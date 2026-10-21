@@ -261,9 +261,10 @@ impl Dispatcher for EnrolledDispatcher {
                     Some(ReportedState::Complete) => Ok((HandleStatus::Complete, None)),
                     Some(ReportedState::Failed) => Ok((HandleStatus::Failed(error), worker_exit)),
                     Some(ReportedState::Gone) => Ok((HandleStatus::Gone, None)),
-                    Some(
-                        ReportedState::Running | ReportedState::Queued | ReportedState::Unknown,
-                    ) => Ok((HandleStatus::Running, None)),
+                    Some(ReportedState::Queued) => Ok((HandleStatus::Queued, None)),
+                    Some(ReportedState::Running | ReportedState::Unknown) => {
+                        Ok((HandleStatus::Running, None))
+                    }
                     None => Err(DispatchError::Backend(
                         error.unwrap_or_else(|| "dispatcher returned no status".into()),
                     )),

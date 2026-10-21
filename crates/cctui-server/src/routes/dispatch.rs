@@ -1225,7 +1225,12 @@ async fn forward_recorded(
         Ok((_, r)) if !counts_as_use(&r.status) && v.dedup_key.as_deref() != Some(sid) => {
             records::delete(&state.pool, sid).await
         }
-        Ok(_) => records::set_outcome(&state.pool, sid, "forwarded", None).await,
+        Ok((_, r)) => match records::set_outcome(&state.pool, sid, "forwarded", None).await {
+            Ok(()) if r.status == "queued" => {
+                records::set_queued(&state.pool, sid, true).await.map(drop)
+            }
+            other => other,
+        },
         Err((_, e)) => {
             records::set_outcome(&state.pool, sid, "refused", Some(e.error.as_str())).await
         }

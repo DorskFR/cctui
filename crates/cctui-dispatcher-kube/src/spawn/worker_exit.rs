@@ -3,7 +3,7 @@
 
 use cctui_orchestrator::{ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER};
 use cctui_proto::api::WorkerExit;
-use k8s_openapi::api::core::v1::{ContainerStateTerminated, Pod};
+use k8s_openapi::api::core::v1::{ContainerStateTerminated, ContainerStatus, Pod};
 use kube::Error as KubeError;
 use kube::api::{ListParams, LogParams};
 
@@ -29,33 +29,44 @@ fn worker_container(pod: &Pod) -> &str {
         .map_or(DEFAULT_WORKER_CONTAINER, String::as_str)
 }
 
-/// The newest of the Job's pods, its worker container's termination, and
-/// where to read its logs.
+fn termination(cs: &ContainerStatus) -> Option<(&ContainerStateTerminated, bool)> {
+    let current = cs.state.as_ref().and_then(|s| s.terminated.as_ref()).map(|t| (t, false));
+    current.or_else(|| cs.last_state.as_ref()?.terminated.as_ref().map(|t| (t, true)))
+}
+
+/// The newest of the Job's pods, how its worker container ended, and where to
+/// read its logs.
+///
+/// A pod fails on any container, so when the worker exited cleanly a container
+/// that did not is reported instead.
 fn exit_of(pods: &[Pod]) -> Option<(WorkerExit, LogTarget)> {
     let pod = pods.iter().max_by_key(|p| p.metadata.creation_timestamp.as_ref().map(|t| t.0))?;
     let pod_name = pod.metadata.name.clone()?;
-    let container = worker_container(pod).to_owned();
-    let status = pod
+    let worker = worker_container(pod);
+    let statuses = pod
         .status
         .as_ref()
-        .and_then(|s| s.container_statuses.as_ref())
-        .and_then(|all| all.iter().find(|cs| cs.name == container));
-    let current = status.and_then(|cs| cs.state.as_ref()?.terminated.as_ref());
-    let last = status.and_then(|cs| cs.last_state.as_ref()?.terminated.as_ref());
-    let (terminated, previous): (Option<&ContainerStateTerminated>, bool) = match (current, last) {
-        (Some(t), _) => (Some(t), false),
-        (None, Some(t)) => (Some(t), true),
-        (None, None) => (None, false),
+        .and_then(|s| s.container_statuses.as_deref())
+        .unwrap_or_default();
+    let worker_end = statuses.iter().find(|cs| cs.name == worker).and_then(termination);
+    let culprit = if worker_end.is_some_and(|(t, _)| t.exit_code == 0) {
+        statuses.iter().find_map(|cs| {
+            termination(cs).filter(|(t, _)| t.exit_code != 0).map(|end| (cs.name.as_str(), end))
+        })
+    } else {
+        None
     };
+    let (container, end) = culprit.map_or((worker, worker_end), |(name, end)| (name, Some(end)));
+    let (terminated, previous) = end.map_or((None, false), |(t, previous)| (Some(t), previous));
     let exit = WorkerExit {
-        container: Some(container.clone()),
+        container: Some(container.to_owned()),
         exit_code: terminated.map(|t| t.exit_code),
         reason: terminated.and_then(|t| t.reason.clone().or_else(|| t.message.clone())),
         signal: terminated.and_then(|t| t.signal),
         log_tail: None,
         logs_error: None,
     };
-    Some((exit, LogTarget { pod: pod_name, container, previous }))
+    Some((exit, LogTarget { pod: pod_name, container: container.to_owned(), previous }))
 }
 
 /// The last `lines` lines, without a trailing newline.
@@ -165,6 +176,29 @@ mod tests {
             target,
             LogTarget { pod: "w-new".into(), container: "agent".into(), previous: false }
         );
+    }
+
+    #[test]
+    fn a_sidecar_that_failed_the_pod_is_reported_when_the_worker_exited_cleanly() {
+        let p = pod(
+            "w",
+            "2026-10-21T05:00:00Z",
+            &json!({ "phase": "Failed", "containerStatuses": [
+                {
+                    "name": "agent", "image": "i", "imageID": "", "ready": false,
+                    "restartCount": 0, "state": { "terminated": { "exitCode": 0 } }
+                },
+                {
+                    "name": "guard-proxy", "image": "i", "imageID": "", "ready": false,
+                    "restartCount": 0,
+                    "state": { "terminated": { "exitCode": 143, "reason": "Error" } }
+                }
+            ]}),
+        );
+        let (exit, target) = exit_of(&[p]).unwrap();
+        assert_eq!(exit.container.as_deref(), Some("guard-proxy"));
+        assert_eq!((exit.exit_code, exit.reason.as_deref()), (Some(143), Some("Error")));
+        assert_eq!(target.container, "guard-proxy");
     }
 
     #[test]

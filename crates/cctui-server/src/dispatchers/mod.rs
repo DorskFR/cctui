@@ -47,6 +47,8 @@ pub enum DispatchError {
 #[derive(Debug, Clone)]
 pub enum HandleStatus {
     Running,
+    /// Created but held back by the dispatcher's concurrency cap.
+    Queued,
     Complete,
     /// Carries the dispatcher's human reason, surfaced in the webhook `error`.
     Failed(Option<String>),
