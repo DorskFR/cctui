@@ -919,12 +919,14 @@ mod tests {
             _voice: Option<&str>,
             speed: Option<f32>,
         ) -> Result<AudioStream, String> {
-            {
-                let mut failures = self.synth_failures.lock().unwrap();
-                if *failures > 0 {
-                    *failures -= 1;
-                    return Err("speech service unreachable".into());
-                }
+            let mut failures = self.synth_failures.lock().unwrap();
+            let failed = *failures > 0;
+            if failed {
+                *failures -= 1;
+            }
+            drop(failures);
+            if failed {
+                return Err("speech service unreachable".into());
             }
             self.synthesized.lock().unwrap().push(text.to_owned());
             self.speeds.lock().unwrap().push(speed);
