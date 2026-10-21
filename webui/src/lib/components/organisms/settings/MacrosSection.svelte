@@ -8,16 +8,16 @@
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
-	import { useAccountPools, useAllMachines } from '$lib/queries';
+	import { useAccountPools, useMachineResources } from '$lib/queries';
 	import { settings, type MacroSpec } from '$lib/settings.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { modes } from '../spawn/options';
 	import { harnessModelsFallback } from '$lib/domainTables';
 	import { effortsFor, macroProblems, newMacro } from '../macros.logic';
 
-	const machinesQ = useAllMachines(() => true);
+	const machinesQ = useMachineResources(() => true);
 	const poolsQ = useAccountPools(() => true);
-	const machines = $derived((machinesQ.data ?? []).filter((r) => r.kind !== 'ephemeral'));
+	const machines = $derived(machinesQ.data ?? []);
 	const pools = $derived(poolsQ.data ?? []);
 	const enabled = $derived(settings.macrosEnabled);
 	const list = $derived(settings.macros);
@@ -27,7 +27,7 @@
 	const problems = $derived(draft ? macroProblems(draft) : []);
 
 	const machineName = (id: string | null) => {
-		const row = machines.find((r) => r.id === id);
+		const row = machines.find((r) => r.machine_id === id);
 		return row ? (row.display_name ?? row.name) : (id ?? '');
 	};
 	const poolLabel = (id: string | null) => pools.find((p) => p.id === id)?.name ?? m.spawn_account_auto();
@@ -134,8 +134,8 @@
 			<SettingRow label={m.spawn_machine_label()}>
 				<Select style="width:100%" value={draft.machine_id ?? ''} onchange={(e) => (draft!.machine_id = orNull(sel(e)))}>
 					<option value="">{m.settings_macros_pick_machine()}</option>
-					{#each machines as r (r.id)}
-						<option value={r.id}>{r.display_name ?? r.name}</option>
+					{#each machines as r (r.machine_id)}
+						<option value={r.machine_id}>{r.display_name ?? r.name}</option>
 					{/each}
 				</Select>
 			</SettingRow>

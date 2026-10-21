@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { useAllMachines, useSessionStats, useUsageCloses } from '$lib/queries';
+	import { useMachineResources, useSessionStats, useUsageCloses } from '$lib/queries';
 	import { m } from '$lib/paraglide/messages';
 	import { getLocale } from '$lib/paraglide/runtime';
 	import MetricTile from '$lib/components/molecules/MetricTile.svelte';
@@ -7,7 +7,7 @@
 	import { wastedPct } from './window-history';
 
 	const stats = useSessionStats();
-	const machines = useAllMachines(() => true);
+	const machines = useMachineResources(() => true);
 
 	const num = (n: number) => n.toLocaleString(getLocale());
 	const tiles = $derived(buildMetricTiles(stats.data, machines.data ?? []));

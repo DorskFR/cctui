@@ -5,11 +5,14 @@ import SpawnModal from "./SpawnModal.svelte";
 
 const machineList = [
   {
-    id: "m-uuid-1",
+    machine_id: "m-uuid-1",
     name: "box",
     display_name: "box",
-    kind: "persistent",
     hue: null,
+    liveness: "online",
+    last_seen_at: "2026-01-01T00:00:00Z",
+    resources: null,
+    updated_at: null,
   },
 ];
 const dispatch = vi.fn();
@@ -18,7 +21,7 @@ vi.mock("$lib/queries", () => {
   const q = <T>(data: T) => ({ data, isLoading: false, isError: false });
   return {
     useSessions: () => ({ data: { sessions: [] } }),
-    useAllMachines: () => q(machineList),
+    useMachineResources: () => q(machineList),
     useDispatchers: () => q([{ id: "kube", name: "kube" }]),
     useRecentDirs: () => q([]),
     useAccounts: () => q([]),
