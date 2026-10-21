@@ -510,6 +510,7 @@ impl Supervisor {
     fn announce_connected(&self) {
         self.established.store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = self.connected.send(());
+        crate::machine_health::on_connected();
     }
 
     /// Drain the shutdown tail (buffered batch plus late adapter events) onto

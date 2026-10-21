@@ -2196,6 +2196,12 @@ impl ResultRow {
     /// Ended, archived, or idle after a finished turn: the bucket the list
     /// files as `Done`, never while the adapter still reports the turn busy.
     fn done(&self) -> bool {
+        if self.ended_at.is_some() || self.status == SessionRowStatus::Archived.as_str() {
+            return true;
+        }
+        if matches!(self.adapter_id.as_deref(), Some("codex" | "opencode")) {
+            return self.idle_after_turn();
+        }
         let busy = matches!(self.tempo.as_deref(), Some("active" | "blocked"))
             || matches!(self.agent_state.as_deref(), Some("working" | "running"));
         let bucket = bucket_from_signals(
@@ -2206,9 +2212,14 @@ impl ResultRow {
             &[],
             &HashMap::new(),
         );
-        self.ended_at.is_some()
-            || self.status == SessionRowStatus::Archived.as_str()
-            || (bucket == Bucket::Done && !busy)
+        bucket == Bucket::Done && !busy
+    }
+
+    /// codex keeps `tempo` at its last busy value after the turn goes idle,
+    /// so only `agent_state` is current for these adapters.
+    fn idle_after_turn(&self) -> bool {
+        self.soft_limit_reason.is_none()
+            && matches!(self.agent_state.as_deref(), Some("idle" | "done"))
     }
 }
 
@@ -3733,7 +3744,7 @@ impl<'a> DraftRowFields<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Bucket, EndRow, RemoveInitiator, SessionChild, SqlParam, attention_from_bucket,
+        Bucket, EndRow, RemoveInitiator, ResultRow, SessionChild, SqlParam, attention_from_bucket,
         bucket_from_signals, cap_unread, compile_node, derive_liveness, field_values_sql,
         make_snippet, normalize_last_message, remove_command, snippet_sql,
     };
@@ -4055,6 +4066,81 @@ mod tests {
         };
         set_signals(&state.pool, &sid, "tempo = 'blocked', agent_state = 'done'").await;
         assert!(!result_of(&state, &sid).await.unwrap().done);
+    }
+
+    fn result_row(adapter: &str, tempo: Option<&str>, agent_state: Option<&str>) -> ResultRow {
+        ResultRow {
+            adapter_id: Some(adapter.to_owned()),
+            end_reason: None,
+            ended_at: None,
+            status: "active".to_owned(),
+            tempo: tempo.map(str::to_owned),
+            agent_state: agent_state.map(str::to_owned),
+            activity: None,
+            soft_limit_reason: None,
+        }
+    }
+
+    #[test]
+    fn codex_is_done_once_its_thread_goes_idle_despite_the_stale_active_tempo() {
+        assert!(!result_row("codex", Some("active"), Some("working")).done());
+        assert!(!result_row("codex", Some("blocked"), Some("working")).done());
+        assert!(result_row("codex", Some("active"), Some("idle")).done());
+        assert!(result_row("codex", Some("hibernated"), Some("idle")).done());
+        assert!(result_row("codex", Some("active"), Some("done")).done());
+        assert!(!result_row("codex", None, None).done());
+    }
+
+    #[test]
+    fn opencode_is_done_once_its_session_goes_idle() {
+        assert!(!result_row("opencode", Some("working"), Some("working")).done());
+        assert!(!result_row("opencode", Some("error"), Some("error")).done());
+        assert!(result_row("opencode", Some("idle"), Some("idle")).done());
+        assert!(!result_row("opencode", None, None).done());
+    }
+
+    #[test]
+    fn an_idle_codex_or_opencode_session_locked_out_by_a_soft_limit_is_not_done() {
+        for adapter in ["codex", "opencode"] {
+            let mut row = result_row(adapter, Some("idle"), Some("idle"));
+            row.soft_limit_reason = Some("switch account".to_owned());
+            assert!(!row.done(), "{adapter}");
+        }
+    }
+
+    #[test]
+    fn claude_code_still_reads_the_classifier_bucket() {
+        assert!(result_row("claude-code", Some("idle"), Some("done")).done());
+        assert!(!result_row("claude-code", Some("idle"), Some("idle")).done());
+        assert!(!result_row("claude-code", Some("active"), Some("done")).done());
+        let mut ended = result_row("codex", Some("active"), Some("working"));
+        ended.ended_at = Some(Utc::now());
+        assert!(ended.done());
+    }
+
+    #[tokio::test]
+    async fn codex_and_opencode_turns_read_done_only_after_going_idle() {
+        let turns = [
+            ("codex", "tempo = 'active', agent_state = 'working'", "agent_state = 'idle'"),
+            (
+                "opencode",
+                "tempo = 'working', agent_state = 'working'",
+                "tempo = 'idle', agent_state = 'idle'",
+            ),
+        ];
+        for (adapter, busy, idle) in turns {
+            let Some((state, _, sid)) =
+                result_session(&format!("{adapter}_turns_read_done_only_after_going_idle")).await
+            else {
+                return;
+            };
+            set_signals(&state.pool, &sid, &format!("adapter_id = '{adapter}', {busy}")).await;
+            assert!(!result_of(&state, &sid).await.unwrap().done, "{adapter} busy");
+            set_signals(&state.pool, &sid, idle).await;
+            assert!(result_of(&state, &sid).await.unwrap().done, "{adapter} idle");
+            set_signals(&state.pool, &sid, busy).await;
+            assert!(!result_of(&state, &sid).await.unwrap().done, "{adapter} next turn");
+        }
     }
 
     /// Archiving clears the classifier signals and leaves `ended_at` unset,
