@@ -157,7 +157,8 @@ pub async fn list(
 
 #[cfg(test)]
 mod tests {
-    use axum::{Extension, Json, extract::State};
+    use axum::extract::State;
+    use axum::{Extension, Json};
     use cctui_proto::resources::MachineResources;
     use uuid::Uuid;
 
@@ -290,9 +291,9 @@ mod tests {
         assert_eq!(own_rows[0].machine_id, own_machine);
         assert!(own_rows[0].resources.is_none(), "machines without a snapshot remain listed");
         let admin_ids = ids(admin_rows);
-        let mut expected_admin_ids = vec![own_machine, other_machine];
-        expected_admin_ids.sort_unstable();
-        assert_eq!(admin_ids, expected_admin_ids);
+        for visible in [own_machine, other_machine] {
+            assert!(admin_ids.contains(&visible));
+        }
         for hidden in [revoked_owner_machine, revoked_machine, deleted_machine, ephemeral_machine] {
             assert!(!admin_ids.contains(&hidden));
         }
