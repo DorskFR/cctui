@@ -1,0 +1,34 @@
+---
+title: Ephemeral workers and guard proxy
+description: Dispatch to throwaway Kubernetes pods built from a WorkerProfile, behind a guard proxy that keeps real credentials off the box.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Clip from '../../../components/Clip.astro';
+
+<Clip slug="workers" alt="The dispatchers panel, a failed-dispatch card with its exit reason and log tail, and a re-run" />
+
+<p class="pitch">Give an agent a clean pod, a repo and a task. <strong>It never sees a real secret</strong>, cannot reach your network, and is gone when the task ends.</p>
+
+<CardGrid>
+  <Card title="Kubernetes dispatcher">Each dispatch becomes one Job from a named `WorkerProfile`. Re-dispatching the same work does not double-run.</Card>
+  <Card title="WorkerProfile CRD">Worker pods declared as a cluster resource (`cctui.dev/v1alpha1`). Operators own the shape; a request only picks a name.</Card>
+  <Card title="Admission webhooks">A mutating webhook injects the sandbox envelope and fails closed; a validating webhook rejects unsafe pods and requests.</Card>
+  <Card title="Supervisor sandbox">Landlock, seccomp, dropped capabilities and a non-root exec around the agent.</Card>
+  <Card title="Guard proxy">Every outbound connection checked against policy, in transparent (IPv4) or forward mode. Metadata endpoints and private ranges denied by default.</Card>
+  <Card title="Phantom tokens">The agent holds placeholders. The proxy swaps in the real GitHub App token, API key or SigV4 signature on the wire.</Card>
+  <Card title="Secret engines">Env, Vault/OpenBao, AWS Secrets Manager or Kubernetes Secrets, cached only in memory.</Card>
+  <Card title="Remote GPG signing">Workers sign commits; the key never leaves the sidecar.</Card>
+  <Card title="Exit diagnosis">A failed worker reports how it died and its last log lines. Retry from the Dispatch failures page.</Card>
+  <Card title="Dispatch policy">Admins limit what each user may dispatch. Pods that OOM or crash-loop are ended cleanly.</Card>
+  <Card title="Worker contract v1">Documented env, mounts, capabilities and callback shape, so you can build your own image `FROM ghcr.io/dorskfr/cctui-worker`.</Card>
+  <Card title="Docker and Apple containers">Dispatchers for one container per session on a host, and one micro-VM per session on macOS, exist in the repository but are not released. <span class="status partial">unreleased</span></Card>
+</CardGrid>
+
+## How it works
+
+A dispatcher is an enrolled executor, like a machine: it connects outward and receives dispatch commands. The kube dispatcher instantiates the profile into a Job, writes a per-dispatch Secret the Job owns, and layers the per-run env (session id, reply URL, task payload) onto the worker container. The pod's daemon enrolls as an ephemeral machine with `CCTUI_MACHINE_KEY`, so the session streams into the UI like any other.
+
+The worker contract separates three planes: platform (set by cctui), operator (the pod template and dispatcher config) and tenant (the task payload). Nothing in the tenant plane can change the sandbox.
+
+See [Run on Kubernetes workers](/cctui/getting-started/kubernetes-workers/) for setup.

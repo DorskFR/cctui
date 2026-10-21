@@ -1,0 +1,22 @@
+---
+title: Self-update and channels
+description: Daemons and the TUI follow the server's version, stable and beta channels, a one-click server update hook.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<p class="pitch">Upgrade the server; the fleet follows. <strong>Every daemon updates to the version its server runs</strong>, verified, in place, without ending live sessions.</p>
+
+<CardGrid>
+  <Card title="Stable and beta channels">The tag picks the channel. A stable machine ignores beta servers; `channel = "beta"` opts in. Promote and roll back by tag.</Card>
+  <Card title="Daemon self-update">Machines poll the server's manifest, download the matching binary, verify the minisign signature and re-exec in place.</Card>
+  <Card title="Server update hook">One click deploys a new server through an operator command, or through an agent fallback.</Card>
+  <Card title="TUI self-update">Silent, verified update with a backup kept.</Card>
+  <Card title="Stale-tab reload">The web UI reloads itself after a deploy instead of failing on a missing chunk.</Card>
+  <Card title="Component-scoped releases">A release rebuilds only what changed since the previous one.</Card>
+  <Card title="macOS signing">Notarization of the macOS daemon is not done yet. <span class="status partial">WIP</span></Card>
+</CardGrid>
+
+## How it works
+
+The server serves `GET /api/v1/manifest/daemon?channel=<channel>`. A beta server answers `204 No Content` to any caller that does not ask for `beta`, so a daemon on stable is never offered a beta, and the daemon checks the version's channel again on its side. Older versions are never installed automatically; roll back by pointing the server at an older tag. Both channels pass the same CI gate and every asset is signed the same way.

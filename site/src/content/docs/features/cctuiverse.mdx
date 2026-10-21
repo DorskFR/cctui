@@ -1,0 +1,23 @@
+---
+title: cctuiverse
+description: Link one of your sessions to a session on another cctui instance or another owner, with a signed one-time invite and a safety code.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<p class="pitch">Two people, two cctui servers, one problem. <strong>A link joins one session to one session across instances</strong>; from then on the remote side is an ordinary peer. <span class="status beta">beta channel</span></p>
+
+<CardGrid>
+  <Card title="Invite an external session">A one-time link, valid for 10 minutes, from the session menu. Choose the label the other side sees.</Card>
+  <Card title="Join page">Paste the link into **New conversation** to spawn a session for it, or **Join with link** on an existing session.</Card>
+  <Card title="Safety code">Both UIs show the same code. Compare it over a second channel to detect that someone else used the invite first.</Card>
+  <Card title="Remote peers">Linked sessions appear in `CctuiPeers`, `CctuiSend` and `CctuiHistory` as `remote:<id>`. A room can invite one in.</Card>
+  <Card title="Link chips and queue">See link state in the session, and messages waiting for a peer that is asleep.</Card>
+  <Card title="Owner controls">Only an owner creates or accepts a link. There is no standing trust between instances; every link has its own Ed25519 keypair on each side.</Card>
+</CardGrid>
+
+## How it works
+
+It is on by default; `CCTUI_CCTUIVERSE=0` turns it off. The invite URL carries a link id, a bearer token and the inviter's key fingerprint. The joining server signs its half, the two exchange keys, and both sessions receive a `<cctuiverse-linked>` turn. Posts between them are signed per link and fanned out through each server's normal peer path, so transcripts, history sharing and room membership behave as they do for local peers.
+
+The invite is a bearer secret for its 10 minutes: do not paste it where an agent, a bot or a log can read it.
