@@ -244,10 +244,10 @@ fn composers() -> std::sync::MutexGuard<'static, HashMap<String, ComposerKeys>> 
 
 /// An ESC can restore the last prompt into the composer as a draft.
 fn note_foreign_keys(short: &str) {
-    let mut map = composers();
-    let keys = map.entry(short.to_owned()).or_default();
-    keys.epoch += 1;
-    keys.empty = false;
+    composers()
+        .entry(short.to_owned())
+        .and_modify(|k| *k = ComposerKeys { epoch: k.epoch + 1, empty: false })
+        .or_insert(ComposerKeys { epoch: 1, empty: false });
 }
 
 /// Read before a reply is delivered, handed back to [`note_composer_emptied`].
@@ -259,11 +259,10 @@ pub fn keys_epoch(short: &str) -> u64 {
 /// A reply submitted into `short` left its composer empty, unless other keys
 /// reached it since `epoch` was read.
 pub fn note_composer_emptied(short: &str, epoch: u64) {
-    let mut map = composers();
-    let keys = map.entry(short.to_owned()).or_default();
-    if keys.epoch == epoch {
-        keys.empty = true;
-    }
+    composers()
+        .entry(short.to_owned())
+        .and_modify(|k| k.empty |= k.epoch == epoch)
+        .or_insert(ComposerKeys { epoch: 0, empty: epoch == 0 });
 }
 
 /// Whether the last reply left `short`'s composer empty and nothing has typed
