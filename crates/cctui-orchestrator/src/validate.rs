@@ -24,7 +24,7 @@ use crate::{
 use k8s_openapi::api::core::v1::{Container, Pod, PodSpec, PodTemplateSpec};
 use std::collections::BTreeSet;
 
-const SECRET_REF_PREFIXES: [&str; 3] = ["vault:", "bao:", "k8s:"];
+const SECRET_REF_PREFIXES: [&str; 4] = ["vault:", "bao:", "k8s:", "aws-sm:"];
 
 /// Outcome of validating a single pod.
 pub enum Decision {
@@ -906,5 +906,42 @@ mod tests {
         });
         let src = source("lean", lean_profile());
         assert!(deny_msg(decide(&pod, &src).await).contains("secret-ref"));
+    }
+
+    async fn decide_with_worker_env(value: &str) -> Decision {
+        use k8s_openapi::api::core::v1::EnvVar;
+        let mut pod = dispatched_pod("lean", &lean_profile());
+        worker_mut(&mut pod).env.get_or_insert_with(Vec::new).push(EnvVar {
+            name: "TOKEN".to_owned(),
+            value: Some(value.to_owned()),
+            value_from: None,
+        });
+        decide(&pod, &source("lean", lean_profile())).await
+    }
+
+    #[tokio::test]
+    async fn every_guard_proxy_ref_scheme_is_denied_as_worker_env_literal() {
+        for value in [
+            "vault:secret/data/ci#gh",
+            "bao:secret/data/ci#gh",
+            "k8s:ns/secret#key",
+            "aws-sm:cctui/worker/acme/github",
+            "aws-sm:cctui/worker#token",
+            "aws-sm:",
+            "aws-sm:name#",
+        ] {
+            let msg = deny_msg(decide_with_worker_env(value).await);
+            assert!(msg.contains("secret-ref"), "{value:?}: {msg}");
+        }
+    }
+
+    #[tokio::test]
+    async fn non_ref_literals_mentioning_aws_sm_are_allowed() {
+        for value in ["aws-sm", "AWS-SM:upper", "region=aws-sm:x", "https://aws-sm.example"] {
+            assert!(
+                matches!(decide_with_worker_env(value).await, Decision::Allow),
+                "{value:?} must be allowed"
+            );
+        }
     }
 }
