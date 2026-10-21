@@ -3,5 +3,12 @@
 /**
  * Task-list entry. `status` is `pending`, `in_progress` or `completed`;
  * `active_form` is claude-only.
+ *
+ * `id`, `description`, `blocked_by` and `owner` come from Claude Code's task
+ * list (`TaskCreate` / `TaskUpdate`), never from `TodoWrite` or `update_plan`.
  */
-export type TodoEntry = { content: string, status: string, active_form?: string | null, };
+export type TodoEntry = { content: string, status: string, active_form?: string | null, id?: string | null, description?: string | null, 
+/**
+ * Ids of the tasks this one waits on.
+ */
+blocked_by?: Array<string>, owner?: string | null, };

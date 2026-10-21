@@ -176,7 +176,8 @@
 		invalidateConversation: () => qc.invalidateQueries({ queryKey: qk.conversation(id) }),
 		invalidateSessions: () => qc.invalidateQueries({ queryKey: qk.sessionsAll }),
 		mergeIntoCache: (sid, ev) =>
-			qc.setQueryData<AgentEvent[]>(qk.conversation(sid), (prev) => mergeLiveEvent(prev, ev))
+			qc.setQueryData<AgentEvent[]>(qk.conversation(sid), (prev) => mergeLiveEvent(prev, ev)),
+		sessionTodos: () => session.todos
 	});
 	// (Re)subscribe when the open session changes or a forced resubscribe is
 	// requested; tear down listeners on switch/unmount.

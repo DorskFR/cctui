@@ -43,6 +43,7 @@ mod snapshot;
 mod spawn;
 mod subagents;
 mod tail;
+mod tasks;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -536,6 +537,8 @@ pub struct Driver {
     /// command path can start/stop viewers.
     pty_view: super::pty_view::PtyViewManager,
     last_reseed: Option<Instant>,
+    /// Task-list folder watch per worker `short`.
+    task_watches: HashMap<String, tasks::TaskWatch>,
 }
 
 #[derive(Debug, Clone)]
@@ -802,6 +805,7 @@ impl Driver {
             spawn_permission_mode: std::sync::Mutex::new(HashMap::new()),
             pty_view,
             last_reseed: None,
+            task_watches: HashMap::new(),
         }
     }
 

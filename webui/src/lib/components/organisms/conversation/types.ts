@@ -123,6 +123,10 @@ export interface TodoItem {
 	status: TodoStatus;
 	activeForm?: string;
 	blockedBy?: string[];
+	// Claude Code task list only.
+	id?: string;
+	description?: string;
+	owner?: string;
 }
 
 export interface TodoProgress {

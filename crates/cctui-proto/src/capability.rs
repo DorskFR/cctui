@@ -18,8 +18,11 @@ pub const TURN_END: &str = "turn_end";
 /// ([`AdapterEvent::HarnessModels`](crate::adapter::AdapterEvent::HarnessModels)).
 pub const HARNESS_MODELS: &str = "harness_models";
 
+/// [`AdapterEvent::Todos`](crate::adapter::AdapterEvent::Todos).
+pub const TODOS: &str = "todos";
+
 /// Everything this build understands, for a server to advertise.
-pub const ALL: &[&str] = &[TURN_END, HARNESS_MODELS];
+pub const ALL: &[&str] = &[TURN_END, HARNESS_MODELS, TODOS];
 
 /// Whether `advertised` contains `capability`.
 #[must_use]
