@@ -2978,6 +2978,16 @@ mod tests {
         assert!(super::parse_frame(Message::Close(None)).is_none());
     }
 
+    #[test]
+    fn a_newer_servers_extra_fields_on_a_known_frame_are_ignored() {
+        use tokio_tungstenite::tungstenite::Message;
+        let json = r#"{"type":"ack","seq":7,"from_the_future":{"x":1}}"#;
+        match super::parse_frame(Message::Text(json.into())) {
+            Some(cctui_proto::ws::DaemonFrameDown::Ack { seq }) => assert_eq!(seq, 7),
+            other => panic!("expected Ack, got {other:?}"),
+        }
+    }
+
     /// Counts adapter instances that are live at the same time. `peak > 1`
     /// means two codex `LogTail`s would share one `codex-offsets.json`.
     #[derive(Clone, Default)]

@@ -21,8 +21,11 @@ pub const HARNESS_MODELS: &str = "harness_models";
 /// [`AdapterEvent::Todos`](crate::adapter::AdapterEvent::Todos).
 pub const TODOS: &str = "todos";
 
+/// [`AdapterEvent::Title`](crate::adapter::AdapterEvent::Title).
+pub const TITLES: &str = "titles";
+
 /// Everything this build understands, for a server to advertise.
-pub const ALL: &[&str] = &[TURN_END, HARNESS_MODELS, TODOS];
+pub const ALL: &[&str] = &[TURN_END, HARNESS_MODELS, TODOS, TITLES];
 
 /// Whether `advertised` contains `capability`.
 #[must_use]
@@ -45,5 +48,11 @@ mod tests {
         assert!(has(&[TURN_END.to_owned()], TURN_END));
         let all: Vec<String> = ALL.iter().map(|c| (*c).to_owned()).collect();
         assert!(has(&all, TURN_END));
+    }
+
+    #[test]
+    fn a_current_server_advertises_titles() {
+        let all: Vec<String> = ALL.iter().map(|c| (*c).to_owned()).collect();
+        assert!(has(&all, TITLES));
     }
 }
