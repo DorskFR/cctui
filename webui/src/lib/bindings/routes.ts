@@ -82,6 +82,8 @@ export const ROUTES = [
   { id: "get_daemon_binary_by_target", method: "GET", path: "/daemon/binary/{target}", summary: "Download a daemon binary for a target (self-update proxy).", request: null, response: null },
   { id: "post_sessions_dispatch", method: "POST", path: "/sessions/dispatch", summary: "Dispatch a session to an enrolled executor (remote runner).", request: null, response: null },
   { id: "get_sessions_dispatchers", method: "GET", path: "/sessions/dispatchers", summary: "List dispatch targets available for a spawn.", request: null, response: null },
+  { id: "get_dispatch_records_failed", method: "GET", path: "/dispatch-records/failed", summary: "Dispatches the dispatcher refused or whose worker never ran to a session.", request: null, response: "FailedDispatch[]" },
+  { id: "post_dispatch_records_by_id_redispatch", method: "POST", path: "/dispatch-records/{id}/redispatch", summary: "Send a recorded dispatch again as a new dispatch.", request: null, response: "DispatchResponse" },
   { id: "get_dispatchers", method: "GET", path: "/dispatchers", summary: "List enrolled dispatchers with liveness.", request: null, response: null },
   { id: "patch_dispatchers_by_id", method: "PATCH", path: "/dispatchers/{id}", summary: "Rename or remove an enrolled dispatcher.", request: null, response: null },
   { id: "delete_dispatchers_by_id", method: "DELETE", path: "/dispatchers/{id}", summary: "Rename or remove an enrolled dispatcher.", request: null, response: null },

@@ -94,19 +94,16 @@ pub const fn tees_response(langfuse: bool, metered: bool) -> bool {
     langfuse || metered
 }
 
-/// Per-provider request-shaping settings for the `fireworks` family, resolved
-/// over [`fireworks_default_settings`]. Applied by the gateway on the way
-/// upstream so no worker needs to know them (and none can bypass them).
+/// Fireworks routes requests carrying the same value here to one replica, so a
+/// conversation's prompt prefix stays cache-warm.
+pub const SESSION_AFFINITY_HEADER: &str = "x-session-affinity";
+
+/// Per-provider settings for the `fireworks` family, resolved over
+/// [`fireworks_default_settings`]. The gateway only ever sets headers from
+/// them: request bodies are forwarded byte-for-byte.
 pub struct FireworksSettings {
-    /// Injected as the request body's `context_length_exceeded_behavior`
-    /// (Fireworks defaults to `truncate`, which silently loses prompt).
-    /// `None` (settings key `null`) injects nothing.
-    pub context_length_exceeded_behavior: Option<String>,
-    /// Pin a conversation's requests to one replica so its prompt prefix stays
-    /// cache-warm: the session id goes out as `user` + `x-session-affinity`.
+    /// Send the session id as [`SESSION_AFFINITY_HEADER`].
     pub session_affinity: bool,
-    /// Extra body keys merged in, none overriding what the client sent.
-    pub extra_body: serde_json::Map<String, serde_json::Value>,
     /// Name of cctui's own API key as it appears in Fireworks' billing console.
     /// A Fireworks account is shared across keys and tenants, so without this
     /// there is no way to tell cctui's spend from anyone else's — unset disables
@@ -118,9 +115,7 @@ pub struct FireworksSettings {
 /// create so the accounts UI can edit every knob.
 pub fn fireworks_default_settings() -> serde_json::Value {
     serde_json::json!({
-        "context_length_exceeded_behavior": "error",
         "session_affinity": true,
-        "extra_body": {},
         "billing_api_key_name": null,
     })
 }
@@ -134,44 +129,16 @@ impl FireworksSettings {
             cctui_proto::util::deep_merge(&mut merged, overlay.clone());
         }
         Self {
-            context_length_exceeded_behavior: merged
-                .get("context_length_exceeded_behavior")
-                .and_then(serde_json::Value::as_str)
-                .filter(|s| !s.trim().is_empty())
-                .map(str::to_owned),
             session_affinity: merged
                 .get("session_affinity")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(true),
-            extra_body: merged
-                .get("extra_body")
-                .and_then(serde_json::Value::as_object)
-                .cloned()
-                .unwrap_or_default(),
             billing_api_key_name: merged
                 .get("billing_api_key_name")
                 .and_then(serde_json::Value::as_str)
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_owned),
-        }
-    }
-
-    /// Apply the settings to a JSON request body. Every injection is
-    /// "only if absent" — an explicit client value always wins.
-    pub fn apply_body(&self, body: &mut serde_json::Value, session_id: Option<&str>) {
-        let Some(obj) = body.as_object_mut() else { return };
-        if let Some(behavior) = self.context_length_exceeded_behavior.as_ref() {
-            obj.entry("context_length_exceeded_behavior")
-                .or_insert_with(|| serde_json::Value::String(behavior.clone()));
-        }
-        for (k, v) in &self.extra_body {
-            obj.entry(k.clone()).or_insert_with(|| v.clone());
-        }
-        if self.session_affinity
-            && let Some(sid) = session_id
-        {
-            obj.entry("user").or_insert_with(|| serde_json::Value::String(sid.to_owned()));
         }
     }
 }

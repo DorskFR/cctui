@@ -416,6 +416,18 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "get_dispatch_records_failed"
+# GET /dispatch-records/failed — Dispatches the dispatcher refused or whose worker never ran to a session.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_dispatch_records_by_id_redispatch"
+# POST /dispatch-records/{id}/redispatch — Send a recorded dispatch again as a new dispatch.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "get_dispatchers"
 # GET /dispatchers — List enrolled dispatchers with liveness.
 tui = "waived"

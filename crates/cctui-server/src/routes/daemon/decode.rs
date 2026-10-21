@@ -1,5 +1,9 @@
+use std::collections::HashSet;
+use std::sync::{LazyLock, Mutex};
+
 use cctui_proto::chunk::{Accept, Reassembler};
 use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp};
+use serde_json::Value;
 
 /// Bound the memory a single in-flight chunked transfer may buffer: a fixed
 /// memory-safety backstop, not a product setting, so it stays unconfigurable.
@@ -38,13 +42,7 @@ pub(super) fn handle_chunk(
                 },
                 None => bytes,
             };
-            match serde_json::from_slice::<DaemonFrameUp>(&joined) {
-                Ok(inner) => (ack, Some(inner)),
-                Err(err) => {
-                    tracing::warn!(%err, "reassembled chunk payload did not parse");
-                    (ack, None)
-                }
-            }
+            (ack, parse_frame(&joined))
         }
         Accept::Restart => {
             (DaemonFrameDown::ChunkAck { transfer_id, highest_contiguous_chunk: None }, None)
@@ -56,7 +54,7 @@ pub(super) fn handle_chunk(
 /// bad codec / base64 / payload — logged and dropped like any malformed frame.
 pub(super) fn decode_compressed_frame(codec: &str, data: &str) -> Option<DaemonFrameUp> {
     match cctui_proto::compress::decode_compressed(codec, data) {
-        Ok(bytes) => parse_decompressed(&bytes),
+        Ok(bytes) => parse_frame(&bytes),
         Err(err) => {
             tracing::warn!(%err, "compressed frame failed to decode");
             None
@@ -68,7 +66,7 @@ pub(super) fn decode_compressed_frame(codec: &str, data: &str) -> Option<DaemonF
 /// carries base64-encoded.
 pub(super) fn decode_binary_frame(data: &[u8]) -> Option<DaemonFrameUp> {
     match cctui_proto::compress::decompress_codec(cctui_proto::compress::CODEC_ZSTD, data) {
-        Ok(bytes) => parse_decompressed(&bytes),
+        Ok(bytes) => parse_frame(&bytes),
         Err(err) => {
             tracing::warn!(%err, "binary frame failed to decompress");
             None
@@ -76,14 +74,62 @@ pub(super) fn decode_binary_frame(data: &[u8]) -> Option<DaemonFrameUp> {
     }
 }
 
-fn parse_decompressed(bytes: &[u8]) -> Option<DaemonFrameUp> {
+/// Parse one up-frame. A frame this build cannot decode, such as an event kind
+/// from a newer daemon or a malformed one, is skipped on its own: the rest of
+/// its `Batch` still goes through. The whole-frame parse runs first, so a
+/// well-formed frame never pays for the per-item fallback.
+pub(super) fn parse_frame(bytes: &[u8]) -> Option<DaemonFrameUp> {
     match serde_json::from_slice::<DaemonFrameUp>(bytes) {
-        Ok(inner) => Some(inner),
+        Ok(frame) => Some(frame),
+        Err(err) => serde_json::from_slice::<Value>(bytes).map_or_else(
+            |_| {
+                tracing::warn!(%err, "bad daemon frame");
+                None
+            },
+            parse_lenient,
+        ),
+    }
+}
+
+fn parse_lenient(mut value: Value) -> Option<DaemonFrameUp> {
+    if value.get("type").and_then(Value::as_str) == Some("batch")
+        && let Some(Value::Array(items)) = value.get_mut("frames").map(Value::take)
+    {
+        let frames = items.into_iter().filter_map(parse_lenient).collect();
+        return Some(DaemonFrameUp::Batch { frames });
+    }
+    let kind = frame_kind(&value);
+    match serde_json::from_value::<DaemonFrameUp>(value) {
+        Ok(frame) => Some(frame),
         Err(err) => {
-            tracing::warn!(%err, "decompressed frame did not parse");
+            if first_skip_of(&kind) {
+                tracing::warn!(%err, %kind, "skipping undecodable daemon frames of this kind");
+            }
             None
         }
     }
+}
+
+/// `event/<kind>` for an `Event`, else the frame's own `type`.
+fn frame_kind(value: &Value) -> String {
+    let tag = |v: &Value| v.get("type").and_then(Value::as_str).unwrap_or("?").to_owned();
+    match value.get("event") {
+        Some(event) if tag(value) == "event" => format!("event/{}", tag(event)),
+        _ => tag(value),
+    }
+}
+
+/// Bounded so a daemon inventing kinds cannot grow the set without limit.
+const MAX_SKIPPED_KINDS: usize = 64;
+
+static SKIPPED_KINDS: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
+
+fn first_skip_of(kind: &str) -> bool {
+    let Ok(mut seen) = SKIPPED_KINDS.lock() else { return false };
+    if seen.contains(kind) || seen.len() >= MAX_SKIPPED_KINDS {
+        return false;
+    }
+    seen.insert(kind.to_owned())
 }
 
 /// Flatten a decoded inner frame into the leaf frames to process: a `Batch`
@@ -276,6 +322,87 @@ mod tests {
     fn bad_compressed_frame_is_dropped() {
         assert!(decode_compressed_frame("zstd", "!!not base64!!").is_none());
         assert!(decode_compressed_frame("brotli", "AAAA").is_none());
+    }
+
+    #[test]
+    fn an_unknown_event_is_skipped_and_its_batch_siblings_survive() {
+        let known = |id: &str| serde_json::to_value(event(id)).unwrap();
+        let unknown = json!({
+            "type": "event",
+            "adapter_id": "claude-code",
+            "event": { "type": "from_the_future", "local_id": "s1", "x": 1 },
+        });
+        let malformed = json!({
+            "type": "event",
+            "adapter_id": "claude-code",
+            "event": { "type": "message", "local_id": 7 },
+        });
+        let garbage = json!({ "type": "nope" });
+        let mut newer = known("s1");
+        newer["from_the_future"] = json!(1);
+        newer["event"]["from_the_future"] = json!({ "x": true });
+        let frame = json!({
+            "type": "batch",
+            "frames": [known("s0"), unknown, newer, malformed, garbage, known("s2")],
+        });
+        let bytes = serde_json::to_vec(&frame).unwrap();
+        let leaves = expand_batch(parse_frame(&bytes).expect("the batch survives"));
+        let ids: Vec<_> = leaves
+            .iter()
+            .map(|f| match f {
+                DaemonFrameUp::Event {
+                    event: cctui_proto::adapter::AdapterEvent::Message { local_id, .. },
+                    ..
+                } => local_id.as_str(),
+                other => panic!("only the known events remain, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(ids, ["s0", "s1", "s2"]);
+    }
+
+    #[test]
+    fn an_unknown_event_inside_a_compressed_batch_spares_its_siblings() {
+        let mut frame =
+            serde_json::to_value(DaemonFrameUp::Batch { frames: vec![event("s0"), event("s1")] })
+                .unwrap();
+        let unknown = json!({"type":"event","adapter_id":"a","event":{"type":"from_the_future"}});
+        frame["frames"].as_array_mut().unwrap().insert(1, unknown);
+        let compressed = cctui_proto::compress::zstd_compress(&serde_json::to_vec(&frame).unwrap());
+        let leaves = expand_batch(decode_binary_frame(&compressed).expect("decodes"));
+        assert_eq!(leaves.len(), 2);
+    }
+
+    #[test]
+    fn unknown_fields_on_known_events_take_the_fast_path() {
+        let mut frame =
+            serde_json::to_value(DaemonFrameUp::Batch { frames: vec![event("s0"), event("s1")] })
+                .unwrap();
+        frame["frames"][0]["event"]["from_the_future"] = json!([1, 2]);
+        frame["from_the_future"] = json!("x");
+        let bytes = serde_json::to_vec(&frame).unwrap();
+        assert!(serde_json::from_slice::<DaemonFrameUp>(&bytes).is_ok());
+        assert_eq!(expand_batch(parse_frame(&bytes).unwrap()).len(), 2);
+    }
+
+    #[test]
+    fn a_lone_unknown_frame_or_garbage_is_dropped() {
+        let lone = json!({"type":"event","adapter_id":"a","event":{"type":"from_the_future"}});
+        assert!(parse_frame(&serde_json::to_vec(&lone).unwrap()).is_none());
+        assert!(parse_frame(b"not json").is_none());
+    }
+
+    #[test]
+    fn a_skipped_kind_is_logged_once() {
+        let kind = "event/once_only_probe";
+        assert!(first_skip_of(kind));
+        assert!(!first_skip_of(kind));
+    }
+
+    #[test]
+    fn frame_kind_names_the_event_inside_an_event_frame() {
+        assert_eq!(frame_kind(&json!({"type":"event","event":{"type":"title"}})), "event/title");
+        assert_eq!(frame_kind(&json!({"type":"heartbeat"})), "heartbeat");
+        assert_eq!(frame_kind(&json!({})), "?");
     }
 
     #[test]

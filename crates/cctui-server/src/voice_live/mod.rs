@@ -147,6 +147,7 @@ async fn read_socket(
             Message::Binary(bytes) if bytes.len() <= MAX_UTTERANCE_BYTES && bytes.len() >= 2 => {
                 Inbound::Audio(bytes)
             }
+            Message::Binary(bytes) if bytes.len() > MAX_UTTERANCE_BYTES => Inbound::TooLong,
             Message::Text(text) => match serde_json::from_str::<VoiceClientMsg>(&text) {
                 Ok(c) => Inbound::Control(c),
                 Err(err) => {

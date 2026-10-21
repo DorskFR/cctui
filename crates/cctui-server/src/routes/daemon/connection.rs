@@ -20,7 +20,7 @@ use super::conn_limit::{ConnGuard, DAEMON_CONNS};
 use super::daemon_lost::{PENDING_DAEMON_LOST, schedule_daemon_lost};
 use super::decode::{
     MAX_TRANSFER_BYTES, STALE_TRANSFER, decode_binary_frame, decode_compressed_frame, expand_batch,
-    handle_chunk,
+    handle_chunk, parse_frame,
 };
 use super::frames::process_frame;
 use super::ingest::{Ingest, ingest_run};
@@ -530,13 +530,7 @@ fn note_idle_eviction(state: &AppState, machine_id: Uuid) {
 
 fn decode_inbound(inbound: Inbound) -> Option<DaemonFrameUp> {
     match inbound {
-        Inbound::Data(text) => match serde_json::from_str(&text) {
-            Ok(f) => Some(f),
-            Err(err) => {
-                tracing::warn!(%err, "bad daemon frame");
-                None
-            }
-        },
+        Inbound::Data(text) => parse_frame(text.as_bytes()),
         Inbound::Binary(data) => decode_binary_frame(&data)
             .map(|inner| DaemonFrameUp::Batch { frames: expand_batch(inner) }),
         Inbound::Skip | Inbound::Done | Inbound::Idle => None,

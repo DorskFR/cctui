@@ -216,6 +216,15 @@ async fn build_state(
     let http_client = build_http_client();
 
     let (transport, internal_secret) = init_bus(&pool, config, &presence, &http_client).await?;
+    if let Some(secret) = &internal_secret {
+        auth_config.set_peers(Arc::new(bus::peer::PeerAuthPurge::new(
+            pool.clone(),
+            http_client.clone(),
+            presence.pod.clone(),
+            config.port,
+            String::from(&**secret),
+        )));
+    }
 
     Ok(AppState {
         pool,
@@ -514,6 +523,7 @@ fn outer_routes() -> Router<AppState> {
             post(routes::internal::bus_route).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
         )
         .route("/internal/bus/publish", post(routes::internal::bus_publish))
+        .route("/internal/auth/purge", post(routes::internal::auth_purge))
         // Server-to-server cctuiverse calls, authenticated by each link's
         // Ed25519 signature rather than any cctui credential.
         .merge(cctuiverse_routes())
@@ -938,6 +948,7 @@ async fn reap_ephemeral_keys(state: &AppState) {
     .await
     {
         Ok(res) if res.rows_affected() > 0 => {
+            state.auth_config.purge_all();
             tracing::info!(
                 count = res.rows_affected(),
                 "revoked ephemeral dispatch keys for archived sessions"
@@ -954,6 +965,7 @@ async fn reap_ephemeral_keys(state: &AppState) {
     .await
     {
         Ok(res) if res.rows_affected() > 0 => {
+            state.auth_config.purge_all();
             tracing::info!(count = res.rows_affected(), "deleted expired ephemeral dispatch keys");
         }
         Ok(_) => {}
@@ -1151,6 +1163,8 @@ mod tests {
             "POST /context/{id}/pending/reject Bearer Human",
             "GET /daemon/binary/{target} Bearer Authenticated",
             "POST /deenroll Bearer Authenticated",
+            "GET /dispatch-records/failed Bearer Authenticated",
+            "POST /dispatch-records/{id}/redispatch Bearer Scope(Dispatch)",
             "POST /dispatcher/enroll Bearer Scope(Enroll)",
             "GET /dispatchers Bearer Authenticated",
             "DELETE /dispatchers/{id} Bearer Scope(Enroll)",

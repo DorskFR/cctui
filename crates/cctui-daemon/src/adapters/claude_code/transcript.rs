@@ -535,7 +535,8 @@ pub(super) fn parse_line(local_id: &str, line: &Value, out: &mut Vec<AdapterEven
             }
         }
         "permission-mode" | "ai-title" | "custom-title" | "agent-name" => {
-            session_fact(local_id, kind, line, out);
+            let titles = crate::servercaps::server_supports(cctui_proto::capability::TITLES);
+            session_fact(local_id, kind, line, titles, out);
         }
         "attachment" => attachment_annotation(local_id, line, out),
         "file-history-snapshot" | "file-history-delta" => {
@@ -594,8 +595,15 @@ fn permission_mode_from_claude(raw: &str) -> Option<PermissionMode> {
 }
 
 /// Last-value-wins session state, not a timeline event. A value that does not
-/// map stays a marker so the information is not simply lost.
-fn session_fact(local_id: &str, kind: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
+/// map stays a marker so the information is not simply lost. A `Title` goes
+/// only to a server that advertised `titles`; the `Status` name always does.
+fn session_fact(
+    local_id: &str,
+    kind: &str,
+    line: &Value,
+    titles: bool,
+    out: &mut Vec<AdapterEvent>,
+) {
     let fact = match kind {
         "permission-mode" => {
             let raw = line.get("permissionMode").and_then(Value::as_str).unwrap_or_default();
@@ -608,7 +616,7 @@ fn session_fact(local_id: &str, kind: &str, line: &Value, out: &mut Vec<AdapterE
                 _ => (&["agentName", "name"], None),
             };
             first_str(line, keys).map(|n| {
-                if let Some(source) = source {
+                if let Some(source) = source.filter(|_| titles) {
                     out.push(AdapterEvent::Title {
                         local_id: local_id.to_owned(),
                         title: n.to_owned(),
@@ -2512,8 +2520,9 @@ mod tests {
             ),
         ];
         for (line, want, want_source) in &cases {
+            let kind = line["type"].as_str().unwrap();
             let mut out = Vec::new();
-            parse_line("s", line, &mut out);
+            session_fact("s", kind, line, true, &mut out);
             assert!(message_payloads(&out).is_empty(), "no timeline bubble for {line}");
             assert_eq!(out.len(), 2, "a Title then a Status for {line}");
             match &out[0] {
@@ -2528,6 +2537,26 @@ mod tests {
                 AdapterEvent::Status { name, .. } => assert_eq!(name.as_deref(), Some(*want)),
                 other => panic!("expected Status for {line}, got {other:?}"),
             }
+        }
+    }
+
+    /// A server that never advertised `titles` would reject the whole frame
+    /// carrying a `Title`, so it gets only the `Status` name it always knew.
+    #[test]
+    fn titles_are_status_only_for_a_server_without_the_capability() {
+        for line in [
+            json!({"type":"ai-title","aiTitle":"fix the parser"}),
+            json!({"type":"custom-title","customTitle":"my session"}),
+        ] {
+            let kind = line["type"].as_str().unwrap();
+            let mut out = Vec::new();
+            session_fact("s", kind, &line, false, &mut out);
+            assert_eq!(out.len(), 1, "a Status alone for {line}");
+            assert!(
+                matches!(&out[0], AdapterEvent::Status { name: Some(n), .. } if !n.is_empty()),
+                "expected a named Status for {line}, got {:?}",
+                out[0]
+            );
         }
     }
 

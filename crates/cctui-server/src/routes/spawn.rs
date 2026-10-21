@@ -1043,8 +1043,19 @@ async fn resolve_spawn_machine(
     machine_id: &str,
 ) -> Result<(Uuid, Uuid), (StatusCode, Json<ApiError>)> {
     let (machine_uuid, owner) = machine_and_owner(state, machine_id).await?;
+    may_spawn_on(state, ctx, machine_uuid, owner).await?;
+    Ok((machine_uuid, owner))
+}
+
+/// `admin || caller == owner || caller holds a live spawn share` on the machine.
+async fn may_spawn_on(
+    state: &AppState,
+    ctx: &AuthContext,
+    machine_uuid: Uuid,
+    owner: Uuid,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
     if ctx.is_admin() || ctx.user_id == owner {
-        return Ok((machine_uuid, owner));
+        return Ok(());
     }
     let shared = crate::routes::shares::granted_action(
         &state.pool,
@@ -1055,13 +1066,94 @@ async fn resolve_spawn_machine(
     )
     .await
     .map_err(|e| AppError::from(e).into_parts())?;
-    if shared { Ok((machine_uuid, owner)) } else { Err(not_your_machine()) }
+    if shared { Ok(()) } else { Err(not_your_machine()) }
+}
+
+/// The gate every path that starts a worker on `machine_uuid` applies: the
+/// `dispatch` scope, and the machine authorization a spawn needs.
+pub async fn authorize_launch(
+    state: &AppState,
+    ctx: &AuthContext,
+    machine_uuid: Uuid,
+) -> Result<(), AppError> {
+    launch_gate(state, ctx, machine_uuid)
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))
+}
+
+async fn launch_gate(
+    state: &AppState,
+    ctx: &AuthContext,
+    machine_uuid: Uuid,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    require_dispatch(ctx)?;
+    let (_, owner) = machine_and_owner(state, &machine_uuid.to_string()).await?;
+    may_spawn_on(state, ctx, machine_uuid, owner).await
+}
+
+/// [`authorize_launch`] on the machine `session_id` runs on. A session with no
+/// machine still needs the `dispatch` scope.
+pub async fn authorize_session_launch(
+    state: &AppState,
+    ctx: &AuthContext,
+    session_id: &str,
+) -> Result<(), AppError> {
+    let machine: Option<Option<Uuid>> =
+        sqlx::query_scalar("SELECT machine_uuid FROM sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    match machine.flatten() {
+        Some(machine_uuid) => authorize_launch(state, ctx, machine_uuid).await,
+        None => require_dispatch(ctx).map_err(|(code, Json(e))| AppError::new(code, e.error)),
+    }
+}
+
+/// A fork inherits its parent's account. Refused when the parent runs on
+/// another user's account (the machine owner forking a spawn grantee's
+/// session), so that account only ever serves the session it was bound to.
+pub async fn refuse_foreign_account(
+    state: &AppState,
+    ctx: &AuthContext,
+    session_id: &str,
+) -> Result<(), AppError> {
+    if ctx.is_admin() {
+        return Ok(());
+    }
+    match crate::routes::gateway::acting_user(state, session_id, None).await {
+        Some(runs_for) if runs_for != ctx.user_id => Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "this session runs on another user's account and cannot be forked",
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Record `user_id` as the spawner of a session that has none. Revival paths
+/// (resume) fill the gap but never rewrite who first started the session.
+pub async fn fill_spawner(pool: &sqlx::PgPool, session_id: &str, user_id: Uuid) {
+    let res = sqlx::query(
+        "UPDATE sessions SET spawned_by = $2 \
+         WHERE id = $1 AND spawned_by IS NULL",
+    )
+    .bind(session_id)
+    .bind(user_id)
+    .execute(pool)
+    .await;
+    if let Err(e) = res {
+        tracing::warn!(%session_id, error = %e, "could not record the spawner");
+    }
 }
 
 /// Remember who asked for the spawn under `spawn_key`, and the name they
 /// gave it, and drop day-old intents nobody claimed. Best-effort: a lost
 /// intent leaves `spawned_by` unset and the name unpinned.
-async fn remember_spawner(pool: &sqlx::PgPool, spawn_key: &str, user_id: Uuid, name: Option<&str>) {
+pub async fn remember_spawner(
+    pool: &sqlx::PgPool,
+    spawn_key: &str,
+    user_id: Uuid,
+    name: Option<&str>,
+) {
     let name = name.map(str::trim).filter(|n| !n.is_empty());
     let res = async {
         sqlx::query(
@@ -1984,7 +2076,7 @@ mod spawn_share_tests {
 
     use crate::auth::{AuthContext, Scope};
 
-    fn caller(user_id: Uuid, scopes: &[Scope]) -> AuthContext {
+    pub(super) fn caller(user_id: Uuid, scopes: &[Scope]) -> AuthContext {
         AuthContext {
             user_id,
             key_id: Uuid::new_v4(),
@@ -1993,7 +2085,7 @@ mod spawn_share_tests {
         }
     }
 
-    async fn seed_user(pool: &sqlx::PgPool) -> Uuid {
+    pub(super) async fn seed_user(pool: &sqlx::PgPool) -> Uuid {
         let uid = Uuid::new_v4();
         sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
             .bind(uid)
@@ -2005,7 +2097,7 @@ mod spawn_share_tests {
         uid
     }
 
-    async fn seed_machine(pool: &sqlx::PgPool, owner: Uuid) -> Uuid {
+    pub(super) async fn seed_machine(pool: &sqlx::PgPool, owner: Uuid) -> Uuid {
         let machine = Uuid::new_v4();
         sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)")
             .bind(machine)
@@ -2017,7 +2109,7 @@ mod spawn_share_tests {
         machine
     }
 
-    async fn share(pool: &sqlx::PgPool, machine: Uuid, grantee: Uuid, action: &str) {
+    pub(super) async fn share(pool: &sqlx::PgPool, machine: Uuid, grantee: Uuid, action: &str) {
         sqlx::query(
             "INSERT INTO resource_shares (resource_type, resource_id, grantee_id, action) \
              VALUES ('machine', $1, $2, $3)",
@@ -2030,8 +2122,8 @@ mod spawn_share_tests {
         .unwrap();
     }
 
-    const SPAWNER: &[Scope] = &[Scope::Read, Scope::Enroll, Scope::Dispatch];
-    const ADMIN: &[Scope] = &[Scope::Read, Scope::Enroll, Scope::Dispatch, Scope::Admin];
+    pub(super) const SPAWNER: &[Scope] = &[Scope::Read, Scope::Enroll, Scope::Dispatch];
+    pub(super) const ADMIN: &[Scope] = &[Scope::Read, Scope::Enroll, Scope::Dispatch, Scope::Admin];
 
     #[tokio::test]
     async fn a_spawn_needs_the_dispatch_scope() {
@@ -2205,5 +2297,323 @@ mod spawn_share_tests {
         );
         assert_eq!(register(None).await, (None, None), "no name, nothing pinned");
         assert_eq!(register(Some("   ")).await, (None, None), "a blank name is no name");
+    }
+}
+
+#[cfg(test)]
+mod launch_gate_tests {
+    use axum::extract::{Path, State};
+    use axum::http::StatusCode;
+    use axum::{Extension, Json};
+    use uuid::Uuid;
+
+    use super::spawn_share_tests::{ADMIN, SPAWNER, caller, seed_machine, seed_user, share};
+    use crate::auth::Scope;
+    use crate::error::AppError;
+    use crate::routes::gateway::Family;
+    use crate::state::AppState;
+
+    const READ_ONLY: &[Scope] = &[Scope::Read];
+
+    async fn seed_session(pool: &sqlx::PgPool, owner: Uuid, machine: Uuid) -> String {
+        let sid = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status, \
+             adapter_id) VALUES ($1, $2, $3, $4, '/w', 'active', 'claude-code')",
+        )
+        .bind(&sid)
+        .bind(machine.to_string())
+        .bind(machine)
+        .bind(owner)
+        .execute(pool)
+        .await
+        .unwrap();
+        sid
+    }
+
+    /// An anthropic account `user` owns; returns `(name, provider_id)`.
+    async fn seed_account(pool: &sqlx::PgPool, user: Uuid) -> (String, Uuid) {
+        let account = Uuid::new_v4();
+        let name = format!("acct-{account}");
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(account)
+            .bind(user)
+            .bind(&name)
+            .execute(pool)
+            .await
+            .unwrap();
+        let provider = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO account_providers \
+               (id, user_id, account_id, provider, auth_scheme, encrypted_access_token) \
+             VALUES ($1, $2, $3, 'anthropic', 'api_key', 'x')",
+        )
+        .bind(provider)
+        .bind(user)
+        .bind(account)
+        .execute(pool)
+        .await
+        .unwrap();
+        (name, provider)
+    }
+
+    /// A session on `owner`'s machine that `grantee` spawned on their own
+    /// account: minted for the grantee in the dispatch window, before the row.
+    async fn seed_grantee_run(
+        state: &AppState,
+        owner: Uuid,
+        grantee: Uuid,
+        machine: Uuid,
+        account: &str,
+    ) -> String {
+        let sid = Uuid::new_v4().to_string();
+        crate::routes::gateway::mint_session_env(state, grantee, account, Family::Anthropic, &sid)
+            .await
+            .expect("mint for the grantee");
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status, \
+             adapter_id, spawned_by) VALUES ($1, $2, $3, $4, '/w', 'active', 'claude-code', $5)",
+        )
+        .bind(&sid)
+        .bind(machine.to_string())
+        .bind(machine)
+        .bind(owner)
+        .bind(grantee)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+        sid
+    }
+
+    fn code<T>(res: Result<T, AppError>) -> Result<(), StatusCode> {
+        res.map(|_| ()).map_err(|e| e.into_parts().0)
+    }
+
+    fn daemon(
+        state: &AppState,
+        machine: Uuid,
+    ) -> tokio::sync::mpsc::Receiver<cctui_proto::ws::DaemonFrameDown> {
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        state.bus.register_daemon(machine, Uuid::new_v4(), tx);
+        rx
+    }
+
+    async fn fork(
+        state: &AppState,
+        ctx: crate::auth::AuthContext,
+        sid: &str,
+    ) -> Result<Option<String>, StatusCode> {
+        crate::routes::sessions::fork_session(
+            State(state.clone()),
+            Extension(ctx),
+            Path(sid.to_owned()),
+            Json(cctui_proto::api::ForkRequest::default()),
+        )
+        .await
+        .map(|(_, Json(res))| res.session_id)
+        .map_err(|e| e.into_parts().0)
+    }
+
+    async fn resume(
+        state: &AppState,
+        ctx: crate::auth::AuthContext,
+        sid: &str,
+    ) -> Result<(), StatusCode> {
+        code(
+            crate::routes::sessions::resume_session(
+                State(state.clone()),
+                Extension(ctx),
+                Path(sid.to_owned()),
+            )
+            .await,
+        )
+    }
+
+    async fn spawned_by(pool: &sqlx::PgPool, sid: &str) -> Option<Uuid> {
+        sqlx::query_scalar("SELECT spawned_by FROM sessions WHERE id = $1")
+            .bind(sid)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn fork_and_resume_need_dispatch_and_a_machine_the_caller_may_spawn_on() {
+        let Some(url) = crate::routes::gateway::test_db_url(
+            "fork_and_resume_need_dispatch_and_a_machine_the_caller_may_spawn_on",
+        ) else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let owner = seed_user(&pool).await;
+        let grantee = seed_user(&pool).await;
+        let reader = seed_user(&pool).await;
+        let stranger = seed_user(&pool).await;
+        let machine = seed_machine(&pool, owner).await;
+        share(&pool, machine, grantee, "spawn").await;
+        share(&pool, machine, reader, "use").await;
+        let state = AppState::for_test(pool.clone());
+        let sid = seed_session(&pool, owner, machine).await;
+
+        let read_only = caller(owner, READ_ONLY);
+        assert_eq!(fork(&state, read_only.clone(), &sid).await, Err(StatusCode::FORBIDDEN));
+        assert_eq!(resume(&state, read_only, &sid).await, Err(StatusCode::FORBIDDEN));
+
+        let gate = |user, scopes| {
+            let state = state.clone();
+            async move { code(super::authorize_launch(&state, &caller(user, scopes), machine).await) }
+        };
+        assert_eq!(gate(owner, SPAWNER).await, Ok(()));
+        assert_eq!(gate(Uuid::nil(), ADMIN).await, Ok(()));
+        assert_eq!(gate(grantee, SPAWNER).await, Ok(()));
+        assert_eq!(gate(reader, SPAWNER).await, Err(StatusCode::FORBIDDEN));
+        assert_eq!(gate(stranger, SPAWNER).await, Err(StatusCode::FORBIDDEN));
+        assert_eq!(gate(owner, READ_ONLY).await, Err(StatusCode::FORBIDDEN));
+
+        let _daemon = daemon(&state, machine);
+        let child = fork(&state, caller(owner, SPAWNER), &sid)
+            .await
+            .expect("the owner still forks")
+            .expect("claude pre-mints the child id");
+        let intent: Option<Uuid> =
+            sqlx::query_scalar("SELECT user_id FROM session_spawner_intents WHERE spawn_key = $1")
+                .bind(&child)
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        assert_eq!(intent, Some(owner), "the fork is attributed to its caller");
+
+        assert_eq!(spawned_by(&pool, &sid).await, None);
+        assert_eq!(resume(&state, caller(owner, SPAWNER), &sid).await, Ok(()));
+        assert_eq!(spawned_by(&pool, &sid).await, Some(owner), "a resume fills a missing spawner");
+    }
+
+    #[tokio::test]
+    async fn a_revival_never_rewrites_who_spawned_the_session() {
+        let Some(url) =
+            crate::routes::gateway::test_db_url("a_revival_never_rewrites_who_spawned_the_session")
+        else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let owner = seed_user(&pool).await;
+        let grantee = seed_user(&pool).await;
+        let machine = seed_machine(&pool, owner).await;
+        let sid = seed_session(&pool, owner, machine).await;
+        super::fill_spawner(&pool, &sid, grantee).await;
+        super::fill_spawner(&pool, &sid, owner).await;
+        assert_eq!(spawned_by(&pool, &sid).await, Some(grantee));
+    }
+
+    #[tokio::test]
+    async fn a_grantee_run_session_stays_on_the_grantee_account() {
+        let Some(url) = crate::routes::gateway::test_db_url(
+            "a_grantee_run_session_stays_on_the_grantee_account",
+        ) else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let owner = seed_user(&pool).await;
+        let grantee = seed_user(&pool).await;
+        let machine = seed_machine(&pool, owner).await;
+        share(&pool, machine, grantee, "spawn").await;
+        let (account, provider) = seed_account(&pool, grantee).await;
+        let state = AppState::for_test(pool.clone());
+        let sid = seed_grantee_run(&state, owner, grantee, machine, &account).await;
+
+        assert_eq!(crate::routes::gateway::acting_user(&state, &sid, None).await, Some(grantee));
+        let env = crate::routes::gateway::resume_env_for_session(&state, &sid).await;
+        assert!(env.contains_key("ANTHROPIC_AUTH_TOKEN"), "the re-mint was refused: {env:?}");
+        let live: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(
+            "SELECT account_id, user_id FROM session_tokens \
+             WHERE session_id = $1 AND revoked_at IS NULL",
+        )
+        .bind(&sid)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(live, vec![(provider, Some(grantee))]);
+        assert_eq!(crate::authz::session_owner(&sid, &pool).await.unwrap(), Some(owner));
+
+        let own = seed_session(&pool, owner, machine).await;
+        assert_eq!(
+            crate::routes::gateway::acting_user(&state, &own, None).await,
+            Some(owner),
+            "an unbound session still resolves to its owner"
+        );
+    }
+
+    async fn switch(
+        state: &AppState,
+        ctx: crate::auth::AuthContext,
+        sid: &str,
+        account: &str,
+    ) -> Result<(), StatusCode> {
+        code(
+            crate::routes::sessions::switch_account(
+                State(state.clone()),
+                Extension(ctx),
+                Path(sid.to_owned()),
+                Json(crate::routes::sessions::SwitchAccountRequest {
+                    account: account.to_owned(),
+                    family: None,
+                }),
+            )
+            .await,
+        )
+    }
+
+    async fn binding(pool: &sqlx::PgPool, sid: &str) -> (Uuid, Option<Uuid>) {
+        sqlx::query_as(
+            "SELECT account_id, user_id FROM session_tokens \
+             WHERE session_id = $1 AND revoked_at IS NULL",
+        )
+        .bind(sid)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_machine_owner_never_reaches_the_grantees_other_accounts() {
+        let Some(url) = crate::routes::gateway::test_db_url(
+            "the_machine_owner_never_reaches_the_grantees_other_accounts",
+        ) else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let owner = seed_user(&pool).await;
+        let grantee = seed_user(&pool).await;
+        let machine = seed_machine(&pool, owner).await;
+        share(&pool, machine, grantee, "spawn").await;
+        let (bound, _) = seed_account(&pool, grantee).await;
+        let (other, other_provider) = seed_account(&pool, grantee).await;
+        let (mine, my_provider) = seed_account(&pool, owner).await;
+        let state = AppState::for_test(pool.clone());
+        let sid = seed_grantee_run(&state, owner, grantee, machine, &bound).await;
+        let as_owner = caller(owner, SPAWNER);
+
+        assert_eq!(fork(&state, as_owner.clone(), &sid).await, Err(StatusCode::FORBIDDEN));
+        let refuse = |ctx: crate::auth::AuthContext| {
+            let state = state.clone();
+            let sid = sid.clone();
+            async move { code(super::refuse_foreign_account(&state, &ctx, &sid).await) }
+        };
+        assert_eq!(refuse(as_owner.clone()).await, Err(StatusCode::FORBIDDEN));
+        assert_eq!(refuse(caller(Uuid::nil(), ADMIN)).await, Ok(()));
+        assert_eq!(refuse(caller(grantee, SPAWNER)).await, Ok(()));
+
+        let not_found = Err(StatusCode::NOT_FOUND);
+        assert_eq!(switch(&state, as_owner.clone(), &sid, &other).await, not_found);
+        assert_eq!(switch(&state, caller(Uuid::nil(), ADMIN), &sid, &other).await, Ok(()));
+        assert_eq!(
+            binding(&pool, &sid).await,
+            (other_provider, Some(grantee)),
+            "an admin keeps the runner"
+        );
+
+        assert_eq!(switch(&state, as_owner.clone(), &sid, &mine).await, Ok(()));
+        assert_eq!(binding(&pool, &sid).await, (my_provider, Some(owner)), "the owner took over");
+        assert_eq!(switch(&state, as_owner, &sid, &other).await, not_found);
     }
 }

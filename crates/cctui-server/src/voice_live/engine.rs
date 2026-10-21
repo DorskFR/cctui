@@ -30,6 +30,8 @@ pub trait VoiceBackend: Send + Sync + 'static {
 pub enum Inbound {
     /// One utterance: 16 kHz mono 16-bit PCM.
     Audio(Bytes),
+    /// An utterance over the size limit, dropped unread.
+    TooLong,
     Control(VoiceClientMsg),
 }
 
@@ -270,7 +272,7 @@ impl<B: VoiceBackend> Engine<B> {
                 if let Some(v) = voice {
                     p.voice = Some(v).filter(|v| !v.trim().is_empty());
                 }
-                if let Some(s) = speed {
+                if let Some(s) = speed.filter(|s| (0.25..=4.0).contains(s)) {
                     p.speed = Some(s);
                 }
             }
@@ -350,6 +352,10 @@ pub async fn run_voice_loop<B: VoiceBackend>(
         tokio::select! {
             msg = inbound.recv() => match msg {
                 Some(Inbound::Audio(audio)) => engine.utterance(audio).await,
+                Some(Inbound::TooLong) => {
+                    let message = "utterance too long".to_owned();
+                    engine.send(VoiceServerMsg::Error { message }).await;
+                }
                 Some(Inbound::Control(c)) => engine.control(c).await,
                 None => break,
             },
@@ -372,6 +378,7 @@ mod tests {
         transcript: Mutex<String>,
         sent: Mutex<Vec<String>>,
         synthesized: Mutex<Vec<String>>,
+        speeds: Mutex<Vec<Option<f32>>>,
         interrupts: Mutex<u32>,
         /// Each synthesis streams forever, so a cancel is observable.
         stall: bool,
@@ -391,9 +398,10 @@ mod tests {
             &self,
             text: &str,
             _voice: Option<&str>,
-            _speed: Option<f32>,
+            speed: Option<f32>,
         ) -> Result<AudioStream, String> {
             self.synthesized.lock().unwrap().push(text.to_owned());
+            self.speeds.lock().unwrap().push(speed);
             let bytes = Bytes::from(text.to_owned());
             if self.stall {
                 let s = futures_util::stream::once(async move { Ok(bytes) })
@@ -623,5 +631,38 @@ mod tests {
             .await;
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(Mock::log(&h.mock.sent)[0].contains("as much detail as needed"));
+    }
+
+    #[tokio::test]
+    async fn an_out_of_range_speed_keeps_the_previous_one() {
+        let mut h = start(Mock::default(), Prefs::default());
+        for speed in [1.5, 9.0, f32::NAN] {
+            let mode = VoiceClientMsg::Mode {
+                barge_in: None,
+                spoken_style: None,
+                voice: None,
+                speed: Some(speed),
+            };
+            h.inbound.send(Inbound::Control(mode)).await.unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        h.signals.send(Signal::Text("Hello.".into())).await.unwrap();
+        h.collect_until(|f| matches!(f, Outbound::Control(VoiceServerMsg::SpeakEnd { .. }))).await;
+        assert_eq!(Mock::log(&h.mock.speeds), vec![Some(1.5)]);
+    }
+
+    #[tokio::test]
+    async fn an_oversized_utterance_is_reported() {
+        let mut h = start(Mock::default(), Prefs::default());
+        h.inbound.send(Inbound::TooLong).await.unwrap();
+        let frames = h.quiet().await;
+        assert_eq!(
+            frames,
+            vec![
+                state(VoiceState::Listening),
+                Outbound::Control(VoiceServerMsg::Error { message: "utterance too long".into() }),
+            ]
+        );
+        assert!(Mock::log(&h.mock.sent).is_empty());
     }
 }

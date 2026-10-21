@@ -87,8 +87,8 @@ needs_reauth: boolean, last_auth_error: string | null, last_auth_error_at: strin
  */
 settings_json: Record<string, unknown> | null, 
 /**
- * Gateway request-shaping settings for this credential (fireworks:
- * `context_length_exceeded_behavior`, session affinity, extra body keys).
+ * Gateway settings for this credential (fireworks: the session-affinity
+ * header, the billing key name). The gateway never rewrites bodies.
  * Distinct from `settings_json`, which is harness settings.
  */
 provider_settings: Record<string, unknown> | null, 

@@ -728,6 +728,22 @@ pub const ROUTES: &[Route] = &[
         response: None,
     },
     Route {
+        id: "get_dispatch_records_failed",
+        method: Method::Get,
+        path: "/dispatch-records/failed",
+        summary: "Dispatches the dispatcher refused or whose worker never ran to a session.",
+        request: None,
+        response: Some("FailedDispatch[]"),
+    },
+    Route {
+        id: "post_dispatch_records_by_id_redispatch",
+        method: Method::Post,
+        path: "/dispatch-records/{id}/redispatch",
+        summary: "Send a recorded dispatch again as a new dispatch.",
+        request: None,
+        response: Some("DispatchResponse"),
+    },
+    Route {
         id: "get_dispatchers",
         method: Method::Get,
         path: "/dispatchers",

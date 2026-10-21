@@ -169,11 +169,12 @@ pub async fn pick_failover_target(
 ) -> Option<FailoverTarget> {
     let hash = crate::auth::sha256_hex(session_token);
     // `user_id` is the bound account's OWNER — whose pool and whose redirect
-    // rules authorise a move. `session_user` is who the session belongs to, and
-    // every elected target is re-checked against them: on a shared account the
-    // owner's pool holds accounts the grantee was never given.
+    // rules authorise a move. `session_user` is who the session runs for (the
+    // token's user, which a spawn grantee holds on the machine owner's session),
+    // and every elected target is re-checked against them: on a shared account
+    // the owner's pool holds accounts the grantee was never given.
     let bound: Option<BoundToken> = sqlx::query_as(
-        "SELECT t.session_id, ap.user_id, COALESCE(s.user_id, t.user_id), \
+        "SELECT t.session_id, ap.user_id, COALESCE(t.user_id, s.user_id), \
                     ap.account_id, ap.family, a.name, t.pool_id \
              FROM session_tokens t \
              JOIN account_providers ap ON ap.id = t.account_id \

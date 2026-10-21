@@ -3,9 +3,10 @@
 //! `POST /internal/bus/route` delivers one forwarded frame/round-trip to a WS
 //! held by THIS pod; `POST /internal/bus/publish` ingests a batch of relayed
 //! [`crate::bus::BusEvent`]s into THIS pod's local subscribers and prompt
-//! stores. Both are loop-guarded by construction: they only ever call the
-//! bus's `*_local` delivery paths, so a forwarded frame or relayed event can
-//! never be re-forwarded around the mesh.
+//! stores; `POST /internal/auth/purge` drops revoked credentials from THIS
+//! pod's auth cache. All are loop-guarded by construction: they only ever call
+//! local delivery paths, so a forwarded frame, relayed event or purge can never
+//! be re-forwarded around the mesh.
 //!
 //! Auth: Bearer = the cluster-internal shared secret ([`ensure_secret`]),
 //! minted once into `cluster_secrets` at first boot and read by every replica.
@@ -169,6 +170,19 @@ pub async fn bus_publish(
         }
         state.bus.deliver_local(event.into());
     }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /internal/auth/purge` — drop an entry (or everything) from THIS
+/// pod's auth cache after a revocation or scope edit on the sending pod.
+/// Local only, never re-broadcast.
+pub async fn auth_purge(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(purge): Json<crate::auth::CachePurge>,
+) -> Result<StatusCode, StatusCode> {
+    authenticate(&state, &headers)?;
+    state.auth_config.purge_local(&purge);
     Ok(StatusCode::NO_CONTENT)
 }
 

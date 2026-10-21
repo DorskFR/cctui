@@ -60,9 +60,11 @@ impl ModelRef {
 
 /// Build the `opencode.json` the session runs under.
 ///
-/// `thinking` is disabled: Fireworks serves Kimi without a separate reasoning
-/// channel, and leaving it on makes tool-call turns 400 on a missing
-/// `reasoning_content`.
+/// The model's `options` go into every request body. `thinking` is disabled:
+/// Fireworks serves Kimi without a separate reasoning channel, and leaving it on
+/// makes tool-call turns 400 on a missing `reasoning_content`.
+/// `context_length_exceeded_behavior: error` overrides Fireworks' default
+/// `truncate`, which silently drops prompt.
 #[must_use]
 pub fn session_config(
     model: Option<&ModelRef>,
@@ -100,7 +102,12 @@ pub fn session_config(
     if let Some(model) = model {
         cfg["model"] = json!(model.qualified());
         cfg["provider"][&model.provider_id]["models"] = json!({
-            model.model_id.clone(): { "options": { "thinking": { "type": "disabled" } } }
+            model.model_id.clone(): {
+                "options": {
+                    "thinking": { "type": "disabled" },
+                    "context_length_exceeded_behavior": "error",
+                }
+            }
         });
     }
     cfg
@@ -409,6 +416,17 @@ mod tests {
             cfg["provider"][PROVIDER_ID]["models"]["accounts/fireworks/models/kimi-k3"]["options"]
                 ["thinking"]["type"],
             "disabled"
+        );
+    }
+
+    #[test]
+    fn an_overlong_prompt_errors_instead_of_being_truncated() {
+        let model = ModelRef::parse("fireworks-ai/accounts/fireworks/models/kimi-k3").unwrap();
+        let cfg = session_config(Some(&model), &BTreeMap::new(), &[]);
+        assert_eq!(
+            cfg["provider"][PROVIDER_ID]["models"]["accounts/fireworks/models/kimi-k3"]["options"]
+                ["context_length_exceeded_behavior"],
+            "error"
         );
     }
 

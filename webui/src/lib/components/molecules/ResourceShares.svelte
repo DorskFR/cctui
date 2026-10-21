@@ -2,23 +2,26 @@
 	import { errMessage } from '$lib/api';
 	import { useResourceShares, useResourceShareActions } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
-	import { Button, Input, Text, Timestamp } from '@dorsk/tsumikit';
+	import { Button, Input, Select, Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	// "Shared with" section for any shareable resource: lists live
-	// grants, a user-picker (login or UUID) to grant `use`, and a per-row revoke.
+	// grants, a user-picker (login or UUID) to grant `use` — or one of `actions`
+	// when the resource has several — and a per-row revoke.
 	// Only rendered for the resource owner/admin — the list endpoint is
 	// owner-scoped server-side, so `enabled` gates the fetch to avoid 404 churn.
 	let {
 		resourceType,
 		id,
 		noun = m.providers_share_noun_default(),
-		enabled = true
+		enabled = true,
+		actions = []
 	}: {
 		resourceType: string;
 		id: string;
 		noun?: string;
 		enabled?: boolean;
+		actions?: { value: string; label: string }[];
 	} = $props();
 
 	const shares = useResourceShares(
@@ -26,10 +29,14 @@
 		() => id,
 		() => enabled
 	);
-	const actions = useResourceShareActions();
+	const shareActions = useResourceShareActions();
 
 	let grantee = $state('');
+	let action = $state('');
 	let busy = $state(false);
+
+	const picked = $derived(action || actions[0]?.value);
+	const actionLabel = (value: string) => actions.find((a) => a.value === value)?.label ?? value;
 
 	async function grant() {
 		const user = grantee.trim();
@@ -39,7 +46,7 @@
 		}
 		busy = true;
 		try {
-			await actions.grant(resourceType, id, { user });
+			await shareActions.grant(resourceType, id, picked ? { user, action: picked } : { user });
 			grantee = '';
 			toasts.ok(m.providers_share_shared());
 		} catch (e) {
@@ -52,7 +59,7 @@
 	async function revoke(userId: string, name: string) {
 		if (!confirm(m.providers_share_confirm_revoke({ name, noun }))) return;
 		try {
-			await actions.revoke(resourceType, id, userId);
+			await shareActions.revoke(resourceType, id, userId);
 			toasts.ok(m.providers_share_revoked());
 		} catch (e) {
 			toasts.error(errMessage(e));
@@ -68,12 +75,12 @@
 		<Text as="div" tone="faint" size="xs">{m.providers_share_empty()}</Text>
 	{:else}
 		<ul class="share-list">
-			{#each rows as s (s.user_id)}
+			{#each rows as s (`${s.user_id}:${s.action}`)}
 				<li class="share-row">
 					<span class="share-who">
 						<Text as="span" size="sm" wrap="anywhere">{s.user_name}</Text>
 						<Text as="span" tone="faint" size="xs">
-							{s.action} · <Timestamp value={s.granted_at} mode="relative" tone="inherit" />
+							{actionLabel(s.action)} · <Timestamp value={s.granted_at} mode="relative" tone="inherit" />
 						</Text>
 					</span>
 					<Button variant="danger" onclick={() => revoke(s.user_id, s.user_name)}>{m.providers_share_revoke()}</Button>
@@ -81,12 +88,21 @@
 			{/each}
 		</ul>
 	{/if}
-	<div class="share-add">
+	<div class="share-add" class:with-action={actions.length > 1}>
 		<Input
 			bind:value={grantee}
 			placeholder={m.providers_share_input_placeholder()}
 			aria-label={m.a11y_share_user()}
 		/>
+		{#if actions.length > 1}
+			<Select
+				value={picked}
+				options={actions}
+				width="auto"
+				aria-label={m.a11y_share_action()}
+				onchange={(e) => (action = (e.currentTarget as HTMLSelectElement).value)}
+			/>
+		{/if}
 		<Button disabled={busy} onclick={grant}>{busy ? m.providers_share_sharing() : m.providers_share_button()}</Button>
 	</div>
 </div>
@@ -126,5 +142,8 @@
 		grid-template-columns: 1fr auto;
 		gap: var(--sp-2);
 		align-items: center;
+	}
+	.share-add.with-action {
+		grid-template-columns: 1fr auto auto;
 	}
 </style>

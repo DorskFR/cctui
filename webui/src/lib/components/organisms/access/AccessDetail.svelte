@@ -202,7 +202,7 @@
 			{#if id === 'keys'}
 				<AccessKeysTab userId={user.id} {ceiling} canManage={canManageKeys && !user.revoked_at} {onsecret} />
 			{:else if id === 'machines'}
-				<AccessMachinesTab userId={user.id} canManage={isAdmin} />
+				<AccessMachinesTab userId={user.id} canManage={isAdmin} canShare={canManageKeys && !user.revoked_at} />
 			{:else if id === 'tokens'}
 				<AccessTokensTab
 					userId={user.id}

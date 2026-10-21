@@ -14,7 +14,7 @@ const usage = (over: Partial<TokenUsage> = {}): TokenUsage =>
 		...over
 	}) as unknown as TokenUsage;
 
-const busted = (reason = 'gateway_rewrote_body'): TokenUsage =>
+const busted = (reason = 'provider_miss'): TokenUsage =>
 	usage({ cache_bust: { lost_tokens: 172_523, lost_usd: 2.98, reason } });
 
 describe('tokenUsageLayout', () => {
@@ -91,7 +91,8 @@ describe('tokenUsageTitle', () => {
 describe('bustReasonKey', () => {
 	it('passes the known reasons through and folds anything else to unknown', () => {
 		expect(bustReasonKey('ttl_expired')).toBe('ttl_expired');
-		expect(bustReasonKey('gateway_rewrote_body')).toBe('gateway_rewrote_body');
+		expect(bustReasonKey('provider_miss')).toBe('provider_miss');
+		expect(bustReasonKey('gateway_rewrote_body')).toBe('unknown');
 		expect(bustReasonKey('unknown')).toBe('unknown');
 		expect(bustReasonKey('something_new')).toBe('unknown');
 		expect(bustReasonKey('')).toBe('unknown');

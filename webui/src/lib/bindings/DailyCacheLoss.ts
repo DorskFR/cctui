@@ -4,4 +4,12 @@ export type DailyCacheLoss = {
 /**
  * Local calendar day, `YYYY-MM-DD`.
  */
-day: string, ttl_expired: number, gateway_rewrote_body: number, unknown: number, total: number, ttl_expired_tokens: number, gateway_rewrote_body_tokens: number, unknown_tokens: number, lost_tokens: number, busts: number, };
+day: string, ttl_expired: number, 
+/**
+ * Always 0: the gateway forwards request bodies verbatim.
+ */
+gateway_rewrote_body: number, 
+/**
+ * A Fireworks turn missed its best-effort prompt cache.
+ */
+provider_miss: number, unknown: number, total: number, ttl_expired_tokens: number, gateway_rewrote_body_tokens: number, provider_miss_tokens: number, unknown_tokens: number, lost_tokens: number, busts: number, };

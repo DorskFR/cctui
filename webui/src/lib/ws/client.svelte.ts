@@ -461,10 +461,17 @@ export class WsClient {
 		return this.guardSteps.get(id) ?? null;
 	}
 
-	/** Seed the step from an HTTP read (the WS only pushes changes). */
 	setGuardStep(id: string, state: GuardStepState) {
 		this.guardSteps.set(id, state);
 		this.guardStepCbs.emit(id, state);
+	}
+
+	/** Seed the step from an HTTP read (the WS only pushes changes). A frame
+	 * landing while the read is in flight is fresher and wins. */
+	async seedGuardStep(id: string, read: Promise<GuardStepState | null>) {
+		const before = this.guardSteps.get(id);
+		const res = await read;
+		if (res && this.guardSteps.get(id) === before) this.setGuardStep(id, res);
 	}
 
 	/** Follow a session's workflow-guard step. Returns an unsubscribe fn. */
