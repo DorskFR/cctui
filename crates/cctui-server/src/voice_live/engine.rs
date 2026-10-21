@@ -180,7 +180,11 @@ async fn speak_one<B: VoiceBackend>(
         let p = prefs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         (p.voice.clone(), p.speed)
     };
-    let mut stream = match backend.synthesize(text, voice.as_deref(), speed).await {
+    let mut attempt = backend.synthesize(text, voice.as_deref(), speed).await;
+    if attempt.is_err() {
+        attempt = backend.synthesize(text, voice.as_deref(), speed).await;
+    }
+    let mut stream = match attempt {
         Ok(s) => s,
         Err(message) => {
             let _ = out.send(Outbound::Control(VoiceServerMsg::Error { message })).await;
@@ -860,6 +864,8 @@ mod tests {
         warm_gate: Option<Arc<Semaphore>>,
         /// `warm <lang>` and `hear <lang>` in call order.
         stt_calls: Mutex<Vec<String>>,
+        /// Syntheses left to fail.
+        synth_failures: Mutex<u32>,
     }
 
     /// Flags a transcription dropped before it finished.
@@ -913,6 +919,13 @@ mod tests {
             _voice: Option<&str>,
             speed: Option<f32>,
         ) -> Result<AudioStream, String> {
+            {
+                let mut failures = self.synth_failures.lock().unwrap();
+                if *failures > 0 {
+                    *failures -= 1;
+                    return Err("speech service unreachable".into());
+                }
+            }
             self.synthesized.lock().unwrap().push(text.to_owned());
             self.speeds.lock().unwrap().push(speed);
             let bytes = Bytes::from(text.to_owned());
@@ -1364,6 +1377,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_claude_code_turn_ends_on_its_first_end_marker_and_the_second_is_harmless() {
+        let (mut h, sent) = sent_a_prompt().await;
+        h.signals.send(Signal::TurnStart(sent.clone())).await.unwrap();
+        h.signals.send(Signal::Text("Looking it up.".into())).await.unwrap();
+        let frames = h.collect_until(|f| *f == state(VoiceState::Thinking)).await;
+        assert!(frames.contains(&state(VoiceState::Speaking)), "{frames:?}");
+        h.signals.send(Signal::Text("It is noon.".into())).await.unwrap();
+        h.signals.send(Signal::TurnEnd).await.unwrap();
+        h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        h.signals.send(Signal::TurnEnd).await.unwrap();
+        h.signals.send(Signal::TurnStart(sent)).await.unwrap();
+        h.signals.send(Signal::Text("Again.".into())).await.unwrap();
+        let mut frames = h.collect_until(|f| *f == state(VoiceState::Thinking)).await;
+        frames.extend(h.quiet().await);
+        assert!(!frames.contains(&state(VoiceState::Listening)), "{frames:?}");
+        h.signals.send(Signal::TurnEnd).await.unwrap();
+        h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        assert_eq!(Mock::log(&h.mock.synthesized), vec!["Looking it up.", "It is noon.", "Again."]);
+    }
+
+    #[tokio::test]
     async fn each_request_of_a_tool_loop_is_spoken_once() {
         let (mut h, sent) = sent_a_prompt().await;
         h.signals.send(request("r1", &sent)).await.unwrap();
@@ -1464,6 +1498,22 @@ mod tests {
         assert_eq!(streamed, Duration::from_millis(140), "the chunk after the first 52 chars");
         assert!(block >= done, "{block:?} < {done:?}");
         assert!(streamed * 5 < done, "{streamed:?} vs {done:?}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_synthesis_is_retried_once_before_its_sentence_is_skipped() {
+        let mock = Mock { synth_failures: Mutex::new(1), ..Mock::default() };
+        let mut h = start(mock, Prefs::default()).await;
+        let is_error = |f: &Outbound| matches!(f, Outbound::Control(VoiceServerMsg::Error { .. }));
+        h.signals.send(Signal::Text("Kept.".into())).await.unwrap();
+        let frames = h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        assert!(!frames.iter().any(is_error), "{frames:?}");
+        assert!(frames.contains(&Outbound::Audio(Bytes::from_static(b"Kept."))), "{frames:?}");
+        *h.mock.synth_failures.lock().unwrap() = 2;
+        h.signals.send(Signal::Text("Lost. Next.".into())).await.unwrap();
+        let frames = h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        assert_eq!(frames.iter().filter(|&f| is_error(f)).count(), 1, "{frames:?}");
+        assert_eq!(Mock::log(&h.mock.synthesized), vec!["Kept.", "Next."]);
     }
 
     #[tokio::test]

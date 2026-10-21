@@ -3721,11 +3721,13 @@ pub async fn set_session_policy(
 /// up row height when CSS doesn't fully suppress wrapping, and caps at
 /// 200 chars + ellipsis as a backstop. CSS handles the *visual* truncation
 /// to the column's actual rendered width (`text-overflow: ellipsis`).
-/// [`normalize_last_message`] over a SQL-truncated prefix: `cut` says the
-/// stored text ran past it, so the preview is elided even when collapsing
-/// whitespace left it under the limit.
+/// [`normalize_last_message`] over the prose of a SQL-truncated prefix, past
+/// the wrappers cctui put ahead of it: `cut` says the stored text ran past it,
+/// so the preview is elided even when collapsing whitespace left it under the
+/// limit.
 fn preview_last_message(prefix: &str, cut: bool) -> String {
-    let preview = normalize_last_message(prefix);
+    let (_, prose) = cctui_proto::injected::split_injected(prefix);
+    let preview = normalize_last_message(if prose.is_empty() { prefix } else { prose });
     if cut && !preview.ends_with('…') { format!("{preview}…") } else { preview }
 }
 
@@ -4499,6 +4501,17 @@ mod tests {
                 full.len()
             );
         }
+    }
+
+    #[test]
+    fn a_spoken_prompt_previews_as_its_utterance() {
+        let spoken = crate::voice_live::text::spoken_prompt(
+            "why is the sky blue",
+            Some(cctui_proto::voice::SpokenStyle::Brief),
+        );
+        assert_eq!(super::preview_last_message(&spoken, false), "why is the sky blue");
+        let only = "<cctui-session-context>\nctx\n</cctui-session-context>";
+        assert_eq!(super::preview_last_message(only, false), normalize_last_message(only));
     }
 
     #[tokio::test]

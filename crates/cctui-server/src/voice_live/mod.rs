@@ -41,6 +41,8 @@ const KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(20);
 const WARM_UP_SILENCE: [u8; 16_000] = [0; 16_000];
 /// How the session stream renders a prompt the agent received.
 const USER_PREFIX: &str = "▷ User:";
+/// The annotation claude-code writes when a turn is over.
+const TURN_DURATION: &str = "turn_duration";
 
 #[derive(Debug, Deserialize)]
 pub struct VoiceQuery {
@@ -194,6 +196,11 @@ async fn read_socket(
 fn signal_of(event: &AgentEvent) -> Option<Signal> {
     match event {
         AgentEvent::TurnEnd { .. } => Some(Signal::TurnEnd),
+        AgentEvent::Text { content, kind: Some(kind), .. }
+            if kind == "turn_annotation" && content.starts_with(TURN_DURATION) =>
+        {
+            Some(Signal::TurnEnd)
+        }
         AgentEvent::Text { content, kind: None, .. } if content.starts_with(USER_PREFIX) => {
             let prompt = content.strip_prefix(USER_PREFIX).unwrap_or_default();
             Some(Signal::TurnStart(prompt.trim().to_owned()))
@@ -367,6 +374,9 @@ mod tests {
         assert_eq!(signal_of(&text(true, None)), None);
         assert_eq!(signal_of(&text(false, Some("thinking"))), None);
         assert_eq!(signal_of(&AgentEvent::TurnEnd { ts: 0, seq: None }), Some(Signal::TurnEnd));
+        let annotation = |content: &str| event(content, true, Some("turn_annotation"));
+        assert_eq!(signal_of(&annotation("turn_duration:5406")), Some(Signal::TurnEnd));
+        assert_eq!(signal_of(&annotation("file_history:src/a.rs")), None);
         let prompt = "▷ User: <cctui-session-context voice=\"spoken\">\n</cctui-session-context>";
         let spoken = "<cctui-session-context voice=\"spoken\">\n</cctui-session-context>";
         assert_eq!(signal_of(&event(prompt, false, None)), Some(Signal::TurnStart(spoken.into())));
