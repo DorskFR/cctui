@@ -885,8 +885,8 @@ mod tests {
             item_id: "gw:r:0".into(),
             delta: "Hi".into(),
         };
-        let json = serde_json::to_string(&WireBusEvent::from(&BusEvent::Voice(delta.clone())))
-            .unwrap();
+        let json =
+            serde_json::to_string(&WireBusEvent::from(&BusEvent::Voice(delta.clone()))).unwrap();
         assert!(json.contains(r#""kind":"voice""#), "{json}");
         let back: WireBusEvent = serde_json::from_str(&json).unwrap();
         assert!(matches!(BusEvent::from(back), BusEvent::Voice(ev) if ev == delta));

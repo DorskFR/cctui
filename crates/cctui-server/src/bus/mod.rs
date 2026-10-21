@@ -167,10 +167,22 @@ pub enum BusEvent {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum VoiceEvent {
-    Watch { session_id: String, watcher: Uuid, on: bool },
-    Request { session_id: String, request_id: String, user_text: String },
+    Watch {
+        session_id: String,
+        watcher: Uuid,
+        on: bool,
+    },
+    Request {
+        session_id: String,
+        request_id: String,
+        user_text: String,
+    },
     /// `item_id` is `gw:{request_id}:{block index}`.
-    Delta { session_id: String, item_id: String, delta: String },
+    Delta {
+        session_id: String,
+        item_id: String,
+        delta: String,
+    },
 }
 
 pub const VOICE_WATCH_REFRESH: std::time::Duration = std::time::Duration::from_secs(20);
@@ -1785,8 +1797,7 @@ mod tests {
     async fn a_published_voice_watch_reaches_the_watched_set_and_subscribers() {
         let bus = bus();
         let mut rx = bus.subscribe_voice();
-        let watch =
-            VoiceEvent::Watch { session_id: "s".into(), watcher: Uuid::new_v4(), on: true };
+        let watch = VoiceEvent::Watch { session_id: "s".into(), watcher: Uuid::new_v4(), on: true };
         bus.deliver_local(BusEvent::Voice(watch.clone()));
         assert!(bus.voice_watched("s"));
         assert_eq!(rx.try_recv().unwrap(), watch);

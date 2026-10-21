@@ -587,17 +587,15 @@ async fn observers(
         tracing::warn!(account = %acct.id, error = %e, "tool policy unavailable, refusing unguarded");
         StatusCode::SERVICE_UNAVAILABLE
     })?;
-    let voice_session = if voice_candidate
-        && family == Family::Anthropic
-        && state.bus.any_voice_watch()
-    {
-        super::voicetee::watched_session(
-            &state.bus,
-            session_id_for_token(state, session_token).await,
-        )
-    } else {
-        None
-    };
+    let voice_session =
+        if voice_candidate && family == Family::Anthropic && state.bus.any_voice_watch() {
+            super::voicetee::watched_session(
+                &state.bus,
+                session_id_for_token(state, session_token).await,
+            )
+        } else {
+            None
+        };
     if tees_response(langfuse.is_some(), fireworks || google)
         || tool_guard.is_some()
         || voice_session.is_some()
@@ -645,9 +643,11 @@ async fn prepare_body(
         .await
         .map_err(|_| Err(StatusCode::PAYLOAD_TOO_LARGE))?;
     let (payload, parsed, request_model) = buffered_payload(bytes, path_model);
-    let voice = obs.voice_session.clone().zip(parsed.as_ref()).and_then(|(sid, body)| {
-        super::voicetee::VoiceTee::from_request(sid, body)
-    });
+    let voice = obs
+        .voice_session
+        .clone()
+        .zip(parsed.as_ref())
+        .and_then(|(sid, body)| super::voicetee::VoiceTee::from_request(sid, body));
     // The deferred half of the soft limit: a `weekly_model:` cap gates only
     // the model it names, so a spent weekly Fable budget must let an Opus
     // request through. Same `window_applies` the account election uses, so
@@ -1000,7 +1000,7 @@ pub async fn passthrough(
     let mut headers = forward_headers(req.headers(), &auth.acct, &target.access_token)?;
     let voice_candidate = super::voicetee::teeable_request(
         &req_method,
-        uri.path().strip_prefix(prefix).unwrap_or(uri.path()),
+        uri.path().strip_prefix(prefix).unwrap_or_else(|| uri.path()),
     );
     let obs = observers(&state, &auth, &mut headers, voice_candidate).await?;
     let path_model = (family == Family::Google)

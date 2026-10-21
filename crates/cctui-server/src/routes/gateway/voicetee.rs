@@ -218,8 +218,7 @@ mod tests {
         let body = fixture();
         for size in [1, 3, 7, 64, body.len()] {
             let mut reader = TextTee::default();
-            let got: Vec<(u64, String)> =
-                body.chunks(size).flat_map(|c| reader.push(c)).collect();
+            let got: Vec<(u64, String)> = body.chunks(size).flat_map(|c| reader.push(c)).collect();
             assert_eq!(
                 got,
                 vec![(1, "Hello, ".to_owned()), (1, "wörld.".to_owned())],

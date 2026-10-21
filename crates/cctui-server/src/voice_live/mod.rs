@@ -369,10 +369,7 @@ mod tests {
         assert_eq!(signal_of(&AgentEvent::TurnEnd { ts: 0, seq: None }), Some(Signal::TurnEnd));
         let prompt = "▷ User: <cctui-session-context voice=\"spoken\">\n</cctui-session-context>";
         let spoken = "<cctui-session-context voice=\"spoken\">\n</cctui-session-context>";
-        assert_eq!(
-            signal_of(&event(prompt, false, None)),
-            Some(Signal::TurnStart(spoken.into()))
-        );
+        assert_eq!(signal_of(&event(prompt, false, None)), Some(Signal::TurnStart(spoken.into())));
         let harness = event("▷ User: <task-notification>", true, None);
         assert_eq!(signal_of(&harness), Some(Signal::TurnStart("<task-notification>".into())));
         assert_eq!(signal_of(&event("▷ User: queued", true, Some("queue_op"))), None);
