@@ -1343,4 +1343,30 @@ mod tests {
             "the dispatch_done marker is completion evidence on its own"
         );
     }
+
+    #[tokio::test]
+    async fn a_dispatch_whose_marker_the_roster_wrote_ends_completed_when_the_driver_stops() {
+        let (d, mut rx) = driver();
+        let sid = "abcd1234-5678-90ab-cdef-000000000000";
+        *d.dispatch_done.lock().unwrap() =
+            Some(DispatchDoneTracker::new(sid, &d.cfg.jobs_root, std::time::Duration::ZERO));
+        d.tick_dispatch_done(&[snap("abcd1234", "working", None)]);
+        let mut idle = snap("abcd1234", "done", None);
+        idle.tempo = Some("idle".into());
+        d.tick_dispatch_done(&[idle]);
+        assert!(d.cfg.jobs_root.join("abcd1234/dispatch_done").exists(), "marker written");
+
+        d.shutdown.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(10), d.run())
+            .await
+            .expect("the driver returns on shutdown")
+            .unwrap();
+        let mut ended = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let AdapterEvent::SessionEnded { local_id, reason } = event {
+                ended.push((local_id, reason));
+            }
+        }
+        assert_eq!(ended, vec![(sid.to_owned(), EndReason::Completed)]);
+    }
 }

@@ -70,10 +70,13 @@ const BATCH_WINDOW: Duration = Duration::from_millis(250);
 /// burst doesn't grow the pre-compression buffer unbounded.
 const BATCH_MAX_BYTES: usize = 1024 * 1024;
 
-/// On shutdown, keep draining adapter events this long past the last one so an
-/// in-flight final tail (the driver's teardown flush) still reaches the wire
-/// before the WS closes. Hard-capped by [`SHUTDOWN_DRAIN_MAX`].
+/// On shutdown, once every adapter has stopped, keep draining adapter events
+/// this long past the last one before the WS closes. Hard-capped by
+/// [`SHUTDOWN_DRAIN_MAX`].
 const SHUTDOWN_DRAIN_QUIET: Duration = Duration::from_millis(500);
+
+/// How often the shutdown drain rechecks whether the adapters have stopped.
+const SHUTDOWN_DRAIN_POLL: Duration = Duration::from_millis(25);
 
 /// Absolute ceiling on the shutdown drain so a busy adapter can't hold teardown
 /// open indefinitely.
@@ -398,7 +401,9 @@ impl Supervisor {
                 tokio::select! {
                     biased;
                     () = shutdown.cancelled() => {
-                        self.flush_on_shutdown(&mut sink, batch.take(), event_rx, &scrub).await;
+                        let stopped = || adapters_stopped(running);
+                        self.flush_on_shutdown(&mut sink, batch.take(), event_rx, &scrub, stopped)
+                            .await;
                         return Ok(());
                     }
                     msg = stream.next() => {
@@ -521,8 +526,9 @@ impl Supervisor {
         batch: Vec<Vec<u8>>,
         event_rx: &mut mpsc::Receiver<(String, AdapterEvent)>,
         scrub: &CompiledPatterns,
+        stopped: impl Fn() -> bool,
     ) {
-        let frames = drain_for_shutdown(batch, event_rx, scrub).await;
+        let frames = drain_for_shutdown(batch, event_rx, scrub, stopped).await;
         if !frames.is_empty()
             && let Some(msg) = prepare_serialized(coalesce(frames)).into_message()
         {
@@ -1290,6 +1296,12 @@ fn jobs_on_disk(jobs_root: &std::path::Path) -> Vec<String> {
     shorts
 }
 
+/// Whether every adapter task has returned: the drivers ran their teardown
+/// flush and the pumps forwarded every event the adapters emitted.
+fn adapters_stopped(running: &HashMap<String, AdapterRunning>) -> bool {
+    running.values().all(|r| r.tasks.iter().all(tokio::task::JoinHandle::is_finished))
+}
+
 async fn stop_adapters(running: &mut HashMap<String, AdapterRunning>) {
     let ids: Vec<String> = running.keys().cloned().collect();
     for id in ids {
@@ -1504,13 +1516,15 @@ fn coalesce(mut frames: Vec<Vec<u8>>) -> Vec<u8> {
 
 /// Collect every event still owed to the wire at shutdown: the in-flight
 /// micro-batch, plus events the adapters emit during their teardown flush.
-/// Waits up to [`SHUTDOWN_DRAIN_QUIET`] for each next event and stops once the
-/// pipeline goes quiet or [`SHUTDOWN_DRAIN_MAX`] elapses, so a stuck adapter
-/// can't wedge teardown.
+/// Quiet only counts once `stopped` reports every adapter done: a driver
+/// mid-poll when shutdown lands emits its teardown events later than any quiet
+/// window. Stops after [`SHUTDOWN_DRAIN_QUIET`] of quiet past that, or at
+/// [`SHUTDOWN_DRAIN_MAX`], so a stuck adapter can't wedge teardown.
 async fn drain_for_shutdown(
     batch: Vec<Vec<u8>>,
     event_rx: &mut mpsc::Receiver<(String, AdapterEvent)>,
     scrub: &CompiledPatterns,
+    stopped: impl Fn() -> bool,
 ) -> Vec<Vec<u8>> {
     let mut frames = batch;
     let deadline = tokio::time::Instant::now() + SHUTDOWN_DRAIN_MAX;
@@ -1519,8 +1533,9 @@ async fn drain_for_shutdown(
         if now >= deadline {
             break;
         }
-        let step = SHUTDOWN_DRAIN_QUIET.min(deadline - now);
-        match tokio::time::timeout(step, event_rx.recv()).await {
+        let settled = stopped();
+        let wait = if settled { SHUTDOWN_DRAIN_QUIET } else { SHUTDOWN_DRAIN_POLL };
+        match tokio::time::timeout(wait.min(deadline - now), event_rx.recv()).await {
             Ok(Some((adapter_id, event))) => {
                 let event = scrub_event(event, scrub);
                 if let Ok(Some(frame)) = encode_event(adapter_id, event, harness_models_supported())
@@ -1528,8 +1543,9 @@ async fn drain_for_shutdown(
                     frames.push(frame);
                 }
             }
-            // All senders dropped (adapters finished) or the pipeline went quiet.
-            Ok(None) | Err(_) => break,
+            Ok(None) => break,
+            Err(_) if settled => break,
+            Err(_) => {}
         }
     }
     frames
@@ -2946,7 +2962,7 @@ mod tests {
         tx.send(("claude-code".to_owned(), msg_event("late"))).await.unwrap();
         drop(tx);
         let batch = vec![ser(&synth_event(0))];
-        let frames = super::drain_for_shutdown(batch, &mut rx, &scrub).await;
+        let frames = super::drain_for_shutdown(batch, &mut rx, &scrub, || true).await;
         assert_eq!(frames.len(), 2, "the in-flight batch plus the drained tail must survive");
         let ids: Vec<String> = frames
             .iter()
@@ -2964,12 +2980,49 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<(String, cctui_proto::adapter::AdapterEvent)>(8);
         drop(tx);
         let started = tokio::time::Instant::now();
-        let frames = super::drain_for_shutdown(Vec::new(), &mut rx, &scrub).await;
+        let frames = super::drain_for_shutdown(Vec::new(), &mut rx, &scrub, || true).await;
         assert!(frames.is_empty());
         assert!(
             started.elapsed() < super::SHUTDOWN_DRAIN_MAX,
             "a closed channel must end the drain before the hard cap"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_drain_waits_for_an_adapter_still_flushing() {
+        let scrub = compile_scrub(&cctui_proto::ws::SecretScrubConfig::default());
+        let (tx, mut rx) = mpsc::channel::<(String, cctui_proto::adapter::AdapterEvent)>(8);
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = stopped.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(super::SHUTDOWN_DRAIN_QUIET * 2).await;
+            tx.send(("claude-code".to_owned(), msg_event("end"))).await.unwrap();
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(super::SHUTDOWN_DRAIN_MAX).await;
+            drop(tx);
+        });
+        let started = tokio::time::Instant::now();
+        let frames = super::drain_for_shutdown(Vec::new(), &mut rx, &scrub, || {
+            stopped.load(std::sync::atomic::Ordering::SeqCst)
+        })
+        .await;
+        assert_eq!(frames.len(), 1, "an event emitted past the quiet window still drains");
+        assert!(
+            started.elapsed() < super::SHUTDOWN_DRAIN_QUIET * 4,
+            "once the adapters stopped, quiet ends the drain before the hard cap"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_drain_gives_up_on_an_adapter_that_never_stops() {
+        let scrub = compile_scrub(&cctui_proto::ws::SecretScrubConfig::default());
+        let (_tx, mut rx) = mpsc::channel::<(String, cctui_proto::adapter::AdapterEvent)>(8);
+        let started = tokio::time::Instant::now();
+        let frames = super::drain_for_shutdown(Vec::new(), &mut rx, &scrub, || false).await;
+        assert!(frames.is_empty());
+        let elapsed = started.elapsed();
+        assert!(elapsed >= super::SHUTDOWN_DRAIN_MAX, "waited for the adapters: {elapsed:?}");
+        assert!(elapsed < super::SHUTDOWN_DRAIN_MAX + super::SHUTDOWN_DRAIN_QUIET, "{elapsed:?}");
     }
 
     #[test]

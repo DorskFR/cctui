@@ -1285,9 +1285,11 @@ phase_hardening
 # cctui-supervisor applies landlock + seccomp, drops all caps, setuids to the
 # worker, then exec's the daemon. RO: system + context/prompts; RW: workspace,
 # home, tmp, the guard/proxy state dirs. The supervisor's own --report captures
-# landlock/seccomp/uid for the hardening metadata.
+# landlock/seccomp/uid for the hardening metadata. `exec` keeps a backgrounded
+# call's $! the daemon's pid: without it $! is a subshell that SIGTERM kills
+# while the daemon never sees the signal.
 run_supervised_daemon() {
-    cctui-supervisor \
+    exec cctui-supervisor \
         --ro /usr --ro /lib --ro /lib64 --ro /bin --ro /sbin --ro /etc --ro /proc \
         --ro /prompts --ro /var/run/guard-proxy-ca \
         --ro "$CONTEXT_DIR" \
@@ -1530,14 +1532,4 @@ if [ -n "${SESSION_ID:-}" ] && [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
 fi
 
 log "thin worker -> exec cctui-supervisor -> cctui-daemon (run forever)"
-exec cctui-supervisor \
-    --ro /usr --ro /lib --ro /lib64 --ro /bin --ro /sbin --ro /etc --ro /proc \
-    --ro /prompts --ro /var/run/guard-proxy-ca \
-    --ro "$CONTEXT_DIR" \
-    $(extra_ro_flags) \
-    --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \
-    --rw /var/run/workflow-guard --ro /var/run/guard-proxy --rw /var/run/gpg-agent \
-    $(extra_rw_flags) \
-    --user "$WORKER_UID" \
-    --report /tmp/hardening.json \
-    -- cctui-daemon run --no-auto-update "$@"
+run_supervised_daemon "$@"
