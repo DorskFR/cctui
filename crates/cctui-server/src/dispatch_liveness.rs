@@ -99,6 +99,42 @@ pub async fn sweep(state: &AppState) {
     }
 }
 
+async fn probe(state: &AppState, row: LiveHandle) {
+    let Ok(Some(dispatcher)) =
+        crate::routes::dispatch::resolve_dispatcher(state, row.user_id, &row.dispatcher_name).await
+    else {
+        return;
+    };
+    let Ok(HandleStatus::Failed(reason)) = dispatcher.status(&row.handle).await else {
+        return;
+    };
+    let detail = reason.unwrap_or_else(|| "workload failed".to_owned());
+    let end_reason = end_reason_for(&detail);
+    if !end_session(&state.pool, &row.session_id, end_reason, &detail).await {
+        return;
+    }
+    tracing::warn!(
+        session_id = %row.session_id,
+        dispatcher = %row.dispatcher_name,
+        handle = %row.handle,
+        end_reason = end_reason.as_str(),
+        "dispatched session ended: {detail}"
+    );
+    let mut event = Event::new(kind::SESSION_ENDED, Actor::Reaper)
+        .severity(events::Severity::Warn)
+        .session(row.session_id)
+        .detail(serde_json::json!({
+            "end_reason": end_reason.as_str(),
+            "end_detail": detail,
+            "dispatcher": row.dispatcher_name,
+            "handle": row.handle,
+        }));
+    if let Some(machine) = row.machine_uuid {
+        event = event.machine(machine);
+    }
+    events::record(state, event);
+}
+
 /// A worker that died before registering has no session to end: its
 /// dispatch record carries the cause instead.
 async fn probe_unregistered(state: &AppState, row: dispatch_records::UnregisteredHandle) {
