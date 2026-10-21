@@ -6,7 +6,12 @@ use sqlx::{ConnectOptions, PgPool};
 
 /// The embedded migrations. A `static` keeps the list off the stack: built
 /// inline in `connect`, it outgrew clippy's `large_stack_arrays` limit.
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
+/// Migrations applied by a newer release are tolerated, so rolling back to this
+/// binary doesn't need a schema rollback first.
+static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate::Migrator {
+    ignore_missing: true,
+    ..sqlx::migrate!("../../migrations")
+};
 
 /// Read a `u32` env var, falling back to `default` when unset or unparseable.
 fn env_u32(name: &str, default: u32) -> u32 {
@@ -128,4 +133,33 @@ async fn reconcile_migration_checksums(pool: &PgPool) -> Result<(), sqlx::Error>
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_migration_from_a_newer_release_does_not_block_startup() {
+        let Some(url) = crate::routes::gateway::test_db_url("db_newer_migration") else {
+            return;
+        };
+        let pool = connect(&url).await.expect("connect");
+        let version = 9_000_000_000_i64 + i64::from(std::process::id());
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) \
+             VALUES ($1, 'from a newer release', true, '\\x00'::bytea, 0)",
+        )
+        .bind(version)
+        .execute(&pool)
+        .await
+        .expect("insert future migration");
+        let result = migrate(&pool).await;
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = $1")
+            .bind(version)
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+        assert!(result.is_ok(), "{result:?}");
+    }
 }
