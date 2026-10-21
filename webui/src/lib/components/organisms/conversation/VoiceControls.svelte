@@ -69,8 +69,8 @@
 		pressed={recording}
 		loading={busy}
 		disabled={disabled || live}
-		label={m.voice_dictate_label()}
-		title={m.voice_dictate_title()}
+		label={m.voice_dictate_hint()}
+		title={m.voice_dictate_hint()}
 		style={recording ? '--btn-on: var(--danger)' : undefined}
 		onpointerdown={(e: PointerEvent) => {
 			e.preventDefault();
@@ -87,8 +87,8 @@
 		size="sm"
 		pressed={live}
 		{disabled}
-		aria-label={m.voice_live_toggle_title()}
-		title={m.voice_live_toggle_title()}
+		aria-label={m.voice_live_hint()}
+		title={m.voice_live_hint()}
 		onclick={ontogglelive}>{m.voice_live_toggle()}</Toggle
 	>
 </span>

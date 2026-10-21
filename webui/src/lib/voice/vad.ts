@@ -21,12 +21,25 @@ export type VadFactory = (cb: VadCallbacks) => Promise<VadHandle>;
 
 export const VAD_ASSET_PATH = '/vad/';
 
+export interface OrtEnvLike {
+	logLevel?: string;
+	wasm: { numThreads?: number };
+}
+
+/** onnxruntime-web ships only the threaded wasm build; its threads need
+ *  SharedArrayBuffer, which a page without cross-origin isolation lacks. */
+export function configureOrt(env: OrtEnvLike, isolated: boolean): void {
+	env.logLevel = 'error';
+	if (!isolated) env.wasm.numThreads = 1;
+}
+
 export const createVad: VadFactory = async (cb) => {
 	const { MicVAD } = await import('@ricky0123/vad-web');
 	const vad = await MicVAD.new({
 		model: 'v5',
 		baseAssetPath: VAD_ASSET_PATH,
 		onnxWASMBasePath: VAD_ASSET_PATH,
+		ortConfig: (ort) => configureOrt(ort.env, globalThis.crossOriginIsolated === true),
 		onSpeechStart: () => cb.onSpeechStart(),
 		onSpeechEnd: (audio: Float32Array) => cb.onSpeechEnd(audio),
 		onFrameProcessed: (_probs: unknown, frame: Float32Array) => cb.onLevel(frameLevel(frame))
