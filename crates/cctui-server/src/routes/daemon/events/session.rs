@@ -683,4 +683,115 @@ mod tests {
         crate::routes::daemon::test_support::drop_machines(&pool, &[thread_id], &[(uid, mid)])
             .await;
     }
+
+    async fn announce(
+        state: &AppState,
+        (uid, mid): (Uuid, Uuid),
+        sid: &str,
+        parent: Option<&str>,
+        relation: serde_json::Value,
+    ) {
+        let meta = cctui_proto::adapter::SessionMeta {
+            working_dir: Some("/w".to_owned()),
+            parent_local_id: parent.map(str::to_owned),
+            extra: json!({ "short": "s", "relation": relation }),
+        };
+        super::on_session_event(
+            state,
+            mid,
+            uid,
+            "claude-code",
+            AdapterEvent::SessionStarted { local_id: sid.to_owned(), meta },
+        )
+        .await
+        .expect("session started");
+    }
+
+    async fn relation_of(pool: &sqlx::PgPool, sid: &str) -> (Option<String>, Option<String>) {
+        sqlx::query_as("SELECT parent_id, metadata->>'relation' FROM sessions WHERE id = $1")
+            .bind(sid)
+            .fetch_one(pool)
+            .await
+            .expect("read relation")
+    }
+
+    async fn followup_intent(pool: &sqlx::PgPool, sid: &str, parent: &str) {
+        sqlx::query(
+            "INSERT INTO session_followup_intents (spawn_key, parent_session_id) VALUES ($1, $2)",
+        )
+        .bind(sid)
+        .bind(parent)
+        .execute(pool)
+        .await
+        .expect("seed follow-up intent");
+    }
+
+    /// A daemon calls every session it discovers a root and re-announces it on
+    /// each reconnect, before or after the follow-up claim, with `"root"` or
+    /// (codex) `null`. Only a genuine root ends up a root.
+    #[tokio::test]
+    async fn a_root_announcement_never_takes_a_born_relation_back() {
+        let Some(url) = crate::routes::gateway::test_db_url("sticky_relation") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let owner = seed_machine(&pool, "sticky-relation").await;
+        let parent = seed_owned_session(&pool, owner.0, owner.1).await;
+        let id = || Uuid::new_v4().to_string();
+        let linked = |relation: &str| (Some(parent.clone()), Some(relation.to_owned()));
+
+        let root_first = id();
+        followup_intent(&pool, &root_first, &parent).await;
+        announce(&state, owner, &root_first, None, json!("root")).await;
+        assert_eq!(relation_of(&pool, &root_first).await, linked("followup"));
+
+        let claim_first = id();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, working_dir, status, user_id, adapter_id) \
+             VALUES ($1, $2, $3, '/w', 'active', $4, 'claude-code')",
+        )
+        .bind(&claim_first)
+        .bind(owner.1.to_string())
+        .bind(owner.1)
+        .bind(owner.0)
+        .execute(&pool)
+        .await
+        .expect("seed claimed session");
+        followup_intent(&pool, &claim_first, &parent).await;
+        crate::followup::claim_intent(&pool, &claim_first, None).await;
+        announce(&state, owner, &claim_first, None, json!("root")).await;
+        assert_eq!(relation_of(&pool, &claim_first).await, linked("followup"));
+
+        let fork = id();
+        announce(&state, owner, &fork, Some(parent.as_str()), json!("fork")).await;
+        let late_fork = id();
+        announce(&state, owner, &late_fork, None, json!("root")).await;
+        announce(&state, owner, &late_fork, Some(parent.as_str()), json!("fork")).await;
+        let child = id();
+        announce(&state, owner, &child, Some(parent.as_str()), json!("subagent")).await;
+
+        for sid in [&root_first, &claim_first, &fork, &late_fork, &child] {
+            announce(&state, owner, sid, None, json!("root")).await;
+            announce(&state, owner, sid, None, serde_json::Value::Null).await;
+        }
+        for sid in [&root_first, &claim_first] {
+            assert_eq!(relation_of(&pool, sid).await, linked("followup"), "{sid} re-announced");
+        }
+        assert_eq!(relation_of(&pool, &fork).await, linked("fork"));
+        assert_eq!(relation_of(&pool, &late_fork).await, linked("fork"));
+        assert_eq!(relation_of(&pool, &child).await, linked("subagent"));
+
+        let genuine = id();
+        announce(&state, owner, &genuine, None, json!("root")).await;
+        announce(&state, owner, &genuine, None, json!("root")).await;
+        assert_eq!(relation_of(&pool, &genuine).await, (None, Some("root".to_owned())));
+
+        let all = [root_first, claim_first, fork, late_fork, child, genuine, parent];
+        crate::routes::daemon::test_support::drop_machines(&pool, &all, &[owner]).await;
+    }
 }
