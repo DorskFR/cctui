@@ -186,6 +186,10 @@ pub enum SubmitConfirm {
 /// `baseline`. Reads only the appended region; partial trailing lines (a
 /// write in flight) don't parse and simply don't match yet.
 fn transcript_gained_user_entry(path: &Path, baseline: u64) -> bool {
+    transcript_gained_entry(path, baseline, &["user"])
+}
+
+fn transcript_gained_entry(path: &Path, baseline: u64, kinds: &[&str]) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut file) = std::fs::File::open(path) else { return false };
     if !file.metadata().is_ok_and(|m| m.len() > baseline) {
@@ -199,28 +203,19 @@ fn transcript_gained_user_entry(path: &Path, baseline: u64) -> bool {
         return false;
     }
     appended.lines().any(|line| {
-        serde_json::from_str::<Value>(line)
-            .ok()
-            .is_some_and(|v| v.get("type").and_then(Value::as_str) == Some("user"))
+        serde_json::from_str::<Value>(line).ok().is_some_and(|v| {
+            v.get("type").and_then(Value::as_str).is_some_and(|kind| kinds.contains(&kind))
+        })
     })
 }
 
-/// Whether `confirm` proves the reply was submitted within `within`, with no
-/// Enter pressed: a build that auto-submits multiline replies appends the user
-/// line on its own. Only the transcript signal is proof.
-pub async fn submit_landed(confirm: &SubmitConfirm, within: Duration) -> bool {
-    const POLL: Duration = Duration::from_millis(20);
+/// Whether the transcript shows an idle worker took the reply with no Enter
+/// pressed: a user or assistant line past the baseline. Only the transcript
+/// signal counts.
+#[must_use]
+pub fn turn_entry_landed(confirm: &SubmitConfirm) -> bool {
     let SubmitConfirm::Transcript { path, baseline } = confirm else { return false };
-    let deadline = tokio::time::Instant::now() + within;
-    loop {
-        if transcript_gained_user_entry(path, *baseline) {
-            return true;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return false;
-        }
-        tokio::time::sleep(POLL).await;
-    }
+    transcript_gained_entry(path, *baseline, &["user", "assistant"])
 }
 
 /// Per worker: how many keystroke batches other than a reply's own (ESC,
@@ -848,26 +843,27 @@ mod tests {
         server.await.unwrap();
     }
 
-    #[tokio::test]
-    async fn submit_landed_reads_only_a_user_line_past_the_baseline() {
+    #[test]
+    fn turn_entry_landed_reads_only_turn_lines_past_the_baseline() {
         let dir = tempfile::tempdir().unwrap();
         let transcript = dir.path().join("session.jsonl");
         std::fs::write(&transcript, "{\"type\":\"user\"}\n").unwrap();
         let baseline = std::fs::metadata(&transcript).unwrap().len();
         let confirm = SubmitConfirm::Transcript { path: transcript.clone(), baseline };
-        let wait = Duration::from_millis(60);
-        assert!(!submit_landed(&confirm, wait).await, "the baseline's own user line");
+        assert!(!turn_entry_landed(&confirm), "the baseline's own user line");
         let mut f = std::fs::OpenOptions::new().append(true).open(&transcript).unwrap();
-        std::io::Write::write_all(&mut f, b"{\"type\":\"assistant\"}\n").unwrap();
-        assert!(!submit_landed(&confirm, wait).await);
-        let appender = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(40)).await;
-            std::io::Write::write_all(&mut f, b"{\"type\":\"user\"}\n").unwrap();
-        });
-        assert!(submit_landed(&confirm, Duration::from_secs(2)).await);
-        appender.await.unwrap();
-        assert!(!submit_landed(&SubmitConfirm::Repaint, wait).await);
-        assert!(!submit_landed(&SubmitConfirm::Composer, wait).await);
+        std::io::Write::write_all(&mut f, b"{\"type\":\"system\"}\n{\"type\":\"user\"").unwrap();
+        assert!(!turn_entry_landed(&confirm), "metadata and a partial line");
+        std::io::Write::write_all(&mut f, b"}\n").unwrap();
+        assert!(turn_entry_landed(&confirm));
+        let assistant_only = dir.path().join("assistant.jsonl");
+        std::fs::write(&assistant_only, "{\"type\":\"assistant\"}\n").unwrap();
+        assert!(turn_entry_landed(&SubmitConfirm::Transcript {
+            path: assistant_only,
+            baseline: 0
+        }));
+        assert!(!turn_entry_landed(&SubmitConfirm::Repaint));
+        assert!(!turn_entry_landed(&SubmitConfirm::Composer));
     }
 
     #[tokio::test]
