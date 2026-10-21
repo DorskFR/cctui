@@ -535,6 +535,60 @@ mod tests {
         assert_eq!(name.as_deref(), Some("nope"));
     }
 
+    /// A guard-less dispatch's daemon ends its session `completed` as the
+    /// worker shuts down; arriving after a transport mark, it replaces it.
+    #[tokio::test]
+    async fn a_completed_end_after_a_transport_mark_upgrades_it() {
+        let Some(url) = crate::routes::gateway::test_db_url("session_end_after_mark") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let (uid, mid) = seed_machine(&pool, "end-after-mark").await;
+        let mut sids = Vec::new();
+        for mark in ["daemon_lost", "machine_offline"] {
+            let sid = seed_owned_session(&pool, uid, mid).await;
+            sqlx::query(
+                "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = $2, \
+                 end_detail = 'transport' WHERE id = $1",
+            )
+            .bind(&sid)
+            .bind(mark)
+            .execute(&pool)
+            .await
+            .expect("mark");
+
+            super::on_session_event(
+                &state,
+                mid,
+                uid,
+                "claude-code",
+                AdapterEvent::SessionEnded { local_id: sid.clone(), reason: EndReason::Completed },
+            )
+            .await
+            .expect("session end");
+
+            let (status, end_reason, end_detail): (String, Option<String>, Option<String>) =
+                sqlx::query_as("SELECT status, end_reason, end_detail FROM sessions WHERE id = $1")
+                    .bind(&sid)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("read back");
+            assert_eq!(
+                (status.as_str(), end_reason.as_deref(), end_detail),
+                ("ended", Some("completed"), None),
+                "{mark} is replaced by the reported completion"
+            );
+            sids.push(sid);
+        }
+
+        crate::routes::daemon::test_support::drop_machines(&pool, &sids, &[(uid, mid)]).await;
+    }
+
     #[tokio::test]
     async fn persist_session_end_fills_reason_columns() {
         let Some(url) = crate::routes::gateway::test_db_url("persist_session_end") else {
