@@ -32,6 +32,8 @@ use text::{UTTERANCE_SAMPLE_RATE, pcm16_to_wav};
 /// Longest utterance accepted (one minute of 16 kHz PCM16).
 const MAX_UTTERANCE_BYTES: usize = 2 * 16_000 * 60;
 const KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(20);
+/// How the session stream renders a prompt the agent received.
+const USER_PREFIX: &str = "▷ User:";
 
 #[derive(Debug, Deserialize)]
 pub struct VoiceQuery {
@@ -65,6 +67,9 @@ pub async fn voice_ws(
         return Err(StatusCode::BAD_REQUEST);
     }
     crate::authz::authorize_session_write(&ctx, &session_id, &state.pool).await?;
+    crate::routes::sessions::authorize_reply(&state, &ctx, &session_id)
+        .await
+        .map_err(|_| StatusCode::FORBIDDEN)?;
     Ok(ws.on_upgrade(move |socket| handle_voice_ws(socket, state, ctx, session_id)))
 }
 
@@ -164,20 +169,18 @@ async fn read_socket(
     }
 }
 
-/// Whether a session event is assistant prose worth reading out.
-fn spoken_text(event: &AgentEvent) -> Option<&str> {
+/// What a session event means to the loop: a prompt echo starts a turn,
+/// visible assistant prose is read out.
+fn signal_of(event: &AgentEvent) -> Option<Signal> {
     match event {
-        AgentEvent::Text { content, meta: false, kind: None, .. } => Some(content),
+        AgentEvent::TurnEnd { .. } => Some(Signal::TurnEnd),
+        AgentEvent::Text { content, kind: None, .. } if content.starts_with(USER_PREFIX) => {
+            Some(Signal::TurnStart)
+        }
+        AgentEvent::Text { content, meta: false, kind: None, .. } => {
+            Some(Signal::Text(content.clone()))
+        }
         _ => None,
-    }
-}
-
-async fn next_session_event(
-    rx: &mut Option<tokio::sync::broadcast::Receiver<AgentEvent>>,
-) -> Result<AgentEvent, RecvError> {
-    match rx {
-        Some(rx) => rx.recv().await,
-        None => std::future::pending().await,
     }
 }
 
@@ -191,7 +194,6 @@ async fn relay_signals(
     signals: mpsc::Sender<Signal>,
     cancel: CancellationToken,
 ) {
-    let mut session_rx = state.bus.subscribe_session(&session_id);
     let mut server_rx = state.bus.subscribe_server();
     if state.bus.text_watch_inc(&session_id) {
         crate::ws::set_daemon_text_watch(&state, &session_id, true).await;
@@ -199,16 +201,13 @@ async fn relay_signals(
     loop {
         let signal = tokio::select! {
             () = cancel.cancelled() => break,
-            ev = next_session_event(&mut session_rx) => match ev {
-                Ok(AgentEvent::TurnEnd { .. }) => Some(Signal::TurnEnd),
-                Ok(ev) => spoken_text(&ev).map(|t| Signal::Text(t.to_owned())),
-                Err(RecvError::Lagged(_)) => None,
-                Err(RecvError::Closed) => break,
-            },
             frame = server_rx.recv() => match frame {
                 Ok(frame) => match &*frame.event {
                     ServerEvent::TextDelta { session_id: sid, delta, .. } if *sid == session_id => {
                         Some(Signal::Delta(delta.clone()))
+                    }
+                    ServerEvent::Stream { session_id: sid, data } if *sid == session_id => {
+                        signal_of(data)
                     }
                     _ => None,
                 },
@@ -293,9 +292,9 @@ mod tests {
     }
 
     #[test]
-    fn only_visible_assistant_prose_is_spoken() {
-        let text = |meta: bool, kind: Option<&str>| AgentEvent::Text {
-            content: "hi".into(),
+    fn only_visible_assistant_prose_is_spoken_and_a_prompt_starts_a_turn() {
+        let event = |content: &str, meta: bool, kind: Option<&str>| AgentEvent::Text {
+            content: content.into(),
             meta,
             kind: kind.map(str::to_owned),
             operation: None,
@@ -305,9 +304,15 @@ mod tests {
             seq: None,
             turn_id: None,
         };
-        assert_eq!(spoken_text(&text(false, None)), Some("hi"));
-        assert_eq!(spoken_text(&text(true, None)), None);
-        assert_eq!(spoken_text(&text(false, Some("thinking"))), None);
-        assert_eq!(spoken_text(&AgentEvent::TurnEnd { ts: 0, seq: None }), None);
+        let text = |meta, kind| event("hi", meta, kind);
+        assert_eq!(signal_of(&text(false, None)), Some(Signal::Text("hi".into())));
+        assert_eq!(signal_of(&text(true, None)), None);
+        assert_eq!(signal_of(&text(false, Some("thinking"))), None);
+        assert_eq!(signal_of(&AgentEvent::TurnEnd { ts: 0, seq: None }), Some(Signal::TurnEnd));
+        let prompt = "▷ User: <cctui-session-context voice=\"spoken\">\n</cctui-session-context>";
+        assert_eq!(signal_of(&event(prompt, false, None)), Some(Signal::TurnStart));
+        let harness = event("▷ User: <task-notification>", true, None);
+        assert_eq!(signal_of(&harness), Some(Signal::TurnStart));
+        assert_eq!(signal_of(&event("▷ User: queued", true, Some("queue_op"))), None);
     }
 }
