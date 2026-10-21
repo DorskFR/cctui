@@ -9,6 +9,10 @@ import { floatToPcm16 } from './pcm';
 import type { SpeechPlayer } from './player';
 import type { VadFactory, VadHandle } from './vad';
 
+/** How long a transcribed turn may sit between the server's `listening` and
+ *  its first sentence before the loop gives up on a reply. */
+export const REPLY_GRACE_MS = 4000;
+
 export type LiveStatus =
 	| 'off'
 	| 'connecting'
@@ -61,10 +65,18 @@ export class LiveVoice {
 	 *  older lines are leftovers of a cut reply. */
 	private minGen = 1;
 	private lineGen = 0;
+	private server: LiveStatus = 'off';
+	private playing = false;
+	private awaitingReply = false;
+	private replyTimer: ReturnType<typeof setTimeout> | null = null;
 	private readonly deps: LiveVoiceDeps;
 
 	constructor(deps: LiveVoiceDeps) {
 		this.deps = deps;
+		deps.player.onIdleChange((idle) => {
+			this.playing = !idle;
+			if (this.socket) this.show();
+		});
 	}
 
 	get active(): boolean {
@@ -76,6 +88,7 @@ export class LiveVoice {
 		if (this.socket) return;
 		this.error = null;
 		this.transcript = '';
+		this.server = 'connecting';
 		this.status = 'connecting';
 		this.minGen = 1;
 		this.lineGen = 0;
@@ -127,6 +140,7 @@ export class LiveVoice {
 
 	/** The user interrupted by hand (the stop button while speaking). */
 	interrupt() {
+		this.endAwait();
 		this.deps.player.stop();
 		this.minGen = Math.max(this.minGen, this.lineGen) + 1;
 		this.send({ type: 'interrupt' });
@@ -159,7 +173,7 @@ export class LiveVoice {
 			}
 			this.vad = vad;
 			if (!this.muted) await vad.start();
-			if (this.status === 'connecting') this.status = 'listening';
+			if (this.status === 'connecting') this.setServer('listening');
 		} catch (e) {
 			if (this.socket === sock) this.fail(e instanceof Error ? e.message : 'microphone unavailable');
 		}
@@ -188,10 +202,12 @@ export class LiveVoice {
 		}
 		switch (msg.type) {
 			case 'state':
-				this.status = msg.state;
+				this.setServer(msg.state);
 				break;
 			case 'transcript':
 				this.transcript = msg.text;
+				this.awaitingReply = true;
+				this.show();
 				break;
 			case 'speak_start': {
 				const gen = Number.parseInt(msg.line_id, 10);
@@ -199,6 +215,7 @@ export class LiveVoice {
 					if (gen < this.minGen) break;
 					this.lineGen = Math.max(this.lineGen, gen);
 				}
+				this.endAwait();
 				this.deps.player.begin(msg.line_id);
 				break;
 			}
@@ -207,8 +224,38 @@ export class LiveVoice {
 				break;
 			case 'error':
 				this.error = msg.message;
+				this.endAwait();
+				this.show();
 				break;
 		}
+	}
+
+	private setServer(state: LiveStatus) {
+		this.server = state;
+		if (state === 'listening' && this.awaitingReply && !this.replyTimer) {
+			this.replyTimer = setTimeout(() => {
+				this.replyTimer = null;
+				this.awaitingReply = false;
+				if (this.socket) this.show();
+			}, REPLY_GRACE_MS);
+		}
+		this.show();
+	}
+
+	/** The server marks a reply done once it is synthesized, long before the
+	 *  queued audio has played, and briefly reports `listening` between a
+	 *  transcript and the reply's first sentence. */
+	private show() {
+		if (this.server !== 'listening') this.status = this.server;
+		else if (this.playing) this.status = 'speaking';
+		else if (this.awaitingReply) this.status = 'thinking';
+		else this.status = 'listening';
+	}
+
+	private endAwait() {
+		this.awaitingReply = false;
+		if (this.replyTimer) clearTimeout(this.replyTimer);
+		this.replyTimer = null;
 	}
 
 	private send(msg: VoiceClientMsg) {
@@ -237,6 +284,8 @@ export class LiveVoice {
 		}
 		this.vad?.destroy();
 		this.vad = null;
+		this.endAwait();
+		this.server = 'off';
 		this.deps.player.stop();
 		this.releaseWakeLock?.();
 		this.releaseWakeLock = null;

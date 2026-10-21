@@ -1,7 +1,7 @@
 import { flushSync } from 'svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_VOICE } from '$lib/settings.svelte';
-import { LiveVoice, voiceSocketUrl, type SocketLike } from './liveVoice.svelte';
+import { LiveVoice, REPLY_GRACE_MS, voiceSocketUrl, type SocketLike } from './liveVoice.svelte';
 import { type AudioLike, SpeechPlayer } from './player';
 import type { VadCallbacks, VadHandle } from './vad';
 
@@ -44,6 +44,7 @@ class FakeSocket implements SocketLike {
 function harness(opts: { vadFails?: boolean } = {}) {
 	let socket: FakeSocket | null = null;
 	let cb: VadCallbacks | null = null;
+	let idle: (idle: boolean) => void = () => {};
 	const vad = { start: vi.fn(), pause: vi.fn(), destroy: vi.fn() } satisfies VadHandle;
 	const player = {
 		playing: false,
@@ -51,7 +52,11 @@ function harness(opts: { vadFails?: boolean } = {}) {
 		begin: vi.fn(),
 		chunk: vi.fn(),
 		end: vi.fn(),
-		stop: vi.fn()
+		stop: vi.fn(),
+		onIdleChange: vi.fn((fn: (idle: boolean) => void) => {
+			idle = fn;
+			return () => {};
+		})
 	};
 	const release = vi.fn();
 	const voice = new LiveVoice({
@@ -80,7 +85,8 @@ function harness(opts: { vadFails?: boolean } = {}) {
 		},
 		get cb() {
 			return cb as VadCallbacks | null;
-		}
+		},
+		idle: (v: boolean) => idle(v)
 	};
 }
 
@@ -334,7 +340,7 @@ describe('LiveVoice', () => {
 		const voice = new LiveVoice({
 			connect: (url) => new FakeSocket(url),
 			vad: async () => ({ start: vi.fn(), pause: vi.fn(), destroy: vi.fn() }),
-			player: { unlock: async () => {}, stop: vi.fn() } as unknown as SpeechPlayer,
+			player: { unlock: async () => {}, stop: vi.fn(), onIdleChange: () => () => {} } as unknown as SpeechPlayer,
 			wakeLock: () => new Promise((r) => (grant = r)),
 			prefs: () => DEFAULT_VOICE
 		});
@@ -356,7 +362,7 @@ describe('LiveVoice', () => {
 				return s;
 			},
 			vad: () => new Promise((r) => grants.push(r)),
-			player: { unlock: async () => {}, stop: vi.fn() } as unknown as SpeechPlayer,
+			player: { unlock: async () => {}, stop: vi.fn(), onIdleChange: () => () => {} } as unknown as SpeechPlayer,
 			wakeLock: async () => () => {},
 			prefs: () => DEFAULT_VOICE
 		});
@@ -373,5 +379,133 @@ describe('LiveVoice', () => {
 		expect(vads[1].start).toHaveBeenCalled();
 		voice.stop();
 		expect(vads[1].destroy).toHaveBeenCalled();
+	});
+});
+
+describe('LiveVoice shown state', () => {
+	beforeEach(() => vi.clearAllMocks());
+
+	async function talking() {
+		const h = harness();
+		await h.voice.start('sess');
+		h.socket?.open();
+		await h.settle();
+		return h;
+	}
+
+	function reply(h: Awaited<ReturnType<typeof talking>>, ids: string[]) {
+		h.socket?.frame({ type: 'state', state: 'speaking' });
+		for (const id of ids) {
+			h.socket?.frame({ type: 'speak_start', line_id: id, text: id });
+			h.socket?.frame(new Uint8Array([1]).buffer);
+			h.socket?.frame({ type: 'speak_end', line_id: id });
+			if (id === ids[0]) h.idle(false);
+		}
+		h.socket?.frame({ type: 'state', state: 'listening' });
+	}
+
+	it('stays speaking while queued audio plays after the server says listening', async () => {
+		const h = await talking();
+		reply(h, ['1-1', '1-2', '1-3']);
+		expect(h.voice.status).toBe('speaking');
+		h.idle(true);
+		expect(h.voice.status).toBe('listening');
+	});
+
+	it('holds thinking between the transcript and the first sentence', async () => {
+		vi.useFakeTimers();
+		try {
+			const h = await talking();
+			h.socket?.frame({ type: 'state', state: 'thinking' });
+			h.socket?.frame({ type: 'transcript', text: 'why is the sky blue' });
+			h.socket?.frame({ type: 'state', state: 'listening' });
+			expect(h.voice.status).toBe('thinking');
+			vi.advanceTimersByTime(REPLY_GRACE_MS - 1);
+			expect(h.voice.status).toBe('thinking');
+			reply(h, ['1-1']);
+			expect(h.voice.status).toBe('speaking');
+			h.idle(true);
+			expect(h.voice.status).toBe('listening');
+			vi.advanceTimersByTime(REPLY_GRACE_MS);
+			expect(h.voice.status).toBe('listening');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('falls back to listening when no reply follows the transcript', async () => {
+		vi.useFakeTimers();
+		try {
+			const h = await talking();
+			h.socket?.frame({ type: 'transcript', text: 'hm' });
+			h.socket?.frame({ type: 'state', state: 'listening' });
+			expect(h.voice.status).toBe('thinking');
+			vi.advanceTimersByTime(REPLY_GRACE_MS);
+			expect(h.voice.status).toBe('listening');
+
+			h.socket?.frame({ type: 'transcript', text: 'again' });
+			h.socket?.frame({ type: 'state', state: 'listening' });
+			h.socket?.frame({ type: 'error', message: 'agent failed' });
+			expect(h.voice.status).toBe('listening');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('a barge-in during held playback interrupts and returns to listening', async () => {
+		const h = await talking();
+		reply(h, ['1-1', '1-2']);
+		expect(h.voice.status).toBe('speaking');
+		h.player.stop.mockImplementation(() => h.idle(true));
+		h.cb?.onSpeechStart();
+		expect(h.player.stop).toHaveBeenCalled();
+		expect(h.socket?.texts().at(-1)).toEqual({ type: 'interrupt' });
+		expect(h.voice.status).toBe('listening');
+	});
+
+	it('drains the real player queue before showing listening', async () => {
+		const audios: AudioLike[] = [];
+		const player = new SpeechPlayer({
+			mime: () => 'audio/ogg',
+			createAudio: () => {
+				const a: AudioLike = {
+					src: '',
+					playbackRate: 1,
+					onended: null,
+					onerror: null,
+					play: async () => {},
+					pause: vi.fn()
+				};
+				audios.push(a);
+				return a;
+			},
+			createUrl: (blob) => `blob:${blob.size}`,
+			revokeUrl: () => {}
+		});
+		let socket: FakeSocket | null = null;
+		const voice = new LiveVoice({
+			connect: (url) => (socket = new FakeSocket(url)),
+			vad: async () => ({ start: vi.fn(), pause: vi.fn(), destroy: vi.fn() }),
+			player,
+			wakeLock: async () => () => {},
+			prefs: () => ({ ...DEFAULT_VOICE, bargeIn: true })
+		});
+		await voice.start('sess');
+		const sock = socket as unknown as FakeSocket;
+		sock.open();
+		for (let i = 0; i < 4; i++) await Promise.resolve();
+		sock.frame({ type: 'state', state: 'speaking' });
+		for (const id of ['1-1', '1-2']) {
+			sock.frame({ type: 'speak_start', line_id: id, text: id });
+			sock.frame(new Uint8Array(2).buffer);
+			sock.frame({ type: 'speak_end', line_id: id });
+		}
+		sock.frame({ type: 'state', state: 'listening' });
+		expect(voice.status).toBe('speaking');
+		audios[1].onended?.(new Event('ended'));
+		expect(voice.status).toBe('speaking');
+		audios[2].onended?.(new Event('ended'));
+		expect(voice.status).toBe('listening');
+		voice.stop();
 	});
 });
