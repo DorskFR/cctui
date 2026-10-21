@@ -59,7 +59,10 @@ pub enum Signal {
     /// A prompt reached the agent: a new turn starts.
     TurnStart,
     /// Streamed text of the block `item`.
-    Delta { item: String, text: String },
+    Delta {
+        item: String,
+        text: String,
+    },
     /// A final assistant prose block.
     Text(String),
     TurnEnd,
@@ -115,6 +118,8 @@ fn log_first_audio(p: &Probe) {
 struct Notice {
     generation: u64,
     busy: bool,
+    /// Sentences this worker has finished.
+    done: u64,
 }
 
 /// One synthesis worker: sentences queued in order, audio out as each is
@@ -144,11 +149,11 @@ fn spawn_synth<B: VoiceBackend>(
             let mut n = 0u64;
             while let Some(text) = rx.recv().await {
                 n += 1;
-                let _ = notices.send(Notice { generation, busy: true });
+                let _ = notices.send(Notice { generation, busy: true, done: n - 1 });
                 let line_id = format!("{generation}-{n}");
                 speak_one(&*backend, &prefs, &probe, &out, &line_id, &text).await;
                 if rx.is_empty() {
-                    let _ = notices.send(Notice { generation, busy: false });
+                    let _ = notices.send(Notice { generation, busy: false, done: n });
                 }
             }
         }
@@ -389,6 +394,8 @@ struct Engine<B: VoiceBackend> {
     /// waits on the worker's sentence queue.
     notice_tx: mpsc::UnboundedSender<Notice>,
     synth: Synth,
+    /// Sentences handed to `synth`.
+    queued: u64,
     listener: Listener,
     /// Utterances handed to the listener and not yet reported back.
     hearing: usize,
@@ -435,6 +442,7 @@ impl<B: VoiceBackend> Engine<B> {
             out,
             notice_tx,
             synth,
+            queued: 0,
             listener,
             hearing: 0,
             generation: 1,
@@ -544,6 +552,7 @@ impl<B: VoiceBackend> Engine<B> {
             self.notice_tx.clone(),
             self.generation,
         );
+        self.queued = 0;
         self.reset_stream();
         *self.probe() = None;
         self.speaking = false;
@@ -587,6 +596,7 @@ impl<B: VoiceBackend> Engine<B> {
             if self.synth.tx.send(s).await.is_err() {
                 break;
             }
+            self.queued += 1;
         }
         self.emit_state().await;
     }
@@ -683,7 +693,7 @@ impl<B: VoiceBackend> Engine<B> {
 
     async fn notice(&mut self, n: Notice) {
         if n.generation == self.generation {
-            self.speaking = n.busy;
+            self.speaking = n.busy || n.done < self.queued;
             self.emit_state().await;
         }
     }
@@ -1179,6 +1189,36 @@ mod tests {
                 state(VoiceState::Listening),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_drained_notice_keeps_speaking_while_a_later_sentence_is_queued() {
+        let (out_tx, mut out) = mpsc::channel(64);
+        let (notice_tx, _notices) = mpsc::unbounded_channel();
+        let (heard_tx, _heard) = mpsc::channel(UTTERANCE_QUEUE);
+        let mock = Arc::new(Mock { stall: true, ..Mock::default() });
+        let mut engine = Engine::new(mock, Prefs::default(), out_tx, notice_tx, heard_tx);
+        engine.warming = false;
+        engine.enqueue(vec!["One.".into()]).await;
+        engine.enqueue(vec!["Two.".into()]).await;
+        assert_eq!(engine.queued, 2);
+        engine.notice(Notice { generation: 1, busy: false, done: 1 }).await;
+        assert!(engine.speaking);
+        assert_eq!(engine.state, Some(VoiceState::Speaking));
+        engine.notice(Notice { generation: 1, busy: false, done: 2 }).await;
+        assert!(!engine.speaking);
+        let mut states = Vec::new();
+        while let Ok(f) = out.try_recv() {
+            if let Outbound::Control(VoiceServerMsg::State { state }) = f {
+                states.push(state);
+            }
+        }
+        assert_eq!(states, vec![VoiceState::Speaking, VoiceState::Listening]);
+        engine.enqueue(vec!["Three.".into()]).await;
+        engine.barge_in().await;
+        assert_eq!(engine.queued, 0);
+        engine.notice(Notice { generation: 1, busy: true, done: 0 }).await;
+        assert!(!engine.speaking);
     }
 
     #[tokio::test]
