@@ -150,6 +150,30 @@ describe('LiveVoice', () => {
 		expect(h.player.stop).not.toHaveBeenCalled();
 	});
 
+	it('drops leftover lines of a reply cut by a barge-in', async () => {
+		const h = harness();
+		await h.voice.start('sess');
+		h.socket?.open();
+		await h.settle();
+		h.socket?.frame({ type: 'speak_start', line_id: '1-1', text: 'One.' });
+		h.socket?.frame({ type: 'state', state: 'speaking' });
+
+		h.cb?.onSpeechStart();
+		h.player.begin.mockClear();
+		h.socket?.frame({ type: 'speak_start', line_id: '1-2', text: 'Two.' });
+		expect(h.player.begin).not.toHaveBeenCalled();
+
+		h.socket?.frame({ type: 'state', state: 'thinking' });
+		h.socket?.frame({ type: 'speak_start', line_id: '2-1', text: 'New.' });
+		expect(h.player.begin).toHaveBeenCalledWith('2-1');
+
+		h.voice.interrupt();
+		h.socket?.frame({ type: 'speak_start', line_id: '2-2', text: 'Stale.' });
+		h.socket?.frame({ type: 'speak_start', line_id: '3-1', text: 'Fresh.' });
+		expect(h.player.begin).toHaveBeenCalledTimes(2);
+		expect(h.player.begin).toHaveBeenLastCalledWith('3-1');
+	});
+
 	it('mute pauses the vad and drops utterances', async () => {
 		const h = harness();
 		await h.voice.start('sess');

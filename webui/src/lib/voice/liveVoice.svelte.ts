@@ -44,6 +44,10 @@ export class LiveVoice {
 	private socket: SocketLike | null = null;
 	private vad: VadHandle | null = null;
 	private releaseWakeLock: (() => void) | null = null;
+	/** Lowest reply generation the server can still send after our interrupts;
+	 *  older lines are leftovers of a cut reply. */
+	private minGen = 1;
+	private lineGen = 0;
 	private readonly deps: LiveVoiceDeps;
 
 	constructor(deps: LiveVoiceDeps) {
@@ -60,6 +64,8 @@ export class LiveVoice {
 		this.error = null;
 		this.transcript = '';
 		this.status = 'connecting';
+		this.minGen = 1;
+		this.lineGen = 0;
 		void this.deps.player.unlock();
 		const sock = this.deps.connect(voiceSocketUrl(sessionId));
 		sock.binaryType = 'arraybuffer';
@@ -102,6 +108,7 @@ export class LiveVoice {
 	/** The user interrupted by hand (the stop button while speaking). */
 	interrupt() {
 		this.deps.player.stop();
+		this.minGen = Math.max(this.minGen, this.lineGen) + 1;
 		this.send({ type: 'interrupt' });
 	}
 
@@ -138,10 +145,7 @@ export class LiveVoice {
 	}
 
 	private onSpeechStart() {
-		if (this.status === 'speaking' || this.deps.player.playing) {
-			this.deps.player.stop();
-			this.send({ type: 'interrupt' });
-		}
+		if (this.status === 'speaking' || this.deps.player.playing) this.interrupt();
 	}
 
 	private onSpeechEnd(audio: Float32Array) {
@@ -168,9 +172,15 @@ export class LiveVoice {
 			case 'transcript':
 				this.transcript = msg.text;
 				break;
-			case 'speak_start':
+			case 'speak_start': {
+				const gen = Number.parseInt(msg.line_id, 10);
+				if (Number.isFinite(gen)) {
+					if (gen < this.minGen) break;
+					this.lineGen = Math.max(this.lineGen, gen);
+				}
 				this.deps.player.begin(msg.line_id);
 				break;
+			}
 			case 'speak_end':
 				this.deps.player.end(msg.line_id);
 				break;

@@ -19,6 +19,7 @@ fn strip_inline(line: &str) -> String {
     while !rest.is_empty() {
         if let Some(after) = rest.strip_prefix("![").or_else(|| rest.strip_prefix('['))
             && let Some(close) = after.find("](")
+            && !after[..close].contains(']')
             && let Some(end) = after[close..].find(')')
         {
             out.push_str(&after[..close]);
@@ -190,8 +191,12 @@ impl SentenceBuffer {
 
     /// Every sentence that is complete so far; the tail stays buffered.
     pub fn drain(&mut self) -> Vec<String> {
-        let fence_open = self.raw.matches("```").count() % 2 == 1;
-        let scan_end = if fence_open { self.raw.rfind("```").unwrap_or(0) } else { self.raw.len() };
+        let scan_end = ["```", "~~~"]
+            .into_iter()
+            .filter(|m| self.raw.matches(m).count() % 2 == 1)
+            .filter_map(|m| self.raw.rfind(m))
+            .min()
+            .unwrap_or(self.raw.len());
         let mut consumed = 0;
         while let Some(end) = sentence_end(&self.raw[consumed..scan_end]) {
             consumed += end;
@@ -314,6 +319,20 @@ mod tests {
         assert_eq!(buf.drain(), vec!["after the code."]);
         assert_eq!(buf.flush(), vec!["tail"]);
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn buffer_holds_open_tilde_fences() {
+        let mut buf = SentenceBuffer::default();
+        buf.push("Intro.\n~~~\ncode line one.\n");
+        assert_eq!(buf.drain(), vec!["Intro."]);
+        buf.push("more code.\n~~~\nAfter. tail");
+        assert_eq!(buf.drain(), vec!["After."]);
+    }
+
+    #[test]
+    fn a_bracket_before_a_link_is_kept_as_text() {
+        assert_eq!(strip_markdown("a[0] and [x](u) done"), "a[0] and x done");
     }
 
     #[test]
