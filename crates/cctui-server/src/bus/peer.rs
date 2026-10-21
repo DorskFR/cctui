@@ -1030,8 +1030,14 @@ mod tests {
         let forget = crate::guard_step::GuardForget { session_id: "peer-guard-forget".into() };
         crate::guard_step::record(forget.session_id.clone(), step);
 
-        post_to_peers(&reqwest::Client::new(), &[base.clone()], "wrong", "guard/forget", &forget)
-            .await;
+        post_to_peers(
+            &reqwest::Client::new(),
+            std::slice::from_ref(&base),
+            "wrong",
+            "guard/forget",
+            &forget,
+        )
+        .await;
         assert!(crate::guard_step::get("peer-guard-forget").is_some(), "wrong secret refused");
 
         post_to_peers(&reqwest::Client::new(), &[base], "shared", "guard/forget", &forget).await;

@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(g.check(Some("1"), Some("2"), Some(true), false, t0), deferred("1", "2"));
         g.request();
         assert!(!g.due(t0 + Duration::from_secs(45)), "a pending request re-arms nothing");
-        assert!(!g.due(t0 + CHECK_MIN_INTERVAL - Duration::from_secs(1)));
+        assert!(!g.due((t0 + CHECK_MIN_INTERVAL).checked_sub(Duration::from_secs(1)).unwrap()));
         assert!(g.due(t0 + CHECK_MIN_INTERVAL));
         assert!(g.requested(), "the request still waits for idle");
     }

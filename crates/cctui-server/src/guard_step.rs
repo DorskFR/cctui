@@ -307,10 +307,8 @@ mod tests {
     #[tokio::test]
     async fn a_forget_reaches_the_peers_and_a_peer_forget_does_not_loop_back() {
         let peers = Arc::new(RecordingPeers::default());
-        let durable = Durable::new(
-            PgPool::connect_lazy("postgres://invalid").unwrap(),
-            Some(peers.clone()),
-        );
+        let durable =
+            Durable::new(PgPool::connect_lazy("postgres://invalid").unwrap(), Some(peers.clone()));
         record("guard-relay".into(), snapshot(2));
         durable.forget("guard-relay");
         assert_eq!(get("guard-relay"), None);
