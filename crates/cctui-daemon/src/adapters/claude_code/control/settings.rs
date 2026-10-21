@@ -623,10 +623,10 @@ mod tests {
     fn isolation(
         env: &[(&str, &str)],
         inherited: Option<&str>,
-        settings: Option<serde_json::Value>,
+        settings: Option<&serde_json::Value>,
     ) -> Option<String> {
         let mut env = env_of(env);
-        with_bg_isolation(&mut env, inherited.map(str::to_owned), settings.as_ref());
+        with_bg_isolation(&mut env, inherited.map(str::to_owned), settings);
         env.get(BG_ISOLATION_ENV).cloned()
     }
 
@@ -634,31 +634,34 @@ mod tests {
     fn the_account_isolation_setting_reaches_the_launch_env() {
         let none = json!({"worktree": {"bgIsolation": "none"}});
         let worktree = json!({"worktree": {"bgIsolation": "worktree"}});
-        assert_eq!(isolation(&[], None, Some(none)).as_deref(), Some("none"));
-        assert_eq!(isolation(&[], None, Some(worktree)).as_deref(), Some("worktree"));
+        assert_eq!(isolation(&[], None, Some(&none)).as_deref(), Some("none"));
+        assert_eq!(isolation(&[], None, Some(&worktree)).as_deref(), Some("worktree"));
         let both = json!({
             "env": {"CLAUDE_BG_ISOLATION": "none"},
             "worktree": {"bgIsolation": "worktree"},
         });
-        assert_eq!(isolation(&[], None, Some(both)).as_deref(), Some("none"), "the env knob first");
+        assert_eq!(
+            isolation(&[], None, Some(&both)).as_deref(),
+            Some("none"),
+            "the env knob first"
+        );
         let bad_knob = json!({
             "env": {"CLAUDE_BG_ISOLATION": "off"},
             "worktree": {"bgIsolation": "worktree"},
         });
-        assert_eq!(isolation(&[], None, Some(bad_knob)).as_deref(), Some("worktree"));
+        assert_eq!(isolation(&[], None, Some(&bad_knob)).as_deref(), Some("worktree"));
     }
 
     #[test]
     fn an_explicit_isolation_env_wins_over_the_account_setting() {
         let worktree = json!({"worktree": {"bgIsolation": "worktree"}});
         assert_eq!(
-            isolation(&[(BG_ISOLATION_ENV, "none")], Some("worktree"), Some(worktree.clone()))
-                .as_deref(),
+            isolation(&[(BG_ISOLATION_ENV, "none")], Some("worktree"), Some(&worktree)).as_deref(),
             Some("none"),
             "launch env first"
         );
         assert_eq!(
-            isolation(&[], Some("none"), Some(worktree)).as_deref(),
+            isolation(&[], Some("none"), Some(&worktree)).as_deref(),
             Some("none"),
             "a worker profile's env beats the account setting"
         );
@@ -667,8 +670,8 @@ mod tests {
     #[test]
     fn no_isolation_anywhere_leaves_the_env_untouched() {
         assert_eq!(isolation(&[], None, None), None);
-        assert_eq!(isolation(&[], Some(" "), Some(json!({"theme": "dark"}))), None);
-        assert_eq!(isolation(&[], None, Some(json!({"worktree": {"bgIsolation": "off"}}))), None);
+        assert_eq!(isolation(&[], Some(" "), Some(&json!({"theme": "dark"}))), None);
+        assert_eq!(isolation(&[], None, Some(&json!({"worktree": {"bgIsolation": "off"}}))), None);
     }
 
     #[test]

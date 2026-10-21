@@ -166,6 +166,8 @@ enum Heard {
     Idle,
     /// A warm-up finished, loaded or not.
     Warm,
+    /// Relayed by the loop so it follows the state the loop emits first.
+    Transcript(String),
 }
 
 #[derive(Debug)]
@@ -261,7 +263,7 @@ async fn hear_one<B: VoiceBackend>(
     if text.is_empty() {
         return Heard::Idle;
     }
-    let _ = out.send(Outbound::Control(VoiceServerMsg::Transcript { text: text.clone() })).await;
+    let _ = heard.send(Heard::Transcript(text.clone())).await;
     let style = prefs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).spoken_style;
     let _ = heard.send(Heard::Sending).await;
     match backend.send_message(spoken_prompt(&text, style)).await {
@@ -426,6 +428,10 @@ impl<B: VoiceBackend> Engine<B> {
 
     async fn heard(&mut self, heard: Heard) {
         match heard {
+            Heard::Transcript(text) => {
+                self.send(VoiceServerMsg::Transcript { text }).await;
+                return;
+            }
             Heard::Sending => {
                 self.delta_acc.clear();
                 self.sentences.clear();

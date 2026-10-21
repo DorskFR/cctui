@@ -48,8 +48,10 @@ impl Driver {
             !job.is_dead() && matches!(job.tempo.as_deref(), Some("active" | "blocked"));
         let grew = watchdog.ledger.scan(&loc.path);
         let outputs = watchdog.outputs_changed();
-        let action = watchdog.observe(turn_running || grew || outputs, Instant::now())?;
-        Some((watchdog.short().to_owned(), action))
+        let action = watchdog.observe(turn_running || grew || outputs, Instant::now());
+        let short = watchdog.short().to_owned();
+        drop(guard);
+        action.map(|a| (short, a))
     }
 
     async fn reprompt_stuck_turn(&self, short: &str, local_id: &str) {
