@@ -108,7 +108,7 @@ RUN echo "ca-certificates refresh ${CA_CERTS_REFRESH}" && apt-get update \
 # npx-based MCP servers (docs/context-packs.md) and so derived images inherit a
 # node on PATH; none of the bundled CLIs depend on it. Pinning the tarball rather
 # than tracking a `node:` base image tag keeps the major explicit.
-ARG NODE_VERSION=24.22.0
+ARG NODE_VERSION=26.12.1
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
          amd64) target=linux-x64 ;; \
