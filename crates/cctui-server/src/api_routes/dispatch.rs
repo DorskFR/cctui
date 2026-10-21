@@ -42,6 +42,24 @@ pub(super) fn register(r: Routes) -> Routes {
         Authn::Bearer,
         ScopeAz(auth::Scope::Dispatch),
     )
+    .add(
+        &[Method::POST],
+        "/dispatch-records/{id}/dismiss",
+        "Hide a failed dispatch from the caller's list.",
+        post(routes::dispatch::dismiss_failed_dispatch),
+        Authn::Bearer,
+        // owner_filter() SQL filter in the handler.
+        Authenticated,
+    )
+    .add(
+        &[Method::POST],
+        "/dispatch-records/dismiss-all",
+        "Hide every failed dispatch the caller's list shows.",
+        post(routes::dispatch::dismiss_all_failed_dispatches),
+        Authn::Bearer,
+        // owner_filter() SQL filter in the handler.
+        Authenticated,
+    )
     // Enrolled-dispatcher management: list with liveness, rename,
     // remove. Enrollment itself is `POST /dispatcher/enroll` below.
     .add(

@@ -1236,13 +1236,61 @@ async fn forward_recorded(
     out
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct FailedDispatchesQuery {
+    /// Also list the ones the caller dismissed.
+    #[serde(default)]
+    history: bool,
+}
+
 /// `GET /api/v1/dispatch-records/failed` — the caller's dispatches that were
-/// refused or never ran to a session; every owner's for an admin.
+/// refused or never ran to a session; every owner's for an admin. The ones
+/// the caller dismissed are left out unless `history` is set.
 pub async fn list_failed_dispatches(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
+    axum::extract::Query(q): axum::extract::Query<FailedDispatchesQuery>,
 ) -> Result<Json<Vec<cctui_proto::api::FailedDispatch>>, crate::error::AppError> {
-    Ok(Json(crate::store::dispatch_records::list_failed(&state.pool, ctx.owner_filter()).await?))
+    use crate::store::dispatch_records::{Listing, list};
+    let listing = Listing {
+        owner: ctx.owner_filter(),
+        viewer: Some(ctx.user_id),
+        include_dismissed: q.history,
+    };
+    Ok(Json(list(&state.pool, listing).await?))
+}
+
+/// `POST /api/v1/dispatch-records/{id}/dismiss` — hide a failed dispatch from
+/// the caller's list, on every device.
+pub async fn dismiss_failed_dispatch(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+) -> Result<StatusCode, crate::error::AppError> {
+    let found = crate::store::dispatch_records::dismiss(
+        &state.pool,
+        ctx.user_id,
+        ctx.owner_filter(),
+        &session_id,
+    )
+    .await?;
+    if found {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(crate::error::AppError::new(StatusCode::NOT_FOUND, "no such dispatch record"))
+    }
+}
+
+/// `POST /api/v1/dispatch-records/dismiss-all` — dismiss every failed
+/// dispatch the caller's list shows.
+pub async fn dismiss_all_failed_dispatches(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<cctui_proto::api::DismissedDispatches>, crate::error::AppError> {
+    let dismissed =
+        crate::store::dispatch_records::dismiss_all(&state.pool, ctx.user_id, ctx.owner_filter())
+            .await?;
+    Ok(Json(cctui_proto::api::DismissedDispatches { dismissed }))
 }
 
 const fn conflict(error: String) -> (StatusCode, Json<ApiError>) {

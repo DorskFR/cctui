@@ -67,6 +67,15 @@ pub trait Dispatcher: Send + Sync {
         Err(DispatchError::Unsupported(format!("status({handle})")))
     }
 
+    /// [`Self::status`] plus how a failed worker's container ended, where
+    /// the dispatcher reports it.
+    async fn status_detail(
+        &self,
+        handle: &str,
+    ) -> Result<(HandleStatus, Option<cctui_proto::api::WorkerExit>), DispatchError> {
+        Ok((self.status(handle).await?, None))
+    }
+
     #[allow(dead_code)]
     async fn cancel(&self, handle: &str) -> Result<(), DispatchError> {
         Err(DispatchError::Unsupported(format!("cancel({handle})")))

@@ -237,6 +237,13 @@ impl Dispatcher for EnrolledDispatcher {
     }
 
     async fn status(&self, handle: &str) -> Result<HandleStatus, DispatchError> {
+        Ok(self.status_detail(handle).await?.0)
+    }
+
+    async fn status_detail(
+        &self,
+        handle: &str,
+    ) -> Result<(HandleStatus, Option<cctui_proto::api::WorkerExit>), DispatchError> {
         let request_id = Uuid::new_v4();
         let reply = self
             .round_trip(
@@ -245,18 +252,18 @@ impl Dispatcher for EnrolledDispatcher {
             )
             .await?;
         match reply {
-            DispatcherFrameUp::StatusResult { state, error, .. } => {
+            DispatcherFrameUp::StatusResult { state, error, worker_exit, .. } => {
                 // `error` alongside a `failed` state is the failure *reason*
                 // (CrashLoopBackOff / OOMKilled / non-zero exit), not a
                 // transport error — only treat it as a hard error when the
                 // dispatcher reported no state at all (couldn't introspect).
                 match state.as_deref().map(ReportedState::parse) {
-                    Some(ReportedState::Complete) => Ok(HandleStatus::Complete),
-                    Some(ReportedState::Failed) => Ok(HandleStatus::Failed(error)),
-                    Some(ReportedState::Gone) => Ok(HandleStatus::Gone),
+                    Some(ReportedState::Complete) => Ok((HandleStatus::Complete, None)),
+                    Some(ReportedState::Failed) => Ok((HandleStatus::Failed(error), worker_exit)),
+                    Some(ReportedState::Gone) => Ok((HandleStatus::Gone, None)),
                     Some(
                         ReportedState::Running | ReportedState::Queued | ReportedState::Unknown,
-                    ) => Ok(HandleStatus::Running),
+                    ) => Ok((HandleStatus::Running, None)),
                     None => Err(DispatchError::Backend(
                         error.unwrap_or_else(|| "dispatcher returned no status".into()),
                     )),

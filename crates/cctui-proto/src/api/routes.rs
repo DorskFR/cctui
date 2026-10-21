@@ -744,6 +744,22 @@ pub const ROUTES: &[Route] = &[
         response: Some("DispatchResponse"),
     },
     Route {
+        id: "post_dispatch_records_by_id_dismiss",
+        method: Method::Post,
+        path: "/dispatch-records/{id}/dismiss",
+        summary: "Hide a failed dispatch from the caller's list.",
+        request: None,
+        response: None,
+    },
+    Route {
+        id: "post_dispatch_records_dismiss_all",
+        method: Method::Post,
+        path: "/dispatch-records/dismiss-all",
+        summary: "Hide every failed dispatch the caller's list shows.",
+        request: None,
+        response: Some("DismissedDispatches"),
+    },
+    Route {
         id: "get_dispatchers",
         method: Method::Get,
         path: "/dispatchers",

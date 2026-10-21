@@ -14,7 +14,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 
 use crate::client::ServerClient;
-use crate::dispatcher::Dispatcher;
+use crate::dispatcher::{Dispatcher, HandleState};
 
 const PING_INTERVAL: Duration = Duration::from_secs(20);
 const LIVENESS_TIMEOUT: Duration = Duration::from_mins(1);
@@ -102,6 +102,32 @@ impl<D: Dispatcher> Runner<D> {
         }
     }
 
+    async fn status_frame(&self, request_id: uuid::Uuid, handle: String) -> DispatcherFrameUp {
+        match self.spawner.status(&handle).await {
+            Ok((state, reason)) => {
+                let worker_exit = if state == HandleState::Failed {
+                    self.spawner.worker_exit(&handle).await
+                } else {
+                    None
+                };
+                DispatcherFrameUp::StatusResult {
+                    request_id,
+                    handle,
+                    state: Some(state.as_str().to_owned()),
+                    error: reason,
+                    worker_exit,
+                }
+            }
+            Err(err) => DispatcherFrameUp::StatusResult {
+                request_id,
+                handle,
+                state: None,
+                error: Some(err.to_string()),
+                worker_exit: None,
+            },
+        }
+    }
+
     /// Drive a server-sent frame against the dispatcher, producing the reply
     /// frame. Errors are reported back in-band (never panic the loop) so the
     /// server can surface a dispatch failure instead of hanging.
@@ -136,20 +162,7 @@ impl<D: Dispatcher> Runner<D> {
                 }
             }
             DispatcherFrameDown::Status { request_id, handle } => {
-                match self.spawner.status(&handle).await {
-                    Ok((state, reason)) => DispatcherFrameUp::StatusResult {
-                        request_id,
-                        handle,
-                        state: Some(state.as_str().to_owned()),
-                        error: reason,
-                    },
-                    Err(err) => DispatcherFrameUp::StatusResult {
-                        request_id,
-                        handle,
-                        state: None,
-                        error: Some(err.to_string()),
-                    },
-                }
+                self.status_frame(request_id, handle).await
             }
             DispatcherFrameDown::Cancel { request_id, handle } => {
                 match self.spawner.cancel(&handle).await {
