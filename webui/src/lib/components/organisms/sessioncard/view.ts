@@ -5,6 +5,7 @@ import { escapeHtml } from '$lib/markdown';
 import { m } from '$lib/paraglide/messages';
 import { highlightTerms } from '$lib/search';
 import { type SessionEnd, sessionEnd } from '$lib/sessionEnd';
+import { displayNameOf } from '$lib/sessionName';
 import {
 	type ToolActivity,
 	branchOf,
@@ -127,7 +128,7 @@ export function livenessClassOf(s: SessionListItem, stale: boolean): string {
 // short id instead of the dir basename every sibling would share.
 export function titleOf(s: SessionListItem, child: boolean): string {
 	const dirName = s.working_dir.split('/').filter(Boolean).pop() || '';
-	return s.name || (child ? s.id.slice(0, 6) : dirName || s.id);
+	return displayNameOf(s) || (child ? s.id.slice(0, 6) : dirName || s.id);
 }
 
 export function statusLabel(st: string): string {

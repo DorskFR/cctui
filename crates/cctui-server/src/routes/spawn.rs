@@ -192,7 +192,7 @@ async fn validate_spawn(
     if req.auto_archive {
         crate::auto_archive::remember_intent(state, &token_session_id).await;
     }
-    remember_spawner(&state.pool, &token_session_id, ctx.user_id).await;
+    remember_spawner(&state.pool, &token_session_id, ctx.user_id, req.name.as_deref()).await;
     // In the machine owner's vocabulary: an admin's picker holds labels of
     // every user, and the session belongs to the owner.
     let label_ids =
@@ -263,7 +263,7 @@ async fn resolve_spawn_context(
     };
     let mut picks = asked.items;
     picks.extend(profile_context_names(state, req, uid, &items).await);
-    (resolve_for_spawn(&items, &picks, asked.auto, &scope.coords), scope)
+    (resolve_for_spawn(&items, &picks, &scope.coords), scope)
 }
 
 /// The names of the items the request's profile pins. Empty when the request
@@ -1058,9 +1058,11 @@ async fn resolve_spawn_machine(
     if shared { Ok((machine_uuid, owner)) } else { Err(not_your_machine()) }
 }
 
-/// Remember who asked for the spawn under `spawn_key`, and drop day-old
-/// intents nobody claimed. Best-effort: a lost intent leaves `spawned_by` unset.
-async fn remember_spawner(pool: &sqlx::PgPool, spawn_key: &str, user_id: Uuid) {
+/// Remember who asked for the spawn under `spawn_key`, and the name they
+/// gave it, and drop day-old intents nobody claimed. Best-effort: a lost
+/// intent leaves `spawned_by` unset and the name unpinned.
+async fn remember_spawner(pool: &sqlx::PgPool, spawn_key: &str, user_id: Uuid, name: Option<&str>) {
+    let name = name.map(str::trim).filter(|n| !n.is_empty());
     let res = async {
         sqlx::query(
             "DELETE FROM session_spawner_intents WHERE created_at < now() - interval '1 day'",
@@ -1068,11 +1070,14 @@ async fn remember_spawner(pool: &sqlx::PgPool, spawn_key: &str, user_id: Uuid) {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO session_spawner_intents (spawn_key, user_id) VALUES ($1, $2) \
-             ON CONFLICT (spawn_key) DO UPDATE SET user_id = EXCLUDED.user_id, created_at = now()",
+            "INSERT INTO session_spawner_intents (spawn_key, user_id, session_name) \
+             VALUES ($1, $2, $3) \
+             ON CONFLICT (spawn_key) DO UPDATE SET user_id = EXCLUDED.user_id, \
+                session_name = EXCLUDED.session_name, created_at = now()",
         )
         .bind(spawn_key)
         .bind(user_id)
+        .bind(name)
         .execute(pool)
         .await
     }
@@ -1083,13 +1088,22 @@ async fn remember_spawner(pool: &sqlx::PgPool, spawn_key: &str, user_id: Uuid) {
 }
 
 /// Stamp `sessions.spawned_by` from a pending intent, looked up by the
-/// session's own id and by the spawn key the adapter echoed.
+/// session's own id and by the spawn key the adapter echoed. A name given at
+/// spawn becomes the session name, pinned against agent titles.
 pub async fn claim_spawner(pool: &sqlx::PgPool, session_id: &str, spawn_key: Option<&str>) {
     let key = spawn_key.unwrap_or(session_id);
     let res = sqlx::query(
         "WITH claimed AS (DELETE FROM session_spawner_intents \
-                           WHERE spawn_key = $1 OR spawn_key = $2 RETURNING user_id) \
-         UPDATE sessions SET spawned_by = (SELECT user_id FROM claimed LIMIT 1) \
+                           WHERE spawn_key = $1 OR spawn_key = $2 \
+                           RETURNING user_id, session_name), \
+              named AS (SELECT session_name FROM claimed \
+                        WHERE session_name IS NOT NULL LIMIT 1) \
+         UPDATE sessions SET spawned_by = (SELECT user_id FROM claimed LIMIT 1), \
+            session_name = COALESCE((SELECT session_name FROM named), sessions.session_name), \
+            metadata = CASE WHEN EXISTS (SELECT 1 FROM named) \
+                THEN COALESCE(sessions.metadata, '{}'::jsonb) \
+                     || jsonb_build_object('name_source', 'user') \
+                ELSE sessions.metadata END \
          WHERE id = $1 AND EXISTS (SELECT 1 FROM claimed)",
     )
     .bind(session_id)
@@ -2105,7 +2119,7 @@ mod spawn_share_tests {
         let spawn_key = Uuid::new_v4().to_string();
         let sid = Uuid::new_v4().to_string();
 
-        super::remember_spawner(&pool, &spawn_key, grantee).await;
+        super::remember_spawner(&pool, &spawn_key, grantee, None).await;
         sqlx::query(
             "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status) \
              VALUES ($1, $2, $3, $4, '/w', 'new')",
@@ -2145,5 +2159,51 @@ mod spawn_share_tests {
             Err(StatusCode::FORBIDDEN),
             "spawning through a share does not make the grantee an owner"
         );
+    }
+
+    #[tokio::test]
+    async fn a_spawn_name_is_pinned_when_the_session_registers() {
+        let Some(url) = crate::routes::gateway::test_db_url(
+            "a_spawn_name_is_pinned_when_the_session_registers",
+        ) else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let owner = seed_user(&pool).await;
+        let machine = seed_machine(&pool, owner).await;
+        let register = |name: Option<&'static str>| {
+            let pool = pool.clone();
+            async move {
+                let sid = Uuid::new_v4().to_string();
+                super::remember_spawner(&pool, &sid, owner, name).await;
+                sqlx::query(
+                    "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, \
+                     status) VALUES ($1, $2, $3, $4, '/w', 'new')",
+                )
+                .bind(&sid)
+                .bind(machine.to_string())
+                .bind(machine)
+                .bind(owner)
+                .execute(&pool)
+                .await
+                .unwrap();
+                super::claim_spawner(&pool, &sid, None).await;
+                let row: (Option<String>, Option<String>) = sqlx::query_as(
+                    "SELECT session_name, metadata->>'name_source' FROM sessions WHERE id = $1",
+                )
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                row
+            }
+        };
+
+        assert_eq!(
+            register(Some("  SUPER ORCHESTRATOR ")).await,
+            (Some("SUPER ORCHESTRATOR".to_owned()), Some("user".to_owned()))
+        );
+        assert_eq!(register(None).await, (None, None), "no name, nothing pinned");
+        assert_eq!(register(Some("   ")).await, (None, None), "a blank name is no name");
     }
 }

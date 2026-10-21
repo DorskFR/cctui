@@ -19,6 +19,13 @@ describe('titleOf', () => {
 		expect(titleOf(session({ name: '' }), true)).toBe('a1e5bd');
 	});
 
+	it('shows the agent title beside a pinned name', () => {
+		const metadata = { name_source: 'user', agent_title: 'super orchestrator resume' };
+		expect(titleOf(session({ name: 'SUPER ORCHESTRATOR', metadata }), false)).toBe(
+			'SUPER ORCHESTRATOR (super orchestrator resume)'
+		);
+	});
+
 	it('names a top-level session from its working dir', () => {
 		expect(titleOf(session({ name: null }), false)).toBe('cctui');
 		expect(titleOf(session({ name: null, working_dir: '' }), false)).toBe('a1e5bd0f2c3d4e5f6');

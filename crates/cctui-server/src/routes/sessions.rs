@@ -9,7 +9,7 @@ use serde::Deserialize;
 use cctui_proto::adapter::{RemoveInitiator, SessionChild};
 use cctui_proto::api::{
     Label, MessageRequest, RegisterRequest, RegisterResponse, RenameRequest, SessionListItem,
-    SessionListResponse, SessionResult, SpawnRequest, SpawnResponse,
+    SessionListResponse, SessionParentStub, SessionResult, SpawnRequest, SpawnResponse,
 };
 use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, PrStatusCache, classify};
 use cctui_proto::models::{Attention, Liveness, Session, SessionEndReason, SessionStatus};
@@ -335,7 +335,10 @@ pub async fn list_sessions(
     );
 
     let sessions = enrich_and_sort(&state, Some(ctx.user_id), with_ts).await?;
-    Ok(crate::http_cache::json_with_etag(&req_headers, &SessionListResponse { sessions }))
+    Ok(crate::http_cache::json_with_etag(
+        &req_headers,
+        &SessionListResponse { sessions, parents: Vec::new() },
+    ))
 }
 
 /// Which live registry entries the caller may see: `None` for admins (all of
@@ -1419,7 +1422,7 @@ pub async fn search_sessions(
     let root = cctui_query::parse(params.q.trim());
     let browse = root.is_empty();
     if browse && !params.include_archived {
-        return Ok(Json(SessionListResponse { sessions: vec![] }));
+        return Ok(Json(SessionListResponse { sessions: vec![], parents: vec![] }));
     }
     let text_terms = root.free_text_terms();
     let limit = params.limit.unwrap_or(SEARCH_DEFAULT_LIMIT).clamp(1, SEARCH_MAX_LIMIT);
@@ -1508,7 +1511,65 @@ pub async fn search_sessions(
         attach_transcript_hits(&mut sessions, snippet_rows, &text_terms);
     }
 
-    Ok(Json(SessionListResponse { sessions }))
+    let parents = fetch_parent_stubs(&state.pool, &missing_parent_ids(&sessions), uid).await?;
+    Ok(Json(SessionListResponse { sessions, parents }))
+}
+
+/// Parents a page's nesting children point at but the page doesn't carry.
+fn missing_parent_ids(sessions: &[SessionListItem]) -> Vec<String> {
+    let here: HashSet<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+    let mut out: Vec<String> = Vec::new();
+    for s in sessions {
+        let relation = s.metadata.get("relation").and_then(serde_json::Value::as_str);
+        let Some(pid) = s.parent_id.as_deref() else {
+            continue;
+        };
+        if matches!(relation, Some("fork" | "followup")) || here.contains(pid) {
+            continue;
+        }
+        if !out.iter().any(|p| p == pid) {
+            out.push(pid.to_owned());
+        }
+    }
+    out
+}
+
+#[derive(sqlx::FromRow)]
+struct ParentStubRow {
+    id: String,
+    session_name: Option<String>,
+    working_dir: String,
+    status: String,
+    registered_at: DateTime<Utc>,
+    last_heartbeat: DateTime<Utc>,
+}
+
+async fn fetch_parent_stubs(
+    pool: &sqlx::PgPool,
+    ids: &[String],
+    uid: Option<uuid::Uuid>,
+) -> Result<Vec<SessionParentStub>, sqlx::Error> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<ParentStubRow> = sqlx::query_as(
+        "SELECT s.id, s.session_name, s.working_dir, s.status, s.registered_at, s.last_heartbeat \
+         FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
+         WHERE s.id = ANY($1) AND ($2::uuid IS NULL OR m.user_id = $2)",
+    )
+    .bind(ids)
+    .bind(uid)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| SessionParentStub {
+            status: resolve_status_liveness(&r.status, r.registered_at, r.last_heartbeat).0,
+            id: r.id,
+            name: r.session_name,
+            working_dir: r.working_dir,
+        })
+        .collect())
 }
 
 /// Sessions with no matching event keep both fields `None`; clients read that
@@ -2500,6 +2561,26 @@ pub async fn send_message(
     ))
 }
 
+/// Store a user-chosen name and pin it against agent titles. `None` when the
+/// session does not exist, else the name it had before.
+pub async fn store_rename(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    name: &str,
+) -> Result<Option<Option<String>>, sqlx::Error> {
+    sqlx::query_scalar(
+        "WITH prior AS (SELECT session_name FROM sessions WHERE id = $1) \
+         UPDATE sessions SET session_name = $2, \
+            metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('name_source', 'user') \
+         WHERE id = $1 \
+         RETURNING (SELECT session_name FROM prior)",
+    )
+    .bind(session_id)
+    .bind(name)
+    .fetch_optional(pool)
+    .await
+}
+
 pub async fn rename_session(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -2513,15 +2594,7 @@ pub async fn rename_session(
     // Persist immediately so the UI reflects the rename without waiting for
     // the daemon round-trip. The daemon write-through (below) keeps the
     // on-disk state.json in sync so the next status poll doesn't revert it.
-    let previous: Option<Option<String>> = sqlx::query_scalar(
-        "WITH prior AS (SELECT session_name FROM sessions WHERE id = $1) \
-         UPDATE sessions SET session_name = $2 WHERE id = $1 \
-         RETURNING (SELECT session_name FROM prior)",
-    )
-    .bind(&session_id)
-    .bind(name)
-    .fetch_optional(&state.pool)
-    .await?;
+    let previous = store_rename(&state.pool, &session_id, name).await?;
     if let Some(previous) = previous
         && previous.as_deref() != Some(name)
     {
@@ -5645,5 +5718,71 @@ mod tests {
         .unwrap();
         assert_eq!(outcome, super::ArchiveOutcome::Archived);
         assert_eq!(crate::guard_step::get(&sid), None);
+    }
+
+    #[test]
+    fn missing_parent_ids_lists_each_absent_nesting_parent_once() {
+        let mut parent = bare_session("p");
+        let mut a = bare_session("a");
+        a.parent_id = Some("live-orch".into());
+        let mut b = bare_session("b");
+        b.parent_id = Some("live-orch".into());
+        let mut nested = bare_session("n");
+        nested.parent_id = Some("p".into());
+        let mut fork = bare_session("f");
+        fork.parent_id = Some("elsewhere".into());
+        fork.metadata = serde_json::json!({"relation": "fork"});
+        parent.parent_id = Some("other-page".into());
+        let page = [a, parent, b, nested, fork, bare_session("root")];
+        assert_eq!(
+            super::missing_parent_ids(&page),
+            vec!["live-orch".to_owned(), "other-page".to_owned()]
+        );
+    }
+
+    #[tokio::test]
+    async fn parent_stubs_carry_status_and_stay_owner_scoped() {
+        let Some((pool, sid)) = seeded_session("parent_stubs_owner_scoped").await else {
+            return;
+        };
+        let owner: uuid::Uuid = sqlx::query_scalar(
+            "SELECT m.user_id FROM sessions s JOIN machines m ON m.id = s.machine_uuid \
+             WHERE s.id = $1",
+        )
+        .bind(&sid)
+        .fetch_one(&pool)
+        .await
+        .expect("owner");
+        sqlx::query("UPDATE sessions SET session_name = 'orch-x' WHERE id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .expect("name parent");
+        let ids = [sid.clone(), "no-such-session".to_owned()];
+
+        let live = super::fetch_parent_stubs(&pool, &ids, Some(owner)).await.expect("stubs");
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].id, sid);
+        assert_eq!(live[0].name.as_deref(), Some("orch-x"));
+        assert_eq!(live[0].working_dir, "/w");
+        assert_ne!(live[0].status, cctui_proto::models::SessionStatus::Archived);
+
+        let stranger = uuid::Uuid::new_v4();
+        assert!(super::fetch_parent_stubs(&pool, &ids, Some(stranger)).await.unwrap().is_empty());
+        assert!(super::fetch_parent_stubs(&pool, &[], None).await.unwrap().is_empty());
+
+        sqlx::query("UPDATE sessions SET status = 'archived' WHERE id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .expect("archive parent");
+        let archived = super::fetch_parent_stubs(&pool, &ids, None).await.expect("admin stubs");
+        assert_eq!(archived[0].status, cctui_proto::models::SessionStatus::Archived);
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .expect("cleanup");
     }
 }

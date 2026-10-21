@@ -35,6 +35,7 @@
 		LAST_DOCKED_SESSION
 	} from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
+	import { displayNameOf } from '$lib/sessionName';
 	import { isViewMode, parseViewMode } from '$lib/sessionsView.svelte';
 	import { TILES_BOOT_KEY } from './tilesBoot';
 	import { settings } from '$lib/settings.svelte';
@@ -223,6 +224,11 @@
 	$effect(() => {
 		void ws.changeTick;
 		invalidateSessions();
+	});
+
+	$effect(() => {
+		notify.setSessionTitle(sp.liveOpen ? displayNameOf(sp.liveOpen) : null);
+		return () => notify.setSessionTitle(null);
 	});
 
 	// Tell the notifier which drawer is open so it won't notify for it.
