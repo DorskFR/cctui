@@ -6,7 +6,7 @@
 		useSessionActions,
 		useInvalidateSessions,
 		useLabels,
-		useAllMachines,
+		useMachineResources,
 		endpoints,
 		qk
 	} from '$lib/queries';
@@ -125,7 +125,7 @@
 
 	// Machine liveness for the group headers; falls back to "unknown" (no dot)
 	// when the machines endpoint is not readable.
-	const machines = useAllMachines(() => sp.groupBy === 'machine');
+	const machines = useMachineResources(() => sp.groupBy === 'machine');
 	const machineLiveness = (name: string): 'online' | 'stale' | 'offline' | null =>
 		(machines.data ?? []).find((mc) => mc.name === name)?.liveness ?? null;
 

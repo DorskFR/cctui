@@ -2,7 +2,7 @@ import { errMessage } from '$lib/api';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
 import type { SessionProfile } from '@bindings/SessionProfile';
 import {
-	useAllMachines,
+	useMachineResources,
 	useDispatchers,
 	useSessionActions,
 	useRecentDirs,
@@ -72,7 +72,7 @@ export class SpawnForm {
 	private readonly autosaveDelay: () => number;
 	private readonly docked: () => boolean;
 
-	private readonly machines = useAllMachines(() => true);
+	private readonly machines = useMachineResources(() => true);
 	private readonly dispatchers = useDispatchers(() => true);
 	private readonly accounts = useAccounts(() => true);
 	private readonly pools = useAccountPools(() => true);
@@ -232,7 +232,8 @@ export class SpawnForm {
 			const list = this.machineList;
 			if (this.form.machine_id || !list.length) return;
 			const last = drafts.get(LAST_MACHINE);
-			this.form.machine_id = last && list.some((m) => m.id === last) ? last : list[0].id;
+			this.form.machine_id =
+				last && list.some((m) => m.machine_id === last) ? last : list[0].machine_id;
 		});
 		$effect(() => {
 			const next = this.recall.machineDir(this.form, this.recentDirs);

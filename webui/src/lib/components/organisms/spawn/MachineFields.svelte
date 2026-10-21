@@ -2,7 +2,7 @@
 	// The "Machine" branch of the spawn form: where (machine badge · cwd ·
 	// branch), the session name, and the prompt. The harness / account / model /
 	// effort / permission knobs come from the selected profile (ProfileList).
-	import type { MachineRow } from '@bindings/MachineRow';
+	import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
 	import { useGitInfo } from '$lib/queries';
 	import PromptField from '$lib/components/organisms/PromptField.svelte';
 	import type { PromptAttachments } from '$lib/promptAttachments.svelte';
@@ -36,7 +36,7 @@
 		promptEl = $bindable(null)
 	}: {
 		form: Form;
-		machines: MachineRow[];
+		machines: MachineResourcesRow[];
 		recentDirs: string[];
 		onsubmit?: () => void;
 		att?: PromptAttachments;

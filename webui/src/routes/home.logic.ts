@@ -3,7 +3,7 @@
 import type { WindowTokenUsage } from '@bindings/WindowTokenUsage';
 import type { TokenUsage } from '@bindings/TokenUsage';
 import type { SessionStats } from '@bindings/SessionStats';
-import type { MachineRow } from '@bindings/MachineRow';
+import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
 
 // Adapt a window's {input, output, cache_read} to the shape TokenUsage.svelte
 // renders (the session-card readout). cost_usd / cache_creation are unused here.
@@ -27,15 +27,14 @@ export interface MetricTileData {
 	sub?: number;
 }
 
-export function machinesOnline(rows: readonly MachineRow[]): { online: number; total: number } {
-	const live = rows.filter((m) => !m.revoked_at);
-	return { online: live.filter((m) => m.liveness === 'online').length, total: live.length };
+export function machinesOnline(rows: readonly MachineResourcesRow[]): { online: number; total: number } {
+	return { online: rows.filter((m) => m.liveness === 'online').length, total: rows.length };
 }
 
 /** The four headline tiles of the Usage page, in display order. */
 export function buildMetricTiles(
 	stats: SessionStats | undefined,
-	machines: readonly MachineRow[]
+	machines: readonly MachineResourcesRow[]
 ): MetricTileData[] {
 	const needs = stats?.needs_input ?? 0;
 	const { online, total } = machinesOnline(machines);
