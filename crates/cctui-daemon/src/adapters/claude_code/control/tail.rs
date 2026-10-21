@@ -46,6 +46,9 @@ impl Driver {
     /// pod is reaped. Best-effort: the claude daemon usually outlives us at
     /// teardown, but a failed poll must not stall the shutdown.
     pub(super) async fn flush_before_teardown(&mut self) {
+        let result_file = crate::dispatch::result_file();
+        self.end_finished_dispatch(Path::new(&result_file), crate::guardwatch::url().is_some())
+            .await;
         if let Err(err) = self.poll_once().await {
             tracing::debug!(%err, "final teardown tail failed");
         }

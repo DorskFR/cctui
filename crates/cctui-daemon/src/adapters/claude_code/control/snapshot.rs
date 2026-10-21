@@ -2,7 +2,8 @@ use crate::git::{read_git_branch, read_git_remote};
 
 use super::{
     AdapterEvent, DispatchDoneTracker, Driver, EndReason, HashMap, HashSet, Instant, LiveSnapshot,
-    PendingPerm, SessionMeta, StateJson, StatusSnapshot, TranscriptLocation, json, transcript,
+    Path, PendingPerm, SessionMeta, StateJson, StatusSnapshot, TranscriptLocation, dispatch_done,
+    json, transcript,
 };
 
 /// What one `list` poll means against the last known roster, decided
@@ -659,6 +660,27 @@ impl Driver {
         }
     }
 
+    /// End the boot-dispatched session `completed` once it finished its work,
+    /// so the worker's shutdown never reads as a lost daemon. A guarded session
+    /// is left to the server, which completes it on the guard's exit.
+    pub(super) async fn end_finished_dispatch(&self, result_file: &Path, guarded: bool) {
+        if guarded {
+            return;
+        }
+        let result_written = dispatch_done::result_written(result_file);
+        let finished = self.dispatch_done.lock().ok().and_then(|guard| {
+            guard
+                .as_ref()
+                .filter(|t| t.finished(result_written))
+                .map(|t| (t.short().to_owned(), t.session_id().to_owned()))
+        });
+        let Some((short, session_id)) = finished else { return };
+        let local_id =
+            self.transcript_locations.get(&short).map_or(session_id, |loc| loc.local_id.clone());
+        tracing::info!(%local_id, "dispatched session finished; ending it completed at shutdown");
+        self.emit(AdapterEvent::SessionEnded { local_id, reason: EndReason::Completed }).await;
+    }
+
     /// Reconcile the pending tool-permission prompt for one worker against the
     /// live snapshot. A `needs` of `"approve <Tool>: <detail>"` (set
     /// while the worker is `tempo:"blocked"`) is a permission prompt; a fresh or
@@ -1262,5 +1284,63 @@ mod tests {
         while rx.try_recv().is_ok() {}
         d.reannounce_live().await;
         assert!(started(&mut rx).is_empty(), "a reaped job is not re-announced");
+    }
+
+    #[tokio::test]
+    async fn a_finished_guard_less_dispatch_ends_completed_at_shutdown() {
+        let (d, mut rx) = driver();
+        let tmp = tempfile::tempdir().unwrap();
+        let result = tmp.path().join("result.json");
+        let sid = "abcd1234-5678-90ab-cdef-000000000000";
+
+        d.end_finished_dispatch(&result, false).await;
+        assert!(rx.try_recv().is_err(), "no dispatch, nothing to end");
+
+        let settle = std::time::Duration::from_mins(1);
+        *d.dispatch_done.lock().unwrap() =
+            Some(DispatchDoneTracker::new(sid, &d.cfg.jobs_root, settle));
+        d.end_finished_dispatch(&result, false).await;
+        assert!(rx.try_recv().is_err(), "never worked, so not finished");
+
+        let busy = d.dispatch_done.lock().unwrap().as_mut().unwrap().observe(true, Instant::now());
+        assert!(!busy);
+        d.end_finished_dispatch(&result, false).await;
+        assert!(rx.try_recv().is_err(), "still working, no verdict");
+
+        std::fs::write(&result, br#"{"task_id":"t","status":"success"}"#).unwrap();
+        d.end_finished_dispatch(&result, true).await;
+        assert!(rx.try_recv().is_err(), "a guarded session is the server's to complete");
+
+        d.end_finished_dispatch(&result, false).await;
+        match rx.try_recv() {
+            Ok(AdapterEvent::SessionEnded { local_id, reason }) => {
+                assert_eq!(local_id, sid);
+                assert_eq!(reason, EndReason::Completed);
+            }
+            other => panic!("expected a completed end, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dispatch_that_settled_idle_ends_completed_without_a_verdict() {
+        let (d, mut rx) = driver();
+        let tmp = tempfile::tempdir().unwrap();
+        let sid = "abcd1234-5678-90ab-cdef-000000000000";
+        let settle = std::time::Duration::from_mins(1);
+        let mut tracker = DispatchDoneTracker::new(sid, &d.cfg.jobs_root, settle);
+        let start = Instant::now();
+        assert!(!tracker.observe(true, start));
+        assert!(!tracker.observe(false, start));
+        assert!(tracker.observe(false, start + settle));
+        *d.dispatch_done.lock().unwrap() = Some(tracker);
+
+        d.end_finished_dispatch(&tmp.path().join("missing.json"), false).await;
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Ok(AdapterEvent::SessionEnded { reason: EndReason::Completed, .. })
+            ),
+            "the dispatch_done marker is completion evidence on its own"
+        );
     }
 }

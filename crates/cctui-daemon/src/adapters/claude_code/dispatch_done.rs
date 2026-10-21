@@ -30,8 +30,15 @@ pub(super) fn settle_from_env(var: Option<&str>) -> Duration {
     )
 }
 
+/// Whether `path` holds a JSON verdict, the entrypoint's `result_valid`.
+pub(super) fn result_written(path: &Path) -> bool {
+    std::fs::read(path)
+        .is_ok_and(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).is_ok())
+}
+
 #[derive(Debug)]
 pub(super) struct DispatchDoneTracker {
+    session_id: String,
     short: String,
     marker_path: PathBuf,
     settle: Duration,
@@ -48,6 +55,7 @@ impl DispatchDoneTracker {
         let short: String = session_id.chars().take(8).collect();
         let marker_path = jobs_root.join(&short).join("dispatch_done");
         Self {
+            session_id: session_id.to_owned(),
             short,
             marker_path,
             settle,
@@ -56,6 +64,10 @@ impl DispatchDoneTracker {
             done: false,
             last_transcript_offset: None,
         }
+    }
+
+    pub fn session_id(&self) -> &str {
+        &self.session_id
     }
 
     pub fn short(&self) -> &str {
@@ -73,6 +85,12 @@ impl DispatchDoneTracker {
     /// Whether the marker has already fired (diagnose observability).
     pub const fn is_done(&self) -> bool {
         self.done
+    }
+
+    /// Whether the session finished its work: it settled idle after working,
+    /// or wrote its verdict to `RESULT_FILE` after it started working.
+    pub const fn finished(&self, result_written: bool) -> bool {
+        self.done || (self.seen_busy && result_written)
     }
 
     /// Whether a live snapshot's `tempo`/`state` counts as busy. `blocked`
@@ -206,6 +224,37 @@ mod tests {
         assert!(!t.transcript_grew(off));
         assert!(!t.observe(false, start + Duration::from_secs(210)));
         assert!(t.observe(false, start + Duration::from_secs(271)));
+    }
+
+    #[test]
+    fn finished_needs_settled_idle_or_a_verdict_after_work() {
+        let mut t = tracker(60);
+        let start = Instant::now();
+        assert_eq!(t.session_id(), "abcd1234-5678-90ab-cdef-000000000000");
+        assert!(!t.finished(false));
+        assert!(!t.finished(true), "a verdict before any work is a failed start, not a finish");
+
+        assert!(!t.observe(true, start));
+        assert!(!t.finished(false), "working, no verdict yet");
+        assert!(t.finished(true), "wrote its verdict after working");
+
+        assert!(!t.observe(false, start + Duration::from_secs(1)));
+        assert!(!t.finished(false), "idle, not yet settled");
+        assert!(t.observe(false, start + Duration::from_secs(62)));
+        assert!(t.finished(false), "settled idle after work");
+    }
+
+    #[test]
+    fn result_written_requires_a_json_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("result.json");
+        assert!(!result_written(&path), "missing");
+        std::fs::write(&path, b"").unwrap();
+        assert!(!result_written(&path), "empty");
+        std::fs::write(&path, b"{\"status\":").unwrap();
+        assert!(!result_written(&path), "truncated");
+        std::fs::write(&path, br#"{"task_id":"t","status":"success"}"#).unwrap();
+        assert!(result_written(&path));
     }
 
     #[test]
