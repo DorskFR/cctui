@@ -264,7 +264,7 @@ const LAST_MESSAGE_SQL: &str = "SELECT s.session_id, left(e.body, 400), length(e
                 se.created_at \
          FROM stream_events se \
          WHERE se.session_id = s.session_id AND se.event_type = 'message' \
-           AND se.payload->>'role' NOT IN ('turn_annotation', 'system_marker') \
+           AND COALESCE(se.payload->>'role', '') NOT IN ('turn_annotation', 'system_marker') \
          ORDER BY se.created_at DESC \
          LIMIT 1 \
      ) e ON true";
@@ -4475,7 +4475,7 @@ mod tests {
         assert!(
             sql.contains(
                 "event_type = 'message' \
-                 AND se.payload->>'role' NOT IN ('turn_annotation', 'system_marker')"
+                 AND COALESCE(se.payload->>'role', '') NOT IN ('turn_annotation', 'system_marker')"
             ),
             "the role filter must stay a residual ANDed onto the index predicate"
         );
@@ -4568,12 +4568,28 @@ mod tests {
         let Some((pool, sid)) = seeded_session("last_message_skips_annotations").await else {
             return;
         };
-        let annotation = |name: &str, text: &str| {
-            serde_json::json!({"role": "turn_annotation", "annotation": name, "text": text})
+        let (pool, sid) = (&pool, &sid);
+        let insert = move |payload: serde_json::Value| async move {
+            sqlx::query(
+                "INSERT INTO stream_events (session_id, event_type, payload) \
+                 VALUES ($1, 'message', $2)",
+            )
+            .bind(sid)
+            .bind(payload)
+            .execute(pool)
+            .await
+            .unwrap();
         };
-        let marker = |name: &str, text: &str| {
-            serde_json::json!({"role": "system_marker", "marker": name, "text": text})
+        let preview = move || async move {
+            let rows: Vec<super::LastMessageRow> = sqlx::query_as(super::LAST_MESSAGE_SQL)
+                .bind(vec![sid.clone()])
+                .fetch_all(pool)
+                .await
+                .unwrap();
+            rows[0].1.clone()
         };
+        let annotation = |name: &str, text: &str| serde_json::json!({"role": "turn_annotation", "annotation": name, "text": text});
+        let marker = |name: &str, text: &str| serde_json::json!({"role": "system_marker", "marker": name, "text": text});
         for payload in [
             serde_json::json!({"role": "assistant", "text": "the real reply"}),
             annotation("turn_duration", "turn_duration:3752"),
@@ -4582,24 +4598,17 @@ mod tests {
             marker("permission-mode", "mode: normal"),
             marker("queue-operation", "enqueue: next"),
         ] {
-            sqlx::query(
-                "INSERT INTO stream_events (session_id, event_type, payload) \
-                 VALUES ($1, 'message', $2)",
-            )
-            .bind(&sid)
-            .bind(&payload)
-            .execute(&pool)
-            .await
-            .unwrap();
+            insert(payload).await;
         }
-        let rows: Vec<super::LastMessageRow> = sqlx::query_as(super::LAST_MESSAGE_SQL)
-            .bind(vec![sid.clone()])
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-        assert_eq!(rows[0].1.as_deref(), Some("the real reply"));
+        assert_eq!(preview().await.as_deref(), Some("the real reply"));
 
-        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
+        insert(serde_json::json!({"id": "c1", "type": "agentMessage", "text": "No findings."}))
+            .await;
+        assert_eq!(preview().await.as_deref(), Some("No findings."), "a role-less codex reply");
+        insert(annotation("turn_duration", "turn_duration:12")).await;
+        assert_eq!(preview().await.as_deref(), Some("No findings."));
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(sid).execute(pool).await.unwrap();
     }
 
     #[test]
