@@ -221,7 +221,7 @@
 			</Badge>
 		</span>
 	{/if}
-	{#if guardStep}
+	{#if guardStep && !session.ended_at}
 		<GuardStepChip
 			step={guardStep}
 			disabled={guardBusy}

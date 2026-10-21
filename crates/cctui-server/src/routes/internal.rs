@@ -186,6 +186,19 @@ pub async fn auth_purge(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `POST /internal/guard/forget` — drop a session's guard step from THIS
+/// pod's mirror after it ended, was killed or archived on the sending pod.
+/// Local only, never re-broadcast.
+pub async fn guard_forget(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(forget): Json<crate::guard_step::GuardForget>,
+) -> Result<StatusCode, StatusCode> {
+    authenticate(&state, &headers)?;
+    crate::guard_step::forget_local(&forget.session_id);
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `ANY /internal/preview/{id}/{*path}` — serve a preview request forwarded by
 /// the pod the browser reached. That pod already checked the preview cookie, so
 /// the verified owner rides in [`forward::USER_HEADER`]; this hop never carries
@@ -295,6 +308,9 @@ async fn apply_server_event(state: &AppState, event: &cctui_proto::ws::ServerEve
         ServerEvent::GuardStepState { session_id, state: step } => {
             crate::guard_step::record(session_id.clone(), step.clone());
         }
+        ServerEvent::SessionEnded { session_id, .. } => {
+            crate::guard_step::forget_local(session_id);
+        }
         _ => {}
     }
 }
@@ -302,6 +318,32 @@ async fn apply_server_event(state: &AppState, event: &cctui_proto::ws::ServerEve
 #[cfg(test)]
 mod tests {
     use super::constant_time_eq;
+
+    #[tokio::test]
+    async fn a_relayed_session_end_forgets_the_guard_step() {
+        use cctui_proto::ws::ServerEvent;
+        let state = crate::state::AppState::for_test(
+            sqlx::PgPool::connect_lazy("postgres://invalid").unwrap(),
+        );
+        let sid = "internal-guard-end".to_owned();
+        let step = cctui_proto::guard_step::GuardStepState { step: 2, ..Default::default() };
+        super::apply_server_event(
+            &state,
+            &ServerEvent::GuardStepState { session_id: sid.clone(), state: step.clone() },
+        )
+        .await;
+        assert_eq!(crate::guard_step::get(&sid), Some(step));
+        super::apply_server_event(
+            &state,
+            &ServerEvent::SessionEnded {
+                session_id: sid.clone(),
+                reason: cctui_proto::models::SessionEndReason::Completed,
+                detail: None,
+            },
+        )
+        .await;
+        assert_eq!(crate::guard_step::get(&sid), None);
+    }
 
     #[test]
     fn constant_time_eq_matches_semantics() {

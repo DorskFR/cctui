@@ -225,6 +225,16 @@ async fn build_state(
             String::from(&**secret),
         )));
     }
+    let guard_peers = internal_secret.as_ref().map(|secret| -> Arc<dyn guard_step::ForgetRelay> {
+        Arc::new(bus::peer::PeerGuardForget::new(
+            pool.clone(),
+            http_client.clone(),
+            presence.pod.clone(),
+            config.port,
+            String::from(&**secret),
+        ))
+    });
+    guard_step::init(guard_step::Durable::new(pool.clone(), guard_peers));
 
     Ok(AppState {
         pool,
@@ -524,6 +534,7 @@ fn outer_routes() -> Router<AppState> {
         )
         .route("/internal/bus/publish", post(routes::internal::bus_publish))
         .route("/internal/auth/purge", post(routes::internal::auth_purge))
+        .route("/internal/guard/forget", post(routes::internal::guard_forget))
         // Server-to-server cctuiverse calls, authenticated by each link's
         // Ed25519 signature rather than any cctui credential.
         .merge(cctuiverse_routes())

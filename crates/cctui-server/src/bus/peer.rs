@@ -54,7 +54,7 @@ const RELAY_BATCH: usize = 64;
 const RELAY_QUEUE: usize = 4096;
 /// How long a fetched peer-pod list is reused before re-querying `pods`.
 const PEER_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
-/// Timeout for one auth-cache purge POST to one peer.
+/// Timeout for one auth-cache purge or guard forget POST to one peer.
 const AUTH_PURGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 // ---- wire types (shared with `crate::routes::internal`) ----
@@ -648,21 +648,71 @@ async fn send_auth_purge(
     secret: &str,
     purge: &crate::auth::CachePurge,
 ) {
+    post_to_peers(client, bases, secret, "auth/purge", purge).await;
+}
+
+/// POST `body` to `/internal/{path}` on every peer in `bases` concurrently,
+/// logging failures only.
+async fn post_to_peers<T: Serialize + Sync>(
+    client: &reqwest::Client,
+    bases: &[String],
+    secret: &str,
+    path: &str,
+    body: &T,
+) {
     futures_util::future::join_all(bases.iter().map(|base| async move {
         let sent = client
-            .post(format!("{base}/internal/auth/purge"))
+            .post(format!("{base}/internal/{path}"))
             .bearer_auth(secret)
             .timeout(AUTH_PURGE_TIMEOUT)
-            .json(purge)
+            .json(body)
             .send()
             .await;
         match sent {
             Ok(r) if r.status().is_success() => {}
-            Ok(r) => tracing::warn!(peer = %base, status = %r.status(), "peer auth purge rejected"),
-            Err(err) => tracing::warn!(peer = %base, %err, "peer auth purge failed"),
+            Ok(r) => tracing::warn!(peer = %base, status = %r.status(), path, "peer post rejected"),
+            Err(err) => tracing::warn!(peer = %base, %err, path, "peer post failed"),
         }
     }))
     .await;
+}
+
+/// Sends guard-step forgets straight to every live peer's
+/// `/internal/guard/forget`. A peer that predates the route answers 404 and
+/// keeps its entry until it restarts.
+pub struct PeerGuardForget {
+    pool: PgPool,
+    client: reqwest::Client,
+    pod: String,
+    port: u16,
+    secret: String,
+}
+
+impl PeerGuardForget {
+    pub const fn new(
+        pool: PgPool,
+        client: reqwest::Client,
+        pod: String,
+        port: u16,
+        secret: String,
+    ) -> Self {
+        Self { pool, client, pod, port, secret }
+    }
+}
+
+impl crate::guard_step::ForgetRelay for PeerGuardForget {
+    fn relay(&self, forget: crate::guard_step::GuardForget) {
+        let pool = self.pool.clone();
+        let client = self.client.clone();
+        let pod = self.pod.clone();
+        let port = self.port;
+        let secret = self.secret.clone();
+        tokio::spawn(async move {
+            let peers = presence::live_peer_pods(&pool, &pod).await;
+            let bases: Vec<String> = peers.iter().map(|ip| peer_base(ip, port)).collect();
+            post_to_peers(&client, &bases, &secret, "guard/forget", &forget).await;
+        });
+    }
 }
 
 #[cfg(test)]
@@ -955,6 +1005,37 @@ mod tests {
         let purge = crate::auth::CachePurge::Key { key_hash: "h".into() };
         send_auth_purge(&reqwest::Client::new(), &[base], "wrong", &purge).await;
         assert!(replica.auth_config.is_cached("h"));
+    }
+
+    async fn guard_replica() -> String {
+        let mut state =
+            crate::state::AppState::for_test(PgPool::connect_lazy("postgres://invalid").unwrap());
+        state.internal_secret = Some(Arc::from("shared"));
+        let app = axum::Router::new()
+            .route(
+                "/internal/guard/forget",
+                axum::routing::post(crate::routes::internal::guard_forget),
+            )
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn a_guard_forget_reaches_the_peer_route_with_the_shared_secret() {
+        let base = guard_replica().await;
+        let step = cctui_proto::guard_step::GuardStepState { step: 2, ..Default::default() };
+        let forget = crate::guard_step::GuardForget { session_id: "peer-guard-forget".into() };
+        crate::guard_step::record(forget.session_id.clone(), step);
+
+        post_to_peers(&reqwest::Client::new(), &[base.clone()], "wrong", "guard/forget", &forget)
+            .await;
+        assert!(crate::guard_step::get("peer-guard-forget").is_some(), "wrong secret refused");
+
+        post_to_peers(&reqwest::Client::new(), &[base], "shared", "guard/forget", &forget).await;
+        assert_eq!(crate::guard_step::get("peer-guard-forget"), None);
     }
 
     #[tokio::test]
