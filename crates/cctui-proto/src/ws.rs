@@ -399,6 +399,9 @@ pub enum DispatcherFrameUp {
         namespace: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<String>,
+        /// 1-based place among the profile's queued workers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        queue_position: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -1432,6 +1435,7 @@ mod tests {
                 handle: "container/cctui-worker-abc".into(),
                 namespace: None,
                 status: Some("dispatched".into()),
+                queue_position: None,
                 error: None,
             },
             DispatcherFrameUp::StatusResult {

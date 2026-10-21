@@ -288,6 +288,7 @@ impl Driver {
             if let Ok(mut guard) = self.dispatch_done.lock() {
                 *guard = Some(DispatchDoneTracker::new(&session_id, &self.cfg.jobs_root, settle));
             }
+            self.arm_stuck_turn(&session_id);
         }
     }
 

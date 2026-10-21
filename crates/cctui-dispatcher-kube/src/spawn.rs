@@ -1036,6 +1036,22 @@ impl Spawner {
             .map_or((HandleState::Running, None), |reason| (HandleState::Failed, Some(reason))))
     }
 
+    async fn worker_queue_position(&self, handle: &str) -> Option<u32> {
+        let name = handle.strip_prefix("jobs/").unwrap_or(handle);
+        let job = self.jobs().get(name).await.ok()?;
+        let profile = job.metadata.labels.as_ref()?.get(LABEL_WORKER_PROFILE)?;
+        let lp = ListParams::default().labels(&format!(
+            "{LABEL_ORIGIN}=cctui-kube-dispatcher,{LABEL_WORKER_PROFILE}={profile}"
+        ));
+        match self.jobs().list(&lp).await {
+            Ok(jobs) => queue_position(&jobs.items, name),
+            Err(e) => {
+                tracing::warn!(job = %name, error = %e, "listing the profile queue failed");
+                None
+            }
+        }
+    }
+
     fn pods(&self) -> Api<Pod> {
         Api::namespaced(self.client.clone(), &self.namespace)
     }
@@ -1160,6 +1176,22 @@ impl Dispatcher for Spawner {
     async fn worker_exit(&self, handle: &str) -> Option<WorkerExit> {
         self.read_worker_exit(handle).await
     }
+
+    async fn queue_position(&self, handle: &str) -> Option<u32> {
+        self.worker_queue_position(handle).await
+    }
+}
+
+/// 1-based place of `name` among the suspended, non-terminal `jobs`, in the
+/// order the queue reconciler resumes them.
+fn queue_position(jobs: &[Job], name: &str) -> Option<u32> {
+    let mut queued: Vec<&Job> = jobs
+        .iter()
+        .filter(|j| Spawner::job_suspended(j) && Spawner::job_terminal_state(j).is_none())
+        .collect();
+    queued.sort_by_key(|j| (j.metadata.creation_timestamp.clone(), j.metadata.name.clone()));
+    let at = queued.iter().position(|j| j.metadata.name.as_deref() == Some(name))?;
+    u32::try_from(at + 1).ok()
 }
 
 /// Names of env Secrets with no owner, no referencing Job, and older than
@@ -2103,5 +2135,35 @@ mod tests {
         assert_eq!(memory_limit(&pod, "nope"), None);
         assert_eq!(oom_reason(Some("8Gi".into())), "OOMKilled (memory limit 8Gi)");
         assert_eq!(oom_reason(None), "OOMKilled");
+    }
+
+    fn listed_job(name: &str, created: &str, suspended: bool, terminal: bool) -> Job {
+        let mut v = json!({
+            "metadata": { "name": name, "creationTimestamp": created },
+            "spec": { "suspend": suspended, "template": {} },
+        });
+        if terminal {
+            v["status"] = json!({ "conditions": [{ "type": "Failed", "status": "True" }] });
+        }
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn queue_position_counts_only_suspended_live_jobs_oldest_first() {
+        let jobs = vec![
+            listed_job("c", "2026-10-21T10:00:03Z", true, false),
+            listed_job("running", "2026-10-21T09:00:00Z", false, false),
+            listed_job("a", "2026-10-21T10:00:01Z", true, false),
+            listed_job("dead", "2026-10-21T08:00:00Z", true, true),
+            listed_job("b2", "2026-10-21T10:00:02Z", true, false),
+            listed_job("b1", "2026-10-21T10:00:02Z", true, false),
+        ];
+        assert_eq!(queue_position(&jobs, "a"), Some(1));
+        assert_eq!(queue_position(&jobs, "b1"), Some(2), "same second: name order");
+        assert_eq!(queue_position(&jobs, "b2"), Some(3));
+        assert_eq!(queue_position(&jobs, "c"), Some(4));
+        assert_eq!(queue_position(&jobs, "running"), None);
+        assert_eq!(queue_position(&jobs, "dead"), None);
+        assert_eq!(queue_position(&jobs, "missing"), None);
     }
 }

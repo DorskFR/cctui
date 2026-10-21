@@ -35,6 +35,7 @@ mod socket;
 mod spawn_watchdog;
 pub(crate) mod state;
 mod streamjson;
+mod stuck_turn;
 mod transcript;
 pub(crate) mod version_gate;
 

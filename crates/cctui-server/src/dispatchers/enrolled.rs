@@ -226,11 +226,18 @@ impl Dispatcher for EnrolledDispatcher {
             dispatch_held(&self.state.bus, self.dispatcher_id, &self.name, &wire, DISPATCH_HOLD)
                 .await?;
         match reply {
-            DispatcherFrameUp::DispatchResult { handle, namespace, status, error, .. } => {
+            DispatcherFrameUp::DispatchResult {
+                handle,
+                namespace,
+                status,
+                queue_position,
+                error,
+                ..
+            } => {
                 if let Some(err) = error {
                     return Err(DispatchError::Backend(err));
                 }
-                Ok(DispatchHandle { handle, namespace, status })
+                Ok(DispatchHandle { handle, namespace, status, queue_position })
             }
             other => Err(DispatchError::Backend(format!("unexpected dispatcher reply: {other:?}"))),
         }
@@ -347,6 +354,7 @@ mod tests {
                     handle: "container/worker-1".into(),
                     namespace: None,
                     status: Some("dispatched".into()),
+                    queue_position: None,
                     error: None,
                 },
             ));
@@ -415,6 +423,7 @@ mod tests {
                     handle: "job/worker-1".into(),
                     namespace: Some("cctui".into()),
                     status: Some("dispatched".into()),
+                    queue_position: None,
                     error: None,
                 },
             ));
@@ -496,6 +505,7 @@ mod tests {
                     handle: "job/worker-2".into(),
                     namespace: None,
                     status: Some("dispatched".into()),
+                    queue_position: None,
                     error: None,
                 },
             ));

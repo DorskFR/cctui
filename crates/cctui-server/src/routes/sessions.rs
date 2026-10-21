@@ -2236,7 +2236,10 @@ pub async fn get_result(
     .fetch_optional(&state.pool)
     .await?;
     let Some(row) = row else {
-        return Err(AppError::new(StatusCode::NOT_FOUND, "session not found"));
+        return queued_dispatch_result(&state.pool, &session_id)
+            .await?
+            .map(Json)
+            .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "session not found"));
     };
     let params = ConversationQuery { limit: Some(RESULT_SCAN_LIMIT), ..Default::default() };
     let rows = renderable_rows(
@@ -2255,6 +2258,38 @@ pub async fn get_result(
         final_assistant_text,
         message_id,
         token_usage,
+        queued: false,
+        queue_position: None,
+    }))
+}
+
+/// A dispatch still held in its dispatcher's queue has no session row yet.
+///
+/// Its position counts the same dispatcher and profile's queued records.
+async fn queued_dispatch_result(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+) -> Result<Option<SessionResult>, sqlx::Error> {
+    let position: Option<i64> = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM dispatch_records q \
+                 WHERE q.queued AND q.outcome = 'forwarded' \
+                   AND q.dispatcher_name = r.dispatcher_name \
+                   AND q.profile IS NOT DISTINCT FROM r.profile \
+                   AND (q.created_at, q.session_id) <= (r.created_at, r.session_id)) \
+         FROM dispatch_records r \
+         WHERE r.session_id = $1 AND r.queued AND r.outcome = 'forwarded'",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(position.map(|p| SessionResult {
+        done: false,
+        end_reason: None,
+        final_assistant_text: None,
+        message_id: None,
+        token_usage: None,
+        queued: true,
+        queue_position: u32::try_from(p).ok(),
     }))
 }
 
@@ -3969,6 +4004,52 @@ mod tests {
         super::get_result(axum::extract::State(state.clone()), axum::extract::Path(sid.to_owned()))
             .await
             .map(|j| j.0)
+    }
+
+    async fn queued_record(
+        pool: &sqlx::PgPool,
+        uid: uuid::Uuid,
+        sid: &str,
+        profile: &str,
+        created: &str,
+        queued: bool,
+    ) {
+        sqlx::query(
+            "INSERT INTO dispatch_records \
+               (session_id, user_id, dispatcher_name, profile, outcome, queued, created_at) \
+             VALUES ($1, $2, 'k8s-' || $2::text, $3, 'forwarded', $4, $5::timestamptz)",
+        )
+        .bind(sid)
+        .bind(uid)
+        .bind(profile)
+        .bind(queued)
+        .bind(created)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_queued_dispatch_without_a_session_reports_its_queue_position() {
+        let Some((state, uid, _)) =
+            result_session("a_queued_dispatch_without_a_session_reports_its_queue_position").await
+        else {
+            return;
+        };
+        let ids: Vec<String> = (0..4).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+        let pool = &state.pool;
+        queued_record(pool, uid, &ids[0], "lean", "2026-10-21T10:00:00Z", true).await;
+        queued_record(pool, uid, &ids[1], "full", "2026-10-21T10:00:01Z", true).await;
+        queued_record(pool, uid, &ids[2], "lean", "2026-10-21T10:00:02Z", true).await;
+        queued_record(pool, uid, &ids[3], "lean", "2026-10-21T10:00:03Z", false).await;
+
+        let second = result_of(&state, &ids[2]).await.unwrap();
+        assert!(!second.done);
+        assert!(second.queued);
+        assert_eq!(second.queue_position, Some(2), "the other profile's queue is not counted");
+        assert_eq!(result_of(&state, &ids[1]).await.unwrap().queue_position, Some(1));
+        assert!(result_of(&state, &ids[3]).await.is_err(), "left the queue: still not found");
+        assert!(result_of(&state, &uuid::Uuid::new_v4().to_string()).await.is_err());
     }
 
     #[tokio::test]

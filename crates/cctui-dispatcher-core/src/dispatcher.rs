@@ -72,6 +72,12 @@ pub trait Dispatcher: Send + Sync {
     fn worker_exit(&self, _handle: &str) -> impl Future<Output = Option<WorkerExit>> + Send {
         std::future::ready(None)
     }
+
+    /// 1-based place of a held-back handle in its queue; `None` when it is not
+    /// queued or the platform has no queue.
+    fn queue_position(&self, _handle: &str) -> impl Future<Output = Option<u32>> + Send {
+        std::future::ready(None)
+    }
 }
 
 /// `cctui-worker-<sha1(dedup_source)[:12]>` — deterministic so a repeat dispatch

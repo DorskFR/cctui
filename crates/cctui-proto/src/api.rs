@@ -428,6 +428,11 @@ pub struct SessionResult {
     pub message_id: Option<String>,
     #[serde(default)]
     pub token_usage: Option<TokenUsage>,
+    /// The dispatch waits in its dispatcher's queue; no session exists yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub queued: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_position: Option<u32>,
 }
 
 // Public wire/data shape mirrored to TS bindings; the bool fields are independent
@@ -1279,8 +1284,11 @@ pub struct DispatchResponse {
     pub handle: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
-    /// `dispatched`, `deduplicated` or `redispatched`.
+    /// `dispatched`, `deduplicated`, `redispatched` or `queued`.
     pub status: String,
+    /// 1-based place among the profile's queued workers while `queued`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_position: Option<u32>,
 }
 
 /// Why a dispatched worker never ran to completion as a session.

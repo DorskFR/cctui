@@ -586,11 +586,36 @@ blocked. The array is consumed by the PR renderer (one section per surface) and,
 longer-term, by `cctui-github` (diff viewer + review-draft store + evidence
 attachments) — the not-yet-built crate is the natural home for richer rendering.
 
+## Dispatch response
+
+`POST /api/v1/sessions/dispatch` answers `202`:
+
+```jsonc
+{
+  "session_id":     "…",
+  "dispatcher":     "k8s",
+  "handle":         "jobs/cctui-worker-…",
+  "namespace":      "cctui",      // absent when the dispatcher has none
+  "status":         "queued",     // dispatched | deduplicated | redispatched | queued
+  "queue_position": 2             // only while queued: 1-based, per worker profile
+}
+```
+
+`queued` means the worker Job was created suspended behind its profile's
+`maxInflight`; `queue_position` counts that profile's suspended Jobs oldest
+first, the order they are resumed in. A re-send of the same dedup key or session
+id while the Job is still queued answers `queued` with its current position
+again instead of `deduplicated`, so a retrying caller can tell it is already
+waiting. Once the Job runs, a re-send answers `deduplicated` as before.
+
 ## Polling for the result
 
 A dispatcher that does not use `REPLY_URL` reads the outcome from the server
 instead: `GET /api/v1/sessions/{id}/result` (session read policy, the same key
-that dispatched). It answers `404` until the worker registers the session, then:
+that dispatched). While the dispatch waits in its dispatcher's queue it answers
+`200` with `{"done": false, "queued": true, "queue_position": 2, …}` (the
+position is a hint from the server's dispatch records). Otherwise it answers
+`404` until the worker registers the session, then:
 
 ```jsonc
 {
@@ -604,6 +629,12 @@ that dispatched). It answers `404` until the worker registers the session, then:
 
 Poll until `done`; `final_assistant_text` is already populated while the
 session runs (the latest completed message), so a service can show progress.
+
+A dispatched session whose turn ends waiting on a Claude Code background task
+that never reports back is re-prompted once after 10 minutes of quiet
+(`CCTUI_STUCK_TURN_REPROMPT_SECS`), and ended after a further 10 minutes
+(`CCTUI_STUCK_TURN_END_SECS`) with `end_reason: "other"` and an `end_detail`
+starting `stuck_waiting`, so the worker exits and frees its profile slot.
 
 ## Dispatch by adapter
 

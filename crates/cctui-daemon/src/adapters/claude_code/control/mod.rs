@@ -41,6 +41,7 @@ mod reply;
 mod settings;
 mod snapshot;
 mod spawn;
+mod stuck_turn;
 mod subagents;
 mod tail;
 mod tasks;
@@ -521,6 +522,7 @@ pub struct Driver {
     /// sessions never get a marker. `Mutex` because it's armed from
     /// `maybe_dispatch_on_start` (`&self`).
     dispatch_done: std::sync::Mutex<Option<DispatchDoneTracker>>,
+    stuck_turn: std::sync::Mutex<Option<super::stuck_turn::StuckTurnWatchdog>>,
     /// Last ask/permission/plan hook delivery per `local_id`, maintained by
     /// the ask-hook listener. Read by the diagnose aggregation.
     hook_log: super::HookLog,
@@ -809,6 +811,7 @@ impl Driver {
             server: None,
             machine_key: None,
             dispatch_done: std::sync::Mutex::new(None),
+            stuck_turn: std::sync::Mutex::new(None),
             hook_log: super::HookLog::default(),
             last_status_at: HashMap::new(),
             last_parsed: HashMap::new(),

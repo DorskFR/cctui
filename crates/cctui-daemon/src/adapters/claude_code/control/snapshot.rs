@@ -78,6 +78,7 @@ impl Driver {
         );
 
         self.tick_dispatch_done(&plan.visible);
+        self.tick_stuck_turn(&plan.visible).await;
 
         self.liveness.retain(&plan.now_shorts);
         self.roster = plan.now_shorts;
