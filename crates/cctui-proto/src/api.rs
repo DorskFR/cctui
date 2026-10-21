@@ -1283,6 +1283,63 @@ pub struct DispatchResponse {
     pub status: String,
 }
 
+/// Why a dispatched worker never ran to completion as a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum FailedDispatchReason {
+    /// The dispatcher refused to place the workload.
+    Refused,
+    NeverRegistered,
+    OomKilled,
+    Crashed,
+    SpawnFailed,
+}
+
+/// Why a failed dispatch cannot be re-run in one click.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum RerunBlocker {
+    Env,
+    PromptTruncated,
+    PayloadTooLarge,
+}
+
+/// A dispatch whose worker never registered or died before it could report,
+/// as recorded at dispatch time. Never carries env values or callback secrets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct FailedDispatch {
+    pub session_id: String,
+    pub dispatcher: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<String>,
+    /// At most 2 KiB of the inline prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_head: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_file: Option<String>,
+    /// Names of the env keys the dispatch carried; values are never stored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_keys: Vec<String>,
+    pub reason: FailedDispatchReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub dispatched_at: chrono::DateTime<chrono::Utc>,
+    /// `None` when the stored fields re-send as a new dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerun_blocked: Option<RerunBlocker>,
+}
+
 /// `image_id` is referenced as `cctui-img://<image_id>`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]

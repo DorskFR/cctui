@@ -175,6 +175,60 @@ pub async fn record_use(
     Ok(())
 }
 
+/// Keeps these advisory-lock keys apart from every other user of the space.
+const USE_LOCK_CLASS: i32 = 0x6470_7573;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reservation {
+    Granted(i64),
+    OverConcurrency { live: i64, max: u32 },
+    OverDailyCap { today: i64, cap: u32 },
+}
+
+/// Count `user_id`'s caps and record the use in one transaction serialised per
+/// user, so concurrent dispatches cannot all read the same count. The lock is
+/// released at commit, before the caller forwards anything.
+pub async fn reserve_use(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    session_id: &str,
+    max_concurrent: Option<u32>,
+    daily_cap: Option<u32>,
+) -> Result<Reservation, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+        .bind(USE_LOCK_CLASS)
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    if let Some(max) = max_concurrent {
+        let live = live_dispatches(&mut *tx, user_id).await?;
+        if live >= i64::from(max) {
+            return Ok(Reservation::OverConcurrency { live, max });
+        }
+    }
+    if let Some(cap) = daily_cap {
+        let today = dispatches_today(&mut *tx, user_id).await?;
+        if today >= i64::from(cap) {
+            return Ok(Reservation::OverDailyCap { today, cap });
+        }
+    }
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO dispatch_policy_uses (session_id, user_id) VALUES ($1, $2) RETURNING id",
+    )
+    .bind(session_id)
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Reservation::Granted(id))
+}
+
+pub async fn release_use(exec: impl PgExecutor<'_>, id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM dispatch_policy_uses WHERE id = $1").bind(id).execute(exec).await?;
+    Ok(())
+}
+
 /// Drops uses no cap reads any more: only the current UTC day counts.
 pub async fn prune_uses(exec: impl PgExecutor<'_>) -> Result<u64, sqlx::Error> {
     let res = sqlx::query(

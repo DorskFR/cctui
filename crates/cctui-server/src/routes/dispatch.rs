@@ -1121,14 +1121,21 @@ pub async fn dispatch(
             );
         }
     }
-    let out = forward_dispatch(&state, &req, &v).await?;
-    if policy.is_some()
-        && let Some(uid) = real_user
-    {
-        record_policy_use(&state.pool, uid, &v.session_id, &out.1.status).await;
-    }
-    Ok(out)
+    let record = crate::store::dispatch_records::NewRecord::from_request(
+        &v.session_id,
+        real_user,
+        &req,
+        v.forwarded_payload.get("name").and_then(serde_json::Value::as_str),
+        payload_adapter(&req.payload),
+    );
+    let bound = real_user.zip(policy.as_ref().map(|p| &p.rules));
+    forward_within_policy(&state.pool, bound, &v.session_id, || {
+        forward_recorded(&state, &req, &v, &record)
+    })
+    .await
 }
+
+type Forwarded = (StatusCode, Json<DispatchResponse>);
 
 /// A `deduplicated` dispatch joined a run that is still going and already
 /// counted; every other outcome, `redispatched` included, starts a fresh run.
@@ -1136,13 +1143,174 @@ fn counts_as_use(status: &str) -> bool {
     status != "deduplicated"
 }
 
-async fn record_policy_use(pool: &sqlx::PgPool, uid: uuid::Uuid, session_id: &str, status: &str) {
-    if !counts_as_use(status) {
-        return;
+fn cap_refused(
+    uid: uuid::Uuid,
+    rule: crate::routes::dispatch_policy::Rule,
+    detail: String,
+) -> (StatusCode, Json<ApiError>) {
+    let v = crate::routes::dispatch_policy::Violation { rule, detail };
+    tracing::warn!(%uid, "dispatch refused: {v}");
+    (StatusCode::FORBIDDEN, Json(ApiError { error: v.to_string() }))
+}
+
+/// Forward a policy-bound dispatch only once its use is reserved against the
+/// caps, refunding the use when the forward fails or joins a counted run.
+/// The reservation is a short per-user locked transaction, so no connection
+/// is held across the forward. Without a policy, `forward` runs as is.
+async fn forward_within_policy<F, Fut>(
+    pool: &sqlx::PgPool,
+    bound: Option<(uuid::Uuid, &cctui_proto::api::admin::DispatchPolicyRules)>,
+    session_id: &str,
+    forward: F,
+) -> DispatchResult<Forwarded>
+where
+    F: FnOnce() -> Fut + Send,
+    Fut: std::future::Future<Output = DispatchResult<Forwarded>> + Send,
+{
+    use crate::routes::dispatch_policy::Rule;
+    use crate::store::dispatch_policies::{Reservation, release_use, reserve_use};
+    let Some((uid, rules)) = bound else {
+        return forward().await;
+    };
+    let reserved = reserve_use(pool, uid, session_id, rules.max_concurrent, rules.daily_cap)
+        .await
+        .map_err(|e| {
+            tracing::error!(%uid, error = %e, "dispatch policy use reservation failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError { error: "could not evaluate dispatch policy".into() }),
+            )
+        })?;
+    let use_id = match reserved {
+        Reservation::Granted(id) => id,
+        Reservation::OverConcurrency { live, max } => {
+            return Err(cap_refused(
+                uid,
+                Rule::Concurrency,
+                format!("{live} dispatched sessions are still live; the limit is {max}"),
+            ));
+        }
+        Reservation::OverDailyCap { today, cap } => {
+            return Err(cap_refused(
+                uid,
+                Rule::DailyCap,
+                format!("{today} dispatches today; the daily cap is {cap}"),
+            ));
+        }
+    };
+    let out = forward().await;
+    if !out.as_ref().is_ok_and(|(_, r)| counts_as_use(&r.status))
+        && let Err(e) = release_use(pool, use_id).await
+    {
+        tracing::warn!(%uid, session = %session_id, error = %e, "dispatch policy use not refunded");
     }
-    if let Err(e) = crate::store::dispatch_policies::record_use(pool, uid, session_id).await {
-        tracing::warn!(%uid, session = %session_id, error = %e, "dispatch policy use not recorded");
+    out
+}
+
+/// A replay that coalesced onto another session's run leaves no record: its
+/// own session never registers.
+async fn forward_recorded(
+    state: &AppState,
+    req: &DispatchRequest,
+    v: &ValidatedDispatch,
+    record: &crate::store::dispatch_records::NewRecord,
+) -> DispatchResult<Forwarded> {
+    use crate::store::dispatch_records as records;
+    let sid = v.session_id.as_str();
+    if let Err(e) = records::insert(&state.pool, record).await {
+        tracing::warn!(session = %sid, error = %e, "dispatch record not stored");
     }
+    let out = forward_dispatch(state, req, v).await;
+    let settled = match &out {
+        Ok((_, r)) if !counts_as_use(&r.status) && v.dedup_key.as_deref() != Some(sid) => {
+            records::delete(&state.pool, sid).await
+        }
+        Ok(_) => records::set_outcome(&state.pool, sid, "forwarded", None).await,
+        Err((_, e)) => {
+            records::set_outcome(&state.pool, sid, "refused", Some(e.error.as_str())).await
+        }
+    };
+    if let Err(e) = settled {
+        tracing::warn!(session = %sid, error = %e, "dispatch record outcome not stored");
+    }
+    out
+}
+
+/// `GET /api/v1/dispatch-records/failed` — the caller's dispatches that were
+/// refused or never ran to a session; every owner's for an admin.
+pub async fn list_failed_dispatches(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<Vec<cctui_proto::api::FailedDispatch>>, crate::error::AppError> {
+    Ok(Json(crate::store::dispatch_records::list_failed(&state.pool, ctx.owner_filter()).await?))
+}
+
+const fn conflict(error: String) -> (StatusCode, Json<ApiError>) {
+    (StatusCode::CONFLICT, Json(ApiError { error }))
+}
+
+fn rerun_refusal(
+    blocker: cctui_proto::api::RerunBlocker,
+    record: &crate::store::dispatch_records::StoredRecord,
+) -> String {
+    use cctui_proto::api::RerunBlocker;
+    match blocker {
+        RerunBlocker::Env => format!(
+            "the dispatch carried env values ({}) that the server does not keep; \
+             re-send it from its original caller",
+            record.env_keys.join(", ")
+        ),
+        RerunBlocker::PromptTruncated => {
+            "only the head of the prompt was stored; re-send it from its original caller".into()
+        }
+        RerunBlocker::PayloadTooLarge => {
+            "the payload was too large to store; re-send it from its original caller".into()
+        }
+    }
+}
+
+/// `POST /api/v1/dispatch-records/{id}/redispatch` — send a recorded
+/// dispatch again as a new one, for its dispatcher or an admin. Only stored
+/// fields are re-sent: no env, no reply or notify callback.
+pub async fn redispatch(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+) -> DispatchResult<Forwarded> {
+    use crate::store::dispatch_records as records;
+    let db_err = |e: sqlx::Error| {
+        tracing::error!(session = %session_id, error = %e, "dispatch record lookup failed");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError { error: "could not read the dispatch record".into() }),
+        )
+    };
+    let record = records::get(&state.pool, &session_id)
+        .await
+        .map_err(db_err)?
+        .filter(|r| ctx.is_admin() || r.user_id == Some(ctx.user_id))
+        .ok_or_else(|| {
+            (StatusCode::NOT_FOUND, Json(ApiError { error: "no such dispatch record".into() }))
+        })?;
+    if let Some(blocker) = record.rerun_blocker() {
+        return Err(conflict(rerun_refusal(blocker, &record)));
+    }
+    let already = || conflict("this dispatch was already re-dispatched".into());
+    if record.redispatched_as.is_some() {
+        return Err(already());
+    }
+    let req = record
+        .replay_request()
+        .ok_or_else(|| conflict("the stored dispatch could not be read back".into()))?;
+    if !records::claim_redispatch(&state.pool, &session_id).await.map_err(db_err)? {
+        return Err(already());
+    }
+    let out = dispatch(State(state.clone()), Extension(ctx), Json(req)).await;
+    let new_id = out.as_ref().ok().map(|(_, r)| r.session_id.as_str());
+    if let Err(e) = records::finish_redispatch(&state.pool, &session_id, new_id).await {
+        tracing::warn!(session = %session_id, error = %e, "re-dispatch not recorded");
+    }
+    out
 }
 
 /// A dispatch may name an existing session id as its retry target, so the
@@ -1512,8 +1680,29 @@ mod tests {
         uid
     }
 
+    fn forwarded(status: &str) -> super::DispatchResult<super::Forwarded> {
+        Ok((
+            axum::http::StatusCode::ACCEPTED,
+            axum::Json(cctui_proto::api::DispatchResponse {
+                session_id: "s".into(),
+                dispatcher: "d".into(),
+                handle: "h".into(),
+                namespace: None,
+                status: status.into(),
+            }),
+        ))
+    }
+
+    async fn uses(pool: &sqlx::PgPool, uid: uuid::Uuid) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM dispatch_policy_uses WHERE user_id = $1")
+            .bind(uid)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
     /// Re-dispatching a session id onto a fresh run counts again; joining the
-    /// run still in flight does not.
+    /// run still in flight, or failing to place one, does not.
     #[tokio::test]
     async fn every_fresh_run_of_a_session_counts_and_a_deduplicated_replay_does_not() {
         let Some(url) = crate::routes::gateway::test_db_url("dispatch_policy_use_per_run") else {
@@ -1522,18 +1711,241 @@ mod tests {
         let pool = sqlx::PgPool::connect(&url).await.expect("connect");
         let uid = seed_user(&pool).await;
         let sid = uuid::Uuid::new_v4().to_string();
+        let rules = cctui_proto::api::admin::DispatchPolicyRules::default();
         for status in ["dispatched", "deduplicated", "redispatched", "queued", "deduplicated"] {
-            super::record_policy_use(&pool, uid, &sid, status).await;
+            super::forward_within_policy(&pool, Some((uid, &rules)), &sid, || async {
+                forwarded(status)
+            })
+            .await
+            .unwrap();
         }
-        let uses: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM dispatch_policy_uses WHERE user_id = $1")
-                .bind(uid)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(uses, 3);
+        let refused = super::forward_within_policy(&pool, Some((uid, &rules)), &sid, || async {
+            Err((
+                axum::http::StatusCode::BAD_GATEWAY,
+                axum::Json(cctui_proto::api::ApiError { error: "down".into() }),
+            ))
+        })
+        .await;
+        assert!(refused.is_err());
+        assert_eq!(uses(&pool, uid).await, 3);
         assert_eq!(crate::store::dispatch_policies::dispatches_today(&pool, uid).await.unwrap(), 3);
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    /// Runs `n` dispatches of `uid` at once through a forward that takes a
+    /// while; returns how many were forwarded and every refusal.
+    async fn race(
+        pool: &sqlx::PgPool,
+        uid: uuid::Uuid,
+        rules: Option<&cctui_proto::api::admin::DispatchPolicyRules>,
+        n: usize,
+    ) -> (usize, Vec<(axum::http::StatusCode, String)>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let forwards = AtomicUsize::new(0);
+        let runs = (0..n).map(|i| {
+            let forwards = &forwards;
+            let sid = format!("race-{i}-{uid}");
+            let forward = move || async move {
+                forwards.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                forwarded("dispatched")
+            };
+            async move {
+                super::forward_within_policy(pool, rules.map(|r| (uid, r)), &sid, forward).await
+            }
+        });
+        let refusals = futures_util::future::join_all(runs)
+            .await
+            .into_iter()
+            .filter_map(Result::err)
+            .map(|(code, body)| (code, body.0.error))
+            .collect();
+        (forwards.load(Ordering::SeqCst), refusals)
+    }
+
+    /// Concurrent policy-bound dispatches racing a daily cap of 1: exactly one
+    /// is forwarded and counted, every other one is refused on the cap.
+    #[tokio::test]
+    async fn concurrent_dispatches_never_exceed_the_daily_cap() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_policy_cap_race") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(8)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = seed_user(&pool).await;
+        let rules = cctui_proto::api::admin::DispatchPolicyRules {
+            daily_cap: Some(1),
+            ..Default::default()
+        };
+        let (forwarded, refusals) = race(&pool, uid, Some(&rules), 8).await;
+        assert_eq!(forwarded, 1);
+        assert_eq!(refusals.len(), 7);
+        for (code, error) in &refusals {
+            assert_eq!(*code, axum::http::StatusCode::FORBIDDEN);
+            assert!(error.contains("(daily_cap)"), "{error}");
+        }
+        assert_eq!(uses(&pool, uid).await, 1);
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    /// Without a policy every concurrent dispatch is forwarded and none is
+    /// counted.
+    #[tokio::test]
+    async fn without_a_policy_concurrent_dispatches_all_forward_uncounted() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_no_policy_race") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let uid = seed_user(&pool).await;
+        let (forwarded, refusals) = race(&pool, uid, None, 8).await;
+        assert_eq!(forwarded, 8);
+        assert!(refusals.is_empty(), "{refusals:?}");
+        assert_eq!(uses(&pool, uid).await, 0);
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    type Call = (String, Option<String>, serde_json::Value);
+
+    /// Records every dispatch it receives and refuses the first.
+    struct RefuseFirst {
+        calls: std::sync::Mutex<Vec<Call>>,
+        refuse: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::dispatchers::Dispatcher for RefuseFirst {
+        fn id(&self) -> &'static str {
+            "refuse-first"
+        }
+
+        async fn dispatch(
+            &self,
+            spec: &crate::dispatchers::DispatchSpec<'_>,
+        ) -> Result<crate::dispatchers::DispatchHandle, crate::dispatchers::DispatchError> {
+            self.calls.lock().unwrap().push((
+                spec.session_id.to_owned(),
+                spec.reply_url.map(str::to_owned),
+                spec.payload.clone(),
+            ));
+            if self.refuse.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                return Err(crate::dispatchers::DispatchError::Backend("quota exceeded".into()));
+            }
+            Ok(crate::dispatchers::DispatchHandle {
+                handle: format!("jobs/{}", spec.session_id),
+                namespace: None,
+                status: None,
+            })
+        }
+    }
+
+    fn user_ctx(uid: uuid::Uuid) -> crate::auth::AuthContext {
+        crate::auth::AuthContext {
+            user_id: uid,
+            key_id: uid,
+            machine_id: None,
+            scopes: [crate::auth::Scope::Read, crate::auth::Scope::Dispatch].into_iter().collect(),
+        }
+    }
+
+    /// A dispatch the dispatcher refused is listed with its stored fields; a
+    /// re-dispatch sends them as a new dispatch without the callback, once,
+    /// and only for its own user.
+    #[tokio::test]
+    async fn a_refused_dispatch_is_listed_and_re_dispatched_with_its_stored_fields() {
+        use axum::extract::{Path, State};
+        use axum::{Extension, Json};
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_record_redispatch") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let stub = std::sync::Arc::new(RefuseFirst {
+            calls: std::sync::Mutex::default(),
+            refuse: std::sync::atomic::AtomicBool::new(true),
+        });
+        let mut state = crate::state::AppState::for_test(pool.clone());
+        state.dispatchers =
+            std::sync::Arc::new(crate::dispatchers::Registry::new().with(stub.clone()));
+        let (uid, other) = (seed_user(&pool).await, seed_user(&pool).await);
+        let req: cctui_proto::api::DispatchRequest = serde_json::from_value(serde_json::json!({
+            "dispatcher": "refuse-first",
+            "session_id": "triage-PROJ-9",
+            "timeout": 20,
+            "reply_url": "https://n8n/reply/CAPABILITY",
+            "payload": {"profile": "tonbo", "repo": "cctui", "model": "opus", "prompt": "fix it"},
+        }))
+        .unwrap();
+        let (code, _) = super::dispatch(State(state.clone()), Extension(user_ctx(uid)), Json(req))
+            .await
+            .unwrap_err();
+        assert_eq!(code, axum::http::StatusCode::BAD_GATEWAY);
+
+        let failed =
+            crate::store::dispatch_records::list_failed(&pool, Some(uid)).await.unwrap();
+        assert_eq!(failed.len(), 1);
+        let original = failed[0].session_id.clone();
+        assert_eq!(failed[0].reason, cctui_proto::api::FailedDispatchReason::Refused);
+        assert!(failed[0].detail.as_deref().unwrap_or_default().contains("quota exceeded"));
+        assert_eq!(failed[0].name.as_deref(), Some("triage-PROJ-9"));
+        assert_eq!(failed[0].prompt_head.as_deref(), Some("fix it"));
+        assert_eq!(failed[0].rerun_blocked, None);
+
+        let (code, _) = super::redispatch(
+            State(state.clone()),
+            Extension(user_ctx(other)),
+            Path(original.clone()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code, axum::http::StatusCode::NOT_FOUND, "another user's record");
+
+        let (code, Json(resp)) = super::redispatch(
+            State(state.clone()),
+            Extension(user_ctx(uid)),
+            Path(original.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, axum::http::StatusCode::ACCEPTED);
+        assert_ne!(resp.session_id, original, "a new dispatch");
+        let calls = stub.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 2);
+        let (sid, reply_url, payload) = &calls[1];
+        assert_eq!(sid, &resp.session_id);
+        assert_eq!(*reply_url, None);
+        for (key, want) in [
+            ("profile", "tonbo"),
+            ("repo", "cctui"),
+            ("model", "opus"),
+            ("prompt", "fix it"),
+            ("name", "triage-PROJ-9"),
+        ] {
+            assert_eq!(payload[key], want, "{key}");
+        }
+        assert!(
+            crate::store::dispatch_records::list_failed(&pool, Some(uid)).await.unwrap().is_empty(),
+            "a re-run record leaves the list"
+        );
+        let (code, _) =
+            super::redispatch(State(state.clone()), Extension(user_ctx(uid)), Path(original))
+                .await
+                .unwrap_err();
+        assert_eq!(code, axum::http::StatusCode::CONFLICT, "re-run once");
+
+        for u in [uid, other] {
+            for sql in
+                ["DELETE FROM auth_keys WHERE user_id = $1", "DELETE FROM machines WHERE user_id = $1"]
+            {
+                sqlx::query(sql)
+                    .bind(u)
+                    .execute(&pool)
+                    .await
+                    .ok();
+            }
+            sqlx::query("DELETE FROM users WHERE id = $1").bind(u).execute(&pool).await.ok();
+        }
     }
 
     /// A policy-bound worker gets a capability that refuses every child,

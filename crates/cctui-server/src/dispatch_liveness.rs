@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::dispatchers::HandleStatus;
 use crate::events::{self, Actor, Event, kind};
 use crate::state::AppState;
+use crate::store::dispatch_records;
 use crate::store::sessions::SessionRowStatus;
 
 const SWEEP_LIMIT: i64 = 100;
@@ -72,52 +73,59 @@ pub async fn sweep(state: &AppState) {
     if let Err(err) = crate::store::dispatch_policies::prune_uses(&state.pool).await {
         tracing::warn!(%err, "dispatch policy use prune failed");
     }
-    let rows = match live_handles(&state.pool).await {
-        Ok(rows) => rows,
-        Err(err) => {
-            tracing::warn!(%err, "dispatch liveness sweep query failed");
-            return;
+    if let Err(err) = dispatch_records::prune(&state.pool).await {
+        tracing::warn!(%err, "dispatch record prune failed");
+    }
+    if let Err(err) = dispatch_records::mark_registered(&state.pool).await {
+        tracing::warn!(%err, "dispatch record registration sweep failed");
+    }
+    match live_handles(&state.pool).await {
+        Ok(rows) => {
+            futures_util::stream::iter(rows)
+                .for_each_concurrent(PROBE_CONCURRENCY, |row| probe(state, row))
+                .await;
         }
-    };
-    futures_util::stream::iter(rows)
-        .for_each_concurrent(PROBE_CONCURRENCY, |row| probe(state, row))
-        .await;
+        Err(err) => tracing::warn!(%err, "dispatch liveness sweep query failed"),
+    }
+    match dispatch_records::unregistered_handles(&state.pool, HANDLE_MAX_AGE_HOURS, SWEEP_LIMIT)
+        .await
+    {
+        Ok(rows) => {
+            futures_util::stream::iter(rows)
+                .for_each_concurrent(PROBE_CONCURRENCY, |row| probe_unregistered(state, row))
+                .await;
+        }
+        Err(err) => tracing::warn!(%err, "unregistered dispatch sweep query failed"),
+    }
 }
 
-async fn probe(state: &AppState, row: LiveHandle) {
+/// A worker that died before registering has no session to end: its
+/// dispatch record carries the cause instead.
+async fn probe_unregistered(state: &AppState, row: dispatch_records::UnregisteredHandle) {
+    let dispatch_records::UnregisteredHandle { session_id, user_id, dispatcher_name, handle } = row;
     let Ok(Some(dispatcher)) =
-        crate::routes::dispatch::resolve_dispatcher(state, row.user_id, &row.dispatcher_name).await
+        crate::routes::dispatch::resolve_dispatcher(state, user_id, &dispatcher_name).await
     else {
         return;
     };
-    let Ok(HandleStatus::Failed(reason)) = dispatcher.status(&row.handle).await else {
+    let Ok(HandleStatus::Failed(reason)) = dispatcher.status(&handle).await else {
         return;
     };
     let detail = reason.unwrap_or_else(|| "workload failed".to_owned());
     let end_reason = end_reason_for(&detail);
-    if !end_session(&state.pool, &row.session_id, end_reason, &detail).await {
-        return;
+    let marked =
+        dispatch_records::mark_failed(&state.pool, &session_id, end_reason.as_str(), &detail).await;
+    match marked {
+        Ok(true) => tracing::warn!(
+            %session_id,
+            dispatcher = %dispatcher_name,
+            %handle,
+            end_reason = end_reason.as_str(),
+            "dispatched worker died before registering: {detail}"
+        ),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, %session_id, "dispatch record update failed"),
     }
-    tracing::warn!(
-        session_id = %row.session_id,
-        dispatcher = %row.dispatcher_name,
-        handle = %row.handle,
-        end_reason = end_reason.as_str(),
-        "dispatched session ended: {detail}"
-    );
-    let mut event = Event::new(kind::SESSION_ENDED, Actor::Reaper)
-        .severity(events::Severity::Warn)
-        .session(row.session_id)
-        .detail(serde_json::json!({
-            "end_reason": end_reason.as_str(),
-            "end_detail": detail,
-            "dispatcher": row.dispatcher_name,
-            "handle": row.handle,
-        }));
-    if let Some(machine) = row.machine_uuid {
-        event = event.machine(machine);
-    }
-    events::record(state, event);
 }
 
 async fn end_session(
@@ -296,6 +304,43 @@ mod tests {
             ("active".into(), None, None),
             "a session without a dispatch handle is never probed"
         );
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_dies_before_registering_records_the_cause() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_liveness_unregistered")
+        else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let (uid, _machine) = crate::events::tests::seed_user_machine(&pool, "dl-unreg").await;
+        let name = format!("k8s-{uid}");
+        let dispatcher = seed_dispatcher(&pool, uid, &name).await;
+        let sid = Uuid::new_v4().to_string();
+        let req: cctui_proto::api::DispatchRequest = serde_json::from_value(
+            serde_json::json!({"dispatcher": name, "payload": {"prompt": "go"}}),
+        )
+        .unwrap();
+        let record = dispatch_records::NewRecord::from_request(&sid, Some(uid), &req, None, None);
+        dispatch_records::insert(&pool, &record).await.unwrap();
+        dispatch_records::set_outcome(&pool, &sid, "forwarded", None).await.unwrap();
+        seed_handle(&pool, &sid, &name, "jobs/cctui-worker-unreg").await;
+
+        let fake = fake_dispatcher(&state, dispatcher, (Some("failed"), Some("OOMKilled")));
+        sweep(&state).await;
+        fake.abort();
+
+        let listed = dispatch_records::list_failed(&pool, Some(uid)).await.unwrap();
+        assert_eq!(listed.len(), 1, "listed at once, without waiting out the timeout");
+        assert_eq!(listed[0].session_id, sid);
+        assert_eq!(listed[0].reason, cctui_proto::api::FailedDispatchReason::OomKilled);
+        assert_eq!(listed[0].detail.as_deref(), Some("OOMKilled"));
+        sqlx::query("DELETE FROM dispatch_handles WHERE session_id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .ok();
     }
 
     #[tokio::test]
