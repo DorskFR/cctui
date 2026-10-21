@@ -526,22 +526,49 @@ function recordIdOf(e: AgentEvent): string | null {
 	return e.type === 'text' && e.message_id ? `m:${e.message_id}` : null;
 }
 
+interface Owner {
+	record: string | null;
+	row: number | null;
+}
+
+const liveRows = new WeakSet<AgentEvent>();
+
+// An event that arrived over the socket rather than from history.
+export function markLive(e: AgentEvent): void {
+	liveRows.add(e);
+}
+
+// The stored row a prompt echo came from, when it is known to be its own
+// transcript line.
+function rowOf(e: AgentEvent): number | null {
+	if (e.type !== 'text' || e.seq == null || userMsgKey(e) === null) return null;
+	return lineIdOf(e) || liveRows.has(e) ? Number(e.seq) : null;
+}
+
+// A live broadcast carries no `line_id`, so two echoes of the same prompt are
+// told apart by their rows.
+function sameOwner(earlier: Owner, next: Owner): boolean {
+	if (earlier.row !== null && next.row !== null) return earlier.row === next.row;
+	if (next.record) return !earlier.record || earlier.record === next.record;
+	return true;
+}
+
 // Two rows of distinct transcript records (`line_id` / `message_id`) may meet
 // on a turn id, never on content, or a repeated utterance or reply collapses.
 export function eventDedup(): (e: AgentEvent) => boolean {
-	const seen = new Map<string, Set<string | null>>();
+	const seen = new Map<string, Owner[]>();
 	return (e) => {
 		const keys = eventKeys(e);
-		const record = recordIdOf(e);
+		const owner: Owner = { record: recordIdOf(e), row: rowOf(e) };
 		const dup = keys.some((k) => {
 			const owners = seen.get(k);
 			if (!owners) return false;
-			if (!record || k.startsWith('t:') || k.startsWith('l:')) return true;
-			return owners.has(null) || owners.has(record);
+			if (k.startsWith('t:') || k.startsWith('l:')) return true;
+			return owners.some((o) => sameOwner(o, owner));
 		});
 		for (const k of keys) {
-			const owners = seen.get(k) ?? new Set();
-			owners.add(record);
+			const owners = seen.get(k) ?? [];
+			owners.push(owner);
 			seen.set(k, owners);
 		}
 		return !dup;

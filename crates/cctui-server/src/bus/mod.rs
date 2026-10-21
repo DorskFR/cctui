@@ -160,7 +160,34 @@ pub enum BusEvent {
     /// liveness, session registered/deregistered, …), delivered to every
     /// [`Bus::subscribe_server`] subscriber.
     Server(ServerEvent),
+    /// Never relayed to a browser.
+    Voice(VoiceEvent),
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum VoiceEvent {
+    Watch {
+        session_id: String,
+        watcher: Uuid,
+        on: bool,
+    },
+    Request {
+        session_id: String,
+        request_id: String,
+        user_text: String,
+    },
+    /// `item_id` is `gw:{request_id}:{block index}`.
+    Delta {
+        session_id: String,
+        item_id: String,
+        delta: String,
+    },
+}
+
+pub const VOICE_WATCH_REFRESH: std::time::Duration = std::time::Duration::from_secs(20);
+/// A crashed pod's watch lapses after this.
+const VOICE_WATCH_TTL: std::time::Duration = std::time::Duration::from_mins(1);
 
 /// A [`ServerEvent`] with its JSON wire form, encoded once at publish so every
 /// socket relays the same bytes instead of re-serializing per subscriber.
@@ -328,6 +355,8 @@ struct Inner {
     pty_watchers: DashMap<String, usize>,
     /// Sockets watching a session's streamed assistant text, by session id.
     text_watchers: DashMap<String, usize>,
+    voice_watches: DashMap<String, Vec<(Uuid, std::time::Instant)>>,
+    voice_tx: broadcast::Sender<VoiceEvent>,
     transport: Box<dyn Transport>,
 }
 
@@ -357,6 +386,8 @@ impl Bus {
                 session_streams: DashMap::new(),
                 pty_watchers: DashMap::new(),
                 text_watchers: DashMap::new(),
+                voice_watches: DashMap::new(),
+                voice_tx: broadcast::channel(CHANNEL_CAPACITY * 4).0,
                 transport,
             }),
         }
@@ -561,6 +592,51 @@ impl Bus {
 
     pub fn text_watch_dec(&self, session: &str) -> bool {
         watch_dec(&self.inner.text_watchers, session)
+    }
+
+    // ---- live voice, cluster-wide ----
+
+    pub fn publish_voice(&self, event: VoiceEvent) {
+        self.publish(BusEvent::Voice(event));
+    }
+
+    pub fn subscribe_voice(&self) -> broadcast::Receiver<VoiceEvent> {
+        self.inner.voice_tx.subscribe()
+    }
+
+    /// Cheap precheck before a session lookup: false when no voice socket is open anywhere.
+    pub fn any_voice_watch(&self) -> bool {
+        !self.inner.voice_watches.is_empty()
+    }
+
+    pub fn voice_watched(&self, session: &str) -> bool {
+        self.voice_watched_at(session, std::time::Instant::now())
+    }
+
+    fn voice_watched_at(&self, session: &str, now: std::time::Instant) -> bool {
+        let live = |w: &mut Vec<(Uuid, std::time::Instant)>| {
+            w.retain(|(_, until)| *until > now);
+            !w.is_empty()
+        };
+        let watched =
+            self.inner.voice_watches.get_mut(session).is_some_and(|mut w| live(w.value_mut()));
+        if !watched {
+            self.inner.voice_watches.remove_if(session, |_, w| w.is_empty());
+        }
+        watched
+    }
+
+    fn note_voice_watch(&self, session: &str, watcher: Uuid, on: bool, now: std::time::Instant) {
+        let mut entry = self.inner.voice_watches.entry(session.to_owned()).or_default();
+        entry.retain(|(w, _)| *w != watcher);
+        if on {
+            entry.push((watcher, now + VOICE_WATCH_TTL));
+        }
+        let empty = entry.is_empty();
+        drop(entry);
+        if empty {
+            self.inner.voice_watches.remove_if(session, |_, w| w.is_empty());
+        }
     }
 
     // ---- point-to-point commands / round-trips ----
@@ -1006,6 +1082,12 @@ impl Bus {
                 if let Some(frame) = ServerFrame::encode(server_event) {
                     let _ = self.inner.server_tx.send(frame);
                 }
+            }
+            BusEvent::Voice(voice_event) => {
+                if let VoiceEvent::Watch { session_id, watcher, on } = &voice_event {
+                    self.note_voice_watch(session_id, *watcher, *on, std::time::Instant::now());
+                }
+                let _ = self.inner.voice_tx.send(voice_event);
             }
         }
     }
@@ -1686,6 +1768,39 @@ mod tests {
         assert!(bus.text_watch_dec("s"), "1→0 must signal stop");
         assert!(!bus.text_watch_dec("s"), "stray dec must not signal");
         assert!(bus.pty_watch_dec("s"), "the pty count was untouched");
+    }
+
+    #[test]
+    fn a_voice_watch_counts_until_it_is_released_or_lapses() {
+        let bus = bus();
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let t0 = std::time::Instant::now();
+        assert!(!bus.any_voice_watch());
+        assert!(!bus.voice_watched_at("s", t0));
+        bus.note_voice_watch("s", a, true, t0);
+        bus.note_voice_watch("s", b, true, t0 + VOICE_WATCH_REFRESH);
+        assert!(bus.any_voice_watch());
+        assert!(bus.voice_watched_at("s", t0));
+        assert!(!bus.voice_watched_at("other", t0));
+        bus.note_voice_watch("s", b, false, t0);
+        assert!(bus.voice_watched_at("s", t0), "a's watch still holds");
+        assert!(!bus.voice_watched_at("s", t0 + VOICE_WATCH_TTL), "an unrefreshed watch lapses");
+        assert!(!bus.any_voice_watch(), "a lapsed session is dropped");
+        bus.note_voice_watch("s", a, true, t0);
+        bus.note_voice_watch("s", a, true, t0 + VOICE_WATCH_TTL);
+        assert!(bus.voice_watched_at("s", t0 + VOICE_WATCH_TTL), "a refresh extends it");
+        bus.note_voice_watch("s", a, false, t0);
+        assert!(!bus.any_voice_watch());
+    }
+
+    #[tokio::test]
+    async fn a_published_voice_watch_reaches_the_watched_set_and_subscribers() {
+        let bus = bus();
+        let mut rx = bus.subscribe_voice();
+        let watch = VoiceEvent::Watch { session_id: "s".into(), watcher: Uuid::new_v4(), on: true };
+        bus.deliver_local(BusEvent::Voice(watch.clone()));
+        assert!(bus.voice_watched("s"));
+        assert_eq!(rx.try_recv().unwrap(), watch);
     }
 
     #[tokio::test]

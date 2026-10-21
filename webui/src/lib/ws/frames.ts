@@ -28,12 +28,24 @@ export type PermReq = EventOf<'permission_request'>;
  * events. Shared so both shapes reconcile to one identity. */
 export const USER_PREFIX = '▷ User:';
 
-/** Mirrors the server's `normalize_last_message` (collapse whitespace,
- *  cap at 200 chars) so patched excerpts match the next poll's. */
+const INJECTED_HEAD =
+	/^\s*<(cctui-session-context|session-context|cctui-previous-conversation|previous-conversation)(?:\s[^>]*)?>[\s\S]*?<\/\1>/;
+
+/** The prose after the wrappers cctui puts ahead of a prompt, or the whole
+ *  body when nothing follows them. */
+function withoutInjected(body: string): string {
+	let rest = body;
+	for (let m = INJECTED_HEAD.exec(rest); m; m = INJECTED_HEAD.exec(rest))
+		rest = rest.slice(m[0].length);
+	return rest.trim() ? rest : body;
+}
+
+/** Mirrors the server's `preview_last_message` (drop the leading wrappers,
+ *  collapse whitespace, cap at 200 chars) so patched excerpts match the next
+ *  poll's. */
 export function lastMessageExcerpt(content: string): string {
-	const collapsed = content.startsWith(USER_PREFIX)
-		? content.slice(USER_PREFIX.length).split(/\s+/).filter(Boolean).join(' ')
-		: content.split(/\s+/).filter(Boolean).join(' ');
+	const body = content.startsWith(USER_PREFIX) ? content.slice(USER_PREFIX.length) : content;
+	const collapsed = withoutInjected(body).split(/\s+/).filter(Boolean).join(' ');
 	return collapsed.length > 200 ? `${[...collapsed].slice(0, 200).join('')}…` : collapsed;
 }
 

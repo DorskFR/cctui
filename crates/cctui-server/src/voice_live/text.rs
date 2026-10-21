@@ -12,6 +12,14 @@ const MIN_STREAMED_CHARS: usize = 40;
 const ABBREVIATIONS: [&str; 10] =
     ["e.g", "i.e", "etc", "vs", "cf", "mr", "mrs", "ms", "dr", "approx"];
 pub const UTTERANCE_SAMPLE_RATE: u32 = 16_000;
+/// Lines of the agents' status protocol: shown in the reply, never spoken.
+const STATUS_PREFIXES: [&str; 3] = ["result:", "needs input:", "failed:"];
+
+fn is_status_line(line: &str) -> bool {
+    let plain: String = line.chars().filter(|&c| !matches!(c, '*' | '_' | '`')).collect();
+    let plain = plain.trim_start().to_ascii_lowercase();
+    STATUS_PREFIXES.iter().any(|p| plain.starts_with(p))
+}
 
 fn is_rule(line: &str) -> bool {
     let t = line.trim();
@@ -194,6 +202,10 @@ pub struct SentenceBuffer {
     raw: String,
     /// Complete sentences too short to speak alone yet.
     held: String,
+    /// The text taken so far stopped inside a line.
+    mid_line: bool,
+    /// That line is a status line.
+    in_status: bool,
 }
 
 impl SentenceBuffer {
@@ -204,6 +216,22 @@ impl SentenceBuffer {
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.raw.trim().is_empty() && self.held.is_empty()
+    }
+
+    /// `text` without its status lines, continuing the line the last call
+    /// stopped in.
+    fn without_status(&mut self, text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        for line in text.split_inclusive('\n') {
+            if !self.mid_line {
+                self.in_status = is_status_line(line);
+            }
+            self.mid_line = !line.ends_with('\n');
+            if !self.in_status {
+                out.push_str(line);
+            }
+        }
+        out
     }
 
     /// Where an open code fence starts, or the end of the buffer.
@@ -232,6 +260,7 @@ impl SentenceBuffer {
             }
         }
         let head: String = self.raw.drain(..cut).collect();
+        let head = self.without_status(&head);
         let mut out = Vec::new();
         for sentence in split_sentences(&strip_markdown(&head)) {
             if !self.held.is_empty() {
@@ -249,12 +278,16 @@ impl SentenceBuffer {
     /// stream paused.
     pub fn pause(&mut self) -> Vec<String> {
         let head: String = self.raw.drain(..self.scan_end()).collect();
+        let head = self.without_status(&head);
         self.after_held(split_sentences(&strip_markdown(&head)))
     }
 
     /// Everything buffered, complete or not.
     pub fn flush(&mut self) -> Vec<String> {
         let raw = std::mem::take(&mut self.raw);
+        let raw = self.without_status(&raw);
+        self.mid_line = false;
+        self.in_status = false;
         self.after_held(split_sentences(&strip_markdown(&raw)))
     }
 
@@ -269,6 +302,8 @@ impl SentenceBuffer {
     pub fn clear(&mut self) {
         self.raw.clear();
         self.held.clear();
+        self.mid_line = false;
+        self.in_status = false;
     }
 }
 
@@ -441,6 +476,22 @@ mod tests {
     #[test]
     fn a_bracket_before_a_link_is_kept_as_text() {
         assert_eq!(strip_markdown("a[0] and [x](u) done"), "a[0] and x done");
+    }
+
+    #[test]
+    fn status_lines_are_never_spoken() {
+        let mut buf = SentenceBuffer::default();
+        buf.push(&format!("{LONG_A}\n\nresult: Explained it. In two"));
+        assert_eq!(buf.drain(), vec![LONG_A]);
+        buf.push(&format!(
+            " sentences.\n  **Needs input:** a token.\n{LONG_B}\n_FAILED:_ no.\nBye"
+        ));
+        assert_eq!(buf.drain(), vec![LONG_B]);
+        assert_eq!(buf.flush(), vec!["Bye"]);
+        buf.push("The result: is spoken mid-line.\nresult: but not here");
+        assert_eq!(buf.flush(), vec!["The result: is spoken mid-line."]);
+        buf.push("Next block.");
+        assert_eq!(buf.flush(), vec!["Next block."]);
     }
 
     #[test]

@@ -24,6 +24,7 @@ mod refresh;
 pub mod toolguard;
 mod usage;
 pub mod usage_notices;
+mod voicetee;
 
 pub use config::*;
 pub use failover::*;

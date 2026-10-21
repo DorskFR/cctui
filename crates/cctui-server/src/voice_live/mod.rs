@@ -6,6 +6,7 @@
 //! JSON.
 
 mod engine;
+mod mainline;
 pub mod text;
 
 use std::sync::Arc;
@@ -25,6 +26,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::auth::{AuthContext, Scope};
+use crate::bus::{VOICE_WATCH_REFRESH, VoiceEvent};
 use crate::speech::SpeechClient;
 use crate::state::AppState;
 pub use engine::{
@@ -39,6 +41,8 @@ const KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(20);
 const WARM_UP_SILENCE: [u8; 16_000] = [0; 16_000];
 /// How the session stream renders a prompt the agent received.
 const USER_PREFIX: &str = "▷ User:";
+/// The annotation claude-code writes when a turn is over.
+const TURN_DURATION: &str = "turn_duration";
 
 #[derive(Debug, Deserialize)]
 pub struct VoiceQuery {
@@ -192,8 +196,14 @@ async fn read_socket(
 fn signal_of(event: &AgentEvent) -> Option<Signal> {
     match event {
         AgentEvent::TurnEnd { .. } => Some(Signal::TurnEnd),
+        AgentEvent::Text { content, kind: Some(kind), .. }
+            if kind == "turn_annotation" && content.starts_with(TURN_DURATION) =>
+        {
+            Some(Signal::TurnEnd)
+        }
         AgentEvent::Text { content, kind: None, .. } if content.starts_with(USER_PREFIX) => {
-            Some(Signal::TurnStart)
+            let prompt = content.strip_prefix(USER_PREFIX).unwrap_or_default();
+            Some(Signal::TurnStart(prompt.trim().to_owned()))
         }
         AgentEvent::Text { content, meta: false, kind: None, .. } => {
             Some(Signal::Text(content.clone()))
@@ -202,10 +212,23 @@ fn signal_of(event: &AgentEvent) -> Option<Signal> {
     }
 }
 
+fn voice_signal(event: VoiceEvent, session_id: &str) -> Option<Signal> {
+    match event {
+        VoiceEvent::Request { session_id: sid, request_id, user_text } if sid == session_id => {
+            Some(Signal::Request { id: request_id, user_text })
+        }
+        VoiceEvent::Delta { session_id: sid, item_id, delta } if sid == session_id => {
+            Some(Signal::Delta { item: item_id, text: delta })
+        }
+        _ => None,
+    }
+}
+
 /// Turns the session's bus traffic into [`Signal`]s for the loop.
 ///
 /// Holds the text watch for the socket's lifetime so the daemon streams
-/// deltas, and releases it when `cancel` fires.
+/// deltas, and the cluster-wide voice watch so the gateway does, and
+/// releases both when `cancel` fires.
 async fn relay_signals(
     state: AppState,
     session_id: String,
@@ -213,12 +236,25 @@ async fn relay_signals(
     cancel: CancellationToken,
 ) {
     let mut server_rx = state.bus.subscribe_server();
+    let mut voice_rx = state.bus.subscribe_voice();
     if state.bus.text_watch_inc(&session_id) {
         crate::ws::set_daemon_text_watch(&state, &session_id, true).await;
     }
+    let watcher = uuid::Uuid::new_v4();
+    let beacon = |on| VoiceEvent::Watch { session_id: session_id.clone(), watcher, on };
+    let mut refresh = tokio::time::interval(VOICE_WATCH_REFRESH);
     loop {
         let signal = tokio::select! {
             () = cancel.cancelled() => break,
+            _ = refresh.tick() => {
+                state.bus.publish_voice(beacon(true));
+                None
+            }
+            frame = voice_rx.recv() => match frame {
+                Ok(event) => voice_signal(event, &session_id),
+                Err(RecvError::Lagged(_)) => None,
+                Err(RecvError::Closed) => break,
+            },
             frame = server_rx.recv() => match frame {
                 Ok(frame) => match &*frame.event {
                     ServerEvent::TextDelta { session_id: sid, item_id, delta }
@@ -241,6 +277,7 @@ async fn relay_signals(
             break;
         }
     }
+    state.bus.publish_voice(beacon(false));
     if state.bus.text_watch_dec(&session_id) {
         crate::ws::set_daemon_text_watch(&state, &session_id, false).await;
     }
@@ -337,10 +374,40 @@ mod tests {
         assert_eq!(signal_of(&text(true, None)), None);
         assert_eq!(signal_of(&text(false, Some("thinking"))), None);
         assert_eq!(signal_of(&AgentEvent::TurnEnd { ts: 0, seq: None }), Some(Signal::TurnEnd));
+        let annotation = |content: &str| event(content, true, Some("turn_annotation"));
+        assert_eq!(signal_of(&annotation("turn_duration:5406")), Some(Signal::TurnEnd));
+        assert_eq!(signal_of(&annotation("file_history:src/a.rs")), None);
         let prompt = "▷ User: <cctui-session-context voice=\"spoken\">\n</cctui-session-context>";
-        assert_eq!(signal_of(&event(prompt, false, None)), Some(Signal::TurnStart));
+        let spoken = "<cctui-session-context voice=\"spoken\">\n</cctui-session-context>";
+        assert_eq!(signal_of(&event(prompt, false, None)), Some(Signal::TurnStart(spoken.into())));
         let harness = event("▷ User: <task-notification>", true, None);
-        assert_eq!(signal_of(&harness), Some(Signal::TurnStart));
+        assert_eq!(signal_of(&harness), Some(Signal::TurnStart("<task-notification>".into())));
         assert_eq!(signal_of(&event("▷ User: queued", true, Some("queue_op"))), None);
+    }
+
+    #[test]
+    fn only_this_sessions_gateway_traffic_reaches_the_loop() {
+        let delta = |sid: &str| VoiceEvent::Delta {
+            session_id: sid.into(),
+            item_id: "gw:r:0".into(),
+            delta: "Hi".into(),
+        };
+        assert_eq!(
+            voice_signal(delta("s"), "s"),
+            Some(Signal::Delta { item: "gw:r:0".into(), text: "Hi".into() })
+        );
+        assert_eq!(voice_signal(delta("other"), "s"), None);
+        let request = VoiceEvent::Request {
+            session_id: "s".into(),
+            request_id: "r".into(),
+            user_text: "go".into(),
+        };
+        assert_eq!(
+            voice_signal(request, "s"),
+            Some(Signal::Request { id: "r".into(), user_text: "go".into() })
+        );
+        let watcher = uuid::Uuid::nil();
+        let watch = VoiceEvent::Watch { session_id: "s".into(), watcher, on: true };
+        assert_eq!(voice_signal(watch, "s"), None);
     }
 }

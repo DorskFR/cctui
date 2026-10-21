@@ -412,6 +412,17 @@ describe('LiveVoice shown state', () => {
 		expect(h.voice.status).toBe('listening');
 	});
 
+	it('shows speaking over a server thinking while the reply still plays', async () => {
+		const h = await talking();
+		reply(h, ['1-1', '1-2']);
+		h.socket?.frame({ type: 'state', state: 'thinking' });
+		expect(h.voice.status).toBe('speaking');
+		h.idle(true);
+		expect(h.voice.status).toBe('thinking');
+		h.socket?.frame({ type: 'state', state: 'listening' });
+		expect(h.voice.status).toBe('listening');
+	});
+
 	it('holds thinking between the transcript and the first sentence', async () => {
 		vi.useFakeTimers();
 		try {
