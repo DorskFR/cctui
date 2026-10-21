@@ -4,7 +4,8 @@
 //!
 //! A session whose workflow guard already reached its exit did its work: a
 //! failed Job after that is the container's exit code, and the session ends
-//! `completed`. Without that evidence a failure is a crash.
+//! `completed`, as does a Job that finished. Without that evidence a failure
+//! is a crash.
 
 use cctui_proto::models::SessionEndReason;
 use uuid::Uuid;
@@ -26,6 +27,8 @@ const HANDLE_MAX_AGE_HOURS: i64 = 48;
 const TRANSPORT_ENDS: &[&str] = &["daemon_lost", "machine_offline"];
 
 const EXITED_AFTER_COMPLETION: &str = "completed (worker exited non-zero)";
+
+const EXITED_CLEANLY: &str = "completed (worker exited)";
 
 /// The persisted end reason for a dispatcher's verbatim failure reason.
 ///
@@ -168,13 +171,17 @@ async fn verdict(
 }
 
 async fn probe(state: &AppState, row: LiveHandle) {
-    let Some(HandleStatus::Failed(reason)) =
-        status_of(state, row.user_id, &row.dispatcher_name, &row.session_id, &row.handle).await
-    else {
-        return;
+    let status =
+        status_of(state, row.user_id, &row.dispatcher_name, &row.session_id, &row.handle).await;
+    let (end_reason, detail) = match status {
+        Some(HandleStatus::Failed(reason)) => {
+            verdict(&state.pool, &row.session_id, failure_text(reason)).await
+        }
+        Some(HandleStatus::Complete) if guard_exited(&state.pool, &row.session_id).await => {
+            (SessionEndReason::Completed, EXITED_CLEANLY.to_owned())
+        }
+        _ => return,
     };
-    let failure = failure_text(reason);
-    let (end_reason, detail) = verdict(&state.pool, &row.session_id, failure).await;
     if !end_session(&state.pool, &row.session_id, end_reason, &detail).await {
         return;
     }
@@ -549,6 +556,55 @@ mod tests {
         assert!(
             dispatch_records::list_failed(&pool, Some(uid)).await.unwrap().is_empty(),
             "no failure card for work that was done"
+        );
+        forget_user(&pool, uid).await;
+    }
+
+    /// A finished Job after the guard exited is a clean completion, even when
+    /// the disconnect already marked the session `daemon_lost`.
+    #[tokio::test]
+    async fn a_finished_job_after_the_guard_exited_is_a_completed_session() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_liveness_finished") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let (uid, machine) = crate::events::tests::seed_user_machine(&pool, "dl-finished").await;
+        let name = format!("k8s-{uid}");
+        let dispatcher = seed_dispatcher(&pool, uid, &name).await;
+        let lost = crate::events::tests::seed_session(&pool, uid, machine, Some("lost")).await;
+        let unguarded = crate::events::tests::seed_session(&pool, uid, machine, None).await;
+        sqlx::query(
+            "UPDATE sessions SET status = 'ended', end_reason = 'daemon_lost', \
+             end_detail = 'daemon connection closed' WHERE id = $1",
+        )
+        .bind(&lost)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let guard = cctui_proto::guard_step::GuardStepState { step: -1, ..Default::default() };
+        sqlx::query("INSERT INTO guard_steps (session_id, state) VALUES ($1, $2)")
+            .bind(&lost)
+            .bind(sqlx::types::Json(&guard))
+            .execute(&pool)
+            .await
+            .unwrap();
+        for sid in [&lost, &unguarded] {
+            seed_handle(&pool, sid, &name, &format!("jobs/cctui-worker-{sid}")).await;
+        }
+
+        let fake = fake_dispatcher(&state, dispatcher, (Some("complete"), None));
+        sweep(&state).await;
+        fake.abort();
+
+        assert_eq!(
+            status(&pool, &lost).await,
+            ("ended".into(), Some("completed".into()), Some(EXITED_CLEANLY.into())),
+        );
+        assert_eq!(
+            status(&pool, &unguarded).await,
+            ("active".into(), None, None),
+            "a finished Job alone is no proof the work was done"
         );
         forget_user(&pool, uid).await;
     }
