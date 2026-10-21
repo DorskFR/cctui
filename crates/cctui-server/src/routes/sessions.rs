@@ -2814,12 +2814,17 @@ pub async fn switch_account(
             "session has no active gateway account binding to switch",
         ));
     };
-    // The session's OWN user, not the bound account's owner: on a shared account
-    // the two differ, and resolving the target against the owner lets a grantee
-    // move their session onto accounts of the sharer's that were never shared.
-    let acting_user = crate::routes::gateway::acting_user(&state, &session_id, None)
+    // The user the session runs for, not the bound account's owner: on a shared
+    // account the two differ, and resolving the target against the owner lets a
+    // grantee move their session onto accounts of the sharer's that were never
+    // shared.
+    let runs_for = crate::routes::gateway::acting_user(&state, &session_id, None)
         .await
         .unwrap_or(bound_account_owner);
+    // The machine owner of a session a spawn grantee runs moves it onto their
+    // own accounts and takes the binding over, never onto the grantee's others.
+    let takeover = (!ctx.is_admin() && ctx.user_id != runs_for).then_some(ctx.user_id);
+    let acting_user = takeover.unwrap_or(runs_for);
     let default_family = match req.family.as_deref().map(str::trim) {
         None | Some("") => {
             let adapter = adapter_id.as_deref().unwrap_or("claude-code");
@@ -2923,12 +2928,13 @@ pub async fn switch_account(
     // Repoint only this family's row: touching the other family's would hand
     // e.g. the worker's OPENAI_API_KEY an anthropic credential.
     let updated = sqlx::query(
-        "UPDATE session_tokens SET account_id = $3 \
+        "UPDATE session_tokens SET account_id = $3, user_id = COALESCE($4, user_id) \
          WHERE session_id = $1 AND revoked_at IS NULL AND account_id = $2",
     )
     .bind(&session_id)
     .bind(current_account_id)
     .bind(target_id)
+    .bind(takeover)
     .execute(&state.pool)
     .await?;
     if updated.rows_affected() == 0 {
@@ -2999,6 +3005,7 @@ pub async fn resume_session(
     Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
+    crate::routes::spawn::authorize_session_launch(&state, &ctx, &session_id).await?;
     // Pass the working_dir so the daemon can resume even after archiving ran
     // `claude rm` (which deletes the on-disk job state.json but keeps the
     // conversation transcript) — the daemon falls back to local_id + this cwd.
@@ -3025,6 +3032,7 @@ pub async fn resume_session(
         AppError::new(StatusCode::SERVICE_UNAVAILABLE, format!("resume failed: {e}"))
     })?;
     crate::store::sessions::set_inactive(&state.pool, &session_id, true).await?;
+    crate::routes::spawn::fill_spawner(&state.pool, &session_id, ctx.user_id).await;
     tracing::info!(session_id = %session_id, "resume dispatched");
     events::record(
         &state,
@@ -3137,6 +3145,8 @@ pub async fn fork_session(
     let Some(machine_uuid) = machine_uuid else {
         return Err(AppError::new(StatusCode::CONFLICT, "session has no machine — cannot fork"));
     };
+    crate::routes::spawn::authorize_launch(&state, &ctx, machine_uuid).await?;
+    crate::routes::spawn::refuse_foreign_account(&state, &ctx, &session_id).await?;
 
     // Subset forks slice the parent's on-disk transcript — a claude
     // primitive only. Codex has no partial-fork mechanism, so reject it here
@@ -3189,6 +3199,7 @@ pub async fn fork_session(
     };
     let child_key = child_session_id.clone().unwrap_or_else(|| command_id.to_string());
     crate::routes::context::inherit_intent(&state.pool, &child_key, &session_id).await;
+    crate::routes::spawn::remember_spawner(&state.pool, &child_key, ctx.user_id, None).await;
     state.bus.command_daemon_for_session(machine_uuid, &session_id, frame).await.map_err(
         |err| match err {
             crate::bus::BusError::NoDaemon(_) => {

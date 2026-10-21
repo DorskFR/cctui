@@ -213,7 +213,7 @@ pub async fn machine_user(
 
 /// Same resolution the webui spawn runs, keyed on the child's own launch key,
 /// so a profile's context set means the same thing from the tool as from the
-/// browser.
+/// browser. The child's spawner is recorded under the same key.
 async fn remember_child_context(
     state: &AppState,
     parent: &Parent,
@@ -243,6 +243,8 @@ async fn remember_child_context(
     )
     .await;
     crate::routes::context::remember_intent(&state.pool, child_key, &context, &scope).await;
+    let spawner = child_spawner(&state.pool, parent).await;
+    crate::routes::spawn::remember_spawner(&state.pool, child_key, spawner, None).await;
 }
 
 async fn load_parent(state: &AppState, session_id: &str, caller: Uuid) -> Result<Parent, AppError> {
@@ -269,6 +271,19 @@ async fn load_parent(state: &AppState, session_id: &str, caller: Uuid) -> Result
         user_id,
         permission_mode: mode.as_deref().and_then(PermissionMode::from_session_label),
     })
+}
+
+/// Who a child is attributed to: the human who spawned its parent, else the
+/// parent's owner. The tree acts for whoever started it.
+async fn child_spawner(pool: &sqlx::PgPool, parent: &Parent) -> Uuid {
+    sqlx::query_scalar::<_, Option<Uuid>>("SELECT spawned_by FROM sessions WHERE id = $1")
+        .bind(&parent.session_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+        .unwrap_or(parent.user_id)
 }
 
 /// The account identity the parent is bound to, resolved so the child can mint
@@ -436,6 +451,11 @@ async fn child_account_env(
     let Some(parent_account) = parent_account_name(state, &parent.session_id).await else {
         return Ok((std::collections::BTreeMap::new(), wanted));
     };
+    // The user the parent's account was bound for: a spawn grantee's tree runs
+    // on the grantee's accounts even though the machine owner owns the session.
+    let account_user = crate::routes::gateway::acting_user(state, &parent.session_id, None)
+        .await
+        .unwrap_or(parent.user_id);
 
     let mut first_error = None;
     let mut elected_pool = None;
@@ -447,7 +467,7 @@ async fn child_account_env(
             a
         } else {
             let (elected, pool, refusal) =
-                elect_family_account(state, parent, family, wanted.as_deref()).await;
+                elect_family_account(state, parent, account_user, family, wanted.as_deref()).await;
             election_refusal = refusal;
             match elected {
                 Some(elected) if elected != parent_account => {
@@ -469,7 +489,7 @@ async fn child_account_env(
         if model.is_some() || cctui_proto::adapter::needs_model(adapter) {
             let resolved = crate::routes::gateway::resolve_account_model(
                 state,
-                parent.user_id,
+                account_user,
                 &account,
                 family,
                 model.as_deref().unwrap_or_default(),
@@ -479,7 +499,7 @@ async fn child_account_env(
         }
         match crate::routes::gateway::mint_session_env(
             state,
-            parent.user_id,
+            account_user,
             &account,
             family,
             child_key,
@@ -535,13 +555,14 @@ async fn child_account_env(
     ))
 }
 
-/// An account the parent's user may bind in `family`, ranked as an
+/// An account `account_user` may bind in `family`, ranked as an
 /// `auto_account` spawn ranks them. A ranking failure (every candidate out of
 /// allocation, or none serving the model) is not an error here: it only means
 /// there is no fallback, and the caller reports the original mint failure.
 async fn elect_family_account(
     state: &AppState,
     parent: &Parent,
+    account_user: Uuid,
     family: crate::routes::gateway::Family,
     model: Option<&str>,
 ) -> (Option<String>, Option<Uuid>, Option<String>) {
@@ -550,7 +571,7 @@ async fn elect_family_account(
     if let Some(pool_id) = parent_pool_id(state, &parent.session_id).await {
         return match crate::account_resolve::resolve_pool_by_id(
             state,
-            parent.user_id,
+            account_user,
             family,
             model,
             pool_id,
@@ -572,7 +593,7 @@ async fn elect_family_account(
         };
     }
 
-    match crate::routes::spawn::auto_account_name_scoped(state, parent.user_id, family, model, true)
+    match crate::routes::spawn::auto_account_name_scoped(state, account_user, family, model, true)
         .await
     {
         Ok(elected) => (elected, None, None),
@@ -2273,5 +2294,110 @@ mod tests {
             .execute(&pool)
             .await
             .ok();
+    }
+
+    fn parent_of(session_id: &str, owner: Uuid) -> Parent {
+        Parent {
+            session_id: session_id.to_owned(),
+            machine_uuid: Uuid::new_v4(),
+            working_dir: None,
+            user_id: owner,
+            permission_mode: None,
+        }
+    }
+
+    /// DB-gated: a spawn grantee's session belongs to the machine owner but runs
+    /// on the grantee's account, and so does its tree.
+    #[tokio::test]
+    async fn a_grantee_trees_child_runs_on_the_grantees_account() {
+        let Some(url) = crate::routes::gateway::test_db_url(
+            "a_grantee_trees_child_runs_on_the_grantees_account",
+        ) else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let owner = Uuid::new_v4();
+        let grantee = Uuid::new_v4();
+        seed_accounts(&pool, owner, "machine-owner", &[]).await;
+        let mine = seed_accounts(&pool, grantee, "grantee", &[("g-claude", "anthropic")]).await;
+        let (account, provider) = mine[0];
+        let state = crate::state::AppState::for_test(pool.clone());
+        let parent_id = Uuid::new_v4().to_string();
+        crate::routes::gateway::mint_session_env(
+            &state,
+            grantee,
+            &format!("g-claude-{account}"),
+            crate::routes::gateway::Family::Anthropic,
+            &parent_id,
+        )
+        .await
+        .expect("bind the parent to the grantee's account");
+
+        let child_key = Uuid::new_v4().to_string();
+        child_account_env(
+            &state,
+            &parent_of(&parent_id, owner),
+            "claude-code",
+            crate::routes::gateway::Family::Anthropic,
+            None,
+            &child_key,
+        )
+        .await
+        .expect("the child mints on the account its parent runs on");
+        let bound: (Uuid, Option<Uuid>) =
+            sqlx::query_as("SELECT account_id, user_id FROM session_tokens WHERE session_id = $1")
+                .bind(&child_key)
+                .fetch_one(&pool)
+                .await
+                .expect("child token");
+        assert_eq!(bound, (provider, Some(grantee)));
+
+        for u in [owner, grantee] {
+            sqlx::query("DELETE FROM users WHERE id = $1").bind(u).execute(&pool).await.ok();
+        }
+    }
+
+    /// DB-gated: a child is attributed to whoever spawned its parent, else to
+    /// the parent's owner.
+    #[tokio::test]
+    async fn a_child_is_attributed_to_the_human_behind_its_tree() {
+        let Some(url) = crate::routes::gateway::test_db_url(
+            "a_child_is_attributed_to_the_human_behind_its_tree",
+        ) else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let owner = Uuid::new_v4();
+        let grantee = Uuid::new_v4();
+        seed_accounts(&pool, owner, "attr-owner", &[]).await;
+        seed_accounts(&pool, grantee, "attr-grantee", &[]).await;
+        let mut parents = Vec::new();
+        for spawner in [Some(grantee), None] {
+            let sid = Uuid::new_v4().to_string();
+            sqlx::query(
+                "INSERT INTO sessions (id, machine_id, working_dir, user_id, spawned_by) \
+                 VALUES ($1, 'm', '/w', $2, $3)",
+            )
+            .bind(&sid)
+            .bind(owner)
+            .bind(spawner)
+            .execute(&pool)
+            .await
+            .expect("seed parent");
+            parents.push(sid);
+        }
+        assert_eq!(child_spawner(&pool, &parent_of(&parents[0], owner)).await, grantee);
+        assert_eq!(child_spawner(&pool, &parent_of(&parents[1], owner)).await, owner);
+
+        for sid in &parents {
+            sqlx::query("DELETE FROM sessions WHERE id = $1").bind(sid).execute(&pool).await.ok();
+        }
+        for u in [owner, grantee] {
+            sqlx::query("DELETE FROM users WHERE id = $1").bind(u).execute(&pool).await.ok();
+        }
     }
 }

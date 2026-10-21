@@ -392,10 +392,11 @@ async fn provider_account(pool: &sqlx::PgPool, provider_id: Uuid) -> Option<(Uui
 }
 
 /// The user a mint for `session_id` acts for. `known` is the authenticated
-/// caller when a path has one; otherwise the session row, the user its gateway
-/// token was minted for, or — in the dispatch window, where neither exists yet —
-/// the ephemeral dispatch key cut for this session. `None` is fail-closed
-/// everywhere downstream.
+/// caller when a path has one; otherwise the user its gateway token was minted
+/// for, the session row, or — in the dispatch window, where neither exists
+/// yet — the ephemeral dispatch key cut for this session. The token comes
+/// first: a spawn grantee's session belongs to the machine owner but runs on
+/// the grantee's account. `None` is fail-closed everywhere downstream.
 pub async fn acting_user(state: &AppState, session_id: &str, known: Option<Uuid>) -> Option<Uuid> {
     acting_user_in(&state.pool, session_id, known).await
 }
@@ -410,9 +411,9 @@ pub async fn acting_user_in(
         return known;
     }
     for sql in [
-        "SELECT user_id FROM sessions WHERE id = $1",
         "SELECT user_id FROM session_tokens WHERE session_id = $1 \
          ORDER BY (revoked_at IS NULL) DESC, created_at DESC LIMIT 1",
+        "SELECT user_id FROM sessions WHERE id = $1",
         "SELECT user_id FROM auth_keys WHERE session_id = $1 AND revoked_at IS NULL \
          ORDER BY created_at DESC LIMIT 1",
     ] {

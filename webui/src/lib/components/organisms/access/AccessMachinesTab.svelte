@@ -7,10 +7,12 @@
 		DataTable,
 		Dot,
 		IconButton,
+		Modal,
 		Text,
 		Timestamp
 	} from '@dorsk/tsumikit';
 	import EditEntityModal from '$lib/components/molecules/EditEntityModal.svelte';
+	import ResourceShares from '$lib/components/molecules/ResourceShares.svelte';
 	import MachineHistoryModal from './MachineHistoryModal.svelte';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import { useMachines, useUserActions } from '$lib/queries';
@@ -19,7 +21,12 @@
 	import { m } from '$lib/paraglide/messages';
 	import { splitRevoked, visibleRows } from './access.logic';
 
-	let { userId, canManage }: { userId: string; canManage: boolean } = $props();
+	let {
+		userId,
+		canManage,
+		canShare
+	}: { userId: string; canManage: boolean; canShare?: boolean } = $props();
+	const mayShare = $derived(canShare ?? canManage);
 
 	const HUES = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
 
@@ -34,6 +41,12 @@
 	let editMachine = $state<MachineRow | null>(null);
 	let dropTarget = $state<MachineRow | null>(null);
 	let historyTarget = $state<MachineRow | null>(null);
+	let shareTarget = $state<MachineRow | null>(null);
+
+	const shareActions = [
+		{ value: 'use', label: m.access_share_action_use() },
+		{ value: 'spawn', label: m.access_share_action_spawn() }
+	];
 
 	const shown = $derived((machines.data ?? []).filter((mc) => mc.kind !== 'ephemeral'));
 	const hiddenCount = $derived((machines.data ?? []).length - shown.length);
@@ -103,6 +116,16 @@
 			title={m.events_machine_history_button()}
 			onclick={() => (historyTarget = mc)}
 		/>
+		{#if mayShare && mc.kind !== 'dispatch' && !mc.revoked_at}
+			<IconButton
+				inline
+				icon="share"
+				size={14}
+				label={m.access_share_machine()}
+				title={m.access_share_machine()}
+				onclick={() => (shareTarget = mc)}
+			/>
+		{/if}
 		{#if canManage && mc.kind !== 'dispatch'}
 			{#if !mc.revoked_at}
 				<IconButton
@@ -182,6 +205,19 @@
 
 {#if historyTarget}
 	<MachineHistoryModal machine={historyTarget} onclose={() => (historyTarget = null)} />
+{/if}
+
+{#if shareTarget}
+	{@const mc = shareTarget}
+	<Modal
+		title={m.access_share_machine_title({ machine: mc.display_name || mc.name })}
+		size="md"
+		onclose={() => (shareTarget = null)}
+	>
+		{#snippet body()}
+			<ResourceShares resourceType="machine" id={mc.id} noun={m.access_share_machine_noun()} actions={shareActions} />
+		{/snippet}
+	</Modal>
 {/if}
 
 {#if dropTarget}
