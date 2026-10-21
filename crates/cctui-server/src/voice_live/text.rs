@@ -511,6 +511,8 @@ mod tests {
         let bare = spoken_prompt("hi", None);
         assert!(!bare.contains("text-to-speech"));
         assert!(bare.ends_with("\n\nhi"));
+        assert!(cctui_proto::injected::is_spoken_prompt(&p));
+        assert!(cctui_proto::injected::is_spoken_prompt(&bare));
     }
 
     #[test]

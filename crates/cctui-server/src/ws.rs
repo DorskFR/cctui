@@ -219,10 +219,13 @@ pub async fn dispatch_reply(
     ask_picks: Option<Vec<Vec<usize>>>,
     turn_id: Option<uuid::Uuid>,
 ) -> (uuid::Uuid, Result<(), crate::bus::BusError>) {
+    let started = std::time::Instant::now();
+    let spoken = cctui_proto::injected::is_spoken_prompt(&content);
+    let command_id = uuid::Uuid::new_v4();
     // Re-minted gateway env lets a reply-driven cold-resume of a hibernated
     // worker revive it with a fresh token; ignored when the worker is alive.
     let env = crate::routes::gateway::resume_env_for_session(state, session_id).await;
-    let command_id = uuid::Uuid::new_v4();
+    reply_hop(spoken, session_id, command_id, "gateway env resolved", started);
     crate::state::track_command(
         &state.pending_commands,
         command_id,
@@ -243,7 +246,25 @@ pub async fn dispatch_reply(
         },
     )
     .await;
+    reply_hop(spoken, session_id, command_id, "handed to the daemon link", started);
     (command_id, dispatch)
+}
+
+/// One step of a reply's way to its daemon: info for a spoken prompt, whose
+/// delivery latency is heard, debug for any other.
+fn reply_hop(
+    spoken: bool,
+    session_id: &str,
+    command_id: uuid::Uuid,
+    hop: &str,
+    started: std::time::Instant,
+) {
+    let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    if spoken {
+        tracing::info!(%session_id, %command_id, hop, ms, "voice delivery hop");
+    } else {
+        tracing::debug!(%session_id, %command_id, hop, ms, "reply delivery hop");
+    }
 }
 
 /// Reports the outcome of one `Message` frame, when the client asked to be told.

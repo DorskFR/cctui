@@ -49,6 +49,7 @@ mod tasks;
 mod test_support;
 #[cfg(test)]
 mod tests;
+mod voice;
 
 pub(super) use settings::ensure_hook_settings;
 pub use settings::stage_mid_chat_files;
@@ -493,6 +494,7 @@ pub struct Driver {
     /// Fingerprints of text this daemon delivered per session, so a transcript
     /// user line it wrote is never mistaken for harness-injected text.
     delivered: delivered::Delivered,
+    voice: voice::VoiceClocks,
     /// Parent session id remembered per freshly-forked child `short`.
     /// `fork` dispatches a new worker but the `SessionStarted` for it is emitted
     /// later by the poll loop when the short first appears in the roster — that
@@ -809,6 +811,7 @@ impl Driver {
             pending_turns: std::sync::Mutex::new(HashMap::new()),
             deferred_peer: HashMap::new(),
             delivered: delivered::Delivered::default(),
+            voice: voice::VoiceClocks::default(),
             fork_parent_by_short: std::sync::Mutex::new(HashMap::new()),
             announced_meta: std::sync::Mutex::new(HashMap::new()),
             connected: None,
@@ -1325,6 +1328,12 @@ impl Driver {
     /// belong to an older turn, and stamping them with whatever turn happens
     /// to be in flight mints a row the server sees as new.
     async fn emit_fresh(&self, evt: AdapterEvent) {
+        if let AdapterEvent::Message { local_id, payload, .. } = &evt
+            && payload.get("role").and_then(serde_json::Value::as_str) == Some("user")
+        {
+            let text = payload.get("text").and_then(serde_json::Value::as_str).unwrap_or_default();
+            self.voice.tailed(local_id, text);
+        }
         let _ = self.events.send(self.unmask_delivered(self.stamp_turn(evt))).await;
     }
 
@@ -1423,11 +1432,14 @@ impl SessionDriver for Driver {
         text: String,
         ask_picks: Option<Vec<Vec<usize>>>,
         env: std::collections::BTreeMap<String, String>,
-        _command_id: Option<uuid::Uuid>,
+        command_id: Option<uuid::Uuid>,
         turn_id: Option<uuid::Uuid>,
     ) -> CommandOutcome {
+        self.voice.start(&local_id, &text, command_id);
         let sock = self.ensure_socket().await?;
+        self.voice.hop(&local_id, "control socket located");
         Box::pin(self.deliver_reply(&sock, &local_id, &text, ask_picks, &env, turn_id)).await?;
+        self.voice.hop(&local_id, "delivered");
         Ok(Handled::Done)
     }
 
