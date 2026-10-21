@@ -902,10 +902,7 @@ mod tests {
         state.internal_secret = Some(Arc::from("shared"));
         state.auth_config.seed_cache(hash, cached_ctx());
         let app = axum::Router::new()
-            .route(
-                "/internal/auth/purge",
-                axum::routing::post(crate::routes::internal::auth_purge),
-            )
+            .route("/internal/auth/purge", axum::routing::post(crate::routes::internal::auth_purge))
             .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -931,9 +928,8 @@ mod tests {
         let (replica_b, base) = replica_with_cached("revoked").await;
         replica_b.auth_config.seed_cache("other", cached_ctx());
 
-        let replica_a = crate::state::AppState::for_test(
-            PgPool::connect_lazy("postgres://invalid").unwrap(),
-        );
+        let replica_a =
+            crate::state::AppState::for_test(PgPool::connect_lazy("postgres://invalid").unwrap());
         replica_a
             .auth_config
             .set_peers(Arc::new(DirectPeers { client: reqwest::Client::new(), bases: vec![base] }));

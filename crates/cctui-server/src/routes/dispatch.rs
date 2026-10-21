@@ -1680,6 +1680,7 @@ mod tests {
         uid
     }
 
+    #[allow(clippy::unnecessary_wraps)] // the shape forward_within_policy's forward closure returns
     fn forwarded(status: &str) -> super::DispatchResult<super::Forwarded> {
         Ok((
             axum::http::StatusCode::ACCEPTED,
@@ -1713,11 +1714,12 @@ mod tests {
         let sid = uuid::Uuid::new_v4().to_string();
         let rules = cctui_proto::api::admin::DispatchPolicyRules::default();
         for status in ["dispatched", "deduplicated", "redispatched", "queued", "deduplicated"] {
-            super::forward_within_policy(&pool, Some((uid, &rules)), &sid, || async {
-                forwarded(status)
-            })
-            .await
-            .unwrap();
+            let (_code, _body) =
+                super::forward_within_policy(&pool, Some((uid, &rules)), &sid, || async {
+                    forwarded(status)
+                })
+                .await
+                .unwrap();
         }
         let refused = super::forward_within_policy(&pool, Some((uid, &rules)), &sid, || async {
             Err((
@@ -1882,8 +1884,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(code, axum::http::StatusCode::BAD_GATEWAY);
 
-        let failed =
-            crate::store::dispatch_records::list_failed(&pool, Some(uid)).await.unwrap();
+        let failed = crate::store::dispatch_records::list_failed(&pool, Some(uid)).await.unwrap();
         assert_eq!(failed.len(), 1);
         let original = failed[0].session_id.clone();
         assert_eq!(failed[0].reason, cctui_proto::api::FailedDispatchReason::Refused);
@@ -1935,14 +1936,11 @@ mod tests {
         assert_eq!(code, axum::http::StatusCode::CONFLICT, "re-run once");
 
         for u in [uid, other] {
-            for sql in
-                ["DELETE FROM auth_keys WHERE user_id = $1", "DELETE FROM machines WHERE user_id = $1"]
-            {
-                sqlx::query(sql)
-                    .bind(u)
-                    .execute(&pool)
-                    .await
-                    .ok();
+            for sql in [
+                "DELETE FROM auth_keys WHERE user_id = $1",
+                "DELETE FROM machines WHERE user_id = $1",
+            ] {
+                sqlx::query(sql).bind(u).execute(&pool).await.ok();
             }
             sqlx::query("DELETE FROM users WHERE id = $1").bind(u).execute(&pool).await.ok();
         }

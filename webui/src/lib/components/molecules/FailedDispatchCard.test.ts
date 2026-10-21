@@ -4,13 +4,6 @@ import { mount, unmount } from 'svelte';
 import FailedDispatchCard from './FailedDispatchCard.svelte';
 import type { FailedDispatch } from '@bindings/FailedDispatch';
 
-vi.mock('$lib/paraglide/messages', async () => {
-	const en: Record<string, string> = (await import('../../../../messages/en.json')).default;
-	const render = (key: string) => (params: Record<string, string> = {}) =>
-		en[key].replace(/\{(\w+)\}/g, (_, name: string) => params[name] ?? '');
-	return { m: new Proxy({}, { get: (_, key: string) => render(key) }) };
-});
-
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 let comp: ReturnType<typeof mount> | null = null;

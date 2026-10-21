@@ -948,6 +948,9 @@ mod tests {
             serde_json::to_value(&key).unwrap(),
             serde_json::json!({"op": "key", "key_hash": "abc"})
         );
-        assert_eq!(serde_json::to_value(CachePurge::All).unwrap(), serde_json::json!({"op": "all"}));
+        assert_eq!(
+            serde_json::to_value(CachePurge::All).unwrap(),
+            serde_json::json!({"op": "all"})
+        );
     }
 }

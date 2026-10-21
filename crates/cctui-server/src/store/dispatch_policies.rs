@@ -162,6 +162,7 @@ pub async fn dispatches_today(
     .await
 }
 
+#[cfg(test)]
 pub async fn record_use(
     exec: impl PgExecutor<'_>,
     user_id: Uuid,

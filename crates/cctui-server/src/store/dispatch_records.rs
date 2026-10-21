@@ -95,14 +95,14 @@ impl NewRecord {
         adapter: Option<&str>,
     ) -> Self {
         let p = &req.payload;
-        let (prompt_head, prompt_truncated) =
-            p.get("prompt").and_then(serde_json::Value::as_str).filter(|s| !s.is_empty()).map_or(
-                (None, false),
-                |prompt| {
-                    let (h, cut) = head(prompt, PROMPT_HEAD_BYTES);
-                    (Some(h.to_owned()), cut)
-                },
-            );
+        let (prompt_head, prompt_truncated) = p
+            .get("prompt")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map_or((None, false), |prompt| {
+                let (h, cut) = head(prompt, PROMPT_HEAD_BYTES);
+                (Some(h.to_owned()), cut)
+            });
         let mut env_keys: Vec<String> = p
             .get("env")
             .and_then(serde_json::Value::as_object)
@@ -439,7 +439,7 @@ mod tests {
     use cctui_proto::api::{DispatchRequest, FailedDispatchReason};
     use uuid::Uuid;
 
-    fn req(payload: serde_json::Value) -> DispatchRequest {
+    fn req(payload: &serde_json::Value) -> DispatchRequest {
         serde_json::from_value(serde_json::json!({
             "dispatcher": "kube",
             "session_id": "triage-PROJ-1",
@@ -466,7 +466,7 @@ mod tests {
 
     #[test]
     fn a_record_keeps_the_identifying_fields_and_no_secret() {
-        let r = req(serde_json::json!({
+        let r = req(&serde_json::json!({
             "profile": "tonbo", "repo": "cctui", "model": "opus", "adapter": "codex",
             "prompt": "fix the build", "context": {"owner": "o"},
             "env": {"GITHUB_TOKEN": "ghp_SECRETVALUE"},
@@ -502,7 +502,7 @@ mod tests {
         let rec = NewRecord::from_request(
             "s1",
             None,
-            &req(serde_json::json!({ "prompt": prompt })),
+            &req(&serde_json::json!({ "prompt": prompt })),
             None,
             None,
         );
@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn the_replay_resends_the_stored_fields_as_a_new_dispatch() {
-        let r = req(serde_json::json!({ "profile": "tonbo", "prompt": "go", "repo": "cctui" }));
+        let r = req(&serde_json::json!({ "profile": "tonbo", "prompt": "go", "repo": "cctui" }));
         let rec = NewRecord::from_request("s1", None, &r, Some("triage-PROJ-1"), None);
         let again = stored(&rec).replay_request().expect("re-runnable");
         assert_eq!(again.dispatcher, "kube");
@@ -578,7 +578,7 @@ mod tests {
         let sid = |tag: &str| format!("{tag}-{}", Uuid::new_v4());
         let (lost, fresh, refused, registered) =
             (sid("lost"), sid("fresh"), sid("refused"), sid("registered"));
-        let r = req(serde_json::json!({ "prompt": "go", "env": {"K": "V"} }));
+        let r = req(&serde_json::json!({ "prompt": "go", "env": {"K": "V"} }));
         for s in [&lost, &fresh, &refused, &registered] {
             super::insert(&pool, &NewRecord::from_request(s, Some(uid), &r, None, None))
                 .await

@@ -2461,9 +2461,7 @@ mod launch_gate_tests {
 
         let gate = |user, scopes| {
             let state = state.clone();
-            async move {
-                code(super::authorize_launch(&state, &caller(user, scopes), machine).await)
-            }
+            async move { code(super::authorize_launch(&state, &caller(user, scopes), machine).await) }
         };
         assert_eq!(gate(owner, SPAWNER).await, Ok(()));
         assert_eq!(gate(Uuid::nil(), ADMIN).await, Ok(()));

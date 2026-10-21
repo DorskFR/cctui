@@ -81,13 +81,13 @@ pub(super) fn decode_binary_frame(data: &[u8]) -> Option<DaemonFrameUp> {
 pub(super) fn parse_frame(bytes: &[u8]) -> Option<DaemonFrameUp> {
     match serde_json::from_slice::<DaemonFrameUp>(bytes) {
         Ok(frame) => Some(frame),
-        Err(err) => match serde_json::from_slice::<Value>(bytes) {
-            Ok(value) => parse_lenient(value),
-            Err(_) => {
+        Err(err) => serde_json::from_slice::<Value>(bytes).map_or_else(
+            |_| {
                 tracing::warn!(%err, "bad daemon frame");
                 None
-            }
-        },
+            },
+            parse_lenient,
+        ),
     }
 }
 
@@ -362,10 +362,9 @@ mod tests {
 
     #[test]
     fn an_unknown_event_inside_a_compressed_batch_spares_its_siblings() {
-        let mut frame = serde_json::to_value(DaemonFrameUp::Batch {
-            frames: vec![event("s0"), event("s1")],
-        })
-        .unwrap();
+        let mut frame =
+            serde_json::to_value(DaemonFrameUp::Batch { frames: vec![event("s0"), event("s1")] })
+                .unwrap();
         let unknown = json!({"type":"event","adapter_id":"a","event":{"type":"from_the_future"}});
         frame["frames"].as_array_mut().unwrap().insert(1, unknown);
         let compressed = cctui_proto::compress::zstd_compress(&serde_json::to_vec(&frame).unwrap());
@@ -375,10 +374,9 @@ mod tests {
 
     #[test]
     fn unknown_fields_on_known_events_take_the_fast_path() {
-        let mut frame = serde_json::to_value(DaemonFrameUp::Batch {
-            frames: vec![event("s0"), event("s1")],
-        })
-        .unwrap();
+        let mut frame =
+            serde_json::to_value(DaemonFrameUp::Batch { frames: vec![event("s0"), event("s1")] })
+                .unwrap();
         frame["frames"][0]["event"]["from_the_future"] = json!([1, 2]);
         frame["from_the_future"] = json!("x");
         let bytes = serde_json::to_vec(&frame).unwrap();
