@@ -1,8 +1,9 @@
 use super::{AdapterEvent, Driver, json, socket, transcript};
 
-/// How long a spoken multiline reply may take to show up in the transcript on
+/// How long Claude Code may take to show it took a spoken multiline reply on
 /// its own before the Enter-driven submit takes over.
-const AUTO_SUBMIT_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+const TAKEN_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+const TAKEN_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
 impl Driver {
     /// Repair only the idle worker named by a recovery request. Resolve its
@@ -257,6 +258,7 @@ impl Driver {
         // replies grows the transcript immediately, and a later baseline would
         // hide that submit from the confirm loop.
         let confirm = self.submit_confirm(short, local_id);
+        let sent_at = chrono::Utc::now().timestamp_millis();
         let resp =
             socket::one_shot(sock, &json!({"proto":1,"op":"reply","short":short,"text":text}))
                 .await?;
@@ -264,7 +266,7 @@ impl Driver {
         hop("reply op acked");
         let typed = resp.get("ok") != Some(&serde_json::Value::Bool(false));
         let submitted = if text.contains('\n') {
-            if spoken && socket::submit_landed(&confirm, AUTO_SUBMIT_WAIT).await {
+            if spoken && self.prompt_taken(short, &confirm, sent_at).await {
                 hop("submitted without an Enter");
                 true
             } else if let Err(err) = Box::pin(socket::attach_submit(sock, short, &confirm)).await {
@@ -281,6 +283,36 @@ impl Driver {
             socket::note_composer_emptied(short, epoch);
         }
         Ok(())
+    }
+
+    /// Whether an idle worker took a reply sent at `sent_at` (epoch ms) on its
+    /// own: its user line, the answer starting, or the worker persisting a
+    /// working tempo since. Pressing Enter into a worker already answering
+    /// waits out its spinner and can submit an empty line.
+    async fn prompt_taken(
+        &self,
+        short: &str,
+        confirm: &socket::SubmitConfirm,
+        sent_at: i64,
+    ) -> bool {
+        if matches!(confirm, socket::SubmitConfirm::Composer) {
+            return false;
+        }
+        let deadline = tokio::time::Instant::now() + TAKEN_WAIT;
+        loop {
+            if socket::turn_entry_landed(confirm)
+                || working_since(
+                    super::StateJson::read(&self.cfg.jobs_root, short).as_ref(),
+                    sent_at,
+                )
+            {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(TAKEN_POLL).await;
+        }
     }
 
     /// Pick the submit-confirmation signal for a worker: transcript growth
@@ -368,6 +400,16 @@ fn silent_since_native_respawn(
         .as_deref()
         .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
         .is_some_and(|at| at.timestamp_millis() <= started_at)
+}
+
+fn working_since(state: Option<&super::StateJson>, since_ms: i64) -> bool {
+    let Some(state) = state else { return false };
+    state.tempo.as_deref().is_some_and(|tempo| tempo != "idle")
+        && state
+            .updated_at
+            .as_deref()
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .is_some_and(|at| at.timestamp_millis() >= since_ms)
 }
 
 fn valid_recovery_env(env: &std::collections::BTreeMap<String, String>) -> bool {
@@ -842,17 +884,38 @@ mod submit_tests {
     const SPOKEN: &str =
         "<cctui-session-context voice=\"spoken\">\nbody\n</cctui-session-context>\n\nhi";
 
-    fn append_user_line(transcript: &Path) {
+    fn append_line(transcript: &Path, kind: &str) {
         let mut f = std::fs::OpenOptions::new().append(true).open(transcript).unwrap();
-        std::io::Write::write_all(&mut f, b"{\"type\":\"user\"}\n").unwrap();
+        std::io::Write::write_all(&mut f, format!("{{\"type\":\"{kind}\"}}\n").as_bytes()).unwrap();
+    }
+
+    fn write_state(jobs_root: &Path, short: &str, tempo: &str, updated_at_ms: i64) {
+        let dir = jobs_root.join(short);
+        std::fs::create_dir_all(&dir).unwrap();
+        let at = chrono::DateTime::from_timestamp_millis(updated_at_ms)
+            .unwrap()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let state = serde_json::json!({ "tempo": tempo, "updatedAt": at });
+        std::fs::write(dir.join("state.json"), state.to_string()).unwrap();
+    }
+
+    /// How the worker shows it took a `reply` with no Enter, if it does.
+    #[derive(Clone, Copy)]
+    enum Taken {
+        Never,
+        UserLine,
+        AnswerStarts,
+        Working,
+        WorkingBeforeTheReply,
     }
 
     /// A control socket recording each request's op. An Enter on an attach
-    /// submits; `reply` submits on its own only when `auto_submit`.
+    /// submits; `reply` submits on its own as `taken` says.
     fn fake_daemon(
         sock: &Path,
         transcript: PathBuf,
-        auto_submit: bool,
+        state: (PathBuf, String),
+        taken: Taken,
     ) -> (tokio::task::JoinHandle<()>, Arc<Mutex<Vec<String>>>) {
         let listener = tokio::net::UnixListener::bind(sock).unwrap();
         let ops = Arc::new(Mutex::new(Vec::new()));
@@ -867,8 +930,18 @@ mod submit_tests {
                 let request: serde_json::Value = serde_json::from_str(&line).unwrap();
                 let op = request["op"].as_str().unwrap().to_owned();
                 seen.lock().unwrap().push(op.clone());
-                if op == "reply" && auto_submit {
-                    append_user_line(&transcript);
+                if op == "reply" {
+                    match taken {
+                        Taken::UserLine => append_line(&transcript, "user"),
+                        Taken::AnswerStarts => append_line(&transcript, "assistant"),
+                        Taken::Working => write_state(
+                            &state.0,
+                            &state.1,
+                            "active",
+                            chrono::Utc::now().timestamp_millis(),
+                        ),
+                        Taken::Never | Taken::WorkingBeforeTheReply => {}
+                    }
                 }
                 write.write_all(b"{\"ok\":true}\n").await.unwrap();
                 if op != "attach" {
@@ -880,7 +953,7 @@ mod submit_tests {
                         break;
                     }
                     if keys[..n].contains(&b'\r') {
-                        append_user_line(&transcript);
+                        append_line(&transcript, "user");
                     }
                 }
             }
@@ -888,7 +961,7 @@ mod submit_tests {
         (server, ops)
     }
 
-    async fn deliver(text: &str, known_empty: bool, auto_submit: bool) -> Vec<String> {
+    async fn deliver(text: &str, known_empty: bool, taken: Taken) -> Vec<String> {
         let (mut driver, _events) = super::super::test_support::driver();
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("control.sock");
@@ -907,7 +980,11 @@ mod submit_tests {
         if known_empty {
             socket::note_composer_emptied(&short, socket::keys_epoch(&short));
         }
-        let (server, ops) = fake_daemon(&sock, transcript, auto_submit);
+        let jobs_root = driver.cfg.jobs_root.clone();
+        if matches!(taken, Taken::WorkingBeforeTheReply) {
+            write_state(&jobs_root, &short, "active", chrono::Utc::now().timestamp_millis() - 5000);
+        }
+        let (server, ops) = fake_daemon(&sock, transcript, (jobs_root, short.clone()), taken);
         tokio::time::timeout(
             std::time::Duration::from_secs(10),
             Box::pin(driver.submit_text(&sock, &short, "sess", text, false)),
@@ -922,22 +999,60 @@ mod submit_tests {
 
     #[tokio::test]
     async fn a_spoken_prompt_into_an_empty_composer_is_one_reply_op() {
-        assert_eq!(deliver(SPOKEN, true, true).await, ["reply"]);
+        assert_eq!(deliver(SPOKEN, true, Taken::UserLine).await, ["reply"]);
     }
 
     #[tokio::test]
     async fn a_spoken_prompt_still_clears_a_composer_not_known_empty() {
-        assert_eq!(deliver(SPOKEN, false, true).await, ["attach", "reply"]);
+        assert_eq!(deliver(SPOKEN, false, Taken::UserLine).await, ["attach", "reply"]);
+    }
+
+    #[tokio::test]
+    async fn a_spoken_prompt_taken_before_its_user_line_gets_no_enter() {
+        let started = std::time::Instant::now();
+        assert_eq!(deliver(SPOKEN, true, Taken::Working).await, ["reply"]);
+        assert_eq!(deliver(SPOKEN, true, Taken::AnswerStarts).await, ["reply"]);
+        assert!(started.elapsed() < TAKEN_WAIT, "no wait once the worker took the prompt");
     }
 
     #[tokio::test]
     async fn a_spoken_prompt_that_does_not_submit_itself_gets_its_enter() {
-        assert_eq!(deliver(SPOKEN, true, false).await, ["reply", "attach"]);
+        assert_eq!(deliver(SPOKEN, true, Taken::Never).await, ["reply", "attach"]);
+        assert_eq!(
+            deliver(SPOKEN, true, Taken::WorkingBeforeTheReply).await,
+            ["reply", "attach"],
+            "a working tempo written before the reply proves nothing",
+        );
     }
 
     #[tokio::test]
     async fn a_typed_reply_keeps_the_clear_and_the_enter() {
-        assert_eq!(deliver("line one\nline two", true, true).await, ["attach", "reply", "attach"]);
-        assert_eq!(deliver("one line", true, true).await, ["attach", "reply"]);
+        assert_eq!(
+            deliver("line one\nline two", true, Taken::UserLine).await,
+            ["attach", "reply", "attach"]
+        );
+        assert_eq!(
+            deliver("line one\nline two", true, Taken::Working).await,
+            ["attach", "reply", "attach"]
+        );
+        assert_eq!(deliver("one line", true, Taken::UserLine).await, ["attach", "reply"]);
+    }
+
+    #[test]
+    fn only_a_working_tempo_written_since_the_reply_counts() {
+        let state = |tempo: &str, at: &str| {
+            let mut st: super::super::StateJson = serde_json::from_value(json!({})).unwrap();
+            st.tempo = Some(tempo.into());
+            st.updated_at = Some(at.into());
+            st
+        };
+        let sent = chrono::DateTime::parse_from_rfc3339("2026-10-22T03:20:00.500Z")
+            .unwrap()
+            .timestamp_millis();
+        assert!(working_since(Some(&state("active", "2026-10-22T03:20:00.512Z")), sent));
+        assert!(!working_since(Some(&state("active", "2026-10-22T03:20:00.499Z")), sent));
+        assert!(!working_since(Some(&state("idle", "2026-10-22T03:20:01.000Z")), sent));
+        assert!(!working_since(Some(&state("active", "not a time")), sent));
+        assert!(!working_since(None, sent));
     }
 }
