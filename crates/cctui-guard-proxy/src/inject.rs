@@ -31,6 +31,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
+use crate::aws_creds::{AmbientAws, AwsCredentials};
 use crate::ghapp::GhAppMinter;
 use crate::secrets::{Credential, SecretError, SecretRef, SecretSource, render_identity};
 
@@ -50,9 +51,10 @@ pub enum AuthShape {
     /// session tokens need their `d` cookie.
     BearerCookie { cookie_name: String },
     /// AWS `SigV4` request signing — Secrets Manager and other AWS APIs. The
-    /// rule's `secret` is the secret access key; the companion `key_id_secret`
-    /// is the access key id. The signature covers the body's SHA-256, so these
-    /// requests are buffered (bounded) instead of streamed.
+    /// rule's `secret` is the secret access key and `key_id_secret` the access
+    /// key id; with neither, the sidecar's ambient AWS credentials sign. The
+    /// signature covers the body's SHA-256, so these requests are buffered
+    /// (bounded) instead of streamed.
     SigV4 { region: String, service: String },
     /// Named non-`Authorization` headers, one secret each (Datadog's
     /// `DD-API-KEY` + `DD-APPLICATION-KEY`). Every ref must resolve or none is injected.
@@ -71,11 +73,20 @@ pub struct InjectionRule {
     /// lookup key.
     pub service: String,
     pub shape: AuthShape,
-    pub secret: SecretRef,
+    /// `None` only for a `SigV4` rule signing with ambient credentials.
+    pub secret: Option<SecretRef>,
     /// Companion cookie value; required by [`AuthShape::BearerCookie`].
     pub cookie_secret: Option<SecretRef>,
-    /// Companion access key id; required by [`AuthShape::SigV4`].
+    /// Companion access key id of a static-key [`AuthShape::SigV4`] rule.
     pub key_id_secret: Option<SecretRef>,
+}
+
+impl InjectionRule {
+    const fn signs_with_ambient_aws(&self) -> bool {
+        matches!(self.shape, AuthShape::SigV4 { .. })
+            && self.key_id_secret.is_none()
+            && self.secret.is_none()
+    }
 }
 
 /// One entry of the JSON inject config: which host, what auth shape, and the
@@ -168,13 +179,14 @@ impl InjectEntry {
             other => anyhow::bail!("inject entry for {host}: unknown shape {other:?}"),
         };
         let secret = match (&shape, self.secret) {
-            (AuthShape::Headers { headers }, None) => headers[0].1.clone(),
+            (AuthShape::Headers { headers }, None) => Some(headers[0].1.clone()),
             (AuthShape::Headers { .. }, Some(_)) => {
                 anyhow::bail!(
                     "inject entry for {host}: headers shape takes `headers`, not `secret`"
                 )
             }
-            (_, Some(s)) => SecretRef::parse(&render_identity(&s, identity)?)?,
+            (_, Some(s)) => Some(SecretRef::parse(&render_identity(&s, identity)?)?),
+            (AuthShape::SigV4 { .. }, None) => None,
             (_, None) => anyhow::bail!("inject entry for {host}: missing `secret`"),
         };
         let cookie_secret = self
@@ -190,8 +202,10 @@ impl InjectEntry {
             .map(|s| SecretRef::parse(&render_identity(&s, identity)?))
             .transpose()?;
         anyhow::ensure!(
-            !matches!(shape, AuthShape::SigV4 { .. }) || key_id_secret.is_some(),
-            "inject entry for {host}: sigv4 shape needs key_id_secret"
+            !matches!(shape, AuthShape::SigV4 { .. })
+                || key_id_secret.is_some() == secret.is_some(),
+            "inject entry for {host}: sigv4 takes both key_id_secret and secret, or neither \
+             (ambient AWS credentials)"
         );
         let path_prefix = self
             .path_prefix
@@ -376,6 +390,8 @@ pub struct Injector {
     /// When present, the `github` service is served a freshly-minted GitHub App
     /// installation token instead of the stored `github` credential.
     ghapp: Option<Arc<GhAppMinter>>,
+    /// Built only when a `SigV4` rule signs with ambient credentials.
+    ambient: Option<Arc<AmbientAws>>,
 }
 
 impl Injector {
@@ -392,7 +408,14 @@ impl Injector {
         server_config.alpn_protocols = vec![b"http/1.1".to_vec()];
         let acceptor = TlsAcceptor::from(Arc::new(server_config));
         let connector = Self::build_connector(Vec::new())?;
-        Ok(Self { acceptor, connector, secrets, policy, ghapp })
+        let ambient = policy
+            .rules
+            .iter()
+            .any(InjectionRule::signs_with_ambient_aws)
+            .then(AmbientAws::default_chain)
+            .transpose()?
+            .map(Arc::new);
+        Ok(Self { acceptor, connector, secrets, policy, ghapp, ambient })
     }
 
     fn build_connector(extra_roots: Vec<CertificateDer<'static>>) -> anyhow::Result<TlsConnector> {
@@ -568,7 +591,10 @@ impl Injector {
                 Err(e) => return Err(e),
             }
         }
-        self.secrets.fetch(&rule.secret).await
+        let Some(secret) = &rule.secret else {
+            return Err(SecretError::NotFound { what: format!("{} has no secret", rule.service) });
+        };
+        self.secrets.fetch(secret).await
     }
 
     /// `SigV4` signs the body hash, so the body is buffered (≤ [`MAX_SIGV4_BODY`])
@@ -622,23 +648,20 @@ impl Injector {
         head: &[u8],
         body: &[u8],
     ) -> Vec<u8> {
-        let (AuthShape::SigV4 { region, service }, Some(key_id_ref)) =
-            (&rule.shape, &rule.key_id_secret)
-        else {
+        let AuthShape::SigV4 { region, service } = &rule.shape else {
             return head.to_vec();
         };
-        let (key_id, secret_key) =
-            match (self.secrets.fetch(key_id_ref).await, self.secrets.fetch(&rule.secret).await) {
-                (Ok(k), Ok(s)) => (k, s),
-                (Err(e), _) | (_, Err(e)) => {
-                    tracing::warn!(
-                        "sigv4 credentials for {}/{host} (forwarding agent header): {e}",
-                        rule.service
-                    );
-                    return head.to_vec();
-                }
-            };
-        match sigv4_head(head, host, region, service, key_id.expose(), secret_key.expose(), body) {
+        let creds = match self.sigv4_credentials(rule).await {
+            Ok(creds) => creds,
+            Err(e) => {
+                tracing::warn!(
+                    "sigv4 credentials for {}/{host} (forwarding agent header): {e:#}",
+                    rule.service
+                );
+                return head.to_vec();
+            }
+        };
+        match sigv4_head(head, host, region, service, &creds, body) {
             Ok(signed) => signed,
             Err(e) => {
                 tracing::warn!(
@@ -649,6 +672,19 @@ impl Injector {
             }
         }
     }
+
+    async fn sigv4_credentials(&self, rule: &InjectionRule) -> anyhow::Result<AwsCredentials> {
+        match (&rule.key_id_secret, &rule.secret, &self.ambient) {
+            (Some(key_id_ref), Some(secret_ref), _) => {
+                match (self.secrets.fetch(key_id_ref).await, self.secrets.fetch(secret_ref).await) {
+                    (Ok(k), Ok(s)) => Ok(AwsCredentials::new(k.expose(), s.expose())),
+                    (Err(e), _) | (_, Err(e)) => Err(anyhow::anyhow!("{e}")),
+                }
+            }
+            (None, None, Some(ambient)) => ambient.credentials().await,
+            _ => anyhow::bail!("no AWS credential source for this rule"),
+        }
+    }
 }
 
 const MAX_SIGV4_BODY: usize = 1024 * 1024;
@@ -657,14 +693,14 @@ const MAX_SIGV4_BODY: usize = 1024 * 1024;
 /// agent's `Authorization` and `x-amz-*` signing artifacts are stripped, every
 /// other header is forwarded, and only `host`, `content-type`, and the
 /// remaining `x-amz-*` headers are covered by the signature (AWS requires all
-/// `x-amz-*` headers present in the request to be signed).
+/// `x-amz-*` headers present in the request to be signed). A session token
+/// adds a signed `x-amz-security-token`.
 fn sigv4_head(
     head: &[u8],
     host: &str,
     region: &str,
     service: &str,
-    key_id: &str,
-    secret_key: &str,
+    creds: &AwsCredentials,
     body: &[u8],
 ) -> anyhow::Result<Vec<u8>> {
     let text = String::from_utf8_lossy(head);
@@ -697,9 +733,14 @@ fn sigv4_head(
             || n.eq_ignore_ascii_case("content-type")
             || n.len() >= 6 && n.as_bytes()[..6].eq_ignore_ascii_case(b"x-amz-")
     });
-    let identity =
-        aws_credential_types::Credentials::new(key_id, secret_key, None, None, "guard-proxy")
-            .into();
+    let identity = aws_credential_types::Credentials::new(
+        &creds.key_id,
+        &creds.secret_key,
+        creds.session_token.clone(),
+        None,
+        "guard-proxy",
+    )
+    .into();
     let params = aws_sigv4::sign::v4::SigningParams::builder()
         .identity(&identity)
         .region(region)
@@ -1188,7 +1229,7 @@ mod tests {
         assert!(matches!(rules[0].shape, AuthShape::Bearer));
         assert_eq!(
             rules[0].secret,
-            SecretRef::parse("vault:kvmount/data/cctui/workers#GITHUB_TOKEN_ACME").unwrap()
+            Some(SecretRef::parse("vault:kvmount/data/cctui/workers#GITHUB_TOKEN_ACME").unwrap())
         );
 
         assert_eq!(rules[1].host, "github.com");
@@ -1227,7 +1268,7 @@ mod tests {
                 ("DD-APPLICATION-KEY".to_owned(), SecretRef::parse("env:DD_APP_KEY").unwrap()),
             ]
         );
-        assert_eq!(rules[0].secret, headers[0].1);
+        assert_eq!(rules[0].secret.as_ref(), Some(&headers[0].1));
     }
 
     #[test]
@@ -1257,9 +1298,9 @@ mod tests {
         assert_eq!(rules[1].path_prefix, None);
 
         let pack = select_rule(&rules, "/Acme/context-packs/info/refs").unwrap();
-        assert_eq!(pack.secret, SecretRef::parse("env:PACK_TOKEN").unwrap());
+        assert_eq!(pack.secret, Some(SecretRef::parse("env:PACK_TOKEN").unwrap()));
         let other = select_rule(&rules, "/Acme/work-repo/info/refs").unwrap();
-        assert_eq!(other.secret, SecretRef::parse("env:GITHUB_TOKEN_ZEPHYR").unwrap());
+        assert_eq!(other.secret, Some(SecretRef::parse("env:GITHUB_TOKEN_ZEPHYR").unwrap()));
         assert!(select_rule(&rules[..1], "/Other/repo").is_none());
     }
 
@@ -1285,6 +1326,52 @@ mod tests {
             &rules[1].shape,
             AuthShape::SigV4 { region, service } if region == "us-east-1" && service == "sts"
         ));
+        assert!(!rules[0].signs_with_ambient_aws());
+    }
+
+    #[test]
+    fn inject_config_parses_sigv4_ambient_without_the_static_pair() {
+        let json = r#"[
+            {"host": "secretsmanager.ap-northeast-1.amazonaws.com", "shape": "sigv4"}
+        ]"#;
+        let rules = load_inject_config(json, "acme").unwrap();
+        assert!(matches!(
+            &rules[0].shape,
+            AuthShape::SigV4 { region, service }
+                if region == "ap-northeast-1" && service == "secretsmanager"
+        ));
+        assert_eq!(rules[0].secret, None);
+        assert_eq!(rules[0].key_id_secret, None);
+        assert!(rules[0].signs_with_ambient_aws());
+    }
+
+    #[test]
+    fn sigv4_signs_the_session_token_of_temporary_credentials() {
+        let h = head(
+            "POST / HTTP/1.1\nHost: secretsmanager.ap-northeast-1.amazonaws.com\nContent-Type: application/x-amz-json-1.1\nX-Amz-Target: secretsmanager.GetSecretValue\nX-Amz-Security-Token: agentsessiontoken\nContent-Length: 2\n\n",
+        );
+        let creds = AwsCredentials {
+            key_id: "ASIAEXAMPLE".to_owned(),
+            secret_key: "verysecret".to_owned(),
+            session_token: Some("SESSIONTOKEN".to_owned()),
+            expiry: None,
+        };
+        let out = sigv4_head(
+            &h,
+            "secretsmanager.ap-northeast-1.amazonaws.com",
+            "ap-northeast-1",
+            "secretsmanager",
+            &creds,
+            b"{}",
+        )
+        .unwrap();
+        let out = as_text(&out);
+        assert!(out.contains("authorization: AWS4-HMAC-SHA256 Credential=ASIAEXAMPLE/"), "{out}");
+        assert!(out.contains("x-amz-security-token: SESSIONTOKEN\r\n"), "{out}");
+        let signed_headers = out.split("SignedHeaders=").nth(1).unwrap().split(',').next().unwrap();
+        assert!(signed_headers.contains("x-amz-security-token"), "{signed_headers}");
+        assert!(!out.contains("agentsessiontoken"), "agent session token must be gone: {out}");
+        assert_eq!(out.to_ascii_lowercase().matches("x-amz-security-token:").count(), 1);
     }
 
     #[test]
@@ -1307,8 +1394,7 @@ mod tests {
             "secretsmanager.ap-northeast-1.amazonaws.com",
             "ap-northeast-1",
             "secretsmanager",
-            "AKIDEXAMPLE",
-            "verysecret",
+            &AwsCredentials::new("AKIDEXAMPLE", "verysecret"),
             br#"{"SecretId":"dev/example"}X"#,
         )
         .unwrap();
@@ -1328,6 +1414,7 @@ mod tests {
         assert!(!out.contains("19700101"), "agent x-amz-date must be gone: {out}");
         assert!(!out.contains("garbage"), "{out}");
         assert!(!out.contains("agentsessiontoken"), "agent session token must be gone: {out}");
+        assert!(!out.to_ascii_lowercase().contains("x-amz-security-token"), "{out}");
         assert!(out.contains("abcdeéf: multibyte-name\r\n"), "{out}");
         assert!(out.ends_with("\r\n\r\n"));
     }
@@ -1342,8 +1429,7 @@ mod tests {
             "sts.us-east-1.amazonaws.com",
             "us-east-1",
             "sts",
-            "AKIDEXAMPLE",
-            "verysecret",
+            &AwsCredentials::new("AKIDEXAMPLE", "verysecret"),
             b"",
         )
         .unwrap();
@@ -1382,6 +1468,11 @@ mod tests {
                 r#"[{"host": "secretsmanager.ap-northeast-1.amazonaws.com", "shape": "sigv4",
                      "secret": "env:X"}]"#,
                 "sigv4 missing key_id_secret",
+            ),
+            (
+                r#"[{"host": "secretsmanager.ap-northeast-1.amazonaws.com", "shape": "sigv4",
+                     "key_id_secret": "env:K"}]"#,
+                "sigv4 missing secret",
             ),
             (
                 r#"[{"host": "a.com", "shape": "cookie", "secret": "env:X"}]"#,
@@ -1641,7 +1732,7 @@ mod tests {
             key_id_secret: matches!(shape, AuthShape::SigV4 { .. })
                 .then(|| test_ref("TEST_KEY_ID")),
             shape,
-            secret: test_ref("TEST_SECRET"),
+            secret: Some(test_ref("TEST_SECRET")),
             cookie_secret: None,
         }]);
         let mut inj = Injector::new(client_ca.clone(), secrets, policy, None).unwrap();
@@ -1740,6 +1831,7 @@ mod tests {
             service: "secretsmanager".to_owned(),
         };
         let (inj, ca) = injector_for(&up, MockBackend(Ok("AKID")), shape);
+        assert!(inj.ambient.is_none(), "static-key rules never build the ambient chain");
         let payload = r#"{"SecretId":"dev/example"}"#;
         let req = format!(
             "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-amz-json-1.1\r\nContent-Length: {}\r\nX-Amz-Target: secretsmanager.GetSecretValue\r\nAuthorization: AWS4-HMAC-SHA256 Credential=DUMMY/garbage\r\nX-Amz-Date: 19700101T000000Z\r\nConnection: close\r\n\r\n{payload}",
@@ -1751,6 +1843,49 @@ mod tests {
         assert!(auth.contains("/ap-northeast-1/secretsmanager/aws4_request"), "{auth}");
         assert!(!auth.contains("DUMMY"), "agent auth must be gone: {auth}");
         assert_eq!(body, payload, "body must arrive byte-identical");
+    }
+
+    #[tokio::test]
+    async fn sigv4_ambient_e2e_signs_with_the_session_token() {
+        let up = spawn_upstream_with(true).await;
+        let client_ca = Arc::new(PerPodCa::generate().unwrap());
+        let secrets =
+            Arc::new(SecretSource::new(Box::new(MockBackend(Err(()))), Duration::from_mins(2)));
+        let policy = InjectionPolicy::new(vec![InjectionRule {
+            host: "localhost".to_owned(),
+            path_prefix: None,
+            service: "svc".to_owned(),
+            shape: AuthShape::SigV4 {
+                region: "ap-northeast-1".to_owned(),
+                service: "secretsmanager".to_owned(),
+            },
+            secret: None,
+            cookie_secret: None,
+            key_id_secret: None,
+        }]);
+        let mut inj = Injector::new(client_ca.clone(), secrets, policy, None).unwrap();
+        assert!(inj.ambient.is_some());
+        inj.connector = Injector::build_connector(vec![up.ca.ca_der().clone()]).unwrap();
+        let creds = AwsCredentials {
+            key_id: "ASIAAMBIENT".to_owned(),
+            secret_key: "pod-secret".to_owned(),
+            session_token: Some("pod-session-token".to_owned()),
+            expiry: None,
+        };
+        inj.ambient = Some(Arc::new(AmbientAws::new(
+            Box::new(crate::aws_creds::FixedSource(creds)),
+            Arc::new(std::time::SystemTime::now),
+        )));
+        let payload = r#"{"SecretId":"dev/example"}"#;
+        let req = format!(
+            "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-amz-json-1.1\r\nContent-Length: {}\r\nX-Amz-Target: secretsmanager.GetSecretValue\r\nAuthorization: AWS4-HMAC-SHA256 Credential=DUMMY/garbage\r\nConnection: close\r\n\r\n{payload}",
+            payload.len()
+        );
+        let got = roundtrip_raw(Arc::new(inj), &client_ca, up.addr.port(), &req).await;
+        let (auth, body) = got.split_once('|').expect("upstream echoes auth|body");
+        assert!(auth.starts_with("AWS4-HMAC-SHA256 Credential=ASIAAMBIENT/"), "{auth}");
+        assert!(auth.contains("x-amz-security-token"), "token must be signed: {auth}");
+        assert_eq!(body, payload);
     }
 
     #[tokio::test]
@@ -1805,7 +1940,7 @@ mod tests {
             path_prefix: path_prefix.map(str::to_owned),
             service: "svc".to_owned(),
             shape: AuthShape::Bearer,
-            secret: test_ref(var),
+            secret: Some(test_ref(var)),
             cookie_secret: None,
             key_id_secret: None,
         };

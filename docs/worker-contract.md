@@ -363,14 +363,14 @@ startup**: a partially applied credential config is worse than none.
 | Field | Required | Meaning |
 |---|---|---|
 | `host` | yes | Host to TLS-terminate (lowercased). Repeat the host for several path-scoped rules. |
-| `secret` | yes (except `headers`) | Secret ref of the credential to inject. |
+| `secret` | yes (except `headers`, ambient `sigv4`) | Secret ref of the credential to inject. |
 | `shape` | no (`bearer`) | `bearer`, `basic`/`git`, `bearer+cookie`/`cookie`, `sigv4`, or `headers`. |
 | `service` | no (`host`) | Label for logs and GitHub-App provider matching — never a lookup key. |
 | `path_prefix` | no | Scopes the rule to a request path; must start with `/`. The **longest** matching prefix wins, ties keep config order, and a request matching no rule forwards the agent's head unchanged. |
 | `username` | no (`x-access-token`) | Basic-auth username. |
 | `cookie_name` / `cookie_secret` | `cookie_secret` required for `bearer+cookie` | Companion session cookie (default name `d`). |
 | `headers` | required for `headers` | Map of header name → secret ref (no `Authorization`). Replaces `secret`. |
-| `region` / `aws_service` / `key_id_secret` | `key_id_secret` required for `sigv4` | `SigV4` signing params; `region`/`aws_service` default from a `<service>.<region>.amazonaws.com` host. `secret` is the secret access key, `key_id_secret` the access key id. |
+| `region` / `aws_service` / `key_id_secret` | no | `SigV4` signing params; `region`/`aws_service` default from a `<service>.<region>.amazonaws.com` host. `secret` is the secret access key, `key_id_secret` the access key id: give both, or neither to sign with the sidecar's ambient AWS credentials. Only one of the two is a config error. |
 
 ```jsonc
 [
@@ -387,6 +387,38 @@ startup**: a partially applied credential config is worse than none.
 `sigv4` requests are buffered (≤1 MiB) so the signature can cover the body hash;
 a chunked or oversized body cannot be hashed and forwards unchanged, exactly
 like a credential miss.
+
+A `sigv4` rule without `secret`/`key_id_secret` signs with the **sidecar's**
+ambient AWS credentials. The first configured source wins:
+
+1. `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (+ `AWS_SESSION_TOKEN`).
+2. Web identity (IRSA): `AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN` exchanged
+   through STS `AssumeRoleWithWebIdentity` (`AWS_REGION` picks the regional STS
+   endpoint, `AWS_ENDPOINT_URL_STS` overrides it).
+3. Container endpoint (ECS, EKS Pod Identity): `AWS_CONTAINER_CREDENTIALS_FULL_URI`
+   with `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE` (re-read on every fetch) or
+   `AWS_CONTAINER_AUTHORIZATION_TOKEN`, or `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`.
+   Plain `http` is only accepted for loopback, `169.254.170.2`,
+   `169.254.170.23` and `fd00:ec2::23`.
+4. `IMDSv2`, unless `AWS_EC2_METADATA_DISABLED=true`.
+
+Temporary credentials are cached and refreshed 5 minutes before they expire
+(a failed refresh keeps the cached ones until their real expiry), and their
+session token is sent and signed as `x-amz-security-token`. With no source the
+request forwards unchanged, like a credential miss. Only the sidecar resolves
+these credentials: the worker uid cannot reach `169.254.0.0/16`
+(`worker-net-init.sh`), and the agent's own `x-amz-security-token` is always
+stripped.
+
+```jsonc
+[
+  // static key pair
+  { "host": "secretsmanager.ap-northeast-1.amazonaws.com", "shape": "sigv4",
+    "key_id_secret": "env:AWS_ACCESS_KEY_ID", "secret": "env:AWS_SECRET_ACCESS_KEY" },
+  // ambient credentials (e.g. EKS Pod Identity on the sidecar)
+  { "host": "sts.us-east-1.amazonaws.com", "shape": "sigv4" }
+]
+```
 
 **Per-pod CA.** At boot the sidecar mints a CA (via `rcgen`), keeps the private
 key **in memory only** (never on disk), and writes only the public cert (PEM,

@@ -10,6 +10,7 @@
 //! IPv4 only — IPv6 egress is denied at the iptables layer by the worker
 //! entrypoint.
 
+mod aws_creds;
 mod denylist;
 mod forward;
 mod ghapp;
@@ -374,7 +375,7 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert_eq!(
             rules[0].secret,
-            SecretRef::parse("vault:kvmount/data/cctui/workers#GITHUB_TOKEN_ACME").unwrap()
+            Some(SecretRef::parse("vault:kvmount/data/cctui/workers#GITHUB_TOKEN_ACME").unwrap())
         );
     }
 
