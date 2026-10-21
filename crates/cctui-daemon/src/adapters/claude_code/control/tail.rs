@@ -213,6 +213,30 @@ mod tests {
     use super::super::test_support::*;
 
     #[tokio::test]
+    async fn a_text_watched_session_is_tailed_between_polls_and_others_wait() {
+        let (mut d, mut rx) = driver();
+        write_main_transcript(&d, "watch001", &[&text_line("one")]);
+        write_main_transcript(&d, "other001", &[&text_line("uno")]);
+        let roster = || vec![snap("watch001", "working", None), snap("other001", "working", None)];
+        d.apply_snapshot(roster()).await;
+        let _ = drain_messages(&mut rx);
+        assert!(!d.has_text_watch());
+
+        crate::text_deltas::set("watch001-uuid", true);
+        write_main_transcript(&d, "watch001", &[&text_line("two")]);
+        write_main_transcript(&d, "other001", &[&text_line("dos")]);
+        let watched = d.has_text_watch();
+        d.tail_watched().await;
+        crate::text_deltas::set("watch001-uuid", false);
+        assert!(watched);
+        assert_eq!(drain_messages(&mut rx), vec!["two"]);
+        assert!(!d.has_text_watch());
+
+        d.apply_snapshot(roster()).await;
+        assert_eq!(drain_messages(&mut rx), vec!["dos"], "the poll does not re-send it");
+    }
+
+    #[tokio::test]
     async fn only_the_forward_tail_stamps_a_turn_id() {
         // acceptance: a replay window must re-emit a user line byte-identically
         // to the forward tail, turn id included, or the server's dedupe sees a

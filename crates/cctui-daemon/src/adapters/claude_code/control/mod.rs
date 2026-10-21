@@ -57,6 +57,10 @@ use settings::{
     with_bg_isolation,
 };
 
+/// How often a session with a text watcher has its transcript tailed
+/// between polls.
+const WATCHED_TAIL_INTERVAL: Duration = Duration::from_millis(200);
+
 /// Config knobs read from `adapters_enabled.config`.
 #[derive(Debug, Clone)]
 pub struct DriverConfig {
@@ -908,9 +912,12 @@ impl Driver {
         self.maybe_dispatch_on_start().await;
         let mut tick = tokio::time::interval(self.cfg.poll_interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut watched_tick = tokio::time::interval(WATCHED_TAIL_INTERVAL);
+        watched_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let events = self.events.clone();
         let mut connected = self.connected.take();
         loop {
+            let watched = self.has_text_watch();
             tokio::select! {
                 // Biased: the interval's first tick is ready immediately, so an
                 // unbiased select can poll before a queued `ResumeMarks` is
@@ -933,6 +940,7 @@ impl Driver {
                     }
                     self.reannounce_live().await;
                 }
+                _ = watched_tick.tick(), if watched => self.tail_watched().await,
                 _ = tick.tick() => {
                     if let Err(err) = self.poll_once().await {
                         tracing::debug!(%err, "claude daemon poll failed (will retry)");
