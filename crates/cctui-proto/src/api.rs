@@ -1338,6 +1338,42 @@ pub struct FailedDispatch {
     /// `None` when the stored fields re-send as a new dispatch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rerun_blocked: Option<RerunBlocker>,
+    /// A later dispatch of the same work by the same caller that ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
+    /// The viewer dismissed this card; only listed for the history.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dismissed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_exit: Option<WorkerExit>,
+}
+
+/// How a dispatched worker's container ended, read from the cluster before
+/// its pod is reaped. The log tail is scrubbed of secret-looking values.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct WorkerExit {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<i32>,
+    /// The last lines the container wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_tail: Option<String>,
+    /// Why the log tail is missing, e.g. the permission the dispatcher lacks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logs_error: Option<String>,
+}
+
+/// Body of `POST /api/v1/dispatch-records/dismiss-all`'s reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct DismissedDispatches {
+    pub dismissed: u64,
 }
 
 /// `image_id` is referenced as `cctui-img://<image_id>`.

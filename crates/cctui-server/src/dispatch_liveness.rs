@@ -1,6 +1,10 @@
 //! Ends a dispatched session whose dispatcher reports its workload dead
 //! (`OOMKilled`, crash loop, un-pullable image, stuck `Pending`): a worker killed
 //! by the kernel never reaches its exit trap, so nothing else reports it.
+//!
+//! A session whose workflow guard already reached its exit did its work: a
+//! failed Job after that is the container's exit code, and the session ends
+//! `completed`. Without that evidence a failure is a crash.
 
 use cctui_proto::models::SessionEndReason;
 use uuid::Uuid;
@@ -20,6 +24,8 @@ const HANDLE_MAX_AGE_HOURS: i64 = 48;
 
 /// Server guesses at a lost worker, overwritten by a reported cause.
 const TRANSPORT_ENDS: &[&str] = &["daemon_lost", "machine_offline"];
+
+const EXITED_AFTER_COMPLETION: &str = "completed (worker exited non-zero)";
 
 /// The persisted end reason for a dispatcher's verbatim failure reason.
 ///
@@ -99,29 +105,91 @@ pub async fn sweep(state: &AppState) {
     }
 }
 
-async fn probe(state: &AppState, row: LiveHandle) {
+/// The dispatcher's failure reason, once the worker's exit is kept on the
+/// dispatch record; `None` while the workload is not failed.
+async fn failure_of(
+    state: &AppState,
+    user_id: Option<Uuid>,
+    dispatcher_name: &str,
+    session_id: &str,
+    handle: &str,
+) -> Option<String> {
     let Ok(Some(dispatcher)) =
-        crate::routes::dispatch::resolve_dispatcher(state, row.user_id, &row.dispatcher_name).await
+        crate::routes::dispatch::resolve_dispatcher(state, user_id, dispatcher_name).await
+    else {
+        return None;
+    };
+    let Ok((HandleStatus::Failed(reason), exit)) = dispatcher.status_detail(handle).await else {
+        return None;
+    };
+    if let Some(exit) = exit {
+        let exit = dispatch_records::scrub_worker_exit(&exit);
+        if let Err(err) = dispatch_records::set_worker_exit(&state.pool, session_id, &exit).await {
+            tracing::warn!(%err, %session_id, "worker exit not stored");
+        }
+    }
+    Some(reason.unwrap_or_else(|| "workload failed".to_owned()))
+}
+
+/// Whether the session's workflow guard reached its exit, read from this
+/// replica's mirror, then the table any replica wrote. A session end by the
+/// daemon forgets the step, but such a session is never probed.
+async fn guard_exited(pool: &sqlx::PgPool, session_id: &str) -> bool {
+    if crate::guard_step::get(session_id).is_some_and(|step| step.exited()) {
+        return true;
+    }
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM guard_steps \
+                        WHERE session_id = $1 AND (state->>'step')::bigint < 0)",
+    )
+    .bind(session_id)
+    .fetch_one(pool)
+    .await
+    .unwrap_or_else(|err| {
+        tracing::warn!(%err, %session_id, "guard step read failed");
+        false
+    })
+}
+
+/// How the session ends for a failed workload: `completed` when its guard
+/// already exited, else the cause the failure names.
+async fn verdict(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    failure: String,
+) -> (SessionEndReason, String) {
+    if guard_exited(pool, session_id).await {
+        (SessionEndReason::Completed, format!("{EXITED_AFTER_COMPLETION}: {failure}"))
+    } else {
+        (end_reason_for(&failure), failure)
+    }
+}
+
+async fn probe(state: &AppState, row: LiveHandle) {
+    let Some(failure) =
+        failure_of(state, row.user_id, &row.dispatcher_name, &row.session_id, &row.handle).await
     else {
         return;
     };
-    let Ok(HandleStatus::Failed(reason)) = dispatcher.status(&row.handle).await else {
-        return;
-    };
-    let detail = reason.unwrap_or_else(|| "workload failed".to_owned());
-    let end_reason = end_reason_for(&detail);
+    let (end_reason, detail) = verdict(&state.pool, &row.session_id, failure).await;
     if !end_session(&state.pool, &row.session_id, end_reason, &detail).await {
         return;
     }
-    tracing::warn!(
-        session_id = %row.session_id,
-        dispatcher = %row.dispatcher_name,
-        handle = %row.handle,
-        end_reason = end_reason.as_str(),
-        "dispatched session ended: {detail}"
-    );
+    let severity = if end_reason == SessionEndReason::Completed {
+        tracing::info!(session_id = %row.session_id, handle = %row.handle, "{detail}");
+        events::Severity::Info
+    } else {
+        tracing::warn!(
+            session_id = %row.session_id,
+            dispatcher = %row.dispatcher_name,
+            handle = %row.handle,
+            end_reason = end_reason.as_str(),
+            "dispatched session ended: {detail}"
+        );
+        events::Severity::Warn
+    };
     let mut event = Event::new(kind::SESSION_ENDED, Actor::Reaper)
-        .severity(events::Severity::Warn)
+        .severity(severity)
         .session(row.session_id)
         .detail(serde_json::json!({
             "end_reason": end_reason.as_str(),
@@ -139,15 +207,10 @@ async fn probe(state: &AppState, row: LiveHandle) {
 /// dispatch record carries the cause instead.
 async fn probe_unregistered(state: &AppState, row: dispatch_records::UnregisteredHandle) {
     let dispatch_records::UnregisteredHandle { session_id, user_id, dispatcher_name, handle } = row;
-    let Ok(Some(dispatcher)) =
-        crate::routes::dispatch::resolve_dispatcher(state, user_id, &dispatcher_name).await
+    let Some(detail) = failure_of(state, user_id, &dispatcher_name, &session_id, &handle).await
     else {
         return;
     };
-    let Ok(HandleStatus::Failed(reason)) = dispatcher.status(&handle).await else {
-        return;
-    };
-    let detail = reason.unwrap_or_else(|| "workload failed".to_owned());
     let end_reason = end_reason_for(&detail);
     let marked =
         dispatch_records::mark_failed(&state.pool, &session_id, end_reason.as_str(), &detail).await;
@@ -262,6 +325,15 @@ mod tests {
         id: Uuid,
         verdict: (Option<&'static str>, Option<&'static str>),
     ) -> tokio::task::JoinHandle<()> {
+        fake_dispatcher_exiting(state, id, verdict, None)
+    }
+
+    fn fake_dispatcher_exiting(
+        state: &AppState,
+        id: Uuid,
+        verdict: (Option<&'static str>, Option<&'static str>),
+        worker_exit: Option<cctui_proto::api::WorkerExit>,
+    ) -> tokio::task::JoinHandle<()> {
         let (tx, mut rx) = mpsc::channel::<DispatcherFrameDown>(8);
         state.bus.register_dispatcher(id, tx);
         let bus = state.bus.clone();
@@ -277,6 +349,7 @@ mod tests {
                         handle,
                         state: verdict.0.map(Into::into),
                         error: verdict.1.map(Into::into),
+                        worker_exit: worker_exit.clone(),
                     },
                 ));
             }
@@ -377,6 +450,86 @@ mod tests {
             .execute(&pool)
             .await
             .ok();
+    }
+
+    const BACKOFF: &str = "Job has reached the specified backoff limit";
+
+    /// A dispatched, registered session with a guard at `step` and a Job the
+    /// dispatcher reports failed with exit code 1.
+    async fn backoff_failure(tag: &str, step: i64) -> Option<(sqlx::PgPool, Uuid, String)> {
+        let url = crate::routes::gateway::test_db_url(tag)?;
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let (uid, machine) = crate::events::tests::seed_user_machine(&pool, tag).await;
+        let name = format!("k8s-{uid}");
+        let dispatcher = seed_dispatcher(&pool, uid, &name).await;
+        let sid = crate::events::tests::seed_session(&pool, uid, machine, Some(tag)).await;
+        let req: cctui_proto::api::DispatchRequest = serde_json::from_value(
+            serde_json::json!({"dispatcher": name, "payload": {"prompt": "go", "name": tag}}),
+        )
+        .unwrap();
+        let record = dispatch_records::NewRecord::from_request(&sid, Some(uid), &req, None, None);
+        dispatch_records::insert(&pool, &record).await.unwrap();
+        dispatch_records::set_outcome(&pool, &sid, "forwarded", None).await.unwrap();
+        seed_handle(&pool, &sid, &name, &format!("jobs/cctui-worker-{tag}")).await;
+        let guard = cctui_proto::guard_step::GuardStepState { step, ..Default::default() };
+        sqlx::query("INSERT INTO guard_steps (session_id, state) VALUES ($1, $2)")
+            .bind(&sid)
+            .bind(sqlx::types::Json(&guard))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let exit = cctui_proto::api::WorkerExit {
+            container: Some("worker".into()),
+            exit_code: Some(1),
+            log_tail: Some("result written\nGITHUB_TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123".into()),
+            ..Default::default()
+        };
+        let fake =
+            fake_dispatcher_exiting(&state, dispatcher, (Some("failed"), Some(BACKOFF)), Some(exit));
+        sweep(&state).await;
+        fake.abort();
+        Some((pool, uid, sid))
+    }
+
+    #[tokio::test]
+    async fn a_failed_job_after_the_guard_exited_is_a_completed_session() {
+        let Some((pool, uid, sid)) = backoff_failure("dispatch_liveness_completed", -1).await
+        else {
+            return;
+        };
+        assert_eq!(
+            status(&pool, &sid).await,
+            (
+                "ended".into(),
+                Some("completed".into()),
+                Some(format!("completed (worker exited non-zero): {BACKOFF}")),
+            )
+        );
+        assert!(
+            dispatch_records::list_failed(&pool, Some(uid)).await.unwrap().is_empty(),
+            "no failure card for work that was done"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_job_without_completion_evidence_stays_a_crash() {
+        let Some((pool, uid, sid)) = backoff_failure("dispatch_liveness_crash", 2).await else {
+            return;
+        };
+        assert_eq!(
+            status(&pool, &sid).await,
+            ("ended".into(), Some("crashed".into()), Some(BACKOFF.into()))
+        );
+        let listed = dispatch_records::list_failed(&pool, Some(uid)).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].reason, cctui_proto::api::FailedDispatchReason::Crashed);
+        assert_eq!(listed[0].detail.as_deref(), Some(BACKOFF));
+        let exit = listed[0].worker_exit.as_ref().expect("the exit is on the card");
+        assert_eq!(exit.exit_code, Some(1));
+        let log = exit.log_tail.as_deref().unwrap();
+        assert!(log.starts_with("result written\n"), "{log}");
+        assert!(!log.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123"), "a token reached the card: {log}");
     }
 
     #[tokio::test]

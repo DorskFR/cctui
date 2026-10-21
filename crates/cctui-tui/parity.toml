@@ -428,6 +428,18 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "post_dispatch_records_by_id_dismiss"
+# POST /dispatch-records/{id}/dismiss — Hide a failed dispatch from the caller's list.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_dispatch_records_dismiss_all"
+# POST /dispatch-records/dismiss-all — Hide every failed dispatch the caller's list shows.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "get_dispatchers"
 # GET /dispatchers — List enrolled dispatchers with liveness.
 tui = "waived"

@@ -7,6 +7,7 @@
 
 use std::future::Future;
 
+use cctui_proto::api::WorkerExit;
 use cctui_proto::ws::WireDispatchSpec;
 use sha1::{Digest, Sha1};
 
@@ -65,6 +66,12 @@ pub trait Dispatcher: Send + Sync {
     ) -> impl Future<Output = anyhow::Result<(HandleState, Option<String>)>> + Send;
 
     fn cancel(&self, handle: &str) -> impl Future<Output = anyhow::Result<()>> + Send;
+
+    /// How a failed worker's container ended, with its last log lines; `None`
+    /// where the platform cannot tell.
+    fn worker_exit(&self, _handle: &str) -> impl Future<Output = Option<WorkerExit>> + Send {
+        std::future::ready(None)
+    }
 }
 
 /// `cctui-worker-<sha1(dedup_source)[:12]>` — deterministic so a repeat dispatch

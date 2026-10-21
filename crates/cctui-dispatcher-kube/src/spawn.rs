@@ -25,6 +25,7 @@ use cctui_orchestrator::{
     ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, LABEL_WORKER_PROFILE, WorkerProfile,
     WorkerProfileSpec,
 };
+use cctui_proto::api::WorkerExit;
 use cctui_proto::worker_env::check_payload_env;
 use cctui_proto::ws::WireDispatchSpec;
 use k8s_openapi::api::batch::v1::Job;
@@ -32,6 +33,8 @@ use k8s_openapi::api::core::v1::{Pod, Secret};
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams, PropagationPolicy};
 use kube::{Client, Error as KubeError};
 use tokio_util::sync::CancellationToken;
+
+mod worker_exit;
 
 /// A pod wedged `Pending` longer than this (no schedulable node / image still
 /// failing to pull) is reported `Failed` rather than `Running`.
@@ -1152,6 +1155,10 @@ impl Dispatcher for Spawner {
 
     async fn cancel(&self, handle: &str) -> anyhow::Result<()> {
         self.cancel_worker(handle).await
+    }
+
+    async fn worker_exit(&self, handle: &str) -> Option<WorkerExit> {
+        self.read_worker_exit(handle).await
     }
 }
 

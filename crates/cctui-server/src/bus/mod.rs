@@ -1943,6 +1943,7 @@ mod tests {
                     handle: "h".into(),
                     state: Some("complete".into()),
                     error: None,
+                    worker_exit: None,
                 },
             ));
         });
