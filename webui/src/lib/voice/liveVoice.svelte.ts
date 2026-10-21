@@ -26,6 +26,8 @@ export type LiveStatus =
 export type SpokenLanguage = 'auto' | 'en' | 'fr';
 export const SPOKEN_LANGUAGES: readonly SpokenLanguage[] = ['auto', 'en', 'fr'];
 
+const TALKING: ReadonlySet<LiveStatus> = new Set(['listening', 'thinking', 'speaking']);
+
 export interface SocketLike {
 	binaryType: BinaryType;
 	readyState: number;
@@ -246,8 +248,8 @@ export class LiveVoice {
 	 *  queued audio has played, and briefly reports `listening` between a
 	 *  transcript and the reply's first sentence. */
 	private show() {
-		if (this.server !== 'listening') this.status = this.server;
-		else if (this.playing) this.status = 'speaking';
+		if (this.playing && TALKING.has(this.server)) this.status = 'speaking';
+		else if (this.server !== 'listening') this.status = this.server;
 		else if (this.awaitingReply) this.status = 'thinking';
 		else this.status = 'listening';
 	}

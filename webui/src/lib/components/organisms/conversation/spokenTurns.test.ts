@@ -68,4 +68,30 @@ describe('spoken turns in the thread', () => {
 		expect(lines.filter((l) => l.role === 'user' && l.voice)).toHaveLength(6);
 		expect(voiceTranscriptLanded(lines, UTTERANCE)).toBe(true);
 	});
+
+	it('renders two identical live spoken turns in a row, each once', () => {
+		const { line_id: _, ...shape } = SPOKEN as AgentEvent & { line_id?: string };
+		const live = (seq: number) => ({ ...shape, seq, ts: SPOKEN.ts + seq }) as AgentEvent;
+		const answer = {
+			type: 'text',
+			content: 'Because air scatters blue light.',
+			meta: false,
+			message_id: 'msg_live',
+			seq: 198935001,
+			ts: SPOKEN.ts + 198935001
+		} as AgentEvent;
+		const stream = [live(198935000), answer, live(198935002)];
+		let merged: AgentEvent[] | undefined = rows;
+		for (const ev of stream) merged = mergeLiveEvent(merged, ev);
+		expect(merged).toHaveLength(rows.length + 3);
+		expect(mergeLiveEvent(merged, live(198935002))).toBe(merged);
+		const spoken = (events: AgentEvent[], buffer: AgentEvent[]) =>
+			buildLines(mergeEventSources(events, [], buffer), ctx())
+				.filter((l) => l.role === 'user' && l.voice)
+				.map((l) => l.seq);
+		const expected = [198934431, 198934477, 198934801, 198934915, 198934943, 198935000, 198935002];
+		expect(spoken(merged ?? [], [])).toEqual(expected);
+		expect(spoken(merged ?? [], stream)).toEqual(expected);
+		expect(spoken(rows, stream)).toEqual(expected);
+	});
 });

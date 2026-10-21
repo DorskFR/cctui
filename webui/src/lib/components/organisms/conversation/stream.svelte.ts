@@ -20,7 +20,7 @@ import {
 	type SoftLimitBlock,
 	type ToolBlock
 } from '$lib/ws.svelte';
-import { eventDedup, parseAsk, parseTodos, todoProgress as deriveTodoProgress } from './format';
+import { eventDedup, markLive, parseAsk, parseTodos, todoProgress as deriveTodoProgress } from './format';
 import { resultAnswers } from './lines';
 import { lastProseLine, toolInvocationSummary, type ActivityTool } from './activity';
 import type { AskQuestion, TodoItem, TodoProgress } from './types';
@@ -40,6 +40,7 @@ export function mergeLiveEvent(
 	prev: AgentEvent[] | undefined,
 	ev: AgentEvent
 ): AgentEvent[] | undefined {
+	markLive(ev);
 	if (!prev?.length) return prev;
 	const seq = ev.seq;
 	if (seq === null || seq === undefined) return prev;
@@ -158,7 +159,8 @@ export class ConversationStream {
 			const turnId = turnIdOf(ev);
 			if (turnId !== null && this.live.some((e) => turnIdOf(e) === turnId)) return;
 			const key = userMsgKey(ev);
-			if (key !== null && this.live.some((e) => userMsgKey(e) === key)) return;
+			const echoed = (e: AgentEvent) => e.type === 'reply' && userMsgKey(e) === key;
+			if (key !== null && this.live.some(echoed)) return;
 			this.live = [...this.live, ev];
 			// A pending live ask/plan is superseded the instant the agent streams a
 			// fresh substantive (non-user, non-heartbeat) event past it:
