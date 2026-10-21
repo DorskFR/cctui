@@ -365,6 +365,7 @@ async fn on_session_started(
     if let Some(context_key) = meta.extra.get("context_key").and_then(serde_json::Value::as_str) {
         crate::routes::context::claim_fork_intent(&state.pool, &local_id, context_key, user_id)
             .await;
+        crate::routes::spawn::claim_spawner(&state.pool, &local_id, Some(context_key)).await;
     }
     Ok(())
 }
