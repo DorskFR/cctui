@@ -261,3 +261,24 @@ describe('gateway tool block', () => {
 		expect(notice?.textContent).toContain('a****e');
 	});
 });
+
+describe('voice message', () => {
+	it('badges a spoken turn VOICE and puts the mic before the transcript', async () => {
+		const el = await render(line({ voice: true, html: '<p>what time is it</p>', text: 'what time is it' }));
+		const msg = el.querySelector('[data-testid="voice-message"]');
+		expect(msg).not.toBeNull();
+		expect(msg?.querySelector('[role="img"]')?.textContent).toBe('🎙');
+		expect(msg?.querySelector('.bubble.user')?.textContent).toBe('what time is it');
+		const meta = el.querySelector('.lmeta')?.textContent?.toLowerCase() ?? '';
+		expect(meta).toContain('voice');
+		expect(meta).not.toContain('user');
+		expect(el.textContent?.split('what time is it').length).toBe(2);
+	});
+
+	it('keeps a typed turn a user bubble with no mic', async () => {
+		const el = await render(line());
+		expect(el.querySelector('[data-testid="voice-message"]')).toBeNull();
+		expect(el.querySelector('.bubble.user')?.textContent).toBe('hello');
+		expect(el.textContent).not.toContain('🎙');
+	});
+});

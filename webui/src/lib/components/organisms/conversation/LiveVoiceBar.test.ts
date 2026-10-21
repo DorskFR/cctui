@@ -11,7 +11,7 @@ afterEach(() => {
 	document.body.innerHTML = '';
 });
 
-const render = (status: LiveStatus, over: Partial<LiveVoice> = {}) => {
+const render = (status: LiveStatus, over: Partial<LiveVoice> = {}, landed = false) => {
 	const voice = {
 		status,
 		level: 0,
@@ -23,7 +23,7 @@ const render = (status: LiveStatus, over: Partial<LiveVoice> = {}) => {
 		interrupt: vi.fn(),
 		...over
 	} as unknown as LiveVoice;
-	comp = mount(LiveVoiceBar, { target: document.body, props: { voice, onstop: vi.fn() } });
+	comp = mount(LiveVoiceBar, { target: document.body, props: { voice, onstop: vi.fn(), landed } });
 	flushSync();
 	return voice;
 };
@@ -31,6 +31,15 @@ const render = (status: LiveStatus, over: Partial<LiveVoice> = {}) => {
 const text = () => document.body.textContent ?? '';
 
 describe('LiveVoiceBar', () => {
+	it('shows the transcript until its voice message lands in the conversation', () => {
+		render('thinking', { transcript: 'what is two plus two' });
+		expect(text()).toContain('what is two plus two');
+		if (comp) unmount(comp);
+		document.body.innerHTML = '';
+		render('thinking', { transcript: 'what is two plus two' }, true);
+		expect(text()).not.toContain('what is two plus two');
+	});
+
 	it('says it is warming up while the model loads', () => {
 		render('warming');
 		expect(text()).toContain('Warming up…');

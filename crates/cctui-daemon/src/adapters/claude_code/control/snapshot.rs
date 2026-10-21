@@ -470,43 +470,7 @@ impl Driver {
         let locations: Vec<TranscriptLocation> =
             self.transcript_locations.values().cloned().collect();
         for loc in locations {
-            let prev = self.offsets.get(&loc.offset_key);
-            let off = self.resume_offset(&loc.offset_key, &loc.path);
-            if off != prev {
-                dirty_offsets = true;
-            }
-            match transcript::tail_bounded(&loc.path, &loc.local_id, off, super::LIVE_TAIL_BUDGET) {
-                Ok((events, new_off)) => {
-                    if new_off != off {
-                        self.offsets.set(loc.offset_key.clone(), new_off);
-                        self.server_marks.insert(loc.offset_key.clone(), new_off);
-                        dirty_offsets = true;
-                    }
-                    if let Some(last) = events.last() {
-                        // "Last parsed event" for diagnose.
-                        self.last_parsed.insert(
-                            loc.offset_key.clone(),
-                            (
-                                super::super::diagnose::event_kind(last).to_owned(),
-                                std::time::SystemTime::now(),
-                            ),
-                        );
-                    }
-                    for evt in events {
-                        self.emit_fresh(evt).await;
-                    }
-                    if new_off != off {
-                        self.emit(AdapterEvent::TranscriptMark {
-                            local_id: loc.local_id.clone(),
-                            offset: new_off,
-                        })
-                        .await;
-                    }
-                }
-                Err(err) => {
-                    tracing::debug!(%err, path = %loc.path.display(), "transcript tail failed");
-                }
-            }
+            dirty_offsets |= self.tail_location(&loc).await;
         }
         // Discover + tail Task-tool subagents nested under each live parent.
         // Runs after the parent tail so a subagent's parent row
@@ -516,6 +480,69 @@ impl Driver {
         if dirty_offsets {
             self.offsets.flush();
         }
+    }
+
+    /// Whether a text watcher waits on any pinned session.
+    pub(super) fn has_text_watch(&self) -> bool {
+        self.transcript_locations.values().any(|l| crate::text_deltas::wanted(&l.local_id))
+    }
+
+    /// Tails only the sessions a text watcher waits on, between polls, so a
+    /// finished block reaches it without waiting for the next `list`.
+    pub(super) async fn tail_watched(&mut self) {
+        let locations: Vec<TranscriptLocation> = self
+            .transcript_locations
+            .values()
+            .filter(|l| crate::text_deltas::wanted(&l.local_id))
+            .cloned()
+            .collect();
+        let mut dirty_offsets = false;
+        for loc in locations {
+            dirty_offsets |= self.tail_location(&loc).await;
+        }
+        if dirty_offsets {
+            self.offsets.flush();
+        }
+    }
+
+    /// Emits what `loc` gained since its offset; true when the offset moved.
+    async fn tail_location(&mut self, loc: &TranscriptLocation) -> bool {
+        let prev = self.offsets.get(&loc.offset_key);
+        let off = self.resume_offset(&loc.offset_key, &loc.path);
+        let mut dirty = off != prev;
+        match transcript::tail_bounded(&loc.path, &loc.local_id, off, super::LIVE_TAIL_BUDGET) {
+            Ok((events, new_off)) => {
+                if new_off != off {
+                    self.offsets.set(loc.offset_key.clone(), new_off);
+                    self.server_marks.insert(loc.offset_key.clone(), new_off);
+                    dirty = true;
+                }
+                if let Some(last) = events.last() {
+                    // "Last parsed event" for diagnose.
+                    self.last_parsed.insert(
+                        loc.offset_key.clone(),
+                        (
+                            super::super::diagnose::event_kind(last).to_owned(),
+                            std::time::SystemTime::now(),
+                        ),
+                    );
+                }
+                for evt in events {
+                    self.emit_fresh(evt).await;
+                }
+                if new_off != off {
+                    self.emit(AdapterEvent::TranscriptMark {
+                        local_id: loc.local_id.clone(),
+                        offset: new_off,
+                    })
+                    .await;
+                }
+            }
+            Err(err) => {
+                tracing::debug!(%err, path = %loc.path.display(), "transcript tail failed");
+            }
+        }
+        dirty
     }
 
     async fn reap_gone(&mut self, short: &str) {

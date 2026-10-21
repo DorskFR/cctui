@@ -196,3 +196,23 @@ describe('one user message with an image renders as one bubble', () => {
 		expect(lines.map((l) => l.uploads?.names)).toEqual([[SHOT], [b]]);
 	});
 });
+
+describe('a live-voice turn renders as one voice message', () => {
+	const SPOKEN =
+		'<cctui-session-context voice="spoken">\nThe user spoke this message aloud.\n</cctui-session-context>\n\nwhat time is it';
+
+	it('shows the transcript once, behind the mic, without the wrapper', async () => {
+		await render(buildLines([userEvent(SPOKEN, 1, 1)], buildCtx));
+		expect(document.querySelectorAll('.line').length).toBe(1);
+		expect(document.querySelectorAll('[data-testid="voice-message"]').length).toBe(1);
+		const shown = document.body.textContent ?? '';
+		expect(shown.split('what time is it').length - 1).toBe(1);
+		expect(shown).not.toContain('spoke this message aloud');
+	});
+
+	it('leaves a typed or dictated turn a plain user message', async () => {
+		await render(buildLines([userEvent('what time is it', 1, 1)], buildCtx));
+		expect(document.querySelectorAll('[data-testid="voice-message"]').length).toBe(0);
+		expect(document.querySelector('.line')?.classList.contains('user')).toBe(true);
+	});
+});
