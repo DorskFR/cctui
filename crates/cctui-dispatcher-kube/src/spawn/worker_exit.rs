@@ -42,12 +42,11 @@ fn exit_of(pods: &[Pod]) -> Option<(WorkerExit, LogTarget)> {
         .and_then(|all| all.iter().find(|cs| cs.name == container));
     let current = status.and_then(|cs| cs.state.as_ref()?.terminated.as_ref());
     let last = status.and_then(|cs| cs.last_state.as_ref()?.terminated.as_ref());
-    let (terminated, previous): (Option<&ContainerStateTerminated>, bool) =
-        match (current, last) {
-            (Some(t), _) => (Some(t), false),
-            (None, Some(t)) => (Some(t), true),
-            (None, None) => (None, false),
-        };
+    let (terminated, previous): (Option<&ContainerStateTerminated>, bool) = match (current, last) {
+        (Some(t), _) => (Some(t), false),
+        (None, Some(t)) => (Some(t), true),
+        (None, None) => (None, false),
+    };
     let exit = WorkerExit {
         container: Some(container.clone()),
         exit_code: terminated.map(|t| t.exit_code),
@@ -111,7 +110,7 @@ mod tests {
 
     use super::*;
 
-    fn pod(name: &str, created: &str, status: serde_json::Value) -> Pod {
+    fn pod(name: &str, created: &str, status: &serde_json::Value) -> Pod {
         serde_json::from_value(json!({
             "metadata": {
                 "name": name,
@@ -128,7 +127,7 @@ mod tests {
         let older = pod(
             "w-old",
             "2026-10-21T08:00:00Z",
-            json!({ "containerStatuses": [{
+            &json!({ "containerStatuses": [{
                 "name": "agent", "image": "i", "imageID": "", "ready": false, "restartCount": 0,
                 "state": { "terminated": { "exitCode": 2, "reason": "Error" } }
             }]}),
@@ -136,7 +135,7 @@ mod tests {
         let newer = pod(
             "w-new",
             "2026-10-21T08:05:00Z",
-            json!({ "phase": "Failed", "containerStatuses": [
+            &json!({ "phase": "Failed", "containerStatuses": [
                 {
                     "name": "guard-proxy", "image": "i", "imageID": "", "ready": false,
                     "restartCount": 0, "state": { "terminated": { "exitCode": 0 } }
@@ -173,7 +172,7 @@ mod tests {
         let p = pod(
             "w",
             "2026-10-21T08:00:00Z",
-            json!({ "containerStatuses": [{
+            &json!({ "containerStatuses": [{
                 "name": "agent", "image": "i", "imageID": "", "ready": false, "restartCount": 3,
                 "state": { "waiting": { "reason": "CrashLoopBackOff" } },
                 "lastState": { "terminated": { "exitCode": 1, "message": "panic: boom" } }
@@ -199,7 +198,7 @@ mod tests {
 
     #[test]
     fn the_log_tail_keeps_the_last_lines() {
-        let log: String = (1..=100).map(|i| format!("line {i}\n")).collect();
+        let log = (1..=100).map(|i| format!("line {i}\n")).collect::<Vec<_>>().concat();
         let kept = tail(&log, LOG_TAIL_LINES).unwrap();
         assert_eq!(kept.lines().count(), LOG_TAIL_LINES);
         assert!(kept.starts_with("line 61\n") && kept.ends_with("line 100"));

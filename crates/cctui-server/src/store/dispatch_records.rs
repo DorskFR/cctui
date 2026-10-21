@@ -225,9 +225,8 @@ fn tail(s: &str, max: usize) -> &str {
 }
 
 fn scrubbed(text: Option<&str>, max: usize, keep_end: bool) -> Option<String> {
-    static PATTERNS: LazyLock<CompiledPatterns> = LazyLock::new(|| {
-        cctui_crypto::redact::compile(true, &[], &cctui_crypto::vault_key())
-    });
+    static PATTERNS: LazyLock<CompiledPatterns> =
+        LazyLock::new(|| cctui_crypto::redact::compile(true, &[], &cctui_crypto::vault_key()));
     let text = text?;
     let cut = if keep_end { tail(text, max) } else { head(text, max).0 };
     let mut value = serde_json::Value::String(cut.to_owned());
@@ -450,6 +449,7 @@ pub async fn list(
 }
 
 /// [`list`] with no dismissals applied.
+#[cfg(test)]
 pub async fn list_failed(
     exec: impl PgExecutor<'_>,
     owner: Option<Uuid>,
@@ -488,7 +488,8 @@ pub async fn dismiss_all(
     viewer: Uuid,
     owner: Option<Uuid>,
 ) -> Result<u64, sqlx::Error> {
-    let shown = list(pool, Listing { owner, viewer: Some(viewer), include_dismissed: false }).await?;
+    let shown =
+        list(pool, Listing { owner, viewer: Some(viewer), include_dismissed: false }).await?;
     let ids: Vec<String> = shown.into_iter().map(|f| f.session_id).collect();
     let done = sqlx::query(
         "INSERT INTO dispatch_record_dismissals (user_id, session_id) \
@@ -772,7 +773,7 @@ mod tests {
 
     #[test]
     fn a_worker_exit_is_bounded_and_scrubbed_keeping_the_last_lines() {
-        let noise: String = (0..2000).map(|i| format!("line {i}\n")).collect();
+        let noise = (0..2000).map(|i| format!("line {i}\n")).collect::<Vec<_>>().concat();
         let exit = super::scrub_worker_exit(&cctui_proto::api::WorkerExit {
             container: Some("worker".into()),
             exit_code: Some(1),
@@ -874,9 +875,7 @@ mod tests {
         let pool = sqlx::PgPool::connect(&url).await.expect("connect");
         let (uid, other) = (seed_user(&pool).await, seed_user(&pool).await);
         let sid = |tag: &str| format!("{tag}-{}", Uuid::new_v4());
-        let work = |name: &str, file: &str| {
-            serde_json::json!({ "name": name, "prompt_file": file, "prompt": "go" })
-        };
+        let work = |name: &str, file: &str| serde_json::json!({ "name": name, "prompt_file": file, "prompt": "go" });
         let (failed, ok, elsewhere) = (sid("failed"), sid("ok"), sid("elsewhere"));
         let (again, crashed, theirs) = (sid("again"), sid("crashed"), sid("theirs"));
         refused(&pool, uid, &failed, &work("review-PR-7", "prompts/review.md")).await;
@@ -898,9 +897,8 @@ mod tests {
         }
 
         let listed = super::list_failed(&pool, Some(uid)).await.unwrap();
-        let sup = |id: &str| {
-            listed.iter().find(|f| f.session_id == id).map(|f| f.superseded_by.clone())
-        };
+        let sup =
+            |id: &str| listed.iter().find(|f| f.session_id == id).map(|f| f.superseded_by.clone());
         assert_eq!(sup(&failed), Some(Some(ok.clone())));
         assert_eq!(sup(&elsewhere), Some(None), "another prompt file is other work");
         assert_eq!(sup(&again), Some(None), "a crashed re-run or someone else's does not count");

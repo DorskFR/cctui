@@ -1080,6 +1080,7 @@ mod tests {
             "/users/{id}/tokens",
             // `user_id`-filtered SQL in the handler.
             "/bookmarks/{id}",
+            "/dispatch-records/{id}/dismiss",
             "/drafts/{*key}",
             "/keys/{id}",
             "/keys/{id}/value",

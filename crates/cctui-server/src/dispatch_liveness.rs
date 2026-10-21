@@ -454,6 +454,20 @@ mod tests {
 
     const BACKOFF: &str = "Job has reached the specified backoff limit";
 
+    /// Every machine left behind is swept by each later machine liveness test.
+    async fn forget_user(pool: &sqlx::PgPool, uid: Uuid) {
+        for sql in [
+            "DELETE FROM dispatch_handles WHERE session_id IN \
+             (SELECT id FROM sessions WHERE user_id = $1)",
+            "DELETE FROM sessions WHERE user_id = $1",
+            "DELETE FROM machines WHERE user_id = $1",
+            "DELETE FROM dispatchers WHERE user_id = $1",
+            "DELETE FROM users WHERE id = $1",
+        ] {
+            sqlx::query(sql).bind(uid).execute(pool).await.ok();
+        }
+    }
+
     /// A dispatched, registered session with a guard at `step` and a Job the
     /// dispatcher reports failed with exit code 1.
     async fn backoff_failure(tag: &str, step: i64) -> Option<(sqlx::PgPool, Uuid, String)> {
@@ -485,8 +499,12 @@ mod tests {
             log_tail: Some("result written\nGITHUB_TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123".into()),
             ..Default::default()
         };
-        let fake =
-            fake_dispatcher_exiting(&state, dispatcher, (Some("failed"), Some(BACKOFF)), Some(exit));
+        let fake = fake_dispatcher_exiting(
+            &state,
+            dispatcher,
+            (Some("failed"), Some(BACKOFF)),
+            Some(exit),
+        );
         sweep(&state).await;
         fake.abort();
         Some((pool, uid, sid))
@@ -510,6 +528,7 @@ mod tests {
             dispatch_records::list_failed(&pool, Some(uid)).await.unwrap().is_empty(),
             "no failure card for work that was done"
         );
+        forget_user(&pool, uid).await;
     }
 
     #[tokio::test]
@@ -529,7 +548,11 @@ mod tests {
         assert_eq!(exit.exit_code, Some(1));
         let log = exit.log_tail.as_deref().unwrap();
         assert!(log.starts_with("result written\n"), "{log}");
-        assert!(!log.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123"), "a token reached the card: {log}");
+        assert!(
+            !log.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123"),
+            "a token reached the card: {log}"
+        );
+        forget_user(&pool, uid).await;
     }
 
     #[tokio::test]

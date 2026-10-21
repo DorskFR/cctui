@@ -1457,7 +1457,8 @@ mod tests {
     #[test]
     fn a_status_result_carries_the_worker_exit_and_reads_without_it() {
         let old = r#"{"type":"status_result","request_id":"00000000-0000-0000-0000-000000000000","handle":"jobs/w","state":"failed"}"#;
-        let DispatcherFrameUp::StatusResult { worker_exit, .. } = serde_json::from_str(old).unwrap()
+        let DispatcherFrameUp::StatusResult { worker_exit, .. } =
+            serde_json::from_str(old).unwrap()
         else {
             panic!("expected StatusResult");
         };
@@ -1475,7 +1476,8 @@ mod tests {
             worker_exit: Some(exit.clone()),
         })
         .unwrap();
-        let DispatcherFrameUp::StatusResult { worker_exit, .. } = serde_json::from_str(&json).unwrap()
+        let DispatcherFrameUp::StatusResult { worker_exit, .. } =
+            serde_json::from_str(&json).unwrap()
         else {
             panic!("expected StatusResult");
         };
