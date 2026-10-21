@@ -507,14 +507,45 @@ export function eventSig(e: AgentEvent): string {
 // Every identity an event answers to. A user row replayed after a daemon
 // restart lost its `turn_id` but kept `line_id` (the transcript record's uuid),
 // so the two copies only ever meet on the line key; conversely a live broadcast
-// carries the turn id and no line id. Matching on ANY key collapses both pairs
-// without collapsing two distinct turns, which share neither.
+// carries the turn id and no line id. Matching on ANY key collapses both pairs.
 export function eventKeys(e: AgentEvent): string[] {
 	const sig = eventSig(e);
-	const lineId = 'line_id' in e ? (e.line_id as string | null | undefined) : undefined;
+	const lineId = lineIdOf(e);
 	if (!lineId) return [sig];
 	const line = `l:${lineId}`;
 	return line === sig ? [line] : [line, sig];
+}
+
+function lineIdOf(e: AgentEvent): string | null {
+	return 'line_id' in e ? ((e.line_id as string | null | undefined) ?? null) : null;
+}
+
+function recordIdOf(e: AgentEvent): string | null {
+	const line = lineIdOf(e);
+	if (line) return `l:${line}`;
+	return e.type === 'text' && e.message_id ? `m:${e.message_id}` : null;
+}
+
+// Two rows of distinct transcript records (`line_id` / `message_id`) may meet
+// on a turn id, never on content, or a repeated utterance or reply collapses.
+export function eventDedup(): (e: AgentEvent) => boolean {
+	const seen = new Map<string, Set<string | null>>();
+	return (e) => {
+		const keys = eventKeys(e);
+		const record = recordIdOf(e);
+		const dup = keys.some((k) => {
+			const owners = seen.get(k);
+			if (!owners) return false;
+			if (!record || k.startsWith('t:') || k.startsWith('l:')) return true;
+			return owners.has(null) || owners.has(record);
+		});
+		for (const k of keys) {
+			const owners = seen.get(k) ?? new Set();
+			owners.add(record);
+			seen.set(k, owners);
+		}
+		return !dup;
+	};
 }
 
 function computeEventSig(e: AgentEvent): string {
@@ -550,14 +581,8 @@ export function mergeEventSources(
 	earlier: AgentEvent[],
 	live: AgentEvent[]
 ): AgentEvent[] {
-	const seen = new Set<string>();
-	const dedup = (list: AgentEvent[]) =>
-		list.filter((e) => {
-			const keys = eventKeys(e);
-			if (keys.some((k) => seen.has(k))) return false;
-			for (const k of keys) seen.add(k);
-			return true;
-		});
+	const fresh = eventDedup();
+	const dedup = (list: AgentEvent[]) => list.filter(fresh);
 	const hist = dedup(history);
 	const front = dedup(earlier);
 	const tail = dedup(live);

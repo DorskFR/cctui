@@ -65,6 +65,8 @@ pub(super) fn schedule_daemon_lost(state: &AppState, machine_id: Uuid, sessions:
         tracing::info!(%machine_id, "daemon_lost mark skipped — connection announced no sessions");
         return;
     }
+    let (completing, announced) = (state.clone(), sessions.clone());
+    tokio::spawn(async move { complete_guard_exited(&completing, machine_id, &announced).await });
     let state = state.clone();
     PENDING_DAEMON_LOST.schedule(machine_id, DAEMON_LOST_GRACE, async move {
         if daemon_seen_recently(&state.pool, machine_id).await {
@@ -88,6 +90,71 @@ pub(super) fn schedule_daemon_lost(state: &AppState, machine_id: Uuid, sessions:
             );
         }
     });
+}
+
+/// A worker tears its daemon down right after its workflow guard exits, so a
+/// guard-exited session ends `completed` at the disconnect. Not deferred: the
+/// pending mark is per machine, and every worker pod of a dispatcher shares one
+/// machine id, so a sibling's connect or disconnect would drop it.
+async fn complete_guard_exited(state: &AppState, machine_id: Uuid, sessions: &[String]) {
+    let exited_here: Vec<String> = sessions
+        .iter()
+        .filter(|id| crate::guard_step::get(id).is_some_and(|step| step.exited()))
+        .cloned()
+        .collect();
+    for session_id in mark_guard_exited(&state.pool, machine_id, sessions, &exited_here).await {
+        crate::routes::gateway::revoke_session_tokens(state, &session_id).await;
+        crate::events::record(
+            state,
+            crate::events::Event::new(
+                crate::events::kind::SESSION_ENDED,
+                crate::events::Actor::Daemon,
+            )
+            .session(session_id)
+            .machine(machine_id)
+            .detail(serde_json::json!({ "end_reason": "completed", "end_detail": null })),
+        );
+    }
+}
+
+/// The ids ended `completed`: those whose guard exited, per this replica's
+/// mirror (`exited_here`) or the table any replica wrote.
+async fn mark_guard_exited(
+    pool: &sqlx::PgPool,
+    machine_id: Uuid,
+    sessions: &[String],
+    exited_here: &[String],
+) -> Vec<String> {
+    match sqlx::query_scalar::<_, String>(
+        "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = 'completed', \
+             end_detail = NULL \
+         WHERE machine_uuid = $1 AND id = ANY($2) AND status IN ('new', 'active', 'inactive') \
+           AND end_reason IS NULL \
+           AND (id = ANY($3) OR EXISTS (SELECT 1 FROM guard_steps g \
+                WHERE g.session_id = sessions.id AND (g.state->>'step')::bigint < 0)) \
+         RETURNING id",
+    )
+    .bind(machine_id)
+    .bind(sessions)
+    .bind(exited_here)
+    .fetch_all(pool)
+    .await
+    {
+        Ok(ids) => {
+            if !ids.is_empty() {
+                tracing::info!(
+                    %machine_id,
+                    count = ids.len(),
+                    "guard-exited sessions completed on disconnect"
+                );
+            }
+            ids
+        }
+        Err(err) => {
+            tracing::warn!(%err, %machine_id, "guard-exited completion failed");
+            Vec::new()
+        }
+    }
 }
 
 /// Cross-pod backstop for the local cancel: a daemon that dropped this pod's WS
@@ -387,5 +454,62 @@ mod tests {
         };
         assert_eq!(status(&mine).await, ("ended".into(), Some("daemon_lost".into())));
         assert_eq!(status(&neighbour).await, ("active".into(), None));
+    }
+
+    /// A dispatched worker SIGTERMs its daemon once the guard exits: the
+    /// disconnect must end that session `completed`, and the later
+    /// `daemon_lost` mark only the sessions with no completion evidence.
+    #[tokio::test]
+    async fn a_guard_exited_session_ends_completed_not_daemon_lost() {
+        let Some(url) = crate::routes::gateway::test_db_url("daemon_lost_guard_exited") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let (uid, mid) = crate::events::tests::seed_user_machine(&pool, "dl-guard-exit").await;
+        let seed = async |step: Option<i64>| {
+            let sid = crate::events::tests::seed_session(&pool, uid, mid, None).await;
+            if let Some(step) = step {
+                let guard = cctui_proto::guard_step::GuardStepState { step, ..Default::default() };
+                sqlx::query("INSERT INTO guard_steps (session_id, state) VALUES ($1, $2)")
+                    .bind(&sid)
+                    .bind(sqlx::types::Json(&guard))
+                    .execute(&pool)
+                    .await
+                    .expect("seed guard step");
+            }
+            sid
+        };
+        let exited = seed(Some(-1)).await;
+        let exited_here = seed(None).await;
+        let mid_workflow = seed(Some(3)).await;
+        let unguarded = seed(None).await;
+        let sessions =
+            vec![exited.clone(), exited_here.clone(), mid_workflow.clone(), unguarded.clone()];
+
+        let mut completed =
+            super::mark_guard_exited(&pool, mid, &sessions, std::slice::from_ref(&exited_here))
+                .await;
+        completed.sort();
+        let mut want = vec![exited.clone(), exited_here.clone()];
+        want.sort();
+        assert_eq!(completed, want);
+
+        let mut lost = super::mark_daemon_lost(&pool, mid, &sessions).await;
+        lost.sort();
+        let mut want = vec![mid_workflow.clone(), unguarded.clone()];
+        want.sort();
+        assert_eq!(lost, want, "completed sessions are never re-marked daemon_lost");
+
+        let end_reason = async |id: &str| -> Option<String> {
+            sqlx::query_scalar("SELECT end_reason FROM sessions WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .expect("session row")
+        };
+        assert_eq!(end_reason(&exited).await.as_deref(), Some("completed"));
+        assert_eq!(end_reason(&exited_here).await.as_deref(), Some("completed"));
+        assert_eq!(end_reason(&mid_workflow).await.as_deref(), Some("daemon_lost"));
+        assert_eq!(end_reason(&unguarded).await.as_deref(), Some("daemon_lost"));
     }
 }

@@ -705,7 +705,8 @@ export function buildLines(
       continue;
     }
     if (e.type === "text" && e.kind === "queue_op") {
-      const body = e.content.trim();
+      const raw = e.content.trim();
+      const body = splitInjected(raw).prose.trim();
       const op = e.operation ?? "queued";
       if (op !== "queued") {
         // Only the human withdrawing a prompt strikes it out; `dequeued`
@@ -719,10 +720,10 @@ export function buildLines(
       // A harness- or cctui-injected prompt is not a human one: the delivered
       // turn renders it, and no `user` line can ever absorb the placeholder.
       if (
-        looksMeta(body) ||
-        parsePeerMessage(body) ||
-        parseRoomJoined(body) !== null ||
-        parseCctuiverseLinked(body) !== null
+        looksMeta(raw) ||
+        parsePeerMessage(raw) ||
+        parseRoomJoined(raw) !== null ||
+        parseCctuiverseLinked(raw) !== null
       )
         continue;
       if (!body || !ctx.visible("user")) continue;
