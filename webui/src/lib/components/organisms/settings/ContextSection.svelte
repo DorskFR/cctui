@@ -11,7 +11,7 @@
 	import type { ContextItemSpec } from '@bindings/ContextItemSpec';
 	import type { ContextMatch } from '@bindings/ContextMatch';
 	import {
-		useAllMachines,
+		useMachineResources,
 		useContextActions,
 		useContextItems,
 		useHarnesses,
@@ -38,19 +38,19 @@
 	} from './context.logic';
 
 	const itemsQ = useContextItems();
-	const machinesQ = useAllMachines(() => true);
+	const machinesQ = useMachineResources(() => true);
 	const labelsQ = useLabels();
 	useHarnesses();
 	const actions = useContextActions();
 
-	const machines = $derived((machinesQ.data ?? []).filter((r) => r.kind !== 'ephemeral'));
+	const machines = $derived(machinesQ.data ?? []);
 	const labels = $derived(labelsQ.data?.labels ?? []);
 	const harnesses = $derived(harnessTable());
 	const items = $derived(itemsQ.data ?? []);
 	const ofKind = (kind: ContextKind) => items.filter((i) => i.kind === kind);
 
 	const machineName = (id: string) => {
-		const r = machines.find((x) => x.id === id);
+		const r = machines.find((x) => x.machine_id === id);
 		return r ? (r.display_name ?? r.name) : id;
 	};
 	const labelName = (id: string) => labels.find((l) => l.id === id)?.name ?? id;
@@ -307,11 +307,11 @@
 				<div class="match">
 					<Text size="xs" weight="medium">{m.settings_context_match_machines()}</Text>
 					<div class="toggles">
-						{#each machines as r (r.id)}
+						{#each machines as r (r.machine_id)}
 							<Toggle
 								pill
-								pressed={draft.match.machines.includes(r.id)}
-								onclick={() => toggleMatch('machines', r.id)}>{r.display_name ?? r.name}</Toggle
+								pressed={draft.match.machines.includes(r.machine_id)}
+								onclick={() => toggleMatch('machines', r.machine_id)}>{r.display_name ?? r.name}</Toggle
 							>
 						{/each}
 					</div>
@@ -375,8 +375,8 @@
 		<SettingRow label={m.spawn_machine_label()} help={m.settings_context_preview_help()}>
 			<Select style="width:100%" value={previewMachine} onchange={(e) => (previewMachine = sel(e))}>
 				<option value="">{m.settings_macros_pick_machine()}</option>
-				{#each machines as r (r.id)}
-					<option value={r.id}>{r.display_name ?? r.name}</option>
+				{#each machines as r (r.machine_id)}
+					<option value={r.machine_id}>{r.display_name ?? r.name}</option>
 				{/each}
 			</Select>
 		</SettingRow>

@@ -3,25 +3,29 @@
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
 	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
-	import { endpoints, qk, useAllMachines } from '$lib/queries';
+	import { endpoints, qk, useAllMachines, useMachineResources } from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import type { MachineAdapterInfo } from '@bindings/MachineAdapterInfo';
-	import type { MachineRow } from '@bindings/MachineRow';
 	import { harnessLabel } from '$lib/harnesses';
 	import { harnessTable } from '$lib/harnesses.svelte';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import AdapterConfigEditor from './AdapterConfigEditor.svelte';
-	import { binaryStatus } from './machineAdapters.logic';
+	import { adapterMachines, binaryStatus, type AdapterMachine } from './machineAdapters.logic';
+
+	let { isAdmin = false }: { isAdmin?: boolean } = $props();
 
 	const qc = useQueryClient();
-	const machines = useAllMachines(() => true);
+	const allMachines = useAllMachines(() => isAdmin);
+	const ownMachines = useMachineResources(() => !isAdmin);
+	const machines = $derived(adapterMachines(isAdmin, allMachines.data, ownMachines.data));
+	const locked = (id: string) => !isAdmin || busy === id;
 
 	let rows = $state<Record<string, MachineAdapterInfo[]>>({});
 	let busy = $state<string | null>(null);
 	const requested = new Set<string>();
 
-	async function load(machine: MachineRow) {
+	async function load(machine: AdapterMachine) {
 		requested.add(machine.id);
 		let list: MachineAdapterInfo[];
 		try {
@@ -33,18 +37,18 @@
 	}
 
 	$effect(() => {
-		for (const machine of machines.data ?? []) if (!requested.has(machine.id)) void load(machine);
+		for (const machine of machines) if (!requested.has(machine.id)) void load(machine);
 	});
 
 	async function run(
-		machine: MachineRow,
+		machine: AdapterMachine,
 		call: () => Promise<MachineAdapterInfo[]>
 	): Promise<boolean> {
 		busy = machine.id;
 		try {
 			rows[machine.id] = await call();
 			await qc.invalidateQueries({ queryKey: qk.machineAdapters(machine.id) });
-			toasts.ok(m.settings_machine_adapters_saved({ name: machine.display_name ?? machine.name }));
+			toasts.ok(m.settings_machine_adapters_saved({ name: machine.name }));
 			return true;
 		} catch (e) {
 			toasts.error(e instanceof Error ? e.message : String(e));
@@ -68,28 +72,28 @@
 		label={m.settings_machine_adapters_label()}
 		help={m.settings_machine_adapters_help()}
 		server
-		admin
+		admin={isAdmin}
 		wide
 		selfLabelled
 	>
-		{#if (machines.data ?? []).length === 0}
+		{#if machines.length === 0}
 			<Text size="sm" tone="faint">{m.settings_machine_adapters_no_machines()}</Text>
 		{:else}
 			<ul class="machines">
-				{#each machines.data ?? [] as machine (machine.id)}
+				{#each machines as machine (machine.id)}
 					{@const list = rows[machine.id] ?? []}
 					<li class="machine">
-						<Text size="sm" weight="semibold">{machine.display_name ?? machine.name}</Text>
+						<Text size="sm" weight="semibold">{machine.name}</Text>
 						<ul class="adapters">
 							{#each list as a (a.adapter_id)}
 								<li class="adapter" title={about(a)}>
 									<BrandLogo adapter={a.adapter_id} size={14} />
 									<Switch
 										checked={a.enabled}
-										disabled={busy === machine.id}
+										disabled={locked(machine.id)}
 										label={m.settings_machine_adapters_toggle_aria({
 											harness: label(a),
-											name: machine.display_name ?? machine.name
+											name: machine.name
 										})}
 										labelVisible
 										size="sm"
@@ -102,7 +106,7 @@
 										<Button
 											size="sm"
 											variant="ghost"
-											disabled={busy === machine.id}
+											disabled={locked(machine.id)}
 											onclick={() =>
 												run(machine, () => endpoints.resetMachineAdapter(machine.id, a.adapter_id))}
 										>
@@ -129,10 +133,10 @@
 									{/if}
 									<AdapterConfigEditor
 										config={a.config}
-										disabled={busy === machine.id}
+										disabled={locked(machine.id)}
 										label={m.settings_machine_adapters_config_aria({
 											harness: label(a),
-											name: machine.display_name ?? machine.name
+											name: machine.name
 										})}
 										onsave={(config) =>
 											run(machine, () =>

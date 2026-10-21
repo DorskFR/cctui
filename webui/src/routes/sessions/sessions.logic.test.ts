@@ -29,6 +29,7 @@ import {
 	inEnabledSections,
 	isDimension,
 	isSection,
+	machineGroupLiveness,
 	matchesLabelFilter,
 	matchesUnreadFilter,
 	parseLabelFilter,
@@ -1075,5 +1076,30 @@ describe('archived children grouped under their parent', () => {
 		expect(parentStubTitle(stub('orch-123456789', { name: 'orch-x' }))).toBe('orch-x');
 		expect(parentStubTitle(stub('orch-123456789', { name: null }))).toBe('repo');
 		expect(parentStubTitle(stub('orch-123456789', { name: null, working_dir: '' }))).toBe('orch-1');
+	});
+});
+
+describe('machineGroupLiveness', () => {
+	const worker = (over: Partial<SessionListItem>) =>
+		session({ machine_kind: 'ephemeral', liveness: 'dead', hibernated: false, ...over });
+
+	it('keeps the machine list liveness when the machine is known', () => {
+		expect(machineGroupLiveness('stale', [worker({ liveness: 'active' })])).toBe('stale');
+	});
+
+	it('derives an ephemeral worker group from its sessions', () => {
+		expect(machineGroupLiveness(null, [worker({}), worker({ liveness: 'active' })])).toBe('online');
+		expect(machineGroupLiveness(null, [worker({}), worker({ liveness: 'stale' })])).toBe('stale');
+		expect(machineGroupLiveness(null, [worker({})])).toBe('offline');
+		expect(machineGroupLiveness(null, [worker({ liveness: 'active', hibernated: true })])).toBe(
+			'offline'
+		);
+	});
+
+	it('leaves an unknown persistent machine without a dot', () => {
+		const persistent = session({ machine_kind: 'persistent', liveness: 'active' });
+		expect(machineGroupLiveness(null, [persistent])).toBeNull();
+		expect(machineGroupLiveness(null, [session({ machine_kind: null, liveness: 'active' })])).toBeNull();
+		expect(machineGroupLiveness(null, [])).toBeNull();
 	});
 });

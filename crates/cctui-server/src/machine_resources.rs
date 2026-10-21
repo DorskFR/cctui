@@ -116,9 +116,10 @@ pub async fn list(
                 r.cpu_pct, r.mem_pct, r.mem_used_bytes, r.mem_total_bytes, \
                 r.disk_pct, r.disk_used_bytes, r.disk_total_bytes, r.disk_path, r.load1, \
                 r.updated_at \
-         FROM machines m LEFT JOIN machine_resources r ON r.machine_id = m.id \
+         FROM machines m JOIN users u ON u.id = m.user_id \
+         LEFT JOIN machine_resources r ON r.machine_id = m.id \
          WHERE (m.user_id = $1 OR $2) AND m.kind = 'persistent' \
-           AND m.revoked_at IS NULL AND m.deleted_at IS NULL \
+           AND u.revoked_at IS NULL AND m.revoked_at IS NULL AND m.deleted_at IS NULL \
          ORDER BY m.first_seen_at",
     )
     .bind(ctx.user_id)
@@ -156,10 +157,12 @@ pub async fn list(
 
 #[cfg(test)]
 mod tests {
+    use axum::extract::State;
+    use axum::{Extension, Json};
     use cctui_proto::resources::MachineResources;
     use uuid::Uuid;
 
-    use super::{changed_since_last_broadcast, materially_changed};
+    use super::{changed_since_last_broadcast, list, materially_changed};
 
     fn snapshot() -> MachineResources {
         MachineResources {
@@ -208,5 +211,96 @@ mod tests {
             std::fs::read_to_string(format!("{dir}/097_machine_resources.down.sql")).unwrap();
         assert!(up.contains("CREATE TABLE machine_resources"));
         assert!(down.contains("DROP TABLE IF EXISTS machine_resources"));
+    }
+
+    #[tokio::test]
+    async fn resource_list_scopes_owners_and_hides_revoked_users() {
+        use crate::auth::{AuthContext, Scope};
+        use std::collections::BTreeSet;
+
+        let Some(url) = crate::routes::gateway::test_db_url("machine_resources_owner_scope") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let owner = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let revoked = Uuid::new_v4();
+        for (id, name, is_revoked) in [
+            (owner, "resource-owner", false),
+            (other, "resource-other", false),
+            (revoked, "resource-revoked", true),
+        ] {
+            sqlx::query(
+                "INSERT INTO users (id, name, key_hash, revoked_at) \
+                 VALUES ($1, $2, $3, CASE WHEN $4 THEN now() END)",
+            )
+            .bind(id)
+            .bind(format!("{name}-{id}"))
+            .bind(format!("resource-key-{id}"))
+            .bind(is_revoked)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let seed_machine = |user_id: Uuid, kind: &'static str, revoked: bool, deleted: bool| {
+            let pool = pool.clone();
+            async move {
+                let id = Uuid::new_v4();
+                sqlx::query(
+                    "INSERT INTO machines (id, user_id, name, key_hash, kind, revoked_at, deleted_at) \
+                     VALUES ($1, $2, $3, $4, $5, CASE WHEN $6 THEN now() END, CASE WHEN $7 THEN now() END)",
+                )
+                .bind(id)
+                .bind(user_id)
+                .bind(format!("machine-{id}"))
+                .bind(format!("machine-key-{id}"))
+                .bind(kind)
+                .bind(revoked)
+                .bind(deleted)
+                .execute(&pool)
+                .await
+                .unwrap();
+                id
+            }
+        };
+        let own_machine = seed_machine(owner, "persistent", false, false).await;
+        let other_machine = seed_machine(other, "persistent", false, false).await;
+        let revoked_owner_machine = seed_machine(revoked, "persistent", false, false).await;
+        let revoked_machine = seed_machine(owner, "persistent", true, false).await;
+        let deleted_machine = seed_machine(owner, "persistent", false, true).await;
+        let ephemeral_machine = seed_machine(owner, "ephemeral", false, false).await;
+
+        let state = crate::state::AppState::for_test(pool.clone());
+        let caller = |user_id, admin| {
+            Extension(AuthContext {
+                user_id,
+                key_id: Uuid::new_v4(),
+                machine_id: None,
+                scopes: if admin { BTreeSet::from([Scope::Admin]) } else { BTreeSet::new() },
+            })
+        };
+        let Json(own_rows) = list(State(state.clone()), caller(owner, false)).await.unwrap();
+        let Json(admin_rows) = list(State(state), caller(owner, true)).await.unwrap();
+        let ids = |rows: Vec<super::MachineResourcesRow>| {
+            let mut ids: Vec<_> = rows.into_iter().map(|row| row.machine_id).collect();
+            ids.sort_unstable();
+            ids
+        };
+        assert_eq!(own_rows.len(), 1);
+        assert_eq!(own_rows[0].machine_id, own_machine);
+        assert!(own_rows[0].resources.is_none(), "machines without a snapshot remain listed");
+        let admin_ids = ids(admin_rows);
+        for visible in [own_machine, other_machine] {
+            assert!(admin_ids.contains(&visible));
+        }
+        for hidden in [revoked_owner_machine, revoked_machine, deleted_machine, ephemeral_machine] {
+            assert!(!admin_ids.contains(&hidden));
+        }
+        sqlx::query("DELETE FROM users WHERE id = ANY($1)")
+            .bind(vec![owner, other, revoked])
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 }

@@ -2,6 +2,7 @@
 // they live outside the component and are unit-testable on their own. Anything
 // that reads $state (e.g. the section toggles, the expand set) stays in the
 // component; only data-shape transforms and static config live here.
+import type { MachineLiveness } from '@bindings/MachineLiveness';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { SessionParentStub } from '@bindings/SessionParentStub';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
@@ -528,6 +529,19 @@ export function groupRows(rows: SessionListItem[], dim: Dimension): RowGroup[] {
 		if (au !== bu) return au ? 1 : -1;
 		return a.label.localeCompare(b.label);
 	});
+}
+
+// Ephemeral worker machines live and die with their sessions and are absent
+// from the machine lists, so their group takes its liveness from its rows.
+export function machineGroupLiveness(
+	known: MachineLiveness | null,
+	sessions: readonly SessionListItem[]
+): MachineLiveness | null {
+	if (known) return known;
+	if (!sessions.length || sessions.some((s) => s.machine_kind !== 'ephemeral')) return null;
+	if (sessions.some((s) => s.liveness === 'active' && !s.hibernated)) return 'online';
+	if (sessions.some((s) => s.liveness === 'stale')) return 'stale';
+	return 'offline';
 }
 
 // The open drawer's session id, parsed from the live pathname (shallow routing

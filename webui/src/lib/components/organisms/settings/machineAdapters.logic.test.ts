@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { binaryStatus, formatAdapterConfig, parseAdapterConfig } from './machineAdapters.logic';
+import {
+	adapterMachines,
+	binaryStatus,
+	formatAdapterConfig,
+	parseAdapterConfig
+} from './machineAdapters.logic';
+import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
+import type { MachineRow } from '@bindings/MachineRow';
 import type { MachineAdapterInfo } from '@bindings/MachineAdapterInfo';
 
 const adapter = (over: Partial<MachineAdapterInfo> = {}): MachineAdapterInfo => ({
@@ -54,5 +61,29 @@ describe('formatAdapterConfig', () => {
 	it('round-trips through the parser', () => {
 		const config = { codex_bin: '/opt/codex', args: ['--x'] };
 		expect(parseAdapterConfig(formatAdapterConfig(config))).toEqual({ ok: true, config });
+	});
+});
+
+describe('adapterMachines', () => {
+	const all = [
+		{ id: 'a', name: 'alpha', display_name: 'Alpha' },
+		{ id: 'b', name: 'beta', display_name: null }
+	] as MachineRow[];
+	const own = [{ machine_id: 'm', name: 'mine', display_name: null }] as MachineResourcesRow[];
+
+	it('an admin gets the full machine list', () => {
+		expect(adapterMachines(true, all, own)).toEqual([
+			{ id: 'a', name: 'Alpha' },
+			{ id: 'b', name: 'beta' }
+		]);
+	});
+
+	it('a non-admin gets only their own machines', () => {
+		expect(adapterMachines(false, all, own)).toEqual([{ id: 'm', name: 'mine' }]);
+	});
+
+	it('is empty while the source query has no data', () => {
+		expect(adapterMachines(true, undefined, own)).toEqual([]);
+		expect(adapterMachines(false, all, undefined)).toEqual([]);
 	});
 });

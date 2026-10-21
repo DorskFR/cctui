@@ -232,10 +232,12 @@
 		</SettingGroup>
 		<PasskeySignInGroup />
 		<HarnessUpdateGroup />
-		<MachineAdaptersGroup />
+		<MachineAdaptersGroup isAdmin />
 		<SpawnLimitsGroup />
 		<UpstreamHostsGroup />
 		<SpeechGroup />
+	{:else}
+		<MachineAdaptersGroup />
 	{/if}
 </SettingSection>
 
