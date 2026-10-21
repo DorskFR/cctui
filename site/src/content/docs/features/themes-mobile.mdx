@@ -1,0 +1,28 @@
+---
+title: Mobile, themes and i18n
+description: A phone-first web UI, 31 themes, a tiles view, the Needs-you list, English and French, ntfy push.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Clip from '../../../components/Clip.astro';
+
+<Clip slug="mobile" alt="A 390px phone flow: the Needs-you list, answering a prompt, and back" ratio="16 / 10" />
+
+<p class="pitch">Most approvals happen away from the desk. <strong>Below 960px every panel becomes a drawer</strong>, cards swipe, and the Needs-you list shows only what is waiting on you.</p>
+
+<CardGrid>
+  <Card title="Mobile layout">Panels become drawers and fields stack. Tested at phone widths in the journey suite.</Card>
+  <Card title="Swipe actions">Archive or pin a session with a swipe.</Card>
+  <Card title="Needs you">One list of sessions blocked on a permission, a question or a plan.</Card>
+  <Card title="Tiles view">Many live conversations at once, as a third view mode of Sessions.</Card>
+  <Card title="31 themes">Light and dark, applied to every screen and to plugins. Text size scales the whole UI.</Card>
+  <Card title="English and French">Switch language without a reload.</Card>
+  <Card title="Notifications">Browser notifications and sounds when a session needs input; phone push through ntfy. <span class="status partial">ntfy only</span></Card>
+  <Card title="Keyboard chords">Ctrl/Cmd+Enter send, Ctrl/Cmd+F find, Ctrl/Cmd+E archive, Esc close.</Card>
+</CardGrid>
+
+<Clip slug="themes" alt="Cycling through several of the 31 themes" />
+
+## How it works
+
+The web UI is a SvelteKit single-page app built on a shared UI kit whose themes are CSS custom-property blocks; a theme change is one attribute on the root element. There is no PWA manifest or service worker today, so "install to home screen" is the browser's own bookmark, and there is no command palette.

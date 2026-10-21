@@ -1,0 +1,31 @@
+---
+title: Accounts, usage and caps
+description: Many subscription and API accounts, pools with failover, 5h/7d windows, per-model cost and hard dollar caps.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Clip from '../../../components/Clip.astro';
+
+<Clip slug="usage" alt="Usage overview tiles, per-model cost, and the accounts board with a pool" />
+
+<p class="pitch">Three subscriptions, two API keys, a LAN model. <strong>cctui's gateway holds the credentials, picks the account, tracks every window and stops at the cap you set.</strong></p>
+
+<CardGrid>
+  <Card title="Gateway">Sessions use stored credentials through cctui, with token refresh. Subscription and API accounts, and any compatible endpoint behind an allowlist.</Card>
+  <Card title="Accounts board">Provider columns; drag accounts into pools. An account page for identity, providers, env, service tokens and tool policy.</Card>
+  <Card title="Pools">Spread sessions across accounts by headroom. Pool gauges show the combined quota.</Card>
+  <Card title="Failover and redirects">A session moves off an exhausted account. Temporarily send new sessions to another account or model.</Card>
+  <Card title="5h and 7d windows">Usage bars and a battery with reset countdowns. Notices when a window crosses a threshold.</Card>
+  <Card title="Dollar caps">Hard spend ceilings per session and per subagent. Soft limits make launches wait instead of fail.</Card>
+  <Card title="Pacing">Spreads usage so a window is not burned early.</Card>
+  <Card title="Overview">Tiles, tokens over time, a heatmap and cost per model. A stats dock beside the session list.</Card>
+  <Card title="Cache-loss card">Tokens and dollars lost to prompt-cache busts, per session.</Card>
+  <Card title="CctuiUsage">Agents check their own limits and budget before big work.</Card>
+  <Card title="Service tokens">Long-lived gateway credentials for non-agent services, stored hashed.</Card>
+  <Card title="Provider status">A dot shows when a provider is degraded. Cost is reconciled against a provider billing API where one exists.</Card>
+  <Card title="Limit reset">Claim a usage reset manually or automatically. <span class="status partial">partial</span></Card>
+</CardGrid>
+
+## How it works
+
+Each session is bound to an account; the harness is pointed at cctui's gateway, which injects the real credential, counts tokens, prices them from the account's catalog and enforces rate limits and caps per account and per provider. Balancing is explicit: a session fails over when its account is exhausted, or is pool-bound at spawn; there is no implicit cross-account shuffling. Usage is exported on `/metrics` and as JSON for a status bar (`cctui-admin usage --json`).

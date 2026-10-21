@@ -1,0 +1,51 @@
+:root {
+  --c-bg: #0f1115;
+  --c-bg-elev: #171a21;
+  --c-bg-elev-2: #1f232c;
+  --c-surface: #21262f;
+  --c-border: #2c323d;
+  --c-border-strong: #68707e;
+  --c-text: #e6e9ef;
+  --c-text-muted: #9aa3b2;
+  --c-text-faint: #848c9e;
+  --c-accent: #5ad6a0;
+  --c-accent-ink: #04130c;
+  --c-accent-dim: #2a6e54;
+  --c-blue: #5aa9ff;
+  --c-amber: #f0b454;
+  --c-red: #f0716b;
+  --c-green: #5ad6a0;
+  --c-violet: #b48ef0;
+  --c-teal: #4fd6cf;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.5);
+  --font-sans:
+    system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans', sans-serif;
+  --font-mono:
+    ui-monospace, 'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
+}
+
+:root[data-theme='light'] {
+  --c-bg: #f6f7f9;
+  --c-bg-elev: #ffffff;
+  --c-bg-elev-2: #eef0f3;
+  --c-surface: #ffffff;
+  --c-border: #d9dde3;
+  --c-border-strong: #8a9098;
+  --c-text: #1a1d23;
+  --c-text-muted: #5b6472;
+  --c-text-faint: #6a7282;
+  --c-accent: #008256;
+  --c-accent-ink: #ffffff;
+  --c-accent-dim: #9bd9c2;
+  --c-blue: #1165c1;
+  --c-amber: #9b6700;
+  --c-red: #cd3e38;
+  --c-green: #008256;
+  --c-violet: #7c3aed;
+  --c-teal: #008076;
+  --shadow-sm: 0 1px 2px rgba(20, 24, 31, 0.08);
+  --shadow-md: 0 6px 20px rgba(20, 24, 31, 0.12);
+  --shadow-lg: 0 12px 40px rgba(20, 24, 31, 0.18);
+}

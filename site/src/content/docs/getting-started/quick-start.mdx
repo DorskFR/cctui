@@ -1,0 +1,63 @@
+---
+title: Quick start
+description: Run cctui locally with Docker Compose, enroll your first machine and open the UI.
+---
+
+import { Steps } from '@astrojs/starlight/components';
+import Shot from '../../../components/Shot.astro';
+
+cctui is a server, a web UI, and a small daemon on each machine you want to drive. The fastest way to try it is the local Docker Compose stack: it pulls the published images plus PostgreSQL and wires them together. Linux and macOS, no source build.
+
+<Steps>
+
+1. **Start the stack.**
+
+   ```sh
+   git clone https://github.com/DorskFR/cctui
+   cd cctui
+   make local/up
+   ```
+
+   The first run writes `deploy/local/.env` with a random admin token (`CCTUI_ADMIN_TOKENS`) and a vault key (`CCTUI_VAULT_KEY`). The server migrates its database on start. Both ports are published on `127.0.0.1` only.
+
+   - Web UI: [http://localhost:8088](http://localhost:8088), log in with the admin token `make local/up` prints
+   - Server API: [http://localhost:8700](http://localhost:8700)
+
+2. **Enroll a machine.**
+
+   The daemon is not containerised: it runs on your host so it can see your real `claude`, `codex` and `opencode` binaries and working directories. Download `cctui-daemon` for your platform from [GitHub Releases](https://github.com/DorskFR/cctui/releases), then:
+
+   ```sh
+   cctui-daemon enroll --server-url http://localhost:8700 --token <admin-token> --name workstation-01
+   cctui-daemon service install
+   ```
+
+   The daemon connects outward over WebSocket. Within a few seconds `workstation-01` shows as online and its existing sessions appear in the list. cctui does not modify your Claude Code configuration; the daemon observes and spawns sessions directly.
+
+3. **Spawn your first agent.**
+
+   In the UI click **New session**, pick `workstation-01`, a folder, a harness and a model, write a brief, and launch. Open the session to watch it stream. When it asks for a permission, approve it from the card. See [Enroll a machine](/cctui/getting-started/enroll-a-machine/) for user tokens and remote installs.
+
+</Steps>
+
+<Shot src="spawn-dialog.png" alt="The New session dialog with machine, folder, harness and brief fields" caption="The spawn dialog. Profiles save a combination for one click next time." />
+
+## Try it with demo data
+
+`make local/demo` starts the stack and loads a fictional fixture (two machines, five sessions, three accounts, a pool) so every screen has something to show:
+
+```sh
+make local/demo
+```
+
+Other targets: `make local/pull` (update images), `make local/logs`, `make local/ps`, `make local/down` (keeps the PostgreSQL volume).
+
+## What next
+
+- [Run on Kubernetes workers](/cctui/getting-started/kubernetes-workers/): dispatch tasks to throwaway pods.
+- [Configuration](/cctui/getting-started/configuration/): server environment, daemon config, release channels.
+- [Features](/cctui/features/harnesses/): what the UI can do once sessions are flowing.
+
+:::caution[Early stage]
+cctui is a personal open-source project under active development. Expect breaking changes between releases. Run it on infrastructure you control.
+:::

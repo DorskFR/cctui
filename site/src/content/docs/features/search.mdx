@@ -1,0 +1,28 @@
+---
+title: Search, archive and context
+description: Full-text search over every transcript with facets, bookmarks, pins, exports, attachments and context packs.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Clip from '../../../components/Clip.astro';
+
+<Clip slug="search" alt="Searching sessions by text, then narrowing with label:, machine: and status: facets" />
+
+<p class="pitch">Which session touched the checkout API last week? <strong>Every transcript, live or archived, is indexed</strong>; facets narrow it to a machine, a label, a model or a date.</p>
+
+<CardGrid>
+  <Card title="Full-text search">Find any session by what was said, with matches highlighted in results and in the transcript.</Card>
+  <Card title="Faceted query language">`machine:`, `status:`, `label:`, `model:`, `adapter:`, `dir:`, `before:` and `after:`, with autocomplete.</Card>
+  <Card title="Archive and resume">Archived sessions stay searchable and can be resumed. Finished one-shots archive themselves.</Card>
+  <Card title="Bulk actions">Select many sessions; archive or pin them at once.</Card>
+  <Card title="Pins and bookmarks">Pin sessions to the top and messages inside a session. Bookmark messages across sessions as snapshots.</Card>
+  <Card title="Export">A conversation as one HTML file (print to PDF), or as markdown and a brief for another agent.</Card>
+  <Card title="Attachments">Paste or drop files and screenshots at spawn or mid-chat; images are compressed, large files stored by content hash.</Card>
+  <Card title="Context packs">Rules, memory and prompt templates attachable at spawn, or by the agent itself through `CctuiContext`.</Card>
+  <Card title="Working with output">Copy code blocks, open images in a lightbox, view linked files from the machine.</Card>
+  <Card title="Drafts and history">A half-written reply follows you across devices. Up and Down recall earlier prompts.</Card>
+</CardGrid>
+
+## How it works
+
+Events are stored in PostgreSQL and indexed with its full-text search; the query language (`cctui-query`) compiles facets into the same SQL, scoped to what the user owns or was shared. Context items are server-side records with match rules (adapter, directory, label) that decide when a rule auto-attaches; memories are offered as suggestions and attached explicitly. For dispatched workers, a git-hosted context pack is fetched at boot and staged into the right place for the selected harness.
