@@ -266,7 +266,7 @@ describe('LiveVoice', () => {
 		(cb as unknown as VadCallbacks).onSpeechStart();
 		expect(player.playing).toBe(false);
 		line('1-4', 4);
-		audios[0].onended?.();
+		audios[0].onended?.(new Event('ended'));
 		expect(played).toEqual(['blob:1']);
 
 		line('2-1', 5);

@@ -1227,9 +1227,11 @@ mod tests {
         h.signals.send(delta("m:0", "The first sentence is long enough to sp")).await.unwrap();
         h.signals.send(delta("m:0", "eak. Second")).await.unwrap();
         h.collect_until(|f| matches!(f, Outbound::Control(VoiceServerMsg::SpeakEnd { .. }))).await;
+        h.collect_until(|f| *f == state(VoiceState::Listening)).await;
         let block = "The first sentence is long enough to speak. Second half.";
         h.signals.send(Signal::Text(block.into())).await.unwrap();
         h.signals.send(Signal::TurnEnd).await.unwrap();
+        h.collect_until(|f| matches!(f, Outbound::Control(VoiceServerMsg::SpeakEnd { .. }))).await;
         h.collect_until(|f| *f == state(VoiceState::Listening)).await;
         assert_eq!(
             Mock::log(&h.mock.synthesized),
