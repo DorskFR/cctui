@@ -1,13 +1,15 @@
-//! Mutating admission webhook server: injects the secretless-worker envelope
-//! into profiled pods. No kube client, no state — it operates purely on the
-//! `AdmissionReview` payload.
+//! Admission webhook server: the mutating endpoint injects the secretless-worker
+//! envelope into profiled pods (reading only the profile's `spec.guard`), the
+//! validating endpoint checks them against their `WorkerProfile`.
 
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use cctui_orchestrator::envelope::{MutationOutcome, default_sidecar_image, mutate_pod};
+use cctui_orchestrator::envelope::{
+    MutationOutcome, default_sidecar_image, is_eligible, is_injected, mutate_pod, profile_name,
+};
 use cctui_orchestrator::validate::{Decision, ProfileSource, validate};
-use cctui_orchestrator::{WorkerProfile, WorkerProfileSpec};
+use cctui_orchestrator::{GuardSpec, WorkerProfile, WorkerProfileSpec};
 use k8s_openapi::api::core::v1::Pod;
 use kube::core::admission::{AdmissionRequest, AdmissionResponse, AdmissionReview};
 use kube::{Api, Client, Error as KubeError};
@@ -40,6 +42,32 @@ async fn healthz() -> StatusCode {
     StatusCode::OK
 }
 
+fn request_namespace(req: &AdmissionRequest<Pod>, pod: &Pod) -> String {
+    req.namespace
+        .clone()
+        .or_else(|| pod.metadata.namespace.clone())
+        .unwrap_or_else(|| "default".to_owned())
+}
+
+/// The source profile's `spec.guard` for a pod about to be injected. A missing
+/// profile renders no guard overrides (the validating webhook denies the pod);
+/// a lookup failure is an `Err` so the pod is denied fail-closed.
+async fn profile_guard(
+    state: &AppState,
+    req: &AdmissionRequest<Pod>,
+    pod: &Pod,
+) -> anyhow::Result<Option<GuardSpec>> {
+    if !is_eligible(pod) || is_injected(pod) {
+        return Ok(None);
+    }
+    let Some(name) = profile_name(pod) else { return Ok(None) };
+    let namespace = request_namespace(req, pod);
+    let profile = state.profile_source.get(&namespace, name).await.map_err(|e| {
+        anyhow::anyhow!("cannot resolve WorkerProfile `{name}` in `{namespace}`: {e}")
+    })?;
+    Ok(profile.and_then(|p| p.guard))
+}
+
 #[allow(clippy::cognitive_complexity)]
 async fn mutate(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
@@ -54,7 +82,10 @@ async fn mutate(
 
     let mut resp = AdmissionResponse::from(&req);
     if let Some(pod) = &req.object {
-        match mutate_pod(pod, &state.sidecar_image) {
+        let outcome = profile_guard(&state, &req, pod)
+            .await
+            .and_then(|guard| mutate_pod(pod, &state.sidecar_image, guard.as_ref()));
+        match outcome {
             Ok(MutationOutcome::Patch(patch)) => {
                 tracing::info!(
                     pod = pod.metadata.name.as_deref().unwrap_or("<unnamed>"),
@@ -91,11 +122,7 @@ async fn validate_handler(
 
     let resp = AdmissionResponse::from(&req);
     let resp = if let Some(pod) = &req.object {
-        let namespace = req
-            .namespace
-            .clone()
-            .or_else(|| pod.metadata.namespace.clone())
-            .unwrap_or_else(|| "default".to_owned());
+        let namespace = request_namespace(&req, pod);
         match validate(pod, &namespace, state.profile_source.as_ref()).await {
             Decision::Allow => resp,
             Decision::Deny(msg) => resp.deny(msg),
@@ -215,8 +242,58 @@ mod tests {
         })
     }
 
+    struct GuardedProfiles;
+
+    #[async_trait::async_trait]
+    impl ProfileSource for GuardedProfiles {
+        async fn get(
+            &self,
+            _namespace: &str,
+            _name: &str,
+        ) -> anyhow::Result<Option<WorkerProfileSpec>> {
+            Ok(Some(serde_json::from_value(serde_json::json!({
+                "image": "registry.example.com/worker:latest",
+                "guard": { "envFrom": [{ "configMapRef": { "name": "guard-proxy-env-canary" } }] }
+            }))?))
+        }
+    }
+
+    struct FailingProfiles;
+
+    #[async_trait::async_trait]
+    impl ProfileSource for FailingProfiles {
+        async fn get(
+            &self,
+            _namespace: &str,
+            _name: &str,
+        ) -> anyhow::Result<Option<WorkerProfileSpec>> {
+            anyhow::bail!("apiserver unreachable")
+        }
+    }
+
+    fn state_with(profile_source: Arc<dyn ProfileSource>) -> Arc<AppState> {
+        Arc::new(AppState {
+            sidecar_image: "registry.example.com/w:test".to_owned(),
+            profile_source,
+        })
+    }
+
+    fn decode_patch(response: &serde_json::Value) -> String {
+        let raw: Vec<u8> = response["patch"]
+            .as_array()
+            .expect("patch present")
+            .iter()
+            .map(|b| u8::try_from(b.as_u64().unwrap()).unwrap())
+            .collect();
+        serde_json::from_slice::<serde_json::Value>(&raw).unwrap().to_string()
+    }
+
     async fn post_review(body: serde_json::Value) -> serde_json::Value {
-        let resp = app(test_state())
+        post_review_to(test_state(), body).await
+    }
+
+    async fn post_review_to(state: Arc<AppState>, body: serde_json::Value) -> serde_json::Value {
+        let resp = app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -251,6 +328,26 @@ mod tests {
         let text = patch.to_string();
         assert!(text.contains("guard-proxy"), "patch injects guard-proxy sidecar");
         assert!(text.contains("envelope-injected"), "patch stamps the marker annotation");
+    }
+
+    #[tokio::test]
+    async fn profile_guard_env_from_reaches_the_patch() {
+        let review = review_json(serde_json::json!({ LABEL_WORKER_PROFILE: "lean" }));
+        let out = post_review_to(state_with(Arc::new(GuardedProfiles)), review).await;
+        assert_eq!(out["response"]["allowed"], true);
+        let text = decode_patch(&out["response"]);
+        assert!(text.contains("guard-proxy-env-canary"), "{text}");
+        assert!(text.contains("\"guard-proxy-env\""), "global ConfigMap still rendered: {text}");
+    }
+
+    #[tokio::test]
+    async fn profile_lookup_failure_denies_the_pod() {
+        let review = review_json(serde_json::json!({ LABEL_WORKER_PROFILE: "lean" }));
+        let out = post_review_to(state_with(Arc::new(FailingProfiles)), review).await;
+        let response = &out["response"];
+        assert_eq!(response["allowed"], false);
+        let message = response["status"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("apiserver unreachable"), "{message}");
     }
 
     #[tokio::test]

@@ -10,7 +10,8 @@
 //! 1. structural — exactly one worker container and the envelope marker present;
 //! 2. sandbox-defeating footguns on the worker/pod;
 //! 3. profile conformance — the pod is exactly what the dispatcher + mutating
-//!    webhook would legitimately produce from the named profile.
+//!    webhook would legitimately produce from the named profile, and the
+//!    profile's `spec.guard` only tunes the guard-proxy within its rules.
 
 use crate::envelope::{
     GUARD_PROXY_CONTAINER, NET_INIT_CONTAINER, PROXY_UID, VOL_GPG_AGENT, VOL_GUARD_PROXY_CA,
@@ -19,12 +20,17 @@ use crate::envelope::{
 };
 use crate::{
     ANNOTATION_ENV_SECRET, ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_WORKER_CONTAINER,
-    DEFAULT_WORKER_CONTAINER, LABEL_WORKER_PROFILE, WorkerProfileSpec,
+    DEFAULT_WORKER_CONTAINER, GuardSpec, LABEL_WORKER_PROFILE, WorkerProfileSpec,
 };
 use k8s_openapi::api::core::v1::{Container, Pod, PodSpec, PodTemplateSpec};
 use std::collections::BTreeSet;
 
 const SECRET_REF_PREFIXES: [&str; 4] = ["vault:", "bao:", "k8s:", "aws-sm:"];
+
+const GUARD_ENV_PREFIX: &str = "GUARD_PROXY_";
+const GUARD_ENV_IDENTITY: &str = "GUARD_PROXY_IDENTITY";
+const GUARD_ENV_ALLOW_PRIVATE_IPS: &str = "GUARD_PROXY_ALLOW_PRIVATE_IPS";
+const GUARD_ENV_PRIVATE_ALLOW: &str = "GUARD_PROXY_PRIVATE_ALLOW";
 
 /// Outcome of validating a single pod.
 pub enum Decision {
@@ -94,7 +100,56 @@ async fn validate_inner(
         format!("WorkerProfile `{name}` not found in `{namespace}` — refusing to admit a pod whose profile is missing")
     })?;
 
+    if let Some(guard) = &profile.guard {
+        check_guard(guard).map_err(|e| format!("WorkerProfile `{name}` spec.guard: {e}"))?;
+    }
     check_conformance(spec, worker, &worker_name, &profile, dispatch_env_secret(pod))
+}
+
+/// Check a profile's `spec.guard`.
+///
+/// `spec.guard.env` may only set `GUARD_PROXY_*` (never the per-dispatch
+/// identity), and widening private egress needs `allowPrivateEgress: true`.
+/// Narrowing (zeroing either setting) needs nothing. `envFrom` contents are
+/// not visible at admission and stay operator-owned, like `guard-proxy-env`.
+pub fn check_guard(guard: &GuardSpec) -> Result<(), String> {
+    for env in guard.env.iter().flatten() {
+        if !env.name.starts_with(GUARD_ENV_PREFIX) {
+            return Err(format!(
+                "env `{}` is not a `{GUARD_ENV_PREFIX}*` setting — spec.guard only configures \
+                 the guard-proxy",
+                env.name
+            ));
+        }
+        if env.name == GUARD_ENV_IDENTITY {
+            return Err(format!(
+                "env `{GUARD_ENV_IDENTITY}` is set per dispatch (`cctui.dev/guard-identity`), \
+                 not per profile"
+            ));
+        }
+        if !guard.allow_private_egress && widens_private_egress(env) {
+            return Err(format!(
+                "env `{}` widens private egress — set spec.guard.allowPrivateEgress: true to \
+                 make that explicit",
+                env.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A `valueFrom` on a widening setting can't be read at admission, so it
+/// counts as widening.
+fn widens_private_egress(env: &k8s_openapi::api::core::v1::EnvVar) -> bool {
+    let value = env.value.as_deref().unwrap_or_default().trim();
+    match env.name.as_str() {
+        GUARD_ENV_ALLOW_PRIVATE_IPS => {
+            env.value_from.is_some()
+                || matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+        }
+        GUARD_ENV_PRIVATE_ALLOW => env.value_from.is_some() || !value.is_empty(),
+        _ => false,
+    }
 }
 
 /// The pod's own per-dispatch env Secret: named by its annotation and bound to
@@ -577,6 +632,7 @@ mod tests {
             worker_container: worker_name.to_owned(),
             guard_identity: None,
             gpg: profile.gpg_signing,
+            guard: profile.guard.clone(),
         };
         envelope::inject(&pod, &cfg)
     }
@@ -932,6 +988,87 @@ mod tests {
         ] {
             let msg = deny_msg(decide_with_worker_env(value).await);
             assert!(msg.contains("secret-ref"), "{value:?}: {msg}");
+        }
+    }
+
+    async fn decide_with_guard(guard: serde_json::Value) -> Decision {
+        let mut profile = lean_profile();
+        profile.guard = Some(serde_json::from_value(guard).unwrap());
+        let pod = dispatched_pod("lean", &profile);
+        decide(&pod, &source("lean", profile)).await
+    }
+
+    #[tokio::test]
+    async fn guard_env_and_env_from_overrides_are_allowed() {
+        let decision = decide_with_guard(serde_json::json!({
+            "envFrom": [{ "configMapRef": { "name": "guard-proxy-env-canary" } }],
+            "env": [{ "name": "GUARD_PROXY_SECRET_TTL_SECS", "value": "60" }]
+        }))
+        .await;
+        assert!(matches!(decision, Decision::Allow));
+    }
+
+    #[tokio::test]
+    async fn guard_env_outside_guard_proxy_namespace_is_denied() {
+        for name in ["LOG_LEVEL", "HTTPS_PROXY", "guard_proxy_allow_private_ips", "GUARD_PROXY"] {
+            let msg = deny_msg(
+                decide_with_guard(serde_json::json!({ "env": [{ "name": name, "value": "x" }] }))
+                    .await,
+            );
+            assert!(msg.contains("spec.guard") && msg.contains(name), "{name}: {msg}");
+        }
+    }
+
+    #[tokio::test]
+    async fn guard_env_cannot_set_the_dispatch_identity() {
+        let msg = deny_msg(
+            decide_with_guard(serde_json::json!({
+                "env": [{ "name": "GUARD_PROXY_IDENTITY", "value": "release-bot" }]
+            }))
+            .await,
+        );
+        assert!(msg.contains("per dispatch"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn widening_private_egress_without_allow_private_egress_is_denied() {
+        for env in [
+            serde_json::json!({ "name": "GUARD_PROXY_ALLOW_PRIVATE_IPS", "value": "1" }),
+            serde_json::json!({ "name": "GUARD_PROXY_ALLOW_PRIVATE_IPS", "value": " TRUE " }),
+            serde_json::json!({ "name": "GUARD_PROXY_PRIVATE_ALLOW", "value": "git.lan:443" }),
+            serde_json::json!({
+                "name": "GUARD_PROXY_PRIVATE_ALLOW",
+                "valueFrom": { "configMapKeyRef": { "name": "guard-extra", "key": "allow" } }
+            }),
+        ] {
+            let msg = deny_msg(decide_with_guard(serde_json::json!({ "env": [env] })).await);
+            assert!(msg.contains("allowPrivateEgress"), "{msg}");
+        }
+    }
+
+    #[tokio::test]
+    async fn widening_private_egress_with_allow_private_egress_is_allowed() {
+        let decision = decide_with_guard(serde_json::json!({
+            "allowPrivateEgress": true,
+            "env": [
+                { "name": "GUARD_PROXY_ALLOW_PRIVATE_IPS", "value": "1" },
+                { "name": "GUARD_PROXY_PRIVATE_ALLOW", "value": "git.lan:443" }
+            ]
+        }))
+        .await;
+        assert!(matches!(decision, Decision::Allow));
+    }
+
+    #[tokio::test]
+    async fn narrowing_private_egress_needs_no_flag() {
+        for env in [
+            serde_json::json!({ "name": "GUARD_PROXY_ALLOW_PRIVATE_IPS", "value": "0" }),
+            serde_json::json!({ "name": "GUARD_PROXY_ALLOW_PRIVATE_IPS", "value": "" }),
+            serde_json::json!({ "name": "GUARD_PROXY_ALLOW_PRIVATE_IPS" }),
+            serde_json::json!({ "name": "GUARD_PROXY_PRIVATE_ALLOW", "value": "  " }),
+        ] {
+            let decision = decide_with_guard(serde_json::json!({ "env": [env.clone()] })).await;
+            assert!(matches!(decision, Decision::Allow), "{env} must be allowed");
         }
     }
 

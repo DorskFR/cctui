@@ -38,6 +38,7 @@ and is left untouched.
 | `podAnnotations` | operator | stamped onto each instantiated pod's template metadata; the dispatcher's own `cctui.dev/*` session annotations win on key conflict |
 | `serviceAccountName` | operator | identity / secret scope mapping; the dispatch request never sets this |
 | `gpgSigning` | operator | opt-in; webhook wires a gpg-agent socket into the worker container |
+| `guard` | operator | guard-proxy sidecar `envFrom`/`env` layered over `guard-proxy-env`; widening needs `allowPrivateEgress` (see worker-contract.md) |
 | per-run env (session id, reply URL, task payload, ...) | dispatcher | layered onto the worker `env` at Job creation |
 | secretless credential envelope, gpg-agent socket | webhook | injected into **only** the worker container at pod admission |
 

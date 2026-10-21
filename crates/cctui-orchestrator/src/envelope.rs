@@ -6,11 +6,12 @@
 //! initContainer is passthrough (threat model: the operator is trusted, the
 //! agent in the worker container is not). Environment-specific guard-proxy
 //! settings are supplied at runtime via the `guard-proxy-env` `ConfigMap`
-//! (`envFrom`), never baked into the binary.
+//! (`envFrom`), never baked into the binary; a profile's `spec.guard` layers
+//! on top of it.
 
 use crate::{
     ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_GPG_SIGNING, ANNOTATION_GUARD_IDENTITY,
-    ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, LABEL_WORKER_PROFILE,
+    ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, GuardSpec, LABEL_WORKER_PROFILE,
 };
 use k8s_openapi::api::core::v1::{
     AppArmorProfile, Capabilities, ConfigMapEnvSource, ConfigMapProjection, ConfigMapVolumeSource,
@@ -78,10 +79,11 @@ pub struct EnvelopeConfig {
     pub worker_container: String,
     pub guard_identity: Option<String>,
     pub gpg: bool,
+    pub guard: Option<GuardSpec>,
 }
 
 impl EnvelopeConfig {
-    fn from_pod(pod: &Pod, sidecar_image: &str) -> Self {
+    fn from_pod(pod: &Pod, sidecar_image: &str, guard: Option<&GuardSpec>) -> Self {
         let annotations = pod.metadata.annotations.as_ref();
         let get = |key: &str| annotations.and_then(|a| a.get(key)).map(String::as_str);
         Self {
@@ -91,6 +93,7 @@ impl EnvelopeConfig {
                 .to_owned(),
             guard_identity: get(ANNOTATION_GUARD_IDENTITY).map(ToOwned::to_owned),
             gpg: get(ANNOTATION_GPG_SIGNING) == Some("true"),
+            guard: guard.cloned(),
         }
     }
 }
@@ -124,17 +127,28 @@ pub enum MutationOutcome {
     Patch(json_patch::Patch),
 }
 
-/// Evaluate `pod` for envelope injection. A serialization failure is an `Err` so
-/// the admission webhook fails closed (deny) instead of admitting an unpatched,
-/// unsandboxed worker.
-pub fn mutate_pod(pod: &Pod, sidecar_image: &str) -> anyhow::Result<MutationOutcome> {
+/// Profile name from the worker-profile label, if the pod carries one.
+#[must_use]
+pub fn profile_name(pod: &Pod) -> Option<&str> {
+    pod.metadata.labels.as_ref().and_then(|l| l.get(LABEL_WORKER_PROFILE)).map(String::as_str)
+}
+
+/// Evaluate `pod` for envelope injection.
+///
+/// `guard` is the source profile's `spec.guard`. A serialization failure is an `Err` so the admission webhook
+/// fails closed (deny) instead of admitting an unpatched, unsandboxed worker.
+pub fn mutate_pod(
+    pod: &Pod,
+    sidecar_image: &str,
+    guard: Option<&GuardSpec>,
+) -> anyhow::Result<MutationOutcome> {
     if !is_eligible(pod) {
         return Ok(MutationOutcome::NotEligible);
     }
     if is_injected(pod) {
         return Ok(MutationOutcome::AlreadyInjected);
     }
-    let cfg = EnvelopeConfig::from_pod(pod, sidecar_image);
+    let cfg = EnvelopeConfig::from_pod(pod, sidecar_image, guard);
     let injected = inject(pod, &cfg);
     let before =
         serde_json::to_value(pod).map_err(|e| anyhow::anyhow!("serializing admitted pod: {e}"))?;
@@ -246,6 +260,17 @@ fn guard_proxy_container(cfg: &EnvelopeConfig) -> Container {
             value_from: None,
         });
     }
+    let mut env_from = vec![EnvFromSource {
+        config_map_ref: Some(ConfigMapEnvSource {
+            name: CONFIGMAP_GUARD_PROXY_ENV.to_owned(),
+            optional: Some(false),
+        }),
+        ..EnvFromSource::default()
+    }];
+    if let Some(guard) = &cfg.guard {
+        env_from.extend(guard.env_from.iter().flatten().cloned());
+        env.extend(guard.env.iter().flatten().cloned());
+    }
 
     let mut mounts = vec![
         mount(VOL_PROXY_POLICY, "/var/run/guard-proxy", false),
@@ -274,13 +299,7 @@ fn guard_proxy_container(cfg: &EnvelopeConfig) -> Container {
             .collect(),
         ),
         env: (!env.is_empty()).then_some(env),
-        env_from: Some(vec![EnvFromSource {
-            config_map_ref: Some(ConfigMapEnvSource {
-                name: CONFIGMAP_GUARD_PROXY_ENV.to_owned(),
-                optional: Some(false),
-            }),
-            ..EnvFromSource::default()
-        }]),
+        env_from: Some(env_from),
         security_context: Some(SecurityContext {
             run_as_user: Some(PROXY_UID),
             run_as_group: Some(PROXY_UID),
@@ -463,7 +482,11 @@ mod tests {
     }
 
     fn apply(pod: &Pod) -> Pod {
-        let patch = match mutate_pod(pod, IMG).expect("mutate_pod must not error") {
+        apply_with(pod, None)
+    }
+
+    fn apply_with(pod: &Pod, guard: Option<&GuardSpec>) -> Pod {
+        let patch = match mutate_pod(pod, IMG, guard).expect("mutate_pod must not error") {
             MutationOutcome::Patch(p) => p,
             other => panic!("eligible pod must yield a patch, got {other:?}"),
         };
@@ -525,6 +548,214 @@ mod tests {
             "guard-proxy-env"
         );
         assert!(gp.env.is_none(), "no identity annotation -> ConfigMap default only");
+    }
+
+    fn golden_mount(name: &str, path: &str) -> serde_json::Value {
+        serde_json::json!({ "name": name, "mountPath": path })
+    }
+
+    fn golden_ro_mount(name: &str, path: &str) -> serde_json::Value {
+        serde_json::json!({ "name": name, "mountPath": path, "readOnly": true })
+    }
+
+    fn golden_resources(cr: &str, mr: &str, cl: &str, ml: &str) -> serde_json::Value {
+        serde_json::json!({
+            "requests": { "cpu": cr, "memory": mr },
+            "limits": { "cpu": cl, "memory": ml }
+        })
+    }
+
+    fn golden_guard_proxy() -> serde_json::Value {
+        let sa_token_dir = "/var/run/secrets/kubernetes.io/serviceaccount";
+        serde_json::json!({
+            "name": "guard-proxy",
+            "image": IMG,
+            "restartPolicy": "Always",
+            "command": [
+                "cctui-guard-proxy-entrypoint",
+                "--mode=transparent",
+                "--listen=0.0.0.0:15001",
+                "--health-listen=0.0.0.0:15002",
+                "--policy=/var/run/guard-proxy/policy.json"
+            ],
+            "envFrom": [{ "configMapRef": { "name": "guard-proxy-env", "optional": false } }],
+            "securityContext": {
+                "runAsUser": 1337,
+                "runAsGroup": 1337,
+                "allowPrivilegeEscalation": false,
+                "capabilities": { "drop": ["ALL"] }
+            },
+            "volumeMounts": [
+                golden_mount("proxy-policy", "/var/run/guard-proxy"),
+                golden_ro_mount("guard-proxy-inject", "/etc/guard-proxy"),
+                golden_mount("guard-proxy-ca", "/var/run/guard-proxy-ca"),
+                golden_ro_mount("guard-proxy-sa-token", sa_token_dir)
+            ],
+            "startupProbe": {
+                "httpGet": { "path": "/health", "port": 15002 },
+                "periodSeconds": 2,
+                "failureThreshold": 30
+            },
+            "resources": golden_resources("25m", "32Mi", "500m", "256Mi")
+        })
+    }
+
+    fn golden_worker() -> serde_json::Value {
+        serde_json::json!({
+            "name": "worker",
+            "image": "registry.example.com/worker:latest",
+            "securityContext": {
+                "runAsUser": 0,
+                "appArmorProfile": { "type": "Unconfined" },
+                "capabilities": { "drop": ["ALL"], "add": WORKER_ADDED_CAPS }
+            },
+            "env": [
+                { "name": "WORKER_NET_MODE", "value": "transparent-external" },
+                { "name": "NODE_EXTRA_CA_CERTS", "value": "/var/run/guard-proxy-ca/ca.pem" }
+            ],
+            "volumeMounts": [
+                golden_mount("home", "/home/worker"),
+                golden_mount("overlay", "/overlay"),
+                golden_mount("guard-state", "/var/run/workflow-guard"),
+                golden_mount("proxy-policy", "/var/run/guard-proxy"),
+                golden_mount("guard-proxy-ca", "/var/run/guard-proxy-ca")
+            ]
+        })
+    }
+
+    fn golden_volumes() -> serde_json::Value {
+        let empty = |name: &str| serde_json::json!({ "name": name, "emptyDir": {} });
+        serde_json::json!([
+            empty("home"),
+            empty("overlay"),
+            empty("guard-state"),
+            empty("proxy-policy"),
+            { "name": "guard-proxy-inject", "configMap": { "name": "guard-proxy-inject" } },
+            empty("guard-proxy-ca"),
+            {
+                "name": "guard-proxy-sa-token",
+                "projected": {
+                    "sources": [
+                        { "serviceAccountToken": { "path": "token", "expirationSeconds": 3600 } },
+                        {
+                            "configMap": {
+                                "name": "kube-root-ca.crt",
+                                "items": [{ "key": "ca.crt", "path": "ca.crt" }]
+                            }
+                        },
+                        {
+                            "downwardAPI": {
+                                "items": [{
+                                    "path": "namespace",
+                                    "fieldRef": { "fieldPath": "metadata.namespace" }
+                                }]
+                            }
+                        }
+                    ]
+                }
+            }
+        ])
+    }
+
+    /// `lean_pod` as injected before profiles could carry `spec.guard`.
+    fn lean_pod_injected_golden() -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "worker-lean",
+                "labels": { LABEL_WORKER_PROFILE: "lean" },
+                "annotations": { ANNOTATION_ENVELOPE_INJECTED: "true" }
+            },
+            "spec": {
+                "initContainers": [
+                    {
+                        "name": "net-init",
+                        "image": IMG,
+                        "command": ["cctui-worker-net-init"],
+                        "securityContext": {
+                            "runAsUser": 0,
+                            "capabilities": { "drop": ["ALL"], "add": ["NET_ADMIN"] }
+                        },
+                        "resources": golden_resources("10m", "16Mi", "100m", "64Mi")
+                    },
+                    golden_guard_proxy()
+                ],
+                "containers": [golden_worker()],
+                "securityContext": { "fsGroup": 1000 },
+                "volumes": golden_volumes()
+            }
+        })
+    }
+
+    #[test]
+    fn profile_without_guard_renders_the_golden_pod() {
+        let golden = lean_pod_injected_golden();
+        let out = serde_json::to_value(apply(&lean_pod())).unwrap();
+        assert_eq!(out, golden);
+        let empty_guard = GuardSpec::default();
+        let out = serde_json::to_value(apply_with(&lean_pod(), Some(&empty_guard))).unwrap();
+        assert_eq!(out, golden, "an empty spec.guard renders like no spec.guard");
+    }
+
+    #[test]
+    fn guard_env_and_env_from_render_after_the_global_config_map() {
+        let mut pod = lean_pod();
+        pod.metadata
+            .annotations
+            .as_mut()
+            .unwrap()
+            .insert(ANNOTATION_GUARD_IDENTITY.to_owned(), "release-bot".to_owned());
+        let guard: GuardSpec = serde_json::from_value(serde_json::json!({
+            "envFrom": [
+                { "configMapRef": { "name": "guard-proxy-env-canary" } },
+                { "secretRef": { "name": "guard-proxy-canary-secret" } }
+            ],
+            "env": [{ "name": "GUARD_PROXY_ALLOW_PRIVATE_IPS", "value": "0" }]
+        }))
+        .unwrap();
+        let out = apply_with(&pod, Some(&guard));
+        let gp = &out.spec.as_ref().unwrap().init_containers.as_ref().unwrap()[1];
+
+        let sources: Vec<String> = gp
+            .env_from
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|s| {
+                s.config_map_ref
+                    .as_ref()
+                    .map(|c| format!("cm:{}", c.name))
+                    .or_else(|| s.secret_ref.as_ref().map(|r| format!("secret:{}", r.name)))
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            sources,
+            ["cm:guard-proxy-env", "cm:guard-proxy-env-canary", "secret:guard-proxy-canary-secret"]
+        );
+
+        let env: Vec<(&str, Option<&str>)> = gp
+            .env
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|e| (e.name.as_str(), e.value.as_deref()))
+            .collect();
+        assert_eq!(
+            env,
+            [
+                ("GUARD_PROXY_IDENTITY", Some("release-bot")),
+                ("GUARD_PROXY_ALLOW_PRIVATE_IPS", Some("0")),
+            ]
+        );
+
+        let w = worker(&out, "worker");
+        assert!(
+            !w.env.as_ref().unwrap().iter().any(|e| e.name.starts_with("GUARD_PROXY_")),
+            "guard settings never reach the worker"
+        );
+        assert!(w.env_from.is_none());
     }
 
     #[test]
@@ -633,7 +864,7 @@ mod tests {
         let once = apply(&lean_pod());
         assert!(is_injected(&once));
         assert!(
-            matches!(mutate_pod(&once, IMG).unwrap(), MutationOutcome::AlreadyInjected),
+            matches!(mutate_pod(&once, IMG, None).unwrap(), MutationOutcome::AlreadyInjected),
             "second pass must not double-inject"
         );
     }
@@ -643,7 +874,7 @@ mod tests {
         let mut pod = lean_pod();
         pod.metadata.labels = None;
         assert!(!is_eligible(&pod));
-        assert!(matches!(mutate_pod(&pod, IMG).unwrap(), MutationOutcome::NotEligible));
+        assert!(matches!(mutate_pod(&pod, IMG, None).unwrap(), MutationOutcome::NotEligible));
     }
 
     #[test]

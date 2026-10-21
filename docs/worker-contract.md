@@ -329,6 +329,57 @@ dispatched-worker wait kills the uid-1000 daemon tree from root). The container
 mounts need an unconfined AppArmor profile where the runtime's default profile
 denies `mount(2)` (previously masked by `privileged: true`).
 
+### Per-profile guard settings (`spec.guard`)
+
+The injected `guard-proxy` gets its settings from the global `guard-proxy-env`
+`ConfigMap` (`envFrom`) plus `GUARD_PROXY_IDENTITY` from the
+`cctui.dev/guard-identity` annotation. A `WorkerProfile` can layer its own on
+top, so a guard change can be tried on one profile before it reaches every worker:
+
+| Field | Rendered into the sidecar as |
+| --- | --- |
+| `spec.guard.envFrom` | extra `envFrom` sources **after** `guard-proxy-env`: a key here overrides the global one |
+| `spec.guard.env` | container `env` after the identity: wins over every `envFrom` |
+| `spec.guard.allowPrivateEgress` | nothing; it is the admission gate below |
+
+The mutating webhook reads the profile named by `cctui.dev/worker-profile` at pod
+admission, so a profile edit applies to the next pod, queued Jobs included. A
+failed profile lookup denies the pod. A profile without `spec.guard` renders the
+sidecar exactly as before.
+
+The validating webhook denies pods whose profile's `spec.guard.env`:
+
+- sets a name outside `GUARD_PROXY_*`, or sets `GUARD_PROXY_IDENTITY` (that one
+  is per dispatch);
+- widens private egress without `allowPrivateEgress: true`, i.e. sets
+  `GUARD_PROXY_ALLOW_PRIVATE_IPS` truthy (`1`/`true`/`yes`/`on`) or a non-empty
+  `GUARD_PROXY_PRIVATE_ALLOW`. A `valueFrom` on either counts as widening.
+
+Narrowing needs no flag: `GUARD_PROXY_ALLOW_PRIVATE_IPS: "0"` (or `""`) zeroes
+the global opt-out. `envFrom` sources are always in the pod's namespace, and
+their contents aren't read at admission: they are operator-owned, just like
+`guard-proxy-env`.
+
+**Canary recipe** (drop the blanket private-IP opt-out on one profile): copy the
+base profile under a new name, add the override, and dispatch a few runs to it.
+
+```yaml
+apiVersion: cctui.dev/v1alpha1
+kind: WorkerProfile
+metadata:
+  name: dev-guard-canary
+spec:
+  # ... everything from the base profile, unchanged ...
+  guard:
+    env:
+      - name: GUARD_PROXY_ALLOW_PRIVATE_IPS
+        value: "0"
+```
+
+Watch the sidecar logs for `private egress DENY`, list what's missing in
+`GUARD_PROXY_PRIVATE_ALLOW` (with `allowPrivateEgress: true`), and once the canary
+runs clean, make the change in `guard-proxy-env` and delete the canary's override.
+
 ### Sidecar secret source
 
 Every secret the sidecar can inject is named by an **explicit, engine-qualified
