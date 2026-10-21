@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep_until};
 use tracing::Instrument;
 
+use super::mainline::{Delta, MainThread, squash};
 use super::text::{SentenceBuffer, spoken_prompt};
 
 pub type AudioStream = BoxStream<'static, Result<Bytes, String>>;
@@ -57,7 +58,12 @@ pub enum Outbound {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Signal {
     /// A prompt reached the agent: a new turn starts.
-    TurnStart,
+    TurnStart(String),
+    /// A model request the gateway streams, by its latest user text.
+    Request {
+        id: String,
+        user_text: String,
+    },
     /// Streamed text of the block `item`.
     Delta {
         item: String,
@@ -207,7 +213,7 @@ async fn speak_one<B: VoiceBackend>(
 /// so the loop counts it before the agent can answer.
 #[derive(Debug)]
 enum Heard {
-    Sending,
+    Sending(String),
     Sent,
     Failed,
     /// Nothing to send: no speech, or transcription failed.
@@ -313,8 +319,9 @@ async fn hear_one<B: VoiceBackend>(
     }
     let _ = heard.send(Heard::Transcript(text.clone())).await;
     let style = prefs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).spoken_style;
-    let _ = heard.send(Heard::Sending).await;
-    match backend.send_message(spoken_prompt(&text, style)).await {
+    let message = spoken_prompt(&text, style);
+    let _ = heard.send(Heard::Sending(message.clone())).await;
+    match backend.send_message(message).await {
         Ok(()) => Heard::Sent,
         Err(message) => {
             let _ = out.send(error(message)).await;
@@ -414,6 +421,7 @@ struct Engine<B: VoiceBackend> {
     /// A warm-up is in flight.
     warming: bool,
     turns: Turns,
+    main: MainThread,
     state: Option<VoiceState>,
 }
 
@@ -455,6 +463,7 @@ impl<B: VoiceBackend> Engine<B> {
             speaking: false,
             warming: true,
             turns: Turns::default(),
+            main: MainThread::default(),
             state: None,
         }
     }
@@ -500,11 +509,14 @@ impl<B: VoiceBackend> Engine<B> {
                 self.send(VoiceServerMsg::Transcript { text }).await;
                 return;
             }
-            Heard::Sending => {
+            Heard::Sending(message) => {
                 self.reset_stream();
                 *self.probe() = Some(Probe::start());
                 self.turns.sent();
                 self.turn_active = true;
+                self.main.new_turn();
+                let ready = self.main.prompt(&message);
+                self.play(ready).await;
             }
             Heard::Sent | Heard::Idle => self.hearing = self.hearing.saturating_sub(1),
             Heard::Warm => self.warming = false,
@@ -603,18 +615,19 @@ impl<B: VoiceBackend> Engine<B> {
 
     async fn signal(&mut self, sig: Signal) {
         match sig {
-            Signal::TurnStart => {
+            Signal::TurnStart(prompt) => {
                 let id = self.turns.start();
                 if !self.turns.is_cut(id) {
                     self.turn_active = true;
                     self.emit_state().await;
                 }
+                let ready = self.main.prompt(&prompt);
+                self.play(ready).await;
             }
+            Signal::Request { id, user_text } => self.main.request(id, &user_text),
             Signal::Delta { item, text } => {
-                let id = self.turns.text();
-                if !self.turns.is_cut(id) {
-                    self.delta(item, &text).await;
-                }
+                let ready = self.main.delta(item, text);
+                self.play(ready).await;
             }
             Signal::Text(content) => {
                 let id = self.turns.text();
@@ -623,6 +636,19 @@ impl<B: VoiceBackend> Engine<B> {
                 }
             }
             Signal::TurnEnd => self.turn_end().await,
+        }
+    }
+
+    async fn play(&mut self, ready: Vec<Delta>) {
+        if ready.is_empty() {
+            return;
+        }
+        let id = self.turns.text();
+        if self.turns.is_cut(id) {
+            return;
+        }
+        for (item, text) in ready {
+            self.delta(item, &text).await;
         }
     }
 
@@ -670,6 +696,7 @@ impl<B: VoiceBackend> Engine<B> {
     }
 
     async fn turn_end(&mut self) {
+        self.main.new_turn();
         let id = self.turns.end();
         self.streamed.clear();
         self.delta_item = None;
@@ -699,10 +726,6 @@ impl<B: VoiceBackend> Engine<B> {
     }
 }
 
-fn squash(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 /// Splits a final block against the text streamed ahead of it: the streamed
 /// text later blocks still account for, and the part of the block its
 /// deltas never carried.
@@ -717,7 +740,27 @@ fn reconcile(streamed: &str, block: &str) -> (String, String) {
     if block.ends_with(streamed.as_str()) {
         return (String::new(), String::new());
     }
-    (streamed, block)
+    near_split(&streamed, &block).unwrap_or((streamed, block))
+}
+
+/// [`reconcile`] for a block that differs from its streamed text by a few
+/// characters, which must not be read out twice.
+fn near_split(streamed: &str, block: &str) -> Option<(String, String)> {
+    let streamed: Vec<char> = streamed.chars().collect();
+    let block: Vec<char> = block.chars().collect();
+    let len = streamed.len().min(block.len());
+    if len < 20 {
+        return None;
+    }
+    let (ours, theirs) = (&streamed[..len], &block[..len]);
+    let same = |(a, b): &(&char, &char)| a == b;
+    let prefix = ours.iter().zip(theirs).take_while(same).count();
+    let suffix = ours.iter().rev().zip(theirs.iter().rev()).take_while(same).count();
+    if (prefix + suffix) * 10 < len * 9 {
+        return None;
+    }
+    let rest = |chars: &[char]| chars[len..].iter().collect::<String>().trim_start().to_owned();
+    Some((rest(&streamed), rest(&block)))
 }
 
 /// Applies a `mode` frame; true when the spoken language changed.
@@ -955,6 +998,25 @@ mod tests {
         Signal::Delta { item: item.into(), text: text.into() }
     }
 
+    fn turn_start() -> Signal {
+        Signal::TurnStart(String::new())
+    }
+
+    fn request(id: &str, user_text: &str) -> Signal {
+        Signal::Request { id: id.into(), user_text: user_text.into() }
+    }
+
+    /// A loop that sent one spoken prompt, and that prompt as it left.
+    async fn sent_a_prompt() -> (Harness, String) {
+        let mock = Mock { transcript: Mutex::new("what time is it".into()), ..Mock::default() };
+        let mut h = start(mock, Prefs::default()).await;
+        h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
+        h.collect_until(is_transcript).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let sent = Mock::log(&h.mock.sent).remove(0);
+        (h, sent)
+    }
+
     fn is_speak_start(f: &Outbound) -> bool {
         matches!(f, Outbound::Control(VoiceServerMsg::SpeakStart { .. }))
     }
@@ -970,7 +1032,7 @@ mod tests {
         h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
         h.collect_until(is_transcript).await;
         tokio::time::sleep(Duration::from_millis(20)).await;
-        h.signals.send(Signal::TurnStart).await.unwrap();
+        h.signals.send(turn_start()).await.unwrap();
         h.signals.send(Signal::Text("Alpha.".into())).await.unwrap();
         h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(b"Alpha."))).await;
         h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
@@ -989,7 +1051,7 @@ mod tests {
         h.signals.send(Signal::TurnEnd).await.unwrap();
         let frames = h.quiet().await;
         assert!(!frames.contains(&state(VoiceState::Listening)), "{frames:?}");
-        h.signals.send(Signal::TurnStart).await.unwrap();
+        h.signals.send(turn_start()).await.unwrap();
         h.signals.send(Signal::Text("Fresh.".into())).await.unwrap();
         h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(b"Fresh."))).await;
         assert_eq!(Mock::log(&h.mock.synthesized), vec!["Alpha.", "Fresh."]);
@@ -999,7 +1061,7 @@ mod tests {
     async fn a_cut_turn_without_a_turn_end_does_not_silence_the_next_one() {
         let mut h = cut_a_turn_with_a_new_utterance().await;
         h.signals.send(Signal::Text("Leftover.".into())).await.unwrap();
-        h.signals.send(Signal::TurnStart).await.unwrap();
+        h.signals.send(turn_start()).await.unwrap();
         h.signals.send(Signal::Text("Fresh.".into())).await.unwrap();
         h.signals.send(Signal::TurnEnd).await.unwrap();
         h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(b"Fresh."))).await;
@@ -1025,12 +1087,12 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         h.inbound.send(Inbound::Control(VoiceClientMsg::Interrupt {})).await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
-        h.signals.send(Signal::TurnStart).await.unwrap();
+        h.signals.send(turn_start()).await.unwrap();
         h.signals.send(Signal::Text("Cut.".into())).await.unwrap();
         h.signals.send(Signal::TurnEnd).await.unwrap();
         let frames = h.quiet().await;
         assert_eq!(frames.last(), Some(&state(VoiceState::Listening)), "{frames:?}");
-        h.signals.send(Signal::TurnStart).await.unwrap();
+        h.signals.send(turn_start()).await.unwrap();
         h.signals.send(Signal::Text("Next.".into())).await.unwrap();
         h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(b"Next."))).await;
         assert_eq!(Mock::log(&h.mock.synthesized), vec!["Next."]);
@@ -1049,7 +1111,7 @@ mod tests {
         h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
         h.collect_until(is_transcript).await;
         tokio::time::sleep(Duration::from_millis(20)).await;
-        h.signals.send(Signal::TurnStart).await.unwrap();
+        h.signals.send(turn_start()).await.unwrap();
         h.signals.send(Signal::Text("Quick.".into())).await.unwrap();
         h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(b"Quick."))).await;
         gate.add_permits(1);
@@ -1057,7 +1119,7 @@ mod tests {
         h.inbound.send(Inbound::Control(VoiceClientMsg::Interrupt {})).await.unwrap();
         h.collect_until(|f| *f == state(VoiceState::Thinking)).await;
         h.signals.send(Signal::TurnEnd).await.unwrap();
-        h.signals.send(Signal::TurnStart).await.unwrap();
+        h.signals.send(turn_start()).await.unwrap();
         h.signals.send(Signal::Text("Next.".into())).await.unwrap();
         h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(b"Next."))).await;
     }
@@ -1275,6 +1337,77 @@ mod tests {
             Mock::log(&h.mock.synthesized),
             vec!["The reply starts streaming with this sentence.", "And then it ends here."]
         );
+    }
+
+    #[tokio::test]
+    async fn the_main_requests_gateway_text_is_spoken_before_its_block_and_once() {
+        let (mut h, sent) = sent_a_prompt().await;
+        let reminded = format!("<system-reminder>r</system-reminder>\n{sent}");
+        h.signals.send(request("main", &reminded)).await.unwrap();
+        h.signals.send(request("task", "Look up what time is it")).await.unwrap();
+        let aside = "A subagent sentence nobody should ever hear. ";
+        h.signals.send(delta("gw:task:0", aside)).await.unwrap();
+        let opening = "The first sentence is long enough to sp";
+        h.signals.send(delta("gw:main:1", opening)).await.unwrap();
+        h.signals.send(delta("gw:main:1", "eak. Second")).await.unwrap();
+        let first = Bytes::from_static(b"The first sentence is long enough to speak.");
+        h.collect_until(|f| *f == Outbound::Audio(first.clone())).await;
+        h.signals.send(Signal::TurnStart(format!("{sent}\n"))).await.unwrap();
+        let block = "The first sentence is long enough to speak. Second half.";
+        h.signals.send(Signal::Text(block.into())).await.unwrap();
+        h.signals.send(Signal::TurnEnd).await.unwrap();
+        h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        assert_eq!(
+            Mock::log(&h.mock.synthesized),
+            vec!["The first sentence is long enough to speak.", "Second half."]
+        );
+    }
+
+    #[tokio::test]
+    async fn each_request_of_a_tool_loop_is_spoken_once() {
+        let (mut h, sent) = sent_a_prompt().await;
+        h.signals.send(request("r1", &sent)).await.unwrap();
+        let first = "The first block opens with a long sentence. Its tail";
+        h.signals.send(delta("gw:r1:0", first)).await.unwrap();
+        h.signals.send(Signal::Text(first.into())).await.unwrap();
+        h.signals.send(request("r2", &sent)).await.unwrap();
+        let second = "The second block starts streaming right away. More to come.";
+        h.signals.send(delta("gw:r2:0", second)).await.unwrap();
+        h.signals.send(Signal::Text(second.into())).await.unwrap();
+        h.signals.send(Signal::TurnEnd).await.unwrap();
+        h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        assert_eq!(
+            Mock::log(&h.mock.synthesized),
+            vec![
+                "The first block opens with a long sentence.",
+                "Its tail",
+                "The second block starts streaming right away.",
+                "More to come."
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_text_of_an_unclaimed_request_is_never_spoken() {
+        let (mut h, _) = sent_a_prompt().await;
+        h.signals.send(request("task", "Summarize the repository layout")).await.unwrap();
+        let aside = "The subagent reports a long finding here.";
+        h.signals.send(delta("gw:task:0", aside)).await.unwrap();
+        h.signals.send(Signal::Text("The reply itself.".into())).await.unwrap();
+        h.signals.send(Signal::TurnEnd).await.unwrap();
+        h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        assert_eq!(Mock::log(&h.mock.synthesized), vec!["The reply itself."]);
+    }
+
+    #[test]
+    fn a_block_a_few_characters_off_its_stream_is_not_spoken_again() {
+        let streamed = "It’s a long opening sentence that keeps going. And";
+        let block = "It's a long opening sentence that keeps going. And the end.";
+        assert_eq!(reconcile(streamed, block), (String::new(), "the end.".to_owned()));
+        let whole = "It's a long opening sentence that keeps going. And";
+        assert_eq!(reconcile(streamed, whole), (String::new(), String::new()));
+        let other = "Something else entirely was written in this block.";
+        assert_eq!(reconcile(streamed, other), (streamed.to_owned(), other.to_owned()));
     }
 
     #[tokio::test(start_paused = true)]

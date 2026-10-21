@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use super::{BusError, BusEvent, DaemonRequest, DaemonResponse, Transport};
+use super::{BusError, BusEvent, DaemonRequest, DaemonResponse, Transport, VoiceEvent};
 use crate::presence::{self, Kind};
 
 /// Timeout for a forwarded fire-and-forget command (the peer only has to drop
@@ -226,6 +226,7 @@ pub fn decode_error(
 pub enum WireBusEvent {
     Session { session_id: String, event: AgentEvent },
     Server { event: ServerEvent },
+    Voice { event: VoiceEvent },
 }
 
 impl From<&BusEvent> for WireBusEvent {
@@ -235,6 +236,7 @@ impl From<&BusEvent> for WireBusEvent {
                 Self::Session { session_id: session_id.clone(), event: event.clone() }
             }
             BusEvent::Server(event) => Self::Server { event: event.clone() },
+            BusEvent::Voice(event) => Self::Voice { event: event.clone() },
         }
     }
 }
@@ -244,6 +246,7 @@ impl From<WireBusEvent> for BusEvent {
         match ev {
             WireBusEvent::Session { session_id, event } => Self::Session { session_id, event },
             WireBusEvent::Server { event } => Self::Server(event),
+            WireBusEvent::Voice { event } => Self::Voice(event),
         }
     }
 }
@@ -876,6 +879,17 @@ mod tests {
             BusEvent::Session { session_id, event: AgentEvent::TurnEnd { ts: 7, .. } }
                 if session_id == "sess-2"
         ));
+
+        let delta = VoiceEvent::Delta {
+            session_id: "sess-3".into(),
+            item_id: "gw:r:0".into(),
+            delta: "Hi".into(),
+        };
+        let json = serde_json::to_string(&WireBusEvent::from(&BusEvent::Voice(delta.clone())))
+            .unwrap();
+        assert!(json.contains(r#""kind":"voice""#), "{json}");
+        let back: WireBusEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(BusEvent::from(back), BusEvent::Voice(ev) if ev == delta));
     }
 
     #[test]

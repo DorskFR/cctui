@@ -296,12 +296,14 @@ struct Observers {
     langfuse: Option<std::sync::Arc<crate::langfuse::LangfuseClient>>,
     trace_session_id: Option<String>,
     tool_guard: Option<super::toolguard::ActiveGuard>,
+    voice_session: Option<String>,
 }
 
 /// What was learned from the request body while preparing it.
 struct RequestInfo {
     traced_request: Option<serde_json::Value>,
     request_model: Option<String>,
+    voice: Option<super::voicetee::VoiceTee>,
 }
 
 /// Map the worker's bearer (the session token) to an account. A missing
@@ -554,6 +556,7 @@ async fn observers(
     state: &AppState,
     auth: &Authenticated,
     headers: &mut HeaderMap,
+    voice_candidate: bool,
 ) -> Result<Observers, StatusCode> {
     let Authenticated { session_token, acct } = auth;
     let family = Family::from_provider(&acct.provider);
@@ -584,10 +587,32 @@ async fn observers(
         tracing::warn!(account = %acct.id, error = %e, "tool policy unavailable, refusing unguarded");
         StatusCode::SERVICE_UNAVAILABLE
     })?;
-    if tees_response(langfuse.is_some(), fireworks || google) || tool_guard.is_some() {
+    let voice_session = if voice_candidate
+        && family == Family::Anthropic
+        && state.bus.any_voice_watch()
+    {
+        super::voicetee::watched_session(
+            &state.bus,
+            session_id_for_token(state, session_token).await,
+        )
+    } else {
+        None
+    };
+    if tees_response(langfuse.is_some(), fireworks || google)
+        || tool_guard.is_some()
+        || voice_session.is_some()
+    {
         headers.remove(reqwest::header::ACCEPT_ENCODING);
     }
-    Ok(Observers { fireworks, google, affinity_session, langfuse, trace_session_id, tool_guard })
+    Ok(Observers {
+        fireworks,
+        google,
+        affinity_session,
+        langfuse,
+        trace_session_id,
+        tool_guard,
+        voice_session,
+    })
 }
 
 /// Stream the request body through without buffering (default), OR buffer it
@@ -605,17 +630,24 @@ async fn prepare_body(
 ) -> Result<(reqwest::Body, RequestInfo), Reply> {
     let Authenticated { session_token, acct } = auth;
     let Admission { effective_limits, model_gate } = admission;
-    if !(obs.langfuse.is_some() || obs.fireworks || model_gate.is_some()) {
+    if !(obs.langfuse.is_some()
+        || obs.fireworks
+        || model_gate.is_some()
+        || obs.voice_session.is_some())
+    {
         let body_stream = req.into_body().into_data_stream();
         return Ok((
             reqwest::Body::wrap_stream(body_stream),
-            RequestInfo { traced_request: None, request_model: path_model },
+            RequestInfo { traced_request: None, request_model: path_model, voice: None },
         ));
     }
     let bytes = axum::body::to_bytes(req.into_body(), MAX_BUFFERED_BODY)
         .await
         .map_err(|_| Err(StatusCode::PAYLOAD_TOO_LARGE))?;
     let (payload, parsed, request_model) = buffered_payload(bytes, path_model);
+    let voice = obs.voice_session.clone().zip(parsed.as_ref()).and_then(|(sid, body)| {
+        super::voicetee::VoiceTee::from_request(sid, body)
+    });
     // The deferred half of the soft limit: a `weekly_model:` cap gates only
     // the model it names, so a spent weekly Fable budget must let an Opus
     // request through. Same `window_applies` the account election uses, so
@@ -649,7 +681,11 @@ async fn prepare_body(
     }
     Ok((
         payload,
-        RequestInfo { traced_request: parsed.filter(|_| obs.langfuse.is_some()), request_model },
+        RequestInfo {
+            traced_request: parsed.filter(|_| obs.langfuse.is_some()),
+            request_model,
+            voice,
+        },
     ))
 }
 
@@ -751,7 +787,7 @@ async fn relay_response(
     state: &AppState,
     auth: &Authenticated,
     mut obs: Observers,
-    info: RequestInfo,
+    mut info: RequestInfo,
     upstream: reqwest::Response,
     status: StatusCode,
     is_anthropic: bool,
@@ -813,6 +849,11 @@ async fn relay_response(
         Some((g, sse)) => guard_stream(upstream.bytes_stream(), g, sse, state.clone()).boxed(),
         None => upstream.bytes_stream().boxed(),
     };
+    let readable_sse = status.is_success()
+        && !encoded
+        && content_type.as_deref().is_some_and(|ct| ct.starts_with("text/event-stream"));
+    let resp_stream =
+        super::voicetee::maybe_tee(resp_stream, &state.bus, info.voice.take(), readable_sse);
 
     // Fast path (nothing to observe): stream the response straight through.
     if obs.langfuse.is_none() && usage_session.is_none() {
@@ -850,7 +891,7 @@ fn spawn_observer(
     usage_session: Option<String>,
     usage_headers: Option<(Option<String>, Option<String>)>,
 ) -> tokio::sync::mpsc::Sender<Vec<u8>> {
-    let RequestInfo { traced_request, request_model } = info;
+    let RequestInfo { traced_request, request_model, .. } = info;
     let ctx = crate::langfuse::TraceContext {
         session_id: obs.trace_session_id,
         account_id: Some(acct.id.to_string()),
@@ -957,7 +998,11 @@ pub async fn passthrough(
         Err(reply) => return reply,
     };
     let mut headers = forward_headers(req.headers(), &auth.acct, &target.access_token)?;
-    let obs = observers(&state, &auth, &mut headers).await?;
+    let voice_candidate = super::voicetee::teeable_request(
+        &req_method,
+        uri.path().strip_prefix(prefix).unwrap_or(uri.path()),
+    );
+    let obs = observers(&state, &auth, &mut headers, voice_candidate).await?;
     let path_model = (family == Family::Google)
         .then(|| uri.path().strip_prefix(prefix).and_then(google_path_model))
         .flatten();
