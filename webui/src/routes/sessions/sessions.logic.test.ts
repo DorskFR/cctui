@@ -1096,6 +1096,18 @@ describe('machineGroupLiveness', () => {
 		);
 	});
 
+	it('derives a shared dispatch machine group from its sessions', () => {
+		const dispatch = (over: Partial<SessionListItem>) => worker({ machine_kind: 'dispatch', ...over });
+		expect(machineGroupLiveness(null, [dispatch({}), dispatch({ liveness: 'active' })])).toBe('online');
+		expect(machineGroupLiveness(null, [dispatch({}), dispatch({ liveness: 'stale' })])).toBe('stale');
+		expect(machineGroupLiveness(null, [dispatch({}), worker({})])).toBe('offline');
+	});
+
+	it('leaves a group mixing workers and a persistent machine without a dot', () => {
+		const persistent = session({ machine_kind: 'persistent', liveness: 'active' });
+		expect(machineGroupLiveness(null, [worker({ machine_kind: 'dispatch' }), persistent])).toBeNull();
+	});
+
 	it('leaves an unknown persistent machine without a dot', () => {
 		const persistent = session({ machine_kind: 'persistent', liveness: 'active' });
 		expect(machineGroupLiveness(null, [persistent])).toBeNull();
