@@ -78,7 +78,7 @@ impl BgTaskLedger {
         true
     }
 
-    pub const fn has_outstanding(&self) -> bool {
+    pub fn has_outstanding(&self) -> bool {
         !self.outstanding.is_empty()
     }
 

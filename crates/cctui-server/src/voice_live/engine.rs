@@ -1165,7 +1165,7 @@ mod tests {
             tokio::time::sleep(d).await;
             tokio::task::yield_now().await;
         };
-        step(STT_KEEPALIVE - Duration::from_secs(1)).await;
+        step(STT_KEEPALIVE.checked_sub(Duration::from_secs(1)).unwrap()).await;
         assert_eq!(h.mock.warms(), 1);
         step(Duration::from_secs(2)).await;
         assert_eq!(h.mock.warms(), 2);
@@ -1175,7 +1175,7 @@ mod tests {
         step(Duration::from_secs(30)).await;
         h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
         h.quiet().await;
-        step(STT_KEEPALIVE - Duration::from_secs(5)).await;
+        step(STT_KEEPALIVE.checked_sub(Duration::from_secs(5)).unwrap()).await;
         assert_eq!(h.mock.warms(), 3, "an utterance counts as use");
         step(Duration::from_secs(10)).await;
         assert_eq!(h.mock.warms(), 4);
