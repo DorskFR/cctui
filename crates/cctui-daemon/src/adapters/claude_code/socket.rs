@@ -4,6 +4,7 @@
 //! one-response on a fresh connection; `subscribe` and `attach` keep the
 //! connection open and stream multiple response lines.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -142,6 +143,7 @@ pub async fn call<T: DeserializeOwned>(socket: &Path, request: &Value) -> Result
 /// input parser resolves it as the Escape key rather than waiting for the
 /// continuation byte of an escape sequence (the classic terminal ESC-timeout).
 pub async fn attach_interrupt(socket: &Path, short: &str) -> Result<()> {
+    note_foreign_keys(short);
     // Raw ESC byte → PTY → the TUI aborts the in-flight turn.
     attach_send_keys(socket, short, b"\x1b").await
 }
@@ -154,6 +156,7 @@ pub async fn attach_interrupt(socket: &Path, short: &str) -> Result<()> {
 /// against claude 2.1.161: approve runs the gated tool, deny skips it and the
 /// worker returns to `tempo:"idle"`.
 pub async fn attach_permission_response(socket: &Path, short: &str, allow: bool) -> Result<()> {
+    note_foreign_keys(short);
     if allow {
         attach_send_keys(socket, short, b"1\r").await
     } else {
@@ -200,6 +203,73 @@ fn transcript_gained_user_entry(path: &Path, baseline: u64) -> bool {
             .ok()
             .is_some_and(|v| v.get("type").and_then(Value::as_str) == Some("user"))
     })
+}
+
+/// Whether `confirm` proves the reply was submitted within `within`, with no
+/// Enter pressed: a build that auto-submits multiline replies appends the user
+/// line on its own. Only the transcript signal is proof.
+pub async fn submit_landed(confirm: &SubmitConfirm, within: Duration) -> bool {
+    const POLL: Duration = Duration::from_millis(20);
+    let SubmitConfirm::Transcript { path, baseline } = confirm else { return false };
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        if transcript_gained_user_entry(path, *baseline) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(POLL).await;
+    }
+}
+
+/// Per worker: how many keystroke batches other than a reply's own (ESC,
+/// form answers, permission keys) reached its PTY, and whether a reply left
+/// the composer empty after the last of them.
+#[derive(Debug, Default, Clone, Copy)]
+struct ComposerKeys {
+    epoch: u64,
+    empty: bool,
+}
+
+static COMPOSERS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, ComposerKeys>>> =
+    std::sync::OnceLock::new();
+
+fn composers() -> std::sync::MutexGuard<'static, HashMap<String, ComposerKeys>> {
+    COMPOSERS
+        .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// An ESC can restore the last prompt into the composer as a draft.
+fn note_foreign_keys(short: &str) {
+    composers()
+        .entry(short.to_owned())
+        .and_modify(|k| *k = ComposerKeys { epoch: k.epoch + 1, empty: false })
+        .or_insert(ComposerKeys { epoch: 1, empty: false });
+}
+
+/// Read before a reply is delivered, handed back to [`note_composer_emptied`].
+#[must_use]
+pub fn keys_epoch(short: &str) -> u64 {
+    composers().get(short).map_or(0, |k| k.epoch)
+}
+
+/// A reply submitted into `short` left its composer empty, unless other keys
+/// reached it since `epoch` was read.
+pub fn note_composer_emptied(short: &str, epoch: u64) {
+    composers()
+        .entry(short.to_owned())
+        .and_modify(|k| k.empty |= k.epoch == epoch)
+        .or_insert(ComposerKeys { epoch: 0, empty: epoch == 0 });
+}
+
+/// Whether the last reply left `short`'s composer empty and nothing has typed
+/// into it since.
+#[must_use]
+pub fn composer_known_empty(short: &str) -> bool {
+    composers().get(short).is_some_and(|k| k.empty)
 }
 
 /// Submit the current draft in a worker PTY. Used after multiline `reply`
@@ -449,6 +519,7 @@ async fn drain_for(
 /// Claude then records a genuine `tool_result` with the selected labels — no
 /// "User declined to answer questions", no extra user turn.
 pub async fn attach_answer_keys(socket: &Path, short: &str, chunks: &[Vec<u8>]) -> Result<()> {
+    note_foreign_keys(short);
     attach_send_chunks(socket, short, chunks).await
 }
 
@@ -775,6 +846,53 @@ mod tests {
             .await
             .expect("submit should confirm via transcript growth");
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn submit_landed_reads_only_a_user_line_past_the_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("session.jsonl");
+        std::fs::write(&transcript, "{\"type\":\"user\"}\n").unwrap();
+        let baseline = std::fs::metadata(&transcript).unwrap().len();
+        let confirm = SubmitConfirm::Transcript { path: transcript.clone(), baseline };
+        let wait = Duration::from_millis(60);
+        assert!(!submit_landed(&confirm, wait).await, "the baseline's own user line");
+        let mut f = std::fs::OpenOptions::new().append(true).open(&transcript).unwrap();
+        std::io::Write::write_all(&mut f, b"{\"type\":\"assistant\"}\n").unwrap();
+        assert!(!submit_landed(&confirm, wait).await);
+        let appender = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            std::io::Write::write_all(&mut f, b"{\"type\":\"user\"}\n").unwrap();
+        });
+        assert!(submit_landed(&confirm, Duration::from_secs(2)).await);
+        appender.await.unwrap();
+        assert!(!submit_landed(&SubmitConfirm::Repaint, wait).await);
+        assert!(!submit_landed(&SubmitConfirm::Composer, wait).await);
+    }
+
+    #[tokio::test]
+    async fn only_a_reply_with_no_esc_since_leaves_the_composer_known_empty() {
+        let short = format!("k-{}", uuid::Uuid::new_v4());
+        assert!(!composer_known_empty(&short), "unknown until a reply empties it");
+        note_composer_emptied(&short, keys_epoch(&short));
+        assert!(composer_known_empty(&short));
+
+        let epoch = keys_epoch(&short);
+        let sock = scratch_socket("nobody");
+        assert!(attach_interrupt(&sock, &short).await.is_err());
+        assert!(!composer_known_empty(&short), "an ESC that may have landed restores drafts");
+        note_composer_emptied(&short, epoch);
+        assert!(!composer_known_empty(&short), "an ESC during the reply wins");
+        note_composer_emptied(&short, keys_epoch(&short));
+        assert!(composer_known_empty(&short));
+
+        let _ = attach_permission_response(&sock, &short, false).await;
+        assert!(!composer_known_empty(&short));
+        note_composer_emptied(&short, keys_epoch(&short));
+        let _ = attach_answer_keys(&sock, &short, &[b"1".to_vec()]).await;
+        assert!(!composer_known_empty(&short));
+        let other = format!("k-{}", uuid::Uuid::new_v4());
+        assert!(!composer_known_empty(&other), "per worker");
     }
 
     /// The pre-reply clear must be exactly `CLEAR_COMPOSER_LINES` paced

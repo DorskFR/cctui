@@ -82,6 +82,15 @@ pub fn starts_with_peer_tag(text: &str) -> bool {
     PEER_TAGS.iter().any(|tag| opens_tag(text, tag))
 }
 
+/// Whether `text` is a prompt the live voice loop sent: it opens on a session
+/// context marked `voice="spoken"`.
+#[must_use]
+pub fn is_spoken_prompt(text: &str) -> bool {
+    split_injected(text).0.first().is_some_and(|b| {
+        b.kind == InjectedKind::SessionContext && b.attr("voice").as_deref() == Some("spoken")
+    })
+}
+
 fn opens_tag(text: &str, tag: &str) -> bool {
     text.strip_prefix('<')
         .and_then(|r| r.strip_prefix(tag))
@@ -162,6 +171,20 @@ mod tests {
     fn kinds(content: &str) -> (Vec<(InjectedKind, &str)>, &str) {
         let (blocks, prose) = split_injected(content);
         (blocks.iter().map(|b| (b.kind, b.tag)).collect(), prose)
+    }
+
+    #[test]
+    fn only_a_leading_spoken_session_context_marks_a_voice_prompt() {
+        let spoken =
+            "<cctui-session-context voice=\"spoken\">\nbody\n</cctui-session-context>\n\nhi";
+        assert!(is_spoken_prompt(spoken));
+        assert!(is_spoken_prompt(&format!("\n{spoken}")));
+        let plain = "<cctui-session-context>\nsession: a\n</cctui-session-context>\n\nhi";
+        assert!(!is_spoken_prompt(plain));
+        assert!(!is_spoken_prompt(&format!("quoted: {spoken}")));
+        let peer = "<cctui-peer-message voice=\"spoken\">\nx\n</cctui-peer-message>";
+        assert!(!is_spoken_prompt(peer));
+        assert!(!is_spoken_prompt("hi\nthere"));
     }
 
     #[test]

@@ -715,6 +715,14 @@ impl Supervisor {
                     tracing::info!(%adapter_id, %local_id, "interrupt routed off the command path");
                     return;
                 }
+                if let AdapterCommand::Reply { local_id, text, command_id, .. } = command.as_ref()
+                    && cctui_proto::injected::is_spoken_prompt(text)
+                {
+                    tracing::info!(
+                        %adapter_id, %local_id, ?command_id, hop = "daemon received",
+                        "voice delivery hop"
+                    );
+                }
                 // `try_send`, never `send().await`: this runs inside the
                 // transport `select!`, alongside the keepalive ping and the
                 // socket read. Awaiting a full adapter channel here stalls

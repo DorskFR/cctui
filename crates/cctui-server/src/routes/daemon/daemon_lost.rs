@@ -1,5 +1,5 @@
+use std::collections::HashSet;
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -19,36 +19,69 @@ const DAEMON_LOST_GRACE: Duration = Duration::from_secs(45);
 /// machine that is genuinely gone is never held alive by its own last beat.
 const DAEMON_SEEN_FRESH: Duration = Duration::from_secs(40);
 
-/// Deferred `daemon_lost` marks, one at most per machine, cancelled by a
-/// reconnect. A machine that never comes back still gets marked once the delay
-/// elapses.
+/// One closed connection's deferred mark: the sessions it announced that no
+/// connection has announced since.
+struct PendingMark {
+    machine_id: Uuid,
+    sessions: HashSet<String>,
+    task: tokio::task::AbortHandle,
+}
+
+/// Deferred `daemon_lost` marks, one per closed connection. Every dispatched
+/// worker pod shares one machine id, so a mark is only ever cancelled for the
+/// sessions a later connection announces, or for the whole machine when it is
+/// not shared.
 #[derive(Default)]
 pub(super) struct PendingDaemonLost {
-    marks: dashmap::DashMap<Uuid, (u64, tokio::task::AbortHandle)>,
-    seq: AtomicU64,
+    marks: dashmap::DashMap<Uuid, PendingMark>,
 }
 
 impl PendingDaemonLost {
-    fn schedule<F>(self: &Arc<Self>, machine_id: Uuid, delay: Duration, mark: F)
-    where
-        F: Future<Output = ()> + Send + 'static,
+    fn schedule<F, Fut>(
+        self: &Arc<Self>,
+        conn_id: Uuid,
+        machine_id: Uuid,
+        sessions: Vec<String>,
+        delay: Duration,
+        mark: F,
+    ) where
+        F: FnOnce(Vec<String>) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
     {
-        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         let this = Arc::clone(self);
         let task = tokio::spawn(async move {
             tokio::time::sleep(delay).await;
-            this.marks.remove_if(&machine_id, |_, (pending, _)| *pending == seq);
-            mark.await;
+            let Some((_, pending)) = this.marks.remove(&conn_id) else { return };
+            mark(pending.sessions.into_iter().collect()).await;
         });
-        if let Some((_, superseded)) = self.marks.insert(machine_id, (seq, task.abort_handle())) {
-            superseded.abort();
+        let sessions = sessions.into_iter().collect();
+        let pending = PendingMark { machine_id, sessions, task: task.abort_handle() };
+        if let Some(superseded) = self.marks.insert(conn_id, pending) {
+            superseded.task.abort();
         }
     }
 
-    pub(super) fn cancel(&self, machine_id: Uuid) {
-        if let Some((_, (_, task))) = self.marks.remove(&machine_id) {
-            task.abort();
-        }
+    /// A reconnect of a machine only one daemon uses: its marks are moot.
+    pub(super) fn cancel_machine(&self, machine_id: Uuid) {
+        self.marks.retain(|_, pending| {
+            let keep = pending.machine_id != machine_id;
+            if !keep {
+                pending.task.abort();
+            }
+            keep
+        });
+    }
+
+    /// `session_id` was announced again, so it is alive on some connection.
+    pub(super) fn announced(&self, session_id: &str) {
+        self.marks.retain(|_, pending| {
+            pending.sessions.remove(session_id);
+            let keep = !pending.sessions.is_empty();
+            if !keep {
+                pending.task.abort();
+            }
+            keep
+        });
     }
 }
 
@@ -56,11 +89,18 @@ pub(super) static PENDING_DAEMON_LOST: LazyLock<Arc<PendingDaemonLost>> =
     LazyLock::new(|| Arc::new(PendingDaemonLost::default()));
 
 /// The daemon's WS is gone: every session it announced is now unreachable,
-/// so end them as `daemon_lost` — but only if it has not reconnected within
-/// [`DAEMON_LOST_GRACE`]. Soft — [`upsert_session`] reverts it when the daemon
-/// reconnects and re-registers the session as alive. Only `sessions` are
-/// eligible: other daemons on the same machine id keep theirs.
-pub(super) fn schedule_daemon_lost(state: &AppState, machine_id: Uuid, sessions: Vec<String>) {
+/// so end them as `daemon_lost` — but only if no connection re-announced them
+/// within [`DAEMON_LOST_GRACE`]. Soft — [`upsert_session`] reverts it when the
+/// daemon reconnects and re-registers the session as alive. Only `sessions`
+/// are eligible: other daemons on the same machine id keep theirs. A `shared`
+/// machine's heartbeat is a sibling's, so it says nothing about this daemon.
+pub(super) fn schedule_daemon_lost(
+    state: &AppState,
+    machine_id: Uuid,
+    conn_id: Uuid,
+    shared: bool,
+    sessions: Vec<String>,
+) {
     if sessions.is_empty() {
         tracing::info!(%machine_id, "daemon_lost mark skipped — connection announced no sessions");
         return;
@@ -68,12 +108,12 @@ pub(super) fn schedule_daemon_lost(state: &AppState, machine_id: Uuid, sessions:
     let (completing, announced) = (state.clone(), sessions.clone());
     tokio::spawn(async move { complete_guard_exited(&completing, machine_id, &announced).await });
     let state = state.clone();
-    PENDING_DAEMON_LOST.schedule(machine_id, DAEMON_LOST_GRACE, async move {
-        if daemon_seen_recently(&state.pool, machine_id).await {
+    let mark = move |left: Vec<String>| async move {
+        if !shared && daemon_seen_recently(&state.pool, machine_id).await {
             tracing::info!(%machine_id, "daemon_lost mark skipped — machine heartbeating elsewhere");
             return;
         }
-        for session_id in mark_daemon_lost(&state.pool, machine_id, &sessions).await {
+        for session_id in mark_daemon_lost(&state.pool, machine_id, &left).await {
             crate::events::record(
                 &state,
                 crate::events::Event::new(
@@ -89,13 +129,12 @@ pub(super) fn schedule_daemon_lost(state: &AppState, machine_id: Uuid, sessions:
                 })),
             );
         }
-    });
+    };
+    PENDING_DAEMON_LOST.schedule(conn_id, machine_id, sessions, DAEMON_LOST_GRACE, mark);
 }
 
 /// A worker tears its daemon down right after its workflow guard exits, so a
-/// guard-exited session ends `completed` at the disconnect. Not deferred: the
-/// pending mark is per machine, and every worker pod of a dispatcher shares one
-/// machine id, so a sibling's connect or disconnect would drop it.
+/// guard-exited session ends `completed` at the disconnect, not after the grace.
 async fn complete_guard_exited(state: &AppState, machine_id: Uuid, sessions: &[String]) {
     let exited_here: Vec<String> = sessions
         .iter()
@@ -186,7 +225,8 @@ fn seen_within(
     last_seen_at.is_some_and(|seen| now.signed_duration_since(seen) < window)
 }
 
-/// The ids actually ended.
+/// The ids actually ended. A session another replica holds a live
+/// announcement for was re-announced there and is not lost.
 async fn mark_daemon_lost(
     pool: &sqlx::PgPool,
     machine_id: Uuid,
@@ -197,10 +237,15 @@ async fn mark_daemon_lost(
              end_detail = 'daemon connection closed' \
          WHERE machine_uuid = $1 AND id = ANY($2) AND status IN ('new', 'active', 'inactive') \
            AND end_reason IS NULL AND last_heartbeat > now() - interval '1 hour' \
+           AND NOT EXISTS (SELECT 1 FROM ws_presence p \
+                WHERE p.kind = $3 AND p.entity_id::text = sessions.id \
+                  AND p.heartbeat_at > now() - make_interval(secs => $4)) \
          RETURNING id",
     )
     .bind(machine_id)
     .bind(sessions)
+    .bind(crate::presence::Kind::Session.as_str())
+    .bind(f64::from(crate::presence::LIVE_WITHIN_SECS))
     .fetch_all(pool)
     .await
     {
@@ -219,19 +264,31 @@ async fn mark_daemon_lost(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicUsize;
-
     use super::*;
 
-    fn marker() -> (Arc<PendingDaemonLost>, Arc<AtomicUsize>) {
-        (Arc::new(PendingDaemonLost::default()), Arc::new(AtomicUsize::new(0)))
+    type Marked = Arc<std::sync::Mutex<Vec<Vec<String>>>>;
+
+    fn marker() -> (Arc<PendingDaemonLost>, Marked) {
+        (Arc::new(PendingDaemonLost::default()), Marked::default())
     }
 
-    fn mark(marks: &Arc<AtomicUsize>) -> impl Future<Output = ()> + Send + 'static {
-        let marks = Arc::clone(marks);
-        async move {
-            marks.fetch_add(1, Ordering::Relaxed);
+    fn mark(
+        marked: &Marked,
+    ) -> impl FnOnce(Vec<String>) -> futures_util::future::Ready<()> + Send + use<> {
+        let marked = Arc::clone(marked);
+        move |mut sessions| {
+            sessions.sort();
+            marked.lock().expect("marks").push(sessions);
+            futures_util::future::ready(())
         }
+    }
+
+    fn ids(names: &[&str]) -> Vec<String> {
+        names.iter().map(|&n| n.to_owned()).collect()
+    }
+
+    fn marked_sessions(marked: &Marked) -> Vec<Vec<String>> {
+        marked.lock().expect("marks").clone()
     }
 
     /// A spawned task only arms its `sleep` on its first poll, so the clock may
@@ -247,70 +304,96 @@ mod tests {
         let (pending, marked) = marker();
         let machine = Uuid::new_v4();
 
-        pending.schedule(machine, DAEMON_LOST_GRACE, mark(&marked));
+        pending.schedule(Uuid::new_v4(), machine, ids(&["a"]), DAEMON_LOST_GRACE, mark(&marked));
         settle().await;
         tokio::time::advance(DAEMON_LOST_GRACE / 2).await;
-        pending.cancel(machine);
+        pending.cancel_machine(machine);
         tokio::time::advance(DAEMON_LOST_GRACE * 4).await;
         settle().await;
 
-        assert_eq!(marked.load(Ordering::Relaxed), 0);
+        assert!(marked_sessions(&marked).is_empty());
         assert!(pending.marks.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_daemon_that_never_returns_is_marked_after_the_grace_window() {
         let (pending, marked) = marker();
-        let machine = Uuid::new_v4();
 
-        pending.schedule(machine, DAEMON_LOST_GRACE, mark(&marked));
+        pending.schedule(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            ids(&["a", "b"]),
+            DAEMON_LOST_GRACE,
+            mark(&marked),
+        );
         settle().await;
         tokio::time::advance(DAEMON_LOST_GRACE / 2).await;
         settle().await;
-        assert_eq!(marked.load(Ordering::Relaxed), 0);
+        assert!(marked_sessions(&marked).is_empty());
 
         tokio::time::advance(DAEMON_LOST_GRACE).await;
         settle().await;
-        assert_eq!(marked.load(Ordering::Relaxed), 1);
+        assert_eq!(marked_sessions(&marked), [ids(&["a", "b"])]);
         assert!(pending.marks.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_second_disconnect_leaves_exactly_one_pending_mark() {
+    async fn sibling_connections_on_one_machine_keep_their_own_marks() {
         let (pending, marked) = marker();
         let machine = Uuid::new_v4();
-        let other = Uuid::new_v4();
 
-        pending.schedule(machine, DAEMON_LOST_GRACE, mark(&marked));
-        pending.cancel(machine);
-        pending.schedule(machine, DAEMON_LOST_GRACE, mark(&marked));
-        pending.schedule(other, DAEMON_LOST_GRACE, mark(&marked));
-        assert_eq!(pending.marks.len(), 2);
+        pending.schedule(Uuid::new_v4(), machine, ids(&["a"]), DAEMON_LOST_GRACE, mark(&marked));
+        settle().await;
+        tokio::time::advance(DAEMON_LOST_GRACE / 2).await;
+        pending.schedule(Uuid::new_v4(), machine, ids(&["b"]), DAEMON_LOST_GRACE, mark(&marked));
+        pending.announced("c");
+        assert_eq!(pending.marks.len(), 2, "a sibling's close or announce drops no mark");
         settle().await;
 
-        pending.cancel(other);
         tokio::time::advance(DAEMON_LOST_GRACE * 2).await;
         settle().await;
+        let mut got = marked_sessions(&marked);
+        got.sort();
+        assert_eq!(got, [ids(&["a"]), ids(&["b"])]);
+    }
 
-        assert_eq!(marked.load(Ordering::Relaxed), 1);
+    #[tokio::test(start_paused = true)]
+    async fn a_reannounced_session_leaves_the_pending_mark() {
+        let (pending, marked) = marker();
+        let machine = Uuid::new_v4();
+
+        pending.schedule(
+            Uuid::new_v4(),
+            machine,
+            ids(&["a", "b"]),
+            DAEMON_LOST_GRACE,
+            mark(&marked),
+        );
+        pending.schedule(Uuid::new_v4(), machine, ids(&["c"]), DAEMON_LOST_GRACE, mark(&marked));
+        settle().await;
+        pending.announced("a");
+        pending.announced("c");
+        assert_eq!(pending.marks.len(), 1, "a mark with nothing left to end is dropped");
+
+        tokio::time::advance(DAEMON_LOST_GRACE * 2).await;
+        settle().await;
+        assert_eq!(marked_sessions(&marked), [ids(&["b"])]);
         assert!(pending.marks.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_disconnect_without_a_cancel_supersedes_its_predecessor() {
+    async fn a_machine_cancel_spares_other_machines() {
         let (pending, marked) = marker();
-        let machine = Uuid::new_v4();
+        let (machine, other) = (Uuid::new_v4(), Uuid::new_v4());
 
-        pending.schedule(machine, DAEMON_LOST_GRACE, mark(&marked));
+        pending.schedule(Uuid::new_v4(), machine, ids(&["a"]), DAEMON_LOST_GRACE, mark(&marked));
+        pending.schedule(Uuid::new_v4(), other, ids(&["b"]), DAEMON_LOST_GRACE, mark(&marked));
         settle().await;
-        tokio::time::advance(DAEMON_LOST_GRACE / 2).await;
-        pending.schedule(machine, DAEMON_LOST_GRACE, mark(&marked));
-        assert_eq!(pending.marks.len(), 1);
-        settle().await;
+        pending.cancel_machine(machine);
 
-        tokio::time::advance(DAEMON_LOST_GRACE).await;
+        tokio::time::advance(DAEMON_LOST_GRACE * 2).await;
         settle().await;
-        assert_eq!(marked.load(Ordering::Relaxed), 1);
+        assert_eq!(marked_sessions(&marked), [ids(&["b"])]);
     }
 
     #[test]
@@ -511,5 +594,46 @@ mod tests {
         assert_eq!(end_reason(&exited_here).await.as_deref(), Some("completed"));
         assert_eq!(end_reason(&mid_workflow).await.as_deref(), Some("daemon_lost"));
         assert_eq!(end_reason(&unguarded).await.as_deref(), Some("daemon_lost"));
+    }
+
+    /// A dispatched pod that reconnected to a peer replica re-announced its
+    /// session there; this replica's pending mark must not end it.
+    #[tokio::test]
+    async fn a_session_live_on_a_peer_replica_is_not_marked() {
+        let Some(url) = crate::routes::gateway::test_db_url("daemon_lost_presence") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let (uid, mid) = crate::events::tests::seed_user_machine(&pool, "dl-presence").await;
+        let moved = crate::events::tests::seed_session(&pool, uid, mid, None).await;
+        let stale = crate::events::tests::seed_session(&pool, uid, mid, None).await;
+        let lost = crate::events::tests::seed_session(&pool, uid, mid, None).await;
+        for (sid, age_secs) in [(&moved, 1), (&stale, 600)] {
+            sqlx::query(
+                "INSERT INTO ws_presence (kind, entity_id, pod, pod_ip, heartbeat_at) \
+                 VALUES ('session', $1::uuid, 'peer', '10.0.0.2', \
+                         now() - make_interval(secs => $2))",
+            )
+            .bind(sid)
+            .bind(f64::from(age_secs))
+            .execute(&pool)
+            .await
+            .expect("seed presence");
+        }
+
+        let mut marked =
+            super::mark_daemon_lost(&pool, mid, &[moved.clone(), stale.clone(), lost.clone()])
+                .await;
+        marked.sort();
+        let mut want = vec![stale.clone(), lost.clone()];
+        want.sort();
+        assert_eq!(marked, want, "a stale presence row is a crashed pod, not a live session");
+
+        let cleanup = [moved, stale];
+        sqlx::query("DELETE FROM ws_presence WHERE entity_id::text = ANY($1)")
+            .bind(&cleanup[..])
+            .execute(&pool)
+            .await
+            .expect("drop presence");
     }
 }

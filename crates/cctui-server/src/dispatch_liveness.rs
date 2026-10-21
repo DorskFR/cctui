@@ -2,10 +2,10 @@
 //! (`OOMKilled`, crash loop, un-pullable image, stuck `Pending`): a worker killed
 //! by the kernel never reaches its exit trap, so nothing else reports it.
 //!
-//! A session whose workflow guard already reached its exit did its work: a
-//! failed Job after that is the container's exit code, and the session ends
-//! `completed`, as does a Job that finished. Without that evidence a failure
-//! is a crash.
+//! A session whose workflow guard already reached its exit, or that its daemon
+//! reported completed, did its work: a failed Job after that is the
+//! container's exit code, and the session ends `completed`, as does a Job that
+//! finished. Without that evidence a failure is a crash.
 
 use cctui_proto::models::SessionEndReason;
 use uuid::Uuid;
@@ -156,14 +156,35 @@ async fn guard_exited(pool: &sqlx::PgPool, session_id: &str) -> bool {
     })
 }
 
-/// How the session ends for a failed workload: `completed` when its guard
-/// already exited, else the cause the failure names.
+/// Whether the daemon reported the session `completed`: a guard-less
+/// dispatch ends itself so at the worker's shutdown.
+async fn daemon_completed(pool: &sqlx::PgPool, session_id: &str) -> bool {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM stream_events \
+                        WHERE session_id = $1 AND event_type = 'session_ended' \
+                          AND payload->'reason'->>'kind' = 'completed')",
+    )
+    .bind(session_id)
+    .fetch_one(pool)
+    .await
+    .unwrap_or_else(|err| {
+        tracing::warn!(%err, %session_id, "session end read failed");
+        false
+    })
+}
+
+async fn finished(pool: &sqlx::PgPool, session_id: &str) -> bool {
+    guard_exited(pool, session_id).await || daemon_completed(pool, session_id).await
+}
+
+/// How the session ends for a failed workload: `completed` when it already
+/// finished its work, else the cause the failure names.
 async fn verdict(
     pool: &sqlx::PgPool,
     session_id: &str,
     failure: String,
 ) -> (SessionEndReason, String) {
-    if guard_exited(pool, session_id).await {
+    if finished(pool, session_id).await {
         (SessionEndReason::Completed, format!("{EXITED_AFTER_COMPLETION}: {failure}"))
     } else {
         (end_reason_for(&failure), failure)
@@ -177,7 +198,7 @@ async fn probe(state: &AppState, row: LiveHandle) {
         Some(HandleStatus::Failed(reason)) => {
             verdict(&state.pool, &row.session_id, failure_text(reason)).await
         }
-        Some(HandleStatus::Complete) if guard_exited(&state.pool, &row.session_id).await => {
+        Some(HandleStatus::Complete) if finished(&state.pool, &row.session_id).await => {
             (SessionEndReason::Completed, EXITED_CLEANLY.to_owned())
         }
         _ => return,
@@ -605,6 +626,60 @@ mod tests {
             status(&pool, &unguarded).await,
             ("active".into(), None, None),
             "a finished Job alone is no proof the work was done"
+        );
+        forget_user(&pool, uid).await;
+    }
+
+    /// A guard-less dispatch has no guard step: its daemon's own `completed`
+    /// end is the evidence, and it upgrades a `daemon_lost` mark.
+    #[tokio::test]
+    async fn a_finished_job_the_daemon_reported_completed_is_a_completed_session() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_liveness_reported") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let (uid, machine) = crate::events::tests::seed_user_machine(&pool, "dl-reported").await;
+        let name = format!("k8s-{uid}");
+        let dispatcher = seed_dispatcher(&pool, uid, &name).await;
+        let reported = crate::events::tests::seed_session(&pool, uid, machine, None).await;
+        let crashed = crate::events::tests::seed_session(&pool, uid, machine, None).await;
+        for (sid, reason) in [
+            (&reported, cctui_proto::adapter::EndReason::Completed),
+            (&crashed, cctui_proto::adapter::EndReason::Crashed { detail: "boom".into() }),
+        ] {
+            sqlx::query(
+                "INSERT INTO stream_events (session_id, event_type, payload) \
+                 VALUES ($1, 'session_ended', $2)",
+            )
+            .bind(sid)
+            .bind(serde_json::json!({ "reason": reason }))
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "UPDATE sessions SET status = 'ended', end_reason = 'daemon_lost', \
+                 end_detail = 'daemon connection closed' WHERE id = $1",
+            )
+            .bind(sid)
+            .execute(&pool)
+            .await
+            .unwrap();
+            seed_handle(&pool, sid, &name, &format!("jobs/cctui-worker-{sid}")).await;
+        }
+
+        let fake = fake_dispatcher(&state, dispatcher, (Some("complete"), None));
+        sweep(&state).await;
+        fake.abort();
+
+        assert_eq!(
+            status(&pool, &reported).await,
+            ("ended".into(), Some("completed".into()), Some(EXITED_CLEANLY.into())),
+        );
+        assert_eq!(
+            status(&pool, &crashed).await,
+            ("ended".into(), Some("daemon_lost".into()), Some("daemon connection closed".into())),
+            "only a completed end is evidence"
         );
         forget_user(&pool, uid).await;
     }

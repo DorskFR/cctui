@@ -49,6 +49,21 @@ export function lastMessageExcerpt(content: string): string {
 	return collapsed.length > 200 ? `${[...collapsed].slice(0, 200).join('')}…` : collapsed;
 }
 
+const NO_PREVIEW_KINDS = new Set(['turn_annotation', 'system_marker', 'queue_op']);
+
+/** The sessions-list patch a live stream event implies: user turns only (the
+ *  server's preview row is a `message`), never an annotation or marker. */
+export function streamListPatch(sessionId: string, ev: AgentEvent): SessionListPatch | null {
+	if (ev.type !== 'text' && ev.type !== 'reply') return null;
+	if (ev.type === 'text' && ev.kind && NO_PREVIEW_KINDS.has(ev.kind)) return null;
+	if (userMsgKey(ev) === null) return null;
+	return {
+		session_id: sessionId,
+		last_message_text: lastMessageExcerpt(ev.content),
+		last_message_at: new Date(ev.ts).toISOString()
+	};
+}
+
 /** Canonicalize a user-turn body so its optimistic-echo and persisted/server
  * shapes reduce to the same string. The composer appends staged
  * *absolute* upload paths under an `Attached file(s):` header, and the

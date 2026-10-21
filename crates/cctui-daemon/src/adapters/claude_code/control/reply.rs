@@ -1,5 +1,9 @@
 use super::{AdapterEvent, Driver, json, socket, transcript};
 
+/// How long a spoken multiline reply may take to show up in the transcript on
+/// its own before the Enter-driven submit takes over.
+const AUTO_SUBMIT_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
 impl Driver {
     /// Repair only the idle worker named by a recovery request. Resolve its
     /// durable gateway binding BEFORE stopping it, then resume the same saved
@@ -215,27 +219,66 @@ impl Driver {
                 .send(AdapterEvent::PlanResolved { local_id: local_id.to_owned() })
                 .await;
         }
+        Box::pin(self.submit_text(sock, &short, local_id, text, had_pending_ask)).await
+    }
+
+    /// Type `text` into the worker's composer and see it submitted.
+    async fn submit_text(
+        &self,
+        sock: &std::path::Path,
+        short: &str,
+        local_id: &str,
+        text: &str,
+        had_pending_ask: bool,
+    ) -> anyhow::Result<()> {
+        let spoken = cctui_proto::injected::is_spoken_prompt(text);
+        let hop = |name: &str| {
+            if spoken {
+                self.voice.hop(local_id, name);
+            }
+        };
+        let epoch = socket::keys_epoch(short);
         // The `reply` op types into the live composer, which is not empty after
         // an ESC ESC draft restore. Only an idle worker with no form up is safe
         // to clear (mid-turn the composer is a queue, and a form eats the keys).
-        if !had_pending_ask && !self.is_busy(&short) {
-            match socket::attach_clear_composer(sock, &short).await {
+        // The paced clear costs a spoken prompt over a second, so it is skipped
+        // when the last reply left the composer empty and no ESC came since.
+        let may_clear = !had_pending_ask && !self.is_busy(short);
+        if may_clear && spoken && socket::composer_known_empty(short) {
+            hop("composer clear skipped");
+        } else if may_clear {
+            match socket::attach_clear_composer(sock, short).await {
                 Ok(()) => tracing::debug!(%short, "cleared composer before reply"),
                 Err(err) => tracing::warn!(%err, %short, "failed to clear composer before reply"),
             }
+            hop("composer cleared");
         }
         // Baseline before the reply op: a build that auto-submits multiline
         // replies grows the transcript immediately, and a later baseline would
         // hide that submit from the confirm loop.
-        let confirm = self.submit_confirm(&short, local_id);
+        let confirm = self.submit_confirm(short, local_id);
         let resp =
             socket::one_shot(sock, &json!({"proto":1,"op":"reply","short":short,"text":text}))
                 .await?;
         tracing::debug!(?resp, %short, "reply ack");
-        if text.contains('\n')
-            && let Err(err) = Box::pin(socket::attach_submit(sock, &short, &confirm)).await
-        {
-            tracing::warn!(%err, %short, "failed to submit multiline reply draft");
+        hop("reply op acked");
+        let typed = resp.get("ok") != Some(&serde_json::Value::Bool(false));
+        let submitted = if text.contains('\n') {
+            if spoken && socket::submit_landed(&confirm, AUTO_SUBMIT_WAIT).await {
+                hop("submitted without an Enter");
+                true
+            } else if let Err(err) = Box::pin(socket::attach_submit(sock, short, &confirm)).await {
+                tracing::warn!(%err, %short, "failed to submit multiline reply draft");
+                false
+            } else {
+                hop("draft submitted");
+                true
+            }
+        } else {
+            true
+        };
+        if typed && submitted {
+            socket::note_composer_emptied(short, epoch);
         }
         Ok(())
     }
@@ -784,5 +827,117 @@ mod auth_recovery_tests {
         assert!(valid_recovery_env(&env));
         env.insert("ANTHROPIC_AUTH_TOKEN".into(), "provider-token".into());
         assert!(!valid_recovery_env(&env));
+    }
+}
+
+#[cfg(test)]
+mod submit_tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    const SPOKEN: &str =
+        "<cctui-session-context voice=\"spoken\">\nbody\n</cctui-session-context>\n\nhi";
+
+    fn append_user_line(transcript: &Path) {
+        let mut f = std::fs::OpenOptions::new().append(true).open(transcript).unwrap();
+        std::io::Write::write_all(&mut f, b"{\"type\":\"user\"}\n").unwrap();
+    }
+
+    /// A control socket recording each request's op. An Enter on an attach
+    /// submits; `reply` submits on its own only when `auto_submit`.
+    fn fake_daemon(
+        sock: &Path,
+        transcript: PathBuf,
+        auto_submit: bool,
+    ) -> (tokio::task::JoinHandle<()>, Arc<Mutex<Vec<String>>>) {
+        let listener = tokio::net::UnixListener::bind(sock).unwrap();
+        let ops = Arc::new(Mutex::new(Vec::new()));
+        let seen = ops.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (read, mut write) = stream.into_split();
+                let mut reader = tokio::io::BufReader::new(read);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let op = request["op"].as_str().unwrap().to_owned();
+                seen.lock().unwrap().push(op.clone());
+                if op == "reply" && auto_submit {
+                    append_user_line(&transcript);
+                }
+                write.write_all(b"{\"ok\":true}\n").await.unwrap();
+                if op != "attach" {
+                    continue;
+                }
+                let mut keys = [0_u8; 64];
+                while let Ok(n) = reader.read(&mut keys).await {
+                    if n == 0 {
+                        break;
+                    }
+                    if keys[..n].contains(&b'\r') {
+                        append_user_line(&transcript);
+                    }
+                }
+            }
+        });
+        (server, ops)
+    }
+
+    async fn deliver(text: &str, known_empty: bool, auto_submit: bool) -> Vec<String> {
+        let (mut driver, _events) = super::super::test_support::driver();
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("control.sock");
+        let transcript = dir.path().join("session.jsonl");
+        std::fs::write(&transcript, "{\"type\":\"assistant\"}\n").unwrap();
+        let short = format!("s-{}", uuid::Uuid::new_v4());
+        driver.transcript_locations.insert(
+            short.clone(),
+            super::super::TranscriptLocation {
+                path: transcript.clone(),
+                local_id: "sess".into(),
+                cwd: "/project".into(),
+                offset_key: "sess".into(),
+            },
+        );
+        if known_empty {
+            socket::note_composer_emptied(&short, socket::keys_epoch(&short));
+        }
+        let (server, ops) = fake_daemon(&sock, transcript, auto_submit);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            Box::pin(driver.submit_text(&sock, &short, "sess", text, false)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        server.abort();
+        assert!(socket::composer_known_empty(&short), "a submitted reply empties the composer");
+        ops.lock().unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn a_spoken_prompt_into_an_empty_composer_is_one_reply_op() {
+        assert_eq!(deliver(SPOKEN, true, true).await, ["reply"]);
+    }
+
+    #[tokio::test]
+    async fn a_spoken_prompt_still_clears_a_composer_not_known_empty() {
+        assert_eq!(deliver(SPOKEN, false, true).await, ["attach", "reply"]);
+    }
+
+    #[tokio::test]
+    async fn a_spoken_prompt_that_does_not_submit_itself_gets_its_enter() {
+        assert_eq!(deliver(SPOKEN, true, false).await, ["reply", "attach"]);
+    }
+
+    #[tokio::test]
+    async fn a_typed_reply_keeps_the_clear_and_the_enter() {
+        assert_eq!(deliver("line one\nline two", true, true).await, ["attach", "reply", "attach"]);
+        assert_eq!(deliver("one line", true, true).await, ["attach", "reply"]);
     }
 }
