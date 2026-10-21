@@ -10,6 +10,7 @@
 	import LineFooter from './LineFooter.svelte';
 	import MessageBubble from './MessageBubble.svelte';
 	import VoiceNote from './VoiceNote.svelte';
+	import VoiceMessage from './VoiceMessage.svelte';
 	import MarkerBody from './MarkerBody.svelte';
 	import TaskNotificationCard from './TaskNotificationCard.svelte';
 	import ThinkingBubble from './ThinkingBubble.svelte';
@@ -145,13 +146,12 @@
 			</Tooltip>
 		{:else if ln.context}
 			<Badge size="xs" uppercase color="var(--bc)">{contextLabel}</Badge>
+		{:else if ln.voice}
+			<Badge size="xs" uppercase color="var(--bc)">{m.voice_live_toggle()}</Badge>
 		{:else}
 			<Badge size="xs" uppercase color="var(--bc)"
 				>{ln.mcp ? 'mcp' : ln.role === 'result' ? 'result' : ln.role}</Badge
 			>
-		{/if}
-		{#if ln.voice}
-			<span class="who voice-mark" title={m.voice_user_spoken()}>🎙</span>
 		{/if}
 		{#if ln.context?.session}
 			<span class="who context-from" title={ln.context.session}>
@@ -213,6 +213,16 @@
 		<HarnessCommandCard command={ln.command} />
 	{:else if ln.voiceNoteId && sessionId}
 		<VoiceNote {sessionId} noteId={ln.voiceNoteId} text={ln.text ?? ''} ts={ln.ts} />
+	{:else if ln.voice}
+		<VoiceMessage
+			html={ln.html}
+			text={ln.text}
+			tinted={settings.roleTintedBackground}
+			pending={ln.pending}
+			queued={queueWaiting}
+			failed={!!ln.failed}
+			cancelled={ln.cancelled}
+		/>
 	{:else}
 		<MessageBubble
 			role={ln.role}

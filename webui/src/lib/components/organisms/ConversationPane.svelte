@@ -62,6 +62,7 @@
 	import type { ConversationChrome } from './conversation/chrome';
 	import { m } from '$lib/paraglide/messages';
 	import LiveVoiceBar from './conversation/LiveVoiceBar.svelte';
+	import { voiceTranscriptLanded } from './conversation/voiceMessage';
 	import { LiveVoice } from '$lib/voice/liveVoice.svelte';
 	import { SpeechPlayer } from '$lib/voice/player';
 	import { speakText } from '$lib/voice/speakLine';
@@ -553,7 +554,11 @@
 			<AutoArchiveNotice {session} onpin={() => togglePin(session)} />
 
 			{#if liveVoice.active}
-				<LiveVoiceBar voice={liveVoice} onstop={toggleLiveVoice} />
+				<LiveVoiceBar
+					voice={liveVoice}
+					onstop={toggleLiveVoice}
+					landed={voiceTranscriptLanded(lines, liveVoice.transcript)}
+				/>
 			{/if}
 			<ConversationComposer
 				bind:this={composer}

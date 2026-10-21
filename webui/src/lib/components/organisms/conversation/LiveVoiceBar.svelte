@@ -9,7 +9,11 @@
 	} from '$lib/voice/liveVoice.svelte';
 	import { m } from '$lib/paraglide/messages';
 
-	let { voice, onstop }: { voice: LiveVoice; onstop: () => void } = $props();
+	let {
+		voice,
+		onstop,
+		landed = false
+	}: { voice: LiveVoice; onstop: () => void; landed?: boolean } = $props();
 
 	const label = $derived.by(() => {
 		switch (voice.status) {
@@ -45,7 +49,7 @@
 	<div class="meter">
 		<Meter label={m.voice_live_level()} value={voice.muted ? 0 : voice.level} max={1} size="sm" format={() => ''} />
 	</div>
-	{#if voice.transcript}
+	{#if voice.transcript && !landed}
 		<span class="transcript"><Text size="sm" tone="muted">🎙 {voice.transcript}</Text></span>
 	{/if}
 	<Select
