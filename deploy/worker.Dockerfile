@@ -61,6 +61,7 @@ COPY --from=builder /out/ /
 # run npx-based MCP servers. Heavier JS tooling (pnpm stores, a managed
 # toolchain) still belongs in derived org images, e.g. under /opt/mise.
 FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
+ARG CA_CERTS_REFRESH=2026-10-22
 
 # Base tooling kept deliberately lean:
 #   ca-certificates          — TLS trust roots for the daemon's rustls stack.
@@ -78,7 +79,7 @@ FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee
 #   xz-utils                — unpacks the node tarball below.
 #   procps                  — `ps`, which `codex app-server daemon start` needs.
 #   libstdc++6              — the goose binary links it dynamically.
-RUN apt-get update \
+RUN echo "ca-certificates refresh ${CA_CERTS_REFRESH}" && apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
