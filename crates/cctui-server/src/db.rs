@@ -8,10 +8,8 @@ use sqlx::{ConnectOptions, PgPool};
 /// inline in `connect`, it outgrew clippy's `large_stack_arrays` limit.
 /// Migrations applied by a newer release are tolerated, so rolling back to this
 /// binary doesn't need a schema rollback first.
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate::Migrator {
-    ignore_missing: true,
-    ..sqlx::migrate!("../../migrations")
-};
+static MIGRATOR: sqlx::migrate::Migrator =
+    sqlx::migrate::Migrator { ignore_missing: true, ..sqlx::migrate!("../../migrations") };
 
 /// Read a `u32` env var, falling back to `default` when unset or unparseable.
 fn env_u32(name: &str, default: u32) -> u32 {
