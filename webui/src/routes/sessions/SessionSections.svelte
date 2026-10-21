@@ -7,6 +7,7 @@
 	import type { SessionsPage } from './sessionsPage.svelte';
 	import SessionGroupHeader from './SessionGroupHeader.svelte';
 	import SessionRows from './SessionRows.svelte';
+	import ArchivedRows from './ArchivedRows.svelte';
 	import DraftRows from './DraftRows.svelte';
 	import PendingSpawnRows from './PendingSpawnRows.svelte';
 
@@ -87,7 +88,7 @@
 		<div class="section">
 			{@render groupHeader('archived', m.sessions_section_archived(), archTop.length, {})}
 			{#if !sp.hiddenSections.has('archived')}
-				<SessionRows {sp} rows={archTop} childGroups={ns.childGroups} allowSelect={false} hl={sp.searchTerms} {pending} />
+				<ArchivedRows {sp} rows={archTop} childGroups={ns.childGroups} hl={sp.searchTerms} {pending} />
 			{/if}
 		</div>
 	{/if}
@@ -176,7 +177,7 @@
 					{#if sp.pageRows.length === 0 && !sp.pageLoading}
 						<div class="placeholder"><Text tone="muted">{m.sessions_no_archived()}</Text></div>
 					{:else}
-						<SessionRows {sp} rows={archTop} childGroups={ns.childGroups} allowSelect={false} hl={sp.searchTerms} {pending} />
+						<ArchivedRows {sp} rows={archTop} childGroups={ns.childGroups} hl={sp.searchTerms} {pending} />
 						{@render loadMore()}
 					{/if}
 				{/if}

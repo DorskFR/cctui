@@ -41,6 +41,7 @@ import {
   PAGE,
   nextSort,
   archivedDescendantsOf,
+  mergeParentStubs,
   inEnabledSections,
   matchesUnreadFilter,
   parseLabelFilter,
@@ -353,6 +354,9 @@ export class SessionsPage {
       .flatMap((p) => p.sessions)
       .filter((s) => !seen.has(s.id) && !!seen.add(s.id));
   });
+  pageParents = $derived.by(() =>
+    this.pagerActive ? mergeParentStubs(this.#pager.data?.pages ?? []) : [],
+  );
   pageDone = $derived.by(() => !this.#pager.hasNextPage);
   pageLoading = $derived.by(
     () =>

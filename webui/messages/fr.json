@@ -1341,6 +1341,23 @@
 	"sessions_new_session": "Nouvelle session",
 	"sessions_no_archived": "Aucune session archivée.",
 	"sessions_no_usage_data": "Aucune donnée d'utilisation",
+	"sessions_parent_children": [
+		{
+			"declarations": [
+				"input n",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
+			"match": {
+				"nPlural=one": "{n} sous-agent archivé",
+				"nPlural=other": "{n} sous-agents archivés"
+			}
+		}
+	],
+	"sessions_parent_live": "active",
+	"sessions_parent_open": "Ouvrir {name}",
 	"sessions_perm_count": "{count} perm",
 	"sessions_pin_aria": "Épingler la session",
 	"sessions_pin_title": "Épingler en haut (exempté de l'archivage automatique)",

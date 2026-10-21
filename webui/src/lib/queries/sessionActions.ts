@@ -280,6 +280,7 @@ export function useSessionActions() {
           placeholder,
           ...(prev?.sessions ?? []).filter((s) => s.id !== id),
         ],
+        parents: prev?.parents ?? [],
       }));
       try {
         const res = await endpoints.dispatch(body);

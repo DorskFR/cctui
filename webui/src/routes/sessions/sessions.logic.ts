@@ -3,6 +3,7 @@
 // that reads $state (e.g. the section toggles, the expand set) stays in the
 // component; only data-shape transforms and static config live here.
 import type { SessionListItem } from '@bindings/SessionListItem';
+import type { SessionParentStub } from '@bindings/SessionParentStub';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
 import { normalizeDir, spawnSlotDirty, type SpawnSlotPayload } from '$lib/drafts';
 import { NO_ACCOUNT } from '$lib/components/organisms/spawn/options';
@@ -147,8 +148,8 @@ export function groupChildren(kids: SessionListItem[]): SubGroup[] {
 // Build the parent→subagent-group nesting for an arbitrary row set. Used for
 // the live buckets AND the archive + search views so they keep the same
 // nesting + count badges instead of a flat list. A
-// child whose parent is absent from `rows` falls back to top-level so nothing
-// is dropped.
+// child whose parent is absent from `rows` stays top-level so nothing is
+// dropped; the archive then folds it under its parent's stub.
 export type Nest = {
 	topLevel: SessionListItem[];
 	childGroups: Map<string, SubGroup[]>;
@@ -171,6 +172,48 @@ export function nest(rows: SessionListItem[]): Nest {
 		if (groups.some((g) => g.agents.length >= INLINE_THRESHOLD)) hasCollapsible = true;
 	}
 	return { topLevel, childGroups, hasCollapsible };
+}
+
+// A child whose parent is live or on another archive page folds under that
+// parent's server stub, placed at the group's newest row.
+export type ArchiveSegment =
+	| { kind: 'rows'; key: string; rows: SessionListItem[] }
+	| { kind: 'group'; key: string; parent: SessionParentStub; rows: SessionListItem[] };
+export function groupUnderParents(
+	topLevel: SessionListItem[],
+	parents: SessionParentStub[]
+): ArchiveSegment[] {
+	const byId = new Map(parents.map((p) => [p.id, p]));
+	const groups = new Map<string, Extract<ArchiveSegment, { kind: 'group' }>>();
+	const out: ArchiveSegment[] = [];
+	for (const s of topLevel) {
+		const parent = s.parent_id && nestsUnderParent(s) ? byId.get(s.parent_id) : undefined;
+		if (parent) {
+			let g = groups.get(parent.id);
+			if (!g) {
+				g = { kind: 'group', key: `parent:${parent.id}`, parent, rows: [] };
+				groups.set(parent.id, g);
+				out.push(g);
+			}
+			g.rows.push(s);
+			continue;
+		}
+		const last = out.at(-1);
+		if (last?.kind === 'rows') last.rows.push(s);
+		else out.push({ kind: 'rows', key: `rows:${s.id}`, rows: [s] });
+	}
+	return out;
+}
+export const parentStubTitle = (p: SessionParentStub): string =>
+	p.name || p.working_dir.split('/').filter(Boolean).pop() || p.id.slice(0, 6);
+// Collapsed by default; a search opens them, since their rows are hits.
+export const parentGroupKey = (searching: boolean) => (searching ? 'archived-search' : 'archived');
+export const parentGroupOpen = (expanded: Set<string>, parentId: string, searching: boolean) =>
+	searching !== expanded.has(groupId(parentId, parentGroupKey(searching)));
+export function mergeParentStubs(pages: { parents?: SessionParentStub[] }[]): SessionParentStub[] {
+	const byId = new Map<string, SessionParentStub>();
+	for (const p of pages) for (const stub of p.parents ?? []) byId.set(stub.id, stub);
+	return [...byId.values()];
 }
 
 // Collect the transitive archived descendants of a set of (pinned) parent ids
