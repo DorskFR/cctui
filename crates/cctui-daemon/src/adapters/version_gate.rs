@@ -52,10 +52,13 @@ pub fn decide(running: Option<&str>, local: Option<&str>, busy: Busy) -> Decisio
 #[derive(Debug, Default)]
 pub struct VersionGate {
     last_check: Option<Instant>,
-    /// A manual restart request: the next check runs regardless of the
-    /// interval and a cycle happens at the first idle check. Cleared once the
-    /// versions agree or the cycle runs.
+    /// A manual restart request: a cycle happens at the first idle check.
+    /// Cleared once the versions agree or the cycle runs.
     requested: bool,
+    /// The request's first check skips the interval; once deferred, re-checks
+    /// keep the interval, since a drain waiting on hours of work gains little
+    /// from probing the harness every reconcile.
+    skip_interval: bool,
     /// Deferred pair and when work was last noted busy (or the deferral
     /// began), whichever is later.
     deferred: Option<(String, String, Instant)>,
@@ -64,10 +67,10 @@ pub struct VersionGate {
 }
 
 impl VersionGate {
-    /// Whether [`CHECK_MIN_INTERVAL`] has elapsed, or a restart was
+    /// Whether [`CHECK_MIN_INTERVAL`] has elapsed, or a restart was just
     /// requested; records `now` when it has.
     pub fn due(&mut self, now: Instant) -> bool {
-        let permit = self.requested
+        let permit = std::mem::take(&mut self.skip_interval)
             || self.last_check.is_none_or(|t| now.duration_since(t) >= CHECK_MIN_INTERVAL);
         if permit {
             self.last_check = Some(now);
@@ -83,10 +86,14 @@ impl VersionGate {
         }
     }
 
-    /// Ask for a cycle at the first idle check instead of the next interval.
-    /// Never turns a busy deferral into a cycle: the request only waits.
+    /// Ask for a cycle at the first idle check, checking now rather than at
+    /// the next interval. Repeating a pending request changes nothing. Never
+    /// turns a busy deferral into a cycle: the request only waits.
     pub const fn request(&mut self) {
-        self.requested = true;
+        if !self.requested {
+            self.requested = true;
+            self.skip_interval = true;
+        }
     }
 
     #[must_use]
@@ -260,17 +267,35 @@ mod tests {
         assert!(g.due(t0));
         assert!(!g.due(t0 + Duration::from_secs(1)));
         g.request();
-        assert!(g.due(t0 + Duration::from_secs(2)));
-        assert_eq!(g.check(Some("1"), Some("2"), Some(true), false, t0), deferred("1", "2"));
+        let t1 = t0 + Duration::from_secs(2);
+        assert!(g.due(t1));
+        assert_eq!(g.check(Some("1"), Some("2"), Some(true), false, t1), deferred("1", "2"));
         assert!(g.requested(), "busy keeps the request armed");
-        assert!(g.due(t0 + Duration::from_secs(3)));
-        assert_eq!(g.check(Some("1"), Some("2"), Some(false), false, t0), cycle("1", "2", false));
+        assert!(g.due(t1 + CHECK_MIN_INTERVAL));
+        assert_eq!(g.check(Some("1"), Some("2"), Some(false), false, t1), cycle("1", "2", false));
         assert!(!g.requested(), "the cycle consumed the request");
         assert!(!g.due(t0 + Duration::from_secs(4)));
 
         g.request();
         assert_eq!(g.check(Some("2"), Some("2"), Some(false), false, t0), Decision::Nothing);
         assert!(!g.requested(), "nothing to restart clears the request");
+    }
+
+    /// Only the request's first check skips the interval: a drain deferred by
+    /// hours of work re-probes every [`CHECK_MIN_INTERVAL`], not every reconcile,
+    /// even though the claude wrapper re-requests after each deferral.
+    #[test]
+    fn a_deferred_request_rechecks_at_the_normal_interval() {
+        let mut g = VersionGate::default();
+        let t0 = Instant::now();
+        g.request();
+        assert!(g.due(t0));
+        assert_eq!(g.check(Some("1"), Some("2"), Some(true), false, t0), deferred("1", "2"));
+        g.request();
+        assert!(!g.due(t0 + Duration::from_secs(45)), "a pending request re-arms nothing");
+        assert!(!g.due(t0 + CHECK_MIN_INTERVAL - Duration::from_secs(1)));
+        assert!(g.due(t0 + CHECK_MIN_INTERVAL));
+        assert!(g.requested(), "the request still waits for idle");
     }
 
     #[test]
