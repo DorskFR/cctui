@@ -221,6 +221,7 @@ pub(super) async fn on_session_event(
         }
         AdapterEvent::SessionEnded { local_id, reason } => {
             mark_session_ended(state, machine_id, user_id, &local_id, &reason).await?;
+            crate::guard_step::forget(&local_id);
             publish_session_ended(state, &local_id, &reason);
             crate::preview::close_session(state, &local_id).await;
         }
@@ -432,6 +433,38 @@ mod tests {
                 "{placeholder:?} must not overwrite the model"
             );
         }
+
+        crate::routes::daemon::test_support::drop_machines(&pool, &[sid], &[(uid, mid)]).await;
+    }
+
+    #[tokio::test]
+    async fn a_session_end_forgets_its_guard_step() {
+        let Some(url) = crate::routes::gateway::test_db_url("session_end_guard_step") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let (uid, mid) = seed_machine(&pool, "session-end-guard").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
+        crate::guard_step::record(
+            sid.clone(),
+            cctui_proto::guard_step::GuardStepState { step: 2, ..Default::default() },
+        );
+
+        super::on_session_event(
+            &state,
+            mid,
+            uid,
+            "claude-code",
+            AdapterEvent::SessionEnded { local_id: sid.clone(), reason: EndReason::Completed },
+        )
+        .await
+        .expect("session end");
+        assert_eq!(crate::guard_step::get(&sid), None);
 
         crate::routes::daemon::test_support::drop_machines(&pool, &[sid], &[(uid, mid)]).await;
     }

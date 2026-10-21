@@ -650,9 +650,10 @@ mod tests {
                 Effect::LoadConversationPage { session_id, .. },
                 Effect::Subscribe { .. },
                 Effect::LoadPins { .. },
+                Effect::FetchGuardStep { .. },
                 Effect::MarkSeen { .. },
             ] => assert_eq!(session_id, "s-a"),
-            _ => panic!("expected a load, a subscribe, a pin read and a seen mark"),
+            _ => panic!("expected a load, a subscribe, a pin read, a guard read and a seen mark"),
         }
     }
 

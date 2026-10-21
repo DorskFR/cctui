@@ -216,6 +216,12 @@ pub enum Effect {
     LoadPins {
         session_id: String,
     },
+    /// `GET /sessions/{id}/guard`: the step the socket only pushes changes of.
+    /// `frames` is the session's live frame count when the read went out.
+    FetchGuardStep {
+        session_id: String,
+        frames: u64,
+    },
     PinMessage {
         session_id: String,
         seq: i64,

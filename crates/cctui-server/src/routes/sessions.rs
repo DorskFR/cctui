@@ -2527,6 +2527,7 @@ pub async fn send_message(
         )
         .await;
     }
+    authorize_reply(&state, &ctx, &session_id).await?;
     // Carry re-minted gateway env so a reply-driven cold-resume revives the
     // worker with a fresh valid token rather than empty env.
     let env = crate::routes::gateway::resume_env_for_session(&state, &session_id).await;
@@ -2570,6 +2571,34 @@ pub async fn send_message(
             session_id: None,
         }),
     ))
+}
+
+/// A draft has no worker to wake.
+pub fn reply_wakes_worker(status: &str, tempo: Option<&str>) -> bool {
+    matches!(tempo, Some("hibernated" | "dead"))
+        || matches!(
+            SessionRowStatus::parse(status),
+            Some(SessionRowStatus::Ended | SessionRowStatus::Failed | SessionRowStatus::Archived)
+        )
+}
+
+/// A reply that wakes the worker is a launch and gated like a resume.
+pub async fn authorize_reply(
+    state: &AppState,
+    ctx: &AuthContext,
+    session_id: &str,
+) -> Result<(), AppError> {
+    let row: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT status, tempo FROM sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    match row {
+        Some((status, tempo)) if reply_wakes_worker(&status, tempo.as_deref()) => {
+            crate::routes::spawn::authorize_session_launch(state, ctx, session_id).await
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Store a user-chosen name and pin it against agent titles. `None` when the

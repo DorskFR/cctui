@@ -420,6 +420,21 @@ async fn run_tui_socket(
                     }
                     continue;
                 }
+                if let Err(e) =
+                    crate::routes::sessions::authorize_reply(&state, &ctx, &session_id).await
+                {
+                    if let Some(client_msg_id) = client_msg_id {
+                        let ack = ServerEvent::MessageAck {
+                            session_id,
+                            client_msg_id,
+                            ok: false,
+                            error: Some(e.to_string()),
+                            command_id: None,
+                        };
+                        send_event(&event_tx, &ack).await;
+                    }
+                    continue;
+                }
                 handle_message(
                     &state,
                     &event_tx,

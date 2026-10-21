@@ -3,9 +3,12 @@
 
 use std::time::Duration as StdDuration;
 
+use axum::http::StatusCode;
 use cctui_proto::backoff::Backoff;
 use chrono::{DateTime, Duration, Utc};
 
+use crate::auth::AuthContext;
+use crate::error::AppError;
 use crate::state::AppState;
 use crate::store::sessions::SessionRowStatus;
 
@@ -89,7 +92,9 @@ pub struct ClaimedRow {
     pub ask_picks: Option<serde_json::Value>,
     pub attempts: i32,
     pub turn_id: uuid::Uuid,
+    pub user_id: Option<uuid::Uuid>,
     pub session_status: Option<String>,
+    pub session_tempo: Option<String>,
 }
 
 const CLAIM_SQL: &str = "\
@@ -103,8 +108,8 @@ const CLAIM_SQL: &str = "\
             ORDER BY deliver_at \
             LIMIT $2 \
             FOR UPDATE SKIP LOCKED) \
-        RETURNING q.id, q.session_id, q.body, q.ask_picks, q.attempts, q.turn_id) \
-    SELECT c.*, s.status AS session_status \
+        RETURNING q.id, q.session_id, q.body, q.ask_picks, q.attempts, q.turn_id, q.user_id) \
+    SELECT c.*, s.status AS session_status, s.tempo AS session_tempo \
     FROM claimed c LEFT JOIN sessions s ON s.id = c.session_id";
 
 const CLAIM_ONE_SQL: &str = "\
@@ -112,8 +117,8 @@ const CLAIM_ONE_SQL: &str = "\
         UPDATE session_message_queue \
         SET state = 'sending', next_attempt_at = now() + ($3 || ' seconds')::interval \
         WHERE id = $1 AND session_id = $2 AND state = 'scheduled' \
-        RETURNING id, session_id, body, ask_picks, attempts, turn_id) \
-    SELECT c.*, s.status AS session_status \
+        RETURNING id, session_id, body, ask_picks, attempts, turn_id, user_id) \
+    SELECT c.*, s.status AS session_status, s.tempo AS session_tempo \
     FROM claimed c LEFT JOIN sessions s ON s.id = c.session_id";
 
 pub async fn claim_due(pool: &sqlx::PgPool) -> sqlx::Result<Vec<ClaimedRow>> {
@@ -160,8 +165,46 @@ pub async fn sweep(state: &AppState) {
         }
     };
     for row in rows {
-        let _ = deliver(state, row).await;
+        deliver_due(state, row).await;
     }
+}
+
+async fn deliver_due(state: &AppState, row: ClaimedRow) {
+    match authorize_wake(state, &row).await {
+        Ok(()) => {
+            let _ = deliver(state, row).await;
+        }
+        Err(e) => {
+            let (code, axum::Json(e)) = e.into_parts();
+            if code.is_server_error() {
+                record_failure(&state.pool, row.id, row.attempts, &e.error).await;
+            } else {
+                tracing::warn!(queue_id = %row.id, "scheduled message refused: {}", e.error);
+                mark_dead(&state.pool, row.id, row.attempts + 1, &e.error).await;
+            }
+        }
+    }
+}
+
+/// A due message that wakes its worker is sent for whoever scheduled it, with
+/// the scopes they hold at delivery time.
+async fn authorize_wake(state: &AppState, row: &ClaimedRow) -> Result<(), AppError> {
+    let Some(status) = row.session_status.as_deref() else { return Ok(()) };
+    if undeliverable_reason(Some(status)).is_some()
+        || !crate::routes::sessions::reply_wakes_worker(status, row.session_tempo.as_deref())
+    {
+        return Ok(());
+    }
+    let Some(user_id) = row.user_id else {
+        return Err(AppError::new(StatusCode::FORBIDDEN, "scheduled by an unknown user"));
+    };
+    let ctx = AuthContext {
+        user_id,
+        key_id: uuid::Uuid::nil(),
+        machine_id: None,
+        scopes: crate::store::acls::user_ceiling(&state.pool, user_id).await?,
+    };
+    crate::routes::spawn::authorize_session_launch(state, &ctx, &row.session_id).await
 }
 
 pub async fn deliver(state: &AppState, row: ClaimedRow) -> Result<(), String> {
@@ -416,5 +459,209 @@ mod tests {
 
         let one = claim_one(&pool, &sid, later).await.unwrap().expect("send-now claims early");
         assert_eq!(one.session_status.as_deref(), Some("active"));
+    }
+}
+
+#[cfg(test)]
+mod reply_gate_tests {
+    use axum::extract::{Path, State};
+    use axum::http::StatusCode;
+    use axum::{Extension, Json};
+    use cctui_proto::adapter::AdapterCommand;
+    use cctui_proto::ws::DaemonFrameDown;
+    use tokio::sync::mpsc::Receiver;
+    use uuid::Uuid;
+
+    use super::{claim_one, deliver_due};
+    use crate::auth::{AuthContext, Scope};
+    use crate::routes::sessions::reply_wakes_worker;
+    use crate::state::AppState;
+
+    const READ_ONLY: &[Scope] = &[Scope::Read];
+    const DISPATCH: &[Scope] = &[Scope::Read, Scope::Dispatch];
+
+    fn caller(user_id: Uuid, scopes: &[Scope]) -> AuthContext {
+        AuthContext {
+            user_id,
+            key_id: Uuid::new_v4(),
+            machine_id: None,
+            scopes: scopes.iter().copied().collect(),
+        }
+    }
+
+    async fn state(name: &str) -> Option<AppState> {
+        let url = crate::routes::gateway::test_db_url(name)?;
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        Some(AppState::for_test(pool))
+    }
+
+    async fn seed_owner(pool: &sqlx::PgPool, ceiling: &[Scope]) -> (Uuid, Uuid) {
+        let uid = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("reply-gate-{uid}"))
+            .bind(format!("hrg-{uid}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        set_ceiling(pool, uid, ceiling).await;
+        let machine = Uuid::new_v4();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)")
+            .bind(machine)
+            .bind(uid)
+            .bind(format!("mkrg-{machine}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        (uid, machine)
+    }
+
+    async fn set_ceiling(pool: &sqlx::PgPool, uid: Uuid, scopes: &[Scope]) {
+        let mut conn = pool.acquire().await.unwrap();
+        crate::store::acls::set_user_ceiling(&mut conn, uid, scopes).await.unwrap();
+    }
+
+    async fn seed_session(pool: &sqlx::PgPool, owner: Uuid, machine: Uuid, tempo: &str) -> String {
+        let sid = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status, \
+             adapter_id, tempo) VALUES ($1, $2, $3, $4, '/w', 'inactive', 'claude-code', $5)",
+        )
+        .bind(&sid)
+        .bind(machine.to_string())
+        .bind(machine)
+        .bind(owner)
+        .bind(tempo)
+        .execute(pool)
+        .await
+        .unwrap();
+        sid
+    }
+
+    fn daemon(state: &AppState, machine: Uuid) -> Receiver<DaemonFrameDown> {
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        state.bus.register_daemon(machine, Uuid::new_v4(), tx);
+        rx
+    }
+
+    fn replied(rx: &mut Receiver<DaemonFrameDown>) -> bool {
+        matches!(
+            rx.try_recv(),
+            Ok(DaemonFrameDown::Command { command, .. })
+                if matches!(*command, AdapterCommand::Reply { .. })
+        )
+    }
+
+    async fn reply(state: &AppState, ctx: AuthContext, sid: &str) -> Result<(), StatusCode> {
+        crate::routes::sessions::send_message(
+            State(state.clone()),
+            Extension(ctx),
+            Path(sid.to_owned()),
+            Json(serde_json::from_value(serde_json::json!({ "content": "hi" })).unwrap()),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| e.into_parts().0)
+    }
+
+    async fn queue(pool: &sqlx::PgPool, sid: &str, user: Uuid) -> Uuid {
+        sqlx::query_scalar(
+            "INSERT INTO session_message_queue \
+               (session_id, user_id, body, deliver_at, next_attempt_at) \
+             VALUES ($1, $2, 'later', now() + interval '1 hour', now() + interval '1 hour') \
+             RETURNING id",
+        )
+        .bind(sid)
+        .bind(user)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn queue_state(pool: &sqlx::PgPool, id: Uuid) -> (String, Option<String>) {
+        sqlx::query_as("SELECT state, last_error FROM session_message_queue WHERE id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[test]
+    fn only_a_gone_worker_or_a_stopped_session_is_woken() {
+        assert!(reply_wakes_worker("inactive", Some("hibernated")));
+        assert!(reply_wakes_worker("active", Some("dead")));
+        assert!(reply_wakes_worker("ended", None));
+        assert!(reply_wakes_worker("failed", None));
+        assert!(reply_wakes_worker("archived", None));
+        assert!(!reply_wakes_worker("active", Some("idle")));
+        assert!(!reply_wakes_worker("inactive", Some("blocked")));
+        assert!(!reply_wakes_worker("new", None));
+        assert!(!reply_wakes_worker("draft", None));
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_wakes_the_worker_needs_dispatch_a_live_one_does_not() {
+        let name = "a_reply_that_wakes_the_worker_needs_dispatch_a_live_one_does_not";
+        let Some(state) = state(name).await else { return };
+        let pool = state.pool.clone();
+        let (owner, machine) = seed_owner(&pool, DISPATCH).await;
+        let mut rx = daemon(&state, machine);
+        let asleep = seed_session(&pool, owner, machine, "hibernated").await;
+        let live = seed_session(&pool, owner, machine, "idle").await;
+
+        let refused = reply(&state, caller(owner, READ_ONLY), &asleep).await;
+        assert_eq!(refused, Err(StatusCode::FORBIDDEN));
+        assert!(rx.try_recv().is_err(), "a refused reply never reaches the daemon");
+
+        let scheduled = queue(&pool, &asleep, owner).await;
+        let send_now = crate::routes::scheduled_messages::send_now(
+            State(state.clone()),
+            Extension(caller(owner, READ_ONLY)),
+            Path((asleep.clone(), scheduled)),
+        )
+        .await
+        .map_err(|e| e.into_parts().0);
+        assert_eq!(send_now, Err(StatusCode::FORBIDDEN));
+        assert!(rx.try_recv().is_err());
+        assert_eq!(queue_state(&pool, scheduled).await.0, "scheduled", "left for its owner");
+
+        assert_eq!(reply(&state, caller(owner, DISPATCH), &asleep).await, Ok(()));
+        assert!(replied(&mut rx), "a dispatch key wakes the worker");
+
+        assert_eq!(reply(&state, caller(owner, READ_ONLY), &live).await, Ok(()));
+        assert!(replied(&mut rx), "typing into a live session is unchanged");
+    }
+
+    #[tokio::test]
+    async fn a_due_wake_is_refused_once_its_scheduler_lost_dispatch() {
+        let name = "a_due_wake_is_refused_once_its_scheduler_lost_dispatch";
+        let Some(state) = state(name).await else { return };
+        let pool = state.pool.clone();
+        let (owner, machine) = seed_owner(&pool, DISPATCH).await;
+        let mut rx = daemon(&state, machine);
+        let asleep = seed_session(&pool, owner, machine, "hibernated").await;
+        let live = seed_session(&pool, owner, machine, "idle").await;
+        let to_asleep = queue(&pool, &asleep, owner).await;
+        let to_live = queue(&pool, &live, owner).await;
+        set_ceiling(&pool, owner, READ_ONLY).await;
+
+        let row = claim_one(&pool, &asleep, to_asleep).await.unwrap().expect("claimed");
+        deliver_due(&state, row).await;
+        let (st, err) = queue_state(&pool, to_asleep).await;
+        assert_eq!(st, "dead");
+        assert!(err.is_some_and(|e| e.contains("dispatch")), "the refusal is recorded");
+        assert!(rx.try_recv().is_err(), "the worker is not woken");
+
+        let row = claim_one(&pool, &live, to_live).await.unwrap().expect("claimed");
+        deliver_due(&state, row).await;
+        assert_eq!(queue_state(&pool, to_live).await.0, "sent", "a live worker still gets it");
+        assert!(replied(&mut rx));
+
+        set_ceiling(&pool, owner, DISPATCH).await;
+        let again = queue(&pool, &asleep, owner).await;
+        let row = claim_one(&pool, &asleep, again).await.unwrap().expect("claimed");
+        deliver_due(&state, row).await;
+        assert_eq!(queue_state(&pool, again).await.0, "sent");
+        assert!(replied(&mut rx), "with dispatch the due message wakes the worker");
     }
 }

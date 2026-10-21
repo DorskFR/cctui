@@ -443,6 +443,18 @@ describe('onFrame, one fixture per ServerEvent variant', () => {
 		expect(c.guardStep(SID)?.step).toBe(3);
 	});
 
+	it('session_ended drops the guard step and tells its listeners', () => {
+		const { c, sock } = setup();
+		const seen: unknown[] = [];
+		c.onGuardStep(SID, (ev) => seen.push(ev.state));
+		sock.deliver(fixtures.guard_step_state);
+		sock.deliver(fixtures.session_ended);
+		expect(c.guardStep(SID)).toBeNull();
+		expect(seen).toEqual([fixtures.guard_step_state.state, null]);
+		sock.deliver(fixtures.session_ended);
+		expect(seen).toHaveLength(2);
+	});
+
 	it('an HTTP guard seed never overwrites a frame that landed while it was in flight', async () => {
 		const { c, sock } = setup();
 		const step = (n: number) => ({ ...fixtures.guard_step_state.state, step: n });
