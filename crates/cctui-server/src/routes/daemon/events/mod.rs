@@ -13,7 +13,7 @@ mod status;
 mod stream;
 mod todos;
 
-use todos::{extract_todos, is_user_turn, record_todos};
+use todos::{extract_todos, is_user_turn, record_task_op, record_todos, task_op};
 
 pub(super) async fn handle_event(
     state: &AppState,
@@ -54,7 +54,8 @@ pub(super) async fn handle_event(
         }
         e @ (AdapterEvent::Status { .. }
         | AdapterEvent::PrLink { .. }
-        | AdapterEvent::RateLimits { .. }) => {
+        | AdapterEvent::RateLimits { .. }
+        | AdapterEvent::Title { .. }) => {
             status::on_status_event(state, e).await?;
             Inserted::UNSTORED
         }
@@ -64,6 +65,10 @@ pub(super) async fn handle_event(
         | AdapterEvent::GuardStepState { .. }
         | AdapterEvent::CommandResult { .. }) => {
             relay::on_relay_event(state, e).await;
+            Inserted::UNSTORED
+        }
+        AdapterEvent::Todos { local_id, todos } => {
+            record_todos(&state.pool, &local_id, &todos).await;
             Inserted::UNSTORED
         }
         _ => Inserted::UNSTORED,
@@ -163,6 +168,11 @@ impl Tail {
                 && let Some(todos) = extract_todos(tool, input)
             {
                 record_todos(&state.pool, &id, &todos).await;
+            }
+            if inserted.newly
+                && let Some(op) = broadcast.as_ref().and_then(|(_, e)| task_op(e))
+            {
+                record_task_op(&state.pool, &id, op).await;
             }
         }
         if inserted.newly

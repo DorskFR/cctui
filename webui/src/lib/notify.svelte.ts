@@ -35,6 +35,8 @@ class Notifier {
   private badgeCount = 0;
   /** Server-wide instance name (`/version.instance_name`); part of the tab title. */
   private instanceName: string | null = null;
+  /** The open conversation's display name; leads the tab title. */
+  private sessionTitle: string | null = null;
   private audioCtx: AudioContext | null = null;
 
   constructor() {
@@ -127,9 +129,18 @@ class Notifier {
     };
   }
 
-  /** Base tab title: `cctui`, or `cctui (NAME)` when the admin labelled the instance. */
+  /** Base tab title: `cctui`, or `cctui (NAME)` when the admin labelled the
+   *  instance, behind the open session's name. */
   baseTitle(): string {
-    return this.instanceName ? `${BRAND} (${this.instanceName})` : BRAND;
+    const brand = this.instanceName ? `${BRAND} (${this.instanceName})` : BRAND;
+    return this.sessionTitle ? `${this.sessionTitle} · ${brand}` : brand;
+  }
+
+  setSessionTitle(title: string | null | undefined) {
+    const next = title?.trim() || null;
+    if (next === this.sessionTitle) return;
+    this.sessionTitle = next;
+    this.updateBadge(this.badgeCount);
   }
 
   /** Header feeds this from `/version`; re-renders the title with the current badge. */

@@ -420,10 +420,10 @@ pub fn room_tool_schema() -> Value {
 /// The split both user-action tools must state, so a model does not file its own
 /// steps here or the user's here into its own plan.
 const USER_ACTION_SPLIT: &str = "This list is what YOU are waiting on from the USER — approvals, \
-    commands only they can run, secrets, decisions, a yubikey touch. Track your OWN work with \
-    TodoWrite / update_plan instead; never put your own steps here, and never put a request for \
-    the user into your task list. The tools never block: they return immediately and the user \
-    answers in their own time.";
+    commands only they can run, secrets, decisions, a yubikey touch. Track your OWN work in \
+    your own task list instead (TaskCreate / TaskUpdate, TodoWrite or update_plan); never put \
+    your own steps here, and never put a request for the user into your task list. The tools \
+    never block: they return immediately and the user answers in their own time.";
 
 /// The `CctuiUserActionAdd` input schema.
 #[must_use]
@@ -1221,6 +1221,7 @@ mod tests {
         assert_eq!(props["blocking"]["type"], "boolean");
         let desc = schema["description"].as_str().unwrap();
         assert!(desc.contains("TodoWrite"), "{desc}");
+        assert!(desc.contains("TaskCreate / TaskUpdate"), "{desc}");
         assert!(desc.contains("waiting on from the USER"), "{desc}");
         assert_eq!(tool_kind(USER_ACTION_ADD_TOOL_NAME), Some("user_action_add"));
     }

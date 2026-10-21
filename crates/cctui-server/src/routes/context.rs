@@ -4,7 +4,7 @@
 //! Skills are deliberately absent: a skill bundle is a plugin, delivered per
 //! session by the plugin platform. See `docs/adr/0002-session-context.md`.
 //!
-//! Resolution ([`resolve_auto`], [`resolve_rules`], [`resolve_for_spawn`]) is
+//! Resolution ([`matching_memories`], [`resolve_rules`], [`resolve_for_spawn`]) is
 //! pure over rows so it is unit-tested without a database, the way the prompt
 //! resolver is.
 
@@ -297,12 +297,11 @@ pub fn scope_matches(item: &ContextItem, scope: &SpawnScope) -> bool {
     item.enabled && filter_matches(&item.match_, scope)
 }
 
-/// The memories a spawn pre-selects: every enabled `memory` whose filter
-/// matches. Prompt templates are never auto-applied — a template replaces the
-/// user's first turn, which must stay an explicit choice — and rules are
-/// resolved by [`resolve_rules`].
+/// The memories a spawn suggests: every enabled `memory` whose filter
+/// matches. A suggestion only attaches once picked; rules are resolved by
+/// [`resolve_rules`].
 #[must_use]
-pub fn resolve_auto(items: &[ContextItem], scope: &SpawnScope) -> Vec<ContextItem> {
+pub fn matching_memories(items: &[ContextItem], scope: &SpawnScope) -> Vec<ContextItem> {
     let mut chosen: Vec<ContextItem> =
         items.iter().filter(|i| i.kind == "memory" && scope_matches(i, scope)).cloned().collect();
     sort_for_delivery(&mut chosen);
@@ -355,18 +354,16 @@ fn sort_for_delivery(items: &mut [ContextItem]) {
     });
 }
 
-/// The matching rules, then explicit picks (by name; memories and prompts)
-/// unioned with [`resolve_auto`] when `auto`. Rules attach whatever `auto`
-/// says: enabling a rule is the consent. Picks are capped, so a runaway
-/// filter cannot flood a launch.
+/// The matching rules, then the explicit picks (by name; memories and
+/// prompts). Enabling a rule is the consent; a memory attaches only when
+/// picked, whatever its filter matches. Picks are capped.
 #[must_use]
 pub fn resolve_for_spawn(
     items: &[ContextItem],
     picks: &[String],
-    auto: bool,
     scope: &SpawnScope,
 ) -> Vec<ContextItem> {
-    let mut chosen: Vec<ContextItem> = if auto { resolve_auto(items, scope) } else { Vec::new() };
+    let mut chosen: Vec<ContextItem> = Vec::new();
     for name in picks {
         if let Some(item) = items.iter().find(|i| &i.name == name && i.kind != "rule")
             && !chosen.iter().any(|c| c.id == item.id)
@@ -952,7 +949,7 @@ pub async fn resolve_for_child(
     }
     // A child inherits what its profile pins, never what its cwd happens to
     // match; its rules still apply, as on every launch.
-    resolve_for_spawn(&items, &picks, false, scope)
+    resolve_for_spawn(&items, &picks, scope)
 }
 
 /// Stage `names` (memories of `owner`) into a live session as one file and
@@ -1167,7 +1164,7 @@ pub async fn resolve_items(
     };
     Ok(Json(ResolvedContextResponse {
         rules: resolve_rules(&items, &scope),
-        memories: resolve_auto(&items, &scope),
+        memories: matching_memories(&items, &scope),
     }))
 }
 
@@ -1327,7 +1324,7 @@ mod tests {
             adapter: None,
         };
         assert_eq!(
-            names(&resolve_auto(&items, &scope)),
+            names(&matching_memories(&items, &scope)),
             ["always", "in-repo", "tagged", "this-box"],
             "one per scope kind, in title order and never in row order"
         );
@@ -1379,15 +1376,14 @@ mod tests {
     fn a_disabled_item_is_never_resolved() {
         let mut off = item("memory", "off", "user", None);
         off.enabled = false;
-        assert!(resolve_auto(&[off], &SpawnScope::default()).is_empty());
+        assert!(matching_memories(&[off], &SpawnScope::default()).is_empty());
 
         let mut off_rule = rule("off-rule", ContextMatch::default());
         off_rule.enabled = false;
         assert!(resolve_rules(std::slice::from_ref(&off_rule), &at("codex", "/w")).is_empty());
         assert!(
-            resolve_for_spawn(&[off_rule], &["off-rule".to_owned()], true, &at("codex", "/w"))
-                .is_empty(),
-            "neither auto nor a pick brings back a disabled rule"
+            resolve_for_spawn(&[off_rule], &["off-rule".to_owned()], &at("codex", "/w")).is_empty(),
+            "a pick never brings back a disabled rule"
         );
     }
 
@@ -1415,7 +1411,7 @@ mod tests {
     }
 
     #[test]
-    fn rules_attach_whatever_auto_says_and_come_first() {
+    fn rules_attach_unpicked_and_come_first() {
         let items = vec![
             item("memory", "note", "user", None),
             rule("zeta", ContextMatch::default()),
@@ -1423,14 +1419,15 @@ mod tests {
             item("prompt", "reviewer", "user", None),
         ];
         let scope = at("claude-code", "/w");
-        assert_eq!(names(&resolve_for_spawn(&items, &[], false, &scope)), ["alpha", "zeta"]);
+        assert_eq!(names(&resolve_for_spawn(&items, &[], &scope)), ["alpha", "zeta"]);
+        let picks = ["reviewer".to_owned(), "note".to_owned()];
         assert_eq!(
-            names(&resolve_for_spawn(&items, &["reviewer".to_owned()], true, &scope)),
+            names(&resolve_for_spawn(&items, &picks, &scope)),
             ["alpha", "zeta", "note", "reviewer"],
             "rules, then memories, then the prompt"
         );
         assert_eq!(
-            names(&resolve_for_spawn(&items, &["alpha".to_owned()], false, &scope)),
+            names(&resolve_for_spawn(&items, &["alpha".to_owned()], &scope)),
             ["alpha", "zeta"],
             "naming a rule never duplicates it"
         );
@@ -1470,31 +1467,25 @@ mod tests {
     #[test]
     fn prompt_templates_are_never_auto_resolved() {
         let items = vec![item("prompt", "reviewer", "user", None)];
-        assert!(resolve_auto(&items, &SpawnScope::default()).is_empty());
-        let picked =
-            resolve_for_spawn(&items, &["reviewer".to_owned()], true, &SpawnScope::default());
+        assert!(matching_memories(&items, &SpawnScope::default()).is_empty());
+        let picked = resolve_for_spawn(&items, &["reviewer".to_owned()], &SpawnScope::default());
         assert_eq!(names(&picked), ["reviewer"]);
     }
 
     #[test]
-    fn explicit_picks_union_with_the_auto_set_without_duplicating() {
+    fn only_explicit_picks_attach_without_duplicating() {
         let items = vec![
             item("memory", "always", "user", None),
             item("memory", "hand-picked", "machine", Some("elsewhere")),
             item("prompt", "reviewer", "user", None),
         ];
-        let picks = ["always".to_owned(), "hand-picked".to_owned(), "reviewer".to_owned()];
-        let got = resolve_for_spawn(&items, &picks, true, &SpawnScope::default());
-        assert_eq!(
-            names(&got),
-            ["always", "hand-picked", "reviewer"],
-            "memories first, prompt last"
-        );
+        let picks = ["reviewer".to_owned(), "hand-picked".to_owned(), "hand-picked".to_owned()];
+        let got = resolve_for_spawn(&items, &picks, &SpawnScope::default());
+        assert_eq!(names(&got), ["hand-picked", "reviewer"], "memories first, prompt last");
 
-        let manual =
-            resolve_for_spawn(&items, &["hand-picked".to_owned()], false, &SpawnScope::default());
-        assert_eq!(names(&manual), ["hand-picked"], "auto off means only the picks");
-        assert!(resolve_for_spawn(&items, &[], false, &SpawnScope::default()).is_empty());
+        let manual = resolve_for_spawn(&items, &["hand-picked".to_owned()], &SpawnScope::default());
+        assert_eq!(names(&manual), ["hand-picked"], "a matching memory is only a suggestion");
+        assert!(resolve_for_spawn(&items, &[], &SpawnScope::default()).is_empty());
     }
 
     /// Profile parity: both spawn paths funnel into `resolve_for_spawn` with
@@ -1533,8 +1524,8 @@ mod tests {
             adapter: Some("codex".into()),
         };
 
-        let from_webui = resolve_for_spawn(&items, &pinned, false, &scope);
-        let from_tool = resolve_for_spawn(&items, &pinned, false, &scope);
+        let from_webui = resolve_for_spawn(&items, &pinned, &scope);
+        let from_tool = resolve_for_spawn(&items, &pinned, &scope);
         assert_eq!(names(&from_webui), names(&from_tool));
         assert_eq!(
             names(&from_webui),
@@ -1542,19 +1533,13 @@ mod tests {
             "the matching rules plus the pins; a memory the profile did not pin stays out"
         );
 
-        assert_eq!(
-            names(&resolve_for_spawn(&items, &pinned, true, &scope)),
-            ["codex-here", "everywhere", "always", "in-repo", "pinned", "this-box", "reviewer"],
-        );
-
         let elsewhere = SpawnScope { machine_id: Some(Uuid::new_v4().to_string()), ..scope };
-        let got = resolve_for_spawn(&items, &[], true, &elsewhere);
-        assert!(!names(&got).contains(&"this-box"));
-        assert!(!names(&got).contains(&"codex-here"));
+        let got = resolve_for_spawn(&items, &pinned, &elsewhere);
+        assert_eq!(names(&got), ["everywhere", "pinned", "reviewer"], "pins attach anywhere");
     }
 
-    /// A body that says nothing about context decodes to no picks and no
-    /// auto; only the rules, which need no consent per spawn, still attach.
+    /// Only the rules, which need no consent per spawn, attach unpicked. An
+    /// old client's `auto: true` brings back no memory.
     #[test]
     fn a_spawn_that_asks_for_nothing_gets_only_its_rules() {
         let asked = cctui_proto::api::SpawnContext::default();
@@ -1568,23 +1553,24 @@ mod tests {
         ];
         let scope = at("claude-code", "/w/repo");
         assert_eq!(
-            names(&resolve_for_spawn(&items, &asked.items, asked.auto, &scope)),
+            names(&resolve_for_spawn(&items, &asked.items, &scope)),
             ["house"],
             "a matching memory is not consent; a rule is"
         );
         let decoded: cctui_proto::api::SpawnContext =
             serde_json::from_str(r#"{"items":["always"]}"#).expect("decodes");
         assert!(!decoded.auto);
-        assert_eq!(
-            names(&resolve_for_spawn(&items, &decoded.items, decoded.auto, &scope)),
-            ["house", "always"]
-        );
+        assert_eq!(names(&resolve_for_spawn(&items, &decoded.items, &scope)), ["house", "always"]);
+        let legacy: cctui_proto::api::SpawnContext =
+            serde_json::from_str(r#"{"items":[],"auto":true}"#).expect("decodes");
+        assert!(legacy.auto);
+        assert_eq!(names(&resolve_for_spawn(&items, &legacy.items, &scope)), ["house"]);
     }
 
     #[test]
     fn an_unknown_pick_is_ignored_rather_than_failing_the_spawn() {
         let items = vec![item("memory", "known", "user", None)];
-        let got = resolve_for_spawn(&items, &["ghost".to_owned()], false, &SpawnScope::default());
+        let got = resolve_for_spawn(&items, &["ghost".to_owned()], &SpawnScope::default());
         assert!(got.is_empty());
     }
 
@@ -1592,9 +1578,10 @@ mod tests {
     fn the_resolved_set_is_capped() {
         let items: Vec<ContextItem> =
             (0..50).map(|i| item("memory", &format!("m{i:02}"), "user", None)).collect();
-        assert_eq!(resolve_auto(&items, &SpawnScope::default()).len(), 50);
+        let picks: Vec<String> = items.iter().map(|i| i.name.clone()).collect();
+        assert_eq!(matching_memories(&items, &SpawnScope::default()).len(), 50);
         assert_eq!(
-            resolve_for_spawn(&items, &[], true, &SpawnScope::default()).len(),
+            resolve_for_spawn(&items, &picks, &SpawnScope::default()).len(),
             MAX_ITEMS_PER_SPAWN
         );
     }

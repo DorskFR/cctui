@@ -780,13 +780,25 @@ pub struct ContextCounts {
 
 /// Task-list entry. `status` is `pending`, `in_progress` or `completed`;
 /// `active_form` is claude-only.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `id`, `description`, `blocked_by` and `owner` come from Claude Code's task
+/// list (`TaskCreate` / `TaskUpdate`), never from `TodoWrite` or `update_plan`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct TodoEntry {
     pub content: String,
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_form: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Ids of the tasks this one waits on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 /// `color` is a CSS hex string.
@@ -841,6 +853,19 @@ pub struct LabelListResponse {
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SessionListResponse {
     pub sessions: Vec<SessionListItem>,
+    /// Parents of `sessions` rows that are not themselves in `sessions` (live,
+    /// or on another page), so a client can group a child under its parent.
+    #[serde(default)]
+    pub parents: Vec<SessionParentStub>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionParentStub {
+    pub id: String,
+    pub name: Option<String>,
+    pub working_dir: String,
+    pub status: SessionStatus,
 }
 
 /// One transcript match inside a single session. `seq` is `stream_events.id`,

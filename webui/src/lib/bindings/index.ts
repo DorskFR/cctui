@@ -261,6 +261,7 @@ export type * from './SessionKeepaliveRequest';
 export type * from './SessionListItem';
 export type * from './SessionListResponse';
 export type * from './SessionOrigin';
+export type * from './SessionParentStub';
 export type * from './SessionProfile';
 export type * from './SessionRebind';
 export type * from './SessionResult';

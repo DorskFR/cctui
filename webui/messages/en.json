@@ -1341,6 +1341,23 @@
 	"sessions_new_session": "New session",
 	"sessions_no_archived": "No archived sessions.",
 	"sessions_no_usage_data": "No usage data",
+	"sessions_parent_children": [
+		{
+			"declarations": [
+				"input n",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
+			"match": {
+				"nPlural=one": "{n} archived subagent",
+				"nPlural=other": "{n} archived subagents"
+			}
+		}
+	],
+	"sessions_parent_live": "live",
+	"sessions_parent_open": "Open {name}",
 	"sessions_perm_count": "{count} perm",
 	"sessions_pin_aria": "Pin session",
 	"sessions_pin_title": "Pin to top (exempt from auto-archive)",

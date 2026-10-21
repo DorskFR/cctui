@@ -110,6 +110,44 @@ describe('TaskPanel', () => {
 		expect(document.querySelectorAll('.task')).toHaveLength(1);
 	});
 
+	it('shows a task-list row with its id, owner and blocked-by ids', async () => {
+		render(
+			progressOf([
+				{ content: 'Parse', status: 'completed', id: '1' },
+				{ content: 'Render', status: 'in_progress', id: '2', owner: 'agent-a', blockedBy: ['#1'] }
+			])
+		);
+		strip()?.click();
+		await tick();
+		const rows = document.querySelectorAll('.task');
+		expect(rows).toHaveLength(2);
+		expect(rows[1].textContent).toContain('#2');
+		expect(rows[1].textContent).toContain('@agent-a');
+		expect(rows[1].textContent).toContain('blocked by #1');
+		expect(rows[0].textContent).not.toContain('@');
+	});
+
+	it('reveals a task description only when its row is expanded', async () => {
+		render(
+			progressOf([
+				{ content: 'Render', status: 'pending', id: '2', description: 'why it matters' },
+				{ content: 'Plain', status: 'pending', id: '3' }
+			])
+		);
+		strip()?.click();
+		await tick();
+		const rows = document.querySelectorAll('.task');
+		const toggle = rows[0].querySelector('button[aria-expanded]') as HTMLButtonElement;
+		expect(toggle.getAttribute('aria-expanded')).toBe('false');
+		expect(text()).not.toContain('why it matters');
+		expect(rows[1].querySelector('button')).toBeNull();
+		toggle.click();
+		await tick();
+		expect(toggle.getAttribute('aria-expanded')).toBe('true');
+		expect(rows[0].textContent).toContain('why it matters');
+		expect(strip()?.getAttribute('aria-expanded')).toBe('true');
+	});
+
 	it('shows the in_progress activeForm on the collapsed strip', () => {
 		render(sample);
 		expect(document.querySelector('.now')?.textContent?.trim()).toBe('Rendering the panel');

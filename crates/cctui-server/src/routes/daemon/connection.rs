@@ -609,7 +609,9 @@ pub(super) fn session_scope(frame: &DaemonFrameUp) -> Option<&str> {
                 | AdapterEvent::GuardStepState { local_id, .. }
                 | AdapterEvent::TranscriptMark { local_id, .. }
                 | AdapterEvent::TurnEnd { local_id, .. }
-                | AdapterEvent::RateLimits { local_id, .. },
+                | AdapterEvent::RateLimits { local_id, .. }
+                | AdapterEvent::Todos { local_id, .. }
+                | AdapterEvent::Title { local_id, .. },
             ..
         } => Some(local_id),
         _ => None,
@@ -646,7 +648,9 @@ pub(super) fn event_local_id(event: &AdapterEvent) -> &str {
         | AdapterEvent::TranscriptMark { local_id, .. }
         | AdapterEvent::GuardStepState { local_id, .. }
         | AdapterEvent::TurnEnd { local_id, .. }
-        | AdapterEvent::RateLimits { local_id, .. } => local_id,
+        | AdapterEvent::RateLimits { local_id, .. }
+        | AdapterEvent::Todos { local_id, .. }
+        | AdapterEvent::Title { local_id, .. } => local_id,
         _ => "",
     }
 }
@@ -665,6 +669,8 @@ pub(super) const fn event_kind(event: &AdapterEvent) -> &'static str {
         AdapterEvent::TextDelta { .. } => "text_delta",
         AdapterEvent::GuardStepState { .. } => "guard_step_state",
         AdapterEvent::TurnEnd { .. } => "turn_end",
+        AdapterEvent::Todos { .. } => "todos",
+        AdapterEvent::Title { .. } => "title",
         _ => "other",
     }
 }

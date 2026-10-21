@@ -17,7 +17,7 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
-use cctui_proto::adapter::{AdapterEvent, PermissionMode};
+use cctui_proto::adapter::{AdapterEvent, PermissionMode, TitleSource};
 use serde_json::{Value, json};
 
 /// Encode a working directory into the path-segment Claude uses under
@@ -602,12 +602,21 @@ fn session_fact(local_id: &str, kind: &str, line: &Value, out: &mut Vec<AdapterE
             permission_mode_from_claude(raw).map(|m| session_status(local_id, None, Some(m)))
         }
         "ai-title" | "custom-title" | "agent-name" => {
-            let keys: &[&str] = match kind {
-                "ai-title" => &["aiTitle", "title"],
-                "custom-title" => &["customTitle", "title"],
-                _ => &["agentName", "name"],
+            let (keys, source): (&[&str], _) = match kind {
+                "ai-title" => (&["aiTitle", "title"], Some(TitleSource::Agent)),
+                "custom-title" => (&["customTitle", "title"], Some(TitleSource::User)),
+                _ => (&["agentName", "name"], None),
             };
-            first_str(line, keys).map(|n| session_status(local_id, Some(n.to_owned()), None))
+            first_str(line, keys).map(|n| {
+                if let Some(source) = source {
+                    out.push(AdapterEvent::Title {
+                        local_id: local_id.to_owned(),
+                        title: n.to_owned(),
+                        source,
+                    });
+                }
+                session_status(local_id, Some(n.to_owned()), None)
+            })
         }
         _ => None,
     };
@@ -2469,8 +2478,6 @@ mod tests {
                 Some(PermissionMode::Ask),
             ),
             (json!({"type":"agent-name","agentName":"lane-a"}), Some("lane-a"), None),
-            (json!({"type":"ai-title","aiTitle":"fix the parser"}), Some("fix the parser"), None),
-            (json!({"type":"custom-title","customTitle":"my session"}), Some("my session"), None),
         ];
         for (line, want_name, want_mode) in &cases {
             let mut out = Vec::new();
@@ -2483,6 +2490,42 @@ mod tests {
                     assert_eq!(permission_mode, want_mode, "{line}");
                     assert!(tempo.is_none() && model.is_none(), "session facts set nothing else");
                 }
+                other => panic!("expected Status for {line}, got {other:?}"),
+            }
+        }
+    }
+
+    /// A title says who chose it, so the server can pin a user name; the
+    /// `Status` that follows keeps every other consumer's view unchanged.
+    #[test]
+    fn titles_carry_their_source_ahead_of_the_status() {
+        let cases = [
+            (
+                json!({"type":"ai-title","aiTitle":"fix the parser"}),
+                "fix the parser",
+                TitleSource::Agent,
+            ),
+            (
+                json!({"type":"custom-title","customTitle":"my session"}),
+                "my session",
+                TitleSource::User,
+            ),
+        ];
+        for (line, want, want_source) in &cases {
+            let mut out = Vec::new();
+            parse_line("s", line, &mut out);
+            assert!(message_payloads(&out).is_empty(), "no timeline bubble for {line}");
+            assert_eq!(out.len(), 2, "a Title then a Status for {line}");
+            match &out[0] {
+                AdapterEvent::Title { local_id, title, source } => {
+                    assert_eq!(local_id, "s");
+                    assert_eq!(title, want, "{line}");
+                    assert_eq!(source, want_source, "{line}");
+                }
+                other => panic!("expected Title for {line}, got {other:?}"),
+            }
+            match &out[1] {
+                AdapterEvent::Status { name, .. } => assert_eq!(name.as_deref(), Some(*want)),
                 other => panic!("expected Status for {line}, got {other:?}"),
             }
         }

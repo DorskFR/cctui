@@ -60,6 +60,8 @@ impl Driver {
         // Done after Status updates so the UI's identity fields land
         // before the message stream they describe.
         self.tail_transcripts().await;
+        self.scan_task_lists(crate::servercaps::server_supports(cctui_proto::capability::TODOS))
+            .await;
         for short in &plan.gone {
             self.reap_gone(short).await;
         }
@@ -517,6 +519,7 @@ impl Driver {
 
     async fn reap_gone(&mut self, short: &str) {
         self.last_status.remove(short);
+        self.task_watches.remove(short);
         if let Ok(mut m) = self.announced_meta.lock() {
             m.remove(short);
         }

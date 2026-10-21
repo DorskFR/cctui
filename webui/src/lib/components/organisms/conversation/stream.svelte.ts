@@ -7,6 +7,7 @@
 // than read off the ws singleton from a $derived — a $derived reading the
 // singleton's keyed state does NOT re-run on mutation (see ws.svelte.ts header).
 import type { AgentEvent } from '@bindings/AgentEvent';
+import type { TodoEntry } from '@bindings/TodoEntry';
 import type { UserAction } from '@bindings/UserAction';
 import type { UserActionStatus } from '@bindings/UserActionStatus';
 import {
@@ -23,6 +24,7 @@ import { eventKeys, parseAsk, parseTodos, todoProgress as deriveTodoProgress } f
 import { resultAnswers } from './lines';
 import { lastProseLine, toolInvocationSummary, type ActivityTool } from './activity';
 import type { AskQuestion, TodoItem, TodoProgress } from './types';
+import { drawerTodos, isTaskEvent } from './taskList';
 import { endpoints } from '$lib/queries';
 import { newTurnId } from '$lib/turnid';
 
@@ -65,7 +67,12 @@ export interface StreamOpts {
 	invalidateSessions: () => void;
 	// Fold a server-sent live event into the `["conversation", sid]` cache.
 	mergeIntoCache: (sid: string, ev: AgentEvent) => void;
+	// The session's stored task list (reactive getter).
+	sessionTodos?: () => readonly TodoEntry[] | undefined;
 }
+
+// Lets the daemon's settled snapshot of the task folder land before the refetch.
+const TASK_REFRESH_MS = 3000;
 
 export class ConversationStream {
 	#opts: StreamOpts;
@@ -88,6 +95,10 @@ export class ConversationStream {
 	// Folded last-write-wins: the list mutates many times per turn and only its
 	// latest state is meaningful.
 	todos = $state<TodoItem[] | null>(null);
+	// A live `TodoWrite` / `update_plan` outranks a stored task list until the
+	// next task step.
+	#liveTodos = $state(false);
+	#taskRefresh: ReturnType<typeof setTimeout> | null = null;
 	// What the agent is waiting on from the user. Server-authoritative: seeded by
 	// an HTTP read on subscribe, then replaced whole by every ws push.
 	userActions = $state<UserAction[]>([]);
@@ -131,6 +142,7 @@ export class ConversationStream {
 		this.answering = false;
 		this.working = false;
 		this.todos = null;
+		this.#liveTodos = false;
 		this.#resetActivity();
 		ws.subscribe(sid);
 		const offStream = ws.onStream(sid, (ev) => {
@@ -169,7 +181,13 @@ export class ConversationStream {
 			// substantive agent/tool/user event means work is in progress.
 			if (ev.type === 'tool_call' && (ev.tool === 'TodoWrite' || ev.tool === 'update_plan')) {
 				const t = parseTodos(ev.input);
-				if (t) this.todos = t;
+				if (t) {
+					this.todos = t;
+					this.#liveTodos = true;
+				}
+			} else if (isTaskEvent(ev)) {
+				this.#liveTodos = false;
+				this.#refreshTasks();
 			}
 			this.#trackActivity(ev);
 			if (ev.type === 'turn_end') this.working = false;
@@ -225,6 +243,8 @@ export class ConversationStream {
 			if (snap.failed.size) this.answering = false;
 		});
 		return () => {
+			if (this.#taskRefresh) clearTimeout(this.#taskRefresh);
+			this.#taskRefresh = null;
 			offStream();
 			offPerms();
 			offAsk();
@@ -315,7 +335,15 @@ export class ConversationStream {
 	// Null when the session never produced a task list — callers render nothing
 	// rather than a zero state.
 	get todoProgress(): TodoProgress | null {
-		return deriveTodoProgress(this.todos);
+		return deriveTodoProgress(drawerTodos(this.#opts.sessionTodos?.(), this.todos, this.#liveTodos));
+	}
+
+	#refreshTasks() {
+		if (this.#taskRefresh) clearTimeout(this.#taskRefresh);
+		this.#taskRefresh = setTimeout(() => {
+			this.#taskRefresh = null;
+			this.#opts.invalidateSessions();
+		}, TASK_REFRESH_MS);
 	}
 
 	// Parsed structured questions for the live prompt, or null → text fallback.

@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { Disclosure } from '@dorsk/tsumikit';
-	import type { TodoProgress, TodoStatus } from './types';
+	import { Disclosure, Text } from '@dorsk/tsumikit';
+	import type { TodoItem, TodoProgress, TodoStatus } from './types';
 	import { taskPanelOpen, setTaskPanelOpen } from './taskPanel';
 	import { m } from '$lib/paraglide/messages';
 
@@ -10,6 +10,17 @@
 	// that session's own persisted state instead of carrying the previous one's.
 	let open = $derived(taskPanelOpen(sessionId));
 
+	let expanded = $state<ReadonlySet<string>>(new Set());
+	const setExpanded = (key: string, v: boolean) => {
+		const next = new Set(expanded);
+		if (v) next.add(key);
+		else next.delete(key);
+		expanded = next;
+	};
+
+	const ROW_DISCLOSURE =
+		'flex:1;min-width:0;--disclosure-pad:0;--disclosure-panel-pad:0 0 var(--sp-1) calc(1em + var(--sp-2))';
+
 	const GLYPH: Record<TodoStatus, string> = { completed: '✔', in_progress: '▸', pending: '·' };
 	const label: Record<TodoStatus, () => string> = {
 		completed: m.tasks_status_completed,
@@ -17,6 +28,19 @@
 		pending: m.tasks_status_pending
 	};
 </script>
+
+{#snippet row(t: TodoItem)}
+	<span class="glyph" aria-hidden="true">{GLYPH[t.status]}</span>
+	{#if t.id}<Text tone="faint" numeric nowrap>#{t.id}</Text>{/if}
+	<span class="subject" title={t.content}>{t.content}</span>
+	{#if t.owner}<Text tone="faint" nowrap truncate title={t.owner}>@{t.owner}</Text>{/if}
+	<span class="status">{label[t.status]()}</span>
+	{#if t.blockedBy?.length}
+		<span class="blocked" title={t.blockedBy.join(', ')}>
+			{m.tasks_blocked_by({ tasks: t.blockedBy.join(', ') })}
+		</span>
+	{/if}
+{/snippet}
 
 {#if progress}
 	<div class="tasks">
@@ -43,13 +67,24 @@
 				<ul class="list">
 					{#each progress.items as t, i (i)}
 						<li class="task" class:done={t.status === 'completed'} class:active={t.status === 'in_progress'}>
-							<span class="glyph" aria-hidden="true">{GLYPH[t.status]}</span>
-							<span class="subject" title={t.content}>{t.content}</span>
-							<span class="status">{label[t.status]()}</span>
-							{#if t.blockedBy?.length}
-								<span class="blocked" title={t.blockedBy.join(', ')}>
-									{m.tasks_blocked_by({ tasks: t.blockedBy.join(', ') })}
-								</span>
+							{#if t.description}
+								{@const key = t.id ?? String(i)}
+								<Disclosure
+									size="compact"
+									chevron="end"
+									style={ROW_DISCLOSURE}
+									open={expanded.has(key)}
+									onchange={(v) => setExpanded(key, v)}
+								>
+									{#snippet header()}
+										<span class="row">{@render row(t)}</span>
+									{/snippet}
+									{#if expanded.has(key)}
+										<Text as="p" tone="faint" size="xs" wrap="anywhere">{t.description}</Text>
+									{/if}
+								</Disclosure>
+							{:else}
+								{@render row(t)}
 							{/if}
 						</li>
 					{/each}
@@ -126,6 +161,14 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	.row {
+		flex: 1;
+		display: flex;
+		align-items: baseline;
+		gap: var(--sp-2);
+		min-width: 0;
+		text-align: start;
 	}
 	.status,
 	.blocked {

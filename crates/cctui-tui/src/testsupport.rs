@@ -73,6 +73,7 @@ pub fn todo(status: &str, content: &str, active_form: Option<&str>) -> cctui_pro
         content: content.to_owned(),
         status: status.to_owned(),
         active_form: active_form.map(str::to_owned),
+        ..Default::default()
     }
 }
 
