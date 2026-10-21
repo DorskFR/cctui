@@ -443,6 +443,24 @@ describe('onFrame, one fixture per ServerEvent variant', () => {
 		expect(c.guardStep(SID)?.step).toBe(3);
 	});
 
+	it('an HTTP guard seed never overwrites a frame that landed while it was in flight', async () => {
+		const { c, sock } = setup();
+		const step = (n: number) => ({ ...fixtures.guard_step_state.state, step: n });
+
+		await c.seedGuardStep(SID, Promise.resolve(step(1)));
+		expect(c.guardStep(SID)?.step).toBe(1);
+
+		let answer!: (s: ReturnType<typeof step>) => void;
+		const slow = c.seedGuardStep(SID, new Promise((r) => (answer = r)));
+		sock.deliver({ ...fixtures.guard_step_state, state: step(3) });
+		answer(step(2));
+		await slow;
+		expect(c.guardStep(SID)?.step).toBe(3);
+
+		await c.seedGuardStep(SID, Promise.resolve(null));
+		expect(c.guardStep(SID)?.step).toBe(3);
+	});
+
 	it('text_delta reaches the per-session listener, which toggles the watch on and off', () => {
 		const { c, sock } = setup();
 		const deltas: unknown[] = [];

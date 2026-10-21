@@ -106,12 +106,7 @@
 		const id = session.id;
 		guardStep = ws.guardStep(id);
 		const off = ws.onGuardStep(id, (ev) => (guardStep = ev.state));
-		void sessionActions.guardStep(id).then(
-			(res) => {
-				if (res) ws.setGuardStep(id, res);
-			},
-			() => {}
-		);
+		ws.seedGuardStep(id, sessionActions.guardStep(id)).catch(() => {});
 		return off;
 	});
 	async function requestGuardTransition(step: string) {
