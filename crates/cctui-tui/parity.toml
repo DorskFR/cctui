@@ -62,6 +62,12 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "get_accounts_usage_ledger"
+# GET /accounts/usage/ledger — One row per window reset per credential, with unused share and capacity-hours.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "post_accounts_by_id_limit_reset"
 # POST /accounts/{id}/limit-reset — Claim a usage-limit reset on a provider credential.
 tui = "waived"

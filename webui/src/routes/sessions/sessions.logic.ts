@@ -88,7 +88,7 @@ export function nextSearchPage(
 ): SearchPageParam | undefined {
 	const offset = pages.reduce((n, p) => n + p.sessions.length, 0);
 	if (last.next_cursor) return { offset, cursor: last.next_cursor };
-	if (!('next_cursor' in last) && last.sessions.length >= PAGE) return { offset, cursor: null };
+	if ((last as Partial<SessionListResponse>).next_cursor === undefined && last.sessions.length >= PAGE) return { offset, cursor: null };
 	return undefined;
 }
 
