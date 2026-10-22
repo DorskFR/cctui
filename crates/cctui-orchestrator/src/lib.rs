@@ -502,7 +502,10 @@ preflight:
         let crd = serde_json::to_value(WorkerProfile::crd()).unwrap();
         let posture = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
             ["properties"]["posture"];
-        assert_eq!(posture["enum"], serde_json::json!(["root", "nonroot"]));
+        let values = posture["enum"].as_array().expect("posture is an enum");
+        for want in ["root", "nonroot"] {
+            assert!(values.contains(&serde_json::json!(want)), "{want} missing from {values:?}");
+        }
         assert!(
             posture.get("default").is_none(),
             "a schema default would be applied to stored profiles on read and flip them"

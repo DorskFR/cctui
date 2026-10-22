@@ -658,7 +658,7 @@ mod tests {
         })
     }
 
-    fn golden_guard_proxy(security_context: serde_json::Value) -> serde_json::Value {
+    fn golden_guard_proxy(security_context: &serde_json::Value) -> serde_json::Value {
         let sa_token_dir = "/var/run/secrets/kubernetes.io/serviceaccount";
         serde_json::json!({
             "name": "guard-proxy",
@@ -785,7 +785,7 @@ mod tests {
                         },
                         "resources": golden_resources("10m", "16Mi", "100m", "64Mi")
                     },
-                    golden_guard_proxy(golden_root_guard_proxy_sc())
+                    golden_guard_proxy(&golden_root_guard_proxy_sc())
                 ],
                 "containers": [golden_worker()],
                 "securityContext": { "fsGroup": 1000 },
@@ -833,7 +833,7 @@ mod tests {
                         },
                         "resources": golden_resources("10m", "16Mi", "100m", "64Mi")
                     },
-                    golden_guard_proxy(golden_restricted(1337))
+                    golden_guard_proxy(&golden_restricted(1337))
                 ],
                 "containers": [golden_nonroot_worker()],
                 "securityContext": { "fsGroup": 1000 },

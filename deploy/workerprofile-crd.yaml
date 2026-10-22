@@ -2189,6 +2189,7 @@ spec:
                 enum:
                 - root
                 - nonroot
+                - null
                 nullable: true
                 type: string
               preflight:

@@ -2124,8 +2124,10 @@ mod tests {
     fn a_root_profile_cannot_smuggle_the_posture_annotation() {
         let s = spec("sess-posture-smuggle", json!({}));
         let mut profile = lean_profile();
-        profile.pod_annotations =
-            Some([(ANNOTATION_POSTURE.to_owned(), "nonroot".to_owned())].into_iter().collect());
+        profile.pod_annotations = Some(std::collections::BTreeMap::from([(
+            ANNOTATION_POSTURE.to_owned(),
+            "nonroot".to_owned(),
+        )]));
         let v = build("lean", &profile, &s);
         assert!(v.pointer("/spec/template/metadata/annotations/cctui.dev~1posture").is_none());
     }
