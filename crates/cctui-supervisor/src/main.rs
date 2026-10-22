@@ -74,7 +74,9 @@ fn run() -> anyhow::Result<()> {
         false
     } else {
         privdrop::drop_capabilities().context("dropping capabilities")?;
-        privdrop::switch_user(cli.user).context("switching user")?;
+        if !privdrop::switch_user(cli.user).context("switching user")? {
+            eprintln!("cctui-supervisor: already uid/gid {}, no user switch", cli.user);
+        }
         true
     };
 
