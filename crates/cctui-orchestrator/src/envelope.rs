@@ -11,14 +11,15 @@
 
 use crate::{
     ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_GPG_SIGNING, ANNOTATION_GUARD_IDENTITY,
-    ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, GuardSpec, LABEL_WORKER_PROFILE,
+    ANNOTATION_POSTURE, ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, GuardSpec,
+    LABEL_WORKER_PROFILE, Posture,
 };
 use k8s_openapi::api::core::v1::{
     AppArmorProfile, Capabilities, ConfigMapEnvSource, ConfigMapProjection, ConfigMapVolumeSource,
     Container, DownwardAPIProjection, DownwardAPIVolumeFile, EmptyDirVolumeSource, EnvFromSource,
     EnvVar, HTTPGetAction, KeyToPath, ObjectFieldSelector, Pod, PodSecurityContext, Probe,
-    ProjectedVolumeSource, ResourceRequirements, SecurityContext, ServiceAccountTokenProjection,
-    Volume, VolumeMount, VolumeProjection,
+    ProjectedVolumeSource, ResourceRequirements, SeccompProfile, SecurityContext,
+    ServiceAccountTokenProjection, Volume, VolumeMount, VolumeProjection,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
@@ -45,13 +46,17 @@ const SA_TOKEN_DIR: &str = "/var/run/secrets/kubernetes.io/serviceaccount";
 const SA_TOKEN_EXPIRATION_SECONDS: i64 = 3600;
 const CONFIGMAP_KUBE_ROOT_CA: &str = "kube-root-ca.crt";
 
-/// Volume names the envelope mounts into the worker container, always. Mirrors
-/// [`sandbox_worker`]; [`VOL_GPG_AGENT`] is added on top only under `gpgSigning`.
+/// Volume names the envelope mounts into the worker container under `root`.
+/// Mirrors [`sandbox_worker`]; see [`worker_envelope_mounts`].
 pub const WORKER_ENVELOPE_MOUNTS: [&str; 5] =
     [VOL_HOME, VOL_OVERLAY, VOL_GUARD_STATE, VOL_PROXY_POLICY, VOL_GUARD_PROXY_CA];
 
+/// Points the entrypoint at an overlayfs warm cache, which needs `SYS_ADMIN`.
+pub const WARM_REPO_DIR_ENV: &str = "WARM_REPO_DIR";
+
 pub const PROXY_UID: i64 = 1337;
-const FS_GROUP: i64 = 1000;
+pub const WORKER_UID: i64 = 1000;
+const FS_GROUP: i64 = WORKER_UID;
 
 pub const WORKER_ADDED_CAPS: [&str; 9] = [
     "SYS_ADMIN",
@@ -72,6 +77,76 @@ pub fn default_sidecar_image() -> String {
     format!("ghcr.io/dorskfr/cctui-worker:{}", env!("CARGO_PKG_VERSION"))
 }
 
+#[must_use]
+pub const fn has_overlay(posture: Posture) -> bool {
+    matches!(posture, Posture::Root)
+}
+
+/// Volume names the envelope mounts into the worker container;
+/// [`VOL_GPG_AGENT`] is added on top only under `gpgSigning`.
+#[must_use]
+pub fn worker_envelope_mounts(posture: Posture) -> Vec<&'static str> {
+    WORKER_ENVELOPE_MOUNTS
+        .into_iter()
+        .filter(|m| has_overlay(posture) || *m != VOL_OVERLAY)
+        .collect()
+}
+
+#[must_use]
+pub const fn worker_added_caps(posture: Posture) -> &'static [&'static str] {
+    match posture {
+        Posture::Root => &WORKER_ADDED_CAPS,
+        Posture::Nonroot => &[],
+    }
+}
+
+fn restricted(uid: i64) -> SecurityContext {
+    SecurityContext {
+        run_as_user: Some(uid),
+        run_as_group: Some(uid),
+        run_as_non_root: Some(true),
+        allow_privilege_escalation: Some(false),
+        capabilities: Some(Capabilities { drop: Some(vec!["ALL".to_owned()]), add: None }),
+        seccomp_profile: Some(SeccompProfile {
+            type_: "RuntimeDefault".to_owned(),
+            localhost_profile: None,
+        }),
+        ..SecurityContext::default()
+    }
+}
+
+#[must_use]
+pub fn worker_security_context(posture: Posture) -> SecurityContext {
+    match posture {
+        Posture::Root => SecurityContext {
+            run_as_user: Some(0),
+            app_armor_profile: Some(AppArmorProfile {
+                type_: "Unconfined".to_owned(),
+                localhost_profile: None,
+            }),
+            capabilities: Some(Capabilities {
+                drop: Some(vec!["ALL".to_owned()]),
+                add: Some(WORKER_ADDED_CAPS.iter().map(|s| (*s).to_owned()).collect()),
+            }),
+            ..SecurityContext::default()
+        },
+        Posture::Nonroot => restricted(WORKER_UID),
+    }
+}
+
+fn guard_proxy_security_context(posture: Posture) -> SecurityContext {
+    match posture {
+        Posture::Root => SecurityContext {
+            run_as_user: Some(PROXY_UID),
+            run_as_group: Some(PROXY_UID),
+            allow_privilege_escalation: Some(false),
+            capabilities: Some(Capabilities { drop: Some(vec!["ALL".to_owned()]), add: None }),
+            ..SecurityContext::default()
+        },
+        Posture::Nonroot => restricted(PROXY_UID),
+    }
+}
+
 /// Everything the envelope construction needs, resolved from the pod's
 /// admission-time label/annotations.
 pub struct EnvelopeConfig {
@@ -80,13 +155,21 @@ pub struct EnvelopeConfig {
     pub guard_identity: Option<String>,
     pub gpg: bool,
     pub guard: Option<GuardSpec>,
+    pub posture: Posture,
 }
 
 impl EnvelopeConfig {
-    fn from_pod(pod: &Pod, sidecar_image: &str, guard: Option<&GuardSpec>) -> Self {
+    fn from_pod(pod: &Pod, sidecar_image: &str, guard: Option<&GuardSpec>) -> anyhow::Result<Self> {
         let annotations = pod.metadata.annotations.as_ref();
         let get = |key: &str| annotations.and_then(|a| a.get(key)).map(String::as_str);
-        Self {
+        let posture = Posture::from_annotation(get(ANNOTATION_POSTURE)).ok_or_else(|| {
+            anyhow::anyhow!(
+                "pod annotation `{ANNOTATION_POSTURE}: {}` names no posture (want `nonroot`, or \
+                 no annotation for `root`)",
+                get(ANNOTATION_POSTURE).unwrap_or_default()
+            )
+        })?;
+        Ok(Self {
             sidecar_image: sidecar_image.to_owned(),
             worker_container: get(ANNOTATION_WORKER_CONTAINER)
                 .unwrap_or(DEFAULT_WORKER_CONTAINER)
@@ -94,7 +177,8 @@ impl EnvelopeConfig {
             guard_identity: get(ANNOTATION_GUARD_IDENTITY).map(ToOwned::to_owned),
             gpg: get(ANNOTATION_GPG_SIGNING) == Some("true"),
             guard: guard.cloned(),
-        }
+            posture,
+        })
     }
 }
 
@@ -135,8 +219,9 @@ pub fn profile_name(pod: &Pod) -> Option<&str> {
 
 /// Evaluate `pod` for envelope injection.
 ///
-/// `guard` is the source profile's `spec.guard`. A serialization failure is an `Err` so the admission webhook
-/// fails closed (deny) instead of admitting an unpatched, unsandboxed worker.
+/// `guard` is the source profile's `spec.guard`. A serialization failure or an
+/// unknown posture annotation is an `Err` so the admission webhook fails closed
+/// (deny) instead of admitting an unpatched, unsandboxed worker.
 pub fn mutate_pod(
     pod: &Pod,
     sidecar_image: &str,
@@ -148,7 +233,7 @@ pub fn mutate_pod(
     if is_injected(pod) {
         return Ok(MutationOutcome::AlreadyInjected);
     }
-    let cfg = EnvelopeConfig::from_pod(pod, sidecar_image, guard);
+    let cfg = EnvelopeConfig::from_pod(pod, sidecar_image, guard)?;
     let injected = inject(pod, &cfg);
     let before =
         serde_json::to_value(pod).map_err(|e| anyhow::anyhow!("serializing admitted pod: {e}"))?;
@@ -198,20 +283,12 @@ pub fn inject(pod: &Pod, cfg: &EnvelopeConfig) -> Pod {
 }
 
 fn sandbox_worker(worker: &mut Container, cfg: &EnvelopeConfig) {
-    worker.security_context = Some(SecurityContext {
-        run_as_user: Some(0),
-        app_armor_profile: Some(AppArmorProfile {
-            type_: "Unconfined".to_owned(),
-            localhost_profile: None,
-        }),
-        capabilities: Some(Capabilities {
-            drop: Some(vec!["ALL".to_owned()]),
-            add: Some(WORKER_ADDED_CAPS.iter().map(|s| (*s).to_owned()).collect()),
-        }),
-        ..SecurityContext::default()
-    });
+    worker.security_context = Some(worker_security_context(cfg.posture));
 
     let env = worker.env.get_or_insert_with(Vec::new);
+    if !has_overlay(cfg.posture) {
+        env.retain(|e| e.name != WARM_REPO_DIR_ENV);
+    }
     upsert_env(env, "WORKER_NET_MODE", "transparent-external");
     upsert_env(env, "NODE_EXTRA_CA_CERTS", "/var/run/guard-proxy-ca/ca.pem");
 
@@ -226,6 +303,7 @@ fn sandbox_worker(worker: &mut Container, cfg: &EnvelopeConfig) {
     if cfg.gpg {
         wanted.push(mount(VOL_GPG_AGENT, "/var/run/gpg-agent", false));
     }
+    wanted.retain(|m| has_overlay(cfg.posture) || m.name != VOL_OVERLAY);
     for m in wanted {
         if !mounts.iter().any(|x| x.name == m.name) {
             mounts.push(m);
@@ -300,13 +378,7 @@ fn guard_proxy_container(cfg: &EnvelopeConfig) -> Container {
         ),
         env: (!env.is_empty()).then_some(env),
         env_from: Some(env_from),
-        security_context: Some(SecurityContext {
-            run_as_user: Some(PROXY_UID),
-            run_as_group: Some(PROXY_UID),
-            allow_privilege_escalation: Some(false),
-            capabilities: Some(Capabilities { drop: Some(vec!["ALL".to_owned()]), add: None }),
-            ..SecurityContext::default()
-        }),
+        security_context: Some(guard_proxy_security_context(cfg.posture)),
         volume_mounts: Some(mounts),
         startup_probe: Some(Probe {
             http_get: Some(HTTPGetAction {
@@ -343,6 +415,7 @@ fn envelope_volumes(cfg: &EnvelopeConfig) -> Vec<Volume> {
     if cfg.gpg {
         volumes.push(empty_dir(VOL_GPG_AGENT));
     }
+    volumes.retain(|v| has_overlay(cfg.posture) || v.name != VOL_OVERLAY);
     volumes
 }
 
@@ -565,7 +638,27 @@ mod tests {
         })
     }
 
-    fn golden_guard_proxy() -> serde_json::Value {
+    fn golden_root_guard_proxy_sc() -> serde_json::Value {
+        serde_json::json!({
+            "runAsUser": 1337,
+            "runAsGroup": 1337,
+            "allowPrivilegeEscalation": false,
+            "capabilities": { "drop": ["ALL"] }
+        })
+    }
+
+    fn golden_restricted(uid: i64) -> serde_json::Value {
+        serde_json::json!({
+            "runAsUser": uid,
+            "runAsGroup": uid,
+            "runAsNonRoot": true,
+            "allowPrivilegeEscalation": false,
+            "capabilities": { "drop": ["ALL"] },
+            "seccompProfile": { "type": "RuntimeDefault" }
+        })
+    }
+
+    fn golden_guard_proxy(security_context: &serde_json::Value) -> serde_json::Value {
         let sa_token_dir = "/var/run/secrets/kubernetes.io/serviceaccount";
         serde_json::json!({
             "name": "guard-proxy",
@@ -579,12 +672,7 @@ mod tests {
                 "--policy=/var/run/guard-proxy/policy.json"
             ],
             "envFrom": [{ "configMapRef": { "name": "guard-proxy-env", "optional": false } }],
-            "securityContext": {
-                "runAsUser": 1337,
-                "runAsGroup": 1337,
-                "allowPrivilegeEscalation": false,
-                "capabilities": { "drop": ["ALL"] }
-            },
+            "securityContext": security_context,
             "volumeMounts": [
                 golden_mount("proxy-policy", "/var/run/guard-proxy"),
                 golden_ro_mount("guard-proxy-inject", "/etc/guard-proxy"),
@@ -616,6 +704,24 @@ mod tests {
             "volumeMounts": [
                 golden_mount("home", "/home/worker"),
                 golden_mount("overlay", "/overlay"),
+                golden_mount("guard-state", "/var/run/workflow-guard"),
+                golden_mount("proxy-policy", "/var/run/guard-proxy"),
+                golden_mount("guard-proxy-ca", "/var/run/guard-proxy-ca")
+            ]
+        })
+    }
+
+    fn golden_nonroot_worker() -> serde_json::Value {
+        serde_json::json!({
+            "name": "worker",
+            "image": "registry.example.com/worker:latest",
+            "securityContext": golden_restricted(1000),
+            "env": [
+                { "name": "WORKER_NET_MODE", "value": "transparent-external" },
+                { "name": "NODE_EXTRA_CA_CERTS", "value": "/var/run/guard-proxy-ca/ca.pem" }
+            ],
+            "volumeMounts": [
+                golden_mount("home", "/home/worker"),
                 golden_mount("guard-state", "/var/run/workflow-guard"),
                 golden_mount("proxy-policy", "/var/run/guard-proxy"),
                 golden_mount("guard-proxy-ca", "/var/run/guard-proxy-ca")
@@ -679,13 +785,167 @@ mod tests {
                         },
                         "resources": golden_resources("10m", "16Mi", "100m", "64Mi")
                     },
-                    golden_guard_proxy()
+                    golden_guard_proxy(&golden_root_guard_proxy_sc())
                 ],
                 "containers": [golden_worker()],
                 "securityContext": { "fsGroup": 1000 },
                 "volumes": golden_volumes()
             }
         })
+    }
+
+    fn with_annotation(mut pod: Pod, key: &str, value: &str) -> Pod {
+        pod.metadata
+            .annotations
+            .get_or_insert_with(BTreeMap::new)
+            .insert(key.to_owned(), value.to_owned());
+        pod
+    }
+
+    fn nonroot_pod() -> Pod {
+        with_annotation(lean_pod(), ANNOTATION_POSTURE, "nonroot")
+    }
+
+    /// `lean_pod` under `posture: nonroot`: the pod the restricted-worker canary ran.
+    fn nonroot_pod_injected_golden() -> serde_json::Value {
+        let mut volumes = golden_volumes();
+        volumes.as_array_mut().unwrap().retain(|v| v["name"] != "overlay");
+        serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "worker-lean",
+                "labels": { LABEL_WORKER_PROFILE: "lean" },
+                "annotations": {
+                    ANNOTATION_POSTURE: "nonroot",
+                    ANNOTATION_ENVELOPE_INJECTED: "true"
+                }
+            },
+            "spec": {
+                "initContainers": [
+                    {
+                        "name": "net-init",
+                        "image": IMG,
+                        "command": ["cctui-worker-net-init"],
+                        "securityContext": {
+                            "runAsUser": 0,
+                            "capabilities": { "drop": ["ALL"], "add": ["NET_ADMIN"] }
+                        },
+                        "resources": golden_resources("10m", "16Mi", "100m", "64Mi")
+                    },
+                    golden_guard_proxy(&golden_restricted(1337))
+                ],
+                "containers": [golden_nonroot_worker()],
+                "securityContext": { "fsGroup": 1000 },
+                "volumes": volumes
+            }
+        })
+    }
+
+    #[test]
+    fn nonroot_posture_renders_the_restricted_golden_pod() {
+        let out = serde_json::to_value(apply(&nonroot_pod())).unwrap();
+        assert_eq!(out, nonroot_pod_injected_golden());
+    }
+
+    #[test]
+    fn root_posture_annotation_renders_like_no_annotation() {
+        let pod = with_annotation(lean_pod(), ANNOTATION_POSTURE, "root");
+        let mut out = serde_json::to_value(apply(&pod)).unwrap();
+        out["metadata"]["annotations"].as_object_mut().unwrap().remove(ANNOTATION_POSTURE);
+        assert_eq!(out, lean_pod_injected_golden());
+    }
+
+    #[test]
+    fn nonroot_posture_drops_warm_repo_dir_and_keeps_other_env() {
+        let env = vec![
+            EnvVar {
+                name: "LOG_LEVEL".to_owned(),
+                value: Some("info".to_owned()),
+                value_from: None,
+            },
+            EnvVar {
+                name: WARM_REPO_DIR_ENV.to_owned(),
+                value: Some("/warm".to_owned()),
+                value_from: None,
+            },
+        ];
+        let mut pod = nonroot_pod();
+        pod.spec.as_mut().unwrap().containers[0].env = Some(env.clone());
+        let out = apply(&pod);
+        let names: Vec<&str> =
+            worker(&out, "worker").env.as_ref().unwrap().iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["LOG_LEVEL", "WORKER_NET_MODE", "NODE_EXTRA_CA_CERTS"]);
+
+        let mut root = lean_pod();
+        root.spec.as_mut().unwrap().containers[0].env = Some(env);
+        let out = apply(&root);
+        let root_env = worker(&out, "worker").env.as_ref().unwrap();
+        assert!(
+            root_env.iter().any(|e| e.name == WARM_REPO_DIR_ENV),
+            "root keeps the overlay warm cache"
+        );
+    }
+
+    #[test]
+    fn nonroot_posture_with_gpg_keeps_the_gpg_agent_and_no_overlay() {
+        let pod = with_annotation(nonroot_pod(), ANNOTATION_GPG_SIGNING, "true");
+        let out = apply(&pod);
+        let spec = out.spec.as_ref().unwrap();
+        let vols: Vec<&str> =
+            spec.volumes.as_ref().unwrap().iter().map(|v| v.name.as_str()).collect();
+        assert!(vols.contains(&"gpg-agent"));
+        assert!(!vols.contains(&"overlay"));
+        let mounts: Vec<&str> = worker(&out, "worker")
+            .volume_mounts
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect();
+        assert_eq!(mounts, ["home", "guard-state", "proxy-policy", "guard-proxy-ca", "gpg-agent"]);
+    }
+
+    #[test]
+    fn nonroot_posture_keeps_a_preset_fs_group_and_passthrough_containers() {
+        let mut pod = with_annotation(full_stack_pod(), ANNOTATION_POSTURE, "nonroot");
+        pod.spec.as_mut().unwrap().security_context =
+            Some(PodSecurityContext { fs_group: Some(2000), ..PodSecurityContext::default() });
+        let out = apply(&pod);
+        assert_eq!(
+            out.spec.as_ref().unwrap().security_context.as_ref().unwrap().fs_group,
+            Some(2000)
+        );
+        assert_eq!(
+            serde_json::to_value(worker(&out, "db")).unwrap(),
+            serde_json::to_value(worker(&pod, "db")).unwrap()
+        );
+        assert_eq!(
+            worker(&out, "worker").security_context,
+            Some(worker_security_context(Posture::Nonroot))
+        );
+        let net_init = &out.spec.as_ref().unwrap().init_containers.as_ref().unwrap()[0];
+        assert_eq!(net_init.name, NET_INIT_CONTAINER);
+        let caps = net_init.security_context.as_ref().unwrap().capabilities.as_ref().unwrap();
+        assert_eq!(caps.add.as_deref(), Some(&["NET_ADMIN".to_owned()][..]));
+    }
+
+    #[test]
+    fn unknown_posture_annotation_fails_closed() {
+        let pod = with_annotation(lean_pod(), ANNOTATION_POSTURE, "restricted");
+        let err = mutate_pod(&pod, IMG, None).unwrap_err().to_string();
+        assert!(err.contains("restricted") && err.contains(ANNOTATION_POSTURE), "{err}");
+    }
+
+    #[test]
+    fn envelope_mounts_and_caps_per_posture() {
+        assert_eq!(worker_envelope_mounts(Posture::Root), WORKER_ENVELOPE_MOUNTS);
+        assert_eq!(
+            worker_envelope_mounts(Posture::Nonroot),
+            [VOL_HOME, VOL_GUARD_STATE, VOL_PROXY_POLICY, VOL_GUARD_PROXY_CA]
+        );
+        assert_eq!(worker_added_caps(Posture::Root), WORKER_ADDED_CAPS);
+        assert!(worker_added_caps(Posture::Nonroot).is_empty());
     }
 
     #[test]

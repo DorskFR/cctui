@@ -194,7 +194,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
-    use cctui_orchestrator::LABEL_WORKER_PROFILE;
+    use cctui_orchestrator::{ANNOTATION_POSTURE, LABEL_WORKER_PROFILE};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -348,6 +348,44 @@ mod tests {
         assert_eq!(response["allowed"], false);
         let message = response["status"]["message"].as_str().unwrap_or_default();
         assert!(message.contains("apiserver unreachable"), "{message}");
+    }
+
+    fn review_with_posture(posture: &str) -> serde_json::Value {
+        let mut review = review_json(serde_json::json!({ LABEL_WORKER_PROFILE: "lean" }));
+        review["request"]["object"]["metadata"]["annotations"] =
+            serde_json::json!({ ANNOTATION_POSTURE: posture });
+        review
+    }
+
+    #[tokio::test]
+    async fn nonroot_posture_pod_gets_the_restricted_envelope() {
+        let out = post_review(review_with_posture("nonroot")).await;
+        assert_eq!(out["response"]["allowed"], true);
+        let text = decode_patch(&out["response"]);
+        for want in ["runAsNonRoot\":true", "RuntimeDefault", "runAsGroup\":1000", "NET_ADMIN"] {
+            assert!(text.contains(want), "missing {want}: {text}");
+        }
+        for absent in ["SYS_ADMIN", "Unconfined", "\"overlay\"", "/overlay"] {
+            assert!(!text.contains(absent), "unexpected {absent}: {text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn root_posture_pod_keeps_the_root_envelope() {
+        let text = decode_patch(&post_review(review_with_posture("root")).await["response"]);
+        for want in ["SYS_ADMIN", "Unconfined", "\"overlay\""] {
+            assert!(text.contains(want), "missing {want}: {text}");
+        }
+        assert!(!text.contains("runAsNonRoot"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn unknown_posture_annotation_denies_the_pod() {
+        let out = post_review(review_with_posture("restricted")).await;
+        let response = &out["response"];
+        assert_eq!(response["allowed"], false);
+        let message = response["status"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("names no posture"), "{message}");
     }
 
     #[tokio::test]
