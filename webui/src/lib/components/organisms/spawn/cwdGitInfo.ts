@@ -1,4 +1,5 @@
 import type { GitInfo } from '@bindings/GitInfo';
+import type { MachineLiveness } from '@bindings/MachineLiveness';
 
 export const GIT_INFO_DEBOUNCE_MS = 300;
 
@@ -17,8 +18,9 @@ export function gitBadge(info: GitInfo | null | undefined): GitBadge | null {
 }
 
 // Debounced (machine, path) lookup; only the latest request may deliver.
-// Empty machine or path, or a machine known offline, resolves to null without
-// asking: the daemon cannot answer, and the 503 would only log console noise.
+// Empty machine or path, unknown liveness (machine list not loaded yet), or a
+// machine known offline resolves to null without asking: the daemon may not
+// answer, and the 503 would only log console noise.
 export function makeGitInfoWatcher(
 	lookup: (machineId: string, path: string) => Promise<GitInfo>,
 	onResult: (info: GitInfo | null) => void,
@@ -31,9 +33,9 @@ export function makeGitInfoWatcher(
 		if (timer !== undefined) clearTimeout(timer);
 		timer = undefined;
 	}
-	function update(machineId: string, path: string, offline = false) {
+	function update(machineId: string, path: string, liveness: MachineLiveness | undefined) {
 		cancel();
-		if (!machineId || !path.trim() || offline) {
+		if (!machineId || !path.trim() || !liveness || liveness === 'offline') {
 			onResult(null);
 			return;
 		}

@@ -22,6 +22,7 @@
 	import { m } from '$lib/paraglide/messages';
 	import { settings } from '$lib/settings.svelte';
 	import { sessionHref } from '$lib/sessionFailureToast';
+	import { renderImageMarkers } from '$lib/markdown';
 
 	let {
 		ln,
@@ -80,6 +81,8 @@
 		speaking?: boolean;
 	} = $props();
 
+	const IMAGE_RESULT_TOOL = /(^|[_.])Cctui(Agent|Send)$/;
+
 	// An archived session has no composer to quote into.
 	const quotable = $derived(
 		!!onquote &&
@@ -108,6 +111,13 @@
 
 	const uploadRefs = $derived(
 		ln.uploads ? { ...ln.uploads, sessionId: ln.uploads.sessionId ?? sessionId } : null
+	);
+
+	// These results render as code, so the images they carry go below the block.
+	const resultImages = $derived(
+		ln.role === 'result' && sessionId && ln.text && IMAGE_RESULT_TOOL.test(ln.tool ?? '')
+			? renderImageMarkers(ln.text, sessionId)
+			: ''
 	);
 
 	const forkAnchor = $derived(
@@ -236,6 +246,9 @@
 			failed={!!ln.failed}
 			cancelled={ln.cancelled}
 		/>
+		{#if resultImages}
+			<div class="result-images">{@html resultImages}</div>
+		{/if}
 	{/if}
 	{#if pluginActions.length && onpluginaction}
 		<PluginMessageActions actions={pluginActions} onopen={onpluginaction} />
