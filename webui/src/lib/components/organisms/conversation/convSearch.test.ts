@@ -48,7 +48,7 @@ describe('ConversationSearch', () => {
 		search.openBar('role:user needle');
 		await search.run();
 
-		expect(fetchHits).toHaveBeenCalledWith('s1', 'role:user needle');
+		expect(fetchHits).toHaveBeenCalledWith('s1', 'role:user needle', expect.any(AbortSignal));
 		expect(search.count).toBe(3);
 		expect(search.tools).toEqual(['Bash']);
 		expect(search.terms).toEqual(['needle']);
@@ -115,6 +115,42 @@ describe('ConversationSearch', () => {
 		expect(search.count).toBe(4);
 	});
 
+	it('matches a live event on its rendered, folded text', async () => {
+		const { search } = ctl();
+		search.open = true;
+		search.rawQuery = '"to master...HEAD (three"';
+		await search.run();
+		search.appendLive(text('Change the gate to `master...HEAD` (three dots).', 40));
+		expect(search.count).toBe(4);
+
+		search.rawQuery = '"it\'s fine"';
+		await search.run();
+		search.appendLive(text('it\u2019s   fine', 41));
+		expect(search.count).toBe(4);
+	});
+
+	it('aborts the previous request when the query moves on', async () => {
+		const signals: AbortSignal[] = [];
+		const search = new ConversationSearch({
+			id: () => 's1',
+			fetchHits: (_id, _q, signal) => {
+				if (signal) signals.push(signal);
+				return new Promise(() => {});
+			},
+			ensureSeqVisible: async () => true,
+			debounceMs: 0
+		});
+		search.rawQuery = 'first';
+		void search.run();
+		search.rawQuery = 'second';
+		void search.run();
+		expect(signals).toHaveLength(2);
+		expect(signals[0].aborted).toBe(true);
+		expect(signals[1].aborted).toBe(false);
+		search.reset();
+		expect(signals[1].aborted, 'closing the bar cancels too').toBe(true);
+	});
+
 	it('leaves a fielded query to the server rather than guessing locally', async () => {
 		const { search, fetchHits } = ctl();
 		search.open = true;
@@ -137,7 +173,7 @@ describe('ConversationSearch', () => {
 			expect(fetchHits).not.toHaveBeenCalled();
 			await vi.advanceTimersByTimeAsync(1);
 			expect(fetchHits).toHaveBeenCalledTimes(1);
-			expect(fetchHits).toHaveBeenCalledWith('s1', 'needle');
+			expect(fetchHits).toHaveBeenCalledWith('s1', 'needle', expect.any(AbortSignal));
 		} finally {
 			vi.useRealTimers();
 		}

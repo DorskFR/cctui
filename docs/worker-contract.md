@@ -80,6 +80,9 @@ case, never a *no-`SESSION_ID`* case.
 | `CONTEXT_PACK_TOKEN_FROM` | — | Name of an env var holding the pack-clone token, when it differs from the task identity's (e.g. the task identity can't read the pack repo). Resolved before the `GITHUB_TOKEN` fallbacks; keeps a specific identity name out of the image. |
 | `GUARD_RULES_FILE` | `/opt/context/guard-rules.md` | Guard rules path; defaults into the fetched pack (the override/extend layer). |
 | `GUARD_RULES_BASE` | — | Operator base guard-rules parsed **before** `GUARD_RULES_FILE`. When a pack ships `guard-rules.md`, the entrypoint moves any prior `GUARD_RULES_FILE` here so the pack reuses/extends/overrides it. |
+| `CCTUI_PREFLIGHT_MODE` | `enforce` in `transparent-external`, else `warn` | Pre-flight isolation check mode: `enforce`, `warn` or `off` (see below). An unknown value enforces. Set by the kube dispatcher from `spec.preflight.mode`. |
+| `CCTUI_PREFLIGHT_DENY` | — | Comma-separated extra pre-flight deny targets: `host:port` or a CIDR. Set from `spec.preflight.deny`. |
+| `NODE_OPTIONS` | `--use-openssl-ca` appended | Every node reads the system trust store (see "Node trust store" below). A value already naming `--use-openssl-ca`, `--use-bundled-ca` or `--use-system-ca` is left as is. |
 | `CCTUI_DISPATCH_WORKDIR` | `/workspace/$TASK_REPO` if that dir exists (else `/workspace`) | Session working directory. Defaulted to the checked-out repo after `phase_workspace` so the CLI grants edit-in-place (a cwd inside the repo) instead of blocking background edits with "call `EnterWorktree` first"; an explicit operator/dispatcher value always wins. |
 
 ### Tenant plane (from `TASK_PAYLOAD_JSON`)
@@ -379,6 +382,67 @@ spec:
 Watch the sidecar logs for `private egress DENY`, list what's missing in
 `GUARD_PROXY_PRIVATE_ALLOW` (with `allowPrivateEgress: true`), and once the canary
 runs clean, make the change in `guard-proxy-env` and delete the canary's override.
+
+### Pre-flight isolation check
+
+Before the agent starts, the entrypoint runs short probes **as the agent uid**
+(`setpriv` to uid 1000, so the same iptables owner rules apply as for the
+agent). Every probe must fail. Then the agent's one sanctioned path must work:
+`GET ${CCTUI_URL}/health` through the guard proxy (any HTTP answer counts).
+Probes run in parallel with 300 ms timeouts; the public-DNS probes wait up to
+1 s, and the control up to 2 s.
+
+| Probe | Target | Failing reason |
+| --- | --- | --- |
+| Kubernetes API | `https://kubernetes.default.svc:443`, `$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT` | `k8s API reachable` |
+| Service-account token | any `/var/run/secrets/*/serviceaccount/*token*` readable | `service-account token readable` |
+| Public DNS | a UDP query to `1.1.1.1` and `8.8.8.8` (`dig` if present, else node's resolver) | `public DNS answers` |
+| Cloud metadata | `169.254.169.254`, `169.254.170.23`, `[fd00:ec2::254]` on port 80 | `cloud metadata reachable` |
+| Ambient cloud identity | any of `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_CONTAINER_CREDENTIALS_{FULL,RELATIVE}_URI`, `AWS_CONTAINER_AUTHORIZATION_TOKEN`, `AWS_WEB_IDENTITY_TOKEN_FILE`, `GOOGLE_APPLICATION_CREDENTIALS`, `AZURE_CLIENT_SECRET`, `AZURE_FEDERATED_TOKEN_FILE` set; `~/.aws/credentials` or gcloud ADC readable | `ambient cloud identity` |
+| Private ranges | `10.0.0.1`, `172.16.0.1`, `192.168.0.1`, `100.64.0.1`, `[fd00::1]` on port 80 | `private range reachable` |
+| Direct egress | `http://1.1.1.1:80` with the proxy env ignored | `direct public egress` |
+| Profile extras | each `spec.preflight.deny` entry; a CIDR probes its first host on port 80 | `profile deny target reachable` / `profile deny range <cidr> reachable` |
+
+A TCP probe sends an HTTP request (TLS for the API server) with the proxy env
+ignored. In the transparent modes every agent connect is redirected to the guard
+proxy, which closes a denied connection unanswered. So a target counts as
+reachable only when bytes come back (curl exit 0, 1 or 8). In `forward` mode
+nothing sits in the path, so an accepted connection is enough.
+
+**Verdict.** `enforce` fails the dispatch before the agent runs. The failure
+names every failing probe, e.g. `preflight: k8s API reachable
+(kubernetes.default.svc:443); public DNS answers (1.1.1.1)`. That string is the
+callback's `error`, the pod's termination message, and an entrypoint log line.
+The kube dispatcher reports the termination message as the failure, so it
+becomes the failed dispatch's detail with end reason `spawn_failed`. The worker
+dies before its session registers, so the detail lands on the dispatch record. `warn` logs `WARNING: preflight: …` and continues. `off` skips the
+check. The verdict is also recorded as `preflight` in the hardening report. An
+unset mode enforces only in `transparent-external`. Only there does net-init
+filter the agent's non-proxied egress (UDP, link-local, IPv6), so in the
+single-container modes the probes would fail by design.
+
+**Not probed:**
+- `aws sts get-caller-identity`. The guard proxy may legitimately sign STS calls
+  for the agent (ambient `sigv4`), so a success does not prove an ambient
+  identity. The checks above cover the credential sources themselves.
+- Whether the guard-proxy port refuses other pods. From inside the pod, a
+  connect to its own `:15001` lands on the same listener and proves nothing.
+  The sidecar binds `0.0.0.0:15001`, so peers must be blocked by a
+  NetworkPolicy ingress rule on the worker pods.
+- A sample address per private range proves the redirect covers that range, not
+  that nothing in it answers. List real in-cluster targets (databases, internal
+  APIs) in `spec.preflight.deny`. A target that accepts a connection and closes
+  it without replying is not detected in the transparent modes.
+
+### Node trust store
+
+Node verifies TLS against its own bundled root list, which can still hold roots
+the system store distrusts. `NODE_EXTRA_CA_CERTS` only adds roots. And the guard
+proxy passes allowed hosts through without re-verifying them. So the entrypoint
+appends `--use-openssl-ca` to `NODE_OPTIONS` after the extension hooks, and
+every node in the agent tree reads the system store (and `SSL_CERT_FILE`). This
+makes node exactly as strict as the image's system store, which must itself
+carry the distrust.
 
 ### Sidecar secret source
 
@@ -797,10 +861,11 @@ Two parts, surfaced for the daemon to attach as session metadata:
   `WORKER_HARDENING_FILE` (`/tmp/cctui-hardening.json`):
 
   ```json
-  { "net_mode": "transparent", "guard": "on", "supervisor_report": "/tmp/hardening.json" }
+  { "net_mode": "transparent", "guard": "on", "preflight": "passed", "supervisor_report": "/tmp/hardening.json" }
   ```
 
-  `net_mode` ∈ `transparent|transparent-external|forward`; `guard` ∈ `on|off`.
+  `net_mode` ∈ `transparent|transparent-external|forward`; `guard` ∈ `on|off`;
+  `preflight` ∈ `passed|warned|off`.
 
 - **Supervisor report** — `cctui-supervisor --report /tmp/hardening.json`:
 
@@ -847,11 +912,15 @@ input), then drops to uid 1000:
    usage statistics off and the API-key / `openai` auth type selected.
 7. **Callback** — install the `REPLY_URL` exit trap, then refuse an unknown
    `adapter` with a `failed` verdict (see Dispatch by adapter).
+   **Pre-flight** — run the isolation probes as the agent uid; fail the
+   dispatch on any reachable target under `enforce` (see Pre-flight isolation
+   check).
 8. **Guard** — start `cctui-guard` if the resolved prompt has step blocks
    (`# Step N` + `[allowed]`); always-allow the structural hosts.
 9. **Permissions** — seed Claude's bypass-permissions + trust-dialog gates for
    the dispatch workdir and register any context-pack `PreToolUse` hooks.
-10. **Hardening** — assemble `WORKER_HARDENING_JSON`.
+10. **Hardening** — append `--use-openssl-ca` to `NODE_OPTIONS` (see Node
+    trust store), assemble `WORKER_HARDENING_JSON`.
 11. **Drop + run** — `exec cctui-supervisor --ro … --rw … --user 1000
     --report /tmp/hardening.json -- cctui-daemon run --no-auto-update`.
 

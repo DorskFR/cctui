@@ -23,6 +23,7 @@ export interface RequestOpts {
 	/** Bearer for a non-cctui backend: no cctui cookie is sent, and its 401 does
 	 *  not end the cctui session. */
 	token?: string;
+	signal?: AbortSignal;
 }
 
 function buildUrl(base: string, path: string, query?: RequestOpts['query']): string {
@@ -87,7 +88,7 @@ export function errMessage(e: unknown): string {
 }
 
 export async function request<T>(base: string, path: string, opts: RequestOpts = {}): Promise<T> {
-	const { method = 'GET', body, query, keepalive, token } = opts;
+	const { method = 'GET', body, query, keepalive, token, signal } = opts;
 	const headers = new Headers();
 	if (body !== undefined) headers.set('Content-Type', 'application/json');
 	if (token) headers.set('Authorization', `Bearer ${token}`);
@@ -102,6 +103,7 @@ export async function request<T>(base: string, path: string, opts: RequestOpts =
 		headers,
 		credentials: token ? 'omit' : 'include',
 		keepalive,
+		signal,
 		body: body !== undefined ? JSON.stringify(body) : undefined
 	});
 
@@ -145,7 +147,8 @@ const postForm = <T>(path: string, form: FormData) => sendForm<T>('POST', path, 
 const putForm = <T>(path: string, form: FormData) => sendForm<T>('PUT', path, form);
 
 export const api = {
-	get: <T>(path: string, query?: RequestOpts['query']) => request<T>(apiBase(), path, { query }),
+	get: <T>(path: string, query?: RequestOpts['query'], signal?: AbortSignal) =>
+		request<T>(apiBase(), path, { query, signal }),
 	post: <T>(path: string, body?: unknown) => request<T>(apiBase(), path, { method: 'POST', body }),
 	postBlob,
 	postBlobJson,

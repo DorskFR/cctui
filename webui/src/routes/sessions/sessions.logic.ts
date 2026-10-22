@@ -4,6 +4,7 @@
 // component; only data-shape transforms and static config live here.
 import type { MachineLiveness } from '@bindings/MachineLiveness';
 import type { SessionListItem } from '@bindings/SessionListItem';
+import type { SessionListResponse } from '@bindings/SessionListResponse';
 import type { SessionParentStub } from '@bindings/SessionParentStub';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
 import { normalizeDir, spawnSlotDirty, type SpawnSlotPayload } from '$lib/drafts';
@@ -76,6 +77,20 @@ export const toggleHiddenSection = (hidden: Set<string>, key: string): Set<strin
 
 // Search/archive pager page size.
 export const PAGE = 50;
+
+// The server pages by `next_cursor`; `offset` only serves a server that sends none.
+export type SearchPageParam = { offset: number; cursor: string | null };
+export const FIRST_PAGE: SearchPageParam = { offset: 0, cursor: null };
+
+export function nextSearchPage(
+	last: SessionListResponse,
+	pages: SessionListResponse[]
+): SearchPageParam | undefined {
+	const offset = pages.reduce((n, p) => n + p.sessions.length, 0);
+	if (last.next_cursor) return { offset, cursor: last.next_cursor };
+	if ((last as Partial<SessionListResponse>).next_cursor === undefined && last.sessions.length >= PAGE) return { offset, cursor: null };
+	return undefined;
+}
 
 // ── Subagent grouping ───────────────────────────────────
 // A subagent group folded under a parent. Workflow-tool subagents

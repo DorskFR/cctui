@@ -60,10 +60,17 @@ pub(super) async fn ingest_run(
     }
     let mut events = Vec::with_capacity(run.len());
     let mut rows = Vec::with_capacity(run.len());
+    let mut searchable = Vec::with_capacity(run.len());
     for Ingest { adapter_id, event, mut row } in run.drain(..) {
         if row.event_type == "message" {
             crate::keepalive::observe_message(state, &row.local_id, &mut row.payload).await;
         }
+        searchable.push((
+            adapter_id.clone(),
+            row.local_id.clone(),
+            row.event_type,
+            row.payload.clone(),
+        ));
         events.push((adapter_id, event));
         rows.push(row);
     }
@@ -74,6 +81,22 @@ pub(super) async fn ingest_run(
             return;
         }
     };
+    crate::search_index::index_new(
+        &state.pool,
+        searchable
+            .into_iter()
+            .zip(seqs.iter().copied())
+            .filter_map(|((adapter_id, session_id, event_type, payload), seq)| {
+                seq.map(|event_id| crate::search_index::NewEvent {
+                    event_id,
+                    session_id,
+                    adapter_id,
+                    event_type,
+                    payload,
+                })
+            })
+            .collect(),
+    );
     for ((adapter_id, event), seq) in events.into_iter().zip(seqs) {
         if let Err(err) =
             handle_event(state, bumps, machine_id, user_id, &adapter_id, event, Stored::Done(seq))

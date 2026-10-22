@@ -18,7 +18,12 @@ describe('dispatch optimistic card', () => {
 	it('prepends the placeholder and keeps the cached parent stubs', async () => {
 		const parents = [{ id: 'orch', name: 'orch-x', working_dir: '/w', status: 'active' as const }];
 		const old = { id: 'old' } as SessionListItem;
-		qc.setQueryData<SessionListResponse>(qk.sessions(false), { sessions: [old], parents });
+		qc.setQueryData<SessionListResponse>(qk.sessions(false), {
+			sessions: [old],
+			parents,
+			next_cursor: null,
+			partial: false,
+		});
 		const body = { session_id: 'new-1', profile: 'p', prompt: 'go' } as unknown as DispatchRequest;
 
 		await useSessionActions().dispatch(body);

@@ -1,0 +1,90 @@
+{
+  "markdownText": [
+    {
+      "md": "Change the gate to `master...HEAD` (three dots).",
+      "out": "Change the gate to master...HEAD (three dots)."
+    },
+    {
+      "md": "a **bold** and *it* word",
+      "out": "a bold and it word"
+    },
+    {
+      "md": "see [the docs](https://x.dev/a?b=1) now",
+      "out": "see the docs now"
+    },
+    {
+      "md": "## Title here\nbody",
+      "out": "Title here body"
+    },
+    {
+      "md": "> quoted line",
+      "out": "quoted line"
+    },
+    {
+      "md": "- one\n- two",
+      "out": "one two"
+    },
+    {
+      "md": "* item",
+      "out": "item"
+    },
+    {
+      "md": "1 * 2 * 3",
+      "out": "1 2 3"
+    },
+    {
+      "md": "`a **b** c`",
+      "out": "a b c"
+    },
+    {
+      "md": "x ![shot](cctui-img://ab-12) y",
+      "out": "x y"
+    },
+    {
+      "md": "run:\n```bash\nls -la `pwd`\n```\ndone",
+      "out": "run: ls -la `pwd` done"
+    },
+    {
+      "md": "| a | **b** |\n|---|:-:|\n| c \\| d | e |\n",
+      "out": "a b c | d e"
+    },
+    {
+      "md": "It’s “quoted”",
+      "out": "It's \"quoted\""
+    },
+    {
+      "md": "first line\nsecond *line*\n\nthird",
+      "out": "first line second line third"
+    },
+    {
+      "md": "\u001b[31mred\u001b[0m text",
+      "out": "red text"
+    },
+    {
+      "md": "<system-reminder>\nhi & bye",
+      "out": "<system-reminder> hi & bye"
+    },
+    {
+      "md": "ＡＢＣ　１２３",
+      "out": "ABC 123"
+    }
+  ],
+  "fold": [
+    {
+      "s": "  a\n\n\tb c​d  ",
+      "out": "a b cd"
+    },
+    {
+      "s": "it’s “fine”",
+      "out": "it's \"fine\""
+    },
+    {
+      "s": "• x • y",
+      "out": "x y"
+    },
+    {
+      "s": "ﬁle",
+      "out": "file"
+    }
+  ]
+}

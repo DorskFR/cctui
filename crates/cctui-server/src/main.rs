@@ -53,6 +53,7 @@ mod rooms;
 mod routes;
 mod scheduled_messages;
 mod scheduled_spawns;
+mod search_index;
 mod session_emoji;
 mod session_plugins;
 mod settings_catalog;
@@ -353,6 +354,10 @@ async fn start_background_tasks(state: &AppState) {
     }
 
     routes::codex_models::warm_cache(state).await;
+
+    if let Some(config) = search_index::BackfillConfig::from_env() {
+        tokio::spawn(search_index::task(state.pool.clone(), config));
+    }
 
     // Off the startup path: every replica sweeps, and the scan is IO over a
     // shared volume.
@@ -1086,6 +1091,7 @@ mod tests {
             "GET /accounts/settings-catalog Bearer Authenticated",
             "GET /accounts/usage Bearer Human",
             "GET /accounts/usage/closes Bearer Human",
+            "GET /accounts/usage/ledger Bearer Human",
             "DELETE /accounts/{id} Bearer Human",
             "GET /accounts/{id} Bearer Human",
             "PATCH /accounts/{id} Bearer Human",

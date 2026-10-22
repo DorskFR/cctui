@@ -200,6 +200,14 @@ pub const ROUTES: &[Route] = &[
         response: None,
     },
     Route {
+        id: "get_accounts_usage_ledger",
+        method: Method::Get,
+        path: "/accounts/usage/ledger",
+        summary: "Every reset of every visible credential's windows, with what went unused.",
+        request: None,
+        response: Some("AccountUsageLedger"),
+    },
+    Route {
         id: "post_accounts_by_id_limit_reset",
         method: Method::Post,
         path: "/accounts/{id}/limit-reset",

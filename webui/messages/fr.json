@@ -1402,6 +1402,8 @@
 	"sessions_status_active": "active",
 	"sessions_status_archived": "archivée",
 	"sessions_status_dead": "morte",
+	"sessions_search_partial": "Recherche arrêtée tôt pour rester rapide : les conversations plus anciennes ne sont pas encore parcourues.",
+	"sessions_search_further": "Chercher dans les plus anciennes",
 	"sessions_status_draft": "brouillon",
 	"sessions_status_inactive": "inactive",
 	"sessions_status_new": "nouvelle",

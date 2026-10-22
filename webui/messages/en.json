@@ -1402,6 +1402,8 @@
 	"sessions_status_active": "active",
 	"sessions_status_archived": "archived",
 	"sessions_status_dead": "dead",
+	"sessions_search_partial": "Stopped early to stay fast: older chats are not searched yet.",
+	"sessions_search_further": "Search older chats",
 	"sessions_status_draft": "draft",
 	"sessions_status_inactive": "inactive",
 	"sessions_status_new": "new",

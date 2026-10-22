@@ -7,4 +7,14 @@ export type SessionListResponse = { sessions: Array<SessionListItem>,
  * Parents of `sessions` rows that are not themselves in `sessions` (live,
  * or on another page), so a client can group a child under its parent.
  */
-parents: Array<SessionParentStub>, };
+parents: Array<SessionParentStub>, 
+/**
+ * `/sessions/search` only: pass back as `cursor` for the next page; null
+ * once nothing older is left to scan.
+ */
+next_cursor: string | null, 
+/**
+ * The search ran out of time before filling the page, so more matches may
+ * lie past `next_cursor`.
+ */
+partial: boolean, };
