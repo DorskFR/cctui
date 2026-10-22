@@ -5,6 +5,8 @@ use std::time::Duration;
 use serde_json::Value;
 use sqlx::{Connection, PgPool};
 
+use super::Tally;
+
 pub const NAME: &str = "backfill";
 
 const DEFAULT_SCAN: i64 = 500;
@@ -58,7 +60,7 @@ impl Config {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    Rewritten { blob_bytes: u64 },
+    Rewritten { blob_bytes: u64, tally: Tally },
     Nothing,
     Gone,
     Changed,
@@ -76,15 +78,23 @@ pub async fn rewrite_event(conn: &mut sqlx::PgConnection, id: i64) -> Result<Out
     let Some((session_id, payload, content_hash)) = row else {
         return Ok(Outcome::Gone);
     };
-    let Some((rewritten, blobs)) = super::extract(&payload) else {
-        return Ok(Outcome::Nothing);
-    };
-    drop(payload);
+    let extracted = super::extract_blocking(&payload).await;
+    let moved = extracted.is_some();
+    let (mut rewritten, mut blobs) = extracted.unwrap_or_else(|| (payload, Vec::new()));
     let mut tx = conn.begin().await?;
+    let mut intact =
+        super::recover_redacted(&mut tx, &session_id, &mut rewritten, &mut blobs).await?;
+    let mut tally = Tally::of(&blobs, intact.len() as u64);
+    let reviewed = super::review_opaque(&mut tx, &session_id, &mut rewritten).await?;
+    if !moved && !reviewed.changed {
+        return Ok(Outcome::Nothing);
+    }
+    tally.add(reviewed.tally);
+    intact.extend(reviewed.intact);
     let Some(blob_bytes) = super::store_verified(&mut tx, &blobs).await? else {
         return Ok(Outcome::BadBlob);
     };
-    let hashes: Vec<String> = blobs.into_iter().map(|b| b.hash).collect();
+    let hashes: Vec<String> = blobs.into_iter().map(|b| b.hash).chain(intact).collect();
     sqlx::query(
         "INSERT INTO session_blob_links (session_id, hash) \
          SELECT $1, * FROM UNNEST($2::text[]) ON CONFLICT DO NOTHING",
@@ -103,7 +113,7 @@ pub async fn rewrite_event(conn: &mut sqlx::PgConnection, id: i64) -> Result<Out
     match updated {
         Ok(r) if r.rows_affected() == 1 => {
             tx.commit().await?;
-            Ok(Outcome::Rewritten { blob_bytes })
+            Ok(Outcome::Rewritten { blob_bytes, tally })
         }
         Ok(_) => Ok(Outcome::Changed),
         Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("23505") => {
@@ -118,6 +128,7 @@ pub struct Step {
     pub rewritten: usize,
     pub left_inline: usize,
     pub blob_bytes: u64,
+    pub images: Tally,
     pub more: bool,
 }
 
@@ -130,6 +141,8 @@ const SCAN_SQL: &str = "WITH scan AS ( \
                   WHERE CASE WHEN pg_column_size(e.payload) >= $4 \
                              THEN strpos(e.payload::text, '\"type\": \"base64\"') > 0 \
                              ELSE false END \
+                     OR (strpos(e.payload::text, '\"encoding\": \"base64\"') > 0 \
+                         AND strpos(e.payload::text, '\"corrupt\": true') = 0) \
                   ORDER BY e.id)";
 
 pub struct Walk {
@@ -204,9 +217,10 @@ impl Walk {
         let mut conn = pool.acquire().await?;
         for &id in todo {
             match rewrite_event(&mut conn, id).await? {
-                Outcome::Rewritten { blob_bytes } => {
+                Outcome::Rewritten { blob_bytes, tally } => {
                     step.rewritten += 1;
                     step.blob_bytes += blob_bytes;
+                    step.images.add(tally);
                 }
                 Outcome::Nothing | Outcome::Gone => {}
                 other => {
@@ -216,16 +230,24 @@ impl Walk {
             }
         }
         sqlx::query(
-            "INSERT INTO image_blob_backfill AS t \
-             (name, last_event_id, rows_rewritten, blob_bytes) VALUES ($1, $2, $3, $4) \
+            "INSERT INTO image_blob_backfill AS t (name, last_event_id, rows_rewritten, \
+             blob_bytes, images_valid, images_corrupt, images_recovered) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
              ON CONFLICT (name) DO UPDATE SET last_event_id = EXCLUDED.last_event_id, \
              rows_rewritten = t.rows_rewritten + EXCLUDED.rows_rewritten, \
-             blob_bytes = t.blob_bytes + EXCLUDED.blob_bytes, updated_at = now()",
+             blob_bytes = t.blob_bytes + EXCLUDED.blob_bytes, \
+             images_valid = t.images_valid + EXCLUDED.images_valid, \
+             images_corrupt = t.images_corrupt + EXCLUDED.images_corrupt, \
+             images_recovered = t.images_recovered + EXCLUDED.images_recovered, \
+             updated_at = now()",
         )
         .bind(&self.name)
         .bind(next)
         .bind(i64::try_from(step.rewritten).unwrap_or(i64::MAX))
         .bind(i64::try_from(step.blob_bytes).unwrap_or(i64::MAX))
+        .bind(i64::try_from(step.images.valid).unwrap_or(i64::MAX))
+        .bind(i64::try_from(step.images.corrupt).unwrap_or(i64::MAX))
+        .bind(i64::try_from(step.images.recovered).unwrap_or(i64::MAX))
         .execute(&mut *lock)
         .await?;
         lock.commit().await?;
@@ -248,6 +270,9 @@ pub async fn task(pool: PgPool, config: Config) {
                         rewritten = step.rewritten,
                         left_inline = step.left_inline,
                         blob_bytes = step.blob_bytes,
+                        images_valid = step.images.valid,
+                        images_corrupt = step.images.corrupt,
+                        images_recovered = step.images.recovered,
                         spent,
                         "image blob backfill batch"
                     );

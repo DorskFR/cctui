@@ -48,6 +48,7 @@ flate2 = "1"
 tar = "0.4"
 tokio-tungstenite.workspace = true
 unicode-normalization = "0.1.25"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 [dev-dependencies]
 reqwest.workspace = true

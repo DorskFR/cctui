@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use hmac::{Hmac, Mac};
 use regex::{Regex, RegexSet};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use sha2::Sha256;
 
 /// Per-field scan cap.
@@ -593,6 +593,55 @@ fn looks_like_secret_value(v: &str) -> bool {
     !v.chars().all(|c| c.is_ascii_lowercase() || matches!(c, '-' | '_' | '.'))
 }
 
+/// Random base64 is full of token-shaped runs, and one masked run makes an
+/// image undecodable: encoded attachment data is never scanned.
+fn binary_field(obj: &Map<String, Value>, key: &str) -> bool {
+    match obj.get("type").and_then(Value::as_str) {
+        Some("cctui-blob") => true,
+        Some("base64") => key == "data",
+        _ => key == "data" && (obj.contains_key("mimeType") || obj.contains_key("mime_type")),
+    }
+}
+
+fn binary_spans(s: &str) -> Vec<(usize, usize)> {
+    static RES: std::sync::OnceLock<[Regex; 2]> = std::sync::OnceLock::new();
+    if !s.contains("base64") {
+        return Vec::new();
+    }
+    let [data_url, embedded] = RES.get_or_init(|| {
+        [
+            Regex::new(r"data:[\w.+-]+/[\w.+-]+(?:;[\w.+-]+=[\w.+-]+)*;base64,[A-Za-z0-9+/=]+")
+                .expect("data url pattern must compile"),
+            Regex::new(r#"\\*"data\\*"\s*:\s*\\*"([A-Za-z0-9+/]{64,}={0,2})\\*""#)
+                .expect("embedded base64 pattern must compile"),
+        ]
+    });
+    let mut spans: Vec<(usize, usize)> = data_url
+        .find_iter(s)
+        .map(|m| (m.start(), m.end()))
+        .chain(embedded.captures_iter(s).filter_map(|c| c.get(1)).map(|m| (m.start(), m.end())))
+        .collect();
+    spans.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(spans.len());
+    for (start, end) in spans {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
+}
+
+fn text_parts(s: &str) -> Vec<(&str, &str)> {
+    let mut last = 0;
+    let mut parts = Vec::new();
+    for (start, end) in binary_spans(s).into_iter().chain(std::iter::once((s.len(), s.len()))) {
+        parts.push((&s[last..start], &s[start..end]));
+        last = end;
+    }
+    parts
+}
+
 /// Compile the effective detector set.
 ///
 /// Built-in defaults plus each `enabled`
@@ -703,6 +752,30 @@ fn redact_string(
     if input.len() > MAX_FIELD_LEN {
         return None;
     }
+    let parts = text_parts(input);
+    if let [(text, "")] = parts.as_slice() {
+        return redact_text(text, patterns, stats);
+    }
+    let mut out = String::with_capacity(input.len());
+    let mut changed = false;
+    for (text, binary) in parts {
+        match redact_text(text, patterns, stats) {
+            Some(r) => {
+                out.push_str(&r);
+                changed = true;
+            }
+            None => out.push_str(text),
+        }
+        out.push_str(binary);
+    }
+    changed.then_some(out)
+}
+
+fn redact_text(
+    input: &str,
+    patterns: &CompiledPatterns,
+    stats: &mut BTreeMap<String, usize>,
+) -> Option<String> {
     let candidates: Vec<usize> = patterns.prefilter.as_ref().map_or_else(
         || (0..patterns.patterns.len()).collect(),
         |set| set.matches(input).into_iter().collect(),
@@ -752,7 +825,12 @@ fn walk(
                 .filter_map(|k| obj.get(*k))
                 .filter_map(Value::as_str)
                 .any(is_secret_key_name);
+            let skipped: Vec<String> =
+                obj.keys().filter(|k| binary_field(obj, k)).cloned().collect();
             for (k, v) in obj.iter_mut() {
+                if skipped.contains(k) {
+                    continue;
+                }
                 let announced = is_secret_key_name(k)
                     || (named_secret && matches!(k.as_str(), "value" | "Value"));
                 walk(v, announced, patterns, stats);
@@ -867,8 +945,10 @@ fn sample_walk(
             }
         }
         Value::Object(obj) => {
-            for v in obj.values() {
-                sample_walk(v, patterns, out);
+            for (k, v) in obj {
+                if !binary_field(obj, k) {
+                    sample_walk(v, patterns, out);
+                }
             }
         }
         _ => {}
@@ -883,6 +963,16 @@ fn sample_string(
     if input.len() > MAX_FIELD_LEN {
         return;
     }
+    for (text, _) in text_parts(input) {
+        sample_text_part(text, patterns, out);
+    }
+}
+
+fn sample_text_part(
+    input: &str,
+    patterns: &CompiledPatterns,
+    out: &mut BTreeMap<String, CategorySamples>,
+) {
     let candidates: Vec<usize> = patterns.prefilter.as_ref().map_or_else(
         || (0..patterns.patterns.len()).collect(),
         |set| set.matches(input).into_iter().collect(),
@@ -1500,5 +1590,78 @@ mod tests {
         collect_samples(&doc, &CompiledPatterns::disabled(), &mut out);
         assert!(out.is_empty());
         assert_eq!(doc["text"], json!("ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123"));
+    }
+
+    /// Base64 with a token-shaped run, as found in prod screenshots.
+    fn image_b64() -> String {
+        let run = "EAAAqT7bZ3kLm9pW2xYv8sN4rD1fH6jC0";
+        format!("iVBORw0KGgoAAAANSUhEUgAA{}x9+/{run}+/Qw{}", "Ab+/".repeat(40), "Zz09".repeat(40))
+    }
+
+    const GH: &str = "ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123";
+
+    fn image_result(data: &str) -> Value {
+        json!({
+            "kind": "tool_result",
+            "tool_use_id": "toolu_01",
+            "content": [
+                {"type": "text", "text": format!("saved, token {GH}")},
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/png", "data": data,
+                }},
+            ],
+        })
+    }
+
+    #[test]
+    fn image_source_data_is_never_scanned_and_its_text_still_is() {
+        let data = image_b64();
+        assert!(redact_str(&data).contains("[REDACTED:square_token"), "token-shaped fixture");
+        let mut v = image_result(&data);
+        assert!(redact_json(&mut v, &p()) > 0);
+        assert_eq!(v["content"][1]["source"]["data"], json!(data));
+        let text = v["content"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with("saved, token [REDACTED:github_token"), "{text}");
+    }
+
+    #[test]
+    fn stringified_image_blocks_and_data_urls_keep_their_base64() {
+        let data = image_b64();
+        let content = image_result(&data)["content"].to_string();
+        let mut v = json!({ "output_summary": content });
+        redact_json(&mut v, &p());
+        let blocks: Value = serde_json::from_str(v["output_summary"].as_str().unwrap()).unwrap();
+        assert_eq!(blocks[1]["source"]["data"], json!(data));
+        assert!(blocks[0]["text"].as_str().unwrap().contains("[REDACTED:github_token"));
+
+        let url = format!("data:image/png;base64,{data}");
+        let out = redact_str(&format!("![shot]({url}) and {GH}"));
+        assert!(out.starts_with(&format!("![shot]({url}) and [REDACTED:github_token")), "{out}");
+    }
+
+    #[test]
+    fn blob_refs_and_inline_data_parts_are_left_alone() {
+        let data = image_b64();
+        let doc = json!({
+            "ref": {"type": "cctui-blob", "blob_id": data, "size": 3, "encoding": "base64"},
+            "part": {"inlineData": {"mimeType": "image/png", "data": data}},
+            "data": GH,
+        });
+        let mut v = doc.clone();
+        redact_json(&mut v, &p());
+        assert_eq!(v["ref"], doc["ref"]);
+        assert_eq!(v["part"], doc["part"]);
+        assert!(v["data"].as_str().unwrap().starts_with("[REDACTED:github_token"), "plain data");
+    }
+
+    #[test]
+    fn samples_skip_image_data() {
+        let data = image_b64();
+        let mut out = BTreeMap::new();
+        collect_samples(&image_result(&data), &p(), &mut out);
+        let s = json!({"s": format!("data:image/jpeg;base64,{data}")});
+        collect_samples(&s, &p(), &mut out);
+        assert!(!out.contains_key("square_token"), "{out:?}");
+        assert!(out.contains_key("github_token"));
     }
 }
