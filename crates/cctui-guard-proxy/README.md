@@ -19,6 +19,8 @@ Two modes share one policy engine and one health endpoint:
   requested `host:port`.
 
 IPv4 only — IPv6 egress is denied at the iptables layer by the worker entrypoint.
+The proxy dials the worker's original destination first, then the name's other
+IPv4 addresses, and IPv6 last.
 
 ## CLI flags
 

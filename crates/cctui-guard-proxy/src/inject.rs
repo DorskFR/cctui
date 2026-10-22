@@ -460,8 +460,27 @@ impl Injector {
         let mut client = self.acceptor.accept(PrefixedStream::new(conn, prefix)).await?;
         let server_name = ServerName::try_from(host.clone())?;
         let upstream =
-            tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(addrs)).await??;
-        let mut upstream = self.connector.connect(server_name, upstream).await?;
+            match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(addrs)).await {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => {
+                    tracing::warn!("inject dial upstream {host} failed: {e}");
+                    return Ok(());
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "inject dial upstream {host} timed out ({} address(es))",
+                        addrs.len()
+                    );
+                    return Ok(());
+                }
+            };
+        let mut upstream = match self.connector.connect(server_name, upstream).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("inject upstream TLS to {host} failed: {e}");
+                return Ok(());
+            }
+        };
 
         self.pump(&mut client, &mut upstream, &host, &rules).await
     }

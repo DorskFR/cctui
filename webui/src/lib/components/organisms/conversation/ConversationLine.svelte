@@ -198,7 +198,7 @@
 		/>
 	</div>
 	{#if ln.role === 'thinking'}
-		<ThinkingBubble html={ln.html} redacted={ln.redacted} />
+		<ThinkingBubble html={ln.html} redacted={ln.redacted} noReply={ln.noReply} />
 	{:else if ln.toolBlock}
 		<div class="bubble tool-block" role="note">
 			{m.conversation_tool_call_blocked({ tool: ln.toolBlock.tool, rule: ln.toolBlock.term })}

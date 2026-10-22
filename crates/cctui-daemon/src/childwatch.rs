@@ -416,7 +416,7 @@ impl ChildWatch {
             }
             AdapterEvent::Message { local_id, payload, .. } => {
                 if let Some(w) = find_mut(watches, local_id) {
-                    apply_message(w, payload);
+                    apply_message(w, local_id, payload);
                 }
             }
             AdapterEvent::ToolUse { local_id, payload } => {
@@ -552,9 +552,11 @@ fn apply_status(
         .or_else(|| w.state.status_line.clone());
 }
 
-fn apply_message(w: &mut Watch, payload: &serde_json::Value) {
+/// A child's image refs are qualified with its session, so they still resolve
+/// once the text is the parent's tool result.
+fn apply_message(w: &mut Watch, local_id: &str, payload: &serde_json::Value) {
     if let Some(text) = assistant_text(payload) {
-        w.state.final_text = Some(text);
+        w.state.final_text = Some(crate::imagepost::qualify_refs(&text, local_id));
         // Narration that the model itself flagged as leading into a tool call
         // is not a turn tail, however long the tool then takes to appear.
         w.state.tail = match stop_reason(payload) {
@@ -844,6 +846,16 @@ mod tests {
         assert_eq!(out.final_text.as_deref(), Some("VERDICT: approve"));
         assert!(out.error.is_none());
         assert_eq!(out.local_id.as_deref(), Some("child-1"));
+    }
+
+    #[test]
+    fn a_childs_image_refs_reach_the_parent_qualified_with_the_child_session() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&msg("child-1", "user", "show me"));
+        watch.observe(&msg_stopping("child-1", "here: ![shot](cctui-img://img-7)", "end_turn"));
+        let out = finished(&h).expect("an end_turn answer finishes the turn");
+        assert_eq!(out.final_text.as_deref(), Some("here: ![shot](cctui-img://child-1/img-7)"));
     }
 
     #[test]

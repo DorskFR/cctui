@@ -282,3 +282,15 @@ describe('voice message', () => {
 		expect(el.textContent).not.toContain('🎙');
 	});
 });
+
+describe('thinking-only turn', () => {
+	it('footnotes thinking that ended a turn with no reply', async () => {
+		const el = await render(line({ role: 'thinking', html: '<p>posted it</p>', noReply: true }));
+		expect(el.querySelector('[role="note"]')?.textContent).toContain('no reply was sent');
+	});
+
+	it('leaves ordinary thinking without the footnote', async () => {
+		const el = await render(line({ role: 'thinking', html: '<p>plan</p>' }));
+		expect(el.querySelector('[role="note"]')).toBeNull();
+	});
+});

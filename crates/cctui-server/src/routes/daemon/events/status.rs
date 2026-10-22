@@ -399,18 +399,22 @@ mod tests {
 
         async fn session(&self) -> String {
             let id = Uuid::new_v4().to_string();
+            self.register(&id).await;
+            id
+        }
+
+        async fn register(&self, id: &str) {
             sqlx::query(
                 "INSERT INTO sessions (id, machine_id, working_dir, user_id, \
                  machine_uuid, adapter_id) VALUES ($1, $2, '/w', $3, $4, 'claude-code')",
             )
-            .bind(&id)
+            .bind(id)
             .bind(self.machine.to_string())
             .bind(self.user)
             .bind(self.machine)
             .execute(&self.pool)
             .await
             .expect("seed session");
-            id
         }
 
         /// One Status event carrying an agent-generated title.
@@ -448,16 +452,7 @@ mod tests {
         /// A session spawned with `name`, registered and claimed.
         async fn spawned(&self, name: &str) -> String {
             let id = self.session().await;
-            sqlx::query(
-                "INSERT INTO session_spawner_intents (spawn_key, user_id, session_name) \
-                 VALUES ($1, $2, $3)",
-            )
-            .bind(&id)
-            .bind(self.user)
-            .bind(name)
-            .execute(&self.pool)
-            .await
-            .expect("seed intent");
+            crate::routes::spawn::remember_spawner(&self.pool, &id, self.user, Some(name)).await;
             crate::routes::spawn::claim_spawner(&self.pool, &id, None).await;
             id
         }
@@ -604,6 +599,64 @@ mod tests {
         fx.ai_title(&id, "a later title").await;
         assert_eq!(fx.name_of(&id).await.as_deref(), Some("SUPER ORCHESTRATOR"));
         assert_eq!(fx.agent_title_of(&id).await.as_deref(), Some("a later title"));
+
+        fx.cleanup().await;
+    }
+
+    /// A claim that runs before the row exists leaves the intent for the
+    /// claim at registration, so the spawn name still lands.
+    #[tokio::test]
+    async fn a_spawn_name_survives_a_claim_before_registration() {
+        let Some(fx) = TitleFixture::new("spawn_name_early_claim").await else {
+            return;
+        };
+        let id = Uuid::new_v4().to_string();
+        crate::routes::spawn::remember_spawner(&fx.pool, &id, fx.user, Some("qa-voice")).await;
+        crate::routes::spawn::claim_spawner(&fx.pool, &id, None).await;
+        fx.register(&id).await;
+        crate::routes::spawn::claim_spawner(&fx.pool, &id, None).await;
+        assert_eq!(fx.name_of(&id).await.as_deref(), Some("qa-voice"));
+
+        fx.cleanup().await;
+    }
+
+    /// A named interactive spawn: claim, idle Status events, the `--name`
+    /// echo, a duplicate claim. The row keeps the name throughout.
+    #[tokio::test]
+    async fn a_named_spawn_keeps_its_row_name_through_registration() {
+        let Some(fx) = TitleFixture::new("named_spawn_row_name").await else {
+            return;
+        };
+        let id = fx.spawned("qa-voice").await;
+        let idle = StatusSignals {
+            tempo: Some("idle"),
+            agent_state: None,
+            activity: None,
+            name: None,
+            agent_title: false,
+            intent: None,
+            model: Some("claude-opus"),
+            effort: None,
+            permission_mode: None,
+            children: &[],
+        };
+        write_status_signals(&fx.pool, &id, &idle, None).await.expect("status write");
+        fx.custom_title(&id, "qa-voice").await;
+        crate::routes::spawn::claim_spawner(&fx.pool, &id, None).await;
+        write_status_signals(&fx.pool, &id, &idle, None).await.expect("status write");
+
+        let row: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT session_name, metadata->>'name_source', metadata->>'custom_title' \
+             FROM sessions WHERE id = $1",
+        )
+        .bind(&id)
+        .fetch_one(&fx.pool)
+        .await
+        .expect("read row");
+        assert_eq!(
+            row,
+            (Some("qa-voice".to_owned()), Some("user".to_owned()), Some("qa-voice".to_owned()))
+        );
 
         fx.cleanup().await;
     }

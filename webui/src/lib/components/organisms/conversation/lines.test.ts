@@ -1528,3 +1528,43 @@ describe("spoken turns", () => {
     expect(buildLines([text("▷ User: hi", 1)], ctx())[0].voice).toBeUndefined();
   });
 });
+
+describe("thinking-only turns", () => {
+  const think = (content: string, ts: number) => text(content, ts, "thinking");
+  const user = (content: string, ts: number) => text(`▷ User: ${content}`, ts);
+  const call = (ts: number): AgentEvent => ({
+    type: "tool_call",
+    tool: "Bash",
+    input: "{}",
+    ts,
+    seq: null,
+  } as AgentEvent);
+  const turnEnd = (ts: number): AgentEvent => ({ type: "turn_end", ts, seq: null });
+  const flagged = (es: AgentEvent[], c = ctx()) =>
+    buildLines(es, c)
+      .filter((l) => l.noReply)
+      .map((l) => l.text);
+
+  it("flags the last thinking of a turn that ended without reply text", () => {
+    expect(
+      flagged([user("go", 1), think("plan", 2), call(3), think("posted it", 4), turnEnd(5)]),
+    ).toEqual(["posted it"]);
+  });
+
+  it("closes the turn on the next prompt or a turn_duration annotation", () => {
+    expect(flagged([think("a", 1), user("next", 2)])).toEqual(["a"]);
+    expect(flagged([think("b", 1), text("turn_duration:900", 2, "turn_annotation")])).toEqual([
+      "b",
+    ]);
+  });
+
+  it("leaves a turn that replied, or one still running, unflagged", () => {
+    expect(flagged([think("a", 1), text("done", 2), think("b", 3), turnEnd(4)])).toEqual([]);
+    expect(flagged([user("go", 1), think("still working", 2)])).toEqual([]);
+  });
+
+  it("counts a reply hidden by the assistant filter", () => {
+    const c = ctx({ assistant: false });
+    expect(flagged([think("a", 1), text("done", 2), turnEnd(3)], c)).toEqual([]);
+  });
+});

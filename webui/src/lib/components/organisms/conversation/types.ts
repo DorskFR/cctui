@@ -188,6 +188,8 @@ export interface Line {
 	mcp?: boolean;
 	// Thinking whose content the provider withheld: same brown treatment, dimmed.
 	redacted?: boolean;
+	// Last thinking of a turn that ended without any reply text.
+	noReply?: boolean;
 	pending?: boolean;
 	// Set on a pending user line that auto-retry is currently re-attempting
 	//: shows a "retrying (n/m)" hint instead of plain "sending…".

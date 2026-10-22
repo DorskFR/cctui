@@ -139,11 +139,12 @@ impl PrivateAllow {
         orig_dst: Option<IpAddr>,
     ) -> anyhow::Result<Vec<SocketAddr>> {
         let host_port = join_host_port(host, port);
-        let addrs: Vec<SocketAddr> = tokio::net::lookup_host(&host_port)
+        let mut addrs: Vec<SocketAddr> = tokio::net::lookup_host(&host_port)
             .await
             .map_err(|e| anyhow::anyhow!("resolving {host_port}: {e}"))?
             .collect();
         anyhow::ensure!(!addrs.is_empty(), "no addresses resolved for {host_port}");
+        dial_order(&mut addrs, orig_dst);
         match self.decide(host, port, &addrs, orig_dst) {
             Decision::Public => Ok(addrs),
             Decision::Allowed(rule) => {
@@ -242,6 +243,14 @@ fn join_host_port(host: &str, port: u16) -> String {
     } else {
         format!("{host}:{port}")
     }
+}
+
+/// Addresses are dialed in turn under one timeout, and the worker pod REJECTs
+/// IPv6 egress (each attempt costs ~1s), so a dual-stack host listing its AAAA
+/// records first would exhaust the budget before any IPv4 address. Dial the
+/// worker's own original destination first, then IPv4, then IPv6.
+fn dial_order(addrs: &mut [SocketAddr], orig_dst: Option<IpAddr>) {
+    addrs.sort_by_key(|a| (Some(a.ip()) != orig_dst, a.is_ipv6()));
 }
 
 /// Parses `host`, `host:port`, `host:*`, `[v6]:port` or a bare v6 literal.
@@ -508,6 +517,27 @@ mod tests {
             pa.resolve("140.82.121.4", 443, None).await.unwrap(),
             addrs(&["140.82.121.4"], 443)
         );
+    }
+
+    #[test]
+    fn dual_stack_dials_ipv4_before_ipv6() {
+        let mut got = addrs(
+            &["2606:4700::6810:522", "2606:4700::6810:a22", "104.16.0.34", "104.16.10.34"],
+            443,
+        );
+        dial_order(&mut got, None);
+        let want = addrs(
+            &["104.16.0.34", "104.16.10.34", "2606:4700::6810:522", "2606:4700::6810:a22"],
+            443,
+        );
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn original_destination_is_dialed_first() {
+        let mut got = addrs(&["2606:4700::6810:522", "104.16.0.34", "104.16.10.34"], 443);
+        dial_order(&mut got, Some(ip("104.16.10.34")));
+        assert_eq!(got, addrs(&["104.16.10.34", "104.16.0.34", "2606:4700::6810:522"], 443));
     }
 
     #[tokio::test]

@@ -186,6 +186,80 @@ pub async fn rewrite_text(
     out
 }
 
+/// The ref scheme as it follows a marker's alt text.
+const REF_PREFIX: &str = "](cctui-img://";
+
+fn is_image_id(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+fn is_session_id(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Qualifies each bare `cctui-img://<id>` in `text` with `session_id`.
+///
+/// `cctui-img://<session_id>/<id>` resolves from another session's transcript:
+/// the webui fetches it from `session_id`, under that session's read authz.
+/// Already-qualified refs are kept.
+#[must_use]
+pub fn qualify_refs(text: &str, session_id: &str) -> String {
+    if !is_session_id(session_id) || !text.contains(REF_PREFIX) {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0usize;
+    while let Some(found) = text[at..].find(REF_PREFIX) {
+        let id_start = at + found + REF_PREFIX.len();
+        out.push_str(&text[at..id_start]);
+        at = id_start;
+        let Some(close) = text[id_start..].find(')') else { break };
+        if is_image_id(&text[id_start..id_start + close]) {
+            out.push_str(session_id);
+            out.push('/');
+        }
+    }
+    out.push_str(&text[at..]);
+    out
+}
+
+/// Every `![alt](cctui-img://…)` marker in `text`, verbatim.
+#[must_use]
+pub fn served_markers(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    while let Some(found) = text[at..].find("![") {
+        let start = at + found;
+        at = start + 2;
+        let Some(alt_end) = text[at..].find(']').map(|i| at + i) else { break };
+        if !text[alt_end..].starts_with(REF_PREFIX) {
+            continue;
+        }
+        let Some(close) = text[alt_end..].find(')').map(|i| alt_end + i) else { break };
+        out.push(&text[start..=close]);
+        at = close + 1;
+    }
+    out
+}
+
+/// Prepares a peer-message body's images for the recipient.
+///
+/// `![alt](/abs/path)` markers upload to the sender's session and every ref is
+/// qualified with it, so the recipient renders them.
+pub async fn rewrite_for_peer(
+    client: &ServerClient,
+    machine_key: &str,
+    session_id: &str,
+    text: &str,
+    allowed_roots: &[PathBuf],
+) -> String {
+    if !text.contains("![") {
+        return text.to_owned();
+    }
+    let uploaded = rewrite_text(client, machine_key, session_id, text, allowed_roots).await;
+    qualify_refs(&uploaded, session_id)
+}
+
 /// Rewrite image markers in an assistant `Message`, else pass the event through.
 ///
 /// This is the single choke point the supervisor's per-adapter event pump routes
@@ -340,6 +414,83 @@ mod tests {
 
         let diverged = json!({ "role": "assistant", "content": "other", "text": marker });
         assert_eq!(with_rewritten_text(&diverged, served)["content"], "other");
+    }
+
+    #[test]
+    fn bare_refs_are_qualified_with_the_owning_session() {
+        assert_eq!(
+            qualify_refs("see ![a](cctui-img://img-1) and ![](cctui-img://img-2).", "sess-a"),
+            "see ![a](cctui-img://sess-a/img-1) and ![](cctui-img://sess-a/img-2)."
+        );
+    }
+
+    #[test]
+    fn qualified_refs_paths_and_odd_ids_are_left_alone() {
+        for text in [
+            "![a](cctui-img://child-1/img-1)",
+            "![a](/tmp/a.png)",
+            "![a](cctui-img://bad id)",
+            "![a](cctui-img://)",
+            "![a](cctui-img://img-1",
+            "no images here",
+        ] {
+            assert_eq!(qualify_refs(text, "sess-a"), text);
+        }
+        let bare = "![a](cctui-img://img-1)";
+        assert_eq!(qualify_refs(bare, "bad/session"), bare);
+    }
+
+    #[test]
+    fn served_markers_are_listed_verbatim() {
+        let text = "a ![x](cctui-img://s/1) ![y](/tmp/y.png) ![](cctui-img://2) [z](cctui-img://3)";
+        assert_eq!(served_markers(text), vec!["![x](cctui-img://s/1)", "![](cctui-img://2)"]);
+        assert!(served_markers("nothing ![here").is_empty());
+    }
+
+    async fn serve_upload(
+        image_id: &'static str,
+    ) -> (String, std::sync::Arc<tokio::sync::Mutex<String>>) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = std::sync::Arc::new(tokio::sync::Mutex::new(String::new()));
+        let sink = captured.clone();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let n = sock.read(&mut buf).await.unwrap();
+            *sink.lock().await = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let body = format!("{{\"image_id\":\"{image_id}\"}}");
+            let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            sock.flush().await.unwrap();
+        });
+        (format!("http://{addr}"), captured)
+    }
+
+    #[tokio::test]
+    async fn a_peer_body_uploads_to_the_sender_and_carries_qualified_refs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let img = root.join("shot.png");
+        std::fs::write(&img, b"\x89PNG\r\n\x1a\nrest").unwrap();
+        let (url, req) = serve_upload("img-9").await;
+        let client = ServerClient::new(url);
+        let body = format!("look: ![shot]({}) and ![old](cctui-img://img-1)", img.display());
+        let out = rewrite_for_peer(&client, "mkey", "sender-1", &body, &[root]).await;
+        assert_eq!(
+            out,
+            "look: ![shot](cctui-img://sender-1/img-9) and ![old](cctui-img://sender-1/img-1)"
+        );
+        let request = req.lock().await.clone();
+        assert!(request.starts_with("POST /api/v1/daemon/sessions/sender-1/images"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn a_peer_body_without_markers_is_sent_verbatim() {
+        let client = ServerClient::new("http://127.0.0.1:9");
+        let body = "plain text, a path /tmp/x.png, and [a link](https://x.y)";
+        assert_eq!(rewrite_for_peer(&client, "mkey", "s", body, &[]).await, body);
     }
 
     #[test]

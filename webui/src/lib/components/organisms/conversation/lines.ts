@@ -667,6 +667,24 @@ function dedupKey(ln: Line, turnId: string): string {
   }|${turnId}`;
 }
 
+// Agent prose the user receives, judged on the event so a filtered-out reply
+// still counts.
+function isReplyText(e: AgentEvent): boolean {
+  if (e.type !== "text" || !e.content.trim()) return false;
+  if (e.content.startsWith(USER_PREFIX)) return false;
+  if (!e.kind) return !parseToolBlock(e.content);
+  return e.kind === "voice" || e.kind === "attachment";
+}
+
+function endsTurn(e: AgentEvent): boolean {
+  if (e.type === "turn_end" || e.type === "turn_summary") return true;
+  return (
+    e.type === "text" &&
+    e.kind === "turn_annotation" &&
+    parseAnnotation(e.content).kind === "turn_duration"
+  );
+}
+
 function markDelivery(ln: Line, delivery: DeliveryState | undefined): void {
   if ((ln.role !== "user" && ln.role !== "poll") || !delivery) return;
   if (delivery.pending.has(ln.ts)) ln.pending = true;
@@ -689,7 +707,18 @@ export function buildLines(
   let hiddenTick = false;
   const callTools = new Map<string, string>();
   let prevCallTool: string | null = null;
+  // A turn that ended on thinking sent the user nothing: its narration must
+  // not read as the reply.
+  let turnThinking: Line | null = null;
+  let turnReplied = false;
+  const closeTurn = () => {
+    if (turnThinking && !turnReplied) turnThinking.noReply = true;
+    turnThinking = null;
+    turnReplied = false;
+  };
   for (const e of events) {
+    if (isReplyText(e)) turnReplied = true;
+    if (endsTurn(e)) closeTurn();
     if (breaksPollRun(e)) poll.last = null;
     const posCallTool = prevCallTool;
     prevCallTool = e.type === "tool_call" ? e.tool : null;
@@ -760,6 +789,8 @@ export function buildLines(
     }
     const produced = toLines(e, ctx, poll);
     if (!produced.length) continue;
+    if (produced.some((l) => l.role === "user" || l.role === "reset"))
+      closeTurn();
     // The three encodings Claude stores ONE human turn in share its `turn_id`,
     // so keying on it still collapses them while two composer sends of the same
     // text — always distinct ids — stay two messages.
@@ -825,6 +856,7 @@ export function buildLines(
     }
     markDelivery(ln, delivery);
     out.push(ln);
+    if (ln.role === "thinking") turnThinking = ln;
   }
   const lines = reconcileQueued(out, placeholders, closes);
   // `events` is already ordered causally by `orderEvents` (server insert
