@@ -2235,7 +2235,7 @@ pub const ROUTES: &[Route] = &[
         id: "get_sessions_by_id_user_actions",
         method: Method::Get,
         path: "/sessions/{id}/user-actions",
-        summary: "What the agent is waiting on from the user (owner only).",
+        summary: "What the agent is waiting on from the user.",
         request: None,
         response: None,
     },

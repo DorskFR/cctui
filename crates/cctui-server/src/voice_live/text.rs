@@ -188,6 +188,42 @@ pub fn split_sentences(text: &str) -> Vec<String> {
     out
 }
 
+fn ends_a_clause(text: &str) -> bool {
+    let core = text.trim_end_matches(['"', '\'', ')', '*', '_', '”', '’']);
+    core.ends_with(['.', '!', '?', '…', ',', ';', ':'])
+        && !(core.ends_with('.') && is_abbreviation(core, core.len() - 1))
+}
+
+/// `text` ends in a separator the next delta may continue: "3." of "3.5",
+/// "1," of "1,000".
+fn ends_mid_number(text: &str) -> bool {
+    let mut tail = text.chars().rev();
+    matches!(tail.next(), Some('.' | ',')) && tail.next().is_some_and(|c| c.is_ascii_digit())
+}
+
+/// How much of a paused stream's `text` can be spoken without cutting a word:
+/// up to its last sentence or clause end or newline, else up to its last
+/// space when the run is too long for one TTS request.
+fn pause_cut(text: &str) -> usize {
+    let trimmed = text.trim_end();
+    let open = trimmed.len() == text.len() && ends_mid_number(text);
+    if (ends_a_clause(trimmed) && !open) || text[trimmed.len()..].contains('\n') {
+        return text.len();
+    }
+    let boundary = text
+        .char_indices()
+        .rev()
+        .find(|&(i, c)| c == '\n' || (c.is_whitespace() && ends_a_clause(&text[..i])))
+        .map(|(i, c)| i + c.len_utf8());
+    match boundary {
+        Some(end) => end,
+        None if text.chars().count() > MAX_SENTENCE_CHARS => {
+            text.rfind(char::is_whitespace).unwrap_or(0)
+        }
+        None => 0,
+    }
+}
+
 fn fences_closed(text: &str) -> bool {
     ["```", "~~~"].into_iter().all(|m| text.matches(m).count() % 2 == 0)
 }
@@ -246,7 +282,11 @@ impl SentenceBuffer {
 
     /// Text a [`Self::pause`] would speak.
     pub fn has_pending(&self) -> bool {
-        !self.held.is_empty() || !self.raw[..self.scan_end()].trim().is_empty()
+        !self.held.is_empty() || !self.raw[..self.pause_end()].trim().is_empty()
+    }
+
+    fn pause_end(&self) -> usize {
+        pause_cut(&self.raw[..self.scan_end()])
     }
 
     /// Every sentence that is complete so far; the tail stays buffered.
@@ -274,10 +314,11 @@ impl SentenceBuffer {
         out
     }
 
-    /// Everything buffered outside an open code fence, complete or not: the
-    /// stream paused.
+    /// Everything buffered outside an open code fence up to its last clause
+    /// end: the stream paused, and an unfinished word or clause waits for
+    /// more text or the turn end.
     pub fn pause(&mut self) -> Vec<String> {
-        let head: String = self.raw.drain(..self.scan_end()).collect();
+        let head: String = self.raw.drain(..self.pause_end()).collect();
         let head = self.without_status(&head);
         self.after_held(split_sentences(&strip_markdown(&head)))
     }
@@ -464,13 +505,73 @@ mod tests {
         let mut buf = SentenceBuffer::default();
         buf.push("Short. And a half");
         assert!(buf.drain().is_empty());
-        assert_eq!(buf.pause(), vec!["Short.", "And a half"]);
-        assert!(!buf.has_pending());
+        assert_eq!(buf.pause(), vec!["Short."]);
+        assert!(!buf.has_pending(), "an unfinished clause waits");
+        assert_eq!(buf.flush(), vec!["And a half"]);
         buf.push("See https://example.com/x for it:\n```sh\nrm -rf build.\n");
         assert_eq!(buf.pause(), vec!["See for it:"]);
         assert!(!buf.has_pending(), "an open fence is not pending speech");
         buf.push("```\nAfter the code.");
         assert_eq!(buf.pause(), vec!["After the code."]);
+    }
+
+    #[test]
+    fn a_pause_never_cuts_a_word() {
+        let mut buf = SentenceBuffer::default();
+        buf.push("Bl");
+        assert!(buf.drain().is_empty());
+        assert!(!buf.has_pending());
+        assert!(buf.pause().is_empty());
+        buf.push("ue.");
+        assert!(buf.drain().is_empty());
+        assert!(buf.has_pending());
+        assert_eq!(buf.pause(), vec!["Blue."]);
+        assert!(buf.flush().is_empty());
+
+        buf.push("A");
+        assert!(buf.pause().is_empty());
+        buf.push(" fox");
+        assert!(buf.pause().is_empty());
+        assert_eq!(buf.flush(), vec!["A fox"]);
+    }
+
+    #[test]
+    fn a_pause_cuts_at_the_last_clause_end() {
+        let mut buf = SentenceBuffer::default();
+        buf.push("First, you open the fi");
+        assert_eq!(buf.pause(), vec!["First,"]);
+        buf.push("le and save it. Then");
+        assert_eq!(buf.pause(), vec!["you open the file and save it."]);
+        buf.push(" done\n");
+        assert_eq!(buf.pause(), vec!["Then done"]);
+    }
+
+    #[test]
+    fn a_pause_holds_a_number_or_abbreviation_the_next_delta_may_continue() {
+        let mut buf = SentenceBuffer::default();
+        buf.push("Done. Version 3.");
+        assert_eq!(buf.pause(), vec!["Done."]);
+        buf.push("5 shipped.");
+        assert_eq!(buf.pause(), vec!["Version 3.5 shipped."]);
+        buf.push("Use a tool, e.g. a hamm");
+        assert_eq!(buf.pause(), vec!["Use a tool,"]);
+        buf.push("er.");
+        assert_eq!(buf.pause(), vec!["e.g. a hammer."]);
+        buf.push("It costs 1,");
+        assert!(buf.pause().is_empty());
+        buf.push("000 now. ");
+        assert_eq!(buf.pause(), vec!["It costs 1,000 now."]);
+    }
+
+    #[test]
+    fn a_long_pause_without_a_clause_end_cuts_at_a_space() {
+        let words = "word ".repeat(70);
+        let mut buf = SentenceBuffer::default();
+        buf.push(&format!("{words}unfini"));
+        let spoken = buf.pause();
+        assert_eq!(spoken.concat().replace(' ', ""), words.replace(' ', ""));
+        buf.push("shed.");
+        assert_eq!(buf.pause(), vec!["unfinished."]);
     }
 
     #[test]

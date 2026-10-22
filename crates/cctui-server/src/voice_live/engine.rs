@@ -1536,7 +1536,7 @@ mod tests {
     async fn a_pause_in_the_middle_of_a_short_reply_does_not_repeat_it() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         h.signals.send(delta("m:0", "Thanks. I'll keep doing that")).await.unwrap();
-        let first = Bytes::from_static(b"I'll keep doing that");
+        let first = Bytes::from_static(b"Thanks.");
         h.collect_until(|f| *f == Outbound::Audio(first.clone())).await;
         let rest = ": drafts stay here until you explicitly ask me to post.";
         h.signals.send(delta("m:0", rest)).await.unwrap();
@@ -1544,7 +1544,22 @@ mod tests {
         h.signals.send(Signal::TurnEnd).await.unwrap();
         h.collect_until(|f| *f == state(VoiceState::Listening)).await;
         h.quiet().await;
-        assert_eq!(Mock::log(&h.mock.synthesized), vec!["Thanks.", "I'll keep doing that", rest]);
+        assert_eq!(Mock::log(&h.mock.synthesized), SHORT_SPOKEN);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pause_inside_a_word_holds_it_until_the_word_ends() {
+        let mut h = start(Mock::default(), Prefs::default()).await;
+        h.signals.send(delta("m:0", "Bl")).await.unwrap();
+        tokio::time::sleep(PAUSE_FLUSH * 2).await;
+        assert!(Mock::log(&h.mock.synthesized).is_empty(), "nothing spoken mid-word");
+        h.signals.send(delta("m:0", "ue.")).await.unwrap();
+        tokio::time::sleep(PAUSE_FLUSH * 2).await;
+        h.signals.send(Signal::Text("Blue.".into())).await.unwrap();
+        h.signals.send(Signal::TurnEnd).await.unwrap();
+        h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        h.quiet().await;
+        assert_eq!(Mock::log(&h.mock.synthesized), vec!["Blue."]);
     }
 
     #[tokio::test]
@@ -1581,7 +1596,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_quiet_stream_speaks_its_short_tail_after_a_pause() {
+    async fn a_quiet_stream_speaks_its_finished_sentences_after_a_pause() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         let t0 = Instant::now();
         h.signals.send(delta("m:0", "Sure. Let me")).await.unwrap();
@@ -1589,7 +1604,11 @@ mod tests {
         assert!(h.out.try_recv().is_err(), "nothing spoken before the pause");
         h.collect_until(is_speak_start).await;
         assert!(t0.elapsed() >= PAUSE_FLUSH, "{:?}", t0.elapsed());
-        h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(b"Sure."))).await;
+        h.quiet().await;
+        assert_eq!(Mock::log(&h.mock.synthesized), vec!["Sure."]);
+        h.signals.send(Signal::TurnEnd).await.unwrap();
+        h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(b"Let me"))).await;
         assert_eq!(Mock::log(&h.mock.synthesized), vec!["Sure.", "Let me"]);
     }
 
