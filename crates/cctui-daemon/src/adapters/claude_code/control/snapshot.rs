@@ -142,8 +142,9 @@ impl Driver {
     /// edge. The server upsert is idempotent (status, parent, name and account
     /// survive; only a spurious `daemon_lost` end is revived), so this costs
     /// one upsert per session and recovers any `SessionStarted` the previous
-    /// connection lost.
-    pub(super) async fn reannounce_live(&self) {
+    /// connection lost. The next poll re-sends each one's current Status too,
+    /// so a turn that ended while the link was down is not left reading busy.
+    pub(super) async fn reannounce_live(&mut self) {
         let pending: Vec<(String, SessionMeta)> = {
             let Ok(cache) = self.announced_meta.lock() else { return };
             self.roster
@@ -161,6 +162,8 @@ impl Driver {
                 })
                 .collect()
         };
+        self.status_resend
+            .extend(self.roster.iter().filter(|short| !self.dead_shorts.contains(*short)).cloned());
         if !pending.is_empty() {
             tracing::info!(count = pending.len(), "re-announcing live claude sessions on connect");
         }
@@ -444,7 +447,8 @@ impl Driver {
             source: job.source.clone(),
             started_at: job.started_at,
         };
-        if self.last_status.get(&job.short) == Some(&snap) {
+        let resend = self.status_resend.remove(&job.short);
+        if !resend && self.last_status.get(&job.short) == Some(&snap) {
             return;
         }
         self.last_status.insert(job.short.clone(), snap);
@@ -551,6 +555,7 @@ impl Driver {
 
     async fn reap_gone(&mut self, short: &str) {
         self.last_status.remove(short);
+        self.status_resend.remove(short);
         self.task_watches.remove(short);
         if let Ok(mut m) = self.announced_meta.lock() {
             m.remove(short);
@@ -614,6 +619,12 @@ impl Driver {
     /// and write the `dispatch_done` marker when it fires. No-op on normal
     /// daemons (`dispatch_done` is only armed by `maybe_dispatch_on_start`).
     pub(super) fn tick_dispatch_done(&self, jobs: &[LiveSnapshot]) {
+        // A turn parked on a background task is idle while that task still
+        // works; the stuck-turn watchdog owns that wait.
+        let bg_pending = self
+            .stuck_turn
+            .lock()
+            .is_ok_and(|g| g.as_ref().is_some_and(|w| w.ledger.has_outstanding()));
         let Ok(mut guard) = self.dispatch_done.lock() else { return };
         let Some(tracker) = guard.as_mut() else { return };
         let job = jobs.iter().find(|j| j.short == tracker.short());
@@ -633,6 +644,7 @@ impl Driver {
             .map_or(0, |loc| self.offsets.get(&loc.offset_key));
         let grew = tracker.transcript_grew(transcript_offset);
         let busy = grew
+            || bg_pending
             || job.is_some_and(|j| {
                 !j.is_dead() && DispatchDoneTracker::is_busy(j.tempo.as_deref(), j.state.as_deref())
             });
@@ -1298,6 +1310,36 @@ mod tests {
         assert!(started(&mut rx).is_empty(), "a reaped job is not re-announced");
     }
 
+    fn statuses(rx: &mut tokio::sync::mpsc::Receiver<AdapterEvent>) -> Vec<Option<String>> {
+        let mut out = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::Status { tempo, .. } = evt {
+                out.push(tempo);
+            }
+        }
+        out
+    }
+
+    /// A Status lost with a dropped WS (the turn went idle mid-gap) is never
+    /// re-sent by the deduped poll; the connect edge must force it once.
+    #[tokio::test]
+    async fn connect_edge_resends_the_current_status_once() {
+        let (mut d, mut rx) = driver();
+        let mut idle = snap("abcd1234", "done", None);
+        idle.tempo = Some("idle".into());
+        d.apply_snapshot(vec![idle.clone()]).await;
+        assert_eq!(statuses(&mut rx), [Some("idle".to_owned())]);
+        d.apply_snapshot(vec![idle.clone()]).await;
+        assert!(statuses(&mut rx).is_empty(), "an unchanged poll is deduped");
+
+        d.reannounce_live().await;
+        assert_eq!(started(&mut rx).len(), 1);
+        d.apply_snapshot(vec![idle.clone()]).await;
+        assert_eq!(statuses(&mut rx), [Some("idle".to_owned())], "the edge re-sends it");
+        d.apply_snapshot(vec![idle]).await;
+        assert!(statuses(&mut rx).is_empty(), "only once per edge");
+    }
+
     #[tokio::test]
     async fn a_finished_guard_less_dispatch_ends_completed_at_shutdown() {
         let (d, mut rx) = driver();
@@ -1397,6 +1439,63 @@ mod tests {
             rx.try_recv(),
             Ok(AdapterEvent::SessionEnded { reason: EndReason::Completed, .. })
         ));
+    }
+
+    /// The stranded-worker shape: the answer landed and the turn is idle, but
+    /// claude's self-reported job `state` still reads `working`.
+    #[tokio::test]
+    async fn a_dispatch_idle_under_a_stale_working_label_settles_and_ends_completed() {
+        let (mut d, mut rx) = driver();
+        let answer = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"5.57.2"}]}}"#;
+        let marker = dispatch_with_transcript(&mut d, &[PROMPT, answer]);
+        let mut idle = snap("abcd1234", "working", None);
+        idle.tempo = Some("idle".into());
+
+        d.tail_transcripts().await;
+        d.tick_dispatch_done(std::slice::from_ref(&idle));
+        d.tick_dispatch_done(std::slice::from_ref(&idle));
+        assert!(marker.exists(), "an idle tempo settles the turn whatever the label says");
+
+        while rx.try_recv().is_ok() {}
+        d.end_finished_dispatch(Path::new("/nonexistent/result.json"), false).await;
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AdapterEvent::SessionEnded { reason: EndReason::Completed, .. })
+        ));
+    }
+
+    /// An idle turn waiting on a backgrounded command is not finished: the
+    /// command is still working, so the marker holds until it is notified.
+    #[tokio::test]
+    async fn a_dispatch_waiting_on_a_background_task_is_not_finished_until_notified() {
+        let (mut d, _rx) = driver();
+        let sid = "abcd1234-5678-90ab-cdef-000000000000";
+        let tool = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"make test","run_in_background":true}}]}}"#;
+        let started = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"Command running in background with ID: bg1. Output is being written to: /nonexistent/bg1.output"}]},"toolUseResult":{"backgroundTaskId":"bg1"}}"#;
+        let marker = dispatch_with_transcript(&mut d, &[PROMPT, tool, started]);
+        let ten_min = std::time::Duration::from_mins(10);
+        *d.stuck_turn.lock().unwrap() = Some(
+            crate::adapters::claude_code::stuck_turn::StuckTurnWatchdog::new(sid, ten_min, ten_min),
+        );
+        let mut idle = snap("abcd1234", "working", None);
+        idle.tempo = Some("idle".into());
+
+        d.tail_transcripts().await;
+        d.tick_stuck_turn(std::slice::from_ref(&idle)).await;
+        for _ in 0..3 {
+            d.tick_dispatch_done(std::slice::from_ref(&idle));
+        }
+        assert!(!marker.exists(), "an outstanding background task holds the marker");
+
+        let path = d.transcript_locations["abcd1234"].path.clone();
+        let notified = r#"{"type":"user","message":{"role":"user","content":"<task-notification><task-id>bg1</task-id><status>completed</status></task-notification>"}}"#;
+        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        std::io::Write::write_all(&mut file, format!("{notified}\n").as_bytes()).unwrap();
+        d.tick_stuck_turn(std::slice::from_ref(&idle)).await;
+        d.tail_transcripts().await;
+        d.tick_dispatch_done(std::slice::from_ref(&idle));
+        d.tick_dispatch_done(std::slice::from_ref(&idle));
+        assert!(marker.exists(), "settles once the task is notified and the turn stays idle");
     }
 
     #[tokio::test]
