@@ -1,3 +1,4 @@
+import type { ResultImage } from '$lib/resultImages';
 import type { TokenUsage as TokenUsageT } from '@bindings/TokenUsage';
 import { m } from '$lib/paraglide/messages';
 import type { UserUploadRefs } from './lines';
@@ -251,4 +252,5 @@ export interface Line {
 	/** A user turn that came in through the microphone. */
 	voice?: boolean;
 	usage?: TokenUsageT;
+	images?: ResultImage[];
 }

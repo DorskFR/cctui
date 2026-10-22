@@ -35,6 +35,7 @@ import {
   splitInjected,
   type InjectedBlock,
 } from "$lib/components/organisms/conversation/format";
+import { resultDisplayText } from "$lib/resultImages";
 import {
   renderMarkdown,
   highlightBlock,
@@ -266,7 +267,7 @@ function toBlock(
         role: "result",
         ts: Number(e.ts),
         label: e.tool,
-        html: `<pre><code>${highlightBlock(e.output_summary, "")}</code></pre>`,
+        html: `<pre><code>${highlightBlock(resultDisplayText(e.output_summary), "")}</code></pre>`,
       };
     case "context_reset":
       if (!visible(opts, "reset")) return null;
@@ -592,7 +593,7 @@ function toMarkdownBlock(
       // The served shape carries no tool name — it belongs to the call above —
       // so the label is dropped rather than printed as "undefined".
       const head = e.tool ? `**Result · ${e.tool}**` : "**Result**";
-      return `${head}\n\n${fenced(e.output_summary)}`;
+      return `${head}\n\n${fenced(resultDisplayText(e.output_summary))}`;
     }
     case "context_reset":
       if (!visible(opts, "reset")) return null;

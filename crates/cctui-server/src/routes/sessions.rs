@@ -2141,6 +2141,15 @@ pub struct ConversationQuery {
     pub order: ConversationOrder,
 }
 
+/// `inline_images=true`: tool result images come back as base64 `source`s
+/// instead of blob references, up to
+/// [`crate::image_blobs::INLINE_IMAGES_MAX_BYTES`] per page.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct InlineImagesQuery {
+    #[serde(default)]
+    pub inline_images: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConversationOrder {
@@ -2324,6 +2333,7 @@ pub async fn get_conversation(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     Query(params): Query<ConversationQuery>,
+    Query(images): Query<InlineImagesQuery>,
     req_headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
     let adapter: Option<String> =
@@ -2348,7 +2358,7 @@ pub async fn get_conversation(
     // shape) derived from `created_at`, so the client renders real timestamps
     // instead of "Invalid Date". Legacy payloads that already carry `ts` keep
     // their own value.
-    let normalized: Vec<serde_json::Value> = rows
+    let mut normalized: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|(id, mut v, created_at, turn_id)| {
             if let Some(obj) = v.as_object_mut() {
@@ -2372,6 +2382,15 @@ pub async fn get_conversation(
             v
         })
         .collect();
+    if images.inline_images {
+        crate::image_blobs::inline_client_rows(
+            &state.pool,
+            &session_id,
+            &mut normalized,
+            crate::image_blobs::INLINE_IMAGES_MAX_BYTES,
+        )
+        .await?;
+    }
     Ok(crate::http_cache::json_with_etag(&req_headers, &normalized))
 }
 
