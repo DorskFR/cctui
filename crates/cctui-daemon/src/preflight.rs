@@ -51,6 +51,12 @@ fn relay_wait_secs(raw: Option<&str>) -> u64 {
         .min(MAX_RELAY_WAIT_SECS)
 }
 
+/// How long a launch that already announced its session waits for the server
+/// to register it before the limits check gives up.
+const REGISTRATION_WAIT: Duration = Duration::from_secs(5);
+
+const REGISTRATION_POLL: Duration = Duration::from_millis(250);
+
 /// Where the limits question is asked.
 struct Limits {
     server: crate::client::ServerClient,
@@ -153,7 +159,7 @@ impl Preflight {
 
     async fn run_on(&self, local_id: Option<&str>) {
         let card = local_id.or(self.card_id.as_deref());
-        self.hold(card).await;
+        self.hold(card, local_id.is_some()).await;
         self.await_relay().await;
     }
 
@@ -162,8 +168,10 @@ impl Preflight {
     }
 
     /// Block until the job's model is allowed, the hold outlives
-    /// [`crate::launchgate::MAX_HOLD`], or the limits call fails.
-    async fn hold(&self, card: Option<&str>) {
+    /// [`crate::launchgate::MAX_HOLD`], or the limits call fails. A `bound`
+    /// launch announced its session just before asking, so a server that does
+    /// not know it yet is asked again for up to [`REGISTRATION_WAIT`].
+    async fn hold(&self, card: Option<&str>, bound: bool) {
         let (Some(limits), Some(session_id)) = (self.limits.as_ref(), self.limits_id(card)) else {
             return;
         };
@@ -176,6 +184,10 @@ impl Preflight {
                 .await
             {
                 Ok(payload) => payload,
+                Err(err) if bound && unregistered(&err) && began.elapsed() < REGISTRATION_WAIT => {
+                    tokio::time::sleep(REGISTRATION_POLL).await;
+                    continue;
+                }
                 Err(err) => {
                     tracing::warn!(session = %session_id, %err, "launch limits check failed; launching anyway");
                     return;
@@ -250,8 +262,17 @@ impl Preflight {
     }
 }
 
+fn unregistered(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<crate::client::LimitsUnavailable>()
+        .is_some_and(crate::client::LimitsUnavailable::unregistered)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::{Duration, Preflight};
     use cctui_proto::adapter::AdapterEvent;
     use tokio::sync::mpsc;
@@ -387,5 +408,59 @@ mod tests {
         assert_eq!(relay_wait_secs(Some("0")), 0, "0 disables the gate");
         assert_eq!(relay_wait_secs(Some(" 12 ")), 12);
         assert_eq!(relay_wait_secs(Some("600")), 60, "clamped to a minute");
+    }
+
+    const UNREGISTERED: &str = r#"{"error":"calling session not found"}"#;
+    const ALLOWED: &str = r#"{"decision":{"allow":true}}"#;
+
+    /// A stand-in server: one canned answer per connection, in order. Returns
+    /// its base URL and how many requests it answered.
+    fn serve(answers: Vec<(u16, &'static str)>) -> (String, Arc<AtomicUsize>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let answered = Arc::clone(&hits);
+        std::thread::spawn(move || {
+            for (status, body) in answers {
+                let Ok((mut sock, _)) = listener.accept() else { return };
+                let _ = sock.read(&mut [0u8; 4096]);
+                answered.fetch_add(1, Ordering::SeqCst);
+                let _ = write!(
+                    sock,
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (base, hits)
+    }
+
+    fn preflight(base: String) -> Preflight {
+        let (tx, _rx) = mpsc::channel(4);
+        Preflight::new(tx, Some("claude-opus-5-5".to_owned()))
+            .with_limits(Some(&crate::client::ServerClient::new(base)), Some("mk"))
+    }
+
+    #[tokio::test]
+    async fn a_bound_launch_asks_again_until_the_server_knows_its_session() {
+        let (base, hits) = serve(vec![(404, UNREGISTERED), (404, UNREGISTERED), (200, ALLOWED)]);
+        preflight(base).run_bound("ses_1").await;
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn any_other_refusal_launches_at_once() {
+        let unbound = r#"{"error":"this session has no cctui gateway token"}"#;
+        let (base, hits) = serve(vec![(404, unbound), (200, ALLOWED)]);
+        preflight(base).run_bound("ses_1").await;
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "only registration is worth waiting for");
+
+        let (base, hits) = serve(vec![(404, UNREGISTERED), (200, ALLOWED)]);
+        preflight(base).with_card("c0ffee00").run().await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "a launch that has not announced its session cannot wait for it"
+        );
     }
 }

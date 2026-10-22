@@ -186,6 +186,14 @@ url_hostport() {
     esac
 }
 
+# host:port of the dispatch's repo when it is fetched over http(s); empty for
+# ssh, scp-style and local URLs, which the SNI guard cannot pass anyway.
+repo_hostport() {
+    case "$1" in
+        https://* | http://*) url_hostport "$1" ;;
+    esac
+}
+
 # bare host (no port) from a URL.
 url_host() {
     printf '%s' "$(url_hostport "$1")" | sed 's,:.*$,,'
@@ -329,7 +337,8 @@ wire_gpg_forwarding() {
 # transparent: iptables REDIRECT to an in-container proxy. forward: proxy env
 # only. transparent-external: sidecar proxy, REDIRECT installed by net-init.
 # Every mode seeds a deny-default policy: the structural hosts (server, callback,
-# every minted model-gateway base), the boot-only pack host and WORKER_NET_ALLOW.
+# every minted model-gateway base), the boot-only pack and repo hosts and
+# WORKER_NET_ALLOW.
 seed_policy() {
     mkdir -p "$(dirname "$POLICY_FILE")"
 
@@ -341,16 +350,20 @@ seed_policy() {
     # Boot-only: the pack host is deliberately NOT --always-allow'ed in
     # phase_guard, so the first per-step rewrite closes it again.
     _pack_hp=$(url_hostport "${CONTEXT_PACK_URL:-}")
+    # Boot-only too: the worker uid's clone and checkout of the dispatch's own
+    # repo go through the proxy, which injects its credential.
+    _repo_hp=$(repo_hostport "${TASK_REPO_URL:-}")
     _net_allow=$(printf '%s' "${WORKER_NET_ALLOW:-}" | tr ',' '\n' \
         | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;/^$/d')
-    _allowed=$(printf '%s\n%s\n%s\n%s\n%s\n' "$_cctui_hp" "$_reply_hp" "$_gw_hps" "$_pack_hp" "$_net_allow" \
+    _allowed=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$_cctui_hp" "$_reply_hp" "$_gw_hps" "$_pack_hp" \
+            "$_repo_hp" "$_net_allow" \
         | sed '/^$/d' | jq -R . | jq -cs 'unique')
     printf '{"allowed_hosts":%s,"default":"deny"}\n' "$_allowed" > "$POLICY_FILE"
     private_allow_lines > "${PRIVATE_ALLOW_FILE}.tmp"
     chmod 644 "${PRIVATE_ALLOW_FILE}.tmp"
     mv -f "${PRIVATE_ALLOW_FILE}.tmp" "$PRIVATE_ALLOW_FILE"
     _gw_log=$(printf '%s' "$_gw_hps" | tr '\n' ',' | sed 's/,$//;s/,/, /g')
-    log "seeded guard-proxy policy (allow: ${_cctui_hp}${_reply_hp:+, $_reply_hp}${_gw_log:+, $_gw_log}${_pack_hp:+, $_pack_hp}${WORKER_NET_ALLOW:+, $WORKER_NET_ALLOW}; default deny)"
+    log "seeded guard-proxy policy (allow: ${_cctui_hp}${_reply_hp:+, $_reply_hp}${_gw_log:+, $_gw_log}${_pack_hp:+, $_pack_hp}${_repo_hp:+, $_repo_hp}${WORKER_NET_ALLOW:+, $WORKER_NET_ALLOW}; default deny)"
 }
 
 NET_MODE=""

@@ -6,6 +6,7 @@
 //! authoritative: nothing here decides a step.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
@@ -50,6 +51,8 @@ pub struct GuardWatch {
     sessions: Mutex<HashMap<String, String>>,
     last: Mutex<Option<GuardStepState>>,
     nudge: Notify,
+    /// The shutdown poll ran: the state the worker tears down on is queued.
+    settled: AtomicBool,
 }
 
 impl GuardWatch {
@@ -143,25 +146,56 @@ pub fn start(event_tx: mpsc::Sender<(String, AdapterEvent)>, shutdown: Cancellat
     let Some(url) = url() else { return };
     let Some(client) = client() else { return };
     tracing::info!(%url, "workflow guard mirror on");
-    tokio::spawn(async move {
-        loop {
-            let nudged = tokio::select! {
-                () = shutdown.cancelled() => break,
-                () = tokio::time::sleep(POLL) => false,
-                () = global().nudge.notified() => true,
-            };
-            match fetch_state(&client, &url).await {
-                Ok(state) => {
-                    for pair in global().relay(&state, nudged) {
-                        if event_tx.send(pair).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-                Err(err) => tracing::debug!(%err, "guard state poll"),
+    tokio::spawn(async move { watch(global(), &client, &url, &event_tx, &shutdown).await });
+}
+
+/// Whether the shutdown drain may close the WS: no guard runs beside this
+/// daemon, or its last state is already queued.
+#[must_use]
+pub fn settled() -> bool {
+    url().is_none() || global().settled.load(Ordering::Acquire)
+}
+
+/// Poll until shutdown, then once more: the worker stops the daemon as soon
+/// as the guard exits, and that exit is the server's proof of completion.
+async fn watch(
+    w: &GuardWatch,
+    client: &reqwest::Client,
+    url: &str,
+    event_tx: &mpsc::Sender<(String, AdapterEvent)>,
+    shutdown: &CancellationToken,
+) {
+    loop {
+        let (nudged, last) = tokio::select! {
+            () = shutdown.cancelled() => (false, true),
+            () = tokio::time::sleep(POLL) => (false, false),
+            () = w.nudge.notified() => (true, false),
+        };
+        let open = match fetch_state(client, url).await {
+            Ok(state) => send_all(event_tx, w.relay(&state, nudged)).await,
+            Err(err) => {
+                tracing::debug!(%err, "guard state poll");
+                true
             }
+        };
+        if last || !open {
+            break;
         }
-    });
+    }
+    w.settled.store(true, Ordering::Release);
+}
+
+/// `false` once the event channel is closed.
+async fn send_all(
+    event_tx: &mpsc::Sender<(String, AdapterEvent)>,
+    pairs: Vec<(String, AdapterEvent)>,
+) -> bool {
+    for pair in pairs {
+        if event_tx.send(pair).await.is_err() {
+            return false;
+        }
+    }
+    true
 }
 
 /// `GET /state`.
@@ -413,6 +447,30 @@ mod tests {
         assert_eq!(got.transitions, vec![3]);
         assert!(got.exit);
         assert!(task.await.unwrap().starts_with("GET /state "));
+    }
+
+    #[tokio::test]
+    async fn shutdown_relays_the_guard_exit_before_settling() {
+        let w = GuardWatch::owned_by(Some("dispatch-1".into()));
+        w.observe("claude-code", &started("dispatch-1", serde_json::Value::Null));
+        w.relay(&state(4), false);
+        let (url, task) = fake_guard(r#"{"step":-1,"title":"Exit"}"#).await;
+        let (tx, mut rx) = mpsc::channel(8);
+        let shutdown = CancellationToken::new();
+        shutdown.cancel();
+
+        watch(&w, &client().unwrap(), &url, &tx, &shutdown).await;
+
+        assert!(task.await.unwrap().starts_with("GET /state "));
+        match rx.try_recv().expect("the exit is relayed on shutdown") {
+            (adapter_id, AdapterEvent::GuardStepState { local_id, state }) => {
+                assert_eq!(adapter_id, "claude-code");
+                assert_eq!(local_id, "dispatch-1");
+                assert!(state.exited());
+            }
+            other => panic!("expected GuardStepState, got {other:?}"),
+        }
+        assert!(w.settled.load(Ordering::Acquire));
     }
 
     #[tokio::test]

@@ -265,7 +265,11 @@ impl Dispatcher for EnrolledDispatcher {
                 // transport error — only treat it as a hard error when the
                 // dispatcher reported no state at all (couldn't introspect).
                 match state.as_deref().map(ReportedState::parse) {
-                    Some(ReportedState::Complete) => Ok((HandleStatus::Complete, None)),
+                    // On a finished workload it is how the container ended,
+                    // e.g. a child's OOM kill under a clean exit.
+                    Some(ReportedState::Complete) => {
+                        Ok((HandleStatus::Complete, worker_exit.or_else(|| error.map(ended))))
+                    }
                     Some(ReportedState::Failed) => Ok((HandleStatus::Failed(error), worker_exit)),
                     Some(ReportedState::Gone) => Ok((HandleStatus::Gone, None)),
                     Some(ReportedState::Queued) => Ok((HandleStatus::Queued, None)),
@@ -302,6 +306,11 @@ impl Dispatcher for EnrolledDispatcher {
             other => Err(DispatchError::Backend(format!("unexpected dispatcher reply: {other:?}"))),
         }
     }
+}
+
+/// A finished workload's container end, as its dispatcher named it.
+fn ended(reason: String) -> cctui_proto::api::WorkerExit {
+    cctui_proto::api::WorkerExit { reason: Some(reason), ..Default::default() }
 }
 
 #[cfg(test)]
