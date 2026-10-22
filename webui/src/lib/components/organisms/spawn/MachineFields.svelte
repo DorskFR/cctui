@@ -83,7 +83,9 @@
 	const cwdBadge = $derived(gitBadge(cwdGit));
 	const gitWatcher = makeGitInfoWatcher(fetchGitInfo, (info) => (cwdGit = info));
 	$effect(() => {
-		gitWatcher.update(form.machine_id, form.working_dir);
+		const offline =
+			machines.find((mc) => mc.machine_id === form.machine_id)?.liveness === 'offline';
+		gitWatcher.update(form.machine_id, form.working_dir, offline);
 		return gitWatcher.cancel;
 	});
 	const cwdBadgeTitle = $derived.by(() => {

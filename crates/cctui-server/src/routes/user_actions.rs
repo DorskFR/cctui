@@ -10,7 +10,7 @@
 //! updates live without refetching.
 
 use axum::Json;
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use cctui_proto::api::{
     AddUserActionRequest, TickUserActionRequest, USER_ACTION_LIMIT, USER_ACTION_TITLE_MAX,
@@ -19,7 +19,6 @@ use cctui_proto::api::{
 };
 use uuid::Uuid;
 
-use crate::auth::AuthContext;
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -255,27 +254,13 @@ pub async fn daemon_tick(
     }))
 }
 
-// ---- user-facing (session owner) ----
-
-async fn require_owner(
-    state: &AppState,
-    ctx: &AuthContext,
-    session_id: &str,
-) -> Result<(), AppError> {
-    match crate::authz::session_owner(session_id, &state.pool).await? {
-        Some(owner) if owner == ctx.user_id => Ok(()),
-        Some(_) => Err(AppError::new(StatusCode::FORBIDDEN, "not your session")),
-        None => Err(AppError::new(StatusCode::NOT_FOUND, "no such session")),
-    }
-}
+// ---- user-facing: the route's `Resource(Session, ..)` guard is the gate ----
 
 /// `GET /api/v1/sessions/{id}/user-actions`.
 pub async fn get_list(
     State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<Json<UserActionList>, AppError> {
-    require_owner(&state, &ctx, &session_id).await?;
     Ok(Json(list_of(&state, &session_id).await?))
 }
 
@@ -289,11 +274,9 @@ pub struct UiTick {
 /// `POST /api/v1/sessions/{id}/user-actions/{aid}/tick`.
 pub async fn ui_tick(
     State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
     Path((session_id, action_id)): Path<(String, Uuid)>,
     Json(req): Json<UiTick>,
 ) -> Result<Json<UserActionList>, AppError> {
-    require_owner(&state, &ctx, &session_id).await?;
     if !writable(&state.pool, &session_id).await? {
         return Err(AppError::new(
             StatusCode::CONFLICT,
@@ -459,6 +442,36 @@ mod tests {
         assert_eq!(item.status, UserActionStatus::Done);
         assert_eq!(item.resolved_by, Some(UserActionResolver::User));
         assert!(item.resolved_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn an_admin_reads_another_users_list_under_the_session_read_rule() {
+        use crate::auth::{AuthContext, Scope};
+        let Some(pool) =
+            test_pool("an_admin_reads_another_users_list_under_the_session_read_rule").await
+        else {
+            return;
+        };
+        let sid = seed(&pool, "ua-admin").await;
+        sqlx::query("INSERT INTO session_user_actions (session_id, title) VALUES ($1, 'x')")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let caller = |admin| AuthContext {
+            user_id: Uuid::new_v4(),
+            key_id: Uuid::new_v4(),
+            machine_id: None,
+            scopes: if admin { [Scope::Admin].into() } else { std::collections::BTreeSet::new() },
+        };
+        assert_eq!(
+            crate::authz::authorize_session_read(&caller(false), &sid, &pool).await,
+            Err(StatusCode::FORBIDDEN)
+        );
+        assert_eq!(crate::authz::authorize_session_read(&caller(true), &sid, &pool).await, Ok(()));
+        let state = AppState::for_test(pool);
+        let Json(got) = get_list(State(state), Path(sid)).await.unwrap();
+        assert_eq!(got.items.len(), 1);
     }
 
     #[tokio::test]

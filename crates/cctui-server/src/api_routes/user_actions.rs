@@ -9,7 +9,7 @@ pub(super) fn register(r: Routes) -> Routes {
     r.add(
         &[Method::GET],
         "/sessions/{id}/user-actions",
-        "What the agent is waiting on from the user (owner only).",
+        "What the agent is waiting on from the user.",
         get(routes::user_actions::get_list),
         Authn::Bearer,
         sess_read(),

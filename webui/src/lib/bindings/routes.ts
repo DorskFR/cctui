@@ -270,7 +270,7 @@ export const ROUTES = [
   { id: "get_skills_by_name", method: "GET", path: "/skills/{name}", summary: "Upload or fetch a skill bundle by name.", request: null, response: null },
   { id: "get_sessions_by_id_context", method: "GET", path: "/sessions/{id}/context", summary: "The rules and memories a session was given.", request: null, response: "SessionContextResponse" },
   { id: "post_sessions_by_id_context", method: "POST", path: "/sessions/{id}/context", summary: "Attach memories to a live session (owner only).", request: "AttachContextRequest", response: "AttachContextResponse" },
-  { id: "get_sessions_by_id_user_actions", method: "GET", path: "/sessions/{id}/user-actions", summary: "What the agent is waiting on from the user (owner only).", request: null, response: null },
+  { id: "get_sessions_by_id_user_actions", method: "GET", path: "/sessions/{id}/user-actions", summary: "What the agent is waiting on from the user.", request: null, response: null },
   { id: "post_sessions_by_id_user_actions_by_aid_tick", method: "POST", path: "/sessions/{id}/user-actions/{aid}/tick", summary: "Resolve one user action as the user (done or dropped).", request: null, response: null },
   { id: "get_drafts", method: "GET", path: "/drafts", summary: "List your unsent drafts.", request: null, response: "DraftList" },
   { id: "get_drafts_by_*key", method: "GET", path: "/drafts/{*key}", summary: "Read, save or discard one draft.", request: null, response: "Draft" },

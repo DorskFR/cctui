@@ -1538,7 +1538,7 @@ module = "app/context_items.rs"
 
 [[route]]
 id = "get_sessions_by_id_user_actions"
-# GET /sessions/{id}/user-actions — What the agent is waiting on from the user (owner only).
+# GET /sessions/{id}/user-actions — What the agent is waiting on from the user.
 tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 

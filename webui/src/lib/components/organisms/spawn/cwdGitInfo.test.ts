@@ -55,6 +55,20 @@ describe('makeGitInfoWatcher', () => {
 		expect(results).toEqual([null, null, null]);
 	});
 
+	it('never asks a machine known offline, and asks again once it is back', async () => {
+		const fetch = vi.fn(async () => repo({ branch: 'main' }));
+		const results: (GitInfo | null)[] = [];
+		const w = makeGitInfoWatcher(fetch, (i) => results.push(i), 300);
+		w.update('m1', '/a', true);
+		await vi.advanceTimersByTimeAsync(300);
+		expect(fetch).not.toHaveBeenCalled();
+		expect(results).toEqual([null]);
+		w.update('m1', '/a', false);
+		await vi.advanceTimersByTimeAsync(300);
+		expect(fetch).toHaveBeenCalledWith('m1', '/a');
+		expect(results).toEqual([null, repo({ branch: 'main' })]);
+	});
+
 	it('drops a reply that lands after a newer update or cancel', async () => {
 		let resolve!: (i: GitInfo) => void;
 		const fetch = vi.fn(() => new Promise<GitInfo>((r) => (resolve = r)));
