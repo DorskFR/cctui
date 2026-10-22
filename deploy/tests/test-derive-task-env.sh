@@ -18,11 +18,11 @@ reset() {
 
 echo "== 1. payload fields map to TASK_* =="
 reset
-TASK_PAYLOAD_JSON='{"repo":"cryptact","model":"opus","effort":"low","codex_model":"gpt-6-astra","context":{"owner":"Cryptact","head_sha":"abc123"}}'
+TASK_PAYLOAD_JSON='{"repo":"widgets","model":"opus","effort":"low","codex_model":"gpt-6-astra","context":{"owner":"acme","head_sha":"abc123"}}'
 derive_task_env
 check "TASK_CODEX_MODEL" "gpt-6-astra" "${TASK_CODEX_MODEL:-}"
 check "TASK_MODEL"       "opus"        "${TASK_MODEL:-}"
-check "TASK_REPO_URL"    "https://github.com/Cryptact/cryptact" "${TASK_REPO_URL:-}"
+check "TASK_REPO_URL"    "https://github.com/acme/widgets" "${TASK_REPO_URL:-}"
 check "TASK_REPO_REF"    "abc123"      "${TASK_REPO_REF:-}"
 
 echo "== 2. explicit env wins =="
