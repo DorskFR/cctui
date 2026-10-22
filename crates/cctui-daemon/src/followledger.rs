@@ -13,7 +13,7 @@ use serde_json::Value;
 /// result this old is no longer worth handing back.
 pub const RETENTION_SECS: i64 = 24 * 3600;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     pub parent: String,
     /// Unix seconds.
@@ -22,7 +22,7 @@ pub struct Entry {
     pub finished: Option<Finished>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Finished {
     /// Unix seconds.
     pub at: i64,

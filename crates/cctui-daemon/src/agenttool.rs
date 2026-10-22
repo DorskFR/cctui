@@ -446,7 +446,7 @@ fn dispatch_note(kind: &CallKind, timeout: Duration) -> String {
             timeout.as_secs(),
         ),
         CallKind::Attach { session_id } => {
-            format!("\n\n[reattached to child {session_id} · follow window {}s]", timeout.as_secs(),)
+            format!("\n\n[reattached to child {session_id} · follow window {}s]", timeout.as_secs())
         }
         CallKind::Usage { .. }
         | CallKind::ArchiveChild(_)
@@ -662,6 +662,7 @@ enum FollowResult {
     Superseded,
 }
 
+#[cfg(test)]
 fn follow_result_to_frame(result: FollowResult) -> Value {
     match result {
         FollowResult::Finished(outcome) => reply_frame(&outcome),
@@ -1145,16 +1146,22 @@ struct FollowCtx {
 }
 
 /// A child followed independently of any relay connection. Its result goes to
-/// `waiter` when a call is waiting, else to the parent as a turn.
+/// the slot's waiter when a call is waiting, else to the parent as a turn.
 struct Follower {
     parent: String,
-    waiter: Mutex<Option<oneshot::Sender<Value>>>,
+    slot: Mutex<Slot>,
+}
+
+/// `released` is set as the follow hands its result off; a reattach that
+/// finds it set reads the result from the ledger instead of waiting.
+struct Slot {
+    waiter: Option<oneshot::Sender<Value>>,
+    released: bool,
 }
 
 type Followers = Mutex<HashMap<String, Arc<Follower>>>;
 
-/// Live follows by child id. `waiter` is only touched under this lock, so a
-/// reattach either joins a follow or finds its result in the ledger.
+/// Live follows by child id.
 fn followers() -> &'static Followers {
     static FOLLOWERS: LazyLock<Followers> = LazyLock::new(Followers::default);
     &FOLLOWERS
@@ -1168,7 +1175,10 @@ fn start_follow(
     mut progress: impl AsyncWriteExt + Unpin + Send + 'static,
 ) -> oneshot::Receiver<Value> {
     let (tx, rx) = oneshot::channel();
-    let follower = Arc::new(Follower { parent: ctx.parent.clone(), waiter: Mutex::new(Some(tx)) });
+    let follower = Arc::new(Follower {
+        parent: ctx.parent.clone(),
+        slot: Mutex::new(Slot { waiter: Some(tx), released: false }),
+    });
     followers().lock().unwrap().insert(child.clone(), follower.clone());
     crate::followledger::begin(&child, &ctx.parent);
     tokio::spawn(async move {
@@ -1190,13 +1200,15 @@ fn start_follow(
 /// Drop `follower` from the live set (unless a newer follow replaced it) and
 /// take whichever call is waiting on it.
 fn release(child: &str, follower: &Arc<Follower>) -> Option<oneshot::Sender<Value>> {
-    let mut live = followers().lock().unwrap();
-    if live.get(child).is_some_and(|f| Arc::ptr_eq(f, follower)) {
-        live.remove(child);
+    {
+        let mut live = followers().lock().unwrap();
+        if live.get(child).is_some_and(|f| Arc::ptr_eq(f, follower)) {
+            live.remove(child);
+        }
     }
-    let waiter = follower.waiter.lock().unwrap().take();
-    drop(live);
-    waiter
+    let mut slot = follower.slot.lock().unwrap();
+    slot.released = true;
+    slot.waiter.take()
 }
 
 /// The frame a follow ends with, or `None` when a newer call took the child
@@ -1441,15 +1453,20 @@ fn attach(parent: &str, child: &str) -> Joined {
 }
 
 /// Become the call waiting on `child`'s live follow. `None` when nothing
-/// follows it; `Err` when another session's call started the follow.
+/// follows it (or it already handed its result off); `Err` when another
+/// session's call started the follow.
 fn join_live(parent: &str, child: &str) -> Option<Result<oneshot::Receiver<Value>, ()>> {
-    let live = followers().lock().unwrap();
-    let follower = live.get(child)?;
+    let follower = followers().lock().unwrap().get(child).cloned()?;
     if follower.parent != parent {
         return Some(Err(()));
     }
     let (tx, rx) = oneshot::channel();
-    *follower.waiter.lock().unwrap() = Some(tx);
+    let mut slot = follower.slot.lock().unwrap();
+    if slot.released {
+        return None;
+    }
+    slot.waiter = Some(tx);
+    drop(slot);
     Some(Ok(rx))
 }
 

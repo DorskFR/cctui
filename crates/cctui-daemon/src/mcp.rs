@@ -898,22 +898,26 @@ fn dropped_error(tool: &str, kind: &str, child: Option<&str>) -> String {
     if kind != "spawn_agent" {
         return format!("{tool} failed: the daemon closed the connection without a result");
     }
-    match child {
-        Some(child) => format!(
-            "{tool} lost its connection to the cctui daemon (most likely a daemon restart or \
-             self-update) and could not reattach. THE CHILD IS NOT AFFECTED: {child} keeps \
-             running. When its turn ends, its final message is delivered to this session as a \
-             message. To wait for it here instead, call {tool} with session_id {child:?} and no \
-             prompt: that returns its final message, at once if it already finished."
-        ),
-        None => format!(
-            "{tool} lost its connection to the cctui daemon (most likely a daemon restart or \
+    child.map_or_else(
+        || {
+            format!(
+                "{tool} lost its connection to the cctui daemon (most likely a daemon restart or \
              self-update) before the child's session id was known. A child that was spawned keeps \
              running, and its final message is delivered to this session as a message when its \
              turn ends. To wait for it here instead, find its id with CctuiPeers and call {tool} \
              with that session_id and no prompt."
-        ),
-    }
+            )
+        },
+        |child| {
+            format!(
+                "{tool} lost its connection to the cctui daemon (most likely a daemon restart or \
+             self-update) and could not reattach. THE CHILD IS NOT AFFECTED: {child} keeps \
+             running. When its turn ends, its final message is delivered to this session as a \
+             message. To wait for it here instead, call {tool} with session_id {child:?} and no \
+             prompt: that returns its final message, at once if it already finished."
+            )
+        },
+    )
 }
 
 /// One fire-and-forget line on the daemon socket, ignoring any reply. Used for
