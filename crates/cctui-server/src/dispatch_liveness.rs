@@ -45,7 +45,9 @@ pub fn end_reason_for(reason: &str) -> SessionEndReason {
         | "InvalidImageName"
         | "CreateContainerError"
         | "CreateContainerConfigError" => SessionEndReason::SpawnFailed,
-        _ if reason.starts_with("pod pending") => SessionEndReason::SpawnFailed,
+        _ if reason.starts_with("pod pending") || reason.starts_with("preflight:") => {
+            SessionEndReason::SpawnFailed
+        }
         _ => SessionEndReason::Crashed,
     }
 }
@@ -325,6 +327,10 @@ mod tests {
             ("InvalidImageName", SessionEndReason::SpawnFailed),
             ("CreateContainerConfigError", SessionEndReason::SpawnFailed),
             ("pod pending for 300s (unschedulable?)", SessionEndReason::SpawnFailed),
+            (
+                "preflight: k8s API reachable (kubernetes.default.svc:443)",
+                SessionEndReason::SpawnFailed,
+            ),
             ("pod failed", SessionEndReason::Crashed),
             ("container restart-looping", SessionEndReason::Crashed),
             ("container exited with code 137", SessionEndReason::Crashed),

@@ -58,12 +58,25 @@ fn exit_of(pods: &[Pod]) -> Option<(WorkerExit, LogTarget)> {
     let exit = WorkerExit {
         container: Some(container.to_owned()),
         exit_code: terminated.map(|t| t.exit_code),
-        reason: terminated.and_then(|t| t.reason.clone().or_else(|| t.message.clone())),
+        reason: terminated.and_then(|t| t.message.clone().or_else(|| t.reason.clone())),
         signal: terminated.and_then(|t| t.signal),
         log_tail: None,
         logs_error: None,
     };
     Some((exit, LogTarget { pod: pod_name, container: container.to_owned(), previous }))
+}
+
+/// What the newest pod's worker container wrote to its termination message
+/// before exiting non-zero: the entrypoint's own account of a refused dispatch.
+fn termination_message(pods: &[Pod]) -> Option<String> {
+    let pod = pods.iter().max_by_key(|p| p.metadata.creation_timestamp.as_ref().map(|t| t.0))?;
+    let worker = worker_container(pod);
+    let statuses = pod.status.as_ref()?.container_statuses.as_deref()?;
+    let (end, _) = statuses.iter().find(|cs| cs.name == worker).and_then(termination)?;
+    if end.exit_code == 0 {
+        return None;
+    }
+    end.message.as_deref().map(str::trim).filter(|m| !m.is_empty()).map(ToOwned::to_owned)
 }
 
 /// The last `lines` lines, without a trailing newline.
@@ -89,6 +102,11 @@ fn logs_error(code: u16, message: &str, namespace: &str) -> String {
 }
 
 impl Spawner {
+    pub(super) async fn worker_termination_message(&self, job_name: &str) -> Option<String> {
+        let lp = ListParams::default().labels(&format!("job-name={job_name}"));
+        termination_message(&self.pods().list(&lp).await.ok()?.items)
+    }
+
     pub(super) async fn read_worker_exit(&self, handle: &str) -> Option<WorkerExit> {
         let name = handle.strip_prefix("jobs/").unwrap_or(handle);
         let lp = ListParams::default().labels(&format!("job-name={name}"));
@@ -213,6 +231,42 @@ mod tests {
         assert_eq!(exit.exit_code, Some(1));
         assert_eq!(exit.reason.as_deref(), Some("panic: boom"));
         assert!(target.previous);
+    }
+
+    #[test]
+    fn a_refused_dispatch_reports_the_worker_termination_message() {
+        let refused = pod(
+            "w",
+            "2026-10-22T08:00:00Z",
+            &json!({ "phase": "Failed", "containerStatuses": [{
+                "name": "agent", "image": "i", "imageID": "", "ready": false, "restartCount": 0,
+                "state": { "terminated": {
+                    "exitCode": 1, "reason": "Error",
+                    "message": "preflight: k8s API reachable (kubernetes.default.svc:443)\n"
+                } }
+            }]}),
+        );
+        let want = "preflight: k8s API reachable (kubernetes.default.svc:443)";
+        assert_eq!(termination_message(std::slice::from_ref(&refused)).as_deref(), Some(want));
+        let (exit, _) = exit_of(&[refused]).unwrap();
+        assert_eq!(exit.reason.as_deref().map(str::trim), Some(want));
+
+        for state in [
+            json!({ "terminated": { "exitCode": 1, "reason": "Error" } }),
+            json!({ "terminated": { "exitCode": 1, "reason": "Error", "message": "  " } }),
+            json!({ "terminated": { "exitCode": 0, "message": "done" } }),
+            json!({ "running": {} }),
+        ] {
+            let p = pod(
+                "w",
+                "2026-10-22T08:00:00Z",
+                &json!({ "containerStatuses": [{
+                    "name": "agent", "image": "i", "imageID": "", "ready": false,
+                    "restartCount": 0, "state": state
+                }]}),
+            );
+            assert_eq!(termination_message(&[p]), None, "{state}");
+        }
     }
 
     #[test]

@@ -375,6 +375,13 @@ impl Spawner {
             worker.insert("volumeMounts".into(), serde_json::to_value(mounts)?);
         }
         Self::merge_env(&mut worker, overrides)?;
+        let preflight: Vec<(String, EnvSource)> = profile
+            .preflight
+            .iter()
+            .flat_map(cctui_orchestrator::PreflightSpec::worker_env)
+            .map(|(k, v)| (k.to_owned(), EnvSource::Literal(v)))
+            .collect();
+        Self::merge_env(&mut worker, &preflight)?;
 
         let mut containers = vec![Value::Object(worker)];
         for extra in profile.containers.iter().flatten() {
@@ -1020,6 +1027,9 @@ impl Spawner {
         match Self::job_terminal_state(&job) {
             Some("Complete") => return Ok((HandleState::Complete, None)),
             Some("Failed") => {
+                if let Some(message) = self.worker_termination_message(name).await {
+                    return Ok((HandleState::Failed, Some(message)));
+                }
                 let reason = Self::job_failed_reason(&job);
                 return Ok((HandleState::Failed, reason.or(self.pod_failure_reason(name).await)));
             }
@@ -1897,6 +1907,41 @@ mod tests {
         let ca = mounts.iter().find(|m| m["name"] == "ca").unwrap();
         assert_eq!(ca["readOnly"], json!(true), "the CA mount is read-only");
         assert_eq!(ca["mountPath"], json!("/etc/cctui/ca"));
+    }
+
+    #[test]
+    fn profile_preflight_becomes_worker_env_and_survives_a_rebuild() {
+        let mut profile: WorkerProfileSpec = serde_json::from_value(json!({
+            "image": "example.com/worker:latest",
+            "env": [{ "name": "CCTUI_PREFLIGHT_MODE", "value": "off" }],
+            "preflight": { "mode": "warn", "deny": ["postgres.db.svc:5432", "10.42.0.0/16"] }
+        }))
+        .unwrap();
+        let s = spec("sess-preflight", json!({}));
+        let v = build("lean", &profile, &s);
+        assert_eq!(env_value(&v, "CCTUI_PREFLIGHT_MODE").as_deref(), Some("warn"));
+        assert_eq!(
+            env_value(&v, "CCTUI_PREFLIGHT_DENY").as_deref(),
+            Some("postgres.db.svc:5432,10.42.0.0/16")
+        );
+        let names: Vec<_> = worker_env(&v)
+            .into_iter()
+            .filter(|e| e["name"] == "CCTUI_PREFLIGHT_MODE")
+            .collect();
+        assert_eq!(names.len(), 1, "spec.preflight replaces the profile env entry");
+
+        let old = queued_job("lean", &profile, &s);
+        profile.preflight.as_mut().unwrap().mode = Some("enforce".to_owned());
+        let v = serde_json::to_value(Spawner::rebuild_job(&old, &profile).unwrap()).unwrap();
+        assert_eq!(
+            env_value(&v, "CCTUI_PREFLIGHT_MODE").as_deref(),
+            Some("enforce"),
+            "the current profile wins over the queued Job's env"
+        );
+
+        let v = build("lean", &lean_profile(), &s);
+        assert!(env_value(&v, "CCTUI_PREFLIGHT_MODE").is_none());
+        assert!(env_value(&v, "CCTUI_PREFLIGHT_DENY").is_none());
     }
 
     #[test]

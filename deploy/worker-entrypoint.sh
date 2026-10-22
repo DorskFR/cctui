@@ -2,7 +2,8 @@
 # Entrypoint for the cctui worker container (contract v1).
 # Runs root-side bootstrap phases, each skippable when its env is absent, then
 # drops to uid 1000 via cctui-supervisor and execs the daemon. Only the context
-# pack fetch is fail-closed. Ephemeral: never self-updates.
+# pack fetch and the pre-flight isolation check are fail-closed. Ephemeral:
+# never self-updates.
 # See docs/worker-contract.md for the env / mount / capability contract.
 set -eu
 
@@ -96,6 +97,16 @@ require_known_adapter() {
     log "dispatch: unknown adapter '${TASK_ADAPTER}' (known: claude-code codex opencode ${ACP_AGENTS})"
     jq -nc --arg id "${TASK_ID:-}" --arg a "$TASK_ADAPTER" \
         '{task_id:$id, status:"failed", error:("dispatch payload names unknown adapter `"+$a+"`")}' \
+        > "$RESULT_FILE"
+    exit 1
+}
+
+# The kube dispatcher reports the termination message as the session's end reason.
+TERMINATION_LOG="${TERMINATION_LOG:-/dev/termination-log}"
+fail_dispatch() {
+    log "dispatch: $1"
+    { printf '%s' "$1" > "$TERMINATION_LOG"; } 2>/dev/null || true
+    jq -nc --arg id "${TASK_ID:-}" --arg e "$1" '{task_id:$id, status:"failed", error:$e}' \
         > "$RESULT_FILE"
     exit 1
 }
@@ -1143,6 +1154,198 @@ phase_guard() {
     log "guard: started (prompt=$_prompt, rules=$_rules, pid $GUARD_PID)"
 }
 
+# ── Phase 6b: Pre-flight isolation check ────────────────────────────────────
+# An unset mode warns outside transparent-external: only there does net-init
+# filter the agent's non-proxied egress, so elsewhere the probes cannot pass.
+PREFLIGHT_TIMEOUT=0.3
+PREFLIGHT_CONTROL_TIMEOUT=2
+PREFLIGHT_RESULT=off
+
+as_agent() {
+    if [ "$(id -u)" = 0 ]; then
+        setpriv --reuid="$WORKER_UID" --regid="$WORKER_UID" --clear-groups "$@"
+    else
+        "$@"
+    fi
+}
+
+cidr_sample() {
+    _net=${1%/*}
+    _len=${1#*/}
+    case "$_net" in
+        *::) printf '[%s1]' "$_net"; return 0 ;;
+        *:*) printf '[%s]' "$_net"; return 0 ;;
+    esac
+    _OLDIFS=$IFS; IFS=.
+    # shellcheck disable=SC2086
+    set -- $_net
+    IFS=$_OLDIFS
+    _ip=$(( ($1 << 24) | ($2 << 16) | ($3 << 8) | $4 ))
+    _mask=0
+    [ "$_len" -gt 0 ] && _mask=$(( (0xFFFFFFFF << (32 - _len)) & 0xFFFFFFFF ))
+    _ip=$(( _ip & _mask ))
+    [ "$_len" -ge 31 ] || _ip=$(( _ip + 1 ))
+    printf '%d.%d.%d.%d' $(( (_ip >> 24) & 255 )) $(( (_ip >> 16) & 255 )) \
+        $(( (_ip >> 8) & 255 )) $(( _ip & 255 ))
+}
+
+# `kind target reason` per deny probe.
+preflight_targets() {
+    echo "https kubernetes.default.svc:443 k8s API reachable"
+    if [ -n "${KUBERNETES_SERVICE_HOST:-}" ]; then
+        _kh=$KUBERNETES_SERVICE_HOST
+        case "$_kh" in *:*) _kh="[$_kh]" ;; esac
+        echo "https ${_kh}:${KUBERNETES_SERVICE_PORT:-443} k8s API reachable"
+    fi
+    for _t in /var/run/secrets/*/serviceaccount/*token*; do
+        if [ -e "$_t" ]; then echo "file $_t service-account token readable"; fi
+    done
+    for _r in 1.1.1.1 8.8.8.8; do
+        echo "dns $_r public DNS answers"
+    done
+    for _m in 169.254.169.254:80 169.254.170.23:80 '[fd00:ec2::254]:80'; do
+        echo "http $_m cloud metadata reachable"
+    done
+    for _v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+            AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_CONTAINER_CREDENTIALS_RELATIVE_URI \
+            AWS_CONTAINER_AUTHORIZATION_TOKEN AWS_WEB_IDENTITY_TOKEN_FILE \
+            GOOGLE_APPLICATION_CREDENTIALS AZURE_CLIENT_SECRET AZURE_FEDERATED_TOKEN_FILE; do
+        echo "env $_v ambient cloud identity"
+    done
+    for _c in "/home/${WORKER_USER}/.aws/credentials" \
+            "/home/${WORKER_USER}/.config/gcloud/application_default_credentials.json"; do
+        echo "file $_c ambient cloud identity"
+    done
+    for _p in 10.0.0.1:80 172.16.0.1:80 192.168.0.1:80 100.64.0.1:80 '[fd00::1]:80'; do
+        echo "http $_p private range reachable"
+    done
+    echo "http 1.1.1.1:80 direct public egress"
+    printf '%s\n' "${CCTUI_PREFLIGHT_DENY:-}" | tr ',' '\n' \
+        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;/^$/d' \
+        | while read -r _e; do
+            case "$_e" in
+                */*) echo "http $(cidr_sample "$_e"):80 profile deny range $_e reachable" ;;
+                *) echo "http $_e profile deny target reachable" ;;
+            esac
+        done
+}
+
+# Exit 0 when the target answered. Transparent modes REDIRECT every agent
+# connect to the guard proxy, which closes a denied one unanswered, so only
+# bytes back count there; forward mode has no proxy in the path, so a connect
+# alone does.
+preflight_connect() {
+    _rc=0
+    _tc=$(as_agent curl -q -sk -g -o /dev/null -w '%{time_connect}' --noproxy '*' \
+        --connect-timeout "$PREFLIGHT_TIMEOUT" --max-time "$PREFLIGHT_TIMEOUT" \
+        "$1://$2/" 2>/dev/null) || _rc=$?
+    case "$_rc" in
+        0 | 1 | 8) return 0 ;;
+    esac
+    [ "$NET_MODE" = forward ] && awk -v t="${_tc:-0}" 'BEGIN { exit !(t + 0 > 0) }'
+}
+
+# Exit 0 when the resolver answered, 3 when no DNS client is available.
+preflight_dns() {
+    if command -v dig >/dev/null 2>&1; then
+        as_agent dig "@$1" +time=1 +tries=1 +short example.com A >/dev/null 2>&1
+    elif command -v node >/dev/null 2>&1; then
+        as_agent node -e '
+            const answered = ["ENODATA", "ENOTFOUND", "ESERVFAIL", "EREFUSED", "EFORMERR", "ENOTIMP", "EBADRESP"];
+            const r = new (require("dns").promises.Resolver)({ timeout: 800, tries: 1 });
+            r.setServers([process.argv[1]]);
+            r.resolve4("example.com").then(() => process.exit(0),
+                (e) => process.exit(answered.includes(e.code) ? 0 : 1));
+        ' "$1" >/dev/null 2>&1
+    else
+        return 3
+    fi
+}
+
+# Exit 0 when the probe reached its target, i.e. isolation failed.
+preflight_probe() {
+    case "$1" in
+        file) as_agent test -r "$2" ;;
+        env) [ -n "$(printenv "$2" 2>/dev/null)" ] ;;
+        dns) preflight_dns "$2" ;;
+        http | https) preflight_connect "$1" "$2" ;;
+        *) return 1 ;;
+    esac
+}
+
+preflight_control() {
+    _code=$(as_agent curl -q -4 -sS -o /dev/null -w '%{http_code}' \
+        --max-time "$PREFLIGHT_CONTROL_TIMEOUT" "${CCTUI_BASE_URL%/}/health" 2>/dev/null) \
+        || return 1
+    [ -n "$_code" ] && [ "$_code" != 000 ]
+}
+
+phase_preflight() {
+    _mode="${CCTUI_PREFLIGHT_MODE:-}"
+    if [ -z "$_mode" ]; then
+        _mode=warn
+        [ "$NET_MODE" = transparent-external ] && _mode=enforce
+    fi
+    case "$_mode" in
+        off) log "preflight: off"; PREFLIGHT_RESULT=off; return 0 ;;
+        enforce | warn) ;;
+        *) log "preflight: unknown mode '$_mode', enforcing"; _mode=enforce ;;
+    esac
+
+    _failed=""
+    if [ "$(id -u)" = 0 ] && ! command -v setpriv >/dev/null 2>&1; then
+        _failed="cannot drop to the agent uid (setpriv missing)"
+    else
+        _start=$(date +%s%N)
+        _dir=$(mktemp -d)
+        preflight_targets > "$_dir/targets"
+        _n=0
+        _pids=""
+        while read -r _kind _target _reason; do
+            [ -n "$_kind" ] || continue
+            _n=$((_n + 1))
+            (
+                _rc=0
+                preflight_probe "$_kind" "$_target" || _rc=$?
+                printf '%s %s (%s)\n' "$_rc" "$_reason" "$_target" > "$_dir/$_n"
+            ) &
+            _pids="$_pids $!"
+        done < "$_dir/targets"
+        ( if preflight_control; then : > "$_dir/control"; fi ) &
+        _pids="$_pids $!"
+        # shellcheck disable=SC2086
+        wait $_pids || true
+
+        _i=0
+        while [ "$_i" -lt "$_n" ]; do
+            _i=$((_i + 1))
+            [ -f "$_dir/$_i" ] || continue
+            read -r _rc _what < "$_dir/$_i"
+            case "$_rc" in
+                0) log "preflight: FAIL $_what"; _failed="${_failed:+$_failed; }$_what" ;;
+                3) log "preflight: skipped $_what (no DNS client)" ;;
+            esac
+        done
+        [ -f "$_dir/control" ] \
+            || _failed="${_failed:+$_failed; }proxy path to the cctui server failed (${CCTUI_BASE_URL%/}/health)"
+        rm -rf "$_dir"
+        _ms=$(( ($(date +%s%N) - _start) / 1000000 ))
+        log "preflight: ${_n} deny probes + proxy control in ${_ms}ms (mode=$_mode)"
+    fi
+
+    if [ -z "$_failed" ]; then
+        PREFLIGHT_RESULT=passed
+        log "preflight: passed"
+        return 0
+    fi
+    if [ "$_mode" = warn ]; then
+        PREFLIGHT_RESULT=warned
+        log "WARNING: preflight: $_failed (warn mode, continuing)"
+        return 0
+    fi
+    fail_dispatch "preflight: $_failed"
+}
+
 # ── Phase 7: Hardening report ───────────────────────────────────────────────
 # Collect entrypoint-side state; the supervisor appends landlock/seccomp via
 # --report. Exposed as WORKER_HARDENING_JSON (env) + a file the daemon can
@@ -1152,11 +1355,12 @@ phase_hardening() {
     WORKER_HARDENING_JSON=$(jq -nc \
         --arg net "$NET_MODE" \
         --arg guard "$GUARD_ON" \
-        '{net_mode:$net, guard:$guard, supervisor_report:"/tmp/hardening.json"}')
+        --arg preflight "$PREFLIGHT_RESULT" \
+        '{net_mode:$net, guard:$guard, preflight:$preflight, supervisor_report:"/tmp/hardening.json"}')
     export WORKER_HARDENING_JSON
     printf '%s\n' "$WORKER_HARDENING_JSON" > "$HARDENING_FILE"
     export WORKER_HARDENING_FILE="$HARDENING_FILE"
-    log "hardening: net_mode=$NET_MODE guard=$GUARD_ON"
+    log "hardening: net_mode=$NET_MODE guard=$GUARD_ON preflight=$PREFLIGHT_RESULT"
 }
 
 # ── Phase 7b: Permission bypass seeding ─────────────────────────────────────
@@ -1248,6 +1452,15 @@ derive_task_env() {
 default_bg_isolation() {
     export CLAUDE_BG_ISOLATION="${CLAUDE_BG_ISOLATION:-none}"
 }
+# Node trusts its bundled roots, distrusted ones included, unless pointed at
+# the system store; NODE_EXTRA_CA_CERTS only adds roots. A profile that names a
+# CA source in NODE_OPTIONS keeps its choice.
+default_node_ca() {
+    case " ${NODE_OPTIONS:-} " in
+        *" --use-openssl-ca "* | *" --use-bundled-ca "* | *" --use-system-ca "*) return 0 ;;
+    esac
+    export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--use-openssl-ca"
+}
 derive_task_env
 default_bg_isolation
 phase_network
@@ -1277,8 +1490,10 @@ phase_codex_pack
 phase_acp_config
 phase_callback
 require_known_adapter
+phase_preflight
 phase_guard
 phase_permissions
+default_node_ca
 phase_hardening
 
 # ── Phase 8: Drop privileges + run ──────────────────────────────────────────

@@ -2179,6 +2179,28 @@ spec:
                   dispatcher's own `cctui.dev/*` session annotations win on key conflict.
                 nullable: true
                 type: object
+              preflight:
+                description: |-
+                  Pre-flight isolation check the worker entrypoint runs before the agent
+                  starts. `None` runs the built-in probes in the default mode.
+                nullable: true
+                properties:
+                  deny:
+                    description: |-
+                      Extra targets the agent must not reach, on top of the built-in set:
+                      `host:port` (`[addr]:port` for IPv6), or a CIDR whose first host is
+                      probed on port 80.
+                    items:
+                      type: string
+                    nullable: true
+                    type: array
+                  mode:
+                    description: |-
+                      `enforce` fails the dispatch on any reachable probe, `warn` logs and
+                      continues, `off` skips the check. Unset enforces in the sandboxed pod.
+                    nullable: true
+                    type: string
+                type: object
               resources:
                 description: Resource requests/limits for the worker container.
                 nullable: true

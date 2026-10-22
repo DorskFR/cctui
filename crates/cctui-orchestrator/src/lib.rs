@@ -166,7 +166,57 @@ pub struct WorkerProfileSpec {
     /// `guard-proxy-env` `ConfigMap`. `None` renders the sidecar unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guard: Option<GuardSpec>,
+
+    /// Pre-flight isolation check the worker entrypoint runs before the agent
+    /// starts. `None` runs the built-in probes in the default mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preflight: Option<PreflightSpec>,
 }
+
+/// Pre-flight isolation check settings for one profile.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PreflightSpec {
+    /// `enforce` fails the dispatch on any reachable probe, `warn` logs and
+    /// continues, `off` skips the check. Unset enforces in the sandboxed pod.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+
+    /// Extra targets the agent must not reach, on top of the built-in set:
+    /// `host:port` (`[addr]:port` for IPv6), or a CIDR whose first host is
+    /// probed on port 80.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deny: Option<Vec<String>>,
+}
+
+impl PreflightSpec {
+    /// Worker env the entrypoint reads the settings from.
+    #[must_use]
+    pub fn worker_env(&self) -> Vec<(&'static str, String)> {
+        let mut env = Vec::new();
+        if let Some(mode) = self.mode.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            env.push((PREFLIGHT_MODE_ENV, mode.to_owned()));
+        }
+        let deny: Vec<&str> = self
+            .deny
+            .iter()
+            .flatten()
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .collect();
+        if !deny.is_empty() {
+            env.push((PREFLIGHT_DENY_ENV, deny.join(",")));
+        }
+        env
+    }
+}
+
+/// Worker env carrying [`PreflightSpec::mode`].
+pub const PREFLIGHT_MODE_ENV: &str = "CCTUI_PREFLIGHT_MODE";
+
+/// Worker env carrying [`PreflightSpec::deny`], comma-separated.
+pub const PREFLIGHT_DENY_ENV: &str = "CCTUI_PREFLIGHT_DENY";
 
 /// Guard-proxy sidecar env for one profile, so a guard setting can be canaried
 /// on a single profile before it reaches the global `ConfigMap`.
@@ -341,6 +391,35 @@ guard:
             serde_norway::from_str("image: registry.example.com/worker:latest\n").unwrap();
         assert!(lean.guard.is_none());
         assert!(serde_json::to_value(&lean).unwrap().get("guard").is_none());
+    }
+
+    #[test]
+    fn preflight_profile_deserializes_into_worker_env() {
+        let yaml = r#"
+image: registry.example.com/worker:latest
+preflight:
+  mode: warn
+  deny:
+    - postgres.db.svc:5432
+    - " 10.42.0.0/16 "
+    - ""
+"#;
+        let spec: WorkerProfileSpec =
+            serde_norway::from_str(yaml).expect("preflight profile parses");
+        let env = spec.preflight.expect("spec.preflight").worker_env();
+        assert_eq!(
+            env,
+            vec![
+                (PREFLIGHT_MODE_ENV, "warn".to_owned()),
+                (PREFLIGHT_DENY_ENV, "postgres.db.svc:5432,10.42.0.0/16".to_owned()),
+            ]
+        );
+
+        assert!(PreflightSpec::default().worker_env().is_empty());
+        let lean: WorkerProfileSpec =
+            serde_norway::from_str("image: registry.example.com/worker:latest\n").unwrap();
+        assert!(lean.preflight.is_none());
+        assert!(serde_json::to_value(&lean).unwrap().get("preflight").is_none());
     }
 
     #[test]
