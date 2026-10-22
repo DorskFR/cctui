@@ -70,7 +70,7 @@ case, never a *no-`SESSION_ID`* case.
 | `WORKER_NET_MODE` | auto | `transparent`, `transparent-external`, or `forward`. Auto = `transparent` when iptables is usable (CAP_NET_ADMIN), else `forward`. `transparent-external` is never auto-selected — set it only when the pod runs the guard-proxy sidecar + net-init init container (see below). |
 | `WORKER_NET_EXEMPT` | — | Comma-separated `host:port` that **bypass** the proxy (resolved to a single IP at boot, iptables `RETURN`'d). Transparent mode only. IP-pinned — use only for **IP-stable** hosts; CDN/multi-IP hosts will rotate off the exempted IP. |
 | `WORKER_NET_ALLOW` | — | Comma-separated `host:port` allowed **through** the proxy by **SNI** (IP-independent). Folded into the seeded `policy.json` and re-applied as `cctui-guard --always-allow` so it survives per-step rewrites. The right tool for CDN/multi-IP SaaS APIs (e.g. a YouTrack host). |
-| `WARM_REPO_DIR` | — | Mounted warm-repo dir; becomes the overlayfs lowerdir for `/workspace` (rsync-copy fallback). |
+| `WARM_REPO_DIR` | — | Mounted warm-repo dir; becomes the overlayfs lowerdir for `/workspace` (rsync-copy fallback). `posture: root` only: a `posture: nonroot` profile is denied for setting it, and the envelope strips it from a nonroot worker. |
 | `TASK_REPO_URL` | — | Repo to shallow-clone into `/workspace` when no warm repo. |
 | `TASK_REPO_REF` | — | Branch/tag to clone (`git clone --depth 1 --branch`). |
 | `CONTEXT_PACK_URL` | — | Git repo of the context pack. May carry `@<ref>` (path) and `#<subdir>` to pin in one value. Set ⇒ fetch is **fail-closed**. Its `host:port` is seeded into the boot guard-proxy policy (boot-only — not `--always-allow`'d, so the first per-step rewrite closes it), and the clone runs as `WORKER_UID` so it flows through the proxy: with no `CONTEXT_PACK_TOKEN`, a matching inject rule (optionally `path_prefix`-scoped to the pack repo) supplies the credential. |
@@ -322,7 +322,8 @@ base `ghcr.io/dorskfr/cctui-worker` image — no extra image needed):
    waits (≤30s) for the sidecar's `/ready` over pod-local net. `cctui-guard`'s
    per-step policy rewrites keep working unchanged through the shared file.
 
-Worker-container capabilities in this mode: `privileged` and NET_ADMIN are
+Worker-container capabilities in this mode (`posture: root`; `nonroot` adds
+none, see Non-root start): `privileged` and NET_ADMIN are
 gone. The entrypoint still boots as root, so it keeps `drop: ALL` plus the
 minimal add set: `SYS_ADMIN` (overlayfs + `mount --bind` context-pack/home
 isolation), `CHOWN`/`DAC_OVERRIDE`/`FOWNER`/`FSETID` (workspace + home chowns as
@@ -945,7 +946,11 @@ A worker container may run as uid/gid 1000 with `runAsNonRoot: true`,
 `allowPrivilegeEscalation: false`, `capabilities: {drop: [ALL]}` and the
 runtime's default seccomp and AppArmor. The pod's only privileged container
 is then the `net-init` init container (root, `NET_ADMIN`), which exits before
-the worker starts. Requirements:
+the worker starts. A `WorkerProfile` gets this pod with `spec.posture: nonroot`
+(worker-profile-crd.md, Posture): the envelope renders the worker
+`securityContext` above, drops the `overlay` emptyDir and mount and
+`WARM_REPO_DIR`, and runs the guard-proxy sidecar as restricted uid 1337
+(adds `runAsNonRoot` and `RuntimeDefault` seccomp). Requirements:
 
 - `runAsGroup: 1000`. The supervisor skips its uid switch when it already
   runs as uid and gid 1000, and fails with a `runAsGroup` hint on any other
@@ -959,6 +964,7 @@ the worker starts. Requirements:
   mounts them as `fsGroup: 1000` emptyDirs.
 - No `WARM_REPO_DIR` overlay. Without `SYS_ADMIN` the entrypoint rsync-copies
   the warm cache instead, so use a baked warm image (`/workspace/.warm-baked`).
+  A `posture: nonroot` profile can't set it at all.
 
 The entrypoint logs `running as uid 1000 (non-root)` and skips its root-only
 steps, each with a log line:

@@ -10,20 +10,23 @@
 //! 1. structural — exactly one worker container and the envelope marker present;
 //! 2. sandbox-defeating footguns on the worker/pod;
 //! 3. profile conformance — the pod is exactly what the dispatcher + mutating
-//!    webhook would legitimately produce from the named profile, and the
-//!    profile's `spec.guard` only tunes the guard-proxy within its rules.
+//!    webhook would legitimately produce from the named profile, the
+//!    profile's `spec.guard` only tunes the guard-proxy within its rules, and
+//!    nothing in the profile contradicts its `spec.posture`.
 
 use crate::envelope::{
     GUARD_PROXY_CONTAINER, NET_INIT_CONTAINER, PROXY_UID, VOL_GPG_AGENT, VOL_GUARD_PROXY_CA,
     VOL_GUARD_PROXY_INJECT, VOL_GUARD_PROXY_SA_TOKEN, VOL_GUARD_STATE, VOL_HOME, VOL_OVERLAY,
-    VOL_PROXY_POLICY, WORKER_ADDED_CAPS, WORKER_ENVELOPE_MOUNTS,
+    VOL_PROXY_POLICY, WARM_REPO_DIR_ENV, WORKER_UID, has_overlay, worker_added_caps,
+    worker_envelope_mounts,
 };
 use crate::{
-    ANNOTATION_ENV_SECRET, ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_WORKER_CONTAINER,
-    DEFAULT_WORKER_CONTAINER, GuardSpec, LABEL_WORKER_PROFILE, WorkerProfileSpec,
+    ANNOTATION_ENV_SECRET, ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_POSTURE,
+    ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, GuardSpec, LABEL_WORKER_PROFILE,
+    Posture, WorkerProfileSpec,
 };
-use k8s_openapi::api::core::v1::{Container, Pod, PodSpec, PodTemplateSpec};
-use std::collections::BTreeSet;
+use k8s_openapi::api::core::v1::{Container, Pod, PodSpec, PodTemplateSpec, SecurityContext};
+use std::collections::{BTreeMap, BTreeSet};
 
 const SECRET_REF_PREFIXES: [&str; 4] = ["vault:", "bao:", "k8s:", "aws-sm:"];
 
@@ -31,6 +34,8 @@ const GUARD_ENV_PREFIX: &str = "GUARD_PROXY_";
 const GUARD_ENV_IDENTITY: &str = "GUARD_PROXY_IDENTITY";
 const GUARD_ENV_ALLOW_PRIVATE_IPS: &str = "GUARD_PROXY_ALLOW_PRIVATE_IPS";
 const GUARD_ENV_PRIVATE_ALLOW: &str = "GUARD_PROXY_PRIVATE_ALLOW";
+
+const APPARMOR_ANNOTATION_PREFIX: &str = "container.apparmor.security.beta.kubernetes.io/";
 
 /// Outcome of validating a single pod.
 pub enum Decision {
@@ -90,7 +95,12 @@ async fn validate_inner(
     let spec = pod.spec.as_ref().ok_or_else(|| "profiled pod has no spec".to_owned())?;
 
     let worker = check_structure(pod, spec, &worker_name)?;
-    check_sandbox(spec, worker, &worker_name)?;
+    let annotations = pod.metadata.annotations.as_ref();
+    let posture = annotated_posture(annotations)?;
+    check_sandbox(spec, worker, &worker_name, posture)?;
+    if posture == Posture::Nonroot {
+        check_nonroot_worker(worker, &worker_name, annotations)?;
+    }
 
     let name = profile_name(pod).ok_or_else(|| "profiled pod missing profile label".to_owned())?;
     let profile = source.get(namespace, name).await.map_err(|e| {
@@ -103,7 +113,162 @@ async fn validate_inner(
     if let Some(guard) = &profile.guard {
         check_guard(guard).map_err(|e| format!("WorkerProfile `{name}` spec.guard: {e}"))?;
     }
+    check_posture(&profile).map_err(|e| format!("WorkerProfile `{name}` spec.posture: {e}"))?;
+    check_posture_annotation(annotations, &profile)?;
     check_conformance(spec, worker, &worker_name, &profile, dispatch_env_secret(pod))
+}
+
+fn annotated_posture(annotations: Option<&BTreeMap<String, String>>) -> Result<Posture, String> {
+    let value = annotations.and_then(|a| a.get(ANNOTATION_POSTURE)).map(String::as_str);
+    Posture::from_annotation(value).ok_or_else(|| {
+        format!(
+            "pod annotation `{ANNOTATION_POSTURE}: {}` names no posture (want `nonroot`, or no \
+             annotation for `root`)",
+            value.unwrap_or_default()
+        )
+    })
+}
+
+/// The pod (or Job template) was rendered for the profile's current posture.
+fn check_posture_annotation(
+    annotations: Option<&BTreeMap<String, String>>,
+    profile: &WorkerProfileSpec,
+) -> Result<(), String> {
+    let have = annotated_posture(annotations)?;
+    let want = profile.posture();
+    if have != want {
+        return Err(format!(
+            "pod was rendered for posture `{}` but the profile's posture is `{}` — it was built \
+             before the profile changed",
+            have.as_str(),
+            want.as_str()
+        ));
+    }
+    Ok(())
+}
+
+/// Check that nothing in a profile contradicts its `spec.posture`. `root`
+/// adds no rule.
+pub fn check_posture(profile: &WorkerProfileSpec) -> Result<(), String> {
+    if profile.posture() == Posture::Root {
+        return Ok(());
+    }
+    check_no_overlay(profile)?;
+    for c in profile.init_containers.iter().flatten().chain(profile.containers.iter().flatten()) {
+        check_unprivileged(c)?;
+    }
+    Ok(())
+}
+
+fn check_no_overlay(profile: &WorkerProfileSpec) -> Result<(), String> {
+    if profile.env.iter().flatten().any(|e| e.name == WARM_REPO_DIR_ENV) {
+        return Err(format!(
+            "nonroot: env `{WARM_REPO_DIR_ENV}` selects the overlayfs warm cache, which needs \
+             `SYS_ADMIN` — bake the warm repo into the image (`/workspace/.warm-baked`) instead, \
+             or use posture root"
+        ));
+    }
+    if profile.volumes.iter().flatten().any(|v| v.name == VOL_OVERLAY) {
+        return Err(format!(
+            "nonroot: volume `{VOL_OVERLAY}` is the root posture's overlay emptyDir — nonroot has \
+             no overlay"
+        ));
+    }
+    if let Some(m) = profile
+        .volume_mounts
+        .iter()
+        .flatten()
+        .find(|m| m.name == VOL_OVERLAY || m.mount_path.trim_end_matches('/') == "/overlay")
+    {
+        return Err(format!(
+            "nonroot: volumeMount `{}` at `{}` is the root posture's overlay — nonroot has no \
+             overlay",
+            m.name, m.mount_path
+        ));
+    }
+    Ok(())
+}
+
+/// Under nonroot, `net-init` stays the pod's only privileged container.
+fn check_unprivileged(c: &Container) -> Result<(), String> {
+    let Some(sc) = &c.security_context else { return Ok(()) };
+    let name = &c.name;
+    if sc.privileged == Some(true) {
+        return Err(format!(
+            "nonroot: container `{name}` is privileged: true — net-init is the only privileged \
+             container"
+        ));
+    }
+    if let Some(cap) =
+        sc.capabilities.as_ref().and_then(|caps| caps.add.as_ref()).and_then(|a| a.first())
+    {
+        return Err(format!(
+            "nonroot: container `{name}` adds capability `{cap}` — net-init is the only container \
+             with added capabilities"
+        ));
+    }
+    if sc.run_as_user == Some(0) {
+        return Err(format!(
+            "nonroot: container `{name}` sets runAsUser: 0 — net-init is the only container that \
+             runs as root"
+        ));
+    }
+    Ok(())
+}
+
+/// The nonroot worker runs with the envelope's restricted `securityContext`.
+/// Fields the envelope leaves unset may be API-server defaulted, so they are
+/// only checked for weakening values, not compared exactly.
+fn check_nonroot_worker(
+    worker: &Container,
+    worker_name: &str,
+    annotations: Option<&BTreeMap<String, String>>,
+) -> Result<(), String> {
+    let apparmor_key = format!("{APPARMOR_ANNOTATION_PREFIX}{worker_name}");
+    if annotations
+        .and_then(|a| a.get(&apparmor_key))
+        .is_some_and(|v| v.eq_ignore_ascii_case("unconfined"))
+    {
+        return Err(format!(
+            "pod annotation `{apparmor_key}: unconfined` lifts AppArmor from the nonroot worker"
+        ));
+    }
+    if let Some(why) = nonroot_violation(worker.security_context.as_ref()) {
+        return Err(format!(
+            "worker container `{worker_name}` securityContext is not the nonroot envelope's: {why}"
+        ));
+    }
+    Ok(())
+}
+
+fn nonroot_violation(sc: Option<&SecurityContext>) -> Option<&'static str> {
+    let Some(sc) = sc else { return Some("no securityContext") };
+    let keeps_capabilities = !sc
+        .capabilities
+        .as_ref()
+        .and_then(|c| c.drop.as_ref())
+        .is_some_and(|d| d.iter().any(|c| c == "ALL"));
+    if sc.run_as_user != Some(WORKER_UID) {
+        Some("runAsUser must be 1000")
+    } else if sc.run_as_group != Some(WORKER_UID) {
+        Some("runAsGroup must be 1000")
+    } else if sc.run_as_non_root != Some(true) {
+        Some("runAsNonRoot must be true")
+    } else if sc.allow_privilege_escalation != Some(false) {
+        Some("allowPrivilegeEscalation must be false")
+    } else if keeps_capabilities {
+        Some("capabilities must drop ALL")
+    } else if sc.seccomp_profile.as_ref().map(|p| p.type_.as_str()) != Some("RuntimeDefault") {
+        Some("seccompProfile must be RuntimeDefault")
+    } else if sc.app_armor_profile.as_ref().is_some_and(|p| p.type_ == "Unconfined") {
+        Some("appArmorProfile must not be Unconfined")
+    } else if sc.se_linux_options.is_some() {
+        Some("seLinuxOptions must be unset")
+    } else if sc.proc_mount.as_deref().is_some_and(|m| m != "Default") {
+        Some("procMount must be Default")
+    } else {
+        None
+    }
 }
 
 /// Check a profile's `spec.guard`.
@@ -198,7 +363,12 @@ fn check_structure<'a>(
 }
 
 /// Reject sandbox-defeating footguns on the worker container / pod.
-fn check_sandbox(spec: &PodSpec, worker: &Container, worker_name: &str) -> Result<(), String> {
+fn check_sandbox(
+    spec: &PodSpec,
+    worker: &Container,
+    worker_name: &str,
+    posture: Posture,
+) -> Result<(), String> {
     if spec.host_pid == Some(true) {
         return Err("pod sets hostPID: true — breaks worker isolation".to_owned());
     }
@@ -227,11 +397,12 @@ fn check_sandbox(spec: &PodSpec, worker: &Container, worker_name: &str) -> Resul
         if let Some(caps) = &sc.capabilities
             && let Some(add) = &caps.add
         {
-            let sanctioned: BTreeSet<&str> = WORKER_ADDED_CAPS.iter().copied().collect();
-            if let Some(extra) = add.iter().find(|c| !sanctioned.contains(c.as_str())) {
+            let sanctioned = worker_added_caps(posture);
+            if let Some(extra) = add.iter().find(|c| !sanctioned.contains(&c.as_str())) {
                 return Err(format!(
                     "worker container `{worker_name}` adds capability `{extra}` beyond the \
-                     sanctioned envelope set {WORKER_ADDED_CAPS:?}"
+                     sanctioned envelope set {sanctioned:?} of posture {}",
+                    posture.as_str()
                 ));
             }
         }
@@ -342,7 +513,14 @@ pub fn template_drift(template: &PodTemplateSpec, profile: &WorkerProfileSpec) -
         .and_then(|a| a.get(ANNOTATION_WORKER_CONTAINER))
         .map_or(DEFAULT_WORKER_CONTAINER, String::as_str);
     let worker = spec.containers.iter().find(|c| c.name == worker_name)?;
-    check_template_conformance(spec, worker, profile).err()
+    check_template_conformance(spec, worker, profile)
+        .and_then(|()| {
+            check_posture_annotation(
+                template.metadata.as_ref().and_then(|m| m.annotations.as_ref()),
+                profile,
+            )
+        })
+        .err()
 }
 
 /// Worker `envFrom` must be exactly the profile's — the envelope never adds
@@ -369,7 +547,7 @@ fn check_worker_mounts(
     worker_name: &str,
     profile: &WorkerProfileSpec,
 ) -> Result<(), String> {
-    let mut want: BTreeSet<&str> = WORKER_ENVELOPE_MOUNTS.into_iter().collect();
+    let mut want: BTreeSet<&str> = worker_envelope_mounts(profile.posture()).into_iter().collect();
     if profile.gpg_signing {
         want.insert(VOL_GPG_AGENT);
     }
@@ -433,6 +611,9 @@ fn check_volumes(spec: &PodSpec, profile: &WorkerProfileSpec) -> Result<(), Stri
     ]
     .into_iter()
     .collect();
+    if !has_overlay(profile.posture()) {
+        want.remove(VOL_OVERLAY);
+    }
     if profile.gpg_signing {
         want.insert(VOL_GPG_AGENT);
     }
@@ -613,6 +794,9 @@ mod tests {
         if profile.gpg_signing {
             annotations.insert(crate::ANNOTATION_GPG_SIGNING.into(), serde_json::json!("true"));
         }
+        if let Some(posture) = profile.posture().annotation() {
+            annotations.insert(ANNOTATION_POSTURE.into(), serde_json::json!(posture));
+        }
 
         let pod: Pod = serde_json::from_value(serde_json::json!({
             "apiVersion": "v1",
@@ -633,6 +817,7 @@ mod tests {
             guard_identity: None,
             gpg: profile.gpg_signing,
             guard: profile.guard.clone(),
+            posture: profile.posture(),
         };
         envelope::inject(&pod, &cfg)
     }
@@ -1070,6 +1255,257 @@ mod tests {
             let decision = decide_with_guard(serde_json::json!({ "env": [env.clone()] })).await;
             assert!(matches!(decision, Decision::Allow), "{env} must be allowed");
         }
+    }
+
+    fn nonroot_profile() -> WorkerProfileSpec {
+        let mut profile = lean_profile();
+        profile.posture = Some(Posture::Nonroot);
+        profile
+    }
+
+    async fn decide_nonroot(mutate: impl FnOnce(&mut Pod)) -> Decision {
+        let mut pod = dispatched_pod("lean", &nonroot_profile());
+        mutate(&mut pod);
+        decide(&pod, &source("lean", nonroot_profile())).await
+    }
+
+    #[tokio::test]
+    async fn faithful_nonroot_pods_are_allowed() {
+        assert!(matches!(decide_nonroot(|_| {}).await, Decision::Allow));
+
+        let mut profile: WorkerProfileSpec = serde_json::from_value(serde_json::json!({
+            "image": "registry.example.com/worker:latest",
+            "posture": "nonroot",
+            "gpgSigning": true,
+            "volumes": [{ "name": "db-data", "emptyDir": {} }],
+            "containers": [{
+                "name": "db",
+                "image": "registry.example.com/postgres:16",
+                "securityContext": { "runAsUser": 999, "capabilities": { "drop": ["ALL"] } }
+            }],
+        }))
+        .unwrap();
+        let pod = dispatched_pod("full", &profile);
+        assert!(matches!(decide(&pod, &source("full", profile.clone())).await, Decision::Allow));
+
+        profile.posture = Some(Posture::Root);
+        assert!(
+            matches!(decide(&pod, &source("full", profile)).await, Decision::Deny(_)),
+            "the same pod is not a root pod"
+        );
+    }
+
+    #[tokio::test]
+    async fn nonroot_worker_tolerates_api_server_defaults() {
+        let decision = decide_nonroot(|pod| {
+            worker_mut(pod).security_context.as_mut().unwrap().proc_mount =
+                Some("Default".to_owned());
+        })
+        .await;
+        assert!(matches!(decision, Decision::Allow));
+    }
+
+    #[tokio::test]
+    async fn nonroot_worker_with_the_root_security_context_is_denied() {
+        let msg = deny_msg(
+            decide_nonroot(|pod| {
+                worker_mut(pod).security_context =
+                    Some(envelope::worker_security_context(Posture::Root));
+            })
+            .await,
+        );
+        assert!(msg.contains("SYS_ADMIN") && msg.contains("posture nonroot"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn every_weakened_nonroot_worker_field_is_denied() {
+        use k8s_openapi::api::core::v1::{AppArmorProfile, SELinuxOptions};
+        type Edit = (&'static str, fn(&mut SecurityContext));
+        let edits: [Edit; 10] = [
+            ("runAsUser", |sc| sc.run_as_user = Some(0)),
+            ("runAsGroup", |sc| sc.run_as_group = None),
+            ("runAsNonRoot", |sc| sc.run_as_non_root = Some(false)),
+            ("allowPrivilegeEscalation", |sc| sc.allow_privilege_escalation = Some(true)),
+            ("drop ALL", |sc| sc.capabilities = None),
+            ("RuntimeDefault", |sc| sc.seccomp_profile = None),
+            ("Unconfined", |sc| {
+                sc.app_armor_profile = Some(AppArmorProfile {
+                    type_: "Unconfined".to_owned(),
+                    localhost_profile: None,
+                });
+            }),
+            ("seLinuxOptions", |sc| {
+                sc.se_linux_options =
+                    Some(SELinuxOptions { type_: Some("spc_t".to_owned()), ..Default::default() });
+            }),
+            ("procMount", |sc| sc.proc_mount = Some("Unmasked".to_owned())),
+            ("privileged", |sc| sc.privileged = Some(true)),
+        ];
+        for (want, edit) in edits {
+            let msg = deny_msg(
+                decide_nonroot(|pod| edit(worker_mut(pod).security_context.as_mut().unwrap()))
+                    .await,
+            );
+            assert!(msg.contains(want), "{want}: {msg}");
+        }
+        let msg = deny_msg(decide_nonroot(|pod| worker_mut(pod).security_context = None).await);
+        assert!(msg.contains("no securityContext"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn nonroot_worker_apparmor_annotation_is_denied() {
+        let msg = deny_msg(
+            decide_nonroot(|pod| {
+                pod.metadata
+                    .annotations
+                    .as_mut()
+                    .unwrap()
+                    .insert(format!("{APPARMOR_ANNOTATION_PREFIX}worker"), "unconfined".to_owned());
+            })
+            .await,
+        );
+        assert!(msg.contains("AppArmor"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn nonroot_pod_with_an_overlay_volume_is_denied() {
+        use k8s_openapi::api::core::v1::{EmptyDirVolumeSource, Volume};
+        let msg = deny_msg(
+            decide_nonroot(|pod| {
+                pod.spec.as_mut().unwrap().volumes.get_or_insert_with(Vec::new).push(Volume {
+                    name: "overlay".to_owned(),
+                    empty_dir: Some(EmptyDirVolumeSource::default()),
+                    ..Volume::default()
+                });
+            })
+            .await,
+        );
+        assert!(msg.contains("overlay"), "{msg}");
+    }
+
+    async fn nonroot_profile_denial(extra: serde_json::Value) -> String {
+        let mut spec = serde_json::json!({
+            "image": "registry.example.com/worker:latest",
+            "posture": "nonroot",
+        });
+        if let serde_json::Value::Object(extra) = extra {
+            spec.as_object_mut().unwrap().extend(extra);
+        }
+        let profile: WorkerProfileSpec = serde_json::from_value(spec).unwrap();
+        let pod = dispatched_pod("p", &profile);
+        deny_msg(decide(&pod, &source("p", profile)).await)
+    }
+
+    #[tokio::test]
+    async fn nonroot_profiles_with_overlay_settings_are_denied() {
+        let cases = [
+            (
+                serde_json::json!({ "env": [{ "name": "WARM_REPO_DIR", "value": "/warm" }] }),
+                "WARM_REPO_DIR",
+            ),
+            (
+                serde_json::json!({ "volumes": [{ "name": "overlay", "emptyDir": {} }] }),
+                "volume `overlay`",
+            ),
+            (
+                serde_json::json!({
+                    "volumes": [{ "name": "scratch", "emptyDir": {} }],
+                    "volumeMounts": [{ "name": "scratch", "mountPath": "/overlay/" }]
+                }),
+                "/overlay",
+            ),
+        ];
+        for (extra, want) in cases {
+            let msg = nonroot_profile_denial(extra).await;
+            assert!(msg.contains("spec.posture: nonroot") && msg.contains(want), "{msg}");
+        }
+    }
+
+    #[tokio::test]
+    async fn nonroot_profiles_with_privileged_passthrough_containers_are_denied() {
+        let cases = [
+            (
+                serde_json::json!({ "containers": [{
+                    "name": "db",
+                    "image": "registry.example.com/postgres:16",
+                    "securityContext": { "privileged": true }
+                }] }),
+                "`db` is privileged",
+            ),
+            (
+                serde_json::json!({ "initContainers": [{
+                    "name": "migrate",
+                    "image": "registry.example.com/m:1",
+                    "securityContext": { "capabilities": { "add": ["NET_RAW"] } }
+                }] }),
+                "`migrate` adds capability `NET_RAW`",
+            ),
+            (
+                serde_json::json!({ "containers": [{
+                    "name": "db",
+                    "image": "registry.example.com/postgres:16",
+                    "securityContext": { "runAsUser": 0 }
+                }] }),
+                "`db` sets runAsUser: 0",
+            ),
+        ];
+        for (extra, want) in cases {
+            let msg = nonroot_profile_denial(extra).await;
+            assert!(msg.contains("spec.posture: nonroot") && msg.contains(want), "{msg}");
+        }
+    }
+
+    #[tokio::test]
+    async fn root_profiles_keep_overlay_settings_and_privileged_sidecars() {
+        let profile: WorkerProfileSpec = serde_json::from_value(serde_json::json!({
+            "image": "registry.example.com/worker:latest",
+            "posture": "root",
+            "env": [{ "name": "WARM_REPO_DIR", "value": "/warm" }],
+            "containers": [{
+                "name": "dind",
+                "image": "registry.example.com/dind:1",
+                "securityContext": { "privileged": true, "runAsUser": 0 }
+            }],
+        }))
+        .unwrap();
+        assert!(check_posture(&profile).is_ok());
+        let pod = dispatched_pod("p", &profile);
+        assert!(matches!(decide(&pod, &source("p", profile)).await, Decision::Allow));
+    }
+
+    #[tokio::test]
+    async fn pod_rendered_for_another_posture_is_denied() {
+        let root_pod = dispatched_pod("lean", &lean_profile());
+        let msg = deny_msg(decide(&root_pod, &source("lean", nonroot_profile())).await);
+        assert!(msg.contains("rendered for posture `root`"), "{msg}");
+
+        let nonroot_pod = dispatched_pod("lean", &nonroot_profile());
+        let msg = deny_msg(decide(&nonroot_pod, &source("lean", lean_profile())).await);
+        assert!(msg.contains("rendered for posture `nonroot`"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn unknown_posture_annotation_is_denied() {
+        let msg = deny_msg(
+            decide_nonroot(|pod| {
+                pod.metadata
+                    .annotations
+                    .as_mut()
+                    .unwrap()
+                    .insert(ANNOTATION_POSTURE.to_owned(), "restricted".to_owned());
+            })
+            .await,
+        );
+        assert!(msg.contains("names no posture"), "{msg}");
+    }
+
+    #[test]
+    fn template_drift_reports_a_posture_change() {
+        let pod = dispatched_pod("lean", &lean_profile());
+        let template = PodTemplateSpec { metadata: Some(pod.metadata), spec: pod.spec };
+        assert!(template_drift(&template, &lean_profile()).is_none());
+        let drift = template_drift(&template, &nonroot_profile()).expect("posture drift");
+        assert!(drift.contains("posture"), "{drift}");
     }
 
     #[tokio::test]

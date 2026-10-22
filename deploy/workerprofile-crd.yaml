@@ -2179,6 +2179,18 @@ spec:
                   dispatcher's own `cctui.dev/*` session annotations win on key conflict.
                 nullable: true
                 type: object
+              posture:
+                description: |-
+                  Security posture of the worker container. `root` boots it as uid 0 with
+                  the envelope's capability set and the overlay warm cache; `nonroot` runs
+                  it as uid/gid 1000 with every capability dropped, no privilege
+                  escalation, `RuntimeDefault` seccomp and no overlay. Unset is `root`;
+                  new profiles set `nonroot`.
+                enum:
+                - root
+                - nonroot
+                nullable: true
+                type: string
               preflight:
                 description: |-
                   Pre-flight isolation check the worker entrypoint runs before the agent

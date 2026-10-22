@@ -21,7 +21,7 @@ use cctui_dispatcher_core::{
 };
 use cctui_orchestrator::validate::template_drift;
 use cctui_orchestrator::{
-    ANNOTATION_ENV_SECRET, ANNOTATION_GPG_SIGNING, ANNOTATION_GUARD_IDENTITY,
+    ANNOTATION_ENV_SECRET, ANNOTATION_GPG_SIGNING, ANNOTATION_GUARD_IDENTITY, ANNOTATION_POSTURE,
     ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, LABEL_WORKER_PROFILE, WorkerProfile,
     WorkerProfileSpec,
 };
@@ -307,6 +307,7 @@ impl Spawner {
         if profile.gpg_signing {
             annotations.insert(ANNOTATION_GPG_SIGNING.into(), json!("true"));
         }
+        stamp_posture(&mut annotations, profile);
         if let Some(s) = &env_secret {
             annotations.insert(ANNOTATION_ENV_SECRET.into(), json!(s));
         }
@@ -968,6 +969,7 @@ impl Spawner {
         } else {
             annotations.remove(ANNOTATION_GPG_SIGNING);
         }
+        stamp_posture(&mut annotations, profile);
 
         let ours = |m: Option<&std::collections::BTreeMap<String, String>>| {
             m.into_iter()
@@ -1145,6 +1147,14 @@ impl Spawner {
     }
 }
 
+/// Removing it for root also drops a copy smuggled in through `podAnnotations`.
+fn stamp_posture(annotations: &mut serde_json::Map<String, Value>, profile: &WorkerProfileSpec) {
+    annotations.remove(ANNOTATION_POSTURE);
+    if let Some(posture) = profile.posture().annotation() {
+        annotations.insert(ANNOTATION_POSTURE.into(), json!(posture));
+    }
+}
+
 /// The `limits.memory` of the named container (init or main), if declared.
 fn memory_limit(pod: &Pod, container: &str) -> Option<String> {
     let spec = pod.spec.as_ref()?;
@@ -1251,6 +1261,7 @@ const fn drift_disposition(never_ran: bool, has_pods: bool, suspended: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cctui_orchestrator::Posture;
 
     type Mutation = (&'static str, fn(&mut WorkerProfileSpec));
 
@@ -1777,7 +1788,7 @@ mod tests {
     fn every_template_conformance_field_strands_and_is_repaired_by_a_rebuild() {
         let s = spec("sess-fields", json!({}));
         let job = queued_job("full", &full_profile(), &s);
-        let mutations: [Mutation; 8] = [
+        let mutations: [Mutation; 9] = [
             ("serviceAccountName", |p| p.service_account_name = Some("other".to_owned())),
             ("workerContainer", |p| p.worker_container = Some("other".to_owned())),
             ("image", |p| p.image = "example.com/worker:next".to_owned()),
@@ -1786,6 +1797,7 @@ mod tests {
             ("nodeSelector", |p| p.node_selector = None),
             ("runtimeClassName", |p| p.runtime_class_name = None),
             ("envFrom", |p| p.env_from = None),
+            ("posture", |p| p.posture = Some(Posture::Nonroot)),
         ];
         for (field, mutate) in mutations {
             let mut profile = full_profile();
@@ -2081,6 +2093,56 @@ mod tests {
         );
         assert!(!data.contains_key("SESSION_ID"), "non-secret vars stay literal on the Job");
         assert!(secret.metadata.owner_references.is_none(), "staged unowned, adopted after create");
+    }
+
+    #[test]
+    fn root_or_unset_posture_renders_the_job_unchanged_and_nonroot_only_adds_the_annotation() {
+        let s = spec("sess-posture", json!({ "flow": "review" }));
+        for base in [lean_profile(), full_profile()] {
+            let unset = build("p", &base, &s);
+            assert!(
+                unset.pointer("/spec/template/metadata/annotations/cctui.dev~1posture").is_none(),
+                "a root Job carries no posture annotation"
+            );
+            let mut root = base.clone();
+            root.posture = Some(Posture::Root);
+            assert_eq!(build("p", &root, &s), unset);
+
+            let mut nonroot = base;
+            nonroot.posture = Some(Posture::Nonroot);
+            let mut v = build("p", &nonroot, &s);
+            let annotations = v
+                .pointer_mut("/spec/template/metadata/annotations")
+                .and_then(Value::as_object_mut)
+                .unwrap();
+            assert_eq!(annotations.remove(ANNOTATION_POSTURE), Some(json!("nonroot")));
+            assert_eq!(v, unset);
+        }
+    }
+
+    #[test]
+    fn a_root_profile_cannot_smuggle_the_posture_annotation() {
+        let s = spec("sess-posture-smuggle", json!({}));
+        let mut profile = lean_profile();
+        profile.pod_annotations =
+            Some([(ANNOTATION_POSTURE.to_owned(), "nonroot".to_owned())].into_iter().collect());
+        let v = build("lean", &profile, &s);
+        assert!(v.pointer("/spec/template/metadata/annotations/cctui.dev~1posture").is_none());
+    }
+
+    #[test]
+    fn a_posture_flip_back_to_root_rebuilds_without_the_annotation() {
+        let s = spec("sess-posture-back", json!({}));
+        let mut nonroot = lean_profile();
+        nonroot.posture = Some(Posture::Nonroot);
+        let job = queued_job("lean", &nonroot, &s);
+        assert!(drift_of(&job, &nonroot).is_none());
+        let drift = drift_of(&job, &lean_profile()).expect("posture flip strands the queued Job");
+        assert!(drift.contains("posture"), "{drift}");
+        let rebuilt = Spawner::rebuild_job(&job, &lean_profile()).unwrap();
+        assert!(drift_of(&rebuilt, &lean_profile()).is_none());
+        let v = serde_json::to_value(&rebuilt).unwrap();
+        assert!(v.pointer("/spec/template/metadata/annotations/cctui.dev~1posture").is_none());
     }
 
     #[test]

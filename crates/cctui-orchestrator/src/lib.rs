@@ -53,6 +53,44 @@ pub fn env_secret_name(job_name: &str, nonce: &str) -> String {
     format!("{job_name}-env-{nonce}")
 }
 
+/// Pod annotation carrying a non-root [`Posture`]; absent means root.
+pub const ANNOTATION_POSTURE: &str = "cctui.dev/posture";
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Posture {
+    Root,
+    Nonroot,
+}
+
+impl Posture {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Root => "root",
+            Self::Nonroot => "nonroot",
+        }
+    }
+
+    /// `None` for root, so a root pod renders byte-for-byte as before.
+    #[must_use]
+    pub const fn annotation(self) -> Option<&'static str> {
+        match self {
+            Self::Root => None,
+            Self::Nonroot => Some("nonroot"),
+        }
+    }
+
+    #[must_use]
+    pub fn from_annotation(value: Option<&str>) -> Option<Self> {
+        match value {
+            None | Some("root") => Some(Self::Root),
+            Some("nonroot") => Some(Self::Nonroot),
+            Some(_) => None,
+        }
+    }
+}
+
 /// Pod annotation the webhook stamps (`"true"`) after injecting the envelope.
 /// Its presence makes re-invocation a no-op.
 pub const ANNOTATION_ENVELOPE_INJECTED: &str = "cctui.dev/envelope-injected";
@@ -171,6 +209,14 @@ pub struct WorkerProfileSpec {
     /// starts. `None` runs the built-in probes in the default mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preflight: Option<PreflightSpec>,
+
+    /// Security posture of the worker container. `root` boots it as uid 0 with
+    /// the envelope's capability set and the overlay warm cache; `nonroot` runs
+    /// it as uid/gid 1000 with every capability dropped, no privilege
+    /// escalation, `RuntimeDefault` seccomp and no overlay. Unset is `root`;
+    /// new profiles set `nonroot`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub posture: Option<Posture>,
 }
 
 /// Pre-flight isolation check settings for one profile.
@@ -247,6 +293,11 @@ impl WorkerProfileSpec {
     #[must_use]
     pub fn worker_container_name(&self) -> &str {
         self.worker_container.as_deref().unwrap_or(DEFAULT_WORKER_CONTAINER)
+    }
+
+    #[must_use]
+    pub fn posture(&self) -> Posture {
+        self.posture.unwrap_or(Posture::Root)
     }
 }
 
@@ -420,6 +471,53 @@ preflight:
             serde_norway::from_str("image: registry.example.com/worker:latest\n").unwrap();
         assert!(lean.preflight.is_none());
         assert!(serde_json::to_value(&lean).unwrap().get("preflight").is_none());
+    }
+
+    #[test]
+    fn posture_deserializes_and_unset_is_root() {
+        let lean: WorkerProfileSpec =
+            serde_norway::from_str("image: registry.example.com/worker:latest\n").unwrap();
+        assert!(lean.posture.is_none());
+        assert_eq!(lean.posture(), Posture::Root);
+        assert!(serde_json::to_value(&lean).unwrap().get("posture").is_none());
+
+        for (yaml, want) in [("root", Posture::Root), ("nonroot", Posture::Nonroot)] {
+            let spec: WorkerProfileSpec = serde_norway::from_str(&format!(
+                "image: registry.example.com/worker:latest\nposture: {yaml}\n"
+            ))
+            .unwrap();
+            assert_eq!(spec.posture(), want);
+            assert_eq!(serde_json::to_value(&spec).unwrap()["posture"], yaml);
+        }
+        assert!(
+            serde_norway::from_str::<WorkerProfileSpec>(
+                "image: registry.example.com/worker:latest\nposture: restricted\n"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn crd_posture_has_no_schema_default() {
+        let crd = serde_json::to_value(WorkerProfile::crd()).unwrap();
+        let posture = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+            ["properties"]["posture"];
+        assert_eq!(posture["enum"], serde_json::json!(["root", "nonroot"]));
+        assert!(
+            posture.get("default").is_none(),
+            "a schema default would be applied to stored profiles on read and flip them"
+        );
+    }
+
+    #[test]
+    fn posture_annotation_round_trips() {
+        assert_eq!(Posture::Root.annotation(), None);
+        assert_eq!(Posture::Nonroot.annotation(), Some("nonroot"));
+        for p in [Posture::Root, Posture::Nonroot] {
+            assert_eq!(Posture::from_annotation(p.annotation()), Some(p));
+            assert_eq!(Posture::from_annotation(Some(p.as_str())), Some(p));
+        }
+        assert_eq!(Posture::from_annotation(Some("restricted")), None);
     }
 
     #[test]
