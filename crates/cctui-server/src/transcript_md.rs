@@ -54,7 +54,10 @@ fn text_of(payload: &Value) -> Option<String> {
         }
         "tool_result" => {
             let out = payload.get("output_summary").map_or_else(String::new, |v| {
-                v.as_str().map_or_else(|| v.to_string(), str::to_owned)
+                v.as_str().map_or_else(
+                    || v.to_string(),
+                    |s| crate::image_blobs::readable_result(s).unwrap_or_else(|| s.to_owned()),
+                )
             });
             Some(snippet(out.trim(), TOOL_SNIPPET))
         }

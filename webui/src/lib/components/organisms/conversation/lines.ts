@@ -26,6 +26,7 @@ import {
   stripAttachmentDecorations,
 } from "./format";
 import type { Line, MsgCategory } from "./types";
+import { parseResultImages } from "$lib/resultImages";
 import { VOICE_TOOL } from "./voiceNote";
 
 export interface LineBuildCtx {
@@ -415,16 +416,20 @@ function buildLine(
         htmlCode: ctx.renderCode(text, lang),
       };
     }
-    case "tool_result":
+    case "tool_result": {
       if (!ctx.visible(resultCategory(e))) return null;
+      const parsed = parseResultImages(e.output_summary);
+      const text = parsed?.text ?? e.output_summary;
       return {
         role: "result",
         ts: Number(e.ts),
         tool: e.tool,
         toolUseId: e.tool_use_id ?? undefined,
-        text: e.output_summary,
-        htmlCode: ctx.renderCode(e.output_summary, ""),
+        text,
+        htmlCode: ctx.renderCode(text, ""),
+        ...(parsed ? { images: parsed.images } : {}),
       };
+    }
     case "context_reset":
       // /clear: the session id rotated under the same worker.
       if (!ctx.visible("reset")) return null;

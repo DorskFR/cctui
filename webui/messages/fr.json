@@ -817,7 +817,6 @@
 	"guide_welcome_skip": "Passer",
 	"guide_welcome_title": "Bienvenue dans cctui",
 	"home_cache_loss_busts": "{count} invalidations",
-	"home_cache_loss_gateway_rewrote_body": "Corps réécrit par la passerelle",
 	"home_cache_loss_none": "Aucun cache invalidé sur cette période.",
 	"home_cache_loss_provider_miss": "Cache manqué par le fournisseur (Fireworks)",
 	"home_cache_loss_title_24h": "Perdu en caches invalidés · dernières 24 h",

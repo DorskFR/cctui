@@ -23,6 +23,7 @@
 	import { settings } from '$lib/settings.svelte';
 	import { sessionHref } from '$lib/sessionFailureToast';
 	import { renderImageMarkers } from '$lib/markdown';
+	import { renderResultImages } from '$lib/resultImages';
 
 	let {
 		ln,
@@ -115,8 +116,11 @@
 
 	// These results render as code, so the images they carry go below the block.
 	const resultImages = $derived(
-		ln.role === 'result' && sessionId && ln.text && IMAGE_RESULT_TOOL.test(ln.tool ?? '')
-			? renderImageMarkers(ln.text, sessionId)
+		ln.role === 'result' && sessionId
+			? renderResultImages(ln.images ?? [], sessionId) +
+					(ln.text && IMAGE_RESULT_TOOL.test(ln.tool ?? '')
+						? renderImageMarkers(ln.text, sessionId)
+						: '')
 			: ''
 	);
 

@@ -250,10 +250,11 @@ pub const fn attention_from_bucket(bucket: Bucket) -> Option<Attention> {
 /// half: any shape that groups or sorts the whole fan-out instead reads every
 /// message row of every listed session.
 ///
-/// Ships only the first 400 chars of the string `text` (else `content`), twice
-/// what [`normalize_last_message`] keeps, plus whether it was cut; never the
-/// payload.
-const LAST_MESSAGE_SQL: &str = "SELECT s.session_id, left(e.body, 400), length(e.body) > 400, \
+/// Ships a prefix of the string `text` (else `content`) plus whether it was
+/// cut; never the payload. The prefix is 400 chars, twice what
+/// [`normalize_last_message`] keeps, or 64 KiB when the body opens on a tag, so
+/// the wrappers cctui puts ahead of the prose close inside it.
+const LAST_MESSAGE_SQL: &str = "SELECT s.session_id, left(e.body, c.n), length(e.body) > c.n, \
             e.created_at \
      FROM unnest($1::text[]) AS s(session_id) \
      JOIN LATERAL ( \
@@ -268,7 +269,10 @@ const LAST_MESSAGE_SQL: &str = "SELECT s.session_id, left(e.body, 400), length(e
            AND COALESCE(se.payload->>'role', '') NOT IN ('turn_annotation', 'system_marker') \
          ORDER BY se.created_at DESC \
          LIMIT 1 \
-     ) e ON true";
+     ) e ON true \
+     CROSS JOIN LATERAL ( \
+         SELECT CASE WHEN e.body ~ '^\\s*<' THEN 65536 ELSE 400 END AS n \
+     ) c";
 
 /// Per-(session, model) token totals, maintained by a trigger on
 /// `session_token_usage` (migration 132). `model` is stored as '' for NULL.
@@ -2137,6 +2141,15 @@ pub struct ConversationQuery {
     pub order: ConversationOrder,
 }
 
+/// `inline_images=true`: tool result images come back as base64 `source`s
+/// instead of blob references, up to
+/// [`crate::image_blobs::INLINE_IMAGES_MAX_BYTES`] per page.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct InlineImagesQuery {
+    #[serde(default)]
+    pub inline_images: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConversationOrder {
@@ -2320,6 +2333,7 @@ pub async fn get_conversation(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     Query(params): Query<ConversationQuery>,
+    Query(images): Query<InlineImagesQuery>,
     req_headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
     let adapter: Option<String> =
@@ -2344,7 +2358,7 @@ pub async fn get_conversation(
     // shape) derived from `created_at`, so the client renders real timestamps
     // instead of "Invalid Date". Legacy payloads that already carry `ts` keep
     // their own value.
-    let normalized: Vec<serde_json::Value> = rows
+    let mut normalized: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|(id, mut v, created_at, turn_id)| {
             if let Some(obj) = v.as_object_mut() {
@@ -2368,6 +2382,15 @@ pub async fn get_conversation(
             v
         })
         .collect();
+    if images.inline_images {
+        crate::image_blobs::inline_client_rows(
+            &state.pool,
+            &session_id,
+            &mut normalized,
+            crate::image_blobs::INLINE_IMAGES_MAX_BYTES,
+        )
+        .await?;
+    }
     Ok(crate::http_cache::json_with_etag(&req_headers, &normalized))
 }
 
@@ -3990,22 +4013,35 @@ pub async fn set_session_policy(
     Ok(StatusCode::OK)
 }
 
+/// [`normalize_last_message`] over the prose of a SQL-truncated prefix, past
+/// the wrappers cctui put ahead of it: `cut` says the stored text ran past it,
+/// so the preview is elided even when collapsing whitespace left it under the
+/// limit. Empty when the cut fell inside the wrappers: the prose is unknown.
+fn preview_last_message(prefix: &str, cut: bool) -> String {
+    let (blocks, prose) = cctui_proto::injected::split_injected(prefix);
+    if cut && ((!blocks.is_empty() && prose.is_empty()) || opens_on_wrapper(prose)) {
+        return String::new();
+    }
+    let preview = normalize_last_message(if prose.is_empty() { prefix } else { prose });
+    if cut && !preview.ends_with('…') { format!("{preview}…") } else { preview }
+}
+
+/// Whether `text` opens on a wrapper tag cctui injects, closed or not.
+fn opens_on_wrapper(text: &str) -> bool {
+    text.trim_start().strip_prefix('<').is_some_and(|rest| {
+        let name_len =
+            rest.find(|c: char| !(c.is_ascii_lowercase() || c == '-')).unwrap_or(rest.len());
+        cctui_proto::injected::InjectedKind::from_tag(&rest[..name_len]).is_some()
+            && rest[name_len..].starts_with(|c: char| c == '>' || c.is_whitespace())
+    })
+}
+
 /// normalize a session's last-message text for the sessions
 /// table. Collapses every run of ASCII/Unicode whitespace (newlines,
 /// tabs, NBSP) into a single space so multi-line snippets don't blow
 /// up row height when CSS doesn't fully suppress wrapping, and caps at
 /// 200 chars + ellipsis as a backstop. CSS handles the *visual* truncation
 /// to the column's actual rendered width (`text-overflow: ellipsis`).
-/// [`normalize_last_message`] over the prose of a SQL-truncated prefix, past
-/// the wrappers cctui put ahead of it: `cut` says the stored text ran past it,
-/// so the preview is elided even when collapsing whitespace left it under the
-/// limit.
-fn preview_last_message(prefix: &str, cut: bool) -> String {
-    let (_, prose) = cctui_proto::injected::split_injected(prefix);
-    let preview = normalize_last_message(if prose.is_empty() { prefix } else { prose });
-    if cut && !preview.ends_with('…') { format!("{preview}…") } else { preview }
-}
-
 fn normalize_last_message(s: &str) -> String {
     const MAX_CHARS: usize = 200;
     let collapsed = s.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -4756,8 +4792,7 @@ mod tests {
     #[test]
     fn sql_prefix_preview_matches_the_full_text_preview() {
         let n = 400;
-        assert!(super::LAST_MESSAGE_SQL.contains(&format!("left(e.body, {n})")));
-        assert!(super::LAST_MESSAGE_SQL.contains(&format!("length(e.body) > {n}")));
+        assert!(super::LAST_MESSAGE_SQL.contains(&format!("ELSE {n} END")));
         let inputs = [
             String::new(),
             "short message".to_owned(),
@@ -4790,6 +4825,87 @@ mod tests {
         assert_eq!(super::preview_last_message(&spoken, false), "why is the sky blue");
         let only = "<cctui-session-context>\nctx\n</cctui-session-context>";
         assert_eq!(super::preview_last_message(only, false), normalize_last_message(only));
+    }
+
+    #[test]
+    fn a_long_session_context_never_previews_raw() {
+        let context = format!(
+            "<cctui-session-context>\nsession: lane\n{}\n</cctui-session-context>\n\n",
+            "rule line\n".repeat(600)
+        );
+        let full = format!("{context}fix the preview");
+        assert!(full.chars().count() > 400);
+        assert_eq!(super::preview_last_message(&full, false), "fix the preview");
+
+        let head: String = full.chars().take(400).collect();
+        assert_eq!(super::preview_last_message(&head, true), "", "cut inside the wrapper");
+        let wrapper_only: String = full.chars().take(context.chars().count()).collect();
+        assert_eq!(super::preview_last_message(&wrapper_only, true), "");
+
+        let stacked = format!(
+            "{context}<cctui-previous-conversation session=\"a\">\nolder\n\
+             </cctui-previous-conversation>\n\nnext ask"
+        );
+        assert_eq!(super::preview_last_message(&stacked, false), "next ask");
+    }
+
+    #[test]
+    fn an_unclosed_wrapper_previews_empty_only_when_cut() {
+        let unclosed = format!("<cctui-session-context>\nsession: lane\n{}", "x ".repeat(300));
+        assert_eq!(super::preview_last_message(&unclosed, true), "");
+        assert_eq!(
+            super::preview_last_message(&unclosed, false),
+            normalize_last_message(&unclosed),
+            "a whole message is shown as written"
+        );
+        let after_block = format!(
+            "<cctui-session-context>ctx</cctui-session-context>\n<previous-conversation>\n{}",
+            "y".repeat(500)
+        );
+        assert_eq!(super::preview_last_message(&after_block, true), "");
+        let html = format!("<div>{}</div>", "z".repeat(500));
+        assert!(super::preview_last_message(&html, true).starts_with("<div>"));
+    }
+
+    #[tokio::test]
+    async fn last_message_sql_ships_enough_to_strip_a_long_wrapper() {
+        let Some((pool, sid)) = seeded_session("last_message_sql_long_wrapper").await else {
+            return;
+        };
+        let context = format!(
+            "\n<cctui-session-context>\n{}\n</cctui-session-context>\n\n",
+            "session: lane ".repeat(500)
+        );
+        let (pool, sid) = (&pool, &sid);
+        let preview = move |text: String| async move {
+            sqlx::query(
+                "INSERT INTO stream_events (session_id, event_type, payload) \
+                 VALUES ($1, 'message', $2)",
+            )
+            .bind(sid)
+            .bind(serde_json::json!({"role": "user", "text": text}))
+            .execute(pool)
+            .await
+            .unwrap();
+            let rows: Vec<super::LastMessageRow> = sqlx::query_as(super::LAST_MESSAGE_SQL)
+                .bind(vec![sid.clone()])
+                .fetch_all(pool)
+                .await
+                .unwrap();
+            super::preview_last_message(rows[0].1.as_deref().unwrap(), rows[0].2.unwrap())
+        };
+        assert_eq!(preview(format!("{context}fix the preview")).await, "fix the preview");
+        assert_eq!(
+            preview(format!("{context}{}", "w".repeat(70_000))).await,
+            format!("{}…", "w".repeat(200))
+        );
+        assert_eq!(
+            preview(format!("<cctui-session-context>\n{}", "v ".repeat(40_000))).await,
+            "",
+            "a wrapper unclosed past the prefix"
+        );
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(sid).execute(pool).await.unwrap();
     }
 
     #[tokio::test]

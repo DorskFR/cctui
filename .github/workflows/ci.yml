@@ -45,6 +45,9 @@ jobs:
       # false when a green run already tested this exact tree, e.g. the push
       # of a squash merge whose pull request run passed.
       check: ${{ steps.tested.outputs.check != 'false' }}
+      # A skipped push still builds what clippy, test and bindings cache when
+      # their key has no exact match, so pull requests into the branch restore it.
+      warm: ${{ steps.tested.outputs.check == 'false' && env.SAVE_RUST_CACHE == 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -141,8 +144,10 @@ jobs:
   clippy:
     name: cargo clippy
     needs: changes
-    if: needs.changes.outputs.check == 'true' && needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' && (needs.changes.outputs.check == 'true' || needs.changes.outputs.warm == 'true')
     runs-on: ubuntu-latest
+    env:
+      WARM_ONLY: ${{ needs.changes.outputs.check != 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -155,16 +160,24 @@ jobs:
       - name: Keep only the pinned toolchain
         run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        id: cached
+        if: env.WARM_ONLY == 'true'
+        with:
+          lookup-only: true
+          save-if: false
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        if: steps.cached.outputs.cache-hit != 'true'
         with:
           save-if: ${{ env.SAVE_RUST_CACHE }}
 
       - name: cargo clippy
+        if: steps.cached.outputs.cache-hit != 'true'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
     name: cargo test
     needs: changes
-    if: needs.changes.outputs.check == 'true' && needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' && (needs.changes.outputs.check == 'true' || needs.changes.outputs.warm == 'true')
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -187,6 +200,7 @@ jobs:
       TEST_CCTUI_URL: http://localhost:8700
       TEST_ADMIN_TOKEN: test-admin
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      WARM_ONLY: ${{ needs.changes.outputs.check != 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -198,26 +212,41 @@ jobs:
       - name: Keep only the pinned toolchain
         run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        id: cached
+        if: env.WARM_ONLY == 'true'
+        with:
+          lookup-only: true
+          save-if: false
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        if: steps.cached.outputs.cache-hit != 'true'
         with:
           save-if: ${{ env.SAVE_RUST_CACHE }}
 
       - name: Install sqlx-cli
+        if: steps.cached.outputs.cache-hit != 'true'
         uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: sqlx-cli
 
       - name: Apply migrations
+        if: steps.cached.outputs.cache-hit != 'true'
         run: sqlx migrate run --source migrations
+
+      - name: cargo test --no-run (warm the cache)
+        if: env.WARM_ONLY == 'true' && steps.cached.outputs.cache-hit != 'true'
+        run: cargo test --workspace --locked --no-run
 
       # Every cargo test below keeps the same --workspace package selection so
       # feature unification (and therefore the compiled artifacts) is identical
       # and the workspace compiles once.
       - name: cargo test (workspace)
+        if: env.WARM_ONLY != 'true'
         run: cargo test --workspace --locked
 
       # Ignored tests that only need the CI database or a throwaway runner. The
       # rest need a live claude/codex/opencode binary and stay manual-only.
       - name: cargo test --ignored (database, fake harness shims)
+        if: env.WARM_ONLY != 'true'
         run: |
           cargo test --workspace --locked --bins --lib -- --ignored routes::gateway::mint::db_tests harness_update::
 
@@ -225,6 +254,7 @@ jobs:
       # integration test target; do not rebuild it with a different package
       # selection.
       - name: Start the server
+        if: env.WARM_ONLY != 'true'
         run: |
           test -x ./target/debug/cctui-server || { echo "cargo test did not produce target/debug/cctui-server" >&2; exit 1; }
           ./target/debug/cctui-server > /tmp/cctui-server.log 2>&1 &
@@ -240,19 +270,21 @@ jobs:
           exit 1
 
       - name: cargo test --ignored (against the running server)
+        if: env.WARM_ONLY != 'true'
         run: cargo test --workspace --locked --test integration -- --ignored
 
       - name: Server log
-        if: always()
+        if: always() && env.WARM_ONLY != 'true'
         run: cat /tmp/cctui-server.log 2>/dev/null || true
 
   bindings:
     name: webui bindings
     needs: changes
-    if: needs.changes.outputs.check == 'true' && needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' && (needs.changes.outputs.check == 'true' || needs.changes.outputs.warm == 'true')
     runs-on: ubuntu-latest
     env:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      WARM_ONLY: ${{ needs.changes.outputs.check != 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -264,11 +296,19 @@ jobs:
       - name: Keep only the pinned toolchain
         run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        id: cached
+        if: env.WARM_ONLY == 'true'
+        with:
+          lookup-only: true
+          save-if: false
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        if: steps.cached.outputs.cache-hit != 'true'
         with:
           save-if: ${{ env.SAVE_RUST_CACHE }}
 
       # cctui-query's ts exports are not part of the webui bindings.
       - name: Regenerate webui bindings
+        if: steps.cached.outputs.cache-hit != 'true'
         env:
           CCTUI_BINDINGS_CARGO_ARGS: --workspace --locked --lib --bins --exclude cctui-query
         run: |
@@ -276,6 +316,7 @@ jobs:
           node webui/scripts/gen-scrub-detectors.mjs
 
       - name: Committed bindings match the generators
+        if: env.WARM_ONLY != 'true'
         run: |
           git add --intent-to-add webui/src/lib/bindings
           if ! git diff --exit-code webui/src/lib/bindings webui/src/lib/scrubDetectors.generated.ts; then

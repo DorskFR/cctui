@@ -21,9 +21,12 @@ pub(super) async fn handle_event(
     machine_id: Uuid,
     user_id: Uuid,
     adapter_id: &str,
-    event: AdapterEvent,
+    mut event: AdapterEvent,
     stored: Stored,
 ) -> anyhow::Result<()> {
+    if matches!(stored, Stored::Pending) {
+        crate::image_blobs::externalize_event(&state.pool, &mut event).await;
+    }
     let tail = Tail::of(adapter_id, &event);
     if let AdapterEvent::TurnEnd { local_id, .. } = &event {
         crate::cctuiverse::turn_ended(state, local_id);

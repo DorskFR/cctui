@@ -24,6 +24,7 @@ mod fireworks_billing;
 mod followup;
 mod guard_step;
 mod http_cache;
+mod image_blobs;
 mod keepalive;
 mod langfuse;
 mod live_sessions;
@@ -357,6 +358,9 @@ async fn start_background_tasks(state: &AppState) {
 
     if let Some(config) = search_index::BackfillConfig::from_env() {
         tokio::spawn(search_index::task(state.pool.clone(), config));
+    }
+    if let Some(config) = image_blobs::backfill::Config::from_env() {
+        tokio::spawn(image_blobs::backfill::task(state.pool.clone(), config));
     }
 
     // Off the startup path: every replica sweeps, and the scan is IO over a

@@ -61,7 +61,17 @@ pub(super) async fn ingest_run(
     let mut events = Vec::with_capacity(run.len());
     let mut rows = Vec::with_capacity(run.len());
     let mut searchable = Vec::with_capacity(run.len());
-    for Ingest { adapter_id, event, mut row } in run.drain(..) {
+    for Ingest { adapter_id, mut event, mut row } in run.drain(..) {
+        if crate::image_blobs::externalize(
+            &state.pool,
+            &row.local_id,
+            row.event_type,
+            &mut row.payload,
+        )
+        .await
+        {
+            crate::image_blobs::set_payload(&mut event, &row.payload);
+        }
         if row.event_type == "message" {
             crate::keepalive::observe_message(state, &row.local_id, &mut row.payload).await;
         }
@@ -272,7 +282,9 @@ pub(super) fn backfill(local_id: &str, n: usize) -> Vec<NewEvent> {
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine;
     use serde_json::json;
+    use sha2::Digest;
 
     use super::*;
     use crate::routes::daemon::test_support::{drop_machines, seed_machine, seed_owned_session};
@@ -615,6 +627,76 @@ mod tests {
                 .ok();
         }
         drop_machines(&pool, &[per_row_sid, batched_sid], &[(uid, mid)]).await;
+    }
+
+    #[tokio::test]
+    async fn an_image_result_is_stored_once_by_reference_and_served_to_each_session() {
+        let Some(url) = crate::routes::gateway::test_db_url("image_ingest") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "image_ingest").await;
+        let a = seed_owned_session(&pool, uid, mid).await;
+        let b = seed_owned_session(&pool, uid, mid).await;
+        let png = crate::image_blobs::tests::screenshot(Uuid::new_v4().as_u128(), 450_000);
+        let hash = hex::encode(sha2::Sha256::digest(&png));
+        let data_head = base64::engine::general_purpose::STANDARD.encode(&png[..96]);
+
+        let mut rows = Vec::new();
+        for sid in [&a, &b] {
+            let mut payload = crate::image_blobs::tests::read_result("toolu_shot", &png);
+            assert!(crate::image_blobs::externalize(&pool, sid, "tool_use", &mut payload).await);
+            rows.push(NewEvent {
+                local_id: sid.clone(),
+                event_type: "tool_use",
+                payload,
+                turn_id: None,
+            });
+        }
+        let seqs = insert_events(&pool, mid, uid, rows).await.expect("insert");
+        assert!(seqs.iter().all(Option::is_some));
+
+        for (sid, seq) in [(&a, seqs[0]), (&b, seqs[1])] {
+            let (payload, base64_in_search): (serde_json::Value, bool) = sqlx::query_as(
+                "SELECT payload, strpos(search_text, $2) > 0 FROM stream_events WHERE id = $1",
+            )
+            .bind(seq)
+            .bind(&data_head)
+            .fetch_one(&pool)
+            .await
+            .expect("stored row");
+            assert_eq!(payload["content"][0]["source"]["type"], "cctui-blob");
+            assert_eq!(payload["content"][0]["source"]["blob_id"], hash);
+            assert!(!payload.to_string().contains(&data_head), "no base64 in the payload");
+            assert!(!base64_in_search, "no base64 in search_text");
+            let served = crate::routes::blobs::fetch_session_blob(&pool, sid, &hash)
+                .await
+                .expect("fetch")
+                .map(|(_, bytes)| bytes);
+            assert_eq!(served.as_deref(), Some(png.as_slice()), "each session serves it");
+        }
+        let blobs: i64 = sqlx::query_scalar("SELECT count(*) FROM daemon_blobs WHERE hash = $1")
+            .bind(&hash)
+            .fetch_one(&pool)
+            .await
+            .expect("count blobs");
+        assert_eq!(blobs, 1, "one blob for the screenshot of both sessions");
+
+        sqlx::query("DELETE FROM stream_events WHERE session_id = ANY($1)")
+            .bind(vec![a.clone(), b.clone()])
+            .execute(&pool)
+            .await
+            .ok();
+        drop_machines(&pool, &[a, b], &[(uid, mid)]).await;
+        sqlx::query("DELETE FROM daemon_blobs WHERE hash = $1")
+            .bind(&hash)
+            .execute(&pool)
+            .await
+            .ok();
     }
 
     #[tokio::test]
