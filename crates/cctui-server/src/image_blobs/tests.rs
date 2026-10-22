@@ -69,11 +69,7 @@ fn redacted_result(tool_use_id: &str, bytes: &[u8]) -> (Value, String) {
     redacted_at(tool_use_id, bytes, 240..304)
 }
 
-fn redacted_at(
-    tool_use_id: &str,
-    bytes: &[u8],
-    range: std::ops::Range<usize>,
-) -> (Value, String) {
+fn redacted_at(tool_use_id: &str, bytes: &[u8], range: std::ops::Range<usize>) -> (Value, String) {
     let mut data = b64(bytes);
     data.replace_range(range, "[REDACTED:square_token]");
     let payload = json!({
