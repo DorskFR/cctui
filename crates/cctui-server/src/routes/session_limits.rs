@@ -474,6 +474,65 @@ mod tests {
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 
+    /// A user owning one anthropic provider row: `(user, account, provider)`.
+    async fn seed_owner(pool: &sqlx::PgPool) -> (Uuid, Uuid, Uuid) {
+        let uid = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("limits-pending-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(pool)
+            .await
+            .expect("seed user");
+        let (acct, prov) = (Uuid::new_v4(), Uuid::new_v4());
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(acct)
+            .bind(uid)
+            .bind(format!("pending-{uid}"))
+            .execute(pool)
+            .await
+            .expect("seed account");
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'anthropic', 'x', $3)",
+        )
+        .bind(prov)
+        .bind(uid)
+        .bind(acct)
+        .execute(pool)
+        .await
+        .expect("seed provider");
+        (uid, acct, prov)
+    }
+
+    async fn forget_owner(
+        pool: &sqlx::PgPool,
+        (uid, acct, prov): (Uuid, Uuid, Uuid),
+        sids: &[&str],
+    ) {
+        for sid in sids {
+            sqlx::query("DELETE FROM session_tokens WHERE session_id = $1")
+                .bind(sid)
+                .execute(pool)
+                .await
+                .ok();
+            sqlx::query("DELETE FROM sessions WHERE id = $1").bind(sid).execute(pool).await.ok();
+            sqlx::query("DELETE FROM dispatch_records WHERE session_id = $1")
+                .bind(sid)
+                .execute(pool)
+                .await
+                .ok();
+        }
+        sqlx::query("DELETE FROM account_providers WHERE id = $1")
+            .bind(prov)
+            .execute(pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM accounts WHERE id = $1").bind(acct).execute(pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(pool).await.ok();
+    }
+
     /// A worker asks before its harness registered the session: the dispatch
     /// record, else a token minted for the caller, answers for the row.
     #[tokio::test]
@@ -486,33 +545,8 @@ mod tests {
             .connect(&url)
             .await
             .expect("connect test db");
-        let uid = Uuid::new_v4();
-        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
-            .bind(uid)
-            .bind(format!("limits-pending-{uid}"))
-            .bind(format!("kh-{uid}"))
-            .execute(&pool)
-            .await
-            .expect("seed user");
-        let (acct, prov) = (Uuid::new_v4(), Uuid::new_v4());
-        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
-            .bind(acct)
-            .bind(uid)
-            .bind(format!("pending-{uid}"))
-            .execute(&pool)
-            .await
-            .expect("seed account");
-        sqlx::query(
-            "INSERT INTO account_providers \
-                 (id, user_id, provider, encrypted_refresh_token, account_id) \
-             VALUES ($1, $2, 'anthropic', 'x', $3)",
-        )
-        .bind(prov)
-        .bind(uid)
-        .bind(acct)
-        .execute(&pool)
-        .await
-        .expect("seed provider");
+        let owner = seed_owner(&pool).await;
+        let (uid, _, prov) = owner;
 
         let dispatched = format!("limits-dispatched-{uid}");
         sqlx::query(
@@ -564,30 +598,7 @@ mod tests {
         assert_eq!(row.model.as_deref(), Some("claude-sonnet-5-5"), "the registered row wins");
         assert_eq!(row.soft_limit_reason.as_deref(), Some("weekly cap"));
 
-        for sid in [&spawned, &orphan] {
-            sqlx::query("DELETE FROM session_tokens WHERE session_id = $1")
-                .bind(sid)
-                .execute(&pool)
-                .await
-                .ok();
-        }
-        sqlx::query("DELETE FROM sessions WHERE id = $1")
-            .bind(&dispatched)
-            .execute(&pool)
-            .await
-            .ok();
-        sqlx::query("DELETE FROM dispatch_records WHERE session_id = $1")
-            .bind(&dispatched)
-            .execute(&pool)
-            .await
-            .ok();
-        sqlx::query("DELETE FROM account_providers WHERE id = $1")
-            .bind(prov)
-            .execute(&pool)
-            .await
-            .ok();
-        sqlx::query("DELETE FROM accounts WHERE id = $1").bind(acct).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+        forget_owner(&pool, owner, &[dispatched.as_str(), spawned.as_str(), orphan.as_str()]).await;
     }
 
     #[tokio::test]

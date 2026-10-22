@@ -16,12 +16,12 @@ log() { :; }
 POLICY_FILE="$TMP/policy.json"
 PRIVATE_ALLOW_FILE="$TMP/private-allow"
 eval "$(grep '^GATEWAY_URL_KEYS=' "$ENTRY")"
-for fn in url_hostport url_host gateway_url gateway_hostports private_allow_lines seed_policy; do
+for fn in url_hostport repo_hostport url_host gateway_url gateway_hostports private_allow_lines seed_policy; do
   eval "$(awk "/^${fn}\\(\\)/,/^}/" "$ENTRY")"
 done
 
 reset() {
-  unset REPLY_URL CONTEXT_PACK_URL WORKER_NET_ALLOW TASK_PAYLOAD_JSON CCTUI_URL CCTUI_SERVER_URL \
+  unset REPLY_URL CONTEXT_PACK_URL TASK_REPO_URL WORKER_NET_ALLOW TASK_PAYLOAD_JSON CCTUI_URL CCTUI_SERVER_URL \
         ANTHROPIC_BASE_URL OPENAI_BASE_URL FIREWORKS_BASE_URL GOOGLE_GEMINI_BASE_URL
   CCTUI_BASE_URL="http://cctui.cctui.svc:8700"
   : > "$POLICY_FILE"

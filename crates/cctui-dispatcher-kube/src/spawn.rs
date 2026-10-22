@@ -1027,7 +1027,9 @@ impl Spawner {
             Err(e) => anyhow::bail!("reading Job {name}: {e}"),
         };
         match Self::job_terminal_state(&job) {
-            Some("Complete") => return Ok((HandleState::Complete, self.pod_oom_reason(name).await)),
+            Some("Complete") => {
+                return Ok((HandleState::Complete, self.pod_oom_reason(name).await));
+            }
             Some("Failed") => {
                 if let Some(oom) = self.pod_oom_reason(name).await {
                     return Ok((HandleState::Failed, Some(oom)));

@@ -268,7 +268,7 @@ impl Dispatcher for EnrolledDispatcher {
                     // On a finished workload it is how the container ended,
                     // e.g. a child's OOM kill under a clean exit.
                     Some(ReportedState::Complete) => {
-                        Ok((HandleStatus::Complete, worker_exit.or_else(|| ended(error))))
+                        Ok((HandleStatus::Complete, worker_exit.or_else(|| error.map(ended))))
                     }
                     Some(ReportedState::Failed) => Ok((HandleStatus::Failed(error), worker_exit)),
                     Some(ReportedState::Gone) => Ok((HandleStatus::Gone, None)),
@@ -309,8 +309,8 @@ impl Dispatcher for EnrolledDispatcher {
 }
 
 /// A finished workload's container end, as its dispatcher named it.
-fn ended(reason: Option<String>) -> Option<cctui_proto::api::WorkerExit> {
-    reason.map(|reason| cctui_proto::api::WorkerExit { reason: Some(reason), ..Default::default() })
+fn ended(reason: String) -> cctui_proto::api::WorkerExit {
+    cctui_proto::api::WorkerExit { reason: Some(reason), ..Default::default() }
 }
 
 #[cfg(test)]

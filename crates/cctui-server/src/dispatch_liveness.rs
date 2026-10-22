@@ -533,8 +533,7 @@ mod tests {
     /// only the backoff; the container's termination names the cause.
     #[tokio::test]
     async fn an_oom_kill_behind_a_backoff_failure_ends_the_session_oom_killed() {
-        let Some(url) = crate::routes::gateway::test_db_url("dispatch_liveness_oom_backoff")
-        else {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_liveness_oom_backoff") else {
             return;
         };
         let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
