@@ -110,3 +110,10 @@ start).
 ```sh
 cargo run -p cctui-orchestrator --bin crdgen > deploy/workerprofile-crd.yaml
 ```
+
+Each GitHub release attaches it as `workerprofile-crd.yaml`:
+
+```sh
+gh release download vX.Y.Z --repo DorskFR/cctui --pattern workerprofile-crd.yaml
+kubectl apply -f workerprofile-crd.yaml
+```

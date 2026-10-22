@@ -70,6 +70,7 @@ case, never a *no-`SESSION_ID`* case.
 | `WORKER_NET_MODE` | auto | `transparent`, `transparent-external`, or `forward`. Auto = `transparent` when iptables is usable (CAP_NET_ADMIN), else `forward`. `transparent-external` is never auto-selected — set it only when the pod runs the guard-proxy sidecar + net-init init container (see below). |
 | `WORKER_NET_EXEMPT` | — | Comma-separated `host:port` that **bypass** the proxy (resolved to a single IP at boot, iptables `RETURN`'d). Transparent mode only. IP-pinned — use only for **IP-stable** hosts; CDN/multi-IP hosts will rotate off the exempted IP. |
 | `WORKER_NET_ALLOW` | — | Comma-separated `host:port` allowed **through** the proxy by **SNI** (IP-independent). Folded into the seeded `policy.json` and re-applied as `cctui-guard --always-allow` so it survives per-step rewrites. The right tool for CDN/multi-IP SaaS APIs (e.g. a YouTrack host). |
+| `WORKER_REPO_REGISTRIES` | on | After the repo lands in `/workspace/<repo>`, its manifests (up to three levels deep; `.git`, `node_modules`, `target`, `vendor`, `.venv` skipped) add their package registry to the seeded `policy.json` as plain egress (no credential injection): `package.json`/`package-lock.json`/`npm-shrinkwrap.json` → `registry.npmjs.org:443`; `pyproject.toml`/`uv.lock`/`requirements*.txt` → `pypi.org:443`, `files.pythonhosted.org:443`; `Cargo.toml` → `index.crates.io:443`, `static.crates.io:443`, `crates.io:443`; `go.mod` → `proxy.golang.org:443`, `sum.golang.org:443`. Not `--always-allow`'d: under a guarded workflow the per-step `[network]` policy replaces them. `0`/`false`/`off`/`no` disables it per profile. |
 | `WARM_REPO_DIR` | — | Mounted warm-repo dir; becomes the overlayfs lowerdir for `/workspace` (rsync-copy fallback). `posture: root` only: a `posture: nonroot` profile is denied for setting it, and the envelope strips it from a nonroot worker. |
 | `TASK_REPO_URL` | — | Repo to shallow-clone into `/workspace` when no warm repo. |
 | `TASK_REPO_REF` | — | Branch/tag to clone (`git clone --depth 1 --branch`). |
@@ -198,7 +199,7 @@ applies a **documented built-in default**, logged loudly at boot
   `guard-rules.md` **and** the prompt carries `# Step N` + `[allowed]` blocks.
 - **Network = deny-default + seeded structural hosts.** Egress stays the boot
   `policy.json`: deny-default with only `CCTUI_URL`, `REPLY_URL`, the minted
-  model-gateway hosts, and any `WORKER_NET_ALLOW`/`CONTEXT_PACK_URL` host allowed. The sandbox floor holds
+  model-gateway hosts, and any `WORKER_NET_ALLOW`/`CONTEXT_PACK_URL`/repo host plus the repo's package registries (`WORKER_REPO_REGISTRIES`) allowed. The sandbox floor holds
   even with no rules file — an unguarded run is never an *open* run.
 
 To gate tools per workflow step, ship a `guard-rules.md` in the pack and give the
@@ -1703,3 +1704,34 @@ the spawn key until it registers; `rebind_spawn_key` moves the token, the record
 usage, the child's budget and its capability onto the registered id in one step.
 Miss that and the usage FK to `sessions(id)` rejects every insert and the child's
 spend reads $0.
+
+## Agent-posted images
+
+An agent shows the user a picture by writing a markdown image marker with an
+absolute local path into its own message text:
+
+```
+![login page after the fix](/tmp/shot.png)
+```
+
+The daemon (`imagepost.rs`) finds the marker in an assistant message from any
+harness, uploads the file to the session's blob store and rewrites the marker to
+`![alt](cctui-img://<id>)`, which the webui renders inline. The file must:
+
+- canonicalize (symlinks resolved) to a regular file under `$HOME`, `/tmp` or
+  `$TMPDIR`;
+- be png, jpeg, gif or webp by its magic bytes, with a `.png`, `.jpg`, `.jpeg`,
+  `.gif` or `.webp` extension;
+- be at most 5 MB. A session keeps at most 200 images and 100 MB in total.
+
+A marker that fails any check stays as the agent wrote it, as a plain path.
+
+Every session is told this in one line of its `<cctui-session-context>` block
+(`preamble::IMAGE_LINE`): always for claude-code, and for codex, opencode and
+ACP whenever that block is sent at all.
+
+Images are scoped to the session that posted them. A marker only works in the
+agent's own prose: one inside a tool call, such as a `CctuiSend` body, is never
+uploaded and reaches the peer as a plain path. A child's final message as
+`CctuiAgent` returns it to the parent carries the child's `cctui-img://` id,
+which does not resolve in the parent's session.

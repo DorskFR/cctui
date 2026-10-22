@@ -1630,6 +1630,38 @@ mod tests {
     }
 
     #[test]
+    fn split_block_lines_keep_text_across_a_mid_turn_peer_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("t.jsonl");
+        write_lines(
+            &path,
+            &[
+                r#"{"type":"assistant","uuid":"u1","apiBlockIndex":0,"message":{"id":"m1","role":"assistant","stop_reason":"tool_use","content":[{"type":"thinking","thinking":"plan","signature":"s"}]}}"#,
+                r#"{"type":"queue-operation","operation":"enqueue","content":"<cctui-peer-message from=\"p\">hi</cctui-peer-message>"}"#,
+                r#"{"type":"assistant","uuid":"u2","apiBlockIndex":1,"message":{"id":"m1","role":"assistant","stop_reason":"tool_use","content":[{"type":"text","text":"Look: ![shot](/tmp/a.png)"}]}}"#,
+            ],
+        );
+        let (mut events, off) = tail_once(&path, "s", 0).unwrap();
+        write_lines(
+            &path,
+            &[
+                r#"{"type":"assistant","uuid":"u3","apiBlockIndex":2,"message":{"id":"m1","role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_1","name":"mcp__cctui__CctuiSend","input":{"message":"x"}}]}}"#,
+                r#"{"type":"queue-operation","operation":"remove"}"#,
+                r#"{"type":"assistant","uuid":"u4","apiBlockIndex":0,"message":{"id":"m2","role":"assistant","stop_reason":"tool_use","content":[{"type":"text","text":"next"}]}}"#,
+            ],
+        );
+        events.extend(tail_once(&path, "s", off).unwrap().0);
+
+        let texts: Vec<(&str, &str)> = message_payloads(&events)
+            .into_iter()
+            .filter(|p| p["role"] == "assistant")
+            .map(|p| (p["message_id"].as_str().unwrap(), p["text"].as_str().unwrap()))
+            .collect();
+        assert_eq!(texts, [("m1", "Look: ![shot](/tmp/a.png)"), ("m2", "next")]);
+        assert!(events.iter().any(|e| matches!(e, AdapterEvent::ToolUse { .. })));
+    }
+
+    #[test]
     fn tail_handles_rotation() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("t.jsonl");

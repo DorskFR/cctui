@@ -41,6 +41,7 @@ jobs:
       rust: ${{ steps.scope.outputs.rust }}
       webui: ${{ steps.scope.outputs.webui }}
       deps: ${{ steps.scope.outputs.deps }}
+      deploy: ${{ steps.scope.outputs.deploy }}
       # false when a green run already tested this exact tree, e.g. the push
       # of a squash merge whose pull request run passed.
       check: ${{ steps.tested.outputs.check != 'false' }}
@@ -662,6 +663,45 @@ jobs:
       - name: The fixture seeds only the stack this checkout started
         run: bash deploy/local/fixture/seed.test.sh
 
+  deploy-tests:
+    name: deploy tests
+    needs: changes
+    if: needs.changes.outputs.check == 'true' && needs.changes.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install dash
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends dash
+
+      # The worker image runs these with Debian's /bin/sh, which is dash.
+      - name: Container scripts parse under dash
+        run: |
+          for f in deploy/*.sh; do
+            echo "dash -n $f"
+            dash -n "$f"
+          done
+
+      - name: Every deploy/tests suite passes
+        run: |
+          failed=()
+          for t in deploy/tests/test-*.sh; do
+            echo "::group::$t"
+            if bash "$t"; then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error file=$t::$t failed"
+              failed+=("$t")
+            fi
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            printf 'failed: %s\n' "${failed[@]}" >&2
+            exit 1
+          fi
+
   actionlint:
     name: actionlint
     needs: changes
@@ -702,6 +742,7 @@ jobs:
       - i18n-messages
       - release-channel
       - local-seed
+      - deploy-tests
       - actionlint
     runs-on: ubuntu-latest
     steps:

@@ -110,6 +110,8 @@ also keeps the Claude Code `User-Agent` version baked in at its last build.
 Each release attaches `release-scope.json` (`version`, `prev_tag`, `rust`, and
 `modes` per image: `build`, `prevbins` or `retag`) and states what it rebuilt in
 its notes. The infra rollout reads it to bump only the rebuilt components.
+Every release, rebuilt or carried, also attaches `workerprofile-crd.yaml`, the
+WorkerProfile CRD at the release commit, for operators to apply.
 
 To rebuild everything, dispatch the release workflow with `full: true`, e.g.
 when the previous release's images are missing or broken.

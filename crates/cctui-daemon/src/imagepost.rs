@@ -198,8 +198,8 @@ pub async fn process_event(
     allowed_roots: &[PathBuf],
 ) -> AdapterEvent {
     let event = crate::blobs::extract_blobs(client, machine_key, event).await;
-    let AdapterEvent::Message { local_id, payload, .. } = &event else { return event };
-    if payload.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+    let AdapterEvent::Message { local_id, payload, turn_id } = &event else { return event };
+    if !is_assistant_text(payload) {
         return event;
     }
     let Some(text) = payload.get("text").and_then(|t| t.as_str()) else { return event };
@@ -211,11 +211,37 @@ pub async fn process_event(
     if rewritten == text {
         return event;
     }
+    AdapterEvent::Message {
+        local_id: local_id.clone(),
+        payload: with_rewritten_text(payload, rewritten),
+        turn_id: *turn_id,
+    }
+}
+
+/// An agent's own prose: claude/opencode/acp tag it `role: assistant`, codex
+/// sends its raw `agentMessage` item, which has no role.
+fn is_assistant_text(payload: &serde_json::Value) -> bool {
+    payload.get("role").and_then(serde_json::Value::as_str).map_or_else(
+        || payload.get("type").and_then(serde_json::Value::as_str) == Some("agentMessage"),
+        |role| role == "assistant",
+    )
+}
+
+/// `payload` with `text` replaced. opencode and acp mirror the text into
+/// `content`, the field the server renders for them, so a mirror that matched
+/// the old text is replaced too.
+fn with_rewritten_text(payload: &serde_json::Value, rewritten: String) -> serde_json::Value {
     let mut payload = payload.clone();
     if let Some(obj) = payload.as_object_mut() {
-        obj.insert("text".to_owned(), serde_json::Value::String(rewritten));
+        let field = |key: &str| obj.get(key).and_then(serde_json::Value::as_str);
+        let mirrored = field("content").is_some() && field("content") == field("text");
+        let rewritten = serde_json::Value::String(rewritten);
+        if mirrored {
+            obj.insert("content".to_owned(), rewritten.clone());
+        }
+        obj.insert("text".to_owned(), rewritten);
     }
-    AdapterEvent::Message { local_id: local_id.clone(), payload, turn_id: None }
+    payload
 }
 
 #[cfg(test)]
@@ -281,6 +307,39 @@ mod tests {
         assert!(!path_allowed(root.to_str().unwrap(), &roots));
         // A non-existent path is rejected.
         assert!(!path_allowed(root.join("nope.png").to_str().unwrap(), &roots));
+    }
+
+    #[test]
+    fn every_harness_shape_of_assistant_prose_is_rewritten() {
+        use serde_json::json;
+        assert!(is_assistant_text(&json!({ "role": "assistant", "text": "x" })));
+        assert!(is_assistant_text(&json!({ "type": "agentMessage", "text": "x" })));
+        assert!(is_assistant_text(&json!({ "type": "text", "role": "assistant", "content": "x" })));
+        assert!(!is_assistant_text(&json!({ "role": "user", "text": "x" })));
+        assert!(!is_assistant_text(&json!({ "role": "assistant_thinking", "text": "x" })));
+        assert!(!is_assistant_text(&json!({ "type": "userMessage", "text": "x" })));
+        assert!(!is_assistant_text(&json!({ "type": "reasoning", "text": "x" })));
+    }
+
+    #[test]
+    fn the_rendered_content_mirror_is_rewritten_with_the_text() {
+        use serde_json::json;
+        let marker = "![a](/tmp/a.png)";
+        let served = "![a](cctui-img://id-1)".to_owned();
+        let opencode =
+            json!({ "type": "text", "role": "assistant", "content": marker, "text": marker });
+        let out = with_rewritten_text(&opencode, served.clone());
+        assert_eq!(out["text"], served.as_str());
+        assert_eq!(out["content"], served.as_str());
+        assert_eq!(out["role"], "assistant");
+
+        let codex = json!({ "type": "agentMessage", "id": "i1", "text": marker });
+        let out = with_rewritten_text(&codex, served.clone());
+        assert_eq!(out["text"], served.as_str());
+        assert!(out.get("content").is_none(), "{out}");
+
+        let diverged = json!({ "role": "assistant", "content": "other", "text": marker });
+        assert_eq!(with_rewritten_text(&diverged, served)["content"], "other");
     }
 
     #[test]

@@ -60,6 +60,7 @@
 		style="min-width:0;max-width:100%">{view.title}</Text
 	>
 </span>
+{#if row}<span class="row-break" aria-hidden="true"></span>{/if}
 {#if s.labels.length > 0 || actions.labelEditable}
 	<span class="labels" class:empty={s.labels.length === 0}><LabelBadge
 		labels={s.labels}
@@ -140,6 +141,19 @@
 			flex: 1 1 auto;
 			max-width: none;
 			min-width: 6ch;
+		}
+	}
+	/* On a phone the title owns the first line; the chips wrap under it. Pairs
+	   with the row's `wrapAt`. */
+	.row-break {
+		display: none;
+	}
+	@container sess-row (max-width: 30em) {
+		.row-break {
+			display: block;
+			flex: 0 0 100%;
+			height: 0;
+			margin-top: calc(-1 * var(--row-gap, 0px));
 		}
 	}
 	.activity {

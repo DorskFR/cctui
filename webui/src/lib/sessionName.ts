@@ -24,10 +24,25 @@ function metaString(meta: unknown, key: string): string | null {
 	return typeof v === 'string' ? v : null;
 }
 
+/** The stored name, else the title the user pinned when the row lost it. */
+export function nameOf(s: Pick<SessionListItem, 'name' | 'metadata'>): string {
+	const n = s.name?.trim();
+	if (n) return n;
+	if (metaString(s.metadata, 'name_source') !== 'user') return '';
+	return metaString(s.metadata, 'custom_title')?.trim() ?? '';
+}
+
 export function displayNameOf(s: Pick<SessionListItem, 'name' | 'metadata'>): string {
 	return sessionDisplayName(
-		s.name,
+		nameOf(s),
 		metaString(s.metadata, 'agent_title'),
 		metaString(s.metadata, 'name_source')
 	);
+}
+
+/** Conversation header title: the session name, the working folder otherwise. */
+export function headerTitleOf(
+	s: Pick<SessionListItem, 'name' | 'metadata' | 'working_dir'>
+): string {
+	return displayNameOf(s) || s.working_dir;
 }

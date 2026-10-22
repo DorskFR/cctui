@@ -366,6 +366,42 @@ seed_policy() {
     log "seeded guard-proxy policy (allow: ${_cctui_hp}${_reply_hp:+, $_reply_hp}${_gw_log:+, $_gw_log}${_pack_hp:+, $_pack_hp}${_repo_hp:+, $_repo_hp}${WORKER_NET_ALLOW:+, $WORKER_NET_ALLOW}; default deny)"
 }
 
+repo_registry_hostports() {
+    [ -d "$1" ] || return 0
+    find "$1" -maxdepth 3 \( -name .git -o -name node_modules -o -name target \
+            -o -name vendor -o -name .venv \) -prune -o -type f \
+            \( -name package.json -o -name package-lock.json -o -name npm-shrinkwrap.json \
+            -o -name pyproject.toml -o -name uv.lock -o -name 'requirements*.txt' \
+            -o -name Cargo.toml -o -name go.mod \) -print 2>/dev/null \
+        | sed 's,.*/,,' | sort -u | while IFS= read -r _f; do
+            case "$_f" in
+                package.json | package-lock.json | npm-shrinkwrap.json)
+                    echo registry.npmjs.org:443 ;;
+                pyproject.toml | uv.lock | requirements*.txt)
+                    printf '%s\n' pypi.org:443 files.pythonhosted.org:443 ;;
+                Cargo.toml)
+                    printf '%s\n' index.crates.io:443 static.crates.io:443 crates.io:443 ;;
+                go.mod)
+                    printf '%s\n' proxy.golang.org:443 sum.golang.org:443 ;;
+            esac
+        done | sort -u
+}
+
+# Seeded only, never --always-allow'ed: a guarded step's [network] has the final say.
+phase_repo_registries() {
+    case "${WORKER_REPO_REGISTRIES:-1}" in
+        0 | false | off | no) return 0 ;;
+    esac
+    [ -f "$POLICY_FILE" ] || return 0
+    _rr_hps=$(repo_registry_hostports "/workspace/${TASK_REPO:-repo}")
+    [ -n "$_rr_hps" ] || return 0
+    jq -c --arg h "$_rr_hps" \
+        '.allowed_hosts = ((.allowed_hosts + ($h | split("\n") | map(select(. != "")))) | unique)' \
+        "$POLICY_FILE" > "${POLICY_FILE}.tmp" \
+        && mv -f "${POLICY_FILE}.tmp" "$POLICY_FILE" \
+        && log "repo registries allowed: $(printf '%s' "$_rr_hps" | tr '\n' ',' | sed 's/,/, /g')"
+}
+
 NET_MODE=""
 phase_network() {
     # Decide the mode. Explicit WORKER_NET_MODE wins; else transparent iff we
@@ -1533,6 +1569,7 @@ derive_task_env
 default_bg_isolation
 phase_network
 phase_workspace
+phase_repo_registries
 # The CLI grants edit-in-place only when the session cwd IS a git repo,
 # so default the workdir to the repo (must run after phase_workspace clones it).
 if [ -z "${CCTUI_DISPATCH_WORKDIR:-}" ] && [ -n "${TASK_REPO:-}" ] \

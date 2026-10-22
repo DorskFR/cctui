@@ -57,6 +57,7 @@ pub(super) fn build_session_context(
             let _ = writeln!(b, "  - {p}");
         }
     }
+    b.push_str(crate::preamble::IMAGE_LINE);
     if let Some(cap) = capability.filter(|c| !c.is_empty()) {
         b.push_str(&agent_tool_context(cap));
     }
@@ -1153,6 +1154,18 @@ mod tests {
 
         let bare = build_session_context(&bare_spec(), "/work/cctui", &[], None, &[], Some("  "));
         assert!(!bare.contains("context:"), "a blank notice adds no line: {bare}");
+    }
+
+    #[test]
+    fn every_session_context_says_how_to_show_an_image() {
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, &[], None);
+        assert!(block.contains(crate::preamble::IMAGE_LINE), "{block}");
+        assert!(block.ends_with("</cctui-session-context>"), "{block}");
+
+        let cap = cctui_proto::api::SpawnCapability::machine_default();
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], Some(&cap), &[], None);
+        let image = block.find("images: to show the user an image").expect("image line");
+        assert!(image < block.find("CctuiAgent:").expect("agent paragraph"), "{block}");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@bindings/SessionListItem';
-import { displayNameOf, sessionDisplayName } from './sessionName';
+import { displayNameOf, headerTitleOf, nameOf, sessionDisplayName } from './sessionName';
 
 describe('sessionDisplayName', () => {
 	it('shows the agent title beside a pinned name', () => {
@@ -45,5 +45,51 @@ describe('displayNameOf', () => {
 		expect(displayNameOf(row('n', undefined))).toBe('n');
 		expect(displayNameOf(row('n', ['user']))).toBe('n');
 		expect(displayNameOf(row('n', { name_source: 'user', agent_title: 7 }))).toBe('n');
+	});
+});
+
+describe('nameOf', () => {
+	const row = (name: string | null, metadata: unknown) =>
+		({ name, metadata }) as Pick<SessionListItem, 'name' | 'metadata'>;
+
+	it('prefers the stored name', () => {
+		expect(nameOf(row(' lane d ', { name_source: 'user', custom_title: 'old' }))).toBe('lane d');
+	});
+
+	it('falls back to the pinned title when the stored name is gone', () => {
+		expect(nameOf(row(null, { name_source: 'user', custom_title: 'qa-voice-0261b12' }))).toBe(
+			'qa-voice-0261b12'
+		);
+		expect(nameOf(row('  ', { name_source: 'user', custom_title: 'pinned' }))).toBe('pinned');
+	});
+
+	it('ignores a custom title the user never pinned', () => {
+		expect(nameOf(row(null, { custom_title: 'stray' }))).toBe('');
+		expect(nameOf(row(null, null))).toBe('');
+	});
+});
+
+describe('headerTitleOf', () => {
+	const row = (name: string | null, metadata: unknown) =>
+		({ name, metadata, working_dir: '/home/dorsk/Documents' }) as Pick<
+			SessionListItem,
+			'name' | 'metadata' | 'working_dir'
+		>;
+
+	it('shows the name of a named session, interactive or dispatched', () => {
+		expect(headerTitleOf(row('qa-voice-0261b12', { name_source: 'user' }))).toBe(
+			'qa-voice-0261b12'
+		);
+		expect(headerTitleOf(row('dispatched job', { agent_title: 'dispatched job' }))).toBe(
+			'dispatched job'
+		);
+		expect(
+			headerTitleOf(row(null, { name_source: 'user', custom_title: 'qa-voice-0261b12' }))
+		).toBe('qa-voice-0261b12');
+	});
+
+	it('falls back to the working folder for an unnamed session', () => {
+		expect(headerTitleOf(row(null, {}))).toBe('/home/dorsk/Documents');
+		expect(headerTitleOf(row('  ', null))).toBe('/home/dorsk/Documents');
 	});
 });

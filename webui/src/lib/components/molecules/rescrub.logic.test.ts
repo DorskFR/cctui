@@ -6,6 +6,7 @@ import {
   rescrubProgress,
   rescrubSampleLines,
   rescrubScopeSince,
+  rescrubSettleNotice,
 } from "./rescrub.logic";
 import type { PrivacyScanJob } from "@bindings/PrivacyScanJob";
 import type { ScanCategory } from "@bindings/ScanCategory";
@@ -99,5 +100,31 @@ describe("rescrubSampleLines", () => {
     });
     expect(rescrubSampleLines(c)).toEqual(["input_token   the …count was 3"]);
     expect(rescrubSampleLines(category())).toEqual([]);
+  });
+});
+
+describe("rescrubSettleNotice", () => {
+  const applied = job({ status: "completed", dry_run: false });
+
+  it("stays silent for a job finished before this panel mounted", () => {
+    expect(rescrubSettleNotice(applied, null)).toBeNull();
+    expect(rescrubSettleNotice(job({ status: "failed" }), null)).toBeNull();
+  });
+
+  it("stays silent for a different job than the one watched", () => {
+    expect(rescrubSettleNotice(applied, "job-0")).toBeNull();
+  });
+
+  it("notifies a watched apply that completed", () => {
+    expect(rescrubSettleNotice(applied, "job-1")).toBe("done");
+  });
+
+  it("notifies a watched job that failed", () => {
+    expect(rescrubSettleNotice(job({ status: "failed" }), "job-1")).toBe("failed");
+  });
+
+  it("does not toast a watched dry run or a cancelled apply", () => {
+    expect(rescrubSettleNotice(job({ status: "completed" }), "job-1")).toBeNull();
+    expect(rescrubSettleNotice(job({ status: "cancelled", dry_run: false }), "job-1")).toBeNull();
   });
 });
