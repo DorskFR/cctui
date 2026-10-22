@@ -79,6 +79,7 @@ ARG CA_CERTS_REFRESH=2026-10-22
 #   xz-utils                — unpacks the node tarball below.
 #   procps                  — `ps`, which `codex app-server daemon start` needs.
 #   libstdc++6              — the goose binary links it dynamically.
+#   libatomic1              — the Node 26 runtime links it dynamically.
 RUN echo "ca-certificates refresh ${CA_CERTS_REFRESH}" && apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -88,6 +89,7 @@ RUN echo "ca-certificates refresh ${CA_CERTS_REFRESH}" && apt-get update \
         gnupg \
         iptables \
         jq \
+        libatomic1 \
         libstdc++6 \
         openssh-client \
         procps \
