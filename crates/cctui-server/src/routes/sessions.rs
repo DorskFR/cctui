@@ -2675,9 +2675,11 @@ fn conv_search_sql(n_patterns: usize, gap: Option<Unchunked>) -> String {
             .collect::<Vec<_>>()
             .join(" INTERSECT ");
         let unchunked = gap.map_or_else(String::new, |g| {
-            let raw = (l + 1..=l + n_patterns)
-                .map(|i| format!(" AND left(u.search_text, {SEARCH_TEXT_CAP}) ILIKE ${i}"))
-                .collect::<String>();
+            use std::fmt::Write as _;
+            let raw = (l + 1..=l + n_patterns).fold(String::new(), |mut acc, i| {
+                let _ = write!(acc, " AND left(u.search_text, {SEARCH_TEXT_CAP}) ILIKE ${i}");
+                acc
+            });
             format!(
                 " UNION SELECT u.id FROM stream_events u \
                   WHERE u.session_id = $1 AND {}{raw}",

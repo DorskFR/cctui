@@ -146,7 +146,10 @@ pub struct Unchunked {
 impl Unchunked {
     /// No `live_from` yet means nothing past the cursor has been chunked.
     pub const fn between(cursor: i64, live_from: Option<i64>) -> Option<Self> {
-        let before = live_from.unwrap_or(i64::MAX);
+        let before = match live_from {
+            Some(id) => id,
+            None => i64::MAX,
+        };
         if before.saturating_sub(cursor) > 1 { Some(Self { after: cursor, before }) } else { None }
     }
 }

@@ -23,11 +23,10 @@ pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
 
 /// [`connect`], also returning the migration versions this call applied.
 pub async fn connect_reporting(database_url: &str) -> Result<(PgPool, Vec<i64>), sqlx::Error> {
-    // Pool sizing is env-tunable so prod can scale connections without a rebuild.
-    // Defaults are generous enough to absorb gateway proxying + heartbeats +
-    // dispatcher bumps + webui loads without starving the pool (CCT slow-pool fix);
-    // acquire_timeout fails fast instead of hanging requests (and the UI) ~30s.
-    let max_connections = env_u32("CCTUI_DB_MAX_CONNECTIONS", 40);
+    // Pool sizing is env-tunable without a rebuild. The default keeps two
+    // replicas plus a rolling-update surge (4 pods) under Postgres' default
+    // max_connections of 100; acquire_timeout fails fast instead of hanging requests.
+    let max_connections = env_u32("CCTUI_DB_MAX_CONNECTIONS", 20);
     let min_connections = env_u32("CCTUI_DB_MIN_CONNECTIONS", 5);
     let acquire_timeout = env_u32("CCTUI_DB_ACQUIRE_TIMEOUT_SECS", 5);
     let slow_query_ms = env_u32("CCTUI_DB_SLOW_QUERY_MS", 500);
