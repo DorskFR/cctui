@@ -30,6 +30,7 @@ pub mod dispatch_codex;
 pub mod doctor;
 pub mod enroll;
 pub mod fatal;
+pub mod followledger;
 pub mod git;
 pub mod guardwatch;
 pub mod harness_update;

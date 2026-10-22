@@ -131,6 +131,7 @@ struct Watch {
     state: WatchState,
     registered_at: Instant,
     notify: Arc<Notify>,
+    generation: u64,
 }
 
 /// A point-in-time copy of a watch, plus its age. All policy questions are
@@ -286,16 +287,20 @@ fn humanize_tokens(n: u64) -> String {
 }
 
 /// A registered watch: snapshot on demand, woken on every observed change.
+///
+/// A newer registration for the same child supersedes it: the stale handle
+/// then reads `None` and its drop leaves the newer watch in place.
 pub struct WatchHandle {
     key: String,
     watch: Arc<ChildWatch>,
     notify: Arc<Notify>,
+    generation: u64,
 }
 
 impl WatchHandle {
     #[must_use]
     pub fn snapshot(&self) -> Option<ChildSnapshot> {
-        self.watch.snapshot(&self.key)
+        self.watch.snapshot_of(&self.key, Some(self.generation))
     }
 
     /// Wait for the next observed change, or until `timeout` elapses.
@@ -306,7 +311,7 @@ impl WatchHandle {
 
 impl Drop for WatchHandle {
     fn drop(&mut self) {
-        self.watch.remove(&self.key);
+        self.watch.remove(&self.key, self.generation);
     }
 }
 
@@ -317,6 +322,7 @@ const UNCLAIMED_BIND_TTL: Duration = Duration::from_mins(5);
 #[derive(Default)]
 pub struct ChildWatch {
     watches: Mutex<HashMap<String, Watch>>,
+    generations: std::sync::atomic::AtomicU64,
     /// `spawn_key → (local_id, seen)` binds that arrived before `register`.
     /// Locked only while `watches` is held.
     unclaimed: Mutex<HashMap<String, (String, Instant)>>,
@@ -367,20 +373,30 @@ impl ChildWatch {
             state.local_id = Some(local_id);
         }
         drop(unclaimed);
-        let watch = Watch { state, registered_at: Instant::now(), notify: notify.clone() };
+        let generation = self.generations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let watch =
+            Watch { state, registered_at: Instant::now(), notify: notify.clone(), generation };
         watches.insert(key.to_owned(), watch);
         drop(watches);
-        WatchHandle { key: key.to_owned(), watch: self.clone(), notify }
+        WatchHandle { key: key.to_owned(), watch: self.clone(), notify, generation }
     }
 
-    fn remove(&self, key: &str) {
-        self.watches.lock().unwrap().remove(key);
+    fn remove(&self, key: &str, generation: u64) {
+        let mut watches = self.watches.lock().unwrap();
+        if watches.get(key).is_some_and(|w| w.generation == generation) {
+            watches.remove(key);
+        }
+    }
+
+    #[cfg(test)]
+    fn snapshot(&self, key: &str) -> Option<ChildSnapshot> {
+        self.snapshot_of(key, None)
     }
 
     #[allow(clippy::significant_drop_tightening)]
-    fn snapshot(&self, key: &str) -> Option<ChildSnapshot> {
+    fn snapshot_of(&self, key: &str, generation: Option<u64>) -> Option<ChildSnapshot> {
         let guard = self.watches.lock().ok()?;
-        let w = guard.get(key)?;
+        let w = guard.get(key).filter(|w| generation.is_none_or(|g| w.generation == g))?;
         Some(ChildSnapshot {
             local_id: w.state.local_id.clone(),
             final_text: w.state.final_text.clone(),
@@ -1614,6 +1630,18 @@ mod tests {
         let watch = Arc::new(ChildWatch::default());
         let h = watch.register("child-1");
         drop(h);
+        assert!(watch.snapshot("child-1").is_none());
+    }
+
+    #[test]
+    fn a_superseded_handle_reads_nothing_and_its_drop_keeps_the_newer_watch() {
+        let watch = Arc::new(ChildWatch::default());
+        let old = watch.register_bound("child-1");
+        let new = watch.register_bound("child-1");
+        assert!(old.snapshot().is_none(), "a stale handle must not read the newer turn");
+        drop(old);
+        assert!(new.snapshot().is_some(), "dropping the stale handle removed the newer watch");
+        drop(new);
         assert!(watch.snapshot("child-1").is_none());
     }
 

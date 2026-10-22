@@ -20,7 +20,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -87,6 +87,12 @@ const SOCKET_PROTO: u64 = 2;
 const DEFAULT_TIMEOUT_SECS: u64 = 1800;
 const MAX_TIMEOUT_SECS: u64 = 7200;
 
+/// How long a `CctuiAgent` call whose daemon dropped it keeps trying to reach
+/// the daemon again, and how often one call may reattach. A self-update
+/// re-exec is back within seconds.
+const REATTACH_WINDOW: Duration = Duration::from_secs(90);
+const MAX_REATTACHES: u32 = 3;
+
 /// Every ACP agent row id, each wrapped in `quote`, comma-separated.
 fn acp_agent_ids(quote: &str) -> String {
     crate::adapters::acp::rows::ROWS
@@ -106,7 +112,10 @@ pub fn tool_schema() -> Value {
     the UI, its token usage is metered, its spend is capped, and it can be killed. Progress \
     (current tool, status, latest message) streams back while it runs. Parallel calls are \
     supported. To send a follow-up prompt to a child from an earlier call, pass its session_id \
-    (returned in the reply) together with the new prompt.",
+    (returned in the reply) together with the new prompt. To collect the answer of a child \
+    whose call was cut off (lost connection, expired follow window), pass only its session_id, \
+    without a prompt: that returns its last finished turn's final message, or waits for the \
+    turn still running.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -127,7 +136,8 @@ pub fn tool_schema() -> Value {
                 "session_id": {
                     "type": "string",
                     "description": "Session id of a child spawned earlier by this session: \
-    send `prompt` to it as a follow-up and wait for its answer instead of spawning anew.",
+    send `prompt` to it as a follow-up and wait for its answer instead of spawning anew. \
+    Without a prompt, reattach to it and return its answer.",
                 },
                 "model": {
                     "type": "string",
@@ -169,7 +179,7 @@ pub fn tool_schema() -> Value {
     routinely runs long. The effective window is echoed in the result.",
                 },
             },
-            "required": ["prompt", "model"],
+            "required": ["model"],
             "additionalProperties": false,
         },
     })
@@ -721,48 +731,140 @@ fn call_daemon(
     token: Option<&Value>,
     outbox: &Outbox,
 ) -> (String, bool) {
+    call_daemon_with(session_id, sock, kind, args, token, outbox, REATTACH_WINDOW)
+}
+
+/// [`call_daemon`], reattaching a `CctuiAgent` follow the daemon dropped (a
+/// restart, a self-update re-exec) for up to `reattach_window` per drop.
+fn call_daemon_with(
+    session_id: &str,
+    sock: &Path,
+    kind: &str,
+    args: &Value,
+    token: Option<&Value>,
+    outbox: &Outbox,
+    reattach_window: Duration,
+) -> (String, bool) {
     let tool = tool_of_kind(kind);
     let timeout = match kind {
         "spawn_agent" => resolve_timeout(args.get("timeout_secs").and_then(Value::as_u64)),
         "speak" => SPEAK_TIMEOUT,
         _ => USAGE_TIMEOUT,
     };
-    let request = json!({
+    let deadline = Instant::now() + timeout;
+    let mut request = json!({
         "kind": kind,
         "session_id": session_id,
         "args": args,
         "timeout_secs": timeout.as_secs(),
         "proto": SOCKET_PROTO,
     });
-    let stream = match UnixStream::connect(sock) {
+    let mut stream = match UnixStream::connect(sock) {
         Ok(s) => s,
         Err(err) => {
             return (format!("{tool} unavailable: cannot reach the cctui daemon ({err})"), true);
         }
     };
-    // Outlive the daemon's own wait so the daemon's timeout message wins.
-    let _ = stream.set_read_timeout(Some(timeout + Duration::from_secs(30)));
-    let mut writer = &stream;
-    if writeln!(writer, "{request}").and_then(|()| writer.flush()).is_err() {
-        return (format!("{tool} failed: could not send the request to the daemon"), true);
+    let mut child = args
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| kind == "spawn_agent" && !s.is_empty())
+        .map(str::to_owned);
+    let mut progress = Progress { token, outbox, seq: 0 };
+    let mut reattaches = 0;
+    loop {
+        // Outlive the daemon's own wait so the daemon's timeout message wins.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match exchange(
+            &stream,
+            &request,
+            remaining + Duration::from_secs(30),
+            &mut progress,
+            &mut child,
+        ) {
+            Exchange::Done(text, is_error) => return (text, is_error),
+            Exchange::Malformed => return (format!("{tool} failed: malformed daemon reply"), true),
+            Exchange::Lost { closed: false } => {
+                return (dropped_error(tool, kind, child.as_deref()), true);
+            }
+            Exchange::Lost { closed: true } => {}
+        }
+        let Some(target) = child.clone().filter(|_| reattaches < MAX_REATTACHES) else {
+            return (dropped_error(tool, kind, child.as_deref()), true);
+        };
+        let Some(next) = reconnect(sock, reattach_window) else {
+            return (dropped_error(tool, kind, Some(&target)), true);
+        };
+        reattaches += 1;
+        stream = next;
+        let remaining =
+            deadline.saturating_duration_since(Instant::now()).max(Duration::from_secs(1));
+        request = json!({
+            "kind": kind,
+            "session_id": session_id,
+            "args": { "session_id": target },
+            "timeout_secs": remaining.as_secs(),
+            "proto": SOCKET_PROTO,
+        });
     }
-    let mut reader = BufReader::new(&stream);
-    let mut seq: u64 = 0;
+}
+
+struct Progress<'a> {
+    token: Option<&'a Value>,
+    outbox: &'a Outbox,
+    seq: u64,
+}
+
+enum Exchange {
+    Done(String, bool),
+    Malformed,
+    /// No result line. `closed` is a dropped connection, worth a reattach; a
+    /// read timeout means the daemon is alive but hung.
+    Lost {
+        closed: bool,
+    },
+}
+
+/// One request on `stream`, read through to its result line. A frame naming
+/// the child records it in `child`, for a reattach after a drop.
+fn exchange(
+    stream: &UnixStream,
+    request: &Value,
+    read_timeout: Duration,
+    progress: &mut Progress<'_>,
+    child: &mut Option<String>,
+) -> Exchange {
+    let _ = stream.set_read_timeout(Some(read_timeout.max(Duration::from_secs(1))));
+    let mut writer = stream;
+    if writeln!(writer, "{request}").and_then(|()| writer.flush()).is_err() {
+        return Exchange::Lost { closed: true };
+    }
+    let mut reader = BufReader::new(stream);
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line).is_err() || line.trim().is_empty() {
-            return (
-                format!("{tool} failed: the daemon closed the connection without a result"),
-                true,
-            );
+        match reader.read_line(&mut line) {
+            Ok(_) if !line.trim().is_empty() => {}
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Exchange::Lost { closed: false };
+            }
+            Ok(_) | Err(_) => return Exchange::Lost { closed: true },
         }
         let Ok(frame) = serde_json::from_str::<Value>(&line) else {
-            return (format!("{tool} failed: malformed daemon reply"), true);
+            return Exchange::Malformed;
         };
-        if let Some(progress) = frame.get("progress").and_then(Value::as_str) {
-            if let Some(token) = token {
-                seq += 1;
-                outbox.send(&progress_notification(token, seq, progress));
+        if let Some(id) = frame.get("child").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+            *child = Some(id.to_owned());
+        }
+        if let Some(message) = frame.get("progress").and_then(Value::as_str) {
+            if let Some(token) = progress.token {
+                progress.seq += 1;
+                progress.outbox.send(&progress_notification(token, progress.seq, message));
             }
             continue;
         }
@@ -772,7 +874,45 @@ fn call_daemon(
             .and_then(Value::as_str)
             .unwrap_or("no output")
             .to_owned();
-        return (text, !ok);
+        return Exchange::Done(text, !ok);
+    }
+}
+
+/// Connect to a daemon that is coming back, polling for up to `window`.
+fn reconnect(sock: &Path, window: Duration) -> Option<UnixStream> {
+    let until = Instant::now() + window;
+    loop {
+        if let Ok(stream) = UnixStream::connect(sock) {
+            return Some(stream);
+        }
+        if Instant::now() >= until {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// What the model reads when a call ends without a result. A follow names how
+/// the child's answer still reaches it.
+fn dropped_error(tool: &str, kind: &str, child: Option<&str>) -> String {
+    if kind != "spawn_agent" {
+        return format!("{tool} failed: the daemon closed the connection without a result");
+    }
+    match child {
+        Some(child) => format!(
+            "{tool} lost its connection to the cctui daemon (most likely a daemon restart or \
+             self-update) and could not reattach. THE CHILD IS NOT AFFECTED: {child} keeps \
+             running. When its turn ends, its final message is delivered to this session as a \
+             message. To wait for it here instead, call {tool} with session_id {child:?} and no \
+             prompt: that returns its final message, at once if it already finished."
+        ),
+        None => format!(
+            "{tool} lost its connection to the cctui daemon (most likely a daemon restart or \
+             self-update) before the child's session id was known. A child that was spawned keeps \
+             running, and its final message is delivered to this session as a message when its \
+             turn ends. To wait for it here instead, find its id with CctuiPeers and call {tool} \
+             with that session_id and no prompt."
+        ),
     }
 }
 
@@ -859,7 +999,11 @@ mod tests {
     fn tool_schema_names_the_tool_and_its_required_args() {
         let schema = tool_schema();
         assert_eq!(schema["name"], TOOL_NAME);
-        assert_eq!(schema["inputSchema"]["required"], json!(["prompt", "model"]));
+        assert_eq!(
+            schema["inputSchema"]["required"],
+            json!(["model"]),
+            "a reattach passes only session_id, so prompt cannot be required"
+        );
         let model_doc =
             schema["inputSchema"]["properties"]["model"]["description"].as_str().unwrap();
         assert!(model_doc.contains("REQUIRED"), "{model_doc}");
@@ -1346,6 +1490,85 @@ mod tests {
         server.join().unwrap();
         assert!(!is_error);
         assert_eq!(text, "verdict: ship");
+    }
+
+    #[test]
+    fn a_follow_the_daemon_drops_is_reattached_by_the_child_id_it_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("agent.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(first.try_clone().unwrap()).read_line(&mut line).unwrap();
+            let progress =
+                json!({ "progress": "spawned child session child-7", "child": "child-7" });
+            writeln!(first, "{progress}").unwrap();
+            drop(first);
+            let (mut second, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(second.try_clone().unwrap()).read_line(&mut line).unwrap();
+            let req: Value = serde_json::from_str(&line).unwrap();
+            writeln!(second, "{}", json!({ "ok": true, "result": "the answer" })).unwrap();
+            req
+        });
+        let (text, is_error) = call_daemon_with(
+            "parent-1",
+            &sock_path,
+            "spawn_agent",
+            &json!({ "adapter": "codex", "prompt": "go", "model": "m", "timeout_secs": 30 }),
+            None,
+            &Outbox::new(),
+            Duration::from_secs(5),
+        );
+        let reattach = server.join().unwrap();
+        assert!(!is_error, "{text}");
+        assert_eq!(text, "the answer");
+        assert_eq!(reattach["kind"], json!("spawn_agent"));
+        assert_eq!(reattach["session_id"], json!("parent-1"));
+        assert_eq!(
+            reattach["args"],
+            json!({ "session_id": "child-7" }),
+            "a reattach carries no prompt"
+        );
+    }
+
+    #[test]
+    fn a_daemon_that_never_returns_ends_the_call_with_reattach_instructions() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("agent.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+        let gone = sock_path.clone();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+            drop(listener);
+            std::fs::remove_file(&gone).unwrap();
+            drop(stream);
+        });
+        let (text, is_error) = call_daemon_with(
+            "parent-1",
+            &sock_path,
+            "spawn_agent",
+            &json!({ "session_id": "child-9", "prompt": "and the tests?", "timeout_secs": 30 }),
+            None,
+            &Outbox::new(),
+            Duration::from_millis(600),
+        );
+        server.join().unwrap();
+        assert!(is_error);
+        assert!(text.contains("THE CHILD IS NOT AFFECTED"), "{text}");
+        assert!(text.contains("delivered to this session as a message"), "{text}");
+        assert!(text.contains("session_id \"child-9\" and no prompt"), "{text}");
+    }
+
+    #[test]
+    fn a_dropped_round_trip_tool_is_never_reattached() {
+        assert_eq!(
+            dropped_error("CctuiUsage", "usage", None),
+            "CctuiUsage failed: the daemon closed the connection without a result"
+        );
     }
 
     #[test]

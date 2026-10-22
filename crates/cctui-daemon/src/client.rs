@@ -366,6 +366,38 @@ impl ServerClient {
         Ok(serde_json::from_value(Self::peer_json(resp, "CctuiAgentArchive").await?)?)
     }
 
+    /// `POST /api/v1/daemon/sessions/{child}/child-completion` — hand a child's
+    /// finished turn to its parent as a turn of its own. `Err` is transient and
+    /// worth a retry; a refusal (`Ok(Some(reason))`) never will succeed.
+    pub async fn child_completion(
+        &self,
+        machine_key: &str,
+        child_id: &str,
+        text: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let url = format!(
+            "{}/api/v1/daemon/sessions/{}/child-completion",
+            self.base_url.trim_end_matches('/'),
+            child_id,
+        );
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(machine_key)
+            .json(&serde_json::json!({ "text": text }))
+            .send()
+            .await?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(None);
+        }
+        let reason = resp.text().await.unwrap_or_default();
+        if status.is_client_error() && status != reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Ok(Some(format!("{status}: {reason}")));
+        }
+        anyhow::bail!("child completion not delivered ({status}): {reason}");
+    }
+
     /// The limits that apply to `session_id` itself: its pinned account, that
     /// account's usage windows, the caps in force (including the session's own
     /// `CctuiAgent` dollar budget) and a per-model allow decision.
