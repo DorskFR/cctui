@@ -183,7 +183,8 @@ impl BackfillConfig {
             batch: num("CCTUI_SEARCH_BACKFILL_BATCH")
                 .and_then(|n| i64::try_from(n).ok())
                 .unwrap_or(DEFAULT_BATCH),
-            pause: num("CCTUI_SEARCH_BACKFILL_PAUSE_MS").map_or(DEFAULT_PAUSE, Duration::from_millis),
+            pause: num("CCTUI_SEARCH_BACKFILL_PAUSE_MS")
+                .map_or(DEFAULT_PAUSE, Duration::from_millis),
         })
     }
 }
@@ -432,7 +433,8 @@ mod tests {
             .await
             .unwrap();
 
-        let mut walk = Backfill { name: walk_name.clone(), batch: 2, horizon: Horizon::new(Duration::ZERO) };
+        let mut walk =
+            Backfill { name: walk_name.clone(), batch: 2, horizon: Horizon::new(Duration::ZERO) };
         assert_eq!(walk.step(&pool).await.unwrap(), 2);
         let cursor: i64 =
             sqlx::query_scalar("SELECT last_event_id FROM search_index_state WHERE name = $1")
@@ -469,12 +471,17 @@ mod tests {
         .unwrap();
         assert!(after_cut >= 1, "text past 8 KB is indexed");
 
-        sqlx::query("DELETE FROM stream_events WHERE id = $1").bind(ids[0]).execute(&pool).await.unwrap();
-        let gone: i64 = sqlx::query_scalar("SELECT count(*) FROM search_chunks WHERE event_id = $1")
+        sqlx::query("DELETE FROM stream_events WHERE id = $1")
             .bind(ids[0])
-            .fetch_one(&pool)
+            .execute(&pool)
             .await
             .unwrap();
+        let gone: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM search_chunks WHERE event_id = $1")
+                .bind(ids[0])
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(gone, 0, "chunks follow their event out");
 
         sqlx::query("DELETE FROM search_index_state WHERE name = $1")

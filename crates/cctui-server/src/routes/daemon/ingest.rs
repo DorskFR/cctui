@@ -65,7 +65,12 @@ pub(super) async fn ingest_run(
         if row.event_type == "message" {
             crate::keepalive::observe_message(state, &row.local_id, &mut row.payload).await;
         }
-        searchable.push((adapter_id.clone(), row.local_id.clone(), row.event_type, row.payload.clone()));
+        searchable.push((
+            adapter_id.clone(),
+            row.local_id.clone(),
+            row.event_type,
+            row.payload.clone(),
+        ));
         events.push((adapter_id, event));
         rows.push(row);
     }

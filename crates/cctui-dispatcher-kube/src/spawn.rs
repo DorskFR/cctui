@@ -1924,11 +1924,9 @@ mod tests {
             env_value(&v, "CCTUI_PREFLIGHT_DENY").as_deref(),
             Some("postgres.db.svc:5432,10.42.0.0/16")
         );
-        let names: Vec<_> = worker_env(&v)
-            .into_iter()
-            .filter(|e| e["name"] == "CCTUI_PREFLIGHT_MODE")
-            .collect();
-        assert_eq!(names.len(), 1, "spec.preflight replaces the profile env entry");
+        let names =
+            worker_env(&v).into_iter().filter(|e| e["name"] == "CCTUI_PREFLIGHT_MODE").count();
+        assert_eq!(names, 1, "spec.preflight replaces the profile env entry");
 
         let old = queued_job("lean", &profile, &s);
         profile.preflight.as_mut().unwrap().mode = Some("enforce".to_owned());

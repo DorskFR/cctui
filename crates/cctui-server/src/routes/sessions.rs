@@ -1216,11 +1216,7 @@ fn text_pattern(term: &str) -> String {
 /// Free-text terms folded like the indexed chunks; terms that fold to nothing
 /// are dropped.
 fn fold_terms(terms: &[String]) -> Vec<String> {
-    terms
-        .iter()
-        .map(|t| crate::search_index::text::fold(t))
-        .filter(|t| !t.is_empty())
-        .collect()
+    terms.iter().map(|t| crate::search_index::text::fold(t)).filter(|t| !t.is_empty()).collect()
 }
 
 fn is_statement_timeout(err: &sqlx::Error) -> bool {
@@ -1394,10 +1390,8 @@ fn check_query_len(q: &str) -> Result<(), AppError> {
 /// one row per session. `$1` is the session-id array, `$2…$n+1` the ILIKE
 /// patterns, `$n+2` the terms the rank weighs.
 fn snippet_sql(n_patterns: usize) -> String {
-    let or = (2..=n_patterns + 1)
-        .map(|i| format!("c.body ILIKE ${i}"))
-        .collect::<Vec<_>>()
-        .join(" OR ");
+    let or =
+        (2..=n_patterns + 1).map(|i| format!("c.body ILIKE ${i}")).collect::<Vec<_>>().join(" OR ");
     let rank = n_patterns + 2;
     format!(
         "SELECT sid, hit.body, hit.event_id FROM unnest($1::text[]) AS sid \
@@ -1554,8 +1548,7 @@ async fn browse_archive(pool: &sqlx::PgPool, page: &SearchPage) -> Result<FoundP
         .fetch_all(pool)
         .await?;
     let full = usize::try_from(page.limit).is_ok_and(|l| rows.len() >= l);
-    let next_cursor =
-        rows.last().filter(|_| full).map(|r| search_cursor(r.registered_at, &r.id));
+    let next_cursor = rows.last().filter(|_| full).map(|r| search_cursor(r.registered_at, &r.id));
     Ok(FoundPage { rows, next_cursor, partial: false })
 }
 
@@ -1595,7 +1588,8 @@ async fn scan_matches(
     );
     let window_sql = search_window_sql(live_ids.is_some());
     let want = usize::try_from(page.limit).unwrap_or(1);
-    let mut skip = if page.cursor.is_some() { 0 } else { usize::try_from(page.offset).unwrap_or(0) };
+    let mut skip =
+        if page.cursor.is_some() { 0 } else { usize::try_from(page.offset).unwrap_or(0) };
     let mut cursor = page.cursor.clone();
     let deadline = std::time::Instant::now() + SEARCH_BUDGET;
     let mut rows: Vec<DbSession> = Vec::new();
@@ -1607,13 +1601,12 @@ async fn scan_matches(
         partial: true,
     };
     loop {
-        let mut wq = sqlx::query_as::<_, (String, DateTime<Utc>)>(sqlx::AssertSqlSafe(
-            window_sql.clone(),
-        ))
-        .bind(page.uid)
-        .bind(cursor.as_ref().map(|c| c.0))
-        .bind(cursor.as_ref().map(|c| c.1.clone()))
-        .bind(SEARCH_WINDOW);
+        let mut wq =
+            sqlx::query_as::<_, (String, DateTime<Utc>)>(sqlx::AssertSqlSafe(window_sql.clone()))
+                .bind(page.uid)
+                .bind(cursor.as_ref().map(|c| c.0))
+                .bind(cursor.as_ref().map(|c| c.1.clone()))
+                .bind(SEARCH_WINDOW);
         if let Some(live) = live_ids {
             wq = wq.bind(live);
         }
@@ -5166,14 +5159,21 @@ mod tests {
         crate::search_index::reindex(pool, &ids).await.unwrap();
     }
 
-    async fn insert_payload(pool: &sqlx::PgPool, sid: &str, kind: &str, payload: serde_json::Value) {
-        sqlx::query("INSERT INTO stream_events (session_id, event_type, payload) VALUES ($1, $2, $3)")
-            .bind(sid)
-            .bind(kind)
-            .bind(payload)
-            .execute(pool)
-            .await
-            .unwrap();
+    async fn insert_payload(
+        pool: &sqlx::PgPool,
+        sid: &str,
+        kind: &str,
+        payload: serde_json::Value,
+    ) {
+        sqlx::query(
+            "INSERT INTO stream_events (session_id, event_type, payload) VALUES ($1, $2, $3)",
+        )
+        .bind(sid)
+        .bind(kind)
+        .bind(payload)
+        .execute(pool)
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -5182,10 +5182,34 @@ mod tests {
             return;
         };
         let say = |text: String| serde_json::json!({"role": "assistant", "text": text});
-        insert_payload(&pool, &sid, "message", say("Change the gate to `master...HEAD` (three dots).".into())).await;
-        insert_payload(&pool, &sid, "message", say(format!("{} the hidden tail phrase", "filler ".repeat(2000)))).await;
-        insert_payload(&pool, &sid, "message", say("It\u{2019}s \u{201C}quoted\u{201D} text".into())).await;
-        insert_payload(&pool, &sid, "message", say("first line\nsecond **line**\n\n- third".into())).await;
+        insert_payload(
+            &pool,
+            &sid,
+            "message",
+            say("Change the gate to `master...HEAD` (three dots).".into()),
+        )
+        .await;
+        insert_payload(
+            &pool,
+            &sid,
+            "message",
+            say(format!("{} the hidden tail phrase", "filler ".repeat(2000))),
+        )
+        .await;
+        insert_payload(
+            &pool,
+            &sid,
+            "message",
+            say("It\u{2019}s \u{201C}quoted\u{201D} text".into()),
+        )
+        .await;
+        insert_payload(
+            &pool,
+            &sid,
+            "message",
+            say("first line\nsecond **line**\n\n- third".into()),
+        )
+        .await;
         let blob = "iVBORw0KGgoAAAANSUhEUgAA".repeat(40);
         insert_payload(
             &pool,
@@ -6116,8 +6140,8 @@ mod tests {
     fn free_text_exists_keeps_the_correlation_barrier() {
         let (sql, _) = compile("hello");
         // `(SELECT s.id)` is what stops the planner hoisting the sublink into a
-        // hashed subplan that rechecks every matching event in the table.
-        assert!(sql.contains("e.session_id = (SELECT s.id)"), "{sql}");
+        // hashed subplan that rechecks every matching chunk in the table.
+        assert!(sql.contains("c.session_id = (SELECT s.id)"), "{sql}");
     }
 
     /// The persisted posture reaches the sessions payload and the

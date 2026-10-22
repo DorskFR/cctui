@@ -16,6 +16,7 @@ export const ROUTES = [
   { id: "get_accounts_by_id_usage_history", method: "GET", path: "/accounts/{id}/usage/history", summary: "Sampled usage of one provider credential over time.", request: null, response: null },
   { id: "get_accounts_by_id_usage_closes", method: "GET", path: "/accounts/{id}/usage/closes", summary: "Closed usage windows of one provider credential, with unused share.", request: null, response: null },
   { id: "get_accounts_usage_closes", method: "GET", path: "/accounts/usage/closes", summary: "Closed usage windows of every owned credential, with unused share.", request: null, response: null },
+  { id: "get_accounts_usage_ledger", method: "GET", path: "/accounts/usage/ledger", summary: "Every reset of every visible credential's windows, with what went unused.", request: null, response: "AccountUsageLedger" },
   { id: "post_accounts_by_id_limit_reset", method: "POST", path: "/accounts/{id}/limit-reset", summary: "Claim a usage-limit reset on a provider credential.", request: null, response: null },
   { id: "get_accounts_settings_catalog", method: "GET", path: "/accounts/settings-catalog", summary: "The per-account settings catalog (exposable keys, env allowlist, preset).", request: null, response: "SettingsCatalogResponse" },
   { id: "get_accounts", method: "GET", path: "/accounts", summary: "List your accounts (identities + provider credentials), or create one.", request: null, response: "OAuthAccount[]" },

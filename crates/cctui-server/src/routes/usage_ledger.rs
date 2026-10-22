@@ -16,7 +16,9 @@ use crate::soft_limit::{KEY_SESSION, KEY_WEEKLY_ALL, WEEKLY_MODEL_PREFIX, is_usd
 use crate::state::AppState;
 use crate::store::usage_ledger::{self, LedgerClose};
 
-pub use cctui_proto::api::usage_history::{AccountLedgerRow, AccountLedgerTotal, AccountUsageLedger};
+pub use cctui_proto::api::usage_history::{
+    AccountLedgerRow, AccountLedgerTotal, AccountUsageLedger,
+};
 
 /// Oldest the last sample before a reset may be for its final reading to stand.
 const SHORT_WINDOW_SAMPLING_GAP: Duration = Duration::minutes(30);

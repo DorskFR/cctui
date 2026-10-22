@@ -33,20 +33,23 @@ fn re(pattern: &str) -> Regex {
 }
 
 static ANSI: LazyLock<Regex> = LazyLock::new(|| {
-    re(r"[\x1B\x{9B}][\[\]()#;?]*(?:(?:(?:(?:;[-a-zA-Z0-9/#&.:=?%@~_]+)*|[a-zA-Z0-9]+(?:;[-a-zA-Z0-9/#&.:=?%@~_]*)*)?\x07)|(?:(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-PR-TZcf-ntqry=><~]))")
+    re(
+        r"[\x1B\x{9B}][\[\]()#;?]*(?:(?:(?:(?:;[-a-zA-Z0-9/#&.:=?%@~_]+)*|[a-zA-Z0-9]+(?:;[-a-zA-Z0-9/#&.:=?%@~_]*)*)?\x07)|(?:(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-PR-TZcf-ntqry=><~]))",
+    )
 });
 static C0: LazyLock<Regex> = LazyLock::new(|| re(r"[\x00-\x08\x0B-\x1F\x7F]"));
 static IMG_MARKER: LazyLock<Regex> =
     LazyLock::new(|| re(r"!\[[^\]]*\]\(cctui-img://[A-Za-z0-9-]+\)"));
 static FENCE: LazyLock<Regex> = LazyLock::new(|| re(r"(?s)```[^\n`]*\n?(.*?)```"));
 static TABLE: LazyLock<Regex> = LazyLock::new(|| {
-    re(r"(?:^|\n)([ \t]*\|.+\|[ \t]*)\n[ \t]*\|(?:[ \t]*:?-+:?[ \t]*\|)+[ \t]*\n((?:[ \t]*\|.*\|[ \t]*(?:\n|$))+)")
+    re(
+        r"(?:^|\n)([ \t]*\|.+\|[ \t]*)\n[ \t]*\|(?:[ \t]*:?-+:?[ \t]*\|)+[ \t]*\n((?:[ \t]*\|.*\|[ \t]*(?:\n|$))+)",
+    )
 });
 static INLINE_CODE: LazyLock<Regex> = LazyLock::new(|| re(r"`([^`]+)`"));
 static BOLD: LazyLock<Regex> = LazyLock::new(|| re(r"\*\*([^*]+)\*\*"));
 static ITALIC: LazyLock<Regex> = LazyLock::new(|| re(r"(^|[^*])\*([^*\n]+)\*"));
-static LINK: LazyLock<Regex> =
-    LazyLock::new(|| re(r"\[([^\]]+)\]\(https?://[^\s)\x{E002}]+\)"));
+static LINK: LazyLock<Regex> = LazyLock::new(|| re(r"\[([^\]]+)\]\(https?://[^\s)\x{E002}]+\)"));
 static HEADING: LazyLock<Regex> = LazyLock::new(|| re(r"(?m)^#{1,6}\s+(.+)$"));
 static QUOTE: LazyLock<Regex> = LazyLock::new(|| re(r"(?m)^>\s?(.*)$"));
 static LIST: LazyLock<Regex> = LazyLock::new(|| re(r"(?m)^\s*[-*]\s+(.+)$"));
@@ -87,9 +90,8 @@ fn split_row(row: &str) -> Vec<String> {
 }
 
 fn table_text(header: &str, body: &str) -> String {
-    let row = |r: &str| {
-        split_row(r).iter().map(|c| inline_text(c.trim())).collect::<Vec<_>>().join(" ")
-    };
+    let row =
+        |r: &str| split_row(r).iter().map(|c| inline_text(c.trim())).collect::<Vec<_>>().join(" ");
     let mut lines = vec![row(header)];
     lines.extend(body.split('\n').filter(|r| !r.trim().is_empty()).map(row));
     format!("\n{}\n", lines.join("\n"))
@@ -117,9 +119,7 @@ pub fn markdown_text(src: &str) -> String {
         })
         .into_owned();
     let s = TABLE
-        .replace_all(&s, |c: &regex::Captures<'_>| {
-            stash(&mut blocks, table_text(&c[1], &c[2]))
-        })
+        .replace_all(&s, |c: &regex::Captures<'_>| stash(&mut blocks, table_text(&c[1], &c[2])))
         .into_owned();
     let s = inline_text(&s);
     let s = HEADING.replace_all(&s, "${1}");
@@ -262,7 +262,7 @@ fn visible_text(v: &Value) -> String {
 }
 
 /// Largest char boundary at or below `i`.
-fn floor_boundary(s: &str, mut i: usize) -> usize {
+const fn floor_boundary(s: &str, mut i: usize) -> usize {
     if i >= s.len() {
         return s.len();
     }
@@ -307,6 +307,8 @@ pub fn chunks(text: &str) -> Vec<&str> {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use serde_json::json;
 
     use super::*;
@@ -388,7 +390,8 @@ mod tests {
         let text = client_text(&v);
         assert_eq!(text, "Screenshot taken");
 
-        let inline = json!({"type": "text", "content": format!("look data:image/png;base64,{blob} ok")});
+        let inline =
+            json!({"type": "text", "content": format!("look data:image/png;base64,{blob} ok")});
         let text = client_text(&inline);
         assert!(!text.contains("iVBOR"), "{text}");
         assert!(text.starts_with("look") && text.ends_with("ok"));
@@ -408,7 +411,8 @@ mod tests {
 
     #[test]
     fn chunks_overlap_so_text_after_8_kb_and_across_cuts_is_found() {
-        let text = fold(&format!("{} needle phrase here {}", "word ".repeat(2000), "tail ".repeat(800)));
+        let text =
+            fold(&format!("{} needle phrase here {}", "word ".repeat(2000), "tail ".repeat(800)));
         let parts = chunks(&text);
         assert!(parts.len() >= 3, "{}", parts.len());
         assert!(parts.iter().all(|p| p.len() <= CHUNK_BYTES));
@@ -417,7 +421,10 @@ mod tests {
 
     #[test]
     fn every_short_window_lies_inside_some_chunk() {
-        let text: String = (0..3000).map(|i| format!("w{i} ")).collect();
+        let text = (0..3000).fold(String::new(), |mut acc, i| {
+            let _ = write!(acc, "w{i} ");
+            acc
+        });
         let text = fold(&text);
         let parts = chunks(&text);
         let mut i = 0;
