@@ -2656,8 +2656,12 @@ mod tests {
             drop(ws);
             listener
         });
-        let first =
-            supervisor.run_once(CancellationToken::new(), &mut running, &event_tx, &mut event_rx);
+        let first = Box::pin(supervisor.run_once(
+            CancellationToken::new(),
+            &mut running,
+            &event_tx,
+            &mut event_rx,
+        ));
         let _ = tokio::time::timeout(Duration::from_secs(10), first)
             .await
             .expect("the dropped link ends the connection");
@@ -2681,8 +2685,12 @@ mod tests {
             }
             seen
         });
-        let second =
-            supervisor.run_once(CancellationToken::new(), &mut running, &event_tx, &mut event_rx);
+        let second = Box::pin(supervisor.run_once(
+            CancellationToken::new(),
+            &mut running,
+            &event_tx,
+            &mut event_rx,
+        ));
         let seen = tokio::time::timeout(Duration::from_secs(10), async {
             tokio::select! {
                 biased;
