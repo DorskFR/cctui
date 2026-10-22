@@ -2,15 +2,6 @@
   "version": 1,
   "plugins": [
     {
-      "id": "ghreview",
-      "name": "GitHub",
-      "description": "A pull-request inbox next to your sessions. Buckets the PRs that need you, shows diffs and threads, and lets you review and merge without leaving cctui.",
-      "version": "0.1.8",
-      "url": "https://github.com/DorskFR/ghreview/releases/download/v0.1.8/ghreview-0.1.8.tgz",
-      "sha256": "c95e2ebea2280dbcc605f74f98104e8f45f5e2d3ec27159c27e2a772a3af7582",
-      "homepage": "https://github.com/DorskFR/ghreview"
-    },
-    {
       "id": "yubisashi",
       "name": "Review",
       "description": "Frames your running dev app next to the conversation. Point at an element and its source location lands in the composer, ready for your comment.",
