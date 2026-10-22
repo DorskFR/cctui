@@ -1728,10 +1728,25 @@ A marker that fails any check stays as the agent wrote it, as a plain path.
 
 Every session is told this in one line of its `<cctui-session-context>` block
 (`preamble::IMAGE_LINE`): always for claude-code, and for codex, opencode and
-ACP whenever that block is sent at all.
+ACP whenever that block is sent at all. For claude-code, the line before it
+says thinking is never shown as a reply: a marker or answer written only in
+thinking reaches no one, and the webui footnotes a turn that ended on thinking
+with "no reply was sent".
 
-Images are scoped to the session that posted them. A marker only works in the
-agent's own prose: one inside a tool call, such as a `CctuiSend` body, is never
-uploaded and reaches the peer as a plain path. A child's final message as
-`CctuiAgent` returns it to the parent carries the child's `cctui-img://` id,
-which does not resolve in the parent's session.
+An image belongs to the session that posted it. `cctui-img://<id>` resolves
+against the session showing it; `cctui-img://<session>/<id>` names the owner, and
+the webui fetches it from `GET /api/v1/sessions/<session>/images/<id>`. That
+route's guard is the owner session's transcript-read check, and the handler
+serves the blob only under that session's id, so a viewer sees a cross-session
+image exactly when they may read the session it came from.
+
+- A `CctuiSend` body is rewritten like assistant prose before it is sent
+  (`agenttool::run_send_peer`): markers upload to the sender's session and every
+  ref is qualified with the sender's id, so the recipient's transcript renders
+  them. A `remote:` peer's body is sent as written, since another cctui cannot
+  read this one's store.
+- A child's final message reaches the parent with its refs qualified with the
+  child's id (`childwatch::apply_message`). The parent renders the image once it
+  copies the marker into its own reply.
+- Other tool calls are not scanned. Tool inputs and results render as code, so
+  a marker inside one shows as text.

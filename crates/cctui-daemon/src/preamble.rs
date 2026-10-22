@@ -24,9 +24,10 @@ pub const CONTEXT_TOOL_LINE: &str = "CctuiContext: use `mcp__cctui__CctuiContext
 /// How to show the user an image; the limits are the ones [`crate::imagepost`]
 /// enforces.
 pub const IMAGE_LINE: &str = "images: to show the user an image, put `![alt](/absolute/path.png)` \
-    in your message text (not in a tool call): png, jpg, gif or webp, at most 5 MB, the file under \
-    $HOME, /tmp or $TMPDIR. It renders in this session only, not in peer messages or in the \
-    result a parent session receives from you.\n";
+    in your message text or in a message to a peer session (not in other tool calls): png, jpg, \
+    gif or webp, at most 5 MB, the file under $HOME, /tmp or $TMPDIR. A posted image becomes \
+    `![alt](cctui-img://…)`; to show one another session posted (a child's answer, a peer's \
+    message), copy that marker into your own reply unchanged.\n";
 
 /// The shared-checkout warning for a session about to work in `cwd`.
 ///

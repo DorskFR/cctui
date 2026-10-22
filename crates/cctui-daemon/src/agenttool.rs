@@ -982,6 +982,42 @@ async fn run_user_action(
     }
 }
 
+/// `CctuiSend`. Image markers in the body are posted to the sender's session
+/// first; a remote peer's cctui could not resolve those refs, so its body goes
+/// as written.
+async fn run_send_peer(
+    server: &ServerClient,
+    machine_key: &str,
+    me: &str,
+    req: &PeerMessageRequest,
+) -> Value {
+    let message = if req.session_id.starts_with("remote:") {
+        req.message.clone()
+    } else {
+        let roots = crate::imagepost::default_allowed_roots();
+        crate::imagepost::rewrite_for_peer(server, machine_key, me, &req.message, &roots).await
+    };
+    let posted = if message == req.message {
+        String::new()
+    } else {
+        crate::imagepost::served_markers(&message).join(" ")
+    };
+    let req = PeerMessageRequest { session_id: req.session_id.clone(), message };
+    match server.message_peer(machine_key, me, &req).await {
+        Ok(v) => {
+            let to = v.get("delivered_to").and_then(Value::as_str).unwrap_or(&req.session_id);
+            let relation = v.get("relation").and_then(Value::as_str).unwrap_or("peer");
+            let status = v.get("status").and_then(Value::as_str).unwrap_or("delivered");
+            let mut result = render_sent(to, relation, status);
+            if !posted.is_empty() {
+                let _ = write!(result, " Images sent: {posted}");
+            }
+            json!({ "ok": true, "result": result })
+        }
+        Err(err) => json!({ "ok": false, "error": err.to_string() }),
+    }
+}
+
 /// The kinds that answer from one server round-trip and never follow a child.
 /// `None` means the call is a spawn or a follow-up, which [`run_call`] handles.
 async fn run_unfollowed_call(
@@ -1000,15 +1036,7 @@ async fn run_unfollowed_call(
             Ok(v) => json!({ "ok": true, "result": render_peers(&v) }),
             Err(err) => json!({ "ok": false, "error": err.to_string() }),
         },
-        CallKind::SendPeer(req) => match server.message_peer(machine_key, me, req).await {
-            Ok(v) => {
-                let to = v.get("delivered_to").and_then(Value::as_str).unwrap_or(&req.session_id);
-                let relation = v.get("relation").and_then(Value::as_str).unwrap_or("peer");
-                let status = v.get("status").and_then(Value::as_str).unwrap_or("delivered");
-                json!({ "ok": true, "result": render_sent(to, relation, status) })
-            }
-            Err(err) => json!({ "ok": false, "error": err.to_string() }),
-        },
+        CallKind::SendPeer(req) => run_send_peer(server, machine_key, me, req).await,
         CallKind::Room(req) => match server.room(machine_key, me, req).await {
             Ok(v) => json!({ "ok": true, "result": render_room(&req.action, me, &v) }),
             Err(err) => json!({ "ok": false, "error": err.to_string() }),
