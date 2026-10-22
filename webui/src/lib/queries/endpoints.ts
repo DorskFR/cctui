@@ -133,6 +133,7 @@ import type {
   RenameDispatcher,
   UserDispatcher,
 } from "./dispatchers";
+
 const SEARCH_TIMEOUT_MS = 20_000;
 
 /** A search the caller never aborts still gives up after a while, so the UI
@@ -146,9 +147,8 @@ function withSearchTimeout(signal?: AbortSignal): AbortSignal | undefined {
     : signal;
 }
 
-
-
 /** Raw typed fetchers — also usable outside of components. */
+
 export const endpoints = {
   version: () => api.get<VersionInfo>(path("get_version")),
   /** Probe upstream for a newer release now rather than waiting out the
@@ -372,9 +372,9 @@ export const endpoints = {
     q: string,
     includeArchived: boolean,
     limit: number,
+    offset: number,
     cursor: string | null,
     signal?: AbortSignal,
-    offset: number,
   ) =>
     api.get<SessionListResponse>(
       "/sessions/search",
