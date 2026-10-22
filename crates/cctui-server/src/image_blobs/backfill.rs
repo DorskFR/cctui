@@ -11,8 +11,8 @@ const DEFAULT_SCAN: i64 = 500;
 const DEFAULT_ROWS: usize = 20;
 const DEFAULT_PAUSE: Duration = Duration::from_secs(1);
 const DEFAULT_BUDGET_MB: u64 = 512;
-const IDLE: Duration = Duration::from_secs(60);
-const ERROR_BACKOFF: Duration = Duration::from_secs(60);
+const IDLE: Duration = Duration::from_mins(1);
+const ERROR_BACKOFF: Duration = Duration::from_mins(1);
 /// Ids are drawn before their transaction commits; the walk stays behind rows
 /// this recent so it does not pass one that is not visible yet.
 const COMMIT_LAG: Duration = Duration::from_secs(30);
