@@ -1181,12 +1181,14 @@ pub async fn remember_spawner(
 
 /// Stamp `sessions.spawned_by` from a pending intent, looked up by the
 /// session's own id and by the spawn key the adapter echoed. A name given at
-/// spawn becomes the session name, pinned against agent titles.
+/// spawn becomes the session name, pinned against agent titles. The intent is
+/// only consumed once the row exists, or an early claim would lose the name.
 pub async fn claim_spawner(pool: &sqlx::PgPool, session_id: &str, spawn_key: Option<&str>) {
     let key = spawn_key.unwrap_or(session_id);
     let res = sqlx::query(
         "WITH claimed AS (DELETE FROM session_spawner_intents \
-                           WHERE spawn_key = $1 OR spawn_key = $2 \
+                           WHERE (spawn_key = $1 OR spawn_key = $2) \
+                             AND EXISTS (SELECT 1 FROM sessions WHERE id = $1) \
                            RETURNING user_id, session_name), \
               named AS (SELECT session_name FROM claimed \
                         WHERE session_name IS NOT NULL LIMIT 1) \
