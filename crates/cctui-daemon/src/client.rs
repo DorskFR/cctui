@@ -59,6 +59,30 @@ impl std::fmt::Display for AuthRejected {
 
 impl std::error::Error for AuthRejected {}
 
+/// The limits endpoint refused to answer.
+#[derive(Debug)]
+pub struct LimitsUnavailable {
+    pub status: reqwest::StatusCode,
+    pub reason: String,
+}
+
+impl LimitsUnavailable {
+    /// The server does not know the session yet: its registration is still
+    /// in flight.
+    #[must_use]
+    pub fn unregistered(&self) -> bool {
+        self.status == reqwest::StatusCode::NOT_FOUND && self.reason == "calling session not found"
+    }
+}
+
+impl std::fmt::Display for LimitsUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CctuiUsage unavailable ({}): {}", self.status, self.reason)
+    }
+}
+
+impl std::error::Error for LimitsUnavailable {}
+
 impl ServerClient {
     #[must_use]
     pub fn new(base_url: impl Into<String>) -> Self {
@@ -372,7 +396,7 @@ impl ServerClient {
                 .ok()
                 .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
                 .unwrap_or(text);
-            anyhow::bail!("CctuiUsage unavailable ({status}): {reason}");
+            return Err(LimitsUnavailable { status, reason }.into());
         }
         Ok(resp.json().await?)
     }

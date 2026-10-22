@@ -401,7 +401,7 @@ impl Supervisor {
                 tokio::select! {
                     biased;
                     () = shutdown.cancelled() => {
-                        let stopped = || adapters_stopped(running);
+                        let stopped = || adapters_stopped(running) && crate::guardwatch::settled();
                         self.flush_on_shutdown(&mut sink, batch.take(), event_rx, &scrub, stopped)
                             .await;
                         return Ok(());

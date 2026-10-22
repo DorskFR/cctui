@@ -122,6 +122,47 @@ struct SessionRow {
     soft_limit_key: Option<String>,
 }
 
+/// A session the server minted a token or a dispatch for, asked about before
+/// its harness registered it: the owner and launch model stand in for the row.
+#[derive(Debug, sqlx::FromRow)]
+struct Unregistered {
+    user_id: Option<Uuid>,
+    model: Option<String>,
+}
+
+async fn session_row(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+) -> Result<Option<SessionRow>, sqlx::Error> {
+    let row: Option<SessionRow> = sqlx::query_as(
+        "SELECT user_id, model, soft_limit_reason, soft_limit_key FROM sessions WHERE id = $1",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+    if row.is_some() {
+        return Ok(row);
+    }
+    let pending: Option<Unregistered> = sqlx::query_as(
+        "SELECT user_id, model FROM ( \
+             SELECT r.user_id, r.model, 0 AS rank FROM dispatch_records r \
+              WHERE r.session_id = $1 \
+             UNION ALL \
+             SELECT st.user_id, NULL::text, 1 FROM session_tokens st \
+              WHERE st.session_id = $1 AND st.revoked_at IS NULL AND st.user_id IS NOT NULL \
+         ) pending ORDER BY rank LIMIT 1",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(pending.map(|p| SessionRow {
+        user_id: p.user_id,
+        model: p.model,
+        soft_limit_reason: None,
+        soft_limit_key: None,
+    }))
+}
+
 /// The account the session's live token is pinned to. Ordered so a live token
 /// wins over a revoked one, matching how the spawn path resolves the same row.
 #[derive(Debug, sqlx::FromRow)]
@@ -177,13 +218,7 @@ pub async fn session_limits(
     let caller = crate::routes::spawn_child::machine_user(&state, &headers)
         .await
         .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
-    let row: Option<SessionRow> = sqlx::query_as(
-        "SELECT user_id, model, soft_limit_reason, soft_limit_key FROM sessions WHERE id = $1",
-    )
-    .bind(&session_id)
-    .fetch_optional(&state.pool)
-    .await?;
-    let Some(session) = row else {
+    let Some(session) = session_row(&state.pool, &session_id).await? else {
         return Err(deny(StatusCode::NOT_FOUND, "calling session not found"));
     };
     if session.user_id != Some(caller) {
@@ -436,6 +471,122 @@ mod tests {
         assert!(found.is_none(), "an unbound session resolves to no account — the route 404s");
 
         sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&session).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    /// A worker asks before its harness registered the session: the dispatch
+    /// record, else a token minted for the caller, answers for the row.
+    #[tokio::test]
+    async fn an_unregistered_session_is_answered_from_its_dispatch_or_token() {
+        let Some(url) = gateway::test_db_url("limits_unregistered_session") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("limits-pending-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        let (acct, prov) = (Uuid::new_v4(), Uuid::new_v4());
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(acct)
+            .bind(uid)
+            .bind(format!("pending-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed account");
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'anthropic', 'x', $3)",
+        )
+        .bind(prov)
+        .bind(uid)
+        .bind(acct)
+        .execute(&pool)
+        .await
+        .expect("seed provider");
+
+        let dispatched = format!("limits-dispatched-{uid}");
+        sqlx::query(
+            "INSERT INTO dispatch_records (session_id, user_id, dispatcher_name, model) \
+             VALUES ($1, $2, 'k8s', 'claude-opus-5-5')",
+        )
+        .bind(&dispatched)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .expect("seed dispatch record");
+        let spawned = format!("limits-spawned-{uid}");
+        let orphan = format!("limits-orphan-{uid}");
+        for (sid, owner) in [(&spawned, Some(uid)), (&orphan, None)] {
+            sqlx::query(
+                "INSERT INTO session_tokens (token_hash, session_id, account_id, user_id) \
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(format!("th-{sid}"))
+            .bind(sid)
+            .bind(prov)
+            .bind(owner)
+            .execute(&pool)
+            .await
+            .expect("seed token");
+        }
+
+        let row = session_row(&pool, &dispatched).await.unwrap().expect("the record answers");
+        assert_eq!(row.user_id, Some(uid));
+        assert_eq!(row.model.as_deref(), Some("claude-opus-5-5"));
+        assert!(row.soft_limit_reason.is_none(), "nothing has refused it yet");
+        let row = session_row(&pool, &spawned).await.unwrap().expect("the token answers");
+        assert_eq!(row.user_id, Some(uid));
+        assert_eq!(row.model, None);
+        assert!(session_row(&pool, &orphan).await.unwrap().is_none(), "no owner, no answer");
+        assert!(session_row(&pool, "limits-unknown").await.unwrap().is_none());
+
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, working_dir, user_id, status, model, \
+                                   soft_limit_reason) \
+             VALUES ($1, 'm1', '/w', $2, 'active', 'claude-sonnet-5-5', 'weekly cap')",
+        )
+        .bind(&dispatched)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .expect("seed session");
+        let row = session_row(&pool, &dispatched).await.unwrap().expect("the row answers");
+        assert_eq!(row.model.as_deref(), Some("claude-sonnet-5-5"), "the registered row wins");
+        assert_eq!(row.soft_limit_reason.as_deref(), Some("weekly cap"));
+
+        for sid in [&spawned, &orphan] {
+            sqlx::query("DELETE FROM session_tokens WHERE session_id = $1")
+                .bind(sid)
+                .execute(&pool)
+                .await
+                .ok();
+        }
+        sqlx::query("DELETE FROM sessions WHERE id = $1")
+            .bind(&dispatched)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM dispatch_records WHERE session_id = $1")
+            .bind(&dispatched)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM account_providers WHERE id = $1")
+            .bind(prov)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM accounts WHERE id = $1").bind(acct).execute(&pool).await.ok();
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 

@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use cctui_proto::api::WorkerExit;
 use cctui_proto::models::SessionEndReason;
 use uuid::Uuid;
 
@@ -112,24 +113,24 @@ pub async fn sweep(state: &AppState) {
     }
 }
 
-/// The dispatcher's view of the workload, a failed worker's exit kept on the
-/// dispatch record; `None` when the dispatcher cannot be asked.
+/// The dispatcher's view of the workload and how its container ended, kept
+/// on the dispatch record; `None` when the dispatcher cannot be asked.
 async fn status_of(
     state: &AppState,
     user_id: Option<Uuid>,
     dispatcher_name: &str,
     session_id: &str,
     handle: &str,
-) -> Option<HandleStatus> {
+) -> Option<(HandleStatus, Option<WorkerExit>)> {
     let dispatcher = dispatcher_for(state, user_id, dispatcher_name).await?;
     let (status, exit) = dispatcher.status_detail(handle).await.ok()?;
-    if let Some(exit) = exit {
-        let exit = dispatch_records::scrub_worker_exit(&exit);
-        if let Err(err) = dispatch_records::set_worker_exit(&state.pool, session_id, &exit).await {
-            tracing::warn!(%err, %session_id, "worker exit not stored");
-        }
+    let exit = exit.map(|exit| dispatch_records::scrub_worker_exit(&exit));
+    if let Some(exit) = &exit
+        && let Err(err) = dispatch_records::set_worker_exit(&state.pool, session_id, exit).await
+    {
+        tracing::warn!(%err, %session_id, "worker exit not stored");
     }
-    Some(status)
+    Some((status, exit))
 }
 
 /// The dispatcher a handle was forwarded to. An admin dispatch resolves the
@@ -148,8 +149,20 @@ async fn dispatcher_for(
     }
 }
 
-fn failure_text(reason: Option<String>) -> String {
-    reason.unwrap_or_else(|| "workload failed".to_owned())
+/// The kernel's OOM kill of the worker container, which a Job's failure
+/// condition or a clean entrypoint exit can hide.
+fn oom_kill(exit: Option<&WorkerExit>) -> Option<String> {
+    let reason = exit?.reason.as_deref()?.trim();
+    (end_reason_for(reason) == SessionEndReason::OomKilled).then(|| reason.to_owned())
+}
+
+/// Why the workload failed: the dispatcher's reason, unless it names no
+/// specific cause and the worker container was OOM killed.
+fn failure_text(reason: Option<String>, exit: Option<&WorkerExit>) -> String {
+    match reason {
+        Some(reason) if end_reason_for(&reason) != SessionEndReason::Crashed => reason,
+        reason => oom_kill(exit).or(reason).unwrap_or_else(|| "workload failed".to_owned()),
+    }
 }
 
 /// Whether the session's workflow guard reached its exit, read from this
@@ -208,15 +221,22 @@ async fn verdict(
 }
 
 async fn probe(state: &AppState, row: LiveHandle) {
-    let status =
-        status_of(state, row.user_id, &row.dispatcher_name, &row.session_id, &row.handle).await;
+    let Some((status, exit)) =
+        status_of(state, row.user_id, &row.dispatcher_name, &row.session_id, &row.handle).await
+    else {
+        return;
+    };
     let (end_reason, detail) = match status {
-        Some(HandleStatus::Failed(reason)) => {
-            verdict(&state.pool, &row.session_id, failure_text(reason)).await
+        HandleStatus::Failed(reason) => {
+            verdict(&state.pool, &row.session_id, failure_text(reason, exit.as_ref())).await
         }
-        Some(HandleStatus::Complete) if finished(&state.pool, &row.session_id).await => {
+        HandleStatus::Complete if finished(&state.pool, &row.session_id).await => {
             (SessionEndReason::Completed, EXITED_CLEANLY.to_owned())
         }
+        HandleStatus::Complete => match oom_kill(exit.as_ref()) {
+            Some(oom) => (SessionEndReason::OomKilled, oom),
+            None => return,
+        },
         _ => return,
     };
     if !end_session(&state.pool, &row.session_id, end_reason, &detail).await {
@@ -255,15 +275,20 @@ async fn probe(state: &AppState, row: LiveHandle) {
 /// queue is not yet late.
 async fn probe_unregistered(state: &AppState, row: dispatch_records::UnregisteredHandle) {
     let dispatch_records::UnregisteredHandle { session_id, user_id, dispatcher_name, handle } = row;
-    let status = status_of(state, user_id, &dispatcher_name, &session_id, &handle).await;
+    let Some((status, exit)) =
+        status_of(state, user_id, &dispatcher_name, &session_id, &handle).await
+    else {
+        return;
+    };
     let queued = match status {
-        Some(HandleStatus::Failed(reason)) => {
-            mark_failed(state, &session_id, &dispatcher_name, &handle, &failure_text(reason)).await;
+        HandleStatus::Failed(reason) => {
+            let detail = failure_text(reason, exit.as_ref());
+            mark_failed(state, &session_id, &dispatcher_name, &handle, &detail).await;
             return;
         }
-        Some(HandleStatus::Queued) => true,
-        Some(HandleStatus::Running) => false,
-        Some(HandleStatus::Complete | HandleStatus::Gone) | None => return,
+        HandleStatus::Queued => true,
+        HandleStatus::Running => false,
+        HandleStatus::Complete | HandleStatus::Gone => return,
     };
     if let Err(err) = dispatch_records::set_queued(&state.pool, &session_id, queued).await {
         tracing::warn!(%err, %session_id, "dispatch record queue state not stored");
@@ -354,6 +379,25 @@ mod tests {
         ] {
             assert_eq!(end_reason_for(reason), want, "{reason:?}");
         }
+    }
+
+    #[test]
+    fn an_oom_killed_worker_names_the_cause_a_generic_failure_hides() {
+        let oom = WorkerExit {
+            exit_code: Some(137),
+            reason: Some("OOMKilled".into()),
+            ..Default::default()
+        };
+        assert_eq!(failure_text(Some(BACKOFF.into()), Some(&oom)), "OOMKilled");
+        assert_eq!(failure_text(None, Some(&oom)), "OOMKilled");
+        let limit = "OOMKilled (memory limit 8Gi)";
+        assert_eq!(failure_text(Some(limit.into()), Some(&oom)), limit);
+        assert_eq!(failure_text(Some("ImagePullBackOff".into()), Some(&oom)), "ImagePullBackOff");
+        let error =
+            WorkerExit { exit_code: Some(1), reason: Some("Error".into()), ..Default::default() };
+        assert_eq!(failure_text(Some(BACKOFF.into()), Some(&error)), BACKOFF);
+        assert_eq!(failure_text(Some(BACKOFF.into()), None), BACKOFF);
+        assert_eq!(failure_text(None, None), "workload failed");
     }
 
     async fn status(pool: &sqlx::PgPool, id: &str) -> (String, Option<String>, Option<String>) {
@@ -483,6 +527,92 @@ mod tests {
             ("active".into(), None, None),
             "a session without a dispatch handle is never probed"
         );
+    }
+
+    /// A Job that ran out of backoff after its worker was OOM killed reports
+    /// only the backoff; the container's termination names the cause.
+    #[tokio::test]
+    async fn an_oom_kill_behind_a_backoff_failure_ends_the_session_oom_killed() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_liveness_oom_backoff")
+        else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let (uid, machine) = crate::events::tests::seed_user_machine(&pool, "dl-oom-bo").await;
+        let name = format!("k8s-{uid}");
+        let dispatcher = seed_dispatcher(&pool, uid, &name).await;
+        let live = crate::events::tests::seed_session(&pool, uid, machine, Some("live")).await;
+        let lost = crate::events::tests::seed_session(&pool, uid, machine, Some("lost")).await;
+        sqlx::query(
+            "UPDATE sessions SET status = 'ended', end_reason = 'daemon_lost', \
+             end_detail = 'daemon connection closed' WHERE id = $1",
+        )
+        .bind(&lost)
+        .execute(&pool)
+        .await
+        .unwrap();
+        for sid in [&live, &lost] {
+            seed_handle(&pool, sid, &name, &format!("jobs/cctui-worker-{sid}")).await;
+        }
+        let exit = WorkerExit {
+            container: Some("worker".into()),
+            exit_code: Some(137),
+            reason: Some("OOMKilled".into()),
+            ..Default::default()
+        };
+        let verdict = (Some("failed"), Some(BACKOFF));
+        let fake = fake_dispatcher_exiting(&state, dispatcher, verdict, Some(exit));
+        sweep(&state).await;
+        fake.abort();
+
+        let want = ("ended".into(), Some("oom_killed".into()), Some("OOMKilled".into()));
+        assert_eq!(status(&pool, &live).await, want);
+        assert_eq!(status(&pool, &lost).await, want, "a daemon_lost end is upgraded to the cause");
+        forget_user(&pool, uid).await;
+    }
+
+    /// An OOM kill of a child leaves the entrypoint exiting 0: the Job
+    /// completes, and only the container's end names the cause.
+    #[tokio::test]
+    async fn a_finished_job_whose_worker_was_oom_killed_ends_oom_killed() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_liveness_oom_complete")
+        else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let (uid, machine) = crate::events::tests::seed_user_machine(&pool, "dl-oom-ok").await;
+        let name = format!("k8s-{uid}");
+        let dispatcher = seed_dispatcher(&pool, uid, &name).await;
+        let stuck = crate::events::tests::seed_session(&pool, uid, machine, Some("stuck")).await;
+        let done = crate::events::tests::seed_session(&pool, uid, machine, Some("done")).await;
+        let guard = cctui_proto::guard_step::GuardStepState { step: -1, ..Default::default() };
+        sqlx::query("INSERT INTO guard_steps (session_id, state) VALUES ($1, $2)")
+            .bind(&done)
+            .bind(sqlx::types::Json(&guard))
+            .execute(&pool)
+            .await
+            .unwrap();
+        for sid in [&stuck, &done] {
+            seed_handle(&pool, sid, &name, &format!("jobs/cctui-worker-{sid}")).await;
+        }
+        let oom = "OOMKilled (memory limit 8Gi)";
+        let fake = fake_dispatcher(&state, dispatcher, (Some("complete"), Some(oom)));
+        sweep(&state).await;
+        fake.abort();
+
+        assert_eq!(
+            status(&pool, &stuck).await,
+            ("ended".into(), Some("oom_killed".into()), Some(oom.into())),
+            "a session left working by its dead worker learns why"
+        );
+        assert_eq!(
+            status(&pool, &done).await,
+            ("ended".into(), Some("completed".into()), Some(EXITED_CLEANLY.into())),
+            "work already done stays completed"
+        );
+        forget_user(&pool, uid).await;
     }
 
     #[tokio::test]
