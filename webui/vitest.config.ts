@@ -19,6 +19,8 @@ export default defineConfig({
 				}
 			}
 		},
+		// Node 25+ defines its own global localStorage, which shadows happy-dom's.
+		execArgv: ['--no-webstorage'],
 		setupFiles: ['./vitest.setup.ts'],
 		include: ['src/**/*.test.ts', 'scripts/**/*.test.mjs']
 	}
