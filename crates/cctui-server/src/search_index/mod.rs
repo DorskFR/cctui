@@ -69,7 +69,7 @@ where
          SELECT u.event_id, u.ord, u.session_id, u.body \
          FROM unnest($1::bigint[], $2::int[], $3::text[], $4::text[]) \
               AS u(event_id, ord, session_id, body) \
-         WHERE EXISTS (SELECT 1 FROM stream_events e WHERE e.id = u.event_id) \
+         WHERE EXISTS (SELECT 1 FROM stream_events e WHERE e.id = u.event_id FOR KEY SHARE) \
          ON CONFLICT DO NOTHING",
     )
     .bind(&ids)
