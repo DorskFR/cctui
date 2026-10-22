@@ -33,7 +33,8 @@ TASK_ID=task-1
 RESULT_FILE="$TMP/result.json"
 TERMINATION_LOG="$TMP/termination-log"
 unset KUBERNETES_SERVICE_HOST KUBERNETES_SERVICE_PORT CCTUI_PREFLIGHT_DENY CCTUI_PREFLIGHT_MODE
-unset AWS_ACCESS_KEY_ID GOOGLE_APPLICATION_CREDENTIALS
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY GOOGLE_APPLICATION_CREDENTIALS
+unset AWS_WEB_IDENTITY_TOKEN_FILE AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE AZURE_FEDERATED_TOKEN_FILE AWS_CONTAINER_CREDENTIALS_FULL_URI
 
 REACHABLE=""
 CONTROL_OK=1
@@ -64,7 +65,7 @@ has "public DNS probed" "dns 1.1.1.1" "$(cat "$PROBED")"
 has "IMDS probed" "http 169.254.169.254:80" "$(cat "$PROBED")"
 has "IPv6 IMDS probed" "http [fd00:ec2::254]:80" "$(cat "$PROBED")"
 has "Pod Identity probed" "http 169.254.170.23:80" "$(cat "$PROBED")"
-has "ambient identity probed" "env AWS_ACCESS_KEY_ID" "$(cat "$PROBED")"
+has "ECS credentials endpoint probed" "http 169.254.170.2:80" "$(cat "$PROBED")"
 has "private range probed" "http 10.0.0.1:80" "$(cat "$PROBED")"
 has "direct egress probed" "http 1.1.1.1:80" "$(cat "$PROBED")"
 
@@ -174,12 +175,52 @@ check "forward: a connect is reachable"    reach "$(verdict 52 0.004 forward)"
 check "forward: slow peer is reachable"    reach "$(verdict 28 0.004 forward)"
 unset -f curl
 
-echo "== 12. file and env probes =="
+echo "== 12. file probes =="
 touch "$TMP/token"; chmod 600 "$TMP/token"
 if real_preflight_probe file "$TMP/token"; then ok "readable file reachable"; else bad "readable file"; fi
 if real_preflight_probe file "$TMP/missing"; then bad "missing file"; else ok "missing file denied"; fi
-if real_preflight_probe env AWS_ACCESS_KEY_ID; then bad "unset env"; else ok "unset env denied"; fi
-if AWS_ACCESS_KEY_ID=AKIA real_preflight_probe env AWS_ACCESS_KEY_ID; then ok "set env reachable"; else bad "set env"; fi
+
+echo "== 12b. operator credentials are not ambient identity =="
+reset
+mkdir -p "$TMP/home/.aws"; : > "$TMP/home/.aws/credentials"
+AWS_ACCESS_KEY_ID=AKIA AWS_SECRET_ACCESS_KEY=secret AWS_SESSION_TOKEN=tok \
+  GOOGLE_APPLICATION_CREDENTIALS="$TMP/home/adc.json" AZURE_CLIENT_SECRET=s \
+  AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/v2/creds preflight_targets > "$TMP/t"
+lacks "no env identity probe" "AWS_ACCESS_KEY_ID" "$(cat "$TMP/t")"
+lacks "no credentials file probe" ".aws/credentials" "$(cat "$TMP/t")"
+lacks "no ADC probe" "adc.json" "$(cat "$TMP/t")"
+export AWS_ACCESS_KEY_ID=AKIA AWS_SECRET_ACCESS_KEY=secret
+check "explicit AWS env creds pass" 0 "$(run)"
+has "passed" "preflight: passed" "$(cat "$LOG")"
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+
+echo "== 12c. pod-provided identity fails closed =="
+reset
+export AWS_WEB_IDENTITY_TOKEN_FILE="$TMP/token"
+REACHABLE="$TMP/token"
+check "readable web-identity token fails" 1 "$(run)"
+check "reason names it" "preflight: ambient cloud identity via AWS_WEB_IDENTITY_TOKEN_FILE ($TMP/token)" \
+  "$(jq -r .error "$RESULT_FILE" 2>/dev/null)"
+unset AWS_WEB_IDENTITY_TOKEN_FILE
+reset
+REACHABLE=169.254.170.2:80
+check "ECS credentials endpoint fails" 1 "$(run)"
+AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE=/var/run/pi/token AZURE_FEDERATED_TOKEN_FILE=/var/run/az/token \
+  preflight_targets > "$TMP/t"
+has "Pod Identity token probed" "file /var/run/pi/token ambient cloud identity via AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE" "$(cat "$TMP/t")"
+has "Azure federated token probed" "file /var/run/az/token ambient cloud identity via AZURE_FEDERATED_TOKEN_FILE" "$(cat "$TMP/t")"
+full() { AWS_CONTAINER_CREDENTIALS_FULL_URI=$1 preflight_targets | grep FULL_URI | cut -d' ' -f1,2; }
+check "full URI with port" "http 169.254.170.23:8080" "$(full http://169.254.170.23:8080/v1/credentials)"
+check "full URI default port" "http 169.254.170.23:80" "$(full http://169.254.170.23/v1/credentials)"
+check "https default port" "https creds.example:443" "$(full https://creds.example/x)"
+check "IPv6 default port" "http [fd00:ec2::23]:80" "$(full 'http://[fd00:ec2::23]/v1/credentials')"
+check "IPv6 with port" "http [fd00:ec2::23]:81" "$(full 'http://[fd00:ec2::23]:81/v1')"
+REACHABLE=169.254.170.23:8080
+export AWS_CONTAINER_CREDENTIALS_FULL_URI=http://169.254.170.23:8080/v1/credentials
+check "reachable full URI fails" 1 "$(run)"
+has "reason names it" "ambient cloud identity via AWS_CONTAINER_CREDENTIALS_FULL_URI (169.254.170.23:8080)" \
+  "$(jq -r .error "$RESULT_FILE" 2>/dev/null)"
+unset AWS_CONTAINER_CREDENTIALS_FULL_URI
 
 echo "== 13. control =="
 curl() { printf '%s' "$CURL_CODE"; return "$CURL_RC"; }

@@ -397,8 +397,8 @@ Probes run in parallel with 300 ms timeouts; the public-DNS probes wait up to
 | Kubernetes API | `https://kubernetes.default.svc:443`, `$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT` | `k8s API reachable` |
 | Service-account token | any `/var/run/secrets/*/serviceaccount/*token*` readable | `service-account token readable` |
 | Public DNS | a UDP query to `1.1.1.1` and `8.8.8.8` (`dig` if present, else node's resolver) | `public DNS answers` |
-| Cloud metadata | `169.254.169.254`, `169.254.170.23`, `[fd00:ec2::254]` on port 80 | `cloud metadata reachable` |
-| Ambient cloud identity | any of `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_CONTAINER_CREDENTIALS_{FULL,RELATIVE}_URI`, `AWS_CONTAINER_AUTHORIZATION_TOKEN`, `AWS_WEB_IDENTITY_TOKEN_FILE`, `GOOGLE_APPLICATION_CREDENTIALS`, `AZURE_CLIENT_SECRET`, `AZURE_FEDERATED_TOKEN_FILE` set; `~/.aws/credentials` or gcloud ADC readable | `ambient cloud identity` |
+| Cloud metadata | `169.254.169.254` (EC2/GCE/Azure IMDS, GKE Workload Identity), `169.254.170.23` (EKS Pod Identity), `169.254.170.2` (ECS, `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`), `[fd00:ec2::254]` on port 80 | `cloud metadata reachable` |
+| Ambient cloud identity | the file named by `AWS_WEB_IDENTITY_TOKEN_FILE` (IRSA), `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE` (Pod Identity) or `AZURE_FEDERATED_TOKEN_FILE` readable; the host of `AWS_CONTAINER_CREDENTIALS_FULL_URI` reachable | `ambient cloud identity via <VAR>` |
 | Private ranges | `10.0.0.1`, `172.16.0.1`, `192.168.0.1`, `100.64.0.1`, `[fd00::1]` on port 80 | `private range reachable` |
 | Direct egress | `http://1.1.1.1:80` with the proxy env ignored | `direct public egress` |
 | Profile extras | each `spec.preflight.deny` entry; a CIDR probes its first host on port 80 | `profile deny target reachable` / `profile deny range <cidr> reachable` |
@@ -422,6 +422,11 @@ filter the agent's non-proxied egress (UDP, link-local, IPv6), so in the
 single-container modes the probes would fail by design.
 
 **Not probed:**
+- Credentials the operator configured explicitly: `AWS_ACCESS_KEY_ID` /
+  `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`, `AZURE_CLIENT_SECRET`,
+  `GOOGLE_APPLICATION_CREDENTIALS`, `~/.aws/credentials`, gcloud ADC files. The
+  profile sets them on purpose; ambient identity means only what the pod or
+  instance provides.
 - `aws sts get-caller-identity`. The guard proxy may legitimately sign STS calls
   for the agent (ambient `sigv4`), so a success does not prove an ambient
   identity. The checks above cover the credential sources themselves.
@@ -900,7 +905,12 @@ input), then drops to uid 1000:
 4. **Extensions** — source any `*.sh` in `/opt/worker-entrypoint.d/` (lexical
    order). The generic seam derived images use to inject boot phases (e.g.
    credential materialization) without forking the entrypoint. No-op on the
-   public image (empty dir).
+   public image (empty dir). Hooks are optional: each is sourced with
+   `errexit`/`nounset` off (restored after), so its exports reach later
+   phases and a failing command never aborts the dispatch. A hook signals
+   failure with a non-zero `return`, logged as `WARNING: extension <name>
+   failed (rc N, continuing)`. A hook must not `exit`: that ends the
+   entrypoint.
 5. **Codex package** — link `~/.codex/packages/standalone/current` to the baked
    `CODEX_PACKAGE_DIR`, the standalone install `codex app-server daemon` needs.
    **Codex config** — write the `cctui` model-provider region into

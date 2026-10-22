@@ -77,6 +77,39 @@ pub fn ledger_row(c: LedgerClose) -> AccountLedgerRow {
     }
 }
 
+/// Jitter allowed between the `resets_at` of two consecutive window instances.
+const INSTANCE_SLACK: Duration = Duration::minutes(1);
+
+type KeptResets = BTreeMap<(Uuid, String), Vec<DateTime<Utc>>>;
+
+/// Two instances of one window reset at least a window length apart, so an
+/// idle row closer than that to another kept row of the same credential and
+/// window is a phantom close of a window that never started. Used rows always
+/// stand; of a run of idle rows the earliest stands. Order is preserved.
+pub fn collapse_idle(rows: Vec<AccountLedgerRow>) -> Vec<AccountLedgerRow> {
+    let mut kept = KeptResets::new();
+    for r in rows.iter().filter(|r| !r.idle) {
+        kept.entry((r.account_id, r.window_key.clone())).or_default().push(r.resets_at);
+    }
+    let mut out: Vec<AccountLedgerRow> =
+        rows.into_iter().rev().filter(|r| !r.idle || keep_idle(&mut kept, r)).collect();
+    out.reverse();
+    out
+}
+
+fn keep_idle(kept: &mut KeptResets, r: &AccountLedgerRow) -> bool {
+    let Some(len) = window_duration(&r.window_key) else {
+        return true;
+    };
+    let min_gap = (len - INSTANCE_SLACK).num_seconds();
+    let at = kept.entry((r.account_id, r.window_key.clone())).or_default();
+    if at.iter().any(|k| (*k - r.resets_at).num_seconds().abs() < min_gap) {
+        return false;
+    }
+    at.push(r.resets_at);
+    true
+}
+
 #[derive(Default)]
 struct Acc {
     closes: u32,
@@ -125,7 +158,7 @@ pub async fn account_usage_ledger(
     let closes =
         usage_ledger::closes(&state.pool, ctx.owner_filter(), q.account, q.window.as_deref(), from)
             .await?;
-    let rows: Vec<AccountLedgerRow> = closes.into_iter().map(ledger_row).collect();
+    let rows = collapse_idle(closes.into_iter().map(ledger_row).collect());
     let totals = totals(&rows);
     Ok(Json(AccountUsageLedger { rows, totals }))
 }
@@ -224,6 +257,39 @@ mod tests {
         let idle_only = totals(&rows[2..3]);
         assert!(idle_only[0].unused_pct_mean.is_none());
         assert!(idle_only[0].unused_capacity_hours.is_none());
+    }
+
+    fn weekly_at(resets_at: DateTime<Utc>, final_util: f64) -> AccountLedgerRow {
+        let mut c = close("weekly_all", final_util, None);
+        c.resets_at = resets_at;
+        c.last_sampled_at = Some(resets_at - Duration::minutes(5));
+        ledger_row(c)
+    }
+
+    #[test]
+    fn sliding_idle_rows_collapse_to_one_per_window_length_around_real_closes() {
+        let real = t("2026-10-20T12:00:00Z");
+        let mut rows: Vec<AccountLedgerRow> = (0..=10 * 24 * 12)
+            .map(|i| weekly_at(real + Duration::days(7) - Duration::minutes(5 * i), 0.0))
+            .collect();
+        rows.insert(10 * 24 * 12 - 3 * 24 * 12, weekly_at(real, 50.0));
+        let mut session = ledger_row(close("session", 0.0, Some(Duration::minutes(5))));
+        session.resets_at = real + Duration::minutes(1);
+        rows.push(session);
+
+        let kept = collapse_idle(rows);
+        let weekly: Vec<_> = kept.iter().filter(|r| r.window_key == "weekly_all").collect();
+        assert_eq!(weekly.len(), 2);
+        assert_eq!((weekly[0].resets_at, weekly[0].idle), (real + Duration::days(7), true));
+        assert_eq!((weekly[1].resets_at, weekly[1].idle), (real, false));
+        assert_eq!(kept.iter().filter(|r| r.window_key == "session").count(), 1);
+    }
+
+    #[test]
+    fn idle_rows_a_full_window_apart_all_stand() {
+        let base = t("2026-10-01T12:00:00Z");
+        let rows = (0..3).map(|i| weekly_at(base - Duration::days(7 * i), 0.0)).collect();
+        assert_eq!(collapse_idle(rows).len(), 3);
     }
 
     #[test]
@@ -416,5 +482,34 @@ mod tests {
         assert!(near(session.unused_capacity_hours, 2.0));
         let weekly = l.totals.iter().find(|t| t.window_key == "weekly_all").unwrap();
         assert!(near(weekly.unused_pct_mean, 10.0));
+    }
+
+    #[tokio::test]
+    async fn junk_idle_closes_read_as_one_row_per_window_and_never_in_the_future() {
+        let Some(state) = test_state("ledger_junk_idle").await else { return };
+        let now = Utc::now();
+        let (uid, account, p) = tenant(&state.pool).await;
+        sqlx::query(
+            "INSERT INTO account_window_closes \
+                 (provider_id, window_key, resets_at, final_utilization, wasted_pct) \
+             SELECT $1, 'weekly_all', $2 + make_interval(mins => 5 * g), 0, 100 \
+               FROM generate_series(0, 1999) g",
+        )
+        .bind(p)
+        .bind(now - Duration::days(3))
+        .execute(&state.pool)
+        .await
+        .unwrap();
+        seed_close(&state.pool, p, "session", now - Duration::hours(1), 60.0, Duration::minutes(5))
+            .await;
+
+        let l = ledger(&state, ctx(uid, false), Some(account)).await;
+        assert!(l.rows.iter().all(|r| r.resets_at <= now));
+        let weekly: Vec<_> = l.rows.iter().filter(|r| r.window_key == "weekly_all").collect();
+        assert_eq!(weekly.len(), 1);
+        assert!(weekly[0].idle);
+        let total = l.totals.iter().find(|t| t.window_key == "weekly_all").unwrap();
+        assert_eq!((total.closes, total.idle_closes), (1, 1));
+        assert_eq!(l.rows.iter().filter(|r| r.window_key == "session").count(), 1);
     }
 }

@@ -33,4 +33,19 @@ FROM search_index_state s WHERE s.name = 'backfill';
 SELECT pg_size_pretty(pg_total_relation_size('search_chunks'));
 ```
 
-Until the walk passes an event, older history is not found by search.
+## Unchunked history
+
+`search_index_state` row `live_from` holds the first event id chunked on
+ingest (written once; migration 187 seeds it on installs that already chunk).
+Events with an id past the backfill cursor and below `live_from` have no chunks,
+so search also matches them the way it did before chunks existed: the unfolded
+query against `left(search_text, 8192)`, through
+`idx_stream_events_session_search_trgm`. That matching skips the 8 KB tail and
+the folding. The fallback goes away once the cursor reaches `live_from`.
+
+```sql
+SELECT name, last_event_id FROM search_index_state WHERE name IN ('backfill', 'live_from');
+```
+
+Rows written after `live_from` by paths other than daemon ingest are still only
+found once the walk reaches them.

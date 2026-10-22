@@ -889,12 +889,20 @@ resolve_prompt_path() {
 }
 
 # ── Phase 4: Extension hooks ────────────────────────────────────────────────
+# Sourced so their exports reach later phases, with errexit/nounset off: dash
+# ignores `|| ...` inside a dot script, so a failing command would abort here.
+EXT_DIR=/opt/worker-entrypoint.d
 phase_extensions() {
-    [ -d /opt/worker-entrypoint.d ] || return 0
-    for _ext in /opt/worker-entrypoint.d/*.sh; do
+    [ -d "$EXT_DIR" ] || return 0
+    for _ext in "$EXT_DIR"/*.sh; do
         [ -e "$_ext" ] || continue
-        log "ext: sourcing $(basename "$_ext")"
-        . "$_ext" || log "WARNING: extension ${_ext} failed (continuing)"
+        _ext_name=$(basename "$_ext")
+        log "ext: sourcing $_ext_name"
+        set +eu
+        . "$_ext"
+        _ext_rc=$?
+        set -eu
+        [ "$_ext_rc" = 0 ] || log "WARNING: extension $_ext_name failed (rc $_ext_rc, continuing)"
     done
 }
 
@@ -1203,19 +1211,29 @@ preflight_targets() {
     for _r in 1.1.1.1 8.8.8.8; do
         echo "dns $_r public DNS answers"
     done
-    for _m in 169.254.169.254:80 169.254.170.23:80 '[fd00:ec2::254]:80'; do
+    for _m in 169.254.169.254:80 169.254.170.23:80 169.254.170.2:80 '[fd00:ec2::254]:80'; do
         echo "http $_m cloud metadata reachable"
     done
-    for _v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
-            AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_CONTAINER_CREDENTIALS_RELATIVE_URI \
-            AWS_CONTAINER_AUTHORIZATION_TOKEN AWS_WEB_IDENTITY_TOKEN_FILE \
-            GOOGLE_APPLICATION_CREDENTIALS AZURE_CLIENT_SECRET AZURE_FEDERATED_TOKEN_FILE; do
-        echo "env $_v ambient cloud identity"
+    # Only pod/instance-provided identity counts: credentials the operator
+    # set in the profile env or files are deliberate.
+    for _v in AWS_WEB_IDENTITY_TOKEN_FILE AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE \
+            AZURE_FEDERATED_TOKEN_FILE; do
+        _f=$(printenv "$_v" 2>/dev/null || true)
+        if [ -n "$_f" ]; then echo "file $_f ambient cloud identity via $_v"; fi
     done
-    for _c in "/home/${WORKER_USER}/.aws/credentials" \
-            "/home/${WORKER_USER}/.config/gcloud/application_default_credentials.json"; do
-        echo "file $_c ambient cloud identity"
-    done
+    _u=${AWS_CONTAINER_CREDENTIALS_FULL_URI:-}
+    if [ -n "$_u" ]; then
+        _s=${_u%%://*}
+        _h=${_u#*://}
+        _h=${_h%%/*}
+        _h=${_h##*@}
+        case "$_s" in http | https) ;; *) _s=http ;; esac
+        case "$_h" in
+            *\]:* | [!\[]*:*) ;;
+            *) _p=80; [ "$_s" = https ] && _p=443; _h="$_h:$_p" ;;
+        esac
+        echo "$_s $_h ambient cloud identity via AWS_CONTAINER_CREDENTIALS_FULL_URI"
+    fi
     for _p in 10.0.0.1:80 172.16.0.1:80 192.168.0.1:80 100.64.0.1:80 '[fd00::1]:80'; do
         echo "http $_p private range reachable"
     done
@@ -1266,7 +1284,6 @@ preflight_dns() {
 preflight_probe() {
     case "$1" in
         file) as_agent test -r "$2" ;;
-        env) [ -n "$(printenv "$2" 2>/dev/null)" ] ;;
         dns) preflight_dns "$2" ;;
         http | https) preflight_connect "$1" "$2" ;;
         *) return 1 ;;

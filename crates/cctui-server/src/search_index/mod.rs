@@ -4,6 +4,7 @@
 pub mod text;
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -12,6 +13,10 @@ use sqlx::PgPool;
 /// The `search_index_state` row of the production backfill. Its advisory lock
 /// (`hashtext(name)`) also serialises [`reindex`] against a running batch.
 pub const BACKFILL: &str = "backfill";
+/// The `search_index_state` row holding the first event id chunked on ingest.
+pub const LIVE_FROM: &str = "live_from";
+
+static LIVE_FROM_RECORDED: AtomicBool = AtomicBool::new(false);
 
 const DEFAULT_BATCH: i64 = 50;
 const DEFAULT_PAUSE: Duration = Duration::from_millis(250);
@@ -93,6 +98,11 @@ pub fn index_new(pool: &PgPool, events: Vec<NewEvent>) {
     }
     let pool = pool.clone();
     tokio::spawn(async move {
+        if let Some(first) = events.iter().map(|e| e.event_id).min()
+            && let Err(err) = record_live_from(&pool, first).await
+        {
+            tracing::warn!(%err, "recording the first inline-indexed event failed");
+        }
         let rows: Vec<Chunked> = events
             .into_iter()
             .map(|e| Chunked {
@@ -105,6 +115,71 @@ pub fn index_new(pool: &PgPool, events: Vec<NewEvent>) {
             tracing::warn!(%err, "inline search indexing failed");
         }
     });
+}
+
+/// Written once: a later row would hide the ids between the backfill cursor
+/// and the first one actually chunked on ingest.
+async fn record_live_from(pool: &PgPool, first: i64) -> Result<(), sqlx::Error> {
+    if LIVE_FROM_RECORDED.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    sqlx::query(
+        "INSERT INTO search_index_state (name, last_event_id) VALUES ($1, $2) \
+         ON CONFLICT (name) DO NOTHING",
+    )
+    .bind(LIVE_FROM)
+    .bind(first)
+    .execute(pool)
+    .await?;
+    LIVE_FROM_RECORDED.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Event ids no chunk covers yet: past the backfill cursor and below the first
+/// id chunked on ingest. Search matches them on `stream_events.search_text`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unchunked {
+    pub after: i64,
+    pub before: i64,
+}
+
+impl Unchunked {
+    /// No `live_from` yet means nothing past the cursor has been chunked.
+    pub const fn between(cursor: i64, live_from: Option<i64>) -> Option<Self> {
+        let before = match live_from {
+            Some(id) => id,
+            None => i64::MAX,
+        };
+        if before.saturating_sub(cursor) > 1 { Some(Self { after: cursor, before }) } else { None }
+    }
+}
+
+/// The production [`Unchunked`] range; `None` once the backfill has reached
+/// the first inline-indexed event.
+pub async fn unchunked<'e, E>(ex: E) -> Result<Option<Unchunked>, sqlx::Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    unchunked_of(ex, BACKFILL, LIVE_FROM).await
+}
+
+async fn unchunked_of<'e, E>(
+    ex: E,
+    walk: &str,
+    live_from: &str,
+) -> Result<Option<Unchunked>, sqlx::Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let (cursor, first): (i64, Option<i64>) = sqlx::query_as(
+        "SELECT COALESCE((SELECT last_event_id FROM search_index_state WHERE name = $1), 0), \
+                (SELECT last_event_id FROM search_index_state WHERE name = $2)",
+    )
+    .bind(walk)
+    .bind(live_from)
+    .fetch_one(ex)
+    .await?;
+    Ok(Unchunked::between(cursor, first))
 }
 
 #[derive(sqlx::FromRow)]
@@ -335,6 +410,19 @@ mod tests {
     }
 
     #[test]
+    fn the_unchunked_range_closes_once_the_cursor_reaches_live_from() {
+        assert_eq!(Unchunked::between(10, Some(50)), Some(Unchunked { after: 10, before: 50 }));
+        assert_eq!(Unchunked::between(49, Some(50)), None, "no id lies strictly between");
+        assert_eq!(Unchunked::between(50, Some(50)), None);
+        assert_eq!(Unchunked::between(70, Some(50)), None);
+        assert_eq!(
+            Unchunked::between(10, None),
+            Some(Unchunked { after: 10, before: i64::MAX }),
+            "nothing chunked on ingest yet: all of it past the cursor"
+        );
+    }
+
+    #[test]
     fn image_tool_results_chunk_to_their_text_only() {
         let blob = "iVBORw0KGgoAAAANSUhEUgAA".repeat(40);
         let payload = json!({
@@ -491,6 +579,45 @@ mod tests {
             .unwrap();
         sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
         assert_eq!(chunk_count(&pool, &sid).await, 0, "chunks follow their session out");
+    }
+
+    #[tokio::test]
+    async fn unchunked_reads_the_cursor_and_live_from_rows() {
+        let Some((pool, sid)) = seeded("search_unchunked_state").await else { return };
+        let (walk, live) = (format!("walk-{sid}"), format!("live-{sid}"));
+        let set = |name: String, id: i64| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query(
+                    "INSERT INTO search_index_state (name, last_event_id) VALUES ($1, $2) \
+                     ON CONFLICT (name) DO UPDATE SET last_event_id = EXCLUDED.last_event_id",
+                )
+                .bind(name)
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        };
+        assert_eq!(
+            unchunked_of(&pool, &walk, &live).await.unwrap(),
+            Some(Unchunked { after: 0, before: i64::MAX })
+        );
+        set(walk.clone(), 100).await;
+        set(live.clone(), 500).await;
+        assert_eq!(
+            unchunked_of(&pool, &walk, &live).await.unwrap(),
+            Some(Unchunked { after: 100, before: 500 })
+        );
+        set(walk.clone(), 500).await;
+        assert_eq!(unchunked_of(&pool, &walk, &live).await.unwrap(), None);
+        sqlx::query("DELETE FROM search_index_state WHERE name IN ($1, $2)")
+            .bind(&walk)
+            .bind(&live)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
     }
 
     #[tokio::test]
