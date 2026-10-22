@@ -16,6 +16,8 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use cctui_proto::adapter::AdapterEvent;
+
 /// How long the session must stay non-busy before the marker is written.
 /// A session pausing between tool calls / API turns flickers idle for a poll
 /// or two; 60s is comfortably past that while still ending the pod promptly.
@@ -34,6 +36,14 @@ pub(super) fn settle_from_env(var: Option<&str>) -> Duration {
 pub(super) fn result_written(path: &Path) -> bool {
     std::fs::read(path)
         .is_ok_and(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).is_ok())
+}
+
+pub(super) fn is_reply(event: &AdapterEvent) -> bool {
+    match event {
+        AdapterEvent::Message { payload, .. } => payload["role"] == "assistant",
+        AdapterEvent::ToolUse { .. } => true,
+        _ => false,
+    }
 }
 
 #[derive(Debug)]
@@ -108,6 +118,11 @@ impl DispatchDoneTracker {
         let grew = self.last_transcript_offset.is_some_and(|prev| offset > prev);
         self.last_transcript_offset = Some(offset);
         grew
+    }
+
+    /// A reply counts as work: a fast answer can go idle between two polls.
+    pub const fn note_reply(&mut self) {
+        self.seen_busy = true;
     }
 
     /// Feed one poll observation. Returns `true` exactly once: when the
@@ -190,6 +205,50 @@ mod tests {
             "clock restarted at the second idle"
         );
         assert!(t.observe(false, start + Duration::from_secs(131)));
+    }
+
+    #[test]
+    fn a_reply_between_polls_counts_as_work() {
+        let mut t = tracker(60);
+        let start = Instant::now();
+        assert!(!t.observe(false, start), "idle before the answer landed");
+        t.note_reply();
+        assert!(t.seen_busy());
+        assert!(!t.observe(false, start + Duration::from_secs(2)), "idle < settle");
+        assert!(t.observe(false, start + Duration::from_secs(63)), "settled idle after the reply");
+        assert!(t.finished(false));
+    }
+
+    #[test]
+    fn a_reply_does_not_end_a_session_still_working_or_blocked() {
+        let mut t = tracker(60);
+        let start = Instant::now();
+        t.note_reply();
+        for (secs, tempo, state) in
+            [(100, "active", "working"), (200, "blocked", "done"), (300, "idle", "running")]
+        {
+            let busy = DispatchDoneTracker::is_busy(Some(tempo), Some(state));
+            assert!(!t.observe(busy, start + Duration::from_secs(secs)));
+        }
+        assert!(!t.finished(false), "the settle clock never ran");
+        assert!(!t.observe(false, start + Duration::from_secs(301)));
+        assert!(t.observe(false, start + Duration::from_secs(361)));
+    }
+
+    #[test]
+    fn reply_classification() {
+        let msg = |role: &str| AdapterEvent::Message {
+            local_id: "s".into(),
+            payload: serde_json::json!({ "role": role, "text": "391" }),
+            turn_id: None,
+        };
+        assert!(is_reply(&msg("assistant")));
+        assert!(is_reply(&AdapterEvent::ToolUse {
+            local_id: "s".into(),
+            payload: serde_json::json!({}),
+        }));
+        assert!(!is_reply(&msg("user")), "the dispatched prompt is not work");
+        assert!(!is_reply(&msg("system_marker")));
     }
 
     #[test]

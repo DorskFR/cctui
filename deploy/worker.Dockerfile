@@ -61,6 +61,7 @@ COPY --from=builder /out/ /
 # run npx-based MCP servers. Heavier JS tooling (pnpm stores, a managed
 # toolchain) still belongs in derived org images, e.g. under /opt/mise.
 FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
+ARG CA_CERTS_REFRESH=2026-10-22
 
 # Base tooling kept deliberately lean:
 #   ca-certificates          — TLS trust roots for the daemon's rustls stack.
@@ -78,7 +79,7 @@ FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee
 #   xz-utils                — unpacks the node tarball below.
 #   procps                  — `ps`, which `codex app-server daemon start` needs.
 #   libstdc++6              — the goose binary links it dynamically.
-RUN apt-get update \
+RUN echo "ca-certificates refresh ${CA_CERTS_REFRESH}" && apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
@@ -101,13 +102,16 @@ RUN apt-get update \
     && apt-get update \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
+RUN sed -i 's#^mozilla/emSign#!mozilla/emSign#' /etc/ca-certificates.conf \
+    && update-ca-certificates --fresh >/dev/null \
+    && ! ls /etc/ssl/certs | grep -qi emsign
 
 # Node — the runtime only, from the official nodejs.org tarball, checksum-verified
 # against the release's SHASUMS256.txt. Present so context packs can configure
 # npx-based MCP servers (docs/context-packs.md) and so derived images inherit a
 # node on PATH; none of the bundled CLIs depend on it. Pinning the tarball rather
 # than tracking a `node:` base image tag keeps the major explicit.
-ARG NODE_VERSION=24.22.0
+ARG NODE_VERSION=26.12.1
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
          amd64) target=linux-x64 ;; \

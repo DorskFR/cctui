@@ -531,14 +531,14 @@ export function groupRows(rows: SessionListItem[], dim: Dimension): RowGroup[] {
 	});
 }
 
-// Ephemeral worker machines live and die with their sessions and are absent
-// from the machine lists, so their group takes its liveness from its rows.
+// Worker machines (dispatch / ephemeral) are absent from the machine lists, so
+// their group takes its liveness from its rows.
 export function machineGroupLiveness(
 	known: MachineLiveness | null,
 	sessions: readonly SessionListItem[]
 ): MachineLiveness | null {
 	if (known) return known;
-	if (!sessions.length || sessions.some((s) => s.machine_kind !== 'ephemeral')) return null;
+	if (!sessions.length || !sessions.every(isDispatched)) return null;
 	if (sessions.some((s) => s.liveness === 'active' && !s.hibernated)) return 'online';
 	if (sessions.some((s) => s.liveness === 'stale')) return 'stale';
 	return 'offline';
