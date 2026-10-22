@@ -197,10 +197,11 @@ fn is_session_id(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// `text` with each bare `cctui-img://<id>` qualified as
-/// `cctui-img://<session_id>/<id>`, the form another session's transcript can
-/// resolve: the webui fetches it from `session_id`, under that session's read
-/// authz. Already-qualified refs are kept.
+/// Qualifies each bare `cctui-img://<id>` in `text` with `session_id`.
+///
+/// `cctui-img://<session_id>/<id>` resolves from another session's transcript:
+/// the webui fetches it from `session_id`, under that session's read authz.
+/// Already-qualified refs are kept.
 #[must_use]
 pub fn qualify_refs(text: &str, session_id: &str) -> String {
     if !is_session_id(session_id) || !text.contains(REF_PREFIX) {
@@ -241,9 +242,10 @@ pub fn served_markers(text: &str) -> Vec<&str> {
     out
 }
 
-/// A peer-message body with its `![alt](/abs/path)` markers uploaded to the
-/// sender's session and every ref qualified with it, so the recipient renders
-/// them.
+/// Prepares a peer-message body's images for the recipient.
+///
+/// `![alt](/abs/path)` markers upload to the sender's session and every ref is
+/// qualified with it, so the recipient renders them.
 pub async fn rewrite_for_peer(
     client: &ServerClient,
     machine_key: &str,

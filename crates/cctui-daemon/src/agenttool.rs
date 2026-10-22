@@ -982,9 +982,10 @@ async fn run_user_action(
     }
 }
 
-/// `CctuiSend`. Image markers in the body are posted to the sender's session
-/// first; a remote peer's cctui could not resolve those refs, so its body goes
-/// as written.
+/// `CctuiSend`.
+///
+/// Image markers in the body are posted to the sender's session first; a remote
+/// peer's cctui could not resolve those refs, so its body goes as written.
 async fn run_send_peer(
     server: &ServerClient,
     machine_key: &str,
