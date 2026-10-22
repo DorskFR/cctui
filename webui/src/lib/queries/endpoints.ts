@@ -113,7 +113,6 @@ import type { UpdateBookmark } from "@bindings/UpdateBookmark";
 import { SYSTEM_MACHINE_KINDS } from "./keys";
 import type {
   AccountProvider,
-  AccountUsage,
   LimitResetResponse,
   CreateAccount,
   CreateProvider,
@@ -133,6 +132,7 @@ import type {
   RenameDispatcher,
   UserDispatcher,
 } from "./dispatchers";
+
 const SEARCH_TIMEOUT_MS = 20_000;
 
 /** A search the caller never aborts still gives up after a while, so the UI
@@ -146,9 +146,8 @@ function withSearchTimeout(signal?: AbortSignal): AbortSignal | undefined {
     : signal;
 }
 
-
-
 /** Raw typed fetchers — also usable outside of components. */
+
 export const endpoints = {
   version: () => api.get<VersionInfo>(path("get_version")),
   /** Probe upstream for a newer release now rather than waiting out the
@@ -372,9 +371,9 @@ export const endpoints = {
     q: string,
     includeArchived: boolean,
     limit: number,
+    offset: number,
     cursor: string | null,
     signal?: AbortSignal,
-    offset: number,
   ) =>
     api.get<SessionListResponse>(
       "/sessions/search",
@@ -673,9 +672,6 @@ export const endpoints = {
       target_account_id: targetAccountId,
     }),
   deleteAccount: (id: string) => api.del<void>(`/accounts/${id}`),
-  /** Current subscription usage for an account. Free + tokenless;
-   *  the server slow-refreshes a cache so polling never spams upstream. */
-  accountUsage: (id: string) => api.get<AccountUsage>(`/accounts/${id}/usage`),
   accountLimitReset: (id: string, creditId?: string | null) =>
     api.post<LimitResetResponse>(`/accounts/${id}/limit-reset`, { credit_id: creditId ?? null }),
   /** Who an account is shared with. Owner-scoped server-side. */

@@ -1,4 +1,4 @@
-import type { UsageHistorySample, WastedSummary } from '$lib/queries';
+import type { UsageHistorySample } from '$lib/queries';
 
 export const WINDOW_MS: Record<string, number> = {
 	session: 5 * 3600_000,
@@ -44,10 +44,4 @@ export function polyline(line: WindowLine): string {
 	return line.points
 		.map((p) => `${(p.x * 100).toFixed(2)},${(100 - Math.min(100, p.y)).toFixed(2)}`)
 		.join(' ');
-}
-
-/** Mean unused share of a window key, rounded, or null when none closed. */
-export function wastedPct(summary: WastedSummary[] | undefined, windowKey: string): number | null {
-	const s = summary?.find((x) => x.window_key === windowKey);
-	return s && s.windows > 0 ? Math.round(s.mean_wasted_pct) : null;
 }

@@ -8,8 +8,8 @@ import type { UpdatePoolRequest } from "@bindings/UpdatePoolRequest";
 import { api } from "../api";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
+import { USAGE_POLL_MS } from "../stats/accounts/data.svelte";
 import type {
-  AccountUsageEntry,
   ProviderStatus,
   UsageHistory,
   UsageWindowCloses,
@@ -200,51 +200,17 @@ export const useSessionRebinds = (
     retry: false,
   }));
 
-/** Safety net, not the primary refresh: freshness comes from the server's
- *  `account_usage` push. Matches the server-side cache TTL, because Anthropic's
- *  usage endpoint rate-limits per access token — do not shorten it. */
-export const USAGE_POLL_MS = 180_000;
+export {
+  USAGE_POLL_MS,
+  useAccountLedger,
+  useAccountUsage,
+  useAllAccountsUsage,
+  useLimitReset,
+} from "../stats/accounts/data.svelte";
 
 /** Provider status refresh. The server polls upstream every 60s; asking more
  *  often than that only re-reads the same cache entry. */
 export const PROVIDER_STATUS_POLL_MS = 60_000;
-
-/** The caches a pushed usage row patches. Both are fed by one server-side
- *  per-account cache entry, so they must never be invalidated independently. */
-export const usageKeys = {
-  one: (accountId: string) => ["account-usage", accountId],
-  all: () => ["accounts-usage"],
-};
-
-/** Per-account subscription usage. Lazy: only fetched while the accounts view
- *  is mounted (caller gates `enabled`). Codex accounts return `null`. */
-export const useAccountUsage = (
-  accountId: () => string,
-  enabled: () => boolean = () => true,
-) =>
-  createQuery(() => ({
-    queryKey: usageKeys.one(accountId()),
-    queryFn: () => endpoints.accountUsage(accountId()),
-    enabled: enabled(),
-    staleTime: USAGE_POLL_MS,
-    refetchInterval: USAGE_POLL_MS,
-    refetchOnWindowFocus: false,
-    retry: false,
-  }));
-
-/** Every owned provider's usage windows in one request, for the header
- *  batteries. Same slow cadence as `useAccountUsage`; server-side each row is
- *  served by the same per-provider cache, so the two never double-hit upstream. */
-export const useAllAccountsUsage = (enabled: () => boolean = () => true) =>
-  createQuery(() => ({
-    queryKey: usageKeys.all(),
-    queryFn: () => api.get<AccountUsageEntry[]>("/accounts/usage"),
-    enabled: enabled(),
-    staleTime: USAGE_POLL_MS,
-    refetchInterval: USAGE_POLL_MS,
-    refetchOnWindowFocus: false,
-    retry: false,
-  }));
 
 /** What each upstream provider family reports on its status page. Server-side
  *  this is a cached background poll, so the cadence here is only how fast the
@@ -289,20 +255,6 @@ export const useUsageCloses = (from: () => string) =>
     refetchOnWindowFocus: false,
     retry: false,
   }));
-
-/** Claim a usage-limit reset on a provider credential and refresh its usage
- *  row right away so the bars reflect the claim. */
-export function useLimitReset() {
-  const qc = useQueryClient();
-  return async (accountId: string, creditId?: string | null) => {
-    const r = await endpoints.accountLimitReset(accountId, creditId);
-    // The header strip reads `accounts-usage`; invalidating only the per-account
-    // key leaves it showing the pre-claim figure until its next poll.
-    qc.invalidateQueries({ queryKey: usageKeys.one(accountId) });
-    qc.invalidateQueries({ queryKey: usageKeys.all() });
-    return r;
-  };
-}
 
 /** Who an account is shared with. Owner-scoped: the server 404s the
  *  list for a non-owner, so callers gate `enabled` to the account owner/admin. */

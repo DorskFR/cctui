@@ -4,6 +4,7 @@ import type { WindowTokenUsage } from '@bindings/WindowTokenUsage';
 import type { TokenUsage } from '@bindings/TokenUsage';
 import type { SessionStats } from '@bindings/SessionStats';
 import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
+import { m } from '$lib/paraglide/messages';
 
 // Adapt a window's {input, output, cache_read} to the shape TokenUsage.svelte
 // renders (the session-card readout). cost_usd / cache_creation are unused here.
@@ -16,6 +17,16 @@ export const asUsage = (w: WindowTokenUsage | undefined): TokenUsage => ({
 });
 
 export type MetricKey = 'live' | 'needs_input' | 'machines' | 'sessions';
+
+/** The sessions tile folds the archived count in only where it is passed. */
+export function metricLabel(key: MetricKey, archived?: string): string {
+	if (key === 'live') return m.home_stat_live();
+	if (key === 'needs_input') return m.home_stat_needs_input();
+	if (key === 'machines') return m.home_stat_machines_online();
+	return archived === undefined
+		? m.home_stat_total_sessions()
+		: m.home_stat_total_sessions_archived({ n: archived });
+}
 
 export interface MetricTileData {
 	key: MetricKey;

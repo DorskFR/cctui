@@ -1,28 +1,12 @@
 import type { MachineResourcesRow } from "@bindings/MachineResourcesRow";
 import type { MachineResources } from "@bindings/MachineResources";
+import { statTone, worstTone as worstOf, type StatTone } from "$lib/stats/tone";
 
-/** Fill tone of one resource bar: green with room to spare, orange when it
- *  gets tight, red when it is about to hit the wall. `unknown` when the
- *  daemon has never reported (older daemon, non-Linux host). */
-export type ResourceTone = "ok" | "warn" | "danger" | "unknown";
-
-const WARN_AT = 70;
-const DANGER_AT = 90;
+export type ResourceTone = StatTone;
 
 export function resourceTone(pct: number | null | undefined): ResourceTone {
-  if (pct === null || pct === undefined || !Number.isFinite(pct))
-    return "unknown";
-  if (pct >= DANGER_AT) return "danger";
-  if (pct >= WARN_AT) return "warn";
-  return "ok";
+  return statTone("resource", pct);
 }
-
-const TONE_RANK: Record<ResourceTone, number> = {
-  unknown: 0,
-  ok: 1,
-  warn: 2,
-  danger: 3,
-};
 
 /** The tone the machine's single dot takes on a narrow screen: its worst bar,
  *  `unknown` only when nothing is known at all. */
@@ -30,15 +14,11 @@ export function worstTone(
   r: MachineResources | null | undefined,
 ): ResourceTone {
   if (!r) return "unknown";
-  const tones = [
+  return worstOf([
     resourceTone(r.cpu_pct),
     resourceTone(r.mem_pct),
     resourceTone(r.disk_pct),
-  ];
-  return tones.reduce(
-    (a, b) => (TONE_RANK[b] > TONE_RANK[a] ? b : a),
-    "unknown",
-  );
+  ]);
 }
 
 /** Rounded 0..100 for a bar width, null when unknown. */

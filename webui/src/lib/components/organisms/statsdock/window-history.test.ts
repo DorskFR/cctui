@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect } from 'vitest';
 import type { UsageHistorySample } from '$lib/queries';
-import { polyline, wastedPct, windowLines } from './window-history';
+import { polyline, windowLines } from './window-history';
 
 const sample = (sampledAt: string, resetsAt: string, utilization: number): UsageHistorySample => ({
 	window_key: 'session',
@@ -38,14 +38,5 @@ describe('windowLines', () => {
 describe('polyline', () => {
 	it('maps to a 100x100 viewBox and caps overage', () => {
 		expect(polyline({ resetsAt: '', points: [{ x: 0.5, y: 25 }, { x: 1, y: 120 }] })).toBe('50.00,75.00 100.00,0.00');
-	});
-});
-
-describe('wastedPct', () => {
-	it('rounds the mean for the requested window and is null when nothing closed', () => {
-		const summary = [{ window_key: 'session', windows: 3, mean_wasted_pct: 37.6 }];
-		expect(wastedPct(summary, 'session')).toBe(38);
-		expect(wastedPct(summary, 'weekly_all')).toBeNull();
-		expect(wastedPct(undefined, 'session')).toBeNull();
 	});
 });
