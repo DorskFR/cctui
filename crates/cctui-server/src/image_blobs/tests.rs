@@ -154,8 +154,8 @@ fn backfill_config_is_off_unless_enabled() {
         let get = |k: &str| (k == "CCTUI_IMAGE_BACKFILL").then(|| v.to_owned());
         assert_eq!(Config::from_lookup(get), None, "{v:?} keeps it off");
     }
-    let on = Config::from_lookup(|k| (k == "CCTUI_IMAGE_BACKFILL").then(|| "1".into()))
-        .expect("on");
+    let on =
+        Config::from_lookup(|k| (k == "CCTUI_IMAGE_BACKFILL").then(|| "1".into())).expect("on");
     assert_eq!((on.scan, on.rows, on.pause), (500, 20, Duration::from_secs(1)));
     assert_eq!(on.budget_bytes, 512 * 1024 * 1024);
     let tuned = Config::from_lookup(|k| match k {

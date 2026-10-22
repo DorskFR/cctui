@@ -68,12 +68,11 @@ pub enum Outcome {
 
 /// Any error rolls the blob writes back and leaves the row untouched.
 pub async fn rewrite_event(conn: &mut sqlx::PgConnection, id: i64) -> Result<Outcome, sqlx::Error> {
-    let row: Option<(String, Value, Vec<u8>)> = sqlx::query_as(
-        "SELECT session_id, payload, content_hash FROM stream_events WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(&mut *conn)
-    .await?;
+    let row: Option<(String, Value, Vec<u8>)> =
+        sqlx::query_as("SELECT session_id, payload, content_hash FROM stream_events WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&mut *conn)
+            .await?;
     let Some((session_id, payload, content_hash)) = row else {
         return Ok(Outcome::Gone);
     };
