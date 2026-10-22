@@ -33,6 +33,9 @@ FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee
 ARG CA_CERTS_REFRESH=2026-10-22
 RUN echo "ca-certificates refresh ${CA_CERTS_REFRESH}" && apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3t64 \
     && rm -rf /var/lib/apt/lists/*
+RUN sed -i 's#^mozilla/emSign#!mozilla/emSign#' /etc/ca-certificates.conf \
+    && update-ca-certificates --fresh >/dev/null \
+    && ! ls /etc/ssl/certs | grep -qi emsign
 COPY --from=bins /cctui-server /usr/local/bin/cctui-server
 RUN useradd --system --uid 10001 --user-group --create-home --home-dir /home/cctui cctui \
     && mkdir -p /skills /archive && chown 10001:10001 /skills /archive

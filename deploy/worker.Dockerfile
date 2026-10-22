@@ -102,6 +102,9 @@ RUN echo "ca-certificates refresh ${CA_CERTS_REFRESH}" && apt-get update \
     && apt-get update \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
+RUN sed -i 's#^mozilla/emSign#!mozilla/emSign#' /etc/ca-certificates.conf \
+    && update-ca-certificates --fresh >/dev/null \
+    && ! ls /etc/ssl/certs | grep -qi emsign
 
 # Node — the runtime only, from the official nodejs.org tarball, checksum-verified
 # against the release's SHASUMS256.txt. Present so context packs can configure
