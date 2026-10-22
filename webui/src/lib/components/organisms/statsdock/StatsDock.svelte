@@ -12,7 +12,6 @@
 	import OverviewTiles from './OverviewTiles.svelte';
 	import UsageCharts from './UsageCharts.svelte';
 	import WindowHistory from './WindowHistory.svelte';
-	import AccountStats from '$lib/stats/accounts/AccountStats.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	// The stats panel pinned to one edge of the Sessions screen (Settings ›
@@ -45,7 +44,6 @@
 	const sections = $derived([
 		{ key: 'pools', title: m.stats_dock_pools() },
 		{ key: 'accounts', title: m.stats_dock_accounts() },
-		{ key: 'ledger', title: m.account_stats_ledger() },
 		{ key: 'tokens', title: m.home_token_usage() },
 		{ key: 'overview', title: m.home_overview_title() },
 		{ key: 'history', title: m.stats_dock_window_history() },
@@ -55,7 +53,6 @@
 	let open = $state<Record<string, boolean>>({
 		pools: true,
 		accounts: true,
-		ledger: true,
 		tokens: true,
 		overview: true,
 		history: false,
@@ -109,8 +106,6 @@
 							<PoolUsageList />
 						{:else if s.key === 'accounts'}
 							<AccountUsageList />
-						{:else if s.key === 'ledger'}
-							<AccountStats size="light" />
 						{:else if s.key === 'tokens'}
 							<TokenWindows />
 						{:else if s.key === 'overview'}

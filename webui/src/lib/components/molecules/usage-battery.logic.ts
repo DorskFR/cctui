@@ -1,5 +1,4 @@
 import type { AccountUsageEntry, UsagePace, UsageWindow } from '$lib/queries';
-import { statTone } from '$lib/stats/tone';
 
 /** Fill colour of a battery bar, by headroom left in the window. */
 export type HeadroomTone = 'ok' | 'warn' | 'danger' | 'unknown';
@@ -10,8 +9,13 @@ export type PaceState = 'leaf' | 'neutral' | 'flame';
 const LEAF_BELOW = 0.8;
 const FLAME_ABOVE = 1.2;
 
+/** Green while more than half the window is left, amber down to 20%, then red. */
 export function headroomTone(utilization: number | null): HeadroomTone {
-	return statTone('quota', utilization);
+	if (utilization === null || !Number.isFinite(utilization)) return 'unknown';
+	const headroom = 100 - utilization;
+	if (headroom > 50) return 'ok';
+	if (headroom > 20) return 'warn';
+	return 'danger';
 }
 
 export function paceState(pace: UsagePace | null | undefined): PaceState | null {
@@ -124,3 +128,24 @@ export function aggregateBars(entries: BatteryEntry[]): BatteryBars {
 	};
 	return { fiveHour: fullest((b) => b.fiveHour), weekly: fullest((b) => b.weekly) };
 }
+
+/** Merge a pushed usage row into the batch cache, keeping each entry's identity
+ *  fields (the push carries only the usage half of the row). Returns `old`
+ *  unchanged when the account is not in the strip, so an unrelated push cannot
+ *  churn the query cache. */
+export function patchUsageEntries(
+	old: AccountUsageEntry[] | undefined,
+	accountId: string,
+	usage: PushedUsage
+): AccountUsageEntry[] | undefined {
+	if (!old?.some((e) => e.account_id === accountId)) return old;
+	return old.map((e) =>
+		e.account_id === accountId ? { ...e, ...usage, account_id: e.account_id } : e
+	);
+}
+
+/** The usage half of a row, as the `account_usage` push carries it. */
+export type PushedUsage = Pick<
+	AccountUsageEntry,
+	'account_id' | 'provider' | 'usage' | 'windows' | 'age_secs' | 'limit_reset'
+>;

@@ -27,7 +27,6 @@
 	import { dockLayout } from '$lib/spawnDock.svelte';
 	import { sessionsView } from '$lib/sessionsView.svelte';
 	import { mountJourneys } from '$lib/journey';
-	import { bindAccountUsageLive } from '$lib/stats/accounts/data.svelte';
 
 	let { children } = $props();
 
@@ -137,7 +136,6 @@
 	});
 
 	$effect(() => ws.onSessionEnded((ev) => sessionFailureToast(ev, (href) => void goto(href))));
-	$effect(() => bindAccountUsageLive(queryClient, ws));
 
 	// Pull server-persisted user settings once a token is established.
 	// `load()` is idempotent (runs once) and tolerates 401/offline by keeping the

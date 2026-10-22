@@ -3,10 +3,11 @@
 	import { Popover, Text } from '@dorsk/tsumikit';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import AccountCard from '$lib/components/organisms/AccountCard.svelte';
-	import { useAccounts, useAllAccountsUsage, useRedirectChips } from '$lib/queries';
+	import { useQueryClient } from '@tanstack/svelte-query';
+	import { ws } from '$lib/ws.svelte';
+	import { useAccounts, useAllAccountsUsage, useRedirectChips, usageKeys } from '$lib/queries';
+	import type { AccountUsageEntry } from '$lib/queries';
 	import type { UsageWindow } from '$lib/queries';
-	import StatMeter from '$lib/stats/StatMeter.svelte';
-	import AccountStats from '$lib/stats/accounts/AccountStats.svelte';
 	import { providerLabel } from '$lib/providers';
 	import { m } from '$lib/paraglide/messages';
 	import {
@@ -14,14 +15,28 @@
 		barPct,
 		batteryEntries,
 		countdown,
+		headroomTone,
 		paceState,
 		wallInMs,
+		patchUsageEntries,
 		worstPace,
 		type BatteryBars,
 		type BatteryEntry
 	} from '$lib/components/molecules/usage-battery.logic';
 
 	const q = useAllAccountsUsage(() => true);
+	// Live: the server pushes each usage refresh it already made, so the bars
+	// follow real consumption instead of this query's slow safety-net poll.
+	// Patched in place — invalidating here would refetch and undo the saving.
+	const qc = useQueryClient();
+	$effect(() =>
+		ws.onAccountUsage((ev) => {
+			qc.setQueryData<AccountUsageEntry[]>(usageKeys.all(), (old) =>
+				patchUsageEntries(old, ev.account_id, ev.usage)
+			);
+			qc.setQueryData(usageKeys.one(ev.account_id), ev.usage);
+		})
+	);
 	// The popovers show the same read-only AccountCard the stats dock shows.
 	const accounts = useAccounts();
 	// Only the pinned providers: that is what the strip shows.
@@ -85,13 +100,20 @@
 	}
 </script>
 
+{#snippet bar(w: UsageWindow | null)}
+	{@const pct = barPct(w)}
+	<span class="track" data-tone={headroomTone(pct)}>
+		{#if pct !== null}<span class="fill" style={`width: ${pct}%`}></span>{/if}
+	</span>
+{/snippet}
+
 {#snippet cell(bars: BatteryBars, title: string, provider: string | null)}
 	{@const p = paceOf(bars)}
 	<span class="cell" {title}>
 		{#if provider}<span class="glyph"><AdapterIcon {provider} size={12} /></span>{/if}
 		<span class="bars">
-			<StatMeter kind="quota" size="mini" label={m.usage_battery_five_hour()} value={barPct(bars.fiveHour)} />
-			<StatMeter kind="quota" size="mini" label={m.usage_battery_weekly()} value={barPct(bars.weekly)} />
+			{@render bar(bars.fiveHour)}
+			{@render bar(bars.weekly)}
 		</span>
 		{#if p}
 			<span class="pace" data-state={p.state} aria-hidden="true"
@@ -128,7 +150,6 @@
 							{:else}
 								<Text size="sm" weight="semibold">{head}</Text>
 							{/if}
-							<AccountStats size="mini" account={e.providerId} />
 						</div>
 					</Popover>
 				{/each}
@@ -149,7 +170,6 @@
 				{@render cell(agg, titleOf(m.usage_battery_aggregate_title(), agg), null)}
 			{/snippet}
 			<div class="panel">
-				<AccountStats size="mini" />
 				{#each groups as group (group[0].account)}
 					{@const acct = accountOf(group[0].account)}
 					{#if acct}
@@ -208,6 +228,31 @@
 		display: inline-flex;
 		flex-direction: column;
 		gap: 2px;
+	}
+	.track {
+		display: block;
+		width: 22px;
+		height: 3px;
+		border-radius: 2px;
+		background: var(--border);
+		overflow: hidden;
+	}
+	.track[data-tone='unknown'] {
+		background: repeating-linear-gradient(45deg, var(--border-strong) 0 2px, transparent 2px 4px);
+	}
+	.fill {
+		display: block;
+		height: 100%;
+		border-radius: 2px;
+	}
+	.track[data-tone='ok'] .fill {
+		background: var(--ok);
+	}
+	.track[data-tone='warn'] .fill {
+		background: var(--warn);
+	}
+	.track[data-tone='danger'] .fill {
+		background: var(--danger);
 	}
 	.pace {
 		display: inline-flex;

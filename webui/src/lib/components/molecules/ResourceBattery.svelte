@@ -13,7 +13,6 @@
 	import { ws } from '$lib/ws.svelte';
 	import { hashHue } from '$lib/format';
 	import { m } from '$lib/paraglide/messages';
-	import StatMeter from '$lib/stats/StatMeter.svelte';
 	import {
 		fmtBytes,
 		isStale,
@@ -21,6 +20,7 @@
 		patchRow,
 		pctOf,
 		pinnedRows,
+		resourceTone,
 		worstTone
 	} from './resource-gauge.logic';
 
@@ -73,8 +73,11 @@
 	}
 </script>
 
-{#snippet bar(label: string, v: number | null | undefined, stale: boolean)}
-	<StatMeter kind="resource" size="mini" {label} value={stale ? null : pctOf(v)} />
+{#snippet bar(v: number | null | undefined, stale: boolean)}
+	{@const pct = pctOf(v)}
+	<span class="track" data-tone={stale ? 'unknown' : resourceTone(v)}>
+		{#if pct !== null && !stale}<span class="fill" style={`width: ${pct}%`}></span>{/if}
+	</span>
 {/snippet}
 
 {#if rows.length > 0}
@@ -88,9 +91,9 @@
 					<span class="cell" title={titleOf(r)}>
 						<span class="name" style={`--hue: ${hueOf(r)}`}>{machineLabel(r)}</span>
 						<span class="bars">
-							{@render bar(m.resource_gauge_cpu(), res?.cpu_pct, stale)}
-							{@render bar(m.resource_gauge_mem(), res?.mem_pct, stale)}
-							{@render bar(m.resource_gauge_disk(), res?.disk_pct, stale)}
+							{@render bar(res?.cpu_pct, stale)}
+							{@render bar(res?.mem_pct, stale)}
+							{@render bar(res?.disk_pct, stale)}
 						</span>
 						{#if stale}<span class="unknown" aria-hidden="true">?</span>{/if}
 						<span class="dot" data-tone={worst} aria-hidden="true"></span>
@@ -156,6 +159,31 @@
 		display: inline-flex;
 		flex-direction: column;
 		gap: 2px;
+	}
+	.track {
+		display: block;
+		width: 22px;
+		height: 3px;
+		border-radius: 2px;
+		background: var(--border);
+		overflow: hidden;
+	}
+	.track[data-tone='unknown'] {
+		background: repeating-linear-gradient(45deg, var(--border-strong) 0 2px, transparent 2px 4px);
+	}
+	.fill {
+		display: block;
+		height: 100%;
+		border-radius: 2px;
+	}
+	.track[data-tone='ok'] .fill {
+		background: var(--ok);
+	}
+	.track[data-tone='warn'] .fill {
+		background: var(--warn);
+	}
+	.track[data-tone='danger'] .fill {
+		background: var(--danger);
 	}
 	.unknown {
 		font-size: 10px;

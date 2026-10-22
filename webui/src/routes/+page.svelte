@@ -1,24 +1,32 @@
 <script lang="ts">
-	import { useMachineResources, useSessionStats, useTokenStats } from '$lib/queries';
+	import { useAccounts, useMachineResources, useSessionStats, useTokenStats } from '$lib/queries';
 	import { getLocale } from '$lib/paraglide/runtime';
 	import { m } from '$lib/paraglide/messages';
-	import AccountStats from '$lib/stats/accounts/AccountStats.svelte';
 	import SessionPeriodSummary from '$lib/components/organisms/overview/SessionPeriodSummary.svelte';
 	import MetricTile from '$lib/components/molecules/MetricTile.svelte';
 	import WindowsTable from '$lib/components/molecules/WindowsTable.svelte';
 	import UsageAnalyticsSection from '$lib/components/organisms/overview/UsageAnalyticsSection.svelte';
 	import { Card, Stack } from '@dorsk/tsumikit';
 	import PageHead from '$lib/components/molecules/PageHead.svelte';
-	import { buildMetricTiles, metricLabel } from './home.logic';
+	import { buildMetricTiles, machinesOnline, type MetricKey } from './home.logic';
 
 	const stats = useSessionStats();
 	const tokens = useTokenStats();
 	const machines = useMachineResources(() => true);
+	const accounts = useAccounts();
 
 	const machineRows = $derived(machines.data ?? []);
 
 	const num = (n: number) => n.toLocaleString(getLocale());
 	const tiles = $derived(buildMetricTiles(stats.data, machineRows));
+	const tileLabel = (key: MetricKey, sub: number | undefined) =>
+		key === 'live'
+			? m.home_stat_live()
+			: key === 'needs_input'
+				? m.home_stat_needs_input()
+				: key === 'machines'
+					? m.home_stat_machines_online()
+					: m.home_stat_total_sessions_archived({ n: num(sub ?? 0) });
 </script>
 
 <Stack gap="var(--sp-5)">
@@ -31,7 +39,7 @@
 					value={num(t.value)}
 					suffix={t.suffix}
 					warn={t.warn}
-					label={metricLabel(t.key, num(t.sub ?? 0))}
+					label={tileLabel(t.key, t.sub)}
 				/>
 			</div>
 		{/each}
@@ -40,8 +48,6 @@
 	<SessionPeriodSummary stats={stats.data} />
 
 	<Card padding="none" data-journey="windows"><WindowsTable windows={tokens.data} /></Card>
-
-	<Card><AccountStats size="full" /></Card>
 
 	<div data-journey="analytics"><UsageAnalyticsSection /></div>
 </Stack>
