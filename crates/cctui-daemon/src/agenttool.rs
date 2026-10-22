@@ -1117,7 +1117,7 @@ async fn run_call(
             (handle, child.session_id)
         }
         CallKind::Message(req) => {
-            let handle = watch.register_bound(&req.session_id);
+            let handle = watch.register_follow_up(&req.session_id, &req.prompt);
             if let Err(err) = server.message_child(machine_key, &call.session_id, req).await {
                 return annotate(json!({ "ok": false, "error": err.to_string() }), &note);
             }
@@ -1175,7 +1175,7 @@ async fn nudge_once(
 ) -> Value {
     let req =
         MessageChildRequest { session_id: target.to_owned(), prompt: NUDGE_PROMPT.to_owned() };
-    let handle = watch.register_bound(target);
+    let handle = watch.register_follow_up(target, NUDGE_PROMPT);
     if let Err(err) = server.message_child(machine_key, &call.session_id, &req).await {
         tracing::warn!(parent = %call.session_id, child = %target, %err, "CctuiAgent nudge failed");
         return reply_frame(&original);
@@ -1822,6 +1822,42 @@ mod tests {
         feeder.await.unwrap();
         assert_eq!(frame["ok"], json!(true));
         assert!(frame["result"].as_str().unwrap().starts_with("all done"));
+    }
+
+    #[tokio::test]
+    async fn a_follow_up_queued_behind_a_peer_turn_returns_its_own_turns_answer() {
+        let msg = |role: &str, text: &str, stop: Option<&str>| {
+            cctui_proto::adapter::AdapterEvent::Message {
+                local_id: "child-1".into(),
+                payload: json!({ "role": role, "text": text, "stop_reason": stop }),
+                turn_id: None,
+            }
+        };
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let handle = watch.register_follow_up("child-1", "run the QA turn");
+        let observer = watch.clone();
+        let feeder = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            observer.observe(&msg("assistant", "Received.", Some("end_turn")));
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            observer.observe(&msg("user", "run the QA turn", None));
+            observer.observe(&msg("assistant", "QA turn done", Some("end_turn")));
+        });
+        let mut out: Vec<u8> = Vec::new();
+        let frame = follow_result_to_frame(
+            follow_child_with(
+                &handle,
+                "child-1",
+                Duration::from_secs(10),
+                SILENT_CHILD_GRACE,
+                2,
+                &mut out,
+            )
+            .await,
+        );
+        feeder.await.unwrap();
+        assert_eq!(frame["ok"], json!(true));
+        assert!(frame["result"].as_str().unwrap().starts_with("QA turn done"), "{frame}");
     }
 
     #[tokio::test]

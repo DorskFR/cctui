@@ -24,10 +24,11 @@ pub const CONTEXT_TOOL_LINE: &str = "CctuiContext: use `mcp__cctui__CctuiContext
 /// How to show the user an image; the limits are the ones [`crate::imagepost`]
 /// enforces.
 pub const IMAGE_LINE: &str = "images: to show the user an image, put `![alt](/absolute/path.png)` \
-    in your message text or in a message to a peer session (not in other tool calls): png, jpg, \
-    gif or webp, at most 5 MB, the file under $HOME, /tmp or $TMPDIR. A posted image becomes \
+    in the turn's final reply, after your last tool call (text written before a tool call can be \
+    dropped), or in a message to a peer session (no other tool call shows it): png, jpg, gif or \
+    webp, at most 5 MB, the file under $HOME, /tmp or $TMPDIR. A posted image becomes \
     `![alt](cctui-img://…)`; to show one another session posted (a child's answer, a peer's \
-    message), copy that marker into your own reply unchanged.\n";
+    message), copy that marker into your final reply unchanged.\n";
 
 /// The shared-checkout warning for a session about to work in `cwd`.
 ///
@@ -313,6 +314,7 @@ mod tests {
         assert!(IMAGE_LINE.contains(&format!("at most {mb} MB")), "{IMAGE_LINE}");
         assert!(IMAGE_LINE.contains("![alt](/absolute/path.png)"), "{IMAGE_LINE}");
         assert!(IMAGE_LINE.contains("png, jpg, gif or webp"), "{IMAGE_LINE}");
+        assert!(IMAGE_LINE.contains("in the turn's final reply, after your last tool call"));
         assert!(IMAGE_LINE.ends_with(".\n") && IMAGE_LINE.lines().count() == 1, "{IMAGE_LINE}");
     }
 
