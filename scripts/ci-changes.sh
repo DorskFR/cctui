@@ -4,7 +4,7 @@
 # webui/package-lock.json diff that only moves the workspace version is ignored.
 set -euo pipefail
 
-keys=(ci rust webui deps schema)
+keys=(ci rust webui deps schema deploy)
 
 if [ "${1:-}" = "--all" ]; then
   for k in "${keys[@]}"; do echo "$k=true"; done
@@ -45,7 +45,7 @@ version_only() {
 
 files="$(git diff --name-only --no-renames "$base" "$head")"
 
-ci=false rust=false webui=false deps=false schema=false
+ci=false rust=false webui=false deps=false schema=false deploy=false
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   case "$f" in
@@ -59,7 +59,7 @@ while IFS= read -r f; do
       fi
       ;;
     crates/* | migrations/* | rust-toolchain.toml | rustfmt.toml | .cargo/* \
-      | keys/* | packaging/* | plugins/* | fixtures/* | deploy/examples/* \
+      | keys/* | packaging/* | plugins/* | fixtures/* | deploy/examples/* | deploy/workerprofile-crd.yaml \
       | webui/src/lib/bindings/* | webui/src/lib/scrubDetectors.generated.ts \
       | webui/scripts/gen-bindings.sh | webui/scripts/gen-scrub-detectors.mjs)
       rust=true
@@ -76,6 +76,9 @@ while IFS= read -r f; do
   case "$f" in
     crates/cctui-server/src/settings_catalog/*) schema=true ;;
   esac
+  case "$f" in
+    deploy/* | webui/Dockerfile | webui/nginx.conf | scripts/check-vad-assets.sh) deploy=true ;;
+  esac
 done <<<"$files"
 
 echo "ci=$ci"
@@ -83,3 +86,4 @@ echo "rust=$rust"
 echo "webui=$webui"
 echo "deps=$deps"
 echo "schema=$schema"
+echo "deploy=$deploy"
