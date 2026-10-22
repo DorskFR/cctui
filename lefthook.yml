@@ -41,10 +41,23 @@ pre-commit:
     comment-refs:
       glob: "{*.rs,*.ts,*.svelte,*.sh,*.yml,*.yaml,*.service,*Dockerfile,Makefile,**/Makefile,docs/*.md,docs/**/*.md}"
       run: bash scripts/check-comment-refs.sh
+    # Private names stay out of the repo. The list is local
+    # (~/.config/cctui/forbidden-terms.txt) and the FORBIDDEN_TERMS secret in CI;
+    # hits print only their location.
+    forbidden-terms:
+      run: bash scripts/check-forbidden-terms.sh --staged
+
+commit-msg:
+  commands:
+    forbidden-terms:
+      run: bash scripts/check-forbidden-terms.sh --message {1}
 
 pre-push:
   parallel: true
   commands:
+    forbidden-terms:
+      use_stdin: true
+      run: bash scripts/check-forbidden-terms.sh --pre-push
     # Each check runs only when the pushed commits touch its area (see
     # scripts/ci-changes.sh); CI runs the full suites.
     test:
