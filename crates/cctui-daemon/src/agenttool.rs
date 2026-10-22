@@ -8,9 +8,16 @@
 //! frames to a proto≥2 relay while waiting and finishing with the child's
 //! final message. Proto 1 relays (older, still attached to live sessions)
 //! get the single final line only.
+//!
+//! A follow runs detached from the relay connection and is recorded in
+//! [`crate::followledger`]: when the relay is gone (dropped, timed out, or the
+//! daemon re-exec'd under it) the result is delivered to the parent as a turn,
+//! and a call naming only the child's `session_id` reattaches to it.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use cctui_proto::api::context::{
@@ -21,8 +28,9 @@ use cctui_proto::api::{
     RoomToolRequest, SpawnChildRequest,
 };
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines};
 use tokio::net::UnixStream;
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use crate::childwatch::{Assessment, WatchHandle, snippet};
@@ -34,6 +42,18 @@ const PROGRESS_EVERY: Duration = Duration::from_secs(15);
 /// A child that has shown no sign of life at all by this point never reached
 /// its first model call — waiting out `timeout_secs` only delays the failure.
 const SILENT_CHILD_GRACE: Duration = Duration::from_secs(90);
+
+/// How long a follow outlives the call that started it, so a child that
+/// finishes after its caller stopped waiting still reaches the parent.
+const FOLLOW_CAP: Duration = Duration::from_hours(6);
+
+/// Retries for a completion the parent's machine could not take yet.
+const DELIVERY_ATTEMPTS: u32 = 5;
+const DELIVERY_RETRY: Duration = Duration::from_secs(30);
+
+/// Under the server's own cap on a delivered turn; the full text stays one
+/// reattach away.
+const COMPLETION_MAX_BYTES: usize = 32 * 1024;
 
 const NUDGE_PROMPT: &str =
     "continue — return your findings / final answer now, in full, and nothing else.";
@@ -53,6 +73,11 @@ pub fn socket_path() -> PathBuf {
 enum CallKind {
     Spawn(SpawnChildRequest),
     Message(MessageChildRequest),
+    /// `CctuiAgent` with a child's `session_id` and no prompt: rejoin its
+    /// follow, or return its last finished turn.
+    Attach {
+        session_id: String,
+    },
     /// `CctuiUsage`: ask the server what limits apply to the calling session.
     /// Neither spawns nor follows anything, so it never touches the watch.
     Usage {
@@ -246,10 +271,13 @@ fn parse_user_action_tick(args: &Value) -> Result<CallKind, String> {
 
 fn parse_spawn_agent(args: &Value) -> Result<CallKind, String> {
     let prompt = args.get("prompt").and_then(Value::as_str).unwrap_or("").to_owned();
+    let child = string_arg(args, "session_id");
     if prompt.trim().is_empty() {
-        return Err("prompt is required".to_owned());
+        return child
+            .map(|session_id| CallKind::Attach { session_id })
+            .ok_or_else(|| "prompt is required".to_owned());
     }
-    if let Some(child) = string_arg(args, "session_id") {
+    if let Some(child) = child {
         return Ok(CallKind::Message(MessageChildRequest { session_id: child, prompt }));
     }
     let adapter = normalize_adapter(args.get("adapter").and_then(Value::as_str).unwrap_or(""));
@@ -417,6 +445,9 @@ fn dispatch_note(kind: &CallKind, timeout: Duration) -> String {
             req.session_id,
             timeout.as_secs(),
         ),
+        CallKind::Attach { session_id } => {
+            format!("\n\n[reattached to child {session_id} · follow window {}s]", timeout.as_secs())
+        }
         CallKind::Usage { .. }
         | CallKind::ArchiveChild(_)
         | CallKind::Peers
@@ -627,13 +658,40 @@ fn annotate(mut frame: Value, note: &str) -> Value {
 enum FollowResult {
     Finished(crate::childwatch::ChildOutcome),
     Error(Value),
+    /// A newer call took over the child's watch; this follow has no result.
+    Superseded,
 }
 
+#[cfg(test)]
 fn follow_result_to_frame(result: FollowResult) -> Value {
     match result {
         FollowResult::Finished(outcome) => reply_frame(&outcome),
         FollowResult::Error(frame) => frame,
+        FollowResult::Superseded => superseded_frame(),
     }
+}
+
+fn superseded_frame() -> Value {
+    json!({
+        "ok": false,
+        "error": "child agent tracking was dropped: a newer CctuiAgent call to this child took \
+                  over its follow",
+    })
+}
+
+fn window_expired_frame(timeout: Duration, child: &str) -> Value {
+    json!({
+        "ok": false,
+        "error": format!(
+            "the {}s follow window expired for child agent {child}. THIS IS NOT A CRASH: the \
+             child is still running, and whatever it has already written is on disk. Only the \
+             wait gave up. When its turn ends, its final message is delivered to this session \
+             as a message. To wait for it here instead, call CctuiAgent again with session_id \
+             {child:?} and no prompt. Pass a larger timeout_secs (max 7200) next time to wait \
+             longer.",
+            timeout.as_secs(),
+        ),
+    })
 }
 
 /// Whether a completed turn's final message reads as a truncated non-answer
@@ -682,13 +740,12 @@ async fn follow_child_with(
 ) -> FollowResult {
     let started = Instant::now();
     let mut last_progress = Instant::now();
+    let mut relay_gone = false;
     loop {
         handle.changed(Duration::from_secs(2)).await;
         let now = Instant::now();
         let Some(snap) = handle.snapshot() else {
-            return FollowResult::Error(
-                json!({ "ok": false, "error": "child agent tracking was dropped" }),
-            );
+            return FollowResult::Superseded;
         };
         match snap.assess(now) {
             Assessment::Finished(outcome) => return FollowResult::Finished(outcome),
@@ -708,21 +765,13 @@ async fn follow_child_with(
                     }));
                 }
                 if now.duration_since(started) >= timeout {
-                    return FollowResult::Error(json!({
-                        "ok": false,
-                        "error": format!(
-                            "the {}s follow window expired for child agent {child_id}. THIS IS \
-                             NOT A CRASH: the child is still running, and whatever it has \
-                             already written is on disk. Only the wait gave up. Watch it in \
-                             cctui, or call CctuiAgent again with session_id {:?} to reattach \
-                             and collect its answer. Pass a larger timeout_secs (max 7200) \
-                             next time to wait longer.",
-                            timeout.as_secs(),
-                            snap.local_id.as_deref().unwrap_or(child_id),
-                        ),
-                    }));
+                    return FollowResult::Error(window_expired_frame(
+                        timeout,
+                        snap.local_id.as_deref().unwrap_or(child_id),
+                    ));
                 }
-                if proto >= 2 && now.duration_since(last_progress) >= PROGRESS_EVERY {
+                if proto >= 2 && !relay_gone && now.duration_since(last_progress) >= PROGRESS_EVERY
+                {
                     last_progress = now;
                     let frame = json!({
                         "progress": format!(
@@ -732,11 +781,9 @@ async fn follow_child_with(
                             snap.local_id.as_deref().unwrap_or(child_id),
                         ),
                     });
-                    if write_line(out, &frame).await.is_err() {
-                        return FollowResult::Error(
-                            json!({ "ok": false, "error": "relay went away" }),
-                        );
-                    }
+                    // The child keeps running without a reader; its result
+                    // still has somewhere to go.
+                    relay_gone = write_line(out, &frame).await.is_err();
                 }
             }
         }
@@ -1020,7 +1067,7 @@ async fn run_send_peer(
 }
 
 /// The kinds that answer from one server round-trip and never follow a child.
-/// `None` means the call is a spawn or a follow-up, which [`run_call`] handles.
+/// `None` means the call is a spawn or a follow-up, which [`run_followed_call`] handles.
 async fn run_unfollowed_call(
     server: &ServerClient,
     machine_key: &str,
@@ -1083,51 +1130,274 @@ async fn run_unfollowed_call(
             Ok(()) => json!({ "ok": true, "result": "closed" }),
             Err(err) => json!({ "ok": false, "error": err }),
         },
-        CallKind::Spawn(_) | CallKind::Message(_) => return None,
+        CallKind::Spawn(_) | CallKind::Message(_) | CallKind::Attach { .. } => return None,
     };
     Some(frame)
 }
 
-async fn run_call(
-    server: &ServerClient,
-    machine_key: &str,
-    call: Call,
+/// What a follow needs to finish without the call that started it.
+#[derive(Clone)]
+struct FollowCtx {
+    server: ServerClient,
+    machine_key: String,
+    parent: String,
+    proto: u64,
+    silent_grace: Duration,
+}
+
+/// A child followed independently of any relay connection. Its result goes to
+/// the slot's waiter when a call is waiting, else to the parent as a turn.
+struct Follower {
+    parent: String,
+    slot: Mutex<Slot>,
+}
+
+/// `released` is set as the follow hands its result off; a reattach that
+/// finds it set reads the result from the ledger instead of waiting.
+struct Slot {
+    waiter: Option<oneshot::Sender<Value>>,
+    released: bool,
+}
+
+type Followers = Mutex<HashMap<String, Arc<Follower>>>;
+
+/// Live follows by child id.
+fn followers() -> &'static Followers {
+    static FOLLOWERS: LazyLock<Followers> = LazyLock::new(Followers::default);
+    &FOLLOWERS
+}
+
+/// Follow `child` in a detached task; the receiver gets the result.
+fn start_follow(
+    ctx: FollowCtx,
+    handle: WatchHandle,
+    child: String,
+    mut progress: impl AsyncWriteExt + Unpin + Send + 'static,
+) -> oneshot::Receiver<Value> {
+    let (tx, rx) = oneshot::channel();
+    let follower = Arc::new(Follower {
+        parent: ctx.parent.clone(),
+        slot: Mutex::new(Slot { waiter: Some(tx), released: false }),
+    });
+    followers().lock().unwrap().insert(child.clone(), follower.clone());
+    crate::followledger::begin(&child, &ctx.parent);
+    tokio::spawn(async move {
+        let frame = follow_to_frame(&ctx, handle, &child, &mut progress).await;
+        drop(progress);
+        if let Some(frame) = &frame {
+            crate::followledger::finish(&child, &ctx.parent, frame, false);
+        }
+        let waiter = release(&child, &follower);
+        let Some(frame) = frame else { return };
+        match waiter.map(|tx| tx.send(frame.clone())) {
+            Some(Ok(())) => crate::followledger::mark_delivered(&child),
+            Some(Err(_)) | None => deliver_to_parent(&ctx, &child, &frame).await,
+        }
+    });
+    rx
+}
+
+/// Drop `follower` from the live set (unless a newer follow replaced it) and
+/// take whichever call is waiting on it.
+fn release(child: &str, follower: &Arc<Follower>) -> Option<oneshot::Sender<Value>> {
+    {
+        let mut live = followers().lock().unwrap();
+        if live.get(child).is_some_and(|f| Arc::ptr_eq(f, follower)) {
+            live.remove(child);
+        }
+    }
+    let mut slot = follower.slot.lock().unwrap();
+    slot.released = true;
+    slot.waiter.take()
+}
+
+/// The frame a follow ends with, or `None` when a newer call took the child
+/// over. A truncated non-answer gets exactly one continuation nudge.
+async fn follow_to_frame(
+    ctx: &FollowCtx,
+    handle: WatchHandle,
+    child: &str,
+    out: &mut (impl AsyncWriteExt + Unpin),
+) -> Option<Value> {
+    let outcome =
+        match follow_child_with(&handle, child, FOLLOW_CAP, ctx.silent_grace, ctx.proto, out).await
+        {
+            FollowResult::Finished(outcome) => outcome,
+            FollowResult::Error(frame) => return Some(frame),
+            FollowResult::Superseded => return None,
+        };
+    if !should_nudge(&outcome) {
+        return Some(reply_frame(&outcome));
+    }
+    let Some(target) = outcome.local_id.clone() else {
+        return Some(reply_frame(&outcome));
+    };
+    drop(handle);
+    Some(nudge_once(ctx, &target, outcome, out).await)
+}
+
+/// Send exactly one continuation prompt to a child that finished on a truncated
+/// non-answer and follow that turn. Falls back to the original outcome when the
+/// nudge cannot be relayed or the follow-up itself produces nothing.
+async fn nudge_once(
+    ctx: &FollowCtx,
+    target: &str,
+    original: crate::childwatch::ChildOutcome,
     out: &mut (impl AsyncWriteExt + Unpin),
 ) -> Value {
-    if let Some(frame) = run_unfollowed_call(server, machine_key, &call).await {
-        return frame;
+    let req =
+        MessageChildRequest { session_id: target.to_owned(), prompt: NUDGE_PROMPT.to_owned() };
+    let handle = crate::childwatch::global().register_follow_up(target, NUDGE_PROMPT);
+    if let Err(err) = ctx.server.message_child(&ctx.machine_key, &ctx.parent, &req).await {
+        tracing::warn!(parent = %ctx.parent, child = %target, %err, "CctuiAgent nudge failed");
+        return reply_frame(&original);
     }
-    let note = dispatch_note(&call.kind, call.timeout);
-    let watch = crate::childwatch::global();
-    let (handle, child_id) = match &call.kind {
-        CallKind::Spawn(req) => {
-            let child = match server.spawn_child(machine_key, &call.session_id, req).await {
-                Ok(child) => child,
-                Err(err) => {
-                    return annotate(json!({ "ok": false, "error": err.to_string() }), &note);
+    tracing::info!(parent = %ctx.parent, child = %target, "CctuiAgent nudging truncated child");
+    match follow_child_with(&handle, target, FOLLOW_CAP, ctx.silent_grace, ctx.proto, out).await {
+        FollowResult::Finished(nudged) if nudged.final_text.is_some() || nudged.error.is_some() => {
+            reply_frame(&nudged)
+        }
+        _ => reply_frame(&original),
+    }
+}
+
+/// The turn a parent receives for a result no call was waiting for.
+fn completion_text(child: &str, frame: &Value) -> String {
+    let ok = frame.get("ok").and_then(Value::as_bool) == Some(true);
+    let body = frame
+        .get(if ok { "result" } else { "error" })
+        .and_then(Value::as_str)
+        .unwrap_or("child agent finished without producing any output");
+    let head = if ok {
+        format!(
+            "CctuiAgent child {child} finished its turn after your call stopped following it \
+             (lost connection, daemon restart or expired follow window). Its final message:"
+        )
+    } else {
+        format!(
+            "CctuiAgent child {child} ended after your call stopped following it (lost \
+             connection, daemon restart or expired follow window):"
+        )
+    };
+    let mut text = format!("{head}\n\n");
+    let budget = COMPLETION_MAX_BYTES.saturating_sub(text.len() + 256);
+    if body.len() > budget {
+        let mut cut = budget;
+        while !body.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let _ = write!(
+            text,
+            "{}\n\n[truncated: CctuiAgent with session_id {child:?} and no prompt returns it in \
+             full]",
+            &body[..cut]
+        );
+    } else {
+        text.push_str(body);
+    }
+    if body.contains("without producing any output") {
+        let _ = write!(
+            text,
+            "\n\n[its final message was not captured; read it with CctuiHistory, session_id \
+             {child:?}]"
+        );
+    }
+    text
+}
+
+/// Hand a result nobody is waiting for to the parent as a turn of its own,
+/// retrying while the parent's machine cannot take it. The ledger keeps it
+/// either way, so a reattach still returns it.
+async fn deliver_to_parent(ctx: &FollowCtx, child: &str, frame: &Value) {
+    crate::followledger::finish(child, &ctx.parent, frame, false);
+    let text = completion_text(child, frame);
+    for attempt in 1..=DELIVERY_ATTEMPTS {
+        match ctx.server.child_completion(&ctx.machine_key, child, &text).await {
+            Ok(None) => {
+                crate::followledger::mark_delivered(child);
+                tracing::info!(
+                    parent = %ctx.parent,
+                    %child,
+                    "CctuiAgent child completion delivered to the parent as a turn",
+                );
+                return;
+            }
+            Ok(Some(reason)) => {
+                tracing::warn!(
+                    parent = %ctx.parent,
+                    %child,
+                    %reason,
+                    "CctuiAgent child completion refused",
+                );
+                return;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    parent = %ctx.parent,
+                    %child,
+                    attempt,
+                    %err,
+                    "CctuiAgent child completion not delivered yet",
+                );
+                if attempt < DELIVERY_ATTEMPTS {
+                    tokio::time::sleep(DELIVERY_RETRY).await;
                 }
+            }
+        }
+    }
+}
+
+enum Joined {
+    Ready(Value),
+    Waiting { child: String, rx: oneshot::Receiver<Value>, progress: Option<DuplexStream> },
+}
+
+fn spawn_follow(ctx: &FollowCtx, handle: WatchHandle, child: String) -> Joined {
+    let (progress_in, progress_out) = tokio::io::duplex(64 * 1024);
+    let rx = start_follow(ctx.clone(), handle, child.clone(), progress_in);
+    Joined::Waiting { child, rx, progress: Some(progress_out) }
+}
+
+/// Spawn, follow up or reattach, up to the point there is a follow to wait on.
+async fn start_or_join(
+    ctx: &FollowCtx,
+    kind: &CallKind,
+    out: &mut (impl AsyncWriteExt + Unpin),
+) -> Joined {
+    let watch = crate::childwatch::global();
+    match kind {
+        CallKind::Spawn(req) => {
+            let child = match ctx.server.spawn_child(&ctx.machine_key, &ctx.parent, req).await {
+                Ok(child) => child.session_id,
+                Err(err) => return Joined::Ready(json!({ "ok": false, "error": err.to_string() })),
             };
-            let handle = watch.register(&child.session_id);
+            let handle = watch.register(&child);
             tracing::info!(
-                parent = %call.session_id,
-                child = %child.session_id,
+                parent = %ctx.parent,
+                %child,
                 adapter = %req.adapter,
                 "CctuiAgent following spawned child",
             );
-            (handle, child.session_id)
+            if ctx.proto >= 2 {
+                let named =
+                    json!({ "progress": format!("spawned child session {child}"), "child": child });
+                let _ = write_line(out, &named).await;
+            }
+            spawn_follow(ctx, handle, child)
         }
         CallKind::Message(req) => {
             let handle = watch.register_follow_up(&req.session_id, &req.prompt);
-            if let Err(err) = server.message_child(machine_key, &call.session_id, req).await {
-                return annotate(json!({ "ok": false, "error": err.to_string() }), &note);
+            if let Err(err) = ctx.server.message_child(&ctx.machine_key, &ctx.parent, req).await {
+                return Joined::Ready(json!({ "ok": false, "error": err.to_string() }));
             }
             tracing::info!(
-                parent = %call.session_id,
+                parent = %ctx.parent,
                 child = %req.session_id,
                 "CctuiAgent following child after follow-up",
             );
-            (handle, req.session_id.clone())
+            spawn_follow(ctx, handle, req.session_id.clone())
         }
+        CallKind::Attach { session_id } => attach(&ctx.parent, session_id),
         CallKind::Usage { .. }
         | CallKind::ArchiveChild(_)
         | CallKind::Peers
@@ -1144,50 +1414,183 @@ async fn run_call(
         | CallKind::PreviewClose { .. } => {
             unreachable!("these return above; they have no child to spawn or follow")
         }
-    };
-    let result =
-        follow_child_with(&handle, &child_id, call.timeout, SILENT_CHILD_GRACE, call.proto, out)
-            .await;
-    let FollowResult::Finished(outcome) = result else {
-        return annotate(follow_result_to_frame(result), &note);
-    };
-    if !should_nudge(&outcome) {
-        return annotate(reply_frame(&outcome), &note);
     }
-    let Some(target) = outcome.local_id.clone() else {
-        return annotate(reply_frame(&outcome), &note);
-    };
-    drop(handle);
-    annotate(nudge_once(server, machine_key, &call, &watch, &target, outcome, out).await, &note)
 }
 
-/// Send exactly one continuation prompt to a child that finished on a truncated
-/// non-answer and follow that turn. Falls back to the original outcome when the
-/// nudge cannot be relayed or the follow-up itself produces nothing.
-async fn nudge_once(
+/// Rejoin `child`'s running follow, else hand back its last finished turn.
+/// Only the session that started the follow may.
+fn attach(parent: &str, child: &str) -> Joined {
+    match join_live(parent, child) {
+        Some(Ok(rx)) => {
+            tracing::info!(%parent, %child, "CctuiAgent reattached to a running follow");
+            return Joined::Waiting { child: child.to_owned(), rx, progress: None };
+        }
+        Some(Err(())) => return Joined::Ready(not_your_child(child)),
+        None => {}
+    }
+    match crate::followledger::get(child) {
+        Some(entry) if entry.parent != parent => Joined::Ready(not_your_child(child)),
+        Some(crate::followledger::Entry { finished: Some(finished), .. }) => {
+            crate::followledger::mark_delivered(child);
+            let age = chrono::Utc::now().timestamp() - finished.at;
+            Joined::Ready(annotate(
+                finished.frame,
+                &format!(
+                    "\n\n[the child's last finished turn, which ended {} ago]",
+                    human_duration(age)
+                ),
+            ))
+        }
+        _ => Joined::Ready(json!({
+            "ok": false,
+            "error": format!(
+                "no CctuiAgent follow of child {child} is known to this machine's daemon, so \
+                 there is nothing to reattach to. Read its transcript with CctuiHistory, or \
+                 send it a follow-up by passing a prompt with session_id."
+            ),
+        })),
+    }
+}
+
+/// Become the call waiting on `child`'s live follow. `None` when nothing
+/// follows it (or it already handed its result off); `Err` when another
+/// session's call started the follow.
+fn join_live(parent: &str, child: &str) -> Option<Result<oneshot::Receiver<Value>, ()>> {
+    let follower = followers().lock().unwrap().get(child).cloned()?;
+    if follower.parent != parent {
+        return Some(Err(()));
+    }
+    let (tx, rx) = oneshot::channel();
+    let mut slot = follower.slot.lock().unwrap();
+    if slot.released {
+        return None;
+    }
+    slot.waiter = Some(tx);
+    drop(slot);
+    Some(Ok(rx))
+}
+
+fn not_your_child(child: &str) -> Value {
+    json!({
+        "ok": false,
+        "error": format!("child {child} was not spawned or followed by this session"),
+    })
+}
+
+enum Waited {
+    Result(Value),
+    Expired(Value),
+    RelayGone,
+}
+
+async fn next_progress(lines: &mut Option<Lines<BufReader<DuplexStream>>>) -> Option<String> {
+    match lines {
+        Some(lines) => lines.next_line().await.ok().flatten(),
+        None => std::future::pending().await,
+    }
+}
+
+/// Wait for a follow's result, forwarding its progress to the relay (or, for a
+/// reattach with no progress stream, a keepalive line).
+async fn await_follow(
+    mut rx: oneshot::Receiver<Value>,
+    progress: Option<DuplexStream>,
+    out: &mut (impl AsyncWriteExt + Unpin),
+    timeout: Duration,
+    child: &str,
+    proto: u64,
+) -> Waited {
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    let mut lines = progress.map(|p| BufReader::new(p).lines());
+    let mut keepalive = tokio::time::interval(PROGRESS_EVERY);
+    keepalive.tick().await;
+    loop {
+        tokio::select! {
+            result = &mut rx => {
+                return Waited::Result(result.unwrap_or_else(|_| superseded_frame()));
+            }
+            () = &mut deadline => return Waited::Expired(window_expired_frame(timeout, child)),
+            line = next_progress(&mut lines) => match line {
+                Some(line) => {
+                    let sent = out.write_all(format!("{line}\n").as_bytes()).await;
+                    if sent.is_err() || out.flush().await.is_err() {
+                        return Waited::RelayGone;
+                    }
+                }
+                None => lines = None,
+            },
+            _ = keepalive.tick(), if lines.is_none() && proto >= 2 => {
+                let line = format!("waiting on child session {child}");
+                let frame = json!({ "progress": line, "child": child });
+                if write_line(out, &frame).await.is_err() {
+                    return Waited::RelayGone;
+                }
+            }
+        }
+    }
+}
+
+/// A spawn, follow-up or reattach, answered on `out`. A result the relay can no
+/// longer take goes to the parent instead.
+async fn run_followed_call(
     server: &ServerClient,
     machine_key: &str,
-    call: &Call,
-    watch: &std::sync::Arc<crate::childwatch::ChildWatch>,
-    target: &str,
-    original: crate::childwatch::ChildOutcome,
+    call: Call,
     out: &mut (impl AsyncWriteExt + Unpin),
-) -> Value {
-    let req =
-        MessageChildRequest { session_id: target.to_owned(), prompt: NUDGE_PROMPT.to_owned() };
-    let handle = watch.register_follow_up(target, NUDGE_PROMPT);
-    if let Err(err) = server.message_child(machine_key, &call.session_id, &req).await {
-        tracing::warn!(parent = %call.session_id, child = %target, %err, "CctuiAgent nudge failed");
-        return reply_frame(&original);
-    }
-    tracing::info!(parent = %call.session_id, child = %target, "CctuiAgent nudging truncated child");
-    match follow_child_with(&handle, target, call.timeout, SILENT_CHILD_GRACE, call.proto, out)
-        .await
-    {
-        FollowResult::Finished(nudged) if nudged.final_text.is_some() || nudged.error.is_some() => {
-            reply_frame(&nudged)
+) {
+    let note = dispatch_note(&call.kind, call.timeout);
+    let ctx = FollowCtx {
+        server: server.clone(),
+        machine_key: machine_key.to_owned(),
+        parent: call.session_id.clone(),
+        proto: call.proto,
+        silent_grace: SILENT_CHILD_GRACE,
+    };
+    let (child, frame) = match start_or_join(&ctx, &call.kind, out).await {
+        Joined::Ready(frame) => (None, frame),
+        Joined::Waiting { child, rx, progress } => {
+            match await_follow(rx, progress, out, call.timeout, &child, call.proto).await {
+                Waited::Result(frame) => (Some(child), frame),
+                Waited::Expired(frame) => (None, frame),
+                Waited::RelayGone => return,
+            }
         }
-        _ => reply_frame(&original),
+    };
+    if write_line(out, &annotate(frame.clone(), &note)).await.is_err()
+        && let Some(child) = child
+    {
+        deliver_to_parent(&ctx, &child, &frame).await;
+    }
+}
+
+/// Pick up what a previous daemon image left: its pending follows died with it,
+/// so they are followed again with their results bound for the parent, and
+/// results that never reached their parent are delivered.
+fn resume_follows(
+    server: &ServerClient,
+    machine_key: &str,
+    entries: Vec<(String, crate::followledger::Entry)>,
+) {
+    for (child, entry) in entries {
+        let ctx = FollowCtx {
+            server: server.clone(),
+            machine_key: machine_key.to_owned(),
+            parent: entry.parent.clone(),
+            proto: 1,
+            silent_grace: FOLLOW_CAP,
+        };
+        match entry.finished {
+            None => {
+                tracing::info!(parent = %entry.parent, %child, "CctuiAgent resuming a follow");
+                let handle = crate::childwatch::global().register_bound(&child);
+                drop(start_follow(ctx, handle, child, tokio::io::sink()));
+            }
+            Some(finished) if !finished.delivered => {
+                tokio::spawn(async move { deliver_to_parent(&ctx, &child, &finished.frame).await });
+            }
+            Some(_) => {}
+        }
     }
 }
 
@@ -1195,11 +1598,18 @@ async fn handle_connection(stream: UnixStream, server: ServerClient, machine_key
     let (read_half, mut write_half) = stream.into_split();
     let mut lines = BufReader::new(read_half).lines();
     let Ok(Some(line)) = lines.next_line().await else { return };
-    let frame = match parse_call(&line) {
-        Ok(call) => run_call(&server, &machine_key, call, &mut write_half).await,
-        Err(err) => json!({ "ok": false, "error": err }),
+    let call = match parse_call(&line) {
+        Ok(call) => call,
+        Err(err) => {
+            let _ = write_line(&mut write_half, &json!({ "ok": false, "error": err })).await;
+            return;
+        }
     };
-    let _ = write_line(&mut write_half, &frame).await;
+    if let Some(frame) = run_unfollowed_call(&server, &machine_key, &call).await {
+        let _ = write_line(&mut write_half, &frame).await;
+        return;
+    }
+    run_followed_call(&server, &machine_key, call, &mut write_half).await;
 }
 
 /// Serve the agent-tool socket until `shutdown`.
@@ -1209,6 +1619,7 @@ pub async fn serve(
     machine_key: String,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
+    resume_follows(&server, &machine_key, crate::followledger::all());
     let listener = crate::runtime::bind_private_socket(&path)?;
     tracing::info!(socket = %path.display(), "CctuiAgent tool listener ready");
     loop {
@@ -1613,6 +2024,22 @@ mod tests {
         let CallKind::Message(req) = call.kind else { panic!("expected message") };
         assert_eq!(req.session_id, "child-9");
         assert_eq!(req.prompt, "and check the tests");
+    }
+
+    #[test]
+    fn a_session_id_without_a_prompt_is_a_reattach() {
+        let line = json!({
+            "kind": "spawn_agent",
+            "session_id": "parent-1",
+            "args": { "session_id": "child-9", "model": "m" },
+        })
+        .to_string();
+        let call = parse_call(&line).unwrap();
+        let CallKind::Attach { session_id } = call.kind else { panic!("expected attach") };
+        assert_eq!(session_id, "child-9");
+        assert!(
+            dispatch_note(&CallKind::Attach { session_id }, call.timeout).contains("reattached")
+        );
     }
 
     #[test]
@@ -2695,5 +3122,216 @@ mod tests {
         assert!(!is_available(""));
         assert!(!is_available("   "));
         assert!(is_available("machine-key"));
+    }
+
+    /// One HTTP request read whole (headers and body), answered with `status`.
+    async fn capture_one_request(status: &'static str) -> (String, oneshot::Receiver<String>) {
+        use tokio::io::AsyncReadExt as _;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = sock.read(&mut chunk).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                let text = String::from_utf8_lossy(&buf).into_owned();
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let len = text[..end]
+                        .lines()
+                        .find_map(|l| {
+                            let lower = l.to_ascii_lowercase();
+                            lower
+                                .strip_prefix("content-length:")
+                                .and_then(|v| v.trim().parse().ok())
+                        })
+                        .unwrap_or(0_usize);
+                    if buf.len() >= end + 4 + len {
+                        break;
+                    }
+                }
+            }
+            let reply = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}"
+            );
+            sock.write_all(reply.as_bytes()).await.unwrap();
+            sock.flush().await.unwrap();
+            let _ = tx.send(String::from_utf8_lossy(&buf).into_owned());
+        });
+        (format!("http://{addr}"), rx)
+    }
+
+    fn ctx_for(base: &str, parent: &str) -> FollowCtx {
+        FollowCtx {
+            server: ServerClient::new(base),
+            machine_key: "mk".into(),
+            parent: parent.into(),
+            proto: 2,
+            silent_grace: SILENT_CHILD_GRACE,
+        }
+    }
+
+    fn finish_turn(watch: &crate::childwatch::ChildWatch, child: &str, text: &str) {
+        watch.observe(&cctui_proto::adapter::AdapterEvent::Message {
+            local_id: child.into(),
+            payload: json!({ "role": "assistant", "text": text }),
+            turn_id: None,
+        });
+        watch.observe(&cctui_proto::adapter::AdapterEvent::SessionEnded {
+            local_id: child.into(),
+            reason: cctui_proto::adapter::EndReason::Completed,
+        });
+    }
+
+    async fn delivered(child: &str) -> bool {
+        for _ in 0..100 {
+            if crate::followledger::get(child).and_then(|e| e.finished).is_some_and(|f| f.delivered)
+            {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn a_follow_whose_relay_went_away_delivers_the_result_to_the_parent() {
+        let (base, request) = capture_one_request("200 OK").await;
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let child = "child-relay-gone";
+        let rx = start_follow(
+            ctx_for(&base, "parent-a"),
+            watch.register_bound(child),
+            child.to_owned(),
+            tokio::io::sink(),
+        );
+        drop(rx);
+        finish_turn(&watch, child, "the lane is done: 3 files changed");
+        let request = tokio::time::timeout(Duration::from_secs(10), request)
+            .await
+            .expect("the parent was never notified")
+            .unwrap();
+        assert!(
+            request.starts_with(&format!("POST /api/v1/daemon/sessions/{child}/child-completion ")),
+            "{request}"
+        );
+        assert!(request.contains("the lane is done: 3 files changed"), "{request}");
+        assert!(request.contains("stopped following it"), "{request}");
+        assert!(delivered(child).await, "the ledger must record the delivery");
+    }
+
+    #[tokio::test]
+    async fn a_daemon_restart_mid_turn_resumes_the_follow_and_notifies_the_parent() {
+        let (base, request) = capture_one_request("200 OK").await;
+        let child = "child-across-a-restart";
+        let pending = crate::followledger::Entry {
+            parent: "parent-b".into(),
+            started_at: chrono::Utc::now().timestamp(),
+            finished: None,
+        };
+        resume_follows(&ServerClient::new(base), "mk", vec![(child.to_owned(), pending)]);
+        finish_turn(&crate::childwatch::global(), child, "finished after the re-exec");
+        let request = tokio::time::timeout(Duration::from_secs(10), request)
+            .await
+            .expect("a resumed follow must still reach the parent")
+            .unwrap();
+        assert!(request.contains(&format!("/sessions/{child}/child-completion")), "{request}");
+        assert!(request.contains("finished after the re-exec"), "{request}");
+        assert!(delivered(child).await);
+    }
+
+    #[tokio::test]
+    async fn a_reattach_joins_a_running_follow_and_gets_its_result() {
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let child = "child-rejoined";
+        let first = start_follow(
+            ctx_for("http://127.0.0.1:9", "parent-c"),
+            watch.register_bound(child),
+            child.to_owned(),
+            tokio::io::sink(),
+        );
+        drop(first);
+        let Joined::Waiting { rx, progress, .. } = attach("parent-c", child) else {
+            panic!("a live follow must be joined, not answered from the ledger");
+        };
+        assert!(progress.is_none());
+        assert!(matches!(attach("parent-other", child), Joined::Ready(_)));
+        finish_turn(&watch, child, "rejoined answer");
+        let frame = tokio::time::timeout(Duration::from_secs(10), rx).await.unwrap().unwrap();
+        assert_eq!(frame["ok"], json!(true));
+        assert!(frame["result"].as_str().unwrap().starts_with("rejoined answer"), "{frame}");
+        assert!(delivered(child).await, "a joined call counts as delivered");
+    }
+
+    #[test]
+    fn a_reattach_returns_the_stored_final_message_of_a_turn_nobody_followed() {
+        let child = "child-finished-alone";
+        crate::followledger::finish(
+            child,
+            "parent-d",
+            &json!({ "ok": true, "result": "stored answer" }),
+            false,
+        );
+        let Joined::Ready(frame) = attach("parent-d", child) else {
+            panic!("a finished turn must be answered at once, not waited for");
+        };
+        assert_eq!(frame["ok"], json!(true));
+        let text = frame["result"].as_str().unwrap();
+        assert!(text.starts_with("stored answer"), "{text}");
+        assert!(text.contains("last finished turn"), "{text}");
+        assert!(crate::followledger::get(child).unwrap().finished.unwrap().delivered);
+
+        let Joined::Ready(foreign) = attach("parent-x", child) else { panic!() };
+        assert_eq!(foreign["ok"], json!(false));
+        assert!(foreign["error"].as_str().unwrap().contains("not spawned or followed"));
+
+        let Joined::Ready(unknown) = attach("parent-d", "child-never-followed") else { panic!() };
+        assert!(unknown["error"].as_str().unwrap().contains("nothing to reattach"));
+    }
+
+    #[tokio::test]
+    async fn an_expired_window_names_the_reattach_and_the_follow_keeps_going() {
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let child = "child-slow";
+        let rx = start_follow(
+            ctx_for("http://127.0.0.1:9", "parent-e"),
+            watch.register_bound(child),
+            child.to_owned(),
+            tokio::io::sink(),
+        );
+        let mut out: Vec<u8> = Vec::new();
+        let Waited::Expired(frame) =
+            await_follow(rx, None, &mut out, Duration::from_millis(50), child, 1).await
+        else {
+            panic!("expected the window to expire");
+        };
+        let text = frame["error"].as_str().unwrap();
+        assert!(text.contains("delivered to this session as a message"), "{text}");
+        assert!(text.contains("session_id \"child-slow\" and no prompt"), "{text}");
+        assert!(matches!(attach("parent-e", child), Joined::Waiting { .. }), "still followed");
+    }
+
+    #[test]
+    fn a_completion_is_capped_and_points_at_the_reattach_for_the_rest() {
+        let long = "x".repeat(COMPLETION_MAX_BYTES * 2);
+        let text = completion_text("c1", &json!({ "ok": true, "result": long }));
+        assert!(text.len() <= COMPLETION_MAX_BYTES, "{}", text.len());
+        assert!(text.contains("session_id \"c1\" and no prompt returns it in full"));
+
+        let failed =
+            completion_text("c1", &json!({ "ok": false, "error": "child agent failed: boom" }));
+        assert!(failed.contains("ended after your call stopped following it"), "{failed}");
+        assert!(failed.contains("boom"));
+
+        let empty = completion_text(
+            "c1",
+            &json!({ "ok": true, "result": "child agent finished without producing any output" }),
+        );
+        assert!(empty.contains("CctuiHistory"), "{empty}");
     }
 }

@@ -54,7 +54,7 @@ describe('fileviewer refusalMessage', () => {
 	});
 
 	it('names the roots a denial was checked against, when the daemon listed them', () => {
-		const detail = '/home/gtax/.claude/jobs/cdfadc1d/tmp/x.md is outside the allowed roots: /tmp, /srv/app';
+		const detail = '/home/alice/.claude/jobs/cdfadc1d/tmp/x.md is outside the allowed roots: /tmp, /srv/app';
 		expect(deniedRoots(detail)).toEqual(['/tmp', '/srv/app']);
 		expect(deniedRoots('path was not linked in this session')).toEqual([]);
 
@@ -192,7 +192,7 @@ describe('fileviewer inline refusals', () => {
 	}
 
 	it('shows the refusal next to the link instead of navigating to the body', async () => {
-		const detail = '/x/note.md is outside the allowed roots: /tmp, /home/gtax/.claude/jobs';
+		const detail = '/x/note.md is outside the allowed roots: /tmp, /home/alice/.claude/jobs';
 		vi.stubGlobal(
 			'fetch',
 			vi.fn(async () => new Response(JSON.stringify({ error: detail }), { status: 403 }))
@@ -206,7 +206,7 @@ describe('fileviewer inline refusals', () => {
 			return el;
 		});
 		expect(err?.textContent).toContain('note.md');
-		expect(err?.textContent).toContain('/home/gtax/.claude/jobs');
+		expect(err?.textContent).toContain('/home/alice/.claude/jobs');
 		expect(a.nextElementSibling).toBe(err);
 	});
 

@@ -826,6 +826,82 @@ async fn resolve_child_adapter(
         .ok_or_else(|| deny(StatusCode::CONFLICT, "child session has no adapter"))
 }
 
+/// A completion becomes a turn in the parent, so it is capped like one.
+const MAX_COMPLETION_BYTES: usize = 64 * 1024;
+
+#[derive(serde::Deserialize)]
+pub struct ChildCompletion {
+    text: String,
+}
+
+/// `POST /api/v1/daemon/sessions/{id}/child-completion` — child `{id}`'s
+/// finished turn, posted by its daemon when no `CctuiAgent` call is following
+/// it any more. Delivered into the parent as a turn from the child.
+pub async fn child_completion(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(child_id): Path<String>,
+    Json(req): Json<ChildCompletion>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let caller = machine_user(&state, &headers)
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
+    let parent = deliver_completion(&state, caller, &child_id, &req.text).await?;
+    Ok(Json(serde_json::json!({ "delivered_to": parent })))
+}
+
+/// The parent's id once `text` is in its turn queue. Both sessions must be
+/// `caller`'s, and only a live parent is offered the turn.
+async fn deliver_completion(
+    state: &AppState,
+    caller: Uuid,
+    child_id: &str,
+    text: &str,
+) -> Result<String, AppError> {
+    use crate::routes::peer::{Delivery, deliver, envelope};
+    let body = text.trim();
+    if body.is_empty() {
+        return Err(deny(StatusCode::BAD_REQUEST, "text is required"));
+    }
+    if body.len() > MAX_COMPLETION_BYTES {
+        return Err(deny(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("completion is {} bytes; the cap is {MAX_COMPLETION_BYTES}", body.len()),
+        ));
+    }
+    let owned =
+        |node: Option<crate::peer_policy::SessionNode>| node.filter(|n| n.user_id == Some(caller));
+    let child = owned(crate::peer_policy::load_node(&state.pool, child_id).await?)
+        .ok_or_else(|| deny(StatusCode::NOT_FOUND, "child session not found"))?;
+    let Some(parent_id) = child.parent_id.as_deref() else {
+        return Err(deny(StatusCode::CONFLICT, "session has no parent to report to"));
+    };
+    let parent = owned(crate::peer_policy::load_node(&state.pool, parent_id).await?)
+        .ok_or_else(|| deny(StatusCode::NOT_FOUND, "parent session not found"))?;
+    if !parent.is_live() {
+        return Err(deny(
+            StatusCode::CONFLICT,
+            format!("parent session {} is {}", parent.id, parent.state()),
+        ));
+    }
+    let turn = envelope(&child, &crate::envelope_guard::neutralize(body));
+    match deliver(state, &parent.id, parent.state(), turn).await {
+        Delivery::Delivered => {}
+        outcome => {
+            return Err(deny(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("could not deliver to {}: {}", parent.id, outcome.as_str()),
+            ));
+        }
+    }
+    tracing::info!(
+        child = %child.id,
+        parent = %parent.id,
+        "CctuiAgent child completion delivered to the parent",
+    );
+    Ok(parent.id)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct ChildSlots {
     pub used: u32,
@@ -1841,6 +1917,60 @@ mod tests {
             assert_eq!(status, Some(StatusCode::NOT_FOUND), "archiving {why} must be a 404");
             assert_ne!(t.status(to).await, "archived", "{why} was archived anyway");
         }
+        t.cleanup().await;
+    }
+
+    /// DB-gated: a child's completion reaches only its own parent, owned by the
+    /// same user, and only while that parent can take a turn.
+    #[tokio::test]
+    async fn a_child_completion_is_only_offered_to_its_own_live_parent() {
+        let Some(t) =
+            ArchiveTree::seed("a_child_completion_is_only_offered_to_its_own_live_parent").await
+        else {
+            return;
+        };
+        let code = |r: Result<String, AppError>| r.err().map(|e| e.status());
+        assert_eq!(
+            code(deliver_completion(&t.state, t.stranger, &t.a, "done").await),
+            Some(StatusCode::NOT_FOUND),
+            "another user's machine key cannot post a completion"
+        );
+        assert_eq!(
+            code(deliver_completion(&t.state, t.uid, &t.foreign, "done").await),
+            Some(StatusCode::NOT_FOUND),
+            "a child owned by someone else is unknown"
+        );
+        assert_eq!(
+            code(deliver_completion(&t.state, t.uid, &t.outsider, "done").await),
+            Some(StatusCode::CONFLICT),
+            "a root session has no parent to report to"
+        );
+        assert_eq!(
+            code(deliver_completion(&t.state, t.uid, &t.a, "   ").await),
+            Some(StatusCode::BAD_REQUEST)
+        );
+        let huge = "x".repeat(MAX_COMPLETION_BYTES + 1);
+        assert_eq!(
+            code(deliver_completion(&t.state, t.uid, &t.a, &huge).await),
+            Some(StatusCode::PAYLOAD_TOO_LARGE)
+        );
+        let reached = deliver_completion(&t.state, t.uid, &t.a1, "the grandchild is done").await;
+        assert!(
+            matches!(&reached, Ok(parent) if *parent == t.a)
+                || code(reached) == Some(StatusCode::SERVICE_UNAVAILABLE),
+            "an authorized completion must go to the child's own parent (or fail only on \
+             delivery, with no daemon connected in the test)"
+        );
+        sqlx::query("UPDATE sessions SET status = 'archived' WHERE id = $1")
+            .bind(&t.root)
+            .execute(&t.pool)
+            .await
+            .expect("archive root");
+        assert_eq!(
+            code(deliver_completion(&t.state, t.uid, &t.a, "done").await),
+            Some(StatusCode::CONFLICT),
+            "an archived parent is never offered the turn"
+        );
         t.cleanup().await;
     }
 

@@ -125,6 +125,8 @@ bumps for a separate follow-up — they belong in the same change as the code.
   same PR** as the change — not a separate one.
 - Keep PRs focused; reference the relevant ticket in the title where applicable.
 - Let the pre-commit hooks (lefthook) run fmt / check / clippy / lint.
+- Test fixtures use neutral names such as acme/widgets and /home/alice; a local
+  pre-commit check rejects known private names.
 
 ### Local loop: red, green, push
 

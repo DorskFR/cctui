@@ -653,6 +653,41 @@ jobs:
       - name: Reject ticket references in added comments
         run: bash scripts/check-comment-refs.sh "origin/${{ github.base_ref }}"
 
+  forbidden-terms:
+    name: forbidden-terms
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Test the guard itself
+        run: bash scripts/check-forbidden-terms.test.sh
+
+      - name: Guard tests did not leak into this checkout
+        run: bash scripts/check-git-untouched.sh
+
+      # Fork and bot PRs get no secrets, so an empty list skips.
+      - name: Reject private names in the PR's diffs and commit messages
+        env:
+          TERM_LIST: ${{ secrets.FORBIDDEN_TERMS }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ -z "$TERM_LIST" ]; then
+            echo "::notice::FORBIDDEN_TERMS is not set; skipping"
+            exit 0
+          fi
+          list="$RUNNER_TEMP/forbidden-terms.txt"
+          printf '%s\n' "$TERM_LIST" >"$list"
+          while IFS= read -r entry; do
+            entry="${entry%$'\r'}"
+            [ -n "$entry" ] || continue
+            echo "::add-mask::$entry"
+            case "$entry" in re:* | lit:*) echo "::add-mask::${entry#*:}" ;; esac
+          done <"$list"
+          bash scripts/check-forbidden-terms.sh --patterns "$list" --range "origin/$BASE_REF..HEAD"
+
   i18n-messages:
     name: i18n-messages
     needs: changes
@@ -780,6 +815,7 @@ jobs:
       - audit
       - no-css-global
       - comment-refs
+      - forbidden-terms
       - i18n-messages
       - release-channel
       - local-seed
