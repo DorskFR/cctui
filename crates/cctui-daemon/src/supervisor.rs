@@ -148,6 +148,7 @@ type WsSink = futures_util::stream::SplitSink<WsStream, Message>;
 
 /// Micro-batch buffer: adapter events accumulate here for up to
 /// `BATCH_WINDOW`, then flush as one compress+chunk frame.
+#[derive(Default)]
 struct EventBatch {
     frames: Vec<Vec<u8>>,
     bytes: usize,
@@ -155,10 +156,6 @@ struct EventBatch {
 }
 
 impl EventBatch {
-    const fn new() -> Self {
-        Self { frames: Vec::new(), bytes: 0, deadline: None }
-    }
-
     fn push(&mut self, up: Vec<u8>) {
         self.bytes = self.bytes.saturating_add(up.len());
         self.frames.push(up);
@@ -190,6 +187,9 @@ pub struct Supervisor {
     /// the next connection resumes from the last acked chunk rather than byte
     /// zero.
     pending_transfer: std::sync::Mutex<Option<PendingTransfer>>,
+    /// Events batched but not yet flushed when the connection died, sent first
+    /// on the next one rather than dropped with it.
+    pending_batch: std::sync::Mutex<EventBatch>,
     /// Per-content-hash give-up tracker: size/attempts caps + tombstones so a
     /// poison transfer can't wedge the pipeline.
     guard: std::sync::Mutex<SendGuard>,
@@ -279,6 +279,7 @@ impl Supervisor {
             machine_key,
             factories,
             pending_transfer: std::sync::Mutex::new(None),
+            pending_batch: std::sync::Mutex::default(),
             guard: std::sync::Mutex::new(SendGuard::open_default()),
             counters,
             resources: std::sync::Mutex::new(crate::resources::ResourceSampler::new()),
@@ -394,7 +395,7 @@ impl Supervisor {
             t.rewind_to_ack();
         }
 
-        let mut batch = EventBatch::new();
+        let mut batch = std::mem::take(&mut *self.pending_batch.lock().unwrap());
 
         let outcome: anyhow::Result<()> = async {
             loop {
@@ -492,7 +493,7 @@ impl Supervisor {
         .await;
 
         crate::preview::set_uplink(None);
-        self.park_transfer(active);
+        self.park_connection(active, batch);
         outcome
     }
 
@@ -646,6 +647,12 @@ impl Supervisor {
 
     /// An unfinished transfer resumes next connection, unless it has burned
     /// `MAX_ATTEMPTS` without progress: then tombstone + drop it.
+    /// Keep what the dying connection still owed the wire for the next one.
+    fn park_connection(&self, active: Option<PendingTransfer>, batch: EventBatch) {
+        self.park_transfer(active);
+        *self.pending_batch.lock().unwrap() = batch;
+    }
+
     fn park_transfer(&self, active: Option<PendingTransfer>) {
         if let Some(t) = active
             && !t.is_complete()
@@ -2616,6 +2623,76 @@ mod tests {
             "expected keepalive pings throughout the purge of {BACKLOG} jobs, got {pings}"
         );
         super::stop_adapters(&mut running).await;
+    }
+
+    fn ended(local_id: &str) -> (String, AdapterEvent) {
+        let reason = cctui_proto::adapter::EndReason::Completed;
+        ("claude-code".to_owned(), AdapterEvent::SessionEnded { local_id: local_id.into(), reason })
+    }
+
+    /// A reset inside the batch window must not lose what was batched, and
+    /// what the adapters emit while the link is down follows it on reconnect.
+    #[tokio::test]
+    async fn events_from_a_reconnect_gap_land_on_the_next_connection() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let supervisor = Supervisor::new(
+            ServerClient::new(format!("http://{addr}")),
+            "machine-key".to_string(),
+            vec![],
+        );
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let mut running: std::collections::HashMap<String, AdapterRunning> =
+            std::collections::HashMap::new();
+
+        event_tx.send(ended("batched-1")).await.unwrap();
+        let reset = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_async(sock).await.unwrap();
+            tokio::time::sleep(super::BATCH_WINDOW / 5).await;
+            drop(ws);
+            listener
+        });
+        let first =
+            supervisor.run_once(CancellationToken::new(), &mut running, &event_tx, &mut event_rx);
+        let _ = tokio::time::timeout(Duration::from_secs(10), first)
+            .await
+            .expect("the dropped link ends the connection");
+        let listener = reset.await.unwrap();
+        assert!(event_rx.try_recv().is_err(), "the event had moved into the batch");
+        assert_eq!(supervisor.pending_batch.lock().unwrap().frames.len(), 1, "parked, not dropped");
+
+        event_tx.send(ended("offline-2")).await.unwrap();
+        let server = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(sock).await.unwrap();
+            let mut seen = Vec::new();
+            while let Some(Ok(msg)) = ws.next().await {
+                let Message::Text(text) = msg else { continue };
+                seen.extend(
+                    ["batched-1", "offline-2"].into_iter().filter(|id| text.as_str().contains(id)),
+                );
+                if seen.len() == 2 {
+                    break;
+                }
+            }
+            seen
+        });
+        let second =
+            supervisor.run_once(CancellationToken::new(), &mut running, &event_tx, &mut event_rx);
+        let seen = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                biased;
+                seen = server => seen.unwrap(),
+                _ = second => panic!("the connection ended before the gap was delivered"),
+            }
+        })
+        .await
+        .expect("the gap's events reach the new connection");
+        assert_eq!(seen, ["batched-1", "offline-2"]);
     }
 
     fn chunk_parts(frame: DaemonFrameUp) -> (String, u32, u32, String) {

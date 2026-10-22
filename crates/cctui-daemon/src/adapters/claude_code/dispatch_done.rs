@@ -105,9 +105,15 @@ impl DispatchDoneTracker {
 
     /// Whether a live snapshot's `tempo`/`state` counts as busy. `blocked`
     /// (pending prompt) is treated as busy: the turn isn't complete, and the
-    /// crash backstops still bound a wedged prompt.
+    /// crash backstops still bound a wedged prompt. `tempo` is the live turn
+    /// signal; `state` is claude's self-reported job label, which can read
+    /// `working` long after the turn ended, so it only stands in when `tempo`
+    /// is absent.
     pub fn is_busy(tempo: Option<&str>, state: Option<&str>) -> bool {
-        matches!(tempo, Some("active" | "blocked")) || matches!(state, Some("working" | "running"))
+        tempo.map_or_else(
+            || matches!(state, Some("working" | "running")),
+            |tempo| matches!(tempo, "active" | "blocked"),
+        )
     }
 
     /// Whether the tracked session's transcript grew since the last poll. A
@@ -224,10 +230,12 @@ mod tests {
         let mut t = tracker(60);
         let start = Instant::now();
         t.note_reply();
-        for (secs, tempo, state) in
-            [(100, "active", "working"), (200, "blocked", "done"), (300, "idle", "running")]
-        {
-            let busy = DispatchDoneTracker::is_busy(Some(tempo), Some(state));
+        for (secs, tempo, state) in [
+            (100, Some("active"), "working"),
+            (200, Some("blocked"), "done"),
+            (300, None, "running"),
+        ] {
+            let busy = DispatchDoneTracker::is_busy(tempo, Some(state));
             assert!(!t.observe(busy, start + Duration::from_secs(secs)));
         }
         assert!(!t.finished(false), "the settle clock never ran");
@@ -320,8 +328,12 @@ mod tests {
     fn busy_classification() {
         assert!(DispatchDoneTracker::is_busy(Some("active"), None));
         assert!(DispatchDoneTracker::is_busy(Some("blocked"), Some("done")));
-        assert!(DispatchDoneTracker::is_busy(Some("idle"), Some("working")));
+        assert!(
+            !DispatchDoneTracker::is_busy(Some("idle"), Some("working")),
+            "a stale working label must not outlive an idle turn"
+        );
         assert!(DispatchDoneTracker::is_busy(None, Some("running")));
+        assert!(DispatchDoneTracker::is_busy(None, Some("working")));
         assert!(!DispatchDoneTracker::is_busy(Some("idle"), Some("done")));
         assert!(!DispatchDoneTracker::is_busy(None, None));
         assert!(!DispatchDoneTracker::is_busy(Some("hibernated"), Some("failed")));

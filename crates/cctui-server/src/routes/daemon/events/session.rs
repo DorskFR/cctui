@@ -882,4 +882,79 @@ mod tests {
         let all = [root_first, claim_first, fork, late_fork, child, genuine, parent];
         crate::routes::daemon::test_support::drop_machines(&pool, &all, &[owner]).await;
     }
+
+    /// A daemon reconnecting mid-dispatch re-announces a session whose turn
+    /// already ended: the upsert keeps it live without reopening anything, the
+    /// re-sent Status lands, and a completed end survives a later re-announce.
+    #[tokio::test]
+    async fn a_reannounce_of_a_finished_turn_keeps_its_state_and_its_end() {
+        let Some(url) = crate::routes::gateway::test_db_url("reannounce_finished_turn") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let (uid, mid) = seed_machine(&pool, "reannounce-finished").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
+        let status = |tempo: &str, agent_state: &str| AdapterEvent::Status {
+            local_id: sid.clone(),
+            tempo: Some(tempo.to_owned()),
+            state: Some(agent_state.to_owned()),
+            detail: None,
+            activity: None,
+            name: None,
+            intent: None,
+            model: None,
+            effort: None,
+            permission_mode: None,
+            children: Vec::new(),
+        };
+        let reannounce = || AdapterEvent::SessionStarted {
+            local_id: sid.clone(),
+            meta: cctui_proto::adapter::SessionMeta {
+                working_dir: Some("/w".into()),
+                ..Default::default()
+            },
+        };
+        let row = || {
+            let pool = pool.clone();
+            let sid = sid.clone();
+            async move {
+                sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>)>(
+                    "SELECT status, agent_state, tempo, end_reason FROM sessions WHERE id = $1",
+                )
+                .bind(sid)
+                .fetch_one(&pool)
+                .await
+                .expect("read session")
+            }
+        };
+        let send = |event| super::on_session_event(&state, mid, uid, "claude-code", event);
+
+        super::super::status::on_status_event(&state, status("idle", "working"))
+            .await
+            .expect("stale status");
+        send(reannounce()).await.expect("re-announce");
+        let (st, agent_state, tempo, _) = row().await;
+        assert_eq!(st, "active");
+        assert_eq!((agent_state.as_deref(), tempo.as_deref()), (Some("working"), Some("idle")));
+
+        super::super::status::on_status_event(&state, status("idle", "done"))
+            .await
+            .expect("re-sent status");
+        assert_eq!(row().await.1.as_deref(), Some("done"), "the edge's Status reconciles");
+
+        send(AdapterEvent::SessionEnded { local_id: sid.clone(), reason: EndReason::Completed })
+            .await
+            .expect("end");
+        send(reannounce()).await.expect("late re-announce");
+        let (st, _, _, end_reason) = row().await;
+        assert_eq!(st, "ended", "a completed end is not revived by a re-announce");
+        assert_eq!(end_reason.as_deref(), Some("completed"));
+
+        crate::routes::daemon::test_support::drop_machines(&pool, &[sid], &[(uid, mid)]).await;
+    }
 }

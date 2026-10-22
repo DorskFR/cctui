@@ -378,6 +378,10 @@ pub struct Driver {
     shutdown: CancellationToken,
     roster: HashSet<String>,
     last_status: HashMap<String, StatusSnapshot>,
+    /// Shorts re-announced on a connect edge whose next Status goes out even
+    /// if unchanged: the one `last_status` remembers may have died with the
+    /// previous connection.
+    status_resend: HashSet<String>,
     /// Shorts claude reports dead-but-still-listed. Once we emit the
     /// dead transition (hibernated or `SessionEnded`) we record the short here
     /// and suppress further live-status emits for it, so the still-present
@@ -786,6 +790,7 @@ impl Driver {
             shutdown,
             roster: HashSet::new(),
             last_status: HashMap::new(),
+            status_resend: HashSet::new(),
             dead_shorts: HashSet::new(),
             liveness: liveness::Liveness::default(),
             foreign_shorts: HashSet::new(),
