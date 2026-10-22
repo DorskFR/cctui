@@ -1027,8 +1027,11 @@ impl Spawner {
             Err(e) => anyhow::bail!("reading Job {name}: {e}"),
         };
         match Self::job_terminal_state(&job) {
-            Some("Complete") => return Ok((HandleState::Complete, None)),
+            Some("Complete") => return Ok((HandleState::Complete, self.pod_oom_reason(name).await)),
             Some("Failed") => {
+                if let Some(oom) = self.pod_oom_reason(name).await {
+                    return Ok((HandleState::Failed, Some(oom)));
+                }
                 if let Some(message) = self.worker_termination_message(name).await {
                     return Ok((HandleState::Failed, Some(message)));
                 }
@@ -1077,6 +1080,14 @@ impl Spawner {
                 .or_else(|| c.reason.clone())
                 .unwrap_or_else(|| "job failed".to_owned())
         })
+    }
+
+    /// Why a finished Job's container ended when the kernel OOM killed it,
+    /// which a clean entrypoint exit or the Job's backoff condition hides. A
+    /// listing error reads as no OOM kill, so the status still answers.
+    async fn pod_oom_reason(&self, job_name: &str) -> Option<String> {
+        let lp = ListParams::default().labels(&format!("job-name={job_name}"));
+        oom_killed(&self.pods().list(&lp).await.ok()?.items)
     }
 
     /// Inspect the Job's pods for a terminal-but-not-yet-Job-Failed condition:
@@ -1169,6 +1180,24 @@ fn memory_limit(pod: &Pod, container: &str) -> Option<String> {
         .as_ref()?
         .get("memory")
         .map(|q| q.0.clone())
+}
+
+/// The first container of `pods` that ended `OOMKilled`, as [`oom_reason`]
+/// names it.
+fn oom_killed(pods: &[Pod]) -> Option<String> {
+    pods.iter().find_map(|pod| {
+        let status = pod.status.as_ref()?;
+        status
+            .init_container_statuses
+            .iter()
+            .chain(status.container_statuses.iter())
+            .flatten()
+            .find(|cs| {
+                let terminated = cs.state.as_ref().and_then(|st| st.terminated.as_ref());
+                terminated.and_then(|t| t.reason.as_deref()) == Some("OOMKilled")
+            })
+            .map(|cs| oom_reason(memory_limit(pod, &cs.name)))
+    })
 }
 
 /// `OOMKilled`, naming the limit the container ran into when it is known.
@@ -2242,6 +2271,34 @@ mod tests {
         assert_eq!(memory_limit(&pod, "nope"), None);
         assert_eq!(oom_reason(Some("8Gi".into())), "OOMKilled (memory limit 8Gi)");
         assert_eq!(oom_reason(None), "OOMKilled");
+    }
+
+    fn finished_pod(reason: &str) -> Pod {
+        serde_json::from_value(json!({
+            "spec": { "containers": [{
+                "name": "worker",
+                "resources": { "limits": { "memory": "8Gi" } }
+            }]},
+            "status": { "phase": "Succeeded", "containerStatuses": [{
+                "name": "worker", "image": "i", "imageID": "", "ready": false, "restartCount": 0,
+                "state": { "terminated": { "exitCode": 0, "reason": reason } }
+            }]}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_completed_job_whose_worker_was_oom_killed_names_it() {
+        assert_eq!(
+            oom_killed(&[finished_pod("Completed"), finished_pod("OOMKilled")]).as_deref(),
+            Some("OOMKilled (memory limit 8Gi)"),
+            "a child's OOM kill under a clean exit"
+        );
+        assert_eq!(oom_killed(&[finished_pod("Completed")]), None, "a clean finish stays clean");
+        assert_eq!(oom_killed(&[]), None);
+        let pending: Pod =
+            serde_json::from_value(json!({ "status": { "phase": "Pending" } })).unwrap();
+        assert_eq!(oom_killed(&[pending]), None);
     }
 
     fn listed_job(name: &str, created: &str, suspended: bool, terminal: bool) -> Job {
