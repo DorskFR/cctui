@@ -320,8 +320,12 @@ COPY deploy/worker-net-init.sh     /usr/local/bin/cctui-worker-net-init
 COPY deploy/guard-proxy-entrypoint.sh /usr/local/bin/cctui-guard-proxy-entrypoint
 
 # Sandbox state dirs the entrypoint and proxy/guard write into. /opt/context is
-# the context-pack mount target (read-only after fetch).
-RUN mkdir -p /var/run/guard-proxy /var/run/workflow-guard /workspace /opt/context /opt/worker-entrypoint.d \
+# the context-pack mount target (read-only after fetch). /workspace and
+# /opt/context are worker-owned for a non-root (uid 1000) start; a root start
+# re-owns both. The /var/run dirs stay root-owned so the agent can't rewrite
+# guard state: a non-root pod mounts them as fsGroup 1000 emptyDirs.
+RUN mkdir -p /var/run/guard-proxy /var/run/workflow-guard /opt/worker-entrypoint.d \
+    && install -d -o 1000 -g 1000 /workspace /opt/context \
     && chmod +x /usr/local/bin/cctui-worker-entrypoint \
                 /usr/local/bin/cctui-worker-net-init \
                 /usr/local/bin/cctui-guard-proxy-entrypoint

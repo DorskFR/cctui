@@ -1,7 +1,8 @@
 #!/usr/bin/env sh
 # Entrypoint for the cctui worker container (contract v1).
-# Runs root-side bootstrap phases, each skippable when its env is absent, then
-# drops to uid 1000 via cctui-supervisor and execs the daemon. Only the context
+# Runs bootstrap phases, each skippable when its env is absent, then drops to
+# uid 1000 via cctui-supervisor and execs the daemon. Starting as uid 1000
+# (runAsNonRoot) skips the root-only steps instead. Only the context
 # pack fetch and the pre-flight isolation check are fail-closed. Ephemeral:
 # never self-updates.
 # See docs/worker-contract.md for the env / mount / capability contract.
@@ -68,6 +69,24 @@ POLICY_FILE=/var/run/guard-proxy/policy.json
 PRIVATE_ALLOW_FILE=/var/run/guard-proxy/private-allow
 GUARD_STATE=/var/run/workflow-guard/state
 CONTEXT_DIR=/opt/context
+
+is_root() {
+    [ "$(id -u)" = 0 ]
+}
+
+# Runs a command as the worker uid: dropped when root, as-is when already the
+# worker. Extension hooks call it instead of runuser.
+as_worker() {
+    if ! is_root; then
+        "$@"
+    elif command -v setpriv >/dev/null 2>&1; then
+        setpriv --reuid="$WORKER_UID" --regid="$WORKER_UID" --clear-groups "$@"
+    else
+        runuser -u "$WORKER_USER" -- "$@"
+    fi
+}
+
+is_root || log "running as uid $(id -u) (non-root): root-only bootstrap steps are skipped"
 
 # The ACP agents the image bakes (crates/cctui-daemon/src/adapters/acp/rows.rs).
 ACP_AGENTS="gemini qwen goose"
@@ -230,7 +249,8 @@ install_guard_ca() {
     # Prefer the OS store: update-ca-certificates folds the guard CA into the
     # system bundle so every OpenSSL client trusts it with no env at all.
     _bundle="$GUARD_CA_FILE"
-    if command -v update-ca-certificates >/dev/null 2>&1 \
+    is_root || log "guard-proxy CA: non-root, system trust store skipped; using the env-pointed bundle"
+    if is_root && command -v update-ca-certificates >/dev/null 2>&1 \
             && mkdir -p /usr/local/share/ca-certificates 2>/dev/null \
             && cp "$GUARD_CA_FILE" /usr/local/share/ca-certificates/cctui-guard-proxy.crt 2>/dev/null \
             && update-ca-certificates >/dev/null 2>&1; then
@@ -444,8 +464,12 @@ phase_network() {
 
     # Start the proxy as uid 1337 (a uid the worker can't write as). setpriv is
     # part of util-linux (present on the base); fall back to running as root if
-    # it's missing (still functional, just less isolated).
-    if command -v setpriv >/dev/null 2>&1; then
+    # it's missing (still functional, just less isolated). A non-root start
+    # can't switch uid, and a proxy the agent's uid owns isn't a boundary.
+    if ! is_root; then
+        log "WARNING: non-root: in-container guard-proxy not started (needs root to run as uid $PROXY_UID); egress needs an external proxy on :${PROXY_HEALTH_PORT}"
+        return 0
+    elif command -v setpriv >/dev/null 2>&1; then
         setpriv --reuid="$PROXY_UID" --regid="$PROXY_UID" --clear-groups \
             cctui-guard-proxy --mode "$NET_MODE" \
                 --listen "0.0.0.0:${PROXY_PORT}" \
@@ -528,15 +552,20 @@ phase_workspace() {
     # an empty/missing cache must fall through to a clone, not overlay nothing.
     if [ -n "${WARM_REPO_DIR:-}" ] && [ -n "${TASK_REPO:-}" ] \
             && [ -d "${WARM_REPO_DIR%/}/${TASK_REPO}" ]; then
-        mkdir -p /overlay/upper /overlay/work
-        if mount -t overlay overlay \
-                -o "lowerdir=${WARM_REPO_DIR},upperdir=/overlay/upper,workdir=/overlay/work" \
-                /workspace 2>/dev/null; then
-            log "workspace: overlayfs on WARM_REPO_DIR=$WARM_REPO_DIR"
-            _ws_overlay=1
-        else
-            log "workspace: overlayfs unavailable, rsync-copying WARM_REPO_DIR"
+        if ! is_root; then
+            log "workspace: non-root, no overlayfs; rsync-copying WARM_REPO_DIR"
             rsync -a "${WARM_REPO_DIR%/}/" /workspace/
+        else
+            mkdir -p /overlay/upper /overlay/work
+            if mount -t overlay overlay \
+                    -o "lowerdir=${WARM_REPO_DIR},upperdir=/overlay/upper,workdir=/overlay/work" \
+                    /workspace 2>/dev/null; then
+                log "workspace: overlayfs on WARM_REPO_DIR=$WARM_REPO_DIR"
+                _ws_overlay=1
+            else
+                log "workspace: overlayfs unavailable, rsync-copying WARM_REPO_DIR"
+                rsync -a "${WARM_REPO_DIR%/}/" /workspace/
+            fi
         fi
     elif [ -n "${TASK_REPO_URL:-}" ]; then
         # On-demand clone into /workspace/<repo> (matches the warm-overlay layout
@@ -726,11 +755,10 @@ phase_context_pack() {
     _giterr=$(mktemp)
     # Root egress bypasses the uid-scoped redirect — only WORKER_UID traffic
     # reaches the proxy's credential injection.
-    if [ "$(id -u)" = "0" ] && command -v setpriv >/dev/null 2>&1; then
+    if is_root && command -v setpriv >/dev/null 2>&1; then
         chown "${WORKER_UID}:${WORKER_UID}" "$_tmp"
         pack_git() {
-            setpriv --reuid="$WORKER_UID" --regid="$WORKER_UID" --clear-groups \
-                env HOME="$_tmp" GIT_TERMINAL_PROMPT=0 git "$@" 2>>"$_giterr"
+            as_worker env HOME="$_tmp" GIT_TERMINAL_PROMPT=0 git "$@" 2>>"$_giterr"
         }
     else
         pack_git() { GIT_TERMINAL_PROMPT=0 git "$@" 2>>"$_giterr"; }
@@ -747,7 +775,7 @@ phase_context_pack() {
     elif ! pack_git clone --depth 1 --branch "$CONTEXT_PACK_REF" "$_url" "$_tmp"; then
         # Some refs are SHAs (not clonable by --branch): fetch the ref directly.
         rm -rf "$_tmp"; _tmp=$(mktemp -d)
-        [ "$(id -u)" = "0" ] && chown "${WORKER_UID}:${WORKER_UID}" "$_tmp"
+        is_root && chown "${WORKER_UID}:${WORKER_UID}" "$_tmp"
         { pack_git -C "$_tmp" init -q \
             && pack_git -C "$_tmp" remote add origin "$_url" \
             && pack_git -C "$_tmp" fetch --depth 1 -q origin "$CONTEXT_PACK_REF" \
@@ -779,7 +807,16 @@ phase_context_pack() {
         fi
     fi
 
-    rm -rf "$CONTEXT_DIR"
+    # Non-root can't recreate $CONTEXT_DIR under root-owned /opt: the image
+    # ships it worker-owned, so empty it in place.
+    if is_root; then
+        rm -rf "$CONTEXT_DIR"
+    elif [ -d "$CONTEXT_DIR" ]; then
+        find "$CONTEXT_DIR" -mindepth 1 -delete || {
+            echo "cctui-worker: FATAL cannot empty $CONTEXT_DIR as uid $(id -u) (the image must ship it worker-owned)" >&2
+            exit 1
+        }
+    fi
     mkdir -p "$CONTEXT_DIR"
     # Base layer first (if any), then the pack overlays on top; both drop .git.
     if [ -n "$_base_dir" ] && [ -d "$_base_dir" ]; then
@@ -808,8 +845,10 @@ style style
 projects projects"
 
     # The home is shared NFS: bind a per-pod dir over the paths the pack writes
-    # so concurrent pods don't race. Best-effort.
-    if [ -d /overlay ]; then
+    # so concurrent pods don't race. Best-effort; a bind mount needs root.
+    if [ -d /overlay ] && ! is_root; then
+        log "context pack: non-root, per-pod home bind mounts skipped"
+    elif [ -d /overlay ]; then
         _iso="/overlay/pack-home"
         mkdir -p "$_iso"
         for _p in style; do
@@ -861,7 +900,13 @@ projects projects"
     # READABLE/traversable: the dropped-privilege daemon (worker uid) reads the
     # prompt + guard-rules from here. mkdir inherits root's umask (077 -> 700),
     # which blocks the worker from traversing it, so force a+rX.
-    chown -R 0:0 "$CONTEXT_DIR" 2>/dev/null || true
+    # Non-root keeps it worker-owned: Landlock's RO set is then the only
+    # write barrier.
+    if is_root; then
+        chown -R 0:0 "$CONTEXT_DIR" 2>/dev/null || true
+    else
+        log "context pack: non-root, $CONTEXT_DIR stays uid $(id -u)-owned (read-only via Landlock only)"
+    fi
     chmod -R a+rX "$CONTEXT_DIR" 2>/dev/null || true
 
     # Resolve the guard-rules seam. The pack's guard-rules.md is the override/
@@ -1148,6 +1193,7 @@ phase_guard() {
         IFS=$_OLDIFS
     fi
 
+    is_root || log "WARNING: guard: non-root start, cctui-guard runs as the agent's uid $(id -u)"
     cctui-guard "$@" &
     GUARD_PID=$!
     _i=0
@@ -1168,14 +1214,6 @@ phase_guard() {
 PREFLIGHT_TIMEOUT=0.3
 PREFLIGHT_CONTROL_TIMEOUT=2
 PREFLIGHT_RESULT=off
-
-as_agent() {
-    if [ "$(id -u)" = 0 ]; then
-        setpriv --reuid="$WORKER_UID" --regid="$WORKER_UID" --clear-groups "$@"
-    else
-        "$@"
-    fi
-}
 
 cidr_sample() {
     _net=${1%/*}
@@ -1254,7 +1292,7 @@ preflight_targets() {
 # alone does.
 preflight_connect() {
     _rc=0
-    _tc=$(as_agent curl -q -sk -g -o /dev/null -w '%{time_connect}' --noproxy '*' \
+    _tc=$(as_worker curl -q -sk -g -o /dev/null -w '%{time_connect}' --noproxy '*' \
         --connect-timeout "$PREFLIGHT_TIMEOUT" --max-time "$PREFLIGHT_TIMEOUT" \
         "$1://$2/" 2>/dev/null) || _rc=$?
     case "$_rc" in
@@ -1266,9 +1304,9 @@ preflight_connect() {
 # Exit 0 when the resolver answered, 3 when no DNS client is available.
 preflight_dns() {
     if command -v dig >/dev/null 2>&1; then
-        as_agent dig "@$1" +time=1 +tries=1 +short example.com A >/dev/null 2>&1
+        as_worker dig "@$1" +time=1 +tries=1 +short example.com A >/dev/null 2>&1
     elif command -v node >/dev/null 2>&1; then
-        as_agent node -e '
+        as_worker node -e '
             const answered = ["ENODATA", "ENOTFOUND", "ESERVFAIL", "EREFUSED", "EFORMERR", "ENOTIMP", "EBADRESP"];
             const r = new (require("dns").promises.Resolver)({ timeout: 800, tries: 1 });
             r.setServers([process.argv[1]]);
@@ -1283,7 +1321,7 @@ preflight_dns() {
 # Exit 0 when the probe reached its target, i.e. isolation failed.
 preflight_probe() {
     case "$1" in
-        file) as_agent test -r "$2" ;;
+        file) as_worker test -r "$2" ;;
         dns) preflight_dns "$2" ;;
         http | https) preflight_connect "$1" "$2" ;;
         *) return 1 ;;
@@ -1291,7 +1329,7 @@ preflight_probe() {
 }
 
 preflight_control() {
-    _code=$(as_agent curl -q -4 -sS -o /dev/null -w '%{http_code}' \
+    _code=$(as_worker curl -q -4 -sS -o /dev/null -w '%{http_code}' \
         --max-time "$PREFLIGHT_CONTROL_TIMEOUT" "${CCTUI_BASE_URL%/}/health" 2>/dev/null) \
         || return 1
     [ -n "$_code" ] && [ "$_code" != 000 ]
@@ -1310,7 +1348,7 @@ phase_preflight() {
     esac
 
     _failed=""
-    if [ "$(id -u)" = 0 ] && ! command -v setpriv >/dev/null 2>&1; then
+    if is_root && ! command -v setpriv >/dev/null 2>&1; then
         _failed="cannot drop to the agent uid (setpriv missing)"
     else
         _start=$(date +%s%N)

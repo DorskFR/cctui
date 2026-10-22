@@ -87,6 +87,27 @@ fn runs_command_without_privdrop() {
 }
 
 #[test]
+fn non_root_start_at_target_uid_skips_the_switch() {
+    let (uid, gid) = (nix::unistd::getuid().as_raw(), nix::unistd::getgid().as_raw());
+    if uid == 0 {
+        eprintln!("SKIP non_root_start_at_target_uid_skips_the_switch: running as root");
+        return;
+    }
+    let out = Command::new(bin())
+        .args(["--no-seccomp", "--rw", "/", "--user", &uid.to_string(), "--", "true"])
+        .output()
+        .expect("run supervisor");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if uid == gid {
+        assert!(out.status.success(), "expected success as uid {uid}, stderr: {stderr}");
+        assert!(stderr.contains("no user switch"), "stderr: {stderr}");
+    } else {
+        assert!(!out.status.success(), "gid {gid} != uid {uid} must fail, stderr: {stderr}");
+        assert!(stderr.contains("runAsGroup"), "stderr: {stderr}");
+    }
+}
+
+#[test]
 fn seccomp_denies_syscall_with_eperm() {
     // Deterministic, privilege-independent: the self-test installs the filter
     // then calls setuid(geteuid()) — a no-op that succeeds for any user when

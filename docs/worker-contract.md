@@ -892,7 +892,7 @@ Two parts, surfaced for the daemon to attach as session metadata:
 ## Entrypoint phases
 
 The container starts as root, runs these phases (each skippable on absent
-input), then drops to uid 1000:
+input), then drops to uid 1000 (see Non-root start for a uid 1000 start):
 
 1. **Network** — choose mode, seed the deny-default policy, install iptables
    (transparent) or export proxy env (forward), start `cctui-guard-proxy` — or,
@@ -910,7 +910,12 @@ input), then drops to uid 1000:
    phases and a failing command never aborts the dispatch. A hook signals
    failure with a non-zero `return`, logged as `WARNING: extension <name>
    failed (rc N, continuing)`. A hook must not `exit`: that ends the
-   entrypoint.
+   entrypoint. To run a command as the worker, a hook calls
+   `as_worker <cmd> [args…]`, not `runuser`: it drops via `setpriv` (or
+   `runuser -u worker --`) when the entrypoint is root and runs the command
+   as-is when it already is uid 1000, where `runuser` refuses to run. It is
+   a shell function, so only the sourced hook sees it (not a `bash -c`
+   child), and it keeps the environment (`HOME` stays `/home/worker`).
 5. **Codex package** — link `~/.codex/packages/standalone/current` to the baked
    `CODEX_PACKAGE_DIR`, the standalone install `codex app-server daemon` needs.
    **Codex config** — write the `cctui` model-provider region into
@@ -933,6 +938,40 @@ input), then drops to uid 1000:
     trust store), assemble `WORKER_HARDENING_JSON`.
 11. **Drop + run** — `exec cctui-supervisor --ro … --rw … --user 1000
     --report /tmp/hardening.json -- cctui-daemon run --no-auto-update`.
+
+### Non-root start
+
+A worker container may run as uid/gid 1000 with `runAsNonRoot: true`,
+`allowPrivilegeEscalation: false`, `capabilities: {drop: [ALL]}` and the
+runtime's default seccomp and AppArmor. The pod's only privileged container
+is then the `net-init` init container (root, `NET_ADMIN`), which exits before
+the worker starts. Requirements:
+
+- `runAsGroup: 1000`. The supervisor skips its uid switch when it already
+  runs as uid and gid 1000, and fails with a `runAsGroup` hint on any other
+  gid, which a non-root process can't change. It still applies Landlock and
+  seccomp, clears the ambient and inheritable capability sets and sets
+  `no_new_privs` (it can't shrink the bounding set; drop `ALL` empties it).
+- `/workspace` and `/opt/context` owned by uid 1000. The public image ships
+  them that way; a derived image that re-creates them must keep it.
+- `/var/run/guard-proxy`, `/var/run/workflow-guard` and `/var/run/gpg-agent`
+  writable by uid 1000: the image keeps them root-owned, and the envelope
+  mounts them as `fsGroup: 1000` emptyDirs.
+- No `WARM_REPO_DIR` overlay. Without `SYS_ADMIN` the entrypoint rsync-copies
+  the warm cache instead, so use a baked warm image (`/workspace/.warm-baked`).
+
+The entrypoint logs `running as uid 1000 (non-root)` and skips its root-only
+steps, each with a log line:
+
+| Step | Root start | Non-root start |
+| --- | --- | --- |
+| Guard-proxy CA | system trust store, else a combined bundle | combined bundle `/tmp/cctui-guard-ca-bundle.pem`, exported as `SSL_CERT_FILE`, `GIT_SSL_CAINFO`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE` (clients that ignore those lose trust on credential-injected hosts) |
+| In-container guard-proxy (`transparent`/`forward`) | started as uid 1337 | not started: needs an external proxy (the sidecar) |
+| `WARM_REPO_DIR` | overlayfs, else rsync | rsync |
+| Context pack | `/opt/context` re-created, `chown 0:0` | emptied in place, stays worker-owned: only Landlock keeps it read-only |
+| Pack home bind mounts (`/overlay`) | bind-mounted | skipped |
+| `cctui-guard` | runs as root | runs as uid 1000, the agent's uid |
+| Repo clone, pack clone, pre-flight probes | dropped to uid 1000 | run directly as uid 1000 |
 
 ### Entrypoint internals
 

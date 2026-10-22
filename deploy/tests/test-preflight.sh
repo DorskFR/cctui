@@ -11,7 +11,7 @@ check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1: expected [$2] got [$3]"
 has()  { case "$3" in *"$2"*) ok "$1" ;; *) bad "$1: [$2] not in [$3]" ;; esac; }
 lacks(){ case "$3" in *"$2"*) bad "$1: [$2] unexpectedly in [$3]" ;; *) ok "$1" ;; esac; }
 
-for f in as_agent cidr_sample preflight_targets preflight_connect preflight_dns \
+for f in is_root as_worker cidr_sample preflight_targets preflight_connect preflight_dns \
          preflight_probe preflight_control phase_preflight fail_dispatch; do
   eval "$(awk "/^$f\\(\\)/,/^}/" "$ENTRY")"
   type "$f" >/dev/null 2>&1 || { bad "$f not found in $ENTRY"; exit 1; }
