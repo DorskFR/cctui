@@ -7,10 +7,12 @@
 //! container's exit code, and the session ends `completed`, as does a Job that
 //! finished. Without that evidence a failure is a crash.
 
+use std::sync::Arc;
+
 use cctui_proto::models::SessionEndReason;
 use uuid::Uuid;
 
-use crate::dispatchers::HandleStatus;
+use crate::dispatchers::{Dispatcher, HandleStatus};
 use crate::events::{self, Actor, Event, kind};
 use crate::state::AppState;
 use crate::store::dispatch_records;
@@ -119,11 +121,7 @@ async fn status_of(
     session_id: &str,
     handle: &str,
 ) -> Option<HandleStatus> {
-    let Ok(Some(dispatcher)) =
-        crate::routes::dispatch::resolve_dispatcher(state, user_id, dispatcher_name).await
-    else {
-        return None;
-    };
+    let dispatcher = dispatcher_for(state, user_id, dispatcher_name).await?;
     let (status, exit) = dispatcher.status_detail(handle).await.ok()?;
     if let Some(exit) = exit {
         let exit = dispatch_records::scrub_worker_exit(&exit);
@@ -132,6 +130,22 @@ async fn status_of(
         }
     }
     Some(status)
+}
+
+/// The dispatcher a handle was forwarded to. An admin dispatch resolves the
+/// name across owners while its record keeps the caller's own user, so a name
+/// that user does not own resolves the way the dispatch did.
+async fn dispatcher_for(
+    state: &AppState,
+    user_id: Option<Uuid>,
+    name: &str,
+) -> Option<Arc<dyn Dispatcher>> {
+    use crate::routes::dispatch::resolve_dispatcher;
+    match resolve_dispatcher(state, user_id, name).await {
+        Ok(Some(d)) => Some(d),
+        _ if user_id.is_none() => None,
+        _ => resolve_dispatcher(state, None, name).await.ok().flatten(),
+    }
 }
 
 fn failure_text(reason: Option<String>) -> String {
@@ -506,6 +520,58 @@ mod tests {
             .execute(&pool)
             .await
             .ok();
+    }
+
+    const PREFLIGHT: &str = "preflight: k8s API reachable (kubernetes.default.svc:443)";
+
+    /// An admin dispatch resolves a dispatcher another user owns, while its
+    /// record keeps the admin's own user.
+    #[tokio::test]
+    async fn a_preflight_refusal_on_another_owners_dispatcher_fails_the_record() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_liveness_preflight") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let (owner, _) = crate::events::tests::seed_user_machine(&pool, "dl-pf-owner").await;
+        let (admin, _) = crate::events::tests::seed_user_machine(&pool, "dl-pf-admin").await;
+        let name = format!("k8s-{owner}");
+        let dispatcher = seed_dispatcher(&pool, owner, &name).await;
+        let sid = Uuid::new_v4().to_string();
+        let req: cctui_proto::api::DispatchRequest = serde_json::from_value(
+            serde_json::json!({"dispatcher": name, "payload": {"prompt": "go"}}),
+        )
+        .unwrap();
+        let record = dispatch_records::NewRecord::from_request(&sid, Some(admin), &req, None, None);
+        dispatch_records::insert(&pool, &record).await.unwrap();
+        dispatch_records::set_outcome(&pool, &sid, "forwarded", None).await.unwrap();
+        seed_handle(&pool, &sid, &name, "jobs/cctui-worker-preflight").await;
+
+        let exit = cctui_proto::api::WorkerExit {
+            container: Some("worker".into()),
+            exit_code: Some(1),
+            reason: Some(PREFLIGHT.into()),
+            ..Default::default()
+        };
+        let verdict = (Some("failed"), Some(PREFLIGHT));
+        let fake = fake_dispatcher_exiting(&state, dispatcher, verdict, Some(exit));
+        sweep(&state).await;
+        fake.abort();
+
+        let listed = dispatch_records::list_failed(&pool, Some(admin)).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].session_id, sid);
+        assert_eq!(listed[0].reason, cctui_proto::api::FailedDispatchReason::SpawnFailed);
+        assert_eq!(listed[0].detail.as_deref(), Some(PREFLIGHT));
+        let exit = listed[0].worker_exit.as_ref().expect("the exit is on the card");
+        assert_eq!(exit.exit_code, Some(1));
+        sqlx::query("DELETE FROM dispatch_handles WHERE session_id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .ok();
+        forget_user(&pool, admin).await;
+        forget_user(&pool, owner).await;
     }
 
     const BACKOFF: &str = "Job has reached the specified backoff limit";

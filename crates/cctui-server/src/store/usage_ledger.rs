@@ -40,7 +40,7 @@ pub async fn closes(
           WHERE ($1::uuid IS NULL OR p.user_id = $1) \
             AND ($2::uuid IS NULL OR p.id = $2 OR p.account_id = $2) \
             AND ($3::text IS NULL OR c.window_key = $3) \
-            AND c.resets_at >= $4 \
+            AND c.resets_at >= $4 AND c.resets_at <= now() \
           ORDER BY c.resets_at DESC, a.name, c.window_key",
     )
     .bind(owner)
