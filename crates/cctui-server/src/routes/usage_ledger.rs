@@ -91,11 +91,8 @@ pub fn collapse_idle(rows: Vec<AccountLedgerRow>) -> Vec<AccountLedgerRow> {
     for r in rows.iter().filter(|r| !r.idle) {
         kept.entry((r.account_id, r.window_key.clone())).or_default().push(r.resets_at);
     }
-    let mut out: Vec<AccountLedgerRow> = rows
-        .into_iter()
-        .rev()
-        .filter(|r| !r.idle || keep_idle(&mut kept, r))
-        .collect();
+    let mut out: Vec<AccountLedgerRow> =
+        rows.into_iter().rev().filter(|r| !r.idle || keep_idle(&mut kept, r)).collect();
     out.reverse();
     out
 }

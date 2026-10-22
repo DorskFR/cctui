@@ -550,14 +550,13 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
-        let account: Uuid = sqlx::query_scalar(
-            "INSERT INTO accounts (user_id, name) VALUES ($1, $2) RETURNING id",
-        )
-        .bind(uid)
-        .bind(format!("samples-account-{uid}"))
-        .fetch_one(pool)
-        .await
-        .unwrap();
+        let account: Uuid =
+            sqlx::query_scalar("INSERT INTO accounts (user_id, name) VALUES ($1, $2) RETURNING id")
+                .bind(uid)
+                .bind(format!("samples-account-{uid}"))
+                .fetch_one(pool)
+                .await
+                .unwrap();
         sqlx::query_scalar(
             "INSERT INTO account_providers (user_id, account_id, provider) \
              VALUES ($1, $2, 'anthropic') RETURNING id",
