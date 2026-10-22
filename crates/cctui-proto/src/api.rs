@@ -854,7 +854,7 @@ pub struct LabelListResponse {
     pub labels: Vec<Label>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SessionListResponse {
     pub sessions: Vec<SessionListItem>,
@@ -862,6 +862,14 @@ pub struct SessionListResponse {
     /// or on another page), so a client can group a child under its parent.
     #[serde(default)]
     pub parents: Vec<SessionParentStub>,
+    /// `/sessions/search` only: pass back as `cursor` for the next page; null
+    /// once nothing older is left to scan.
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+    /// The search ran out of time before filling the page, so more matches may
+    /// lie past `next_cursor`.
+    #[serde(default)]
+    pub partial: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

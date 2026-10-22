@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { QueryClient } from '@tanstack/svelte-query';
 import type { SessionListItem } from '@bindings/SessionListItem';
+import type { SessionListResponse } from '@bindings/SessionListResponse';
 import type { Label } from '@bindings/Label';
 import { ApiError } from '$lib/api';
 import { qk } from '$lib/queries';
@@ -66,7 +67,11 @@ function harness(over: Partial<SessionsPageDeps> = {}, stored: Record<string, st
 	const toasts = { ok: vi.fn(), error: vi.fn() };
 	const api = {
 		session: vi.fn(async (id: string) => session({ id })),
-		searchSessions: vi.fn(async () => ({ sessions: [] as SessionListItem[] })),
+		searchSessions: vi.fn(
+			async (..._args: unknown[]): Promise<Partial<SessionListResponse>> => ({
+				sessions: [] as SessionListItem[]
+			})
+		),
 		brief: vi.fn(async () => ({ markdown: '' })),
 		searchFieldValues: vi.fn(async () => [] as string[])
 	};
@@ -338,7 +343,7 @@ describe('SessionsPage — search and archive pager', () => {
 		sp.sections = new Set(['live', 'archived']);
 		flushSync();
 		await vi.advanceTimersByTimeAsync(0);
-		expect(api.searchSessions).toHaveBeenCalledWith('', true, 50, 0);
+		expect(api.searchSessions).toHaveBeenCalledWith('', true, 50, 0, null, expect.any(AbortSignal));
 		expect(sp.pageRows.map((s) => s.id)).toEqual(['old']);
 		expect(sp.pageDone).toBe(true);
 		expect(sp.pageLoading).toBe(false);
@@ -352,12 +357,12 @@ describe('SessionsPage — search and archive pager', () => {
 		await vi.advanceTimersByTimeAsync(0);
 		expect(sp.searching).toBe(true);
 		expect(sp.searchTerms).toEqual(['needle']);
-		expect(api.searchSessions).toHaveBeenLastCalledWith('needle', false, 50, 0);
+		expect(api.searchSessions).toHaveBeenLastCalledWith('needle', false, 50, 0, null, expect.any(AbortSignal));
 		sp.rawQuery = 'other';
 		await vi.advanceTimersByTimeAsync(200);
 		flushSync();
 		await vi.advanceTimersByTimeAsync(0);
-		expect(api.searchSessions).toHaveBeenLastCalledWith('other', false, 50, 0);
+		expect(api.searchSessions).toHaveBeenLastCalledWith('other', false, 50, 0, null, expect.any(AbortSignal));
 		expect(api.searchSessions).toHaveBeenCalledTimes(2);
 	});
 
@@ -372,7 +377,7 @@ describe('SessionsPage — search and archive pager', () => {
 		api.searchSessions.mockResolvedValueOnce({ sessions: [session({ id: 'tail', status: 'archived' })] });
 		await sp.loadMore();
 		await vi.advanceTimersByTimeAsync(0);
-		expect(api.searchSessions).toHaveBeenLastCalledWith('', true, 50, 50);
+		expect(api.searchSessions).toHaveBeenLastCalledWith('', true, 50, 50, null, expect.any(AbortSignal));
 		expect(sp.pageRows).toHaveLength(51);
 		expect(sp.pageDone).toBe(true);
 	});
@@ -425,8 +430,63 @@ describe('SessionsPage — search and archive pager', () => {
 		api.searchSessions.mockResolvedValue({ sessions: [session({ id: 'hit', status: 'archived' })] });
 		await queryClient.invalidateQueries({ queryKey: qk.sessionsAll });
 		await vi.advanceTimersByTimeAsync(0);
-		expect(api.searchSessions).toHaveBeenLastCalledWith('needle', true, 50, 0);
+		expect(api.searchSessions).toHaveBeenLastCalledWith('needle', true, 50, 0, null, expect.any(AbortSignal));
 		expect(sp.pageRows.map((s) => [s.id, s.status])).toEqual([['hit', 'archived']]);
+	});
+
+	it('pages by the server cursor and flags a partial scan', async () => {
+		const { sp, api } = make();
+		api.searchSessions.mockResolvedValueOnce({
+			sessions: [session({ id: 'hit' })],
+			parents: [],
+			next_cursor: '123:hit',
+			partial: true
+		});
+		sp.rawQuery = 'needle';
+		await vi.advanceTimersByTimeAsync(200);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sp.pagePartial).toBe(true);
+		expect(sp.pageDone).toBe(false);
+		api.searchSessions.mockResolvedValueOnce({
+			sessions: [],
+			parents: [],
+			next_cursor: null,
+			partial: false
+		});
+		await sp.loadMore();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(api.searchSessions).toHaveBeenLastCalledWith(
+			'needle',
+			false,
+			50,
+			1,
+			'123:hit',
+			expect.any(AbortSignal)
+		);
+		expect(sp.pagePartial).toBe(false);
+		expect(sp.pageDone).toBe(true);
+	});
+
+	it('aborts the in-flight search when the query changes', async () => {
+		const { sp, api } = make();
+		const signals: AbortSignal[] = [];
+		api.searchSessions.mockImplementation((...args: unknown[]) => {
+			const signal = args[5];
+			if (signal instanceof AbortSignal) signals.push(signal);
+			return new Promise(() => {});
+		});
+		sp.rawQuery = 'first';
+		await vi.advanceTimersByTimeAsync(200);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		sp.rawQuery = 'second';
+		await vi.advanceTimersByTimeAsync(200);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(signals).toHaveLength(2);
+		expect(signals[0].aborted).toBe(true);
+		expect(signals[1].aborted).toBe(false);
 	});
 
 	it('never repeats a row that shifted across a page boundary during a refetch', async () => {

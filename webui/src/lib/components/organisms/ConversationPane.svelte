@@ -279,7 +279,8 @@
 	// the paged tail, so a `mark.search-hit` count can never be the total.
 	const search = new ConversationSearch({
 		id: () => id,
-		fetchHits: (sid: string, q: string) => endpoints.conversationSearch(sid, q),
+		fetchHits: (sid: string, q: string, signal?: AbortSignal) =>
+			endpoints.conversationSearch(sid, q, undefined, signal),
 		ensureSeqVisible: (seq) => pins.ensureSeqVisible(seq),
 		onerror: (e) => toasts.error(errMessage(e))
 	});

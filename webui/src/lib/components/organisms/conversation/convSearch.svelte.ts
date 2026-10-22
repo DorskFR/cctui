@@ -3,12 +3,14 @@ import type { ConversationHit } from '@bindings/ConversationHit';
 import type { ConversationSearchResponse } from '@bindings/ConversationSearchResponse';
 import { filters, freeText, parse, type Schema } from '@dorsk/tsumikit';
 import { tokenizeQuery } from '$lib/search';
+import { foldSearchText, markdownToSearchText } from '$lib/searchText';
+import { USER_PREFIX } from '$lib/ws/frames';
 import { buildConversationSearchSchema } from './searchSchema';
 
 export interface ConversationSearchDeps {
 	id: () => string;
-	/** `GET /sessions/{id}/search`. */
-	fetchHits: (id: string, q: string) => Promise<ConversationSearchResponse>;
+	/** `GET /sessions/{id}/search`; `signal` aborts when the query moves on. */
+	fetchHits: (id: string, q: string, signal?: AbortSignal) => Promise<ConversationSearchResponse>;
 	/** Pages older history in until `seq` is mounted, then centres it. */
 	ensureSeqVisible: (seq: number) => Promise<boolean>;
 	onerror?: (e: unknown) => void;
@@ -29,6 +31,7 @@ export class ConversationSearch {
 	#d: ConversationSearchDeps;
 	#timer: ReturnType<typeof setTimeout> | null = null;
 	#reqId = 0;
+	#inflight: AbortController | null = null;
 
 	open = $state(false);
 	rawQuery = $state('');
@@ -93,6 +96,7 @@ export class ConversationSearch {
 		const raw = this.rawQuery.trim();
 		if (!raw) {
 			this.#reqId++;
+			this.#abort();
 			this.#clearHits();
 			return;
 		}
@@ -107,9 +111,12 @@ export class ConversationSearch {
 			return;
 		}
 		const req = ++this.#reqId;
+		this.#abort();
+		const ctl = new AbortController();
+		this.#inflight = ctl;
 		this.loading = true;
 		try {
-			const res = await this.#d.fetchHits(id, raw);
+			const res = await this.#d.fetchHits(id, raw, ctl.signal);
 			if (req !== this.#reqId) return;
 			const keep = this.currentSeq;
 			this.hits = res.hits;
@@ -135,11 +142,11 @@ export class ConversationSearch {
 		if (!this.open || this.hits.length === 0 || this.#fielded) return;
 		const seq = ev.seq;
 		if (typeof seq !== 'number' || this.hits.some((h) => h.seq === seq)) return;
-		const text = eventSearchText(ev);
-		const terms = this.terms;
+		const text = liveSearchText(ev);
+		const terms = this.terms.map((t) => foldSearchText(t).toLowerCase()).filter(Boolean);
 		if (terms.length === 0) return;
 		const hay = text.toLowerCase();
-		if (!terms.every((t) => hay.includes(t.toLowerCase()))) return;
+		if (!terms.every((t) => hay.includes(t))) return;
 		this.hits = [
 			...this.hits,
 			{ seq, ts: Number(ev.ts), role: '', tool: null, snippet: text.slice(0, 200) }
@@ -166,10 +173,16 @@ export class ConversationSearch {
 		if (this.#timer) clearTimeout(this.#timer);
 		this.#timer = null;
 		this.#reqId++;
+		this.#abort();
 		this.open = false;
 		this.rawQuery = '';
 		this.#clearHits();
 	};
+
+	#abort(): void {
+		this.#inflight?.abort();
+		this.#inflight = null;
+	}
 
 	#clearHits(): void {
 		this.hits = [];
@@ -186,9 +199,8 @@ export class ConversationSearch {
 	}
 }
 
-/** The client-side twin of the `stream_events.search_text` generated column
- *  (payload `text` / `content` / `tool` / `input`), so a live match agrees with
- *  what the server would have matched. */
+/** The readable fields of a live event: `content` / `text` / `output_summary`
+ *  / `tool` / `detail` / `input`. */
 export function eventSearchText(ev: AgentEvent): string {
 	const rec = ev as unknown as Record<string, unknown>;
 	const parts: string[] = [];
@@ -201,4 +213,14 @@ export function eventSearchText(ev: AgentEvent): string {
 		parts.push(typeof input === 'string' ? input : JSON.stringify(input));
 	}
 	return parts.join(' ');
+}
+
+/** A live event's text folded like the server's search chunks, so a live
+ *  match agrees with what the server would have matched. */
+function liveSearchText(ev: AgentEvent): string {
+	if (ev.type === 'text') {
+		const body = ev.content.startsWith(USER_PREFIX) ? ev.content.slice(USER_PREFIX.length) : ev.content;
+		return markdownToSearchText(body);
+	}
+	return foldSearchText(eventSearchText(ev));
 }

@@ -47,6 +47,7 @@ webauthn-rs-proto = "0.5"
 flate2 = "1"
 tar = "0.4"
 tokio-tungstenite.workspace = true
+unicode-normalization = "0.1.25"
 
 [dev-dependencies]
 reqwest.workspace = true
