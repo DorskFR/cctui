@@ -1704,3 +1704,34 @@ the spawn key until it registers; `rebind_spawn_key` moves the token, the record
 usage, the child's budget and its capability onto the registered id in one step.
 Miss that and the usage FK to `sessions(id)` rejects every insert and the child's
 spend reads $0.
+
+## Agent-posted images
+
+An agent shows the user a picture by writing a markdown image marker with an
+absolute local path into its own message text:
+
+```
+![login page after the fix](/tmp/shot.png)
+```
+
+The daemon (`imagepost.rs`) finds the marker in an assistant message from any
+harness, uploads the file to the session's blob store and rewrites the marker to
+`![alt](cctui-img://<id>)`, which the webui renders inline. The file must:
+
+- canonicalize (symlinks resolved) to a regular file under `$HOME`, `/tmp` or
+  `$TMPDIR`;
+- be png, jpeg, gif or webp by its magic bytes, with a `.png`, `.jpg`, `.jpeg`,
+  `.gif` or `.webp` extension;
+- be at most 5 MB. A session keeps at most 200 images and 100 MB in total.
+
+A marker that fails any check stays as the agent wrote it, as a plain path.
+
+Every session is told this in one line of its `<cctui-session-context>` block
+(`preamble::IMAGE_LINE`): always for claude-code, and for codex, opencode and
+ACP whenever that block is sent at all.
+
+Images are scoped to the session that posted them. A marker only works in the
+agent's own prose: one inside a tool call, such as a `CctuiSend` body, is never
+uploaded and reaches the peer as a plain path. A child's final message as
+`CctuiAgent` returns it to the parent carries the child's `cctui-img://` id,
+which does not resolve in the parent's session.

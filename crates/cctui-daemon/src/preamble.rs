@@ -21,6 +21,13 @@ pub const CONTEXT_TOOL_LINE: &str = "CctuiContext: use `mcp__cctui__CctuiContext
     `show` read what is saved, `attach` stages saved memories into this session. Never store \
     secrets in it.\n";
 
+/// How to show the user an image; the limits are the ones [`crate::imagepost`]
+/// enforces.
+pub const IMAGE_LINE: &str = "images: to show the user an image, put `![alt](/absolute/path.png)` \
+    in your message text (not in a tool call): png, jpg, gif or webp, at most 5 MB, the file under \
+    $HOME, /tmp or $TMPDIR. It renders in this session only, not in peer messages or in the \
+    result a parent session receives from you.\n";
+
 /// The shared-checkout warning for a session about to work in `cwd`.
 ///
 /// `None` when no other live session shares its working tree. `local_id` is
@@ -117,7 +124,9 @@ pub fn stage_context(session_id: &str, items: &[SessionContextItem]) -> Option<S
 ///
 /// It carries the shared-checkout warning, the session's rules and attached
 /// context, and — when the session has the cctui MCP relay (`tools`) — the
-/// `CctuiContext` line.
+/// `CctuiContext` line. A block that is sent at all also carries
+/// [`IMAGE_LINE`]; the line alone is not worth a block, since a prompt-less
+/// spawn would then open a turn just to deliver it.
 ///
 /// `session_id` keys the staging dir (the launch key, so a relaunch restages
 /// in place); `None` means this launch has no stable key and its notes are
@@ -134,6 +143,7 @@ pub fn for_launch(
     let context =
         merge(context_block(session_id, items), tools.then(|| CONTEXT_TOOL_LINE.to_owned()));
     let body = merge(shared_checkout(cwd, local_id), context)?;
+    let body = format!("{}\n\n{IMAGE_LINE}", body.trim_end());
     Some(format!("<{SESSION_CONTEXT}>\n{}\n</{SESSION_CONTEXT}>", body.trim_end()))
 }
 
@@ -150,8 +160,8 @@ pub fn merge(base: Option<String>, extra: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CONTEXT_TOOL_LINE, SessionContextItem, context_block, context_notice, for_launch, merge,
-        render_context, render_rules, stage_context,
+        CONTEXT_TOOL_LINE, IMAGE_LINE, SessionContextItem, context_block, context_notice,
+        for_launch, merge, render_context, render_rules, stage_context,
     };
 
     fn item(kind: &str, title: &str, body: &str) -> SessionContextItem {
@@ -284,6 +294,25 @@ mod tests {
             block.find("### Wt").expect("rule") < block.find("CctuiContext").expect("line"),
             "{block}"
         );
+    }
+
+    #[test]
+    fn a_sent_block_tells_the_agent_how_to_show_an_image() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().to_string_lossy();
+        let block = for_launch(None, &cwd, None, &[], true).expect("a block");
+        assert!(block.contains(IMAGE_LINE.trim_end()), "{block}");
+        assert!(block.ends_with(&format!("{}\n</cctui-session-context>", IMAGE_LINE.trim_end())));
+        assert!(for_launch(None, &cwd, None, &[], false).is_none(), "the line alone sends nothing");
+    }
+
+    #[test]
+    fn the_image_line_states_the_limits_the_daemon_enforces() {
+        let mb = crate::imagepost::MAX_IMAGE_BYTES / (1024 * 1024);
+        assert!(IMAGE_LINE.contains(&format!("at most {mb} MB")), "{IMAGE_LINE}");
+        assert!(IMAGE_LINE.contains("![alt](/absolute/path.png)"), "{IMAGE_LINE}");
+        assert!(IMAGE_LINE.contains("png, jpg, gif or webp"), "{IMAGE_LINE}");
+        assert!(IMAGE_LINE.ends_with(".\n") && IMAGE_LINE.lines().count() == 1, "{IMAGE_LINE}");
     }
 
     #[test]
