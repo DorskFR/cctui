@@ -4,12 +4,9 @@ use cctui_proto::injected::SESSION_CONTEXT;
 
 use super::{PathBuf, json};
 
-/// Decode + stage `bootstrap` file uploads under the upload staging root's
-/// `<session-id>/` dir, returning their absolute paths in upload order. Files
-/// are written 0600 with sanitized bare names; an empty/null bootstrap yields
-/// an empty vec. Errors (bad base64, unwritable dir) abort the
-/// spawn so the user learns the attachment didn't land rather than the worker
-/// silently starting without it.
+const REPLY_LINE: &str = "replies: your thinking is never shown to the user as a reply; anything \
+    meant for them (answers, image markers) must be in your message text.\n";
+
 /// Build the spawn-time `<cctui-session-context>` block prepended to the
 /// initial prompt. Mirrors what a human sees on the session card — name,
 /// model·effort, permission posture, env var NAMES, cwd, and staged files.
@@ -57,6 +54,7 @@ pub(super) fn build_session_context(
             let _ = writeln!(b, "  - {p}");
         }
     }
+    b.push_str(REPLY_LINE);
     b.push_str(crate::preamble::IMAGE_LINE);
     if let Some(cap) = capability.filter(|c| !c.is_empty()) {
         b.push_str(&agent_tool_context(cap));
@@ -1166,6 +1164,16 @@ mod tests {
         let block = build_session_context(&bare_spec(), "/work/cctui", &[], Some(&cap), &[], None);
         let image = block.find("images: to show the user an image").expect("image line");
         assert!(image < block.find("CctuiAgent:").expect("agent paragraph"), "{block}");
+    }
+
+    #[test]
+    fn every_session_context_says_thinking_is_not_a_reply() {
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, &[], None);
+        assert!(block.contains(REPLY_LINE), "{block}");
+        assert!(REPLY_LINE.ends_with(".\n") && REPLY_LINE.lines().count() == 1, "{REPLY_LINE}");
+        let reply = block.find(REPLY_LINE).expect("reply line");
+        let image = block.find(crate::preamble::IMAGE_LINE).expect("image line");
+        assert_eq!(reply + REPLY_LINE.len(), image, "{block}");
     }
 
     #[test]

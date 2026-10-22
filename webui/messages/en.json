@@ -520,6 +520,7 @@
 	"conversation_terminal_readonly_live": "Terminal (read-only, live)",
 	"conversation_terminal_title": "Read-only live view of the session's terminal",
 	"conversation_transcript_downloaded": "Transcript downloaded",
+	"conversation_thinking_no_reply": "Thinking only: no reply was sent this turn",
 	"conversation_turn_summary_label": "Summary",
 	"conversation_turn_summary_needs_action": "Needs action",
 	"conversation_unpin_label": "Unpin message",

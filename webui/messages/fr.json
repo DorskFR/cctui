@@ -520,6 +520,7 @@
 	"conversation_terminal_readonly_live": "Terminal (lecture seule, en direct)",
 	"conversation_terminal_title": "Vue en direct en lecture seule du terminal de la session",
 	"conversation_transcript_downloaded": "Transcription téléchargée",
+	"conversation_thinking_no_reply": "Réflexion seulement : aucune réponse envoyée à ce tour",
 	"conversation_turn_summary_label": "Résumé",
 	"conversation_turn_summary_needs_action": "Action requise",
 	"conversation_unpin_label": "Retirer l'épingle",

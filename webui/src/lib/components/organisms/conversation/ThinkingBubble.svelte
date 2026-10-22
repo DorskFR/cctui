@@ -1,9 +1,13 @@
 <script lang="ts">
-	import { Button } from '@dorsk/tsumikit';
+	import { Button, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import './bubble.css';
 
-	let { html, redacted }: { html: string | undefined; redacted: boolean | undefined } = $props();
+	let {
+		html,
+		redacted,
+		noReply = false
+	}: { html: string | undefined; redacted: boolean | undefined; noReply?: boolean } = $props();
 
 	// Thinking runs long; clamp it and offer a toggle, but only once the content
 	// actually overflows the clamp. Measuring while expanded would report no
@@ -33,6 +37,11 @@
 		{expanded ? m.conversation_show_less() : m.conversation_show_more()}
 	</Button>
 {/if}
+{#if noReply}
+	<div class="no-reply" role="note">
+		<Text tone="faint" size="xs" italic>{m.conversation_thinking_no_reply()}</Text>
+	</div>
+{/if}
 
 <style>
 	/* Reasoning — muted brown, visually behind the prose it produced. */
@@ -47,6 +56,9 @@
 		overflow: hidden;
 		/* Fade the cut edge so a clamped block reads as truncated, not as ended. */
 		mask-image: linear-gradient(to bottom, #000 8rem, transparent);
+	}
+	.no-reply {
+		padding-inline: var(--sp-1);
 	}
 	/* Provider withheld the content; only the placeholder remains. */
 	.bubble.think.redacted {
