@@ -817,7 +817,6 @@
 	"guide_welcome_skip": "Skip",
 	"guide_welcome_title": "Welcome to cctui",
 	"home_cache_loss_busts": "{count} busts",
-	"home_cache_loss_gateway_rewrote_body": "Gateway rewrote body",
 	"home_cache_loss_none": "No cache bust in this range.",
 	"home_cache_loss_provider_miss": "Provider cache miss (Fireworks)",
 	"home_cache_loss_title_24h": "Lost to cache busts · last 24 hours",

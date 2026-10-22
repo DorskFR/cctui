@@ -324,6 +324,14 @@ mod tests {
     }
 
     #[test]
+    fn a_long_gap_outranks_a_historical_rewrite() {
+        let mut late = turn("late", 100, 0, 201_000, 75);
+        late.gateway_rewrote_body = true;
+        let turns = [turn("a", 266, 200_968, 266, 0), late];
+        assert_eq!(compute(&turns, None)["late"].reason, Reason::TtlExpired);
+    }
+
+    #[test]
     fn a_long_gap_outranks_the_provider() {
         let turns = [fireworks("a", 500, 40_000, 0), fireworks("late", 40_600, 0, 75)];
         assert_eq!(compute(&turns, None)["late"].reason, Reason::TtlExpired);
