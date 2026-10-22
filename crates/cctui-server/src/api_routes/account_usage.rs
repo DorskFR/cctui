@@ -76,6 +76,14 @@ pub(super) fn register(r: Routes) -> Routes {
             Human,
         )
         .add(
+            &[GET],
+            "/accounts/usage/ledger",
+            "Every reset of every visible credential's windows, with what went unused.",
+            get(routes::usage_ledger::account_usage_ledger),
+            Authn::Bearer,
+            Human,
+        )
+        .add(
             &[Method::POST],
             "/accounts/{id}/limit-reset",
             "Claim a usage-limit reset on a provider credential.",

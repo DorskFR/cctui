@@ -12,4 +12,5 @@ pub mod dispatch_records;
 pub mod sessions;
 pub mod spawn_capabilities;
 pub mod tokens;
+pub mod usage_ledger;
 pub mod usage_samples;

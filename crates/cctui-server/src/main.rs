@@ -1086,6 +1086,7 @@ mod tests {
             "GET /accounts/settings-catalog Bearer Authenticated",
             "GET /accounts/usage Bearer Human",
             "GET /accounts/usage/closes Bearer Human",
+            "GET /accounts/usage/ledger Bearer Human",
             "DELETE /accounts/{id} Bearer Human",
             "GET /accounts/{id} Bearer Human",
             "PATCH /accounts/{id} Bearer Human",

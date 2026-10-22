@@ -27,7 +27,7 @@ pub struct HistoryQuery {
     pub from: Option<DateTime<Utc>>,
 }
 
-fn clamp_from(from: Option<DateTime<Utc>>, now: DateTime<Utc>) -> DateTime<Utc> {
+pub fn clamp_from(from: Option<DateTime<Utc>>, now: DateTime<Utc>) -> DateTime<Utc> {
     from.unwrap_or(now - DEFAULT_LOOKBACK).max(now - Duration::days(RETENTION_DAYS))
 }
 
