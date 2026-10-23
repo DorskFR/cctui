@@ -12,7 +12,7 @@ use super::*;
 
 fn noise(seed: u128, len: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(len + 8);
-    let mut x = u64::try_from(seed % u128::from(u64::MAX)).unwrap_or(1) | 1;
+    let mut x = (u64::try_from(seed % u128::from(u64::MAX)).unwrap_or(1) << 1) | 1;
     while out.len() < len {
         x ^= x << 13;
         x ^= x >> 7;
@@ -603,7 +603,8 @@ async fn inline_on_demand_follows_links_and_the_size_limit() {
     assert!(inlined(0, png.len() - 1).await.contains("cctui-blob"), "past the limit: a ref");
     assert!(inlined(1, INLINE_IMAGES_MAX_BYTES).await.contains("cctui-blob"), "unlinked: a ref");
 
-    let (mut redacted, data) = redacted_result("toolu_redacted", &png);
+    let lost = screenshot(Uuid::new_v4().as_u128(), 60_000);
+    let (mut redacted, data) = redacted_result("toolu_redacted", &lost);
     let original = redacted["content"].clone();
     assert!(externalize(&db.pool, &db.sessions[0], "tool_use", &mut redacted).await);
     sqlx::query("INSERT INTO session_blob_links (session_id, hash) VALUES ($1, $2)")
@@ -743,8 +744,8 @@ async fn recovery_needs_one_match_among_the_owners_blobs() {
     let seed = Uuid::new_v4().as_u128();
     let base = screenshot(seed, 30_000);
     let (twin_a, twin_b) = (with_text(&base, &[b'a'; 48]), with_text(&base, &[b'b'; 48]));
-    let (one, data) = redacted_at("toolu_one", &twin_a, 56..124);
-    let (two, _) = redacted_at("toolu_two", &twin_b, 56..124);
+    let (one, data) = redacted_at("toolu_one", &twin_a, 56..128);
+    let (two, _) = redacted_at("toolu_two", &twin_b, 56..128);
     assert!(recover::fits(&b64(&twin_b), &recover::segments(&data).unwrap()), "twins share it");
     let mut conn = db.pool.acquire().await.unwrap();
 
@@ -768,7 +769,7 @@ async fn recovery_needs_one_match_among_the_owners_blobs() {
     assert_eq!(src["blob_id"], sha(foreign_text.as_bytes()));
     drop(conn);
 
-    let corrupt = [sha(data.as_bytes()), sha(redacted_at("", &twin_b, 56..124).1.as_bytes())];
+    let corrupt = [sha(data.as_bytes()), sha(redacted_at("", &twin_b, 56..128).1.as_bytes())];
     other.cleanup(&[sha(&foreign)], None).await;
     let mut hashes = vec![sha(&twin_a), sha(&twin_b), sha(foreign_text.as_bytes())];
     hashes.extend(corrupt);
