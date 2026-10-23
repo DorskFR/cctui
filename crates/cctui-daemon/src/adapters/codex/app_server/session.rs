@@ -316,11 +316,7 @@ impl CodexSession {
     fn developer_instructions(&self) -> Option<String> {
         crate::preamble::merge(
             self.skills.catalog.clone(),
-            crate::preamble::for_launch(
-                self.staging_id(),
-                &self.context,
-                self.agent_mcp.is_some(),
-            ),
+            crate::preamble::for_launch(self.staging_id(), &self.context, self.agent_mcp.is_some()),
         )
     }
 
