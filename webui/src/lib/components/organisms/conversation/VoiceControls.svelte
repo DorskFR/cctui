@@ -140,19 +140,21 @@
 
 {#if recording}
 	<div class="recording" data-journey="voice-recording" role="status" aria-live="polite">
-		<Button
-			variant="danger"
-			size="lg"
-			pill
-			grow
-			aria-label={m.voice_dictate_stop()}
-			title={m.voice_dictate_stop()}
-			onclick={() => act(gesture.toggle(Date.now()))}
-		>
-			<span class="dot" aria-hidden="true"></span>
-			<span class="stop-label">{m.voice_dictate_stop()}</span>
-			<span class="timer" aria-label={m.voice_dictate_recording()}>{timer}</span>
-		</Button>
+		<div class="stop">
+			<Button
+				variant="danger"
+				size="lg"
+				pill
+				grow
+				aria-label={m.voice_dictate_stop()}
+				title={m.voice_dictate_stop()}
+				onclick={() => act(gesture.toggle(Date.now()))}
+			>
+				<span class="dot" aria-hidden="true"></span>
+				<span class="stop-label">{m.voice_dictate_stop()}</span>
+				<span class="timer" aria-label={m.voice_dictate_recording()}>{timer}</span>
+			</Button>
+		</div>
 		<IconButton
 			icon="x"
 			box="lg"
@@ -185,7 +187,9 @@
 		box-shadow: var(--shadow-lg, 0 8px 24px rgb(0 0 0 / 0.25));
 		min-height: 4rem;
 	}
-	.recording :global(button:first-child) {
+	.stop {
+		display: flex;
+		flex: 1;
 		min-height: 3.5rem;
 		font-size: var(--fs-lg);
 	}
