@@ -14,13 +14,14 @@ const lastShown = new Map<string, { at: number; id: unknown }>();
 const rawError = kit.error.bind(kit) as (...args: unknown[]) => unknown;
 
 export const toasts = {
+	/** Toasts on screen; a dismissed one lingers in the kit store while its exit plays. */
 	get items() {
-		return kit.items;
+		return kit.items.filter((t) => !t.leaving);
 	},
 	/** Drop every toast *and* the dedupe window. Clearing one without the other
 	 *  leaves a later identical error silently swallowed. */
 	reset() {
-		for (const t of [...kit.items]) kit.dismiss(t.id);
+		for (const t of [...kit.items]) kit.remove(t.id);
 		lastShown.clear();
 	},
 	ok: kit.ok.bind(kit),
