@@ -376,6 +376,7 @@ async fn run_tui_socket(
     // per-socket so a disconnect decrements the shared watcher refcount and the
     // daemon stops streaming to a browser that vanished without unwatching.
     let mut pty_watches: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut viewing: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     while let Some(msg) = stream.next().await {
         let text = match msg {
@@ -401,9 +402,15 @@ async fn run_tui_socket(
                     tracing::debug!(session_id = %session_id, user_id = %ctx.user_id, "tui_ws: subscribe denied (not owner)");
                     continue;
                 }
+                if viewing.insert(session_id.clone()) && state.bus.view_watch_inc(&session_id) {
+                    crate::session_viewers::opened(&state, &session_id).await;
+                }
                 handle_subscribe(session_id, &state, &event_tx, &mut sub_handles).await;
             }
             TuiCommand::Unsubscribe { session_id } => {
+                if viewing.remove(&session_id) {
+                    stop_viewing(&state, &session_id).await;
+                }
                 // Tear down this session's relay task so it stops delivering
                 // events to this socket.
                 if let Some(handle) = sub_handles.remove(&session_id) {
@@ -525,6 +532,9 @@ async fn run_tui_socket(
     for (_, handle) in sub_handles {
         handle.abort();
     }
+    for session_id in viewing {
+        stop_viewing(&state, &session_id).await;
+    }
     // Decrement every terminal this socket still watched so a browser that
     // closed the tab (or dropped) releases the daemon PTY stream.
     for session_id in pty_watches {
@@ -539,6 +549,12 @@ async fn run_tui_socket(
         if state.bus.text_watch_dec(&session_id) {
             set_daemon_text_watch(&state, &session_id, false).await;
         }
+    }
+}
+
+async fn stop_viewing(state: &AppState, session_id: &str) {
+    if state.bus.view_watch_dec(session_id) {
+        crate::session_viewers::closed(state, session_id).await;
     }
 }
 

@@ -355,6 +355,8 @@ struct Inner {
     pty_watchers: DashMap<String, usize>,
     /// Sockets watching a session's streamed assistant text, by session id.
     text_watchers: DashMap<String, usize>,
+    /// Sockets on this pod with each session open, by session id.
+    view_watchers: DashMap<String, usize>,
     voice_watches: DashMap<String, Vec<(Uuid, std::time::Instant)>>,
     voice_tx: broadcast::Sender<VoiceEvent>,
     transport: Box<dyn Transport>,
@@ -386,6 +388,7 @@ impl Bus {
                 session_streams: DashMap::new(),
                 pty_watchers: DashMap::new(),
                 text_watchers: DashMap::new(),
+                view_watchers: DashMap::new(),
                 voice_watches: DashMap::new(),
                 voice_tx: broadcast::channel(CHANNEL_CAPACITY * 4).0,
                 transport,
@@ -592,6 +595,20 @@ impl Bus {
 
     pub fn text_watch_dec(&self, session: &str) -> bool {
         watch_dec(&self.inner.text_watchers, session)
+    }
+
+    /// Same edges as [`Self::pty_watch_inc`], for a client having the session open.
+    pub fn view_watch_inc(&self, session: &str) -> bool {
+        watch_inc(&self.inner.view_watchers, session)
+    }
+
+    pub fn view_watch_dec(&self, session: &str) -> bool {
+        watch_dec(&self.inner.view_watchers, session)
+    }
+
+    /// Sessions some socket on this pod has open.
+    pub fn viewed_sessions(&self) -> Vec<String> {
+        self.inner.view_watchers.iter().map(|e| e.key().clone()).collect()
     }
 
     // ---- live voice, cluster-wide ----
@@ -1768,6 +1785,18 @@ mod tests {
         assert!(bus.text_watch_dec("s"), "1→0 must signal stop");
         assert!(!bus.text_watch_dec("s"), "stray dec must not signal");
         assert!(bus.pty_watch_dec("s"), "the pty count was untouched");
+    }
+
+    #[test]
+    fn view_watch_refcount_lists_open_sessions_until_the_last_socket_leaves() {
+        let bus = bus();
+        assert!(bus.view_watch_inc("s"), "0→1 must signal");
+        assert!(!bus.view_watch_inc("s"), "1→2 must not re-signal");
+        assert!(bus.text_watch_inc("s"), "a text watch is its own count");
+        assert_eq!(bus.viewed_sessions(), vec!["s".to_owned()]);
+        assert!(!bus.view_watch_dec("s"), "2→1 must not signal");
+        assert!(bus.view_watch_dec("s"), "1→0 must signal");
+        assert!(bus.viewed_sessions().is_empty());
     }
 
     #[test]

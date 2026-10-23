@@ -788,6 +788,31 @@ that never reports back is re-prompted once after 10 minutes of quiet
 (`CCTUI_STUCK_TURN_END_SECS`) with `end_reason: "other"` and an `end_detail`
 starting `stuck_waiting`, so the worker exits and frees its profile slot.
 
+### Auto-archive when the run ends
+
+A dispatched session that ends (`completed`, `failed`, killed, timed out) is
+archived by the server's reaper once its owner's grace has passed, through the
+same path as a manual archive: it leaves the active list and frees its slot,
+and the sessions nested under it (`CctuiAgent` children) go with it. A child of
+a dispatch that ends on its own while the dispatch still runs is archived the
+same way. The transcript, `/result` and the dispatch record stay readable.
+
+The session stays listed while any of these holds for it or a session nested
+under it: it is pinned, it ended waiting on a question, plan or permission, it
+has an open user action, or a client has it open (archived once the last
+viewer leaves). `daemon_lost` / `machine_offline` ends are left to the idle
+TTL (`archive_after_secs`), since the worker may still reconnect. A session
+the user un-archives is never archived again by this sweep.
+
+Per-user settings (Settings › Sessions › Dispatched sessions), stored in the
+settings blob:
+
+| Key                               | Default | Meaning                                              |
+| --------------------------------- | ------- | ---------------------------------------------------- |
+| `dispatchAutoArchive`             | `true`  | Off leaves every dispatched session listed.          |
+| `dispatchAutoArchiveGraceSecs`    | `180`   | Seconds after the end before archiving, `0`–`3600`.  |
+| `dispatchAutoArchiveKeepProfiles` | `[]`    | Worker profiles (`payload.profile`) never archived.  |
+
 ## Dispatch by adapter
 
 A dispatch payload carries an optional **`adapter`** key selecting which harness

@@ -187,6 +187,27 @@ export function clampSpawnDockSide(v: unknown): SpawnDockSide {
 // `left`/`right` pin it to that edge with the same gutter the centered stack
 // keeps on a narrow viewport. Purely presentational, so it lives entirely in
 // the webui: the value drives the `data-toast-pos` attribute on the Toaster host.
+export const DISPATCH_ARCHIVE_GRACE_DEFAULT = 180;
+export const DISPATCH_ARCHIVE_GRACE_MAX = 3600;
+
+/** Mirrors the server's clamp: whole seconds in `0..=3600`, else the default. */
+export function clampDispatchArchiveGrace(v: unknown): number {
+  if (typeof v !== "number" || !Number.isFinite(v))
+    return DISPATCH_ARCHIVE_GRACE_DEFAULT;
+  return Math.min(DISPATCH_ARCHIVE_GRACE_MAX, Math.max(0, Math.trunc(v)));
+}
+
+export function clampProfileNames(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const raw of v) {
+    const name = typeof raw === "string" ? raw.trim() : "";
+    if (name.length > 0 && name.length <= 128 && !out.includes(name))
+      out.push(name);
+  }
+  return out;
+}
+
 export const TOAST_POSITIONS = ["center", "left", "right"] as const;
 export type ToastPosition = (typeof TOAST_POSITIONS)[number];
 export const DEFAULT_TOAST_POSITION: ToastPosition = "center";
@@ -552,6 +573,11 @@ export interface SettingsState {
   // session stuck on an "API Error: Connection lost mid-response" with a
   // "continue" reply (1, 5 then 10 minutes) when this is on.
   autoResumeOnConnectionLoss: boolean;
+  // Server-read: archive a dispatched session once its run ends, after the
+  // grace, unless its worker profile is listed.
+  dispatchAutoArchive: boolean;
+  dispatchAutoArchiveGraceSecs: number;
+  dispatchAutoArchiveKeepProfiles: string[];
   // Macros menu (off by default) and its entries. Serializes as `data.macros`.
   macros: MacrosSettings;
   plugins: PluginsSettings;
@@ -608,6 +634,9 @@ const DEFAULTS: SettingsState = {
   secretScrubPatterns: [],
   sessionEmojiPrefix: false,
   autoResumeOnConnectionLoss: false,
+  dispatchAutoArchive: true,
+  dispatchAutoArchiveGraceSecs: DISPATCH_ARCHIVE_GRACE_DEFAULT,
+  dispatchAutoArchiveKeepProfiles: [],
   macros: { enabled: false, items: [] },
   plugins: { enabled: {}, config: {} },
   toastPosition: DEFAULT_TOAST_POSITION,
@@ -681,6 +710,13 @@ export function mergeDefaults(
     secretScrubPatterns: mergeSecretScrubPatterns(p.secretScrubPatterns),
     sessionEmojiPrefix: p.sessionEmojiPrefix === true,
     autoResumeOnConnectionLoss: p.autoResumeOnConnectionLoss === true,
+    dispatchAutoArchive: p.dispatchAutoArchive !== false,
+    dispatchAutoArchiveGraceSecs: clampDispatchArchiveGrace(
+      p.dispatchAutoArchiveGraceSecs,
+    ),
+    dispatchAutoArchiveKeepProfiles: clampProfileNames(
+      p.dispatchAutoArchiveKeepProfiles,
+    ),
     macros: mergeMacros(p.macros),
     plugins: {
       enabled: clampPluginsEnabled(p.plugins?.enabled),
@@ -1130,6 +1166,30 @@ class Settings {
   }
   get autoResumeOnConnectionLoss(): boolean {
     return this.state.autoResumeOnConnectionLoss;
+  }
+
+  setDispatchAutoArchive(on: boolean) {
+    this.state.dispatchAutoArchive = on;
+    this.persist();
+  }
+  get dispatchAutoArchive(): boolean {
+    return this.state.dispatchAutoArchive;
+  }
+
+  setDispatchAutoArchiveGraceSecs(secs: number) {
+    this.state.dispatchAutoArchiveGraceSecs = clampDispatchArchiveGrace(secs);
+    this.persist();
+  }
+  get dispatchAutoArchiveGraceSecs(): number {
+    return this.state.dispatchAutoArchiveGraceSecs;
+  }
+
+  setDispatchAutoArchiveKeepProfiles(names: string[]) {
+    this.state.dispatchAutoArchiveKeepProfiles = clampProfileNames(names);
+    this.persist();
+  }
+  get dispatchAutoArchiveKeepProfiles(): string[] {
+    return this.state.dispatchAutoArchiveKeepProfiles;
   }
 
   get pluginsEnabled(): Record<string, boolean> {

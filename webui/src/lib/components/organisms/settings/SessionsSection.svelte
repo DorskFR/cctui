@@ -3,7 +3,7 @@
 	// screen, and conversation behaviour (auto-resume, archive shortcut). The
 	// per-section sort and the label filter are set on the Sessions page itself,
 	// so the description only points there.
-	import { Link, SegmentedControl, Select, Switch } from '@dorsk/tsumikit';
+	import { Input, Link, SegmentedControl, Select, Switch } from '@dorsk/tsumikit';
 	import type { SegmentOption } from '@dorsk/tsumikit';
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
@@ -20,6 +20,17 @@
 	const conversationDock = $derived(settings.conversationDock);
 	const sessionEmojiPrefix = $derived(settings.sessionEmojiPrefix);
 	const autoResume = $derived(settings.autoResumeOnConnectionLoss);
+	const dispatchArchive = $derived(settings.dispatchAutoArchive);
+
+	function onGrace(e: Event) {
+		settings.setDispatchAutoArchiveGraceSecs((e.currentTarget as HTMLInputElement).valueAsNumber);
+	}
+
+	function onKeepProfiles(e: Event) {
+		settings.setDispatchAutoArchiveKeepProfiles(
+			(e.currentTarget as HTMLInputElement).value.split(',')
+		);
+	}
 
 	const viewOptions: SegmentOption[] = [
 		{ value: 'list', label: m.settings_view_list() },
@@ -238,6 +249,50 @@
 			<Switch
 				bind:checked={() => settings.roleTintedBackground, (v) => settings.setRoleTintedBackground(v)}
 				label={m.settings_role_tinted_background_label()}
+			/>
+		</SettingRow>
+	</SettingGroup>
+
+	<SettingGroup title={m.settings_group_dispatch()}>
+		<SettingRow
+			label={m.settings_dispatch_archive_label()}
+			help={m.settings_dispatch_archive_help()}
+			server
+		>
+			<Switch
+				bind:checked={() => dispatchArchive, (v) => settings.setDispatchAutoArchive(v)}
+				label={m.settings_dispatch_archive_label()}
+			/>
+		</SettingRow>
+		<SettingRow
+			label={m.settings_dispatch_archive_grace_label()}
+			help={m.settings_dispatch_archive_grace_help()}
+			disabled={!dispatchArchive}
+			server
+		>
+			<Input
+				type="number"
+				min="0"
+				max="3600"
+				step="1"
+				value={settings.dispatchAutoArchiveGraceSecs}
+				disabled={!dispatchArchive}
+				onchange={onGrace}
+				aria-label={m.settings_dispatch_archive_grace_label()}
+			/>
+		</SettingRow>
+		<SettingRow
+			label={m.settings_dispatch_archive_keep_label()}
+			help={m.settings_dispatch_archive_keep_help()}
+			disabled={!dispatchArchive}
+			server
+		>
+			<Input
+				style="width:100%"
+				value={settings.dispatchAutoArchiveKeepProfiles.join(', ')}
+				disabled={!dispatchArchive}
+				onchange={onKeepProfiles}
+				aria-label={m.settings_dispatch_archive_keep_label()}
 			/>
 		</SettingRow>
 	</SettingGroup>

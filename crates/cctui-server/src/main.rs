@@ -15,6 +15,7 @@ mod config;
 mod cost;
 mod crypto;
 mod db;
+mod dispatch_archive;
 mod dispatch_liveness;
 mod dispatchers;
 mod envelope_guard;
@@ -57,6 +58,7 @@ mod scheduled_spawns;
 mod search_index;
 mod session_emoji;
 mod session_plugins;
+mod session_viewers;
 mod settings_catalog;
 mod skill_store;
 mod soft_limit;
@@ -585,6 +587,13 @@ fn spawn_sweeps(state: &AppState) {
         let state = state.clone();
         move || keepalive_sweep(state.clone())
     });
+    spawn_periodic(session_viewers::HEARTBEAT, {
+        let state = state.clone();
+        move || {
+            let state = state.clone();
+            async move { session_viewers::heartbeat(&state).await }
+        }
+    });
     spawn_periodic(REAPER_PERIOD, {
         let pool = state.pool.clone();
         let tracked = state.presence.ip.is_some();
@@ -839,6 +848,7 @@ async fn reaper_sweep(state: &AppState) {
     demote_idle_registered(state).await;
     let archived = auto_archive_stale(state).await;
     auto_archive::sweep(state).await;
+    dispatch_archive::sweep(state).await;
     let events_pruned = events::prune(&state.pool).await;
     if archived > 0 || events_pruned > 0 {
         events::record(
