@@ -3,6 +3,8 @@
 //! the blob route serve them.
 
 pub mod backfill;
+pub mod recover;
+pub mod validate;
 
 use std::collections::HashMap;
 
@@ -22,6 +24,28 @@ pub const INLINE_IMAGES_MAX_BYTES: usize = 8 * 1024 * 1024;
 pub struct Extracted {
     pub hash: String,
     pub bytes: Vec<u8>,
+    pub corrupt: Option<&'static str>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Tally {
+    pub valid: u64,
+    pub corrupt: u64,
+    pub recovered: u64,
+}
+
+impl Tally {
+    #[must_use]
+    pub fn of(blobs: &[Extracted], recovered: u64) -> Self {
+        let corrupt = blobs.iter().filter(|b| b.corrupt.is_some()).count() as u64;
+        Self { valid: blobs.len() as u64 - corrupt, corrupt, recovered }
+    }
+
+    pub const fn add(&mut self, other: Self) {
+        self.valid += other.valid;
+        self.corrupt += other.corrupt;
+        self.recovered += other.recovered;
+    }
 }
 
 fn is_candidate(map: &Map<String, Value>) -> bool {
@@ -40,29 +64,40 @@ fn contains_candidate(v: &Value) -> bool {
     }
 }
 
-/// A ref with `"encoding": "base64"` names a blob holding the base64 text
-/// verbatim: data that does not decode (secret redaction rewrote part of it)
-/// still leaves the row, and comes back byte for byte.
+/// A ref with `"encoding": "base64"` names a blob holding the source's base64
+/// text verbatim, kept because it is not a valid image (`corrupt_reason` says
+/// why): it is never served as one.
 const OPAQUE_ENCODING: &str = "base64";
+
+fn ref_map(hash: &str, size: u64, media_type: Option<String>) -> Option<Map<String, Value>> {
+    match serde_json::to_value(BlobRef::new(hash, size, media_type)) {
+        Ok(Value::Object(r)) => Some(r),
+        _ => None,
+    }
+}
+
+fn mark_corrupt(r: &mut Map<String, Value>, reason: &str) {
+    r.insert("encoding".to_owned(), Value::from(OPAQUE_ENCODING));
+    r.insert("corrupt".to_owned(), Value::Bool(true));
+    r.insert("corrupt_reason".to_owned(), Value::from(reason));
+}
 
 fn decode(map: &Map<String, Value>) -> Option<(Extracted, Map<String, Value>)> {
     let data = map.get("data").and_then(Value::as_str)?;
-    let (bytes, opaque) = base64::engine::general_purpose::STANDARD
-        .decode(data)
-        .map_or_else(|_| (data.as_bytes().to_vec(), true), |b| (b, false));
+    let declared = map.get("media_type").and_then(Value::as_str);
+    let (bytes, media_type, corrupt) = match validate::check(declared, data) {
+        Ok(v) => (v.bytes, v.media_type, None),
+        Err(reason) => (data.as_bytes().to_vec(), declared.map(str::to_owned), Some(reason)),
+    };
     if !(MIN_BLOB_BYTES..=MAX_BLOB_BYTES).contains(&bytes.len()) {
         return None;
     }
     let hash = hex::encode(Sha256::digest(&bytes));
-    let media_type = map.get("media_type").and_then(Value::as_str).map(str::to_owned);
-    let r = BlobRef::new(hash.clone(), bytes.len() as u64, media_type);
-    let Ok(Value::Object(mut r)) = serde_json::to_value(r) else {
-        return None;
-    };
-    if opaque {
-        r.insert("encoding".to_owned(), Value::from(OPAQUE_ENCODING));
+    let mut r = ref_map(&hash, bytes.len() as u64, media_type)?;
+    if let Some(reason) = corrupt {
+        mark_corrupt(&mut r, reason);
     }
-    Some((Extracted { hash, bytes }, r))
+    Some((Extracted { hash, bytes, corrupt }, r))
 }
 
 fn rewrite(v: &mut Value, out: &mut Vec<Extracted>) {
@@ -93,6 +128,121 @@ pub fn extract(payload: &Value) -> Option<(Value, Vec<Extracted>)> {
     let mut blobs = Vec::new();
     rewrite(&mut out, &mut blobs);
     (!blobs.is_empty()).then_some((out, blobs))
+}
+
+/// [`extract`] fully decodes every image, so it runs off the async workers.
+pub async fn extract_blocking(payload: &Value) -> Option<(Value, Vec<Extracted>)> {
+    if !contains_candidate(payload) {
+        return None;
+    }
+    let copy = payload.clone();
+    tokio::task::spawn_blocking(move || extract(&copy)).await.unwrap_or_else(|err| {
+        tracing::warn!(%err, "image extraction failed; payload kept inline");
+        None
+    })
+}
+
+fn retarget(v: &mut Value, from: &str, to: &recover::Intact) {
+    match v {
+        Value::Object(map) => {
+            if blob_ref(map) == Some(from) {
+                if let Some(mut r) = ref_map(&to.hash, to.size, to.media_type.clone()) {
+                    r.insert("recovered".to_owned(), Value::Bool(true));
+                    *map = r;
+                }
+                return;
+            }
+            map.values_mut().for_each(|x| retarget(x, from, to));
+        }
+        Value::Array(items) => items.iter_mut().for_each(|x| retarget(x, from, to)),
+        _ => {}
+    }
+}
+
+fn flag(v: &mut Value, hash: &str, reason: &str) {
+    match v {
+        Value::Object(map) => {
+            if blob_ref(map) == Some(hash) {
+                mark_corrupt(map, reason);
+                return;
+            }
+            map.values_mut().for_each(|x| flag(x, hash, reason));
+        }
+        Value::Array(items) => items.iter_mut().for_each(|x| flag(x, hash, reason)),
+        _ => {}
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct Repair {
+    /// Blobs the payload now points at instead of a redacted copy.
+    pub intact: Vec<String>,
+    pub tally: Tally,
+    pub changed: bool,
+}
+
+/// Points refs to redacted data at the intact blob they were cut from; the
+/// redacted copy is then not stored.
+pub async fn recover_redacted(
+    conn: &mut sqlx::PgConnection,
+    session_id: &str,
+    payload: &mut Value,
+    blobs: &mut Vec<Extracted>,
+) -> Result<Vec<String>, sqlx::Error> {
+    let mut intact = Vec::new();
+    let mut i = 0;
+    while i < blobs.len() {
+        let found = match (blobs[i].corrupt, std::str::from_utf8(&blobs[i].bytes)) {
+            (Some(validate::REDACTED), Ok(text)) => {
+                recover::find_intact(&mut *conn, session_id, text).await?
+            }
+            _ => None,
+        };
+        if let Some(found) = found {
+            retarget(payload, &blobs[i].hash, &found);
+            intact.push(found.hash);
+            blobs.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+    Ok(intact)
+}
+
+/// Refs stored opaque before sources were validated carry no verdict: each is
+/// recovered or flagged corrupt.
+pub async fn review_opaque(
+    conn: &mut sqlx::PgConnection,
+    session_id: &str,
+    payload: &mut Value,
+) -> Result<Repair, sqlx::Error> {
+    let mut refs = Vec::new();
+    collect_refs(payload, &mut refs);
+    let mut repair = Repair::default();
+    for r in refs.into_iter().filter(|r| r.opaque && !r.flagged) {
+        let stored: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT bytes FROM daemon_blobs WHERE hash = $1")
+                .bind(&r.hash)
+                .fetch_optional(&mut *conn)
+                .await?;
+        let Some(text) = stored.and_then(|b| String::from_utf8(b).ok()) else { continue };
+        let Err(reason) = validate::check(r.media_type.as_deref(), &text) else { continue };
+        let found = if reason == validate::REDACTED {
+            recover::find_intact(&mut *conn, session_id, &text).await?
+        } else {
+            None
+        };
+        if let Some(found) = found {
+            retarget(payload, &r.hash, &found);
+            repair.intact.push(found.hash);
+            repair.tally.recovered += 1;
+        } else {
+            flag(payload, &r.hash, reason);
+            repair.tally.corrupt += 1;
+        }
+        repair.changed = true;
+    }
+    Ok(repair)
 }
 
 /// `Ok(None)` when a stored row does not hash to its key (a payload must never
@@ -155,7 +305,7 @@ pub async fn externalize(
     event_type: &str,
     payload: &mut Value,
 ) -> bool {
-    let Some((rewritten, blobs)) = extract(payload) else {
+    let Some((mut rewritten, mut blobs)) = extract_blocking(payload).await else {
         return false;
     };
     let original = &*payload;
@@ -163,6 +313,12 @@ pub async fn externalize(
         let mut conn = pool.acquire().await?;
         if stored_inline(&mut conn, session_id, event_type, original).await? {
             return Ok(None);
+        }
+        recover_redacted(&mut conn, session_id, &mut rewritten, &mut blobs).await?;
+        for b in &blobs {
+            if let Some(reason) = b.corrupt {
+                tracing::warn!(session_id, hash = %b.hash, reason, "stored a corrupt image source");
+            }
         }
         store_verified(&mut conn, &blobs).await
     }
@@ -201,7 +357,9 @@ pub fn set_payload(event: &mut AdapterEvent, rewritten: &Value) {
 struct RefInfo {
     hash: String,
     size: u64,
+    media_type: Option<String>,
     opaque: bool,
+    flagged: bool,
 }
 
 fn blob_ref(map: &Map<String, Value>) -> Option<&str> {
@@ -219,8 +377,13 @@ fn collect_refs(v: &Value, out: &mut Vec<RefInfo>) {
                     out.push(RefInfo {
                         hash: hash.to_owned(),
                         size: map.get("size").and_then(Value::as_u64).unwrap_or(0),
+                        media_type: map
+                            .get("media_type")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
                         opaque: map.get("encoding").and_then(Value::as_str)
                             == Some(OPAQUE_ENCODING),
+                        flagged: map.contains_key("corrupt"),
                     });
                 }
                 return;
@@ -327,7 +490,10 @@ pub async fn inline_client_rows(
         let mut refs = Vec::new();
         collect_refs(&blocks, &mut refs);
         for r in refs {
-            if data.contains_key(&r.hash) || !usize::try_from(r.size).is_ok_and(|s| s <= budget) {
+            if r.opaque
+                || data.contains_key(&r.hash)
+                || !usize::try_from(r.size).is_ok_and(|s| s <= budget)
+            {
                 continue;
             }
             let Some((media_type, bytes)) =
@@ -339,12 +505,7 @@ pub async fn inline_client_rows(
                 continue;
             }
             budget -= bytes.len();
-            let text = if r.opaque {
-                let Ok(text) = String::from_utf8(bytes) else { continue };
-                text
-            } else {
-                base64::engine::general_purpose::STANDARD.encode(&bytes)
-            };
+            let text = base64::engine::general_purpose::STANDARD.encode(&bytes);
             data.insert(r.hash, (media_type, text));
         }
         inline_refs(&mut blocks, &data);

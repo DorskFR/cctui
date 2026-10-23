@@ -316,13 +316,7 @@ impl CodexSession {
     fn developer_instructions(&self) -> Option<String> {
         crate::preamble::merge(
             self.skills.catalog.clone(),
-            crate::preamble::for_launch(
-                self.staging_id(),
-                &self.cwd,
-                self.roster_self(),
-                &self.context,
-                self.agent_mcp.is_some(),
-            ),
+            crate::preamble::for_launch(self.staging_id(), &self.context, self.agent_mcp.is_some()),
         )
     }
 
@@ -341,8 +335,7 @@ impl CodexSession {
         }
     }
 
-    /// The roster id this session already holds, so the preamble does not
-    /// report the session to itself. A fresh thread has none yet.
+    /// The thread id a resumed session already holds. A fresh thread has none yet.
     const fn roster_self(&self) -> Option<&str> {
         match &self.launch {
             SessionLaunch::Resume { thread_id, .. } => Some(thread_id.as_str()),
@@ -1044,66 +1037,6 @@ mod tests {
             !req["params"]["config"]["model_providers"].is_object(),
             "an unbound session still declares no provider"
         );
-    }
-
-    /// Register `local_id` as a live session in `cwd` on the process-wide
-    /// roster, so a neighbour exists for the preamble to report.
-    fn note_neighbour(local_id: &str, cwd: &std::path::Path) {
-        crate::neighbours::global().observe(
-            "claude-code",
-            &AdapterEvent::SessionStarted {
-                local_id: local_id.to_owned(),
-                meta: SessionMeta {
-                    working_dir: Some(cwd.to_string_lossy().into_owned()),
-                    parent_local_id: None,
-                    extra: json!({ "started_at_ms": crate::neighbours::now_ms() }),
-                },
-            },
-        );
-    }
-
-    /// Codex has no prompt preamble of its own, so the shared-checkout notice
-    /// has to ride `developerInstructions` — alongside the skill catalog, not
-    /// instead of it.
-    #[test]
-    fn a_thread_started_beside_a_live_session_is_told_they_share_the_checkout() {
-        let dir = tempfile::tempdir().unwrap();
-        let neighbour = format!("nb-{}", uuid::Uuid::new_v4());
-        note_neighbour(&neighbour, dir.path());
-
-        let mut session = session_with_tier(fresh_launch(), None);
-        session.cwd = dir.path().to_string_lossy().into_owned();
-        session.skills = skills_of("launch-key-9", "<cctui_skills>yubisashi</cctui_skills>");
-        let (req, method) = session.stdio_thread_request();
-        assert_eq!(method, "thread/start");
-        let instructions = req["params"]["developerInstructions"].as_str().expect("instructions");
-        assert!(instructions.contains("<cctui_skills>yubisashi</cctui_skills>"), "{instructions}");
-        assert!(instructions.contains("shared cwd: 1 other live session"), "{instructions}");
-        assert!(instructions.contains("do not switch branches"), "{instructions}");
-
-        crate::neighbours::global().forget(&[neighbour]);
-    }
-
-    /// A resume is already on the roster; the notice must not report the
-    /// session to itself.
-    #[test]
-    fn a_resumed_thread_is_not_its_own_neighbour() {
-        let dir = tempfile::tempdir().unwrap();
-        let thread_id = format!("tid-{}", uuid::Uuid::new_v4());
-        note_neighbour(&thread_id, dir.path());
-
-        let mut session = session_with_tier(
-            SessionLaunch::Resume { thread_id: thread_id.clone(), initial_commands: Vec::new() },
-            None,
-        );
-        session.cwd = dir.path().to_string_lossy().into_owned();
-        let (req, _) = session.stdio_thread_request();
-        assert!(
-            req["params"]["developerInstructions"].is_null(),
-            "the only live session in the tree is this one"
-        );
-
-        crate::neighbours::global().forget(&[thread_id]);
     }
 
     /// Codex has no prompt preamble, so an attached memory has to arrive

@@ -1,3 +1,4 @@
+use std::io::Cursor;
 use std::time::Duration;
 
 use base64::Engine;
@@ -9,11 +10,9 @@ use uuid::Uuid;
 use super::backfill::{Config, Outcome, Walk, rewrite_event};
 use super::*;
 
-/// Incompressible bytes behind a PNG signature, like a real screenshot.
-#[must_use]
-pub fn screenshot(seed: u128, len: usize) -> Vec<u8> {
-    let mut out = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
-    let mut x = u64::try_from(seed % u128::from(u64::MAX)).unwrap_or(1) | 1;
+fn noise(seed: u128, len: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(len + 8);
+    let mut x = (u64::try_from(seed % u128::from(u64::MAX)).unwrap_or(1) << 1) | 1;
     while out.len() < len {
         x ^= x << 13;
         x ^= x >> 7;
@@ -22,6 +21,26 @@ pub fn screenshot(seed: u128, len: usize) -> Vec<u8> {
     }
     out.truncate(len);
     out
+}
+
+fn encode(seed: u128, len: usize, format: image::ImageFormat) -> Vec<u8> {
+    let side = u32::try_from((len / 3).isqrt().max(1)).unwrap();
+    let raw = noise(seed, usize::try_from(side * side * 3).unwrap());
+    let img = image::RgbImage::from_raw(side, side, raw).unwrap();
+    let mut out = Cursor::new(Vec::new());
+    img.write_to(&mut out, format).unwrap();
+    out.into_inner()
+}
+
+/// A decodable PNG of noise, about `len` bytes like a real screenshot.
+#[must_use]
+pub fn screenshot(seed: u128, len: usize) -> Vec<u8> {
+    encode(seed, len, image::ImageFormat::Png)
+}
+
+#[must_use]
+pub fn photo(seed: u128, len: usize) -> Vec<u8> {
+    encode(seed, len, image::ImageFormat::Jpeg)
 }
 
 fn b64(bytes: &[u8]) -> String {
@@ -47,8 +66,12 @@ pub fn read_result(tool_use_id: &str, bytes: &[u8]) -> Value {
 
 /// Secret redaction rewrote a token-shaped run inside the base64 on prod.
 fn redacted_result(tool_use_id: &str, bytes: &[u8]) -> (Value, String) {
+    redacted_at(tool_use_id, bytes, 240..304)
+}
+
+fn redacted_at(tool_use_id: &str, bytes: &[u8], range: std::ops::Range<usize>) -> (Value, String) {
     let mut data = b64(bytes);
-    data.replace_range(240..304, "[REDACTED:square_token]");
+    data.replace_range(range, "[REDACTED:square_token]");
     let payload = json!({
         "kind": "tool_result",
         "tool_use_id": tool_use_id,
@@ -87,7 +110,7 @@ fn extract_moves_a_prod_shaped_read_result() {
     assert_eq!(blobs[0].hash, sha(&png));
     assert_eq!(blobs[0].bytes, png);
     let expected = json!({
-        "type": "cctui-blob", "blob_id": sha(&png), "size": 300_000, "media_type": "image/png",
+        "type": "cctui-blob", "blob_id": sha(&png), "size": png.len(), "media_type": "image/png",
     });
     assert_eq!(source(&out, 0), &expected);
     assert_eq!(out["content"][0]["type"], "image");
@@ -98,7 +121,7 @@ fn extract_moves_a_prod_shaped_read_result() {
 
 #[test]
 fn extract_keeps_text_and_dedups_a_repeated_source() {
-    let jpg = screenshot(2, 50_000);
+    let jpg = photo(2, 50_000);
     let mut payload = captioned_result("toolu_02", &jpg);
     payload["content"].as_array_mut().unwrap().push(json!({"type": "image", "source": {
         "type": "base64", "media_type": "image/jpeg", "data": b64(&jpg),
@@ -117,8 +140,39 @@ fn extract_moves_redacted_data_verbatim() {
     assert_eq!(blobs[0].bytes, data.as_bytes());
     assert_eq!(blobs[0].hash, sha(data.as_bytes()));
     assert_eq!(source(&out, 0)["encoding"], "base64");
+    assert_eq!(source(&out, 0)["corrupt"], true);
+    assert_eq!(source(&out, 0)["corrupt_reason"], "redacted");
     assert_eq!(source(&out, 0)["size"], data.len());
     assert!(!out.to_string().contains("REDACTED"));
+    assert_eq!(blobs[0].corrupt, Some(validate::REDACTED));
+}
+
+#[test]
+fn extract_keeps_undecodable_images_verbatim_and_flagged() {
+    let png = screenshot(8, 20_000);
+    let mut fake = png[..8].to_vec();
+    fake.extend_from_slice(&noise(9, 20_000));
+    let truncated = &png[..png.len() / 2];
+    for (bytes, reason) in [(&fake[..], "undecodable"), (truncated, "undecodable")] {
+        let (out, blobs) = extract(&read_result("t", bytes)).unwrap();
+        assert_eq!(blobs[0].bytes, b64(bytes).as_bytes(), "kept as the original text");
+        assert_eq!(source(&out, 0)["corrupt"], true);
+        assert_eq!(source(&out, 0)["corrupt_reason"], reason);
+        assert_eq!(source(&out, 0)["encoding"], "base64");
+    }
+    let (out, blobs) = extract(&read_result("t", &png)).unwrap();
+    assert_eq!(blobs[0].corrupt, None);
+    assert!(source(&out, 0).get("corrupt").is_none(), "{out}");
+}
+
+#[test]
+fn tally_counts_valid_and_corrupt_sources() {
+    let (mut payload, _) = redacted_result("t", &screenshot(10, 30_000));
+    payload["content"].as_array_mut().unwrap().push(json!({"type": "image", "source": {
+        "type": "base64", "media_type": "image/jpeg", "data": b64(&photo(11, 30_000)),
+    }}));
+    let (_, blobs) = extract(&payload).unwrap();
+    assert_eq!(Tally::of(&blobs, 2), Tally { valid: 1, corrupt: 1, recovered: 2 });
 }
 
 #[test]
@@ -131,16 +185,20 @@ fn extract_leaves_small_and_moved_sources_alone() {
 
 #[test]
 fn readable_result_labels_images_and_keeps_text() {
-    let jpg = screenshot(5, 4096);
+    let jpg = photo(5, 4096);
     let inline = captioned_result("t", &jpg)["content"].to_string();
     assert_eq!(
-        readable_result(&inline).as_deref(),
-        Some("Screenshot saved to /tmp/shot.jpg\n\n[image image/jpeg 4 KB]")
+        readable_result(&inline),
+        Some(format!(
+            "Screenshot saved to /tmp/shot.jpg\n\n[image image/jpeg {} KB]",
+            jpg.len().div_ceil(1024)
+        ))
     );
-    let (moved, _) = extract(&read_result("t", &screenshot(6, 300_000))).unwrap();
+    let png = screenshot(6, 300_000);
+    let (moved, _) = extract(&read_result("t", &png)).unwrap();
     assert_eq!(
-        readable_result(&moved["content"].to_string()).as_deref(),
-        Some("[image image/png 293 KB]")
+        readable_result(&moved["content"].to_string()),
+        Some(format!("[image image/png {} KB]", png.len().div_ceil(1024)))
     );
     assert!(readable_result("plain output").is_none());
     assert!(readable_result(r#"[{"type":"text","text":"no image"}]"#).is_none());
@@ -326,6 +384,17 @@ async fn cursor(pool: &PgPool, name: &str) -> (i64, i64) {
         .unwrap()
 }
 
+async fn verdicts(pool: &PgPool, name: &str) -> (i64, i64, i64) {
+    sqlx::query_as(
+        "SELECT images_valid, images_corrupt, images_recovered FROM image_blob_backfill \
+         WHERE name = $1",
+    )
+    .bind(name)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
 async fn drain(walk: &Walk, pool: &PgPool) -> usize {
     let mut rewritten = 0;
     for _ in 0..1000 {
@@ -380,8 +449,7 @@ async fn backfill_rewrites_prod_shaped_rows_resumably_and_idempotently() {
     let walk_name = format!("test-{}", db.uid);
     let seed = Uuid::new_v4().as_u128();
     let png = screenshot(seed, 420_000);
-    let mut jpg = screenshot(seed.wrapping_add(1), 250_000);
-    jpg[..3].copy_from_slice(&[0xFF, 0xD8, 0xFF]);
+    let jpg = photo(seed.wrapping_add(1), 250_000);
     let tiny = screenshot(seed.wrapping_add(2), 200);
 
     let read = db.insert(0, &read_result("toolu_read", &png)).await;
@@ -392,7 +460,8 @@ async fn backfill_rewrites_prod_shaped_rows_resumably_and_idempotently() {
     let small = read_result("toolu_small", &tiny);
     let small_id = db.insert(0, &small).await;
     let again = db.insert(1, &read_result("toolu_again", &png)).await;
-    let (redacted_payload, redacted) = redacted_result("toolu_redacted", &jpg);
+    let lost = photo(seed.wrapping_add(3), 60_000);
+    let (redacted_payload, redacted) = redacted_result("toolu_redacted", &lost);
     let redacted_id = db.insert(0, &redacted_payload).await;
     set_cursor(&db.pool, &walk_name, read - 1).await;
 
@@ -406,6 +475,8 @@ async fn backfill_rewrites_prod_shaped_rows_resumably_and_idempotently() {
     assert_eq!(drain(&resumed, &db.pool).await, 3, "a new walk resumes at the cursor");
     let opaque = source(&db.payload(redacted_id).await, 0).clone();
     assert_eq!(opaque["encoding"], "base64");
+    assert_eq!(opaque["corrupt"], true);
+    assert_eq!(opaque["corrupt_reason"], "redacted");
     assert_eq!(db.served(0, &sha(redacted.as_bytes())).await.as_deref(), Some(redacted.as_bytes()));
 
     for (id, i, bytes) in [(read, 0, &png), (captioned, 1, &jpg), (again, 0, &png)] {
@@ -432,6 +503,7 @@ async fn backfill_rewrites_prod_shaped_rows_resumably_and_idempotently() {
     let after = [db.payload(read).await, db.payload(captioned).await, db.payload(again).await];
     assert_eq!(after, snapshot);
     assert_eq!(cursor(&db.pool, &walk_name).await.1, 4);
+    assert_eq!(verdicts(&db.pool, &walk_name).await, (3, 1, 0), "valid, corrupt, recovered");
 
     db.cleanup(&[sha(&png), sha(&jpg), sha(redacted.as_bytes())], Some(&walk_name)).await;
 }
@@ -531,7 +603,8 @@ async fn inline_on_demand_follows_links_and_the_size_limit() {
     assert!(inlined(0, png.len() - 1).await.contains("cctui-blob"), "past the limit: a ref");
     assert!(inlined(1, INLINE_IMAGES_MAX_BYTES).await.contains("cctui-blob"), "unlinked: a ref");
 
-    let (mut redacted, data) = redacted_result("toolu_redacted", &png);
+    let lost = screenshot(Uuid::new_v4().as_u128(), 60_000);
+    let (mut redacted, data) = redacted_result("toolu_redacted", &lost);
     let original = redacted["content"].clone();
     assert!(externalize(&db.pool, &db.sessions[0], "tool_use", &mut redacted).await);
     sqlx::query("INSERT INTO session_blob_links (session_id, hash) VALUES ($1, $2)")
@@ -545,7 +618,160 @@ async fn inline_on_demand_follows_links_and_the_size_limit() {
         .await
         .unwrap();
     let summary = rows[0]["output_summary"].as_str().unwrap();
-    let restored: Value = serde_json::from_str(summary).unwrap();
-    assert_eq!(restored, original, "redacted data comes back byte for byte");
+    let kept: Value = serde_json::from_str(summary).unwrap();
+    assert_eq!(kept[0]["source"]["type"], "cctui-blob", "never inlined as an image");
+    assert_eq!(kept[0]["source"]["corrupt"], true);
+    assert_ne!(kept, original);
+    let text = db.served(0, &sha(data.as_bytes())).await;
+    assert_eq!(text.as_deref(), Some(data.as_bytes()), "the original text is kept");
     db.cleanup(&[sha(&png), sha(data.as_bytes())], None).await;
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &b in bytes {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+        }
+    }
+    !crc
+}
+
+/// `png` with a `tEXt` chunk after IHDR: twins differing only in `text`.
+fn with_text(png: &[u8], text: &[u8]) -> Vec<u8> {
+    let mut chunk = b"tEXt".to_vec();
+    chunk.extend_from_slice(b"k\0");
+    chunk.extend_from_slice(text);
+    let mut out = png[..33].to_vec();
+    out.extend_from_slice(&u32::try_from(chunk.len() - 4).unwrap().to_be_bytes());
+    out.extend_from_slice(&chunk);
+    out.extend_from_slice(&crc32(&chunk).to_be_bytes());
+    out.extend_from_slice(&png[33..]);
+    out
+}
+
+impl Seeded {
+    async fn store_intact(&self, session: usize, bytes: &[u8]) {
+        let mut conn = self.pool.acquire().await.unwrap();
+        crate::routes::blobs::store_blob_in(&mut conn, bytes, Some("image/png")).await.unwrap();
+        self.link(session, &sha(bytes)).await;
+    }
+
+    async fn link(&self, session: usize, hash: &str) {
+        sqlx::query("INSERT INTO session_blob_links (session_id, hash) VALUES ($1, $2)")
+            .bind(&self.sessions[session])
+            .bind(hash)
+            .execute(&self.pool)
+            .await
+            .unwrap();
+    }
+
+    /// A ref stored opaque before sources were validated.
+    async fn legacy_opaque(&self, session: usize, text: &str) -> i64 {
+        let mut conn = self.pool.acquire().await.unwrap();
+        crate::routes::blobs::store_blob_in(&mut conn, text.as_bytes(), Some("text/plain"))
+            .await
+            .unwrap();
+        drop(conn);
+        self.link(session, &sha(text.as_bytes())).await;
+        let payload = json!({
+            "kind": "tool_result", "tool_use_id": "toolu_legacy", "is_error": false,
+            "content": [{"type": "image", "source": {
+                "type": "cctui-blob", "blob_id": sha(text.as_bytes()), "size": text.len(),
+                "media_type": "image/png", "encoding": "base64",
+            }}],
+        });
+        self.insert(session, &payload).await
+    }
+}
+
+#[tokio::test]
+async fn redacted_copies_are_recovered_from_the_owners_intact_blob() {
+    let Some(db) = seeded("image_recover", 2).await else { return };
+    let walk_name = format!("test-{}", db.uid);
+    let seed = Uuid::new_v4().as_u128();
+    let (png, legacy, lost) = (
+        screenshot(seed, 60_000),
+        screenshot(seed.wrapping_add(1), 40_000),
+        screenshot(seed.wrapping_add(2), 40_000),
+    );
+    db.store_intact(1, &png).await;
+    db.store_intact(1, &legacy).await;
+    let (payload, data) = redacted_result("toolu_lost", &png);
+    let inline = db.insert(0, &payload).await;
+    let legacy_text = redacted_result("t", &legacy).1;
+    let legacy_id = db.legacy_opaque(0, &legacy_text).await;
+    let lost_text = redacted_result("t", &lost).1;
+    let lost_id = db.legacy_opaque(0, &lost_text).await;
+    set_cursor(&db.pool, &walk_name, inline - 1).await;
+
+    assert_eq!(drain(&walk(&walk_name, 20, &db.sessions), &db.pool).await, 3);
+    for (id, bytes) in [(inline, &png), (legacy_id, &legacy)] {
+        let src = source(&db.payload(id).await, 0).clone();
+        let want = json!({"type": "cctui-blob", "blob_id": sha(bytes), "size": bytes.len(),
+            "media_type": "image/png", "recovered": true});
+        assert_eq!(src, want);
+        assert_eq!(db.served(0, &sha(bytes)).await.as_deref(), Some(bytes.as_slice()));
+    }
+    assert_eq!(db.blob_rows(&sha(data.as_bytes())).await, 0, "the redacted copy is not stored");
+    let flagged = source(&db.payload(lost_id).await, 0).clone();
+    assert_eq!(flagged["blob_id"], sha(lost_text.as_bytes()));
+    assert_eq!(flagged["corrupt"], true);
+    assert_eq!(flagged["corrupt_reason"], "redacted");
+    assert_eq!(verdicts(&db.pool, &walk_name).await, (0, 1, 2), "valid, corrupt, recovered");
+
+    let ids = [inline, legacy_id, lost_id];
+    let mut snapshot = Vec::new();
+    for id in ids {
+        snapshot.push(db.payload(id).await);
+    }
+    set_cursor(&db.pool, &walk_name, inline - 1).await;
+    assert_eq!(drain(&walk(&walk_name, 20, &db.sessions), &db.pool).await, 0, "settled");
+    for (id, before) in ids.into_iter().zip(snapshot) {
+        assert_eq!(db.payload(id).await, before);
+    }
+
+    let hashes = [&png, &legacy].map(|b| sha(b)).into_iter();
+    let texts = [&legacy_text, &lost_text].map(|t| sha(t.as_bytes())).into_iter();
+    db.cleanup(&hashes.chain(texts).collect::<Vec<_>>(), Some(&walk_name)).await;
+}
+
+#[tokio::test]
+async fn recovery_needs_one_match_among_the_owners_blobs() {
+    let Some(db) = seeded("image_recover_ambiguous", 2).await else { return };
+    let Some(other) = seeded("image_recover_other_user", 1).await else { return };
+    let seed = Uuid::new_v4().as_u128();
+    let base = screenshot(seed, 30_000);
+    let (twin_a, twin_b) = (with_text(&base, &[b'a'; 48]), with_text(&base, &[b'b'; 48]));
+    let (one, data) = redacted_at("toolu_one", &twin_a, 56..128);
+    let (two, _) = redacted_at("toolu_two", &twin_b, 56..128);
+    assert!(recover::fits(&b64(&twin_b), &recover::segments(&data).unwrap()), "twins share it");
+    let mut conn = db.pool.acquire().await.unwrap();
+
+    db.store_intact(1, &twin_a).await;
+    let first = db.insert(0, &one).await;
+    assert!(matches!(rewrite_event(&mut conn, first).await.unwrap(), Outcome::Rewritten { .. }));
+    assert_eq!(source(&db.payload(first).await, 0)["blob_id"], sha(&twin_a), "one match");
+
+    db.store_intact(1, &twin_b).await;
+    let second = db.insert(0, &two).await;
+    rewrite_event(&mut conn, second).await.unwrap();
+    assert_eq!(source(&db.payload(second).await, 0)["corrupt"], true, "two matches");
+
+    let foreign = screenshot(seed.wrapping_add(1), 30_000);
+    other.store_intact(0, &foreign).await;
+    let (theirs, foreign_text) = redacted_result("toolu_theirs", &foreign);
+    let third = db.insert(0, &theirs).await;
+    rewrite_event(&mut conn, third).await.unwrap();
+    let src = source(&db.payload(third).await, 0).clone();
+    assert_eq!(src["corrupt"], true, "another user's blob is never a match");
+    assert_eq!(src["blob_id"], sha(foreign_text.as_bytes()));
+    drop(conn);
+
+    let corrupt = [sha(data.as_bytes()), sha(redacted_at("", &twin_b, 56..128).1.as_bytes())];
+    other.cleanup(&[sha(&foreign)], None).await;
+    let mut hashes = vec![sha(&twin_a), sha(&twin_b), sha(foreign_text.as_bytes())];
+    hashes.extend(corrupt);
+    db.cleanup(&hashes, None).await;
 }

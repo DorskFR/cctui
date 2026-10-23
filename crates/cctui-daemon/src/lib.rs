@@ -41,7 +41,6 @@ pub mod machine_health;
 pub mod maintenance;
 pub mod mcp;
 pub mod mcpready;
-pub mod neighbours;
 pub mod offsets;
 pub mod plugins;
 pub mod preamble;

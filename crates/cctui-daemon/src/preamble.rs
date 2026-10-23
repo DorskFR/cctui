@@ -6,8 +6,6 @@
 //! adapter therefore implements one primitive — "deliver this text to the
 //! agent" — and nothing else.
 
-use std::time::SystemTime;
-
 use cctui_proto::api::SessionContextItem;
 use cctui_proto::injected::SESSION_CONTEXT;
 
@@ -29,16 +27,6 @@ pub const IMAGE_LINE: &str = "images: to show the user an image, put `![alt](/ab
     webp, at most 5 MB, the file under $HOME, /tmp or $TMPDIR. A posted image becomes \
     `![alt](cctui-img://…)`; to show one another session posted (a child's answer, a peer's \
     message), copy that marker into your final reply unchanged.\n";
-
-/// The shared-checkout warning for a session about to work in `cwd`.
-///
-/// `None` when no other live session shares its working tree. `local_id` is
-/// the session's own roster id, so a session already registered does not warn
-/// about itself; `None` before the harness has minted one.
-#[must_use]
-pub fn shared_checkout(cwd: &str, local_id: Option<&str>) -> Option<String> {
-    crate::neighbours::notice(&crate::neighbours::cwd_neighbours(cwd, local_id), SystemTime::now())
-}
 
 /// The session's rules, inline, or `None` when none apply. Rules are short by
 /// construction (the server caps them), so unlike memories they are not staged
@@ -124,27 +112,22 @@ pub fn stage_context(session_id: &str, items: &[SessionContextItem]) -> Option<S
 /// The whole neutral preamble for one launch, in one block a harness delivers
 /// verbatim.
 ///
-/// It carries the shared-checkout warning, the session's rules and attached
-/// context, and — when the session has the cctui MCP relay (`tools`) — the
+/// It carries the session's rules and attached context, and — when the session has the cctui MCP relay (`tools`) — the
 /// `CctuiContext` line. A block that is sent at all also carries
 /// [`IMAGE_LINE`]; the line alone is not worth a block, since a prompt-less
 /// spawn would then open a turn just to deliver it.
 ///
 /// `session_id` keys the staging dir (the launch key, so a relaunch restages
 /// in place); `None` means this launch has no stable key and its notes are
-/// skipped rather than written somewhere unpredictable. `local_id` is the
-/// session's roster id, absent until the harness mints one.
+/// skipped rather than written somewhere unpredictable.
 #[must_use]
 pub fn for_launch(
     session_id: Option<&str>,
-    cwd: &str,
-    local_id: Option<&str>,
     items: &[SessionContextItem],
     tools: bool,
 ) -> Option<String> {
-    let context =
-        merge(context_block(session_id, items), tools.then(|| CONTEXT_TOOL_LINE.to_owned()));
-    let body = merge(shared_checkout(cwd, local_id), context)?;
+    let body =
+        merge(context_block(session_id, items), tools.then(|| CONTEXT_TOOL_LINE.to_owned()))?;
     let body = format!("{}\n\n{IMAGE_LINE}", body.trim_end());
     Some(format!("<{SESSION_CONTEXT}>\n{}\n</{SESSION_CONTEXT}>", body.trim_end()))
 }
@@ -177,9 +160,8 @@ mod tests {
     }
 
     #[test]
-    fn a_session_alone_with_no_context_gets_no_block() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(for_launch(Some("s1"), &tmp.path().to_string_lossy(), None, &[], false).is_none());
+    fn a_session_with_no_context_gets_no_block() {
+        assert!(for_launch(Some("s1"), &[], false).is_none());
     }
 
     #[test]
@@ -226,17 +208,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    /// Context alone is enough to produce a block: a session with notes and no
-    /// neighbours must still be told about them.
     #[test]
     fn context_alone_produces_the_block() {
-        let tmp = tempfile::tempdir().unwrap();
         let session = format!("test-{}", uuid::Uuid::new_v4());
         let items = vec![item("memory", "House style", "be terse")];
-        let block = for_launch(Some(&session), &tmp.path().to_string_lossy(), None, &items, false)
-            .expect("a block");
+        let block = for_launch(Some(&session), &items, false).expect("a block");
         assert!(
-            for_launch(None, &tmp.path().to_string_lossy(), None, &items, false).is_none(),
+            for_launch(None, &items, false).is_none(),
             "without a staging key the notes are skipped, not written blind"
         );
         assert!(block.starts_with("<cctui-session-context>\n"), "{block}");
@@ -282,16 +260,13 @@ mod tests {
 
     #[test]
     fn a_session_with_the_relay_is_told_about_cctui_context() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cwd = tmp.path().to_string_lossy();
-        let block =
-            for_launch(None, &cwd, None, &[], true).expect("the tool line alone is a block");
+        let block = for_launch(None, &[], true).expect("the tool line alone is a block");
         assert!(block.contains(CONTEXT_TOOL_LINE.trim_end()), "{block}");
         assert!(block.contains("need the user's approval"), "{block}");
-        assert!(for_launch(None, &cwd, None, &[], false).is_none());
+        assert!(for_launch(None, &[], false).is_none());
 
         let rules = vec![item("rule", "Wt", "worktree")];
-        let block = for_launch(None, &cwd, None, &rules, true).expect("a block");
+        let block = for_launch(None, &rules, true).expect("a block");
         assert!(
             block.find("### Wt").expect("rule") < block.find("CctuiContext").expect("line"),
             "{block}"
@@ -300,12 +275,10 @@ mod tests {
 
     #[test]
     fn a_sent_block_tells_the_agent_how_to_show_an_image() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cwd = tmp.path().to_string_lossy();
-        let block = for_launch(None, &cwd, None, &[], true).expect("a block");
+        let block = for_launch(None, &[], true).expect("a block");
         assert!(block.contains(IMAGE_LINE.trim_end()), "{block}");
         assert!(block.ends_with(&format!("{}\n</cctui-session-context>", IMAGE_LINE.trim_end())));
-        assert!(for_launch(None, &cwd, None, &[], false).is_none(), "the line alone sends nothing");
+        assert!(for_launch(None, &[], false).is_none(), "the line alone sends nothing");
     }
 
     #[test]
