@@ -15,6 +15,8 @@ pub mod turn_end;
 pub mod uploads;
 pub mod version_gate;
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use cctui_proto::adapter::AdapterEvent;
 use tokio::sync::mpsc;
 
@@ -28,6 +30,14 @@ pub async fn emit(events: &mpsc::Sender<AdapterEvent>, event: AdapterEvent) {
     if let Err(err) = events.send(event).await {
         tracing::warn!(event = ?err.0, "adapter event dropped: the supervisor is gone");
     }
+}
+
+/// The `started_at_ms` an adapter stamps into `SessionMeta::extra` as it starts
+/// a session, so a later re-announcement cannot re-date it to the present.
+#[must_use]
+pub fn now_ms() -> u64 {
+    u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis()))
+        .unwrap_or(0)
 }
 
 /// A turn another agent sent through cctui (direct, room or cctuiverse). It must

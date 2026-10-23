@@ -17,7 +17,6 @@ pub(super) fn build_session_context(
     cwd: &str,
     staged: &[String],
     capability: Option<&cctui_proto::api::SpawnCapability>,
-    neighbours: &[crate::neighbours::Neighbour],
     context: Option<&str>,
 ) -> String {
     let mut b = format!("<{SESSION_CONTEXT}>\n");
@@ -38,9 +37,6 @@ pub(super) fn build_session_context(
         let _ = writeln!(b, "permission-mode: {}", mode.normalized_label());
     }
     let _ = writeln!(b, "cwd: {cwd}");
-    if let Some(shared) = crate::neighbours::notice(neighbours, std::time::SystemTime::now()) {
-        b.push_str(&shared);
-    }
     if let Some(context) = context.map(str::trim).filter(|c| !c.is_empty()) {
         let _ = writeln!(b, "{context}");
     }
@@ -1080,58 +1076,11 @@ mod tests {
         }
     }
 
-    fn neighbour(label: &str) -> crate::neighbours::Neighbour {
-        crate::neighbours::Neighbour {
-            local_id: label.to_owned(),
-            harness: "claude-code".to_owned(),
-            label: Some(label.to_owned()),
-            status: Some("working".to_owned()),
-            started_at: Some(std::time::SystemTime::now()),
-        }
-    }
-
     #[test]
-    fn session_context_omits_the_shared_cwd_line_when_the_session_is_alone() {
-        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, &[], None);
+    fn session_context_never_mentions_other_sessions_in_the_cwd() {
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, None);
         assert!(block.contains("cwd: /work/cctui"));
-        assert!(!block.contains("shared cwd"), "no neighbours means no line at all: {block}");
-    }
-
-    #[test]
-    fn session_context_warns_about_one_session_sharing_the_cwd() {
-        let block = build_session_context(
-            &bare_spec(),
-            "/work/cctui",
-            &[],
-            None,
-            std::slice::from_ref(&neighbour("wave-3 integrator")),
-            None,
-        );
-        assert!(block.contains("shared cwd: 1 other live session in this directory: "), "{block}");
-        assert!(block.contains("\"wave-3 integrator\" (claude-code, working, started 0s ago)"));
-        assert!(block.contains("Its uncommitted changes are not yours"), "{block}");
-        assert!(block.ends_with("</cctui-session-context>"));
-    }
-
-    #[test]
-    fn session_context_leaves_the_age_out_when_the_start_is_unknown() {
-        let mut lone = neighbour("wave-3 integrator");
-        lone.started_at = None;
-        let one = std::slice::from_ref(&lone);
-        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, one, None);
-        assert!(block.contains("\"wave-3 integrator\" (claude-code, working)."), "{block}");
-        assert!(!block.contains("started"), "no age beats a wrong age: {block}");
-    }
-
-    #[test]
-    fn session_context_lists_three_sharers_and_counts_the_rest() {
-        let all: Vec<crate::neighbours::Neighbour> =
-            (1..=4).map(|i| neighbour(&format!("agent {i}"))).collect();
-        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, &all, None);
-        assert!(block.contains("shared cwd: 4 other live sessions in this directory: "), "{block}");
-        assert!(block.contains("agent 3"), "{block}");
-        assert!(!block.contains("agent 4"), "{block}");
-        assert!(block.contains("+1 more."), "{block}");
+        assert!(!block.contains("shared cwd"), "{block}");
     }
 
     /// The staged-context notice rides the same block as everything else a
@@ -1143,32 +1092,31 @@ mod tests {
             "/work/cctui",
             &[],
             None,
-            &[],
             Some("context: 1 attached for this session (House style). Read `/tmp/x/context.md`.\n"),
         );
         assert!(block.contains("context: 1 attached for this session (House style)"), "{block}");
         assert!(block.contains("/tmp/x/context.md"), "{block}");
         assert!(block.ends_with("</cctui-session-context>"), "{block}");
 
-        let bare = build_session_context(&bare_spec(), "/work/cctui", &[], None, &[], Some("  "));
+        let bare = build_session_context(&bare_spec(), "/work/cctui", &[], None, Some("  "));
         assert!(!bare.contains("context:"), "a blank notice adds no line: {bare}");
     }
 
     #[test]
     fn every_session_context_says_how_to_show_an_image() {
-        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, &[], None);
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, None);
         assert!(block.contains(crate::preamble::IMAGE_LINE), "{block}");
         assert!(block.ends_with("</cctui-session-context>"), "{block}");
 
         let cap = cctui_proto::api::SpawnCapability::machine_default();
-        let block = build_session_context(&bare_spec(), "/work/cctui", &[], Some(&cap), &[], None);
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], Some(&cap), None);
         let image = block.find("images: to show the user an image").expect("image line");
         assert!(image < block.find("CctuiAgent:").expect("agent paragraph"), "{block}");
     }
 
     #[test]
     fn every_session_context_says_thinking_is_not_a_reply() {
-        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, &[], None);
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, None);
         assert!(block.contains(REPLY_LINE), "{block}");
         assert!(REPLY_LINE.ends_with(".\n") && REPLY_LINE.lines().count() == 1, "{REPLY_LINE}");
         let reply = block.find(REPLY_LINE).expect("reply line");
@@ -1195,8 +1143,7 @@ mod tests {
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,
         };
-        let block =
-            build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()], None, &[], None);
+        let block = build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()], None, None);
         assert!(block.starts_with("<cctui-session-context>\n"));
         assert!(block.ends_with("</cctui-session-context>"));
         assert!(block.contains("session: refactor the dispatcher"));
@@ -1229,7 +1176,7 @@ mod tests {
             parent_local_id: None,
         };
         let cap = cctui_proto::api::SpawnCapability::machine_default();
-        let block = build_session_context(&spec, "/work/cctui", &[], Some(&cap), &[], None);
+        let block = build_session_context(&spec, "/work/cctui", &[], Some(&cap), None);
         assert!(block.contains("mcp__cctui__CctuiAgent"));
         assert!(block.contains("adapters you may spawn: claude-code, codex, opencode"));
         assert!(block.contains("no budget limit"), "{block}");
@@ -1246,7 +1193,7 @@ mod tests {
         assert!(block.ends_with("</cctui-session-context>"));
 
         let empty = cctui_proto::api::SpawnCapability::default();
-        let block = build_session_context(&spec, "/work/cctui", &[], Some(&empty), &[], None);
+        let block = build_session_context(&spec, "/work/cctui", &[], Some(&empty), None);
         assert!(!block.contains("CctuiAgent"), "an empty capability advertises nothing");
         assert!(!block.contains("CctuiUsage"), "the relay is absent, so neither tool exists");
     }
