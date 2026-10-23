@@ -1,7 +1,7 @@
 {
   "name": "cctui-webui",
   "private": true,
-  "version": "0.26.1-beta.28",
+  "version": "0.26.1-beta.29",
   "type": "module",
   "packageManager": "npm@10.9.8",
   "scripts": {
@@ -48,7 +48,7 @@
   },
   "dependencies": {
     "@dorsk/journey": "^0.8.2",
-    "@dorsk/tsumikit": "^0.80.0",
+    "@dorsk/tsumikit": "^0.80.2",
     "@ricky0123/vad-web": "^0.0.31",
     "@tanstack/query-async-storage-persister": "^5.104.2",
     "@tanstack/svelte-query": "^6.3.2",

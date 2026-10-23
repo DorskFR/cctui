@@ -1,9 +1,18 @@
 <script lang="ts">
-	// Settings › Appearance: theme, text size, interface language, toast
-	// position. The blob-backed wrappers on `settings` drive the runtime
+	// Settings › Appearance: theme, look, motion, sound, text size, interface
+	// language, toast position. Look, motion and sound live in the kit's own
+	// browser storage; the other blob-backed wrappers on `settings` drive the runtime
 	// theme/fontScale singletons AND persist, so this section and the header
 	// pickers share one round-tripping surface.
-	import { SegmentedControl, Select, Switch, Text } from '@dorsk/tsumikit';
+	import {
+		LookPicker,
+		MotionSettings,
+		SegmentedControl,
+		Select,
+		SoundSettings,
+		Switch,
+		Text
+	} from '@dorsk/tsumikit';
 	import type { SegmentOption } from '@dorsk/tsumikit';
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
@@ -14,6 +23,8 @@
 	import { themePickerGroups } from '$lib/components/molecules/themePicker.logic';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { m } from '$lib/paraglide/messages';
+
+	const LOOKS = ['default', 'depth', 'tactile'] as const;
 
 	const scaleOptions: SegmentOption[] = SCALE_LEVELS.map((l) => ({ value: l.id, label: l.label }));
 	function scaleOf(id: string): number {
@@ -56,6 +67,36 @@
 					</optgroup>
 				{/each}
 			</Select>
+		</SettingRow>
+		<SettingRow label={m.settings_look_label()} help={m.settings_look_help()} selfLabelled>
+			<div data-testid="appearance-look">
+				<LookPicker looks={LOOKS} experimental={false} size="sm" control label={m.settings_look_label()} />
+			</div>
+		</SettingRow>
+		<SettingRow label={m.settings_motion_label()} help={m.settings_motion_help()} selfLabelled>
+			<div data-testid="appearance-motion">
+				<MotionSettings
+					size="sm"
+					control
+					label={m.settings_motion_label()}
+					resetLabel={m.settings_motion_reset()}
+					reducedMotionHint={m.settings_motion_reduced_hint()}
+				/>
+			</div>
+		</SettingRow>
+		<SettingRow label={m.settings_sound_label()} help={m.settings_sound_help()} selfLabelled>
+			<div data-testid="appearance-sound">
+				<SoundSettings
+					size="sm"
+					control
+					label={m.settings_sound_label()}
+					switchLabel={m.settings_sound_switch()}
+					volumeLabel={m.settings_sound_volume()}
+					previewLabel={m.settings_sound_preview()}
+					offHint={m.settings_sound_off_hint()}
+					reducedMotionHint={m.settings_sound_reduced_hint()}
+				/>
+			</div>
 		</SettingRow>
 		<SettingRow label={m.settings_font_size_label()} selfLabelled>
 			<SegmentedControl
