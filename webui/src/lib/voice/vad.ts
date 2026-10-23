@@ -2,13 +2,14 @@
  *  loaded on first use so pages that never go live pay nothing. The model
  *  and the onnxruntime wasm are served from `/vad/`, copied out of
  *  node_modules by `scripts/copy-vad-assets.mjs`. */
-import { frameLevel } from './pcm';
 
 export interface VadCallbacks {
 	onSpeechStart(): void;
-	/** One utterance: 16 kHz mono float samples. */
-	onSpeechEnd(audio: Float32Array): void;
-	onLevel(level: number): void;
+	onSpeechEnd(): void;
+	/** Speech too short to be an utterance; its frames are to be dropped. */
+	onMisfire(): void;
+	/** Every 16 kHz mono frame, speaking or not, with its speech probability. */
+	onFrame(frame: Float32Array, speechProb: number): void;
 }
 
 export interface VadHandle {
@@ -41,8 +42,10 @@ export const createVad: VadFactory = async (cb) => {
 		onnxWASMBasePath: VAD_ASSET_PATH,
 		ortConfig: (ort) => configureOrt(ort.env, globalThis.crossOriginIsolated === true),
 		onSpeechStart: () => cb.onSpeechStart(),
-		onSpeechEnd: (audio: Float32Array) => cb.onSpeechEnd(audio),
-		onFrameProcessed: (_probs: unknown, frame: Float32Array) => cb.onLevel(frameLevel(frame))
+		onSpeechEnd: () => cb.onSpeechEnd(),
+		onVADMisfire: () => cb.onMisfire(),
+		onFrameProcessed: (probs: { isSpeech: number }, frame: Float32Array) =>
+			cb.onFrame(frame, probs.isSpeech)
 	});
 	return {
 		start: () => vad.start(),

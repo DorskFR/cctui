@@ -41,6 +41,18 @@ class FakeSocket implements SocketLike {
 	}
 }
 
+/** Each sent frame as its control type or its binary byte length. */
+function kinds(sent: (string | ArrayBuffer)[]): (string | number)[] {
+	return sent.map((s) => (typeof s === 'string' ? JSON.parse(s).type : s.byteLength));
+}
+
+/** One short utterance as the VAD reports it: a frame, then speech start and end. */
+function speak(h: { cb: VadCallbacks | null }, samples: number[]) {
+	h.cb?.onFrame(new Float32Array(samples), 0.9);
+	h.cb?.onSpeechStart();
+	h.cb?.onSpeechEnd();
+}
+
 function harness(opts: { vadFails?: boolean } = {}) {
 	let socket: FakeSocket | null = null;
 	let cb: VadCallbacks | null = null;
@@ -68,7 +80,8 @@ function harness(opts: { vadFails?: boolean } = {}) {
 		},
 		player: player as unknown as SpeechPlayer,
 		wakeLock: async () => release,
-		prefs: () => ({ ...DEFAULT_VOICE, voice: 'af_sky', bargeIn: true })
+		prefs: () => ({ ...DEFAULT_VOICE, voice: 'af_sky', bargeIn: true }),
+		chunker: { sampleRate: 1000, minPartMs: 100, pauseMs: 20, maxPartMs: 300, preRollMs: 50 }
 	});
 	const settle = async () => {
 		for (let i = 0; i < 4; i++) await Promise.resolve();
@@ -133,7 +146,7 @@ describe('LiveVoice', () => {
 		await h.settle();
 		expect(h.voice.status).toBe('warming');
 		expect(h.vad.start).toHaveBeenCalled();
-		h.cb?.onSpeechEnd(new Float32Array([0.1, 0.2]));
+		speak(h, [0.1, 0.2]);
 		expect(h.socket?.sent.some((s) => s instanceof ArrayBuffer)).toBe(true);
 		h.socket?.frame({ type: 'state', state: 'listening' });
 		expect(h.voice.status).toBe('listening');
@@ -165,12 +178,12 @@ describe('LiveVoice', () => {
 		h.socket?.open();
 		await h.settle();
 
-		h.cb?.onLevel(0.4);
-		expect(h.voice.level).toBe(0.4);
-		h.cb?.onSpeechEnd(new Float32Array([0, 0.5, -0.5]));
+		speak(h, [0, 0.5, -0.5]);
+		expect(h.voice.level).toBe(1);
 		const bin = h.socket?.sent.find((s) => s instanceof ArrayBuffer) as ArrayBuffer;
 		expect(bin.byteLength).toBe(6);
 		expect(new Int16Array(bin)[1]).toBe(0x3fff);
+		expect(h.socket?.texts().some((m) => (m as { type: string }).type === 'part')).toBe(false);
 
 		h.socket?.frame({ type: 'speak_start', line_id: '1-1', text: 'Hi.' });
 		h.socket?.frame(new Uint8Array([1, 2, 3]).buffer);
@@ -280,6 +293,55 @@ describe('LiveVoice', () => {
 		voice.stop();
 	});
 
+	it('streams a long utterance as marked parts and a bare final binary', async () => {
+		const h = harness();
+		await h.voice.start('sess');
+		h.socket?.open();
+		await h.settle();
+		const before = h.socket!.sent.length;
+		const frame = (n: number, v: number, prob: number) =>
+			h.cb?.onFrame(new Float32Array(n).fill(v), prob);
+		frame(10, 0.1, 0.1);
+		h.cb?.onSpeechStart();
+		for (let i = 0; i < 6; i++) frame(50, 0.2, 0.9);
+		frame(20, 0, 0.1);
+		frame(30, 0.3, 0.9);
+		h.cb?.onSpeechEnd();
+		const sent = h.socket!.sent.slice(before);
+		expect(kinds(sent)).toEqual(['part', 2 * 310, 2 * 50]);
+		const first = new Int16Array(sent[1] as ArrayBuffer);
+		expect(first[0]).toBe(Math.floor(0.1 * 0x7fff));
+		expect(first[10]).toBe(Math.floor(0.2 * 0x7fff));
+	});
+
+	it('closes a streamed utterance with utterance_end when speech ends on a flush', async () => {
+		const h = harness();
+		await h.voice.start('sess');
+		h.socket?.open();
+		await h.settle();
+		const before = h.socket!.sent.length;
+		h.cb?.onSpeechStart();
+		for (let i = 0; i < 6; i++) h.cb?.onFrame(new Float32Array(50).fill(0.2), 0.9);
+		h.cb?.onSpeechEnd();
+		const sent = h.socket!.sent.slice(before);
+		expect(kinds(sent)).toEqual(['part', 600, 'utterance_end']);
+	});
+
+	it('a misfire sends nothing and leaves nothing for the next utterance', async () => {
+		const h = harness();
+		await h.voice.start('sess');
+		h.socket?.open();
+		await h.settle();
+		const before = h.socket!.sent.length;
+		h.cb?.onFrame(new Float32Array(5).fill(0.5), 0.9);
+		h.cb?.onSpeechStart();
+		h.cb?.onMisfire();
+		expect(h.socket!.sent.length).toBe(before);
+		speak(h, [0.1, 0.1]);
+		const bin = h.socket!.sent.at(-1) as ArrayBuffer;
+		expect(bin.byteLength).toBe(4);
+	});
+
 	it('mute pauses the vad and drops utterances', async () => {
 		const h = harness();
 		await h.voice.start('sess');
@@ -287,8 +349,9 @@ describe('LiveVoice', () => {
 		await h.settle();
 		h.voice.toggleMute();
 		expect(h.vad.pause).toHaveBeenCalled();
-		h.cb?.onSpeechEnd(new Float32Array([0.1]));
+		speak(h, [0.1]);
 		expect(h.socket?.sent.some((s) => s instanceof ArrayBuffer)).toBe(false);
+		expect(h.voice.level).toBe(0);
 		h.voice.toggleMute();
 		expect(h.vad.start).toHaveBeenCalledTimes(2);
 	});

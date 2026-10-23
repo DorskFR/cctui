@@ -5,6 +5,7 @@ import {
 	DEFAULT_SETTINGS_PAGE,
 	firstMatchingPage,
 	firstMatchingRow,
+	fuzzyMatches,
 	isFiltered,
 	isSettingsPage,
 	normalizeForFilter,
@@ -107,6 +108,30 @@ describe('page map', () => {
 		expect(pagerNeighbours(first).next).toBe(SETTINGS_PAGES[1]);
 		expect(pagerNeighbours(last).next).toBeNull();
 		expect(pagerNeighbours('privacy')).toEqual({ prev: 'execution', next: 'notifications' });
+	});
+});
+
+describe('fuzzyMatches', () => {
+	it('matches every query word in any order, ignoring case and diacritics', () => {
+		expect(fuzzyMatches('Enrol a passkey', 'passkey enrol')).toBe(true);
+		expect(fuzzyMatches('Notify on input needed', 'notify inp')).toBe(true);
+		expect(fuzzyMatches('Réglages', 'REGL')).toBe(true);
+	});
+
+	it('rejects a query with a word the text lacks', () => {
+		expect(fuzzyMatches('Enrol a passkey', 'passkey remove')).toBe(false);
+		expect(fuzzyMatches('Theme', 'thme')).toBe(false);
+	});
+
+	it('matches everything on an empty or blank query', () => {
+		expect(fuzzyMatches('Theme', '')).toBe(true);
+		expect(fuzzyMatches('Theme', '   ')).toBe(true);
+	});
+
+	it('drives the tree filter word by word', () => {
+		const root = tree();
+		expect(applySettingsFilter(root, 'language interface')).toBe(1);
+		expect(firstMatchingRow(root, 'appearance')?.textContent).toBe('Interface language');
 	});
 });
 

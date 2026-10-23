@@ -109,7 +109,7 @@ async fn main() -> anyhow::Result<()> {
     start_background_tasks(&state).await;
     let app = build_app(&state, &config, &auth_config);
     spawn_sweeps(&state);
-    serve(&config, app).await
+    serve(&config, app, &state).await
 }
 
 /// `check-plugin-archive <archive.tgz> <id> <version>`: the catalog check's
@@ -625,10 +625,17 @@ fn spawn_sweeps(state: &AppState) {
 const SHUTDOWN_DRAIN: std::time::Duration = std::time::Duration::from_secs(20);
 const READY_DB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
-async fn serve(config: &Config, app: Router) -> anyhow::Result<()> {
+/// Presence is withdrawn as soon as the signal lands, before the drain: a peer
+/// that keeps routing to this pod's rows would otherwise hit a closed listener
+/// until the heartbeat window ran out.
+async fn serve(config: &Config, app: Router, state: &AppState) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(config.bind_addr()).await?;
     tracing::info!("listening on {}", config.bind_addr());
-    serve_until(listener, app, shutdown_signal(), SHUTDOWN_DRAIN).await
+    let signal = async {
+        shutdown_signal().await;
+        presence::withdraw(&state.pool, &state.presence).await;
+    };
+    serve_until(listener, app, signal, SHUTDOWN_DRAIN).await
 }
 
 /// The drain is bounded: `WebSockets` and streams can outlast any wait.
