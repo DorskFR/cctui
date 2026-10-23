@@ -5,7 +5,8 @@ import type { VoiceClientMsg } from '@bindings/VoiceClientMsg';
 import type { VoiceServerMsg } from '@bindings/VoiceServerMsg';
 import { wsBase } from '$lib/config';
 import type { VoiceSettings } from '$lib/settings.svelte';
-import { floatToPcm16 } from './pcm';
+import { type ChunkerOptions, UtteranceChunker } from './chunker';
+import { floatToPcm16, frameLevel } from './pcm';
 import type { SpeechPlayer } from './player';
 import type { VadFactory, VadHandle } from './vad';
 
@@ -45,6 +46,7 @@ export interface LiveVoiceDeps {
 	player: SpeechPlayer;
 	wakeLock: () => Promise<() => void>;
 	prefs: () => VoiceSettings;
+	chunker?: Partial<ChunkerOptions>;
 }
 
 export function voiceSocketUrl(sessionId: string, language: SpokenLanguage = 'auto'): string {
@@ -72,9 +74,11 @@ export class LiveVoice {
 	private awaitingReply = false;
 	private replyTimer: ReturnType<typeof setTimeout> | null = null;
 	private readonly deps: LiveVoiceDeps;
+	private readonly chunker: UtteranceChunker;
 
 	constructor(deps: LiveVoiceDeps) {
 		this.deps = deps;
+		this.chunker = new UtteranceChunker((s, last) => this.sendPart(s, last), deps.chunker);
 		deps.player.onIdleChange((idle) => {
 			this.playing = !idle;
 			if (this.socket) this.show();
@@ -129,6 +133,7 @@ export class LiveVoice {
 		this.muted = !this.muted;
 		if (this.muted) {
 			this.vad?.pause();
+			this.chunker.cancel();
 			this.level = 0;
 		} else void this.vad?.start();
 	}
@@ -164,10 +169,9 @@ export class LiveVoice {
 		try {
 			const vad = await this.deps.vad({
 				onSpeechStart: () => this.onSpeechStart(),
-				onSpeechEnd: (audio) => this.onSpeechEnd(audio),
-				onLevel: (level) => {
-					if (!this.muted) this.level = level;
-				}
+				onSpeechEnd: () => this.onSpeechEnd(),
+				onMisfire: () => this.chunker.cancel(),
+				onFrame: (frame, prob) => this.onFrame(frame, prob)
 			});
 			if (this.socket !== sock) {
 				vad.destroy();
@@ -183,11 +187,27 @@ export class LiveVoice {
 
 	private onSpeechStart() {
 		if (this.status === 'speaking' || this.deps.player.playing) this.interrupt();
+		if (!this.muted) this.chunker.start();
 	}
 
-	private onSpeechEnd(audio: Float32Array) {
-		if (!audio.length || this.muted) return;
-		this.sendBinary(floatToPcm16(audio));
+	private onFrame(frame: Float32Array, speechProb: number) {
+		if (this.muted) return;
+		this.level = frameLevel(frame);
+		this.chunker.frame(frame, speechProb);
+	}
+
+	private onSpeechEnd() {
+		if (this.muted) this.chunker.cancel();
+		else this.chunker.end();
+	}
+
+	private sendPart(samples: Float32Array, last: boolean) {
+		if (!last) {
+			if (!samples.length) return;
+			this.send({ type: 'part' });
+			this.sendBinary(floatToPcm16(samples));
+		} else if (samples.length) this.sendBinary(floatToPcm16(samples));
+		else this.send({ type: 'utterance_end' });
 	}
 
 	private onMessage(data: unknown) {
@@ -286,6 +306,7 @@ export class LiveVoice {
 		}
 		this.vad?.destroy();
 		this.vad = null;
+		this.chunker.cancel();
 		this.endAwait();
 		this.server = 'off';
 		this.deps.player.stop();

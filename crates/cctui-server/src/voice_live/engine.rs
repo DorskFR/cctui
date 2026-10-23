@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep_until};
 use tracing::Instrument;
 
+use super::audio::{MAX_CHUNK_BYTES, split_utterance};
 use super::mainline::{Delta, MainThread, squash};
 use super::text::{SentenceBuffer, spoken_prompt};
 
@@ -41,10 +42,12 @@ pub trait VoiceBackend: Send + Sync + 'static {
 
 #[derive(Debug)]
 pub enum Inbound {
-    /// One utterance: 16 kHz mono 16-bit PCM.
+    /// A whole utterance, or the last part of one: 16 kHz mono 16-bit PCM.
     Audio(Bytes),
-    /// An utterance over the size limit, dropped unread.
-    TooLong,
+    /// A non-final part of the utterance being spoken.
+    Part(Bytes),
+    /// The utterance being spoken ended with no more audio.
+    UtteranceEnd,
     Control(VoiceClientMsg),
 }
 
@@ -86,6 +89,8 @@ pub struct Prefs {
 type SharedPrefs = Arc<Mutex<Prefs>>;
 
 const UTTERANCE_QUEUE: usize = 8;
+/// Further attempts at a chunk whose transcription failed.
+const STT_RETRIES: usize = 2;
 /// Under the speech router's 90 s idle unload.
 const STT_KEEPALIVE: Duration = Duration::from_mins(1);
 /// A stream quiet this long speaks what it has buffered.
@@ -226,20 +231,27 @@ enum Heard {
     Warm,
     /// Relayed by the loop so it follows the state the loop emits first.
     Transcript(String),
+    /// A non-final chunk was heard; the utterance goes on.
+    Partial,
 }
 
 #[derive(Debug)]
 enum Job {
-    Hear(Bytes),
+    /// A chunk of the utterance being heard; `last` closes it.
+    Hear { audio: Bytes, last: bool },
+    /// The utterance being heard is over with no more audio.
+    End,
     Warm,
 }
 
-/// Transcribes and sends utterances one at a time, in arrival order, off
-/// the loop. It warms the model before the first utterance and keeps it warm
-/// while idle; utterances arriving meanwhile wait in its queue. Dropping it
-/// aborts whatever was in flight.
+/// Transcribes utterances chunk by chunk, in arrival order, off the loop,
+/// and sends each utterance once its last chunk is heard. It warms the model
+/// before the first utterance and keeps it warm while idle. Its queue is
+/// unbounded: audio is never dropped, and the loop must not wait on it while
+/// it waits on the loop's `heard` queue. Dropping it aborts whatever was in
+/// flight.
 struct Listener {
-    tx: mpsc::Sender<Job>,
+    tx: mpsc::UnboundedSender<Job>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -255,21 +267,23 @@ fn spawn_listener<B: VoiceBackend>(
     out: mpsc::Sender<Outbound>,
     heard: mpsc::Sender<Heard>,
 ) -> Listener {
-    let (tx, mut rx) = mpsc::channel::<Job>(UTTERANCE_QUEUE);
+    let (tx, mut rx) = mpsc::unbounded_channel::<Job>();
     let task = tokio::spawn(async move {
+        let mut ear = Ear { backend, prefs, out, heard, pending: String::new() };
         let mut job = Job::Warm;
         loop {
             let outcome = match job {
-                Job::Hear(audio) => hear_one(&*backend, &prefs, &out, &heard, audio).await,
+                Job::Hear { audio, last } => ear.hear(audio, last).await,
+                Job::End => ear.finish().await,
                 Job::Warm => {
-                    warm_up(&*backend, &prefs).await;
+                    warm_up(&*ear.backend, &ear.prefs).await;
                     Heard::Warm
                 }
             };
-            if heard.send(outcome).await.is_err() {
+            if ear.heard.send(outcome).await.is_err() {
                 break;
             }
-            match next_job(&mut rx, &*backend, &prefs).await {
+            match next_job(&mut rx, &*ear.backend, &ear.prefs).await {
                 Some(next) => job = next,
                 None => break,
             }
@@ -281,7 +295,7 @@ fn spawn_listener<B: VoiceBackend>(
 /// Waits for the next job, warming the model every [`STT_KEEPALIVE`] of
 /// silence.
 async fn next_job<B: VoiceBackend>(
-    rx: &mut mpsc::Receiver<Job>,
+    rx: &mut mpsc::UnboundedReceiver<Job>,
     backend: &B,
     prefs: &SharedPrefs,
 ) -> Option<Job> {
@@ -303,34 +317,73 @@ async fn warm_up<B: VoiceBackend>(backend: &B, prefs: &SharedPrefs) {
     }
 }
 
-async fn hear_one<B: VoiceBackend>(
-    backend: &B,
-    prefs: &SharedPrefs,
-    out: &mpsc::Sender<Outbound>,
-    heard: &mpsc::Sender<Heard>,
-    audio: Bytes,
-) -> Heard {
-    let error = |message| Outbound::Control(VoiceServerMsg::Error { message });
-    let text = match backend.transcribe(audio, language(prefs).as_deref()).await {
-        Ok(text) => text.trim().to_owned(),
-        Err(message) => {
-            let _ = out.send(error(message)).await;
+/// The listener's side of one utterance: the text of its chunks heard so
+/// far, sent as one message when the last chunk is in.
+struct Ear<B> {
+    backend: Arc<B>,
+    prefs: SharedPrefs,
+    out: mpsc::Sender<Outbound>,
+    heard: mpsc::Sender<Heard>,
+    pending: String,
+}
+
+impl<B: VoiceBackend> Ear<B> {
+    async fn hear(&mut self, audio: Bytes, last: bool) -> Heard {
+        match self.transcribe(audio).await {
+            Ok(text) if !text.is_empty() => {
+                if !self.pending.is_empty() {
+                    self.pending.push(' ');
+                }
+                self.pending.push_str(&text);
+                let _ = self.heard.send(Heard::Transcript(self.pending.clone())).await;
+            }
+            Ok(_) => {}
+            Err(message) => self.error(message).await,
+        }
+        if last {
+            self.finish().await
+        } else {
+            Heard::Partial
+        }
+    }
+
+    /// Up to [`STT_RETRIES`] more attempts, so one failed chunk does not
+    /// lose the utterance.
+    async fn transcribe(&self, audio: Bytes) -> Result<String, String> {
+        let language = language(&self.prefs);
+        let mut attempt = 0;
+        loop {
+            match self.backend.transcribe(audio.clone(), language.as_deref()).await {
+                Ok(text) => return Ok(text.trim().to_owned()),
+                Err(message) if attempt >= STT_RETRIES => return Err(message),
+                Err(err) => {
+                    attempt += 1;
+                    tracing::debug!(%err, attempt, "voice: transcription retried");
+                }
+            }
+        }
+    }
+
+    async fn finish(&mut self) -> Heard {
+        let text = std::mem::take(&mut self.pending);
+        if text.is_empty() {
             return Heard::Idle;
         }
-    };
-    if text.is_empty() {
-        return Heard::Idle;
-    }
-    let _ = heard.send(Heard::Transcript(text.clone())).await;
-    let style = prefs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).spoken_style;
-    let message = spoken_prompt(&text, style);
-    let _ = heard.send(Heard::Sending(message.clone())).await;
-    match backend.send_message(message).await {
-        Ok(()) => Heard::Sent,
-        Err(message) => {
-            let _ = out.send(error(message)).await;
-            Heard::Failed
+        let style =
+            self.prefs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).spoken_style;
+        let message = spoken_prompt(&text, style);
+        let _ = self.heard.send(Heard::Sending(message.clone())).await;
+        match self.backend.send_message(message).await {
+            Ok(()) => Heard::Sent,
+            Err(message) => {
+                self.error(message).await;
+                Heard::Failed
+            }
         }
+    }
+
+    async fn error(&self, message: String) {
+        let _ = self.out.send(Outbound::Control(VoiceServerMsg::Error { message })).await;
     }
 }
 
@@ -410,6 +463,8 @@ struct Engine<B: VoiceBackend> {
     listener: Listener,
     /// Utterances handed to the listener and not yet reported back.
     hearing: usize,
+    /// The listener's current utterance still has parts to come.
+    hearing_open: bool,
     generation: u64,
     probe: SharedProbe,
     sentences: SentenceBuffer,
@@ -463,6 +518,7 @@ impl<B: VoiceBackend> Engine<B> {
             queued: 0,
             listener,
             hearing: 0,
+            hearing_open: false,
             generation: 1,
             probe,
             sentences: SentenceBuffer::default(),
@@ -502,16 +558,36 @@ impl<B: VoiceBackend> Engine<B> {
         }
     }
 
-    async fn utterance(&mut self, audio: Bytes) {
-        if self.speaking {
-            self.barge_in().await;
+    /// `audio` continues the utterance being heard, or opens one; `last`
+    /// closes it. Audio over the chunk cap is split so none of it is lost.
+    /// A reply being spoken goes on: the browser barges in with an
+    /// `interrupt` when the user talks over it, and audio landing meanwhile
+    /// was spoken before the reply started.
+    async fn utterance(&mut self, audio: Bytes, last: bool) {
+        if !self.hearing_open {
+            self.hearing += 1;
         }
-        if self.listener.tx.try_send(Job::Hear(audio)).is_err() {
-            let message = "utterance dropped: still transcribing".to_owned();
-            self.send(VoiceServerMsg::Error { message }).await;
+        self.hearing_open = !last;
+        let chunks = split_utterance(audio, MAX_CHUNK_BYTES);
+        let count = chunks.len();
+        for (i, chunk) in chunks.into_iter().enumerate() {
+            let job = Job::Hear { audio: chunk, last: last && i + 1 == count };
+            if self.listener.tx.send(job).is_err() {
+                break;
+            }
+        }
+        if last && count == 0 {
+            let _ = self.listener.tx.send(Job::End);
+        }
+        self.emit_state().await;
+    }
+
+    async fn utterance_end(&mut self) {
+        if !self.hearing_open {
             return;
         }
-        self.hearing += 1;
+        self.hearing_open = false;
+        let _ = self.listener.tx.send(Job::End);
         self.emit_state().await;
     }
 
@@ -522,7 +598,6 @@ impl<B: VoiceBackend> Engine<B> {
                 return;
             }
             Heard::Sending(message) => {
-                self.reset_stream();
                 *self.probe() = Some(Probe::start());
                 self.turns.sent();
                 self.turn_active = true;
@@ -531,6 +606,7 @@ impl<B: VoiceBackend> Engine<B> {
                 self.play(ready).await;
             }
             Heard::Sent | Heard::Idle => self.hearing = self.hearing.saturating_sub(1),
+            Heard::Partial => {}
             Heard::Warm => self.warming = false,
             Heard::Failed => {
                 self.hearing = self.hearing.saturating_sub(1);
@@ -604,11 +680,12 @@ impl<B: VoiceBackend> Engine<B> {
                         self.prefs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     apply_mode(&mut p, barge_in, spoken_style, voice, speed, language.as_deref())
                 };
-                if rewarm && self.listener.tx.try_send(Job::Warm).is_ok() {
+                if rewarm && self.listener.tx.send(Job::Warm).is_ok() {
                     self.warming = true;
                     self.emit_state().await;
                 }
             }
+            VoiceClientMsg::Part {} | VoiceClientMsg::UtteranceEnd {} => {}
         }
     }
 
@@ -865,11 +942,9 @@ pub async fn run_voice_loop<B: VoiceBackend>(
         let pause = engine.pause_at;
         tokio::select! {
             msg = inbound.recv() => match msg {
-                Some(Inbound::Audio(audio)) => engine.utterance(audio).await,
-                Some(Inbound::TooLong) => {
-                    let message = "utterance too long".to_owned();
-                    engine.send(VoiceServerMsg::Error { message }).await;
-                }
+                Some(Inbound::Audio(audio)) => engine.utterance(audio, true).await,
+                Some(Inbound::Part(audio)) => engine.utterance(audio, false).await,
+                Some(Inbound::UtteranceEnd) => engine.utterance_end().await,
                 Some(Inbound::Control(c)) => engine.control(c).await,
                 None => break,
             },
@@ -889,7 +964,7 @@ pub async fn run_voice_loop<B: VoiceBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
     use tokio::sync::Semaphore;
 
@@ -914,6 +989,11 @@ mod tests {
         stt_calls: Mutex<Vec<String>>,
         /// Syntheses left to fail.
         synth_failures: Mutex<u32>,
+        /// Transcriptions left to fail.
+        stt_failures: Mutex<u32>,
+        /// Each transcript is `p<n>`, numbered in call order.
+        numbered: bool,
+        heard_n: AtomicUsize,
     }
 
     /// Flags a transcription dropped before it finished.
@@ -949,6 +1029,16 @@ mod tests {
                 gate.acquire().await.unwrap().forget();
             }
             unfinished.0 = None;
+            {
+                let mut failures = self.stt_failures.lock().unwrap();
+                if *failures > 0 {
+                    *failures -= 1;
+                    return Err("speech service unreachable".into());
+                }
+            }
+            if self.numbered {
+                return Ok(format!("p{}", self.heard_n.fetch_add(1, Ordering::SeqCst) + 1));
+            }
             if self.echo {
                 return Ok(String::from_utf8_lossy(&audio).into_owned());
             }
@@ -1088,7 +1178,8 @@ mod tests {
         matches!(f, Outbound::Control(VoiceServerMsg::Transcript { .. }))
     }
 
-    /// A reply being spoken, then a new utterance barging in on it.
+    /// A reply being spoken, then a new utterance barging in on it, as the
+    /// browser does it: an `interrupt` at speech start, the audio after.
     async fn cut_a_turn_with_a_new_utterance() -> Harness {
         let mock = Mock { transcript: Mutex::new("go".into()), stall: true, ..Mock::default() };
         let mut h = start(mock, Prefs { barge_in: true, ..Prefs::default() }).await;
@@ -1098,6 +1189,7 @@ mod tests {
         h.signals.send(turn_start()).await.unwrap();
         h.signals.send(Signal::Text("Alpha.".into())).await.unwrap();
         h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(b"Alpha."))).await;
+        h.inbound.send(Inbound::Control(VoiceClientMsg::Interrupt {})).await.unwrap();
         h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
         h.collect_until(is_transcript).await;
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1139,6 +1231,109 @@ mod tests {
         h.signals.send(Signal::Text("Fresh.".into())).await.unwrap();
         h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(b"Fresh."))).await;
         assert_eq!(Mock::log(&h.mock.synthesized), vec!["Alpha.", "Fresh."]);
+    }
+
+    const PEER_REPLY: &str = "Nothing for you here. The long-voice fix is being built in another \
+                              lane. It should land tonight.";
+    /// [`PEER_REPLY`] as spoken: the short opening waits for the next
+    /// sentence, the last one is flushed at the turn end.
+    const PEER_SPOKEN: [&str; 2] = [
+        "Nothing for you here. The long-voice fix is being built in another lane.",
+        "It should land tonight.",
+    ];
+
+    /// [`PEER_REPLY`] streamed in awkward splits: mid-word and mid-sentence.
+    async fn stream_peer_reply(h: &Harness, item: &str) {
+        let parts = [
+            "Noth",
+            "ing for you he",
+            "re. The long-voice fix is be",
+            "ing built in another lane. It sho",
+            "uld land tonight.",
+        ];
+        for part in parts {
+            h.signals.send(delta(item, part)).await.unwrap();
+        }
+        h.signals.send(Signal::Text(PEER_REPLY.into())).await.unwrap();
+        h.signals.send(Signal::TurnEnd).await.unwrap();
+    }
+
+    const NOON: &str = "It is noon, give or take a few minutes.";
+
+    /// A spoken turn, replied to and ended.
+    async fn spoken_turn() -> Harness {
+        let (mut h, sent) = sent_a_prompt().await;
+        h.signals.send(Signal::TurnStart(sent)).await.unwrap();
+        h.signals.send(delta("m:0", NOON)).await.unwrap();
+        h.signals.send(Signal::Text(NOON.into())).await.unwrap();
+        h.signals.send(Signal::TurnEnd).await.unwrap();
+        h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        h
+    }
+
+    #[tokio::test]
+    async fn a_reply_opening_with_a_short_sentence_is_spoken_in_full_from_awkward_deltas() {
+        let mut h = start(Mock::default(), Prefs::default()).await;
+        stream_peer_reply(&h, "m:0").await;
+        h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        h.quiet().await;
+        assert_eq!(Mock::log(&h.mock.synthesized), PEER_SPOKEN);
+    }
+
+    #[tokio::test]
+    async fn a_peer_prompted_reply_after_a_spoken_turn_is_spoken_in_full() {
+        let mut h = spoken_turn().await;
+        h.signals.send(Signal::TurnStart("peer: anything for me?".into())).await.unwrap();
+        stream_peer_reply(&h, "m:1").await;
+        h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        h.quiet().await;
+        let expected = [&[NOON][..], &PEER_SPOKEN[..]].concat();
+        assert_eq!(Mock::log(&h.mock.synthesized), expected);
+    }
+
+    #[tokio::test]
+    async fn a_reply_without_a_prompt_echo_after_a_spoken_turn_is_spoken_in_full() {
+        let mut h = spoken_turn().await;
+        stream_peer_reply(&h, "m:1").await;
+        h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        h.quiet().await;
+        let expected = [&[NOON][..], &PEER_SPOKEN[..]].concat();
+        assert_eq!(Mock::log(&h.mock.synthesized), expected);
+    }
+
+    #[tokio::test]
+    async fn an_utterance_landing_mid_reply_keeps_the_replys_pending_text() {
+        let mock = Mock { transcript: Mutex::new("go".into()), ..Mock::default() };
+        let mut h = start(mock, Prefs { barge_in: true, ..Prefs::default() }).await;
+        let opening = "Nothing for you here. The long-voice fix is be";
+        h.signals.send(delta("m:0", opening)).await.unwrap();
+        h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
+        h.collect_until(is_transcript).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(Mock::log(&h.mock.sent).len(), 1);
+        assert_eq!(Mock::log(&h.mock.interrupts), 0);
+        let rest = "ing built in another lane. It should land tonight.";
+        h.signals.send(delta("m:0", rest)).await.unwrap();
+        h.signals.send(Signal::Text(PEER_REPLY.into())).await.unwrap();
+        h.signals.send(Signal::TurnEnd).await.unwrap();
+        h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(PEER_SPOKEN[1].as_bytes())))
+            .await;
+        assert_eq!(Mock::log(&h.mock.synthesized), PEER_SPOKEN);
+    }
+
+    #[tokio::test]
+    async fn an_utterance_landing_while_a_reply_is_spoken_does_not_cut_it() {
+        let mock = Mock { transcript: Mutex::new("go".into()), stall: true, ..Mock::default() };
+        let mut h = start(mock, Prefs { barge_in: true, ..Prefs::default() }).await;
+        let reply = "Nothing for you here. The long-voice fix is built.";
+        h.signals.send(Signal::Text(reply.into())).await.unwrap();
+        h.collect_until(|f| *f == state(VoiceState::Speaking)).await;
+        h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
+        let mut frames = h.collect_until(is_transcript).await;
+        frames.extend(h.quiet().await);
+        assert!(!frames.contains(&state(VoiceState::Thinking)), "the reply was cut: {frames:?}");
+        assert_eq!(Mock::log(&h.mock.interrupts), 0);
+        assert_eq!(Mock::log(&h.mock.sent).len(), 1);
     }
 
     #[tokio::test]
@@ -1760,16 +1955,126 @@ mod tests {
         assert_eq!(Mock::log(&h.mock.speeds), vec![Some(1.5)]);
     }
 
+    fn is_error(f: &Outbound) -> bool {
+        matches!(f, Outbound::Control(VoiceServerMsg::Error { .. }))
+    }
+
+    fn transcripts(frames: &[Outbound]) -> Vec<String> {
+        frames
+            .iter()
+            .filter_map(|f| match f {
+                Outbound::Control(VoiceServerMsg::Transcript { text }) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Five minutes of a continuous tone: nothing in it reads as silence.
+    fn five_minutes() -> Bytes {
+        Bytes::from([0x00u8, 0x40].repeat(5 * 60 * 16_000))
+    }
+
+    fn ten_chunks() -> String {
+        (1..=10).map(|n| format!("p{n}")).collect::<Vec<_>>().join(" ")
+    }
+
+    /// Frames until the whole transcript is in, then the settled tail.
+    async fn heard_whole(h: &mut Harness, whole: &str) -> Vec<Outbound> {
+        let mut frames = h
+            .collect_until(|f| {
+                matches!(f, Outbound::Control(VoiceServerMsg::Transcript { text }) if text == whole)
+            })
+            .await;
+        frames.extend(h.quiet().await);
+        frames
+    }
+
     #[tokio::test]
-    async fn an_oversized_utterance_is_reported() {
-        let mut h = start(Mock::default(), Prefs::default()).await;
-        h.inbound.send(Inbound::TooLong).await.unwrap();
-        let frames = h.quiet().await;
-        assert_eq!(
-            frames,
-            vec![Outbound::Control(VoiceServerMsg::Error { message: "utterance too long".into() })]
-        );
+    async fn a_five_minute_utterance_sent_whole_is_heard_in_chunks_and_sent_once() {
+        let mock = Mock { numbered: true, ..Mock::default() };
+        let mut h = start(mock, Prefs::default()).await;
+        h.inbound.send(Inbound::Audio(five_minutes())).await.unwrap();
+        let frames = heard_whole(&mut h, &ten_chunks()).await;
+        assert!(!frames.iter().any(is_error), "{frames:?}");
+        assert_eq!(transcripts(&frames).len(), 10);
+        assert_eq!(transcripts(&frames)[1], "p1 p2");
+        let sent = Mock::log(&h.mock.sent);
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].ends_with(&ten_chunks()), "{sent:?}");
+    }
+
+    #[tokio::test]
+    async fn a_five_minute_utterance_streamed_in_parts_is_sent_once_in_order() {
+        let mock = Mock { numbered: true, ..Mock::default() };
+        let mut h = start(mock, Prefs::default()).await;
+        let whole = five_minutes();
+        let part = whole.len() / 10;
+        for i in 0..9 {
+            h.inbound.send(Inbound::Part(whole.slice(i * part..(i + 1) * part))).await.unwrap();
+        }
+        h.inbound.send(Inbound::Audio(whole.slice(9 * part..))).await.unwrap();
+        let frames = heard_whole(&mut h, &ten_chunks()).await;
+        assert!(!frames.iter().any(is_error), "{frames:?}");
+        assert_eq!(frames.iter().filter(|f| **f == state(VoiceState::Thinking)).count(), 1);
+        let sent = Mock::log(&h.mock.sent);
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].ends_with(&ten_chunks()), "{sent:?}");
+    }
+
+    #[tokio::test]
+    async fn streamed_parts_are_transcribed_as_they_arrive_and_joined() {
+        let mock = Mock { echo: true, ..Mock::default() };
+        let mut h = start(mock, Prefs::default()).await;
+        h.inbound.send(Inbound::Part(Bytes::from_static(b"one"))).await.unwrap();
+        h.collect_until(is_transcript).await;
         assert!(Mock::log(&h.mock.sent).is_empty());
+        h.inbound.send(Inbound::Part(Bytes::from_static(b"two"))).await.unwrap();
+        h.inbound.send(Inbound::Audio(Bytes::from_static(b"three"))).await.unwrap();
+        let frames = heard_whole(&mut h, "one two three").await;
+        assert_eq!(transcripts(&frames), vec!["one two", "one two three"]);
+        let sent = Mock::log(&h.mock.sent);
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].ends_with("one two three"), "{sent:?}");
+    }
+
+    #[tokio::test]
+    async fn a_streamed_utterance_may_end_without_a_last_part() {
+        let mock = Mock { echo: true, ..Mock::default() };
+        let mut h = start(mock, Prefs::default()).await;
+        h.inbound.send(Inbound::UtteranceEnd).await.unwrap();
+        assert!(h.quiet().await.is_empty());
+        h.inbound.send(Inbound::Part(Bytes::from_static(b"one"))).await.unwrap();
+        h.inbound.send(Inbound::UtteranceEnd).await.unwrap();
+        let frames = heard_whole(&mut h, "one").await;
+        assert!(!frames.iter().any(is_error), "{frames:?}");
+        let sent = Mock::log(&h.mock.sent);
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].ends_with("one"), "{sent:?}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_chunk_is_retried_before_the_utterance_goes_on() {
+        let mock = Mock { echo: true, stt_failures: Mutex::new(1), ..Mock::default() };
+        let mut h = start(mock, Prefs::default()).await;
+        h.inbound.send(Inbound::Part(Bytes::from_static(b"one"))).await.unwrap();
+        h.inbound.send(Inbound::Audio(Bytes::from_static(b"two"))).await.unwrap();
+        let frames = heard_whole(&mut h, "one two").await;
+        assert!(!frames.iter().any(is_error), "{frames:?}");
+        assert!(Mock::log(&h.mock.sent)[0].ends_with("one two"));
+    }
+
+    #[tokio::test]
+    async fn a_chunk_that_keeps_failing_is_reported_and_the_rest_is_still_sent() {
+        let mock = Mock { echo: true, stt_failures: Mutex::new(3), ..Mock::default() };
+        let mut h = start(mock, Prefs::default()).await;
+        h.inbound.send(Inbound::Part(Bytes::from_static(b"one"))).await.unwrap();
+        h.inbound.send(Inbound::Part(Bytes::from_static(b"two"))).await.unwrap();
+        h.inbound.send(Inbound::Audio(Bytes::from_static(b"three"))).await.unwrap();
+        let frames = heard_whole(&mut h, "two three").await;
+        assert_eq!(frames.iter().filter(|f| is_error(f)).count(), 1, "{frames:?}");
+        let sent = Mock::log(&h.mock.sent);
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].ends_with("two three"), "{sent:?}");
     }
 
     #[tokio::test]

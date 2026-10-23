@@ -34,6 +34,11 @@ pub enum VoiceState {
 pub enum VoiceClientMsg {
     /// Barge-in: stop speaking now and, when `barge_in` is on, cut the turn.
     Interrupt {},
+    /// The next binary frame is a non-final part of the utterance; a binary
+    /// frame without this marker ends it, so a bare binary is a whole utterance.
+    Part {},
+    /// The streamed utterance ended with no more audio to send.
+    UtteranceEnd {},
     /// Preferences for the rest of the connection; each field keeps its
     /// previous value when absent.
     Mode {
@@ -100,5 +105,13 @@ mod tests {
         let state =
             serde_json::to_string(&VoiceServerMsg::State { state: VoiceState::Speaking }).unwrap();
         assert_eq!(state, r#"{"type":"state","state":"speaking"}"#);
+    }
+
+    #[test]
+    fn utterance_part_markers_are_bare_tags() {
+        let part = serde_json::to_string(&VoiceClientMsg::Part {}).unwrap();
+        assert_eq!(part, r#"{"type":"part"}"#);
+        let end: VoiceClientMsg = serde_json::from_str(r#"{"type":"utterance_end"}"#).unwrap();
+        assert_eq!(end, VoiceClientMsg::UtteranceEnd {});
     }
 }

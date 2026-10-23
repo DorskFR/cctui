@@ -5,6 +5,7 @@
 //! speech down); text frames carry [`VoiceClientMsg`] / [`VoiceServerMsg`]
 //! JSON.
 
+mod audio;
 mod engine;
 mod mainline;
 pub mod text;
@@ -34,8 +35,9 @@ pub use engine::{
 };
 use text::{UTTERANCE_SAMPLE_RATE, pcm16_to_wav};
 
-/// Longest utterance accepted (one minute of 16 kHz PCM16).
-const MAX_UTTERANCE_BYTES: usize = 2 * 16_000 * 60;
+/// Well over the longest utterance an old browser sends whole; new ones
+/// stream parts of at most [`audio::MAX_CHUNK_BYTES`].
+const MAX_WS_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(20);
 /// Half a second of silence: enough for the speech service to load its model.
 const WARM_UP_SILENCE: [u8; 16_000] = [0; 16_000];
@@ -83,6 +85,7 @@ pub async fn voice_ws(
         .await
         .map_err(|_| StatusCode::FORBIDDEN)?;
     let language = query.language.as_deref().and_then(picked_language);
+    let ws = ws.max_message_size(MAX_WS_MESSAGE_BYTES).max_frame_size(MAX_WS_MESSAGE_BYTES);
     Ok(ws.on_upgrade(move |socket| handle_voice_ws(socket, state, ctx, session_id, language)))
 }
 
@@ -169,13 +172,22 @@ async fn read_socket(
     mut stream: futures_util::stream::SplitStream<WebSocket>,
     inbound: mpsc::Sender<Inbound>,
 ) {
+    let mut part_next = false;
     while let Some(Ok(msg)) = stream.next().await {
         let item = match msg {
-            Message::Binary(bytes) if bytes.len() <= MAX_UTTERANCE_BYTES && bytes.len() >= 2 => {
-                Inbound::Audio(bytes)
+            Message::Binary(bytes) if bytes.len() >= 2 => {
+                if std::mem::take(&mut part_next) {
+                    Inbound::Part(bytes)
+                } else {
+                    Inbound::Audio(bytes)
+                }
             }
-            Message::Binary(bytes) if bytes.len() > MAX_UTTERANCE_BYTES => Inbound::TooLong,
             Message::Text(text) => match serde_json::from_str::<VoiceClientMsg>(&text) {
+                Ok(VoiceClientMsg::Part {}) => {
+                    part_next = true;
+                    continue;
+                }
+                Ok(VoiceClientMsg::UtteranceEnd {}) => Inbound::UtteranceEnd,
                 Ok(c) => Inbound::Control(c),
                 Err(err) => {
                     tracing::debug!(%err, "voice_ws: unreadable control frame");
