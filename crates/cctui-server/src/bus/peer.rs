@@ -362,13 +362,11 @@ impl PeerHttpTransport {
         let Some(fresh) = self.await_replacement(target, &owner.ip).await else {
             return Err(Self::miss(target.kind, target.id));
         };
-        match self.post(&fresh, target, request, timeout).await? {
-            Some(response) => Ok(response),
-            None => {
-                self.forget(&fresh, target).await;
-                Err(Self::miss(target.kind, target.id))
-            }
+        if let Some(response) = self.post(&fresh, target, request, timeout).await? {
+            return Ok(response);
         }
+        self.forget(&fresh, target).await;
+        Err(Self::miss(target.kind, target.id))
     }
 
     async fn forget(&self, owner: &Owner, target: Target) {

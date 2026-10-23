@@ -36,7 +36,7 @@ describe('UtteranceChunker', () => {
 		c.start();
 		c.end();
 		expect(emitted[0].samples.length).toBeLessThanOrEqual(60);
-		expect(emitted[0].samples.at(-1)).toBe(199 / 1e6);
+		expect(emitted[0].samples.at(-1)).toBe(Math.fround(199 / 1e6));
 	});
 
 	it('flushes a part at a pause once enough is buffered', () => {

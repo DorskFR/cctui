@@ -20,7 +20,7 @@ const SILENCE_LEVEL: u32 = 200;
 /// `pcm` in sample-aligned chunks of at most `cap` bytes that concatenate
 /// back to it. Each cut lands at the quietest 20 ms block in the last two
 /// thirds of the chunk when one is silent, else at the cap.
-pub fn split_utterance(pcm: Bytes, cap: usize) -> Vec<Bytes> {
+pub fn split_utterance(pcm: &Bytes, cap: usize) -> Vec<Bytes> {
     let cap = (cap.max(2 * BLOCK_BYTES)) & !1;
     let min = (MIN_CHUNK_BYTES.min(cap / 3)) & !1;
     let mut out = Vec::new();
@@ -74,17 +74,17 @@ mod tests {
 
     #[test]
     fn a_short_or_empty_utterance_is_one_chunk_or_none() {
-        assert!(split_utterance(Bytes::new(), MAX_CHUNK_BYTES).is_empty());
+        assert!(split_utterance(&Bytes::new(), MAX_CHUNK_BYTES).is_empty());
         let tiny = Bytes::from_static(&[0, 0]);
-        assert_eq!(split_utterance(tiny.clone(), MAX_CHUNK_BYTES), vec![tiny]);
+        assert_eq!(split_utterance(&tiny, MAX_CHUNK_BYTES), vec![tiny]);
         let fits = Bytes::from(tone(30));
-        assert_eq!(split_utterance(fits.clone(), MAX_CHUNK_BYTES), vec![fits]);
+        assert_eq!(split_utterance(&fits, MAX_CHUNK_BYTES), vec![fits]);
     }
 
     #[test]
     fn a_continuous_tone_is_cut_at_the_cap() {
         let pcm = Bytes::from(tone(5 * 60));
-        let chunks = split_utterance(pcm.clone(), MAX_CHUNK_BYTES);
+        let chunks = split_utterance(&pcm, MAX_CHUNK_BYTES);
         assert_eq!(chunks.len(), 10);
         assert!(chunks.iter().all(|c| c.len() == MAX_CHUNK_BYTES), "{:?}", lens(&chunks));
         assert_eq!(rejoined(&chunks), pcm);
@@ -96,7 +96,7 @@ mod tests {
         pcm.extend(silence(1));
         pcm.extend(tone(20));
         let pcm = Bytes::from(pcm);
-        let chunks = split_utterance(pcm.clone(), MAX_CHUNK_BYTES);
+        let chunks = split_utterance(&pcm, MAX_CHUNK_BYTES);
         assert_eq!(chunks.len(), 2, "{:?}", lens(&chunks));
         let first = chunks[0].len();
         assert!((20 * BYTES_PER_SECOND..=21 * BYTES_PER_SECOND).contains(&first), "{first}");
@@ -109,7 +109,7 @@ mod tests {
         pcm.extend(silence(1));
         pcm.extend(tone(40));
         let pcm = Bytes::from(pcm);
-        let chunks = split_utterance(pcm.clone(), MAX_CHUNK_BYTES);
+        let chunks = split_utterance(&pcm, MAX_CHUNK_BYTES);
         assert!(chunks[0].len() >= MIN_CHUNK_BYTES, "{:?}", lens(&chunks));
         assert_eq!(rejoined(&chunks), pcm);
     }
@@ -118,7 +118,7 @@ mod tests {
     fn chunks_are_sample_aligned_for_any_cap() {
         let pcm = Bytes::from(tone(7));
         for cap in [BLOCK_BYTES * 2 + 1, 12_345, 100_001, MAX_CHUNK_BYTES] {
-            let chunks = split_utterance(pcm.clone(), cap);
+            let chunks = split_utterance(&pcm, cap);
             assert!(chunks.iter().all(|c| c.len() % 2 == 0 && c.len() <= (cap | 1)), "{cap}");
             assert_eq!(rejoined(&chunks), pcm, "{cap}");
         }

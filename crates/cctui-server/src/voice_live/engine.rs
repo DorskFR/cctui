@@ -238,7 +238,10 @@ enum Heard {
 #[derive(Debug)]
 enum Job {
     /// A chunk of the utterance being heard; `last` closes it.
-    Hear { audio: Bytes, last: bool },
+    Hear {
+        audio: Bytes,
+        last: bool,
+    },
     /// The utterance being heard is over with no more audio.
     End,
     Warm,
@@ -340,11 +343,7 @@ impl<B: VoiceBackend> Ear<B> {
             Ok(_) => {}
             Err(message) => self.error(message).await,
         }
-        if last {
-            self.finish().await
-        } else {
-            Heard::Partial
-        }
+        if last { self.finish().await } else { Heard::Partial }
     }
 
     /// Up to [`STT_RETRIES`] more attempts, so one failed chunk does not
@@ -450,6 +449,20 @@ impl Turns {
     }
 }
 
+/// Utterances handed to the listener and not yet reported back.
+#[derive(Debug, Default)]
+struct Hearing {
+    count: usize,
+    /// The current utterance still has parts to come.
+    open: bool,
+}
+
+impl Hearing {
+    const fn done(&mut self) {
+        self.count = self.count.saturating_sub(1);
+    }
+}
+
 struct Engine<B: VoiceBackend> {
     backend: Arc<B>,
     prefs: SharedPrefs,
@@ -461,10 +474,7 @@ struct Engine<B: VoiceBackend> {
     /// Sentences handed to `synth`.
     queued: u64,
     listener: Listener,
-    /// Utterances handed to the listener and not yet reported back.
-    hearing: usize,
-    /// The listener's current utterance still has parts to come.
-    hearing_open: bool,
+    hearing: Hearing,
     generation: u64,
     probe: SharedProbe,
     sentences: SentenceBuffer,
@@ -517,8 +527,7 @@ impl<B: VoiceBackend> Engine<B> {
             synth,
             queued: 0,
             listener,
-            hearing: 0,
-            hearing_open: false,
+            hearing: Hearing::default(),
             generation: 1,
             probe,
             sentences: SentenceBuffer::default(),
@@ -547,7 +556,7 @@ impl<B: VoiceBackend> Engine<B> {
             VoiceState::Thinking
         } else if self.warming {
             VoiceState::Warming
-        } else if self.hearing > 0 {
+        } else if self.hearing.count > 0 {
             VoiceState::Thinking
         } else {
             VoiceState::Listening
@@ -564,11 +573,11 @@ impl<B: VoiceBackend> Engine<B> {
     /// `interrupt` when the user talks over it, and audio landing meanwhile
     /// was spoken before the reply started.
     async fn utterance(&mut self, audio: Bytes, last: bool) {
-        if !self.hearing_open {
-            self.hearing += 1;
+        if !self.hearing.open {
+            self.hearing.count += 1;
         }
-        self.hearing_open = !last;
-        let chunks = split_utterance(audio, MAX_CHUNK_BYTES);
+        self.hearing.open = !last;
+        let chunks = split_utterance(&audio, MAX_CHUNK_BYTES);
         let count = chunks.len();
         for (i, chunk) in chunks.into_iter().enumerate() {
             let job = Job::Hear { audio: chunk, last: last && i + 1 == count };
@@ -583,10 +592,10 @@ impl<B: VoiceBackend> Engine<B> {
     }
 
     async fn utterance_end(&mut self) {
-        if !self.hearing_open {
+        if !self.hearing.open {
             return;
         }
-        self.hearing_open = false;
+        self.hearing.open = false;
         let _ = self.listener.tx.send(Job::End);
         self.emit_state().await;
     }
@@ -605,11 +614,11 @@ impl<B: VoiceBackend> Engine<B> {
                 let ready = self.main.prompt(&message);
                 self.play(ready).await;
             }
-            Heard::Sent | Heard::Idle => self.hearing = self.hearing.saturating_sub(1),
+            Heard::Sent | Heard::Idle => self.hearing.done(),
             Heard::Partial => {}
             Heard::Warm => self.warming = false,
             Heard::Failed => {
-                self.hearing = self.hearing.saturating_sub(1);
+                self.hearing.done();
                 self.turns.unsent();
                 self.turn_active = false;
             }
@@ -1029,12 +1038,16 @@ mod tests {
                 gate.acquire().await.unwrap().forget();
             }
             unfinished.0 = None;
-            {
+            let failed = {
                 let mut failures = self.stt_failures.lock().unwrap();
-                if *failures > 0 {
+                let failed = *failures > 0;
+                if failed {
                     *failures -= 1;
-                    return Err("speech service unreachable".into());
                 }
+                failed
+            };
+            if failed {
+                return Err("speech service unreachable".into());
             }
             if self.numbered {
                 return Ok(format!("p{}", self.heard_n.fetch_add(1, Ordering::SeqCst) + 1));
