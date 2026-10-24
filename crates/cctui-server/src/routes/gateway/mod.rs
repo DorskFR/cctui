@@ -16,6 +16,7 @@
 
 mod config;
 mod failover;
+mod fork;
 mod limits;
 mod mint;
 mod proxy;
@@ -28,6 +29,7 @@ mod voicetee;
 
 pub use config::*;
 pub use failover::*;
+pub use fork::fork_env_for_session;
 pub use limits::*;
 pub use mint::*;
 pub use proxy::*;

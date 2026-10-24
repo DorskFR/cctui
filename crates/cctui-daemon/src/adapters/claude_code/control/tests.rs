@@ -1,6 +1,25 @@
 use super::test_support::*;
 use super::*;
 
+#[tokio::test]
+async fn fork_dispatch_preserves_the_child_gateway_hint_when_the_pull_is_unavailable() {
+    let (d, _events) = driver();
+    let mut spec = launch_argv_spec();
+    spec.env = env_of(&[
+        ("ANTHROPIC_BASE_URL", "https://gateway.invalid/anthropic"),
+        ("ANTHROPIC_AUTH_TOKEN", "child-token"),
+    ]);
+    let child = uuid::Uuid::new_v4().to_string();
+    let dispatch = d
+        .prepare_fork(Path::new("/unused.sock"), "parent", &spec, Some(&child), None)
+        .await
+        .unwrap();
+    assert_eq!(dispatch.req["d"]["env"]["ANTHROPIC_AUTH_TOKEN"], "child-token");
+    assert_eq!(dispatch.req["d"]["reattachEnv"]["ANTHROPIC_AUTH_TOKEN"], "child-token");
+    assert_eq!(dispatch.session_id, child);
+    std::fs::remove_dir_all(d.cfg.jobs_root.parent().unwrap()).unwrap();
+}
+
 #[test]
 fn supervise_daemon_defaults_on_and_is_disablable_by_config() {
     assert!(DriverConfig::default().supervise_daemon);
