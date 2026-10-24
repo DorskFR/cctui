@@ -2528,10 +2528,10 @@ mod launch_gate_tests {
     }
 
     #[tokio::test]
-    async fn fork_refuses_a_binding_after_its_account_share_is_revoked() {
-        let Some(url) = crate::routes::gateway::test_db_url(
-            "fork_refuses_a_binding_after_its_account_share_is_revoked",
-        ) else {
+    async fn fork_refuses_an_inaccessible_or_deleted_account() {
+        let Some(url) =
+            crate::routes::gateway::test_db_url("fork_refuses_an_inaccessible_or_deleted_account")
+        else {
             return;
         };
         let pool = sqlx::PgPool::connect(&url).await.unwrap();
@@ -2567,6 +2567,14 @@ mod launch_gate_tests {
         let mut rx = daemon(&state, machine);
         assert_eq!(fork(&state, caller(owner, SPAWNER), &parent).await, Err(StatusCode::CONFLICT));
         assert!(rx.try_recv().is_err(), "never dispatch without the account");
+        sqlx::query("DELETE FROM accounts WHERE name = $1 AND user_id = $2")
+            .bind(&account)
+            .bind(other)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        assert_eq!(fork(&state, caller(owner, SPAWNER), &parent).await, Err(StatusCode::CONFLICT));
+        assert!(rx.try_recv().is_err(), "a deleted account must not become an unbound fork");
     }
 
     #[tokio::test]
