@@ -5,6 +5,7 @@ use super::*;
 async fn fork_dispatch_preserves_the_child_gateway_hint_when_the_pull_is_unavailable() {
     let (d, _events) = driver();
     let mut spec = launch_argv_spec();
+    spec.working_dir = Some(d.cfg.jobs_root.parent().unwrap().to_string_lossy().into_owned());
     spec.env = env_of(&[
         ("ANTHROPIC_BASE_URL", "https://gateway.invalid/anthropic"),
         ("ANTHROPIC_AUTH_TOKEN", "child-token"),
