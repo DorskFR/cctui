@@ -573,13 +573,10 @@ impl Driver {
         let mut launch = fork_launch(spec, &resume_id, session_id, extract.is_some());
         self.remember_launch_posture(short, spec);
         let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
-        // If the server hasn't bound the child id yet, inherit the parent's
-        // account env so the child routes through the gateway from its first turn.
-        let no_env = std::collections::BTreeMap::default();
-        let mut launch_env = self.resolve_launch_env(session_id, &no_env).await?;
-        if launch_env.env.is_empty() {
-            launch_env = self.resolve_launch_env(parent_local_id, &no_env).await?;
-        }
+        // The server binds the child before dispatch. Pull its own credential;
+        // the pushed env covers a transient pull failure without reusing the
+        // parent's token or confusing guard variables with authentication.
+        let launch_env = self.resolve_launch_env(session_id, &spec.env).await?;
         launch.plugin_dirs.clone_from(&launch_env.plugin_dirs);
         launch.mcp_config =
             agent_relay_config(short, session_id, launch_env.spawn_capability.as_ref());

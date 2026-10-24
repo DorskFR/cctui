@@ -2439,6 +2439,144 @@ mod launch_gate_tests {
             .unwrap()
     }
 
+    /// The child must already own a credential when the daemon receives Fork,
+    /// including when reopening an archived parent whose tokens were revoked.
+    #[tokio::test]
+    async fn fork_binds_a_fresh_child_token_before_dispatch() {
+        let Some(url) =
+            crate::routes::gateway::test_db_url("fork_binds_a_fresh_child_token_before_dispatch")
+        else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let owner = seed_user(&pool).await;
+        let machine = seed_machine(&pool, owner).await;
+        let (account, provider) = seed_account(&pool, owner).await;
+        let state = AppState::for_test(pool.clone());
+        let mut rx = daemon(&state, machine);
+        for mode in ["live", "archived", "legacy", "unbound"] {
+            let parent = seed_session(&pool, owner, machine).await;
+            let parent_env = if mode == "unbound" {
+                std::collections::BTreeMap::new()
+            } else {
+                crate::routes::gateway::mint_session_env(
+                    &state,
+                    owner,
+                    &account,
+                    Family::Anthropic,
+                    &parent,
+                )
+                .await
+                .unwrap()
+            };
+            if mode == "archived" {
+                sqlx::query("UPDATE session_tokens SET revoked_at = now() WHERE session_id = $1")
+                    .bind(&parent)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE sessions SET status = 'archived' WHERE id = $1")
+                    .bind(&parent)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            } else if mode == "legacy" {
+                sqlx::query("DELETE FROM session_tokens WHERE session_id = $1")
+                    .bind(&parent)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            let child = fork(&state, caller(owner, SPAWNER), &parent).await.unwrap().unwrap();
+            let cctui_proto::ws::DaemonFrameDown::Command { command, .. } =
+                rx.recv().await.unwrap()
+            else {
+                panic!("expected a fork command")
+            };
+            let cctui_proto::adapter::AdapterCommand::Fork { spec, session_id, .. } = *command
+            else {
+                panic!("expected a fork")
+            };
+            assert_eq!(session_id.as_deref(), Some(child.as_str()));
+            let bindings: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(
+                "SELECT account_id, user_id FROM session_tokens \
+                 WHERE session_id = $1 AND revoked_at IS NULL",
+            )
+            .bind(&child)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            if mode == "unbound" {
+                assert!(spec.env.is_empty());
+                assert!(bindings.is_empty());
+                continue;
+            }
+            assert_eq!(bindings, vec![(provider, Some(owner))]);
+            assert_ne!(spec.env["ANTHROPIC_AUTH_TOKEN"], parent_env["ANTHROPIC_AUTH_TOKEN"]);
+            assert_eq!(
+                spec.env,
+                crate::routes::gateway::resume_env_for_session(&state, &child).await
+            );
+            let registered: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions WHERE id = $1)")
+                    .bind(&child)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert!(!registered, "the binding must precede registration");
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_refuses_an_inaccessible_or_deleted_account() {
+        let Some(url) =
+            crate::routes::gateway::test_db_url("fork_refuses_an_inaccessible_or_deleted_account")
+        else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let owner = seed_user(&pool).await;
+        let other = seed_user(&pool).await;
+        let machine = seed_machine(&pool, owner).await;
+        let (account, provider) = seed_account(&pool, other).await;
+        sqlx::query(
+            "INSERT INTO resource_shares (resource_type, resource_id, grantee_id) \
+             SELECT 'account', account_id, $2 FROM account_providers WHERE id = $1",
+        )
+        .bind(provider)
+        .bind(owner)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let parent = seed_session(&pool, owner, machine).await;
+        let state = AppState::for_test(pool.clone());
+        crate::routes::gateway::mint_session_env(
+            &state,
+            owner,
+            &account,
+            Family::Anthropic,
+            &parent,
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE resource_shares SET revoked_at = now() WHERE grantee_id = $1")
+            .bind(owner)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut rx = daemon(&state, machine);
+        assert_eq!(fork(&state, caller(owner, SPAWNER), &parent).await, Err(StatusCode::CONFLICT));
+        assert!(rx.try_recv().is_err(), "never dispatch without the account");
+        sqlx::query("DELETE FROM accounts WHERE name = $1 AND user_id = $2")
+            .bind(&account)
+            .bind(other)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        assert_eq!(fork(&state, caller(owner, SPAWNER), &parent).await, Err(StatusCode::CONFLICT));
+        assert!(rx.try_recv().is_err(), "a deleted account must not become an unbound fork");
+    }
+
     #[tokio::test]
     async fn fork_and_resume_need_dispatch_and_a_machine_the_caller_may_spawn_on() {
         let Some(url) = crate::routes::gateway::test_db_url(

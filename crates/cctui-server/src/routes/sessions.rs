@@ -3527,6 +3527,12 @@ pub async fn fork_session(
     // don't claim one for it.
     let is_claude = adapter_id == "claude-code";
     let child_session_id = is_claude.then(|| uuid::Uuid::new_v4().to_string());
+    let child_key = child_session_id.clone().unwrap_or_else(|| command_id.to_string());
+    let env = if is_claude {
+        crate::routes::gateway::fork_env_for_session(&state, &session_id, &child_key).await?
+    } else {
+        std::collections::BTreeMap::new()
+    };
     let service_tier = if crate::routes::gateway::Family::from_adapter(&adapter_id)
         == Ok(crate::routes::gateway::Family::Openai)
     {
@@ -3545,7 +3551,7 @@ pub async fn fork_session(
         effort: norm(req.effort),
         model: norm(req.model),
         service_tier,
-        env: std::collections::BTreeMap::new(),
+        env,
         bootstrap: serde_json::Value::Null,
         parent_local_id: None,
     };
@@ -3559,7 +3565,6 @@ pub async fn fork_session(
             extract: req.extract,
         }),
     };
-    let child_key = child_session_id.clone().unwrap_or_else(|| command_id.to_string());
     crate::routes::context::inherit_intent(&state.pool, &child_key, &session_id).await;
     crate::routes::spawn::remember_spawner(&state.pool, &child_key, ctx.user_id, None).await;
     state.bus.command_daemon_for_session(machine_uuid, &session_id, frame).await.map_err(
