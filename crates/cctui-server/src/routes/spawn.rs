@@ -2456,7 +2456,9 @@ mod launch_gate_tests {
         let mut rx = daemon(&state, machine);
         for mode in ["live", "archived", "legacy", "unbound"] {
             let parent = seed_session(&pool, owner, machine).await;
-            let parent_env = if mode != "unbound" {
+            let parent_env = if mode == "unbound" {
+                std::collections::BTreeMap::new()
+            } else {
                 crate::routes::gateway::mint_session_env(
                     &state,
                     owner,
@@ -2466,8 +2468,6 @@ mod launch_gate_tests {
                 )
                 .await
                 .unwrap()
-            } else {
-                std::collections::BTreeMap::new()
             };
             if mode == "archived" {
                 sqlx::query("UPDATE session_tokens SET revoked_at = now() WHERE session_id = $1")
