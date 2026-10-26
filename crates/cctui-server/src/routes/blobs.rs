@@ -98,14 +98,21 @@ pub async fn store_blob_in(
 ) -> Result<StoredBlob, sqlx::Error> {
     let hash = hex::encode(Sha256::digest(bytes));
     let byte_len = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
+    let on_disk = if let Some(root) = blob_directory() {
+        write_file(&root, &hash, bytes).await?;
+        true
+    } else {
+        false
+    };
     let rows = sqlx::query(
-        "INSERT INTO daemon_blobs (hash, media_type, byte_len, bytes) VALUES ($1, $2, $3, $4) \
+        "INSERT INTO daemon_blobs (hash, media_type, byte_len, bytes, file_stored) VALUES ($1, $2, $3, $4, $5) \
          ON CONFLICT (hash) DO NOTHING",
     )
     .bind(&hash)
     .bind(media_type)
     .bind(byte_len)
-    .bind(bytes)
+    .bind(if on_disk { &[][..] } else { bytes })
+    .bind(on_disk)
     .execute(conn)
     .await?
     .rows_affected();
@@ -120,8 +127,8 @@ pub async fn fetch_session_blob(
     session_id: &str,
     hash: &str,
 ) -> Result<Option<(Option<String>, Vec<u8>)>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT b.media_type, b.bytes FROM daemon_blobs b \
+    let row: Option<(Option<String>, Vec<u8>, bool, i64)> = sqlx::query_as(
+        "SELECT b.media_type, b.bytes, b.file_stored, b.byte_len FROM daemon_blobs b \
          WHERE b.hash = $1 AND ( \
            EXISTS (SELECT 1 FROM session_blob_links l \
                    WHERE l.hash = b.hash AND l.session_id = $2) \
@@ -131,7 +138,95 @@ pub async fn fetch_session_blob(
     .bind(hash)
     .bind(session_id)
     .fetch_optional(pool)
-    .await
+    .await?;
+    match row {
+        Some((media_type, bytes, on_disk, size)) => {
+            Ok(Some((media_type, resolve_file(hash, bytes, on_disk, size).await?)))
+        }
+        None => Ok(None),
+    }
+}
+
+/// All replicas must share this durable directory. Without it, retain the
+/// `PostgreSQL` backend for existing installations.
+fn blob_directory() -> Option<std::path::PathBuf> {
+    std::env::var_os("CCTUI_BLOB_PATH").filter(|s| !s.is_empty()).map(Into::into)
+}
+
+async fn write_file(root: &std::path::Path, hash: &str, bytes: &[u8]) -> sqlx::Result<()> {
+    tokio::fs::create_dir_all(root).await?;
+    let path = root.join(hash);
+    if let Ok(existing) = tokio::fs::read(&path).await {
+        if existing == bytes {
+            return Ok(());
+        }
+        return Err(sqlx::Error::Protocol("blob file hash mismatch".into()));
+    }
+    // A unique temporary inode and atomic publication keep concurrent uploads
+    // and interrupted writes from exposing partial content.
+    let tmp = root.join(format!(".{}.{}", hash, uuid::Uuid::new_v4()));
+    let result = async {
+        use tokio::io::AsyncWriteExt;
+        let mut file =
+            tokio::fs::OpenOptions::new().write(true).create_new(true).open(&tmp).await?;
+        file.write_all(bytes).await?;
+        file.sync_all().await?;
+        tokio::fs::rename(&tmp, &path).await?;
+        // Persist the directory entry before a database commit references it.
+        let dir = tokio::fs::File::open(root).await?;
+        dir.sync_all().await
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+    Ok(result?)
+}
+
+async fn resolve_file(
+    hash: &str,
+    bytes: Vec<u8>,
+    on_disk: bool,
+    size: i64,
+) -> sqlx::Result<Vec<u8>> {
+    if !on_disk {
+        return Ok(bytes);
+    }
+    if !is_sha256_hex(hash) {
+        return Err(sqlx::Error::Protocol("invalid blob key".into()));
+    }
+    let root = blob_directory().ok_or_else(|| {
+        sqlx::Error::Protocol("CCTUI_BLOB_PATH is required for file-backed blobs".into())
+    })?;
+    read_file(&root, hash, size).await
+}
+
+async fn read_file(root: &std::path::Path, hash: &str, size: i64) -> sqlx::Result<Vec<u8>> {
+    if !is_sha256_hex(hash) {
+        return Err(sqlx::Error::Protocol("invalid blob key".into()));
+    }
+    let bytes = tokio::fs::read(root.join(hash)).await?;
+    if i64::try_from(bytes.len()).ok() != Some(size) || hex::encode(Sha256::digest(&bytes)) != hash
+    {
+        return Err(sqlx::Error::Protocol("blob file hash mismatch".into()));
+    }
+    Ok(bytes)
+}
+
+/// Internal readers use the same backend as the authenticated blob route.
+pub async fn read_blob_in(
+    conn: &mut sqlx::PgConnection,
+    hash: &str,
+) -> sqlx::Result<Option<Vec<u8>>> {
+    let row: Option<(Vec<u8>, bool, i64)> =
+        sqlx::query_as("SELECT bytes, file_stored, byte_len FROM daemon_blobs WHERE hash = $1")
+            .bind(hash)
+            .fetch_optional(conn)
+            .await?;
+    match row {
+        Some((bytes, on_disk, size)) => Ok(Some(resolve_file(hash, bytes, on_disk, size).await?)),
+        None => Ok(None),
+    }
 }
 
 pub async fn get_blob(
@@ -174,6 +269,42 @@ pub fn blob_response(hash: &str, bytes: Vec<u8>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn file_backend_publishes_verified_bytes_and_refuses_corruption() {
+        let root = std::env::temp_dir().join(format!("cctui-blob-test-{}", uuid::Uuid::new_v4()));
+        let bytes = b"durable attachment";
+        let hash = hex::encode(Sha256::digest(bytes));
+        write_file(&root, &hash, bytes).await.unwrap();
+        write_file(&root, &hash, bytes).await.unwrap();
+        assert_eq!(
+            read_file(&root, &hash, i64::try_from(bytes.len()).unwrap()).await.unwrap(),
+            bytes
+        );
+        assert!(read_file(&root, "../private", 1).await.is_err());
+        assert!(read_file(&root, &hash, 1).await.is_err());
+        tokio::fs::write(root.join(&hash), b"damaged").await.unwrap();
+        assert!(read_file(&root, &hash, i64::try_from(bytes.len()).unwrap()).await.is_err());
+        assert!(write_file(&root, &hash, bytes).await.is_err());
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn concurrent_file_uploads_are_complete() {
+        let root = std::env::temp_dir().join(format!("cctui-blob-test-{}", uuid::Uuid::new_v4()));
+        let bytes = vec![7; 128 * 1024];
+        let hash = hex::encode(Sha256::digest(&bytes));
+        let (a, b) =
+            tokio::join!(write_file(&root, &hash, &bytes), write_file(&root, &hash, &bytes));
+        a.unwrap();
+        b.unwrap();
+        assert_eq!(
+            read_file(&root, &hash, i64::try_from(bytes.len()).unwrap()).await.unwrap(),
+            bytes
+        );
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
 
     #[test]
     fn sha256_hex_validation() {

@@ -128,3 +128,23 @@ Restart from the beginning (idempotent: rewritten rows are skipped):
 ```sql
 UPDATE image_blob_backfill SET last_event_id = 0 WHERE name = 'backfill';
 ```
+
+## Durable file backend
+
+Set `CCTUI_BLOB_PATH` to a directory on durable storage shared by every server
+replica. Blob metadata, ownership links and hashes remain in PostgreSQL; new
+blob bytes are atomically written and synced to `<directory>/<sha256>`. The
+same authenticated routes and image references serve both backends. Reads
+verify the file length and hash. Missing or damaged files fail closed.
+
+Without the variable, new blobs continue using PostgreSQL. Existing database
+blobs remain readable with either configuration. Once any `file_stored` rows
+exist, keep the directory mounted and the variable configured, including on
+restore. Back up this directory together with PostgreSQL. Files whose database
+transaction rolled back are safe orphans; this change does not delete files.
+Do not remove the directory or roll back migration 191 while it is in use.
+
+To migrate existing blobs, copy and verify each file by hash and length before
+setting `file_stored = true, bytes = ''::bytea` in a transaction. Preserve the
+original rows in a verified external backup first. Keep plugin archives and
+image recovery on the same backend-aware reader.
