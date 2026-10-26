@@ -259,8 +259,15 @@ pub async fn store_verified(
         if stored.created {
             written += b.bytes.len() as u64;
         }
+        let stored_size: Option<i64> =
+            sqlx::query_scalar("SELECT byte_len FROM daemon_blobs WHERE hash = $1")
+                .bind(&b.hash)
+                .fetch_optional(&mut *conn)
+                .await?;
         let stored_bytes = crate::routes::blobs::read_blob_in(&mut *conn, &b.hash).await?;
-        if stored_bytes.as_deref() != Some(b.bytes.as_slice()) {
+        if stored_size != i64::try_from(b.bytes.len()).ok()
+            || stored_bytes.as_deref() != Some(b.bytes.as_slice())
+        {
             tracing::warn!(hash = %b.hash, "stored blob does not match its hash");
             return Ok(None);
         }

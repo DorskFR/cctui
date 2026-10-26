@@ -418,11 +418,11 @@ async fn ingest_stores_a_repeated_screenshot_once() {
     assert_eq!(source(&first, 0)["blob_id"], sha(&png));
     assert_eq!(source(&second, 0)["blob_id"], sha(&png));
     assert_eq!(db.blob_rows(&sha(&png)).await, 1, "one row per content hash");
-    let stored: Vec<u8> = sqlx::query_scalar("SELECT bytes FROM daemon_blobs WHERE hash = $1")
-        .bind(sha(&png))
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
+    let stored =
+        crate::routes::blobs::read_blob_in(&mut db.pool.acquire().await.unwrap(), &sha(&png))
+            .await
+            .unwrap()
+            .unwrap();
     assert_eq!(stored, png);
     db.cleanup(&[sha(&png)], None).await;
 }
