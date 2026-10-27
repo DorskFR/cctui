@@ -34,10 +34,22 @@ export class UtteranceChunker {
 	private quiet = 0;
 	private speaking = false;
 	private sent = 0;
+	/** Set while the server transcribes live: a part goes out every this
+	 *  much speech, with no pause needed. */
+	private livePartMs: number | null = null;
 
 	constructor(emit: PartSink, opts: Partial<ChunkerOptions> = {}) {
 		this.emit = emit;
 		this.opts = { ...CHUNKER_DEFAULTS, ...opts };
+	}
+
+	/** An utterance is being cut into parts. */
+	get active(): boolean {
+		return this.speaking;
+	}
+
+	setLivePartMs(ms: number | null) {
+		this.livePartMs = ms && ms > 0 ? ms : null;
 	}
 
 	start() {
@@ -68,7 +80,8 @@ export class UtteranceChunker {
 		const paused =
 			this.buffered >= this.samples(this.opts.minPartMs) &&
 			this.quiet >= this.samples(this.opts.pauseMs);
-		if (paused || this.buffered >= this.samples(this.opts.maxPartMs)) this.flush(false);
+		const live = this.livePartMs !== null && this.buffered >= this.samples(this.livePartMs);
+		if (live || paused || this.buffered >= this.samples(this.opts.maxPartMs)) this.flush(false);
 	}
 
 	end() {

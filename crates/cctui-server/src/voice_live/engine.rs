@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use cctui_proto::voice::{SpokenStyle, VoiceClientMsg, VoiceServerMsg, VoiceState};
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
@@ -15,6 +15,7 @@ use tracing::Instrument;
 use super::audio::{MAX_CHUNK_BYTES, split_utterance};
 use super::mainline::{Delta, MainThread, squash};
 use super::text::{SentenceBuffer, spoken_prompt};
+use crate::speech::{SpeechError, SttEvent, SttStream};
 
 pub type AudioStream = BoxStream<'static, Result<Bytes, String>>;
 
@@ -30,6 +31,12 @@ pub trait VoiceBackend: Send + Sync + 'static {
     /// Loads the speech-to-text model `language` routes to, so the next
     /// utterance does not pay for the load.
     fn warm_up(&self, language: Option<&str>) -> impl Future<Output = Result<(), String>> + Send;
+    /// Whether the model `language` routes to transcribes live.
+    fn streams(&self, language: Option<&str>) -> bool;
+    fn stream(
+        &self,
+        language: Option<&str>,
+    ) -> impl Future<Output = Result<SttStream, SpeechError>> + Send;
     fn synthesize(
         &self,
         text: &str,
@@ -95,6 +102,10 @@ const STT_RETRIES: usize = 2;
 const STT_KEEPALIVE: Duration = Duration::from_mins(1);
 /// A stream quiet this long speaks what it has buffered.
 const PAUSE_FLUSH: Duration = Duration::from_millis(700);
+/// The part cadence asked of the browser while utterances are heard live.
+pub const STREAM_PART_MS: u32 = 320;
+/// A live utterance whose final text takes longer is transcribed in batch.
+const STREAM_FINAL_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Milestones of the turn a spoken prompt started, for its time-to-first-audio
 /// log line.
@@ -272,13 +283,26 @@ fn spawn_listener<B: VoiceBackend>(
 ) -> Listener {
     let (tx, mut rx) = mpsc::unbounded_channel::<Job>();
     let task = tokio::spawn(async move {
-        let mut ear = Ear { backend, prefs, out, heard, pending: String::new() };
+        let mut ear = Ear {
+            backend,
+            prefs,
+            out,
+            heard,
+            pending: String::new(),
+            shown: String::new(),
+            open: false,
+            live: None,
+            refused: false,
+            told: None,
+        };
         let mut job = Job::Warm;
         loop {
             let outcome = match job {
                 Job::Hear { audio, last } => ear.hear(audio, last).await,
-                Job::End => ear.finish().await,
+                Job::End => ear.end().await,
                 Job::Warm => {
+                    ear.refused = false;
+                    ear.listen().await;
                     warm_up(&*ear.backend, &ear.prefs).await;
                     Heard::Warm
                 }
@@ -286,28 +310,13 @@ fn spawn_listener<B: VoiceBackend>(
             if ear.heard.send(outcome).await.is_err() {
                 break;
             }
-            match next_job(&mut rx, &*ear.backend, &ear.prefs).await {
+            match ear.next_job(&mut rx).await {
                 Some(next) => job = next,
                 None => break,
             }
         }
     });
     Listener { tx, task }
-}
-
-/// Waits for the next job, warming the model every [`STT_KEEPALIVE`] of
-/// silence.
-async fn next_job<B: VoiceBackend>(
-    rx: &mut mpsc::UnboundedReceiver<Job>,
-    backend: &B,
-    prefs: &SharedPrefs,
-) -> Option<Job> {
-    loop {
-        tokio::select! {
-            next = rx.recv() => return next,
-            () = tokio::time::sleep(STT_KEEPALIVE) => warm_up(backend, prefs).await,
-        }
-    }
 }
 
 fn language(prefs: &SharedPrefs) -> Option<String> {
@@ -320,30 +329,191 @@ async fn warm_up<B: VoiceBackend>(backend: &B, prefs: &SharedPrefs) {
     }
 }
 
+/// An utterance heard live, with its audio so far for the batch fallback.
+struct Live {
+    /// `None` once the stream failed.
+    stream: Option<SttStream>,
+    audio: BytesMut,
+}
+
+async fn live_event(live: &mut Option<Live>) -> Option<Result<SttEvent, SpeechError>> {
+    match live.as_mut().and_then(|l| l.stream.as_mut()) {
+        Some(stream) => stream.event().await,
+        None => std::future::pending().await,
+    }
+}
+
 /// The listener's side of one utterance: the text of its chunks heard so
-/// far, sent as one message when the last chunk is in.
+/// far, sent as one message when the last chunk is in. When the model
+/// streams, the utterance is heard live over one stream instead.
 struct Ear<B> {
     backend: Arc<B>,
     prefs: SharedPrefs,
     out: mpsc::Sender<Outbound>,
     heard: mpsc::Sender<Heard>,
     pending: String,
+    /// The transcript last relayed for the utterance.
+    shown: String,
+    /// An utterance is being heard.
+    open: bool,
+    live: Option<Live>,
+    /// The service refused to stream the current language.
+    refused: bool,
+    /// The part cadence last asked of the browser.
+    told: Option<u32>,
 }
 
 impl<B: VoiceBackend> Ear<B> {
+    /// Waits for the next job, relaying the live utterance meanwhile and
+    /// warming the model every [`STT_KEEPALIVE`] of silence.
+    async fn next_job(&mut self, rx: &mut mpsc::UnboundedReceiver<Job>) -> Option<Job> {
+        loop {
+            tokio::select! {
+                next = rx.recv() => return next,
+                event = live_event(&mut self.live) => self.live_event(event).await,
+                () = tokio::time::sleep(STT_KEEPALIVE) => warm_up(&*self.backend, &self.prefs).await,
+            }
+        }
+    }
+
     async fn hear(&mut self, audio: Bytes, last: bool) -> Heard {
+        if !self.open {
+            self.open = true;
+            self.go_live().await;
+        }
+        if let Some(live) = &mut self.live {
+            live.audio.extend_from_slice(&audio);
+            if let Some(stream) = &live.stream {
+                stream.send_audio(&audio);
+            }
+        } else {
+            self.hear_chunk(audio).await;
+        }
+        if last { self.end().await } else { Heard::Partial }
+    }
+
+    async fn hear_chunk(&mut self, audio: Bytes) {
         match self.transcribe(audio).await {
             Ok(text) if !text.is_empty() => {
                 if !self.pending.is_empty() {
                     self.pending.push(' ');
                 }
                 self.pending.push_str(&text);
-                let _ = self.heard.send(Heard::Transcript(self.pending.clone())).await;
+                self.show(self.pending.clone()).await;
             }
             Ok(_) => {}
             Err(message) => self.error(message).await,
         }
-        if last { self.finish().await } else { Heard::Partial }
+    }
+
+    async fn show(&mut self, text: String) {
+        if text.is_empty() || text == self.shown {
+            return;
+        }
+        self.shown.clone_from(&text);
+        let _ = self.heard.send(Heard::Transcript(text)).await;
+    }
+
+    /// Opens a live stream for the utterance starting, when the model
+    /// streams; a stream that fails to open leaves the utterance to batch.
+    async fn go_live(&mut self) {
+        self.live = None;
+        let language = language(&self.prefs);
+        if self.refused || !self.backend.streams(language.as_deref()) {
+            return;
+        }
+        let stream = match self.backend.stream(language.as_deref()).await {
+            Ok(stream) => Some(stream),
+            Err(err) => {
+                self.stream_failed(&err).await;
+                None
+            }
+        };
+        self.live = Some(Live { stream, audio: BytesMut::new() });
+    }
+
+    async fn live_event(&mut self, event: Option<Result<SttEvent, SpeechError>>) {
+        match event {
+            Some(Ok(SttEvent::Partial(text))) => self.show(text.trim().to_owned()).await,
+            Some(Ok(SttEvent::Final(_))) => {}
+            Some(Err(err)) => {
+                if let Some(live) = &mut self.live {
+                    live.stream = None;
+                }
+                self.stream_failed(&err).await;
+            }
+            None => {
+                if let Some(live) = &mut self.live {
+                    live.stream = None;
+                }
+            }
+        }
+    }
+
+    async fn stream_failed(&mut self, err: &SpeechError) {
+        tracing::debug!(%err, "voice: live transcription failed, hearing in batch");
+        if err.refuses_streaming() {
+            self.refused = true;
+            self.listen().await;
+        }
+    }
+
+    /// Tells the browser the part cadence the current model wants.
+    async fn listen(&mut self) {
+        let language = language(&self.prefs);
+        let streams = !self.refused && self.backend.streams(language.as_deref());
+        let part_ms = streams.then_some(STREAM_PART_MS);
+        if part_ms != self.told {
+            self.told = part_ms;
+            let _ = self.out.send(Outbound::Control(VoiceServerMsg::Listen { part_ms })).await;
+        }
+    }
+
+    /// The utterance is over: its live final text, or its audio heard in
+    /// batch when the stream failed, then the message.
+    async fn end(&mut self) -> Heard {
+        self.open = false;
+        if let Some(live) = self.live.take() {
+            match self.live_final(live.stream).await {
+                Some(text) => {
+                    self.pending = text;
+                    self.show(self.pending.clone()).await;
+                }
+                None => {
+                    for chunk in split_utterance(&live.audio.freeze(), MAX_CHUNK_BYTES) {
+                        self.hear_chunk(chunk).await;
+                    }
+                }
+            }
+        }
+        self.shown.clear();
+        self.finish().await
+    }
+
+    /// Closes the live utterance and waits for its final text.
+    async fn live_final(&mut self, stream: Option<SttStream>) -> Option<String> {
+        let mut stream = stream?;
+        stream.end();
+        let deadline = tokio::time::sleep(STREAM_FINAL_TIMEOUT);
+        tokio::pin!(deadline);
+        loop {
+            let event = tokio::select! {
+                event = stream.event() => event,
+                () = &mut deadline => {
+                    tracing::debug!("voice: live transcription final timed out");
+                    return None;
+                }
+            };
+            match event {
+                Some(Ok(SttEvent::Partial(text))) => self.show(text.trim().to_owned()).await,
+                Some(Ok(SttEvent::Final(text))) => return Some(text.trim().to_owned()),
+                Some(Err(err)) => {
+                    self.stream_failed(&err).await;
+                    return None;
+                }
+                None => return None,
+            }
+        }
     }
 
     /// Up to [`STT_RETRIES`] more attempts, so one failed chunk does not
@@ -556,7 +726,7 @@ impl<B: VoiceBackend> Engine<B> {
             VoiceState::Thinking
         } else if self.warming {
             VoiceState::Warming
-        } else if self.hearing.count > 0 {
+        } else if self.hearing.count > usize::from(self.hearing.open) {
             VoiceState::Thinking
         } else {
             VoiceState::Listening
@@ -973,11 +1143,13 @@ pub async fn run_voice_loop<B: VoiceBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::speech::SttInput;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
     use tokio::sync::Semaphore;
 
     #[derive(Default)]
+    #[allow(clippy::struct_excessive_bools)]
     struct Mock {
         transcript: Mutex<String>,
         sent: Mutex<Vec<String>>,
@@ -1003,6 +1175,15 @@ mod tests {
         /// Each transcript is `p<n>`, numbered in call order.
         numbered: bool,
         heard_n: AtomicUsize,
+        /// Utterances are heard live: each partial is the parts so far, as
+        /// text, joined by spaces.
+        streaming: bool,
+        /// Streams left to fail to open.
+        stream_open_failures: Mutex<u32>,
+        /// Close codes the next streams fail with at their first audio.
+        stream_closes: Mutex<Vec<u16>>,
+        /// Streams their engine closed.
+        streams_closed: Arc<AtomicUsize>,
     }
 
     /// Flags a transcription dropped before it finished.
@@ -1027,6 +1208,14 @@ mod tests {
 
         fn warms(&self) -> usize {
             Self::log(&self.stt_calls).iter().filter(|c| c.starts_with("warm")).count()
+        }
+
+        fn calls(&self, what: &str) -> usize {
+            Self::log(&self.stt_calls).iter().filter(|c| c.starts_with(what)).count()
+        }
+
+        fn live() -> Self {
+            Self { streaming: true, echo: true, ..Self::default() }
         }
     }
 
@@ -1063,6 +1252,49 @@ mod tests {
                 gate.acquire().await.unwrap().forget();
             }
             Ok(())
+        }
+        fn streams(&self, _language: Option<&str>) -> bool {
+            self.streaming
+        }
+        async fn stream(&self, language: Option<&str>) -> Result<SttStream, SpeechError> {
+            self.stt("stream", language);
+            let failed = {
+                let mut failures = self.stream_open_failures.lock().unwrap();
+                let failed = *failures > 0;
+                if failed {
+                    *failures -= 1;
+                }
+                failed
+            };
+            if failed {
+                return Err(SpeechError::Transport("connection refused".into()));
+            }
+            let close = {
+                let mut closes = self.stream_closes.lock().unwrap();
+                (!closes.is_empty()).then(|| closes.remove(0))
+            };
+            let (stream, mut input, events) = SttStream::channel();
+            let closed = self.streams_closed.clone();
+            tokio::spawn(async move {
+                let mut parts: Vec<String> = Vec::new();
+                while let Some(cmd) = input.recv().await {
+                    let event = match cmd {
+                        SttInput::Audio(_) if let Some(code) = close => {
+                            let detail = "nope".to_owned();
+                            let _ = events.send(Err(SpeechError::StreamClosed { code, detail }));
+                            return;
+                        }
+                        SttInput::Audio(pcm) => {
+                            parts.push(String::from_utf8_lossy(&pcm).into_owned());
+                            SttEvent::Partial(parts.join(" "))
+                        }
+                        SttInput::End => SttEvent::Final(std::mem::take(&mut parts).join(" ")),
+                    };
+                    let _ = events.send(Ok(event));
+                }
+                closed.fetch_add(1, Ordering::SeqCst);
+            });
+            Ok(stream)
         }
         async fn synthesize(
             &self,
@@ -2164,5 +2396,140 @@ mod tests {
             Mock::log(&h.mock.stt_calls),
             vec!["warm -", "warm fr", "hear fr", "warm -", "hear -"]
         );
+    }
+
+    fn listen(part_ms: Option<u32>) -> Outbound {
+        Outbound::Control(VoiceServerMsg::Listen { part_ms })
+    }
+
+    fn transcript_is(text: &'static str) -> impl Fn(&Outbound) -> bool {
+        move |f| matches!(f, Outbound::Control(VoiceServerMsg::Transcript { text: t }) if t == text)
+    }
+
+    /// A loop past its opening warm-up, asking the browser for small parts.
+    async fn start_live(mock: Mock) -> Harness {
+        let mut h = start_cold(mock, Prefs::default());
+        let frames = h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        assert!(frames.contains(&listen(Some(STREAM_PART_MS))), "{frames:?}");
+        h
+    }
+
+    #[tokio::test]
+    async fn a_live_utterance_relays_partials_as_parts_arrive_and_is_sent_once() {
+        let mut h = start_live(Mock::live()).await;
+        h.inbound.send(Inbound::Part(Bytes::from_static(b"one"))).await.unwrap();
+        let mut frames = h.collect_until(transcript_is("one")).await;
+        h.inbound.send(Inbound::Part(Bytes::from_static(b"two"))).await.unwrap();
+        frames.extend(h.collect_until(transcript_is("one two")).await);
+        assert!(!frames.contains(&state(VoiceState::Thinking)), "still listening: {frames:?}");
+        assert!(Mock::log(&h.mock.sent).is_empty());
+        h.inbound.send(Inbound::Audio(Bytes::from_static(b"three"))).await.unwrap();
+        let frames = heard_whole(&mut h, "one two three").await;
+        assert_eq!(frames[0], state(VoiceState::Thinking));
+        assert_eq!(transcripts(&frames), vec!["one two three"], "the final repeats no partial");
+        assert!(!frames.iter().any(is_error), "{frames:?}");
+        let sent = Mock::log(&h.mock.sent);
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].ends_with("\n\none two three"), "{sent:?}");
+        assert_eq!(h.mock.calls("hear"), 0, "nothing heard in batch");
+        assert_eq!(h.mock.calls("stream"), 1);
+        assert_eq!(h.mock.streams_closed.load(Ordering::SeqCst), 1, "closed after its final");
+    }
+
+    #[tokio::test]
+    async fn live_utterances_each_get_a_stream_and_are_sent_in_order() {
+        let mut h = start_live(Mock::live()).await;
+        h.inbound.send(Inbound::Part(Bytes::from_static(b"first"))).await.unwrap();
+        h.inbound.send(Inbound::UtteranceEnd).await.unwrap();
+        h.inbound.send(Inbound::Audio(Bytes::from_static(b"second"))).await.unwrap();
+        heard_whole(&mut h, "second").await;
+        let sent = Mock::log(&h.mock.sent);
+        assert_eq!(sent.len(), 2);
+        assert!(sent[0].ends_with("first") && sent[1].ends_with("second"), "{sent:?}");
+        assert_eq!(h.mock.calls("stream"), 2);
+    }
+
+    #[tokio::test]
+    async fn a_live_stream_failing_mid_utterance_falls_back_to_batch_for_that_utterance() {
+        let mock = Mock { stream_closes: Mutex::new(vec![1013]), ..Mock::live() };
+        let mut h = start_live(mock).await;
+        h.inbound.send(Inbound::Part(Bytes::from_static(b"one"))).await.unwrap();
+        h.inbound.send(Inbound::Part(Bytes::from_static(b"two"))).await.unwrap();
+        h.inbound.send(Inbound::Audio(Bytes::from_static(b"three"))).await.unwrap();
+        let frames = heard_whole(&mut h, "onetwothree").await;
+        assert!(!frames.iter().any(is_error), "{frames:?}");
+        assert!(!frames.contains(&listen(None)), "a busy model is tried again: {frames:?}");
+        assert_eq!(h.mock.calls("hear"), 1);
+        h.inbound.send(Inbound::Audio(Bytes::from_static(b"four"))).await.unwrap();
+        heard_whole(&mut h, "four").await;
+        let sent = Mock::log(&h.mock.sent);
+        assert_eq!(sent.len(), 2);
+        assert!(sent[0].ends_with("onetwothree") && sent[1].ends_with("four"), "{sent:?}");
+        assert_eq!(h.mock.calls("stream"), 2);
+        assert_eq!(h.mock.calls("hear"), 1, "the second utterance was heard live");
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_will_not_open_leaves_the_utterance_to_batch() {
+        let mock = Mock { stream_open_failures: Mutex::new(1), ..Mock::live() };
+        let mut h = start_live(mock).await;
+        h.inbound.send(Inbound::Part(Bytes::from_static(b"one"))).await.unwrap();
+        h.inbound.send(Inbound::Audio(Bytes::from_static(b"two"))).await.unwrap();
+        let frames = heard_whole(&mut h, "onetwo").await;
+        assert!(!frames.iter().any(is_error), "{frames:?}");
+        assert_eq!(Mock::log(&h.mock.sent).len(), 1);
+        assert_eq!(h.mock.calls("stream"), 1, "opened once per utterance");
+    }
+
+    #[tokio::test]
+    async fn a_refused_stream_asks_for_big_parts_until_the_language_changes() {
+        let mock = Mock { stream_closes: Mutex::new(vec![1008]), ..Mock::live() };
+        let mut h = start_live(mock).await;
+        h.inbound.send(Inbound::Audio(Bytes::from_static(b"one"))).await.unwrap();
+        let frames = heard_whole(&mut h, "one").await;
+        assert!(frames.contains(&listen(None)), "{frames:?}");
+        h.inbound.send(Inbound::Audio(Bytes::from_static(b"two"))).await.unwrap();
+        heard_whole(&mut h, "two").await;
+        assert_eq!(h.mock.calls("stream"), 1, "a refusal is not retried");
+        assert_eq!(Mock::log(&h.mock.sent).len(), 2);
+        let pick = VoiceClientMsg::Mode {
+            barge_in: None,
+            spoken_style: None,
+            voice: None,
+            speed: None,
+            language: Some("en".into()),
+        };
+        h.inbound.send(Inbound::Control(pick)).await.unwrap();
+        h.collect_until(|f| *f == listen(Some(STREAM_PART_MS))).await;
+        h.inbound.send(Inbound::Audio(Bytes::from_static(b"three"))).await.unwrap();
+        heard_whole(&mut h, "three").await;
+        assert_eq!(h.mock.calls("stream"), 2);
+    }
+
+    #[tokio::test]
+    async fn closing_the_socket_discards_a_live_utterance() {
+        let mut h = start_live(Mock::live()).await;
+        h.inbound.send(Inbound::Part(Bytes::from_static(b"one"))).await.unwrap();
+        h.collect_until(transcript_is("one")).await;
+        let Harness { mock, inbound, _task: task, .. } = h;
+        drop(inbound);
+        tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while mock.streams_closed.load(Ordering::SeqCst) == 0 {
+            assert!(tokio::time::Instant::now() < deadline, "stream still open");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(Mock::log(&mock.sent).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_batch_model_never_asks_the_browser_for_small_parts() {
+        let mut h = start(Mock { echo: true, ..Mock::default() }, Prefs::default()).await;
+        h.inbound.send(Inbound::Audio(Bytes::from_static(b"one"))).await.unwrap();
+        let frames = heard_whole(&mut h, "one").await;
+        assert!(
+            !frames.iter().any(|f| matches!(f, Outbound::Control(VoiceServerMsg::Listen { .. })))
+        );
+        assert_eq!(h.mock.calls("stream"), 0);
     }
 }

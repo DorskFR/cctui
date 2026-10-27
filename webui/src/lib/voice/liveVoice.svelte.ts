@@ -251,7 +251,7 @@ export class LiveVoice {
 				break;
 			case 'transcript':
 				this.transcript = msg.text;
-				this.awaitingReply = true;
+				if (!this.chunker.active) this.awaitingReply = true;
 				this.show();
 				break;
 			case 'speak_start': {
@@ -271,6 +271,9 @@ export class LiveVoice {
 				this.error = msg.message;
 				this.endAwait();
 				this.show();
+				break;
+			case 'listen':
+				this.chunker.setLivePartMs(msg.part_ms);
 				break;
 		}
 	}
@@ -330,6 +333,7 @@ export class LiveVoice {
 		this.vad?.destroy();
 		this.vad = null;
 		this.chunker.cancel();
+		this.chunker.setLivePartMs(null);
 		this.endAwait();
 		this.server = 'off';
 		this.deps.player.stop();

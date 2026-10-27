@@ -141,4 +141,33 @@ describe('UtteranceChunker', () => {
 		expect(emitted.at(-1)?.last).toBe(true);
 		expect(joined(emitted.map((e) => e.samples))).toEqual(Array.from(ramp(0, at)));
 	});
+
+	it('sends a part every live interval of speech, pause or not, while the server streams', () => {
+		const { emitted, c } = fed();
+		c.setLivePartMs(30);
+		c.frame(ramp(0, 10), 0.1);
+		c.start();
+		for (let i = 0; i < 9; i++) c.frame(ramp(10 + i * 10, 10), 0.9);
+		expect(emitted.map((e) => [e.samples.length, e.last])).toEqual([
+			[30, false],
+			[30, false],
+			[30, false]
+		]);
+		c.frame(ramp(100, 5), 0.9);
+		c.end();
+		expect(emitted.at(-1)).toMatchObject({ last: true });
+		expect(emitted.at(-1)?.samples.length).toBe(15);
+		expect(joined(emitted.map((e) => e.samples))).toEqual(Array.from(ramp(0, 105)));
+	});
+
+	it('goes back to pause-driven parts when live parts are switched off', () => {
+		const { emitted, c } = fed();
+		c.setLivePartMs(30);
+		c.setLivePartMs(null);
+		c.start();
+		for (let i = 0; i < 9; i++) c.frame(ramp(i * 10, 10), 0.9);
+		expect(emitted).toEqual([]);
+		c.end();
+		expect(emitted.map((e) => [e.samples.length, e.last])).toEqual([[90, true]]);
+	});
 });

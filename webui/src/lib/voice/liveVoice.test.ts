@@ -352,6 +352,32 @@ describe('LiveVoice', () => {
 		expect(first[10]).toBe(Math.floor(0.2 * 0x7fff));
 	});
 
+	it('sends small parts while the server transcribes live, until told otherwise', async () => {
+		const h = harness();
+		const utterance = () => {
+			const sent = () => h.socket?.sent ?? [];
+			const before = sent().length;
+			h.cb?.onSpeechStart();
+			for (let i = 0; i < 6; i++) h.cb?.onFrame(new Float32Array(50).fill(0.2), 0.9);
+			h.cb?.onSpeechEnd();
+			return kinds(sent().slice(before));
+		};
+		await h.voice.start('sess');
+		h.socket?.open();
+		await h.settle();
+		h.socket?.frame({ type: 'listen', part_ms: 100 });
+		expect(utterance()).toEqual(['part', 200, 'part', 200, 'part', 200, 'utterance_end']);
+		h.socket?.frame({ type: 'listen', part_ms: null });
+		expect(utterance()).toEqual(['part', 600, 'utterance_end']);
+
+		h.socket?.frame({ type: 'listen', part_ms: 100 });
+		h.voice.stop();
+		await h.voice.start('sess');
+		h.socket?.open();
+		await h.settle();
+		expect(utterance()).toEqual(['part', 600, 'utterance_end']);
+	});
+
 	it('closes a streamed utterance with utterance_end when speech ends on a flush', async () => {
 		const h = harness();
 		await h.voice.start('sess');
@@ -543,6 +569,21 @@ describe('LiveVoice shown state', () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it('shows live partials while the user talks without waiting for a reply', async () => {
+		const h = await talking();
+		h.socket?.frame({ type: 'listen', part_ms: 100 });
+		h.cb?.onSpeechStart();
+		for (let i = 0; i < 3; i++) h.cb?.onFrame(new Float32Array(50).fill(0.2), 0.9);
+		h.socket?.frame({ type: 'transcript', text: 'why is' });
+		expect(h.voice.transcript).toBe('why is');
+		expect(h.voice.status).toBe('listening');
+		h.cb?.onSpeechEnd();
+		h.socket?.frame({ type: 'state', state: 'thinking' });
+		h.socket?.frame({ type: 'transcript', text: 'why is the sky blue' });
+		h.socket?.frame({ type: 'state', state: 'listening' });
+		expect(h.voice.status).toBe('thinking');
 	});
 
 	it('falls back to listening when no reply follows the transcript', async () => {
