@@ -48,6 +48,7 @@ export const ROUTES = [
   { id: "get_admin_instance_speech_catalog", method: "GET", path: "/admin/instance/speech/catalog", summary: "List the models and voices the configured speech service offers (admin).", request: null, response: null },
   { id: "post_admin_instance_speech_test", method: "POST", path: "/admin/instance/speech/test", summary: "Check the speech service and return a short synthesized sample (admin).", request: null, response: null },
   { id: "get_voice_config", method: "GET", path: "/voice/config", summary: "Whether speech is enabled and its effective models and voice.", request: null, response: null },
+  { id: "get_voice_voices", method: "GET", path: "/voice/voices", summary: "The voices the instance speech service offers.", request: null, response: null },
   { id: "post_voice_transcribe", method: "POST", path: "/voice/transcribe", summary: "Transcribe a multipart `file` audio part (size-capped) to text.", request: null, response: null },
   { id: "post_voice_speak", method: "POST", path: "/voice/speak", summary: "Synthesize text to audio with the instance speech service.", request: null, response: null },
   { id: "get_admin_instance_upload_caps", method: "GET", path: "/admin/instance/upload-caps", summary: "Read or set the per-upload file count and size caps (admin).", request: null, response: null },

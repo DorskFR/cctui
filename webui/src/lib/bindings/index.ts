@@ -359,6 +359,7 @@ export type * from './VoiceServerMsg';
 export type * from './VoiceSpeakRequest';
 export type * from './VoiceState';
 export type * from './VoiceTranscript';
+export type * from './VoiceVoices';
 export type * from './WastedSummary';
 export type * from './WindowTokenUsage';
 export type * from './WorkerExit';

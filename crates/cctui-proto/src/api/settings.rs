@@ -118,6 +118,9 @@ pub struct SpeechConfig {
     pub tts_model: String,
     pub tts_voice: String,
     pub tts_format: String,
+    /// Chat model that shortens long messages before they are read aloud;
+    /// empty turns summaries off.
+    pub summary_model: String,
 }
 
 impl Default for SpeechConfig {
@@ -130,6 +133,7 @@ impl Default for SpeechConfig {
             tts_model: "kokoro".into(),
             tts_voice: "af_heart".into(),
             tts_format: "opus".into(),
+            summary_model: String::new(),
         }
     }
 }
@@ -162,6 +166,10 @@ pub struct SpeechSettingsRequest {
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SpeechCatalog {
     pub models: Vec<String>,
+    /// The models the service tags as speech-to-text; empty when it tags none.
+    pub stt_models: Vec<String>,
+    pub tts_models: Vec<String>,
+    pub text_models: Vec<String>,
     pub voices: Vec<String>,
 }
 
@@ -175,12 +183,18 @@ pub struct VoiceConfigInfo {
     pub tts_model: String,
     pub tts_voice: String,
     pub tts_format: String,
+    /// Whether `/voice/speak` can summarize long text.
+    pub can_summarize: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct VoiceSpeakRequest {
     pub text: String,
+    /// Read a summary of long text instead of all of it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub summarize: Option<bool>,
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub voice: Option<String>,
@@ -193,4 +207,11 @@ pub struct VoiceSpeakRequest {
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct VoiceTranscript {
     pub text: String,
+}
+
+/// `GET /voice/voices`: the voices the speech service offers.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct VoiceVoices {
+    pub voices: Vec<String>,
 }

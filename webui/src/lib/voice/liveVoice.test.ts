@@ -1,7 +1,13 @@
 import { flushSync } from 'svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_VOICE } from '$lib/settings.svelte';
-import { LiveVoice, REPLY_GRACE_MS, voiceSocketUrl, type SocketLike } from './liveVoice.svelte';
+import {
+	ECHO_TAIL_MS,
+	LiveVoice,
+	REPLY_GRACE_MS,
+	voiceSocketUrl,
+	type SocketLike
+} from './liveVoice.svelte';
 import { type AudioLike, SpeechPlayer } from './player';
 import type { VadCallbacks, VadHandle } from './vad';
 
@@ -53,7 +59,7 @@ function speak(h: { cb: VadCallbacks | null }, samples: number[]) {
 	h.cb?.onSpeechEnd();
 }
 
-function harness(opts: { vadFails?: boolean } = {}) {
+function harness(opts: { vadFails?: boolean; bargeIn?: boolean } = {}) {
 	let socket: FakeSocket | null = null;
 	let cb: VadCallbacks | null = null;
 	let idle: (idle: boolean) => void = () => {};
@@ -80,7 +86,7 @@ function harness(opts: { vadFails?: boolean } = {}) {
 		},
 		player: player as unknown as SpeechPlayer,
 		wakeLock: async () => release,
-		prefs: () => ({ ...DEFAULT_VOICE, voice: 'af_sky', bargeIn: true }),
+		prefs: () => ({ ...DEFAULT_VOICE, voice: 'af_sky', bargeIn: opts.bargeIn ?? true }),
 		chunker: { sampleRate: 1000, minPartMs: 100, pauseMs: 20, maxPartMs: 300, preRollMs: 50 }
 	});
 	const settle = async () => {
@@ -208,6 +214,34 @@ describe('LiveVoice', () => {
 		h.player.stop.mockClear();
 		h.cb?.onSpeechStart();
 		expect(h.player.stop).not.toHaveBeenCalled();
+	});
+
+	it('without barge-in, ignores what the mic hears over a reply and its echo tail', async () => {
+		vi.useFakeTimers();
+		const h = harness({ bargeIn: false });
+		await h.voice.start('sess');
+		h.socket?.open();
+		await h.settle();
+		h.socket?.frame({ type: 'state', state: 'speaking' });
+		h.idle(false);
+		h.player.playing = true;
+		const before = h.socket?.sent.length;
+
+		speak(h, [0.5, 0.5, 0.5]);
+		expect(h.player.stop).not.toHaveBeenCalled();
+		expect(h.socket?.sent.length).toBe(before);
+
+		h.player.playing = false;
+		h.idle(true);
+		h.socket?.frame({ type: 'state', state: 'listening' });
+		speak(h, [0.5, 0.5, 0.5]);
+		expect(h.socket?.sent.length).toBe(before);
+
+		vi.advanceTimersByTime(ECHO_TAIL_MS + 1);
+		speak(h, [0.5, 0.5, 0.5]);
+		expect(h.socket?.sent.some((s) => s instanceof ArrayBuffer)).toBe(true);
+		expect(h.socket?.texts().some((m) => (m as { type: string }).type === 'interrupt')).toBe(false);
+		vi.useRealTimers();
 	});
 
 	it('drops leftover lines of a reply cut by a barge-in', async () => {

@@ -403,6 +403,7 @@
 			const outcome = await speakText(key, ln.text, {
 				voice: settings.voice.voice,
 				speed: settings.voice.speed,
+				summarize: settings.voice.summarizeLong,
 				onend: () => {
 					if (speakingKey === key) speakingKey = null;
 				}

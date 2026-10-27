@@ -509,6 +509,8 @@ export interface VoiceSettings {
   autoSend: boolean;
   bargeIn: boolean;
   spokenStyle: VoiceSpokenStyle;
+  /** Read a summary of long messages instead of all of them. */
+  summarizeLong: boolean;
 }
 
 export const DEFAULT_VOICE: VoiceSettings = {
@@ -516,8 +518,9 @@ export const DEFAULT_VOICE: VoiceSettings = {
   autoPlayVoiceNotes: false,
   inputMode: "push",
   autoSend: false,
-  bargeIn: true,
+  bargeIn: false,
   spokenStyle: "brief",
+  summarizeLong: true,
 };
 
 export function mergeVoice(v: Partial<VoiceSettings> | undefined): VoiceSettings {
@@ -533,11 +536,12 @@ export function mergeVoice(v: Partial<VoiceSettings> | undefined): VoiceSettings
     autoPlayVoiceNotes: raw.autoPlayVoiceNotes === true,
     inputMode: raw.inputMode === "handsfree" ? "handsfree" : "push",
     autoSend: raw.autoSend === true,
-    bargeIn: raw.bargeIn !== false,
+    bargeIn: raw.bargeIn === true,
     spokenStyle:
       raw.spokenStyle === "normal" || raw.spokenStyle === "verbose"
         ? raw.spokenStyle
         : "brief",
+    summarizeLong: raw.summarizeLong !== false,
   };
 }
 

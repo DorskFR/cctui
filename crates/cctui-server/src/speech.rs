@@ -16,6 +16,7 @@ pub const MULTILINGUAL_STT_MODEL: &str = "whisper";
 const ENGLISH_FIRST_STT_MODELS: &[&str] = &["parakeet"];
 const AUDIO_TIMEOUT: Duration = Duration::from_mins(1);
 const META_TIMEOUT: Duration = Duration::from_secs(10);
+const SUMMARY_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, thiserror::Error)]
 pub enum SpeechError {
@@ -79,10 +80,32 @@ struct ModelsBody {
     data: Vec<ModelEntry>,
 }
 
-#[derive(Deserialize)]
-struct ModelEntry {
-    id: String,
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ModelEntry {
+    pub id: String,
+    /// The router tags its models `stt`, `tts` or `text` here.
+    #[serde(default)]
+    pub owned_by: Option<String>,
 }
+
+#[derive(Deserialize)]
+struct ChatBody {
+    choices: Vec<ChatChoice>,
+}
+
+#[derive(Deserialize)]
+struct ChatChoice {
+    message: ChatMessage,
+}
+
+#[derive(Deserialize)]
+struct ChatMessage {
+    content: String,
+}
+
+const SUMMARY_PROMPT: &str = "Summarize the message for text-to-speech in at most three short \
+    spoken sentences, in the message's language. Plain prose: no markdown, no lists, no code, \
+    no URLs. Reply with the summary only.";
 
 #[derive(Deserialize)]
 struct TranscriptBody {
@@ -252,15 +275,63 @@ impl SpeechClient {
             .collect())
     }
 
-    /// The model ids the service serves; doubles as the health check.
-    pub async fn health(&self) -> Result<Vec<String>, SpeechError> {
+    /// The models the service serves; doubles as the health check.
+    pub async fn models(&self) -> Result<Vec<ModelEntry>, SpeechError> {
         let req = self.request(reqwest::Method::GET, "models").timeout(META_TIMEOUT);
         let body: ModelsBody = Self::send(req)
             .await?
             .json()
             .await
             .map_err(|e| SpeechError::Decode(e.without_url().to_string()))?;
-        Ok(body.data.into_iter().map(|m| m.id).collect())
+        Ok(body.data)
+    }
+
+    pub async fn health(&self) -> Result<Vec<String>, SpeechError> {
+        Ok(self.models().await?.into_iter().map(|m| m.id).collect())
+    }
+
+    pub const fn can_summarize(&self) -> bool {
+        !self.config.summary_model.is_empty()
+    }
+
+    /// A few spoken sentences standing in for `text`, from the summary model.
+    pub async fn summarize(&self, text: &str) -> Result<String, SpeechError> {
+        if !self.can_summarize() {
+            return Err(SpeechError::NotConfigured);
+        }
+        let body = serde_json::json!({
+            "model": self.config.summary_model,
+            "temperature": 0.3,
+            "max_tokens": 300,
+            "chat_template_kwargs": { "enable_thinking": false },
+            "messages": [
+                { "role": "system", "content": SUMMARY_PROMPT },
+                { "role": "user", "content": text },
+            ],
+        });
+        let req = self
+            .request(reqwest::Method::POST, "chat/completions")
+            .timeout(SUMMARY_TIMEOUT)
+            .json(&body);
+        let body: ChatBody = Self::send(req)
+            .await?
+            .json()
+            .await
+            .map_err(|e| SpeechError::Decode(e.without_url().to_string()))?;
+        let summary = body
+            .choices
+            .into_iter()
+            .next()
+            .map(|c| {
+                let content = c.message.content;
+                let answer = content.rsplit_once("</think>").map_or(content.as_str(), |(_, a)| a);
+                answer.trim().to_owned()
+            })
+            .unwrap_or_default();
+        if summary.is_empty() {
+            return Err(SpeechError::Decode("empty summary".into()));
+        }
+        Ok(summary)
     }
 }
 
@@ -278,6 +349,7 @@ mod tests {
         auth: Vec<Option<String>>,
         fields: Vec<(String, String)>,
         speech: Option<serde_json::Value>,
+        chat: Option<serde_json::Value>,
     }
     type Shared = Arc<Mutex<Seen>>;
 
@@ -314,9 +386,21 @@ mod tests {
             )
             .route("/v1/audio/voices", get(move || async move { Json(voices) }))
             .route(
+                "/v1/chat/completions",
+                post(|State(s): State<Shared>, Json(b): Json<serde_json::Value>| async move {
+                    s.lock().unwrap().chat = Some(b);
+                    Json(serde_json::json!({
+                        "choices": [{ "message": { "content": "<think>\n</think>\n\n Short. " } }]
+                    }))
+                }),
+            )
+            .route(
                 "/v1/models",
                 get(|| async {
-                    Json(serde_json::json!({ "data": [{ "id": "kokoro" }, { "id": "parakeet" }] }))
+                    Json(serde_json::json!({ "data": [
+                        { "id": "kokoro", "owned_by": "tts" },
+                        { "id": "parakeet", "owned_by": "stt" }
+                    ] }))
                 }),
             )
             .route(
@@ -481,6 +565,26 @@ mod tests {
         let err = dead.health().await.unwrap_err();
         assert!(matches!(err, SpeechError::Transport(_)), "{err}");
         assert!(!err.to_string().contains("sk-secret"));
+    }
+
+    #[tokio::test]
+    async fn models_keep_the_router_role_tags() {
+        let (base, _) = mock(serde_json::json!([])).await;
+        let models = client(&base, None).models().await.unwrap();
+        assert_eq!(models[1], ModelEntry { id: "parakeet".into(), owned_by: Some("stt".into()) });
+    }
+
+    #[tokio::test]
+    async fn summarize_asks_the_summary_model_without_thinking() {
+        let (base, seen) = mock(serde_json::json!([])).await;
+        let mut c = client(&base, None);
+        assert!(matches!(c.summarize("long").await, Err(SpeechError::NotConfigured)));
+        c.config.summary_model = "qwen3-1.7b".into();
+        assert_eq!(c.summarize("a long message").await.unwrap(), "Short.");
+        let body = seen.lock().unwrap().chat.take().unwrap();
+        assert_eq!(body["model"], "qwen3-1.7b");
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(body["messages"][1]["content"], "a long message");
     }
 
     #[test]

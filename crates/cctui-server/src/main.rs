@@ -1383,6 +1383,7 @@ mod tests {
             "GET /voice/config Bearer Human",
             "POST /voice/speak Bearer Human",
             "POST /voice/transcribe Bearer Human",
+            "GET /voice/voices Bearer Human",
             "GET /{resource_type}/{id}/shares Bearer Human",
             "POST /{resource_type}/{id}/shares Bearer Human",
             "DELETE /{resource_type}/{id}/shares/{user_id} Bearer Human",

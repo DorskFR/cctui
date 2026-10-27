@@ -33,6 +33,15 @@ const button = (text: string) =>
 		| undefined;
 const input = (label: string) =>
 	document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`) as HTMLInputElement;
+const select = (label: string) =>
+	document.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`) as HTMLSelectElement;
+const optionsOf = (label: string) => [...select(label).options].map((o) => o.value);
+const choose = (label: string, value: string) => {
+	const el = select(label);
+	el.value = value;
+	el.dispatchEvent(new Event('change', { bubbles: true }));
+	flushSync();
+};
 const type = (el: HTMLInputElement, value: string) => {
 	el.value = value;
 	el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -46,7 +55,15 @@ const config = {
 	stt_language: null,
 	tts_model: 'kokoro',
 	tts_voice: 'af_heart',
-	tts_format: 'opus'
+	tts_format: 'opus',
+	summary_model: ''
+};
+const catalog = {
+	models: ['parakeet', 'whistle', 'kokoro', 'qwen3-1.7b'],
+	stt_models: ['parakeet', 'whistle'],
+	tts_models: ['kokoro'],
+	text_models: ['qwen3-1.7b'],
+	voices: ['af_heart', 'bf_emma']
 };
 const info = (over: Partial<SpeechSettingsInfo> = {}): SpeechSettingsInfo => ({
 	config,
@@ -58,6 +75,7 @@ const info = (over: Partial<SpeechSettingsInfo> = {}): SpeechSettingsInfo => ({
 describe('speech settings', () => {
 	it('sends a new key write-only, keeps it otherwise, and clears it explicitly', async () => {
 		api.speechSettings.mockResolvedValue(info());
+		api.speechCatalog.mockResolvedValue(catalog);
 		comp = mount(SpeechGroup, { target: document.body });
 		await settle();
 		expect(document.body.textContent).toContain('no key');
@@ -73,7 +91,7 @@ describe('speech settings', () => {
 		expect(input('API key').value).toBe('');
 
 		api.setSpeechSettings.mockResolvedValue(info({ has_key: true, config: { ...config, tts_voice: 'bf_emma' } }));
-		type(input('Voice'), 'bf_emma');
+		choose('Voice', 'bf_emma');
 		button('Save')?.click();
 		await settle();
 		expect(api.setSpeechSettings).toHaveBeenLastCalledWith({ config: { ...config, tts_voice: 'bf_emma' } });
@@ -87,9 +105,9 @@ describe('speech settings', () => {
 		expect(document.body.textContent).toContain('no key');
 	});
 
-	it('fills the pickers from the catalog and plays the test sample', async () => {
-		api.speechSettings.mockResolvedValue(info());
-		api.speechCatalog.mockResolvedValue({ models: ['kokoro', 'parakeet'], voices: ['af_heart', 'bf_emma'] });
+	it('offers each picker the catalog models of its role and plays the test sample', async () => {
+		api.speechSettings.mockResolvedValue(info({ config: { ...config, tts_voice: 'custom' } }));
+		api.speechCatalog.mockResolvedValue(catalog);
 		api.testSpeech.mockResolvedValue(new Blob([new Uint8Array([1, 2])], { type: 'audio/ogg' }));
 		const play = vi.fn().mockResolvedValue(undefined);
 		vi.stubGlobal(
@@ -101,11 +119,19 @@ describe('speech settings', () => {
 		comp = mount(SpeechGroup, { target: document.body });
 		await settle();
 
-		button('Load models and voices')?.click();
+		expect(optionsOf('Speech-to-text model')).toEqual(['parakeet', 'whistle']);
+		expect(optionsOf('Text-to-speech model')).toEqual(['kokoro']);
+		expect(optionsOf('Voice')).toEqual(['custom', 'af_heart', 'bf_emma']);
+		expect(optionsOf('Summary model')).toEqual(['', 'qwen3-1.7b']);
+
+		api.setSpeechSettings.mockResolvedValue(info());
+		choose('Speech-to-text model', 'whistle');
+		choose('Summary model', 'qwen3-1.7b');
+		button('Save')?.click();
 		await settle();
-		const voices = [...document.querySelectorAll('#speech-voices option')].map((o) => o.getAttribute('value'));
-		expect(voices).toEqual(['af_heart', 'bf_emma']);
-		expect(document.querySelectorAll('#speech-models option')).toHaveLength(2);
+		expect(api.setSpeechSettings).toHaveBeenLastCalledWith({
+			config: { ...config, tts_voice: 'custom', stt_model: 'whistle', summary_model: 'qwen3-1.7b' }
+		});
 
 		button('Test')?.click();
 		await settle();
@@ -114,8 +140,22 @@ describe('speech settings', () => {
 		vi.unstubAllGlobals();
 	});
 
+	it('falls back to every model when the service tags none', async () => {
+		api.speechSettings.mockResolvedValue(info());
+		api.speechCatalog.mockResolvedValue({
+			...catalog,
+			stt_models: [],
+			tts_models: [],
+			text_models: []
+		});
+		comp = mount(SpeechGroup, { target: document.body });
+		await settle();
+		expect(optionsOf('Speech-to-text model')).toEqual(catalog.models);
+	});
+
 	it('surfaces a save error as a toast', async () => {
 		api.speechSettings.mockResolvedValue(info());
+		api.speechCatalog.mockResolvedValue(catalog);
 		api.setSpeechSettings.mockRejectedValue(new Error('base_url is required to enable speech'));
 		comp = mount(SpeechGroup, { target: document.body });
 		await settle();
