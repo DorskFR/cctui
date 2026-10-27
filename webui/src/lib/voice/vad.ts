@@ -20,6 +20,8 @@ export interface VadHandle {
 
 export type VadFactory = (cb: VadCallbacks) => Promise<VadHandle>;
 
+import { micConstraints } from './devices';
+
 export const VAD_ASSET_PATH = '/vad/';
 
 export interface OrtEnvLike {
@@ -34,9 +36,12 @@ export function configureOrt(env: OrtEnvLike, isolated: boolean): void {
 	if (!isolated) env.wasm.numThreads = 1;
 }
 
-export const createVad: VadFactory = async (cb) => {
+export const createVad = async (cb: VadCallbacks, micId?: string): Promise<VadHandle> => {
 	const { MicVAD } = await import('@ricky0123/vad-web');
+	const open = () => navigator.mediaDevices.getUserMedia({ audio: micConstraints(micId) });
 	const vad = await MicVAD.new({
+		getStream: open,
+		resumeStream: open,
 		model: 'v5',
 		baseAssetPath: VAD_ASSET_PATH,
 		onnxWASMBasePath: VAD_ASSET_PATH,

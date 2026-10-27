@@ -6,6 +6,7 @@
 	import { errMessage } from '$lib/api';
 	import { toasts } from '$lib/toast.svelte';
 	import { Dictation } from '$lib/voice/dictation';
+	import { settings } from '$lib/settings.svelte';
 	import { TapHold, type TapHoldAction } from '$lib/voice/tapHold';
 	import { m } from '$lib/paraglide/messages';
 
@@ -22,7 +23,10 @@
 		disabled?: boolean;
 	} = $props();
 
-	const dictation = new Dictation();
+	const dictation = new Dictation(() => ({
+		micId: settings.voice.micId,
+		language: settings.voice.language === 'auto' ? undefined : settings.voice.language
+	}));
 	const gesture = new TapHold();
 	let recording = $state(false);
 	let busy = $state(false);

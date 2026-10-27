@@ -59,7 +59,7 @@ function speak(h: { cb: VadCallbacks | null }, samples: number[]) {
 	h.cb?.onSpeechEnd();
 }
 
-function harness(opts: { vadFails?: boolean; bargeIn?: boolean } = {}) {
+function harness(opts: { vadFails?: boolean; bargeIn?: boolean; language?: 'auto' | 'en' | 'fr' } = {}) {
 	let socket: FakeSocket | null = null;
 	let cb: VadCallbacks | null = null;
 	let idle: (idle: boolean) => void = () => {};
@@ -86,7 +86,12 @@ function harness(opts: { vadFails?: boolean; bargeIn?: boolean } = {}) {
 		},
 		player: player as unknown as SpeechPlayer,
 		wakeLock: async () => release,
-		prefs: () => ({ ...DEFAULT_VOICE, voice: 'af_sky', bargeIn: opts.bargeIn ?? true }),
+		prefs: () => ({
+			...DEFAULT_VOICE,
+			voice: 'af_sky',
+			bargeIn: opts.bargeIn ?? true,
+			language: opts.language ?? 'auto'
+		}),
 		chunker: { sampleRate: 1000, minPartMs: 100, pauseMs: 20, maxPartMs: 300, preRollMs: 50 }
 	});
 	const settle = async () => {
@@ -158,11 +163,10 @@ describe('LiveVoice', () => {
 		expect(h.voice.status).toBe('listening');
 	});
 
-	it('opens with the picked language and switches it live', async () => {
+	it('opens with the language from settings and switches it live', async () => {
 		expect(voiceSocketUrl('s', 'fr')).toBe('ws://x/api/v1/ws/voice?session=s&language=fr');
 		expect(voiceSocketUrl('s', 'auto')).toBe('ws://x/api/v1/ws/voice?session=s');
-		const h = harness();
-		h.voice.setLanguage('fr');
+		const h = harness({ language: 'fr' });
 		await h.voice.start('sess');
 		expect(h.socket?.url).toBe('ws://x/api/v1/ws/voice?session=sess&language=fr');
 		h.socket?.open();

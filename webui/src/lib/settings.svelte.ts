@@ -500,9 +500,13 @@ export function clampPluginsConfig(
 
 export type VoiceInputMode = "push" | "handsfree";
 export type VoiceSpokenStyle = "brief" | "normal" | "verbose";
+export type VoiceLanguage = "auto" | "en" | "fr";
 
 export interface VoiceSettings {
   voice?: string;
+  micId?: string;
+  speakerId?: string;
+  language: VoiceLanguage;
   speed: number;
   autoPlayVoiceNotes: boolean;
   inputMode: VoiceInputMode;
@@ -515,6 +519,7 @@ export interface VoiceSettings {
 
 export const DEFAULT_VOICE: VoiceSettings = {
   speed: 1,
+  language: "auto",
   autoPlayVoiceNotes: false,
   inputMode: "push",
   autoSend: false,
@@ -526,9 +531,15 @@ export const DEFAULT_VOICE: VoiceSettings = {
 export function mergeVoice(v: Partial<VoiceSettings> | undefined): VoiceSettings {
   const raw = v ?? {};
   const speed = Number(raw.speed);
-  const voice = typeof raw.voice === "string" ? raw.voice.trim() : "";
+  const id = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+  const voice = id(raw.voice);
+  const micId = id(raw.micId);
+  const speakerId = id(raw.speakerId);
   return {
     ...(voice ? { voice } : {}),
+    ...(micId ? { micId } : {}),
+    ...(speakerId ? { speakerId } : {}),
+    language: raw.language === "en" || raw.language === "fr" ? raw.language : "auto",
     speed:
       Number.isFinite(speed) && speed >= 0.25 && speed <= 4
         ? speed
