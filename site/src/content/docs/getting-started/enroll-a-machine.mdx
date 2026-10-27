@@ -1,0 +1,47 @@
+---
+title: Enroll a machine
+description: Put cctui-daemon on a machine so its agent sessions show up in the fleet.
+---
+
+import Shot from '../../../components/Shot.astro';
+
+Every machine in the fleet runs one `cctui-daemon`. It enrolls once with a token, stores a machine key in `~/.config/cctui/daemon.toml`, and from then on connects outward to the server over WebSocket. Nothing listens on the machine; no inbound port or SSH tunnel is needed.
+
+## Create a user token
+
+Admins create users and tokens on **Settings › Users** (or with `cctui-admin user create`). A machine enrolled with a user's token belongs to that user: only they (and admins) see its sessions. For a quick single-user test the admin token works too.
+
+<Shot src="enroll-command.png" alt="The Machines tab showing the enrolment command with the token filled in" caption="The Machines tab prints the exact command to paste on the target host." />
+
+## Enroll locally
+
+```sh
+cctui-daemon enroll --server-url https://cctui.example.net --token <user-token> --name workstation-01
+cctui-daemon service install
+```
+
+`service install` writes a systemd user unit on Linux (launchd on macOS), enables it and starts it. `cctui-daemon status` prints the resolved configuration with the key redacted, and `cctui-daemon doctor` probes folder and network access the way the daemon sees them.
+
+## Enroll a remote host over ssh
+
+The same command takes an ssh target and does the whole install in one shot: it pushes the right daemon binary through the server's release proxy, enrolls, writes the remote config, installs and starts the service, then waits until the machine shows as connected.
+
+```sh
+cctui-daemon enroll ci-runner-02 --server-url https://cctui.example.net --token <user-token>
+```
+
+It is idempotent: running it again upgrades or repairs an existing install.
+
+## Machine kinds
+
+`--kind persistent` (default) is a real development machine. `--kind ephemeral` marks a dispatch worker: hidden from the New-session picker and reaped once stale. Dispatched pods never run `enroll`; they get `CCTUI_SERVER_URL` and `CCTUI_MACHINE_KEY` from the dispatcher instead.
+
+## Which harnesses run
+
+`claude-code`, `codex` and `opencode` run on every machine by default. The ACP rows (`gemini`, `qwen`, `goose`) are opt-in per machine from **Settings › Execution › Machine adapters**. The daemon receives the change immediately; running sessions are left alone.
+
+<Shot src="execution.png" alt="Settings › Execution with per-machine adapter toggles" />
+
+## Keeping daemons current
+
+Daemons follow the version their server runs. A machine on the `stable` channel ignores beta servers; set `channel = "beta"` in `daemon.toml` to opt in. Updates are minisign-verified and re-exec the daemon in place without ending live sessions. See [Self-update and channels](/cctui/features/self-update/).

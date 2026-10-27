@@ -1,0 +1,18 @@
+---
+title: Yubisashi
+description: Point at an element in a live preview of your app; the pick lands in the agent's chat with its source location.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<p class="pitch">"This button, make it smaller." <strong>Yubisashi frames your running app next to the conversation</strong>; click an element and its source location is in the composer, ready for your comment. <span class="status">external mod</span></p>
+
+<CardGrid>
+  <Card title="Review pane">Your dev server, framed beside the transcript through cctui's preview proxy.</Card>
+  <Card title="Point at an element">The element's file and line land in the composer. Add a sentence, send.</Card>
+  <Card title="Agent-side skill">When the pane opens with no preview, the agent starts the dev server behind the yubisashi proxy itself.</Card>
+</CardGrid>
+
+## How it works
+
+Yubisashi is a mod installed from the plugin catalog. It uses the pane surface, the composer bridge and the daemon's preview proxy. The skill it ships tells the agent how to start the app behind the proxy so the pane can frame it; the pick resolves to source through the framework's dev-mode element metadata.

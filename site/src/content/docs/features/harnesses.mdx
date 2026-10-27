@@ -1,0 +1,28 @@
+---
+title: Every harness, one window
+description: Claude Code, Codex, opencode and any ACP agent stream into the same transcript view.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Clip from '../../../components/Clip.astro';
+
+<Clip slug="harnesses" alt="A sessions list mixing Claude Code, Codex, opencode and ACP sessions, all rendered by the same transcript view" />
+
+<p class="pitch">Pick the agent per task, not per tool. <strong>Four adapters, one canonical event shape</strong>, so every session reads, replies and asks for permission the same way.</p>
+
+<CardGrid>
+  <Card title="Claude Code">Headless, or attached to the Claude daemon. Discovery of existing sessions, backfill of history, stuck-turn rescue and a version gate.</Card>
+  <Card title="Codex">Driven through `codex app-server`: rollout tail, rate-limit windows, a sandbox probe, codex-native context packs.</Card>
+  <Card title="opencode">Driven through `opencode serve` over HTTP and SSE, on either server API generation.</Card>
+  <Card title="ACP agents">One adapter for the Agent Client Protocol. Gemini CLI, Qwen Code and Goose are registered rows; add another by adding a row. <span class="status partial">partial</span></Card>
+  <Card title="One renderer">Text, thinking, tool calls, results, questions and permissions normalise to one event shape. The UI has one code path, and so do search and export.</Card>
+  <Card title="Execution modes">Claude Code can run in `bg`, `oneshot` or `sdk` mode per machine. <span class="status partial">metering partial</span></Card>
+</CardGrid>
+
+## How it works
+
+The daemon loads one adapter per harness. Each adapter contributes only small primitives (launch, attach, send, interrupt, read usage) and emits harness-native events; `cctui-server` normalises them into the canonical transcript shape before storing and broadcasting them. Session-level capabilities such as fork, mentions, scheduled messages, subagents and rooms are written once in adapter-neutral code.
+
+ACP rows are opt-in per machine (`default_enabled = false`) because each one needs its own CLI installed. They carry their provider family: a Gemini session binds to a Google-family account, Qwen and Goose to the OpenAI family, and the gateway meters usage the same way it does for Claude Code and Codex.
+
+`docs/harness-parity.md` in the repository records where parity holds and where it does not, per capability and per harness.

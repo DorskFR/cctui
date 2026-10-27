@@ -1,0 +1,27 @@
+---
+title: CLI, TUI and admin
+description: A terminal client at day-to-day parity with the web UI, device-code login, an admin CLI, and in-app onboarding.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Clip from '../../../components/Clip.astro';
+
+<Clip slug="tui" alt="The cctui terminal client: session list, a conversation, and a permission answered" />
+
+<p class="pitch">Same server, no browser. <strong>`cctui` is a full terminal client</strong>: session list, conversation, spawn, permissions, mentions, terminal view, account switch and a keymap.</p>
+
+<CardGrid>
+  <Card title="Terminal client">`cctui` opens the session list; `cctui open <id>` deep-links one conversation; `cctui diagnose <id>` prints everything known about a session.</Card>
+  <Card title="Device-code login">`cctui login` opens a code you approve in the browser. No key in the shell history.</Card>
+  <Card title="Self-updating">`cctui update` re-downloads the release the server runs, verified, with a backup kept.</Card>
+  <Card title="cctui-admin">Users, machines, enrolment, usage export and skills from the shell. `cctui-admin usage --json` feeds a status bar.</Card>
+  <Card title="One-command local stack">`make local/up` and `make local/demo` from published images.</Card>
+  <Card title="Onboarding">A welcome deck, a first-run checklist and 11 guided tours unlocked by prerequisites.</Card>
+  <Card title="Events">A lifecycle feed of sessions, machines and the system, with filters, and a per-session events panel.</Card>
+  <Card title="Observability">Prometheus `/metrics`, a JSON usage export, an optional LLM tracing sink, a network stats chip in the header.</Card>
+  <Card title="External triggers">GitHub, Slack and cron triggers are a stub today. <span class="status partial">WIP</span></Card>
+</CardGrid>
+
+## How it works
+
+The terminal client is built on `cctui-clientcore`; the web UI keeps parity tests against the same readings (spend, attachments), so both clients show the same numbers. Admin screens, account editing and dispatch stay in the web UI; the TUI keeps the day-to-day loop. See the [command line reference](/cctui/reference/cli/).

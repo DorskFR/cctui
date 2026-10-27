@@ -1,0 +1,28 @@
+---
+title: Agents that spawn agents
+description: The CctuiAgent MCP tool lets any session run nested subagents on any harness and any machine, with budgets and live progress.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Clip from '../../../components/Clip.astro';
+
+<Clip slug="subagents" alt="A parent session with nested subagents underneath, each showing live progress" />
+
+<p class="pitch">An orchestrator is just a session with a tool. <strong>`CctuiAgent` spawns a child on any machine, follows it, and returns its result</strong>, in parallel if you ask, with a dollar ceiling each.</p>
+
+<CardGrid>
+  <Card title="CctuiAgent">Spawn a child session, wait for its turn to complete, and get the result back. Parallel calls run parallel children.</Card>
+  <Card title="Any harness, any machine">The child can run on a different harness, model, machine or dispatcher than the parent. Named agent profiles set the posture.</Card>
+  <Card title="Follow-ups">Call the tool again with the child's `session_id` to send it a follow-up message and wait again.</Card>
+  <Card title="Budgets and timeouts">Per-child `budget_usd` and `timeout_secs`. A child can never be more permissive than its parent.</Card>
+  <Card title="Nested in the UI">Children group under their parent in the list with a subagent badge; open any level.</Card>
+  <Card title="CctuiAgentArchive">Agents clean up the children they spawned.</Card>
+  <Card title="Needs-you checklist">`CctuiUserActionAdd` and `CctuiUserActionTick` keep a list of things only you can do; you tick them off in the UI.</Card>
+  <Card title="Preamble">Every session learns the cctui tools before its first turn, so a brief can call `CctuiAgent` on turn one.</Card>
+</CardGrid>
+
+## How it works
+
+At launch the daemon writes a per-session MCP config pointing at `cctui-daemon mcp-agent --session <id>`, a stdio relay fixed to that session so no session can spawn as another. Tool calls go to the running daemon, which owns the spawn path; the server creates the child, tracks parent and child, and the daemon watches the child's turn until it completes or times out.
+
+Instance-wide limits on children, depth and tree budget are optional (`CCTUI_SPAWN_MAX_*`); by default there is no limit. See the [MCP tools reference](/cctui/reference/mcp-tools/) for parameters.

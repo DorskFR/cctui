@@ -1,0 +1,28 @@
+---
+title: Permissions and prompts
+description: Approve tool calls, answer AskUserQuestion forms and plan cards from any device; set a permission posture per session.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Clip from '../../../components/Clip.astro';
+
+<Clip slug="permissions" alt="A permission card approved, then an AskUserQuestion form answered with buttons" />
+
+<p class="pitch">An agent that needs you should not need your laptop. <strong>Permission cards and question forms land in the UI and on your phone</strong>; the agent waits, you tap, it continues.</p>
+
+<CardGrid>
+  <Card title="Permission cards">Approve or deny tool requests inline. A prompt raised while you were away is still there when you open the tab.</Card>
+  <Card title="Questions as forms">`AskUserQuestion` renders with real buttons and fields, not a wall of text to retype.</Card>
+  <Card title="Auto-approve">Let a trusted session run unattended. Plan-exit and questions still stop for you.</Card>
+  <Card title="Permission modes at spawn">`ask`, `auto` or `yolo` per session. A child can never be more permissive than its parent.</Card>
+  <Card title="Allow and deny rules">Policy rules for tool calls, plus a per-account tool-call guard inside the gateway that tells the agent why it was blocked.</Card>
+  <Card title="Dangerous-rm detection">Destructive deletes are caught even in bypass mode.</Card>
+  <Card title="Whip mode">A stop hook that keeps an agent working instead of handing back early.</Card>
+  <Card title="Workflow guard">Markdown-defined steps with allowed and disallowed tools, gates, and an LLM judge on transitions. The current step shows as a chip.</Card>
+</CardGrid>
+
+## How it works
+
+For Claude Code, the daemon registers a `PreToolUse` hook that blocks and long-polls the daemon for a decision; the daemon forwards the request to the server, which broadcasts a permission card to every client and replays it to late ones. Your answer travels back down the same path. Codex, opencode and ACP agents expose their own approval seams and are mapped onto the same card.
+
+The gateway can apply a second, account-level guard: calls that match a tool policy are blocked on the wire, regardless of what the harness would have allowed, and the agent is told why.

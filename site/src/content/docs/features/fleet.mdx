@@ -1,0 +1,34 @@
+---
+title: Fleet, spawn and dispatch
+description: Enroll any machine with one command, then spawn agents on any of them with profiles, drafts, schedules and follow-ups.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Clip from '../../../components/Clip.astro';
+
+<Clip slug="spawn" alt="The New session dialog: machine, folder, harness and brief, then the session appears in the list" />
+
+<p class="pitch">Your laptop, the build box, the server under the desk, a pod in the cluster. <strong>Every enrolled machine is one dropdown away</strong>, and a spawn is a form you fill once and save.</p>
+
+<CardGrid>
+  <Card title="One-command enrolment">`cctui-daemon enroll` locally, or with an ssh target for a one-shot remote install. Idempotent.</Card>
+  <Card title="Liveness and history">See which machines are online, when they were last seen, and their connection history.</Card>
+  <Card title="Spawn panel">Machine, folder with git branch and state, harness, model (catalog or free-text id), effort, prompt, labels, permission mode.</Card>
+  <Card title="Profiles and memory">One-click presets (work, review, scratch). The dialog reopens with your last settings for that folder.</Card>
+  <Card title="Drafts and schedules">Park a spawn as a draft and launch it later, or at a set time. Schedule a message to a running session, with retry.</Card>
+  <Card title="Follow-ups and macros">Start a new session seeded with the parent's brief. Saved prompts to insert or run as new sessions.</Card>
+  <Card title="Labels and names">Colour labels chosen at spawn and used to filter. Rename sessions, with an optional emoji prefix.</Card>
+  <Card title="Daemon as a service">systemd and launchd units. A restart re-execs in place without killing sessions. `doctor` diagnoses a machine.</Card>
+  <Card title="Harness auto-update">The daemon updates `claude` and `codex` when idle and flags stale installs.</Card>
+  <Card title="Neighbour awareness">Agents learn about other sessions working in the same tree.</Card>
+  <Card title="Auto-resume">Sessions resume after a lost connection or a gateway auth failure.</Card>
+  <Card title="Dispatch">Send work to a dispatcher instead of a machine; see [Ephemeral workers](/cctui/features/workers/).</Card>
+</CardGrid>
+
+<Clip slug="fleet" alt="The Machines page with the enrolment command and machine liveness" />
+
+## How it works
+
+A machine is a daemon with a key. The daemon connects outward over WebSocket, so a machine behind NAT or on a laptop that moves between networks still works. The server pushes a `Reconcile` frame with which adapters to run; the daemon reports liveness, sessions and health.
+
+A spawn is a request from the server to one daemon: adapter, working directory, model, permission posture, context, prompt. Pending spawns show as placeholders in the list immediately and fill in as the session starts; a failed launch shows a toast with the reason. Launches wait rather than fail when a model is soft-blocked by a limit.

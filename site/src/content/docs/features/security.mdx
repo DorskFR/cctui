@@ -1,0 +1,34 @@
+---
+title: Security
+description: Multi-user isolation, passkeys, an encrypted vault, secret redaction, SSRF guards and minisign-signed releases.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Shot from '../../../components/Shot.astro';
+
+<p class="pitch">cctui holds your model credentials and streams your agents' work. <strong>It is built to fail closed</strong>, and honest about what it does not do yet.</p>
+
+<CardGrid>
+  <Card title="Encrypted vault">Stored credentials are encrypted with ChaCha20-Poly1305 under `CCTUI_VAULT_KEY`. A fresh install refuses to start without a valid key.</Card>
+  <Card title="Declarative authz">Every route declares admin, owner or shared-resource access. A route without a declaration is denied.</Card>
+  <Card title="Multi-user isolation">Users see their own machines, sessions and accounts. Sharing is explicit, per resource.</Card>
+  <Card title="Keys and scoped tokens">Per-user tokens and keys with scopes; rotate and revoke from the UI or `cctui-admin`.</Card>
+  <Card title="Passkeys">Sign in with WebAuthn. The TUI and CLI sign in by approving a device code in the browser.</Card>
+  <Card title="Secret redaction">Secrets in transcripts become typed `[REDACTED]` markers. Detectors are configurable; old events can be re-scrubbed.</Card>
+  <Card title="SSRF and origin guards">Server requests to user-supplied URLs are restricted; compatible endpoints must be `https` and public unless allowlisted; the WebSocket refuses foreign origins.</Card>
+  <Card title="Signed releases">Daemon, TUI and server updates are verified with minisign and checksums.</Card>
+  <Card title="Egress policy for workers">Guard proxy, phantom tokens, remote GPG signing; see [Ephemeral workers](/cctui/features/workers/).</Card>
+  <Card title="Bandwidth anomaly alerts">Warns on unusual traffic from a machine.</Card>
+</CardGrid>
+
+<Shot src="privacy.png" alt="Settings › Privacy with secret-scrub detectors" caption="Redaction runs on ingest. Re-scrub applies new rules to stored history." />
+
+## Not there yet
+
+- No mutual TLS between daemon and server: the daemon pins the server's TLS identity, and authenticates with its machine key over a header.
+- Generic resource sharing beyond accounts is a documented work in progress.
+- Push notifications go through ntfy only; there is no Web Push or native app.
+
+## How it works
+
+`auth_middleware` establishes identity for `/api/v1`; `authz_layer` then evaluates each route's declared policy, with a default-deny backstop. Single-object routes carry a `Resource` guard that checks ownership centrally. Daemons, dispatchers and the gateway authenticate with header-only credentials; query-string tokens were removed.
