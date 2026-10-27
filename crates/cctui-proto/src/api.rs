@@ -428,6 +428,11 @@ pub struct SessionResult {
     pub message_id: Option<String>,
     #[serde(default)]
     pub token_usage: Option<TokenUsage>,
+    /// The dispatch waits in its dispatcher's queue; no session exists yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub queued: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_position: Option<u32>,
 }
 
 // Public wire/data shape mirrored to TS bindings; the bool fields are independent
@@ -780,13 +785,25 @@ pub struct ContextCounts {
 
 /// Task-list entry. `status` is `pending`, `in_progress` or `completed`;
 /// `active_form` is claude-only.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `id`, `description`, `blocked_by` and `owner` come from Claude Code's task
+/// list (`TaskCreate` / `TaskUpdate`), never from `TodoWrite` or `update_plan`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct TodoEntry {
     pub content: String,
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_form: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Ids of the tasks this one waits on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 /// `color` is a CSS hex string.
@@ -837,10 +854,31 @@ pub struct LabelListResponse {
     pub labels: Vec<Label>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SessionListResponse {
     pub sessions: Vec<SessionListItem>,
+    /// Parents of `sessions` rows that are not themselves in `sessions` (live,
+    /// or on another page), so a client can group a child under its parent.
+    #[serde(default)]
+    pub parents: Vec<SessionParentStub>,
+    /// `/sessions/search` only: pass back as `cursor` for the next page; null
+    /// once nothing older is left to scan.
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+    /// The search ran out of time before filling the page, so more matches may
+    /// lie past `next_cursor`.
+    #[serde(default)]
+    pub partial: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionParentStub {
+    pub id: String,
+    pub name: Option<String>,
+    pub working_dir: String,
+    pub status: SessionStatus,
 }
 
 /// One transcript match inside a single session. `seq` is `stream_events.id`,
@@ -1254,8 +1292,104 @@ pub struct DispatchResponse {
     pub handle: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
-    /// `dispatched`, `deduplicated` or `redispatched`.
+    /// `dispatched`, `deduplicated`, `redispatched` or `queued`.
     pub status: String,
+    /// 1-based place among the profile's queued workers while `queued`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_position: Option<u32>,
+}
+
+/// Why a dispatched worker never ran to completion as a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum FailedDispatchReason {
+    /// The dispatcher refused to place the workload.
+    Refused,
+    NeverRegistered,
+    OomKilled,
+    Crashed,
+    SpawnFailed,
+}
+
+/// Why a failed dispatch cannot be re-run in one click.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum RerunBlocker {
+    Env,
+    PromptTruncated,
+    PayloadTooLarge,
+}
+
+/// A dispatch whose worker never registered or died before it could report,
+/// as recorded at dispatch time. Never carries env values or callback secrets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct FailedDispatch {
+    pub session_id: String,
+    pub dispatcher: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<String>,
+    /// At most 2 KiB of the inline prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_head: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_file: Option<String>,
+    /// Names of the env keys the dispatch carried; values are never stored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_keys: Vec<String>,
+    pub reason: FailedDispatchReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub dispatched_at: chrono::DateTime<chrono::Utc>,
+    /// `None` when the stored fields re-send as a new dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerun_blocked: Option<RerunBlocker>,
+    /// A later dispatch of the same work by the same caller that ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
+    /// The viewer dismissed this card; only listed for the history.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dismissed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_exit: Option<WorkerExit>,
+}
+
+/// How a dispatched worker's container ended, read from the cluster before
+/// its pod is reaped. The log tail is scrubbed of secret-looking values.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct WorkerExit {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<i32>,
+    /// The last lines the container wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_tail: Option<String>,
+    /// Why the log tail is missing, e.g. the permission the dispatcher lacks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logs_error: Option<String>,
+}
+
+/// Body of `POST /api/v1/dispatch-records/dismiss-all`'s reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct DismissedDispatches {
+    pub dismissed: u64,
 }
 
 /// `image_id` is referenced as `cctui-img://<image_id>`.

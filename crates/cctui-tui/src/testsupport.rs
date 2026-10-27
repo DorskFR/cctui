@@ -73,6 +73,7 @@ pub fn todo(status: &str, content: &str, active_form: Option<&str>) -> cctui_pro
         content: content.to_owned(),
         status: status.to_owned(),
         active_form: active_form.map(str::to_owned),
+        ..Default::default()
     }
 }
 
@@ -322,6 +323,8 @@ pub fn diagnose_response() -> cctui_proto::diagnose::SessionDiagnoseResponse {
             accounts: vec!["main".to_owned()],
             machine_id: Some("orion".to_owned()),
             machine_last_seen_ms: Some(now - 4_000),
+            owner: None,
+            spawned_by: None,
         },
         silence: vec![],
     }

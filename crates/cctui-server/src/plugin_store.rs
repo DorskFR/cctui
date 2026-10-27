@@ -30,14 +30,18 @@ pub enum InstallError {
 /// Every stored plugin, extracted; rows whose archive no longer validates are
 /// logged and skipped.
 pub async fn load_all(pool: &PgPool) -> sqlx::Result<BTreeMap<String, Plugin>> {
-    let rows: Vec<(String, bool, Vec<u8>)> = sqlx::query_as(
-        "SELECT p.id, p.enabled, b.bytes FROM plugins p \
+    let rows: Vec<(String, bool, String)> = sqlx::query_as(
+        "SELECT p.id, p.enabled, b.hash FROM plugins p \
          JOIN daemon_blobs b ON b.hash = p.archive_hash ORDER BY p.id",
     )
     .fetch_all(pool)
     .await?;
     let mut out = BTreeMap::new();
-    for (id, enabled, bytes) in rows {
+    let mut conn = pool.acquire().await?;
+    for (id, enabled, hash) in rows {
+        let Some(bytes) = crate::routes::blobs::read_blob_in(&mut conn, &hash).await? else {
+            continue;
+        };
         match load_archive(&bytes, enabled) {
             Ok(plugin) if plugin.manifest.id == id => {
                 out.insert(id, plugin);

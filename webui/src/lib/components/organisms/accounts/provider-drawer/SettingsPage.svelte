@@ -39,6 +39,8 @@
 		{ value: '1', label: m.providers_opt_on() }
 	];
 
+	const BG_ISOLATION = 'CLAUDE_BG_ISOLATION';
+
 	const knobs = $derived(groups.flatMap((g) => g.knobs));
 	const overridden = $derived(overriddenCount(settings, knobs));
 	const enumOptions = (k: Knob) => [
@@ -83,6 +85,11 @@
 							{#if k.care}<span class="care" title={m.providers_care_title()}>{m.providers_care()}</span>{/if}
 						</Text>
 						<div class="key"><Text as="span" tone="faint" size="xs" wrap="anywhere">{k.sub}</Text></div>
+						{#if k.name === BG_ISOLATION}
+							<div class="scope">
+								<Text as="span" tone="faint" size="xs">{m.provider_drawer_bg_isolation_scope()}</Text>
+							</div>
+						{/if}
 					</div>
 					<div class="control">
 						{#if k.control === 'tristate' || k.control === 'toggle' || k.control === 'enum'}

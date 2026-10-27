@@ -57,8 +57,8 @@
 		switch (bustReasonKey(bust?.reason ?? '')) {
 			case 'ttl_expired':
 				return m.sessions_token_bust_reason_ttl_expired();
-			case 'gateway_rewrote_body':
-				return m.sessions_token_bust_reason_gateway_rewrote_body();
+			case 'provider_miss':
+				return m.sessions_token_bust_reason_provider_miss();
 			default:
 				return m.sessions_token_bust_reason_unknown();
 		}
@@ -106,12 +106,7 @@
 		const id = session.id;
 		guardStep = ws.guardStep(id);
 		const off = ws.onGuardStep(id, (ev) => (guardStep = ev.state));
-		void sessionActions.guardStep(id).then(
-			(res) => {
-				if (res) ws.setGuardStep(id, res);
-			},
-			() => {}
-		);
+		ws.seedGuardStep(id, sessionActions.guardStep(id)).catch(() => {});
 		return off;
 	});
 	async function requestGuardTransition(step: string) {
@@ -226,7 +221,7 @@
 			</Badge>
 		</span>
 	{/if}
-	{#if guardStep}
+	{#if guardStep && !session.ended_at}
 		<GuardStepChip
 			step={guardStep}
 			disabled={guardBusy}

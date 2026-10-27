@@ -879,7 +879,6 @@ pub async fn record_metered_usage(
     session_id: String,
     model: Option<String>,
     captured: crate::cost::CapturedUsage,
-    gateway_rewrote_body: bool,
 ) {
     let family = family.label();
     let message_id = captured
@@ -888,9 +887,8 @@ pub async fn record_metered_usage(
     let u = captured.usage;
     if let Err(e) = sqlx::query(
         "INSERT INTO session_token_usage \
-             (session_id, message_id, input_tokens, output_tokens, cache_read_tokens, model, \
-              gateway_rewrote_body) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             (session_id, message_id, input_tokens, output_tokens, cache_read_tokens, model) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
          ON CONFLICT (session_id, message_id) DO NOTHING",
     )
     .bind(&session_id)
@@ -899,7 +897,6 @@ pub async fn record_metered_usage(
     .bind(u.output)
     .bind(u.cached_input)
     .bind(model)
-    .bind(gateway_rewrote_body)
     .execute(&pool)
     .await
     {

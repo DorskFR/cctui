@@ -59,7 +59,11 @@
 	// The filter reads the rendered rows back instead of keeping a parallel
 	// catalogue of localized copy. Every page is in the DOM, so a query that
 	// matches nothing here but something elsewhere navigates to that page and
-	// brings its first match into view.
+	// brings its first match into view. The walk covers every row of every
+	// page, so it runs once per typing pause rather than per keystroke; the
+	// navigation keeps focus in the search box (SvelteKit resets it to the
+	// body otherwise, and the next keystrokes would land nowhere).
+	const FILTER_DEBOUNCE_MS = 120;
 	let query = $state('');
 	let content = $state<HTMLElement | null>(null);
 	let visibleRows = $state(-1);
@@ -69,16 +73,19 @@
 		void isAdmin;
 		if (!content) return;
 		const root = content;
-		tick().then(() => {
-			visibleRows = applySettingsFilter(root, q);
-			if (!q.trim()) return;
-			const target = firstMatchingPage(root);
-			if (target && target !== here) {
-				void goto(settingsHref(target), { replaceState: true, noScroll: true });
-				return;
-			}
-			firstMatchingRow(root, here)?.scrollIntoView({ block: 'nearest' });
-		});
+		const timer = setTimeout(() => {
+			void tick().then(() => {
+				visibleRows = applySettingsFilter(root, q);
+				if (!q.trim()) return;
+				const target = firstMatchingPage(root);
+				if (target && target !== here) {
+					void goto(settingsHref(target), { replaceState: true, noScroll: true, keepFocus: true });
+					return;
+				}
+				firstMatchingRow(root, here)?.scrollIntoView({ block: 'nearest' });
+			});
+		}, FILTER_DEBOUNCE_MS);
+		return () => clearTimeout(timer);
 	});
 
 	// "Saved just now" for a short while after the server acknowledged the PUT,

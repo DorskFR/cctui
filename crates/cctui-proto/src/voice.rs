@@ -23,6 +23,8 @@ pub enum VoiceState {
     Listening,
     Thinking,
     Speaking,
+    /// The speech-to-text model is loading; utterances wait for it.
+    Warming,
 }
 
 /// Browser → server.
@@ -32,6 +34,11 @@ pub enum VoiceState {
 pub enum VoiceClientMsg {
     /// Barge-in: stop speaking now and, when `barge_in` is on, cut the turn.
     Interrupt {},
+    /// The next binary frame is a non-final part of the utterance; a binary
+    /// frame without this marker ends it, so a bare binary is a whole utterance.
+    Part {},
+    /// The streamed utterance ended with no more audio to send.
+    UtteranceEnd {},
     /// Preferences for the rest of the connection; each field keeps its
     /// previous value when absent.
     Mode {
@@ -43,6 +50,9 @@ pub enum VoiceClientMsg {
         voice: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         speed: Option<f32>,
+        /// Spoken language, e.g. `fr`; empty or `auto` for the instance default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        language: Option<String>,
     },
 }
 
@@ -69,6 +79,15 @@ pub enum VoiceServerMsg {
     Error {
         message: String,
     },
+    /// How often to send parts of an utterance: every `part_ms` of speech
+    /// when the server transcribes live, else at the first pause after
+    /// `min_part_ms` of speech. `None` keeps the browser's default. Sent
+    /// when either changes from that default.
+    Listen {
+        part_ms: Option<u32>,
+        #[serde(default)]
+        min_part_ms: Option<u32>,
+    },
 }
 
 #[cfg(test)]
@@ -88,11 +107,29 @@ mod tests {
                 barge_in: Some(false),
                 spoken_style: Some(SpokenStyle::Verbose),
                 voice: None,
-                speed: None
+                speed: None,
+                language: None
             }
         );
         let state =
             serde_json::to_string(&VoiceServerMsg::State { state: VoiceState::Speaking }).unwrap();
         assert_eq!(state, r#"{"type":"state","state":"speaking"}"#);
+    }
+
+    #[test]
+    fn utterance_part_markers_are_bare_tags() {
+        let part = serde_json::to_string(&VoiceClientMsg::Part {}).unwrap();
+        assert_eq!(part, r#"{"type":"part"}"#);
+        let end: VoiceClientMsg = serde_json::from_str(r#"{"type":"utterance_end"}"#).unwrap();
+        assert_eq!(end, VoiceClientMsg::UtteranceEnd {});
+        let listen = VoiceServerMsg::Listen { part_ms: Some(320), min_part_ms: None };
+        let listen = serde_json::to_string(&listen).unwrap();
+        assert_eq!(listen, r#"{"type":"listen","part_ms":320,"min_part_ms":null}"#);
+        let batch = VoiceServerMsg::Listen { part_ms: None, min_part_ms: Some(2000) };
+        let batch = serde_json::to_string(&batch).unwrap();
+        assert_eq!(batch, r#"{"type":"listen","part_ms":null,"min_part_ms":2000}"#);
+        let old: VoiceServerMsg =
+            serde_json::from_str(r#"{"type":"listen","part_ms":320}"#).unwrap();
+        assert_eq!(old, VoiceServerMsg::Listen { part_ms: Some(320), min_part_ms: None });
     }
 }

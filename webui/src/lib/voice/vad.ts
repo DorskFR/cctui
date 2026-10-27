@@ -2,13 +2,14 @@
  *  loaded on first use so pages that never go live pay nothing. The model
  *  and the onnxruntime wasm are served from `/vad/`, copied out of
  *  node_modules by `scripts/copy-vad-assets.mjs`. */
-import { frameLevel } from './pcm';
 
 export interface VadCallbacks {
 	onSpeechStart(): void;
-	/** One utterance: 16 kHz mono float samples. */
-	onSpeechEnd(audio: Float32Array): void;
-	onLevel(level: number): void;
+	onSpeechEnd(): void;
+	/** Speech too short to be an utterance; its frames are to be dropped. */
+	onMisfire(): void;
+	/** Every 16 kHz mono frame, speaking or not, with its speech probability. */
+	onFrame(frame: Float32Array, speechProb: number): void;
 }
 
 export interface VadHandle {
@@ -19,17 +20,37 @@ export interface VadHandle {
 
 export type VadFactory = (cb: VadCallbacks) => Promise<VadHandle>;
 
+import { micConstraints } from './devices';
+
 export const VAD_ASSET_PATH = '/vad/';
 
-export const createVad: VadFactory = async (cb) => {
+export interface OrtEnvLike {
+	logLevel?: string;
+	wasm: { numThreads?: number };
+}
+
+/** onnxruntime-web ships only the threaded wasm build; its threads need
+ *  SharedArrayBuffer, which a page without cross-origin isolation lacks. */
+export function configureOrt(env: OrtEnvLike, isolated: boolean): void {
+	env.logLevel = 'error';
+	if (!isolated) env.wasm.numThreads = 1;
+}
+
+export const createVad = async (cb: VadCallbacks, micId?: string): Promise<VadHandle> => {
 	const { MicVAD } = await import('@ricky0123/vad-web');
+	const open = () => navigator.mediaDevices.getUserMedia({ audio: micConstraints(micId) });
 	const vad = await MicVAD.new({
+		getStream: open,
+		resumeStream: open,
 		model: 'v5',
 		baseAssetPath: VAD_ASSET_PATH,
 		onnxWASMBasePath: VAD_ASSET_PATH,
+		ortConfig: (ort) => configureOrt(ort.env, globalThis.crossOriginIsolated === true),
 		onSpeechStart: () => cb.onSpeechStart(),
-		onSpeechEnd: (audio: Float32Array) => cb.onSpeechEnd(audio),
-		onFrameProcessed: (_probs: unknown, frame: Float32Array) => cb.onLevel(frameLevel(frame))
+		onSpeechEnd: () => cb.onSpeechEnd(),
+		onVADMisfire: () => cb.onMisfire(),
+		onFrameProcessed: (probs: { isSpeech: number }, frame: Float32Array) =>
+			cb.onFrame(frame, probs.isSpeech)
 	});
 	return {
 		start: () => vad.start(),

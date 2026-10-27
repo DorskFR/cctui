@@ -61,6 +61,7 @@ COPY --from=builder /out/ /
 # run npx-based MCP servers. Heavier JS tooling (pnpm stores, a managed
 # toolchain) still belongs in derived org images, e.g. under /opt/mise.
 FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
+ARG CA_CERTS_REFRESH=2026-10-22
 
 # Base tooling kept deliberately lean:
 #   ca-certificates          — TLS trust roots for the daemon's rustls stack.
@@ -78,7 +79,8 @@ FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee
 #   xz-utils                — unpacks the node tarball below.
 #   procps                  — `ps`, which `codex app-server daemon start` needs.
 #   libstdc++6              — the goose binary links it dynamically.
-RUN apt-get update \
+#   libatomic1              — the Node 26 runtime links it dynamically.
+RUN echo "ca-certificates refresh ${CA_CERTS_REFRESH}" && apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
@@ -87,6 +89,7 @@ RUN apt-get update \
         gnupg \
         iptables \
         jq \
+        libatomic1 \
         libstdc++6 \
         openssh-client \
         procps \
@@ -101,13 +104,16 @@ RUN apt-get update \
     && apt-get update \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
+RUN sed -i 's#^mozilla/emSign#!mozilla/emSign#' /etc/ca-certificates.conf \
+    && update-ca-certificates --fresh >/dev/null \
+    && ! ls /etc/ssl/certs | grep -qi emsign
 
 # Node — the runtime only, from the official nodejs.org tarball, checksum-verified
 # against the release's SHASUMS256.txt. Present so context packs can configure
 # npx-based MCP servers (docs/context-packs.md) and so derived images inherit a
 # node on PATH; none of the bundled CLIs depend on it. Pinning the tarball rather
 # than tracking a `node:` base image tag keeps the major explicit.
-ARG NODE_VERSION=24.22.0
+ARG NODE_VERSION=26.12.1
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
          amd64) target=linux-x64 ;; \
@@ -314,8 +320,12 @@ COPY deploy/worker-net-init.sh     /usr/local/bin/cctui-worker-net-init
 COPY deploy/guard-proxy-entrypoint.sh /usr/local/bin/cctui-guard-proxy-entrypoint
 
 # Sandbox state dirs the entrypoint and proxy/guard write into. /opt/context is
-# the context-pack mount target (read-only after fetch).
-RUN mkdir -p /var/run/guard-proxy /var/run/workflow-guard /workspace /opt/context /opt/worker-entrypoint.d \
+# the context-pack mount target (read-only after fetch). /workspace and
+# /opt/context are worker-owned for a non-root (uid 1000) start; a root start
+# re-owns both. The /var/run dirs stay root-owned so the agent can't rewrite
+# guard state: a non-root pod mounts them as fsGroup 1000 emptyDirs.
+RUN mkdir -p /var/run/guard-proxy /var/run/workflow-guard /opt/worker-entrypoint.d \
+    && install -d -o 1000 -g 1000 /workspace /opt/context \
     && chmod +x /usr/local/bin/cctui-worker-entrypoint \
                 /usr/local/bin/cctui-worker-net-init \
                 /usr/local/bin/cctui-guard-proxy-entrypoint

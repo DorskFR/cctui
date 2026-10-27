@@ -376,7 +376,7 @@ impl AcpSession {
         if let Some(preflight) = self.params.preflight.take() {
             preflight.run_bound(&session_id).await;
         }
-        let first = if self.params.resume.is_some() { None } else { self.first_turn(&session_id) };
+        let first = if self.params.resume.is_some() { None } else { self.first_turn() };
         if let Some(first) = first {
             self.begin_turn(&session_id, &first, self.params.command_id, None);
         } else if let Some(command_id) = self.params.command_id {
@@ -484,7 +484,7 @@ impl AcpSession {
 
     /// The spawn prompt behind the neutral preamble, delivered even when the
     /// spawn carried no prompt, as the opencode adapter does.
-    fn first_turn(&self, local_id: &str) -> Option<String> {
+    fn first_turn(&self) -> Option<String> {
         let prompt = self.params.prompt.clone().unwrap_or_default();
         let files: Vec<&String> = self
             .params
@@ -500,8 +500,6 @@ impl AcpSession {
         };
         let preamble = crate::preamble::for_launch(
             Some(self.params.key.as_str()).filter(|k| !k.is_empty()),
-            &self.params.cwd,
-            Some(local_id),
             &self.params.context,
             self.params.agent_mcp.is_some(),
         );
@@ -528,7 +526,7 @@ impl AcpSession {
             crate::adapters::agent_mcp::remember(&local_id, relay);
         }
         let started_at_ms =
-            self.params.resume.as_ref().map_or_else(crate::neighbours::now_ms, |r| r.started_at_ms);
+            self.params.resume.as_ref().map_or_else(crate::adapters::now_ms, |r| r.started_at_ms);
         if !self.oneshot {
             self.store.upsert(
                 &local_id,

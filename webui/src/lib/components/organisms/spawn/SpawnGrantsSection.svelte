@@ -21,7 +21,6 @@
 {#if sf.target === 'machine' && sf.form.machine_id}
 	<SpawnContextRow
 		bind:items={sf.form.context_items}
-		bind:auto={sf.form.context_auto}
 		bind:pins={sf.contextPins}
 		machineId={sf.form.machine_id}
 		workingDir={sf.form.working_dir}

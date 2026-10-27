@@ -5,10 +5,16 @@
 	import type { LiveVoice } from '$lib/voice/liveVoice.svelte';
 	import { m } from '$lib/paraglide/messages';
 
-	let { voice, onstop }: { voice: LiveVoice; onstop: () => void } = $props();
+	let {
+		voice,
+		onstop,
+		landed = false
+	}: { voice: LiveVoice; onstop: () => void; landed?: boolean } = $props();
 
 	const label = $derived.by(() => {
 		switch (voice.status) {
+			case 'warming':
+				return m.voice_live_warming();
 			case 'listening':
 				return m.voice_live_listening();
 			case 'thinking':
@@ -22,7 +28,7 @@
 	const color = $derived(
 		voice.status === 'speaking'
 			? 'var(--role-assistant)'
-			: voice.status === 'thinking'
+			: voice.status === 'thinking' || voice.status === 'warming'
 				? 'var(--warn)'
 				: 'var(--ok)'
 	);
@@ -33,7 +39,7 @@
 	<div class="meter">
 		<Meter label={m.voice_live_level()} value={voice.muted ? 0 : voice.level} max={1} size="sm" format={() => ''} />
 	</div>
-	{#if voice.transcript}
+	{#if voice.transcript && !landed}
 		<span class="transcript"><Text size="sm" tone="muted">🎙 {voice.transcript}</Text></span>
 	{/if}
 	<IconButton

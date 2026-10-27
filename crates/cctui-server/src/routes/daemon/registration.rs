@@ -4,6 +4,19 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 
+/// SQL: the stored metadata merged with the announced one. The relation a
+/// session was born with (follow-up, fork, subagent) outlives a later
+/// announcement that calls it a root or nulls it.
+macro_rules! merged_metadata {
+    () => {
+        "(COALESCE(sessions.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb) \
+          || CASE WHEN COALESCE(sessions.metadata->>'relation', 'root') <> 'root' \
+                   AND COALESCE(EXCLUDED.metadata->>'relation', 'root') = 'root' \
+                  THEN jsonb_build_object('relation', sessions.metadata->'relation') \
+                  ELSE '{}'::jsonb END)"
+    };
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn upsert_session(
     state: &AppState,
@@ -29,7 +42,7 @@ pub(super) async fn upsert_session(
     // (`inactive`, `archived`, `ended`) so a re-discovery refreshes the
     // heartbeat without resurrecting the session into the Working list;
     // otherwise revive it to `active`.
-    let inserted: Option<bool> = sqlx::query_scalar(
+    let inserted: Option<bool> = sqlx::query_scalar(concat!(
         r"INSERT INTO sessions
             (id, parent_id, account_id, machine_id, working_dir, status, registered_at,
              last_heartbeat, metadata, user_id, machine_uuid, adapter_id)
@@ -43,7 +56,9 @@ pub(super) async fn upsert_session(
             status = CASE WHEN sessions.status IN ('inactive', 'archived', 'ended') THEN sessions.status ELSE 'active' END,
             adapter_id = EXCLUDED.adapter_id,
             parent_id = COALESCE(sessions.parent_id, EXCLUDED.parent_id),
-            metadata = COALESCE(sessions.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb)
+            metadata = ",
+        merged_metadata!(),
+        r"
           WHERE sessions.machine_uuid = EXCLUDED.machine_uuid
             AND sessions.user_id = EXCLUDED.user_id
             AND (sessions.last_heartbeat, sessions.status, sessions.adapter_id,
@@ -54,9 +69,11 @@ pub(super) async fn upsert_session(
                  CASE WHEN sessions.status IN ('inactive', 'archived', 'ended') THEN sessions.status ELSE 'active' END,
                  EXCLUDED.adapter_id,
                  COALESCE(sessions.parent_id, EXCLUDED.parent_id),
-                 COALESCE(sessions.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb))
+                 ",
+        merged_metadata!(),
+        r")
           RETURNING (xmax = 0)",
-    )
+    ))
     .bind(local_id)
     .bind(machine_id.to_string())
     .bind(working_dir.unwrap_or_default())

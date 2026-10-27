@@ -1,7 +1,7 @@
 //! Follow-up sessions: a spawn whose first prompt embeds the parent's
 //! transcript brief. The parent link is remembered under the spawn key (like
-//! labels and auto-archive) and claimed when the worker registers, after the
-//! daemon's own `relation: "root"` metadata has landed, so the claim wins.
+//! labels and auto-archive) and claimed when the worker registers; a daemon
+//! announcing it as a root never takes the relation back.
 
 use axum::Json;
 use axum::extract::{Path, State};

@@ -42,3 +42,17 @@ export function rescrubIdentifierWarnings(job: PrivacyScanJob | null): string[] 
 export function rescrubSampleLines(category: ScanCategory): string[] {
   return category.samples.map((s) => `${s.text}   ${s.context}`);
 }
+
+export type RescrubNotice = "failed" | "done" | null;
+
+/** A finished job only notifies the panel that watched it run: the server keeps
+ *  the last job, so a fresh mount would otherwise replay its toast. */
+export function rescrubSettleNotice(
+  done: PrivacyScanJob,
+  watchedId: string | null,
+): RescrubNotice {
+  if (done.id !== watchedId) return null;
+  if (done.status === "failed") return "failed";
+  if (!done.dry_run && done.status === "completed") return "done";
+  return null;
+}

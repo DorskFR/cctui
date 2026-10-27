@@ -1,3 +1,4 @@
+import type { ResultImage } from '$lib/resultImages';
 import type { TokenUsage as TokenUsageT } from '@bindings/TokenUsage';
 import { m } from '$lib/paraglide/messages';
 import type { UserUploadRefs } from './lines';
@@ -123,6 +124,10 @@ export interface TodoItem {
 	status: TodoStatus;
 	activeForm?: string;
 	blockedBy?: string[];
+	// Claude Code task list only.
+	id?: string;
+	description?: string;
+	owner?: string;
 }
 
 export interface TodoProgress {
@@ -184,6 +189,8 @@ export interface Line {
 	mcp?: boolean;
 	// Thinking whose content the provider withheld: same brown treatment, dimmed.
 	redacted?: boolean;
+	// Last thinking of a turn that ended without any reply text.
+	noReply?: boolean;
 	pending?: boolean;
 	// Set on a pending user line that auto-retry is currently re-attempting
 	//: shows a "retrying (n/m)" hint instead of plain "sending…".
@@ -245,4 +252,5 @@ export interface Line {
 	/** A user turn that came in through the microphone. */
 	voice?: boolean;
 	usage?: TokenUsageT;
+	images?: ResultImage[];
 }

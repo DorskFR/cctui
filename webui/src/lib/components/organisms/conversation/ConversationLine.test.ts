@@ -15,12 +15,13 @@ afterEach(() => {
 	document.body.innerHTML = '';
 });
 
-async function render(ln: Line) {
+async function render(ln: Line, sessionId: string | null = null) {
 	comp = mount(ConversationLine, {
 		target: document.body,
 		props: {
 			ln,
 			archived: false,
+			sessionId,
 			onretry: vi.fn(),
 			onedit: vi.fn(),
 			onsaveimage: vi.fn(),
@@ -259,5 +260,81 @@ describe('gateway tool block', () => {
 		const notice = el.querySelector('.tool-block');
 		expect(notice?.textContent).toContain('Bash');
 		expect(notice?.textContent).toContain('a****e');
+	});
+});
+
+describe('voice message', () => {
+	it('badges a spoken turn VOICE and puts the mic before the transcript', async () => {
+		const el = await render(line({ voice: true, html: '<p>what time is it</p>', text: 'what time is it' }));
+		const msg = el.querySelector('[data-testid="voice-message"]');
+		expect(msg).not.toBeNull();
+		expect(msg?.querySelector('[role="img"]')?.textContent).toBe('🎙');
+		expect(msg?.querySelector('.bubble.user')?.textContent).toBe('what time is it');
+		const meta = el.querySelector('.lmeta')?.textContent?.toLowerCase() ?? '';
+		expect(meta).toContain('voice');
+		expect(meta).not.toContain('user');
+		expect(el.textContent?.split('what time is it').length).toBe(2);
+	});
+
+	it('keeps a typed turn a user bubble with no mic', async () => {
+		const el = await render(line());
+		expect(el.querySelector('[data-testid="voice-message"]')).toBeNull();
+		expect(el.querySelector('.bubble.user')?.textContent).toBe('hello');
+		expect(el.textContent).not.toContain('🎙');
+	});
+});
+
+describe('thinking-only turn', () => {
+	it('footnotes thinking that ended a turn with no reply', async () => {
+		const el = await render(line({ role: 'thinking', html: '<p>posted it</p>', noReply: true }));
+		expect(el.querySelector('[role="note"]')?.textContent).toContain('no reply was sent');
+	});
+
+	it('leaves ordinary thinking without the footnote', async () => {
+		const el = await render(line({ role: 'thinking', html: '<p>plan</p>' }));
+		expect(el.querySelector('[role="note"]')).toBeNull();
+	});
+});
+
+describe('images in CctuiAgent / CctuiSend results', () => {
+	const result = (tool: string, text: string): Line => ({
+		role: 'result',
+		ts: 1_700_000_000_000,
+		tool,
+		text,
+		htmlCode: text
+	});
+	const srcs = (el: HTMLElement) =>
+		[...el.querySelectorAll('.result-images img')].map((i) => i.getAttribute('src'));
+
+	it('renders bare and owner-qualified markers below the unchanged code block', async () => {
+		const text =
+			'done ![qa](cctui-img://11111111-2222-3333-4444-555555555555) and ' +
+			'![child](cctui-img://ses_child/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee)';
+		const el = await render(result('mcp__cctui__CctuiAgent', text), 'ses_parent');
+		expect(el.querySelector('pre.code')?.textContent).toBe(text);
+		expect(srcs(el)).toEqual([
+			'/api/v1/sessions/ses_parent/images/11111111-2222-3333-4444-555555555555',
+			'/api/v1/sessions/ses_child/images/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+		]);
+		const pre = el.querySelector('pre.code') as HTMLElement;
+		const imgs = el.querySelector('.result-images') as HTMLElement;
+		expect(pre.compareDocumentPosition(imgs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+	});
+
+	it('covers CctuiSend too', async () => {
+		const text = 'Images sent: ![s](cctui-img://ses_me/11111111-2222-3333-4444-555555555555)';
+		const el = await render(result('mcp__cctui__CctuiSend', text), 'ses_me');
+		expect(srcs(el)).toHaveLength(1);
+	});
+
+	it('adds nothing for a plain result or another tool', async () => {
+		let el = await render(result('mcp__cctui__CctuiAgent', 'no images here'), 'ses_parent');
+		expect(el.querySelector('.result-images')).toBeNull();
+		unmount(comp!);
+		comp = null;
+		const marker = '![x](cctui-img://11111111-2222-3333-4444-555555555555)';
+		el = await render(result('Bash', marker), 'ses_parent');
+		expect(el.querySelector('.result-images')).toBeNull();
 	});
 });

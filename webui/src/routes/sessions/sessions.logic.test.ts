@@ -21,9 +21,15 @@ import {
 	groupChildren,
 	GROUP_DIMENSIONS,
 	groupRows,
+	groupUnderParents,
+	mergeParentStubs,
+	parentGroupKey,
+	parentGroupOpen,
+	parentStubTitle,
 	inEnabledSections,
 	isDimension,
 	isSection,
+	machineGroupLiveness,
 	matchesLabelFilter,
 	matchesUnreadFilter,
 	parseLabelFilter,
@@ -48,6 +54,7 @@ import {
 	type Section
 } from './sessions.logic';
 import type { Label } from '@bindings/Label';
+import type { SessionParentStub } from '@bindings/SessionParentStub';
 
 function session(over: Partial<SessionListItem>): SessionListItem {
 	return { id: 'sess-abc', labels: [], working_dir: '', unread_count: 0, ...over } as SessionListItem;
@@ -992,5 +999,119 @@ describe('linked relations', () => {
 			linked('next', 'src', 'followup', { status: 'archived' })
 		];
 		expect(archivedDescendantsOf(new Set(['src']), archived).map((s) => s.id)).toEqual(['sub']);
+	});
+});
+
+describe('archived children grouped under their parent', () => {
+	const kid = (id: string, parent: string | null, relation = 'subagent') =>
+		session({ id, parent_id: parent, status: 'archived', metadata: { relation } });
+	const stub = (id: string, over: Partial<SessionParentStub> = {}): SessionParentStub => ({
+		id,
+		name: id,
+		working_dir: '/w/repo',
+		status: 'active',
+		...over
+	});
+	const segmentsOf = (rows: SessionListItem[], parents: SessionParentStub[]) =>
+		groupUnderParents(nest(rows).topLevel, parents).map((g) =>
+			g.kind === 'group'
+				? { group: g.parent.id, rows: g.rows.map((s) => s.id) }
+				: { rows: g.rows.map((s) => s.id) }
+		);
+
+	it('folds the archived lanes of a live parent under its stub, at the newest lane', () => {
+		const rows = [kid('solo', null), kid('lane-2', 'orch'), kid('other', null), kid('lane-1', 'orch')];
+		expect(segmentsOf(rows, [stub('orch')])).toEqual([
+			{ rows: ['solo'] },
+			{ group: 'orch', rows: ['lane-2', 'lane-1'] },
+			{ rows: ['other'] }
+		]);
+	});
+
+	it('keeps one group when the lanes and the parent span pages', () => {
+		const page1 = { sessions: [kid('lane-3', 'orch')], parents: [stub('orch', { status: 'archived' })] };
+		const page2 = { sessions: [kid('lane-2', 'orch')], parents: [stub('orch', { status: 'archived' })] };
+		const loaded = [...page1.sessions, ...page2.sessions];
+		const parents = mergeParentStubs([page1, page2]);
+		expect(parents).toHaveLength(1);
+		expect(segmentsOf(loaded, parents)).toEqual([{ group: 'orch', rows: ['lane-3', 'lane-2'] }]);
+
+		const withParent = [...loaded, kid('orch', null)];
+		expect(segmentsOf(withParent, parents)).toEqual([{ rows: ['orch'] }]);
+		expect(
+			nest(withParent).childGroups.get('orch')?.flatMap((g) => g.agents.map((s) => s.id))
+		).toEqual(['lane-3', 'lane-2']);
+	});
+
+	it('starts collapsed and opens on its own toggle key', () => {
+		expect(parentGroupOpen(new Set(), 'orch', false)).toBe(false);
+		expect(parentGroupOpen(new Set([`orch/${parentGroupKey(false)}`]), 'orch', false)).toBe(true);
+	});
+
+	it('opens every group while searching, so a matching child shows under its parent', () => {
+		const hits = [kid('lane-7', 'orch')];
+		expect(segmentsOf(hits, [stub('orch')])).toEqual([{ group: 'orch', rows: ['lane-7'] }]);
+		expect(parentGroupOpen(new Set(), 'orch', true)).toBe(true);
+		expect(parentGroupOpen(new Set([`orch/${parentGroupKey(true)}`]), 'orch', true)).toBe(false);
+		expect(parentGroupOpen(new Set([`orch/${parentGroupKey(false)}`]), 'orch', true)).toBe(true);
+	});
+
+	it('leaves rows without a parent stub as one untouched run', () => {
+		const rows = [kid('a', null), kid('b', 'gone'), kid('c', null)];
+		const segs = groupUnderParents(rows, []);
+		expect(segs).toHaveLength(1);
+		expect(segs[0].rows).toEqual(rows);
+		expect(groupUnderParents([], [stub('orch')])).toEqual([]);
+	});
+
+	it('keeps forks and follow-ups linked, not grouped', () => {
+		const rows = [kid('fork', 'src', 'fork'), kid('next', 'src', 'followup'), kid('sub', 'src')];
+		expect(segmentsOf(rows, [stub('src')])).toEqual([
+			{ rows: ['fork', 'next'] },
+			{ group: 'src', rows: ['sub'] }
+		]);
+	});
+
+	it('titles a stub by name, then dir basename, then short id', () => {
+		expect(parentStubTitle(stub('orch-123456789', { name: 'orch-x' }))).toBe('orch-x');
+		expect(parentStubTitle(stub('orch-123456789', { name: null }))).toBe('repo');
+		expect(parentStubTitle(stub('orch-123456789', { name: null, working_dir: '' }))).toBe('orch-1');
+	});
+});
+
+describe('machineGroupLiveness', () => {
+	const worker = (over: Partial<SessionListItem>) =>
+		session({ machine_kind: 'ephemeral', liveness: 'dead', hibernated: false, ...over });
+
+	it('keeps the machine list liveness when the machine is known', () => {
+		expect(machineGroupLiveness('stale', [worker({ liveness: 'active' })])).toBe('stale');
+	});
+
+	it('derives an ephemeral worker group from its sessions', () => {
+		expect(machineGroupLiveness(null, [worker({}), worker({ liveness: 'active' })])).toBe('online');
+		expect(machineGroupLiveness(null, [worker({}), worker({ liveness: 'stale' })])).toBe('stale');
+		expect(machineGroupLiveness(null, [worker({})])).toBe('offline');
+		expect(machineGroupLiveness(null, [worker({ liveness: 'active', hibernated: true })])).toBe(
+			'offline'
+		);
+	});
+
+	it('derives a shared dispatch machine group from its sessions', () => {
+		const dispatch = (over: Partial<SessionListItem>) => worker({ machine_kind: 'dispatch', ...over });
+		expect(machineGroupLiveness(null, [dispatch({}), dispatch({ liveness: 'active' })])).toBe('online');
+		expect(machineGroupLiveness(null, [dispatch({}), dispatch({ liveness: 'stale' })])).toBe('stale');
+		expect(machineGroupLiveness(null, [dispatch({}), worker({})])).toBe('offline');
+	});
+
+	it('leaves a group mixing workers and a persistent machine without a dot', () => {
+		const persistent = session({ machine_kind: 'persistent', liveness: 'active' });
+		expect(machineGroupLiveness(null, [worker({ machine_kind: 'dispatch' }), persistent])).toBeNull();
+	});
+
+	it('leaves an unknown persistent machine without a dot', () => {
+		const persistent = session({ machine_kind: 'persistent', liveness: 'active' });
+		expect(machineGroupLiveness(null, [persistent])).toBeNull();
+		expect(machineGroupLiveness(null, [session({ machine_kind: null, liveness: 'active' })])).toBeNull();
+		expect(machineGroupLiveness(null, [])).toBeNull();
 	});
 });

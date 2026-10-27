@@ -17,7 +17,7 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
-use cctui_proto::adapter::{AdapterEvent, PermissionMode};
+use cctui_proto::adapter::{AdapterEvent, PermissionMode, TitleSource};
 use serde_json::{Value, json};
 
 /// Encode a working directory into the path-segment Claude uses under
@@ -535,7 +535,8 @@ pub(super) fn parse_line(local_id: &str, line: &Value, out: &mut Vec<AdapterEven
             }
         }
         "permission-mode" | "ai-title" | "custom-title" | "agent-name" => {
-            session_fact(local_id, kind, line, out);
+            let titles = crate::servercaps::server_supports(cctui_proto::capability::TITLES);
+            session_fact(local_id, kind, line, titles, out);
         }
         "attachment" => attachment_annotation(local_id, line, out),
         "file-history-snapshot" | "file-history-delta" => {
@@ -594,20 +595,36 @@ fn permission_mode_from_claude(raw: &str) -> Option<PermissionMode> {
 }
 
 /// Last-value-wins session state, not a timeline event. A value that does not
-/// map stays a marker so the information is not simply lost.
-fn session_fact(local_id: &str, kind: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
+/// map stays a marker so the information is not simply lost. A `Title` goes
+/// only to a server that advertised `titles`; the `Status` name always does.
+fn session_fact(
+    local_id: &str,
+    kind: &str,
+    line: &Value,
+    titles: bool,
+    out: &mut Vec<AdapterEvent>,
+) {
     let fact = match kind {
         "permission-mode" => {
             let raw = line.get("permissionMode").and_then(Value::as_str).unwrap_or_default();
             permission_mode_from_claude(raw).map(|m| session_status(local_id, None, Some(m)))
         }
         "ai-title" | "custom-title" | "agent-name" => {
-            let keys: &[&str] = match kind {
-                "ai-title" => &["aiTitle", "title"],
-                "custom-title" => &["customTitle", "title"],
-                _ => &["agentName", "name"],
+            let (keys, source): (&[&str], _) = match kind {
+                "ai-title" => (&["aiTitle", "title"], Some(TitleSource::Agent)),
+                "custom-title" => (&["customTitle", "title"], Some(TitleSource::User)),
+                _ => (&["agentName", "name"], None),
             };
-            first_str(line, keys).map(|n| session_status(local_id, Some(n.to_owned()), None))
+            first_str(line, keys).map(|n| {
+                if let Some(source) = source.filter(|_| titles) {
+                    out.push(AdapterEvent::Title {
+                        local_id: local_id.to_owned(),
+                        title: n.to_owned(),
+                        source,
+                    });
+                }
+                session_status(local_id, Some(n.to_owned()), None)
+            })
         }
         _ => None,
     };
@@ -1613,6 +1630,38 @@ mod tests {
     }
 
     #[test]
+    fn split_block_lines_keep_text_across_a_mid_turn_peer_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("t.jsonl");
+        write_lines(
+            &path,
+            &[
+                r#"{"type":"assistant","uuid":"u1","apiBlockIndex":0,"message":{"id":"m1","role":"assistant","stop_reason":"tool_use","content":[{"type":"thinking","thinking":"plan","signature":"s"}]}}"#,
+                r#"{"type":"queue-operation","operation":"enqueue","content":"<cctui-peer-message from=\"p\">hi</cctui-peer-message>"}"#,
+                r#"{"type":"assistant","uuid":"u2","apiBlockIndex":1,"message":{"id":"m1","role":"assistant","stop_reason":"tool_use","content":[{"type":"text","text":"Look: ![shot](/tmp/a.png)"}]}}"#,
+            ],
+        );
+        let (mut events, off) = tail_once(&path, "s", 0).unwrap();
+        write_lines(
+            &path,
+            &[
+                r#"{"type":"assistant","uuid":"u3","apiBlockIndex":2,"message":{"id":"m1","role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_1","name":"mcp__cctui__CctuiSend","input":{"message":"x"}}]}}"#,
+                r#"{"type":"queue-operation","operation":"remove"}"#,
+                r#"{"type":"assistant","uuid":"u4","apiBlockIndex":0,"message":{"id":"m2","role":"assistant","stop_reason":"tool_use","content":[{"type":"text","text":"next"}]}}"#,
+            ],
+        );
+        events.extend(tail_once(&path, "s", off).unwrap().0);
+
+        let texts: Vec<(&str, &str)> = message_payloads(&events)
+            .into_iter()
+            .filter(|p| p["role"] == "assistant")
+            .map(|p| (p["message_id"].as_str().unwrap(), p["text"].as_str().unwrap()))
+            .collect();
+        assert_eq!(texts, [("m1", "Look: ![shot](/tmp/a.png)"), ("m2", "next")]);
+        assert!(events.iter().any(|e| matches!(e, AdapterEvent::ToolUse { .. })));
+    }
+
+    #[test]
     fn tail_handles_rotation() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("t.jsonl");
@@ -2469,8 +2518,6 @@ mod tests {
                 Some(PermissionMode::Ask),
             ),
             (json!({"type":"agent-name","agentName":"lane-a"}), Some("lane-a"), None),
-            (json!({"type":"ai-title","aiTitle":"fix the parser"}), Some("fix the parser"), None),
-            (json!({"type":"custom-title","customTitle":"my session"}), Some("my session"), None),
         ];
         for (line, want_name, want_mode) in &cases {
             let mut out = Vec::new();
@@ -2485,6 +2532,63 @@ mod tests {
                 }
                 other => panic!("expected Status for {line}, got {other:?}"),
             }
+        }
+    }
+
+    /// A title says who chose it, so the server can pin a user name; the
+    /// `Status` that follows keeps every other consumer's view unchanged.
+    #[test]
+    fn titles_carry_their_source_ahead_of_the_status() {
+        let cases = [
+            (
+                json!({"type":"ai-title","aiTitle":"fix the parser"}),
+                "fix the parser",
+                TitleSource::Agent,
+            ),
+            (
+                json!({"type":"custom-title","customTitle":"my session"}),
+                "my session",
+                TitleSource::User,
+            ),
+        ];
+        for (line, want, want_source) in &cases {
+            let kind = line["type"].as_str().unwrap();
+            let mut out = Vec::new();
+            session_fact("s", kind, line, true, &mut out);
+            assert!(message_payloads(&out).is_empty(), "no timeline bubble for {line}");
+            assert_eq!(out.len(), 2, "a Title then a Status for {line}");
+            match &out[0] {
+                AdapterEvent::Title { local_id, title, source } => {
+                    assert_eq!(local_id, "s");
+                    assert_eq!(title, want, "{line}");
+                    assert_eq!(source, want_source, "{line}");
+                }
+                other => panic!("expected Title for {line}, got {other:?}"),
+            }
+            match &out[1] {
+                AdapterEvent::Status { name, .. } => assert_eq!(name.as_deref(), Some(*want)),
+                other => panic!("expected Status for {line}, got {other:?}"),
+            }
+        }
+    }
+
+    /// A server that never advertised `titles` would reject the whole frame
+    /// carrying a `Title`, so it gets only the `Status` name it always knew.
+    #[test]
+    fn titles_are_status_only_for_a_server_without_the_capability() {
+        for line in [
+            json!({"type":"ai-title","aiTitle":"fix the parser"}),
+            json!({"type":"custom-title","customTitle":"my session"}),
+        ] {
+            let kind = line["type"].as_str().unwrap();
+            let mut out = Vec::new();
+            session_fact("s", kind, &line, false, &mut out);
+            assert_eq!(out.len(), 1, "a Status alone for {line}");
+            assert!(
+                matches!(&out[0], AdapterEvent::Status { name: Some(n), .. } if !n.is_empty()),
+                "expected a named Status for {line}, got {:?}",
+                out[0]
+            );
         }
     }
 

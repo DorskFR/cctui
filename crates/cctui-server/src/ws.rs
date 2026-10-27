@@ -219,10 +219,13 @@ pub async fn dispatch_reply(
     ask_picks: Option<Vec<Vec<usize>>>,
     turn_id: Option<uuid::Uuid>,
 ) -> (uuid::Uuid, Result<(), crate::bus::BusError>) {
+    let started = std::time::Instant::now();
+    let spoken = cctui_proto::injected::is_spoken_prompt(&content);
+    let command_id = uuid::Uuid::new_v4();
     // Re-minted gateway env lets a reply-driven cold-resume of a hibernated
     // worker revive it with a fresh token; ignored when the worker is alive.
     let env = crate::routes::gateway::resume_env_for_session(state, session_id).await;
-    let command_id = uuid::Uuid::new_v4();
+    reply_hop(spoken, session_id, command_id, "gateway env resolved", started);
     crate::state::track_command(
         &state.pending_commands,
         command_id,
@@ -243,7 +246,25 @@ pub async fn dispatch_reply(
         },
     )
     .await;
+    reply_hop(spoken, session_id, command_id, "handed to the daemon link", started);
     (command_id, dispatch)
+}
+
+/// One step of a reply's way to its daemon: info for a spoken prompt, whose
+/// delivery latency is heard, debug for any other.
+fn reply_hop(
+    spoken: bool,
+    session_id: &str,
+    command_id: uuid::Uuid,
+    hop: &str,
+    started: std::time::Instant,
+) {
+    let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    if spoken {
+        tracing::info!(%session_id, %command_id, hop, ms, "voice delivery hop");
+    } else {
+        tracing::debug!(%session_id, %command_id, hop, ms, "reply delivery hop");
+    }
 }
 
 /// Reports the outcome of one `Message` frame, when the client asked to be told.
@@ -355,6 +376,7 @@ async fn run_tui_socket(
     // per-socket so a disconnect decrements the shared watcher refcount and the
     // daemon stops streaming to a browser that vanished without unwatching.
     let mut pty_watches: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut viewing: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     while let Some(msg) = stream.next().await {
         let text = match msg {
@@ -380,9 +402,15 @@ async fn run_tui_socket(
                     tracing::debug!(session_id = %session_id, user_id = %ctx.user_id, "tui_ws: subscribe denied (not owner)");
                     continue;
                 }
+                if viewing.insert(session_id.clone()) && state.bus.view_watch_inc(&session_id) {
+                    crate::session_viewers::opened(&state, &session_id).await;
+                }
                 handle_subscribe(session_id, &state, &event_tx, &mut sub_handles).await;
             }
             TuiCommand::Unsubscribe { session_id } => {
+                if viewing.remove(&session_id) {
+                    stop_viewing(&state, &session_id).await;
+                }
                 // Tear down this session's relay task so it stops delivering
                 // events to this socket.
                 if let Some(handle) = sub_handles.remove(&session_id) {
@@ -414,6 +442,21 @@ async fn run_tui_socket(
                             client_msg_id,
                             ok: false,
                             error: Some("forbidden".into()),
+                            command_id: None,
+                        };
+                        send_event(&event_tx, &ack).await;
+                    }
+                    continue;
+                }
+                if let Err(e) =
+                    crate::routes::sessions::authorize_reply(&state, &ctx, &session_id).await
+                {
+                    if let Some(client_msg_id) = client_msg_id {
+                        let ack = ServerEvent::MessageAck {
+                            session_id,
+                            client_msg_id,
+                            ok: false,
+                            error: Some(e.to_string()),
                             command_id: None,
                         };
                         send_event(&event_tx, &ack).await;
@@ -489,6 +532,9 @@ async fn run_tui_socket(
     for (_, handle) in sub_handles {
         handle.abort();
     }
+    for session_id in viewing {
+        stop_viewing(&state, &session_id).await;
+    }
     // Decrement every terminal this socket still watched so a browser that
     // closed the tab (or dropped) releases the daemon PTY stream.
     for session_id in pty_watches {
@@ -503,6 +549,12 @@ async fn run_tui_socket(
         if state.bus.text_watch_dec(&session_id) {
             set_daemon_text_watch(&state, &session_id, false).await;
         }
+    }
+}
+
+async fn stop_viewing(state: &AppState, session_id: &str) {
+    if state.bus.view_watch_dec(session_id) {
+        crate::session_viewers::closed(state, session_id).await;
     }
 }
 

@@ -26,6 +26,7 @@ import {
   stripAttachmentDecorations,
 } from "./format";
 import type { Line, MsgCategory } from "./types";
+import { parseResultImages } from "$lib/resultImages";
 import { VOICE_TOOL } from "./voiceNote";
 
 export interface LineBuildCtx {
@@ -415,16 +416,20 @@ function buildLine(
         htmlCode: ctx.renderCode(text, lang),
       };
     }
-    case "tool_result":
+    case "tool_result": {
       if (!ctx.visible(resultCategory(e))) return null;
+      const parsed = parseResultImages(e.output_summary);
+      const text = parsed?.text ?? e.output_summary;
       return {
         role: "result",
         ts: Number(e.ts),
         tool: e.tool,
         toolUseId: e.tool_use_id ?? undefined,
-        text: e.output_summary,
-        htmlCode: ctx.renderCode(e.output_summary, ""),
+        text,
+        htmlCode: ctx.renderCode(text, ""),
+        ...(parsed ? { images: parsed.images } : {}),
       };
+    }
     case "context_reset":
       // /clear: the session id rotated under the same worker.
       if (!ctx.visible("reset")) return null;
@@ -667,6 +672,24 @@ function dedupKey(ln: Line, turnId: string): string {
   }|${turnId}`;
 }
 
+// Agent prose the user receives, judged on the event so a filtered-out reply
+// still counts.
+function isReplyText(e: AgentEvent): boolean {
+  if (e.type !== "text" || !e.content.trim()) return false;
+  if (e.content.startsWith(USER_PREFIX)) return false;
+  if (!e.kind) return !parseToolBlock(e.content);
+  return e.kind === "voice" || e.kind === "attachment";
+}
+
+function endsTurn(e: AgentEvent): boolean {
+  if (e.type === "turn_end" || e.type === "turn_summary") return true;
+  return (
+    e.type === "text" &&
+    e.kind === "turn_annotation" &&
+    parseAnnotation(e.content).kind === "turn_duration"
+  );
+}
+
 function markDelivery(ln: Line, delivery: DeliveryState | undefined): void {
   if ((ln.role !== "user" && ln.role !== "poll") || !delivery) return;
   if (delivery.pending.has(ln.ts)) ln.pending = true;
@@ -689,7 +712,18 @@ export function buildLines(
   let hiddenTick = false;
   const callTools = new Map<string, string>();
   let prevCallTool: string | null = null;
+  // A turn that ended on thinking sent the user nothing: its narration must
+  // not read as the reply.
+  let turnThinking: Line | null = null;
+  let turnReplied = false;
+  const closeTurn = () => {
+    if (turnThinking && !turnReplied) turnThinking.noReply = true;
+    turnThinking = null;
+    turnReplied = false;
+  };
   for (const e of events) {
+    if (isReplyText(e)) turnReplied = true;
+    if (endsTurn(e)) closeTurn();
     if (breaksPollRun(e)) poll.last = null;
     const posCallTool = prevCallTool;
     prevCallTool = e.type === "tool_call" ? e.tool : null;
@@ -705,7 +739,8 @@ export function buildLines(
       continue;
     }
     if (e.type === "text" && e.kind === "queue_op") {
-      const body = e.content.trim();
+      const raw = e.content.trim();
+      const body = splitInjected(raw).prose.trim();
       const op = e.operation ?? "queued";
       if (op !== "queued") {
         // Only the human withdrawing a prompt strikes it out; `dequeued`
@@ -719,10 +754,10 @@ export function buildLines(
       // A harness- or cctui-injected prompt is not a human one: the delivered
       // turn renders it, and no `user` line can ever absorb the placeholder.
       if (
-        looksMeta(body) ||
-        parsePeerMessage(body) ||
-        parseRoomJoined(body) !== null ||
-        parseCctuiverseLinked(body) !== null
+        looksMeta(raw) ||
+        parsePeerMessage(raw) ||
+        parseRoomJoined(raw) !== null ||
+        parseCctuiverseLinked(raw) !== null
       )
         continue;
       if (!body || !ctx.visible("user")) continue;
@@ -759,6 +794,8 @@ export function buildLines(
     }
     const produced = toLines(e, ctx, poll);
     if (!produced.length) continue;
+    if (produced.some((l) => l.role === "user" || l.role === "reset"))
+      closeTurn();
     // The three encodings Claude stores ONE human turn in share its `turn_id`,
     // so keying on it still collapses them while two composer sends of the same
     // text — always distinct ids — stay two messages.
@@ -824,6 +861,7 @@ export function buildLines(
     }
     markDelivery(ln, delivery);
     out.push(ln);
+    if (ln.role === "thinking") turnThinking = ln;
   }
   const lines = reconcileQueued(out, placeholders, closes);
   // `events` is already ordered causally by `orderEvents` (server insert

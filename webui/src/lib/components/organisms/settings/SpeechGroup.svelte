@@ -14,7 +14,13 @@
 	let info = $state<SpeechSettingsInfo | null>(null);
 	let draft = $state<SpeechConfig | null>(null);
 	let keyDraft = $state('');
-	let catalog = $state<SpeechCatalog>({ models: [], voices: [] });
+	let catalog = $state<SpeechCatalog>({
+		models: [],
+		stt_models: [],
+		tts_models: [],
+		text_models: [],
+		voices: []
+	});
 	let busy = $state(false);
 
 	function apply(next: SpeechSettingsInfo) {
@@ -26,9 +32,31 @@
 	$effect(() => {
 		endpoints
 			.speechSettings()
-			.then(apply)
+			.then((next) => {
+				apply(next);
+				if (next.config.enabled)
+					endpoints
+						.speechCatalog()
+						.then((c) => (catalog = c))
+						.catch(() => {});
+			})
 			.catch(() => {});
 	});
+
+	/** The catalog's picks for a field, keeping the saved value selectable. */
+	const choices = (tagged: string[], current: string) => {
+		const list = tagged.length ? tagged : catalog.models;
+		return current && !list.includes(current) ? [current, ...list] : list;
+	};
+	const pickers = $derived(
+		draft
+			? ([
+					['stt_model', m.settings_speech_stt_model(), choices(catalog.stt_models, draft.stt_model)],
+					['tts_model', m.settings_speech_tts_model(), choices(catalog.tts_models, draft.tts_model)],
+					['tts_voice', m.settings_speech_tts_voice(), choices(catalog.voices, draft.tts_voice)]
+				] as const)
+			: []
+	);
 
 	const dirty = $derived(
 		!!info && !!draft && (keyDraft.trim() !== '' || JSON.stringify(draft) !== JSON.stringify(info.config))
@@ -75,6 +103,11 @@
 		});
 
 	const inputValue = (e: Event) => (e.currentTarget as HTMLInputElement).value;
+	const selectValue = (e: Event) => (e.currentTarget as HTMLSelectElement).value;
+	const partMs = (e: Event) => {
+		const seconds = parseFloat(inputValue(e));
+		return Number.isFinite(seconds) ? Math.round(seconds * 1000) : null;
+	};
 </script>
 
 <div id="speech">
@@ -114,16 +147,38 @@
 					{/if}
 				</div>
 			</SettingRow>
-			{#each [['stt_model', m.settings_speech_stt_model()], ['tts_model', m.settings_speech_tts_model()]] as const as [field, label] (field)}
+			{#each pickers as [field, label, options] (field)}
 				<SettingRow {label} server admin>
-					<Input
+					<Select
 						value={draft[field]}
-						list="speech-models"
 						aria-label={label}
-						oninput={(e: Event) => draft && (draft[field] = inputValue(e))}
-					/>
+						style="width:100%"
+						onchange={(e: Event) => draft && (draft[field] = selectValue(e))}
+					>
+						{#each options as id (id)}
+							<option value={id}>{id}</option>
+						{/each}
+					</Select>
 				</SettingRow>
 			{/each}
+			<SettingRow
+				label={m.settings_speech_summary_model()}
+				help={m.settings_speech_summary_model_help()}
+				server
+				admin
+			>
+				<Select
+					value={draft.summary_model}
+					aria-label={m.settings_speech_summary_model()}
+					style="width:100%"
+					onchange={(e: Event) => draft && (draft.summary_model = selectValue(e))}
+				>
+					<option value="">{m.settings_speech_summary_off()}</option>
+					{#each choices(catalog.text_models, draft.summary_model) as id (id)}
+						<option value={id}>{id}</option>
+					{/each}
+				</Select>
+			</SettingRow>
 			<SettingRow label={m.settings_speech_stt_language()} server admin>
 				<Input
 					value={draft.stt_language ?? ''}
@@ -132,31 +187,29 @@
 					oninput={(e: Event) => draft && (draft.stt_language = inputValue(e))}
 				/>
 			</SettingRow>
-			<SettingRow label={m.settings_speech_tts_voice()} server admin>
+			<SettingRow label={m.settings_speech_stt_part()} help={m.settings_speech_stt_part_help()} server admin>
 				<Input
-					value={draft.tts_voice}
-					list="speech-voices"
-					aria-label={m.settings_speech_tts_voice()}
-					oninput={(e: Event) => draft && (draft.tts_voice = inputValue(e))}
+					type="number"
+					min="1"
+					max="28"
+					step="0.5"
+					value={draft.stt_part_ms == null ? '' : draft.stt_part_ms / 1000}
+					placeholder="3"
+					aria-label={m.settings_speech_stt_part()}
+					oninput={(e: Event) => draft && (draft.stt_part_ms = partMs(e))}
 				/>
 			</SettingRow>
 			<SettingRow label={m.settings_speech_tts_format()} server admin>
 				<Select
 					value={draft.tts_format}
 					aria-label={m.settings_speech_tts_format()}
-					onchange={(e: Event) => draft && (draft.tts_format = (e.currentTarget as HTMLSelectElement).value)}
+					onchange={(e: Event) => draft && (draft.tts_format = selectValue(e))}
 				>
 					{#each FORMATS as f (f)}
 						<option value={f}>{f}</option>
 					{/each}
 				</Select>
 			</SettingRow>
-			<datalist id="speech-models">
-				{#each catalog.models as id (id)}<option value={id}></option>{/each}
-			</datalist>
-			<datalist id="speech-voices">
-				{#each catalog.voices as id (id)}<option value={id}></option>{/each}
-			</datalist>
 			<div class="line actions">
 				<Button disabled={!dirty || busy} onclick={() => save()}>{m.settings_speech_save()}</Button>
 				<Button variant="ghost" disabled={busy || dirty || !info.config.enabled} onclick={loadCatalog}>

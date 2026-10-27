@@ -2,6 +2,7 @@
  *  same key while it plays stops it instead. */
 import { api } from '$lib/api';
 import type { VoiceSpeakRequest } from '@bindings/VoiceSpeakRequest';
+import { routeToSpeaker } from './devices';
 
 interface Current {
 	key: string;
@@ -24,16 +25,28 @@ function stopCurrent() {
 export async function speakText(
 	key: string,
 	text: string,
-	opts: { voice?: string; speed?: number; onend?: () => void } = {}
+	opts: {
+		voice?: string;
+		speed?: number;
+		summarize?: boolean;
+		speaker?: string;
+		onend?: () => void;
+	} = {}
 ): Promise<'started' | 'stopped'> {
 	if (current?.key === key) {
 		stopCurrent();
 		return 'stopped';
 	}
 	stopCurrent();
-	const body: VoiceSpeakRequest = { text, voice: opts.voice, speed: opts.speed };
+	const body: VoiceSpeakRequest = {
+		text,
+		voice: opts.voice,
+		speed: opts.speed,
+		summarize: opts.summarize
+	};
 	const url = URL.createObjectURL(await api.postBlobJson('/voice/speak', body));
 	const audio = new Audio(url);
+	routeToSpeaker(audio, opts.speaker);
 	audio.playbackRate = opts.speed ?? 1;
 	const mine: Current = { key, audio, url, onend: opts.onend ?? (() => {}) };
 	current = mine;

@@ -104,8 +104,8 @@ pub struct ProviderInfo {
     /// under this provider. Config, not secret → returned normally.
     #[cfg_attr(feature = "ts", ts(type = "Record<string, unknown> | null"))]
     pub settings_json: Option<serde_json::Value>,
-    /// Gateway request-shaping settings for this credential (fireworks:
-    /// `context_length_exceeded_behavior`, session affinity, extra body keys).
+    /// Gateway settings for this credential (fireworks: the session-affinity
+    /// header, the billing key name). The gateway never rewrites bodies.
     /// Distinct from `settings_json`, which is harness settings.
     #[cfg_attr(feature = "ts", ts(type = "Record<string, unknown> | null"))]
     pub provider_settings: Option<serde_json::Value>,

@@ -1,5 +1,7 @@
 <script lang="ts">
 	import '$lib/styles/app.css';
+	import '@dorsk/tsumikit/looks/depth.css';
+	import '@dorsk/tsumikit/looks/tactile.css';
 	import { QueryClient } from '@tanstack/svelte-query';
 	import { PersistQueryClientProvider } from '@tanstack/svelte-query-persist-client';
 	import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';

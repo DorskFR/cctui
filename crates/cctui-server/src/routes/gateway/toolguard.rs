@@ -274,14 +274,14 @@ enum Wire {
     Gemini,
 }
 
-struct SseEvent {
+pub(super) struct SseEvent {
     raw: Vec<u8>,
     name: Option<String>,
     data: String,
 }
 
 impl SseEvent {
-    fn parse(raw: Vec<u8>) -> Self {
+    pub(super) fn parse(raw: Vec<u8>) -> Self {
         let text = String::from_utf8_lossy(&raw);
         let mut name = None;
         let mut data: Option<String> = None;
@@ -303,7 +303,7 @@ impl SseEvent {
         Self { raw, name, data: data.unwrap_or_default() }
     }
 
-    fn json(&self) -> Option<Value> {
+    pub(super) fn json(&self) -> Option<Value> {
         let d = self.data.trim();
         if d.is_empty() || d == "[DONE]" {
             return None;
@@ -313,7 +313,7 @@ impl SseEvent {
 }
 
 /// End of the next complete SSE event in `buf` (exclusive, terminator included).
-fn event_end(buf: &[u8]) -> Option<usize> {
+pub(super) fn event_end(buf: &[u8]) -> Option<usize> {
     let mut i = 0;
     while i < buf.len() {
         if buf[i] == b'\n' {

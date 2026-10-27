@@ -1,3 +1,5 @@
+import { routeToSpeaker } from './devices';
+
 /** Plays synthesized sentences in arrival order. Each `speak_start` opens a
  *  line that collects binary chunks until its `speak_end`, then joins the
  *  queue; one `<audio>` element plays them back to back. */
@@ -14,6 +16,7 @@ export interface AudioLike {
 export interface PlayerOptions {
 	mime: () => string;
 	speed?: () => number;
+	speaker?: () => string | undefined;
 	/** `true` once playback has nothing left to do. */
 	onIdle?: (idle: boolean) => void;
 	createAudio?: () => AudioLike;
@@ -32,6 +35,7 @@ export class SpeechPlayer {
 	private current: AudioLike | null = null;
 	private currentUrl: string | null = null;
 	private unlocked = false;
+	private readonly idleListeners = new Set<(idle: boolean) => void>();
 	private readonly opts: PlayerOptions;
 
 	constructor(opts: PlayerOptions) {
@@ -40,6 +44,11 @@ export class SpeechPlayer {
 
 	get playing(): boolean {
 		return this.current !== null;
+	}
+
+	onIdleChange(fn: (idle: boolean) => void): () => void {
+		this.idleListeners.add(fn);
+		return () => this.idleListeners.delete(fn);
 	}
 
 	/** Call from a user gesture: iOS only lets a tapped element start audio,
@@ -85,7 +94,7 @@ export class SpeechPlayer {
 			cur.pause();
 		}
 		this.releaseUrl();
-		this.opts.onIdle?.(true);
+		this.idle(true);
 	}
 
 	private next() {
@@ -93,11 +102,12 @@ export class SpeechPlayer {
 		if (!blob) {
 			this.current = null;
 			this.releaseUrl();
-			this.opts.onIdle?.(true);
+			this.idle(true);
 			return;
 		}
-		this.opts.onIdle?.(false);
+		this.idle(false);
 		const a = this.opts.createAudio?.() ?? new Audio();
+		routeToSpeaker(a, this.opts.speaker?.());
 		this.current = a;
 		this.releaseUrl();
 		this.currentUrl = this.opts.createUrl?.(blob) ?? URL.createObjectURL(blob);
@@ -106,6 +116,11 @@ export class SpeechPlayer {
 		a.onended = () => this.next();
 		a.onerror = () => this.next();
 		void a.play().catch(() => this.next());
+	}
+
+	private idle(idle: boolean) {
+		this.opts.onIdle?.(idle);
+		for (const fn of this.idleListeners) fn(idle);
 	}
 
 	private releaseUrl() {

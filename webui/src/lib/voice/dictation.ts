@@ -2,6 +2,7 @@
  *  the clip through `/voice/transcribe`. */
 import { api } from '$lib/api';
 import type { VoiceTranscript } from '@bindings/VoiceTranscript';
+import { micConstraints } from './devices';
 
 const PREFERRED = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
 
@@ -22,6 +23,11 @@ export class Dictation {
 	private chunks: Blob[] = [];
 	private stream: MediaStream | null = null;
 	private wanted = false;
+	private readonly device: () => { micId?: string; language?: string };
+
+	constructor(device: () => { micId?: string; language?: string } = () => ({})) {
+		this.device = device;
+	}
 
 	get recording(): boolean {
 		return this.recorder?.state === 'recording';
@@ -33,7 +39,9 @@ export class Dictation {
 		this.wanted = true;
 		let stream: MediaStream;
 		try {
-			stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+			stream = await navigator.mediaDevices.getUserMedia({
+				audio: micConstraints(this.device().micId)
+			});
 		} catch (e) {
 			this.wanted = false;
 			throw e;
@@ -63,7 +71,7 @@ export class Dictation {
 			rec.stop();
 		});
 		this.release();
-		return clip.size ? transcribeBlob(clip) : '';
+		return clip.size ? transcribeBlob(clip, this.device().language) : '';
 	}
 
 	cancel() {

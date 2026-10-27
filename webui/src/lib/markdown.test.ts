@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
-import { renderMarkdown } from './markdown';
+import { renderImageMarkers, renderMarkdown } from './markdown';
 
 describe('renderMarkdown cctui-img rendering', () => {
 	const sid = 'sess-abc';
@@ -33,6 +33,45 @@ describe('renderMarkdown cctui-img rendering', () => {
 		// early — the payload is inert text inside alt=".
 		expect(html).toContain('alt="&quot; onerror=alert(1) x"');
 		expect(html).not.toContain('alt="" onerror=alert(1)');
+	});
+
+	it('fetches a qualified marker from the session that owns the image', () => {
+		const html = renderMarkdown('peer says ![shot](cctui-img://sender-1/img-9)', {
+			sessionId: sid,
+		});
+		expect(html).toContain('src="/api/v1/sessions/sender-1/images/img-9"');
+		expect(html).toContain('data-lightbox="/api/v1/sessions/sender-1/images/img-9"');
+		expect(html).not.toContain('/sessions/sess-abc/');
+	});
+
+	it('leaves a qualified marker with an unsafe owner as text', () => {
+		for (const text of [
+			'![x](cctui-img://../admin/img-9)',
+			'![x](cctui-img://a b/img-9)',
+			'![x](cctui-img://a/b/img-9)',
+			'![x](cctui-img://%2e%2e/img-9)',
+		]) {
+			expect(renderMarkdown(text, { sessionId: sid })).not.toContain('<img');
+		}
+	});
+
+	it('mixes own-session and cross-session markers in one body', () => {
+		const html = renderMarkdown('![a](cctui-img://one) ![b](cctui-img://child_2/two)', {
+			sessionId: sid,
+		});
+		expect(html).toContain('src="/api/v1/sessions/sess-abc/images/one"');
+		expect(html).toContain('src="/api/v1/sessions/child_2/images/two"');
+	});
+
+	it('renderImageMarkers yields only the images, owner-resolved', () => {
+		const html = renderImageMarkers(
+			'{"message":"see ![a](cctui-img://sender-1/img-9) and ![b](cctui-img://img-2)"}',
+			sid,
+		);
+		expect(html).toContain('src="/api/v1/sessions/sender-1/images/img-9"');
+		expect(html).toContain('src="/api/v1/sessions/sess-abc/images/img-2"');
+		expect(html).not.toContain('message');
+		expect(renderImageMarkers('no images', sid)).toBe('');
 	});
 
 	it('renders multiple markers', () => {

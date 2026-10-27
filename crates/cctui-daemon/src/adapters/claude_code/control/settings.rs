@@ -4,12 +4,9 @@ use cctui_proto::injected::SESSION_CONTEXT;
 
 use super::{PathBuf, json};
 
-/// Decode + stage `bootstrap` file uploads under the upload staging root's
-/// `<session-id>/` dir, returning their absolute paths in upload order. Files
-/// are written 0600 with sanitized bare names; an empty/null bootstrap yields
-/// an empty vec. Errors (bad base64, unwritable dir) abort the
-/// spawn so the user learns the attachment didn't land rather than the worker
-/// silently starting without it.
+const REPLY_LINE: &str = "replies: your thinking is never shown to the user as a reply; anything \
+    meant for them (answers, image markers) must be in your message text.\n";
+
 /// Build the spawn-time `<cctui-session-context>` block prepended to the
 /// initial prompt. Mirrors what a human sees on the session card — name,
 /// model·effort, permission posture, env var NAMES, cwd, and staged files.
@@ -20,7 +17,6 @@ pub(super) fn build_session_context(
     cwd: &str,
     staged: &[String],
     capability: Option<&cctui_proto::api::SpawnCapability>,
-    neighbours: &[crate::neighbours::Neighbour],
     context: Option<&str>,
 ) -> String {
     let mut b = format!("<{SESSION_CONTEXT}>\n");
@@ -41,9 +37,6 @@ pub(super) fn build_session_context(
         let _ = writeln!(b, "permission-mode: {}", mode.normalized_label());
     }
     let _ = writeln!(b, "cwd: {cwd}");
-    if let Some(shared) = crate::neighbours::notice(neighbours, std::time::SystemTime::now()) {
-        b.push_str(&shared);
-    }
     if let Some(context) = context.map(str::trim).filter(|c| !c.is_empty()) {
         let _ = writeln!(b, "{context}");
     }
@@ -57,6 +50,8 @@ pub(super) fn build_session_context(
             let _ = writeln!(b, "  - {p}");
         }
     }
+    b.push_str(REPLY_LINE);
+    b.push_str(crate::preamble::IMAGE_LINE);
     if let Some(cap) = capability.filter(|c| !c.is_empty()) {
         b.push_str(&agent_tool_context(cap));
     }
@@ -587,10 +582,92 @@ pub(super) fn managed_settings(
     serde_json::Value::Object(managed)
 }
 
+pub(super) const BG_ISOLATION_ENV: &str = "CLAUDE_BG_ISOLATION";
+
+/// Claude Code's background edit guard reads only the process env's
+/// [`BG_ISOLATION_ENV`], never the `--settings` file, so mirror the account's
+/// choice into the launch env. Precedence: the launch env, this daemon's own
+/// env (a worker pod's profile), the account's `env` entry, then its
+/// `worktree.bgIsolation`.
+pub(super) fn with_bg_isolation(
+    env: &mut std::collections::BTreeMap<String, String>,
+    inherited: Option<String>,
+    settings: Option<&serde_json::Value>,
+) {
+    if env.contains_key(BG_ISOLATION_ENV) {
+        return;
+    }
+    let from_settings = || {
+        ["/env/CLAUDE_BG_ISOLATION", "/worktree/bgIsolation"]
+            .into_iter()
+            .find_map(|key| {
+                settings?.pointer(key)?.as_str().filter(|v| matches!(*v, "none" | "worktree"))
+            })
+            .map(str::to_owned)
+    };
+    if let Some(value) = inherited.filter(|v| !v.trim().is_empty()).or_else(from_settings) {
+        env.insert(BG_ISOLATION_ENV.to_owned(), value);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
     use super::*;
+
+    fn isolation(
+        env: &[(&str, &str)],
+        inherited: Option<&str>,
+        settings: Option<&serde_json::Value>,
+    ) -> Option<String> {
+        let mut env = env_of(env);
+        with_bg_isolation(&mut env, inherited.map(str::to_owned), settings);
+        env.get(BG_ISOLATION_ENV).cloned()
+    }
+
+    #[test]
+    fn the_account_isolation_setting_reaches_the_launch_env() {
+        let none = json!({"worktree": {"bgIsolation": "none"}});
+        let worktree = json!({"worktree": {"bgIsolation": "worktree"}});
+        assert_eq!(isolation(&[], None, Some(&none)).as_deref(), Some("none"));
+        assert_eq!(isolation(&[], None, Some(&worktree)).as_deref(), Some("worktree"));
+        let both = json!({
+            "env": {"CLAUDE_BG_ISOLATION": "none"},
+            "worktree": {"bgIsolation": "worktree"},
+        });
+        assert_eq!(
+            isolation(&[], None, Some(&both)).as_deref(),
+            Some("none"),
+            "the env knob first"
+        );
+        let bad_knob = json!({
+            "env": {"CLAUDE_BG_ISOLATION": "off"},
+            "worktree": {"bgIsolation": "worktree"},
+        });
+        assert_eq!(isolation(&[], None, Some(&bad_knob)).as_deref(), Some("worktree"));
+    }
+
+    #[test]
+    fn an_explicit_isolation_env_wins_over_the_account_setting() {
+        let worktree = json!({"worktree": {"bgIsolation": "worktree"}});
+        assert_eq!(
+            isolation(&[(BG_ISOLATION_ENV, "none")], Some("worktree"), Some(&worktree)).as_deref(),
+            Some("none"),
+            "launch env first"
+        );
+        assert_eq!(
+            isolation(&[], Some("none"), Some(&worktree)).as_deref(),
+            Some("none"),
+            "a worker profile's env beats the account setting"
+        );
+    }
+
+    #[test]
+    fn no_isolation_anywhere_leaves_the_env_untouched() {
+        assert_eq!(isolation(&[], None, None), None);
+        assert_eq!(isolation(&[], Some(" "), Some(&json!({"theme": "dark"}))), None);
+        assert_eq!(isolation(&[], None, Some(&json!({"worktree": {"bgIsolation": "off"}}))), None);
+    }
 
     #[test]
     fn only_the_matching_gateway_session_settings_authorize_a_respawn_repair() {
@@ -999,58 +1076,11 @@ mod tests {
         }
     }
 
-    fn neighbour(label: &str) -> crate::neighbours::Neighbour {
-        crate::neighbours::Neighbour {
-            local_id: label.to_owned(),
-            harness: "claude-code".to_owned(),
-            label: Some(label.to_owned()),
-            status: Some("working".to_owned()),
-            started_at: Some(std::time::SystemTime::now()),
-        }
-    }
-
     #[test]
-    fn session_context_omits_the_shared_cwd_line_when_the_session_is_alone() {
-        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, &[], None);
+    fn session_context_never_mentions_other_sessions_in_the_cwd() {
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, None);
         assert!(block.contains("cwd: /work/cctui"));
-        assert!(!block.contains("shared cwd"), "no neighbours means no line at all: {block}");
-    }
-
-    #[test]
-    fn session_context_warns_about_one_session_sharing_the_cwd() {
-        let block = build_session_context(
-            &bare_spec(),
-            "/work/cctui",
-            &[],
-            None,
-            std::slice::from_ref(&neighbour("wave-3 integrator")),
-            None,
-        );
-        assert!(block.contains("shared cwd: 1 other live session in this directory: "), "{block}");
-        assert!(block.contains("\"wave-3 integrator\" (claude-code, working, started 0s ago)"));
-        assert!(block.contains("Its uncommitted changes are not yours"), "{block}");
-        assert!(block.ends_with("</cctui-session-context>"));
-    }
-
-    #[test]
-    fn session_context_leaves_the_age_out_when_the_start_is_unknown() {
-        let mut lone = neighbour("wave-3 integrator");
-        lone.started_at = None;
-        let one = std::slice::from_ref(&lone);
-        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, one, None);
-        assert!(block.contains("\"wave-3 integrator\" (claude-code, working)."), "{block}");
-        assert!(!block.contains("started"), "no age beats a wrong age: {block}");
-    }
-
-    #[test]
-    fn session_context_lists_three_sharers_and_counts_the_rest() {
-        let all: Vec<crate::neighbours::Neighbour> =
-            (1..=4).map(|i| neighbour(&format!("agent {i}"))).collect();
-        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, &all, None);
-        assert!(block.contains("shared cwd: 4 other live sessions in this directory: "), "{block}");
-        assert!(block.contains("agent 3"), "{block}");
-        assert!(!block.contains("agent 4"), "{block}");
-        assert!(block.contains("+1 more."), "{block}");
+        assert!(!block.contains("shared cwd"), "{block}");
     }
 
     /// The staged-context notice rides the same block as everything else a
@@ -1062,15 +1092,36 @@ mod tests {
             "/work/cctui",
             &[],
             None,
-            &[],
             Some("context: 1 attached for this session (House style). Read `/tmp/x/context.md`.\n"),
         );
         assert!(block.contains("context: 1 attached for this session (House style)"), "{block}");
         assert!(block.contains("/tmp/x/context.md"), "{block}");
         assert!(block.ends_with("</cctui-session-context>"), "{block}");
 
-        let bare = build_session_context(&bare_spec(), "/work/cctui", &[], None, &[], Some("  "));
+        let bare = build_session_context(&bare_spec(), "/work/cctui", &[], None, Some("  "));
         assert!(!bare.contains("context:"), "a blank notice adds no line: {bare}");
+    }
+
+    #[test]
+    fn every_session_context_says_how_to_show_an_image() {
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, None);
+        assert!(block.contains(crate::preamble::IMAGE_LINE), "{block}");
+        assert!(block.ends_with("</cctui-session-context>"), "{block}");
+
+        let cap = cctui_proto::api::SpawnCapability::machine_default();
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], Some(&cap), None);
+        let image = block.find("images: to show the user an image").expect("image line");
+        assert!(image < block.find("CctuiAgent:").expect("agent paragraph"), "{block}");
+    }
+
+    #[test]
+    fn every_session_context_says_thinking_is_not_a_reply() {
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, None);
+        assert!(block.contains(REPLY_LINE), "{block}");
+        assert!(REPLY_LINE.ends_with(".\n") && REPLY_LINE.lines().count() == 1, "{REPLY_LINE}");
+        let reply = block.find(REPLY_LINE).expect("reply line");
+        let image = block.find(crate::preamble::IMAGE_LINE).expect("image line");
+        assert_eq!(reply + REPLY_LINE.len(), image, "{block}");
     }
 
     #[test]
@@ -1092,8 +1143,7 @@ mod tests {
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,
         };
-        let block =
-            build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()], None, &[], None);
+        let block = build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()], None, None);
         assert!(block.starts_with("<cctui-session-context>\n"));
         assert!(block.ends_with("</cctui-session-context>"));
         assert!(block.contains("session: refactor the dispatcher"));
@@ -1126,7 +1176,7 @@ mod tests {
             parent_local_id: None,
         };
         let cap = cctui_proto::api::SpawnCapability::machine_default();
-        let block = build_session_context(&spec, "/work/cctui", &[], Some(&cap), &[], None);
+        let block = build_session_context(&spec, "/work/cctui", &[], Some(&cap), None);
         assert!(block.contains("mcp__cctui__CctuiAgent"));
         assert!(block.contains("adapters you may spawn: claude-code, codex, opencode"));
         assert!(block.contains("no budget limit"), "{block}");
@@ -1143,7 +1193,7 @@ mod tests {
         assert!(block.ends_with("</cctui-session-context>"));
 
         let empty = cctui_proto::api::SpawnCapability::default();
-        let block = build_session_context(&spec, "/work/cctui", &[], Some(&empty), &[], None);
+        let block = build_session_context(&spec, "/work/cctui", &[], Some(&empty), None);
         assert!(!block.contains("CctuiAgent"), "an empty capability advertises nothing");
         assert!(!block.contains("CctuiUsage"), "the relay is absent, so neither tool exists");
     }

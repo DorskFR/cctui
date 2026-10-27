@@ -9,7 +9,7 @@ use serde::Deserialize;
 use cctui_proto::adapter::{RemoveInitiator, SessionChild};
 use cctui_proto::api::{
     Label, MessageRequest, RegisterRequest, RegisterResponse, RenameRequest, SessionListItem,
-    SessionListResponse, SessionResult, SpawnRequest, SpawnResponse,
+    SessionListResponse, SessionParentStub, SessionResult, SpawnRequest, SpawnResponse,
 };
 use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, PrStatusCache, classify};
 use cctui_proto::models::{Attention, Liveness, Session, SessionEndReason, SessionStatus};
@@ -20,6 +20,7 @@ use crate::events::{self, Actor, Event, kind};
 use crate::followup::{nests_under_parent, next_session_sql};
 use crate::live_sessions::live_sessions_predicate;
 use crate::routes::spawn::resolve_owned_machine;
+use crate::search_index::Unchunked;
 use crate::state::AppState;
 use crate::store::sessions::SessionRowStatus;
 
@@ -239,18 +240,21 @@ pub const fn attention_from_bucket(bucket: Bucket) -> Option<Attention> {
     }
 }
 
-/// Newest `message` event per listed session.
+/// Newest `message` event per listed session that is not a turn annotation or
+/// a system marker (queue operations included): those never preview a row.
 ///
 /// `event_type = 'message'` must stay character-identical to the predicate of
-/// `idx_stream_events_latest_message` (migration 118); narrowing it here (a
-/// role filter, say) without narrowing the index costs the single probe. The
-/// per-session `LIMIT 1` is the other half: any shape that groups or sorts the
-/// whole fan-out instead reads every message row of every listed session.
+/// `idx_stream_events_latest_message` (migration 118). The role filter rides
+/// on top as a residual, so the backward walk only steps past the few
+/// bookkeeping rows that trail a turn. The per-session `LIMIT 1` is the other
+/// half: any shape that groups or sorts the whole fan-out instead reads every
+/// message row of every listed session.
 ///
-/// Ships only the first 400 chars of the string `text` (else `content`), twice
-/// what [`normalize_last_message`] keeps, plus whether it was cut; never the
-/// payload.
-const LAST_MESSAGE_SQL: &str = "SELECT s.session_id, left(e.body, 400), length(e.body) > 400, \
+/// Ships a prefix of the string `text` (else `content`) plus whether it was
+/// cut; never the payload. The prefix is 400 chars, twice what
+/// [`normalize_last_message`] keeps, or 64 KiB when the body opens on a tag, so
+/// the wrappers cctui puts ahead of the prose close inside it.
+const LAST_MESSAGE_SQL: &str = "SELECT s.session_id, left(e.body, c.n), length(e.body) > c.n, \
             e.created_at \
      FROM unnest($1::text[]) AS s(session_id) \
      JOIN LATERAL ( \
@@ -262,9 +266,13 @@ const LAST_MESSAGE_SQL: &str = "SELECT s.session_id, left(e.body, 400), length(e
                 se.created_at \
          FROM stream_events se \
          WHERE se.session_id = s.session_id AND se.event_type = 'message' \
+           AND COALESCE(se.payload->>'role', '') NOT IN ('turn_annotation', 'system_marker') \
          ORDER BY se.created_at DESC \
          LIMIT 1 \
-     ) e ON true";
+     ) e ON true \
+     CROSS JOIN LATERAL ( \
+         SELECT CASE WHEN e.body ~ '^\\s*<' THEN 65536 ELSE 400 END AS n \
+     ) c";
 
 /// Per-(session, model) token totals, maintained by a trigger on
 /// `session_token_usage` (migration 132). `model` is stored as '' for NULL.
@@ -335,7 +343,10 @@ pub async fn list_sessions(
     );
 
     let sessions = enrich_and_sort(&state, Some(ctx.user_id), with_ts).await?;
-    Ok(crate::http_cache::json_with_etag(&req_headers, &SessionListResponse { sessions }))
+    Ok(crate::http_cache::json_with_etag(
+        &req_headers,
+        &SessionListResponse { sessions, ..Default::default() },
+    ))
 }
 
 /// Which live registry entries the caller may see: `None` for admins (all of
@@ -1151,12 +1162,14 @@ fn sort_sessions(mut with_ts: Vec<(DateTime<Utc>, SessionListItem)>) -> Vec<Sess
     with_ts.into_iter().map(|(_, s)| s).collect()
 }
 
-/// Query params for `GET /sessions/search`. `q` is a substring
-/// matched (case-insensitively, trgm-accelerated) against a session's full
-/// transcript plus its id/name/working-dir. `include_archived` sets the scope:
-/// `false` searches live (non-archived) sessions only, `true` searches all.
-/// With an empty `q` and `include_archived=true` this becomes "browse the
-/// archive" — archived sessions, newest first. Offset pagination throughout.
+/// Query params for `GET /sessions/search`. Each free-text term of `q` is
+/// folded like the rendered transcript and matched (case-insensitively,
+/// trgm-accelerated) against a session's search chunks plus its
+/// id/name/working-dir. `include_archived` sets the scope: `false` searches
+/// live (non-archived) sessions only, `true` searches all. With an empty `q`
+/// and `include_archived=true` this becomes "browse the archive" — archived
+/// sessions, newest first. Pages follow the response's `next_cursor`; `offset`
+/// is honoured only without one.
 #[derive(Debug, Default, Deserialize)]
 pub struct SearchParams {
     #[serde(default)]
@@ -1165,6 +1178,7 @@ pub struct SearchParams {
     pub include_archived: bool,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    pub cursor: Option<String>,
 }
 
 /// Shared SELECT + machine-name and room joins: the full `DbSession`
@@ -1181,6 +1195,18 @@ pub const DB_SESSION_SELECT: &str = "SELECT s.id, s.parent_id, s.machine_id, s.w
 
 const SEARCH_DEFAULT_LIMIT: i64 = 100;
 const SEARCH_MAX_LIMIT: i64 = 500;
+/// Sessions tested per statement of the search scan.
+const SEARCH_WINDOW: i64 = 200;
+/// Past this the scan stops between windows and the page comes back partial.
+const SEARCH_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
+/// Caps any one search statement, so a single window cannot outlive the budget
+/// by much.
+const SEARCH_STATEMENT_TIMEOUT: &str = "SET LOCAL statement_timeout = '5s'";
+/// Newest matching chunks of a session ranked for its snippet.
+const SNIPPET_CANDIDATES: i64 = 50;
+/// Must match the `(session_id, left(search_text, 8192))` index of migration
+/// 108 exactly, or the unchunked fallback stops using it.
+const SEARCH_TEXT_CAP: u32 = 8192;
 
 /// Escape LIKE/ILIKE wildcards so a user's literal `%`/`_` aren't treated as
 /// pattern metacharacters, then wrap in `%…%` for a substring match. `\` is
@@ -1188,6 +1214,49 @@ const SEARCH_MAX_LIMIT: i64 = 500;
 pub fn ilike_contains(q: &str) -> String {
     let escaped = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
     format!("%{escaped}%")
+}
+
+/// [`ilike_contains`] over a free-text term folded like the indexed chunks.
+fn text_pattern(term: &str) -> String {
+    ilike_contains(&crate::search_index::text::fold(term))
+}
+
+/// Free-text terms folded like the indexed chunks, and as typed for the
+/// unchunked fallback, which matches `search_text` unfolded; terms that fold
+/// to nothing are dropped.
+struct Terms {
+    folded: Vec<String>,
+    raw: Vec<String>,
+}
+
+impl Terms {
+    fn of(terms: &[String]) -> Self {
+        let (folded, raw) = terms
+            .iter()
+            .map(|t| (crate::search_index::text::fold(t), t.clone()))
+            .filter(|(f, _)| !f.is_empty())
+            .unzip();
+        Self { folded, raw }
+    }
+
+    const fn is_empty(&self) -> bool {
+        self.folded.is_empty()
+    }
+
+    const fn len(&self) -> usize {
+        self.folded.len()
+    }
+
+    /// What a snippet centres on: chunk text is folded, `search_text` is not.
+    fn needles(&self) -> Vec<String> {
+        let mut out = self.folded.clone();
+        out.extend(self.raw.iter().filter(|r| !self.folded.contains(r)).cloned());
+        out
+    }
+}
+
+fn is_statement_timeout(err: &sqlx::Error) -> bool {
+    matches!(err, sqlx::Error::Database(d) if d.code().as_deref() == Some("57014"))
 }
 
 /// A positional bind for the compiled query — kept typed so `pinned` binds a
@@ -1204,7 +1273,12 @@ fn ph_text(params: &mut Vec<SqlParam>, s: String) -> usize {
 
 /// SQL predicate for one fielded value. The bind is appended to `params` and
 /// the returned string references it by its `$N` position (1-based).
-fn leaf_predicate(field: &str, value: &str, params: &mut Vec<SqlParam>) -> String {
+fn leaf_predicate(
+    field: &str,
+    value: &str,
+    params: &mut Vec<SqlParam>,
+    gap: Option<Unchunked>,
+) -> String {
     match field {
         "machine" => {
             let p = ph_text(params, value.to_string());
@@ -1262,40 +1336,58 @@ fn leaf_predicate(field: &str, value: &str, params: &mut Vec<SqlParam>) -> Strin
         // Transcript-scoped fields, meaningful only to `/sessions/{id}/search`.
         // Across sessions they stay the literal free text they were before the
         // query registry learned them.
-        "role" | "tool" | "after" | "before" => {
-            let p = ph_text(params, ilike_contains(&format!("{field}:{value}")));
-            free_text_predicate(p)
-        }
-        _ => {
-            let p = ph_text(params, ilike_contains(value));
-            free_text_predicate(p)
-        }
+        "role" | "tool" | "after" | "before" => text_leaf(&format!("{field}:{value}"), params, gap),
+        _ => text_leaf(value, params, gap),
     }
 }
 
-/// Must match the `idx_stream_events_search_trgm_capped` expression (migration
-/// 065) exactly, or the ILIKE silently stops using the index.
-const SEARCH_TEXT_CAP: u32 = 8192;
+/// `alias.id` past the backfill cursor and either below the first event
+/// chunked on ingest or, above it, written by a path that chunks nothing.
+fn unchunked_ids(alias: &str, g: Unchunked) -> String {
+    format!(
+        "{alias}.id > {} AND ({alias}.id < {} \
+         OR NOT EXISTS (SELECT 1 FROM search_chunks k WHERE k.event_id = {alias}.id))",
+        g.after, g.before
+    )
+}
 
-/// The residual free-text path: id / name / dir / trgm-accelerated transcript.
+fn text_leaf(term: &str, params: &mut Vec<SqlParam>, gap: Option<Unchunked>) -> String {
+    let p = ph_text(params, text_pattern(term));
+    let fallback = gap.map(|g| (ph_text(params, ilike_contains(term)), g));
+    free_text_predicate(p, fallback)
+}
+
+/// The residual free-text path: id / name / dir / the session's search chunks,
+/// and with `fallback` its unchunked events' capped `search_text` (bind `$r`).
 ///
 /// `(SELECT s.id)` must not be simplified to `s.id`: the wrapper keeps the
 /// correlation as a Param, and a plain `s.id` lets the planner hoist the
 /// sublink into a hashed subplan that rechecks every matching event in the
 /// table rather than probing one session (13 s vs 0.35 s on 600k events).
-fn free_text_predicate(p: usize) -> String {
+fn free_text_predicate(p: usize, fallback: Option<(usize, Unchunked)>) -> String {
+    let unchunked = fallback.map_or_else(String::new, |(r, g)| {
+        format!(
+            " OR EXISTS (SELECT 1 FROM stream_events e \
+                        WHERE e.session_id = (SELECT s.id) AND {} \
+                        AND left(e.search_text, {SEARCH_TEXT_CAP}) ILIKE ${r})",
+            unchunked_ids("e", g)
+        )
+    });
     format!(
         "(s.id ILIKE ${p} OR COALESCE(s.session_name, '') ILIKE ${p} \
           OR s.working_dir ILIKE ${p} \
-          OR EXISTS (SELECT 1 FROM stream_events e \
-                     WHERE e.session_id = (SELECT s.id) \
-                     AND left(e.search_text, {SEARCH_TEXT_CAP}) ILIKE ${p}))"
+          OR EXISTS (SELECT 1 FROM search_chunks c \
+                     WHERE c.session_id = (SELECT s.id) AND c.body ILIKE ${p}){unchunked})"
     )
 }
 
-fn compile_filter(filter: &cctui_query::Filter, params: &mut Vec<SqlParam>) -> String {
+fn compile_filter(
+    filter: &cctui_query::Filter,
+    params: &mut Vec<SqlParam>,
+    gap: Option<Unchunked>,
+) -> String {
     let preds: Vec<String> =
-        filter.values.iter().map(|v| leaf_predicate(&filter.field, v, params)).collect();
+        filter.values.iter().map(|v| leaf_predicate(&filter.field, v, params, gap)).collect();
     let joined = match preds.len() {
         0 => "TRUE".to_string(),
         1 => preds.into_iter().next().unwrap(),
@@ -1309,26 +1401,38 @@ fn compile_filter(filter: &cctui_query::Filter, params: &mut Vec<SqlParam>) -> S
 /// predicates / join-EXISTS, free text takes the `pg_trgm` path, and the
 /// boolean/negation structure maps straight to `AND`/`OR`/`NOT`.
 fn compile_node(node: &cctui_query::Node, params: &mut Vec<SqlParam>) -> String {
-    compile_node_at(node, params, 0)
+    compile_node_at(node, params, None, 0)
+}
+
+/// [`compile_node`] for the session search, whose free text also probes the
+/// `gap` events that have no chunks yet.
+fn compile_search(
+    node: &cctui_query::Node,
+    params: &mut Vec<SqlParam>,
+    gap: Option<Unchunked>,
+) -> String {
+    compile_node_at(node, params, gap, 0)
 }
 
 const MAX_COMPILE_DEPTH: usize = 4 * cctui_query::MAX_DEPTH + 8;
 
-fn compile_node_at(node: &cctui_query::Node, params: &mut Vec<SqlParam>, depth: usize) -> String {
+fn compile_node_at(
+    node: &cctui_query::Node,
+    params: &mut Vec<SqlParam>,
+    gap: Option<Unchunked>,
+    depth: usize,
+) -> String {
     use cctui_query::Node;
     if depth > MAX_COMPILE_DEPTH {
         return "FALSE".to_string();
     }
     match node {
         Node::Empty => "TRUE".to_string(),
-        Node::Text { value } => {
-            let p = ph_text(params, ilike_contains(value));
-            free_text_predicate(p)
-        }
-        Node::Filter { filter } => compile_filter(filter, params),
-        Node::Not { child } => format!("(NOT {})", compile_node_at(child, params, depth + 1)),
-        Node::And { children } => join_children(children, "AND", params, depth),
-        Node::Or { children } => join_children(children, "OR", params, depth),
+        Node::Text { value } => text_leaf(value, params, gap),
+        Node::Filter { filter } => compile_filter(filter, params, gap),
+        Node::Not { child } => format!("(NOT {})", compile_node_at(child, params, gap, depth + 1)),
+        Node::And { children } => join_children(children, "AND", params, gap, depth),
+        Node::Or { children } => join_children(children, "OR", params, gap, depth),
     }
 }
 
@@ -1336,10 +1440,11 @@ fn join_children(
     children: &[cctui_query::Node],
     sep: &str,
     params: &mut Vec<SqlParam>,
+    gap: Option<Unchunked>,
     depth: usize,
 ) -> String {
     let preds: Vec<String> =
-        children.iter().map(|c| compile_node_at(c, params, depth + 1)).collect();
+        children.iter().map(|c| compile_node_at(c, params, gap, depth + 1)).collect();
     if preds.is_empty() {
         "TRUE".to_string()
     } else {
@@ -1358,20 +1463,38 @@ fn check_query_len(q: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Newest event matching any term, at most one row per session.
-/// `$1` is the session-id array, `$2…` the ILIKE patterns.
-fn snippet_sql(n_patterns: usize) -> String {
-    let or = (2..=n_patterns + 1)
-        .map(|i| format!("left(e.search_text, {SEARCH_TEXT_CAP}) ILIKE ${i}"))
-        .collect::<Vec<_>>()
-        .join(" OR ");
+/// The best-ranked of a session's newest chunks matching any term, at most
+/// one row per session. `$1` is the session-id array, `$2…$n+1` the ILIKE
+/// patterns, `$n+2` the terms the rank weighs; with a `gap`, `$n+3…$2n+2` the
+/// unfolded patterns its newest matching unchunked event is tested with.
+fn snippet_sql(n_patterns: usize, gap: Option<Unchunked>) -> String {
+    let or =
+        (2..=n_patterns + 1).map(|i| format!("c.body ILIKE ${i}")).collect::<Vec<_>>().join(" OR ");
+    let rank = n_patterns + 2;
+    let unchunked = gap.map_or_else(String::new, |g| {
+        let raw = (rank + 1..=rank + n_patterns)
+            .map(|i| format!("left(e.search_text, {SEARCH_TEXT_CAP}) ILIKE ${i}"))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        format!(
+            " UNION ALL ( \
+               SELECT left(e.search_text, {SEARCH_TEXT_CAP}), e.id FROM stream_events e \
+               WHERE e.session_id = sid AND {} AND ({raw}) \
+               ORDER BY e.id DESC LIMIT 1)",
+            unchunked_ids("e", g)
+        )
+    });
     format!(
-        "SELECT sid, hit.text, hit.id FROM unnest($1::text[]) AS sid \
+        "SELECT sid, hit.body, hit.event_id FROM unnest($1::text[]) AS sid \
          CROSS JOIN LATERAL ( \
-           SELECT left(e.search_text, {SEARCH_TEXT_CAP}) AS text, e.id \
-           FROM stream_events e \
-           WHERE e.session_id = sid AND ({or}) \
-           ORDER BY e.created_at DESC LIMIT 1 \
+           SELECT m.body, m.event_id FROM ( \
+             (SELECT c.body, c.event_id FROM search_chunks c \
+              WHERE c.session_id = sid AND ({or}) \
+              ORDER BY c.event_id DESC LIMIT {SNIPPET_CANDIDATES}){unchunked} \
+           ) m \
+           ORDER BY ts_rank(to_tsvector('simple', m.body), plainto_tsquery('simple', ${rank})) DESC, \
+                    m.event_id DESC \
+           LIMIT 1 \
          ) hit"
     )
 }
@@ -1401,12 +1524,11 @@ fn make_snippet(text: &str, needles: &[String]) -> String {
     out
 }
 
-/// `GET /sessions/search?q=…&include_archived=…&limit=…&offset=…`.
-/// Full-transcript substring search, scoped to live or all sessions; with an
-/// empty `q` and `include_archived=true` it browses the archive. Returns the
-/// same `SessionListItem` shape as the list (so clients reuse `SessionCard`),
-/// each carrying a `match_snippet` when the hit was in the transcript.
-#[allow(clippy::too_many_lines)]
+/// `GET /sessions/search?q=…&include_archived=…&limit=…&cursor=…`.
+/// Full-transcript search, scoped to live or all sessions; with an empty `q`
+/// and `include_archived=true` it browses the archive. Returns the same
+/// `SessionListItem` shape as the list (so clients reuse `SessionCard`), each
+/// carrying a `match_snippet` when the hit was in the transcript.
 pub async fn search_sessions(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -1419,96 +1541,272 @@ pub async fn search_sessions(
     let root = cctui_query::parse(params.q.trim());
     let browse = root.is_empty();
     if browse && !params.include_archived {
-        return Ok(Json(SessionListResponse { sessions: vec![] }));
+        return Ok(Json(SessionListResponse::default()));
     }
-    let text_terms = root.free_text_terms();
-    let limit = params.limit.unwrap_or(SEARCH_DEFAULT_LIMIT).clamp(1, SEARCH_MAX_LIMIT);
-    let offset = params.offset.unwrap_or(0).max(0);
-
-    let rows: Vec<DbSession> = if browse {
-        // Browse the archive: archived sessions only, newest first, paginated.
-        // `$3` scopes to the caller (NULL = admin).
-        let sql = format!(
-            "{DB_SESSION_SELECT} WHERE s.status = 'archived' \
-             AND ($3::uuid IS NULL OR m.user_id = $3) \
-             ORDER BY s.registered_at DESC LIMIT $1 OFFSET $2"
-        );
-        sqlx::query_as(sqlx::AssertSqlSafe(sql))
-            .bind(limit)
-            .bind(offset)
-            .bind(uid)
-            .fetch_all(&state.pool)
-            .await
+    let page = SearchPage {
+        limit: params.limit.unwrap_or(SEARCH_DEFAULT_LIMIT).clamp(1, SEARCH_MAX_LIMIT),
+        offset: params.offset.unwrap_or(0).max(0),
+        cursor: params.cursor.as_deref().and_then(parse_search_cursor),
+        uid,
+    };
+    let gap = if browse { None } else { crate::search_index::unchunked(&state.pool).await? };
+    let found = if browse {
+        browse_archive(&state.pool, &page).await?
     } else {
-        // Compile the AST to a WHERE tree; `ast_params` are the leading `$1…$N`
-        // binds. Ownership/scope stay outer constraints appended after them.
-        //
         // Live-only scope normally drops archived rows, but a session that's
         // currently live in the in-memory registry (e.g. a dispatched worker
         // auto-archived in the DB while still running) must stay searchable —
         // the bucketed live list surfaces those via the registry, so search
-        // would otherwise be the one place they vanish (item 2). OR in
-        // the live registry ids so they're never filtered by status. With
-        // include_archived the scope is already open, so no extra bind is needed.
-        let mut ast_params: Vec<SqlParam> = Vec::new();
-        let where_sql = compile_node(&root, &mut ast_params);
-        tracing::debug!(q = %params.q, %where_sql, "compiled session search");
-        let n = ast_params.len();
-        let live_ids: Vec<String> = if params.include_archived {
-            Vec::new()
+        // would otherwise be the one place they vanish.
+        let live_ids: Option<Vec<String>> = if params.include_archived {
+            None
         } else {
             let registry = state.registry.read().await;
-            registry.list().into_iter().map(|h| h.session.id.clone()).collect()
+            Some(registry.list().into_iter().map(|h| h.session.id.clone()).collect())
         };
-        let scope = if params.include_archived {
-            "TRUE".to_string()
-        } else {
-            format!("({} OR s.id = ANY(${}))", live_sessions_predicate!("s"), n + 1)
-        };
-        // Whether we bound the live_ids array (1) or not (0) — shifts limit/offset.
-        let extra = usize::from(!params.include_archived);
-        let (li, oi) = (n + 1 + extra, n + 2 + extra);
-        let ui = oi + 1;
-        let sql = format!(
-            "{DB_SESSION_SELECT} WHERE ({scope}) AND ({where_sql}) \
-             AND (${ui}::uuid IS NULL OR m.user_id = ${ui}) \
-             ORDER BY s.registered_at DESC LIMIT ${li} OFFSET ${oi}"
-        );
-        let mut query = sqlx::query_as::<_, DbSession>(sqlx::AssertSqlSafe(sql));
-        for p in &ast_params {
-            query = match p {
-                SqlParam::Text(s) => query.bind(s.clone()),
-                SqlParam::Bool(b) => query.bind(*b),
-            };
-        }
-        if !params.include_archived {
-            query = query.bind(live_ids);
-        }
-        query.bind(limit).bind(offset).bind(uid).fetch_all(&state.pool).await
-    }?;
+        scan_matches(&state.pool, &root, live_ids.as_deref(), &page, gap).await?
+    };
 
     let with_ts: Vec<(DateTime<Utc>, SessionListItem)> =
-        rows.into_iter().map(|row| (row.registered_at, db_list_item(row))).collect();
-
+        found.rows.into_iter().map(|row| (row.registered_at, db_list_item(row))).collect();
     let mut sessions = enrich_and_sort(&state, Some(ctx.user_id), with_ts).await?;
 
-    // Attach a transcript snippet per session: the most recent matching event's
-    // searchable text, windowed around the keyword. Sessions matched only by
-    // id/name/dir have no transcript hit and keep `match_snippet = None`.
+    // Attach a transcript snippet per session, windowed around the keyword.
+    // Sessions matched only by id/name/dir have no transcript hit and keep
+    // `match_snippet = None`.
+    let terms = Terms::of(&root.free_text_terms());
     let ids: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
-    if !browse && !ids.is_empty() && !text_terms.is_empty() {
-        let patterns: Vec<String> = text_terms.iter().map(|t| ilike_contains(t)).collect();
-        let sql = snippet_sql(patterns.len());
+    if !browse && !ids.is_empty() && !terms.is_empty() {
+        let sql = snippet_sql(terms.len(), gap);
         let mut query =
             sqlx::query_as::<_, (String, String, i64)>(sqlx::AssertSqlSafe(sql)).bind(&ids);
-        for p in &patterns {
-            query = query.bind(p);
+        for t in &terms.folded {
+            query = query.bind(ilike_contains(t));
+        }
+        query = query.bind(terms.folded.join(" "));
+        if gap.is_some() {
+            for t in &terms.raw {
+                query = query.bind(ilike_contains(t));
+            }
         }
         let snippet_rows = query.fetch_all(&state.pool).await?;
-        attach_transcript_hits(&mut sessions, snippet_rows, &text_terms);
+        attach_transcript_hits(&mut sessions, snippet_rows, &terms.needles());
     }
 
-    Ok(Json(SessionListResponse { sessions }))
+    let parents = fetch_parent_stubs(&state.pool, &missing_parent_ids(&sessions), uid).await?;
+    Ok(Json(SessionListResponse {
+        sessions,
+        parents,
+        next_cursor: found.next_cursor,
+        partial: found.partial,
+    }))
+}
+
+/// One requested page: size, legacy offset, keyset cursor and owner scope.
+struct SearchPage {
+    limit: i64,
+    offset: i64,
+    cursor: Option<(DateTime<Utc>, String)>,
+    uid: Option<uuid::Uuid>,
+}
+
+struct FoundPage {
+    rows: Vec<DbSession>,
+    next_cursor: Option<String>,
+    partial: bool,
+}
+
+/// `<registered_at µs>:<session id>`, the keyset position of a row in the
+/// newest-first order.
+fn search_cursor(registered_at: DateTime<Utc>, id: &str) -> String {
+    format!("{}:{id}", registered_at.timestamp_micros())
+}
+
+fn parse_search_cursor(raw: &str) -> Option<(DateTime<Utc>, String)> {
+    let (micros, id) = raw.split_once(':')?;
+    let at = DateTime::from_timestamp_micros(micros.parse().ok()?)?;
+    (!id.is_empty()).then(|| (at, id.to_owned()))
+}
+
+/// Archived sessions, newest first. `$3` scopes to the caller (NULL = admin).
+async fn browse_archive(pool: &sqlx::PgPool, page: &SearchPage) -> Result<FoundPage, AppError> {
+    let sql = format!(
+        "{DB_SESSION_SELECT} WHERE s.status = 'archived' \
+         AND ($3::uuid IS NULL OR m.user_id = $3) \
+         AND ($4::timestamptz IS NULL OR (s.registered_at, s.id) < ($4, $5)) \
+         ORDER BY s.registered_at DESC, s.id DESC LIMIT $1 OFFSET $2"
+    );
+    let offset = if page.cursor.is_some() { 0 } else { page.offset };
+    let rows: Vec<DbSession> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(page.limit)
+        .bind(offset)
+        .bind(page.uid)
+        .bind(page.cursor.as_ref().map(|c| c.0))
+        .bind(page.cursor.as_ref().map(|c| c.1.as_str()))
+        .fetch_all(pool)
+        .await?;
+    let full = usize::try_from(page.limit).is_ok_and(|l| rows.len() >= l);
+    let next_cursor = rows.last().filter(|_| full).map(|r| search_cursor(r.registered_at, &r.id));
+    Ok(FoundPage { rows, next_cursor, partial: false })
+}
+
+/// The next [`SEARCH_WINDOW`] in-scope sessions after `$2/$3`, newest first.
+/// `$1` owner, `$4` window size, `$5` live registry ids when live-only.
+fn search_window_sql(live_only: bool) -> String {
+    let scope = if live_only {
+        format!("({} OR s.id = ANY($5))", live_sessions_predicate!("s"))
+    } else {
+        "TRUE".to_owned()
+    };
+    format!(
+        "SELECT s.id, s.registered_at FROM sessions s \
+         LEFT JOIN machines m ON m.id = s.machine_uuid \
+         WHERE ({scope}) AND ($1::uuid IS NULL OR m.user_id = $1) \
+           AND ($2::timestamptz IS NULL OR (s.registered_at, s.id) < ($2, $3)) \
+         ORDER BY s.registered_at DESC, s.id DESC LIMIT $4"
+    )
+}
+
+/// Walk in-scope sessions newest first, one window per statement, testing the
+/// compiled query against each window until the page is full, the sessions
+/// run out, or [`SEARCH_BUDGET`] is spent; the last returns what was found
+/// with `partial` set and a cursor to resume from.
+async fn scan_matches(
+    pool: &sqlx::PgPool,
+    root: &cctui_query::Node,
+    live_ids: Option<&[String]>,
+    page: &SearchPage,
+    gap: Option<Unchunked>,
+) -> Result<FoundPage, AppError> {
+    let mut ast_params: Vec<SqlParam> = Vec::new();
+    let where_sql = compile_search(root, &mut ast_params, gap);
+    let match_sql = format!(
+        "{DB_SESSION_SELECT} WHERE s.id = ANY(${}) AND ({where_sql}) \
+         ORDER BY s.registered_at DESC, s.id DESC",
+        ast_params.len() + 1
+    );
+    let window_sql = search_window_sql(live_ids.is_some());
+    let want = usize::try_from(page.limit).unwrap_or(1);
+    let mut skip =
+        if page.cursor.is_some() { 0 } else { usize::try_from(page.offset).unwrap_or(0) };
+    let mut cursor = page.cursor.clone();
+    let deadline = std::time::Instant::now() + SEARCH_BUDGET;
+    let mut rows: Vec<DbSession> = Vec::new();
+    let mut tx = pool.begin().await?;
+    sqlx::query(SEARCH_STATEMENT_TIMEOUT).execute(&mut *tx).await?;
+    let partial = |rows, cursor: Option<(DateTime<Utc>, String)>| FoundPage {
+        rows,
+        next_cursor: cursor.map(|(at, id)| search_cursor(at, &id)),
+        partial: true,
+    };
+    loop {
+        let mut wq =
+            sqlx::query_as::<_, (String, DateTime<Utc>)>(sqlx::AssertSqlSafe(window_sql.clone()))
+                .bind(page.uid)
+                .bind(cursor.as_ref().map(|c| c.0))
+                .bind(cursor.as_ref().map(|c| c.1.clone()))
+                .bind(SEARCH_WINDOW);
+        if let Some(live) = live_ids {
+            wq = wq.bind(live);
+        }
+        let window = match wq.fetch_all(&mut *tx).await {
+            Ok(w) => w,
+            Err(e) if is_statement_timeout(&e) => return Ok(partial(rows, cursor)),
+            Err(e) => return Err(e.into()),
+        };
+        let Some(last) = window.last().map(|(id, at)| (*at, id.clone())) else {
+            return Ok(FoundPage { rows, next_cursor: None, partial: false });
+        };
+        let exhausted = usize::try_from(SEARCH_WINDOW).is_ok_and(|w| window.len() < w);
+        let ids: Vec<String> = window.into_iter().map(|(id, _)| id).collect();
+        let mut mq = sqlx::query_as::<_, DbSession>(sqlx::AssertSqlSafe(match_sql.clone()));
+        for p in &ast_params {
+            mq = match p {
+                SqlParam::Text(s) => mq.bind(s.clone()),
+                SqlParam::Bool(b) => mq.bind(*b),
+            };
+        }
+        let found = match mq.bind(&ids).fetch_all(&mut *tx).await {
+            Ok(f) => f,
+            Err(e) if is_statement_timeout(&e) => return Ok(partial(rows, cursor)),
+            Err(e) => return Err(e.into()),
+        };
+        for row in found {
+            if skip > 0 {
+                skip -= 1;
+                continue;
+            }
+            rows.push(row);
+            if rows.len() >= want {
+                let next_cursor = rows.last().map(|r| search_cursor(r.registered_at, &r.id));
+                return Ok(FoundPage { rows, next_cursor, partial: false });
+            }
+        }
+        if exhausted {
+            return Ok(FoundPage { rows, next_cursor: None, partial: false });
+        }
+        cursor = Some(last);
+        if std::time::Instant::now() >= deadline {
+            return Ok(partial(rows, cursor));
+        }
+    }
+}
+
+/// Parents a page's nesting children point at but the page doesn't carry.
+fn missing_parent_ids(sessions: &[SessionListItem]) -> Vec<String> {
+    let here: HashSet<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+    let mut out: Vec<String> = Vec::new();
+    for s in sessions {
+        let relation = s.metadata.get("relation").and_then(serde_json::Value::as_str);
+        let Some(pid) = s.parent_id.as_deref() else {
+            continue;
+        };
+        if matches!(relation, Some("fork" | "followup")) || here.contains(pid) {
+            continue;
+        }
+        if !out.iter().any(|p| p == pid) {
+            out.push(pid.to_owned());
+        }
+    }
+    out
+}
+
+#[derive(sqlx::FromRow)]
+struct ParentStubRow {
+    id: String,
+    session_name: Option<String>,
+    working_dir: String,
+    status: String,
+    registered_at: DateTime<Utc>,
+    last_heartbeat: DateTime<Utc>,
+}
+
+async fn fetch_parent_stubs(
+    pool: &sqlx::PgPool,
+    ids: &[String],
+    uid: Option<uuid::Uuid>,
+) -> Result<Vec<SessionParentStub>, sqlx::Error> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<ParentStubRow> = sqlx::query_as(
+        "SELECT s.id, s.session_name, s.working_dir, s.status, s.registered_at, s.last_heartbeat \
+         FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
+         WHERE s.id = ANY($1) AND ($2::uuid IS NULL OR m.user_id = $2)",
+    )
+    .bind(ids)
+    .bind(uid)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| SessionParentStub {
+            status: resolve_status_liveness(&r.status, r.registered_at, r.last_heartbeat).0,
+            id: r.id,
+            name: r.session_name,
+            working_dir: r.working_dir,
+        })
+        .collect())
 }
 
 /// Sessions with no matching event keep both fields `None`; clients read that
@@ -1843,6 +2141,15 @@ pub struct ConversationQuery {
     pub order: ConversationOrder,
 }
 
+/// `inline_images=true`: tool result images come back as base64 `source`s
+/// instead of blob references, up to
+/// [`crate::image_blobs::INLINE_IMAGES_MAX_BYTES`] per page.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct InlineImagesQuery {
+    #[serde(default)]
+    pub inline_images: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConversationOrder {
@@ -2026,6 +2333,7 @@ pub async fn get_conversation(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     Query(params): Query<ConversationQuery>,
+    Query(images): Query<InlineImagesQuery>,
     req_headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
     let adapter: Option<String> =
@@ -2050,7 +2358,7 @@ pub async fn get_conversation(
     // shape) derived from `created_at`, so the client renders real timestamps
     // instead of "Invalid Date". Legacy payloads that already carry `ts` keep
     // their own value.
-    let normalized: Vec<serde_json::Value> = rows
+    let mut normalized: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|(id, mut v, created_at, turn_id)| {
             if let Some(obj) = v.as_object_mut() {
@@ -2074,6 +2382,15 @@ pub async fn get_conversation(
             v
         })
         .collect();
+    if images.inline_images {
+        crate::image_blobs::inline_client_rows(
+            &state.pool,
+            &session_id,
+            &mut normalized,
+            crate::image_blobs::INLINE_IMAGES_MAX_BYTES,
+        )
+        .await?;
+    }
     Ok(crate::http_cache::json_with_etag(&req_headers, &normalized))
 }
 
@@ -2119,25 +2436,72 @@ fn final_assistant_text(newest_first: &[RenderableRow]) -> (Option<String>, Opti
     (message_id, Some(parts.join("\n\n")))
 }
 
-type ResultRow = (Option<String>, Option<String>, Option<DateTime<Utc>>);
+#[derive(sqlx::FromRow)]
+struct ResultRow {
+    adapter_id: Option<String>,
+    end_reason: Option<String>,
+    ended_at: Option<DateTime<Utc>>,
+    status: String,
+    tempo: Option<String>,
+    agent_state: Option<String>,
+    activity: Option<String>,
+    soft_limit_reason: Option<String>,
+}
+
+impl ResultRow {
+    /// Ended, archived, or idle after a finished turn: the bucket the list
+    /// files as `Done`, never while the adapter still reports the turn busy.
+    fn done(&self) -> bool {
+        if self.ended_at.is_some() || self.status == SessionRowStatus::Archived.as_str() {
+            return true;
+        }
+        if matches!(self.adapter_id.as_deref(), Some("codex" | "opencode")) {
+            return self.idle_after_turn();
+        }
+        let busy = matches!(self.tempo.as_deref(), Some("active" | "blocked"))
+            || matches!(self.agent_state.as_deref(), Some("working" | "running"));
+        let bucket = bucket_from_signals(
+            self.tempo.as_deref(),
+            self.agent_state.as_deref(),
+            self.activity.as_deref(),
+            self.soft_limit_reason.as_deref(),
+            &[],
+            &HashMap::new(),
+        );
+        bucket == Bucket::Done && !busy
+    }
+
+    /// codex keeps `tempo` at its last busy value after the turn goes idle,
+    /// so only `agent_state` is current for these adapters.
+    fn idle_after_turn(&self) -> bool {
+        self.soft_limit_reason.is_none()
+            && matches!(self.agent_state.as_deref(), Some("idle" | "done"))
+    }
+}
 
 pub async fn get_result(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionResult>, AppError> {
-    let row: Option<ResultRow> =
-        sqlx::query_as("SELECT adapter_id, end_reason, ended_at FROM sessions WHERE id = $1")
-            .bind(&session_id)
-            .fetch_optional(&state.pool)
-            .await?;
-    let Some((adapter, end_reason, ended_at)) = row else {
-        return Err(AppError::new(StatusCode::NOT_FOUND, "session not found"));
+    let row: Option<ResultRow> = sqlx::query_as(
+        "SELECT adapter_id, end_reason, ended_at, status, tempo, agent_state, activity, \
+                soft_limit_reason \
+         FROM sessions WHERE id = $1",
+    )
+    .bind(&session_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(row) = row else {
+        return queued_dispatch_result(&state.pool, &session_id)
+            .await?
+            .map(Json)
+            .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "session not found"));
     };
     let params = ConversationQuery { limit: Some(RESULT_SCAN_LIMIT), ..Default::default() };
     let rows = renderable_rows(
         &state.pool,
         &session_id,
-        adapter.as_deref().unwrap_or("claude-code"),
+        row.adapter_id.as_deref().unwrap_or("claude-code"),
         &params,
     )
     .await?;
@@ -2145,11 +2509,43 @@ pub async fn get_result(
     let token_usage =
         message_usage(&state, &session_id, message_id.as_slice()).await?.into_values().next();
     Ok(Json(SessionResult {
-        done: ended_at.is_some(),
-        end_reason,
+        done: row.done(),
+        end_reason: row.end_reason,
         final_assistant_text,
         message_id,
         token_usage,
+        queued: false,
+        queue_position: None,
+    }))
+}
+
+/// A dispatch still held in its dispatcher's queue has no session row yet.
+///
+/// Its position counts the same dispatcher and profile's queued records.
+async fn queued_dispatch_result(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+) -> Result<Option<SessionResult>, sqlx::Error> {
+    let position: Option<i64> = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM dispatch_records q \
+                 WHERE q.queued AND q.outcome = 'forwarded' \
+                   AND q.dispatcher_name = r.dispatcher_name \
+                   AND q.profile IS NOT DISTINCT FROM r.profile \
+                   AND (q.created_at, q.session_id) <= (r.created_at, r.session_id)) \
+         FROM dispatch_records r \
+         WHERE r.session_id = $1 AND r.queued AND r.outcome = 'forwarded'",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(position.map(|p| SessionResult {
+        done: false,
+        end_reason: None,
+        final_assistant_text: None,
+        message_id: None,
+        token_usage: None,
+        queued: true,
+        queue_position: u32::try_from(p).ok(),
     }))
 }
 
@@ -2280,28 +2676,43 @@ impl ConvSearchFilters {
     }
 }
 
-/// `(id, event_type, payload, created_at, capped search_text)`.
-type ConvSearchRow = (i64, String, serde_json::Value, DateTime<Utc>, Option<String>);
+/// `(id, event_type, payload, created_at)`.
+type ConvSearchRow = (i64, String, serde_json::Value, DateTime<Utc>);
 
-/// `$1` the session id, `$2…$n+1` the ILIKE patterns — all of them required of
-/// one and the same event, so a hit carries every term rather than any of them
-/// — then `after`, `before` and the scan cap.
-///
-/// The `left(search_text, …)` must match the migration-108 index expression
-/// exactly or the ILIKE stops using it.
-fn conv_search_sql(n_patterns: usize) -> String {
+/// `$1` the session id, `$2…$n+1` the folded ILIKE patterns — all of them
+/// required of one and the same event, each in any of its chunks — then
+/// `after`, `before` and the scan cap; with a `gap`, `$n+5…$2n+4` the unfolded
+/// patterns its unchunked events must all carry in their capped `search_text`.
+fn conv_search_sql(n_patterns: usize, gap: Option<Unchunked>) -> String {
+    let (a, b, l) = (n_patterns + 2, n_patterns + 3, n_patterns + 4);
     let text_where = if n_patterns == 0 {
         "TRUE".to_string()
     } else {
-        (1..=n_patterns)
-            .map(|i| format!("left(e.search_text, {SEARCH_TEXT_CAP}) ILIKE ${}", i + 1))
+        let sets = (2..=n_patterns + 1)
+            .map(|i| {
+                format!(
+                    "SELECT c.event_id FROM search_chunks c \
+                     WHERE c.session_id = $1 AND c.body ILIKE ${i}"
+                )
+            })
             .collect::<Vec<_>>()
-            .join(" AND ")
+            .join(" INTERSECT ");
+        let unchunked = gap.map_or_else(String::new, |g| {
+            use std::fmt::Write as _;
+            let raw = (l + 1..=l + n_patterns).fold(String::new(), |mut acc, i| {
+                let _ = write!(acc, " AND left(u.search_text, {SEARCH_TEXT_CAP}) ILIKE ${i}");
+                acc
+            });
+            format!(
+                " UNION SELECT u.id FROM stream_events u \
+                  WHERE u.session_id = $1 AND {}{raw}",
+                unchunked_ids("u", g)
+            )
+        });
+        format!("e.id IN (({sets}){unchunked})")
     };
-    let (a, b, l) = (n_patterns + 2, n_patterns + 3, n_patterns + 4);
     format!(
-        "SELECT e.id, e.event_type, e.payload, e.created_at, \
-                left(e.search_text, {SEARCH_TEXT_CAP}) \
+        "SELECT e.id, e.event_type, e.payload, e.created_at \
          FROM stream_events e \
          WHERE e.session_id = $1 AND ({text_where}) \
            AND (${a}::timestamptz IS NULL OR e.created_at >= ${a}) \
@@ -2310,10 +2721,39 @@ fn conv_search_sql(n_patterns: usize) -> String {
     )
 }
 
+/// The candidate rows of a conversation search, under
+/// [`SEARCH_STATEMENT_TIMEOUT`]; `None` when it ran out of time.
+async fn conv_search_rows(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    terms: &Terms,
+    filters: &ConvSearchFilters,
+    gap: Option<Unchunked>,
+) -> Result<Option<Vec<ConvSearchRow>>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(SEARCH_STATEMENT_TIMEOUT).execute(&mut *tx).await?;
+    let gap = gap.filter(|_| !terms.is_empty());
+    let sql = conv_search_sql(terms.len(), gap);
+    let mut query = sqlx::query_as::<_, ConvSearchRow>(sqlx::AssertSqlSafe(sql)).bind(session_id);
+    for t in &terms.folded {
+        query = query.bind(ilike_contains(t));
+    }
+    query = query.bind(filters.after).bind(filters.before).bind(CONV_SEARCH_SCAN_CAP);
+    if gap.is_some() {
+        for t in &terms.raw {
+            query = query.bind(ilike_contains(t));
+        }
+    }
+    match query.fetch_all(&mut *tx).await {
+        Ok(rows) => Ok(Some(rows)),
+        Err(e) if is_statement_timeout(&e) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 /// `GET /sessions/{id}/search?q=…&limit=…`: the hit list for a find-in-
-/// conversation bar, oldest → newest. Every free-text term must match the same
-/// event, over the capped `search_text` (served by the
-/// `(session_id, left(search_text, 8192))` GIN of migration 108);
+/// conversation bar, oldest → newest. Every free-text term, folded like the
+/// rendered transcript, must match the same event's search chunks;
 /// `role`/`type`/`tool`/`pinned` are decided on the normalised client payload
 /// so the roles match the webui's `MsgCategory`.
 #[allow(clippy::too_many_lines)]
@@ -2342,19 +2782,17 @@ pub async fn search_conversation(
     let mut raw_filters = Vec::new();
     flatten_conv_query(&root, false, &mut terms, &mut raw_filters);
     let filters = conv_filters(&raw_filters);
+    let terms = Terms::of(&terms);
+    let gap = crate::search_index::unchunked(&state.pool).await?;
+    let needles = terms.needles();
 
-    let patterns: Vec<String> = terms.iter().map(|t| ilike_contains(t)).collect();
-    let sql = conv_search_sql(patterns.len());
-    let mut query = sqlx::query_as::<_, ConvSearchRow>(sqlx::AssertSqlSafe(sql)).bind(&session_id);
-    for p in &patterns {
-        query = query.bind(p);
-    }
-    let rows = query
-        .bind(filters.after)
-        .bind(filters.before)
-        .bind(CONV_SEARCH_SCAN_CAP)
-        .fetch_all(&state.pool)
-        .await?;
+    let Some(rows) = conv_search_rows(&state.pool, &session_id, &terms, &filters, gap).await?
+    else {
+        return Err(AppError::new(
+            StatusCode::GATEWAY_TIMEOUT,
+            "search timed out: add a word, quote a phrase or narrow it with after:/before:",
+        ));
+    };
     let scanned = i64::try_from(rows.len()).unwrap_or(i64::MAX);
 
     let pinned: HashSet<i64> = if filters.pinned.is_some() {
@@ -2377,7 +2815,7 @@ pub async fn search_conversation(
     let mut hits: Vec<cctui_proto::api::ConversationHit> = Vec::new();
     let mut truncated = scanned >= CONV_SEARCH_SCAN_CAP;
     let mut tools: Vec<String> = Vec::new();
-    for (id, event_type, payload, created_at, text) in rows {
+    for (id, event_type, payload, created_at) in rows {
         let Some(client) = crate::normalize::for_client(adapter_id, &event_type, payload) else {
             continue;
         };
@@ -2399,7 +2837,7 @@ pub async fn search_conversation(
             ts: created_at.timestamp_millis(),
             role: role.to_owned(),
             tool,
-            snippet: make_snippet(text.as_deref().unwrap_or_default(), &terms),
+            snippet: make_snippet(&crate::search_index::text::client_text(&client), &needles),
         });
     }
     let total = u32::try_from(hits.len()).unwrap_or(u32::MAX);
@@ -2422,6 +2860,7 @@ pub async fn send_message(
         )
         .await;
     }
+    authorize_reply(&state, &ctx, &session_id).await?;
     // Carry re-minted gateway env so a reply-driven cold-resume revives the
     // worker with a fresh valid token rather than empty env.
     let env = crate::routes::gateway::resume_env_for_session(&state, &session_id).await;
@@ -2467,6 +2906,54 @@ pub async fn send_message(
     ))
 }
 
+/// A draft has no worker to wake.
+pub fn reply_wakes_worker(status: &str, tempo: Option<&str>) -> bool {
+    matches!(tempo, Some("hibernated" | "dead"))
+        || matches!(
+            SessionRowStatus::parse(status),
+            Some(SessionRowStatus::Ended | SessionRowStatus::Failed | SessionRowStatus::Archived)
+        )
+}
+
+/// A reply that wakes the worker is a launch and gated like a resume.
+pub async fn authorize_reply(
+    state: &AppState,
+    ctx: &AuthContext,
+    session_id: &str,
+) -> Result<(), AppError> {
+    let row: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT status, tempo FROM sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    match row {
+        Some((status, tempo)) if reply_wakes_worker(&status, tempo.as_deref()) => {
+            crate::routes::spawn::authorize_session_launch(state, ctx, session_id).await
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Store a user-chosen name and pin it against agent titles. `None` when the
+/// session does not exist, else the name it had before.
+pub async fn store_rename(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    name: &str,
+) -> Result<Option<Option<String>>, sqlx::Error> {
+    sqlx::query_scalar(
+        "WITH prior AS (SELECT session_name FROM sessions WHERE id = $1) \
+         UPDATE sessions SET session_name = $2, \
+            metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('name_source', 'user') \
+         WHERE id = $1 \
+         RETURNING (SELECT session_name FROM prior)",
+    )
+    .bind(session_id)
+    .bind(name)
+    .fetch_optional(pool)
+    .await
+}
+
 pub async fn rename_session(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -2480,15 +2967,7 @@ pub async fn rename_session(
     // Persist immediately so the UI reflects the rename without waiting for
     // the daemon round-trip. The daemon write-through (below) keeps the
     // on-disk state.json in sync so the next status poll doesn't revert it.
-    let previous: Option<Option<String>> = sqlx::query_scalar(
-        "WITH prior AS (SELECT session_name FROM sessions WHERE id = $1) \
-         UPDATE sessions SET session_name = $2 WHERE id = $1 \
-         RETURNING (SELECT session_name FROM prior)",
-    )
-    .bind(&session_id)
-    .bind(name)
-    .fetch_optional(&state.pool)
-    .await?;
+    let previous = store_rename(&state.pool, &session_id, name).await?;
     if let Some(previous) = previous
         && previous.as_deref() != Some(name)
     {
@@ -2697,12 +3176,17 @@ pub async fn switch_account(
             "session has no active gateway account binding to switch",
         ));
     };
-    // The session's OWN user, not the bound account's owner: on a shared account
-    // the two differ, and resolving the target against the owner lets a grantee
-    // move their session onto accounts of the sharer's that were never shared.
-    let acting_user = crate::routes::gateway::acting_user(&state, &session_id, None)
+    // The user the session runs for, not the bound account's owner: on a shared
+    // account the two differ, and resolving the target against the owner lets a
+    // grantee move their session onto accounts of the sharer's that were never
+    // shared.
+    let runs_for = crate::routes::gateway::acting_user(&state, &session_id, None)
         .await
         .unwrap_or(bound_account_owner);
+    // The machine owner of a session a spawn grantee runs moves it onto their
+    // own accounts and takes the binding over, never onto the grantee's others.
+    let takeover = (!ctx.is_admin() && ctx.user_id != runs_for).then_some(ctx.user_id);
+    let acting_user = takeover.unwrap_or(runs_for);
     let default_family = match req.family.as_deref().map(str::trim) {
         None | Some("") => {
             let adapter = adapter_id.as_deref().unwrap_or("claude-code");
@@ -2806,12 +3290,13 @@ pub async fn switch_account(
     // Repoint only this family's row: touching the other family's would hand
     // e.g. the worker's OPENAI_API_KEY an anthropic credential.
     let updated = sqlx::query(
-        "UPDATE session_tokens SET account_id = $3 \
+        "UPDATE session_tokens SET account_id = $3, user_id = COALESCE($4, user_id) \
          WHERE session_id = $1 AND revoked_at IS NULL AND account_id = $2",
     )
     .bind(&session_id)
     .bind(current_account_id)
     .bind(target_id)
+    .bind(takeover)
     .execute(&state.pool)
     .await?;
     if updated.rows_affected() == 0 {
@@ -2882,6 +3367,7 @@ pub async fn resume_session(
     Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
+    crate::routes::spawn::authorize_session_launch(&state, &ctx, &session_id).await?;
     // Pass the working_dir so the daemon can resume even after archiving ran
     // `claude rm` (which deletes the on-disk job state.json but keeps the
     // conversation transcript) — the daemon falls back to local_id + this cwd.
@@ -2908,6 +3394,7 @@ pub async fn resume_session(
         AppError::new(StatusCode::SERVICE_UNAVAILABLE, format!("resume failed: {e}"))
     })?;
     crate::store::sessions::set_inactive(&state.pool, &session_id, true).await?;
+    crate::routes::spawn::fill_spawner(&state.pool, &session_id, ctx.user_id).await;
     tracing::info!(session_id = %session_id, "resume dispatched");
     events::record(
         &state,
@@ -3020,6 +3507,8 @@ pub async fn fork_session(
     let Some(machine_uuid) = machine_uuid else {
         return Err(AppError::new(StatusCode::CONFLICT, "session has no machine — cannot fork"));
     };
+    crate::routes::spawn::authorize_launch(&state, &ctx, machine_uuid).await?;
+    crate::routes::spawn::refuse_foreign_account(&state, &ctx, &session_id).await?;
 
     // Subset forks slice the parent's on-disk transcript — a claude
     // primitive only. Codex has no partial-fork mechanism, so reject it here
@@ -3038,6 +3527,12 @@ pub async fn fork_session(
     // don't claim one for it.
     let is_claude = adapter_id == "claude-code";
     let child_session_id = is_claude.then(|| uuid::Uuid::new_v4().to_string());
+    let child_key = child_session_id.clone().unwrap_or_else(|| command_id.to_string());
+    let env = if is_claude {
+        crate::routes::gateway::fork_env_for_session(&state, &session_id, &child_key).await?
+    } else {
+        std::collections::BTreeMap::new()
+    };
     let service_tier = if crate::routes::gateway::Family::from_adapter(&adapter_id)
         == Ok(crate::routes::gateway::Family::Openai)
     {
@@ -3056,7 +3551,7 @@ pub async fn fork_session(
         effort: norm(req.effort),
         model: norm(req.model),
         service_tier,
-        env: std::collections::BTreeMap::new(),
+        env,
         bootstrap: serde_json::Value::Null,
         parent_local_id: None,
     };
@@ -3070,8 +3565,8 @@ pub async fn fork_session(
             extract: req.extract,
         }),
     };
-    let child_key = child_session_id.clone().unwrap_or_else(|| command_id.to_string());
     crate::routes::context::inherit_intent(&state.pool, &child_key, &session_id).await;
+    crate::routes::spawn::remember_spawner(&state.pool, &child_key, ctx.user_id, None).await;
     state.bus.command_daemon_for_session(machine_uuid, &session_id, frame).await.map_err(
         |err| match err {
             crate::bus::BusError::NoDaemon(_) => {
@@ -3523,20 +4018,35 @@ pub async fn set_session_policy(
     Ok(StatusCode::OK)
 }
 
+/// [`normalize_last_message`] over the prose of a SQL-truncated prefix, past
+/// the wrappers cctui put ahead of it: `cut` says the stored text ran past it,
+/// so the preview is elided even when collapsing whitespace left it under the
+/// limit. Empty when the cut fell inside the wrappers: the prose is unknown.
+fn preview_last_message(prefix: &str, cut: bool) -> String {
+    let (blocks, prose) = cctui_proto::injected::split_injected(prefix);
+    if cut && ((!blocks.is_empty() && prose.is_empty()) || opens_on_wrapper(prose)) {
+        return String::new();
+    }
+    let preview = normalize_last_message(if prose.is_empty() { prefix } else { prose });
+    if cut && !preview.ends_with('…') { format!("{preview}…") } else { preview }
+}
+
+/// Whether `text` opens on a wrapper tag cctui injects, closed or not.
+fn opens_on_wrapper(text: &str) -> bool {
+    text.trim_start().strip_prefix('<').is_some_and(|rest| {
+        let name_len =
+            rest.find(|c: char| !(c.is_ascii_lowercase() || c == '-')).unwrap_or(rest.len());
+        cctui_proto::injected::InjectedKind::from_tag(&rest[..name_len]).is_some()
+            && rest[name_len..].starts_with(|c: char| c == '>' || c.is_whitespace())
+    })
+}
+
 /// normalize a session's last-message text for the sessions
 /// table. Collapses every run of ASCII/Unicode whitespace (newlines,
 /// tabs, NBSP) into a single space so multi-line snippets don't blow
 /// up row height when CSS doesn't fully suppress wrapping, and caps at
 /// 200 chars + ellipsis as a backstop. CSS handles the *visual* truncation
 /// to the column's actual rendered width (`text-overflow: ellipsis`).
-/// [`normalize_last_message`] over a SQL-truncated prefix: `cut` says the
-/// stored text ran past it, so the preview is elided even when collapsing
-/// whitespace left it under the limit.
-fn preview_last_message(prefix: &str, cut: bool) -> String {
-    let preview = normalize_last_message(prefix);
-    if cut && !preview.ends_with('…') { format!("{preview}…") } else { preview }
-}
-
 fn normalize_last_message(s: &str) -> String {
     const MAX_CHARS: usize = 200;
     let collapsed = s.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -3627,7 +4137,7 @@ impl<'a> DraftRowFields<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Bucket, EndRow, RemoveInitiator, SessionChild, SqlParam, attention_from_bucket,
+        Bucket, EndRow, RemoveInitiator, ResultRow, SessionChild, SqlParam, attention_from_bucket,
         bucket_from_signals, cap_unread, compile_node, derive_liveness, field_values_sql,
         make_snippet, normalize_last_message, remove_command, snippet_sql,
     };
@@ -3814,6 +4324,52 @@ mod tests {
             .map(|j| j.0)
     }
 
+    async fn queued_record(
+        pool: &sqlx::PgPool,
+        uid: uuid::Uuid,
+        sid: &str,
+        profile: &str,
+        created: &str,
+        queued: bool,
+    ) {
+        sqlx::query(
+            "INSERT INTO dispatch_records \
+               (session_id, user_id, dispatcher_name, profile, outcome, queued, created_at) \
+             VALUES ($1, $2, 'k8s-' || $2::text, $3, 'forwarded', $4, $5::timestamptz)",
+        )
+        .bind(sid)
+        .bind(uid)
+        .bind(profile)
+        .bind(queued)
+        .bind(created)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_queued_dispatch_without_a_session_reports_its_queue_position() {
+        let Some((state, uid, _)) =
+            result_session("a_queued_dispatch_without_a_session_reports_its_queue_position").await
+        else {
+            return;
+        };
+        let ids: Vec<String> = (0..4).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+        let pool = &state.pool;
+        queued_record(pool, uid, &ids[0], "lean", "2026-10-21T10:00:00Z", true).await;
+        queued_record(pool, uid, &ids[1], "full", "2026-10-21T10:00:01Z", true).await;
+        queued_record(pool, uid, &ids[2], "lean", "2026-10-21T10:00:02Z", true).await;
+        queued_record(pool, uid, &ids[3], "lean", "2026-10-21T10:00:03Z", false).await;
+
+        let second = result_of(&state, &ids[2]).await.unwrap();
+        assert!(!second.done);
+        assert!(second.queued);
+        assert_eq!(second.queue_position, Some(2), "the other profile's queue is not counted");
+        assert_eq!(result_of(&state, &ids[1]).await.unwrap().queue_position, Some(1));
+        assert!(result_of(&state, &ids[3]).await.is_err(), "left the queue: still not found");
+        assert!(result_of(&state, &uuid::Uuid::new_v4().to_string()).await.is_err());
+    }
+
     #[tokio::test]
     async fn a_live_session_reports_its_latest_message_as_not_done() {
         let Some((state, _, sid)) =
@@ -3881,6 +4437,174 @@ mod tests {
         assert_eq!(result.final_assistant_text.as_deref(), Some("answer"));
         let usage = result.token_usage.expect("usage of m2");
         assert_eq!((usage.tokens_in, usage.tokens_out), (120, 7));
+    }
+
+    async fn set_signals(pool: &sqlx::PgPool, sid: &str, sql: &str) {
+        sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE sessions SET {sql} WHERE id = $1")))
+            .bind(sid)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn store_answer(pool: &sqlx::PgPool, sid: &str) {
+        store_rows(
+            pool,
+            sid,
+            &[
+                ("message", serde_json::json!({"role": "user", "text": "go"})),
+                (
+                    "message",
+                    serde_json::json!({"role": "assistant", "text": "answer", "message_id": "m1"}),
+                ),
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_running_turn_is_not_done_even_with_a_stale_success_activity() {
+        let Some((state, _, sid)) =
+            result_session("a_running_turn_is_not_done_even_with_a_stale_success_activity").await
+        else {
+            return;
+        };
+        store_answer(&state.pool, &sid).await;
+        set_signals(
+            &state.pool,
+            &sid,
+            "tempo = 'active', agent_state = 'working', activity = 'success'",
+        )
+        .await;
+        let result = result_of(&state, &sid).await.unwrap();
+        assert!(!result.done);
+        assert_eq!(result.final_assistant_text.as_deref(), Some("answer"));
+    }
+
+    #[tokio::test]
+    async fn a_finished_turn_on_a_live_session_is_done() {
+        let Some((state, _, sid)) =
+            result_session("a_finished_turn_on_a_live_session_is_done").await
+        else {
+            return;
+        };
+        store_answer(&state.pool, &sid).await;
+        set_signals(&state.pool, &sid, "tempo = 'idle', agent_state = 'done'").await;
+        let result = result_of(&state, &sid).await.unwrap();
+        assert!(result.done);
+        assert_eq!(result.end_reason, None);
+        assert_eq!(result.message_id.as_deref(), Some("m1"));
+        assert_eq!(result.final_assistant_text.as_deref(), Some("answer"));
+    }
+
+    #[tokio::test]
+    async fn a_turn_waiting_on_input_is_not_done() {
+        let Some((state, _, sid)) = result_session("a_turn_waiting_on_input_is_not_done").await
+        else {
+            return;
+        };
+        set_signals(&state.pool, &sid, "tempo = 'blocked', agent_state = 'done'").await;
+        assert!(!result_of(&state, &sid).await.unwrap().done);
+    }
+
+    fn result_row(adapter: &str, tempo: Option<&str>, agent_state: Option<&str>) -> ResultRow {
+        ResultRow {
+            adapter_id: Some(adapter.to_owned()),
+            end_reason: None,
+            ended_at: None,
+            status: "active".to_owned(),
+            tempo: tempo.map(str::to_owned),
+            agent_state: agent_state.map(str::to_owned),
+            activity: None,
+            soft_limit_reason: None,
+        }
+    }
+
+    #[test]
+    fn codex_is_done_once_its_thread_goes_idle_despite_the_stale_active_tempo() {
+        assert!(!result_row("codex", Some("active"), Some("working")).done());
+        assert!(!result_row("codex", Some("blocked"), Some("working")).done());
+        assert!(result_row("codex", Some("active"), Some("idle")).done());
+        assert!(result_row("codex", Some("hibernated"), Some("idle")).done());
+        assert!(result_row("codex", Some("active"), Some("done")).done());
+        assert!(!result_row("codex", None, None).done());
+    }
+
+    #[test]
+    fn opencode_is_done_once_its_session_goes_idle() {
+        assert!(!result_row("opencode", Some("working"), Some("working")).done());
+        assert!(!result_row("opencode", Some("error"), Some("error")).done());
+        assert!(result_row("opencode", Some("idle"), Some("idle")).done());
+        assert!(!result_row("opencode", None, None).done());
+    }
+
+    #[test]
+    fn an_idle_codex_or_opencode_session_locked_out_by_a_soft_limit_is_not_done() {
+        for adapter in ["codex", "opencode"] {
+            let mut row = result_row(adapter, Some("idle"), Some("idle"));
+            row.soft_limit_reason = Some("switch account".to_owned());
+            assert!(!row.done(), "{adapter}");
+        }
+    }
+
+    #[test]
+    fn claude_code_still_reads_the_classifier_bucket() {
+        assert!(result_row("claude-code", Some("idle"), Some("done")).done());
+        assert!(!result_row("claude-code", Some("idle"), Some("idle")).done());
+        assert!(!result_row("claude-code", Some("active"), Some("done")).done());
+        let mut ended = result_row("codex", Some("active"), Some("working"));
+        ended.ended_at = Some(Utc::now());
+        assert!(ended.done());
+    }
+
+    #[tokio::test]
+    async fn codex_and_opencode_turns_read_done_only_after_going_idle() {
+        let turns = [
+            ("codex", "tempo = 'active', agent_state = 'working'", "agent_state = 'idle'"),
+            (
+                "opencode",
+                "tempo = 'working', agent_state = 'working'",
+                "tempo = 'idle', agent_state = 'idle'",
+            ),
+        ];
+        for (adapter, busy, idle) in turns {
+            let Some((state, _, sid)) =
+                result_session(&format!("{adapter}_turns_read_done_only_after_going_idle")).await
+            else {
+                return;
+            };
+            set_signals(&state.pool, &sid, &format!("adapter_id = '{adapter}', {busy}")).await;
+            assert!(!result_of(&state, &sid).await.unwrap().done, "{adapter} busy");
+            set_signals(&state.pool, &sid, idle).await;
+            assert!(result_of(&state, &sid).await.unwrap().done, "{adapter} idle");
+            set_signals(&state.pool, &sid, busy).await;
+            assert!(!result_of(&state, &sid).await.unwrap().done, "{adapter} next turn");
+        }
+    }
+
+    /// Archiving clears the classifier signals and leaves `ended_at` unset,
+    /// so a session archived mid-turn is done on its status alone and
+    /// reports whatever text it had produced.
+    #[tokio::test]
+    async fn an_archived_session_is_done_with_the_text_it_had() {
+        let Some((state, _, sid)) =
+            result_session("an_archived_session_is_done_with_the_text_it_had").await
+        else {
+            return;
+        };
+        store_answer(&state.pool, &sid).await;
+        set_signals(&state.pool, &sid, "tempo = 'active', agent_state = 'working'").await;
+        set_signals(
+            &state.pool,
+            &sid,
+            "status = 'archived', tempo = NULL, agent_state = NULL, activity = NULL, \
+             archived_by = 'automatic'",
+        )
+        .await;
+        let result = result_of(&state, &sid).await.unwrap();
+        assert!(result.done);
+        assert_eq!(result.end_reason, None);
+        assert_eq!(result.final_assistant_text.as_deref(), Some("answer"));
     }
 
     /// The route sits behind the session read guard: the owner reads it,
@@ -4062,16 +4786,18 @@ mod tests {
             "DISTINCT ON reads every message row of every listed session"
         );
         assert!(
-            !sql.contains("role"),
-            "a role filter here without the same filter in migration 118 loses the index"
+            sql.contains(
+                "event_type = 'message' \
+                 AND COALESCE(se.payload->>'role', '') NOT IN ('turn_annotation', 'system_marker')"
+            ),
+            "the role filter must stay a residual ANDed onto the index predicate"
         );
     }
 
     #[test]
     fn sql_prefix_preview_matches_the_full_text_preview() {
         let n = 400;
-        assert!(super::LAST_MESSAGE_SQL.contains(&format!("left(e.body, {n})")));
-        assert!(super::LAST_MESSAGE_SQL.contains(&format!("length(e.body) > {n}")));
+        assert!(super::LAST_MESSAGE_SQL.contains(&format!("ELSE {n} END")));
         let inputs = [
             String::new(),
             "short message".to_owned(),
@@ -4093,6 +4819,98 @@ mod tests {
                 full.len()
             );
         }
+    }
+
+    #[test]
+    fn a_spoken_prompt_previews_as_its_utterance() {
+        let spoken = crate::voice_live::text::spoken_prompt(
+            "why is the sky blue",
+            Some(cctui_proto::voice::SpokenStyle::Brief),
+        );
+        assert_eq!(super::preview_last_message(&spoken, false), "why is the sky blue");
+        let only = "<cctui-session-context>\nctx\n</cctui-session-context>";
+        assert_eq!(super::preview_last_message(only, false), normalize_last_message(only));
+    }
+
+    #[test]
+    fn a_long_session_context_never_previews_raw() {
+        let context = format!(
+            "<cctui-session-context>\nsession: lane\n{}\n</cctui-session-context>\n\n",
+            "rule line\n".repeat(600)
+        );
+        let full = format!("{context}fix the preview");
+        assert!(full.chars().count() > 400);
+        assert_eq!(super::preview_last_message(&full, false), "fix the preview");
+
+        let head: String = full.chars().take(400).collect();
+        assert_eq!(super::preview_last_message(&head, true), "", "cut inside the wrapper");
+        let wrapper_only: String = full.chars().take(context.chars().count()).collect();
+        assert_eq!(super::preview_last_message(&wrapper_only, true), "");
+
+        let stacked = format!(
+            "{context}<cctui-previous-conversation session=\"a\">\nolder\n\
+             </cctui-previous-conversation>\n\nnext ask"
+        );
+        assert_eq!(super::preview_last_message(&stacked, false), "next ask");
+    }
+
+    #[test]
+    fn an_unclosed_wrapper_previews_empty_only_when_cut() {
+        let unclosed = format!("<cctui-session-context>\nsession: lane\n{}", "x ".repeat(300));
+        assert_eq!(super::preview_last_message(&unclosed, true), "");
+        assert_eq!(
+            super::preview_last_message(&unclosed, false),
+            normalize_last_message(&unclosed),
+            "a whole message is shown as written"
+        );
+        let after_block = format!(
+            "<cctui-session-context>ctx</cctui-session-context>\n<previous-conversation>\n{}",
+            "y".repeat(500)
+        );
+        assert_eq!(super::preview_last_message(&after_block, true), "");
+        let html = format!("<div>{}</div>", "z".repeat(500));
+        assert!(super::preview_last_message(&html, true).starts_with("<div>"));
+    }
+
+    #[tokio::test]
+    async fn last_message_sql_ships_enough_to_strip_a_long_wrapper() {
+        let Some((pool, sid)) = seeded_session("last_message_sql_long_wrapper").await else {
+            return;
+        };
+        let context = format!(
+            "\n<cctui-session-context>\n{}\n</cctui-session-context>\n\n",
+            "session: lane ".repeat(500)
+        );
+        let (pool, sid) = (&pool, &sid);
+        let preview = move |text: String| async move {
+            sqlx::query(
+                "INSERT INTO stream_events (session_id, event_type, payload) \
+                 VALUES ($1, 'message', $2)",
+            )
+            .bind(sid)
+            .bind(serde_json::json!({"role": "user", "text": text}))
+            .execute(pool)
+            .await
+            .unwrap();
+            let rows: Vec<super::LastMessageRow> = sqlx::query_as(super::LAST_MESSAGE_SQL)
+                .bind(vec![sid.clone()])
+                .fetch_all(pool)
+                .await
+                .unwrap();
+            super::preview_last_message(rows[0].1.as_deref().unwrap(), rows[0].2.unwrap())
+        };
+        assert_eq!(preview(format!("{context}fix the preview")).await, "fix the preview");
+        assert_eq!(
+            preview(format!("{context}{}", "w".repeat(70_000))).await,
+            format!("{}…", "w".repeat(200))
+        );
+        assert_eq!(
+            preview(format!("<cctui-session-context>\n{}", "v ".repeat(40_000))).await,
+            "",
+            "a wrapper unclosed past the prefix"
+        );
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(sid).execute(pool).await.unwrap();
     }
 
     #[tokio::test]
@@ -4136,6 +4954,54 @@ mod tests {
         }
 
         sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn turn_annotations_and_markers_never_become_the_preview() {
+        let Some((pool, sid)) = seeded_session("last_message_skips_annotations").await else {
+            return;
+        };
+        let (pool, sid) = (&pool, &sid);
+        let insert = move |payload: serde_json::Value| async move {
+            sqlx::query(
+                "INSERT INTO stream_events (session_id, event_type, payload) \
+                 VALUES ($1, 'message', $2)",
+            )
+            .bind(sid)
+            .bind(payload)
+            .execute(pool)
+            .await
+            .unwrap();
+        };
+        let preview = move || async move {
+            let rows: Vec<super::LastMessageRow> = sqlx::query_as(super::LAST_MESSAGE_SQL)
+                .bind(vec![sid.clone()])
+                .fetch_all(pool)
+                .await
+                .unwrap();
+            rows[0].1.clone()
+        };
+        let annotation = |name: &str, text: &str| serde_json::json!({"role": "turn_annotation", "annotation": name, "text": text});
+        let marker = |name: &str, text: &str| serde_json::json!({"role": "system_marker", "marker": name, "text": text});
+        for payload in [
+            serde_json::json!({"role": "assistant", "text": "the real reply"}),
+            annotation("turn_duration", "turn_duration:3752"),
+            annotation("stop_hook_summary", "stop_hook_summary"),
+            annotation("file_history", "file_history:snapshot"),
+            marker("permission-mode", "mode: normal"),
+            marker("queue-operation", "enqueue: next"),
+        ] {
+            insert(payload).await;
+        }
+        assert_eq!(preview().await.as_deref(), Some("the real reply"));
+
+        insert(serde_json::json!({"id": "c1", "type": "agentMessage", "text": "No findings."}))
+            .await;
+        assert_eq!(preview().await.as_deref(), Some("No findings."), "a role-less codex reply");
+        insert(annotation("turn_duration", "turn_duration:12")).await;
+        assert_eq!(preview().await.as_deref(), Some("No findings."));
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(sid).execute(pool).await.unwrap();
     }
 
     #[test]
@@ -4451,19 +5317,17 @@ mod tests {
     }
 
     #[test]
-    fn conversation_search_ands_every_term_over_the_indexed_expression() {
-        let sql = super::conv_search_sql(3);
-        assert_eq!(sql.matches("ILIKE $").count(), 3);
+    fn conversation_search_ands_every_term_over_the_session_chunks() {
+        let sql = super::conv_search_sql(3, None);
+        assert_eq!(sql.matches("c.body ILIKE $").count(), 3);
         assert!(sql.contains("$2") && sql.contains("$3") && sql.contains("$4"));
-        assert!(
-            !sql.contains(" OR left(e.search_text"),
-            "terms are ANDed per event, not ORed: {sql}"
-        );
-        assert!(sql.contains(&format!("left(e.search_text, {})", super::SEARCH_TEXT_CAP)));
+        assert_eq!(sql.matches(" INTERSECT ").count(), 2, "terms are ANDed per event: {sql}");
+        assert_eq!(sql.matches("c.session_id = $1").count(), 3, "every probe stays in the session");
+        assert!(!sql.contains("search_text"), "{sql}");
         assert!(sql.contains("WHERE e.session_id = $1"), "the hit list never leaves the session");
         assert!(sql.ends_with("ORDER BY e.id ASC LIMIT $7"), "oldest first: {sql}");
 
-        let none = super::conv_search_sql(0);
+        let none = super::conv_search_sql(0, None);
         assert!(none.contains("AND (TRUE)"));
         assert!(none.ends_with("ORDER BY e.id ASC LIMIT $4"));
     }
@@ -4519,6 +5383,255 @@ mod tests {
         );
     }
 
+    async fn index_session(pool: &sqlx::PgPool, sid: &str) {
+        let ids: Vec<i64> =
+            sqlx::query_scalar("SELECT id FROM stream_events WHERE session_id = $1")
+                .bind(sid)
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        crate::search_index::reindex(pool, &ids).await.unwrap();
+    }
+
+    async fn insert_payload(
+        pool: &sqlx::PgPool,
+        sid: &str,
+        kind: &str,
+        payload: serde_json::Value,
+    ) {
+        sqlx::query(
+            "INSERT INTO stream_events (session_id, event_type, payload) VALUES ($1, $2, $3)",
+        )
+        .bind(sid)
+        .bind(kind)
+        .bind(payload)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn conversation_search_matches_text_copied_from_the_rendered_view() {
+        let Some((pool, sid)) = seeded_session("conversation_search_rendered").await else {
+            return;
+        };
+        let say = |text: String| serde_json::json!({"role": "assistant", "text": text});
+        insert_payload(
+            &pool,
+            &sid,
+            "message",
+            say("Change the gate to `master...HEAD` (three dots).".into()),
+        )
+        .await;
+        insert_payload(
+            &pool,
+            &sid,
+            "message",
+            say(format!("{} the hidden tail phrase", "filler ".repeat(2000))),
+        )
+        .await;
+        insert_payload(
+            &pool,
+            &sid,
+            "message",
+            say("It\u{2019}s \u{201C}quoted\u{201D} text".into()),
+        )
+        .await;
+        insert_payload(
+            &pool,
+            &sid,
+            "message",
+            say("first line\nsecond **line**\n\n- third".into()),
+        )
+        .await;
+        let blob = "iVBORw0KGgoAAAANSUhEUgAA".repeat(40);
+        insert_payload(
+            &pool,
+            &sid,
+            "tool_use",
+            serde_json::json!({"kind": "tool_result", "content": [
+                {"type": "text", "text": "screenshot saved"},
+                {"type": "image", "source": {"type": "base64", "data": blob}},
+            ]}),
+        )
+        .await;
+        index_session(&pool, &sid).await;
+
+        let hits = |q: &'static str| {
+            let (pool, sid) = (pool.clone(), sid.clone());
+            async move {
+                let root = cctui_query::parse(q);
+                let terms = super::Terms::of(&root.free_text_terms());
+                super::conv_search_rows(&pool, &sid, &terms, &super::conv_filters(&[]), None)
+                    .await
+                    .unwrap()
+                    .expect("no timeout")
+                    .len()
+            }
+        };
+        assert_eq!(hits("\"Change the gate to master...HEAD (three dots).\"").await, 1);
+        assert_eq!(hits("\"the hidden tail phrase\"").await, 1, "text past 8 KB");
+        assert_eq!(hits("\"It's \"").await, 1, "a straight quote finds a smart one");
+        assert_eq!(hits("\"first line second line third\"").await, 1, "multi-line copy");
+        assert_eq!(hits("screenshot saved").await, 1);
+        assert_eq!(hits("iVBORw0KGgo").await, 0, "image payloads are not indexed");
+        assert_eq!(hits("gate dots").await, 1, "unquoted words must all appear");
+        assert_eq!(hits("gate absentword").await, 0);
+
+        let page = super::SearchPage { limit: 10, offset: 0, cursor: None, uid: None };
+        let root = cctui_query::parse("\"master...HEAD (three dots)\"");
+        let found = super::scan_matches(&pool, &root, None, &page, None).await.unwrap();
+        assert!(found.rows.iter().any(|r| r.id == sid), "the session list finds it too");
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
+    }
+
+    #[test]
+    fn the_unchunked_fallback_probes_the_indexed_search_text_expression() {
+        let index =
+            include_str!("../../../../migrations/108_stream_events_session_search_trgm.up.sql");
+        assert!(index.contains("(session_id, left(search_text, 8192) gin_trgm_ops)"));
+        let gap = Some(crate::search_index::Unchunked { after: 10, before: 500 });
+
+        let mut params = Vec::new();
+        let sql = super::compile_search(&cctui_query::parse("\u{FB01}x"), &mut params, gap);
+        assert!(sql.contains("e.session_id = (SELECT s.id)"), "{sql}");
+        assert!(sql.contains("e.id > 10 AND (e.id < 500 OR NOT EXISTS"), "{sql}");
+        assert!(sql.contains("WHERE k.event_id = e.id"), "a primary-key probe: {sql}");
+        assert!(sql.contains("left(e.search_text, 8192) ILIKE $2"), "{sql}");
+        let texts: Vec<String> = params
+            .into_iter()
+            .map(|p| match p {
+                SqlParam::Text(s) => s,
+                SqlParam::Bool(b) => b.to_string(),
+            })
+            .collect();
+        assert_eq!(texts, ["%fix%", "%\u{FB01}x%"], "search_text is matched unfolded");
+
+        let conv = super::conv_search_sql(2, gap);
+        assert!(conv.contains("u.session_id = $1 AND u.id > 10 AND (u.id < 500"), "{conv}");
+        for i in [7, 8] {
+            assert!(conv.contains(&format!("left(u.search_text, 8192) ILIKE ${i}")), "{conv}");
+        }
+        assert!(conv.ends_with("ORDER BY e.id ASC LIMIT $6"), "{conv}");
+
+        let snip = snippet_sql(2, gap);
+        for i in [5, 6] {
+            assert!(snip.contains(&format!("left(e.search_text, 8192) ILIKE ${i}")), "{snip}");
+        }
+        assert!(snip.contains("plainto_tsquery('simple', $4)"), "{snip}");
+
+        let (none, _) = compile("fix");
+        for sql in [none, super::conv_search_sql(2, None), snippet_sql(2, None)] {
+            assert!(!sql.contains("search_text"), "no fallback once history is chunked: {sql}");
+        }
+    }
+
+    #[tokio::test]
+    async fn search_falls_back_to_search_text_for_unchunked_history() {
+        use crate::search_index::Unchunked;
+        let Some((pool, sid)) = seeded_session("search_unchunked_fallback").await else {
+            return;
+        };
+        let insert = |text: &'static str| {
+            let (pool, sid) = (pool.clone(), sid.clone());
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "INSERT INTO stream_events (session_id, event_type, payload) \
+                     VALUES ($1, 'message', jsonb_build_object('role', 'assistant', 'text', $2::text)) \
+                     RETURNING id",
+                )
+                .bind(&sid)
+                .bind(text)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        let old = insert("an ancient unchunked phrase").await;
+        let fresh = insert("a freshly chunked phrase").await;
+        let side = insert("a sidelined peer phrase").await;
+        let live = insert("a live chunked phrase").await;
+        crate::search_index::reindex(&pool, &[fresh, live]).await.unwrap();
+        let gap = Unchunked::between(old - 1, Some(fresh + 1));
+        assert!(gap.is_some());
+        let closed = Unchunked::between(fresh, Some(fresh));
+        assert_eq!(closed, None, "the cursor reached live_from");
+
+        let hits = |q: &'static str, gap: Option<Unchunked>| {
+            let (pool, sid) = (pool.clone(), sid.clone());
+            async move {
+                let terms = super::Terms::of(&cctui_query::parse(q).free_text_terms());
+                super::conv_search_rows(&pool, &sid, &terms, &super::conv_filters(&[]), gap)
+                    .await
+                    .unwrap()
+                    .expect("no timeout")
+                    .into_iter()
+                    .map(|r| r.0)
+                    .collect::<Vec<_>>()
+            }
+        };
+        assert_eq!(hits("\"ancient unchunked phrase\"", gap).await, [old]);
+        assert_eq!(hits("ancient phrase", gap).await, [old], "every word, one event");
+        assert!(hits("\"ancient unchunked phrase\"", closed).await.is_empty());
+        assert_eq!(
+            hits("\"freshly chunked phrase\"", gap).await,
+            [fresh],
+            "an event both chunked and in the range is one hit"
+        );
+        assert_eq!(
+            hits("\"sidelined peer phrase\"", gap).await,
+            [side],
+            "above live_from, a row no path chunked"
+        );
+        assert_eq!(hits("\"live chunked phrase\"", gap).await, [live]);
+        assert_eq!(hits("phrase", gap).await, [old, fresh, side, live]);
+
+        let listed = |q: &'static str, gap: Option<Unchunked>| {
+            let pool = pool.clone();
+            async move {
+                let root = cctui_query::parse(q);
+                let page = super::SearchPage { limit: 10, offset: 0, cursor: None, uid: None };
+                super::scan_matches(&pool, &root, None, &page, gap).await.unwrap().rows
+            }
+        };
+        let found = listed("\"ancient unchunked phrase\"", gap).await;
+        assert!(found.iter().any(|r| r.id == sid), "the session list finds it");
+        assert!(!listed("\"ancient unchunked phrase\"", closed).await.iter().any(|r| r.id == sid));
+        assert!(listed("\"sidelined peer phrase\"", gap).await.iter().any(|r| r.id == sid));
+        let once = listed("\"chunked phrase\"", gap).await;
+        assert_eq!(once.iter().filter(|r| r.id == sid).count(), 1, "one row per session");
+
+        let terms = super::Terms::of(&cctui_query::parse("ancient").free_text_terms());
+        let mut q = sqlx::query_as::<_, (String, String, i64)>(sqlx::AssertSqlSafe(snippet_sql(
+            terms.len(),
+            gap,
+        )))
+        .bind(std::slice::from_ref(&sid));
+        for t in &terms.folded {
+            q = q.bind(super::ilike_contains(t));
+        }
+        q = q.bind(terms.folded.join(" "));
+        for t in &terms.raw {
+            q = q.bind(super::ilike_contains(t));
+        }
+        let snippets = q.fetch_all(&pool).await.unwrap();
+        assert_eq!(snippets.len(), 1, "{snippets:?}");
+        assert!(snippets[0].1.contains("ancient unchunked phrase"), "{snippets:?}");
+        assert_eq!(snippets[0].2, old);
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
+    }
+
+    #[test]
+    fn search_cursor_round_trips() {
+        let at = "2026-10-21T10:11:12.345678Z".parse::<DateTime<Utc>>().unwrap();
+        let raw = super::search_cursor(at, "cct:with:colons");
+        assert_eq!(super::parse_search_cursor(&raw), Some((at, "cct:with:colons".to_owned())));
+        assert_eq!(super::parse_search_cursor("nope"), None);
+        assert_eq!(super::parse_search_cursor("12:"), None);
+    }
+
     #[tokio::test]
     async fn conversation_search_sql_ands_terms_and_honours_the_date_window() {
         let Some((pool, sid)) = seeded_session("conversation_search_sql").await else {
@@ -4541,12 +5654,13 @@ mod tests {
             .unwrap();
         }
 
+        index_session(&pool, &sid).await;
         let run =
             |patterns: Vec<String>, after: Option<DateTime<Utc>>, before: Option<DateTime<Utc>>| {
                 let (pool, sid) = (pool.clone(), sid.clone());
                 async move {
                     let mut q = sqlx::query_as::<_, super::ConvSearchRow>(sqlx::AssertSqlSafe(
-                        super::conv_search_sql(patterns.len()),
+                        super::conv_search_sql(patterns.len(), None),
                     ))
                     .bind(&sid);
                     for p in &patterns {
@@ -4556,7 +5670,9 @@ mod tests {
                 }
             };
         let texts = |rows: Vec<super::ConvSearchRow>| {
-            rows.into_iter().map(|r| r.4.unwrap_or_default()).collect::<Vec<_>>()
+            rows.into_iter()
+                .map(|r| r.2["text"].as_str().unwrap_or_default().to_owned())
+                .collect::<Vec<_>>()
         };
 
         let both = texts(run(vec!["%alpha%".into(), "%beta%".into()], None, None).await);
@@ -5026,8 +6142,14 @@ mod tests {
         let (sql, params) = compile("hello");
         assert!(sql.contains("s.id ILIKE $1"));
         assert!(sql.contains("s.working_dir ILIKE $1"));
-        assert!(sql.contains("left(e.search_text, 8192) ILIKE $1"));
+        assert!(sql.contains("c.body ILIKE $1"));
         assert_eq!(params, vec!["%hello%".to_string()]);
+    }
+
+    #[test]
+    fn free_text_patterns_are_folded_like_the_chunks() {
+        let (_, params) = compile("\"it\u{2019}s  \u{201C}done\u{201D}\"");
+        assert_eq!(params, vec!["%it's \"done\"%".to_string()]);
     }
 
     #[test]
@@ -5365,9 +6487,10 @@ mod tests {
 
     #[test]
     fn snippet_sql_returns_one_row_per_session() {
-        let sql = snippet_sql(1);
+        let sql = snippet_sql(1, None);
         assert!(sql.contains("CROSS JOIN LATERAL"), "{sql}");
-        assert!(sql.contains("ORDER BY e.created_at DESC LIMIT 1"), "{sql}");
+        assert!(sql.contains("ORDER BY c.event_id DESC LIMIT 50"), "ranks a bounded set: {sql}");
+        assert!(sql.contains("plainto_tsquery('simple', $3)"), "{sql}");
         assert!(sql.contains("unnest($1::text[])"), "{sql}");
         // A per-session LATERAL replaces the whole-table DISTINCT ON: bringing
         // that back re-scans every matching event of every session.
@@ -5375,20 +6498,21 @@ mod tests {
     }
 
     #[test]
-    fn snippet_sql_binds_every_pattern_and_keeps_the_indexed_cap() {
-        let sql = snippet_sql(3);
+    fn snippet_sql_binds_every_pattern_then_the_rank_terms() {
+        let sql = snippet_sql(3, None);
         for i in 2..=4 {
-            assert!(sql.contains(&format!("left(e.search_text, 8192) ILIKE ${i}")), "{sql}");
+            assert!(sql.contains(&format!("c.body ILIKE ${i}")), "{sql}");
         }
-        assert!(!sql.contains("$5"), "{sql}");
+        assert!(sql.contains("plainto_tsquery('simple', $5)"), "{sql}");
+        assert!(!sql.contains("$6"), "{sql}");
     }
 
     #[test]
     fn free_text_exists_keeps_the_correlation_barrier() {
         let (sql, _) = compile("hello");
         // `(SELECT s.id)` is what stops the planner hoisting the sublink into a
-        // hashed subplan that rechecks every matching event in the table.
-        assert!(sql.contains("e.session_id = (SELECT s.id)"), "{sql}");
+        // hashed subplan that rechecks every matching chunk in the table.
+        assert!(sql.contains("c.session_id = (SELECT s.id)"), "{sql}");
     }
 
     /// The persisted posture reaches the sessions payload and the
@@ -5519,5 +6643,71 @@ mod tests {
         .unwrap();
         assert_eq!(outcome, super::ArchiveOutcome::Archived);
         assert_eq!(crate::guard_step::get(&sid), None);
+    }
+
+    #[test]
+    fn missing_parent_ids_lists_each_absent_nesting_parent_once() {
+        let mut parent = bare_session("p");
+        let mut a = bare_session("a");
+        a.parent_id = Some("live-orch".into());
+        let mut b = bare_session("b");
+        b.parent_id = Some("live-orch".into());
+        let mut nested = bare_session("n");
+        nested.parent_id = Some("p".into());
+        let mut fork = bare_session("f");
+        fork.parent_id = Some("elsewhere".into());
+        fork.metadata = serde_json::json!({"relation": "fork"});
+        parent.parent_id = Some("other-page".into());
+        let page = [a, parent, b, nested, fork, bare_session("root")];
+        assert_eq!(
+            super::missing_parent_ids(&page),
+            vec!["live-orch".to_owned(), "other-page".to_owned()]
+        );
+    }
+
+    #[tokio::test]
+    async fn parent_stubs_carry_status_and_stay_owner_scoped() {
+        let Some((pool, sid)) = seeded_session("parent_stubs_owner_scoped").await else {
+            return;
+        };
+        let owner: uuid::Uuid = sqlx::query_scalar(
+            "SELECT m.user_id FROM sessions s JOIN machines m ON m.id = s.machine_uuid \
+             WHERE s.id = $1",
+        )
+        .bind(&sid)
+        .fetch_one(&pool)
+        .await
+        .expect("owner");
+        sqlx::query("UPDATE sessions SET session_name = 'orch-x' WHERE id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .expect("name parent");
+        let ids = [sid.clone(), "no-such-session".to_owned()];
+
+        let live = super::fetch_parent_stubs(&pool, &ids, Some(owner)).await.expect("stubs");
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].id, sid);
+        assert_eq!(live[0].name.as_deref(), Some("orch-x"));
+        assert_eq!(live[0].working_dir, "/w");
+        assert_ne!(live[0].status, cctui_proto::models::SessionStatus::Archived);
+
+        let stranger = uuid::Uuid::new_v4();
+        assert!(super::fetch_parent_stubs(&pool, &ids, Some(stranger)).await.unwrap().is_empty());
+        assert!(super::fetch_parent_stubs(&pool, &[], None).await.unwrap().is_empty());
+
+        sqlx::query("UPDATE sessions SET status = 'archived' WHERE id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .expect("archive parent");
+        let archived = super::fetch_parent_stubs(&pool, &ids, None).await.expect("admin stubs");
+        assert_eq!(archived[0].status, cctui_proto::models::SessionStatus::Archived);
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .expect("cleanup");
     }
 }

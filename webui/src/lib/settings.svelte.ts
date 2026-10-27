@@ -187,6 +187,27 @@ export function clampSpawnDockSide(v: unknown): SpawnDockSide {
 // `left`/`right` pin it to that edge with the same gutter the centered stack
 // keeps on a narrow viewport. Purely presentational, so it lives entirely in
 // the webui: the value drives the `data-toast-pos` attribute on the Toaster host.
+export const DISPATCH_ARCHIVE_GRACE_DEFAULT = 180;
+export const DISPATCH_ARCHIVE_GRACE_MAX = 3600;
+
+/** Mirrors the server's clamp: whole seconds in `0..=3600`, else the default. */
+export function clampDispatchArchiveGrace(v: unknown): number {
+  if (typeof v !== "number" || !Number.isFinite(v))
+    return DISPATCH_ARCHIVE_GRACE_DEFAULT;
+  return Math.min(DISPATCH_ARCHIVE_GRACE_MAX, Math.max(0, Math.trunc(v)));
+}
+
+export function clampProfileNames(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const raw of v) {
+    const name = typeof raw === "string" ? raw.trim() : "";
+    if (name.length > 0 && name.length <= 128 && !out.includes(name))
+      out.push(name);
+  }
+  return out;
+}
+
 export const TOAST_POSITIONS = ["center", "left", "right"] as const;
 export type ToastPosition = (typeof TOAST_POSITIONS)[number];
 export const DEFAULT_TOAST_POSITION: ToastPosition = "center";
@@ -479,32 +500,46 @@ export function clampPluginsConfig(
 
 export type VoiceInputMode = "push" | "handsfree";
 export type VoiceSpokenStyle = "brief" | "normal" | "verbose";
+export type VoiceLanguage = "auto" | "en" | "fr";
 
 export interface VoiceSettings {
   voice?: string;
+  micId?: string;
+  speakerId?: string;
+  language: VoiceLanguage;
   speed: number;
   autoPlayVoiceNotes: boolean;
   inputMode: VoiceInputMode;
   autoSend: boolean;
   bargeIn: boolean;
   spokenStyle: VoiceSpokenStyle;
+  /** Read a summary of long messages instead of all of them. */
+  summarizeLong: boolean;
 }
 
 export const DEFAULT_VOICE: VoiceSettings = {
   speed: 1,
+  language: "auto",
   autoPlayVoiceNotes: false,
   inputMode: "push",
   autoSend: false,
-  bargeIn: true,
+  bargeIn: false,
   spokenStyle: "brief",
+  summarizeLong: true,
 };
 
 export function mergeVoice(v: Partial<VoiceSettings> | undefined): VoiceSettings {
   const raw = v ?? {};
   const speed = Number(raw.speed);
-  const voice = typeof raw.voice === "string" ? raw.voice.trim() : "";
+  const id = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+  const voice = id(raw.voice);
+  const micId = id(raw.micId);
+  const speakerId = id(raw.speakerId);
   return {
     ...(voice ? { voice } : {}),
+    ...(micId ? { micId } : {}),
+    ...(speakerId ? { speakerId } : {}),
+    language: raw.language === "en" || raw.language === "fr" ? raw.language : "auto",
     speed:
       Number.isFinite(speed) && speed >= 0.25 && speed <= 4
         ? speed
@@ -512,11 +547,12 @@ export function mergeVoice(v: Partial<VoiceSettings> | undefined): VoiceSettings
     autoPlayVoiceNotes: raw.autoPlayVoiceNotes === true,
     inputMode: raw.inputMode === "handsfree" ? "handsfree" : "push",
     autoSend: raw.autoSend === true,
-    bargeIn: raw.bargeIn !== false,
+    bargeIn: raw.bargeIn === true,
     spokenStyle:
       raw.spokenStyle === "normal" || raw.spokenStyle === "verbose"
         ? raw.spokenStyle
         : "brief",
+    summarizeLong: raw.summarizeLong !== false,
   };
 }
 
@@ -552,6 +588,11 @@ export interface SettingsState {
   // session stuck on an "API Error: Connection lost mid-response" with a
   // "continue" reply (1, 5 then 10 minutes) when this is on.
   autoResumeOnConnectionLoss: boolean;
+  // Server-read: archive a dispatched session once its run ends, after the
+  // grace, unless its worker profile is listed.
+  dispatchAutoArchive: boolean;
+  dispatchAutoArchiveGraceSecs: number;
+  dispatchAutoArchiveKeepProfiles: string[];
   // Macros menu (off by default) and its entries. Serializes as `data.macros`.
   macros: MacrosSettings;
   plugins: PluginsSettings;
@@ -608,6 +649,9 @@ const DEFAULTS: SettingsState = {
   secretScrubPatterns: [],
   sessionEmojiPrefix: false,
   autoResumeOnConnectionLoss: false,
+  dispatchAutoArchive: true,
+  dispatchAutoArchiveGraceSecs: DISPATCH_ARCHIVE_GRACE_DEFAULT,
+  dispatchAutoArchiveKeepProfiles: [],
   macros: { enabled: false, items: [] },
   plugins: { enabled: {}, config: {} },
   toastPosition: DEFAULT_TOAST_POSITION,
@@ -681,6 +725,13 @@ export function mergeDefaults(
     secretScrubPatterns: mergeSecretScrubPatterns(p.secretScrubPatterns),
     sessionEmojiPrefix: p.sessionEmojiPrefix === true,
     autoResumeOnConnectionLoss: p.autoResumeOnConnectionLoss === true,
+    dispatchAutoArchive: p.dispatchAutoArchive !== false,
+    dispatchAutoArchiveGraceSecs: clampDispatchArchiveGrace(
+      p.dispatchAutoArchiveGraceSecs,
+    ),
+    dispatchAutoArchiveKeepProfiles: clampProfileNames(
+      p.dispatchAutoArchiveKeepProfiles,
+    ),
     macros: mergeMacros(p.macros),
     plugins: {
       enabled: clampPluginsEnabled(p.plugins?.enabled),
@@ -1130,6 +1181,30 @@ class Settings {
   }
   get autoResumeOnConnectionLoss(): boolean {
     return this.state.autoResumeOnConnectionLoss;
+  }
+
+  setDispatchAutoArchive(on: boolean) {
+    this.state.dispatchAutoArchive = on;
+    this.persist();
+  }
+  get dispatchAutoArchive(): boolean {
+    return this.state.dispatchAutoArchive;
+  }
+
+  setDispatchAutoArchiveGraceSecs(secs: number) {
+    this.state.dispatchAutoArchiveGraceSecs = clampDispatchArchiveGrace(secs);
+    this.persist();
+  }
+  get dispatchAutoArchiveGraceSecs(): number {
+    return this.state.dispatchAutoArchiveGraceSecs;
+  }
+
+  setDispatchAutoArchiveKeepProfiles(names: string[]) {
+    this.state.dispatchAutoArchiveKeepProfiles = clampProfileNames(names);
+    this.persist();
+  }
+  get dispatchAutoArchiveKeepProfiles(): string[] {
+    return this.state.dispatchAutoArchiveKeepProfiles;
   }
 
   get pluginsEnabled(): Record<string, boolean> {

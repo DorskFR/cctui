@@ -2,7 +2,8 @@ use crate::git::{read_git_branch, read_git_remote};
 
 use super::{
     AdapterEvent, DispatchDoneTracker, Driver, EndReason, HashMap, HashSet, Instant, LiveSnapshot,
-    PendingPerm, SessionMeta, StateJson, StatusSnapshot, TranscriptLocation, json, transcript,
+    Path, PendingPerm, SessionMeta, StateJson, StatusSnapshot, TranscriptLocation, dispatch_done,
+    json, transcript,
 };
 
 /// What one `list` poll means against the last known roster, decided
@@ -60,6 +61,8 @@ impl Driver {
         // Done after Status updates so the UI's identity fields land
         // before the message stream they describe.
         self.tail_transcripts().await;
+        self.scan_task_lists(crate::servercaps::server_supports(cctui_proto::capability::TODOS))
+            .await;
         for short in &plan.gone {
             self.reap_gone(short).await;
         }
@@ -76,6 +79,7 @@ impl Driver {
         );
 
         self.tick_dispatch_done(&plan.visible);
+        self.tick_stuck_turn(&plan.visible).await;
 
         self.liveness.retain(&plan.now_shorts);
         self.roster = plan.now_shorts;
@@ -138,8 +142,9 @@ impl Driver {
     /// edge. The server upsert is idempotent (status, parent, name and account
     /// survive; only a spurious `daemon_lost` end is revived), so this costs
     /// one upsert per session and recovers any `SessionStarted` the previous
-    /// connection lost.
-    pub(super) async fn reannounce_live(&self) {
+    /// connection lost. The next poll re-sends each one's current Status too,
+    /// so a turn that ended while the link was down is not left reading busy.
+    pub(super) async fn reannounce_live(&mut self) {
         let pending: Vec<(String, SessionMeta)> = {
             let Ok(cache) = self.announced_meta.lock() else { return };
             self.roster
@@ -157,6 +162,8 @@ impl Driver {
                 })
                 .collect()
         };
+        self.status_resend
+            .extend(self.roster.iter().filter(|short| !self.dead_shorts.contains(*short)).cloned());
         if !pending.is_empty() {
             tracing::info!(count = pending.len(), "re-announcing live claude sessions on connect");
         }
@@ -440,7 +447,8 @@ impl Driver {
             source: job.source.clone(),
             started_at: job.started_at,
         };
-        if self.last_status.get(&job.short) == Some(&snap) {
+        let resend = self.status_resend.remove(&job.short);
+        if !resend && self.last_status.get(&job.short) == Some(&snap) {
             return;
         }
         self.last_status.insert(job.short.clone(), snap);
@@ -467,43 +475,7 @@ impl Driver {
         let locations: Vec<TranscriptLocation> =
             self.transcript_locations.values().cloned().collect();
         for loc in locations {
-            let prev = self.offsets.get(&loc.offset_key);
-            let off = self.resume_offset(&loc.offset_key, &loc.path);
-            if off != prev {
-                dirty_offsets = true;
-            }
-            match transcript::tail_bounded(&loc.path, &loc.local_id, off, super::LIVE_TAIL_BUDGET) {
-                Ok((events, new_off)) => {
-                    if new_off != off {
-                        self.offsets.set(loc.offset_key.clone(), new_off);
-                        self.server_marks.insert(loc.offset_key.clone(), new_off);
-                        dirty_offsets = true;
-                    }
-                    if let Some(last) = events.last() {
-                        // "Last parsed event" for diagnose.
-                        self.last_parsed.insert(
-                            loc.offset_key.clone(),
-                            (
-                                super::super::diagnose::event_kind(last).to_owned(),
-                                std::time::SystemTime::now(),
-                            ),
-                        );
-                    }
-                    for evt in events {
-                        self.emit_fresh(evt).await;
-                    }
-                    if new_off != off {
-                        self.emit(AdapterEvent::TranscriptMark {
-                            local_id: loc.local_id.clone(),
-                            offset: new_off,
-                        })
-                        .await;
-                    }
-                }
-                Err(err) => {
-                    tracing::debug!(%err, path = %loc.path.display(), "transcript tail failed");
-                }
-            }
+            dirty_offsets |= self.tail_location(&loc).await;
         }
         // Discover + tail Task-tool subagents nested under each live parent.
         // Runs after the parent tail so a subagent's parent row
@@ -515,8 +487,76 @@ impl Driver {
         }
     }
 
+    /// Whether a text watcher waits on any pinned session.
+    pub(super) fn has_text_watch(&self) -> bool {
+        self.transcript_locations.values().any(|l| crate::text_deltas::wanted(&l.local_id))
+    }
+
+    /// Tails only the sessions a text watcher waits on, between polls, so a
+    /// finished block reaches it without waiting for the next `list`.
+    pub(super) async fn tail_watched(&mut self) {
+        let locations: Vec<TranscriptLocation> = self
+            .transcript_locations
+            .values()
+            .filter(|l| crate::text_deltas::wanted(&l.local_id))
+            .cloned()
+            .collect();
+        let mut dirty_offsets = false;
+        for loc in locations {
+            dirty_offsets |= self.tail_location(&loc).await;
+        }
+        if dirty_offsets {
+            self.offsets.flush();
+        }
+    }
+
+    /// Emits what `loc` gained since its offset; true when the offset moved.
+    async fn tail_location(&mut self, loc: &TranscriptLocation) -> bool {
+        let prev = self.offsets.get(&loc.offset_key);
+        let off = self.resume_offset(&loc.offset_key, &loc.path);
+        let mut dirty = off != prev;
+        match transcript::tail_bounded(&loc.path, &loc.local_id, off, super::LIVE_TAIL_BUDGET) {
+            Ok((events, new_off)) => {
+                if new_off != off {
+                    self.offsets.set(loc.offset_key.clone(), new_off);
+                    self.server_marks.insert(loc.offset_key.clone(), new_off);
+                    dirty = true;
+                }
+                if events.iter().any(dispatch_done::is_reply) {
+                    self.note_dispatch_reply(&loc.offset_key);
+                }
+                if let Some(last) = events.last() {
+                    // "Last parsed event" for diagnose.
+                    self.last_parsed.insert(
+                        loc.offset_key.clone(),
+                        (
+                            super::super::diagnose::event_kind(last).to_owned(),
+                            std::time::SystemTime::now(),
+                        ),
+                    );
+                }
+                for evt in events {
+                    self.emit_fresh(evt).await;
+                }
+                if new_off != off {
+                    self.emit(AdapterEvent::TranscriptMark {
+                        local_id: loc.local_id.clone(),
+                        offset: new_off,
+                    })
+                    .await;
+                }
+            }
+            Err(err) => {
+                tracing::debug!(%err, path = %loc.path.display(), "transcript tail failed");
+            }
+        }
+        dirty
+    }
+
     async fn reap_gone(&mut self, short: &str) {
         self.last_status.remove(short);
+        self.status_resend.remove(short);
+        self.task_watches.remove(short);
         if let Ok(mut m) = self.announced_meta.lock() {
             m.remove(short);
         }
@@ -579,6 +619,12 @@ impl Driver {
     /// and write the `dispatch_done` marker when it fires. No-op on normal
     /// daemons (`dispatch_done` is only armed by `maybe_dispatch_on_start`).
     pub(super) fn tick_dispatch_done(&self, jobs: &[LiveSnapshot]) {
+        // A turn parked on a background task is idle while that task still
+        // works; the stuck-turn watchdog owns that wait.
+        let bg_pending = self
+            .stuck_turn
+            .lock()
+            .is_ok_and(|g| g.as_ref().is_some_and(|w| w.ledger.has_outstanding()));
         let Ok(mut guard) = self.dispatch_done.lock() else { return };
         let Some(tracker) = guard.as_mut() else { return };
         let job = jobs.iter().find(|j| j.short == tracker.short());
@@ -598,6 +644,7 @@ impl Driver {
             .map_or(0, |loc| self.offsets.get(&loc.offset_key));
         let grew = tracker.transcript_grew(transcript_offset);
         let busy = grew
+            || bg_pending
             || job.is_some_and(|j| {
                 !j.is_dead() && DispatchDoneTracker::is_busy(j.tempo.as_deref(), j.state.as_deref())
             });
@@ -626,6 +673,36 @@ impl Driver {
                 }
             }
         }
+    }
+
+    fn note_dispatch_reply(&self, offset_key: &str) {
+        let Ok(mut guard) = self.dispatch_done.lock() else { return };
+        let Some(tracker) = guard.as_mut() else { return };
+        let Some(loc) = self.transcript_locations.get(tracker.short()) else { return };
+        if loc.offset_key == offset_key {
+            tracker.note_reply();
+        }
+    }
+
+    /// End the boot-dispatched session `completed` once it finished its work,
+    /// so the worker's shutdown never reads as a lost daemon. A guarded session
+    /// is left to the server, which completes it on the guard's exit.
+    pub(super) async fn end_finished_dispatch(&self, result_file: &Path, guarded: bool) {
+        if guarded {
+            return;
+        }
+        let result_written = dispatch_done::result_written(result_file);
+        let finished = self.dispatch_done.lock().ok().and_then(|guard| {
+            guard
+                .as_ref()
+                .filter(|t| t.finished(result_written))
+                .map(|t| (t.short().to_owned(), t.session_id().to_owned()))
+        });
+        let Some((short, session_id)) = finished else { return };
+        let local_id =
+            self.transcript_locations.get(&short).map_or(session_id, |loc| loc.local_id.clone());
+        tracing::info!(%local_id, "dispatched session finished; ending it completed at shutdown");
+        self.emit(AdapterEvent::SessionEnded { local_id, reason: EndReason::Completed }).await;
     }
 
     /// Reconcile the pending tool-permission prompt for one worker against the
@@ -1231,5 +1308,252 @@ mod tests {
         while rx.try_recv().is_ok() {}
         d.reannounce_live().await;
         assert!(started(&mut rx).is_empty(), "a reaped job is not re-announced");
+    }
+
+    fn statuses(rx: &mut tokio::sync::mpsc::Receiver<AdapterEvent>) -> Vec<Option<String>> {
+        let mut out = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::Status { tempo, .. } = evt {
+                out.push(tempo);
+            }
+        }
+        out
+    }
+
+    /// A Status lost with a dropped WS (the turn went idle mid-gap) is never
+    /// re-sent by the deduped poll; the connect edge must force it once.
+    #[tokio::test]
+    async fn connect_edge_resends_the_current_status_once() {
+        let (mut d, mut rx) = driver();
+        let mut idle = snap("abcd1234", "done", None);
+        idle.tempo = Some("idle".into());
+        d.apply_snapshot(vec![idle.clone()]).await;
+        assert_eq!(statuses(&mut rx), [Some("idle".to_owned())]);
+        d.apply_snapshot(vec![idle.clone()]).await;
+        assert!(statuses(&mut rx).is_empty(), "an unchanged poll is deduped");
+
+        d.reannounce_live().await;
+        assert_eq!(started(&mut rx).len(), 1);
+        d.apply_snapshot(vec![idle.clone()]).await;
+        assert_eq!(statuses(&mut rx), [Some("idle".to_owned())], "the edge re-sends it");
+        d.apply_snapshot(vec![idle]).await;
+        assert!(statuses(&mut rx).is_empty(), "only once per edge");
+    }
+
+    #[tokio::test]
+    async fn a_finished_guard_less_dispatch_ends_completed_at_shutdown() {
+        let (d, mut rx) = driver();
+        let tmp = tempfile::tempdir().unwrap();
+        let result = tmp.path().join("result.json");
+        let sid = "abcd1234-5678-90ab-cdef-000000000000";
+
+        d.end_finished_dispatch(&result, false).await;
+        assert!(rx.try_recv().is_err(), "no dispatch, nothing to end");
+
+        let settle = std::time::Duration::from_mins(1);
+        *d.dispatch_done.lock().unwrap() =
+            Some(DispatchDoneTracker::new(sid, &d.cfg.jobs_root, settle));
+        d.end_finished_dispatch(&result, false).await;
+        assert!(rx.try_recv().is_err(), "never worked, so not finished");
+
+        let busy = d.dispatch_done.lock().unwrap().as_mut().unwrap().observe(true, Instant::now());
+        assert!(!busy);
+        d.end_finished_dispatch(&result, false).await;
+        assert!(rx.try_recv().is_err(), "still working, no verdict");
+
+        std::fs::write(&result, br#"{"task_id":"t","status":"success"}"#).unwrap();
+        d.end_finished_dispatch(&result, true).await;
+        assert!(rx.try_recv().is_err(), "a guarded session is the server's to complete");
+
+        d.end_finished_dispatch(&result, false).await;
+        match rx.try_recv() {
+            Ok(AdapterEvent::SessionEnded { local_id, reason }) => {
+                assert_eq!(local_id, sid);
+                assert_eq!(reason, EndReason::Completed);
+            }
+            other => panic!("expected a completed end, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dispatch_that_settled_idle_ends_completed_without_a_verdict() {
+        let (d, mut rx) = driver();
+        let tmp = tempfile::tempdir().unwrap();
+        let sid = "abcd1234-5678-90ab-cdef-000000000000";
+        let settle = std::time::Duration::from_mins(1);
+        let mut tracker = DispatchDoneTracker::new(sid, &d.cfg.jobs_root, settle);
+        let start = Instant::now();
+        assert!(!tracker.observe(true, start));
+        assert!(!tracker.observe(false, start));
+        assert!(tracker.observe(false, start + settle));
+        *d.dispatch_done.lock().unwrap() = Some(tracker);
+
+        d.end_finished_dispatch(&tmp.path().join("missing.json"), false).await;
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Ok(AdapterEvent::SessionEnded { reason: EndReason::Completed, .. })
+            ),
+            "the dispatch_done marker is completion evidence on its own"
+        );
+    }
+
+    fn dispatch_with_transcript(d: &mut Driver, lines: &[&str]) -> std::path::PathBuf {
+        let sid = "abcd1234-5678-90ab-cdef-000000000000";
+        *d.dispatch_done.lock().unwrap() =
+            Some(DispatchDoneTracker::new(sid, &d.cfg.jobs_root, std::time::Duration::ZERO));
+        std::fs::create_dir_all(&d.cfg.projects_root).unwrap();
+        let path = d.cfg.projects_root.join(format!("{sid}.jsonl"));
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        d.transcript_locations.insert(
+            "abcd1234".into(),
+            TranscriptLocation {
+                path,
+                local_id: sid.into(),
+                cwd: "/tmp".into(),
+                offset_key: sid.into(),
+            },
+        );
+        d.cfg.jobs_root.join("abcd1234/dispatch_done")
+    }
+
+    const PROMPT: &str =
+        r#"{"type":"user","message":{"role":"user","content":"What is 17 times 23?"}}"#;
+
+    #[tokio::test]
+    async fn a_dispatch_answered_before_any_busy_poll_settles_and_ends_completed() {
+        let (mut d, mut rx) = driver();
+        let answer = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"391"}]}}"#;
+        let marker = dispatch_with_transcript(&mut d, &[PROMPT, answer]);
+        let mut idle = snap("abcd1234", "done", None);
+        idle.tempo = Some("idle".into());
+
+        d.tail_transcripts().await;
+        d.tick_dispatch_done(std::slice::from_ref(&idle));
+        d.tick_dispatch_done(std::slice::from_ref(&idle));
+        assert!(marker.exists(), "the reply is evidence of work, so settled idle marks it done");
+
+        while rx.try_recv().is_ok() {}
+        d.end_finished_dispatch(Path::new("/nonexistent/result.json"), false).await;
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AdapterEvent::SessionEnded { reason: EndReason::Completed, .. })
+        ));
+    }
+
+    /// The stranded-worker shape: the answer landed and the turn is idle, but
+    /// claude's self-reported job `state` still reads `working`.
+    #[tokio::test]
+    async fn a_dispatch_idle_under_a_stale_working_label_settles_and_ends_completed() {
+        let (mut d, mut rx) = driver();
+        let answer = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"5.57.2"}]}}"#;
+        let marker = dispatch_with_transcript(&mut d, &[PROMPT, answer]);
+        let mut idle = snap("abcd1234", "working", None);
+        idle.tempo = Some("idle".into());
+
+        d.tail_transcripts().await;
+        d.tick_dispatch_done(std::slice::from_ref(&idle));
+        d.tick_dispatch_done(std::slice::from_ref(&idle));
+        assert!(marker.exists(), "an idle tempo settles the turn whatever the label says");
+
+        while rx.try_recv().is_ok() {}
+        d.end_finished_dispatch(Path::new("/nonexistent/result.json"), false).await;
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AdapterEvent::SessionEnded { reason: EndReason::Completed, .. })
+        ));
+    }
+
+    /// An idle turn waiting on a backgrounded command is not finished: the
+    /// command is still working, so the marker holds until it is notified.
+    #[tokio::test]
+    async fn a_dispatch_waiting_on_a_background_task_is_not_finished_until_notified() {
+        let (mut d, _rx) = driver();
+        let sid = "abcd1234-5678-90ab-cdef-000000000000";
+        let tool = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"make test","run_in_background":true}}]}}"#;
+        let started = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"Command running in background with ID: bg1. Output is being written to: /nonexistent/bg1.output"}]},"toolUseResult":{"backgroundTaskId":"bg1"}}"#;
+        let marker = dispatch_with_transcript(&mut d, &[PROMPT, tool, started]);
+        let ten_min = std::time::Duration::from_mins(10);
+        *d.stuck_turn.lock().unwrap() = Some(
+            crate::adapters::claude_code::stuck_turn::StuckTurnWatchdog::new(sid, ten_min, ten_min),
+        );
+        let mut idle = snap("abcd1234", "working", None);
+        idle.tempo = Some("idle".into());
+
+        d.tail_transcripts().await;
+        d.tick_stuck_turn(std::slice::from_ref(&idle)).await;
+        for _ in 0..3 {
+            d.tick_dispatch_done(std::slice::from_ref(&idle));
+        }
+        assert!(!marker.exists(), "an outstanding background task holds the marker");
+
+        let path = d.transcript_locations["abcd1234"].path.clone();
+        let notified = r#"{"type":"user","message":{"role":"user","content":"<task-notification><task-id>bg1</task-id><status>completed</status></task-notification>"}}"#;
+        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        std::io::Write::write_all(&mut file, format!("{notified}\n").as_bytes()).unwrap();
+        d.tick_stuck_turn(std::slice::from_ref(&idle)).await;
+        d.tail_transcripts().await;
+        d.tick_dispatch_done(std::slice::from_ref(&idle));
+        d.tick_dispatch_done(std::slice::from_ref(&idle));
+        assert!(marker.exists(), "settles once the task is notified and the turn stays idle");
+    }
+
+    #[tokio::test]
+    async fn a_dispatch_with_only_its_prompt_is_not_finished() {
+        let (mut d, mut rx) = driver();
+        let marker = dispatch_with_transcript(&mut d, &[PROMPT]);
+        let mut idle = snap("abcd1234", "done", None);
+        idle.tempo = Some("idle".into());
+
+        d.tail_transcripts().await;
+        for _ in 0..3 {
+            d.tick_dispatch_done(std::slice::from_ref(&idle));
+        }
+        assert!(!marker.exists(), "a cold start that has not answered yet is not done");
+        while rx.try_recv().is_ok() {}
+        d.end_finished_dispatch(Path::new("/nonexistent/result.json"), false).await;
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_dispatch_blocked_on_a_permission_after_replying_is_not_finished() {
+        let (mut d, _rx) = driver();
+        let tool = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]}}"#;
+        let marker = dispatch_with_transcript(&mut d, &[PROMPT, tool]);
+        let mut blocked = snap("abcd1234", "done", None);
+        blocked.tempo = Some("blocked".into());
+        blocked.needs = Some("approve Bash: ls".into());
+
+        d.tail_transcripts().await;
+        for _ in 0..3 {
+            d.tick_dispatch_done(std::slice::from_ref(&blocked));
+        }
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn a_dispatch_whose_marker_the_roster_wrote_ends_completed_when_the_driver_stops() {
+        let (d, mut rx) = driver();
+        let sid = "abcd1234-5678-90ab-cdef-000000000000";
+        *d.dispatch_done.lock().unwrap() =
+            Some(DispatchDoneTracker::new(sid, &d.cfg.jobs_root, std::time::Duration::ZERO));
+        d.tick_dispatch_done(&[snap("abcd1234", "working", None)]);
+        let mut idle = snap("abcd1234", "done", None);
+        idle.tempo = Some("idle".into());
+        d.tick_dispatch_done(&[idle]);
+        assert!(d.cfg.jobs_root.join("abcd1234/dispatch_done").exists(), "marker written");
+
+        d.shutdown.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(10), d.run())
+            .await
+            .expect("the driver returns on shutdown")
+            .unwrap();
+        let mut ended = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let AdapterEvent::SessionEnded { local_id, reason } = event {
+                ended.push((local_id, reason));
+            }
+        }
+        assert_eq!(ended, vec![(sid.to_owned(), EndReason::Completed)]);
     }
 }

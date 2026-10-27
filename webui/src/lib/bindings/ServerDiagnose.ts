@@ -21,4 +21,13 @@ accounts: Array<string>, machine_id?: string | null,
 /**
  * `machines.last_seen_at` as unix ms — the daemon heartbeat freshness.
  */
-machine_last_seen_ms?: number | null, };
+machine_last_seen_ms?: number | null, 
+/**
+ * Name of the session's owner: the user owning its machine.
+ */
+owner?: string | null, 
+/**
+ * Name of the user who spawned the session, when the server launched it.
+ * Differs from `owner` for a spawn through a machine share.
+ */
+spawned_by?: string | null, };

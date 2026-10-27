@@ -25,6 +25,41 @@ pub(super) fn register(r: Routes) -> Routes {
         // owner_filter() SQL filter in the handler.
         Authenticated,
     )
+    .add(
+        &[GET],
+        "/dispatch-records/failed",
+        "Dispatches the dispatcher refused or whose worker never ran to a session.",
+        get(routes::dispatch::list_failed_dispatches),
+        Authn::Bearer,
+        // owner_filter() SQL filter in the handler.
+        Authenticated,
+    )
+    .add(
+        &[Method::POST],
+        "/dispatch-records/{id}/redispatch",
+        "Send a recorded dispatch again as a new dispatch.",
+        post(routes::dispatch::redispatch),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Dispatch),
+    )
+    .add(
+        &[Method::POST],
+        "/dispatch-records/{id}/dismiss",
+        "Hide a failed dispatch from the caller's list.",
+        post(routes::dispatch::dismiss_failed_dispatch),
+        Authn::Bearer,
+        // owner_filter() SQL filter in the handler.
+        Authenticated,
+    )
+    .add(
+        &[Method::POST],
+        "/dispatch-records/dismiss-all",
+        "Hide every failed dispatch the caller's list shows.",
+        post(routes::dispatch::dismiss_all_failed_dispatches),
+        Authn::Bearer,
+        // owner_filter() SQL filter in the handler.
+        Authenticated,
+    )
     // Enrolled-dispatcher management: list with liveness, rename,
     // remove. Enrollment itself is `POST /dispatcher/enroll` below.
     .add(

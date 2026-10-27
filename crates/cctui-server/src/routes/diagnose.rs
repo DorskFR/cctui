@@ -3,7 +3,8 @@
 //! `GET /api/v1/sessions/{id}/diagnose` — one call that snapshots everything
 //! the owning daemon knows about the session (each fact dated + sourced, plus
 //! the arbitration verdict) and merges the server-side facts the daemon can't
-//! see (DB row status, gateway/account binding, machine heartbeat freshness).
+//! see (DB row status, owner and spawner, gateway/account binding, machine
+//! heartbeat freshness).
 //!
 //! Fail-soft: a daemon that is offline, slow, or yields
 //! `daemon: null` + `daemon_error`, with the server facts still served —
@@ -24,12 +25,19 @@ pub async fn diagnose_session(
 ) -> Result<Json<SessionDiagnoseResponse>, AppError> {
     // Ownership is enforced by the authz layer (`sess_read`); this lookup
     // supplies the server-side facts and 404s a genuinely unknown id.
-    let row: Option<(Option<String>, Option<String>, Option<Uuid>)> =
-        sqlx::query_as("SELECT status, adapter_id, machine_uuid FROM sessions WHERE id = $1")
-            .bind(&session_id)
-            .fetch_optional(&state.pool)
-            .await?;
-    let Some((status, adapter_id, machine_uuid)) = row else {
+    type Row = (Option<String>, Option<String>, Option<Uuid>, Option<String>, Option<String>);
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT s.status, s.adapter_id, s.machine_uuid, ou.name, su.name \
+         FROM sessions s \
+         LEFT JOIN machines m ON m.id = s.machine_uuid \
+         LEFT JOIN users ou ON ou.id = m.user_id \
+         LEFT JOIN users su ON su.id = s.spawned_by \
+         WHERE s.id = $1",
+    )
+    .bind(&session_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some((status, adapter_id, machine_uuid, owner, spawned_by)) = row else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "session not found"));
     };
 
@@ -64,6 +72,8 @@ pub async fn diagnose_session(
         accounts,
         machine_id: machine_uuid.map(|m| m.to_string()),
         machine_last_seen_ms: machine_last_seen.map(|t| t.timestamp_millis()),
+        owner,
+        spawned_by,
     };
 
     // The daemon round-trip (server → daemon WS → adapter → back). Any

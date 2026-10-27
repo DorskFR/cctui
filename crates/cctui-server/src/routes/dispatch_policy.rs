@@ -87,6 +87,12 @@ fn clean_opt(v: &mut Option<String>) {
     *v = v.take().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
 }
 
+/// Whether the worker would split a `#subdir` or a path `@ref` out of `url`.
+fn url_embeds_pin(url: &str) -> bool {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    url.contains('#') || rest.split_once('/').is_some_and(|(_, path)| path.contains('@'))
+}
+
 /// Trim and dedup every list; a pack needs a name and a url, and names are
 /// unique.
 fn normalize(rules: &mut DispatchPolicyRules) -> Result<(), String> {
@@ -101,6 +107,12 @@ fn normalize(rules: &mut DispatchPolicyRules) -> Result<(), String> {
         clean_opt(&mut pack.subdir);
         if pack.name.is_empty() || pack.url.is_empty() {
             return Err("a context pack needs a name and a url".into());
+        }
+        if url_embeds_pin(&pack.url) {
+            return Err(format!(
+                "context pack {:?}: set git_ref/subdir instead of `@`/`#` in the url",
+                pack.name
+            ));
         }
     }
     let mut names: Vec<&str> = rules.context_packs.iter().map(|p| p.name.as_str()).collect();
@@ -128,6 +140,7 @@ pub enum Rule {
     Adapter,
     Model,
     ContextPack,
+    Egress,
     Timeout,
     Concurrency,
     DailyCap,
@@ -141,6 +154,7 @@ impl Rule {
             Self::Adapter => "adapter",
             Self::Model => "model",
             Self::ContextPack => "context_pack",
+            Self::Egress => "egress",
             Self::Timeout => "max_timeout_minutes",
             Self::Concurrency => "max_concurrent",
             Self::DailyCap => "daily_cap",
@@ -210,7 +224,12 @@ fn check_context_pack(
         return Ok(());
     }
     let Some(url) = env_str(payload, "CONTEXT_PACK_URL") else {
-        return Ok(());
+        let stray = ["CONTEXT_PACK_REF", "CONTEXT_PACK_SUBDIR"]
+            .into_iter()
+            .find(|k| env_str(payload, k).is_some());
+        return stray.map_or(Ok(()), |k| {
+            Err(violation(Rule::ContextPack, format!("`{k}` needs a CONTEXT_PACK_URL")))
+        });
     };
     if allowed.iter().any(|g| pack_matches(g, payload)) {
         return Ok(());
@@ -220,6 +239,31 @@ fn check_context_pack(
         Rule::ContextPack,
         format!("{url:?} matches no allowed pack; allowed: [{}]", names.join(", ")),
     ))
+}
+
+/// Refuse caller env that redirects egress or, under a model list, the model.
+///
+/// The server mints its own `*_BASE_URL` after this check.
+fn check_env_keys(
+    rules: &DispatchPolicyRules,
+    payload: &serde_json::Value,
+) -> Result<(), Violation> {
+    let Some(env) = payload.get("env").and_then(serde_json::Value::as_object) else {
+        return Ok(());
+    };
+    for key in env.keys() {
+        let upper = key.to_ascii_uppercase();
+        if upper.ends_with("_BASE_URL") || upper.starts_with("WORKER_NET_") {
+            return Err(violation(Rule::Egress, format!("payload env `{key}` is reserved")));
+        }
+        if !rules.models.is_empty() && upper.ends_with("_MODEL") {
+            return Err(violation(
+                Rule::Model,
+                format!("payload env `{key}` would override the model"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The request-shape rules: every listed dimension and the timeout ceiling.
@@ -233,6 +277,10 @@ pub fn check_rules(
     let adapter = crate::routes::dispatch::payload_adapter(&req.payload).unwrap_or("claude-code");
     check_listed(Rule::Adapter, &rules.adapters, Some(adapter))?;
     check_listed(Rule::Model, &rules.models, payload_str(&req.payload, "model"))?;
+    if let Some(codex_model) = payload_str(&req.payload, "codex_model") {
+        check_listed(Rule::Model, &rules.models, Some(codex_model))?;
+    }
+    check_env_keys(rules, &req.payload)?;
     check_context_pack(&rules.context_packs, &req.payload)?;
     if let Some(max) = rules.max_timeout_minutes {
         match req.timeout {
@@ -413,6 +461,96 @@ mod tests {
     }
 
     #[test]
+    fn the_model_rule_covers_codex_model_and_model_env_overrides() {
+        let rules = DispatchPolicyRules { models: vec!["sonnet".into()], ..Default::default() };
+        let with = |key: &str, value: serde_json::Value| {
+            let mut payload = serde_json::json!({"model": "sonnet"});
+            payload[key] = value;
+            req("d", payload)
+        };
+        let codex = |model: &str| with("codex_model", model.into());
+        assert_eq!(check_rules(&rules, &mut codex("sonnet")), Ok(()));
+        assert_eq!(
+            check_rules(&rules, &mut with("env", serde_json::json!({"GITHUB_TOKEN": "t"}))),
+            Ok(())
+        );
+        assert_eq!(rule_of(check_rules(&rules, &mut codex("gpt-5.6-sol"))), Some(Rule::Model));
+        for key in [
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_SMALL_FAST_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+            "anthropic_model",
+        ] {
+            let err = check_rules(&rules, &mut with("env", serde_json::json!({key: "opus"})))
+                .unwrap_err();
+            assert_eq!(err.rule, Rule::Model, "{key}");
+            assert!(err.to_string().contains(key), "names the key: {err}");
+        }
+        let overrides =
+            serde_json::json!({"codex_model": "gpt", "env": {"ANTHROPIC_MODEL": "opus"}});
+        assert_eq!(
+            check_rules(&DispatchPolicyRules::default(), &mut req("d", overrides)),
+            Ok(()),
+            "an open model list leaves model overrides alone"
+        );
+    }
+
+    #[test]
+    fn any_policy_refuses_caller_base_urls_and_worker_net_env() {
+        let rules = DispatchPolicyRules::default();
+        let keys = ["FIREWORKS_BASE_URL", "anthropic_base_url", "WORKER_NET_ALLOW", "worker_net_x"];
+        for key in keys {
+            let payload = serde_json::json!({"env": {key: "https://x"}});
+            let err = check_rules(&rules, &mut req("d", payload)).unwrap_err();
+            assert_eq!(err.rule, Rule::Egress, "{key}");
+            assert!(err.to_string().contains(key), "names the key: {err}");
+        }
+        let unrelated = serde_json::json!({"env": {"BASE_URL_NOTE": "x", "NET_ALLOW": "y"}});
+        assert_eq!(check_rules(&rules, &mut req("d", unrelated)), Ok(()));
+    }
+
+    #[test]
+    fn a_restricted_pack_refuses_ref_or_subdir_without_a_url() {
+        let rules = DispatchPolicyRules {
+            context_packs: vec![pack("p", "https://git/p.git", None, None)],
+            ..Default::default()
+        };
+        for key in ["CONTEXT_PACK_REF", "CONTEXT_PACK_SUBDIR"] {
+            let payload = serde_json::json!({"env": {key: "evil"}});
+            assert_eq!(
+                rule_of(check_rules(&rules, &mut req("d", payload))),
+                Some(Rule::ContextPack),
+                "{key}"
+            );
+        }
+        let ref_only = serde_json::json!({"env": {"CONTEXT_PACK_REF": "evil"}});
+        assert_eq!(
+            check_rules(&DispatchPolicyRules::default(), &mut req("d", ref_only)),
+            Ok(()),
+            "unrestricted packs leave the ref alone"
+        );
+    }
+
+    #[test]
+    fn normalize_rejects_a_ref_or_subdir_embedded_in_a_pack_url() {
+        for url in ["https://git/p.git@v1", "https://git/p.git#packs/a", "git@host:o/r.git@v1"] {
+            let mut rules = DispatchPolicyRules {
+                context_packs: vec![pack("p", url, None, None)],
+                ..Default::default()
+            };
+            assert!(normalize(&mut rules).unwrap_err().contains("git_ref/subdir"), "{url}");
+        }
+        for url in ["https://user@git/p.git", "git@github.com:o/r.git", "https://git/p.git"] {
+            let mut rules = DispatchPolicyRules {
+                context_packs: vec![pack("p", url, None, None)],
+                ..Default::default()
+            };
+            assert_eq!(normalize(&mut rules), Ok(()), "{url}");
+        }
+    }
+
+    #[test]
     fn the_context_pack_rule_matches_url_and_any_pinned_ref_or_subdir() {
         let rules = DispatchPolicyRules {
             context_packs: vec![
@@ -584,6 +722,16 @@ mod tests {
         let mut r = req("anything", serde_json::json!({"model": "whatever"}));
         assert!(super::enforce(&state, uid, &mut r).await.unwrap().is_none());
         assert_eq!(r.timeout, None);
+        let mut unbound = req(
+            "anything",
+            serde_json::json!({"model": "opus", "codex_model": "gpt-5.6-sol", "env": {
+                "FIREWORKS_BASE_URL": "https://x", "WORKER_NET_ALLOW": "*",
+                "ANTHROPIC_MODEL": "opus", "CONTEXT_PACK_REF": "dev"
+            }}),
+        );
+        let sent = unbound.payload.clone();
+        assert!(super::enforce(&state, uid, &mut unbound).await.unwrap().is_none());
+        assert_eq!(unbound.payload, sent, "no policy: the payload goes through untouched");
 
         let rules = DispatchPolicyRules {
             dispatchers: vec!["anything".into()],

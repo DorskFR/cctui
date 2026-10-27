@@ -10,10 +10,9 @@ import type { QueryClient } from '@tanstack/svelte-query';
 import {
 	KeyedListeners,
 	decodeBase64,
-	lastMessageExcerpt,
 	scheduledLaunchPatch,
 	spawnOutcomeFromEnd,
-	userMsgKey,
+	streamListPatch,
 	type AccountUsageEvent,
 	type CommandOutcome,
 	type GithubEvent,
@@ -104,7 +103,7 @@ export class WsClient {
 	/** Last workflow-guard step per session, so a header mounting after the
 	 * frame still shows it; listeners keyed by session id. */
 	private guardSteps = new Map<string, GuardStepState>();
-	private guardStepCbs = new KeyedListeners<GuardStepState>();
+	private guardStepCbs = new KeyedListeners<GuardStepState | null>();
 	/** GitHub inbox listeners; not session-keyed — one
 	 * broadcast channel the mounted inbox subscribes to. Not reactive. */
 	private githubCbs = new Set<GithubCb>();
@@ -165,15 +164,8 @@ export class WsClient {
 				const { session_id: sid, data } = msg;
 				this.commands.settleSpawn(sid, { ok: true });
 				this.streams.appendEvent(sid, data);
-				// The list's last-message column tracks USER messages only
-				// (server: event_type='message'); assistant text must not patch it.
-				if (userMsgKey(data) !== null && (data.type === 'text' || data.type === 'reply')) {
-					this.emitListPatch({
-						session_id: sid,
-						last_message_text: lastMessageExcerpt(data.content),
-						last_message_at: new Date(data.ts).toISOString()
-					});
-				}
+				const patch = streamListPatch(sid, data);
+				if (patch) this.emitListPatch(patch);
 				break;
 			}
 			case 'pty_chunk': {
@@ -206,6 +198,7 @@ export class WsClient {
 			case 'session_ended': {
 				const { type: _, ...ev } = msg;
 				this.commands.settleSpawn(ev.session_id, spawnOutcomeFromEnd(ev.reason, ev.detail ?? null));
+				this.clearGuardStep(ev.session_id);
 				for (const cb of this.sessionEndedCbs) cb(ev);
 				this.markListDirty();
 				break;
@@ -461,14 +454,29 @@ export class WsClient {
 		return this.guardSteps.get(id) ?? null;
 	}
 
-	/** Seed the step from an HTTP read (the WS only pushes changes). */
 	setGuardStep(id: string, state: GuardStepState) {
 		this.guardSteps.set(id, state);
 		this.guardStepCbs.emit(id, state);
 	}
 
-	/** Follow a session's workflow-guard step. Returns an unsubscribe fn. */
-	onGuardStep(id: string, cb: (ev: GuardStepEvent) => void): () => void {
+	/** An ended session no longer runs under its pod's guard; a resume re-reports the step. */
+	clearGuardStep(id: string) {
+		if (this.guardSteps.delete(id)) this.guardStepCbs.emit(id, null);
+	}
+
+	/** Seed the step from an HTTP read (the WS only pushes changes). A frame
+	 * landing while the read is in flight is fresher and wins. */
+	async seedGuardStep(id: string, read: Promise<GuardStepState | null>) {
+		const before = this.guardSteps.get(id);
+		const res = await read;
+		if (res && this.guardSteps.get(id) === before) this.setGuardStep(id, res);
+	}
+
+	/** Follow a session's workflow-guard step, `null` once it ends. Returns an unsubscribe fn. */
+	onGuardStep(
+		id: string,
+		cb: (ev: Omit<GuardStepEvent, 'state'> & { state: GuardStepState | null }) => void
+	): () => void {
 		return this.guardStepCbs.add(id, (state) => cb({ session_id: id, state }));
 	}
 

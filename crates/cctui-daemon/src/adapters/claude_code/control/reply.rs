@@ -1,5 +1,10 @@
 use super::{AdapterEvent, Driver, json, socket, transcript};
 
+/// How long Claude Code may take to show it took a spoken multiline reply on
+/// its own before the Enter-driven submit takes over.
+const TAKEN_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+const TAKEN_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
 impl Driver {
     /// Repair only the idle worker named by a recovery request. Resolve its
     /// durable gateway binding BEFORE stopping it, then resume the same saved
@@ -215,29 +220,99 @@ impl Driver {
                 .send(AdapterEvent::PlanResolved { local_id: local_id.to_owned() })
                 .await;
         }
+        Box::pin(self.submit_text(sock, &short, local_id, text, had_pending_ask)).await
+    }
+
+    /// Type `text` into the worker's composer and see it submitted.
+    async fn submit_text(
+        &self,
+        sock: &std::path::Path,
+        short: &str,
+        local_id: &str,
+        text: &str,
+        had_pending_ask: bool,
+    ) -> anyhow::Result<()> {
+        let spoken = cctui_proto::injected::is_spoken_prompt(text);
+        let hop = |name: &str| {
+            if spoken {
+                self.voice.hop(local_id, name);
+            }
+        };
+        let epoch = socket::keys_epoch(short);
         // The `reply` op types into the live composer, which is not empty after
         // an ESC ESC draft restore. Only an idle worker with no form up is safe
         // to clear (mid-turn the composer is a queue, and a form eats the keys).
-        if !had_pending_ask && !self.is_busy(&short) {
-            match socket::attach_clear_composer(sock, &short).await {
+        // The paced clear costs a spoken prompt over a second, so it is skipped
+        // when the last reply left the composer empty and no ESC came since.
+        let may_clear = !had_pending_ask && !self.is_busy(short);
+        if may_clear && spoken && socket::composer_known_empty(short) {
+            hop("composer clear skipped");
+        } else if may_clear {
+            match socket::attach_clear_composer(sock, short).await {
                 Ok(()) => tracing::debug!(%short, "cleared composer before reply"),
                 Err(err) => tracing::warn!(%err, %short, "failed to clear composer before reply"),
             }
+            hop("composer cleared");
         }
         // Baseline before the reply op: a build that auto-submits multiline
         // replies grows the transcript immediately, and a later baseline would
         // hide that submit from the confirm loop.
-        let confirm = self.submit_confirm(&short, local_id);
+        let confirm = self.submit_confirm(short, local_id);
+        let sent_at = chrono::Utc::now().timestamp_millis();
         let resp =
             socket::one_shot(sock, &json!({"proto":1,"op":"reply","short":short,"text":text}))
                 .await?;
         tracing::debug!(?resp, %short, "reply ack");
-        if text.contains('\n')
-            && let Err(err) = Box::pin(socket::attach_submit(sock, &short, &confirm)).await
-        {
-            tracing::warn!(%err, %short, "failed to submit multiline reply draft");
+        hop("reply op acked");
+        let typed = resp.get("ok") != Some(&serde_json::Value::Bool(false));
+        let submitted = if text.contains('\n') {
+            if spoken && self.prompt_taken(short, &confirm, sent_at).await {
+                hop("submitted without an Enter");
+                true
+            } else if let Err(err) = Box::pin(socket::attach_submit(sock, short, &confirm)).await {
+                tracing::warn!(%err, %short, "failed to submit multiline reply draft");
+                false
+            } else {
+                hop("draft submitted");
+                true
+            }
+        } else {
+            true
+        };
+        if typed && submitted {
+            socket::note_composer_emptied(short, epoch);
         }
         Ok(())
+    }
+
+    /// Whether an idle worker took a reply sent at `sent_at` (epoch ms) on its
+    /// own: its user line, the answer starting, or the worker persisting a
+    /// working tempo since. Pressing Enter into a worker already answering
+    /// waits out its spinner and can submit an empty line.
+    async fn prompt_taken(
+        &self,
+        short: &str,
+        confirm: &socket::SubmitConfirm,
+        sent_at: i64,
+    ) -> bool {
+        if matches!(confirm, socket::SubmitConfirm::Composer) {
+            return false;
+        }
+        let deadline = tokio::time::Instant::now() + TAKEN_WAIT;
+        loop {
+            if socket::turn_entry_landed(confirm)
+                || working_since(
+                    super::StateJson::read(&self.cfg.jobs_root, short).as_ref(),
+                    sent_at,
+                )
+            {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(TAKEN_POLL).await;
+        }
     }
 
     /// Pick the submit-confirmation signal for a worker: transcript growth
@@ -325,6 +400,16 @@ fn silent_since_native_respawn(
         .as_deref()
         .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
         .is_some_and(|at| at.timestamp_millis() <= started_at)
+}
+
+fn working_since(state: Option<&super::StateJson>, since_ms: i64) -> bool {
+    let Some(state) = state else { return false };
+    state.tempo.as_deref().is_some_and(|tempo| tempo != "idle")
+        && state
+            .updated_at
+            .as_deref()
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .is_some_and(|at| at.timestamp_millis() >= since_ms)
 }
 
 fn valid_recovery_env(env: &std::collections::BTreeMap<String, String>) -> bool {
@@ -784,5 +869,190 @@ mod auth_recovery_tests {
         assert!(valid_recovery_env(&env));
         env.insert("ANTHROPIC_AUTH_TOKEN".into(), "provider-token".into());
         assert!(!valid_recovery_env(&env));
+    }
+}
+
+#[cfg(test)]
+mod submit_tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    const SPOKEN: &str =
+        "<cctui-session-context voice=\"spoken\">\nbody\n</cctui-session-context>\n\nhi";
+
+    fn append_line(transcript: &Path, kind: &str) {
+        let mut f = std::fs::OpenOptions::new().append(true).open(transcript).unwrap();
+        std::io::Write::write_all(&mut f, format!("{{\"type\":\"{kind}\"}}\n").as_bytes()).unwrap();
+    }
+
+    fn write_state(jobs_root: &Path, short: &str, tempo: &str, updated_at_ms: i64) {
+        let dir = jobs_root.join(short);
+        std::fs::create_dir_all(&dir).unwrap();
+        let at = chrono::DateTime::from_timestamp_millis(updated_at_ms)
+            .unwrap()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let state = serde_json::json!({ "tempo": tempo, "updatedAt": at });
+        std::fs::write(dir.join("state.json"), state.to_string()).unwrap();
+    }
+
+    /// How the worker shows it took a `reply` with no Enter, if it does.
+    #[derive(Clone, Copy)]
+    enum Taken {
+        Never,
+        UserLine,
+        AnswerStarts,
+        Working,
+        WorkingBeforeTheReply,
+    }
+
+    /// A control socket recording each request's op. An Enter on an attach
+    /// submits; `reply` submits on its own as `taken` says.
+    fn fake_daemon(
+        sock: &Path,
+        transcript: PathBuf,
+        state: (PathBuf, String),
+        taken: Taken,
+    ) -> (tokio::task::JoinHandle<()>, Arc<Mutex<Vec<String>>>) {
+        let listener = tokio::net::UnixListener::bind(sock).unwrap();
+        let ops = Arc::new(Mutex::new(Vec::new()));
+        let seen = ops.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (read, mut write) = stream.into_split();
+                let mut reader = tokio::io::BufReader::new(read);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let op = request["op"].as_str().unwrap().to_owned();
+                seen.lock().unwrap().push(op.clone());
+                if op == "reply" {
+                    match taken {
+                        Taken::UserLine => append_line(&transcript, "user"),
+                        Taken::AnswerStarts => append_line(&transcript, "assistant"),
+                        Taken::Working => write_state(
+                            &state.0,
+                            &state.1,
+                            "active",
+                            chrono::Utc::now().timestamp_millis(),
+                        ),
+                        Taken::Never | Taken::WorkingBeforeTheReply => {}
+                    }
+                }
+                write.write_all(b"{\"ok\":true}\n").await.unwrap();
+                if op != "attach" {
+                    continue;
+                }
+                let mut keys = [0_u8; 64];
+                while let Ok(n) = reader.read(&mut keys).await {
+                    if n == 0 {
+                        break;
+                    }
+                    if keys[..n].contains(&b'\r') {
+                        append_line(&transcript, "user");
+                    }
+                }
+            }
+        });
+        (server, ops)
+    }
+
+    async fn deliver(text: &str, known_empty: bool, taken: Taken) -> Vec<String> {
+        let (mut driver, _events) = super::super::test_support::driver();
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("control.sock");
+        let transcript = dir.path().join("session.jsonl");
+        std::fs::write(&transcript, "{\"type\":\"assistant\"}\n").unwrap();
+        let short = format!("s-{}", uuid::Uuid::new_v4());
+        driver.transcript_locations.insert(
+            short.clone(),
+            super::super::TranscriptLocation {
+                path: transcript.clone(),
+                local_id: "sess".into(),
+                cwd: "/project".into(),
+                offset_key: "sess".into(),
+            },
+        );
+        if known_empty {
+            socket::note_composer_emptied(&short, socket::keys_epoch(&short));
+        }
+        let jobs_root = driver.cfg.jobs_root.clone();
+        if matches!(taken, Taken::WorkingBeforeTheReply) {
+            write_state(&jobs_root, &short, "active", chrono::Utc::now().timestamp_millis() - 5000);
+        }
+        let (server, ops) = fake_daemon(&sock, transcript, (jobs_root, short.clone()), taken);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            Box::pin(driver.submit_text(&sock, &short, "sess", text, false)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        server.abort();
+        assert!(socket::composer_known_empty(&short), "a submitted reply empties the composer");
+        ops.lock().unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn a_spoken_prompt_into_an_empty_composer_is_one_reply_op() {
+        assert_eq!(deliver(SPOKEN, true, Taken::UserLine).await, ["reply"]);
+    }
+
+    #[tokio::test]
+    async fn a_spoken_prompt_still_clears_a_composer_not_known_empty() {
+        assert_eq!(deliver(SPOKEN, false, Taken::UserLine).await, ["attach", "reply"]);
+    }
+
+    #[tokio::test]
+    async fn a_spoken_prompt_taken_before_its_user_line_gets_no_enter() {
+        let started = std::time::Instant::now();
+        assert_eq!(deliver(SPOKEN, true, Taken::Working).await, ["reply"]);
+        assert_eq!(deliver(SPOKEN, true, Taken::AnswerStarts).await, ["reply"]);
+        assert!(started.elapsed() < TAKEN_WAIT, "no wait once the worker took the prompt");
+    }
+
+    #[tokio::test]
+    async fn a_spoken_prompt_that_does_not_submit_itself_gets_its_enter() {
+        assert_eq!(deliver(SPOKEN, true, Taken::Never).await, ["reply", "attach"]);
+        assert_eq!(
+            deliver(SPOKEN, true, Taken::WorkingBeforeTheReply).await,
+            ["reply", "attach"],
+            "a working tempo written before the reply proves nothing",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_typed_reply_keeps_the_clear_and_the_enter() {
+        assert_eq!(
+            deliver("line one\nline two", true, Taken::UserLine).await,
+            ["attach", "reply", "attach"]
+        );
+        assert_eq!(
+            deliver("line one\nline two", true, Taken::Working).await,
+            ["attach", "reply", "attach"]
+        );
+        assert_eq!(deliver("one line", true, Taken::UserLine).await, ["attach", "reply"]);
+    }
+
+    #[test]
+    fn only_a_working_tempo_written_since_the_reply_counts() {
+        let state = |tempo: &str, at: &str| {
+            let mut st: super::super::StateJson = serde_json::from_value(json!({})).unwrap();
+            st.tempo = Some(tempo.into());
+            st.updated_at = Some(at.into());
+            st
+        };
+        let sent = chrono::DateTime::parse_from_rfc3339("2026-10-22T03:20:00.500Z")
+            .unwrap()
+            .timestamp_millis();
+        assert!(working_since(Some(&state("active", "2026-10-22T03:20:00.512Z")), sent));
+        assert!(!working_since(Some(&state("active", "2026-10-22T03:20:00.499Z")), sent));
+        assert!(!working_since(Some(&state("idle", "2026-10-22T03:20:01.000Z")), sent));
+        assert!(!working_since(Some(&state("active", "not a time")), sent));
+        assert!(!working_since(None, sent));
     }
 }

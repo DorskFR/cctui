@@ -115,6 +115,23 @@ pub async fn grants_dispatcher(
     .await
 }
 
+/// Whether the user owning `session_id` has a dispatch policy: the registered
+/// session's user, or the one its dispatch key was minted for.
+pub async fn session_is_policy_bound(
+    exec: impl PgExecutor<'_>,
+    session_id: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM dispatch_policies WHERE user_id IN ( \
+             SELECT user_id FROM sessions WHERE id = $1 \
+             UNION ALL \
+             SELECT user_id FROM auth_keys WHERE session_id = $1 AND kind = 'ephemeral'))",
+    )
+    .bind(session_id)
+    .fetch_one(exec)
+    .await
+}
+
 /// Forwarded dispatches of `user_id` still alive: an unexpired, unrevoked
 /// ephemeral worker key whose session has not reached a terminal state. Only
 /// recorded uses count, as a refused forward still minted a key.
@@ -145,18 +162,156 @@ pub async fn dispatches_today(
     .await
 }
 
+#[cfg(test)]
 pub async fn record_use(
     exec: impl PgExecutor<'_>,
     user_id: Uuid,
     session_id: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO dispatch_policy_uses (session_id, user_id) VALUES ($1, $2) \
-         ON CONFLICT (session_id) DO NOTHING",
+    sqlx::query("INSERT INTO dispatch_policy_uses (session_id, user_id) VALUES ($1, $2)")
+        .bind(session_id)
+        .bind(user_id)
+        .execute(exec)
+        .await?;
+    Ok(())
+}
+
+/// Keeps these advisory-lock keys apart from every other user of the space.
+const USE_LOCK_CLASS: i32 = 0x6470_7573;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reservation {
+    Granted(i64),
+    OverConcurrency { live: i64, max: u32 },
+    OverDailyCap { today: i64, cap: u32 },
+}
+
+/// Count `user_id`'s caps and record the use in one transaction serialised per
+/// user, so concurrent dispatches cannot all read the same count. The lock is
+/// released at commit, before the caller forwards anything.
+pub async fn reserve_use(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    session_id: &str,
+    max_concurrent: Option<u32>,
+    daily_cap: Option<u32>,
+) -> Result<Reservation, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+        .bind(USE_LOCK_CLASS)
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    if let Some(max) = max_concurrent {
+        let live = live_dispatches(&mut *tx, user_id).await?;
+        if live >= i64::from(max) {
+            return Ok(Reservation::OverConcurrency { live, max });
+        }
+    }
+    if let Some(cap) = daily_cap {
+        let today = dispatches_today(&mut *tx, user_id).await?;
+        if today >= i64::from(cap) {
+            return Ok(Reservation::OverDailyCap { today, cap });
+        }
+    }
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO dispatch_policy_uses (session_id, user_id) VALUES ($1, $2) RETURNING id",
     )
     .bind(session_id)
     .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Reservation::Granted(id))
+}
+
+pub async fn release_use(exec: impl PgExecutor<'_>, id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM dispatch_policy_uses WHERE id = $1").bind(id).execute(exec).await?;
+    Ok(())
+}
+
+/// Drops uses no cap reads any more: only the current UTC day counts.
+pub async fn prune_uses(exec: impl PgExecutor<'_>) -> Result<u64, sqlx::Error> {
+    let res = sqlx::query(
+        "DELETE FROM dispatch_policy_uses WHERE dispatched_at < now() - interval '2 days'",
+    )
     .execute(exec)
     .await?;
-    Ok(())
+    Ok(res.rows_affected())
+}
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    async fn seed_user(pool: &sqlx::PgPool) -> Uuid {
+        let uid = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("policy-uses-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(pool)
+            .await
+            .expect("seed user");
+        uid
+    }
+
+    #[tokio::test]
+    async fn two_runs_of_one_session_both_count_but_hold_one_slot() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_policy_uses_two_runs") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let uid = seed_user(&pool).await;
+        let sid = Uuid::new_v4().to_string();
+        super::record_use(&pool, uid, &sid).await.unwrap();
+        super::record_use(&pool, uid, &sid).await.unwrap();
+        assert_eq!(super::dispatches_today(&pool, uid).await.unwrap(), 2);
+
+        sqlx::query(
+            "INSERT INTO auth_keys (user_id, key_hash, kind, session_id, expires_at) \
+             VALUES ($1, $2, 'ephemeral', $3, now() + interval '1 hour')",
+        )
+        .bind(uid)
+        .bind(format!("eph-{sid}"))
+        .bind(&sid)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(super::live_dispatches(&pool, uid).await.unwrap(), 1);
+
+        sqlx::query("DELETE FROM auth_keys WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    #[tokio::test]
+    async fn prune_drops_only_uses_older_than_two_days() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_policy_uses_prune") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let uid = seed_user(&pool).await;
+        let (old, recent) = (format!("old-{uid}"), format!("recent-{uid}"));
+        for (sid, age) in [(&old, "3 days"), (&recent, "1 day")] {
+            sqlx::query(
+                "INSERT INTO dispatch_policy_uses (session_id, user_id, dispatched_at) \
+                 VALUES ($1, $2, now() - $3::interval)",
+            )
+            .bind(sid)
+            .bind(uid)
+            .bind(age)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        assert!(super::prune_uses(&pool).await.unwrap() >= 1);
+        let left: Vec<String> =
+            sqlx::query_scalar("SELECT session_id FROM dispatch_policy_uses WHERE user_id = $1")
+                .bind(uid)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(left, [recent]);
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
 }

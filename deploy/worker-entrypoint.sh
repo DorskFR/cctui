@@ -1,8 +1,10 @@
 #!/usr/bin/env sh
 # Entrypoint for the cctui worker container (contract v1).
-# Runs root-side bootstrap phases, each skippable when its env is absent, then
-# drops to uid 1000 via cctui-supervisor and execs the daemon. Only the context
-# pack fetch is fail-closed. Ephemeral: never self-updates.
+# Runs bootstrap phases, each skippable when its env is absent, then drops to
+# uid 1000 via cctui-supervisor and execs the daemon. Starting as uid 1000
+# (runAsNonRoot) skips the root-only steps instead. Only the context
+# pack fetch and the pre-flight isolation check are fail-closed. Ephemeral:
+# never self-updates.
 # See docs/worker-contract.md for the env / mount / capability contract.
 set -eu
 
@@ -64,8 +66,27 @@ PROXY_PORT=15001
 PROXY_HEALTH_PORT=15002
 GUARD_PORT=9999
 POLICY_FILE=/var/run/guard-proxy/policy.json
+PRIVATE_ALLOW_FILE=/var/run/guard-proxy/private-allow
 GUARD_STATE=/var/run/workflow-guard/state
 CONTEXT_DIR=/opt/context
+
+is_root() {
+    [ "$(id -u)" = 0 ]
+}
+
+# Runs a command as the worker uid: dropped when root, as-is when already the
+# worker. Extension hooks call it instead of runuser.
+as_worker() {
+    if ! is_root; then
+        "$@"
+    elif command -v setpriv >/dev/null 2>&1; then
+        setpriv --reuid="$WORKER_UID" --regid="$WORKER_UID" --clear-groups "$@"
+    else
+        runuser -u "$WORKER_USER" -- "$@"
+    fi
+}
+
+is_root || log "running as uid $(id -u) (non-root): root-only bootstrap steps are skipped"
 
 # The ACP agents the image bakes (crates/cctui-daemon/src/adapters/acp/rows.rs).
 ACP_AGENTS="gemini qwen goose"
@@ -95,6 +116,16 @@ require_known_adapter() {
     log "dispatch: unknown adapter '${TASK_ADAPTER}' (known: claude-code codex opencode ${ACP_AGENTS})"
     jq -nc --arg id "${TASK_ID:-}" --arg a "$TASK_ADAPTER" \
         '{task_id:$id, status:"failed", error:("dispatch payload names unknown adapter `"+$a+"`")}' \
+        > "$RESULT_FILE"
+    exit 1
+}
+
+# The kube dispatcher reports the termination message as the session's end reason.
+TERMINATION_LOG="${TERMINATION_LOG:-/dev/termination-log}"
+fail_dispatch() {
+    log "dispatch: $1"
+    { printf '%s' "$1" > "$TERMINATION_LOG"; } 2>/dev/null || true
+    jq -nc --arg id "${TASK_ID:-}" --arg e "$1" '{task_id:$id, status:"failed", error:$e}' \
         > "$RESULT_FILE"
     exit 1
 }
@@ -142,7 +173,7 @@ url_hostport() {
     _u="$1"
     [ -n "$_u" ] || return 0
     _scheme=$(printf '%s' "$_u" | sed -n 's,^\([a-zA-Z][a-zA-Z0-9+.-]*\)://.*,\1,p')
-    _hostport=$(printf '%s' "$_u" | sed -e 's,^[a-zA-Z][a-zA-Z0-9+.-]*://,,' -e 's,/.*$,,' -e 's,^[^@]*@,,')
+    _hostport=$(printf '%s' "$_u" | sed -e 's,^[a-zA-Z][a-zA-Z0-9+.-]*://,,' -e 's,[/?#].*$,,' -e 's,^.*@,,')
     case "$_hostport" in
         *:*) printf '%s' "$_hostport" ;;
         *)
@@ -155,22 +186,53 @@ url_hostport() {
     esac
 }
 
+# host:port of the dispatch's repo when it is fetched over http(s); empty for
+# ssh, scp-style and local URLs, which the SNI guard cannot pass anyway.
+repo_hostport() {
+    case "$1" in
+        https://* | http://*) url_hostport "$1" ;;
+    esac
+}
+
 # bare host (no port) from a URL.
 url_host() {
     printf '%s' "$(url_hostport "$1")" | sed 's,:.*$,,'
 }
 
-# host:port of every model-gateway base URL the dispatch minted, one per line,
-# deduped. Pod env wins over the payload's env (docker/apple leave it there).
+GATEWAY_URL_KEYS="ANTHROPIC_BASE_URL OPENAI_BASE_URL FIREWORKS_BASE_URL GOOGLE_GEMINI_BASE_URL"
+
+# A model-gateway base URL the dispatch minted. Pod env wins over the payload's
+# env (docker/apple leave it there).
+gateway_url() {
+    eval "_gu=\${$1:-}"
+    if [ -z "$_gu" ] && [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
+        _gu=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -r --arg k "$1" '.env[$k] // empty' 2>/dev/null || true)
+    fi
+    printf '%s' "$_gu"
+}
+
+# host:port of every model-gateway base URL, one per line, deduped.
 gateway_hostports() {
-    for _k in ANTHROPIC_BASE_URL OPENAI_BASE_URL FIREWORKS_BASE_URL GOOGLE_GEMINI_BASE_URL; do
-        eval "_u=\${$_k:-}"
-        if [ -z "$_u" ] && [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
-            _u=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -r --arg k "$_k" '.env[$k] // empty' 2>/dev/null || true)
-        fi
-        url_hostport "$_u"
+    for _k in $GATEWAY_URL_KEYS; do
+        url_hostport "$(gateway_url "$_k")"
         printf '\n'
     done | sed '/^$/d' | sort -u
+}
+
+# `host:port VAR` per control-plane URL: the hosts the guard-proxy may reach on
+# a private IP (bound to their own DNS answer). A file, because the sidecar
+# cannot read this env.
+private_allow_lines() {
+    for _k in CCTUI_URL CCTUI_SERVER_URL REPLY_URL $GATEWAY_URL_KEYS; do
+        case " $GATEWAY_URL_KEYS " in
+            *" $_k "*) _u=$(gateway_url "$_k") ;;
+            *) eval "_u=\${$_k:-}" ;;
+        esac
+        _hp=$(url_hostport "$_u")
+        if [ -n "$_hp" ]; then
+            printf '%s %s\n' "$_hp" "$_k"
+        fi
+    done
 }
 
 # Trust the guard-proxy sidecar's per-pod CA alongside the public roots.
@@ -195,7 +257,8 @@ install_guard_ca() {
     # Prefer the OS store: update-ca-certificates folds the guard CA into the
     # system bundle so every OpenSSL client trusts it with no env at all.
     _bundle="$GUARD_CA_FILE"
-    if command -v update-ca-certificates >/dev/null 2>&1 \
+    is_root || log "guard-proxy CA: non-root, system trust store skipped; using the env-pointed bundle"
+    if is_root && command -v update-ca-certificates >/dev/null 2>&1 \
             && mkdir -p /usr/local/share/ca-certificates 2>/dev/null \
             && cp "$GUARD_CA_FILE" /usr/local/share/ca-certificates/cctui-guard-proxy.crt 2>/dev/null \
             && update-ca-certificates >/dev/null 2>&1; then
@@ -274,7 +337,8 @@ wire_gpg_forwarding() {
 # transparent: iptables REDIRECT to an in-container proxy. forward: proxy env
 # only. transparent-external: sidecar proxy, REDIRECT installed by net-init.
 # Every mode seeds a deny-default policy: the structural hosts (server, callback,
-# every minted model-gateway base), the boot-only pack host and WORKER_NET_ALLOW.
+# every minted model-gateway base), the boot-only pack and repo hosts and
+# WORKER_NET_ALLOW.
 seed_policy() {
     mkdir -p "$(dirname "$POLICY_FILE")"
 
@@ -286,13 +350,56 @@ seed_policy() {
     # Boot-only: the pack host is deliberately NOT --always-allow'ed in
     # phase_guard, so the first per-step rewrite closes it again.
     _pack_hp=$(url_hostport "${CONTEXT_PACK_URL:-}")
+    # Boot-only too: the worker uid's clone and checkout of the dispatch's own
+    # repo go through the proxy, which injects its credential.
+    _repo_hp=$(repo_hostport "${TASK_REPO_URL:-}")
     _net_allow=$(printf '%s' "${WORKER_NET_ALLOW:-}" | tr ',' '\n' \
         | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;/^$/d')
-    _allowed=$(printf '%s\n%s\n%s\n%s\n%s\n' "$_cctui_hp" "$_reply_hp" "$_gw_hps" "$_pack_hp" "$_net_allow" \
+    _allowed=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$_cctui_hp" "$_reply_hp" "$_gw_hps" "$_pack_hp" \
+            "$_repo_hp" "$_net_allow" \
         | sed '/^$/d' | jq -R . | jq -cs 'unique')
     printf '{"allowed_hosts":%s,"default":"deny"}\n' "$_allowed" > "$POLICY_FILE"
+    private_allow_lines > "${PRIVATE_ALLOW_FILE}.tmp"
+    chmod 644 "${PRIVATE_ALLOW_FILE}.tmp"
+    mv -f "${PRIVATE_ALLOW_FILE}.tmp" "$PRIVATE_ALLOW_FILE"
     _gw_log=$(printf '%s' "$_gw_hps" | tr '\n' ',' | sed 's/,$//;s/,/, /g')
-    log "seeded guard-proxy policy (allow: ${_cctui_hp}${_reply_hp:+, $_reply_hp}${_gw_log:+, $_gw_log}${_pack_hp:+, $_pack_hp}${WORKER_NET_ALLOW:+, $WORKER_NET_ALLOW}; default deny)"
+    log "seeded guard-proxy policy (allow: ${_cctui_hp}${_reply_hp:+, $_reply_hp}${_gw_log:+, $_gw_log}${_pack_hp:+, $_pack_hp}${_repo_hp:+, $_repo_hp}${WORKER_NET_ALLOW:+, $WORKER_NET_ALLOW}; default deny)"
+}
+
+repo_registry_hostports() {
+    [ -d "$1" ] || return 0
+    find "$1" -maxdepth 3 \( -name .git -o -name node_modules -o -name target \
+            -o -name vendor -o -name .venv \) -prune -o -type f \
+            \( -name package.json -o -name package-lock.json -o -name npm-shrinkwrap.json \
+            -o -name pyproject.toml -o -name uv.lock -o -name 'requirements*.txt' \
+            -o -name Cargo.toml -o -name go.mod \) -print 2>/dev/null \
+        | sed 's,.*/,,' | sort -u | while IFS= read -r _f; do
+            case "$_f" in
+                package.json | package-lock.json | npm-shrinkwrap.json)
+                    echo registry.npmjs.org:443 ;;
+                pyproject.toml | uv.lock | requirements*.txt)
+                    printf '%s\n' pypi.org:443 files.pythonhosted.org:443 ;;
+                Cargo.toml)
+                    printf '%s\n' index.crates.io:443 static.crates.io:443 crates.io:443 ;;
+                go.mod)
+                    printf '%s\n' proxy.golang.org:443 sum.golang.org:443 ;;
+            esac
+        done | sort -u
+}
+
+# Seeded only, never --always-allow'ed: a guarded step's [network] has the final say.
+phase_repo_registries() {
+    case "${WORKER_REPO_REGISTRIES:-1}" in
+        0 | false | off | no) return 0 ;;
+    esac
+    [ -f "$POLICY_FILE" ] || return 0
+    _rr_hps=$(repo_registry_hostports "/workspace/${TASK_REPO:-repo}")
+    [ -n "$_rr_hps" ] || return 0
+    jq -c --arg h "$_rr_hps" \
+        '.allowed_hosts = ((.allowed_hosts + ($h | split("\n") | map(select(. != "")))) | unique)' \
+        "$POLICY_FILE" > "${POLICY_FILE}.tmp" \
+        && mv -f "${POLICY_FILE}.tmp" "$POLICY_FILE" \
+        && log "repo registries allowed: $(printf '%s' "$_rr_hps" | tr '\n' ',' | sed 's/,/, /g')"
 }
 
 NET_MODE=""
@@ -406,8 +513,12 @@ phase_network() {
 
     # Start the proxy as uid 1337 (a uid the worker can't write as). setpriv is
     # part of util-linux (present on the base); fall back to running as root if
-    # it's missing (still functional, just less isolated).
-    if command -v setpriv >/dev/null 2>&1; then
+    # it's missing (still functional, just less isolated). A non-root start
+    # can't switch uid, and a proxy the agent's uid owns isn't a boundary.
+    if ! is_root; then
+        log "WARNING: non-root: in-container guard-proxy not started (needs root to run as uid $PROXY_UID); egress needs an external proxy on :${PROXY_HEALTH_PORT}"
+        return 0
+    elif command -v setpriv >/dev/null 2>&1; then
         setpriv --reuid="$PROXY_UID" --regid="$PROXY_UID" --clear-groups \
             cctui-guard-proxy --mode "$NET_MODE" \
                 --listen "0.0.0.0:${PROXY_PORT}" \
@@ -490,15 +601,20 @@ phase_workspace() {
     # an empty/missing cache must fall through to a clone, not overlay nothing.
     if [ -n "${WARM_REPO_DIR:-}" ] && [ -n "${TASK_REPO:-}" ] \
             && [ -d "${WARM_REPO_DIR%/}/${TASK_REPO}" ]; then
-        mkdir -p /overlay/upper /overlay/work
-        if mount -t overlay overlay \
-                -o "lowerdir=${WARM_REPO_DIR},upperdir=/overlay/upper,workdir=/overlay/work" \
-                /workspace 2>/dev/null; then
-            log "workspace: overlayfs on WARM_REPO_DIR=$WARM_REPO_DIR"
-            _ws_overlay=1
-        else
-            log "workspace: overlayfs unavailable, rsync-copying WARM_REPO_DIR"
+        if ! is_root; then
+            log "workspace: non-root, no overlayfs; rsync-copying WARM_REPO_DIR"
             rsync -a "${WARM_REPO_DIR%/}/" /workspace/
+        else
+            mkdir -p /overlay/upper /overlay/work
+            if mount -t overlay overlay \
+                    -o "lowerdir=${WARM_REPO_DIR},upperdir=/overlay/upper,workdir=/overlay/work" \
+                    /workspace 2>/dev/null; then
+                log "workspace: overlayfs on WARM_REPO_DIR=$WARM_REPO_DIR"
+                _ws_overlay=1
+            else
+                log "workspace: overlayfs unavailable, rsync-copying WARM_REPO_DIR"
+                rsync -a "${WARM_REPO_DIR%/}/" /workspace/
+            fi
         fi
     elif [ -n "${TASK_REPO_URL:-}" ]; then
         # On-demand clone into /workspace/<repo> (matches the warm-overlay layout
@@ -688,11 +804,10 @@ phase_context_pack() {
     _giterr=$(mktemp)
     # Root egress bypasses the uid-scoped redirect — only WORKER_UID traffic
     # reaches the proxy's credential injection.
-    if [ "$(id -u)" = "0" ] && command -v setpriv >/dev/null 2>&1; then
+    if is_root && command -v setpriv >/dev/null 2>&1; then
         chown "${WORKER_UID}:${WORKER_UID}" "$_tmp"
         pack_git() {
-            setpriv --reuid="$WORKER_UID" --regid="$WORKER_UID" --clear-groups \
-                env HOME="$_tmp" GIT_TERMINAL_PROMPT=0 git "$@" 2>>"$_giterr"
+            as_worker env HOME="$_tmp" GIT_TERMINAL_PROMPT=0 git "$@" 2>>"$_giterr"
         }
     else
         pack_git() { GIT_TERMINAL_PROMPT=0 git "$@" 2>>"$_giterr"; }
@@ -709,7 +824,7 @@ phase_context_pack() {
     elif ! pack_git clone --depth 1 --branch "$CONTEXT_PACK_REF" "$_url" "$_tmp"; then
         # Some refs are SHAs (not clonable by --branch): fetch the ref directly.
         rm -rf "$_tmp"; _tmp=$(mktemp -d)
-        [ "$(id -u)" = "0" ] && chown "${WORKER_UID}:${WORKER_UID}" "$_tmp"
+        is_root && chown "${WORKER_UID}:${WORKER_UID}" "$_tmp"
         { pack_git -C "$_tmp" init -q \
             && pack_git -C "$_tmp" remote add origin "$_url" \
             && pack_git -C "$_tmp" fetch --depth 1 -q origin "$CONTEXT_PACK_REF" \
@@ -741,7 +856,16 @@ phase_context_pack() {
         fi
     fi
 
-    rm -rf "$CONTEXT_DIR"
+    # Non-root can't recreate $CONTEXT_DIR under root-owned /opt: the image
+    # ships it worker-owned, so empty it in place.
+    if is_root; then
+        rm -rf "$CONTEXT_DIR"
+    elif [ -d "$CONTEXT_DIR" ]; then
+        find "$CONTEXT_DIR" -mindepth 1 -delete || {
+            echo "cctui-worker: FATAL cannot empty $CONTEXT_DIR as uid $(id -u) (the image must ship it worker-owned)" >&2
+            exit 1
+        }
+    fi
     mkdir -p "$CONTEXT_DIR"
     # Base layer first (if any), then the pack overlays on top; both drop .git.
     if [ -n "$_base_dir" ] && [ -d "$_base_dir" ]; then
@@ -770,8 +894,10 @@ style style
 projects projects"
 
     # The home is shared NFS: bind a per-pod dir over the paths the pack writes
-    # so concurrent pods don't race. Best-effort.
-    if [ -d /overlay ]; then
+    # so concurrent pods don't race. Best-effort; a bind mount needs root.
+    if [ -d /overlay ] && ! is_root; then
+        log "context pack: non-root, per-pod home bind mounts skipped"
+    elif [ -d /overlay ]; then
         _iso="/overlay/pack-home"
         mkdir -p "$_iso"
         for _p in style; do
@@ -823,7 +949,13 @@ projects projects"
     # READABLE/traversable: the dropped-privilege daemon (worker uid) reads the
     # prompt + guard-rules from here. mkdir inherits root's umask (077 -> 700),
     # which blocks the worker from traversing it, so force a+rX.
-    chown -R 0:0 "$CONTEXT_DIR" 2>/dev/null || true
+    # Non-root keeps it worker-owned: Landlock's RO set is then the only
+    # write barrier.
+    if is_root; then
+        chown -R 0:0 "$CONTEXT_DIR" 2>/dev/null || true
+    else
+        log "context pack: non-root, $CONTEXT_DIR stays uid $(id -u)-owned (read-only via Landlock only)"
+    fi
     chmod -R a+rX "$CONTEXT_DIR" 2>/dev/null || true
 
     # Resolve the guard-rules seam. The pack's guard-rules.md is the override/
@@ -851,12 +983,20 @@ resolve_prompt_path() {
 }
 
 # ── Phase 4: Extension hooks ────────────────────────────────────────────────
+# Sourced so their exports reach later phases, with errexit/nounset off: dash
+# ignores `|| ...` inside a dot script, so a failing command would abort here.
+EXT_DIR=/opt/worker-entrypoint.d
 phase_extensions() {
-    [ -d /opt/worker-entrypoint.d ] || return 0
-    for _ext in /opt/worker-entrypoint.d/*.sh; do
+    [ -d "$EXT_DIR" ] || return 0
+    for _ext in "$EXT_DIR"/*.sh; do
         [ -e "$_ext" ] || continue
-        log "ext: sourcing $(basename "$_ext")"
-        . "$_ext" || log "WARNING: extension ${_ext} failed (continuing)"
+        _ext_name=$(basename "$_ext")
+        log "ext: sourcing $_ext_name"
+        set +eu
+        . "$_ext"
+        _ext_rc=$?
+        set -eu
+        [ "$_ext_rc" = 0 ] || log "WARNING: extension $_ext_name failed (rc $_ext_rc, continuing)"
     done
 }
 
@@ -1102,6 +1242,7 @@ phase_guard() {
         IFS=$_OLDIFS
     fi
 
+    is_root || log "WARNING: guard: non-root start, cctui-guard runs as the agent's uid $(id -u)"
     cctui-guard "$@" &
     GUARD_PID=$!
     _i=0
@@ -1116,6 +1257,199 @@ phase_guard() {
     log "guard: started (prompt=$_prompt, rules=$_rules, pid $GUARD_PID)"
 }
 
+# ── Phase 6b: Pre-flight isolation check ────────────────────────────────────
+# An unset mode warns outside transparent-external: only there does net-init
+# filter the agent's non-proxied egress, so elsewhere the probes cannot pass.
+PREFLIGHT_TIMEOUT=0.3
+PREFLIGHT_CONTROL_TIMEOUT=2
+PREFLIGHT_RESULT=off
+
+cidr_sample() {
+    _net=${1%/*}
+    _len=${1#*/}
+    case "$_net" in
+        *::) printf '[%s1]' "$_net"; return 0 ;;
+        *:*) printf '[%s]' "$_net"; return 0 ;;
+    esac
+    _OLDIFS=$IFS; IFS=.
+    # shellcheck disable=SC2086
+    set -- $_net
+    IFS=$_OLDIFS
+    _ip=$(( ($1 << 24) | ($2 << 16) | ($3 << 8) | $4 ))
+    _mask=0
+    [ "$_len" -gt 0 ] && _mask=$(( (0xFFFFFFFF << (32 - _len)) & 0xFFFFFFFF ))
+    _ip=$(( _ip & _mask ))
+    [ "$_len" -ge 31 ] || _ip=$(( _ip + 1 ))
+    printf '%d.%d.%d.%d' $(( (_ip >> 24) & 255 )) $(( (_ip >> 16) & 255 )) \
+        $(( (_ip >> 8) & 255 )) $(( _ip & 255 ))
+}
+
+# `kind target reason` per deny probe.
+preflight_targets() {
+    echo "https kubernetes.default.svc:443 k8s API reachable"
+    if [ -n "${KUBERNETES_SERVICE_HOST:-}" ]; then
+        _kh=$KUBERNETES_SERVICE_HOST
+        case "$_kh" in *:*) _kh="[$_kh]" ;; esac
+        echo "https ${_kh}:${KUBERNETES_SERVICE_PORT:-443} k8s API reachable"
+    fi
+    for _t in /var/run/secrets/*/serviceaccount/*token*; do
+        if [ -e "$_t" ]; then echo "file $_t service-account token readable"; fi
+    done
+    for _r in 1.1.1.1 8.8.8.8; do
+        echo "dns $_r public DNS answers"
+    done
+    for _m in 169.254.169.254:80 169.254.170.23:80 169.254.170.2:80 '[fd00:ec2::254]:80'; do
+        echo "http $_m cloud metadata reachable"
+    done
+    # Only pod/instance-provided identity counts: credentials the operator
+    # set in the profile env or files are deliberate.
+    for _v in AWS_WEB_IDENTITY_TOKEN_FILE AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE \
+            AZURE_FEDERATED_TOKEN_FILE; do
+        _f=$(printenv "$_v" 2>/dev/null || true)
+        if [ -n "$_f" ]; then echo "file $_f ambient cloud identity via $_v"; fi
+    done
+    _u=${AWS_CONTAINER_CREDENTIALS_FULL_URI:-}
+    if [ -n "$_u" ]; then
+        _s=${_u%%://*}
+        _h=${_u#*://}
+        _h=${_h%%/*}
+        _h=${_h##*@}
+        case "$_s" in http | https) ;; *) _s=http ;; esac
+        case "$_h" in
+            *\]:* | [!\[]*:*) ;;
+            *) _p=80; [ "$_s" = https ] && _p=443; _h="$_h:$_p" ;;
+        esac
+        echo "$_s $_h ambient cloud identity via AWS_CONTAINER_CREDENTIALS_FULL_URI"
+    fi
+    for _p in 10.0.0.1:80 172.16.0.1:80 192.168.0.1:80 100.64.0.1:80 '[fd00::1]:80'; do
+        echo "http $_p private range reachable"
+    done
+    echo "http 1.1.1.1:80 direct public egress"
+    printf '%s\n' "${CCTUI_PREFLIGHT_DENY:-}" | tr ',' '\n' \
+        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;/^$/d' \
+        | while read -r _e; do
+            case "$_e" in
+                */*) echo "http $(cidr_sample "$_e"):80 profile deny range $_e reachable" ;;
+                *) echo "http $_e profile deny target reachable" ;;
+            esac
+        done
+}
+
+# Exit 0 when the target answered. Transparent modes REDIRECT every agent
+# connect to the guard proxy, which closes a denied one unanswered, so only
+# bytes back count there; forward mode has no proxy in the path, so a connect
+# alone does.
+preflight_connect() {
+    _rc=0
+    _tc=$(as_worker curl -q -sk -g -o /dev/null -w '%{time_connect}' --noproxy '*' \
+        --connect-timeout "$PREFLIGHT_TIMEOUT" --max-time "$PREFLIGHT_TIMEOUT" \
+        "$1://$2/" 2>/dev/null) || _rc=$?
+    case "$_rc" in
+        0 | 1 | 8) return 0 ;;
+    esac
+    [ "$NET_MODE" = forward ] && awk -v t="${_tc:-0}" 'BEGIN { exit !(t + 0 > 0) }'
+}
+
+# Exit 0 when the resolver answered, 3 when no DNS client is available.
+preflight_dns() {
+    if command -v dig >/dev/null 2>&1; then
+        as_worker dig "@$1" +time=1 +tries=1 +short example.com A >/dev/null 2>&1
+    elif command -v node >/dev/null 2>&1; then
+        as_worker node -e '
+            const answered = ["ENODATA", "ENOTFOUND", "ESERVFAIL", "EREFUSED", "EFORMERR", "ENOTIMP", "EBADRESP"];
+            const r = new (require("dns").promises.Resolver)({ timeout: 800, tries: 1 });
+            r.setServers([process.argv[1]]);
+            r.resolve4("example.com").then(() => process.exit(0),
+                (e) => process.exit(answered.includes(e.code) ? 0 : 1));
+        ' "$1" >/dev/null 2>&1
+    else
+        return 3
+    fi
+}
+
+# Exit 0 when the probe reached its target, i.e. isolation failed.
+preflight_probe() {
+    case "$1" in
+        file) as_worker test -r "$2" ;;
+        dns) preflight_dns "$2" ;;
+        http | https) preflight_connect "$1" "$2" ;;
+        *) return 1 ;;
+    esac
+}
+
+preflight_control() {
+    _code=$(as_worker curl -q -4 -sS -o /dev/null -w '%{http_code}' \
+        --max-time "$PREFLIGHT_CONTROL_TIMEOUT" "${CCTUI_BASE_URL%/}/health" 2>/dev/null) \
+        || return 1
+    [ -n "$_code" ] && [ "$_code" != 000 ]
+}
+
+phase_preflight() {
+    _mode="${CCTUI_PREFLIGHT_MODE:-}"
+    if [ -z "$_mode" ]; then
+        _mode=warn
+        [ "$NET_MODE" = transparent-external ] && _mode=enforce
+    fi
+    case "$_mode" in
+        off) log "preflight: off"; PREFLIGHT_RESULT=off; return 0 ;;
+        enforce | warn) ;;
+        *) log "preflight: unknown mode '$_mode', enforcing"; _mode=enforce ;;
+    esac
+
+    _failed=""
+    if is_root && ! command -v setpriv >/dev/null 2>&1; then
+        _failed="cannot drop to the agent uid (setpriv missing)"
+    else
+        _start=$(date +%s%N)
+        _dir=$(mktemp -d)
+        preflight_targets > "$_dir/targets"
+        _n=0
+        _pids=""
+        while read -r _kind _target _reason; do
+            [ -n "$_kind" ] || continue
+            _n=$((_n + 1))
+            (
+                _rc=0
+                preflight_probe "$_kind" "$_target" || _rc=$?
+                printf '%s %s (%s)\n' "$_rc" "$_reason" "$_target" > "$_dir/$_n"
+            ) &
+            _pids="$_pids $!"
+        done < "$_dir/targets"
+        ( if preflight_control; then : > "$_dir/control"; fi ) &
+        _pids="$_pids $!"
+        # shellcheck disable=SC2086
+        wait $_pids || true
+
+        _i=0
+        while [ "$_i" -lt "$_n" ]; do
+            _i=$((_i + 1))
+            [ -f "$_dir/$_i" ] || continue
+            read -r _rc _what < "$_dir/$_i"
+            case "$_rc" in
+                0) log "preflight: FAIL $_what"; _failed="${_failed:+$_failed; }$_what" ;;
+                3) log "preflight: skipped $_what (no DNS client)" ;;
+            esac
+        done
+        [ -f "$_dir/control" ] \
+            || _failed="${_failed:+$_failed; }proxy path to the cctui server failed (${CCTUI_BASE_URL%/}/health)"
+        rm -rf "$_dir"
+        _ms=$(( ($(date +%s%N) - _start) / 1000000 ))
+        log "preflight: ${_n} deny probes + proxy control in ${_ms}ms (mode=$_mode)"
+    fi
+
+    if [ -z "$_failed" ]; then
+        PREFLIGHT_RESULT=passed
+        log "preflight: passed"
+        return 0
+    fi
+    if [ "$_mode" = warn ]; then
+        PREFLIGHT_RESULT=warned
+        log "WARNING: preflight: $_failed (warn mode, continuing)"
+        return 0
+    fi
+    fail_dispatch "preflight: $_failed"
+}
+
 # ── Phase 7: Hardening report ───────────────────────────────────────────────
 # Collect entrypoint-side state; the supervisor appends landlock/seccomp via
 # --report. Exposed as WORKER_HARDENING_JSON (env) + a file the daemon can
@@ -1125,11 +1459,12 @@ phase_hardening() {
     WORKER_HARDENING_JSON=$(jq -nc \
         --arg net "$NET_MODE" \
         --arg guard "$GUARD_ON" \
-        '{net_mode:$net, guard:$guard, supervisor_report:"/tmp/hardening.json"}')
+        --arg preflight "$PREFLIGHT_RESULT" \
+        '{net_mode:$net, guard:$guard, preflight:$preflight, supervisor_report:"/tmp/hardening.json"}')
     export WORKER_HARDENING_JSON
     printf '%s\n' "$WORKER_HARDENING_JSON" > "$HARDENING_FILE"
     export WORKER_HARDENING_FILE="$HARDENING_FILE"
-    log "hardening: net_mode=$NET_MODE guard=$GUARD_ON"
+    log "hardening: net_mode=$NET_MODE guard=$GUARD_ON preflight=$PREFLIGHT_RESULT"
 }
 
 # ── Phase 7b: Permission bypass seeding ─────────────────────────────────────
@@ -1215,9 +1550,26 @@ derive_task_env() {
     [ -z "${TASK_REPO_REF:-}" ] && { _v=$(_pj '.context.head_sha'); [ -n "$_v" ] && export TASK_REPO_REF="$_v"; }
     return 0
 }
+# Each worker owns an ephemeral checkout, so Claude Code's background
+# worktree-isolation guard only deadlocks it. The env var is the only isolation
+# channel a worker honors; a profile or payload value wins.
+default_bg_isolation() {
+    export CLAUDE_BG_ISOLATION="${CLAUDE_BG_ISOLATION:-none}"
+}
+# Node trusts its bundled roots, distrusted ones included, unless pointed at
+# the system store; NODE_EXTRA_CA_CERTS only adds roots. A profile that names a
+# CA source in NODE_OPTIONS keeps its choice.
+default_node_ca() {
+    case " ${NODE_OPTIONS:-} " in
+        *" --use-openssl-ca "* | *" --use-bundled-ca "* | *" --use-system-ca "*) return 0 ;;
+    esac
+    export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--use-openssl-ca"
+}
 derive_task_env
+default_bg_isolation
 phase_network
 phase_workspace
+phase_repo_registries
 # The CLI grants edit-in-place only when the session cwd IS a git repo,
 # so default the workdir to the repo (must run after phase_workspace clones it).
 if [ -z "${CCTUI_DISPATCH_WORKDIR:-}" ] && [ -n "${TASK_REPO:-}" ] \
@@ -1243,17 +1595,21 @@ phase_codex_pack
 phase_acp_config
 phase_callback
 require_known_adapter
+phase_preflight
 phase_guard
 phase_permissions
+default_node_ca
 phase_hardening
 
 # ── Phase 8: Drop privileges + run ──────────────────────────────────────────
 # cctui-supervisor applies landlock + seccomp, drops all caps, setuids to the
 # worker, then exec's the daemon. RO: system + context/prompts; RW: workspace,
 # home, tmp, the guard/proxy state dirs. The supervisor's own --report captures
-# landlock/seccomp/uid for the hardening metadata.
+# landlock/seccomp/uid for the hardening metadata. `exec` keeps a backgrounded
+# call's $! the daemon's pid: without it $! is a subshell that SIGTERM kills
+# while the daemon never sees the signal.
 run_supervised_daemon() {
-    cctui-supervisor \
+    exec cctui-supervisor \
         --ro /usr --ro /lib --ro /lib64 --ro /bin --ro /sbin --ro /etc --ro /proc \
         --ro /prompts --ro /var/run/guard-proxy-ca \
         --ro "$CONTEXT_DIR" \
@@ -1496,14 +1852,4 @@ if [ -n "${SESSION_ID:-}" ] && [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
 fi
 
 log "thin worker -> exec cctui-supervisor -> cctui-daemon (run forever)"
-exec cctui-supervisor \
-    --ro /usr --ro /lib --ro /lib64 --ro /bin --ro /sbin --ro /etc --ro /proc \
-    --ro /prompts --ro /var/run/guard-proxy-ca \
-    --ro "$CONTEXT_DIR" \
-    $(extra_ro_flags) \
-    --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \
-    --rw /var/run/workflow-guard --ro /var/run/guard-proxy --rw /var/run/gpg-agent \
-    $(extra_rw_flags) \
-    --user "$WORKER_UID" \
-    --report /tmp/hardening.json \
-    -- cctui-daemon run --no-auto-update "$@"
+run_supervised_daemon "$@"

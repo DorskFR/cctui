@@ -7,14 +7,16 @@
 //! ways, preserving every other header, status code and `retry-after`. No
 //! retries or rate-limit handling, except [`failover`].
 //!
-//! Request bodies stream unread unless Langfuse samples the call or a
-//! Fireworks account opts into shaping ([`FireworksSettings`]). The anthropic
-//! path always forwards the client's bytes verbatim: re-serializing sorts JSON
-//! keys and destroys the prompt cache. Responses are rewritten only by
-//! [`toolguard`]. Raw OAuth tokens never enter worker env, logs, or sessions.
+//! Request bodies stream unread unless something must read them (Langfuse,
+//! metering, a model gate); every family forwards the client's bytes verbatim,
+//! since re-serializing sorts JSON keys and destroys the prompt cache. The
+//! gateway shapes requests through headers only ([`FireworksSettings`]).
+//! Responses are rewritten only by [`toolguard`]. Raw OAuth tokens never enter
+//! worker env, logs, or sessions.
 
 mod config;
 mod failover;
+mod fork;
 mod limits;
 mod mint;
 mod proxy;
@@ -23,9 +25,11 @@ mod refresh;
 pub mod toolguard;
 mod usage;
 pub mod usage_notices;
+mod voicetee;
 
 pub use config::*;
 pub use failover::*;
+pub use fork::fork_env_for_session;
 pub use limits::*;
 pub use mint::*;
 pub use proxy::*;
@@ -495,54 +499,26 @@ mod tests {
     #[test]
     fn fireworks_settings_default_and_override() {
         let defaults = FireworksSettings::resolve(None);
-        assert_eq!(defaults.context_length_exceeded_behavior.as_deref(), Some("error"));
         assert!(defaults.session_affinity);
-        assert!(defaults.extra_body.is_empty());
+        assert!(defaults.billing_api_key_name.is_none());
 
-        // A partial stored blob overrides only the keys it names.
+        // A partial stored blob overrides only the keys it names; keys the
+        // gateway no longer reads are ignored.
         let stored = serde_json::json!({
             "session_affinity": false,
+            "context_length_exceeded_behavior": "error",
             "extra_body": { "temperature": 0.2 },
         });
         let merged = FireworksSettings::resolve(Some(&stored));
-        assert_eq!(merged.context_length_exceeded_behavior.as_deref(), Some("error"));
         assert!(!merged.session_affinity);
-        assert_eq!(merged.extra_body.get("temperature"), Some(&serde_json::json!(0.2)));
-
-        // An explicit null opts the injection out entirely.
-        let off = serde_json::json!({ "context_length_exceeded_behavior": null });
-        assert!(FireworksSettings::resolve(Some(&off)).context_length_exceeded_behavior.is_none());
+        assert!(merged.billing_api_key_name.is_none());
     }
 
     #[test]
-    fn fireworks_body_injection_never_overrides_the_client() {
-        let settings = FireworksSettings::resolve(Some(&serde_json::json!({
-            "extra_body": { "temperature": 0.2 },
-        })));
-        let mut body = serde_json::json!({ "model": "kimi", "messages": [] });
-        settings.apply_body(&mut body, Some("sess-1"));
-        assert_eq!(body["context_length_exceeded_behavior"], serde_json::json!("error"));
-        assert_eq!(body["temperature"], serde_json::json!(0.2));
-        assert_eq!(body["user"], serde_json::json!("sess-1"));
-
-        let mut explicit = serde_json::json!({
-            "context_length_exceeded_behavior": "truncate",
-            "temperature": 1.0,
-            "user": "mine",
-        });
-        settings.apply_body(&mut explicit, Some("sess-1"));
-        assert_eq!(explicit["context_length_exceeded_behavior"], serde_json::json!("truncate"));
-        assert_eq!(explicit["temperature"], serde_json::json!(1.0));
-        assert_eq!(explicit["user"], serde_json::json!("mine"));
-    }
-
-    #[test]
-    fn fireworks_affinity_off_leaves_user_alone() {
-        let settings =
-            FireworksSettings::resolve(Some(&serde_json::json!({ "session_affinity": false })));
-        let mut body = serde_json::json!({ "model": "kimi" });
-        settings.apply_body(&mut body, Some("sess-1"));
-        assert!(body.get("user").is_none());
+    fn new_fireworks_rows_seed_no_body_keys() {
+        let defaults = super::fireworks_default_settings();
+        assert!(defaults.get("context_length_exceeded_behavior").is_none());
+        assert!(defaults.get("extra_body").is_none());
     }
 
     #[test]
@@ -1154,7 +1130,6 @@ mod tests {
                 message_id: Some("gw-cap-1".to_owned()),
                 usage: crate::cost::TokenUsage { input: 2_000_000, cached_input: 0, output: 0 },
             },
-            false,
         )
         .await;
 

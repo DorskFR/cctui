@@ -21,6 +21,7 @@
 	import { cctuiverseConfig, loadCctuiverseConfig } from '$lib/cctuiverseConfig.svelte';
 	import { Button, Icon, IconButton, Input, Menu, Modal, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
+	import { headerTitleOf, nameOf } from '$lib/sessionName';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -118,15 +119,16 @@
 	// Label picker is interactive only when an attach handler is wired in.
 	const labelEditable = $derived(!!onAttachLabel);
 
-	const headTitle = $derived(session.name || session.working_dir);
+	const plainTitle = $derived(nameOf(session) || session.working_dir);
+	const headTitle = $derived(headerTitleOf(session));
 
 	let renaming = $state(false);
 	// svelte-ignore state_referenced_locally
-	let newName = $state(session.name ?? '');
+	let newName = $state(nameOf(session));
 
 	function startRename() {
 		renaming = true;
-		newName = session.name ?? '';
+		newName = nameOf(session);
 	}
 	function doRename() {
 		const n = newName.trim();
@@ -428,13 +430,13 @@
 {#if inviteOpen}
 	<CctuiverseInviteModal
 		target={{ session: session.id }}
-		defaultLabel={headTitle}
+		defaultLabel={plainTitle}
 		onclose={() => (inviteOpen = false)}
 	/>
 {/if}
 
 {#if joinOpen}
-	<CctuiverseJoinModal sessionId={session.id} defaultLabel={headTitle} onclose={() => (joinOpen = false)} />
+	<CctuiverseJoinModal sessionId={session.id} defaultLabel={plainTitle} onclose={() => (joinOpen = false)} />
 {/if}
 
 {#if roomOpen}

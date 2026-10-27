@@ -73,42 +73,5 @@ export function chipsOf<T extends Pickable>(value: readonly string[], items: rea
 	return value.flatMap((k) => items.find((i) => keyOf(i, by) === k) ?? []);
 }
 
-export interface Precheck {
-	picks: string[];
-	/** Names checked because they matched, not because the user picked them. */
-	auto: string[];
-	/** Matched names the user unchecked: not re-checked while they keep matching. */
-	dismissed: string[];
-}
-
-export function reconcilePrecheck(state: Precheck, matched: readonly string[]): Precheck {
-	const stale = state.auto.filter((n) => !matched.includes(n));
-	const picks = state.picks.filter((n) => !stale.includes(n));
-	const auto = state.auto.filter((n) => matched.includes(n));
-	for (const n of matched) {
-		if (state.dismissed.includes(n) || picks.includes(n)) continue;
-		auto.push(n);
-		picks.push(n);
-	}
-	return { picks, auto, dismissed: state.dismissed.filter((n) => matched.includes(n)) };
-}
-
 export const sameList = (a: readonly string[], b: readonly string[]) =>
 	a.length === b.length && a.every((n, i) => n === b[i]);
-
-export function notePicks(state: Precheck, picks: readonly string[]): Precheck {
-	const removed = state.auto.filter((n) => !picks.includes(n));
-	return {
-		picks: [...picks],
-		auto: state.auto.filter((n) => picks.includes(n)),
-		dismissed: [...new Set([...state.dismissed, ...removed])]
-	};
-}
-
-/**
- * `auto` makes the server add every scope-matched memory, so it may only stay
- * on while every match is still checked; otherwise an unchecked one comes back.
- */
-export function contextAuto(picks: readonly string[], matched: readonly string[]): boolean {
-	return matched.every((n) => picks.includes(n));
-}

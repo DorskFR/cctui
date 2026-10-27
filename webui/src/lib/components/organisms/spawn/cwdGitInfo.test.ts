@@ -1,11 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GitInfo } from '@bindings/GitInfo';
+import type { MachineLiveness } from '@bindings/MachineLiveness';
+import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
 import { gitBadge, makeGitInfoWatcher } from './cwdGitInfo';
 
 const repo = (over: Partial<GitInfo>): GitInfo => ({
 	is_repo: true,
 	is_worktree: false,
 	...over
+});
+
+const machine = (machine_id: string, liveness: MachineLiveness): MachineResourcesRow => ({
+	machine_id,
+	name: machine_id,
+	display_name: null,
+	hue: null,
+	liveness,
+	last_seen_at: '2026-10-22T00:00:00Z',
+	resources: null,
+	updated_at: null
 });
 
 describe('gitBadge', () => {
@@ -30,8 +43,8 @@ describe('makeGitInfoWatcher', () => {
 		const fetch = vi.fn(async (_m: string, path: string) => repo({ branch: path }));
 		const results: (GitInfo | null)[] = [];
 		const w = makeGitInfoWatcher(fetch, (i) => results.push(i), 300);
-		w.update('m1', '/a');
-		w.update('m1', '/b');
+		w.update('m1', '/a', 'online');
+		w.update('m1', '/b', 'online');
 		await vi.advanceTimersByTimeAsync(299);
 		expect(fetch).not.toHaveBeenCalled();
 		await vi.advanceTimersByTimeAsync(1);
@@ -46,13 +59,45 @@ describe('makeGitInfoWatcher', () => {
 		});
 		const results: (GitInfo | null)[] = [];
 		const w = makeGitInfoWatcher(fetch, (i) => results.push(i), 300);
-		w.update('', '/a');
-		w.update('m1', '  ');
+		w.update('', '/a', 'online');
+		w.update('m1', '  ', 'online');
 		expect(fetch).not.toHaveBeenCalled();
 		expect(results).toEqual([null, null]);
-		w.update('m1', '/a');
+		w.update('m1', '/a', 'stale');
 		await vi.advanceTimersByTimeAsync(300);
 		expect(results).toEqual([null, null, null]);
+	});
+
+	it('never asks a machine known offline, and asks again once it is back', async () => {
+		const fetch = vi.fn(async () => repo({ branch: 'main' }));
+		const results: (GitInfo | null)[] = [];
+		const w = makeGitInfoWatcher(fetch, (i) => results.push(i), 300);
+		w.update('m1', '/a', 'offline');
+		await vi.advanceTimersByTimeAsync(300);
+		expect(fetch).not.toHaveBeenCalled();
+		expect(results).toEqual([null]);
+		w.update('m1', '/a', 'online');
+		await vi.advanceTimersByTimeAsync(300);
+		expect(fetch).toHaveBeenCalledWith('m1', '/a');
+		expect(results).toEqual([null, repo({ branch: 'main' })]);
+	});
+
+	it('waits for the machine list before asking, then skips offline and asks online', async () => {
+		const fetch = vi.fn(async () => repo({ branch: 'main' }));
+		const results: (GitInfo | null)[] = [];
+		const w = makeGitInfoWatcher(fetch, (i) => results.push(i), 300);
+		const liveness = (list: MachineResourcesRow[]) =>
+			list.find((mc) => mc.machine_id === 'm1')?.liveness;
+		w.update('m1', '/a', liveness([]));
+		await vi.advanceTimersByTimeAsync(300);
+		expect(fetch).not.toHaveBeenCalled();
+		w.update('m1', '/a', liveness([machine('m1', 'offline')]));
+		await vi.advanceTimersByTimeAsync(300);
+		expect(fetch).not.toHaveBeenCalled();
+		w.update('m1', '/a', liveness([machine('m1', 'online')]));
+		await vi.advanceTimersByTimeAsync(300);
+		expect(fetch).toHaveBeenCalledTimes(1);
+		expect(results).toEqual([null, null, repo({ branch: 'main' })]);
 	});
 
 	it('drops a reply that lands after a newer update or cancel', async () => {
@@ -60,7 +105,7 @@ describe('makeGitInfoWatcher', () => {
 		const fetch = vi.fn(() => new Promise<GitInfo>((r) => (resolve = r)));
 		const results: (GitInfo | null)[] = [];
 		const w = makeGitInfoWatcher(fetch, (i) => results.push(i), 300);
-		w.update('m1', '/a');
+		w.update('m1', '/a', 'online');
 		await vi.advanceTimersByTimeAsync(300);
 		w.cancel();
 		resolve(repo({ branch: 'late' }));

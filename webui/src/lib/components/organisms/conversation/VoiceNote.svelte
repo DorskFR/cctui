@@ -3,6 +3,7 @@
 	import { settings } from '$lib/settings.svelte';
 	import { notify } from '$lib/notify.svelte';
 	import { m } from '$lib/paraglide/messages';
+	import { routeToSpeaker } from '$lib/voice/devices';
 	import { claimAnnounce, formatClock, voiceNoteUrl } from './voiceNote';
 
 	let {
@@ -29,6 +30,7 @@
 	function toggle() {
 		if (!audio) return;
 		if (audio.paused) {
+			routeToSpeaker(audio, settings.voice.speakerId);
 			audio.playbackRate = settings.voice.speed;
 			void audio.play().catch(() => (playing = false));
 		} else audio.pause();
@@ -55,6 +57,7 @@
 	onMount(() => {
 		if (!claimAnnounce(noteId, ts)) return;
 		if (settings.voice.autoPlayVoiceNotes && audio && !document.hidden) {
+			routeToSpeaker(audio, settings.voice.speakerId);
 			audio.playbackRate = settings.voice.speed;
 			void audio.play().catch(announce);
 		} else {

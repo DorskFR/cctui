@@ -13,7 +13,7 @@ mod status;
 mod stream;
 mod todos;
 
-use todos::{extract_todos, is_user_turn, record_todos};
+use todos::{extract_todos, is_user_turn, record_task_op, record_todos, task_op};
 
 pub(super) async fn handle_event(
     state: &AppState,
@@ -21,9 +21,12 @@ pub(super) async fn handle_event(
     machine_id: Uuid,
     user_id: Uuid,
     adapter_id: &str,
-    event: AdapterEvent,
+    mut event: AdapterEvent,
     stored: Stored,
 ) -> anyhow::Result<()> {
+    if matches!(stored, Stored::Pending) {
+        crate::image_blobs::externalize_event(&state.pool, &mut event).await;
+    }
     let tail = Tail::of(adapter_id, &event);
     if let AdapterEvent::TurnEnd { local_id, .. } = &event {
         crate::cctuiverse::turn_ended(state, local_id);
@@ -54,7 +57,8 @@ pub(super) async fn handle_event(
         }
         e @ (AdapterEvent::Status { .. }
         | AdapterEvent::PrLink { .. }
-        | AdapterEvent::RateLimits { .. }) => {
+        | AdapterEvent::RateLimits { .. }
+        | AdapterEvent::Title { .. }) => {
             status::on_status_event(state, e).await?;
             Inserted::UNSTORED
         }
@@ -64,6 +68,10 @@ pub(super) async fn handle_event(
         | AdapterEvent::GuardStepState { .. }
         | AdapterEvent::CommandResult { .. }) => {
             relay::on_relay_event(state, e).await;
+            Inserted::UNSTORED
+        }
+        AdapterEvent::Todos { local_id, todos } => {
+            record_todos(&state.pool, &local_id, &todos).await;
             Inserted::UNSTORED
         }
         _ => Inserted::UNSTORED,
@@ -163,6 +171,11 @@ impl Tail {
                 && let Some(todos) = extract_todos(tool, input)
             {
                 record_todos(&state.pool, &id, &todos).await;
+            }
+            if inserted.newly
+                && let Some(op) = broadcast.as_ref().and_then(|(_, e)| task_op(e))
+            {
+                record_task_op(&state.pool, &id, op).await;
             }
         }
         if inserted.newly

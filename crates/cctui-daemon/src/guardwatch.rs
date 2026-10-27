@@ -6,6 +6,7 @@
 //! authoritative: nothing here decides a step.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
@@ -16,6 +17,8 @@ use tokio_util::sync::CancellationToken;
 
 /// Set by the worker entrypoint when a guard runs in the pod.
 pub const URL_ENV: &str = "CCTUI_GUARD_URL";
+/// The dispatch the pod, and so its guard, was started for.
+pub const OWNER_ENV: &str = "SESSION_ID";
 
 const POLL: Duration = Duration::from_secs(3);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -24,7 +27,9 @@ static GLOBAL: OnceLock<GuardWatch> = OnceLock::new();
 
 #[must_use]
 pub fn global() -> &'static GuardWatch {
-    GLOBAL.get_or_init(GuardWatch::default)
+    GLOBAL.get_or_init(|| {
+        GuardWatch::owned_by(std::env::var(OWNER_ENV).ok().filter(|s| !s.is_empty()))
+    })
 }
 
 /// The guard's base URL, when this daemon runs beside one.
@@ -36,21 +41,51 @@ pub fn url() -> Option<String> {
         .filter(|u| !u.is_empty())
 }
 
-/// Live sessions on this daemon (`local_id` → `adapter_id`) and the last
+/// Live sessions the guard governs (`local_id` → `adapter_id`) and the last
 /// state relayed, so only changes go up.
 #[derive(Default)]
 pub struct GuardWatch {
+    /// The dispatch key of the guarded session; `None` mirrors onto every
+    /// live session.
+    owner: Option<String>,
     sessions: Mutex<HashMap<String, String>>,
     last: Mutex<Option<GuardStepState>>,
     nudge: Notify,
+    /// The shutdown poll ran: the state the worker tears down on is queued.
+    settled: AtomicBool,
 }
 
 impl GuardWatch {
-    /// Track which sessions are live; a new one gets the current state
-    /// relayed right away, whether or not it changed.
+    #[must_use]
+    pub fn owned_by(owner: Option<String>) -> Self {
+        Self { owner, ..Self::default() }
+    }
+
+    /// Whether the guard governs `local_id`: the dispatched session registers
+    /// under the dispatch key, or names itself and carries the key as
+    /// `spawn_key`.
+    fn governs(&self, local_id: &str, extra: &serde_json::Value) -> bool {
+        self.owner.as_deref().is_none_or(|owner| {
+            local_id == owner
+                || extra.get("spawn_key").and_then(serde_json::Value::as_str) == Some(owner)
+        })
+    }
+
+    /// Whether a transition requested for `local_id` may move the guard.
+    #[must_use]
+    pub fn may_transition(&self, local_id: &str) -> bool {
+        self.owner.is_none()
+            || self.sessions.lock().unwrap_or_else(PoisonError::into_inner).contains_key(local_id)
+    }
+
+    /// Track which governed sessions are live; a new one gets the current
+    /// state relayed right away, whether or not it changed.
     pub fn observe(&self, adapter_id: &str, event: &AdapterEvent) {
         match event {
-            AdapterEvent::SessionStarted { local_id, .. } => {
+            AdapterEvent::SessionStarted { local_id, meta } => {
+                if !self.governs(local_id, &meta.extra) {
+                    return;
+                }
                 self.sessions
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
@@ -111,25 +146,56 @@ pub fn start(event_tx: mpsc::Sender<(String, AdapterEvent)>, shutdown: Cancellat
     let Some(url) = url() else { return };
     let Some(client) = client() else { return };
     tracing::info!(%url, "workflow guard mirror on");
-    tokio::spawn(async move {
-        loop {
-            let nudged = tokio::select! {
-                () = shutdown.cancelled() => break,
-                () = tokio::time::sleep(POLL) => false,
-                () = global().nudge.notified() => true,
-            };
-            match fetch_state(&client, &url).await {
-                Ok(state) => {
-                    for pair in global().relay(&state, nudged) {
-                        if event_tx.send(pair).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-                Err(err) => tracing::debug!(%err, "guard state poll"),
+    tokio::spawn(async move { watch(global(), &client, &url, &event_tx, &shutdown).await });
+}
+
+/// Whether the shutdown drain may close the WS: no guard runs beside this
+/// daemon, or its last state is already queued.
+#[must_use]
+pub fn settled() -> bool {
+    url().is_none() || global().settled.load(Ordering::Acquire)
+}
+
+/// Poll until shutdown, then once more: the worker stops the daemon as soon
+/// as the guard exits, and that exit is the server's proof of completion.
+async fn watch(
+    w: &GuardWatch,
+    client: &reqwest::Client,
+    url: &str,
+    event_tx: &mpsc::Sender<(String, AdapterEvent)>,
+    shutdown: &CancellationToken,
+) {
+    loop {
+        let (nudged, last) = tokio::select! {
+            () = shutdown.cancelled() => (false, true),
+            () = tokio::time::sleep(POLL) => (false, false),
+            () = w.nudge.notified() => (true, false),
+        };
+        let open = match fetch_state(client, url).await {
+            Ok(state) => send_all(event_tx, w.relay(&state, nudged)).await,
+            Err(err) => {
+                tracing::debug!(%err, "guard state poll");
+                true
             }
+        };
+        if last || !open {
+            break;
         }
-    });
+    }
+    w.settled.store(true, Ordering::Release);
+}
+
+/// `false` once the event channel is closed.
+async fn send_all(
+    event_tx: &mpsc::Sender<(String, AdapterEvent)>,
+    pairs: Vec<(String, AdapterEvent)>,
+) -> bool {
+    for pair in pairs {
+        if event_tx.send(pair).await.is_err() {
+            return false;
+        }
+    }
+    true
 }
 
 /// `GET /state`.
@@ -187,6 +253,9 @@ pub fn handle_command(
     let event_tx = event_tx.clone();
     tokio::spawn(async move {
         let outcome = match (url(), client()) {
+            (Some(_), Some(_)) if !global().may_transition(&local_id) => {
+                Err("this session does not run under the pod's workflow guard".to_owned())
+            }
             (Some(url), Some(client)) => {
                 let result = transition(&client, &url, &step).await;
                 if let Ok(state) = fetch_state(&client, &url).await {
@@ -265,6 +334,52 @@ mod tests {
         assert_eq!(w.relay(&state(3), false).len(), 1);
     }
 
+    fn started(local_id: &str, extra: serde_json::Value) -> AdapterEvent {
+        AdapterEvent::SessionStarted {
+            local_id: local_id.into(),
+            meta: SessionMeta { extra, ..SessionMeta::default() },
+        }
+    }
+
+    fn relayed_to(w: &GuardWatch, step: i64) -> Vec<String> {
+        let mut ids: Vec<String> = w
+            .relay(&state(step), true)
+            .into_iter()
+            .map(|(_, event)| match event {
+                AdapterEvent::GuardStepState { local_id, .. } => local_id,
+                other => panic!("expected GuardStepState, got {other:?}"),
+            })
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn a_pod_guard_is_mirrored_only_onto_its_dispatched_session() {
+        let w = GuardWatch::owned_by(Some("dispatch-1".into()));
+        w.observe("claude-code", &started("dispatch-1", serde_json::Value::Null));
+        w.observe("claude-code", &started("child-1", json!({ "spawn_key": "child-1" })));
+        assert_eq!(relayed_to(&w, 1), vec!["dispatch-1"]);
+        assert!(w.may_transition("dispatch-1"));
+        assert!(!w.may_transition("child-1"), "a child must not move the pod's guard");
+
+        let w = GuardWatch::owned_by(Some("dispatch-2".into()));
+        w.observe("opencode", &started("ses_abc", json!({ "spawn_key": "dispatch-2" })));
+        w.observe("opencode", &started("ses_def", json!({ "spawn_key": "other" })));
+        assert_eq!(relayed_to(&w, 1), vec!["ses_abc"], "a self-named session matches by spawn key");
+        assert!(w.may_transition("ses_abc"));
+        assert!(!w.may_transition("ses_def"));
+    }
+
+    #[test]
+    fn without_an_owner_every_live_session_is_governed() {
+        let w = GuardWatch::default();
+        w.observe("claude-code", &started("s1", serde_json::Value::Null));
+        w.observe("codex", &started("s2", json!({ "spawn_key": "k" })));
+        assert_eq!(relayed_to(&w, 1), vec!["s1", "s2"]);
+        assert!(w.may_transition("anything"));
+    }
+
     #[test]
     fn a_transition_reply_is_the_guard_verdict() {
         assert_eq!(transition_outcome(&json!({ "ok": true, "step": 2 })), Ok(()));
@@ -332,6 +447,30 @@ mod tests {
         assert_eq!(got.transitions, vec![3]);
         assert!(got.exit);
         assert!(task.await.unwrap().starts_with("GET /state "));
+    }
+
+    #[tokio::test]
+    async fn shutdown_relays_the_guard_exit_before_settling() {
+        let w = GuardWatch::owned_by(Some("dispatch-1".into()));
+        w.observe("claude-code", &started("dispatch-1", serde_json::Value::Null));
+        w.relay(&state(4), false);
+        let (url, task) = fake_guard(r#"{"step":-1,"title":"Exit"}"#).await;
+        let (tx, mut rx) = mpsc::channel(8);
+        let shutdown = CancellationToken::new();
+        shutdown.cancel();
+
+        watch(&w, &client().unwrap(), &url, &tx, &shutdown).await;
+
+        assert!(task.await.unwrap().starts_with("GET /state "));
+        match rx.try_recv().expect("the exit is relayed on shutdown") {
+            (adapter_id, AdapterEvent::GuardStepState { local_id, state }) => {
+                assert_eq!(adapter_id, "claude-code");
+                assert_eq!(local_id, "dispatch-1");
+                assert!(state.exited());
+            }
+            other => panic!("expected GuardStepState, got {other:?}"),
+        }
+        assert!(w.settled.load(Ordering::Acquire));
     }
 
     #[tokio::test]

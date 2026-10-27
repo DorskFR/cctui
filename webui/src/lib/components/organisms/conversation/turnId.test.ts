@@ -122,6 +122,15 @@ describe('mergeEventSources with replayed lines', () => {
 		);
 		expect(out).toHaveLength(2);
 	});
+
+	it('keeps turn-less lines with the same prose but distinct line ids', () => {
+		const out = mergeEventSources(
+			[lineEv(1, 'continue', 'line-a'), lineEv(2, 'continue', 'line-b')],
+			[],
+			[userEv(3, 'continue')]
+		);
+		expect(out).toHaveLength(2);
+	});
 });
 
 describe('newTurnId', () => {

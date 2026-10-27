@@ -1,9 +1,9 @@
 //! Session registration, spawn and staged-file routes.
 
 use super::sess_write;
-use crate::authz::Authz::Authenticated;
+use crate::authz::Authz::{Authenticated, Scope as ScopeAz};
 use crate::authz::{Authn, Routes};
-use crate::routes;
+use crate::{auth, routes};
 use axum::extract::DefaultBodyLimit;
 use axum::http::Method;
 use axum::routing::post;
@@ -39,8 +39,8 @@ pub(super) fn register(r: Routes) -> Routes {
         // over-cap upload yields its 413 rather than a body-limit error.
         post(routes::spawn::spawn_session).layer(DefaultBodyLimit::max(body_limit())),
         Authn::Bearer,
-        // In-handler machine-owner check (`is_admin || user_id == owner`).
-        Authenticated,
+        // In-handler: the machine's owner, an admin, or a `spawn` share grantee.
+        ScopeAz(auth::Scope::Dispatch),
     )
     .add(
         // Mid-chat file attachments — same multipart shape + caps

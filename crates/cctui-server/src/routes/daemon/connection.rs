@@ -20,7 +20,7 @@ use super::conn_limit::{ConnGuard, DAEMON_CONNS};
 use super::daemon_lost::{PENDING_DAEMON_LOST, schedule_daemon_lost};
 use super::decode::{
     MAX_TRANSFER_BYTES, STALE_TRANSFER, decode_binary_frame, decode_compressed_frame, expand_batch,
-    handle_chunk,
+    handle_chunk, parse_frame,
 };
 use super::frames::process_frame;
 use super::ingest::{Ingest, ingest_run};
@@ -54,7 +54,8 @@ pub async fn ws(
     };
     let user_id = ctx.user_id;
     let cap = state.config.max_daemon_ws_conns;
-    let guard = if dispatch_machine(&state, machine_id).await {
+    let shared = dispatch_machine(&state, machine_id).await;
+    let guard = if shared {
         Some(ConnGuard::exempt())
     } else {
         DAEMON_CONNS.acquire(ctx.key_id, cap, std::time::Instant::now())
@@ -68,7 +69,7 @@ pub async fn ws(
         return Err(StatusCode::TOO_MANY_REQUESTS);
     };
     Ok(ws
-        .on_upgrade(move |socket| handle(socket, state, machine_id, user_id, guard))
+        .on_upgrade(move |socket| handle(socket, state, machine_id, user_id, shared, guard))
         .into_response())
 }
 
@@ -179,12 +180,13 @@ async fn handle(
     state: AppState,
     machine_id: Uuid,
     user_id: Uuid,
+    shared: bool,
     guard: ConnGuard,
 ) {
     let (sink, mut stream) = socket.split();
     let (tx, rx) = mpsc::channel::<DaemonFrameDown>(64);
     let (priority_tx, priority_rx) = mpsc::channel::<DaemonFrameDown>(PRIORITY_CAPACITY);
-    let mut conn = Conn::new(state, machine_id, user_id);
+    let mut conn = Conn::new(state, machine_id, user_id, shared);
     conn.register(&tx, priority_tx).await;
     send_initial_frames(&conn.state, machine_id, &tx).await;
     let outbound = tokio::spawn(outbound_pump(sink, rx, priority_rx));
@@ -212,6 +214,9 @@ struct Conn {
     /// This connection's own routing address. The machine id groups the
     /// dispatched pods; only this distinguishes them.
     id: Uuid,
+    /// The machine id is the user's `dispatch` machine, which every dispatched
+    /// worker pod authenticates as.
+    shared: bool,
     /// Sessions this connection announced. Several daemons can share one
     /// machine id (every dispatched worker pod authenticates as the user's
     /// `dispatch` machine), so the close path may only end these, never the
@@ -229,12 +234,13 @@ enum Leaves {
 }
 
 impl Conn {
-    fn new(state: AppState, machine_id: Uuid, user_id: Uuid) -> Self {
+    fn new(state: AppState, machine_id: Uuid, user_id: Uuid, shared: bool) -> Self {
         Self {
             state,
             machine_id,
             user_id,
             id: Uuid::new_v4(),
+            shared,
             announced: Arc::default(),
             owners: SessionOwners::new(machine_id, user_id),
             bumps: Arc::new(Bumps::default()),
@@ -253,7 +259,9 @@ impl Conn {
         state.auth_recovery_daemons.remove(&machine_id);
         state.bus.register_daemon(machine_id, self.id, tx.clone());
         state.bus.register_daemon_priority(self.id, priority_tx);
-        PENDING_DAEMON_LOST.cancel(machine_id);
+        if !self.shared {
+            PENDING_DAEMON_LOST.cancel_machine(machine_id);
+        }
         // Replica-aware presence: record this pod as the WS owner so a
         // peer replica can forward daemon-targeted requests here.
         crate::presence::register(state, crate::presence::Kind::Daemon, machine_id).await;
@@ -331,6 +339,9 @@ impl Conn {
                 // First announcement only: these frames repeat constantly and
                 // the presence row is a DB upsert.
                 let first = self.announced.lock().is_ok_and(|mut set| set.insert(local_id.clone()));
+                if first {
+                    PENDING_DAEMON_LOST.announced(&local_id);
+                }
                 if first && let Ok(session) = Uuid::parse_str(&local_id) {
                     crate::presence::register(state, crate::presence::Kind::Session, session).await;
                 }
@@ -362,7 +373,8 @@ impl Conn {
         for session in &sessions {
             state.preview.detach_session(&state.pool, session).await;
         }
-        if state.bus.unregister_daemon(machine_id, self.id, tx) {
+        let newest = state.bus.unregister_daemon(machine_id, self.id, tx);
+        if newest {
             state.auth_recovery_daemons.remove(&machine_id);
             state.preview.detach_machine(&state.pool, machine_id).await;
             crate::presence::unregister(state, crate::presence::Kind::Daemon, machine_id).await;
@@ -380,7 +392,11 @@ impl Conn {
                     "announced_sessions": sessions.len(),
                 })),
             );
-            schedule_daemon_lost(state, machine_id, sessions);
+        }
+        // A shared machine's other connections are siblings, not this daemon's
+        // replacement, so its sessions are still owed a mark.
+        if newest || self.shared {
+            schedule_daemon_lost(state, machine_id, self.id, self.shared, sessions);
         }
     }
 }
@@ -530,13 +546,7 @@ fn note_idle_eviction(state: &AppState, machine_id: Uuid) {
 
 fn decode_inbound(inbound: Inbound) -> Option<DaemonFrameUp> {
     match inbound {
-        Inbound::Data(text) => match serde_json::from_str(&text) {
-            Ok(f) => Some(f),
-            Err(err) => {
-                tracing::warn!(%err, "bad daemon frame");
-                None
-            }
-        },
+        Inbound::Data(text) => parse_frame(text.as_bytes()),
         Inbound::Binary(data) => decode_binary_frame(&data)
             .map(|inner| DaemonFrameUp::Batch { frames: expand_batch(inner) }),
         Inbound::Skip | Inbound::Done | Inbound::Idle => None,
@@ -609,7 +619,9 @@ pub(super) fn session_scope(frame: &DaemonFrameUp) -> Option<&str> {
                 | AdapterEvent::GuardStepState { local_id, .. }
                 | AdapterEvent::TranscriptMark { local_id, .. }
                 | AdapterEvent::TurnEnd { local_id, .. }
-                | AdapterEvent::RateLimits { local_id, .. },
+                | AdapterEvent::RateLimits { local_id, .. }
+                | AdapterEvent::Todos { local_id, .. }
+                | AdapterEvent::Title { local_id, .. },
             ..
         } => Some(local_id),
         _ => None,
@@ -646,7 +658,9 @@ pub(super) fn event_local_id(event: &AdapterEvent) -> &str {
         | AdapterEvent::TranscriptMark { local_id, .. }
         | AdapterEvent::GuardStepState { local_id, .. }
         | AdapterEvent::TurnEnd { local_id, .. }
-        | AdapterEvent::RateLimits { local_id, .. } => local_id,
+        | AdapterEvent::RateLimits { local_id, .. }
+        | AdapterEvent::Todos { local_id, .. }
+        | AdapterEvent::Title { local_id, .. } => local_id,
         _ => "",
     }
 }
@@ -665,6 +679,8 @@ pub(super) const fn event_kind(event: &AdapterEvent) -> &'static str {
         AdapterEvent::TextDelta { .. } => "text_delta",
         AdapterEvent::GuardStepState { .. } => "guard_step_state",
         AdapterEvent::TurnEnd { .. } => "turn_end",
+        AdapterEvent::Todos { .. } => "todos",
+        AdapterEvent::Title { .. } => "title",
         _ => "other",
     }
 }

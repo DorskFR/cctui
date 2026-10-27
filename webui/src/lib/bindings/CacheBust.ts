@@ -2,6 +2,6 @@
 
 /**
  * What a turn lost when its prompt cache did not match.
- * `reason` is `ttl_expired` | `gateway_rewrote_body` | `unknown`.
+ * `reason` is `ttl_expired` | `provider_miss` | `unknown`.
  */
 export type CacheBust = { lost_tokens: number, lost_usd: number, reason: string, };

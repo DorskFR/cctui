@@ -330,6 +330,9 @@ pub struct App {
     pub machine_liveness: HashMap<String, cctui_proto::models::MachineLiveness>,
     /// Each session's workflow-guard step as its pod last reported it.
     pub guard_steps: HashMap<String, cctui_proto::guard_step::GuardStepState>,
+    /// Live guard-step frames received per session, so an HTTP read that a
+    /// frame overtook can tell its answer is stale.
+    pub guard_step_frames: HashMap<String, u64>,
     /// Spawn configurations remembered per target, as the server holds them.
     pub spawn_memory: std::collections::BTreeMap<String, cctui_proto::drafts::SpawnMemoryEntry>,
     /// The socket is delivering events, so the REST poll can slow down.
@@ -494,6 +497,7 @@ impl App {
             clock_ms: 0,
             machine_liveness: HashMap::new(),
             guard_steps: HashMap::new(),
+            guard_step_frames: HashMap::new(),
             spawn_memory: std::collections::BTreeMap::new(),
             ws_healthy: false,
             last_refresh_ms: 0,

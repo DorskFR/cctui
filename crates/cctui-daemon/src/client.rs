@@ -59,6 +59,30 @@ impl std::fmt::Display for AuthRejected {
 
 impl std::error::Error for AuthRejected {}
 
+/// The limits endpoint refused to answer.
+#[derive(Debug)]
+pub struct LimitsUnavailable {
+    pub status: reqwest::StatusCode,
+    pub reason: String,
+}
+
+impl LimitsUnavailable {
+    /// The server does not know the session yet: its registration is still
+    /// in flight.
+    #[must_use]
+    pub fn unregistered(&self) -> bool {
+        self.status == reqwest::StatusCode::NOT_FOUND && self.reason == "calling session not found"
+    }
+}
+
+impl std::fmt::Display for LimitsUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CctuiUsage unavailable ({}): {}", self.status, self.reason)
+    }
+}
+
+impl std::error::Error for LimitsUnavailable {}
+
 impl ServerClient {
     #[must_use]
     pub fn new(base_url: impl Into<String>) -> Self {
@@ -342,6 +366,38 @@ impl ServerClient {
         Ok(serde_json::from_value(Self::peer_json(resp, "CctuiAgentArchive").await?)?)
     }
 
+    /// `POST /api/v1/daemon/sessions/{child}/child-completion` — hand a child's
+    /// finished turn to its parent as a turn of its own. `Err` is transient and
+    /// worth a retry; a refusal (`Ok(Some(reason))`) never will succeed.
+    pub async fn child_completion(
+        &self,
+        machine_key: &str,
+        child_id: &str,
+        text: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let url = format!(
+            "{}/api/v1/daemon/sessions/{}/child-completion",
+            self.base_url.trim_end_matches('/'),
+            child_id,
+        );
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(machine_key)
+            .json(&serde_json::json!({ "text": text }))
+            .send()
+            .await?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(None);
+        }
+        let reason = resp.text().await.unwrap_or_default();
+        if status.is_client_error() && status != reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Ok(Some(format!("{status}: {reason}")));
+        }
+        anyhow::bail!("child completion not delivered ({status}): {reason}");
+    }
+
     /// The limits that apply to `session_id` itself: its pinned account, that
     /// account's usage windows, the caps in force (including the session's own
     /// `CctuiAgent` dollar budget) and a per-model allow decision.
@@ -372,7 +428,7 @@ impl ServerClient {
                 .ok()
                 .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
                 .unwrap_or(text);
-            anyhow::bail!("CctuiUsage unavailable ({status}): {reason}");
+            return Err(LimitsUnavailable { status, reason }.into());
         }
         Ok(resp.json().await?)
     }

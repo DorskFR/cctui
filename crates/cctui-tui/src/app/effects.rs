@@ -25,6 +25,7 @@ use super::line::agent_event_to_line;
 use super::machines::MachineAction;
 use super::pins::PinAction;
 use super::send::SendAction;
+use super::session_live::SessionLiveAction;
 use super::slice::SliceAction;
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
@@ -284,6 +285,9 @@ async fn run(server: &Client, ws: &WsClient, drafts: &DraftSaver, effect: Effect
                 Vec::new()
             }
         },
+        Effect::FetchGuardStep { session_id, frames } => {
+            fetch_guard_step(server, session_id, frames).await
+        }
         Effect::PinMessage { session_id, seq } => pin(server, session_id, seq, true).await,
         Effect::UnpinMessage { session_id, seq } => pin(server, session_id, seq, false).await,
         Effect::Copy { text, label } => copy(&text, label),
@@ -810,6 +814,19 @@ async fn load_drafts(server: &Client, session_id: String) -> Vec<Action> {
         text: text.unwrap_or_default(),
         history: history.unwrap_or_default(),
     })]
+}
+
+async fn fetch_guard_step(server: &Client, session_id: String, frames: u64) -> Vec<Action> {
+    match server.guard_step(&session_id).await {
+        Ok(state) => {
+            let read = SessionLiveAction::GuardStepRead { session_id, frames, state };
+            vec![Action::SessionLive(read)]
+        }
+        Err(e) => {
+            tracing::warn!(%e, session_id, "guard step fetch failed");
+            Vec::new()
+        }
+    }
 }
 
 async fn fetch_pending_permissions(server: &Client) -> Vec<Action> {

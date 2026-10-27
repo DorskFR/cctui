@@ -28,13 +28,40 @@ export type PermReq = EventOf<'permission_request'>;
  * events. Shared so both shapes reconcile to one identity. */
 export const USER_PREFIX = '▷ User:';
 
-/** Mirrors the server's `normalize_last_message` (collapse whitespace,
- *  cap at 200 chars) so patched excerpts match the next poll's. */
+const INJECTED_HEAD =
+	/^\s*<(cctui-session-context|session-context|cctui-previous-conversation|previous-conversation)(?:\s[^>]*)?>[\s\S]*?<\/\1>/;
+
+/** The prose after the wrappers cctui puts ahead of a prompt, or the whole
+ *  body when nothing follows them. */
+function withoutInjected(body: string): string {
+	let rest = body;
+	for (let m = INJECTED_HEAD.exec(rest); m; m = INJECTED_HEAD.exec(rest))
+		rest = rest.slice(m[0].length);
+	return rest.trim() ? rest : body;
+}
+
+/** Mirrors the server's `preview_last_message` (drop the leading wrappers,
+ *  collapse whitespace, cap at 200 chars) so patched excerpts match the next
+ *  poll's. */
 export function lastMessageExcerpt(content: string): string {
-	const collapsed = content.startsWith(USER_PREFIX)
-		? content.slice(USER_PREFIX.length).split(/\s+/).filter(Boolean).join(' ')
-		: content.split(/\s+/).filter(Boolean).join(' ');
+	const body = content.startsWith(USER_PREFIX) ? content.slice(USER_PREFIX.length) : content;
+	const collapsed = withoutInjected(body).split(/\s+/).filter(Boolean).join(' ');
 	return collapsed.length > 200 ? `${[...collapsed].slice(0, 200).join('')}…` : collapsed;
+}
+
+const NO_PREVIEW_KINDS = new Set(['turn_annotation', 'system_marker', 'queue_op']);
+
+/** The sessions-list patch a live stream event implies: user turns only (the
+ *  server's preview row is a `message`), never an annotation or marker. */
+export function streamListPatch(sessionId: string, ev: AgentEvent): SessionListPatch | null {
+	if (ev.type !== 'text' && ev.type !== 'reply') return null;
+	if (ev.type === 'text' && ev.kind && NO_PREVIEW_KINDS.has(ev.kind)) return null;
+	if (userMsgKey(ev) === null) return null;
+	return {
+		session_id: sessionId,
+		last_message_text: lastMessageExcerpt(ev.content),
+		last_message_at: new Date(ev.ts).toISOString()
+	};
 }
 
 /** Canonicalize a user-turn body so its optimistic-echo and persisted/server

@@ -62,6 +62,7 @@
 	import type { ConversationChrome } from './conversation/chrome';
 	import { m } from '$lib/paraglide/messages';
 	import LiveVoiceBar from './conversation/LiveVoiceBar.svelte';
+	import { voiceTranscriptLanded } from './conversation/voiceMessage';
 	import { LiveVoice } from '$lib/voice/liveVoice.svelte';
 	import { SpeechPlayer } from '$lib/voice/player';
 	import { speakText } from '$lib/voice/speakLine';
@@ -176,7 +177,8 @@
 		invalidateConversation: () => qc.invalidateQueries({ queryKey: qk.conversation(id) }),
 		invalidateSessions: () => qc.invalidateQueries({ queryKey: qk.sessionsAll }),
 		mergeIntoCache: (sid, ev) =>
-			qc.setQueryData<AgentEvent[]>(qk.conversation(sid), (prev) => mergeLiveEvent(prev, ev))
+			qc.setQueryData<AgentEvent[]>(qk.conversation(sid), (prev) => mergeLiveEvent(prev, ev)),
+		sessionTodos: () => session.todos
 	});
 	// (Re)subscribe when the open session changes or a forced resubscribe is
 	// requested; tear down listeners on switch/unmount.
@@ -277,7 +279,8 @@
 	// the paged tail, so a `mark.search-hit` count can never be the total.
 	const search = new ConversationSearch({
 		id: () => id,
-		fetchHits: (sid: string, q: string) => endpoints.conversationSearch(sid, q),
+		fetchHits: (sid: string, q: string, signal?: AbortSignal) =>
+			endpoints.conversationSearch(sid, q, undefined, signal),
 		ensureSeqVisible: (seq) => pins.ensureSeqVisible(seq),
 		onerror: (e) => toasts.error(errMessage(e))
 	});
@@ -372,10 +375,11 @@
 	const voiceEnabled = $derived(!!voiceConfig.data?.enabled && !archived);
 	const liveVoice = new LiveVoice({
 		connect: (url) => new WebSocket(url),
-		vad: (cb) => import('$lib/voice/vad').then((mod) => mod.createVad(cb)),
+		vad: (cb) => import('$lib/voice/vad').then((mod) => mod.createVad(cb, settings.voice.micId)),
 		player: new SpeechPlayer({
 			mime: () => ttsMime(voiceConfig.data?.tts_format ?? 'opus'),
-			speed: () => settings.voice.speed
+			speed: () => settings.voice.speed,
+			speaker: () => settings.voice.speakerId
 		}),
 		wakeLock: acquireWakeLock,
 		prefs: () => settings.voice
@@ -392,6 +396,9 @@
 	$effect(() => {
 		if (liveVoice.error) toasts.error(liveVoice.error);
 	});
+	$effect(() => {
+		liveVoice.setLanguage(settings.voice.language);
+	});
 	let speakingKey = $state<string | null>(null);
 	async function speakLine(ln: Line) {
 		if (!ln.key || !ln.text) return;
@@ -400,6 +407,8 @@
 			const outcome = await speakText(key, ln.text, {
 				voice: settings.voice.voice,
 				speed: settings.voice.speed,
+				summarize: settings.voice.summarizeLong,
+				speaker: settings.voice.speakerId,
 				onend: () => {
 					if (speakingKey === key) speakingKey = null;
 				}
@@ -552,7 +561,11 @@
 			<AutoArchiveNotice {session} onpin={() => togglePin(session)} />
 
 			{#if liveVoice.active}
-				<LiveVoiceBar voice={liveVoice} onstop={toggleLiveVoice} />
+				<LiveVoiceBar
+					voice={liveVoice}
+					onstop={toggleLiveVoice}
+					landed={voiceTranscriptLanded(lines, liveVoice.transcript)}
+				/>
 			{/if}
 			<ConversationComposer
 				bind:this={composer}

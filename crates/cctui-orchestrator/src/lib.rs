@@ -53,6 +53,44 @@ pub fn env_secret_name(job_name: &str, nonce: &str) -> String {
     format!("{job_name}-env-{nonce}")
 }
 
+/// Pod annotation carrying a non-root [`Posture`]; absent means root.
+pub const ANNOTATION_POSTURE: &str = "cctui.dev/posture";
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Posture {
+    Root,
+    Nonroot,
+}
+
+impl Posture {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Root => "root",
+            Self::Nonroot => "nonroot",
+        }
+    }
+
+    /// `None` for root, so a root pod renders byte-for-byte as before.
+    #[must_use]
+    pub const fn annotation(self) -> Option<&'static str> {
+        match self {
+            Self::Root => None,
+            Self::Nonroot => Some("nonroot"),
+        }
+    }
+
+    #[must_use]
+    pub fn from_annotation(value: Option<&str>) -> Option<Self> {
+        match value {
+            None | Some("root") => Some(Self::Root),
+            Some("nonroot") => Some(Self::Nonroot),
+            Some(_) => None,
+        }
+    }
+}
+
 /// Pod annotation the webhook stamps (`"true"`) after injecting the envelope.
 /// Its presence makes re-invocation a no-op.
 pub const ANNOTATION_ENVELOPE_INJECTED: &str = "cctui.dev/envelope-injected";
@@ -161,6 +199,91 @@ pub struct WorkerProfileSpec {
     /// `None`/`0` ⇒ unlimited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_inflight: Option<u32>,
+
+    /// Per-profile guard-proxy settings, layered over the global
+    /// `guard-proxy-env` `ConfigMap`. `None` renders the sidecar unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard: Option<GuardSpec>,
+
+    /// Pre-flight isolation check the worker entrypoint runs before the agent
+    /// starts. `None` runs the built-in probes in the default mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preflight: Option<PreflightSpec>,
+
+    /// Security posture of the worker container. `root` boots it as uid 0 with
+    /// the envelope's capability set and the overlay warm cache; `nonroot` runs
+    /// it as uid/gid 1000 with every capability dropped, no privilege
+    /// escalation, `RuntimeDefault` seccomp and no overlay. Unset is `root`;
+    /// new profiles set `nonroot`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub posture: Option<Posture>,
+}
+
+/// Pre-flight isolation check settings for one profile.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PreflightSpec {
+    /// `enforce` fails the dispatch on any reachable probe, `warn` logs and
+    /// continues, `off` skips the check. Unset enforces in the sandboxed pod.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+
+    /// Extra targets the agent must not reach, on top of the built-in set:
+    /// `host:port` (`[addr]:port` for IPv6), or a CIDR whose first host is
+    /// probed on port 80.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deny: Option<Vec<String>>,
+}
+
+impl PreflightSpec {
+    /// Worker env the entrypoint reads the settings from.
+    #[must_use]
+    pub fn worker_env(&self) -> Vec<(&'static str, String)> {
+        let mut env = Vec::new();
+        if let Some(mode) = self.mode.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            env.push((PREFLIGHT_MODE_ENV, mode.to_owned()));
+        }
+        let deny: Vec<&str> = self
+            .deny
+            .iter()
+            .flatten()
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .collect();
+        if !deny.is_empty() {
+            env.push((PREFLIGHT_DENY_ENV, deny.join(",")));
+        }
+        env
+    }
+}
+
+/// Worker env carrying [`PreflightSpec::mode`].
+pub const PREFLIGHT_MODE_ENV: &str = "CCTUI_PREFLIGHT_MODE";
+
+/// Worker env carrying [`PreflightSpec::deny`], comma-separated.
+pub const PREFLIGHT_DENY_ENV: &str = "CCTUI_PREFLIGHT_DENY";
+
+/// Guard-proxy sidecar env for one profile, so a guard setting can be canaried
+/// on a single profile before it reaches the global `ConfigMap`.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GuardSpec {
+    /// Extra `ConfigMap`/`Secret` env sources, rendered after the global
+    /// `guard-proxy-env`, so a key here overrides it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_from: Option<Vec<EnvFromSource>>,
+
+    /// `GUARD_PROXY_*` overrides. Container env wins over every `envFrom`
+    /// source, the global one included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<Vec<EnvVar>>,
+
+    /// Required for [`env`](Self::env) to widen private egress
+    /// (`GUARD_PROXY_ALLOW_PRIVATE_IPS` truthy, a non-empty
+    /// `GUARD_PROXY_PRIVATE_ALLOW`), so the widening is explicit in review.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_private_egress: bool,
 }
 
 impl WorkerProfileSpec {
@@ -170,6 +293,11 @@ impl WorkerProfileSpec {
     #[must_use]
     pub fn worker_container_name(&self) -> &str {
         self.worker_container.as_deref().unwrap_or(DEFAULT_WORKER_CONTAINER)
+    }
+
+    #[must_use]
+    pub fn posture(&self) -> Posture {
+        self.posture.unwrap_or(Posture::Root)
     }
 }
 
@@ -278,6 +406,121 @@ containers:
                 .map(String::as_str),
             Some("worker")
         );
+    }
+
+    #[test]
+    fn checked_in_crd_matches_the_generated_schema() {
+        let checked_in: serde_json::Value =
+            serde_norway::from_str(include_str!("../../../deploy/workerprofile-crd.yaml")).unwrap();
+        assert_eq!(
+            checked_in,
+            serde_json::to_value(WorkerProfile::crd()).unwrap(),
+            "deploy/workerprofile-crd.yaml is stale: regenerate it with the crdgen binary"
+        );
+    }
+
+    #[test]
+    fn guard_profile_deserializes() {
+        let yaml = r#"
+image: registry.example.com/worker:latest
+guard:
+  allowPrivateEgress: true
+  envFrom:
+    - configMapRef:
+        name: guard-proxy-env-canary
+  env:
+    - name: GUARD_PROXY_ALLOW_PRIVATE_IPS
+      value: "0"
+"#;
+        let spec: WorkerProfileSpec = serde_norway::from_str(yaml).expect("guard profile parses");
+        let guard = spec.guard.expect("spec.guard");
+        assert!(guard.allow_private_egress);
+        assert_eq!(guard.env_from.as_ref().map(Vec::len), Some(1));
+        assert_eq!(guard.env.as_ref().unwrap()[0].name, "GUARD_PROXY_ALLOW_PRIVATE_IPS");
+
+        let lean: WorkerProfileSpec =
+            serde_norway::from_str("image: registry.example.com/worker:latest\n").unwrap();
+        assert!(lean.guard.is_none());
+        assert!(serde_json::to_value(&lean).unwrap().get("guard").is_none());
+    }
+
+    #[test]
+    fn preflight_profile_deserializes_into_worker_env() {
+        let yaml = r#"
+image: registry.example.com/worker:latest
+preflight:
+  mode: warn
+  deny:
+    - postgres.db.svc:5432
+    - " 10.42.0.0/16 "
+    - ""
+"#;
+        let spec: WorkerProfileSpec =
+            serde_norway::from_str(yaml).expect("preflight profile parses");
+        let env = spec.preflight.expect("spec.preflight").worker_env();
+        assert_eq!(
+            env,
+            vec![
+                (PREFLIGHT_MODE_ENV, "warn".to_owned()),
+                (PREFLIGHT_DENY_ENV, "postgres.db.svc:5432,10.42.0.0/16".to_owned()),
+            ]
+        );
+
+        assert!(PreflightSpec::default().worker_env().is_empty());
+        let lean: WorkerProfileSpec =
+            serde_norway::from_str("image: registry.example.com/worker:latest\n").unwrap();
+        assert!(lean.preflight.is_none());
+        assert!(serde_json::to_value(&lean).unwrap().get("preflight").is_none());
+    }
+
+    #[test]
+    fn posture_deserializes_and_unset_is_root() {
+        let lean: WorkerProfileSpec =
+            serde_norway::from_str("image: registry.example.com/worker:latest\n").unwrap();
+        assert!(lean.posture.is_none());
+        assert_eq!(lean.posture(), Posture::Root);
+        assert!(serde_json::to_value(&lean).unwrap().get("posture").is_none());
+
+        for (yaml, want) in [("root", Posture::Root), ("nonroot", Posture::Nonroot)] {
+            let spec: WorkerProfileSpec = serde_norway::from_str(&format!(
+                "image: registry.example.com/worker:latest\nposture: {yaml}\n"
+            ))
+            .unwrap();
+            assert_eq!(spec.posture(), want);
+            assert_eq!(serde_json::to_value(&spec).unwrap()["posture"], yaml);
+        }
+        assert!(
+            serde_norway::from_str::<WorkerProfileSpec>(
+                "image: registry.example.com/worker:latest\nposture: restricted\n"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn crd_posture_has_no_schema_default() {
+        let crd = serde_json::to_value(WorkerProfile::crd()).unwrap();
+        let posture = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+            ["properties"]["posture"];
+        let values = posture["enum"].as_array().expect("posture is an enum");
+        for want in ["root", "nonroot"] {
+            assert!(values.contains(&serde_json::json!(want)), "{want} missing from {values:?}");
+        }
+        assert!(
+            posture.get("default").is_none(),
+            "a schema default would be applied to stored profiles on read and flip them"
+        );
+    }
+
+    #[test]
+    fn posture_annotation_round_trips() {
+        assert_eq!(Posture::Root.annotation(), None);
+        assert_eq!(Posture::Nonroot.annotation(), Some("nonroot"));
+        for p in [Posture::Root, Posture::Nonroot] {
+            assert_eq!(Posture::from_annotation(p.annotation()), Some(p));
+            assert_eq!(Posture::from_annotation(Some(p.as_str())), Some(p));
+        }
+        assert_eq!(Posture::from_annotation(Some("restricted")), None);
     }
 
     #[test]

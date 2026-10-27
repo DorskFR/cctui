@@ -316,9 +316,16 @@ async fn apply_batch(pool: &PgPool, updates: &[(i64, Value)]) -> usize {
         return 0;
     }
     let ids: Vec<i64> = updates.iter().map(|(id, _)| *id).collect();
-    let payloads: Vec<Value> = updates.iter().map(|(_, p)| p.clone()).collect();
+    let written = write_batch(pool, &ids, updates).await;
+    if let Err(e) = crate::search_index::reindex(pool, &ids).await {
+        tracing::warn!("privacy scan search reindex failed: {e}");
+    }
+    written
+}
 
-    match sqlx::query(SET_SQL).bind(&ids).bind(&payloads).execute(pool).await {
+async fn write_batch(pool: &PgPool, ids: &[i64], updates: &[(i64, Value)]) -> usize {
+    let payloads: Vec<Value> = updates.iter().map(|(_, p)| p.clone()).collect();
+    match sqlx::query(SET_SQL).bind(ids).bind(&payloads).execute(pool).await {
         Ok(_) => ids.len(),
         Err(e) => {
             // A redacted payload can collide with an existing redacted row on

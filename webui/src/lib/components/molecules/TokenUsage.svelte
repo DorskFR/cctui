@@ -62,8 +62,8 @@
 		switch (bustReasonKey(usage.cache_bust?.reason ?? '')) {
 			case 'ttl_expired':
 				return m.sessions_token_bust_reason_ttl_expired();
-			case 'gateway_rewrote_body':
-				return m.sessions_token_bust_reason_gateway_rewrote_body();
+			case 'provider_miss':
+				return m.sessions_token_bust_reason_provider_miss();
 			default:
 				return m.sessions_token_bust_reason_unknown();
 		}

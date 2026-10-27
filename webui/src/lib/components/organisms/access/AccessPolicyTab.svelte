@@ -8,6 +8,8 @@
 		blankPack,
 		formFromRules,
 		incompletePacks,
+		invalidLimits,
+		type LimitField,
 		type PolicyForm,
 		rulesFromForm
 	} from './dispatchPolicy.logic';
@@ -44,7 +46,9 @@
 		}
 	});
 
-	const invalid = $derived(incompletePacks(form));
+	const badLimits = $derived(invalidLimits(form));
+	const invalid = $derived(incompletePacks(form) || badLimits.length > 0);
+	const limitError = (f: LimitField) => (badLimits.includes(f) ? m.access_policy_limit_invalid() : undefined);
 
 	async function save() {
 		saving = true;
@@ -132,14 +136,14 @@
 	</div>
 
 	<div class="grid limits">
-		<Field label={m.access_policy_max_timeout()} hint={m.access_policy_limit_hint()}>
-			<Input mono type="number" min="1" bind:value={form.maxTimeout} disabled={!canManage} />
+		<Field label={m.access_policy_max_timeout()} hint={m.access_policy_limit_hint()} error={limitError('maxTimeout')}>
+			<Input mono inputmode="numeric" bind:value={form.maxTimeout} disabled={!canManage} />
 		</Field>
-		<Field label={m.access_policy_max_concurrent()} hint={m.access_policy_limit_hint()}>
-			<Input mono type="number" min="1" bind:value={form.maxConcurrent} disabled={!canManage} />
+		<Field label={m.access_policy_max_concurrent()} hint={m.access_policy_limit_hint()} error={limitError('maxConcurrent')}>
+			<Input mono inputmode="numeric" bind:value={form.maxConcurrent} disabled={!canManage} />
 		</Field>
-		<Field label={m.access_policy_daily_cap()} hint={m.access_policy_limit_hint()}>
-			<Input mono type="number" min="1" bind:value={form.dailyCap} disabled={!canManage} />
+		<Field label={m.access_policy_daily_cap()} hint={m.access_policy_limit_hint()} error={limitError('dailyCap')}>
+			<Input mono inputmode="numeric" bind:value={form.dailyCap} disabled={!canManage} />
 		</Field>
 	</div>
 

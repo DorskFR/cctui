@@ -43,9 +43,134 @@ pub(super) fn extract_todos(tool: &str, input: &serde_json::Value) -> Option<Vec
                     .and_then(serde_json::Value::as_str)
                     .filter(|s| !s.is_empty())
                     .map(str::to_owned),
+                ..TodoEntry::default()
             })
             .collect(),
     )
+}
+
+/// One step of Claude Code's incremental task list, read off the live stream.
+///
+/// `TaskCreate`'s input has no id, so a creation is read from its result
+/// (`Task #N created successfully: <subject>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum TaskOp {
+    Created { id: String, subject: String },
+    Updated { id: String, input: serde_json::Value },
+}
+
+pub(super) fn task_op(event: &cctui_proto::ws::AgentEvent) -> Option<TaskOp> {
+    match event {
+        cctui_proto::ws::AgentEvent::ToolCall { tool, input, .. } if tool == "TaskUpdate" => {
+            let id = match input.get("taskId")? {
+                serde_json::Value::String(s) => s.trim().to_owned(),
+                serde_json::Value::Number(n) => n.to_string(),
+                _ => return None,
+            };
+            (!id.is_empty()).then(|| TaskOp::Updated { id, input: input.clone() })
+        }
+        cctui_proto::ws::AgentEvent::ToolResult { output_summary, error: false, .. } => {
+            let rest = output_summary.trim_start().strip_prefix("Task #")?;
+            let (id, subject) = rest.split_once(" created successfully: ")?;
+            (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| TaskOp::Created { id: id.to_owned(), subject: subject.trim().to_owned() })
+        }
+        _ => None,
+    }
+}
+
+/// Apply `op` to a stored list, idempotently.
+///
+/// Entries without an id are a `TodoWrite` / `update_plan` list, superseded
+/// once a task lands.
+pub(super) fn fold_task(list: &mut Vec<TodoEntry>, op: TaskOp) {
+    match op {
+        TaskOp::Created { id, subject } => {
+            list.retain(|t| t.id.is_some());
+            if !list.iter().any(|t| t.id.as_deref() == Some(id.as_str())) {
+                list.push(TodoEntry {
+                    content: subject,
+                    status: "pending".to_owned(),
+                    id: Some(id),
+                    ..TodoEntry::default()
+                });
+                list.sort_by_key(|t| task_order(t.id.as_deref()));
+            }
+        }
+        TaskOp::Updated { id, input } => {
+            if input.get("status").and_then(serde_json::Value::as_str) == Some("deleted") {
+                list.retain(|t| t.id.as_deref() != Some(id.as_str()));
+            } else if let Some(entry) =
+                list.iter_mut().find(|t| t.id.as_deref() == Some(id.as_str()))
+            {
+                apply_update(entry, &input);
+            }
+        }
+    }
+}
+
+fn apply_update(entry: &mut TodoEntry, input: &serde_json::Value) {
+    let field = |key: &str| input.get(key).and_then(serde_json::Value::as_str);
+    let non_empty = |key: &str| field(key).map(|s| Some(s.to_owned()).filter(|s| !s.is_empty()));
+    if let Some(status) = field("status") {
+        task_status(status).clone_into(&mut entry.status);
+    }
+    if let Some(Some(subject)) = non_empty("subject") {
+        entry.content = subject;
+    }
+    if let Some(description) = non_empty("description") {
+        entry.description = description;
+    }
+    if let Some(active_form) = non_empty("activeForm") {
+        entry.active_form = active_form;
+    }
+    if let Some(owner) = non_empty("owner") {
+        entry.owner = owner;
+    }
+    let added = input.get("addBlockedBy").and_then(serde_json::Value::as_array);
+    for blocker in added.into_iter().flatten().filter_map(serde_json::Value::as_str) {
+        if !entry.blocked_by.iter().any(|b| b == blocker) {
+            entry.blocked_by.push(blocker.to_owned());
+        }
+    }
+}
+
+fn task_status(raw: &str) -> &'static str {
+    match raw {
+        "completed" => "completed",
+        "in_progress" => "in_progress",
+        _ => "pending",
+    }
+}
+
+/// Numeric ids in numeric order, anything else after them.
+fn task_order(id: Option<&str>) -> (u64, String) {
+    let id = id.unwrap_or_default();
+    (id.parse().unwrap_or(u64::MAX), id.to_owned())
+}
+
+/// Fold a task-list step into the session's stored list.
+pub(super) async fn record_task_op(pool: &sqlx::PgPool, local_id: &str, op: TaskOp) {
+    let stored: Option<Option<serde_json::Value>> =
+        match sqlx::query_scalar("SELECT todos FROM sessions WHERE id = $1")
+            .bind(local_id)
+            .fetch_optional(pool)
+            .await
+        {
+            Ok(v) => v,
+            Err(err) => {
+                tracing::warn!(%err, %local_id, "todo read failed");
+                return;
+            }
+        };
+    let Some(stored) = stored else { return };
+    let mut list: Vec<TodoEntry> =
+        stored.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    let before = list.clone();
+    fold_task(&mut list, op);
+    if list != before {
+        record_todos(pool, local_id, &list).await;
+    }
 }
 
 /// Persist the session's task list. **Leaf only, deliberately unlike
@@ -121,6 +246,142 @@ mod tests {
         let got = extract_todos("TodoWrite", &json!({"todos": [{"content": "x"}]})).unwrap();
         assert_eq!(got[0].status, "pending");
         assert_eq!(got[0].content, "x");
+    }
+
+    #[test]
+    fn a_todowrite_entry_serializes_exactly_as_before() {
+        let got = extract_todos(
+            "TodoWrite",
+            &json!({"todos": [{"content": "a", "status": "in_progress", "activeForm": "A-ing"}]}),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&got).unwrap(),
+            json!([{"content": "a", "status": "in_progress", "active_form": "A-ing"}])
+        );
+    }
+
+    fn tool_call(tool: &str, input: serde_json::Value) -> cctui_proto::ws::AgentEvent {
+        cctui_proto::ws::AgentEvent::ToolCall {
+            tool: tool.to_owned(),
+            input,
+            kind: None,
+            tool_use_id: None,
+            ts: 0,
+            seq: None,
+        }
+    }
+
+    fn tool_result(summary: &str, error: bool) -> cctui_proto::ws::AgentEvent {
+        cctui_proto::ws::AgentEvent::ToolResult {
+            tool: String::new(),
+            output_summary: summary.to_owned(),
+            kind: None,
+            tool_use_id: None,
+            error,
+            ts: 0,
+            seq: None,
+        }
+    }
+
+    fn task(id: &str, content: &str, status: &str) -> TodoEntry {
+        TodoEntry {
+            content: content.to_owned(),
+            status: status.to_owned(),
+            id: Some(id.to_owned()),
+            ..TodoEntry::default()
+        }
+    }
+
+    #[test]
+    fn task_op_reads_creations_from_results_and_updates_from_calls() {
+        assert_eq!(
+            task_op(&tool_result("Task #12 created successfully: ship: it", false)),
+            Some(TaskOp::Created { id: "12".into(), subject: "ship: it".into() })
+        );
+        assert_eq!(task_op(&tool_result("Task #12 created successfully: x", true)), None);
+        assert_eq!(task_op(&tool_result("Task #x created successfully: x", false)), None);
+        assert_eq!(task_op(&tool_result("ok", false)), None);
+        let input = json!({"taskId": "3", "status": "completed"});
+        assert_eq!(
+            task_op(&tool_call("TaskUpdate", input.clone())),
+            Some(TaskOp::Updated { id: "3".into(), input })
+        );
+        assert!(matches!(
+            task_op(&tool_call("TaskUpdate", json!({"taskId": 4}))),
+            Some(TaskOp::Updated { id, .. }) if id == "4"
+        ));
+        assert_eq!(task_op(&tool_call("TaskUpdate", json!({"status": "completed"}))), None);
+        assert_eq!(task_op(&tool_call("TaskCreate", json!({"subject": "s"}))), None);
+        assert_eq!(task_op(&tool_call("TodoWrite", json!({"todos": []}))), None);
+    }
+
+    #[test]
+    fn creations_fold_in_numeric_order_and_replace_a_todowrite_list() {
+        let mut list = extract_todos("TodoWrite", &json!({"todos": [{"content": "old"}]})).unwrap();
+        for (id, subject) in [("10", "ten"), ("9", "nine"), ("10", "ten again")] {
+            fold_task(&mut list, TaskOp::Created { id: id.into(), subject: subject.into() });
+        }
+        assert_eq!(list, vec![task("9", "nine", "pending"), task("10", "ten", "pending")]);
+    }
+
+    #[test]
+    fn updates_patch_the_task_and_deleted_removes_it() {
+        let mut list = vec![task("1", "one", "pending"), task("2", "two", "pending")];
+        fold_task(
+            &mut list,
+            TaskOp::Updated {
+                id: "2".into(),
+                input: json!({
+                    "taskId": "2", "status": "in_progress", "subject": "two!",
+                    "description": "why", "activeForm": "Doing two", "owner": "agent-a",
+                    "addBlockedBy": ["1", "1"],
+                }),
+            },
+        );
+        let two = &list[1];
+        assert_eq!(two.content, "two!");
+        assert_eq!(two.status, "in_progress");
+        assert_eq!(two.description.as_deref(), Some("why"));
+        assert_eq!(two.active_form.as_deref(), Some("Doing two"));
+        assert_eq!(two.owner.as_deref(), Some("agent-a"));
+        assert_eq!(two.blocked_by, vec!["1".to_owned()]);
+        let snapshot = list.clone();
+        fold_task(
+            &mut list,
+            TaskOp::Updated { id: "2".into(), input: json!({"status": "in_progress"}) },
+        );
+        assert_eq!(list, snapshot, "an update the list already carries changes nothing");
+        fold_task(
+            &mut list,
+            TaskOp::Updated { id: "1".into(), input: json!({"status": "deleted"}) },
+        );
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn an_update_for_an_unknown_task_leaves_a_todowrite_list_alone() {
+        let mut list =
+            extract_todos("TodoWrite", &json!({"todos": [{"content": "keep"}]})).unwrap();
+        let before = list.clone();
+        fold_task(
+            &mut list,
+            TaskOp::Updated { id: "7".into(), input: json!({"status": "completed"}) },
+        );
+        assert_eq!(list, before);
+    }
+
+    #[test]
+    fn a_todos_frame_is_scoped_to_its_session() {
+        let frame = cctui_proto::ws::DaemonFrameUp::Event {
+            adapter_id: "claude-code".into(),
+            event: cctui_proto::adapter::AdapterEvent::Todos {
+                local_id: "sess-1".into(),
+                todos: vec![task("1", "one", "pending")],
+            },
+        };
+        assert_eq!(crate::routes::daemon::connection::session_scope(&frame), Some("sess-1"));
     }
 
     /// DB-gated: unlike the activity bump, a todos

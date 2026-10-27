@@ -189,6 +189,20 @@ fn drain_restartable(harness: &str) -> bool {
     DRAIN_RESTARTABLE.contains(&harness)
 }
 
+/// The daemon frame parser drops an unknown `drain_restart`, so a daemon older
+/// than 0.25.7 would ignore the request. Those daemons never report a health
+/// verdict, which every later daemon sends from its first heartbeats.
+fn drain_supported(report: Option<&HarnessReport>) -> bool {
+    report.is_some_and(|r| r.health.is_some())
+}
+
+fn daemon_too_old(machine: &str) -> String {
+    format!(
+        "the cctui-daemon on {machine} is older than 0.25.7 and would ignore a drain restart; \
+         update it first"
+    )
+}
+
 /// Ask a machine's daemon to restart `harness` onto the installed CLI as soon
 /// as it has no live worker. Accepted, not done: the daemon decides when.
 pub async fn restart_harness(
@@ -213,6 +227,10 @@ pub async fn restart_harness(
     if !online {
         return Err(AppError::new(StatusCode::NOT_FOUND, "machine not found"));
     }
+    let (name, report) = super::machine_adapters::machine_report(&state.pool, machine_id).await?;
+    if !drain_supported(report.as_ref()) {
+        return Err(AppError::new(StatusCode::CONFLICT, daemon_too_old(&name)));
+    }
     state
         .bus
         .command_daemon(machine_id, DaemonFrameDown::DrainRestart { harness: req.harness.clone() })
@@ -226,12 +244,31 @@ pub async fn restart_harness(
 
 #[cfg(test)]
 mod tests {
-    use super::drain_restartable;
+    use cctui_proto::harness::{HarnessReport, MachineHealth};
+
+    use super::{daemon_too_old, drain_restartable, drain_supported};
 
     #[test]
     fn only_claude_code_has_a_drain_restart() {
         assert!(drain_restartable("claude-code"));
         assert!(!drain_restartable("codex"), "codex cycles itself from the updater");
         assert!(!drain_restartable("gemini"));
+    }
+
+    #[test]
+    fn only_a_daemon_that_reports_health_can_drain() {
+        assert!(!drain_supported(None), "no report at all");
+        assert!(!drain_supported(Some(&HarnessReport::default())), "pre-0.25.7 report");
+        let report = HarnessReport { health: Some(MachineHealth::Ok), ..HarnessReport::default() };
+        assert!(drain_supported(Some(&report)));
+        let denied = MachineHealth::FolderDenied { detail: "EPERM".to_owned() };
+        let report = HarnessReport { health: Some(denied), ..HarnessReport::default() };
+        assert!(drain_supported(Some(&report)), "a denial is still a 0.25.7+ daemon");
+    }
+
+    #[test]
+    fn the_refusal_names_the_machine_and_the_fix() {
+        let msg = daemon_too_old("m2pro");
+        assert!(msg.contains("m2pro") && msg.contains("0.25.7") && msg.contains("update it first"));
     }
 }

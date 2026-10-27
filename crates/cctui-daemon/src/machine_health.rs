@@ -141,6 +141,19 @@ pub async fn refresh() -> MachineHealth {
     probe(probe_folders(), SERVER_URL.get().map(String::as_str)).await
 }
 
+/// A working WS to the server disproves a Local Network denial.
+#[must_use]
+pub const fn stale_after_connect(verdict: Option<&MachineHealth>) -> bool {
+    matches!(verdict, Some(MachineHealth::NetworkDenied { .. }))
+}
+
+/// Re-probe now rather than at the next `PERIOD` tick.
+pub fn on_connected() {
+    if stale_after_connect(last().as_ref()) {
+        tokio::spawn(refresh());
+    }
+}
+
 /// Probe now, then every `PERIOD`.
 pub fn spawn_loop(shutdown: CancellationToken, server_url: String) {
     let _ = SERVER_URL.set(server_url);
@@ -225,7 +238,30 @@ mod tests {
         let refusal = spawn_refusal().expect("refused");
         assert!(refusal.contains("cctui-daemon doctor --grant"), "{refusal}");
         assert!(refusal.contains("EHOSTUNREACH"), "{refusal}");
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            on_connected();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while last() != Some(MachineHealth::Ok) {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("a reconnect re-probes a stale network denial");
+            assert!(spawn_refusal().is_none());
+        }
         *LAST.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn only_a_network_denial_is_stale_once_the_ws_connects() {
+        let network = MachineHealth::NetworkDenied { detail: "x".into() };
+        let folder = MachineHealth::FolderDenied { detail: "x".into() };
+        assert!(stale_after_connect(Some(&network)));
+        assert!(!stale_after_connect(Some(&folder)));
+        assert!(!stale_after_connect(Some(&MachineHealth::Ok)));
+        assert!(!stale_after_connect(None));
     }
 
     #[cfg(not(target_os = "macos"))]

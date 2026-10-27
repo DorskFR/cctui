@@ -178,15 +178,33 @@ function splitRow(row: string): string[] {
 // endpoint. Remote/model-authored URLs stay escaped (the XSS/track guard). The
 // id is a server-minted uuid, so it is constrained to `[A-Za-z0-9-]` and the
 // alt/session id are attribute-escaped before they reach the DOM.
-const CCTUI_IMG = /!\[([^\]]*)\]\(cctui-img:\/\/([A-Za-z0-9-]+)\)/g;
+// `cctui-img://<session>/<id>` names the session that owns the blob (a peer
+// message, a child's answer): it is fetched from that session, under that
+// session's read authz, whichever transcript shows it.
+const CCTUI_IMG =
+  /!\[([^\]]*)\]\(cctui-img:\/\/(?:([A-Za-z0-9_-]+)\/)?([A-Za-z0-9-]+)\)/g;
+
+function imageSrc(id: string, sessionId: string): string {
+  return `/api/v1/sessions/${encodeURIComponent(sessionId)}/images/${encodeURIComponent(id)}`;
+}
 
 function imageMarkerHtml(alt: string, id: string, sessionId: string): string {
-  const src = `/api/v1/sessions/${encodeURIComponent(sessionId)}/images/${encodeURIComponent(id)}`;
+  const src = imageSrc(id, sessionId);
   const altAttr = escapeHtml(alt);
   return (
     `<img class="md-img" src="${src}" alt="${altAttr}" loading="lazy" ` +
     `data-lightbox="${src}" title="Click to open full image" />`
   );
+}
+
+/** Just the images a text carries, for rows rendered as code (a tool's input
+ *  or result) whose markers would otherwise show as literal text. */
+export function renderImageMarkers(text: string, sessionId: string): string {
+  let out = "";
+  for (const m of text.matchAll(CCTUI_IMG)) {
+    out += imageMarkerHtml(m[1], m[3], m[2] ?? sessionId);
+  }
+  return out;
 }
 
 export function renderMarkdown(
@@ -211,8 +229,8 @@ export function renderMarkdown(
   // is left to be escaped as plain text, which degrades safely.
   if (opts.sessionId) {
     const sid = opts.sessionId;
-    src = src.replace(CCTUI_IMG, (_m, alt: string, id: string) => {
-      const i = blocks.push(imageMarkerHtml(alt, id, sid)) - 1;
+    src = src.replace(CCTUI_IMG, (_m, alt: string, owner: string | undefined, id: string) => {
+      const i = blocks.push(imageMarkerHtml(alt, id, owner ?? sid)) - 1;
       return `${BLOCK_L}s${i}${BLOCK_R}`;
     });
   }

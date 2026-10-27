@@ -7,12 +7,14 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use bytes::Bytes;
 
-pub use cctui_proto::api::settings::{VoiceConfigInfo, VoiceSpeakRequest, VoiceTranscript};
+pub use cctui_proto::api::settings::{
+    VoiceConfigInfo, VoiceSpeakRequest, VoiceTranscript, VoiceVoices,
+};
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
 use crate::routes::server_settings::{read_speech, speech_client, speech_error};
-use crate::speech::SpeechConfig;
+use crate::speech::{MAX_TTS_INPUT_CHARS, SpeechConfig};
 use crate::state::AppState;
 
 pub const MAX_AUDIO_BYTES: usize = 10 * 1024 * 1024;
@@ -20,6 +22,8 @@ pub const MAX_AUDIO_BYTES: usize = 10 * 1024 * 1024;
 /// headroom, so an over-cap recording reaches the handler's 413 instead of
 /// axum's 2 MB default tripping mid-stream as a malformed part.
 pub const TRANSCRIBE_BODY_LIMIT: usize = MAX_AUDIO_BYTES + 64 * 1024;
+/// Text up to this length is read as written even when a summary is asked for.
+pub const SUMMARY_MIN_CHARS: usize = 600;
 
 pub fn audio_mime(format: &str) -> String {
     match format {
@@ -38,6 +42,7 @@ fn config_info(c: SpeechConfig) -> VoiceConfigInfo {
         tts_model: c.tts_model,
         tts_voice: c.tts_voice,
         tts_format: c.tts_format,
+        can_summarize: !c.summary_model.is_empty(),
     }
 }
 
@@ -52,13 +57,14 @@ struct AudioForm {
     audio: Bytes,
     mime: String,
     language: Option<String>,
+    model: Option<String>,
 }
 
-/// The `file` and `language` parts of a transcribe request, the audio capped
-/// at [`MAX_AUDIO_BYTES`].
+/// The `file`, `language` and `model` parts of a transcribe request, the
+/// audio capped at [`MAX_AUDIO_BYTES`].
 async fn read_audio_form(mut multipart: Multipart) -> Result<AudioForm, AppError> {
     let bad = |msg: &str| AppError::new(StatusCode::BAD_REQUEST, msg);
-    let (mut audio, mut mime, mut language) = (None, None, None);
+    let (mut audio, mut mime, mut language, mut model) = (None, None, None, None);
     while let Some(mut field) =
         multipart.next_field().await.map_err(|_| bad("malformed multipart body"))?
     {
@@ -82,6 +88,9 @@ async fn read_audio_form(mut multipart: Multipart) -> Result<AudioForm, AppError
             Some("language") => {
                 language = Some(field.text().await.map_err(|_| bad("malformed language"))?);
             }
+            Some("model") => {
+                model = Some(field.text().await.map_err(|_| bad("malformed model"))?);
+            }
             _ => {}
         }
     }
@@ -89,8 +98,8 @@ async fn read_audio_form(mut multipart: Multipart) -> Result<AudioForm, AppError
         .filter(|a| !a.is_empty())
         .ok_or_else(|| bad("a non-empty `file` part is required"))?;
     let mime = mime.unwrap_or_else(|| "audio/webm".to_owned());
-    let language = language.map(|l| l.trim().to_owned()).filter(|l| !l.is_empty());
-    Ok(AudioForm { audio, mime, language })
+    let trimmed = |v: Option<String>| v.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+    Ok(AudioForm { audio, mime, language: trimmed(language), model: trimmed(model) })
 }
 
 pub async fn transcribe(
@@ -101,7 +110,7 @@ pub async fn transcribe(
     let form = read_audio_form(multipart).await?;
     let client = speech_client(&state).await?;
     let text = client
-        .transcribe(form.audio, &form.mime, form.language.as_deref())
+        .transcribe(form.audio, &form.mime, form.language.as_deref(), form.model.as_deref())
         .await
         .map_err(|e| speech_error(&e))?;
     Ok(Json(VoiceTranscript { text }))
@@ -121,12 +130,43 @@ pub async fn speak(
     let client = speech_client(&state).await?;
     let plain = crate::voice_live::text::strip_markdown(&req.text);
     let text = if plain.is_empty() { req.text.as_str() } else { plain.as_str() };
+    let summary = if req.summarize == Some(true)
+        && client.can_summarize()
+        && text.chars().count() > SUMMARY_MIN_CHARS
+    {
+        client
+            .summarize(text)
+            .await
+            .inspect_err(|e| tracing::warn!(%e, "voice: summary failed, reading the full text"))
+            .ok()
+    } else {
+        None
+    };
+    let text = clip_for_speech(summary.as_deref().unwrap_or(text));
     let stream = client
         .synthesize_stream(text, req.voice.as_deref(), None, req.speed)
         .await
         .map_err(|e| speech_error(&e))?;
     let mime = audio_mime(&client.config().tts_format);
     Ok(([(http::header::CONTENT_TYPE, mime)], Body::from_stream(stream)).into_response())
+}
+
+/// `text` cut to what one synthesis takes, at the last sentence end that fits.
+fn clip_for_speech(text: &str) -> &str {
+    let Some((cut, _)) = text.char_indices().nth(MAX_TTS_INPUT_CHARS) else {
+        return text;
+    };
+    let head = &text[..cut];
+    head.rfind(['.', '!', '?', '\n']).map_or(head, |i| &head[..=i])
+}
+
+pub async fn voices(
+    State(state): State<AppState>,
+    Extension(_ctx): Extension<AuthContext>,
+) -> Result<Json<VoiceVoices>, AppError> {
+    let client = speech_client(&state).await?;
+    let voices = client.voices().await.map_err(|e| speech_error(&e))?;
+    Ok(Json(VoiceVoices { voices }))
 }
 
 #[cfg(test)]
@@ -201,6 +241,25 @@ mod tests {
         let info = config_info(c);
         assert!(info.enabled);
         assert!(!serde_json::to_string(&info).unwrap().contains("speech.example"));
+    }
+
+    #[test]
+    fn overlong_text_is_clipped_at_a_sentence_end() {
+        assert_eq!(clip_for_speech("short. text"), "short. text");
+        let long = format!("{}. {}", "é".repeat(MAX_TTS_INPUT_CHARS - 10), "x".repeat(50));
+        let clipped = clip_for_speech(&long);
+        assert!(clipped.ends_with('.'));
+        assert_eq!(clipped.chars().count(), MAX_TTS_INPUT_CHARS - 9);
+        let unbroken = "y".repeat(MAX_TTS_INPUT_CHARS + 5);
+        assert_eq!(clip_for_speech(&unbroken).len(), MAX_TTS_INPUT_CHARS);
+    }
+
+    #[test]
+    fn config_offers_summaries_once_a_summary_model_is_set() {
+        let c = SpeechConfig { base_url: "https://s.example/v1".into(), ..SpeechConfig::default() };
+        assert!(!config_info(c.clone()).can_summarize);
+        let c = SpeechConfig { summary_model: "qwen3-1.7b".into(), ..c };
+        assert!(config_info(c).can_summarize);
     }
 
     #[test]

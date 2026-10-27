@@ -16,6 +16,7 @@ use cctui_proto::api::{
 };
 use cctui_proto::diagnose::SessionDiagnoseResponse;
 use cctui_proto::drafts::{Draft, DraftList, PutDraftRequest};
+use cctui_proto::guard_step::GuardStepState;
 use cctui_proto::harness_models::HarnessModels;
 use cctui_proto::models::MessagePin;
 use reqwest::StatusCode;
@@ -1153,6 +1154,15 @@ impl Client {
         self.json(Self::route("get_sessions_by_id_pins")?, &[("id", session_id)], &[], None).await
     }
 
+    /// The session's mirrored workflow-guard step; `None` when its pod never
+    /// reported one.
+    pub async fn guard_step(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<GuardStepState>, ClientError> {
+        self.json(Self::route("get_sessions_by_id_guard")?, &[("id", session_id)], &[], None).await
+    }
+
     /// Pin a message by its stream `seq`.
     pub async fn pin_message(&self, session_id: &str, seq: i64) -> Result<MessagePin, ClientError> {
         let body = serde_json::json!({ "seq": seq, "message_id": Value::Null });
@@ -1453,6 +1463,7 @@ mod tests {
             "post_sessions_pin",
             "post_sessions_unpin",
             "get_sessions_by_id_pins",
+            "get_sessions_by_id_guard",
             "post_sessions_by_id_pins",
             "delete_sessions_by_id_pins_by_seq",
             "get_bookmarks",
@@ -1559,6 +1570,39 @@ mod tests {
             "it gave up after {:?}, which is not a deadline",
             started.elapsed()
         );
+    }
+
+    /// A listener that answers its first request with `body` as JSON.
+    fn one_shot_server(body: &'static str) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let port = listener.local_addr().expect("an address").port();
+        std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().expect("a connection");
+            let mut buf = [0_u8; 4096];
+            let _ = conn.read(&mut buf);
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                 content-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = conn.write_all(head.as_bytes());
+            let _ = conn.write_all(body.as_bytes());
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    #[tokio::test]
+    async fn a_guard_step_read_decodes_a_state_or_nothing() {
+        let none = test_client(&one_shot_server("null"), "tok").guard_step("s1").await;
+        assert_eq!(none.expect("a null body is a valid answer"), None);
+
+        let body = r#"{"step":2,"title":"Implement","transitions":[3],"exit":true}"#;
+        let read = test_client(&one_shot_server(body), "tok").guard_step("s1").await;
+        let state = read.expect("a state").expect("the pod reported a step");
+        assert_eq!(state.step, 2);
+        assert_eq!(state.title, "Implement");
+        assert_eq!(state.transitions, vec![3]);
     }
 
     #[test]

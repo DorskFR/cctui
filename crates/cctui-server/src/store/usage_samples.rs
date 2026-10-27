@@ -32,6 +32,10 @@ pub const MIN_SAMPLE_SPACING: Duration = Duration::minutes(4);
 /// when upstream reports the same `resets_at` again.
 const RESET_DROP_POINTS: f64 = 30.0;
 
+/// How far short of a full window length an idle reading's `resets_at` may
+/// sit and still mark a window that has not started.
+const UNSTARTED_SLACK: Duration = Duration::minutes(10);
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct PreviousSample {
     pub window_key: String,
@@ -74,17 +78,31 @@ pub fn due(last: Option<&LastSample>, now: DateTime<Utc>) -> bool {
 }
 
 /// The close of `last`'s window instance, if `current` belongs to a later one:
-/// its `resets_at` moved forward by more than a minute, or utilization fell by more than
-/// [`RESET_DROP_POINTS`] after `last`'s reset time passed.
+/// `last`'s reset time passed and either `resets_at` moved forward by more than
+/// a minute or utilization fell by more than [`RESET_DROP_POINTS`]. A window
+/// that had not started at `last` never closes.
 pub fn detect_close(
     last: &LastSample,
     current: &UsageWindow,
     now: DateTime<Utc>,
 ) -> Option<WindowClose> {
     let prev_reset = last.resets_at?;
+    if prev_reset > now || unstarted(last, &current.key) {
+        return None;
+    }
     let moved = current.resets_at.is_some_and(|r| (r - prev_reset).num_seconds() > 60);
-    let dropped = prev_reset <= now && last.utilization - current.utilization > RESET_DROP_POINTS;
+    let dropped = last.utilization - current.utilization > RESET_DROP_POINTS;
     (moved || dropped).then(|| close_of(prev_reset, last.utilization))
+}
+
+/// Until first use upstream reports an idle window as resetting one window
+/// length after the reading, so its `resets_at` slides with every sample.
+fn unstarted(last: &LastSample, key: &str) -> bool {
+    last.utilization <= 0.0
+        && last
+            .resets_at
+            .zip(window_duration(key))
+            .is_some_and(|(r, len)| r - last.sampled_at >= len - UNSTARTED_SLACK)
 }
 
 fn close_of(resets_at: DateTime<Utc>, final_utilization: f64) -> WindowClose {
@@ -256,7 +274,8 @@ pub async fn closes(
     sqlx::query_as(
         "SELECT provider_id, window_key, resets_at, final_utilization, wasted_pct, closed_at, source \
            FROM account_window_closes \
-          WHERE provider_id = ANY($1) AND ($2::text IS NULL OR window_key = $2) AND resets_at >= $3 \
+          WHERE provider_id = ANY($1) AND ($2::text IS NULL OR window_key = $2) \
+            AND resets_at >= $3 AND resets_at <= now() \
           ORDER BY resets_at DESC",
     )
     .bind(provider_ids)
@@ -450,5 +469,142 @@ mod tests {
         assert!(due(None, now));
         assert!(!due(Some(&last(1.0, "2026-09-11T17:00:00Z", "2026-09-11T11:57:00Z")), now));
         assert!(due(Some(&last(1.0, "2026-09-11T17:00:00Z", "2026-09-11T11:56:00Z")), now));
+    }
+
+    /// `(sampled_at, utilization, resets_at)`
+    type Reading = (DateTime<Utc>, f64, DateTime<Utc>);
+
+    fn closes_over(key: &str, readings: &[Reading]) -> Vec<WindowClose> {
+        readings
+            .windows(2)
+            .filter_map(|p| {
+                let (at, util, resets) = p[0];
+                let (now, cur_util, cur_resets) = p[1];
+                let l = LastSample { utilization: util, resets_at: Some(resets), sampled_at: at };
+                let mut w = window(key, "2026-09-11T00:00:00Z");
+                w.utilization = cur_util;
+                w.resets_at = Some(cur_resets);
+                detect_close(&l, &w, now)
+            })
+            .collect()
+    }
+
+    fn idle_reading(at: DateTime<Utc>) -> Reading {
+        (at, 0.0, at + Duration::days(7))
+    }
+
+    #[test]
+    fn an_unstarted_window_sliding_at_zero_never_closes() {
+        let start = t("2026-10-20T04:01:59Z");
+        let readings: Vec<_> =
+            (0..300).map(|i| idle_reading(start + Duration::minutes(5 * i))).collect();
+        assert!(closes_over("weekly_all", &readings).is_empty());
+    }
+
+    #[test]
+    fn an_unstarted_window_seen_again_after_a_long_gap_does_not_close() {
+        let first = t("2026-10-01T10:00:00Z");
+        let readings = [idle_reading(first), idle_reading(first + Duration::days(9))];
+        assert!(closes_over("weekly_all", &readings).is_empty());
+    }
+
+    #[test]
+    fn a_real_reset_after_use_closes_exactly_once_then_idles_quietly() {
+        let reset = t("2026-10-20T12:00:00Z");
+        let mut readings = vec![
+            (reset - Duration::minutes(10), 40.0, reset),
+            (reset - Duration::minutes(5), 41.0, reset),
+        ];
+        readings.extend((0..100).map(|i| idle_reading(reset + Duration::minutes(2 + 5 * i))));
+        let closes = closes_over("weekly_all", &readings);
+        assert_eq!(closes.len(), 1);
+        assert_eq!(closes[0].resets_at, reset);
+        assert!((closes[0].final_utilization - 41.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_close_is_never_dated_in_the_future() {
+        let now = t("2026-10-20T12:00:00Z");
+        let l = last(60.0, "2026-10-21T12:00:00Z", "2026-10-20T11:55:00Z");
+        let w = window("weekly_all", "2026-10-27T12:00:00Z");
+        assert!(detect_close(&l, &w, now).is_none());
+    }
+
+    async fn test_pool(tag: &str) -> Option<sqlx::PgPool> {
+        let url = crate::routes::gateway::test_db_url(tag)?;
+        Some(
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&url)
+                .await
+                .expect("connect test db"),
+        )
+    }
+
+    async fn provider(pool: &sqlx::PgPool) -> Uuid {
+        let uid = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("samples-{uid}"))
+            .bind(format!("hsamples-{uid}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        let account: Uuid =
+            sqlx::query_scalar("INSERT INTO accounts (user_id, name) VALUES ($1, $2) RETURNING id")
+                .bind(uid)
+                .bind(format!("samples-account-{uid}"))
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        sqlx::query_scalar(
+            "INSERT INTO account_providers (user_id, account_id, provider) \
+             VALUES ($1, $2, 'anthropic') RETURNING id",
+        )
+        .bind(uid)
+        .bind(account)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn record_reading(pool: &sqlx::PgPool, p: Uuid, (at, util, resets): Reading) {
+        let mut w = window("weekly_all", "2026-09-11T00:00:00Z");
+        w.utilization = util;
+        w.resets_at = Some(resets);
+        record(pool, p, &[w], at, "test").await;
+    }
+
+    async fn stored_closes(pool: &sqlx::PgPool, p: Uuid) -> Vec<DateTime<Utc>> {
+        sqlx::query_scalar("SELECT resets_at FROM account_window_closes WHERE provider_id = $1")
+            .bind(p)
+            .fetch_all(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn recording_a_sliding_idle_window_stores_no_close() {
+        let Some(pool) = test_pool("usage_samples_sliding_idle").await else { return };
+        let p = provider(&pool).await;
+        let start = t("2026-10-20T04:01:59Z");
+        for i in 0..100 {
+            let at = start + Duration::minutes(5 * i);
+            record_reading(&pool, p, idle_reading(at)).await;
+        }
+        assert!(stored_closes(&pool, p).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn recording_a_real_reset_after_use_stores_one_close() {
+        let Some(pool) = test_pool("usage_samples_real_reset").await else { return };
+        let p = provider(&pool).await;
+        let reset = t("2026-10-20T12:00:00Z");
+        record_reading(&pool, p, (reset - Duration::minutes(10), 40.0, reset)).await;
+        record_reading(&pool, p, (reset - Duration::minutes(5), 41.0, reset)).await;
+        for i in 0..40 {
+            record_reading(&pool, p, idle_reading(reset + Duration::minutes(2 + 5 * i))).await;
+        }
+        assert_eq!(stored_closes(&pool, p).await, vec![reset]);
     }
 }

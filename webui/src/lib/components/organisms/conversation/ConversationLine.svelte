@@ -10,6 +10,7 @@
 	import LineFooter from './LineFooter.svelte';
 	import MessageBubble from './MessageBubble.svelte';
 	import VoiceNote from './VoiceNote.svelte';
+	import VoiceMessage from './VoiceMessage.svelte';
 	import MarkerBody from './MarkerBody.svelte';
 	import TaskNotificationCard from './TaskNotificationCard.svelte';
 	import ThinkingBubble from './ThinkingBubble.svelte';
@@ -21,6 +22,8 @@
 	import { m } from '$lib/paraglide/messages';
 	import { settings } from '$lib/settings.svelte';
 	import { sessionHref } from '$lib/sessionFailureToast';
+	import { renderImageMarkers } from '$lib/markdown';
+	import { renderResultImages } from '$lib/resultImages';
 
 	let {
 		ln,
@@ -79,6 +82,8 @@
 		speaking?: boolean;
 	} = $props();
 
+	const IMAGE_RESULT_TOOL = /(^|[_.])Cctui(Agent|Send)$/;
+
 	// An archived session has no composer to quote into.
 	const quotable = $derived(
 		!!onquote &&
@@ -107,6 +112,16 @@
 
 	const uploadRefs = $derived(
 		ln.uploads ? { ...ln.uploads, sessionId: ln.uploads.sessionId ?? sessionId } : null
+	);
+
+	// These results render as code, so the images they carry go below the block.
+	const resultImages = $derived(
+		ln.role === 'result' && sessionId
+			? renderResultImages(ln.images ?? [], sessionId) +
+					(ln.text && IMAGE_RESULT_TOOL.test(ln.tool ?? '')
+						? renderImageMarkers(ln.text, sessionId)
+						: '')
+			: ''
 	);
 
 	const forkAnchor = $derived(
@@ -145,13 +160,12 @@
 			</Tooltip>
 		{:else if ln.context}
 			<Badge size="xs" uppercase color="var(--bc)">{contextLabel}</Badge>
+		{:else if ln.voice}
+			<Badge size="xs" uppercase color="var(--bc)">{m.voice_live_toggle()}</Badge>
 		{:else}
 			<Badge size="xs" uppercase color="var(--bc)"
 				>{ln.mcp ? 'mcp' : ln.role === 'result' ? 'result' : ln.role}</Badge
 			>
-		{/if}
-		{#if ln.voice}
-			<span class="who voice-mark" title={m.voice_user_spoken()}>🎙</span>
 		{/if}
 		{#if ln.context?.session}
 			<span class="who context-from" title={ln.context.session}>
@@ -198,7 +212,7 @@
 		/>
 	</div>
 	{#if ln.role === 'thinking'}
-		<ThinkingBubble html={ln.html} redacted={ln.redacted} />
+		<ThinkingBubble html={ln.html} redacted={ln.redacted} noReply={ln.noReply} />
 	{:else if ln.toolBlock}
 		<div class="bubble tool-block" role="note">
 			{m.conversation_tool_call_blocked({ tool: ln.toolBlock.tool, rule: ln.toolBlock.term })}
@@ -213,6 +227,16 @@
 		<HarnessCommandCard command={ln.command} />
 	{:else if ln.voiceNoteId && sessionId}
 		<VoiceNote {sessionId} noteId={ln.voiceNoteId} text={ln.text ?? ''} ts={ln.ts} />
+	{:else if ln.voice}
+		<VoiceMessage
+			html={ln.html}
+			text={ln.text}
+			tinted={settings.roleTintedBackground}
+			pending={ln.pending}
+			queued={queueWaiting}
+			failed={!!ln.failed}
+			cancelled={ln.cancelled}
+		/>
 	{:else}
 		<MessageBubble
 			role={ln.role}
@@ -226,6 +250,9 @@
 			failed={!!ln.failed}
 			cancelled={ln.cancelled}
 		/>
+		{#if resultImages}
+			<div class="result-images">{@html resultImages}</div>
+		{/if}
 	{/if}
 	{#if pluginActions.length && onpluginaction}
 		<PluginMessageActions actions={pluginActions} onopen={onpluginaction} />

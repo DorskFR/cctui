@@ -39,8 +39,12 @@ import {
   serializeHiddenSections,
   toggleHiddenSection,
   PAGE,
+  FIRST_PAGE,
+  nextSearchPage,
+  type SearchPageParam,
   nextSort,
   archivedDescendantsOf,
+  mergeParentStubs,
   inEnabledSections,
   matchesUnreadFilter,
   parseLabelFilter,
@@ -169,7 +173,7 @@ export class SessionsPage {
   query = $state("");
 
   #pager: CreateInfiniteQueryResult<
-    InfiniteData<SessionListResponse, number>,
+    InfiniteData<SessionListResponse, SearchPageParam>,
     Error
   >;
 
@@ -185,13 +189,17 @@ export class SessionsPage {
     this.#pager = createInfiniteQuery(
       () => ({
         queryKey: qk.sessionSearch(this.serverQuery, this.#pagerArchived),
-        queryFn: ({ queryKey: [, , { q, archived }], pageParam }) =>
-          d.api.searchSessions(q, archived, PAGE, pageParam),
-        initialPageParam: 0,
-        getNextPageParam: (last, pages) =>
-          last.sessions.length < PAGE
-            ? undefined
-            : pages.reduce((n, p) => n + p.sessions.length, 0),
+        queryFn: ({ queryKey: [, , { q, archived }], pageParam, signal }) =>
+          d.api.searchSessions(
+            q,
+            archived,
+            PAGE,
+            pageParam.offset,
+            pageParam.cursor,
+            signal,
+          ),
+        initialPageParam: FIRST_PAGE,
+        getNextPageParam: nextSearchPage,
         enabled: this.pagerActive,
       }),
       () => d.queryClient,
@@ -353,7 +361,15 @@ export class SessionsPage {
       .flatMap((p) => p.sessions)
       .filter((s) => !seen.has(s.id) && !!seen.add(s.id));
   });
+  pageParents = $derived.by(() =>
+    this.pagerActive ? mergeParentStubs(this.#pager.data?.pages ?? []) : [],
+  );
   pageDone = $derived.by(() => !this.#pager.hasNextPage);
+  // The last page stopped at the server's time budget: older chats are not
+  // searched yet, so an empty or short result is not a "no match".
+  pagePartial = $derived.by(
+    () => this.pagerActive && (this.#pager.data?.pages.at(-1)?.partial ?? false),
+  );
   pageLoading = $derived.by(
     () =>
       this.pagerActive &&

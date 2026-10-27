@@ -4,4 +4,4 @@ import type { VoiceState } from "./VoiceState";
 /**
  * Server → browser.
  */
-export type VoiceServerMsg = { "type": "transcript", text: string, } | { "type": "state", state: VoiceState, } | { "type": "speak_start", line_id: string, text: string, } | { "type": "speak_end", line_id: string, } | { "type": "error", message: string, };
+export type VoiceServerMsg = { "type": "transcript", text: string, } | { "type": "state", state: VoiceState, } | { "type": "speak_start", line_id: string, text: string, } | { "type": "speak_end", line_id: string, } | { "type": "error", message: string, } | { "type": "listen", part_ms: number | null, min_part_ms: number | null, };

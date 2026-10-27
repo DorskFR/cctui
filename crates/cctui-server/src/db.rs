@@ -6,7 +6,10 @@ use sqlx::{ConnectOptions, PgPool};
 
 /// The embedded migrations. A `static` keeps the list off the stack: built
 /// inline in `connect`, it outgrew clippy's `large_stack_arrays` limit.
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
+/// Migrations applied by a newer release are tolerated, so rolling back to this
+/// binary doesn't need a schema rollback first.
+static MIGRATOR: sqlx::migrate::Migrator =
+    sqlx::migrate::Migrator { ignore_missing: true, ..sqlx::migrate!("../../migrations") };
 
 /// Read a `u32` env var, falling back to `default` when unset or unparseable.
 fn env_u32(name: &str, default: u32) -> u32 {
@@ -20,11 +23,10 @@ pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
 
 /// [`connect`], also returning the migration versions this call applied.
 pub async fn connect_reporting(database_url: &str) -> Result<(PgPool, Vec<i64>), sqlx::Error> {
-    // Pool sizing is env-tunable so prod can scale connections without a rebuild.
-    // Defaults are generous enough to absorb gateway proxying + heartbeats +
-    // dispatcher bumps + webui loads without starving the pool (CCT slow-pool fix);
-    // acquire_timeout fails fast instead of hanging requests (and the UI) ~30s.
-    let max_connections = env_u32("CCTUI_DB_MAX_CONNECTIONS", 40);
+    // Pool sizing is env-tunable without a rebuild. The default keeps two
+    // replicas plus a rolling-update surge (4 pods) under Postgres' default
+    // max_connections of 100; acquire_timeout fails fast instead of hanging requests.
+    let max_connections = env_u32("CCTUI_DB_MAX_CONNECTIONS", 20);
     let min_connections = env_u32("CCTUI_DB_MIN_CONNECTIONS", 5);
     let acquire_timeout = env_u32("CCTUI_DB_ACQUIRE_TIMEOUT_SECS", 5);
     let slow_query_ms = env_u32("CCTUI_DB_SLOW_QUERY_MS", 500);
@@ -128,4 +130,33 @@ async fn reconcile_migration_checksums(pool: &PgPool) -> Result<(), sqlx::Error>
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_migration_from_a_newer_release_does_not_block_startup() {
+        let Some(url) = crate::routes::gateway::test_db_url("db_newer_migration") else {
+            return;
+        };
+        let pool = connect(&url).await.expect("connect");
+        let version = 9_000_000_000_i64 + i64::from(std::process::id());
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) \
+             VALUES ($1, 'from a newer release', true, '\\x00'::bytea, 0)",
+        )
+        .bind(version)
+        .execute(&pool)
+        .await
+        .expect("insert future migration");
+        let result = migrate(&pool).await;
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = $1")
+            .bind(version)
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+        assert!(result.is_ok(), "{result:?}");
+    }
 }

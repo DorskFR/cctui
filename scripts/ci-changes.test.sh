@@ -111,11 +111,14 @@ plugin_catalog() { write plugins/catalog.json '{}'; }
 fixture() { write fixtures/a.json '{}'; }
 deploy_example() { write deploy/examples/profile.yaml 'a: 1'; }
 deploy_file() { write deploy/Dockerfile 'FROM scratch'; }
+crd() { write deploy/workerprofile-crd.yaml 'kind: CustomResourceDefinition'; }
+deploy_test() { write deploy/tests/test-a.sh 'exit 0'; }
+ui_nginx() { write webui/nginx.conf 'server {}'; }
 
 change "a version-only bump with a webui change is webui-only" \
   rust=false webui=true deps=false -- bump_and_ui
 change "a version-only bump alone touches nothing" \
-  ci=false rust=false webui=false deps=false schema=false -- bump
+  ci=false rust=false webui=false deps=false schema=false deploy=false -- bump
 change "a version-only webui lockfile bump is not a deps change" deps=false rust=false -- npm_bump
 change "a dependency bump in Cargo.toml is a Rust change" rust=true -- dep_manifest
 change "a dependency bump in Cargo.lock is a Rust and deps change" rust=true deps=true -- dep_lock
@@ -136,9 +139,15 @@ change "a plugin catalog change is a Rust change" rust=true webui=false -- plugi
 change "a fixture change is a Rust change" rust=true webui=false -- fixture
 change "a deploy example change is a Rust change" rust=true webui=false -- deploy_example
 change "a Dockerfile change is not a Rust change" rust=false webui=false -- deploy_file
+change "the WorkerProfile CRD runs its crdgen drift test" rust=true deploy=true -- crd
+change "a deploy change runs the deploy suites" deploy=true rust=false webui=false -- deploy_file
+change "a deploy suite change runs the deploy suites" deploy=true -- deploy_test
+change "a deploy example change runs the deploy suites too" deploy=true rust=true -- deploy_example
+change "the webui nginx config runs the deploy suites" deploy=true webui=true -- ui_nginx
+change "a webui source change skips the deploy suites" deploy=false -- ui_src
 
 out="$(bash "$script" --all)"
-if [ "$(grep -c '=true$' <<<"$out")" -eq 5 ]; then
+if [ "$(grep -c '=true$' <<<"$out")" -eq 6 ]; then
   echo "ok   — --all turns every area on"
 else
   echo "FAIL — --all turns every area on"

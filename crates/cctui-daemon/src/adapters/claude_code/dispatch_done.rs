@@ -16,6 +16,8 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use cctui_proto::adapter::AdapterEvent;
+
 /// How long the session must stay non-busy before the marker is written.
 /// A session pausing between tool calls / API turns flickers idle for a poll
 /// or two; 60s is comfortably past that while still ending the pod promptly.
@@ -30,8 +32,23 @@ pub(super) fn settle_from_env(var: Option<&str>) -> Duration {
     )
 }
 
+/// Whether `path` holds a JSON verdict, the entrypoint's `result_valid`.
+pub(super) fn result_written(path: &Path) -> bool {
+    std::fs::read(path)
+        .is_ok_and(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).is_ok())
+}
+
+pub(super) fn is_reply(event: &AdapterEvent) -> bool {
+    match event {
+        AdapterEvent::Message { payload, .. } => payload["role"] == "assistant",
+        AdapterEvent::ToolUse { .. } => true,
+        _ => false,
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct DispatchDoneTracker {
+    session_id: String,
     short: String,
     marker_path: PathBuf,
     settle: Duration,
@@ -48,6 +65,7 @@ impl DispatchDoneTracker {
         let short: String = session_id.chars().take(8).collect();
         let marker_path = jobs_root.join(&short).join("dispatch_done");
         Self {
+            session_id: session_id.to_owned(),
             short,
             marker_path,
             settle,
@@ -56,6 +74,10 @@ impl DispatchDoneTracker {
             done: false,
             last_transcript_offset: None,
         }
+    }
+
+    pub fn session_id(&self) -> &str {
+        &self.session_id
     }
 
     pub fn short(&self) -> &str {
@@ -75,11 +97,23 @@ impl DispatchDoneTracker {
         self.done
     }
 
+    /// Whether the session finished its work: it settled idle after working,
+    /// or wrote its verdict to `RESULT_FILE` after it started working.
+    pub const fn finished(&self, result_written: bool) -> bool {
+        self.done || (self.seen_busy && result_written)
+    }
+
     /// Whether a live snapshot's `tempo`/`state` counts as busy. `blocked`
     /// (pending prompt) is treated as busy: the turn isn't complete, and the
-    /// crash backstops still bound a wedged prompt.
+    /// crash backstops still bound a wedged prompt. `tempo` is the live turn
+    /// signal; `state` is claude's self-reported job label, which can read
+    /// `working` long after the turn ended, so it only stands in when `tempo`
+    /// is absent.
     pub fn is_busy(tempo: Option<&str>, state: Option<&str>) -> bool {
-        matches!(tempo, Some("active" | "blocked")) || matches!(state, Some("working" | "running"))
+        tempo.map_or_else(
+            || matches!(state, Some("working" | "running")),
+            |tempo| matches!(tempo, "active" | "blocked"),
+        )
     }
 
     /// Whether the tracked session's transcript grew since the last poll. A
@@ -90,6 +124,11 @@ impl DispatchDoneTracker {
         let grew = self.last_transcript_offset.is_some_and(|prev| offset > prev);
         self.last_transcript_offset = Some(offset);
         grew
+    }
+
+    /// A reply counts as work: a fast answer can go idle between two polls.
+    pub const fn note_reply(&mut self) {
+        self.seen_busy = true;
     }
 
     /// Feed one poll observation. Returns `true` exactly once: when the
@@ -175,6 +214,52 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_between_polls_counts_as_work() {
+        let mut t = tracker(60);
+        let start = Instant::now();
+        assert!(!t.observe(false, start), "idle before the answer landed");
+        t.note_reply();
+        assert!(t.seen_busy());
+        assert!(!t.observe(false, start + Duration::from_secs(2)), "idle < settle");
+        assert!(t.observe(false, start + Duration::from_secs(63)), "settled idle after the reply");
+        assert!(t.finished(false));
+    }
+
+    #[test]
+    fn a_reply_does_not_end_a_session_still_working_or_blocked() {
+        let mut t = tracker(60);
+        let start = Instant::now();
+        t.note_reply();
+        for (secs, tempo, state) in [
+            (100, Some("active"), "working"),
+            (200, Some("blocked"), "done"),
+            (300, None, "running"),
+        ] {
+            let busy = DispatchDoneTracker::is_busy(tempo, Some(state));
+            assert!(!t.observe(busy, start + Duration::from_secs(secs)));
+        }
+        assert!(!t.finished(false), "the settle clock never ran");
+        assert!(!t.observe(false, start + Duration::from_secs(301)));
+        assert!(t.observe(false, start + Duration::from_secs(361)));
+    }
+
+    #[test]
+    fn reply_classification() {
+        let msg = |role: &str| AdapterEvent::Message {
+            local_id: "s".into(),
+            payload: serde_json::json!({ "role": role, "text": "391" }),
+            turn_id: None,
+        };
+        assert!(is_reply(&msg("assistant")));
+        assert!(is_reply(&AdapterEvent::ToolUse {
+            local_id: "s".into(),
+            payload: serde_json::json!({}),
+        }));
+        assert!(!is_reply(&msg("user")), "the dispatched prompt is not work");
+        assert!(!is_reply(&msg("system_marker")));
+    }
+
+    #[test]
     fn transcript_growth_reports_only_on_increase() {
         let mut t = tracker(60);
         assert!(!t.transcript_grew(0), "first observation sets the baseline, no growth");
@@ -209,11 +294,46 @@ mod tests {
     }
 
     #[test]
+    fn finished_needs_settled_idle_or_a_verdict_after_work() {
+        let mut t = tracker(60);
+        let start = Instant::now();
+        assert_eq!(t.session_id(), "abcd1234-5678-90ab-cdef-000000000000");
+        assert!(!t.finished(false));
+        assert!(!t.finished(true), "a verdict before any work is a failed start, not a finish");
+
+        assert!(!t.observe(true, start));
+        assert!(!t.finished(false), "working, no verdict yet");
+        assert!(t.finished(true), "wrote its verdict after working");
+
+        assert!(!t.observe(false, start + Duration::from_secs(1)));
+        assert!(!t.finished(false), "idle, not yet settled");
+        assert!(t.observe(false, start + Duration::from_secs(62)));
+        assert!(t.finished(false), "settled idle after work");
+    }
+
+    #[test]
+    fn result_written_requires_a_json_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("result.json");
+        assert!(!result_written(&path), "missing");
+        std::fs::write(&path, b"").unwrap();
+        assert!(!result_written(&path), "empty");
+        std::fs::write(&path, b"{\"status\":").unwrap();
+        assert!(!result_written(&path), "truncated");
+        std::fs::write(&path, br#"{"task_id":"t","status":"success"}"#).unwrap();
+        assert!(result_written(&path));
+    }
+
+    #[test]
     fn busy_classification() {
         assert!(DispatchDoneTracker::is_busy(Some("active"), None));
         assert!(DispatchDoneTracker::is_busy(Some("blocked"), Some("done")));
-        assert!(DispatchDoneTracker::is_busy(Some("idle"), Some("working")));
+        assert!(
+            !DispatchDoneTracker::is_busy(Some("idle"), Some("working")),
+            "a stale working label must not outlive an idle turn"
+        );
         assert!(DispatchDoneTracker::is_busy(None, Some("running")));
+        assert!(DispatchDoneTracker::is_busy(None, Some("working")));
         assert!(!DispatchDoneTracker::is_busy(Some("idle"), Some("done")));
         assert!(!DispatchDoneTracker::is_busy(None, None));
         assert!(!DispatchDoneTracker::is_busy(Some("hibernated"), Some("failed")));

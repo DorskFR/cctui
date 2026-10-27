@@ -453,6 +453,9 @@ jobs:
             --argjson rust "$RUST" --argjson modes "$MODES" \
             '{version: $version, prev_tag: $prev_tag, rust: $rust, modes: $modes}' > dist/release-scope.json
           cat dist/release-scope.json
+      # Every release, carried or rebuilt: ci.yml's crdgen drift test passed on this commit.
+      - name: Attach the WorkerProfile CRD
+        run: cp deploy/workerprofile-crd.yaml dist/workerprofile-crd.yaml
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
@@ -465,6 +468,7 @@ jobs:
             dist/cctui-*
             dist/SHA256SUMS*
             dist/release-scope.json
+            dist/workerprofile-crd.yaml
 
   # Every image is pushed by digest only, so nothing is tagged before ci-green;
   # `images-push` then just tags those digests (or the previous release's image

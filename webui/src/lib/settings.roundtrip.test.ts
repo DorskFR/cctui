@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   CURRENT_VERSION,
+  clampDispatchArchiveGrace,
   clampNavPosition,
   clampPluginsConfig,
   clampPluginsEnabled,
@@ -100,6 +101,9 @@ describe("Settings save → load round-trip through the blob", () => {
       secretScrubPatterns: [{ name: "tok", regex: "sk-\\w+", enabled: true }],
       sessionEmojiPrefix: true,
       autoResumeOnConnectionLoss: true,
+      dispatchAutoArchive: false,
+      dispatchAutoArchiveGraceSecs: 0,
+      dispatchAutoArchiveKeepProfiles: ["review"],
       macros: {
         enabled: true,
         items: [
@@ -125,6 +129,24 @@ describe("Settings save → load round-trip through the blob", () => {
       JSON.parse(JSON.stringify(saved)) as Record<string, unknown>,
     );
     expect(reloaded).toEqual(saved);
+  });
+
+  it("dispatch auto-archive defaults on with a 3-minute grace and clamps like the server", () => {
+    const d = mergeDefaults(null);
+    expect(d.dispatchAutoArchive).toBe(true);
+    expect(d.dispatchAutoArchiveGraceSecs).toBe(180);
+    expect(d.dispatchAutoArchiveKeepProfiles).toEqual([]);
+    expect(clampDispatchArchiveGrace(9999)).toBe(3600);
+    expect(clampDispatchArchiveGrace(-1)).toBe(0);
+    expect(clampDispatchArchiveGrace("soon")).toBe(180);
+
+    settings.setDispatchAutoArchiveGraceSecs(42.7);
+    settings.setDispatchAutoArchiveKeepProfiles([" review ", "", "review", "build"]);
+    settings.setDispatchAutoArchive(false);
+    const reloaded = loadFromCache();
+    expect(reloaded.dispatchAutoArchiveGraceSecs).toBe(42);
+    expect(reloaded.dispatchAutoArchiveKeepProfiles).toEqual(["review", "build"]);
+    expect(reloaded.dispatchAutoArchive).toBe(false);
   });
 
   it("the nav position defaults to top, survives a reload, and clamps unknown values", () => {

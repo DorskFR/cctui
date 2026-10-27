@@ -9,6 +9,7 @@ import type { SilenceReason } from '@bindings/SilenceReason';
 import { endReasonLabel } from './sessionEnd';
 import {
 	diagnoseBlocks,
+	diagnoseOwnership,
 	diagnoseRows,
 	statusDotClass,
 	trimDetail,
@@ -297,6 +298,33 @@ describe('trimDetail', () => {
 
 	it('is empty for a missing detail', () => {
 		expect(trimDetail(undefined)).toBe('');
+	});
+});
+
+describe('diagnoseOwnership', () => {
+	const withServer = (over: Partial<SessionDiagnoseResponse['server']>) =>
+		report({ server: { ...report().server, ...over } });
+
+	it('names the owner and the user who spawned the session', () => {
+		expect(diagnoseOwnership(withServer({ owner: 'tonbo', spawned_by: 'dorsk' }))).toEqual({
+			owner: 'tonbo',
+			spawnedBy: 'dorsk'
+		});
+	});
+
+	it('shows a dash for a session no one spawned through the server', () => {
+		expect(diagnoseOwnership(withServer({ owner: 'tonbo' }))?.spawnedBy).toBe('—');
+	});
+
+	it('has nothing to show without a report naming an owner', () => {
+		expect(diagnoseOwnership(null)).toBeNull();
+		expect(diagnoseOwnership(report())).toBeNull();
+	});
+
+	it('is rendered in the tooltip next to the blocks', () => {
+		expect(factsSource).toContain('diagnoseOwnership(');
+		expect(blocksSource).toContain('m.diagnose_row_owner()');
+		expect(blocksSource).toContain('m.diagnose_row_spawned_by()');
 	});
 });
 

@@ -122,12 +122,16 @@ struct WatchState {
     turn_end_at: Option<Instant>,
     tool_errors: u32,
     tokens: u64,
+    /// A follow-up's prompt head, held until a user message carrying it lands:
+    /// until then every turn the child runs is an earlier one.
+    awaiting_prompt: Option<String>,
 }
 
 struct Watch {
     state: WatchState,
     registered_at: Instant,
     notify: Arc<Notify>,
+    generation: u64,
 }
 
 /// A point-in-time copy of a watch, plus its age. All policy questions are
@@ -149,6 +153,7 @@ pub struct ChildSnapshot {
     turn_end_at: Option<Instant>,
     tool_errors: u32,
     tokens: u64,
+    awaiting_prompt: bool,
 }
 
 /// What the tool handler should do with the current snapshot.
@@ -195,6 +200,9 @@ impl ChildSnapshot {
         if self.ended || self.error.is_some() {
             return Assessment::Finished(self.outcome());
         }
+        if self.awaiting_prompt {
+            return Assessment::Running(self.progress_line());
+        }
         // A `Stop` hook is the harness itself saying the turn is over, so it
         // outranks every inference below. It can beat the transcript poll that
         // carries the turn's last message, and the text in hand is then
@@ -238,7 +246,9 @@ impl ChildSnapshot {
     /// One line describing what the child is doing, streamed to the parent.
     fn progress_line(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
-        if let Some(blocked) = &self.blocked {
+        if self.awaiting_prompt {
+            parts.push("follow-up queued behind the child's current turn".to_owned());
+        } else if let Some(blocked) = &self.blocked {
             parts.push(format!("child needs input: {blocked}"));
         } else if let Some(status) = &self.status_line {
             parts.push(status.clone());
@@ -277,16 +287,20 @@ fn humanize_tokens(n: u64) -> String {
 }
 
 /// A registered watch: snapshot on demand, woken on every observed change.
+///
+/// A newer registration for the same child supersedes it: the stale handle
+/// then reads `None` and its drop leaves the newer watch in place.
 pub struct WatchHandle {
     key: String,
     watch: Arc<ChildWatch>,
     notify: Arc<Notify>,
+    generation: u64,
 }
 
 impl WatchHandle {
     #[must_use]
     pub fn snapshot(&self) -> Option<ChildSnapshot> {
-        self.watch.snapshot(&self.key)
+        self.watch.snapshot_of(&self.key, Some(self.generation))
     }
 
     /// Wait for the next observed change, or until `timeout` elapses.
@@ -297,7 +311,7 @@ impl WatchHandle {
 
 impl Drop for WatchHandle {
     fn drop(&mut self) {
-        self.watch.remove(&self.key);
+        self.watch.remove(&self.key, self.generation);
     }
 }
 
@@ -308,6 +322,7 @@ const UNCLAIMED_BIND_TTL: Duration = Duration::from_mins(5);
 #[derive(Default)]
 pub struct ChildWatch {
     watches: Mutex<HashMap<String, Watch>>,
+    generations: std::sync::atomic::AtomicU64,
     /// `spawn_key → (local_id, seen)` binds that arrived before `register`.
     /// Locked only while `watches` is held.
     unclaimed: Mutex<HashMap<String, (String, Instant)>>,
@@ -334,6 +349,20 @@ impl ChildWatch {
         self.insert(key, WatchState { local_id: Some(key.to_owned()), ..WatchState::default() })
     }
 
+    /// [`Self::register_bound`] for a follow-up `prompt`: a turn already in
+    /// flight (a peer message, a queued prompt) cannot answer it; only the turn
+    /// its own user message opens can.
+    pub fn register_follow_up(self: &Arc<Self>, key: &str, prompt: &str) -> WatchHandle {
+        self.insert(
+            key,
+            WatchState {
+                local_id: Some(key.to_owned()),
+                awaiting_prompt: Some(prompt_head(prompt)),
+                ..WatchState::default()
+            },
+        )
+    }
+
     fn insert(self: &Arc<Self>, key: &str, mut state: WatchState) -> WatchHandle {
         let notify = Arc::new(Notify::new());
         let mut watches = self.watches.lock().unwrap();
@@ -344,20 +373,30 @@ impl ChildWatch {
             state.local_id = Some(local_id);
         }
         drop(unclaimed);
-        let watch = Watch { state, registered_at: Instant::now(), notify: notify.clone() };
+        let generation = self.generations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let watch =
+            Watch { state, registered_at: Instant::now(), notify: notify.clone(), generation };
         watches.insert(key.to_owned(), watch);
         drop(watches);
-        WatchHandle { key: key.to_owned(), watch: self.clone(), notify }
+        WatchHandle { key: key.to_owned(), watch: self.clone(), notify, generation }
     }
 
-    fn remove(&self, key: &str) {
-        self.watches.lock().unwrap().remove(key);
+    fn remove(&self, key: &str, generation: u64) {
+        let mut watches = self.watches.lock().unwrap();
+        if watches.get(key).is_some_and(|w| w.generation == generation) {
+            watches.remove(key);
+        }
+    }
+
+    #[cfg(test)]
+    fn snapshot(&self, key: &str) -> Option<ChildSnapshot> {
+        self.snapshot_of(key, None)
     }
 
     #[allow(clippy::significant_drop_tightening)]
-    fn snapshot(&self, key: &str) -> Option<ChildSnapshot> {
+    fn snapshot_of(&self, key: &str, generation: Option<u64>) -> Option<ChildSnapshot> {
         let guard = self.watches.lock().ok()?;
-        let w = guard.get(key)?;
+        let w = guard.get(key).filter(|w| generation.is_none_or(|g| w.generation == g))?;
         Some(ChildSnapshot {
             local_id: w.state.local_id.clone(),
             final_text: w.state.final_text.clone(),
@@ -374,6 +413,7 @@ impl ChildWatch {
             turn_end_at: w.state.turn_end_at,
             tool_errors: w.state.tool_errors,
             tokens: w.state.tokens,
+            awaiting_prompt: w.state.awaiting_prompt.is_some(),
         })
     }
 
@@ -416,7 +456,7 @@ impl ChildWatch {
             }
             AdapterEvent::Message { local_id, payload, .. } => {
                 if let Some(w) = find_mut(watches, local_id) {
-                    apply_message(w, payload);
+                    apply_message(w, local_id, payload);
                 }
             }
             AdapterEvent::ToolUse { local_id, payload } => {
@@ -552,9 +592,21 @@ fn apply_status(
         .or_else(|| w.state.status_line.clone());
 }
 
-fn apply_message(w: &mut Watch, payload: &serde_json::Value) {
+/// A child's image refs are qualified with its session, so they still resolve
+/// once the text is the parent's tool result.
+fn apply_message(w: &mut Watch, local_id: &str, payload: &serde_json::Value) {
+    if let Some(head) = w.state.awaiting_prompt.as_deref() {
+        if is_user_role(payload)
+            && user_text(payload).is_some_and(|t| fold_whitespace(&t).contains(head))
+        {
+            w.state.awaiting_prompt = None;
+            start_turn(w);
+            w.notify.notify_waiters();
+        }
+        return;
+    }
     if let Some(text) = assistant_text(payload) {
-        w.state.final_text = Some(text);
+        w.state.final_text = Some(crate::imagepost::qualify_refs(&text, local_id));
         // Narration that the model itself flagged as leading into a tool call
         // is not a turn tail, however long the tool then takes to appear.
         w.state.tail = match stop_reason(payload) {
@@ -569,14 +621,18 @@ fn apply_message(w: &mut Watch, payload: &serde_json::Value) {
     } else if is_turn_summary(payload) {
         apply_summary(w, payload);
     } else if is_user_message(payload) {
-        // A new prompt (follow-up) starts a new turn: the previous final text
-        // and done reading are stale.
-        w.state.final_text = None;
-        w.state.done_since = None;
-        w.state.tail = Tail::Other;
-        w.state.turn_end_at = None;
-        w.state.tool_errors = 0;
+        start_turn(w);
     }
+}
+
+/// A new prompt starts a new turn: the previous final text and done reading
+/// are stale.
+fn start_turn(w: &mut Watch) {
+    w.state.final_text = None;
+    w.state.done_since = None;
+    w.state.tail = Tail::Other;
+    w.state.turn_end_at = None;
+    w.state.tool_errors = 0;
 }
 
 fn apply_tool_use(w: &mut Watch, payload: &serde_json::Value) {
@@ -685,14 +741,47 @@ fn assistant_text(payload: &serde_json::Value) -> Option<String> {
 /// Excludes `meta:true` user turns (system-reminders, task-notifications,
 /// hook feedback): injected content is not a new human turn.
 fn is_user_message(payload: &serde_json::Value) -> bool {
-    if payload.get("meta").and_then(serde_json::Value::as_bool).unwrap_or(false) {
-        return false;
-    }
+    !payload.get("meta").and_then(serde_json::Value::as_bool).unwrap_or(false)
+        && is_user_role(payload)
+}
+
+fn is_user_role(payload: &serde_json::Value) -> bool {
     payload.get("role").and_then(serde_json::Value::as_str) == Some("user")
         || matches!(
             payload.get("type").and_then(serde_json::Value::as_str),
             Some("userMessage" | "user_message")
         )
+}
+
+/// The text of a user message across adapter shapes: claude/opencode/acp
+/// `text`, codex rollout `message`, codex item `content` parts.
+fn user_text(payload: &serde_json::Value) -> Option<String> {
+    let field = |key: &str| payload.get(key).and_then(serde_json::Value::as_str);
+    if let Some(text) = field("text").or_else(|| field("message")) {
+        return Some(text.to_owned());
+    }
+    match payload.get("content")? {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Array(parts) => Some(
+            parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(serde_json::Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        _ => None,
+    }
+}
+
+const PROMPT_HEAD_CHARS: usize = 200;
+
+/// The prompt's opening, whitespace-folded: what its user message must contain.
+fn prompt_head(prompt: &str) -> String {
+    fold_whitespace(prompt).chars().take(PROMPT_HEAD_CHARS).collect()
+}
+
+fn fold_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The adapter-reported stop reason of an assistant message, when it reports
@@ -745,7 +834,7 @@ fn apply_summary(w: &mut Watch, payload: &serde_json::Value) {
 /// First `max` characters of `text` on one line, ellipsised.
 #[must_use]
 pub fn snippet(text: &str, max: usize) -> String {
-    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let one_line = fold_whitespace(text);
     if one_line.chars().count() <= max {
         return one_line;
     }
@@ -844,6 +933,16 @@ mod tests {
         assert_eq!(out.final_text.as_deref(), Some("VERDICT: approve"));
         assert!(out.error.is_none());
         assert_eq!(out.local_id.as_deref(), Some("child-1"));
+    }
+
+    #[test]
+    fn a_childs_image_refs_reach_the_parent_qualified_with_the_child_session() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&msg("child-1", "user", "show me"));
+        watch.observe(&msg_stopping("child-1", "here: ![shot](cctui-img://img-7)", "end_turn"));
+        let out = finished(&h).expect("an end_turn answer finishes the turn");
+        assert_eq!(out.final_text.as_deref(), Some("here: ![shot](cctui-img://child-1/img-7)"));
     }
 
     #[test]
@@ -1535,6 +1634,18 @@ mod tests {
     }
 
     #[test]
+    fn a_superseded_handle_reads_nothing_and_its_drop_keeps_the_newer_watch() {
+        let watch = Arc::new(ChildWatch::default());
+        let old = watch.register_bound("child-1");
+        let new = watch.register_bound("child-1");
+        assert!(old.snapshot().is_none(), "a stale handle must not read the newer turn");
+        drop(old);
+        assert!(new.snapshot().is_some(), "dropping the stale handle removed the newer watch");
+        drop(new);
+        assert!(watch.snapshot("child-1").is_none());
+    }
+
+    #[test]
     fn progress_line_carries_tool_and_snippet() {
         let watch = Arc::new(ChildWatch::default());
         let h = watch.register("child-1");
@@ -1573,6 +1684,84 @@ mod tests {
         );
         assert!(assistant_text(&json!({ "type": "userMessage", "text": "go" })).is_none());
         assert!(assistant_text(&json!({ "type": "reasoning", "text": "hmm" })).is_none());
+    }
+
+    const FOLLOW_UP: &str = "QA test of a thinking-only turn: think briefly, then make exactly \
+                             ONE tool call: Bash `true`.";
+
+    #[test]
+    fn a_follow_up_is_not_answered_by_the_peer_turn_in_flight() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_follow_up("child-1", FOLLOW_UP);
+        watch.observe(&msg_stopping("child-1", "Received.", "end_turn"));
+        watch.observe(&status("child-1", None, Some("done"), Some("success")));
+        watch.note_turn_end("child-1");
+        let snap = h.snapshot().unwrap();
+        let later = Instant::now() + QUIET_DONE_MIN_AGE + DONE_TEXT_GRACE;
+        assert!(
+            matches!(snap.assess(later), Assessment::Running(_)),
+            "the peer turn's answer must not answer the follow-up"
+        );
+        assert!(running_line(&h).contains("follow-up queued"));
+        watch.observe(&msg("child-1", "user", FOLLOW_UP));
+        assert!(finished(&h).is_none(), "the follow-up's own turn just opened");
+        watch.observe(&tool_use("child-1", "Bash"));
+        watch.observe(&msg_stopping("child-1", "I ran `true`.", "end_turn"));
+        assert_eq!(finished(&h).unwrap().final_text.as_deref(), Some("I ran `true`."));
+    }
+
+    #[test]
+    fn a_peer_message_landing_after_the_follow_up_does_not_open_its_turn() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_follow_up("child-1", "say pong");
+        watch.observe(&msg(
+            "child-1",
+            "user",
+            "<cctui-peer-message from=\"p\">image test</cctui-peer-message>",
+        ));
+        watch.observe(&msg_stopping("child-1", "Received.", "end_turn"));
+        assert!(finished(&h).is_none());
+        watch.observe(&msg("child-1", "user", "say pong"));
+        watch.observe(&msg_stopping("child-1", "pong", "end_turn"));
+        assert_eq!(finished(&h).unwrap().final_text.as_deref(), Some("pong"));
+    }
+
+    #[test]
+    fn a_follow_up_prompt_is_recognised_in_every_adapter_shape() {
+        let watch = Arc::new(ChildWatch::default());
+        let codex = watch.register_follow_up("thr-1", "line one\n\n  line two");
+        watch.observe(&AdapterEvent::Message {
+            local_id: "thr-1".to_owned(),
+            payload: json!({
+                "type": "userMessage",
+                "content": [{ "type": "text", "text": "line one line two" }],
+            }),
+            turn_id: None,
+        });
+        watch.observe(&msg_stopping("thr-1", "two lines", "end_turn"));
+        assert_eq!(finished(&codex).unwrap().final_text.as_deref(), Some("two lines"));
+
+        let meta = watch.register_follow_up("child-2", "<system-reminder>check</system-reminder>");
+        watch.observe(&AdapterEvent::Message {
+            local_id: "child-2".to_owned(),
+            payload: json!({
+                "role": "user",
+                "text": "<system-reminder>check</system-reminder>",
+                "meta": true,
+            }),
+            turn_id: None,
+        });
+        watch.observe(&msg_stopping("child-2", "checked", "end_turn"));
+        assert_eq!(finished(&meta).unwrap().final_text.as_deref(), Some("checked"));
+    }
+
+    #[test]
+    fn a_child_ending_before_the_follow_up_lands_returns_no_stale_answer() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_follow_up("child-1", "say pong");
+        watch.observe(&msg_stopping("child-1", "Received.", "end_turn"));
+        watch.observe(&ended("child-1"));
+        assert_eq!(finished(&h).unwrap().final_text, None);
     }
 
     #[test]

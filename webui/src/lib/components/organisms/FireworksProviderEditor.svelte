@@ -1,8 +1,8 @@
 <script lang="ts">
-	// Fireworks credential editor: the gateway settings it injects on every
+	// Fireworks credential editor: the headers the gateway sets on every
 	// request, and the account-owned model catalog (ids + display names +
 	// per-Mtok pricing) that spawn resolves the model from.
-	import { Button, Field, Input, Select, Switch, Text } from '@dorsk/tsumikit';
+	import { Button, Field, Input, Switch, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import type { AccountModel } from '$lib/queries';
 
@@ -19,20 +19,8 @@
 		models?: AccountModel[];
 	} = $props();
 
-	const CLX_BEHAVIORS = ['error', 'truncate'];
-
-	const clx = $derived(
-		typeof settings.context_length_exceeded_behavior === 'string'
-			? settings.context_length_exceeded_behavior
-			: settings.context_length_exceeded_behavior === null
-				? ''
-				: 'error'
-	);
 	const affinity = $derived(settings.session_affinity !== false);
 
-	function setClx(v: string) {
-		settings = { ...settings, context_length_exceeded_behavior: v === '' ? null : v };
-	}
 	function setAffinity(v: boolean) {
 		settings = { ...settings, session_affinity: v };
 	}
@@ -68,21 +56,13 @@
 {#if section !== 'models'}
 <div class="block">
 	<Text as="div" tone="muted" size="sm">{m.fireworks_settings_label()}</Text>
-	<Text as="div" tone="faint" size="xs">{m.fireworks_settings_help()}</Text>
-	<Field label={m.fireworks_clx_label()}>
-		<Select value={clx} onchange={(e) => setClx((e.currentTarget as HTMLSelectElement).value)}>
-			<option value="">{m.fireworks_clx_unset()}</option>
-			{#each CLX_BEHAVIORS as b (b)}
-				<option value={b}>{b}</option>
-			{/each}
-		</Select>
-	</Field>
+	<Text as="div" tone="faint" size="xs">{m.fireworks_settings_headers_help()}</Text>
 	<div class="switch-row">
 		<Switch
 			bind:checked={() => affinity, (v) => setAffinity(v)}
 			label={m.fireworks_affinity_label()}
 		/>
-		<Text as="div" tone="faint" size="xs">{m.fireworks_affinity_help()}</Text>
+		<Text as="div" tone="faint" size="xs">{m.fireworks_affinity_header_help()}</Text>
 	</div>
 </div>
 {/if}

@@ -15,6 +15,7 @@ mod config;
 mod cost;
 mod crypto;
 mod db;
+mod dispatch_archive;
 mod dispatch_liveness;
 mod dispatchers;
 mod envelope_guard;
@@ -24,6 +25,7 @@ mod fireworks_billing;
 mod followup;
 mod guard_step;
 mod http_cache;
+mod image_blobs;
 mod keepalive;
 mod langfuse;
 mod live_sessions;
@@ -53,8 +55,10 @@ mod rooms;
 mod routes;
 mod scheduled_messages;
 mod scheduled_spawns;
+mod search_index;
 mod session_emoji;
 mod session_plugins;
+mod session_viewers;
 mod settings_catalog;
 mod skill_store;
 mod soft_limit;
@@ -105,7 +109,7 @@ async fn main() -> anyhow::Result<()> {
     start_background_tasks(&state).await;
     let app = build_app(&state, &config, &auth_config);
     spawn_sweeps(&state);
-    serve(&config, app).await
+    serve(&config, app, &state).await
 }
 
 /// `check-plugin-archive <archive.tgz> <id> <version>`: the catalog check's
@@ -216,6 +220,25 @@ async fn build_state(
     let http_client = build_http_client();
 
     let (transport, internal_secret) = init_bus(&pool, config, &presence, &http_client).await?;
+    if let Some(secret) = &internal_secret {
+        auth_config.set_peers(Arc::new(bus::peer::PeerAuthPurge::new(
+            pool.clone(),
+            http_client.clone(),
+            presence.pod.clone(),
+            config.port,
+            String::from(&**secret),
+        )));
+    }
+    let guard_peers = internal_secret.as_ref().map(|secret| -> Arc<dyn guard_step::ForgetRelay> {
+        Arc::new(bus::peer::PeerGuardForget::new(
+            pool.clone(),
+            http_client.clone(),
+            presence.pod.clone(),
+            config.port,
+            String::from(&**secret),
+        ))
+    });
+    guard_step::init(guard_step::Durable::new(pool.clone(), guard_peers));
 
     Ok(AppState {
         pool,
@@ -334,6 +357,13 @@ async fn start_background_tasks(state: &AppState) {
     }
 
     routes::codex_models::warm_cache(state).await;
+
+    if let Some(config) = search_index::BackfillConfig::from_env() {
+        tokio::spawn(search_index::task(state.pool.clone(), config));
+    }
+    if let Some(config) = image_blobs::backfill::Config::from_env() {
+        tokio::spawn(image_blobs::backfill::task(state.pool.clone(), config));
+    }
 
     // Off the startup path: every replica sweeps, and the scan is IO over a
     // shared volume.
@@ -458,6 +488,10 @@ fn outer_routes() -> Router<AppState> {
             "/api/v1/daemon/sessions/{id}/archive-child",
             post(routes::spawn_child::archive_child),
         )
+        .route(
+            "/api/v1/daemon/sessions/{id}/child-completion",
+            post(routes::spawn_child::child_completion),
+        )
         // Agent-posted image upload: the daemon POSTs raw image bytes
         // it detected as a marker in an assistant message. Self-auths via the
         // machine-key Bearer like the sibling daemon endpoints, so it sits here
@@ -514,6 +548,8 @@ fn outer_routes() -> Router<AppState> {
             post(routes::internal::bus_route).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
         )
         .route("/internal/bus/publish", post(routes::internal::bus_publish))
+        .route("/internal/auth/purge", post(routes::internal::auth_purge))
+        .route("/internal/guard/forget", post(routes::internal::guard_forget))
         // Server-to-server cctuiverse calls, authenticated by each link's
         // Ed25519 signature rather than any cctui credential.
         .merge(cctuiverse_routes())
@@ -551,6 +587,13 @@ fn spawn_sweeps(state: &AppState) {
         let state = state.clone();
         move || keepalive_sweep(state.clone())
     });
+    spawn_periodic(session_viewers::HEARTBEAT, {
+        let state = state.clone();
+        move || {
+            let state = state.clone();
+            async move { session_viewers::heartbeat(&state).await }
+        }
+    });
     spawn_periodic(REAPER_PERIOD, {
         let pool = state.pool.clone();
         let tracked = state.presence.ip.is_some();
@@ -582,10 +625,17 @@ fn spawn_sweeps(state: &AppState) {
 const SHUTDOWN_DRAIN: std::time::Duration = std::time::Duration::from_secs(20);
 const READY_DB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
-async fn serve(config: &Config, app: Router) -> anyhow::Result<()> {
+/// Presence is withdrawn as soon as the signal lands, before the drain: a peer
+/// that keeps routing to this pod's rows would otherwise hit a closed listener
+/// until the heartbeat window ran out.
+async fn serve(config: &Config, app: Router, state: &AppState) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(config.bind_addr()).await?;
     tracing::info!("listening on {}", config.bind_addr());
-    serve_until(listener, app, shutdown_signal(), SHUTDOWN_DRAIN).await
+    let signal = async {
+        shutdown_signal().await;
+        presence::withdraw(&state.pool, &state.presence).await;
+    };
+    serve_until(listener, app, signal, SHUTDOWN_DRAIN).await
 }
 
 /// The drain is bounded: `WebSockets` and streams can outlast any wait.
@@ -805,6 +855,7 @@ async fn reaper_sweep(state: &AppState) {
     demote_idle_registered(state).await;
     let archived = auto_archive_stale(state).await;
     auto_archive::sweep(state).await;
+    dispatch_archive::sweep(state).await;
     let events_pruned = events::prune(&state.pool).await;
     if archived > 0 || events_pruned > 0 {
         events::record(
@@ -938,6 +989,7 @@ async fn reap_ephemeral_keys(state: &AppState) {
     .await
     {
         Ok(res) if res.rows_affected() > 0 => {
+            state.auth_config.purge_all();
             tracing::info!(
                 count = res.rows_affected(),
                 "revoked ephemeral dispatch keys for archived sessions"
@@ -954,6 +1006,7 @@ async fn reap_ephemeral_keys(state: &AppState) {
     .await
     {
         Ok(res) if res.rows_affected() > 0 => {
+            state.auth_config.purge_all();
             tracing::info!(count = res.rows_affected(), "deleted expired ephemeral dispatch keys");
         }
         Ok(_) => {}
@@ -1063,6 +1116,7 @@ mod tests {
             "GET /accounts/settings-catalog Bearer Authenticated",
             "GET /accounts/usage Bearer Human",
             "GET /accounts/usage/closes Bearer Human",
+            "GET /accounts/usage/ledger Bearer Human",
             "DELETE /accounts/{id} Bearer Human",
             "GET /accounts/{id} Bearer Human",
             "PATCH /accounts/{id} Bearer Human",
@@ -1151,6 +1205,10 @@ mod tests {
             "POST /context/{id}/pending/reject Bearer Human",
             "GET /daemon/binary/{target} Bearer Authenticated",
             "POST /deenroll Bearer Authenticated",
+            "POST /dispatch-records/dismiss-all Bearer Authenticated",
+            "GET /dispatch-records/failed Bearer Authenticated",
+            "POST /dispatch-records/{id}/dismiss Bearer Authenticated",
+            "POST /dispatch-records/{id}/redispatch Bearer Scope(Dispatch)",
             "POST /dispatcher/enroll Bearer Scope(Enroll)",
             "GET /dispatchers Bearer Authenticated",
             "DELETE /dispatchers/{id} Bearer Scope(Enroll)",
@@ -1230,7 +1288,7 @@ mod tests {
             "POST /sessions/register Bearer Authenticated",
             "GET /sessions/search Bearer Authenticated",
             "GET /sessions/search/values Bearer Authenticated",
-            "POST /sessions/spawn Bearer Authenticated",
+            "POST /sessions/spawn Bearer Scope(Dispatch)",
             "GET /sessions/stats Bearer Authenticated",
             "GET /sessions/stats/cache-busts Bearer Authenticated",
             "GET /sessions/stats/tokens Bearer Authenticated",
@@ -1325,6 +1383,7 @@ mod tests {
             "GET /voice/config Bearer Human",
             "POST /voice/speak Bearer Human",
             "POST /voice/transcribe Bearer Human",
+            "GET /voice/voices Bearer Human",
             "GET /{resource_type}/{id}/shares Bearer Human",
             "POST /{resource_type}/{id}/shares Bearer Human",
             "DELETE /{resource_type}/{id}/shares/{user_id} Bearer Human",

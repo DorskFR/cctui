@@ -70,10 +70,13 @@ const BATCH_WINDOW: Duration = Duration::from_millis(250);
 /// burst doesn't grow the pre-compression buffer unbounded.
 const BATCH_MAX_BYTES: usize = 1024 * 1024;
 
-/// On shutdown, keep draining adapter events this long past the last one so an
-/// in-flight final tail (the driver's teardown flush) still reaches the wire
-/// before the WS closes. Hard-capped by [`SHUTDOWN_DRAIN_MAX`].
+/// On shutdown, once every adapter has stopped, keep draining adapter events
+/// this long past the last one before the WS closes. Hard-capped by
+/// [`SHUTDOWN_DRAIN_MAX`].
 const SHUTDOWN_DRAIN_QUIET: Duration = Duration::from_millis(500);
+
+/// How often the shutdown drain rechecks whether the adapters have stopped.
+const SHUTDOWN_DRAIN_POLL: Duration = Duration::from_millis(25);
 
 /// Absolute ceiling on the shutdown drain so a busy adapter can't hold teardown
 /// open indefinitely.
@@ -145,6 +148,7 @@ type WsSink = futures_util::stream::SplitSink<WsStream, Message>;
 
 /// Micro-batch buffer: adapter events accumulate here for up to
 /// `BATCH_WINDOW`, then flush as one compress+chunk frame.
+#[derive(Default)]
 struct EventBatch {
     frames: Vec<Vec<u8>>,
     bytes: usize,
@@ -152,10 +156,6 @@ struct EventBatch {
 }
 
 impl EventBatch {
-    const fn new() -> Self {
-        Self { frames: Vec::new(), bytes: 0, deadline: None }
-    }
-
     fn push(&mut self, up: Vec<u8>) {
         self.bytes = self.bytes.saturating_add(up.len());
         self.frames.push(up);
@@ -187,6 +187,9 @@ pub struct Supervisor {
     /// the next connection resumes from the last acked chunk rather than byte
     /// zero.
     pending_transfer: std::sync::Mutex<Option<PendingTransfer>>,
+    /// Events batched but not yet flushed when the connection died, sent first
+    /// on the next one rather than dropped with it.
+    pending_batch: std::sync::Mutex<EventBatch>,
     /// Per-content-hash give-up tracker: size/attempts caps + tombstones so a
     /// poison transfer can't wedge the pipeline.
     guard: std::sync::Mutex<SendGuard>,
@@ -276,6 +279,7 @@ impl Supervisor {
             machine_key,
             factories,
             pending_transfer: std::sync::Mutex::new(None),
+            pending_batch: std::sync::Mutex::default(),
             guard: std::sync::Mutex::new(SendGuard::open_default()),
             counters,
             resources: std::sync::Mutex::new(crate::resources::ResourceSampler::new()),
@@ -391,14 +395,16 @@ impl Supervisor {
             t.rewind_to_ack();
         }
 
-        let mut batch = EventBatch::new();
+        let mut batch = std::mem::take(&mut *self.pending_batch.lock().unwrap());
 
         let outcome: anyhow::Result<()> = async {
             loop {
                 tokio::select! {
                     biased;
                     () = shutdown.cancelled() => {
-                        self.flush_on_shutdown(&mut sink, batch.take(), event_rx, &scrub).await;
+                        let stopped = || adapters_stopped(running) && crate::guardwatch::settled();
+                        self.flush_on_shutdown(&mut sink, batch.take(), event_rx, &scrub, stopped)
+                            .await;
                         return Ok(());
                     }
                     msg = stream.next() => {
@@ -487,7 +493,7 @@ impl Supervisor {
         .await;
 
         crate::preview::set_uplink(None);
-        self.park_transfer(active);
+        self.park_connection(active, batch);
         outcome
     }
 
@@ -510,6 +516,7 @@ impl Supervisor {
     fn announce_connected(&self) {
         self.established.store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = self.connected.send(());
+        crate::machine_health::on_connected();
     }
 
     /// Drain the shutdown tail (buffered batch plus late adapter events) onto
@@ -520,8 +527,9 @@ impl Supervisor {
         batch: Vec<Vec<u8>>,
         event_rx: &mut mpsc::Receiver<(String, AdapterEvent)>,
         scrub: &CompiledPatterns,
+        stopped: impl Fn() -> bool,
     ) {
-        let frames = drain_for_shutdown(batch, event_rx, scrub).await;
+        let frames = drain_for_shutdown(batch, event_rx, scrub, stopped).await;
         if !frames.is_empty()
             && let Some(msg) = prepare_serialized(coalesce(frames)).into_message()
         {
@@ -639,6 +647,12 @@ impl Supervisor {
 
     /// An unfinished transfer resumes next connection, unless it has burned
     /// `MAX_ATTEMPTS` without progress: then tombstone + drop it.
+    /// Keep what the dying connection still owed the wire for the next one.
+    fn park_connection(&self, active: Option<PendingTransfer>, batch: EventBatch) {
+        self.park_transfer(active);
+        *self.pending_batch.lock().unwrap() = batch;
+    }
+
     fn park_transfer(&self, active: Option<PendingTransfer>) {
         if let Some(t) = active
             && !t.is_complete()
@@ -713,6 +727,14 @@ impl Supervisor {
                     interrupts.push(local_id, *command_id);
                     tracing::info!(%adapter_id, %local_id, "interrupt routed off the command path");
                     return;
+                }
+                if let AdapterCommand::Reply { local_id, text, command_id, .. } = command.as_ref()
+                    && cctui_proto::injected::is_spoken_prompt(text)
+                {
+                    tracing::info!(
+                        %adapter_id, %local_id, ?command_id, hop = "daemon received",
+                        "voice delivery hop"
+                    );
                 }
                 // `try_send`, never `send().await`: this runs inside the
                 // transport `select!`, alongside the keepalive ping and the
@@ -1222,11 +1244,9 @@ impl AdapterRunning {
 }
 
 impl Supervisor {
-    /// Drop the archived sessions from the shared-cwd roster, and queue a
-    /// `Remove` for every one whose claude job is still on disk and was not
-    /// already attempted within [`PURGE_RETRY`].
+    /// Queue a `Remove` for every archived session whose claude job is still
+    /// on disk and was not already attempted within [`PURGE_RETRY`].
     fn purge_archived_jobs(&self, running: &HashMap<String, AdapterRunning>, archived: &[String]) {
-        crate::neighbours::global().forget(archived);
         let Some(claude) = running.get(CLAUDE_ADAPTER_ID) else { return };
         let Some(jobs_root) = claude_jobs_root(running) else { return };
         let leaked = self.not_yet_attempted(leaked_jobs(&jobs_root, archived));
@@ -1279,6 +1299,12 @@ fn jobs_on_disk(jobs_root: &std::path::Path) -> Vec<String> {
         .collect();
     shorts.sort();
     shorts
+}
+
+/// Whether every adapter task has returned: the drivers ran their teardown
+/// flush and the pumps forwarded every event the adapters emitted.
+fn adapters_stopped(running: &HashMap<String, AdapterRunning>) -> bool {
+    running.values().all(|r| r.tasks.iter().all(tokio::task::JoinHandle::is_finished))
 }
 
 async fn stop_adapters(running: &mut HashMap<String, AdapterRunning>) {
@@ -1423,7 +1449,6 @@ fn lane(adapter_id: &str, event: &AdapterEvent) -> serde_json::Result<Lane> {
 fn observe_event(adapter_id: &str, event: &AdapterEvent) {
     crate::childwatch::global().observe(event);
     crate::guardwatch::global().observe(adapter_id, event);
-    crate::neighbours::global().observe(adapter_id, event);
     crate::toolblock_followup::observe(adapter_id, event);
 }
 
@@ -1495,13 +1520,15 @@ fn coalesce(mut frames: Vec<Vec<u8>>) -> Vec<u8> {
 
 /// Collect every event still owed to the wire at shutdown: the in-flight
 /// micro-batch, plus events the adapters emit during their teardown flush.
-/// Waits up to [`SHUTDOWN_DRAIN_QUIET`] for each next event and stops once the
-/// pipeline goes quiet or [`SHUTDOWN_DRAIN_MAX`] elapses, so a stuck adapter
-/// can't wedge teardown.
+/// Quiet only counts once `stopped` reports every adapter done: a driver
+/// mid-poll when shutdown lands emits its teardown events later than any quiet
+/// window. Stops after [`SHUTDOWN_DRAIN_QUIET`] of quiet past that, or at
+/// [`SHUTDOWN_DRAIN_MAX`], so a stuck adapter can't wedge teardown.
 async fn drain_for_shutdown(
     batch: Vec<Vec<u8>>,
     event_rx: &mut mpsc::Receiver<(String, AdapterEvent)>,
     scrub: &CompiledPatterns,
+    stopped: impl Fn() -> bool,
 ) -> Vec<Vec<u8>> {
     let mut frames = batch;
     let deadline = tokio::time::Instant::now() + SHUTDOWN_DRAIN_MAX;
@@ -1510,8 +1537,9 @@ async fn drain_for_shutdown(
         if now >= deadline {
             break;
         }
-        let step = SHUTDOWN_DRAIN_QUIET.min(deadline - now);
-        match tokio::time::timeout(step, event_rx.recv()).await {
+        let settled = stopped();
+        let wait = if settled { SHUTDOWN_DRAIN_QUIET } else { SHUTDOWN_DRAIN_POLL };
+        match tokio::time::timeout(wait.min(deadline - now), event_rx.recv()).await {
             Ok(Some((adapter_id, event))) => {
                 let event = scrub_event(event, scrub);
                 if let Ok(Some(frame)) = encode_event(adapter_id, event, harness_models_supported())
@@ -1519,8 +1547,9 @@ async fn drain_for_shutdown(
                     frames.push(frame);
                 }
             }
-            // All senders dropped (adapters finished) or the pipeline went quiet.
-            Ok(None) | Err(_) => break,
+            Ok(None) => break,
+            Err(_) if settled => break,
+            Err(_) => {}
         }
     }
     frames
@@ -2593,6 +2622,84 @@ mod tests {
         super::stop_adapters(&mut running).await;
     }
 
+    fn ended(local_id: &str) -> (String, AdapterEvent) {
+        let reason = cctui_proto::adapter::EndReason::Completed;
+        ("claude-code".to_owned(), AdapterEvent::SessionEnded { local_id: local_id.into(), reason })
+    }
+
+    /// A reset inside the batch window must not lose what was batched, and
+    /// what the adapters emit while the link is down follows it on reconnect.
+    #[tokio::test]
+    async fn events_from_a_reconnect_gap_land_on_the_next_connection() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let supervisor = Supervisor::new(
+            ServerClient::new(format!("http://{addr}")),
+            "machine-key".to_string(),
+            vec![],
+        );
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let mut running: std::collections::HashMap<String, AdapterRunning> =
+            std::collections::HashMap::new();
+
+        event_tx.send(ended("batched-1")).await.unwrap();
+        let reset = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_async(sock).await.unwrap();
+            tokio::time::sleep(super::BATCH_WINDOW / 5).await;
+            drop(ws);
+            listener
+        });
+        let first = Box::pin(supervisor.run_once(
+            CancellationToken::new(),
+            &mut running,
+            &event_tx,
+            &mut event_rx,
+        ));
+        let _ = tokio::time::timeout(Duration::from_secs(10), first)
+            .await
+            .expect("the dropped link ends the connection");
+        let listener = reset.await.unwrap();
+        assert!(event_rx.try_recv().is_err(), "the event had moved into the batch");
+        assert_eq!(supervisor.pending_batch.lock().unwrap().frames.len(), 1, "parked, not dropped");
+
+        event_tx.send(ended("offline-2")).await.unwrap();
+        let server = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(sock).await.unwrap();
+            let mut seen = Vec::new();
+            while let Some(Ok(msg)) = ws.next().await {
+                let Message::Text(text) = msg else { continue };
+                seen.extend(
+                    ["batched-1", "offline-2"].into_iter().filter(|id| text.as_str().contains(id)),
+                );
+                if seen.len() == 2 {
+                    break;
+                }
+            }
+            seen
+        });
+        let second = Box::pin(supervisor.run_once(
+            CancellationToken::new(),
+            &mut running,
+            &event_tx,
+            &mut event_rx,
+        ));
+        let seen = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                biased;
+                seen = server => seen.unwrap(),
+                _ = second => panic!("the connection ended before the gap was delivered"),
+            }
+        })
+        .await
+        .expect("the gap's events reach the new connection");
+        assert_eq!(seen, ["batched-1", "offline-2"]);
+    }
+
     fn chunk_parts(frame: DaemonFrameUp) -> (String, u32, u32, String) {
         match frame {
             DaemonFrameUp::Chunk { transfer_id, chunk_index, total_chunks, data, .. } => {
@@ -2937,7 +3044,7 @@ mod tests {
         tx.send(("claude-code".to_owned(), msg_event("late"))).await.unwrap();
         drop(tx);
         let batch = vec![ser(&synth_event(0))];
-        let frames = super::drain_for_shutdown(batch, &mut rx, &scrub).await;
+        let frames = super::drain_for_shutdown(batch, &mut rx, &scrub, || true).await;
         assert_eq!(frames.len(), 2, "the in-flight batch plus the drained tail must survive");
         let ids: Vec<String> = frames
             .iter()
@@ -2955,12 +3062,49 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<(String, cctui_proto::adapter::AdapterEvent)>(8);
         drop(tx);
         let started = tokio::time::Instant::now();
-        let frames = super::drain_for_shutdown(Vec::new(), &mut rx, &scrub).await;
+        let frames = super::drain_for_shutdown(Vec::new(), &mut rx, &scrub, || true).await;
         assert!(frames.is_empty());
         assert!(
             started.elapsed() < super::SHUTDOWN_DRAIN_MAX,
             "a closed channel must end the drain before the hard cap"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_drain_waits_for_an_adapter_still_flushing() {
+        let scrub = compile_scrub(&cctui_proto::ws::SecretScrubConfig::default());
+        let (tx, mut rx) = mpsc::channel::<(String, cctui_proto::adapter::AdapterEvent)>(8);
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = stopped.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(super::SHUTDOWN_DRAIN_QUIET * 2).await;
+            tx.send(("claude-code".to_owned(), msg_event("end"))).await.unwrap();
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(super::SHUTDOWN_DRAIN_MAX).await;
+            drop(tx);
+        });
+        let started = tokio::time::Instant::now();
+        let frames = super::drain_for_shutdown(Vec::new(), &mut rx, &scrub, || {
+            stopped.load(std::sync::atomic::Ordering::SeqCst)
+        })
+        .await;
+        assert_eq!(frames.len(), 1, "an event emitted past the quiet window still drains");
+        assert!(
+            started.elapsed() < super::SHUTDOWN_DRAIN_QUIET * 4,
+            "once the adapters stopped, quiet ends the drain before the hard cap"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_drain_gives_up_on_an_adapter_that_never_stops() {
+        let scrub = compile_scrub(&cctui_proto::ws::SecretScrubConfig::default());
+        let (_tx, mut rx) = mpsc::channel::<(String, cctui_proto::adapter::AdapterEvent)>(8);
+        let started = tokio::time::Instant::now();
+        let frames = super::drain_for_shutdown(Vec::new(), &mut rx, &scrub, || false).await;
+        assert!(frames.is_empty());
+        let elapsed = started.elapsed();
+        assert!(elapsed >= super::SHUTDOWN_DRAIN_MAX, "waited for the adapters: {elapsed:?}");
+        assert!(elapsed < super::SHUTDOWN_DRAIN_MAX + super::SHUTDOWN_DRAIN_QUIET, "{elapsed:?}");
     }
 
     #[test]
@@ -2975,6 +3119,16 @@ mod tests {
         }
         assert!(super::parse_frame(Message::Ping(Vec::new().into())).is_none());
         assert!(super::parse_frame(Message::Close(None)).is_none());
+    }
+
+    #[test]
+    fn a_newer_servers_extra_fields_on_a_known_frame_are_ignored() {
+        use tokio_tungstenite::tungstenite::Message;
+        let json = r#"{"type":"ack","seq":7,"from_the_future":{"x":1}}"#;
+        match super::parse_frame(Message::Text(json.into())) {
+            Some(cctui_proto::ws::DaemonFrameDown::Ack { seq }) => assert_eq!(seq, 7),
+            other => panic!("expected Ack, got {other:?}"),
+        }
     }
 
     /// Counts adapter instances that are live at the same time. `peak > 1`

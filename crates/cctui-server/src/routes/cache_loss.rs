@@ -46,9 +46,9 @@ pub fn aggregate(
                 d.ttl_expired += usd;
                 d.ttl_expired_tokens += tokens;
             }
-            Reason::GatewayRewroteBody => {
-                d.gateway_rewrote_body += usd;
-                d.gateway_rewrote_body_tokens += tokens;
+            Reason::ProviderMiss => {
+                d.provider_miss += usd;
+                d.provider_miss_tokens += tokens;
             }
             Reason::Unknown => {
                 d.unknown += usd;
@@ -132,7 +132,7 @@ mod tests {
         let out = aggregate(
             [
                 (t("2026-09-20T10:00:00Z"), Reason::TtlExpired, 100, 1.5),
-                (t("2026-09-20T11:00:00Z"), Reason::GatewayRewroteBody, 20, 0.25),
+                (t("2026-09-20T11:00:00Z"), Reason::ProviderMiss, 20, 0.25),
                 (t("2026-09-20T12:00:00Z"), Reason::TtlExpired, 30, 0.5),
                 (t("2026-09-19T12:00:00Z"), Reason::Unknown, 7, 2.0),
             ],
@@ -153,10 +153,10 @@ mod tests {
                 DailyCacheLoss {
                     day: "2026-09-20".into(),
                     ttl_expired: 2.0,
-                    gateway_rewrote_body: 0.25,
+                    provider_miss: 0.25,
                     total: 2.25,
                     ttl_expired_tokens: 130,
-                    gateway_rewrote_body_tokens: 20,
+                    provider_miss_tokens: 20,
                     lost_tokens: 150,
                     busts: 3,
                     ..Default::default()
@@ -188,10 +188,12 @@ mod tests {
             "day",
             "ttl_expired",
             "gateway_rewrote_body",
+            "provider_miss",
             "unknown",
             "total",
             "ttl_expired_tokens",
             "gateway_rewrote_body_tokens",
+            "provider_miss_tokens",
             "unknown_tokens",
             "lost_tokens",
             "busts",

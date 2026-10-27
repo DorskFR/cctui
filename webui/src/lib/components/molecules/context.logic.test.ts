@@ -1,11 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
 	chipsOf,
-	contextAuto,
 	dropLast,
 	fuzzyRank,
-	notePicks,
-	reconcilePrecheck,
 	sameList,
 	togglePick,
 	type Pickable
@@ -96,38 +93,7 @@ describe('chips', () => {
 	});
 });
 
-describe('scope pre-check', () => {
-	it('checks matches, honours an uncheck, and follows the coordinates', () => {
-		let s = reconcilePrecheck({ picks: ['x'], auto: [], dismissed: [] }, ['a', 'b']);
-		expect(s.picks).toEqual(['x', 'a', 'b']);
-		expect(contextAuto(s.picks, ['a', 'b'])).toBe(true);
-
-		s = notePicks(s, ['x', 'b']);
-		expect(s.auto).toEqual(['b']);
-		expect(s.dismissed).toEqual(['a']);
-		expect(contextAuto(s.picks, ['a', 'b'])).toBe(false);
-
-		expect(reconcilePrecheck(s, ['a', 'b']).picks).toEqual(['x', 'b']);
-
-		s = reconcilePrecheck(s, ['b', 'c']);
-		expect(s.picks).toEqual(['x', 'b', 'c']);
-		expect(s.dismissed).toEqual([]);
-
-		s = reconcilePrecheck(s, []);
-		expect(s.picks).toEqual(['x']);
-		expect(s.auto).toEqual([]);
-	});
-
-	it('keeps a match the user had picked themselves', () => {
-		const s = reconcilePrecheck({ picks: ['a'], auto: [], dismissed: [] }, ['a']);
-		expect(s.auto).toEqual([]);
-		expect(reconcilePrecheck(s, []).picks).toEqual(['a']);
-	});
-
-	it('leaves auto on with no matches', () => {
-		expect(contextAuto([], [])).toBe(true);
-	});
-
+describe('sameList', () => {
 	it('compares lists by content and order', () => {
 		expect(sameList(['a', 'b'], ['a', 'b'])).toBe(true);
 		expect(sameList(['a', 'b'], ['b', 'a'])).toBe(false);

@@ -909,7 +909,7 @@ impl<'a> EventLoop<'a> {
             .await
             .get(&local_id)
             .and_then(|record| record.started_at_ms)
-            .unwrap_or_else(crate::neighbours::now_ms);
+            .unwrap_or_else(crate::adapters::now_ms);
         // A `CctuiAgent` call from this session arrives keyed by the launch
         // key baked into the relay argv.
         if let Some(agent_mcp) = &session.agent_mcp {

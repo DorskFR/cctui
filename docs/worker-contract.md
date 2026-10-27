@@ -70,7 +70,8 @@ case, never a *no-`SESSION_ID`* case.
 | `WORKER_NET_MODE` | auto | `transparent`, `transparent-external`, or `forward`. Auto = `transparent` when iptables is usable (CAP_NET_ADMIN), else `forward`. `transparent-external` is never auto-selected — set it only when the pod runs the guard-proxy sidecar + net-init init container (see below). |
 | `WORKER_NET_EXEMPT` | — | Comma-separated `host:port` that **bypass** the proxy (resolved to a single IP at boot, iptables `RETURN`'d). Transparent mode only. IP-pinned — use only for **IP-stable** hosts; CDN/multi-IP hosts will rotate off the exempted IP. |
 | `WORKER_NET_ALLOW` | — | Comma-separated `host:port` allowed **through** the proxy by **SNI** (IP-independent). Folded into the seeded `policy.json` and re-applied as `cctui-guard --always-allow` so it survives per-step rewrites. The right tool for CDN/multi-IP SaaS APIs (e.g. a YouTrack host). |
-| `WARM_REPO_DIR` | — | Mounted warm-repo dir; becomes the overlayfs lowerdir for `/workspace` (rsync-copy fallback). |
+| `WORKER_REPO_REGISTRIES` | on | After the repo lands in `/workspace/<repo>`, its manifests (up to three levels deep; `.git`, `node_modules`, `target`, `vendor`, `.venv` skipped) add their package registry to the seeded `policy.json` as plain egress (no credential injection): `package.json`/`package-lock.json`/`npm-shrinkwrap.json` → `registry.npmjs.org:443`; `pyproject.toml`/`uv.lock`/`requirements*.txt` → `pypi.org:443`, `files.pythonhosted.org:443`; `Cargo.toml` → `index.crates.io:443`, `static.crates.io:443`, `crates.io:443`; `go.mod` → `proxy.golang.org:443`, `sum.golang.org:443`. Not `--always-allow`'d: under a guarded workflow the per-step `[network]` policy replaces them. `0`/`false`/`off`/`no` disables it per profile. |
+| `WARM_REPO_DIR` | — | Mounted warm-repo dir; becomes the overlayfs lowerdir for `/workspace` (rsync-copy fallback). `posture: root` only: a `posture: nonroot` profile is denied for setting it, and the envelope strips it from a nonroot worker. |
 | `TASK_REPO_URL` | — | Repo to shallow-clone into `/workspace` when no warm repo. |
 | `TASK_REPO_REF` | — | Branch/tag to clone (`git clone --depth 1 --branch`). |
 | `CONTEXT_PACK_URL` | — | Git repo of the context pack. May carry `@<ref>` (path) and `#<subdir>` to pin in one value. Set ⇒ fetch is **fail-closed**. Its `host:port` is seeded into the boot guard-proxy policy (boot-only — not `--always-allow`'d, so the first per-step rewrite closes it), and the clone runs as `WORKER_UID` so it flows through the proxy: with no `CONTEXT_PACK_TOKEN`, a matching inject rule (optionally `path_prefix`-scoped to the pack repo) supplies the credential. |
@@ -80,6 +81,9 @@ case, never a *no-`SESSION_ID`* case.
 | `CONTEXT_PACK_TOKEN_FROM` | — | Name of an env var holding the pack-clone token, when it differs from the task identity's (e.g. the task identity can't read the pack repo). Resolved before the `GITHUB_TOKEN` fallbacks; keeps a specific identity name out of the image. |
 | `GUARD_RULES_FILE` | `/opt/context/guard-rules.md` | Guard rules path; defaults into the fetched pack (the override/extend layer). |
 | `GUARD_RULES_BASE` | — | Operator base guard-rules parsed **before** `GUARD_RULES_FILE`. When a pack ships `guard-rules.md`, the entrypoint moves any prior `GUARD_RULES_FILE` here so the pack reuses/extends/overrides it. |
+| `CCTUI_PREFLIGHT_MODE` | `enforce` in `transparent-external`, else `warn` | Pre-flight isolation check mode: `enforce`, `warn` or `off` (see below). An unknown value enforces. Set by the kube dispatcher from `spec.preflight.mode`. |
+| `CCTUI_PREFLIGHT_DENY` | — | Comma-separated extra pre-flight deny targets: `host:port` or a CIDR. Set from `spec.preflight.deny`. |
+| `NODE_OPTIONS` | `--use-openssl-ca` appended | Every node reads the system trust store (see "Node trust store" below). A value already naming `--use-openssl-ca`, `--use-bundled-ca` or `--use-system-ca` is left as is. |
 | `CCTUI_DISPATCH_WORKDIR` | `/workspace/$TASK_REPO` if that dir exists (else `/workspace`) | Session working directory. Defaulted to the checked-out repo after `phase_workspace` so the CLI grants edit-in-place (a cwd inside the repo) instead of blocking background edits with "call `EnterWorktree` first"; an explicit operator/dispatcher value always wins. |
 
 ### Tenant plane (from `TASK_PAYLOAD_JSON`)
@@ -195,7 +199,7 @@ applies a **documented built-in default**, logged loudly at boot
   `guard-rules.md` **and** the prompt carries `# Step N` + `[allowed]` blocks.
 - **Network = deny-default + seeded structural hosts.** Egress stays the boot
   `policy.json`: deny-default with only `CCTUI_URL`, `REPLY_URL`, the minted
-  model-gateway hosts, and any `WORKER_NET_ALLOW`/`CONTEXT_PACK_URL` host allowed. The sandbox floor holds
+  model-gateway hosts, and any `WORKER_NET_ALLOW`/`CONTEXT_PACK_URL`/repo host plus the repo's package registries (`WORKER_REPO_REGISTRIES`) allowed. The sandbox floor holds
   even with no rules file — an unguarded run is never an *open* run.
 
 To gate tools per workflow step, ship a `guard-rules.md` in the pack and give the
@@ -261,6 +265,36 @@ be exercised in unit tests):
   from the worker fails to obtain any identity (no IMDS/IRSA reach). The worker
   carries a non-secret `AWS_REGION` only — a region hint, not a credential.
 
+### Private destinations
+
+Loopback, RFC1918/ULA and CGNAT destinations are refused unless the requested
+host (SNI, `Host`, or `CONNECT` target) is on the proxy's **private allow-list**
+for that port, and the address dialed is one that host resolves to in the proxy.
+In transparent mode a private `SO_ORIGINAL_DST` must also be one of those
+addresses, so a forged SNI/Host, a rebinding answer or another private IP cannot
+ride an allowed name. The hostname allow-list (`policy.json`) still applies on top;
+being on `policy.json` alone never opens a private address.
+
+The list is built from:
+
+| Source | Port |
+| --- | --- |
+| `CCTUI_URL` / `CCTUI_SERVER_URL` / `CCTUI_BASE_URL`, `REPLY_URL`, and the minted `*_BASE_URL` gateways (`ANTHROPIC`, `OPENAI`, `FIREWORKS`, `GOOGLE_GEMINI`) in the proxy's env | the URL's |
+| `/var/run/guard-proxy/private-allow` (`GUARD_PROXY_PRIVATE_ALLOW_FILE`): one `host:port VAR` line per control-plane URL above, seeded root-owned next to `policy.json` by the worker entrypoint, because the sidecar cannot read the worker's env; re-read on change | the URL's |
+| Every injection-rule host (`inject.json`) | any |
+| `GUARD_PROXY_PRIVATE_ALLOW`: comma-separated `host`, `host:port` or `host:*`, for operator extras (internal git, registries, a private `WORKER_NET_ALLOW` or context-pack host) | as written |
+
+The proxy's own Vault/OpenBao address is deliberately not derived: the sidecar
+reaches it directly, and the worker must not reach the credential backend. A
+Secrets Manager VPC endpoint used through SigV4 injection is covered as an
+injection host. Link-local (`169.254/16`, `fe80::/10`) stays denied whatever the
+list says. Each private allow or deny is logged once per host and reason
+(`private egress ALLOW <host:port> (rule: <source>)` /
+`private egress DENY <host:port>: <reason>`).
+
+`GUARD_PROXY_ALLOW_PRIVATE_IPS=1` is the legacy blanket opt-out: every private
+destination is reachable without binding, and the proxy logs a warning at start.
+
 ### Sidecar mode (`transparent-external`)
 
 Promotes the guard-proxy out of the worker container so its memory, env, and
@@ -289,7 +323,8 @@ base `ghcr.io/dorskfr/cctui-worker` image — no extra image needed):
    waits (≤30s) for the sidecar's `/ready` over pod-local net. `cctui-guard`'s
    per-step policy rewrites keep working unchanged through the shared file.
 
-Worker-container capabilities in this mode: `privileged` and NET_ADMIN are
+Worker-container capabilities in this mode (`posture: root`; `nonroot` adds
+none, see Non-root start): `privileged` and NET_ADMIN are
 gone. The entrypoint still boots as root, so it keeps `drop: ALL` plus the
 minimal add set: `SYS_ADMIN` (overlayfs + `mount --bind` context-pack/home
 isolation), `CHOWN`/`DAC_OVERRIDE`/`FOWNER`/`FSETID` (workspace + home chowns as
@@ -298,6 +333,123 @@ root), `SETUID`/`SETGID` (cctui-supervisor's setresuid/setresgid drop to uid
 dispatched-worker wait kills the uid-1000 daemon tree from root). The container
 mounts need an unconfined AppArmor profile where the runtime's default profile
 denies `mount(2)` (previously masked by `privileged: true`).
+
+### Per-profile guard settings (`spec.guard`)
+
+The injected `guard-proxy` gets its settings from the global `guard-proxy-env`
+`ConfigMap` (`envFrom`) plus `GUARD_PROXY_IDENTITY` from the
+`cctui.dev/guard-identity` annotation. A `WorkerProfile` can layer its own on
+top, so a guard change can be tried on one profile before it reaches every worker:
+
+| Field | Rendered into the sidecar as |
+| --- | --- |
+| `spec.guard.envFrom` | extra `envFrom` sources **after** `guard-proxy-env`: a key here overrides the global one |
+| `spec.guard.env` | container `env` after the identity: wins over every `envFrom` |
+| `spec.guard.allowPrivateEgress` | nothing; it is the admission gate below |
+
+The mutating webhook reads the profile named by `cctui.dev/worker-profile` at pod
+admission, so a profile edit applies to the next pod, queued Jobs included. A
+failed profile lookup denies the pod. A profile without `spec.guard` renders the
+sidecar exactly as before.
+
+The validating webhook denies pods whose profile's `spec.guard.env`:
+
+- sets a name outside `GUARD_PROXY_*`, or sets `GUARD_PROXY_IDENTITY` (that one
+  is per dispatch);
+- widens private egress without `allowPrivateEgress: true`, i.e. sets
+  `GUARD_PROXY_ALLOW_PRIVATE_IPS` truthy (`1`/`true`/`yes`/`on`) or a non-empty
+  `GUARD_PROXY_PRIVATE_ALLOW`. A `valueFrom` on either counts as widening.
+
+Narrowing needs no flag: `GUARD_PROXY_ALLOW_PRIVATE_IPS: "0"` (or `""`) zeroes
+the global opt-out. `envFrom` sources are always in the pod's namespace, and
+their contents aren't read at admission: they are operator-owned, just like
+`guard-proxy-env`.
+
+**Canary recipe** (drop the blanket private-IP opt-out on one profile): copy the
+base profile under a new name, add the override, and dispatch a few runs to it.
+
+```yaml
+apiVersion: cctui.dev/v1alpha1
+kind: WorkerProfile
+metadata:
+  name: dev-guard-canary
+spec:
+  # ... everything from the base profile, unchanged ...
+  guard:
+    env:
+      - name: GUARD_PROXY_ALLOW_PRIVATE_IPS
+        value: "0"
+```
+
+Watch the sidecar logs for `private egress DENY`, list what's missing in
+`GUARD_PROXY_PRIVATE_ALLOW` (with `allowPrivateEgress: true`), and once the canary
+runs clean, make the change in `guard-proxy-env` and delete the canary's override.
+
+### Pre-flight isolation check
+
+Before the agent starts, the entrypoint runs short probes **as the agent uid**
+(`setpriv` to uid 1000, so the same iptables owner rules apply as for the
+agent). Every probe must fail. Then the agent's one sanctioned path must work:
+`GET ${CCTUI_URL}/health` through the guard proxy (any HTTP answer counts).
+Probes run in parallel with 300 ms timeouts; the public-DNS probes wait up to
+1 s, and the control up to 2 s.
+
+| Probe | Target | Failing reason |
+| --- | --- | --- |
+| Kubernetes API | `https://kubernetes.default.svc:443`, `$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT` | `k8s API reachable` |
+| Service-account token | any `/var/run/secrets/*/serviceaccount/*token*` readable | `service-account token readable` |
+| Public DNS | a UDP query to `1.1.1.1` and `8.8.8.8` (`dig` if present, else node's resolver) | `public DNS answers` |
+| Cloud metadata | `169.254.169.254` (EC2/GCE/Azure IMDS, GKE Workload Identity), `169.254.170.23` (EKS Pod Identity), `169.254.170.2` (ECS, `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`), `[fd00:ec2::254]` on port 80 | `cloud metadata reachable` |
+| Ambient cloud identity | the file named by `AWS_WEB_IDENTITY_TOKEN_FILE` (IRSA), `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE` (Pod Identity) or `AZURE_FEDERATED_TOKEN_FILE` readable; the host of `AWS_CONTAINER_CREDENTIALS_FULL_URI` reachable | `ambient cloud identity via <VAR>` |
+| Private ranges | `10.0.0.1`, `172.16.0.1`, `192.168.0.1`, `100.64.0.1`, `[fd00::1]` on port 80 | `private range reachable` |
+| Direct egress | `http://1.1.1.1:80` with the proxy env ignored | `direct public egress` |
+| Profile extras | each `spec.preflight.deny` entry; a CIDR probes its first host on port 80 | `profile deny target reachable` / `profile deny range <cidr> reachable` |
+
+A TCP probe sends an HTTP request (TLS for the API server) with the proxy env
+ignored. In the transparent modes every agent connect is redirected to the guard
+proxy, which closes a denied connection unanswered. So a target counts as
+reachable only when bytes come back (curl exit 0, 1 or 8). In `forward` mode
+nothing sits in the path, so an accepted connection is enough.
+
+**Verdict.** `enforce` fails the dispatch before the agent runs. The failure
+names every failing probe, e.g. `preflight: k8s API reachable
+(kubernetes.default.svc:443); public DNS answers (1.1.1.1)`. That string is the
+callback's `error`, the pod's termination message, and an entrypoint log line.
+The kube dispatcher reports the termination message as the failure, so it
+becomes the failed dispatch's detail with end reason `spawn_failed`. The worker
+dies before its session registers, so the detail lands on the dispatch record. `warn` logs `WARNING: preflight: …` and continues. `off` skips the
+check. The verdict is also recorded as `preflight` in the hardening report. An
+unset mode enforces only in `transparent-external`. Only there does net-init
+filter the agent's non-proxied egress (UDP, link-local, IPv6), so in the
+single-container modes the probes would fail by design.
+
+**Not probed:**
+- Credentials the operator configured explicitly: `AWS_ACCESS_KEY_ID` /
+  `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`, `AZURE_CLIENT_SECRET`,
+  `GOOGLE_APPLICATION_CREDENTIALS`, `~/.aws/credentials`, gcloud ADC files. The
+  profile sets them on purpose; ambient identity means only what the pod or
+  instance provides.
+- `aws sts get-caller-identity`. The guard proxy may legitimately sign STS calls
+  for the agent (ambient `sigv4`), so a success does not prove an ambient
+  identity. The checks above cover the credential sources themselves.
+- Whether the guard-proxy port refuses other pods. From inside the pod, a
+  connect to its own `:15001` lands on the same listener and proves nothing.
+  The sidecar binds `0.0.0.0:15001`, so peers must be blocked by a
+  NetworkPolicy ingress rule on the worker pods.
+- A sample address per private range proves the redirect covers that range, not
+  that nothing in it answers. List real in-cluster targets (databases, internal
+  APIs) in `spec.preflight.deny`. A target that accepts a connection and closes
+  it without replying is not detected in the transparent modes.
+
+### Node trust store
+
+Node verifies TLS against its own bundled root list, which can still hold roots
+the system store distrusts. `NODE_EXTRA_CA_CERTS` only adds roots. And the guard
+proxy passes allowed hosts through without re-verifying them. So the entrypoint
+appends `--use-openssl-ca` to `NODE_OPTIONS` after the extension hooks, and
+every node in the agent tree reads the system store (and `SSL_CERT_FILE`). This
+makes node exactly as strict as the image's system store, which must itself
+carry the distrust.
 
 ### Sidecar secret source
 
@@ -363,14 +515,14 @@ startup**: a partially applied credential config is worse than none.
 | Field | Required | Meaning |
 |---|---|---|
 | `host` | yes | Host to TLS-terminate (lowercased). Repeat the host for several path-scoped rules. |
-| `secret` | yes (except `headers`) | Secret ref of the credential to inject. |
+| `secret` | yes (except `headers`, ambient `sigv4`) | Secret ref of the credential to inject. |
 | `shape` | no (`bearer`) | `bearer`, `basic`/`git`, `bearer+cookie`/`cookie`, `sigv4`, or `headers`. |
 | `service` | no (`host`) | Label for logs and GitHub-App provider matching — never a lookup key. |
 | `path_prefix` | no | Scopes the rule to a request path; must start with `/`. The **longest** matching prefix wins, ties keep config order, and a request matching no rule forwards the agent's head unchanged. |
 | `username` | no (`x-access-token`) | Basic-auth username. |
 | `cookie_name` / `cookie_secret` | `cookie_secret` required for `bearer+cookie` | Companion session cookie (default name `d`). |
 | `headers` | required for `headers` | Map of header name → secret ref (no `Authorization`). Replaces `secret`. |
-| `region` / `aws_service` / `key_id_secret` | `key_id_secret` required for `sigv4` | `SigV4` signing params; `region`/`aws_service` default from a `<service>.<region>.amazonaws.com` host. `secret` is the secret access key, `key_id_secret` the access key id. |
+| `region` / `aws_service` / `key_id_secret` | no | `SigV4` signing params; `region`/`aws_service` default from a `<service>.<region>.amazonaws.com` host. `secret` is the secret access key, `key_id_secret` the access key id: give both, or neither to sign with the sidecar's ambient AWS credentials. Only one of the two is a config error. |
 
 ```jsonc
 [
@@ -387,6 +539,38 @@ startup**: a partially applied credential config is worse than none.
 `sigv4` requests are buffered (≤1 MiB) so the signature can cover the body hash;
 a chunked or oversized body cannot be hashed and forwards unchanged, exactly
 like a credential miss.
+
+A `sigv4` rule without `secret`/`key_id_secret` signs with the **sidecar's**
+ambient AWS credentials. The first configured source wins:
+
+1. `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (+ `AWS_SESSION_TOKEN`).
+2. Web identity (IRSA): `AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN` exchanged
+   through STS `AssumeRoleWithWebIdentity` (`AWS_REGION` picks the regional STS
+   endpoint, `AWS_ENDPOINT_URL_STS` overrides it).
+3. Container endpoint (ECS, EKS Pod Identity): `AWS_CONTAINER_CREDENTIALS_FULL_URI`
+   with `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE` (re-read on every fetch) or
+   `AWS_CONTAINER_AUTHORIZATION_TOKEN`, or `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`.
+   Plain `http` is only accepted for loopback, `169.254.170.2`,
+   `169.254.170.23` and `fd00:ec2::23`.
+4. `IMDSv2`, unless `AWS_EC2_METADATA_DISABLED=true`.
+
+Temporary credentials are cached and refreshed 5 minutes before they expire
+(a failed refresh keeps the cached ones until their real expiry), and their
+session token is sent and signed as `x-amz-security-token`. With no source the
+request forwards unchanged, like a credential miss. Only the sidecar resolves
+these credentials: the worker uid cannot reach `169.254.0.0/16`
+(`worker-net-init.sh`), and the agent's own `x-amz-security-token` is always
+stripped.
+
+```jsonc
+[
+  // static key pair
+  { "host": "secretsmanager.ap-northeast-1.amazonaws.com", "shape": "sigv4",
+    "key_id_secret": "env:AWS_ACCESS_KEY_ID", "secret": "env:AWS_SECRET_ACCESS_KEY" },
+  // ambient credentials (e.g. EKS Pod Identity on the sidecar)
+  { "host": "sts.us-east-1.amazonaws.com", "shape": "sigv4" }
+]
+```
 
 **Per-pod CA.** At boot the sidecar mints a CA (via `rcgen`), keeps the private
 key **in memory only** (never on disk), and writes only the public cert (PEM,
@@ -554,11 +738,36 @@ blocked. The array is consumed by the PR renderer (one section per surface) and,
 longer-term, by `cctui-github` (diff viewer + review-draft store + evidence
 attachments) — the not-yet-built crate is the natural home for richer rendering.
 
+## Dispatch response
+
+`POST /api/v1/sessions/dispatch` answers `202`:
+
+```jsonc
+{
+  "session_id":     "…",
+  "dispatcher":     "k8s",
+  "handle":         "jobs/cctui-worker-…",
+  "namespace":      "cctui",      // absent when the dispatcher has none
+  "status":         "queued",     // dispatched | deduplicated | redispatched | queued
+  "queue_position": 2             // only while queued: 1-based, per worker profile
+}
+```
+
+`queued` means the worker Job was created suspended behind its profile's
+`maxInflight`; `queue_position` counts that profile's suspended Jobs oldest
+first, the order they are resumed in. A re-send of the same dedup key or session
+id while the Job is still queued answers `queued` with its current position
+again instead of `deduplicated`, so a retrying caller can tell it is already
+waiting. Once the Job runs, a re-send answers `deduplicated` as before.
+
 ## Polling for the result
 
 A dispatcher that does not use `REPLY_URL` reads the outcome from the server
 instead: `GET /api/v1/sessions/{id}/result` (session read policy, the same key
-that dispatched). It answers `404` until the worker registers the session, then:
+that dispatched). While the dispatch waits in its dispatcher's queue it answers
+`200` with `{"done": false, "queued": true, "queue_position": 2, …}` (the
+position is a hint from the server's dispatch records). Otherwise it answers
+`404` until the worker registers the session, then:
 
 ```jsonc
 {
@@ -572,6 +781,37 @@ that dispatched). It answers `404` until the worker registers the session, then:
 
 Poll until `done`; `final_assistant_text` is already populated while the
 session runs (the latest completed message), so a service can show progress.
+
+A dispatched session whose turn ends waiting on a Claude Code background task
+that never reports back is re-prompted once after 10 minutes of quiet
+(`CCTUI_STUCK_TURN_REPROMPT_SECS`), and ended after a further 10 minutes
+(`CCTUI_STUCK_TURN_END_SECS`) with `end_reason: "other"` and an `end_detail`
+starting `stuck_waiting`, so the worker exits and frees its profile slot.
+
+### Auto-archive when the run ends
+
+A dispatched session that ends (`completed`, `failed`, killed, timed out) is
+archived by the server's reaper once its owner's grace has passed, through the
+same path as a manual archive: it leaves the active list and frees its slot,
+and the sessions nested under it (`CctuiAgent` children) go with it. A child of
+a dispatch that ends on its own while the dispatch still runs is archived the
+same way. The transcript, `/result` and the dispatch record stay readable.
+
+The session stays listed while any of these holds for it or a session nested
+under it: it is pinned, it ended waiting on a question, plan or permission, it
+has an open user action, or a client has it open (archived once the last
+viewer leaves). `daemon_lost` / `machine_offline` ends are left to the idle
+TTL (`archive_after_secs`), since the worker may still reconnect. A session
+the user un-archives is never archived again by this sweep.
+
+Per-user settings (Settings › Sessions › Dispatched sessions), stored in the
+settings blob:
+
+| Key                               | Default | Meaning                                              |
+| --------------------------------- | ------- | ---------------------------------------------------- |
+| `dispatchAutoArchive`             | `true`  | Off leaves every dispatched session listed.          |
+| `dispatchAutoArchiveGraceSecs`    | `180`   | Seconds after the end before archiving, `0`–`3600`.  |
+| `dispatchAutoArchiveKeepProfiles` | `[]`    | Worker profiles (`payload.profile`) never archived.  |
 
 ## Dispatch by adapter
 
@@ -653,10 +893,11 @@ Two parts, surfaced for the daemon to attach as session metadata:
   `WORKER_HARDENING_FILE` (`/tmp/cctui-hardening.json`):
 
   ```json
-  { "net_mode": "transparent", "guard": "on", "supervisor_report": "/tmp/hardening.json" }
+  { "net_mode": "transparent", "guard": "on", "preflight": "passed", "supervisor_report": "/tmp/hardening.json" }
   ```
 
-  `net_mode` ∈ `transparent|transparent-external|forward`; `guard` ∈ `on|off`.
+  `net_mode` ∈ `transparent|transparent-external|forward`; `guard` ∈ `on|off`;
+  `preflight` ∈ `passed|warned|off`.
 
 - **Supervisor report** — `cctui-supervisor --report /tmp/hardening.json`:
 
@@ -678,7 +919,7 @@ Two parts, surfaced for the daemon to attach as session metadata:
 ## Entrypoint phases
 
 The container starts as root, runs these phases (each skippable on absent
-input), then drops to uid 1000:
+input), then drops to uid 1000 (see Non-root start for a uid 1000 start):
 
 1. **Network** — choose mode, seed the deny-default policy, install iptables
    (transparent) or export proxy env (forward), start `cctui-guard-proxy` — or,
@@ -691,7 +932,17 @@ input), then drops to uid 1000:
 4. **Extensions** — source any `*.sh` in `/opt/worker-entrypoint.d/` (lexical
    order). The generic seam derived images use to inject boot phases (e.g.
    credential materialization) without forking the entrypoint. No-op on the
-   public image (empty dir).
+   public image (empty dir). Hooks are optional: each is sourced with
+   `errexit`/`nounset` off (restored after), so its exports reach later
+   phases and a failing command never aborts the dispatch. A hook signals
+   failure with a non-zero `return`, logged as `WARNING: extension <name>
+   failed (rc N, continuing)`. A hook must not `exit`: that ends the
+   entrypoint. To run a command as the worker, a hook calls
+   `as_worker <cmd> [args…]`, not `runuser`: it drops via `setpriv` (or
+   `runuser -u worker --`) when the entrypoint is root and runs the command
+   as-is when it already is uid 1000, where `runuser` refuses to run. It is
+   a shell function, so only the sourced hook sees it (not a `bash -c`
+   child), and it keeps the environment (`HOME` stays `/home/worker`).
 5. **Codex package** — link `~/.codex/packages/standalone/current` to the baked
    `CODEX_PACKAGE_DIR`, the standalone install `codex app-server daemon` needs.
    **Codex config** — write the `cctui` model-provider region into
@@ -703,13 +954,56 @@ input), then drops to uid 1000:
    usage statistics off and the API-key / `openai` auth type selected.
 7. **Callback** — install the `REPLY_URL` exit trap, then refuse an unknown
    `adapter` with a `failed` verdict (see Dispatch by adapter).
+   **Pre-flight** — run the isolation probes as the agent uid; fail the
+   dispatch on any reachable target under `enforce` (see Pre-flight isolation
+   check).
 8. **Guard** — start `cctui-guard` if the resolved prompt has step blocks
    (`# Step N` + `[allowed]`); always-allow the structural hosts.
 9. **Permissions** — seed Claude's bypass-permissions + trust-dialog gates for
    the dispatch workdir and register any context-pack `PreToolUse` hooks.
-10. **Hardening** — assemble `WORKER_HARDENING_JSON`.
+10. **Hardening** — append `--use-openssl-ca` to `NODE_OPTIONS` (see Node
+    trust store), assemble `WORKER_HARDENING_JSON`.
 11. **Drop + run** — `exec cctui-supervisor --ro … --rw … --user 1000
     --report /tmp/hardening.json -- cctui-daemon run --no-auto-update`.
+
+### Non-root start
+
+A worker container may run as uid/gid 1000 with `runAsNonRoot: true`,
+`allowPrivilegeEscalation: false`, `capabilities: {drop: [ALL]}` and the
+runtime's default seccomp and AppArmor. The pod's only privileged container
+is then the `net-init` init container (root, `NET_ADMIN`), which exits before
+the worker starts. A `WorkerProfile` gets this pod with `spec.posture: nonroot`
+(worker-profile-crd.md, Posture): the envelope renders the worker
+`securityContext` above, drops the `overlay` emptyDir and mount and
+`WARM_REPO_DIR`, and runs the guard-proxy sidecar as restricted uid 1337
+(adds `runAsNonRoot` and `RuntimeDefault` seccomp). Requirements:
+
+- `runAsGroup: 1000`. The supervisor skips its uid switch when it already
+  runs as uid and gid 1000, and fails with a `runAsGroup` hint on any other
+  gid, which a non-root process can't change. It still applies Landlock and
+  seccomp, clears the ambient and inheritable capability sets and sets
+  `no_new_privs` (it can't shrink the bounding set; drop `ALL` empties it).
+- `/workspace` and `/opt/context` owned by uid 1000. The public image ships
+  them that way; a derived image that re-creates them must keep it.
+- `/var/run/guard-proxy`, `/var/run/workflow-guard` and `/var/run/gpg-agent`
+  writable by uid 1000: the image keeps them root-owned, and the envelope
+  mounts them as `fsGroup: 1000` emptyDirs.
+- No `WARM_REPO_DIR` overlay. Without `SYS_ADMIN` the entrypoint rsync-copies
+  the warm cache instead, so use a baked warm image (`/workspace/.warm-baked`).
+  A `posture: nonroot` profile can't set it at all.
+
+The entrypoint logs `running as uid 1000 (non-root)` and skips its root-only
+steps, each with a log line:
+
+| Step | Root start | Non-root start |
+| --- | --- | --- |
+| Guard-proxy CA | system trust store, else a combined bundle | combined bundle `/tmp/cctui-guard-ca-bundle.pem`, exported as `SSL_CERT_FILE`, `GIT_SSL_CAINFO`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE` (clients that ignore those lose trust on credential-injected hosts) |
+| In-container guard-proxy (`transparent`/`forward`) | started as uid 1337 | not started: needs an external proxy (the sidecar) |
+| `WARM_REPO_DIR` | overlayfs, else rsync | rsync |
+| Context pack | `/opt/context` re-created, `chown 0:0` | emptied in place, stays worker-owned: only Landlock keeps it read-only |
+| Pack home bind mounts (`/overlay`) | bind-mounted | skipped |
+| `cctui-guard` | runs as root | runs as uid 1000, the agent's uid |
+| Repo clone, pack clone, pre-flight probes | dropped to uid 1000 | run directly as uid 1000 |
 
 ### Entrypoint internals
 
@@ -1435,3 +1729,49 @@ the spawn key until it registers; `rebind_spawn_key` moves the token, the record
 usage, the child's budget and its capability onto the registered id in one step.
 Miss that and the usage FK to `sessions(id)` rejects every insert and the child's
 spend reads $0.
+
+## Agent-posted images
+
+An agent shows the user a picture by writing a markdown image marker with an
+absolute local path into its own message text:
+
+```
+![login page after the fix](/tmp/shot.png)
+```
+
+The daemon (`imagepost.rs`) finds the marker in an assistant message from any
+harness, uploads the file to the session's blob store and rewrites the marker to
+`![alt](cctui-img://<id>)`, which the webui renders inline. The file must:
+
+- canonicalize (symlinks resolved) to a regular file under `$HOME`, `/tmp` or
+  `$TMPDIR`;
+- be png, jpeg, gif or webp by its magic bytes, with a `.png`, `.jpg`, `.jpeg`,
+  `.gif` or `.webp` extension;
+- be at most 5 MB. A session keeps at most 200 images and 100 MB in total.
+
+A marker that fails any check stays as the agent wrote it, as a plain path.
+
+Every session is told this in one line of its `<cctui-session-context>` block
+(`preamble::IMAGE_LINE`): always for claude-code, and for codex, opencode and
+ACP whenever that block is sent at all. For claude-code, the line before it
+says thinking is never shown as a reply: a marker or answer written only in
+thinking reaches no one, and the webui footnotes a turn that ended on thinking
+with "no reply was sent".
+
+An image belongs to the session that posted it. `cctui-img://<id>` resolves
+against the session showing it; `cctui-img://<session>/<id>` names the owner, and
+the webui fetches it from `GET /api/v1/sessions/<session>/images/<id>`. That
+route's guard is the owner session's transcript-read check, and the handler
+serves the blob only under that session's id, so a viewer sees a cross-session
+image exactly when they may read the session it came from.
+
+- A `CctuiSend` body is rewritten like assistant prose before it is sent
+  (`agenttool::run_send_peer`): markers upload to the sender's session and every
+  ref is qualified with the sender's id, so the recipient's transcript renders
+  them. A `remote:` peer's body is sent as written, since another cctui cannot
+  read this one's store.
+- A child's final message reaches the parent with its refs qualified with the
+  child's id (`childwatch::apply_message`). The parent renders the image once it
+  copies the marker into its own reply.
+- Other tool calls are not scanned. Tool inputs and results render as code, so
+  a marker inside one shows as text.

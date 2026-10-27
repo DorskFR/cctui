@@ -20,6 +20,7 @@
 
 use dashmap::DashMap;
 use sqlx::PgPool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
 
 use crate::state::AppState;
@@ -66,6 +67,9 @@ pub struct PodIdentity {
     /// them, so a row reaped while the DB was unreachable comes back on the
     /// next tick instead of staying gone until the WS reconnects.
     owned: DashMap<(Kind, Uuid), ()>,
+    /// Set by [`withdraw`] on shutdown: the heartbeat must not resurrect rows
+    /// peers are meant to stop routing to.
+    withdrawn: AtomicBool,
 }
 
 impl PodIdentity {
@@ -79,12 +83,17 @@ impl PodIdentity {
                 tracing::info!(pod, "CCTUI_POD_IP unset — WS presence registration disabled");
             }
         }
-        Self { pod, ip, owned: DashMap::new() }
+        Self { pod, ip, owned: DashMap::new(), withdrawn: AtomicBool::new(false) }
     }
 
     #[cfg(test)]
     pub(crate) fn for_test(pod: &str, ip: &str) -> Self {
-        Self { pod: pod.into(), ip: Some(ip.into()), owned: DashMap::new() }
+        Self {
+            pod: pod.into(),
+            ip: Some(ip.into()),
+            owned: DashMap::new(),
+            withdrawn: AtomicBool::new(false),
+        }
     }
 }
 
@@ -131,6 +140,36 @@ pub async fn unregister(state: &AppState, kind: Kind, entity_id: Uuid) {
             .await
     {
         tracing::warn!(%err, %entity_id, kind = kind.as_str(), "ws_presence unregister failed");
+    }
+}
+
+/// Drop the owner row for `entity_id` only while it still names `pod_ip`: a
+/// router that found the owner unreachable forgets it without clobbering a
+/// reconnect that has since moved the row to another pod. Returns whether a
+/// row was dropped.
+pub async fn forget_owner(pool: &PgPool, kind: Kind, entity_id: Uuid, pod_ip: &str) -> bool {
+    sqlx::query("DELETE FROM ws_presence WHERE kind = $1 AND entity_id = $2 AND pod_ip = $3")
+        .bind(kind.as_str())
+        .bind(entity_id)
+        .bind(pod_ip)
+        .execute(pool)
+        .await
+        .map_err(|err| tracing::warn!(%err, %entity_id, "ws_presence forget failed"))
+        .is_ok_and(|done| done.rows_affected() > 0)
+}
+
+/// Shutdown: remove every row naming this pod and mute its heartbeat, so peers
+/// stop routing here the moment the listener closes instead of after the
+/// heartbeat window expires. No-op without a pod IP.
+pub async fn withdraw(pool: &PgPool, me: &PodIdentity) {
+    if me.ip.is_none() {
+        return;
+    }
+    me.withdrawn.store(true, Ordering::SeqCst);
+    for sql in ["DELETE FROM ws_presence WHERE pod = $1", "DELETE FROM pods WHERE pod = $1"] {
+        if let Err(err) = sqlx::query(sql).bind(&me.pod).execute(pool).await {
+            tracing::warn!(%err, pod = me.pod, "presence withdraw failed");
+        }
     }
 }
 
@@ -246,6 +285,9 @@ async fn boot_register(state: &AppState) {
 /// so a replica can never delete itself.
 async fn heartbeat_tick(pool: &PgPool, me: &PodIdentity) {
     let Some(ip) = me.ip.as_deref() else { return };
+    if me.withdrawn.load(Ordering::SeqCst) {
+        return;
+    }
     match sqlx::query_scalar::<_, bool>(
         "INSERT INTO pods (pod, pod_ip, started_at, heartbeat_at) \
          VALUES ($1, $2, now(), now()) \
@@ -434,6 +476,54 @@ mod tests {
             peer_owner_ip(&pool, &format!("{prefix}b"), Kind::Daemon, reaped).await.as_deref(),
             Some(ip_a.as_str())
         );
+        wipe(&pool, &prefix).await;
+    }
+
+    /// A router that found an owner unreachable drops its row, but only while
+    /// the row still names that IP: a reconnect that moved it stays.
+    #[tokio::test]
+    async fn forget_owner_only_drops_the_row_still_naming_that_ip() {
+        let Some(pool) = pool().await else { return };
+        let prefix = prefix("forget");
+        let ip_a = format!("{prefix}10.0.3.1");
+        let ip_b = format!("{prefix}10.0.3.2");
+        let a = PodIdentity::for_test(&format!("{prefix}a"), &ip_a);
+        let machine = Uuid::new_v4();
+        a.owned.insert((Kind::Daemon, machine), ());
+        heartbeat_tick(&pool, &a).await;
+
+        assert!(!forget_owner(&pool, Kind::Daemon, machine, &ip_b).await);
+        assert_eq!(ws_owner(&pool, Kind::Daemon, machine).await.as_deref(), Some(a.pod.as_str()));
+        assert!(forget_owner(&pool, Kind::Daemon, machine, &ip_a).await);
+        assert_eq!(ws_owner(&pool, Kind::Daemon, machine).await, None);
+        assert!(!forget_owner(&pool, Kind::Daemon, machine, &ip_a).await);
+        wipe(&pool, &prefix).await;
+    }
+
+    /// Withdrawing removes this pod's `pods` and `ws_presence` rows and keeps
+    /// a late heartbeat tick from bringing them back.
+    #[tokio::test]
+    async fn withdraw_drops_this_pods_rows_and_mutes_its_heartbeat() {
+        let Some(pool) = pool().await else { return };
+        let prefix = prefix("withdraw");
+        let ip_a = format!("{prefix}10.0.4.1");
+        let a = PodIdentity::for_test(&format!("{prefix}a"), &ip_a);
+        let b = PodIdentity::for_test(&format!("{prefix}b"), &format!("{prefix}10.0.4.2"));
+        let machine = Uuid::new_v4();
+        a.owned.insert((Kind::Daemon, machine), ());
+        heartbeat_tick(&pool, &a).await;
+        assert_eq!(
+            peer_owner_ip(&pool, &b.pod, Kind::Daemon, machine).await.as_deref(),
+            Some(ip_a.as_str())
+        );
+
+        withdraw(&pool, &a).await;
+        assert!(!pod_exists(&pool, &a.pod).await);
+        assert_eq!(peer_owner_ip(&pool, &b.pod, Kind::Daemon, machine).await, None);
+
+        heartbeat_tick(&pool, &a).await;
+        assert!(!pod_exists(&pool, &a.pod).await, "a withdrawn pod stays gone");
+        assert_eq!(ws_owner(&pool, Kind::Daemon, machine).await, None);
         wipe(&pool, &prefix).await;
     }
 }

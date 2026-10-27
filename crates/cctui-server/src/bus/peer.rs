@@ -3,7 +3,9 @@
 //!
 //! * **route**: a local registry miss looks up the live owning peer in
 //!   `ws_presence` and POSTs the frame to its `/internal/bus/route`; no live
-//!   owner yields the same `NoDaemon`/`NoDispatcher` miss as locally.
+//!   owner yields the same `NoDaemon`/`NoDispatcher` miss as locally. An
+//!   owner that cannot be connected to is a replaced pod: its row is dropped
+//!   and the request waits briefly for the reconnect to name a new owner.
 //! * **relay**: every locally-published [`BusEvent`] is batched and sent to
 //!   every live pod's `/internal/bus/publish`, best-effort; the DB stays the
 //!   source of truth for refetch.
@@ -27,7 +29,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use super::{BusError, BusEvent, DaemonRequest, DaemonResponse, Transport};
+use super::{BusError, BusEvent, DaemonRequest, DaemonResponse, Transport, VoiceEvent};
 use crate::presence::{self, Kind};
 
 /// Timeout for a forwarded fire-and-forget command (the peer only has to drop
@@ -54,6 +56,13 @@ const RELAY_BATCH: usize = 64;
 const RELAY_QUEUE: usize = 4096;
 /// How long a fetched peer-pod list is reused before re-querying `pods`.
 const PEER_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+/// Timeout for one auth-cache purge or guard forget POST to one peer.
+const AUTH_PURGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long a route waits for a replacement owner after the recorded one was
+/// unreachable (the daemon's reconnect to a live pod lands within this), and
+/// how often the owner row is re-read meanwhile.
+const REOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+const REOWN_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
 // ---- wire types (shared with `crate::routes::internal`) ----
 
@@ -224,6 +233,7 @@ pub fn decode_error(
 pub enum WireBusEvent {
     Session { session_id: String, event: AgentEvent },
     Server { event: ServerEvent },
+    Voice { event: VoiceEvent },
 }
 
 impl From<&BusEvent> for WireBusEvent {
@@ -233,6 +243,7 @@ impl From<&BusEvent> for WireBusEvent {
                 Self::Session { session_id: session_id.clone(), event: event.clone() }
             }
             BusEvent::Server(event) => Self::Server { event: event.clone() },
+            BusEvent::Voice(event) => Self::Voice { event: event.clone() },
         }
     }
 }
@@ -242,6 +253,7 @@ impl From<WireBusEvent> for BusEvent {
         match ev {
             WireBusEvent::Session { session_id, event } => Self::Session { session_id, event },
             WireBusEvent::Server { event } => Self::Server(event),
+            WireBusEvent::Voice { event } => Self::Voice(event),
         }
     }
 }
@@ -311,47 +323,80 @@ impl PeerHttpTransport {
         }
     }
 
-    /// The peer owning a SESSION-scoped frame: the pod that announced the
-    /// session, else the pod owning the machine. A machine id can be shared by
-    /// several daemons, so its owner row alone would pick an arbitrary one.
-    async fn session_owner_ip(&self, machine: Uuid, session: Option<&str>) -> Option<String> {
-        if let Some(session) = session.and_then(|s| Uuid::parse_str(s).ok())
+    /// The owner row for `target`: the pod that announced the session when the
+    /// frame names one, else the pod owning the machine or dispatcher. A machine
+    /// id can be shared by several daemons, so its row alone would pick an
+    /// arbitrary one.
+    async fn resolve(&self, target: Target) -> Option<Owner> {
+        if let Some(session) = target.session
             && let Some(ip) =
                 presence::peer_owner_ip(&self.pool, &self.pod, Kind::Session, session).await
         {
-            return Some(ip);
+            return Some(Owner { kind: Kind::Session, id: session, ip });
         }
-        presence::peer_owner_ip(&self.pool, &self.pod, Kind::Daemon, machine).await
+        presence::peer_owner_ip(&self.pool, &self.pod, target.kind, target.id)
+            .await
+            .map(|ip| Owner { kind: target.kind, id: target.id, ip })
     }
 
     /// Look up the live peer owning `target`'s WS and POST the route request to
-    /// it. No live owner, an unreachable peer, or a moved connection all map to
+    /// it. No live owner, a rejected request, or a moved connection all map to
     /// the honest miss error; peer-side delivery failures are decoded back into
-    /// their [`BusError`] variants.
+    /// their [`BusError`] variants. An owner that cannot be reached at all is a
+    /// replaced pod: its row is forgotten (only while it still names that IP)
+    /// and the request waits up to [`REOWN_WAIT`] for the daemon's reconnect to
+    /// record a new owner, then is retried once there.
     async fn route(
         &self,
-        kind: Kind,
-        target: Uuid,
+        target: Target,
         request: &RouteRequest,
         timeout: std::time::Duration,
     ) -> Result<RouteResponse, BusError> {
-        let owner = presence::peer_owner_ip(&self.pool, &self.pod, kind, target).await;
-        self.route_to(owner, kind, target, request, timeout).await
+        let Some(owner) = self.resolve(target).await else {
+            return Err(Self::miss(target.kind, target.id));
+        };
+        if let Some(response) = self.post(&owner, target, request, timeout).await? {
+            return Ok(response);
+        }
+        self.forget(&owner, target).await;
+        let Some(fresh) = self.await_replacement(target, &owner.ip).await else {
+            return Err(Self::miss(target.kind, target.id));
+        };
+        if let Some(response) = self.post(&fresh, target, request, timeout).await? {
+            return Ok(response);
+        }
+        self.forget(&fresh, target).await;
+        Err(Self::miss(target.kind, target.id))
     }
 
-    /// [`Self::route`] against an already-resolved owner.
-    async fn route_to(
+    async fn forget(&self, owner: &Owner, target: Target) {
+        let dropped = presence::forget_owner(&self.pool, owner.kind, owner.id, &owner.ip).await;
+        tracing::warn!(
+            owner = %owner.ip,
+            target = %target.id,
+            kind = target.kind.as_str(),
+            dropped,
+            "peer bus owner unreachable"
+        );
+    }
+
+    /// Re-read the owner until one naming another IP than `stale` appears or
+    /// [`REOWN_WAIT`] runs out.
+    async fn await_replacement(&self, target: Target, stale: &str) -> Option<Owner> {
+        await_replacement(stale, REOWN_WAIT, REOWN_POLL, || self.resolve(target)).await
+    }
+
+    /// One POST to one owner. `Err` is a final bus error; `Ok(None)` is a
+    /// connection-level failure (nothing listens at the owner's IP) the caller
+    /// may retry elsewhere.
+    async fn post(
         &self,
-        owner: Option<String>,
-        kind: Kind,
-        target: Uuid,
+        owner: &Owner,
+        target: Target,
         request: &RouteRequest,
         timeout: std::time::Duration,
-    ) -> Result<RouteResponse, BusError> {
-        let Some(owner) = owner else {
-            return Err(Self::miss(kind, target));
-        };
-        let url = format!("{}/internal/bus/route", peer_base(&owner, self.port));
+    ) -> Result<Option<RouteResponse>, BusError> {
+        let url = format!("{}/internal/bus/route", peer_base(&owner.ip, self.port));
         let response = match self
             .client
             .post(&url)
@@ -362,24 +407,93 @@ impl PeerHttpTransport {
             .await
         {
             Ok(r) => r,
+            Err(err) if err.is_connect() => return Ok(None),
             Err(err) => {
-                tracing::warn!(%err, %owner, %target, kind = kind.as_str(), "peer bus route failed");
-                return Err(Self::miss(kind, target));
+                tracing::warn!(
+                    %err,
+                    owner = %owner.ip,
+                    target = %target.id,
+                    kind = target.kind.as_str(),
+                    "peer bus route failed"
+                );
+                return Err(Self::miss(target.kind, target.id));
             }
         };
         if !response.status().is_success() {
-            tracing::warn!(status = %response.status(), %owner, %target, "peer bus route rejected");
-            return Err(Self::miss(kind, target));
+            tracing::warn!(
+                status = %response.status(),
+                owner = %owner.ip,
+                target = %target.id,
+                "peer bus route rejected"
+            );
+            return Err(Self::miss(target.kind, target.id));
         }
         match response.json::<RouteResponse>().await {
             Ok(RouteResponse::Err { code, message, allowed_folders }) => {
-                Err(decode_error(code, message, allowed_folders, target))
+                Err(decode_error(code, message, allowed_folders, target.id))
             }
-            Ok(ok) => Ok(ok),
+            Ok(ok) => Ok(Some(ok)),
             Err(err) => {
-                tracing::warn!(%err, %owner, "peer bus route response unreadable");
+                tracing::warn!(%err, owner = %owner.ip, "peer bus route response unreadable");
                 Err(BusError::Transport(format!("peer response unreadable: {err}")))
             }
+        }
+    }
+}
+
+/// The WS a route request is addressed to. `session` is the announced session
+/// a daemon frame names, whose own owner row wins over the machine's.
+#[derive(Debug, Clone, Copy)]
+struct Target {
+    kind: Kind,
+    id: Uuid,
+    session: Option<Uuid>,
+}
+
+impl Target {
+    fn machine(id: Uuid, session: Option<&str>) -> Self {
+        let session = session.and_then(|s| Uuid::parse_str(s).ok());
+        Self { kind: Kind::Daemon, id, session }
+    }
+
+    const fn dispatcher(id: Uuid) -> Self {
+        Self { kind: Kind::Dispatcher, id, session: None }
+    }
+}
+
+/// A resolved owner row: which row named `ip`, so forgetting a dead owner
+/// touches that row and no other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Owner {
+    kind: Kind,
+    id: Uuid,
+    ip: String,
+}
+
+/// Poll `lookup` every `poll` until it names an owner other than `stale`, or
+/// `wait` has elapsed. `None` from `lookup` (no owner yet) keeps polling: the
+/// daemon's reconnect registers its new owner a moment after the old pod's row
+/// is gone.
+async fn await_replacement<F, Fut>(
+    stale: &str,
+    wait: std::time::Duration,
+    poll: std::time::Duration,
+    mut lookup: F,
+) -> Option<Owner>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<Owner>>,
+{
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        tokio::time::sleep(poll).await;
+        if let Some(owner) = lookup().await
+            && owner.ip != stale
+        {
+            return Some(owner);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
         }
     }
 }
@@ -387,9 +501,9 @@ impl PeerHttpTransport {
 #[async_trait::async_trait]
 impl Transport for PeerHttpTransport {
     async fn forward_daemon(&self, machine: Uuid, frame: DaemonFrameDown) -> Result<(), BusError> {
-        let owner = self.session_owner_ip(machine, frame_session(&frame)).await;
+        let target = Target::machine(machine, frame_session(&frame));
         let request = RouteRequest::DaemonCommand { machine, frame };
-        match self.route_to(owner, Kind::Daemon, machine, &request, COMMAND_TIMEOUT).await? {
+        match self.route(target, &request, COMMAND_TIMEOUT).await? {
             RouteResponse::Ok => Ok(()),
             other => Err(BusError::Transport(format!("unexpected peer reply: {other:?}"))),
         }
@@ -401,7 +515,7 @@ impl Transport for PeerHttpTransport {
         frame: DispatcherFrameDown,
     ) -> Result<(), BusError> {
         let request = RouteRequest::DispatcherCommand { dispatcher, frame };
-        match self.route(Kind::Dispatcher, dispatcher, &request, COMMAND_TIMEOUT).await? {
+        match self.route(Target::dispatcher(dispatcher), &request, COMMAND_TIMEOUT).await? {
             RouteResponse::Ok => Ok(()),
             other => Err(BusError::Transport(format!("unexpected peer reply: {other:?}"))),
         }
@@ -417,7 +531,7 @@ impl Transport for PeerHttpTransport {
             | DaemonRequest::Diagnose { local_id, .. } => Some(local_id.clone()),
             _ => None,
         };
-        let owner = self.session_owner_ip(machine, session.as_deref()).await;
+        let target = Target::machine(machine, session.as_deref());
         let (request, timeout) = match request {
             DaemonRequest::StageFiles { adapter_id, local_id, uploads } => (
                 RouteRequest::DaemonStageFiles { machine, adapter_id, local_id, uploads },
@@ -439,7 +553,7 @@ impl Transport for PeerHttpTransport {
                 DIAGNOSE_FORWARD_TIMEOUT,
             ),
         };
-        match self.route_to(owner, Kind::Daemon, machine, &request, timeout).await? {
+        match self.route(target, &request, timeout).await? {
             RouteResponse::StagedFiles { paths } => Ok(DaemonResponse::StagedFiles(paths)),
             RouteResponse::Dirs { dirs } => Ok(DaemonResponse::Dirs(dirs)),
             RouteResponse::GitInfo { info } => Ok(DaemonResponse::GitInfo(info)),
@@ -456,8 +570,8 @@ impl Transport for PeerHttpTransport {
         frame: DispatcherFrameDown,
     ) -> Result<DispatcherFrameUp, BusError> {
         let request = RouteRequest::DispatcherRequest { dispatcher, request_id, frame };
-        match self.route(Kind::Dispatcher, dispatcher, &request, DISPATCHER_FORWARD_TIMEOUT).await?
-        {
+        let target = Target::dispatcher(dispatcher);
+        match self.route(target, &request, DISPATCHER_FORWARD_TIMEOUT).await? {
             RouteResponse::DispatcherReply { frame } => Ok(frame),
             other => Err(BusError::Transport(format!("unexpected peer reply: {other:?}"))),
         }
@@ -596,6 +710,120 @@ async fn peer_relay(
             }
             Err(err) => tracing::warn!(peer = %base, %err, "peer bus publish failed"),
         }
+    }
+}
+
+/// Sends auth-cache purges straight to every live peer's `/internal/auth/purge`.
+///
+/// Bypasses the batched event relay so a revocation is never queued behind an
+/// event backlog.
+pub struct PeerAuthPurge {
+    pool: PgPool,
+    client: reqwest::Client,
+    pod: String,
+    port: u16,
+    secret: String,
+}
+
+impl PeerAuthPurge {
+    pub const fn new(
+        pool: PgPool,
+        client: reqwest::Client,
+        pod: String,
+        port: u16,
+        secret: String,
+    ) -> Self {
+        Self { pool, client, pod, port, secret }
+    }
+}
+
+impl crate::auth::PurgeRelay for PeerAuthPurge {
+    fn relay(&self, purge: crate::auth::CachePurge) {
+        let pool = self.pool.clone();
+        let client = self.client.clone();
+        let pod = self.pod.clone();
+        let port = self.port;
+        let secret = self.secret.clone();
+        tokio::spawn(async move {
+            let peers = presence::live_peer_pods(&pool, &pod).await;
+            let bases: Vec<String> = peers.iter().map(|ip| peer_base(ip, port)).collect();
+            send_auth_purge(&client, &bases, &secret, &purge).await;
+        });
+    }
+}
+
+/// POST `purge` to every peer in `bases` concurrently. Failures are logged
+/// only: the peer's entry then lives out its TTL.
+async fn send_auth_purge(
+    client: &reqwest::Client,
+    bases: &[String],
+    secret: &str,
+    purge: &crate::auth::CachePurge,
+) {
+    post_to_peers(client, bases, secret, "auth/purge", purge).await;
+}
+
+/// POST `body` to `/internal/{path}` on every peer in `bases` concurrently,
+/// logging failures only.
+async fn post_to_peers<T: Serialize + Sync>(
+    client: &reqwest::Client,
+    bases: &[String],
+    secret: &str,
+    path: &str,
+    body: &T,
+) {
+    futures_util::future::join_all(bases.iter().map(|base| async move {
+        let sent = client
+            .post(format!("{base}/internal/{path}"))
+            .bearer_auth(secret)
+            .timeout(AUTH_PURGE_TIMEOUT)
+            .json(body)
+            .send()
+            .await;
+        match sent {
+            Ok(r) if r.status().is_success() => {}
+            Ok(r) => tracing::warn!(peer = %base, status = %r.status(), path, "peer post rejected"),
+            Err(err) => tracing::warn!(peer = %base, %err, path, "peer post failed"),
+        }
+    }))
+    .await;
+}
+
+/// Sends guard-step forgets straight to every live peer's
+/// `/internal/guard/forget`. A peer that predates the route answers 404 and
+/// keeps its entry until it restarts.
+pub struct PeerGuardForget {
+    pool: PgPool,
+    client: reqwest::Client,
+    pod: String,
+    port: u16,
+    secret: String,
+}
+
+impl PeerGuardForget {
+    pub const fn new(
+        pool: PgPool,
+        client: reqwest::Client,
+        pod: String,
+        port: u16,
+        secret: String,
+    ) -> Self {
+        Self { pool, client, pod, port, secret }
+    }
+}
+
+impl crate::guard_step::ForgetRelay for PeerGuardForget {
+    fn relay(&self, forget: crate::guard_step::GuardForget) {
+        let pool = self.pool.clone();
+        let client = self.client.clone();
+        let pod = self.pod.clone();
+        let port = self.port;
+        let secret = self.secret.clone();
+        tokio::spawn(async move {
+            let peers = presence::live_peer_pods(&pool, &pod).await;
+            let bases: Vec<String> = peers.iter().map(|ip| peer_base(ip, port)).collect();
+            post_to_peers(&client, &bases, &secret, "guard/forget", &forget).await;
+        });
     }
 }
 
@@ -760,6 +988,17 @@ mod tests {
             BusEvent::Session { session_id, event: AgentEvent::TurnEnd { ts: 7, .. } }
                 if session_id == "sess-2"
         ));
+
+        let delta = VoiceEvent::Delta {
+            session_id: "sess-3".into(),
+            item_id: "gw:r:0".into(),
+            delta: "Hi".into(),
+        };
+        let json =
+            serde_json::to_string(&WireBusEvent::from(&BusEvent::Voice(delta.clone()))).unwrap();
+        assert!(json.contains(r#""kind":"voice""#), "{json}");
+        let back: WireBusEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(BusEvent::from(back), BusEvent::Voice(ev) if ev == delta));
     }
 
     #[test]
@@ -817,5 +1056,287 @@ mod tests {
         assert!(allowed_folders.is_empty());
         let back = decode_error(code, message, allowed_folders, Uuid::new_v4());
         assert!(matches!(back, BusError::ReadFile(r) if r.message == "no"));
+    }
+
+    fn cached_ctx() -> crate::auth::AuthContext {
+        crate::auth::AuthContext {
+            user_id: Uuid::new_v4(),
+            key_id: Uuid::new_v4(),
+            machine_id: None,
+            scopes: std::iter::once(crate::auth::Scope::Read).collect(),
+        }
+    }
+
+    /// A replica serving the real `/internal/auth/purge` handler, with `hash`
+    /// cached as live. Returns its state and base URL.
+    async fn replica_with_cached(hash: &str) -> (crate::state::AppState, String) {
+        let pool = PgPool::connect_lazy("postgres://invalid").unwrap();
+        let mut state = crate::state::AppState::for_test(pool);
+        state.internal_secret = Some(Arc::from("shared"));
+        state.auth_config.seed_cache(hash, cached_ctx());
+        let app = axum::Router::new()
+            .route("/internal/auth/purge", axum::routing::post(crate::routes::internal::auth_purge))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (state, format!("http://{addr}"))
+    }
+
+    struct DirectPeers {
+        client: reqwest::Client,
+        bases: Vec<String>,
+    }
+
+    impl crate::auth::PurgeRelay for DirectPeers {
+        fn relay(&self, purge: crate::auth::CachePurge) {
+            let client = self.client.clone();
+            let bases = self.bases.clone();
+            tokio::spawn(async move { send_auth_purge(&client, &bases, "shared", &purge).await });
+        }
+    }
+
+    #[tokio::test]
+    async fn a_revoke_on_one_replica_drops_the_key_from_the_other() {
+        let (replica_b, base) = replica_with_cached("revoked").await;
+        replica_b.auth_config.seed_cache("other", cached_ctx());
+
+        let replica_a =
+            crate::state::AppState::for_test(PgPool::connect_lazy("postgres://invalid").unwrap());
+        replica_a
+            .auth_config
+            .set_peers(Arc::new(DirectPeers { client: reqwest::Client::new(), bases: vec![base] }));
+        replica_a.auth_config.purge("revoked");
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while replica_b.auth_config.is_cached("revoked") {
+            assert!(tokio::time::Instant::now() < deadline, "peer purge never landed");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(replica_b.auth_config.is_cached("other"), "only the revoked hash is dropped");
+
+        replica_a.auth_config.purge_all();
+        while replica_b.auth_config.is_cached("other") {
+            assert!(tokio::time::Instant::now() < deadline, "peer purge-all never landed");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_purge_with_the_wrong_secret_is_refused() {
+        let (replica, base) = replica_with_cached("h").await;
+        let purge = crate::auth::CachePurge::Key { key_hash: "h".into() };
+        send_auth_purge(&reqwest::Client::new(), &[base], "wrong", &purge).await;
+        assert!(replica.auth_config.is_cached("h"));
+    }
+
+    async fn guard_replica() -> String {
+        let mut state =
+            crate::state::AppState::for_test(PgPool::connect_lazy("postgres://invalid").unwrap());
+        state.internal_secret = Some(Arc::from("shared"));
+        let app = axum::Router::new()
+            .route(
+                "/internal/guard/forget",
+                axum::routing::post(crate::routes::internal::guard_forget),
+            )
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn a_guard_forget_reaches_the_peer_route_with_the_shared_secret() {
+        let base = guard_replica().await;
+        let step = cctui_proto::guard_step::GuardStepState { step: 2, ..Default::default() };
+        let forget = crate::guard_step::GuardForget { session_id: "peer-guard-forget".into() };
+        crate::guard_step::record(forget.session_id.clone(), step);
+
+        post_to_peers(
+            &reqwest::Client::new(),
+            std::slice::from_ref(&base),
+            "wrong",
+            "guard/forget",
+            &forget,
+        )
+        .await;
+        assert!(crate::guard_step::get("peer-guard-forget").is_some(), "wrong secret refused");
+
+        post_to_peers(&reqwest::Client::new(), &[base], "shared", "guard/forget", &forget).await;
+        assert_eq!(crate::guard_step::get("peer-guard-forget"), None);
+    }
+
+    fn owner(ip: &str) -> Owner {
+        Owner { kind: Kind::Daemon, id: Uuid::nil(), ip: ip.into() }
+    }
+
+    /// The wait returns as soon as a row names another IP; the stale IP being
+    /// re-read (a late heartbeat) or no row at all (reconnect in flight) keeps
+    /// polling until the deadline.
+    #[tokio::test(start_paused = true)]
+    async fn await_replacement_returns_the_first_owner_that_is_not_the_stale_one() {
+        let reads = Arc::new(AtomicU64::new(0));
+        let seen = reads.clone();
+        let found = await_replacement("10.0.0.1", REOWN_WAIT, REOWN_POLL, move || {
+            let n = seen.fetch_add(1, Ordering::SeqCst);
+            async move {
+                match n {
+                    0 => None,
+                    1 => Some(owner("10.0.0.1")),
+                    _ => Some(owner("10.0.0.2")),
+                }
+            }
+        })
+        .await;
+        assert_eq!(found, Some(owner("10.0.0.2")));
+        assert_eq!(reads.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn await_replacement_gives_up_at_the_deadline_when_only_the_stale_owner_is_seen() {
+        let started = tokio::time::Instant::now();
+        let found = await_replacement("10.0.0.1", REOWN_WAIT, REOWN_POLL, || async {
+            Some(owner("10.0.0.1"))
+        })
+        .await;
+        assert_eq!(found, None);
+        assert!(started.elapsed() >= REOWN_WAIT);
+        assert!(started.elapsed() < REOWN_WAIT + REOWN_POLL * 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn await_replacement_gives_up_at_the_deadline_without_any_owner() {
+        let found = await_replacement("10.0.0.1", REOWN_WAIT, REOWN_POLL, || async { None }).await;
+        assert_eq!(found, None);
+    }
+
+    /// `/internal/bus/route` that answers `Ok` and counts calls, bound on the
+    /// given loopback address so two "pods" can share the transport's port.
+    async fn stub_route_peer(ip: &str, received: Arc<AtomicU64>) -> u16 {
+        let app = axum::Router::new().route(
+            "/internal/bus/route",
+            axum::routing::post(move |axum::Json(_): axum::Json<RouteRequest>| {
+                let received = received.clone();
+                async move {
+                    received.fetch_add(1, Ordering::SeqCst);
+                    axum::Json(RouteResponse::Ok)
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind((ip, 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        port
+    }
+
+    async fn presence_pool() -> Option<PgPool> {
+        let url = crate::routes::gateway::test_db_url("peer-route")?;
+        Some(
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&url)
+                .await
+                .expect("connect test db"),
+        )
+    }
+
+    async fn set_owner(pool: &PgPool, machine: Uuid, pod: &str, ip: &str) {
+        sqlx::query(
+            "INSERT INTO ws_presence (kind, entity_id, pod, pod_ip, connected_at, heartbeat_at) \
+             VALUES ('daemon', $1, $2, $3, now(), now()) \
+             ON CONFLICT (kind, entity_id) DO UPDATE SET \
+               pod = EXCLUDED.pod, pod_ip = EXCLUDED.pod_ip, heartbeat_at = now()",
+        )
+        .bind(machine)
+        .bind(pod)
+        .bind(ip)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn owner_ip(pool: &PgPool, machine: Uuid) -> Option<String> {
+        sqlx::query_scalar(
+            "SELECT pod_ip FROM ws_presence WHERE kind = 'daemon' AND entity_id = $1",
+        )
+        .bind(machine)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+    }
+
+    fn reconcile() -> DaemonFrameDown {
+        DaemonFrameDown::Reconcile {
+            adapters: Vec::new(),
+            secret_scrub: cctui_proto::ws::SecretScrubConfig::default(),
+        }
+    }
+
+    /// The recorded owner is a replaced pod (nothing listens on its IP): its
+    /// row goes, and the daemon's reconnect — landing on a live pod during the
+    /// wait — gets the request instead of a `NoDaemon` refusal.
+    #[tokio::test]
+    async fn an_unreachable_owner_is_forgotten_and_the_reconnected_owner_gets_the_retry() {
+        let Some(pool) = presence_pool().await else { return };
+        let received = Arc::new(AtomicU64::new(0));
+        let port = stub_route_peer("127.0.0.1", received.clone()).await;
+        let transport = PeerHttpTransport::new(
+            pool.clone(),
+            crate::build_http_client(),
+            "cct1642-self".into(),
+            port,
+            "s".into(),
+        );
+        let machine = Uuid::new_v4();
+        set_owner(&pool, machine, "cct1642-dead", "127.0.0.2").await;
+        tokio::spawn({
+            let pool = pool.clone();
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                set_owner(&pool, machine, "cct1642-live", "127.0.0.1").await;
+            }
+        });
+
+        transport.forward_daemon(machine, reconcile()).await.unwrap();
+        assert_eq!(received.load(Ordering::SeqCst), 1);
+        assert_eq!(owner_ip(&pool, machine).await.as_deref(), Some("127.0.0.1"));
+        sqlx::query("DELETE FROM ws_presence WHERE entity_id = $1")
+            .bind(machine)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    /// No reconnect within the wait: the stale row is still dropped and the
+    /// caller gets the same `NoDaemon` miss a local registry miss yields.
+    #[tokio::test]
+    async fn an_unreachable_owner_without_a_replacement_is_dropped_and_misses() {
+        let Some(pool) = presence_pool().await else { return };
+        let port = stub_route_peer("127.0.0.1", Arc::new(AtomicU64::new(0))).await;
+        let transport = PeerHttpTransport::new(
+            pool.clone(),
+            crate::build_http_client(),
+            "cct1642-self".into(),
+            port,
+            "s".into(),
+        );
+        let machine = Uuid::new_v4();
+        set_owner(&pool, machine, "cct1642-dead", "127.0.0.2").await;
+
+        let err = transport.forward_daemon(machine, reconcile()).await.unwrap_err();
+        assert!(matches!(err, BusError::NoDaemon(m) if m == machine), "{err:?}");
+        assert_eq!(owner_ip(&pool, machine).await, None);
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_peer_does_not_stall_the_others() {
+        let (replica, base) = replica_with_cached("h").await;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let purge = crate::auth::CachePurge::Key { key_hash: "h".into() };
+        send_auth_purge(&reqwest::Client::new(), &[dead, base], "shared", &purge).await;
+        assert!(!replica.auth_config.is_cached("h"));
     }
 }

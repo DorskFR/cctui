@@ -41,16 +41,26 @@ mod reply;
 mod settings;
 mod snapshot;
 mod spawn;
+mod stuck_turn;
 mod subagents;
 mod tail;
+mod tasks;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
 mod tests;
+mod voice;
 
 pub(super) use settings::ensure_hook_settings;
 pub use settings::stage_mid_chat_files;
-use settings::{agent_relay_config, build_session_context, detect_whip_from_settings};
+use settings::{
+    BG_ISOLATION_ENV, agent_relay_config, build_session_context, detect_whip_from_settings,
+    with_bg_isolation,
+};
+
+/// How often a session with a text watcher has its transcript tailed
+/// between polls.
+const WATCHED_TAIL_INTERVAL: Duration = Duration::from_millis(200);
 
 /// Config knobs read from `adapters_enabled.config`.
 #[derive(Debug, Clone)]
@@ -368,6 +378,10 @@ pub struct Driver {
     shutdown: CancellationToken,
     roster: HashSet<String>,
     last_status: HashMap<String, StatusSnapshot>,
+    /// Shorts re-announced on a connect edge whose next Status goes out even
+    /// if unchanged: the one `last_status` remembers may have died with the
+    /// previous connection.
+    status_resend: HashSet<String>,
     /// Shorts claude reports dead-but-still-listed. Once we emit the
     /// dead transition (hibernated or `SessionEnded`) we record the short here
     /// and suppress further live-status emits for it, so the still-present
@@ -484,6 +498,7 @@ pub struct Driver {
     /// Fingerprints of text this daemon delivered per session, so a transcript
     /// user line it wrote is never mistaken for harness-injected text.
     delivered: delivered::Delivered,
+    voice: voice::VoiceClocks,
     /// Parent session id remembered per freshly-forked child `short`.
     /// `fork` dispatches a new worker but the `SessionStarted` for it is emitted
     /// later by the poll loop when the short first appears in the roster — that
@@ -517,6 +532,7 @@ pub struct Driver {
     /// sessions never get a marker. `Mutex` because it's armed from
     /// `maybe_dispatch_on_start` (`&self`).
     dispatch_done: std::sync::Mutex<Option<DispatchDoneTracker>>,
+    stuck_turn: std::sync::Mutex<Option<super::stuck_turn::StuckTurnWatchdog>>,
     /// Last ask/permission/plan hook delivery per `local_id`, maintained by
     /// the ask-hook listener. Read by the diagnose aggregation.
     hook_log: super::HookLog,
@@ -536,6 +552,8 @@ pub struct Driver {
     /// command path can start/stop viewers.
     pty_view: super::pty_view::PtyViewManager,
     last_reseed: Option<Instant>,
+    /// Task-list folder watch per worker `short`.
+    task_watches: HashMap<String, tasks::TaskWatch>,
 }
 
 #[derive(Debug, Clone)]
@@ -654,6 +672,7 @@ pub(super) async fn resolve_launch_env_for(
             crate::childenv::with_web_origin(&mut env, server.base_url());
             crate::childenv::with_session_id(&mut env, local_id);
         }
+        with_bg_isolation(&mut env, std::env::var(BG_ISOLATION_ENV).ok(), None);
         return Ok(LaunchEnv { env, ..Default::default() });
     };
     match server.gateway_env(mk, local_id).await {
@@ -668,6 +687,11 @@ pub(super) async fn resolve_launch_env_for(
             crate::childenv::with_web_origin(&mut env, server.base_url());
             crate::childenv::with_session_id(&mut env, local_id);
             crate::plugins::export_env(&mut env, &resp.plugins);
+            with_bg_isolation(
+                &mut env,
+                std::env::var(BG_ISOLATION_ENV).ok(),
+                resp.settings.as_ref(),
+            );
             let plugin_dirs = crate::plugins::plugin_dirs(server, &resp.plugins).await;
             Ok(LaunchEnv {
                 env,
@@ -683,6 +707,7 @@ pub(super) async fn resolve_launch_env_for(
             let mut env = with_resume_guard(hint.clone());
             crate::childenv::with_web_origin(&mut env, server.base_url());
             crate::childenv::with_session_id(&mut env, local_id);
+            with_bg_isolation(&mut env, std::env::var(BG_ISOLATION_ENV).ok(), None);
             Ok(LaunchEnv { env, ..Default::default() })
         }
     }
@@ -765,6 +790,7 @@ impl Driver {
             shutdown,
             roster: HashSet::new(),
             last_status: HashMap::new(),
+            status_resend: HashSet::new(),
             dead_shorts: HashSet::new(),
             liveness: liveness::Liveness::default(),
             foreign_shorts: HashSet::new(),
@@ -790,18 +816,21 @@ impl Driver {
             pending_turns: std::sync::Mutex::new(HashMap::new()),
             deferred_peer: HashMap::new(),
             delivered: delivered::Delivered::default(),
+            voice: voice::VoiceClocks::default(),
             fork_parent_by_short: std::sync::Mutex::new(HashMap::new()),
             announced_meta: std::sync::Mutex::new(HashMap::new()),
             connected: None,
             server: None,
             machine_key: None,
             dispatch_done: std::sync::Mutex::new(None),
+            stuck_turn: std::sync::Mutex::new(None),
             hook_log: super::HookLog::default(),
             last_status_at: HashMap::new(),
             last_parsed: HashMap::new(),
             spawn_permission_mode: std::sync::Mutex::new(HashMap::new()),
             pty_view,
             last_reseed: None,
+            task_watches: HashMap::new(),
         }
     }
 
@@ -891,9 +920,12 @@ impl Driver {
         self.maybe_dispatch_on_start().await;
         let mut tick = tokio::time::interval(self.cfg.poll_interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut watched_tick = tokio::time::interval(WATCHED_TAIL_INTERVAL);
+        watched_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let events = self.events.clone();
         let mut connected = self.connected.take();
         loop {
+            let watched = self.has_text_watch();
             tokio::select! {
                 // Biased: the interval's first tick is ready immediately, so an
                 // unbiased select can poll before a queued `ResumeMarks` is
@@ -916,6 +948,7 @@ impl Driver {
                     }
                     self.reannounce_live().await;
                 }
+                _ = watched_tick.tick(), if watched => self.tail_watched().await,
                 _ = tick.tick() => {
                     if let Err(err) = self.poll_once().await {
                         tracing::debug!(%err, "claude daemon poll failed (will retry)");
@@ -1300,6 +1333,12 @@ impl Driver {
     /// belong to an older turn, and stamping them with whatever turn happens
     /// to be in flight mints a row the server sees as new.
     async fn emit_fresh(&self, evt: AdapterEvent) {
+        if let AdapterEvent::Message { local_id, payload, .. } = &evt
+            && payload.get("role").and_then(serde_json::Value::as_str) == Some("user")
+        {
+            let text = payload.get("text").and_then(serde_json::Value::as_str).unwrap_or_default();
+            self.voice.tailed(local_id, text);
+        }
         let _ = self.events.send(self.unmask_delivered(self.stamp_turn(evt))).await;
     }
 
@@ -1398,11 +1437,14 @@ impl SessionDriver for Driver {
         text: String,
         ask_picks: Option<Vec<Vec<usize>>>,
         env: std::collections::BTreeMap<String, String>,
-        _command_id: Option<uuid::Uuid>,
+        command_id: Option<uuid::Uuid>,
         turn_id: Option<uuid::Uuid>,
     ) -> CommandOutcome {
+        self.voice.start(&local_id, &text, command_id);
         let sock = self.ensure_socket().await?;
+        self.voice.hop(&local_id, "control socket located");
         Box::pin(self.deliver_reply(&sock, &local_id, &text, ask_picks, &env, turn_id)).await?;
+        self.voice.hop(&local_id, "delivered");
         Ok(Handled::Done)
     }
 

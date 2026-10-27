@@ -1,4 +1,6 @@
 import type { MachineAdapterInfo } from '@bindings/MachineAdapterInfo';
+import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
+import type { MachineRow } from '@bindings/MachineRow';
 
 export type BinaryStatus = 'found' | 'missing' | 'unknown';
 
@@ -28,3 +30,17 @@ export function parseAdapterConfig(text: string): ParsedConfig {
 
 export const formatAdapterConfig = (config: Record<string, unknown>): string =>
 	JSON.stringify(config ?? {}, null, 2);
+
+export interface AdapterMachine {
+	id: string;
+	name: string;
+}
+
+export function adapterMachines(
+	isAdmin: boolean,
+	all: readonly MachineRow[] | undefined,
+	own: readonly MachineResourcesRow[] | undefined
+): AdapterMachine[] {
+	if (isAdmin) return (all ?? []).map((r) => ({ id: r.id, name: r.display_name ?? r.name }));
+	return (own ?? []).map((r) => ({ id: r.machine_id, name: r.display_name ?? r.name }));
+}

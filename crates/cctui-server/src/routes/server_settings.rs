@@ -366,6 +366,8 @@ pub async fn read_speech(pool: &sqlx::PgPool) -> Result<(SpeechConfig, Option<St
     Ok((stored.config, key))
 }
 
+/// Under the browser's 28 s part cap.
+const STT_PART_MS: std::ops::RangeInclusive<u32> = 1_000..=28_000;
 const SPEECH_FORMATS: &[&str] = &["opus", "mp3", "aac", "flac", "wav", "pcm"];
 
 fn validate_speech(c: SpeechConfig) -> Result<SpeechConfig, AppError> {
@@ -376,9 +378,11 @@ fn validate_speech(c: SpeechConfig) -> Result<SpeechConfig, AppError> {
         base_url: trim(&c.base_url).trim_end_matches('/').to_owned(),
         stt_model: trim(&c.stt_model),
         stt_language: c.stt_language.map(|l| trim(&l)).filter(|l| !l.is_empty()),
+        stt_part_ms: c.stt_part_ms,
         tts_model: trim(&c.tts_model),
         tts_voice: trim(&c.tts_voice),
         tts_format: trim(&c.tts_format).to_ascii_lowercase(),
+        summary_model: trim(&c.summary_model),
     };
     if c.base_url.is_empty() {
         if c.enabled {
@@ -401,10 +405,16 @@ fn validate_speech(c: SpeechConfig) -> Result<SpeechConfig, AppError> {
             return Err(bad(format!("{name} must be 1 to 128 characters")));
         }
     }
+    if c.summary_model.len() > 128 {
+        return Err(bad("summary_model must be at most 128 characters".into()));
+    }
     if c.stt_language.as_deref().is_some_and(|l| {
         l.len() > 16 || !l.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
     }) {
         return Err(bad("stt_language must be a language code such as `en`".into()));
+    }
+    if c.stt_part_ms.is_some_and(|ms| !STT_PART_MS.contains(&ms)) {
+        return Err(bad("stt_part_ms must be 1000 to 28000 milliseconds".into()));
     }
     if !SPEECH_FORMATS.contains(&c.tts_format.as_str()) {
         return Err(bad(format!("tts_format must be one of {}", SPEECH_FORMATS.join(", "))));
@@ -455,7 +465,9 @@ pub fn speech_error(e: &crate::speech::SpeechError) -> AppError {
     let status = match e {
         E::NotConfigured => StatusCode::CONFLICT,
         E::InputTooLong | E::Url(_) => StatusCode::BAD_REQUEST,
-        E::Transport(_) | E::Upstream { .. } | E::Decode(_) => StatusCode::BAD_GATEWAY,
+        E::Transport(_) | E::Upstream { .. } | E::Decode(_) | E::StreamClosed { .. } => {
+            StatusCode::BAD_GATEWAY
+        }
     };
     AppError::new(status, e.to_string())
 }
@@ -472,9 +484,26 @@ pub async fn speech_catalog(
 ) -> Result<Json<SpeechCatalog>, AppError> {
     admin(&ctx)?;
     let client = speech_client(&state).await?;
-    let models = client.health().await.map_err(|e| speech_error(&e))?;
+    let models = client.models().await.map_err(|e| speech_error(&e))?;
     let voices = client.voices().await.unwrap_or_default();
-    Ok(Json(SpeechCatalog { models, voices }))
+    Ok(Json(catalog(models, voices)))
+}
+
+fn catalog(models: Vec<crate::speech::ModelEntry>, voices: Vec<String>) -> SpeechCatalog {
+    let tagged = |role: &str| {
+        models
+            .iter()
+            .filter(|m| m.owned_by.as_deref() == Some(role))
+            .map(|m| m.id.clone())
+            .collect::<Vec<_>>()
+    };
+    SpeechCatalog {
+        stt_models: tagged("stt"),
+        tts_models: tagged("tts"),
+        text_models: tagged("text"),
+        models: models.into_iter().map(|m| m.id).collect(),
+        voices,
+    }
 }
 
 /// Health check plus a short synthesis the admin UI plays back.
@@ -676,16 +705,47 @@ mod tests {
     }
 
     #[test]
+    fn the_catalog_sorts_tagged_models_by_role() {
+        let m = |id: &str, owned_by: Option<&str>| crate::speech::ModelEntry {
+            id: id.into(),
+            owned_by: owned_by.map(str::to_owned),
+        };
+        let c = catalog(
+            vec![
+                m("parakeet", Some("stt")),
+                m("kokoro", Some("tts")),
+                m("qwen3-1.7b", Some("text")),
+                m("gpt-4o", Some("openai")),
+            ],
+            vec!["af_heart".into()],
+        );
+        assert_eq!(c.models, ["parakeet", "kokoro", "qwen3-1.7b", "gpt-4o"]);
+        assert_eq!(
+            (c.stt_models, c.tts_models, c.text_models),
+            (vec!["parakeet".to_owned()], vec!["kokoro".to_owned()], vec!["qwen3-1.7b".to_owned()])
+        );
+    }
+
+    #[test]
     fn speech_validation_trims_and_rejects_bad_values() {
         let ok = SpeechConfig {
             enabled: true,
             base_url: " https://speech.example/v1/ ".into(),
             stt_language: Some(" ".into()),
             tts_format: "MP3".into(),
+            summary_model: " qwen3-1.7b ".into(),
+            stt_part_ms: Some(2_000),
             ..SpeechConfig::default()
         };
         let v = validate_speech(ok.clone()).unwrap();
+        assert_eq!(v.stt_part_ms, Some(2_000));
+        for edge in [1_000, 28_000] {
+            assert!(
+                validate_speech(SpeechConfig { stt_part_ms: Some(edge), ..ok.clone() }).is_ok()
+            );
+        }
         assert_eq!(v.base_url, "https://speech.example/v1");
+        assert_eq!(v.summary_model, "qwen3-1.7b");
         assert_eq!((v.stt_language, v.tts_format.as_str()), (None, "mp3"));
         assert!(validate_speech(SpeechConfig::default()).is_ok());
         for bad in [
@@ -696,6 +756,9 @@ mod tests {
             SpeechConfig { tts_voice: " ".into(), ..ok.clone() },
             SpeechConfig { stt_model: String::new(), ..ok.clone() },
             SpeechConfig { stt_language: Some("en; drop".into()), ..ok.clone() },
+            SpeechConfig { summary_model: "m".repeat(129), ..ok.clone() },
+            SpeechConfig { stt_part_ms: Some(999), ..ok.clone() },
+            SpeechConfig { stt_part_ms: Some(28_001), ..ok.clone() },
             SpeechConfig { tts_format: "ogg".into(), ..ok },
         ] {
             let status = validate_speech(bad.clone()).unwrap_err().status();
@@ -704,6 +767,16 @@ mod tests {
         assert!(validate_speech_key("sk abc").is_err());
         assert!(validate_speech_key("  ").is_err());
         assert_eq!(validate_speech_key(" sk-1 ").unwrap(), "sk-1");
+    }
+
+    #[test]
+    fn a_speech_config_saved_before_part_length_loads_with_the_default() {
+        let old = r#"{"enabled":true,"base_url":"https://s.example/v1","encrypted_key":"k"}"#;
+        let stored: StoredSpeech = serde_json::from_str(old).unwrap();
+        assert!(stored.config.enabled);
+        assert_eq!((stored.config.stt_part_ms, stored.encrypted_key.as_deref()), (None, Some("k")));
+        let stored: StoredSpeech = serde_json::from_str(r#"{"stt_part_ms":2500}"#).unwrap();
+        assert_eq!(stored.config.stt_part_ms, Some(2_500));
     }
 
     #[tokio::test]

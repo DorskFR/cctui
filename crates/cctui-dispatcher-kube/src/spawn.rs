@@ -21,10 +21,11 @@ use cctui_dispatcher_core::{
 };
 use cctui_orchestrator::validate::template_drift;
 use cctui_orchestrator::{
-    ANNOTATION_ENV_SECRET, ANNOTATION_GPG_SIGNING, ANNOTATION_GUARD_IDENTITY,
+    ANNOTATION_ENV_SECRET, ANNOTATION_GPG_SIGNING, ANNOTATION_GUARD_IDENTITY, ANNOTATION_POSTURE,
     ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, LABEL_WORKER_PROFILE, WorkerProfile,
     WorkerProfileSpec,
 };
+use cctui_proto::api::WorkerExit;
 use cctui_proto::worker_env::check_payload_env;
 use cctui_proto::ws::WireDispatchSpec;
 use k8s_openapi::api::batch::v1::Job;
@@ -32,6 +33,8 @@ use k8s_openapi::api::core::v1::{Pod, Secret};
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams, PropagationPolicy};
 use kube::{Client, Error as KubeError};
 use tokio_util::sync::CancellationToken;
+
+mod worker_exit;
 
 /// A pod wedged `Pending` longer than this (no schedulable node / image still
 /// failing to pull) is reported `Failed` rather than `Running`.
@@ -304,6 +307,7 @@ impl Spawner {
         if profile.gpg_signing {
             annotations.insert(ANNOTATION_GPG_SIGNING.into(), json!("true"));
         }
+        stamp_posture(&mut annotations, profile);
         if let Some(s) = &env_secret {
             annotations.insert(ANNOTATION_ENV_SECRET.into(), json!(s));
         }
@@ -372,6 +376,13 @@ impl Spawner {
             worker.insert("volumeMounts".into(), serde_json::to_value(mounts)?);
         }
         Self::merge_env(&mut worker, overrides)?;
+        let preflight: Vec<(String, EnvSource)> = profile
+            .preflight
+            .iter()
+            .flat_map(cctui_orchestrator::PreflightSpec::worker_env)
+            .map(|(k, v)| (k.to_owned(), EnvSource::Literal(v)))
+            .collect();
+        Self::merge_env(&mut worker, &preflight)?;
 
         let mut containers = vec![Value::Object(worker)];
         for extra in profile.containers.iter().flatten() {
@@ -958,6 +969,7 @@ impl Spawner {
         } else {
             annotations.remove(ANNOTATION_GPG_SIGNING);
         }
+        stamp_posture(&mut annotations, profile);
 
         let ours = |m: Option<&std::collections::BTreeMap<String, String>>| {
             m.into_iter()
@@ -1015,8 +1027,16 @@ impl Spawner {
             Err(e) => anyhow::bail!("reading Job {name}: {e}"),
         };
         match Self::job_terminal_state(&job) {
-            Some("Complete") => return Ok((HandleState::Complete, None)),
+            Some("Complete") => {
+                return Ok((HandleState::Complete, self.pod_oom_reason(name).await));
+            }
             Some("Failed") => {
+                if let Some(oom) = self.pod_oom_reason(name).await {
+                    return Ok((HandleState::Failed, Some(oom)));
+                }
+                if let Some(message) = self.worker_termination_message(name).await {
+                    return Ok((HandleState::Failed, Some(message)));
+                }
                 let reason = Self::job_failed_reason(&job);
                 return Ok((HandleState::Failed, reason.or(self.pod_failure_reason(name).await)));
             }
@@ -1033,6 +1053,22 @@ impl Spawner {
             .map_or((HandleState::Running, None), |reason| (HandleState::Failed, Some(reason))))
     }
 
+    async fn worker_queue_position(&self, handle: &str) -> Option<u32> {
+        let name = handle.strip_prefix("jobs/").unwrap_or(handle);
+        let job = self.jobs().get(name).await.ok()?;
+        let profile = job.metadata.labels.as_ref()?.get(LABEL_WORKER_PROFILE)?;
+        let lp = ListParams::default().labels(&format!(
+            "{LABEL_ORIGIN}=cctui-kube-dispatcher,{LABEL_WORKER_PROFILE}={profile}"
+        ));
+        match self.jobs().list(&lp).await {
+            Ok(jobs) => queue_position(&jobs.items, name),
+            Err(e) => {
+                tracing::warn!(job = %name, error = %e, "listing the profile queue failed");
+                None
+            }
+        }
+    }
+
     fn pods(&self) -> Api<Pod> {
         Api::namespaced(self.client.clone(), &self.namespace)
     }
@@ -1046,6 +1082,14 @@ impl Spawner {
                 .or_else(|| c.reason.clone())
                 .unwrap_or_else(|| "job failed".to_owned())
         })
+    }
+
+    /// Why a finished Job's container ended when the kernel OOM killed it,
+    /// which a clean entrypoint exit or the Job's backoff condition hides. A
+    /// listing error reads as no OOM kill, so the status still answers.
+    async fn pod_oom_reason(&self, job_name: &str) -> Option<String> {
+        let lp = ListParams::default().labels(&format!("job-name={job_name}"));
+        oom_killed(&self.pods().list(&lp).await.ok()?.items)
     }
 
     /// Inspect the Job's pods for a terminal-but-not-yet-Job-Failed condition:
@@ -1116,6 +1160,14 @@ impl Spawner {
     }
 }
 
+/// Removing it for root also drops a copy smuggled in through `podAnnotations`.
+fn stamp_posture(annotations: &mut serde_json::Map<String, Value>, profile: &WorkerProfileSpec) {
+    annotations.remove(ANNOTATION_POSTURE);
+    if let Some(posture) = profile.posture().annotation() {
+        annotations.insert(ANNOTATION_POSTURE.into(), json!(posture));
+    }
+}
+
 /// The `limits.memory` of the named container (init or main), if declared.
 fn memory_limit(pod: &Pod, container: &str) -> Option<String> {
     let spec = pod.spec.as_ref()?;
@@ -1130,6 +1182,24 @@ fn memory_limit(pod: &Pod, container: &str) -> Option<String> {
         .as_ref()?
         .get("memory")
         .map(|q| q.0.clone())
+}
+
+/// The first container of `pods` that ended `OOMKilled`, as [`oom_reason`]
+/// names it.
+fn oom_killed(pods: &[Pod]) -> Option<String> {
+    pods.iter().find_map(|pod| {
+        let status = pod.status.as_ref()?;
+        status
+            .init_container_statuses
+            .iter()
+            .chain(status.container_statuses.iter())
+            .flatten()
+            .find(|cs| {
+                let terminated = cs.state.as_ref().and_then(|st| st.terminated.as_ref());
+                terminated.and_then(|t| t.reason.as_deref()) == Some("OOMKilled")
+            })
+            .map(|cs| oom_reason(memory_limit(pod, &cs.name)))
+    })
 }
 
 /// `OOMKilled`, naming the limit the container ran into when it is known.
@@ -1153,6 +1223,26 @@ impl Dispatcher for Spawner {
     async fn cancel(&self, handle: &str) -> anyhow::Result<()> {
         self.cancel_worker(handle).await
     }
+
+    async fn worker_exit(&self, handle: &str) -> Option<WorkerExit> {
+        self.read_worker_exit(handle).await
+    }
+
+    async fn queue_position(&self, handle: &str) -> Option<u32> {
+        self.worker_queue_position(handle).await
+    }
+}
+
+/// 1-based place of `name` among the suspended, non-terminal `jobs`, in the
+/// order the queue reconciler resumes them.
+fn queue_position(jobs: &[Job], name: &str) -> Option<u32> {
+    let mut queued: Vec<&Job> = jobs
+        .iter()
+        .filter(|j| Spawner::job_suspended(j) && Spawner::job_terminal_state(j).is_none())
+        .collect();
+    queued.sort_by_key(|j| (j.metadata.creation_timestamp.clone(), j.metadata.name.clone()));
+    let at = queued.iter().position(|j| j.metadata.name.as_deref() == Some(name))?;
+    u32::try_from(at + 1).ok()
 }
 
 /// Names of env Secrets with no owner, no referencing Job, and older than
@@ -1202,6 +1292,7 @@ const fn drift_disposition(never_ran: bool, has_pods: bool, suspended: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cctui_orchestrator::Posture;
 
     type Mutation = (&'static str, fn(&mut WorkerProfileSpec));
 
@@ -1728,7 +1819,7 @@ mod tests {
     fn every_template_conformance_field_strands_and_is_repaired_by_a_rebuild() {
         let s = spec("sess-fields", json!({}));
         let job = queued_job("full", &full_profile(), &s);
-        let mutations: [Mutation; 8] = [
+        let mutations: [Mutation; 9] = [
             ("serviceAccountName", |p| p.service_account_name = Some("other".to_owned())),
             ("workerContainer", |p| p.worker_container = Some("other".to_owned())),
             ("image", |p| p.image = "example.com/worker:next".to_owned()),
@@ -1737,6 +1828,7 @@ mod tests {
             ("nodeSelector", |p| p.node_selector = None),
             ("runtimeClassName", |p| p.runtime_class_name = None),
             ("envFrom", |p| p.env_from = None),
+            ("posture", |p| p.posture = Some(Posture::Nonroot)),
         ];
         for (field, mutate) in mutations {
             let mut profile = full_profile();
@@ -1858,6 +1950,39 @@ mod tests {
         let ca = mounts.iter().find(|m| m["name"] == "ca").unwrap();
         assert_eq!(ca["readOnly"], json!(true), "the CA mount is read-only");
         assert_eq!(ca["mountPath"], json!("/etc/cctui/ca"));
+    }
+
+    #[test]
+    fn profile_preflight_becomes_worker_env_and_survives_a_rebuild() {
+        let mut profile: WorkerProfileSpec = serde_json::from_value(json!({
+            "image": "example.com/worker:latest",
+            "env": [{ "name": "CCTUI_PREFLIGHT_MODE", "value": "off" }],
+            "preflight": { "mode": "warn", "deny": ["postgres.db.svc:5432", "10.42.0.0/16"] }
+        }))
+        .unwrap();
+        let s = spec("sess-preflight", json!({}));
+        let v = build("lean", &profile, &s);
+        assert_eq!(env_value(&v, "CCTUI_PREFLIGHT_MODE").as_deref(), Some("warn"));
+        assert_eq!(
+            env_value(&v, "CCTUI_PREFLIGHT_DENY").as_deref(),
+            Some("postgres.db.svc:5432,10.42.0.0/16")
+        );
+        let names =
+            worker_env(&v).into_iter().filter(|e| e["name"] == "CCTUI_PREFLIGHT_MODE").count();
+        assert_eq!(names, 1, "spec.preflight replaces the profile env entry");
+
+        let old = queued_job("lean", &profile, &s);
+        profile.preflight.as_mut().unwrap().mode = Some("enforce".to_owned());
+        let v = serde_json::to_value(Spawner::rebuild_job(&old, &profile).unwrap()).unwrap();
+        assert_eq!(
+            env_value(&v, "CCTUI_PREFLIGHT_MODE").as_deref(),
+            Some("enforce"),
+            "the current profile wins over the queued Job's env"
+        );
+
+        let v = build("lean", &lean_profile(), &s);
+        assert!(env_value(&v, "CCTUI_PREFLIGHT_MODE").is_none());
+        assert!(env_value(&v, "CCTUI_PREFLIGHT_DENY").is_none());
     }
 
     #[test]
@@ -2002,6 +2127,58 @@ mod tests {
     }
 
     #[test]
+    fn root_or_unset_posture_renders_the_job_unchanged_and_nonroot_only_adds_the_annotation() {
+        let s = spec("sess-posture", json!({ "flow": "review" }));
+        for base in [lean_profile(), full_profile()] {
+            let unset = build("p", &base, &s);
+            assert!(
+                unset.pointer("/spec/template/metadata/annotations/cctui.dev~1posture").is_none(),
+                "a root Job carries no posture annotation"
+            );
+            let mut root = base.clone();
+            root.posture = Some(Posture::Root);
+            assert_eq!(build("p", &root, &s), unset);
+
+            let mut nonroot = base;
+            nonroot.posture = Some(Posture::Nonroot);
+            let mut v = build("p", &nonroot, &s);
+            let annotations = v
+                .pointer_mut("/spec/template/metadata/annotations")
+                .and_then(Value::as_object_mut)
+                .unwrap();
+            assert_eq!(annotations.remove(ANNOTATION_POSTURE), Some(json!("nonroot")));
+            assert_eq!(v, unset);
+        }
+    }
+
+    #[test]
+    fn a_root_profile_cannot_smuggle_the_posture_annotation() {
+        let s = spec("sess-posture-smuggle", json!({}));
+        let mut profile = lean_profile();
+        profile.pod_annotations = Some(std::collections::BTreeMap::from([(
+            ANNOTATION_POSTURE.to_owned(),
+            "nonroot".to_owned(),
+        )]));
+        let v = build("lean", &profile, &s);
+        assert!(v.pointer("/spec/template/metadata/annotations/cctui.dev~1posture").is_none());
+    }
+
+    #[test]
+    fn a_posture_flip_back_to_root_rebuilds_without_the_annotation() {
+        let s = spec("sess-posture-back", json!({}));
+        let mut nonroot = lean_profile();
+        nonroot.posture = Some(Posture::Nonroot);
+        let job = queued_job("lean", &nonroot, &s);
+        assert!(drift_of(&job, &nonroot).is_none());
+        let drift = drift_of(&job, &lean_profile()).expect("posture flip strands the queued Job");
+        assert!(drift.contains("posture"), "{drift}");
+        let rebuilt = Spawner::rebuild_job(&job, &lean_profile()).unwrap();
+        assert!(drift_of(&rebuilt, &lean_profile()).is_none());
+        let v = serde_json::to_value(&rebuilt).unwrap();
+        assert!(v.pointer("/spec/template/metadata/annotations/cctui.dev~1posture").is_none());
+    }
+
+    #[test]
     fn dispatch_without_secrets_has_no_env_secret() {
         let s = spec("sess-plain", json!({ "flow": "review" }));
         let job = queued_job("lean", &lean_profile(), &s);
@@ -2096,5 +2273,63 @@ mod tests {
         assert_eq!(memory_limit(&pod, "nope"), None);
         assert_eq!(oom_reason(Some("8Gi".into())), "OOMKilled (memory limit 8Gi)");
         assert_eq!(oom_reason(None), "OOMKilled");
+    }
+
+    fn finished_pod(reason: &str) -> Pod {
+        serde_json::from_value(json!({
+            "spec": { "containers": [{
+                "name": "worker",
+                "resources": { "limits": { "memory": "8Gi" } }
+            }]},
+            "status": { "phase": "Succeeded", "containerStatuses": [{
+                "name": "worker", "image": "i", "imageID": "", "ready": false, "restartCount": 0,
+                "state": { "terminated": { "exitCode": 0, "reason": reason } }
+            }]}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_completed_job_whose_worker_was_oom_killed_names_it() {
+        assert_eq!(
+            oom_killed(&[finished_pod("Completed"), finished_pod("OOMKilled")]).as_deref(),
+            Some("OOMKilled (memory limit 8Gi)"),
+            "a child's OOM kill under a clean exit"
+        );
+        assert_eq!(oom_killed(&[finished_pod("Completed")]), None, "a clean finish stays clean");
+        assert_eq!(oom_killed(&[]), None);
+        let pending: Pod =
+            serde_json::from_value(json!({ "status": { "phase": "Pending" } })).unwrap();
+        assert_eq!(oom_killed(&[pending]), None);
+    }
+
+    fn listed_job(name: &str, created: &str, suspended: bool, terminal: bool) -> Job {
+        let mut v = json!({
+            "metadata": { "name": name, "creationTimestamp": created },
+            "spec": { "suspend": suspended, "template": {} },
+        });
+        if terminal {
+            v["status"] = json!({ "conditions": [{ "type": "Failed", "status": "True" }] });
+        }
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn queue_position_counts_only_suspended_live_jobs_oldest_first() {
+        let jobs = vec![
+            listed_job("c", "2026-10-21T10:00:03Z", true, false),
+            listed_job("running", "2026-10-21T09:00:00Z", false, false),
+            listed_job("a", "2026-10-21T10:00:01Z", true, false),
+            listed_job("dead", "2026-10-21T08:00:00Z", true, true),
+            listed_job("b2", "2026-10-21T10:00:02Z", true, false),
+            listed_job("b1", "2026-10-21T10:00:02Z", true, false),
+        ];
+        assert_eq!(queue_position(&jobs, "a"), Some(1));
+        assert_eq!(queue_position(&jobs, "b1"), Some(2), "same second: name order");
+        assert_eq!(queue_position(&jobs, "b2"), Some(3));
+        assert_eq!(queue_position(&jobs, "c"), Some(4));
+        assert_eq!(queue_position(&jobs, "running"), None);
+        assert_eq!(queue_position(&jobs, "dead"), None);
+        assert_eq!(queue_position(&jobs, "missing"), None);
     }
 }

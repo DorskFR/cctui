@@ -2,19 +2,12 @@
 	import { untrack } from 'svelte';
 	import { Badge, Field, Text, Toggle } from '@dorsk/tsumikit';
 	import ContextPicker from '$lib/components/molecules/ContextPicker.svelte';
-	import {
-		contextAuto,
-		notePicks,
-		reconcilePrecheck,
-		sameList,
-		type Precheck
-	} from '$lib/components/molecules/context.logic';
+	import { sameList } from '$lib/components/molecules/context.logic';
 	import { useContextItems, useResolvedContext } from '$lib/queries';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
 		items = $bindable(),
-		auto = $bindable(),
 		pins = $bindable([]),
 		machineId,
 		workingDir,
@@ -24,7 +17,6 @@
 	}: {
 		/** Picked item names. */
 		items: string[];
-		auto: boolean;
 		/** Names of the profile's pinned items, sent alongside the picks. */
 		pins?: string[];
 		machineId: string;
@@ -49,7 +41,6 @@
 	const matched = $derived(resolved.data?.memories.map((i) => i.name) ?? []);
 	const locked = $derived(pickable.filter((i) => pinnedIds.includes(i.id)).map((i) => i.name));
 	let showRules = $state(false);
-	let pre = $state.raw<Precheck>({ picks: [], auto: [], dismissed: [] });
 
 	// Writing an unchanged list still dirties the parent form, which re-runs the
 	// resolve query and this effect: only write real changes.
@@ -59,21 +50,6 @@
 			if (!sameList(pins, next)) pins = next;
 		});
 	});
-
-	$effect(() => {
-		if (!resolved.data) return;
-		const names = matched;
-		untrack(() => {
-			pre = reconcilePrecheck({ ...pre, picks: [...items] }, names);
-			if (!sameList(items, pre.picks)) items = pre.picks;
-			auto = contextAuto(pre.picks, names);
-		});
-	});
-
-	function onchange(next: string[]) {
-		pre = notePicks(pre, next);
-		auto = contextAuto(next, matched);
-	}
 </script>
 
 <Field label={m.spawn_context_label()} for="sp-context">
@@ -103,7 +79,6 @@
 			{matched}
 			{locked}
 			label={m.spawn_context_label()}
-			{onchange}
 		/>
 		{#if !pickable.length}
 			<Text size="xs" tone="faint">{m.spawn_context_none()}</Text>

@@ -226,17 +226,31 @@ impl Dispatcher for EnrolledDispatcher {
             dispatch_held(&self.state.bus, self.dispatcher_id, &self.name, &wire, DISPATCH_HOLD)
                 .await?;
         match reply {
-            DispatcherFrameUp::DispatchResult { handle, namespace, status, error, .. } => {
+            DispatcherFrameUp::DispatchResult {
+                handle,
+                namespace,
+                status,
+                queue_position,
+                error,
+                ..
+            } => {
                 if let Some(err) = error {
                     return Err(DispatchError::Backend(err));
                 }
-                Ok(DispatchHandle { handle, namespace, status })
+                Ok(DispatchHandle { handle, namespace, status, queue_position })
             }
             other => Err(DispatchError::Backend(format!("unexpected dispatcher reply: {other:?}"))),
         }
     }
 
     async fn status(&self, handle: &str) -> Result<HandleStatus, DispatchError> {
+        Ok(self.status_detail(handle).await?.0)
+    }
+
+    async fn status_detail(
+        &self,
+        handle: &str,
+    ) -> Result<(HandleStatus, Option<cctui_proto::api::WorkerExit>), DispatchError> {
         let request_id = Uuid::new_v4();
         let reply = self
             .round_trip(
@@ -245,18 +259,23 @@ impl Dispatcher for EnrolledDispatcher {
             )
             .await?;
         match reply {
-            DispatcherFrameUp::StatusResult { state, error, .. } => {
+            DispatcherFrameUp::StatusResult { state, error, worker_exit, .. } => {
                 // `error` alongside a `failed` state is the failure *reason*
                 // (CrashLoopBackOff / OOMKilled / non-zero exit), not a
                 // transport error — only treat it as a hard error when the
                 // dispatcher reported no state at all (couldn't introspect).
                 match state.as_deref().map(ReportedState::parse) {
-                    Some(ReportedState::Complete) => Ok(HandleStatus::Complete),
-                    Some(ReportedState::Failed) => Ok(HandleStatus::Failed(error)),
-                    Some(ReportedState::Gone) => Ok(HandleStatus::Gone),
-                    Some(
-                        ReportedState::Running | ReportedState::Queued | ReportedState::Unknown,
-                    ) => Ok(HandleStatus::Running),
+                    // On a finished workload it is how the container ended,
+                    // e.g. a child's OOM kill under a clean exit.
+                    Some(ReportedState::Complete) => {
+                        Ok((HandleStatus::Complete, worker_exit.or_else(|| error.map(ended))))
+                    }
+                    Some(ReportedState::Failed) => Ok((HandleStatus::Failed(error), worker_exit)),
+                    Some(ReportedState::Gone) => Ok((HandleStatus::Gone, None)),
+                    Some(ReportedState::Queued) => Ok((HandleStatus::Queued, None)),
+                    Some(ReportedState::Running | ReportedState::Unknown) => {
+                        Ok((HandleStatus::Running, None))
+                    }
                     None => Err(DispatchError::Backend(
                         error.unwrap_or_else(|| "dispatcher returned no status".into()),
                     )),
@@ -287,6 +306,11 @@ impl Dispatcher for EnrolledDispatcher {
             other => Err(DispatchError::Backend(format!("unexpected dispatcher reply: {other:?}"))),
         }
     }
+}
+
+/// A finished workload's container end, as its dispatcher named it.
+fn ended(reason: String) -> cctui_proto::api::WorkerExit {
+    cctui_proto::api::WorkerExit { reason: Some(reason), ..Default::default() }
 }
 
 #[cfg(test)]
@@ -339,6 +363,7 @@ mod tests {
                     handle: "container/worker-1".into(),
                     namespace: None,
                     status: Some("dispatched".into()),
+                    queue_position: None,
                     error: None,
                 },
             ));
@@ -407,6 +432,7 @@ mod tests {
                     handle: "job/worker-1".into(),
                     namespace: Some("cctui".into()),
                     status: Some("dispatched".into()),
+                    queue_position: None,
                     error: None,
                 },
             ));
@@ -488,6 +514,7 @@ mod tests {
                     handle: "job/worker-2".into(),
                     namespace: None,
                     status: Some("dispatched".into()),
+                    queue_position: None,
                     error: None,
                 },
             ));

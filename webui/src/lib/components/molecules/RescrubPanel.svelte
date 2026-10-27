@@ -20,6 +20,7 @@
 		rescrubIsRunning,
 		rescrubProgress,
 		rescrubScopeSince,
+		rescrubSettleNotice,
 		type RescrubScope
 	} from './rescrub.logic';
 
@@ -29,7 +30,7 @@
 	let job = $state<PrivacyScanJob | null>(null);
 	let confirming = $state(false);
 	let starting = $state(false);
-	let settled = $state<string | null>(null);
+	let watched: string | null = null;
 
 	const running = $derived(rescrubIsRunning(job));
 	const progress = $derived(rescrubProgress(job));
@@ -46,12 +47,12 @@
 	]);
 
 	function settle(done: PrivacyScanJob) {
-		if (settled === done.id) return;
-		settled = done.id;
-		rescrub.settled(done);
-		if (done.status === 'failed') {
+		const notice = rescrubSettleNotice(done, watched);
+		watched = null;
+		if (notice) rescrub.settled(done);
+		if (notice === 'failed') {
 			toasts.error(m.settings_rescrub_failed({ error: done.error ?? '' }));
-		} else if (!done.dry_run && done.status === 'completed') {
+		} else if (notice === 'done') {
 			toasts.ok(
 				m.settings_rescrub_toast_done({ values: done.substitutions, messages: done.rows_changed })
 			);
@@ -62,7 +63,8 @@
 		try {
 			const next = await rescrub.poll();
 			job = next;
-			if (next && next.status !== 'running') settle(next);
+			if (next?.status === 'running') watched = next.id;
+			else if (next) settle(next);
 		} catch (e) {
 			toasts.error(e instanceof Error ? e.message : String(e));
 		}
@@ -83,8 +85,9 @@
 	async function startScan(dry_run: boolean) {
 		starting = true;
 		try {
-			settled = null;
 			job = await rescrub.start({ dry_run, session_ids: null, since: rescrubScopeSince(scope) });
+			watched = job.id;
+			if (job.status !== 'running') settle(job);
 		} catch (e) {
 			toasts.error(e instanceof Error ? e.message : String(e));
 		} finally {

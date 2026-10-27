@@ -399,6 +399,9 @@ pub enum DispatcherFrameUp {
         namespace: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<String>,
+        /// 1-based place among the profile's queued workers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        queue_position: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -410,6 +413,9 @@ pub enum DispatcherFrameUp {
         state: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        /// How the worker container ended, alongside a `failed` state.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_exit: Option<crate::api::WorkerExit>,
     },
     CancelResult {
         request_id: uuid::Uuid,
@@ -1429,6 +1435,7 @@ mod tests {
                 handle: "container/cctui-worker-abc".into(),
                 namespace: None,
                 status: Some("dispatched".into()),
+                queue_position: None,
                 error: None,
             },
             DispatcherFrameUp::StatusResult {
@@ -1436,6 +1443,7 @@ mod tests {
                 handle: "container/cctui-worker-abc".into(),
                 state: Some("running".into()),
                 error: None,
+                worker_exit: None,
             },
             DispatcherFrameUp::CancelResult {
                 request_id: uuid::Uuid::nil(),
@@ -1448,6 +1456,36 @@ mod tests {
             let json = serde_json::to_string(&f).unwrap();
             let _back: DispatcherFrameUp = serde_json::from_str(&json).unwrap();
         }
+    }
+
+    #[test]
+    fn a_status_result_carries_the_worker_exit_and_reads_without_it() {
+        let old = r#"{"type":"status_result","request_id":"00000000-0000-0000-0000-000000000000","handle":"jobs/w","state":"failed"}"#;
+        let DispatcherFrameUp::StatusResult { worker_exit, .. } =
+            serde_json::from_str(old).unwrap()
+        else {
+            panic!("expected StatusResult");
+        };
+        assert!(worker_exit.is_none());
+        let exit = crate::api::WorkerExit {
+            exit_code: Some(137),
+            log_tail: Some("boom".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&DispatcherFrameUp::StatusResult {
+            request_id: uuid::Uuid::nil(),
+            handle: "jobs/w".into(),
+            state: Some("failed".into()),
+            error: None,
+            worker_exit: Some(exit.clone()),
+        })
+        .unwrap();
+        let DispatcherFrameUp::StatusResult { worker_exit, .. } =
+            serde_json::from_str(&json).unwrap()
+        else {
+            panic!("expected StatusResult");
+        };
+        assert_eq!(worker_exit, Some(exit));
     }
 
     #[test]

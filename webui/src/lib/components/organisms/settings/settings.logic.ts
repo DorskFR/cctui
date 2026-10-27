@@ -50,8 +50,21 @@ export function normalizeForFilter(s: string): string {
 }
 
 /**
+ * Fuzzy row match: every whitespace-separated word of the query must occur in
+ * the text, in any order ("passkey enrol" finds "Enrol a passkey"). Rows carry
+ * whole paragraphs of help copy, so a looser subsequence match would light up
+ * nearly every row for short queries. An empty query matches everything.
+ */
+export function fuzzyMatches(text: string, query: string): boolean {
+	const words = normalizeForFilter(query).split(/\s+/).filter(Boolean);
+	if (words.length === 0) return true;
+	const hay = normalizeForFilter(text);
+	return words.every((w) => hay.includes(w));
+}
+
+/**
  * Apply a free-text filter to the rendered settings tree: a row stays when its
- * text contains the query, a group stays when it keeps a row, a section when it
+ * text matches the query (see `fuzzyMatches`), a group stays when it keeps a row, a section when it
  * keeps a group. Without a query everything shows, row-less empty states included. Returns the number of visible rows so the page can show an
  * empty state. DOM-driven on purpose — the rows already carry their localized
  * copy, so there is no second catalogue to keep in sync. Visibility goes
@@ -66,14 +79,14 @@ export function isFiltered(el: HTMLElement): boolean {
 }
 
 export function applySettingsFilter(root: ParentNode, query: string): number {
-	const q = normalizeForFilter(query.trim());
+	const q = query.trim();
 	let visible = 0;
 	for (const section of root.querySelectorAll<HTMLElement>('[data-setting-section]')) {
 		let sectionAny = false;
 		for (const group of section.querySelectorAll<HTMLElement>('[data-setting-group]')) {
 			let groupAny = false;
 			for (const row of group.querySelectorAll<HTMLElement>('[data-setting-row]')) {
-				const match = !q || normalizeForFilter(row.textContent ?? '').includes(q);
+				const match = fuzzyMatches(row.textContent ?? '', q);
 				show(row, match);
 				if (match) {
 					groupAny = true;

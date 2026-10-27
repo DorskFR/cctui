@@ -91,16 +91,15 @@ failed `CommandResult`. That much of the shape is genuinely shared.
 | MCP relay (`CctuiAgent`) declaration | yes | yes | yes | no | **neutral** | `adapters/agent_mcp.rs::AgentMcp` renders per-harness config (claude `mcp_config`, codex config overrides, opencode config block) from one capability. ACP sends `mcpServers: []` until its relay ticket. |
 | MCP-readiness launch gate | yes | yes | yes | n.a. | **neutral** | `preflight.rs` holds the first turn until the session's relay has answered `initialize`, with `mcpready.rs` behind it. claude-code arms the same wait through its `SessionStart` hook instead, because it holds turn 1 in-band; `CCTUI_MCP_READY_WAIT_SECS` is one knob for all three. ACP declares no relay yet, so there is nothing to wait for. |
 | Usage-limit launch hold | yes | yes | yes | yes | **neutral** | `launchgate.rs` decides, `preflight.rs` waits and reports the hold on the session card. claude-code holds before its control-socket dispatch; codex, opencode and ACP hold after the session registers and before turn 1 — the turn is what would eat the 429, and before `SessionStarted` they have no card for the wait to land on. |
-| Shared-checkout (cwd neighbours) notice | yes | yes | yes | yes | **neutral** | `neighbours.rs` renders it, `preamble.rs` packages it, and each adapter delivers it: claude folds it into `<cctui-session-context>`, codex into `developerInstructions` beside its skill catalog, opencode and ACP into the first prompt. |
-| Spawn preamble / `<cctui-session-context>` | yes | partial | partial | partial | neutral block, per-harness delivery | `preamble.rs` is the neutral carrier and every harness has a delivery primitive, but only the shared-checkout notice and attached context travel through it today. Name, model·effort, permission mode, env var *names*, attached files and the `CctuiAgent` paragraph are still assembled by claude's `build_session_context` alone. |
+| Spawn preamble / `<cctui-session-context>` | yes | partial | partial | partial | neutral block, per-harness delivery | `preamble.rs` is the neutral carrier and every harness has a delivery primitive, but only the rules, attached context and the image-marker line travel through it today; the image line rides only a block that is sent anyway. Name, model·effort, permission mode, env var *names*, attached files and the `CctuiAgent` paragraph are still assembled by claude's `build_session_context` alone. |
+| Agent-posted images (`![alt](/abs/path.png)`) | yes | yes | yes | yes | **neutral** | `imagepost.rs` runs in the supervisor's per-adapter event pump, so every harness's assistant prose is rewritten to `cctui-img://`: claude's `role: assistant`, codex's raw `agentMessage` item, and the `content` mirror opencode and ACP render from. `CctuiSend` bodies and a child's answer carry owner-qualified `cctui-img://<session>/<id>` refs. See [worker-contract](worker-contract.md#agent-posted-images). |
 | Version gate (harness binary vs running daemon) | yes | yes | n.a. | no | per-harness | `version_gate.rs` and `codex_version_gate.rs` are separate implementations; opencode only warns on a pinned-version mismatch. ACP reports `agentInfo.version` per session and has no gate yet. |
 
 ## Observation and lifecycle
 
 | Capability | claude-code | codex | opencode | ACP | Shape | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| Session roster / neighbour registry | yes | yes | yes | yes | **neutral** | `neighbours::LiveDirs::observe` folds in every adapter's events from `supervisor.rs`. |
-| Session start time | yes | yes | yes | yes | per-harness stamp, neutral read | Adapters stamp `started_at_ms` (codex, opencode, ACP) or `created_at` (claude) into `SessionMeta::extra`; `neighbours::reported_start` reads either. |
+| Session start time | yes | yes | yes | yes | per-harness stamp, neutral read | Adapters stamp `started_at_ms` (codex, opencode, ACP) or `created_at` (claude) into `SessionMeta::extra`. |
 | Start time across a daemon restart | yes | yes | yes | no | per-harness | claude re-reads it from the worker's own `state.json`; codex and opencode persist it in their durable registries (`codex/persist.rs`, `opencode/persist.rs`). |
 | Durable session registry | yes | yes | yes | no | per-harness | claude's workers are separate processes discovered by roster; codex snapshots `SessionRegistry` to `codex-sessions.json`; opencode records its sessions to `opencode-sessions.json` and re-attaches them after a re-exec (an in-flight turn is lost). ACP sessions die with the daemon until the durable-sessions ticket (`session/resume` or `load`). |
 | Re-announce on reconnect | yes | yes | yes | yes | neutral contract, per-harness body | `AdapterCtx::connected` fires per connection; each adapter re-announces its own live sessions. |
@@ -122,8 +121,9 @@ failed `CommandResult`. That much of the shape is genuinely shared.
    `session/resume` and `session/load` for it, so this is the epic's
    durable-sessions ticket rather than a design gap.
 
-2. **The spawn preamble carries only the shared-checkout notice.** The neutral
-   seam exists — `preamble.rs` plus a delivery primitive per harness — but the
+2. **The spawn preamble carries only rules, attached context and the image
+   line.** The neutral seam exists — `preamble.rs` plus a delivery primitive
+   per harness — but the
    rest of what claude's `build_session_context` assembles (name,
    model·effort, permission posture, env var names, staged attachments, the
    `CctuiAgent` paragraph) is still built inside the claude-code adapter.

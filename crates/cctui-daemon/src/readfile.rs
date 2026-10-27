@@ -378,9 +378,9 @@ mod tests {
 
     #[test]
     fn home_of_identifies_the_user_a_path_belongs_to() {
-        assert_eq!(home_of(Path::new("/home/gtax/Documents/repo")), Some("/home/gtax".into()));
-        assert_eq!(home_of(Path::new("/home/gtax")), Some("/home/gtax".into()));
-        assert_eq!(home_of(Path::new("/Users/gtax/src/a")), Some("/Users/gtax".into()));
+        assert_eq!(home_of(Path::new("/home/alice/Documents/repo")), Some("/home/alice".into()));
+        assert_eq!(home_of(Path::new("/home/alice")), Some("/home/alice".into()));
+        assert_eq!(home_of(Path::new("/Users/alice/src/a")), Some("/Users/alice".into()));
         assert_eq!(home_of(Path::new("/root/src")), Some("/root".into()));
         assert_eq!(home_of(Path::new("/srv/app")), None);
         assert_eq!(home_of(Path::new("/home")), None);
@@ -456,8 +456,8 @@ mod tests {
 
     #[test]
     fn the_home_of_the_session_user_is_a_root_but_other_users_homes_are_not() {
-        let cwd = Path::new("/home/gtax/Documents/repo");
-        assert_eq!(home_of(cwd), Some(PathBuf::from("/home/gtax")));
+        let cwd = Path::new("/home/alice/Documents/repo");
+        assert_eq!(home_of(cwd), Some(PathBuf::from("/home/alice")));
         assert_eq!(home_of(Path::new("/home/someone-else/x")), Some("/home/someone-else".into()));
         assert_ne!(home_of(cwd), home_of(Path::new("/home/someone-else/x")));
 

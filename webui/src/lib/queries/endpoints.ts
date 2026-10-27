@@ -63,6 +63,7 @@ import type { PasskeyTestResult } from "@bindings/PasskeyTestResult";
 import type { RelabelPasskeyRequest } from "@bindings/RelabelPasskeyRequest";
 import type { VersionInfo } from "@bindings/VersionInfo";
 import type { VoiceConfigInfo } from "@bindings/VoiceConfigInfo";
+import type { VoiceVoices } from "@bindings/VoiceVoices";
 import type { GitInfo } from "@bindings/GitInfo";
 import type { InstanceInfo } from "@bindings/InstanceInfo";
 import type { ChangelogResponse } from "@bindings/ChangelogResponse";
@@ -134,7 +135,21 @@ import type {
   UserDispatcher,
 } from "./dispatchers";
 
+const SEARCH_TIMEOUT_MS = 20_000;
+
+/** A search the caller never aborts still gives up after a while, so the UI
+ *  shows an error instead of an endless spinner. */
+function withSearchTimeout(signal?: AbortSignal): AbortSignal | undefined {
+  if (typeof AbortSignal.timeout !== "function") return signal;
+  const timeout = AbortSignal.timeout(SEARCH_TIMEOUT_MS);
+  if (!signal) return timeout;
+  return typeof AbortSignal.any === "function"
+    ? AbortSignal.any([signal, timeout])
+    : signal;
+}
+
 /** Raw typed fetchers — also usable outside of components. */
+
 export const endpoints = {
   version: () => api.get<VersionInfo>(path("get_version")),
   /** Probe upstream for a newer release now rather than waiting out the
@@ -206,6 +221,7 @@ export const endpoints = {
    *  Drives capability-gated UI: the lazy `/github` route + nav. */
   capabilities: () => api.get<CapabilitiesResponse>(path("get_capabilities")),
   voiceConfig: () => api.get<VoiceConfigInfo>("/voice/config"),
+  voiceVoices: () => api.get<VoiceVoices>("/voice/voices"),
   /** Who the stored bearer token resolves to. */
   me: () => api.get<MeResponse>(path("get_me")),
   /** What a device login identified by its short code is asking for. */
@@ -359,13 +375,20 @@ export const endpoints = {
     includeArchived: boolean,
     limit: number,
     offset: number,
+    cursor: string | null,
+    signal?: AbortSignal,
   ) =>
-    api.get<SessionListResponse>("/sessions/search", {
-      q: q || undefined,
-      include_archived: includeArchived || undefined,
-      limit,
-      offset,
-    }),
+    api.get<SessionListResponse>(
+      "/sessions/search",
+      {
+        q: q || undefined,
+        include_archived: includeArchived || undefined,
+        limit,
+        offset: cursor ? undefined : offset,
+        cursor: cursor ?? undefined,
+      },
+      withSearchTimeout(signal),
+    ),
   searchFieldValues: (field: string, q: string, context?: string) =>
     api.get<string[]>("/sessions/search/values", {
       field,
@@ -396,11 +419,17 @@ export const endpoints = {
   /** Find-in-conversation hit list for ONE session, oldest → newest. The
    *  server is the source of truth for the total: the DOM only holds the
    *  currently paged window. */
-  conversationSearch: (id: string, q: string, limit?: number) =>
-    api.get<ConversationSearchResponse>(`/sessions/${id}/search`, {
-      q,
-      limit,
-    }),
+  conversationSearch: (
+    id: string,
+    q: string,
+    limit?: number,
+    signal?: AbortSignal,
+  ) =>
+    api.get<ConversationSearchResponse>(
+      `/sessions/${id}/search`,
+      { q, limit },
+      withSearchTimeout(signal),
+    ),
   messagePins: (id: string) =>
     api.get<MessagePin[]>(`/sessions/${id}/pins`),
   pinMessage: (id: string, seq: number, messageId?: string | null) =>

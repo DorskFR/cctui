@@ -3,10 +3,12 @@
 	import type { Snippet } from 'svelte';
 	import { Button, Callout, Container, Spinner, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
-	import { nest, idsForSection } from './sessions.logic';
+	import type { SessionListItem } from '@bindings/SessionListItem';
+	import { nest, idsForSection, machineGroupLiveness } from './sessions.logic';
 	import type { SessionsPage } from './sessionsPage.svelte';
 	import SessionGroupHeader from './SessionGroupHeader.svelte';
 	import SessionRows from './SessionRows.svelte';
+	import ArchivedRows from './ArchivedRows.svelte';
 	import DraftRows from './DraftRows.svelte';
 	import PendingSpawnRows from './PendingSpawnRows.svelte';
 
@@ -42,9 +44,14 @@
 		<Callout tone="danger">{m.sessions_search_failed({ error: sp.pageError })}</Callout>
 	{:else if sp.pageLoading}
 		<div class="loadmore"><Spinner label={m.common_loading()} /></div>
-		{:else if !sp.pageDone && sp.pageRows.length > 0}
+		{:else if !sp.pageDone && (sp.pageRows.length > 0 || sp.pagePartial)}
 			<div class="loadmore">
-				<Button onclick={() => sp.loadMore()}>{m.sessions_load_more()}</Button>
+				{#if sp.pagePartial}
+					<Text tone="muted">{m.sessions_search_partial()}</Text>
+				{/if}
+				<Button onclick={() => sp.loadMore()}>
+					{sp.pagePartial ? m.sessions_search_further() : m.sessions_load_more()}
+				</Button>
 			</div>
 		{/if}
 {/snippet}
@@ -57,6 +64,8 @@
 		<!-- Search results, scoped by the Archived checkbox; split Live / Archived. -->
 		{#if sp.pageLoading && sp.pageRows.length === 0}
 			<div class="placeholder"><Spinner label={m.common_loading()} /></div>
+		{:else if sp.pageRows.length === 0 && sp.pagePartial}
+			{@render loadMore()}
 		{:else if sp.pageRows.length === 0}
 			<div class="placeholder"><Text tone="muted">{m.sessions_search_no_match({ query: sp.serverQuery })}{sp.showArchived ? '.' : ' ' + m.sessions_search_live_only_hint()}</Text></div>
 		{:else}
@@ -87,7 +96,7 @@
 		<div class="section">
 			{@render groupHeader('archived', m.sessions_section_archived(), archTop.length, {})}
 			{#if !sp.hiddenSections.has('archived')}
-				<SessionRows {sp} rows={archTop} childGroups={ns.childGroups} allowSelect={false} hl={sp.searchTerms} {pending} />
+				<ArchivedRows {sp} rows={archTop} childGroups={ns.childGroups} hl={sp.searchTerms} {pending} />
 			{/if}
 		</div>
 	{/if}
@@ -101,7 +110,13 @@
 	key: string,
 	label: string,
 	count: number,
-	opts: { hue?: number | null; bucket?: string | null; machine?: string | null; archiveIds?: string[] }
+	opts: {
+		hue?: number | null;
+		bucket?: string | null;
+		machine?: string | null;
+		sessions?: SessionListItem[];
+		archiveIds?: string[];
+	}
 )}
 	<SessionGroupHeader
 		{sp}
@@ -111,7 +126,9 @@
 		hue={opts.hue}
 		bucket={opts.bucket}
 		machine={opts.machine}
-		liveness={opts.machine ? machineLiveness(opts.machine) : null}
+		liveness={opts.machine
+			? machineGroupLiveness(machineLiveness(opts.machine), opts.sessions ?? [])
+			: null}
 		archiveIds={opts.archiveIds}
 	/>
 {/snippet}
@@ -132,6 +149,7 @@
 					{@render groupHeader(key, g.label, g.sessions.length, {
 						hue: g.hue,
 						machine: sp.groupBy === 'machine' && g.hue !== null ? g.label : null,
+						sessions: g.sessions,
 						archiveIds: idsForSection(g.sessions, sp.childGroupsOf)
 					})}
 					{#if !sp.hiddenSections.has(key)}
@@ -176,7 +194,7 @@
 					{#if sp.pageRows.length === 0 && !sp.pageLoading}
 						<div class="placeholder"><Text tone="muted">{m.sessions_no_archived()}</Text></div>
 					{:else}
-						<SessionRows {sp} rows={archTop} childGroups={ns.childGroups} allowSelect={false} hl={sp.searchTerms} {pending} />
+						<ArchivedRows {sp} rows={archTop} childGroups={ns.childGroups} hl={sp.searchTerms} {pending} />
 						{@render loadMore()}
 					{/if}
 				{/if}
@@ -209,7 +227,10 @@
 	}
 	.loadmore {
 		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
 		justify-content: center;
+		gap: var(--sp-3);
 		padding: var(--sp-3) 0;
 	}
 	.sections {

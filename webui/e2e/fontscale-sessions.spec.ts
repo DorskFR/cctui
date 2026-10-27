@@ -51,6 +51,8 @@ for (const view of ['grid', 'list'] as const) {
 					const edge = card.getBoundingClientRect().right - parseFloat(getComputedStyle(card).paddingRight) + 1;
 					return [...card.querySelectorAll('*')]
 						.filter((el) => {
+							if (el.getAttribute('aria-hidden') === 'true' && getComputedStyle(el).position === 'absolute')
+								return false;
 							const b = el.getBoundingClientRect();
 							return b.width > 0 && b.right > edge;
 						})

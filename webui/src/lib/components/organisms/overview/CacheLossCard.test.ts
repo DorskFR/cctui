@@ -51,10 +51,12 @@ describe('CacheLossCard', () => {
 				day: '2026-09-24',
 				ttl_expired: 0,
 				gateway_rewrote_body: 0,
+				provider_miss: 0,
 				unknown: 0,
 				total: 0,
 				ttl_expired_tokens: 0,
 				gateway_rewrote_body_tokens: 0,
+				provider_miss_tokens: 0,
 				unknown_tokens: 172_523,
 				lost_tokens: 172_523,
 				busts: 3

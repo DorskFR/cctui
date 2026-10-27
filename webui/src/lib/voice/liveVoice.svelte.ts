@@ -5,11 +5,33 @@ import type { VoiceClientMsg } from '@bindings/VoiceClientMsg';
 import type { VoiceServerMsg } from '@bindings/VoiceServerMsg';
 import { wsBase } from '$lib/config';
 import type { VoiceSettings } from '$lib/settings.svelte';
-import { floatToPcm16 } from './pcm';
+import { type ChunkerOptions, UtteranceChunker } from './chunker';
+import { floatToPcm16, frameLevel } from './pcm';
 import type { SpeechPlayer } from './player';
 import type { VadFactory, VadHandle } from './vad';
 
-export type LiveStatus = 'off' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'error';
+/** How long a transcribed turn may sit between the server's `listening` and
+ *  its first sentence before the loop gives up on a reply. */
+export const REPLY_GRACE_MS = 4000;
+
+/** Without barge-in, speech this soon after playback stops is the speakers'
+ *  echo tail, not the user. */
+export const ECHO_TAIL_MS = 600;
+
+export type LiveStatus =
+	| 'off'
+	| 'connecting'
+	| 'warming'
+	| 'listening'
+	| 'thinking'
+	| 'speaking'
+	| 'error';
+
+/** The spoken language for speech-to-text; `auto` keeps the instance default. */
+export type SpokenLanguage = 'auto' | 'en' | 'fr';
+export const SPOKEN_LANGUAGES: readonly SpokenLanguage[] = ['auto', 'en', 'fr'];
+
+const TALKING: ReadonlySet<LiveStatus> = new Set(['listening', 'thinking', 'speaking']);
 
 export interface SocketLike {
 	binaryType: BinaryType;
@@ -28,10 +50,12 @@ export interface LiveVoiceDeps {
 	player: SpeechPlayer;
 	wakeLock: () => Promise<() => void>;
 	prefs: () => VoiceSettings;
+	chunker?: Partial<ChunkerOptions>;
 }
 
-export function voiceSocketUrl(sessionId: string): string {
-	return `${wsBase()}/ws/voice?session=${encodeURIComponent(sessionId)}`;
+export function voiceSocketUrl(sessionId: string, language: SpokenLanguage = 'auto'): string {
+	const lang = language === 'auto' ? '' : `&language=${language}`;
+	return `${wsBase()}/ws/voice?session=${encodeURIComponent(sessionId)}${lang}`;
 }
 
 export class LiveVoice {
@@ -40,14 +64,33 @@ export class LiveVoice {
 	muted = $state(false);
 	transcript = $state('');
 	error = $state<string | null>(null);
+	language = $state<SpokenLanguage>('auto');
 
 	private socket: SocketLike | null = null;
 	private vad: VadHandle | null = null;
 	private releaseWakeLock: (() => void) | null = null;
+	/** Lowest reply generation the server can still send after our interrupts;
+	 *  older lines are leftovers of a cut reply. */
+	private minGen = 1;
+	private lineGen = 0;
+	private server: LiveStatus = 'off';
+	private playing = false;
+	private awaitingReply = false;
+	private quietAt = 0;
+	/** The speech in progress started over a reply and is being ignored. */
+	private echo = false;
+	private replyTimer: ReturnType<typeof setTimeout> | null = null;
 	private readonly deps: LiveVoiceDeps;
+	private readonly chunker: UtteranceChunker;
 
 	constructor(deps: LiveVoiceDeps) {
 		this.deps = deps;
+		this.chunker = new UtteranceChunker((s, last) => this.sendPart(s, last), deps.chunker);
+		deps.player.onIdleChange((idle) => {
+			this.playing = !idle;
+			if (idle) this.quietAt = Date.now();
+			if (this.socket) this.show();
+		});
 	}
 
 	get active(): boolean {
@@ -59,9 +102,13 @@ export class LiveVoice {
 		if (this.socket) return;
 		this.error = null;
 		this.transcript = '';
+		this.server = 'connecting';
 		this.status = 'connecting';
+		this.minGen = 1;
+		this.lineGen = 0;
+		this.language = this.deps.prefs().language;
 		void this.deps.player.unlock();
-		const sock = this.deps.connect(voiceSocketUrl(sessionId));
+		const sock = this.deps.connect(voiceSocketUrl(sessionId, this.language));
 		sock.binaryType = 'arraybuffer';
 		this.socket = sock;
 		sock.onopen = () => {
@@ -95,13 +142,22 @@ export class LiveVoice {
 		this.muted = !this.muted;
 		if (this.muted) {
 			this.vad?.pause();
+			this.chunker.cancel();
 			this.level = 0;
 		} else void this.vad?.start();
 	}
 
+	setLanguage(language: SpokenLanguage) {
+		if (language === this.language) return;
+		this.language = language;
+		this.send({ type: 'mode', language });
+	}
+
 	/** The user interrupted by hand (the stop button while speaking). */
 	interrupt() {
+		this.endAwait();
 		this.deps.player.stop();
+		this.minGen = Math.max(this.minGen, this.lineGen) + 1;
 		this.send({ type: 'interrupt' });
 	}
 
@@ -112,7 +168,8 @@ export class LiveVoice {
 			barge_in: p.bargeIn,
 			spoken_style: p.spokenStyle,
 			voice: p.voice ?? null,
-			speed: p.speed
+			speed: p.speed,
+			language: this.language
 		});
 	}
 
@@ -120,10 +177,12 @@ export class LiveVoice {
 		try {
 			const vad = await this.deps.vad({
 				onSpeechStart: () => this.onSpeechStart(),
-				onSpeechEnd: (audio) => this.onSpeechEnd(audio),
-				onLevel: (level) => {
-					if (!this.muted) this.level = level;
-				}
+				onSpeechEnd: () => this.onSpeechEnd(),
+				onMisfire: () => {
+					this.echo = false;
+					this.chunker.cancel();
+				},
+				onFrame: (frame, prob) => this.onFrame(frame, prob)
 			});
 			if (this.socket !== sock) {
 				vad.destroy();
@@ -131,22 +190,47 @@ export class LiveVoice {
 			}
 			this.vad = vad;
 			if (!this.muted) await vad.start();
-			if (this.status === 'connecting') this.status = 'listening';
+			if (this.status === 'connecting') this.setServer('listening');
 		} catch (e) {
 			if (this.socket === sock) this.fail(e instanceof Error ? e.message : 'microphone unavailable');
 		}
 	}
 
+	/** Without barge-in the loop is half duplex: what the microphone hears
+	 *  over a reply is its own echo, never recorded nor allowed to cut it. */
 	private onSpeechStart() {
-		if (this.status === 'speaking' || this.deps.player.playing) {
-			this.deps.player.stop();
-			this.send({ type: 'interrupt' });
-		}
+		const replying = this.status === 'speaking' || this.deps.player.playing;
+		if (!this.deps.prefs().bargeIn) {
+			if (replying || Date.now() - this.quietAt < ECHO_TAIL_MS) {
+				this.echo = true;
+				return;
+			}
+		} else if (replying) this.interrupt();
+		if (!this.muted) this.chunker.start();
 	}
 
-	private onSpeechEnd(audio: Float32Array) {
-		if (!audio.length || this.muted) return;
-		this.sendBinary(floatToPcm16(audio));
+	private onFrame(frame: Float32Array, speechProb: number) {
+		if (this.muted) return;
+		this.level = frameLevel(frame);
+		this.chunker.frame(frame, speechProb);
+	}
+
+	private onSpeechEnd() {
+		if (this.echo) {
+			this.echo = false;
+			return;
+		}
+		if (this.muted) this.chunker.cancel();
+		else this.chunker.end();
+	}
+
+	private sendPart(samples: Float32Array, last: boolean) {
+		if (!last) {
+			if (!samples.length) return;
+			this.send({ type: 'part' });
+			this.sendBinary(floatToPcm16(samples));
+		} else if (samples.length) this.sendBinary(floatToPcm16(samples));
+		else this.send({ type: 'utterance_end' });
 	}
 
 	private onMessage(data: unknown) {
@@ -163,21 +247,64 @@ export class LiveVoice {
 		}
 		switch (msg.type) {
 			case 'state':
-				this.status = msg.state;
+				this.setServer(msg.state);
 				break;
 			case 'transcript':
 				this.transcript = msg.text;
+				if (!this.chunker.active) this.awaitingReply = true;
+				this.show();
 				break;
-			case 'speak_start':
+			case 'speak_start': {
+				const gen = Number.parseInt(msg.line_id, 10);
+				if (Number.isFinite(gen)) {
+					if (gen < this.minGen) break;
+					this.lineGen = Math.max(this.lineGen, gen);
+				}
+				this.endAwait();
 				this.deps.player.begin(msg.line_id);
 				break;
+			}
 			case 'speak_end':
 				this.deps.player.end(msg.line_id);
 				break;
 			case 'error':
 				this.error = msg.message;
+				this.endAwait();
+				this.show();
+				break;
+			case 'listen':
+				this.chunker.setLivePartMs(msg.part_ms);
+				this.chunker.setMinPartMs(msg.min_part_ms ?? null);
 				break;
 		}
+	}
+
+	private setServer(state: LiveStatus) {
+		this.server = state;
+		if (state === 'listening' && this.awaitingReply && !this.replyTimer) {
+			this.replyTimer = setTimeout(() => {
+				this.replyTimer = null;
+				this.awaitingReply = false;
+				if (this.socket) this.show();
+			}, REPLY_GRACE_MS);
+		}
+		this.show();
+	}
+
+	/** The server marks a reply done once it is synthesized, long before the
+	 *  queued audio has played, and briefly reports `listening` between a
+	 *  transcript and the reply's first sentence. */
+	private show() {
+		if (this.playing && TALKING.has(this.server)) this.status = 'speaking';
+		else if (this.server !== 'listening') this.status = this.server;
+		else if (this.awaitingReply) this.status = 'thinking';
+		else this.status = 'listening';
+	}
+
+	private endAwait() {
+		this.awaitingReply = false;
+		if (this.replyTimer) clearTimeout(this.replyTimer);
+		this.replyTimer = null;
 	}
 
 	private send(msg: VoiceClientMsg) {
@@ -206,6 +333,11 @@ export class LiveVoice {
 		}
 		this.vad?.destroy();
 		this.vad = null;
+		this.chunker.cancel();
+		this.chunker.setLivePartMs(null);
+		this.chunker.setMinPartMs(null);
+		this.endAwait();
+		this.server = 'off';
 		this.deps.player.stop();
 		this.releaseWakeLock?.();
 		this.releaseWakeLock = null;

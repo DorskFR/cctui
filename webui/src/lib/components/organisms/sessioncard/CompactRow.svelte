@@ -11,13 +11,13 @@
 
 	// One real row, no wrap: lead · preview (takes the slack) · cwd · branch ·
 	// perm · unread · Σ $ · model · effort · logo · time. Narrow enough and the
-	// preview yields the slack to the title.
+	// preview yields the slack to the title; on a phone the chips wrap under it.
 	let { view, actions }: { view: SessionView; actions: SessionActions } = $props();
 	const s = $derived(view.s);
 </script>
 
 <div class="gaps">
-<Cluster wrap={false} gap="var(--row-gap)">
+<Cluster wrap={false} wrapAt="30em" gap="var(--row-gap)">
 	<Lead {view} {actions} row />
 	{#if s.match_snippet || view.lastMsg}
 		<span class="snippet">
@@ -124,6 +124,7 @@
 	}
 	.time {
 		flex: none;
+		margin-inline-start: auto;
 		min-width: 30px;
 		text-align: right;
 		white-space: nowrap;

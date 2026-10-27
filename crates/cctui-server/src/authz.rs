@@ -737,6 +737,25 @@ mod tests {
         assert_eq!(status_of(admin, "/r").await, StatusCode::OK);
     }
 
+    #[tokio::test]
+    async fn spawn_route_needs_the_dispatch_scope() {
+        let spawn = descriptors()
+            .into_iter()
+            .find(|d| d.method == Method::POST && d.path == "/sessions/spawn")
+            .expect("spawn route registered");
+        assert!(matches!(spawn.authz, Authz::Scope(Scope::Dispatch)), "{:?}", spawn.authz);
+
+        let read_only = one_route_app(spawn.authz.clone(), Some(user(Uuid::new_v4())));
+        assert_eq!(status_of(read_only, "/r").await, StatusCode::FORBIDDEN);
+
+        let mut human = user(Uuid::new_v4());
+        human.scopes = [Scope::Read, Scope::Enroll, Scope::Dispatch].into_iter().collect();
+        let webui = one_route_app(spawn.authz.clone(), Some(human));
+        assert_eq!(status_of(webui, "/r").await, StatusCode::OK);
+        let admin = one_route_app(spawn.authz, Some(admin()));
+        assert_eq!(status_of(admin, "/r").await, StatusCode::OK);
+    }
+
     #[test]
     fn custom_and_scope_routes_are_enumerated() {
         // Enumerates every non-`Authenticated` policy so a change to who-can-do-what
@@ -1061,6 +1080,7 @@ mod tests {
             "/users/{id}/tokens",
             // `user_id`-filtered SQL in the handler.
             "/bookmarks/{id}",
+            "/dispatch-records/{id}/dismiss",
             "/drafts/{*key}",
             "/keys/{id}",
             "/keys/{id}/value",

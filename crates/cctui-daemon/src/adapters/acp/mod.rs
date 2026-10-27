@@ -281,7 +281,7 @@ impl SessionDriver for Pump {
                 effort: None,
                 permission_mode: None,
                 parent_local_id: None,
-                started_at_ms: crate::neighbours::now_ms(),
+                started_at_ms: crate::adapters::now_ms(),
                 spawn_relay: false,
             },
             (None, None) => {

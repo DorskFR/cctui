@@ -32,6 +32,8 @@ struct DispatchReply {
     /// fall back.
     #[serde(default)]
     status: Option<String>,
+    #[serde(default)]
+    queue_position: Option<u32>,
 }
 
 impl HttpDispatcher {
@@ -83,6 +85,7 @@ impl Dispatcher for HttpDispatcher {
             handle: reply.handle,
             namespace: reply.namespace,
             status: reply.status,
+            queue_position: reply.queue_position,
         })
     }
 }

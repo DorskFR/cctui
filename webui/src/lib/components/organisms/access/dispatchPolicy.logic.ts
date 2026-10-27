@@ -80,3 +80,11 @@ export function rulesFromForm(form: PolicyForm): DispatchPolicyRules {
 export function incompletePacks(form: PolicyForm): boolean {
 	return form.packs.some((p) => !!p.name.trim() !== !!p.url.trim());
 }
+
+export type LimitField = 'maxTimeout' | 'maxConcurrent' | 'dailyCap';
+
+/** Limits typed but not a positive integer: saving them would silently drop the cap. */
+export function invalidLimits(form: PolicyForm): LimitField[] {
+	const fields: LimitField[] = ['maxTimeout', 'maxConcurrent', 'dailyCap'];
+	return fields.filter((f) => form[f].trim() !== '' && parseLimit(form[f]) === undefined);
+}
