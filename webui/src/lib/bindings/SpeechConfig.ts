@@ -7,4 +7,9 @@ export type SpeechConfig = { enabled: boolean,
 /**
  * OpenAI-compatible root, e.g. `https://speech.example/v1`.
  */
-base_url: string, stt_model: string, stt_language: string | null, tts_model: string, tts_voice: string, tts_format: string, };
+base_url: string, stt_model: string, stt_language: string | null, tts_model: string, tts_voice: string, tts_format: string, 
+/**
+ * Chat model that shortens long messages before they are read aloud;
+ * empty turns summaries off.
+ */
+summary_model: string, };

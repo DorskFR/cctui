@@ -379,6 +379,7 @@ fn validate_speech(c: SpeechConfig) -> Result<SpeechConfig, AppError> {
         tts_model: trim(&c.tts_model),
         tts_voice: trim(&c.tts_voice),
         tts_format: trim(&c.tts_format).to_ascii_lowercase(),
+        summary_model: trim(&c.summary_model),
     };
     if c.base_url.is_empty() {
         if c.enabled {
@@ -400,6 +401,9 @@ fn validate_speech(c: SpeechConfig) -> Result<SpeechConfig, AppError> {
         if v.is_empty() || v.len() > 128 {
             return Err(bad(format!("{name} must be 1 to 128 characters")));
         }
+    }
+    if c.summary_model.len() > 128 {
+        return Err(bad("summary_model must be at most 128 characters".into()));
     }
     if c.stt_language.as_deref().is_some_and(|l| {
         l.len() > 16 || !l.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
@@ -472,9 +476,26 @@ pub async fn speech_catalog(
 ) -> Result<Json<SpeechCatalog>, AppError> {
     admin(&ctx)?;
     let client = speech_client(&state).await?;
-    let models = client.health().await.map_err(|e| speech_error(&e))?;
+    let models = client.models().await.map_err(|e| speech_error(&e))?;
     let voices = client.voices().await.unwrap_or_default();
-    Ok(Json(SpeechCatalog { models, voices }))
+    Ok(Json(catalog(models, voices)))
+}
+
+fn catalog(models: Vec<crate::speech::ModelEntry>, voices: Vec<String>) -> SpeechCatalog {
+    let tagged = |role: &str| {
+        models
+            .iter()
+            .filter(|m| m.owned_by.as_deref() == Some(role))
+            .map(|m| m.id.clone())
+            .collect::<Vec<_>>()
+    };
+    SpeechCatalog {
+        stt_models: tagged("stt"),
+        tts_models: tagged("tts"),
+        text_models: tagged("text"),
+        models: models.into_iter().map(|m| m.id).collect(),
+        voices,
+    }
 }
 
 /// Health check plus a short synthesis the admin UI plays back.
@@ -676,16 +697,40 @@ mod tests {
     }
 
     #[test]
+    fn the_catalog_sorts_tagged_models_by_role() {
+        let m = |id: &str, owned_by: Option<&str>| crate::speech::ModelEntry {
+            id: id.into(),
+            owned_by: owned_by.map(str::to_owned),
+        };
+        let c = catalog(
+            vec![
+                m("parakeet", Some("stt")),
+                m("kokoro", Some("tts")),
+                m("qwen3-1.7b", Some("text")),
+                m("gpt-4o", Some("openai")),
+            ],
+            vec!["af_heart".into()],
+        );
+        assert_eq!(c.models, ["parakeet", "kokoro", "qwen3-1.7b", "gpt-4o"]);
+        assert_eq!(
+            (c.stt_models, c.tts_models, c.text_models),
+            (vec!["parakeet".to_owned()], vec!["kokoro".to_owned()], vec!["qwen3-1.7b".to_owned()])
+        );
+    }
+
+    #[test]
     fn speech_validation_trims_and_rejects_bad_values() {
         let ok = SpeechConfig {
             enabled: true,
             base_url: " https://speech.example/v1/ ".into(),
             stt_language: Some(" ".into()),
             tts_format: "MP3".into(),
+            summary_model: " qwen3-1.7b ".into(),
             ..SpeechConfig::default()
         };
         let v = validate_speech(ok.clone()).unwrap();
         assert_eq!(v.base_url, "https://speech.example/v1");
+        assert_eq!(v.summary_model, "qwen3-1.7b");
         assert_eq!((v.stt_language, v.tts_format.as_str()), (None, "mp3"));
         assert!(validate_speech(SpeechConfig::default()).is_ok());
         for bad in [
@@ -696,6 +741,7 @@ mod tests {
             SpeechConfig { tts_voice: " ".into(), ..ok.clone() },
             SpeechConfig { stt_model: String::new(), ..ok.clone() },
             SpeechConfig { stt_language: Some("en; drop".into()), ..ok.clone() },
+            SpeechConfig { summary_model: "m".repeat(129), ..ok.clone() },
             SpeechConfig { tts_format: "ogg".into(), ..ok },
         ] {
             let status = validate_speech(bad.clone()).unwrap_err().status();

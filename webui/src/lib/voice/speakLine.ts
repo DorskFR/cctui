@@ -24,14 +24,19 @@ function stopCurrent() {
 export async function speakText(
 	key: string,
 	text: string,
-	opts: { voice?: string; speed?: number; onend?: () => void } = {}
+	opts: { voice?: string; speed?: number; summarize?: boolean; onend?: () => void } = {}
 ): Promise<'started' | 'stopped'> {
 	if (current?.key === key) {
 		stopCurrent();
 		return 'stopped';
 	}
 	stopCurrent();
-	const body: VoiceSpeakRequest = { text, voice: opts.voice, speed: opts.speed };
+	const body: VoiceSpeakRequest = {
+		text,
+		voice: opts.voice,
+		speed: opts.speed,
+		summarize: opts.summarize
+	};
 	const url = URL.createObjectURL(await api.postBlobJson('/voice/speak', body));
 	const audio = new Audio(url);
 	audio.playbackRate = opts.speed ?? 1;

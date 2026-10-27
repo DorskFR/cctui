@@ -18,6 +18,14 @@ pub(super) fn register(r: Routes) -> Routes {
         Human,
     )
     .add(
+        &[GET],
+        "/voice/voices",
+        "The voices the instance speech service offers.",
+        get(routes::voice::voices),
+        Authn::Bearer,
+        Human,
+    )
+    .add(
         &[Method::POST],
         "/voice/transcribe",
         "Transcribe a multipart `file` audio part (size-capped) to text.",

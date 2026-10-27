@@ -1856,6 +1856,12 @@ tui = "waived"
 reason = "voice input and playback need a browser audio stack; the TUI has none"
 
 [[route]]
+id = "get_voice_voices"
+# GET /voice/voices
+tui = "waived"
+reason = "voice input and playback need a browser audio stack; the TUI has none"
+
+[[route]]
 id = "post_voice_transcribe"
 # POST /voice/transcribe
 tui = "waived"

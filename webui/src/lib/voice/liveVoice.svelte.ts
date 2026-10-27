@@ -14,6 +14,10 @@ import type { VadFactory, VadHandle } from './vad';
  *  its first sentence before the loop gives up on a reply. */
 export const REPLY_GRACE_MS = 4000;
 
+/** Without barge-in, speech this soon after playback stops is the speakers'
+ *  echo tail, not the user. */
+export const ECHO_TAIL_MS = 600;
+
 export type LiveStatus =
 	| 'off'
 	| 'connecting'
@@ -72,6 +76,9 @@ export class LiveVoice {
 	private server: LiveStatus = 'off';
 	private playing = false;
 	private awaitingReply = false;
+	private quietAt = 0;
+	/** The speech in progress started over a reply and is being ignored. */
+	private echo = false;
 	private replyTimer: ReturnType<typeof setTimeout> | null = null;
 	private readonly deps: LiveVoiceDeps;
 	private readonly chunker: UtteranceChunker;
@@ -81,6 +88,7 @@ export class LiveVoice {
 		this.chunker = new UtteranceChunker((s, last) => this.sendPart(s, last), deps.chunker);
 		deps.player.onIdleChange((idle) => {
 			this.playing = !idle;
+			if (idle) this.quietAt = Date.now();
 			if (this.socket) this.show();
 		});
 	}
@@ -170,7 +178,10 @@ export class LiveVoice {
 			const vad = await this.deps.vad({
 				onSpeechStart: () => this.onSpeechStart(),
 				onSpeechEnd: () => this.onSpeechEnd(),
-				onMisfire: () => this.chunker.cancel(),
+				onMisfire: () => {
+					this.echo = false;
+					this.chunker.cancel();
+				},
 				onFrame: (frame, prob) => this.onFrame(frame, prob)
 			});
 			if (this.socket !== sock) {
@@ -185,8 +196,16 @@ export class LiveVoice {
 		}
 	}
 
+	/** Without barge-in the loop is half duplex: what the microphone hears
+	 *  over a reply is its own echo, never recorded nor allowed to cut it. */
 	private onSpeechStart() {
-		if (this.status === 'speaking' || this.deps.player.playing) this.interrupt();
+		const replying = this.status === 'speaking' || this.deps.player.playing;
+		if (!this.deps.prefs().bargeIn) {
+			if (replying || Date.now() - this.quietAt < ECHO_TAIL_MS) {
+				this.echo = true;
+				return;
+			}
+		} else if (replying) this.interrupt();
 		if (!this.muted) this.chunker.start();
 	}
 
@@ -197,6 +216,10 @@ export class LiveVoice {
 	}
 
 	private onSpeechEnd() {
+		if (this.echo) {
+			this.echo = false;
+			return;
+		}
 		if (this.muted) this.chunker.cancel();
 		else this.chunker.end();
 	}

@@ -63,6 +63,7 @@ import type { PasskeyTestResult } from "@bindings/PasskeyTestResult";
 import type { RelabelPasskeyRequest } from "@bindings/RelabelPasskeyRequest";
 import type { VersionInfo } from "@bindings/VersionInfo";
 import type { VoiceConfigInfo } from "@bindings/VoiceConfigInfo";
+import type { VoiceVoices } from "@bindings/VoiceVoices";
 import type { GitInfo } from "@bindings/GitInfo";
 import type { InstanceInfo } from "@bindings/InstanceInfo";
 import type { ChangelogResponse } from "@bindings/ChangelogResponse";
@@ -220,6 +221,7 @@ export const endpoints = {
    *  Drives capability-gated UI: the lazy `/github` route + nav. */
   capabilities: () => api.get<CapabilitiesResponse>(path("get_capabilities")),
   voiceConfig: () => api.get<VoiceConfigInfo>("/voice/config"),
+  voiceVoices: () => api.get<VoiceVoices>("/voice/voices"),
   /** Who the stored bearer token resolves to. */
   me: () => api.get<MeResponse>(path("get_me")),
   /** What a device login identified by its short code is asking for. */

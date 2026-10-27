@@ -456,6 +456,14 @@ pub const ROUTES: &[Route] = &[
         response: None,
     },
     Route {
+        id: "get_voice_voices",
+        method: Method::Get,
+        path: "/voice/voices",
+        summary: "The voices the instance speech service offers.",
+        request: None,
+        response: None,
+    },
+    Route {
         id: "post_voice_transcribe",
         method: Method::Post,
         path: "/voice/transcribe",
