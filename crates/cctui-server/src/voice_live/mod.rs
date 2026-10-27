@@ -28,7 +28,7 @@ use tracing::Instrument;
 
 use crate::auth::{AuthContext, Scope};
 use crate::bus::{VOICE_WATCH_REFRESH, VoiceEvent};
-use crate::speech::SpeechClient;
+use crate::speech::{SpeechClient, SpeechError, SttStream};
 use crate::state::AppState;
 pub use engine::{
     AudioStream, Inbound, Outbound, Prefs, Signal, VoiceBackend, picked_language, run_voice_loop,
@@ -111,6 +111,14 @@ impl VoiceBackend for ServerBackend {
             .await
             .map(drop)
             .map_err(|e| e.to_string())
+    }
+
+    fn streams(&self, language: Option<&str>) -> bool {
+        self.client.stt_streams(language)
+    }
+
+    async fn stream(&self, language: Option<&str>) -> Result<SttStream, SpeechError> {
+        self.client.stream_transcription(language).await
     }
 
     async fn synthesize(

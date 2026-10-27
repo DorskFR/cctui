@@ -321,18 +321,30 @@ struct GuardedResolver {
 impl reqwest::dns::Resolve for GuardedResolver {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
         let host = name.as_str().to_owned();
-        let open = host_allowlisted(&host, &(self.allow)());
+        let allow = (self.allow)();
         Box::pin(async move {
-            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
-                .await?
-                .filter(|a| open || !ip_is_internal(a.ip()))
-                .collect();
-            if addrs.is_empty() {
-                return Err(format!("{host}: no permitted address").into());
-            }
+            let addrs = permitted_addrs(&host, 0, &allow).await?;
             Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
         })
     }
+}
+
+/// The addresses of `host` a guarded connection may reach: internal ones are
+/// dropped unless the host is allowlisted.
+pub async fn permitted_addrs(
+    host: &str,
+    port: u16,
+    allow: &[AllowedHost],
+) -> std::io::Result<Vec<SocketAddr>> {
+    let open = host_allowlisted(host, allow);
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((bare_host(host), port))
+        .await?
+        .filter(|a| open || !ip_is_internal(a.ip()))
+        .collect();
+    if addrs.is_empty() {
+        return Err(std::io::Error::other(format!("{host}: no permitted address")));
+    }
+    Ok(addrs)
 }
 
 /// A client that follows no redirects and resolves names through the guard.
@@ -367,8 +379,16 @@ pub fn upstream_client() -> &'static reqwest::Client {
 mod tests {
     use super::{
         OutboundUrlError, ip_is_internal, normalize_allowlist_entry, parse_allowlist,
-        validate_outbound_url,
+        permitted_addrs, validate_outbound_url,
     };
+
+    #[tokio::test]
+    async fn a_guarded_connection_reaches_an_internal_host_only_when_allowlisted() {
+        assert!(permitted_addrs("127.0.0.1", 80, &[]).await.is_err());
+        assert!(permitted_addrs("[::1]", 80, &[]).await.is_err());
+        let addrs = permitted_addrs("127.0.0.1", 80, &parse_allowlist("127.0.0.1")).await.unwrap();
+        assert_eq!(addrs, vec!["127.0.0.1:80".parse().unwrap()]);
+    }
 
     #[test]
     fn env_hosts_stay_allowed_alongside_saved_ones() {

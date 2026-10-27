@@ -459,7 +459,9 @@ pub fn speech_error(e: &crate::speech::SpeechError) -> AppError {
     let status = match e {
         E::NotConfigured => StatusCode::CONFLICT,
         E::InputTooLong | E::Url(_) => StatusCode::BAD_REQUEST,
-        E::Transport(_) | E::Upstream { .. } | E::Decode(_) => StatusCode::BAD_GATEWAY,
+        E::Transport(_) | E::Upstream { .. } | E::Decode(_) | E::StreamClosed { .. } => {
+            StatusCode::BAD_GATEWAY
+        }
     };
     AppError::new(status, e.to_string())
 }

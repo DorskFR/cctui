@@ -4,8 +4,10 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use futures_util::{Stream, StreamExt, TryStreamExt};
+use futures_util::{SinkExt, Stream, StreamExt, TryStreamExt};
 use serde::Deserialize;
+use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::{self, Message};
 
 pub use cctui_proto::api::settings::SpeechConfig;
 
@@ -14,6 +16,11 @@ pub const MAX_TTS_INPUT_CHARS: usize = 4096;
 /// picked: parakeet drifts into English words on French speech.
 pub const MULTILINGUAL_STT_MODEL: &str = "whisper";
 const ENGLISH_FIRST_STT_MODELS: &[&str] = &["parakeet"];
+/// Models the router transcribes live over its websocket.
+const STREAMING_STT_MODELS: &[&str] = &["nemotron"];
+/// Audio per websocket frame: 16 kHz mono PCM16, a third of a second.
+const STREAM_FRAME_BYTES: usize = 10_240;
+const STREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const AUDIO_TIMEOUT: Duration = Duration::from_mins(1);
 const META_TIMEOUT: Duration = Duration::from_secs(10);
 const SUMMARY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -32,6 +39,162 @@ pub enum SpeechError {
     Upstream { status: u16, body: String },
     #[error("unexpected speech service response: {0}")]
     Decode(String),
+    #[error("speech stream closed ({code}): {detail}")]
+    StreamClosed { code: u16, detail: String },
+}
+
+impl SpeechError {
+    /// The service cannot stream this model or language at all, as opposed
+    /// to being busy or unreachable for now.
+    pub const fn refuses_streaming(&self) -> bool {
+        match self {
+            Self::StreamClosed { code, .. } => *code == 1008,
+            Self::Upstream { status, .. } => *status >= 400 && *status < 500 && *status != 429,
+            _ => false,
+        }
+    }
+}
+
+pub fn stt_streams(model: &str) -> bool {
+    STREAMING_STT_MODELS.contains(&model)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SttEvent {
+    /// Everything heard so far in the utterance.
+    Partial(String),
+    Final(String),
+}
+
+#[derive(Debug)]
+pub enum SttInput {
+    Audio(Bytes),
+    End,
+}
+
+/// One live transcription: 16 kHz mono PCM16 in, partial and final text
+/// out. After a final the same stream takes the next utterance. Dropping it
+/// discards the utterance in flight.
+#[derive(Debug)]
+pub struct SttStream {
+    input: mpsc::UnboundedSender<SttInput>,
+    events: mpsc::UnboundedReceiver<Result<SttEvent, SpeechError>>,
+    task: Option<tokio::task::AbortHandle>,
+}
+
+impl Drop for SttStream {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+type SttEvents = mpsc::UnboundedSender<Result<SttEvent, SpeechError>>;
+
+impl SttStream {
+    /// A stream fed by whatever holds the other ends.
+    pub fn channel() -> (Self, mpsc::UnboundedReceiver<SttInput>, SttEvents) {
+        let (input, input_rx) = mpsc::unbounded_channel();
+        let (events_tx, events) = mpsc::unbounded_channel();
+        (Self { input, events, task: None }, input_rx, events_tx)
+    }
+
+    /// False once the stream is gone.
+    pub fn send_audio(&self, pcm: &Bytes) -> bool {
+        let mut at = 0;
+        while at < pcm.len() {
+            let end = (at + STREAM_FRAME_BYTES).min(pcm.len());
+            if self.input.send(SttInput::Audio(pcm.slice(at..end))).is_err() {
+                return false;
+            }
+            at = end;
+        }
+        true
+    }
+
+    pub fn end(&self) -> bool {
+        self.input.send(SttInput::End).is_ok()
+    }
+
+    /// `None` once the stream is gone; a failure is reported once before.
+    pub async fn event(&mut self) -> Option<Result<SttEvent, SpeechError>> {
+        self.events.recv().await
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum StreamFrame {
+    Partial {
+        text: String,
+    },
+    Final {
+        text: String,
+    },
+    Error {
+        #[serde(default)]
+        detail: String,
+    },
+    #[serde(other)]
+    Other,
+}
+
+type UpstreamWs =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn pump_stream(
+    ws: UpstreamWs,
+    mut input: mpsc::UnboundedReceiver<SttInput>,
+    events: SttEvents,
+) {
+    let (mut sink, mut stream) = ws.split();
+    let mut detail = String::new();
+    loop {
+        tokio::select! {
+            cmd = input.recv() => {
+                let msg = match cmd {
+                    Some(SttInput::Audio(pcm)) => Message::Binary(pcm),
+                    Some(SttInput::End) => Message::Text(r#"{"type":"end"}"#.into()),
+                    None => {
+                        let _ = sink.send(Message::Close(None)).await;
+                        return;
+                    }
+                };
+                if let Err(e) = sink.send(msg).await {
+                    let _ = events.send(Err(SpeechError::Transport(e.to_string())));
+                    return;
+                }
+            }
+            msg = stream.next() => {
+                let event = match msg {
+                    Some(Ok(Message::Text(text))) => match serde_json::from_str(&text) {
+                        Ok(StreamFrame::Partial { text }) => Ok(SttEvent::Partial(text)),
+                        Ok(StreamFrame::Final { text }) => Ok(SttEvent::Final(text)),
+                        Ok(StreamFrame::Error { detail: d }) => {
+                            detail = d;
+                            continue;
+                        }
+                        Ok(StreamFrame::Other) | Err(_) => continue,
+                    },
+                    Some(Ok(Message::Close(frame))) => {
+                        let (code, reason) =
+                            frame.map_or((1005, String::new()), |f| (u16::from(f.code), f.reason.to_string()));
+                        let detail = if reason.is_empty() { std::mem::take(&mut detail) } else { reason };
+                        let _ = events.send(Err(SpeechError::StreamClosed { code, detail }));
+                        return;
+                    }
+                    Some(Ok(_)) => continue,
+                    Some(Err(e)) => Err(SpeechError::Transport(e.to_string())),
+                    None => Err(SpeechError::StreamClosed { code: 1006, detail: std::mem::take(&mut detail) }),
+                };
+                let failed = event.is_err();
+                if events.send(event).is_err() || failed {
+                    return;
+                }
+            }
+        }
+    }
 }
 
 impl From<reqwest::Error> for SpeechError {
@@ -44,6 +207,9 @@ pub struct SpeechClient {
     http: reqwest::Client,
     config: SpeechConfig,
     api_key: Option<String>,
+    /// Websocket connections resolve through the SSRF guard, as
+    /// [`crate::outbound::upstream_client`] does.
+    guarded: bool,
 }
 
 impl std::fmt::Debug for SpeechClient {
@@ -125,7 +291,7 @@ fn extension(mime: &str) -> &'static str {
 
 impl SpeechClient {
     pub const fn new(http: reqwest::Client, config: SpeechConfig, api_key: Option<String>) -> Self {
-        Self { http, config, api_key }
+        Self { http, config, api_key, guarded: false }
     }
 
     /// The client for the saved setting, through the SSRF-guarded upstream client.
@@ -137,7 +303,9 @@ impl SpeechClient {
             return Err(SpeechError::NotConfigured);
         }
         crate::outbound::upstream_url_permitted(&config.base_url).map_err(SpeechError::Url)?;
-        Ok(Self::new(crate::outbound::upstream_client().clone(), config, api_key))
+        let mut client = Self::new(crate::outbound::upstream_client().clone(), config, api_key);
+        client.guarded = true;
+        Ok(client)
     }
 
     pub const fn config(&self) -> &SpeechConfig {
@@ -214,6 +382,69 @@ impl SpeechClient {
             .await
             .map_err(|e| SpeechError::Decode(e.without_url().to_string()))?;
         Ok(body.text)
+    }
+
+    /// Whether `language` routes to a model that streams.
+    pub fn stt_streams(&self, language: Option<&str>) -> bool {
+        stt_streams(self.stt_route(language, None).0)
+    }
+
+    /// A live transcription session with the model `language` routes to.
+    pub async fn stream_transcription(
+        &self,
+        language: Option<&str>,
+    ) -> Result<SttStream, SpeechError> {
+        use tungstenite::client::IntoClientRequest;
+
+        let (model, language) = self.stt_route(language, None);
+        let base = self.config.base_url.trim_end_matches('/');
+        let mut url = reqwest::Url::parse(&format!("{base}/audio/transcriptions/stream"))
+            .map_err(|_| SpeechError::Url(crate::outbound::OutboundUrlError::Malformed))?;
+        let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
+        url.set_scheme(scheme)
+            .map_err(|()| SpeechError::Url(crate::outbound::OutboundUrlError::Malformed))?;
+        url.query_pairs_mut().append_pair("model", model);
+        if let Some(lang) = language {
+            url.query_pairs_mut().append_pair("language", lang);
+        }
+        let mut req = url
+            .as_str()
+            .into_client_request()
+            .map_err(|_| SpeechError::Url(crate::outbound::OutboundUrlError::Malformed))?;
+        if let Some(key) = &self.api_key {
+            let value = format!("Bearer {key}")
+                .parse()
+                .map_err(|_| SpeechError::Decode("invalid API key".into()))?;
+            req.headers_mut().insert(reqwest::header::AUTHORIZATION, value);
+        }
+        let connect = async {
+            if !self.guarded {
+                return tokio_tungstenite::connect_async(req).await;
+            }
+            let host = url.host_str().unwrap_or_default();
+            let port = url.port_or_known_default().unwrap_or(443);
+            let allow = crate::outbound::upstream_allowlist();
+            let addrs = crate::outbound::permitted_addrs(host, port, &allow).await?;
+            let tcp = tokio::net::TcpStream::connect(&*addrs).await?;
+            tokio_tungstenite::client_async_tls(req, tcp).await
+        };
+        let (ws, _) = tokio::time::timeout(STREAM_CONNECT_TIMEOUT, connect)
+            .await
+            .map_err(|_| SpeechError::Transport("speech stream connect timed out".into()))?
+            .map_err(|e| match e {
+                tungstenite::Error::Http(resp) => SpeechError::Upstream {
+                    status: resp.status().as_u16(),
+                    body: resp
+                        .body()
+                        .as_deref()
+                        .map(|b| String::from_utf8_lossy(b).chars().take(300).collect())
+                        .unwrap_or_default(),
+                },
+                other => SpeechError::Transport(other.to_string()),
+            })?;
+        let (mut stream, input, events) = SttStream::channel();
+        stream.task = Some(tokio::spawn(pump_stream(ws, input, events)).abort_handle());
+        Ok(stream)
     }
 
     fn speech_request(
@@ -414,6 +645,11 @@ mod tests {
         (format!("http://{addr}"), seen)
     }
 
+    fn http() -> reqwest::Client {
+        crate::install_crypto_provider();
+        reqwest::Client::new()
+    }
+
     fn client(base: &str, key: Option<&str>) -> SpeechClient {
         let config = SpeechConfig {
             enabled: true,
@@ -421,7 +657,7 @@ mod tests {
             stt_language: Some("en".into()),
             ..SpeechConfig::default()
         };
-        SpeechClient::new(reqwest::Client::new(), config, key.map(str::to_owned))
+        SpeechClient::new(http(), config, key.map(str::to_owned))
     }
 
     #[tokio::test]
@@ -479,7 +715,7 @@ mod tests {
                 stt_language: stt_language.map(str::to_owned),
                 ..SpeechConfig::default()
             };
-            SpeechClient::new(reqwest::Client::new(), config, None)
+            SpeechClient::new(http(), config, None)
         };
         let gpt = c("gpt-4o-transcribe", None);
         assert_eq!(gpt.stt_route(Some("fr"), None), ("gpt-4o-transcribe", Some("fr")));
@@ -553,7 +789,7 @@ mod tests {
         assert_eq!(client(&base, None).health().await.unwrap(), vec!["kokoro", "parakeet"]);
 
         let broken = SpeechClient::new(
-            reqwest::Client::new(),
+            http(),
             SpeechConfig { base_url: format!("{base}/broken"), ..SpeechConfig::default() },
             Some("sk-secret".into()),
         );
@@ -585,6 +821,159 @@ mod tests {
         assert_eq!(body["model"], "qwen3-1.7b");
         assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
         assert_eq!(body["messages"][1]["content"], "a long message");
+    }
+
+    #[derive(Default)]
+    struct StreamSeen {
+        auth: Option<String>,
+        query: Option<String>,
+        largest_frame: usize,
+        closed: bool,
+    }
+    type StreamShared = Arc<Mutex<StreamSeen>>;
+
+    /// The router's streaming endpoint: a partial after each frame with the
+    /// bytes heard so far, a final at `end`; language `xx` is refused.
+    async fn stream_mock() -> (String, StreamShared) {
+        use axum::extract::RawQuery;
+        use axum::extract::ws::{CloseFrame, Message as WsMessage, WebSocketUpgrade};
+
+        let seen: StreamShared = Arc::default();
+        let app = Router::new()
+            .route(
+                "/v1/audio/transcriptions/stream",
+                get(|State(s): State<StreamShared>,
+                     h: HeaderMap,
+                     RawQuery(q): RawQuery,
+                     ws: WebSocketUpgrade| async move {
+                    {
+                        let mut seen = s.lock().unwrap();
+                        seen.auth =
+                            h.get("authorization").and_then(|v| v.to_str().ok()).map(str::to_owned);
+                        seen.query.clone_from(&q);
+                    }
+                    ws.on_upgrade(move |mut socket| async move {
+                        if q.unwrap_or_default().contains("language=xx") {
+                            let error = r#"{"type":"error","detail":"unsupported language"}"#;
+                            let _ = socket.send(WsMessage::Text(error.into())).await;
+                            let frame = CloseFrame { code: 1008, reason: "".into() };
+                            let _ = socket.send(WsMessage::Close(Some(frame))).await;
+                            return;
+                        }
+                        let mut heard = 0;
+                        while let Some(Ok(msg)) = socket.recv().await {
+                            let reply = match msg {
+                                WsMessage::Binary(b) => {
+                                    heard += b.len();
+                                    let mut seen = s.lock().unwrap();
+                                    seen.largest_frame = seen.largest_frame.max(b.len());
+                                    drop(seen);
+                                    serde_json::json!({ "type": "partial", "text": format!("{heard} bytes") })
+                                }
+                                WsMessage::Text(t) if t.contains("end") => {
+                                    let text = format!("heard {heard} bytes");
+                                    heard = 0;
+                                    serde_json::json!({ "type": "final", "text": text, "language": "en" })
+                                }
+                                WsMessage::Close(_) => break,
+                                _ => continue,
+                            };
+                            if socket.send(WsMessage::Text(reply.to_string().into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        s.lock().unwrap().closed = true;
+                    })
+                }),
+            )
+            .with_state(seen.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}"), seen)
+    }
+
+    async fn next_event(s: &mut SttStream) -> Result<SttEvent, SpeechError> {
+        tokio::time::timeout(Duration::from_secs(2), s.event()).await.unwrap().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_stream_relays_partials_and_a_final_per_utterance() {
+        let (base, seen) = stream_mock().await;
+        let mut c = client(&base, Some("sk-secret"));
+        c.config.stt_model = "nemotron".into();
+        let mut s = c.stream_transcription(None).await.unwrap();
+        let (auth, query) = {
+            let seen = seen.lock().unwrap();
+            (seen.auth.clone(), seen.query.clone())
+        };
+        assert_eq!(auth.as_deref(), Some("Bearer sk-secret"));
+        assert_eq!(query.as_deref(), Some("model=nemotron&language=en"));
+        assert!(s.send_audio(&Bytes::from(vec![0u8; 4000])));
+        assert_eq!(next_event(&mut s).await.unwrap(), SttEvent::Partial("4000 bytes".into()));
+        assert!(s.send_audio(&Bytes::from(vec![0u8; 3 * STREAM_FRAME_BYTES])));
+        for n in 1..=3 {
+            let partial = format!("{} bytes", 4000 + n * STREAM_FRAME_BYTES);
+            assert_eq!(next_event(&mut s).await.unwrap(), SttEvent::Partial(partial));
+        }
+        assert!(s.end());
+        let heard = format!("heard {} bytes", 4000 + 3 * STREAM_FRAME_BYTES);
+        assert_eq!(next_event(&mut s).await.unwrap(), SttEvent::Final(heard));
+        assert_eq!(seen.lock().unwrap().largest_frame, STREAM_FRAME_BYTES);
+
+        assert!(s.send_audio(&Bytes::from_static(&[0, 0])));
+        assert_eq!(next_event(&mut s).await.unwrap(), SttEvent::Partial("2 bytes".into()));
+        assert!(s.end());
+        assert_eq!(next_event(&mut s).await.unwrap(), SttEvent::Final("heard 2 bytes".into()));
+        drop(s);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while !seen.lock().unwrap().closed {
+            assert!(tokio::time::Instant::now() < deadline, "stream left open");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_stream_reports_its_close_code_and_detail() {
+        let (base, _) = stream_mock().await;
+        let mut c = client(&base, None);
+        c.config.stt_model = "nemotron".into();
+        let mut s = c.stream_transcription(Some("xx")).await.unwrap();
+        let err = next_event(&mut s).await.unwrap_err();
+        assert!(
+            matches!(&err, SpeechError::StreamClosed { code: 1008, detail } if detail == "unsupported language"),
+            "{err}"
+        );
+        assert!(err.refuses_streaming());
+        assert!(s.event().await.is_none());
+        let busy = SpeechError::StreamClosed { code: 1013, detail: "loading".into() };
+        assert!(!busy.refuses_streaming());
+    }
+
+    #[tokio::test]
+    async fn a_missing_stream_endpoint_is_an_upstream_refusal() {
+        let (base, _) = mock(serde_json::json!([])).await;
+        let mut c = client(&base, None);
+        c.config.stt_model = "nemotron".into();
+        let err = c.stream_transcription(None).await.unwrap_err();
+        assert!(matches!(err, SpeechError::Upstream { status: 404, .. }), "{err}");
+        assert!(err.refuses_streaming());
+        let dead = client("http://127.0.0.1:1", None);
+        let err = dead.stream_transcription(None).await.unwrap_err();
+        assert!(matches!(err, SpeechError::Transport(_)), "{err}");
+        assert!(!err.refuses_streaming());
+    }
+
+    #[test]
+    fn only_a_streaming_model_after_routing_streams() {
+        let c = |stt_model: &str| {
+            let config = SpeechConfig { stt_model: stt_model.into(), ..SpeechConfig::default() };
+            SpeechClient::new(http(), config, None)
+        };
+        assert!(c("nemotron").stt_streams(None));
+        assert!(c("nemotron").stt_streams(Some("en")));
+        assert!(!c("parakeet").stt_streams(None));
+        assert!(!c("whisper").stt_streams(Some("fr")));
     }
 
     #[test]
