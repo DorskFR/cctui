@@ -51,14 +51,8 @@ describe('LiveVoiceBar', () => {
 		expect(text()).not.toContain('Warming up');
 	});
 
-	it('picks the spoken language', () => {
-		const voice = render('listening', { language: 'fr' } as Partial<LiveVoice>);
-		const select = document.querySelector<HTMLSelectElement>('select[aria-label="Spoken language"]');
-		expect(select).not.toBeNull();
-		expect([...select!.options].map((o) => o.value)).toEqual(['auto', 'en', 'fr']);
-		expect(select!.value).toBe('fr');
-		select!.value = 'en';
-		select!.dispatchEvent(new Event('change', { bubbles: true }));
-		expect(voice.setLanguage).toHaveBeenCalledWith('en');
+	it('leaves the spoken language to Settings → Voice', () => {
+		render('listening');
+		expect(document.querySelector('select')).toBeNull();
 	});
 });

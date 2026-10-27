@@ -1,3 +1,5 @@
+import { routeToSpeaker } from './devices';
+
 /** Plays synthesized sentences in arrival order. Each `speak_start` opens a
  *  line that collects binary chunks until its `speak_end`, then joins the
  *  queue; one `<audio>` element plays them back to back. */
@@ -14,6 +16,7 @@ export interface AudioLike {
 export interface PlayerOptions {
 	mime: () => string;
 	speed?: () => number;
+	speaker?: () => string | undefined;
 	/** `true` once playback has nothing left to do. */
 	onIdle?: (idle: boolean) => void;
 	createAudio?: () => AudioLike;
@@ -104,6 +107,7 @@ export class SpeechPlayer {
 		}
 		this.idle(false);
 		const a = this.opts.createAudio?.() ?? new Audio();
+		routeToSpeaker(a, this.opts.speaker?.());
 		this.current = a;
 		this.releaseUrl();
 		this.currentUrl = this.opts.createUrl?.(blob) ?? URL.createObjectURL(blob);

@@ -1,13 +1,15 @@
 <script lang="ts">
-	import { Select, Switch } from '@dorsk/tsumikit';
+	import { Button, Select, Switch } from '@dorsk/tsumikit';
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
 	import {
 		settings,
 		type VoiceInputMode,
+		type VoiceLanguage,
 		type VoiceSpokenStyle
 	} from '$lib/settings.svelte';
+	import { type AudioDevice, canPickSpeaker, listDevices } from '$lib/voice/devices';
 	import { m } from '$lib/paraglide/messages';
 	import { endpoints, useVoiceConfig } from '$lib/queries';
 
@@ -22,6 +24,31 @@
 			.then((v) => (voices = v.voices))
 			.catch(() => {});
 	});
+	let mics = $state<AudioDevice[]>([]);
+	let speakers = $state<AudioDevice[]>([]);
+	const loadDevices = async () => {
+		mics = await listDevices('audioinput');
+		speakers = canPickSpeaker() ? await listDevices('audiooutput') : [];
+	};
+	/** Device names stay hidden until the page has used the microphone once. */
+	const revealNames = async () => {
+		const stream = await navigator.mediaDevices?.getUserMedia({ audio: true }).catch(() => null);
+		for (const t of stream?.getTracks() ?? []) t.stop();
+		await loadDevices();
+	};
+	$effect(() => {
+		void loadDevices();
+		navigator.mediaDevices?.addEventListener('devicechange', loadDevices);
+		return () => navigator.mediaDevices?.removeEventListener('devicechange', loadDevices);
+	});
+	const unnamed = $derived(mics.some((d) => d.label.startsWith('🎙')));
+	const LANGUAGES: [VoiceLanguage, () => string][] = [
+		['auto', m.voice_live_language_auto],
+		['en', m.voice_live_language_en],
+		['fr', m.voice_live_language_fr]
+	];
+	const pick = (e: Event) => (e.currentTarget as HTMLSelectElement).value;
+
 	const voiceChoices = $derived.by(() => {
 		const current = settings.voice.voice;
 		return current && !voices.includes(current) ? [current, ...voices] : voices;
@@ -38,6 +65,53 @@
 				}
 				label={m.settings_voice_autoplay_label()}
 			/>
+		</SettingRow>
+		<SettingRow label={m.settings_voice_mic_label()} help={m.settings_voice_mic_help()}>
+			<div class="device">
+				<Select
+					value={settings.voice.micId ?? ''}
+					style="width:100%"
+					aria-label={m.settings_voice_mic_label()}
+					onchange={(e: Event) => settings.setVoice({ micId: pick(e) })}
+				>
+					<option value="">{m.settings_voice_device_default()}</option>
+					{#each mics as d (d.id)}
+						<option value={d.id}>{d.label}</option>
+					{/each}
+				</Select>
+				{#if unnamed}
+					<Button variant="ghost" size="sm" onclick={revealNames}>
+						{m.settings_voice_device_names()}
+					</Button>
+				{/if}
+			</div>
+		</SettingRow>
+		{#if canPickSpeaker()}
+			<SettingRow label={m.settings_voice_speaker_label()} help={m.settings_voice_speaker_help()}>
+				<Select
+					value={settings.voice.speakerId ?? ''}
+					style="width:100%"
+					aria-label={m.settings_voice_speaker_label()}
+					onchange={(e: Event) => settings.setVoice({ speakerId: pick(e) })}
+				>
+					<option value="">{m.settings_voice_device_default()}</option>
+					{#each speakers as d (d.id)}
+						<option value={d.id}>{d.label}</option>
+					{/each}
+				</Select>
+			</SettingRow>
+		{/if}
+		<SettingRow label={m.voice_live_language()} help={m.settings_voice_language_help()}>
+			<Select
+				value={settings.voice.language}
+				style="width:100%"
+				aria-label={m.voice_live_language()}
+				onchange={(e: Event) => settings.setVoice({ language: pick(e) as VoiceLanguage })}
+			>
+				{#each LANGUAGES as [value, label] (value)}
+					<option {value}>{label()}</option>
+				{/each}
+			</Select>
 		</SettingRow>
 		<SettingRow label={m.settings_voice_voice_label()} help={m.settings_voice_voice_help()}>
 			<Select
@@ -117,3 +191,12 @@
 		</SettingRow>
 	</SettingGroup>
 </SettingSection>
+
+<style>
+	.device {
+		display: flex;
+		gap: var(--sp-2);
+		align-items: center;
+		width: 100%;
+	}
+</style>

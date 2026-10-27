@@ -375,10 +375,11 @@
 	const voiceEnabled = $derived(!!voiceConfig.data?.enabled && !archived);
 	const liveVoice = new LiveVoice({
 		connect: (url) => new WebSocket(url),
-		vad: (cb) => import('$lib/voice/vad').then((mod) => mod.createVad(cb)),
+		vad: (cb) => import('$lib/voice/vad').then((mod) => mod.createVad(cb, settings.voice.micId)),
 		player: new SpeechPlayer({
 			mime: () => ttsMime(voiceConfig.data?.tts_format ?? 'opus'),
-			speed: () => settings.voice.speed
+			speed: () => settings.voice.speed,
+			speaker: () => settings.voice.speakerId
 		}),
 		wakeLock: acquireWakeLock,
 		prefs: () => settings.voice
@@ -395,6 +396,9 @@
 	$effect(() => {
 		if (liveVoice.error) toasts.error(liveVoice.error);
 	});
+	$effect(() => {
+		liveVoice.setLanguage(settings.voice.language);
+	});
 	let speakingKey = $state<string | null>(null);
 	async function speakLine(ln: Line) {
 		if (!ln.key || !ln.text) return;
@@ -404,6 +408,7 @@
 				voice: settings.voice.voice,
 				speed: settings.voice.speed,
 				summarize: settings.voice.summarizeLong,
+				speaker: settings.voice.speakerId,
 				onend: () => {
 					if (speakingKey === key) speakingKey = null;
 				}

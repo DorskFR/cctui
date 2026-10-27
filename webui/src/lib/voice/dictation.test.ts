@@ -6,11 +6,14 @@ vi.mock('$lib/api', () => ({ api: {} }));
 function stubMic() {
 	const track = { stop: vi.fn() };
 	let grant: () => void = () => {};
+	const asked: MediaStreamConstraints[] = [];
 	const recorders: { start: ReturnType<typeof vi.fn> }[] = [];
 	vi.stubGlobal('navigator', {
 		mediaDevices: {
-			getUserMedia: () =>
-				new Promise((r) => (grant = () => r({ getTracks: () => [track] })))
+			getUserMedia: (c: MediaStreamConstraints) => {
+				asked.push(c);
+				return new Promise((r) => (grant = () => r({ getTracks: () => [track] })));
+			}
 		}
 	});
 	vi.stubGlobal(
@@ -25,7 +28,7 @@ function stubMic() {
 			{ isTypeSupported: () => false }
 		)
 	);
-	return { track, recorders, grant: () => grant() };
+	return { track, recorders, asked, grant: () => grant() };
 }
 
 describe('Dictation', () => {
@@ -52,5 +55,15 @@ describe('Dictation', () => {
 		expect(d.recording).toBe(true);
 		d.cancel();
 		expect(mic.track.stop).toHaveBeenCalled();
+	});
+
+	it('opens the microphone picked in settings', async () => {
+		const mic = stubMic();
+		const d = new Dictation(() => ({ micId: 'headset' }));
+		const started = d.start();
+		mic.grant();
+		await started;
+		expect(mic.asked[0].audio).toMatchObject({ deviceId: { ideal: 'headset' }, echoCancellation: true });
+		d.cancel();
 	});
 });

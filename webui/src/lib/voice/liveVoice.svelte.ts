@@ -106,6 +106,7 @@ export class LiveVoice {
 		this.status = 'connecting';
 		this.minGen = 1;
 		this.lineGen = 0;
+		this.language = this.deps.prefs().language;
 		void this.deps.player.unlock();
 		const sock = this.deps.connect(voiceSocketUrl(sessionId, this.language));
 		sock.binaryType = 'arraybuffer';
@@ -146,7 +147,6 @@ export class LiveVoice {
 		} else void this.vad?.start();
 	}
 
-	/** Applies to the open conversation and the next ones from this pane. */
 	setLanguage(language: SpokenLanguage) {
 		if (language === this.language) return;
 		this.language = language;
