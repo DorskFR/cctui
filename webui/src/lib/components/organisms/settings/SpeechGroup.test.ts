@@ -53,6 +53,7 @@ const config = {
 	base_url: 'http://speech-router.ai:8000/v1',
 	stt_model: 'parakeet',
 	stt_language: null,
+	stt_part_ms: null,
 	tts_model: 'kokoro',
 	tts_voice: 'af_heart',
 	tts_format: 'opus',
@@ -151,6 +152,27 @@ describe('speech settings', () => {
 		comp = mount(SpeechGroup, { target: document.body });
 		await settle();
 		expect(optionsOf('Speech-to-text model')).toEqual(catalog.models);
+	});
+
+	it('edits the part length in seconds and saves blank as the default', async () => {
+		api.speechSettings.mockResolvedValue(info({ config: { ...config, stt_part_ms: 5000 } }));
+		api.speechCatalog.mockResolvedValue(catalog);
+		comp = mount(SpeechGroup, { target: document.body });
+		await settle();
+		const field = input('Text appears after (seconds of speech)');
+		expect(field.value).toBe('5');
+
+		api.setSpeechSettings.mockResolvedValue(info({ config: { ...config, stt_part_ms: 1500 } }));
+		type(field, '1.5');
+		button('Save')?.click();
+		await settle();
+		expect(api.setSpeechSettings).toHaveBeenLastCalledWith({ config: { ...config, stt_part_ms: 1500 } });
+
+		api.setSpeechSettings.mockResolvedValue(info());
+		type(input('Text appears after (seconds of speech)'), '');
+		button('Save')?.click();
+		await settle();
+		expect(api.setSpeechSettings).toHaveBeenLastCalledWith({ config });
 	});
 
 	it('surfaces a save error as a toast', async () => {

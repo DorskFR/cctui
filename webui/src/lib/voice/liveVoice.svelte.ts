@@ -274,6 +274,7 @@ export class LiveVoice {
 				break;
 			case 'listen':
 				this.chunker.setLivePartMs(msg.part_ms);
+				this.chunker.setMinPartMs(msg.min_part_ms ?? null);
 				break;
 		}
 	}
@@ -334,6 +335,7 @@ export class LiveVoice {
 		this.vad = null;
 		this.chunker.cancel();
 		this.chunker.setLivePartMs(null);
+		this.chunker.setMinPartMs(null);
 		this.endAwait();
 		this.server = 'off';
 		this.deps.player.stop();

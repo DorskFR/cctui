@@ -366,6 +366,8 @@ pub async fn read_speech(pool: &sqlx::PgPool) -> Result<(SpeechConfig, Option<St
     Ok((stored.config, key))
 }
 
+/// Under the browser's 28 s part cap.
+const STT_PART_MS: std::ops::RangeInclusive<u32> = 1_000..=28_000;
 const SPEECH_FORMATS: &[&str] = &["opus", "mp3", "aac", "flac", "wav", "pcm"];
 
 fn validate_speech(c: SpeechConfig) -> Result<SpeechConfig, AppError> {
@@ -376,6 +378,7 @@ fn validate_speech(c: SpeechConfig) -> Result<SpeechConfig, AppError> {
         base_url: trim(&c.base_url).trim_end_matches('/').to_owned(),
         stt_model: trim(&c.stt_model),
         stt_language: c.stt_language.map(|l| trim(&l)).filter(|l| !l.is_empty()),
+        stt_part_ms: c.stt_part_ms,
         tts_model: trim(&c.tts_model),
         tts_voice: trim(&c.tts_voice),
         tts_format: trim(&c.tts_format).to_ascii_lowercase(),
@@ -409,6 +412,9 @@ fn validate_speech(c: SpeechConfig) -> Result<SpeechConfig, AppError> {
         l.len() > 16 || !l.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
     }) {
         return Err(bad("stt_language must be a language code such as `en`".into()));
+    }
+    if c.stt_part_ms.is_some_and(|ms| !STT_PART_MS.contains(&ms)) {
+        return Err(bad("stt_part_ms must be 1000 to 28000 milliseconds".into()));
     }
     if !SPEECH_FORMATS.contains(&c.tts_format.as_str()) {
         return Err(bad(format!("tts_format must be one of {}", SPEECH_FORMATS.join(", "))));
@@ -728,9 +734,16 @@ mod tests {
             stt_language: Some(" ".into()),
             tts_format: "MP3".into(),
             summary_model: " qwen3-1.7b ".into(),
+            stt_part_ms: Some(2_000),
             ..SpeechConfig::default()
         };
         let v = validate_speech(ok.clone()).unwrap();
+        assert_eq!(v.stt_part_ms, Some(2_000));
+        for edge in [1_000, 28_000] {
+            assert!(
+                validate_speech(SpeechConfig { stt_part_ms: Some(edge), ..ok.clone() }).is_ok()
+            );
+        }
         assert_eq!(v.base_url, "https://speech.example/v1");
         assert_eq!(v.summary_model, "qwen3-1.7b");
         assert_eq!((v.stt_language, v.tts_format.as_str()), (None, "mp3"));
@@ -744,6 +757,8 @@ mod tests {
             SpeechConfig { stt_model: String::new(), ..ok.clone() },
             SpeechConfig { stt_language: Some("en; drop".into()), ..ok.clone() },
             SpeechConfig { summary_model: "m".repeat(129), ..ok.clone() },
+            SpeechConfig { stt_part_ms: Some(999), ..ok.clone() },
+            SpeechConfig { stt_part_ms: Some(28_001), ..ok.clone() },
             SpeechConfig { tts_format: "ogg".into(), ..ok },
         ] {
             let status = validate_speech(bad.clone()).unwrap_err().status();
@@ -752,6 +767,16 @@ mod tests {
         assert!(validate_speech_key("sk abc").is_err());
         assert!(validate_speech_key("  ").is_err());
         assert_eq!(validate_speech_key(" sk-1 ").unwrap(), "sk-1");
+    }
+
+    #[test]
+    fn a_speech_config_saved_before_part_length_loads_with_the_default() {
+        let old = r#"{"enabled":true,"base_url":"https://s.example/v1","encrypted_key":"k"}"#;
+        let stored: StoredSpeech = serde_json::from_str(old).unwrap();
+        assert!(stored.config.enabled);
+        assert_eq!((stored.config.stt_part_ms, stored.encrypted_key.as_deref()), (None, Some("k")));
+        let stored: StoredSpeech = serde_json::from_str(r#"{"stt_part_ms":2500}"#).unwrap();
+        assert_eq!(stored.config.stt_part_ms, Some(2_500));
     }
 
     #[tokio::test]

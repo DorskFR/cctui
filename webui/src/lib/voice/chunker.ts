@@ -14,7 +14,7 @@ export interface ChunkerOptions {
 
 export const CHUNKER_DEFAULTS: ChunkerOptions = {
 	sampleRate: 16_000,
-	minPartMs: 8_000,
+	minPartMs: 3_000,
 	pauseMs: 400,
 	maxPartMs: 28_000,
 	preRollMs: 800,
@@ -37,10 +37,12 @@ export class UtteranceChunker {
 	/** Set while the server transcribes live: a part goes out every this
 	 *  much speech, with no pause needed. */
 	private livePartMs: number | null = null;
+	private minPartMs: number;
 
 	constructor(emit: PartSink, opts: Partial<ChunkerOptions> = {}) {
 		this.emit = emit;
 		this.opts = { ...CHUNKER_DEFAULTS, ...opts };
+		this.minPartMs = this.opts.minPartMs;
 	}
 
 	/** An utterance is being cut into parts. */
@@ -50,6 +52,11 @@ export class UtteranceChunker {
 
 	setLivePartMs(ms: number | null) {
 		this.livePartMs = ms && ms > 0 ? ms : null;
+	}
+
+	/** Speech gathered before a pause sends a part; `null` restores the default. */
+	setMinPartMs(ms: number | null) {
+		this.minPartMs = ms && ms > 0 ? Math.min(ms, this.opts.maxPartMs) : this.opts.minPartMs;
 	}
 
 	start() {
@@ -78,7 +85,7 @@ export class UtteranceChunker {
 		this.buffered += samples.length;
 		this.quiet = speechProb < this.opts.speechThreshold ? this.quiet + samples.length : 0;
 		const paused =
-			this.buffered >= this.samples(this.opts.minPartMs) &&
+			this.buffered >= this.samples(this.minPartMs) &&
 			this.quiet >= this.samples(this.opts.pauseMs);
 		const live = this.livePartMs !== null && this.buffered >= this.samples(this.livePartMs);
 		if (live || paused || this.buffered >= this.samples(this.opts.maxPartMs)) this.flush(false);

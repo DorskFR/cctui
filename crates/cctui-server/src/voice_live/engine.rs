@@ -33,6 +33,9 @@ pub trait VoiceBackend: Send + Sync + 'static {
     fn warm_up(&self, language: Option<&str>) -> impl Future<Output = Result<(), String>> + Send;
     /// Whether the model `language` routes to transcribes live.
     fn streams(&self, language: Option<&str>) -> bool;
+    /// Speech the browser gathers before sending a part to a batch model;
+    /// `None` keeps its default.
+    fn min_part_ms(&self) -> Option<u32>;
     fn stream(
         &self,
         language: Option<&str>,
@@ -293,7 +296,7 @@ fn spawn_listener<B: VoiceBackend>(
             open: false,
             live: None,
             refused: false,
-            told: None,
+            told: (None, None),
         };
         let mut job = Job::Warm;
         loop {
@@ -359,8 +362,8 @@ struct Ear<B> {
     live: Option<Live>,
     /// The service refused to stream the current language.
     refused: bool,
-    /// The part cadence last asked of the browser.
-    told: Option<u32>,
+    /// The part cadence last asked of the browser: live and batch.
+    told: (Option<u32>, Option<u32>),
 }
 
 impl<B: VoiceBackend> Ear<B> {
@@ -462,10 +465,12 @@ impl<B: VoiceBackend> Ear<B> {
     async fn listen(&mut self) {
         let language = language(&self.prefs);
         let streams = !self.refused && self.backend.streams(language.as_deref());
-        let part_ms = streams.then_some(STREAM_PART_MS);
-        if part_ms != self.told {
-            self.told = part_ms;
-            let _ = self.out.send(Outbound::Control(VoiceServerMsg::Listen { part_ms })).await;
+        let told = (streams.then_some(STREAM_PART_MS), self.backend.min_part_ms());
+        if told != self.told {
+            self.told = told;
+            let (part_ms, min_part_ms) = told;
+            let msg = VoiceServerMsg::Listen { part_ms, min_part_ms };
+            let _ = self.out.send(Outbound::Control(msg)).await;
         }
     }
 
@@ -1178,6 +1183,7 @@ mod tests {
         /// Utterances are heard live: each partial is the parts so far, as
         /// text, joined by spaces.
         streaming: bool,
+        min_part_ms: Option<u32>,
         /// Streams left to fail to open.
         stream_open_failures: Mutex<u32>,
         /// Close codes the next streams fail with at their first audio.
@@ -1255,6 +1261,9 @@ mod tests {
         }
         fn streams(&self, _language: Option<&str>) -> bool {
             self.streaming
+        }
+        fn min_part_ms(&self) -> Option<u32> {
+            self.min_part_ms
         }
         async fn stream(&self, language: Option<&str>) -> Result<SttStream, SpeechError> {
             self.stt("stream", language);
@@ -2399,7 +2408,7 @@ mod tests {
     }
 
     fn listen(part_ms: Option<u32>) -> Outbound {
-        Outbound::Control(VoiceServerMsg::Listen { part_ms })
+        Outbound::Control(VoiceServerMsg::Listen { part_ms, min_part_ms: None })
     }
 
     fn transcript_is(text: &'static str) -> impl Fn(&Outbound) -> bool {
@@ -2531,5 +2540,38 @@ mod tests {
             !frames.iter().any(|f| matches!(f, Outbound::Control(VoiceServerMsg::Listen { .. })))
         );
         assert_eq!(h.mock.calls("stream"), 0);
+    }
+
+    #[tokio::test]
+    async fn a_batch_model_asks_the_browser_for_the_instance_part_length() {
+        let mock = Mock { echo: true, min_part_ms: Some(2_000), ..Mock::default() };
+        let mut h = start_cold(mock, Prefs::default());
+        let frames = h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        let part =
+            Outbound::Control(VoiceServerMsg::Listen { part_ms: None, min_part_ms: Some(2_000) });
+        assert_eq!(frames.iter().filter(|f| **f == part).count(), 1, "{frames:?}");
+        h.inbound.send(Inbound::Audio(Bytes::from_static(b"one"))).await.unwrap();
+        let frames = heard_whole(&mut h, "one").await;
+        assert!(!frames.contains(&part), "told once: {frames:?}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_stream_keeps_the_instance_part_length() {
+        let mock = Mock {
+            stream_closes: Mutex::new(vec![1008]),
+            min_part_ms: Some(2_000),
+            ..Mock::live()
+        };
+        let mut h = start_cold(mock, Prefs::default());
+        let live = Outbound::Control(VoiceServerMsg::Listen {
+            part_ms: Some(STREAM_PART_MS),
+            min_part_ms: Some(2_000),
+        });
+        h.collect_until(|f| *f == live).await;
+        h.inbound.send(Inbound::Audio(Bytes::from_static(b"one"))).await.unwrap();
+        let frames = heard_whole(&mut h, "one").await;
+        let batch =
+            Outbound::Control(VoiceServerMsg::Listen { part_ms: None, min_part_ms: Some(2_000) });
+        assert!(frames.contains(&batch), "{frames:?}");
     }
 }

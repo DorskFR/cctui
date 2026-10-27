@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { UtteranceChunker } from './chunker';
+import { CHUNKER_DEFAULTS, UtteranceChunker } from './chunker';
 
 const opts = { sampleRate: 1000, minPartMs: 100, pauseMs: 20, maxPartMs: 300, preRollMs: 50 };
 
@@ -54,6 +54,31 @@ describe('UtteranceChunker', () => {
 			[30, true]
 		]);
 		expect(joined(emitted.map((e) => e.samples))).toEqual(Array.from(ramp(0, 150)));
+	});
+
+	it('by default shows a few seconds of speech at the next pause', () => {
+		const emitted: boolean[] = [];
+		const c = new UtteranceChunker((_, last) => emitted.push(last));
+		const rate = CHUNKER_DEFAULTS.sampleRate;
+		c.start();
+		c.frame(new Float32Array(rate * 3), 0.9);
+		c.frame(new Float32Array((rate * CHUNKER_DEFAULTS.pauseMs) / 1000), 0.1);
+		expect(emitted).toEqual([false]);
+	});
+
+	it('waits for the minimum it is set to, and goes back to its own when cleared', () => {
+		const { emitted, c } = fed();
+		const part = () => {
+			c.start();
+			c.frame(ramp(0, 150), 0.9);
+			c.frame(ramp(150, 20), 0.1);
+			c.end();
+			return emitted.splice(0).map((e) => e.last);
+		};
+		c.setMinPartMs(200);
+		expect(part()).toEqual([true]);
+		c.setMinPartMs(null);
+		expect(part()).toEqual([false, true]);
 	});
 
 	it('a pause before the minimum does not flush, and speech resets the pause', () => {

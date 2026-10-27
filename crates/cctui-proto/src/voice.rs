@@ -80,10 +80,13 @@ pub enum VoiceServerMsg {
         message: String,
     },
     /// How often to send parts of an utterance: every `part_ms` of speech
-    /// when the server transcribes live, the browser's default cadence when
-    /// `None`. Sent when it changes from that default.
+    /// when the server transcribes live, else at the first pause after
+    /// `min_part_ms` of speech. `None` keeps the browser's default. Sent
+    /// when either changes from that default.
     Listen {
         part_ms: Option<u32>,
+        #[serde(default)]
+        min_part_ms: Option<u32>,
     },
 }
 
@@ -119,9 +122,14 @@ mod tests {
         assert_eq!(part, r#"{"type":"part"}"#);
         let end: VoiceClientMsg = serde_json::from_str(r#"{"type":"utterance_end"}"#).unwrap();
         assert_eq!(end, VoiceClientMsg::UtteranceEnd {});
-        let listen = serde_json::to_string(&VoiceServerMsg::Listen { part_ms: Some(320) }).unwrap();
-        assert_eq!(listen, r#"{"type":"listen","part_ms":320}"#);
-        let batch = serde_json::to_string(&VoiceServerMsg::Listen { part_ms: None }).unwrap();
-        assert_eq!(batch, r#"{"type":"listen","part_ms":null}"#);
+        let listen = VoiceServerMsg::Listen { part_ms: Some(320), min_part_ms: None };
+        let listen = serde_json::to_string(&listen).unwrap();
+        assert_eq!(listen, r#"{"type":"listen","part_ms":320,"min_part_ms":null}"#);
+        let batch = VoiceServerMsg::Listen { part_ms: None, min_part_ms: Some(2000) };
+        let batch = serde_json::to_string(&batch).unwrap();
+        assert_eq!(batch, r#"{"type":"listen","part_ms":null,"min_part_ms":2000}"#);
+        let old: VoiceServerMsg =
+            serde_json::from_str(r#"{"type":"listen","part_ms":320}"#).unwrap();
+        assert_eq!(old, VoiceServerMsg::Listen { part_ms: Some(320), min_part_ms: None });
     }
 }
