@@ -60,9 +60,9 @@ fn byte_window(segs: &[&str]) -> (i64, i64) {
 }
 
 const CANDIDATES_SQL: &str = "WITH owner AS (SELECT user_id FROM sessions WHERE id = $1) \
-     SELECT b.hash, b.bytes FROM daemon_blobs b \
+     SELECT b.hash FROM daemon_blobs b \
      WHERE b.byte_len BETWEEN $2 AND $3 AND b.media_type LIKE 'image/%' \
-       AND substring(b.bytes FROM 1 FOR $4) = $5 \
+       AND (b.file_stored OR substring(b.bytes FROM 1 FOR $4) = $5) \
        AND (EXISTS (SELECT 1 FROM session_blob_links l JOIN sessions s ON s.id = l.session_id \
                     WHERE l.hash = b.hash AND s.user_id = (SELECT user_id FROM owner)) \
          OR EXISTS (SELECT 1 FROM session_attachments a JOIN sessions s ON s.id = a.session_id \
@@ -83,16 +83,19 @@ pub async fn find_intact(
         return Ok(None);
     };
     let (lo, hi) = byte_window(&segs);
-    let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(CANDIDATES_SQL)
+    let rows: Vec<(String,)> = sqlx::query_as(CANDIDATES_SQL)
         .bind(session_id)
         .bind(lo)
         .bind(hi)
         .bind(i32::try_from(prefix.len()).unwrap_or(i32::MAX))
         .bind(&prefix)
-        .fetch_all(conn)
+        .fetch_all(&mut *conn)
         .await?;
     let mut found = None;
-    for (hash, bytes) in rows {
+    for (hash,) in rows {
+        let Some(bytes) = crate::routes::blobs::read_blob_in(&mut *conn, &hash).await? else {
+            continue;
+        };
         if !fits(&base64::engine::general_purpose::STANDARD.encode(&bytes), &segs) {
             continue;
         }

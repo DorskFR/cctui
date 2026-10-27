@@ -221,10 +221,7 @@ pub async fn review_opaque(
     let mut repair = Repair::default();
     for r in refs.into_iter().filter(|r| r.opaque && !r.flagged) {
         let stored: Option<Vec<u8>> =
-            sqlx::query_scalar("SELECT bytes FROM daemon_blobs WHERE hash = $1")
-                .bind(&r.hash)
-                .fetch_optional(&mut *conn)
-                .await?;
+            crate::routes::blobs::read_blob_in(&mut *conn, &r.hash).await?;
         let Some(text) = stored.and_then(|b| String::from_utf8(b).ok()) else { continue };
         let Err(reason) = validate::check(r.media_type.as_deref(), &text) else { continue };
         let found = if reason == validate::REDACTED {
@@ -262,15 +259,15 @@ pub async fn store_verified(
         if stored.created {
             written += b.bytes.len() as u64;
         }
-        let ok: Option<bool> = sqlx::query_scalar(
-            "SELECT encode(sha256(bytes), 'hex') = hash AND byte_len = $2 \
-             FROM daemon_blobs WHERE hash = $1",
-        )
-        .bind(&b.hash)
-        .bind(i64::try_from(b.bytes.len()).unwrap_or(i64::MAX))
-        .fetch_optional(&mut *conn)
-        .await?;
-        if ok != Some(true) {
+        let stored_size: Option<i64> =
+            sqlx::query_scalar("SELECT byte_len FROM daemon_blobs WHERE hash = $1")
+                .bind(&b.hash)
+                .fetch_optional(&mut *conn)
+                .await?;
+        let stored_bytes = crate::routes::blobs::read_blob_in(&mut *conn, &b.hash).await?;
+        if stored_size != i64::try_from(b.bytes.len()).ok()
+            || stored_bytes.as_deref() != Some(b.bytes.as_slice())
+        {
             tracing::warn!(hash = %b.hash, "stored blob does not match its hash");
             return Ok(None);
         }
