@@ -1719,6 +1719,8 @@
 	"settings_speech_key_clear": "Effacer la clé",
 	"settings_speech_stt_model": "Modèle de transcription",
 	"settings_speech_stt_language": "Langue (optionnelle)",
+	"settings_speech_stt_part": "Le texte apparaît après (secondes de parole)",
+	"settings_speech_stt_part_help": "Pour les modèles de reconnaissance vocale qui ne transcrivent pas en direct, la voix en direct affiche vos mots à la première pause après cette durée de parole. Laisser vide pour 3 secondes.",
 	"settings_speech_tts_model": "Modèle de synthèse",
 	"settings_speech_tts_voice": "Voix",
 	"settings_speech_tts_format": "Format audio",

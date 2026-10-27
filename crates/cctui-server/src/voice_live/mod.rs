@@ -117,6 +117,10 @@ impl VoiceBackend for ServerBackend {
         self.client.stt_streams(language)
     }
 
+    fn min_part_ms(&self) -> Option<u32> {
+        self.client.config().stt_part_ms
+    }
+
     async fn stream(&self, language: Option<&str>) -> Result<SttStream, SpeechError> {
         self.client.stream_transcription(language).await
     }

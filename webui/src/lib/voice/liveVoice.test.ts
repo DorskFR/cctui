@@ -378,6 +378,34 @@ describe('LiveVoice', () => {
 		expect(utterance()).toEqual(['part', 600, 'utterance_end']);
 	});
 
+	it('waits for as much speech as the server asks before sending a part at a pause', async () => {
+		const h = harness();
+		const utterance = () => {
+			const sent = () => h.socket?.sent ?? [];
+			const before = sent().length;
+			h.cb?.onSpeechStart();
+			for (let i = 0; i < 3; i++) h.cb?.onFrame(new Float32Array(50).fill(0.2), 0.9);
+			h.cb?.onFrame(new Float32Array(50), 0.1);
+			h.cb?.onSpeechEnd();
+			return kinds(sent().slice(before));
+		};
+		await h.voice.start('sess');
+		h.socket?.open();
+		await h.settle();
+		expect(utterance()).toEqual(['part', 400, 'utterance_end']);
+		h.socket?.frame({ type: 'listen', part_ms: null, min_part_ms: 250 });
+		expect(utterance()).toEqual([400]);
+		h.socket?.frame({ type: 'listen', part_ms: null, min_part_ms: null });
+		expect(utterance()).toEqual(['part', 400, 'utterance_end']);
+
+		h.socket?.frame({ type: 'listen', part_ms: null, min_part_ms: 250 });
+		h.voice.stop();
+		await h.voice.start('sess');
+		h.socket?.open();
+		await h.settle();
+		expect(utterance()).toEqual(['part', 400, 'utterance_end']);
+	});
+
 	it('closes a streamed utterance with utterance_end when speech ends on a flush', async () => {
 		const h = harness();
 		await h.voice.start('sess');

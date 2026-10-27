@@ -104,6 +104,10 @@
 
 	const inputValue = (e: Event) => (e.currentTarget as HTMLInputElement).value;
 	const selectValue = (e: Event) => (e.currentTarget as HTMLSelectElement).value;
+	const partMs = (e: Event) => {
+		const seconds = parseFloat(inputValue(e));
+		return Number.isFinite(seconds) ? Math.round(seconds * 1000) : null;
+	};
 </script>
 
 <div id="speech">
@@ -181,6 +185,18 @@
 					placeholder="en"
 					aria-label={m.settings_speech_stt_language()}
 					oninput={(e: Event) => draft && (draft.stt_language = inputValue(e))}
+				/>
+			</SettingRow>
+			<SettingRow label={m.settings_speech_stt_part()} help={m.settings_speech_stt_part_help()} server admin>
+				<Input
+					type="number"
+					min="1"
+					max="28"
+					step="0.5"
+					value={draft.stt_part_ms == null ? '' : draft.stt_part_ms / 1000}
+					placeholder="3"
+					aria-label={m.settings_speech_stt_part()}
+					oninput={(e: Event) => draft && (draft.stt_part_ms = partMs(e))}
 				/>
 			</SettingRow>
 			<SettingRow label={m.settings_speech_tts_format()} server admin>

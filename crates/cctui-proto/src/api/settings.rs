@@ -115,6 +115,9 @@ pub struct SpeechConfig {
     pub base_url: String,
     pub stt_model: String,
     pub stt_language: Option<String>,
+    /// Speech heard before live voice shows its text, for models that do
+    /// not transcribe live; `None` keeps the browser default.
+    pub stt_part_ms: Option<u32>,
     pub tts_model: String,
     pub tts_voice: String,
     pub tts_format: String,
@@ -130,6 +133,7 @@ impl Default for SpeechConfig {
             base_url: String::new(),
             stt_model: "parakeet".into(),
             stt_language: None,
+            stt_part_ms: None,
             tts_model: "kokoro".into(),
             tts_voice: "af_heart".into(),
             tts_format: "opus".into(),

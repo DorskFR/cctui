@@ -1719,6 +1719,8 @@
 	"settings_speech_key_clear": "Clear key",
 	"settings_speech_stt_model": "Speech-to-text model",
 	"settings_speech_stt_language": "Language (optional)",
+	"settings_speech_stt_part": "Text appears after (seconds of speech)",
+	"settings_speech_stt_part_help": "For speech-to-text models that do not transcribe live, live voice shows your words at the first pause after this much speech. Leave empty for 3 seconds.",
 	"settings_speech_tts_model": "Text-to-speech model",
 	"settings_speech_tts_voice": "Voice",
 	"settings_speech_tts_format": "Audio format",
