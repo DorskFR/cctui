@@ -2356,38 +2356,7 @@ pub async fn revoke_share(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Cut the ex-grantee's live gateway credentials for an account whose share was
-/// just revoked. Without this the revoke only stops the NEXT resolution: the
-/// opaque tokens their running workers already carry keep resolving at the
-/// gateway for the rest of their TTL. Re-minting is blocked separately, by the
-/// share check in `mint_env_for_account`.
-pub async fn revoke_grantee_session_tokens(pool: &sqlx::PgPool, account_id: Uuid, grantee: Uuid) {
-    let res = sqlx::query(
-        "UPDATE session_tokens st SET revoked_at = now() \
-         WHERE st.revoked_at IS NULL AND st.user_id = $2 \
-           AND st.account_id IN (SELECT id FROM account_providers WHERE account_id = $1)",
-    )
-    .bind(account_id)
-    .bind(grantee)
-    .execute(pool)
-    .await;
-    match res {
-        Ok(done) if done.rows_affected() > 0 => tracing::info!(
-            %account_id,
-            %grantee,
-            tokens = done.rows_affected(),
-            "share revoked: cut the grantee's live gateway tokens"
-        ),
-        Ok(_) => {}
-        Err(e) => tracing::error!(
-            %account_id,
-            %grantee,
-            error = %e,
-            "share revoked but cutting the grantee's gateway tokens failed — they stay usable \
-             until they expire"
-        ),
-    }
-}
+pub use cctui_server_core::gateway::mint::revoke_grantee_session_tokens;
 
 #[cfg(test)]
 mod tests {
