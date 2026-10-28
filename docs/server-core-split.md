@@ -312,6 +312,33 @@ Full-host spawn, service-tier and attachment regressions remain release gates.
 The standalone host, remaining lifecycle ingestion, workspace assembly and minimal
 schema provisioning remain subsequent work.
 
+### Shared runtime and headless administration (`0.27.0-beta.11`)
+
+`CoreState` now owns execution delivery, authentication, target registries,
+command tracking, account refresh locks, quota caches, capabilities, budgets and
+rate windows. Full `AppState` composes this with its workspace resources. Startup
+still supplies the same HTTP client and peer transport; state clones retain the
+same shared caches and connections. Existing route registration and authorization
+remain in the full host.
+
+User/key administration, identity lookup, self-revocation and machine enrollment
+now accept the shared execution state directly. The full host supplies this state
+through Axum's substate extraction. These handlers preserve key ceilings, scope
+intersection, cache invalidation, legacy credential revocation and lifecycle audit
+recording. Machine liveness thresholds are shared with the full host.
+
+The historical quota ledger repository returns to workspace ownership: its last
+sample and window-close projections are reporting features, while live quota and
+execution accounting remain in core. Full routes and SQL remain the same.
+
+A headless HTTP contract uses only temporary execution tables to provision a
+user, issue a restricted key, reject privilege escalation, revoke cached keys,
+enroll a machine, observe its persisted audit event and invalidate its key on
+deenrollment. Existing identity tests move with the implementation; full-host
+authorization, liveness and ledger regressions cover the composition boundary.
+This remains the full distribution. The standalone host and minimal provisioning
+are still subsequent acceptance gates.
+
 ### Execution services and complete ownership inventory
 
 - Inventory every route, background task, setting, event handler and table,

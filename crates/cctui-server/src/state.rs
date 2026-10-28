@@ -1,26 +1,25 @@
 use std::sync::Arc;
 
-use cctui_proto::models::MachineLiveness;
 use dashmap::DashMap;
+#[cfg(test)]
 use sqlx::PgPool;
 use uuid::Uuid;
 
+#[cfg(test)]
 use crate::auth::AuthConfig;
+#[cfg(test)]
 use crate::bus::Bus;
 use crate::config::Config;
+#[cfg(test)]
 use crate::dispatchers::Registry as DispatcherRegistry;
-use crate::registry::SharedRegistry;
 use crate::routes::permissions::SharedPermissionStore;
 use crate::skill_store::SkillStore;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub pool: PgPool,
+    pub core: cctui_server_core::state::CoreState,
     pub config: Config,
-    pub registry: SharedRegistry,
     pub permission_store: SharedPermissionStore,
-    pub bus: Bus,
-    pub auth_config: AuthConfig,
     /// `None` when no secure public URL is configured; passkey routes then
     /// answer "unavailable".
     pub webauthn: Option<Arc<webauthn_rs::Webauthn>>,
@@ -31,42 +30,15 @@ pub struct AppState {
     /// Shared secret for pod-to-pod `/internal/bus/*` calls; `None` (no
     /// `CCTUI_POD_IP`) makes those endpoints refuse everything.
     pub internal_secret: Option<Arc<str>>,
-    pub dispatcher_liveness: Arc<DashMap<Uuid, MachineLiveness>>,
-    pub dispatchers: Arc<DispatcherRegistry>,
-    /// Last broadcast tier per machine, so [`ServerEvent::MachineLiveness`]
-    /// fires only on a transition.
-    pub machine_liveness: Arc<DashMap<Uuid, MachineLiveness>>,
-    /// OAuth refresh tokens are single-use: held around read-expiry → refresh →
-    /// persist so two sessions on one account never both refresh.
-    pub account_locks: Arc<DashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>,
-    pub http_client: reqwest::Client,
     pub update_check: Arc<crate::update_check::UpdateCheck>,
-    /// Upstream incident readings, refreshed by a background poller; never read
-    /// from a status host on the request path.
-    pub provider_status: Arc<crate::provider_status::ProviderStatusCache>,
     /// Serialises "Update" clicks: one self-update agent per release at a time.
     pub self_update: Arc<crate::routes::self_update::SelfUpdateGuard>,
-    /// Commands awaiting their daemon `CommandResult`, keyed by `command_id`.
-    pub pending_commands: Arc<DashMap<Uuid, PendingCommand>>,
-    /// Requests holding their reply a moment for the daemon's verdict, keyed
-    /// by `command_id`; see [`cctui_server_core::commands::await_early_verdict`].
-    pub command_waiters: CommandWaiters,
     /// `None` unless `CCTUI_LANGFUSE_*` is configured.
     pub langfuse: Option<Arc<crate::langfuse::LangfuseClient>>,
     /// Single-use, TTL-bounded, swept lazily on access.
     pub pending_oauth_logins: crate::routes::accounts::PendingOAuthLogins,
-    /// Anthropic's usage endpoint rate-limits per access token, so fetches are
-    /// cached per account and refreshed only past a TTL.
-    pub account_usage_cache: AccountUsageCache,
     /// Has no feeder, so the `Review` bucket never surfaces.
     pub pr_status_cache: cctui_proto::classifier::PrStatusCache,
-    /// Keyed by the SHA-256 of an unresolvable session token: once over the
-    /// threshold, requests are dropped before any DB lookup so a zombie worker
-    /// cannot starve the pool.
-    pub gateway_orphan_spam: Arc<DashMap<String, OrphanSpam>>,
-    /// In-memory mirror of `account_providers.needs_reauth`, so the success
-    /// path writes only on the transition.
-    pub account_reauth: Arc<DashMap<Uuid, ()>>,
     /// Read-through cache over `codex_model_catalogs`, keyed by `machine_id`.
     pub codex_catalogs: Arc<DashMap<Uuid, crate::routes::codex_models::CachedCatalog>>,
     /// Codex catalogs fetched with an account's own OAuth, keyed by provider
@@ -80,29 +52,15 @@ pub struct AppState {
     /// Rapid reconnects mean a daemon crashloop, which liveness never surfaces.
     pub connect_tracker: Arc<crate::bandwidth_watch::ConnectTracker>,
     pub divergence_tracker: Arc<crate::bandwidth_watch::DivergenceTracker>,
-    pub machine_event_inserts: Arc<DashMap<Uuid, u64>>,
-    /// Read-through cache over `session_spawn_capabilities`.
-    pub spawn_capabilities: Arc<DashMap<String, cctui_proto::api::SpawnCapability>>,
-    /// Read on the gateway hot path only while non-empty.
-    pub session_usd_budgets: Arc<DashMap<String, f64>>,
-    /// Machines whose daemon advertised `mark_acks`; only they may be sent
-    /// [`cctui_proto::ws::DaemonFrameDown::TranscriptAck`].
-    pub mark_ack_daemons: Arc<DashMap<Uuid, ()>>,
-    /// Machines advertising targeted authentication recovery in their current connection.
-    pub auth_recovery_daemons: Arc<DashMap<Uuid, ()>>,
-    /// Rolling RPM/TPM windows, keyed by provider row id.
-    pub gateway_rate_windows: Arc<DashMap<Uuid, crate::routes::gateway::RateWindow>>,
     /// Cached `instance_settings.upload_caps`, so the upload path never hits
     /// Postgres. Written on `PUT` and by a periodic reload for other replicas.
     pub upload_caps: Arc<std::sync::RwLock<crate::uploads::UploadCaps>>,
 }
 
-pub use cctui_server_core::gateway::limits::OrphanSpam;
-
-pub use cctui_server_core::gateway::usage::{AccountUsageCache, CachedUsage};
+pub use cctui_server_core::gateway::usage::CachedUsage;
 
 pub use cctui_server_core::commands::{
-    CommandVerdict, CommandWaiters, FailedSpawnRow, PendingCommand, resolve_verdict, track_command,
+    CommandVerdict, FailedSpawnRow, resolve_verdict, track_command,
 };
 
 #[cfg(test)]
@@ -110,50 +68,54 @@ impl AppState {
     #[must_use]
     pub fn for_test(pool: PgPool) -> Self {
         Self {
+            core: cctui_server_core::state::CoreState::new(
+                pool.clone(),
+                AuthConfig::new(vec![], pool),
+                Bus::new(Box::new(crate::bus::NoopTransport)),
+                crate::build_http_client(),
+                Arc::new(DispatcherRegistry::new()),
+            ),
             config: Config::for_test(vec![]),
-            registry: crate::registry::Registry::shared(),
             permission_store: crate::routes::permissions::PermissionStore::shared(),
-            bus: Bus::new(Box::new(crate::bus::NoopTransport)),
-            auth_config: AuthConfig::new(vec![], pool.clone()),
             webauthn: None,
             skills: Arc::new(SkillStore::new(std::env::temp_dir().join("cctui-test-skills"))),
             plugins: Arc::new(crate::plugins::PluginRegistry::disabled()),
             preview: Arc::new(crate::preview::Registry::new(None, "", b"test")),
             presence: Arc::new(crate::presence::PodIdentity::from_env()),
             internal_secret: None,
-            dispatcher_liveness: Arc::new(DashMap::new()),
-            dispatchers: Arc::new(DispatcherRegistry::new()),
-            machine_liveness: Arc::new(DashMap::new()),
-            account_locks: Arc::new(DashMap::new()),
-            http_client: crate::build_http_client(),
             langfuse: None,
             pending_oauth_logins: Arc::new(DashMap::new()),
-            account_usage_cache: Arc::new(DashMap::new()),
             pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
-            gateway_orphan_spam: Arc::new(DashMap::new()),
-            account_reauth: Arc::new(DashMap::new()),
             codex_catalogs: Arc::new(DashMap::new()),
             codex_account_catalogs: Arc::new(DashMap::new()),
             codex_latest_version: Arc::new(std::sync::Mutex::new(None)),
             eviction_tracker: Arc::new(crate::bandwidth_watch::EvictionTracker::default()),
             connect_tracker: Arc::new(crate::bandwidth_watch::ConnectTracker::default()),
             divergence_tracker: Arc::new(crate::bandwidth_watch::DivergenceTracker::default()),
-            machine_event_inserts: Arc::new(DashMap::new()),
-            spawn_capabilities: Arc::new(DashMap::new()),
-            session_usd_budgets: Arc::new(DashMap::new()),
-            mark_ack_daemons: Arc::new(DashMap::new()),
-            auth_recovery_daemons: Arc::new(DashMap::new()),
-            gateway_rate_windows: Arc::new(DashMap::new()),
             upload_caps: Arc::new(std::sync::RwLock::new(crate::uploads::UploadCaps::default())),
             update_check: crate::update_check::UpdateCheck::shared(),
-            provider_status: crate::provider_status::ProviderStatusCache::shared(),
             self_update: Arc::new(crate::routes::self_update::SelfUpdateGuard::default()),
-            pending_commands: Arc::new(DashMap::new()),
-            command_waiters: Arc::new(DashMap::new()),
-            pool,
         }
     }
 }
 
 #[cfg(test)]
 pub use cctui_server_core::commands::wait_for_verdict;
+
+impl std::ops::Deref for AppState {
+    type Target = cctui_server_core::state::CoreState;
+    fn deref(&self) -> &Self::Target {
+        &self.core
+    }
+}
+impl std::ops::DerefMut for AppState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.core
+    }
+}
+
+impl axum::extract::FromRef<AppState> for cctui_server_core::state::CoreState {
+    fn from_ref(state: &AppState) -> Self {
+        state.core.clone()
+    }
+}
