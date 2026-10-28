@@ -53,3 +53,7 @@ pub mod targets;
 pub mod normalize;
 
 pub mod results;
+
+pub mod launch_credentials;
+
+pub mod spawn_defaults;

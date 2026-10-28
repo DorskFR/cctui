@@ -31,6 +31,15 @@ pub fn router(host: Host) -> Router {
         .layer(Extension(host.auth_config.clone()));
     Router::new()
         .merge(authenticated)
+        .route(
+            "/api/v1/daemon/sessions/{id}/gateway-env",
+            get(crate::launch_credentials::gateway_env),
+        )
+        .route("/api/v1/daemon/sessions/{id}/context", get(crate::launch_credentials::context))
+        .route(
+            "/api/v1/daemon/sessions/{id}/token-valid",
+            get(crate::launch_credentials::token_valid),
+        )
         .route("/api/v1/daemon/auth", post(crate::daemon::auth))
         .route("/api/v1/daemon/ws", get(crate::daemon::ws))
         .route("/api/v1/version", get(version))
