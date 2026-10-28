@@ -76,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
     .with_spawn_defaults(spawn_defaults);
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!(%address, version = env!("CARGO_PKG_VERSION"), "automation server listening");
+    let _background = cctui_core_server::background::BackgroundTasks::start(host.clone());
     axum::serve(listener, cctui_core_server::router::router(host))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;

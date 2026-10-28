@@ -13,6 +13,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 struct Fixture {
+    host: Host,
     pool: sqlx::PgPool,
     base: String,
     client: reqwest::Client,
@@ -74,6 +75,7 @@ impl Fixture {
             "CREATE TEMP TABLE dispatch_policies (LIKE public.dispatch_policies INCLUDING ALL)",
             "CREATE TEMP TABLE dispatch_policy_uses (LIKE public.dispatch_policy_uses INCLUDING ALL)",
             "CREATE TEMP TABLE dispatch_handles (LIKE public.dispatch_handles INCLUDING ALL)",
+            "CREATE TEMP TABLE session_webhooks (LIKE public.session_webhooks INCLUDING ALL)",
             "CREATE TEMP TABLE dispatch_records (LIKE public.dispatch_records INCLUDING ALL)",
         ] {
             sqlx::query(ddl).execute(&pool).await.unwrap();
@@ -94,10 +96,12 @@ impl Fixture {
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
+        let router_host = host.clone();
         let task = tokio::spawn(async move {
-            axum::serve(listener, cctui_core_server::router::router(host)).await.unwrap();
+            axum::serve(listener, cctui_core_server::router::router(router_host)).await.unwrap();
         });
         Some(Self {
+            host,
             pool,
             base,
             client: reqwest::Client::builder()
@@ -138,6 +142,49 @@ impl Fixture {
         })
         .await
         .unwrap();
+    }
+    async fn assert_completion_outbox(&self, session: &str, user_id: &str) {
+        let row: (String, String, String, String) = sqlx::query_as(
+            "SELECT state,task_id,notify_url,secret FROM session_webhooks WHERE session_id=$1",
+        )
+        .bind(session)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            row,
+            (
+                "pending".into(),
+                "review-fixture".into(),
+                "https://1.1.1.1/hook".into(),
+                "fixture-signing-secret".into()
+            )
+        );
+        // An unregistered HTTP worker cannot be probed; polling must not spend delivery retries.
+        cctui_server_core::webhook::sweep(&self.host).await;
+        let row: (String, i32, bool) = sqlx::query_as(
+        "SELECT state,attempts,next_attempt_at > now() FROM session_webhooks WHERE session_id=$1",
+    )
+    .bind(session)
+    .fetch_one(&self.pool)
+    .await
+    .unwrap();
+        assert_eq!(row, ("pending".into(), 0, true));
+        sqlx::query("INSERT INTO sessions (id,machine_id,working_dir,user_id,adapter_id,status) VALUES ($1,'executor','/tmp',$2,'codex','ended')")
+        .bind(session).bind(uuid::Uuid::parse_str(user_id).unwrap()).execute(&self.pool).await.unwrap();
+        sqlx::query("UPDATE session_webhooks SET next_attempt_at=now() WHERE session_id=$1")
+            .bind(session)
+            .execute(&self.pool)
+            .await
+            .unwrap();
+        cctui_server_core::webhook::sweep(&self.host).await;
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM session_webhooks WHERE session_id=$1")
+                .bind(session)
+                .fetch_one(&self.pool)
+                .await
+                .unwrap();
+        assert_eq!(state, "superseded");
     }
     async fn post(&self, path: &str, token: &str, body: Value) -> Value {
         self.client
@@ -418,7 +465,7 @@ async fn dispatch_through_the_host_delivers_an_authenticated_job_and_a_usable_wo
         return;
     };
     let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"automation"})).await;
-    let reply=f.post("/api/v1/sessions/dispatch",user["key"].as_str().unwrap(),json!({"dispatcher":"fixture","timeout":1,"payload":{"prompt_file":"review","env":{"FEATURE_FLAG":"fixture"}}})).await;
+    let reply=f.post("/api/v1/sessions/dispatch",user["key"].as_str().unwrap(),json!({"dispatcher":"fixture","timeout":1,"notify_url":"https://1.1.1.1/hook","notify_secret":"fixture-signing-secret","payload":{"task_id":"review-fixture","prompt_file":"review","env":{"FEATURE_FLAG":"fixture"}}})).await;
     let (headers, job) =
         tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.unwrap().unwrap();
     assert_eq!(headers["authorization"], "Bearer executor-token");
@@ -429,6 +476,18 @@ async fn dispatch_through_the_host_delivers_an_authenticated_job_and_a_usable_wo
     let identity = f.post("/api/v1/daemon/auth", "", json!({"machine_key":machine_key})).await;
     assert_eq!(identity["user_id"], user["id"]);
     assert_eq!(reply["handle"], "job/fixture");
+    let session = reply["session_id"].as_str().unwrap();
+    f.assert_completion_outbox(session, user["id"].as_str().unwrap()).await;
+    let rejected = f
+        .client
+        .post(format!("{}/api/v1/sessions/dispatch", f.base))
+        .bearer_auth(user["key"].as_str().unwrap())
+        .json(&json!({"dispatcher":"fixture","notify_url":"https://127.0.0.1/hook","payload":{}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), reqwest::StatusCode::BAD_REQUEST);
+    assert!(rx.try_recv().is_err(), "unsafe callbacks must be refused before launch");
     task.abort();
 }
 
@@ -1158,4 +1217,65 @@ async fn an_older_daemon_reconnecting_after_a_newer_one_receives_no_checkpoint_a
     .await;
     assert!(received.is_err(), "never send an unknown frame to an older daemon");
     older.close(None).await.unwrap();
+}
+
+#[tokio::test]
+async fn completion_runtime_freezes_failure_payloads_and_preserves_the_retry_budget() {
+    let Some(f) = Fixture::new().await else { return };
+    let session = uuid::Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO sessions (id,machine_id,working_dir,adapter_id,status) VALUES ($1,'executor','/tmp','codex','failed')")
+        .bind(&session).execute(&f.pool).await.unwrap();
+    // An unsafe historical target fails immediately through the guarded client;
+    // this exercises delivery failure without contacting an external receiver.
+    sqlx::query("INSERT INTO session_webhooks (session_id,notify_url,task_id) VALUES ($1,'https://127.0.0.1:1/hook','fixture-task')")
+        .bind(&session).execute(&f.pool).await.unwrap();
+    let runtime = cctui_core_server::background::BackgroundTasks::start(f.host.clone());
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let attempts: i32 =
+                sqlx::query_scalar("SELECT attempts FROM session_webhooks WHERE session_id=$1")
+                    .bind(&session)
+                    .fetch_one(&f.pool)
+                    .await
+                    .unwrap();
+            if attempts == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(runtime);
+    let row: (String, Value, bool) = sqlx::query_as(
+        "SELECT state,payload,next_attempt_at > now() FROM session_webhooks WHERE session_id=$1",
+    )
+    .bind(&session)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    let expected =
+        json!({"task_id":"fixture-task","status":"failed","error":"dispatch never launched"});
+    assert_eq!(row, ("pending".into(), expected.clone(), true));
+    // A later lifecycle update must not rewrite a payload already being retried.
+    sqlx::query("UPDATE sessions SET status='ended' WHERE id=$1")
+        .bind(&session)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE session_webhooks SET attempts=10,next_attempt_at=now() WHERE session_id=$1",
+    )
+    .bind(&session)
+    .execute(&f.pool)
+    .await
+    .unwrap();
+    cctui_server_core::webhook::sweep(&f.host).await;
+    let row: (String, i32, Value) =
+        sqlx::query_as("SELECT state,attempts,payload FROM session_webhooks WHERE session_id=$1")
+            .bind(&session)
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+    assert_eq!(row, ("dead".into(), 11, expected));
 }

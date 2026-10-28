@@ -193,10 +193,25 @@ impl core::dispatch::DispatchContext for Host {
     }
     async fn register_completion_webhook(
         &self,
-        _: &core::auth::AuthContext,
-        _: &cctui_proto::api::DispatchRequest,
-        _: &str,
+        ctx: &core::auth::AuthContext,
+        req: &cctui_proto::api::DispatchRequest,
+        session: &str,
     ) {
+        if let (Some(uid), Some(url)) =
+            (ctx.owner_filter(), req.notify_url.as_deref().filter(|url| !url.trim().is_empty()))
+        {
+            let task_id =
+                req.payload.get("task_id").and_then(serde_json::Value::as_str).unwrap_or(session);
+            core::webhook::register(
+                self,
+                session,
+                uid,
+                url,
+                req.notify_secret.as_deref().filter(|secret| !secret.trim().is_empty()),
+                task_id,
+            )
+            .await;
+        }
     }
     async fn remember_dispatch_context(
         &self,
