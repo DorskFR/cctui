@@ -1260,6 +1260,33 @@ async fn an_older_daemon_reconnecting_after_a_newer_one_receives_no_checkpoint_a
 }
 
 #[tokio::test]
+async fn reaper_ended_oom_keeps_the_server_failure_callback() {
+    let Some(f) = Fixture::new().await else { return };
+    let session = uuid::Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO sessions (id,machine_id,working_dir,adapter_id,status,end_reason,end_detail) VALUES ($1,'executor','/tmp','codex','ended','oom_killed','OOMKilled')")
+        .bind(&session).execute(&f.pool).await.unwrap();
+    sqlx::query("INSERT INTO session_webhooks (session_id,notify_url,task_id) VALUES ($1,'https://127.0.0.1:1/hook','fixture-task')")
+        .bind(&session).execute(&f.pool).await.unwrap();
+    cctui_server_core::webhook::sweep(&f.host).await;
+    let row: (String, i32, Option<Value>) =
+        sqlx::query_as("SELECT state,attempts,payload FROM session_webhooks WHERE session_id=$1")
+            .bind(&session)
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        row,
+        (
+            "pending".into(),
+            1,
+            Some(json!({
+                "task_id":"fixture-task", "status":"failed", "error":"OOMKilled"
+            }))
+        )
+    );
+}
+
+#[tokio::test]
 async fn completion_runtime_freezes_failure_payloads_and_preserves_the_retry_budget() {
     let Some(f) = Fixture::new().await else { return };
     let session = uuid::Uuid::new_v4().to_string();
@@ -1563,4 +1590,94 @@ async fn unregistered_run_results_report_queue_position_failure_and_ownership() 
     assert_eq!(result.end_reason.as_deref(), Some("oom_killed"));
     assert!(!result.queued);
     assert!(result.queue_position.is_none());
+}
+
+#[tokio::test]
+async fn workload_runtime_records_a_dispatcher_reported_oom_as_a_terminal_owned_result() {
+    let Some(f) = Fixture::new().await else { return };
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"automation"})).await;
+    let key = user["key"].as_str().unwrap();
+    let uid = uuid::Uuid::parse_str(user["id"].as_str().unwrap()).unwrap();
+    let executor = f
+        .post(
+            "/api/v1/dispatcher/enroll",
+            key,
+            json!({"name":"runtime-executor","kind":"kubernetes"}),
+        )
+        .await;
+    let dispatcher = uuid::Uuid::parse_str(executor["dispatcher_id"].as_str().unwrap()).unwrap();
+    let machine = f.post("/api/v1/enroll", key, json!({"hostname":"runtime-worker"})).await;
+    let mid = uuid::Uuid::parse_str(machine["machine_id"].as_str().unwrap()).unwrap();
+    let session = uuid::Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO sessions (id,machine_id,working_dir,machine_uuid,user_id,adapter_id,status) VALUES ($1,'runtime-worker','/tmp',$2,$3,'codex','active')")
+        .bind(&session).bind(mid).bind(uid).execute(&f.pool).await.unwrap();
+    sqlx::query("INSERT INTO dispatch_handles (session_id,dispatcher_name,handle) VALUES ($1,'runtime-executor','job/fixture')")
+        .bind(&session).execute(&f.pool).await.unwrap();
+    sqlx::query("INSERT INTO dispatch_records (session_id,user_id,dispatcher_name,outcome) VALUES ($1,$2,'runtime-executor','forwarded')")
+        .bind(&session).bind(uid).execute(&f.pool).await.unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    f.host.bus.register_dispatcher(dispatcher, tx);
+    let bus = f.host.bus.clone();
+    let responder = tokio::spawn(async move {
+        while let Some(frame) = rx.recv().await {
+            let cctui_proto::ws::DispatcherFrameDown::Status { request_id, handle } = frame else {
+                panic!("expected workload status probe")
+            };
+            bus.resolve_dispatcher_reply(
+                request_id,
+                cctui_proto::ws::DispatcherFrameUp::StatusResult {
+                    request_id,
+                    handle,
+                    state: Some("failed".into()),
+                    error: Some("OOMKilled".into()),
+                    worker_exit: Some(cctui_proto::api::WorkerExit {
+                        exit_code: Some(137),
+                        reason: Some("OOMKilled".into()),
+                        ..Default::default()
+                    }),
+                },
+            );
+        }
+    });
+    let runtime = cctui_core_server::background::BackgroundTasks::start(f.host.clone());
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let reason: Option<String> =
+                sqlx::query_scalar("SELECT end_reason FROM sessions WHERE id=$1")
+                    .bind(&session)
+                    .fetch_one(&f.pool)
+                    .await
+                    .unwrap();
+            if reason.as_deref() == Some("oom_killed") {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let result: cctui_proto::api::SessionResult = f
+        .client
+        .get(format!("{}/api/v1/sessions/{session}/result", f.base))
+        .bearer_auth(key)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(result.done);
+    assert_eq!(result.end_reason.as_deref(), Some("oom_killed"));
+    let exit: Value =
+        sqlx::query_scalar("SELECT worker_exit FROM dispatch_records WHERE session_id=$1")
+            .bind(&session)
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+    assert_eq!(exit["exit_code"], 137);
+    assert_eq!(exit["reason"], "OOMKilled");
+    drop(runtime);
+    responder.abort();
 }

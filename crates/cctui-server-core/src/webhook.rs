@@ -126,7 +126,8 @@ const CLAIM_SQL: &str = "\
         RETURNING q.id, q.session_id, q.user_id, q.notify_url, q.secret, q.task_id, \
                   q.attempts, q.payload) \
     SELECT c.id, c.session_id, c.user_id, c.notify_url, c.secret, c.task_id, c.attempts, \
-           s.status AS session_status, dh.dispatcher_name, dh.handle, c.payload \
+           s.status AS session_status, s.end_reason, s.end_detail, \
+           dh.dispatcher_name, dh.handle, c.payload \
     FROM claimed c \
     LEFT JOIN sessions s ON s.id = c.session_id \
     LEFT JOIN dispatch_handles dh ON dh.session_id = c.session_id";
@@ -153,6 +154,8 @@ struct PendingRow {
     /// dispatched session whose worker never registered (pod crashlooped / never
     /// started) — exactly the case the dispatcher poll below resolves.
     session_status: Option<String>,
+    end_reason: Option<String>,
+    end_detail: Option<String>,
     /// The owning dispatcher's name + opaque handle, if one was
     /// persisted at dispatch. `None` for the http escape-hatch.
     dispatcher_name: Option<String>,
@@ -201,9 +204,23 @@ enum Outcome {
 /// workload is still alive.
 async fn decide(state: &impl DispatchContext, row: &PendingRow) -> Outcome {
     match row.session_status.as_deref().and_then(SessionRowStatus::parse) {
-        // Any SessionEnded means the worker process reached its EXIT/INT/TERM
-        // trap (completed, killed, or crashed) and already POSTed REPLY_URL —
-        // the worker owns the verdict, the server stays quiet.
+        // A server-observed failure does not prove the worker reached its exit
+        // trap. In particular, an OOM kill cannot deliver the worker callback.
+        Some(SessionRowStatus::Ended)
+            if matches!(
+                row.end_reason.as_deref(),
+                Some("oom_killed" | "spawn_failed" | "crashed")
+            ) =>
+        {
+            return Outcome::Fire(
+                row.end_detail.clone().or_else(|| row.end_reason.clone()).unwrap(),
+            );
+        }
+        // Transport loss can recover; ask the executor before declaring death.
+        Some(SessionRowStatus::Ended)
+            if matches!(row.end_reason.as_deref(), Some("daemon_lost" | "machine_offline")) => {}
+        // Preserve clean completion, explicit cancellation and legacy rows
+        // without an end reason: their worker owns the callback.
         Some(SessionRowStatus::Ended) => return Outcome::Supersede,
         // Dispatch never launched a runtime: no worker, no callback ever.
         Some(SessionRowStatus::Failed) => return Outcome::Fire("dispatch never launched".into()),
