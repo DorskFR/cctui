@@ -4,19 +4,6 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 
-/// SQL: the stored metadata merged with the announced one. The relation a
-/// session was born with (follow-up, fork, subagent) outlives a later
-/// announcement that calls it a root or nulls it.
-macro_rules! merged_metadata {
-    () => {
-        "(COALESCE(sessions.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb) \
-          || CASE WHEN COALESCE(sessions.metadata->>'relation', 'root') <> 'root' \
-                   AND COALESCE(EXCLUDED.metadata->>'relation', 'root') = 'root' \
-                  THEN jsonb_build_object('relation', sessions.metadata->'relation') \
-                  ELSE '{}'::jsonb END)"
-    };
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn upsert_session(
     state: &AppState,
@@ -29,137 +16,19 @@ pub(super) async fn upsert_session(
     observed_at: Option<i64>,
     extra: Option<serde_json::Value>,
 ) -> anyhow::Result<Option<bool>> {
-    // `parent_id`: resolve via a subquery rather than binding the
-    // raw value so a not-yet-known parent yields NULL instead of an FK
-    // violation that would drop the whole insert. In the normal case the
-    // parent is upserted earlier in the same poll, so it resolves. On
-    // conflict, COALESCE keeps an already-set parent and otherwise fills it
-    // in from a later poll.
-    //
-    // `status` on conflict: the codex thread/list inventory poll
-    // re-emits SessionStarted for every machine-wide thread every
-    // ~15s, including ones the user archived. Preserve terminal/parked states
-    // (`inactive`, `archived`, `ended`) so a re-discovery refreshes the
-    // heartbeat without resurrecting the session into the Working list;
-    // otherwise revive it to `active`.
-    let inserted: Option<bool> = sqlx::query_scalar(concat!(
-        r"INSERT INTO sessions
-            (id, parent_id, account_id, machine_id, working_dir, status, registered_at,
-             last_heartbeat, metadata, user_id, machine_uuid, adapter_id)
-          VALUES ($1, (SELECT id FROM sessions WHERE id = $7), NULL, $2, $3, 'active',
-                  COALESCE(to_timestamp($8::double precision), now()),
-                  COALESCE(to_timestamp($8::double precision), now()),
-                  COALESCE($9::jsonb, '{}'::jsonb), $4, $5, $6)
-          ON CONFLICT (id) DO UPDATE SET
-            last_heartbeat = GREATEST(sessions.last_heartbeat,
-                                      COALESCE(to_timestamp($8::double precision), now())),
-            status = CASE WHEN sessions.status IN ('inactive', 'archived', 'ended') THEN sessions.status ELSE 'active' END,
-            adapter_id = EXCLUDED.adapter_id,
-            parent_id = COALESCE(sessions.parent_id, EXCLUDED.parent_id),
-            metadata = ",
-        merged_metadata!(),
-        r"
-          WHERE sessions.machine_uuid = EXCLUDED.machine_uuid
-            AND sessions.user_id = EXCLUDED.user_id
-            AND (sessions.last_heartbeat, sessions.status, sessions.adapter_id,
-                 sessions.parent_id, sessions.metadata)
-                IS DISTINCT FROM
-                (GREATEST(sessions.last_heartbeat,
-                          COALESCE(to_timestamp($8::double precision), now())),
-                 CASE WHEN sessions.status IN ('inactive', 'archived', 'ended') THEN sessions.status ELSE 'active' END,
-                 EXCLUDED.adapter_id,
-                 COALESCE(sessions.parent_id, EXCLUDED.parent_id),
-                 ",
-        merged_metadata!(),
-        r")
-          RETURNING (xmax = 0)",
-    ))
-    .bind(local_id)
-    .bind(machine_id.to_string())
-    .bind(working_dir.unwrap_or_default())
-    .bind(user_id)
-    .bind(machine_id)
-    .bind(adapter_id)
-    .bind(parent_local_id)
-    .bind(observed_at)
-    .bind(extra)
-    .fetch_optional(&state.pool)
-    .await?;
-    let pool = &state.pool;
-    let inserted = match inserted {
-        Some(inserted) => inserted,
-        None if session_owned(pool, machine_id, user_id, local_id).await? => false,
-        None => {
-            tracing::warn!(%machine_id, %local_id, "refusing to register a session another machine owns");
-            return Ok(None);
-        }
-    };
-    // A daemon that re-registers the session after a reconnect proves the
-    // `daemon_lost` / `machine_offline` end was spurious. So is a "released"
-    // end: 0.17.0 ended every claude job cctui had not started, and those jobs
-    // are alive and registered again.
-    let revived: Option<Option<String>> = sqlx::query_scalar(
-        "WITH prior AS (SELECT end_reason FROM sessions WHERE id = $1) \
-         UPDATE sessions SET status = 'active', ended_at = NULL, end_reason = NULL, end_detail = NULL \
-         WHERE id = $1 AND status = 'ended' \
-           AND (end_reason IN ('daemon_lost', 'machine_offline') OR end_detail LIKE 'released:%') \
-         RETURNING (SELECT end_reason FROM prior)",
+    Ok(cctui_server_core::lifecycle::upsert_session(
+        &state.pool,
+        &state.bus,
+        machine_id,
+        user_id,
+        adapter_id,
+        local_id,
+        working_dir,
+        parent_local_id,
+        observed_at,
+        extra,
     )
-    .bind(local_id)
-    .fetch_optional(pool)
-    .await?;
-    if let Some(prior_end_reason) = revived {
-        crate::events::record(
-            state,
-            crate::events::Event::new(
-                crate::events::kind::SESSION_RESUMED,
-                crate::events::Actor::Daemon,
-            )
-            .session(local_id)
-            .machine(machine_id)
-            .user(user_id)
-            .detail(serde_json::json!({
-                "origin": "daemon-reregistered",
-                "prior_end_reason": prior_end_reason,
-            })),
-        );
-    }
-    // Repair the durable account binding: the dispatch path mints the
-    // gateway token BEFORE the daemon registers the session, so mint-time's
-    // best-effort `UPDATE sessions SET account_id` hit no row and the binding
-    // silently stayed NULL — leaving resume-after-revocation with
-    // nothing to re-mint from. Backfill it here from the newest token row
-    // (live preferred). No-op for already-bound or never-bound sessions.
-    sqlx::query(
-        "UPDATE sessions SET account_id = t.account_id \
-         FROM (SELECT st.account_id::text AS account_id FROM session_tokens st \
-                WHERE st.session_id = $1 \
-                ORDER BY (st.revoked_at IS NULL) DESC, st.created_at DESC LIMIT 1) t \
-         WHERE sessions.id = $1 AND sessions.account_id IS NULL",
-    )
-    .bind(local_id)
-    .execute(pool)
-    .await?;
-    Ok(Some(inserted))
-}
-
-/// Whether `machine_id`/`user_id` own the session row: an upsert that changed
-/// nothing returns no row, the same as one refused for ownership.
-async fn session_owned(
-    pool: &sqlx::PgPool,
-    machine_id: Uuid,
-    user_id: Uuid,
-    local_id: &str,
-) -> sqlx::Result<bool> {
-    sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM sessions \
-                        WHERE id = $1 AND machine_uuid = $2 AND user_id = $3)",
-    )
-    .bind(local_id)
-    .bind(machine_id)
-    .bind(user_id)
-    .fetch_one(pool)
-    .await
+    .await?)
 }
 
 /// Register a session the daemon announced, announcing it to browser clients
