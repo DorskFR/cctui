@@ -733,3 +733,24 @@ Regression coverage includes typed legacy/core decoding, TUI startup over HTTP,
 web probe behavior and browser checks that core opens no workspace requests or
 WebSocket. Interactive state/handler extraction, execution context, child APIs,
 Kubernetes and rolling-upgrade acceptance remain open milestones.
+
+### Child execution policy (`0.27.0-beta.27`)
+
+Child capability checks, permission/depth ceilings, pending-child slots, tree
+budget accounting, reservation locking and release now live in core. The full
+host delegates its existing spawn-child reservation to the shared service and
+supplies the same transcript-based completion count as before. Its account,
+context, delivery and archive paths remain in the full host for now.
+
+The execution-only counter reads persisted session outcomes, keeps running and
+completed children in their slots, releases failed/archived children, and excludes
+forks and follow-ups. A count failure refuses the reservation before minting a
+capability or recording a grant. All counts and grants run under the existing
+per-tree transaction lock, including children not registered yet.
+
+The minimal-schema regression reproduced the original transcript dependency;
+contracts now cover slot enforcement, concurrent reservations, inherited tree
+budgets, failed-launch release and unreadable counts without workspace tables.
+The existing pure policy tests run in core. Standalone child-tool HTTP assembly,
+account/context preparation and end-to-end child execution remain acceptance
+gates; this increment does not yet expose a core spawn-child route.
