@@ -72,7 +72,7 @@ core tests require an already migrated database, just as the full-server tests d
 This beta is still the full server. It is not a minimal installation and does not
 claim to remove workspace schema/extensions or publish a standalone core image.
 
-### Account resolution and gateway policy (`0.27.0-beta.2`)
+### Account resolution, gateway policy and launch tracking (`0.27.0-beta.2`)
 
 Account ranking, pool resolution and provider/path configuration now live in
 `cctui-server-core`. Full-server modules re-export them, preserving route callers
@@ -89,6 +89,13 @@ constant is shared with the full session display to prevent threshold drift.
 The new database regression restricts search_path to temporary execution tables;
 no workspace table is visible. A separate closed-database regression checks
 reauthentication fallback and distinguishes database failures from rejection.
+
+Core also owns pending-command metadata, daemon-verdict waiters and the early
+launch acknowledgment deadline. The full state module re-exports these types and
+functions, keeping its existing callers. Waiter registration now cleans up when
+a waiting request is canceled as well as on verdict and timeout; the cancellation
+regression fails against the old implementation. Existing acknowledgment tests
+move with their implementation, and expiry tests check stale command pruning.
 
 This remains an internal extraction shipped through the full distribution.
 OAuth refresh, usage fetching, execution state, launch, lifecycle, standalone
