@@ -348,3 +348,41 @@ fn note_support(map: &dashmap::DashMap<Uuid, ()>, machine: Uuid, supported: Opti
         map.remove(&machine);
     }
 }
+
+/// Same version contract used by a worker's post-update health probe.
+pub async fn version(
+    State(host): State<Host>,
+    headers: HeaderMap,
+) -> Result<Json<cctui_proto::api::update_hook::DaemonVersion>, StatusCode> {
+    let token = bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    let ctx = host.auth_config.validate(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
+    ctx.machine_id.ok_or(StatusCode::FORBIDDEN)?;
+    Ok(Json(cctui_proto::api::update_hook::DaemonVersion {
+        version: env!("CARGO_PKG_VERSION"),
+        git_hash: env!("CCTUI_GIT_HASH"),
+    }))
+}
+
+pub async fn machine_status(
+    State(host): State<Host>,
+    axum::Extension(ctx): axum::Extension<core::auth::AuthContext>,
+    axum::extract::Path(machine): axum::extract::Path<Uuid>,
+) -> Result<Json<core::targets::machine_status::MachineStatusResponse>, core::error::AppError> {
+    use core::error::AppError;
+    ctx.requires(core::auth::Scope::Read).map_err(|s| AppError::new(s, "read scope required"))?;
+    let owner = core::resource_owners::shareable_owner(
+        core::resource_owners::Shareable::Machine,
+        machine,
+        &host.pool,
+    )
+    .await?;
+    let owner = owner.ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "machine not found"))?;
+    if !ctx.is_admin()
+        && ctx.user_id != owner
+        && !core::store::shares::granted(&host.pool, "machine", machine, ctx.user_id).await?
+    {
+        return Err(AppError::new(StatusCode::FORBIDDEN, "not your machine"));
+    }
+    core::targets::machine_status::machine_status(State(host.core), axum::extract::Path(machine))
+        .await
+}

@@ -1725,3 +1725,160 @@ async fn workload_runtime_records_a_dispatcher_reported_oom_as_a_terminal_owned_
     drop(runtime);
     responder.abort();
 }
+
+#[tokio::test]
+async fn machine_connectivity_status_enforces_read_and_ownership() {
+    let Some(f) = Fixture::new().await else { return };
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"operator"})).await;
+    let key = user["key"].as_str().unwrap();
+    let enrolled = f.post("/api/v1/enroll", key, json!({"hostname":"executor"})).await;
+    let path =
+        format!("{}/api/v1/machines/{}/status", f.base, enrolled["machine_id"].as_str().unwrap());
+    let response = f.client.get(&path).bearer_auth(key).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let status: Value = response.json().await.unwrap();
+    assert_eq!(status["connected"], false);
+    assert_eq!(status["revoked"], false);
+    let other = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"other"})).await;
+    assert_eq!(
+        f.client
+            .get(&path)
+            .bearer_auth(other["key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    let restricted = f
+        .post(
+            &format!("/api/v1/users/{}/keys", user["id"].as_str().unwrap()),
+            "fixture-admin",
+            json!({"label":"enroll-only","scopes":["enroll"]}),
+        )
+        .await;
+    assert_eq!(
+        f.client
+            .get(&path)
+            .bearer_auth(restricted["key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    let machine_id = uuid::Uuid::parse_str(enrolled["machine_id"].as_str().unwrap()).unwrap();
+    let grantee = uuid::Uuid::parse_str(other["id"].as_str().unwrap()).unwrap();
+    sqlx::query("INSERT INTO resource_shares (resource_type,resource_id,grantee_id) VALUES ('machine',$1,$2)").bind(machine_id).bind(grantee).execute(&f.pool).await.unwrap();
+    assert_eq!(
+        f.client
+            .get(&path)
+            .bearer_auth(other["key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    sqlx::query(
+        "UPDATE resource_shares SET revoked_at=now() WHERE resource_id=$1 AND grantee_id=$2",
+    )
+    .bind(machine_id)
+    .bind(grantee)
+    .execute(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        f.client
+            .get(&path)
+            .bearer_auth(other["key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    let mut daemon = f.daemon(enrolled["machine_key"].as_str().unwrap()).await;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let status: Value =
+                f.client.get(&path).bearer_auth(key).send().await.unwrap().json().await.unwrap();
+            if status["connected"] == true {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    daemon.close(None).await.unwrap();
+}
+
+#[tokio::test]
+async fn daemon_distribution_preserves_channels_origin_etag_and_machine_identity() {
+    let Some(f) = Fixture::new().await else { return };
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"operator"})).await;
+    let key = user["key"].as_str().unwrap();
+    let manifest = format!("{}/api/v1/manifest/daemon", f.base);
+    assert_eq!(f.client.get(&manifest).send().await.unwrap().status(), 401);
+    assert_eq!(f.client.get(&manifest).bearer_auth(key).send().await.unwrap().status(), 204);
+    let response =
+        f.client.get(format!("{manifest}?channel=beta")).bearer_auth(key).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let etag = response.headers().get("etag").unwrap().clone();
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        body["assets"][0]["url"],
+        "https://automation.example.invalid/api/v1/daemon/binary/linux-amd64"
+    );
+    assert_eq!(
+        f.client
+            .get(format!("{manifest}?channel=beta"))
+            .bearer_auth(key)
+            .header("if-none-match", etag)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        304
+    );
+    let download = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .build()
+        .unwrap();
+    let response = download
+        .get(format!("{}/api/v1/daemon/binary/linux-amd64", f.base))
+        .bearer_auth(key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 307);
+    assert!(response.headers()["location"].to_str().unwrap().ends_with(&format!(
+        "/releases/download/v{}/cctui-daemon-linux-amd64",
+        env!("CARGO_PKG_VERSION")
+    )));
+    assert_eq!(
+        download
+            .get(format!("{}/api/v1/daemon/binary/unsupported", f.base))
+            .bearer_auth(key)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    let enrolled = f.post("/api/v1/enroll", key, json!({"hostname":"executor"})).await;
+    let version = format!("{}/api/v1/daemon/version", f.base);
+    assert_eq!(f.client.get(&version).bearer_auth(key).send().await.unwrap().status(), 403);
+    let response = f
+        .client
+        .get(&version)
+        .bearer_auth(enrolled["machine_key"].as_str().unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.json::<Value>().await.unwrap()["version"], env!("CARGO_PKG_VERSION"));
+}

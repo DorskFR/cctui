@@ -22,6 +22,7 @@ pub struct Host {
     pub core: CoreState,
     vault_key: Arc<Vec<u8>>,
     external_url: Arc<str>,
+    github_token: Option<Arc<str>>,
     spawn_defaults: cctui_proto::api::settings::SpawnDefaults,
     oauth_logins: core::accounts::PendingOAuthLogins,
     pub(crate) ephemeral_machine_ttl_secs: u64,
@@ -33,10 +34,16 @@ impl Host {
             core,
             vault_key: Arc::new(vault_key),
             external_url: external_url.into(),
+            github_token: None,
             spawn_defaults: cctui_proto::api::settings::SpawnDefaults::default(),
             oauth_logins: Arc::new(DashMap::new()),
             ephemeral_machine_ttl_secs: 2 * 60 * 60,
         }
+    }
+    #[must_use]
+    pub fn with_github_token(mut self, token: Option<String>) -> Self {
+        self.github_token = token.map(Into::into);
+        self
     }
     #[must_use]
     pub const fn with_spawn_defaults(
@@ -250,5 +257,14 @@ impl core::dispatch_liveness::DispatchLivenessContext for Host {
             tracing::warn!(%error, %session, "execution completion evidence read failed");
             false
         })
+    }
+}
+
+impl core::targets::manifest::DistributionContext for Host {
+    fn distribution_url(&self) -> &str {
+        &self.external_url
+    }
+    fn github_token(&self) -> Option<&str> {
+        self.github_token.as_deref()
     }
 }

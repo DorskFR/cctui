@@ -23,3 +23,6 @@ pub mod daemon;
 pub mod dispatcher;
 pub mod dispatcher_liveness;
 pub mod dispatcher_management;
+
+pub mod machine_status;
+pub mod manifest;

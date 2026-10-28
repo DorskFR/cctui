@@ -21,6 +21,12 @@ pub fn router(host: Host) -> Router {
         .route("/api/v1/admin/users/{id}/revoke", post(admin::revoke_user))
         .route("/api/v1/users/{id}/keys", get(admin::list_user_keys).post(admin::mint_user_key))
         .route("/api/v1/users/{id}/keys/{kid}", axum::routing::delete(admin::revoke_user_key))
+        .route("/api/v1/manifest/daemon", get(core::targets::manifest::daemon_manifest::<Host>))
+        .route(
+            "/api/v1/daemon/binary/{target}",
+            get(core::targets::manifest::download_daemon_binary::<Host>),
+        )
+        .route("/api/v1/machines/{id}/status", get(crate::daemon::machine_status))
         .route("/api/v1/me", get(me::me))
         .route("/api/v1/me/key", axum::routing::delete(me::revoke_current_key))
         .route("/api/v1/enroll", post(core::targets::enrollment::enroll))
@@ -54,6 +60,7 @@ pub fn router(host: Host) -> Router {
             "/api/v1/dispatcher/ws",
             get(core::targets::dispatcher::ws::<core::state::CoreState>),
         )
+        .route("/api/v1/daemon/version", get(crate::daemon::version))
         .route("/api/v1/daemon/auth", post(crate::daemon::auth))
         .route("/api/v1/daemon/ws", get(crate::daemon::ws))
         .route("/api/v1/version", get(version))
