@@ -498,3 +498,16 @@ and child grants to the harness's final identity.
 The host remains experimental and needs an existing migrated database. Complete
 execution-context support, dispatcher operations, callback delivery, minimal core
 provisioning, dedicated release artifacts and client capabilities remain gates.
+
+### Daemon usage and checkpoints (`0.27.0-beta.16`, in development)
+
+Both hosts share idempotent daemon token-usage insertion, including suppression
+for gateway-metered harnesses, integer saturation and missing-session handling.
+Transcript checkpoints preserve the maximum stored offset and acknowledge it
+only for daemons advertising support. The standalone host now uses both services,
+and its reconnect handshake returns the durable resume marks. Conversation
+archives remain owned by the full workspace host.
+
+HTTP/WebSocket contracts cover repeated usage, out-of-order checkpoints,
+acknowledgment after storage, reconnection and an older daemon reconnecting after
+a newer one without receiving unsupported acknowledgment frames.
