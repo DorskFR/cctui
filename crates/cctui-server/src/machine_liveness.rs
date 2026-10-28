@@ -19,24 +19,9 @@ use crate::events::{self, Actor, Event, kind};
 use crate::state::AppState;
 use crate::store::sessions::SessionRowStatus;
 
-/// `Online` (green) within the active window, `Stale` (orange) up to the dead
-/// window, `Offline` beyond it. Mirrors `routes::sessions::LIVENESS_*` so machine
-/// and session dots age out on the same schedule.
-const ONLINE_SECS: i64 = 5 * 60;
-const OFFLINE_SECS: i64 = 60 * 60;
-
-/// Map `last_seen_at` age onto the three-tier machine liveness.
-#[must_use]
-pub fn derive(last_seen_at: DateTime<Utc>) -> MachineLiveness {
-    let age = (Utc::now() - last_seen_at).num_seconds();
-    if age < ONLINE_SECS {
-        MachineLiveness::Online
-    } else if age < OFFLINE_SECS {
-        MachineLiveness::Stale
-    } else {
-        MachineLiveness::Offline
-    }
-}
+pub use cctui_server_core::targets::derive_liveness as derive;
+#[cfg(test)]
+use cctui_server_core::targets::{OFFLINE_SECS, ONLINE_SECS};
 
 /// Record `tier` for `machine_id`, broadcasting iff it changed.
 ///

@@ -85,7 +85,6 @@ use axum::routing::{any, get, post, put};
 use axum::{Extension, Router, middleware};
 use config::Config;
 use live_sessions::live_sessions_predicate;
-use registry::Registry;
 use state::AppState;
 use store::sessions::SessionRowStatus;
 
@@ -223,14 +222,15 @@ async fn build_state(
     guard_step::init(guard_step::Durable::new(pool.clone(), guard_peers));
 
     Ok(AppState {
-        pool,
+        core: cctui_server_core::state::CoreState::new(
+            pool,
+            auth_config,
+            bus::Bus::new(transport),
+            http_client,
+            dispatchers,
+        ),
         config: config.clone(),
-        registry: Registry::shared(),
         permission_store: routes::permissions::PermissionStore::shared(),
-        // The single routing seam for daemon/dispatcher WS traffic;
-        // the transport behind it is chosen by `init_bus`.
-        bus: bus::Bus::new(transport),
-        auth_config,
         // Passkeys ride the deployment's own public URL: a server already
         // configured with an https `CCTUI_EXTERNAL_URL` needs no new env.
         webauthn: webauthn::build(&config.external_url, config.rp_id.as_deref()).map(Arc::new),
@@ -243,38 +243,21 @@ async fn build_state(
         )),
         presence,
         internal_secret,
-        dispatcher_liveness: Arc::new(dashmap::DashMap::new()),
-        dispatchers,
-        machine_liveness: Arc::new(dashmap::DashMap::new()),
-        account_locks: Arc::new(dashmap::DashMap::new()),
-        http_client,
         // Optional Langfuse tracing sink. `None` (dark) unless the
         // CCTUI_LANGFUSE_* env is fully set — zero overhead on the gateway path.
         langfuse: langfuse::LangfuseConfig::from_env()
             .map(|c| Arc::new(langfuse::LangfuseClient::new(c, build_http_client()))),
         pending_oauth_logins: Arc::new(dashmap::DashMap::new()),
-        account_usage_cache: Arc::new(dashmap::DashMap::new()),
         pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
-        gateway_orphan_spam: Arc::new(dashmap::DashMap::new()),
-        account_reauth: Arc::new(dashmap::DashMap::new()),
         codex_catalogs: Arc::new(dashmap::DashMap::new()),
         codex_account_catalogs: Arc::new(dashmap::DashMap::new()),
         codex_latest_version: Arc::new(std::sync::Mutex::new(None)),
         eviction_tracker: Arc::new(bandwidth_watch::EvictionTracker::default()),
         connect_tracker: Arc::new(bandwidth_watch::ConnectTracker::default()),
         divergence_tracker: Arc::new(bandwidth_watch::DivergenceTracker::default()),
-        machine_event_inserts: Arc::new(dashmap::DashMap::new()),
-        mark_ack_daemons: Arc::new(dashmap::DashMap::new()),
-        auth_recovery_daemons: Arc::new(dashmap::DashMap::new()),
-        spawn_capabilities: Arc::new(dashmap::DashMap::new()),
-        session_usd_budgets: Arc::new(dashmap::DashMap::new()),
-        gateway_rate_windows: Arc::new(dashmap::DashMap::new()),
         upload_caps: Arc::new(std::sync::RwLock::new(uploads::UploadCaps::default())),
         update_check: update_check::UpdateCheck::shared(),
-        provider_status: provider_status::ProviderStatusCache::shared(),
         self_update: Arc::new(routes::self_update::SelfUpdateGuard::default()),
-        pending_commands: Arc::new(dashmap::DashMap::new()),
-        command_waiters: Arc::new(dashmap::DashMap::new()),
     })
 }
 
