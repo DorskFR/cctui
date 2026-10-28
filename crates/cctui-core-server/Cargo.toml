@@ -1,0 +1,29 @@
+[package]
+name = "cctui-core-server"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cctui-server-core.workspace = true
+cctui-proto.workspace = true
+cctui-crypto.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+dashmap = "6"
+sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
+
+[dev-dependencies]
+tokio-tungstenite.workspace = true
+tower.workspace = true

@@ -426,3 +426,29 @@ The initial storage extraction does not satisfy the standalone-core gates.
 
 Organization hierarchies, enterprise SSO, new workflow engines, new scheduling
 semantics, durable callback delivery and worker-image slimming are separate work.
+
+### Automation host and daemon transport (`0.27.0-beta.12`, in development)
+
+`cctui-core-server` assembles execution services without the full server, search,
+image codecs, WebAuthn or workspace startup. Its host adapters use the same
+credential refresh, account selection, provider proxy, metering and policy
+implementations. HTTP administration and enrollment use the shared handlers.
+Daemon framing, compression/chunks, liveness, priority delivery, connection limits,
+reconciliation, session ownership and reconnect-grace scheduling are shared with
+the full host. The full distribution keeps its existing presence, transcript,
+preview and diagnostic adapters and ordering.
+
+The development host accepts daemon lifecycle events and persists a bounded
+projection of the final assistant message, with replay deduplication. Results use
+the existing completion classifier and expose truncation explicitly. An unattended
+permission, question or plan request records a terminal `other` failure explaining
+that human input is required, revokes gateway credentials and stops the worker.
+It never grants approval on behalf of an absent operator. Result and cancellation
+routes enforce scopes and ownership inside the host.
+
+This host is still under development. It currently requires an existing migrated
+schema, and is not yet the minimal installation. Account setup/OAuth, machine
+launch assembly, complete daemon launch-context handling, completion callbacks,
+capability-aware clients, minimal provisioning and dedicated release artifacts
+remain acceptance gates. Requests asking for unsupported completion notifications
+are refused before dispatch. No existing installation selects this host on upgrade.

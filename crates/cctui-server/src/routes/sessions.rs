@@ -2436,48 +2436,7 @@ fn final_assistant_text(newest_first: &[RenderableRow]) -> (Option<String>, Opti
     (message_id, Some(parts.join("\n\n")))
 }
 
-#[derive(sqlx::FromRow)]
-struct ResultRow {
-    adapter_id: Option<String>,
-    end_reason: Option<String>,
-    ended_at: Option<DateTime<Utc>>,
-    status: String,
-    tempo: Option<String>,
-    agent_state: Option<String>,
-    activity: Option<String>,
-    soft_limit_reason: Option<String>,
-}
-
-impl ResultRow {
-    /// Ended, archived, or idle after a finished turn: the bucket the list
-    /// files as `Done`, never while the adapter still reports the turn busy.
-    fn done(&self) -> bool {
-        if self.ended_at.is_some() || self.status == SessionRowStatus::Archived.as_str() {
-            return true;
-        }
-        if matches!(self.adapter_id.as_deref(), Some("codex" | "opencode")) {
-            return self.idle_after_turn();
-        }
-        let busy = matches!(self.tempo.as_deref(), Some("active" | "blocked"))
-            || matches!(self.agent_state.as_deref(), Some("working" | "running"));
-        let bucket = bucket_from_signals(
-            self.tempo.as_deref(),
-            self.agent_state.as_deref(),
-            self.activity.as_deref(),
-            self.soft_limit_reason.as_deref(),
-            &[],
-            &HashMap::new(),
-        );
-        bucket == Bucket::Done && !busy
-    }
-
-    /// codex keeps `tempo` at its last busy value after the turn goes idle,
-    /// so only `agent_state` is current for these adapters.
-    fn idle_after_turn(&self) -> bool {
-        self.soft_limit_reason.is_none()
-            && matches!(self.agent_state.as_deref(), Some("idle" | "done"))
-    }
-}
+use cctui_server_core::results::ResultRow;
 
 pub async fn get_result(
     State(state): State<AppState>,

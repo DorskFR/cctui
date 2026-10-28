@@ -17,3 +17,5 @@ pub fn derive_liveness(last_seen_at: DateTime<Utc>) -> MachineLiveness {
 }
 
 pub mod enrollment;
+
+pub mod daemon;
