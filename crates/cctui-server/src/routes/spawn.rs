@@ -103,7 +103,6 @@ fn require_dispatch(ctx: &AuthContext) -> Result<(), (StatusCode, Json<ApiError>
 }
 
 use cctui_server_core::machine_spawn::BoundAccount;
-pub(super) use cctui_server_core::machine_spawn::auto_account_name_scoped;
 #[cfg(test)]
 use cctui_server_core::machine_spawn::{
     AccountDecision, AutoAccountRow, auto_account_candidates, decide_account,

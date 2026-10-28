@@ -6,7 +6,10 @@ use axum::http::{HeaderMap, StatusCode};
 use cctui_server_core as core;
 use core::launch_credentials::{gateway_env_allowed, spawn_capability_for};
 
-async fn machine(host: &Host, headers: &HeaderMap) -> Result<(uuid::Uuid, uuid::Uuid), StatusCode> {
+pub(crate) async fn machine(
+    host: &Host,
+    headers: &HeaderMap,
+) -> Result<(uuid::Uuid, uuid::Uuid), StatusCode> {
     let token =
         core::targets::daemon::transport::bearer_token(headers).ok_or(StatusCode::UNAUTHORIZED)?;
     let ctx = host.auth_config.validate(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;

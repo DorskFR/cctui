@@ -2076,3 +2076,380 @@ async fn register_and_complete_launch(
         404
     );
 }
+#[tokio::test]
+async fn child_spawn_offline_delivery_releases_its_grant_and_records_a_durable_failure() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"automation"})).await;
+    let machine = f
+        .post("/api/v1/enroll", user["key"].as_str().unwrap(), json!({"hostname":"executor"}))
+        .await;
+    let parent = uuid::Uuid::new_v4().to_string();
+    let owner = uuid::Uuid::parse_str(user["id"].as_str().unwrap()).unwrap();
+    let target = uuid::Uuid::parse_str(machine["machine_id"].as_str().unwrap()).unwrap();
+    sqlx::query("INSERT INTO sessions (id,machine_id,machine_uuid,user_id,working_dir,status,adapter_id,permission_mode) VALUES ($1,'fixture',$2,$3,'/work/acme','active','codex','ask')")
+        .bind(&parent).bind(target).bind(owner).execute(&f.pool).await.unwrap();
+    let cap = cctui_proto::api::SpawnCapability {
+        adapters: vec!["codex".into()],
+        max_children: Some(1),
+        max_budget_usd: Some(3.0),
+        max_depth: Some(2),
+        ..Default::default()
+    };
+    cctui_server_core::store::spawn_capabilities::upsert(&f.pool, &parent, &cap).await.unwrap();
+    let reply = f
+        .client
+        .post(format!("{}/api/v1/daemon/sessions/{parent}/spawn-child", f.base))
+        .bearer_auth(machine["machine_key"].as_str().unwrap())
+        .json(&json!({"adapter":"codex","prompt":"review"}))
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reply.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        cctui_server_core::child_policy::pending_child_count(&f.pool, &parent).await.unwrap(),
+        0
+    );
+    let rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM machine_launches WHERE machine_id=$1 AND state='delivery_failed'",
+    )
+    .bind(target)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(rows, 1);
+}
+
+#[tokio::test]
+async fn child_spawn_enforces_machine_identity_capability_and_permission_ceilings() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"automation"})).await;
+    let key = user["key"].as_str().unwrap();
+    let machine = f.post("/api/v1/enroll", key, json!({"hostname":"executor"})).await;
+    let sibling = f.post("/api/v1/enroll", key, json!({"hostname":"sibling"})).await;
+    let parent = uuid::Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO sessions (id,machine_id,machine_uuid,user_id,working_dir,status,adapter_id,permission_mode) VALUES ($1,'fixture',$2,$3,'/work/acme','active','codex','ask')")
+        .bind(&parent).bind(uuid::Uuid::parse_str(machine["machine_id"].as_str().unwrap()).unwrap())
+        .bind(uuid::Uuid::parse_str(user["id"].as_str().unwrap()).unwrap()).execute(&f.pool).await.unwrap();
+    let url = format!("{}/api/v1/daemon/sessions/{parent}/spawn-child", f.base);
+    let body = json!({"adapter":"codex","prompt":"review"});
+    for (token, expected) in [
+        ("", 401),
+        (key, 403),
+        (sibling["machine_key"].as_str().unwrap(), 403),
+        (machine["machine_key"].as_str().unwrap(), 403),
+    ] {
+        let reply = f
+            .client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&body)
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reply.status().as_u16(), expected);
+    }
+    let cap = cctui_proto::api::SpawnCapability {
+        adapters: vec!["codex".into()],
+        max_children: Some(1),
+        max_permission_mode: Some(cctui_proto::adapter::PermissionMode::Yolo),
+        ..Default::default()
+    };
+    cctui_server_core::store::spawn_capabilities::upsert(&f.pool, &parent, &cap).await.unwrap();
+    for (body, expected) in [
+        (json!({"adapter":"codex","prompt":"review","permission_mode":"yolo"}), 403),
+        (json!({"adapter":"codex","prompt":"review","agent_profile":"workspace-profile"}), 400),
+    ] {
+        let reply = f
+            .client
+            .post(&url)
+            .bearer_auth(machine["machine_key"].as_str().unwrap())
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reply.status().as_u16(), expected);
+    }
+    sqlx::query("UPDATE sessions SET status='archived' WHERE id=$1")
+        .bind(&parent)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        f.client
+            .post(&url)
+            .bearer_auth(machine["machine_key"].as_str().unwrap())
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        cctui_server_core::child_policy::pending_child_count(&f.pool, &parent).await.unwrap(),
+        0
+    );
+    let launches: i64 = sqlx::query_scalar("SELECT count(*) FROM machine_launches")
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(launches, 0);
+}
+
+#[tokio::test]
+async fn child_spawn_delivers_bound_credentials_and_a_durable_machine_command() {
+    child_spawn_lifecycle(false).await;
+}
+
+#[tokio::test]
+async fn child_spawn_late_refusal_after_restart_refunds_the_tree_budget() {
+    child_spawn_lifecycle(true).await;
+}
+
+async fn child_spawn_lifecycle(late_refusal: bool) {
+    let Some((mut f, user, machine, parent)) = child_spawn_fixture().await else {
+        return;
+    };
+    let owner = uuid::Uuid::parse_str(user["id"].as_str().unwrap()).unwrap();
+    let mut socket = f.daemon(machine["machine_key"].as_str().unwrap()).await;
+    tokio::time::timeout(Duration::from_secs(3), socket.next()).await.unwrap().unwrap().unwrap();
+    let client = f.client.clone();
+    let url = format!("{}/api/v1/daemon/sessions/{parent}/spawn-child", f.base);
+    let token = machine["machine_key"].as_str().unwrap().to_owned();
+    let pending = tokio::spawn(async move {
+        client
+            .post(url)
+            .bearer_auth(token)
+            .json(&json!({"adapter":"codex","prompt":"review","name":"child-review"}))
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .unwrap()
+    });
+    let command = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(Ok(Message::Text(text))) = socket.next().await
+                && let Ok(DaemonFrameDown::Command { command, .. }) = serde_json::from_str(&text)
+            {
+                break command;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let cctui_proto::adapter::AdapterCommand::Spawn { spec, command_id, session_id } = *command
+    else {
+        panic!("expected spawn");
+    };
+    let child = session_id.unwrap().to_string();
+    let command = command_id.unwrap();
+    assert_eq!(child, command.to_string());
+    assert_eq!(spec.parent_local_id.as_deref(), Some(parent.as_str()));
+    assert_eq!(spec.working_dir.as_deref(), Some("/work/acme"));
+    assert_eq!(spec.permission_mode, Some(cctui_proto::adapter::PermissionMode::Ask));
+    assert!(spec.env.contains_key("OPENAI_API_KEY"));
+    assert!(!serde_json::to_string(&spec).unwrap().contains("fixture-refresh"));
+    let grant =
+        cctui_server_core::store::spawn_capabilities::get(&f.pool, &child).await.unwrap().unwrap();
+    assert_eq!(grant.max_depth, Some(1));
+    assert_eq!(grant.max_budget_usd, Some(3.0));
+    assert_eq!(f.host.session_usd_budgets.get(&child).map(|value| *value), Some(3.0));
+    assert!(
+        cctui_server_core::machine_launches::find(&f.pool, &child, Some(owner))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&DaemonFrameUp::Event {
+                adapter_id: "codex".into(),
+                event: AdapterEvent::CommandResult { command_id: command, ok: true, error: None },
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let reply = pending.await.unwrap();
+    assert_eq!(reply.status(), reqwest::StatusCode::OK);
+    let reply: Value = reply.json().await.unwrap();
+    assert_eq!(reply["session_id"], child);
+    assert_eq!(reply["budget_usd"], 3.0);
+    if late_refusal {
+        drop(socket);
+        f.restart().await;
+        refuse_child_after_restart(&f, &machine, &parent, command).await;
+        return;
+    }
+    complete_child_launch(&f, &mut socket, &parent, command, &user).await;
+    let second = f
+        .client
+        .post(format!("{}/api/v1/daemon/sessions/{parent}/spawn-child", f.base))
+        .bearer_auth(machine["machine_key"].as_str().unwrap())
+        .json(&json!({"adapter":"codex","prompt":"another"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second.status(), reqwest::StatusCode::FORBIDDEN);
+    socket.close(None).await.unwrap();
+}
+
+async fn child_spawn_fixture() -> Option<(Fixture, Value, Value, String)> {
+    let f = Fixture::new().await?;
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"automation"})).await;
+    let key = user["key"].as_str().unwrap();
+    f.post(
+        "/api/v1/accounts",
+        key,
+        json!({"name":"fixture","provider":"openai","refresh_token":"fixture-refresh"}),
+    )
+    .await;
+    let machine = f.post("/api/v1/enroll", key, json!({"hostname":"executor"})).await;
+    let parent = uuid::Uuid::new_v4().to_string();
+    let owner = uuid::Uuid::parse_str(user["id"].as_str().unwrap()).unwrap();
+    sqlx::query("INSERT INTO sessions (id,machine_id,machine_uuid,user_id,working_dir,status,adapter_id,permission_mode) VALUES ($1,'fixture',$2,$3,'/work/acme','active','codex','ask')")
+        .bind(&parent).bind(uuid::Uuid::parse_str(machine["machine_id"].as_str().unwrap()).unwrap())
+        .bind(owner).execute(&f.pool).await.unwrap();
+    cctui_server_core::gateway::mint::mint_session_env(
+        &f.host,
+        owner,
+        "fixture",
+        cctui_server_core::gateway::Family::Openai,
+        &parent,
+    )
+    .await
+    .unwrap();
+    let cap = cctui_proto::api::SpawnCapability {
+        adapters: vec!["codex".into()],
+        max_children: Some(1),
+        max_budget_usd: Some(3.0),
+        max_tree_budget_usd: Some(5.0),
+        max_depth: Some(2),
+        ..Default::default()
+    };
+    cctui_server_core::store::spawn_capabilities::upsert(&f.pool, &parent, &cap).await.unwrap();
+    Some((f, user, machine, parent))
+}
+
+async fn refuse_child_after_restart(
+    f: &Fixture,
+    machine: &Value,
+    parent: &str,
+    command: uuid::Uuid,
+) {
+    let child = command.to_string();
+    let mut socket = f.daemon(machine["machine_key"].as_str().unwrap()).await;
+    tokio::time::timeout(Duration::from_secs(3), socket.next()).await.unwrap().unwrap().unwrap();
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&DaemonFrameUp::Event {
+                adapter_id: "codex".into(),
+                event: AdapterEvent::CommandResult {
+                    command_id: command,
+                    ok: false,
+                    error: Some("queue refused after restart".into()),
+                },
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let state: String =
+                sqlx::query_scalar("SELECT state FROM machine_launches WHERE command_id=$1")
+                    .bind(command)
+                    .fetch_one(&f.pool)
+                    .await
+                    .unwrap();
+            let remaining =
+                cctui_server_core::child_policy::tree_granted_usd(&f.pool, parent).await.unwrap();
+            if state == "refused" && remaining == 0.0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("late refusal must refund the tree grant");
+    assert!(
+        cctui_server_core::store::spawn_capabilities::get(&f.pool, &child).await.unwrap().is_none()
+    );
+    assert!(!f.host.spawn_capabilities.contains_key(&child));
+    assert!(!f.host.session_usd_budgets.contains_key(&child));
+}
+
+async fn complete_child_launch(
+    f: &Fixture,
+    socket: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    parent: &str,
+    command: uuid::Uuid,
+    user: &Value,
+) {
+    let canonical = uuid::Uuid::new_v4().to_string();
+    for event in [
+        AdapterEvent::SessionStarted {
+            local_id: canonical.clone(),
+            meta: SessionMeta {
+                working_dir: Some("/work/acme".into()),
+                parent_local_id: Some(parent.to_owned()),
+                extra: json!({"spawn_key": command.to_string()}),
+            },
+        },
+        AdapterEvent::SessionEnded {
+            local_id: canonical.clone(),
+            reason: cctui_proto::adapter::EndReason::Completed,
+        },
+    ] {
+        socket
+            .send(Message::Text(
+                serde_json::to_string(&DaemonFrameUp::Event { adapter_id: "codex".into(), event })
+                    .unwrap()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+    }
+    f.wait_for_spawner(&canonical, user, "child-review").await;
+    let url = format!("{}/api/v1/sessions/{command}/result", f.base);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let result: Value = f
+                .client
+                .get(&url)
+                .bearer_auth(user["key"].as_str().unwrap())
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            if result["done"] == true {
+                assert_eq!(result["end_reason"], "completed");
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let parent_id: Option<String> =
+        sqlx::query_scalar("SELECT parent_id FROM sessions WHERE id=$1")
+            .bind(&canonical)
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+    assert_eq!(parent_id.as_deref(), Some(parent));
+}

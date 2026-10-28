@@ -329,6 +329,10 @@ impl Connection {
                 &reason,
             )
             .await?;
+            core::child_policy::release_child(&self.host.pool, &row.session_id).await;
+            self.host.spawn_capabilities.remove(&row.session_id);
+            self.host.session_usd_budgets.remove(&row.session_id);
+            core::session_credentials::revoke_session_tokens(&self.host, &row.session_id).await;
         }
         core::commands::resolve_verdict(
             &self.host.command_waiters,
