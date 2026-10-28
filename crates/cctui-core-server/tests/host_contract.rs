@@ -980,3 +980,182 @@ async fn daemon_registration_cannot_claim_a_foreign_launch_intent_or_its_credent
     assert_eq!(token_session, spawn_key);
     socket.close(None).await.unwrap();
 }
+
+#[tokio::test]
+async fn daemon_checkpoints_are_durable_monotonic_and_acknowledged_with_idempotent_usage() {
+    let Some(f) = Fixture::new().await else { return };
+    let owner = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"automation"})).await;
+    let machine = f
+        .post("/api/v1/enroll", owner["key"].as_str().unwrap(), json!({"hostname":"executor"}))
+        .await;
+    let key = machine["machine_key"].as_str().unwrap();
+    let mut socket = f.daemon(key).await;
+    let session = uuid::Uuid::new_v4().to_string();
+    socket
+        .send(Message::Text(
+            json!({"type":"heartbeat","sent_at":"2026-01-01T00:00:00Z","mark_acks":true})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let usage = AdapterEvent::TokenUsage {
+        local_id: session.clone(),
+        message_id: "fixture-usage".into(),
+        input_tokens: 101,
+        output_tokens: 17,
+        cache_read_tokens: 5,
+        cache_creation_tokens: 4,
+    };
+    for event in [
+        AdapterEvent::SessionStarted { local_id: session.clone(), meta: SessionMeta::default() },
+        usage.clone(),
+        usage,
+        AdapterEvent::TranscriptMark { local_id: session.clone(), offset: 100 },
+        AdapterEvent::TranscriptMark { local_id: session.clone(), offset: 40 },
+    ] {
+        socket
+            .send(Message::Text(
+                serde_json::to_string(&DaemonFrameUp::Event { adapter_id: "codex".into(), event })
+                    .unwrap()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let mut acks = Vec::new();
+        while acks.len() < 2 {
+            if let Some(Ok(Message::Text(text))) = socket.next().await
+                && let Ok(DaemonFrameDown::TranscriptAck { session_marks, .. }) =
+                    serde_json::from_str(&text)
+            {
+                acks.extend(session_marks);
+            }
+        }
+        assert_eq!(acks, vec![(session.clone(), 100), (session.clone(), 40)]);
+    })
+    .await
+    .expect("durably accepted checkpoints must be acknowledged");
+    let offset: i64 = sqlx::query_scalar("SELECT transcript_offset FROM sessions WHERE id=$1")
+        .bind(&session)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(offset, 100);
+    let usage:(i64,i64,i64,i64,i64)=sqlx::query_as("SELECT count(*)::bigint,sum(input_tokens)::bigint,sum(output_tokens)::bigint,sum(cache_read_tokens)::bigint,sum(cache_creation_tokens)::bigint FROM session_token_usage WHERE session_id=$1").bind(&session).fetch_one(&f.pool).await.unwrap();
+    assert_eq!(usage, (1, 101, 17, 5, 4));
+    socket.close(None).await.unwrap();
+    let mut resumed = f.daemon(key).await;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(Ok(Message::Text(text))) = resumed.next().await
+                && let Ok(DaemonFrameDown::ResumeMarks { session_marks, .. }) =
+                    serde_json::from_str(&text)
+            {
+                assert_eq!(session_marks, vec![(session.clone(), 100)]);
+                break;
+            }
+        }
+    })
+    .await
+    .expect("reconnect must resume at the stored checkpoint");
+    resumed.close(None).await.unwrap();
+}
+
+#[tokio::test]
+async fn an_older_daemon_reconnecting_after_a_newer_one_receives_no_checkpoint_ack() {
+    let Some(f) = Fixture::new().await else { return };
+    let owner = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"automation"})).await;
+    let machine = f
+        .post("/api/v1/enroll", owner["key"].as_str().unwrap(), json!({"hostname":"executor"}))
+        .await;
+    let key = machine["machine_key"].as_str().unwrap();
+    let mut modern = f.daemon(key).await;
+    modern
+        .send(Message::Text(
+            json!({"type":"heartbeat","sent_at":"2026-01-01T00:00:00Z","mark_acks":true})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let session = uuid::Uuid::new_v4().to_string();
+    for event in [
+        AdapterEvent::SessionStarted { local_id: session.clone(), meta: SessionMeta::default() },
+        AdapterEvent::TranscriptMark { local_id: session.clone(), offset: 50 },
+    ] {
+        modern
+            .send(Message::Text(
+                serde_json::to_string(&DaemonFrameUp::Event { adapter_id: "codex".into(), event })
+                    .unwrap()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(Ok(Message::Text(text))) = modern.next().await
+                && matches!(
+                    serde_json::from_str::<DaemonFrameDown>(&text),
+                    Ok(DaemonFrameDown::TranscriptAck { .. })
+                )
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    modern.close(None).await.unwrap();
+    let mut older = f.daemon(key).await;
+    older
+        .send(Message::Text(
+            json!({"type":"heartbeat","sent_at":"2026-01-01T00:00:00Z"}).to_string().into(),
+        ))
+        .await
+        .unwrap();
+    older
+        .send(Message::Text(
+            serde_json::to_string(&DaemonFrameUp::Event {
+                adapter_id: "codex".into(),
+                event: AdapterEvent::TranscriptMark { local_id: session.clone(), offset: 100 },
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let mark: i64 =
+                sqlx::query_scalar("SELECT transcript_offset FROM sessions WHERE id=$1")
+                    .bind(&session)
+                    .fetch_one(&f.pool)
+                    .await
+                    .unwrap();
+            if mark == 100 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let received = tokio::time::timeout(Duration::from_millis(250), async {
+        loop {
+            if let Some(Ok(Message::Text(text))) = older.next().await
+                && matches!(
+                    serde_json::from_str::<DaemonFrameDown>(&text),
+                    Ok(DaemonFrameDown::TranscriptAck { .. })
+                )
+            {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(received.is_err(), "never send an unknown frame to an older daemon");
+    older.close(None).await.unwrap();
+}

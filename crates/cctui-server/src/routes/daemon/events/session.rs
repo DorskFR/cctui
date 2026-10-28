@@ -126,46 +126,7 @@ pub(in crate::routes::daemon) async fn persist_session_end(
     .await?)
 }
 
-/// Advance a session's stored transcript high-water mark to `offset`, keeping
-/// the max so a replayed / out-of-order mark can't rewind it. Handed
-/// back to the daemon as a resume point on its next connect.
-async fn update_transcript_mark(
-    state: &AppState,
-    local_id: &str,
-    offset: u64,
-) -> anyhow::Result<()> {
-    let offset = i64::try_from(offset).unwrap_or(i64::MAX);
-    sqlx::query(
-        "UPDATE sessions SET transcript_offset = $2 WHERE id = $1 AND transcript_offset < $2",
-    )
-    .bind(local_id)
-    .bind(offset)
-    .execute(&state.pool)
-    .await?;
-    Ok(())
-}
-
-/// Tell the daemon the mark is stored, so its reconcile stops re-sending the
-/// window behind it. Skipped for a daemon that never advertised `mark_acks`:
-/// an unknown frame kills such a connection.
-async fn ack_transcript_mark(
-    state: &AppState,
-    machine_id: Uuid,
-    adapter_id: &str,
-    local_id: &str,
-    offset: u64,
-) {
-    if !state.mark_ack_daemons.contains_key(&machine_id) {
-        return;
-    }
-    let frame = cctui_proto::ws::DaemonFrameDown::TranscriptAck {
-        adapter_id: adapter_id.to_owned(),
-        session_marks: vec![(local_id.to_owned(), offset)],
-    };
-    if let Err(err) = state.bus.command_daemon_for_session(machine_id, local_id, frame).await {
-        tracing::debug!(%err, %machine_id, "transcript ack not delivered");
-    }
-}
+use cctui_server_core::daemon_checkpoints::{ack_transcript_mark, update_transcript_mark};
 
 /// Session lifecycle events: start, end, transcript mark and model.
 pub(super) async fn on_session_event(

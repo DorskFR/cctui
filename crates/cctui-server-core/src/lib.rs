@@ -64,3 +64,6 @@ pub mod settings_catalog;
 
 pub mod machine_adapters;
 pub mod machine_policy;
+
+pub mod daemon_checkpoints;
+pub mod daemon_usage;

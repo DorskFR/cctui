@@ -250,6 +250,21 @@ impl Connection {
             AdapterEvent::TurnEnd { local_id, .. } => {
                 sqlx::query("UPDATE sessions SET agent_state='idle',tempo='idle',activity=NULL WHERE id=$1 AND machine_uuid=$2 AND user_id=$3 AND status='active'").bind(local_id).bind(self.machine).bind(self.user).execute(&self.host.pool).await?;
             }
+            event @ AdapterEvent::TokenUsage { .. } => {
+                core::daemon_usage::on_token_usage(&self.host.pool, event).await?;
+            }
+            AdapterEvent::TranscriptMark { local_id, offset } => {
+                core::daemon_checkpoints::update_transcript_mark(&self.host, &local_id, offset)
+                    .await?;
+                core::daemon_checkpoints::ack_transcript_mark(
+                    &self.host,
+                    self.machine,
+                    adapter,
+                    &local_id,
+                    offset,
+                )
+                .await;
+            }
             AdapterEvent::SessionModel { local_id, model } => {
                 if let Some(model) = cctui_proto::adapter::observed_model_id(&model) {
                     sqlx::query("UPDATE sessions SET model=$2 WHERE id=$1 AND machine_uuid=$3 AND user_id=$4").bind(local_id).bind(model).bind(self.machine).bind(self.user).execute(&self.host.pool).await?;
@@ -258,33 +273,7 @@ impl Connection {
             AdapterEvent::PermissionRequest { local_id, .. }
             | AdapterEvent::AskQuestion { local_id, .. }
             | AdapterEvent::PlanRequest { local_id, .. } => {
-                let reason = cctui_proto::adapter::EndReason::Other {
-                    detail: "human input required; unattended automation stopped the worker".into(),
-                };
-                core::lifecycle::persist_session_end(
-                    &self.host.pool,
-                    &core::lifecycle::NoopSessionEndJournal,
-                    self.machine,
-                    self.user,
-                    &local_id,
-                    &reason,
-                )
-                .await?;
-                core::session_credentials::revoke_session_tokens(&self.host, &local_id).await;
-                self.host
-                    .bus
-                    .command_daemon_for_session(
-                        self.machine,
-                        &local_id,
-                        DaemonFrameDown::Command {
-                            adapter_id: adapter.to_owned(),
-                            command: Box::new(cctui_proto::adapter::AdapterCommand::Kill {
-                                local_id: local_id.clone(),
-                                signal: None,
-                            }),
-                        },
-                    )
-                    .await?;
+                self.stop_for_human_input(adapter, &local_id).await?;
             }
             AdapterEvent::CommandResult { command_id, ok, error } => {
                 let pending = self.host.pending_commands.remove(&command_id).map(|(_, c)| c);
@@ -308,6 +297,36 @@ impl Connection {
             }
             _ => {}
         }
+        Ok(())
+    }
+    async fn stop_for_human_input(&self, adapter: &str, local_id: &str) -> anyhow::Result<()> {
+        let reason = cctui_proto::adapter::EndReason::Other {
+            detail: "human input required; unattended automation stopped the worker".into(),
+        };
+        core::lifecycle::persist_session_end(
+            &self.host.pool,
+            &core::lifecycle::NoopSessionEndJournal,
+            self.machine,
+            self.user,
+            local_id,
+            &reason,
+        )
+        .await?;
+        core::session_credentials::revoke_session_tokens(&self.host, local_id).await;
+        self.host
+            .bus
+            .command_daemon_for_session(
+                self.machine,
+                local_id,
+                DaemonFrameDown::Command {
+                    adapter_id: adapter.to_owned(),
+                    command: Box::new(cctui_proto::adapter::AdapterCommand::Kill {
+                        local_id: local_id.to_owned(),
+                        signal: None,
+                    }),
+                },
+            )
+            .await?;
         Ok(())
     }
     fn schedule_lost(self, shared: bool) {
