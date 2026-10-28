@@ -1,6 +1,5 @@
-use std::collections::HashSet;
-use std::future::Future;
-use std::sync::{Arc, LazyLock};
+#[cfg(test)]
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -19,74 +18,9 @@ const DAEMON_LOST_GRACE: Duration = Duration::from_secs(45);
 /// machine that is genuinely gone is never held alive by its own last beat.
 const DAEMON_SEEN_FRESH: Duration = Duration::from_secs(40);
 
-/// One closed connection's deferred mark: the sessions it announced that no
-/// connection has announced since.
-struct PendingMark {
-    machine_id: Uuid,
-    sessions: HashSet<String>,
-    task: tokio::task::AbortHandle,
-}
-
-/// Deferred `daemon_lost` marks, one per closed connection. Every dispatched
-/// worker pod shares one machine id, so a mark is only ever cancelled for the
-/// sessions a later connection announces, or for the whole machine when it is
-/// not shared.
-#[derive(Default)]
-pub(super) struct PendingDaemonLost {
-    marks: dashmap::DashMap<Uuid, PendingMark>,
-}
-
-impl PendingDaemonLost {
-    fn schedule<F, Fut>(
-        self: &Arc<Self>,
-        conn_id: Uuid,
-        machine_id: Uuid,
-        sessions: Vec<String>,
-        delay: Duration,
-        mark: F,
-    ) where
-        F: FnOnce(Vec<String>) -> Fut + Send + 'static,
-        Fut: Future<Output = ()> + Send + 'static,
-    {
-        let this = Arc::clone(self);
-        let task = tokio::spawn(async move {
-            tokio::time::sleep(delay).await;
-            let Some((_, pending)) = this.marks.remove(&conn_id) else { return };
-            mark(pending.sessions.into_iter().collect()).await;
-        });
-        let sessions = sessions.into_iter().collect();
-        let pending = PendingMark { machine_id, sessions, task: task.abort_handle() };
-        if let Some(superseded) = self.marks.insert(conn_id, pending) {
-            superseded.task.abort();
-        }
-    }
-
-    /// A reconnect of a machine only one daemon uses: its marks are moot.
-    pub(super) fn cancel_machine(&self, machine_id: Uuid) {
-        self.marks.retain(|_, pending| {
-            let keep = pending.machine_id != machine_id;
-            if !keep {
-                pending.task.abort();
-            }
-            keep
-        });
-    }
-
-    /// `session_id` was announced again, so it is alive on some connection.
-    pub(super) fn announced(&self, session_id: &str) {
-        self.marks.retain(|_, pending| {
-            pending.sessions.remove(session_id);
-            let keep = !pending.sessions.is_empty();
-            if !keep {
-                pending.task.abort();
-            }
-            keep
-        });
-    }
-}
-
-pub(super) static PENDING_DAEMON_LOST: LazyLock<Arc<PendingDaemonLost>> =
-    LazyLock::new(|| Arc::new(PendingDaemonLost::default()));
+pub use cctui_server_core::targets::daemon::lost::PENDING_DAEMON_LOST;
+#[cfg(test)]
+use cctui_server_core::targets::daemon::lost::PendingDaemonLost;
 
 /// The daemon's WS is gone: every session it announced is now unreachable,
 /// so end them as `daemon_lost` — but only if no connection re-announced them
@@ -312,7 +246,7 @@ mod tests {
         settle().await;
 
         assert!(marked_sessions(&marked).is_empty());
-        assert!(pending.marks.is_empty());
+        assert!(pending.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
@@ -334,7 +268,7 @@ mod tests {
         tokio::time::advance(DAEMON_LOST_GRACE).await;
         settle().await;
         assert_eq!(marked_sessions(&marked), [ids(&["a", "b"])]);
-        assert!(pending.marks.is_empty());
+        assert!(pending.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
@@ -347,7 +281,7 @@ mod tests {
         tokio::time::advance(DAEMON_LOST_GRACE / 2).await;
         pending.schedule(Uuid::new_v4(), machine, ids(&["b"]), DAEMON_LOST_GRACE, mark(&marked));
         pending.announced("c");
-        assert_eq!(pending.marks.len(), 2, "a sibling's close or announce drops no mark");
+        assert_eq!(pending.len(), 2, "a sibling's close or announce drops no mark");
         settle().await;
 
         tokio::time::advance(DAEMON_LOST_GRACE * 2).await;
@@ -373,12 +307,12 @@ mod tests {
         settle().await;
         pending.announced("a");
         pending.announced("c");
-        assert_eq!(pending.marks.len(), 1, "a mark with nothing left to end is dropped");
+        assert_eq!(pending.len(), 1, "a mark with nothing left to end is dropped");
 
         tokio::time::advance(DAEMON_LOST_GRACE * 2).await;
         settle().await;
         assert_eq!(marked_sessions(&marked), [ids(&["b"])]);
-        assert!(pending.marks.is_empty());
+        assert!(pending.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
