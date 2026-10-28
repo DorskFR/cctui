@@ -1,4 +1,5 @@
 //! [`Dispatcher`] backed by an enrolled dispatcher connected over the WS hub.
+//!
 //! Resolving a dispatch target to an enrolled dispatcher yields one
 //! of these; `dispatch`/`status`/`cancel` send the corresponding
 //! [`DispatcherFrameDown`] over the dispatcher's live channel and await the
@@ -17,7 +18,6 @@ use uuid::Uuid;
 
 use super::{DispatchError, DispatchHandle, DispatchSpec, Dispatcher, HandleStatus};
 use crate::bus::{Bus, BusError};
-use crate::state::AppState;
 
 /// A dispatcher's `StatusResult.state`; anything unrecognised is still running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -71,12 +71,12 @@ pub struct EnrolledDispatcher {
     /// request) — surfaced as the dispatcher id to the caller.
     name: String,
     dispatcher_id: Uuid,
-    state: AppState,
+    bus: Bus,
 }
 
 impl EnrolledDispatcher {
-    pub fn new(name: impl Into<String>, dispatcher_id: Uuid, state: AppState) -> Self {
-        Self { name: name.into(), dispatcher_id, state }
+    pub fn new(name: impl Into<String>, dispatcher_id: Uuid, bus: Bus) -> Self {
+        Self { name: name.into(), dispatcher_id, bus }
     }
 
     /// Send a frame over the dispatcher's live channel and await the
@@ -87,7 +87,7 @@ impl EnrolledDispatcher {
         request_id: Uuid,
         frame: DispatcherFrameDown,
     ) -> Result<DispatcherFrameUp, DispatchError> {
-        round_trip(&self.state.bus, self.dispatcher_id, &self.name, request_id, frame).await
+        round_trip(&self.bus, self.dispatcher_id, &self.name, request_id, frame).await
     }
 }
 
@@ -223,8 +223,7 @@ impl Dispatcher for EnrolledDispatcher {
             payload: spec.payload.clone(),
         };
         let reply =
-            dispatch_held(&self.state.bus, self.dispatcher_id, &self.name, &wire, DISPATCH_HOLD)
-                .await?;
+            dispatch_held(&self.bus, self.dispatcher_id, &self.name, &wire, DISPATCH_HOLD).await?;
         match reply {
             DispatcherFrameUp::DispatchResult {
                 handle,

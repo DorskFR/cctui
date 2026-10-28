@@ -4,4 +4,5 @@ pub mod config;
 pub mod credentials;
 pub mod health;
 pub use config::*;
+pub mod ratelimit;
 pub mod usage;

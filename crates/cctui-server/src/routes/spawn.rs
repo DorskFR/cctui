@@ -21,12 +21,13 @@ use axum::extract::{Multipart, Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 
-use cctui_proto::adapter::{AdapterCommand, AdapterId, BootstrapUploads, SessionSpec};
+use cctui_proto::adapter::{AdapterId, BootstrapUploads, SessionSpec};
 use cctui_proto::api::{
     ApiError, LaunchRequest, ScheduleLaunchRequest, SpawnRequest, SpawnResponse,
 };
-use cctui_proto::ws::DaemonFrameDown;
 use uuid::Uuid;
+
+use cctui_server_core::launch::spawn_ids;
 
 use crate::auth::AuthContext;
 use crate::authz::{Shareable, shareable_owner};
@@ -130,18 +131,6 @@ struct SpawnTarget {
     /// The context items this spawn resolved, server-side, from the request's
     /// picks, the profile's pinned set and the scope-matching memories.
     context: Vec<crate::routes::context::ContextItem>,
-}
-
-/// The ids a spawn is dispatched under: `(pre_session_id, token_key)`.
-///
-/// codex and opencode mint their own session id, so the token cannot be bound
-/// to it up front. It is bound to `command_id` instead, and that key must still
-/// reach the daemon: an adapter that never learns it cannot echo it as
-/// `spawn_key`, and the token then stays on an id no session ever has, which
-/// leaves the session with no account, no switch-account and no revocation.
-fn spawn_ids(adapter_id: &str, command_id: Uuid) -> (Option<Uuid>, Uuid) {
-    let pre_session_id = (adapter_id == "claude-code").then(Uuid::new_v4);
-    (pre_session_id, pre_session_id.unwrap_or(command_id))
 }
 
 fn spawn_adapter(requested: Option<&str>) -> Result<String, String> {
@@ -582,62 +571,45 @@ async fn execute_spawn(
         parent_local_id: None,
     };
     persist_spawn_capability(state, machine_uuid, req, permission_mode, &token_session_id).await;
-    // `command_id` travels with the command and comes back in an
-    // `AdapterEvent::CommandResult` → `ServerEvent::CommandResult`, letting the
-    // client surface success/failure instead of silently polling.
-    let frame = DaemonFrameDown::Command {
-        adapter_id: adapter_id.clone(),
-        command: Box::new(AdapterCommand::Spawn {
-            spec,
-            command_id: Some(command_id),
-            session_id: Some(token_key),
-        }),
-    };
-
-    let verdict = crate::state::wait_for_verdict(&state.command_waiters, command_id);
-    crate::state::track_command(
+    let launched = cctui_server_core::launch::launch_machine(
+        &state.bus,
         &state.pending_commands,
-        command_id,
-        None,
-        Some(crate::state::FailedSpawnRow {
-            session_id: token_session_id.clone(),
-            machine_id: machine_uuid,
-            user_id: owner,
-            adapter_id: adapter_id.clone(),
-            working_dir: req.working_dir.clone(),
-            name: req.name.clone().filter(|n| !n.trim().is_empty()),
-            model: spec_model,
-            effort: spec_effort,
-        }),
-    );
-    if let Err(err) = state.bus.command_daemon(machine_uuid, frame).await {
-        state.pending_commands.remove(&command_id);
-        state.command_waiters.remove(&command_id);
-        if let Err(e) =
-            crate::routes::attachments::delete_attachments(&state.pool, &recorded_ids).await
-        {
-            tracing::warn!(session = %token_session_id, "undoing bootstrap attachments: {e}");
-        }
-        return Err(dispatch_error(&err));
-    }
-
-    // A daemon that refuses the spawn on receipt (its command queue is full,
-    // the adapter is not running) answers within milliseconds: tell the caller
-    // now rather than accept a session that is already over. The failed row is
-    // written before the verdict is handed over, so it is on the list too.
-    if let Some(detail) = crate::state::await_early_verdict(
         &state.command_waiters,
-        command_id,
-        verdict,
-        crate::state::EARLY_VERDICT_WAIT,
+        cctui_server_core::launch::MachineSpawn {
+            machine_id: machine_uuid,
+            command_id,
+            token_key,
+            spec,
+            failed: crate::state::FailedSpawnRow {
+                session_id: token_session_id.clone(),
+                machine_id: machine_uuid,
+                user_id: owner,
+                adapter_id: adapter_id.clone(),
+                working_dir: req.working_dir.clone(),
+                name: req.name.clone().filter(|n| !n.trim().is_empty()),
+                model: spec_model,
+                effort: spec_effort,
+            },
+        },
     )
-    .await
-    {
-        tracing::warn!(machine = %req.machine_id, %command_id, %adapter_id, %detail, "spawn refused by the daemon");
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ApiError { error: format!("the daemon refused the spawn: {detail}") }),
-        ));
+    .await;
+    match launched {
+        Ok(()) => {}
+        Err(cctui_server_core::launch::LaunchError::Delivery(err)) => {
+            if let Err(e) =
+                crate::routes::attachments::delete_attachments(&state.pool, &recorded_ids).await
+            {
+                tracing::warn!(session = %token_session_id, "undoing bootstrap attachments: {e}");
+            }
+            return Err(dispatch_error(&err));
+        }
+        Err(cctui_server_core::launch::LaunchError::Refused(detail)) => {
+            tracing::warn!(machine = %req.machine_id, %command_id, %adapter_id, %detail, "spawn refused by the daemon");
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiError { error: format!("the daemon refused the spawn: {detail}") }),
+            ));
+        }
     }
 
     tracing::info!(machine = %req.machine_id, %command_id, %adapter_id, "spawn dispatched");

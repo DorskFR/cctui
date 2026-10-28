@@ -121,23 +121,7 @@ fn check_plugin_archive(args: &[String]) -> anyhow::Result<()> {
     plugin_archive::check_catalog_archive(&bytes, id, version).map_err(anyhow::Error::msg)
 }
 
-/// `reqwest` has no built-in provider: a `Client` built before this panics.
-fn install_crypto_provider() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-}
-
-/// No whole-request `timeout`: this client carries long gateway streams.
-fn build_http_client() -> reqwest::Client {
-    install_crypto_provider();
-    reqwest::Client::builder()
-        .connect_timeout(HTTP_CONNECT_TIMEOUT)
-        .read_timeout(HTTP_READ_TIMEOUT)
-        .build()
-        .expect("build http client")
-}
-
-const HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-const HTTP_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(5);
+use cctui_server_core::client::{build_http_client, install_crypto_provider};
 
 fn init_tracing() {
     tracing_subscriber::fmt()
@@ -785,6 +769,7 @@ fn init_dispatchers(config: &Config) -> Arc<dispatchers::Registry> {
             &d.id,
             &d.url,
             d.token.clone(),
+            build_http_client(),
         )));
     }
 

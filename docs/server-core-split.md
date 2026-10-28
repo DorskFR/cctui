@@ -148,6 +148,33 @@ local HTTP fixture. Existing pricing, billing and probe mapping tests move with
 the implementations. This is still the full distribution; proxy transport,
 execution hosting and minimal database provisioning remain subsequent work.
 
+### Target transport and prepared machine launch (`0.27.0-beta.5`)
+
+Core owns the delivery bus, dispatcher interface/registry and enrolled/HTTP
+implementations, legacy live-session registry and policy shapes, outbound URL
+policy, HTTP client setup and rolling gateway RPM/TPM windows. The full server
+re-exports them and supplies the same peer transport, connection registries,
+clients and shared allowlist. Full-host session addressing and daemon reconcile
+assembly remain adapters above the bus. Protocol payloads are unchanged.
+
+Parked daemon and dispatcher replies now unregister when callers are canceled,
+including while waiting to send. The regression fails against the unguarded
+implementation. Existing bus ownership, priority delivery, reply correlation,
+dispatcher restart/hold bounds and status mapping tests move into core. HTTP
+contracts cover request authentication/body, older replies, queue status and
+invalid-intent versus backend errors using a local fake executor.
+
+`launch_machine` owns prepared spawn delivery, failure metadata and the existing
+early acknowledgment deadline. The full host still authorizes the target, resolves
+accounts, prepares workspace context/uploads and capabilities, and rolls back
+attachments when delivery fails. Core preserves the command/session key and
+retains delivered command metadata for eventual daemon results. Canceling a caller
+abandons its reply waiter; it does not cancel work already delivered. Focused
+headless contracts cover offline cleanup, immediate refusal and delayed verdicts.
+
+The standalone host, shared launch preparation/credential minting, lifecycle
+persistence, ownership inventory and minimal provisioning are still in progress.
+
 ### Execution services and complete ownership inventory
 
 - Inventory every route, background task, setting, event handler and table,

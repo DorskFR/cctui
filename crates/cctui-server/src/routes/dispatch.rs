@@ -409,7 +409,7 @@ pub async fn resolve_dispatcher(
         return Ok(Some(std::sync::Arc::new(EnrolledDispatcher::new(
             name,
             dispatcher_id,
-            state.clone(),
+            state.bus.clone(),
         ))));
     }
     // Fall back to a global env-configured http dispatcher (escape hatch).

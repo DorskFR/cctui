@@ -12,6 +12,9 @@ test-support = []
 [dependencies]
 cctui-proto = { workspace = true, features = ["sqlx"] }
 cctui-crypto.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -28,6 +31,5 @@ hex.workspace = true
 sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
 
 [dev-dependencies]
-rustls.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tower.workspace = true
