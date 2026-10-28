@@ -160,6 +160,52 @@ pub async fn capture_message(
     tx.commit().await
 }
 
+/// Read a durable dispatch before its worker registers a session.
+///
+/// Ownership is checked on the dispatch record. Queue position follows the
+/// existing dispatcher/profile ordering used by the full server.
+pub async fn unregistered_result(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    owner: Option<uuid::Uuid>,
+) -> Result<Option<cctui_proto::api::SessionResult>, sqlx::Error> {
+    let row: Option<(String, Option<String>, bool, Option<i64>)> = sqlx::query_as(
+        "SELECT r.outcome, r.end_reason, r.queued, \
+                CASE WHEN r.queued AND r.outcome = 'forwarded' THEN \
+                    (SELECT count(*) FROM dispatch_records q \
+                     WHERE q.queued AND q.outcome = 'forwarded' \
+                       AND q.dispatcher_name = r.dispatcher_name \
+                       AND q.profile IS NOT DISTINCT FROM r.profile \
+                       AND (q.created_at, q.session_id) <= (r.created_at, r.session_id)) \
+                ELSE NULL END \
+         FROM dispatch_records r \
+         WHERE r.session_id = $1 AND ($2::uuid IS NULL OR r.user_id = $2)",
+    )
+    .bind(session_id)
+    .bind(owner)
+    .fetch_optional(pool)
+    .await?;
+    let Some((outcome, end_reason, queued, position)) = row else { return Ok(None) };
+    if !matches!(outcome.as_str(), "pending" | "forwarded" | "refused" | "failed") {
+        return Ok(None);
+    }
+    let done = matches!(outcome.as_str(), "refused" | "failed");
+    let queued = !done && outcome == "forwarded" && queued;
+    Ok(Some(cctui_proto::api::SessionResult {
+        done,
+        end_reason: if done {
+            Some(end_reason.unwrap_or_else(|| "spawn_failed".into()))
+        } else {
+            None
+        },
+        final_assistant_text: None,
+        message_id: None,
+        token_usage: None,
+        queued,
+        queue_position: if queued { position.and_then(|p| u32::try_from(p).ok()) } else { None },
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::CapturedResult;
