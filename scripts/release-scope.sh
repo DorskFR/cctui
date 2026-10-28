@@ -22,8 +22,8 @@ tag="${1:?usage: release-scope.sh <tag> <sha>}"
 sha="${2:?usage: release-scope.sh <tag> <sha>}"
 version="${tag#v}"
 
-images=(cctui cctui-worker cctui-dispatcher-kube cctui-orchestrator cctui-ui)
-rust_images=(cctui cctui-worker cctui-dispatcher-kube cctui-orchestrator)
+images=(cctui cctui-core cctui-worker cctui-dispatcher-kube cctui-orchestrator cctui-ui)
+rust_images=(cctui cctui-core cctui-worker cctui-dispatcher-kube cctui-orchestrator)
 
 rust_paths=(
   crates/ Cargo.toml Cargo.lock rust-toolchain.toml .cargo/ keys/ migrations/
@@ -34,6 +34,7 @@ ui_paths=(webui/)
 all_paths=(.dockerignore .github/workflows/release.yml scripts/release-scope.sh scripts/release-prev-bins.sh)
 declare -A image_paths=(
   [cctui]="deploy/Dockerfile"
+  [cctui-core]="deploy/core.Dockerfile"
   [cctui-worker]="deploy/worker.Dockerfile deploy/worker-entrypoint.sh deploy/worker-net-init.sh deploy/guard-proxy-entrypoint.sh scripts/check-worker-image-harness.sh scripts/check-claude-version-drift.sh scripts/check-codex-version-drift.sh"
   [cctui-dispatcher-kube]="deploy/dispatcher.Dockerfile"
   [cctui-orchestrator]="deploy/orchestrator.Dockerfile"
@@ -114,6 +115,11 @@ touched() {
 rust=false all=false
 touched "${rust_paths[@]}" && rust=true
 touched "${all_paths[@]}" && all=true
+# Releases predating the core distribution have neither its image nor its
+# downloadable binaries. Rebuild instead of trying to carry nonexistent assets.
+if ! git cat-file -e "$prev_tag:deploy/core.Dockerfile" 2>/dev/null; then
+  rust=true
+fi
 
 for img in "${rust_images[@]}"; do
   # shellcheck disable=SC2086

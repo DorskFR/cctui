@@ -1,5 +1,21 @@
 # Server core and workspace split
 
+## Delivery status
+
+| Milestone | Status | Remaining gate |
+| --- | --- | --- |
+| Shared execution engine | Substantially extracted and exercised by both hosts | Context packs, child-spawn APIs and remaining lifecycle ownership |
+| Standalone automation host | Experimental HTTP/WebSocket host implemented | Real machine/Kubernetes execution and rolling-upgrade acceptance |
+| Minimal database | Core bootstrap and core→full expansion implemented | Numbered forward package migrations |
+| Installable core distribution | Dedicated binary/image release wiring implemented | Published-artifact and fresh-database smoke verification |
+| Workspace boundary and clients | Workspace schema extracted; full behavior retained | Interactive handlers/state extraction and capability-aware TUI/webui |
+
+The split is **not complete**. Beta counts describe delivery increments, not a
+percentage of completion. Production readiness requires all acceptance gates
+below, including a real worker run on each supported target. Stable installations
+remain on the existing full distribution. See [core-server.md](core-server.md)
+for the opt-in installation and current limitations.
+
 ## Release lane and compatibility contract
 
 Implementation targets the `0.27.0` integration branch. Feature PRs target that
@@ -585,7 +601,7 @@ Persistent machines are excluded. Runtime shutdown stops cleanup with its other
 sweeps. Database contracts cover stale-worker retirement, cached session-key
 revocation, retired-machine authentication and preservation of persistent targets.
 
-### Schema provisioning and workspace assembly (`0.27.0-beta.22`, in development)
+### Schema provisioning and workspace assembly (`0.27.0-beta.22`)
 
 Fresh core installations bootstrap 33 execution tables and two schema-tracking
 tables. They need no PostgreSQL extensions, transcript archive, uploads or search
@@ -628,3 +644,25 @@ Baseline assets must remain immutable. Numbered forward package migrations,
 dedicated core release artifacts, additional workspace-service extraction,
 capability-aware clients and real executor/rolling-upgrade acceptance remain gates
 before stable promotion.
+
+
+### Installable core distribution (`0.27.0-beta.23`)
+
+The release pipeline builds `cctui-core-server` for Linux amd64/arm64 and Darwin
+arm64 alongside the shared TUI and daemon assets. Linux builds use musl; core
+requires no full-server OpenSSL linkage. Signed checksum/release asset handling
+includes the new binaries. CI artifact reuse validates the core version, commit
+and image-binary identity and refuses a cache missing either Linux core asset.
+
+The opt-in `ghcr.io/dorskfr/cctui-core` Linux-amd64 image runs as UID 10001,
+includes CA roots and has no workspace storage mounts. Its prebuilt and local
+build paths select the same core binary. Full image identity, release channels
+and stable/latest selection retain their existing behavior. Release scoping
+forces a binary rebuild when the preceding release predates core artifacts;
+subsequent image-only changes can reuse core's previously published binary.
+
+The [headless installation guide](core-server.md) documents configuration,
+provisioning, identity, dispatch/results, database transitions and beta limitations.
+Packaging contracts cover all three targets, absent artifacts and image-only
+reuse. Published-image verification remains a release gate; a local prebuilt
+container smoke test already passed on an empty execution-only database.

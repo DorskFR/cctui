@@ -152,7 +152,13 @@ jobs:
           fi
           chmod +x ci-bins/*/*
           daemon=ci-bins/release-bins-linux-amd64/cctui-daemon-linux-amd64
+          core=ci-bins/release-bins-linux-amd64/cctui-core-server-linux-amd64
           if bash scripts/release-version.sh "v$VERSION" --binary "$daemon" && "$daemon" selfcheck \
+            && bash scripts/release-version.sh "v$VERSION" --binary "$core" \
+            && grep -qaF "$SHA" "$core" \
+            && test -x ci-bins/release-bins-linux-arm64/cctui-core-server-linux-arm64 \
+            && grep -qaF "$SHA" ci-bins/release-bins-linux-arm64/cctui-core-server-linux-arm64 \
+            && cmp "$core" ci-bins/release-image-bins/cctui-core-server \
             && grep -qaF "$SHA" ci-bins/release-image-bins-server/cctui-server; then
             echo "found=true" >> "$GITHUB_OUTPUT"
           else
@@ -299,6 +305,7 @@ jobs:
           path: |
             dist/cctui-${{ matrix.os }}-${{ matrix.arch }}
             dist/cctui-daemon-${{ matrix.os }}-${{ matrix.arch }}
+            dist/cctui-core-server-${{ matrix.os }}-${{ matrix.arch }}
 
   build-darwin:
     name: build darwin-arm64
@@ -342,6 +349,7 @@ jobs:
           path: |
             dist/cctui-darwin-arm64
             dist/cctui-daemon-darwin-arm64
+            dist/cctui-core-server-darwin-arm64
 
   # cctui-server links the distro OpenSSL (webauthn-rs), so it is not a musl
   # build. The runner's glibc must not be newer than the trixie-slim runtime
@@ -537,6 +545,9 @@ jobs:
           - image: cctui-dispatcher-kube
             file: deploy/dispatcher.Dockerfile
             bins: cctui-dispatcher-kube
+          - image: cctui-core
+            file: deploy/core.Dockerfile
+            bins: cctui-core-server
           - image: cctui-orchestrator
             file: deploy/orchestrator.Dockerfile
             bins: cctui-orchestrator
@@ -621,7 +632,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [cctui, cctui-worker, cctui-dispatcher-kube, cctui-orchestrator, cctui-ui]
+        image: [cctui, cctui-core, cctui-worker, cctui-dispatcher-kube, cctui-orchestrator, cctui-ui]
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         if: env.MODE != 'retag'
