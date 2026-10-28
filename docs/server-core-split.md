@@ -101,6 +101,31 @@ This remains an internal extraction shipped through the full distribution.
 OAuth refresh, usage fetching, execution state, launch, lifecycle, standalone
 hosting and minimal schema provisioning are still subsequent work.
 
+### Provider credentials and refresh (`0.27.0-beta.3`)
+
+Core now resolves gateway tokens to live credentials, refreshes OAuth credentials,
+and persists reauthentication flags. `CredentialContext` supplies the host's
+pool, HTTP client, per-account locks, reauthentication cache and lazy vault-key
+accessor. The full adapter calls the existing startup-resolved vault-key helper;
+installed legacy/generated keys keep working. Once loaded, static credentials
+bypass database, vault-key and refresh access during token selection.
+
+Refresh retains the second database read under the account lock, rotated-token
+persistence, provider endpoints/client IDs, skew, rejection backoff and transient
+failure handling. Owner/share revocation SQL is unchanged. Reauthentication
+writes keep their existing cache-transition and background-write behavior.
+Only the host interface allows token endpoint overrides for deterministic tests;
+full-server defaults still read the same environment configuration.
+
+Focused PostgreSQL tests cover concurrent refresh making exactly one OAuth call,
+rotation of encrypted credentials, rejected-token backoff and flag persistence,
+static credentials and owner/service-token revocation. Rotation and flag tests
+see only the provider table, without workspace storage. Full gateway routes
+re-export or forward to these shared services.
+
+This remains the full distribution. Gateway proxying, usage fetching, target
+transport, execution assembly, standalone hosting and schema provisioning remain.
+
 ### Execution services and complete ownership inventory
 
 - Inventory every route, background task, setting, event handler and table,

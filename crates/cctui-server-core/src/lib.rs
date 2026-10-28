@@ -1,8 +1,8 @@
 //! Shared server services for automation and the interactive workspace.
 //!
 //! This crate must never depend on the full server or workspace services.
-//! The initial extraction owns identity and the execution data-access layer;
-//! routing, migration orchestration and execution services follow separately.
+//! Owns identity, execution persistence, account selection, launch tracking and
+//! provider credentials. Hosts supply transport and optional workspace behavior.
 
 pub mod account_pick;
 pub mod account_resolve;

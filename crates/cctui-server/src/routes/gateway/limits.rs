@@ -251,54 +251,14 @@ pub fn note_token_used(state: &AppState, token_fp: &str) {
     });
 }
 
-/// Flag an account as needing reauthentication: the upstream provider
-/// rejected its OAuth credentials. Persists `needs_reauth` + the error so the
-/// accounts UI can show a "credential rejected — reauthenticate" badge. Gated on
-/// the in-memory set so a flapping worker doesn't re-write the row on every 401 —
-/// the DB write fires only on the false→true transition.
+/// Persist a rejected credential through the shared execution service.
 pub fn flag_account_reauth(state: &AppState, account_id: Uuid, reason: &str) {
-    if state.account_reauth.insert(account_id, ()).is_some() {
-        return; // already flagged in memory — no redundant write
-    }
-    let pool = state.pool.clone();
-    let reason = reason.to_string();
-    tokio::spawn(async move {
-        if let Err(e) = sqlx::query(
-            "UPDATE account_providers \
-                SET needs_reauth = true, last_auth_error = $2, last_auth_error_at = now() \
-             WHERE id = $1",
-        )
-        .bind(account_id)
-        .bind(reason)
-        .execute(&pool)
-        .await
-        {
-            tracing::warn!(account = %account_id, error = %e, "failed to flag account reauth");
-        }
-    });
+    cctui_server_core::gateway::health::flag_account_reauth(state, account_id, reason);
 }
 
-/// Clear an account's reauth flag after a successful upstream call.
-/// Gated on the in-memory set so the common case (account healthy) costs nothing;
-/// the DB write fires only on the true→false transition.
+/// Clear the shared credential rejection flag after an upstream success.
 pub fn clear_account_reauth(state: &AppState, account_id: Uuid) {
-    if state.account_reauth.remove(&account_id).is_none() {
-        return; // not flagged — nothing to clear
-    }
-    let pool = state.pool.clone();
-    tokio::spawn(async move {
-        if let Err(e) = sqlx::query(
-            "UPDATE account_providers \
-                SET needs_reauth = false, last_auth_error = NULL, last_auth_error_at = NULL \
-             WHERE id = $1 AND needs_reauth",
-        )
-        .bind(account_id)
-        .execute(&pool)
-        .await
-        {
-            tracing::warn!(account = %account_id, error = %e, "failed to clear account reauth");
-        }
-    });
+    cctui_server_core::gateway::health::clear_account_reauth(state, account_id);
 }
 
 /// Resolve the session token (the upstream bearer the worker sent) to its

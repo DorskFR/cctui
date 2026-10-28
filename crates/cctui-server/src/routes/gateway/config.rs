@@ -1,1 +1,1 @@
-pub use cctui_server_core::gateway::*;
+pub use cctui_server_core::gateway::config::*;

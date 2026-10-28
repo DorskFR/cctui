@@ -19,6 +19,7 @@ chrono.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 futures-util.workspace = true
+reqwest.workspace = true
 dashmap = "6"
 axum.workspace = true
 http = "1"
@@ -27,5 +28,6 @@ hex.workspace = true
 sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
 
 [dev-dependencies]
+rustls.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tower.workspace = true
