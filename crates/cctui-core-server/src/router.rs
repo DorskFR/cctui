@@ -26,6 +26,7 @@ pub fn router(host: Host) -> Router {
         .route("/api/v1/enroll", post(core::targets::enrollment::enroll))
         .route("/api/v1/deenroll", post(core::targets::enrollment::deenroll))
         .route("/api/v1/sessions/dispatch", post(dispatch))
+        .route("/api/v1/sessions/spawn", post(crate::spawn::spawn))
         .route("/api/v1/sessions/{id}/result", get(crate::runs::result))
         .route("/api/v1/sessions/{id}/kill", post(crate::runs::kill))
         .layer(axum::middleware::from_fn(auth_middleware))
@@ -138,7 +139,7 @@ async fn capabilities() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "langfuse": {"available":false,"host":null,"public_host":null,"project_id":null},
         "distribution": "core",
-        "features": ["identity", "accounts", "oauth", "enrollment", "dispatch", "gateway", "run_results", "cancellation"],
+        "features": ["identity", "accounts", "oauth", "enrollment", "dispatch", "machine_spawn", "gateway", "run_results", "cancellation"],
         "workspace": false,
         "experimental": true,
     }))

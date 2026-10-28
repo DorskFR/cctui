@@ -476,3 +476,25 @@ account administration paths with human-principal and owner checks. Embedded
 harness setting catalogs and resource-owner queries now live with execution
 validation. Drift checks follow the catalog's new path. No account or credential
 schema changes are required.
+
+### JSON machine launches (`0.27.0-beta.15`, in development)
+
+The standalone automation host accepts JSON `SpawnRequest` at the existing
+`POST /api/v1/sessions/spawn` path. The full host retains multipart uploads,
+drafts and workspace context preparation. Both hosts share environment validation,
+owner/admin/live-spawn-share authorization, harness availability checks, durable
+child-spawn grants and permission ceilings, and spawner/name intents.
+
+A standalone request can select a machine, working directory, prompt, harness,
+model, effort, permission mode, account or pool, service tier, environment and
+child-spawn capability. Cross-user machine launches are explicitly refused until
+execution records preserve the acting user across registration and restart.
+Workspace context/profile selections, draft/upload fields,
+labels, auto-archive and follow-up relations are refused before any launch. The
+daemon receives gateway credentials rather than provider secrets. Worker session
+registration claims the requested name/spawner and rebinds execution credentials
+and child grants to the harness's final identity.
+
+The host remains experimental and needs an existing migrated database. Complete
+execution-context support, dispatcher operations, callback delivery, minimal core
+provisioning, dedicated release artifacts and client capabilities remain gates.
