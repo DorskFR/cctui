@@ -754,3 +754,25 @@ budgets, failed-launch release and unreadable counts without workspace tables.
 The existing pure policy tests run in core. Standalone child-tool HTTP assembly,
 account/context preparation and end-to-end child execution remain acceptance
 gates; this increment does not yet expose a core spawn-child route.
+
+
+### Standalone child spawning (`0.27.0-beta.28`)
+
+The machine-authenticated spawn-child endpoint now runs against execution-only
+storage. Both hosts share account selection, model resolution, credential minting,
+capability inheritance and atomic reservations. Full retains its workspace
+context adapter and existing delivery behavior. Core rejects workspace profiles,
+binds the parent to the authenticated machine, and persists the launch identity
+before sending the daemon command.
+
+Core installs the child's budget before delivery. Offline delivery and immediate
+refusal release reservations; a late refusal after restart also refunds the tree
+budget and revokes the unused credentials. A registered worker remains addressable
+through the command ID after its canonical session ID is announced.
+
+HTTP/WebSocket contracts cover machine identity, missing grants, permission
+ceilings, archived parents, scoped credentials, offline cleanup, successful
+completion, retained completed-child slots and restart-time refusal refunds.
+Child message/archive/completion endpoints and a real parent/child harness run
+remain acceptance gates, alongside context packs, workspace extraction, Kubernetes
+and rolling upgrade/rollback checks.

@@ -50,6 +50,7 @@ pub fn router(host: Host) -> Router {
             "/api/v1/daemon/sessions/{id}/gateway-env",
             get(crate::launch_credentials::gateway_env),
         )
+        .route("/api/v1/daemon/sessions/{id}/spawn-child", post(crate::children::spawn_child))
         .route("/api/v1/daemon/sessions/{id}/context", get(crate::launch_credentials::context))
         .route(
             "/api/v1/daemon/sessions/{id}/token-valid",

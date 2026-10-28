@@ -77,3 +77,5 @@ pub mod worker_retirement;
 pub mod machine_launches;
 
 pub mod child_policy;
+
+pub mod child_exec;

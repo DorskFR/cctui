@@ -7,7 +7,9 @@ not serve a workspace UI, transcript search, uploads, plugins, voice or previews
 Existing `cctui-server` installations and the `cctui` image remain the full product.
 
 This is an experimental beta. Real machine execution is verified; Kubernetes,
-child-spawn APIs, context-pack resolution and upgrade acceptance remain open.
+child message/archive/completion APIs, context-pack resolution and upgrade
+acceptance remain open. Machine-authenticated child spawning is available, with
+capability and budget enforcement; workspace agent profiles require full.
 Use the execution API for this beta. Current webui and TUI clients identify core
 and explain which workspace functions require a full server. Server self-update
 is disabled.
