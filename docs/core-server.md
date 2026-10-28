@@ -7,10 +7,11 @@ not serve a workspace UI, transcript search, uploads, plugins, voice or previews
 Existing `cctui-server` installations and the `cctui` image remain the full product.
 
 This is an experimental beta. Real machine/Kubernetes execution acceptance,
-child-spawn APIs, context-pack resolution, daemon download/update endpoints and
+child-spawn APIs, context-pack resolution and
 capability-aware clients remain under development. Use the API for this beta;
 webui and TUI workspace views do not yet adapt to core. Self-update is disabled.
-Use a separately installed daemon binary for worker testing. Follow the
+Daemon manifests/downloads and machine connectivity verification use the same
+contracts as full. Follow the
 [split roadmap](server-core-split.md) for production-readiness gates.
 
 ## Install
@@ -109,3 +110,24 @@ Do not point a pre-split full binary at a database originally bootstrapped by co
 that rollback is unsupported. Keep the normal database backup before upgrades.
 Switching full to core deliberately removes access to workspace features and is
 an operator choice, separate from an ordinary full-server upgrade.
+
+
+## Repeatable machine execution smoke
+
+On Linux with the repository's PostgreSQL test container running on port 5481:
+
+```sh
+cargo build -p cctui-core-server
+python3 scripts/check-core-worker.py
+```
+
+This starts an isolated core database, enrolls a containerized real daemon,
+launches the actual Claude harness and verifies the final result through a
+controlled provider endpoint and core's credential gateway. It makes no paid
+provider requests. It removes its own database/container/work directory and
+prints the directory retaining diagnostics. Ports 18727 and 18729 must be free.
+`CCTUI_TEST_WORKER_IMAGE` selects a worker release for compatibility checks;
+`CCTUI_TEST_POSTGRES_CONTAINER` selects the test PostgreSQL container.
+The smoke pins oneshot mode directly in its temporary fixture database; general
+headless harness configuration remains a separate API gap. This is a machine
+execution check; Kubernetes and rolling server upgrades require separate gates.

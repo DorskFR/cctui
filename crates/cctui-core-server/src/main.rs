@@ -84,6 +84,9 @@ async fn main() -> anyhow::Result<()> {
         vault_key,
         external_url,
     )
+    .with_github_token(
+        std::env::var("CCTUI_GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN")).ok(),
+    )
     .with_spawn_defaults(spawn_defaults)
     .with_worker_ttl_secs(
         optional_number::<u64>("CCTUI_EPHEMERAL_MACHINE_TTL_HOURS")?

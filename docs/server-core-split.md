@@ -5,7 +5,7 @@
 | Milestone | Status | Remaining gate |
 | --- | --- | --- |
 | Shared execution engine | Substantially extracted and exercised by both hosts | Context packs, child-spawn APIs and remaining lifecycle ownership |
-| Standalone automation host | Experimental HTTP/WebSocket host implemented | Real machine/Kubernetes execution and rolling-upgrade acceptance |
+| Standalone automation host | Real daemon/Claude machine execution verified against a controlled provider | Kubernetes execution and rolling-upgrade acceptance |
 | Minimal database | Core bootstrap and core→full expansion implemented | Numbered forward package migrations |
 | Installable core distribution | Dedicated binary/image release wiring implemented | Published-artifact and fresh-database smoke verification |
 | Workspace boundary and clients | Workspace schema extracted; full behavior retained | Interactive handlers/state extraction and capability-aware TUI/webui |
@@ -666,3 +666,26 @@ provisioning, identity, dispatch/results, database transitions and beta limitati
 Packaging contracts cover all three targets, absent artifacts and image-only
 reuse. Published-image verification remains a release gate; a local prebuilt
 container smoke test already passed on an empty execution-only database.
+
+
+### Worker provisioning and machine execution (`0.27.0-beta.24`)
+
+Core now serves the existing daemon manifest/download and machine-version
+contracts. Manifest channel opt-in, same-origin URLs, ETag handling, public
+redirects and authenticated private-release downloads share the full implementation.
+`CCTUI_REPO`, `CCTUI_GITHUB_TOKEN` and `GH_TOKEN` retain their existing meaning.
+
+Machine connectivity snapshots share the execution query. Core checks read scope,
+ownership/admin or live machine shares. Full retains its existing route guard,
+peer-presence fallback and bandwidth reporting; workspace telemetry queries do
+not enter core. No protocol or route-table additions are needed, so TUI parity
+entries remain unchanged.
+
+The repeatable `scripts/check-core-worker.py` check provisions a fresh core DB,
+runs a real containerized daemon and Claude harness against a controlled provider,
+and verifies credential-gateway forwarding and final result capture. The current
+check passed with a 0.26.1 worker, without a paid provider call. This validates one
+machine execution/older-worker path, not Kubernetes or a rolling server upgrade.
+The fixture pins oneshot mode in its temporary database; general headless harness
+configuration is still required. Context/child APIs and workspace/client extraction
+remain open milestones.
