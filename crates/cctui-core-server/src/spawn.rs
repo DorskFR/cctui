@@ -124,10 +124,9 @@ async fn execute(
         bootstrap: serde_json::Value::Null,
         parent_local_id: None,
     };
-    core::launch::launch_machine(
-        &host.bus,
-        &host.pending_commands,
-        &host.command_waiters,
+    core::launch::launch_durable(
+        &host.core,
+        ctx.user_id,
         core::launch::MachineSpawn { machine_id: machine, command_id, token_key, spec, failed },
     )
     .await
@@ -145,6 +144,13 @@ async fn execute(
 
 fn launch_error(error: core::launch::LaunchError) -> Failure {
     let detail = match error {
+        core::launch::LaunchError::Storage(error) => {
+            tracing::error!(%error,"could not persist launch");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(cctui_proto::api::ApiError { error: core::error::DB_ERROR.into() }),
+            );
+        }
         core::launch::LaunchError::Refused(detail) => {
             format!("the daemon refused the spawn: {detail}")
         }

@@ -73,3 +73,5 @@ pub mod webhook;
 pub mod dispatch_liveness;
 pub mod schema;
 pub mod worker_retirement;
+
+pub mod machine_launches;

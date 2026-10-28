@@ -128,7 +128,7 @@ async fn legacy_full_adoption_preserves_data_checksums_and_the_older_migrator() 
         let media: (String,String,Vec<u8>)=sqlx::query_as("SELECT a.name,e.payload->>'text',i.bytes FROM session_attachments a JOIN stream_events e USING (session_id) JOIN session_images i USING (session_id)")
             .fetch_one(&pool).await.unwrap();
         assert_eq!(media,("fixture.txt".into(),"fixture transcript".into(),vec![1,2,3]));
-        let modes: Vec<String>=sqlx::query_scalar("SELECT installation FROM _cctui_schema_migrations ORDER BY package")
+        let modes: Vec<String>=sqlx::query_scalar("SELECT installation FROM _cctui_schema_migrations WHERE version=1 ORDER BY package")
             .fetch_all(&pool).await.unwrap();
         assert_eq!(modes,["adopted","adopted"]);
         assert_credentials(&pool).await;

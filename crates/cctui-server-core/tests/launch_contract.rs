@@ -154,3 +154,32 @@ async fn canceling_while_the_daemon_send_is_blocked_unregisters_the_waiter() {
     assert!(request.await.unwrap_err().is_cancelled());
     assert!(host.waiters.is_empty());
 }
+
+#[tokio::test]
+async fn unavailable_launch_storage_prevents_delivery_to_a_connected_daemon() {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy("postgres://fixture:fixture@127.0.0.1/fixture")
+        .unwrap();
+    pool.close().await;
+    cctui_server_core::client::install_crypto_provider();
+    let state = cctui_server_core::state::CoreState::new(
+        pool.clone(),
+        cctui_server_core::auth::AuthConfig::new(vec![], pool),
+        Bus::new(Box::new(NoopTransport)),
+        cctui_server_core::client::build_http_client(),
+        Arc::new(cctui_server_core::dispatchers::Registry::new()),
+    );
+    let machine = Uuid::new_v4();
+    let (tx, mut rx) = mpsc::channel(1);
+    state.bus.register_daemon(machine, Uuid::new_v4(), tx);
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        cctui_server_core::launch::launch_durable(&state, Uuid::new_v4(), Host::spawn(machine)),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(result, Err(LaunchError::Storage(sqlx::Error::PoolClosed))));
+    assert!(matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+    assert!(state.pending_commands.is_empty());
+    assert!(state.command_waiters.is_empty());
+}

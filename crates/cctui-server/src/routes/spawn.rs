@@ -129,6 +129,7 @@ async fn resolve_spawn_account(
 
 /// The validated spawn target plus the ids minted for it.
 struct SpawnTarget {
+    acting_user_id: Uuid,
     machine_uuid: Uuid,
     owner: Uuid,
     /// The user whose accounts the spawn resolves against.
@@ -190,6 +191,7 @@ async fn validate_spawn(
     let uid = ctx.owner_filter().unwrap_or(owner);
 
     Ok(SpawnTarget {
+        acting_user_id: ctx.user_id,
         machine_uuid,
         owner,
         uid,
@@ -364,6 +366,7 @@ async fn execute_spawn(
     raw_uploads: Vec<crate::uploads::RawUpload>,
 ) -> Result<(StatusCode, Json<SpawnResponse>), (StatusCode, Json<ApiError>)> {
     let SpawnTarget {
+        acting_user_id,
         machine_uuid,
         owner,
         adapter_id,
@@ -395,10 +398,9 @@ async fn execute_spawn(
         parent_local_id: None,
     };
     persist_spawn_capability(state, machine_uuid, req, permission_mode, &token_session_id).await;
-    let launched = cctui_server_core::launch::launch_machine(
-        &state.bus,
-        &state.pending_commands,
-        &state.command_waiters,
+    let launched = cctui_server_core::launch::launch_durable(
+        &state.core,
+        acting_user_id,
         cctui_server_core::launch::MachineSpawn {
             machine_id: machine_uuid,
             command_id,
@@ -418,6 +420,13 @@ async fn execute_spawn(
     )
     .await;
     match launched {
+        Err(cctui_server_core::launch::LaunchError::Storage(error)) => {
+            tracing::error!(%error,"could not persist machine launch");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError { error: crate::error::DB_ERROR.into() }),
+            ));
+        }
         Ok(()) => {}
         Err(cctui_server_core::launch::LaunchError::Delivery(err)) => {
             if let Err(e) =

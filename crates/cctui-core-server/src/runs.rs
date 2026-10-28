@@ -13,8 +13,19 @@ pub async fn result(
     Path(session): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     ctx.requires(Scope::Read).map_err(|status| AppError::new(status, "read scope required"))?;
-    let row:Option<core::results::ResultRow>=sqlx::query_as("SELECT adapter_id,end_reason,ended_at,status,tempo,agent_state,activity,soft_limit_reason FROM sessions WHERE id=$1 AND ($2::uuid IS NULL OR user_id=$2)").bind(&session).bind(ctx.owner_filter()).fetch_optional(&host.pool).await?;
+    let launch = core::machine_launches::find(&host.pool, &session, ctx.owner_filter()).await?;
+    let canonical = launch.as_ref().and_then(|launch| launch.registered_session_id.clone());
+    let session = canonical.unwrap_or_else(|| {
+        launch.as_ref().map_or_else(|| session.clone(), |launch| launch.session_id.clone())
+    });
+    let owner = if launch.is_some() { None } else { ctx.owner_filter() };
+    let row:Option<core::results::ResultRow>=sqlx::query_as("SELECT adapter_id,end_reason,ended_at,status,tempo,agent_state,activity,soft_limit_reason FROM sessions WHERE id=$1 AND ($2::uuid IS NULL OR user_id=$2)").bind(&session).bind(owner).fetch_optional(&host.pool).await?;
     let Some(row) = row else {
+        if let Some(launch) = launch {
+            return Ok(Json(
+                serde_json::json!({"done":launch.failed(),"end_reason":if launch.failed(){Some("spawn_failed")}else{None},"final_assistant_text":null,"message_id":null,"token_usage":null,"queued":false,"queue_position":null,"final_assistant_text_truncated":false}),
+            ));
+        }
         let result = core::results::unregistered_result(&host.pool, &session, ctx.owner_filter())
             .await?
             .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "session not found"))?;
@@ -22,7 +33,7 @@ pub async fn result(
         value["final_assistant_text_truncated"] = serde_json::json!(false);
         return Ok(Json(value));
     };
-    let value:Option<serde_json::Value>=sqlx::query_scalar("SELECT metadata->'cctui_execution_result' FROM sessions WHERE id=$1 AND ($2::uuid IS NULL OR user_id=$2)").bind(&session).bind(ctx.owner_filter()).fetch_one(&host.pool).await?;
+    let value:Option<serde_json::Value>=sqlx::query_scalar("SELECT metadata->'cctui_execution_result' FROM sessions WHERE id=$1 AND ($2::uuid IS NULL OR user_id=$2)").bind(&session).bind(owner).fetch_one(&host.pool).await?;
     let capture: core::results::CapturedResult =
         value.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
     let response = cctui_proto::api::SessionResult {

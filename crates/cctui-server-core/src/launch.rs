@@ -22,6 +22,8 @@ pub struct MachineSpawn {
 
 #[derive(Debug, thiserror::Error)]
 pub enum LaunchError {
+    #[error("could not persist machine launch: {0}")]
+    Storage(#[from] sqlx::Error),
     #[error(transparent)]
     Delivery(#[from] BusError),
     #[error("the daemon refused the spawn: {0}")]
@@ -80,4 +82,26 @@ pub async fn launch_machine(
     let refusal = await_early_verdict(waiters, command_id, verdict, EARLY_VERDICT_WAIT).await;
     drop(registration);
     refusal.map_or(Ok(()), |detail| Err(LaunchError::Refused(detail)))
+}
+
+/// Persist a safe launch identity before delivering work. A lost HTTP waiter
+/// does not remove the durable record or authorize an automatic resubmission.
+pub async fn launch_durable(
+    state: &crate::state::CoreState,
+    actor: Uuid,
+    spawn: MachineSpawn,
+) -> Result<(), LaunchError> {
+    let command = spawn.command_id;
+    crate::machine_launches::prepare(&state.pool, command, actor, &spawn.failed).await?;
+    let result =
+        launch_machine(&state.bus, &state.pending_commands, &state.command_waiters, spawn).await;
+    match &result {
+        Ok(()) => crate::machine_launches::delivered(&state.pool, command).await?,
+        Err(LaunchError::Delivery(error)) => {
+            crate::machine_launches::delivery_failed(&state.pool, command, &error.to_string())
+                .await?;
+        }
+        Err(LaunchError::Refused(_) | LaunchError::Storage(_)) => {}
+    }
+    result
 }

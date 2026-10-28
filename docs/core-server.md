@@ -108,6 +108,12 @@ policy and may be duplicated around crashes; they are not exactly-once delivery.
 Existing full databases keep their historical migration records and checksums.
 Do not point a pre-split full binary at a database originally bootstrapped by core;
 that rollback is unsupported. Keep the normal database backup before upgrades.
+Beta 25 adds package schema version two for durable machine launches. Both core and full betas
+22–24 reject this version; rolling back across that boundary requires a
+pre-upgrade database restore. Machine result polling accepts the returned command
+ID and follows canonical worker registration after a host restart. An interrupted
+delivery can remain pending; the server does not automatically resend the work.
+
 Switching full to core deliberately removes access to workspace features and is
 an operator choice, separate from an ordinary full-server upgrade.
 

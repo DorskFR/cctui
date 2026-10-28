@@ -194,6 +194,14 @@ impl Connection {
         )
         .await?;
         if registered.is_some() {
+            core::machine_launches::registered(
+                &self.host.pool,
+                trusted_spawn_key.unwrap_or(session),
+                session,
+                self.machine,
+                self.user,
+            )
+            .await?;
             core::machine_policy::claim_spawner(&self.host.pool, session, trusted_spawn_key).await;
         }
         Ok(())
@@ -276,27 +284,57 @@ impl Connection {
                 self.stop_for_human_input(adapter, &local_id).await?;
             }
             AdapterEvent::CommandResult { command_id, ok, error } => {
-                let pending = self.host.pending_commands.remove(&command_id).map(|(_, c)| c);
-                if !ok && let Some(row) = pending.and_then(|c| c.spawn) {
-                    let reason = cctui_proto::adapter::EndReason::SpawnFailed {
-                        detail: error.clone().unwrap_or_else(|| "spawn failed".into()),
-                    };
-                    core::lifecycle::persist_failed_spawn(
-                        &self.host.pool,
-                        &core::lifecycle::NoopSessionEndJournal,
-                        &row,
-                        &reason,
-                    )
-                    .await?;
-                }
-                core::commands::resolve_verdict(
-                    &self.host.command_waiters,
-                    command_id,
-                    core::commands::CommandVerdict { ok, error },
-                );
+                self.command_result(command_id, ok, error).await?;
             }
             _ => {}
         }
+        Ok(())
+    }
+    async fn command_result(
+        &self,
+        command_id: uuid::Uuid,
+        ok: bool,
+        error: Option<String>,
+    ) -> anyhow::Result<()> {
+        let known =
+            core::machine_launches::find(&self.host.pool, &command_id.to_string(), None).await?;
+        if known
+            .as_ref()
+            .is_some_and(|launch| launch.machine_id != self.machine || launch.user_id != self.user)
+        {
+            tracing::warn!(%command_id,"refusing foreign machine launch verdict");
+            return Ok(());
+        }
+        let durable = core::machine_launches::verdict(
+            &self.host.pool,
+            command_id,
+            self.machine,
+            self.user,
+            ok,
+            error.as_deref(),
+        )
+        .await?;
+        let pending = self.host.pending_commands.remove(&command_id).map(|(_, c)| c);
+        let failed = durable
+            .map(|launch| launch.failed_row())
+            .or_else(|| if known.is_none() { pending.and_then(|c| c.spawn) } else { None });
+        if !ok && let Some(row) = failed {
+            let reason = cctui_proto::adapter::EndReason::SpawnFailed {
+                detail: error.clone().unwrap_or_else(|| "spawn failed".into()),
+            };
+            core::lifecycle::persist_failed_spawn(
+                &self.host.pool,
+                &core::lifecycle::NoopSessionEndJournal,
+                &row,
+                &reason,
+            )
+            .await?;
+        }
+        core::commands::resolve_verdict(
+            &self.host.command_waiters,
+            command_id,
+            core::commands::CommandVerdict { ok, error },
+        );
         Ok(())
     }
     async fn stop_for_human_input(&self, adapter: &str, local_id: &str) -> anyhow::Result<()> {
