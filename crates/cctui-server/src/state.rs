@@ -49,7 +49,7 @@ pub struct AppState {
     /// Commands awaiting their daemon `CommandResult`, keyed by `command_id`.
     pub pending_commands: Arc<DashMap<Uuid, PendingCommand>>,
     /// Requests holding their reply a moment for the daemon's verdict, keyed
-    /// by `command_id`; see [`await_early_verdict`].
+    /// by `command_id`; see [`cctui_server_core::commands::await_early_verdict`].
     pub command_waiters: CommandWaiters,
     /// `None` unless `CCTUI_LANGFUSE_*` is configured.
     pub langfuse: Option<Arc<crate::langfuse::LangfuseClient>>,
@@ -107,8 +107,7 @@ pub struct OrphanSpam {
 pub use cctui_server_core::gateway::usage::{AccountUsageCache, CachedUsage};
 
 pub use cctui_server_core::commands::{
-    CommandVerdict, CommandWaiters, EARLY_VERDICT_WAIT, FailedSpawnRow, PendingCommand,
-    await_early_verdict, resolve_verdict, track_command, wait_for_verdict,
+    CommandVerdict, CommandWaiters, FailedSpawnRow, PendingCommand, resolve_verdict, track_command,
 };
 
 #[cfg(test)]
@@ -160,3 +159,6 @@ impl AppState {
         }
     }
 }
+
+#[cfg(test)]
+pub use cctui_server_core::commands::wait_for_verdict;

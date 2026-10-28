@@ -16,3 +16,13 @@ pub mod usage_probe;
 
 #[cfg(test)]
 mod test_support;
+
+pub mod bus;
+pub mod dispatchers;
+pub mod policy;
+pub mod registry;
+
+pub mod client;
+pub mod outbound;
+
+pub mod launch;

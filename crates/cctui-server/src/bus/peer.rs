@@ -259,16 +259,7 @@ impl From<WireBusEvent> for BusEvent {
 }
 
 /// The session a down-frame belongs to, when it is session-scoped.
-pub fn frame_session(frame: &DaemonFrameDown) -> Option<&str> {
-    match frame {
-        DaemonFrameDown::Command { command, .. } => command.local_id(),
-        DaemonFrameDown::TranscriptAck { session_marks, .. } => {
-            session_marks.first().map(|(id, _)| id.as_str())
-        }
-        _ => None,
-    }
-}
-
+pub use cctui_server_core::bus::frame_session;
 /// Format a peer IP + port as an HTTP authority (IPv6 literals need brackets).
 fn peer_base(ip: &str, port: u16) -> String {
     if ip.contains(':') { format!("http://[{ip}]:{port}") } else { format!("http://{ip}:{port}") }
