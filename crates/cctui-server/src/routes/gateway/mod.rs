@@ -28,6 +28,7 @@ pub mod usage_notices;
 mod voicetee;
 
 pub use config::*;
+#[cfg(test)]
 pub use failover::*;
 pub use fork::fork_env_for_session;
 pub use limits::*;
@@ -35,7 +36,6 @@ pub use mint::*;
 pub use proxy::*;
 pub use ratelimit::*;
 pub use refresh::*;
-pub use toolguard::{guard_for, guard_stream, guardable};
 pub use usage::*;
 
 /// Resolve the database a DB-gated test should run against.
