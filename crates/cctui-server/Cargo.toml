@@ -10,6 +10,7 @@ workspace = true
 ts = ["dep:ts-rs", "cctui-proto/ts", "cctui-query/ts"]
 
 [dependencies]
+cctui-server-core.workspace = true
 cctui-proto = { workspace = true, features = ["sqlx"] }
 cctui-crypto.workspace = true
 cctui-query.workspace = true
@@ -51,6 +52,7 @@ unicode-normalization = "0.1.25"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 [dev-dependencies]
+cctui-server-core = { workspace = true, features = ["test-support"] }
 reqwest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
