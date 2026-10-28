@@ -3,12 +3,22 @@
 pub use cctui_server_core::store::tokens::*;
 
 /// Rebind execution records, then preserve the full server's uploaded attachments.
+#[cfg(test)]
 pub async fn rebind_session_id(
     exec: impl sqlx::PgExecutor<'_> + Copy,
     spawn_key: &str,
     session_id: &str,
 ) -> Result<(), sqlx::Error> {
     cctui_server_core::store::tokens::rebind_session_id(exec, spawn_key, session_id).await?;
+    rebind_attachments(exec, spawn_key, session_id).await
+}
+
+/// Workspace records follow a successful execution-record rebind.
+pub async fn rebind_attachments(
+    exec: impl sqlx::PgExecutor<'_>,
+    spawn_key: &str,
+    session_id: &str,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE session_attachments SET session_id = $2 WHERE session_id = $1 \
            AND NOT EXISTS (SELECT 1 FROM sessions WHERE id = $1)",

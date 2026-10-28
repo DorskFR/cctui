@@ -11,6 +11,13 @@ use uuid::Uuid;
 struct Host {
     pool: PgPool,
     cleared: DashMap<String, ()>,
+    client: reqwest::Client,
+    locks: DashMap<Uuid, std::sync::Arc<tokio::sync::Mutex<()>>>,
+    reauth: DashMap<Uuid, ()>,
+    cache: DashMap<Uuid, cctui_server_core::gateway::usage::CachedUsage>,
+    caps: DashMap<String, cctui_proto::api::SpawnCapability>,
+    budgets: DashMap<String, f64>,
+    reject_rebind: std::sync::atomic::AtomicBool,
 }
 
 impl MintContext for Host {
@@ -39,6 +46,7 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Option<Self> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let url = ["DATABASE_URL", "TEST_DATABASE_URL"]
             .iter()
             .filter_map(|key| std::env::var(key).ok())
@@ -68,6 +76,9 @@ impl Fixture {
             "CREATE TEMP TABLE session_tokens (LIKE public.session_tokens INCLUDING DEFAULTS INCLUDING GENERATED)",
             "CREATE TEMP TABLE sessions (LIKE public.sessions INCLUDING DEFAULTS INCLUDING GENERATED)",
             "CREATE TEMP TABLE resource_shares (LIKE public.resource_shares INCLUDING DEFAULTS INCLUDING GENERATED)",
+            "CREATE TEMP TABLE account_pools (LIKE public.account_pools INCLUDING DEFAULTS)",
+            "CREATE TEMP TABLE session_token_usage (session_id text)",
+            "CREATE TEMP TABLE session_spawn_capabilities (session_id text PRIMARY KEY, capability jsonb)",
             "CREATE TEMP TABLE auth_keys (LIKE public.auth_keys INCLUDING DEFAULTS INCLUDING GENERATED)",
         ] {
             sqlx::query(ddl).execute(&pool).await.unwrap();
@@ -96,7 +107,17 @@ impl Fixture {
             .is_none()
         );
         Some(Self {
-            host: Host { pool, cleared: DashMap::new() },
+            host: Host {
+                pool,
+                cleared: DashMap::new(),
+                client: reqwest::Client::new(),
+                locks: DashMap::new(),
+                reauth: DashMap::new(),
+                cache: DashMap::new(),
+                caps: DashMap::new(),
+                budgets: DashMap::new(),
+                reject_rebind: std::sync::atomic::AtomicBool::new(false),
+            },
             owner,
             grantee,
             account,
@@ -186,5 +207,162 @@ async fn grantee_mints_filter_settings_and_env_and_revocation_blocks_resume() {
     .fetch_one(&f.host.pool)
     .await
     .unwrap();
+    assert!(revoked);
+}
+
+impl cctui_server_core::gateway::credentials::CredentialContext for Host {
+    fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+    fn http_client(&self) -> &reqwest::Client {
+        &self.client
+    }
+    fn account_locks(&self) -> &DashMap<Uuid, std::sync::Arc<tokio::sync::Mutex<()>>> {
+        &self.locks
+    }
+    fn account_reauth(&self) -> &DashMap<Uuid, ()> {
+        &self.reauth
+    }
+    fn vault_key(&self) -> Vec<u8> {
+        vec![42; 32]
+    }
+}
+impl cctui_server_core::gateway::usage::UsageContext for Host {
+    fn usage_cache(&self) -> &DashMap<Uuid, cctui_server_core::gateway::usage::CachedUsage> {
+        &self.cache
+    }
+    fn probe_client(&self) -> &reqwest::Client {
+        &self.client
+    }
+    fn probe_url_permitted(&self, _: &str) -> Result<(), String> {
+        Err("no outbound probes in this contract".into())
+    }
+    async fn usage_updated(&self, _: Uuid, _: String, _: Option<&serde_json::Value>) {}
+}
+impl cctui_server_core::account_resolve::AccountResolutionContext for Host {
+    fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+    fn cached_needs_reauth(&self, id: Uuid) -> bool {
+        self.reauth.contains_key(&id)
+    }
+    async fn usage_for_soft_limit(&self, id: Uuid) -> Option<serde_json::Value> {
+        cctui_server_core::gateway::usage::usage_for_soft_limit(self, id).await
+    }
+}
+impl cctui_server_core::session_credentials::SessionCredentialContext for Host {
+    fn token_pool(&self) -> &PgPool {
+        &self.pool
+    }
+    fn spawn_capabilities(&self) -> &DashMap<String, cctui_proto::api::SpawnCapability> {
+        &self.caps
+    }
+    fn session_budgets(&self) -> &DashMap<String, f64> {
+        &self.budgets
+    }
+    async fn after_execution_rebind(&self, spawn: &str, session: &str) -> Result<(), sqlx::Error> {
+        let id: String =
+            sqlx::query_scalar("SELECT session_id FROM session_tokens WHERE session_id = $1")
+                .bind(session)
+                .fetch_one(&self.pool)
+                .await?;
+        assert_eq!(id, session, "execution records precede the host callback");
+        assert!(self.budgets.contains_key(spawn), "cache follows the host callback");
+        if self.reject_rebind.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(sqlx::Error::RowNotFound);
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn machine_account_preparation_needs_no_workspace_storage() {
+    use cctui_server_core::machine_spawn::{AccountTarget, resolve_spawn_account};
+    let Some(f) = Fixture::new().await else { return };
+    let target = AccountTarget {
+        uid: f.owner,
+        adapter_id: "claude-code".into(),
+        token_session_id: "spawn".into(),
+    };
+    let mut req: cctui_proto::api::SpawnRequest = serde_json::from_value(json!({"machine_id":"machine", "working_dir":"/work", "env":{"CUSTOM":"kept"}, "effort":"  "})).unwrap();
+    let bound = resolve_spawn_account(&f.host, &target, &req).await.unwrap();
+    assert_eq!(bound.account_choice.as_deref(), Some("automation"));
+    assert!(bound.effort.is_none());
+    assert_eq!(bound.env["CUSTOM"], "kept");
+    assert!(bound.env.contains_key("ANTHROPIC_AUTH_TOKEN"));
+    assert!(bound.env.contains_key("OPENAI_API_KEY"));
+    req.no_account = true;
+    let unbound = resolve_spawn_account(&f.host, &target, &req).await.unwrap();
+    assert!(unbound.account_choice.is_none());
+    assert_eq!(unbound.env, req.env);
+    req.account = Some("automation".into());
+    let explicit = resolve_spawn_account(&f.host, &target, &req).await.unwrap();
+    assert_eq!(explicit.account_choice.as_deref(), Some("automation"));
+    assert_eq!(explicit.env["ANTHROPIC_AUTH_TOKEN"], bound.env["ANTHROPIC_AUTH_TOKEN"]);
+    sqlx::query("INSERT INTO accounts (user_id, name) VALUES ($1, 'second')")
+        .bind(f.owner)
+        .execute(&f.host.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO account_providers (user_id, account_id, provider) SELECT $1, id, 'anthropic' FROM accounts WHERE name = 'second'").bind(f.owner).execute(&f.host.pool).await.unwrap();
+    req.account = None;
+    req.no_account = false;
+    let (status, error) = resolve_spawn_account(&f.host, &target, &req).await.err().unwrap();
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.error.contains("several are available"));
+}
+
+#[tokio::test]
+async fn credential_rebind_and_revocation_preserve_host_order_without_attachments() {
+    use cctui_proto::ids::{SessionId, SpawnKey};
+    use cctui_server_core::session_credentials::{rebind_spawn_key, revoke_session_tokens};
+    let Some(f) = Fixture::new().await else { return };
+    f.mint(f.anthropic, Family::Anthropic, "spawn", f.owner).await;
+    f.host.budgets.insert("spawn".into(), 12.0);
+    let cap: cctui_proto::api::SpawnCapability =
+        serde_json::from_value(json!({"adapters":["claude-code"],"max_children":2})).unwrap();
+    cctui_server_core::store::spawn_capabilities::upsert(&f.host.pool, "spawn", &cap)
+        .await
+        .unwrap();
+    f.host.caps.insert("spawn".into(), cap);
+    sqlx::query("INSERT INTO session_token_usage VALUES ('spawn')")
+        .execute(&f.host.pool)
+        .await
+        .unwrap();
+    f.host.reject_rebind.store(true, std::sync::atomic::Ordering::Relaxed);
+    rebind_spawn_key(&f.host, SpawnKey::from("spawn"), SessionId::from("registered")).await;
+    assert!(f.host.budgets.contains_key("spawn"), "failed host callback must stop cache changes");
+    f.host.reject_rebind.store(false, std::sync::atomic::Ordering::Relaxed);
+    rebind_spawn_key(&f.host, SpawnKey::from("spawn"), SessionId::from("registered")).await;
+    assert!(!f.host.budgets.contains_key("spawn"));
+    assert!((*f.host.budgets.get("registered").unwrap() - 12.0).abs() < f64::EPSILON);
+    assert!(!f.host.caps.contains_key("spawn"));
+    assert_eq!(f.host.caps.get("registered").unwrap().max_children, Some(2));
+    assert_eq!(
+        cctui_server_core::store::spawn_capabilities::get(&f.host.pool, "registered")
+            .await
+            .unwrap()
+            .unwrap()
+            .max_children,
+        Some(2)
+    );
+    let id: String = sqlx::query_scalar("SELECT session_id FROM session_token_usage")
+        .fetch_one(&f.host.pool)
+        .await
+        .unwrap();
+    assert_eq!(id, "registered");
+    revoke_session_tokens(&f.host, "registered").await;
+    assert!(f.host.budgets.is_empty());
+    assert!(f.host.caps.is_empty());
+    assert!(
+        cctui_server_core::store::spawn_capabilities::get(&f.host.pool, "registered")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let revoked: bool = sqlx::query_scalar("SELECT revoked_at IS NOT NULL FROM session_tokens")
+        .fetch_one(&f.host.pool)
+        .await
+        .unwrap();
     assert!(revoked);
 }

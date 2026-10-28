@@ -1,4 +1,3 @@
-mod account_pick;
 mod account_resolve;
 mod api_routes;
 mod auth;
