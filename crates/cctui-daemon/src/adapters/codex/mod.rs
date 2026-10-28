@@ -358,7 +358,8 @@ impl SessionDriver for CommandPump {
     }
 
     async fn send_message(&mut self, local_id: String, text: String) -> CommandOutcome {
-        self.forward(&local_id, SessionCommand::Send { text, command_id: None }).await;
+        self.forward(&local_id, SessionCommand::Send { text, command_id: None, turn_id: None })
+            .await;
         Ok(Handled::Deferred)
     }
 
@@ -369,9 +370,9 @@ impl SessionDriver for CommandPump {
         _ask_picks: Option<Vec<Vec<usize>>>,
         _env: std::collections::BTreeMap<String, String>,
         command_id: Option<uuid::Uuid>,
-        _turn_id: Option<uuid::Uuid>,
+        turn_id: Option<uuid::Uuid>,
     ) -> CommandOutcome {
-        self.forward(&local_id, SessionCommand::Send { text, command_id }).await;
+        self.forward(&local_id, SessionCommand::Send { text, command_id, turn_id }).await;
         Ok(Handled::Deferred)
     }
 
@@ -1478,7 +1479,7 @@ mod tests {
             None,
             &unrecoverable_cfg(),
             "ghost",
-            SessionCommand::Send { text: "hi".to_owned(), command_id: None },
+            SessionCommand::Send { text: "hi".to_owned(), command_id: None, turn_id: None },
         )
         .await;
         assert!(handled, "recovery is attempted asynchronously");
