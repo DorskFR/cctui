@@ -71,3 +71,4 @@ pub mod daemon_usage;
 pub mod webhook;
 
 pub mod dispatch_liveness;
+pub mod worker_retirement;

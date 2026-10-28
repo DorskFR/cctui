@@ -24,6 +24,7 @@ pub struct Host {
     external_url: Arc<str>,
     spawn_defaults: cctui_proto::api::settings::SpawnDefaults,
     oauth_logins: core::accounts::PendingOAuthLogins,
+    pub(crate) ephemeral_machine_ttl_secs: u64,
 }
 impl Host {
     #[must_use]
@@ -34,6 +35,7 @@ impl Host {
             external_url: external_url.into(),
             spawn_defaults: cctui_proto::api::settings::SpawnDefaults::default(),
             oauth_logins: Arc::new(DashMap::new()),
+            ephemeral_machine_ttl_secs: 2 * 60 * 60,
         }
     }
     #[must_use]
@@ -42,6 +44,11 @@ impl Host {
         defaults: cctui_proto::api::settings::SpawnDefaults,
     ) -> Self {
         self.spawn_defaults = defaults;
+        self
+    }
+    #[must_use]
+    pub const fn with_worker_ttl_secs(mut self, ttl_secs: u64) -> Self {
+        self.ephemeral_machine_ttl_secs = ttl_secs;
         self
     }
 }

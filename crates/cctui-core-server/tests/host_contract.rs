@@ -1260,6 +1260,78 @@ async fn an_older_daemon_reconnecting_after_a_newer_one_receives_no_checkpoint_a
 }
 
 #[tokio::test]
+async fn runtime_retires_stale_ephemeral_workers_and_revokes_cached_session_keys() {
+    let Some(f) = Fixture::new().await else { return };
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"automation"})).await;
+    let primary = user["key"].as_str().unwrap();
+    let uid = uuid::Uuid::parse_str(user["id"].as_str().unwrap()).unwrap();
+    let credential = f
+        .post(
+            &format!("/api/v1/users/{uid}/keys"),
+            primary,
+            json!({"label":"worker","scopes":["read"]}),
+        )
+        .await;
+    let key = credential["key"].as_str().unwrap();
+    let session = uuid::Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO sessions (id,machine_id,working_dir,user_id,adapter_id,status) VALUES ($1,'executor','/tmp',$2,'codex','archived')")
+        .bind(&session).bind(uid).execute(&f.pool).await.unwrap();
+    sqlx::query(
+        "UPDATE auth_keys SET kind='ephemeral',session_id=$1 WHERE user_id=$2 AND label='worker'",
+    )
+    .bind(&session)
+    .bind(uid)
+    .execute(&f.pool)
+    .await
+    .unwrap();
+    // Worker credentials have only a canonical key, unlike an interactive key.
+    sqlx::query("DELETE FROM user_tokens WHERE token_hash IN (SELECT key_hash FROM auth_keys WHERE session_id=$1)")
+        .bind(&session).execute(&f.pool).await.unwrap();
+    assert!(f.host.auth_config.validate(key).await.is_some(), "warm the worker key cache");
+    let worker = f
+        .post("/api/v1/enroll", primary, json!({"hostname":"expired-worker","kind":"ephemeral"}))
+        .await;
+    let mid = uuid::Uuid::parse_str(worker["machine_id"].as_str().unwrap()).unwrap();
+    let persistent =
+        f.post("/api/v1/enroll", primary, json!({"hostname":"persistent-worker"})).await;
+    let persistent_id = uuid::Uuid::parse_str(persistent["machine_id"].as_str().unwrap()).unwrap();
+    sqlx::query("UPDATE machines SET last_seen_at=now()-interval '3 hours' WHERE id=ANY($1)")
+        .bind(vec![mid, persistent_id])
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    cctui_server_core::worker_retirement::reap_ephemeral_machines(&f.host.core, 0).await;
+    let disabled: bool = sqlx::query_scalar("SELECT deleted_at IS NULL FROM machines WHERE id=$1")
+        .bind(mid)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    assert!(disabled, "a zero TTL disables machine retirement");
+    let runtime = cctui_core_server::background::BackgroundTasks::start(f.host.clone());
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let retired: bool = sqlx::query_scalar("SELECT revoked_at IS NOT NULL AND deleted_at IS NOT NULL FROM machines WHERE id=$1")
+                .bind(mid).fetch_one(&f.pool).await.unwrap();
+            if retired && f.host.auth_config.validate(key).await.is_none() { break }
+            tokio::task::yield_now().await;
+        }
+    }).await.unwrap();
+    let preserved: bool = sqlx::query_scalar(
+        "SELECT revoked_at IS NULL AND deleted_at IS NULL FROM machines WHERE id=$1",
+    )
+    .bind(persistent_id)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert!(preserved, "persistent machines survive the ephemeral TTL");
+    assert!(
+        f.host.auth_config.validate(worker["machine_key"].as_str().unwrap()).await.is_none(),
+        "a retired worker cannot authenticate through its canonical machine key"
+    );
+    drop(runtime);
+}
+
+#[tokio::test]
 async fn reaper_ended_oom_keeps_the_server_failure_callback() {
     let Some(f) = Fixture::new().await else { return };
     let session = uuid::Uuid::new_v4().to_string();

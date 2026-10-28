@@ -568,3 +568,18 @@ failure notification even after the reaper ends the session. Transport-loss
 outcomes still probe the executor, while clean completion, cancellation and legacy
 rows without end reasons preserve worker-owned callbacks. Delivery retains its
 existing retry budget and can duplicate a worker notification after a crash.
+
+### Worker identity retirement (`0.27.0-beta.21`, in development)
+
+Both hosts share ephemeral-machine retirement and archived/expired worker-key
+cleanup. The full server retains its scheduling and two-hour default machine
+TTL; the standalone runtime runs cleanup independently and honors
+`CCTUI_EPHEMERAL_MACHINE_TTL_HOURS` (zero disables machine retirement).
+
+Retirement preserves machine rows and session history. It atomically revokes the
+machine's canonical keys and invalidates authentication caches, closing an
+existing gap where a retired machine could still authenticate. Archived-session
+keys are revoked and expired worker keys are deleted using the existing policy.
+Persistent machines are excluded. Runtime shutdown stops cleanup with its other
+sweeps. Database contracts cover stale-worker retirement, cached session-key
+revocation, retired-machine authentication and preservation of persistent targets.
