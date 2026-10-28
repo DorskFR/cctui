@@ -503,6 +503,20 @@ async fn dispatch_through_the_host_delivers_an_authenticated_job_and_a_usable_wo
     assert_eq!(identity["user_id"], user["id"]);
     assert_eq!(reply["handle"], "job/fixture");
     let session = reply["session_id"].as_str().unwrap();
+    let pending: cctui_proto::api::SessionResult = f
+        .client
+        .get(format!("{}/api/v1/sessions/{session}/result", f.base))
+        .bearer_auth(user["key"].as_str().unwrap())
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!pending.done);
+    assert!(!pending.queued);
     f.assert_completion_outbox(session, user["id"].as_str().unwrap()).await;
     let rejected = f
         .client
@@ -1478,4 +1492,75 @@ async fn dispatcher_management_enforces_scope_ownership_and_owner_bound_default_
     assert_eq!(renamed["name"], "renamed-executor");
     assert_eq!(renamed["default_account"], "owner-default");
     assert!(renamed.get("dispatcher_key").is_none());
+}
+
+#[tokio::test]
+async fn unregistered_run_results_report_queue_position_failure_and_ownership() {
+    let Some(f) = Fixture::new().await else { return };
+    let owner = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"owner"})).await;
+    let foreign = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"foreign"})).await;
+    let uid = uuid::Uuid::parse_str(owner["id"].as_str().unwrap()).unwrap();
+    let first = uuid::Uuid::new_v4().to_string();
+    let session = uuid::Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO dispatch_records (session_id,user_id,dispatcher_name,profile,outcome,queued,created_at) VALUES ($1,$3,'executor','review','forwarded',true,'2026-01-01T00:00:00Z'),($2,$3,'executor','review','forwarded',true,'2026-01-01T00:00:01Z')")
+        .bind(first).bind(&session).bind(uid).execute(&f.pool).await.unwrap();
+    let url = format!("{}/api/v1/sessions/{session}/result", f.base);
+    let result: cctui_proto::api::SessionResult = f
+        .client
+        .get(&url)
+        .bearer_auth(owner["key"].as_str().unwrap())
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!result.done);
+    assert!(result.queued);
+    assert_eq!(result.queue_position, Some(2));
+    let denied =
+        f.client.get(&url).bearer_auth(foreign["key"].as_str().unwrap()).send().await.unwrap();
+    assert_eq!(denied.status(), reqwest::StatusCode::NOT_FOUND);
+    cctui_server_core::store::dispatch_records::set_queued(&f.pool, &session, false).await.unwrap();
+    let result: cctui_proto::api::SessionResult = f
+        .client
+        .get(&url)
+        .bearer_auth(owner["key"].as_str().unwrap())
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!result.done);
+    assert!(!result.queued);
+    assert!(result.queue_position.is_none());
+    cctui_server_core::store::dispatch_records::mark_failed(
+        &f.pool,
+        &session,
+        "oom_killed",
+        "OOMKilled",
+    )
+    .await
+    .unwrap();
+    let result: cctui_proto::api::SessionResult = f
+        .client
+        .get(&url)
+        .bearer_auth(owner["key"].as_str().unwrap())
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(result.done);
+    assert_eq!(result.end_reason.as_deref(), Some("oom_killed"));
+    assert!(!result.queued);
+    assert!(result.queue_position.is_none());
 }

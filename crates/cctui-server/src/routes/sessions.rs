@@ -2485,27 +2485,9 @@ async fn queued_dispatch_result(
     pool: &sqlx::PgPool,
     session_id: &str,
 ) -> Result<Option<SessionResult>, sqlx::Error> {
-    let position: Option<i64> = sqlx::query_scalar(
-        "SELECT (SELECT count(*) FROM dispatch_records q \
-                 WHERE q.queued AND q.outcome = 'forwarded' \
-                   AND q.dispatcher_name = r.dispatcher_name \
-                   AND q.profile IS NOT DISTINCT FROM r.profile \
-                   AND (q.created_at, q.session_id) <= (r.created_at, r.session_id)) \
-         FROM dispatch_records r \
-         WHERE r.session_id = $1 AND r.queued AND r.outcome = 'forwarded'",
-    )
-    .bind(session_id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(position.map(|p| SessionResult {
-        done: false,
-        end_reason: None,
-        final_assistant_text: None,
-        message_id: None,
-        token_usage: None,
-        queued: true,
-        queue_position: u32::try_from(p).ok(),
-    }))
+    Ok(cctui_server_core::results::unregistered_result(pool, session_id, None)
+        .await?
+        .filter(|result| result.queued))
 }
 
 #[derive(Debug, Default, Deserialize)]

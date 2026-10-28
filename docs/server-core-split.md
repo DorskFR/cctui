@@ -541,3 +541,12 @@ presence registration, heartbeat persistence and lifecycle audit retain their
 ordering; an old connection cannot unregister a replacement connection. Both
 hosts use the same dispatcher liveness transitions and audit records. This does
 not yet assemble the standalone reaper or prove a real Kubernetes rollout.
+
+### Results before worker registration (`0.27.0-beta.19`, in development)
+
+The standalone result endpoint reads owned durable dispatch records while a
+worker is pending or queued, including its dispatcher/profile queue position.
+A recorded failure before registration is terminal and exposes its end reason.
+Registered sessions retain their bounded final-message projection. Unknown and
+foreign run IDs remain hidden. The full host uses the shared queue calculation
+and retains its existing queued-only fallback and conversation result behavior.
