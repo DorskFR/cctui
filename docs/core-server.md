@@ -6,10 +6,11 @@ dispatcher enrollment, JSON dispatch/spawn, run results and cancellation. They d
 not serve a workspace UI, transcript search, uploads, plugins, voice or previews.
 Existing `cctui-server` installations and the `cctui` image remain the full product.
 
-This is an experimental beta. Real machine/Kubernetes execution acceptance,
-child-spawn APIs, context-pack resolution and
-capability-aware clients remain under development. Use the API for this beta;
-webui and TUI workspace views do not yet adapt to core. Self-update is disabled.
+This is an experimental beta. Real machine execution is verified; Kubernetes,
+child-spawn APIs, context-pack resolution and upgrade acceptance remain open.
+Use the execution API for this beta. Current webui and TUI clients identify core
+and explain which workspace functions require a full server. Server self-update
+is disabled.
 Daemon manifests/downloads and machine connectivity verification use the same
 contracts as full. Follow the
 [split roadmap](server-core-split.md) for production-readiness gates.
@@ -137,3 +138,12 @@ prints the directory retaining diagnostics. Ports 18727 and 18729 must be free.
 The smoke pins oneshot mode directly in its temporary fixture database; general
 headless harness configuration remains a separate API gap. This is a machine
 execution check; Kubernetes and rolling server upgrades require separate gates.
+
+## Client compatibility
+
+The capability endpoint identifies core with `distribution: "core"` and
+`workspace: false`. Current TUI and web clients explain that interactive sessions
+and workspace screens require a full server and direct core users to the execution
+API. Older full-server capability responses continue to select the usual client
+flow. Execution API support and configured optional integrations are separate
+capabilities.
