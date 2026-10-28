@@ -23,7 +23,7 @@ pub async fn capabilities(State(state): State<AppState>) -> Json<CapabilitiesRes
         }
     };
 
-    Json(CapabilitiesResponse { langfuse })
+    Json(CapabilitiesResponse::full(langfuse))
 }
 
 #[cfg(test)]

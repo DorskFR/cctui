@@ -144,12 +144,6 @@ async fn version() -> Json<cctui_proto::api::version::VersionInfo> {
         upload_caps: cctui_proto::api::uploads::UploadCaps::default(),
     })
 }
-async fn capabilities() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "langfuse": {"available":false,"host":null,"public_host":null,"project_id":null},
-        "distribution": "core",
-        "features": ["identity", "accounts", "oauth", "enrollment", "dispatch", "machine_spawn", "gateway", "run_results", "cancellation", "failure_notifications", "enrolled_dispatchers"],
-        "workspace": false,
-        "experimental": true,
-    }))
+async fn capabilities() -> Json<cctui_proto::api::capabilities::CapabilitiesResponse> {
+    Json(cctui_proto::api::capabilities::CapabilitiesResponse::core())
 }

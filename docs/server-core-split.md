@@ -8,7 +8,7 @@
 | Standalone automation host | Real daemon/Claude machine execution verified against a controlled provider | Kubernetes execution and rolling-upgrade acceptance |
 | Minimal database | Core bootstrap, core→full expansion and numbered forward migrations implemented | Continued upgrade and rollback acceptance |
 | Installable core distribution | Dedicated binaries/image published; signed artifacts and fresh-database image smokes verified | Ongoing published-worker and upgrade acceptance |
-| Workspace boundary and clients | Workspace schema extracted; full behavior retained | Interactive handlers/state extraction and capability-aware TUI/webui |
+| Workspace boundary and clients | Workspace schema extracted; TUI/webui recognize core and full distributions | Interactive handlers/state extraction and further client acceptance |
 
 The split is **not complete**. Beta counts describe delivery increments, not a
 percentage of completion. Production readiness requires all acceptance gates
@@ -715,3 +715,21 @@ an unresolved prepared launch; the host does not automatically resend it. Pendin
 cancellation, timeout/reconciliation behavior and general headless harness
 configuration remain later execution-lifecycle gates. This increment does not
 complete the overall split.
+
+### Distribution-aware clients (`0.27.0-beta.26`)
+
+Both hosts return the shared typed capability envelope, with separate distribution,
+workspace support, execution features and experimental status. Langfuse remains
+an independently configured integration. Decoding a legacy response preserves
+full-server workspace support; additive feature names remain forward compatible.
+
+The TUI probes support before opening the terminal. The web UI probes before
+login, WebSocket connection, workspace queries or settings loading. A core server
+gets an explanation and a link to the execution API guide. Full servers retain
+the existing flow, including older servers that omit the new fields or capability
+endpoint. Probe failures retain existing offline/authentication handling.
+
+Regression coverage includes typed legacy/core decoding, TUI startup over HTTP,
+web probe behavior and browser checks that core opens no workspace requests or
+WebSocket. Interactive state/handler extraction, execution context, child APIs,
+Kubernetes and rolling-upgrade acceptance remain open milestones.
