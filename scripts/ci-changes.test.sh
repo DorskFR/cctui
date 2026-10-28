@@ -99,7 +99,7 @@ bump_and_dep_lock() { manifest 0.1.0-beta.2 1.0.0; lock 0.1.0-beta.2 1.0.1; }
 rust_src() { write crates/cctui-a/src/lib.rs 'pub fn a() -> u8 { 1 }'; }
 ui_src() { write webui/src/app.ts 'export const a = 3;'; }
 bindings() { write webui/src/lib/bindings/A.ts 'export type A = number;'; }
-catalog() { write crates/cctui-server/src/settings_catalog/catalog.toml 'x = 1'; }
+catalog() { write crates/cctui-server-core/src/settings_catalog/catalog.toml 'x = 1'; }
 journeys() { write docs/journeys/a/spec.md '# a'; }
 workflow() { write .github/workflows/ci.yml 'name: ci'; }
 lockfile() { npm_lock 0.1.0-beta.1 1.0.1; }

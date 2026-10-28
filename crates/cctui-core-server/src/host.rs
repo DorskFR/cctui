@@ -23,6 +23,7 @@ pub struct Host {
     vault_key: Arc<Vec<u8>>,
     external_url: Arc<str>,
     spawn_defaults: cctui_proto::api::settings::SpawnDefaults,
+    oauth_logins: core::accounts::PendingOAuthLogins,
 }
 impl Host {
     #[must_use]
@@ -32,6 +33,7 @@ impl Host {
             vault_key: Arc::new(vault_key),
             external_url: external_url.into(),
             spawn_defaults: cctui_proto::api::settings::SpawnDefaults::default(),
+            oauth_logins: Arc::new(DashMap::new()),
         }
     }
     #[must_use]
@@ -202,5 +204,14 @@ impl core::dispatch::DispatchContext for Host {
         _: &cctui_proto::api::DispatchRequest,
         _: &str,
     ) {
+    }
+}
+
+impl core::accounts::AccountsContext for Host {
+    fn account_core(&self) -> &CoreState {
+        &self.core
+    }
+    fn oauth_logins(&self) -> &core::accounts::PendingOAuthLogins {
+        &self.oauth_logins
     }
 }

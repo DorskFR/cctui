@@ -465,3 +465,14 @@ an unknown response for foreign users so their daemons cannot trigger a healing
 restart. Standalone context is empty until execution context preparation is
 assembled. Account setup, machine launch assembly, transcript-mark acknowledgments,
 usage ingestion, minimal provisioning and release packaging remain outstanding.
+
+### Account administration (`0.27.0-beta.14`, in development)
+
+Account/provider creation, updates, deletion and OAuth authorization use shared
+core services. Hosts supply the installed vault key, execution state, OAuth login
+cache and usage/limit adapters. The full server retains its route policy, legacy
+configuration shim and usage reporting; the standalone host exposes the same
+account administration paths with human-principal and owner checks. Embedded
+harness setting catalogs and resource-owner queries now live with execution
+validation. Drift checks follow the catalog's new path. No account or credential
+schema changes are required.

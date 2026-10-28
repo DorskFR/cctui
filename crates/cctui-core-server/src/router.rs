@@ -12,6 +12,7 @@ use core::identity::{admin, me};
 
 pub fn router(host: Host) -> Router {
     let authenticated = Router::new()
+        .merge(crate::accounts::router())
         .route("/api/v1/admin/users", get(admin::list_users).post(admin::create_user))
         .route(
             "/api/v1/admin/users/{id}",
@@ -137,7 +138,7 @@ async fn capabilities() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "langfuse": {"available":false,"host":null,"public_host":null,"project_id":null},
         "distribution": "core",
-        "features": ["identity", "enrollment", "dispatch", "gateway", "run_results", "cancellation"],
+        "features": ["identity", "accounts", "oauth", "enrollment", "dispatch", "gateway", "run_results", "cancellation"],
         "workspace": false,
         "experimental": true,
     }))

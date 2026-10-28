@@ -63,6 +63,7 @@ impl Fixture {
             "CREATE TEMP TABLE adapters_enabled (LIKE public.adapters_enabled INCLUDING ALL)",
             "CREATE TEMP TABLE user_settings (LIKE public.user_settings INCLUDING ALL)",
             "CREATE TEMP TABLE accounts (LIKE public.accounts INCLUDING ALL)",
+            "CREATE TEMP TABLE session_usage_totals (LIKE public.session_usage_totals INCLUDING ALL)",
             "CREATE TEMP TABLE instance_settings (LIKE public.instance_settings INCLUDING ALL)",
             "CREATE TEMP TABLE resource_shares (LIKE public.resource_shares INCLUDING ALL)",
             "CREATE TEMP TABLE account_providers (LIKE public.account_providers INCLUDING ALL)",
@@ -557,4 +558,106 @@ async fn bound_daemon_launch_restores_credentials_and_token_validity_without_exp
         .await
         .unwrap();
     assert_eq!(validity["valid"], false);
+}
+
+#[tokio::test]
+async fn account_administration_provisions_credentials_and_keeps_them_private_and_owner_scoped() {
+    let Some(f) = Fixture::new().await else { return };
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"automation"})).await;
+    let key = user["key"].as_str().unwrap();
+    let account = f
+        .post(
+            "/api/v1/accounts",
+            key,
+            json!({"name":"fixture","provider":"openai","refresh_token":"fixture-refresh"}),
+        )
+        .await;
+    assert_eq!(account["name"], "fixture");
+    assert_eq!(account["providers"][0]["provider"], "openai");
+    assert!(!account.to_string().contains("fixture-refresh"));
+    let id = account["id"].as_str().unwrap();
+    let stored: String = sqlx::query_scalar(
+        "SELECT encrypted_refresh_token FROM account_providers WHERE account_id=$1",
+    )
+    .bind(uuid::Uuid::parse_str(id).unwrap())
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_ne!(stored, "fixture-refresh");
+    assert_eq!(cctui_crypto::decrypt(&stored, &[42; 32]).as_deref(), Some("fixture-refresh"));
+    let other = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"other"})).await;
+    assert_eq!(
+        f.client
+            .get(format!("{}/api/v1/accounts/{id}", f.base))
+            .bearer_auth(other["key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::NOT_FOUND
+    );
+    let machine = f.post("/api/v1/enroll", key, json!({"hostname":"executor"})).await;
+    assert_eq!(
+        f.client
+            .get(format!("{}/api/v1/accounts", f.base))
+            .bearer_auth(machine["machine_key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn oauth_login_state_is_owner_bound_and_consumed_once() {
+    let Some(f) = Fixture::new().await else { return };
+    let owner = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"automation"})).await;
+    let other = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"other"})).await;
+    let login = f
+        .post(
+            "/api/v1/accounts/oauth/start",
+            owner["key"].as_str().unwrap(),
+            json!({"provider":"openai"}),
+        )
+        .await;
+    assert!(login["authorize_url"].as_str().unwrap().contains("code_challenge="));
+    let url = format!("{}/api/v1/accounts/oauth/finish", f.base);
+    let finish = json!({"nonce":login["nonce"],"code":"fixture-code"});
+    let refused: Value = f
+        .client
+        .post(&url)
+        .bearer_auth(other["key"].as_str().unwrap())
+        .json(&finish)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(refused["error"], "unknown or expired login");
+    let consumed: Value = f
+        .client
+        .post(&url)
+        .bearer_auth(owner["key"].as_str().unwrap())
+        .json(&finish)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(consumed["error"], "name required");
+    let repeated: Value = f
+        .client
+        .post(&url)
+        .bearer_auth(owner["key"].as_str().unwrap())
+        .json(&finish)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(repeated["error"], "unknown or expired login");
 }

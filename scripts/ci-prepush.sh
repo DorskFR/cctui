@@ -60,7 +60,7 @@ case "$area" in
     ;;
   schema)
     url=https://json.schemastore.org/claude-code-settings.json
-    vendored=crates/cctui-server/src/settings_catalog/claude-code-settings.schema.json
+    vendored=crates/cctui-server-core/src/settings_catalog/claude-code-settings.schema.json
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT
     curl -fsSL "$url" -o "$tmp/upstream.json"
