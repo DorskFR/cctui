@@ -67,7 +67,7 @@ pub(super) async fn handle_event(
         | AdapterEvent::TextDelta { .. }
         | AdapterEvent::GuardStepState { .. }
         | AdapterEvent::CommandResult { .. }) => {
-            relay::on_relay_event(state, e).await;
+            relay::on_relay_event(state, machine_id, user_id, e).await;
             Inserted::UNSTORED
         }
         AdapterEvent::Todos { local_id, todos } => {

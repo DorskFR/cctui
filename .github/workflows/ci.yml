@@ -235,6 +235,10 @@ jobs:
         if: steps.cached.outputs.cache-hit != 'true'
         run: sqlx migrate run --source migrations
 
+      - name: Apply package migrations
+        if: steps.cached.outputs.cache-hit != 'true'
+        run: cargo run -p cctui-core-server --locked -- --init-db
+
       - name: cargo test --no-run (warm the cache)
         if: env.WARM_ONLY == 'true' && steps.cached.outputs.cache-hit != 'true'
         run: cargo test --workspace --locked --no-run

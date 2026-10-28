@@ -6,8 +6,8 @@
 | --- | --- | --- |
 | Shared execution engine | Substantially extracted and exercised by both hosts | Context packs, child-spawn APIs and remaining lifecycle ownership |
 | Standalone automation host | Real daemon/Claude machine execution verified against a controlled provider | Kubernetes execution and rolling-upgrade acceptance |
-| Minimal database | Core bootstrap and core→full expansion implemented | Numbered forward package migrations |
-| Installable core distribution | Dedicated binary/image release wiring implemented | Published-artifact and fresh-database smoke verification |
+| Minimal database | Core bootstrap, core→full expansion and numbered forward migrations implemented | Continued upgrade and rollback acceptance |
+| Installable core distribution | Dedicated binaries/image published; signed artifacts and fresh-database image smokes verified | Ongoing published-worker and upgrade acceptance |
 | Workspace boundary and clients | Workspace schema extracted; full behavior retained | Interactive handlers/state extraction and capability-aware TUI/webui |
 
 The split is **not complete**. Beta counts describe delivery increments, not a
@@ -689,3 +689,29 @@ machine execution/older-worker path, not Kubernetes or a rolling server upgrade.
 The fixture pins oneshot mode in its temporary database; general headless harness
 configuration is still required. Context/child APIs and workspace/client extraction
 remain open milestones.
+
+### Durable machine launches (`0.27.0-beta.25`)
+
+Machine launches now persist their command ID, provisional session identity,
+authorized actor and target before delivery. Core result polling can use the
+command ID before registration and follows the daemon's authenticated canonical
+session identity afterward. A rebuilt core host recovers late refusals without
+its original pending-command map. The full host also persists launch verdicts
+and canonical registration aliases while preserving its workspace event ordering.
+Foreign machines cannot settle a known launch; result aliases remain actor-bound.
+No prompts, environment or provider credentials enter this metadata table.
+
+Package schema version two adds the launch table. Forward migrations are applied
+in order with checksum validation and per-migration transactions; the applied
+version-one baseline files remain unchanged. Existing historical full migration
+records are preserved. Both core and full betas 22–24 reject package schema version two, so a
+rollback across this boundary requires restoring the pre-upgrade database.
+The older historical full migrator still accepts the additive schema in the
+legacy-origin regression; that does not establish binary rollback support for
+the intervening schema-aware betas.
+
+Launch delivery is not exactly once. A crash around transport delivery can leave
+an unresolved prepared launch; the host does not automatically resend it. Pending
+cancellation, timeout/reconciliation behavior and general headless harness
+configuration remain later execution-lifecycle gates. This increment does not
+complete the overall split.

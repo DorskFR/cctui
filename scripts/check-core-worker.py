@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Manual Linux smoke: fresh core DB, real daemon/harness, controlled provider.
 
-Requires a built target/debug/cctui-core-server, Docker, and the repository's
+Requires a built target/debug/cctui-core-server (or CCTUI_TEST_CORE_BINARY), Docker,
+and the repository's
 PostgreSQL test container on port 5481. Ports 18727 and 18729 must be free.
 CCTUI_TEST_WORKER_IMAGE overrides the published worker image used for rolling
 compatibility checks. No paid provider request is made. Each run removes only
@@ -179,7 +180,7 @@ try:
     )
     with open(log_dir / "server.log", "w") as log:
         server = subprocess.Popen(
-            [str(root / "target/debug/cctui-core-server")],
+            [os.environ.get("CCTUI_TEST_CORE_BINARY", str(root / "target/debug/cctui-core-server"))],
             env=env,
             stdout=log,
             stderr=subprocess.STDOUT,

@@ -50,8 +50,10 @@ impl Fixture {
             .connect(&url)
             .await
             .unwrap();
-        let ddl = cctui_server_core::schema::BOOTSTRAP.replace("public.", "pg_temp.");
-        sqlx::raw_sql(sqlx::AssertSqlSafe(ddl)).execute(&pool).await.unwrap();
+        for migration in cctui_server_core::schema::MIGRATIONS {
+            let ddl = migration.sql.replace("public.", "pg_temp.");
+            sqlx::raw_sql(sqlx::AssertSqlSafe(ddl)).execute(&pool).await.unwrap();
+        }
         cctui_server_core::client::install_crypto_provider();
         let auth = AuthConfig::new(vec!["fixture-admin".into()], pool.clone());
         auth.seed_admin().await;
@@ -84,6 +86,31 @@ impl Fixture {
             task,
         })
     }
+    /// Rebuild the host with fresh auth, bus, waiter and pending-command state.
+    async fn restart(&mut self) {
+        self.task.abort();
+        let _ = (&mut self.task).await;
+        let auth = AuthConfig::new(vec!["fixture-admin".into()], self.pool.clone());
+        auth.seed_admin().await;
+        self.host = Host::new(
+            CoreState::new(
+                self.pool.clone(),
+                auth,
+                Bus::new(Box::new(NoopTransport)),
+                cctui_server_core::client::build_http_client(),
+                Arc::new(cctui_server_core::dispatchers::Registry::new()),
+            ),
+            vec![42; 32],
+            "https://automation.example.invalid".into(),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        self.base = format!("http://{}", listener.local_addr().unwrap());
+        let host = self.host.clone();
+        self.task = tokio::spawn(async move {
+            axum::serve(listener, cctui_core_server::router::router(host)).await.unwrap();
+        });
+    }
+
     async fn daemon(
         &self,
         key: &str,
@@ -1881,4 +1908,171 @@ async fn daemon_distribution_preserves_channels_origin_etag_and_machine_identity
         .unwrap();
     assert_eq!(response.status(), 200);
     assert_eq!(response.json::<Value>().await.unwrap()["version"], env!("CARGO_PKG_VERSION"));
+}
+
+#[tokio::test]
+async fn machine_launch_identity_and_late_failure_survive_host_restart() {
+    durable_machine_launch_after_restart(false).await;
+}
+
+#[tokio::test]
+async fn machine_launch_command_identity_resolves_the_canonical_worker_after_restart() {
+    durable_machine_launch_after_restart(true).await;
+}
+
+async fn durable_machine_launch_after_restart(register: bool) {
+    let Some(mut f) = Fixture::new().await else { return };
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"operator"})).await;
+    let key = user["key"].as_str().unwrap();
+    let machine = f.post("/api/v1/enroll", key, json!({"hostname":"executor"})).await;
+    let mut daemon = f.daemon(machine["machine_key"].as_str().unwrap()).await;
+    daemon.next().await.unwrap().unwrap();
+    let client = f.client.clone();
+    let url = format!("{}/api/v1/sessions/spawn", f.base);
+    let token = key.to_owned();
+    let machine_id = machine["machine_id"].clone();
+    let launch = tokio::spawn(async move {
+        client.post(url).bearer_auth(token).json(&json!({"machine_id":machine_id,"working_dir":"/work/acme","adapter_id":"codex","no_account":true})).send().await.unwrap()
+    });
+    let command = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(Ok(Message::Text(text))) = daemon.next().await
+                && let Ok(DaemonFrameDown::Command { command, .. }) = serde_json::from_str(&text)
+            {
+                break command;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let cctui_proto::adapter::AdapterCommand::Spawn { command_id: Some(command_id), .. } = *command
+    else {
+        panic!("expected spawn")
+    };
+    let response = launch.await.unwrap();
+    assert_eq!(response.status(), 202);
+    drop(daemon);
+    f.restart().await;
+    let mut daemon = f.daemon(machine["machine_key"].as_str().unwrap()).await;
+    daemon.next().await.unwrap().unwrap();
+    assert!(f.host.pending_commands.is_empty());
+    let path = format!("{}/api/v1/sessions/{command_id}/result", f.base);
+    let response = f.client.get(&path).bearer_auth(key).send().await.unwrap();
+    assert_eq!(
+        response.status(),
+        200,
+        "the command id must identify an accepted run before registration"
+    );
+    assert_eq!(response.json::<Value>().await.unwrap()["done"], false);
+    let foreign =
+        f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"other-operator"})).await;
+    assert_eq!(
+        f.client
+            .get(&path)
+            .bearer_auth(foreign["key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    if register {
+        register_and_complete_launch(
+            &f,
+            &mut daemon,
+            command_id,
+            &path,
+            key,
+            foreign["key"].as_str().unwrap(),
+        )
+        .await;
+        return;
+    }
+    daemon
+        .send(Message::Text(
+            serde_json::to_string(&DaemonFrameUp::Event {
+                adapter_id: "codex".into(),
+                event: AdapterEvent::CommandResult {
+                    command_id,
+                    ok: false,
+                    error: Some("queue full after reconnect".into()),
+                },
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let result: Value =
+                f.client.get(&path).bearer_auth(key).send().await.unwrap().json().await.unwrap();
+            if result["done"] == true {
+                assert_eq!(result["end_reason"], "spawn_failed");
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+async fn register_and_complete_launch(
+    f: &Fixture,
+    daemon: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    command_id: uuid::Uuid,
+    path: &str,
+    key: &str,
+    foreign: &str,
+) {
+    let canonical = uuid::Uuid::new_v4().to_string();
+    for event in [
+        AdapterEvent::SessionStarted {
+            local_id: canonical.clone(),
+            meta: SessionMeta {
+                working_dir: Some("/work/acme".into()),
+                extra: json!({"spawn_key":command_id.to_string()}),
+                ..Default::default()
+            },
+        },
+        AdapterEvent::SessionEnded {
+            local_id: canonical.clone(),
+            reason: cctui_proto::adapter::EndReason::Completed,
+        },
+    ] {
+        daemon
+            .send(Message::Text(
+                serde_json::to_string(&DaemonFrameUp::Event { adapter_id: "codex".into(), event })
+                    .unwrap()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let result: Value =
+                f.client.get(path).bearer_auth(key).send().await.unwrap().json().await.unwrap();
+            if result["done"] == true {
+                assert_eq!(result["end_reason"], "completed");
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        f.client
+            .get(format!("{}/api/v1/sessions/{canonical}/result", f.base))
+            .bearer_auth(foreign)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
 }

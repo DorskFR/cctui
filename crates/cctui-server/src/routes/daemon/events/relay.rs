@@ -5,8 +5,13 @@ use crate::state::AppState;
 
 /// Replies relayed straight back to waiting callers: diagnose reports, live
 /// terminal chunks, streamed text and command results. Nothing here is
-/// persisted.
-pub(super) async fn on_relay_event(state: &AppState, event: AdapterEvent) {
+/// persisted, except durable launch verdicts.
+pub(super) async fn on_relay_event(
+    state: &AppState,
+    machine_id: uuid::Uuid,
+    user_id: uuid::Uuid,
+    event: AdapterEvent,
+) {
     match event {
         AdapterEvent::Diagnose { request_id, report, .. } => {
             // Session-diagnose reply: fire the oneshot the
@@ -36,50 +41,97 @@ pub(super) async fn on_relay_event(state: &AppState, event: AdapterEvent) {
             crate::guard_step::record_and_broadcast(&state.bus, local_id, step);
         }
         AdapterEvent::CommandResult { command_id, ok, error } => {
-            if !ok {
-                tracing::warn!(%command_id, ?error, "command failed on daemon");
-            }
-            let pending = state.pending_commands.remove(&command_id).map(|(_, c)| c);
-            let mut session_id = pending.as_ref().and_then(|c| {
-                c.session_id.clone().or_else(|| c.spawn.as_ref().map(|row| row.session_id.clone()))
-            });
-            // A spawn that never started has no row of its own: write one so
-            // the failure shows up on the list with its detail.
-            if !ok && let Some(row) = pending.and_then(|c| c.spawn) {
-                let detail = error.clone().unwrap_or_else(|| "spawn failed".to_owned());
-                let reason = EndReason::SpawnFailed { detail };
-                match persist_failed_spawn(&state.pool, &row, &reason).await {
-                    Ok(true) => {
-                        session_id = Some(row.session_id.clone());
-                        publish_session_ended(state, &row.session_id, &reason);
-                        super::session::record_session_ended(
-                            state,
-                            &row.session_id,
-                            row.machine_id,
-                            row.user_id,
-                            &reason,
-                        );
-                    }
-                    Ok(false) => {}
-                    Err(e) => tracing::error!(%command_id, "db error (failed spawn): {e}"),
-                }
-            }
-            // After the failed row is written, so a request answering with the
-            // refusal never races the session list.
-            crate::state::resolve_verdict(
-                &state.command_waiters,
-                command_id,
-                crate::state::CommandVerdict { ok, error: error.clone() },
-            );
-            state.bus.publish_server(cctui_proto::ws::ServerEvent::CommandResult {
-                command_id: command_id.to_string(),
-                ok,
-                error,
-                session_id,
-            });
+            on_command_result(state, machine_id, user_id, command_id, ok, error).await;
         }
         _ => {}
     }
+}
+
+async fn on_command_result(
+    state: &AppState,
+    machine_id: uuid::Uuid,
+    user_id: uuid::Uuid,
+    command_id: uuid::Uuid,
+    ok: bool,
+    error: Option<String>,
+) {
+    if !ok {
+        tracing::warn!(%command_id, ?error, "command failed on daemon");
+    }
+    let known =
+        match cctui_server_core::machine_launches::find(&state.pool, &command_id.to_string(), None)
+            .await
+        {
+            Ok(known) => known,
+            Err(error) => {
+                tracing::error!(%command_id, %error, "cannot read durable launch verdict");
+                return;
+            }
+        };
+    if known
+        .as_ref()
+        .is_some_and(|launch| launch.machine_id != machine_id || launch.user_id != user_id)
+    {
+        tracing::warn!(%command_id, "refusing foreign machine launch verdict");
+        return;
+    }
+    let durable = match cctui_server_core::machine_launches::verdict(
+        &state.pool,
+        command_id,
+        machine_id,
+        user_id,
+        ok,
+        error.as_deref(),
+    )
+    .await
+    {
+        Ok(launch) => launch,
+        Err(error) => {
+            tracing::error!(%command_id, %error, "cannot persist launch verdict");
+            return;
+        }
+    };
+    let pending = state.pending_commands.remove(&command_id).map(|(_, c)| c);
+    let mut session_id = pending.as_ref().and_then(|c| {
+        c.session_id.clone().or_else(|| c.spawn.as_ref().map(|row| row.session_id.clone()))
+    });
+    // A spawn that never started has no row of its own: write one so
+    // the failure shows up on the list with its detail.
+    let failed = durable
+        .map(|launch| launch.failed_row())
+        .or_else(|| if known.is_none() { pending.and_then(|c| c.spawn) } else { None });
+    if !ok && let Some(row) = failed {
+        let detail = error.clone().unwrap_or_else(|| "spawn failed".to_owned());
+        let reason = EndReason::SpawnFailed { detail };
+        match persist_failed_spawn(&state.pool, &row, &reason).await {
+            Ok(true) => {
+                session_id = Some(row.session_id.clone());
+                publish_session_ended(state, &row.session_id, &reason);
+                super::session::record_session_ended(
+                    state,
+                    &row.session_id,
+                    row.machine_id,
+                    row.user_id,
+                    &reason,
+                );
+            }
+            Ok(false) => {}
+            Err(e) => tracing::error!(%command_id, "db error (failed spawn): {e}"),
+        }
+    }
+    // After the failed row is written, so a request answering with the
+    // refusal never races the session list.
+    crate::state::resolve_verdict(
+        &state.command_waiters,
+        command_id,
+        crate::state::CommandVerdict { ok, error: error.clone() },
+    );
+    state.bus.publish_server(cctui_proto::ws::ServerEvent::CommandResult {
+        command_id: command_id.to_string(),
+        ok,
+        error,
+        session_id,
+    });
 }
 
 #[cfg(test)]
@@ -103,6 +155,8 @@ mod tests {
 
         on_relay_event(
             &state,
+            uuid::Uuid::nil(),
+            uuid::Uuid::nil(),
             AdapterEvent::TextDelta {
                 local_id: session_id.clone(),
                 item_id: "msg_01:0".into(),
@@ -127,6 +181,15 @@ mod tests {
     /// is on the list, so the caller and the session list agree.
     #[tokio::test]
     async fn a_refused_spawn_is_written_before_the_waiting_request_hears_of_it() {
+        refused_spawn(false).await;
+    }
+
+    #[tokio::test]
+    async fn a_durable_refusal_recovers_metadata_and_rejects_a_foreign_machine() {
+        refused_spawn(true).await;
+    }
+
+    async fn refused_spawn(durable: bool) {
         let Some(url) = crate::routes::gateway::test_db_url("relay_refused_spawn") else {
             return;
         };
@@ -172,8 +235,38 @@ mod tests {
             }),
         );
 
+        if durable {
+            let row = state.pending_commands.get(&command_id).unwrap().spawn.clone().unwrap();
+            cctui_server_core::machine_launches::prepare(&pool, command_id, uid, &row)
+                .await
+                .unwrap();
+            on_relay_event(
+                &state,
+                uuid::Uuid::new_v4(),
+                uid,
+                AdapterEvent::CommandResult {
+                    command_id,
+                    ok: false,
+                    error: Some("foreign refusal".into()),
+                },
+            )
+            .await;
+            assert!(state.pending_commands.contains_key(&command_id));
+            assert!(state.command_waiters.contains_key(&command_id));
+            assert_eq!(
+                cctui_server_core::machine_launches::find(&pool, &command_id.to_string(), None)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                "prepared"
+            );
+            state.pending_commands.clear();
+        }
         on_relay_event(
             &state,
+            mid,
+            uid,
             AdapterEvent::CommandResult {
                 command_id,
                 ok: false,

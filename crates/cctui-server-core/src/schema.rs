@@ -8,6 +8,18 @@ use std::time::Duration;
 pub const BOOTSTRAP: &str = include_str!("../schema/0001_execution.sql");
 /// Last migration in the historical, shared migration stream.
 pub const LEGACY_BASELINE: i64 = 191;
+/// One immutable, numbered package migration. Version one is its baseline.
+#[derive(Debug, Clone, Copy)]
+pub struct Migration {
+    pub version: i64,
+    pub sql: &'static str,
+}
+
+pub const MIGRATIONS: &[Migration] = &[
+    Migration { version: 1, sql: BOOTSTRAP },
+    Migration { version: 2, sql: include_str!("../schema/0002_machine_launches.sql") },
+];
+
 const LEGACY_LAST: &str = include_str!("../../../migrations/191_file_blobs.up.sql");
 const LOCK_KEY: i64 = 0x6363_7475_695f_6d67;
 const TRACKING: &str = "\
@@ -85,59 +97,76 @@ pub async fn origin(conn: &mut PgConnection) -> Result<Option<Origin>, sqlx::Err
 }
 
 async fn installed(conn: &mut PgConnection, package: &str, sql: &str) -> Result<bool, sqlx::Error> {
-    let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(
-        "SELECT version, checksum FROM _cctui_schema_migrations WHERE package=$1 ORDER BY version",
+    let checksum: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT checksum FROM _cctui_schema_migrations WHERE package=$1 AND version=1",
     )
     .bind(package)
-    .fetch_all(conn)
+    .fetch_optional(conn)
     .await?;
-    if rows.is_empty() {
-        return Ok(false);
+    match checksum {
+        None => Ok(false),
+        Some(checksum) if checksum == Sha256::digest(sql.as_bytes()).to_vec() => Ok(true),
+        Some(_) => Err(incompatible(format!("altered {package} baseline"))),
     }
-    let checksum = Sha256::digest(sql.as_bytes()).to_vec();
-    if rows.len() != 1 || rows[0].0 != 1 || rows[0].1 != checksum {
-        return Err(incompatible(format!("unsupported or altered {package} schema migration")));
-    }
-    Ok(true)
 }
 
 async fn record(
     conn: &mut PgConnection,
     package: &str,
-    sql: &str,
+    migration: Migration,
     adopted: bool,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO _cctui_schema_migrations (package,version,checksum,installation) \
-         VALUES ($1,1,$2,$3)",
-    )
-    .bind(package)
-    .bind(Sha256::digest(sql.as_bytes()).to_vec())
-    .bind(if adopted { "adopted" } else { "bootstrap" })
-    .execute(conn)
-    .await?;
+        "INSERT INTO _cctui_schema_migrations (package,version,checksum,installation) VALUES ($1,$2,$3,$4)"
+    ).bind(package).bind(migration.version)
+        .bind(Sha256::digest(migration.sql.as_bytes()).to_vec())
+        .bind(if adopted { "adopted" } else { "bootstrap" })
+        .execute(conn).await?;
     Ok(())
 }
 
-/// Apply a package baseline atomically, or record explicit legacy adoption.
+/// Validate immutable history and apply each missing migration transactionally.
 ///
-/// Adoption records identify an existing baseline; they never claim its SQL
-/// was executed and never insert records into the legacy sqlx ledger.
+/// Only the baseline can be adopted from legacy storage. Forward migrations
+/// always execute their SQL and never alter the historical sqlx ledger.
 pub async fn install_package(
     conn: &mut MigrationConnection,
     package: &str,
-    sql: &'static str,
+    migrations: &[Migration],
     adopted: bool,
 ) -> Result<(), sqlx::Error> {
-    if installed(conn, package, sql).await? {
-        return Ok(());
+    if migrations.is_empty()
+        || migrations
+            .iter()
+            .enumerate()
+            .any(|(i, m)| usize::try_from(m.version).ok() != Some(i + 1))
+    {
+        return Err(incompatible("package migrations must be contiguous from version one"));
     }
-    let mut tx = conn.begin().await?;
-    if !adopted {
-        sqlx::raw_sql(sql).execute(&mut *tx).await?;
+    let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+        "SELECT version,checksum FROM _cctui_schema_migrations WHERE package=$1 ORDER BY version",
+    )
+    .bind(package)
+    .fetch_all(&mut **conn)
+    .await?;
+    if rows.len() > migrations.len()
+        || rows.iter().zip(migrations).any(|((version, checksum), migration)| {
+            *version != migration.version
+                || *checksum != Sha256::digest(migration.sql.as_bytes()).to_vec()
+        })
+    {
+        return Err(incompatible(format!("unsupported or altered {package} schema migration")));
     }
-    record(&mut tx, package, sql, adopted).await?;
-    tx.commit().await
+    for migration in &migrations[rows.len()..] {
+        let mut tx = conn.begin().await?;
+        let adopting = adopted && migration.version == 1;
+        if !adopting {
+            sqlx::raw_sql(migration.sql).execute(&mut *tx).await?;
+        }
+        record(&mut tx, package, *migration, adopting).await?;
+        tx.commit().await?;
+    }
+    Ok(())
 }
 
 async fn verify_legacy(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
@@ -183,7 +212,7 @@ pub async fn provision(conn: &mut MigrationConnection) -> Result<(), sqlx::Error
         if !installed(conn, "core", BOOTSTRAP).await? {
             return Err(incompatible("core schema tracking is incomplete"));
         }
-        return Ok(());
+        return install_package(conn, "core", MIGRATIONS, false).await;
     }
     let legacy: bool = sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations') IS NOT NULL")
         .fetch_one(&mut **conn)
@@ -212,8 +241,9 @@ pub async fn provision(conn: &mut MigrationConnection) -> Result<(), sqlx::Error
         .bind(LEGACY_BASELINE)
         .execute(&mut *tx)
         .await?;
-    record(&mut tx, "core", BOOTSTRAP, legacy).await?;
-    tx.commit().await
+    record(&mut tx, "core", MIGRATIONS[0], legacy).await?;
+    tx.commit().await?;
+    install_package(conn, "core", MIGRATIONS, false).await
 }
 
 /// Core startup entry point; all changes share the full host's coordination lock.
