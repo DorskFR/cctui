@@ -25,6 +25,13 @@ pub fn router(host: Host) -> Router {
         .route("/api/v1/me/key", axum::routing::delete(me::revoke_current_key))
         .route("/api/v1/enroll", post(core::targets::enrollment::enroll))
         .route("/api/v1/deenroll", post(core::targets::enrollment::deenroll))
+        .route("/api/v1/dispatcher/enroll", post(core::targets::dispatcher::enroll))
+        .route("/api/v1/dispatchers", get(core::targets::dispatcher_management::list_dispatchers))
+        .route(
+            "/api/v1/dispatchers/{id}",
+            axum::routing::patch(core::targets::dispatcher_management::update_dispatcher)
+                .delete(core::targets::dispatcher_management::delete_dispatcher),
+        )
         .route("/api/v1/sessions/dispatch", post(dispatch))
         .route("/api/v1/sessions/spawn", post(crate::spawn::spawn))
         .route("/api/v1/sessions/{id}/result", get(crate::runs::result))
@@ -41,6 +48,11 @@ pub fn router(host: Host) -> Router {
         .route(
             "/api/v1/daemon/sessions/{id}/token-valid",
             get(crate::launch_credentials::token_valid),
+        )
+        .route("/api/v1/dispatcher/auth", post(core::targets::dispatcher::auth))
+        .route(
+            "/api/v1/dispatcher/ws",
+            get(core::targets::dispatcher::ws::<core::state::CoreState>),
         )
         .route("/api/v1/daemon/auth", post(crate::daemon::auth))
         .route("/api/v1/daemon/ws", get(crate::daemon::ws))
@@ -129,7 +141,7 @@ async fn capabilities() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "langfuse": {"available":false,"host":null,"public_host":null,"project_id":null},
         "distribution": "core",
-        "features": ["identity", "accounts", "oauth", "enrollment", "dispatch", "machine_spawn", "gateway", "run_results", "cancellation", "failure_notifications"],
+        "features": ["identity", "accounts", "oauth", "enrollment", "dispatch", "machine_spawn", "gateway", "run_results", "cancellation", "failure_notifications", "enrolled_dispatchers"],
         "workspace": false,
         "experimental": true,
     }))

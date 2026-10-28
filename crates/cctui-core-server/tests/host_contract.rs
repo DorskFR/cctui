@@ -186,6 +186,32 @@ impl Fixture {
                 .unwrap();
         assert_eq!(state, "superseded");
     }
+    async fn wait_for_dispatcher(&self, key: &str, name: &str) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let rows: Value = self
+                    .client
+                    .get(format!("{}/api/v1/dispatchers", self.base))
+                    .bearer_auth(key)
+                    .send()
+                    .await
+                    .unwrap()
+                    .error_for_status()
+                    .unwrap()
+                    .json()
+                    .await
+                    .unwrap();
+                assert_eq!(rows[0]["name"], name);
+                assert!(rows[0].get("dispatcher_key").is_none());
+                if rows[0]["connected"] == true {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
     async fn post(&self, path: &str, token: &str, body: Value) -> Value {
         self.client
             .post(format!("{}{path}", self.base))
@@ -1278,4 +1304,178 @@ async fn completion_runtime_freezes_failure_payloads_and_preserves_the_retry_bud
             .await
             .unwrap();
     assert_eq!(row, ("dead".into(), 11, expected));
+}
+
+#[tokio::test]
+async fn enrolled_dispatcher_delivers_correlated_work_and_revocation_blocks_reconnection() {
+    let Some(f) = Fixture::new().await else { return };
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"automation"})).await;
+    let key = user["key"].as_str().unwrap();
+    let enrolled = f
+        .post(
+            "/api/v1/dispatcher/enroll",
+            key,
+            json!({"name":"enrolled-executor","kind":"kubernetes"}),
+        )
+        .await;
+    let dispatcher_key = enrolled["dispatcher_key"].as_str().unwrap();
+    let auth = f.post("/api/v1/dispatcher/auth", "", json!({"machine_key":dispatcher_key})).await;
+    assert_eq!(auth["machine_id"], enrolled["dispatcher_id"]);
+    assert_eq!(auth["user_id"], user["id"]);
+    let mut request = format!("{}/api/v1/dispatcher/ws", f.base.replace("http://", "ws://"))
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("authorization", format!("Bearer {dispatcher_key}").parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    socket
+        .send(Message::Text(
+            json!({"type":"hello","kind":"kubernetes","version":"fixture"}).to_string().into(),
+        ))
+        .await
+        .unwrap();
+    f.wait_for_dispatcher(key, "enrolled-executor").await;
+    let dispatch = f.client.post(format!("{}/api/v1/sessions/dispatch", f.base)).bearer_auth(key)
+        .json(&json!({"dispatcher":"enrolled-executor","timeout":1,"payload":{"prompt_file":"review"}}));
+    let job = tokio::spawn(async move {
+        dispatch.send().await.unwrap().error_for_status().unwrap().json::<Value>().await.unwrap()
+    });
+    let frame: Value = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Message::Text(text) = socket.next().await.unwrap().unwrap() {
+                let frame: Value = serde_json::from_str(&text).unwrap();
+                if frame["type"] == "dispatch" {
+                    break frame;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        frame["spec"]["payload"]["cctui_machine_key"].as_str().unwrap().starts_with("cctui_m_")
+    );
+    socket
+        .send(Message::Text(
+            json!({"type":"dispatch_result","request_id":frame["request_id"],
+        "session_id":frame["spec"]["session_id"],"handle":"job/fixture","status":"dispatched"})
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(3), job).await.unwrap().unwrap();
+    assert_eq!(reply["handle"], "job/fixture");
+    assert_eq!(reply["session_id"], frame["spec"]["session_id"]);
+    let deleted = f
+        .client
+        .delete(format!(
+            "{}/api/v1/dispatchers/{}",
+            f.base,
+            enrolled["dispatcher_id"].as_str().unwrap()
+        ))
+        .bearer_auth(key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), reqwest::StatusCode::NO_CONTENT);
+    let rejected = f
+        .client
+        .post(format!("{}/api/v1/dispatcher/auth", f.base))
+        .json(&json!({"machine_key":dispatcher_key}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let mut request = format!("{}/api/v1/dispatcher/ws", f.base.replace("http://", "ws://"))
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("authorization", format!("Bearer {dispatcher_key}").parse().unwrap());
+    assert!(tokio_tungstenite::connect_async(request).await.is_err());
+}
+
+#[tokio::test]
+async fn dispatcher_management_enforces_scope_ownership_and_owner_bound_default_accounts() {
+    let Some(f) = Fixture::new().await else { return };
+    let owner = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"owner"})).await;
+    let foreign = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"foreign"})).await;
+    let key = owner["key"].as_str().unwrap();
+    let reader = f
+        .post(
+            &format!("/api/v1/users/{}/keys", owner["id"].as_str().unwrap()),
+            key,
+            json!({"label":"reader","scopes":["read"]}),
+        )
+        .await;
+    let refused = f
+        .client
+        .post(format!("{}/api/v1/dispatcher/enroll", f.base))
+        .bearer_auth(reader["key"].as_str().unwrap())
+        .json(&json!({"name":"denied"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), reqwest::StatusCode::FORBIDDEN);
+    let enrolled = f.post("/api/v1/dispatcher/enroll", key, json!({"name":"owned-executor"})).await;
+    let url =
+        format!("{}/api/v1/dispatchers/{}", f.base, enrolled["dispatcher_id"].as_str().unwrap());
+    let hidden: Value = f
+        .client
+        .get(format!("{}/api/v1/dispatchers", f.base))
+        .bearer_auth(foreign["key"].as_str().unwrap())
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(hidden, json!([]));
+    assert_eq!(
+        f.client
+            .delete(&url)
+            .bearer_auth(foreign["key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        f.client
+            .patch(&url)
+            .bearer_auth(reader["key"].as_str().unwrap())
+            .json(&json!({"name":"denied"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::FORBIDDEN
+    );
+    let uid = uuid::Uuid::parse_str(owner["id"].as_str().unwrap()).unwrap();
+    sqlx::query("INSERT INTO accounts (user_id,name) VALUES ($1,'owner-default')")
+        .bind(uid)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let renamed: Value = f
+        .client
+        .patch(&url)
+        .bearer_auth("fixture-admin")
+        .json(&json!({"name":"renamed-executor","default_account":"owner-default"}))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(renamed["name"], "renamed-executor");
+    assert_eq!(renamed["default_account"], "owner-default");
+    assert!(renamed.get("dispatcher_key").is_none());
 }

@@ -158,40 +158,11 @@ async fn mark_sessions_machine_offline(
     }
 }
 
-/// Record `tier` for an enrolled `dispatcher_id` and broadcast a
-/// [`ServerEvent::DispatcherLiveness`] iff it changed. Peer of
-/// [`record_and_broadcast`].
-pub fn record_and_broadcast_dispatcher(
-    state: &AppState,
-    dispatcher_id: Uuid,
-    tier: MachineLiveness,
-) {
-    let changed =
-        state.dispatcher_liveness.insert(dispatcher_id, tier).is_none_or(|prev| prev != tier);
-    if changed {
-        tracing::info!(%dispatcher_id, ?tier, "dispatcher liveness changed");
-        state.bus.publish_server(cctui_proto::ws::ServerEvent::DispatcherLiveness {
-            dispatcher_id,
-            liveness: tier,
-        });
-        let logged = match tier {
-            MachineLiveness::Online => {
-                Some((kind::SYSTEM_DISPATCHER_ONLINE, events::Severity::Info))
-            }
-            MachineLiveness::Offline => {
-                Some((kind::SYSTEM_DISPATCHER_OFFLINE, events::Severity::Warn))
-            }
-            MachineLiveness::Stale => None,
-        };
-        if let Some((event_kind, severity)) = logged {
-            events::record(
-                state,
-                Event::new(event_kind, Actor::System)
-                    .severity(severity)
-                    .detail(serde_json::json!({ "dispatcher_id": dispatcher_id })),
-            );
-        }
-    }
+/// Record and broadcast the shared dispatcher liveness transition.
+pub fn record_and_broadcast_dispatcher(state: &AppState, id: Uuid, tier: MachineLiveness) {
+    cctui_server_core::targets::dispatcher_liveness::record_and_broadcast_dispatcher(
+        state, id, tier,
+    );
 }
 
 /// Re-derive every live dispatcher's tier from its persisted `last_seen_at` and
