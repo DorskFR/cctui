@@ -75,10 +75,3 @@ pub async fn rebind_spawn_key(state: &AppState, spawn_key: SpawnKey, session_id:
         tracing::error!(%spawn_key, %session_id, error = %e, "spawn-capability rebind failed");
     }
 }
-
-/// Look up the `session_id` bound to a (live) gateway session token — used only
-/// to tag Langfuse traces. `None` for unknown/revoked tokens.
-pub async fn session_id_for_token(state: &AppState, session_token: &str) -> Option<String> {
-    let hash = crate::auth::sha256_hex(session_token);
-    crate::store::tokens::session_id_by_token_hash(&state.pool, &hash).await.ok().flatten()
-}

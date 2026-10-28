@@ -257,6 +257,39 @@ full dispatch and policy regressions continue through the same shared service.
 Standalone hosting, gateway proxy hosting, complete lifecycle ingestion and
 minimal provisioning remain subsequent gates.
 
+### Shared gateway pipeline (`0.27.0-beta.9`)
+
+Core now owns the provider proxy pipeline, tool-call policy enforcement, durable
+soft-limit signalling, session budgets, orphan-token protection, provider outage
+cache and account failover. The full host retains its four gateway endpoints and
+supplies the same installed credentials, outbound policy, clients and shared rate
+windows. Path validation, credential replacement, authentication-stage errors,
+quota admission, retry/failover, statistics and block clearing keep their order.
+
+`ProxyContext` requires execution resources and explicit host decisions about
+optional observers. Tool-policy enforcement always runs in core, including when
+both tracing and voice are absent. A failed policy lookup without a cached policy
+still refuses the request. `TraceSink` receives the captured bytes only after
+core metering and TPM accounting; the full adapter retains reconstruction, cache
+annotation and Langfuse delivery. `ResponseTee` retains the full voice observer
+after tool enforcement. Sampling, raw request forwarding, buffering predicates,
+compression handling and the bounded observer channel's `try_send` behavior are
+unchanged. Usage notices remain an awaited host callback before clearing the
+credential rejection flag; shared notice delivery is a standalone-host gate.
+
+Execution-only PostgreSQL contracts exercise byte preservation, upstream
+credential replacement, status/headers, RPM/TPM admission, outbound/path denial,
+separate orphan/provider authentication errors, missing-policy refusal and tool
+blocking with no workspace observers. The tool-block contract waits for the
+post-persistence event before checking its audit row. A sampled tracing contract
+checks metering before reporting and unchanged response bytes. Existing gateway,
+policy rewriting, failover and provider-status regressions move with their code;
+the full host continues testing its workspace voice and usage-notice adapters.
+
+This remains the full distribution. Standalone hosting, shared machine spawn
+preparation, complete lifecycle ingestion, workspace assembly and minimal schema
+provisioning remain subsequent gates.
+
 ### Execution services and complete ownership inventory
 
 - Inventory every route, background task, setting, event handler and table,

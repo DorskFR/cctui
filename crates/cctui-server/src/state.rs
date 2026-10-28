@@ -97,12 +97,7 @@ pub struct AppState {
     pub upload_caps: Arc<std::sync::RwLock<crate::uploads::UploadCaps>>,
 }
 
-#[derive(Clone)]
-pub struct OrphanSpam {
-    pub count: u32,
-    pub window_start: std::time::Instant,
-    pub blocked_until: Option<std::time::Instant>,
-}
+pub use cctui_server_core::gateway::limits::OrphanSpam;
 
 pub use cctui_server_core::gateway::usage::{AccountUsageCache, CachedUsage};
 

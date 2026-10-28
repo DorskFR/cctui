@@ -11,9 +11,8 @@ use crate::bus::{Bus, VoiceEvent};
 
 const MAX_USER_TEXT: usize = 16 * 1024;
 
-pub fn teeable_request(method: &axum::http::Method, tail: &str) -> bool {
-    *method == axum::http::Method::POST && tail.trim_end_matches('/').ends_with("/v1/messages")
-}
+#[cfg(test)]
+use cctui_server_core::gateway::proxy::teeable_request;
 
 pub fn watched_session(bus: &Bus, session_id: Option<String>) -> Option<String> {
     session_id.filter(|s| bus.voice_watched(s))

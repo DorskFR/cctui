@@ -10,6 +10,7 @@ workspace = true
 test-support = []
 
 [dependencies]
+regex.workspace = true
 cctui-proto = { workspace = true, features = ["sqlx"] }
 cctui-crypto.workspace = true
 async-trait.workspace = true
