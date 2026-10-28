@@ -1,4 +1,6 @@
 //! Provider configuration and request policy shared by server hosts.
 
-mod config;
+pub mod config;
+pub mod credentials;
+pub mod health;
 pub use config::*;
