@@ -136,7 +136,7 @@ const STATUS_WINDOW_SECS: i64 = 5 * 60;
 /// Liveness-dot thresholds (heartbeat age). `Active` (green) within the
 /// active window, `Stale` (orange) up to the dead window, `Dead` (no dot)
 /// beyond it.
-pub const LIVENESS_ACTIVE_SECS: i64 = 5 * 60;
+pub use cctui_server_core::account_resolve::LIVENESS_ACTIVE_SECS;
 pub const LIVENESS_DEAD_SECS: i64 = 60 * 60;
 
 /// Query params for `GET /sessions`. Archived sessions are hidden unless
