@@ -165,3 +165,59 @@ pub async fn working_dir(
         .fetch_optional(exec)
         .await
 }
+
+/// A session nested under a parent.
+///
+/// `observe_only` marks a Task-tool subagent:
+/// a transcript the daemon tails with no worker or job of its own, so it never
+/// needs a `Remove`. Everything else (`CctuiAgent` children, forks) is a real job.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct Child {
+    pub id: String,
+    pub observe_only: bool,
+    /// Generations below the archived root: a direct child is 1.
+    pub depth: i32,
+}
+
+/// Cap on the recursion, so a `parent_id` cycle cannot spin the query.
+const MAX_DESCENDANT_DEPTH: i32 = 32;
+
+/// Every session nested under `root`, at any depth, deepest first. Forks and
+/// follow-ups are linked, not nested, so they and their own trees are left out.
+///
+/// Depth order is what the caller needs: a live grandchild holds its parent's
+/// worktree, so it must be removed before that parent is.
+pub async fn descendants(exec: impl PgExecutor<'_>, root: &str) -> Result<Vec<Child>, sqlx::Error> {
+    sqlx::query_as(concat!(
+        "WITH RECURSIVE tree AS ( \
+             SELECT c.id, 1 AS depth FROM sessions c WHERE c.parent_id = $1 AND ",
+        "COALESCE(c.metadata->>'relation', '') NOT IN ('fork', 'followup')",
+        " UNION ALL \
+             SELECT s.id, t.depth + 1 FROM sessions s \
+               JOIN tree t ON s.parent_id = t.id \
+              WHERE t.depth < $2 AND ",
+        "COALESCE(s.metadata->>'relation', '') NOT IN ('fork', 'followup')",
+        " ) \
+         SELECT t.id, \
+                COALESCE((s.metadata->>'subagent')::boolean, false) AS observe_only, \
+                t.depth \
+           FROM tree t JOIN sessions s ON s.id = t.id \
+          ORDER BY t.depth DESC, t.id",
+    ))
+    .bind(root)
+    .bind(MAX_DESCENDANT_DEPTH)
+    .fetch_all(exec)
+    .await
+}
+
+/// Archived descendants that own a claude job and so need a `Remove` of their
+/// own, keeping the deepest-first order of [`descendants`].
+#[must_use]
+pub fn job_children<'a>(children: &'a [Child], archived: &[String]) -> Vec<&'a str> {
+    let mut jobs: Vec<&Child> = children
+        .iter()
+        .filter(|c| !c.observe_only && archived.iter().any(|id| id == &c.id))
+        .collect();
+    jobs.sort_by_key(|c| std::cmp::Reverse(c.depth));
+    jobs.into_iter().map(|c| c.id.as_str()).collect()
+}

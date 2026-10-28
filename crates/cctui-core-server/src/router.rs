@@ -51,6 +51,13 @@ pub fn router(host: Host) -> Router {
             get(crate::launch_credentials::gateway_env),
         )
         .route("/api/v1/daemon/sessions/{id}/spawn-child", post(crate::children::spawn_child))
+        .route("/api/v1/daemon/sessions/{id}/message-child", post(crate::children::message_child))
+        .route("/api/v1/daemon/sessions/{id}/limits", get(crate::session_limits::session_limits))
+        .route("/api/v1/daemon/sessions/{id}/archive-child", post(crate::children::archive_child))
+        .route(
+            "/api/v1/daemon/sessions/{id}/child-completion",
+            post(crate::children::child_completion),
+        )
         .route("/api/v1/daemon/sessions/{id}/context", get(crate::launch_credentials::context))
         .route(
             "/api/v1/daemon/sessions/{id}/token-valid",

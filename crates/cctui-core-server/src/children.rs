@@ -99,3 +99,123 @@ impl ChildExecutionContext for Host {
         })
     }
 }
+
+/// Relay a follow-up from the authenticated parent's machine.
+pub async fn message_child(
+    State(host): State<Host>,
+    headers: HeaderMap,
+    Path(parent): Path<String>,
+    Json(req): Json<cctui_proto::api::MessageChildRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let (user, machine) = crate::launch_credentials::machine(&host, &headers)
+        .await
+        .map_err(|code| AppError::new(code, "machine key required"))?;
+    if !core::launch_credentials::gateway_env_allowed(&host.pool, user, machine, &parent).await? {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "parent session is unavailable for this machine",
+        ));
+    }
+    core::child_exec::message_child(&host, user, &parent, &req).await?;
+    Ok(Json(serde_json::json!({})))
+}
+
+/// Deliver the authenticated child's completion to its live parent.
+pub async fn child_completion(
+    State(host): State<Host>,
+    headers: HeaderMap,
+    Path(child): Path<String>,
+    Json(req): Json<core::child_exec::ChildCompletion>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let (user, machine) = crate::launch_credentials::machine(&host, &headers)
+        .await
+        .map_err(|code| AppError::new(code, "machine key required"))?;
+    if !core::launch_credentials::gateway_env_allowed(&host.pool, user, machine, &child).await? {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "child session is unavailable for this machine",
+        ));
+    }
+    let parent = core::child_exec::deliver_completion(&host, user, &child, &req.text).await?;
+    Ok(Json(serde_json::json!({"delivered_to":parent})))
+}
+
+/// Archive a descendant without workspace journals or registries.
+pub async fn archive_child(
+    State(host): State<Host>,
+    headers: HeaderMap,
+    Path(parent): Path<String>,
+    Json(req): Json<cctui_proto::api::ArchiveChildRequest>,
+) -> Result<Json<cctui_proto::api::ArchiveChildResponse>, AppError> {
+    let (user, machine) = crate::launch_credentials::machine(&host, &headers)
+        .await
+        .map_err(|code| AppError::new(code, "machine key required"))?;
+    if !core::launch_credentials::gateway_env_allowed(&host.pool, user, machine, &parent).await? {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "parent session is unavailable for this machine",
+        ));
+    }
+    core::child_exec::archive_descendant(&host, user, &parent, req.session_id.trim())
+        .await
+        .map(Json)
+}
+impl core::child_exec::ChildArchiveContext for Host {
+    async fn archive_child_tree(
+        &self,
+        owner: Uuid,
+        actor: &str,
+        target: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let pinned: Option<bool> =
+            sqlx::query_scalar("SELECT pinned FROM sessions WHERE id=$1 AND user_id=$2 FOR UPDATE")
+                .bind(target)
+                .bind(owner)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if pinned != Some(false) {
+            return Ok(false);
+        }
+        let children = core::store::sessions::descendants(&mut *tx, target).await?;
+        let mut ids: Vec<String> = children.iter().map(|child| child.id.clone()).collect();
+        ids.push(target.to_owned());
+        let archived: Vec<String> = sqlx::query_scalar("UPDATE sessions SET status='archived',tempo=NULL,agent_state=NULL,activity=NULL,soft_limit_reason=NULL,archived_by='automatic' WHERE id=ANY($1) AND user_id=$2 AND NOT pinned RETURNING id")
+            .bind(&ids).bind(owner).fetch_all(&mut *tx).await?;
+        tx.commit().await?;
+        for id in &archived {
+            core::session_credentials::revoke_session_tokens(self, id).await;
+            self.bus.deregister_session_stream(id);
+        }
+        let mut jobs = core::store::sessions::job_children(&children, &archived);
+        if archived.iter().any(|id| id == target) {
+            jobs.push(target);
+        }
+        for id in jobs {
+            if let Err(error) = core::bus::dispatch_session(
+                &self.pool,
+                &self.bus,
+                id,
+                cctui_proto::adapter::AdapterCommand::Remove {
+                    local_id: id.to_owned(),
+                    command_id: None,
+                    initiator: cctui_proto::adapter::RemoveInitiator::Automatic,
+                },
+            )
+            .await
+            {
+                tracing::warn!(session=%id, %error, "archive persisted; worker removal could not be delivered");
+            }
+        }
+        core::events::record(&self.pool, &self.bus,
+            core::events::Event::new(core::events::kind::SESSION_ARCHIVED, core::events::Actor::Agent(actor.to_owned()))
+                .session(target).detail(serde_json::json!({"children":archived.len().saturating_sub(1),"initiator":"automatic"})));
+        Ok(true)
+    }
+    async fn archive_slots_used(&self, parent: &str) -> Result<u32, sqlx::Error> {
+        let mut conn = self.pool.acquire().await?;
+        let live = self.live_child_count(&mut conn, parent).await?;
+        let pending = core::child_policy::pending_child_count(&mut *conn, parent).await?;
+        Ok(live.saturating_add(pending))
+    }
+}
