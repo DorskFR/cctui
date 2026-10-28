@@ -2,25 +2,10 @@ use cctui_proto::adapter::{AdapterEvent, EndReason};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::live_sessions::live_sessions_predicate;
 use crate::routes::daemon::registration::{publish_session_registered, upsert_session};
 use crate::state::AppState;
 
-/// `end_detail` cap: enough for an exit status plus a 40-line stderr tail
-/// without letting a runaway log balloon the sessions row.
-const END_DETAIL_MAX_BYTES: usize = 2048;
-
-/// Trim `detail` to [`END_DETAIL_MAX_BYTES`] on a char boundary.
-pub fn truncate_end_detail(detail: &str) -> &str {
-    if detail.len() <= END_DETAIL_MAX_BYTES {
-        return detail;
-    }
-    let mut end = END_DETAIL_MAX_BYTES;
-    while !detail.is_char_boundary(end) {
-        end -= 1;
-    }
-    &detail[..end]
-}
+pub use cctui_server_core::lifecycle::truncate_end_detail;
 
 async fn mark_session_ended(
     state: &AppState,
@@ -81,45 +66,48 @@ pub(super) fn publish_session_ended(state: &AppState, local_id: &str, reason: &E
     });
 }
 
-/// Insert the row for a spawn that never registered, then end it. `false`
-/// when the id already exists (the session did start after all).
+struct TranscriptJournal;
+impl cctui_server_core::lifecycle::SessionEndJournal for TranscriptJournal {
+    async fn before_end(
+        &self,
+        pool: &sqlx::PgPool,
+        machine_id: Uuid,
+        user_id: Uuid,
+        local_id: &str,
+        reason: &EndReason,
+    ) -> Result<(), sqlx::Error> {
+        let payload = json!({ "reason": reason });
+        // `WHERE EXISTS` guard: a session_ended can arrive for a session the server
+        // never registered (its SessionStarted was dropped, or an ephemeral subagent
+        // session) — a bare INSERT trips `stream_events_session_id_fkey`. No-op
+        // cleanly instead of erroring; the UPDATE below is already missing-safe.
+        sqlx::query(
+            "INSERT INTO stream_events (session_id, event_type, payload) \
+         SELECT $1, 'session_ended', $2 WHERE EXISTS ( \
+             SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $3 AND user_id = $4) \
+         ON CONFLICT (session_id, event_type, content_hash, \
+                      COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
+         DO NOTHING",
+        )
+        .bind(local_id)
+        .bind(&payload)
+        .bind(machine_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+}
+
 pub(super) async fn persist_failed_spawn(
     pool: &sqlx::PgPool,
     row: &crate::state::FailedSpawnRow,
     reason: &EndReason,
 ) -> anyhow::Result<bool> {
-    let inserted: Option<(String,)> = sqlx::query_as(
-        r"INSERT INTO sessions
-            (id, machine_id, machine_uuid, working_dir, status, registered_at, last_heartbeat,
-             metadata, user_id, adapter_id, session_name, model, effort)
-          VALUES ($1, $2, $3, $4, 'ended', now(), now(), '{}'::jsonb, $5, $6, $7, $8, $9)
-          ON CONFLICT (id) DO NOTHING
-          RETURNING id",
-    )
-    .bind(&row.session_id)
-    .bind(row.machine_id.to_string())
-    .bind(row.machine_id)
-    .bind(&row.working_dir)
-    .bind(row.user_id)
-    .bind(&row.adapter_id)
-    .bind(&row.name)
-    .bind(&row.model)
-    .bind(&row.effort)
-    .fetch_optional(pool)
-    .await?;
-    if inserted.is_none() {
-        return Ok(false);
-    }
-    persist_session_end(pool, row.machine_id, row.user_id, &row.session_id, reason).await?;
-    Ok(true)
+    Ok(cctui_server_core::lifecycle::persist_failed_spawn(pool, &TranscriptJournal, row, reason)
+        .await?)
 }
 
-/// Record the end of a session the caller's machine owns.
-///
-/// Writes a `session_ended` stream event (the conversation's final line) plus
-/// the row's sticky `ended` status, `ended_at`, `end_reason` and `end_detail`.
-/// A no-op unless `machine_id`/`user_id` own the session; `true` when the row
-/// flipped to `ended` on this call.
 pub(in crate::routes::daemon) async fn persist_session_end(
     pool: &sqlx::PgPool,
     machine_id: Uuid,
@@ -127,43 +115,15 @@ pub(in crate::routes::daemon) async fn persist_session_end(
     local_id: &str,
     reason: &EndReason,
 ) -> anyhow::Result<bool> {
-    let payload = json!({ "reason": reason });
-    // `WHERE EXISTS` guard: a session_ended can arrive for a session the server
-    // never registered (its SessionStarted was dropped, or an ephemeral subagent
-    // session) — a bare INSERT trips `stream_events_session_id_fkey`. No-op
-    // cleanly instead of erroring; the UPDATE below is already missing-safe.
-    sqlx::query(
-        "INSERT INTO stream_events (session_id, event_type, payload) \
-         SELECT $1, 'session_ended', $2 WHERE EXISTS ( \
-             SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $3 AND user_id = $4) \
-         ON CONFLICT (session_id, event_type, content_hash, \
-                      COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
-         DO NOTHING",
+    Ok(cctui_server_core::lifecycle::persist_session_end(
+        pool,
+        &TranscriptJournal,
+        machine_id,
+        user_id,
+        local_id,
+        reason,
     )
-    .bind(local_id)
-    .bind(&payload)
-    .bind(machine_id)
-    .bind(user_id)
-    .execute(pool)
-    .await?;
-    // `ended` is sticky: read paths treat it as terminal regardless of
-    // heartbeat age, whereas `inactive` would be re-derived to Active from a
-    // still-recent heartbeat. Resume can revive the row.
-    let flipped = sqlx::query(concat!(
-        "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = $2, \
-                 end_detail = $3 \
-             WHERE id = $1 AND machine_uuid = $4 AND user_id = $5 AND ",
-        live_sessions_predicate!()
-    ))
-    .bind(local_id)
-    .bind(reason.kind().as_str())
-    .bind(reason.detail().map(truncate_end_detail))
-    .bind(machine_id)
-    .bind(user_id)
-    .execute(pool)
-    .await?
-    .rows_affected();
-    Ok(flipped > 0)
+    .await?)
 }
 
 /// Advance a session's stored transcript high-water mark to `offset`, keeping

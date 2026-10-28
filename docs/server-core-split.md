@@ -198,6 +198,34 @@ filtering plus revocation. Existing mint, redirect and allowlist tests move with
 the implementation; catalog parity tests stay in the full host. This is still the full distribution; standalone hosting and
 minimal schema provisioning remain subsequent gates.
 
+### Lifecycle persistence and audit (`0.27.0-beta.7`)
+
+Core now persists daemon session registration, terminal state and failed-spawn
+rows, and records lifecycle audit events. The same services enforce machine/user
+ownership, preserve parent relationships and sticky states, repair pre-registration
+account bindings, revive spurious offline ends and cap end details at UTF-8
+boundaries. Session status vocabulary and basic execution queries are also shared;
+full conversation projections remain in the workspace host.
+
+`SessionEndJournal` makes transcript persistence an explicit host responsibility.
+The full journal retains its ownership-guarded, deduplicated end-event insert and
+must finish before the shared row update. Its errors still propagate. The headless
+journal intentionally writes no transcript. Failed-spawn persistence uses the same
+journal and keeps the existing insert-before-verdict behavior in the full relay.
+Audit recording preserves its detached insertion, warning on failure, enrichment,
+retention and persistence-before-broadcast order. Re-registration emits its revival
+audit before repairing the token binding, as before.
+
+A regression with the original transcript insert fails against execution-only
+tables because `stream_events` is absent. Five headless PostgreSQL contracts cover
+registration ownership and metadata, account binding repair, archive-independent
+terminal/failed-spawn persistence, journal failure before mutation, spurious-offline
+revival and audit persistence before broadcast. Full daemon and audit regressions
+continue exercising the workspace journal and existing event ordering.
+
+This remains an internal extraction. Lifecycle ingestion, dispatch preparation,
+standalone hosting and minimal provisioning still need their remaining gates.
+
 ### Execution services and complete ownership inventory
 
 - Inventory every route, background task, setting, event handler and table,
