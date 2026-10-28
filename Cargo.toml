@@ -16,12 +16,13 @@ members = [
     "crates/cctui-proto",
     "crates/cctui-query",
     "crates/cctui-server",
+    "crates/cctui-server-core",
     "crates/cctui-supervisor",
     "crates/cctui-tui",
 ]
 
 [workspace.package]
-version = "0.26.1-beta.35"
+version = "0.27.0-beta.1"
 edition = "2024"
 license = "MIT"
 authors = ["DorskFR"]
@@ -41,6 +42,7 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
 [workspace.dependencies]
+cctui-server-core = { path = "crates/cctui-server-core" }
 cctui-client = { path = "crates/cctui-client" }
 cctui-clientcore = { path = "crates/cctui-clientcore" }
 cctui-proto = { path = "crates/cctui-proto" }
