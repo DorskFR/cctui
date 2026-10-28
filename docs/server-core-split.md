@@ -525,3 +525,19 @@ the server callback because the worker's `REPLY_URL` trap owns the actual result
 Registration remains best-effort and delivery remains bounded by the existing
 retry budget; this extraction adds no new delivery guarantees. The standalone
 host still requires the existing migrated schema, including the outbox table.
+
+### Enrolled dispatcher transport (`0.27.0-beta.18`, in development)
+
+Both hosts share executor enrollment, key authentication, WebSocket framing and
+reply correlation, heartbeat/read-timeout handling, account/pool defaults and
+dispatcher management. The standalone host can dispatch through an enrolled
+Kubernetes or Docker executor using the existing protocol. Executors still own
+their runtime semantics. Management preserves owner filters, enrollment scopes,
+default-account resolution against the dispatcher owner, key-cache invalidation
+and connection eviction on deletion.
+
+The full host supplies its existing replica-presence adapter. Bus registration,
+presence registration, heartbeat persistence and lifecycle audit retain their
+ordering; an old connection cannot unregister a replacement connection. Both
+hosts use the same dispatcher liveness transitions and audit records. This does
+not yet assemble the standalone reaper or prove a real Kubernetes rollout.
