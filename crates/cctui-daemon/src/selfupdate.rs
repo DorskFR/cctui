@@ -14,6 +14,7 @@
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -46,6 +47,37 @@ pub fn reexec_prep() -> CancellationToken {
 
 /// How long adapters get between [`reexec_prep`] firing and the execve.
 const REEXEC_GRACE: Duration = Duration::from_secs(3);
+
+/// Longest an applied update waits for in-flight turns before re-execing anyway.
+const BUSY_DEFER_CAP: Duration = Duration::from_mins(30);
+
+static BUSY_TURNS: AtomicUsize = AtomicUsize::new(0);
+
+/// Held while an adapter's child is mid-turn; the auto-update re-exec, which
+/// would kill that child, waits for every guard to drop.
+#[derive(Debug)]
+pub struct BusyTurn(());
+
+impl BusyTurn {
+    #[must_use]
+    pub fn hold() -> Self {
+        BUSY_TURNS.fetch_add(1, Ordering::SeqCst);
+        Self(())
+    }
+}
+
+impl Drop for BusyTurn {
+    fn drop(&mut self) {
+        BUSY_TURNS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+async fn wait_until_idle(busy: &AtomicUsize, cap: Duration) {
+    let deadline = tokio::time::Instant::now() + cap;
+    while busy.load(Ordering::SeqCst) > 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
 
 /// Resolve the auto-update poll interval, honouring
 /// `CCTUI_DAEMON_AUTOUPDATE_INTERVAL_SECS` (seconds, floored at
@@ -580,6 +612,11 @@ pub fn spawn_loop(
                     // the same PID/cgroup) picks up the new image immediately.
                     // Re-exec the resolved install path, not current_exe() —
                     // see reexec() for why.
+                    let busy = BUSY_TURNS.load(Ordering::SeqCst);
+                    if busy > 0 {
+                        tracing::info!(busy, "auto-update applied; waiting for in-flight turns");
+                        wait_until_idle(&BUSY_TURNS, BUSY_DEFER_CAP).await;
+                    }
                     tracing::info!(exe = %exe.display(), "auto-update applied; re-execing into the new binary");
                     reexec_after_grace(&exe).await;
                 }
@@ -593,6 +630,18 @@ pub fn spawn_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn the_reexec_waits_for_busy_turns_up_to_the_cap() {
+        let busy = AtomicUsize::new(1);
+        let start = tokio::time::Instant::now();
+        wait_until_idle(&busy, Duration::from_mins(1)).await;
+        assert!(start.elapsed() >= Duration::from_mins(1));
+        busy.store(0, Ordering::SeqCst);
+        let start = tokio::time::Instant::now();
+        wait_until_idle(&busy, Duration::from_mins(1)).await;
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
 
     #[test]
     fn parse_sha256sums_picks_matching_line() {

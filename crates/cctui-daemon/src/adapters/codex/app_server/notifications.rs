@@ -373,6 +373,43 @@ fn turn_failed(v: &Value) -> bool {
     v.pointer("/params/turn/status").map_or(TurnStatus::Unknown, parse_status) == TurnStatus::Failed
 }
 
+/// Whether a `turn/completed` failed on an upstream hiccup a retry can clear,
+/// rather than a limit or refusal it would only repeat.
+pub(super) fn transient_turn_failure(v: &Value) -> bool {
+    if v.get("method").and_then(Value::as_str) != Some("turn/completed") || !turn_failed(v) {
+        return false;
+    }
+    match v.pointer("/params/turn/error/codexErrorInfo") {
+        Some(Value::String(code)) => {
+            matches!(code.as_str(), "serverOverloaded" | "internalServerError")
+        }
+        Some(Value::Object(info)) => info.keys().any(|k| {
+            matches!(
+                k.as_str(),
+                "httpConnectionFailed"
+                    | "responseStreamConnectionFailed"
+                    | "responseStreamDisconnected"
+                    | "responseTooManyFailedAttempts"
+            )
+        }),
+        _ => false,
+    }
+}
+
+pub(super) fn retry_notice(local_id: &str, text: &str) -> AdapterEvent {
+    AdapterEvent::Message {
+        local_id: local_id.to_owned(),
+        payload: json!({
+            "type": "codexNotice",
+            "level": "warning",
+            "method": "turn/retry",
+            "text": text,
+            "params": Value::Null,
+        }),
+        turn_id: None,
+    }
+}
+
 /// Map `turn/completed` whose `turn.status == "failed"` → failed
 /// [`AdapterEvent::Status`] carrying the turn error message. A successful turn
 /// is codex's authoritative turn end; against a server that cannot take one it
@@ -1043,5 +1080,21 @@ mod tests {
                 "{ty} should be a ToolUse",
             );
         }
+    }
+
+    #[test]
+    fn only_upstream_hiccups_count_as_transient_turn_failures() {
+        let completed = |status: &str, info: Value| {
+            json!({"method": "turn/completed", "params": {"turn": {
+                "status": status, "error": {"message": "x", "codexErrorInfo": info}}}})
+        };
+        assert!(transient_turn_failure(&completed("failed", json!("serverOverloaded"))));
+        assert!(transient_turn_failure(&completed(
+            "failed",
+            json!({"responseStreamDisconnected": {"httpStatusCode": null}})
+        )));
+        assert!(!transient_turn_failure(&completed("failed", json!("usageLimitExceeded"))));
+        assert!(!transient_turn_failure(&completed("failed", Value::Null)));
+        assert!(!transient_turn_failure(&completed("completed", json!("serverOverloaded"))));
     }
 }

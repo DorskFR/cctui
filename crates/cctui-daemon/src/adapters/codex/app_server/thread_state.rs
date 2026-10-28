@@ -1,5 +1,7 @@
 use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
 
+use cctui_proto::adapter::AdapterEvent;
 use cctui_proto::codex_catalog::CodexModel;
 use serde_json::{Value, json};
 
@@ -34,15 +36,19 @@ pub fn turn_lifecycle(v: &Value) -> Option<TurnLifecycle> {
 #[derive(Debug, Default)]
 pub struct ActiveTurn {
     id: Option<String>,
+    busy: Option<crate::selfupdate::BusyTurn>,
 }
 
 impl ActiveTurn {
     pub fn apply(&mut self, ev: &TurnLifecycle) {
         match ev {
-            TurnLifecycle::Started { turn_id } => self.id = Some(turn_id.clone()),
+            TurnLifecycle::Started { turn_id } => {
+                self.id = Some(turn_id.clone());
+                self.busy.get_or_insert_with(crate::selfupdate::BusyTurn::hold);
+            }
             TurnLifecycle::Completed { turn_id } => {
                 if self.id.as_deref() == Some(turn_id.as_str()) {
-                    self.id = None;
+                    self.clear();
                 }
             }
         }
@@ -55,6 +61,7 @@ impl ActiveTurn {
 
     pub fn clear(&mut self) {
         self.id = None;
+        self.busy = None;
     }
 }
 
@@ -249,13 +256,40 @@ pub(super) struct ThreadState {
     /// `-c model=` up front; while set, that request is part of the handshake.
     pub(super) validating_model: bool,
     pub(super) catalog_sent: bool,
+    /// The composer turn id of the last send and when it was sent.
+    pub(super) pending_turn: Option<(uuid::Uuid, Instant)>,
+}
+
+/// How long a send's turn id keeps landing on `userMessage` items; later
+/// ones belong to another turn.
+const TURN_ID_WINDOW: Duration = Duration::from_mins(1);
+
+impl ThreadState {
+    pub(super) fn note_turn(&mut self, turn_id: Option<uuid::Uuid>) {
+        self.pending_turn = turn_id.map(|id| (id, Instant::now()));
+    }
+
+    /// Give codex's `userMessage` echo of a send the composer's turn id.
+    pub(super) fn stamp_turn(&mut self, mut evt: AdapterEvent) -> AdapterEvent {
+        if let AdapterEvent::Message { payload, turn_id, .. } = &mut evt
+            && turn_id.is_none()
+            && payload.get("type").and_then(Value::as_str) == Some("userMessage")
+            && let Some((id, at)) = self.pending_turn
+        {
+            if at.elapsed() <= TURN_ID_WINDOW {
+                *turn_id = Some(id);
+            } else {
+                self.pending_turn = None;
+            }
+        }
+        evt
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::rpc::{Incoming, classify};
     use super::*;
-    use cctui_proto::adapter::AdapterEvent;
 
     // --- active-turn routing via turn/steer ------------------------
 
@@ -481,5 +515,41 @@ mod tests {
             assert!(completed_types.contains(&ty.to_owned()), "missing completed item {ty}");
         }
         assert_eq!(reasoning_text.as_deref(), Some("First I will list the files."));
+    }
+
+    fn message(kind: &str) -> AdapterEvent {
+        AdapterEvent::Message {
+            local_id: "t".to_owned(),
+            payload: json!({"type": kind, "text": "hi"}),
+            turn_id: None,
+        }
+    }
+
+    fn stamped(evt: &AdapterEvent) -> Option<uuid::Uuid> {
+        match evt {
+            AdapterEvent::Message { turn_id, .. } => *turn_id,
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_sends_turn_id_lands_on_its_user_message_only() {
+        let mut thread = ThreadState::default();
+        let id = uuid::Uuid::new_v4();
+        thread.note_turn(Some(id));
+        assert_eq!(stamped(&thread.stamp_turn(message("userMessage"))), Some(id));
+        assert_eq!(stamped(&thread.stamp_turn(message("agentMessage"))), None);
+    }
+
+    #[test]
+    fn an_expired_or_cleared_turn_id_is_not_stamped() {
+        let mut thread = ThreadState::default();
+        let stale = Instant::now().checked_sub(TURN_ID_WINDOW + Duration::from_secs(1)).unwrap();
+        thread.pending_turn = Some((uuid::Uuid::new_v4(), stale));
+        assert_eq!(stamped(&thread.stamp_turn(message("userMessage"))), None);
+        assert!(thread.pending_turn.is_none());
+        thread.note_turn(Some(uuid::Uuid::new_v4()));
+        thread.note_turn(None);
+        assert_eq!(stamped(&thread.stamp_turn(message("userMessage"))), None);
     }
 }

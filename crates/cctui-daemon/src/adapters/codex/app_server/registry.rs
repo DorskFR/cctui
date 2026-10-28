@@ -16,8 +16,10 @@ pub enum SessionCommand {
     Permission { request_id: String, allow: bool },
     /// Start a new turn with user text. `command_id` correlates the
     /// `turn/start` (or `turn/steer`) JSON-RPC outcome back to an
-    /// [`AdapterEvent::CommandResult`].
-    Send { text: String, command_id: Option<Uuid> },
+    /// [`AdapterEvent::CommandResult`]. `turn_id` is the composer's id for
+    /// the turn, stamped on codex's `userMessage` echo so the webui collapses
+    /// it into its optimistic row.
+    Send { text: String, command_id: Option<Uuid>, turn_id: Option<Uuid> },
     /// Persist the display name into Codex's thread metadata.
     Rename { name: String },
     /// Interrupt the in-flight turn and terminate the session. `signal` is
@@ -211,7 +213,7 @@ mod tests {
             &live,
             &registry,
             "tid",
-            SessionCommand::Send { text: "hi".to_owned(), command_id: None },
+            SessionCommand::Send { text: "hi".to_owned(), command_id: None, turn_id: None },
         )
         .await;
         assert!(matches!(action, RouteAction::Delivered));
@@ -263,7 +265,7 @@ mod tests {
             &live,
             &registry,
             "missing",
-            SessionCommand::Send { text: "hi".to_owned(), command_id: None },
+            SessionCommand::Send { text: "hi".to_owned(), command_id: None, turn_id: None },
         )
         .await;
         assert!(matches!(action, RouteAction::Missing));
@@ -279,7 +281,8 @@ mod tests {
         );
         assert_eq!(SessionCommand::Interrupt { command_id: Some(cid) }.command_id(), Some(cid));
         assert_eq!(
-            SessionCommand::Send { text: String::new(), command_id: None }.command_id(),
+            SessionCommand::Send { text: String::new(), command_id: None, turn_id: None }
+                .command_id(),
             None
         );
         assert_eq!(SessionCommand::Kill { signal: None }.command_id(), None);

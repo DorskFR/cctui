@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use super::config::launch_overrides;
 use super::diagnose::{DiagnoseRings, stderr_tail};
+use super::notifications::{retry_notice, transient_turn_failure};
 use super::registry::{
     CodexLiveSnapshot, SessionCommand, SessionRecord, forget_interrupts, register_interrupts,
 };
@@ -209,6 +210,23 @@ struct EventLoop<'a> {
     retry_after_hibernate: Option<SessionCommand>,
     thread: ThreadState,
     sandbox_notice_sent: bool,
+    turn_retry: TurnRetry,
+}
+
+/// Backoff between automatic re-prompts after transient turn failures; its
+/// length caps the attempts.
+const RETRY_DELAYS: [Duration; 3] =
+    [Duration::from_secs(30), Duration::from_mins(2), Duration::from_mins(10)];
+
+const RETRY_PROMPT: &str =
+    "Your previous turn was cut off by a transient upstream error. Continue where you left off.";
+
+/// Re-prompts a turn an upstream hiccup killed: nothing else would wake the
+/// session, so the work would sit idle until someone noticed.
+#[derive(Default)]
+struct TurnRetry {
+    attempts: usize,
+    due: Option<Instant>,
 }
 
 impl<'a> EventLoop<'a> {
@@ -238,6 +256,7 @@ impl<'a> EventLoop<'a> {
             retry_after_hibernate: None,
             thread: ThreadState::default(),
             sandbox_notice_sent: false,
+            turn_retry: TurnRetry::default(),
         }
     }
 
@@ -394,7 +413,7 @@ impl<'a> EventLoop<'a> {
             kill_child(&mut self.child);
             return Flow::Break;
         }
-        Flow::Continue
+        self.retry_due().await
     }
 
     async fn on_command(&mut self, cmd: Option<SessionCommand>) -> Flow {
@@ -402,7 +421,9 @@ impl<'a> EventLoop<'a> {
             Some(SessionCommand::Permission { request_id, allow }) => {
                 self.on_permission(&request_id, allow).await
             }
-            Some(SessionCommand::Send { text, command_id }) => self.on_send(text, command_id).await,
+            Some(SessionCommand::Send { text, command_id, turn_id }) => {
+                self.on_send(text, command_id, turn_id).await
+            }
             Some(SessionCommand::Rename { name }) => {
                 if let Err(e) = self.rename(&name).await {
                     tracing::warn!(%e, "codex: thread/name/set write failed; ending session");
@@ -437,7 +458,14 @@ impl<'a> EventLoop<'a> {
         Flow::Continue
     }
 
-    async fn on_send(&mut self, text: String, command_id: Option<Uuid>) -> Flow {
+    async fn on_send(
+        &mut self,
+        text: String,
+        command_id: Option<Uuid>,
+        turn_id: Option<Uuid>,
+    ) -> Flow {
+        self.thread.note_turn(turn_id);
+        self.turn_retry = TurnRetry::default();
         if let Some((rpc_id, question_ids)) = self.thread.pending_questions.pop_front() {
             let reply = user_input_reply(&rpc_id, &question_ids, &text);
             if let Err(e) = self.stdin.send(&reply).await {
@@ -478,7 +506,7 @@ impl<'a> EventLoop<'a> {
             tracing::warn!(%e, "codex: turn dispatch write failed; ending session");
             self.thread.steer_texts.remove(&next_id);
             self.pending_rpcs.remove(next_id);
-            self.retry_after_hibernate = Some(SessionCommand::Send { text, command_id });
+            self.retry_after_hibernate = Some(SessionCommand::Send { text, command_id, turn_id });
             return Flow::Break;
         }
         Flow::Continue
@@ -582,6 +610,9 @@ impl<'a> EventLoop<'a> {
         }
         if let Some(ev) = turn_lifecycle(&value) {
             self.on_turn_lifecycle(&ev).await;
+            if matches!(ev, TurnLifecycle::Completed { .. }) {
+                self.on_turn_outcome(&value).await;
+            }
         }
         self.thread.items.note(&value);
         let value = self.thread.items.enrich_completed(value);
@@ -624,6 +655,50 @@ impl<'a> EventLoop<'a> {
                 .await
                 .ok();
         }
+    }
+
+    async fn on_turn_outcome(&mut self, value: &Value) {
+        if !transient_turn_failure(value) {
+            self.turn_retry = TurnRetry::default();
+            return;
+        }
+        let Some(delay) = RETRY_DELAYS.get(self.turn_retry.attempts).copied() else {
+            let text =
+                format!("turn failed {} times in a row; not retrying", RETRY_DELAYS.len() + 1);
+            self.events().send(retry_notice(&self.thread.local_id, &text)).await.ok();
+            self.turn_retry = TurnRetry::default();
+            return;
+        };
+        self.turn_retry.attempts += 1;
+        self.turn_retry.due = Some(Instant::now() + delay);
+        let text = format!(
+            "turn failed upstream; retrying in {}s (attempt {}/{})",
+            delay.as_secs(),
+            self.turn_retry.attempts,
+            RETRY_DELAYS.len()
+        );
+        self.events().send(retry_notice(&self.thread.local_id, &text)).await.ok();
+    }
+
+    async fn retry_due(&mut self) -> Flow {
+        if self.turn_retry.due.is_none_or(|due| due > Instant::now())
+            || self.thread.active_turn.id().is_some()
+        {
+            return Flow::Continue;
+        }
+        self.turn_retry.due = None;
+        self.thread.note_turn(None);
+        if let Err(e) = self.start_turn(RETRY_PROMPT, &[], None).await {
+            tracing::warn!(%e, "codex: retry turn/start write failed; ending session");
+            self.pending_rpcs.remove(self.next_id - 1);
+            self.retry_after_hibernate = Some(SessionCommand::Send {
+                text: RETRY_PROMPT.to_owned(),
+                command_id: None,
+                turn_id: None,
+            });
+            return Flow::Break;
+        }
+        Flow::Continue
     }
 
     async fn on_server_request(&mut self, request: Incoming) -> Flow {
@@ -670,7 +745,7 @@ impl<'a> EventLoop<'a> {
                 if let Some(notice) = self.sandbox_notice(&evt) {
                     self.events().send(notice).await.ok();
                 }
-                self.events().send(evt).await.ok();
+                self.events().send(self.thread.stamp_turn(evt)).await.ok();
             }
             Incoming::Traced { method, reason } => {
                 tracing::trace!(%method, reason, "codex notification consumed out-of-band");
@@ -837,8 +912,11 @@ impl<'a> EventLoop<'a> {
                 if let Err(e) = self.start_turn(&text, &[], pending.command_id).await {
                     tracing::warn!(%e, "codex: turn/start fallback write failed; ending session");
                     self.pending_rpcs.remove(self.next_id - 1);
-                    self.retry_after_hibernate =
-                        Some(SessionCommand::Send { text, command_id: pending.command_id });
+                    self.retry_after_hibernate = Some(SessionCommand::Send {
+                        text,
+                        command_id: pending.command_id,
+                        turn_id: None,
+                    });
                     return Flow::Break;
                 }
             }
@@ -1008,8 +1086,11 @@ impl<'a> EventLoop<'a> {
             let prompt_text = prompt.unwrap_or("");
             if let Err(e) = self.start_turn(prompt_text, attachments, None).await {
                 tracing::warn!(%e, "codex: initial prompt write failed; ending session");
-                self.retry_after_hibernate =
-                    Some(SessionCommand::Send { text: prompt_text.to_owned(), command_id: None });
+                self.retry_after_hibernate = Some(SessionCommand::Send {
+                    text: prompt_text.to_owned(),
+                    command_id: None,
+                    turn_id: None,
+                });
                 return true;
             }
         }
@@ -1021,12 +1102,13 @@ impl<'a> EventLoop<'a> {
     async fn replay_initial_commands(&mut self, commands: Vec<SessionCommand>) -> bool {
         for command in commands {
             match command {
-                SessionCommand::Send { text, command_id } => {
+                SessionCommand::Send { text, command_id, turn_id } => {
+                    self.thread.note_turn(turn_id);
                     if let Err(e) = self.start_turn(&text, &[], command_id).await {
                         tracing::warn!(%e, "codex: resumed turn/start write failed");
                         self.pending_rpcs.remove(self.next_id - 1);
                         self.retry_after_hibernate =
-                            Some(SessionCommand::Send { text, command_id });
+                            Some(SessionCommand::Send { text, command_id, turn_id });
                         return true;
                     }
                 }
@@ -1435,7 +1517,11 @@ done
         let command_id = Uuid::new_v4();
         let (mut rx, shutdown) = send_to_live_session(
             bin,
-            SessionCommand::Send { text: "hi".to_owned(), command_id: Some(command_id) },
+            SessionCommand::Send {
+                text: "hi".to_owned(),
+                command_id: Some(command_id),
+                turn_id: None,
+            },
         )
         .await;
         let (ok, error) = spawn_result(&mut rx).await;
@@ -1508,7 +1594,11 @@ done
 
         let send = Uuid::new_v4();
         sender
-            .send(SessionCommand::Send { text: "go".to_owned(), command_id: Some(send) })
+            .send(SessionCommand::Send {
+                text: "go".to_owned(),
+                command_id: Some(send),
+                turn_id: None,
+            })
             .await
             .unwrap();
         assert!(command_result_for(&mut rx, send).await, "the turn must start");
@@ -1535,7 +1625,11 @@ done
         let command_id = Uuid::new_v4();
         let (mut rx, shutdown) = send_to_live_session(
             bin,
-            SessionCommand::Send { text: "hi".to_owned(), command_id: Some(command_id) },
+            SessionCommand::Send {
+                text: "hi".to_owned(),
+                command_id: Some(command_id),
+                turn_id: None,
+            },
         )
         .await;
         let (ok, error) = spawn_result(&mut rx).await;

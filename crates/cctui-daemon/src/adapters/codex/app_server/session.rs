@@ -923,7 +923,7 @@ mod tests {
     fn partition_drained_splits_retry_dropped_and_kill() {
         let cid = Uuid::new_v4();
         let drained = vec![
-            SessionCommand::Send { text: "hi".to_owned(), command_id: None },
+            SessionCommand::Send { text: "hi".to_owned(), command_id: None, turn_id: None },
             SessionCommand::Permission { request_id: "r".to_owned(), allow: true },
             SessionCommand::Kill { signal: None },
             SessionCommand::Rename { name: "n".to_owned() },
@@ -1269,7 +1269,7 @@ mod tests {
             &LiveSessionRegistry::default(),
             &registry,
             "tid",
-            SessionCommand::Send { text: "hi".to_owned(), command_id: None },
+            SessionCommand::Send { text: "hi".to_owned(), command_id: None, turn_id: None },
         )
         .await;
         let RouteAction::Resume { record, .. } = action else { panic!("expected a resume") };
