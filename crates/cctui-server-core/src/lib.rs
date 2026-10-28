@@ -37,3 +37,10 @@ pub mod dispatch;
 pub mod dispatch_policy;
 
 pub mod provider_status;
+
+pub mod error;
+pub mod machine_spawn;
+
+pub mod execution_settings;
+
+pub mod session_credentials;

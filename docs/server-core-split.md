@@ -290,6 +290,28 @@ This remains the full distribution. Standalone hosting, shared machine spawn
 preparation, complete lifecycle ingestion, workspace assembly and minimal schema
 provisioning remain subsequent gates.
 
+### Machine account preparation and credential lifecycle (`0.27.0-beta.10`)
+
+Core now owns machine-launch account selection, default ambiguity checks,
+auto-account ranking, pool binding and per-family credential preparation. The
+full host retains machine authorization, workspace context, uploads and delivery
+assembly, and delegates account preparation through the same execution contexts.
+Codex service-tier policy and the common HTTP error surface are shared too;
+workspace catalog editing stays in the full server.
+
+Session credential revocation and spawn-key rebinding now use an explicit host
+callback for optional workspace records. Execution records move first, the full
+host then rebinds attachments, and only a successful callback permits budget and
+capability cache updates. Revocation retains its existing best-effort cleanup and
+error logging. No migration, route or protocol shape changes in this increment.
+
+Headless contracts cover default/explicit/unbound accounts, ambiguity rejection,
+credential reuse and gateway environment preservation, plus execution rebinding,
+host failure before cache changes and revocation without attachment storage.
+Full-host spawn, service-tier and attachment regressions remain release gates.
+The standalone host, remaining lifecycle ingestion, workspace assembly and minimal
+schema provisioning remain subsequent work.
+
 ### Execution services and complete ownership inventory
 
 - Inventory every route, background task, setting, event handler and table,
