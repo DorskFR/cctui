@@ -67,16 +67,6 @@ async fn dispatch(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<cctui_proto::api::DispatchRequest>,
 ) -> core::dispatch::DispatchResult<core::dispatch::Forwarded> {
-    // Until completion delivery is installed, refuse a requested callback before launching.
-    if req.notify_url.is_some() || req.notify_secret.is_some() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(cctui_proto::api::ApiError {
-                error: "completion notifications are not yet available in the automation beta"
-                    .into(),
-            }),
-        ));
-    }
     core::dispatch::execute_dispatch(&host, &ctx, req).await
 }
 async fn anthropic(
@@ -139,7 +129,7 @@ async fn capabilities() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "langfuse": {"available":false,"host":null,"public_host":null,"project_id":null},
         "distribution": "core",
-        "features": ["identity", "accounts", "oauth", "enrollment", "dispatch", "machine_spawn", "gateway", "run_results", "cancellation"],
+        "features": ["identity", "accounts", "oauth", "enrollment", "dispatch", "machine_spawn", "gateway", "run_results", "cancellation", "failure_notifications"],
         "workspace": false,
         "experimental": true,
     }))

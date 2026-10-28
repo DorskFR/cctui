@@ -11,3 +11,5 @@ pub mod launch_credentials;
 pub mod accounts;
 
 pub mod spawn;
+
+pub mod background;

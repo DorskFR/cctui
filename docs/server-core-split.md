@@ -511,3 +511,17 @@ archives remain owned by the full workspace host.
 HTTP/WebSocket contracts cover repeated usage, out-of-order checkpoints,
 acknowledgment after storage, reconnection and an older daemon reconnecting after
 a newer one without receiving unsupported acknowledgment frames.
+
+### Completion failure callbacks (`0.27.0-beta.17`, in development)
+
+Both hosts use the existing durable webhook outbox, dispatcher liveness decisions,
+HTTPS/DNS guards, HMAC signatures, bounded delivery concurrency, leases, retries
+and dead-letter policy. The standalone host registers requested notifications at
+dispatch and owns a periodic sweep task that stops when its runtime shuts down.
+The full host keeps its existing sweep scheduling and dispatch ordering.
+
+These callbacks detect failed or lost workers. A clean worker exit supersedes
+the server callback because the worker's `REPLY_URL` trap owns the actual result.
+Registration remains best-effort and delivery remains bounded by the existing
+retry budget; this extraction adds no new delivery guarantees. The standalone
+host still requires the existing migrated schema, including the outbox table.
