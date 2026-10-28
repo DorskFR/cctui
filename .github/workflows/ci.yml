@@ -408,6 +408,7 @@ jobs:
           path: |
             dist/cctui-${{ matrix.os }}-${{ matrix.arch }}
             dist/cctui-daemon-${{ matrix.os }}-${{ matrix.arch }}
+            dist/cctui-core-server-${{ matrix.os }}-${{ matrix.arch }}
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: matrix.arch == 'amd64'
@@ -724,6 +725,9 @@ jobs:
 
       - name: Release scoping picks what to rebuild
         run: bash scripts/release-scope.test.sh
+
+      - name: Release packaging stages every distribution and target
+        run: bash scripts/release-build-bins.test.sh
 
       - name: The release takes push CI's binaries or builds its own
         run: bash scripts/release-ci-bins.test.sh

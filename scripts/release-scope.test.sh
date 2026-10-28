@@ -35,6 +35,7 @@ g init -q
 write crates/cctui-server/src/main.rs "fn main() {}"
 write webui/src/app.ts "export {}"
 write deploy/Dockerfile "FROM scratch"
+write deploy/core.Dockerfile "FROM scratch"
 write deploy/worker.Dockerfile "FROM scratch"
 write .dockerignore "target/"
 write README.md "readme"
@@ -57,16 +58,16 @@ check() {
   fi
 }
 
-carried='modes={"cctui":"retag","cctui-worker":"retag","cctui-dispatcher-kube":"retag","cctui-orchestrator":"retag","cctui-ui":"retag"}'
-all_built='modes={"cctui":"build","cctui-worker":"build","cctui-dispatcher-kube":"build","cctui-orchestrator":"build","cctui-ui":"build"}'
+carried='modes={"cctui":"retag","cctui-core":"retag","cctui-worker":"retag","cctui-dispatcher-kube":"retag","cctui-orchestrator":"retag","cctui-ui":"retag"}'
+all_built='modes={"cctui":"build","cctui-core":"build","cctui-worker":"build","cctui-dispatcher-kube":"build","cctui-orchestrator":"build","cctui-ui":"build"}'
 
 write webui/src/app.ts "export const x = 1"
 release v0.1.0-beta.2
 check "webui change + version bump rebuilds only the ui" v0.1.0-beta.2 "v0.1.0-beta.1" "prev_tag=v0.1.0-beta.1
 prev_version=0.1.0-beta.1
 rust=false
-modes={\"cctui\":\"retag\",\"cctui-worker\":\"retag\",\"cctui-dispatcher-kube\":\"retag\",\"cctui-orchestrator\":\"retag\",\"cctui-ui\":\"build\"}
-summary=Rebuilt: cctui-ui. Binaries and release assets carried from v0.1.0-beta.1. Images carried from v0.1.0-beta.1: cctui, cctui-worker, cctui-dispatcher-kube, cctui-orchestrator."
+modes={\"cctui\":\"retag\",\"cctui-core\":\"retag\",\"cctui-worker\":\"retag\",\"cctui-dispatcher-kube\":\"retag\",\"cctui-orchestrator\":\"retag\",\"cctui-ui\":\"build\"}
+summary=Rebuilt: cctui-ui. Binaries and release assets carried from v0.1.0-beta.1. Images carried from v0.1.0-beta.1: cctui, cctui-core, cctui-worker, cctui-dispatcher-kube, cctui-orchestrator."
 
 release v0.1.0-beta.3
 check "a bare version bump carries everything" v0.1.0-beta.3 "v0.1.0-beta.1 v0.1.0-beta.2" "rust=false
@@ -80,7 +81,7 @@ $carried"
 write crates/cctui-server/src/main.rs "fn main() { println!(); }"
 release v0.1.0-beta.5
 check "a crate change rebuilds every rust image, not the ui" v0.1.0-beta.5 "v0.1.0-beta.4" "rust=true
-modes={\"cctui\":\"build\",\"cctui-worker\":\"build\",\"cctui-dispatcher-kube\":\"build\",\"cctui-orchestrator\":\"build\",\"cctui-ui\":\"retag\"}"
+modes={\"cctui\":\"build\",\"cctui-core\":\"build\",\"cctui-worker\":\"build\",\"cctui-dispatcher-kube\":\"build\",\"cctui-orchestrator\":\"build\",\"cctui-ui\":\"retag\"}"
 
 serde=1.0.1
 release v0.1.0-beta.6
@@ -89,13 +90,13 @@ check "a dependency bump in Cargo.lock is a rust change" v0.1.0-beta.6 "v0.1.0-b
 write deploy/worker.Dockerfile "FROM debian"
 release v0.1.0-beta.7
 check "a worker Dockerfile change rebuilds the worker around the previous binaries" v0.1.0-beta.7 "v0.1.0-beta.6" "rust=false
-modes={\"cctui\":\"retag\",\"cctui-worker\":\"prevbins\",\"cctui-dispatcher-kube\":\"retag\",\"cctui-orchestrator\":\"retag\",\"cctui-ui\":\"retag\"}"
+modes={\"cctui\":\"retag\",\"cctui-core\":\"retag\",\"cctui-worker\":\"prevbins\",\"cctui-dispatcher-kube\":\"retag\",\"cctui-orchestrator\":\"retag\",\"cctui-ui\":\"retag\"}"
 
 write .dockerignore "target/
 dist/"
 release v0.1.0-beta.8
 check ".dockerignore rebuilds every image" v0.1.0-beta.8 "v0.1.0-beta.7" "rust=false
-modes={\"cctui\":\"prevbins\",\"cctui-worker\":\"prevbins\",\"cctui-dispatcher-kube\":\"prevbins\",\"cctui-orchestrator\":\"prevbins\",\"cctui-ui\":\"build\"}"
+modes={\"cctui\":\"prevbins\",\"cctui-core\":\"prevbins\",\"cctui-worker\":\"prevbins\",\"cctui-dispatcher-kube\":\"prevbins\",\"cctui-orchestrator\":\"prevbins\",\"cctui-ui\":\"build\"}"
 
 release v0.1.0-beta.9
 release v0.1.0-beta.10
@@ -125,6 +126,18 @@ else
   echo "FAIL — CCTUI_FULL_RELEASE=true forces a full build"; printf '%s\n' "$out" | sed 's/^/       /'
   failures=$((failures + 1))
 fi
+
+write deploy/core.Dockerfile "FROM debian"
+release v0.2.0-beta.2
+check "core-only Dockerfile changes reuse the previous core binary" v0.2.0-beta.2 "v0.2.0-beta.1" 'rust=false
+modes={"cctui":"retag","cctui-core":"prevbins","cctui-worker":"retag","cctui-dispatcher-kube":"retag","cctui-orchestrator":"retag","cctui-ui":"retag"}'
+
+g rm -q deploy/core.Dockerfile
+release v0.2.0-beta.3
+write deploy/core.Dockerfile "FROM scratch"
+release v0.2.0-beta.4
+check "first core distribution builds binaries instead of carrying missing assets" v0.2.0-beta.4 "v0.2.0-beta.3" 'rust=true
+modes={"cctui":"build","cctui-core":"build","cctui-worker":"build","cctui-dispatcher-kube":"build","cctui-orchestrator":"build","cctui-ui":"retag"}'
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures failure(s)" >&2

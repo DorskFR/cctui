@@ -1,0 +1,111 @@
+# Standalone execution server (experimental)
+
+The opt-in `cctui-core-server` binary and `ghcr.io/dorskfr/cctui-core` image
+provide identity, encrypted provider accounts, credential proxying, machine and
+dispatcher enrollment, JSON dispatch/spawn, run results and cancellation. They do
+not serve a workspace UI, transcript search, uploads, plugins, voice or previews.
+Existing `cctui-server` installations and the `cctui` image remain the full product.
+
+This is an experimental beta. Real machine/Kubernetes execution acceptance,
+child-spawn APIs, context-pack resolution, daemon download/update endpoints and
+capability-aware clients remain under development. Use the API for this beta;
+webui and TUI workspace views do not yet adapt to core. Self-update is disabled.
+Use a separately installed daemon binary for worker testing. Follow the
+[split roadmap](server-core-split.md) for production-readiness gates.
+
+## Install
+
+Release assets include `cctui-core-server-linux-amd64`,
+`cctui-core-server-linux-arm64` and `cctui-core-server-darwin-arm64`, with the
+same signed checksum files as the other binaries. The image is Linux amd64.
+Select an explicit beta version; the stable full deployment need not change.
+
+The server requires PostgreSQL and these environment variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | PostgreSQL connection URL; a fresh core database needs no optional extensions |
+| `CCTUI_VAULT_KEY` | Hex-encoded encryption key of at least 32 bytes; retain it across upgrades |
+| `CCTUI_ADMIN_TOKENS` | Comma-separated bootstrap administrator bearer tokens |
+| `CCTUI_EXTERNAL_URL` | Server URL reachable by workers, used for gateway routing |
+| `CCTUI_HOST`, `CCTUI_PORT` | Listen address; defaults `0.0.0.0:8700` |
+
+Generate and store the vault key and bootstrap token before starting. For example,
+`openssl rand -hex 32` generates each value. Put configuration in a protected env
+file and supply it to the process or container. For a local PostgreSQL test:
+
+```sh
+docker run --rm --env-file /path/to/core.env --network host \
+  ghcr.io/dorskfr/cctui-core:0.27.0-beta.23
+```
+
+`DATABASE_URL` and `CCTUI_EXTERNAL_URL` must be reachable from the container's
+network. Put the API behind your usual TLS endpoint for remote workers.
+There are no workspace file-volume requirements. Persist PostgreSQL and the
+vault key. The image runs as UID 10001.
+
+Normal startup provisions or validates the database. To provision without
+starting HTTP, use `cctui-core-server --init-db` (only `DATABASE_URL` is required),
+or append `--init-db` to the image invocation. `--version` needs no configuration.
+`GET /health` checks HTTP liveness; `GET /ready` also checks the database.
+
+## Headless setup and dispatch
+
+Set `CCTUI_URL` and `CCTUI_ADMIN_TOKEN` in your shell to the server URL and one
+bootstrap token. Create a service user:
+
+```sh
+curl --fail-with-body "$CCTUI_URL/api/v1/admin/users" \
+  -H "Authorization: Bearer $CCTUI_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"automation"}'
+```
+
+Store the returned `key` securely as `CCTUI_USER_KEY`; it is shown once. It grants
+read, enrollment and dispatch access. Use `POST /api/v1/users/{id}/keys` with an
+administrator token to issue narrower keys; `DELETE /api/v1/users/{id}/keys/{kid}`
+revokes them. A read-only key uses `{"label":"observer","scopes":["read"]}`.
+
+Create provider credentials through `/api/v1/accounts`, or initiate provider
+consent through `/api/v1/accounts/oauth/start` and finish through
+`/api/v1/accounts/oauth/finish`. These API shapes match the full distribution.
+Account credentials are encrypted with the vault key and redacted in responses.
+
+Enroll a machine with `POST /api/v1/enroll` or a dispatcher with
+`POST /api/v1/dispatcher/enroll`, authenticated as the service user. Enrollment
+returns the worker credential. Configure the matching daemon/dispatcher with it.
+The HTTP dispatcher adapter can instead be configured with
+`CCTUI_HTTP_DISPATCHERS`, a JSON array of `{ "id", "url", "token" }` objects
+(`token` is optional). Its executor must implement the existing dispatch contract;
+a generic webhook does not execute a workload.
+
+For a configured HTTP executor named `automation`, a dispatch request is:
+
+```sh
+curl --fail-with-body "$CCTUI_URL/api/v1/sessions/dispatch" \
+  -H "Authorization: Bearer $CCTUI_USER_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"dispatcher":"automation","payload":{"prompt_file":"/work/task.md"}}'
+```
+
+The prompt file must exist where the executor expects it. Keep the returned
+`session_id`. Fetch `/api/v1/sessions/{session_id}/result` with the same user key
+for status/outcome, or POST `/api/v1/sessions/{session_id}/kill` to cancel.
+An executor acknowledgment means dispatch was accepted; it does not establish
+that the task completed. Failure notifications use the existing bounded retry
+policy and may be duplicated around crashes; they are not exactly-once delivery.
+
+## Database transitions
+
+- **Empty → core:** creates execution tables and package lineage, without
+  transcript-search extensions or a historical full migration ledger.
+- **Existing full → core:** validates and adopts the supported full schema;
+  workspace tables and stored data remain intact.
+- **Core → full:** start the matching full beta with the same database and vault
+  key. Workspace schema/extensions are added and execution data is preserved.
+
+Existing full databases keep their historical migration records and checksums.
+Do not point a pre-split full binary at a database originally bootstrapped by core;
+that rollback is unsupported. Keep the normal database backup before upgrades.
+Switching full to core deliberately removes access to workspace features and is
+an operator choice, separate from an ordinary full-server upgrade.
