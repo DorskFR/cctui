@@ -1,0 +1,11 @@
+[package]
+name = "cctui-server-workspace"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cctui-server-core.workspace = true
+sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres"] }

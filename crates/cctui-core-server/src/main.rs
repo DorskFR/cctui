@@ -6,13 +6,27 @@ use cctui_server_core::bus::{Bus, NoopTransport};
 use cctui_server_core::state::CoreState;
 use std::sync::Arc;
 
+#[derive(clap::Parser)]
+#[command(version)]
+struct Args {
+    /// Provision or validate the execution schema, then exit.
+    #[arg(long)]
+    init_db: bool,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args = <Args as clap::Parser>::parse();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     cctui_server_core::client::install_crypto_provider();
     let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL is required")?;
+    if args.init_db {
+        let pool = sqlx::postgres::PgPoolOptions::new().connect(&database_url).await?;
+        cctui_server_core::schema::bootstrap(&pool).await?;
+        return Ok(());
+    }
     let vault_key = cctui_crypto::vault_key_checked()?;
     let admin_tokens: Vec<String> = std::env::var("CCTUI_ADMIN_TOKENS")
         .unwrap_or_default()
@@ -31,10 +45,7 @@ async fn main() -> anyhow::Result<()> {
         .context("CCTUI_EXTERNAL_URL is required for worker gateway routing")?;
     let pool =
         sqlx::postgres::PgPoolOptions::new().max_connections(20).connect(&database_url).await?;
-    sqlx::query("SELECT id FROM users LIMIT 0")
-        .execute(&pool)
-        .await
-        .context("the automation beta currently requires an existing migrated schema")?;
+    cctui_server_core::schema::bootstrap(&pool).await?;
     let auth = AuthConfig::new(admin_tokens, pool.clone());
     auth.seed_admin().await;
     let client = cctui_server_core::client::build_http_client();

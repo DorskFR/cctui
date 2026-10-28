@@ -14,8 +14,8 @@ pub mod gateway;
 pub mod store;
 pub mod usage_probe;
 
-#[cfg(test)]
-mod test_support;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 pub mod bus;
 pub mod dispatchers;
@@ -71,4 +71,5 @@ pub mod daemon_usage;
 pub mod webhook;
 
 pub mod dispatch_liveness;
+pub mod schema;
 pub mod worker_retirement;
