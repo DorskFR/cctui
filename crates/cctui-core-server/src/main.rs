@@ -53,6 +53,15 @@ async fn main() -> anyhow::Result<()> {
             ));
         }
     }
+    let spawn_defaults = cctui_proto::api::settings::SpawnDefaults {
+        max_children: optional_number("CCTUI_SPAWN_MAX_CHILDREN")?,
+        max_depth: optional_number("CCTUI_SPAWN_MAX_DEPTH")?,
+        max_tree_budget_usd: optional_number("CCTUI_SPAWN_MAX_TREE_BUDGET_USD")?,
+    };
+    anyhow::ensure!(
+        spawn_defaults.max_tree_budget_usd.is_none_or(|v| v.is_finite() && v >= 0.0),
+        "CCTUI_SPAWN_MAX_TREE_BUDGET_USD must be finite and non-negative"
+    );
     let host = Host::new(
         CoreState::new(
             pool,
@@ -63,7 +72,8 @@ async fn main() -> anyhow::Result<()> {
         ),
         vault_key,
         external_url,
-    );
+    )
+    .with_spawn_defaults(spawn_defaults);
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!(%address, version = env!("CARGO_PKG_VERSION"), "automation server listening");
     axum::serve(listener, cctui_core_server::router::router(host))
@@ -79,4 +89,12 @@ struct HttpDispatcher {
     url: String,
     #[serde(default)]
     token: Option<String>,
+}
+
+fn optional_number<T: std::str::FromStr>(name: &str) -> anyhow::Result<Option<T>> {
+    match std::env::var(name) {
+        Ok(raw) => raw.trim().parse().map(Some).map_err(|_| anyhow::anyhow!("invalid {name}")),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("invalid {name}")),
+    }
 }
