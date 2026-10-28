@@ -175,6 +175,29 @@ headless contracts cover offline cleanup, immediate refusal and delayed verdicts
 The standalone host, shared launch preparation/credential minting, lifecycle
 persistence, ownership inventory and minimal provisioning are still in progress.
 
+### Credential minting and resume (`0.27.0-beta.6`)
+
+Core now owns account-provider binding, per-family gateway token minting,
+account/model redirects, account environment and settings resolution, and
+credential restoration on resume. `MintContext` supplies the pool, the installed
+vault key, the external gateway URL and transient orphan-block cleanup. The full
+host delegates to its existing resources; launch paths retain the same services,
+SQL, token TTL and provider environment names.
+
+The shared-account settings and environment allowlists also live in core. Owners
+retain their own configuration; grantees receive only allowed keys, and a revoked
+share blocks both initial mint and resume. Share revocation still cuts only the
+ex-grantee's live credentials. Session token revocation, capability/budget map
+cleanup and spawn-key rebinding remain full-host lifecycle adapters for now.
+
+New PostgreSQL contracts see only temporary execution tables. They exercise
+stable token reuse, orphan-block cleanup on reuse, independent provider families,
+resume after revocation issuing fresh tokens without resurrecting dead ones,
+gateway keys overriding account environment, and grantee settings/environment
+filtering plus revocation. Existing mint, redirect and allowlist tests move with
+the implementation; catalog parity tests stay in the full host. This is still the full distribution; standalone hosting and
+minimal schema provisioning remain subsequent gates.
+
 ### Execution services and complete ownership inventory
 
 - Inventory every route, background task, setting, event handler and table,

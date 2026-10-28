@@ -6,3 +6,5 @@ pub mod health;
 pub use config::*;
 pub mod ratelimit;
 pub mod usage;
+
+pub mod mint;
