@@ -8,8 +8,11 @@ pub mod account_pick;
 pub mod account_resolve;
 pub mod auth;
 pub mod commands;
+pub mod cost;
+pub mod fireworks_billing;
 pub mod gateway;
 pub mod store;
+pub mod usage_probe;
 
 #[cfg(test)]
 mod test_support;

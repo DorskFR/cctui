@@ -23,6 +23,7 @@ use crate::cost::TokenUsage;
 
 /// Fireworks' control-plane base (the billing API), distinct from the inference
 /// base the gateway proxies to. Overridable to track upstream changes.
+#[must_use]
 pub fn billing_base() -> String {
     std::env::var("CCTUI_FIREWORKS_BILLING_BASE")
         .unwrap_or_else(|_| "https://api.fireworks.ai/v1".into())
@@ -79,19 +80,23 @@ pub fn parse_billing_usage(body: &[u8], key_name: &str) -> Vec<ModelUsage> {
 }
 
 /// A 7d window reconciles directly against the upstream total.
+#[must_use]
 pub fn reconcile_7d(local: f64, upstream: Option<f64>) -> f64 {
     upstream.filter(|u| u.is_finite() && *u > local).unwrap_or(local)
 }
 
-/// A 5h window has no upstream counterpart: buckets are daily, so the last 5
-/// hours cannot be isolated. Instead of inventing precision, carry over whatever
-/// systematic under-count the 7d comparison exposes and scale the local figure by
-/// it.
+/// A 5h window has no upstream counterpart: buckets are daily, so the last 5 hours cannot be
+/// isolated.
 ///
-/// When local metering recorded nothing at all over 7d there is no ratio to take,
-/// and no way to know what share of the upstream total is recent — the window
-/// falls back to the full upstream total. That over-states a 5h window, which is
-/// the safe direction for a spend cap.
+/// Instead of inventing precision, carry over whatever systematic under-count the 7d comparison
+/// exposes and scale the local figure by it.
+///
+/// When local metering recorded nothing at all over 7d there is no ratio to take, and no way to
+/// know what share of the upstream total is recent — the window falls back to the full upstream
+/// total.
+///
+/// That over-states a 5h window, which is the safe direction for a spend cap.
+#[must_use]
 pub fn reconcile_5h(recent: f64, week: f64, upstream_week: Option<f64>) -> f64 {
     let Some(upstream) = upstream_week.filter(|u| u.is_finite() && *u > week) else {
         return recent;

@@ -126,6 +126,28 @@ re-export or forward to these shared services.
 This remains the full distribution. Gateway proxying, usage fetching, target
 transport, execution assembly, standalone hosting and schema provisioning remain.
 
+### Quota enforcement and metering (`0.27.0-beta.4`)
+
+Core now owns provider quota reads, compatible-endpoint probes, cost calculation,
+billing reconciliation, session metering and the current-usage cache. The full
+host re-exports those implementations and supplies its existing outbound policy
+and guarded HTTP client. Probe validation remains mandatory at the host boundary.
+
+`UsageContext` caches a fresh reading before awaiting its reporting callback. The
+full callback retains rendering/broadcast followed by background history recording;
+core does not depend on historical samples or the workspace event bus. Failed
+upstream reads preserve the previous payload and timestamp, including the existing
+fail-open behavior when no reading exists. Cache TTLs and provider defaults remain
+unchanged. The release-configured provider user-agent version is now baked into
+core by its own build script, preserving release behavior after the move.
+
+Contract tests exercise fresh-cache reuse while reporting is blocked, stale-cache
+fallback on HTTP 429, and host rejection of a compatible probe before network IO.
+They expose only a temporary provider table; the quota and reset endpoints use a
+local HTTP fixture. Existing pricing, billing and probe mapping tests move with
+the implementations. This is still the full distribution; proxy transport,
+execution hosting and minimal database provisioning remain subsequent work.
+
 ### Execution services and complete ownership inventory
 
 - Inventory every route, background task, setting, event handler and table,

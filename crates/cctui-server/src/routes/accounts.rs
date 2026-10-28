@@ -1968,7 +1968,7 @@ fn urlencoding(s: &str) -> String {
 /// Anthropic's usage endpoint rate-limits per access token (safe at ~180s); we
 /// cache for a few minutes so a viewed accounts page + slow background poll never
 /// spams it, and many clients share one entry per account.
-pub const USAGE_CACHE_TTL: Duration = Duration::minutes(3);
+pub use cctui_server_core::gateway::usage::USAGE_CACHE_TTL;
 
 /// Rate `window` now, on the slope from `previous` when there is one and
 /// on the window average otherwise.
@@ -2064,10 +2064,17 @@ pub async fn store_and_broadcast_usage(
     provider: String,
     usage: Option<serde_json::Value>,
 ) -> AccountUsage {
-    state.account_usage_cache.insert(
-        id,
-        crate::state::CachedUsage { fetched_at: std::time::Instant::now(), usage: usage.clone() },
-    );
+    cctui_server_core::gateway::usage::cache_usage(&state.account_usage_cache, id, usage.clone());
+    render_and_broadcast_usage(state, id, provider, usage).await
+}
+
+/// Render and publish a reading already stored in the shared quota cache.
+pub async fn render_and_broadcast_usage(
+    state: &AppState,
+    id: Uuid,
+    provider: String,
+    usage: Option<serde_json::Value>,
+) -> AccountUsage {
     let previous = previous_samples(state, id, usage.as_ref()).await;
     let row = with_provider_status(build_account_usage(id, provider, usage, 0, &previous), state);
     if row.provider.is_empty() {
