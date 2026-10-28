@@ -158,31 +158,9 @@ async fn mark_sessions_machine_offline(
     }
 }
 
-/// Record and broadcast the shared dispatcher liveness transition.
-pub fn record_and_broadcast_dispatcher(state: &AppState, id: Uuid, tier: MachineLiveness) {
-    cctui_server_core::targets::dispatcher_liveness::record_and_broadcast_dispatcher(
-        state, id, tier,
-    );
-}
-
-/// Re-derive every live dispatcher's tier from its persisted `last_seen_at` and
-/// broadcast any transitions. Peer of [`sweep`].
+/// Refresh the shared dispatcher heartbeat tiers.
 pub async fn sweep_dispatchers(state: &AppState) {
-    let rows: Vec<(Uuid, DateTime<Utc>)> = match sqlx::query_as(
-        "SELECT id, last_seen_at FROM dispatchers WHERE deleted_at IS NULL AND revoked_at IS NULL",
-    )
-    .fetch_all(&state.pool)
-    .await
-    {
-        Ok(rows) => rows,
-        Err(err) => {
-            tracing::warn!(%err, "dispatcher liveness sweep query failed");
-            return;
-        }
-    };
-    for (id, last_seen_at) in rows {
-        record_and_broadcast_dispatcher(state, id, derive(last_seen_at));
-    }
+    cctui_server_core::targets::dispatcher_liveness::sweep(state).await;
 }
 
 #[cfg(test)]

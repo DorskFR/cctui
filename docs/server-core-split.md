@@ -550,3 +550,21 @@ A recorded failure before registration is terminal and exposes its end reason.
 Registered sessions retain their bounded final-message projection. Unknown and
 foreign run IDs remain hidden. The full host uses the shared queue calculation
 and retains its existing queued-only fallback and conversation result behavior.
+
+### Dispatcher liveness operations (`0.27.0-beta.20`, in development)
+
+The standalone runtime runs independent workload, dispatcher-heartbeat and
+failure-callback sweeps. Workload probes retain the existing concurrency and age
+bounds, policy/record cleanup, queue tracking, worker-exit redaction and terminal
+cause mapping. An OOM or failed launch becomes a durable result even when the
+worker cannot send its final event. Dropping the runtime stops all its tasks.
+
+Both hosts share the sweep implementation. The full host retains its original
+workflow-guard and transcript completion evidence through an explicit adapter;
+core reads execution completion state without workspace tables. The full host's
+existing scheduler and evidence ordering remain unchanged. The callback sweep
+uses the recorded end reason: OOM, crash and failed-start outcomes retain their
+failure notification even after the reaper ends the session. Transport-loss
+outcomes still probe the executor, while clean completion, cancellation and legacy
+rows without end reasons preserve worker-owned callbacks. Delivery retains its
+existing retry budget and can duplicate a worker notification after a crash.

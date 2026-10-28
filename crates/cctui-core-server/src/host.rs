@@ -230,3 +230,18 @@ impl core::accounts::AccountsContext for Host {
         &self.oauth_logins
     }
 }
+
+impl core::dispatch_liveness::DispatchLivenessContext for Host {
+    async fn execution_finished(&self, session: &str) -> bool {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM sessions WHERE id=$1 AND end_reason='completed')",
+        )
+        .bind(session)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, %session, "execution completion evidence read failed");
+            false
+        })
+    }
+}

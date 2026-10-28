@@ -5,6 +5,9 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use cctui_proto::api::{ApiError, DispatchRequest, DispatchResponse};
+pub use cctui_server_core::dispatch::payload_adapter;
+#[cfg(test)]
+pub use cctui_server_core::dispatch::resolve_dispatcher;
 #[cfg(test)]
 use cctui_server_core::dispatch::{
     DefaultBinding, binding_family, colliding_family, default_binding, dispatch_ceiling,
@@ -14,7 +17,6 @@ use cctui_server_core::dispatch::{
 use cctui_server_core::dispatch::{
     DispatchContext, DispatchNotification, DispatchResult, Forwarded,
 };
-pub use cctui_server_core::dispatch::{payload_adapter, resolve_dispatcher};
 
 impl DispatchContext for AppState {
     fn dispatch_bus(&self) -> &crate::bus::Bus {
@@ -82,7 +84,7 @@ pub async fn dispatch(
 /// dispatch picker. Any authenticated caller may read it (no role gate,
 /// matching dispatch itself — for per-user gating).
 ///
-/// Ownership scoping matches [`resolve_dispatcher`]: a user sees its
+/// Ownership scoping matches [`cctui_server_core::dispatch::resolve_dispatcher`]: a user sees its
 /// own enrolled dispatchers; the admin token (`user_id` is `None`) sees ALL of
 /// them, so the picker offers everything an admin can actually dispatch to.
 pub async fn list_dispatchers(
