@@ -4,7 +4,6 @@
 //! predicate — live in exactly one place.
 
 pub mod account_pools;
-pub mod account_providers;
 pub mod account_redirects;
 pub mod acls;
 pub mod dispatch_policies;

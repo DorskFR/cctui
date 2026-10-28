@@ -23,7 +23,7 @@ use super::{Catalog, build_from};
 const RAW_CATALOG: &str = include_str!("codex-catalog.toml");
 const RAW_SCHEMA: &str = include_str!("codex-config.schema.json");
 
-pub use cctui_server_core::execution_settings::*;
+pub use crate::execution_settings::*;
 
 static CATALOG: LazyLock<Catalog> = LazyLock::new(|| build_from(RAW_CATALOG, Some(RAW_SCHEMA)));
 

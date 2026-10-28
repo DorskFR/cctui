@@ -14,7 +14,8 @@ use super::{Account, session_id_for_token, usage_for_soft_limit};
 use crate::soft_limit::{SoftLimits, UsageWindow};
 use crate::state::AppState;
 
-pub use cctui_proto::api::gateway::UsageNotices;
+#[cfg(test)]
+use cctui_proto::api::gateway::UsageNotices;
 
 pub fn bucket(utilization: f64, step_pct: u32) -> u32 {
     let step = f64::from(step_pct.max(1));

@@ -5,8 +5,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-schema="${1:-$repo_root/crates/cctui-server/src/settings_catalog/codex-config.schema.json}"
-catalog="${2:-$repo_root/crates/cctui-server/src/settings_catalog/codex-catalog.toml}"
+schema="${1:-$repo_root/crates/cctui-server-core/src/settings_catalog/codex-config.schema.json}"
+catalog="${2:-$repo_root/crates/cctui-server-core/src/settings_catalog/codex-catalog.toml}"
 curated="${3:-$repo_root/crates/cctui-proto/src/codex_config.rs}"
 contract="${4:-$repo_root/crates/cctui-daemon/src/adapters/codex/contract.rs}"
 

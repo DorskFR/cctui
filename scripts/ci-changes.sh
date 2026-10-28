@@ -74,7 +74,7 @@ while IFS= read -r f; do
     webui/*) webui=true ;;
   esac
   case "$f" in
-    crates/cctui-server/src/settings_catalog/*) schema=true ;;
+    crates/cctui-server/src/settings_catalog/* | crates/cctui-server-core/src/settings_catalog/*) schema=true ;;
   esac
   case "$f" in
     deploy/* | webui/Dockerfile | webui/nginx.conf | scripts/check-vad-assets.sh) deploy=true ;;

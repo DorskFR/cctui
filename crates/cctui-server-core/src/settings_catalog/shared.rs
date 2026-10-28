@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use cctui_server_core::launch_settings::{SHARED_ENV_ALLOWLIST, SHARED_SETTINGS_ALLOWLIST};
+    use crate::launch_settings::{SHARED_ENV_ALLOWLIST, SHARED_SETTINGS_ALLOWLIST};
 
     /// The allowlist must name real, per-account-settable keys: a typo or a key
     /// the catalog has since retagged `managed` would silently widen or narrow
