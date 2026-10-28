@@ -61,3 +61,6 @@ pub mod spawn_defaults;
 pub mod accounts;
 pub mod resource_owners;
 pub mod settings_catalog;
+
+pub mod machine_adapters;
+pub mod machine_policy;

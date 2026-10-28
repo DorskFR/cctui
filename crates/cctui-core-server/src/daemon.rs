@@ -162,7 +162,9 @@ impl Connection {
         session: &str,
         meta: SessionMeta,
     ) -> anyhow::Result<()> {
-        if let Some(spawn) = meta.extra.get("spawn_key").and_then(serde_json::Value::as_str)
+        let spawn_key =
+            meta.extra.get("spawn_key").and_then(serde_json::Value::as_str).map(str::to_owned);
+        let trusted_spawn_key = if let Some(spawn) = spawn_key.as_deref()
             && core::store::tokens::rebind_allowed(
                 &self.host.pool,
                 spawn,
@@ -174,8 +176,11 @@ impl Connection {
         {
             core::session_credentials::rebind_spawn_key(&self.host, spawn.into(), session.into())
                 .await;
-        }
-        core::lifecycle::upsert_session(
+            Some(spawn)
+        } else {
+            None
+        };
+        let registered = core::lifecycle::upsert_session(
             &self.host.pool,
             &self.host.bus,
             self.machine,
@@ -188,6 +193,9 @@ impl Connection {
             (!meta.extra.is_null()).then_some(meta.extra),
         )
         .await?;
+        if registered.is_some() {
+            core::machine_policy::claim_spawner(&self.host.pool, session, trusted_spawn_key).await;
+        }
         Ok(())
     }
     async fn process(&self, frame: DaemonFrameUp) -> anyhow::Result<()> {

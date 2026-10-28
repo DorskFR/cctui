@@ -59,7 +59,9 @@ impl Fixture {
             "CREATE TEMP TABLE events (LIKE public.events INCLUDING ALL)",
             "CREATE TEMP TABLE sessions (LIKE public.sessions INCLUDING ALL)",
             "CREATE TEMP TABLE session_tokens (LIKE public.session_tokens INCLUDING ALL)",
+            "CREATE TEMP TABLE session_token_usage (LIKE public.session_token_usage INCLUDING ALL)",
             "CREATE TEMP TABLE session_spawn_capabilities (LIKE public.session_spawn_capabilities INCLUDING ALL)",
+            "CREATE TEMP TABLE session_spawner_intents (LIKE public.session_spawner_intents INCLUDING ALL)",
             "CREATE TEMP TABLE adapters_enabled (LIKE public.adapters_enabled INCLUDING ALL)",
             "CREATE TEMP TABLE user_settings (LIKE public.user_settings INCLUDING ALL)",
             "CREATE TEMP TABLE accounts (LIKE public.accounts INCLUDING ALL)",
@@ -105,6 +107,37 @@ impl Fixture {
                 .unwrap(),
             task,
         })
+    }
+    async fn daemon(
+        &self,
+        key: &str,
+    ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
+    {
+        let mut request = format!("{}/api/v1/daemon/ws", self.base.replace("http://", "ws://"))
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert("authorization", format!("Bearer {key}").parse().unwrap());
+        tokio_tungstenite::connect_async(request).await.unwrap().0
+    }
+    async fn wait_for_spawner(&self, session: &str, user: &Value, expected_name: &str) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let row: Option<(Option<uuid::Uuid>, Option<String>)> =
+                    sqlx::query_as("SELECT spawned_by,session_name FROM sessions WHERE id=$1")
+                        .bind(session)
+                        .fetch_optional(&self.pool)
+                        .await
+                        .unwrap();
+                if let Some((Some(spawner), Some(name))) = row {
+                    assert_eq!(spawner.to_string(), user["id"].as_str().unwrap());
+                    assert_eq!(name, expected_name);
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
     }
     async fn post(&self, path: &str, token: &str, body: Value) -> Value {
         self.client
@@ -660,4 +693,290 @@ async fn oauth_login_state_is_owner_bound_and_consumed_once() {
         .await
         .unwrap();
     assert_eq!(repeated["error"], "unknown or expired login");
+}
+
+#[tokio::test]
+async fn machine_spawn_refuses_read_only_keys_and_unsupported_workspace_inputs() {
+    let Some(f) = Fixture::new().await else { return };
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"automation"})).await;
+    let primary = user["key"].as_str().unwrap();
+    let reader = f
+        .post(
+            &format!("/api/v1/users/{}/keys", user["id"].as_str().unwrap()),
+            primary,
+            json!({"label":"reader","scopes":["read"]}),
+        )
+        .await;
+    let machine = f.post("/api/v1/enroll", primary, json!({"hostname":"executor"})).await;
+    let body = json!({"machine_id":machine["machine_id"],"working_dir":"/work/acme","prompt":"review","no_account":true});
+    let url = format!("{}/api/v1/sessions/spawn", f.base);
+    let response = f
+        .client
+        .post(&url)
+        .bearer_auth(reader["key"].as_str().unwrap())
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    for field in [
+        "save_draft",
+        "auto_archive",
+        "context",
+        "profile_id",
+        "attachment_names",
+        "label_ids",
+        "parent_session_id",
+    ] {
+        let mut invalid = body.clone();
+        invalid[field] = match field {
+            "save_draft" | "auto_archive" => json!(true),
+            "context" => json!({"items":["fixture"]}),
+            "profile_id" => json!(uuid::Uuid::new_v4()),
+            "attachment_names" | "label_ids" => json!(["fixture"]),
+            _ => json!("fixture"),
+        };
+        let response =
+            f.client.post(&url).bearer_auth(primary).json(&invalid).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST, "{field}");
+    }
+}
+
+#[tokio::test]
+async fn machine_spawn_delivers_bound_credentials_rebinds_identity_and_caps_child_permissions() {
+    let Some(f) = Fixture::new().await else { return };
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"automation"})).await;
+    let key = user["key"].as_str().unwrap();
+    f.post(
+        "/api/v1/accounts",
+        key,
+        json!({"name":"fixture","provider":"openai","refresh_token":"fixture-refresh"}),
+    )
+    .await;
+    let machine = f.post("/api/v1/enroll", key, json!({"hostname":"executor"})).await;
+    let mut request = format!("{}/api/v1/daemon/ws", f.base.replace("http://", "ws://"))
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert(
+        "authorization",
+        format!("Bearer {}", machine["machine_key"].as_str().unwrap()).parse().unwrap(),
+    );
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    // Consume reconciliation before issuing the request so target presence is established.
+    tokio::time::timeout(Duration::from_secs(3), socket.next()).await.unwrap().unwrap().unwrap();
+    let client = f.client.clone();
+    let url = format!("{}/api/v1/sessions/spawn", f.base);
+    let token = key.to_owned();
+    let body = json!({"machine_id":machine["machine_id"],"working_dir":"/work/acme","adapter_id":"codex","prompt":"review","name":"review-run","account":"fixture","permission_mode":"ask","env":{"TASK_FLAG":"fixture"},"spawn_capability":{"adapters":["codex"],"max_children":2,"max_permission_mode":"yolo"}});
+    let pending = tokio::spawn(async move {
+        client.post(url).bearer_auth(token).json(&body).send().await.unwrap()
+    });
+    let command = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(Ok(Message::Text(text))) = socket.next().await
+                && let Ok(DaemonFrameDown::Command { command, .. }) = serde_json::from_str(&text)
+            {
+                break command;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let cctui_proto::adapter::AdapterCommand::Spawn { spec, command_id, session_id } = *command
+    else {
+        panic!("expected spawn")
+    };
+    assert_eq!(spec.prompt.as_deref(), Some("review"));
+    assert_eq!(spec.env.get("TASK_FLAG").map(String::as_str), Some("fixture"));
+    assert!(spec.env.contains_key("OPENAI_API_KEY"));
+    assert!(!serde_json::to_string(&spec).unwrap().contains("fixture-refresh"));
+    let spawn_key = session_id.unwrap().to_string();
+    let command_id = command_id.unwrap();
+    let grant = cctui_server_core::store::spawn_capabilities::get(&f.pool, &spawn_key)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(grant.max_children, Some(2));
+    assert_eq!(grant.max_permission_mode, Some(cctui_proto::adapter::PermissionMode::Ask));
+    let session = uuid::Uuid::new_v4().to_string();
+    for event in [
+        AdapterEvent::CommandResult { command_id, ok: true, error: None },
+        AdapterEvent::SessionStarted {
+            local_id: session.clone(),
+            meta: SessionMeta { extra: json!({"spawn_key":spawn_key}), ..Default::default() },
+        },
+    ] {
+        socket
+            .send(Message::Text(
+                serde_json::to_string(&DaemonFrameUp::Event { adapter_id: "codex".into(), event })
+                    .unwrap()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+    }
+    let response = pending.await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+    let reply: Value = response.json().await.unwrap();
+    assert_eq!(reply["command_id"], command_id.to_string());
+    f.wait_for_spawner(&session, &user, "review-run").await;
+    assert!(
+        cctui_server_core::store::spawn_capabilities::get(&f.pool, &session)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let bound: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM session_tokens WHERE session_id=$1 AND revoked_at IS NULL)",
+    )
+    .bind(&session)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert!(bound);
+    socket.close(None).await.unwrap();
+}
+
+#[tokio::test]
+async fn machine_spawn_enforces_target_shares_environment_and_reported_harness_health() {
+    let Some(f) = Fixture::new().await else { return };
+    let owner = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"automation"})).await;
+    let other = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"other"})).await;
+    let key = owner["key"].as_str().unwrap();
+    let foreign = other["key"].as_str().unwrap();
+    let machine = f.post("/api/v1/enroll", key, json!({"hostname":"executor"})).await;
+    let machine_id = uuid::Uuid::parse_str(machine["machine_id"].as_str().unwrap()).unwrap();
+    let url = format!("{}/api/v1/sessions/spawn", f.base);
+    let body = json!({"machine_id":machine_id,"working_dir":"/work/acme","no_account":true});
+    for (token, status) in [(key, 503), (foreign, 403)] {
+        let response = f.client.post(&url).bearer_auth(token).json(&body).send().await.unwrap();
+        assert_eq!(response.status().as_u16(), status);
+    }
+    for (field, value) in [("env", json!({"bad-key":"fixture"})), ("adapter_id", json!("unknown"))]
+    {
+        let mut invalid = body.clone();
+        invalid[field] = value;
+        let response = f.client.post(&url).bearer_auth(key).json(&invalid).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    }
+    let grantee = uuid::Uuid::parse_str(other["id"].as_str().unwrap()).unwrap();
+    sqlx::query("INSERT INTO resource_shares(resource_type,resource_id,grantee_id,action) VALUES('machine',$1,$2,'use')").bind(machine_id).bind(grantee).execute(&f.pool).await.unwrap();
+    let response = f.client.post(&url).bearer_auth(foreign).json(&body).send().await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    sqlx::query("UPDATE resource_shares SET action='spawn' WHERE resource_id=$1")
+        .bind(machine_id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let response = f.client.post(&url).bearer_auth(foreign).json(&body).send().await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    sqlx::query("UPDATE resource_shares SET revoked_at=now() WHERE resource_id=$1")
+        .bind(machine_id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let response = f.client.post(&url).bearer_auth(foreign).json(&body).send().await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    sqlx::query("UPDATE machines SET harness_report=$2 WHERE id=$1")
+        .bind(machine_id)
+        .bind(json!({"binaries":{"claude-code":{"bin":"claude","config_key":"bin","path":null}}}))
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let response = f.client.post(&url).bearer_auth(key).json(&body).send().await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn daemon_registration_cannot_claim_a_foreign_launch_intent_or_its_credentials() {
+    let Some(f) = Fixture::new().await else { return };
+    let owner = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"automation"})).await;
+    let other = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"other"})).await;
+    let account = f
+        .post(
+            "/api/v1/accounts",
+            other["key"].as_str().unwrap(),
+            json!({"name":"fixture","provider":"openai","refresh_token":"fixture-refresh"}),
+        )
+        .await;
+    let foreign = uuid::Uuid::parse_str(other["id"].as_str().unwrap()).unwrap();
+    let provider = uuid::Uuid::parse_str(account["providers"][0]["id"].as_str().unwrap()).unwrap();
+    let spawn_key = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO session_tokens(token_hash,account_id,user_id,session_id) VALUES($1,$2,$3,$4)",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(provider)
+    .bind(foreign)
+    .bind(&spawn_key)
+    .execute(&f.pool)
+    .await
+    .unwrap();
+    cctui_server_core::machine_policy::remember_spawner(
+        &f.pool,
+        &spawn_key,
+        foreign,
+        Some("private-name"),
+    )
+    .await;
+    let machine = f
+        .post("/api/v1/enroll", owner["key"].as_str().unwrap(), json!({"hostname":"executor"}))
+        .await;
+    let mut socket = f.daemon(machine["machine_key"].as_str().unwrap()).await;
+    let session = uuid::Uuid::new_v4().to_string();
+    for event in [
+        AdapterEvent::SessionStarted {
+            local_id: session.clone(),
+            meta: SessionMeta { extra: json!({"spawn_key":spawn_key}), ..Default::default() },
+        },
+        AdapterEvent::SessionEnded {
+            local_id: session.clone(),
+            reason: cctui_proto::adapter::EndReason::Completed,
+        },
+    ] {
+        socket
+            .send(Message::Text(
+                serde_json::to_string(&DaemonFrameUp::Event { adapter_id: "codex".into(), event })
+                    .unwrap()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let row: Option<(Option<uuid::Uuid>, Option<String>, String)> =
+                sqlx::query_as("SELECT spawned_by,session_name,status FROM sessions WHERE id=$1")
+                    .bind(&session)
+                    .fetch_optional(&f.pool)
+                    .await
+                    .unwrap();
+            if let Some((spawner, name, status)) = row
+                && status == "ended"
+            {
+                assert_eq!(spawner, None);
+                assert_eq!(name, None);
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let retained: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM session_spawner_intents WHERE spawn_key=$1)",
+    )
+    .bind(&spawn_key)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert!(retained);
+    let token_session: String =
+        sqlx::query_scalar("SELECT session_id FROM session_tokens WHERE account_id=$1")
+            .bind(provider)
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+    assert_eq!(token_session, spawn_key);
+    socket.close(None).await.unwrap();
 }
