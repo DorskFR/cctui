@@ -11,6 +11,10 @@ use sqlx::{ConnectOptions, PgPool};
 static MIGRATOR: sqlx::migrate::Migrator =
     sqlx::migrate::Migrator { ignore_missing: true, ..sqlx::migrate!("../../migrations") };
 
+#[cfg(test)]
+#[path = "db_split_tests.rs"]
+mod split_tests;
+
 /// Read a `u32` env var, falling back to `default` when unset or unparseable.
 fn env_u32(name: &str, default: u32) -> u32 {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
@@ -60,25 +64,21 @@ pub async fn connect_reporting(database_url: &str) -> Result<(PgPool, Vec<i64>),
 /// blocking `pg_advisory_lock` waiter holds a snapshot that a concurrent
 /// `CREATE INDEX CONCURRENTLY` must wait out, which deadlocks the two.
 async fn migrate(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
-    const LOCK_KEY: i64 = 0x6363_7475_695f_6d67;
-    let mut conn = pool.acquire().await?;
-    while !sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_lock($1)")
-        .bind(LOCK_KEY)
-        .fetch_one(&mut *conn)
-        .await?
+    let mut conn = cctui_server_core::schema::migration_connection(pool).await?;
+    if cctui_server_core::schema::origin(&mut conn).await?
+        == Some(cctui_server_core::schema::Origin::Core)
     {
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        cctui_server_core::schema::provision(&mut conn).await?;
+        cctui_server_workspace::schema::provision(&mut conn).await?;
+        return Ok(Vec::new());
     }
-    let result = async {
-        reconcile_migration_checksums(pool).await?;
-        let before = applied_versions(&mut conn).await?;
-        MIGRATOR.run(&mut *conn).await?;
-        let after = applied_versions(&mut conn).await?;
-        Ok(after.into_iter().filter(|v| !before.contains(v)).collect())
-    }
-    .await;
-    sqlx::query("SELECT pg_advisory_unlock($1)").bind(LOCK_KEY).execute(&mut *conn).await?;
-    result
+    reconcile_migration_checksums(pool).await?;
+    let before = applied_versions(&mut conn).await?;
+    MIGRATOR.run(&mut *conn).await?;
+    let after = applied_versions(&mut conn).await?;
+    cctui_server_core::schema::provision(&mut conn).await?;
+    cctui_server_workspace::schema::provision(&mut conn).await?;
+    Ok(after.into_iter().filter(|v| !before.contains(v)).collect())
 }
 
 async fn applied_versions(conn: &mut sqlx::PgConnection) -> Result<Vec<i64>, sqlx::Error> {

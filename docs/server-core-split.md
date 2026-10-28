@@ -48,8 +48,9 @@ should be required to initiate or finish the supported flow.
 
 - `cctui-server-core`: shared identity, account, gateway, execution and essential
   persistence services. No dependency on workspace/full server.
-- `cctui-core-server` (planned): small automation host using core services.
-- `cctui-server-workspace` (planned): interactive services depending on core.
+- `cctui-core-server`: experimental automation host using core services.
+- `cctui-server-workspace`: workspace schema services depending on core; interactive
+  handler/state extraction remains in progress.
 - `cctui-server`: existing full binary assembling core and workspace in one process.
 
 Start with these coarse crates. Extract search/media/voice/plugin crates further
@@ -583,3 +584,47 @@ keys are revoked and expired worker keys are deleted using the existing policy.
 Persistent machines are excluded. Runtime shutdown stops cleanup with its other
 sweeps. Database contracts cover stale-worker retirement, cached session-key
 revocation, retired-machine authentication and preservation of persistent targets.
+
+### Schema provisioning and workspace assembly (`0.27.0-beta.22`, in development)
+
+Fresh core installations bootstrap 33 execution tables and two schema-tracking
+tables. They need no PostgreSQL extensions, transcript archive, uploads or search
+storage. `cctui-core-server --init-db` provisions or validates the schema and exits;
+normal startup performs the same check. The binary also supports `--version`
+without database or credential configuration. New core databases use the public
+schema. Existing full installations retain their current schema selection.
+
+The immutable execution baseline is owned by `cctui-server-core`; the workspace
+baseline is owned by the new `cctui-server-workspace` crate. Both reflect legacy
+schema 191. Applied baseline SQL is SHA-256 checked, unsupported package versions
+are refused, and origin and installation mode are recorded explicitly. Historical
+migration files and checksums are unchanged. All hosts use the existing advisory
+lock key through a connection whose lifetime owns the lock, including during
+errors or cancellation. Bootstrap and package installation are transactional.
+
+Existing full databases continue through the historical migrator, including its
+checksum reconciliation and tolerance for newer history entries. They then record
+explicit baseline adoption. Their users, credentials, session history and existing
+ledger stay in place. Core can also adopt a supported full database without
+deleting workspace tables or extensions. An unfinished legacy migration is refused.
+
+Starting the full host on a core database adds workspace tables, constraints,
+triggers and extensions through its package bootstrap. It preserves core data and
+establishes provider-host allowlist defaults for existing accounts. It does not run
+or fabricate historical sqlx migrations. The database retains its core origin, so
+later full startup uses the package path. Running core again preserves workspace
+data. Pre-split full binaries are unsupported against databases originally created
+by core; legacy-origin full databases retain the existing rollback path.
+
+Database contracts compare expanded and fresh-full column definitions, constraints,
+indexes and triggers, and preserve encrypted provider credentials, worker tokens,
+keys, accounts, machines, sessions, attachments, images and transcripts. Other
+contracts cover concurrent core startup, checksum/version rejection, rollback of a
+failed package, cancellation of a lock waiter and refusal of unrecognized schemas.
+The automation host contracts now create their tables from the execution baseline
+instead of copying a full database's tables.
+
+Baseline assets must remain immutable. Numbered forward package migrations,
+dedicated core release artifacts, additional workspace-service extraction,
+capability-aware clients and real executor/rolling-upgrade acceptance remain gates
+before stable promotion.

@@ -50,36 +50,8 @@ impl Fixture {
             .connect(&url)
             .await
             .unwrap();
-        for ddl in [
-            "CREATE TEMP TABLE users (LIKE public.users INCLUDING ALL)",
-            "CREATE TEMP TABLE auth_keys (LIKE public.auth_keys INCLUDING ALL)",
-            "CREATE TEMP TABLE user_tokens (LIKE public.user_tokens INCLUDING ALL)",
-            "CREATE TEMP TABLE user_acls (LIKE public.user_acls INCLUDING ALL)",
-            "CREATE TEMP TABLE key_acls (LIKE public.key_acls INCLUDING ALL)",
-            "CREATE TEMP TABLE machines (LIKE public.machines INCLUDING ALL)",
-            "CREATE TEMP TABLE events (LIKE public.events INCLUDING ALL)",
-            "CREATE TEMP TABLE sessions (LIKE public.sessions INCLUDING ALL)",
-            "CREATE TEMP TABLE session_tokens (LIKE public.session_tokens INCLUDING ALL)",
-            "CREATE TEMP TABLE session_token_usage (LIKE public.session_token_usage INCLUDING ALL)",
-            "CREATE TEMP TABLE session_spawn_capabilities (LIKE public.session_spawn_capabilities INCLUDING ALL)",
-            "CREATE TEMP TABLE session_spawner_intents (LIKE public.session_spawner_intents INCLUDING ALL)",
-            "CREATE TEMP TABLE adapters_enabled (LIKE public.adapters_enabled INCLUDING ALL)",
-            "CREATE TEMP TABLE user_settings (LIKE public.user_settings INCLUDING ALL)",
-            "CREATE TEMP TABLE accounts (LIKE public.accounts INCLUDING ALL)",
-            "CREATE TEMP TABLE session_usage_totals (LIKE public.session_usage_totals INCLUDING ALL)",
-            "CREATE TEMP TABLE instance_settings (LIKE public.instance_settings INCLUDING ALL)",
-            "CREATE TEMP TABLE resource_shares (LIKE public.resource_shares INCLUDING ALL)",
-            "CREATE TEMP TABLE account_providers (LIKE public.account_providers INCLUDING ALL)",
-            "CREATE TEMP TABLE account_pools (LIKE public.account_pools INCLUDING ALL)",
-            "CREATE TEMP TABLE dispatchers (LIKE public.dispatchers INCLUDING ALL)",
-            "CREATE TEMP TABLE dispatch_policies (LIKE public.dispatch_policies INCLUDING ALL)",
-            "CREATE TEMP TABLE dispatch_policy_uses (LIKE public.dispatch_policy_uses INCLUDING ALL)",
-            "CREATE TEMP TABLE dispatch_handles (LIKE public.dispatch_handles INCLUDING ALL)",
-            "CREATE TEMP TABLE session_webhooks (LIKE public.session_webhooks INCLUDING ALL)",
-            "CREATE TEMP TABLE dispatch_records (LIKE public.dispatch_records INCLUDING ALL)",
-        ] {
-            sqlx::query(ddl).execute(&pool).await.unwrap();
-        }
+        let ddl = cctui_server_core::schema::BOOTSTRAP.replace("public.", "pg_temp.");
+        sqlx::raw_sql(sqlx::AssertSqlSafe(ddl)).execute(&pool).await.unwrap();
         cctui_server_core::client::install_crypto_provider();
         let auth = AuthConfig::new(vec!["fixture-admin".into()], pool.clone());
         auth.seed_admin().await;
