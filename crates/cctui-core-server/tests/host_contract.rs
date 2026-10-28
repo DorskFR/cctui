@@ -63,6 +63,8 @@ impl Fixture {
             "CREATE TEMP TABLE adapters_enabled (LIKE public.adapters_enabled INCLUDING ALL)",
             "CREATE TEMP TABLE user_settings (LIKE public.user_settings INCLUDING ALL)",
             "CREATE TEMP TABLE accounts (LIKE public.accounts INCLUDING ALL)",
+            "CREATE TEMP TABLE instance_settings (LIKE public.instance_settings INCLUDING ALL)",
+            "CREATE TEMP TABLE resource_shares (LIKE public.resource_shares INCLUDING ALL)",
             "CREATE TEMP TABLE account_providers (LIKE public.account_providers INCLUDING ALL)",
             "CREATE TEMP TABLE account_pools (LIKE public.account_pools INCLUDING ALL)",
             "CREATE TEMP TABLE dispatchers (LIKE public.dispatchers INCLUDING ALL)",
@@ -394,4 +396,165 @@ async fn dispatch_through_the_host_delivers_an_authenticated_job_and_a_usable_wo
     assert_eq!(identity["user_id"], user["id"]);
     assert_eq!(reply["handle"], "job/fixture");
     task.abort();
+}
+
+#[tokio::test]
+async fn daemon_launch_pulls_require_a_machine_key_and_withhold_foreign_session_credentials() {
+    let Some(f) = Fixture::new().await else { return };
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"automation"})).await;
+    let primary = user["key"].as_str().unwrap();
+    let machine = f.post("/api/v1/enroll", primary, json!({"hostname":"executor"})).await;
+    let other = f.post("/api/v1/enroll", primary, json!({"hostname":"other-executor"})).await;
+    let session = uuid::Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO sessions (id,machine_id,working_dir,machine_uuid,user_id,adapter_id,status) VALUES ($1,'executor','/tmp',$2,$3,'codex','active')")
+        .bind(&session).bind(uuid::Uuid::parse_str(machine["machine_id"].as_str().unwrap()).unwrap())
+        .bind(uuid::Uuid::parse_str(user["id"].as_str().unwrap()).unwrap()).execute(&f.pool).await.unwrap();
+    let url = format!("{}/api/v1/daemon/sessions/{session}/gateway-env", f.base);
+    let response = f
+        .client
+        .get(&url)
+        .bearer_auth(machine["machine_key"].as_str().unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let reply: Value = response.json().await.unwrap();
+    assert_eq!(reply["account_bound"], false);
+    assert!(reply["spawn_capability"].is_object());
+    let response = f
+        .client
+        .get(&url)
+        .bearer_auth(other["machine_key"].as_str().unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let reply: Value = response.json().await.unwrap();
+    assert_eq!(reply["spawn_capability"], Value::Null);
+    assert_eq!(reply["env"], json!({}));
+    assert_eq!(
+        f.client.get(&url).bearer_auth(primary).send().await.unwrap().status(),
+        reqwest::StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        f.client.get(&url).send().await.unwrap().status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+    let context: Value = f
+        .client
+        .get(format!("{}/api/v1/daemon/sessions/{session}/context", f.base))
+        .bearer_auth(machine["machine_key"].as_str().unwrap())
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(context["context"], json!([]));
+}
+
+#[tokio::test]
+async fn bound_daemon_launch_restores_credentials_and_token_validity_without_exposing_provider_secrets()
+ {
+    let Some(f) = Fixture::new().await else { return };
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"automation"})).await;
+    let uid = uuid::Uuid::parse_str(user["id"].as_str().unwrap()).unwrap();
+    let machine = f
+        .post("/api/v1/enroll", user["key"].as_str().unwrap(), json!({"hostname":"executor"}))
+        .await;
+    let mid = uuid::Uuid::parse_str(machine["machine_id"].as_str().unwrap()).unwrap();
+    let account: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO accounts (user_id,name) VALUES ($1,'fixture') RETURNING id",
+    )
+    .bind(uid)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    let secret = cctui_crypto::encrypt("fixture-provider-secret", &[42; 32]);
+    let provider: uuid::Uuid = sqlx::query_scalar("INSERT INTO account_providers (user_id,account_id,provider,encrypted_access_token,auth_scheme) VALUES ($1,$2,'openai',$3,'bearer') RETURNING id").bind(uid).bind(account).bind(secret).fetch_one(&f.pool).await.unwrap();
+    let session = uuid::Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO sessions (id,machine_id,working_dir,machine_uuid,user_id,adapter_id,status,account_id,end_reason,ended_at) VALUES ($1,'executor','/tmp',$2,$3,'codex','ended',$4,'daemon_lost',now())").bind(&session).bind(mid).bind(uid).bind(provider.to_string()).execute(&f.pool).await.unwrap();
+    sqlx::query("INSERT INTO instance_settings (key,value) VALUES ('spawn_defaults',$1)")
+        .bind(json!({"max_children":2,"max_depth":1}))
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let base = format!("{}/api/v1/daemon/sessions/{session}", f.base);
+    let key = machine["machine_key"].as_str().unwrap();
+    let reply: Value = f
+        .client
+        .get(format!("{base}/gateway-env"))
+        .bearer_auth(key)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(reply["account_bound"], true);
+    assert_eq!(reply["settings"]["service_tier"], "default");
+    assert_eq!(reply["spawn_capability"]["max_children"], 2);
+    assert_eq!(reply["spawn_capability"]["max_depth"], 1);
+    assert!(!reply.to_string().contains("fixture-provider-secret"));
+    let token = reply["env"]["OPENAI_API_KEY"].as_str().unwrap();
+    let hash = cctui_server_core::auth::sha256_hex(token);
+    let validity: Value = f
+        .client
+        .get(format!("{base}/token-valid?hash={hash}"))
+        .bearer_auth(key)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(validity["valid"], true);
+    let status: String = sqlx::query_scalar("SELECT status FROM sessions WHERE id=$1")
+        .bind(&session)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "active");
+    let other = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"other"})).await;
+    let foreign = f
+        .post(
+            "/api/v1/enroll",
+            other["key"].as_str().unwrap(),
+            json!({"hostname":"other-executor"}),
+        )
+        .await;
+    assert_eq!(
+        f.client
+            .get(format!("{base}/token-valid?hash={hash}"))
+            .bearer_auth(foreign["machine_key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::NOT_FOUND
+    );
+    sqlx::query("UPDATE session_tokens SET revoked_at=now() WHERE session_id=$1")
+        .bind(&session)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let validity: Value = f
+        .client
+        .get(format!("{base}/token-valid?hash={hash}"))
+        .bearer_auth(key)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(validity["valid"], false);
 }

@@ -8,8 +8,8 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json};
 
 pub use cctui_proto::api::settings::{
-    SettingSource, SpawnDefaults, SpawnDefaultsInfo, SpawnDefaultsSources, SpeechCatalog,
-    SpeechConfig, SpeechSettingsInfo, SpeechSettingsRequest, UploadCapsInfo, UploadCapsRequest,
+    SettingSource, SpawnDefaults, SpawnDefaultsInfo, SpeechCatalog, SpeechConfig,
+    SpeechSettingsInfo, SpeechSettingsRequest, UploadCapsInfo, UploadCapsRequest,
     UpstreamHostsInfo, UpstreamHostsRequest,
 };
 
@@ -23,16 +23,6 @@ const UPSTREAM_KEY: &str = "upstream_allowed_hosts";
 const UPLOAD_CAPS_KEY: &str = "upload_caps";
 const SPEECH_KEY: &str = "speech";
 
-/// Built-in layer: only the depth is capped. Child count and tree budget are
-/// unlimited unless a saved setting or env sets a ceiling explicitly.
-const fn builtin_spawn_defaults() -> SpawnDefaults {
-    SpawnDefaults {
-        max_children: None,
-        max_depth: Some(cctui_proto::api::DEFAULT_MAX_DEPTH),
-        max_tree_budget_usd: None,
-    }
-}
-
 const fn env_spawn_defaults(config: &crate::config::Config) -> SpawnDefaults {
     SpawnDefaults {
         max_children: config.spawn_max_children,
@@ -41,31 +31,8 @@ const fn env_spawn_defaults(config: &crate::config::Config) -> SpawnDefaults {
     }
 }
 
-fn pick<T: Copy>(
-    settings: Option<T>,
-    env: Option<T>,
-    default: Option<T>,
-) -> (Option<T>, SettingSource) {
-    settings
-        .map(|v| (Some(v), SettingSource::Settings))
-        .or_else(|| env.map(|v| (Some(v), SettingSource::Env)))
-        .unwrap_or((default, SettingSource::Default))
-}
-
-pub fn resolve_spawn_defaults(settings: SpawnDefaults, env: SpawnDefaults) -> SpawnDefaultsInfo {
-    let defaults = builtin_spawn_defaults();
-    let (c, cs) = pick(settings.max_children, env.max_children, defaults.max_children);
-    let (d, ds) = pick(settings.max_depth, env.max_depth, defaults.max_depth);
-    let (b, bs) =
-        pick(settings.max_tree_budget_usd, env.max_tree_budget_usd, defaults.max_tree_budget_usd);
-    SpawnDefaultsInfo {
-        effective: SpawnDefaults { max_children: c, max_depth: d, max_tree_budget_usd: b },
-        sources: SpawnDefaultsSources { max_children: cs, max_depth: ds, max_tree_budget_usd: bs },
-        settings,
-        env,
-        defaults,
-    }
-}
+#[cfg(test)]
+use cctui_server_core::spawn_defaults::resolve_spawn_defaults;
 
 async fn stored<T: serde::de::DeserializeOwned>(pool: &sqlx::PgPool, key: &str) -> Option<T> {
     sqlx::query_scalar::<_, serde_json::Value>("SELECT value FROM instance_settings WHERE key = $1")
@@ -104,19 +71,13 @@ async fn store(
 }
 
 pub async fn read_spawn_defaults(state: &AppState) -> SpawnDefaultsInfo {
-    let settings = stored(&state.pool, SPAWN_KEY).await.unwrap_or_default();
-    resolve_spawn_defaults(settings, env_spawn_defaults(&state.config))
+    cctui_server_core::spawn_defaults::read(&state.pool, env_spawn_defaults(&state.config)).await
 }
 
 /// Capability for a session that declares none.
 pub async fn spawn_default_capability(state: &AppState) -> cctui_proto::api::SpawnCapability {
-    let e = read_spawn_defaults(state).await.effective;
-    cctui_proto::api::SpawnCapability {
-        max_children: e.max_children,
-        max_depth: e.max_depth,
-        max_tree_budget_usd: e.max_tree_budget_usd,
-        ..cctui_proto::api::SpawnCapability::machine_default()
-    }
+    cctui_server_core::spawn_defaults::capability(&state.pool, env_spawn_defaults(&state.config))
+        .await
 }
 
 fn validate_spawn_defaults(v: SpawnDefaults) -> Result<SpawnDefaults, AppError> {

@@ -22,11 +22,33 @@ pub struct Host {
     pub core: CoreState,
     vault_key: Arc<Vec<u8>>,
     external_url: Arc<str>,
+    spawn_defaults: cctui_proto::api::settings::SpawnDefaults,
 }
 impl Host {
     #[must_use]
     pub fn new(core: CoreState, vault_key: Vec<u8>, external_url: String) -> Self {
-        Self { core, vault_key: Arc::new(vault_key), external_url: external_url.into() }
+        Self {
+            core,
+            vault_key: Arc::new(vault_key),
+            external_url: external_url.into(),
+            spawn_defaults: cctui_proto::api::settings::SpawnDefaults::default(),
+        }
+    }
+    #[must_use]
+    pub const fn with_spawn_defaults(
+        mut self,
+        defaults: cctui_proto::api::settings::SpawnDefaults,
+    ) -> Self {
+        self.spawn_defaults = defaults;
+        self
+    }
+}
+impl core::launch_credentials::LaunchCredentialsContext for Host {
+    fn launch_state(&self) -> &CoreState {
+        &self.core
+    }
+    async fn default_spawn_capability(&self) -> cctui_proto::api::SpawnCapability {
+        core::spawn_defaults::capability(&self.pool, self.spawn_defaults).await
     }
 }
 impl std::ops::Deref for Host {
@@ -165,7 +187,7 @@ impl core::dispatch::DispatchContext for Host {
         self.core.spawn_capabilities.insert(session.to_owned(), capability);
     }
     async fn spawn_default_capability(&self) -> cctui_proto::api::SpawnCapability {
-        cctui_proto::api::SpawnCapability::machine_default()
+        core::launch_credentials::LaunchCredentialsContext::default_spawn_capability(self).await
     }
     async fn register_completion_webhook(
         &self,

@@ -452,3 +452,16 @@ launch assembly, complete daemon launch-context handling, completion callbacks,
 capability-aware clients, minimal provisioning and dedicated release artifacts
 remain acceptance gates. Requests asking for unsupported completion notifications
 are refused before dispatch. No existing installation selects this host on upgrade.
+
+### Daemon launch credentials (`0.27.0-beta.13`, in development)
+
+Both hosts share daemon launch ownership checks, durable spawn-grant resolution,
+policy-bound child restrictions and configured execution-default precedence. Full
+launches retain their existing plugin, context and user-setting adapters. The
+standalone host now serves gateway environment, context and token-validity pulls:
+bound accounts restore session credentials and account settings on restart;
+foreign sessions receive no credentials or spawn grant. Token validity preserves
+an unknown response for foreign users so their daemons cannot trigger a healing
+restart. Standalone context is empty until execution context preparation is
+assembled. Account setup, machine launch assembly, transcript-mark acknowledgments,
+usage ingestion, minimal provisioning and release packaging remain outstanding.
