@@ -226,6 +226,37 @@ continue exercising the workspace journal and existing event ordering.
 This remains an internal extraction. Lifecycle ingestion, dispatch preparation,
 standalone hosting and minimal provisioning still need their remaining gates.
 
+### Shared dispatch preparation and policy (`0.27.0-beta.8`)
+
+Core now owns dispatcher resolution, worker identity, ephemeral credentials,
+account/pool routing, model aliases, provider-family collision checks, gateway
+environment injection, child-spawn ceilings, policy reservations/refunds, dispatch
+handles and execution records. `DispatchContext` supplies the existing host's
+execution resources and explicit callbacks for notifications, completion-webhook
+registration, default capabilities and workspace context recording. Full HTTP
+handlers and historical projections remain adapters; they retain their routes,
+authorization and side-effect ordering. Webhook validation still uses the same
+outbound policy, and workspace context ownership checks remain in the full host.
+
+Policy normalization, request checks and the policy repository are shared too.
+No-policy callers retain existing behavior; a policy-bound worker cannot grant
+itself children, and a failed capability write still prevents forwarding.
+
+The headless concurrency contract exposed a first-dispatch race: two requests
+could both observe no dispatch machine, then one failed its unique-user insert
+with a 500. Provisioning now converges on the installed machine/key through an
+upsert. Existing keys are preserved, including concurrent requests; legacy rows
+with missing keys are repaired in place.
+
+Execution-only PostgreSQL contracts exercise authenticated HTTP forwarding,
+worker credential scopes/expiry, durable handles and outcomes, reserved-env and
+scope rejection before minting, host callback ordering, failure/dedup refunds,
+policy child-spawn ceilings, concurrent daily caps and legacy key repair. The
+full dispatch and policy regressions continue through the same shared service.
+
+Standalone hosting, gateway proxy hosting, complete lifecycle ingestion and
+minimal provisioning remain subsequent gates.
+
 ### Execution services and complete ownership inventory
 
 - Inventory every route, background task, setting, event handler and table,
