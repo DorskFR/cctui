@@ -104,14 +104,7 @@ pub struct OrphanSpam {
     pub blocked_until: Option<std::time::Instant>,
 }
 
-/// A `None` payload means "fetched, but no usage" and is cached too.
-#[derive(Clone)]
-pub struct CachedUsage {
-    pub fetched_at: std::time::Instant,
-    pub usage: Option<serde_json::Value>,
-}
-
-pub type AccountUsageCache = Arc<DashMap<Uuid, CachedUsage>>;
+pub use cctui_server_core::gateway::usage::{AccountUsageCache, CachedUsage};
 
 pub use cctui_server_core::commands::{
     CommandVerdict, CommandWaiters, EARLY_VERDICT_WAIT, FailedSpawnRow, PendingCommand,
