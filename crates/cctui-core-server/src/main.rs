@@ -73,7 +73,12 @@ async fn main() -> anyhow::Result<()> {
         vault_key,
         external_url,
     )
-    .with_spawn_defaults(spawn_defaults);
+    .with_spawn_defaults(spawn_defaults)
+    .with_worker_ttl_secs(
+        optional_number::<u64>("CCTUI_EPHEMERAL_MACHINE_TTL_HOURS")?
+            .unwrap_or(2)
+            .saturating_mul(60 * 60),
+    );
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!(%address, version = env!("CARGO_PKG_VERSION"), "automation server listening");
     let _background = cctui_core_server::background::BackgroundTasks::start(host.clone());

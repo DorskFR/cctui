@@ -907,77 +907,16 @@ async fn demote_idle_registered(state: &AppState) {
     }
 }
 
-/// Soft-delete ephemeral (dispatch/worker) machines that have gone quiet past
-/// the TTL — pods that died before self-deenroll. Mirrors the self-deenroll
-/// write (`revoked_at` + `deleted_at`) so the row survives for historical session
-/// FKs but drops out of every listing.
 async fn reap_ephemeral_machines(state: &AppState) {
-    if state.config.ephemeral_machine_ttl_secs == 0 {
-        return;
-    }
-    let cutoff = chrono::Utc::now()
-        - chrono::Duration::seconds(
-            i64::try_from(state.config.ephemeral_machine_ttl_secs).unwrap_or(i64::MAX),
-        );
-    match sqlx::query_scalar::<_, uuid::Uuid>(
-        "UPDATE machines SET revoked_at = COALESCE(revoked_at, now()), deleted_at = now() \
-         WHERE kind = 'ephemeral' AND deleted_at IS NULL AND last_seen_at < $1 RETURNING id",
+    cctui_server_core::worker_retirement::reap_ephemeral_machines(
+        state,
+        state.config.ephemeral_machine_ttl_secs,
     )
-    .bind(cutoff)
-    .fetch_all(&state.pool)
-    .await
-    {
-        Ok(ids) if !ids.is_empty() => {
-            tracing::info!(count = ids.len(), "reaped stale ephemeral machines");
-            for id in ids {
-                events::record(
-                    state,
-                    events::Event::new(events::kind::MACHINE_DELETED, events::Actor::Reaper)
-                        .machine(id)
-                        .detail(serde_json::json!({ "reason": "ephemeral_ttl" })),
-                );
-            }
-        }
-        Ok(_) => {}
-        Err(err) => tracing::warn!(%err, "ephemeral machine reap failed"),
-    }
+    .await;
 }
 
-/// Ephemeral dispatch keys are per-session credentials handed to worker pods:
-/// revoke one once its session is archived, and delete keys past `expires_at`.
 async fn reap_ephemeral_keys(state: &AppState) {
-    match sqlx::query(
-        "UPDATE auth_keys SET revoked_at = now() \
-         WHERE kind = 'ephemeral' AND revoked_at IS NULL AND session_id IN \
-           (SELECT id FROM sessions WHERE status = 'archived')",
-    )
-    .execute(&state.pool)
-    .await
-    {
-        Ok(res) if res.rows_affected() > 0 => {
-            state.auth_config.purge_all();
-            tracing::info!(
-                count = res.rows_affected(),
-                "revoked ephemeral dispatch keys for archived sessions"
-            );
-        }
-        Ok(_) => {}
-        Err(err) => tracing::warn!(%err, "ephemeral key revoke sweep failed"),
-    }
-    match sqlx::query(
-        "DELETE FROM auth_keys \
-         WHERE kind = 'ephemeral' AND expires_at IS NOT NULL AND expires_at < now()",
-    )
-    .execute(&state.pool)
-    .await
-    {
-        Ok(res) if res.rows_affected() > 0 => {
-            state.auth_config.purge_all();
-            tracing::info!(count = res.rows_affected(), "deleted expired ephemeral dispatch keys");
-        }
-        Ok(_) => {}
-        Err(err) => tracing::warn!(%err, "expired ephemeral key delete sweep failed"),
-    }
+    cctui_server_core::worker_retirement::reap_ephemeral_keys(state).await;
 }
 
 #[cfg(test)]
