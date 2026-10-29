@@ -2138,3 +2138,35 @@ mod cancellation_tests {
         }
     }
 }
+
+/// Deliver a command using persisted execution session addressing.
+pub async fn dispatch_session(
+    pool: &sqlx::PgPool,
+    bus: &Bus,
+    session_id: &str,
+    command: AdapterCommand,
+) -> Result<(), BusError> {
+    let (adapter_id, machine_uuid) = resolve_session(pool, session_id).await?;
+    bus.command_daemon_for_session(
+        machine_uuid,
+        session_id,
+        DaemonFrameDown::Command { adapter_id, command: Box::new(command) },
+    )
+    .await
+}
+
+/// Resolve the adapter and machine owning an execution session.
+pub async fn resolve_session(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+) -> Result<(String, Uuid), BusError> {
+    let row: Option<(Option<String>, Option<Uuid>)> =
+        sqlx::query_as("SELECT adapter_id, machine_uuid FROM sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await?;
+    let (adapter_id, machine_uuid) = row.ok_or(BusError::NotFound)?;
+    let adapter_id = adapter_id.ok_or(BusError::NoAdapter)?;
+    let machine_uuid = machine_uuid.ok_or(BusError::NoMachine)?;
+    Ok((adapter_id, machine_uuid))
+}

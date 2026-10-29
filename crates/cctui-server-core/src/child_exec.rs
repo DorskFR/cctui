@@ -436,3 +436,203 @@ pub async fn spawn_child(
     );
     Ok(SpawnChildResponse { session_id: child_key, budget_usd: authorized.budget_usd })
 }
+
+/// Relay a follow-up only to a direct child owned by the parent's owner.
+pub async fn message_child(
+    state: &impl ChildExecutionContext,
+    caller: Uuid,
+    session_id: &str,
+    req: &cctui_proto::api::MessageChildRequest,
+) -> Result<(), AppError> {
+    let parent = load_parent(state, session_id, caller).await?;
+    if req.prompt.trim().is_empty() {
+        return Err(deny(StatusCode::BAD_REQUEST, "prompt is required"));
+    }
+    let child = req.session_id.trim();
+    if child.is_empty() {
+        return Err(deny(StatusCode::BAD_REQUEST, "session_id is required"));
+    }
+    resolve_child_adapter(&state.child_state().pool, caller, &parent, child).await?;
+    crate::bus::dispatch_session(
+        &state.child_state().pool,
+        &state.child_state().bus,
+        child,
+        cctui_proto::adapter::AdapterCommand::SendMessage {
+            local_id: child.to_owned(),
+            text: req.prompt.clone(),
+        },
+    )
+    .await
+    .map_err(|err| {
+        deny(StatusCode::SERVICE_UNAVAILABLE, format!("could not reach the daemon: {err}"))
+    })?;
+    tracing::info!(parent = %session_id, %child, "CctuiAgent follow-up relayed");
+    Ok(())
+}
+
+/// Validate direct-child ownership and adapter availability before delivery.
+pub async fn resolve_child_adapter(
+    pool: &sqlx::PgPool,
+    caller: Uuid,
+    parent: &Parent,
+    child: &str,
+) -> Result<String, AppError> {
+    let row: Option<(Option<String>, Option<Uuid>, Option<String>)> = sqlx::query_as(
+        "SELECT parent_id, machine_uuid, adapter_id FROM sessions WHERE id = $1 AND user_id = $2",
+    )
+    .bind(child)
+    .bind(caller)
+    .fetch_optional(pool)
+    .await?;
+    let Some((child_parent, child_machine, adapter_id)) = row else {
+        return Err(deny(StatusCode::NOT_FOUND, "child session not found"));
+    };
+    if child_parent.as_deref() != Some(parent.session_id.as_str()) {
+        return Err(deny(StatusCode::FORBIDDEN, "session is not a child of this session"));
+    }
+    if child_machine.is_none() {
+        return Err(deny(StatusCode::CONFLICT, "child session has no machine"));
+    }
+    adapter_id
+        .filter(|a| !a.is_empty())
+        .ok_or_else(|| deny(StatusCode::CONFLICT, "child session has no adapter"))
+}
+
+/// A completion becomes a turn in the parent, so it is capped like one.
+pub const MAX_COMPLETION_BYTES: usize = 64 * 1024;
+
+#[derive(serde::Deserialize)]
+pub struct ChildCompletion {
+    pub text: String,
+}
+
+/// Deliver a bounded, neutralized completion only to an owned live parent.
+pub async fn deliver_completion(
+    state: &impl ChildExecutionContext,
+    caller: Uuid,
+    child_id: &str,
+    text: &str,
+) -> Result<String, AppError> {
+    use crate::peer_session::{Delivery, deliver, envelope};
+    let body = text.trim();
+    if body.is_empty() {
+        return Err(deny(StatusCode::BAD_REQUEST, "text is required"));
+    }
+    if body.len() > MAX_COMPLETION_BYTES {
+        return Err(deny(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("completion is {} bytes; the cap is {MAX_COMPLETION_BYTES}", body.len()),
+        ));
+    }
+    let owned =
+        |node: Option<crate::peer_session::SessionNode>| node.filter(|n| n.user_id == Some(caller));
+    let child = owned(crate::peer_session::load_node(&state.child_state().pool, child_id).await?)
+        .ok_or_else(|| deny(StatusCode::NOT_FOUND, "child session not found"))?;
+    let Some(parent_id) = child.parent_id.as_deref() else {
+        return Err(deny(StatusCode::CONFLICT, "session has no parent to report to"));
+    };
+    let parent = owned(crate::peer_session::load_node(&state.child_state().pool, parent_id).await?)
+        .ok_or_else(|| deny(StatusCode::NOT_FOUND, "parent session not found"))?;
+    if !parent.is_live() {
+        return Err(deny(
+            StatusCode::CONFLICT,
+            format!("parent session {} is {}", parent.id, parent.state()),
+        ));
+    }
+    let turn = envelope(&child, &crate::envelope_guard::neutralize(body));
+    match deliver(state.child_state(), &parent.id, parent.state(), turn).await {
+        Delivery::Delivered => {}
+        outcome => {
+            return Err(deny(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("could not deliver to {}: {}", parent.id, outcome.as_str()),
+            ));
+        }
+    }
+    tracing::info!(
+        child = %child.id,
+        parent = %parent.id,
+        "CctuiAgent child completion delivered to the parent",
+    );
+    Ok(parent.id)
+}
+
+/// Host-specific archival side effects after common tree authorization.
+pub trait ChildArchiveContext: ChildExecutionContext {
+    fn archive_child_tree(
+        &self,
+        owner: Uuid,
+        actor: &str,
+        target: &str,
+    ) -> impl std::future::Future<Output = Result<bool, sqlx::Error>> + Send;
+    fn archive_slots_used(
+        &self,
+        parent: &str,
+    ) -> impl std::future::Future<Output = Result<u32, sqlx::Error>> + Send;
+}
+
+/// Archive an owned descendant while retaining historical tree spending.
+pub async fn archive_descendant(
+    state: &impl ChildArchiveContext,
+    caller: Uuid,
+    session_id: &str,
+    target: &str,
+) -> Result<cctui_proto::api::ArchiveChildResponse, AppError> {
+    if target.is_empty() {
+        return Err(deny(StatusCode::BAD_REQUEST, "session_id is required"));
+    }
+    ensure_descendant(&state.child_state().pool, caller, session_id, target).await?;
+    let mut swept: Vec<String> =
+        crate::store::sessions::descendants(&state.child_state().pool, target)
+            .await?
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+    swept.push(target.to_owned());
+    if !state.archive_child_tree(caller, session_id, target).await? {
+        return Err(deny(
+            StatusCode::CONFLICT,
+            format!(
+                "session {target} is pinned by the user; ask them to unpin or archive it \
+                 themselves"
+            ),
+        ));
+    }
+    let archived: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM sessions WHERE id = ANY($1) AND user_id = $2 AND status = 'archived' ORDER BY id",
+    )
+    .bind(&swept)
+    .bind(caller)
+    .fetch_all(&state.child_state().pool)
+    .await?;
+    let max_children = capability_for(state, session_id).await.and_then(|c| c.max_children);
+    let children_used = state.archive_slots_used(session_id).await?;
+    tracing::info!(
+        parent = %session_id,
+        child = %target,
+        archived = archived.len(),
+        "CctuiAgentArchive released a child",
+    );
+    Ok(cctui_proto::api::ArchiveChildResponse { archived, children_used, max_children })
+}
+
+/// Refuse targets outside the caller's owned descendant tree.
+pub async fn ensure_descendant(
+    pool: &sqlx::PgPool,
+    caller: Uuid,
+    parent: &str,
+    target: &str,
+) -> Result<(), AppError> {
+    let in_tree =
+        crate::store::sessions::descendants(pool, parent).await?.iter().any(|c| c.id == target);
+    let owner: Option<Option<Uuid>> =
+        sqlx::query_scalar("SELECT user_id FROM sessions WHERE id = $1")
+            .bind(target)
+            .fetch_optional(pool)
+            .await?;
+    if in_tree && owner == Some(Some(caller)) {
+        Ok(())
+    } else {
+        Err(deny(StatusCode::NOT_FOUND, "no such session below this one"))
+    }
+}

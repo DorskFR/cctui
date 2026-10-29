@@ -16,9 +16,7 @@ use axum::http::StatusCode;
 use dashmap::DashMap;
 use serde_json::{Value, json};
 
-use cctui_proto::adapter::AdapterCommand;
 use cctui_proto::api::PeerMessageRequest;
-use cctui_proto::injected::PEER_MESSAGE;
 
 use crate::error::AppError;
 use crate::peer_policy::{self, Refusal, Relation, SessionNode};
@@ -134,23 +132,7 @@ async fn authorized(
     }
 }
 
-/// A markdown-attribute-safe rendering of a label.
-fn attr(raw: &str) -> String {
-    raw.replace(['"', '<', '>'], "")
-}
-
-/// Wrap `body` in the envelope the webui's peer-message detector recognises
-/// (`PEER_TAG_RE`, `webui/.../conversation/format.ts`) and the server's own
-/// [`crate::normalize::client_category`] files under the `peer` role.
-#[must_use]
-pub fn envelope(sender: &SessionNode, body: &str) -> String {
-    format!(
-        "<{PEER_MESSAGE} from=\"{}\" from-name=\"{}\">\n{}\n</{PEER_MESSAGE}>",
-        attr(&sender.id),
-        attr(&sender.label()),
-        body.trim(),
-    )
-}
+pub use cctui_server_core::peer_session::envelope;
 
 /// Record a marker turn on `session_id` so the human sees what an agent did on
 /// their behalf. Best-effort: losing the audit row must not fail the call it
@@ -177,27 +159,7 @@ async fn audit(pool: &sqlx::PgPool, session_id: &str, text: &str) {
     }
 }
 
-/// What one delivery attempt did. `Offline` covers every reason the bus could not
-/// place the turn: no daemon for the machine, no adapter, a closed channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Delivery {
-    Delivered,
-    Archived,
-    Ended,
-    Offline,
-}
-
-impl Delivery {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Delivered => "delivered",
-            Self::Archived => "archived",
-            Self::Ended => "ended",
-            Self::Offline => "offline",
-        }
-    }
-}
+pub use cctui_server_core::peer_session::Delivery;
 
 /// Place `text` as a turn in `target_id`'s session — the ONE delivery path for
 /// every agent-to-agent message, direct or broadcast.
@@ -212,24 +174,7 @@ pub async fn deliver(
     target_state: &str,
     text: String,
 ) -> Delivery {
-    match target_state {
-        "archived" => return Delivery::Archived,
-        "ended" => return Delivery::Ended,
-        _ => {}
-    }
-    match crate::bus::dispatch(
-        state,
-        target_id,
-        AdapterCommand::SendMessage { local_id: target_id.to_owned(), text },
-    )
-    .await
-    {
-        Ok(()) => Delivery::Delivered,
-        Err(err) => {
-            tracing::info!(target = %target_id, %err, "peer turn not delivered");
-            Delivery::Offline
-        }
-    }
+    cctui_server_core::peer_session::deliver(&state.core, target_id, target_state, text).await
 }
 
 /// The caller's own session, owned by the machine key's user. Anything else is

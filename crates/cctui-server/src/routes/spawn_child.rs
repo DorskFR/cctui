@@ -27,11 +27,11 @@ use cctui_proto::api::{
 use cctui_proto::ws::DaemonFrameDown;
 use uuid::Uuid;
 
-#[cfg(test)]
-use cctui_server_core::child_exec::child_account_env;
 use cctui_server_core::child_exec::{
     ChildExecutionContext, Parent, capability_for, child_spawner, load_parent,
 };
+#[cfg(test)]
+use cctui_server_core::child_exec::{child_account_env, resolve_child_adapter};
 
 #[cfg(test)]
 pub use cctui_server_core::child_policy::{
@@ -240,66 +240,13 @@ pub async fn message_child(
     let caller = machine_user(&state, &headers)
         .await
         .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
-    let parent = load_parent(&state, &session_id, caller).await?;
-    if req.prompt.trim().is_empty() {
-        return Err(deny(StatusCode::BAD_REQUEST, "prompt is required"));
-    }
-    let child = req.session_id.trim();
-    if child.is_empty() {
-        return Err(deny(StatusCode::BAD_REQUEST, "session_id is required"));
-    }
-    resolve_child_adapter(&state.pool, caller, &parent, child).await?;
-    crate::bus::dispatch(
-        &state,
-        child,
-        AdapterCommand::SendMessage { local_id: child.to_owned(), text: req.prompt.clone() },
-    )
-    .await
-    .map_err(|err| {
-        deny(StatusCode::SERVICE_UNAVAILABLE, format!("could not reach the daemon: {err}"))
-    })?;
-    tracing::info!(parent = %session_id, %child, "CctuiAgent follow-up relayed");
+    cctui_server_core::child_exec::message_child(&state, caller, &session_id, &req).await?;
     Ok(Json(serde_json::json!({})))
 }
 
-/// The follow-up target's adapter, only if `child` really is `parent`'s child
-/// owned by `caller`. The child's machine is NOT required to be the parent's:
-/// delivery goes through [`crate::bus::dispatch`], which resolves the child's
-/// own machine and routes across replicas.
-async fn resolve_child_adapter(
-    pool: &sqlx::PgPool,
-    caller: Uuid,
-    parent: &Parent,
-    child: &str,
-) -> Result<String, AppError> {
-    let row: Option<(Option<String>, Option<Uuid>, Option<String>)> = sqlx::query_as(
-        "SELECT parent_id, machine_uuid, adapter_id FROM sessions WHERE id = $1 AND user_id = $2",
-    )
-    .bind(child)
-    .bind(caller)
-    .fetch_optional(pool)
-    .await?;
-    let Some((child_parent, child_machine, adapter_id)) = row else {
-        return Err(deny(StatusCode::NOT_FOUND, "child session not found"));
-    };
-    if child_parent.as_deref() != Some(parent.session_id.as_str()) {
-        return Err(deny(StatusCode::FORBIDDEN, "session is not a child of this session"));
-    }
-    if child_machine.is_none() {
-        return Err(deny(StatusCode::CONFLICT, "child session has no machine"));
-    }
-    adapter_id
-        .filter(|a| !a.is_empty())
-        .ok_or_else(|| deny(StatusCode::CONFLICT, "child session has no adapter"))
-}
-
-/// A completion becomes a turn in the parent, so it is capped like one.
-const MAX_COMPLETION_BYTES: usize = 64 * 1024;
-
-#[derive(serde::Deserialize)]
-pub struct ChildCompletion {
-    text: String,
-}
+pub use cctui_server_core::child_exec::ChildCompletion;
+#[cfg(test)]
+use cctui_server_core::child_exec::MAX_COMPLETION_BYTES;
 
 /// `POST /api/v1/daemon/sessions/{id}/child-completion` — child `{id}`'s
 /// finished turn, posted by its daemon when no `CctuiAgent` call is following
@@ -325,58 +272,10 @@ async fn deliver_completion(
     child_id: &str,
     text: &str,
 ) -> Result<String, AppError> {
-    use crate::routes::peer::{Delivery, deliver, envelope};
-    let body = text.trim();
-    if body.is_empty() {
-        return Err(deny(StatusCode::BAD_REQUEST, "text is required"));
-    }
-    if body.len() > MAX_COMPLETION_BYTES {
-        return Err(deny(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            format!("completion is {} bytes; the cap is {MAX_COMPLETION_BYTES}", body.len()),
-        ));
-    }
-    let owned =
-        |node: Option<crate::peer_policy::SessionNode>| node.filter(|n| n.user_id == Some(caller));
-    let child = owned(crate::peer_policy::load_node(&state.pool, child_id).await?)
-        .ok_or_else(|| deny(StatusCode::NOT_FOUND, "child session not found"))?;
-    let Some(parent_id) = child.parent_id.as_deref() else {
-        return Err(deny(StatusCode::CONFLICT, "session has no parent to report to"));
-    };
-    let parent = owned(crate::peer_policy::load_node(&state.pool, parent_id).await?)
-        .ok_or_else(|| deny(StatusCode::NOT_FOUND, "parent session not found"))?;
-    if !parent.is_live() {
-        return Err(deny(
-            StatusCode::CONFLICT,
-            format!("parent session {} is {}", parent.id, parent.state()),
-        ));
-    }
-    let turn = envelope(&child, &crate::envelope_guard::neutralize(body));
-    match deliver(state, &parent.id, parent.state(), turn).await {
-        Delivery::Delivered => {}
-        outcome => {
-            return Err(deny(
-                StatusCode::SERVICE_UNAVAILABLE,
-                format!("could not deliver to {}: {}", parent.id, outcome.as_str()),
-            ));
-        }
-    }
-    tracing::info!(
-        child = %child.id,
-        parent = %parent.id,
-        "CctuiAgent child completion delivered to the parent",
-    );
-    Ok(parent.id)
+    cctui_server_core::child_exec::deliver_completion(state, caller, child_id, text).await
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-pub struct ChildSlots {
-    pub used: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub depth_left: Option<u32>,
-}
+pub use cctui_server_core::child_policy::ChildSlots;
 
 pub async fn child_slots(state: &AppState, session_id: &str) -> Option<ChildSlots> {
     let cap = capability_for(state, session_id).await.filter(|c| !c.is_empty())?;
@@ -416,67 +315,28 @@ async fn archive_descendant(
     session_id: &str,
     target: &str,
 ) -> Result<ArchiveChildResponse, AppError> {
-    if target.is_empty() {
-        return Err(deny(StatusCode::BAD_REQUEST, "session_id is required"));
-    }
-    ensure_descendant(&state.pool, caller, session_id, target).await?;
-    let mut swept: Vec<String> = crate::store::sessions::descendants(&state.pool, target)
-        .await?
-        .into_iter()
-        .map(|c| c.id)
-        .collect();
-    swept.push(target.to_owned());
-    let outcome = crate::routes::sessions::archive_one(
-        state,
-        target,
-        false,
-        cctui_proto::adapter::RemoveInitiator::Automatic,
-        crate::events::Actor::Agent(session_id.to_owned()),
-    )
-    .await?;
-    if outcome == crate::routes::sessions::ArchiveOutcome::SkippedPinned {
-        return Err(deny(
-            StatusCode::CONFLICT,
-            format!(
-                "session {target} is pinned by the user; ask them to unpin or archive it \
-                 themselves"
-            ),
-        ));
-    }
-    let archived: Vec<String> = sqlx::query_scalar(
-        "SELECT id FROM sessions WHERE id = ANY($1) AND status = 'archived' ORDER BY id",
-    )
-    .bind(&swept)
-    .fetch_all(&state.pool)
-    .await?;
-    let max_children = capability_for(state, session_id).await.and_then(|c| c.max_children);
-    let children_used = slots_used(&state.pool, session_id).await;
-    tracing::info!(
-        parent = %session_id,
-        child = %target,
-        archived = archived.len(),
-        "CctuiAgentArchive released a child",
-    );
-    Ok(ArchiveChildResponse { archived, children_used, max_children })
+    cctui_server_core::child_exec::archive_descendant(state, caller, session_id, target).await
 }
 
-async fn ensure_descendant(
-    pool: &sqlx::PgPool,
-    caller: Uuid,
-    parent: &str,
-    target: &str,
-) -> Result<(), AppError> {
-    let in_tree =
-        crate::store::sessions::descendants(pool, parent).await?.iter().any(|c| c.id == target);
-    let owner: Option<Option<Uuid>> =
-        sqlx::query_scalar("SELECT user_id FROM sessions WHERE id = $1")
-            .bind(target)
-            .fetch_optional(pool)
-            .await?;
-    if in_tree && owner == Some(Some(caller)) {
-        Ok(())
-    } else {
-        Err(deny(StatusCode::NOT_FOUND, "no such session below this one"))
+impl cctui_server_core::child_exec::ChildArchiveContext for AppState {
+    async fn archive_child_tree(
+        &self,
+        _owner: Uuid,
+        actor: &str,
+        target: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let outcome = crate::routes::sessions::archive_one(
+            self,
+            target,
+            false,
+            cctui_proto::adapter::RemoveInitiator::Automatic,
+            crate::events::Actor::Agent(actor.to_owned()),
+        )
+        .await?;
+        Ok(outcome != crate::routes::sessions::ArchiveOutcome::SkippedPinned)
+    }
+    async fn archive_slots_used(&self, parent: &str) -> Result<u32, sqlx::Error> {
+        Ok(slots_used(&self.pool, parent).await)
     }
 }
 

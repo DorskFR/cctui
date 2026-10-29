@@ -4,7 +4,7 @@
 
 | Milestone | Status | Remaining gate |
 | --- | --- | --- |
-| Shared execution engine | Substantially extracted and exercised by both hosts | Context packs, child-spawn APIs and remaining lifecycle ownership |
+| Shared execution engine | Substantially extracted and exercised by both hosts | Context packs, real child-harness acceptance and remaining lifecycle ownership |
 | Standalone automation host | Real daemon/Claude machine execution verified against a controlled provider | Kubernetes execution and rolling-upgrade acceptance |
 | Minimal database | Core bootstrap, core→full expansion and numbered forward migrations implemented | Continued upgrade and rollback acceptance |
 | Installable core distribution | Dedicated binaries/image published; signed artifacts and fresh-database image smokes verified | Ongoing published-worker and upgrade acceptance |
@@ -776,3 +776,31 @@ completion, retained completed-child slots and restart-time refusal refunds.
 Child message/archive/completion endpoints and a real parent/child harness run
 remain acceptance gates, alongside context packs, workspace extraction, Kubernetes
 and rolling upgrade/rollback checks.
+
+
+### Child tools and session usage (`0.27.0-beta.29`)
+
+Core exposes the existing child-message, child-completion, child-archive and
+session-limits endpoints. Each endpoint authenticates a machine key and binds
+the calling session to that exact machine. Shared execution services validate
+direct-child follow-ups, owned/live completion parents and descendant archival.
+Completion text uses the same neutralized cctui envelope in both distributions.
+
+The limits response identifies only the pinned provider account and reports its
+usage windows, model decisions, effective session budget and child slots. Full
+keeps its transcript-based slot evidence through a host adapter; core counts
+persisted execution outcomes. Child archival preserves pins, sends worker removal
+deepest first, revokes archived credentials, frees slots and retains historical
+tree spending. Full keeps its registry, audit and workspace archival side effects.
+
+Oneshot Claude child registration now retains its parent, relation and launch
+key so a registered child continues to occupy its policy slot. Forks retain their
+separate relation and do not consume child slots.
+
+Execution session addressing, tree traversal, envelope formatting and usage
+computation now belong to core. Workspace peer relations and conversation history
+remain in full. Minimal-database HTTP/WebSocket contracts cover follow-ups,
+completion neutralization and machine identity, pinned subtree archival, budget
+retention and bound-account limits. Real parent/child harness execution remains a
+separate acceptance gate; the existing simple worker smoke uses oneshot Claude,
+which does not register the child MCP relay.

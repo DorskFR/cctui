@@ -21,15 +21,7 @@ pub async fn dispatch(
     session_id: &str,
     command: AdapterCommand,
 ) -> Result<(), BusError> {
-    let (adapter_id, machine_uuid) = resolve_session(state, session_id).await?;
-    state
-        .bus
-        .command_daemon_for_session(
-            machine_uuid,
-            session_id,
-            DaemonFrameDown::Command { adapter_id, command: Box::new(command) },
-        )
-        .await
+    cctui_server_core::bus::dispatch_session(&state.pool, &state.bus, session_id, command).await
 }
 
 /// Rebuild and live-push a fresh [`DaemonFrameDown::Reconcile`] to `machine_id`'s
@@ -146,13 +138,5 @@ pub async fn read_file(
 
 /// Resolve a session id to its `(adapter_id, machine_uuid)` addressing pair.
 async fn resolve_session(state: &AppState, session_id: &str) -> Result<(String, Uuid), BusError> {
-    let row: Option<(Option<String>, Option<Uuid>)> =
-        sqlx::query_as("SELECT adapter_id, machine_uuid FROM sessions WHERE id = $1")
-            .bind(session_id)
-            .fetch_optional(&state.pool)
-            .await?;
-    let (adapter_id, machine_uuid) = row.ok_or(BusError::NotFound)?;
-    let adapter_id = adapter_id.ok_or(BusError::NoAdapter)?;
-    let machine_uuid = machine_uuid.ok_or(BusError::NoMachine)?;
-    Ok((adapter_id, machine_uuid))
+    cctui_server_core::bus::resolve_session(&state.pool, session_id).await
 }

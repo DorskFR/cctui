@@ -87,54 +87,7 @@ impl Refusal {
     }
 }
 
-/// The session columns the policy and the peer surfaces both need.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionNode {
-    pub id: String,
-    pub user_id: Option<Uuid>,
-    pub parent_id: Option<String>,
-    pub machine_uuid: Option<Uuid>,
-    pub machine_name: Option<String>,
-    pub adapter_id: Option<String>,
-    pub name: Option<String>,
-    pub status: Option<String>,
-    /// The one room this session is in, if any.
-    pub room_id: Option<Uuid>,
-}
-
-/// `live` / `ended` / `archived`, the three states the roster reports.
-/// An idle-but-revivable session is `live`: a message wakes it.
-#[must_use]
-pub fn state_of(status: Option<&str>) -> &'static str {
-    match status {
-        Some("archived") => "archived",
-        Some("ended" | "failed") => "ended",
-        _ => "live",
-    }
-}
-
-impl SessionNode {
-    #[must_use]
-    pub fn state(&self) -> &'static str {
-        state_of(self.status.as_deref())
-    }
-
-    /// Whether a message can still be delivered into this session.
-    #[must_use]
-    pub fn is_live(&self) -> bool {
-        self.state() == "live"
-    }
-
-    /// `name (adapter on machine)` — the sender label the envelope carries.
-    #[must_use]
-    pub fn label(&self) -> String {
-        let name =
-            self.name.as_deref().map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&self.id);
-        let adapter = self.adapter_id.as_deref().unwrap_or("unknown");
-        let machine = self.machine_name.as_deref().unwrap_or("unknown machine");
-        format!("{name} ({adapter} on {machine})")
-    }
-}
+pub use cctui_server_core::peer_session::{SessionNode, state_of};
 
 /// Everything [`PREDICATES`] may look at. A new relation adds a field here
 /// rather than a database call inside a predicate: the decision stays pure and
@@ -240,52 +193,7 @@ SELECT 1 FROM sessions a \
  WHERE a.id = $1 AND b.id = $2 AND a.room_id IS NOT NULL \
  LIMIT 1";
 
-/// `$1` is the session id.
-pub const NODE_SQL: &str = "\
-SELECT s.id, s.user_id, s.parent_id, s.machine_uuid, m.name, s.adapter_id, s.session_name, \
-       s.status, s.room_id \
-  FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
- WHERE s.id = $1";
-
-/// Columns of [`NODE_SQL`], in order.
-pub type NodeRow = (
-    String,
-    Option<Uuid>,
-    Option<String>,
-    Option<Uuid>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<Uuid>,
-);
-
-impl From<NodeRow> for SessionNode {
-    fn from(r: NodeRow) -> Self {
-        let (id, user_id, parent_id, machine_uuid, machine_name, adapter_id, name, status, room_id) =
-            r;
-        Self {
-            id,
-            user_id,
-            parent_id,
-            machine_uuid,
-            machine_name,
-            adapter_id,
-            name,
-            status,
-            room_id,
-        }
-    }
-}
-
-pub async fn load_node(
-    pool: &sqlx::PgPool,
-    session_id: &str,
-) -> Result<Option<SessionNode>, sqlx::Error> {
-    let row: Option<NodeRow> =
-        sqlx::query_as(NODE_SQL).bind(session_id).fetch_optional(pool).await?;
-    Ok(row.map(SessionNode::from))
-}
+pub use cctui_server_core::peer_session::load_node;
 
 /// Load both sessions and the share fact, then [`decide`]. A database error
 /// refuses rather than grants: the check is fail-closed like the spawn one.
