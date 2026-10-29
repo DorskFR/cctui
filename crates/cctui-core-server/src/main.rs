@@ -1,9 +1,11 @@
 //! Standalone automation server.
+mod ownership;
 use anyhow::Context;
 use cctui_core_server::host::Host;
 use cctui_server_core::auth::AuthConfig;
 use cctui_server_core::bus::{Bus, NoopTransport};
 use cctui_server_core::state::CoreState;
+use std::future::IntoFuture;
 use std::sync::Arc;
 
 #[derive(clap::Parser)]
@@ -45,6 +47,7 @@ async fn main() -> anyhow::Result<()> {
         .context("CCTUI_EXTERNAL_URL is required for worker gateway routing")?;
     let pool =
         sqlx::postgres::PgPoolOptions::new().max_connections(20).connect(&database_url).await?;
+    let lease = ownership::RuntimeLease::acquire(&pool).await?;
     cctui_server_core::schema::bootstrap(&pool).await?;
     let auth = AuthConfig::new(admin_tokens, pool.clone());
     auth.seed_admin().await;
@@ -96,11 +99,15 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!(%address, version = env!("CARGO_PKG_VERSION"), "automation server listening");
     let _background = cctui_core_server::background::BackgroundTasks::start(host.clone());
-    axum::serve(listener, cctui_core_server::router::router(host))
+    let serving = axum::serve(listener, cctui_core_server::router::router(host))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })
-        .await?;
+        .into_future();
+    tokio::select! {
+        result = serving => result?,
+        result = lease.monitor() => result?,
+    }
     Ok(())
 }
 #[derive(serde::Deserialize)]

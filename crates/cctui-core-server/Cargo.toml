@@ -26,5 +26,6 @@ dashmap = "6"
 sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
 
 [dev-dependencies]
+cctui-server-core = { workspace = true, features = ["test-support"] }
 tokio-tungstenite.workspace = true
 tower.workspace = true

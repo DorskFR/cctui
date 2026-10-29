@@ -4,11 +4,11 @@
 
 | Milestone | Status | Remaining gate |
 | --- | --- | --- |
-| Shared execution engine | Substantially extracted and exercised by both hosts | Remaining lifecycle ownership and further adapter acceptance |
-| Standalone automation host | Real machine, parent/child and sandboxed Kubernetes Codex execution verified | Rolling-upgrade acceptance |
-| Minimal database | Core bootstrap, core→full expansion and numbered forward migrations implemented | Continued upgrade and rollback acceptance |
-| Installable core distribution | Dedicated binaries/image published; signed artifacts and fresh-database image smokes verified | Ongoing published-worker and upgrade acceptance |
-| Workspace boundary and clients | Workspace schema, handlers/state and full-host assembly extracted; clients recognize distributions | Further client and production upgrade acceptance |
+| Shared execution engine | Extracted and exercised by both hosts | Pending-launch cancellation/reconciliation and unattended-run policy acceptance |
+| Standalone automation host | Claude/Codex machine and Kubernetes execution, parent/child, signed context packs and single-host recovery verified | General headless harness configuration and lifecycle acceptance |
+| Minimal database | Core bootstrap, core→full expansion, immutable lineage and forward migrations verified | Final release acceptance within documented rollback windows |
+| Installable core distribution | Signed binaries/images and real published workers verified | Final release publication and runtime verification |
+| Workspace boundary and clients | Full host extracted; client distribution handling and stable full rollout/rollback verified | Final release checks |
 
 The split is **not complete**. Beta counts describe delivery increments, not a
 percentage of completion. Production readiness requires all acceptance gates
@@ -862,3 +862,23 @@ retaining credentials/results and requiring a fresh real task after each daemon
 reconnection. This checks sequential restarts within the existing schema window.
 Remaining gates include shared execution lifecycle/replica ownership, broader
 production-shaped full upgrades and rolling multi-replica acceptance.
+
+
+### Host ownership and repeatable full upgrades (`0.27.0-beta.32`)
+
+The standalone host enforces one active process per database with a dedicated
+PostgreSQL advisory-lock connection. A second standalone process fails before
+schema/bootstrap/listening. A bounded ownership probe exits the host on connection
+loss, so restart supervision can replace it. `--init-db` remains administrative.
+This is a sequential restart/rollback topology; standalone core does not advertise
+active replica support. Do not run core and full concurrently on one database.
+Full keeps its peer transport and multi-replica behavior.
+
+The maintained worker fixture adds full-server sequential and mixed-version
+upgrade/rollback modes with real daemon reconnection and peer-routed tasks in both
+directions. Retained evidence includes actual transcript rows, encrypted provider
+credentials, settings, dispatcher identity/authentication, image bytes and file
+bytes in a shared mount. The maintained sequential and mixed-version fixtures passed against stable
+0.26.1, making that gate repeatable. A standalone process mode
+checks duplicate refusal, administrative provisioning, lease-loss exit and a new
+task after replacement. See [the operator guide](core-server.md) for commands.
