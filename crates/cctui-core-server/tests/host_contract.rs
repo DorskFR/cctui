@@ -2730,3 +2730,145 @@ async fn child_archive_preserves_pins_and_historical_budgets_while_releasing_slo
         );
     }
 }
+
+#[tokio::test]
+async fn headless_machine_configuration_enforces_read_and_write_access() {
+    let Some(f) = Fixture::new().await else { return };
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"operator"})).await;
+    let key = user["key"].as_str().unwrap();
+    let machine = f.post("/api/v1/enroll", key, json!({"hostname":"executor"})).await;
+    let mid = machine["machine_id"].as_str().unwrap();
+    let path = format!("{}/api/v1/machines/{mid}/adapters", f.base);
+    let response = f.client.get(&path).bearer_auth(key).send().await.unwrap();
+    assert_eq!(response.status(), 200, "core must expose headless harness configuration");
+    let defaults: Vec<Value> = response.json().await.unwrap();
+    assert!(defaults.iter().any(|row| row["adapter_id"] == "claude-code"));
+    let other = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"observer"})).await;
+    assert_eq!(
+        f.client
+            .get(&path)
+            .bearer_auth(other["key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    let restricted = f
+        .post(
+            &format!("/api/v1/users/{}/keys", user["id"].as_str().unwrap()),
+            "fixture-admin",
+            json!({"label":"enroll-only","scopes":["enroll"]}),
+        )
+        .await;
+    assert_eq!(
+        f.client
+            .get(&path)
+            .bearer_auth(restricted["key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    let adapter_path = format!("{path}/claude-code");
+    let config = json!({"enabled":true,"config":{"mode":"oneshot"}});
+    assert_eq!(
+        f.client.put(&adapter_path).bearer_auth(key).json(&config).send().await.unwrap().status(),
+        403
+    );
+    assert_eq!(
+        f.client
+            .put(&adapter_path)
+            .bearer_auth("fixture-admin")
+            .json(&json!({"config":[]}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        400
+    );
+}
+
+#[tokio::test]
+async fn headless_machine_configuration_reconciles_and_resets_without_reenrollment() {
+    let Some(f) = Fixture::new().await else { return };
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"operator"})).await;
+    let key = user["key"].as_str().unwrap();
+    let machine = f.post("/api/v1/enroll", key, json!({"hostname":"executor"})).await;
+    let mid = machine["machine_id"].as_str().unwrap();
+    let path = format!("{}/api/v1/machines/{mid}/adapters", f.base);
+    let adapter_path = format!("{path}/claude-code");
+    let config = json!({"enabled":true,"config":{"mode":"oneshot"}});
+    let mut daemon = f.daemon(machine["machine_key"].as_str().unwrap()).await;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let frame = daemon.next().await.expect("daemon connection remains open").unwrap();
+            let Message::Text(raw) = frame else { continue };
+            if matches!(
+                serde_json::from_str::<DaemonFrameDown>(&raw).unwrap(),
+                DaemonFrameDown::Reconcile { .. }
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let response = f
+        .client
+        .put(&adapter_path)
+        .bearer_auth("fixture-admin")
+        .json(&config)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let pinned: Vec<Value> = response.json().await.unwrap();
+    let claude = pinned.iter().find(|row| row["adapter_id"] == "claude-code").unwrap();
+    assert_eq!(claude["config"], json!({"mode":"oneshot"}));
+    assert_eq!(claude["pinned"], true);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let frame = daemon.next().await.expect("daemon connection remains open").unwrap();
+            let Message::Text(raw) = frame else { continue };
+            if let DaemonFrameDown::Reconcile { adapters, .. } = serde_json::from_str(&raw).unwrap()
+            {
+                assert!(adapters.iter().any(|row| row.adapter_id.as_str() == "claude-code"
+                    && row.config["mode"] == "oneshot"));
+                break;
+            }
+        }
+    })
+    .await
+    .expect("configuration must reach the connected daemon");
+    let response =
+        f.client.delete(&adapter_path).bearer_auth("fixture-admin").send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let reset: Vec<Value> = response.json().await.unwrap();
+    let claude = reset.iter().find(|row| row["adapter_id"] == "claude-code").unwrap();
+    assert_eq!(claude["pinned"], false);
+    assert_eq!(claude["config"], json!({}));
+    assert_eq!(
+        f.client
+            .put(format!("{path}/Invalid"))
+            .bearer_auth("fixture-admin")
+            .json(&config)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        400
+    );
+    assert_eq!(
+        f.client
+            .get(format!("{}/api/v1/machines/{}/adapters", f.base, uuid::Uuid::new_v4()))
+            .bearer_auth("fixture-admin")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    daemon.close(None).await.unwrap();
+}

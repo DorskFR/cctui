@@ -43,6 +43,24 @@ pub async fn archived_jobs(
     .await
 }
 
+/// Rebuild and deliver current configuration to the machine's live daemon.
+pub async fn push_reconcile(
+    state: &CoreState,
+    machine_id: Uuid,
+) -> Result<(), crate::bus::BusError> {
+    let adapters = load_reconcile(state, machine_id)
+        .await
+        .map_err(|e| crate::bus::BusError::Reconcile(e.to_string()))?;
+    let secret_scrub = load_scrub_config(state, machine_id).await;
+    state
+        .bus
+        .command_daemon(
+            machine_id,
+            cctui_proto::ws::DaemonFrameDown::Reconcile { adapters, secret_scrub },
+        )
+        .await
+}
+
 /// Union the machine's `adapters_enabled` rows with the harnesses that run by default.
 ///
 /// A row overrides a default-on harness's config or disables it, and is the

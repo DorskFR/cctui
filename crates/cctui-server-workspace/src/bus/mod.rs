@@ -3,7 +3,7 @@ pub mod peer;
 use crate::state::AppState;
 use cctui_proto::adapter::{AdapterCommand, BootstrapFile};
 use cctui_proto::git::GitInfo;
-use cctui_proto::ws::{DaemonFrameDown, ReadFileOk};
+use cctui_proto::ws::ReadFileOk;
 pub use cctui_server_core::bus::*;
 use uuid::Uuid;
 
@@ -24,20 +24,13 @@ pub async fn dispatch(
     cctui_server_core::bus::dispatch_session(&state.pool, &state.bus, session_id, command).await
 }
 
-/// Rebuild and live-push a fresh [`DaemonFrameDown::Reconcile`] to `machine_id`'s
+/// Rebuild and live-push a fresh [`cctui_proto::ws::DaemonFrameDown::Reconcile`] to `machine_id`'s
 /// connected daemon. Used when a per-user setting the reconcile derives
 /// from (e.g. `harnessMode`) changes, so a daemon picks up the new config without
 /// waiting for a reconnect. Best-effort: same `NoDaemon`/`Closed` handling as
 /// [`dispatch`] — a machine with no live WS is a no-op error the caller ignores.
 pub async fn push_reconcile(state: &AppState, machine_id: Uuid) -> Result<(), BusError> {
-    let adapters = crate::routes::daemon::load_reconcile(state, machine_id)
-        .await
-        .map_err(|e| BusError::Reconcile(e.to_string()))?;
-    let secret_scrub = crate::routes::daemon::load_scrub_config(state, machine_id).await;
-    state
-        .bus
-        .command_daemon(machine_id, DaemonFrameDown::Reconcile { adapters, secret_scrub })
-        .await
+    cctui_server_core::targets::daemon::reconcile::push_reconcile(state, machine_id).await
 }
 
 /// Stage mid-chat attachment `files` for `session_id` and return the
