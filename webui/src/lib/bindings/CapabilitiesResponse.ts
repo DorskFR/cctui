@@ -2,9 +2,8 @@
 import type { LangfuseCapability } from "./LangfuseCapability";
 
 /**
- * The capability envelope. One field per optional integration.
- *
- * Self-hosted models are a per-account property surfaced by `GET /accounts`,
- * not a server-global list.
+ * Supported features describe the installed distribution, independently of
+ * configured integrations and the caller's permissions. Missing flags from
+ * older full servers preserve workspace support.
  */
-export type CapabilitiesResponse = { langfuse: LangfuseCapability, };
+export type CapabilitiesResponse = { langfuse: LangfuseCapability, distribution: string, workspace: boolean, features: Array<string>, experimental: boolean, };

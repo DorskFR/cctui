@@ -13,6 +13,7 @@ use std::process::Stdio;
 use std::sync::{LazyLock, Mutex};
 
 use anyhow::Context;
+use cctui_proto::adapter::{AdapterEvent, EndReason, SessionMeta};
 use serde_json::{Value, json};
 
 /// Map `codex-exec rollout thread id → dispatch SESSION_ID`. The codex adapters
@@ -179,6 +180,33 @@ impl CodexDispatch {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         crate::childenv::ScrubChildEnv::scrub_child_env(&mut cmd);
+        self.run_command(
+            cmd,
+            &std::env::var("SESSION_ID").unwrap_or_default(),
+            crate::dispatch::event_sink(),
+        )
+        .await
+    }
+
+    async fn run_command(
+        &self,
+        cmd: tokio::process::Command,
+        session_id: &str,
+        sink: Option<crate::dispatch::EventSink>,
+    ) -> anyhow::Result<()> {
+        let sink = sink.filter(|_| !session_id.is_empty());
+        publish(
+            sink.as_ref(),
+            AdapterEvent::SessionStarted {
+                local_id: session_id.to_owned(),
+                meta: SessionMeta {
+                    working_dir: Some(self.workdir.clone()),
+                    extra: json!({"source":"codex-exec", "spawn_key":session_id}),
+                    ..SessionMeta::default()
+                },
+            },
+        )
+        .await;
         let outcome = match self.run_inner(cmd).await {
             Ok(outcome) => outcome,
             Err(err) => {
@@ -186,6 +214,50 @@ impl CodexDispatch {
                 CodexOutcome::failed(format!("codex exec failed to run: {err}"))
             }
         };
+        if !outcome.message.is_empty() {
+            publish(
+                sink.as_ref(),
+                AdapterEvent::Message {
+                    local_id: session_id.to_owned(),
+                    payload: json!({"type":"agentMessage", "text":outcome.message}),
+                    turn_id: None,
+                },
+            )
+            .await;
+        }
+        if let Some(usage) = &outcome.usage {
+            publish(
+                sink.as_ref(),
+                AdapterEvent::TokenUsage {
+                    local_id: session_id.to_owned(),
+                    message_id: format!("codex-dispatch:{session_id}"),
+                    input_tokens: usage["input_tokens"].as_u64().unwrap_or_default(),
+                    output_tokens: usage["output_tokens"].as_u64().unwrap_or_default(),
+                    cache_read_tokens: usage["cached_input_tokens"].as_u64().unwrap_or_default(),
+                    cache_creation_tokens: 0,
+                },
+            )
+            .await;
+        }
+        publish(
+            sink.as_ref(),
+            AdapterEvent::SessionEnded {
+                local_id: session_id.to_owned(),
+                reason: if outcome.status == "success" {
+                    EndReason::Completed
+                } else {
+                    EndReason::Crashed {
+                        detail: outcome
+                            .error
+                            .clone()
+                            .unwrap_or_else(|| "codex dispatch failed".to_owned()),
+                    }
+                },
+            },
+        )
+        .await;
+        // Writing the verdict releases the worker entrypoint's shutdown wait.
+        // Queue lifecycle and accounting first so graceful teardown flushes them.
         let result = self.result_json(&outcome);
         let body = serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_owned());
         std::fs::write(&self.result_file, &body)
@@ -275,6 +347,14 @@ impl CodexDispatch {
             obj.insert("usage".to_owned(), usage.clone());
         }
         Value::Object(obj)
+    }
+}
+
+async fn publish(sink: Option<&crate::dispatch::EventSink>, event: AdapterEvent) {
+    if let Some(sink) = sink
+        && let Err(err) = sink.send(("codex".to_owned(), event)).await
+    {
+        tracing::warn!(%err, "codex dispatch: event lane closed");
     }
 }
 
@@ -450,6 +530,54 @@ mod tests {
             last_message_file: "/tmp/last.txt".to_owned(),
             result_file: "/tmp/cctui-result.json".to_owned(),
             timeout_secs: 500,
+        }
+    }
+
+    #[tokio::test]
+    async fn boot_dispatch_publishes_success_and_failure_before_its_result_file() {
+        use cctui_proto::adapter::{AdapterEvent, EndReason};
+        for (stream, success) in [
+            (
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"worker answer"}}
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}"#,
+                true,
+            ),
+            (r#"{"type":"turn.failed","error":{"message":"provider refused"}}"#, false),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut d = dispatch("go");
+            d.workdir = temp.path().to_str().unwrap().to_owned();
+            d.result_file = temp.path().join("result.json").to_str().unwrap().to_owned();
+            d.last_message_file = temp.path().join("last.txt").to_str().unwrap().to_owned();
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.args(["-c", "printf '%s\n' \"$1\"", "fixture", stream])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+            d.run_command(cmd, "dispatch-session", Some(tx)).await.unwrap();
+            let mut events = Vec::new();
+            while let Ok((adapter, event)) = rx.try_recv() {
+                assert_eq!(adapter, "codex");
+                events.push(event);
+            }
+            assert!(
+                matches!(events.first(), Some(AdapterEvent::SessionStarted { local_id, .. }) if local_id == "dispatch-session"),
+                "{events:?}"
+            );
+            if success {
+                assert!(events.iter().any(|event| matches!(event, AdapterEvent::Message { local_id, payload, .. } if local_id == "dispatch-session" && payload["type"] == "agentMessage" && payload["text"] == "worker answer")));
+                assert!(events.iter().any(|event| matches!(
+                    event,
+                    AdapterEvent::TokenUsage { input_tokens: 10, output_tokens: 5, .. }
+                )));
+            }
+            assert!(
+                matches!(events.last(), Some(AdapterEvent::SessionEnded { local_id, reason }) if local_id == "dispatch-session" && match reason { EndReason::Completed => success, EndReason::Crashed { detail } => !success && detail.contains("provider refused"), _ => false }),
+                "{events:?}"
+            );
+            let result: Value =
+                serde_json::from_str(&std::fs::read_to_string(&d.result_file).unwrap()).unwrap();
+            assert_eq!(result["status"], if success { "success" } else { "failed" });
         }
     }
 

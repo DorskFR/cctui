@@ -184,11 +184,7 @@ impl OneshotDriver {
         // Announce the session before its first events so the server has a row.
         self.emit(AdapterEvent::SessionStarted {
             local_id: session_id.clone(),
-            meta: SessionMeta {
-                working_dir: Some(cwd.clone()),
-                parent_local_id: fork_parent,
-                extra: serde_json::Value::Null,
-            },
+            meta: started_meta(spec, &session_id, &cwd, fork_parent),
         })
         .await;
 
@@ -528,6 +524,26 @@ impl SessionDriver for OneshotDriver {
     }
 }
 
+fn started_meta(
+    spec: &SessionSpec,
+    session_id: &str,
+    cwd: &str,
+    fork_parent: Option<String>,
+) -> SessionMeta {
+    let (parent, relation) = fork_parent.map_or_else(
+        || (spec.parent_local_id.clone(), spec.parent_local_id.as_ref().map(|_| "subagent")),
+        |parent| (Some(parent), Some("fork")),
+    );
+    SessionMeta {
+        working_dir: Some(cwd.to_owned()),
+        parent_local_id: parent,
+        extra: relation.map_or(
+            serde_json::Value::Null,
+            |relation| serde_json::json!({"relation":relation, "spawn_key":session_id}),
+        ),
+    }
+}
+
 /// The idle [`AdapterEvent::Status`] emitted after a successful oneshot turn:
 /// the conversation is done with this turn but stays resumable (mirrors how the
 /// bg worker idles awaiting input).
@@ -550,6 +566,21 @@ fn idle_status(local_id: &str) -> AdapterEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn child_registration_keeps_the_parent_and_launch_key_for_policy_enforcement() {
+        let spec: SessionSpec = serde_json::from_value(serde_json::json!({
+            "adapter_id":"claude-code", "working_dir":"/work/acme", "parent_local_id":"parent"
+        }))
+        .unwrap();
+        let meta = started_meta(&spec, "child-key", "/work/acme", None);
+        assert_eq!(meta.parent_local_id.as_deref(), Some("parent"));
+        assert_eq!(meta.extra["relation"], "subagent");
+        assert_eq!(meta.extra["spawn_key"], "child-key");
+        let fork = started_meta(&spec, "fork-key", "/work/acme", Some("fork-source".into()));
+        assert_eq!(fork.parent_local_id.as_deref(), Some("fork-source"));
+        assert_eq!(fork.extra["relation"], "fork");
+    }
 
     #[test]
     fn idle_status_is_resumable_not_ended() {

@@ -1,0 +1,570 @@
+//! Server-emitted completion webhooks detect workers lost before their exit trap.
+//!
+//! Covers the cases the worker's `REPLY_URL` exit-trap cannot cover (OOM/SIGKILL, never registered,
+//! connection lost past grace). The worker's own payload stays the verdict; the
+//! server only ever sends `status:"failed"` with a reason.
+//!
+//! At dispatch, [`register`] writes a `pending` row keyed on the pre-minted
+//! `session_id`. The reaper's [`sweep`] resolves each row via [`decide`]: a
+//! clean `SessionEnded` supersedes it; a never-registered session is probed
+//! through its dispatcher, and only `Failed`/`Gone` (plus the never-launched and
+//! archive backstops) fire, with backoff and dead-lettering after `MAX_ATTEMPTS`.
+//!
+//! Wire shape: `{ task_id, status:"failed", error }`. With a per-target
+//! `secret` the body is signed HMAC-SHA256 in `X-CCTUI-Signature: sha256=<hex>`.
+
+use std::sync::OnceLock;
+use std::time::Duration;
+
+use cctui_proto::backoff::Backoff;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+
+use crate::dispatch::DispatchContext;
+use crate::dispatchers::HandleStatus;
+use crate::store::sessions::SessionRowStatus;
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// How long to wait before re-polling a dispatcher for a still-running workload.
+/// Separate from delivery backoff — a liveness poll that says
+/// "running" must not consume the delivery retry budget.
+const POLL_INTERVAL_SECS: i64 = 30;
+
+/// Retry budget before dead-lettering, sized so the schedule below spans over
+/// two hours: a receiver down for an hour must recover, not dead-letter.
+const MAX_ATTEMPTS: i32 = 11;
+
+/// Delivery retry schedule: 10 s doubling to a 1 h cap, jittered so a receiver
+/// coming back from an outage is not hit by every pending row at once. The first
+/// retry stays seconds away for a transient blip; [`MAX_ATTEMPTS`] carries the
+/// total reach past two hours.
+const fn retry_schedule() -> Backoff {
+    Backoff::new(Duration::from_secs(10), Duration::from_hours(1))
+}
+
+pub use crate::outbound::OutboundUrlError as NotifyUrlError;
+
+/// Rows fetched per sweep, and how many of them are processed at once.
+const SWEEP_LIMIT: i64 = 50;
+const DELIVERY_CONCURRENCY: usize = 8;
+const DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Fail-closed SSRF guard: requires `https` and refuses a host that is
+/// cluster-local, resolves to an internal address, or does not resolve.
+pub async fn validate_notify_url(raw: &str) -> Result<(), NotifyUrlError> {
+    crate::outbound::validate_outbound_url(raw, &[]).await
+}
+
+/// No redirects and guarded DNS, so neither a 3xx nor a rebound name can move
+/// the POST onto an internal address after registration vetted the URL.
+fn delivery_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| crate::outbound::guarded_client(crate::outbound::no_allowlist))
+}
+
+/// Register a pending completion webhook for a dispatched session.
+///
+/// No-op when `notify_url` is absent. Idempotent on the `session_id` unique
+/// constraint, so a re-dispatch with the same id refreshes the target rather
+/// than duplicating. `task_id` falls back to the session id when the dispatch
+/// payload carries none, so the receiver always gets a correlation key.
+///
+/// Best-effort: a failure here is logged and swallowed — it must never block an
+/// otherwise-valid dispatch (the `REPLY_URL` trap still covers completion during
+/// migration).
+#[allow(clippy::cognitive_complexity)]
+pub async fn register(
+    state: &impl DispatchContext,
+    session_id: &str,
+    user_id: uuid::Uuid,
+    notify_url: &str,
+    notify_secret: Option<&str>,
+    task_id: &str,
+) {
+    if let Err(reason) = validate_notify_url(notify_url).await {
+        tracing::warn!(%session_id, "refusing completion webhook with unsafe notify_url: {reason}");
+        return;
+    }
+    let res = sqlx::query(
+        "INSERT INTO session_webhooks (session_id, user_id, notify_url, secret, task_id) \
+         VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (session_id) DO UPDATE SET \
+           notify_url = EXCLUDED.notify_url, \
+           secret = EXCLUDED.secret, \
+           task_id = EXCLUDED.task_id, \
+           user_id = EXCLUDED.user_id \
+         WHERE session_webhooks.state = 'pending'",
+    )
+    .bind(session_id)
+    .bind(user_id)
+    .bind(notify_url)
+    .bind(notify_secret)
+    .bind(task_id)
+    .execute(state.dispatch_pool())
+    .await;
+    match res {
+        Ok(_) => tracing::info!(%session_id, "registered completion webhook"),
+        Err(e) => tracing::warn!(%session_id, "failed to register completion webhook: {e}"),
+    }
+}
+
+/// A claimed row stays invisible to other sweeps for this long, past a full
+/// pass; a pass that dies mid-row leaves it to be retried after the lease.
+const CLAIM_LEASE_SECS: i64 = 300;
+
+const CLAIM_SQL: &str = "\
+    WITH claimed AS ( \
+        UPDATE session_webhooks q \
+        SET next_attempt_at = now() + ($1 || ' seconds')::interval \
+        WHERE q.id IN ( \
+            SELECT id FROM session_webhooks \
+            WHERE state = 'pending' AND next_attempt_at <= now() \
+            ORDER BY next_attempt_at \
+            LIMIT $2 \
+            FOR UPDATE SKIP LOCKED) \
+        RETURNING q.id, q.session_id, q.user_id, q.notify_url, q.secret, q.task_id, \
+                  q.attempts, q.payload) \
+    SELECT c.id, c.session_id, c.user_id, c.notify_url, c.secret, c.task_id, c.attempts, \
+           s.status AS session_status, s.end_reason, s.end_detail, \
+           dh.dispatcher_name, dh.handle, c.payload \
+    FROM claimed c \
+    LEFT JOIN sessions s ON s.id = c.session_id \
+    LEFT JOIN dispatch_handles dh ON dh.session_id = c.session_id";
+
+async fn claim_due(pool: &sqlx::PgPool) -> sqlx::Result<Vec<PendingRow>> {
+    sqlx::query_as(CLAIM_SQL)
+        .bind(CLAIM_LEASE_SECS.to_string())
+        .bind(SWEEP_LIMIT)
+        .fetch_all(pool)
+        .await
+}
+
+/// A pending webhook joined to its session's current status and dispatch handle.
+#[derive(sqlx::FromRow)]
+struct PendingRow {
+    id: uuid::Uuid,
+    session_id: String,
+    user_id: Option<uuid::Uuid>,
+    notify_url: String,
+    secret: Option<String>,
+    task_id: String,
+    attempts: i32,
+    /// The session's current status, if a `sessions` row exists. `None` for a
+    /// dispatched session whose worker never registered (pod crashlooped / never
+    /// started) — exactly the case the dispatcher poll below resolves.
+    session_status: Option<String>,
+    end_reason: Option<String>,
+    end_detail: Option<String>,
+    /// The owning dispatcher's name + opaque handle, if one was
+    /// persisted at dispatch. `None` for the http escape-hatch.
+    dispatcher_name: Option<String>,
+    handle: Option<String>,
+    /// The frozen payload once we've decided to fire; `None` until then.
+    payload: Option<serde_json::Value>,
+}
+
+/// Build the lifecycle-only death payload. The server webhook is a
+/// *death-detector*: it only ever fires for a run that did NOT complete, so the
+/// status is always `failed`. The real verdict of a clean run is delivered by
+/// the worker's own `REPLY_URL` callback and never touches the server.
+///
+/// Preserves the `REPLY_URL` wire shape: `{ task_id, status:"failed", error }`.
+fn build_payload(task_id: &str, reason: &str) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("task_id".into(), serde_json::Value::String(task_id.to_string()));
+    obj.insert("status".into(), serde_json::Value::String("failed".into()));
+    obj.insert("error".into(), serde_json::Value::String(reason.to_string()));
+    serde_json::Value::Object(obj)
+}
+
+/// Hex HMAC-SHA256 of `body` under `secret`, for the `X-CCTUI-Signature` header.
+fn sign(secret: &str, body: &[u8]) -> String {
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
+    mac.update(body);
+    hex::encode(mac.finalize().into_bytes())
+}
+
+/// What the sweep should do with one pending row this cycle.
+enum Outcome {
+    /// The run died without a conclusion — fire the death callback with reason.
+    Fire(String),
+    /// The worker owns the callback (clean exit → its `REPLY_URL` trap delivered
+    /// the verdict). Close the row without firing.
+    Supersede,
+    /// Still alive / not yet decidable — re-poll on the next sweep.
+    Wait,
+}
+
+/// Decide a pending row's fate. The server is a death-detector: it
+/// fires only for runs that did NOT complete. A clean `SessionEnded` (the
+/// worker reached its exit trap and `POSTed` `REPLY_URL`) is superseded; a session
+/// that never registered is resolved by asking the owning dispatcher whether its
+/// workload is still alive.
+async fn decide(state: &impl DispatchContext, row: &PendingRow) -> Outcome {
+    match row.session_status.as_deref().and_then(SessionRowStatus::parse) {
+        // A server-observed failure does not prove the worker reached its exit
+        // trap. In particular, an OOM kill cannot deliver the worker callback.
+        Some(SessionRowStatus::Ended)
+            if matches!(
+                row.end_reason.as_deref(),
+                Some("oom_killed" | "spawn_failed" | "crashed")
+            ) =>
+        {
+            return Outcome::Fire(
+                row.end_detail.clone().or_else(|| row.end_reason.clone()).unwrap(),
+            );
+        }
+        // Transport loss can recover; ask the executor before declaring death.
+        Some(SessionRowStatus::Ended)
+            if matches!(row.end_reason.as_deref(), Some("daemon_lost" | "machine_offline")) => {}
+        // Preserve clean completion, explicit cancellation and legacy rows
+        // without an end reason: their worker owns the callback.
+        Some(SessionRowStatus::Ended) => return Outcome::Supersede,
+        // Dispatch never launched a runtime: no worker, no callback ever.
+        Some(SessionRowStatus::Failed) => return Outcome::Fire("dispatch never launched".into()),
+        // Time-based archive backstop (silence past grace) for when no
+        // dispatcher poll resolved it first.
+        Some(SessionRowStatus::Archived) => {
+            return Outcome::Fire(
+                "session ended without a completion signal (timed out / crashed / connection lost)"
+                    .into(),
+            );
+        }
+        // Non-terminal (active/inactive) or no session row at all (worker never
+        // registered — crashloop/never-started): fall through to the dispatcher
+        // liveness probe.
+        _ => {}
+    }
+
+    let (Some(name), Some(handle)) = (row.dispatcher_name.as_deref(), row.handle.as_deref()) else {
+        // No persisted handle (http escape-hatch, or a dispatch) —
+        // nothing to probe; the time-based archive path is the only backstop.
+        return Outcome::Wait;
+    };
+    let Ok(Some(dispatcher)) = crate::dispatch::resolve_dispatcher(state, row.user_id, name).await
+    else {
+        // Dispatcher gone/unreachable — wait; archive backstop still applies.
+        return Outcome::Wait;
+    };
+    match dispatcher.status(handle).await {
+        Ok(HandleStatus::Complete) => Outcome::Supersede,
+        Ok(HandleStatus::Failed(reason)) => {
+            Outcome::Fire(reason.unwrap_or_else(|| "workload failed".into()))
+        }
+        Ok(HandleStatus::Gone) => {
+            Outcome::Fire("workload no longer exists (crashed / evicted before reporting)".into())
+        }
+        // Still running, or the dispatcher can't introspect (http) / a transient
+        // error — wait.
+        Ok(HandleStatus::Running | HandleStatus::Queued) | Err(_) => Outcome::Wait,
+    }
+}
+
+/// One reaper-cadence sweep of the completion-webhook outbox.
+///
+/// For each due `pending` row: a row with a frozen payload is a delivery retry
+/// (POST it). Otherwise [`decide`] resolves the run's fate — `Fire` freezes the
+/// death payload and POSTs it (2xx → `sent`, else backoff/dead-letter);
+/// `Supersede` closes the row (the worker's own callback owns the verdict);
+/// `Wait` re-polls on the next sweep. Best-effort and self-healing.
+pub async fn sweep(state: &impl DispatchContext) {
+    let rows = match claim_due(state.dispatch_pool()).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("completion-webhook sweep query failed: {e}");
+            return;
+        }
+    };
+
+    for_each_bounded(rows, DELIVERY_CONCURRENCY, |row| process(state, row)).await;
+}
+
+async fn for_each_bounded<T, F, Fut>(items: Vec<T>, limit: usize, f: F)
+where
+    F: FnMut(T) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    use futures_util::StreamExt;
+    futures_util::stream::iter(items).for_each_concurrent(limit, f).await;
+}
+
+#[allow(clippy::cognitive_complexity)]
+async fn process(state: &impl DispatchContext, row: PendingRow) {
+    // A frozen payload means we already decided to fire — this is a retry.
+    if let Some(payload) = row.payload.clone() {
+        deliver(state, row.id, &row.notify_url, row.secret.as_deref(), &payload, row.attempts)
+            .await;
+        return;
+    }
+
+    match decide(state, &row).await {
+        Outcome::Fire(reason) => {
+            let payload = build_payload(&row.task_id, &reason);
+            // Freeze the payload so a later state change can't rewrite the
+            // body mid-retry and a server restart re-uses the same bytes.
+            let _ = sqlx::query("UPDATE session_webhooks SET payload = $2 WHERE id = $1")
+                .bind(row.id)
+                .bind(&payload)
+                .execute(state.dispatch_pool())
+                .await;
+            deliver(state, row.id, &row.notify_url, row.secret.as_deref(), &payload, row.attempts)
+                .await;
+        }
+        Outcome::Supersede => {
+            let _ = sqlx::query("UPDATE session_webhooks SET state = 'superseded' WHERE id = $1")
+                .bind(row.id)
+                .execute(state.dispatch_pool())
+                .await;
+            tracing::debug!(session_id = %row.session_id, "webhook superseded by worker callback");
+        }
+        Outcome::Wait => {
+            // Back off the next liveness poll without bumping the retry
+            // budget (that budget is for delivery failures, not polling).
+            let _ = sqlx::query(
+                "UPDATE session_webhooks \
+                 SET next_attempt_at = now() + ($2 || ' seconds')::interval WHERE id = $1",
+            )
+            .bind(row.id)
+            .bind(POLL_INTERVAL_SECS.to_string())
+            .execute(state.dispatch_pool())
+            .await;
+        }
+    }
+}
+
+/// POST one webhook body, updating the row on the outcome. Treats any 2xx as
+/// delivered; everything else (non-2xx, transport error) bumps the retry.
+async fn deliver(
+    state: &impl DispatchContext,
+    id: uuid::Uuid,
+    url: &str,
+    secret: Option<&str>,
+    payload: &serde_json::Value,
+    attempts: i32,
+) {
+    let body = serde_json::to_vec(payload).unwrap_or_default();
+    let mut req =
+        delivery_client().post(url).header("content-type", "application/json").body(body.clone());
+    if let Some(secret) = secret {
+        req = req.header("X-CCTUI-Signature", format!("sha256={}", sign(secret, &body)));
+    }
+
+    let outcome = req.timeout(DELIVERY_TIMEOUT).send().await;
+
+    match outcome {
+        Ok(resp) if resp.status().is_success() => {
+            let _ = sqlx::query(
+                "UPDATE session_webhooks SET state = 'sent', sent_at = now(), last_error = NULL \
+                 WHERE id = $1",
+            )
+            .bind(id)
+            .execute(state.dispatch_pool())
+            .await;
+            tracing::info!(webhook_id = %id, "completion webhook delivered");
+        }
+        other => {
+            let err = match other {
+                Ok(resp) => format!("non-success status {}", resp.status()),
+                Err(e) => format!("transport error: {e}"),
+            };
+            schedule_retry(state, id, attempts, &err).await;
+        }
+    }
+}
+
+/// Bump the attempt count and either schedule the next backoff attempt or
+/// dead-letter the row once the budget is exhausted.
+async fn schedule_retry(state: &impl DispatchContext, id: uuid::Uuid, attempts: i32, err: &str) {
+    let next = attempts + 1;
+    if next >= MAX_ATTEMPTS {
+        let _ = sqlx::query(
+            "UPDATE session_webhooks SET state = 'dead', attempts = $2, last_error = $3 \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(next)
+        .bind(err)
+        .execute(state.dispatch_pool())
+        .await;
+        tracing::error!(
+            webhook_id = %id,
+            attempts = next,
+            "completion webhook dead-lettered after exhausting retries: {err}"
+        );
+        return;
+    }
+    let backoff = retry_schedule().delay_secs_for(u32::try_from(attempts).unwrap_or(u32::MAX));
+    let _ = sqlx::query(
+        "UPDATE session_webhooks \
+         SET attempts = $2, last_error = $3, \
+             next_attempt_at = now() + ($4 || ' seconds')::interval \
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(next)
+    .bind(err)
+    .bind(backoff.to_string())
+    .execute(state.dispatch_pool())
+    .await;
+    tracing::warn!(webhook_id = %id, attempt = next, retry_in_secs = backoff, "completion webhook delivery failed, will retry: {err}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DELIVERY_CONCURRENCY, DELIVERY_TIMEOUT, MAX_ATTEMPTS, NotifyUrlError, SWEEP_LIMIT,
+        build_payload, claim_due, for_each_bounded, retry_schedule, sign, validate_notify_url,
+    };
+
+    /// Sum of the superseded fixed table (10/30/120/300/900/1800/3600). The
+    /// doubling schedule must reach at least this far, even at the bottom of the
+    /// jitter range, or an hour-long outage dead-letters where it used to recover.
+    const PREVIOUS_HORIZON_SECS: i64 = 6760;
+
+    /// Retries span the whole budget, so the horizon is the sum of every delay a
+    /// row can be given before it is declared dead.
+    #[test]
+    fn retry_horizon_is_no_shorter_than_the_table_it_replaced() {
+        let s = retry_schedule();
+        let retries = u32::try_from(MAX_ATTEMPTS - 1).unwrap();
+        let horizon: i64 = (0..retries).map(|a| s.delay_secs_for(a)).sum();
+        assert!(
+            horizon >= PREVIOUS_HORIZON_SECS,
+            "horizon {horizon}s over {retries} retries is shorter than the \
+             {PREVIOUS_HORIZON_SECS}s it replaced"
+        );
+        // A receiver that comes back within the hour must still be delivered to.
+        assert!(horizon >= 3600, "horizon {horizon}s cannot outlast a one-hour outage");
+    }
+
+    /// Every retry inside the attempt budget doubles within the shared ±20%
+    /// jitter and never exceeds the 1 h cap.
+    #[test]
+    fn retry_schedule_doubles_and_caps() {
+        let s = retry_schedule();
+        let mut base = 10i64;
+        for attempt in 0..u32::try_from(MAX_ATTEMPTS).unwrap() {
+            let secs = s.delay_secs_for(attempt);
+            let (lo, hi) = (base * 8 / 10, base * 12 / 10);
+            assert!((lo..=hi).contains(&secs), "attempt {attempt}: {secs}s outside {lo}..={hi}");
+            base = (base * 2).min(3600);
+        }
+        assert!(s.delay_secs_for(u32::MAX) <= 3600 * 12 / 10);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_full_pass_of_hung_receivers_is_bounded_by_concurrency() {
+        let started = tokio::time::Instant::now();
+        let limit = usize::try_from(SWEEP_LIMIT).unwrap();
+        for_each_bounded((0..limit).collect(), DELIVERY_CONCURRENCY, |_| {
+            tokio::time::sleep(DELIVERY_TIMEOUT)
+        })
+        .await;
+        let waves = u32::try_from(limit.div_ceil(DELIVERY_CONCURRENCY)).unwrap();
+        assert_eq!(started.elapsed(), DELIVERY_TIMEOUT * waves);
+    }
+
+    #[tokio::test]
+    async fn notify_url_accepts_public_https() {
+        validate_notify_url("https://1.1.1.1/hook").await.unwrap();
+        validate_notify_url("https://93.184.216.34:8443/cb").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn notify_url_rejects_non_https() {
+        assert!(matches!(
+            validate_notify_url("http://1.1.1.1/hook").await,
+            Err(NotifyUrlError::NotHttps)
+        ));
+        assert!(matches!(
+            validate_notify_url("file:///etc/passwd").await,
+            Err(NotifyUrlError::NotHttps)
+        ));
+        assert!(matches!(validate_notify_url("not a url").await, Err(NotifyUrlError::Malformed)));
+    }
+
+    #[tokio::test]
+    async fn notify_url_rejects_internal_targets() {
+        for u in [
+            "https://127.0.0.1/x",
+            "https://127.0.0.1:8080/x",
+            "https://10.0.0.5/x",
+            "https://172.16.9.9/x",
+            "https://192.168.1.1/x",
+            "https://100.64.0.1/x",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://0.0.0.0/x",
+            "https://[::1]/x",
+            "https://[::ffff:169.254.169.254]/",
+        ] {
+            assert!(matches!(validate_notify_url(u).await, Err(NotifyUrlError::Internal)), "{u}");
+        }
+    }
+
+    #[test]
+    fn death_payload_is_always_failed_with_reason() {
+        // The server webhook is a death-detector: it only fires for a
+        // run that did not complete, so the status is always `failed` and the
+        // dispatcher's reason rides in `error`. The verdict of a clean run is
+        // delivered by the worker's own REPLY_URL callback and never here.
+        let p = build_payload("task-1", "CrashLoopBackOff");
+        assert_eq!(p["task_id"], "task-1");
+        assert_eq!(p["status"], "failed");
+        assert_eq!(p["error"], "CrashLoopBackOff");
+        assert!(p.get("verdict").is_none());
+    }
+
+    #[test]
+    fn signature_is_stable_hex_hmac() {
+        // Known HMAC-SHA256("key", "body") so a receiver can reproduce it.
+        let sig = sign("key", b"body");
+        assert_eq!(sig.len(), 64);
+        assert_eq!(sig, sign("key", b"body"));
+        assert_ne!(sig, sign("other", b"body"));
+    }
+
+    #[tokio::test]
+    async fn a_due_webhook_is_claimed_by_one_sweep_only() {
+        let name = "webhook_claim_once";
+        let Some(url) = crate::test_support::db_url(name) else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(4)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let due = format!("{name}-{}", uuid::Uuid::new_v4());
+        let later = format!("{name}-{}", uuid::Uuid::new_v4());
+        sqlx::query(
+            "INSERT INTO session_webhooks (session_id, notify_url, task_id, next_attempt_at) \
+             VALUES ($1, 'https://example.com/hook', $1, now() - interval '1 second'), \
+                    ($2, 'https://example.com/hook', $2, now() + interval '1 hour')",
+        )
+        .bind(&due)
+        .bind(&later)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (a, b) = tokio::join!(claim_due(&pool), claim_due(&pool));
+        let mine: Vec<String> = a
+            .unwrap()
+            .into_iter()
+            .chain(b.unwrap())
+            .map(|r| r.session_id)
+            .filter(|id| id == &due || id == &later)
+            .collect();
+        assert_eq!(mine, vec![due.clone()], "the due row is claimed once, the future one not");
+        assert!(
+            claim_due(&pool).await.unwrap().iter().all(|r| r.session_id != due),
+            "a claimed row is leased"
+        );
+
+        sqlx::query("DELETE FROM session_webhooks WHERE session_id = ANY($1)")
+            .bind(vec![due, later])
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}

@@ -1,5 +1,8 @@
 <script lang="ts">
 	import '$lib/styles/app.css';
+	import { apiBase } from '$lib/config';
+	import { probeWorkspaceSupport } from '$lib/workspaceSupport';
+	import CoreServerNotice from '$lib/components/organisms/CoreServerNotice.svelte';
 	import '@dorsk/tsumikit/looks/depth.css';
 	import '@dorsk/tsumikit/looks/tactile.css';
 	import { QueryClient } from '@tanstack/svelte-query';
@@ -31,6 +34,7 @@
 	import { mountJourneys } from '$lib/journey';
 
 	let { children } = $props();
+	let workspaceAvailable = $state<boolean | null>(null);
 
 	// A deploy replaced the content-hashed chunks this tab knows, so the next
 	// navigation goes through the server instead of importing a 404.
@@ -128,12 +132,18 @@
 	// Probe the `HttpOnly` auth cookie once on load to learn whether we're already
 	// signed in — the token isn't readable from JS.
 	$effect(() => {
-		void auth.init();
+		let cancelled = false;
+		void probeWorkspaceSupport(fetch, apiBase()).then((supported) => {
+			if (cancelled) return;
+			workspaceAvailable = supported;
+			if (supported) void auth.init();
+		});
+		return () => { cancelled = true; };
 	});
 
 	// Keep the websocket alive whenever we hold a valid cookie session.
 	$effect(() => {
-		if (auth.isAuthed) ws.connect();
+		if (workspaceAvailable === true && auth.isAuthed) ws.connect();
 		else ws.disconnect();
 	});
 
@@ -143,17 +153,17 @@
 	// `load()` is idempotent (runs once) and tolerates 401/offline by keeping the
 	// localStorage-cached / default state, so it's safe to call on every auth flip.
 	$effect(() => {
-		if (auth.isAuthed) void settings.load();
+		if (workspaceAvailable === true && auth.isAuthed) void settings.load();
 	});
 
 	$effect(() => {
-		if (auth.isAuthed) void serverDrafts.load();
+		if (workspaceAvailable === true && auth.isAuthed) void serverDrafts.load();
 	});
 
 	// The guided tours spotlight elements behind the login, so they mount once
 	// a session exists; `mountJourneys` is idempotent across auth flips.
 	$effect(() => {
-		if (auth.isAuthed) void mountJourneys(queryClient);
+		if (workspaceAvailable === true && auth.isAuthed) void mountJourneys(queryClient);
 	});
 
 </script>
@@ -166,7 +176,9 @@
 	<!-- Remount the tree on a language flip so labels captured in component-init
 	     `const`s (not just reactive template reads) re-localize live. -->
 	{#key locale.current}
-		{#if auth.isAuthed}
+		{#if workspaceAvailable === false}
+			<CoreServerNotice />
+		{:else if workspaceAvailable === true && auth.isAuthed}
 			<div class="app" class:tiles={isTiles}>
 				<Header />
 				<main
@@ -195,9 +207,9 @@
 					onspawned={() => void queryClient.invalidateQueries({ queryKey: qk.sessionsAll })}
 				/>
 			{/if}
-		{:else if page.route.id === '/cctuiverse/join'}
+		{:else if workspaceAvailable === true && page.route.id === '/cctuiverse/join'}
 			<main class="content">{@render children?.()}</main>
-		{:else if !auth.checking}
+		{:else if workspaceAvailable === true && !auth.checking}
 			<Login />
 		{/if}
 	{/key}

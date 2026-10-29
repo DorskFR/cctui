@@ -676,8 +676,8 @@ reason = "a re-scrub is an admin maintenance action driven from the webui"
 [[route]]
 id = "get_capabilities"
 # GET /capabilities — List server capabilities/feature flags.
-tui = "waived"
-reason = "the daemon calls this, not a human client"
+tui = "handled"
+module = "server_capabilities.rs"
 
 [[route]]
 id = "post_enroll"

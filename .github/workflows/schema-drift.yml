@@ -19,9 +19,9 @@ on:
   workflow_dispatch: {}
   push:
     paths:
-      - "crates/cctui-server/src/settings_catalog/claude-code-settings.schema.json"
-      - "crates/cctui-server/src/settings_catalog/codex-config.schema.json"
-      - "crates/cctui-server/src/settings_catalog/codex-catalog.toml"
+      - "crates/cctui-server-core/src/settings_catalog/claude-code-settings.schema.json"
+      - "crates/cctui-server-core/src/settings_catalog/codex-config.schema.json"
+      - "crates/cctui-server-core/src/settings_catalog/codex-catalog.toml"
       - "crates/cctui-proto/src/codex_config.rs"
       - "crates/cctui-daemon/src/adapters/codex/contract.rs"
       - "scripts/check-codex-schema-drift.sh"
@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SCHEMA_URL: https://json.schemastore.org/claude-code-settings.json
-      VENDORED: crates/cctui-server/src/settings_catalog/claude-code-settings.schema.json
+      VENDORED: crates/cctui-server-core/src/settings_catalog/claude-code-settings.schema.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -57,7 +57,7 @@ jobs:
             echo "Upstream $SCHEMA_URL differs from the vendored copy at $VENDORED."
             echo "Re-vendor it and review catalog.toml for added/removed keys:"
             echo "  curl -fsSL $SCHEMA_URL -o $VENDORED"
-            echo "Then run: cargo test -p cctui-server settings_catalog"
+            echo "Then run: cargo test -p cctui-server-core settings_catalog"
             exit 1
           fi
 
@@ -81,7 +81,7 @@ jobs:
     name: codex catalog keys vs upstream config schema
     runs-on: ubuntu-latest
     env:
-      VENDORED: crates/cctui-server/src/settings_catalog/codex-config.schema.json
+      VENDORED: crates/cctui-server-core/src/settings_catalog/codex-config.schema.json
       SCHEMA_PATH: codex-rs/core/config.schema.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

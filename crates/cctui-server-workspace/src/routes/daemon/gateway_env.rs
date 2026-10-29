@@ -1,0 +1,690 @@
+use axum::Json;
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use serde::Deserialize;
+use uuid::Uuid;
+
+use crate::state::AppState;
+use cctui_server_core::launch_credentials::{gateway_env_allowed, spawn_capability_for};
+
+impl cctui_server_core::launch_credentials::LaunchCredentialsContext for AppState {
+    fn launch_state(&self) -> &cctui_server_core::state::CoreState {
+        &self.core
+    }
+    async fn default_spawn_capability(&self) -> cctui_proto::api::SpawnCapability {
+        crate::routes::server_settings::spawn_default_capability(self).await
+    }
+}
+
+// ---- /api/v1/daemon/sessions/{id}/gateway-env ----
+
+/// Query of both launch-context pulls. `rules` is absent from daemons that
+/// predate rules.
+#[derive(Debug, Default, Deserialize)]
+pub struct LaunchQuery {
+    #[serde(default)]
+    rules: bool,
+}
+
+/// Resolve a session's gateway-routing env for the daemon's launch chokepoint.
+/// The daemon calls this at every worker (re)launch — spawn, resume,
+/// cold-resume, fork — so the gateway credential comes from the server's durable
+/// `sessions.account_id` binding rather than from whatever env the triggering
+/// command happened to carry. This is what makes routing survive a daemon /
+/// claude-daemon restart and session-id rotation: the env is re-derived from the
+/// DB, not from volatile process/in-memory state.
+///
+/// Self-authenticating like [`auth`]/[`ws`]: the machine key is the Bearer.
+/// Scoped to the machine's owning user so a daemon can't resolve another user's
+/// account env.
+///
+/// Returns `{account_bound, env}`:
+///   * no binding → `{false, {}}` (no gateway routing needed; launch as-is)
+///   * bound + mintable → `{true, env}` (inject and launch)
+///   * bound + unmintable (account gone) → `{true, {}}` (daemon fails closed)
+///   * transient DB error → 500 (daemon falls back to the pushed env hint)
+pub async fn session_gateway_env(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(session_id): Path<String>,
+    Query(query): Query<LaunchQuery>,
+) -> Result<Json<cctui_proto::api::GatewayEnvResponse>, StatusCode> {
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let ctx = state.auth_config.validate(token).await.ok_or(StatusCode::UNAUTHORIZED)?;
+    let Some(machine_id) = ctx.machine_id else {
+        return Err(StatusCode::FORBIDDEN);
+    };
+
+    let allowed = gateway_env_allowed(&state.pool, ctx.user_id, machine_id, &session_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(%session_id, "daemon gateway-env ownership lookup failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if !allowed {
+        return Ok(Json(cctui_proto::api::GatewayEnvResponse {
+            account_bound: false,
+            env: std::collections::BTreeMap::default(),
+            settings: None,
+            whip_phrases: None,
+            spawn_capability: None,
+            plugins: Vec::new(),
+            context: Vec::new(),
+        }));
+    }
+
+    // The machine user's whip stall-phrase override rides this pull to
+    // reach the connectionless `whip-stop-hook`; per-user, so it applies whether
+    // or not the session is account-bound.
+    let user_settings = user_settings_of(&state, ctx.user_id).await;
+    let whip_phrases =
+        user_settings.as_ref().and_then(crate::routes::settings::whip_stop_phrases_of);
+    crate::plugin_store::sync_or_warn(&state.pool, &state.plugins).await;
+    let plugins = session_plugins(&state.plugins, user_settings.as_ref());
+
+    // Resolve EVERY bound family (one account per family) and re-mint each, so a
+    // worker carrying both claude + codex creds gets both restored on launch,
+    // not just the last-minted family. The families emit disjoint env
+    // keys, so the merge never collides.
+    let accounts = crate::routes::gateway::resolve_session_accounts(&state, &session_id).await;
+    if accounts.is_empty() {
+        return Ok(Json(cctui_proto::api::GatewayEnvResponse {
+            account_bound: false,
+            env: std::collections::BTreeMap::default(),
+            settings: None,
+            whip_phrases,
+            spawn_capability: spawn_capability_for(&state, &session_id).await,
+            plugins,
+            context: launch_context(&state.pool, ctx.user_id, machine_id, &session_id, query.rules)
+                .await?,
+        }));
+    }
+    let mut env = std::collections::BTreeMap::new();
+    for account_id in accounts {
+        match crate::routes::gateway::mint_session_env_for_account(&state, account_id, &session_id)
+            .await
+        {
+            Ok(Some(e)) => env.extend(e),
+            // This family's account row is gone — skip it; other families may
+            // still mint. With every family gone, `env` stays empty and we report
+            // bound + empty below so the daemon fails closed instead of launching
+            // a worker that will 401.
+            Ok(None) => {}
+            // Transient DB failure: let the daemon fall back to its pushed env hint.
+            Err(e) => {
+                tracing::error!(%session_id, "daemon gateway-env mint failed: {e}");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+    // Merge the bound account(s)' per-account `settings_json` so it
+    // rides alongside the gateway env on this same pull. Re-served on every
+    // (re)launch, it survives a daemon / claude-daemon restart; the daemon
+    // deep-merges it UNDER its managed hook settings when writing the worker's
+    // `--settings` file (that daemon-side merge is).
+    let mut settings = crate::routes::gateway::resolve_session_settings(&state, &session_id).await;
+    // Codex defaults to the `priority` tier, so a relaunch with no opinion is the
+    // expensive one. Serve a concrete tier to a codex session, and only to one:
+    // the OpenAI-wire ACP agents share the family but cannot use the key.
+    let adapter = crate::store::sessions::adapter_id(&state.pool, &session_id)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if crate::settings_catalog::codex::adapter_takes_service_tier(&adapter) {
+        settings = crate::settings_catalog::codex::overlay_service_tier(settings);
+    }
+    // This pull only happens when the daemon is actually (re)launching the
+    // worker — a session marked `ended` (possibly by a spurious end)
+    // is provably coming back to life, so un-stick the terminal status here.
+    // `archived` stays parked: un-archiving is an explicit user action.
+    let _ = sqlx::query(
+        "UPDATE sessions SET status = 'active', ended_at = NULL, end_reason = NULL, end_detail = NULL \
+         WHERE id = $1 AND status = 'ended'",
+    )
+    .bind(&session_id)
+    .execute(&state.pool)
+    .await;
+    Ok(Json(cctui_proto::api::GatewayEnvResponse {
+        account_bound: true,
+        env,
+        settings,
+        whip_phrases,
+        spawn_capability: spawn_capability_for(&state, &session_id).await,
+        plugins,
+        context: launch_context(&state.pool, ctx.user_id, machine_id, &session_id, query.rules)
+            .await?,
+    }))
+}
+
+/// `GET /api/v1/daemon/sessions/{id}/context` — [`session_context`] without
+/// minting credentials, for a launch that already holds them.
+pub async fn session_launch_context(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(session_id): Path<String>,
+    Query(query): Query<LaunchQuery>,
+) -> Result<Json<cctui_proto::api::LaunchContextResponse>, StatusCode> {
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let ctx = state.auth_config.validate(token).await.ok_or(StatusCode::UNAUTHORIZED)?;
+    let Some(machine_id) = ctx.machine_id else {
+        return Err(StatusCode::FORBIDDEN);
+    };
+    let context =
+        launch_context(&state.pool, ctx.user_id, machine_id, &session_id, query.rules).await?;
+    Ok(Json(cctui_proto::api::LaunchContextResponse { context }))
+}
+
+/// [`session_context`] gated by [`context_allowed`]: both launch pulls serve
+/// the context only when the key is the caller's.
+async fn launch_context(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    machine_id: Uuid,
+    session_id: &str,
+    rules: bool,
+) -> Result<Vec<cctui_proto::api::SessionContextItem>, StatusCode> {
+    let allowed = context_allowed(pool, user_id, machine_id, session_id).await.map_err(|e| {
+        tracing::error!(%session_id, "daemon context ownership lookup failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(if allowed { session_context(pool, session_id, rules).await } else { Vec::new() })
+}
+
+/// A key with no session row is readable only when the set recorded under it
+/// is the caller's.
+async fn context_allowed(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    machine_id: Uuid,
+    session_id: &str,
+) -> Result<bool, sqlx::Error> {
+    if !gateway_env_allowed(pool, user_id, machine_id, session_id).await? {
+        return Ok(false);
+    }
+    let registered: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sessions WHERE id = $1)")
+            .bind(session_id)
+            .fetch_one(pool)
+            .await?;
+    if registered {
+        return Ok(true);
+    }
+    let owner: Option<Option<String>> =
+        sqlx::query_scalar("SELECT scope->>'user_id' FROM session_context WHERE spawn_key = $1")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(owner.flatten().is_some_and(|o| o == user_id.to_string()))
+}
+
+/// The context this launch carries, as the daemon needs it: the rules,
+/// re-resolved now so an edited rule reaches the next launch, then the memory
+/// notes and prompt template the spawn froze. Read through the spawn key the
+/// adapters echo.
+async fn session_context(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    rules: bool,
+) -> Vec<cctui_proto::api::SessionContextItem> {
+    crate::routes::context::for_launch(pool, session_id, rules)
+        .await
+        .into_iter()
+        .map(|i| cctui_proto::api::SessionContextItem {
+            kind: i.kind,
+            name: i.name,
+            title: i.title,
+            body: i.body,
+            version: i.version,
+        })
+        .collect()
+}
+
+/// The machine user's clamped `whipStopPhrases` block from
+/// `user_settings.data`, or `None` when unset / reduced to the default. Read from
+/// the DB on the same gateway-env pull that carries the account settings.
+async fn user_settings_of(state: &AppState, user_id: Uuid) -> Option<serde_json::Value> {
+    sqlx::query_scalar("SELECT data FROM user_settings WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// The skill bundles and setting env of every installed plugin the user
+/// enabled; plugins that contribute neither are skipped.
+pub fn session_plugins(
+    registry: &crate::plugins::PluginRegistry,
+    settings: Option<&serde_json::Value>,
+) -> Vec<cctui_proto::api::SessionPlugin> {
+    crate::plugins::enabled_ids(settings)
+        .iter()
+        .filter_map(|id| registry.get(id))
+        .map(|p| {
+            let host_token = crate::plugin_host_token::unsealed(settings, &p.manifest.id);
+            (crate::plugins::plugin_env(&p.manifest, settings, host_token.as_deref()), p)
+        })
+        .filter(|(env, p)| !p.skill_files.is_empty() || !env.is_empty())
+        .map(|(env, p)| cctui_proto::api::SessionPlugin {
+            id: p.manifest.id,
+            version: p.manifest.version,
+            skills_hash: p.skills_hash,
+            files: p.skill_files,
+            env,
+        })
+        .collect()
+}
+
+// ---- /api/v1/daemon/sessions/{id}/token-valid ----
+
+/// Query for [`session_token_valid`]: the sha256 hex of the session token the
+/// daemon launched the worker with. Hash-only on purpose — no token material
+/// on the wire (invariant).
+#[derive(Deserialize)]
+pub struct TokenValidQuery {
+    pub hash: String,
+}
+
+/// Does this session's minted token still resolve at the gateway?
+///
+/// The daemon's validity sweep calls this for TRUSTED workers (ones it
+/// launched with gateway env) so a worker whose `session_tokens` row got
+/// unbound/deleted (401s forever at the gateway) is observable and healable.
+/// `valid` = a `session_tokens` row with this hash exists
+/// FOR THIS SESSION, is not revoked, and joins a live `account_providers` row
+/// (the same join [`resolve_account`](crate::routes::gateway) applies, but by
+/// hash equality).
+///
+/// Self-authenticating like [`session_gateway_env`]: machine-key Bearer.
+/// User-scoped the same way, except a session owned by another user answers
+/// 404 rather than `{valid: false}` — a false `valid` triggers a destructive
+/// kill + cold-resume daemon-side, and the daemon treats any non-200 as
+/// "unknown" (no heal). Transient DB error → 500 for the same reason
+/// (fail-open; the heal kill is destructive).
+pub async fn session_token_valid(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(session_id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<TokenValidQuery>,
+) -> Result<Json<cctui_proto::api::TokenValidResponse>, StatusCode> {
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let ctx = state.auth_config.validate(token).await.ok_or(StatusCode::UNAUTHORIZED)?;
+    if ctx.machine_id.is_none() {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let valid = cctui_server_core::launch_credentials::token_valid(
+        &state.pool,
+        ctx.user_id,
+        &session_id,
+        &q.hash,
+    )
+    .await
+    .map_err(|error| {
+        tracing::error!(%session_id,%error,"token-valid lookup failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
+    .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(cctui_proto::api::TokenValidResponse { valid }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::routes::daemon::test_support::{
+        drop_machines, seed_machine, seed_owned_session, seed_session,
+    };
+
+    #[test]
+    fn ungranted_sessions_spawn_up_to_their_live_mode() {
+        use crate::routes::spawn_child::{Usage, authorize};
+        use cctui_proto::adapter::PermissionMode;
+        let cap = cctui_proto::api::SpawnCapability::machine_default();
+        let req = |m| cctui_proto::api::SpawnChildRequest {
+            adapter: "codex".into(),
+            prompt: "go".into(),
+            permission_mode: Some(m),
+            ..Default::default()
+        };
+        let usage = |p| Usage { parent_mode: Some(p), ..Usage::default() };
+
+        let a = authorize(Some(&cap), &req(PermissionMode::Yolo), &usage(PermissionMode::Yolo))
+            .expect("yolo parent spawns yolo");
+        assert_eq!(a.permission_mode, PermissionMode::Yolo);
+
+        assert!(
+            authorize(Some(&cap), &req(PermissionMode::Yolo), &usage(PermissionMode::Ask)).is_err()
+        );
+        let a = authorize(Some(&cap), &req(PermissionMode::Ask), &usage(PermissionMode::Ask))
+            .expect("ask parent spawns ask");
+        assert_eq!(a.permission_mode, PermissionMode::Ask);
+    }
+
+    /// A session launched without a capability gets the default grant, except
+    /// one whose owner has a dispatch policy: it may spawn no children.
+    #[tokio::test]
+    async fn the_default_grant_spawns_no_children_for_a_policy_bound_owner() {
+        let Some(url) = crate::routes::gateway::test_db_url("gateway_env_policy_default") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let state = AppState::for_test(pool.clone());
+        let default = crate::routes::server_settings::spawn_default_capability(&state).await;
+        for bound in [false, true] {
+            let uid = Uuid::new_v4();
+            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+                .bind(uid)
+                .bind(format!("policy-default-{uid}"))
+                .bind(format!("kh-{uid}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+            if bound {
+                let rules = cctui_proto::api::admin::DispatchPolicyRules::default();
+                crate::store::dispatch_policies::upsert(&pool, uid, &rules).await.unwrap();
+            }
+            let sid = format!("policy-default-{}", Uuid::new_v4());
+            sqlx::query(
+                "INSERT INTO auth_keys (user_id, key_hash, kind, session_id, expires_at) \
+                 VALUES ($1, $2, 'ephemeral', $3, now() + interval '1 hour')",
+            )
+            .bind(uid)
+            .bind(format!("eph-{sid}"))
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let cap = spawn_capability_for(&state, &sid).await.expect("granted");
+            let max_children = if bound { Some(0) } else { default.max_children };
+            assert_eq!(
+                cap,
+                cctui_proto::api::SpawnCapability { max_children, ..default.clone() },
+                "policy-bound: {bound}"
+            );
+
+            sqlx::query("DELETE FROM session_spawn_capabilities WHERE session_id = $1")
+                .bind(&sid)
+                .execute(&pool)
+                .await
+                .ok();
+            sqlx::query("DELETE FROM auth_keys WHERE user_id = $1")
+                .bind(uid)
+                .execute(&pool)
+                .await
+                .ok();
+            sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+        }
+    }
+
+    #[tokio::test]
+    async fn gateway_env_is_refused_for_sessions_the_machine_does_not_own() {
+        let Some(url) = crate::routes::gateway::test_db_url("gateway_env_owner") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (ua, ma) = seed_machine(&pool, "owner").await;
+        let (ub, mb) = seed_machine(&pool, "intruder").await;
+        let ma2 = {
+            let mid = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(mid)
+            .bind(ua)
+            .bind(format!("m-{mid}"))
+            .bind(format!("mk-{mid}"))
+            .execute(&pool)
+            .await
+            .expect("seed second machine");
+            mid
+        };
+        let owned = seed_owned_session(&pool, ua, ma).await;
+        let (ownerless_user, ownerless) = seed_session(&pool, "claude-code", "anthropic").await;
+        sqlx::query("UPDATE sessions SET user_id = NULL WHERE id = $1")
+            .bind(&ownerless)
+            .execute(&pool)
+            .await
+            .expect("clear owner");
+
+        let allowed = async |user, machine, sid: &str| {
+            super::gateway_env_allowed(&pool, user, machine, sid).await.expect("lookup")
+        };
+        assert!(allowed(ua, ma, &owned).await);
+        assert!(allowed(ua, ma, "not-registered-yet").await);
+        assert!(!allowed(ub, mb, &owned).await, "another user's session is refused");
+        assert!(!allowed(ua, ma2, &owned).await, "another machine's session is refused");
+        assert!(!allowed(ub, mb, &ownerless).await, "a NULL-owner session is refused");
+        assert!(!allowed(ua, ma, &ownerless).await);
+
+        // An unregistered id whose token was already minted for someone else is
+        // that user's session: a machine key that merely knows the id is not
+        // entitled to its credential.
+        let claimed = format!("ses-claimed-{}", Uuid::new_v4());
+        let acct: Uuid =
+            sqlx::query_scalar("INSERT INTO accounts (user_id, name) VALUES ($1, $2) RETURNING id")
+                .bind(ua)
+                .bind(format!("acct-{claimed}"))
+                .fetch_one(&pool)
+                .await
+                .expect("seed account");
+        let prov: Uuid = sqlx::query_scalar(
+            "INSERT INTO account_providers (user_id, account_id, provider) \
+             VALUES ($1, $2, 'anthropic') RETURNING id",
+        )
+        .bind(ua)
+        .bind(acct)
+        .fetch_one(&pool)
+        .await
+        .expect("seed provider");
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id, user_id) \
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(format!("kh-{claimed}"))
+        .bind(&claimed)
+        .bind(prov)
+        .bind(ua)
+        .execute(&pool)
+        .await
+        .expect("seed token");
+        assert!(allowed(ua, ma, &claimed).await, "the token's own user is let through");
+        assert!(
+            !allowed(ub, mb, &claimed).await,
+            "an unregistered id already claimed by another user's token is refused"
+        );
+        sqlx::query("DELETE FROM accounts WHERE id = $1").bind(acct).execute(&pool).await.ok();
+
+        // Archiving is an explicit park: un-archiving is a user action, so an
+        // archived session must not re-mint behind the user's back.
+        sqlx::query("UPDATE sessions SET status = 'archived' WHERE id = $1")
+            .bind(&owned)
+            .execute(&pool)
+            .await
+            .expect("archive");
+        assert!(!allowed(ua, ma, &owned).await, "an archived session mints nothing");
+        sqlx::query("UPDATE sessions SET status = 'ended' WHERE id = $1")
+            .bind(&owned)
+            .execute(&pool)
+            .await
+            .expect("end");
+        assert!(allowed(ua, ma, &owned).await, "an ended session is still relaunchable");
+
+        sqlx::query("DELETE FROM machines WHERE id = $1").bind(ma2).execute(&pool).await.ok();
+        drop_machines(&pool, &[owned, ownerless], &[(ua, ma), (ub, mb)]).await;
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(ownerless_user)
+            .execute(&pool)
+            .await
+            .ok();
+
+        pool.close().await;
+        assert!(
+            super::gateway_env_allowed(&pool, ua, ma, "any").await.is_err(),
+            "a lookup failure surfaces as an error (500), never as allowed",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_launch_key_context_is_readable_only_by_its_owner() {
+        let Some(url) = crate::routes::gateway::test_db_url("launch_context_owner") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (ua, ma) = seed_machine(&pool, "ctx-owner").await;
+        let (ub, mb) = seed_machine(&pool, "ctx-intruder").await;
+        let owned = seed_owned_session(&pool, ua, ma).await;
+        let key = format!("cmd-{}", Uuid::new_v4());
+        let scope = crate::routes::context::StoredScope {
+            user_id: ua,
+            coords: crate::routes::context::SpawnScope::default(),
+            dispatched: false,
+        };
+        crate::routes::context::remember_intent(&pool, &key, &[], &scope).await;
+
+        let allowed = async |user, machine, sid: &str| {
+            super::context_allowed(&pool, user, machine, sid).await.expect("lookup")
+        };
+        assert!(allowed(ua, ma, &owned).await);
+        assert!(!allowed(ub, mb, &owned).await);
+        assert!(allowed(ua, ma, &key).await, "the fork's own launch key");
+        assert!(!allowed(ub, mb, &key).await, "another user's launch key");
+        assert!(!allowed(ua, ma, "never-recorded").await, "an unknown key reads nothing");
+
+        sqlx::query("DELETE FROM session_context WHERE spawn_key = $1")
+            .bind(&key)
+            .execute(&pool)
+            .await
+            .ok();
+        drop_machines(&pool, &[owned], &[(ua, ma), (ub, mb)]).await;
+    }
+
+    /// The gateway-env pull serves the same context as the context pull, so it
+    /// is gated the same way: a launch key recorded for another user yields no
+    /// rule or memory bodies, even though the key itself has no session row.
+    #[tokio::test]
+    async fn gateway_env_context_is_withheld_from_another_users_launch_key() {
+        use crate::routes::context::{ContextItemSpec, clean_spec, insert};
+
+        let Some(url) = crate::routes::gateway::test_db_url("gateway_env_context_owner") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (ua, ma) = seed_machine(&pool, "genv-ctx-owner").await;
+        let (ub, mb) = seed_machine(&pool, "genv-ctx-intruder").await;
+        let memory = clean_spec(ContextItemSpec {
+            kind: "memory".into(),
+            name: "deploy".into(),
+            title: "Deploy".into(),
+            body: "private runbook".into(),
+            enabled: true,
+            ..ContextItemSpec::default()
+        })
+        .expect("valid memory");
+        let item = insert(&pool, ua, &memory, None, None).await.expect("memory");
+        let key = format!("cmd-{}", Uuid::new_v4());
+        let scope = crate::routes::context::StoredScope {
+            user_id: ua,
+            coords: crate::routes::context::SpawnScope::default(),
+            dispatched: false,
+        };
+        crate::routes::context::remember_intent(&pool, &key, std::slice::from_ref(&item), &scope)
+            .await;
+
+        let mine = super::launch_context(&pool, ua, ma, &key, true).await.expect("lookup");
+        assert_eq!(mine.len(), 1);
+        assert_eq!((mine[0].name.as_str(), mine[0].body.as_str()), ("deploy", "private runbook"));
+        let theirs = super::launch_context(&pool, ub, mb, &key, true).await.expect("lookup");
+        assert!(theirs.is_empty(), "another user's machine key reads no context: {theirs:?}");
+
+        sqlx::query("DELETE FROM session_context WHERE spawn_key = $1")
+            .bind(&key)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM context_items WHERE id = $1")
+            .bind(item.id)
+            .execute(&pool)
+            .await
+            .ok();
+        drop_machines(&pool, &[], &[(ua, ma), (ub, mb)]).await;
+    }
+
+    #[test]
+    fn session_plugins_follow_the_users_enabled_flags() {
+        use crate::plugins::test_support::write_plugin;
+        let root = tempfile::tempdir().unwrap();
+        write_plugin(
+            root.path(),
+            "on",
+            r#","settings":[{"key":"host","label":"Host","env":"ON_HOST","type":"string"}]"#,
+        );
+        write_plugin(root.path(), "off", "");
+        let noskill = root.path().join("bare");
+        std::fs::create_dir_all(&noskill).unwrap();
+        std::fs::write(
+            noskill.join("plugin.json"),
+            br#"{"id":"bare","name":"b","version":"1","cctuiApi":1}"#,
+        )
+        .unwrap();
+        let registry = crate::plugins::PluginRegistry::from_dir(root.path().to_path_buf());
+        let settings = serde_json::json!({
+            "plugins": {
+                "enabled": { "on": true, "off": false, "bare": true, "ghost": true },
+                "config": { "on": { "host": "10.0.0.5" }, "off": { "host": "x" } }
+            }
+        });
+        let plugins = super::session_plugins(&registry, Some(&settings));
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].id, "on");
+        assert_eq!(plugins[0].version, "1.2.3");
+        assert_eq!(plugins[0].files, vec!["on/SKILL.md", "on/notes.txt"]);
+        assert_eq!(plugins[0].skills_hash.len(), 16);
+        assert_eq!(plugins[0].env.get("ON_HOST").map(String::as_str), Some("10.0.0.5"));
+        assert!(super::session_plugins(&registry, None).is_empty());
+    }
+
+    #[test]
+    fn a_host_token_plugin_with_no_minted_token_exports_none() {
+        use crate::plugins::test_support::write_plugin;
+        let root = tempfile::tempdir().unwrap();
+        write_plugin(root.path(), "asks", r#","hostToken":{"env":"ASKS_TOKEN"}"#);
+        let registry = crate::plugins::PluginRegistry::from_dir(root.path().to_path_buf());
+        let settings = serde_json::json!({ "plugins": { "enabled": { "asks": true } } });
+
+        // Reads the sealed block, which is absent — so this must not reach the
+        // vault key, which is unset outside the server process.
+        let plugins = super::session_plugins(&registry, Some(&settings));
+        assert_eq!(plugins.len(), 1, "the skill files still ship");
+        assert_eq!(plugins[0].id, "asks");
+        assert!(
+            !plugins[0].env.contains_key("ASKS_TOKEN"),
+            "a user with no minted token gets no env entry at all"
+        );
+    }
+}

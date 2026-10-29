@@ -127,7 +127,7 @@ Daemon ingest groups the persistable events of one frame into a single multi-row
 event. The benchmark measures both paths against the same database:
 
 ```sh
-DATABASE_URL=postgres://… cargo test -p cctui-server --bins routes::daemon::ingest \
+DATABASE_URL=postgres://… cargo test -p cctui-server-workspace --lib routes::daemon::ingest \
   -- --ignored --nocapture batched_backfill
 ```
 

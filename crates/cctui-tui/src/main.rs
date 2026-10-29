@@ -9,6 +9,7 @@ mod keys;
 #[cfg(test)]
 mod parity;
 mod selfupdate;
+mod server_capabilities;
 #[cfg(test)]
 mod server_event_contract;
 mod termnotify;
@@ -129,15 +130,9 @@ async fn main() -> Result<()> {
         Some(Command::Logout { revoke }) => auth::logout(revoke).await,
         Some(Command::Diagnose { session_id }) => run_diagnose(&session_id).await,
         Some(Command::Open { session_id, seq }) => {
-            let (base_url, _) = resolve_identity();
-            selfupdate::maybe_update(&base_url).await;
             run_tui(Startup { open: Some(session_id), seq, filter }).await
         }
-        None => {
-            let (base_url, _) = resolve_identity();
-            selfupdate::maybe_update(&base_url).await;
-            run_tui(Startup { filter, ..Startup::default() }).await
-        }
+        None => run_tui(Startup { filter, ..Startup::default() }).await,
     }
 }
 
@@ -253,6 +248,11 @@ fn on_panic(ui_thread: std::thread::ThreadId, out: &mut impl io::Write) -> bool 
 
 async fn run_tui(startup: Startup) -> Result<()> {
     let (base_url, token) = resolve_identity();
+
+    let probe =
+        Client::with_timeouts(&base_url, &token, Duration::from_secs(3), Duration::from_secs(3));
+    server_capabilities::require_workspace(&probe).await?;
+    selfupdate::maybe_update(&base_url).await;
 
     install_panic_hook();
     enable_raw_mode()?;

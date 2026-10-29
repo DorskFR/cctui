@@ -1,0 +1,943 @@
+# Server core and workspace split
+
+## Delivery status
+
+The 0.27.0 release delivers the shared execution engine, opt-in standalone
+host, minimal database, signed core distribution, and extracted workspace host.
+The full distribution remains the default for existing installations.
+
+| Milestone | Acceptance evidence |
+| --- | --- |
+| Shared execution engine | Both hosts use shared services; workspace tests and HTTP/WebSocket contracts pass |
+| Standalone automation host | Real Claude/Codex machine and Kubernetes execution, parent/child, signed context packs, cancellation and single-host recovery |
+| Minimal database | Fresh core bootstrap, core-to-full expansion, immutable lineage and forward migrations |
+| Installable core distribution | Signed binaries/images and actual published-worker execution |
+| Workspace boundary and clients | Full-host extraction, capability-aware clients and stable full mixed-replica rollout/rollback with retained data |
+
+Standalone core supports one active host per database, enforced by a database
+lease; active core replication is outside this release. Full-server rolling
+replicas remain supported. Core package schema three requires a pre-upgrade
+restore when rolling back to split betas 25–33. See
+[core-server.md](core-server.md) for deployment and compatibility details.
+
+The increments below are a historical delivery record. Their open-gate notes
+record the state at each increment; the table above describes the final scope.
+Stable publication still follows the signed-release and verified-rollout gates.
+
+## Release lane and compatibility contract
+
+Implementation targets the `0.27.0` integration branch. Feature PRs target that
+branch, and each publishable increment uses `0.27.0-beta.N`. Stable promotion to
+`main` happens only after the acceptance gates below pass. The existing release
+workflow already tests version branches and publishes beta tags as prereleases;
+`:latest` remains on the stable line. Read `docs/release-channels.md` before tagging.
+
+`cctui-server` and the `cctui` image remain the full distribution. Existing
+commands, environment defaults, API paths, client wire formats, database records,
+encryption keys, mounts, enrollment and self-update selection must keep working.
+The first extraction changes no migrations or deployment configuration. The new
+core binary/image will be opt-in; running an existing installation never silently
+selects core. Workers and dispatchers remain shared between distributions.
+
+This is an execution/workspace boundary, not an enterprise license boundary.
+GitHub review and YouTrack triage remain integrations calling the execution API.
+
+## Ownership
+
+| Area | Core | Workspace |
+| --- | --- | --- |
+| Identity | Users, service identities, API keys, scopes, revocation, ownership, audit | Interactive login adapters and identity screens |
+| Accounts | Encrypted provider credentials, OAuth setup/refresh, pools, model routing | Account dashboards and historical charts |
+| Gateway | Provider proxying, ephemeral tokens, limits, budget enforcement | Optional tracing exporters and reporting |
+| Targets | Machine/dispatcher enrollment, daemon transport, existing dispatcher backends | Filesystem browser, interactive terminal, previews |
+| Launch | JSON machine/dispatcher launch, harness/model/configuration selection | Multipart uploads, drafts, interactive context resolution |
+| Policy | Dispatch grants, permission ceilings, tool/network policy, child-spawn limits | Human approval/question/plan interfaces |
+| Lifecycle | Stable run identity, acknowledgment, status, cancellation, result/failure | Conversation navigation and organization |
+| Events | Lifecycle, accounting, bounded diagnostic records | Full transcript archive, search, images, filesystem links |
+| Inputs | Prompts/configuration references and worker context-pack execution | Server attachment storage, skill editors, shared memory |
+| Operations | Health/readiness, essential metrics, configuration, migration orchestration, cleanup | Voice, plugins, rooms, federation |
+
+Worker repository checkout, local files and result files remain execution inputs
+and outputs. Removing server uploads must not remove these capabilities.
+Unattended runs must not hang indefinitely waiting for a human: define a blocked
+or terminal outcome and an explicit supported resolution path, preserving policy
+enforcement. Do not equate removing approval screens with granting permission.
+
+Core must be administrable through API/CLI without a workspace UI: provision a
+user, issue/revoke keys, connect provider accounts, enroll targets and inspect work.
+OAuth browser consent may still be required by a provider; no workspace frontend
+should be required to initiate or finish the supported flow.
+
+## Dependency direction
+
+- `cctui-server-core`: shared identity, account, gateway, execution and essential
+  persistence services. No dependency on workspace/full server.
+- `cctui-core-server`: experimental automation host using core services.
+- `cctui-server-workspace`: interactive handlers, application state, workspace
+  storage and full-host assembly, depending on core.
+- `cctui-server`: the existing full executable, starting the workspace host.
+
+Start with these coarse crates. Extract search/media/voice/plugin crates further
+only when useful. Core must compile/test on its own without search, image codecs,
+WebAuthn or UI/plugin startup. Shared protocol types can continue describing the
+full API; the core binary must not need implementations of workspace capabilities.
+
+## Increments
+
+### Shared identity and storage foundation
+
+The initial beta extracts `auth` and the repositories for ACLs, provider accounts,
+account pools/redirects, gateway tokens, dispatch records, spawn capabilities and
+the usage ledger into `cctui-server-core`. The full server re-exports the same
+implementations, so callers and wire shapes stay unchanged. The core token rebind does not require attachment storage; the full server wraps
+it to preserve attachment rebinding. Existing tests move
+with their implementation and run under the workspace test gate. Database-gated
+core tests require an already migrated database, just as the full-server tests do.
+
+This beta is still the full server. It is not a minimal installation and does not
+claim to remove workspace schema/extensions or publish a standalone core image.
+
+### Account resolution, gateway policy and launch tracking (`0.27.0-beta.2`)
+
+Account ranking, pool resolution and provider/path configuration now live in
+`cctui-server-core`. Full-server modules re-export them, preserving route callers
+and configuration defaults. `AccountResolutionContext` supplies only the pool,
+the local reauthentication fallback and an asynchronous usage reader. The full
+host delegates that reader to its existing gateway implementation, retaining
+usage refresh/cache, history and broadcast ordering. Core never calls a workspace
+route or imports `AppState`.
+
+Account precedence, scoped pool lookup, provider-family/model filtering,
+redirect-aware scoring, in-flight reservations, reauthentication exclusions and
+best-effort reads retain their existing SQL and policy. The active-liveness
+constant is shared with the full session display to prevent threshold drift.
+The new database regression restricts search_path to temporary execution tables;
+no workspace table is visible. A separate closed-database regression checks
+reauthentication fallback and distinguishes database failures from rejection.
+
+Core also owns pending-command metadata, daemon-verdict waiters and the early
+launch acknowledgment deadline. The full state module re-exports these types and
+functions, keeping its existing callers. Waiter registration now cleans up when
+a waiting request is canceled as well as on verdict and timeout; the cancellation
+regression fails against the old implementation. Existing acknowledgment tests
+move with their implementation, and expiry tests check stale command pruning.
+
+This remains an internal extraction shipped through the full distribution.
+OAuth refresh, usage fetching, execution state, launch, lifecycle, standalone
+hosting and minimal schema provisioning are still subsequent work.
+
+### Provider credentials and refresh (`0.27.0-beta.3`)
+
+Core now resolves gateway tokens to live credentials, refreshes OAuth credentials,
+and persists reauthentication flags. `CredentialContext` supplies the host's
+pool, HTTP client, per-account locks, reauthentication cache and lazy vault-key
+accessor. The full adapter calls the existing startup-resolved vault-key helper;
+installed legacy/generated keys keep working. Once loaded, static credentials
+bypass database, vault-key and refresh access during token selection.
+
+Refresh retains the second database read under the account lock, rotated-token
+persistence, provider endpoints/client IDs, skew, rejection backoff and transient
+failure handling. Owner/share revocation SQL is unchanged. Reauthentication
+writes keep their existing cache-transition and background-write behavior.
+Only the host interface allows token endpoint overrides for deterministic tests;
+full-server defaults still read the same environment configuration.
+
+Focused PostgreSQL tests cover concurrent refresh making exactly one OAuth call,
+rotation of encrypted credentials, rejected-token backoff and flag persistence,
+static credentials and owner/service-token revocation. Rotation and flag tests
+see only the provider table, without workspace storage. Full gateway routes
+re-export or forward to these shared services.
+
+This remains the full distribution. Gateway proxying, usage fetching, target
+transport, execution assembly, standalone hosting and schema provisioning remain.
+
+### Quota enforcement and metering (`0.27.0-beta.4`)
+
+Core now owns provider quota reads, compatible-endpoint probes, cost calculation,
+billing reconciliation, session metering and the current-usage cache. The full
+host re-exports those implementations and supplies its existing outbound policy
+and guarded HTTP client. Probe validation remains mandatory at the host boundary.
+
+`UsageContext` caches a fresh reading before awaiting its reporting callback. The
+full callback retains rendering/broadcast followed by background history recording;
+core does not depend on historical samples or the workspace event bus. Failed
+upstream reads preserve the previous payload and timestamp, including the existing
+fail-open behavior when no reading exists. Cache TTLs and provider defaults remain
+unchanged. The release-configured provider user-agent version is now baked into
+core by its own build script, preserving release behavior after the move.
+
+Contract tests exercise fresh-cache reuse while reporting is blocked, stale-cache
+fallback on HTTP 429, and host rejection of a compatible probe before network IO.
+They expose only a temporary provider table; the quota and reset endpoints use a
+local HTTP fixture. Existing pricing, billing and probe mapping tests move with
+the implementations. This is still the full distribution; proxy transport,
+execution hosting and minimal database provisioning remain subsequent work.
+
+### Target transport and prepared machine launch (`0.27.0-beta.5`)
+
+Core owns the delivery bus, dispatcher interface/registry and enrolled/HTTP
+implementations, legacy live-session registry and policy shapes, outbound URL
+policy, HTTP client setup and rolling gateway RPM/TPM windows. The full server
+re-exports them and supplies the same peer transport, connection registries,
+clients and shared allowlist. Full-host session addressing and daemon reconcile
+assembly remain adapters above the bus. Protocol payloads are unchanged.
+
+Parked daemon and dispatcher replies now unregister when callers are canceled,
+including while waiting to send. The regression fails against the unguarded
+implementation. Existing bus ownership, priority delivery, reply correlation,
+dispatcher restart/hold bounds and status mapping tests move into core. HTTP
+contracts cover request authentication/body, older replies, queue status and
+invalid-intent versus backend errors using a local fake executor.
+
+`launch_machine` owns prepared spawn delivery, failure metadata and the existing
+early acknowledgment deadline. The full host still authorizes the target, resolves
+accounts, prepares workspace context/uploads and capabilities, and rolls back
+attachments when delivery fails. Core preserves the command/session key and
+retains delivered command metadata for eventual daemon results. Canceling a caller
+abandons its reply waiter; it does not cancel work already delivered. Focused
+headless contracts cover offline cleanup, immediate refusal and delayed verdicts.
+
+The standalone host, shared launch preparation/credential minting, lifecycle
+persistence, ownership inventory and minimal provisioning are still in progress.
+
+### Credential minting and resume (`0.27.0-beta.6`)
+
+Core now owns account-provider binding, per-family gateway token minting,
+account/model redirects, account environment and settings resolution, and
+credential restoration on resume. `MintContext` supplies the pool, the installed
+vault key, the external gateway URL and transient orphan-block cleanup. The full
+host delegates to its existing resources; launch paths retain the same services,
+SQL, token TTL and provider environment names.
+
+The shared-account settings and environment allowlists also live in core. Owners
+retain their own configuration; grantees receive only allowed keys, and a revoked
+share blocks both initial mint and resume. Share revocation still cuts only the
+ex-grantee's live credentials. Session token revocation, capability/budget map
+cleanup and spawn-key rebinding remain full-host lifecycle adapters for now.
+
+New PostgreSQL contracts see only temporary execution tables. They exercise
+stable token reuse, orphan-block cleanup on reuse, independent provider families,
+resume after revocation issuing fresh tokens without resurrecting dead ones,
+gateway keys overriding account environment, and grantee settings/environment
+filtering plus revocation. Existing mint, redirect and allowlist tests move with
+the implementation; catalog parity tests stay in the full host. This is still the full distribution; standalone hosting and
+minimal schema provisioning remain subsequent gates.
+
+### Lifecycle persistence and audit (`0.27.0-beta.7`)
+
+Core now persists daemon session registration, terminal state and failed-spawn
+rows, and records lifecycle audit events. The same services enforce machine/user
+ownership, preserve parent relationships and sticky states, repair pre-registration
+account bindings, revive spurious offline ends and cap end details at UTF-8
+boundaries. Session status vocabulary and basic execution queries are also shared;
+full conversation projections remain in the workspace host.
+
+`SessionEndJournal` makes transcript persistence an explicit host responsibility.
+The full journal retains its ownership-guarded, deduplicated end-event insert and
+must finish before the shared row update. Its errors still propagate. The headless
+journal intentionally writes no transcript. Failed-spawn persistence uses the same
+journal and keeps the existing insert-before-verdict behavior in the full relay.
+Audit recording preserves its detached insertion, warning on failure, enrichment,
+retention and persistence-before-broadcast order. Re-registration emits its revival
+audit before repairing the token binding, as before.
+
+A regression with the original transcript insert fails against execution-only
+tables because `stream_events` is absent. Five headless PostgreSQL contracts cover
+registration ownership and metadata, account binding repair, archive-independent
+terminal/failed-spawn persistence, journal failure before mutation, spurious-offline
+revival and audit persistence before broadcast. Full daemon and audit regressions
+continue exercising the workspace journal and existing event ordering.
+
+This remains an internal extraction. Lifecycle ingestion, dispatch preparation,
+standalone hosting and minimal provisioning still need their remaining gates.
+
+### Shared dispatch preparation and policy (`0.27.0-beta.8`)
+
+Core now owns dispatcher resolution, worker identity, ephemeral credentials,
+account/pool routing, model aliases, provider-family collision checks, gateway
+environment injection, child-spawn ceilings, policy reservations/refunds, dispatch
+handles and execution records. `DispatchContext` supplies the existing host's
+execution resources and explicit callbacks for notifications, completion-webhook
+registration, default capabilities and workspace context recording. Full HTTP
+handlers and historical projections remain adapters; they retain their routes,
+authorization and side-effect ordering. Webhook validation still uses the same
+outbound policy, and workspace context ownership checks remain in the full host.
+
+Policy normalization, request checks and the policy repository are shared too.
+No-policy callers retain existing behavior; a policy-bound worker cannot grant
+itself children, and a failed capability write still prevents forwarding.
+
+The headless concurrency contract exposed a first-dispatch race: two requests
+could both observe no dispatch machine, then one failed its unique-user insert
+with a 500. Provisioning now converges on the installed machine/key through an
+upsert. Existing keys are preserved, including concurrent requests; legacy rows
+with missing keys are repaired in place.
+
+Execution-only PostgreSQL contracts exercise authenticated HTTP forwarding,
+worker credential scopes/expiry, durable handles and outcomes, reserved-env and
+scope rejection before minting, host callback ordering, failure/dedup refunds,
+policy child-spawn ceilings, concurrent daily caps and legacy key repair. The
+full dispatch and policy regressions continue through the same shared service.
+
+Standalone hosting, gateway proxy hosting, complete lifecycle ingestion and
+minimal provisioning remain subsequent gates.
+
+### Shared gateway pipeline (`0.27.0-beta.9`)
+
+Core now owns the provider proxy pipeline, tool-call policy enforcement, durable
+soft-limit signalling, session budgets, orphan-token protection, provider outage
+cache and account failover. The full host retains its four gateway endpoints and
+supplies the same installed credentials, outbound policy, clients and shared rate
+windows. Path validation, credential replacement, authentication-stage errors,
+quota admission, retry/failover, statistics and block clearing keep their order.
+
+`ProxyContext` requires execution resources and explicit host decisions about
+optional observers. Tool-policy enforcement always runs in core, including when
+both tracing and voice are absent. A failed policy lookup without a cached policy
+still refuses the request. `TraceSink` receives the captured bytes only after
+core metering and TPM accounting; the full adapter retains reconstruction, cache
+annotation and Langfuse delivery. `ResponseTee` retains the full voice observer
+after tool enforcement. Sampling, raw request forwarding, buffering predicates,
+compression handling and the bounded observer channel's `try_send` behavior are
+unchanged. Usage notices remain an awaited host callback before clearing the
+credential rejection flag; shared notice delivery is a standalone-host gate.
+
+Execution-only PostgreSQL contracts exercise byte preservation, upstream
+credential replacement, status/headers, RPM/TPM admission, outbound/path denial,
+separate orphan/provider authentication errors, missing-policy refusal and tool
+blocking with no workspace observers. The tool-block contract waits for the
+post-persistence event before checking its audit row. A sampled tracing contract
+checks metering before reporting and unchanged response bytes. Existing gateway,
+policy rewriting, failover and provider-status regressions move with their code;
+the full host continues testing its workspace voice and usage-notice adapters.
+
+This remains the full distribution. Standalone hosting, shared machine spawn
+preparation, complete lifecycle ingestion, workspace assembly and minimal schema
+provisioning remain subsequent gates.
+
+### Machine account preparation and credential lifecycle (`0.27.0-beta.10`)
+
+Core now owns machine-launch account selection, default ambiguity checks,
+auto-account ranking, pool binding and per-family credential preparation. The
+full host retains machine authorization, workspace context, uploads and delivery
+assembly, and delegates account preparation through the same execution contexts.
+Codex service-tier policy and the common HTTP error surface are shared too;
+workspace catalog editing stays in the full server.
+
+Session credential revocation and spawn-key rebinding now use an explicit host
+callback for optional workspace records. Execution records move first, the full
+host then rebinds attachments, and only a successful callback permits budget and
+capability cache updates. Revocation retains its existing best-effort cleanup and
+error logging. No migration, route or protocol shape changes in this increment.
+
+Headless contracts cover default/explicit/unbound accounts, ambiguity rejection,
+credential reuse and gateway environment preservation, plus execution rebinding,
+host failure before cache changes and revocation without attachment storage.
+Full-host spawn, service-tier and attachment regressions remain release gates.
+The standalone host, remaining lifecycle ingestion, workspace assembly and minimal
+schema provisioning remain subsequent work.
+
+### Shared runtime and headless administration (`0.27.0-beta.11`)
+
+`CoreState` now owns execution delivery, authentication, target registries,
+command tracking, account refresh locks, quota caches, capabilities, budgets and
+rate windows. Full `AppState` composes this with its workspace resources. Startup
+still supplies the same HTTP client and peer transport; state clones retain the
+same shared caches and connections. Existing route registration and authorization
+remain in the full host.
+
+User/key administration, identity lookup, self-revocation and machine enrollment
+now accept the shared execution state directly. The full host supplies this state
+through Axum's substate extraction. These handlers preserve key ceilings, scope
+intersection, cache invalidation, legacy credential revocation and lifecycle audit
+recording. Machine liveness thresholds are shared with the full host.
+
+The historical quota ledger repository returns to workspace ownership: its last
+sample and window-close projections are reporting features, while live quota and
+execution accounting remain in core. Full routes and SQL remain the same.
+
+A headless HTTP contract uses only temporary execution tables to provision a
+user, issue a restricted key, reject privilege escalation, revoke cached keys,
+enroll a machine, observe its persisted audit event and invalidate its key on
+deenrollment. Existing identity tests move with the implementation; full-host
+authorization, liveness and ledger regressions cover the composition boundary.
+This remains the full distribution. The standalone host and minimal provisioning
+are still subsequent acceptance gates.
+
+### Execution services and complete ownership inventory
+
+- Inventory every route, background task, setting, event handler and table,
+  including internal/daemon/gateway routes outside the user API registry.
+- Extract `CoreState`, account resolution/refresh, gateway services, machine spawn
+  and dispatcher execution from full `AppState` and multipart/context handling.
+- Preserve grant/ceiling intersection, ownership, temporary credential rebind and
+  revocation, dispatcher reservations, failure visibility and cancellation.
+- Define acknowledgment, run/session ID correlation, result retention and
+  diagnostic bounds for both machine and dispatcher execution.
+- Separate lifecycle handling from transcript persistence/indexing. Keep replay
+  deduplication and daemon transcript acknowledgments correct; metadata needed
+  for protocol acknowledgments is not a searchable conversation archive.
+- Introduce explicit interfaces for workspace input preparation, payload storage,
+  indexing and session cleanup. Specify ordering, failure and backpressure rather
+  than introducing fire-and-forget hooks that change full-server behavior.
+
+Gate: full-server route/auth contract and lifecycle behavior remain unchanged;
+core execution services have no workspace dependency.
+
+### Opt-in automation host
+
+- Add `cctui-core-server`, JSON launch and headless administration.
+- Extend capabilities additively to distinguish supported features from enabled
+  integrations; older servers remain compatible with existing clients.
+- Keep full routes registered by default. Clients connected to core explicitly
+  report unavailable workspace functions. Update protocol/TUI parity together.
+- Essential workers accept existing worker contract v1. Avoid a separate worker
+  image rewrite in this project.
+
+Gate: one service user can connect accounts, dispatch to a machine or Kubernetes
+worker, observe completion/failure, retrieve a result and cancel work without
+voice, uploads, search, plugins or workspace services. Exercise offline targets,
+expired credentials, crashes, duplicate submissions and callback failure. State
+actual execution/callback guarantees; durable retries or exactly-once execution
+are separate behavior changes, not implicit properties of extraction.
+
+### Database provisioning
+
+Keep historical migration files/checksums immutable during extraction. Before
+core is production-ready, implement three tested provisioning paths:
+
+1. Existing full database: retain the historical ledger and serialized upgrade
+   path, then establish package-owned forward migration tracking additively.
+2. Empty core database: install only core schema, without workspace tables or
+   `pg_trgm`/search extensions.
+3. Core database to full: install workspace schema/extensions without recreating
+   users, accounts, keys or execution data.
+
+Both provisioning paths must converge on compatible core constraints and tables.
+Use explicit schema lineage/version checks and one migration coordination lock.
+Do not fake applied historical records or rewrite migration SQL to skip features.
+Do not delete data or extensions merely because core runs against a legacy full
+schema. Audit foreign keys, triggers, views, settings defaults, seed data and
+queries before declaring a table optional.
+
+Define and test a supported rollback window. Tolerating newer migration ledger
+entries does not prove old binaries understand a changed schema. Starting a
+pre-split binary against a fresh core database is unsupported until proven.
+
+### Packaging, beta validation and promotion
+
+- Add opt-in core artifacts/image and include them in release scope, build/cache,
+  signing, binary verification, deployment examples and release assets.
+- Preserve full image identity and self-update selection. No automatic switch to
+  core, including when following beta updates.
+- Use production-shaped upgrade fixtures covering keys, vault data, accounts,
+  machines, dispatchers, transcripts, images, uploads and settings.
+- Test rolling old/new full servers and supported old workers/clients. Test fresh
+  core, core-to-full expansion and supported rollback against the same database.
+- Review TUI parity changes and run `cargo test -p cctui-tui` before every tag.
+- Publish beta tags from green commits on `0.27.0`; never merge beta development
+  into `main` just to trigger CI. Deploy only to the opted-in beta environment,
+  verifying the served version, account access and real worker lifecycle.
+- Promote the final release through a PR into `main`, stable version bump, green
+  CI, signed tag and verified rollout. Keep the stable release lane independent
+  while these changes are incomplete.
+
+## Estimate and exclusions
+
+Initial planning estimate: 6–10 engineer-weeks including database provisioning,
+packaging and compatibility validation. Re-estimate after the execution inventory;
+shared SQL dependencies and lifecycle extraction are the largest uncertainties.
+The initial storage extraction does not satisfy the standalone-core gates.
+
+Organization hierarchies, enterprise SSO, new workflow engines, new scheduling
+semantics, durable callback delivery and worker-image slimming are separate work.
+
+### Automation host and daemon transport (`0.27.0-beta.12`, in development)
+
+`cctui-core-server` assembles execution services without the full server, search,
+image codecs, WebAuthn or workspace startup. Its host adapters use the same
+credential refresh, account selection, provider proxy, metering and policy
+implementations. HTTP administration and enrollment use the shared handlers.
+Daemon framing, compression/chunks, liveness, priority delivery, connection limits,
+reconciliation, session ownership and reconnect-grace scheduling are shared with
+the full host. The full distribution keeps its existing presence, transcript,
+preview and diagnostic adapters and ordering.
+
+The development host accepts daemon lifecycle events and persists a bounded
+projection of the final assistant message, with replay deduplication. Results use
+the existing completion classifier and expose truncation explicitly. An unattended
+permission, question or plan request records a terminal `other` failure explaining
+that human input is required, revokes gateway credentials and stops the worker.
+It never grants approval on behalf of an absent operator. Result and cancellation
+routes enforce scopes and ownership inside the host.
+
+This host is still under development. It currently requires an existing migrated
+schema, and is not yet the minimal installation. Account setup/OAuth, machine
+launch assembly, complete daemon launch-context handling, completion callbacks,
+capability-aware clients, minimal provisioning and dedicated release artifacts
+remain acceptance gates. Requests asking for unsupported completion notifications
+are refused before dispatch. No existing installation selects this host on upgrade.
+
+### Daemon launch credentials (`0.27.0-beta.13`, in development)
+
+Both hosts share daemon launch ownership checks, durable spawn-grant resolution,
+policy-bound child restrictions and configured execution-default precedence. Full
+launches retain their existing plugin, context and user-setting adapters. The
+standalone host now serves gateway environment, context and token-validity pulls:
+bound accounts restore session credentials and account settings on restart;
+foreign sessions receive no credentials or spawn grant. Token validity preserves
+an unknown response for foreign users so their daemons cannot trigger a healing
+restart. Standalone context is empty until execution context preparation is
+assembled. Account setup, machine launch assembly, transcript-mark acknowledgments,
+usage ingestion, minimal provisioning and release packaging remain outstanding.
+
+### Account administration (`0.27.0-beta.14`, in development)
+
+Account/provider creation, updates, deletion and OAuth authorization use shared
+core services. Hosts supply the installed vault key, execution state, OAuth login
+cache and usage/limit adapters. The full server retains its route policy, legacy
+configuration shim and usage reporting; the standalone host exposes the same
+account administration paths with human-principal and owner checks. Embedded
+harness setting catalogs and resource-owner queries now live with execution
+validation. Drift checks follow the catalog's new path. No account or credential
+schema changes are required.
+
+### JSON machine launches (`0.27.0-beta.15`, in development)
+
+The standalone automation host accepts JSON `SpawnRequest` at the existing
+`POST /api/v1/sessions/spawn` path. The full host retains multipart uploads,
+drafts and workspace context preparation. Both hosts share environment validation,
+owner/admin/live-spawn-share authorization, harness availability checks, durable
+child-spawn grants and permission ceilings, and spawner/name intents.
+
+A standalone request can select a machine, working directory, prompt, harness,
+model, effort, permission mode, account or pool, service tier, environment and
+child-spawn capability. Cross-user machine launches are explicitly refused until
+execution records preserve the acting user across registration and restart.
+Workspace context/profile selections, draft/upload fields,
+labels, auto-archive and follow-up relations are refused before any launch. The
+daemon receives gateway credentials rather than provider secrets. Worker session
+registration claims the requested name/spawner and rebinds execution credentials
+and child grants to the harness's final identity.
+
+The host remains experimental and needs an existing migrated database. Complete
+execution-context support, dispatcher operations, callback delivery, minimal core
+provisioning, dedicated release artifacts and client capabilities remain gates.
+
+### Daemon usage and checkpoints (`0.27.0-beta.16`, in development)
+
+Both hosts share idempotent daemon token-usage insertion, including suppression
+for gateway-metered harnesses, integer saturation and missing-session handling.
+Transcript checkpoints preserve the maximum stored offset and acknowledge it
+only for daemons advertising support. The standalone host now uses both services,
+and its reconnect handshake returns the durable resume marks. Conversation
+archives remain owned by the full workspace host.
+
+HTTP/WebSocket contracts cover repeated usage, out-of-order checkpoints,
+acknowledgment after storage, reconnection and an older daemon reconnecting after
+a newer one without receiving unsupported acknowledgment frames.
+
+### Completion failure callbacks (`0.27.0-beta.17`, in development)
+
+Both hosts use the existing durable webhook outbox, dispatcher liveness decisions,
+HTTPS/DNS guards, HMAC signatures, bounded delivery concurrency, leases, retries
+and dead-letter policy. The standalone host registers requested notifications at
+dispatch and owns a periodic sweep task that stops when its runtime shuts down.
+The full host keeps its existing sweep scheduling and dispatch ordering.
+
+These callbacks detect failed or lost workers. A clean worker exit supersedes
+the server callback because the worker's `REPLY_URL` trap owns the actual result.
+Registration remains best-effort and delivery remains bounded by the existing
+retry budget; this extraction adds no new delivery guarantees. The standalone
+host still requires the existing migrated schema, including the outbox table.
+
+### Enrolled dispatcher transport (`0.27.0-beta.18`, in development)
+
+Both hosts share executor enrollment, key authentication, WebSocket framing and
+reply correlation, heartbeat/read-timeout handling, account/pool defaults and
+dispatcher management. The standalone host can dispatch through an enrolled
+Kubernetes or Docker executor using the existing protocol. Executors still own
+their runtime semantics. Management preserves owner filters, enrollment scopes,
+default-account resolution against the dispatcher owner, key-cache invalidation
+and connection eviction on deletion.
+
+The full host supplies its existing replica-presence adapter. Bus registration,
+presence registration, heartbeat persistence and lifecycle audit retain their
+ordering; an old connection cannot unregister a replacement connection. Both
+hosts use the same dispatcher liveness transitions and audit records. This does
+not yet assemble the standalone reaper or prove a real Kubernetes rollout.
+
+### Results before worker registration (`0.27.0-beta.19`, in development)
+
+The standalone result endpoint reads owned durable dispatch records while a
+worker is pending or queued, including its dispatcher/profile queue position.
+A recorded failure before registration is terminal and exposes its end reason.
+Registered sessions retain their bounded final-message projection. Unknown and
+foreign run IDs remain hidden. The full host uses the shared queue calculation
+and retains its existing queued-only fallback and conversation result behavior.
+
+### Dispatcher liveness operations (`0.27.0-beta.20`, in development)
+
+The standalone runtime runs independent workload, dispatcher-heartbeat and
+failure-callback sweeps. Workload probes retain the existing concurrency and age
+bounds, policy/record cleanup, queue tracking, worker-exit redaction and terminal
+cause mapping. An OOM or failed launch becomes a durable result even when the
+worker cannot send its final event. Dropping the runtime stops all its tasks.
+
+Both hosts share the sweep implementation. The full host retains its original
+workflow-guard and transcript completion evidence through an explicit adapter;
+core reads execution completion state without workspace tables. The full host's
+existing scheduler and evidence ordering remain unchanged. The callback sweep
+uses the recorded end reason: OOM, crash and failed-start outcomes retain their
+failure notification even after the reaper ends the session. Transport-loss
+outcomes still probe the executor, while clean completion, cancellation and legacy
+rows without end reasons preserve worker-owned callbacks. Delivery retains its
+existing retry budget and can duplicate a worker notification after a crash.
+
+### Worker identity retirement (`0.27.0-beta.21`, in development)
+
+Both hosts share ephemeral-machine retirement and archived/expired worker-key
+cleanup. The full server retains its scheduling and two-hour default machine
+TTL; the standalone runtime runs cleanup independently and honors
+`CCTUI_EPHEMERAL_MACHINE_TTL_HOURS` (zero disables machine retirement).
+
+Retirement preserves machine rows and session history. It atomically revokes the
+machine's canonical keys and invalidates authentication caches, closing an
+existing gap where a retired machine could still authenticate. Archived-session
+keys are revoked and expired worker keys are deleted using the existing policy.
+Persistent machines are excluded. Runtime shutdown stops cleanup with its other
+sweeps. Database contracts cover stale-worker retirement, cached session-key
+revocation, retired-machine authentication and preservation of persistent targets.
+
+### Schema provisioning and workspace assembly (`0.27.0-beta.22`)
+
+Fresh core installations bootstrap 33 execution tables and two schema-tracking
+tables. They need no PostgreSQL extensions, transcript archive, uploads or search
+storage. `cctui-core-server --init-db` provisions or validates the schema and exits;
+normal startup performs the same check. The binary also supports `--version`
+without database or credential configuration. New core databases use the public
+schema. Existing full installations retain their current schema selection.
+
+The immutable execution baseline is owned by `cctui-server-core`; the workspace
+baseline is owned by the new `cctui-server-workspace` crate. Both reflect legacy
+schema 191. Applied baseline SQL is SHA-256 checked, unsupported package versions
+are refused, and origin and installation mode are recorded explicitly. Historical
+migration files and checksums are unchanged. All hosts use the existing advisory
+lock key through a connection whose lifetime owns the lock, including during
+errors or cancellation. Bootstrap and package installation are transactional.
+
+Existing full databases continue through the historical migrator, including its
+checksum reconciliation and tolerance for newer history entries. They then record
+explicit baseline adoption. Their users, credentials, session history and existing
+ledger stay in place. Core can also adopt a supported full database without
+deleting workspace tables or extensions. An unfinished legacy migration is refused.
+
+Starting the full host on a core database adds workspace tables, constraints,
+triggers and extensions through its package bootstrap. It preserves core data and
+establishes provider-host allowlist defaults for existing accounts. It does not run
+or fabricate historical sqlx migrations. The database retains its core origin, so
+later full startup uses the package path. Running core again preserves workspace
+data. Pre-split full binaries are unsupported against databases originally created
+by core; legacy-origin full databases retain the existing rollback path.
+
+Database contracts compare expanded and fresh-full column definitions, constraints,
+indexes and triggers, and preserve encrypted provider credentials, worker tokens,
+keys, accounts, machines, sessions, attachments, images and transcripts. Other
+contracts cover concurrent core startup, checksum/version rejection, rollback of a
+failed package, cancellation of a lock waiter and refusal of unrecognized schemas.
+The automation host contracts now create their tables from the execution baseline
+instead of copying a full database's tables.
+
+Baseline assets must remain immutable. Numbered forward package migrations,
+dedicated core release artifacts, additional workspace-service extraction,
+capability-aware clients and real executor/rolling-upgrade acceptance remain gates
+before stable promotion.
+
+
+### Installable core distribution (`0.27.0-beta.23`)
+
+The release pipeline builds `cctui-core-server` for Linux amd64/arm64 and Darwin
+arm64 alongside the shared TUI and daemon assets. Linux builds use musl; core
+requires no full-server OpenSSL linkage. Signed checksum/release asset handling
+includes the new binaries. CI artifact reuse validates the core version, commit
+and image-binary identity and refuses a cache missing either Linux core asset.
+
+The opt-in `ghcr.io/dorskfr/cctui-core` Linux-amd64 image runs as UID 10001,
+includes CA roots and has no workspace storage mounts. Its prebuilt and local
+build paths select the same core binary. Full image identity, release channels
+and stable/latest selection retain their existing behavior. Release scoping
+forces a binary rebuild when the preceding release predates core artifacts;
+subsequent image-only changes can reuse core's previously published binary.
+
+The [headless installation guide](core-server.md) documents configuration,
+provisioning, identity, dispatch/results, database transitions and beta limitations.
+Packaging contracts cover all three targets, absent artifacts and image-only
+reuse. Published-image verification remains a release gate; a local prebuilt
+container smoke test already passed on an empty execution-only database.
+
+
+### Worker provisioning and machine execution (`0.27.0-beta.24`)
+
+Core now serves the existing daemon manifest/download and machine-version
+contracts. Manifest channel opt-in, same-origin URLs, ETag handling, public
+redirects and authenticated private-release downloads share the full implementation.
+`CCTUI_REPO`, `CCTUI_GITHUB_TOKEN` and `GH_TOKEN` retain their existing meaning.
+
+Machine connectivity snapshots share the execution query. Core checks read scope,
+ownership/admin or live machine shares. Full retains its existing route guard,
+peer-presence fallback and bandwidth reporting; workspace telemetry queries do
+not enter core. No protocol or route-table additions are needed, so TUI parity
+entries remain unchanged.
+
+The repeatable `scripts/check-core-worker.py` check provisions a fresh core DB,
+runs a real containerized daemon and Claude harness against a controlled provider,
+and verifies credential-gateway forwarding and final result capture. The current
+check passed with a 0.26.1 worker, without a paid provider call. This validates one
+machine execution/older-worker path, not Kubernetes or a rolling server upgrade.
+The fixture pins oneshot mode in its temporary database; general headless harness
+configuration is still required. Context/child APIs and workspace/client extraction
+remain open milestones.
+
+### Durable machine launches (`0.27.0-beta.25`)
+
+Machine launches now persist their command ID, provisional session identity,
+authorized actor and target before delivery. Core result polling can use the
+command ID before registration and follows the daemon's authenticated canonical
+session identity afterward. A rebuilt core host recovers late refusals without
+its original pending-command map. The full host also persists launch verdicts
+and canonical registration aliases while preserving its workspace event ordering.
+Foreign machines cannot settle a known launch; result aliases remain actor-bound.
+No prompts, environment or provider credentials enter this metadata table.
+
+Package schema version two adds the launch table. Forward migrations are applied
+in order with checksum validation and per-migration transactions; the applied
+version-one baseline files remain unchanged. Existing historical full migration
+records are preserved. Both core and full betas 22–24 reject package schema version two, so a
+rollback across this boundary requires restoring the pre-upgrade database.
+The older historical full migrator still accepts the additive schema in the
+legacy-origin regression; that does not establish binary rollback support for
+the intervening schema-aware betas.
+
+Launch delivery is not exactly once. A crash around transport delivery can leave
+an unresolved prepared launch; the host does not automatically resend it. Pending
+cancellation, timeout/reconciliation behavior and general headless harness
+configuration remain later execution-lifecycle gates. This increment does not
+complete the overall split.
+
+### Distribution-aware clients (`0.27.0-beta.26`)
+
+Both hosts return the shared typed capability envelope, with separate distribution,
+workspace support, execution features and experimental status. Langfuse remains
+an independently configured integration. Decoding a legacy response preserves
+full-server workspace support; additive feature names remain forward compatible.
+
+The TUI probes support before opening the terminal. The web UI probes before
+login, WebSocket connection, workspace queries or settings loading. A core server
+gets an explanation and a link to the execution API guide. Full servers retain
+the existing flow, including older servers that omit the new fields or capability
+endpoint. Probe failures retain existing offline/authentication handling.
+
+Regression coverage includes typed legacy/core decoding, TUI startup over HTTP,
+web probe behavior and browser checks that core opens no workspace requests or
+WebSocket. Interactive state/handler extraction, execution context, child APIs,
+Kubernetes and rolling-upgrade acceptance remain open milestones.
+
+### Child execution policy (`0.27.0-beta.27`)
+
+Child capability checks, permission/depth ceilings, pending-child slots, tree
+budget accounting, reservation locking and release now live in core. The full
+host delegates its existing spawn-child reservation to the shared service and
+supplies the same transcript-based completion count as before. Its account,
+context, delivery and archive paths remain in the full host for now.
+
+The execution-only counter reads persisted session outcomes, keeps running and
+completed children in their slots, releases failed/archived children, and excludes
+forks and follow-ups. A count failure refuses the reservation before minting a
+capability or recording a grant. All counts and grants run under the existing
+per-tree transaction lock, including children not registered yet.
+
+The minimal-schema regression reproduced the original transcript dependency;
+contracts now cover slot enforcement, concurrent reservations, inherited tree
+budgets, failed-launch release and unreadable counts without workspace tables.
+The existing pure policy tests run in core. Standalone child-tool HTTP assembly,
+account/context preparation and end-to-end child execution remain acceptance
+gates; this increment does not yet expose a core spawn-child route.
+
+
+### Standalone child spawning (`0.27.0-beta.28`)
+
+The machine-authenticated spawn-child endpoint now runs against execution-only
+storage. Both hosts share account selection, model resolution, credential minting,
+capability inheritance and atomic reservations. Full retains its workspace
+context adapter and existing delivery behavior. Core rejects workspace profiles,
+binds the parent to the authenticated machine, and persists the launch identity
+before sending the daemon command.
+
+Core installs the child's budget before delivery. Offline delivery and immediate
+refusal release reservations; a late refusal after restart also refunds the tree
+budget and revokes the unused credentials. A registered worker remains addressable
+through the command ID after its canonical session ID is announced.
+
+HTTP/WebSocket contracts cover machine identity, missing grants, permission
+ceilings, archived parents, scoped credentials, offline cleanup, successful
+completion, retained completed-child slots and restart-time refusal refunds.
+Child message/archive/completion endpoints and a real parent/child harness run
+remain acceptance gates, alongside context packs, workspace extraction, Kubernetes
+and rolling upgrade/rollback checks.
+
+
+### Child tools and session usage (`0.27.0-beta.29`)
+
+Core exposes the existing child-message, child-completion, child-archive and
+session-limits endpoints. Each endpoint authenticates a machine key and binds
+the calling session to that exact machine. Shared execution services validate
+direct-child follow-ups, owned/live completion parents and descendant archival.
+Completion text uses the same neutralized cctui envelope in both distributions.
+
+The limits response identifies only the pinned provider account and reports its
+usage windows, model decisions, effective session budget and child slots. Full
+keeps its transcript-based slot evidence through a host adapter; core counts
+persisted execution outcomes. Child archival preserves pins, sends worker removal
+deepest first, revokes archived credentials, frees slots and retains historical
+tree spending. Full keeps its registry, audit and workspace archival side effects.
+
+Oneshot Claude child registration now retains its parent, relation and launch
+key so a registered child continues to occupy its policy slot. Forks retain their
+separate relation and do not consume child slots.
+
+Execution session addressing, tree traversal, envelope formatting and usage
+computation now belong to core. Workspace peer relations and conversation history
+remain in full. Minimal-database HTTP/WebSocket contracts cover follow-ups,
+completion neutralization and machine identity, pinned subtree archival, budget
+retention and bound-account limits. Real parent/child harness execution remains a
+separate acceptance gate; the existing simple worker smoke uses oneshot Claude,
+which does not register the child MCP relay.
+
+
+### Child acceptance and workspace failure evidence (`0.27.0-beta.30`)
+
+The repeatable machine smoke now runs a real Codex parent, discovers the daemon's
+MCP tool, calls `CctuiAgent` and receives a real Claude child's final result through
+core. Both harnesses use the controlled provider through core's gateway. The smoke
+also verifies registered-child slot retention and release through the archive API.
+It can mount a newly built Linux daemon into a published worker image, so daemon
+changes are exercised with real packaged harnesses before publishing.
+
+Execution failure listing no longer reads `guard_steps`. Core accepts completed
+session IDs as host-supplied evidence and preserves dispatcher refusals, timeouts,
+owner isolation, dismissals and list limits. The workspace adapter owns workflow
+guard reads and uses the same evidence for listing and dismiss-all. An isolated
+execution-only schema regression and workspace completion/dismissal regressions
+cover the boundary.
+
+A real Kubernetes dispatcher/WorkerProfile/Job run exposed a Codex boot-dispatch
+gap: the local result file completed while the core API stayed pending. The
+runner now publishes adapter-tagged registration, final answer, token usage and
+terminal events before writing the verdict that releases worker teardown.
+Success/failure regressions and a sandboxed Kubernetes rerun verify completion
+through the API with the real packaged harness. The shared smoke script supports
+explicit kubeconfig, worker URL, namespace and profile arguments, retains pod
+diagnostics and deletes only its own Job.
+
+The Kubernetes context-pack mode serves a temporary git repository, pins its
+signed revision and dispatches by prompt-file name. The worker fetches/stages the
+pack through its existing entrypoint; the controlled provider verifies both pack
+instructions and prompt text reached the actual Codex request. No new context
+storage or resolver was introduced in core. Interactive workspace handlers/state,
+remaining lifecycle ownership, further adapter acceptance and rolling
+upgrade/rollback checks remain open.
+
+
+### Workspace handlers, state and full-host assembly (`0.27.0-beta.31`)
+
+The full HTTP/WebSocket handlers, interactive application state, background
+services and startup assembly now live in `cctui-server-workspace`, above the
+shared execution engine. `cctui-server` retains the executable entry point and
+its live-server integration tests. Its runtime dependencies are the workspace
+host, Tokio and the entry-point error type. The standalone core host continues
+to depend on core without importing workspace.
+
+The move preserves module relationships, routes, authentication, workspace
+storage and migration orchestration. Existing skill storage/handler state, plugin
+runtime/archive/session slots and the admin projection join the rest of the
+workspace host; they are no longer full-binary forwarding layers. The build
+metadata script and TypeScript export-test selection follow their implementations.
+The CLI and package/image names stay the same, and the legacy logging directive
+still enables the relocated workspace targets.
+
+The worker fixture adds same-database binary upgrade/rollback acceptance,
+retaining credentials/results and requiring a fresh real task after each daemon
+reconnection. This checks sequential restarts within the existing schema window.
+Remaining gates include shared execution lifecycle/replica ownership, broader
+production-shaped full upgrades and rolling multi-replica acceptance.
+
+
+### Host ownership and repeatable full upgrades (`0.27.0-beta.32`)
+
+The standalone host enforces one active process per database with a dedicated
+PostgreSQL advisory-lock connection. A second standalone process fails before
+schema/bootstrap/listening. A bounded ownership probe exits the host on connection
+loss, so restart supervision can replace it. `--init-db` remains administrative.
+This is a sequential restart/rollback topology; standalone core does not advertise
+active replica support. Do not run core and full concurrently on one database.
+Full keeps its peer transport and multi-replica behavior.
+
+The maintained worker fixture adds full-server sequential and mixed-version
+upgrade/rollback modes with real daemon reconnection and peer-routed tasks in both
+directions. Retained evidence includes actual transcript rows, encrypted provider
+credentials, settings, dispatcher identity/authentication, image bytes and file
+bytes in a shared mount. The maintained sequential and mixed-version fixtures passed against stable
+0.26.1, making that gate repeatable. A standalone process mode
+checks duplicate refusal, administrative provisioning, lease-loss exit and a new
+task after replacement. See [the operator guide](core-server.md) for commands.
+
+
+### Headless harness configuration (`0.27.0-beta.33`)
+
+Machine harness enablement/configuration, binary projection, validation and live
+reconciliation now belong to core. Full keeps its existing route guards and uses
+the shared handlers. Standalone exposes the same read and administrative write/
+reset routes. Reads require read scope and ownership/admin or an active machine
+share; mutation retains the full distribution's administrator requirement.
+
+The real-worker fixture configures current servers through these APIs rather
+than editing their database. Only compatibility runs starting an older core that
+predates the API seed its fixture pins directly. Existing mode, configuration,
+enablement and daemon reconciliation contracts are preserved. Focused HTTP/WS
+regressions reproduce the absent API and verify access checks, pin/reset behavior,
+validation and live delivery without worker reenrollment.
+
+### Durable pending-run lifecycle (`0.27.0-beta.34`)
+
+The standalone host records cancellation and unattended-input stops in package
+schema migration three. Stop decisions, terminal machine rows, credential
+revocation and pending grant cleanup commit together. Command-ID aliases resolve
+under launch ownership and machine constraints, and cancellation serializes with
+registration and credential recovery on the single active host. The full host's
+existing cancellation behavior is unchanged.
+
+Queued dispatcher cancellation uses the backend's existing cancel contract;
+unsupported operations return 501 without claiming a stop. Late machine events
+cannot replace the host's terminal decision, stopped work cannot remint gateway
+credentials or spawn/follow up children, and unregistered launches reach a
+`spawn_failed` result after ten minutes without being resent. Unresolved or
+forwarded dispatcher requests have a fifteen-minute registration deadline,
+excluding queue time. Registered child
+budget grants remain historical charges; only pending reservations are refunded.
+
+Contract coverage includes restart/late registration, command aliases, foreign
+and read-only callers, backend cancellation/unsupported backends, registration
+races, cleanup rollback and retry, temporary-key cache eviction, gateway remint
+refusal, deadline reconciliation and preservation of historical child budgets.
+The maintained worker fixture adds `--check-cancellation` for real harness
+acceptance through the published worker contract. Schema-three rollback requires
+a pre-upgrade restore when selecting an earlier split beta.
+
+Beta34 acceptance passed against the published beta33 worker: actual running
+harness cancellation, credential refusal and fresh execution on the same daemon,
+including after forced core lease loss. The full34/stable0.26.1 rolling fixture
+passed routing in both directions, rollout/reconnect and rollback/reconnect with
+its retained workspace data. Core provisioning (nine tests), full adoption and
+core-to-full expansion (three tests), the standalone contracts (46 tests), and
+TUI parity (1,138 tests; no manifest changes) passed. Final publication and stable
+promotion remain release gates rather than another implementation milestone.

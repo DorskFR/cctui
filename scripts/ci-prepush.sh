@@ -60,7 +60,7 @@ case "$area" in
     ;;
   schema)
     url=https://json.schemastore.org/claude-code-settings.json
-    vendored=crates/cctui-server/src/settings_catalog/claude-code-settings.schema.json
+    vendored=crates/cctui-server-core/src/settings_catalog/claude-code-settings.schema.json
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT
     curl -fsSL "$url" -o "$tmp/upstream.json"
@@ -70,7 +70,7 @@ case "$area" in
       echo "✖ Claude Code settings schema drift: upstream differs from $vendored"
       echo "  Re-vendor:  curl -fsSL $url -o $vendored"
       echo "  Then review catalog.toml for added/removed keys and run:"
-      echo "    cargo test -p cctui-server settings_catalog"
+      echo "    cargo test -p cctui-server-core settings_catalog"
       exit 1
     fi
     ;;
