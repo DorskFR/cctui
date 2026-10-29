@@ -419,12 +419,24 @@ pub struct Listing {
 ///
 /// Those the dispatcher refused, whose worker did not register in time once
 /// out of the dispatcher's queue, or whose session died of a start or kill
-/// failure before its workflow guard exited; records already re-run are left
+/// failure; records already re-run are left
 /// out. Each names the later run of the same work (same caller, name and
 /// prompt file) that registered and did not fail.
 pub async fn list(
     exec: impl PgExecutor<'_>,
     listing: Listing,
+) -> Result<Vec<FailedDispatch>, sqlx::Error> {
+    list_with_completed(exec, listing, &[]).await
+}
+
+/// List execution failures using terminal-work evidence supplied by the host.
+///
+/// Completed session IDs suppress crash cards, but never dispatcher refusals or
+/// registration timeouts. Core does not read workspace workflow state.
+pub async fn list_with_completed(
+    exec: impl PgExecutor<'_>,
+    listing: Listing,
+    completed: &[String],
 ) -> Result<Vec<FailedDispatch>, sqlx::Error> {
     let rows: Vec<FailedRow> = sqlx::query_as(
         "SELECT r.session_id, r.dispatcher_name, r.name, r.profile, r.repo, r.model, r.adapter, \
@@ -456,9 +468,7 @@ pub async fn list(
            AND (r.outcome IN ('refused', 'failed') \
                 OR (r.outcome IN ('pending', 'forwarded') AND s.id IS NULL AND NOT r.queued \
                     AND COALESCE(r.started_at, r.created_at) < now() - make_interval(mins => $2)) \
-                OR (s.end_reason = ANY($3) AND NOT EXISTS ( \
-                    SELECT 1 FROM guard_steps g \
-                    WHERE g.session_id = r.session_id AND (g.state->>'step')::bigint < 0))) \
+                OR (s.end_reason = ANY($3) AND NOT (r.session_id = ANY($7)))) \
          ORDER BY r.created_at DESC \
          LIMIT $4",
     )
@@ -468,6 +478,7 @@ pub async fn list(
     .bind(LIST_LIMIT)
     .bind(listing.viewer)
     .bind(listing.include_dismissed)
+    .bind(completed)
     .fetch_all(exec)
     .await?;
     Ok(rows.into_iter().map(Into::into).collect())
@@ -516,13 +527,22 @@ pub async fn dismiss_all(
     let shown =
         list(pool, Listing { owner, viewer: Some(viewer), include_dismissed: false }).await?;
     let ids: Vec<String> = shown.into_iter().map(|f| f.session_id).collect();
+    dismiss_many(pool, viewer, &ids).await
+}
+
+/// Persist dismissals for the exact failure list selected by a host.
+pub async fn dismiss_many(
+    pool: &sqlx::PgPool,
+    viewer: Uuid,
+    ids: &[String],
+) -> Result<u64, sqlx::Error> {
     let done = sqlx::query(
         "INSERT INTO dispatch_record_dismissals (user_id, session_id) \
          SELECT $1, id FROM unnest($2::text[]) AS id \
          ON CONFLICT DO NOTHING",
     )
     .bind(viewer)
-    .bind(&ids)
+    .bind(ids)
     .execute(pool)
     .await?;
     Ok(done.rows_affected())
@@ -611,7 +631,7 @@ pub async fn finish_redispatch(
 
 #[cfg(test)]
 mod tests {
-    use super::{NewRecord, PROMPT_HEAD_BYTES, RerunBlocker, StoredRecord};
+    use super::{Listing, NewRecord, PROMPT_HEAD_BYTES, RerunBlocker, StoredRecord};
     use cctui_proto::api::{DispatchRequest, FailedDispatchReason};
     use uuid::Uuid;
 
@@ -976,10 +996,43 @@ mod tests {
         cleanup(&pool, &[uid]).await;
     }
 
-    /// A session ended as a crash after its workflow guard exited did its
-    /// work: no failure card, even for a verdict recorded before that was known.
     #[tokio::test]
-    async fn a_crash_after_the_guard_exited_is_not_listed() {
+    async fn failure_listing_needs_only_execution_tables() {
+        let Some(url) = crate::test_support::db_url("execution_failure_listing") else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    sqlx::query("SET search_path=pg_temp").execute(conn).await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .unwrap();
+        for migration in crate::schema::MIGRATIONS {
+            sqlx::raw_sql(sqlx::AssertSqlSafe(migration.sql.replace("public.", "pg_temp.")))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let uid = seed_user(&pool).await;
+        let sid = format!("crashed-{}", Uuid::new_v4());
+        let r = req(&serde_json::json!({"prompt":"go"}));
+        super::insert(&pool, &NewRecord::from_request(&sid, Some(uid), &r, None, None))
+            .await
+            .unwrap();
+        super::set_outcome(&pool, &sid, "registered", None).await.unwrap();
+        seed_session(&pool, &sid, uid, Some("crashed")).await;
+        let listed = super::list_failed(&pool, Some(uid)).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].session_id, sid);
+        assert_eq!(listed[0].reason, FailedDispatchReason::Crashed);
+    }
+
+    /// Host completion evidence suppresses a crash after the work finished.
+    #[tokio::test]
+    async fn host_completion_evidence_suppresses_a_terminal_crash() {
         let Some(url) = crate::test_support::db_url("dispatch_records_guard_exit") else {
             return;
         };
@@ -987,21 +1040,16 @@ mod tests {
         let uid = seed_user(&pool).await;
         let (done, lost) = (format!("done-{}", Uuid::new_v4()), format!("lost-{}", Uuid::new_v4()));
         let r = req(&serde_json::json!({ "prompt": "go" }));
-        for (s, step) in [(&done, -1_i64), (&lost, 3)] {
+        for s in [&done, &lost] {
             super::insert(&pool, &NewRecord::from_request(s, Some(uid), &r, None, None))
                 .await
                 .unwrap();
             super::set_outcome(&pool, s, "registered", None).await.unwrap();
             seed_session(&pool, s, uid, Some("crashed")).await;
-            let guard = cctui_proto::guard_step::GuardStepState { step, ..Default::default() };
-            sqlx::query("INSERT INTO guard_steps (session_id, state) VALUES ($1, $2)")
-                .bind(s)
-                .bind(sqlx::types::Json(&guard))
-                .execute(&pool)
-                .await
-                .unwrap();
         }
-        let listed = super::list_failed(&pool, Some(uid)).await.unwrap();
+        assert_eq!(super::list_failed(&pool, Some(uid)).await.unwrap().len(), 2);
+        let listing = Listing { owner: Some(uid), ..Listing::default() };
+        let listed = super::list_with_completed(&pool, listing, &[done]).await.unwrap();
         let ids: Vec<&str> = listed.iter().map(|f| f.session_id.as_str()).collect();
         assert_eq!(ids, [lost.as_str()]);
         assert_eq!(listed[0].reason, FailedDispatchReason::Crashed);

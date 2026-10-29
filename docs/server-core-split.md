@@ -4,8 +4,8 @@
 
 | Milestone | Status | Remaining gate |
 | --- | --- | --- |
-| Shared execution engine | Substantially extracted and exercised by both hosts | Context packs, real child-harness acceptance and remaining lifecycle ownership |
-| Standalone automation host | Real daemon/Claude machine execution verified against a controlled provider | Kubernetes execution and rolling-upgrade acceptance |
+| Shared execution engine | Substantially extracted and exercised by both hosts | Remaining lifecycle ownership and further adapter acceptance |
+| Standalone automation host | Real machine, parent/child and sandboxed Kubernetes Codex execution verified | Rolling-upgrade acceptance |
 | Minimal database | Core bootstrap, core→full expansion and numbered forward migrations implemented | Continued upgrade and rollback acceptance |
 | Installable core distribution | Dedicated binaries/image published; signed artifacts and fresh-database image smokes verified | Ongoing published-worker and upgrade acceptance |
 | Workspace boundary and clients | Workspace schema extracted; TUI/webui recognize core and full distributions | Interactive handlers/state extraction and further client acceptance |
@@ -804,3 +804,37 @@ completion neutralization and machine identity, pinned subtree archival, budget
 retention and bound-account limits. Real parent/child harness execution remains a
 separate acceptance gate; the existing simple worker smoke uses oneshot Claude,
 which does not register the child MCP relay.
+
+
+### Child acceptance and workspace failure evidence (`0.27.0-beta.30`)
+
+The repeatable machine smoke now runs a real Codex parent, discovers the daemon's
+MCP tool, calls `CctuiAgent` and receives a real Claude child's final result through
+core. Both harnesses use the controlled provider through core's gateway. The smoke
+also verifies registered-child slot retention and release through the archive API.
+It can mount a newly built Linux daemon into a published worker image, so daemon
+changes are exercised with real packaged harnesses before publishing.
+
+Execution failure listing no longer reads `guard_steps`. Core accepts completed
+session IDs as host-supplied evidence and preserves dispatcher refusals, timeouts,
+owner isolation, dismissals and list limits. The workspace adapter owns workflow
+guard reads and uses the same evidence for listing and dismiss-all. An isolated
+execution-only schema regression and workspace completion/dismissal regressions
+cover the boundary.
+
+A real Kubernetes dispatcher/WorkerProfile/Job run exposed a Codex boot-dispatch
+gap: the local result file completed while the core API stayed pending. The
+runner now publishes adapter-tagged registration, final answer, token usage and
+terminal events before writing the verdict that releases worker teardown.
+Success/failure regressions and a sandboxed Kubernetes rerun verify completion
+through the API with the real packaged harness. The shared smoke script supports
+explicit kubeconfig, worker URL, namespace and profile arguments, retains pod
+diagnostics and deletes only its own Job.
+
+The Kubernetes context-pack mode serves a temporary git repository, pins its
+signed revision and dispatches by prompt-file name. The worker fetches/stages the
+pack through its existing entrypoint; the controlled provider verifies both pack
+instructions and prompt text reached the actual Codex request. No new context
+storage or resolver was introduced in core. Interactive workspace handlers/state,
+remaining lifecycle ownership, further adapter acceptance and rolling
+upgrade/rollback checks remain open.

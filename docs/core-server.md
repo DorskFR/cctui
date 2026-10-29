@@ -6,9 +6,10 @@ dispatcher enrollment, JSON dispatch/spawn, run results and cancellation. They d
 not serve a workspace UI, transcript search, uploads, plugins, voice or previews.
 Existing `cctui-server` installations and the `cctui` image remain the full product.
 
-This is an experimental beta. Real machine execution is verified; Kubernetes,
-context-pack resolution, real parent/child harness execution and upgrade
-acceptance remain open. Machine-authenticated child spawning, follow-ups,
+This is an experimental beta. Verified runs include real Claude/Codex machine
+execution, a Codex parent calling a Claude child and a sandboxed Kubernetes Codex
+Job with a fetched context pack. Upgrade acceptance remains open.
+Machine-authenticated child spawning, follow-ups,
 completion delivery, archival and session-limit reporting are available with
 capability and budget enforcement; workspace agent profiles require full.
 Use the execution API for this beta. Current webui and TUI clients identify core
@@ -41,7 +42,7 @@ file and supply it to the process or container. For a local PostgreSQL test:
 
 ```sh
 docker run --rm --env-file /path/to/core.env --network host \
-  ghcr.io/dorskfr/cctui-core:0.27.0-beta.23
+  ghcr.io/dorskfr/cctui-core:0.27.0-beta.30
 ```
 
 `DATABASE_URL` and `CCTUI_EXTERNAL_URL` must be reachable from the container's
@@ -140,7 +141,24 @@ prints the directory retaining diagnostics. Ports 18727 and 18729 must be free.
 `CCTUI_TEST_POSTGRES_CONTAINER` selects the test PostgreSQL container.
 The smoke pins oneshot mode directly in its temporary fixture database; general
 headless harness configuration remains a separate API gap. This is a machine
-execution check; Kubernetes and rolling server upgrades require separate gates.
+execution check; rolling server upgrades require a separate gate.
+
+The same fixture supports `--adapter codex`. For real MCP discovery, parent/child
+execution, registered-child slot retention and archival:
+
+```sh
+cargo build -p cctui-core-server -p cctui-daemon
+CCTUI_TEST_WORKER_IMAGE=ghcr.io/dorskfr/cctui-worker:0.27.0-beta.26 \
+CCTUI_TEST_DAEMON_BINARY="$PWD/target/debug/cctui-daemon" \
+  python3 scripts/check-core-worker.py --child
+```
+
+The optional daemon override mounts the newly built Linux daemon in the published
+worker image, retaining its real harness binaries. The Codex fixture selects full
+access explicitly inside the disposable container. Claude children use `auto`.
+The controlled provider returns a real `CctuiAgent` tool call, validates the child's
+result in the parent's next request, then checks the completed child still occupies
+one slot and archiving it releases that slot.
 
 ## Client compatibility
 
@@ -150,3 +168,37 @@ and workspace screens require a full server and direct core users to the executi
 API. Older full-server capability responses continue to select the usual client
 flow. Execution API support and configured optional integrations are separate
 capabilities.
+
+
+## Repeatable Kubernetes execution smoke
+
+The same fixture can enroll a real Kubernetes dispatcher and launch a sandboxed
+Job through an existing disposable cluster's WorkerProfile and admission webhooks
+(see [worker-profile-crd.md](worker-profile-crd.md)). Pass the kubeconfig explicitly;
+the fixture never selects a default context. The profile must permit the test host
+as private egress, and its worker image must contain the boot-dispatch lifecycle
+fix from beta.30 or later. Keep both guard ConfigMaps (`guard-proxy-env` and
+`guard-proxy-inject`) present, even when empty.
+
+```sh
+python3 scripts/check-core-worker.py --adapter codex \
+  --kubeconfig /tmp/core-acceptance-kubeconfig \
+  --worker-url http://HOST_REACHABLE_FROM_PODS:18727 \
+  --namespace core-acceptance --profile core-smoke
+```
+
+The fixture uses a published dispatcher (`CCTUI_TEST_DISPATCHER_IMAGE` overrides
+it), a fresh core database and the controlled provider. It verifies the terminal
+API result and final answer, retains Job/container diagnostics and deletes only
+its own Job and dispatcher container. The operator owns cluster/webhook cleanup.
+The Kubernetes smoke passed with the beta.30 daemon layered over the published
+beta.26 worker, retaining that image's harnesses and isolation machinery. This is
+single-server acceptance; it does not establish rolling or multi-replica support.
+
+
+Add `--context-pack` to the Kubernetes command to serve a temporary git pack,
+fetch its exact signed revision inside the worker, and verify both `AGENTS.md`
+instructions and the named prompt reach the real harness's provider request.
+This mode requires the checkout's configured Git signing key. The fixture serves
+only that temporary pack and removes it afterward. This acceptance passed for
+Codex; other adapter targets retain their existing staging tests.
