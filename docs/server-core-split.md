@@ -2,19 +2,27 @@
 
 ## Delivery status
 
-| Milestone | Status | Remaining gate |
-| --- | --- | --- |
-| Shared execution engine | Extracted and exercised by both hosts | Final release checks |
-| Standalone automation host | Claude/Codex machine and Kubernetes execution, parent/child, signed context packs and single-host recovery verified | Final publication/runtime acceptance |
-| Minimal database | Core bootstrap, core→full expansion, immutable lineage and forward migrations verified | Final release acceptance within documented rollback windows |
-| Installable core distribution | Signed binaries/images and real published workers verified | Final release publication and runtime verification |
-| Workspace boundary and clients | Full host extracted; client distribution handling and stable full rollout/rollback verified | Final release checks |
+The 0.27.0 release delivers the shared execution engine, opt-in standalone
+host, minimal database, signed core distribution, and extracted workspace host.
+The full distribution remains the default for existing installations.
 
-The split is **not complete**. Beta counts describe delivery increments, not a
-percentage of completion. Production readiness requires all acceptance gates
-below, including a real worker run on each supported target. Stable installations
-remain on the existing full distribution. See [core-server.md](core-server.md)
-for the opt-in installation and current limitations.
+| Milestone | Acceptance evidence |
+| --- | --- |
+| Shared execution engine | Both hosts use shared services; workspace tests and HTTP/WebSocket contracts pass |
+| Standalone automation host | Real Claude/Codex machine and Kubernetes execution, parent/child, signed context packs, cancellation and single-host recovery |
+| Minimal database | Fresh core bootstrap, core-to-full expansion, immutable lineage and forward migrations |
+| Installable core distribution | Signed binaries/images and actual published-worker execution |
+| Workspace boundary and clients | Full-host extraction, capability-aware clients and stable full mixed-replica rollout/rollback with retained data |
+
+Standalone core supports one active host per database, enforced by a database
+lease; active core replication is outside this release. Full-server rolling
+replicas remain supported. Core package schema three requires a pre-upgrade
+restore when rolling back to split betas 25–33. See
+[core-server.md](core-server.md) for deployment and compatibility details.
+
+The increments below are a historical delivery record. Their open-gate notes
+record the state at each increment; the table above describes the final scope.
+Stable publication still follows the signed-release and verified-rollout gates.
 
 ## Release lane and compatibility contract
 

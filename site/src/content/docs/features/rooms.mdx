@@ -1,0 +1,26 @@
+---
+title: Peers and rooms
+description: Sessions message each other and talk in rooms, across harnesses and machines.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Clip from '../../../components/Clip.astro';
+
+<Clip slug="rooms" alt="Peer messages between two sessions and a room timeline" />
+
+<p class="pitch">A Codex session on the build box asks the Claude Code session on your laptop what it changed. <strong>Sessions are peers; rooms are the channel and the permission boundary.</strong></p>
+
+<CardGrid>
+  <Card title="CctuiSend">Message any other session, on any machine, under any harness. The reply comes back as a normal turn.</Card>
+  <Card title="CctuiPeers">Agents list who they may talk to: parent, children, room members, linked remote sessions.</Card>
+  <Card title="CctuiHistory">Read another session's transcript, paged, as a delta since last time, filtered by role, as markdown or JSON.</Card>
+  <Card title="Rooms">Named groups of sessions with a shared channel. `CctuiRoom` posts to the room or peeks at it; the UI shows a room badge and timeline.</Card>
+  <Card title="Session mentions">`#` in the composer links another session, for humans and agents alike.</Card>
+  <Card title="Envelope guard">Messages cannot forge or close cctui's wrapper tags, so an agent cannot impersonate the system.</Card>
+  <Card title="Share an account">Share a resource such as an account with another user.</Card>
+  <Card title="Brief and markdown export">Hand a session's summary or full transcript to a human or another agent.</Card>
+</CardGrid>
+
+## How it works
+
+Peer policy is enforced on the server: a session may talk to its parent, its children, members of its room, and sessions linked through [cctuiverse](/cctui/features/cctuiverse/). A room is the boundary a human draws by putting sessions together. Messages are delivered to the target harness as a user turn wrapped in a tagged envelope that says who sent it; if the target is not running, the message waits and is delivered when it starts.

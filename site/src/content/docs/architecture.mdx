@@ -1,0 +1,49 @@
+---
+title: Architecture
+description: How cctui-server, cctui-daemon, the web UI, dispatchers and the guard proxy fit together.
+---
+
+import ArchDiagram from '../../components/ArchDiagram.astro';
+
+<ArchDiagram />
+
+cctui is one server, one database, and a small daemon on every machine you want in the fleet. Everything connects outward to the server; nothing needs an inbound port on your machines.
+
+## cctui-server
+
+A Rust (Axum) service on PostgreSQL. It owns:
+
+- the session registry and event store, with full-text search and the faceted query language;
+- the WebSocket hub that daemons, dispatchers, browsers and the terminal client connect to, and the REST API under `/api/v1`;
+- the gateway: accounts, pools, token refresh, rate limits, pacing, dollar caps and failover, with credentials in an encrypted vault;
+- permissions, rooms, peers, scheduled messages, subagent tracking and cctuiverse links;
+- plugins (manifest and archive in the database, served to every replica), previews, speech, ntfy push;
+- the release manifest that daemons and the TUI update from, and the metrics endpoint.
+
+It migrates its own database on start and runs as one or many replicas.
+
+## cctui-daemon
+
+A long-lived process per machine. It enrolls once, then connects out over WebSocket. Through pluggable adapters it discovers, spawns and observes agent sessions: Claude Code (headless or attached to the Claude daemon), Codex (`codex app-server`), opencode (`opencode serve`) and ACP agents (stdio JSON-RPC). Each adapter emits harness-native events; the server normalises them to one canonical shape.
+
+The daemon also writes per-session MCP configs and hooks (permission, question, stop and session-start hooks for Claude Code), serves the `Cctui*` MCP tools over a relay fixed to the session, exposes dev-server previews, runs `doctor`, and self-updates with a minisign-verified re-exec that keeps live sessions.
+
+## Web UI and terminal client
+
+The web UI is a SvelteKit single-page app on a shared UI kit (31 themes, English and French), phone-first below 960px. `cctui` is a terminal client sharing a client core with the web UI, with device-code login. `cctui-admin` manages users, machines, skills and usage export from the shell.
+
+## Dispatchers and workers
+
+A dispatcher is an enrolled executor that turns a dispatch into an ephemeral worker. The Kubernetes dispatcher creates one Job per dispatch from a `WorkerProfile` custom resource; admission webhooks (`cctui-orchestrator`) inject the sandbox envelope and validate the result. Inside the pod, `cctui-supervisor` applies Landlock, seccomp and dropped capabilities, and `cctui-daemon` enrolls as an ephemeral machine so the session streams like any other. Docker and Apple-container dispatchers exist in the repository but are not released.
+
+## Guard proxy
+
+`cctui-guard-proxy` runs as a sidecar in worker pods, in transparent or forward mode. It checks every outbound connection against policy, denies metadata endpoints and private ranges by default, and performs credential injection: the agent holds phantom tokens; the proxy swaps in real GitHub App tokens, API keys or SigV4 signatures on the wire, from env, Vault/OpenBao, AWS Secrets Manager or Kubernetes Secrets. A gpg-agent socket lets workers sign commits without the key.
+
+## Data flow for one permission
+
+1. Claude Code calls a tool; the `PreToolUse` hook blocks and asks the daemon.
+2. The daemon forwards the request over its WebSocket.
+3. The server stores it and broadcasts a permission card to every client; it replays it to clients that connect later.
+4. You approve on your phone. The decision travels back; the hook returns and the tool runs.
+5. The tool call, its result and the turn's cost stream into the transcript.

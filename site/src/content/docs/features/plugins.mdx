@@ -1,0 +1,31 @@
+---
+title: Mods, plugins and apps
+description: Runtime plugins add panes, pages and message actions; a signed catalog installs them; app previews are proxied through cctui.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Clip from '../../../components/Clip.astro';
+
+<Clip slug="plugins" alt="The Apps page with a plugin page, and a plugin pane beside a conversation" />
+
+<p class="pitch">The UI is a host. <strong>A mod is a tarball an admin installs at runtime</strong>: it can add a pane beside the conversation, a whole page under the nav, a button on messages, and skills for the agent.</p>
+
+<CardGrid>
+  <Card title="Catalog and archives">Install from a signed catalog (sha256 pinned) or upload a gzipped tar. Nothing is baked into the images; plugins live in the database and reach every replica.</Card>
+  <Card title="Two gates">An admin enables a plugin for the instance; each user turns it on for themselves and fills its settings.</Card>
+  <Card title="Panes">An ES module the SPA imports at runtime, hosted beside the conversation.</Card>
+  <Card title="Pages">Whole pages under `/apps/<id>` with their own nav entry and deep links.</Card>
+  <Card title="Message actions">Buttons on assistant messages that run plugin code.</Card>
+  <Card title="Composer and spawn bridges">A mod can write into the composer or ask for a spawn.</Card>
+  <Card title="Backends">An authenticated, signed proxy to a mod's own backend, with host-minted tokens and per-session data.</Card>
+  <Card title="Skills and env">Per-user settings reach the user's agent sessions as environment variables; plugins and daemons publish Claude Code skills.</Card>
+  <Card title="Runtime SDK">A shared Svelte and UI kit so mods look native in all 31 themes.</Card>
+  <Card title="App previews">A session's dev-server port becomes a preview host framed in the UI (`cctui-daemon preview open`).</Card>
+  <Card title="GitHub review mod">An external mod installed from the catalog: a PR inbox beside your sessions, review and merge without leaving cctui.</Card>
+</CardGrid>
+
+## How it works
+
+A plugin manifest declares its surfaces. The server stores the archive in the blob store, extracts it into memory and serves its static files; each pod reloads when the table changes. The SPA imports pane and page modules at runtime through `PluginPaneHost` and `PluginPageHost`. For development, `CCTUI_PLUGINS_DIR` is a read-only source that `POST /api/v1/plugins/rescan` re-reads without a restart; the local stack mounts `deploy/local/plugins`.
+
+`docs/plugins.md` in the repository is the full manifest and SDK reference.

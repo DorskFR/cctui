@@ -1,0 +1,655 @@
+---
+import '../styles/tokens.css';
+import Clip from '../components/Clip.astro';
+import ArchDiagram from '../components/ArchDiagram.astro';
+import { withBase } from '../lib/base';
+
+const title = 'cctui: every agent, every machine, one window';
+const description =
+  'Self-hosted, MIT control plane to watch, drive and orchestrate Claude Code, Codex, opencode and ACP agent sessions across your machines and ephemeral Kubernetes workers.';
+
+const harnesses = [
+  { name: 'Claude Code', note: 'headless or attached' },
+  { name: 'Codex', note: 'app-server' },
+  { name: 'opencode', note: 'serve API' },
+  { name: 'Gemini CLI', note: 'ACP preview' },
+  { name: 'Qwen Code', note: 'ACP preview' },
+  { name: 'Goose', note: 'ACP preview' },
+];
+
+const features = [
+  {
+    slug: 'live-session',
+    title: 'Follow every session live',
+    text: 'Text, thinking and tool calls stream in; reply from the browser.',
+    href: 'features/live-sessions/',
+  },
+  {
+    slug: 'permissions',
+    title: 'Approve from anywhere',
+    text: 'Permission cards and question forms, answered from your phone.',
+    href: 'features/permissions/',
+  },
+  {
+    slug: 'spawn',
+    title: 'Spawn on any machine',
+    text: 'Pick a machine, folder, harness and model. Save it as a profile.',
+    href: 'features/fleet/',
+  },
+  {
+    slug: 'fleet',
+    title: 'Enroll with one command',
+    text: 'Machines connect out; no inbound ports, no SSH tunnels.',
+    href: 'features/fleet/',
+  },
+  {
+    slug: 'harnesses',
+    title: 'One renderer for every harness',
+    text: 'Claude Code, Codex, opencode and ACP agents look the same.',
+    href: 'features/harnesses/',
+  },
+  {
+    slug: 'subagents',
+    title: 'Agents that spawn agents',
+    text: 'CctuiAgent runs nested subagents on any machine, with budgets.',
+    href: 'features/subagents/',
+  },
+  {
+    slug: 'rooms',
+    title: 'Sessions talk to each other',
+    text: 'Peer messages and rooms, across harnesses and machines.',
+    href: 'features/rooms/',
+  },
+  {
+    slug: 'voice',
+    title: 'Talk to your agents',
+    text: 'Live two-way voice with barge-in, dictation and voice notes.',
+    href: 'features/voice/',
+  },
+  {
+    slug: 'workers',
+    title: 'Throwaway Kubernetes workers',
+    text: 'One pod per task; a guard proxy keeps secrets off the box.',
+    href: 'features/workers/',
+  },
+  {
+    slug: 'usage',
+    title: 'Know what the fleet costs',
+    text: 'Accounts, pools, 5h/7d windows, per-model cost and dollar caps.',
+    href: 'features/usage/',
+  },
+  {
+    slug: 'search',
+    title: 'Find any conversation',
+    text: 'Full-text search over every transcript, with facets.',
+    href: 'features/search/',
+  },
+  {
+    slug: 'plugins',
+    title: 'Extend it with mods',
+    text: 'Panes, pages and message actions from a signed catalog.',
+    href: 'features/plugins/',
+  },
+];
+
+const why = [
+  {
+    title: 'Self-hosted, MIT',
+    text: 'One server, one PostgreSQL, your machines. No vendor account, no relay you do not own.',
+  },
+  {
+    title: 'Every harness, one UI',
+    text: 'Claude Code, Codex, opencode and any ACP agent stream through the same transcript view and the same permission cards.',
+  },
+  {
+    title: 'Orchestration',
+    text: 'Nested subagents with budgets, rooms across sessions, and ephemeral Kubernetes workers behind a guard proxy.',
+  },
+  {
+    title: 'Limits you can see',
+    text: 'Many subscription accounts, pools with failover, 5h/7d windows and hard dollar caps, per session and per subagent.',
+  },
+  {
+    title: 'Hardened',
+    text: 'Multi-user isolation, passkeys, an encrypted vault, opt-in secret redaction and minisign-signed self-updates.',
+  },
+  {
+    title: 'Phone-first',
+    text: 'Below 960px panels become drawers. A "Needs you" list shows what is waiting on you.',
+  },
+];
+---
+
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content={new URL(withBase('media/hero.poster.webp'), Astro.site)} />
+    <meta name="theme-color" content="#0f1115" />
+    <link rel="icon" href={withBase('favicon.svg')} type="image/svg+xml" />
+    <link rel="canonical" href={new URL(withBase(''), Astro.site)} />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="nav">
+      <a class="brand" href={withBase('')} aria-label="cctui home">
+        <img src={withBase('favicon.svg')} alt="" width="28" height="28" />
+        <span>cctui</span>
+      </a>
+      <nav aria-label="Primary">
+        <a href={withBase('getting-started/quick-start/')}>Docs</a>
+        <a href={withBase('features/live-sessions/')}>Features</a>
+        <a href={withBase('architecture/')}>Architecture</a>
+        <a href={withBase('comparison/')}>Compare</a>
+        <a class="gh" href="https://github.com/DorskFR/cctui">GitHub</a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero">
+        <p class="eyebrow">Self-hosted. MIT. Yours.</p>
+        <h1>Every agent.<br />Every machine.<br /><span class="accent">One window.</span></h1>
+        <p class="lede">
+          cctui watches, drives and orchestrates Claude Code, Codex, opencode and ACP agent sessions across all
+          your machines and throwaway Kubernetes workers, from one web UI and a terminal client.
+        </p>
+        <div class="cta">
+          <a class="btn primary" href={withBase('getting-started/quick-start/')}>Quick start</a>
+          <a class="btn" href="https://github.com/DorskFR/cctui/releases">Download</a>
+          <code class="cmd">make local/up</code>
+        </div>
+        <div class="hero-clip">
+          <Clip
+            slug="hero"
+            alt="Tour: the fleet list, a streaming session, a permission approved, an agent spawned on another machine, a subagent tree"
+            ratio="16 / 9"
+          />
+        </div>
+      </section>
+
+      <section class="strip" aria-labelledby="works-with">
+        <h2 id="works-with">Works with</h2>
+        <ul class="harnesses">
+          {
+            harnesses.map((h) => (
+              <li>
+                <span class="hname">{h.name}</span>
+                <span class="hnote">{h.note}</span>
+              </li>
+            ))
+          }
+          <li class="more">
+            <span class="hname">any ACP agent</span>
+            <span class="hnote">Agent Client Protocol</span>
+          </li>
+        </ul>
+      </section>
+
+      <section class="features" aria-labelledby="features-h">
+        <h2 id="features-h">What you get</h2>
+        <p class="sub">Every clip below is the real UI, recorded against a demo fixture.</p>
+        <ul class="grid">
+          {
+            features.map((f) => (
+              <li>
+                <a class="card" href={withBase(f.href)}>
+                  <Clip slug={f.slug} alt={f.title} lazy />
+                  <h3>{f.title}</h3>
+                  <p>{f.text}</p>
+                </a>
+              </li>
+            ))
+          }
+        </ul>
+        <p class="all">
+          <a href={withBase('features/harnesses/')}>All 16 feature areas, 200+ features &rarr;</a>
+        </p>
+      </section>
+
+      <section class="quick" aria-labelledby="quick-h">
+        <h2 id="quick-h">Up in three steps</h2>
+        <ol class="steps">
+          <li>
+            <h3>Start the server</h3>
+            <pre><code>git clone https://github.com/DorskFR/cctui
+cd cctui
+make local/up</code></pre>
+            <p>Pulls the published images plus PostgreSQL. The UI is on <code>localhost:8088</code>.</p>
+          </li>
+          <li>
+            <h3>Enroll a machine</h3>
+            <pre><code>cctui-daemon enroll \
+  --server-url http://localhost:8700 \
+  --token &lt;admin-token&gt; --name workstation-01
+cctui-daemon service install</code></pre>
+            <p>The daemon connects out and your existing sessions appear.</p>
+          </li>
+          <li>
+            <h3>Drive it</h3>
+            <p>
+              Open the UI, spawn an agent on <code>workstation-01</code>, approve its first tool call from your
+              phone, and let it spawn subagents of its own.
+            </p>
+            <a class="btn small" href={withBase('getting-started/quick-start/')}>Full quick start</a>
+          </li>
+        </ol>
+      </section>
+
+      <section class="arch" aria-labelledby="arch-h">
+        <h2 id="arch-h">How it fits together</h2>
+        <p class="sub">
+          One server. A daemon on each machine, connecting outward. Dispatchers that turn tasks into pods.
+        </p>
+        <div class="arch-wrap">
+          <ArchDiagram compact />
+        </div>
+        <p class="all"><a href={withBase('architecture/')}>Read the architecture &rarr;</a></p>
+      </section>
+
+      <section class="why" aria-labelledby="why-h">
+        <h2 id="why-h">Why cctui</h2>
+        <ul class="why-grid">
+          {
+            why.map((w) => (
+              <li>
+                <h3>{w.title}</h3>
+                <p>{w.text}</p>
+              </li>
+            ))
+          }
+        </ul>
+        <p class="all"><a href={withBase('comparison/')}>Comparison with other tools &rarr;</a></p>
+      </section>
+    </main>
+
+    <footer>
+      <nav aria-label="Footer">
+        <a href="https://github.com/DorskFR/cctui">GitHub</a>
+        <a href="https://github.com/DorskFR/cctui/releases">Releases</a>
+        <a href={withBase('getting-started/quick-start/')}>Docs</a>
+        <a href="https://github.com/DorskFR/cctui/blob/main/LICENSE">MIT license</a>
+      </nav>
+      <p>cctui is an independent open-source project. Early stage: expect rough edges and breaking changes.</p>
+    </footer>
+  </body>
+</html>
+
+<style>
+  * {
+    box-sizing: border-box;
+  }
+  html {
+    color-scheme: dark;
+    background: var(--c-bg);
+    color: var(--c-text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    scroll-behavior: smooth;
+  }
+  body {
+    margin: 0;
+    line-height: 1.5;
+  }
+  a {
+    color: var(--c-accent);
+    text-decoration: none;
+  }
+  a:hover {
+    text-decoration: underline;
+  }
+  code,
+  pre {
+    font-family: var(--font-mono);
+  }
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    margin: 0;
+  }
+  h2 {
+    font-size: clamp(1.6rem, 3vw, 2.2rem);
+    margin-bottom: 0.5rem;
+  }
+  .skip {
+    position: absolute;
+    left: -999px;
+    top: 0;
+    background: var(--c-accent);
+    color: var(--c-accent-ink);
+    padding: 0.5rem 1rem;
+    z-index: 10;
+  }
+  .skip:focus {
+    left: 1rem;
+    top: 1rem;
+  }
+
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.75rem clamp(1rem, 4vw, 3rem);
+    background: color-mix(in srgb, var(--c-bg) 85%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--c-border);
+  }
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--c-text);
+    font-weight: 800;
+    font-size: 1.15rem;
+    letter-spacing: -0.02em;
+  }
+  .brand img {
+    border-radius: 7px;
+  }
+  .nav nav {
+    display: flex;
+    gap: clamp(0.6rem, 2vw, 1.5rem);
+    font-size: 0.95rem;
+  }
+  .nav nav a {
+    color: var(--c-text-muted);
+  }
+  .nav nav a:hover,
+  .nav nav a.gh {
+    color: var(--c-text);
+  }
+
+  main {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 clamp(1rem, 4vw, 3rem);
+  }
+  section {
+    padding: clamp(3rem, 7vw, 6rem) 0;
+    border-bottom: 1px solid var(--c-border);
+  }
+  .sub {
+    color: var(--c-text-muted);
+    margin: 0 0 2rem;
+    max-width: 60ch;
+  }
+  .all {
+    margin-top: 2rem;
+    font-weight: 600;
+  }
+
+  .hero {
+    text-align: center;
+    padding-top: clamp(3rem, 8vw, 6rem);
+  }
+  .eyebrow {
+    margin: 0 0 1rem;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--c-accent);
+  }
+  .hero h1 {
+    font-size: clamp(2.6rem, 8vw, 5.2rem);
+    font-weight: 800;
+  }
+  .accent {
+    color: var(--c-accent);
+  }
+  .lede {
+    max-width: 62ch;
+    margin: 1.5rem auto 0;
+    font-size: clamp(1.05rem, 1.6vw, 1.3rem);
+    color: var(--c-text-muted);
+  }
+  .cta {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 2rem 0 3rem;
+  }
+  .btn {
+    display: inline-block;
+    padding: 0.7rem 1.3rem;
+    border-radius: 10px;
+    border: 1px solid var(--c-border-strong);
+    color: var(--c-text);
+    font-weight: 600;
+    background: var(--c-bg-elev);
+  }
+  .btn:hover {
+    text-decoration: none;
+    border-color: var(--c-accent);
+  }
+  .btn.primary {
+    background: var(--c-accent);
+    color: var(--c-accent-ink);
+    border-color: var(--c-accent);
+  }
+  .btn.small {
+    padding: 0.45rem 0.9rem;
+    font-size: 0.9rem;
+    margin-top: 0.5rem;
+  }
+  .cmd {
+    padding: 0.6rem 1rem;
+    border-radius: 10px;
+    background: var(--c-bg-elev-2);
+    border: 1px solid var(--c-border);
+    color: var(--c-accent);
+    font-size: 0.95rem;
+  }
+  .hero-clip {
+    max-width: 1080px;
+    margin: 0 auto;
+  }
+
+  .strip {
+    padding: 2.5rem 0;
+  }
+  .strip h2 {
+    font-size: 0.85rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--c-text-faint);
+    font-family: var(--font-mono);
+    text-align: center;
+    margin-bottom: 1.25rem;
+  }
+  .harnesses {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.75rem;
+  }
+  .harnesses li {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 9rem;
+    padding: 0.7rem 1rem;
+    border-radius: 10px;
+    border: 1px solid var(--c-border);
+    background: var(--c-bg-elev);
+  }
+  .harnesses .more {
+    border-style: dashed;
+  }
+  .hname {
+    font-weight: 700;
+  }
+  .hnote {
+    font-size: 0.8rem;
+    color: var(--c-text-faint);
+  }
+
+  .grid {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 1.25rem;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  }
+  .card {
+    display: block;
+    height: 100%;
+    padding: 0.75rem;
+    border-radius: 16px;
+    border: 1px solid var(--c-border);
+    background: var(--c-bg-elev);
+    color: var(--c-text);
+    transition:
+      border-color 0.15s,
+      transform 0.15s;
+  }
+  .card:hover {
+    text-decoration: none;
+    border-color: var(--c-accent);
+    transform: translateY(-2px);
+  }
+  .card h3 {
+    font-size: 1.05rem;
+    margin: 0.9rem 0.25rem 0.3rem;
+  }
+  .card p {
+    margin: 0 0.25rem 0.25rem;
+    font-size: 0.92rem;
+    color: var(--c-text-muted);
+  }
+
+  .steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 1.25rem;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+    counter-reset: step;
+  }
+  .steps li {
+    position: relative;
+    padding: 1.5rem 1.25rem 1.25rem;
+    border-radius: 16px;
+    border: 1px solid var(--c-border);
+    background: var(--c-bg-elev);
+    counter-increment: step;
+  }
+  .steps li::before {
+    content: counter(step);
+    display: inline-grid;
+    place-items: center;
+    width: 2rem;
+    height: 2rem;
+    margin-bottom: 0.75rem;
+    border-radius: 999px;
+    background: var(--c-accent);
+    color: var(--c-accent-ink);
+    font-weight: 800;
+  }
+  .steps h3 {
+    font-size: 1.1rem;
+    margin-bottom: 0.75rem;
+  }
+  .steps pre {
+    margin: 0 0 0.75rem;
+    padding: 0.8rem 1rem;
+    border-radius: 10px;
+    background: var(--c-bg);
+    border: 1px solid var(--c-border);
+    font-size: 0.82rem;
+    overflow-x: auto;
+  }
+  .steps p {
+    margin: 0;
+    font-size: 0.92rem;
+    color: var(--c-text-muted);
+  }
+  .steps code {
+    color: var(--c-accent);
+  }
+
+  .arch-wrap {
+    padding: 1rem;
+    border-radius: 16px;
+    border: 1px solid var(--c-border);
+    background: var(--c-bg-elev);
+  }
+
+  .why-grid {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 1.25rem;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  }
+  .why-grid li {
+    padding: 1.25rem;
+    border-radius: 16px;
+    border: 1px solid var(--c-border);
+    background: var(--c-bg-elev);
+  }
+  .why-grid h3 {
+    font-size: 1.1rem;
+    margin-bottom: 0.5rem;
+    color: var(--c-accent);
+  }
+  .why-grid p {
+    margin: 0;
+    color: var(--c-text-muted);
+    font-size: 0.95rem;
+  }
+
+  footer {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 2.5rem clamp(1rem, 4vw, 3rem) 3rem;
+    color: var(--c-text-faint);
+    font-size: 0.9rem;
+  }
+  footer nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.25rem;
+    margin-bottom: 0.75rem;
+  }
+  footer nav a {
+    color: var(--c-text-muted);
+  }
+
+  @media (max-width: 480px) {
+    .nav nav a:not(.gh):nth-child(n + 3) {
+      display: none;
+    }
+    .cmd {
+      width: 100%;
+      text-align: center;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    .card:hover {
+      transform: none;
+    }
+  }
+</style>

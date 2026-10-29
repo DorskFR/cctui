@@ -1,0 +1,110 @@
+@import './tokens.css';
+
+:root {
+  --sl-font: var(--font-sans);
+  --sl-font-mono: var(--font-mono);
+  --sl-color-accent-low: #163826;
+  --sl-color-accent: #5ad6a0;
+  --sl-color-accent-high: #bdf0d8;
+  --sl-color-white: #e6e9ef;
+  --sl-color-gray-1: #d9dde6;
+  --sl-color-gray-2: #9aa3b2;
+  --sl-color-gray-3: #848c9e;
+  --sl-color-gray-4: #2c323d;
+  --sl-color-gray-5: #1f232c;
+  --sl-color-gray-6: #171a21;
+  --sl-color-black: #0f1115;
+  --sl-color-bg: #0f1115;
+  --sl-color-bg-nav: #0f1115;
+  --sl-color-bg-sidebar: #12151b;
+  --sl-color-bg-inline-code: #1f232c;
+  --sl-color-text-accent: #5ad6a0;
+  --sl-color-hairline: #2c323d;
+  --sl-color-hairline-light: #2c323d;
+  --sl-text-code: 0.9rem;
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: #cfeee0;
+  --sl-color-accent: #008256;
+  --sl-color-accent-high: #04402a;
+  --sl-color-white: #1a1d23;
+  --sl-color-gray-1: #2b303a;
+  --sl-color-gray-2: #5b6472;
+  --sl-color-gray-3: #6a7282;
+  --sl-color-gray-4: #d9dde3;
+  --sl-color-gray-5: #eef0f3;
+  --sl-color-gray-6: #f6f7f9;
+  --sl-color-black: #ffffff;
+  --sl-color-bg: #f6f7f9;
+  --sl-color-bg-nav: #ffffff;
+  --sl-color-bg-sidebar: #f0f2f5;
+  --sl-color-bg-inline-code: #e8ebef;
+  --sl-color-text-accent: #008256;
+  --sl-color-hairline: #d9dde3;
+  --sl-color-hairline-light: #d9dde3;
+}
+
+.site-title {
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.sl-markdown-content h1,
+.sl-markdown-content h2,
+.sl-markdown-content h3 {
+  letter-spacing: -0.015em;
+}
+
+.sl-markdown-content .card {
+  background: var(--c-bg-elev);
+  border-color: var(--c-border);
+  border-radius: 12px;
+}
+
+.sl-markdown-content .card .title {
+  font-size: 1rem;
+}
+
+.sl-markdown-content .card .body {
+  font-size: 0.92rem;
+  color: var(--c-text-muted);
+}
+
+.sl-markdown-content code:not(pre code) {
+  border-radius: 6px;
+}
+
+.pitch {
+  font-size: 1.15rem;
+  line-height: 1.5;
+  color: var(--c-text-muted);
+  margin-top: 0.5rem !important;
+}
+
+.pitch strong {
+  color: var(--c-text);
+}
+
+.status {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  border: 1px solid var(--c-border-strong);
+  color: var(--c-text-muted);
+  vertical-align: middle;
+}
+
+.status.beta {
+  color: var(--c-amber);
+  border-color: var(--c-amber);
+}
+
+.status.partial {
+  color: var(--c-violet);
+  border-color: var(--c-violet);
+}

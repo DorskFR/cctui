@@ -1,0 +1,26 @@
+---
+title: Voice
+description: Live two-way voice with barge-in, push-to-talk dictation, spoken replies and voice notes from agents.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Clip from '../../../components/Clip.astro';
+
+<Clip slug="voice" alt="The live voice bar and a voice note posted by an agent into the conversation" />
+
+<p class="pitch">Walk away from the keyboard. <strong>Talk to an agent, hear it answer sentence by sentence, interrupt it mid-reply</strong>, and get a voice note when it has something to say.</p>
+
+<CardGrid>
+  <Card title="Hands-free live voice">Voice activity detection on your side, speech on the agent's. It hears you, thinks, and speaks while it is still writing.</Card>
+  <Card title="Barge-in">Start talking and the agent stops speaking.</Card>
+  <Card title="Push-to-talk dictation">Speak a prompt into the composer; edit before sending.</Card>
+  <Card title="Spoken turns, shown once">Your spoken turn appears as audio plus text, as a single bubble.</Card>
+  <Card title="Voice notes from agents">`CctuiSpeak` posts a spoken note into the conversation, with a voice id you choose.</Card>
+  <Card title="Read anything aloud">Listen to any reply, with playback speed control.</Card>
+  <Card title="Screen wake lock">The phone stays awake for the length of a voice session.</Card>
+  <Card title="Speech settings">Pick the speech service, language and engine per instance.</Card>
+</CardGrid>
+
+## How it works
+
+The server runs a speech service for transcription and synthesis, configured under **Settings › Voice**. During a live voice session the gateway tees the agent's streamed text into the voice engine, so speech starts while the turn is still being written; playback state drives the voice UI. Dictation and voice notes use the same service through the normal REST routes.

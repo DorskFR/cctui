@@ -1,0 +1,32 @@
+---
+title: Live sessions
+description: Watch text, thinking and tool calls stream in, and reply to any running agent from the browser.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Clip from '../../../components/Clip.astro';
+
+<Clip slug="live-session" alt="A transcript streaming text, thinking and tool calls, with a reply typed in the composer" />
+
+<p class="pitch">Everything an agent does, as it does it. <strong>Read the transcript, steer it mid-turn, and see what each turn cost</strong>, from a drawer, a dock or a full page.</p>
+
+<CardGrid>
+  <Card title="Streaming transcript">Text, thinking and tool calls render as they happen. Older history pages in on scroll, so long sessions open fast.</Card>
+  <Card title="Composer that reaches the agent">Reply to any session, interrupt it, mention another session with `#`, paste files and screenshots. Drafts sync across devices.</Card>
+  <Card title="Grouped by need">Working, Needs input and Done sections put the sessions that are waiting on you first. List, detailed and tiles views.</Card>
+  <Card title="Card readout">Status dot, current activity, todo progress, badges and a PR link, without opening the session.</Card>
+  <Card title="Todo, plan and task cards">Follow the agent's checklist and plan inline. Repeated status polls fold into one line instead of noise.</Card>
+  <Card title="Turn footer">Tokens, cost and elapsed time per turn. Filters show, collapse or hide tool calls, thinking and polls.</Card>
+  <Card title="Find in conversation">Ctrl/Cmd+F searches one transcript and jumps between hits.</Card>
+  <Card title="Terminal pane">A read-only view of the harness's real terminal, beside the transcript.</Card>
+  <Card title="Context chip">How full the context window is and which memory and rules are attached.</Card>
+  <Card title="Fork from a message">Branch a conversation from any line or selection into a new session, even on a different harness.</Card>
+  <Card title="Switch account mid-session">Move a running session to another account when a window is exhausted.</Card>
+  <Card title="Why is it silent?">Plain-language reasons a session looks stuck, and the delivery state of each message you sent.</Card>
+</CardGrid>
+
+## How it works
+
+The daemon tails each session and streams events to the server over its WebSocket. The server stores them, indexes them for search, and fans them out to every open browser and terminal client. Replies travel the other way: the composer posts to the server, the daemon delivers to the harness, and the delivery state (queued, delivered, deduplicated) is shown on the line.
+
+Prompt cache matters, so usage notices and status checks are delivered as ordinary messages rather than spliced into requests, and a keepalive can keep an idle session's cache warm within a tick budget.

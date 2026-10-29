@@ -1,4 +1,4 @@
-# Standalone execution server (experimental)
+# Standalone execution server
 
 The opt-in `cctui-core-server` binary and `ghcr.io/dorskfr/cctui-core` image
 provide identity, encrypted provider accounts, credential proxying, machine and
@@ -6,26 +6,26 @@ dispatcher enrollment, JSON dispatch/spawn, run results and cancellation. They d
 not serve a workspace UI, transcript search, uploads, plugins, voice or previews.
 Existing `cctui-server` installations and the `cctui` image remain the full product.
 
-This is an experimental beta. Verified runs include real Claude/Codex machine
+The standalone host supports one active instance per database. Verified runs include real Claude/Codex machine
 execution, a Codex parent calling a Claude child and a sandboxed Kubernetes Codex
 Job with a fetched context pack. Same-schema core restart/rollback and mixed-version
 full-server rollout/rollback have also passed controlled-provider acceptance.
 Machine-authenticated child spawning, follow-ups,
 completion delivery, archival and session-limit reporting are available with
 capability and budget enforcement; workspace agent profiles require full.
-Use the execution API for this beta. Current webui and TUI clients identify core
+Use the execution API for standalone automation. Current webui and TUI clients identify core
 and explain which workspace functions require a full server. Server self-update
 is disabled.
 Daemon manifests/downloads and machine connectivity verification use the same
 contracts as full. Follow the
-[split roadmap](server-core-split.md) for production-readiness gates.
+[split delivery record](server-core-split.md) for acceptance coverage and exclusions.
 
 ## Install
 
 Release assets include `cctui-core-server-linux-amd64`,
 `cctui-core-server-linux-arm64` and `cctui-core-server-darwin-arm64`, with the
 same signed checksum files as the other binaries. The image is Linux amd64.
-Select an explicit beta version; the stable full deployment need not change.
+Select an explicit release version; the full deployment need not change.
 
 The server requires PostgreSQL and these environment variables:
 
@@ -43,7 +43,7 @@ file and supply it to the process or container. For a local PostgreSQL test:
 
 ```sh
 docker run --rm --env-file /path/to/core.env --network host \
-  ghcr.io/dorskfr/cctui-core:0.27.0-beta.34
+  ghcr.io/dorskfr/cctui-core:0.27.0
 ```
 
 `DATABASE_URL` and `CCTUI_EXTERNAL_URL` must be reachable from the container's
@@ -320,7 +320,7 @@ removing their own processes, worker container and database.
 ## Repeatable cancellation acceptance
 
 ```sh
-CCTUI_TEST_WORKER_IMAGE=ghcr.io/dorskfr/cctui-worker:0.27.0-beta.33 \
+CCTUI_TEST_WORKER_IMAGE=ghcr.io/dorskfr/cctui-worker:0.27.0 \
   python3 scripts/check-core-worker.py --check-cancellation
 ```
 
