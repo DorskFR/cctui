@@ -8,4 +8,11 @@ workspace = true
 
 [dependencies]
 cctui-server-core.workspace = true
+cctui-proto.workspace = true
+uuid.workspace = true
 sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres"] }
+
+[dev-dependencies]
+cctui-server-core = { workspace = true, features = ["test-support"] }
+tokio.workspace = true
+serde_json.workspace = true
