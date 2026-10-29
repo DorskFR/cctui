@@ -160,7 +160,7 @@ inside, because the change lands as a commit before it lands on the cluster.
 
 With no hook on the target machine, the update button spawns a YOLO agent on it,
 under the clicking admin's own accounts, on an Opus-class model (see
-`launch_profile()` in `crates/cctui-server/src/routes/self_update.rs`). It reads
+`launch_profile()` in `crates/cctui-server-workspace/src/routes/self_update.rs`). It reads
 that machine's `CLAUDE.md` / `AGENTS.md` / notes and works the deployment out.
 
 It is a real fallback for a deployment nobody has written a hook for yet, and it

@@ -8,9 +8,14 @@ use futures_util::TryStreamExt;
 use tokio_util::io::{ReaderStream, StreamReader};
 use uuid::Uuid;
 
-use crate::auth::AuthContext;
 use crate::skill_store::{SkillError, SkillStore, validate_name};
-use crate::state::AppState;
+use cctui_server_core::auth::AuthContext;
+/// State needed by the workspace skill API, independent of the full host.
+#[derive(Clone)]
+pub struct SkillState {
+    pub pool: sqlx::PgPool,
+    pub skills: std::sync::Arc<SkillStore>,
+}
 
 const DEFAULT_CONTENT_TYPE: &str = "application/zstd";
 const VERSION_HEADER: &str = "X-CCTUI-Version";
@@ -24,7 +29,7 @@ fn require_machine(ctx: &AuthContext) -> Result<(Uuid, Uuid), StatusCode> {
 /// Reading the skill index/blobs needs any authenticated identity (machine or
 /// human) with the `read` scope; it returns the owning user for scoping.
 fn require_user_scope(ctx: &AuthContext) -> Result<Uuid, StatusCode> {
-    ctx.requires(crate::auth::Scope::Read)?;
+    ctx.requires(cctui_server_core::auth::Scope::Read)?;
     Ok(ctx.user_id)
 }
 
@@ -105,7 +110,7 @@ fn row_to_entry(r: Row) -> SkillIndexEntry {
 
 #[allow(clippy::similar_names)]
 pub async fn put(
-    State(state): State<AppState>,
+    State(state): State<SkillState>,
     Extension(ctx): Extension<AuthContext>,
     Path(name): Path<String>,
     headers: HeaderMap,
@@ -202,7 +207,7 @@ async fn store_upload<R: tokio::io::AsyncRead + Unpin>(
 }
 
 pub async fn index(
-    State(state): State<AppState>,
+    State(state): State<SkillState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<SkillIndexEntry>>, StatusCode> {
     let user_id = require_user_scope(&ctx)?;
@@ -215,7 +220,7 @@ pub async fn index(
 }
 
 pub async fn get(
-    State(state): State<AppState>,
+    State(state): State<SkillState>,
     Extension(ctx): Extension<AuthContext>,
     Path(name): Path<String>,
 ) -> Result<Response, StatusCode> {
@@ -283,7 +288,7 @@ async fn open_bundle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::routes::gateway::test_db_url;
+    use cctui_server_core::test_support::db_url as test_db_url;
 
     fn headers_with(v: &str) -> HeaderMap {
         let mut h = HeaderMap::new();

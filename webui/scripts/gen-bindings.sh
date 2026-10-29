@@ -44,10 +44,10 @@ mkdir -p "$staging"
 # CI overrides the package selection; the exported set must stay the same
 # (cctui-query exports are not part of the webui bindings).
 # shellcheck disable=SC2206
-cargo_args=(${CCTUI_BINDINGS_CARGO_ARGS:--p cctui-proto -p cctui-server})
+cargo_args=(${CCTUI_BINDINGS_CARGO_ARGS:--p cctui-proto -p cctui-server-workspace})
 # ts-rs (and every `#[ts(export)]` test) is behind each crate's `ts` feature, so
 # only this path compiles it.
-features="${CCTUI_BINDINGS_FEATURES:-cctui-proto/ts,cctui-server/ts}"
+features="${CCTUI_BINDINGS_FEATURES:-cctui-proto/ts,cctui-server-workspace/ts}"
 TS_RS_EXPORT_DIR="$staging" cargo test --manifest-path "$repo_root/Cargo.toml" \
   "${cargo_args[@]}" --features "$features" export_bindings
 

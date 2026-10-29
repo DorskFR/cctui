@@ -70,7 +70,7 @@ case "$area" in
       echo "✖ Claude Code settings schema drift: upstream differs from $vendored"
       echo "  Re-vendor:  curl -fsSL $url -o $vendored"
       echo "  Then review catalog.toml for added/removed keys and run:"
-      echo "    cargo test -p cctui-server settings_catalog"
+      echo "    cargo test -p cctui-server-core settings_catalog"
       exit 1
     fi
     ;;

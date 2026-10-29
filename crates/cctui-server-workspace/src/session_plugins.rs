@@ -13,11 +13,13 @@ pub const BUILTIN_SLOTS: &[&str] = &["youtrack", "slack", "github"];
 
 /// Whether `plugin_id` may own a slot. `installed` answers whether a plugin
 /// bundle with that id exists on this instance.
+#[must_use]
 pub fn slot_allowed(plugin_id: &str, installed: bool) -> bool {
     crate::plugins::valid_id(plugin_id) && (installed || BUILTIN_SLOTS.contains(&plugin_id))
 }
 
 /// Serialized size of a slot payload, for the cap check.
+#[must_use]
 pub fn slot_size(data: &serde_json::Value) -> usize {
     serde_json::to_vec(data).map_or(usize::MAX, |v| v.len())
 }

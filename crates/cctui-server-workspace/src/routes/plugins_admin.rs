@@ -32,22 +32,6 @@ fn db_err(e: &sqlx::Error) -> ApiErr {
     err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
 }
 
-impl From<&Plugin> for AdminPluginInfo {
-    fn from(p: &Plugin) -> Self {
-        Self {
-            id: p.manifest.id.clone(),
-            name: p.manifest.name.clone(),
-            description: p.manifest.description.clone(),
-            version: p.manifest.version.clone(),
-            source: p.source,
-            enabled: p.instance_enabled,
-            instance_settings: p.manifest.instance_settings.clone(),
-            backend: p.manifest.backend.is_some(),
-            proxy_secret: None,
-        }
-    }
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum InstallBody {

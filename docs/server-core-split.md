@@ -8,7 +8,7 @@
 | Standalone automation host | Real machine, parent/child and sandboxed Kubernetes Codex execution verified | Rolling-upgrade acceptance |
 | Minimal database | Core bootstrap, core→full expansion and numbered forward migrations implemented | Continued upgrade and rollback acceptance |
 | Installable core distribution | Dedicated binaries/image published; signed artifacts and fresh-database image smokes verified | Ongoing published-worker and upgrade acceptance |
-| Workspace boundary and clients | Workspace schema extracted; TUI/webui recognize core and full distributions | Interactive handlers/state extraction and further client acceptance |
+| Workspace boundary and clients | Workspace schema, handlers/state and full-host assembly extracted; clients recognize distributions | Further client and production upgrade acceptance |
 
 The split is **not complete**. Beta counts describe delivery increments, not a
 percentage of completion. Production readiness requires all acceptance gates
@@ -65,9 +65,9 @@ should be required to initiate or finish the supported flow.
 - `cctui-server-core`: shared identity, account, gateway, execution and essential
   persistence services. No dependency on workspace/full server.
 - `cctui-core-server`: experimental automation host using core services.
-- `cctui-server-workspace`: workspace schema services depending on core; interactive
-  handler/state extraction remains in progress.
-- `cctui-server`: existing full binary assembling core and workspace in one process.
+- `cctui-server-workspace`: interactive handlers, application state, workspace
+  storage and full-host assembly, depending on core.
+- `cctui-server`: the existing full executable, starting the workspace host.
 
 Start with these coarse crates. Extract search/media/voice/plugin crates further
 only when useful. Core must compile/test on its own without search, image codecs,
@@ -838,3 +838,27 @@ instructions and prompt text reached the actual Codex request. No new context
 storage or resolver was introduced in core. Interactive workspace handlers/state,
 remaining lifecycle ownership, further adapter acceptance and rolling
 upgrade/rollback checks remain open.
+
+
+### Workspace handlers, state and full-host assembly (`0.27.0-beta.31`)
+
+The full HTTP/WebSocket handlers, interactive application state, background
+services and startup assembly now live in `cctui-server-workspace`, above the
+shared execution engine. `cctui-server` retains the executable entry point and
+its live-server integration tests. Its runtime dependencies are the workspace
+host, Tokio and the entry-point error type. The standalone core host continues
+to depend on core without importing workspace.
+
+The move preserves module relationships, routes, authentication, workspace
+storage and migration orchestration. Existing skill storage/handler state, plugin
+runtime/archive/session slots and the admin projection join the rest of the
+workspace host; they are no longer full-binary forwarding layers. The build
+metadata script and TypeScript export-test selection follow their implementations.
+The CLI and package/image names stay the same, and the legacy logging directive
+still enables the relocated workspace targets.
+
+The worker fixture adds same-database binary upgrade/rollback acceptance,
+retaining credentials/results and requiring a fresh real task after each daemon
+reconnection. This checks sequential restarts within the existing schema window.
+Remaining gates include shared execution lifecycle/replica ownership, broader
+production-shaped full upgrades and rolling multi-replica acceptance.
