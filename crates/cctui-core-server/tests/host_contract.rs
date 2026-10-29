@@ -1848,7 +1848,19 @@ async fn daemon_distribution_preserves_channels_origin_etag_and_machine_identity
     let key = user["key"].as_str().unwrap();
     let manifest = format!("{}/api/v1/manifest/daemon", f.base);
     assert_eq!(f.client.get(&manifest).send().await.unwrap().status(), 401);
-    assert_eq!(f.client.get(&manifest).bearer_auth(key).send().await.unwrap().status(), 204);
+    let stable_status = if env!("CARGO_PKG_VERSION").contains("-beta.") { 204 } else { 200 };
+    for query in ["", "?channel=stable"] {
+        assert_eq!(
+            f.client
+                .get(format!("{manifest}{query}"))
+                .bearer_auth(key)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            stable_status
+        );
+    }
     let response =
         f.client.get(format!("{manifest}?channel=beta")).bearer_auth(key).send().await.unwrap();
     assert_eq!(response.status(), 200);
