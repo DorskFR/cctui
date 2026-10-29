@@ -28,7 +28,7 @@ real path — the ownership guard, the NUL strip, the link extraction and the
 ```sh
 createdb cctui_bench
 DATABASE_URL=postgres://…/cctui_bench sqlx migrate run --source migrations
-DATABASE_URL=postgres://…/cctui_bench cargo test -p cctui-server --lib \
+DATABASE_URL=postgres://…/cctui_bench cargo test -p cctui-server-workspace --lib \
   routes::daemon::ingest -- --ignored --nocapture batched_backfill
 ```
 
