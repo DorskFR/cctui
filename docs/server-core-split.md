@@ -4,8 +4,8 @@
 
 | Milestone | Status | Remaining gate |
 | --- | --- | --- |
-| Shared execution engine | Extracted and exercised by both hosts | Pending-launch cancellation/reconciliation and unattended-run policy acceptance |
-| Standalone automation host | Claude/Codex machine and Kubernetes execution, parent/child, signed context packs and single-host recovery verified | General headless harness configuration and lifecycle acceptance |
+| Shared execution engine | Extracted and exercised by both hosts | Pending-launch cancellation/reconciliation |
+| Standalone automation host | Claude/Codex machine and Kubernetes execution, parent/child, signed context packs and single-host recovery verified | Pending-launch lifecycle acceptance |
 | Minimal database | Core bootstrap, core→full expansion, immutable lineage and forward migrations verified | Final release acceptance within documented rollback windows |
 | Installable core distribution | Signed binaries/images and real published workers verified | Final release publication and runtime verification |
 | Workspace boundary and clients | Full host extracted; client distribution handling and stable full rollout/rollback verified | Final release checks |
@@ -882,3 +882,19 @@ bytes in a shared mount. The maintained sequential and mixed-version fixtures pa
 0.26.1, making that gate repeatable. A standalone process mode
 checks duplicate refusal, administrative provisioning, lease-loss exit and a new
 task after replacement. See [the operator guide](core-server.md) for commands.
+
+
+### Headless harness configuration (`0.27.0-beta.33`)
+
+Machine harness enablement/configuration, binary projection, validation and live
+reconciliation now belong to core. Full keeps its existing route guards and uses
+the shared handlers. Standalone exposes the same read and administrative write/
+reset routes. Reads require read scope and ownership/admin or an active machine
+share; mutation retains the full distribution's administrator requirement.
+
+The real-worker fixture configures current servers through these APIs rather
+than editing their database. Only compatibility runs starting an older core that
+predates the API seed its fixture pins directly. Existing mode, configuration,
+enablement and daemon reconciliation contracts are preserved. Focused HTTP/WS
+regressions reproduce the absent API and verify access checks, pin/reset behavior,
+validation and live delivery without worker reenrollment.

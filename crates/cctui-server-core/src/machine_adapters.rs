@@ -49,3 +49,6 @@ pub fn spawn_refusal(
     let binaries = report.map(|r| &r.binaries);
     binaries.and_then(|b| missing_binary(b, adapter_id)).or_else(|| denied_health(report, machine))
 }
+
+/// Harness enablement/configuration and live reconciliation shared by both hosts.
+pub mod configuration;

@@ -27,6 +27,12 @@ pub fn router(host: Host) -> Router {
             get(core::targets::manifest::download_daemon_binary::<Host>),
         )
         .route("/api/v1/machines/{id}/status", get(crate::daemon::machine_status))
+        .route("/api/v1/machines/{id}/adapters", get(machine_adapters))
+        .route(
+            "/api/v1/machines/{id}/adapters/{adapter}",
+            axum::routing::put(core::machine_adapters::configuration::set)
+                .delete(core::machine_adapters::configuration::reset),
+        )
         .route("/api/v1/me", get(me::me))
         .route("/api/v1/me/key", axum::routing::delete(me::revoke_current_key))
         .route("/api/v1/enroll", post(core::targets::enrollment::enroll))
@@ -80,6 +86,17 @@ pub fn router(host: Host) -> Router {
         .route("/gateway/fireworks/{*path}", any(fireworks))
         .route("/gateway/google/{*path}", any(google))
         .with_state(host)
+}
+
+async fn machine_adapters(
+    State(host): State<Host>,
+    Extension(ctx): Extension<AuthContext>,
+    axum::extract::Path(machine): axum::extract::Path<uuid::Uuid>,
+) -> Result<Json<Vec<cctui_proto::api::machine_adapters::MachineAdapterInfo>>, core::error::AppError>
+{
+    core::machine_policy::require_machine_read(&host.pool, &ctx, machine).await?;
+    core::machine_adapters::configuration::list(State(host.core), axum::extract::Path(machine))
+        .await
 }
 
 async fn ready(State(host): State<Host>) -> StatusCode {

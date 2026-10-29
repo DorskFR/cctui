@@ -278,3 +278,26 @@ pub async fn claim_spawner(pool: &sqlx::PgPool, session_id: &str, spawn_key: Opt
         tracing::warn!(%session_id, error = %e, "could not record the spawner");
     }
 }
+
+/// Require read scope and an owned or actively shared machine.
+pub async fn require_machine_read(
+    pool: &sqlx::PgPool,
+    ctx: &AuthContext,
+    machine: Uuid,
+) -> Result<(), AppError> {
+    ctx.requires(crate::auth::Scope::Read).map_err(|s| AppError::new(s, "read scope required"))?;
+    let owner = crate::resource_owners::shareable_owner(
+        crate::resource_owners::Shareable::Machine,
+        machine,
+        pool,
+    )
+    .await?
+    .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "machine not found"))?;
+    if !ctx.is_admin()
+        && ctx.user_id != owner
+        && !crate::store::shares::granted(pool, "machine", machine, ctx.user_id).await?
+    {
+        return Err(AppError::new(StatusCode::FORBIDDEN, "not your machine"));
+    }
+    Ok(())
+}

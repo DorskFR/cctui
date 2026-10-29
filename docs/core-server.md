@@ -43,7 +43,7 @@ file and supply it to the process or container. For a local PostgreSQL test:
 
 ```sh
 docker run --rm --env-file /path/to/core.env --network host \
-  ghcr.io/dorskfr/cctui-core:0.27.0-beta.32
+  ghcr.io/dorskfr/cctui-core:0.27.0-beta.33
 ```
 
 `DATABASE_URL` and `CCTUI_EXTERNAL_URL` must be reachable from the container's
@@ -85,6 +85,24 @@ The HTTP dispatcher adapter can instead be configured with
 `CCTUI_HTTP_DISPATCHERS`, a JSON array of `{ "id", "url", "token" }` objects
 (`token` is optional). Its executor must implement the existing dispatch contract;
 a generic webhook does not execute a workload.
+
+Starting with beta.33, inspect a machine's enabled harnesses and reported binaries
+with `GET /api/v1/machines/{id}/adapters`. Read access requires the machine's owner,
+an administrator or an active machine share, plus read scope. Configure a harness
+with the bootstrap administrator token; changes reconcile the connected daemon
+without reenrollment and leave running sessions alone:
+
+```sh
+curl --fail-with-body -X PUT "$CCTUI_URL/api/v1/machines/$MACHINE_ID/adapters/claude-code" \
+  -H "Authorization: Bearer $CCTUI_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"config":{"mode":"oneshot"}}'
+```
+
+`DELETE /api/v1/machines/{id}/adapters/{adapter}` with an administrator token
+removes the machine's pin and restores the table default. These are the same
+configuration and access contracts as the full distribution; selecting a mode
+does not change a session's permission policy.
 
 For a configured HTTP executor named `automation`, a dispatch request is:
 
@@ -140,8 +158,10 @@ provider requests. It removes its own database/container/work directory and
 prints the directory retaining diagnostics. Ports 18727 and 18729 must be free.
 `CCTUI_TEST_WORKER_IMAGE` selects a worker release for compatibility checks;
 `CCTUI_TEST_POSTGRES_CONTAINER` selects the test PostgreSQL container.
-The smoke pins oneshot mode directly in its temporary fixture database; general
-headless harness configuration remains a separate API gap. Use the upgrade and ownership modes below for host-transition acceptance.
+The smoke configures oneshot mode through the administrative harness API.
+Only compatibility runs starting an older core without that API seed the old
+fixture database directly. Use the upgrade and ownership modes below for
+host-transition acceptance.
 
 The same fixture supports `--adapter codex`. For real MCP discovery, parent/child
 execution, registered-child slot retention and archival:

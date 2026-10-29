@@ -811,15 +811,43 @@ try:
     else:
         machine = req("POST", "/enroll", key, {"hostname": "container-worker"})
         mid = machine["machine_id"]
-        sql(
-            "INSERT INTO adapters_enabled (machine_id,adapter_id,enabled,config) VALUES ('"
-            + mid
-            + "','claude-code',true,'{\"mode\":\"oneshot\"}'::jsonb),('"
-            + mid
-            + "','codex',true,'{}'),('"
-            + mid
-            + "','opencode',false,'{}')"
-        )
+        legacy_configuration = False
+        if args.upgrade_from and not args.full_server:
+            probe = urllib.request.Request(
+                base + "/api/v1/machines/" + mid + "/adapters",
+                headers={"Authorization": "Bearer fixture-admin"},
+            )
+            try:
+                with urllib.request.urlopen(probe, timeout=15):
+                    pass
+            except urllib.error.HTTPError as error:
+                if error.code != 404:
+                    raise
+                legacy_configuration = True
+        if legacy_configuration:
+            # Historical core betas have no harness-configuration API. This
+            # compatibility fixture starts them first, then retains their pins.
+            sql(
+                "INSERT INTO adapters_enabled (machine_id,adapter_id,enabled,config) VALUES ('"
+                + mid
+                + "','claude-code',true,'{\"mode\":\"oneshot\"}'::jsonb),('"
+                + mid
+                + "','codex',true,'{}'),('"
+                + mid
+                + "','opencode',false,'{}')"
+            )
+        else:
+            for adapter, enabled, config in [
+                ("claude-code", True, {"mode": "oneshot"}),
+                ("codex", True, {}),
+                ("opencode", False, {}),
+            ]:
+                req(
+                    "PUT",
+                    "/machines/" + mid + "/adapters/" + adapter,
+                    "fixture-admin",
+                    {"enabled": enabled, "config": config},
+                )
         work = pathlib.Path(tempfile.mkdtemp(prefix="cctui-core-worker-"))
         work.chmod(0o777)
         subprocess.run(
@@ -1054,6 +1082,13 @@ try:
 
         def task(label):
             retained_workspace()
+            # The receiving replica must reconcile the peer that owns this daemon.
+            req(
+                "PUT",
+                "/machines/" + mid + "/adapters/claude-code",
+                "fixture-admin",
+                {"enabled": True, "config": {"mode": "oneshot"}},
+            )
             assert req("GET", "/me", key), label
             assert req("GET", "/accounts", key), label
             saved = req("GET", "/sessions/" + sid + "/result", key)
