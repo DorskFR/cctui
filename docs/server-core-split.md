@@ -4,8 +4,8 @@
 
 | Milestone | Status | Remaining gate |
 | --- | --- | --- |
-| Shared execution engine | Extracted and exercised by both hosts | Pending-launch cancellation/reconciliation |
-| Standalone automation host | Claude/Codex machine and Kubernetes execution, parent/child, signed context packs and single-host recovery verified | Pending-launch lifecycle acceptance |
+| Shared execution engine | Extracted and exercised by both hosts | Final release checks |
+| Standalone automation host | Claude/Codex machine and Kubernetes execution, parent/child, signed context packs and single-host recovery verified | Final publication/runtime acceptance |
 | Minimal database | Core bootstrap, core→full expansion, immutable lineage and forward migrations verified | Final release acceptance within documented rollback windows |
 | Installable core distribution | Signed binaries/images and real published workers verified | Final release publication and runtime verification |
 | Workspace boundary and clients | Full host extracted; client distribution handling and stable full rollout/rollback verified | Final release checks |
@@ -898,3 +898,38 @@ predates the API seed its fixture pins directly. Existing mode, configuration,
 enablement and daemon reconciliation contracts are preserved. Focused HTTP/WS
 regressions reproduce the absent API and verify access checks, pin/reset behavior,
 validation and live delivery without worker reenrollment.
+
+### Durable pending-run lifecycle (`0.27.0-beta.34`)
+
+The standalone host records cancellation and unattended-input stops in package
+schema migration three. Stop decisions, terminal machine rows, credential
+revocation and pending grant cleanup commit together. Command-ID aliases resolve
+under launch ownership and machine constraints, and cancellation serializes with
+registration and credential recovery on the single active host. The full host's
+existing cancellation behavior is unchanged.
+
+Queued dispatcher cancellation uses the backend's existing cancel contract;
+unsupported operations return 501 without claiming a stop. Late machine events
+cannot replace the host's terminal decision, stopped work cannot remint gateway
+credentials or spawn/follow up children, and unregistered launches reach a
+`spawn_failed` result after ten minutes without being resent. Unresolved or
+forwarded dispatcher requests have a fifteen-minute registration deadline,
+excluding queue time. Registered child
+budget grants remain historical charges; only pending reservations are refunded.
+
+Contract coverage includes restart/late registration, command aliases, foreign
+and read-only callers, backend cancellation/unsupported backends, registration
+races, cleanup rollback and retry, temporary-key cache eviction, gateway remint
+refusal, deadline reconciliation and preservation of historical child budgets.
+The maintained worker fixture adds `--check-cancellation` for real harness
+acceptance through the published worker contract. Schema-three rollback requires
+a pre-upgrade restore when selecting an earlier split beta.
+
+Beta34 acceptance passed against the published beta33 worker: actual running
+harness cancellation, credential refusal and fresh execution on the same daemon,
+including after forced core lease loss. The full34/stable0.26.1 rolling fixture
+passed routing in both directions, rollout/reconnect and rollback/reconnect with
+its retained workspace data. Core provisioning (nine tests), full adoption and
+core-to-full expansion (three tests), the standalone contracts (46 tests), and
+TUI parity (1,138 tests; no manifest changes) passed. Final publication and stable
+promotion remain release gates rather than another implementation milestone.

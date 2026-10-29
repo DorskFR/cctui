@@ -20,6 +20,8 @@ pub async fn spawn_child(
     let (user, machine) = crate::launch_credentials::machine(&host, &headers)
         .await
         .map_err(|code| AppError::new(code, "machine key required"))?;
+    let _guard = host.lifecycle.lock().await;
+    require_unstopped(&host, &parent, user, machine).await?;
     if !core::launch_credentials::gateway_env_allowed(&host.pool, user, machine, &parent).await? {
         return Err(AppError::new(
             StatusCode::FORBIDDEN,
@@ -110,6 +112,9 @@ pub async fn message_child(
     let (user, machine) = crate::launch_credentials::machine(&host, &headers)
         .await
         .map_err(|code| AppError::new(code, "machine key required"))?;
+    let _guard = host.lifecycle.lock().await;
+    require_unstopped(&host, &parent, user, machine).await?;
+    require_unstopped(&host, req.session_id.trim(), user, machine).await?;
     if !core::launch_credentials::gateway_env_allowed(&host.pool, user, machine, &parent).await? {
         return Err(AppError::new(
             StatusCode::FORBIDDEN,
@@ -218,4 +223,16 @@ impl core::child_exec::ChildArchiveContext for Host {
         let pending = core::child_policy::pending_child_count(&mut *conn, parent).await?;
         Ok(live.saturating_add(pending))
     }
+}
+
+async fn require_unstopped(
+    host: &Host,
+    session: &str,
+    user: Uuid,
+    machine: Uuid,
+) -> Result<(), AppError> {
+    if crate::termination::stopped(host, session, user, machine).await? {
+        return Err(AppError::new(StatusCode::GONE, "execution was stopped"));
+    }
+    Ok(())
 }

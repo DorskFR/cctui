@@ -17,7 +17,7 @@ async fn concurrent_core_bootstraps_create_only_execution_storage_without_extens
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(count, 36, "34 execution tables plus two schema tracking tables");
+        assert_eq!(count, 37, "35 execution tables plus two schema tracking tables");
         let extensions: Vec<String> =
             sqlx::query_scalar("SELECT extname FROM pg_extension ORDER BY extname")
                 .fetch_all(&pool)
@@ -33,7 +33,7 @@ async fn concurrent_core_bootstraps_create_only_execution_storage_without_extens
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(entries, 2);
+        assert_eq!(entries, 3);
     })
     .await;
 }
@@ -130,7 +130,7 @@ async fn core_forward_migration_adds_durable_machine_launch_storage() {
 async fn a_baseline_only_core_upgrades_without_changing_existing_data_or_history() {
     with_isolated_database("core_forward_upgrade", |pool| async move {
         bootstrap(&pool).await.unwrap();
-        sqlx::raw_sql("DROP TABLE machine_launches; DELETE FROM _cctui_schema_migrations WHERE package='core' AND version=2; INSERT INTO users (id,name,key_hash) VALUES ('00000000-0000-0000-0000-000000000001','fixture','fixture-hash');")
+        sqlx::raw_sql("DROP TABLE machine_launches,execution_stops; DELETE FROM _cctui_schema_migrations WHERE package='core' AND version>=2; INSERT INTO users (id,name,key_hash) VALUES ('00000000-0000-0000-0000-000000000001','fixture','fixture-hash');")
             .execute(&pool).await.unwrap();
         let baseline: (Vec<u8>,String) = sqlx::query_as("SELECT checksum,installation FROM _cctui_schema_migrations WHERE package='core' AND version=1")
             .fetch_one(&pool).await.unwrap();
@@ -142,7 +142,7 @@ async fn a_baseline_only_core_upgrades_without_changing_existing_data_or_history
         let name: String=sqlx::query_scalar("SELECT name FROM users WHERE key_hash='fixture-hash'").fetch_one(&pool).await.unwrap();
         assert_eq!(name,"fixture");
         let versions: Vec<i64>=sqlx::query_scalar("SELECT version FROM _cctui_schema_migrations WHERE package='core' ORDER BY version").fetch_all(&pool).await.unwrap();
-        assert_eq!(versions,[1,2]);
+        assert_eq!(versions,[1,2,3]);
     }).await;
 }
 
