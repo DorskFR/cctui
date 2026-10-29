@@ -8,7 +8,8 @@ Existing `cctui-server` installations and the `cctui` image remain the full prod
 
 This is an experimental beta. Verified runs include real Claude/Codex machine
 execution, a Codex parent calling a Claude child and a sandboxed Kubernetes Codex
-Job with a fetched context pack. Upgrade acceptance remains open.
+Job with a fetched context pack. Same-schema core restart/rollback and mixed-version
+full-server rollout/rollback have also passed controlled-provider acceptance.
 Machine-authenticated child spawning, follow-ups,
 completion delivery, archival and session-limit reporting are available with
 capability and budget enforcement; workspace agent profiles require full.
@@ -42,7 +43,7 @@ file and supply it to the process or container. For a local PostgreSQL test:
 
 ```sh
 docker run --rm --env-file /path/to/core.env --network host \
-  ghcr.io/dorskfr/cctui-core:0.27.0-beta.30
+  ghcr.io/dorskfr/cctui-core:0.27.0-beta.32
 ```
 
 `DATABASE_URL` and `CCTUI_EXTERNAL_URL` must be reachable from the container's
@@ -140,8 +141,7 @@ prints the directory retaining diagnostics. Ports 18727 and 18729 must be free.
 `CCTUI_TEST_WORKER_IMAGE` selects a worker release for compatibility checks;
 `CCTUI_TEST_POSTGRES_CONTAINER` selects the test PostgreSQL container.
 The smoke pins oneshot mode directly in its temporary fixture database; general
-headless harness configuration remains a separate API gap. This is a machine
-execution check; rolling server upgrades require a separate gate.
+headless harness configuration remains a separate API gap. Use the upgrade and ownership modes below for host-transition acceptance.
 
 The same fixture supports `--adapter codex`. For real MCP discovery, parent/child
 execution, registered-child slot retention and archival:
@@ -191,8 +191,8 @@ The fixture uses a published dispatcher (`CCTUI_TEST_DISPATCHER_IMAGE` overrides
 it), a fresh core database and the controlled provider. It verifies the terminal
 API result and final answer, retains Job/container diagnostics and deletes only
 its own Job and dispatcher container. The operator owns cluster/webhook cleanup.
-The Kubernetes smoke passed with the beta.30 daemon layered over the published
-beta.26 worker, retaining that image's harnesses and isolation machinery. This is
+The Kubernetes smoke passed with the published beta.30 worker for Claude and
+Codex, including signed pinned context packs. This is
 single-server acceptance; it does not establish rolling or multi-replica support.
 
 
@@ -201,7 +201,7 @@ fetch its exact signed revision inside the worker, and verify both `AGENTS.md`
 instructions and the named prompt reach the real harness's provider request.
 This mode requires the checkout's configured Git signing key. The fixture serves
 only that temporary pack and removes it afterward. This acceptance passed for
-Codex; other adapter targets retain their existing staging tests.
+Claude and Codex; other adapter targets retain their existing staging tests.
 
 
 ## Same-schema core upgrade and rollback smoke
@@ -224,3 +224,52 @@ credential gateway. No database restore or worker reenrollment is performed.
 This checks sequential core restarts within a compatible schema window. It does
 not establish rolling multi-replica behavior or rollback across incompatible
 package schemas; the beta.22–24 restriction above still applies.
+
+
+## Standalone host ownership
+
+Starting with beta.32, run **one active standalone core per database**. Its daemon
+connections and dispatch transport are local to the process. A database advisory
+lock refuses a second standalone host before schema provisioning or listening.
+The lock is held on a dedicated physical connection; losing that connection or
+exceeding the bounded health probe exits the host. Administrative `--init-db`
+remains available while the host runs.
+
+Use a stop-then-start deployment strategy for core, retain the database and vault
+key, and let workers reconnect. Configure restart supervision as usual. Do not
+mix core and full hosts against one database at the same time: the standalone
+lock coordinates standalone hosts only. Older core betas do not take this lock.
+The full distribution retains its existing multi-replica peer transport.
+
+To verify duplicate refusal, lease-loss process exit, replacement startup and a
+fresh real task on the same reconnected daemon:
+
+```sh
+python3 scripts/check-core-worker.py --check-ownership
+```
+
+## Full-server rollout and rollback acceptance
+
+The same fixture supports the full distribution, retaining a real transcript,
+encrypted provider credentials, user settings, image bytes, an uploaded file in
+a shared blob mount and dispatcher enrollment/authentication. The local TCP
+proxy lets existing daemon connections survive an HTTP replica switch. Each
+mixed-version phase must route a new task through the peer holding the daemon,
+then reconnect that same daemon after the previous owner exits. Rollback repeats
+both directions without restoring the database or reenrolling the worker.
+
+```sh
+cargo build -p cctui-server
+CCTUI_TEST_SERVER_BINARY="$PWD/target/debug/cctui-server" \
+  python3 scripts/check-core-worker.py --full-server --rolling \
+  --upgrade-from /tmp/older-full/cctui-server
+```
+
+Use `--full-server --upgrade-from ...` without `--rolling` for sequential full
+restarts. `CCTUI_TEST_SERVER_BINARY` selects either distribution; the existing
+`CCTUI_TEST_CORE_BINARY` override remains supported. Use a published older binary
+and a compatible schema window. The mixed full acceptance has passed against
+stable 0.26.1 on a legacy-origin database; it does not change the core-origin
+rollback restriction above. Full fixture modes currently use the Claude machine
+target. They scrub inherited operator configuration and retain diagnostics while
+removing their own processes, worker container and database.

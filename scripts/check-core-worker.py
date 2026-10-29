@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Manual Linux smoke: fresh core DB, real daemon/harness, controlled provider.
+"""Manual Linux acceptance: isolated DB, real daemon/harness, controlled provider.
 
-Requires a built target/debug/cctui-core-server (or CCTUI_TEST_CORE_BINARY), Docker,
-and the repository's
-PostgreSQL test container on port 5481. Ports 18727 and 18729 must be free.
+Requires a built server (CCTUI_TEST_SERVER_BINARY overrides the default), Docker,
+and the repository's PostgreSQL test container on port 5481. Ports 18727 and 18729 must be free.
 CCTUI_TEST_WORKER_IMAGE overrides the published worker image used for rolling
 compatibility checks. CCTUI_TEST_DAEMON_BINARY optionally mounts a local Linux
 daemon in that image. --adapter codex tests Responses; --child also checks real
@@ -12,6 +11,9 @@ fixture explicitly uses full access inside its disposable container. No paid pro
 its own database, container and work directory; diagnostic logs are retained.
 With --kubeconfig and --worker-url, an existing disposable cluster/profile and
 admission webhook run the real sandboxed Job through a published dispatcher.
+--full-server retains real transcript, image, upload, settings and dispatcher data;
+--rolling --upgrade-from adds mixed-version full replicas, rollout and rollback.
+--check-ownership verifies core exclusivity, lease-loss exit and worker recovery.
 """
 
 import argparse
@@ -22,6 +24,11 @@ import os
 import pathlib
 import shutil
 import subprocess
+import base64
+import hashlib
+import select
+import socket
+import socketserver
 import tempfile
 import threading
 import time
@@ -46,7 +53,22 @@ parser.add_argument(
 )
 parser.add_argument(
     "--upgrade-from",
-    help="Older core binary for same-database upgrade and rollback acceptance.",
+    help="Older matching-distribution binary for same-database upgrade/rollback acceptance.",
+)
+parser.add_argument(
+    "--full-server",
+    action="store_true",
+    help="Exercise the full distribution with multipart spawn and retained workspace data.",
+)
+parser.add_argument(
+    "--rolling",
+    action="store_true",
+    help="With --full-server --upgrade-from, exercise mixed replicas and peer routing.",
+)
+parser.add_argument(
+    "--check-ownership",
+    action="store_true",
+    help="Verify core duplicate startup refusal, ownership-loss exit and recovery.",
 )
 parser.add_argument("--worker-url", help="Core URL reachable from Kubernetes workers.")
 parser.add_argument(
@@ -57,6 +79,37 @@ parser.add_argument(
 parser.add_argument("--namespace", default="core-acceptance")
 parser.add_argument("--profile", default="core-smoke")
 args = parser.parse_args()
+if args.check_ownership and (
+    args.full_server
+    or args.kubeconfig
+    or args.child
+    or args.context_pack
+    or args.upgrade_from
+    or args.adapter != "claude-code"
+):
+    parser.error(
+        "--check-ownership requires the simple standalone Claude machine fixture"
+    )
+if args.full_server and (
+    args.kubeconfig or args.child or args.context_pack or args.adapter != "claude-code"
+):
+    parser.error("--full-server currently requires the simple Claude machine fixture")
+if args.rolling and not (args.full_server and args.upgrade_from):
+    parser.error("--rolling requires --full-server and --upgrade-from")
+current_binary = os.environ.get(
+    "CCTUI_TEST_SERVER_BINARY",
+    os.environ.get(
+        "CCTUI_TEST_CORE_BINARY",
+        str(
+            root
+            / (
+                "target/debug/cctui-server"
+                if args.full_server
+                else "target/debug/cctui-core-server"
+            )
+        ),
+    ),
+)
 if args.upgrade_from and (
     args.kubeconfig or args.child or args.context_pack or args.adapter != "claude-code"
 ):
@@ -147,6 +200,7 @@ log_dir = pathlib.Path(tempfile.mkdtemp(prefix="cctui-core-worker-logs-"))
 print("Diagnostic logs:", log_dir, flush=True)
 base = "http://127.0.0.1:18727"
 requests = []
+provider_errors = []
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
@@ -197,6 +251,13 @@ class Provider(http.server.BaseHTTPRequestHandler):
         self.git_backend()
 
     def do_POST(self):
+        try:
+            self.provider_request()
+        except (AssertionError, ValueError) as error:
+            provider_errors.append(f"{self.path}: {error}")
+            self.send_error(400, "fixture rejected provider request")
+
+    def provider_request(self):
         raw = b""
         if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
             while True:
@@ -214,17 +275,14 @@ class Provider(http.server.BaseHTTPRequestHandler):
         if self.headers.get("Content-Encoding") == "gzip":
             raw = gzip.decompress(raw)
         body = json.loads(raw)
-        assert self.headers.get("Authorization") == "Bearer fixture-upstream-key", (
-            "gateway did not forward provider credential"
-        )
-        if args.context_pack:
-            serialized = json.dumps(body)
-            assert "CORE_CONTEXT_INSTRUCTIONS" in serialized, (
-                "pack instructions absent from harness request"
-            )
-            assert "CORE_CONTEXT_PROMPT" in serialized, (
-                "pack prompt absent from harness request"
-            )
+        assert (
+            self.headers.get("Authorization") == "Bearer fixture-upstream-key"
+        ), "gateway did not forward provider credential"
+        serialized = json.dumps(body)
+        if args.context_pack and "CORE_CONTEXT_PROMPT" in serialized:
+            assert (
+                "CORE_CONTEXT_INSTRUCTIONS" in serialized
+            ), "pack instructions absent from harness request"
         requests.append((self.path, body))
         if "count_tokens" in self.path:
             response = json.dumps({"input_tokens": 10}).encode()
@@ -507,52 +565,114 @@ def req(method, path, key=None, body=None):
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = "Bearer " + key
+    data = json.dumps(body).encode() if body is not None else None
+    if args.full_server and method == "POST" and path == "/sessions/spawn":
+        boundary = "cctui-full-acceptance-boundary"
+        headers["Content-Type"] = "multipart/form-data; boundary=" + boundary
+        data = (
+            "--"
+            + boundary
+            + '\r\nContent-Disposition: form-data; name="request"\r\nContent-Type: application/json\r\n\r\n'
+            + json.dumps(body)
+            + "\r\n--"
+            + boundary
+            + "--\r\n"
+        ).encode()
     request = urllib.request.Request(
         base + "/api/v1" + path,
         headers=headers,
         method=method,
-        data=json.dumps(body).encode() if body is not None else None,
+        data=data,
     )
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
             raw = response.read()
             return json.loads(raw) if raw else None
     except urllib.error.HTTPError as e:
+        # The legacy full route authorizes against registered sessions. During a
+        # forwarded spawn it may return 404 until the worker announces its id.
+        if (
+            args.full_server
+            and e.code == 404
+            and method == "GET"
+            and path.endswith("/result")
+        ):
+            return {"done": False, "legacy_pending": True}
         raise AssertionError((path, e.code, e.read().decode()))
+
+
+proxy_target = "127.0.0.2"
+extra_servers = []
+proxy = None
+if args.rolling:
+
+    class Proxy(socketserver.BaseRequestHandler):
+        def handle(self):
+            try:
+                upstream = socket.create_connection((proxy_target, 18727), timeout=5)
+            except OSError:
+                return
+            upstream.settimeout(None)
+            try:
+                while True:
+                    ready, _, _ = select.select([self.request, upstream], [], [], 1)
+                    for source in ready:
+                        chunk = source.recv(65536)
+                        if not chunk:
+                            return
+                        (upstream if source is self.request else self.request).sendall(
+                            chunk
+                        )
+            except (OSError, ConnectionError):
+                pass
+            finally:
+                upstream.close()
+
+    class ProxyServer(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    proxy = ProxyServer(("127.0.0.1", 18727), Proxy)
+    threading.Thread(target=proxy.serve_forever, daemon=True).start()
+    urllib.request.install_opener(
+        urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    )
 
 
 try:
     subprocess.run(
         ["docker", "exec", postgres, "createdb", "-U", "postgres", db], check=True
     )
-    env = os.environ.copy()
-    for name in [
-        "OPENAI_API_KEY",
-        "OPENAI_BASE_URL",
-        "ANTHROPIC_BASE_URL",
-        "ANTHROPIC_AUTH_TOKEN",
-        "ANTHROPIC_API_KEY",
-    ]:
-        env.pop(name, None)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("CCTUI_", "OPENAI_", "ANTHROPIC_"))
+        and key not in {"GH_TOKEN", "GITHUB_TOKEN"}
+    }
     env.update(
         DATABASE_URL="postgres://postgres:postgres@127.0.0.1:5481/" + db,
         CCTUI_ADMIN_TOKENS="fixture-admin",
         CCTUI_VAULT_KEY="42" * 32,
         CCTUI_EXTERNAL_URL=args.worker_url or base,
-        CCTUI_HOST="0.0.0.0" if kube else "127.0.0.1",
+        CCTUI_HOST=(
+            "0.0.0.0" if kube else ("127.0.0.2" if args.rolling else "127.0.0.1")
+        ),
         CCTUI_PORT="18727",
         CCTUI_UPSTREAM_ALLOWED_HOSTS="127.0.0.1:18729",
         RUST_LOG="info",
     )
+    if args.full_server:
+        env.update(
+            CCTUI_SKILLS_PATH=str(log_dir / "skills"),
+            CCTUI_BLOB_PATH=str(log_dir / "blobs"),
+            CCTUI_UPDATE_CHECK="0",
+            CCTUI_PROVIDER_STATUS="0",
+        )
+    if args.rolling:
+        env.update(CCTUI_POD_IP="127.0.0.2", HOSTNAME="fixture-old")
     with open(log_dir / "server.log", "w") as log:
         server = subprocess.Popen(
-            [
-                args.upgrade_from
-                or os.environ.get(
-                    "CCTUI_TEST_CORE_BINARY",
-                    str(root / "target/debug/cctui-core-server"),
-                )
-            ],
+            [args.upgrade_from or current_binary],
             env=env,
             stdout=log,
             stderr=subprocess.STDOUT,
@@ -562,9 +682,30 @@ try:
         try:
             req("GET", "/version")
             break
-        except urllib.error.URLError:
+        except OSError:
+            assert server.poll() is None, "server exited before becoming ready"
             assert time.time() < deadline, "server startup timed out"
             time.sleep(0.2)
+    if args.check_ownership:
+        duplicate = subprocess.run(
+            [current_binary], env=env, capture_output=True, text=True, timeout=15
+        )
+        assert duplicate.returncode != 0, "duplicate standalone core started"
+        assert (
+            "another standalone core owns this database" in duplicate.stderr
+        ), duplicate.stderr
+        subprocess.run(
+            [current_binary, "--init-db"],
+            env=env,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=15,
+        )
+        print(
+            "PASS: second core refused; administrative schema check still works",
+            flush=True,
+        )
     user = req("POST", "/admin/users", "fixture-admin", {"name": "automation-worker"})
     key = user["key"]
     account = req(
@@ -573,9 +714,11 @@ try:
         key,
         {
             "name": "controlled-provider",
-            "provider": "openai-compatible"
-            if args.adapter == "codex"
-            else "anthropic-compatible",
+            "provider": (
+                "openai-compatible"
+                if args.adapter == "codex"
+                else "anthropic-compatible"
+            ),
             "base_url": "http://127.0.0.1:18729",
             "access_token": "fixture-upstream-key",
         },
@@ -658,9 +801,9 @@ try:
                             "prompt": "Respond with core-worker-ok. Do not call tools."
                         }
                     ),
-                    "model": "gpt-5.5"
-                    if args.adapter == "codex"
-                    else "claude-sonnet-4-5",
+                    "model": (
+                        "gpt-5.5" if args.adapter == "codex" else "claude-sonnet-4-5"
+                    ),
                 },
             },
         )
@@ -759,17 +902,247 @@ try:
         time.sleep(0.5)
     assert expected_text in (result.get("final_assistant_text") or ""), result
     assert requests, "provider endpoint never called"
-    if args.upgrade_from:
-        for label, binary in [
-            (
-                "upgrade",
-                os.environ.get(
-                    "CCTUI_TEST_CORE_BINARY",
-                    str(root / "target/debug/cctui-core-server"),
+    assert not provider_errors, provider_errors
+    if args.context_pack:
+        assert any(
+            "count_tokens" not in path
+            and "CORE_CONTEXT_PROMPT" in json.dumps(body)
+            and "CORE_CONTEXT_INSTRUCTIONS" in json.dumps(body)
+            for path, body in requests
+        ), "no generation request contained both the pack prompt and instructions"
+    if args.full_server:
+        workspace_sid = sid
+
+        def raw_request(method, path, body=None, content_type=None, token=None):
+            headers = {"Authorization": "Bearer " + (token or key)}
+            if content_type:
+                headers["Content-Type"] = content_type
+            request = urllib.request.Request(
+                base + "/api/v1" + path, data=body, headers=headers, method=method
+            )
+            with urllib.request.urlopen(request, timeout=15) as response:
+                return response.read()
+
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aV1cAAAAASUVORK5CYII="
+        )
+        image = json.loads(
+            raw_request(
+                "POST",
+                "/daemon/sessions/" + workspace_sid + "/images",
+                png,
+                "image/png",
+                machine["machine_key"],
+            )
+        )
+        attachment = b"persistent upload across a mixed-version rollout and rollback\n"
+        attachment_hash = hashlib.sha256(attachment).hexdigest()
+        raw_request(
+            "PUT",
+            "/daemon/blobs/" + attachment_hash,
+            attachment,
+            "text/plain",
+            machine["machine_key"],
+        )
+        sql(f"""
+            INSERT INTO session_attachments(session_id,name,hash,size,content_type)
+            VALUES ('{workspace_sid}','upgrade-fixture.txt','{attachment_hash}',{len(attachment)},'text/plain')
+        """)
+        uid = user["id"]
+        sql(f"""
+            INSERT INTO user_settings(user_id,data)
+            VALUES ('{uid}','{{"upgrade_fixture":"persisted"}}')
+            ON CONFLICT(user_id) DO UPDATE SET data=user_settings.data || EXCLUDED.data
+        """)
+        dispatcher = req(
+            "POST",
+            "/dispatcher/enroll",
+            key,
+            {"name": "upgrade-fixture-executor", "kind": "kubernetes"},
+        )
+        stream_bound = int(
+            sql(f"SELECT max(id) FROM stream_events WHERE session_id='{workspace_sid}'")
+        )
+        # IDs/hashes come from this fixture's API responses; no operator text is interpolated.
+        state_query = f"""
+            SELECT jsonb_build_object(
+                'settings', (SELECT data FROM user_settings WHERE user_id='{uid}'),
+                'credentials', (SELECT jsonb_agg(jsonb_build_object(
+                    'id',id,'access',encrypted_access_token,'refresh',encrypted_refresh_token
+                ) ORDER BY id) FROM account_providers WHERE user_id='{uid}'),
+                'transcript', (SELECT jsonb_agg(jsonb_build_object(
+                    'id',id,'event_type',event_type,'payload',payload
+                ) ORDER BY id) FROM stream_events WHERE session_id='{workspace_sid}' AND id<={stream_bound}),
+                'images', (SELECT jsonb_agg(to_jsonb(i) ORDER BY id)
+                    FROM session_images i WHERE session_id='{workspace_sid}'),
+                'attachments', (SELECT jsonb_agg(to_jsonb(a) ORDER BY id)
+                    FROM session_attachments a WHERE session_id='{workspace_sid}')
+            )
+        """
+        stored_snapshot = json.loads(sql(state_query))
+        assert stored_snapshot["transcript"], "real harness transcript absent"
+
+        def retained_workspace():
+            assert (
+                json.loads(sql(state_query)) == stored_snapshot
+            ), "persistent workspace data changed"
+            assert (
+                raw_request(
+                    "GET", "/sessions/" + workspace_sid + "/images/" + image["image_id"]
+                )
+                == png
+            )
+            assert (
+                raw_request(
+                    "GET", "/sessions/" + workspace_sid + "/blobs/" + attachment_hash
+                )
+                == attachment
+            )
+            rows = req("GET", "/sessions/" + workspace_sid + "/attachments", key)
+            assert "upgrade-fixture.txt" in json.dumps(rows)
+            assert any(
+                row["id"] == dispatcher["dispatcher_id"]
+                for row in req("GET", "/dispatchers", key)
+            )
+            assert (
+                req(
+                    "POST",
+                    "/dispatcher/auth",
+                    None,
+                    {"machine_key": dispatcher["dispatcher_key"]},
+                )["machine_id"]
+                == dispatcher["dispatcher_id"]
+            )
+
+        retained_workspace()
+        print(
+            "PASS: production-shaped fixture retains transcript, settings, encrypted credentials, image, mounted file upload and dispatcher identity",
+            flush=True,
+        )
+    if args.rolling:
+
+        def start_replica(binary, ip, pod, label):
+            replica_env = dict(env, CCTUI_HOST=ip, CCTUI_POD_IP=ip, HOSTNAME=pod)
+            with open(log_dir / (label + ".log"), "w") as log:
+                replica = subprocess.Popen(
+                    [binary], env=replica_env, stdout=log, stderr=subprocess.STDOUT
+                )
+            extra_servers.append(replica)
+            deadline = time.time() + 30
+            while True:
+                assert replica.poll() is None, label + " exited"
+                try:
+                    urllib.request.urlopen("http://" + ip + ":18727/readyz", timeout=1)
+                    break
+                except OSError:
+                    assert time.time() < deadline, label + " startup timed out"
+                    time.sleep(0.2)
+            return replica
+
+        def owner():
+            return sql(
+                "SELECT pod FROM ws_presence WHERE kind='daemon' AND entity_id='"
+                + mid
+                + "'"
+            )
+
+        def wait_owner(pod):
+            deadline = time.time() + 40
+            while owner() != pod:
+                assert time.time() < deadline, (pod, owner())
+                time.sleep(0.3)
+
+        def task(label):
+            retained_workspace()
+            assert req("GET", "/me", key), label
+            assert req("GET", "/accounts", key), label
+            saved = req("GET", "/sessions/" + sid + "/result", key)
+            assert "core-worker-ok" in (saved.get("final_assistant_text") or ""), (
+                label,
+                saved,
+            )
+            run = req(
+                "POST",
+                "/sessions/spawn",
+                key,
+                {
+                    "machine_id": mid,
+                    "adapter_id": "claude-code",
+                    "working_dir": "/work",
+                    "prompt": "Respond with core-worker-ok. Do not call tools.",
+                    "account": "controlled-provider",
+                    "model": "claude-sonnet-4-5",
+                    "permission_mode": "auto",
+                },
+            )
+            run_id = run.get("session_id") or run["command_id"]
+            deadline = time.time() + 60
+            while True:
+                answer = req("GET", "/sessions/" + run_id + "/result", key)
+                if answer.get("done"):
+                    break
+                assert time.time() < deadline, (label, answer)
+                time.sleep(0.3)
+            assert "core-worker-ok" in (answer.get("final_assistant_text") or ""), (
+                label,
+                answer,
+            )
+            print(
+                "PASS:",
+                label,
+                "daemon owner=" + owner(),
+                "served=" + req("GET", "/version")["version"],
+                flush=True,
+            )
+
+        wait_owner("fixture-old")
+        new = start_replica(current_binary, "127.0.0.3", "fixture-new", "rolling-new")
+        proxy_target = "127.0.0.3"
+        task("new replica routes real spawn to old daemon connection")
+        assert owner() == "fixture-old"
+        server.terminate()
+        server.wait(timeout=15)
+        server = new
+        wait_owner("fixture-new")
+        task("rolled out new replica preserves data and reconnects same daemon")
+        rollback = start_replica(
+            args.upgrade_from, "127.0.0.2", "fixture-old", "rolling-rollback"
+        )
+        proxy_target = "127.0.0.2"
+        task("old replica routes real spawn to new daemon connection")
+        assert owner() == "fixture-new"
+        new.terminate()
+        new.wait(timeout=15)
+        server = rollback
+        wait_owner("fixture-old")
+        task("rollback preserves data and reconnects same daemon")
+    elif args.upgrade_from or args.check_ownership:
+        if args.check_ownership:
+            owner_pids = sql("""
+                SELECT DISTINCT pid FROM pg_locks
+                WHERE locktype='advisory' AND granted
+                  AND database=(SELECT oid FROM pg_database WHERE datname=current_database())
+            """).splitlines()
+            assert len(owner_pids) == 1, (
+                "expected exactly one runtime lease",
+                owner_pids,
+            )
+            assert sql(f"SELECT pg_terminate_backend({int(owner_pids[0])})") == "t"
+            assert server.wait(timeout=12) != 0, "lease loss did not fail the host"
+            assert "ownership connection lost" in (log_dir / "server.log").read_text()
+            print("PASS: runtime lease loss exits the actual core process", flush=True)
+        transitions = (
+            [("ownership-recovery", current_binary)]
+            if args.check_ownership
+            else [
+                (
+                    "upgrade",
+                    current_binary,
                 ),
-            ),
-            ("rollback", args.upgrade_from),
-        ]:
+                ("rollback", args.upgrade_from),
+            ]
+        )
+        for label, binary in transitions:
             prior_sid = sid
             server.terminate()
             server.wait(timeout=15)
@@ -782,7 +1155,7 @@ try:
                 try:
                     version = req("GET", "/version")
                     break
-                except urllib.error.URLError:
+                except OSError:
                     assert server.poll() is None, label + " server exited"
                     assert time.time() < deadline, label + " server startup timed out"
                     time.sleep(0.2)
@@ -823,6 +1196,8 @@ try:
                 label,
                 result,
             )
+            if args.full_server:
+                retained_workspace()
             print(
                 "PASS:",
                 label,
@@ -830,6 +1205,7 @@ try:
                 "preserved keys/accounts/results; live daemon reconnected and ran a new real harness task",
                 flush=True,
             )
+    assert not provider_errors, provider_errors
     if args.child:
         parent = sql(
             "SELECT registered_session_id FROM machine_launches WHERE command_id='"
@@ -851,20 +1227,31 @@ try:
             token,
             {"session_id": children[0]},
         )
-        assert archived["children_used"] == 0 and children[0] in archived["archived"], (
-            archived
-        )
+        assert (
+            archived["children_used"] == 0 and children[0] in archived["archived"]
+        ), archived
         assert any(body.get("model", "").startswith("claude") for _, body in requests)
         print(
             "PASS: real child registration retains its slot; archival releases it.",
             flush=True,
         )
     print(
-        "PASS: real containerized daemon and harness completed through core gateway:",
+        "PASS: real containerized daemon and harness completed through gateway:",
         result,
         flush=True,
     )
 finally:
+    for replica in extra_servers:
+        if replica.poll() is None:
+            replica.terminate()
+            try:
+                replica.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                replica.kill()
+                replica.wait()
+    if proxy:
+        proxy.shutdown()
+        proxy.server_close()
     if kube and job_handle:
         # Retain diagnostics and delete only this run's Job, even in a shared namespace.
         name = job_handle.rsplit("/", 1)[-1]
