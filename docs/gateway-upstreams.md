@@ -51,7 +51,7 @@ windows, so no pace, no soft limit, and `account_pick` ranks it
 `usage_known: false` — it can neither be trusted nor excluded.
 
 Setting **Usage probe** in the provider drawer (Advanced) names an entry in the
-server's probe registry (`crates/cctui-server/src/usage_probe.rs`). The probe
+server's probe registry (`crates/cctui-server-workspace/src/usage_probe.rs`). The probe
 reads that upstream's own quota endpoint and reports it under the existing
 canonical window keys, so pace, soft limits and pool election pick it up with no
 further configuration. The credential stays generic — a probe is measurement,

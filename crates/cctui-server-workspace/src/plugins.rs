@@ -1,4 +1,6 @@
-//! Runtime plugin registry. A plugin holds a `plugin.json` manifest, an
+//! Runtime plugin registry.
+//!
+//! A plugin holds a `plugin.json` manifest, an
 //! optional `web/` ES module the webui imports, and optional `skills/<name>/`
 //! folders handed to agent sessions. Plugins come from two sources: folders
 //! under `CCTUI_PLUGINS_DIR` (read-only, always instance-enabled) and archives
@@ -58,6 +60,22 @@ pub struct PluginManifest {
     pub host_token: Option<PluginHostToken>,
 }
 
+impl From<&Plugin> for cctui_proto::api::plugins::AdminPluginInfo {
+    fn from(p: &Plugin) -> Self {
+        Self {
+            id: p.manifest.id.clone(),
+            name: p.manifest.name.clone(),
+            description: p.manifest.description.clone(),
+            version: p.manifest.version.clone(),
+            source: p.source,
+            enabled: p.instance_enabled,
+            instance_settings: p.manifest.instance_settings.clone(),
+            backend: p.manifest.backend.is_some(),
+            proxy_secret: None,
+        }
+    }
+}
+
 pub const MAX_SETTING_VALUE_CHARS: usize = 512;
 /// Instance settings hold URLs and tokens, not the 512-char per-user strings.
 pub const MAX_INSTANCE_SETTING_VALUE_CHARS: usize = 2048;
@@ -86,6 +104,7 @@ impl PluginFiles {
     }
 
     /// Bytes of the safe relative `rel`, `None` when absent or outside the plugin.
+    #[must_use]
     pub fn read(&self, rel: &str) -> Option<Vec<u8>> {
         if !safe_relative(rel) {
             return None;
@@ -156,6 +175,7 @@ pub enum ManifestError {
     PageWithoutWeb(String),
 }
 
+#[must_use]
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= MAX_ID_LEN
@@ -164,6 +184,7 @@ pub fn valid_id(id: &str) -> bool {
 
 /// A relative path with plain components only: no root, no `..`, no `.`,
 /// no hidden segments, no backslashes.
+#[must_use]
 pub fn safe_relative(path: &str) -> bool {
     if path.is_empty() || path.contains('\\') || path.contains('\0') {
         return false;
@@ -420,6 +441,7 @@ fn build_plugin(
 }
 
 /// Scan every child folder of `root`; invalid plugins are logged and skipped.
+#[must_use]
 pub fn scan_dir(root: &Path) -> BTreeMap<String, Plugin> {
     let mut out = BTreeMap::new();
     let entries = match std::fs::read_dir(root) {
@@ -576,6 +598,7 @@ impl PluginRegistry {
 }
 
 /// Which plugin ids a settings blob enables (`plugins.enabled[id] == true`).
+#[must_use]
 pub fn enabled_ids(settings: Option<&serde_json::Value>) -> Vec<String> {
     settings
         .and_then(|v| v.get("plugins"))
@@ -589,6 +612,7 @@ pub fn enabled_ids(settings: Option<&serde_json::Value>) -> Vec<String> {
 
 /// The user's stored values for plugin `id` (`plugins.config[id]`), limited
 /// to declared keys and non-empty strings.
+#[must_use]
 pub fn plugin_config(
     manifest: &PluginManifest,
     settings: Option<&serde_json::Value>,
@@ -611,7 +635,9 @@ pub fn plugin_config(
 
 /// `env name -> value` for every declared setting the user filled in, plus
 /// `host_token` under the manifest's `hostToken.env` when both are present.
+///
 /// The caller unseals the token, so this stays usable without the vault key.
+#[must_use]
 pub fn plugin_env(
     manifest: &PluginManifest,
     settings: Option<&serde_json::Value>,
@@ -642,10 +668,12 @@ fn resolve_in_dir(dir: &Path, path: &str) -> Option<PathBuf> {
 }
 
 /// Static-file lookup for `GET /plugins/{id}/{path}`.
+#[must_use]
 pub fn resolve_static(plugin: &Plugin, path: &str) -> Option<Vec<u8>> {
     plugin.files.read(path)
 }
 
+#[must_use]
 pub fn mime_for(path: &str) -> &'static str {
     match path.rsplit('.').next().map(str::to_ascii_lowercase).as_deref() {
         Some("js" | "mjs") => "text/javascript; charset=utf-8",

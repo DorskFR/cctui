@@ -1,6 +1,6 @@
 # Route authn/authz
 
-Design notes for `crates/cctui-server/src/authz.rs`.
+Design notes for `crates/cctui-server-workspace/src/authz.rs`.
 
 ## Enforcement model
 

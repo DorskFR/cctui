@@ -119,3 +119,9 @@ impl axum::extract::FromRef<AppState> for cctui_server_core::state::CoreState {
         state.core.clone()
     }
 }
+
+impl axum::extract::FromRef<AppState> for crate::skills::SkillState {
+    fn from_ref(state: &AppState) -> Self {
+        Self { pool: state.pool.clone(), skills: state.skills.clone() }
+    }
+}

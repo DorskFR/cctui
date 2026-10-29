@@ -573,7 +573,7 @@ mod tests {
     /// slow and its numbers are only meaningful on a quiet machine — run it
     /// explicitly and read the printed timings.
     ///
-    /// `cargo test -p cctui-server --lib routes::daemon::ingest -- --ignored
+    /// `cargo test -p cctui-server-workspace --lib routes::daemon::ingest -- --ignored
     ///  --nocapture batched_backfill`
     #[tokio::test]
     #[ignore = "timing benchmark; run explicitly"]

@@ -44,6 +44,10 @@ parser.add_argument(
     "--kubeconfig",
     help="Explicit disposable Kubernetes kubeconfig; use a real dispatcher/Job.",
 )
+parser.add_argument(
+    "--upgrade-from",
+    help="Older core binary for same-database upgrade and rollback acceptance.",
+)
 parser.add_argument("--worker-url", help="Core URL reachable from Kubernetes workers.")
 parser.add_argument(
     "--context-pack",
@@ -53,6 +57,10 @@ parser.add_argument(
 parser.add_argument("--namespace", default="core-acceptance")
 parser.add_argument("--profile", default="core-smoke")
 args = parser.parse_args()
+if args.upgrade_from and (
+    args.kubeconfig or args.child or args.context_pack or args.adapter != "claude-code"
+):
+    parser.error("--upgrade-from requires the simple Claude machine fixture")
 if args.kubeconfig and (args.child or not args.worker_url):
     parser.error(
         "Kubernetes requires --worker-url and does not support --child in this smoke"
@@ -539,7 +547,8 @@ try:
     with open(log_dir / "server.log", "w") as log:
         server = subprocess.Popen(
             [
-                os.environ.get(
+                args.upgrade_from
+                or os.environ.get(
                     "CCTUI_TEST_CORE_BINARY",
                     str(root / "target/debug/cctui-core-server"),
                 )
@@ -750,6 +759,77 @@ try:
         time.sleep(0.5)
     assert expected_text in (result.get("final_assistant_text") or ""), result
     assert requests, "provider endpoint never called"
+    if args.upgrade_from:
+        for label, binary in [
+            (
+                "upgrade",
+                os.environ.get(
+                    "CCTUI_TEST_CORE_BINARY",
+                    str(root / "target/debug/cctui-core-server"),
+                ),
+            ),
+            ("rollback", args.upgrade_from),
+        ]:
+            prior_sid = sid
+            server.terminate()
+            server.wait(timeout=15)
+            with open(log_dir / (label + ".log"), "w") as log:
+                server = subprocess.Popen(
+                    [binary], env=env, stdout=log, stderr=subprocess.STDOUT
+                )
+            deadline = time.time() + 30
+            while True:
+                try:
+                    version = req("GET", "/version")
+                    break
+                except urllib.error.URLError:
+                    assert server.poll() is None, label + " server exited"
+                    assert time.time() < deadline, label + " server startup timed out"
+                    time.sleep(0.2)
+            assert req("GET", "/me", key), label + " user key lost"
+            assert req("GET", "/accounts", key), label + " encrypted account lost"
+            saved = req("GET", "/sessions/" + prior_sid + "/result", key)
+            assert "core-worker-ok" in (saved.get("final_assistant_text") or ""), (
+                label,
+                saved,
+            )
+            deadline = time.time() + 40
+            while not req("GET", "/machines/" + mid + "/status", key)["connected"]:
+                assert time.time() < deadline, label + " daemon did not reconnect"
+                time.sleep(0.3)
+            run = req(
+                "POST",
+                "/sessions/spawn",
+                key,
+                {
+                    "machine_id": mid,
+                    "adapter_id": "claude-code",
+                    "working_dir": "/work",
+                    "prompt": "Respond with core-worker-ok. Do not call tools.",
+                    "account": "controlled-provider",
+                    "model": "claude-sonnet-4-5",
+                    "permission_mode": "auto",
+                },
+            )
+            sid = run.get("session_id") or run["command_id"]
+            deadline = time.time() + 60
+            while True:
+                result = req("GET", "/sessions/" + sid + "/result", key)
+                if result.get("done"):
+                    break
+                assert time.time() < deadline, (label, result)
+                time.sleep(0.3)
+            assert "core-worker-ok" in (result.get("final_assistant_text") or ""), (
+                label,
+                result,
+            )
+            print(
+                "PASS:",
+                label,
+                version["version"],
+                "preserved keys/accounts/results; live daemon reconnected and ran a new real harness task",
+                flush=True,
+            )
     if args.child:
         parent = sql(
             "SELECT registered_session_id FROM machine_launches WHERE command_id='"

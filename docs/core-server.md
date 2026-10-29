@@ -202,3 +202,25 @@ instructions and the named prompt reach the real harness's provider request.
 This mode requires the checkout's configured Git signing key. The fixture serves
 only that temporary pack and removes it afterward. This acceptance passed for
 Codex; other adapter targets retain their existing staging tests.
+
+
+## Same-schema core upgrade and rollback smoke
+
+To test persistent identities, encrypted provider accounts, completed results and
+live-worker reconnection across a binary change, pass an older downloaded core
+binary to the machine fixture:
+
+```sh
+CCTUI_TEST_CORE_BINARY="$PWD/target/debug/cctui-core-server" \
+  python3 scripts/check-core-worker.py \
+  --upgrade-from /tmp/older-core/cctui-core-server-linux-amd64
+```
+
+It starts the older binary, completes a real Claude task, starts the current
+binary against the same database, then starts the older binary again. After each
+transition the existing key, provider account and prior result must remain
+readable, and the same daemon must reconnect and complete a new task through the
+credential gateway. No database restore or worker reenrollment is performed.
+This checks sequential core restarts within a compatible schema window. It does
+not establish rolling multi-replica behavior or rollback across incompatible
+package schemas; the beta.22–24 restriction above still applies.

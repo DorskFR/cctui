@@ -69,7 +69,7 @@ async fn migrate(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
         == Some(cctui_server_core::schema::Origin::Core)
     {
         cctui_server_core::schema::provision(&mut conn).await?;
-        cctui_server_workspace::schema::provision(&mut conn).await?;
+        crate::schema::provision(&mut conn).await?;
         return Ok(Vec::new());
     }
     reconcile_migration_checksums(pool).await?;
@@ -77,7 +77,7 @@ async fn migrate(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
     MIGRATOR.run(&mut *conn).await?;
     let after = applied_versions(&mut conn).await?;
     cctui_server_core::schema::provision(&mut conn).await?;
-    cctui_server_workspace::schema::provision(&mut conn).await?;
+    crate::schema::provision(&mut conn).await?;
     Ok(after.into_iter().filter(|v| !before.contains(v)).collect())
 }
 

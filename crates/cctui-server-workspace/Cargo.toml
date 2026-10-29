@@ -6,13 +6,55 @@ edition.workspace = true
 [lints]
 workspace = true
 
+[features]
+ts = ["dep:ts-rs", "cctui-proto/ts", "cctui-query/ts"]
+
 [dependencies]
 cctui-server-core.workspace = true
-cctui-proto.workspace = true
+cctui-proto = { workspace = true, features = ["sqlx"] }
+cctui-crypto.workspace = true
+cctui-query.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 uuid.workspace = true
-sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres"] }
+chrono.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+futures-util.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+tower-http = { version = "0.7", features = ["cors", "trace"] }
+sha2.workspace = true
+hmac.workspace = true
+hex.workspace = true
+base64.workspace = true
+bytes = "1"
+thiserror.workspace = true
+tokio-util.workspace = true
+sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
+http = "1"
+dashmap = "6"
+regex.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+ring = "0.17"
+ts-rs = { workspace = true, optional = true }
+toml.workspace = true
+log = "0.4.33"
+webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
+webauthn-rs-proto = "0.5"
+flate2 = "1"
+tar = "0.4"
+tokio-tungstenite.workspace = true
+unicode-normalization = "0.1.25"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 [dev-dependencies]
 cctui-server-core = { workspace = true, features = ["test-support"] }
-tokio.workspace = true
-serde_json.workspace = true
+reqwest.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tempfile.workspace = true
+tower.workspace = true
+http-body-util.workspace = true

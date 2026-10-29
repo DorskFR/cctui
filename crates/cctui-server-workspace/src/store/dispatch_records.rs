@@ -2,4 +2,4 @@
 
 pub use cctui_server_core::store::dispatch_records::*;
 
-pub use cctui_server_workspace::execution_failures::{dismiss_all, list};
+pub use crate::execution_failures::{dismiss_all, list};

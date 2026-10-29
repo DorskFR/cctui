@@ -57,7 +57,7 @@ jobs:
             echo "Upstream $SCHEMA_URL differs from the vendored copy at $VENDORED."
             echo "Re-vendor it and review catalog.toml for added/removed keys:"
             echo "  curl -fsSL $SCHEMA_URL -o $VENDORED"
-            echo "Then run: cargo test -p cctui-server settings_catalog"
+            echo "Then run: cargo test -p cctui-server-core settings_catalog"
             exit 1
           fi
 
