@@ -162,8 +162,29 @@ impl Connection {
         session: &str,
         meta: SessionMeta,
     ) -> anyhow::Result<()> {
+        let guard = self.host.lifecycle.lock().await;
         let spawn_key =
             meta.extra.get("spawn_key").and_then(serde_json::Value::as_str).map(str::to_owned);
+        for identity in [Some(session), spawn_key.as_deref()].into_iter().flatten() {
+            if let Some(stop) = crate::termination::find(&self.host, identity).await?
+                && stop.user_id == self.user
+                && stop.machine_id.is_none_or(|id| id == self.machine)
+            {
+                crate::termination::record(
+                    &self.host,
+                    &[session.to_owned()],
+                    self.user,
+                    Some(self.machine),
+                    adapter,
+                    &stop.end_reason,
+                    stop.detail.as_deref().unwrap_or("late registration of stopped work"),
+                )
+                .await?;
+                drop(guard);
+                crate::termination::stop_worker(&self.host, self.machine, session, adapter).await;
+                return Ok(());
+            }
+        }
         let trusted_spawn_key = if let Some(spawn) = spawn_key.as_deref()
             && core::store::tokens::rebind_allowed(
                 &self.host.pool,
@@ -241,6 +262,12 @@ impl Connection {
                 .await?;
             }
             AdapterEvent::SessionEnded { local_id, reason } => {
+                let _guard = self.host.lifecycle.lock().await;
+                if crate::termination::stopped(&self.host, &local_id, self.user, self.machine)
+                    .await?
+                {
+                    return Ok(());
+                }
                 core::lifecycle::persist_session_end(
                     &self.host.pool,
                     &core::lifecycle::NoopSessionEndJournal,
@@ -296,6 +323,7 @@ impl Connection {
         ok: bool,
         error: Option<String>,
     ) -> anyhow::Result<()> {
+        let _guard = self.host.lifecycle.lock().await;
         let known =
             core::machine_launches::find(&self.host.pool, &command_id.to_string(), None).await?;
         if known
@@ -342,33 +370,19 @@ impl Connection {
         Ok(())
     }
     async fn stop_for_human_input(&self, adapter: &str, local_id: &str) -> anyhow::Result<()> {
-        let reason = cctui_proto::adapter::EndReason::Other {
-            detail: "human input required; unattended automation stopped the worker".into(),
-        };
-        core::lifecycle::persist_session_end(
-            &self.host.pool,
-            &core::lifecycle::NoopSessionEndJournal,
-            self.machine,
+        let guard = self.host.lifecycle.lock().await;
+        crate::termination::record(
+            &self.host,
+            &[local_id.to_owned()],
             self.user,
-            local_id,
-            &reason,
+            Some(self.machine),
+            adapter,
+            "other",
+            "human input required; unattended automation stopped the worker",
         )
         .await?;
-        core::session_credentials::revoke_session_tokens(&self.host, local_id).await;
-        self.host
-            .bus
-            .command_daemon_for_session(
-                self.machine,
-                local_id,
-                DaemonFrameDown::Command {
-                    adapter_id: adapter.to_owned(),
-                    command: Box::new(cctui_proto::adapter::AdapterCommand::Kill {
-                        local_id: local_id.to_owned(),
-                        signal: None,
-                    }),
-                },
-            )
-            .await?;
+        drop(guard);
+        crate::termination::stop_worker(&self.host, self.machine, local_id, adapter).await;
         Ok(())
     }
     fn schedule_lost(self, shared: bool) {

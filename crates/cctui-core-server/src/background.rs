@@ -6,6 +6,7 @@ use std::time::Duration;
 pub struct BackgroundTasks {
     webhook: tokio::task::JoinHandle<()>,
     workloads: tokio::task::JoinHandle<()>,
+    launches: tokio::task::JoinHandle<()>,
     dispatchers: tokio::task::JoinHandle<()>,
     retirement: tokio::task::JoinHandle<()>,
 }
@@ -21,6 +22,15 @@ impl BackgroundTasks {
         let workloads = periodic(move || {
             let host = workload_host.clone();
             async move { cctui_server_core::dispatch_liveness::sweep(&host).await }
+        });
+        let launch_host = host.clone();
+        let launches = periodic(move || {
+            let host = launch_host.clone();
+            async move {
+                if let Err(error) = crate::termination::sweep(&host).await {
+                    tracing::error!(%error, "launch deadline reconciliation failed");
+                }
+            }
         });
         let dispatcher_host = host.clone();
         let dispatchers = periodic(move || {
@@ -38,7 +48,7 @@ impl BackgroundTasks {
                 cctui_server_core::worker_retirement::reap_ephemeral_keys(&host.core).await;
             }
         });
-        Self { webhook, workloads, dispatchers, retirement }
+        Self { webhook, workloads, launches, dispatchers, retirement }
     }
 }
 fn periodic<F, Fut>(mut job: F) -> tokio::task::JoinHandle<()>
@@ -59,6 +69,7 @@ impl Drop for BackgroundTasks {
     fn drop(&mut self) {
         self.webhook.abort();
         self.workloads.abort();
+        self.launches.abort();
         self.dispatchers.abort();
         self.retirement.abort();
     }

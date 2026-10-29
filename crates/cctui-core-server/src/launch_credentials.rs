@@ -22,6 +22,13 @@ pub async fn gateway_env(
     Path(session): Path<String>,
 ) -> Result<Json<cctui_proto::api::GatewayEnvResponse>, StatusCode> {
     let (user, machine) = machine(&host, &headers).await?;
+    let _guard = host.lifecycle.lock().await;
+    if crate::termination::stopped(&host, &session, user, machine)
+        .await
+        .map_err(|error| db_error(&error))?
+    {
+        return Err(StatusCode::GONE);
+    }
     let allowed = gateway_env_allowed(&host.pool, user, machine, &session)
         .await
         .map_err(|error| db_error(&error))?;

@@ -43,7 +43,7 @@ file and supply it to the process or container. For a local PostgreSQL test:
 
 ```sh
 docker run --rm --env-file /path/to/core.env --network host \
-  ghcr.io/dorskfr/cctui-core:0.27.0-beta.33
+  ghcr.io/dorskfr/cctui-core:0.27.0-beta.34
 ```
 
 `DATABASE_URL` and `CCTUI_EXTERNAL_URL` must be reachable from the container's
@@ -120,6 +120,23 @@ An executor acknowledgment means dispatch was accepted; it does not establish
 that the task completed. Failure notifications use the existing bounded retry
 policy and may be duplicated around crashes; they are not exactly-once delivery.
 
+Starting with beta.34, machine cancellation also accepts the returned command ID
+before registration and after reconnect/restart. The terminal result is `killed`; any captured partial assistant answer is retained.
+The host commits the stop decision, gateway-token and temporary worker-key
+revocation, capability cleanup and release of unregistered child reservations
+before acknowledging cancellation. Registered child grants remain charged to the
+tree budget. Late registration/verdict/end events cannot revive stopped work, and
+credential pulls or child follow-ups return 410 for a stopped execution.
+Worker stop delivery is best effort when its machine is offline; a later
+announcement is stopped again. This does not establish exactly-once execution.
+
+For a queued dispatcher run, cancellation calls the backend's existing cancel
+operation before recording success. An unavailable backend returns an error;
+an adapter without cancellation support returns 501 and keeps the run pending.
+A request whose backend handle has not been recorded returns 409 until it can
+be cancelled or its registration deadline settles it. The configured HTTP
+dispatcher currently has no cancellation operation.
+
 ## Database transitions
 
 - **Empty → core:** creates execution tables and package lineage, without
@@ -135,8 +152,14 @@ that rollback is unsupported. Keep the normal database backup before upgrades.
 Beta 25 adds package schema version two for durable machine launches. Both core and full betas
 22–24 reject this version; rolling back across that boundary requires a
 pre-upgrade database restore. Machine result polling accepts the returned command
-ID and follows canonical worker registration after a host restart. An interrupted
-delivery can remain pending; the server does not automatically resend the work.
+ID and follows canonical worker registration after a host restart.
+Beta 34 adds package schema version three for durable stop decisions. Core/full
+betas 25–33 reject this version; rollback requires a pre-upgrade database restore.
+Unregistered machine launches expire after ten minutes. Dispatcher requests with
+unknown delivery, or forwarded workers that never register, expire after fifteen
+minutes; time held in the dispatcher queue does not count. An independent task
+reconciles deadlines every thirty seconds in batches of up to 100 per target.
+Unknown delivery becomes `spawn_failed`; work is never automatically resent.
 
 Switching full to core deliberately removes access to workspace features and is
 an operator choice, separate from an ordinary full-server upgrade.
@@ -293,3 +316,15 @@ stable 0.26.1 on a legacy-origin database; it does not change the core-origin
 rollback restriction above. Full fixture modes currently use the Claude machine
 target. They scrub inherited operator configuration and retain diagnostics while
 removing their own processes, worker container and database.
+
+## Repeatable cancellation acceptance
+
+```sh
+CCTUI_TEST_WORKER_IMAGE=ghcr.io/dorskfr/cctui-worker:0.27.0-beta.33 \
+  python3 scripts/check-core-worker.py --check-cancellation
+```
+
+The controlled provider holds a real harness request while the fixture cancels
+through its command ID. It checks the terminal outcome, credential revocation,
+refused reminting and a fresh task on the same daemon. This mode can be combined
+with `--check-ownership` to exercise cancellation after lease-loss recovery.

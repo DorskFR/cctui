@@ -2872,3 +2872,752 @@ async fn headless_machine_configuration_reconciles_and_resets_without_reenrollme
     );
     daemon.close(None).await.unwrap();
 }
+
+async fn pending_launch_fixture(f: &Fixture) -> (Value, Value, uuid::Uuid) {
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"operator"})).await;
+    let machine = f
+        .post("/api/v1/enroll", user["key"].as_str().unwrap(), json!({"hostname":"executor"}))
+        .await;
+    let command = uuid::Uuid::new_v4();
+    cctui_server_core::machine_launches::prepare(
+        &f.pool,
+        command,
+        user["id"].as_str().unwrap().parse().unwrap(),
+        &cctui_server_core::commands::FailedSpawnRow {
+            session_id: command.to_string(),
+            machine_id: machine["machine_id"].as_str().unwrap().parse().unwrap(),
+            user_id: user["id"].as_str().unwrap().parse().unwrap(),
+            adapter_id: "codex".into(),
+            working_dir: "/work/acme".into(),
+            name: None,
+            model: None,
+            effort: None,
+        },
+    )
+    .await
+    .unwrap();
+    cctui_server_core::machine_launches::delivered(&f.pool, command).await.unwrap();
+    (user, machine, command)
+}
+
+#[tokio::test]
+async fn pending_launch_cancellation_survives_restart_and_rejects_late_registration() {
+    let Some(mut f) = Fixture::new().await else { return };
+    let (user, machine, command) = pending_launch_fixture(&f).await;
+    f.restart().await;
+    let key = user["key"].as_str().unwrap();
+    let url = format!("{}/api/v1/sessions/{command}", f.base);
+    assert_eq!(
+        f.client.post(format!("{url}/kill")).bearer_auth(key).send().await.unwrap().status(),
+        204
+    );
+    f.restart().await;
+    let mut daemon = f.daemon(machine["machine_key"].as_str().unwrap()).await;
+    daemon.next().await.unwrap().unwrap();
+    let canonical = uuid::Uuid::new_v4().to_string();
+    daemon
+        .send(Message::Text(
+            serde_json::to_string(&DaemonFrameUp::Event {
+                adapter_id: "codex".into(),
+                event: AdapterEvent::SessionStarted {
+                    local_id: canonical.clone(),
+                    meta: SessionMeta {
+                        extra: json!({"spawn_key":command.to_string()}),
+                        ..Default::default()
+                    },
+                },
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let stop = tokio::time::timeout(Duration::from_secs(3), daemon.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let Message::Text(text) = stop else { panic!("expected stop") };
+    let DaemonFrameDown::Command { command: stop, .. } = serde_json::from_str(&text).unwrap()
+    else {
+        panic!("expected command")
+    };
+    assert!(
+        matches!(*stop,cctui_proto::adapter::AdapterCommand::Kill {local_id,..} if local_id==canonical)
+    );
+    let result: Value = f
+        .client
+        .get(format!("{}/api/v1/sessions/{command}/result", f.base))
+        .bearer_auth(key)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(result["done"], true);
+    assert_eq!(result["end_reason"], "killed");
+    let live: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM sessions WHERE id=$1 AND status='active'")
+            .bind(canonical)
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+    assert_eq!(live, 0);
+}
+
+#[tokio::test]
+async fn expired_machine_launch_is_settled_without_resend_and_fresh_launch_is_retained() {
+    let Some(mut f) = Fixture::new().await else { return };
+    let (user, machine, command) = pending_launch_fixture(&f).await;
+    let fresh = uuid::Uuid::new_v4();
+    let old = cctui_server_core::machine_launches::find(&f.pool, &command.to_string(), None)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut row = old.failed_row();
+    row.session_id = fresh.to_string();
+    cctui_server_core::machine_launches::prepare(&f.pool, fresh, old.user_id, &row).await.unwrap();
+    sqlx::query(
+        "UPDATE machine_launches SET created_at=now()-interval '11 minutes' WHERE command_id=$1",
+    )
+    .bind(command)
+    .execute(&f.pool)
+    .await
+    .unwrap();
+    f.restart().await;
+    let mut daemon = f.daemon(machine["machine_key"].as_str().unwrap()).await;
+    daemon.next().await.unwrap().unwrap();
+    cctui_core_server::termination::sweep(&f.host).await.unwrap();
+    let frame = tokio::time::timeout(Duration::from_secs(3), daemon.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let Message::Text(text) = frame else { panic!("expected command") };
+    let DaemonFrameDown::Command { command: stop, .. } = serde_json::from_str(&text).unwrap()
+    else {
+        panic!("expected stop")
+    };
+    assert!(matches!(*stop, cctui_proto::adapter::AdapterCommand::Kill { .. }));
+    let key = user["key"].as_str().unwrap();
+    for (id, done) in [(command, true), (fresh, false)] {
+        let result: Value = f
+            .client
+            .get(format!("{}/api/v1/sessions/{id}/result", f.base))
+            .bearer_auth(key)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(result["done"], done);
+        if done {
+            assert_eq!(result["end_reason"], "spawn_failed");
+        }
+    }
+}
+
+#[tokio::test]
+async fn queued_dispatch_cancellation_calls_backend_and_remains_terminal() {
+    let Some(f) = Fixture::new().await else { return };
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"operator"})).await;
+    let key = user["key"].as_str().unwrap();
+    let uid: uuid::Uuid = user["id"].as_str().unwrap().parse().unwrap();
+    let executor = f
+        .post(
+            "/api/v1/dispatcher/enroll",
+            key,
+            json!({"name":"runtime-executor","kind":"kubernetes"}),
+        )
+        .await;
+    let dispatcher: uuid::Uuid = executor["dispatcher_id"].as_str().unwrap().parse().unwrap();
+    let session = uuid::Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO dispatch_records (session_id,user_id,dispatcher_name,outcome,queued) VALUES ($1,$2,'runtime-executor','forwarded',true)").bind(&session).bind(uid).execute(&f.pool).await.unwrap();
+    sqlx::query("INSERT INTO dispatch_handles (session_id,dispatcher_name,handle) VALUES ($1,'runtime-executor','job/fixture')").bind(&session).execute(&f.pool).await.unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    f.host.bus.register_dispatcher(dispatcher, tx);
+    let bus = f.host.bus.clone();
+    let responder = tokio::spawn(async move {
+        let frame = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.unwrap().unwrap();
+        let cctui_proto::ws::DispatcherFrameDown::Cancel { request_id, handle } = frame else {
+            panic!("expected cancellation")
+        };
+        assert_eq!(handle, "job/fixture");
+        bus.resolve_dispatcher_reply(
+            request_id,
+            cctui_proto::ws::DispatcherFrameUp::CancelResult {
+                request_id,
+                handle,
+                ok: true,
+                error: None,
+            },
+        );
+    });
+    assert_eq!(
+        f.client
+            .post(format!("{}/api/v1/sessions/{session}/kill", f.base))
+            .bearer_auth(key)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    responder.await.unwrap();
+    let result: Value = f
+        .client
+        .get(format!("{}/api/v1/sessions/{session}/result", f.base))
+        .bearer_auth(key)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(result["done"], true);
+    assert_eq!(result["end_reason"], "killed");
+    assert_eq!(result["queued"], false);
+}
+
+#[tokio::test]
+async fn registered_command_cancellation_preserves_terminal_outcome_and_revokes_credentials() {
+    let Some(f) = Fixture::new().await else { return };
+    let (user, machine, command) = pending_launch_fixture(&f).await;
+    let canonical = registered_cancellation_fixture(&f, &user, &machine, command).await;
+    let mut daemon = f.daemon(machine["machine_key"].as_str().unwrap()).await;
+    daemon.next().await.unwrap().unwrap();
+    let url = format!("{}/api/v1/sessions/{command}", f.base);
+    let foreign =
+        f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"other-operator"})).await;
+    assert_eq!(
+        f.client
+            .post(format!("{url}/kill"))
+            .bearer_auth(foreign["key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    assert_eq!(
+        f.client
+            .post(format!("{url}/kill"))
+            .bearer_auth(user["key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    daemon.next().await.unwrap().unwrap();
+    for event in [
+        AdapterEvent::CommandResult { command_id: command, ok: true, error: None },
+        AdapterEvent::SessionEnded {
+            local_id: canonical.clone(),
+            reason: cctui_proto::adapter::EndReason::Completed,
+        },
+    ] {
+        daemon
+            .send(Message::Text(
+                serde_json::to_string(&DaemonFrameUp::Event { adapter_id: "codex".into(), event })
+                    .unwrap()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+    }
+    daemon
+        .send(Message::Text(
+            serde_json::to_string(&DaemonFrameUp::Event {
+                adapter_id: "codex".into(),
+                event: AdapterEvent::SessionStarted {
+                    local_id: canonical.clone(),
+                    meta: SessionMeta::default(),
+                },
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), daemon.next()).await.unwrap().unwrap().unwrap();
+    let ended: String = sqlx::query_scalar("SELECT end_reason FROM sessions WHERE id=$1")
+        .bind(&canonical)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(ended, "killed", "late completion must not overwrite cancellation");
+    assert_stopped_gateway_and_result(
+        &f,
+        &canonical,
+        &url,
+        user["key"].as_str().unwrap(),
+        machine["machine_key"].as_str().unwrap(),
+    )
+    .await;
+    let retained: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM spawn_tree_grants WHERE child_id=$1")
+            .bind(command.to_string())
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+    assert_eq!(retained, 1, "a registered child's grant remains charged to its tree");
+}
+
+async fn cancellation_provider(f: &Fixture, uid: uuid::Uuid) -> uuid::Uuid {
+    let account: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO accounts (user_id,name) VALUES ($1,'fixture') RETURNING id",
+    )
+    .bind(uid)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    let provider:uuid::Uuid=sqlx::query_scalar("INSERT INTO account_providers (user_id,account_id,provider,encrypted_access_token,auth_scheme) VALUES ($1,$2,'openai',$3,'bearer') RETURNING id").bind(uid).bind(account).bind(cctui_crypto::encrypt("fixture-provider-secret",&[42;32])).fetch_one(&f.pool).await.unwrap();
+    provider
+}
+
+#[tokio::test]
+async fn pending_stop_rolls_back_on_cleanup_failure_and_releases_credentials_and_budgets_on_retry()
+{
+    let Some(f) = Fixture::new().await else { return };
+    let (user, _, command) = pending_launch_fixture(&f).await;
+    let uid: uuid::Uuid = user["id"].as_str().unwrap().parse().unwrap();
+    cancellation_provider(&f, uid).await;
+    cctui_server_core::gateway::mint::mint_session_env(
+        &f.host,
+        uid,
+        "fixture",
+        cctui_server_core::gateway::Family::Openai,
+        &command.to_string(),
+    )
+    .await
+    .unwrap();
+    let session = command.to_string();
+    let cap = cctui_proto::api::SpawnCapability::default();
+    cctui_server_core::store::spawn_capabilities::upsert(&f.pool, &session, &cap).await.unwrap();
+    f.host.spawn_capabilities.insert(session.clone(), cap);
+    f.host.session_usd_budgets.insert(session.clone(), 2.0);
+    sqlx::query("INSERT INTO spawn_tree_grants (root_id,parent_id,child_id,budget_usd) VALUES ('root','parent',$1,2.0)").bind(&session).execute(&f.pool).await.unwrap();
+    sqlx::query("INSERT INTO auth_keys (user_id,key_hash,kind,session_id,expires_at) VALUES ($1,$3,'ephemeral',$2,now()+interval '1 hour')").bind(uid).bind(&session).bind(cctui_server_core::auth::sha256_hex("fixture-cancel-ephemeral")).execute(&f.pool).await.unwrap();
+    assert!(f.host.auth_config.validate("fixture-cancel-ephemeral").await.is_some());
+    sqlx::raw_sql("CREATE FUNCTION pg_temp.reject_cleanup() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture cleanup failure'; END $$; CREATE TRIGGER fixture_cleanup_failure BEFORE DELETE ON session_spawn_capabilities FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.reject_cleanup();").execute(&f.pool).await.unwrap();
+    let url = format!("{}/api/v1/sessions/{command}/kill", f.base);
+    let key = user["key"].as_str().unwrap();
+    assert_eq!(f.client.post(&url).bearer_auth(key).send().await.unwrap().status(), 500);
+    let stopped: i64 = sqlx::query_scalar("SELECT count(*) FROM execution_stops")
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(stopped, 0);
+    assert_eq!(
+        cctui_server_core::machine_launches::find(&f.pool, &session, None)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "delivered"
+    );
+    let live: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM session_tokens WHERE session_id=$1 AND revoked_at IS NULL",
+    )
+    .bind(&session)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(live, 1, "credential revocation must also roll back");
+    sqlx::raw_sql("DROP TRIGGER fixture_cleanup_failure ON session_spawn_capabilities")
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(f.client.post(&url).bearer_auth(key).send().await.unwrap().status(), 204);
+    let remaining:(i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM session_tokens WHERE session_id=$1 AND revoked_at IS NULL),(SELECT count(*) FROM session_spawn_capabilities WHERE session_id=$1),(SELECT count(*) FROM spawn_tree_grants WHERE child_id=$1),(SELECT count(*) FROM auth_keys WHERE session_id=$1 AND revoked_at IS NULL)").bind(&session).fetch_one(&f.pool).await.unwrap();
+    assert_eq!(remaining, (0, 0, 0, 0));
+    assert!(f.host.auth_config.validate("fixture-cancel-ephemeral").await.is_none());
+    assert!(!f.host.spawn_capabilities.contains_key(&session));
+    assert!(!f.host.session_usd_budgets.contains_key(&session));
+}
+
+async fn assert_stopped_gateway_and_result(
+    f: &Fixture,
+    canonical: &str,
+    url: &str,
+    key: &str,
+    machine_key: &str,
+) {
+    let reply = f
+        .client
+        .get(format!("{}/api/v1/daemon/sessions/{canonical}/gateway-env", f.base))
+        .bearer_auth(machine_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reply.status(), 410);
+    let live: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM session_tokens WHERE session_id=$1 AND revoked_at IS NULL",
+    )
+    .bind(canonical)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(live, 0);
+    let result: Value = f
+        .client
+        .get(format!("{url}/result"))
+        .bearer_auth(key)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(result["end_reason"], "killed");
+    assert_eq!(result["final_assistant_text"], "partial answer before stop");
+    assert_eq!(
+        f.client
+            .post(format!("{}/api/v1/daemon/sessions/{canonical}/spawn-child", f.base))
+            .bearer_auth(machine_key)
+            .json(&json!({"adapter":"codex","prompt":"continue"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        410
+    );
+}
+
+#[tokio::test]
+async fn pending_cancellation_requires_dispatch_scope_and_owner_access() {
+    let Some(f) = Fixture::new().await else { return };
+    let (user, _, command) = pending_launch_fixture(&f).await;
+    let observer = f
+        .post(
+            &format!("/api/v1/users/{}/keys", user["id"].as_str().unwrap()),
+            "fixture-admin",
+            json!({"label":"observer","scopes":["read"]}),
+        )
+        .await;
+    let url = format!("{}/api/v1/sessions/{command}/kill", f.base);
+    assert_eq!(
+        f.client
+            .post(&url)
+            .bearer_auth(observer["key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    let foreign =
+        f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"other-operator"})).await;
+    assert_eq!(
+        f.client
+            .post(&url)
+            .bearer_auth(foreign["key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    assert_eq!(
+        cctui_server_core::machine_launches::find(&f.pool, &command.to_string(), None)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "delivered"
+    );
+}
+
+#[tokio::test]
+async fn unsupported_dispatcher_cancellation_does_not_claim_success() {
+    let backend = cctui_server_core::dispatchers::http::HttpDispatcher::new(
+        "http-executor",
+        "https://executor.example.invalid",
+        None,
+        reqwest::Client::new(),
+    );
+    let registry = cctui_server_core::dispatchers::Registry::new().with(Arc::new(backend));
+    let Some(f) = Fixture::with_dispatchers(registry).await else { return };
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"operator"})).await;
+    let uid: uuid::Uuid = user["id"].as_str().unwrap().parse().unwrap();
+    let session = uuid::Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO dispatch_records (session_id,user_id,dispatcher_name,outcome,queued) VALUES ($1,$2,'http-executor','forwarded',true)").bind(&session).bind(uid).execute(&f.pool).await.unwrap();
+    sqlx::query("INSERT INTO dispatch_handles (session_id,dispatcher_name,handle) VALUES ($1,'http-executor','job/fixture')").bind(&session).execute(&f.pool).await.unwrap();
+    assert_eq!(
+        f.client
+            .post(format!("{}/api/v1/sessions/{session}/kill", f.base))
+            .bearer_auth(user["key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        501
+    );
+    assert!(cctui_core_server::termination::find(&f.host, &session).await.unwrap().is_none());
+    let result: Value = f
+        .client
+        .get(format!("{}/api/v1/sessions/{session}/result", f.base))
+        .bearer_auth(user["key"].as_str().unwrap())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(result["done"], false);
+    assert_eq!(result["queued"], true);
+}
+
+async fn registered_cancellation_fixture(
+    f: &Fixture,
+    user: &Value,
+    machine: &Value,
+    command: uuid::Uuid,
+) -> String {
+    let uid = user["id"].as_str().unwrap().parse::<uuid::Uuid>().unwrap();
+    let mid = machine["machine_id"].as_str().unwrap().parse::<uuid::Uuid>().unwrap();
+    let canonical = uuid::Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO sessions (id,machine_id,working_dir,machine_uuid,user_id,adapter_id,status) VALUES ($1,'executor','/work/acme',$2,$3,'codex','active')").bind(&canonical).bind(mid).bind(uid).execute(&f.pool).await.unwrap();
+    cctui_server_core::machine_launches::registered(
+        &f.pool,
+        &command.to_string(),
+        &canonical,
+        mid,
+        uid,
+    )
+    .await
+    .unwrap();
+    let mut capture = cctui_server_core::results::CapturedResult::default();
+    capture.observe(&json!({"type":"text","content":"partial answer before stop","role":"Assistant","message_id":"partial"}));
+    sqlx::query("UPDATE sessions SET metadata=jsonb_build_object('cctui_execution_result',$2::jsonb) WHERE id=$1")
+        .bind(&canonical).bind(serde_json::to_value(capture).unwrap()).execute(&f.pool).await.unwrap();
+    let provider = cancellation_provider(f, uid).await;
+    sqlx::query("UPDATE sessions SET account_id=$2 WHERE id=$1")
+        .bind(&canonical)
+        .bind(provider.to_string())
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    cctui_server_core::gateway::mint::mint_session_env_for_account(&f.host, provider, &canonical)
+        .await
+        .unwrap()
+        .unwrap();
+    let live: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM session_tokens WHERE session_id=$1 AND revoked_at IS NULL",
+    )
+    .bind(&canonical)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(live, 1);
+    sqlx::query("INSERT INTO spawn_tree_grants (root_id,parent_id,child_id,budget_usd) VALUES ('root','parent',$1,2.0)").bind(command.to_string()).execute(&f.pool).await.unwrap();
+    canonical
+}
+
+#[tokio::test]
+async fn cancellation_racing_registration_settles_both_identities() {
+    for _ in 0..6 {
+        let Some(f) = Fixture::new().await else { return };
+        let (user, machine, command) = pending_launch_fixture(&f).await;
+        let mut daemon = f.daemon(machine["machine_key"].as_str().unwrap()).await;
+        daemon.next().await.unwrap().unwrap();
+        let canonical = uuid::Uuid::new_v4().to_string();
+        let request = f
+            .client
+            .post(format!("{}/api/v1/sessions/{command}/kill", f.base))
+            .bearer_auth(user["key"].as_str().unwrap());
+        let cancel = tokio::spawn(async move { request.send().await.unwrap().status() });
+        daemon
+            .send(Message::Text(
+                serde_json::to_string(&DaemonFrameUp::Event {
+                    adapter_id: "codex".into(),
+                    event: AdapterEvent::SessionStarted {
+                        local_id: canonical.clone(),
+                        meta: SessionMeta {
+                            extra: json!({"spawn_key":command.to_string()}),
+                            ..Default::default()
+                        },
+                    },
+                })
+                .unwrap()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(cancel.await.unwrap(), 204);
+        tokio::time::timeout(Duration::from_secs(3),async {
+            loop {
+                let Message::Text(text)=daemon.next().await.unwrap().unwrap() else {continue};
+                let DaemonFrameDown::Command {command:stop,..}=serde_json::from_str(&text).unwrap() else {continue};
+                if matches!(*stop,cctui_proto::adapter::AdapterCommand::Kill {local_id,..} if local_id==canonical) {break;}
+            }
+        }).await.unwrap();
+        for id in [command.to_string(), canonical] {
+            let result: Value = f
+                .client
+                .get(format!("{}/api/v1/sessions/{id}/result", f.base))
+                .bearer_auth(user["key"].as_str().unwrap())
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(result["done"], true);
+            assert_eq!(result["end_reason"], "killed");
+        }
+    }
+}
+
+#[tokio::test]
+async fn dispatcher_registration_deadlines_settle_unknown_delivery_but_preserve_queues() {
+    let Some(f) = Fixture::new().await else { return };
+    let user = f.post("/api/v1/admin/users", "fixture-admin", json!({"name":"operator"})).await;
+    let uid: uuid::Uuid = user["id"].as_str().unwrap().parse().unwrap();
+    let pending = uuid::Uuid::new_v4().to_string();
+    let forwarded = uuid::Uuid::new_v4().to_string();
+    let queued = uuid::Uuid::new_v4().to_string();
+    for (id, outcome, waiting) in [
+        (&pending, "pending", false),
+        (&forwarded, "forwarded", false),
+        (&queued, "forwarded", true),
+    ] {
+        sqlx::query("INSERT INTO dispatch_records (session_id,user_id,dispatcher_name,outcome,queued,created_at,started_at) VALUES ($1,$2,'executor',$3,$4,now()-interval '16 minutes',now()-interval '16 minutes')").bind(id).bind(uid).bind(outcome).bind(waiting).execute(&f.pool).await.unwrap();
+    }
+    cctui_core_server::termination::sweep(&f.host).await.unwrap();
+    for (id, done) in [(&pending, true), (&forwarded, true), (&queued, false)] {
+        let result: Value = f
+            .client
+            .get(format!("{}/api/v1/sessions/{id}/result", f.base))
+            .bearer_auth(user["key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(result["done"], done);
+        if done {
+            assert_eq!(result["end_reason"], "spawn_failed");
+        } else {
+            assert_eq!(result["queued"], true);
+        }
+    }
+}
+
+#[tokio::test]
+async fn unattended_stop_also_disarms_the_provisional_launch_identity() {
+    let Some(f) = Fixture::new().await else { return };
+    let (user, machine, command) = pending_launch_fixture(&f).await;
+    let canonical = registered_cancellation_fixture(&f, &user, &machine, command).await;
+    let mut daemon = f.daemon(machine["machine_key"].as_str().unwrap()).await;
+    daemon.next().await.unwrap().unwrap();
+    daemon
+        .send(Message::Text(
+            serde_json::to_string(&DaemonFrameUp::Event {
+                adapter_id: "codex".into(),
+                event: AdapterEvent::AskQuestion {
+                    local_id: canonical.clone(),
+                    question: "choose an option".into(),
+                    questions: None,
+                    preamble: None,
+                },
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), daemon.next()).await.unwrap().unwrap().unwrap();
+    let provisional = command.to_string();
+    for id in [&canonical, &provisional] {
+        assert_eq!(
+            f.client
+                .get(format!("{}/api/v1/daemon/sessions/{id}/gateway-env", f.base))
+                .bearer_auth(machine["machine_key"].as_str().unwrap())
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            410
+        );
+    }
+    let result: Value = f
+        .client
+        .get(format!("{}/api/v1/sessions/{command}/result", f.base))
+        .bearer_auth(user["key"].as_str().unwrap())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(result["end_reason"], "other");
+}
+
+#[tokio::test]
+async fn cancellation_disarms_every_launch_alias_of_the_same_canonical_worker() {
+    let Some(f) = Fixture::new().await else { return };
+    let (user, machine, command) = pending_launch_fixture(&f).await;
+    let canonical = registered_cancellation_fixture(&f, &user, &machine, command).await;
+    let launch = cctui_server_core::machine_launches::find(&f.pool, &command.to_string(), None)
+        .await
+        .unwrap()
+        .unwrap();
+    let second = uuid::Uuid::new_v4();
+    let mut row = launch.failed_row();
+    row.session_id = second.to_string();
+    cctui_server_core::machine_launches::prepare(&f.pool, second, launch.acting_user_id, &row)
+        .await
+        .unwrap();
+    cctui_server_core::machine_launches::registered(
+        &f.pool,
+        &second.to_string(),
+        &canonical,
+        launch.machine_id,
+        launch.user_id,
+    )
+    .await
+    .unwrap();
+    cctui_server_core::gateway::mint::mint_session_env(
+        &f.host,
+        launch.user_id,
+        "fixture",
+        cctui_server_core::gateway::Family::Openai,
+        &second.to_string(),
+    )
+    .await
+    .unwrap();
+    let key = user["key"].as_str().unwrap();
+    assert_eq!(
+        f.client
+            .post(format!("{}/api/v1/sessions/{command}/kill", f.base))
+            .bearer_auth(key)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    assert_eq!(
+        f.client
+            .get(format!("{}/api/v1/daemon/sessions/{second}/gateway-env", f.base))
+            .bearer_auth(machine["machine_key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        410
+    );
+    let live: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM session_tokens WHERE session_id=$1 AND revoked_at IS NULL",
+    )
+    .bind(second.to_string())
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(live, 0);
+}

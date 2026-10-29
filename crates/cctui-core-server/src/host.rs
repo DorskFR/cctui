@@ -20,6 +20,8 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct Host {
     pub core: CoreState,
+    /// Serialize standalone registration, stop decisions and credential recovery.
+    pub(crate) lifecycle: Arc<tokio::sync::Mutex<()>>,
     vault_key: Arc<Vec<u8>>,
     external_url: Arc<str>,
     github_token: Option<Arc<str>>,
@@ -32,6 +34,7 @@ impl Host {
     pub fn new(core: CoreState, vault_key: Vec<u8>, external_url: String) -> Self {
         Self {
             core,
+            lifecycle: Arc::new(tokio::sync::Mutex::new(())),
             vault_key: Arc::new(vault_key),
             external_url: external_url.into(),
             github_token: None,

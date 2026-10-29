@@ -14,6 +14,7 @@ admission webhook run the real sandboxed Job through a published dispatcher.
 --full-server retains real transcript, image, upload, settings and dispatcher data;
 --rolling --upgrade-from adds mixed-version full replicas, rollout and rollback.
 --check-ownership verifies core exclusivity, lease-loss exit and worker recovery.
+--check-cancellation verifies command-alias cancellation of a real running harness.
 """
 
 import argparse
@@ -70,6 +71,10 @@ parser.add_argument(
     action="store_true",
     help="Verify core duplicate startup refusal, ownership-loss exit and recovery.",
 )
+parser.add_argument(
+    "--check-cancellation", action="store_true",
+    help="Cancel a real running harness through its command ID and verify durable cleanup.",
+)
 parser.add_argument("--worker-url", help="Core URL reachable from Kubernetes workers.")
 parser.add_argument(
     "--context-pack",
@@ -79,7 +84,7 @@ parser.add_argument(
 parser.add_argument("--namespace", default="core-acceptance")
 parser.add_argument("--profile", default="core-smoke")
 args = parser.parse_args()
-if args.check_ownership and (
+if (args.check_ownership or args.check_cancellation) and (
     args.full_server
     or args.kubeconfig
     or args.child
@@ -88,7 +93,7 @@ if args.check_ownership and (
     or args.adapter != "claude-code"
 ):
     parser.error(
-        "--check-ownership requires the simple standalone Claude machine fixture"
+        "ownership/cancellation checks require the simple standalone Claude machine fixture"
     )
 if args.full_server and (
     args.kubeconfig or args.child or args.context_pack or args.adapter != "claude-code"
@@ -201,6 +206,8 @@ print("Diagnostic logs:", log_dir, flush=True)
 base = "http://127.0.0.1:18727"
 requests = []
 provider_errors = []
+cancellation_started = threading.Event()
+cancellation_release = threading.Event()
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
@@ -256,6 +263,10 @@ class Provider(http.server.BaseHTTPRequestHandler):
         except (AssertionError, ValueError) as error:
             provider_errors.append(f"{self.path}: {error}")
             self.send_error(400, "fixture rejected provider request")
+        except (BrokenPipeError, ConnectionResetError):
+            # Expected when the cancellation check kills the requesting harness.
+            if not args.check_cancellation:
+                raise
 
     def provider_request(self):
         raw = b""
@@ -291,6 +302,9 @@ class Provider(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(response)
             return
+        if args.check_cancellation and "CANCEL_LIFECYCLE_FIXTURE" in serialized:
+            cancellation_started.set()
+            assert cancellation_release.wait(30), "cancellation fixture was not released"
         if body.get("model", "").startswith("claude"):
             message = {
                 "id": "msg_fixture",
@@ -1240,6 +1254,44 @@ try:
                 "preserved keys/accounts/results; live daemon reconnected and ran a new real harness task",
                 flush=True,
             )
+    if args.check_cancellation:
+        cancelled = req("POST", "/sessions/spawn", key, {
+            "machine_id": mid, "adapter_id": "claude-code", "working_dir": "/work",
+            "prompt": "CANCEL_LIFECYCLE_FIXTURE: Respond with core-worker-ok. Do not call tools.",
+            "account": "controlled-provider", "model": "claude-sonnet-4-5", "permission_mode": "auto",
+        })
+        assert cancellation_started.wait(25), "real harness did not reach provider"
+        command = cancelled["command_id"]
+        canonical = sql(f"SELECT registered_session_id FROM machine_launches WHERE command_id='{command}'")
+        assert canonical, "running harness has no durable canonical identity"
+        assert int(sql(f"SELECT count(*) FROM session_tokens WHERE session_id='{canonical}' AND revoked_at IS NULL")) > 0
+        req("POST", f"/sessions/{command}/kill", key)
+        cancellation_release.set()
+        ended = req("GET", f"/sessions/{command}/result", key)
+        assert ended["done"] and ended["end_reason"] == "killed", ended
+        assert sql(f"SELECT count(*) FROM session_tokens WHERE session_id='{canonical}' AND revoked_at IS NULL") == "0"
+        try:
+            req("GET", f"/daemon/sessions/{canonical}/gateway-env", machine["machine_key"])
+        except AssertionError as error:
+            assert error.args[0][1] == 410, error
+        else:
+            raise AssertionError("cancelled harness reminted credentials")
+        # The same daemon must still execute a fresh task after stopping this one.
+        fresh = req("POST", "/sessions/spawn", key, {
+            "machine_id": mid, "adapter_id": "claude-code", "working_dir": "/work",
+            "prompt": "Respond with core-worker-ok. Do not call tools.",
+            "account": "controlled-provider", "model": "claude-sonnet-4-5", "permission_mode": "auto",
+        })
+        deadline = time.time() + 60
+        while True:
+            answer = req("GET", f"/sessions/{fresh['command_id']}/result", key)
+            if answer.get("done"):
+                break
+            assert time.time() < deadline, answer
+            time.sleep(0.3)
+        assert "core-worker-ok" in (answer.get("final_assistant_text") or ""), answer
+        assert req("GET", f"/sessions/{command}/result", key)["end_reason"] == "killed"
+        print("PASS: real harness command-ID cancellation revoked credentials, resisted late completion/remint, and preserved fresh execution on the same daemon", flush=True)
     assert not provider_errors, provider_errors
     if args.child:
         parent = sql(
@@ -1276,6 +1328,7 @@ try:
         flush=True,
     )
 finally:
+    cancellation_release.set()
     for replica in extra_servers:
         if replica.poll() is None:
             replica.terminate()
