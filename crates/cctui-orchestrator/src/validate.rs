@@ -25,7 +25,9 @@ use crate::{
     ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, GuardSpec, LABEL_WORKER_PROFILE,
     Posture, WorkerProfileSpec,
 };
-use k8s_openapi::api::core::v1::{Container, Pod, PodSpec, PodTemplateSpec, SecurityContext};
+use k8s_openapi::api::core::v1::{
+    Container, Pod, PodSpec, PodTemplateSpec, SecurityContext, Toleration,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 const SECRET_REF_PREFIXES: [&str; 4] = ["vault:", "bao:", "k8s:", "aws-sm:"];
@@ -437,7 +439,8 @@ fn check_conformance(
     profile: &WorkerProfileSpec,
     dispatch_secret: Option<&str>,
 ) -> Result<(), String> {
-    check_template_conformance(spec, worker, profile)?;
+    check_common_template_conformance(spec, worker, profile)?;
+    check_tolerations(spec, profile, true)?;
     check_name_sets(spec, worker_name, profile)?;
     check_volumes(spec, profile)?;
     check_worker_mounts(worker, worker_name, profile)?;
@@ -451,6 +454,15 @@ fn check_conformance(
 /// no longer matches its profile; the field list lives here so the dispatcher's
 /// notion of "conformant" cannot drift from the webhook's.
 pub fn check_template_conformance(
+    spec: &PodSpec,
+    worker: &Container,
+    profile: &WorkerProfileSpec,
+) -> Result<(), String> {
+    check_common_template_conformance(spec, worker, profile)?;
+    check_tolerations(spec, profile, false)
+}
+
+fn check_common_template_conformance(
     spec: &PodSpec,
     worker: &Container,
     profile: &WorkerProfileSpec,
@@ -499,6 +511,68 @@ pub fn check_template_conformance(
     }
 
     check_worker_env_from(worker, worker_name, profile)
+}
+
+/// Kubernetes defaults an omitted operator to Equal; empty optional strings
+/// and list ordering do not change the scheduling permission.
+fn same_toleration(have: &Toleration, want: &Toleration) -> bool {
+    have.key.as_deref().unwrap_or_default() == want.key.as_deref().unwrap_or_default()
+        && have.operator.as_deref().unwrap_or("Equal")
+            == want.operator.as_deref().unwrap_or("Equal")
+        && have.value.as_deref().unwrap_or_default() == want.value.as_deref().unwrap_or_default()
+        && have.effect.as_deref().unwrap_or_default() == want.effect.as_deref().unwrap_or_default()
+        && have.toleration_seconds == want.toleration_seconds
+}
+
+/// Only Pods get admission defaults. Never permit these additions on a Job
+/// template, where they would hide profile drift. Custom admission additions
+/// belong in the operator's profile.
+fn standard_admission_toleration(t: &Toleration, declared: &[Toleration]) -> bool {
+    // The API server skips a node-health default when the profile already
+    // covers that taint. An additional, longer duration would widen the policy.
+    if declared.iter().any(|expected| {
+        (expected.key.as_deref().unwrap_or_default().is_empty() || expected.key == t.key)
+            && (expected.effect.as_deref().unwrap_or_default().is_empty()
+                || expected.effect == t.effect)
+    }) {
+        return false;
+    }
+    if t.operator.as_deref() != Some("Exists") || !t.value.as_deref().unwrap_or_default().is_empty()
+    {
+        return false;
+    }
+    match (t.key.as_deref(), t.effect.as_deref()) {
+        (
+            Some("node.kubernetes.io/not-ready" | "node.kubernetes.io/unreachable"),
+            Some("NoExecute"),
+        ) => {
+            // DefaultTolerationSeconds is configurable on the API server.
+            t.toleration_seconds.is_some_and(|seconds| seconds >= 0)
+        }
+        (Some("node.kubernetes.io/memory-pressure"), Some("NoSchedule")) => {
+            t.toleration_seconds.is_none()
+        }
+        _ => false,
+    }
+}
+
+fn check_tolerations(
+    spec: &PodSpec,
+    profile: &WorkerProfileSpec,
+    admitted_pod: bool,
+) -> Result<(), String> {
+    let have = spec.tolerations.as_deref().unwrap_or_default();
+    let want = profile.tolerations.as_deref().unwrap_or_default();
+    if want.iter().any(|expected| !have.iter().any(|actual| same_toleration(actual, expected))) {
+        return Err("tolerations are missing an entry from the profile".to_owned());
+    }
+    if have.iter().any(|actual| {
+        !(want.iter().any(|expected| same_toleration(actual, expected))
+            || admitted_pod && standard_admission_toleration(actual, want))
+    }) {
+        return Err("tolerations include an entry not allowed by the profile".to_owned());
+    }
+    Ok(())
 }
 
 /// Why a Job's immutable pod template no longer conforms to `profile`, or
@@ -776,6 +850,9 @@ mod tests {
         if let Some(volumes) = &profile.volumes {
             pod_spec.insert("volumes".into(), serde_json::to_value(volumes).unwrap());
         }
+        if let Some(tolerations) = &profile.tolerations {
+            pod_spec.insert("tolerations".into(), serde_json::to_value(tolerations).unwrap());
+        }
         if let Some(ns) = &profile.node_selector {
             pod_spec.insert("nodeSelector".into(), serde_json::to_value(ns).unwrap());
         }
@@ -871,6 +948,112 @@ mod tests {
         }
         let src = source("lean", lean_profile());
         assert!(matches!(decide(&pod, &src).await, Decision::Allow));
+    }
+
+    #[test]
+    fn template_tolerations_ignore_order_and_defaults_but_detect_missing_entries() {
+        let profile: WorkerProfileSpec = serde_json::from_value(serde_json::json!({
+            "image": "example.com/worker:latest",
+            "tolerations": [
+                {"key": "dedicated", "value": "cctui-worker", "effect": "NoSchedule"},
+                {"key": "node.kubernetes.io/unreachable", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": 30}
+            ]
+        })).unwrap();
+        let mut spec = dispatched_pod("tainted", &profile).spec.unwrap();
+        let entries = spec.tolerations.as_mut().unwrap();
+        entries[0].operator = Some("Equal".into());
+        entries.reverse();
+        assert!(check_tolerations(&spec, &profile, false).is_ok());
+        spec.tolerations.as_mut().unwrap().remove(0);
+        assert!(check_tolerations(&spec, &profile, true).unwrap_err().contains("missing"));
+
+        let empty = lean_profile();
+        spec.tolerations = Some(vec![]);
+        assert!(check_tolerations(&spec, &empty, false).is_ok());
+        spec.tolerations = Some(
+            serde_json::from_value(serde_json::json!([{
+                "key": "node.kubernetes.io/not-ready", "operator": "Exists",
+                "effect": "NoExecute", "tolerationSeconds": 300
+            }]))
+            .unwrap(),
+        );
+        assert!(check_tolerations(&spec, &empty, true).is_ok());
+        assert!(check_tolerations(&spec, &empty, false).is_err());
+    }
+
+    #[tokio::test]
+    async fn tolerations_cannot_be_added_or_broadened_outside_the_profile() {
+        let profile: WorkerProfileSpec = serde_json::from_value(serde_json::json!({
+            "image": "example.com/worker:latest",
+            "tolerations": [{"key": "dedicated", "value": "cctui-worker", "effect": "NoSchedule"}]
+        }))
+        .unwrap();
+        let mut pod = dispatched_pod("tainted", &profile);
+        // Model the API server defaulting Equal and reordering the list.
+        pod.spec.as_mut().unwrap().tolerations = Some(serde_json::from_value(serde_json::json!([
+            {"key": "dedicated", "operator": "Equal", "value": "cctui-worker", "effect": "NoSchedule"}
+        ])).unwrap());
+        let src = source("tainted", profile);
+        assert!(matches!(decide(&pod, &src).await, Decision::Allow));
+        pod.spec.as_mut().unwrap().tolerations.as_mut().unwrap()[0].operator =
+            Some("Exists".into());
+        assert!(deny_msg(decide(&pod, &src).await).contains("tolerations"));
+    }
+
+    #[tokio::test]
+    async fn admission_defaults_cannot_broaden_an_explicit_node_health_toleration() {
+        let profile: WorkerProfileSpec = serde_json::from_value(serde_json::json!({
+            "image": "example.com/worker:latest",
+            "tolerations": [{"key": "node.kubernetes.io/unreachable", "operator": "Exists",
+                "effect": "NoExecute", "tolerationSeconds": 30}]
+        }))
+        .unwrap();
+        let mut pod = dispatched_pod("bounded", &profile);
+        let src = source("bounded", profile);
+        assert!(matches!(decide(&pod, &src).await, Decision::Allow));
+        pod.spec.as_mut().unwrap().tolerations.as_mut().unwrap().push(
+            serde_json::from_value(serde_json::json!({"key": "node.kubernetes.io/unreachable",
+                "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": 300}))
+            .unwrap(),
+        );
+        assert!(deny_msg(decide(&pod, &src).await).contains("tolerations"));
+    }
+
+    #[tokio::test]
+    async fn only_bounded_standard_admission_tolerations_are_allowed() {
+        let src = source("lean", lean_profile());
+        for (toleration, allowed) in [
+            (
+                serde_json::json!({"key": "node.kubernetes.io/not-ready", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": 300}),
+                true,
+            ),
+            (
+                serde_json::json!({"key": "node.kubernetes.io/unreachable", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": 30}),
+                true,
+            ),
+            (
+                serde_json::json!({"key": "node.kubernetes.io/memory-pressure", "operator": "Exists", "effect": "NoSchedule"}),
+                true,
+            ),
+            (
+                serde_json::json!({"key": "node.kubernetes.io/unreachable", "operator": "Exists", "effect": "NoExecute"}),
+                false,
+            ),
+            (
+                serde_json::json!({"key": "dedicated", "operator": "Exists", "effect": "NoSchedule"}),
+                false,
+            ),
+            (serde_json::json!({"operator": "Exists"}), false),
+        ] {
+            let mut pod = dispatched_pod("lean", &lean_profile());
+            pod.spec.as_mut().unwrap().tolerations =
+                Some(serde_json::from_value(serde_json::json!([toleration])).unwrap());
+            assert_eq!(
+                matches!(decide(&pod, &src).await, Decision::Allow),
+                allowed,
+                "{toleration}"
+            );
+        }
     }
 
     #[tokio::test]

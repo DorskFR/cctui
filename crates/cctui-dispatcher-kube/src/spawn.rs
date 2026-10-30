@@ -402,6 +402,9 @@ impl Spawner {
         if let Some(ips) = &profile.image_pull_secrets {
             pod_spec.insert("imagePullSecrets".into(), serde_json::to_value(ips)?);
         }
+        if let Some(tolerations) = &profile.tolerations {
+            pod_spec.insert("tolerations".into(), serde_json::to_value(tolerations)?);
+        }
         if let Some(ns) = &profile.node_selector {
             pod_spec.insert("nodeSelector".into(), serde_json::to_value(ns)?);
         }
@@ -1518,6 +1521,40 @@ mod tests {
         assert_eq!(v.pointer("/spec/backoffLimit"), Some(&json!(0)));
         assert_eq!(v.pointer("/spec/ttlSecondsAfterFinished"), Some(&json!(3600)));
         assert_eq!(v.pointer("/spec/activeDeadlineSeconds"), Some(&json!(1800)));
+    }
+
+    #[test]
+    fn tolerations_reach_the_job_and_profile_changes_rebuild_queued_jobs() {
+        let profile: WorkerProfileSpec = serde_json::from_value(json!({
+            "image": "example.com/worker:latest",
+            "tolerations": [{
+                "key": "dedicated", "operator": "Equal", "value": "cctui-worker",
+                "effect": "NoSchedule"
+            }, {
+                "key": "node.kubernetes.io/unreachable", "operator": "Exists",
+                "effect": "NoExecute", "tolerationSeconds": 30
+            }]
+        }))
+        .unwrap();
+        let s = spec("sess-tainted", json!({}));
+        let rendered = build("tainted", &profile, &s);
+        assert_eq!(
+            rendered.pointer("/spec/template/spec/tolerations"),
+            Some(&json!([{
+                "key": "dedicated", "operator": "Equal", "value": "cctui-worker",
+                "effect": "NoSchedule"
+            }, {
+                "key": "node.kubernetes.io/unreachable", "operator": "Exists",
+                "effect": "NoExecute", "tolerationSeconds": 30
+            }]))
+        );
+        let job = queued_job("tainted", &profile, &s);
+        let mut changed = profile;
+        changed.tolerations = None;
+        assert!(drift_of(&job, &changed).unwrap().contains("tolerations"));
+        let rebuilt = Spawner::rebuild_job(&job, &changed).unwrap();
+        assert!(drift_of(&rebuilt, &changed).is_none());
+        assert!(rebuilt.spec.unwrap().template.spec.unwrap().tolerations.is_none());
     }
 
     #[test]
