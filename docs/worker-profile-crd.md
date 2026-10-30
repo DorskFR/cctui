@@ -34,7 +34,7 @@ and is left untouched.
 | `image`, `command`, `args`, `resources`, `env` | operator | worker-container shape; `env` is non-secret |
 | `envFrom`, `volumeMounts` | operator | worker-container env sources / mounts; non-secret config, mounts name operator-owned `volumes` |
 | `workerContainer` | operator | overrides the sandboxed container name (default `worker`) |
-| `containers`, `initContainers`, `volumes`, `imagePullSecrets`, `nodeSelector`, `runtimeClassName` | operator | passthrough pod shape; webhook does not sandbox these |
+| `containers`, `initContainers`, `volumes`, `imagePullSecrets`, `nodeSelector`, `tolerations`, `runtimeClassName` | operator | passthrough pod shape; webhook does not sandbox these |
 | `podAnnotations` | operator | stamped onto each instantiated pod's template metadata; the dispatcher's own `cctui.dev/*` session annotations win on key conflict |
 | `serviceAccountName` | operator | identity / secret scope mapping; the dispatch request never sets this |
 | `gpgSigning` | operator | opt-in; webhook wires a gpg-agent socket into the worker container |
@@ -43,6 +43,20 @@ and is left untouched.
 | `preflight` | operator | `mode` (`enforce`/`warn`/`off`) and extra `deny` targets for the worker's pre-flight isolation check, rendered as `CCTUI_PREFLIGHT_*` worker env after the per-run env, so neither the profile's own `env` nor a dispatch can override them (see worker-contract.md) |
 | per-run env (session id, reply URL, task payload, ...) | dispatcher | layered onto the worker `env` at Job creation |
 | secretless credential envelope, gpg-agent socket | webhook | injected into **only** the worker container at pod admission |
+
+## Scheduling on dedicated nodes
+
+`spec.tolerations` accepts Kubernetes `Toleration` objects (`key`, `operator`,
+`value`, `effect`, `tolerationSeconds`) and passes them to the Job's Pod
+template. Pair a dedicated-node `NoSchedule` toleration with `nodeSelector`
+to both permit and confine placement. See the
+[core deployment checklist](core-kubernetes.md) and its example profile.
+
+Tolerations are operator-owned. Admission rejects missing, changed or extra
+entries, except the standard Kubernetes node-health and memory-pressure
+admission additions. Job templates receive no such exception: changing a
+profile's tolerations triggers the existing queued-Job drift repair. Profiles
+without the field keep their existing scheduling behavior.
 
 ## Posture
 

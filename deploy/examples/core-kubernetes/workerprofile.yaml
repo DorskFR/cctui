@@ -1,0 +1,36 @@
+# Apply the release's WorkerProfile CRD before this profile.
+apiVersion: cctui.dev/v1alpha1
+kind: WorkerProfile
+metadata:
+  name: automation
+  namespace: cctui-workers
+spec:
+  image: ghcr.io/dorskfr/cctui-worker:0.27.1
+  posture: nonroot
+  serviceAccountName: automation
+  nodeSelector:
+    example.com/role: cctui-worker
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: cctui-worker
+      effect: NoSchedule
+    # Bound how long a lost node can retain this workload. These replace the
+    # API server's usual 300-second node-health defaults for this pod.
+    - key: node.kubernetes.io/not-ready
+      operator: Exists
+      effect: NoExecute
+      tolerationSeconds: 30
+    - key: node.kubernetes.io/unreachable
+      operator: Exists
+      effect: NoExecute
+      tolerationSeconds: 30
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      memory: 4Gi
+  maxInflight: 2
+  preflight:
+    mode: enforce

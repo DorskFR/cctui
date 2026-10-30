@@ -11,8 +11,8 @@
 //! `init_containers` are left untouched. See `docs/worker-profile-crd.md`.
 
 use k8s_openapi::api::core::v1::{
-    Container, EnvFromSource, EnvVar, LocalObjectReference, ResourceRequirements, Volume,
-    VolumeMount,
+    Container, EnvFromSource, EnvVar, LocalObjectReference, ResourceRequirements, Toleration,
+    Volume, VolumeMount,
 };
 use kube::CustomResource;
 use schemars::JsonSchema;
@@ -170,6 +170,11 @@ pub struct WorkerProfileSpec {
     /// Node scheduling constraints. Passthrough.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_selector: Option<BTreeMap<String, String>>,
+
+    /// Taints the worker pod may tolerate. Operator-owned passthrough; use
+    /// together with `nodeSelector` to target a dedicated worker node group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tolerations: Option<Vec<Toleration>>,
 
     /// Annotations stamped onto every instantiated pod's template metadata (e.g.
     /// a role annotation an in-cluster mutating webhook consumes). The
@@ -406,6 +411,25 @@ containers:
                 .map(String::as_str),
             Some("worker")
         );
+    }
+
+    #[test]
+    fn dedicated_node_example_round_trips_tolerations() {
+        let profile: WorkerProfile = serde_norway::from_str(include_str!(
+            "../../../deploy/examples/core-kubernetes/workerprofile.yaml"
+        ))
+        .unwrap();
+        let spec = serde_json::to_value(&profile.spec).unwrap();
+        assert_eq!(spec["tolerations"][0]["key"], "dedicated");
+        assert_eq!(spec["tolerations"][0]["value"], "cctui-worker");
+        assert_eq!(spec["tolerations"][1]["tolerationSeconds"], 30);
+        assert_eq!(spec["posture"], "nonroot");
+        let schema = serde_json::to_value(WorkerProfile::crd()).unwrap();
+        let tolerations = &schema["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]
+            ["spec"]["properties"]["tolerations"];
+        assert_eq!(tolerations["type"], "array");
+        assert_eq!(tolerations["items"]["properties"]["tolerationSeconds"]["type"], "integer");
+        assert!(tolerations.get("default").is_none());
     }
 
     #[test]
