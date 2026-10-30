@@ -13,6 +13,7 @@ export CCTUI_URL
 export CCTUI_TOKEN
 
 .PHONY: setup build check test test/unit fmt lint clean
+.PHONY: eval/regressions eval/regressions/test
 .PHONY: db/up db/down db/reset db/migrate/up db/migrate/down db/migrate/add db/psql db/prepare
 .PHONY: db/test/up db/test/down db/test/migrate/up
 .PHONY: run/server run/tui run/admin
@@ -66,6 +67,14 @@ test: db/test/up db/test/migrate/up  ## Run all tests
 
 test/unit:  ## Run unit tests only (no DB required)
 	env -u DATABASE_URL -u TEST_DATABASE_URL cargo test --workspace
+
+# ── Evals ──────────────────────────────────────────────────
+
+eval/regressions:  ## Fail and regression rates of main, by agent
+	python3 evals/regressions/regressions.py
+
+eval/regressions/test:  ## Test the regression eval
+	cd evals/regressions && python3 -m unittest -v test_regressions
 
 # ── Run ────────────────────────────────────────────────────
 
