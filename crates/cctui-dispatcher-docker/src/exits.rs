@@ -12,7 +12,7 @@ use cctui_dispatcher_core::HandleState;
 use futures_util::StreamExt;
 
 /// Matches the server's oldest probed handle.
-const KEEP: Duration = Duration::from_secs(48 * 3600);
+const KEEP: Duration = Duration::from_hours(48);
 const RESUBSCRIBE: Duration = Duration::from_secs(5);
 
 #[must_use]
@@ -82,13 +82,15 @@ impl Exits {
             seen.remove(name);
             return;
         }
-        let (exit, at) = seen.entry(name.clone()).or_insert((Exit::default(), Instant::now()));
+        let (exit, at) =
+            seen.entry(name.clone()).or_insert_with(|| (Exit::default(), Instant::now()));
         *at = Instant::now();
         match event.action.as_deref() {
             Some("oom") => exit.oom = true,
             Some("die") => exit.code = attributes.get("exitCode").and_then(|c| c.parse().ok()),
             _ => {}
         }
+        drop(seen);
     }
 
     #[must_use]
