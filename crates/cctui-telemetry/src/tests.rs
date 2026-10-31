@@ -2,10 +2,9 @@ use std::collections::HashMap;
 
 use opentelemetry::trace::{SpanId, TraceId, TracerProvider as _};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
-use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 
-use super::{current_traceparent, enabled, exporter_requested, init, otel_filter, set_parent};
+use super::{current_traceparent, enabled, exporter_requested, init, set_parent, widen};
 
 const TRACE_ID: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
 const PARENT_ID: &str = "00f067aa0ba902b7";
@@ -109,11 +108,8 @@ fn current_traceparent_is_none_without_an_otel_layer() {
 
 #[test]
 fn exporter_filter_admits_request_and_frame_spans_under_a_narrow_log_filter() {
-    let subscriber = tracing_subscriber::registry().with(
-        tracing_subscriber::fmt::layer()
-            .with_writer(std::io::sink)
-            .with_filter(otel_filter("error")),
-    );
+    let subscriber =
+        tracing_subscriber::registry().with(widen(tracing_subscriber::EnvFilter::new("error")));
     tracing::subscriber::with_default(subscriber, || {
         assert!(tracing::enabled!(target: "cctui_telemetry::http", tracing::Level::INFO));
         assert!(tracing::enabled!(target: "cctui_server_core::bus", tracing::Level::INFO));

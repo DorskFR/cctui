@@ -164,7 +164,11 @@ const EXPORTED_TARGETS: &[&str] = &["cctui_telemetry=info", "cctui_server_core=i
 /// The log filter, widened so request and WS-frame spans are exported
 /// whatever the log targets are.
 fn otel_filter(default_filter: &str) -> EnvFilter {
-    EXPORTED_TARGETS.iter().fold(env_filter(default_filter), |filter, directive| {
+    widen(env_filter(default_filter))
+}
+
+fn widen(filter: EnvFilter) -> EnvFilter {
+    EXPORTED_TARGETS.iter().fold(filter, |filter, directive| {
         filter.add_directive(directive.parse().expect("static directive parses"))
     })
 }
