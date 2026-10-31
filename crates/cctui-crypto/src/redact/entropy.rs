@@ -90,7 +90,7 @@ pub fn base64_secret(hay: &str, start: usize, end: usize) -> bool {
 
 /// A long random hex run that is not digest-sized and not labelled as a digest.
 pub fn hex_secret(hay: &str, start: usize, end: usize) -> bool {
-    let b = hay[start..end].as_bytes();
+    let b = &hay.as_bytes()[start..end];
     if b.len() < MIN_HEX_LEN || DIGEST_HEX_LENS.contains(&b.len()) {
         return false;
     }

@@ -1960,10 +1960,8 @@ mod tests {
         let labelled_hex = hex::encode(rand_bytes("labelled", 30));
         let sri384 = b64(&rand_bytes("sri384", 48));
         let sri512 = b64(&rand_bytes("sri512", 64));
-        let cert = format!(
-            "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----",
-            pem_body("cert")
-        );
+        let cert =
+            format!("-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----", pem_body("cert"));
         let benign = [
             "session 3f2a8c1e-9b4d-4e7a-8f6b-2c1d0e9a7b3c resumed".to_owned(),
             format!("commit {sha1}\nAuthor: someone"),
