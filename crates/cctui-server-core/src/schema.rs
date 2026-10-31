@@ -19,6 +19,10 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration { version: 1, sql: BOOTSTRAP },
     Migration { version: 2, sql: include_str!("../schema/0002_machine_launches.sql") },
     Migration { version: 3, sql: include_str!("../schema/0003_execution_stops.sql") },
+    Migration {
+        version: 4,
+        sql: include_str!("../schema/0004_session_name_from_custom_title.sql"),
+    },
 ];
 
 const LEGACY_LAST: &str = include_str!("../../../migrations/191_file_blobs.up.sql");
