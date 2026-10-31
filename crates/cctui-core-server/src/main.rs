@@ -20,8 +20,7 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = <Args as clap::Parser>::parse();
     cctui_server_core::client::install_crypto_provider();
-    let _telemetry =
-        cctui_telemetry::init("cctui-core-server", env!("CARGO_PKG_VERSION"), "error");
+    let _telemetry = cctui_telemetry::init("cctui-core-server", env!("CARGO_PKG_VERSION"), "error");
     let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL is required")?;
     if args.init_db {
         let pool = sqlx::postgres::PgPoolOptions::new().connect(&database_url).await?;

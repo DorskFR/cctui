@@ -169,6 +169,7 @@ async fn deliver(state: &AppState, session_id: &str, text: String) -> bool {
             local_id: session_id.to_owned(),
             text,
         }),
+        trace: None,
     };
     state.bus.command_daemon_for_session(machine, session_id, frame).await.is_ok()
 }

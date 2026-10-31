@@ -51,10 +51,11 @@ impl Drop for TelemetryGuard {
     }
 }
 
-/// Installs the global tracing subscriber: `EnvFilter` (`RUST_LOG`, else
-/// `default_filter`) + fmt, plus the `tracing-opentelemetry` layer only when an OTLP
-/// endpoint is configured and `OTEL_SDK_DISABLED` is not `true`. Registers the
-/// W3C trace-context propagator globally.
+/// Installs the global tracing subscriber and the W3C propagator.
+///
+/// `EnvFilter` (`RUST_LOG`, else `default_filter`) + fmt, plus the
+/// `tracing-opentelemetry` layer only when an OTLP endpoint is configured and
+/// `OTEL_SDK_DISABLED` is not `true`.
 pub fn init(
     service_name: &'static str,
     service_version: &'static str,
@@ -158,11 +159,14 @@ fn env_filter(default_filter: &str) -> EnvFilter {
     EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter))
 }
 
-/// The log filter, widened so the HTTP server spans this crate emits are
-/// exported whatever the log targets are.
+const EXPORTED_TARGETS: &[&str] = &["cctui_telemetry=info", "cctui_server_core=info"];
+
+/// The log filter, widened so request and WS-frame spans are exported
+/// whatever the log targets are.
 fn otel_filter(default_filter: &str) -> EnvFilter {
-    env_filter(default_filter)
-        .add_directive("cctui_telemetry=info".parse().expect("static directive parses"))
+    EXPORTED_TARGETS.iter().fold(env_filter(default_filter), |filter, directive| {
+        filter.add_directive(directive.parse().expect("static directive parses"))
+    })
 }
 
 #[cfg(test)]

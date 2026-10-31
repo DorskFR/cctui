@@ -204,6 +204,7 @@ impl ChildExecutionContext for AppState {
                 command_id: Some(child),
                 session_id: Some(child),
             }),
+            trace: None,
         };
         self.bus
             .command_daemon_for_session(parent.machine_uuid, &parent.session_id, frame)

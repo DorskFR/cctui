@@ -119,6 +119,7 @@ pub(super) fn reply(local_id: &str) -> DaemonFrameDown {
             command_id: None,
             turn_id: None,
         }),
+        trace: None,
     }
 }
 

@@ -3409,6 +3409,27 @@ pub async fn set_model(
     ))
 }
 
+fn fork_frame(
+    adapter_id: &str,
+    parent_local_id: &str,
+    spec: cctui_proto::adapter::SessionSpec,
+    command_id: uuid::Uuid,
+    session_id: Option<String>,
+    extract: Option<cctui_proto::adapter::ForkExtract>,
+) -> cctui_proto::ws::DaemonFrameDown {
+    cctui_proto::ws::DaemonFrameDown::Command {
+        adapter_id: adapter_id.to_owned(),
+        command: Box::new(cctui_proto::adapter::AdapterCommand::Fork {
+            parent_local_id: parent_local_id.to_owned(),
+            spec,
+            command_id: Some(command_id),
+            session_id,
+            extract,
+        }),
+        trace: None,
+    }
+}
+
 /// `POST /api/v1/sessions/{id}/fork` — fork an existing conversation into a
 /// brand-new session, optionally changing model/effort at fork time.
 ///
@@ -3496,16 +3517,14 @@ pub async fn fork_session(
         bootstrap: serde_json::Value::Null,
         parent_local_id: None,
     };
-    let frame = cctui_proto::ws::DaemonFrameDown::Command {
-        adapter_id: adapter_id.clone(),
-        command: Box::new(cctui_proto::adapter::AdapterCommand::Fork {
-            parent_local_id: session_id.clone(),
-            spec,
-            command_id: Some(command_id),
-            session_id: child_session_id.clone(),
-            extract: req.extract,
-        }),
-    };
+    let frame = fork_frame(
+        &adapter_id,
+        &session_id,
+        spec,
+        command_id,
+        child_session_id.clone(),
+        req.extract,
+    );
     crate::routes::context::inherit_intent(&state.pool, &child_key, &session_id).await;
     crate::routes::spawn::remember_spawner(&state.pool, &child_key, ctx.user_id, None).await;
     state.bus.command_daemon_for_session(machine_uuid, &session_id, frame).await.map_err(
