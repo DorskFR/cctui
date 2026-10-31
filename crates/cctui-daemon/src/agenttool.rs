@@ -2288,6 +2288,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn follow_waits_out_a_background_task_and_returns_the_self_started_turns_answer() {
+        use cctui_proto::adapter::AdapterEvent;
+        let msg = |role: &str, text: &str, stop: Option<&str>| AdapterEvent::Message {
+            local_id: "child-1".into(),
+            payload: json!({ "role": role, "text": text, "stop_reason": stop }),
+            turn_id: None,
+        };
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let handle = watch.register_follow_up("child-1", "run the build");
+        let observer = watch.clone();
+        let feeder = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            observer.observe(&msg("user", "run the build", None));
+            observer.observe(&AdapterEvent::ToolUse {
+                local_id: "child-1".into(),
+                payload: json!({
+                    "kind": "tool_result",
+                    "content": [{ "type": "text", "text": "Command running in background with ID: bg1. Output is being written to: /tmp/bg1.output" }],
+                }),
+            });
+            observer.observe(&msg("assistant", "build running in the background", Some("end_turn")));
+            observer.note_turn_end("child-1");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            observer.observe(&AdapterEvent::Message {
+                local_id: "child-1".into(),
+                payload: json!({
+                    "role": "user",
+                    "meta": true,
+                    "text": "<task-notification><task-id>bg1</task-id><status>completed</status></task-notification>",
+                }),
+                turn_id: None,
+            });
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            observer.observe(&msg("assistant", "build passed: all green", Some("end_turn")));
+        });
+        let mut out: Vec<u8> = Vec::new();
+        let frame = follow_result_to_frame(
+            follow_child_with(
+                &handle,
+                "child-1",
+                Duration::from_secs(10),
+                SILENT_CHILD_GRACE,
+                2,
+                &mut out,
+            )
+            .await,
+        );
+        feeder.await.unwrap();
+        assert_eq!(frame["ok"], json!(true));
+        let text = frame["result"].as_str().unwrap();
+        assert!(text.starts_with("build passed: all green"), "{text}");
+    }
+
+    #[tokio::test]
     async fn follow_keeps_waiting_through_narration_and_returns_the_real_answer() {
         // acceptance: the live failure — narration was returned while the child
         // kept working. The follow must hold until the model says end_turn.

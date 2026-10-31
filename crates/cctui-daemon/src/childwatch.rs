@@ -12,13 +12,15 @@
 //! (codex log-tail rollouts, claude Task subagents) also name the caller as
 //! parent and would steal the watch.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use cctui_proto::adapter::{AdapterEvent, EndReason};
 use cctui_proto::classifier::{Bucket, ClassifyInput, classify};
 use tokio::sync::Notify;
+
+use crate::adapters::claude_code::stuck_turn::{notified_ids, started_id};
 
 /// After a done-classified status, how long to keep waiting for the final
 /// assistant text to land (claude's transcript tail can lag the status poll).
@@ -42,6 +44,11 @@ pub const TEXT_QUIET_GRACE: Duration = Duration::from_secs(45);
 /// distrusted until the watch is at least this old (a freshly dispatched
 /// worker can briefly read as idle before its first status poll).
 pub const QUIET_DONE_MIN_AGE: Duration = Duration::from_mins(1);
+/// How long a child that ended its turn with background tasks still running
+/// can stay quiet before its turn counts as over anyway. Claude Code starts a
+/// new turn on its own once such a task completes, and that turn carries the
+/// real answer.
+pub const BG_TASK_QUIET_CAP: Duration = Duration::from_mins(20);
 /// The one `stop_reason` that means the model handed back rather than lining up
 /// another tool call.
 const TURN_END_STOP_REASON: &str = "end_turn";
@@ -125,6 +132,9 @@ struct WatchState {
     /// A follow-up's prompt head, held until a user message carrying it lands:
     /// until then every turn the child runs is an earlier one.
     awaiting_prompt: Option<String>,
+    /// Background tasks started and not yet notified as completed.
+    bg_tasks: BTreeSet<String>,
+    last_event_at: Option<Instant>,
 }
 
 struct Watch {
@@ -154,6 +164,8 @@ pub struct ChildSnapshot {
     tool_errors: u32,
     tokens: u64,
     awaiting_prompt: bool,
+    bg_tasks: usize,
+    last_event_at: Option<Instant>,
 }
 
 /// What the tool handler should do with the current snapshot.
@@ -200,7 +212,7 @@ impl ChildSnapshot {
         if self.ended || self.error.is_some() {
             return Assessment::Finished(self.outcome());
         }
-        if self.awaiting_prompt {
+        if self.awaiting_prompt || self.waits_on_background(now) {
             return Assessment::Running(self.progress_line());
         }
         // A `Stop` hook is the harness itself saying the turn is over, so it
@@ -237,6 +249,16 @@ impl ChildSnapshot {
         Assessment::Running(self.progress_line())
     }
 
+    /// Whether outstanding background tasks keep the turn open: their
+    /// completion starts the turn that answers. A child that handed a question
+    /// back to its parent is not held.
+    fn waits_on_background(&self, now: Instant) -> bool {
+        self.bg_tasks > 0
+            && self.blocked_kind != Some(BlockKind::Status)
+            && now.duration_since(self.last_event_at.unwrap_or(self.registered_at))
+                < BG_TASK_QUIET_CAP
+    }
+
     /// Whether the text in hand is the turn's last output, rather than
     /// narration with more work behind it.
     const fn text_is_turn_tail(&self) -> bool {
@@ -256,6 +278,11 @@ impl ChildSnapshot {
             parts.push("child starting".to_owned());
         } else {
             parts.push("child working".to_owned());
+        }
+        match self.bg_tasks {
+            0 => {}
+            1 => parts.push("waiting on 1 background task".to_owned()),
+            n => parts.push(format!("waiting on {n} background tasks")),
         }
         if let Some(tool) = &self.last_tool {
             parts.push(format!("tool: {tool}"));
@@ -414,6 +441,8 @@ impl ChildWatch {
             tool_errors: w.state.tool_errors,
             tokens: w.state.tokens,
             awaiting_prompt: w.state.awaiting_prompt.is_some(),
+            bg_tasks: w.state.bg_tasks.len(),
+            last_event_at: w.state.last_event_at,
         })
     }
 
@@ -595,6 +624,12 @@ fn apply_status(
 /// A child's image refs are qualified with its session, so they still resolve
 /// once the text is the parent's tool result.
 fn apply_message(w: &mut Watch, local_id: &str, payload: &serde_json::Value) {
+    if is_user_role(payload)
+        && let Some(text) = user_text(payload).filter(|t| t.contains("<task-notification"))
+    {
+        apply_task_notification(w, &text);
+        return;
+    }
     if let Some(head) = w.state.awaiting_prompt.as_deref() {
         if is_user_role(payload)
             && user_text(payload).is_some_and(|t| fold_whitespace(&t).contains(head))
@@ -625,6 +660,22 @@ fn apply_message(w: &mut Watch, local_id: &str, payload: &serde_json::Value) {
     }
 }
 
+/// A completed background task opens the turn Claude Code starts on its own:
+/// every turn-end reading so far belongs to the interim reply. The interim
+/// text stays as the fallback answer.
+fn apply_task_notification(w: &mut Watch, text: &str) {
+    let mut cleared = false;
+    for id in notified_ids(text) {
+        cleared |= w.state.bg_tasks.remove(id);
+    }
+    if cleared && w.state.awaiting_prompt.is_none() {
+        w.state.done_since = None;
+        w.state.tail = Tail::Other;
+        w.state.turn_end_at = None;
+    }
+    w.notify.notify_waiters();
+}
+
 /// A new prompt starts a new turn: the previous final text and done reading
 /// are stale.
 fn start_turn(w: &mut Watch) {
@@ -646,6 +697,9 @@ fn apply_tool_use(w: &mut Watch, payload: &serde_json::Value) {
             w.state.tool_errors += 1;
         } else {
             w.state.tool_errors = 0;
+        }
+        if let Some(id) = tool_result_texts(payload).into_iter().find_map(started_id) {
+            w.state.bg_tasks.insert(id);
         }
     }
     // Tool traffic is proof of an in-flight turn.
@@ -711,12 +765,26 @@ fn bind(
     None
 }
 
+/// The watch for `local_id`, stamped as just having seen an event.
 fn find_mut<'a>(watches: &'a mut HashMap<String, Watch>, local_id: &str) -> Option<&'a mut Watch> {
     let key = watches
         .iter()
         .find(|(k, w)| w.state.local_id.as_deref() == Some(local_id) || k.as_str() == local_id)
         .map(|(k, _)| k.clone())?;
-    watches.get_mut(&key)
+    let w = watches.get_mut(&key)?;
+    w.state.last_event_at = Some(Instant::now());
+    Some(w)
+}
+
+/// The text parts of a `tool_result` payload's content.
+fn tool_result_texts(payload: &serde_json::Value) -> Vec<&str> {
+    match payload.get("content") {
+        Some(serde_json::Value::String(s)) => vec![s.as_str()],
+        Some(serde_json::Value::Array(parts)) => {
+            parts.iter().filter_map(|p| p.get("text")?.as_str()).collect()
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// The text of an assistant message, ignoring thinking blocks and user turns.
@@ -919,6 +987,75 @@ mod tests {
             Assessment::Finished(o) => Some(o),
             Assessment::Running(_) => None,
         }
+    }
+
+    fn bg_started(local_id: &str, id: &str) -> AdapterEvent {
+        AdapterEvent::ToolUse {
+            local_id: local_id.to_owned(),
+            payload: json!({
+                "kind": "tool_result",
+                "content": format!(
+                    "Command running in background with ID: {id}. Output is being written to: /tmp/{id}.output"
+                ),
+            }),
+        }
+    }
+
+    fn bg_notified(local_id: &str, id: &str) -> AdapterEvent {
+        AdapterEvent::Message {
+            local_id: local_id.to_owned(),
+            payload: json!({
+                "role": "user",
+                "meta": true,
+                "text": format!(
+                    "<task-notification><task-id>{id}</task-id><status>completed</status></task-notification>"
+                ),
+            }),
+            turn_id: None,
+        }
+    }
+
+    #[test]
+    fn a_turn_ended_with_a_background_task_running_is_held_until_the_self_started_turn_answers() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&msg("child-1", "user", "build it"));
+        watch.observe(&tool_use("child-1", "Bash"));
+        watch.observe(&bg_started("child-1", "b6s5c7kle"));
+        watch.observe(&msg_stopping("child-1", "build running, I'll report back", "end_turn"));
+        watch.note_turn_end("child-1");
+        assert!(finished(&h).is_none(), "an outstanding background task holds the turn open");
+        watch.observe(&bg_notified("child-1", "b6s5c7kle"));
+        assert!(finished(&h).is_none(), "the interim reply does not answer the self-started turn");
+        watch.observe(&tool_use("child-1", "Read"));
+        watch.observe(&msg_stopping("child-1", "build passed: 42 tests", "end_turn"));
+        let out = finished(&h).expect("the self-started turn's answer finishes the watch");
+        assert_eq!(out.final_text.as_deref(), Some("build passed: 42 tests"));
+    }
+
+    #[test]
+    fn a_background_hold_lapses_once_the_child_stays_quiet_past_the_cap() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&bg_started("child-1", "dev1"));
+        watch.observe(&msg_stopping("child-1", "dev server up", "end_turn"));
+        let snap = h.snapshot().unwrap();
+        assert!(matches!(snap.assess(Instant::now()), Assessment::Running(_)));
+        let later = Instant::now() + BG_TASK_QUIET_CAP;
+        assert!(matches!(snap.assess(later), Assessment::Finished(_)));
+    }
+
+    #[test]
+    fn a_turn_ended_with_no_background_task_finishes_at_once() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&msg("child-1", "user", "build it"));
+        watch.observe(&tool_use("child-1", "Bash"));
+        watch.observe(&bg_started("child-1", "b1"));
+        watch.observe(&bg_notified("child-1", "b1"));
+        watch.observe(&msg_stopping("child-1", "build passed", "end_turn"));
+        let out = finished(&h).expect("a notified task no longer holds the turn");
+        assert_eq!(out.final_text.as_deref(), Some("build passed"));
     }
 
     #[test]
