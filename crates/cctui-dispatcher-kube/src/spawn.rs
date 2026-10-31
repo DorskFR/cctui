@@ -1235,17 +1235,13 @@ fn worker_profile_label(job: &Job) -> Option<&str> {
 /// so nothing overtakes older queued work) or its active Jobs fill `cap`.
 /// `this_name` is excluded, so a redispatch never queues behind itself.
 fn must_queue(jobs: &[Job], cap: u32, this_name: &str) -> bool {
-    let (queued, active) = jobs
-        .iter()
-        .filter(|j| j.metadata.name.as_deref() != Some(this_name))
-        .filter(|j| Spawner::job_terminal_state(j).is_none())
-        .fold((0_usize, 0_usize), |(q, a), j| {
-            if Spawner::job_suspended(j) {
-                (q + 1, a)
-            } else {
-                (q, a + 1)
-            }
-        });
+    let (queued, active) =
+        jobs.iter()
+            .filter(|j| j.metadata.name.as_deref() != Some(this_name))
+            .filter(|j| Spawner::job_terminal_state(j).is_none())
+            .fold((0_usize, 0_usize), |(q, a), j| {
+                if Spawner::job_suspended(j) { (q + 1, a) } else { (q, a + 1) }
+            });
     queued > 0 || active >= cap as usize
 }
 
@@ -2463,10 +2459,10 @@ mod tests {
         assert!(must_queue(&jobs, 3, "new"), "r1 finished, but three Jobs are queued");
         jobs.push(profiled_job("new", "alpha", "2026-10-21T09:20:00Z", true, false));
 
-        let live: Vec<&Job> =
-            jobs.iter().filter(|j| Spawner::job_terminal_state(j).is_none()).collect();
-        let (queued, running): (Vec<&Job>, Vec<&Job>) =
-            live.into_iter().partition(|j| Spawner::job_suspended(j));
+        let (queued, running): (Vec<&Job>, Vec<&Job>) = jobs
+            .iter()
+            .filter(|j| Spawner::job_terminal_state(j).is_none())
+            .partition(|j| Spawner::job_suspended(j));
         let resumed: Vec<&str> = jobs_to_resume(queued, running.len(), Some(3))
             .iter()
             .filter_map(|j| j.metadata.name.as_deref())
