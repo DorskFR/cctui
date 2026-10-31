@@ -39,6 +39,11 @@
 		return () => clearInterval(tick);
 	});
 
+	/** A long press must reach the gesture, not pan the page or open a menu. */
+	const micStyle = $derived(
+		`touch-action: none; user-select: none; -webkit-touch-callout: none;${recording ? ' --btn-on: var(--danger);' : ''}`
+	);
+
 	const timer = $derived.by(() => {
 		const s = Math.floor(elapsed / 1000);
 		return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -122,7 +127,8 @@
 		disabled={disabled || live}
 		label={m.voice_dictate_hint()}
 		title={m.voice_dictate_hint()}
-		style={recording ? '--btn-on: var(--danger)' : undefined}
+		style={micStyle}
+		oncontextmenu={(e: MouseEvent) => e.preventDefault()}
 		onpointerdown={(e: PointerEvent) => {
 			e.preventDefault();
 			if (armed()) act(gesture.down(Date.now()));

@@ -664,6 +664,9 @@ struct Engine<B: VoiceBackend> {
     ahead: String,
     /// The block the last delta belonged to.
     delta_item: Option<String>,
+    /// Final blocks read since the last prompt, so one delivered again is not
+    /// read again.
+    blocks: Vec<String>,
     /// When a quiet stream speaks its buffered tail.
     pause_at: Option<Instant>,
     turn_active: bool,
@@ -710,6 +713,7 @@ impl<B: VoiceBackend> Engine<B> {
             ended: String::new(),
             ahead: String::new(),
             delta_item: None,
+            blocks: Vec::new(),
             pause_at: None,
             turn_active: false,
             speaking: false,
@@ -785,6 +789,7 @@ impl<B: VoiceBackend> Engine<B> {
                 *self.probe() = Some(Probe::start());
                 self.turns.sent();
                 self.turn_active = true;
+                self.blocks.clear();
                 self.main.new_turn();
                 let ready = self.main.prompt(&message);
                 self.play(ready).await;
@@ -893,6 +898,7 @@ impl<B: VoiceBackend> Engine<B> {
             Signal::TurnStart(prompt) => {
                 self.ended.clear();
                 self.ahead.clear();
+                self.blocks.clear();
                 let id = self.turns.start();
                 if !self.turns.is_cut(id) {
                     self.turn_active = true;
@@ -954,6 +960,11 @@ impl<B: VoiceBackend> Engine<B> {
     /// A final block: spoken whole when nothing streamed, otherwise only
     /// what its deltas missed.
     async fn block(&mut self, content: &str) {
+        let said = squash(content);
+        if self.blocks.contains(&said) {
+            return;
+        }
+        self.blocks.push(said);
         self.mark_text("block");
         if !self.streamed.trim().is_empty() {
             let (later, missed) = reconcile(&self.streamed, content);
@@ -1835,6 +1846,22 @@ mod tests {
                 "More to come."
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_final_block_delivered_again_is_not_spoken_until_the_next_prompt() {
+        let mut h = spoken_turn().await;
+        h.signals.send(Signal::Text(NOON.into())).await.unwrap();
+        h.signals.send(Signal::TurnEnd).await.unwrap();
+        h.signals.send(Signal::Text(NOON.into())).await.unwrap();
+        let frames = h.quiet().await;
+        assert!(!frames.iter().any(is_speak_start), "{frames:?}");
+        assert_eq!(Mock::log(&h.mock.synthesized), vec![NOON]);
+        h.signals.send(turn_start()).await.unwrap();
+        h.signals.send(Signal::Text(NOON.into())).await.unwrap();
+        h.signals.send(Signal::TurnEnd).await.unwrap();
+        h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(NOON.as_bytes()))).await;
+        assert_eq!(Mock::log(&h.mock.synthesized), vec![NOON, NOON]);
     }
 
     #[tokio::test]

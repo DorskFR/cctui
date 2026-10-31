@@ -129,6 +129,22 @@ describe('VoiceControls dictation gestures', () => {
 		expect(postForm).not.toHaveBeenCalled();
 	});
 
+	it('a long press on the mic opens no context menu', () => {
+		const e = new Event('contextmenu', { bubbles: true, cancelable: true });
+		mic().dispatchEvent(e);
+		expect(e.defaultPrevented).toBe(true);
+	});
+
+	it('a tap that lingers short of the hold time keeps recording until the next tap', async () => {
+		await press(HOLD_MS - 50);
+		expect(recordingPanel()).not.toBeNull();
+		vi.advanceTimersByTime(30_000);
+		await press(80);
+		expect(recordingPanel()).toBeNull();
+		expect(postForm).toHaveBeenCalledTimes(1);
+		expect(ondictated).toHaveBeenCalledWith('hello there');
+	});
+
 	it('the keyboard toggles recording', async () => {
 		mic().dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }));
 		await settle();

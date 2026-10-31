@@ -60,4 +60,21 @@ describe('TapHold', () => {
 		expect(g.up(1400)).toBe('none');
 		expect(g.recording).toBe(false);
 	});
+
+	it('a tap that lingers short of the hold time still records hands-free', () => {
+		const g = new TapHold();
+		expect(g.down(0)).toBe('start');
+		expect(g.up(HOLD_MS - 1)).toBe('none');
+		expect(g.recording).toBe(true);
+	});
+
+	it('a long hands-free dictation is stopped and sent by the next tap', () => {
+		const g = new TapHold();
+		g.down(0);
+		g.up(120);
+		expect(g.recording).toBe(true);
+		expect(g.down(30_000)).toBe('stop');
+		expect(g.up(30_090)).toBe('none');
+		expect(g.recording).toBe(false);
+	});
 });
