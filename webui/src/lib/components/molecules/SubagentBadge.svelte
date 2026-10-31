@@ -50,7 +50,11 @@
 		{title}
 		aria-label={ariaLabel}
 		aria-expanded={open}
-		onpointerdown={(e: PointerEvent) => e.stopPropagation()}
+		onpointerdown={(e: PointerEvent) => {
+			e.stopPropagation();
+			// The card's press scale shifts the badge under a stationary pointer.
+			(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+		}}
 		onclick={(e: MouseEvent) => {
 			e.stopPropagation();
 			ontoggle();
