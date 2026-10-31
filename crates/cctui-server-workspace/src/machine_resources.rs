@@ -103,10 +103,12 @@ struct Row {
     disk_path: Option<String>,
     load1: Option<f32>,
     updated_at: Option<DateTime<Utc>>,
+    peer_connected: bool,
 }
 
 /// `GET /api/v1/machines/resources`: the caller's persistent, non-revoked
 /// machines (every user's for an admin) with their latest snapshot.
+/// `connected` is the live daemon WS: held by this pod, or by a live peer.
 pub async fn list(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -115,7 +117,11 @@ pub async fn list(
         "SELECT m.id, m.name, m.display_name, m.hue, m.last_seen_at, \
                 r.cpu_pct, r.mem_pct, r.mem_used_bytes, r.mem_total_bytes, \
                 r.disk_pct, r.disk_used_bytes, r.disk_total_bytes, r.disk_path, r.load1, \
-                r.updated_at \
+                r.updated_at, \
+                EXISTS (SELECT 1 FROM ws_presence p \
+                        WHERE p.kind = $3 AND p.entity_id = m.id AND p.pod <> $4 \
+                          AND p.heartbeat_at > now() - make_interval(secs => $5)) \
+                  AS peer_connected \
          FROM machines m JOIN users u ON u.id = m.user_id \
          LEFT JOIN machine_resources r ON r.machine_id = m.id \
          WHERE (m.user_id = $1 OR $2) AND m.kind = 'persistent' \
@@ -124,6 +130,9 @@ pub async fn list(
     )
     .bind(ctx.user_id)
     .bind(ctx.is_admin())
+    .bind(crate::presence::Kind::Daemon.as_str())
+    .bind(&state.presence.pod)
+    .bind(f64::from(crate::presence::LIVE_WITHIN_SECS))
     .fetch_all(&state.pool)
     .await?;
     let out = rows
@@ -146,6 +155,7 @@ pub async fn list(
                 display_name: r.display_name,
                 hue: r.hue,
                 liveness: crate::machine_liveness::derive(r.last_seen_at),
+                connected: r.peer_connected || state.bus.daemon_connected(r.id),
                 last_seen_at: r.last_seen_at,
                 resources,
                 updated_at: r.updated_at,
@@ -211,6 +221,88 @@ mod tests {
             std::fs::read_to_string(format!("{dir}/097_machine_resources.down.sql")).unwrap();
         assert!(up.contains("CREATE TABLE machine_resources"));
         assert!(down.contains("DROP TABLE IF EXISTS machine_resources"));
+    }
+
+    #[tokio::test]
+    async fn a_freshly_seen_machine_without_a_live_socket_is_not_connected() {
+        use crate::auth::{AuthContext, Scope};
+        use cctui_proto::models::MachineLiveness;
+        use std::collections::BTreeSet;
+
+        let Some(url) = crate::routes::gateway::test_db_url("machine_resources_connected") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let owner = Uuid::new_v4();
+        let machine = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(owner)
+            .bind(format!("resource-conn-{owner}"))
+            .bind(format!("resource-conn-key-{owner}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO machines (id, user_id, name, key_hash, kind, last_seen_at) \
+             VALUES ($1, $2, $3, $4, 'persistent', now())",
+        )
+        .bind(machine)
+        .bind(owner)
+        .bind(format!("machine-{machine}"))
+        .bind(format!("machine-key-{machine}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let state = crate::state::AppState::for_test(pool.clone());
+        let row = || {
+            let state = state.clone();
+            async move {
+                let ctx = AuthContext {
+                    user_id: owner,
+                    key_id: Uuid::new_v4(),
+                    machine_id: None,
+                    scopes: BTreeSet::<Scope>::new(),
+                };
+                let Json(rows) = list(State(state), Extension(ctx)).await.unwrap();
+                rows.into_iter().find(|r| r.machine_id == machine).expect("machine listed")
+            }
+        };
+
+        let offline_socket = row().await;
+        assert_eq!(offline_socket.liveness, MachineLiveness::Online);
+        assert!(!offline_socket.connected, "a recent heartbeat is not a live socket");
+
+        let peer = format!("resource-peer-{machine}");
+        sqlx::query(
+            "INSERT INTO ws_presence (kind, entity_id, pod, pod_ip) \
+             VALUES ('daemon', $1, $2, '10.0.0.9')",
+        )
+        .bind(machine)
+        .bind(&peer)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(row().await.connected, "a live peer replica holds the socket");
+        sqlx::query(
+            "UPDATE ws_presence SET heartbeat_at = now() - interval '1 hour' WHERE pod = $1",
+        )
+        .bind(&peer)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(!row().await.connected, "a stale peer row is not a live socket");
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<cctui_proto::ws::DaemonFrameDown>(1);
+        state.bus.register_daemon(machine, Uuid::new_v4(), tx);
+        assert!(row().await.connected, "this replica holds the socket");
+
+        sqlx::query("DELETE FROM ws_presence WHERE pod = $1")
+            .bind(&peer)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(owner).execute(&pool).await.unwrap();
     }
 
     #[tokio::test]

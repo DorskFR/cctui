@@ -244,6 +244,7 @@ mod tests {
             display_name: None,
             hue: None,
             liveness,
+            connected: true,
             last_seen_at: chrono::DateTime::from_timestamp_millis(1_000).expect("stamp"),
             resources: cpu.map(|cpu_pct| cctui_proto::resources::MachineResources {
                 cpu_pct,

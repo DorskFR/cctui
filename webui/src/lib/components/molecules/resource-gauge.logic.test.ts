@@ -33,6 +33,7 @@ const row = (
   display_name: null,
   hue: null,
   liveness: "online",
+  connected: true,
   resources: r,
   updated_at: r ? "2026-09-06T10:00:00Z" : null,
   last_seen_at: "2026-09-06T10:00:00Z",

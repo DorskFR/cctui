@@ -11,6 +11,7 @@ const machine = (id: string, liveness: MachineLiveness): MachineResourcesRow => 
 	display_name: null,
 	hue: null,
 	liveness,
+	connected: liveness !== 'offline',
 	last_seen_at: '2026-01-01T00:00:00Z',
 	resources: null,
 	updated_at: null
