@@ -178,6 +178,8 @@ pub struct SpeechCatalog {
 }
 
 /// `GET /voice/config`: what the webui may use, without the URL or key.
+// Independent capability flags on a wire shape mirrored to TS, not a state machine.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct VoiceConfigInfo {
