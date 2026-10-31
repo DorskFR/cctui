@@ -134,7 +134,7 @@ async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig, 
         anyhow::bail!("refusing to start: {e}");
     }
 
-    let config = Config::from_env()?;
+    let config = Config::from_env().await?;
     let (pool, migrations) = db::connect_reporting(&config.database_url).await?;
     install_vault_key(&pool).await?;
     // One-release back-compat shim: if the retired
@@ -142,7 +142,7 @@ async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig, 
     // anthropic-compatible account per user so existing deployments keep working
     // until they migrate to first-class accounts.
     routes::accounts::sync_litellm_shim(&pool, &config).await;
-    let auth_config = auth::AuthConfig::new(Config::admin_tokens(), pool.clone());
+    let auth_config = auth::AuthConfig::new(Config::admin_tokens().await?, pool.clone());
     // resolve CCTUI_ADMIN_TOKENS to a seeded admin user + api_keys rows
     // with {admin} ceiling/grant, so the break-glass token is a real identity
     // rather than a user_id=None ghost. Idempotent, best-effort.

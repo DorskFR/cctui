@@ -6,8 +6,12 @@ edition.workspace = true
 [lints]
 workspace = true
 
+[features]
+aws-sm = ["cctui-secrets/aws-sm"]
+
 [dependencies]
 cctui-server-core.workspace = true
+cctui-secrets = { workspace = true, features = ["bao", "k8s"] }
 cctui-proto.workspace = true
 cctui-crypto.workspace = true
 cctui-telemetry = { workspace = true, features = ["http"] }

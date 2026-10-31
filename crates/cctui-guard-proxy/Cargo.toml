@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 cctui-guard = { path = "../cctui-guard" }
+cctui-secrets = { workspace = true, features = ["bao", "k8s", "aws-sm"] }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -25,8 +26,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
 reqwest.workspace = true
-aws-config.workspace = true
-aws-sdk-secretsmanager.workspace = true
 aws-sigv4.workspace = true
 aws-credential-types.workspace = true
 clap.workspace = true

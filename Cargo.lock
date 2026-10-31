@@ -1201,6 +1201,7 @@ dependencies = [
  "axum",
  "cctui-crypto",
  "cctui-proto",
+ "cctui-secrets",
  "cctui-server-core",
  "cctui-telemetry",
  "chrono",
@@ -1290,6 +1291,7 @@ version = "0.28.0-beta.4"
 dependencies = [
  "anyhow",
  "cctui-proto",
+ "cctui-secrets",
  "chrono",
  "clap",
  "dirs",
@@ -1379,13 +1381,12 @@ version = "0.28.0-beta.4"
 dependencies = [
  "anyhow",
  "async-trait",
- "aws-config",
  "aws-credential-types",
- "aws-sdk-secretsmanager",
  "aws-sigv4",
  "axum",
  "base64 0.23.1",
  "cctui-guard",
+ "cctui-secrets",
  "chrono",
  "clap",
  "jsonwebtoken",
@@ -1458,6 +1459,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cctui-secrets"
+version = "0.28.0-beta.4"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "aws-config",
+ "aws-sdk-secretsmanager",
+ "axum",
+ "base64 0.23.1",
+ "reqwest",
+ "rustls",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "cctui-server"
 version = "0.28.0-beta.4"
 dependencies = [
@@ -1512,6 +1531,7 @@ dependencies = [
  "cctui-crypto",
  "cctui-proto",
  "cctui-query",
+ "cctui-secrets",
  "cctui-server-core",
  "cctui-telemetry",
  "chrono",

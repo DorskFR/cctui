@@ -16,6 +16,7 @@ members = [
     "crates/cctui-orchestrator",
     "crates/cctui-proto",
     "crates/cctui-query",
+    "crates/cctui-secrets",
     "crates/cctui-server",
     "crates/cctui-server-core",
     "crates/cctui-server-workspace",
@@ -52,6 +53,7 @@ cctui-clientcore = { path = "crates/cctui-clientcore" }
 cctui-proto = { path = "crates/cctui-proto" }
 cctui-crypto = { path = "crates/cctui-crypto" }
 cctui-query = { path = "crates/cctui-query" }
+cctui-secrets = { path = "crates/cctui-secrets", default-features = false }
 cctui-telemetry = { path = "crates/cctui-telemetry" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

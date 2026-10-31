@@ -8,6 +8,10 @@ use cctui_server_core::state::CoreState;
 use std::future::IntoFuture;
 use std::sync::Arc;
 
+/// Env vars that may hold a secret ref instead of the value.
+const SECRET_ENV: [&str; 4] =
+    ["DATABASE_URL", "CCTUI_ADMIN_TOKENS", "CCTUI_GITHUB_TOKEN", "GH_TOKEN"];
+
 #[derive(clap::Parser)]
 #[command(version)]
 struct Args {
@@ -21,14 +25,16 @@ async fn main() -> anyhow::Result<()> {
     let args = <Args as clap::Parser>::parse();
     cctui_server_core::client::install_crypto_provider();
     let _telemetry = cctui_telemetry::init("cctui-core-server", env!("CARGO_PKG_VERSION"), "error");
-    let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL is required")?;
+    let secrets = cctui_secrets::resolve_env(&SECRET_ENV, |k| std::env::var(k).ok()).await?;
+    let secret = |k: &str| secrets.get(k).cloned();
+    let database_url = secret("DATABASE_URL").context("DATABASE_URL is required")?;
     if args.init_db {
         let pool = sqlx::postgres::PgPoolOptions::new().connect(&database_url).await?;
         cctui_server_core::schema::bootstrap(&pool).await?;
         return Ok(());
     }
     let vault_key = cctui_crypto::vault_key_checked()?;
-    let admin_tokens: Vec<String> = std::env::var("CCTUI_ADMIN_TOKENS")
+    let admin_tokens: Vec<String> = secret("CCTUI_ADMIN_TOKENS")
         .unwrap_or_default()
         .split(',')
         .map(str::trim)
@@ -85,9 +91,7 @@ async fn main() -> anyhow::Result<()> {
         vault_key,
         external_url,
     )
-    .with_github_token(
-        std::env::var("CCTUI_GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN")).ok(),
-    )
+    .with_github_token(secret("CCTUI_GITHUB_TOKEN").or_else(|| secret("GH_TOKEN")))
     .with_spawn_defaults(spawn_defaults)
     .with_worker_ttl_secs(
         optional_number::<u64>("CCTUI_EPHEMERAL_MACHINE_TTL_HOURS")?
