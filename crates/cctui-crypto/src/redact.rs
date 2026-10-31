@@ -599,13 +599,16 @@ fn binary_field(obj: &Map<String, Value>, key: &str) -> bool {
     match obj.get("type").and_then(Value::as_str) {
         Some("cctui-blob") => true,
         Some("base64") => key == "data",
-        _ => key == "data" && (obj.contains_key("mimeType") || obj.contains_key("mime_type")),
+        _ => {
+            key == "data"
+                && ["mimeType", "mime_type", "media_type"].iter().any(|k| obj.contains_key(*k))
+        }
     }
 }
 
 fn binary_spans(s: &str) -> Vec<(usize, usize)> {
     static RES: std::sync::OnceLock<[Regex; 2]> = std::sync::OnceLock::new();
-    if !s.contains("base64") {
+    if !s.contains("data") {
         return Vec::new();
     }
     let [data_url, embedded] = RES.get_or_init(|| {
@@ -1652,6 +1655,66 @@ mod tests {
         assert_eq!(v["ref"], doc["ref"]);
         assert_eq!(v["part"], doc["part"]);
         assert!(v["data"].as_str().unwrap().starts_with("[REDACTED:github_token"), "plain data");
+    }
+
+    fn gh() -> String {
+        format!("{}{}", "gh", "p_ABCDEFGHIJKLMNOPQRSTUVWX0123")
+    }
+
+    fn image_block(data: &str) -> Value {
+        json!({"type": "image", "source": {
+            "type": "base64", "media_type": "image/png", "data": data,
+        }})
+    }
+
+    #[test]
+    fn stream_event_images_keep_base64_byte_identical_while_sibling_text_is_redacted() {
+        let data = image_b64();
+        let secret = gh();
+        let mut v = json!({
+            "type": "user",
+            "message": {"role": "user", "content": [
+                {"type": "text", "text": format!("look {secret}")},
+                image_block(&data),
+                {"type": "tool_result", "tool_use_id": "toolu_02", "content": [
+                    {"type": "text", "text": format!("shot taken {secret}")},
+                    image_block(&data),
+                ]},
+            ]},
+        });
+        assert!(redact_json(&mut v, &p()) >= 2);
+        let content = &v["message"]["content"];
+        assert_eq!(content[1]["source"]["data"].as_str(), Some(data.as_str()));
+        assert_eq!(content[2]["content"][1]["source"]["data"].as_str(), Some(data.as_str()));
+        let top = content[0]["text"].as_str().unwrap();
+        assert!(top.starts_with("look [REDACTED:github_token"), "{top}");
+        let nested = content[2]["content"][0]["text"].as_str().unwrap();
+        assert!(nested.starts_with("shot taken [REDACTED:github_token"), "{nested}");
+    }
+
+    #[test]
+    fn untagged_image_source_keeps_base64() {
+        let data = image_b64();
+        let mut v = json!({"type": "image", "source": {"media_type": "image/png", "data": data}});
+        redact_json(&mut v, &p());
+        assert_eq!(v["source"]["data"].as_str(), Some(data.as_str()));
+    }
+
+    #[test]
+    fn stringified_mcp_image_without_base64_marker_keeps_data() {
+        let data = image_b64();
+        let secret = gh();
+        let blocks = json!([
+            {"type": "text", "text": format!("ok {secret}")},
+            {"type": "image", "data": data, "mimeType": "image/png"},
+        ])
+        .to_string();
+        assert!(!blocks.contains("base64"), "fixture must not carry the base64 marker");
+        let mut v = json!({ "output_summary": blocks });
+        redact_json(&mut v, &p());
+        let out: Value = serde_json::from_str(v["output_summary"].as_str().unwrap()).unwrap();
+        assert_eq!(out[1]["data"].as_str(), Some(data.as_str()));
+        assert!(out[0]["text"].as_str().unwrap().starts_with("ok [REDACTED:github_token"));
     }
 
     #[test]
