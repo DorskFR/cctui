@@ -178,10 +178,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let engines = k8s_engines(base, &dir, "sa-token");
         assert_eq!(resolve_value(&engines, "k8s:dev/worker-creds#token").await.unwrap(), "k8s-tok");
-        let msg = resolve_value(&engines, "k8s:dev/worker-creds#other")
-            .await
-            .unwrap_err()
-            .to_string();
+        let msg =
+            resolve_value(&engines, "k8s:dev/worker-creds#other").await.unwrap_err().to_string();
         assert!(msg.contains("k8s:dev/worker-creds#other"), "{msg}");
         assert!(!msg.contains("k8s-tok"), "{msg}");
     }

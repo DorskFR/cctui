@@ -123,10 +123,8 @@ mod tests {
     #[tokio::test]
     async fn aws_sm_value_error_names_the_ref_and_hides_the_secret() {
         let engines = sm_engines(spawn_sm_mock().await);
-        let msg = resolve_value(&engines, "aws-sm:cctui/json#missing")
-            .await
-            .unwrap_err()
-            .to_string();
+        let msg =
+            resolve_value(&engines, "aws-sm:cctui/json#missing").await.unwrap_err().to_string();
         assert!(msg.contains("aws-sm:cctui/json#missing"), "{msg}");
         assert!(!msg.contains("sm-pw"), "{msg}");
     }

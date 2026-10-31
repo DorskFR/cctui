@@ -48,10 +48,12 @@ pub struct Credential {
 }
 
 impl Credential {
+    #[must_use]
     pub const fn new(value: String) -> Self {
         Self { value }
     }
 
+    #[must_use]
     pub fn expose(&self) -> &str {
         &self.value
     }
@@ -220,6 +222,7 @@ struct CacheEntry {
 }
 
 impl SecretSource {
+    #[must_use]
     pub fn new(resolver: Box<dyn RefResolver>, ttl: Duration) -> Self {
         Self { resolver, ttl, cache: Mutex::new(HashMap::new()) }
     }
@@ -252,9 +255,10 @@ impl SecretSource {
 
 pub type EnvLookup = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
-/// All engines behind one resolver. Engines are independent: a ref names its
-/// engine, so one process can serve `env:` and `vault:` refs side by side. An
-/// engine that is not configured fails its refs as `Backend` (closed).
+/// All engines behind one resolver.
+///
+/// A ref names its engine, so one process serves `env:` and `vault:` refs side
+/// by side. An engine that is not configured fails its refs as `Backend`.
 pub struct Engines {
     env_lookup: EnvLookup,
     #[cfg(feature = "bao")]
@@ -477,11 +481,7 @@ pub async fn resolve_value(resolver: &dyn RefResolver, raw: &str) -> anyhow::Res
 }
 
 async fn resolve_ref(resolver: &dyn RefResolver, r: &SecretRef) -> anyhow::Result<String> {
-    resolver
-        .resolve(r)
-        .await
-        .map(|c| c.value)
-        .map_err(|e| anyhow::anyhow!("secret ref {r}: {e}"))
+    resolver.resolve(r).await.map(|c| c.value).map_err(|e| anyhow::anyhow!("secret ref {r}: {e}"))
 }
 
 /// Like [`resolve_value`] with [`Engines::from_env`], built only when a ref
@@ -502,9 +502,8 @@ async fn resolve_pairs(pairs: Vec<(String, String)>) -> anyhow::Result<HashMap<S
     let mut engines = None;
     let mut out = HashMap::with_capacity(pairs.len());
     for (name, raw) in pairs {
-        let value = resolve_lazily(&mut engines, &raw)
-            .await
-            .map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
+        let value =
+            resolve_lazily(&mut engines, &raw).await.map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
         out.insert(name, value);
     }
     Ok(out)
