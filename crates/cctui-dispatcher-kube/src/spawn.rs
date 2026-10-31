@@ -30,6 +30,7 @@ use cctui_proto::worker_env::check_payload_env;
 use cctui_proto::ws::WireDispatchSpec;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{Pod, Secret};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams, PropagationPolicy};
 use kube::{Client, Error as KubeError};
 use tokio_util::sync::CancellationToken;
@@ -565,7 +566,7 @@ impl Spawner {
         let name = worker_name(dedup_source(spec));
         self.enforce_inflight_cap(&name).await?;
         let suspend =
-            self.profile_cap_reached(&profile_name, profile.spec.max_inflight, &name).await?;
+            self.profile_must_queue(&profile_name, profile.spec.max_inflight, &name).await?;
         let job = Self::build_job(
             &self.cctui_url,
             &profile_name,
@@ -685,11 +686,8 @@ impl Spawner {
         job.spec.as_ref().and_then(|s| s.suspend) == Some(true)
     }
 
-    /// Whether the profile's `maxInflight` is exhausted by *active*
-    /// (non-terminal, unsuspended) Jobs of that profile, `this_name` excluded —
-    /// the same self-exclusion as the global cap, so a dedup/redispatch of a
-    /// running Job never queues behind itself.
-    async fn profile_cap_reached(
+    /// Whether a new Job of the profile must be created suspended; see [`must_queue`].
+    async fn profile_must_queue(
         &self,
         profile_name: &str,
         max_inflight: Option<u32>,
@@ -707,14 +705,7 @@ impl Spawner {
             .list(&lp)
             .await
             .map_err(|e| anyhow::anyhow!("listing worker Jobs for profile cap: {e}"))?;
-        let active = jobs
-            .items
-            .iter()
-            .filter(|j| j.metadata.name.as_deref() != Some(this_name))
-            .filter(|j| Self::job_terminal_state(j).is_none())
-            .filter(|j| !Self::job_suspended(j))
-            .count();
-        Ok(active >= cap as usize)
+        Ok(must_queue(&jobs.items, cap, this_name))
     }
 
     /// Resume suspended Jobs into freed profile slots, oldest-first, forever.
@@ -756,7 +747,7 @@ impl Spawner {
         }
 
         let profiles: Api<WorkerProfile> = Api::namespaced(self.client.clone(), &self.namespace);
-        for (profile_name, (running, mut queued)) in by_profile {
+        for (profile_name, (running, queued)) in by_profile {
             let profile = match profiles.get(&profile_name).await {
                 Ok(p) => Some(p.spec),
                 Err(KubeError::Api(e)) if e.code == 404 => None,
@@ -770,14 +761,8 @@ impl Spawner {
             if queued.is_empty() {
                 continue;
             }
-            let active = running.len();
-            let cap = profile.and_then(|p| p.max_inflight).filter(|c| *c > 0);
-            let slots = cap.map_or(queued.len(), |c| (c as usize).saturating_sub(active));
-            if slots == 0 {
-                continue;
-            }
-            queued.sort_by_key(|j| j.metadata.creation_timestamp.clone());
-            for job in queued.into_iter().take(slots) {
+            let cap = profile.and_then(|p| p.max_inflight);
+            for job in jobs_to_resume(queued, running.len(), cap) {
                 let Some(name) = job.metadata.name.as_deref() else { continue };
                 let patch = Patch::Merge(json!({ "spec": { "suspend": false } }));
                 match self.jobs().patch(name, &PatchParams::default(), &patch).await {
@@ -1236,14 +1221,55 @@ impl Dispatcher for Spawner {
     }
 }
 
-/// 1-based place of `name` among the suspended, non-terminal `jobs`, in the
-/// order the queue reconciler resumes them.
+/// The order a profile's queue is resumed in: oldest first, then by name.
+fn queue_key(job: &Job) -> (Option<&Time>, Option<&str>) {
+    (job.metadata.creation_timestamp.as_ref(), job.metadata.name.as_deref())
+}
+
+fn worker_profile_label(job: &Job) -> Option<&str> {
+    job.metadata.labels.as_ref()?.get(LABEL_WORKER_PROFILE).map(String::as_str)
+}
+
+/// Whether a new Job named `this_name`, among its profile's `jobs`, must be
+/// created suspended: the profile already has a queue (the Job joins its back,
+/// so nothing overtakes older queued work) or its active Jobs fill `cap`.
+/// `this_name` is excluded, so a redispatch never queues behind itself.
+fn must_queue(jobs: &[Job], cap: u32, this_name: &str) -> bool {
+    let (queued, active) = jobs
+        .iter()
+        .filter(|j| j.metadata.name.as_deref() != Some(this_name))
+        .filter(|j| Spawner::job_terminal_state(j).is_none())
+        .fold((0_usize, 0_usize), |(q, a), j| {
+            if Spawner::job_suspended(j) {
+                (q + 1, a)
+            } else {
+                (q, a + 1)
+            }
+        });
+    queued > 0 || active >= cap as usize
+}
+
+/// The queued Jobs of one profile to resume into the slots `active` Jobs leave
+/// free under `cap` (every one when uncapped), in [`queue_key`] order.
+fn jobs_to_resume(mut queued: Vec<&Job>, active: usize, cap: Option<u32>) -> Vec<&Job> {
+    let slots =
+        cap.filter(|c| *c > 0).map_or(queued.len(), |c| (c as usize).saturating_sub(active));
+    queued.sort_by(|a, b| queue_key(a).cmp(&queue_key(b)));
+    queued.truncate(slots);
+    queued
+}
+
+/// 1-based place of `name` among the suspended, non-terminal `jobs` of its own
+/// worker profile, in the order the queue reconciler resumes them.
 fn queue_position(jobs: &[Job], name: &str) -> Option<u32> {
+    let profile =
+        worker_profile_label(jobs.iter().find(|j| j.metadata.name.as_deref() == Some(name))?);
     let mut queued: Vec<&Job> = jobs
         .iter()
+        .filter(|j| worker_profile_label(j) == profile)
         .filter(|j| Spawner::job_suspended(j) && Spawner::job_terminal_state(j).is_none())
         .collect();
-    queued.sort_by_key(|j| (j.metadata.creation_timestamp.clone(), j.metadata.name.clone()));
+    queued.sort_by(|a, b| queue_key(a).cmp(&queue_key(b)));
     let at = queued.iter().position(|j| j.metadata.name.as_deref() == Some(name))?;
     u32::try_from(at + 1).ok()
 }
@@ -2368,5 +2394,96 @@ mod tests {
         assert_eq!(queue_position(&jobs, "running"), None);
         assert_eq!(queue_position(&jobs, "dead"), None);
         assert_eq!(queue_position(&jobs, "missing"), None);
+    }
+
+    fn profiled_job(
+        name: &str,
+        profile: &str,
+        created: &str,
+        suspended: bool,
+        terminal: bool,
+    ) -> Job {
+        let mut job = listed_job(name, created, suspended, terminal);
+        job.metadata.labels = Some(std::collections::BTreeMap::from([(
+            LABEL_WORKER_PROFILE.to_owned(),
+            profile.to_owned(),
+        )]));
+        job
+    }
+
+    #[test]
+    fn queue_position_ranks_only_among_the_jobs_own_profile() {
+        let jobs = [
+            profiled_job("a1", "alpha", "2026-10-21T10:00:01Z", true, false),
+            profiled_job("b1", "beta", "2026-10-21T10:00:02Z", true, false),
+            profiled_job("a2", "alpha", "2026-10-21T10:00:03Z", true, false),
+            profiled_job("b2", "beta", "2026-10-21T10:00:04Z", true, false),
+            profiled_job("a3", "alpha", "2026-10-21T10:00:05Z", true, false),
+            profiled_job("b-run", "beta", "2026-10-21T09:00:00Z", false, false),
+        ];
+        assert_eq!(queue_position(&jobs, "a1"), Some(1));
+        assert_eq!(queue_position(&jobs, "a2"), Some(2), "b1 is ahead in time but not in alpha");
+        assert_eq!(queue_position(&jobs, "a3"), Some(3));
+        assert_eq!(queue_position(&jobs, "b1"), Some(1));
+        assert_eq!(queue_position(&jobs, "b2"), Some(2));
+        assert_eq!(queue_position(&jobs, "b-run"), None);
+    }
+
+    #[test]
+    fn a_dispatch_queues_behind_its_profiles_queue_even_with_a_free_slot() {
+        let jobs = [
+            profiled_job("run", "alpha", "2026-10-21T09:00:00Z", false, false),
+            profiled_job("waiting", "alpha", "2026-10-21T09:30:00Z", true, false),
+        ];
+        assert!(must_queue(&jobs, 3, "new"), "1 of 3 slots used, but a Job is already queued");
+        assert!(!must_queue(&jobs, 3, "waiting"), "a redispatch never queues behind itself");
+    }
+
+    #[test]
+    fn a_dispatch_with_a_free_slot_and_no_queue_starts() {
+        let jobs = [
+            profiled_job("run", "alpha", "2026-10-21T09:00:00Z", false, false),
+            profiled_job("done", "alpha", "2026-10-21T08:00:00Z", false, true),
+            profiled_job("dead-queued", "alpha", "2026-10-21T08:30:00Z", true, true),
+        ];
+        assert!(!must_queue(&jobs, 2, "new"));
+        assert!(must_queue(&jobs, 1, "new"), "the only slot is taken");
+    }
+
+    #[test]
+    fn a_freed_slot_resumes_the_oldest_queued_job_not_a_new_dispatch() {
+        let mut jobs = vec![
+            profiled_job("r1", "alpha", "2026-10-21T09:00:00Z", false, true),
+            profiled_job("r2", "alpha", "2026-10-21T09:00:01Z", false, false),
+            profiled_job("r3", "alpha", "2026-10-21T09:00:02Z", false, false),
+            profiled_job("q3", "alpha", "2026-10-21T09:10:00Z", true, false),
+            profiled_job("q1b", "alpha", "2026-10-21T09:05:00Z", true, false),
+            profiled_job("q1a", "alpha", "2026-10-21T09:05:00Z", true, false),
+        ];
+        assert!(must_queue(&jobs, 3, "new"), "r1 finished, but three Jobs are queued");
+        jobs.push(profiled_job("new", "alpha", "2026-10-21T09:20:00Z", true, false));
+
+        let live: Vec<&Job> =
+            jobs.iter().filter(|j| Spawner::job_terminal_state(j).is_none()).collect();
+        let (queued, running): (Vec<&Job>, Vec<&Job>) =
+            live.into_iter().partition(|j| Spawner::job_suspended(j));
+        let resumed: Vec<&str> = jobs_to_resume(queued, running.len(), Some(3))
+            .iter()
+            .filter_map(|j| j.metadata.name.as_deref())
+            .collect();
+        assert_eq!(resumed, ["q1a"], "oldest first, name breaks the tie");
+    }
+
+    #[test]
+    fn an_uncapped_profile_resumes_its_whole_queue_in_order() {
+        let jobs = [
+            profiled_job("late", "alpha", "2026-10-21T09:10:00Z", true, false),
+            profiled_job("early", "alpha", "2026-10-21T09:00:00Z", true, false),
+        ];
+        let resumed: Vec<&str> = jobs_to_resume(jobs.iter().collect(), 5, None)
+            .iter()
+            .filter_map(|j| j.metadata.name.as_deref())
+            .collect();
+        assert_eq!(resumed, ["early", "late"]);
     }
 }
