@@ -76,5 +76,9 @@ export const BUILTIN_SCRUB_DETECTORS: ScrubDetector[] = [
 	{ category: 'jwt', family: 'generic' },
 	{ category: 'db_url_password', family: 'generic' },
 	{ category: 'url_signed_param', family: 'generic' },
-	{ category: 'env_assignment', family: 'generic' }
+	{ category: 'env_assignment', family: 'generic' },
+	{ category: 'vault_cipher_string', family: 'generic' },
+	{ category: 'otpauth_uri', family: 'generic' },
+	{ category: 'high_entropy_hex', family: 'generic' },
+	{ category: 'high_entropy_base64', family: 'generic' }
 ];

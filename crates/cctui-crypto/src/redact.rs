@@ -6,7 +6,9 @@
 //! correlation suffix `[REDACTED:<category>:9f2a]`. Non-reversible, and
 //! idempotent because the `[REDACTED:...]` marker matches no anchored pattern.
 
-use std::collections::BTreeMap;
+mod entropy;
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use hmac::{Hmac, Mac};
 use regex::{Regex, RegexSet};
@@ -22,6 +24,9 @@ use sha2::Sha256;
 /// on-demand re-scrub (same cap) also skips, deliberately and consistently.
 pub const MAX_FIELD_LEN: usize = 16 * 1024 * 1024;
 
+/// Decides whether the match spanning `start..end` of the haystack is a secret.
+type Validator = fn(&str, usize, usize) -> bool;
+
 /// A single detector: a name/category, its regex, the capture group to mask
 /// (0 = whole match), and whether it earns a correlation suffix.
 struct Compiled {
@@ -29,6 +34,8 @@ struct Compiled {
     re: Regex,
     group: usize,
     high_entropy: bool,
+    builtin: bool,
+    validate: Option<Validator>,
 }
 
 /// The precompiled effective detector set (built-in defaults + enabled user
@@ -40,13 +47,26 @@ pub struct CompiledPatterns {
     /// running all ~70 full scans over every string leaf.
     prefilter: Option<RegexSet>,
     key: Vec<u8>,
+    allow: BTreeSet<String>,
 }
 
 impl CompiledPatterns {
     /// An empty set — redaction is disabled, [`redact_json`] is a no-op.
     #[must_use]
     pub const fn disabled() -> Self {
-        Self { patterns: Vec::new(), prefilter: None, key: Vec::new() }
+        Self { patterns: Vec::new(), prefilter: None, key: Vec::new(), allow: BTreeSet::new() }
+    }
+
+    /// Values the user vetted as not secret: a match equal to one is kept as is.
+    #[must_use]
+    pub fn with_allowlist<I: IntoIterator<Item = String>>(mut self, values: I) -> Self {
+        self.allow
+            .extend(values.into_iter().map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()));
+        self
+    }
+
+    fn masks(&self, c: &Compiled, hay: &str, m: &regex::Match<'_>) -> bool {
+        !self.allow.contains(m.as_str()) && c.validate.is_none_or(|v| v(hay, m.start(), m.end()))
     }
 
     #[must_use]
@@ -517,7 +537,7 @@ const BUILTINS: &[Builtin] = &[
     B {
         category: "private_key",
         family: "generic",
-        regex: r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
+        regex: r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----(?:[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|(?:\s*[A-Za-z0-9+/=]{16,})+)",
         group: 0,
         high_entropy: false,
     },
@@ -551,7 +571,46 @@ const BUILTINS: &[Builtin] = &[
         group: 1,
         high_entropy: true,
     },
+    // Password-manager encrypted field: `<type>.<iv>|<ciphertext>[|<mac>]`.
+    B {
+        category: "vault_cipher_string",
+        family: "generic",
+        regex: r"(?-u:\b)[0-9]\.[A-Za-z0-9+/]{16,}={0,2}\|[A-Za-z0-9+/]{16,}={0,2}(?:\|[A-Za-z0-9+/]{16,}={0,2})?",
+        group: 0,
+        high_entropy: true,
+    },
+    B {
+        category: "otpauth_uri",
+        family: "generic",
+        regex: r#"otpauth://[A-Za-z]+/([^\s"'<>\\\[\]]+)"#,
+        group: 1,
+        high_entropy: true,
+    },
+    // The run detectors go last so a known shape claims its span first; their
+    // regexes are deliberately loose, `entropy` decides.
+    B {
+        category: "high_entropy_hex",
+        family: "generic",
+        regex: r"(?-u:\b)[0-9a-fA-F]{32,}(?-u:\b)",
+        group: 0,
+        high_entropy: true,
+    },
+    B {
+        category: "high_entropy_base64",
+        family: "generic",
+        regex: r"[A-Za-z0-9+/_-]{32,}={0,2}",
+        group: 0,
+        high_entropy: true,
+    },
 ];
+
+fn validator(category: &str) -> Option<Validator> {
+    match category {
+        "high_entropy_hex" => Some(entropy::hex_secret),
+        "high_entropy_base64" => Some(entropy::base64_secret),
+        _ => None,
+    }
+}
 
 /// Category for a value masked because its key announced a secret rather than
 /// because the value matched a shape.
@@ -664,6 +723,8 @@ pub fn compile(enabled: bool, user: &[(String, String)], key: &[u8]) -> Compiled
             re: Regex::new(b.regex).expect("built-in redaction pattern must compile"),
             group: b.group,
             high_entropy: b.high_entropy,
+            builtin: true,
+            validate: validator(b.category),
         })
         .collect();
     for (name, regex) in user {
@@ -673,6 +734,8 @@ pub fn compile(enabled: bool, user: &[(String, String)], key: &[u8]) -> Compiled
                 re,
                 group: 0,
                 high_entropy: false,
+                builtin: false,
+                validate: None,
             }),
             Err(e) => {
                 tracing::warn!(pattern = %name, error = %e, "skipping uncompilable user scrub pattern");
@@ -680,7 +743,7 @@ pub fn compile(enabled: bool, user: &[(String, String)], key: &[u8]) -> Compiled
         }
     }
     let prefilter = RegexSet::new(patterns.iter().map(|c| c.re.as_str())).ok();
-    CompiledPatterns { patterns, prefilter, key: key.to_vec() }
+    CompiledPatterns { patterns, prefilter, key: key.to_vec(), allow: BTreeSet::new() }
 }
 
 /// The built-in detector categories with their UI family, so the webui renders
@@ -727,14 +790,17 @@ fn placeholder(c: &Compiled, matched: &str, key: &[u8]) -> String {
 
 /// Apply one detector across `input`, masking each matched group span. Returns
 /// the rewritten string and the number of substitutions.
-fn apply(input: &str, c: &Compiled, key: &[u8]) -> (String, usize) {
+fn apply(input: &str, c: &Compiled, patterns: &CompiledPatterns) -> (String, usize) {
     let mut out = String::with_capacity(input.len());
     let mut last = 0usize;
     let mut count = 0usize;
     for caps in c.re.captures_iter(input) {
         let Some(g) = caps.get(c.group).or_else(|| caps.get(0)) else { continue };
+        if !patterns.masks(c, input, &g) {
+            continue;
+        }
         out.push_str(&input[last..g.start()]);
-        out.push_str(&placeholder(c, g.as_str(), key));
+        out.push_str(&placeholder(c, g.as_str(), &patterns.key));
         last = g.end();
         count += 1;
     }
@@ -789,7 +855,7 @@ fn redact_text(
     let mut current = input.to_owned();
     let mut changed = false;
     for c in candidates.into_iter().filter_map(|i| patterns.patterns.get(i)) {
-        let (next, n) = apply(&current, c, &patterns.key);
+        let (next, n) = apply(&current, c, patterns);
         if n > 0 {
             *stats.entry(c.category.clone()).or_insert(0) += n;
             current = next;
@@ -980,28 +1046,46 @@ fn sample_text_part(
         || (0..patterns.patterns.len()).collect(),
         |set| set.matches(input).into_iter().collect(),
     );
+    // Progressive like `redact_text`: a span an earlier detector claims is
+    // neither re-sampled by a later one nor left raw in its context.
+    let mut current = input.to_owned();
     for c in candidates.into_iter().filter_map(|i| patterns.patterns.get(i)) {
-        let entry = out.entry(c.category.clone()).or_default();
-        if entry.done() {
+        if !out.get(&c.category).is_some_and(CategorySamples::done) {
+            sample_matches(&current, c, patterns, out);
+        }
+        let (next, n) = apply(&current, c, patterns);
+        if n > 0 {
+            current = next;
+        }
+    }
+}
+
+fn sample_matches(
+    input: &str,
+    c: &Compiled,
+    patterns: &CompiledPatterns,
+    out: &mut BTreeMap<String, CategorySamples>,
+) {
+    for caps in c.re.captures_iter(input) {
+        let Some(g) = caps.get(c.group).or_else(|| caps.get(0)) else { continue };
+        if !patterns.masks(c, input, &g) {
             continue;
         }
-        for caps in c.re.captures_iter(input) {
-            let Some(g) = caps.get(c.group).or_else(|| caps.get(0)) else { continue };
-            let has_value = value_follows(&input[g.end()..]);
-            entry.examined += 1;
-            if has_value {
-                entry.with_value += 1;
-            }
-            if entry.samples.len() < SAMPLES_PER_CATEGORY {
-                entry.samples.push(Sample {
-                    text: sample_text(c, g.as_str()),
-                    context: sample_context(input, g.start(), g.end(), patterns),
-                    value_follows: has_value,
-                });
-            }
-            if entry.done() {
-                break;
-            }
+        let entry = out.entry(c.category.clone()).or_default();
+        let has_value = value_follows(&input[g.end()..]);
+        entry.examined += 1;
+        if has_value {
+            entry.with_value += 1;
+        }
+        if entry.samples.len() < SAMPLES_PER_CATEGORY {
+            entry.samples.push(Sample {
+                text: sample_text(c, g.as_str()),
+                context: sample_context(input, g.start(), g.end(), patterns),
+                value_follows: has_value,
+            });
+        }
+        if entry.done() {
+            break;
         }
     }
 }
@@ -1012,6 +1096,9 @@ fn sample_text_part(
 /// rest; a bare match is kept whole only when it cannot itself be a secret —
 /// which is what makes an `input_token` identifier hit legible in the preview.
 fn sample_text(c: &Compiled, matched: &str) -> String {
+    if c.builtin {
+        return if c.high_entropy { mask_token(matched) } else { mask_value(matched) };
+    }
     if let Some((start, end)) = inner_value_span(matched) {
         let (name, value, rest) = (&matched[..start], &matched[start..end], &matched[end..]);
         return format!("{name}{}{rest}", mask_value(value));
@@ -1396,6 +1483,10 @@ mod tests {
             ("db_url_password", "postgres://admin:s3cr3tPass@db.example.com/app".into()),
             ("url_signed_param", "https://n8n.example/wait/1?signature=5ce8ef8a8245".into()),
             ("env_assignment", "export FIREWORKS_API_KEY=zX9qLmNb2v8Kd4Rt".into()),
+            ("vault_cipher_string", cipher_string("fixture")),
+            ("otpauth_uri", otpauth_fixture()),
+            ("high_entropy_hex", hex::encode(rand_bytes("hex-fixture", 24))),
+            ("high_entropy_base64", b64(&rand_bytes("b64-fixture", 45))),
         ]
     }
 
@@ -1726,5 +1817,246 @@ mod tests {
         collect_samples(&s, &p(), &mut out);
         assert!(!out.contains_key("square_token"), "{out:?}");
         assert!(out.contains_key("github_token"));
+    }
+
+    /// Deterministic pseudo-random bytes, so no secret-shaped literal sits in the source.
+    fn rand_bytes(seed: &str, len: usize) -> Vec<u8> {
+        use sha2::Digest;
+        let mut out = Vec::with_capacity(len + 32);
+        let mut block = Sha256::digest(seed.as_bytes());
+        while out.len() < len {
+            out.extend_from_slice(&block[..]);
+            block = Sha256::digest(&block[..]);
+        }
+        out.truncate(len);
+        out
+    }
+
+    fn b64(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+        for chunk in bytes.chunks(3) {
+            let n = chunk
+                .iter()
+                .enumerate()
+                .fold(0u32, |acc, (i, &b)| acc | (u32::from(b) << (16 - 8 * i)));
+            for i in 0..=chunk.len() {
+                out.push(char::from(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize]));
+            }
+            for _ in chunk.len()..3 {
+                out.push('=');
+            }
+        }
+        out
+    }
+
+    fn cipher_string(seed: &str) -> String {
+        let part = |s: &str, n| b64(&rand_bytes(&format!("{seed}-{s}"), n));
+        format!("2.{}|{}|{}", part("iv", 16), part("ct", 32), part("mac", 32))
+    }
+
+    fn otpauth_fixture() -> String {
+        let secret = "JBSWY3DP".repeat(4);
+        format!("{}://totp/Acme:alice@example.com?secret={secret}&issuer=Acme", "otpauth")
+    }
+
+    fn vault_item_json() -> String {
+        json!({
+            "object": "item",
+            "id": "3f2a8c1e-9b4d-4e7a-8f6b-2c1d0e9a7b3c",
+            "type": 1,
+            "name": cipher_string("name"),
+            "login": {
+                "username": cipher_string("user"),
+                "password": cipher_string("pass"),
+                "totp": cipher_string("totp"),
+            },
+            "notes": null,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn base64_password_manager_payload_is_flagged() {
+        let payload = b64(vault_item_json().as_bytes());
+        let out = redact_str(&format!("Error: apply failed for item payload {payload}\nexit 1"));
+        assert!(out.contains("[REDACTED:high_entropy_base64:"), "{out}");
+        assert!(out.starts_with("Error: apply failed for item payload ["), "{out}");
+        assert!(out.ends_with("\nexit 1"), "{out}");
+        for chunk in payload.as_bytes().chunks(16) {
+            let chunk = std::str::from_utf8(chunk).unwrap();
+            assert!(chunk.len() < 16 || !out.contains(chunk), "leaked {chunk}: {out}");
+        }
+    }
+
+    #[test]
+    fn plain_password_manager_item_masks_every_encrypted_field() {
+        let mut v: Value = serde_json::from_str(&vault_item_json()).unwrap();
+        redact_json(&mut v, &p());
+        assert!(v["name"].as_str().unwrap().starts_with("[REDACTED:vault_cipher_string:"), "{v}");
+        assert!(v["login"]["username"].as_str().unwrap().starts_with("[REDACTED:"), "{v}");
+        assert!(v["login"]["totp"].as_str().unwrap().starts_with("[REDACTED:"), "{v}");
+        assert_eq!(v["id"], json!("3f2a8c1e-9b4d-4e7a-8f6b-2c1d0e9a7b3c"), "uuid rewritten");
+        assert!(!v.to_string().contains('|'), "{v}");
+    }
+
+    #[test]
+    fn hex_secret_run_is_flagged() {
+        let secret = hex::encode(rand_bytes("hex-secret", 24));
+        let out = redact_str(&format!("decrypt with key {secret} failed"));
+        assert!(out.starts_with("decrypt with key [REDACTED:high_entropy_hex:"), "{out}");
+        assert!(out.ends_with(" failed"), "{out}");
+        assert!(!out.contains(&secret[..16]), "{out}");
+    }
+
+    #[test]
+    fn otpauth_uri_secret_is_flagged() {
+        let uri = otpauth_fixture();
+        let out = redact_str(&format!("scan this: {uri} then confirm"));
+        assert!(out.starts_with("scan this: otpauth://totp/[REDACTED:otpauth_uri:"), "{out}");
+        assert!(out.ends_with(" then confirm"), "{out}");
+        assert!(!out.contains("JBSWY3DP"), "{out}");
+        assert_eq!(redact_str(&out), out, "rescrub must be idempotent");
+    }
+
+    fn pem_body(seed: &str) -> String {
+        (0..3).map(|i| b64(&rand_bytes(&format!("{seed}{i}"), 48))).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn pem_private_key_blocks_are_flagged_including_pgp_and_truncated() {
+        let body = pem_body("pem");
+        let k = ["PRIVATE", " KEY BLOCK"].concat();
+        let pgp = format!("-----BEGIN PGP {k}-----\n\n{body}\n=AbCd\n-----END PGP {k}-----");
+        let truncated = format!("-----BEGIN OPENSSH {} KEY-----\n{body}", "PRIVATE");
+        for pem in [pgp, truncated] {
+            let out = redact_str(&format!("cat key:\n{pem}\n... (output truncated)"));
+            assert!(out.contains("[REDACTED:private_key]"), "{out}");
+            assert!(out.ends_with("... (output truncated)"), "{out}");
+            assert!(!out.contains(&body[..24]), "{out}");
+        }
+    }
+
+    #[test]
+    fn private_key_sample_does_not_leak_the_body() {
+        let body = pem_body("sample");
+        let k = ["PRIVATE", " KEY"].concat();
+        let pem = format!("-----BEGIN RSA {k}-----\n{body}==\n-----END RSA {k}-----");
+        let mut out = BTreeMap::new();
+        collect_samples(&json!({ "out": pem }), &p(), &mut out);
+        assert!(out.contains_key("private_key"), "{out:?}");
+        let dumped = format!("{out:?}");
+        for line in body.lines() {
+            assert!(!dumped.contains(&line[..16]), "leaked {line}: {dumped}");
+        }
+    }
+
+    #[test]
+    fn digests_ids_paths_and_public_base64_are_not_flagged() {
+        let sha1 = hex::encode(rand_bytes("git", 20));
+        let sha256 = hex::encode(rand_bytes("sha256", 32));
+        let sha512 = hex::encode(rand_bytes("sha512", 64));
+        let labelled_hex = hex::encode(rand_bytes("labelled", 30));
+        let sri384 = b64(&rand_bytes("sri384", 48));
+        let sri512 = b64(&rand_bytes("sri512", 64));
+        let cert = format!(
+            "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----",
+            pem_body("cert")
+        );
+        let benign = [
+            "session 3f2a8c1e-9b4d-4e7a-8f6b-2c1d0e9a7b3c resumed".to_owned(),
+            format!("commit {sha1}\nAuthor: someone"),
+            format!("{sha256}  target/release/cctui-server"),
+            format!("image@sha256:{sha256}"),
+            format!("sha512sum: {sha512}"),
+            format!("md5={labelled_hex}"),
+            "/home/user/Documents/projects/cctui/crates/cctui-crypto/src/redact/entropy.rs:42"
+                .to_owned(),
+            "/nix/store/0c5a9f2kq8zx1m3n7b4v6d2h8j1l0p9r-openssl-3.0.13/lib".to_owned(),
+            format!(r#"<script src="app.js" integrity="sha384-{sri384}" crossorigin></script>"#),
+            format!(r#""integrity": "sha512-{sri512}","#),
+            "const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';"
+                .to_owned(),
+            "fn digests_ids_paths_and_public_base64_are_not_flagged_by_the_entropy_rules()"
+                .to_owned(),
+            "impl ConversationComposerVoiceControlsHarnessBuilder for X {}".to_owned(),
+            cert,
+        ];
+        for text in &benign {
+            assert_eq!(&redact_str(text), text, "false positive");
+        }
+    }
+
+    #[test]
+    fn image_block_base64_stays_byte_identical_with_entropy_detectors_on() {
+        let data = b64(&rand_bytes("png", 3000));
+        assert!(
+            redact_str(&data).contains("[REDACTED:high_entropy_base64"),
+            "fixture must be something the detector flags as plain text"
+        );
+        let mut v = image_result(&data);
+        redact_json(&mut v, &p());
+        assert_eq!(v["content"][1]["source"]["data"].as_str(), Some(data.as_str()));
+
+        let summary = image_result(&data)["content"].to_string();
+        let mut stringified = json!({ "output_summary": summary });
+        redact_json(&mut stringified, &p());
+        let blocks: Value =
+            serde_json::from_str(stringified["output_summary"].as_str().unwrap()).unwrap();
+        assert_eq!(blocks[1]["source"]["data"].as_str(), Some(data.as_str()));
+
+        let mcp_blocks = json!([{"type": "image", "data": data, "mimeType": "image/png"}]);
+        let mut mcp = json!({ "output_summary": mcp_blocks.to_string() });
+        redact_json(&mut mcp, &p());
+        let blocks: Value = serde_json::from_str(mcp["output_summary"].as_str().unwrap()).unwrap();
+        assert_eq!(blocks[0]["data"].as_str(), Some(data.as_str()));
+
+        let url = format!("data:image/png;base64,{data}");
+        assert_eq!(redact_str(&format!("![shot]({url})")), format!("![shot]({url})"));
+
+        let mut out = BTreeMap::new();
+        collect_samples(&image_result(&data), &p(), &mut out);
+        assert!(!out.contains_key("high_entropy_base64"), "{out:?}");
+    }
+
+    #[test]
+    fn allowlisted_value_is_left_alone() {
+        let vetted = hex::encode(rand_bytes("vetted", 24));
+        let other = hex::encode(rand_bytes("other", 24));
+        let pats = compile(true, &[], KEY).with_allowlist([format!(" {vetted} ")]);
+        let mut v = json!(format!("{vetted} {other}"));
+        assert_eq!(redact_json(&mut v, &pats), 1);
+        let out = v.as_str().unwrap();
+        assert!(out.starts_with(&format!("{vetted} [REDACTED:high_entropy_hex:")), "{out}");
+        let mut samples = BTreeMap::new();
+        collect_samples(&json!(vetted), &pats, &mut samples);
+        assert!(samples.is_empty(), "{samples:?}");
+    }
+
+    #[test]
+    fn dry_run_reports_masked_samples_per_new_category() {
+        let payload = b64(vault_item_json().as_bytes());
+        let hex_secret = hex::encode(rand_bytes("dry-run-hex", 24));
+        let doc = json!({
+            "a": format!("apply failed: {payload}"),
+            "b": format!("key {hex_secret} rejected"),
+            "c": format!("enroll {}", otpauth_fixture()),
+            "d": cipher_string("dry-run"),
+        });
+        let mut samples = BTreeMap::new();
+        collect_samples(&doc, &p(), &mut samples);
+        let mut v = doc.clone();
+        let stats = redact_json_stats(&mut v, &p());
+        let cats =
+            ["high_entropy_base64", "high_entropy_hex", "otpauth_uri", "vault_cipher_string"];
+        for cat in cats {
+            assert_eq!(stats.get(cat), Some(&1), "{cat}: {stats:?}");
+            assert_eq!(samples.get(cat).map(|s| s.samples.len()), Some(1), "{cat}: {samples:?}");
+        }
+        let dumped = format!("{samples:?}");
+        for secret in [&payload[8..40], &hex_secret[8..40], "JBSWY3DP"] {
+            assert!(!dumped.contains(secret), "sample leaked {secret}: {dumped}");
+        }
     }
 }
