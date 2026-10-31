@@ -262,11 +262,7 @@ pub async fn auto_account_candidates(
                   AND s.grantee_id = $1 AND s.revoked_at IS NULL))) \
          ORDER BY a.name",
         |sql| {
-            sqlx::query_as(sql)
-                .bind(user_id)
-                .bind(family.label())
-                .bind(owned_only)
-                .fetch_all(exec)
+            sqlx::query_as(sql).bind(user_id).bind(family.label()).bind(owned_only).fetch_all(exec)
         },
     )
     .await

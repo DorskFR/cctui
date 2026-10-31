@@ -932,15 +932,9 @@ pub async fn get_machine_commands(
 ) -> Result<Json<Vec<MachineCommand>>, AppError> {
     let owned = match Uuid::parse_str(&machine_id) {
         Ok(id) => {
-            traced(
-                "SELECT EXISTS (SELECT 1 FROM machines WHERE id = $1 AND user_id = $2)",
-                |sql| {
-                    sqlx::query_scalar::<_, bool>(sql)
-                        .bind(id)
-                        .bind(ctx.user_id)
-                        .fetch_one(&state.pool)
-                },
-            )
+            traced("SELECT EXISTS (SELECT 1 FROM machines WHERE id = $1 AND user_id = $2)", |sql| {
+                sqlx::query_scalar::<_, bool>(sql).bind(id).bind(ctx.user_id).fetch_one(&state.pool)
+            })
             .await?
         }
         Err(_) => false,
