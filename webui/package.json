@@ -49,6 +49,13 @@
   "dependencies": {
     "@dorsk/journey": "^0.8.2",
     "@dorsk/tsumikit": "^0.80.2",
+    "@opentelemetry/api": "~1.9.1",
+    "@opentelemetry/core": "~2.12.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.223.0",
+    "@opentelemetry/instrumentation": "^0.223.0",
+    "@opentelemetry/instrumentation-fetch": "^0.223.0",
+    "@opentelemetry/resources": "~2.12.0",
+    "@opentelemetry/sdk-trace-web": "~2.12.0",
     "@ricky0123/vad-web": "^0.0.31",
     "@tanstack/query-async-storage-persister": "^5.104.2",
     "@tanstack/svelte-query": "^6.3.2",

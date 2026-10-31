@@ -17,3 +17,16 @@ export function apiBase(): string {
 export function wsBase(): string {
 	return `${apiOrigin().replace(/^http/, 'ws')}/api/v1`;
 }
+
+export interface OtelConfig {
+	/** OTLP/HTTP collector base; spans post to `${endpoint}/v1/traces`. */
+	endpoint: string;
+	serviceName?: string;
+	sampleRatio?: number;
+}
+
+export function otelConfig(): OtelConfig | null {
+	if (!browser) return null;
+	const otel = (window.CCTUI_CONFIG as { otel?: Partial<OtelConfig> } | undefined)?.otel;
+	return otel?.endpoint ? { ...otel, endpoint: otel.endpoint } : null;
+}
