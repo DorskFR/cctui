@@ -661,6 +661,18 @@ jobs:
       - name: Reject ticket references in added comments
         run: bash scripts/check-comment-refs.sh "origin/${{ github.base_ref }}"
 
+  migrations:
+    name: migrations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Test the guard itself
+        run: bash scripts/check-migrations.test.sh
+
+      - name: Reject legacy additions and package version collisions
+        run: bash scripts/check-migrations.sh
+
   forbidden-terms:
     name: forbidden-terms
     if: github.event_name == 'pull_request'
@@ -726,6 +738,9 @@ jobs:
 
       - name: Path scoping classifies changes
         run: bash scripts/ci-changes.test.sh
+
+      - name: The heavy wrapper caps local runs and stays out of CI's way
+        run: bash scripts/heavy.test.sh
 
       - name: Release scoping picks what to rebuild
         run: bash scripts/release-scope.test.sh
@@ -826,6 +841,7 @@ jobs:
       - audit
       - no-css-global
       - comment-refs
+      - migrations
       - forbidden-terms
       - i18n-messages
       - release-channel
