@@ -10,6 +10,22 @@ set -eu
 
 log() { echo "cctui-worker: $*"; }
 
+# git_retry <label> <cmd...>: one attempt plus one per delay (seconds) in
+# CCTUI_GIT_RETRY_DELAYS. <cmd> must wipe its own partial state.
+git_retry() {
+    _gr_label=$1; shift
+    _gr_n=1
+    for _gr_d in ${CCTUI_GIT_RETRY_DELAYS-2 5 10} ""; do
+        "$@" && return 0
+        [ -n "$_gr_d" ] || break
+        log "$_gr_label failed (attempt $_gr_n), retrying in ${_gr_d}s"
+        sleep "$_gr_d"
+        _gr_n=$((_gr_n + 1))
+    done
+    log "$_gr_label failed after $_gr_n attempt(s)"
+    return 1
+}
+
 # Emits one `--ro <path>` token per entry of CCTUI_WORKER_EXTRA_RO
 # (colon-separated), so derived images can add toolchain dirs to the Landlock
 # RO set.
@@ -587,7 +603,8 @@ phase_workspace() {
             _wurl=$(git -C "/workspace/${TASK_REPO}" remote get-url origin 2>/dev/null || echo "")
             [ -n "$_wtok" ] && [ -n "$_wurl" ] \
                 && _wurl=$(printf '%s' "$_wurl" | sed "s,^https://,https://${_wtok}@,")
-            if git -C "/workspace/${TASK_REPO}" fetch -q "${_wurl:-origin}" "$TASK_REPO_REF" 2>/dev/null \
+            if git_retry "workspace: fetch $TASK_REPO_REF" \
+                    git -C "/workspace/${TASK_REPO}" fetch -q "${_wurl:-origin}" "$TASK_REPO_REF" 2>/dev/null \
                     && git -C "/workspace/${TASK_REPO}" checkout -q FETCH_HEAD 2>/dev/null; then
                 log "workspace: checked out TASK_REPO_REF=$TASK_REPO_REF"
             else
@@ -623,7 +640,6 @@ phase_workspace() {
         # identity token from the pod env and inject it into the clone URL, then
         # scrub it from the persisted remote.
         _dest="/workspace/${TASK_REPO:-repo}"
-        mkdir -p "$_dest"
         _wtok="${GITHUB_TOKEN:-}"
         if [ -z "$_wtok" ] && [ -n "${TASK_IDENTITY:-}" ]; then
             _wid=$(printf '%s' "$TASK_IDENTITY" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9' '_')
@@ -632,9 +648,17 @@ phase_workspace() {
         fi
         _curl="$TASK_REPO_URL"
         [ -n "$_wtok" ] && _curl=$(printf '%s' "$TASK_REPO_URL" | sed "s,^https://,https://${_wtok}@,")
-        if git clone --filter=blob:none "$_curl" "$_dest" 2>/dev/null; then
+        ws_clone() {
+            case "/${TASK_REPO:-repo}/" in
+                */../*|*/./*|*//*) ;;
+                *) rm -rf "$_dest" ;;
+            esac
+            mkdir -p "$_dest" && git clone --filter=blob:none "$_curl" "$_dest" 2>/dev/null
+        }
+        if git_retry "workspace: clone ${TASK_REPO:-repo}" ws_clone; then
             if [ -n "${TASK_REPO_REF:-}" ]; then
-                git -C "$_dest" fetch -q "$_curl" "$TASK_REPO_REF" 2>/dev/null \
+                git_retry "workspace: fetch $TASK_REPO_REF" \
+                    git -C "$_dest" fetch -q "$_curl" "$TASK_REPO_REF" 2>/dev/null \
                     && git -C "$_dest" checkout -q FETCH_HEAD 2>/dev/null \
                     || log "WARNING: could not check out TASK_REPO_REF=$TASK_REPO_REF"
             fi
@@ -817,19 +841,29 @@ phase_context_pack() {
         sed 's/^/cctui-worker: git: /' "$_giterr" | tail -5 >&2
         exit 1
     }
-    if [ -z "${CONTEXT_PACK_REF:-}" ]; then
-        # No ref ⇒ clone the remote's default branch.
-        pack_git clone --depth 1 "$_url" "$_tmp" \
-            || pack_fatal "context-pack clone failed (default branch)"
-    elif ! pack_git clone --depth 1 --branch "$CONTEXT_PACK_REF" "$_url" "$_tmp"; then
+    pack_reset() {
+        rm -rf "$_tmp"; mkdir -p "$_tmp"
+        if is_root; then chown "${WORKER_UID}:${WORKER_UID}" "$_tmp"; fi
+    }
+    pack_fetch_once() {
+        pack_reset
+        if [ -z "${CONTEXT_PACK_REF:-}" ]; then
+            pack_git clone --depth 1 "$_url" "$_tmp"
+            return
+        fi
+        pack_git clone --depth 1 --branch "$CONTEXT_PACK_REF" "$_url" "$_tmp" && return 0
         # Some refs are SHAs (not clonable by --branch): fetch the ref directly.
-        rm -rf "$_tmp"; _tmp=$(mktemp -d)
-        is_root && chown "${WORKER_UID}:${WORKER_UID}" "$_tmp"
-        { pack_git -C "$_tmp" init -q \
+        pack_reset
+        pack_git -C "$_tmp" init -q \
             && pack_git -C "$_tmp" remote add origin "$_url" \
             && pack_git -C "$_tmp" fetch --depth 1 -q origin "$CONTEXT_PACK_REF" \
-            && pack_git -C "$_tmp" checkout -q FETCH_HEAD; } \
-            || pack_fatal "context-pack fetch failed (CONTEXT_PACK_URL set, ref=$CONTEXT_PACK_REF)"
+            && pack_git -C "$_tmp" checkout -q FETCH_HEAD
+    }
+    if ! git_retry "context pack: fetch" pack_fetch_once; then
+        if [ -z "${CONTEXT_PACK_REF:-}" ]; then
+            pack_fatal "context-pack clone failed (default branch)"
+        fi
+        pack_fatal "context-pack fetch failed (CONTEXT_PACK_URL set, ref=$CONTEXT_PACK_REF)"
     fi
     rm -f "$_giterr"
 
