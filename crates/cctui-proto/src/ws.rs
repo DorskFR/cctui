@@ -1333,7 +1333,8 @@ mod tests {
 
     #[test]
     fn a_command_without_the_carrier_parses_with_no_trace() {
-        let json = r#"{"type":"command","adapter_id":"codex","command":{"kind":"kill","local_id":"abc"}}"#;
+        let json =
+            r#"{"type":"command","adapter_id":"codex","command":{"kind":"kill","local_id":"abc"}}"#;
         let back: DaemonFrameDown = serde_json::from_str(json).unwrap();
         let DaemonFrameDown::Command { adapter_id, trace, .. } = back else {
             panic!("expected Command")

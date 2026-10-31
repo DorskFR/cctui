@@ -14,8 +14,8 @@ use cctui_proto::adapter::{
 };
 use cctui_proto::ws::TraceCarrier;
 use tokio::sync::mpsc;
-use tracing::Instrument;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 use uuid::Uuid;
 
 /// A `WatchPty` routed off the command path: `(local_id, watch)`.
@@ -399,9 +399,7 @@ pub fn park_span(command_id: Option<Uuid>, span: &tracing::Span) {
 /// The span parked for `command_id`, or [`tracing::Span::none`].
 #[must_use]
 pub fn take_span(command_id: Option<Uuid>) -> tracing::Span {
-    command_id
-        .and_then(|id| parked_spans().remove(&id))
-        .unwrap_or_else(tracing::Span::none)
+    command_id.and_then(|id| parked_spans().remove(&id)).unwrap_or_else(tracing::Span::none)
 }
 
 fn spawn_span(adapter: &str, spec: &SessionSpec, session_id: Option<&str>) -> tracing::Span {
@@ -420,9 +418,9 @@ fn spawn_span(adapter: &str, spec: &SessionSpec, session_id: Option<&str>) -> tr
 
 async fn in_spawn_span(
     span: tracing::Span,
-    spawn: impl std::future::Future<Output = CommandOutcome>,
+    launch: impl std::future::Future<Output = CommandOutcome>,
 ) -> CommandOutcome {
-    let outcome = spawn.instrument(span.clone()).await;
+    let outcome = launch.instrument(span.clone()).await;
     match &outcome {
         Ok(_) => {
             span.record("otel.status_code", "OK");

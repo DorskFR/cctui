@@ -29,6 +29,7 @@ async fn a_traced_command_opens_daemon_command_under_the_server_span() {
     unsafe {
         std::env::set_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://127.0.0.1:9/v1/traces");
     }
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let _telemetry = cctui_telemetry::init("cctui-daemon-test", "0", "cctui_daemon=info");
     assert!(cctui_telemetry::enabled());
 
