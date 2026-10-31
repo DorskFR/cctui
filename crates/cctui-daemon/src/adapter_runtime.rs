@@ -12,7 +12,9 @@ use std::time::Duration;
 use cctui_proto::adapter::{
     AdapterCommand, AdapterEvent, ForkExtract, RemoveInitiator, SessionSpec,
 };
+use cctui_proto::ws::TraceCarrier;
 use tokio::sync::mpsc;
+use tracing::Instrument;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -344,11 +346,109 @@ pub trait SessionDriver: Send {
     }
 }
 
-/// Route one command to its driver method and report its outcome.
-///
+/// Bounds the spans parked for commands an adapter never drains.
+const MAX_PARKED_SPANS: usize = 256;
+
+/// `daemon.command` spans waiting for their command to cross the adapter
+/// channel, keyed by command id.
+static PARKED_SPANS: std::sync::LazyLock<std::sync::Mutex<BTreeMap<Uuid, tracing::Span>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn parked_spans() -> std::sync::MutexGuard<'static, BTreeMap<Uuid, tracing::Span>> {
+    PARKED_SPANS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The consumer span for a server `Command`, parented to the server span
+/// that built the frame when it carries a trace. [`tracing::Span::none`] with
+/// the exporter off, so log lines keep their shape.
+#[must_use]
+pub fn command_span(
+    adapter_id: &str,
+    command: &AdapterCommand,
+    trace: Option<&TraceCarrier>,
+) -> tracing::Span {
+    if !cctui_telemetry::enabled() {
+        return tracing::Span::none();
+    }
+    let span = tracing::info_span!(
+        "daemon.command",
+        otel.kind = "consumer",
+        messaging.system = "cctui-ws",
+        messaging.operation = "process",
+        adapter_id,
+        command = command.kind_name(),
+    );
+    if let Some(trace) = trace {
+        cctui_telemetry::set_parent(&span, &trace.traceparent, trace.tracestate.as_deref());
+    }
+    span
+}
+
+/// Hand `span` to the adapter task that will run `command_id`.
+pub fn park_span(command_id: Option<Uuid>, span: &tracing::Span) {
+    let Some(command_id) = command_id else { return };
+    if span.is_none() {
+        return;
+    }
+    let mut parked = parked_spans();
+    if parked.len() < MAX_PARKED_SPANS {
+        parked.insert(command_id, span.clone());
+    }
+}
+
+/// The span parked for `command_id`, or [`tracing::Span::none`].
+#[must_use]
+pub fn take_span(command_id: Option<Uuid>) -> tracing::Span {
+    command_id
+        .and_then(|id| parked_spans().remove(&id))
+        .unwrap_or_else(tracing::Span::none)
+}
+
+fn spawn_span(adapter: &str, spec: &SessionSpec, session_id: Option<&str>) -> tracing::Span {
+    if !cctui_telemetry::enabled() {
+        return tracing::Span::none();
+    }
+    tracing::info_span!(
+        "session.spawn",
+        adapter,
+        session_id,
+        cwd = spec.working_dir.as_deref(),
+        otel.status_code = tracing::field::Empty,
+        error.message = tracing::field::Empty,
+    )
+}
+
+async fn in_spawn_span(
+    span: tracing::Span,
+    spawn: impl std::future::Future<Output = CommandOutcome>,
+) -> CommandOutcome {
+    let outcome = spawn.instrument(span.clone()).await;
+    match &outcome {
+        Ok(_) => {
+            span.record("otel.status_code", "OK");
+        }
+        Err(err) => {
+            span.record("otel.status_code", "ERROR");
+            span.record("error.message", tracing::field::display(err));
+        }
+    }
+    outcome
+}
+
+/// Route one command to its driver method and report its outcome, inside the
+/// `daemon.command` span the supervisor parked for it.
+pub async fn dispatch_command<D: SessionDriver + ?Sized>(
+    driver: &mut D,
+    events: &mpsc::Sender<AdapterEvent>,
+    cmd: AdapterCommand,
+) {
+    let span = take_span(cmd.command_id());
+    dispatch(driver, events, cmd).instrument(span).await;
+}
+
 /// The only `match` over [`AdapterCommand`] the adapters have; it has no
 /// wildcard arm, so a new variant needs a driver method.
-pub async fn dispatch_command<D: SessionDriver + ?Sized>(
+async fn dispatch<D: SessionDriver + ?Sized>(
     driver: &mut D,
     events: &mpsc::Sender<AdapterEvent>,
     cmd: AdapterCommand,
@@ -360,10 +460,14 @@ pub async fn dispatch_command<D: SessionDriver + ?Sized>(
         AdapterCommand::SendMessage { local_id, text } => driver.send_message(local_id, text).await,
         AdapterCommand::Kill { local_id, signal } => driver.kill(local_id, signal).await,
         AdapterCommand::Spawn { spec, command_id, session_id } => {
-            driver.spawn(spec, command_id, session_id).await
+            let session = session_id.as_ref().map(ToString::to_string);
+            let span = spawn_span(driver.adapter_id(), &spec, session.as_deref());
+            in_spawn_span(span, driver.spawn(spec, command_id, session_id)).await
         }
         AdapterCommand::Fork { parent_local_id, spec, command_id, session_id, extract } => {
-            driver.fork(parent_local_id, spec, command_id, session_id, extract).await
+            let span = spawn_span(driver.adapter_id(), &spec, session_id.as_deref());
+            in_spawn_span(span, driver.fork(parent_local_id, spec, command_id, session_id, extract))
+                .await
         }
         AdapterCommand::Reply {
             local_id,
@@ -480,6 +584,16 @@ pub async fn run_command_loop<D: SessionDriver + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spans_are_not_parked_with_the_exporter_off() {
+        let id = Uuid::new_v4();
+        let cmd = AdapterCommand::Kill { local_id: "s1".into(), signal: None };
+        let span = command_span("codex", &cmd, None);
+        park_span(Some(id), &span);
+        assert!(take_span(Some(id)).is_none());
+        assert!(take_span(None).is_none());
+    }
 
     #[test]
     fn interrupts_coalesce_per_session_in_arrival_order() {

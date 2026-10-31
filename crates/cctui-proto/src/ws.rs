@@ -181,6 +181,14 @@ pub enum DaemonFrameUp {
     },
 }
 
+/// W3C trace context of the span that built a frame.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TraceCarrier {
+    pub traceparent: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracestate: Option<String>,
+}
+
 /// Server → daemon frames on `/api/v1/daemon/ws`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -195,6 +203,8 @@ pub enum DaemonFrameDown {
     Command {
         adapter_id: String,
         command: Box<AdapterCommand>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace: Option<TraceCarrier>,
     },
     /// Event `seq` is durably stored; the daemon may trim its spool.
     Ack {
@@ -1287,10 +1297,65 @@ mod tests {
         let f = DaemonFrameDown::Command {
             adapter_id: "claude-code".into(),
             command: Box::new(AdapterCommand::Kill { local_id: "abc".into(), signal: None }),
+            trace: None,
         };
         let json = serde_json::to_string(&f).unwrap();
         assert!(json.contains(r#""type":"command""#));
+        assert!(!json.contains("trace"), "{json}");
         let _back: DaemonFrameDown = serde_json::from_str(&json).unwrap();
+    }
+
+    /// The `Command` shape of a daemon built before the trace carrier.
+    #[derive(Deserialize)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    enum LegacyFrameDown {
+        Command { adapter_id: String, command: Box<AdapterCommand> },
+    }
+
+    const TRACEPARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
+    #[test]
+    fn a_traced_command_parses_on_a_daemon_without_the_carrier() {
+        let f = DaemonFrameDown::Command {
+            adapter_id: "claude-code".into(),
+            command: Box::new(AdapterCommand::Kill { local_id: "abc".into(), signal: None }),
+            trace: Some(TraceCarrier {
+                traceparent: TRACEPARENT.into(),
+                tracestate: Some("vendor=1".into()),
+            }),
+        };
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains(TRACEPARENT), "{json}");
+        let LegacyFrameDown::Command { adapter_id, command } = serde_json::from_str(&json).unwrap();
+        assert_eq!(adapter_id, "claude-code");
+        assert!(matches!(*command, AdapterCommand::Kill { ref local_id, .. } if local_id == "abc"));
+    }
+
+    #[test]
+    fn a_command_without_the_carrier_parses_with_no_trace() {
+        let json = r#"{"type":"command","adapter_id":"codex","command":{"kind":"kill","local_id":"abc"}}"#;
+        let back: DaemonFrameDown = serde_json::from_str(json).unwrap();
+        let DaemonFrameDown::Command { adapter_id, trace, .. } = back else {
+            panic!("expected Command")
+        };
+        assert_eq!(adapter_id, "codex");
+        assert_eq!(trace, None);
+    }
+
+    #[test]
+    fn the_carrier_roundtrips_with_and_without_tracestate() {
+        for tracestate in [None, Some("vendor=1".to_owned())] {
+            let carrier = TraceCarrier { traceparent: TRACEPARENT.into(), tracestate };
+            let f = DaemonFrameDown::Command {
+                adapter_id: "codex".into(),
+                command: Box::new(AdapterCommand::Kill { local_id: "abc".into(), signal: None }),
+                trace: Some(carrier.clone()),
+            };
+            let back: DaemonFrameDown =
+                serde_json::from_str(&serde_json::to_string(&f).unwrap()).unwrap();
+            let DaemonFrameDown::Command { trace, .. } = back else { panic!("expected Command") };
+            assert_eq!(trace, Some(carrier));
+        }
     }
 
     #[test]

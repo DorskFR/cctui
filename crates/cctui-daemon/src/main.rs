@@ -460,15 +460,13 @@ fn parse_cli() -> Cli {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(
-            |_| {
-                // `codex_app_server_stderr` is its own target, outside the
-                // `cctui_daemon` tree, so journald keeps codex's stderr.
-                "cctui_daemon=info,codex_app_server_stderr=info".into()
-            },
-        ))
-        .init();
+    // `codex_app_server_stderr` is its own target, outside the `cctui_daemon`
+    // tree, so journald keeps codex's stderr.
+    let _telemetry = cctui_telemetry::init(
+        "cctui-daemon",
+        env!("CARGO_PKG_VERSION"),
+        "cctui_daemon=info,codex_app_server_stderr=info",
+    );
 
     let cli = parse_cli();
     let path = cli.config.unwrap_or_else(Config::default_path);

@@ -693,7 +693,10 @@ impl Supervisor {
                 *scrub = compile_scrub(&secret_scrub);
                 self.reconcile(adapters, running, event_tx, shutdown);
             }
-            DaemonFrameDown::Command { adapter_id, command } => {
+            DaemonFrameDown::Command { adapter_id, command, trace } => {
+                let span =
+                    crate::adapter_runtime::command_span(&adapter_id, &command, trace.as_ref());
+                let _entered = span.enter();
                 if let cctui_proto::adapter::AdapterCommand::WatchPty { local_id, watch } =
                     command.as_ref()
                     && let Some(pty_watch_tx) =
@@ -749,7 +752,14 @@ impl Supervisor {
                         #[allow(clippy::option_if_let_else)] // `command` moves into one arm only
                         let outcome = match running.get(&adapter_id) {
                             None => Err(("is not running on this machine", command_id)),
-                            Some(running) => running.route_command(*command),
+                            Some(running) => {
+                                crate::adapter_runtime::park_span(command_id, &span);
+                                let routed = running.route_command(*command);
+                                if routed.is_err() {
+                                    drop(crate::adapter_runtime::take_span(command_id));
+                                }
+                                routed
+                            }
                         };
                         outcome.err().and_then(|(reason, command_id)| {
                             tracing::warn!(%adapter_id, reason, "rejecting command");
@@ -1956,6 +1966,7 @@ mod tests {
                 command_id: Some(command_id),
                 session_id: Some(command_id),
             }),
+            trace: None,
         };
         supervisor
             .handle_frame(frame, &mut running, &event_tx, &frame_up_tx, &mut scrub, &shutdown)
@@ -2014,6 +2025,7 @@ mod tests {
                 command_id: Some(command_id),
                 initiator: cctui_proto::adapter::RemoveInitiator::User,
             }),
+            trace: None,
         };
         let handled = supervisor.handle_frame(
             frame,
@@ -2077,6 +2089,7 @@ mod tests {
                 local_id: "sess-1".to_owned(),
                 watch: true,
             }),
+            trace: None,
         };
         let handled = supervisor.handle_frame(
             frame,
@@ -2131,6 +2144,7 @@ mod tests {
                     local_id: "sess-1".to_owned(),
                     command_id: Some(command_id),
                 }),
+                trace: None,
             };
             let handled = supervisor.handle_frame(
                 frame,
@@ -2188,6 +2202,7 @@ mod tests {
                 local_id: "sess-1".to_owned(),
                 watch: true,
             }),
+            trace: None,
         };
         supervisor
             .handle_frame(frame, &mut running, &event_tx, &frame_up_tx, &mut scrub, &shutdown)

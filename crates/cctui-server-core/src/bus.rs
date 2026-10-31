@@ -16,10 +16,11 @@ use cctui_proto::adapter::{AdapterCommand, BootstrapFile};
 use cctui_proto::git::GitInfo;
 use cctui_proto::ws::{
     AgentEvent, DaemonFrameDown, DispatcherFrameDown, DispatcherFrameUp, ReadFileOk,
-    ReadFileRefusal, ServerEvent,
+    ReadFileRefusal, ServerEvent, TraceCarrier,
 };
 use dashmap::DashMap;
 use tokio::sync::{broadcast, mpsc, oneshot};
+use tracing::Instrument;
 use uuid::Uuid;
 
 /// Owns a parked reply while its caller is sending or waiting.
@@ -686,10 +687,15 @@ impl Bus {
         machine: Uuid,
         frame: DaemonFrameDown,
     ) -> Result<(), BusError> {
-        let Some(tx) = self.inner.daemons.get(&machine).map(|r| r.clone()) else {
-            return self.inner.transport.forward_daemon(machine, frame).await;
-        };
-        self.deliver(tx, frame).await
+        let (frame, span) = traced(machine, frame);
+        async {
+            let Some(tx) = self.inner.daemons.get(&machine).map(|r| r.clone()) else {
+                return self.inner.transport.forward_daemon(machine, frame).await;
+            };
+            self.deliver(tx, frame).await
+        }
+        .instrument(span)
+        .await
     }
 
     /// [`Self::command_daemon`] for a frame that belongs to ONE session:
@@ -700,10 +706,15 @@ impl Bus {
         session_id: &str,
         frame: DaemonFrameDown,
     ) -> Result<(), BusError> {
-        let Some(tx) = self.routable_session_channel(machine, session_id).await else {
-            return self.inner.transport.forward_daemon(machine, frame).await;
-        };
-        self.deliver(tx, frame).await
+        let (frame, span) = traced(machine, frame);
+        async {
+            let Some(tx) = self.routable_session_channel(machine, session_id).await else {
+                return self.inner.transport.forward_daemon(machine, frame).await;
+            };
+            self.deliver(tx, frame).await
+        }
+        .instrument(span)
+        .await
     }
 
     /// [`Self::request_daemon`] for a round-trip that belongs to ONE session.
@@ -729,7 +740,8 @@ impl Bus {
         let Some(tx) = self.session_channel(machine, session_id) else {
             return Err(BusError::NoDaemon(machine));
         };
-        self.deliver(tx, frame).await
+        let (frame, span) = traced(machine, frame);
+        self.deliver(tx, frame).instrument(span).await
     }
 
     /// [`Self::request_daemon_local`] for a round-trip that belongs to ONE
@@ -758,7 +770,8 @@ impl Bus {
         let Some(tx) = self.inner.daemons.get(&machine).map(|r| r.clone()) else {
             return Err(BusError::NoDaemon(machine));
         };
-        self.deliver(tx, frame).await
+        let (frame, span) = traced(machine, frame);
+        self.deliver(tx, frame).instrument(span).await
     }
 
     /// Fire-and-forget a [`DispatcherFrameDown`] toward the enrolled
@@ -908,6 +921,7 @@ impl Bus {
                 let frame = DaemonFrameDown::Command {
                     adapter_id,
                     command: Box::new(AdapterCommand::Diagnose { local_id, request_id }),
+                    trace: current_carrier(),
                 };
                 if tx.send(frame).await.is_err() {
                     self.inner.pending_diagnose.remove(&request_id);
@@ -1214,6 +1228,36 @@ async fn unless_closed<T>(
     }
 }
 
+/// The calling span's W3C context, to stamp on a frame as it is built: frames
+/// queue, so the context at socket-write time is not the caller's.
+#[must_use]
+pub fn current_carrier() -> Option<TraceCarrier> {
+    cctui_telemetry::current_traceparent()
+        .map(|(traceparent, tracestate)| TraceCarrier { traceparent, tracestate })
+}
+
+/// Open the `ws.send` producer span for a `Command` and stamp its context on
+/// the frame. A frame that already carries a trace (relayed by a peer pod)
+/// keeps its original one.
+fn traced(machine: Uuid, mut frame: DaemonFrameDown) -> (DaemonFrameDown, tracing::Span) {
+    if !cctui_telemetry::enabled() || !matches!(frame, DaemonFrameDown::Command { .. }) {
+        return (frame, tracing::Span::none());
+    }
+    let span = tracing::info_span!(
+        "ws.send",
+        otel.kind = "producer",
+        messaging.system = "cctui-ws",
+        messaging.operation = "publish",
+        messaging.destination.name = %machine,
+    );
+    if let DaemonFrameDown::Command { trace, .. } = &mut frame
+        && trace.is_none()
+    {
+        *trace = span.in_scope(current_carrier);
+    }
+    (frame, span)
+}
+
 fn is_interrupt(frame: &DaemonFrameDown) -> bool {
     matches!(frame, DaemonFrameDown::Command { command, .. }
         if matches!(command.as_ref(), AdapterCommand::Interrupt { .. }))
@@ -1272,6 +1316,40 @@ mod tests {
         assert!(matches!(rx.recv().await, Some(DaemonFrameDown::Reconcile { .. })));
     }
 
+    #[tokio::test]
+    async fn a_relayed_command_keeps_its_original_trace() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel(8);
+        bus.register_daemon(machine, Uuid::new_v4(), tx);
+        let carrier = TraceCarrier {
+            traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into(),
+            tracestate: None,
+        };
+        let DaemonFrameDown::Command { adapter_id, command, .. } = reply("s1") else {
+            unreachable!()
+        };
+        let frame = DaemonFrameDown::Command { adapter_id, command, trace: Some(carrier.clone()) };
+        bus.command_daemon_local(machine, frame).await.unwrap();
+        let Some(DaemonFrameDown::Command { trace, .. }) = rx.recv().await else {
+            panic!("expected Command")
+        };
+        assert_eq!(trace, Some(carrier));
+    }
+
+    #[tokio::test]
+    async fn an_untraced_caller_sends_no_carrier() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel(8);
+        bus.register_daemon(machine, Uuid::new_v4(), tx);
+        bus.command_daemon(machine, reply("s1")).await.unwrap();
+        let Some(DaemonFrameDown::Command { trace, .. }) = rx.recv().await else {
+            panic!("expected Command")
+        };
+        assert_eq!(trace, None);
+    }
+
     fn reply(local_id: &str) -> DaemonFrameDown {
         DaemonFrameDown::Command {
             adapter_id: "claude-code".into(),
@@ -1284,6 +1362,7 @@ mod tests {
                 command_id: None,
                 turn_id: None,
             }),
+            trace: None,
         }
     }
 
@@ -1294,6 +1373,7 @@ mod tests {
                 local_id: local_id.into(),
                 command_id: None,
             }),
+            trace: None,
         }
     }
 
@@ -1534,6 +1614,7 @@ mod tests {
                 command_id: Some(Uuid::new_v4()),
                 session_id: Some(Uuid::new_v4()),
             }),
+            trace: None,
         }
     }
 
@@ -1919,7 +2000,7 @@ mod tests {
 
         let bus2 = bus.clone();
         let fake_daemon = tokio::spawn(async move {
-            let Some(DaemonFrameDown::Command { adapter_id, command }) = rx.recv().await else {
+            let Some(DaemonFrameDown::Command { adapter_id, command, .. }) = rx.recv().await else {
                 panic!("expected Command");
             };
             assert_eq!(adapter_id, "claude-code");
@@ -2150,7 +2231,7 @@ pub async fn dispatch_session(
     bus.command_daemon_for_session(
         machine_uuid,
         session_id,
-        DaemonFrameDown::Command { adapter_id, command: Box::new(command) },
+        DaemonFrameDown::Command { adapter_id, command: Box::new(command), trace: None },
     )
     .await
 }

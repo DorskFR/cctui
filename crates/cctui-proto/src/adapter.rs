@@ -844,6 +844,30 @@ impl AdapterCommand {
             _ => None,
         }
     }
+
+    /// The wire `kind` tag.
+    #[must_use]
+    pub const fn kind_name(&self) -> &'static str {
+        match self {
+            Self::ResumeMarks { .. } => "resume_marks",
+            Self::AckMarks { .. } => "ack_marks",
+            Self::SendMessage { .. } => "send_message",
+            Self::Kill { .. } => "kill",
+            Self::Spawn { .. } => "spawn",
+            Self::Fork { .. } => "fork",
+            Self::Reply { .. } => "reply",
+            Self::Interrupt { .. } => "interrupt",
+            Self::Resume { .. } => "resume",
+            Self::PermissionResponse { .. } => "permission_response",
+            Self::Rename { .. } => "rename",
+            Self::Remove { .. } => "remove",
+            Self::SetModel { .. } => "set_model",
+            Self::Diagnose { .. } => "diagnose",
+            Self::WatchPty { .. } => "watch_pty",
+            Self::WatchText { .. } => "watch_text",
+            Self::GuardTransition { .. } => "guard_transition",
+        }
+    }
 }
 
 /// Defaults to [`Self::Automatic`], the conservative reading.
@@ -1563,6 +1587,7 @@ mod tests {
         ];
         for cmd in cases {
             let json = serde_json::to_string(&cmd).unwrap();
+            assert!(json.contains(&format!(r#""kind":"{}""#, cmd.kind_name())), "{json}");
             let _back: AdapterCommand = serde_json::from_str(&json).expect(&json);
         }
     }
