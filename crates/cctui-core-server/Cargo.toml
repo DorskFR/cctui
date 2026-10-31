@@ -10,10 +10,10 @@ workspace = true
 cctui-server-core.workspace = true
 cctui-proto.workspace = true
 cctui-crypto.workspace = true
+cctui-telemetry = { workspace = true, features = ["http"] }
 axum.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true

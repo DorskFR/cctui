@@ -101,7 +101,11 @@ pub async fn run() -> anyhow::Result<()> {
         return check_plugin_archive(rest);
     }
     install_crypto_provider();
-    init_tracing();
+    let _telemetry = cctui_telemetry::init(
+        "cctui-server",
+        env!("CARGO_PKG_VERSION"),
+        "cctui_server=info,sqlx::query=warn",
+    );
     let (config, pool, auth_config, migrations) = bootstrap().await?;
     let state = build_state(&config, pool, auth_config.clone()).await?;
     record_boot_events(&state, &migrations);
@@ -124,15 +128,6 @@ fn check_plugin_archive(args: &[String]) -> anyhow::Result<()> {
 }
 
 use cctui_server_core::client::{build_http_client, install_crypto_provider};
-
-fn init_tracing() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "cctui_server=info,sqlx::query=warn".into()),
-        )
-        .init();
-}
 
 async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig, Vec<i64>)> {
     if let Err(e @ cctui_crypto::KeyError::InvalidHex(_)) = cctui_crypto::vault_key_checked() {
@@ -379,6 +374,7 @@ fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) 
         // origin is invalid once credentials are allowed.
         .layer(cors_layer(&config.allowed_origins))
         .layer(middleware::from_fn_with_state(state.clone(), preview::handler::host_gate))
+        .layer(cctui_telemetry::http::trace_layer())
         .with_state(state.clone())
 }
 
@@ -1314,5 +1310,136 @@ mod tests {
             "DELETE /{resource_type}/{id}/shares/{user_id} Bearer Human",
         ];
         assert_eq!(actual, expected);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::literal_string_with_formatting_args)]
+mod http_tracing_tests {
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode};
+    use axum::routing::{get, post};
+    use opentelemetry::trace::{SpanId, SpanKind, TraceId, TracerProvider as _};
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
+    use tower::ServiceExt;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    use super::cors_layer;
+
+    const TRACE_ID: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
+    const PARENT_ID: &str = "00f067aa0ba902b7";
+
+    fn traced_router() -> axum::Router {
+        let api = axum::Router::new()
+            .route("/sessions/spawn", post(|| async { StatusCode::CREATED }))
+            .route("/sessions/{id}/kill", post(|| async { "killed" }))
+            .layer(axum::middleware::from_fn(
+                |req: axum::extract::Request, next: axum::middleware::Next| next.run(req),
+            ));
+        axum::Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .route("/metrics", get(|| async { "" }))
+            .nest("/api/v1", api)
+            .layer(cctui_telemetry::http::trace_layer())
+    }
+
+    fn attribute(span: &SpanData, key: &str) -> Option<String> {
+        span.attributes
+            .iter()
+            .find(|kv| kv.key.as_str() == key)
+            .map(|kv| kv.value.as_str().into_owned())
+    }
+
+    #[tokio::test]
+    async fn http_tracing_joins_traceparent_and_names_spans_by_matched_route() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder().with_simple_exporter(exporter.clone()).build();
+        let _default = tracing::subscriber::set_default(
+            tracing_subscriber::registry()
+                .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test"))),
+        );
+        let app = traced_router();
+        for (method, uri) in [
+            (Method::POST, "/api/v1/sessions/spawn"),
+            (Method::POST, "/api/v1/sessions/raw-id-0b5e/kill"),
+            (Method::GET, "/health"),
+            (Method::GET, "/metrics"),
+        ] {
+            let request = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("traceparent", format!("00-{TRACE_ID}-{PARENT_ID}-01"))
+                .body(Body::empty())
+                .unwrap();
+            drop(app.clone().oneshot(request).await.unwrap());
+        }
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let server: Vec<&SpanData> =
+            spans.iter().filter(|s| s.span_kind == SpanKind::Server).collect();
+        let names: Vec<&str> = server.iter().map(|s| s.name.as_ref()).collect();
+        assert_eq!(names, ["POST /api/v1/sessions/spawn", "POST /api/v1/sessions/{id}/kill"]);
+        for span in &server {
+            assert_eq!(span.span_context.trace_id(), TraceId::from_hex(TRACE_ID).unwrap());
+            assert_eq!(span.parent_span_id, SpanId::from_hex(PARENT_ID).unwrap());
+            assert!(span.parent_span_is_remote);
+            assert_eq!(attribute(span, "http.request.method").as_deref(), Some("POST"));
+            assert!(attribute(span, "code.file.path").is_some());
+        }
+        let (spawn, kill) = (server[0], server[1]);
+        assert_eq!(attribute(spawn, "http.route").as_deref(), Some("/api/v1/sessions/spawn"));
+        assert_eq!(attribute(spawn, "http.response.status_code").as_deref(), Some("201"));
+        assert_eq!(attribute(kill, "http.route").as_deref(), Some("/api/v1/sessions/{id}/kill"));
+        assert_eq!(
+            attribute(kill, "url.path").as_deref(),
+            Some("/api/v1/sessions/raw-id-0b5e/kill")
+        );
+        assert_eq!(attribute(kill, "http.response.status_code").as_deref(), Some("200"));
+    }
+
+    #[tokio::test]
+    async fn http_tracing_without_traceparent_starts_a_root_span() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder().with_simple_exporter(exporter.clone()).build();
+        let _default = tracing::subscriber::set_default(
+            tracing_subscriber::registry()
+                .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test"))),
+        );
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/sessions/spawn")
+            .body(Body::empty())
+            .unwrap();
+        drop(traced_router().oneshot(request).await.unwrap());
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let span = spans.iter().find(|s| s.span_kind == SpanKind::Server).expect("server span");
+        assert_eq!(span.parent_span_id, SpanId::INVALID);
+        assert_ne!(span.span_context.trace_id(), TraceId::from_hex(TRACE_ID).unwrap());
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_allows_trace_context_headers() {
+        let origin = "http://localhost:5173";
+        let app = axum::Router::new()
+            .route("/api/v1/sessions/spawn", post(|| async { "ok" }))
+            .layer(cors_layer(&[origin.to_owned()]));
+        let request = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/api/v1/sessions/spawn")
+            .header("origin", origin)
+            .header("access-control-request-method", "POST")
+            .header("access-control-request-headers", "content-type,traceparent,tracestate")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        let allowed = response
+            .headers()
+            .get("access-control-allow-headers")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        assert!(allowed.contains("traceparent"), "{allowed}");
+        assert!(allowed.contains("tracestate"), "{allowed}");
     }
 }

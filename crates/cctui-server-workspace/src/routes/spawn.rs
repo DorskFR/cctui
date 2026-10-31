@@ -47,6 +47,7 @@ use crate::uploads::parse_upload_multipart;
 /// the daemon decodes + writes them to `/tmp/cctui-uploads/<session-id>/` and
 /// references their paths in the prompt. `env` secrets ride on `SessionSpec.env`
 /// (never persisted/logged) and the daemon injects them into the worker process.
+#[tracing::instrument(skip_all, fields(user_id = %ctx.user_id))]
 pub async fn spawn_session(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -82,6 +83,7 @@ pub async fn spawn_session(
 /// dispatched identically. Validates the `dispatch` scope, env keys and machine
 /// access, mints any account gateway env, and pushes `AdapterCommand::Spawn`
 /// over the WS.
+#[tracing::instrument(skip_all, fields(user_id = %ctx.user_id, machine = %req.machine_id))]
 pub async fn dispatch_spawn(
     state: &AppState,
     ctx: &AuthContext,
@@ -109,6 +111,7 @@ use cctui_server_core::machine_spawn::{
     resolve_default_account,
 };
 
+#[tracing::instrument(skip_all, fields(machine_id = %target.machine_uuid))]
 async fn resolve_spawn_account(
     state: &AppState,
     target: &SpawnTarget,
@@ -157,6 +160,7 @@ use cctui_server_core::machine_policy::{resolve_spawn_machine, spawn_adapter_on}
 #[cfg(test)]
 use cctui_server_core::machine_policy::{spawn_adapter, spawnable_adapters};
 
+#[tracing::instrument(skip_all)]
 async fn validate_spawn(
     state: &AppState,
     ctx: &AuthContext,
@@ -356,6 +360,10 @@ fn spawn_prompt(
     }
 }
 
+#[tracing::instrument(
+    skip_all,
+    fields(machine_id = %target.machine_uuid, session_id = %target.token_session_id),
+)]
 async fn execute_spawn(
     state: &AppState,
     target: SpawnTarget,
@@ -593,6 +601,7 @@ async fn save_draft(
 /// spawn: read the stored payload, merge the freshly-entered env, dispatch the
 /// real spawn (minting account gateway env), then delete the draft row. The
 /// live session appears via the daemon's normal registration.
+#[tracing::instrument(skip_all, fields(session_id = %session_id))]
 pub async fn launch_draft(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -604,6 +613,7 @@ pub async fn launch_draft(
 
 /// Shared with the scheduled-launch sweep: a due draft must go out through the
 /// same path as a hand-launched one.
+#[tracing::instrument(skip_all, fields(session_id = %session_id))]
 pub async fn launch_stored_draft(
     state: &AppState,
     ctx: &AuthContext,

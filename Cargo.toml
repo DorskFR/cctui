@@ -20,6 +20,7 @@ members = [
     "crates/cctui-server-core",
     "crates/cctui-server-workspace",
     "crates/cctui-supervisor",
+    "crates/cctui-telemetry",
     "crates/cctui-tui",
 ]
 
@@ -51,6 +52,7 @@ cctui-clientcore = { path = "crates/cctui-clientcore" }
 cctui-proto = { path = "crates/cctui-proto" }
 cctui-crypto = { path = "crates/cctui-crypto" }
 cctui-query = { path = "crates/cctui-query" }
+cctui-telemetry = { path = "crates/cctui-telemetry" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -58,6 +60,10 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+opentelemetry = { version = "0.33", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "rt-tokio", "experimental_trace_batch_span_processor_with_async_runtime"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "reqwest-client", "trace"] }
+tracing-opentelemetry = { version = "0.34", default-features = false }
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 anyhow = "1"
