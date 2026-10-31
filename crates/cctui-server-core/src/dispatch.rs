@@ -706,11 +706,9 @@ async fn resolve_routed_accounts(
     Ok((resolved, bound_pool))
 }
 
-/// Map `payload.model` through the resolved account(s) `model_aliases`,
-/// mirroring the spawn path. Try Anthropic then Openai per account; first
-/// rewrite wins. `resolve_account_model` fails soft (returns input unchanged
-/// on any miss), so a non-alias model or an unresolved account passes through
-/// untouched; `effort` is never touched.
+/// Map `payload.model` through the resolved account(s) aliases, mirroring the
+/// spawn path. Fails soft: a non-alias model or an unresolved account passes
+/// through untouched; `effort` is never touched.
 async fn apply_model_aliases(
     state: &impl DispatchContext,
     uid: uuid::Uuid,
@@ -725,26 +723,62 @@ async fn apply_model_aliases(
     else {
         return;
     };
-    for (account_name, _hint) in accounts {
-        for family in [
-            crate::gateway::Family::Anthropic,
-            crate::gateway::Family::Openai,
-            crate::gateway::Family::Fireworks,
-            crate::gateway::Family::Google,
-        ] {
-            let mapped = crate::gateway::mint::resolve_account_model(
+    for (account_name, hint) in accounts {
+        let Ok(Some(rows)) =
+            crate::gateway::mint::account_provider_rows(state, uid, account_name).await
+        else {
+            continue;
+        };
+        let hint = hint.as_deref().map(str::trim).filter(|p| !p.is_empty());
+        let mut candidates = Vec::new();
+        for row in alias_rows(&rows, hint) {
+            let flipped = crate::gateway::mint::flip_model_redirect(
                 state,
                 uid,
-                account_name,
-                family,
+                row.id,
+                row.family(),
                 &raw_model,
             )
             .await;
-            if rewrite_model_if_aliased(forwarded_payload, &raw_model, &mapped) {
-                return;
-            }
+            candidates.push((row, flipped));
+        }
+        let mapped = pick_model_alias(&candidates, hint.is_some(), &raw_model);
+        if rewrite_model_if_aliased(forwarded_payload, &raw_model, &mapped) {
+            return;
         }
     }
+}
+
+/// The provider rows a dispatch resolves aliases against, in priority order:
+/// the hinted family's row only, else one row per family, Anthropic first.
+#[must_use]
+pub fn alias_rows<'a>(
+    rows: &'a [crate::gateway::mint::ProviderRow],
+    hint: Option<&str>,
+) -> Vec<&'a crate::gateway::mint::ProviderRow> {
+    use crate::gateway::Family;
+    let families = hint.map_or_else(
+        || vec![Family::Anthropic, Family::Openai, Family::Fireworks, Family::Google],
+        |p| vec![Family::from_provider(p)],
+    );
+    families.into_iter().filter_map(|f| rows.iter().find(|r| r.family() == f)).collect()
+}
+
+/// The first rewrite among `(row, redirect-flipped model)` candidates, or
+/// `raw` when none rewrites. Only a hinted dispatch takes a catalog's
+/// first-entry fallback, as a spawn on that family would; a bare dispatch
+/// must not let a catalog capture names it does not list.
+#[must_use]
+pub fn pick_model_alias(
+    candidates: &[(&crate::gateway::mint::ProviderRow, String)],
+    hinted: bool,
+    raw: &str,
+) -> String {
+    candidates
+        .iter()
+        .map(|(row, model)| crate::gateway::mint::resolve_row_model(row, model, hinted))
+        .find(|mapped| mapped != raw)
+        .unwrap_or_else(|| raw.to_owned())
 }
 
 /// Expand each named account into the provider rows to mint: the hinted
@@ -1238,4 +1272,84 @@ pub fn payload_adapter(payload: &serde_json::Value) -> Option<&str> {
         .filter_map(|key| payload.get(key).and_then(serde_json::Value::as_str))
         .map(str::trim)
         .find(|s| !s.is_empty())
+}
+
+#[cfg(test)]
+mod alias_tests {
+    use crate::gateway::mint::ProviderRow;
+    use serde_json::json;
+
+    use super::{alias_rows, pick_model_alias};
+
+    fn row(
+        provider: &str,
+        aliases: Option<serde_json::Value>,
+        models: Option<serde_json::Value>,
+    ) -> ProviderRow {
+        ProviderRow {
+            id: uuid::Uuid::new_v4(),
+            provider: provider.to_owned(),
+            model_aliases: aliases,
+            models,
+        }
+    }
+
+    fn account() -> Vec<ProviderRow> {
+        let catalog = json!([{"model": "kimi-k3", "label": "Kimi K3"}]);
+        let anthropic = json!({"opus": "claude-opus-5-5", "fable": "claude-fable-5-1"});
+        let openai = json!({"sol": "gpt-sol", "luna": "gpt-luna", "astra": "gpt-astra"});
+        vec![
+            row("fireworks", None, Some(catalog)),
+            row("anthropic", Some(anthropic), None),
+            row("openai", Some(openai), None),
+        ]
+    }
+
+    fn dispatched(rows: &[ProviderRow], hint: Option<&str>, raw: &str) -> String {
+        let candidates: Vec<_> =
+            alias_rows(rows, hint).into_iter().map(|r| (r, raw.to_owned())).collect();
+        pick_model_alias(&candidates, hint.is_some(), raw)
+    }
+
+    #[test]
+    fn unaliased_claude_models_are_never_captured_by_the_fireworks_catalog() {
+        let rows = account();
+        for raw in ["claude-haiku-5-5", "haiku", "claude-opus-5-5"] {
+            assert_eq!(dispatched(&rows, None, raw), raw, "{raw} must pass through");
+            assert_eq!(dispatched(&rows, Some("anthropic"), raw), raw, "{raw} must pass through");
+        }
+    }
+
+    #[test]
+    fn bare_dispatch_still_rewrites_explicit_aliases_and_catalog_labels() {
+        let rows = account();
+        assert_eq!(dispatched(&rows, None, "opus"), "claude-opus-5-5");
+        assert_eq!(dispatched(&rows, None, "sol"), "gpt-sol");
+        assert_eq!(dispatched(&rows, None, "Kimi K3"), "kimi-k3");
+    }
+
+    #[test]
+    fn fireworks_hint_resolves_an_unknown_model_through_the_catalog_like_a_spawn() {
+        let rows = account();
+        assert_eq!(dispatched(&rows, Some("fireworks"), "something-unlisted"), "kimi-k3");
+        assert_eq!(dispatched(&rows, Some("fireworks"), "Kimi K3"), "kimi-k3");
+    }
+
+    #[test]
+    fn anthropic_hint_rewrites_an_anthropic_alias() {
+        let rows = account();
+        assert_eq!(dispatched(&rows, Some("anthropic"), "opus"), "claude-opus-5-5");
+    }
+
+    #[test]
+    fn a_hint_only_consults_that_familys_row() {
+        let rows = account();
+        assert_eq!(dispatched(&rows, Some("openai"), "opus"), "opus");
+        assert_eq!(dispatched(&rows, Some("anthropic"), "sol"), "sol");
+        let hinted: Vec<&str> =
+            alias_rows(&rows, Some("openai")).iter().map(|r| r.family().label()).collect();
+        assert_eq!(hinted, vec!["openai"]);
+        let bare: Vec<&str> = alias_rows(&rows, None).iter().map(|r| r.family().label()).collect();
+        assert_eq!(bare, vec!["anthropic", "openai", "fireworks"]);
+    }
 }

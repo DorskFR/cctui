@@ -748,7 +748,16 @@ pub async fn resolve_account_model(
     // `fable → opus` still maps through the account's `opus` alias. Keyed on
     // the row's owning account: after an account redirect the target's rules
     // apply, not the source's.
-    let model = &*flip_model_redirect(state, user_id, row.id, family, model).await;
+    let model = flip_model_redirect(state, user_id, row.id, family, model).await;
+    resolve_row_model(row, &model, true)
+}
+
+/// Map `model` through one provider row: its `model_aliases` first, then, for
+/// `fireworks`, its catalog. `catalog_fallback` lets a catalog miss resolve to
+/// the first entry, as a spawn needs; without it only an exact id or label
+/// match counts, so an unrelated name passes through unchanged.
+#[must_use]
+pub fn resolve_row_model(row: &ProviderRow, model: &str, catalog_fallback: bool) -> String {
     let aliased = row
         .model_aliases
         .as_ref()
@@ -756,15 +765,20 @@ pub async fn resolve_account_model(
         .and_then(serde_json::Value::as_str)
         .filter(|s| !s.trim().is_empty())
         .map_or_else(|| model.to_owned(), str::to_owned);
-    if family != Family::Fireworks {
+    if row.family() != Family::Fireworks {
         return aliased;
     }
-    resolve_catalog_model(row.models.as_ref(), &aliased).unwrap_or(aliased)
+    let resolved = if catalog_fallback {
+        resolve_catalog_model(row.models.as_ref(), &aliased)
+    } else {
+        resolve_exact_catalog_model(row.models.as_ref(), &aliased)
+    };
+    resolved.unwrap_or(aliased)
 }
 
 /// The model to actually spawn with, after any live model-redirect rule on the
 /// provider row's owning account. Fail-soft on every path: no rule, no flip.
-async fn flip_model_redirect(
+pub(crate) async fn flip_model_redirect(
     state: &impl MintContext,
     user_id: Uuid,
     provider_row_id: Uuid,
@@ -808,20 +822,33 @@ async fn flip_model_redirect(
 /// is empty — the caller then keeps the requested model verbatim.
 #[must_use]
 pub fn resolve_catalog_model(models: Option<&serde_json::Value>, model: &str) -> Option<String> {
-    let entries = models?.as_array().filter(|a| !a.is_empty())?;
-    let id_of = |e: &serde_json::Value| {
-        e.get("model").and_then(serde_json::Value::as_str).map(str::to_owned)
-    };
+    resolve_exact_catalog_model(models, model)
+        .or_else(|| models?.as_array()?.iter().find_map(catalog_entry_id))
+}
+
+/// [`resolve_catalog_model`] without the first-entry fallback: only an exact
+/// catalog id or label resolves.
+#[must_use]
+pub fn resolve_exact_catalog_model(
+    models: Option<&serde_json::Value>,
+    model: &str,
+) -> Option<String> {
     let wanted = model.trim();
-    if !wanted.is_empty()
-        && let Some(hit) = entries.iter().find(|e| {
-            id_of(e).as_deref() == Some(wanted)
+    if wanted.is_empty() {
+        return None;
+    }
+    models?
+        .as_array()?
+        .iter()
+        .find(|e| {
+            catalog_entry_id(e).as_deref() == Some(wanted)
                 || e.get("label").and_then(serde_json::Value::as_str) == Some(wanted)
         })
-    {
-        return id_of(hit);
-    }
-    entries.iter().find_map(id_of)
+        .and_then(catalog_entry_id)
+}
+
+fn catalog_entry_id(entry: &serde_json::Value) -> Option<String> {
+    entry.get("model").and_then(serde_json::Value::as_str).map(str::to_owned)
 }
 
 /// Decrypt a named account's per-account custom env (`env_json`).
@@ -957,7 +984,10 @@ pub async fn revoke_grantee_session_tokens(pool: &sqlx::PgPool, account_id: Uuid
 
 #[cfg(test)]
 mod tests {
-    use super::{Family, MintSessionEnvError, ProviderRow, mint_order};
+    use super::{
+        Family, MintSessionEnvError, ProviderRow, mint_order, resolve_catalog_model,
+        resolve_exact_catalog_model, resolve_row_model,
+    };
 
     fn row(provider: &str) -> ProviderRow {
         ProviderRow {
@@ -974,6 +1004,17 @@ mod tests {
         let order = mint_order(&rows, Family::Openai).expect("openai provider present");
         let families: Vec<&str> = order.iter().map(|r| r.family().label()).collect();
         assert_eq!(families, vec!["anthropic", "fireworks", "openai"]);
+    }
+
+    #[test]
+    fn row_resolution_takes_the_catalog_fallback_only_when_asked() {
+        let mut fw = row("fireworks");
+        fw.models = Some(serde_json::json!([{"model": "kimi-k3", "label": "Kimi K3"}]));
+        assert_eq!(resolve_row_model(&fw, "claude-haiku-5-5", true), "kimi-k3");
+        assert_eq!(resolve_row_model(&fw, "claude-haiku-5-5", false), "claude-haiku-5-5");
+        assert_eq!(resolve_row_model(&fw, "Kimi K3", false), "kimi-k3");
+        assert_eq!(resolve_exact_catalog_model(fw.models.as_ref(), ""), None);
+        assert_eq!(resolve_catalog_model(fw.models.as_ref(), "").as_deref(), Some("kimi-k3"));
     }
 
     #[test]
