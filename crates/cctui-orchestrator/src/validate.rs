@@ -116,7 +116,8 @@ async fn validate_inner(
         check_guard(guard).map_err(|e| format!("WorkerProfile `{name}` spec.guard: {e}"))?;
     }
     if let Some(settings) = &profile.pod {
-        check_pod_settings(settings).map_err(|e| format!("WorkerProfile `{name}` spec.pod: {e}"))?;
+        check_pod_settings(settings)
+            .map_err(|e| format!("WorkerProfile `{name}` spec.pod: {e}"))?;
     }
     check_posture(&profile).map_err(|e| format!("WorkerProfile `{name}` spec.posture: {e}"))?;
     check_posture_annotation(annotations, &profile)?;
@@ -1515,7 +1516,10 @@ mod tests {
             "priorityClassName": "cctui-workers"
         }));
         let pod = dispatched_pod("lean", &profile);
-        assert_eq!(pod.spec.as_ref().unwrap().priority_class_name.as_deref(), Some("cctui-workers"));
+        assert_eq!(
+            pod.spec.as_ref().unwrap().priority_class_name.as_deref(),
+            Some("cctui-workers")
+        );
         assert!(matches!(decide(&pod, &source("lean", profile)).await, Decision::Allow));
     }
 

@@ -541,7 +541,10 @@ pod:
 "#;
         let spec: WorkerProfileSpec = serde_norway::from_str(yaml).expect("pod profile parses");
         assert_eq!(spec.pod_labels().unwrap()["team"], "platform");
-        assert_eq!(spec.pod_metadata_annotations().unwrap()["policy.example.dev/owner"], "platform");
+        assert_eq!(
+            spec.pod_metadata_annotations().unwrap()["policy.example.dev/owner"],
+            "platform"
+        );
         assert_eq!(spec.priority_class_name(), Some("cctui-workers"));
         let node = spec.affinity.as_ref().and_then(|a| a.node_affinity.as_ref()).unwrap();
         let required = node.required_during_scheduling_ignored_during_execution.as_ref().unwrap();
