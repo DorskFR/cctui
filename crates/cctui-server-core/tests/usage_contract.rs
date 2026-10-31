@@ -63,6 +63,9 @@ impl UsageContext for Host {
     fn anthropic_reset_status_url(&self) -> String {
         self.url.replace("/usage", "/reset")
     }
+    fn openai_usage_url(&self) -> String {
+        self.url.clone()
+    }
     async fn usage_updated(&self, id: Uuid, _provider: String, usage: Option<&Value>) {
         {
             let cached = self.cache.get(&id).expect("cache precedes reporting");
@@ -195,6 +198,19 @@ async fn a_failed_quota_fetch_keeps_the_last_reading_without_reporting() {
     assert_eq!(fixture.host.cache.get(&fixture.provider).unwrap().fetched_at, at);
     assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.host.reports.load(Ordering::SeqCst), 0);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn a_rejected_codex_quota_read_is_an_error_not_a_local_tally() {
+    let Some(fixture) = Fixture::new(StatusCode::UNAUTHORIZED, false).await else { return };
+    sqlx::query("UPDATE account_providers SET provider = 'openai', provider_account_id = 'chatgpt-acct', expires_at = now() + interval '1 hour' WHERE id = $1")
+        .bind(fixture.provider).execute(&fixture.host.pool).await.unwrap();
+    assert_eq!(
+        fetch_account_usage(fixture.host.as_ref(), fixture.provider).await,
+        Err(StatusCode::UNAUTHORIZED)
+    );
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
     fixture.close().await;
 }
 

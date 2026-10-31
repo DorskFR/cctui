@@ -303,18 +303,17 @@ pub async fn fetch_openai_reset_credits(
 
 /// Fetch an OpenAI/codex account's real 5h/7d usage from `wham/usage`.
 ///
-/// Uses only stored OAuth data: a fresh Bearer via [`current_access_token`] and the `chatgpt-
-/// account-id` from `acct.provider_account_id`.
+/// Uses only stored OAuth data: a fresh Bearer via [`current_access_token`] and the account's
+/// `chatgpt-account-id`.
 ///
-/// Returns `None` (so the caller falls back to the local tally) when the account has no account-id,
-/// the token can't be refreshed, the call fails/errs, or the body has no rate-limit windows —
+/// Errs when the token can't be refreshed, the call fails, or the body has no rate-limit windows,
 /// logging the reason in each case. No inference request, costs no tokens.
 pub async fn fetch_openai_usage(
     state: &impl UsageContext,
     acct: &Account,
-) -> Option<serde_json::Value> {
-    let account_id = acct.provider_account_id.as_deref()?;
-    let access_token = current_access_token(state, acct).await.ok()?;
+    account_id: &str,
+) -> Result<serde_json::Value, StatusCode> {
+    let access_token = current_access_token(state, acct).await?;
     let resp = state
         .http_client()
         .get(state.openai_usage_url())
@@ -323,25 +322,29 @@ pub async fn fetch_openai_usage(
         .header(reqwest::header::ACCEPT, "*/*")
         .send()
         .await
-        .map_err(|e| tracing::warn!(account = %acct.id, "openai usage transport error: {e}"))
-        .ok()?;
+        .map_err(|e| {
+            tracing::warn!(account = %acct.id, "openai usage transport error: {e}");
+            StatusCode::BAD_GATEWAY
+        })?;
     if !resp.status().is_success() {
         tracing::warn!(account = %acct.id, status = %resp.status(), "openai usage rejected");
-        return None;
+        return Err(StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY));
     }
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| tracing::warn!(account = %acct.id, "openai usage decode error: {e}"))
-        .ok()?;
-    let mut usage = map_wham_usage(&body)?;
+    let body: serde_json::Value = resp.json().await.map_err(|e| {
+        tracing::warn!(account = %acct.id, "openai usage decode error: {e}");
+        StatusCode::BAD_GATEWAY
+    })?;
+    let Some(mut usage) = map_wham_usage(&body) else {
+        tracing::warn!(account = %acct.id, "openai usage body has no rate-limit windows");
+        return Err(StatusCode::BAD_GATEWAY);
+    };
     super::health::clear_account_reauth(state, acct.id);
     if usage.get("reset_credits").is_none()
         && let Some(credits) = fetch_openai_reset_credits(state, acct, &access_token).await
     {
         usage["reset_credits"] = credits;
     }
-    Some(usage)
+    Ok(usage)
 }
 
 /// Whether the soft-limit check must refresh usage from upstream before deciding.
@@ -386,9 +389,9 @@ pub async fn usage_for_soft_limit(
 /// Reloads + decrypts the account, ensures a fresh access token (refreshing under the per-account
 /// mutex if needed), and calls Anthropic's free usage endpoint.
 ///
-/// Returns:   * `Ok(Some(json))` — anthropic account (fetched upstream) or OpenAI/codex     account
-/// (metered locally from `session_token_usage`)   * `Ok(None)` — no such account   * `Err(status)`
-/// — token refresh failed or upstream rejected (e.g. 429)
+/// Returns `Ok(Some(json))` for windows read upstream (or, for a codex account without a
+/// chatgpt-account-id, tallied locally), `Ok(None)` for no such account, and `Err(status)` when
+/// the token refresh failed or upstream rejected the read.
 ///
 /// This makes NO inference request and costs no tokens. Callers MUST throttle it
 /// (the endpoint rate-limits per access token); see the usage cache in the route.
@@ -431,18 +434,15 @@ async fn usage_for_account(
         return probe_usage_windows(state, &acct, &id).await;
     }
     if acct.provider != "anthropic" {
-        // OpenAI/codex accounts: read the ChatGPT backend's REAL 5h/7d rate-limit
-        // windows — the same numbers `codex /status` shows, keyed on the
-        // stored OAuth Bearer + chatgpt-account-id. Fall back to the local token
-        // tally only when that call can't produce windows (no account-id,
-        // token refresh fail, upstream error, or a body without rate limits), so
-        // freshly-enrolled / API-key accounts still render something.
+        // A failed real read must stay an error: the local tally against an
+        // arbitrary budget reads as thousands of percent on cache-heavy sessions.
+        // Only accounts without a chatgpt-account-id, which have no real
+        // endpoint, are measured by the tally.
         if acct.provider == "openai"
-            && let Some(usage) = fetch_openai_usage(state, &acct).await
+            && let Some(chatgpt_account_id) = acct.provider_account_id.as_deref()
         {
-            return Ok(Some(usage));
+            return fetch_openai_usage(state, &acct, chatgpt_account_id).await.map(Some);
         }
-        tracing::info!(account = %account_id, "openai usage unavailable; falling back to local token tally");
         return local_usage_windows(state, account_id).await;
     }
     let access_token = current_access_token(state, &acct).await?;
