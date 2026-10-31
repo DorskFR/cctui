@@ -764,10 +764,10 @@ pub fn alias_rows<'a>(
     families.into_iter().filter_map(|f| rows.iter().find(|r| r.family() == f)).collect()
 }
 
-/// The first rewrite among `(row, redirect-flipped model)` candidates, or
-/// `raw` when none rewrites. Only a hinted dispatch takes a catalog's
-/// first-entry fallback, as a spawn on that family would; a bare dispatch
-/// must not let a catalog capture names it does not list.
+/// The first rewrite among `(row, redirect-flipped model)` candidates, else `raw`.
+///
+/// Only a hinted dispatch takes a catalog's first-entry fallback, as a spawn
+/// would; a bare dispatch must not let a catalog capture names it does not list.
 #[must_use]
 pub fn pick_model_alias(
     candidates: &[(&crate::gateway::mint::ProviderRow, String)],

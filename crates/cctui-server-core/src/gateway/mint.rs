@@ -752,10 +752,10 @@ pub async fn resolve_account_model(
     resolve_row_model(row, &model, true)
 }
 
-/// Map `model` through one provider row: its `model_aliases` first, then, for
-/// `fireworks`, its catalog. `catalog_fallback` lets a catalog miss resolve to
-/// the first entry, as a spawn needs; without it only an exact id or label
-/// match counts, so an unrelated name passes through unchanged.
+/// Map `model` through one provider row's aliases, then its catalog.
+///
+/// `catalog_fallback` lets a `fireworks` catalog miss resolve to the first
+/// entry, as a spawn needs; without it only an exact id or label match counts.
 #[must_use]
 pub fn resolve_row_model(row: &ProviderRow, model: &str, catalog_fallback: bool) -> String {
     let aliased = row
