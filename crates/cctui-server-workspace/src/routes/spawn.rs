@@ -28,6 +28,7 @@ use cctui_proto::api::{
 use uuid::Uuid;
 
 use cctui_server_core::launch::spawn_ids;
+use cctui_telemetry::db::traced;
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
@@ -262,12 +263,10 @@ async fn profile_context_names(
     items: &[crate::routes::context::ContextItem],
 ) -> Vec<String> {
     let Some(profile_id) = req.profile_id else { return Vec::new() };
-    let pinned: Option<Vec<Uuid>> = sqlx::query_scalar(
+    let pinned: Option<Vec<Uuid>> = traced(
         "SELECT context_items FROM session_profiles WHERE id = $1 AND user_id = $2",
+        |sql| sqlx::query_scalar(sql).bind(profile_id).bind(uid).fetch_optional(&state.pool),
     )
-    .bind(profile_id)
-    .bind(uid)
-    .fetch_optional(&state.pool)
     .await
     .unwrap_or_default();
     pinned
@@ -491,10 +490,10 @@ pub async fn authorize_session_launch(
     session_id: &str,
 ) -> Result<(), AppError> {
     let machine: Option<Option<Uuid>> =
-        sqlx::query_scalar("SELECT machine_uuid FROM sessions WHERE id = $1")
-            .bind(session_id)
-            .fetch_optional(&state.pool)
-            .await?;
+        traced("SELECT machine_uuid FROM sessions WHERE id = $1", |sql| {
+            sqlx::query_scalar(sql).bind(session_id).fetch_optional(&state.pool)
+        })
+        .await?;
     match machine.flatten() {
         Some(machine_uuid) => authorize_launch(state, ctx, machine_uuid).await,
         None => require_dispatch(ctx).map_err(|(code, Json(e))| AppError::new(code, e.error)),
@@ -556,22 +555,25 @@ async fn save_draft(
     let name = req.name.as_deref().filter(|n| !n.trim().is_empty());
     let model = req.model.as_deref().filter(|m| !m.trim().is_empty());
     let effort = req.effort.as_deref().filter(|e| !e.trim().is_empty());
-    sqlx::query(
+    traced(
         r"INSERT INTO sessions
             (id, machine_id, machine_uuid, working_dir, status, registered_at, last_heartbeat,
              metadata, adapter_id, session_name, model, effort)
           VALUES ($1, $2, $3, $4, 'draft', now(), now(), $5, $6, $7, $8, $9)",
+        |sql| {
+            sqlx::query(sql)
+                .bind(draft_id)
+                .bind(&req.machine_id)
+                .bind(machine_uuid)
+                .bind(&req.working_dir)
+                .bind(&metadata)
+                .bind(&adapter_id)
+                .bind(name)
+                .bind(model)
+                .bind(effort)
+                .execute(&state.pool)
+        },
     )
-    .bind(draft_id)
-    .bind(&req.machine_id)
-    .bind(machine_uuid)
-    .bind(&req.working_dir)
-    .bind(&metadata)
-    .bind(&adapter_id)
-    .bind(name)
-    .bind(model)
-    .bind(effort)
-    .execute(&state.pool)
     .await?;
 
     let draft_key = draft_id.to_string();
@@ -621,10 +623,10 @@ pub async fn launch_stored_draft(
     env: std::collections::BTreeMap<String, String>,
 ) -> Result<(StatusCode, Json<SpawnResponse>), AppError> {
     let row: Option<(String, serde_json::Value)> =
-        sqlx::query_as("SELECT status, metadata FROM sessions WHERE id = $1")
-            .bind(session_id)
-            .fetch_optional(&state.pool)
-            .await?;
+        traced("SELECT status, metadata FROM sessions WHERE id = $1", |sql| {
+            sqlx::query_as(sql).bind(session_id).fetch_optional(&state.pool)
+        })
+        .await?;
     let Some((status, metadata)) = row else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "draft not found"));
     };
@@ -661,11 +663,11 @@ pub async fn launch_stored_draft(
     // Drop the draft only after a successful dispatch; the live session is born
     // from the daemon's registration with its own id. The `sessions` delete
     // trigger drops the draft's attachment rows with it.
-    if let Err(e) = sqlx::query("DELETE FROM sessions WHERE id = $1 AND status = 'draft'")
-        .bind(session_id)
-        .execute(&state.pool)
-        .await
-    {
+    let deleted = traced("DELETE FROM sessions WHERE id = $1 AND status = 'draft'", |sql| {
+        sqlx::query(sql).bind(session_id).execute(&state.pool)
+    })
+    .await;
+    if let Err(e) = deleted {
         tracing::warn!(%session_id, "draft launched but row delete failed: {e}");
     }
     tracing::info!(draft = %session_id, "draft launched");
@@ -752,10 +754,10 @@ pub async fn put_draft_attachments(
     let parsed = parse_upload_multipart(multipart, cached_upload_caps(&state))
         .await
         .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
-    let status: Option<String> = sqlx::query_scalar("SELECT status FROM sessions WHERE id = $1")
-        .bind(&session_id)
-        .fetch_optional(&state.pool)
-        .await?;
+    let status: Option<String> = traced("SELECT status FROM sessions WHERE id = $1", |sql| {
+        sqlx::query_scalar(sql).bind(&session_id).fetch_optional(&state.pool)
+    })
+    .await?;
     let Some(status) = status else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "draft not found"));
     };
@@ -779,10 +781,11 @@ pub async fn replace_draft_attachments(
     uploads: &[crate::uploads::RawUpload],
 ) -> Result<Vec<crate::routes::attachments::SessionAttachment>, sqlx::Error> {
     let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM session_attachments WHERE session_id = $1")
-        .bind(draft_id)
-        .execute(&mut *tx)
-        .await?;
+    let conn = &mut *tx;
+    traced("DELETE FROM session_attachments WHERE session_id = $1", move |sql| {
+        sqlx::query(sql).bind(draft_id).execute(conn)
+    })
+    .await?;
     let rows =
         crate::routes::attachments::record_uploads_in(&mut tx, draft_id, uploads, &[]).await?;
     tx.commit().await?;
@@ -800,10 +803,10 @@ pub async fn schedule_draft_launch(
     require_dispatch(&ctx).map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     let at = crate::scheduled_messages::parse_deliver_at(&body.launch_at, chrono::Utc::now())
         .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e.to_string()))?;
-    let status: Option<String> = sqlx::query_scalar("SELECT status FROM sessions WHERE id = $1")
-        .bind(&session_id)
-        .fetch_optional(&state.pool)
-        .await?;
+    let status: Option<String> = traced("SELECT status FROM sessions WHERE id = $1", |sql| {
+        sqlx::query_scalar(sql).bind(&session_id).fetch_optional(&state.pool)
+    })
+    .await?;
     let Some(status) = status else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "draft not found"));
     };
@@ -835,10 +838,10 @@ pub async fn discard_draft(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    let res = sqlx::query("DELETE FROM sessions WHERE id = $1 AND status = 'draft'")
-        .bind(&session_id)
-        .execute(&state.pool)
-        .await?;
+    let res = traced("DELETE FROM sessions WHERE id = $1 AND status = 'draft'", |sql| {
+        sqlx::query(sql).bind(&session_id).execute(&state.pool)
+    })
+    .await?;
     if res.rows_affected() == 0 {
         return Err(AppError::new(StatusCode::NOT_FOUND, "draft not found"));
     }
@@ -929,12 +932,15 @@ pub async fn get_machine_commands(
 ) -> Result<Json<Vec<MachineCommand>>, AppError> {
     let owned = match Uuid::parse_str(&machine_id) {
         Ok(id) => {
-            sqlx::query_scalar::<_, bool>(
+            traced(
                 "SELECT EXISTS (SELECT 1 FROM machines WHERE id = $1 AND user_id = $2)",
+                |sql| {
+                    sqlx::query_scalar::<_, bool>(sql)
+                        .bind(id)
+                        .bind(ctx.user_id)
+                        .fetch_one(&state.pool)
+                },
             )
-            .bind(id)
-            .bind(ctx.user_id)
-            .fetch_one(&state.pool)
             .await?
         }
         Err(_) => false,

@@ -92,11 +92,10 @@ pub async fn load_reconcile(
     state: &CoreState,
     machine_id: Uuid,
 ) -> sqlx::Result<Vec<DaemonAdapterConfig>> {
-    let rows: Vec<(String, serde_json::Value, bool)> = sqlx::query_as(
+    let rows: Vec<(String, serde_json::Value, bool)> = cctui_telemetry::db::traced(
         "SELECT adapter_id, config, enabled FROM adapters_enabled WHERE machine_id = $1",
+        |sql| sqlx::query_as(sql).bind(machine_id).fetch_all(&state.pool),
     )
-    .bind(machine_id)
-    .fetch_all(&state.pool)
     .await?;
     let rows = merge_default_adapters(rows, cctui_proto::adapter::default_enabled_adapters());
 

@@ -200,13 +200,11 @@ async fn launch_gate(
 }
 
 pub async fn fill_spawner(pool: &sqlx::PgPool, session_id: &str, user_id: Uuid) {
-    let res = sqlx::query(
+    let res = cctui_telemetry::db::traced(
         "UPDATE sessions SET spawned_by = $2 \
          WHERE id = $1 AND spawned_by IS NULL",
+        |sql| sqlx::query(sql).bind(session_id).bind(user_id).execute(pool),
     )
-    .bind(session_id)
-    .bind(user_id)
-    .execute(pool)
     .await;
     if let Err(e) = res {
         tracing::warn!(%session_id, error = %e, "could not record the spawner");
@@ -224,21 +222,18 @@ pub async fn remember_spawner(
 ) {
     let name = name.map(str::trim).filter(|n| !n.is_empty());
     let res = async {
-        sqlx::query(
+        cctui_telemetry::db::traced(
             "DELETE FROM session_spawner_intents WHERE created_at < now() - interval '1 day'",
+            |sql| sqlx::query(sql).execute(pool),
         )
-        .execute(pool)
         .await?;
-        sqlx::query(
+        cctui_telemetry::db::traced(
             "INSERT INTO session_spawner_intents (spawn_key, user_id, session_name) \
              VALUES ($1, $2, $3) \
              ON CONFLICT (spawn_key) DO UPDATE SET user_id = EXCLUDED.user_id, \
                 session_name = EXCLUDED.session_name, created_at = now()",
+            |sql| sqlx::query(sql).bind(spawn_key).bind(user_id).bind(name).execute(pool),
         )
-        .bind(spawn_key)
-        .bind(user_id)
-        .bind(name)
-        .execute(pool)
         .await
     }
     .await;
@@ -255,7 +250,7 @@ pub async fn remember_spawner(
 /// only consumed once the row exists, or an early claim would lose the name.
 pub async fn claim_spawner(pool: &sqlx::PgPool, session_id: &str, spawn_key: Option<&str>) {
     let key = spawn_key.unwrap_or(session_id);
-    let res = sqlx::query(
+    let res = cctui_telemetry::db::traced(
         "WITH claimed AS (DELETE FROM session_spawner_intents \
                            WHERE (spawn_key = $1 OR spawn_key = $2) \
                              AND EXISTS (SELECT 1 FROM sessions WHERE id = $1) \
@@ -269,10 +264,8 @@ pub async fn claim_spawner(pool: &sqlx::PgPool, session_id: &str, spawn_key: Opt
                      || jsonb_build_object('name_source', 'user') \
                 ELSE sessions.metadata END \
          WHERE id = $1 AND EXISTS (SELECT 1 FROM claimed)",
+        |sql| sqlx::query(sql).bind(session_id).bind(key).execute(pool),
     )
-    .bind(session_id)
-    .bind(key)
-    .execute(pool)
     .await;
     if let Err(e) = res {
         tracing::warn!(%session_id, error = %e, "could not record the spawner");

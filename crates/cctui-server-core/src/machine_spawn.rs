@@ -209,7 +209,8 @@ pub async fn default_account_name(
 ) -> Result<Option<String>, (StatusCode, Json<ApiError>)> {
     let family =
         crate::gateway::Family::from_adapter(adapter_id).map_err(|e| bad_request(e.to_string()))?;
-    let names: Vec<String> = sqlx::query_scalar(
+    let pool = state.machine_pool();
+    let names: Vec<String> = cctui_telemetry::db::traced(
         "SELECT DISTINCT a.name \
          FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
          WHERE ap.family = $2 \
@@ -218,10 +219,8 @@ pub async fn default_account_name(
                 WHERE s.resource_type = 'account' AND s.resource_id = a.id \
                   AND s.grantee_id = $1 AND s.revoked_at IS NULL)) \
          ORDER BY a.name",
+        |sql| sqlx::query_scalar(sql).bind(user_id).bind(family.label()).fetch_all(pool),
     )
-    .bind(user_id)
-    .bind(family.label())
-    .fetch_all(state.machine_pool())
     .await
     .map_err(|e| AppError::from(e).into_parts())?;
     resolve_default_account(&names, user_id, adapter_id)
@@ -252,7 +251,7 @@ pub async fn auto_account_candidates(
     family: crate::gateway::Family,
     owned_only: bool,
 ) -> Result<Vec<AutoAccountRow>, sqlx::Error> {
-    sqlx::query_as(
+    cctui_telemetry::db::traced(
         "SELECT a.id, a.name, ap.id, ap.soft_limits_json, ap.models, ap.model_aliases \
          FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
          WHERE ap.family = $2 \
@@ -262,11 +261,14 @@ pub async fn auto_account_candidates(
                 WHERE s.resource_type = 'account' AND s.resource_id = a.id \
                   AND s.grantee_id = $1 AND s.revoked_at IS NULL))) \
          ORDER BY a.name",
+        |sql| {
+            sqlx::query_as(sql)
+                .bind(user_id)
+                .bind(family.label())
+                .bind(owned_only)
+                .fetch_all(exec)
+        },
     )
-    .bind(user_id)
-    .bind(family.label())
-    .bind(owned_only)
-    .fetch_all(exec)
     .await
 }
 

@@ -45,15 +45,15 @@ pub async fn prepare(
     actor: Uuid,
     row: &FailedSpawnRow,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT INTO machine_launches (command_id,session_id,machine_id,user_id,acting_user_id,adapter_id,working_dir,name,model,effort) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
+    cctui_telemetry::db::traced("INSERT INTO machine_launches (command_id,session_id,machine_id,user_id,acting_user_id,adapter_id,working_dir,name,model,effort) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", |sql| sqlx::query(sql)
         .bind(command).bind(&row.session_id).bind(row.machine_id).bind(row.user_id).bind(actor)
-        .bind(&row.adapter_id).bind(&row.working_dir).bind(&row.name).bind(&row.model).bind(&row.effort).execute(pool).await?;
+        .bind(&row.adapter_id).bind(&row.working_dir).bind(&row.name).bind(&row.model).bind(&row.effort).execute(pool)).await?;
     Ok(())
 }
 
 pub async fn delivered(pool: &PgPool, command: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE machine_launches SET state='delivered',updated_at=now() WHERE command_id=$1 AND state='prepared'")
-        .bind(command).execute(pool).await?;
+    cctui_telemetry::db::traced("UPDATE machine_launches SET state='delivered',updated_at=now() WHERE command_id=$1 AND state='prepared'", |sql| sqlx::query(sql)
+        .bind(command).execute(pool)).await?;
     Ok(())
 }
 
@@ -62,8 +62,8 @@ pub async fn delivery_failed(
     command: Uuid,
     detail: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE machine_launches SET state='delivery_failed',detail=$2,updated_at=now() WHERE command_id=$1 AND state='prepared'")
-        .bind(command).bind(detail).execute(pool).await?;
+    cctui_telemetry::db::traced("UPDATE machine_launches SET state='delivery_failed',detail=$2,updated_at=now() WHERE command_id=$1 AND state='prepared'", |sql| sqlx::query(sql)
+        .bind(command).bind(detail).execute(pool)).await?;
     Ok(())
 }
 

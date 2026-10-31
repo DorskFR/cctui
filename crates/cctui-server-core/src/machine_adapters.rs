@@ -7,11 +7,10 @@ pub async fn machine_report(
     pool: &sqlx::PgPool,
     machine_id: Uuid,
 ) -> Result<(String, Option<HarnessReport>), AppError> {
-    let row: Option<(String, Option<serde_json::Value>)> = sqlx::query_as(
+    let row: Option<(String, Option<serde_json::Value>)> = cctui_telemetry::db::traced(
         "SELECT COALESCE(display_name, name), harness_report FROM machines WHERE id = $1",
+        |sql| sqlx::query_as(sql).bind(machine_id).fetch_optional(pool),
     )
-    .bind(machine_id)
-    .fetch_optional(pool)
     .await?;
     let (name, report) = row.unwrap_or_default();
     Ok((name, report.and_then(|v| serde_json::from_value::<HarnessReport>(v).ok())))

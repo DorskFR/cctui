@@ -28,16 +28,19 @@ pub async fn granted_action(
     grantee: Uuid,
     action: &str,
 ) -> Result<bool, sqlx::Error> {
-    let row: Option<i32> = sqlx::query_scalar(
+    let row: Option<i32> = cctui_telemetry::db::traced(
         "SELECT 1 FROM resource_shares \
          WHERE resource_type = $1 AND resource_id = $2 AND grantee_id = $3 \
            AND action = $4 AND revoked_at IS NULL LIMIT 1",
+        |sql| {
+            sqlx::query_scalar(sql)
+                .bind(resource_type)
+                .bind(resource_id)
+                .bind(grantee)
+                .bind(action)
+                .fetch_optional(pool)
+        },
     )
-    .bind(resource_type)
-    .bind(resource_id)
-    .bind(grantee)
-    .bind(action)
-    .fetch_optional(pool)
     .await?;
     Ok(row.is_some())
 }

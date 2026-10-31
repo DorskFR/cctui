@@ -7,13 +7,11 @@ pub async fn upsert(
     capability: &SpawnCapability,
 ) -> Result<(), sqlx::Error> {
     let json = serde_json::to_value(capability).unwrap_or(serde_json::Value::Null);
-    sqlx::query(
+    cctui_telemetry::db::traced(
         "INSERT INTO session_spawn_capabilities (session_id, capability) VALUES ($1, $2) \
          ON CONFLICT (session_id) DO UPDATE SET capability = EXCLUDED.capability",
+        |sql| sqlx::query(sql).bind(session_id).bind(json).execute(exec),
     )
-    .bind(session_id)
-    .bind(json)
-    .execute(exec)
     .await?;
     Ok(())
 }
