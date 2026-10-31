@@ -2308,7 +2308,11 @@ mod tests {
                     "content": [{ "type": "text", "text": "Command running in background with ID: bg1. Output is being written to: /tmp/bg1.output" }],
                 }),
             });
-            observer.observe(&msg("assistant", "build running in the background", Some("end_turn")));
+            observer.observe(&msg(
+                "assistant",
+                "build running in the background",
+                Some("end_turn"),
+            ));
             observer.note_turn_end("child-1");
             tokio::time::sleep(Duration::from_millis(100)).await;
             observer.observe(&AdapterEvent::Message {

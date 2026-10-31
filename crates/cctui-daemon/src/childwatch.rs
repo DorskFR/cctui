@@ -44,10 +44,10 @@ pub const TEXT_QUIET_GRACE: Duration = Duration::from_secs(45);
 /// distrusted until the watch is at least this old (a freshly dispatched
 /// worker can briefly read as idle before its first status poll).
 pub const QUIET_DONE_MIN_AGE: Duration = Duration::from_mins(1);
-/// How long a child that ended its turn with background tasks still running
-/// can stay quiet before its turn counts as over anyway. Claude Code starts a
-/// new turn on its own once such a task completes, and that turn carries the
-/// real answer.
+/// Quiet time after which outstanding background tasks stop holding a turn.
+///
+/// Claude Code starts a new turn on its own once such a task completes, and
+/// that turn carries the real answer.
 pub const BG_TASK_QUIET_CAP: Duration = Duration::from_mins(20);
 /// The one `stop_reason` that means the model handed back rather than lining up
 /// another tool call.
