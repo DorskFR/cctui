@@ -77,11 +77,14 @@ async fn write_status_signals(
                    ((COALESCE(s.session_name, '') = '' \
                      OR s.session_name IS NOT DISTINCT FROM s.metadata->>'agent_title') \
                     AND COALESCE(s.metadata->>'name_source', '') <> 'user') \
-                     AS claimable \
+                     AS claimable, \
+                   CASE WHEN COALESCE(s.session_name, '') = '' \
+                             AND s.metadata->>'name_source' = 'user' \
+                        THEN NULLIF(s.metadata->>'custom_title', '') END AS pinned_title \
             FROM sessions s WHERE s.id = $1 \
          ), \
          prev AS ( \
-            SELECT c.id, c.old_name, c.emoji_on, \
+            SELECT c.id, c.old_name, c.emoji_on, c.pinned_title, \
                    CASE WHEN $12 AND $5::text IS NOT NULL AND NOT c.claimable \
                              AND c.agent_title IS DISTINCT FROM $5::text \
                         THEN $5::text END AS kept_title, \
@@ -103,7 +106,7 @@ async fn write_status_signals(
             tempo = COALESCE($2, sessions.tempo), \
             agent_state = COALESCE($3, sessions.agent_state), \
             activity = COALESCE($4, sessions.activity), \
-            session_name = COALESCE(prev.new_name, sessions.session_name), \
+            session_name = COALESCE(prev.new_name, prev.pinned_title, sessions.session_name), \
             metadata = CASE \
                 WHEN prev.new_name IS NOT NULL THEN COALESCE(sessions.metadata, '{}'::jsonb) \
                      || jsonb_build_object('agent_title', prev.new_name) \
@@ -119,6 +122,7 @@ async fn write_status_signals(
          FROM prev \
          WHERE sessions.id = prev.id \
            AND (prev.new_name IS NOT NULL OR prev.kept_title IS NOT NULL \
+                OR prev.pinned_title IS NOT NULL \
                 OR (sessions.tempo, sessions.agent_state, sessions.activity, sessions.intent, \
                     sessions.model, sessions.effort, sessions.permission_mode, sessions.children) \
                    IS DISTINCT FROM \
@@ -154,7 +158,9 @@ async fn pin_user_title(pool: &sqlx::PgPool, local_id: &str, title: &str) -> any
         "UPDATE sessions SET session_name = $2, \
             metadata = COALESCE(metadata, '{}'::jsonb) \
                        || jsonb_build_object('name_source', 'user', 'custom_title', $2::text) \
-         WHERE id = $1 AND metadata->>'custom_title' IS DISTINCT FROM $2::text",
+         WHERE id = $1 \
+           AND (metadata->>'custom_title' IS DISTINCT FROM $2::text \
+                OR COALESCE(session_name, '') = '')",
     )
     .bind(local_id)
     .bind(title)
@@ -657,6 +663,54 @@ mod tests {
             row,
             (Some("qa-voice".to_owned()), Some("user".to_owned()), Some("qa-voice".to_owned()))
         );
+
+        fx.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn a_pinned_session_without_a_row_name_gets_its_custom_title_back() {
+        async fn lose_name(pool: &sqlx::PgPool, id: &str) {
+            sqlx::query("UPDATE sessions SET session_name = NULL WHERE id = $1")
+                .bind(id)
+                .execute(pool)
+                .await
+                .expect("drop name");
+        }
+
+        let Some(fx) = TitleFixture::new("pinned_nameless_heals").await else {
+            return;
+        };
+        let id = fx.spawned("qa-voice").await;
+        fx.custom_title(&id, "qa-voice").await;
+        let idle = StatusSignals {
+            tempo: Some("idle"),
+            agent_state: None,
+            activity: None,
+            name: None,
+            agent_title: false,
+            intent: None,
+            model: None,
+            effort: None,
+            permission_mode: None,
+            children: &[],
+        };
+
+        lose_name(&fx.pool, &id).await;
+        write_status_signals(&fx.pool, &id, &idle, None).await.expect("status write");
+        assert_eq!(fx.name_of(&id).await.as_deref(), Some("qa-voice"), "a Status heals");
+
+        lose_name(&fx.pool, &id).await;
+        fx.custom_title(&id, "qa-voice").await;
+        assert_eq!(fx.name_of(&id).await.as_deref(), Some("qa-voice"), "a replayed title heals");
+
+        lose_name(&fx.pool, &id).await;
+        fx.ai_title(&id, "agent title").await;
+        assert_eq!(fx.name_of(&id).await.as_deref(), Some("qa-voice"), "an agent title");
+        assert_eq!(fx.agent_title_of(&id).await.as_deref(), Some("agent title"));
+
+        fx.ai_title(&id, "another agent title").await;
+        write_status_signals(&fx.pool, &id, &idle, None).await.expect("status write");
+        assert_eq!(fx.name_of(&id).await.as_deref(), Some("qa-voice"));
 
         fx.cleanup().await;
     }
