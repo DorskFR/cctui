@@ -23,7 +23,7 @@ use crate::envelope::{
 use crate::{
     ANNOTATION_ENV_SECRET, ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_POSTURE,
     ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, GuardSpec, LABEL_WORKER_PROFILE,
-    Posture, WorkerProfileSpec,
+    Posture, RESERVED_POD_KEY_PREFIXES, RESERVED_POD_LABELS, WorkerPodSpec, WorkerProfileSpec,
 };
 use k8s_openapi::api::core::v1::{
     Container, Pod, PodSpec, PodTemplateSpec, SecurityContext, Toleration,
@@ -114,6 +114,9 @@ async fn validate_inner(
 
     if let Some(guard) = &profile.guard {
         check_guard(guard).map_err(|e| format!("WorkerProfile `{name}` spec.guard: {e}"))?;
+    }
+    if let Some(settings) = &profile.pod {
+        check_pod_settings(settings).map_err(|e| format!("WorkerProfile `{name}` spec.pod: {e}"))?;
     }
     check_posture(&profile).map_err(|e| format!("WorkerProfile `{name}` spec.posture: {e}"))?;
     check_posture_annotation(annotations, &profile)?;
@@ -305,6 +308,44 @@ pub fn check_guard(guard: &GuardSpec) -> Result<(), String> {
     Ok(())
 }
 
+/// Check a profile's `spec.pod`: its labels and annotations may not take a key
+/// cctui or the Job controller manages, so they can never shadow a selector.
+pub fn check_pod_settings(settings: &WorkerPodSpec) -> Result<(), String> {
+    let reserved = |key: &str| RESERVED_POD_KEY_PREFIXES.iter().any(|p| key.starts_with(p));
+    if let Some(key) = settings
+        .labels
+        .iter()
+        .flat_map(BTreeMap::keys)
+        .find(|k| reserved(k.as_str()) || RESERVED_POD_LABELS.contains(&k.as_str()))
+    {
+        return Err(format!("label `{key}` is managed by cctui or the Job controller"));
+    }
+    if let Some(key) =
+        settings.annotations.iter().flat_map(BTreeMap::keys).find(|k| reserved(k.as_str()))
+    {
+        return Err(format!("annotation `{key}` is managed by cctui or the Job controller"));
+    }
+    Ok(())
+}
+
+/// Priority admission stamps the cluster's global default class on a Pod whose
+/// template names none, so only an admitted pod may differ from an unset class.
+fn check_priority_class(
+    spec: &PodSpec,
+    profile: &WorkerProfileSpec,
+    admitted_pod: bool,
+) -> Result<(), String> {
+    let want = profile.priority_class_name();
+    if spec.priority_class_name.as_deref() == want || admitted_pod && want.is_none() {
+        return Ok(());
+    }
+    Err(format!(
+        "priorityClassName `{}` does not match the profile's `{}`",
+        spec.priority_class_name.as_deref().unwrap_or("<none>"),
+        want.unwrap_or("<none>"),
+    ))
+}
+
 /// A `valueFrom` on a widening setting can't be read at admission, so it
 /// counts as widening.
 fn widens_private_egress(env: &k8s_openapi::api::core::v1::EnvVar) -> bool {
@@ -441,6 +482,7 @@ fn check_conformance(
 ) -> Result<(), String> {
     check_common_template_conformance(spec, worker, profile)?;
     check_tolerations(spec, profile, true)?;
+    check_priority_class(spec, profile, true)?;
     check_name_sets(spec, worker_name, profile)?;
     check_volumes(spec, profile)?;
     check_worker_mounts(worker, worker_name, profile)?;
@@ -459,7 +501,8 @@ pub fn check_template_conformance(
     profile: &WorkerProfileSpec,
 ) -> Result<(), String> {
     check_common_template_conformance(spec, worker, profile)?;
-    check_tolerations(spec, profile, false)
+    check_tolerations(spec, profile, false)?;
+    check_priority_class(spec, profile, false)
 }
 
 fn check_common_template_conformance(
@@ -505,6 +548,9 @@ fn check_common_template_conformance(
     }
     if spec.node_selector != profile.node_selector {
         return Err("nodeSelector does not match the profile".to_owned());
+    }
+    if spec.affinity != profile.affinity {
+        return Err("affinity does not match the profile".to_owned());
     }
     if spec.runtime_class_name != profile.runtime_class_name {
         return Err("runtimeClassName does not match the profile".to_owned());
@@ -856,6 +902,12 @@ mod tests {
         if let Some(ns) = &profile.node_selector {
             pod_spec.insert("nodeSelector".into(), serde_json::to_value(ns).unwrap());
         }
+        if let Some(affinity) = &profile.affinity {
+            pod_spec.insert("affinity".into(), serde_json::to_value(affinity).unwrap());
+        }
+        if let Some(pc) = profile.priority_class_name() {
+            pod_spec.insert("priorityClassName".into(), serde_json::json!(pc));
+        }
         if let Some(rc) = &profile.runtime_class_name {
             pod_spec.insert("runtimeClassName".into(), serde_json::json!(rc));
         }
@@ -864,10 +916,19 @@ mod tests {
         }
 
         let mut annotations = serde_json::Map::new();
-        for (k, v) in profile.pod_annotations.iter().flatten() {
+        for (k, v) in
+            profile.pod_annotations.iter().chain(profile.pod_metadata_annotations()).flatten()
+        {
             annotations.insert(k.clone(), serde_json::json!(v));
         }
         annotations.insert(ANNOTATION_WORKER_CONTAINER.into(), serde_json::json!(worker_name));
+        let mut labels: serde_json::Map<String, serde_json::Value> = profile
+            .pod_labels()
+            .into_iter()
+            .flatten()
+            .map(|(k, v)| (k.clone(), serde_json::json!(v)))
+            .collect();
+        labels.insert(LABEL_WORKER_PROFILE.into(), serde_json::json!(profile_name));
         if profile.gpg_signing {
             annotations.insert(crate::ANNOTATION_GPG_SIGNING.into(), serde_json::json!("true"));
         }
@@ -881,7 +942,7 @@ mod tests {
             "metadata": {
                 "name": "worker-pod",
                 "namespace": "workers",
-                "labels": { LABEL_WORKER_PROFILE: profile_name },
+                "labels": labels,
                 "annotations": annotations,
             },
             "spec": pod_spec,
@@ -1438,6 +1499,101 @@ mod tests {
             let decision = decide_with_guard(serde_json::json!({ "env": [env.clone()] })).await;
             assert!(matches!(decision, Decision::Allow), "{env} must be allowed");
         }
+    }
+
+    fn pod_settings_profile(settings: serde_json::Value) -> WorkerProfileSpec {
+        let mut profile = lean_profile();
+        profile.pod = Some(serde_json::from_value(settings).unwrap());
+        profile
+    }
+
+    #[tokio::test]
+    async fn pod_labels_annotations_and_priority_class_are_allowed() {
+        let profile = pod_settings_profile(serde_json::json!({
+            "labels": { "team": "platform", "example.dev/cost-center": "ai" },
+            "annotations": { "policy.example.dev/owner": "platform" },
+            "priorityClassName": "cctui-workers"
+        }));
+        let pod = dispatched_pod("lean", &profile);
+        assert_eq!(pod.spec.as_ref().unwrap().priority_class_name.as_deref(), Some("cctui-workers"));
+        assert!(matches!(decide(&pod, &source("lean", profile)).await, Decision::Allow));
+    }
+
+    #[tokio::test]
+    async fn pod_labels_colliding_with_managed_labels_are_denied() {
+        for key in [
+            LABEL_WORKER_PROFILE,
+            "cctui.dev/origin",
+            "cctui.dev/session-id",
+            "batch.kubernetes.io/job-name",
+            "batch.kubernetes.io/controller-uid",
+            "job-name",
+            "controller-uid",
+        ] {
+            let profile = pod_settings_profile(serde_json::json!({ "labels": { key: "x" } }));
+            let pod = dispatched_pod("lean", &lean_profile());
+            let msg = deny_msg(decide(&pod, &source("lean", profile)).await);
+            assert!(msg.contains("spec.pod") && msg.contains(key), "{key}: {msg}");
+        }
+    }
+
+    #[tokio::test]
+    async fn pod_annotations_colliding_with_managed_annotations_are_denied() {
+        for key in [
+            ANNOTATION_WORKER_CONTAINER,
+            ANNOTATION_ENVELOPE_INJECTED,
+            ANNOTATION_POSTURE,
+            "cctui.dev/session-id",
+            "batch.kubernetes.io/job-tracking",
+        ] {
+            let profile = pod_settings_profile(serde_json::json!({ "annotations": { key: "x" } }));
+            let pod = dispatched_pod("lean", &lean_profile());
+            let msg = deny_msg(decide(&pod, &source("lean", profile)).await);
+            assert!(msg.contains("spec.pod") && msg.contains(key), "{key}: {msg}");
+        }
+    }
+
+    #[tokio::test]
+    async fn priority_class_must_match_the_profile_but_tolerates_the_cluster_default() {
+        let profile = pod_settings_profile(serde_json::json!({ "priorityClassName": "workers" }));
+        let mut pod = dispatched_pod("lean", &profile);
+        pod.spec.as_mut().unwrap().priority_class_name = Some("system-cluster-critical".into());
+        let msg = deny_msg(decide(&pod, &source("lean", profile)).await);
+        assert!(msg.contains("priorityClassName"), "{msg}");
+
+        let mut defaulted = dispatched_pod("lean", &lean_profile());
+        defaulted.spec.as_mut().unwrap().priority_class_name = Some("cluster-default".into());
+        assert!(matches!(
+            decide(&defaulted, &source("lean", lean_profile())).await,
+            Decision::Allow
+        ));
+        let template = PodTemplateSpec { metadata: Some(defaulted.metadata), spec: defaulted.spec };
+        let drift = template_drift(&template, &lean_profile()).expect("template must match");
+        assert!(drift.contains("priorityClassName"), "{drift}");
+    }
+
+    #[tokio::test]
+    async fn affinity_must_match_the_profile() {
+        let mut profile = lean_profile();
+        profile.affinity = Some(
+            serde_json::from_value(serde_json::json!({
+                "nodeAffinity": { "requiredDuringSchedulingIgnoredDuringExecution": {
+                    "nodeSelectorTerms": [{ "matchExpressions": [
+                        { "key": "pool", "operator": "In", "values": ["workers"] }
+                    ] }]
+                } }
+            }))
+            .unwrap(),
+        );
+        let pod = dispatched_pod("lean", &profile);
+        assert!(matches!(decide(&pod, &source("lean", profile.clone())).await, Decision::Allow));
+
+        let msg = deny_msg(decide(&pod, &source("lean", lean_profile())).await);
+        assert!(msg.contains("affinity"), "{msg}");
+        let mut unpinned = dispatched_pod("lean", &lean_profile());
+        unpinned.spec.as_mut().unwrap().affinity = profile.affinity;
+        let msg = deny_msg(decide(&unpinned, &source("lean", lean_profile())).await);
+        assert!(msg.contains("affinity"), "{msg}");
     }
 
     fn nonroot_profile() -> WorkerProfileSpec {

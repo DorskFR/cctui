@@ -19,7 +19,7 @@ use std::time::Duration;
 use cctui_dispatcher_core::{
     Dispatcher, HandleState, SpawnOutcome, dedup_source, label_safe, worker_name,
 };
-use cctui_orchestrator::validate::template_drift;
+use cctui_orchestrator::validate::{check_pod_settings, template_drift};
 use cctui_orchestrator::{
     ANNOTATION_ENV_SECRET, ANNOTATION_GPG_SIGNING, ANNOTATION_GUARD_IDENTITY, ANNOTATION_POSTURE,
     ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, LABEL_WORKER_PROFILE, WorkerProfile,
@@ -291,13 +291,20 @@ impl Spawner {
         let worker_name = profile.worker_container_name().to_owned();
         let pod_spec = Self::pod_spec(profile, &worker_name, &overrides)?;
 
-        let mut labels = serde_json::Map::new();
-        labels.insert(LABEL_ORIGIN.into(), json!("cctui-kube-dispatcher"));
-        labels.insert(LABEL_SESSION_ID.into(), json!(label_safe(&spec.session_id)));
-        labels.insert(LABEL_WORKER_PROFILE.into(), json!(label_safe(profile_name)));
+        let mut managed_labels = serde_json::Map::new();
+        managed_labels.insert(LABEL_ORIGIN.into(), json!("cctui-kube-dispatcher"));
+        managed_labels.insert(LABEL_SESSION_ID.into(), json!(label_safe(&spec.session_id)));
+        managed_labels.insert(LABEL_WORKER_PROFILE.into(), json!(label_safe(profile_name)));
+        let labels = with_profile_metadata(profile.pod_labels(), managed_labels);
+        let mut job_annotations = serde_json::Map::new();
+        job_annotations.insert(ANNOTATION_SESSION_ID.into(), json!(spec.session_id));
+        let job_annotations =
+            with_profile_metadata(profile.pod_metadata_annotations(), job_annotations);
 
         let mut annotations = serde_json::Map::new();
-        for (k, v) in profile.pod_annotations.iter().flatten() {
+        for (k, v) in
+            profile.pod_annotations.iter().chain(profile.pod_metadata_annotations()).flatten()
+        {
             annotations.insert(k.clone(), json!(v));
         }
         annotations.insert(ANNOTATION_SESSION_ID.into(), json!(spec.session_id));
@@ -318,15 +325,7 @@ impl Spawner {
         let mut job_json = json!({
             "apiVersion": "batch/v1",
             "kind": "Job",
-            "metadata": {
-                "name": name,
-                "labels": {
-                    LABEL_ORIGIN: "cctui-kube-dispatcher",
-                    LABEL_SESSION_ID: label_safe(&spec.session_id),
-                    LABEL_WORKER_PROFILE: label_safe(profile_name),
-                },
-                "annotations": { ANNOTATION_SESSION_ID: spec.session_id },
-            },
+            "metadata": { "name": name, "labels": labels, "annotations": job_annotations },
             "spec": {
                 "backoffLimit": 0,
                 "ttlSecondsAfterFinished": JOB_TTL_SECONDS,
@@ -355,6 +354,9 @@ impl Spawner {
         worker_name: &str,
         overrides: &[(String, EnvSource)],
     ) -> anyhow::Result<serde_json::Map<String, Value>> {
+        if let Some(settings) = &profile.pod {
+            check_pod_settings(settings).map_err(|e| anyhow::anyhow!("spec.pod: {e}"))?;
+        }
         let mut worker = serde_json::Map::new();
         worker.insert("name".into(), json!(worker_name));
         worker.insert("image".into(), json!(profile.image));
@@ -408,6 +410,12 @@ impl Spawner {
         }
         if let Some(ns) = &profile.node_selector {
             pod_spec.insert("nodeSelector".into(), serde_json::to_value(ns)?);
+        }
+        if let Some(affinity) = &profile.affinity {
+            pod_spec.insert("affinity".into(), serde_json::to_value(affinity)?);
+        }
+        if let Some(pc) = profile.priority_class_name() {
+            pod_spec.insert("priorityClassName".into(), json!(pc));
         }
         if let Some(rc) = &profile.runtime_class_name {
             pod_spec.insert("runtimeClassName".into(), json!(rc));
@@ -943,7 +951,9 @@ impl Spawner {
         let pod_spec = Self::pod_spec(profile, &worker_name, &overrides)?;
 
         let mut annotations = serde_json::Map::new();
-        for (k, v) in profile.pod_annotations.iter().flatten() {
+        for (k, v) in
+            profile.pod_annotations.iter().chain(profile.pod_metadata_annotations()).flatten()
+        {
             annotations.insert(k.clone(), json!(v));
         }
         for (k, v) in old_meta.and_then(|m| m.annotations.as_ref()).into_iter().flatten() {
@@ -972,8 +982,14 @@ impl Spawner {
             "kind": "Job",
             "metadata": {
                 "name": name,
-                "labels": ours(old.metadata.labels.as_ref()),
-                "annotations": ours(old.metadata.annotations.as_ref()),
+                "labels": with_profile_metadata(
+                    profile.pod_labels(),
+                    ours(old.metadata.labels.as_ref()),
+                ),
+                "annotations": with_profile_metadata(
+                    profile.pod_metadata_annotations(),
+                    ours(old.metadata.annotations.as_ref()),
+                ),
             },
             "spec": {
                 "backoffLimit": old_spec.backoff_limit.unwrap_or(0),
@@ -982,7 +998,10 @@ impl Spawner {
                     .unwrap_or_else(|| i32::try_from(JOB_TTL_SECONDS).unwrap_or(i32::MAX)),
                 "template": {
                     "metadata": {
-                        "labels": ours(old_meta.and_then(|m| m.labels.as_ref())),
+                        "labels": with_profile_metadata(
+                            profile.pod_labels(),
+                            ours(old_meta.and_then(|m| m.labels.as_ref())),
+                        ),
                         "annotations": annotations,
                     },
                     "spec": pod_spec,
@@ -1146,6 +1165,18 @@ impl Spawner {
         let name = handle.strip_prefix("jobs/").unwrap_or(handle);
         self.delete_and_wait(name).await
     }
+}
+
+/// `spec.pod` labels or annotations under the cctui-managed `managed` keys,
+/// which win on conflict.
+fn with_profile_metadata(
+    profile: Option<&std::collections::BTreeMap<String, String>>,
+    mut managed: serde_json::Map<String, Value>,
+) -> serde_json::Map<String, Value> {
+    for (k, v) in profile.into_iter().flatten() {
+        managed.entry(k.clone()).or_insert_with(|| json!(v));
+    }
+    managed
 }
 
 /// Removing it for root also drops a copy smuggled in through `podAnnotations`.
@@ -1317,7 +1348,8 @@ const fn drift_disposition(never_ran: bool, has_pods: bool, suspended: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cctui_orchestrator::Posture;
+    use cctui_orchestrator::{Posture, WorkerPodSpec};
+    use k8s_openapi::api::core::v1::Affinity;
 
     type Mutation = (&'static str, fn(&mut WorkerProfileSpec));
 
@@ -1577,6 +1609,156 @@ mod tests {
         let rebuilt = Spawner::rebuild_job(&job, &changed).unwrap();
         assert!(drift_of(&rebuilt, &changed).is_none());
         assert!(rebuilt.spec.unwrap().template.spec.unwrap().tolerations.is_none());
+    }
+
+    #[test]
+    fn a_profile_without_pod_settings_renders_the_golden_job() {
+        let s = spec("sess-golden", json!({}));
+        let v = build("lean", &lean_profile(), &s);
+        let labels = json!({
+            "cctui.dev/origin": "cctui-kube-dispatcher",
+            "cctui.dev/session-id": "sess-golden",
+            "cctui.dev/worker-profile": "lean"
+        });
+        let golden = json!({
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": {
+                "name": worker_name("sess-golden"),
+                "labels": labels,
+                "annotations": { "cctui.dev/session-id": "sess-golden" }
+            },
+            "spec": {
+                "backoffLimit": 0,
+                "ttlSecondsAfterFinished": 3600,
+                "activeDeadlineSeconds": 1800,
+                "template": {
+                    "metadata": {
+                        "labels": labels,
+                        "annotations": {
+                            "cctui.dev/session-id": "sess-golden",
+                            "cctui.dev/worker-container": "worker"
+                        }
+                    },
+                    "spec": {
+                        "restartPolicy": "Never",
+                        "automountServiceAccountToken": false,
+                        "serviceAccountName": "worker-lean",
+                        "containers": [{
+                            "name": "worker",
+                            "image": "example.com/worker:latest",
+                            "env": [
+                                { "name": "TASK_ID", "value": "sess-golden" },
+                                { "name": "LOG_LEVEL", "value": "info" },
+                                { "name": "SESSION_ID", "value": "sess-golden" },
+                                { "name": "TASK_PAYLOAD_JSON", "value": "{}" },
+                                {
+                                    "name": "CCTUI_URL",
+                                    "value": "http://cctui.example.svc.cluster.local:8700"
+                                },
+                                { "name": "REPLY_URL", "value": "https://cb" }
+                            ]
+                        }]
+                    }
+                }
+            }
+        });
+        assert_eq!(v, golden);
+
+        let mut empty = lean_profile();
+        empty.pod = Some(WorkerPodSpec::default());
+        assert_eq!(
+            serde_json::to_string(&build("lean", &empty, &s)).unwrap(),
+            serde_json::to_string(&v).unwrap(),
+            "an empty spec.pod renders byte-identically"
+        );
+    }
+
+    #[test]
+    fn pod_settings_reach_the_job_and_its_pod_template_and_survive_a_rebuild() {
+        let s = spec("sess-pod", json!({}));
+        let plain = build("full", &full_profile(), &s);
+        let mut profile = full_profile();
+        profile.pod = Some(
+            serde_json::from_value(json!({
+                "labels": { "team": "platform" },
+                "annotations": { "policy.example.dev/owner": "platform" },
+                "priorityClassName": "cctui-workers"
+            }))
+            .unwrap(),
+        );
+        profile.affinity = Some(
+            serde_json::from_value(json!({
+                "podAntiAffinity": { "preferredDuringSchedulingIgnoredDuringExecution": [{
+                    "weight": 50,
+                    "podAffinityTerm": { "topologyKey": "kubernetes.io/hostname" }
+                }] }
+            }))
+            .unwrap(),
+        );
+        let mut v = build("full", &profile, &s);
+
+        let queued = queued_job("full", &full_profile(), &s);
+        assert!(drift_of(&queued, &profile).is_some(), "new pod settings strand a queued Job");
+        let rebuilt = Spawner::rebuild_job(&queued, &profile).unwrap();
+        assert!(drift_of(&rebuilt, &profile).is_none());
+        let rebuilt = serde_json::to_value(&rebuilt).unwrap();
+
+        for rendered in [&v, &rebuilt] {
+            for meta in ["/metadata", "/spec/template/metadata"] {
+                let at = |key: &str| rendered.pointer(&format!("{meta}/{key}")).cloned();
+                assert_eq!(at("labels/team"), Some(json!("platform")), "{meta}");
+                assert_eq!(at("labels/cctui.dev~1worker-profile"), Some(json!("full")), "{meta}");
+                assert_eq!(
+                    at("annotations/policy.example.dev~1owner"),
+                    Some(json!("platform")),
+                    "{meta}"
+                );
+                assert_eq!(
+                    at("annotations/cctui.dev~1session-id"),
+                    Some(json!("sess-pod")),
+                    "{meta}"
+                );
+            }
+            assert_eq!(
+                rendered.pointer("/spec/template/spec/priorityClassName"),
+                Some(&json!("cctui-workers"))
+            );
+            assert_eq!(
+                rendered.pointer(
+                    "/spec/template/spec/affinity/podAntiAffinity/\
+                     preferredDuringSchedulingIgnoredDuringExecution/0/weight"
+                ),
+                Some(&json!(50))
+            );
+        }
+
+        for path in ["/metadata", "/spec/template/metadata"] {
+            let meta = v.pointer_mut(path).unwrap();
+            meta["labels"].as_object_mut().unwrap().remove("team");
+            meta["annotations"].as_object_mut().unwrap().remove("policy.example.dev/owner");
+        }
+        let pod_spec = v.pointer_mut("/spec/template/spec").and_then(Value::as_object_mut).unwrap();
+        pod_spec.remove("priorityClassName");
+        pod_spec.remove("affinity");
+        assert_eq!(v, plain, "spec.pod and affinity add nothing else to the Job");
+    }
+
+    #[test]
+    fn reserved_pod_labels_and_annotations_fail_the_dispatch() {
+        let s = spec("sess-reserved", json!({}));
+        for settings in [
+            json!({ "labels": { "cctui.dev/session-id": "x" } }),
+            json!({ "labels": { "job-name": "x" } }),
+            json!({ "annotations": { "cctui.dev/env-secret": "other" } }),
+        ] {
+            let mut profile = lean_profile();
+            profile.pod = Some(serde_json::from_value(settings).unwrap());
+            let err =
+                Spawner::build_job("http://cctui:8700", "lean", &profile, &s, "w", 3600, false)
+                    .unwrap_err();
+            assert!(err.to_string().contains("spec.pod"), "{err}");
+        }
     }
 
     #[test]
@@ -1878,7 +2060,7 @@ mod tests {
     fn every_template_conformance_field_strands_and_is_repaired_by_a_rebuild() {
         let s = spec("sess-fields", json!({}));
         let job = queued_job("full", &full_profile(), &s);
-        let mutations: [Mutation; 9] = [
+        let mutations: [Mutation; 11] = [
             ("serviceAccountName", |p| p.service_account_name = Some("other".to_owned())),
             ("workerContainer", |p| p.worker_container = Some("other".to_owned())),
             ("image", |p| p.image = "example.com/worker:next".to_owned()),
@@ -1888,6 +2070,13 @@ mod tests {
             ("runtimeClassName", |p| p.runtime_class_name = None),
             ("envFrom", |p| p.env_from = None),
             ("posture", |p| p.posture = Some(Posture::Nonroot)),
+            ("affinity", |p| p.affinity = Some(Affinity::default())),
+            ("priorityClassName", |p| {
+                p.pod = Some(WorkerPodSpec {
+                    priority_class_name: Some("high".to_owned()),
+                    ..WorkerPodSpec::default()
+                });
+            }),
         ];
         for (field, mutate) in mutations {
             let mut profile = full_profile();

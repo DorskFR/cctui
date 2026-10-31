@@ -11,8 +11,8 @@
 //! `init_containers` are left untouched. See `docs/worker-profile-crd.md`.
 
 use k8s_openapi::api::core::v1::{
-    Container, EnvFromSource, EnvVar, LocalObjectReference, ResourceRequirements, Toleration,
-    Volume, VolumeMount,
+    Affinity, Container, EnvFromSource, EnvVar, LocalObjectReference, ResourceRequirements,
+    Toleration, Volume, VolumeMount,
 };
 use kube::CustomResource;
 use schemars::JsonSchema;
@@ -176,11 +176,21 @@ pub struct WorkerProfileSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tolerations: Option<Vec<Toleration>>,
 
+    /// Node/pod affinity for the worker pod. Operator-owned passthrough,
+    /// alongside `nodeSelector` and `tolerations`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub affinity: Option<Affinity>,
+
     /// Annotations stamped onto every instantiated pod's template metadata (e.g.
     /// a role annotation an in-cluster mutating webhook consumes). The
     /// dispatcher's own `cctui.dev/*` session annotations win on key conflict.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pod_annotations: Option<BTreeMap<String, String>>,
+
+    /// Generic pod metadata and priority class, for clusters whose admission
+    /// policies require them. `None` renders the Job unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pod: Option<WorkerPodSpec>,
 
     /// Sandbox runtime class for the pod (e.g. gVisor/Kata). Passthrough; left
     /// here so a profile can opt into a hardened runtime later.
@@ -291,6 +301,33 @@ pub struct GuardSpec {
     pub allow_private_egress: bool,
 }
 
+/// Label and annotation key prefixes owned by cctui or the Job controller.
+pub const RESERVED_POD_KEY_PREFIXES: [&str; 2] = ["cctui.dev/", "batch.kubernetes.io/"];
+
+/// Legacy Job-controller selector labels, reserved on top of the prefixes.
+pub const RESERVED_POD_LABELS: [&str; 2] = ["controller-uid", "job-name"];
+
+/// Generic metadata and scheduling class stamped onto the worker Job and its
+/// pod template.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerPodSpec {
+    /// Labels for the worker Job and its pod template. Keys cctui or the Job
+    /// controller manage (`cctui.dev/*`, `batch.kubernetes.io/*`, `job-name`,
+    /// `controller-uid`) are denied at admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<BTreeMap<String, String>>,
+
+    /// Annotations for the worker Job and its pod template. `cctui.dev/*` and
+    /// `batch.kubernetes.io/*` keys are denied at admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<BTreeMap<String, String>>,
+
+    /// `PriorityClass` of the worker pod.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_class_name: Option<String>,
+}
+
 impl WorkerProfileSpec {
     /// Effective name of the container the webhook sandboxes: the explicit
     /// [`worker_container`](Self::worker_container) override, else
@@ -303,6 +340,21 @@ impl WorkerProfileSpec {
     #[must_use]
     pub fn posture(&self) -> Posture {
         self.posture.unwrap_or(Posture::Root)
+    }
+
+    #[must_use]
+    pub fn pod_labels(&self) -> Option<&BTreeMap<String, String>> {
+        self.pod.as_ref()?.labels.as_ref()
+    }
+
+    #[must_use]
+    pub fn pod_metadata_annotations(&self) -> Option<&BTreeMap<String, String>> {
+        self.pod.as_ref()?.annotations.as_ref()
+    }
+
+    #[must_use]
+    pub fn priority_class_name(&self) -> Option<&str> {
+        self.pod.as_ref()?.priority_class_name.as_deref()
     }
 }
 
@@ -466,6 +518,54 @@ guard:
             serde_norway::from_str("image: registry.example.com/worker:latest\n").unwrap();
         assert!(lean.guard.is_none());
         assert!(serde_json::to_value(&lean).unwrap().get("guard").is_none());
+    }
+
+    #[test]
+    fn pod_settings_and_affinity_deserialize_and_are_in_the_crd_schema() {
+        let yaml = r#"
+image: registry.example.com/worker:latest
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: pool
+              operator: In
+              values: ["workers"]
+pod:
+  labels:
+    team: platform
+  annotations:
+    policy.example.dev/owner: platform
+  priorityClassName: cctui-workers
+"#;
+        let spec: WorkerProfileSpec = serde_norway::from_str(yaml).expect("pod profile parses");
+        assert_eq!(spec.pod_labels().unwrap()["team"], "platform");
+        assert_eq!(spec.pod_metadata_annotations().unwrap()["policy.example.dev/owner"], "platform");
+        assert_eq!(spec.priority_class_name(), Some("cctui-workers"));
+        let node = spec.affinity.as_ref().and_then(|a| a.node_affinity.as_ref()).unwrap();
+        let required = node.required_during_scheduling_ignored_during_execution.as_ref().unwrap();
+        let expr = &required.node_selector_terms[0].match_expressions.as_ref().unwrap()[0];
+        assert_eq!(expr.key, "pool");
+
+        let lean: WorkerProfileSpec =
+            serde_norway::from_str("image: registry.example.com/worker:latest\n").unwrap();
+        assert!(lean.pod.is_none() && lean.affinity.is_none());
+        assert!(lean.pod_labels().is_none() && lean.priority_class_name().is_none());
+        let lean_json = serde_json::to_value(&lean).unwrap();
+        assert!(lean_json.get("pod").is_none() && lean_json.get("affinity").is_none());
+
+        let crd = serde_json::to_value(WorkerProfile::crd()).unwrap();
+        let props = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+            ["properties"];
+        let pod = &props["pod"]["properties"];
+        assert_eq!(pod["labels"]["additionalProperties"]["type"], "string");
+        assert_eq!(pod["annotations"]["additionalProperties"]["type"], "string");
+        assert_eq!(pod["priorityClassName"]["type"], "string");
+        let affinity = &props["affinity"]["properties"];
+        for key in ["nodeAffinity", "podAffinity", "podAntiAffinity"] {
+            assert_eq!(affinity[key]["type"], "object", "{key}");
+        }
     }
 
     #[test]
