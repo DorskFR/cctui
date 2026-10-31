@@ -67,3 +67,13 @@ describe('line action buttons', () => {
 		expect(el.querySelectorAll('button').length).toBe(3);
 	});
 });
+
+describe('read aloud', () => {
+	it('offers read aloud only when a speak handler is given', async () => {
+		expect(byLabel(await render(), 'Read aloud')).toBeNull();
+		if (comp) unmount(comp);
+		comp = null;
+		document.body.innerHTML = '';
+		expect(byLabel(await render({ onspeak: vi.fn() }), 'Read aloud')).not.toBeNull();
+	});
+});

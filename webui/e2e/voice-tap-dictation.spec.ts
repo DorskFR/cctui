@@ -20,6 +20,8 @@ test('390px: dictation starts with one tap, shows a large stop target, and stops
 		route.fulfill({
 			json: {
 				enabled: true,
+				stt: true,
+				tts: true,
 				stt_model: 'parakeet',
 				stt_language: null,
 				tts_model: 'kokoro',

@@ -182,6 +182,10 @@ pub struct SpeechCatalog {
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct VoiceConfigInfo {
     pub enabled: bool,
+    /// Speech-to-text is available: dictation and voice mode can listen.
+    pub stt: bool,
+    /// Text-to-speech is available: read-aloud and voice mode can speak.
+    pub tts: bool,
     pub stt_model: String,
     pub stt_language: Option<String>,
     pub tts_model: String,

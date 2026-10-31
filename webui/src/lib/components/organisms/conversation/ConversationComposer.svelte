@@ -64,9 +64,10 @@
 		onFollowup?: (instruction?: string) => void;
 		/** Tile chrome: one line of input until it takes focus. */
 		compact?: boolean;
-		/** The instance has a speech service: show dictation and voice mode. */
+		/** The instance transcribes speech: show dictation. */
 		voiceEnabled?: boolean;
 		voiceLive?: boolean;
+		/** Voice mode is available: show its toggle. */
 		onvoicelive?: () => void;
 	} = $props();
 
@@ -368,7 +369,7 @@
 					onfiles={addFiles}
 				/>
 			{/if}
-			{#if voiceEnabled && onvoicelive}
+			{#if voiceEnabled}
 				<VoiceControls live={voiceLive} ontogglelive={onvoicelive} ondictated={dictated} />
 			{/if}
 		{/snippet}

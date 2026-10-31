@@ -155,6 +155,9 @@
 						style="width:100%"
 						onchange={(e: Event) => draft && (draft[field] = selectValue(e))}
 					>
+						{#if field !== 'tts_voice'}
+							<option value="">{m.settings_speech_summary_off()}</option>
+						{/if}
 						{#each options as id (id)}
 							<option value={id}>{id}</option>
 						{/each}

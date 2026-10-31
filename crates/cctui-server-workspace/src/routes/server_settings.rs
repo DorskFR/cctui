@@ -359,15 +359,21 @@ fn validate_speech(c: SpeechConfig) -> Result<SpeechConfig, AppError> {
             return Err(bad("base_url cannot carry credentials or a query".into()));
         }
     }
-    for (name, v) in
-        [("stt_model", &c.stt_model), ("tts_model", &c.tts_model), ("tts_voice", &c.tts_voice)]
-    {
-        if v.is_empty() || v.len() > 128 {
-            return Err(bad(format!("{name} must be 1 to 128 characters")));
-        }
+    if c.stt_model.is_empty() && c.tts_model.is_empty() {
+        return Err(bad("stt_model or tts_model is required".into()));
     }
-    if c.summary_model.len() > 128 {
-        return Err(bad("summary_model must be at most 128 characters".into()));
+    if !c.tts_model.is_empty() && c.tts_voice.is_empty() {
+        return Err(bad("tts_voice is required with a tts_model".into()));
+    }
+    for (name, v) in [
+        ("stt_model", &c.stt_model),
+        ("tts_model", &c.tts_model),
+        ("tts_voice", &c.tts_voice),
+        ("summary_model", &c.summary_model),
+    ] {
+        if v.len() > 128 {
+            return Err(bad(format!("{name} must be at most 128 characters")));
+        }
     }
     if c.stt_language.as_deref().is_some_and(|l| {
         l.len() > 16 || !l.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
@@ -709,13 +715,20 @@ mod tests {
         assert_eq!(v.summary_model, "qwen3-1.7b");
         assert_eq!((v.stt_language, v.tts_format.as_str()), (None, "mp3"));
         assert!(validate_speech(SpeechConfig::default()).is_ok());
+        for half in [
+            SpeechConfig { stt_model: " ".into(), ..ok.clone() },
+            SpeechConfig { tts_model: String::new(), tts_voice: String::new(), ..ok.clone() },
+        ] {
+            assert!(validate_speech(half.clone()).is_ok(), "{half:?}");
+        }
         for bad in [
             SpeechConfig { base_url: String::new(), ..ok.clone() },
             SpeechConfig { base_url: "ftp://speech.example".into(), ..ok.clone() },
             SpeechConfig { base_url: "https://u:p@speech.example/v1".into(), ..ok.clone() },
             SpeechConfig { base_url: "not a url".into(), ..ok.clone() },
             SpeechConfig { tts_voice: " ".into(), ..ok.clone() },
-            SpeechConfig { stt_model: String::new(), ..ok.clone() },
+            SpeechConfig { stt_model: String::new(), tts_model: String::new(), ..ok.clone() },
+            SpeechConfig { stt_model: "m".repeat(129), ..ok.clone() },
             SpeechConfig { stt_language: Some("en; drop".into()), ..ok.clone() },
             SpeechConfig { summary_model: "m".repeat(129), ..ok.clone() },
             SpeechConfig { stt_part_ms: Some(999), ..ok.clone() },

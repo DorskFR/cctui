@@ -156,3 +156,16 @@ describe('VoiceControls dictation gestures', () => {
 		expect(ondictated).toHaveBeenCalledWith('hello there');
 	});
 });
+
+describe('VoiceControls without voice mode', () => {
+	it('shows the mic but no voice-mode toggle when no live handler is given', () => {
+		const toggle = () => document.querySelector('[aria-label="Live voice conversation with this session"]');
+		expect(toggle()).not.toBeNull();
+		if (comp) unmount(comp);
+		document.body.innerHTML = '';
+		comp = mount(VoiceControls, { target: document.body, props: { ondictated } });
+		flushSync();
+		expect(mic()).not.toBeNull();
+		expect(toggle()).toBeNull();
+	});
+});

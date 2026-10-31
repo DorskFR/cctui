@@ -16,6 +16,8 @@ test('live voice initialises the VAD without an error toast', async ({ page }) =
 		route.fulfill({
 			json: {
 				enabled: true,
+				stt: true,
+				tts: true,
 				stt_model: 'parakeet',
 				stt_language: null,
 				tts_model: 'kokoro',

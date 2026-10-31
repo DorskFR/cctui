@@ -66,6 +66,7 @@
 	import { LiveVoice } from '$lib/voice/liveVoice.svelte';
 	import { SpeechPlayer } from '$lib/voice/player';
 	import { speakText } from '$lib/voice/speakLine';
+	import { voiceCaps } from '$lib/voice/capabilities';
 	import { acquireWakeLock } from '$lib/voice/wakeLock';
 	import { ttsMime } from '$lib/voice/mime';
 
@@ -372,7 +373,8 @@
 
 	// ── Voice ─────────────────────────────────────────────────
 	const voiceConfig = useVoiceConfig();
-	const voiceEnabled = $derived(!!voiceConfig.data?.enabled && !archived);
+	const caps = $derived(voiceCaps(voiceConfig.data));
+	const voiceEnabled = $derived(caps.stt && !archived);
 	const liveVoice = new LiveVoice({
 		connect: (url) => new WebSocket(url),
 		vad: (cb) => import('$lib/voice/vad').then((mod) => mod.createVad(cb, settings.voice.micId)),
@@ -398,6 +400,9 @@
 	});
 	$effect(() => {
 		liveVoice.setLanguage(settings.voice.language);
+	});
+	$effect(() => {
+		if (!caps.live) untrack(() => liveVoice.stop());
 	});
 	let speakingKey = $state<string | null>(null);
 	async function speakLine(ln: Line) {
@@ -553,7 +558,7 @@
 				pluginActionsFor={(ln) => plugins.actionsFor(ln)}
 				onpluginaction={(a) => plugins.openWith(a.pluginId, a.params)}
 				onquote={quoteLine}
-				onspeak={voiceConfig.data?.enabled ? speakLine : undefined}
+				onspeak={caps.tts ? speakLine : undefined}
 				{speakingKey}
 			/>
 
@@ -574,7 +579,7 @@
 				working={stream.working}
 				{voiceEnabled}
 				voiceLive={liveVoice.active}
-				onvoicelive={toggleLiveVoice}
+				onvoicelive={caps.live ? toggleLiveVoice : undefined}
 				{supportsAttachments}
 				{scroll}
 				onsend={(body) => stream.sendBody(body)}
