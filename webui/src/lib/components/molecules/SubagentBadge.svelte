@@ -30,7 +30,8 @@
 	);
 	const ariaLabel = $derived(`${open ? m.sessions_collapse() : m.sessions_expand()} ${title}`);
 
-	const chip = '--badge-fs: var(--fs-sm); --badge-fw: var(--fw-semibold); --badge-min-size: 1.5rem;';
+	const chip =
+		'--badge-fs: var(--fs-sm); --badge-fw: var(--fw-semibold); --badge-min-size: 1.85em; position: relative;';
 	// `.active` fills from `--badge-tone` and ignores these, so the open state still wins.
 	const runningTint =
 		' --badge-border: color-mix(in srgb, var(--info) 68%, transparent);' +
@@ -55,6 +56,15 @@
 			ontoggle();
 		}}
 	>
-		{count}
+		<span class="slop" aria-hidden="true"></span>{count}
 	</Badge>
 </span>
+
+<style>
+	/* Transparent hit slop so a near-miss toggles the group instead of opening the session. */
+	.slop {
+		position: absolute;
+		inset: calc(-1 * var(--sp-1));
+		border-radius: inherit;
+	}
+</style>
