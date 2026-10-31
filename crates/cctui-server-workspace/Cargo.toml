@@ -8,12 +8,14 @@ workspace = true
 
 [features]
 ts = ["dep:ts-rs", "cctui-proto/ts", "cctui-query/ts"]
+aws-sm = ["cctui-secrets/aws-sm"]
 
 [dependencies]
 cctui-server-core.workspace = true
 cctui-proto = { workspace = true, features = ["sqlx"] }
 cctui-crypto.workspace = true
 cctui-query.workspace = true
+cctui-secrets = { workspace = true, features = ["bao", "k8s"] }
 cctui-telemetry = { workspace = true, features = ["http"] }
 serde.workspace = true
 serde_json.workspace = true

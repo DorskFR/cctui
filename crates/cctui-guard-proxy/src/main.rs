@@ -167,6 +167,7 @@ enum Cmd {
 /// needs `--vault-addr` + `--vault-role`; the `k8s:` engine needs the
 /// in-cluster environment; `env:`/`aws-sm:` are always available.
 fn build_engines(args: &Args) -> anyhow::Result<Engines> {
+    crate::inject::install_crypto();
     let vault = match (&args.vault_addr, &args.vault_role) {
         (Some(addr), Some(role)) => {
             Some(VaultClient::new(addr.clone(), role.clone(), args.vault_token_path.clone())?)
@@ -174,7 +175,7 @@ fn build_engines(args: &Args) -> anyhow::Result<Engines> {
         (Some(_), None) => anyhow::bail!("--vault-role is required with --vault-addr"),
         (None, _) => None,
     };
-    Ok(Engines::new(vault, K8sClient::in_cluster().ok()))
+    Ok(Engines::new().with_vault(vault).with_k8s(K8sClient::in_cluster().ok()))
 }
 
 /// The injection rule set, fully defined by the JSON inject config. Absent file
@@ -450,7 +451,7 @@ mod tests {
     }
 
     fn test_secrets() -> Arc<SecretSource> {
-        Arc::new(SecretSource::new(Box::new(Engines::new(None, None)), Duration::from_mins(2)))
+        Arc::new(SecretSource::new(Box::new(Engines::new()), Duration::from_mins(2)))
     }
 
     #[test]
