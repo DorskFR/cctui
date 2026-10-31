@@ -5,9 +5,6 @@ pre-commit:
       glob: "*.rs"
       run: cargo +nightly fmt --all
       stage_fixed: true
-    clippy:
-      glob: "*.rs"
-      run: cargo clippy --workspace --all-targets -- -D warnings
     biome:
       glob: "*.{json,yaml,yml,md}"
       run: biome check --write --no-errors-on-unmatched {staged_files}
@@ -60,6 +57,8 @@ pre-push:
       run: bash scripts/check-forbidden-terms.sh --pre-push
     # Each check runs only when the pushed commits touch its area (see
     # scripts/ci-changes.sh); CI runs the full suites.
+    clippy:
+      run: bash scripts/ci-prepush.sh clippy
     test:
       run: bash scripts/ci-prepush.sh rust
     webui-test:

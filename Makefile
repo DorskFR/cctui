@@ -4,6 +4,7 @@ CCTUI_AGENT_TOKENS ?= dev-agent
 CCTUI_ADMIN_TOKENS ?= dev-admin
 CCTUI_URL ?= http://localhost:8700
 CCTUI_TOKEN ?= dev-admin
+HEAVY ?= bash scripts/heavy.sh
 
 export DATABASE_URL
 export TEST_DATABASE_URL
@@ -47,7 +48,7 @@ build:  ## Build all crates in release mode
 	cargo build --release --workspace
 
 check:  ## Type check all crates
-	cargo check --workspace
+	$(HEAVY) cargo check --workspace
 
 # ── Format & Lint ──────────────────────────────────────────
 
@@ -56,16 +57,16 @@ fmt:  ## Auto-format Rust + non-Rust files
 	biome check --write .
 
 lint:  ## Run clippy with deny warnings
-	cargo clippy --workspace --all-targets -- -D warnings
+	$(HEAVY) cargo clippy --workspace --all-targets -- -D warnings
 
 # ── Test ───────────────────────────────────────────────────
 
 test: db/test/up db/test/migrate/up  ## Run all tests
-	DATABASE_URL=$(TEST_DATABASE_URL) cargo test --workspace
+	DATABASE_URL=$(TEST_DATABASE_URL) $(HEAVY) cargo test --workspace
 	@echo "Tests complete."
 
 test/unit:  ## Run unit tests only (no DB required)
-	env -u DATABASE_URL -u TEST_DATABASE_URL cargo test --workspace
+	env -u DATABASE_URL -u TEST_DATABASE_URL $(HEAVY) cargo test --workspace
 
 # ── Run ────────────────────────────────────────────────────
 
