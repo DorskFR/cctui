@@ -11,6 +11,7 @@
 #![allow(clippy::doc_markdown)]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use bollard::Docker;
 use bollard::container::{
@@ -23,7 +24,10 @@ use cctui_dispatcher_core::{
 use cctui_proto::worker_env::check_payload_env;
 use cctui_proto::ws::WireDispatchSpec;
 
+use crate::exits::{self, Exit, Exits};
+
 const LABEL_ORIGIN: &str = "cctui.dev/origin";
+const ORIGIN: &str = "cctui-docker-dispatcher";
 const LABEL_SESSION_ID: &str = "cctui.dev/session-id";
 
 pub struct Spawner {
@@ -32,6 +36,7 @@ pub struct Spawner {
     cctui_url: String,
     mounts: Vec<String>,
     docker: Docker,
+    exits: Arc<Exits>,
 }
 
 impl Spawner {
@@ -50,7 +55,9 @@ impl Spawner {
             None => Docker::connect_with_local_defaults()?,
         };
         docker.ping().await?;
-        Ok(Self { image, network, cctui_url, mounts, docker })
+        let exits = Arc::new(Exits::default());
+        exits::watch(docker.clone(), Arc::clone(&exits), format!("{LABEL_ORIGIN}={ORIGIN}"));
+        Ok(Self { image, network, cctui_url, mounts, docker, exits })
     }
 
     fn worker_env(&self, spec: &WireDispatchSpec) -> anyhow::Result<Vec<String>> {
@@ -69,7 +76,7 @@ impl Spawner {
 
     fn discovery_labels(session_id: &str) -> HashMap<String, String> {
         let mut labels = HashMap::new();
-        labels.insert(LABEL_ORIGIN.to_owned(), "cctui-docker-dispatcher".to_owned());
+        labels.insert(LABEL_ORIGIN.to_owned(), ORIGIN.to_owned());
         labels.insert(LABEL_SESSION_ID.to_owned(), label_safe(session_id));
         labels
     }
@@ -155,17 +162,11 @@ impl Dispatcher for Spawner {
                 }
                 let oom = state.and_then(|s| s.oom_killed).unwrap_or(false);
                 let exit = state.and_then(|s| s.exit_code).unwrap_or(0);
-                if oom {
-                    return Ok((HandleState::Failed, Some("OOMKilled".to_owned())));
-                }
-                Ok(if exit == 0 {
-                    (HandleState::Complete, None)
-                } else {
-                    (HandleState::Failed, Some(format!("container exited with code {exit}")))
-                })
+                let memory = c.host_config.as_ref().and_then(|h| h.memory);
+                Ok(exits::verdict(oom, exit, memory))
             }
             Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => {
-                Ok((HandleState::Gone, None))
+                Ok(self.exits.ended(name).map_or((HandleState::Gone, None), Exit::state))
             }
             Err(e) => anyhow::bail!("inspecting container {name}: {e}"),
         }
