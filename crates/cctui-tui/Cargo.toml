@@ -47,7 +47,7 @@ uuid.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
 tui-term = "0.3.4"
-vt100 = "0.16.2"
+vt100 = "0.18.0"
 base64.workspace = true
 tempfile.workspace = true
 
