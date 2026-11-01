@@ -26,7 +26,8 @@ use crate::{
     Posture, RESERVED_POD_KEY_PREFIXES, RESERVED_POD_LABELS, WorkerPodSpec, WorkerProfileSpec,
 };
 use k8s_openapi::api::core::v1::{
-    Container, Pod, PodSpec, PodTemplateSpec, SecurityContext, Toleration,
+    Affinity, Container, NodeSelectorTerm, Pod, PodSpec, PodTemplateSpec, SecurityContext,
+    Toleration,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -482,6 +483,7 @@ fn check_conformance(
     dispatch_secret: Option<&str>,
 ) -> Result<(), String> {
     check_common_template_conformance(spec, worker, profile)?;
+    check_affinity(spec, profile, true)?;
     check_tolerations(spec, profile, true)?;
     check_priority_class(spec, profile, true)?;
     check_name_sets(spec, worker_name, profile)?;
@@ -502,6 +504,7 @@ pub fn check_template_conformance(
     profile: &WorkerProfileSpec,
 ) -> Result<(), String> {
     check_common_template_conformance(spec, worker, profile)?;
+    check_affinity(spec, profile, false)?;
     check_tolerations(spec, profile, false)?;
     check_priority_class(spec, profile, false)
 }
@@ -550,14 +553,61 @@ fn check_common_template_conformance(
     if spec.node_selector != profile.node_selector {
         return Err("nodeSelector does not match the profile".to_owned());
     }
-    if spec.affinity != profile.affinity {
-        return Err("affinity does not match the profile".to_owned());
-    }
     if spec.runtime_class_name != profile.runtime_class_name {
         return Err("runtimeClassName does not match the profile".to_owned());
     }
 
     check_worker_env_from(worker, worker_name, profile)
+}
+
+fn check_affinity(
+    spec: &PodSpec,
+    profile: &WorkerProfileSpec,
+    admitted_pod: bool,
+) -> Result<(), String> {
+    if spec.affinity == profile.affinity
+        || admitted_pod && narrows_affinity(spec.affinity.as_ref(), profile.affinity.as_ref())
+    {
+        return Ok(());
+    }
+    Err("affinity does not match the profile".to_owned())
+}
+
+/// Cluster admission (a `MutatingAdmissionPolicy` keeping heavy images off
+/// some nodes) may AND extra required node-affinity expressions into the pod.
+/// Those only shrink the set of nodes the profile allows; anything else is drift.
+fn narrows_affinity(have: Option<&Affinity>, want: Option<&Affinity>) -> bool {
+    let (have, want) = (have.cloned().unwrap_or_default(), want.cloned().unwrap_or_default());
+    if have.pod_affinity != want.pod_affinity || have.pod_anti_affinity != want.pod_anti_affinity {
+        return false;
+    }
+    let (have, want) =
+        (have.node_affinity.unwrap_or_default(), want.node_affinity.unwrap_or_default());
+    if have.preferred_during_scheduling_ignored_during_execution
+        != want.preferred_during_scheduling_ignored_during_execution
+    {
+        return false;
+    }
+    match (
+        have.required_during_scheduling_ignored_during_execution,
+        want.required_during_scheduling_ignored_during_execution,
+    ) {
+        (_, None) => true,
+        (None, Some(_)) => false,
+        (Some(have), Some(want)) => have
+            .node_selector_terms
+            .iter()
+            .all(|term| want.node_selector_terms.iter().any(|allowed| term_implies(term, allowed))),
+    }
+}
+
+/// Every requirement of `allowed` is also in `term`, so `term` matches a subset.
+fn term_implies(term: &NodeSelectorTerm, allowed: &NodeSelectorTerm) -> bool {
+    let contains = |have: &Option<Vec<_>>, want: &Option<Vec<_>>| {
+        want.iter().flatten().all(|w| have.iter().flatten().any(|h| h == w))
+    };
+    contains(&term.match_expressions, &allowed.match_expressions)
+        && contains(&term.match_fields, &allowed.match_fields)
 }
 
 /// Kubernetes defaults an omitted operator to Equal; empty optional strings
@@ -1592,12 +1642,91 @@ mod tests {
         let pod = dispatched_pod("lean", &profile);
         assert!(matches!(decide(&pod, &source("lean", profile.clone())).await, Decision::Allow));
 
-        let msg = deny_msg(decide(&pod, &source("lean", lean_profile())).await);
+        let mut unpinned = dispatched_pod("lean", &profile);
+        unpinned.spec.as_mut().unwrap().affinity = None;
+        let msg = deny_msg(decide(&unpinned, &source("lean", profile.clone())).await);
         assert!(msg.contains("affinity"), "{msg}");
-        let mut unpinned = dispatched_pod("lean", &lean_profile());
-        unpinned.spec.as_mut().unwrap().affinity = profile.affinity;
-        let msg = deny_msg(decide(&unpinned, &source("lean", lean_profile())).await);
+
+        let mut widened = dispatched_pod("lean", &profile);
+        widened.spec.as_mut().unwrap().affinity = Some(affinity(serde_json::json!({
+            "nodeAffinity": { "requiredDuringSchedulingIgnoredDuringExecution": {
+                "nodeSelectorTerms": [
+                    { "matchExpressions": [{ "key": "pool", "operator": "In", "values": ["workers"] }] },
+                    { "matchExpressions": [{ "key": "pool", "operator": "In", "values": ["infra"] }] }
+                ]
+            } }
+        })));
+        let msg = deny_msg(decide(&widened, &source("lean", profile)).await);
         assert!(msg.contains("affinity"), "{msg}");
+    }
+
+    fn affinity(v: serde_json::Value) -> Affinity {
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn off_greens() -> serde_json::Value {
+        serde_json::json!({ "key": "kubernetes.io/hostname", "operator": "NotIn",
+            "values": ["green-1", "green-2"] })
+    }
+
+    #[tokio::test]
+    async fn admission_may_narrow_the_node_affinity() {
+        let mut pod = dispatched_pod("lean", &lean_profile());
+        pod.spec.as_mut().unwrap().affinity = Some(affinity(serde_json::json!({
+            "nodeAffinity": { "requiredDuringSchedulingIgnoredDuringExecution": {
+                "nodeSelectorTerms": [{ "matchExpressions": [off_greens()] }]
+            } }
+        })));
+        assert!(matches!(decide(&pod, &source("lean", lean_profile())).await, Decision::Allow));
+        let template = PodTemplateSpec { metadata: Some(pod.metadata), spec: pod.spec };
+        let drift = template_drift(&template, &lean_profile()).expect("template must match");
+        assert!(drift.contains("affinity"), "{drift}");
+
+        let mut profile = lean_profile();
+        profile.affinity = Some(affinity(serde_json::json!({
+            "nodeAffinity": { "requiredDuringSchedulingIgnoredDuringExecution": {
+                "nodeSelectorTerms": [{ "matchExpressions": [
+                    { "key": "pool", "operator": "In", "values": ["workers"] }
+                ] }]
+            } },
+            "podAntiAffinity": { "preferredDuringSchedulingIgnoredDuringExecution": [{
+                "weight": 1, "podAffinityTerm": { "topologyKey": "kubernetes.io/hostname" }
+            }] }
+        })));
+        let mut appended = dispatched_pod("lean", &profile);
+        let mut narrowed = profile.affinity.clone().unwrap();
+        let terms = &mut narrowed
+            .node_affinity
+            .as_mut()
+            .unwrap()
+            .required_during_scheduling_ignored_during_execution
+            .as_mut()
+            .unwrap()
+            .node_selector_terms;
+        terms[0]
+            .match_expressions
+            .as_mut()
+            .unwrap()
+            .push(serde_json::from_value(off_greens()).unwrap());
+        appended.spec.as_mut().unwrap().affinity = Some(narrowed);
+        assert!(matches!(
+            decide(&appended, &source("lean", profile.clone())).await,
+            Decision::Allow
+        ));
+
+        for extra in [
+            serde_json::json!({ "nodeAffinity": { "preferredDuringSchedulingIgnoredDuringExecution": [
+                { "weight": 1, "preference": { "matchExpressions": [off_greens()] } }
+            ] } }),
+            serde_json::json!({ "podAffinity": { "requiredDuringSchedulingIgnoredDuringExecution": [
+                { "topologyKey": "kubernetes.io/hostname" }
+            ] } }),
+        ] {
+            let mut pod = dispatched_pod("lean", &lean_profile());
+            pod.spec.as_mut().unwrap().affinity = Some(affinity(extra));
+            let msg = deny_msg(decide(&pod, &source("lean", lean_profile())).await);
+            assert!(msg.contains("affinity"), "{msg}");
+        }
     }
 
     fn nonroot_profile() -> WorkerProfileSpec {
