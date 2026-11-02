@@ -203,10 +203,11 @@ pub async fn register(
 ) -> ApiResult<StatusCode> {
     let key = bearer(&headers)
         .ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "dispatcher key required"))?;
-    let (dispatcher_id, user_id) = dispatcher_of(&state.pool, key)
-        .await
-        .map_err(|e| db_err(&e))?
-        .ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "invalid dispatcher key"))?;
+    let (dispatcher_id, user_id) =
+        dispatcher_of(&state.pool, key)
+            .await
+            .map_err(|e| db_err(&e))?
+            .ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "invalid dispatcher key"))?;
     check_register(&req).map_err(|e| api_err(StatusCode::BAD_REQUEST, e))?;
     let vault = crate::crypto::vault_key();
     let env = serde_json::to_string(&req.env)
@@ -255,8 +256,8 @@ pub async fn redeem(
         .keys(&state.http_client, token.issuer(), token.kid())
         .await
         .map_err(|e| rejected(id, &e))?;
-    let pod = jwt::verify(token, &jwks, chrono::Utc::now().timestamp())
-        .map_err(|e| rejected(id, &e))?;
+    let pod =
+        jwt::verify(token, &jwks, chrono::Utc::now().timestamp()).map_err(|e| rejected(id, &e))?;
     let found = binding(&state.pool, id).await.map_err(|e| db_err(&e))?;
     let bound = found.ok_or_else(|| api_err(StatusCode::NOT_FOUND, "unknown dispatch"))?;
     if bound.expired {
@@ -287,15 +288,18 @@ pub async fn env(
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> ApiResult<Json<EnvResponse>> {
-    let key =
-        bearer(&headers).ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "machine key required"))?;
-    let sealed = take_env(&state.pool, id, key).await.map_err(|e| db_err(&e))?.ok_or_else(|| {
-        api_err(StatusCode::NOT_FOUND, "no env for this key (not redeemed, or already read)")
-    })?;
+    let key = bearer(&headers)
+        .ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "machine key required"))?;
+    let sealed =
+        take_env(&state.pool, id, key).await.map_err(|e| db_err(&e))?.ok_or_else(|| {
+            api_err(StatusCode::NOT_FOUND, "no env for this key (not redeemed, or already read)")
+        })?;
     let env: BTreeMap<String, String> =
         crate::crypto::decrypt(&sealed, &crate::crypto::vault_key())
             .and_then(|json| serde_json::from_str(&json).ok())
-            .ok_or_else(|| api_err(StatusCode::INTERNAL_SERVER_ERROR, "stored env is unreadable"))?;
+            .ok_or_else(|| {
+                api_err(StatusCode::INTERNAL_SERVER_ERROR, "stored env is unreadable")
+            })?;
     Ok(Json(EnvResponse { env }))
 }
 

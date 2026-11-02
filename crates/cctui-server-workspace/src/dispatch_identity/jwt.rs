@@ -284,14 +284,13 @@ pub fn check_binding(id: &PodIdentity, namespace: &str, job_name: &str) -> Resul
             got: id.namespace.clone(),
         });
     }
-    let owned = id
-        .pod_name
-        .strip_prefix(job_name)
-        .and_then(|rest| rest.strip_prefix('-'))
-        .is_some_and(|suffix| {
-            suffix.len() == POD_SUFFIX_LEN
-                && suffix.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        });
+    let owned =
+        id.pod_name.strip_prefix(job_name).and_then(|rest| rest.strip_prefix('-')).is_some_and(
+            |suffix| {
+                suffix.len() == POD_SUFFIX_LEN
+                    && suffix.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+            },
+        );
     if owned {
         Ok(())
     } else {

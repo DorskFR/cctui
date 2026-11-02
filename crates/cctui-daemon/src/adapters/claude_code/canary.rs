@@ -188,8 +188,8 @@ fn step(
         return if stale { Step::Done } else { Step::Wait };
     };
     if job.exited {
-        let this_launch = watch.live_since.is_some()
-            || job.started_at_ms.is_some_and(|t| t >= watch.armed_at_ms);
+        let this_launch =
+            watch.live_since.is_some() || job.started_at_ms.is_some_and(|t| t >= watch.armed_at_ms);
         return match (this_launch, watch.pinged) {
             (true, false) => Step::Flag(Verdict::ExitedEarly(job.detail.clone())),
             (true, true) => Step::Done,

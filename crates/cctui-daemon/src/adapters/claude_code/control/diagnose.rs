@@ -330,9 +330,8 @@ fn pty_output_fact(
 /// the report renders verbatim.
 fn with_canary_note(fact: &mut DiagnoseFact<EffectiveState>, note: &str) {
     if let Some(state) = fact.value.as_mut() {
-        state.detail = Some(
-            state.detail.take().map_or_else(|| note.to_owned(), |d| format!("{d} · {note}")),
-        );
+        state.detail =
+            Some(state.detail.take().map_or_else(|| note.to_owned(), |d| format!("{d} · {note}")));
     }
 }
 

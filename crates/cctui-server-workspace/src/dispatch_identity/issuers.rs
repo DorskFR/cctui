@@ -84,8 +84,10 @@ impl Issuers {
         issuer: &str,
         kid: Option<&str>,
     ) -> Result<Jwks, Rejection> {
-        let source =
-            self.trusted.get(issuer).ok_or_else(|| Rejection::UntrustedIssuer(issuer.to_owned()))?;
+        let source = self
+            .trusted
+            .get(issuer)
+            .ok_or_else(|| Rejection::UntrustedIssuer(issuer.to_owned()))?;
         if let Some(jwks) = self.cached(issuer, kid) {
             return Ok(jwks);
         }
@@ -128,12 +130,8 @@ async fn fetch(http: &reqwest::Client, source: &Source) -> Result<Jwks, String> 
 }
 
 async fn get_json<T: DeserializeOwned>(http: &reqwest::Client, url: &str) -> Result<T, String> {
-    let resp = http
-        .get(url)
-        .timeout(FETCH_TIMEOUT)
-        .send()
-        .await
-        .map_err(|e| format!("GET {url}: {e}"))?;
+    let resp =
+        http.get(url).timeout(FETCH_TIMEOUT).send().await.map_err(|e| format!("GET {url}: {e}"))?;
     let status = resp.status();
     if !status.is_success() {
         return Err(format!("GET {url}: HTTP {status}"));

@@ -254,9 +254,8 @@ impl Driver {
         if adapter.is_one_shot() {
             tracing::info!(session_id = %session_id, adapter = adapter.id(), "dispatch-on-start: launching one-shot dispatch");
             tokio::spawn(async move {
-                let ran = crate::dispatch::run_one_shot(adapter, &payload)
-                    .instrument(span.clone())
-                    .await;
+                let ran =
+                    crate::dispatch::run_one_shot(adapter, &payload).instrument(span.clone()).await;
                 crate::adapter_runtime::record_spawn_outcome(&span, ran.as_ref().err());
                 if let Err(err) = ran {
                     tracing::error!(%err, adapter = adapter.id(), "dispatch-on-start: one-shot dispatch failed");

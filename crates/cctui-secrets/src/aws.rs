@@ -56,9 +56,8 @@ impl AwsSecretsManager {
             }
         };
         let Some(field) = field else { return Ok(Credential::new(value)) };
-        let json: serde_json::Value = serde_json::from_str(&value).map_err(|e| {
-            SecretError::Backend(anyhow::anyhow!("aws-sm {name} is not JSON: {e}"))
-        })?;
+        let json: serde_json::Value = serde_json::from_str(&value)
+            .map_err(|e| SecretError::Backend(anyhow::anyhow!("aws-sm {name} is not JSON: {e}")))?;
         match json.get(field).and_then(serde_json::Value::as_str) {
             Some(v) if !v.is_empty() => Ok(Credential::new(v.to_owned())),
             _ => Err(SecretError::not_found(r)),
@@ -90,11 +89,8 @@ impl AwsSecretsManager {
         }
         let resp = builder.body(body).send().await.context("request")?;
         let status = resp.status();
-        let error_type = resp
-            .headers()
-            .get("x-amzn-errortype")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        let error_type =
+            resp.headers().get("x-amzn-errortype").and_then(|v| v.to_str().ok()).map(str::to_owned);
         let text = resp.text().await.context("reading the response")?;
         if status.is_success() {
             return parse_secret_string(&text);
@@ -307,8 +303,7 @@ mod tests {
     }
 
     fn sm_engines(base: &str) -> Engines {
-        Engines::new()
-            .with_aws(manager(&[("AWS_REGION", "us-east-1"), ("AWS_ENDPOINT_URL", base)]))
+        Engines::new().with_aws(manager(&[("AWS_REGION", "us-east-1"), ("AWS_ENDPOINT_URL", base)]))
     }
 
     async fn backend_error(engines: &Engines, r: &str) -> String {

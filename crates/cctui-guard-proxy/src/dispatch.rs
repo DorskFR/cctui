@@ -34,10 +34,9 @@ impl ServerTarget {
             "server URL `{url}` has no usable host"
         );
         let (host, port) = match authority.rsplit_once(':') {
-            Some((host, port)) => (
-                host,
-                port.parse::<u16>().map_err(|_| anyhow::anyhow!("bad port in `{url}`"))?,
-            ),
+            Some((host, port)) => {
+                (host, port.parse::<u16>().map_err(|_| anyhow::anyhow!("bad port in `{url}`"))?)
+            }
             None => (authority, if https { 443 } else { 80 }),
         };
         Ok(Self { base_url: url.to_owned(), https, host: host.to_ascii_lowercase(), port })
@@ -118,13 +117,8 @@ impl DispatchIdentity {
             "{}/api/v1/dispatch/{}/env",
             self.config.server.base_url, self.config.dispatch_id
         );
-        let sent = self
-            .http
-            .get(&url)
-            .bearer_auth(machine_key)
-            .timeout(REQUEST_TIMEOUT)
-            .send()
-            .await;
+        let sent =
+            self.http.get(&url).bearer_auth(machine_key).timeout(REQUEST_TIMEOUT).send().await;
         match sent {
             Ok(resp) => {
                 let status = resp.status().as_u16();
