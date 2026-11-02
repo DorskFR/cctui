@@ -2,20 +2,12 @@
 	import type { SessionProfile } from '@bindings/SessionProfile';
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
-	import { Button } from '@dorsk/tsumikit';
+	import { Button, IconButton, RichSelect } from '@dorsk/tsumikit';
 	import ProfileRow from './ProfileRow.svelte';
 	import ProfileAdjust from './ProfileAdjust.svelte';
 	import KitFields from './KitFields.svelte';
 	import { harnessModelsFallback } from '$lib/domainTables';
-	import {
-		EMPTY_SPEC,
-		moveProfile,
-		moveProfileOnto,
-		specChain,
-		specOf,
-		type ProfileSpecForm
-	} from './profiles';
-	import { nextRadioIndex } from './radioNav';
+	import { EMPTY_SPEC, moveProfile, specChain, specOf, type ProfileSpecForm } from './profiles';
 	import { useProfileActions } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
@@ -52,27 +44,10 @@
 
 	let openId = $state<string | null>(null);
 	let pending = $state<SessionProfile[] | null>(null);
-	let dragId = $state('');
-	let overId = $state('');
-	let announcement = $state('');
-	let listEl = $state<HTMLElement | null>(null);
 	const actions = useProfileActions();
 
 	const ordered = $derived(pending ?? profiles);
-	// One tab stop for the whole radiogroup; with nothing selected it is the first
-	// row, so the group stays reachable.
-	const tabbableId = $derived(
-		(ordered.some((p) => p.id === selectedId) ? selectedId : ordered[0]?.id) ?? null
-	);
-
-	function nav(from: number, key: string): boolean {
-		const to = nextRadioIndex(key, from, ordered.length);
-		if (to === null) return false;
-		const p = ordered[to];
-		select(p.id);
-		listEl?.querySelector<HTMLElement>(`[data-profile-id="${p.id}"]`)?.focus();
-		return true;
-	}
+	const adjusting = $derived(ordered.find((p) => p.id === openId) ?? null);
 
 	async function persist(next: SessionProfile[]) {
 		const ids = next.map((p) => p.id);
@@ -87,42 +62,9 @@
 		}
 	}
 
-	function apply(id: string, next: SessionProfile[]) {
-		const to = next.findIndex((p) => p.id === id);
-		if (to >= 0) {
-			announcement = m.spawn_profile_moved({
-				name: next[to].name,
-				position: to + 1,
-				total: next.length
-			});
-		}
-		void persist(next);
-	}
-
-	const move = (id: string, delta: -1 | 1) => {
-		const from = ordered.findIndex((p) => p.id === id);
-		if (from < 0) return;
-		apply(id, moveProfile(ordered, id, from + delta));
-	};
-
-	// Pointer-driven drag: one gesture handled for mouse, pen and touch alike.
-	// The grip releases the implicit touch capture, so the row under the finger
-	// gets the `pointermove` and publishes itself as the drop target.
-	function grab(id: string) {
-		if (ordered.length < 2) return;
-		dragId = id;
-		overId = '';
-		const end = () => {
-			window.removeEventListener('pointerup', end);
-			window.removeEventListener('pointercancel', end);
-			const from = dragId;
-			const target = overId;
-			dragId = '';
-			overId = '';
-			if (from && target && target !== from) apply(from, moveProfileOnto(ordered, from, target));
-		};
-		window.addEventListener('pointerup', end);
-		window.addEventListener('pointercancel', end);
+	function reorder(from: number, to: number) {
+		const p = ordered[from];
+		if (p) void persist(moveProfile(ordered, p.id, to));
 	}
 
 	// With no profile the kit IS the one-off spec the spawn will use, so the
@@ -160,6 +102,7 @@
 	function toggle(id: string) {
 		openId = openId === id ? null : id;
 	}
+	const specFor = (p: SessionProfile) => (selectedId === p.id && oneOff ? oneOff : specOf(p));
 	function useOnce(p: SessionProfile, spec: ProfileSpecForm) {
 		selectedId = p.id;
 		oneOff = spec;
@@ -172,63 +115,102 @@
 	}
 </script>
 
-<div
-	class="list"
-	role="radiogroup"
-	aria-label={m.spawn_profiles_aria()}
-	data-journey="profiles"
-	bind:this={listEl}
->
-	<!-- No saved profile yet: the bare kit stands in for the profile rows, so
+<div class="list" data-journey="profiles">
+	<!-- No saved profile yet: the bare kit stands in for the profile picker, so
 	     harness / account / model / effort / permissions are always reachable
 	     and a session can be started without creating a profile first. -->
-	{#if profiles.length === 0 && oneOff}
-		<KitFields bind:draft={oneOff} {accounts} {pools} {usage} {machineId} />
+	{#if profiles.length === 0}
+		{#if oneOff}
+			<KitFields bind:draft={oneOff} {accounts} {pools} {usage} {machineId} />
+		{/if}
+		<div class="new">
+			<Button data-journey="new-profile" variant="link" size="sm" disabled={busy} onclick={oncreate}>{m.spawn_profile_new()}</Button>
+		</div>
+	{:else}
+		<div class="pick">
+			<RichSelect
+				options={ordered}
+				value={selectedId ?? undefined}
+				onchange={(_, p) => select(p.id)}
+				getKey={(p) => p.id}
+				getLabel={(p) => p.name}
+				onreorder={ordered.length > 1 ? reorder : undefined}
+				movedMessage={(name, position, total) => m.spawn_profile_moved({ name, position, total })}
+				label={m.spawn_profiles_aria()}
+				placeholder={m.spawn_profiles_aria()}
+				style="flex: 1 1 auto"
+			>
+				{#snippet option({ option: p, inTrigger })}
+					<ProfileRow
+						id={p.id}
+						name={p.name}
+						chain={specChain(specFor(p), accounts, pools, chainLabels, modelLabel)}
+						usage={inTrigger ? '' : usageText(p.id)}
+					/>
+				{/snippet}
+				{#snippet trailing({ option: p, close })}
+					<IconButton
+						icon="settings"
+						label={m.spawn_profile_adjust()}
+						inline
+						size={14}
+						pressed={openId === p.id}
+						aria-expanded={openId === p.id}
+						onclick={() => {
+							close();
+							toggle(p.id);
+						}}
+					/>
+				{/snippet}
+				{#snippet footer({ close })}
+					<Button
+						data-journey="new-profile"
+						variant="link"
+						size="sm"
+						disabled={busy}
+						onclick={() => {
+							close();
+							oncreate();
+						}}>{m.spawn_profile_new()}</Button
+					>
+				{/snippet}
+			</RichSelect>
+			{#if selectedId}
+				{@const id = selectedId}
+				<IconButton
+					icon="settings"
+					label={m.spawn_profile_adjust()}
+					inline
+					size={14}
+					pressed={openId === id}
+					aria-expanded={openId === id}
+					onclick={() => toggle(id)}
+				/>
+			{/if}
+		</div>
+		{#if adjusting}
+			{@const p = adjusting}
+			{#key p.id}
+				<div class="adjust" data-journey="profile-adjust" data-profile-id={p.id}>
+					<ProfileAdjust
+						profile={p}
+						initial={specFor(p)}
+						{accounts}
+						{pools}
+						{usage}
+						{machineId}
+						{busy}
+						onuseonce={(s) => useOnce(p, s)}
+						onsave={(name, s) => save(p, name, s)}
+						ondelete={() => {
+							openId = null;
+							ondelete(p.id);
+						}}
+					/>
+				</div>
+			{/key}
+		{/if}
 	{/if}
-	{#each ordered as p, i (p.id)}
-		{@const spec = selectedId === p.id && oneOff ? oneOff : specOf(p)}
-		<ProfileRow
-			id={p.id}
-			name={p.name}
-			chain={specChain(spec, accounts, pools, chainLabels, modelLabel)}
-			usage={usageText(p.id)}
-			selected={selectedId === p.id}
-			open={openId === p.id}
-			position={i + 1}
-			total={ordered.length}
-			dragging={dragId === p.id}
-			dropTarget={overId === p.id && dragId !== p.id}
-			tabbable={tabbableId === p.id}
-			onselect={() => select(p.id)}
-			onnav={(key) => nav(i, key)}
-			ontoggle={() => toggle(p.id)}
-			onmove={ordered.length > 1 ? (delta) => move(p.id, delta) : undefined}
-			ongrab={() => grab(p.id)}
-			onover={() => {
-				if (dragId && dragId !== p.id) overId = p.id;
-			}}
-		>
-			<ProfileAdjust
-				profile={p}
-				initial={spec}
-				{accounts}
-				{pools}
-				{usage}
-				{machineId}
-				{busy}
-				onuseonce={(s) => useOnce(p, s)}
-				onsave={(name, s) => save(p, name, s)}
-				ondelete={() => {
-					openId = null;
-					ondelete(p.id);
-				}}
-			/>
-		</ProfileRow>
-	{/each}
-	<div class="sr-only" role="status" aria-live="polite">{announcement}</div>
-	<div class="new">
-		<Button data-journey="new-profile" variant="link" size="sm" disabled={busy} onclick={oncreate}>{m.spawn_profile_new()}</Button>
-	</div>
 </div>
 
 <style>
@@ -236,6 +218,17 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);
+	}
+	.pick {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-1);
+		min-width: 0;
+	}
+	.adjust {
+		border: 1px solid var(--border);
+		border-radius: var(--r-md);
+		background: var(--bg);
 	}
 	.new {
 		display: flex;
