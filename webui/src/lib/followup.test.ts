@@ -211,9 +211,11 @@ describe('launchFollowup', () => {
 		const d = deps();
 		const out = await launchFollowup(source, 'next step', d);
 		expect(out).toEqual({ status: 'launched', sessionId: 'new' });
-		const body = vi.mocked(d.spawn).mock.calls[0][0];
-		expect(body.prompt?.endsWith('next step')).toBe(true);
-		expect(body.parent_session_id).toBe('src');
+		expect(d.spawn).toHaveBeenCalledTimes(1);
+		expect(d.spawn).toHaveBeenCalledWith(
+			expect.objectContaining({ prompt: expect.stringMatching(/next step$/), parent_session_id: 'src' }),
+			[]
+		);
 		expect(d.awaitSpawn).toHaveBeenCalledWith('c1', 'new');
 		expect(d.archive).toHaveBeenCalledWith('src');
 	});
