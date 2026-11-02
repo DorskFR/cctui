@@ -346,6 +346,7 @@ top, so a guard change can be tried on one profile before it reaches every worke
 | `spec.guard.envFrom` | extra `envFrom` sources **after** `guard-proxy-env`: a key here overrides the global one |
 | `spec.guard.env` | container `env` after the identity: wins over every `envFrom` |
 | `spec.guard.allowPrivateEgress` | nothing; it is the admission gate below |
+| `spec.guard.cloudIdentity` | `volumeMounts` and `env` of the guard-proxy (see [Cloud identity](#cloud-identity-for-the-guard-proxy-specguardcloudidentity)) |
 
 The mutating webhook reads the profile named by `cctui.dev/worker-profile` at pod
 admission, so a profile edit applies to the next pod, queued Jobs included. A
@@ -384,6 +385,56 @@ spec:
 Watch the sidecar logs for `private egress DENY`, list what's missing in
 `GUARD_PROXY_PRIVATE_ALLOW` (with `allowPrivateEgress: true`), and once the canary
 runs clean, make the change in `guard-proxy-env` and delete the canary's override.
+
+### Cloud identity for the guard-proxy (`spec.guard.cloudIdentity`)
+
+A cloud identity webhook (EKS Pod Identity, IRSA, Azure Workload Identity)
+attaches the `ServiceAccount`'s identity to the whole pod: it adds a token
+volume and mounts it, with the SDK env, into every container it is not told to
+skip. Only the guard-proxy may hold it, so `aws-sm:` refs resolve there and
+nowhere else. A profile opts in with two pieces:
+
+```yaml
+spec:
+  serviceAccountName: worker-prod        # carries the Pod Identity association
+  podAnnotations:
+    # every container except guard-proxy: the worker, net-init and any
+    # profile containers / initContainers
+    eks.amazonaws.com/skip-containers: "worker,net-init"
+  guard:
+    cloudIdentity:
+      volumeMounts:
+        - name: eks-pod-identity-token
+          mountPath: /var/run/secrets/pods.eks.amazonaws.com/serviceaccount
+          readOnly: true
+      env:
+        - name: AWS_CONTAINER_CREDENTIALS_FULL_URI
+          value: http://169.254.170.23/v1/credentials
+        - name: AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+          value: /var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token
+```
+
+The mutating webhook adds `cloudIdentity` to the guard-proxy itself, because
+the guard-proxy may not exist yet when the identity webhook runs. It never adds
+the volume: the identity webhook owns it. Either order is safe. The EKS webhook
+skips a container that already mounts a volume of that name or already sets
+`AWS_CONTAINER_*`, and adds the pod volume only when none of that name exists,
+so the guard-proxy ends with one mount and one set of env.
+
+The validating webhook, for a profile with `cloudIdentity`:
+
+- allows each named volume at pod level, present or not;
+- denies it unless it is a projected volume of `serviceAccountToken` sources
+  only, or a read-only CSI volume (a pre-existing `hostPath` of that name would
+  otherwise be kept by the EKS webhook);
+- denies the pod when any container other than `guard-proxy` mounts it, which
+  is what a missing or incomplete skip annotation produces: the pod is
+  refused, never admitted with the identity on the worker.
+
+A profile without `cloudIdentity` is unchanged: an injected identity volume is
+an unexpected volume and the pod is denied. A `cloudIdentity` mount that names
+no volume the identity webhook adds (the `ServiceAccount` has no association)
+makes the API server reject the pod.
 
 ### Pre-flight isolation check
 
@@ -466,7 +517,7 @@ degrades to a blank secret.
 |---|---|---|
 | `env:VAR` | the sidecar's OWN environment | Empty values count as not configured. The sanctioned dev path: the dev cluster's vault-env webhook materializes `vault:` refs into the **sidecar** container env, so the worker container never sees the values. |
 | `vault:<mount>/data/<path>#<field>` | Vault/OpenBao KV v2 (dev) | Needs `--vault-addr` + `--vault-role`; Kubernetes auth with the pod SA token. `bao:` is an accepted alias for refs carried in pod **env values** — the bank-vaults webhook would otherwise hijack a literal `vault:` prefix before the proxy sees it. |
-| `aws-sm:<name>` / `aws-sm:<name>#<json-field>` | AWS Secrets Manager (prod) | SDK default credential chain (EKS Pod Identity / IRSA — the sidecar's ambient identity). Which secrets a pod may read is enforced in IAM by secret-name prefix, not in code. |
+| `aws-sm:<name>` / `aws-sm:<name>#<json-field>` | AWS Secrets Manager (prod) | SDK default credential chain (EKS Pod Identity / IRSA — the sidecar's ambient identity, wired by [`spec.guard.cloudIdentity`](#cloud-identity-for-the-guard-proxy-specguardcloudidentity)). Which secrets a pod may read is enforced in IAM by secret-name prefix, not in code. |
 | `k8s:[<namespace>/]<secret>#<key>` | Kubernetes Secret | Read via the pod's own `ServiceAccount`; RBAC decides what it may read. |
 
 Refs may carry `${IDENTITY}` (the task identity, ASCII alphanumerics uppercased

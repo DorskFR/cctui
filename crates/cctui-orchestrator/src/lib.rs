@@ -299,6 +299,38 @@ pub struct GuardSpec {
     /// `GUARD_PROXY_PRIVATE_ALLOW`), so the widening is explicit in review.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_private_egress: bool,
+
+    /// Cloud workload identity (e.g. EKS Pod Identity) wired into the
+    /// guard-proxy alone. Admission denies the pod if any other container
+    /// mounts one of these volumes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_identity: Option<CloudIdentitySpec>,
+}
+
+/// The guard-proxy's share of a cloud identity webhook's injection.
+///
+/// The webhook must be told to skip every other container (e.g.
+/// `eks.amazonaws.com/skip-containers` in `podAnnotations`). The guard-proxy
+/// gets these mounts and env from cctui itself, so it holds the identity
+/// whichever webhook runs first.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudIdentitySpec {
+    /// Mounts of the volumes the identity webhook adds to the pod. Each named
+    /// volume must be a projected service-account token or a read-only CSI
+    /// volume, and only the guard-proxy may mount it.
+    pub volume_mounts: Vec<VolumeMount>,
+
+    /// Literal env the cloud SDK reads to find the credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<Vec<EnvVar>>,
+}
+
+impl GuardSpec {
+    /// Names of the cloud identity volumes only the guard-proxy may mount.
+    pub fn identity_volumes(&self) -> impl Iterator<Item = &str> {
+        self.cloud_identity.iter().flat_map(|c| &c.volume_mounts).map(|m| m.name.as_str())
+    }
 }
 
 /// Label and annotation key prefixes owned by cctui or the Job controller.
@@ -518,6 +550,26 @@ guard:
             serde_norway::from_str("image: registry.example.com/worker:latest\n").unwrap();
         assert!(lean.guard.is_none());
         assert!(serde_json::to_value(&lean).unwrap().get("guard").is_none());
+    }
+
+    #[test]
+    fn guard_cloud_identity_deserializes() {
+        let yaml = r"
+image: registry.example.com/worker:latest
+guard:
+  cloudIdentity:
+    volumeMounts:
+      - name: eks-pod-identity-token
+        mountPath: /var/run/secrets/pods.eks.amazonaws.com/serviceaccount
+        readOnly: true
+    env:
+      - name: AWS_CONTAINER_CREDENTIALS_FULL_URI
+        value: http://169.254.170.23/v1/credentials
+";
+        let guard = serde_norway::from_str::<WorkerProfileSpec>(yaml).unwrap().guard.unwrap();
+        assert_eq!(guard.identity_volumes().collect::<Vec<_>>(), ["eks-pod-identity-token"]);
+        assert_eq!(guard.cloud_identity.unwrap().env.unwrap().len(), 1);
+        assert_eq!(GuardSpec::default().identity_volumes().count(), 0);
     }
 
     #[test]

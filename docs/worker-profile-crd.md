@@ -39,7 +39,7 @@ and is left untouched.
 | `pod` | operator | `labels`, `annotations` (stamped onto the Job **and** its pod template) and `priorityClassName`, for clusters whose admission policies require them (see [Pod labels, annotations and priority](#pod-labels-annotations-and-priority)) |
 | `serviceAccountName` | operator | identity / secret scope mapping; the dispatch request never sets this |
 | `gpgSigning` | operator | opt-in; webhook wires a gpg-agent socket into the worker container |
-| `guard` | operator | guard-proxy sidecar `envFrom`/`env` layered over `guard-proxy-env`; widening needs `allowPrivateEgress` (see worker-contract.md) |
+| `guard` | operator | guard-proxy sidecar `envFrom`/`env` layered over `guard-proxy-env`; widening needs `allowPrivateEgress`; `cloudIdentity` confines a cloud identity webhook's token to the guard-proxy (see worker-contract.md) |
 | `posture` | operator | `root` or `nonroot`: the worker container's security posture (see [Posture](#posture)); unset is `root` |
 | `preflight` | operator | `mode` (`enforce`/`warn`/`off`) and extra `deny` targets for the worker's pre-flight isolation check, rendered as `CCTUI_PREFLIGHT_*` worker env after the per-run env, so neither the profile's own `env` nor a dispatch can override them (see worker-contract.md) |
 | per-run env (session id, reply URL, task payload, ...) | dispatcher | layered onto the worker `env` at Job creation |
