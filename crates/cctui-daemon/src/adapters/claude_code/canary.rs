@@ -239,6 +239,7 @@ mod tests {
     use super::*;
 
     const T0_MS: i64 = 1_000_000;
+    const JUST_UNDER: Duration = WINDOW.saturating_sub(Duration::from_secs(1));
 
     fn live(short: &str) -> Observed {
         Observed { short: short.to_owned(), exited: false, detail: None, started_at_ms: None }
@@ -260,7 +261,7 @@ mod tests {
         let (mut c, t0) = armed(None);
         let roster = [live("abcd1234")];
         assert!(c.observe(&roster, t0, &never).is_empty());
-        assert!(c.observe(&roster, t0 + WINDOW - Duration::from_secs(1), &never).is_empty());
+        assert!(c.observe(&roster, t0 + JUST_UNDER, &never).is_empty());
         let notices = c.observe(&roster, t0 + WINDOW, &never);
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].0, "loc-1");
@@ -341,7 +342,7 @@ mod tests {
         let roster = [live("abcd1234")];
         let live_at = t0 + WINDOW * 2;
         assert!(c.observe(&roster, live_at, &never).is_empty());
-        assert!(c.observe(&roster, live_at + WINDOW - Duration::from_secs(1), &never).is_empty());
+        assert!(c.observe(&roster, live_at + JUST_UNDER, &never).is_empty());
         assert_eq!(c.observe(&roster, live_at + WINDOW, &never).len(), 1);
     }
 
