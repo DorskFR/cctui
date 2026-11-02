@@ -10,7 +10,6 @@ use crate::authz::{Authn, Routes};
 use crate::state::AppState;
 
 const BODY_LIMIT: usize = 1024 * 1024;
-const FORWARDED: [header::HeaderName; 2] = [header::CONTENT_TYPE, header::CONTENT_ENCODING];
 
 pub(super) fn register(r: Routes) -> Routes {
     r.add(
@@ -28,7 +27,7 @@ async fn forward(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         return StatusCode::NOT_FOUND;
     };
     let mut request = state.http_client.post(url).body(body);
-    for name in FORWARDED {
+    for name in [header::CONTENT_TYPE, header::CONTENT_ENCODING] {
         if let Some(value) = headers.get(&name) {
             request = request.header(name, value.clone());
         }
@@ -64,8 +63,8 @@ mod tests {
     use axum::Router;
     use axum::body::Body;
     use axum::extract::Request;
-    use http::Request as HttpRequest;
     use axum::middleware::{self, Next};
+    use http::Request as HttpRequest;
     use tower::ServiceExt;
     use uuid::Uuid;
 
