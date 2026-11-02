@@ -36,6 +36,16 @@ ui.spawn_session.launch                  webui
          └─ session.spawn                daemon
 ```
 
+A dispatch to an enrolled dispatcher sends no WS command to the worker: the
+server puts its span's `traceparent` on the dispatch frame, the kube
+dispatcher writes it into the worker's `TASK_PAYLOAD_JSON`, and the worker
+daemon parents the boot-dispatched session's `session.spawn` span to it.
+
+```
+POST /api/v1/sessions/dispatch           server
+└─ session.spawn                         worker daemon, parented through the payload
+```
+
 ## End-to-end check
 
 `webui/e2e/otel-spawn-trace.spec.ts` (Playwright project `otel-trace`) clicks

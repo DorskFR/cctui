@@ -1133,6 +1133,8 @@ dependencies = [
  "dirs",
  "futures-util",
  "hex",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "reqwest",
  "rustix 1.1.5",
  "rustls",
@@ -1145,6 +1147,7 @@ dependencies = [
  "tokio-util",
  "toml",
  "tracing",
+ "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
 ]

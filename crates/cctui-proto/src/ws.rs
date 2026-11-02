@@ -376,6 +376,9 @@ pub struct WireDispatchSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
     pub payload: serde_json::Value,
+    /// W3C `traceparent` of the server span that forwarded the dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traceparent: Option<String>,
 }
 
 /// Server → dispatcher frames on `/api/v1/dispatcher/ws`.
@@ -1482,6 +1485,7 @@ mod tests {
                 dedup_key: None,
                 profile: None,
                 payload: serde_json::json!({"name": "demo"}),
+                traceparent: None,
             },
         };
         let json = serde_json::to_string(&f).unwrap();

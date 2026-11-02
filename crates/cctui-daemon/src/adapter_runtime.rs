@@ -406,14 +406,56 @@ fn spawn_span(adapter: &str, spec: &SessionSpec, session_id: Option<&str>) -> tr
     if !cctui_telemetry::enabled() {
         return tracing::Span::none();
     }
+    session_spawn_span(adapter, session_id, spec.working_dir.as_deref())
+}
+
+fn session_spawn_span(adapter: &str, session_id: Option<&str>, cwd: Option<&str>) -> tracing::Span {
     tracing::info_span!(
         "session.spawn",
         adapter,
         session_id,
-        cwd = spec.working_dir.as_deref(),
+        cwd,
         otel.status_code = tracing::field::Empty,
         error.message = tracing::field::Empty,
     )
+}
+
+/// The `session.spawn` span of a session the daemon starts from its dispatch
+/// payload, parented to the payload's `traceparent` when it carries one.
+#[must_use]
+pub fn boot_spawn_span(
+    adapter: &str,
+    session_id: &str,
+    cwd: Option<&str>,
+    payload: &serde_json::Value,
+) -> tracing::Span {
+    if !cctui_telemetry::enabled() {
+        return tracing::Span::none();
+    }
+    parented_boot_span(adapter, session_id, cwd, payload)
+}
+
+fn parented_boot_span(
+    adapter: &str,
+    session_id: &str,
+    cwd: Option<&str>,
+    payload: &serde_json::Value,
+) -> tracing::Span {
+    let span = session_spawn_span(adapter, Some(session_id), cwd);
+    if let Some(traceparent) = payload.get("traceparent").and_then(serde_json::Value::as_str) {
+        cctui_telemetry::set_parent(&span, traceparent, None);
+    }
+    span
+}
+
+/// Stamp a `session.spawn` span with how its launch ended.
+pub fn record_spawn_outcome(span: &tracing::Span, err: Option<&anyhow::Error>) {
+    let Some(err) = err else {
+        span.record("otel.status_code", "OK");
+        return;
+    };
+    span.record("otel.status_code", "ERROR");
+    span.record("error.message", tracing::field::display(err));
 }
 
 async fn in_spawn_span(
@@ -421,15 +463,7 @@ async fn in_spawn_span(
     launch: impl std::future::Future<Output = CommandOutcome>,
 ) -> CommandOutcome {
     let outcome = launch.instrument(span.clone()).await;
-    match &outcome {
-        Ok(_) => {
-            span.record("otel.status_code", "OK");
-        }
-        Err(err) => {
-            span.record("otel.status_code", "ERROR");
-            span.record("error.message", tracing::field::display(err));
-        }
-    }
+    record_spawn_outcome(&span, outcome.as_ref().err());
     outcome
 }
 
@@ -591,6 +625,55 @@ mod tests {
         park_span(Some(id), &span);
         assert!(take_span(Some(id)).is_none());
         assert!(take_span(None).is_none());
+    }
+
+    #[test]
+    fn a_boot_dispatch_opens_a_spawn_span_under_the_carried_traceparent() {
+        use opentelemetry::trace::{SpanId, Status, TracerProvider as _};
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        const TRACE_ID: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
+        const PARENT_ID: &str = "00f067aa0ba902b7";
+
+        let traced = serde_json::json!({
+            "prompt": "go",
+            "traceparent": format!("00-{TRACE_ID}-{PARENT_ID}-01"),
+        });
+        assert!(boot_spawn_span("codex", "sess-off", None, &traced).is_none());
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder().with_simple_exporter(exporter.clone()).build();
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test")));
+        tracing::subscriber::with_default(subscriber, || {
+            let span = parented_boot_span("codex", "sess-boot", Some("/workspace"), &traced);
+            record_spawn_outcome(&span, None);
+            let root = parented_boot_span("codex", "sess-root", None, &serde_json::json!({}));
+            record_spawn_outcome(&root, Some(&anyhow::anyhow!("no socket")));
+        });
+
+        let spans = exporter.get_finished_spans().expect("exporter readable");
+        let session = |id: &str| {
+            spans
+                .iter()
+                .find(|s| {
+                    s.name == "session.spawn"
+                        && s.attributes
+                            .iter()
+                            .any(|kv| kv.key.as_str() == "session_id" && kv.value.as_str() == id)
+                })
+                .unwrap_or_else(|| panic!("session.spawn for {id} exported: {spans:?}"))
+        };
+        let boot = session("sess-boot");
+        assert_eq!(boot.span_context.trace_id().to_string(), TRACE_ID);
+        assert_eq!(boot.parent_span_id.to_string(), PARENT_ID);
+        assert_eq!(boot.status, Status::Ok);
+
+        let root = session("sess-root");
+        assert_ne!(root.span_context.trace_id().to_string(), TRACE_ID);
+        assert_eq!(root.parent_span_id, SpanId::INVALID);
+        assert!(matches!(root.status, Status::Error { .. }), "{:?}", root.status);
     }
 
     #[test]

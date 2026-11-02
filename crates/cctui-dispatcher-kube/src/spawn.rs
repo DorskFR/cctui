@@ -193,6 +193,9 @@ impl Spawner {
             o.remove(cctui_proto::worker_env::SERVER_ENV_KEYS_FIELD);
             o.remove("env")
         });
+        if let (Some(traceparent), Some(o)) = (&spec.traceparent, payload.as_object_mut()) {
+            o.insert("traceparent".to_owned(), Value::String(traceparent.clone()));
+        }
         let payload_json = serde_json::to_string(&payload)?;
 
         let mut literal: Vec<(String, String)> = vec![
@@ -1361,6 +1364,7 @@ mod tests {
             dedup_key: None,
             profile: None,
             payload,
+            traceparent: None,
         }
     }
 
@@ -1856,6 +1860,22 @@ mod tests {
         let tp = env_value(&v, "TASK_PAYLOAD_JSON").unwrap();
         assert!(!tp.contains("CONTEXT_PACK_URL"), "env lifted out of payload: {tp}");
         assert!(tp.contains("pr-review"));
+    }
+
+    #[test]
+    fn the_dispatch_traceparent_reaches_the_worker_payload() {
+        let traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let mut s = spec("sess-trace", json!({ "flow": "review" }));
+        s.traceparent = Some(traceparent.to_owned());
+        let v = build("lean", &lean_profile(), &s);
+        let tp: Value = serde_json::from_str(&env_value(&v, "TASK_PAYLOAD_JSON").unwrap()).unwrap();
+        assert_eq!(tp["traceparent"], json!(traceparent));
+        assert_eq!(tp["flow"], json!("review"));
+
+        let untraced = build("lean", &lean_profile(), &spec("sess-plain", json!({})));
+        let tp: Value =
+            serde_json::from_str(&env_value(&untraced, "TASK_PAYLOAD_JSON").unwrap()).unwrap();
+        assert!(tp.get("traceparent").is_none(), "{tp}");
     }
 
     #[test]
