@@ -1,5 +1,5 @@
 import { localTimeZone } from "@dorsk/tsumikit";
-import { createQuery, useQueryClient } from "@tanstack/svelte-query";
+import { type QueryClient, createQuery, useQueryClient } from "@tanstack/svelte-query";
 import type { AgentEvent } from "@bindings/AgentEvent";
 import type { MessagePin } from "@bindings/MessagePin";
 import type { SessionListItem } from "@bindings/SessionListItem";
@@ -215,7 +215,25 @@ export const useSessionLangfuse = (
 type FollowupLink = Pick<SessionListItem, "id" | "parent_id">;
 
 const isFollowup = (s: Pick<SessionListItem, "metadata">) =>
-  (s.metadata as Record<string, unknown> | null)?.relation === "followup";
+  (s?.metadata as Record<string, unknown> | null | undefined)?.relation === "followup";
+
+/** Ids in a cached thread body; anything but a thread response has none. */
+export function threadMembers(data: unknown): string[] {
+  const sessions = (data as Partial<SessionThreadResponse> | null | undefined)?.sessions;
+  return Array.isArray(sessions) ? sessions.map((s) => s.id) : [];
+}
+
+/** Every session id in the threads cached for `id`. */
+export const cachedThreadMembers = (qc: QueryClient, id: string): string[] =>
+  qc.getQueriesData({ queryKey: qk.sessionThreadAll(id) }).flatMap(([, d]) => threadMembers(d));
+
+/** The follow-up links in a session list body; none when it has no rows. */
+export function listedFollowups(data: unknown): FollowupLink[] {
+  const sessions = (data as Partial<SessionListResponse> | null | undefined)?.sessions;
+  return Array.isArray(sessions)
+    ? sessions.filter(isFollowup).map((s) => ({ id: s.id, parent_id: s.parent_id }))
+    : [];
+}
 
 /** The listed follow-ups chained to `id` or to a `known` thread member, as a
  *  key part: a new follow-up anywhere in the thread changes it. */
@@ -254,17 +272,10 @@ export const useSessionThread = (
     queryKey: qk.sessions(false),
     queryFn: () => endpoints.sessions(false),
     enabled: false,
-    select: (d: SessionListResponse): FollowupLink[] =>
-      d.sessions
-        .filter(isFollowup)
-        .map((s) => ({ id: s.id, parent_id: s.parent_id })),
+    select: listedFollowups,
   }));
   return createQuery(() => {
-    const known = qc
-      .getQueriesData<SessionThreadResponse>({
-        queryKey: qk.sessionThreadAll(id()),
-      })
-      .flatMap(([, d]) => d?.sessions.map((s) => s.id) ?? []);
+    const known = cachedThreadMembers(qc, id());
     return {
       queryKey: qk.sessionThread(
         id(),

@@ -60,7 +60,7 @@ export function threadEntries(
 	thread: readonly ThreadSession[] | undefined,
 	fallback: { previous: string; next: string }
 ): ThreadEntry[] {
-	if (thread && thread.length > 1 && thread.some((t) => t.id === session.id)) {
+	if (Array.isArray(thread) && thread.length > 1 && thread.some((t) => t.id === session.id)) {
 		const tree = treeGlyphs(thread);
 		return uniqueLabels(
 			thread.map((t, i) => ({
