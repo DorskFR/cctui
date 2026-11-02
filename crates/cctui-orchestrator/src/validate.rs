@@ -27,7 +27,7 @@ use crate::{
 };
 use k8s_openapi::api::core::v1::{
     Affinity, Container, NodeSelectorTerm, Pod, PodSpec, PodTemplateSpec, SecurityContext,
-    Toleration,
+    Toleration, Volume, VolumeProjection,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -285,6 +285,12 @@ fn nonroot_violation(sc: Option<&SecurityContext>) -> Option<&'static str> {
 /// Narrowing (zeroing either setting) needs nothing. `envFrom` contents are
 /// not visible at admission and stay operator-owned, like `guard-proxy-env`.
 pub fn check_guard(guard: &GuardSpec) -> Result<(), String> {
+    if guard.cloud_identity.as_ref().is_some_and(|c| c.volume_mounts.is_empty()) {
+        return Err("cloudIdentity names no volumeMounts".to_owned());
+    }
+    if let Some(name) = guard.identity_volumes().find(|n| ENVELOPE_VOLUMES.contains(n)) {
+        return Err(format!("cloudIdentity volume `{name}` is an envelope volume"));
+    }
     for env in guard.env.iter().flatten() {
         if !env.name.starts_with(GUARD_ENV_PREFIX) {
             return Err(format!(
@@ -487,6 +493,7 @@ fn check_conformance(
     check_tolerations(spec, profile, true)?;
     check_priority_class(spec, profile, true)?;
     check_name_sets(spec, worker_name, profile)?;
+    check_cloud_identity(spec, profile)?;
     check_volumes(spec, profile)?;
     check_worker_mounts(worker, worker_name, profile)?;
     check_worker_env(worker, worker_name, profile, dispatch_secret)
@@ -770,18 +777,20 @@ fn check_name_sets(
     diff_names("initContainer", &want_inits, &have_inits)
 }
 
+const ENVELOPE_VOLUMES: [&str; 8] = [
+    VOL_HOME,
+    VOL_OVERLAY,
+    VOL_GUARD_STATE,
+    VOL_PROXY_POLICY,
+    VOL_GUARD_PROXY_INJECT,
+    VOL_GUARD_PROXY_CA,
+    VOL_GUARD_PROXY_SA_TOKEN,
+    VOL_GPG_AGENT,
+];
+
 fn check_volumes(spec: &PodSpec, profile: &WorkerProfileSpec) -> Result<(), String> {
-    let mut want: BTreeSet<&str> = [
-        VOL_HOME,
-        VOL_OVERLAY,
-        VOL_GUARD_STATE,
-        VOL_PROXY_POLICY,
-        VOL_GUARD_PROXY_INJECT,
-        VOL_GUARD_PROXY_CA,
-        VOL_GUARD_PROXY_SA_TOKEN,
-    ]
-    .into_iter()
-    .collect();
+    let mut want: BTreeSet<&str> =
+        ENVELOPE_VOLUMES.into_iter().filter(|v| *v != VOL_GPG_AGENT).collect();
     if !has_overlay(profile.posture()) {
         want.remove(VOL_OVERLAY);
     }
@@ -791,14 +800,75 @@ fn check_volumes(spec: &PodSpec, profile: &WorkerProfileSpec) -> Result<(), Stri
     for v in profile.volumes.iter().flatten() {
         want.insert(v.name.as_str());
     }
+    let identity: BTreeSet<&str> =
+        profile.guard.iter().flat_map(GuardSpec::identity_volumes).collect();
     let have: BTreeSet<&str> = spec
         .volumes
         .iter()
         .flatten()
         .map(|v| v.name.as_str())
-        .filter(|n| !is_api_server_injected(n))
+        .filter(|n| !is_api_server_injected(n) && !identity.contains(n))
         .collect();
     diff_names("volume", &want, &have)
+}
+
+/// A cloud identity volume is injected by the identity webhook (absent until
+/// it runs), must be a token source, and only the guard-proxy may mount it.
+fn check_cloud_identity(spec: &PodSpec, profile: &WorkerProfileSpec) -> Result<(), String> {
+    let identity: BTreeSet<&str> =
+        profile.guard.iter().flat_map(GuardSpec::identity_volumes).collect();
+    for volume in spec.volumes.iter().flatten().filter(|v| identity.contains(v.name.as_str())) {
+        if !is_identity_token_source(volume) {
+            return Err(format!(
+                "cloud identity volume `{}` is not a projected service-account token or a \
+                 read-only CSI volume",
+                volume.name
+            ));
+        }
+    }
+    let holder = spec
+        .containers
+        .iter()
+        .chain(spec.init_containers.iter().flatten())
+        .filter(|c| c.name != GUARD_PROXY_CONTAINER)
+        .find_map(|c| {
+            c.volume_mounts
+                .iter()
+                .flatten()
+                .find(|m| identity.contains(m.name.as_str()))
+                .map(|m| (c.name.as_str(), m.name.as_str()))
+        });
+    if let Some((container, volume)) = holder {
+        return Err(format!(
+            "container `{container}` mounts cloud identity volume `{volume}` — only \
+             `{GUARD_PROXY_CONTAINER}` may hold it; have the identity webhook skip `{container}` \
+             (e.g. `eks.amazonaws.com/skip-containers` in podAnnotations)"
+        ));
+    }
+    Ok(())
+}
+
+fn is_identity_token_source(volume: &Volume) -> bool {
+    let token_only = |s: &VolumeProjection| {
+        s.service_account_token.is_some()
+            && *s
+                == VolumeProjection {
+                    service_account_token: s.service_account_token.clone(),
+                    ..VolumeProjection::default()
+                }
+    };
+    let projected_token = volume.projected.as_ref().is_some_and(|p| {
+        p.sources.as_ref().is_some_and(|s| !s.is_empty() && s.iter().all(token_only))
+    });
+    let read_only_csi = volume.csi.as_ref().is_some_and(|c| c.read_only == Some(true));
+    let only_that_source = *volume
+        == Volume {
+            name: volume.name.clone(),
+            projected: volume.projected.clone(),
+            csi: volume.csi.clone(),
+            ..Volume::default()
+        };
+    (projected_token || read_only_csi) && only_that_source
 }
 
 /// Projected SA-token volume/mounts the API server itself adds during
@@ -1469,6 +1539,212 @@ mod tests {
             let msg = deny_msg(decide_with_worker_env(value).await);
             assert!(msg.contains("secret-ref"), "{value:?}: {msg}");
         }
+    }
+
+    const EKS_TOKEN: &str = "eks-pod-identity-token";
+    const EKS_MOUNT: &str = "/var/run/secrets/pods.eks.amazonaws.com/serviceaccount";
+
+    fn eks_profile() -> WorkerProfileSpec {
+        let mut profile = lean_profile();
+        profile.pod_annotations = Some(BTreeMap::from([(
+            "eks.amazonaws.com/skip-containers".to_owned(),
+            format!("worker,{NET_INIT_CONTAINER}"),
+        )]));
+        profile.guard = Some(
+            serde_json::from_value(serde_json::json!({
+                "cloudIdentity": {
+                    "volumeMounts": [{ "name": EKS_TOKEN, "mountPath": EKS_MOUNT, "readOnly": true }],
+                    "env": [
+                        { "name": "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+                          "value": "http://169.254.170.23/v1/credentials" },
+                        { "name": "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+                          "value": format!("{EKS_MOUNT}/{EKS_TOKEN}") }
+                    ]
+                }
+            }))
+            .unwrap(),
+        );
+        profile
+    }
+
+    /// The EKS Pod Identity webhook's mutation (`pkg/handler/handler.go`): the
+    /// pod volume and per-container mount are added only when no volume/mount of
+    /// that name exists, and `skip-containers` containers are left alone.
+    fn eks_pod_identity_mutate(pod: &mut Pod) {
+        let skip: Vec<String> = pod
+            .metadata
+            .annotations
+            .as_ref()
+            .and_then(|a| a.get("eks.amazonaws.com/skip-containers"))
+            .map(|v| v.split(',').map(str::to_owned).collect())
+            .unwrap_or_default();
+        let spec = pod.spec.as_mut().unwrap();
+        let containers =
+            spec.containers.iter_mut().chain(spec.init_containers.iter_mut().flatten());
+        for c in containers.filter(|c| !skip.contains(&c.name)) {
+            let env = c.env.get_or_insert_default();
+            if !env.iter().any(|e| e.name.starts_with("AWS_CONTAINER_")) {
+                for (name, value) in [
+                    ("AWS_CONTAINER_CREDENTIALS_FULL_URI", "http://169.254.170.23/v1/credentials"),
+                    ("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", "/eks/eks-pod-identity-token"),
+                ] {
+                    env.push(
+                        serde_json::from_value(serde_json::json!({"name": name, "value": value}))
+                            .unwrap(),
+                    );
+                }
+            }
+            let mounts = c.volume_mounts.get_or_insert_default();
+            if !mounts.iter().any(|m| m.name == EKS_TOKEN) {
+                mounts.push(
+                    serde_json::from_value(serde_json::json!({
+                        "name": EKS_TOKEN, "mountPath": EKS_MOUNT, "readOnly": true
+                    }))
+                    .unwrap(),
+                );
+            }
+        }
+        let volumes = spec.volumes.get_or_insert_default();
+        if !volumes.iter().any(|v| v.name == EKS_TOKEN) {
+            volumes.insert(
+                0,
+                serde_json::from_value(serde_json::json!({
+                    "name": EKS_TOKEN,
+                    "projected": { "sources": [{ "serviceAccountToken": {
+                        "audience": "pods.eks.amazonaws.com",
+                        "expirationSeconds": 86400,
+                        "path": EKS_TOKEN
+                    } }] }
+                }))
+                .unwrap(),
+            );
+        }
+    }
+
+    fn guard_proxy(pod: &Pod) -> &Container {
+        let inits = pod.spec.as_ref().unwrap().init_containers.as_ref().unwrap();
+        inits.iter().find(|c| c.name == GUARD_PROXY_CONTAINER).unwrap()
+    }
+
+    #[tokio::test]
+    async fn eks_pod_identity_after_the_envelope_reaches_only_the_guard_proxy() {
+        let mut pod = dispatched_pod("eks", &eks_profile());
+        eks_pod_identity_mutate(&mut pod);
+        let gp = guard_proxy(&pod);
+        let token_mounts = gp.volume_mounts.iter().flatten().filter(|m| m.name == EKS_TOKEN);
+        assert_eq!(token_mounts.count(), 1, "EKS must not add a second mount");
+        let token_file: Vec<_> = gp
+            .env
+            .iter()
+            .flatten()
+            .filter(|e| e.name == "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE")
+            .collect();
+        assert_eq!(token_file.len(), 1);
+        assert_eq!(token_file[0].value.as_deref(), Some(&*format!("{EKS_MOUNT}/{EKS_TOKEN}")));
+        assert!(matches!(decide(&pod, &source("eks", eks_profile())).await, Decision::Allow));
+    }
+
+    #[tokio::test]
+    async fn eks_pod_identity_before_the_envelope_is_allowed() {
+        let profile = eks_profile();
+        let mut pod = dispatched_pod("eks", &profile);
+        let spec = pod.spec.as_mut().unwrap();
+        spec.init_containers = None;
+        spec.volumes = None;
+        eks_pod_identity_mutate(&mut pod);
+        let cfg = EnvelopeConfig {
+            sidecar_image: default_sidecar_image(),
+            worker_container: "worker".to_owned(),
+            guard_identity: None,
+            gpg: false,
+            guard: profile.guard.clone(),
+            posture: profile.posture(),
+        };
+        pod.metadata.annotations.as_mut().unwrap().remove(ANNOTATION_ENVELOPE_INJECTED);
+        let pod = envelope::inject(&pod, &cfg);
+        assert!(guard_proxy(&pod).volume_mounts.iter().flatten().any(|m| m.name == EKS_TOKEN));
+        assert!(matches!(decide(&pod, &source("eks", profile)).await, Decision::Allow));
+    }
+
+    #[tokio::test]
+    async fn identity_reaching_another_container_is_denied() {
+        for skip in ["", "worker", NET_INIT_CONTAINER] {
+            let mut profile = eks_profile();
+            profile
+                .pod_annotations
+                .as_mut()
+                .unwrap()
+                .insert("eks.amazonaws.com/skip-containers".to_owned(), skip.to_owned());
+            let mut pod = dispatched_pod("eks", &profile);
+            eks_pod_identity_mutate(&mut pod);
+            let msg = deny_msg(decide(&pod, &source("eks", profile)).await);
+            assert!(msg.contains("mounts cloud identity volume"), "{skip}: {msg}");
+        }
+    }
+
+    #[tokio::test]
+    async fn identity_volume_without_a_profile_opt_in_is_denied() {
+        let mut profile = eks_profile();
+        profile.guard = None;
+        let mut pod = dispatched_pod("eks", &profile);
+        pod.metadata.annotations.as_mut().unwrap().insert(
+            "eks.amazonaws.com/skip-containers".to_owned(),
+            format!("worker,{NET_INIT_CONTAINER},{GUARD_PROXY_CONTAINER}"),
+        );
+        eks_pod_identity_mutate(&mut pod);
+        let msg = deny_msg(decide(&pod, &source("eks", profile)).await);
+        assert!(msg.contains(&format!("unexpected volume `{EKS_TOKEN}`")), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn identity_volume_must_be_a_token_source() {
+        let mut pod = dispatched_pod("eks", &eks_profile());
+        pod.spec.as_mut().unwrap().volumes.get_or_insert_default().push(
+            serde_json::from_value(serde_json::json!({
+                "name": EKS_TOKEN, "hostPath": { "path": "/var/lib/kubelet" }
+            }))
+            .unwrap(),
+        );
+        eks_pod_identity_mutate(&mut pod);
+        let msg = deny_msg(decide(&pod, &source("eks", eks_profile())).await);
+        assert!(msg.contains("not a projected service-account token"), "{msg}");
+    }
+
+    #[test]
+    fn identity_token_sources() {
+        let vol = |v: serde_json::Value| -> Volume { serde_json::from_value(v).unwrap() };
+        let token = serde_json::json!({ "serviceAccountToken": { "path": "t" } });
+        let secret = serde_json::json!({ "secret": { "name": "s" } });
+        let csi = |ro: bool| serde_json::json!({ "driver": "d", "readOnly": ro });
+        assert!(is_identity_token_source(&vol(serde_json::json!({
+            "name": "a", "projected": { "sources": [token] } }))));
+        assert!(!is_identity_token_source(&vol(serde_json::json!({
+            "name": "a", "projected": { "sources": [token, secret] } }))));
+        assert!(!is_identity_token_source(&vol(serde_json::json!({
+            "name": "a", "projected": { "sources": [] } }))));
+        assert!(is_identity_token_source(&vol(
+            serde_json::json!({ "name": "a", "csi": csi(true) })
+        )));
+        assert!(!is_identity_token_source(&vol(
+            serde_json::json!({ "name": "a", "csi": csi(false) })
+        )));
+        assert!(!is_identity_token_source(&vol(serde_json::json!({
+            "name": "a", "csi": csi(true), "emptyDir": {} }))));
+    }
+
+    #[tokio::test]
+    async fn cloud_identity_cannot_name_an_envelope_volume_or_nothing() {
+        let msg = deny_msg(
+            decide_with_guard(serde_json::json!({ "cloudIdentity": { "volumeMounts": [] } })).await,
+        );
+        assert!(msg.contains("names no volumeMounts"), "{msg}");
+        let msg = deny_msg(
+            decide_with_guard(serde_json::json!({ "cloudIdentity": { "volumeMounts": [
+                { "name": VOL_GUARD_PROXY_SA_TOKEN, "mountPath": "/x" }
+            ] } }))
+            .await,
+        );
+        assert!(msg.contains("is an envelope volume"), "{msg}");
     }
 
     async fn decide_with_guard(guard: serde_json::Value) -> Decision {

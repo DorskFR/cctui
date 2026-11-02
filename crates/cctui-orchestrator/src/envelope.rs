@@ -359,6 +359,10 @@ fn guard_proxy_container(cfg: &EnvelopeConfig) -> Container {
     if cfg.gpg {
         mounts.push(mount(VOL_GPG_AGENT, "/var/run/gpg-agent", false));
     }
+    if let Some(identity) = cfg.guard.as_ref().and_then(|g| g.cloud_identity.as_ref()) {
+        mounts.extend(identity.volume_mounts.iter().cloned());
+        env.extend(identity.env.iter().flatten().cloned());
+    }
 
     Container {
         name: GUARD_PROXY_CONTAINER.to_owned(),
@@ -956,6 +960,39 @@ mod tests {
         let empty_guard = GuardSpec::default();
         let out = serde_json::to_value(apply_with(&lean_pod(), Some(&empty_guard))).unwrap();
         assert_eq!(out, golden, "an empty spec.guard renders like no spec.guard");
+    }
+
+    #[test]
+    fn cloud_identity_reaches_only_the_guard_proxy() {
+        let guard: GuardSpec = serde_json::from_value(serde_json::json!({
+            "cloudIdentity": {
+                "volumeMounts": [{
+                    "name": "eks-pod-identity-token",
+                    "mountPath": "/var/run/secrets/pods.eks.amazonaws.com/serviceaccount",
+                    "readOnly": true
+                }],
+                "env": [{
+                    "name": "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+                    "value": "http://169.254.170.23/v1/credentials"
+                }]
+            }
+        }))
+        .unwrap();
+        let out = apply_with(&lean_pod(), Some(&guard));
+        let spec = out.spec.as_ref().unwrap();
+        let mounts_identity = |c: &Container| {
+            c.volume_mounts.iter().flatten().any(|m| m.name == "eks-pod-identity-token")
+        };
+        let inits = spec.init_containers.as_ref().unwrap();
+        let gp = inits.iter().find(|c| c.name == GUARD_PROXY_CONTAINER).unwrap();
+        assert!(mounts_identity(gp));
+        assert!(gp.env.iter().flatten().any(|e| e.name == "AWS_CONTAINER_CREDENTIALS_FULL_URI"));
+        assert!(!inits.iter().filter(|c| c.name != GUARD_PROXY_CONTAINER).any(mounts_identity));
+        assert!(!spec.containers.iter().any(mounts_identity));
+        assert!(
+            !spec.volumes.iter().flatten().any(|v| v.name == "eks-pod-identity-token"),
+            "the identity webhook owns the volume"
+        );
     }
 
     #[test]
