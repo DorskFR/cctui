@@ -2,9 +2,9 @@
 	import type { SessionProfile } from '@bindings/SessionProfile';
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
-	import { Button, IconButton, RichSelect } from '@dorsk/tsumikit';
 	import ProfileRow from './ProfileRow.svelte';
 	import ProfileForm from './ProfileForm.svelte';
+	import ProfilePicker from './ProfilePicker.svelte';
 	import { harnessModelsFallback } from '$lib/domainTables';
 	import { EMPTY_SPEC, sortProfiles, specChain, specOf, type ProfileSpecForm } from './profiles';
 	import { badgeLook } from './accountBadge';
@@ -50,37 +50,6 @@
 		return f?.mode === 'edit' ? (profiles.find((p) => p.id === f.id) ?? null) : null;
 	});
 	const creating = $derived(form?.mode === 'create');
-	const attached = $derived(listOpen || !!editing || creating);
-
-	let pickEl = $state<HTMLElement | null>(null);
-
-	// RichSelect styles its panel `display: flex`, which outranks the UA rule
-	// hiding a closed popover: a closed panel stays laid out, invisible but
-	// catching taps. Hide it until RichSelect scopes that rule to :popover-open.
-	$effect(() => {
-		const panel = pickEl?.querySelector<HTMLElement>('.rs-panel');
-		if (!panel) return;
-		let shown = false;
-		const apply = () => {
-			const want = shown ? '' : 'none';
-			if (panel.style.display !== want) panel.style.display = want;
-		};
-		const onToggle = (e: Event) => {
-			shown = (e as ToggleEvent).newState === 'open';
-			apply();
-		};
-		// Popover rewrites the panel's style attribute when the trigger resizes.
-		const mo = new MutationObserver(apply);
-		mo.observe(panel, { attributes: true, attributeFilter: ['style'] });
-		panel.addEventListener('beforetoggle', onToggle);
-		panel.addEventListener('toggle', onToggle);
-		apply();
-		return () => {
-			mo.disconnect();
-			panel.removeEventListener('beforetoggle', onToggle);
-			panel.removeEventListener('toggle', onToggle);
-		};
-	});
 
 	// The list and the form are exclusive: opening the list discards the form.
 	$effect(() => {
@@ -173,60 +142,26 @@
 			</div>
 		{/if}
 	{:else}
-		<div class="card" class:attached bind:this={pickEl}>
-			{#if creating}
-				<div class="draft" data-journey="profile-draft">
-					<ProfileRow id="new" name={m.spawn_profile_new()} chain={chainOf(draft)} badge={badgeOf(draft)} variant="draft" />
-				</div>
-			{:else}
-				<RichSelect
-					options={sorted}
-					value={selectedId ?? undefined}
-					onchange={(_, p) => select(p.id)}
-					bind:open={listOpen}
-					getKey={(p) => p.id}
-					getLabel={(p) => p.name}
-					label={m.spawn_profiles_aria()}
-					placeholder={m.spawn_profiles_aria()}
-				>
-					{#snippet option({ option: p, inTrigger })}
-						<ProfileRow
-							id={p.id}
-							name={p.name}
-							chain={chainOf(specFor(p))}
-							badge={badgeOf(specFor(p))}
-							variant={inTrigger ? 'card' : 'row'}
-						/>
-					{/snippet}
-					{#snippet footer({ close })}
-						<Button
-							data-journey="new-profile"
-							variant="link"
-							size="sm"
-							disabled={busy}
-							onclick={() => {
-								close();
-								openCreate();
-							}}>{m.spawn_profile_new()}</Button
-						>
-					{/snippet}
-				</RichSelect>
-				{#if current}
-					<span class="tools">
-						<IconButton
-							icon="settings"
-							label={m.spawn_profile_adjust()}
-							inline
-							size={14}
-							pressed={!!editing}
-							aria-expanded={!!editing}
-							onclick={toggleEdit}
-						/>
-						<span class="divider" aria-hidden="true"></span>
-					</span>
-				{/if}
-			{/if}
-		</div>
+		{#if creating}
+			<div class="draft" data-journey="profile-draft">
+				<ProfileRow id="new" name={m.spawn_profile_new()} chain={chainOf(draft)} badge={badgeOf(draft)} variant="draft" />
+			</div>
+		{:else}
+			<ProfilePicker
+				profiles={sorted}
+				{selectedId}
+				bind:open={listOpen}
+				attached={!!editing}
+				editing={!!editing}
+				{busy}
+				{specFor}
+				{chainOf}
+				{badgeOf}
+				onselect={select}
+				onedit={toggleEdit}
+				onnew={openCreate}
+			/>
+		{/if}
 		{#if editing}
 			{@const p = editing}
 			{#key p.id}
@@ -272,87 +207,15 @@
 	.list {
 		display: flex;
 		flex-direction: column;
-		--card-fill: color-mix(in srgb, var(--accent) 14%, var(--bg));
-		--card-pad: var(--sp-2);
-		--tools-w: calc(24px + var(--sp-2) * 2 + 1px);
-	}
-	.card {
-		position: relative;
-		min-width: 0;
-	}
-	/* The trigger is the whole card, so RichSelect sizes and anchors its panel
-	   to the card. The cog overlays the trigger, in the gap left before the
-	   chevron. */
-	.card :global(.pop-trigger.rs-trigger) {
-		gap: var(--sp-2);
-		padding: var(--card-pad);
-		border-color: var(--accent);
-		background: var(--card-fill);
-		box-shadow: none;
-		color: var(--accent);
-	}
-	@media (hover: hover) and (pointer: fine) {
-		.card :global(.pop-trigger.rs-trigger:hover:not(:disabled)) {
-			background: color-mix(in srgb, var(--accent) 20%, var(--bg));
-		}
-	}
-	.card :global(.rs-chevron) {
-		margin-inline-start: var(--tools-w);
-		color: color-mix(in srgb, var(--accent) 70%, var(--text-muted));
-	}
-	.card.attached :global(.pop-trigger.rs-trigger),
-	.card.attached .draft {
-		border-end-start-radius: 0;
-		border-end-end-radius: 0;
-	}
-	/* Popover places the panel 6px off the trigger; pull it flush. */
-	.card :global(.pop-panel.rs-panel) {
-		margin-top: -6px;
-		border: var(--edge-width) solid var(--accent);
-		border-top: none;
-		border-radius: 0 0 var(--r-md) var(--r-md);
-	}
-	.card :global(.pop-panel.rs-panel[data-side='top']) {
-		margin-top: 6px;
-		border-top: var(--edge-width) solid var(--accent);
-		border-bottom: none;
-		border-radius: var(--r-md) var(--r-md) 0 0;
-	}
-	.card:has(:global(.rs-panel[data-side='top']:popover-open)) :global(.pop-trigger.rs-trigger) {
-		border-radius: 0 0 var(--r-md) var(--r-md);
-	}
-	.card :global(.rs-row[data-selected]::before) {
-		display: none;
-	}
-	.card :global(.rs-footer) {
-		align-items: flex-start;
-	}
-	.tools {
-		position: absolute;
-		inset-block: 0;
-		inset-inline-end: calc(var(--card-pad) + var(--control-icon-md) + var(--sp-2));
-		width: var(--tools-w);
-		display: flex;
-		align-items: center;
-		justify-content: flex-end;
-		gap: var(--sp-2);
-		color: var(--accent);
-		pointer-events: none;
-	}
-	.tools > :global(*) {
-		pointer-events: auto;
-	}
-	.divider {
-		align-self: stretch;
-		width: 1px;
-		margin-block: var(--sp-2);
-		background: color-mix(in srgb, var(--accent) 35%, transparent);
 	}
 	.draft {
-		padding: var(--card-pad);
+		padding: var(--sp-2);
 		border: var(--edge-width) dashed var(--accent);
-		border-radius: var(--r-md);
-		background: var(--card-fill);
+		border-end-start-radius: 0;
+		border-end-end-radius: 0;
+		border-start-start-radius: var(--r-md);
+		border-start-end-radius: var(--r-md);
+		background: color-mix(in srgb, var(--accent) 14%, var(--bg));
 	}
 	.form {
 		border: var(--edge-width) solid var(--accent);

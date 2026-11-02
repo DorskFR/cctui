@@ -94,8 +94,8 @@ async function inViewport(locator: Locator) {
 	expect(b.y + b.height).toBeLessThanOrEqual(MOBILE.height);
 }
 
-const trigger = (dialog: Locator) => dialog.locator('[data-journey="profiles"] .rs-trigger');
-const panel = (page: Page) => page.locator('.rs-panel:popover-open');
+const trigger = (dialog: Locator) => dialog.locator('[data-journey="profiles"] [data-journey="profile-trigger"]');
+const panel = (page: Page) => page.locator('[data-journey="profiles"] [popover]:popover-open');
 
 test('390px: closed, the picker is one card and Labels/Files/Env vars and Launch need no scroll', async ({ page }) => {
 	await stub(page);
@@ -132,7 +132,7 @@ test('390px: the open dropdown scrolls internally and keeps the New profile foot
 	await expect(pop).toBeVisible();
 	await expect(trigger(dialog)).toHaveAttribute('aria-expanded', 'true');
 	await expect(pop.getByRole('option')).toHaveCount(profiles.length);
-	await expect(pop.locator('.rs-trailing, .rs-grip')).toHaveCount(0);
+	await expect(pop.getByRole('option').locator('button')).toHaveCount(0);
 	await expect(pop.getByRole('option').locator('[data-journey="account-badge"]')).toHaveCount(
 		profiles.length
 	);
@@ -140,8 +140,8 @@ test('390px: the open dropdown scrolls internally and keeps the New profile foot
 		Array.from({ length: profiles.length }, (_, i) => `Profile ${i}`)
 	);
 
-	const list = pop.locator('.rs-list');
-	const footer = pop.locator('.rs-footer').getByRole('button', { name: 'New profile' });
+	const list = pop.getByRole('listbox');
+	const footer = pop.getByRole('button', { name: 'New profile' });
 	const overflow = await list.evaluate((el) => el.scrollHeight - el.clientHeight);
 	expect(overflow).toBeGreaterThan(0);
 
@@ -242,7 +242,7 @@ test('New profile writes nothing until Create profile, and Cancel leaves the lis
 	const dialog = await openSpawn(page);
 
 	await trigger(dialog).click();
-	await panel(page).locator('.rs-footer').getByRole('button', { name: 'New profile' }).click();
+	await panel(page).getByRole('button', { name: 'New profile' }).click();
 	const form = dialog.locator('[data-journey="profile-form"][data-mode="create"]');
 	await expect(form).toBeVisible();
 	await expect(dialog.locator('[data-journey="profile-draft"]')).toContainText('New profile');
@@ -258,7 +258,7 @@ test('New profile writes nothing until Create profile, and Cancel leaves the lis
 	expect(writes).toEqual([]);
 
 	await trigger(dialog).click();
-	await panel(page).locator('.rs-footer').getByRole('button', { name: 'New profile' }).click();
+	await panel(page).getByRole('button', { name: 'New profile' }).click();
 	await form.getByLabel('Profile name').fill('Reviewer');
 	await form.getByRole('button', { name: 'Create profile' }).click();
 	await expect.poll(() => writes).toEqual(['POST /api/v1/profiles']);

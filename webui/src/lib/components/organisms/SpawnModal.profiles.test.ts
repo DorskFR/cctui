@@ -189,7 +189,7 @@ const mode = (v: string) => {
 // toggle a browser would.
 const trigger = () => {
   const el = document.querySelector<HTMLButtonElement>(
-    '[data-journey="profiles"] .rs-trigger',
+    '[data-journey="profiles"] [data-journey="profile-trigger"]',
   );
   if (!el) throw new Error("profile picker trigger not found");
   return el;
@@ -264,7 +264,9 @@ async function pickAccount(value: string) {
 }
 async function openNewProfile() {
   await clickPicker();
-  const footer = panel().querySelector<HTMLButtonElement>(".rs-footer button");
+  const footer = panel().querySelector<HTMLButtonElement>(
+    '[data-journey="new-profile"]',
+  );
   if (!footer) throw new Error("footer button not found");
   footer.click();
   await tick();
@@ -344,19 +346,18 @@ describe("SpawnModal profiles", () => {
     expect(optionNames()).toEqual(["Orchestrator", "Quick codex"]);
     expect(option("p1").getAttribute("aria-selected")).toBe("true");
     expect(option("p2").getAttribute("aria-selected")).toBe("false");
-    const rows = [...panel().querySelectorAll(".rs-row")];
+    const rows = options();
     expect(rows).toHaveLength(2);
     for (const row of rows) {
       expect(row.querySelectorAll('[data-journey="account-badge"]')).toHaveLength(1);
-      expect(row.querySelector(".rs-grip")).toBeNull();
-      expect(row.querySelector(".rs-trailing")).toBeNull();
       expect(row.querySelector("button")).toBeNull();
     }
-    const footer = panel().querySelector(".rs-footer");
+    expect(panel().querySelectorAll("button")).toHaveLength(1);
+    const footer = panel().querySelector('[data-journey="new-profile"]');
     expect(footer?.textContent?.trim()).toBe("New profile");
-    expect(panel().querySelector(".rs-list")?.contains(footer ?? null)).toBe(
-      false,
-    );
+    expect(
+      panel().querySelector('[role="listbox"]')?.contains(footer ?? null),
+    ).toBe(false);
   });
 
   it("badges an account by emoji or initial, a pool by its initial and no account with ?", async () => {
@@ -399,20 +400,6 @@ describe("SpawnModal profiles", () => {
       effort: "high",
       permission_mode: "auto",
     });
-  });
-
-  it("takes the closed panel out of the layout, before the first open and after a pick", async () => {
-    await open();
-    expect(panel().style.display).toBe("none");
-    await clickPicker();
-    expect(panel().style.display).toBe("");
-    option("p2").click();
-    await tick();
-    flushSync();
-    expect(panel().style.display).toBe("none");
-    panel().setAttribute("style", "min-width: 12rem");
-    await tick();
-    expect(panel().style.display).toBe("none");
   });
 
   it("arrow keys on the closed picker step through profiles in A–Z order without opening it", async () => {
@@ -592,7 +579,7 @@ describe("SpawnModal profiles", () => {
     await open();
     await openNewProfile();
     expect(
-      document.querySelector('[data-journey="profiles"] .rs-trigger'),
+      document.querySelector('[data-journey="profile-trigger"]'),
     ).toBeNull();
     expect(options()).toHaveLength(0);
     expect(create).not.toHaveBeenCalled();
