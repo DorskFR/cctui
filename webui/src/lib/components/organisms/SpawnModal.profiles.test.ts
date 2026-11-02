@@ -312,6 +312,20 @@ describe("SpawnModal profiles", () => {
     });
   });
 
+  it("takes the closed panel out of the layout, before the first open and after a pick", async () => {
+    await open();
+    expect(panel().style.display).toBe("none");
+    await clickPicker();
+    expect(panel().style.display).toBe("");
+    option("p2").click();
+    await tick();
+    flushSync();
+    expect(panel().style.display).toBe("none");
+    panel().setAttribute("style", "min-width: 12rem");
+    await tick();
+    expect(panel().style.display).toBe("none");
+  });
+
   it("arrow keys on the closed picker switch profiles without opening it", async () => {
     await open();
     trigger().focus();

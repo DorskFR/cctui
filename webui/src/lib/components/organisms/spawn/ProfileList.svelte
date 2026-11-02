@@ -62,6 +62,36 @@
 		}
 	}
 
+	let pickEl = $state<HTMLElement | null>(null);
+
+	// RichSelect styles its panel `display: flex`, which outranks the UA rule
+	// hiding a closed popover: a closed panel stays laid out, invisible but
+	// catching taps. Hide it until RichSelect scopes that rule to :popover-open.
+	$effect(() => {
+		const panel = pickEl?.querySelector<HTMLElement>('.rs-panel');
+		if (!panel) return;
+		let shown = false;
+		const apply = () => {
+			const want = shown ? '' : 'none';
+			if (panel.style.display !== want) panel.style.display = want;
+		};
+		const onToggle = (e: Event) => {
+			shown = (e as ToggleEvent).newState === 'open';
+			apply();
+		};
+		// Popover rewrites the panel's style attribute when the trigger resizes.
+		const mo = new MutationObserver(apply);
+		mo.observe(panel, { attributes: true, attributeFilter: ['style'] });
+		panel.addEventListener('beforetoggle', onToggle);
+		panel.addEventListener('toggle', onToggle);
+		apply();
+		return () => {
+			mo.disconnect();
+			panel.removeEventListener('beforetoggle', onToggle);
+			panel.removeEventListener('toggle', onToggle);
+		};
+	});
+
 	function reorder(from: number, to: number) {
 		const p = ordered[from];
 		if (p) void persist(moveProfile(ordered, p.id, to));
@@ -127,7 +157,7 @@
 			<Button data-journey="new-profile" variant="link" size="sm" disabled={busy} onclick={oncreate}>{m.spawn_profile_new()}</Button>
 		</div>
 	{:else}
-		<div class="pick">
+		<div class="pick" bind:this={pickEl}>
 			<RichSelect
 				options={ordered}
 				value={selectedId ?? undefined}

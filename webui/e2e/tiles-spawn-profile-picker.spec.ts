@@ -68,6 +68,15 @@ async function openSpawn(page: Page) {
 	await page.getByRole('button', { name: 'New session' }).first().click();
 	const dialog = page.locator('dialog[open]').first();
 	await expect(dialog.locator('[data-journey="profiles"]')).toBeVisible();
+	// Until the sheet's slide-in ends, the <dialog> is scrolled by the opening focus.
+	await dialog.evaluate((el) =>
+		Promise.all(
+			el
+				.getAnimations({ subtree: true })
+				.filter((a) => a.effect?.getComputedTiming().endTime !== Infinity)
+				.map((a) => a.finished.catch(() => undefined))
+		)
+	);
 	return dialog;
 }
 
@@ -102,9 +111,15 @@ test('390px: closed, the picker is one card and Labels/Files/Env vars and Launch
 	await inViewport(dialog.getByRole('button', { name: /^Launch/ }));
 
 	const scrolled = await dialog.evaluate((root) =>
-		[root, ...root.querySelectorAll('*')].some((el) => el.scrollTop > 0)
+		[root, ...root.querySelectorAll('*')]
+			.filter((el) => el.scrollTop > 0)
+			.map(
+				(el) =>
+					`<${el.tagName.toLowerCase()} class="${el.getAttribute('class') ?? ''}"> scrollTop=${el.scrollTop} ` +
+					`scrollHeight=${el.scrollHeight} clientHeight=${el.clientHeight}`
+			)
 	);
-	expect(scrolled).toBe(false);
+	expect(scrolled).toEqual([]);
 });
 
 test('390px: the open dropdown scrolls internally and keeps the New profile footer pinned', async ({ page }) => {
