@@ -46,7 +46,7 @@ export default defineConfig({
 		},
 		{
 			name: 'drawer',
-			testMatch: ['drawer-scrollbars.spec.ts', 'composer-inset.spec.ts', 'mobile-hscroll.spec.ts'],
+			testMatch: ['drawer-scrollbars.spec.ts', 'composer-inset.spec.ts', 'mobile-hscroll.spec.ts', 'cold-followup.spec.ts'],
 			use: { baseURL: headerUrl }
 		},
 		// CI runs this and the two drawer projects: every request is stubbed

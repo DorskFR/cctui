@@ -13,7 +13,11 @@ import { notify } from "./notify.svelte";
 import type { SettingsPayload } from "@bindings/SettingsPayload";
 import { clampDockWidth } from "./dock";
 import { saveErrorMessage } from "./saveError";
-import { clampFollowupWhenCold, type FollowupWhenCold } from "./followup";
+import {
+  clampFollowupWhenCold,
+  resolveFollowupWhenCold,
+  type FollowupWhenCold,
+} from "./followup";
 import { isPluginId } from "./plugins/discovery";
 import {
   latestDirFor,
@@ -242,9 +246,10 @@ export interface DisplaySettings {
   // Sticky strip at the top of a conversation showing its first user message
   // (the brief). Off hides the strip entirely.
   pinFirstMessage: boolean;
-  // On a cold-cache session the composer offers a follow-up session (`offer`),
-  // routes Enter to it (`default`), or stays silent (`off`).
-  followupWhenCold?: FollowupWhenCold;
+  // What Send does on a cold-cache session; see `FollowupWhenCold`.
+  coldFollowup?: FollowupWhenCold;
+  // Pre-`auto` value of `coldFollowup` (`off | offer | default`), read once.
+  followupWhenCold?: string;
   // Follow-up takes the fork's spot in the drawer header.
   preferFollowupOverFork?: boolean;
   // Tint each conversation bubble's background with its role colour (assistant,
@@ -694,7 +699,11 @@ export function mergeDefaults(
       ...(p.display ?? {}),
       archiveDoneButton: p.display?.archiveDoneButton !== false,
       pinFirstMessage: p.display?.pinFirstMessage !== false,
-      followupWhenCold: clampFollowupWhenCold(p.display?.followupWhenCold),
+      coldFollowup: resolveFollowupWhenCold(
+        p.display?.coldFollowup,
+        p.display?.followupWhenCold,
+      ),
+      followupWhenCold: undefined,
       preferFollowupOverFork: p.display?.preferFollowupOverFork === true,
       roleTintedBackground: p.display?.roleTintedBackground === true,
       nav: clampNavPosition(p.display?.nav),
@@ -1350,11 +1359,11 @@ class Settings {
   }
 
   get followupWhenCold(): FollowupWhenCold {
-    return clampFollowupWhenCold(this.state.display.followupWhenCold);
+    return clampFollowupWhenCold(this.state.display.coldFollowup);
   }
 
   setFollowupWhenCold(v: FollowupWhenCold) {
-    this.setDisplay({ followupWhenCold: v });
+    this.setDisplay({ coldFollowup: v });
   }
 
   get preferFollowupOverFork(): boolean {
