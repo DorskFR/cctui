@@ -347,10 +347,11 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let rules = build_rules(&args)?;
-    let mut dispatch = None;
-    if let Some(config) = dispatch_config(&args)? {
-        dispatch = Some(Arc::new(DispatchIdentity::redeem(config).await));
-    }
+    let dispatch = if let Some(config) = dispatch_config(&args)? {
+        Some(Arc::new(DispatchIdentity::redeem(config).await))
+    } else {
+        None
+    };
     let https_server = dispatch.as_ref().is_some_and(|d| d.config.server.https);
     let ca = (!rules.is_empty() || https_server).then(|| build_ca(&args)).transpose()?;
     let server = dispatch
