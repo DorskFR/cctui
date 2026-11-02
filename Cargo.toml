@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/cctui-admin",
+    "crates/cctui-aws",
     "crates/cctui-client",
     "crates/cctui-clientcore",
     "crates/cctui-crypto",
@@ -46,6 +47,7 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
 [workspace.dependencies]
+cctui-aws = { path = "crates/cctui-aws" }
 cctui-server-core = { path = "crates/cctui-server-core" }
 cctui-server-workspace = { path = "crates/cctui-server-workspace" }
 cctui-client = { path = "crates/cctui-client" }
@@ -84,8 +86,6 @@ dirs = "7"
 toml = "1.1"
 tokio-util = { version = "0.7", features = ["io"] }
 async-trait = "0.1"
-aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
-aws-sdk-secretsmanager = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sigv4 = { version = "1", default-features = false, features = ["sign-http"] }
 aws-credential-types = "1"
 kube = { version = "4.2", default-features = false, features = ["client", "rustls-tls", "ring", "derive", "admission"] }

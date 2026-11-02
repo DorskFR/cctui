@@ -29,6 +29,8 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
+#[cfg(feature = "aws-sm")]
+pub use aws::AwsSecretsManager;
 #[cfg(feature = "bao")]
 pub use bao::VaultClient;
 #[cfg(feature = "k8s")]
@@ -264,7 +266,7 @@ pub struct Engines {
     #[cfg(feature = "bao")]
     vault: Option<VaultClient>,
     #[cfg(feature = "aws-sm")]
-    aws: tokio::sync::OnceCell<aws_sdk_secretsmanager::Client>,
+    aws: tokio::sync::OnceCell<AwsSecretsManager>,
     #[cfg(feature = "k8s")]
     k8s: Option<K8sClient>,
 }
@@ -304,7 +306,7 @@ impl Engines {
     /// The engine set for a process resolving its own config: the `vault:`
     /// engine from `CCTUI_SECRETS_VAULT_ADDR` + `CCTUI_SECRETS_VAULT_ROLE`
     /// (+ optional `CCTUI_SECRETS_VAULT_TOKEN_PATH`), the `k8s:` engine when
-    /// in-cluster, `aws-sm:` from ambient AWS config.
+    /// in-cluster, `aws-sm:` from the ambient AWS credentials.
     #[allow(clippy::unnecessary_wraps)]
     pub fn from_env() -> anyhow::Result<Self> {
         let engines = Self::new();
@@ -349,23 +351,13 @@ impl Engines {
         self
     }
 
-    /// Pins the Secrets Manager client instead of loading ambient AWS config
-    /// on first use.
+    /// Pins the Secrets Manager client instead of building it from the
+    /// process environment on first use.
     #[cfg(feature = "aws-sm")]
     #[must_use]
-    pub fn with_aws_client(mut self, client: aws_sdk_secretsmanager::Client) -> Self {
-        self.aws = tokio::sync::OnceCell::new_with(Some(client));
+    pub fn with_aws(mut self, sm: AwsSecretsManager) -> Self {
+        self.aws = tokio::sync::OnceCell::new_with(Some(sm));
         self
-    }
-
-    #[cfg(feature = "aws-sm")]
-    async fn aws_client(&self) -> &aws_sdk_secretsmanager::Client {
-        self.aws
-            .get_or_init(|| async {
-                let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
-                aws_sdk_secretsmanager::Client::new(&config)
-            })
-            .await
     }
 
     #[cfg_attr(not(feature = "bao"), allow(clippy::unused_async))]
@@ -401,7 +393,14 @@ impl Engines {
     ) -> Result<Credential, SecretError> {
         #[cfg(feature = "aws-sm")]
         {
-            aws::get(self.aws_client().await, r, name, field).await
+            let sm = self
+                .aws
+                .get_or_try_init(|| async { AwsSecretsManager::from_process_env() })
+                .await
+                .map_err(|e| {
+                    SecretError::Backend(anyhow::anyhow!("aws-sm engine for {r}: {e:#}"))
+                })?;
+            sm.get(r, name, field).await
         }
         #[cfg(not(feature = "aws-sm"))]
         {

@@ -21,12 +21,30 @@ comma-separated list. `CCTUI_VAULT_KEY` does not accept a ref yet.
 | `file:<path>` | a file, with one trailing newline (`\n` or `\r\n`) stripped |
 | `k8s:[<namespace>/]<secret>#<key>` | a Kubernetes Secret through the API with the pod's service account (no mount); the namespace defaults to the pod's |
 | `bao:<mount>/data/<path>#<field>` | an OpenBao/Vault KV v2 field, logging in with the pod's service-account token through Kubernetes auth. `vault:` is the same; prefer `bao:` in pod env, where the bank-vaults webhook rewrites `vault:` values |
-| `aws-sm:<secret-id>[#<json-key>]` | AWS Secrets Manager with ambient credentials (Pod Identity, IRSA, env); the region comes from the AWS config (`AWS_REGION`). With `#<json-key>` the secret must be a JSON object |
+| `aws-sm:<secret-id>[#<json-key>]` | AWS Secrets Manager with ambient credentials (see below). With `#<json-key>` the secret must be a JSON object |
 
 The `bao:` engine for the servers and dispatchers is configured by
 `CCTUI_SECRETS_VAULT_ADDR` and `CCTUI_SECRETS_VAULT_ROLE`, plus
 `CCTUI_SECRETS_VAULT_TOKEN_PATH` (default: the projected service-account
 token). The guard proxy keeps its own `--vault-addr`/`--vault-role` flags.
+
+## AWS Secrets Manager
+
+`aws-sm:` signs one `GetSecretValue` call (SigV4) with the first credential
+source configured, the same chain the guard proxy uses for ambient `sigv4`
+rules:
+
+1. `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (+ `AWS_SESSION_TOKEN`)
+2. web identity (IRSA): `AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN`
+3. the container endpoint (ECS, EKS Pod Identity):
+   `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` or `_FULL_URI`
+4. `IMDSv2`, unless `AWS_EC2_METADATA_DISABLED=true`
+
+Temporary credentials are refreshed five minutes before they expire. The
+region is the one in the secret ARN when the ref uses an ARN, otherwise
+`AWS_REGION`, then `AWS_DEFAULT_REGION`. `AWS_ENDPOINT_URL_SECRETS_MANAGER` or
+`AWS_ENDPOINT_URL` override the endpoint. Shared config and credential files
+(`~/.aws/config`, `AWS_PROFILE`) are not read.
 
 ## Literals
 

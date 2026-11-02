@@ -13,6 +13,7 @@ name = "cctui-guard-proxy"
 path = "src/main.rs"
 
 [dependencies]
+cctui-aws.workspace = true
 cctui-guard = { path = "../cctui-guard" }
 cctui-secrets = { workspace = true, features = ["bao", "k8s", "aws-sm"] }
 tokio.workspace = true
