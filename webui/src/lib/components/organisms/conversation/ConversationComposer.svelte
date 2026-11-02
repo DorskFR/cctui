@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { tick, untrack } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { insertBlock } from './insertText';
 	import { insertAtCaret, quoteMarkdown } from './format';
 	import { errMessage } from '$lib/api';
@@ -7,9 +8,11 @@
 	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
 	import PromptField from '$lib/components/organisms/PromptField.svelte';
 	import {
+		endpoints,
 		pendingScheduled,
 		useScheduledActions,
 		useScheduledMessages,
+		useSessionActions,
 		useSessionAttachments
 	} from '$lib/queries';
 	import { Button, FileButton, IconButton, InputGroup, Text, formatTimestamp } from '@dorsk/tsumikit';
@@ -30,7 +33,10 @@
 	import type { ScrollController } from './scroll.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { settings } from '$lib/settings.svelte';
-	import { routeEnter, showColdOffer } from '$lib/followup';
+	import { BRIEF_FETCH_MAX_BYTES, launchFollowup, routeEnter, showColdOffer } from '$lib/followup';
+	import { ws } from '$lib/ws.svelte';
+	import { pendingSpawns } from '$lib/pendingSpawns.svelte';
+	import { findSpawnedSession } from '$lib/components/organisms/spawn/spawnMatch';
 
 	let {
 		session,
@@ -132,6 +138,13 @@
 	const canSchedule = $derived(
 		(!!input.trim() || att.files.length > 0) && !att.uploading && att.images.pending.length === 0
 	);
+	const actions = useSessionActions();
+	let launching = $state(false);
+	// What Send / Enter does right now. A cold Send starts a follow-up only
+	// where this pane can open one.
+	const route = $derived(
+		onFollowup ? routeEnter(settings.followupWhenCold, cache.cold, false) : 'send'
+	);
 	const scheduleItems = $derived(
 		scheduleMenuItems({
 			now: cache.now,
@@ -142,7 +155,11 @@
 				customValue = toLocalInput(new Date(Date.now() + 3_600_000));
 				customOpen = true;
 			},
-			onlist: () => scheduledEl?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+			onlist: () => scheduledEl?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }),
+			cold:
+				route === 'send'
+					? null
+					: { burstTokens, canSend: canSchedule && !launching, onsendhere: send, onoptions: followup }
 		})
 	);
 
@@ -168,10 +185,7 @@
 				when: formatTimestamp(at, 'datetime')
 			})
 		);
-		msgHistory.push(session.id, text);
-		input = '';
-		resetHistoryNav();
-		drafts.clear(composerKey(session.id));
+		clearSent(text);
 	}
 
 	function scheduleCustom() {
@@ -193,11 +207,77 @@
 		onFollowup?.(input.trim() || undefined);
 	}
 	function submit() {
-		if (onFollowup && routeEnter(settings.followupWhenCold, cache.cold, false) === 'followup') {
+		if (route === 'launch') void launch();
+		else if (route === 'followup') followup();
+		else void send();
+	}
+
+	function clearSent(text: string, id = session.id) {
+		if (text) msgHistory.push(id, text);
+		input = '';
+		resetHistoryNav();
+		drafts.clear(composerKey(id));
+	}
+
+	/** Start the follow-up with the draft as its instruction and archive this
+	 *  session. On failure nothing is archived and the draft stays. */
+	async function launch() {
+		const text = input.trim();
+		if (launching || archived || !text || att.uploading || att.images.pending.length) return;
+		// Staged files belong to this session's upload dir: the modal path keeps them.
+		if (att.files.length) {
 			followup();
 			return;
 		}
-		send();
+		launching = true;
+		const source = session;
+		try {
+			const out = await launchFollowup(source, text, {
+				brief: (id) => endpoints.brief(id, BRIEF_FETCH_MAX_BYTES),
+				spawn: (body, files) => actions.spawn(body, files),
+				awaitSpawn: async (commandId, sessionId) => {
+					let found = sessionId;
+					const outcome = await ws.awaitSpawn(commandId, sessionId, {
+						probe: async () => {
+							const { sessions } = await endpoints.sessions(false);
+							const hit = findSpawnedSession(sessions, source.machine_id, commandId, found);
+							if (hit) found = hit.id;
+							return hit;
+						}
+					});
+					return { ...outcome, sessionId: found };
+				},
+				archive: (id) => actions.archive(id)
+			});
+			if (out.status === 'failed') {
+				toasts.error(
+					m.spawn_toast_spawn_failed({
+						error: out.error == null ? m.spawn_error_unknown() : errMessage(out.error)
+					})
+				);
+				return;
+			}
+			clearSent(text, source.id);
+			if (out.status === 'unconfirmed') {
+				pendingSpawns.add({
+					commandId: out.commandId,
+					sessionId: out.sessionId,
+					machineId: source.machine_id,
+					name: '',
+					workingDir: source.working_dir
+				});
+				toasts.info(m.composer_followup_unconfirmed());
+				return;
+			}
+			if (out.archiveError !== undefined) {
+				toasts.error(m.composer_followup_archive_failed({ error: errMessage(out.archiveError) }));
+			} else {
+				toasts.ok(m.composer_followup_launched());
+			}
+			if (out.sessionId) void goto(`/sessions/${out.sessionId}`);
+		} finally {
+			launching = false;
+		}
 	}
 
 	const nav = new HistoryNav({
@@ -288,10 +368,7 @@
 	function sendBody(text: string) {
 		if (!text || archived) return;
 		onsend(text);
-		msgHistory.push(session.id, text);
-		input = '';
-		resetHistoryNav();
-		drafts.clear(composerKey(session.id));
+		clearSent(text);
 	}
 
 	// On touch/mobile, a bare Enter should insert a newline (the on-screen
@@ -308,18 +385,12 @@
 		if (nav.handleKey(e)) return;
 		if (e.key === 'Enter' && !coarsePointer && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
-			send();
+			submit();
 			return;
 		}
-		if (
-			e.key === 'Enter' &&
-			e.shiftKey &&
-			!coarsePointer &&
-			onFollowup &&
-			routeEnter(settings.followupWhenCold, cache.cold, false) === 'followup'
-		) {
+		if (e.key === 'Enter' && e.shiftKey && !coarsePointer && route !== 'send') {
 			e.preventDefault();
-			send();
+			void send();
 		}
 	}
 </script>
@@ -344,10 +415,17 @@
 			</div>
 		{/if}
 		{#if coldOffer && !folded}
-			<div class="cold-offer">
+			<div class="cold-offer" data-testid="cold-offer">
 				<Text tone="muted" size="sm">
-					{m.composer_followup_offer()}
-					<Button variant="link" size="sm" onclick={followup}>{m.composer_followup_start()}</Button>
+					{#if route === 'launch'}
+						{m.composer_followup_auto_offer()}
+						<Button variant="link" size="sm" onclick={() => void send()}
+							>{m.composer_followup_send_here_link()}</Button
+						>
+					{:else}
+						{m.composer_followup_offer()}
+						<Button variant="link" size="sm" onclick={followup}>{m.composer_followup_start()}</Button>
+					{/if}
 				</Text>
 				<IconButton
 					icon="x"
@@ -407,7 +485,9 @@
 					coldImminent={cache.imminent}
 					coldCountdownSecs={cache.countdownSecs}
 					{burstTokens}
-					onclick={send}
+					{route}
+					{launching}
+					onclick={submit}
 				/>
 			{/snippet}
 		</InputGroup>

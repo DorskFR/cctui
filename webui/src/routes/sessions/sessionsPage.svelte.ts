@@ -14,6 +14,7 @@ import type { toasts, ToastAction } from "$lib/toast.svelte";
 import type { DockLayout } from "$lib/dock";
 import type { SessionListSettings } from "$lib/settings.svelte";
 import {
+  FOLLOWUP_ARCHIVE_SOURCE,
   LIST_HIDDEN,
   LIST_LABELS,
   LIST_SECTION,
@@ -472,7 +473,12 @@ export class SessionsPage {
     try {
       const brief = await this.#d.api.brief(s.id, BRIEF_FETCH_MAX_BYTES);
       this.openSession = null;
-      this.openSpawn(followupPrefill(s, brief.markdown, { instruction }));
+      // Ticked unless the last follow-up launched with it unticked.
+      const archiveSource =
+        this.#d.store.get(FOLLOWUP_ARCHIVE_SOURCE) !== "0";
+      this.openSpawn(
+        followupPrefill(s, brief.markdown, { instruction, archiveSource }),
+      );
     } catch (e) {
       this.#d.toasts.error(m.followup_brief_failed({ error: errMessage(e) }));
     }

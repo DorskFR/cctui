@@ -160,7 +160,7 @@ export async function spawnOnMachine(sf: SpawnForm) {
 			(e) => toasts.error(m.cctuiverse_join_failed({ error: errMessage(e) }), 0)
 		);
 	}
-	if (sf.followupParent) drafts.set(FOLLOWUP_ARCHIVE_SOURCE, sf.archiveSource ? '1' : '');
+	if (sf.followupParent) drafts.set(FOLLOWUP_ARCHIVE_SOURCE, sf.archiveSource ? '1' : '0');
 	if (result.ok) {
 		toasts.ok(m.spawn_toast_spawned());
 		if (sf.followupParent && sf.archiveSource) void sf.actions.archive(sf.followupParent);

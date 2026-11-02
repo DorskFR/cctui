@@ -46,7 +46,7 @@ export default defineConfig({
 		},
 		{
 			name: 'drawer',
-			testMatch: ['drawer-scrollbars.spec.ts', 'composer-inset.spec.ts', 'mobile-hscroll.spec.ts'],
+			testMatch: ['drawer-scrollbars.spec.ts', 'composer-inset.spec.ts', 'mobile-hscroll.spec.ts', 'cold-followup.spec.ts'],
 			use: { baseURL: headerUrl }
 		},
 		// CI runs this and the two drawer projects: every request is stubbed
@@ -63,6 +63,11 @@ export default defineConfig({
 			name: 'plugins',
 			testMatch: ['plugin-review-pane.spec.ts', 'plugin-admin.spec.ts'],
 			use: { baseURL: process.env.PLUGIN_E2E_URL ?? headerUrl }
+		},
+		{
+			name: 'otel-trace',
+			testMatch: 'otel-spawn-trace.spec.ts',
+			use: { baseURL: process.env.OTEL_E2E_URL ?? headerUrl }
 		}
 	]
 });

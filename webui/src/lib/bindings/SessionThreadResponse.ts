@@ -2,6 +2,7 @@
 import type { ThreadSession } from "./ThreadSession";
 
 /**
- * The follow-up thread through a session, oldest first.
+ * The follow-up tree through a session: root first, then depth first with
+ * siblings oldest first.
  */
 export type SessionThreadResponse = { sessions: Array<ThreadSession>, };

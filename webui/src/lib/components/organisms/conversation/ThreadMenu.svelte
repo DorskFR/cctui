@@ -34,6 +34,7 @@
 
 {#snippet row(item: MenuItem)}
 	{@const e = byLabel.get(item.label) as ThreadEntry}
+	{#if e.tree}<span class="tree" aria-hidden="true">{e.tree}</span>{/if}
 	<Text weight={e.current ? 'bold' : 'normal'} truncate>{e.title}</Text>
 	{#if e.at}<Badge size="xs" border={false}>{relativeTime(e.at, undefined, false, true)}</Badge>{/if}
 {/snippet}
@@ -50,5 +51,11 @@
 	.thread {
 		display: inline-flex;
 		flex: none;
+	}
+	.tree {
+		flex: none;
+		font-family: var(--font-mono);
+		white-space: pre;
+		color: var(--text-muted);
 	}
 </style>

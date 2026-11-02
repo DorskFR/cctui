@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { mount, unmount } from "svelte";
+import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionProfile } from "@bindings/SessionProfile";
 import SpawnModal from "./SpawnModal.svelte";
@@ -145,6 +145,7 @@ async function open() {
     },
   });
   await tick(100);
+  stubPopover();
 }
 
 const buttons = () => [
@@ -167,20 +168,85 @@ const mode = (v: string) => {
   if (!el) throw new Error(`permission mode ${v} not found`);
   return el;
 };
-const profileRow = (id: string) => {
-  const el = document.querySelector<HTMLElement>(
-    `[role="radio"][data-profile-id="${id}"]`,
+// happy-dom implements no Popover API: the panel neither answers
+// show/hidePopover nor fires its own toggle, so both are wired to dispatch the
+// toggle a browser would.
+const trigger = () => {
+  const el = document.querySelector<HTMLButtonElement>(
+    '[data-journey="profiles"] .rs-trigger',
   );
-  if (!el) throw new Error(`profile row ${id} not found`);
+  if (!el) throw new Error("profile picker trigger not found");
   return el;
 };
-const checked = (id: string) =>
-  profileRow(id).getAttribute("aria-checked") === "true";
-const pickProfile = (id: string) => {
-  const body = profileRow(id).querySelector<HTMLElement>(".body");
-  if (!body) throw new Error(`profile label ${id} not found`);
-  body.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+const panel = () => {
+  const id = trigger().getAttribute("popovertarget");
+  const el = id ? document.getElementById(id) : null;
+  if (!el) throw new Error("profile picker panel not found");
+  return el as HTMLElement & {
+    showPopover: () => void;
+    hidePopover: () => void;
+  };
 };
+function stubPopover() {
+  if (profileList.length === 0) return;
+  const el = panel();
+  const fire = (newState: "open" | "closed") =>
+    el.dispatchEvent(Object.assign(new Event("toggle"), { newState }));
+  el.showPopover = () => fire("open");
+  el.hidePopover = () => fire("closed");
+}
+const expanded = () => trigger().getAttribute("aria-expanded") === "true";
+async function clickPicker() {
+  trigger().click();
+  panel().showPopover();
+  await tick();
+  flushSync();
+}
+
+const cards = () => [
+  ...document.querySelectorAll<HTMLElement>('[data-journey="profile"]'),
+];
+const selectedCard = () =>
+  trigger().querySelector<HTMLElement>('[data-journey="profile"]')
+    ?.dataset.profileId ?? null;
+const options = () => [
+  ...document.querySelectorAll<HTMLElement>('[role="listbox"] [role="option"]'),
+];
+const optionNames = () =>
+  options().map((o) =>
+    o.querySelector(".name .truncate")?.textContent?.trim(),
+  );
+const option = (id: string) => {
+  const el = options().find((o) =>
+    o.querySelector(`[data-profile-id="${id}"]`),
+  );
+  if (!el) throw new Error(`profile option ${id} not found`);
+  return el;
+};
+async function pickProfile(id: string) {
+  await clickPicker();
+  option(id).click();
+  await tick();
+  flushSync();
+}
+const key = (
+  el: HTMLElement,
+  k: string,
+  mods: Partial<KeyboardEventInit> = {},
+) => {
+  const ev = new KeyboardEvent("keydown", {
+    key: k,
+    bubbles: true,
+    cancelable: true,
+    ...mods,
+  });
+  el.dispatchEvent(ev);
+  return ev;
+};
+const live = () =>
+  [...document.querySelectorAll('[aria-live="polite"]')]
+    .map((n) => n.textContent?.trim() ?? "")
+    .find((t) => t.includes("moved to position")) ?? "";
 
 async function submit() {
   spawnButton().click();
@@ -190,13 +256,136 @@ async function submit() {
 }
 
 describe("SpawnModal profiles", () => {
-  it("lists the profiles, selects the first and names it on the Launch button", async () => {
+  it("closed, it shows only the selected profile as one card", async () => {
     await open();
-    expect(checked("p1")).toBe(true);
-    expect(checked("p2")).toBe(false);
-    expect(document.body.textContent).toContain(
+    expect(selectedCard()).toBe("p1");
+    expect(cards()).toHaveLength(1);
+    expect(options()).toHaveLength(0);
+    expect(expanded()).toBe(false);
+    expect(trigger().getAttribute("aria-haspopup")).toBe("listbox");
+    expect(trigger().textContent).toContain(
       "Claude Code · 🐼 personal · Fable · medium · Yolo",
     );
+  });
+
+  it("click opens the popover with every profile card, a usage hint, a gear per row and the New profile footer", async () => {
+    localStorage.setItem(
+      "cctui_profile_uses",
+      JSON.stringify({ p2: [Date.now() - 1000] }),
+    );
+    await open();
+    await clickPicker();
+    expect(expanded()).toBe(true);
+    expect(optionNames()).toEqual(["Orchestrator", "Codex quick"]);
+    expect(option("p1").getAttribute("aria-selected")).toBe("true");
+    expect(option("p2").getAttribute("aria-selected")).toBe("false");
+    expect(option("p2").textContent).toMatch(/this week|today|ago/);
+    const rows = [...panel().querySelectorAll(".rs-row")];
+    for (const row of rows) {
+      expect(row.querySelector(".rs-grip")).not.toBeNull();
+      expect(
+        row.querySelector('.rs-trailing button[aria-label="Adjust profile"]'),
+      ).not.toBeNull();
+    }
+    const footer = panel().querySelector(".rs-footer");
+    expect(footer?.textContent?.trim()).toBe("New profile");
+    expect(panel().querySelector(".rs-list")?.contains(footer ?? null)).toBe(
+      false,
+    );
+  });
+
+  it("selecting a card closes the popover back to one card and launches with it", async () => {
+    await open();
+    await pickProfile("p2");
+    expect(expanded()).toBe(false);
+    expect(selectedCard()).toBe("p2");
+    expect(
+      cards().filter((c) => trigger().contains(c)).map((c) => c.dataset.profileId),
+    ).toEqual(["p2"]);
+    const body = await submit();
+    expect(body).toMatchObject({
+      adapter_id: "codex",
+      account: null,
+      auto_account: true,
+      effort: "high",
+      permission_mode: "auto",
+    });
+  });
+
+  it("takes the closed panel out of the layout, before the first open and after a pick", async () => {
+    await open();
+    expect(panel().style.display).toBe("none");
+    await clickPicker();
+    expect(panel().style.display).toBe("");
+    option("p2").click();
+    await tick();
+    flushSync();
+    expect(panel().style.display).toBe("none");
+    panel().setAttribute("style", "min-width: 12rem");
+    await tick();
+    expect(panel().style.display).toBe("none");
+  });
+
+  it("arrow keys on the closed picker switch profiles without opening it", async () => {
+    await open();
+    trigger().focus();
+    const down = key(trigger(), "ArrowDown");
+    await tick();
+    expect(down.defaultPrevented).toBe(true);
+    expect(selectedCard()).toBe("p2");
+    expect(expanded()).toBe(false);
+    expect(options()).toHaveLength(0);
+
+    key(trigger(), "ArrowUp");
+    await tick();
+    expect(selectedCard()).toBe("p1");
+
+    key(trigger(), "End");
+    await tick();
+    expect(selectedCard()).toBe("p2");
+
+    key(trigger(), "Home");
+    await tick();
+    expect(selectedCard()).toBe("p1");
+    expect(expanded()).toBe(false);
+
+    key(trigger(), "ArrowDown");
+    await tick();
+    const body = await submit();
+    expect(body).toMatchObject({ adapter_id: "codex" });
+  });
+
+  it("Cmd+Enter and Ctrl+Enter on the picker still launch, without opening it", async () => {
+    await open();
+    trigger().focus();
+    const cmd = key(trigger(), "Enter", { metaKey: true });
+    await tick(80);
+    expect(cmd.defaultPrevented).toBe(true);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(spawn.mock.calls[0][0]).toMatchObject({ adapter_id: "claude-code" });
+    expect(expanded()).toBe(false);
+
+    await unmount(component as NonNullable<typeof component>);
+    component = undefined;
+    document.body.replaceChildren();
+    spawn.mockClear();
+    await open();
+    trigger().focus();
+    key(trigger(), "Enter", { ctrlKey: true });
+    await tick(80);
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("Escape closes the open picker and keeps the selection", async () => {
+    await open();
+    await clickPicker();
+    trigger().focus();
+    key(trigger(), "ArrowDown");
+    key(trigger(), "Escape");
+    await tick();
+    flushSync();
+    expect(expanded()).toBe(false);
+    expect(selectedCard()).toBe("p1");
   });
 
   it("spawns with the selected profile merged under the prompt and where", async () => {
@@ -222,23 +411,12 @@ describe("SpawnModal profiles", () => {
     ).toHaveLength(1);
   });
 
-  it("opens on the machine's last-used profile and switches on row pick", async () => {
+  it("opens on the machine's last-used profile", async () => {
     lastEntry = { profile_id: "p2" };
     await open();
-    expect(checked("p2")).toBe(true);
-    pickProfile("p1");
-    await tick();
-    expect(checked("p1")).toBe(true);
-    pickProfile("p2");
-    await tick();
-    const body = await submit();
-    expect(body).toMatchObject({
-      adapter_id: "codex",
-      account: null,
-      auto_account: true,
-      effort: "high",
-      permission_mode: "auto",
-    });
+    expect(selectedCard()).toBe("p2");
+    await pickProfile("p1");
+    expect(selectedCard()).toBe("p1");
   });
 
   it("with no profile it renders the bare kit and settles (no effect loop)", async () => {
@@ -289,6 +467,41 @@ describe("SpawnModal profiles", () => {
         permission_mode: "auto",
       },
     });
+  });
+
+  it("the gear on a popover row closes it and adjusts that profile without selecting it", async () => {
+    await open();
+    await clickPicker();
+    const gear = option("p2")
+      .closest(".rs-row")
+      ?.querySelector<HTMLButtonElement>('.rs-trailing button[aria-label="Adjust profile"]');
+    if (!gear) throw new Error("gear not found");
+    gear.click();
+    await tick();
+    flushSync();
+    expect(expanded()).toBe(false);
+    expect(selectedCard()).toBe("p1");
+    const adjust = document.querySelector<HTMLElement>(
+      '[data-journey="profile-adjust"]',
+    );
+    expect(adjust?.dataset.profileId).toBe("p2");
+    expect(
+      adjust?.querySelector<HTMLInputElement>('input[id="sp-profile-name-p2"]')
+        ?.value,
+    ).toBe("Codex quick");
+  });
+
+  it("the New profile footer closes the popover and creates a profile", async () => {
+    await open();
+    await clickPicker();
+    const footer = panel().querySelector<HTMLButtonElement>(".rs-footer button");
+    if (!footer) throw new Error("footer button not found");
+    footer.click();
+    await tick();
+    flushSync();
+    expect(expanded()).toBe(false);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0][0]).toMatchObject({ name: "Profile" });
   });
 
   it("spawns inside the profile's pool, and unbound for a no-account profile", async () => {
@@ -356,33 +569,8 @@ describe("SpawnModal profiles", () => {
     });
   });
 
-  const rowNames = () =>
-    [...document.querySelectorAll('[role="radio"] .body .name .truncate')].map((n) =>
-      n.textContent?.trim(),
-    );
-
-  const grip = (name: string) => {
-    const b = buttons().find((x) =>
-      (x.getAttribute("aria-label") ?? "").startsWith(`Reorder ${name},`),
-    );
-    if (!b) throw new Error(`grip for ${name} not found`);
-    return b;
-  };
-  const live = () =>
-    document
-      .querySelector('[role="status"][aria-live="polite"]')
-      ?.textContent?.trim() ?? "";
-  const pointer = (type: string, extra: Record<string, unknown> = {}) =>
-    Object.assign(new Event(type, { bubbles: true, cancelable: true }), {
-      pointerId: 1,
-      pointerType: "touch",
-      ...extra,
-    });
-
-  it("moves a profile with the arrow keys on the grip and persists the new order", async () => {
+  it("reorders with Alt+Arrow in the open popover and persists the new order", async () => {
     await open();
-    expect(rowNames()).toEqual(["Orchestrator", "Codex quick"]);
-
     let release: (() => void) | undefined;
     reorder.mockImplementationOnce(
       () =>
@@ -390,188 +578,20 @@ describe("SpawnModal profiles", () => {
           release = () => ok([codexQuick, orchestrator]);
         }),
     );
-
-    const handle = grip("Codex quick");
-    handle.focus();
-    expect(document.activeElement).toBe(handle);
-    handle.dispatchEvent(
-      new KeyboardEvent("keydown", {
-        key: "ArrowUp",
-        bubbles: true,
-        cancelable: true,
-      }),
-    );
+    await clickPicker();
+    trigger().focus();
+    const ev = key(trigger(), "ArrowDown", { altKey: true });
     await tick();
-
+    flushSync();
+    expect(ev.defaultPrevented).toBe(true);
     expect(reorder).toHaveBeenCalledWith(["p2", "p1"]);
-    expect(rowNames()).toEqual(["Codex quick", "Orchestrator"]);
-    expect(live()).toBe("Codex quick moved to position 1 of 2");
+    expect(optionNames()).toEqual(["Codex quick", "Orchestrator"]);
+    expect(live()).toBe("Orchestrator moved to position 2 of 2");
+    expect(selectedCard()).toBe("p1");
 
     release?.();
     await tick();
     expect(reorder).toHaveBeenCalledTimes(1);
-  });
-
-  it("moves a profile by dragging its grip onto another row", async () => {
-    await open();
-    expect(rowNames()).toEqual(["Orchestrator", "Codex quick"]);
-
-    let release: (() => void) | undefined;
-    reorder.mockImplementationOnce(
-      () =>
-        new Promise((ok) => {
-          release = () => ok([codexQuick, orchestrator]);
-        }),
-    );
-
-    grip("Codex quick").dispatchEvent(pointer("pointerdown"));
-    await tick(10);
-    expect(profileRow("p2").className).toContain("dragging");
-
-    profileRow("p1").dispatchEvent(pointer("pointermove"));
-    await tick(10);
-    expect(profileRow("p1").className).toContain("drop-target");
-
-    window.dispatchEvent(pointer("pointerup"));
-    await tick();
-
-    expect(reorder).toHaveBeenCalledWith(["p2", "p1"]);
-    expect(rowNames()).toEqual(["Codex quick", "Orchestrator"]);
-    expect(live()).toBe("Codex quick moved to position 1 of 2");
-
-    release?.();
-    await tick();
-    expect(reorder).toHaveBeenCalledTimes(1);
-  });
-
-  it("a drag that ends on its own row leaves the order alone", async () => {
-    await open();
-    grip("Orchestrator").dispatchEvent(pointer("pointerdown"));
-    await tick(10);
-    profileRow("p1").dispatchEvent(pointer("pointermove"));
-    window.dispatchEvent(pointer("pointerup"));
-    await tick();
-    expect(reorder).not.toHaveBeenCalled();
-    expect(rowNames()).toEqual(["Orchestrator", "Codex quick"]);
-  });
-
-  it("offers one keyboard-reachable grip per row and no chevron buttons", async () => {
-    await open();
-    const grips = buttons().filter((b) =>
-      (b.getAttribute("aria-label") ?? "").startsWith("Reorder "),
-    );
-    expect(grips.map((g) => g.getAttribute("aria-label"))).toEqual([
-      "Reorder Orchestrator, position 1 of 2",
-      "Reorder Codex quick, position 2 of 2",
-    ]);
-    // Focusable without a mouse: real buttons, never disabled, never removed
-    // from the tab order — the arrow keys are the only reorder path a
-    // keyboard user has now that the chevrons are gone.
-    for (const g of grips) {
-      expect(g.tagName).toBe("BUTTON");
-      expect(g.disabled).toBe(false);
-      expect(g.getAttribute("tabindex")).toBeNull();
-      expect(g.getAttribute("title")).toBe(
-        "Drag to reorder, or press the up and down arrow keys",
-      );
-    }
-    expect(
-      buttons().some((b) =>
-        /^Move .* (up|down)$/.test(b.getAttribute("aria-label") ?? ""),
-      ),
-    ).toBe(false);
-  });
-
-  it("lays the row out grip → name → gear, grip outermost, with no radio input", async () => {
-    await open();
-    const head = profileRow("p1").querySelector(".head");
-    if (!head) throw new Error("row head not found");
-    const kind = (el: Element) => {
-      const aria = el.getAttribute("aria-label") ?? "";
-      if (aria.startsWith("Reorder ")) return "grip";
-      if (el.classList.contains("body")) return "body";
-      return "gear";
-    };
-    expect([...head.children].map(kind)).toEqual(["grip", "body", "gear"]);
-    expect(profileRow("p1").querySelector('input[type="radio"]')).toBeNull();
-  });
-
-  it("carries selection on the row itself, inside a radiogroup", async () => {
-    await open();
-    const group = document.querySelector('[role="radiogroup"][aria-label="Launch profiles"]');
-    expect(group).not.toBeNull();
-    expect(group?.contains(profileRow("p1"))).toBe(true);
-    expect(profileRow("p1").getAttribute("aria-label")).toBe("Orchestrator");
-    const describedBy = profileRow("p1").getAttribute("aria-describedby");
-    expect(document.getElementById(describedBy ?? "")?.textContent).toContain(
-      "Claude Code",
-    );
-  });
-
-  it("keeps one tab stop on the group and moves it with the selection", async () => {
-    await open();
-    const tabIndexes = () =>
-      [...document.querySelectorAll<HTMLElement>('[role="radio"][data-profile-id]')].map(
-        (el) => el.getAttribute("tabindex"),
-      );
-    expect(tabIndexes()).toEqual(["0", "-1"]);
-    pickProfile("p2");
-    await tick();
-    expect(tabIndexes()).toEqual(["-1", "0"]);
-  });
-
-  it("moves the selection with the arrow keys and selects on Space", async () => {
-    await open();
-    const key = (el: HTMLElement, k: string) => {
-      const ev = new KeyboardEvent("keydown", {
-        key: k,
-        bubbles: true,
-        cancelable: true,
-      });
-      el.dispatchEvent(ev);
-      return ev;
-    };
-
-    const down = key(profileRow("p1"), "ArrowDown");
-    await tick();
-    expect(down.defaultPrevented).toBe(true);
-    expect(checked("p2")).toBe(true);
-    expect(document.activeElement).toBe(profileRow("p2"));
-
-    key(profileRow("p2"), "ArrowDown");
-    await tick();
-    expect(checked("p1")).toBe(true);
-
-    key(profileRow("p1"), "End");
-    await tick();
-    expect(checked("p2")).toBe(true);
-
-    key(profileRow("p2"), "Home");
-    await tick();
-    expect(checked("p1")).toBe(true);
-
-    const space = key(profileRow("p1"), " ");
-    await tick();
-    expect(space.defaultPrevented).toBe(true);
-    expect(checked("p1")).toBe(true);
-
-    expect(key(profileRow("p1"), "Tab").defaultPrevented).toBe(false);
-  });
-
-  it("the gear and the grip never change the selection", async () => {
-    await open();
-    expect(checked("p1")).toBe(true);
-    const gear = [...profileRow("p2").querySelectorAll<HTMLButtonElement>("button")].find(
-      (b) => b.getAttribute("aria-label") === "Adjust profile",
-    );
-    if (!gear) throw new Error("gear not found");
-    gear.click();
-    await tick();
-    expect(checked("p1")).toBe(true);
-
-    grip("Codex quick").dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    await tick();
-    expect(checked("p1")).toBe(true);
   });
 
   it("reverts the optimistic order when the reorder call fails", async () => {
@@ -583,15 +603,24 @@ describe("SpawnModal profiles", () => {
           release = () => fail(new Error("nope"));
         }),
     );
-
-    grip("Codex quick").dispatchEvent(
-      new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }),
-    );
+    await clickPicker();
+    trigger().focus();
+    key(trigger(), "ArrowDown", { altKey: true });
     await tick();
-    expect(rowNames()).toEqual(["Codex quick", "Orchestrator"]);
+    flushSync();
+    expect(optionNames()).toEqual(["Codex quick", "Orchestrator"]);
 
     release?.();
     await tick();
-    expect(rowNames()).toEqual(["Orchestrator", "Codex quick"]);
+    flushSync();
+    expect(optionNames()).toEqual(["Orchestrator", "Codex quick"]);
+  });
+
+  it("offers no reorder handle when there is a single profile", async () => {
+    profileList = [orchestrator];
+    await open();
+    await clickPicker();
+    expect(optionNames()).toEqual(["Orchestrator"]);
+    expect(panel().querySelector(".rs-grip")).toBeNull();
   });
 });

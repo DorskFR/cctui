@@ -32,53 +32,85 @@ macro_rules! next_session_sql {
     };
 }
 
+/// SQL: how many follow-ups continue `sessions.id`, the latest included.
+macro_rules! followup_count_sql {
+    () => {
+        "(SELECT count(*)::int4 FROM sessions f \
+          WHERE f.parent_id = sessions.id AND f.metadata->>'relation' = 'followup')"
+    };
+}
+
+pub(crate) use followup_count_sql;
 pub(crate) use nests_under_parent;
 pub(crate) use next_session_sql;
 
 /// The latest follow-up continuing `id`, if any.
+#[cfg(test)]
 pub async fn next_of(pool: &PgPool, id: &str) -> Result<Option<String>, sqlx::Error> {
-    let next: Option<Option<String>> =
-        sqlx::query_scalar(concat!("SELECT ", next_session_sql!(), " FROM sessions WHERE id = $1"))
-            .bind(id)
-            .fetch_optional(pool)
-            .await?;
-    Ok(next.flatten())
+    Ok(followups_of(pool, id).await?.0)
 }
 
-/// Follow-up ancestors up, then the latest follow-up down as in
-/// `next_session_sql!`. No status filter: archived sessions stay in the thread.
+/// The latest follow-up continuing `id` and how many continue it in all.
+pub async fn followups_of(pool: &PgPool, id: &str) -> Result<(Option<String>, u32), sqlx::Error> {
+    let row: Option<(Option<String>, i32)> = sqlx::query_as(concat!(
+        "SELECT ",
+        next_session_sql!(),
+        ", ",
+        followup_count_sql!(),
+        " FROM sessions WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map_or((None, 0), |(next, count)| (next, u32::try_from(count).unwrap_or(0))))
+}
+
+/// Up to the thread's root through follow-up links, then every follow-up
+/// below it: depth first, siblings oldest first. `seen` breaks link cycles.
+/// No status filter: archived sessions stay in the thread.
 const THREAD_SQL: &str = "WITH RECURSIVE up AS ( \
-        SELECT id, parent_id, metadata->>'relation' AS relation, 0 AS depth \
+        SELECT id, metadata->>'relation' AS relation, parent_id, ARRAY[id] AS seen \
           FROM sessions WHERE id = $1 \
         UNION ALL \
-        SELECT p.id, p.parent_id, p.metadata->>'relation', up.depth - 1 \
+        SELECT p.id, p.metadata->>'relation', p.parent_id, up.seen || p.id \
           FROM up JOIN sessions p ON p.id = up.parent_id \
-         WHERE up.relation = 'followup' AND up.depth > -500 \
-    ), down AS ( \
-        SELECT id, 0 AS depth FROM sessions WHERE id = $1 \
+         WHERE up.relation = 'followup' AND NOT p.id = ANY(up.seen) \
+           AND cardinality(up.seen) < 500 \
+    ), root AS ( \
+        SELECT id FROM up ORDER BY cardinality(seen) DESC LIMIT 1 \
+    ), tree AS ( \
+        SELECT s.id, NULL::text AS parent_id, \
+               ARRAY[to_char(s.registered_at AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS') \
+                     || s.id] AS path, \
+               ARRAY[s.id] AS seen \
+          FROM root JOIN sessions s ON s.id = root.id \
         UNION ALL \
-        SELECT n.id, down.depth + 1 FROM down CROSS JOIN LATERAL ( \
-            SELECT f.id FROM sessions f \
-             WHERE f.parent_id = down.id AND f.metadata->>'relation' = 'followup' \
-             ORDER BY f.registered_at DESC LIMIT 1) n \
-         WHERE down.depth < 500 \
+        SELECT f.id, f.parent_id, \
+               tree.path || (to_char(f.registered_at AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS') \
+                     || f.id), \
+               tree.seen || f.id \
+          FROM tree JOIN sessions f ON f.parent_id = tree.id \
+         WHERE f.metadata->>'relation' = 'followup' AND NOT f.id = ANY(tree.seen) \
+           AND cardinality(tree.seen) < 500 \
     ) \
-    SELECT s.id, s.session_name, s.working_dir, s.registered_at \
-      FROM (SELECT id, depth FROM up UNION SELECT id, depth FROM down) t \
-      JOIN sessions s ON s.id = t.id \
-     ORDER BY t.depth";
+    SELECT s.id, s.session_name, s.working_dir, s.registered_at, t.parent_id \
+      FROM tree t JOIN sessions s ON s.id = t.id \
+     ORDER BY t.path";
 
-/// The follow-up thread through `id`, oldest first; empty when `id` is unknown.
+/// `id, session_name, working_dir, registered_at, parent_id` of a thread entry.
+type ThreadRow = (String, Option<String>, String, DateTime<Utc>, Option<String>);
+
+/// The follow-up tree `id` belongs to, root first; empty when `id` is unknown.
 pub async fn thread_of(pool: &PgPool, id: &str) -> Result<Vec<ThreadSession>, sqlx::Error> {
-    let rows: Vec<(String, Option<String>, String, DateTime<Utc>)> =
-        sqlx::query_as(THREAD_SQL).bind(id).fetch_all(pool).await?;
+    let rows: Vec<ThreadRow> = sqlx::query_as(THREAD_SQL).bind(id).fetch_all(pool).await?;
     Ok(rows
         .into_iter()
-        .map(|(id, name, working_dir, registered_at)| ThreadSession {
+        .map(|(id, name, working_dir, registered_at, parent_id)| ThreadSession {
             id,
             name,
             working_dir,
             registered_at,
+            parent_id,
         })
         .collect())
 }
@@ -172,7 +204,7 @@ pub async fn sweep(pool: &PgPool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{next_of, parent_of, thread_of};
+    use super::{followups_of, next_of, parent_of, thread_of};
     use cctui_proto::api::SpawnRequest;
     use uuid::Uuid;
 
@@ -237,11 +269,8 @@ mod tests {
         .expect("link");
     }
 
-    #[tokio::test]
-    async fn an_archived_session_keeps_its_previous_and_next() {
-        let Some(url) = crate::routes::gateway::test_db_url("followup_thread_archived") else {
-            return;
-        };
+    async fn test_pool(name: &str) -> Option<(sqlx::PgPool, Uuid, Uuid)> {
+        let url = crate::routes::gateway::test_db_url(name)?;
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(2)
             .connect(&url)
@@ -263,46 +292,101 @@ mod tests {
             .execute(&pool)
             .await
             .expect("seed machine");
+        Some((pool, uid, mid))
+    }
+
+    async fn age(pool: &sqlx::PgPool, id: &str, mins: i32) {
+        sqlx::query(
+            "UPDATE sessions SET registered_at = now() - make_interval(mins => $2) WHERE id = $1",
+        )
+        .bind(id)
+        .bind(mins)
+        .execute(pool)
+        .await
+        .expect("age");
+    }
+
+    async fn cleanup(pool: &sqlx::PgPool, uid: Uuid, mid: Uuid, sessions: &[String]) {
+        sqlx::query("DELETE FROM sessions WHERE id = ANY($1)")
+            .bind(sessions)
+            .execute(pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM machines WHERE id = $1").bind(mid).execute(pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(pool).await.ok();
+    }
+
+    fn ids(t: &[cctui_proto::api::ThreadSession]) -> Vec<&str> {
+        t.iter().map(|s| s.id.as_str()).collect()
+    }
+
+    fn parents(t: &[cctui_proto::api::ThreadSession]) -> Vec<Option<&str>> {
+        t.iter().map(|s| s.parent_id.as_deref()).collect()
+    }
+
+    #[tokio::test]
+    async fn an_archived_session_keeps_its_previous_and_next() {
+        let Some((pool, uid, mid)) = test_pool("followup_thread_archived").await else {
+            return;
+        };
         let root = seed(&pool, uid, mid, "archived").await;
         let older = seed(&pool, uid, mid, "archived").await;
         let fork = seed(&pool, uid, mid, "active").await;
         let middle = seed(&pool, uid, mid, "archived").await;
         let subagent = seed(&pool, uid, mid, "active").await;
         let latest = seed(&pool, uid, mid, "active").await;
-        sqlx::query("UPDATE sessions SET registered_at = now() - interval '1 hour' WHERE id = $1")
-            .bind(&root)
-            .execute(&pool)
-            .await
-            .expect("age root");
+        age(&pool, &root, 60).await;
         link(&pool, &older, &root, "followup", 50).await;
         link(&pool, &fork, &root, "fork", 45).await;
         link(&pool, &middle, &root, "followup", 40).await;
         link(&pool, &subagent, &middle, "subagent", 35).await;
         link(&pool, &latest, &middle, "followup", 30).await;
 
-        let ids = |t: Vec<cctui_proto::api::ThreadSession>| {
-            t.into_iter().map(|s| s.id).collect::<Vec<_>>()
-        };
-        let full = vec![root.clone(), middle.clone(), latest.clone()];
-        for id in [&root, &middle, &latest] {
-            assert_eq!(ids(thread_of(&pool, id).await.expect("thread")), full, "from {id}");
+        let full = [root.as_str(), older.as_str(), middle.as_str(), latest.as_str()];
+        for id in full {
+            assert_eq!(ids(&thread_of(&pool, id).await.expect("thread")), full, "from {id}");
         }
         assert_eq!(next_of(&pool, &middle).await.expect("next"), Some(latest.clone()));
-        assert_eq!(
-            ids(thread_of(&pool, &older).await.expect("thread")),
-            vec![root.clone(), older.clone()],
-            "an earlier follow-up leads back to its source only"
-        );
-        assert_eq!(ids(thread_of(&pool, &fork).await.expect("thread")), vec![fork.clone()]);
+        assert_eq!(ids(&thread_of(&pool, &fork).await.expect("thread")), [fork.as_str()]);
         assert!(thread_of(&pool, "no-such-session").await.expect("thread").is_empty());
 
-        let all = [root, older, fork, middle, subagent, latest];
-        sqlx::query("DELETE FROM sessions WHERE id = ANY($1)")
-            .bind(&all[..])
-            .execute(&pool)
-            .await
-            .ok();
-        sqlx::query("DELETE FROM machines WHERE id = $1").bind(mid).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+        cleanup(&pool, uid, mid, &[root, older, fork, middle, subagent, latest]).await;
+    }
+
+    #[tokio::test]
+    async fn a_root_followed_up_twice_lists_both_branches() {
+        let Some((pool, uid, mid)) = test_pool("followup_thread_forks").await else {
+            return;
+        };
+        let r = seed(&pool, uid, mid, "archived").await;
+        let a = seed(&pool, uid, mid, "archived").await;
+        let a2 = seed(&pool, uid, mid, "active").await;
+        let b = seed(&pool, uid, mid, "active").await;
+        age(&pool, &r, 60).await;
+        link(&pool, &a, &r, "followup", 50).await;
+        link(&pool, &a2, &a, "followup", 45).await;
+        link(&pool, &b, &r, "followup", 40).await;
+
+        let order = [r.as_str(), a.as_str(), a2.as_str(), b.as_str()];
+        for id in order {
+            let thread = thread_of(&pool, id).await.expect("thread");
+            assert_eq!(ids(&thread), order, "from {id}");
+            assert_eq!(
+                parents(&thread),
+                [None, Some(r.as_str()), Some(a.as_str()), Some(r.as_str())],
+                "A and B are siblings under R, A2 under A, from {id}"
+            );
+        }
+        assert_eq!(
+            followups_of(&pool, &r).await.expect("followups"),
+            (Some(b.clone()), 2),
+            "R still continues in the latest, B, and counts both"
+        );
+        assert_eq!(next_of(&pool, &r).await.expect("next"), Some(b.clone()));
+        assert_eq!(followups_of(&pool, &a).await.expect("followups"), (Some(a2.clone()), 1));
+        assert_eq!(followups_of(&pool, &b).await.expect("followups"), (None, 0));
+        assert_eq!(followups_of(&pool, "no-such-session").await.expect("followups"), (None, 0));
+
+        cleanup(&pool, uid, mid, &[r, a, a2, b]).await;
     }
 }

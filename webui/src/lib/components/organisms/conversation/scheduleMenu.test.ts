@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { scheduleMenuItems } from './scheduleMenu';
+import { coldSendItems, scheduleMenuItems, type ColdSendOpts } from './scheduleMenu';
 import { schedulePresets } from './scheduleTimes';
 
 const NOW = new Date(2026, 0, 7, 9, 0, 0).getTime();
@@ -59,5 +59,55 @@ describe('scheduleMenuItems', () => {
 		expect(onlist).toHaveBeenCalledTimes(1);
 		list[list.length - 2].onselect?.();
 		expect(oncustom).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('cold Send menu entries', () => {
+	function cold(over: Partial<ColdSendOpts> = {}): ColdSendOpts {
+		return { burstTokens: 93_000, canSend: true, onsendhere: vi.fn(), onoptions: vi.fn(), ...over };
+	}
+
+	it('are absent while the cache is warm', () => {
+		const warm = scheduleMenuItems({ now: NOW, canSchedule: true, onpreset: vi.fn(), oncustom: vi.fn() });
+		const unset = scheduleMenuItems({ now: NOW, canSchedule: true, onpreset: vi.fn(), oncustom: vi.fn(), cold: null });
+		for (const list of [warm, unset]) {
+			expect(list.some((it) => it.id === 'send-here' || it.id === 'followup-options')).toBe(false);
+		}
+	});
+
+	it('come first while cold: Send here, then Follow-up with options, then the schedule items', () => {
+		const presets = schedulePresets(new Date(NOW));
+		const list = scheduleMenuItems({
+			now: NOW,
+			canSchedule: true,
+			onpreset: vi.fn(),
+			oncustom: vi.fn(),
+			cold: cold()
+		});
+		expect(list.slice(0, 2).map((it) => it.id)).toEqual(['send-here', 'followup-options']);
+		expect(list).toHaveLength(presets.length + 3);
+		expect(list[2].icon).toBe('clock');
+	});
+
+	it('names the cache rebuild cost on Send here', () => {
+		const [here] = coldSendItems(cold());
+		expect(here.label).toContain('93');
+		const [bare] = coldSendItems(cold({ burstTokens: null }));
+		expect(bare.label).not.toContain('~');
+	});
+
+	it('route each entry to its action', () => {
+		const o = cold();
+		const [here, options] = coldSendItems(o);
+		here.onselect?.();
+		options.onselect?.();
+		expect(o.onsendhere).toHaveBeenCalledTimes(1);
+		expect(o.onoptions).toHaveBeenCalledTimes(1);
+	});
+
+	it('disable Send here with nothing to send, and drop the options entry without a modal', () => {
+		const list = coldSendItems(cold({ canSend: false, onoptions: undefined }));
+		expect(list.map((it) => it.id)).toEqual(['send-here']);
+		expect(list[0].disabled).toBe(true);
 	});
 });

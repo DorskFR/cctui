@@ -7,7 +7,7 @@ use tower_http::trace::{DefaultOnRequest, MakeSpan, OnResponse, TraceLayer};
 use tracing::Span;
 use tracing::field::Empty;
 
-const UNTRACED: &[&str] = &["/health", "/ready", "/readyz", "/metrics"];
+const UNTRACED: &[&str] = &["/health", "/ready", "/readyz", "/metrics", "/api/v1/otlp/v1/traces"];
 
 pub type HttpTraceLayer = TraceLayer<
     SharedClassifier<ServerErrorsAsFailures>,

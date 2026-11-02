@@ -199,23 +199,37 @@ pub fn panel(app: &App, session: &SessionListItem) -> Panel {
     let children = child_rows(&app.sessions, &session.id);
     let running = children.iter().filter(|c| c.running).count();
     let cursor = app.sidebar.cursor.min(children.len().saturating_sub(1));
-    let parent = session
-        .parent_id
-        .as_ref()
-        .and_then(|id| app.sessions.iter().find(|s| s.id == *id).map(child_label));
-    let next = session
-        .next_session_id
-        .as_ref()
-        .and_then(|id| app.sessions.iter().find(|s| s.id == *id).map(child_label));
+    let parent_is_previous = previous_session_id(session).is_some();
+    let parent = session.parent_id.as_ref().and_then(|id| {
+        app.sessions.iter().find(|s| s.id == *id).map(|p| {
+            let siblings = if parent_is_previous { p.followup_count } else { 0 };
+            with_others(child_label(p), siblings)
+        })
+    });
+    let next = session.next_session_id.as_ref().and_then(|id| {
+        app.sessions
+            .iter()
+            .find(|s| s.id == *id)
+            .map(|n| with_others(child_label(n), session.followup_count))
+    });
     Panel {
         done: session.todos.iter().filter(|t| t.status == "completed").count(),
         todos: session.todos.clone(),
         children,
         running,
         parent,
-        parent_is_previous: previous_session_id(session).is_some(),
+        parent_is_previous,
         next,
         cursor,
+    }
+}
+
+/// A thread link's label, led by how many other follow-ups fork off the same
+/// session so the count survives clipping.
+fn with_others(label: String, followups: u32) -> String {
+    match followups.saturating_sub(1) {
+        0 => label,
+        n => format!("+{n} other · {label}"),
     }
 }
 
@@ -387,6 +401,31 @@ mod tests {
         assert!(app.toasts.latest().expect("a toast").text.contains("no follow-up"));
         sidebar(&mut app, SidebarAction::OpenParent);
         assert_eq!(app.selected_session_id().as_deref(), Some("s-parent"));
+    }
+
+    #[test]
+    fn a_forked_thread_says_how_many_other_followups_there_are() {
+        let mut app = app();
+        for (id, name) in [("s-a", "first"), ("s-b", "second")] {
+            let mut f = subagent(id, "s-parent", name);
+            f.metadata = serde_json::json!({"project_name": name, "relation": "followup"});
+            app.sessions.push(f);
+        }
+        app.sessions[0].next_session_id = Some("s-b".into());
+        app.sessions[0].followup_count = 2;
+        app.update_aggregates();
+
+        let source = panel(&app, &app.sessions[0]);
+        assert_eq!(source.next.as_deref(), Some("+1 other · second"));
+        let first = app.sessions.iter().find(|s| s.id == "s-a").expect("listed");
+        let p = panel(&app, first);
+        assert!(p.parent_is_previous);
+        assert_eq!(p.parent.as_deref(), Some("+1 other · alpha"));
+        let kid = &app.sessions[1];
+        assert_eq!(panel(&app, kid).parent.as_deref(), Some("alpha"), "a subagent is no fork");
+
+        app.sessions[0].followup_count = 1;
+        assert_eq!(panel(&app, &app.sessions[0]).next.as_deref(), Some("second"));
     }
 
     #[test]

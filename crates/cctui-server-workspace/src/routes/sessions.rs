@@ -17,7 +17,7 @@ use cctui_proto::models::{Attention, Liveness, Session, SessionEndReason, Sessio
 use crate::auth::AuthContext;
 use crate::error::AppError;
 use crate::events::{self, Actor, Event, kind};
-use crate::followup::{nests_under_parent, next_session_sql};
+use crate::followup::{followup_count_sql, nests_under_parent, next_session_sql};
 use crate::live_sessions::live_sessions_predicate;
 use crate::routes::spawn::resolve_owned_machine;
 use crate::search_index::Unchunked;
@@ -492,6 +492,7 @@ fn skeleton_list_item(
         launch_at: None,
         launch_error: None,
         next_session_id: None,
+        followup_count: 0,
     }
 }
 
@@ -618,6 +619,7 @@ struct SignalRow {
     keepalive_json: Option<serde_json::Value>,
     last_keepalive_at: Option<DateTime<Utc>>,
     next_session_id: Option<String>,
+    followup_count: i32,
 }
 
 const SIGNAL_SQL: &str = concat!(
@@ -626,7 +628,9 @@ const SIGNAL_SQL: &str = concat!(
             children, end_reason, end_detail, ended_at, permission_mode, archived_by, \
             keepalive_json, last_keepalive_at, ",
     next_session_sql!(),
-    " AS next_session_id \
+    " AS next_session_id, ",
+    followup_count_sql!(),
+    " AS followup_count \
      FROM sessions WHERE id = ANY($1)"
 );
 
@@ -1084,6 +1088,7 @@ fn apply_signals(
     s.keepalive = row.keepalive_json.and_then(|v| serde_json::from_value(v).ok());
     s.last_keepalive_at = row.last_keepalive_at;
     s.next_session_id = row.next_session_id;
+    s.followup_count = u32::try_from(row.followup_count).unwrap_or(0);
     s.activity_detail = row.activity;
     s.last_tool_at = row.last_tool_at;
     s.last_tool_name = row.last_tool_name;
@@ -2020,10 +2025,12 @@ pub async fn get_session(
                 launch_at: None,
                 launch_error: None,
                 next_session_id: None,
+                followup_count: 0,
             };
             item.user_actions =
                 fetch_user_actions(&state, std::slice::from_ref(&item.id)).await?.remove(&item.id);
-            item.next_session_id = crate::followup::next_of(&state.pool, &item.id).await?;
+            (item.next_session_id, item.followup_count) =
+                crate::followup::followups_of(&state.pool, &item.id).await?;
             return Ok(Json(item));
         }
     }
@@ -2096,6 +2103,7 @@ pub async fn get_session(
         launch_at: None,
         launch_error: None,
         next_session_id: None,
+        followup_count: 0,
     };
     let end: Option<EndRow> = sqlx::query_as(
         "SELECT end_reason, end_detail, ended_at, todos, permission_mode, pinned, archived_by \
@@ -2123,7 +2131,8 @@ pub async fn get_session(
     }
     item.user_actions =
         fetch_user_actions(&state, std::slice::from_ref(&item.id)).await?.remove(&item.id);
-    item.next_session_id = crate::followup::next_of(&state.pool, &item.id).await?;
+    (item.next_session_id, item.followup_count) =
+        crate::followup::followups_of(&state.pool, &item.id).await?;
     Ok(Json(item))
 }
 
