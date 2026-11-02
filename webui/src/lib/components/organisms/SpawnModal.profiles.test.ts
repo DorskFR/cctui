@@ -591,7 +591,10 @@ describe("SpawnModal profiles", () => {
   it("New profile opens an empty create form and a draft card, and writes nothing until Create profile", async () => {
     await open();
     await openNewProfile();
-    expect(expanded()).toBe(false);
+    expect(
+      document.querySelector('[data-journey="profiles"] .rs-trigger'),
+    ).toBeNull();
+    expect(options()).toHaveLength(0);
     expect(create).not.toHaveBeenCalled();
     expect(profileForm()?.dataset.mode).toBe("create");
     expect(nameInput()?.value).toBe("");
