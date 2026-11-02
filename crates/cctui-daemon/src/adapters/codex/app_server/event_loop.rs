@@ -48,11 +48,22 @@ enum Flow {
 /// Why the pump stopped on purpose; `None` means the app-server went away.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Stop {
-    /// Daemon shutdown or a Kill command: the epilogue reports `Killed`
-    /// rather than treating the non-zero exit as a crash.
+    /// A Kill command: the epilogue reports `Killed` rather than treating the
+    /// non-zero exit as a crash, and drops the durable record.
     Killed,
+    /// Daemon shutdown (service stop, machine reboot): the thread is still
+    /// resumable, so — like a re-exec — the durable record is kept and no
+    /// `SessionEnded` is reported. Treating it as a Kill wiped every live
+    /// thread from `codex-sessions.json` and stranded them after a reboot.
+    Shutdown,
     Reexec,
     HandshakeFailed,
+}
+
+/// Stops that leave the thread resumable by a later daemon: the durable record
+/// stays and the epilogue reports nothing.
+const fn keeps_record_silently(stop: Option<Stop>) -> bool {
+    matches!(stop, Some(Stop::Reexec | Stop::Shutdown))
 }
 
 struct Transport {
@@ -374,7 +385,7 @@ impl<'a> EventLoop<'a> {
 
     fn on_shutdown(&mut self) -> Flow {
         kill_child(&mut self.child);
-        self.stop = Some(Stop::Killed);
+        self.stop = Some(Stop::Shutdown);
         Flow::Break
     }
 
@@ -1166,7 +1177,7 @@ impl<'a> EventLoop<'a> {
             let _ = tokio::time::timeout(Duration::from_secs(1), drain).await;
         }
         if self.thread.local_id.is_empty() {
-            if matches!(self.stop, Some(Stop::Reexec | Stop::HandshakeFailed)) {
+            if matches!(self.stop, Some(Stop::Reexec | Stop::Shutdown | Stop::HandshakeFailed)) {
                 return Ok(());
             }
             let Some(status) = status else {
@@ -1177,7 +1188,7 @@ impl<'a> EventLoop<'a> {
             let exit = status.map_or_else(|e| e.to_string(), |s| s.to_string());
             anyhow::bail!("codex app-server exited ({exit}) before the thread was started");
         }
-        if self.stop == Some(Stop::Reexec) {
+        if keeps_record_silently(self.stop) {
             return Ok(());
         }
         self.end_thread(status, drained).await;
@@ -1527,6 +1538,72 @@ done
         let (ok, error) = spawn_result(&mut rx).await;
         shutdown.cancel();
         assert!(ok, "a delivered send must confirm, not stay unconfirmed: {error:?}");
+    }
+
+    /// A daemon shutdown (service stop, machine reboot) must leave the durable
+    /// record of a live thread in place and report no `SessionEnded`, so the
+    /// next daemon resumes it instead of dropping the command as unknown.
+    #[tokio::test]
+    async fn daemon_shutdown_keeps_the_durable_record_of_a_live_thread() {
+        let (_dir, bin) = fake_codex(&turn_server_script(
+            r#"echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}""#,
+        ));
+        let (tx, mut rx) = mpsc::channel(64);
+        let shutdown = CancellationToken::new();
+        let live = LiveSessionRegistry::default();
+        let registry = SessionRegistry::default();
+        let session = CodexSession::new_fresh(
+            AppServerConfig { bin, ..AppServerConfig::default() },
+            "/tmp".to_string(),
+            std::collections::BTreeMap::new(),
+            None,
+            None,
+            Vec::new(),
+            Some(Uuid::new_v4()),
+            None,
+            None,
+            tx,
+            live.clone(),
+            registry.clone(),
+            shutdown.clone(),
+        );
+        let handle = tokio::spawn(session.run());
+        let (ok, error) = spawn_result(&mut rx).await;
+        assert!(ok, "spawn failed: {error:?}");
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !registry.lock().await.contains_key("t-1") {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("thread recorded within 10s");
+
+        shutdown.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(10), handle)
+            .await
+            .expect("session stops on shutdown")
+            .expect("session task")
+            .ok();
+
+        assert!(
+            registry.lock().await.contains_key("t-1"),
+            "a daemon shutdown must not drop the resumable record"
+        );
+        while let Ok(evt) = rx.try_recv() {
+            assert!(
+                !matches!(evt, AdapterEvent::SessionEnded { .. }),
+                "a daemon shutdown must not end the session: {evt:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_reexec_and_shutdown_keep_the_record_silently() {
+        assert!(keeps_record_silently(Some(Stop::Reexec)));
+        assert!(keeps_record_silently(Some(Stop::Shutdown)));
+        assert!(!keeps_record_silently(Some(Stop::Killed)));
+        assert!(!keeps_record_silently(Some(Stop::HandshakeFailed)));
+        assert!(!keeps_record_silently(None));
     }
 
     /// Logs each request's method to `$LOG`; thread `t-interrupt`, and a
