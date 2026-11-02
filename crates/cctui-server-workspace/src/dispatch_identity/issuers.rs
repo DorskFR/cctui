@@ -102,11 +102,12 @@ impl Issuers {
     }
 
     fn cached(&self, issuer: &str, kid: Option<&str>) -> Option<Jwks> {
-        let (jwks, at) = {
-            let cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-            let entry = cache.get(issuer)?;
-            (entry.jwks.clone(), entry.at)
-        };
+        let (jwks, at) = self
+            .cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(issuer)
+            .map(|e| (e.jwks.clone(), e.at))?;
         let age = at.elapsed();
         let knows_kid = kid.is_none_or(|k| jwks.has(k));
         (age < REFETCH_FLOOR || (age < FRESH_FOR && knows_kid)).then_some(jwks)
