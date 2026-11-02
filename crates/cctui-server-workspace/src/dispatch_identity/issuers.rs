@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 use super::jwt::{Jwks, Rejection};
 
 pub const ISSUERS_ENV: &str = "CCTUI_DISPATCH_TRUSTED_ISSUERS";
-const FRESH_FOR: Duration = Duration::from_secs(600);
+const FRESH_FOR: Duration = Duration::from_mins(10);
 /// An unknown `kid` refetches (key rotation), but never more often than this.
 const REFETCH_FLOOR: Duration = Duration::from_secs(30);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -102,11 +102,14 @@ impl Issuers {
     }
 
     fn cached(&self, issuer: &str, kid: Option<&str>) -> Option<Jwks> {
-        let cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-        let entry = cache.get(issuer)?;
-        let age = entry.at.elapsed();
-        let knows_kid = kid.is_none_or(|k| entry.jwks.has(k));
-        (age < REFETCH_FLOOR || (age < FRESH_FOR && knows_kid)).then(|| entry.jwks.clone())
+        let (jwks, at) = {
+            let cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+            let entry = cache.get(issuer)?;
+            (entry.jwks.clone(), entry.at)
+        };
+        let age = at.elapsed();
+        let knows_kid = kid.is_none_or(|k| jwks.has(k));
+        (age < REFETCH_FLOOR || (age < FRESH_FOR && knows_kid)).then_some(jwks)
     }
 }
 

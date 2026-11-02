@@ -14,6 +14,7 @@ pub struct DispatchRegistry {
 impl DispatchRegistry {
     #[must_use]
     pub fn new(server_url: String, dispatcher_key: String) -> Self {
+        cctui_dispatcher_core::install_crypto_provider();
         Self { http: reqwest::Client::new(), server_url, dispatcher_key }
     }
 
