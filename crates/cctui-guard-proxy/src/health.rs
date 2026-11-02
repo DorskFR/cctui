@@ -58,10 +58,12 @@ async fn handle(
     let path = text.lines().next().and_then(|line| line.split_whitespace().nth(1)).unwrap_or("");
 
     if path == "/dispatch/env" {
-        let (status, body) = match dispatch {
-            Some(d) => d.env().await,
-            None => (404, r#"{"error":"this pod has no dispatch identity"}"#.to_owned()),
+        let Some(dispatch) = dispatch else {
+            let body = r#"{"error":"this pod has no dispatch identity"}"#;
+            conn.write_all(&json_response(404, body)).await?;
+            return Ok(());
         };
+        let (status, body) = Box::pin(dispatch.env()).await;
         conn.write_all(&json_response(status, &body)).await?;
         return Ok(());
     }

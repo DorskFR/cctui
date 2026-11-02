@@ -33,12 +33,13 @@ impl ServerTarget {
             !authority.is_empty() && !authority.contains('@') && !authority.contains('['),
             "server URL `{url}` has no usable host"
         );
-        let (host, port) = match authority.rsplit_once(':') {
-            Some((host, port)) => {
-                (host, port.parse::<u16>().map_err(|_| anyhow::anyhow!("bad port in `{url}`"))?)
-            }
-            None => (authority, if https { 443 } else { 80 }),
-        };
+        let default_port = if https { 443 } else { 80 };
+        let (host, port) =
+            authority.rsplit_once(':').map_or(Ok((authority, default_port)), |(host, port)| {
+                port.parse::<u16>()
+                    .map(|port| (host, port))
+                    .map_err(|_| anyhow::anyhow!("bad port in `{url}`"))
+            })?;
         Ok(Self { base_url: url.to_owned(), https, host: host.to_ascii_lowercase(), port })
     }
 
@@ -63,6 +64,7 @@ struct ApiError {
     error: String,
 }
 
+#[derive(Debug)]
 pub struct DispatchConfig {
     pub dispatch_id: String,
     pub server: ServerTarget,
@@ -86,7 +88,7 @@ impl DispatchIdentity {
     pub async fn redeem(config: DispatchConfig) -> Self {
         crate::inject::install_crypto();
         let http = reqwest::Client::new();
-        let outcome = match redeem_with_retry(&http, &config).await {
+        let outcome = match Box::pin(redeem_with_retry(&http, &config)).await {
             Ok(machine_key) => {
                 tracing::info!(dispatch = %config.dispatch_id, "dispatch identity redeemed");
                 Outcome::Redeemed { machine_key }
@@ -176,7 +178,7 @@ async fn redeem_with_retry(
         if attempt > 0 {
             tokio::time::sleep(Duration::from_secs(1 << (attempt - 1))).await;
         }
-        match redeem_once(http, config, token).await {
+        match Box::pin(redeem_once(http, config, token)).await {
             Attempt::Done(key) => return Ok(key),
             Attempt::Refused(reason) => return Err(reason),
             Attempt::Retry(reason) => {

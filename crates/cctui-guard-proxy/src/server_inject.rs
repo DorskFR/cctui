@@ -79,12 +79,12 @@ impl ServerInjector {
             .map_err(|_| anyhow::anyhow!("dialing the cctui server timed out"))??;
         let client = PrefixedStream::new(conn, prefix);
         let Some(acceptor) = &self.acceptor else {
-            return self.pump(client, upstream).await;
+            return Box::pin(self.pump(client, upstream)).await;
         };
         let client = acceptor.accept(client).await?;
         let name = ServerName::try_from(self.target.host.clone())?;
         let upstream = self.connector.connect(name, upstream).await?;
-        self.pump(client, upstream).await
+        Box::pin(self.pump(client, upstream)).await
     }
 
     fn outbound_head(&self, head: &[u8]) -> Vec<u8> {
@@ -108,10 +108,12 @@ impl ServerInjector {
             let method = request_method(&head);
             let outbound = self.outbound_head(&head);
             let swapped = if request_path(&head).as_deref() == Some(DAEMON_AUTH_PATH) {
-                self.send_auth_body(&mut cbuf, &mut client, &mut upstream, &outbound).await?
+                Box::pin(self.send_auth_body(&mut cbuf, &mut client, &mut upstream, &outbound))
+                    .await?
             } else {
                 upstream.write_all(&outbound).await?;
-                cbuf.relay_body(&mut client, &mut upstream, body_framing(&head, false)).await?;
+                let framing = body_framing(&head, false);
+                Box::pin(cbuf.relay_body(&mut client, &mut upstream, framing)).await?;
                 false
             };
             upstream.flush().await?;
@@ -133,13 +135,13 @@ impl ServerInjector {
                 };
                 anyhow::ensure!(len <= MAX_SWAP_BODY, "daemon auth answer too large");
                 let mut body = Vec::with_capacity(len);
-                ubuf.relay_body(&mut upstream, &mut body, framing).await?;
+                Box::pin(ubuf.relay_body(&mut upstream, &mut body, framing)).await?;
                 let body = mask_key(&body, &self.machine_key);
                 client.write_all(&with_content_length(&resp, body.len())).await?;
                 client.write_all(&body).await?;
             } else {
                 client.write_all(&resp).await?;
-                ubuf.relay_body(&mut upstream, &mut client, framing).await?;
+                Box::pin(ubuf.relay_body(&mut upstream, &mut client, framing)).await?;
             }
             client.flush().await?;
             if wants_close(&head) || wants_close(&resp) {
@@ -164,12 +166,12 @@ impl ServerInjector {
         let framing = body_framing(outbound, false);
         let Framing::Length(len) = framing else {
             upstream.write_all(outbound).await?;
-            cbuf.relay_body(client, upstream, framing).await?;
+            Box::pin(cbuf.relay_body(client, upstream, framing)).await?;
             return Ok(false);
         };
         anyhow::ensure!(len <= MAX_SWAP_BODY, "daemon auth body too large");
         let mut body = Vec::with_capacity(len);
-        cbuf.relay_body(client, &mut body, framing).await?;
+        Box::pin(cbuf.relay_body(client, &mut body, framing)).await?;
         let Some(body) = swap_placeholder(&body, &self.machine_key) else {
             upstream.write_all(outbound).await?;
             upstream.write_all(&body).await?;
@@ -241,7 +243,7 @@ mod tests {
         let (worker, proxy_client) = duplex(64 * 1024);
         let (proxy_upstream, server) = duplex(64 * 1024);
         let inj = injector();
-        tokio::spawn(async move { inj.pump(proxy_client, proxy_upstream).await });
+        tokio::spawn(async move { Box::pin(inj.pump(proxy_client, proxy_upstream)).await });
         (worker, server)
     }
 
@@ -255,7 +257,7 @@ mod tests {
             body_framing(&head, false)
         };
         if framing != Framing::UntilClose {
-            buf.relay_body(stream, &mut body, framing).await.unwrap();
+            Box::pin(buf.relay_body(stream, &mut body, framing)).await.unwrap();
         }
         (String::from_utf8(head).unwrap(), body)
     }
