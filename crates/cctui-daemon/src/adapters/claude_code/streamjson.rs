@@ -120,6 +120,13 @@ fn parse_system(local_id: &str, v: &Value, out: &mut Vec<AdapterEvent>) -> Strea
                     model: model.to_owned(),
                 });
             }
+            if let Some(text) = relay_init_notice(v) {
+                out.push(AdapterEvent::Message {
+                    local_id: local_id.to_owned(),
+                    payload: super::canary::marker_payload(&text),
+                    turn_id: None,
+                });
+            }
             StreamOutcome::default()
         }
         Some("error") => StreamOutcome { end: Some(error_end(v)) },
@@ -128,6 +135,24 @@ fn parse_system(local_id: &str, v: &Value, out: &mut Vec<AdapterEvent>) -> Strea
             StreamOutcome::default()
         }
     }
+}
+
+/// The `cctui` relay as `system/init` lists it, when it did not connect.
+fn relay_init_notice(v: &Value) -> Option<String> {
+    let status = v
+        .get("mcp_servers")?
+        .as_array()?
+        .iter()
+        .find(|s| s.get("name").and_then(Value::as_str) == Some("cctui"))?
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    (!matches!(status, "connected" | "pending")).then(|| {
+        format!(
+            "cctui MCP server {status} at startup: a managed policy \
+             (allowManagedMcpServersOnly) may be blocking it."
+        )
+    })
 }
 
 /// How many trailing child stderr lines to retain for crash diagnostics.
@@ -270,6 +295,39 @@ mod tests {
     }
 
     // Captured `claude --output-format stream-json --verbose` stdout lines.
+    #[test]
+    fn a_relay_that_failed_at_init_posts_a_marker() {
+        let line = json!({
+            "type": "system",
+            "subtype": "init",
+            "session_id": "s",
+            "mcp_servers": [
+                { "name": "other", "status": "failed" },
+                { "name": "cctui", "status": "failed" },
+            ],
+        });
+        let mut out = Vec::new();
+        parse_system("loc", &line, &mut out);
+        let marker = out
+            .iter()
+            .find_map(|e| match e {
+                AdapterEvent::Message { payload, .. } => Some(payload.clone()),
+                _ => None,
+            })
+            .expect("a marker for the failed relay");
+        assert_eq!(marker["role"], "system_marker");
+        assert!(marker["text"].as_str().unwrap().contains("cctui MCP server failed"));
+    }
+
+    #[test]
+    fn a_connected_or_absent_relay_posts_nothing() {
+        for servers in [json!([{ "name": "cctui", "status": "connected" }]), json!([])] {
+            let line = json!({ "type": "system", "subtype": "init", "mcp_servers": servers });
+            assert!(relay_init_notice(&line).is_none(), "{line}");
+        }
+        assert!(relay_init_notice(&json!({ "type": "system", "subtype": "init" })).is_none());
+    }
+
     const INIT_LINE: &str = r#"{"type":"system","subtype":"init","session_id":"11111111-2222-3333-4444-555555555555","model":"claude-opus-4-8","cwd":"/tmp/x","tools":["Bash","Read"],"permissionMode":"default"}"#;
     const ASSISTANT_LINE: &str = r#"{"type":"assistant","message":{"id":"msg_01","model":"claude-opus-4-8","role":"assistant","content":[{"type":"text","text":"Hello there"},{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"ls"}}],"usage":{"input_tokens":120,"output_tokens":45,"cache_read_input_tokens":900,"cache_creation_input_tokens":10}}}"#;
     const USER_TOOL_RESULT_LINE: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_1","content":"file.txt","is_error":false}]}}"#;

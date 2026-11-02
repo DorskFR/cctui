@@ -52,7 +52,8 @@ impl Driver {
             .and_then(|m| m.get(local_id).map(|(_, at)| to_unix_ms(*at)))
             .map(|at| now_ms - at);
 
-        let effective_state = short.as_deref().map_or_else(
+        let canary = super::super::canary::flagged_notice(local_id);
+        let mut effective_state = short.as_deref().map_or_else(
             || DiagnoseFact::missing("activity", "unknown session (no worker short resolvable)"),
             |short| {
                 self.effective_state_fact(
@@ -65,9 +66,18 @@ impl Driver {
             },
         );
 
+        if let Some(note) = &canary {
+            with_canary_note(&mut effective_state, note);
+        }
+
         let last_hook_event =
             self.hook_log.lock().ok().and_then(|m| m.get(local_id).cloned()).map_or_else(
-                || DiagnoseFact::missing("hook", "no hook delivery seen for this session"),
+                || {
+                    DiagnoseFact::missing(
+                        "hook",
+                        canary.as_deref().unwrap_or("no hook delivery seen for this session"),
+                    )
+                },
                 |(kind, at)| {
                     DiagnoseFact::observed(HookEvent { kind }, "hook", to_unix_ms(at), now_ms)
                 },
@@ -316,9 +326,40 @@ fn pty_output_fact(
     )
 }
 
+/// A hook-canary flag rides in the effective state's `detail`, the one field
+/// the report renders verbatim.
+fn with_canary_note(fact: &mut DiagnoseFact<EffectiveState>, note: &str) {
+    if let Some(state) = fact.value.as_mut() {
+        state.detail = Some(
+            state.detail.take().map_or_else(|| note.to_owned(), |d| format!("{d} · {note}")),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
+
+    #[test]
+    fn a_canary_flag_lands_in_the_effective_state_detail() {
+        use cctui_proto::diagnose::{DiagnoseFact, EffectiveState};
+        let state = |detail: Option<&str>| EffectiveState {
+            verdict: "active/working".into(),
+            tempo: None,
+            state: None,
+            detail: detail.map(str::to_owned),
+            activity: None,
+        };
+        let mut bare = DiagnoseFact::fresh(state(None), "activity", 1);
+        super::with_canary_note(&mut bare, "cctui hooks not loaded");
+        assert_eq!(bare.value.unwrap().detail.as_deref(), Some("cctui hooks not loaded"));
+        let mut busy = DiagnoseFact::fresh(state(Some("thinking")), "activity", 1);
+        super::with_canary_note(&mut busy, "cctui hooks not loaded");
+        assert_eq!(
+            busy.value.unwrap().detail.as_deref(),
+            Some("thinking · cctui hooks not loaded")
+        );
+    }
 
     /// the diagnose assembly aggregates the driver's live state —
     /// resolved short, activity-sourced verdict with an observation timestamp,

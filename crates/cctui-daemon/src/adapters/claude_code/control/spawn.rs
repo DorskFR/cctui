@@ -169,6 +169,7 @@ impl Driver {
             json!({ "intent": st.as_ref().and_then(|s| s.intent.clone()).unwrap_or_default() });
         let req = launch::dispatch_request(&ids, &cwd, &launch, None, &env, &seed);
         let session_id = ids.session_id;
+        super::super::canary::arm(local_id, short, &session_id, None);
         let resp: serde_json::Value = socket::call(sock, &req)
             .await
             .with_context(|| format!("resume dispatch for hibernated session {short}"))?;
@@ -444,6 +445,7 @@ impl Driver {
             &dispatch_seed(spec),
         );
         let gate = self.launch_gate(session_id, short, spec.model.as_deref());
+        super::super::canary::arm(session_id, short, session_id, agent_tool.then_some(session_id));
         Ok(DeferredDispatch {
             sock: sock.to_path_buf(),
             req,
@@ -627,6 +629,12 @@ impl Driver {
             prompt,
             &launch_env.env,
             &dispatch_seed(spec),
+        );
+        super::super::canary::arm(
+            session_id,
+            short,
+            session_id,
+            launch.mcp_config.is_some().then_some(session_id),
         );
         tracing::info!(%cwd, %session_id, %parent_local_id, %resume_id, "fork prepared for control socket");
         Ok(DeferredDispatch {

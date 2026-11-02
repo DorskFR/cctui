@@ -390,14 +390,16 @@ fn ensure_hook_settings_in(
         "PostToolUse": [hook("post")],
         "Stop": stop_hooks,
     });
+    let mut session_start = vec![canary_hook(&exe, &sock)];
     // Claude Code connects its MCP servers while the session starts, so a turn-1
     // `CctuiAgent` call can beat the relay's `initialize`.
-    if let Some(block) = agent_relay_session.and_then(|session| {
+    if let Some(serde_json::Value::Array(wait)) = agent_relay_session.and_then(|session| {
         let sock = crate::agenttool::socket_for_launch().to_string_lossy().into_owned();
         mcp_ready_hook(&exe, session, &sock, crate::preflight::mcp_ready_wait_secs())
     }) {
-        hooks["SessionStart"] = block;
+        session_start.extend(wait);
     }
+    hooks["SessionStart"] = serde_json::Value::Array(session_start);
     let managed = managed_settings(hooks, gateway_env, model, effort);
     // Layer the server-provided per-account settings UNDERNEATH the managed
     // settings: account keys are merged in, but the managed keys
@@ -456,6 +458,18 @@ fn shell_quote(s: &str) -> String {
 fn ask_hook_command(exe: &str, event: &str, sock: &str, deny: bool) -> String {
     let deny = if deny { " --deny" } else { "" };
     format!("{} ask-hook --event {event} --sock {}{deny}", shell_quote(exe), shell_quote(sock))
+}
+
+/// The `SessionStart` group that tells the daemon this worker loaded cctui's
+/// hooks. No matcher, so it also runs on resume, `/clear` and compact.
+fn canary_hook(exe: &str, sock: &str) -> serde_json::Value {
+    json!({
+        "hooks": [{
+            "type": "command",
+            "command": ask_hook_command(exe, "start", sock, false),
+            "timeout": 5,
+        }],
+    })
 }
 
 /// The `SessionStart` block that holds the first turn until `session`'s MCP
@@ -1198,6 +1212,102 @@ mod tests {
         assert!(!block.contains("CctuiUsage"), "the relay is absent, so neither tool exists");
     }
 
+    fn session_start_commands(settings: &serde_json::Value) -> Vec<String> {
+        settings["hooks"]["SessionStart"]
+            .as_array()
+            .expect("SessionStart is always registered")
+            .iter()
+            .flat_map(|group| group["hooks"].as_array().cloned().unwrap_or_default())
+            .map(|hook| hook["command"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn every_session_installs_the_session_start_canary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = std::path::Path::new("/run/c.sock");
+        let empty = std::collections::BTreeMap::new();
+        for whip in [false, true] {
+            let path = ensure_hook_settings_in(
+                tmp.path(),
+                sock,
+                whip,
+                "canary1",
+                None,
+                &empty,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let written: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            let commands = session_start_commands(&written);
+            assert_eq!(commands.len(), 1, "no relay → the canary alone: {commands:?}");
+            assert!(
+                commands[0].ends_with("ask-hook --event start --sock '/run/c.sock'"),
+                "{}",
+                commands[0]
+            );
+            assert!(
+                written["hooks"]["SessionStart"][0].get("matcher").is_none(),
+                "no matcher: the canary must run on startup, resume, clear and compact"
+            );
+        }
+    }
+
+    #[test]
+    fn the_canary_rides_next_to_the_relay_wait() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = std::path::Path::new("/run/c.sock");
+        let empty = std::collections::BTreeMap::new();
+        let path = ensure_hook_settings_in(
+            tmp.path(),
+            sock,
+            false,
+            "canary2",
+            None,
+            &empty,
+            None,
+            None,
+            None,
+            Some("sess-1"),
+        )
+        .unwrap();
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let commands = session_start_commands(&written);
+        assert!(commands[0].contains("ask-hook --event start"), "{commands:?}");
+        if crate::preflight::mcp_ready_wait_secs() > 0 {
+            assert_eq!(commands.len(), 2, "{commands:?}");
+            assert!(commands[1].contains("mcp-wait --session 'sess-1'"), "{commands:?}");
+        }
+    }
+
+    #[test]
+    fn account_settings_cannot_drop_the_canary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let account = json!({ "hooks": { "SessionStart": [] } });
+        let empty = std::collections::BTreeMap::new();
+        let path = ensure_hook_settings_in(
+            tmp.path(),
+            std::path::Path::new("/run/c.sock"),
+            false,
+            "canary3",
+            Some(&account),
+            &empty,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(session_start_commands(&written).len(), 1);
+    }
+
     #[test]
     fn the_session_start_hook_waits_for_the_relay_and_outlives_its_own_wait() {
         let block = mcp_ready_hook("/usr/bin/cctui-daemon", "sess-1", "/run/a.sock", 8)
@@ -1237,6 +1347,10 @@ mod tests {
         assert_eq!(
             argv(&ask_hook_command(&exe, "pre", &sock, true)),
             ["ask-hook", "--event", "pre", "--sock", sock.as_str(), "--deny"]
+        );
+        assert_eq!(
+            argv(canary_hook(&exe, &sock)["hooks"][0]["command"].as_str().unwrap()),
+            ["ask-hook", "--event", "start", "--sock", sock.as_str()]
         );
         let wait = mcp_ready_hook(&exe, "sess-1", &sock, 8).unwrap();
         assert_eq!(

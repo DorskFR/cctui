@@ -14,6 +14,7 @@
 
 mod attach;
 mod backfill;
+mod canary;
 pub(crate) mod claude_service;
 mod control;
 pub(crate) use control::stage_mid_chat_files;
@@ -90,8 +91,9 @@ pub(crate) type PermHookKey = (String, String);
 /// so "last hook event: type + age" is answerable.
 pub(crate) type HookLog = Arc<Mutex<HashMap<String, (String, std::time::SystemTime)>>>;
 
-/// Record a hook delivery for diagnose. Best-effort.
+/// Record a hook delivery for diagnose and the hook canary. Best-effort.
 fn record_hook(log: &HookLog, local_id: &str, kind: &str) {
+    canary::ping(local_id);
     if let Ok(mut m) = log.lock() {
         m.insert(local_id.to_owned(), (kind.to_owned(), std::time::SystemTime::now()));
     }
@@ -330,6 +332,10 @@ async fn handle_hook_connection(
         // It resolves the CctuiAgent follow, which otherwise has to infer the
         // turn end from the transcript tail, and reaches clients so the webui
         // idles now instead of on the next status poll.
+        if let Some(local_id) = parse_session_start(line, &session_map) {
+            record_hook(&hook_log, &local_id, "session_start");
+            continue;
+        }
         if let Some(local_id) = parse_turn_end(line, &session_map) {
             record_hook(&hook_log, &local_id, "turn_end");
             crate::adapters::turn_end::emit(&events, &local_id).await;
@@ -465,6 +471,30 @@ fn parse_turn_end(line: &str, session_map: &SessionMap) -> Option<String> {
             .and_then(|m| m.get(session_id).cloned())
             .unwrap_or_else(|| session_id.to_owned()),
     )
+}
+
+/// The `local_id` a `kind:"session_start"` canary ping belongs to. The worker's
+/// `CCTUI_SESSION_ID` wins: the Claude Code session id rotates on `/clear` and
+/// may not be pinned yet. The raw session id is pinged as well so a watch keyed
+/// on it still matches.
+fn parse_session_start(line: &str, session_map: &SessionMap) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("kind").and_then(|k| k.as_str()) != Some("session_start") {
+        return None;
+    }
+    let session_id = v.get("session_id").and_then(|s| s.as_str())?;
+    canary::ping(session_id);
+    let cctui = v.get("cctui_session").and_then(|s| s.as_str()).filter(|s| !s.is_empty());
+    Some(cctui.map_or_else(
+        || {
+            session_map
+                .lock()
+                .ok()
+                .and_then(|m| m.get(session_id).cloned())
+                .unwrap_or_else(|| session_id.to_owned())
+        },
+        str::to_owned,
+    ))
 }
 
 /// A tool-permission hook delivery awaiting a decision.
@@ -742,6 +772,21 @@ mod tests {
         assert!(parse_turn_end(r#"{"kind":"ask","session_id":"s"}"#, &map).is_none());
         assert!(parse_turn_end(r#"{"kind":"turn_end"}"#, &map).is_none());
         assert!(parse_turn_end("not json", &map).is_none());
+    }
+
+    #[test]
+    fn parse_session_start_prefers_the_cctui_session_and_ignores_other_kinds() {
+        let map: SessionMap = Arc::default();
+        map.lock().unwrap().insert("sess-live".into(), "local-42".into());
+        let tagged =
+            r#"{"kind":"session_start","session_id":"sess-rotated","cctui_session":"local-7"}"#;
+        assert_eq!(parse_session_start(tagged, &map).as_deref(), Some("local-7"));
+        let mapped = r#"{"kind":"session_start","session_id":"sess-live"}"#;
+        assert_eq!(parse_session_start(mapped, &map).as_deref(), Some("local-42"));
+        let blank = r#"{"kind":"session_start","session_id":"sess-new","cctui_session":""}"#;
+        assert_eq!(parse_session_start(blank, &map).as_deref(), Some("sess-new"));
+        assert!(parse_session_start(r#"{"kind":"turn_end","session_id":"s"}"#, &map).is_none());
+        assert!(parse_session_start("not json", &map).is_none());
     }
 
     #[test]
