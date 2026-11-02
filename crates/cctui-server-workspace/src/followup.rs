@@ -97,10 +97,12 @@ const THREAD_SQL: &str = "WITH RECURSIVE up AS ( \
       FROM tree t JOIN sessions s ON s.id = t.id \
      ORDER BY t.path";
 
+/// `id, session_name, working_dir, registered_at, parent_id` of a thread entry.
+type ThreadRow = (String, Option<String>, String, DateTime<Utc>, Option<String>);
+
 /// The follow-up tree `id` belongs to, root first; empty when `id` is unknown.
 pub async fn thread_of(pool: &PgPool, id: &str) -> Result<Vec<ThreadSession>, sqlx::Error> {
-    let rows: Vec<(String, Option<String>, String, DateTime<Utc>, Option<String>)> =
-        sqlx::query_as(THREAD_SQL).bind(id).fetch_all(pool).await?;
+    let rows: Vec<ThreadRow> = sqlx::query_as(THREAD_SQL).bind(id).fetch_all(pool).await?;
     Ok(rows
         .into_iter()
         .map(|(id, name, working_dir, registered_at, parent_id)| ThreadSession {
@@ -381,15 +383,9 @@ mod tests {
             "R still continues in the latest, B, and counts both"
         );
         assert_eq!(next_of(&pool, &r).await.expect("next"), Some(b.clone()));
-        assert_eq!(
-            followups_of(&pool, &a).await.expect("followups"),
-            (Some(a2.clone()), 1)
-        );
+        assert_eq!(followups_of(&pool, &a).await.expect("followups"), (Some(a2.clone()), 1));
         assert_eq!(followups_of(&pool, &b).await.expect("followups"), (None, 0));
-        assert_eq!(
-            followups_of(&pool, "no-such-session").await.expect("followups"),
-            (None, 0)
-        );
+        assert_eq!(followups_of(&pool, "no-such-session").await.expect("followups"), (None, 0));
 
         cleanup(&pool, uid, mid, &[r, a, a2, b]).await;
     }
