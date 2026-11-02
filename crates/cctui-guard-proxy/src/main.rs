@@ -12,6 +12,7 @@
 
 mod aws_creds;
 mod denylist;
+mod dispatch;
 mod forward;
 mod ghapp;
 mod health;
@@ -20,6 +21,7 @@ mod peek;
 mod policy;
 mod private_allow;
 mod secrets;
+mod server_inject;
 mod transparent;
 
 use std::path::PathBuf;
@@ -29,6 +31,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use clap::{Parser, Subcommand, ValueEnum};
 
+use crate::dispatch::{DispatchConfig, DispatchIdentity, ServerTarget};
 use crate::forward::ForwardListener;
 use crate::ghapp::{GhAppConfig, GhAppMinter};
 use crate::inject::{InjectionPolicy, InjectionRule, Injector, PerPodCa};
@@ -37,6 +40,7 @@ use crate::private_allow::PrivateAllow;
 use crate::secrets::{
     Engines, K8sClient, RefResolver as _, SecretRef, SecretSource, VaultClient, render_identity,
 };
+use crate::server_inject::ServerInjector;
 use crate::transparent::TransparentListener;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -144,6 +148,24 @@ struct Args {
     #[arg(long, value_delimiter = ',', env = "GUARD_PROXY_GITHUB_APP_REPOS")]
     github_app_repos: Vec<String>,
 
+    /// The dispatch this pod redeems its projected `cctui` token for, from the
+    /// pod's `cctui.dev/dispatch-id` annotation. Empty ⇒ not a dispatched pod.
+    #[arg(long, default_value = "", env = "CCTUI_DISPATCH_ID")]
+    dispatch_id: String,
+
+    /// The cctui server the dispatch redeems against and whose host gets the
+    /// machine key injected.
+    #[arg(long, default_value = "", env = "CCTUI_DISPATCH_SERVER_URL")]
+    dispatch_server_url: String,
+
+    /// The projected `cctui`-audience service-account token.
+    #[arg(
+        long,
+        default_value = "/var/run/secrets/kubernetes.io/serviceaccount/cctui-token",
+        env = "GUARD_PROXY_DISPATCH_TOKEN_PATH"
+    )]
+    dispatch_token_path: PathBuf,
+
     /// GitHub REST base for the token exchange; override only for testing.
     #[arg(
         long,
@@ -196,31 +218,47 @@ fn build_rules(args: &Args) -> anyhow::Result<Vec<InjectionRule>> {
     Ok(rules)
 }
 
-/// Wires the injection layer: mints the per-pod CA, writes its public cert for
-/// the worker to install, and builds the TLS injector over the rule set.
-/// Returns `None` (passthrough) when no rules are configured.
+/// The dispatch this pod redeems for, when it is a dispatched pod.
+fn dispatch_config(args: &Args) -> anyhow::Result<Option<DispatchConfig>> {
+    let dispatch_id = args.dispatch_id.trim();
+    if dispatch_id.is_empty() {
+        return Ok(None);
+    }
+    let server = ServerTarget::parse(&args.dispatch_server_url)
+        .context("CCTUI_DISPATCH_SERVER_URL (the pod's cctui.dev/server-url annotation)")?;
+    Ok(Some(DispatchConfig {
+        dispatch_id: dispatch_id.to_owned(),
+        server,
+        token_path: args.dispatch_token_path.clone(),
+    }))
+}
+
+/// Mints the per-pod CA and writes its public cert for the worker to install.
+fn build_ca(args: &Args) -> anyhow::Result<Arc<PerPodCa>> {
+    let ca = Arc::new(PerPodCa::generate()?);
+    write_ca_cert(&args.ca_cert_out, ca.ca_pem())
+        .with_context(|| format!("writing CA cert to {}", args.ca_cert_out.display()))?;
+    tracing::info!("per-pod CA minted; wrote CA cert to {}", args.ca_cert_out.display());
+    Ok(ca)
+}
+
+/// Builds the TLS injector over the rule set. Returns `None` (passthrough)
+/// when no rules are configured.
 fn build_injection(
     args: &Args,
     rules: Vec<InjectionRule>,
+    ca: Option<Arc<PerPodCa>>,
 ) -> anyhow::Result<Option<Arc<Injector>>> {
     if rules.is_empty() {
         tracing::info!("no injection rules configured — TLS passthrough only");
         return Ok(None);
     }
+    let ca = ca.ok_or_else(|| anyhow::anyhow!("injection rules need the per-pod CA"))?;
     let secrets = Arc::new(SecretSource::new(
         Box::new(build_engines(args)?),
         Duration::from_secs(args.secret_ttl_secs),
     ));
-
-    let ca = Arc::new(PerPodCa::generate()?);
-    write_ca_cert(&args.ca_cert_out, ca.ca_pem())
-        .with_context(|| format!("writing CA cert to {}", args.ca_cert_out.display()))?;
-    tracing::info!(
-        "per-pod CA minted; wrote CA cert to {} ({} rule(s), ttl={}s)",
-        args.ca_cert_out.display(),
-        rules.len(),
-        args.secret_ttl_secs
-    );
+    tracing::info!("{} injection rule(s), secret ttl={}s", rules.len(), args.secret_ttl_secs);
 
     let ghapp = build_ghapp(args, &secrets)?;
     let injector = Injector::new(ca, secrets, InjectionPolicy::new(rules), ghapp)?;
@@ -309,8 +347,20 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let rules = build_rules(&args)?;
+    let dispatch = match dispatch_config(&args)? {
+        Some(config) => Some(Arc::new(DispatchIdentity::redeem(config).await)),
+        None => None,
+    };
+    let https_server = dispatch.as_ref().is_some_and(|d| d.config.server.https);
+    let ca = (!rules.is_empty() || https_server).then(|| build_ca(&args)).transpose()?;
+    let server = dispatch
+        .as_ref()
+        .and_then(|d| d.machine_key().map(|key| (d.config.server.clone(), key.to_owned())))
+        .map(|(target, key)| ServerInjector::new(target, key, ca.clone()))
+        .transpose()?
+        .map(Arc::new);
     let inject_hosts: Vec<String> = rules.iter().map(|r| r.host.clone()).collect();
-    let injection = build_injection(&args, rules)?;
+    let injection = build_injection(&args, rules, ca)?;
     let private =
         Arc::new(PrivateAllow::from_env(Some(args.private_allow_file.clone()), &inject_hosts));
 
@@ -328,8 +378,9 @@ async fn main() -> anyhow::Result<()> {
     {
         let policy = policy.clone();
         let addr = args.health_listen.clone();
+        let dispatch = dispatch.clone();
         tokio::spawn(async move {
-            if let Err(e) = health::serve(&addr, policy).await {
+            if let Err(e) = health::serve(&addr, policy, dispatch).await {
                 tracing::error!("health server exited: {e}");
             }
         });
@@ -337,12 +388,16 @@ async fn main() -> anyhow::Result<()> {
 
     match args.mode {
         Mode::Transparent => {
-            let listener =
-                TransparentListener::bind(&args.listen, policy, injection, private).await?;
+            let listener = TransparentListener::bind(&args.listen, policy, injection, private)
+                .await?
+                .with_server(server);
             tracing::info!("transparent proxy listening on {}", args.listen);
             listener.serve().await?;
         }
         Mode::Forward => {
+            if server.is_some() {
+                tracing::warn!("forward mode does not inject the dispatch machine key");
+            }
             let listener = ForwardListener::bind(&args.listen, policy, injection, private).await?;
             tracing::info!("forward proxy listening on {}", args.listen);
             listener.serve().await?;
@@ -404,6 +459,21 @@ mod tests {
         let mut args = parse(&[]);
         args.inject_config = path;
         assert!(build_rules(&args).is_err());
+    }
+
+    #[test]
+    fn a_pod_without_a_dispatch_id_redeems_nothing() {
+        assert!(dispatch_config(&parse(&[])).unwrap().is_none());
+        let args = parse(&["--dispatch-id", "d-1", "--dispatch-server-url", "http://cctui:8700"]);
+        let config = dispatch_config(&args).unwrap().unwrap();
+        assert_eq!(config.dispatch_id, "d-1");
+        assert_eq!(config.server.port, 8700);
+        assert_eq!(
+            config.token_path,
+            PathBuf::from("/var/run/secrets/kubernetes.io/serviceaccount/cctui-token")
+        );
+        let err = dispatch_config(&parse(&["--dispatch-id", "d-1"])).unwrap_err();
+        assert!(format!("{err:#}").contains("CCTUI_DISPATCH_SERVER_URL"), "{err:#}");
     }
 
     #[test]

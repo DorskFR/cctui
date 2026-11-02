@@ -10,15 +10,15 @@
 //! on top of it.
 
 use crate::{
-    ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_GPG_SIGNING, ANNOTATION_GUARD_IDENTITY,
-    ANNOTATION_POSTURE, ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, GuardSpec,
-    LABEL_WORKER_PROFILE, Posture,
+    ANNOTATION_DISPATCH_ID, ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_GPG_SIGNING,
+    ANNOTATION_GUARD_IDENTITY, ANNOTATION_POSTURE, ANNOTATION_SERVER_URL,
+    ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, GuardSpec, LABEL_WORKER_PROFILE, Posture,
 };
 use k8s_openapi::api::core::v1::{
     AppArmorProfile, Capabilities, ConfigMapEnvSource, ConfigMapProjection, ConfigMapVolumeSource,
     Container, DownwardAPIProjection, DownwardAPIVolumeFile, EmptyDirVolumeSource, EnvFromSource,
-    EnvVar, HTTPGetAction, KeyToPath, ObjectFieldSelector, Pod, PodSecurityContext, Probe,
-    ProjectedVolumeSource, ResourceRequirements, SeccompProfile, SecurityContext,
+    EnvVar, EnvVarSource, HTTPGetAction, KeyToPath, ObjectFieldSelector, Pod, PodSecurityContext,
+    Probe, ProjectedVolumeSource, ResourceRequirements, SeccompProfile, SecurityContext,
     ServiceAccountTokenProjection, Volume, VolumeMount, VolumeProjection,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
@@ -44,6 +44,11 @@ pub const VOL_GPG_AGENT: &str = "gpg-agent";
 /// Kubernetes login, `k8s:` secret refs) gets an equivalent projection.
 const SA_TOKEN_DIR: &str = "/var/run/secrets/kubernetes.io/serviceaccount";
 const SA_TOKEN_EXPIRATION_SECONDS: i64 = 3600;
+/// The token the guard-proxy redeems once at startup, so the shortest lifetime
+/// the API server accepts.
+const CCTUI_TOKEN_EXPIRATION_SECONDS: i64 = 600;
+pub const CCTUI_TOKEN_FILE: &str = "cctui-token";
+pub const CCTUI_TOKEN_AUDIENCE: &str = "cctui";
 const CONFIGMAP_KUBE_ROOT_CA: &str = "kube-root-ca.crt";
 
 /// Volume names the envelope mounts into the worker container under `root`.
@@ -156,6 +161,7 @@ pub struct EnvelopeConfig {
     pub gpg: bool,
     pub guard: Option<GuardSpec>,
     pub posture: Posture,
+    pub dispatched: bool,
 }
 
 impl EnvelopeConfig {
@@ -178,6 +184,7 @@ impl EnvelopeConfig {
             gpg: get(ANNOTATION_GPG_SIGNING) == Some("true"),
             guard: guard.cloned(),
             posture,
+            dispatched: get(ANNOTATION_DISPATCH_ID).is_some(),
         })
     }
 }
@@ -363,6 +370,10 @@ fn guard_proxy_container(cfg: &EnvelopeConfig) -> Container {
         mounts.extend(identity.volume_mounts.iter().cloned());
         env.extend(identity.env.iter().flatten().cloned());
     }
+    if cfg.dispatched {
+        env.push(annotation_env("CCTUI_DISPATCH_ID", ANNOTATION_DISPATCH_ID));
+        env.push(annotation_env("CCTUI_DISPATCH_SERVER_URL", ANNOTATION_SERVER_URL));
+    }
 
     Container {
         name: GUARD_PROXY_CONTAINER.to_owned(),
@@ -399,6 +410,20 @@ fn guard_proxy_container(cfg: &EnvelopeConfig) -> Container {
     }
 }
 
+fn annotation_env(name: &str, annotation: &str) -> EnvVar {
+    EnvVar {
+        name: name.to_owned(),
+        value: None,
+        value_from: Some(EnvVarSource {
+            field_ref: Some(ObjectFieldSelector {
+                field_path: format!("metadata.annotations['{annotation}']"),
+                api_version: None,
+            }),
+            ..EnvVarSource::default()
+        }),
+    }
+}
+
 fn envelope_volumes(cfg: &EnvelopeConfig) -> Vec<Volume> {
     let mut volumes = vec![
         empty_dir(VOL_HOME),
@@ -423,7 +448,8 @@ fn envelope_volumes(cfg: &EnvelopeConfig) -> Vec<Volume> {
     volumes
 }
 
-/// The same projection the kubelet automounts: token, cluster CA, namespace.
+/// The projection the kubelet automounts (token, cluster CA, namespace), plus
+/// the `cctui`-audience token the guard-proxy redeems for the dispatch.
 fn sa_token_volume() -> Volume {
     let sources = vec![
         VolumeProjection {
@@ -431,6 +457,14 @@ fn sa_token_volume() -> Volume {
                 path: "token".to_owned(),
                 expiration_seconds: Some(SA_TOKEN_EXPIRATION_SECONDS),
                 audience: None,
+            }),
+            ..VolumeProjection::default()
+        },
+        VolumeProjection {
+            service_account_token: Some(ServiceAccountTokenProjection {
+                path: CCTUI_TOKEN_FILE.to_owned(),
+                expiration_seconds: Some(CCTUI_TOKEN_EXPIRATION_SECONDS),
+                audience: Some(CCTUI_TOKEN_AUDIENCE.to_owned()),
             }),
             ..VolumeProjection::default()
         },
@@ -748,6 +782,13 @@ mod tests {
                     "sources": [
                         { "serviceAccountToken": { "path": "token", "expirationSeconds": 3600 } },
                         {
+                            "serviceAccountToken": {
+                                "path": "cctui-token",
+                                "expirationSeconds": 600,
+                                "audience": "cctui"
+                            }
+                        },
+                        {
                             "configMap": {
                                 "name": "kube-root-ca.crt",
                                 "items": [{ "key": "ca.crt", "path": "ca.crt" }]
@@ -1062,10 +1103,15 @@ mod tests {
 
         let vol = spec.volumes.as_ref().unwrap().iter().find(|v| v.name == "guard-proxy-sa-token");
         let sources = vol.unwrap().projected.as_ref().unwrap().sources.as_ref().unwrap();
-        let token = sources.iter().find_map(|s| s.service_account_token.as_ref()).unwrap();
-        assert_eq!(token.path, "token");
-        assert_eq!(token.expiration_seconds, Some(3600));
-        assert!(token.audience.is_none(), "default audience: same token the kubelet mounts");
+        let tokens: Vec<_> =
+            sources.iter().filter_map(|s| s.service_account_token.as_ref()).collect();
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0].path, "token");
+        assert_eq!(tokens[0].expiration_seconds, Some(3600));
+        assert!(tokens[0].audience.is_none(), "default audience: same token the kubelet mounts");
+        assert_eq!(tokens[1].path, CCTUI_TOKEN_FILE);
+        assert_eq!(tokens[1].audience.as_deref(), Some("cctui"));
+        assert!(tokens[1].expiration_seconds.is_some_and(|s| s <= 600));
         let ca = sources.iter().find_map(|s| s.config_map.as_ref()).unwrap();
         assert_eq!(ca.name, "kube-root-ca.crt");
         let ns = sources.iter().find_map(|s| s.downward_api.as_ref()).unwrap();
@@ -1092,6 +1138,37 @@ mod tests {
         );
         let ni = &spec.init_containers.as_ref().unwrap()[0];
         assert!(ni.volume_mounts.is_none());
+    }
+
+    #[test]
+    fn a_dispatched_pod_hands_its_dispatch_to_the_guard_proxy_only() {
+        let pod = with_annotation(lean_pod(), ANNOTATION_DISPATCH_ID, "d-1");
+        let pod = with_annotation(pod, ANNOTATION_SERVER_URL, "http://cctui.test:8700");
+        let out = apply(&pod);
+        let spec = out.spec.as_ref().unwrap();
+        let gp = &spec.init_containers.as_ref().unwrap()[1];
+        let field = |name: &str| {
+            gp.env
+                .iter()
+                .flatten()
+                .find(|e| e.name == name)
+                .and_then(|e| e.value_from.as_ref()?.field_ref.as_ref())
+                .map(|f| f.field_path.clone())
+        };
+        assert_eq!(
+            field("CCTUI_DISPATCH_ID").as_deref(),
+            Some("metadata.annotations['cctui.dev/dispatch-id']")
+        );
+        assert_eq!(
+            field("CCTUI_DISPATCH_SERVER_URL").as_deref(),
+            Some("metadata.annotations['cctui.dev/server-url']")
+        );
+        let w = worker(&out, "worker");
+        assert!(!w.env.iter().flatten().any(|e| e.name.starts_with("CCTUI_DISPATCH")));
+
+        let undispatched = apply(&lean_pod());
+        let gp = &undispatched.spec.as_ref().unwrap().init_containers.as_ref().unwrap()[1];
+        assert!(gp.env.is_none(), "no dispatch annotation => no dispatch env");
     }
 
     #[test]

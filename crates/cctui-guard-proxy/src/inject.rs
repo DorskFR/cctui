@@ -362,7 +362,7 @@ impl std::fmt::Debug for PerPodCa {
 
 /// rustls cert resolver minting per-SNI leaf certs from the per-pod CA.
 #[derive(Debug)]
-struct SniResolver(Arc<PerPodCa>);
+pub struct SniResolver(pub Arc<PerPodCa>);
 
 impl ResolvesServerCert for SniResolver {
     fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
@@ -419,7 +419,9 @@ impl Injector {
         Ok(Self { acceptor, connector, secrets, policy, ghapp, ambient })
     }
 
-    fn build_connector(extra_roots: Vec<CertificateDer<'static>>) -> anyhow::Result<TlsConnector> {
+    pub fn build_connector(
+        extra_roots: Vec<CertificateDer<'static>>,
+    ) -> anyhow::Result<TlsConnector> {
         install_crypto();
         let mut roots = RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -794,7 +796,12 @@ fn sigv4_head(
 /// Rebuilds an HTTP/1.1 request head, removing every agent-supplied auth carrier
 /// and substituting the injected one. Operates on the head bytes only; the body
 /// is streamed untouched. Only ever called with a real `credential`.
-fn rewrite_head(head: &[u8], shape: &AuthShape, credential: &str, cookie: Option<&str>) -> Vec<u8> {
+pub fn rewrite_head(
+    head: &[u8],
+    shape: &AuthShape,
+    credential: &str,
+    cookie: Option<&str>,
+) -> Vec<u8> {
     let text = String::from_utf8_lossy(head);
     let mut lines = text.split("\r\n");
     let request_line = lines.next().unwrap_or_default();
@@ -895,7 +902,7 @@ fn strip_named_cookie(line: &str, name: &str) -> Option<String> {
 
 /// Body framing of an HTTP/1.1 message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Framing {
+pub enum Framing {
     None,
     Length(usize),
     Chunked,
@@ -907,7 +914,7 @@ const MAX_HEAD: usize = 64 * 1024;
 /// A tiny buffered HTTP reader: reads a message head (up to `\r\n\r\n`) and
 /// keeps any bytes read past it for the body relay.
 #[derive(Default)]
-struct HttpBuf {
+pub struct HttpBuf {
     buf: Vec<u8>,
 }
 
@@ -915,7 +922,7 @@ impl HttpBuf {
     /// Reads bytes until the end of the header block. Returns the head bytes
     /// (including the terminating `\r\n\r\n`), or `None` on a clean EOF before
     /// any head. Leftover bytes stay in `self.buf` for the body relay.
-    async fn read_head<S: AsyncRead + Unpin>(
+    pub async fn read_head<S: AsyncRead + Unpin>(
         &mut self,
         stream: &mut S,
     ) -> anyhow::Result<Option<Vec<u8>>> {
@@ -942,7 +949,7 @@ impl HttpBuf {
 
     /// Relays a message body from `src` to `dst` per `framing`, draining any
     /// buffered leftover first.
-    async fn relay_body<S, D>(
+    pub async fn relay_body<S, D>(
         &mut self,
         src: &mut S,
         dst: &mut D,
@@ -971,6 +978,12 @@ impl HttpBuf {
                 }
             }
         }
+    }
+
+    /// Bytes read past the last message head, e.g. the first frames after a
+    /// protocol switch.
+    pub fn take_buffered(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.buf)
     }
 
     async fn relay_counted<S, D>(
@@ -1056,14 +1069,14 @@ fn find_head_end(buf: &[u8], from: usize) -> Option<usize> {
 }
 
 /// The request method (uppercased) from a request head.
-fn request_method(head: &[u8]) -> Option<String> {
+pub fn request_method(head: &[u8]) -> Option<String> {
     let line = head.split(|&b| b == b'\n').next()?;
     let method = line.split(|&b| b == b' ').next()?;
     Some(String::from_utf8_lossy(method).trim().to_ascii_uppercase())
 }
 
 /// The request path (query string stripped) from a request head.
-fn request_path(head: &[u8]) -> Option<String> {
+pub fn request_path(head: &[u8]) -> Option<String> {
     let line = head.split(|&b| b == b'\n').next()?;
     let target = line.split(|&b| b == b' ').nth(1)?;
     let target = String::from_utf8_lossy(target);
@@ -1071,7 +1084,7 @@ fn request_path(head: &[u8]) -> Option<String> {
 }
 
 /// Case-insensitive header value lookup within a message head.
-fn header_value<'a>(head: &'a [u8], name: &str) -> Option<&'a [u8]> {
+pub fn header_value<'a>(head: &'a [u8], name: &str) -> Option<&'a [u8]> {
     for line in head.split(|&b| b == b'\n').skip(1) {
         let line = trim_ascii(line);
         if let Some(colon) = line.iter().position(|&b| b == b':')
@@ -1105,7 +1118,7 @@ fn contains_token(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle))
 }
 
-fn body_framing(head: &[u8], is_response: bool) -> Framing {
+pub fn body_framing(head: &[u8], is_response: bool) -> Framing {
     if header_value(head, "transfer-encoding").is_some_and(|v| contains_token(v, b"chunked")) {
         return Framing::Chunked;
     }
@@ -1120,7 +1133,7 @@ fn body_framing(head: &[u8], is_response: bool) -> Framing {
 
 /// Response framing per RFC 7230: HEAD, 1xx, 204, 304 carry no body regardless
 /// of headers.
-fn response_framing(head: &[u8], request_method: Option<&str>) -> Framing {
+pub fn response_framing(head: &[u8], request_method: Option<&str>) -> Framing {
     let status = response_status(head);
     if request_method == Some("HEAD")
         || matches!(status, Some(204 | 304))
@@ -1131,14 +1144,14 @@ fn response_framing(head: &[u8], request_method: Option<&str>) -> Framing {
     body_framing(head, true)
 }
 
-fn response_status(head: &[u8]) -> Option<u16> {
+pub fn response_status(head: &[u8]) -> Option<u16> {
     let line = head.split(|&b| b == b'\n').next()?;
     let mut parts = line.split(|&b| b == b' ');
     parts.next()?; // HTTP/1.1
     std::str::from_utf8(parts.next()?).ok()?.trim().parse().ok()
 }
 
-fn wants_close(head: &[u8]) -> bool {
+pub fn wants_close(head: &[u8]) -> bool {
     if let Some(conn) = header_value(head, "connection") {
         if contains_token(conn, b"close") {
             return true;
@@ -1153,14 +1166,14 @@ fn wants_close(head: &[u8]) -> bool {
 
 /// A `TcpStream` with a leading byte prefix replayed before the socket's own
 /// reads — feeds the already-peeked `ClientHello` into the TLS handshake.
-struct PrefixedStream {
+pub struct PrefixedStream {
     inner: TcpStream,
     prefix: Vec<u8>,
     pos: usize,
 }
 
 impl PrefixedStream {
-    const fn new(inner: TcpStream, prefix: Vec<u8>) -> Self {
+    pub const fn new(inner: TcpStream, prefix: Vec<u8>) -> Self {
         Self { inner, prefix, pos: 0 }
     }
 }

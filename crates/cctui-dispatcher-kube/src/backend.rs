@@ -3,7 +3,7 @@ use clap::Args;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
-use crate::spawn::Spawner;
+use crate::spawn::{DispatchRegistry, Spawner};
 
 pub struct Kube;
 
@@ -43,6 +43,7 @@ impl Backend for Kube {
             cfg.namespace.clone(),
             cfg.default_profile.clone(),
             cfg.worker_url().to_owned(),
+            DispatchRegistry::new(cfg.server_url.clone(), cfg.dispatcher_key.clone()),
         )
         .await?;
         tokio::spawn(spawner.clone().run_queue_reconciler(shutdown.clone()));

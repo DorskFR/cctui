@@ -146,6 +146,39 @@ fail_dispatch() {
     exit 1
 }
 
+# A kube dispatch holds only a placeholder machine key: the guard-proxy redeemed
+# the pod's service-account token for the real one and serves the payload env
+# on its health port. No env, or a failed redeem, fails the pod with the reason.
+DISPATCH_ENV_URL="${DISPATCH_ENV_URL:-http://127.0.0.1:${PROXY_HEALTH_PORT:-15002}/dispatch/env}"
+dispatch_identity_failed() {
+    echo "cctui-worker: dispatch identity: $1" >&2
+    { printf 'dispatch identity: %s' "$1" > "$TERMINATION_LOG"; } 2>/dev/null || true
+    exit 1
+}
+phase_dispatch_env() {
+    [ -n "${CCTUI_DISPATCH_ID:-}" ] || return 0
+    _de_out=$(curl -4 -sS --max-time 30 -w '\n%{http_code}' "$DISPATCH_ENV_URL" 2>&1 || true)
+    _de_code=$(printf '%s\n' "$_de_out" | tail -n 1)
+    _de_json=$(printf '%s\n' "$_de_out" | sed '$d')
+    if [ "$_de_code" != 200 ]; then
+        _de_why=$(printf '%s' "$_de_json" | jq -r '.error // empty' 2>/dev/null || true)
+        [ -n "$_de_why" ] || _de_why="guard-proxy answered HTTP ${_de_code:-000}: $_de_json"
+        dispatch_identity_failed "$_de_why"
+    fi
+    printf '%s' "$_de_json" | jq -e '.env | type == "object"' >/dev/null 2>&1 \
+        || dispatch_identity_failed "the dispatch env answer is not an env object"
+    for _de_k in $(printf '%s' "$_de_json" | jq -r '.env | keys[]'); do
+        case "$_de_k" in
+            "" | [0-9]* | *[!A-Za-z0-9_]*)
+                dispatch_identity_failed "the server sent an invalid env name" ;;
+        esac
+        _de_v=$(printf '%s' "$_de_json" | jq -r --arg k "$_de_k" '.env[$k]')
+        export "$_de_k=$_de_v"
+    done
+    log "dispatch: payload env fetched through the guard-proxy (dispatch ${CCTUI_DISPATCH_ID%%-*})"
+}
+phase_dispatch_env
+
 # Per-agent state under the worker home for the ACP agent a dispatch selects,
 # with the agent's own sandbox and telemetry off: the pod is already sandboxed
 # and its egress is deny-by-default. gemini and qwen read settings.json from
@@ -1744,8 +1777,12 @@ _QUIET_LOGGED=""
 # Echoes registered | ended | quiet (inactive only by heartbeat age: keep
 # waiting) | unknown (transient or not listed yet; never death).
 # `-4` mirrors the callback curl (the worker forces IPv4 egress).
+# Root egress bypasses the guard-proxy, which holds a dispatched pod's real key.
+probe_curl() {
+    if [ -n "${CCTUI_DISPATCH_ID:-}" ]; then as_worker curl "$@"; else curl "$@"; fi
+}
 probe_session() {
-    _code=$(curl -4 -sS -o "$_PROBE_BODY" -w '%{http_code}' --max-time 5 \
+    _code=$(probe_curl -4 -sS -o "$_PROBE_BODY" -w '%{http_code}' --max-time 5 \
         -H "Authorization: Bearer $CCTUI_MACHINE_KEY" "$_SESSIONS_URL" 2>/dev/null) \
         || { echo unknown; return; }
     if [ "$_code" != 200 ]; then

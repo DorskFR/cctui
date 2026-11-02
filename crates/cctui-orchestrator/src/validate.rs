@@ -21,9 +21,9 @@ use crate::envelope::{
     worker_envelope_mounts,
 };
 use crate::{
-    ANNOTATION_ENV_SECRET, ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_POSTURE,
-    ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, GuardSpec, LABEL_WORKER_PROFILE,
-    Posture, RESERVED_POD_KEY_PREFIXES, RESERVED_POD_LABELS, WorkerPodSpec, WorkerProfileSpec,
+    ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_POSTURE, ANNOTATION_WORKER_CONTAINER,
+    DEFAULT_WORKER_CONTAINER, GuardSpec, LABEL_WORKER_PROFILE, Posture, RESERVED_POD_KEY_PREFIXES,
+    RESERVED_POD_LABELS, WorkerPodSpec, WorkerProfileSpec,
 };
 use k8s_openapi::api::core::v1::{
     Affinity, Container, NodeSelectorTerm, Pod, PodSpec, PodTemplateSpec, SecurityContext,
@@ -122,7 +122,7 @@ async fn validate_inner(
     }
     check_posture(&profile).map_err(|e| format!("WorkerProfile `{name}` spec.posture: {e}"))?;
     check_posture_annotation(annotations, &profile)?;
-    check_conformance(spec, worker, &worker_name, &profile, dispatch_env_secret(pod))
+    check_conformance(spec, worker, &worker_name, &profile)
 }
 
 fn annotated_posture(annotations: Option<&BTreeMap<String, String>>) -> Result<Posture, String> {
@@ -368,18 +368,6 @@ fn widens_private_egress(env: &k8s_openapi::api::core::v1::EnvVar) -> bool {
     }
 }
 
-/// The pod's own per-dispatch env Secret: named by its annotation and bound to
-/// the Job that owns the pod, so a dispatch cannot point it at another Secret.
-fn dispatch_env_secret(pod: &Pod) -> Option<&str> {
-    let secret = pod.metadata.annotations.as_ref()?.get(ANNOTATION_ENV_SECRET)?;
-    let labels = pod.metadata.labels.as_ref()?;
-    let job = labels.get("batch.kubernetes.io/job-name").or_else(|| labels.get("job-name"))?;
-    secret
-        .strip_prefix(&crate::env_secret_name(job, ""))
-        .is_some_and(|nonce| !nonce.is_empty())
-        .then_some(secret.as_str())
-}
-
 /// Exactly one worker container, and the envelope marker present (fail-closed
 /// pairing with the mutating webhook).
 fn check_structure<'a>(
@@ -486,7 +474,6 @@ fn check_conformance(
     worker: &Container,
     worker_name: &str,
     profile: &WorkerProfileSpec,
-    dispatch_secret: Option<&str>,
 ) -> Result<(), String> {
     check_common_template_conformance(spec, worker, profile)?;
     check_affinity(spec, profile, true)?;
@@ -496,7 +483,7 @@ fn check_conformance(
     check_cloud_identity(spec, profile)?;
     check_volumes(spec, profile)?;
     check_worker_mounts(worker, worker_name, profile)?;
-    check_worker_env(worker, worker_name, profile, dispatch_secret)
+    check_worker_env(worker, worker_name, profile)
 }
 
 /// The conformance decided entirely by the Job's pod *template*.
@@ -898,14 +885,12 @@ fn check_worker_env(
     worker: &Container,
     worker_name: &str,
     profile: &WorkerProfileSpec,
-    dispatch_secret: Option<&str>,
 ) -> Result<(), String> {
     for env in worker.env.iter().flatten() {
         if let Some(value_from) = &env.value_from {
             // fieldRef/resourceFieldRef reach only the pod's own metadata, so
             // they stay exempt from the cluster-data smuggling check.
             let smuggled = match (&value_from.secret_key_ref, &value_from.config_map_key_ref) {
-                (Some(sk), _) if dispatch_secret == Some(sk.name.as_str()) => sk.key != env.name,
                 (Some(sk), _) => !profile.env.iter().flatten().any(|p| {
                     p.name == env.name
                         && p.value_from
@@ -1077,6 +1062,7 @@ mod tests {
             gpg: profile.gpg_signing,
             guard: profile.guard.clone(),
             posture: profile.posture(),
+            dispatched: false,
         };
         envelope::inject(&pod, &cfg)
     }
@@ -1451,7 +1437,7 @@ mod tests {
         pod.metadata
             .annotations
             .get_or_insert_with(Default::default)
-            .insert(ANNOTATION_ENV_SECRET.to_owned(), secret.to_owned());
+            .insert("cctui.dev/env-secret".to_owned(), secret.to_owned());
         worker_mut(pod).env.get_or_insert_with(Vec::new).push(EnvVar {
             name: "CCTUI_MACHINE_KEY".to_owned(),
             value: None,
@@ -1467,11 +1453,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn own_dispatch_env_secret_ref_is_allowed() {
+    async fn a_per_dispatch_env_secret_ref_is_denied_even_for_the_jobs_own_name() {
         let mut pod = dispatched_pod("lean", &lean_profile());
         with_dispatch_secret_ref(&mut pod, "cctui-worker-abc", "cctui-worker-abc-env-123");
         let src = source("lean", lean_profile());
-        assert!(matches!(decide(&pod, &src).await, Decision::Allow));
+        assert!(deny_msg(decide(&pod, &src).await).contains("valueFrom"));
     }
 
     #[tokio::test]
@@ -1659,6 +1645,7 @@ mod tests {
             gpg: false,
             guard: profile.guard.clone(),
             posture: profile.posture(),
+            dispatched: false,
         };
         pod.metadata.annotations.as_mut().unwrap().remove(ANNOTATION_ENVELOPE_INJECTED);
         let pod = envelope::inject(&pod, &cfg);

@@ -20,6 +20,7 @@ mod cost;
 mod crypto;
 mod db;
 mod dispatch_archive;
+mod dispatch_identity;
 mod dispatch_liveness;
 mod dispatchers;
 mod envelope_guard;
@@ -492,6 +493,11 @@ fn outer_routes() -> Router<AppState> {
         // `api_router` group, like the daemon endpoints.
         .route("/api/v1/dispatcher/auth", post(routes::dispatcher::auth))
         .route("/api/v1/dispatcher/ws", get(routes::dispatcher::ws))
+        // Kube dispatch identity. Register carries the dispatcher key, redeem a
+        // pod's service-account token, env the redeemed machine key.
+        .route("/api/v1/dispatch/register", post(dispatch_identity::register))
+        .route("/api/v1/dispatch/redeem", post(dispatch_identity::redeem))
+        .route("/api/v1/dispatch/{id}/env", get(dispatch_identity::env))
         .route("/api/v1/triggers/{kind}", post(routes::triggers::ingest))
         // OAuth passthrough gateway. Auths via the session-scoped
         // token in the request's own Authorization header — NOT the user-token

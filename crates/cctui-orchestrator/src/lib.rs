@@ -43,15 +43,13 @@ pub const ANNOTATION_GUARD_IDENTITY: &str = "cctui.dev/guard-identity";
 /// [`WorkerProfileSpec::gpg_signing`].
 pub const ANNOTATION_GPG_SIGNING: &str = "cctui.dev/gpg-signing";
 
-/// Pod annotation naming the Job-owned Secret that carries the worker's
-/// per-run secret env. Always [`env_secret_name`] of the pod's Job.
-pub const ANNOTATION_ENV_SECRET: &str = "cctui.dev/env-secret";
+/// Pod annotation carrying the dispatch the guard-proxy redeems its
+/// service-account token for. Absent on pods no dispatcher registered.
+pub const ANNOTATION_DISPATCH_ID: &str = "cctui.dev/dispatch-id";
 
-/// Name of the per-dispatch env Secret for the Job `job_name`.
-#[must_use]
-pub fn env_secret_name(job_name: &str, nonce: &str) -> String {
-    format!("{job_name}-env-{nonce}")
-}
+/// Pod annotation carrying the cctui server URL the guard-proxy redeems
+/// against and injects the machine key for.
+pub const ANNOTATION_SERVER_URL: &str = "cctui.dev/server-url";
 
 /// Pod annotation carrying a non-root [`Posture`]; absent means root.
 pub const ANNOTATION_POSTURE: &str = "cctui.dev/posture";
