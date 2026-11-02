@@ -95,6 +95,18 @@ test.describe('desktop', () => {
 		await expectFollowupLaunched(page, stub);
 	});
 
+	for (const chord of ['Meta+Enter', 'Control+Enter']) {
+		test(`${chord} on a cold session launches the follow-up like Enter`, async ({ page }) => {
+			test.setTimeout(60_000);
+			const stub = await stubCold(page);
+			await openSource(page);
+			await expect(send(page)).toContainText('Follow-up');
+			await message(page).fill(INSTRUCTION);
+			await message(page).press(chord);
+			await expectFollowupLaunched(page, stub);
+		});
+	}
+
 	test('the Send menu offers Send here and the options modal above the schedule items', async ({ page }) => {
 		await stubCold(page);
 		await openSource(page);

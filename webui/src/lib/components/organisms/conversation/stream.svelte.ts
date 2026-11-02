@@ -22,7 +22,7 @@ import {
 } from '$lib/ws.svelte';
 import { eventDedup, markLive, parseAsk, parseTodos, todoProgress as deriveTodoProgress } from './format';
 import { resultAnswers } from './lines';
-import { lastProseLine, toolInvocationSummary, type ActivityTool } from './activity';
+import { lastProseLine, toolInvocationSummary, workingAfter, type ActivityTool } from './activity';
 import type { AskQuestion, TodoItem, TodoProgress } from './types';
 import { drawerTodos, isTaskEvent } from './taskList';
 import { endpoints } from '$lib/queries';
@@ -181,8 +181,6 @@ export class ConversationStream {
 					ws.clearPlan(this.#opts.id());
 				}
 			}
-			// Drive the activity indicator: a turn ends on `turn_end`; any
-			// substantive agent/tool/user event means work is in progress.
 			if (ev.type === 'tool_call' && (ev.tool === 'TodoWrite' || ev.tool === 'update_plan')) {
 				const t = parseTodos(ev.input);
 				if (t) {
@@ -194,8 +192,7 @@ export class ConversationStream {
 				this.#refreshTasks();
 			}
 			this.#trackActivity(ev);
-			if (ev.type === 'turn_end') this.working = false;
-			else if (ev.type !== 'heartbeat') this.working = true;
+			this.working = workingAfter(this.working, ev);
 		});
 		const offPerms = ws.onPerms(sid, (list) => {
 			this.perms = list;

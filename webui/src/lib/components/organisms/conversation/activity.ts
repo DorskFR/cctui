@@ -1,3 +1,5 @@
+import type { AgentEvent } from '@bindings/AgentEvent';
+
 const SUMMARY_MAX = 140;
 
 export interface ActivityTool {
@@ -56,4 +58,22 @@ export function lastProseLine(content: string): string | null {
 		.filter(Boolean);
 	const last = lines.at(-1);
 	return last ? truncate(last) : null;
+}
+
+/** Whether the agent is mid-turn after `ev`. Only agent work starts a turn:
+ *  meta lines and summaries trail `turn_end`, and must not reopen it. */
+export function workingAfter(working: boolean, ev: AgentEvent): boolean {
+	switch (ev.type) {
+		case 'turn_end':
+			return false;
+		case 'heartbeat':
+		case 'turn_summary':
+		case 'compact_summary':
+		case 'context_reset':
+			return working;
+		case 'text':
+			return ev.meta ? working : true;
+		default:
+			return true;
+	}
 }
