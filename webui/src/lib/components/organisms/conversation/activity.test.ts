@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { formatElapsed, lastProseLine, toolInvocationSummary, truncate } from './activity';
+import type { AgentEvent } from '@bindings/AgentEvent';
+import { formatElapsed, lastProseLine, toolInvocationSummary, truncate, workingAfter } from './activity';
 
 describe('toolInvocationSummary', () => {
 	it('prefixes a shell command with $', () => {
@@ -66,5 +67,34 @@ describe('lastProseLine', () => {
 	});
 	it('is null for blank prose', () => {
 		expect(lastProseLine('   \n\n')).toBeNull();
+	});
+});
+
+describe('workingAfter', () => {
+	const text = (meta: boolean, kind: string | null = null) =>
+		({ type: 'text', content: 'x', meta, kind, ts: 1 }) as AgentEvent;
+	const run = (events: AgentEvent[]) => events.reduce(workingAfter, false);
+
+	it('ends the turn on turn_end', () => {
+		expect(run([text(false), { type: 'turn_end', ts: 2 }])).toBe(false);
+	});
+
+	it('keeps a finished turn finished through the lines that trail turn_end', () => {
+		expect(
+			run([
+				text(false),
+				{ type: 'turn_end', ts: 2 },
+				text(true, 'turn_annotation'),
+				text(true, 'system_marker'),
+				text(true, 'queue_op'),
+				{ type: 'turn_summary', detail: 'done', status_category: 'done', needs_action: false, ts: 3 } as AgentEvent,
+				{ type: 'heartbeat', ts: 4 } as AgentEvent
+			])
+		).toBe(false);
+	});
+
+	it('starts a turn on agent output', () => {
+		expect(run([text(false)])).toBe(true);
+		expect(run([{ type: 'tool_call', tool: 'Bash', input: {}, ts: 1 } as unknown as AgentEvent])).toBe(true);
 	});
 });
