@@ -1,6 +1,6 @@
 # Competitors
 
-Landscape of tools that monitor, drive or orchestrate coding agents, as of 2026-10-14.
+Landscape of tools that monitor, drive or orchestrate coding agents, as of 2026-10-14, personal agents as of 2026-11-02.
 `✅` yes, `❌` no, `~` partial, `?` unknown or not stated publicly. Stars are GitHub
 stars on that date. Harnesses: CC Claude Code, Cx Codex, oc opencode, Gm Gemini /
 Antigravity.
@@ -24,6 +24,13 @@ When a new one shows up: add a row to its category table, and a column to the
   tool (Yep Anywhere, CloudCLI), diff/PR review in the session, task boards
   (Multica, Vibe Kanban) and evidence-backed review of a finished change (Blume,
   Antigravity walkthroughs).
+- **Personal agents are the new front**: Grok Bot, OpenAI dots and Claude Duet (hosted)
+  and OpenClaw (self-hosted) sell a long-lived named agent with its own cloud computer,
+  routines, a browser with login takeover, connect-once integrations and push. They own
+  *when and why* an agent runs; cctui owns *where, as whom, with what context and at
+  what cost*. Recurring schedules, signed webhooks, Web Push, an agent-owned browser
+  with login takeover and MCP-free connectors close the gap without turning cctui into
+  a workflow engine.
 - **Churn is high**: Vibe Kanban's company shut down, Terragon shut down, Crystal
   was deprecated for Nimbalyst, Codegen went to ClickUp, Ona to OpenAI, Coder Tasks
   was retired, Omnara pivoted from mobile remote to a managed platform.
@@ -154,6 +161,22 @@ Agents run in vendor sandboxes; you manage tasks from a web or mobile UI.
 | OpenHands                       | own                             | MIT core, Enterprise        | Self-host and multi-user need Enterprise                     |
 | Coder Agents                    | own                             | self-hosted                 | Replaced Coder Tasks                                         |
 | Kilo, Cline, Charlie, Augment, Kiro, Vorflux, Traycer, Nori | own | various           | Single-agent cloud runners                                   |
+
+## Personal agents
+
+Long-lived named agents that run on a schedule or event and come back only for approvals.
+They are aimed at a person's work in general, not at coding fleets, and hand coding to a
+cloud coding agent.
+
+| Product                                                    | License / hosting | Agents                              | Routines        | Browser + takeover | Notes                                                                                  |
+| ---------------------------------------------------------- | ----------------- | ----------------------------------- | --------------- | ------------------ | -------------------------------------------------------------------------------------- |
+| [Grok Bot](https://x.ai/news/introducing-grok-bot)         | ❌ hosted         | Grok, Opus 5.5 (reported), Cursor cloud agents | ✅ schedule + Slack/GitHub/Sentry/inbox | ✅ vault, take over for SSO/CAPTCHA | Beta 2026-08. Bots share one cloud VM, 2–6 bot group chats, push, Auto Review rules; desktop + iOS/Android; X subscription from $30 |
+| OpenAI dots                                                | ❌ hosted         | GPT-6 Astra, Codex cloud tasks      | ✅ schedule + events | ✅ take over, secure credential form | DevDay 2026-09-29. Own VM + Chrome, 4,000+ apps, Custom Rules approvals, ChatGPT Space @mention handoff; 1 dot per user, Pro / Business Premium |
+| [Claude Duet](https://claude.com/resources/articles/claude-duet) | ❌ hosted   | Opus 5.5                            | ~ morning brief, checks every few hours | ~ own browser, no takeover yet | Preview 2026-10-21, US waitlist. Single agent, reuses Claude memory, skills and 6,000+ connectors; asks before send/pay/sign/delete; push |
+| [OpenClaw](https://github.com/openclaw/openclaw)           | MIT, self-hosted  | own, CC, Cx, Gemini CLI, ACP        | ✅ cron + webhooks | ~ managed Chrome profile, no takeover | 394k stars. Ex-Clawdbot/Moltbot, foundation-run. 20+ chat channels (WhatsApp, Telegram, Slack…), subagents, agent-to-agent messages, MCP client and server, command approvals |
+
+OpenClaw is the natural front end for cctui rather than a rival: it decides when work happens,
+and cctui could run the isolated, metered, context-scoped sessions it dispatches.
 
 ## Review, tracking and boards
 
