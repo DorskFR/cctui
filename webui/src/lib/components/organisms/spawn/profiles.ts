@@ -221,6 +221,25 @@ export function uniqueProfileName(base: string, existing: readonly string[]): st
 	}
 }
 
+/** Profiles A–Z by name: case-insensitive, digits compared as numbers. */
+export function sortProfiles<T extends { id: string; name: string }>(list: readonly T[]): T[] {
+	return [...list].sort(
+		(a, b) =>
+			a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true }) ||
+			a.id.localeCompare(b.id)
+	);
+}
+
+/** Whether `name` (trimmed, any case) is used by a profile other than `exceptId`. */
+export function profileNameTaken(
+	name: string,
+	profiles: readonly { id: string; name: string }[],
+	exceptId: string | null = null
+): boolean {
+	const want = name.trim().toLowerCase();
+	return profiles.some((p) => p.id !== exceptId && p.name.trim().toLowerCase() === want);
+}
+
 /** Which profile the panel opens on: the machine's last-used one when it
  *  still exists, else the first. */
 export function initialProfile(

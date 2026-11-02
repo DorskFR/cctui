@@ -4,14 +4,10 @@
 	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
 	import { Button, IconButton, RichSelect } from '@dorsk/tsumikit';
 	import ProfileRow from './ProfileRow.svelte';
-	import ProfileAdjust from './ProfileAdjust.svelte';
-	import KitFields from './KitFields.svelte';
+	import ProfileForm from './ProfileForm.svelte';
 	import { harnessModelsFallback } from '$lib/domainTables';
-	import { EMPTY_SPEC, moveProfile, specChain, specOf, type ProfileSpecForm } from './profiles';
-	import { useProfileActions } from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { errMessage } from '$lib/api';
-	import { profileUsage } from '$lib/spawnMemory';
+	import { EMPTY_SPEC, sortProfiles, specChain, specOf, type ProfileSpecForm } from './profiles';
+	import { badgeLook } from './accountBadge';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -21,7 +17,6 @@
 		accounts,
 		pools = [],
 		usage,
-		usageRaw,
 		machineId,
 		busy = false,
 		oncreate,
@@ -34,33 +29,28 @@
 		accounts: OAuthAccount[];
 		pools?: AccountPoolView[];
 		usage: AccountUsageEntry[];
-		usageRaw: string;
 		machineId: string;
 		busy?: boolean;
-		oncreate: () => void;
+		/** Resolves true once the profile exists and is selected. */
+		oncreate: (name: string, spec: ProfileSpecForm) => Promise<boolean>;
 		onsave: (id: string, name: string, spec: ProfileSpecForm) => void;
 		ondelete: (id: string) => void;
 	} = $props();
 
-	let openId = $state<string | null>(null);
-	let pending = $state<SessionProfile[] | null>(null);
-	const actions = useProfileActions();
+	type FormState = { mode: 'edit'; id: string } | { mode: 'create' } | null;
 
-	const ordered = $derived(pending ?? profiles);
-	const adjusting = $derived(ordered.find((p) => p.id === openId) ?? null);
+	let form = $state<FormState>(null);
+	let draft = $state<ProfileSpecForm>({ ...EMPTY_SPEC });
+	let listOpen = $state(false);
 
-	async function persist(next: SessionProfile[]) {
-		const ids = next.map((p) => p.id);
-		if (ids.join() === profiles.map((p) => p.id).join()) return;
-		pending = next;
-		try {
-			await actions.reorder(ids);
-		} catch (e) {
-			toasts.error(m.spawn_profile_reorder_failed({ error: errMessage(e) }));
-		} finally {
-			pending = null;
-		}
-	}
+	const sorted = $derived(sortProfiles(profiles));
+	const current = $derived(profiles.find((p) => p.id === selectedId) ?? null);
+	const editing = $derived.by(() => {
+		const f = form;
+		return f?.mode === 'edit' ? (profiles.find((p) => p.id === f.id) ?? null) : null;
+	});
+	const creating = $derived(form?.mode === 'create');
+	const attached = $derived(listOpen || !!editing || creating);
 
 	let pickEl = $state<HTMLElement | null>(null);
 
@@ -92,15 +82,14 @@
 		};
 	});
 
-	function reorder(from: number, to: number) {
-		const p = ordered[from];
-		if (p) void persist(moveProfile(ordered, p.id, to));
-	}
+	// The list and the form are exclusive: opening the list discards the form.
+	$effect(() => {
+		if (listOpen) form = null;
+	});
 
 	// With no profile the kit IS the one-off spec the spawn will use, so the
-	// editor binds straight to it. Seed it once — mirroring it into a second
-	// $state and syncing with an effect writes the parent on every run and
-	// re-enters until the tab dies.
+	// form binds straight to it. Seed it once: mirroring it into a second
+	// $state and syncing with an effect re-enters until the tab dies.
 	$effect(() => {
 		if (profiles.length === 0 && oneOff === null) oneOff = { ...EMPTY_SPEC };
 	});
@@ -112,133 +101,169 @@
 		defaultEffort: m.spawn_effort_default(),
 		defaultMode: m.spawn_mode_default_label()
 	});
+	// The badge carries the emoji, so the chain names the account in text only.
+	const plainAccounts = $derived(accounts.map((a) => ({ ...a, emoji: null })));
 	const modelLabel = (harness: string, alias: string) =>
 		harness === 'codex'
 			? alias
 			: (harnessModelsFallback('claude-code').models.find((x) => x.v === alias)?.label ?? alias);
-
-	function usageText(id: string): string {
-		const u = profileUsage(usageRaw, id);
-		if (!u) return '';
-		if ('week' in u) return m.spawn_profile_uses_week({ count: u.week });
-		const days = Math.floor((Date.now() - u.lastAt) / 86_400_000);
-		return days < 1 ? m.spawn_profile_last_used_today() : m.spawn_profile_last_used_days({ days });
-	}
+	const chainOf = (spec: ProfileSpecForm) =>
+		specChain(spec, plainAccounts, pools, chainLabels, modelLabel);
+	const badgeOf = (spec: ProfileSpecForm) => badgeLook(spec, accounts, pools);
+	const specFor = (p: SessionProfile) => (selectedId === p.id && oneOff ? oneOff : specOf(p));
 
 	function select(id: string) {
 		if (id !== selectedId) oneOff = null;
 		selectedId = id;
+		form = null;
 	}
-	function toggle(id: string) {
-		openId = openId === id ? null : id;
+	function toggleEdit() {
+		if (form?.mode === 'edit' || !current) {
+			form = null;
+			return;
+		}
+		draft = { ...specFor(current) };
+		form = { mode: 'edit', id: current.id };
+		listOpen = false;
 	}
-	const specFor = (p: SessionProfile) => (selectedId === p.id && oneOff ? oneOff : specOf(p));
-	function useOnce(p: SessionProfile, spec: ProfileSpecForm) {
-		selectedId = p.id;
+	function openCreate() {
+		draft = { ...(oneOff ?? (current ? specOf(current) : EMPTY_SPEC)) };
+		form = { mode: 'create' };
+		listOpen = false;
+	}
+	function useOnce(spec: ProfileSpecForm) {
+		if (editing) selectedId = editing.id;
 		oneOff = spec;
-		openId = null;
+		form = null;
 	}
-	function save(p: SessionProfile, name: string, spec: ProfileSpecForm) {
-		if (selectedId === p.id) oneOff = null;
-		openId = null;
-		onsave(p.id, name, spec);
+	function save(name: string, spec: ProfileSpecForm) {
+		if (!editing) return;
+		const id = editing.id;
+		if (selectedId === id) oneOff = null;
+		form = null;
+		onsave(id, name, spec);
+	}
+	function remove() {
+		if (form?.mode !== 'edit') return;
+		const id = form.id;
+		form = null;
+		ondelete(id);
+	}
+	async function create(name: string, spec: ProfileSpecForm) {
+		if (await oncreate(name, spec)) form = null;
 	}
 </script>
 
 <div class="list" data-journey="profiles">
-	<!-- No saved profile yet: the bare kit stands in for the profile picker, so
-	     harness / account / model / effort / permissions are always reachable
-	     and a session can be started without creating a profile first. -->
 	{#if profiles.length === 0}
 		{#if oneOff}
-			<KitFields bind:draft={oneOff} {accounts} {pools} {usage} {machineId} />
-		{/if}
-		<div class="new">
-			<Button data-journey="new-profile" variant="link" size="sm" disabled={busy} onclick={oncreate}>{m.spawn_profile_new()}</Button>
-		</div>
-	{:else}
-		<div class="pick" bind:this={pickEl}>
-			<RichSelect
-				options={ordered}
-				value={selectedId ?? undefined}
-				onchange={(_, p) => select(p.id)}
-				getKey={(p) => p.id}
-				getLabel={(p) => p.name}
-				onreorder={ordered.length > 1 ? reorder : undefined}
-				movedMessage={(name, position, total) => m.spawn_profile_moved({ name, position, total })}
-				label={m.spawn_profiles_aria()}
-				placeholder={m.spawn_profiles_aria()}
-				style="flex: 1 1 auto"
-			>
-				{#snippet option({ option: p, inTrigger })}
-					<ProfileRow
-						id={p.id}
-						name={p.name}
-						chain={specChain(specFor(p), accounts, pools, chainLabels, modelLabel)}
-						usage={inTrigger ? '' : usageText(p.id)}
-					/>
-				{/snippet}
-				{#snippet trailing({ option: p, close })}
-					<IconButton
-						icon="settings"
-						label={m.spawn_profile_adjust()}
-						inline
-						size={14}
-						pressed={openId === p.id}
-						aria-expanded={openId === p.id}
-						onclick={() => {
-							close();
-							toggle(p.id);
-						}}
-					/>
-				{/snippet}
-				{#snippet footer({ close })}
-					<Button
-						data-journey="new-profile"
-						variant="link"
-						size="sm"
-						disabled={busy}
-						onclick={() => {
-							close();
-							oncreate();
-						}}>{m.spawn_profile_new()}</Button
-					>
-				{/snippet}
-			</RichSelect>
-			{#if selectedId}
-				{@const id = selectedId}
-				<IconButton
-					icon="settings"
-					label={m.spawn_profile_adjust()}
-					inline
-					size={14}
-					pressed={openId === id}
-					aria-expanded={openId === id}
-					onclick={() => toggle(id)}
+			<div class="form standalone" data-journey="profile-form" data-mode="create">
+				<ProfileForm
+					mode="create"
+					bind:draft={oneOff}
+					{profiles}
+					{accounts}
+					{pools}
+					{usage}
+					{machineId}
+					{busy}
+					onuseonce={(s) => (oneOff = s)}
+					oncreate={create}
 				/>
+			</div>
+		{/if}
+	{:else}
+		<div class="card" class:attached bind:this={pickEl}>
+			{#if creating}
+				<div class="draft" data-journey="profile-draft">
+					<ProfileRow id="new" name={m.spawn_profile_new()} chain={chainOf(draft)} badge={badgeOf(draft)} variant="draft" />
+				</div>
+			{:else}
+				<RichSelect
+					options={sorted}
+					value={selectedId ?? undefined}
+					onchange={(_, p) => select(p.id)}
+					bind:open={listOpen}
+					getKey={(p) => p.id}
+					getLabel={(p) => p.name}
+					label={m.spawn_profiles_aria()}
+					placeholder={m.spawn_profiles_aria()}
+				>
+					{#snippet option({ option: p, inTrigger })}
+						<ProfileRow
+							id={p.id}
+							name={p.name}
+							chain={chainOf(specFor(p))}
+							badge={badgeOf(specFor(p))}
+							variant={inTrigger ? 'card' : 'row'}
+						/>
+					{/snippet}
+					{#snippet footer({ close })}
+						<Button
+							data-journey="new-profile"
+							variant="link"
+							size="sm"
+							disabled={busy}
+							onclick={() => {
+								close();
+								openCreate();
+							}}>{m.spawn_profile_new()}</Button
+						>
+					{/snippet}
+				</RichSelect>
+				{#if current}
+					<span class="tools">
+						<IconButton
+							icon="settings"
+							label={m.spawn_profile_adjust()}
+							inline
+							size={14}
+							pressed={!!editing}
+							aria-expanded={!!editing}
+							onclick={toggleEdit}
+						/>
+						<span class="divider" aria-hidden="true"></span>
+					</span>
+				{/if}
 			{/if}
 		</div>
-		{#if adjusting}
-			{@const p = adjusting}
+		{#if editing}
+			{@const p = editing}
 			{#key p.id}
-				<div class="adjust" data-journey="profile-adjust" data-profile-id={p.id}>
-					<ProfileAdjust
+				<div class="form" data-journey="profile-form" data-mode="edit" data-profile-id={p.id}>
+					<ProfileForm
+						mode="edit"
 						profile={p}
-						initial={specFor(p)}
+						bind:draft
+						{profiles}
 						{accounts}
 						{pools}
 						{usage}
 						{machineId}
 						{busy}
-						onuseonce={(s) => useOnce(p, s)}
-						onsave={(name, s) => save(p, name, s)}
-						ondelete={() => {
-							openId = null;
-							ondelete(p.id);
-						}}
+						onuseonce={useOnce}
+						onsave={save}
+						ondelete={remove}
+						oncancel={() => (form = null)}
 					/>
 				</div>
 			{/key}
+		{:else if creating}
+			<div class="form" data-journey="profile-form" data-mode="create">
+				<ProfileForm
+					mode="create"
+					bind:draft
+					{profiles}
+					{accounts}
+					{pools}
+					{usage}
+					{machineId}
+					{busy}
+					onuseonce={useOnce}
+					oncreate={create}
+					oncancel={() => (form = null)}
+				/>
+			</div>
 		{/if}
 	{/if}
 </div>
@@ -247,22 +272,96 @@
 	.list {
 		display: flex;
 		flex-direction: column;
-		gap: var(--sp-2);
+		--card-fill: color-mix(in srgb, var(--accent) 14%, var(--bg));
+		--card-pad: var(--sp-2);
+		--tools-w: calc(24px + var(--sp-2) * 2 + 1px);
 	}
-	.pick {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-1);
+	.card {
+		position: relative;
 		min-width: 0;
 	}
-	.adjust {
-		border: 1px solid var(--border);
-		border-radius: var(--r-md);
-		background: var(--bg);
+	/* The trigger is the whole card, so RichSelect sizes and anchors its panel
+	   to the card. The cog overlays the trigger, in the gap left before the
+	   chevron. */
+	.card :global(.pop-trigger.rs-trigger) {
+		gap: var(--sp-2);
+		padding: var(--card-pad);
+		border-color: var(--accent);
+		background: var(--card-fill);
+		box-shadow: none;
+		color: var(--accent);
 	}
-	.new {
+	@media (hover: hover) and (pointer: fine) {
+		.card :global(.pop-trigger.rs-trigger:hover:not(:disabled)) {
+			background: color-mix(in srgb, var(--accent) 20%, var(--bg));
+		}
+	}
+	.card :global(.rs-chevron) {
+		margin-inline-start: var(--tools-w);
+		color: color-mix(in srgb, var(--accent) 70%, var(--text-muted));
+	}
+	.card.attached :global(.pop-trigger.rs-trigger),
+	.card.attached .draft {
+		border-end-start-radius: 0;
+		border-end-end-radius: 0;
+	}
+	/* Popover places the panel 6px off the trigger; pull it flush. */
+	.card :global(.pop-panel.rs-panel) {
+		margin-top: -6px;
+		border: var(--edge-width) solid var(--accent);
+		border-top: none;
+		border-radius: 0 0 var(--r-md) var(--r-md);
+	}
+	.card :global(.pop-panel.rs-panel[data-side='top']) {
+		margin-top: 6px;
+		border-top: var(--edge-width) solid var(--accent);
+		border-bottom: none;
+		border-radius: var(--r-md) var(--r-md) 0 0;
+	}
+	.card:has(:global(.rs-panel[data-side='top']:popover-open)) :global(.pop-trigger.rs-trigger) {
+		border-radius: 0 0 var(--r-md) var(--r-md);
+	}
+	.card :global(.rs-row[data-selected]::before) {
+		display: none;
+	}
+	.card :global(.rs-footer) {
+		align-items: flex-start;
+	}
+	.tools {
+		position: absolute;
+		inset-block: 0;
+		inset-inline-end: calc(var(--card-pad) + var(--control-icon-md) + var(--sp-2));
+		width: var(--tools-w);
 		display: flex;
+		align-items: center;
 		justify-content: flex-end;
-		padding: 0 var(--sp-1);
+		gap: var(--sp-2);
+		color: var(--accent);
+		pointer-events: none;
+	}
+	.tools > :global(*) {
+		pointer-events: auto;
+	}
+	.divider {
+		align-self: stretch;
+		width: 1px;
+		margin-block: var(--sp-2);
+		background: color-mix(in srgb, var(--accent) 35%, transparent);
+	}
+	.draft {
+		padding: var(--card-pad);
+		border: var(--edge-width) dashed var(--accent);
+		border-radius: var(--r-md);
+		background: var(--card-fill);
+	}
+	.form {
+		border: var(--edge-width) solid var(--accent);
+		border-top: none;
+		border-radius: 0 0 var(--r-md) var(--r-md);
+		overflow: hidden;
+	}
+	.form.standalone {
+		border: var(--edge-width) solid var(--border);
+		border-radius: var(--r-md);
 	}
 </style>

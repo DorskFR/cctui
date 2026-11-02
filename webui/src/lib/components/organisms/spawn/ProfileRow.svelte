@@ -1,62 +1,62 @@
 <script lang="ts">
 	// Rendered inside RichSelect's trigger button and its listbox rows, so it
 	// must stay free of controls.
+	import AccountBadge from './AccountBadge.svelte';
+	import type { BadgeLook } from './accountBadge';
+
 	let {
 		id,
 		name,
 		chain,
-		usage = ''
+		badge,
+		variant = 'row'
 	}: {
 		id: string;
 		name: string;
 		chain: string;
-		usage?: string;
+		badge: BadgeLook;
+		variant?: 'card' | 'row' | 'draft';
 	} = $props();
 </script>
 
-<span class="profile" data-profile-id={id} data-journey="profile" data-journey-key={id}>
-	<span class="name">
-		<span class="truncate">{name}</span>
-		{#if usage}<span class="use" title={usage}>{usage}</span>{/if}
+<span class="profile {variant}" data-profile-id={id} data-journey="profile" data-journey-key={id}>
+	<AccountBadge look={badge} size={variant === 'row' ? 'row' : 'card'} />
+	<span class="text">
+		<span class="name truncate">{name}</span>
+		<span class="chain truncate" title={chain}>{chain}</span>
 	</span>
-	<span class="chain truncate" title={chain}>{chain}</span>
 </span>
 
 <style>
 	.profile {
 		min-width: 0;
 		display: flex;
-		flex-direction: column;
-		gap: 2px;
-		padding: var(--sp-0-5) var(--sp-1);
+		align-items: center;
+		gap: var(--sp-2);
 		user-select: none;
 	}
-	.name {
+	.text {
+		min-width: 0;
+		flex: 1 1 auto;
 		display: flex;
-		justify-content: space-between;
-		align-items: baseline;
-		gap: var(--sp-2);
+		flex-direction: column;
+		gap: 2px;
+	}
+	.name {
 		font-size: var(--fs-sm);
 		font-weight: var(--fw-semibold);
 	}
-	/* The name outranks the usage chip: the chip absorbs the squeeze first and
-	   ellipsises, and the name only shrinks once it is down to its floor. */
-	.name > .truncate {
-		flex: 1 1 auto;
-		min-width: 10ch;
-	}
-	.use {
-		flex: 0 1 auto;
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		font-size: var(--fs-xs);
-		font-weight: var(--fw-normal);
-		color: var(--text-faint);
-		white-space: nowrap;
-	}
 	.chain {
 		font-size: var(--fs-xs);
+		color: var(--text-muted);
+	}
+	.card .name {
+		color: var(--accent);
+	}
+	.card .chain {
+		color: color-mix(in srgb, var(--accent) 70%, var(--text-muted));
+	}
+	.draft .name {
 		color: var(--text-muted);
 	}
 	.truncate {

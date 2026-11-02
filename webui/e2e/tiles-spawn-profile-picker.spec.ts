@@ -4,25 +4,27 @@ import { session, stubApi } from './tiles.fixture';
 const MOBILE = { width: 390, height: 844 };
 const MACHINE = session(0);
 
-const profiles = Array.from({ length: 12 }, (_, i) => ({
-	id: `p${i}`,
-	user_id: 'u1',
-	name: `Profile ${i}`,
-	harness: i % 2 ? 'codex' : 'claude-code',
-	account_id: null,
-	pool_id: null,
-	no_account: false,
-	model_alias: null,
-	effort: 'medium',
-	permission_mode: 'auto',
-	service_tier: null,
-	context_items: [],
-	sort_order: i,
-	created_at: '',
-	updated_at: ''
-}));
+const makeProfiles = (count: number) =>
+	Array.from({ length: count }, (_, i) => ({
+		id: `p${i}`,
+		user_id: 'u1',
+		name: `Profile ${i}`,
+		harness: i % 2 ? 'codex' : 'claude-code',
+		account_id: null,
+		pool_id: null,
+		no_account: false,
+		model_alias: null,
+		effort: 'medium',
+		permission_mode: 'auto',
+		service_tier: null,
+		context_items: [],
+		sort_order: count - i,
+		created_at: '',
+		updated_at: ''
+	})).reverse();
+const profiles = makeProfiles(12);
 
-async function stub(page: Page) {
+async function stub(page: Page, list = profiles) {
 	await stubApi(page, [MACHINE]);
 	await page.route(
 		(url) => url.pathname === '/api/v1/machines/resources',
@@ -46,20 +48,19 @@ async function stub(page: Page) {
 		(url) => url.pathname === '/api/v1/sessions/recent-dirs',
 		(route) => route.fulfill({ json: [MACHINE.working_dir] })
 	);
-	const orders: string[][] = [];
+	const writes: string[] = [];
 	await page.route(
-		(url) => url.pathname === '/api/v1/profiles/order',
+		(url) => url.pathname.startsWith('/api/v1/profiles'),
 		(route) => {
-			const ids = (route.request().postDataJSON() as { ids: string[] }).ids;
-			orders.push(ids);
-			return route.fulfill({ json: ids.map((id) => profiles.find((p) => p.id === id)) });
+			const req = route.request();
+			if (req.method() !== 'GET') {
+				writes.push(`${req.method()} ${new URL(req.url()).pathname}`);
+				return route.fulfill({ json: { ...list[0], id: 'p-new', name: 'Reviewer' } });
+			}
+			return route.fulfill({ json: list });
 		}
 	);
-	await page.route(
-		(url) => url.pathname === '/api/v1/profiles',
-		(route) => route.fulfill({ json: profiles })
-	);
-	return orders;
+	return writes;
 }
 
 async function openSpawn(page: Page) {
@@ -131,8 +132,12 @@ test('390px: the open dropdown scrolls internally and keeps the New profile foot
 	await expect(pop).toBeVisible();
 	await expect(trigger(dialog)).toHaveAttribute('aria-expanded', 'true');
 	await expect(pop.getByRole('option')).toHaveCount(profiles.length);
-	await expect(pop.locator('.rs-trailing').getByRole('button', { name: 'Adjust profile' })).toHaveCount(
+	await expect(pop.locator('.rs-trailing, .rs-grip')).toHaveCount(0);
+	await expect(pop.getByRole('option').locator('[data-journey="account-badge"]')).toHaveCount(
 		profiles.length
+	);
+	await expect(pop.getByRole('option').locator('.name')).toHaveText(
+		Array.from({ length: profiles.length }, (_, i) => `Profile ${i}`)
 	);
 
 	const list = pop.locator('.rs-list');
@@ -181,21 +186,81 @@ test('arrow keys switch profiles on the closed picker without opening it', async
 	await expect(panel(page)).toHaveCount(0);
 });
 
-test('dragging a row grip in the dropdown persists the new order', async ({ page }) => {
-	const orders = await stub(page);
+function near(a: number, b: number) {
+	expect(Math.abs(a - b)).toBeLessThanOrEqual(1);
+}
+
+test('the closed card carries the badge and the cog inside it, and the open panel is attached at its width', async ({
+	page
+}) => {
+	await stub(page, makeProfiles(3));
+	const dialog = await openSpawn(page);
+	const card = trigger(dialog);
+	const cardBox = await box(card);
+	await expect(card.locator('[data-journey="account-badge"]')).toBeVisible();
+	const cog = dialog.getByRole('button', { name: 'Adjust profile' });
+	const cogBox = await box(cog);
+	expect(cogBox.x).toBeGreaterThan(cardBox.x);
+	expect(cogBox.x + cogBox.width).toBeLessThan(cardBox.x + cardBox.width);
+	expect(cogBox.y).toBeGreaterThanOrEqual(cardBox.y);
+	expect(cogBox.y + cogBox.height).toBeLessThanOrEqual(cardBox.y + cardBox.height);
+
+	await card.click();
+	const pop = panel(page);
+	await expect(pop).toBeVisible();
+	await pop.evaluate((el) =>
+		Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished.catch(() => undefined)))
+	);
+	const popBox = await box(pop);
+	const openCard = await box(card);
+	near(popBox.width, openCard.width);
+	near(popBox.x, openCard.x);
+	const side = await pop.getAttribute('data-side');
+	if (side === 'top') near(popBox.y + popBox.height, openCard.y);
+	else near(popBox.y, openCard.y + openCard.height);
+});
+
+test('the cog opens an edit form attached under the card at its width; the list closes it', async ({ page }) => {
+	await stub(page, makeProfiles(3));
+	const dialog = await openSpawn(page);
+	await dialog.getByRole('button', { name: 'Adjust profile' }).click();
+	const form = dialog.locator('[data-journey="profile-form"][data-mode="edit"]');
+	await expect(form).toBeVisible();
+	const cardBox = await box(trigger(dialog));
+	const formBox = await box(form);
+	near(formBox.width, cardBox.width);
+	near(formBox.x, cardBox.x);
+	near(formBox.y, cardBox.y + cardBox.height);
+
+	await trigger(dialog).click();
+	await expect(panel(page)).toBeVisible();
+	await expect(form).toHaveCount(0);
+});
+
+test('New profile writes nothing until Create profile, and Cancel leaves the list unchanged', async ({ page }) => {
+	const writes = await stub(page, makeProfiles(3));
 	const dialog = await openSpawn(page);
 
 	await trigger(dialog).click();
-	const rows = panel(page).locator('.rs-row');
-	const grip = await box(rows.nth(0).locator('.rs-grip'));
-	const third = await box(rows.nth(2));
-	await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
-	await page.mouse.down();
-	await page.mouse.move(grip.x + grip.width / 2, third.y + third.height / 2, { steps: 8 });
-	await page.mouse.up();
+	await panel(page).locator('.rs-footer').getByRole('button', { name: 'New profile' }).click();
+	const form = dialog.locator('[data-journey="profile-form"][data-mode="create"]');
+	await expect(form).toBeVisible();
+	await expect(dialog.locator('[data-journey="profile-draft"]')).toContainText('New profile');
+	const create = form.getByRole('button', { name: 'Create profile' });
+	await expect(create).toBeDisabled();
+	await form.getByLabel('Profile name').fill('profile 1');
+	await expect(create).toBeDisabled();
+	await form.getByLabel('Profile name').fill('Reviewer');
+	await expect(create).toBeEnabled();
+	await form.getByRole('button', { name: 'Cancel' }).click();
+	await expect(form).toHaveCount(0);
+	await expect(trigger(dialog).locator('[data-profile-id="p0"]')).toBeVisible();
+	expect(writes).toEqual([]);
 
-	await expect.poll(() => orders.length).toBe(1);
-	expect(orders[0][0]).not.toBe('p0');
-	expect(orders[0]).toContain('p0');
-	expect(orders[0]).toHaveLength(profiles.length);
+	await trigger(dialog).click();
+	await panel(page).locator('.rs-footer').getByRole('button', { name: 'New profile' }).click();
+	await form.getByLabel('Profile name').fill('Reviewer');
+	await form.getByRole('button', { name: 'Create profile' }).click();
+	await expect.poll(() => writes).toEqual(['POST /api/v1/profiles']);
+	await expect(form).toHaveCount(0);
 });
