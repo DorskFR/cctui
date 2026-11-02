@@ -226,7 +226,7 @@ mod tests {
         Request { method, host: "example.amazonaws.com", path: "/", query: "", headers, body }
     }
 
-    fn authorization(signed: &[(&'static str, String)]) -> &str {
+    fn authorization<'a>(signed: &'a [(&'static str, String)]) -> &'a str {
         &signed.iter().find(|(k, _)| *k == "authorization").unwrap().1
     }
 
@@ -354,11 +354,9 @@ mod tests {
         let creds = AwsCredentials::new(KEY_ID, SECRET);
         let query = canonical_query("Param2=value2&Param1=value1");
         let req = Request { query: &query, ..request("GET", &[], b"") };
-        assert!(
-            authorization(&sign(&creds, SCOPE, &req, clock())).ends_with(
-                "Signature=b97d918cfa904a5beff61c982a1b6f458b799221646efd99d3219ec94cdf2500"
-            )
-        );
+        let signed = sign(&creds, SCOPE, &req, clock());
+        let want = "Signature=b97d918cfa904a5beff61c982a1b6f458b799221646efd99d3219ec94cdf2500";
+        assert!(authorization(&signed).ends_with(want), "{signed:?}");
     }
 
     #[test]
