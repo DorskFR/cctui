@@ -46,6 +46,9 @@ pub struct ThreadEntry {
     /// `status.type`: `active` / `idle` / `notLoaded` / `systemError`.
     pub status: Option<String>,
     pub parent_id: Option<String>,
+    /// Client that started the thread (`originator`): `cctui` for every thread
+    /// the daemon drives, whatever `source` codex records for it.
+    pub originator: Option<String>,
     /// Thread `updatedAt` (unix seconds).
     pub updated_at: Option<i64>,
 }
@@ -119,6 +122,7 @@ pub fn parse_thread(v: &Value) -> Option<ThreadEntry> {
         source: v.get("source").and_then(parse_source),
         status: v.pointer("/status/type").and_then(Value::as_str).map(str::to_owned),
         parent_id: parse_parent(v),
+        originator: s("originator").filter(|o| !o.is_empty()),
         updated_at: v.get("updatedAt").and_then(Value::as_i64),
     })
 }
@@ -567,6 +571,21 @@ pub async fn read_response_for<R: AsyncBufRead + Unpin>(
     anyhow::bail!("{label} response {id} not received before EOF")
 }
 
+/// The client name cctui announces in `initialize`; codex stamps it into
+/// every thread it starts for us as `originator`.
+const CCTUI_ORIGINATOR: &str = "cctui";
+
+/// Whether cctui itself drove this thread. Codex used to record such threads
+/// as `appServer`-source; over the shared control socket (codex >= 0.16x)
+/// they come back as `vscode`, so the stamped `originator` is the reliable
+/// mark. A thread matching neither is a CLI/IDE session that is not ours to
+/// resume.
+#[must_use]
+pub fn is_cctui_owned(entry: &ThreadEntry) -> bool {
+    entry.source.as_deref() == Some("appServer")
+        || entry.originator.as_deref() == Some(CCTUI_ORIGINATOR)
+}
+
 /// `appServer`-source threads from a `thread/list` snapshot are the ones cctui
 /// itself drove before the daemon restarted. Re-seed the durable
 /// [`SessionRegistry`] with a [`SessionRecord`] for each so a later command
@@ -580,7 +599,7 @@ pub fn owned_records(
 ) -> Vec<(String, SessionRecord)> {
     entries
         .iter()
-        .filter(|e| e.source.as_deref() == Some("appServer"))
+        .filter(|e| is_cctui_owned(e))
         .map(|e| {
             (
                 e.id.clone(),
@@ -638,7 +657,7 @@ pub async fn rediscover_owned(
 }
 
 /// Build a [`SessionRecord`] for one specific thread out of a `thread/list`
-/// snapshot. Only `appServer`-source threads are cctui's to resume.
+/// snapshot. Only cctui-owned threads ([`is_cctui_owned`]) are ours to resume.
 #[must_use]
 pub fn record_for(
     entries: &[ThreadEntry],
@@ -646,30 +665,92 @@ pub fn record_for(
     local_id: &str,
 ) -> Option<SessionRecord> {
     let id = canonical_id(local_id);
-    let entry = entries.iter().find(|e| e.id == id && e.source.as_deref() == Some("appServer"))?;
-    Some(SessionRecord {
+    let entry = entries.iter().find(|e| e.id == id && is_cctui_owned(e))?;
+    Some(record_from_entry(entry, app))
+}
+
+fn record_from_entry(entry: &ThreadEntry, app: &AppServerConfig) -> SessionRecord {
+    SessionRecord {
         cfg: app.clone(),
         cwd: entry.cwd.clone().unwrap_or_default(),
         name: entry.name.clone(),
         env: std::collections::BTreeMap::new(),
         spawn_relay: false,
         started_at_ms: None,
-    })
+    }
+}
+
+/// Build a [`SessionRecord`] from a `thread/read` result (`{"thread": {...}}`),
+/// when that thread is cctui-owned and its id is the one asked for.
+#[must_use]
+pub fn record_from_read(
+    result: &Value,
+    app: &AppServerConfig,
+    local_id: &str,
+) -> Option<SessionRecord> {
+    let entry = parse_thread(result.get("thread").unwrap_or(result))?;
+    (entry.id == canonical_id(local_id) && is_cctui_owned(&entry))
+        .then(|| record_from_entry(&entry, app))
 }
 
 const RECOVER_PAGE_LIMIT: u32 = 100;
 
-/// On-demand recovery for a thread that went Missing: one bounded
-/// `thread/list` probe (the poll's own 30s deadline) to reconstruct its
+/// On-demand recovery for a thread that went Missing: a bounded `thread/list`
+/// probe, then a direct `thread/read` of that one id — `thread/list` pages
+/// hold only the most recent threads and, under codex >= 0.16x, leave out the
+/// `vscode`-source threads cctui starts — to reconstruct its
 /// [`SessionRecord`] so the command can take the Resume path.
-pub async fn recover_record(app: &AppServerConfig, local_id: &str) -> Option<SessionRecord> {
-    match poll_threads(app, RECOVER_PAGE_LIMIT).await {
-        Ok(entries) => record_for(&entries, app, local_id),
+pub async fn recover_record(
+    app: &AppServerConfig,
+    daemon: Option<&super::daemon::SharedDaemon>,
+    local_id: &str,
+) -> Option<SessionRecord> {
+    match poll_threads_any(app, daemon, RECOVER_PAGE_LIMIT).await {
+        Ok(entries) => {
+            if let Some(record) = record_for(&entries, app, local_id) {
+                return Some(record);
+            }
+        }
         Err(err) => {
-            tracing::warn!(%local_id, %err, "codex: on-demand thread recovery probe failed");
+            tracing::warn!(%local_id, %err, "codex: on-demand thread/list recovery probe failed");
+        }
+    }
+    match read_thread_any(app, daemon, local_id).await {
+        Ok(result) => {
+            let record = record_from_read(&result, app, local_id);
+            if record.is_none() {
+                tracing::warn!(%local_id, "codex: thread/read found no cctui-owned thread to recover");
+            }
+            record
+        }
+        Err(err) => {
+            tracing::warn!(%local_id, %err, "codex: on-demand thread/read recovery probe failed");
             None
         }
     }
+}
+
+/// `thread/read` (metadata only) over the shared daemon connection, falling
+/// back to a short-lived stdio child when no daemon is reachable.
+async fn read_thread_any(
+    app: &AppServerConfig,
+    daemon: Option<&super::daemon::SharedDaemon>,
+    thread_id: &str,
+) -> anyhow::Result<Value> {
+    if let Some(shared) = daemon
+        && let Some(handle) = shared.handle().await
+    {
+        match handle
+            .request("thread/read", json!({"threadId": thread_id, "includeTurns": false}))
+            .await
+        {
+            Ok(result) => return Ok(result),
+            Err(err) => {
+                tracing::debug!(%err, thread = %thread_id, "codex: shared thread/read failed, using stdio");
+            }
+        }
+    }
+    super::thread_read::read_history(app, thread_id).await.map(|(meta, _)| meta)
 }
 
 /// Map a `thread/list` `status.type` to a coarse session `Status`. This is the
@@ -997,6 +1078,7 @@ mod tests {
         let entry = ThreadEntry {
             id: "x".into(),
             parent_id: None,
+            originator: None,
             updated_at: None,
             preview: None,
             name: None,
@@ -1016,6 +1098,7 @@ mod tests {
         let entry = ThreadEntry {
             id: "x".into(),
             parent_id: None,
+            originator: None,
             updated_at: Some(1_762_000_000),
             preview: None,
             name: None,
@@ -1031,6 +1114,7 @@ mod tests {
         let mut entry = ThreadEntry {
             id: "x".into(),
             parent_id: None,
+            originator: None,
             updated_at: None,
             preview: None,
             name: None,
@@ -1055,6 +1139,7 @@ mod tests {
         let entry = ThreadEntry {
             id: "child".into(),
             parent_id: Some(exec.into()),
+            originator: None,
             updated_at: None,
             preview: None,
             name: None,
@@ -1072,6 +1157,7 @@ mod tests {
         let entry = ThreadEntry {
             id: "child".into(),
             parent_id: Some("parent".into()),
+            originator: None,
             updated_at: None,
             preview: None,
             name: None,
@@ -1114,6 +1200,7 @@ mod tests {
         let entry = ThreadEntry {
             id: "t1".into(),
             parent_id: None,
+            originator: None,
             updated_at: None,
             preview: Some("hello".into()),
             name: Some("nm".into()),
@@ -1163,6 +1250,7 @@ mod tests {
         let entry = ThreadEntry {
             id: "child".into(),
             parent_id: Some("parent".into()),
+            originator: None,
             updated_at: None,
             preview: None,
             name: None,
@@ -1187,6 +1275,7 @@ mod tests {
             ThreadEntry {
                 id: "mine".into(),
                 parent_id: None,
+                originator: None,
                 updated_at: None,
                 preview: None,
                 name: Some("nm".into()),
@@ -1197,6 +1286,7 @@ mod tests {
             ThreadEntry {
                 id: "cli-one".into(),
                 parent_id: None,
+                originator: None,
                 updated_at: None,
                 preview: None,
                 name: None,
@@ -1218,6 +1308,7 @@ mod tests {
             ThreadEntry {
                 id: "019ea66a-cf6e-73b1-8000-0000000000ab".into(),
                 parent_id: None,
+                originator: None,
                 updated_at: None,
                 preview: None,
                 name: Some("nm".into()),
@@ -1228,6 +1319,7 @@ mod tests {
             ThreadEntry {
                 id: "cli-thread".into(),
                 parent_id: None,
+                originator: None,
                 updated_at: None,
                 preview: None,
                 name: None,
@@ -1244,6 +1336,87 @@ mod tests {
         assert!(rec.env.is_empty());
         assert!(record_for(&entries, &app, "cli-thread").is_none());
         assert!(record_for(&entries, &app, "unknown").is_none());
+    }
+
+    /// codex >= 0.16x records the threads cctui starts over the shared control
+    /// socket as `vscode`-source with `originator: "cctui"`; they must still be
+    /// seeded at startup, while a plain IDE thread stays out.
+    #[test]
+    fn cctui_originator_marks_a_vscode_thread_as_owned() {
+        let ours = parse_thread(&json!({
+            "id": "01a19cfc-f34c-7ef3-87f4-0288c6c8ab69",
+            "cwd": "/home/u",
+            "source": "vscode",
+            "originator": "cctui",
+        }))
+        .unwrap();
+        let ide = parse_thread(&json!({
+            "id": "01a19cfc-f34c-7ef3-87f4-0288c6c8ab70",
+            "source": "vscode",
+            "originator": "codex_vscode",
+        }))
+        .unwrap();
+        assert_eq!(ours.originator.as_deref(), Some("cctui"));
+        assert!(is_cctui_owned(&ours));
+        assert!(!is_cctui_owned(&ide));
+        let recs = owned_records(&[ours, ide], &AppServerConfig::default());
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].0, "01a19cfc-f34c-7ef3-87f4-0288c6c8ab69");
+        assert_eq!(recs[0].1.cwd, "/home/u");
+    }
+
+    #[test]
+    fn record_from_read_recovers_a_cctui_thread_by_id() {
+        let app = AppServerConfig::default();
+        let read = json!({"thread": {
+            "id": "01A19CFC-F34C-7EF3-87F4-0288C6C8AB69",
+            "cwd": "/home/u/github",
+            "name": "nm",
+            "source": "vscode",
+            "originator": "cctui",
+            "status": {"type": "notLoaded"},
+        }});
+        let rec = record_from_read(&read, &app, "01a19cfc-f34c-7ef3-87f4-0288c6c8ab69")
+            .expect("cctui thread recoverable from thread/read");
+        assert_eq!(rec.cwd, "/home/u/github");
+        assert_eq!(rec.name.as_deref(), Some("nm"));
+        // Another id, or a thread cctui did not start, is not recovered.
+        assert!(record_from_read(&read, &app, "01a19cfc-0000-7000-8000-000000000000").is_none());
+        let cli = json!({"thread": {"id": "t", "source": "cli", "originator": "codex_cli_rs"}});
+        assert!(record_from_read(&cli, &app, "t").is_none());
+    }
+
+    /// `thread/list` leaves the thread out (as codex 0.166 does for
+    /// `vscode`-source threads); recovery must still find it via `thread/read`.
+    #[tokio::test]
+    async fn recover_record_falls_back_to_thread_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("app-server.sock");
+        let _srv = super::super::daemon::testserver::spawn(&sock, |method, params| match method {
+            "thread/list" => json!({"data": [], "nextCursor": null}),
+            "thread/read" => {
+                assert_eq!(params["threadId"], "01a19cfc-f34c-7ef3-87f4-0288c6c8ab69");
+                json!({"thread": {
+                    "id": "01a19cfc-f34c-7ef3-87f4-0288c6c8ab69",
+                    "cwd": "/home/u/github",
+                    "source": "vscode",
+                    "originator": "cctui",
+                }})
+            }
+            other => panic!("unexpected {other}"),
+        });
+        let shutdown = CancellationToken::new();
+        let shared = super::super::daemon::SharedDaemon::from_endpoint(
+            super::super::daemon::DaemonEndpoint { socket: sock },
+            shutdown.clone(),
+        );
+        let mut app = AppServerConfig::from_value(&json!({}));
+        app.bin = "/nonexistent/codex-must-not-be-spawned".to_owned();
+        let rec = recover_record(&app, Some(&shared), "01a19cfc-f34c-7ef3-87f4-0288c6c8ab69")
+            .await
+            .expect("recovered through thread/read");
+        assert_eq!(rec.cwd, "/home/u/github");
+        shutdown.cancel();
     }
 
     #[tokio::test]
@@ -1267,6 +1440,7 @@ mod tests {
             ThreadEntry {
                 id: "live".into(),
                 parent_id: None,
+                originator: None,
                 updated_at: None,
                 preview: None,
                 name: Some("from-inventory".into()),
@@ -1277,6 +1451,7 @@ mod tests {
             ThreadEntry {
                 id: "rediscovered".into(),
                 parent_id: None,
+                originator: None,
                 updated_at: None,
                 preview: None,
                 name: None,
@@ -1332,6 +1507,7 @@ mod tests {
         inv.reconcile(vec![ThreadEntry {
             id: "owned1".into(),
             parent_id: None,
+            originator: None,
             updated_at: None,
             preview: Some("x".into()),
             name: None,

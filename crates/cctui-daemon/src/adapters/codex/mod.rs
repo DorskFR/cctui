@@ -469,6 +469,7 @@ impl CommandPump {
             self.server.as_ref(),
             self.machine_key.as_ref(),
             &self.app_cfg,
+            Some(&self.shared),
             local_id,
             cmd,
         )
@@ -1122,6 +1123,7 @@ async fn forward(
     server: Option<&ServerClient>,
     machine_key: Option<&String>,
     app_cfg: &AppServerConfig,
+    daemon: Option<&daemon::SharedDaemon>,
     local_id: &str,
     cmd: SessionCommand,
 ) -> bool {
@@ -1135,9 +1137,12 @@ async fn forward(
                 (live.clone(), registry.clone(), events.clone(), shutdown.clone());
             let (server, machine_key) = (server.cloned(), machine_key.cloned());
             let app = app_cfg.clone();
+            let daemon = daemon.cloned();
             let local_id = local_id.to_owned();
             tokio::spawn(async move {
-                let Some(record) = thread_list::recover_record(&app, &local_id).await else {
+                let Some(record) =
+                    thread_list::recover_record(&app, daemon.as_ref(), &local_id).await
+                else {
                     emit_missing_failure(&events, &local_id, &cmd).await;
                     return;
                 };
@@ -1427,6 +1432,7 @@ mod tests {
             None,
             None,
             &unrecoverable_cfg(),
+            None,
             "ghost",
             SessionCommand::Permission { request_id: "r".to_owned(), allow: true },
         )
@@ -1454,6 +1460,7 @@ mod tests {
             None,
             None,
             &unrecoverable_cfg(),
+            None,
             "ghost",
             SessionCommand::Kill { signal: None },
         )
@@ -1478,6 +1485,7 @@ mod tests {
             None,
             None,
             &unrecoverable_cfg(),
+            None,
             "ghost",
             SessionCommand::Send { text: "hi".to_owned(), command_id: None, turn_id: None },
         )
@@ -1504,6 +1512,7 @@ mod tests {
             None,
             None,
             &unrecoverable_cfg(),
+            None,
             "ghost",
             SessionCommand::SetModel {
                 model: Some("gpt-5-codex".to_owned()),
