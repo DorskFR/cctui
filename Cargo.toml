@@ -86,8 +86,6 @@ dirs = "7"
 toml = "1.1"
 tokio-util = { version = "0.7", features = ["io"] }
 async-trait = "0.1"
-aws-sigv4 = { version = "1", default-features = false, features = ["sign-http"] }
-aws-credential-types = "1"
 kube = { version = "4.2", default-features = false, features = ["client", "rustls-tls", "ring", "derive", "admission"] }
 json-patch = "4"
 axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }

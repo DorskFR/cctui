@@ -16,9 +16,10 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use base64::Engine as _;
+use cctui_aws::sigv4;
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
     KeyUsagePurpose,
@@ -748,36 +749,33 @@ fn sigv4_head(
         kept.push((name.to_owned(), value.trim().to_owned()));
     }
 
-    let signable_headers = kept.iter().filter(|(n, _)| {
-        n.eq_ignore_ascii_case("host")
-            || n.eq_ignore_ascii_case("content-type")
-            || n.len() >= 6 && n.as_bytes()[..6].eq_ignore_ascii_case(b"x-amz-")
-    });
-    let identity = aws_credential_types::Credentials::new(
-        &creds.key_id,
-        &creds.secret_key,
-        creds.session_token.clone(),
-        None,
-        "guard-proxy",
-    )
-    .into();
-    let params = aws_sigv4::sign::v4::SigningParams::builder()
-        .identity(&identity)
-        .region(region)
-        .name(service)
-        .time(std::time::SystemTime::now())
-        .settings(aws_sigv4::http_request::SigningSettings::default())
-        .build()?
-        .into();
-    let signable = aws_sigv4::http_request::SignableRequest::new(
+    let signed_host = kept
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case("host"))
+        .map_or(host, |(_, v)| v.as_str())
+        .to_owned();
+    let signable: Vec<(&str, &str)> = kept
+        .iter()
+        .filter(|(n, _)| {
+            n.eq_ignore_ascii_case("content-type")
+                || n.len() >= 6 && n.as_bytes()[..6].eq_ignore_ascii_case(b"x-amz-")
+        })
+        .map(|(n, v)| (n.as_str(), v.as_str()))
+        .collect();
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let path = sigv4::canonical_uri(path);
+    let query = sigv4::canonical_query(query);
+    let req = sigv4::Request {
         method,
-        format!("https://{host}{target}"),
-        signable_headers.map(|(n, v)| (n.as_str(), v.as_str())),
-        aws_sigv4::http_request::SignableBody::Bytes(body),
-    )?;
-    let (instructions, _signature) = aws_sigv4::http_request::sign(signable, &params)?.into_parts();
-    for (name, value) in instructions.headers() {
-        kept.push((name.to_owned(), value.to_owned()));
+        host: &signed_host,
+        path: &path,
+        query: &query,
+        headers: &signable,
+        body,
+    };
+    let signed = sigv4::sign(creds, sigv4::Scope { region, service }, &req, SystemTime::now());
+    for (name, value) in signed {
+        kept.push((name.to_owned(), value));
     }
 
     let mut out = String::with_capacity(head.len() + 256);

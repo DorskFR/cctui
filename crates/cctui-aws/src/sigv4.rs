@@ -1,4 +1,5 @@
-//! Path and query must already be canonical: no URI normalization is applied.
+//! [`Request`] takes the path and query in canonical form: see [`canonical_uri`]
+//! and [`canonical_query`].
 
 use std::fmt::Write as _;
 use std::time::SystemTime;
@@ -58,6 +59,82 @@ pub fn sign(
         ),
     ));
     out
+}
+
+/// Canonical URI of a request path as sent on the wire: dot segments and
+/// empty segments removed, then every byte outside the unreserved set and `/`
+/// percent-encoded, so an existing `%XX` is encoded again.
+#[must_use]
+pub fn canonical_uri(path: &str) -> String {
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            s => segments.push(s),
+        }
+    }
+    let mut out = String::from("/");
+    out.push_str(&segments.join("/"));
+    let trailing = ["/", "/.", "/..", "/./", "/../"].iter().any(|s| path.ends_with(s));
+    if trailing && !out.ends_with('/') {
+        out.push('/');
+    }
+    uri_encode(&out, true)
+}
+
+/// Canonical query string: pairs form-decoded, re-encoded, then sorted.
+#[must_use]
+pub fn canonical_query(query: &str) -> String {
+    let mut pairs: Vec<(String, String)> = query
+        .split('&')
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let (k, v) = p.split_once('=').unwrap_or((p, ""));
+            (uri_encode(&form_decode(k), false), uri_encode(&form_decode(v), false))
+        })
+        .collect();
+    pairs.sort();
+    pairs.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("&")
+}
+
+fn uri_encode(s: &str, keep_slash: bool) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        let unreserved = b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~');
+        if unreserved || (keep_slash && b == b'/') {
+            out.push(char::from(b));
+        } else {
+            let _ = write!(out, "%{b:02X}");
+        }
+    }
+    out
+}
+
+fn form_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex_pair = bytes.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok());
+        match (bytes[i], hex_pair.and_then(|h| u8::from_str_radix(h, 16).ok())) {
+            (b'%', Some(decoded)) => {
+                out.push(decoded);
+                i += 3;
+            }
+            (b'+', _) => {
+                out.push(b' ');
+                i += 1;
+            }
+            (b, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn amz_date(now: SystemTime) -> String {
@@ -230,6 +307,57 @@ mod tests {
             "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, \
              SignedHeaders=content-length;content-type;host;x-amz-content-sha256;x-amz-date, \
              Signature=d3875051da38690788ef43de4db0d8f280229d82040bfac253562e56c3f20e0b"
+        );
+    }
+
+    #[test]
+    fn canonical_uri_matches_the_aws_test_suite() {
+        for (raw, canonical) in [
+            ("", "/"),
+            ("/", "/"),
+            ("/./", "/"),
+            ("/./example", "/example"),
+            ("//example//", "/example/"),
+            ("/example1/example2/../..", "/"),
+            ("/ሴ", "/%E1%88%B4"),
+            ("/test/@connections/JBDvjfGEIAMCERw%3D", "/test/%40connections/JBDvjfGEIAMCERw%253D"),
+        ] {
+            assert_eq!(canonical_uri(raw), canonical, "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn canonical_query_matches_the_aws_test_suite() {
+        let unreserved = "-._~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+        let unreserved_pair = format!("{unreserved}={unreserved}");
+        for (raw, canonical) in [
+            ("", ""),
+            ("Param2=value2&Param1=value1", "Param1=value1&Param2=value2"),
+            (
+                "Param-3=Value3&Param=Value2&%E1%88%B4=Value1",
+                "%E1%88%B4=Value1&Param=Value2&Param-3=Value3",
+            ),
+            ("ሴ=bar", "%E1%88%B4=bar"),
+            (unreserved_pair.as_str(), unreserved_pair.as_str()),
+            (
+                "Action=GetCallerIdentity&Version=2011-06-15",
+                "Action=GetCallerIdentity&Version=2011-06-15",
+            ),
+            ("b&a=1+2", "a=1%202&b="),
+        ] {
+            assert_eq!(canonical_query(raw), canonical, "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn query_signature_matches_the_aws_test_suite() {
+        let creds = AwsCredentials::new(KEY_ID, SECRET);
+        let query = canonical_query("Param2=value2&Param1=value1");
+        let req = Request { query: &query, ..request("GET", &[], b"") };
+        assert!(
+            authorization(&sign(&creds, SCOPE, &req, clock())).ends_with(
+                "Signature=b97d918cfa904a5beff61c982a1b6f458b799221646efd99d3219ec94cdf2500"
+            )
         );
     }
 
