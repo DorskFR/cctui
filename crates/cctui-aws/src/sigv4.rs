@@ -364,6 +364,6 @@ mod tests {
         let creds = AwsCredentials::new(KEY_ID, SECRET);
         let req = request("GET", &[("My-Header1", "  a   b   c  ")], b"");
         let headers = canonical_headers(&creds, &req, "20150830T123600Z");
-        assert_eq!(headers[0], ("my-header1".to_owned(), "a b c".to_owned()));
+        assert!(headers.contains(&("my-header1".to_owned(), "a b c".to_owned())), "{headers:?}");
     }
 }
