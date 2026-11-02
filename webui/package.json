@@ -27,7 +27,8 @@
     "journey:changed": "node scripts/journeys-for-changes.mjs",
     "journey:compress": "node scripts/journey-compress.mjs",
     "journey:shoot": "node scripts/journey-shoot.mjs",
-    "journey:book": "npm run journey:shoot -- --all"
+    "journey:book": "npm run journey:shoot -- --all",
+    "e2e:otel": "npm run build && playwright test --project otel-trace"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",

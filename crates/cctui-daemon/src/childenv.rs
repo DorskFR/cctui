@@ -9,6 +9,8 @@
 //! of how the daemon was launched, every exec'd child is given an explicit
 //! `PATH` augmented with the usual tool locations.
 
+use std::ffi::{OsStr, OsString};
+
 /// The `PATH` to hand to exec'd children: the daemon's own `PATH` plus the
 /// common tool directories that launchd may have stripped, deduplicated while
 /// preserving order.
@@ -86,20 +88,49 @@ pub fn with_web_origin(env: &mut std::collections::BTreeMap<String, String>, ser
     }
 }
 
+/// Prefixes of the daemon's own trace-export config. Inherited copies are
+/// stripped so an agent's processes do not export into the daemon's collector;
+/// a var the session env sets explicitly is kept.
+pub const INHERITED_ENV_PREFIXES: &[&str] = &["OTEL_"];
+
 /// A spawnable command whose environment can be scrubbed of capability vars.
 ///
 /// Implemented for both `std` and `tokio` `Command` so
 /// [`ScrubChildEnv::scrub_child_env`] applies uniformly at every spawn site.
 pub trait ScrubChildEnv {
-    /// Remove every var in [`CHILD_ENV_REMOVALS`] from the child's environment.
+    /// Remove every var in [`CHILD_ENV_REMOVALS`], and every inherited var
+    /// under [`INHERITED_ENV_PREFIXES`], from the child's environment.
     fn scrub_child_env(&mut self) -> &mut Self;
+}
+
+fn inherited_removals(
+    parent: impl Iterator<Item = OsString>,
+    cmd: &std::process::Command,
+) -> Vec<OsString> {
+    let explicit: Vec<&OsStr> =
+        cmd.get_envs().filter_map(|(key, value)| value.map(|_| key)).collect();
+    let traced = |key: &OsString| {
+        key.to_str().is_some_and(|key| INHERITED_ENV_PREFIXES.iter().any(|p| key.starts_with(p)))
+    };
+    parent.filter(|key| traced(key) && !explicit.contains(&key.as_os_str())).collect()
+}
+
+fn scrub_std(cmd: &mut std::process::Command, parent: impl Iterator<Item = OsString>) {
+    for var in CHILD_ENV_REMOVALS {
+        cmd.env_remove(var);
+    }
+    for var in inherited_removals(parent, cmd) {
+        cmd.env_remove(var);
+    }
+}
+
+fn parent_env() -> impl Iterator<Item = OsString> {
+    std::env::vars_os().map(|(key, _)| key)
 }
 
 impl ScrubChildEnv for std::process::Command {
     fn scrub_child_env(&mut self) -> &mut Self {
-        for var in CHILD_ENV_REMOVALS {
-            self.env_remove(var);
-        }
+        scrub_std(self, parent_env());
         self
     }
 }
@@ -107,6 +138,9 @@ impl ScrubChildEnv for std::process::Command {
 impl ScrubChildEnv for tokio::process::Command {
     fn scrub_child_env(&mut self) -> &mut Self {
         for var in CHILD_ENV_REMOVALS {
+            self.env_remove(var);
+        }
+        for var in inherited_removals(parent_env(), self.as_std()) {
             self.env_remove(var);
         }
         self
@@ -117,7 +151,7 @@ impl ScrubChildEnv for tokio::process::Command {
 mod tests {
     use super::{
         CHILD_ENV_REMOVALS, ScrubChildEnv, WEB_ORIGIN_VAR, child_env_removals, child_path,
-        web_origin, with_session_id, with_web_origin,
+        scrub_std, web_origin, with_session_id, with_web_origin,
     };
     use std::collections::BTreeMap;
 
@@ -194,6 +228,37 @@ mod tests {
                 "{var} was not scrubbed from the child command"
             );
         }
+    }
+
+    #[test]
+    fn inherited_otel_vars_are_scrubbed_but_explicit_ones_kept() {
+        use std::ffi::{OsStr, OsString};
+        let parent = [
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_PROTOCOL",
+            "OTEL_EXPORTER_OTLP_HEADERS",
+            "OTEL_TRACES_SAMPLER",
+            "OTEL_TRACES_SAMPLER_ARG",
+            "OTEL_RESOURCE_ATTRIBUTES",
+            "OTEL_SDK_DISABLED",
+            "OTEL_SERVICE_NAME",
+            "PATH",
+            "HOTEL_ROOM",
+        ];
+        let mut cmd = std::process::Command::new("true");
+        cmd.env("OTEL_SERVICE_NAME", "agent-chosen");
+        scrub_std(&mut cmd, parent.iter().map(OsString::from));
+        let envs: std::collections::HashMap<&OsStr, Option<&OsStr>> = cmd.get_envs().collect();
+        for var in &parent[..8] {
+            assert_eq!(envs.get(OsStr::new(var)), Some(&None), "{var} leaked to the child");
+        }
+        assert_eq!(
+            envs.get(OsStr::new("OTEL_SERVICE_NAME")),
+            Some(&Some(OsStr::new("agent-chosen")))
+        );
+        assert_eq!(envs.get(OsStr::new("PATH")), None);
+        assert_eq!(envs.get(OsStr::new("HOTEL_ROOM")), None);
     }
 
     #[test]

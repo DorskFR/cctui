@@ -290,6 +290,7 @@ export const ROUTES = [
   { id: "get_version_changelog", method: "GET", path: "/version/changelog", summary: "Release notes of every upstream release newer than this server.", request: null, response: "ChangelogResponse" },
   { id: "post_version_self_update", method: "POST", path: "/version/self-update", summary: "Deploy the newer release: the machine's own update hook when it has one, a YOLO agent otherwise (admin).", request: null, response: null },
   { id: "get_version_self_update", method: "GET", path: "/version/self-update", summary: "The most recent update-hook run and where it got to.", request: null, response: null },
+  { id: "post_otlp_v1_traces", method: "POST", path: "/otlp/v1/traces", summary: "Forward the webui's OTLP trace export to this server's collector.", request: null, response: null },
 ] as const satisfies readonly ApiRoute[];
 
 export type RouteId = (typeof ROUTES)[number]['id'];
