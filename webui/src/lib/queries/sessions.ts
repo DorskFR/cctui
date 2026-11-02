@@ -2,6 +2,9 @@ import { localTimeZone } from "@dorsk/tsumikit";
 import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import type { AgentEvent } from "@bindings/AgentEvent";
 import type { MessagePin } from "@bindings/MessagePin";
+import type { SessionListItem } from "@bindings/SessionListItem";
+import type { SessionListResponse } from "@bindings/SessionListResponse";
+import type { SessionThreadResponse } from "@bindings/SessionThreadResponse";
 import { api } from "../api";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
@@ -209,18 +212,70 @@ export const useSessionLangfuse = (
     retry: false,
   }));
 
-/** The follow-up thread through a session, oldest first. Keyed by the known
- *  next id too, so a follow-up registering while the drawer is open refetches. */
+type FollowupLink = Pick<SessionListItem, "id" | "parent_id">;
+
+const isFollowup = (s: Pick<SessionListItem, "metadata">) =>
+  (s.metadata as Record<string, unknown> | null)?.relation === "followup";
+
+/** The listed follow-ups chained to `id` or to a `known` thread member, as a
+ *  key part: a new follow-up anywhere in the thread changes it. */
+export function threadForks(
+  id: string,
+  followups: readonly FollowupLink[],
+  known: Iterable<string> = [],
+): string {
+  const members = new Set([id, ...known]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const { id: child, parent_id: parent } of followups) {
+      if (!parent || (members.has(child) && members.has(parent))) continue;
+      if (!members.has(child) && !members.has(parent)) continue;
+      members.add(child);
+      members.add(parent);
+      grew = true;
+    }
+  }
+  return followups
+    .filter((f) => f.parent_id && members.has(f.id))
+    .map((f) => f.id)
+    .sort()
+    .join(",");
+}
+
+/** The follow-up tree through a session. Keyed by the follow-ups the live
+ *  list chains to it, so a new sibling refetches the thread from any member. */
 export const useSessionThread = (
   id: () => string,
   next: () => string | null,
   enabled: () => boolean = () => true,
-) =>
-  createQuery(() => ({
-    queryKey: qk.sessionThread(id(), next()),
-    queryFn: () => endpoints.sessionThread(id()),
-    enabled: enabled() && !!id(),
+) => {
+  const qc = useQueryClient();
+  const followups = createQuery(() => ({
+    queryKey: qk.sessions(false),
+    queryFn: () => endpoints.sessions(false),
+    enabled: false,
+    select: (d: SessionListResponse): FollowupLink[] =>
+      d.sessions
+        .filter(isFollowup)
+        .map((s) => ({ id: s.id, parent_id: s.parent_id })),
   }));
+  return createQuery(() => {
+    const known = qc
+      .getQueriesData<SessionThreadResponse>({
+        queryKey: qk.sessionThreadAll(id()),
+      })
+      .flatMap(([, d]) => d?.sessions.map((s) => s.id) ?? []);
+    return {
+      queryKey: qk.sessionThread(
+        id(),
+        next(),
+        threadForks(id(), followups.data ?? [], known),
+      ),
+      queryFn: () => endpoints.sessionThread(id()),
+      enabled: enabled() && !!id(),
+    };
+  });
+};
 
 /** Files the user uploaded into a session. Immutable per session id (a
  *  send appends, never rewrites), so the sender invalidates after staging. */

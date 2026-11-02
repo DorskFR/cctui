@@ -557,6 +557,15 @@ pub struct SessionListItem {
     /// this one and its relation is `followup`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_session_id: Option<String>,
+    /// How many follow-ups continue this session, `next_session_id` included:
+    /// above one, the thread forks here.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub followup_count: u32,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// Cache keep-alive: one tick every `interval_secs` while idle, stopping after
@@ -1214,9 +1223,13 @@ pub struct ThreadSession {
     pub name: Option<String>,
     pub working_dir: String,
     pub registered_at: chrono::DateTime<chrono::Utc>,
+    /// The entry this one follows up on; `None` on the thread's root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
 }
 
-/// The follow-up thread through a session, oldest first.
+/// The follow-up tree through a session: root first, then depth first with
+/// siblings oldest first.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SessionThreadResponse {

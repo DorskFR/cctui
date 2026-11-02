@@ -20,16 +20,29 @@ vi.mock('$lib/paraglide/messages', () => ({
 import ThreadMenu from './ThreadMenu.svelte';
 
 const FALLBACK = { previous: 'Previous', next: 'Next' };
-const t = (id: string, name: string | null, at: string): ThreadSession => ({
+const t = (
+	id: string,
+	name: string | null,
+	at: string,
+	parent: string | null = null
+): ThreadSession => ({
 	id,
 	name,
 	working_dir: '/w',
-	registered_at: at
+	registered_at: at,
+	parent_id: parent
 });
 const THREAD = [
 	t('a', 'first', '2026-10-18T10:00:00Z'),
-	t('b', 'second', '2026-10-19T10:00:00Z'),
-	t('c', null, '2026-10-20T10:00:00Z')
+	t('b', 'second', '2026-10-19T10:00:00Z', 'a'),
+	t('c', null, '2026-10-20T10:00:00Z', 'b')
+];
+/** R followed up twice (A, then B), and A followed up again (A2). */
+const FORK = [
+	t('r', 'root', '2026-10-18T10:00:00Z'),
+	t('a', 'branch-a', '2026-10-19T10:00:00Z', 'r'),
+	t('a2', 'branch-a2', '2026-10-20T10:00:00Z', 'a'),
+	t('b', 'branch-b', '2026-10-21T10:00:00Z', 'r')
 ];
 
 function session(over: Partial<SessionListItem> = {}): SessionListItem {
@@ -52,6 +65,29 @@ describe('threadEntries', () => {
 		expect(e.map((x) => x.id)).toEqual(['a', 'b', 'c']);
 		expect(e.map((x) => x.current)).toEqual([false, true, false]);
 		expect(e[2].title).toBe('/w');
+	});
+
+	it('draws no tree for a thread that never forks', () => {
+		expect(threadEntries(session(), THREAD, FALLBACK).map((x) => x.tree)).toEqual(['', '', '']);
+	});
+
+	it('branches the siblings of a fork and keeps the nested follow-up in its branch', () => {
+		const e = threadEntries(session({ id: 'a2' }), FORK, FALLBACK);
+		expect(e.map((x) => [x.id, x.tree, x.current])).toEqual([
+			['r', '', false],
+			['a', '├─ ', false],
+			['a2', '│  ', true],
+			['b', '└─ ', false]
+		]);
+	});
+
+	it('branches again where a branch forks itself', () => {
+		const e = threadEntries(
+			session({ id: 'a' }),
+			[...FORK.slice(0, 3), t('a3', 'branch-a3', '2026-10-20T11:00:00Z', 'a'), FORK[3]],
+			FALLBACK
+		);
+		expect(e.map((x) => x.tree)).toEqual(['', '├─ ', '│  ├─ ', '│  └─ ', '└─ ']);
 	});
 
 	it('falls back to the session links until the thread lands', () => {
@@ -136,6 +172,25 @@ describe('ThreadMenu', () => {
 		rows[2].click();
 		flushSync();
 		expect(goto).toHaveBeenCalledWith('/sessions/c');
+	});
+
+	it('renders a fork as branches with the current session highlighted', async () => {
+		query.data = { sessions: FORK };
+		render(session({ id: 'a2', name: 'branch-a2' }));
+		const rows = await openMenu();
+		expect(rows.map((r) => r.querySelector('.tree')?.textContent ?? '')).toEqual([
+			'',
+			'├─ ',
+			'│  ',
+			'└─ '
+		]);
+		expect(rows.map((r) => r.getAttribute('aria-current'))).toEqual([null, null, 'page', null]);
+		expect(rows[2].querySelector('.fw-bold')?.textContent?.trim()).toBe('branch-a2');
+		expect(rows[3].textContent).toContain('branch-b');
+
+		rows[3].click();
+		flushSync();
+		expect(goto).toHaveBeenCalledWith('/sessions/b');
 	});
 
 	it('does not navigate when the current session is picked', async () => {

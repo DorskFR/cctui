@@ -512,6 +512,7 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
         launch_at: None,
         launch_error: None,
         next_session_id: None,
+        followup_count: 0,
     });
     app.update_aggregates();
 }
