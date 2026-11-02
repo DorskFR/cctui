@@ -262,6 +262,17 @@ impl LiveSnapshot {
         self.source.as_deref() == Some(SPARE_SOURCE)
     }
 
+    /// A `failed` worker counts as exited: a launch Claude Code refuses at
+    /// startup lands there with the reason in `detail`.
+    fn canary_view(&self) -> super::canary::Observed {
+        super::canary::Observed {
+            short: self.short.clone(),
+            exited: self.is_dead() || self.state.as_deref() == Some("failed"),
+            detail: self.detail.clone().filter(|d| !d.trim().is_empty()),
+            started_at_ms: self.started_at,
+        }
+    }
+
     /// Whether claude reports this still-listed session as dead / "process
     /// gone". Parsed DEFENSIVELY across the plausible wire shapes:
     ///   - boolean `gone` / `dead` flags,
@@ -1239,7 +1250,9 @@ impl Driver {
             }
         };
         self.liveness.set_host(&sock);
+        let canary_roster: Vec<_> = resp.jobs.iter().map(LiveSnapshot::canary_view).collect();
         self.apply_snapshot(resp.jobs).await;
+        self.check_canaries(&canary_roster).await;
         self.probe_liveness(&sock).await;
         let reattached = self.churned;
         if self.churned {
@@ -1325,6 +1338,18 @@ impl Driver {
 
     async fn emit(&self, evt: AdapterEvent) {
         let _ = self.events.send(evt).await;
+    }
+
+    async fn check_canaries(&self, roster: &[super::canary::Observed]) {
+        for (local_id, text) in super::canary::observe(roster) {
+            tracing::warn!(%local_id, %text, "hook canary");
+            self.emit(AdapterEvent::Message {
+                local_id,
+                payload: super::canary::marker_payload(&text),
+                turn_id: None,
+            })
+            .await;
+        }
     }
 
     /// Emit an event parsed out of transcript bytes read for the FIRST time.

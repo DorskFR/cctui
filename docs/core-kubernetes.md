@@ -36,9 +36,13 @@ and dispatches through `POST /api/v1/sessions/dispatch`.
    `--namespace`, `--default-profile` and a worker-reachable
    `--worker-cctui-url`. Persist its returned configuration as a Secret and
    run `ghcr.io/dorskfr/cctui-dispatcher-kube:0.27.1`. Its RBAC needs Jobs,
-   Pods (including logs), per-dispatch Secrets and WorkerProfiles; an identity
-   that can only create/delete Jobs is insufficient. See the operations in
-   `crates/cctui-dispatcher-kube/src/spawn.rs` when scoping verbs.
+   Pods (including logs) and WorkerProfiles; it creates no Secrets, since each
+   dispatch is registered with the server instead. An identity that can only
+   create/delete Jobs is insufficient. See the operations in
+   `crates/cctui-dispatcher-kube/src/spawn.rs` when scoping verbs. The server
+   must trust the cluster's service-account issuer
+   (`CCTUI_DISPATCH_TRUSTED_ISSUERS`) so worker pods can redeem their identity;
+   see [Dispatch identity](./worker-contract.md#dispatch-identity-kube).
 7. Bootstrap service identity, provider accounts and a scoped caller key via
    the core API. Configure your trigger service with the dispatcher/profile
    and context pack. Test both directions: the caller must reach core, and

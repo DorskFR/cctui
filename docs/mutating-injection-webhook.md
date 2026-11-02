@@ -48,11 +48,23 @@ The sidecar/init image defaults to `ghcr.io/dorskfr/cctui-worker:<version>`
    `envFrom` the `guard-proxy-env` ConfigMap; `runAsUser/runAsGroup 1337`,
    `allowPrivilegeEscalation false`, caps drop `ALL`; startupProbe
    `GET /health:15002`. When `guard-identity` is set, `GUARD_PROXY_IDENTITY` is
-   upserted over the ConfigMap default.
+   upserted over the ConfigMap default. It alone mounts the `guard-proxy-sa-token`
+   projected volume at `/var/run/secrets/kubernetes.io/serviceaccount` (the pod
+   sets `automountServiceAccountToken: false`), which holds two tokens: `token`
+   (default audience, 3600s, for Vault login and `k8s:` refs) and `cctui-token`
+   (audience `cctui`, 600s), which the proxy redeems once at startup for the
+   dispatch's machine key. On a dispatched pod (annotation
+   `cctui.dev/dispatch-id`) it also gets `CCTUI_DISPATCH_ID` and
+   `CCTUI_DISPATCH_SERVER_URL` from the `cctui.dev/dispatch-id` and
+   `cctui.dev/server-url` annotations through the downward API. See
+   [Dispatch identity](./worker-contract.md#dispatch-identity-kube).
 3. **Pod-level** — `securityContext.fsGroup: 1000` if unset; emptyDir volumes
    `home`, `overlay`, `guard-state`, `proxy-policy`, `guard-proxy-ca` (plus
-   `gpg-agent` when gpg requested) and the `guard-proxy-inject` ConfigMap volume,
-   added only if missing.
+   `gpg-agent` when gpg requested), the `guard-proxy-inject` ConfigMap volume and
+   the `guard-proxy-sa-token` projected volume, added only if missing. There is no
+   per-dispatch env Secret: the worker gets its payload env from the guard-proxy,
+   and the validating webhook denies any worker `secretKeyRef` the profile does
+   not declare.
 4. **Worker container** (the only one mutated) — securityContext overwritten with
    the sanctioned shape: `runAsUser 0`, AppArmor `Unconfined` (the default
    profile denies `mount(2)`), caps drop `ALL` add `[SYS_ADMIN, CHOWN,

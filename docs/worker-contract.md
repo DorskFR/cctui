@@ -57,7 +57,8 @@ case, never a *no-`SESSION_ID`* case.
 | Var | Required | Meaning |
 | --- | --- | --- |
 | `CCTUI_URL` (or `CCTUI_SERVER_URL`) | yes | cctui-server base URL the daemon dials. Its host is always-allowed in the egress policy. |
-| `CCTUI_MACHINE_KEY` | yes | Shared machine key; the daemon runs without enroll (`Config::from_env`). |
+| `CCTUI_MACHINE_KEY` | yes | Machine key; the daemon runs without enroll (`Config::from_env`). A kube dispatch sets the placeholder `cctui-dispatch-placeholder-key`: the guard-proxy holds the real key (see [Dispatch identity](#dispatch-identity-kube)). |
+| `CCTUI_DISPATCH_ID` | kube only | The dispatch the pod's guard-proxy redeemed. Set ⇒ the entrypoint fetches the payload env from the proxy before any phase, and fails the pod with the reason when it cannot. |
 | `SESSION_ID` | yes | Pre-minted session id to register. |
 | `TASK_PAYLOAD_JSON` | no | Opaque dispatch payload (tenant fields live inside it). |
 | `TASK_NAME` | no | Human label for the session. |
@@ -136,27 +137,84 @@ need only the role.
 
 ### Secret references in `payload.env`
 
-The dispatch payload's `env` map is the **one secret-injection surface**, and it
-carries **references, never secret values**. The kube dispatcher lifts
-`payload.env` out of `TASK_PAYLOAD_JSON` and promotes each entry to **pod
-container env**, choosing the form by value prefix:
+The dispatch payload's `env` map carries plain values only. A value shaped like
+a secret reference (`vault:`, `bao:`, `k8s:`) is rejected by the dispatcher and
+by the admission webhook: secret references are resolved by the guard-proxy
+sidecar from its own config, never through worker env. `env` is stripped from
+`TASK_PAYLOAD_JSON`. The kube dispatcher never writes it to the cluster: it is
+registered with the server and fetched by the worker at startup (next section).
 
-| `payload.env` value | becomes | resolved by |
-| --- | --- | --- |
-| `vault:<path>#<field>` | literal env var | the in-cluster **vault-env** webhook, at exec — before the entrypoint |
-| `k8s:[<ns>/]<secret>#<key>` | `valueFrom.secretKeyRef` (namespace prefix dropped; must exist in the pod's ns) | the kubelet, at pod start |
-| anything else | literal env var | passthrough (plain value / test override) |
+### Dispatch identity (kube)
 
-So by the time the entrypoint runs, every var holds a **real value** — the
-dispatcher never reads the secret, and a `vault:`/`k8s:` value never lands in the
-Job spec or etcd. The boundary is the worker's Vault role scope (tenant prefix)
-and the namespace's k8s secrets, not the reference string (which is untrusted).
-The entrypoint stays product-aware (wires `gh`); the dispatcher stays
-secret-agnostic. In `transparent-external`, `GPG_PRIVATE_KEY` is delivered to the
-**guard-proxy sidecar** (not the worker) — see [Remote GPG signing](#remote-gpg-signing-transparent-external-cct-721).
-`env` is stripped from
-`TASK_PAYLOAD_JSON` so the daemon cannot re-apply an unresolved reference over
-the resolved pod env.
+No Secret is created per dispatch, and the machine key never sits in etcd or in
+the worker container.
+
+1. **Register.** Before creating the Job the kube dispatcher calls
+   `POST /api/v1/dispatch/register` (dispatcher-key Bearer) with a fresh
+   dispatch id, the namespace, the Job name, the session's machine key and the
+   payload `env`. The server keeps the key and env encrypted with the vault key.
+   The Job carries only the id: pod annotations `cctui.dev/dispatch-id` and
+   `cctui.dev/server-url`, worker env `CCTUI_DISPATCH_ID` and the placeholder
+   `CCTUI_MACHINE_KEY`.
+2. **Redeem.** The envelope projects a second service-account token into the
+   guard-proxy only: audience `cctui`, `expirationSeconds: 600`, at
+   `/var/run/secrets/kubernetes.io/serviceaccount/cctui-token`, and hands the
+   proxy the two annotations through the downward API (`CCTUI_DISPATCH_ID`,
+   `CCTUI_DISPATCH_SERVER_URL`). At startup the proxy presents the token to
+   `POST /api/v1/dispatch/redeem`. The server verifies the JWT itself against
+   the issuer's JWKS (RS256 or ES256), then the audience, expiry, a lifetime of
+   at most an hour, the namespace, and that the pod is `<job>-<5 chars>`, a pod
+   of the registered Job. One redeem per dispatch: a replay, or a pod of another
+   Job, is refused. The proxy keeps the machine key in memory.
+3. **Inject.** On connections to the server host the proxy replaces
+   `Authorization: Bearer cctui-dispatch-placeholder-key` with the real key
+   (other credentials, such as gateway session tokens, pass untouched), swaps
+   the placeholder in the `/api/v1/daemon/auth` body, and masks the key in its
+   answer. WebSocket upgrades are spliced after the handshake. An `https://`
+   server is TLS-terminated with the per-pod CA. This branch runs before the
+   egress allow-list and private-IP deny: the proxy dials its own resolution of
+   the trusted host, so the key only ever reaches the real server.
+4. **Env.** The entrypoint reads `GET http://127.0.0.1:15002/dispatch/env` from
+   the proxy, which fetches `GET /api/v1/dispatch/{id}/env` with the real key.
+   The server answers once.
+
+**No fallback.** A redeem that fails (server unreachable after five attempts,
+issuer not trusted, token or pod rejected) leaves the proxy up and answering
+`/dispatch/env` with `503 {"error": "<reason>"}`. The entrypoint then writes
+`dispatch identity: <reason>` to the termination log and exits 1, so the Job
+fails at startup and the dispatcher reports that reason as the dispatch's
+failure.
+
+**Server configuration.** `CCTUI_DISPATCH_TRUSTED_ISSUERS` lists the clusters
+whose tokens may redeem, as JSON. Unset trusts none, and every redeem is
+refused with that reason.
+
+```json
+[
+  {"issuer": "https://oidc.eks.<region>.amazonaws.com/id/<cluster-id>"},
+  {"issuer": "https://kubernetes.default.svc.cluster.local",
+   "jwks_file": "/etc/cctui/dev-cluster-jwks.json"},
+  {"issuer": "https://issuer.example.test", "jwks_uri": "https://issuer.example.test/keys"}
+]
+```
+
+`issuer` must equal the token's `iss` exactly. Keys come from OIDC discovery
+(`<issuer>/.well-known/openid-configuration`) unless `jwks_uri` or `jwks_file`
+is set. They are cached for ten minutes and refetched early, at most every 30s,
+when a token names an unknown `kid`. EKS publishes its issuer, so discovery
+works with no kube API access from the server. A cluster whose issuer is not
+reachable from the server (k3s and most self-hosted clusters serve it from the
+API server, behind authentication and the cluster CA) needs either:
+
+- `jwks_file`: export the keys with `kubectl get --raw /openid/v1/jwks` and mount
+  them into the server. Refresh the file when the cluster's service-account
+  signing key rotates.
+- or a public issuer: start the API server with `--service-account-issuer` set
+  to a URL that serves discovery and the JWKS, and allow anonymous reads of
+  them (the `system:service-account-issuer-discovery` ClusterRole).
+
+The issuer is `kubectl get --raw /.well-known/openid-configuration | jq -r .issuer`.
+The dispatcher no longer needs RBAC on Secrets.
 
 ## Optional mounts
 

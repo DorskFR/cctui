@@ -17,6 +17,7 @@ use crate::inject::Injector;
 use crate::peek::{extract_http_host, extract_sni};
 use crate::policy::PolicyManager;
 use crate::private_allow::PrivateAllow;
+use crate::server_inject::ServerInjector;
 
 /// Recovers the pre-`DNAT` destination of a `REDIRECT`ed socket via the
 /// `SO_ORIGINAL_DST` getsockopt. Uses the safe `nix` wrapper (no `unsafe`).
@@ -34,6 +35,7 @@ pub struct TransparentListener {
     policy: Arc<PolicyManager>,
     injection: Option<Arc<Injector>>,
     private: Arc<PrivateAllow>,
+    server: Option<Arc<ServerInjector>>,
 }
 
 impl TransparentListener {
@@ -44,7 +46,13 @@ impl TransparentListener {
         private: Arc<PrivateAllow>,
     ) -> anyhow::Result<Self> {
         let listener = TcpListener::bind(addr).await?;
-        Ok(Self { listener, policy, injection, private })
+        Ok(Self { listener, policy, injection, private, server: None })
+    }
+
+    #[must_use]
+    pub fn with_server(mut self, server: Option<Arc<ServerInjector>>) -> Self {
+        self.server = server;
+        self
     }
 
     pub async fn serve(self) -> anyhow::Result<()> {
@@ -53,8 +61,10 @@ impl TransparentListener {
             let policy = self.policy.clone();
             let injection = self.injection.clone();
             let private = self.private.clone();
+            let server = self.server.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_connection(stream, policy, injection, private).await {
+                if let Err(e) = handle_connection(stream, policy, injection, private, server).await
+                {
                     tracing::debug!("transparent connection ended: {e}");
                 }
             });
@@ -92,6 +102,7 @@ async fn handle_connection(
     policy: Arc<PolicyManager>,
     injection: Option<Arc<Injector>>,
     private: Arc<PrivateAllow>,
+    server: Option<Arc<ServerInjector>>,
 ) -> anyhow::Result<()> {
     let dst = original_dst(&conn)?;
     let host_port = dst.to_string();
@@ -104,6 +115,17 @@ async fn handle_connection(
     let name = sni.as_deref().or(http_host.as_deref());
     let host = name.map_or_else(|| dst.ip().to_string(), str::to_owned);
     let policy_target = format!("{host}:{port}");
+
+    // Before the private-IP denylist: an in-cluster server sits on a private
+    // address, and the injector dials its own resolution of the trusted host.
+    if let Some(server) = server.as_ref()
+        && name.is_some()
+        && server.matches(&host, port)
+    {
+        tracing::info!("INJECT cctui server {policy_target} (orig={host_port})");
+        policy.record(&policy_target, true, "cctui server");
+        return Box::pin(server.handle(conn, buf)).await;
+    }
 
     let exempt = private.exempts(&host, port);
     if ip_is_denied(dst_ip, exempt) || name.is_some_and(|n| host_is_denied(n, exempt)) {

@@ -35,7 +35,14 @@ import { settings } from '$lib/settings.svelte';
 import { m } from '$lib/paraglide/messages';
 import type { EnvRow, Form, SpawnPrefill, Target } from './types';
 import { accountBacksAdapter, providerForAdapter, NO_ACCOUNT, poolName } from './options';
-import { applySpec, initialProfile, specFromForm, specOf, type ProfileSpecForm } from './profiles';
+import {
+	applySpec,
+	initialProfile,
+	sortProfiles,
+	specFromForm,
+	specOf,
+	type ProfileSpecForm
+} from './profiles';
 import { blank, seedForm } from './spawnSeed';
 import { SpawnRecall } from './spawnRecall';
 import { buildSpawnBody, draftBody, envMap } from './spawnBody';
@@ -265,7 +272,7 @@ export class SpawnForm {
 			if (machine === this.profileMachineApplied && stillThere) return;
 			this.profileMachineApplied = machine;
 			const last = settings.lastEntryFor(machine)?.profile_id ?? null;
-			this.selectedProfileId = initialProfile(profiles, last)?.id ?? null;
+			this.selectedProfileId = initialProfile(sortProfiles(profiles), last)?.id ?? null;
 			this.oneOff = null;
 		});
 		// First open with no profile yet: seed "Default" from the spawn memory.
