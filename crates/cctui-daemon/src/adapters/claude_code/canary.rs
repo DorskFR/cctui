@@ -12,12 +12,17 @@ pub(super) const WINDOW: Duration = Duration::from_secs(30);
 /// watchdog owns the never-started case.
 const STALE: Duration = Duration::from_mins(5);
 
+const HOOKS_LOST: &str = "Questions, permission prompts and turn ends will not reach cctui.";
+
 const EXITED_WITHOUT_DETAIL: &str = "worker exited before cctui hooks loaded; Claude Code may \
                                      have refused a launch flag (disableSideloadFlags)";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Verdict {
-    HooksBlocked,
+    /// `spare`: Claude Code claimed a pre-warmed spare for this launch.
+    HooksBlocked {
+        spare: bool,
+    },
     McpBlocked,
     ExitedEarly(Option<String>),
 }
@@ -26,10 +31,13 @@ impl Verdict {
     pub(super) fn notice(&self) -> String {
         let secs = WINDOW.as_secs();
         match self {
-            Self::HooksBlocked => format!(
+            Self::HooksBlocked { spare: true } => format!(
+                "cctui hooks not loaded within {secs}s: Claude Code started this session from a \
+                 pre-warmed spare that did not pick up cctui's hook settings. {HOOKS_LOST}"
+            ),
+            Self::HooksBlocked { spare: false } => format!(
                 "cctui hooks not loaded within {secs}s: a managed policy (allowManagedHooksOnly) \
-                 may be blocking them, check /status in the session. Questions, permission \
-                 prompts and turn ends will not reach cctui."
+                 may be blocking them, check /status in the session. {HOOKS_LOST}"
             ),
             Self::McpBlocked => format!(
                 "cctui MCP server not connected within {secs}s while hooks fire: a managed \
@@ -45,7 +53,9 @@ impl Verdict {
 
     const fn cleared_notice(&self) -> Option<&'static str> {
         match self {
-            Self::HooksBlocked => Some("cctui hooks are firing; the earlier warning is cleared."),
+            Self::HooksBlocked { .. } => {
+                Some("cctui hooks are firing; the earlier warning is cleared.")
+            }
             Self::McpBlocked => Some("cctui MCP server connected; the earlier warning is cleared."),
             Self::ExitedEarly(_) => None,
         }
@@ -71,6 +81,7 @@ struct Watch {
     armed_at_ms: i64,
     live_since: Option<Instant>,
     pinged: bool,
+    spare: bool,
     flagged: Option<Verdict>,
 }
 
@@ -101,6 +112,7 @@ impl Canary {
                 armed_at_ms: now_ms,
                 live_since: None,
                 pinged: false,
+                spare: false,
                 flagged: None,
             },
         );
@@ -112,6 +124,15 @@ impl Canary {
         for (local_id, watch) in &mut self.watches {
             if local_id == id || watch.claude_session == id {
                 watch.pinged = true;
+            }
+        }
+    }
+
+    /// The dispatch for `id` was served by a pre-warmed spare.
+    pub(super) fn mark_spare(&mut self, id: &str) {
+        for (local_id, watch) in &mut self.watches {
+            if local_id == id || watch.claude_session == id {
+                watch.spare = true;
             }
         }
     }
@@ -166,7 +187,7 @@ fn step(
     let mcp_up = watch.mcp_session.as_deref().is_none_or(mcp_ready);
     if let Some(flag) = &watch.flagged {
         let recovered = match flag {
-            Verdict::HooksBlocked => watch.pinged,
+            Verdict::HooksBlocked { .. } => watch.pinged,
             Verdict::McpBlocked => mcp_up,
             Verdict::ExitedEarly(_) => true,
         };
@@ -200,7 +221,11 @@ fn step(
     if now.duration_since(since) < WINDOW {
         return Step::Wait;
     }
-    Step::Flag(if watch.pinged { Verdict::McpBlocked } else { Verdict::HooksBlocked })
+    Step::Flag(if watch.pinged {
+        Verdict::McpBlocked
+    } else {
+        Verdict::HooksBlocked { spare: watch.spare }
+    })
 }
 
 static CANARY: LazyLock<Mutex<Canary>> = LazyLock::new(|| Mutex::new(Canary::default()));
@@ -215,6 +240,12 @@ pub(super) fn arm(local_id: &str, short: &str, claude_session: &str, mcp_session
 pub(super) fn ping(id: &str) {
     if let Ok(mut c) = CANARY.lock() {
         c.ping(id);
+    }
+}
+
+pub(super) fn mark_spare(id: &str) {
+    if let Ok(mut c) = CANARY.lock() {
+        c.mark_spare(id);
     }
 }
 
@@ -267,8 +298,21 @@ mod tests {
         assert_eq!(notices[0].0, "loc-1");
         assert!(notices[0].1.contains("cctui hooks not loaded"), "{}", notices[0].1);
         assert!(notices[0].1.contains("/status"), "{}", notices[0].1);
-        assert_eq!(c.flagged("loc-1"), Some(&Verdict::HooksBlocked));
+        assert_eq!(c.flagged("loc-1"), Some(&Verdict::HooksBlocked { spare: false }));
         assert!(c.observe(&roster, t0 + WINDOW * 2, &never).is_empty(), "flagged once");
+    }
+
+    #[test]
+    fn a_spare_claim_is_named_instead_of_a_managed_policy() {
+        let (mut c, t0) = armed(None);
+        c.mark_spare("claude-1");
+        let roster = [live("abcd1234")];
+        c.observe(&roster, t0, &never);
+        let notices = c.observe(&roster, t0 + WINDOW, &never);
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].1.contains("pre-warmed spare"), "{}", notices[0].1);
+        assert!(!notices[0].1.contains("allowManagedHooksOnly"), "{}", notices[0].1);
+        assert_eq!(c.flagged("loc-1"), Some(&Verdict::HooksBlocked { spare: true }));
     }
 
     #[test]
