@@ -174,6 +174,9 @@ impl Driver {
             .await
             .with_context(|| format!("resume dispatch for hibernated session {short}"))?;
         tracing::info!(?resp, %short, %session_id, "resumed hibernated session via dispatch");
+        if resp.get("via").and_then(serde_json::Value::as_str) == Some("spare") {
+            super::super::canary::mark_spare(&session_id);
+        }
 
         // Wait (bounded) for the revived worker to report alive, then give the
         // PTY a moment to finish booting so the reply isn't swallowed by a
@@ -667,6 +670,9 @@ impl DeferredDispatch {
             .inspect_err(|_| crate::configsweep::remove_session_files(&self.short))
             .with_context(|| format!("dispatch {}", self.what))?;
         tracing::info!(?resp, session_id = %self.session_id, "{} dispatched via control socket", self.what);
+        if resp.get("via").and_then(serde_json::Value::as_str) == Some("spare") {
+            super::super::canary::mark_spare(&self.session_id);
+        }
         if let Some(watchdog) = &self.watchdog {
             if let Err(stall) = watchdog.confirm(&self.sock, &self.short).await {
                 tracing::warn!(session_id = %self.session_id, short = %self.short, "{stall}");
