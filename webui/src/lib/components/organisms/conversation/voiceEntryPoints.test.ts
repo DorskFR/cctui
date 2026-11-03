@@ -21,4 +21,11 @@ describe('conversation voice entry points follow the speech capabilities', () =>
 			'<VoiceControls live={voiceLive} ontogglelive={onvoicelive} ondictated={dictated} />'
 		);
 	});
+
+	it('routes an auto-sent dictation like Send, so a cold session is not sent to in place', () => {
+		const body = composer.slice(composer.indexOf('async function dictated('));
+		const fn = body.slice(0, body.indexOf('\n\t}\n'));
+		expect(fn).toContain("if (route === 'send') return sendText(text);");
+		expect(fn).toContain('submit();');
+	});
 });

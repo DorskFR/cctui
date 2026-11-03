@@ -318,10 +318,13 @@
 		el.setSelectionRange(next.caret, next.caret);
 	}
 
-	/** A finished dictation: into the draft, or straight out when the pref says so. */
-	function dictated(text: string) {
-		if (settings.voice.autoSend) sendText(text);
-		else void insertText(text);
+	/** A finished dictation: into the draft, or out the way Send would route it
+	 *  when the pref says so, so a cold session gets its follow-up. */
+	async function dictated(text: string) {
+		if (!settings.voice.autoSend) return void insertText(text);
+		if (route === 'send') return sendText(text);
+		await insertText(text);
+		submit();
 	}
 
 	/** Quote a message into the draft as a Markdown blockquote, keeping whatever
