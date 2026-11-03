@@ -14,6 +14,7 @@
 
 mod attach;
 mod backfill;
+mod bypass_accept;
 mod canary;
 pub(crate) mod claude_service;
 mod control;

@@ -397,6 +397,7 @@ impl Driver {
         // merged under the managed hooks. Fail-closed: account-bound but
         // unmintable aborts rather than launching a worker that will 401.
         let launch_env = self.resolve_launch_env(session_id, &spec.env).await?;
+        super::super::bypass_accept::ensure_for(spec.permission_mode);
         let mut launch = spawn_launch(spec, session_id);
         launch.plugin_dirs.clone_from(&launch_env.plugin_dirs);
         launch.mcp_config =
@@ -591,6 +592,7 @@ impl Driver {
         if let Some(extract) = extract {
             self.materialize_fork_slice(cwd, &resume_id, session_id, extract)?;
         }
+        super::super::bypass_accept::ensure_for(spec.permission_mode);
         let mut launch = fork_launch(spec, &resume_id, session_id, extract.is_some());
         self.remember_launch_posture(short, spec);
         let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
