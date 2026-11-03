@@ -1387,11 +1387,34 @@ fn scrub_event(event: AdapterEvent, scrub: &CompiledPatterns) -> AdapterEvent {
     if scrub.is_empty() {
         return event;
     }
+    let event = match event {
+        AdapterEvent::PtyChunk { local_id, data } => {
+            return AdapterEvent::PtyChunk { local_id, data: scrub_pty_chunk(data, scrub) };
+        }
+        other => other,
+    };
     let Ok(mut value) = serde_json::to_value(&event) else { return event };
     if redact::redact_json(&mut value, scrub) == 0 {
         return event;
     }
     serde_json::from_value(value).unwrap_or(event)
+}
+
+/// PTY bytes ride as base64, which the high-entropy detector would mask whole:
+/// scrub the decoded text instead, best-effort, and pass non-UTF-8 frames as is.
+fn scrub_pty_chunk(data: String, scrub: &CompiledPatterns) -> String {
+    use base64::Engine as _;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let Ok(text) =
+        engine.decode(&data).map_err(drop).and_then(|b| String::from_utf8(b).map_err(drop))
+    else {
+        return data;
+    };
+    let mut value = serde_json::Value::String(text);
+    if redact::redact_json(&mut value, scrub) == 0 {
+        return data;
+    }
+    value.as_str().map_or(data, |text| engine.encode(text))
 }
 
 /// Claude Code requests `thinking.display: "omitted"`, so the API returns
@@ -1841,6 +1864,59 @@ mod tests {
         let json = serde_json::to_string(&out).unwrap();
         assert!(!json.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123"), "secret leaked: {json}");
         assert!(json.contains("[REDACTED:github_token"), "no placeholder: {json}");
+    }
+
+    fn pty_chunk_bytes(event: &AdapterEvent) -> Vec<u8> {
+        use base64::Engine as _;
+        let AdapterEvent::PtyChunk { data, .. } = event else {
+            panic!("not a pty chunk: {event:?}")
+        };
+        base64::engine::general_purpose::STANDARD.decode(data).expect("data stays valid base64")
+    }
+
+    #[test]
+    fn scrub_event_keeps_a_pty_repaint_intact() {
+        use base64::Engine as _;
+        use std::fmt::Write as _;
+        let scrub =
+            compile_scrub(&cctui_proto::ws::SecretScrubConfig { enabled: true, patterns: vec![] });
+        let words = ["Read", "src/main.rs", "Bash", "cargo test", "Edit", "\u{2500}\u{2502}"];
+        let mut repaint = String::from("\x1b[?2026h\x1b[2J\x1b[H");
+        for row in 0..40_usize {
+            let (line, colour, word) = (row + 1, row * 7 % 256, words[row % 6]);
+            write!(repaint, "\x1b[{line};3H\x1b[38;5;{colour}m{word} {row:02}").unwrap();
+        }
+        repaint.push_str("\x1b[?2026l");
+        let data = base64::engine::general_purpose::STANDARD.encode(&repaint);
+        let event = AdapterEvent::PtyChunk { local_id: "s".to_owned(), data: data.clone() };
+        let out = scrub_event(event, &scrub);
+        assert!(matches!(&out, AdapterEvent::PtyChunk { data: d, .. } if *d == data), "{out:?}");
+    }
+
+    #[test]
+    fn scrub_event_keeps_non_utf8_pty_bytes_intact() {
+        use base64::Engine as _;
+        let scrub =
+            compile_scrub(&cctui_proto::ws::SecretScrubConfig { enabled: true, patterns: vec![] });
+        let bytes: Vec<u8> = (0..=255_u8).cycle().take(4096).collect();
+        let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let out = scrub_event(AdapterEvent::PtyChunk { local_id: "s".to_owned(), data }, &scrub);
+        assert_eq!(pty_chunk_bytes(&out), bytes);
+    }
+
+    #[test]
+    fn scrub_event_masks_a_secret_inside_pty_text() {
+        use base64::Engine as _;
+        let scrub =
+            compile_scrub(&cctui_proto::ws::SecretScrubConfig { enabled: true, patterns: vec![] });
+        let token = format!("{}{}", "ghp_ABCDEFGHIJKL", "MNOPQRSTUVWX0123");
+        let frame = format!("\x1b[1m$ export GH_TOKEN={token}\x1b[0m\r\n");
+        let data = base64::engine::general_purpose::STANDARD.encode(&frame);
+        let out = scrub_event(AdapterEvent::PtyChunk { local_id: "s".to_owned(), data }, &scrub);
+        let text = String::from_utf8(pty_chunk_bytes(&out)).unwrap();
+        assert!(!text.contains(&token), "secret leaked: {text}");
+        assert!(text.starts_with("\x1b[1m$ export GH_TOKEN=[REDACTED:github_token"), "{text}");
+        assert!(text.ends_with("\x1b[0m\r\n"), "{text}");
     }
 
     #[test]
