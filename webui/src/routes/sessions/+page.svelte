@@ -304,6 +304,7 @@
 		<SessionTiles
 			sessions={sp.tileSessions}
 			onNavigate={(sid) => void sp.navigateToForked(sid)}
+			onFollowup={sp.followUp}
 			onoverflow={(items) => (tilesOverflow = items)}
 		/>
 		{#snippet failed()}

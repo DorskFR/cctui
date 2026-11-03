@@ -107,6 +107,20 @@ test.describe('desktop', () => {
 		});
 	}
 
+	for (const chord of ['Enter', 'Meta+Enter']) {
+		test(`${chord} in a cold tile launches the follow-up`, async ({ page }) => {
+			test.setTimeout(60_000);
+			const stub = await stubCold(page);
+			await page.addInitScript(() => localStorage.setItem('cctui_list_view', 'tiles'));
+			await page.goto('/sessions');
+			const tile = page.locator('[data-journey="session-tiles"] .tile').first();
+			await tile.locator('[data-journey="composer"] textarea').first().fill(INSTRUCTION);
+			await expect(tile.locator('[data-journey="composer"] [data-tsu="SplitButton"]')).toContainText('Follow-up');
+			await tile.locator('[data-journey="composer"] textarea').first().press(chord);
+			await expectFollowupLaunched(page, stub);
+		});
+	}
+
 	test('the Send menu offers Send here and the options modal above the schedule items', async ({ page }) => {
 		await stubCold(page);
 		await openSource(page);
