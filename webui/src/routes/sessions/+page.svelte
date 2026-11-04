@@ -7,6 +7,7 @@
 		useInvalidateSessions,
 		useLabels,
 		useMachineResources,
+		useMe,
 		endpoints,
 		qk
 	} from '$lib/queries';
@@ -21,7 +22,8 @@
 	import { dockLayout } from '$lib/spawnDock.svelte';
 	import StatsDock from '$lib/components/organisms/statsdock/StatsDock.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
-	import { Callout, ConfirmModal } from '@dorsk/tsumikit';
+	import { Callout, ConfirmModal, Icon, Toggle } from '@dorsk/tsumikit';
+	import { visibleSessions } from '$lib/hiddenOwners';
 	import SessionSections from './SessionSections.svelte';
 	import SessionTiles from './SessionTiles.svelte';
 	import TilesOverflowChip from './TilesOverflowChip.svelte';
@@ -45,7 +47,14 @@
 
 	// Live buckets always show non-archived sessions; the archive is a separate
 	// paginated section below.
-	const sessions = useSessions(() => false);
+	const me = useMe();
+	const isAdmin = $derived(me.data?.role === 'admin');
+	let showHidden = $state(false);
+	const sessions = useSessions(
+		() => false,
+		() => true,
+		() => isAdmin && showHidden
+	);
 	const qc = useQueryClient();
 	const invalidateSessions = useInvalidateSessions();
 	const actions = useSessionActions();
@@ -78,11 +87,12 @@
 			write: (key, payload) => drafts.set(key, JSON.stringify(payload)),
 			clear: clearSpawnSlot
 		},
-		sessions: () => sessions.data?.sessions ?? [],
+		sessions: () => visibleSessions(sessions.data?.sessions ?? [], isAdmin && showHidden),
 		sessionsLoading: () => sessions.isLoading,
 		allSessions: () => allSessions.data?.sessions ?? [],
 		labels: () => labelsQuery.data?.labels,
-		renderedOrder: renderedIds
+		renderedOrder: renderedIds,
+		showHidden: () => isAdmin && showHidden
 	});
 
 	// Escape hatch: /sessions?view=list|grid|tiles sets (and persists) the mode,
@@ -267,8 +277,21 @@
 </script>
 
 
-{#snippet overflowChip()}
-	<TilesOverflowChip items={tilesOverflow} onOpen={(s) => (sp.openSession = s)} />
+{#snippet trailingControls()}
+	{#if isAdmin}
+		<Toggle
+			pressed={showHidden}
+			title={m.hidden_owners_show_hidden_title()}
+			data-journey="show-hidden"
+			onclick={() => (showHidden = !showHidden)}
+		>
+			<Icon name={showHidden ? 'eye' : 'eye-off'} size={14} />
+			{m.hidden_owners_show_hidden()}
+		</Toggle>
+	{/if}
+	{#if sp.tiles && tilesOverflow.length}
+		<TilesOverflowChip items={tilesOverflow} onOpen={(s) => (sp.openSession = s)} />
+	{/if}
 {/snippet}
 
 <SessionControls
@@ -290,7 +313,7 @@
 	onStartSelect={() => (sp.list.selecting = true)}
 	onCancelSelect={sp.list.exitSelect}
 	onNew={sp.dockSide ? undefined : () => (sp.showSpawn = true)}
-	trailing={sp.tiles && tilesOverflow.length ? overflowChip : undefined}
+	trailing={isAdmin || (sp.tiles && tilesOverflow.length) ? trailingControls : undefined}
 	onUpdateLabel={sp.updateLabel}
 	onDeleteLabel={sp.deleteLabel}
 />

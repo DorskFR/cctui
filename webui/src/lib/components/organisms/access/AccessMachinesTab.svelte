@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { MachineRow } from '@bindings/MachineRow';
 	import {
+		Badge,
 		Button,
 		type Column,
 		ConfirmModal,
@@ -15,7 +16,8 @@
 	import ResourceShares from '$lib/components/molecules/ResourceShares.svelte';
 	import MachineHistoryModal from './MachineHistoryModal.svelte';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
-	import { useMachines, useUserActions } from '$lib/queries';
+	import { useHiddenOwnerActions, useHiddenOwners, useMachines, useUserActions } from '$lib/queries';
+	import { isHiddenOwner } from '$lib/hiddenOwners';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
 	import { m } from '$lib/paraglide/messages';
@@ -35,6 +37,9 @@
 		() => true
 	);
 	const actions = useUserActions();
+	const hiddenOwners = useHiddenOwners(() => canManage);
+	const hiddenActions = useHiddenOwnerActions();
+	const machineHidden = (mc: MachineRow) => isHiddenOwner(hiddenOwners.data?.owners, 'machine', mc.id);
 	const guard = (p: Promise<unknown>) => p.catch((e: unknown) => toasts.error(errMessage(e)));
 
 	let showRevoked = $state(false);
@@ -59,7 +64,7 @@
 		{ key: 'seen', label: m.users_col_last_seen(), width: '8rem', nowrap: true, role: 'meta' },
 		{ key: 'preview', label: m.access_col_preview(), width: '9rem', nowrap: true, role: 'detail', hideBelow: 'md' },
 		{ key: 'kind', label: m.access_col_kind(), width: '6rem', nowrap: true, role: 'meta', hideBelow: 'sm' },
-		{ key: 'actions', label: '', width: '7rem', nowrap: true, align: 'right', role: 'actions' }
+		{ key: 'actions', label: '', width: '8.5rem', nowrap: true, align: 'right', role: 'actions' }
 	];
 
 	const liveText = (mc: MachineRow) =>
@@ -80,6 +85,14 @@
 	function save(mc: MachineRow, displayName: string | null, hue: number | null) {
 		guard(actions.updateMachine(userId, mc.id, displayName, hue));
 	}
+	function toggleHidden(mc: MachineRow) {
+		const name = mc.display_name || mc.name;
+		guard(
+			machineHidden(mc)
+				? hiddenActions.unhide('machine', mc.id).then(() => toasts.ok(m.hidden_owners_unhidden_toast({ name })))
+				: hiddenActions.hide('machine', mc.id, name).then(() => toasts.ok(m.hidden_owners_hidden_toast({ name })))
+		);
+	}
 	function drop(mc: MachineRow) {
 		guard(mc.revoked_at ? actions.purgeMachine(userId, mc.id) : actions.revokeMachine(userId, mc.id));
 		dropTarget = null;
@@ -89,6 +102,9 @@
 {#snippet colMachine(mc: MachineRow)}
 	<span class="lead">
 		<MachineBadge name={mc.display_name || mc.name} id={mc.id} hue={mc.hue} />
+		{#if machineHidden(mc)}
+			<Badge tone="muted" size="xs" style="flex:none" data-journey="hidden-chip">{m.hidden_owners_chip()}</Badge>
+		{/if}
 	</span>
 {/snippet}
 {#snippet colStatus(mc: MachineRow)}
@@ -116,6 +132,17 @@
 			title={m.events_machine_history_button()}
 			onclick={() => (historyTarget = mc)}
 		/>
+		{#if canManage && !mc.revoked_at}
+			<IconButton
+				inline
+				icon={machineHidden(mc) ? 'eye' : 'eye-off'}
+				size={14}
+				label={machineHidden(mc) ? m.hidden_owners_unhide() : m.hidden_owners_hide()}
+				title={machineHidden(mc) ? m.hidden_owners_unhide() : m.hidden_owners_hide()}
+				data-journey="hide-machine"
+				onclick={() => toggleHidden(mc)}
+			/>
+		{/if}
 		{#if mayShare && mc.kind !== 'dispatch' && !mc.revoked_at}
 			<IconButton
 				inline
@@ -260,6 +287,7 @@
 		min-width: 0;
 		display: flex;
 		align-items: center;
+		gap: var(--sp-2);
 	}
 	.live {
 		display: inline-flex;

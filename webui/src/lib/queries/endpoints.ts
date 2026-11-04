@@ -10,6 +10,8 @@ import type { PluginInstanceSettings } from "@bindings/PluginInstanceSettings";
 import type { PluginInstanceSettingsRequest } from "@bindings/PluginInstanceSettingsRequest";
 import type { PluginProxySecret } from "@bindings/PluginProxySecret";
 import type { SessionListResponse } from "@bindings/SessionListResponse";
+import type { HiddenOwnerKind } from "@bindings/HiddenOwnerKind";
+import type { HiddenOwners } from "@bindings/HiddenOwners";
 import type { ToolPolicy } from "@bindings/ToolPolicy";
 import type { DispatchPolicy } from "@bindings/DispatchPolicy";
 import type { MintServiceTokenRequest } from "@bindings/MintServiceTokenRequest";
@@ -252,10 +254,20 @@ export const endpoints = {
     api.put<void>("/admin/passkeys/auto-prompt", {
       auto_prompt,
     } satisfies PasskeyAutoPromptRequest),
-  sessions: (archived: boolean) =>
+  sessions: (archived: boolean, showHidden = false) =>
     api.get<SessionListResponse>("/sessions", {
       include_archived: archived || undefined,
+      show_hidden: showHidden || undefined,
     }),
+  hiddenOwners: () => api.get<HiddenOwners>(path("get_me_hidden_owners")),
+  hideOwner: (kind: HiddenOwnerKind, targetId: string) =>
+    api.put<void>(
+      path("put_me_hidden_owners_by_kind_by_target_id", { kind, target_id: targetId }),
+    ),
+  unhideOwner: (kind: HiddenOwnerKind, targetId: string) =>
+    api.del<void>(
+      path("delete_me_hidden_owners_by_kind_by_target_id", { kind, target_id: targetId }),
+    ),
   /** Aggregate session counts for the Overview — correct past the list's
    * 25-row display cap (the list-derived counts are not). */
   sessionStats: (timezone = "UTC") =>
@@ -377,12 +389,14 @@ export const endpoints = {
     offset: number,
     cursor: string | null,
     signal?: AbortSignal,
+    showHidden?: boolean,
   ) =>
     api.get<SessionListResponse>(
       "/sessions/search",
       {
         q: q || undefined,
         include_archived: includeArchived || undefined,
+        show_hidden: showHidden || undefined,
         limit,
         offset: cursor ? undefined : offset,
         cursor: cursor ?? undefined,

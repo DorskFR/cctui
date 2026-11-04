@@ -121,6 +121,7 @@ export interface SessionsPageDeps {
   labels: () => Label[] | undefined;
   // Visual document order of the rendered rows, for shift-range selection.
   renderedOrder: () => string[];
+  showHidden?: () => boolean;
 }
 
 export type { ViewMode } from "$lib/sessionsView.svelte";
@@ -189,16 +190,24 @@ export class SessionsPage {
     this.#d = d;
     this.#pager = createInfiniteQuery(
       () => ({
-        queryKey: qk.sessionSearch(this.serverQuery, this.#pagerArchived),
-        queryFn: ({ queryKey: [, , { q, archived }], pageParam, signal }) =>
-          d.api.searchSessions(
-            q,
-            archived,
+        queryKey: qk.sessionSearch(
+          this.serverQuery,
+          this.#pagerArchived,
+          d.showHidden?.() ?? false,
+        ),
+        queryFn: ({ queryKey: [, , key], pageParam, signal }) => {
+          const args = [
+            key.q,
+            key.archived,
             PAGE,
             pageParam.offset,
             pageParam.cursor,
             signal,
-          ),
+          ] as const;
+          return "showHidden" in key
+            ? d.api.searchSessions(...args, true)
+            : d.api.searchSessions(...args);
+        },
         initialPageParam: FIRST_PAGE,
         getNextPageParam: nextSearchPage,
         enabled: this.pagerActive,
