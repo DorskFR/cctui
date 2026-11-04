@@ -146,6 +146,8 @@ pub const LIVENESS_DEAD_SECS: i64 = 60 * 60;
 pub struct ListParams {
     #[serde(default)]
     pub include_archived: bool,
+    #[serde(default)]
+    pub show_hidden: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -343,6 +345,7 @@ pub async fn list_sessions(
             .filter(|row| !live_ids.contains(&row.id))
             .map(|row| (row.registered_at, db_list_item(row))),
     );
+    screen_hidden(&state, &ctx, params.show_hidden, &mut with_ts).await?;
     if let Some(Extension(crate::auth::BoundSession(own))) = &worker {
         with_ts.retain(|(_, s)| s.id == *own);
     }
@@ -352,6 +355,28 @@ pub async fn list_sessions(
         &req_headers,
         &SessionListResponse { sessions, ..Default::default() },
     ))
+}
+
+/// Drops the sessions an admin hides, or flags them when `show` is set.
+async fn screen_hidden(
+    state: &AppState,
+    ctx: &AuthContext,
+    show: bool,
+    with_ts: &mut Vec<(DateTime<Utc>, SessionListItem)>,
+) -> Result<(), AppError> {
+    let Some(set) = crate::routes::hidden_owners::applying_to(&state.pool, ctx).await? else {
+        return Ok(());
+    };
+    let ids: Vec<String> = with_ts.iter().map(|(_, s)| s.id.clone()).collect();
+    let hidden = crate::routes::hidden_owners::hidden_session_ids(&state.pool, &set, &ids).await?;
+    if show {
+        for (_, item) in with_ts {
+            item.hidden = hidden.contains(&item.id);
+        }
+    } else {
+        with_ts.retain(|(_, item)| !hidden.contains(&item.id));
+    }
+    Ok(())
 }
 
 /// Which live registry entries the caller may see: `None` for admins (all of
@@ -499,6 +524,7 @@ fn skeleton_list_item(
         next_session_id: None,
         followup_count: 0,
         tool_guard_bypass: false,
+        hidden: false,
     }
 }
 
@@ -935,19 +961,19 @@ async fn fetch_account_names(
     state: &AppState,
     session_ids: &[String],
 ) -> Result<HashMap<String, String>, AppError> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT DISTINCT ON (st.session_id) st.session_id, a.name \
-         FROM session_tokens st \
-         JOIN account_providers ap ON ap.id = st.account_id \
-         JOIN accounts a ON a.id = ap.account_id \
-         WHERE st.session_id = ANY($1) AND st.revoked_at IS NULL \
-         ORDER BY st.session_id, st.created_at DESC",
-    )
-    .bind(session_ids)
-    .fetch_all(&state.pool)
-    .await?;
+    let rows: Vec<(String, String)> =
+        sqlx::query_as(ACCOUNT_NAMES_SQL).bind(session_ids).fetch_all(&state.pool).await?;
     Ok(rows.into_iter().collect())
 }
+
+/// The account each session ran on: its live token's, else its newest revoked
+/// one, so an ended session keeps its account.
+const ACCOUNT_NAMES_SQL: &str = "SELECT DISTINCT ON (st.session_id) st.session_id, a.name \
+     FROM session_tokens st \
+     JOIN account_providers ap ON ap.id = st.account_id \
+     JOIN accounts a ON a.id = ap.account_id \
+     WHERE st.session_id = ANY($1) \
+     ORDER BY st.session_id, (st.revoked_at IS NULL) DESC, st.created_at DESC";
 
 /// Sessions holding live token↔account credentials. Independent of the
 /// account-name join: a token whose `accounts` row was deleted (or that never
@@ -1193,6 +1219,8 @@ pub struct SearchParams {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
     pub cursor: Option<String>,
+    #[serde(default)]
+    pub show_hidden: bool,
 }
 
 /// Shared SELECT + machine-name and room joins: the full `DbSession`
@@ -1592,8 +1620,9 @@ pub async fn search_sessions(
         scan_matches(&state.pool, &root, live_ids.as_deref(), &page, gap).await?
     };
 
-    let with_ts: Vec<(DateTime<Utc>, SessionListItem)> =
+    let mut with_ts: Vec<(DateTime<Utc>, SessionListItem)> =
         found.rows.into_iter().map(|row| (row.registered_at, db_list_item(row))).collect();
+    screen_hidden(&state, &ctx, params.show_hidden, &mut with_ts).await?;
     let mut sessions = enrich_and_sort(&state, Some(ctx.user_id), with_ts).await?;
 
     // Attach a transcript snippet per session, windowed around the keyword.
@@ -2053,6 +2082,7 @@ pub async fn get_session(
                 next_session_id: None,
                 followup_count: 0,
                 tool_guard_bypass,
+                hidden: false,
             };
             item.user_actions =
                 fetch_user_actions(&state, std::slice::from_ref(&item.id)).await?.remove(&item.id);
@@ -2132,6 +2162,7 @@ pub async fn get_session(
         next_session_id: None,
         followup_count: 0,
         tool_guard_bypass: false,
+        hidden: false,
     };
     let end: Option<EndRow> =
         sqlx::query_as(END_ROW_SQL).bind(&item.id).fetch_optional(&state.pool).await?;
@@ -4658,6 +4689,97 @@ mod tests {
 
     fn contents(rows: &[super::RenderableRow]) -> Vec<String> {
         rows.iter().map(|(_, v, _, _)| v["content"].as_str().unwrap().to_owned()).collect()
+    }
+
+    async fn account_on(pool: &sqlx::PgPool, uid: uuid::Uuid, name: &str) -> uuid::Uuid {
+        let account = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(account)
+            .bind(uid)
+            .bind(name)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query_scalar(
+            "INSERT INTO account_providers \
+                 (user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, 'anthropic', 'x', $2) RETURNING id",
+        )
+        .bind(uid)
+        .bind(account)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn token(pool: &sqlx::PgPool, sid: &str, provider: uuid::Uuid, revoked: bool, age: i32) {
+        sqlx::query(
+            "INSERT INTO session_tokens \
+                 (token_hash, session_id, account_id, created_at, revoked_at) \
+             VALUES ($1, $2, $3, now() - make_interval(mins => $4), \
+                     CASE WHEN $5 THEN now() END)",
+        )
+        .bind(format!("th-{}", uuid::Uuid::new_v4()))
+        .bind(sid)
+        .bind(provider)
+        .bind(age)
+        .bind(revoked)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// An ended session's tokens are all revoked; it still names its account,
+    /// and a live token wins over a newer revoked one.
+    #[tokio::test]
+    async fn an_ended_session_keeps_its_account_name() {
+        let Some(url) =
+            crate::routes::gateway::test_db_url("an_ended_session_keeps_its_account_name")
+        else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("u-{uid}"))
+            .bind(format!("k-{uid}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let ended = format!("ended-{}", uuid::Uuid::new_v4());
+        let mixed = format!("mixed-{}", uuid::Uuid::new_v4());
+        for (sid, status) in [(&ended, "ended"), (&mixed, "active")] {
+            sqlx::query(
+                "INSERT INTO sessions (id, machine_id, user_id, working_dir, status) \
+                 VALUES ($1, 'm', $2, '/w', $3)",
+            )
+            .bind(sid)
+            .bind(uid)
+            .bind(status)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let old = account_on(&pool, uid, &format!("old-{uid}")).await;
+        let new = account_on(&pool, uid, &format!("new-{uid}")).await;
+        token(&pool, &ended, old, true, 10).await;
+        token(&pool, &ended, new, true, 5).await;
+        token(&pool, &mixed, old, false, 10).await;
+        token(&pool, &mixed, new, true, 5).await;
+
+        let rows: Vec<(String, String)> = sqlx::query_as(super::ACCOUNT_NAMES_SQL)
+            .bind(vec![ended.clone(), mixed.clone()])
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        let names: std::collections::HashMap<String, String> = rows.into_iter().collect();
+        assert_eq!(names.get(&ended), Some(&format!("new-{uid}")), "newest revoked token");
+        assert_eq!(names.get(&mixed), Some(&format!("old-{uid}")), "the live token wins");
     }
 
     /// A session the daemon discovered rather than launched carries the marker

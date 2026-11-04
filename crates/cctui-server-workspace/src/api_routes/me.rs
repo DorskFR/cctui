@@ -26,6 +26,30 @@ pub(super) fn register(r: Routes) -> Routes {
     )
     .add(
         &[GET],
+        "/me/hidden-owners",
+        "Your hidden users and machines: their sessions stay out of your lists (admin).",
+        get(routes::hidden_owners::list),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[Method::PUT],
+        "/me/hidden-owners/{kind}/{target_id}",
+        "Hide a user's or machine's sessions from your own lists (admin).",
+        put(routes::hidden_owners::hide),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[Method::DELETE],
+        "/me/hidden-owners/{kind}/{target_id}",
+        "Show a hidden user's or machine's sessions in your lists again (admin).",
+        delete(routes::hidden_owners::unhide),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[GET],
         "/settings",
         "Get your user settings.",
         get(routes::settings::get_settings),

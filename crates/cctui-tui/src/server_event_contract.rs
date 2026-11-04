@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::app::Action;
 use crate::app::server_event::to_actions;
 
-const VARIANT_COUNT: usize = 34;
+const VARIANT_COUNT: usize = 35;
 
 fn uuid() -> Uuid {
     Uuid::nil()
@@ -196,6 +196,7 @@ fn fleet_samples() -> Vec<ServerEvent> {
             room_id: None,
             user_id: uuid(),
         },
+        ServerEvent::HiddenOwnersChanged { user_id: uuid() },
         ServerEvent::UserActions { session_id: "s-1".to_owned(), actions: vec![user_action()] },
         ServerEvent::Event {
             event: cctui_proto::api::events::EventRecord {
@@ -248,6 +249,7 @@ fn variant_name(event: &ServerEvent) -> &'static str {
         ServerEvent::ScheduledLaunch { .. } => "scheduled_launch",
         ServerEvent::RoomMembers { .. } => "room_members",
         ServerEvent::CctuiverseChanged { .. } => "cctuiverse_changed",
+        ServerEvent::HiddenOwnersChanged { .. } => "hidden_owners_changed",
         ServerEvent::UserActions { .. } => "user_actions",
         ServerEvent::Event { .. } => "event",
         ServerEvent::Heartbeat { .. } => "heartbeat",

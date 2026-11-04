@@ -9,6 +9,7 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration { version: 1, sql: BOOTSTRAP },
     Migration { version: 2, sql: include_str!("../schema/0002_dispatch_identities.sql") },
     Migration { version: 3, sql: include_str!("../schema/0003_scheduled_message_sealed_body.sql") },
+    Migration { version: 4, sql: include_str!("../schema/0004_user_hidden_owners.sql") },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -85,7 +86,8 @@ mod tests {
                 [
                     (1, "bootstrap".to_owned()),
                     (2, "adopted".to_owned()),
-                    (3, "bootstrap".to_owned())
+                    (3, "bootstrap".to_owned()),
+                    (4, "bootstrap".to_owned())
                 ]
             );
 
@@ -121,7 +123,8 @@ mod tests {
                 [
                     (1, "bootstrap".to_owned()),
                     (2, "bootstrap".to_owned()),
-                    (3, "bootstrap".to_owned())
+                    (3, "bootstrap".to_owned()),
+                    (4, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =
