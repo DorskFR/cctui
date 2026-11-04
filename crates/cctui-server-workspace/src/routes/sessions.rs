@@ -1966,6 +1966,10 @@ type EndRow = (
     bool,
 );
 
+const END_ROW_SQL: &str = "SELECT end_reason, end_detail, ended_at, todos, permission_mode, \
+                                  pinned, archived_by, tool_guard_bypass_by IS NOT NULL \
+                           FROM sessions WHERE id = $1";
+
 #[allow(clippy::too_many_lines)]
 pub async fn get_session(
     State(state): State<AppState>,
@@ -2128,14 +2132,8 @@ pub async fn get_session(
         followup_count: 0,
         tool_guard_bypass: false,
     };
-    let end: Option<EndRow> = sqlx::query_as(
-        "SELECT end_reason, end_detail, ended_at, todos, permission_mode, pinned, archived_by, \
-                tool_guard_bypass_by IS NOT NULL \
-         FROM sessions WHERE id = $1",
-    )
-    .bind(&item.id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let end: Option<EndRow> =
+        sqlx::query_as(END_ROW_SQL).bind(&item.id).fetch_optional(&state.pool).await?;
     if let Some((
         end_reason,
         end_detail,
@@ -4139,9 +4137,9 @@ impl<'a> DraftRowFields<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Bucket, EndRow, RemoveInitiator, ResultRow, SessionChild, SqlParam, attention_from_bucket,
-        bucket_from_signals, cap_unread, compile_node, derive_liveness, field_values_sql,
-        make_snippet, normalize_last_message, remove_command, snippet_sql,
+        Bucket, END_ROW_SQL, EndRow, RemoveInitiator, ResultRow, SessionChild, SqlParam,
+        attention_from_bucket, bucket_from_signals, cap_unread, compile_node, derive_liveness,
+        field_values_sql, make_snippet, normalize_last_message, remove_command, snippet_sql,
     };
     use crate::auth::AuthContext;
     use axum::http::StatusCode;
@@ -6571,14 +6569,11 @@ mod tests {
             .await
             .expect("set posture");
 
-        let row: Option<EndRow> = sqlx::query_as(
-            "SELECT end_reason, end_detail, ended_at, todos, permission_mode, pinned, archived_by \
-             FROM sessions WHERE id = $1",
-        )
-        .bind(&sid)
-        .fetch_optional(&pool)
-        .await
-        .expect("read session");
+        let row: Option<EndRow> = sqlx::query_as(END_ROW_SQL)
+            .bind(&sid)
+            .fetch_optional(&pool)
+            .await
+            .expect("read session");
         assert_eq!(row.expect("session row").4.as_deref(), Some("plan"));
 
         sqlx::query("DELETE FROM sessions WHERE id = $1")
