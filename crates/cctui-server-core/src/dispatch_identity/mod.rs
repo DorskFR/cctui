@@ -2,7 +2,7 @@
 //! service-account token for its machine key, and the one-shot env read.
 
 mod issuers;
-pub mod jwt;
+mod jwt;
 
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
@@ -15,7 +15,7 @@ use cctui_proto::dispatch_identity::{EnvResponse, RedeemRequest, RedeemResponse,
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::state::AppState;
+use crate::gateway::credentials::CredentialContext;
 
 /// A queued Job may wait long before its pod starts; past this the
 /// registration is dropped and a late pod fails its redeem.
@@ -85,7 +85,7 @@ async fn dispatcher_of(pool: &PgPool, key: &str) -> Result<Option<(Uuid, Uuid)>,
          WHERE d.key_hash = $1 AND d.revoked_at IS NULL AND d.deleted_at IS NULL \
          AND u.revoked_at IS NULL AND u.disabled_at IS NULL",
     )
-    .bind(cctui_server_core::auth::sha256_hex(key))
+    .bind(crate::auth::sha256_hex(key))
     .fetch_optional(pool)
     .await
 }
@@ -114,7 +114,7 @@ async fn insert(pool: &PgPool, r: &Registration<'_>) -> Result<bool, sqlx::Error
     .bind(&r.req.session_id)
     .bind(&r.req.namespace)
     .bind(&r.req.job_name)
-    .bind(cctui_server_core::auth::sha256_hex(&r.req.machine_key))
+    .bind(crate::auth::sha256_hex(&r.req.machine_key))
     .bind(&r.encrypted_machine_key)
     .bind(&r.encrypted_env)
     .bind(REGISTRATION_TTL_DAYS)
@@ -189,37 +189,37 @@ async fn take_env(
          RETURNING old.encrypted_env",
     )
     .bind(dispatch_id)
-    .bind(cctui_server_core::auth::sha256_hex(machine_key))
+    .bind(crate::auth::sha256_hex(machine_key))
     .fetch_optional(pool)
     .await
 }
 
 /// `POST /api/v1/dispatch/register`: a dispatcher records the Job it is about
 /// to create, before creating it.
-pub async fn register(
-    State(state): State<AppState>,
+pub async fn register<S: CredentialContext + Clone + Send + Sync + 'static>(
+    State(state): State<S>,
     headers: HeaderMap,
     Json(req): Json<RegisterRequest>,
 ) -> ApiResult<StatusCode> {
     let key = bearer(&headers)
         .ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "dispatcher key required"))?;
     let (dispatcher_id, user_id) =
-        dispatcher_of(&state.pool, key)
+        dispatcher_of(state.pool(), key)
             .await
             .map_err(|e| db_err(&e))?
             .ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "invalid dispatcher key"))?;
     check_register(&req).map_err(|e| api_err(StatusCode::BAD_REQUEST, e))?;
-    let vault = crate::crypto::vault_key();
+    let vault = state.vault_key();
     let env = serde_json::to_string(&req.env)
         .map_err(|e| api_err(StatusCode::BAD_REQUEST, format!("env: {e}")))?;
     let registration = Registration {
         req: &req,
         dispatcher_id,
         user_id,
-        encrypted_machine_key: crate::crypto::encrypt(&req.machine_key, &vault),
-        encrypted_env: crate::crypto::encrypt(&env, &vault),
+        encrypted_machine_key: cctui_crypto::encrypt(&req.machine_key, &vault),
+        encrypted_env: cctui_crypto::encrypt(&env, &vault),
     };
-    if !insert(&state.pool, &registration).await.map_err(|e| db_err(&e))? {
+    if !insert(state.pool(), &registration).await.map_err(|e| db_err(&e))? {
         return Err(api_err(StatusCode::CONFLICT, "dispatch is already registered"));
     }
     tracing::info!(
@@ -243,8 +243,8 @@ fn rejected(dispatch_id: Uuid, why: &jwt::Rejection) -> (StatusCode, Json<ApiErr
 
 /// `POST /api/v1/dispatch/redeem`: the guard-proxy trades its pod's projected
 /// service-account token for the dispatch's machine key, once.
-pub async fn redeem(
-    State(state): State<AppState>,
+pub async fn redeem<S: CredentialContext + Clone + Send + Sync + 'static>(
+    State(state): State<S>,
     Json(req): Json<RedeemRequest>,
 ) -> ApiResult<Json<RedeemResponse>> {
     let issuers = ISSUERS.as_ref().map_err(|e| {
@@ -253,12 +253,12 @@ pub async fn redeem(
     let id = req.dispatch_id;
     let token = jwt::parse(&req.token).map_err(|e| rejected(id, &e))?;
     let jwks = issuers
-        .keys(&state.http_client, token.issuer(), token.kid())
+        .keys(state.http_client(), token.issuer(), token.kid())
         .await
         .map_err(|e| rejected(id, &e))?;
     let pod =
         jwt::verify(token, &jwks, chrono::Utc::now().timestamp()).map_err(|e| rejected(id, &e))?;
-    let found = binding(&state.pool, id).await.map_err(|e| db_err(&e))?;
+    let found = binding(state.pool(), id).await.map_err(|e| db_err(&e))?;
     let bound = found.ok_or_else(|| api_err(StatusCode::NOT_FOUND, "unknown dispatch"))?;
     if bound.expired {
         return Err(api_err(StatusCode::GONE, "dispatch registration expired"));
@@ -267,12 +267,12 @@ pub async fn redeem(
     if bound.redeemed {
         return Err(api_err(StatusCode::CONFLICT, "dispatch identity was already redeemed"));
     }
-    let sealed = claim(&state.pool, id, &pod)
+    let sealed = claim(state.pool(), id, &pod)
         .await
         .map_err(|e| db_err(&e))?
         .ok_or_else(|| api_err(StatusCode::CONFLICT, "dispatch identity was already redeemed"))?;
     let machine_key =
-        crate::crypto::decrypt(&sealed, &crate::crypto::vault_key()).ok_or_else(|| {
+        cctui_crypto::decrypt(&sealed, &state.vault_key()).ok_or_else(|| {
             api_err(StatusCode::INTERNAL_SERVER_ERROR, "stored machine key is unreadable")
         })?;
     tracing::info!(
@@ -283,19 +283,19 @@ pub async fn redeem(
 }
 
 /// `GET /api/v1/dispatch/{id}/env`: the payload env, once, to the redeemed key.
-pub async fn env(
-    State(state): State<AppState>,
+pub async fn env<S: CredentialContext + Clone + Send + Sync + 'static>(
+    State(state): State<S>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> ApiResult<Json<EnvResponse>> {
     let key = bearer(&headers)
         .ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "machine key required"))?;
     let sealed =
-        take_env(&state.pool, id, key).await.map_err(|e| db_err(&e))?.ok_or_else(|| {
+        take_env(state.pool(), id, key).await.map_err(|e| db_err(&e))?.ok_or_else(|| {
             api_err(StatusCode::NOT_FOUND, "no env for this key (not redeemed, or already read)")
         })?;
     let env: BTreeMap<String, String> =
-        crate::crypto::decrypt(&sealed, &crate::crypto::vault_key())
+        cctui_crypto::decrypt(&sealed, &state.vault_key())
             .and_then(|json| serde_json::from_str(&json).ok())
             .ok_or_else(|| {
                 api_err(StatusCode::INTERNAL_SERVER_ERROR, "stored env is unreadable")

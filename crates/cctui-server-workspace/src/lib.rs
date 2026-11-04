@@ -20,7 +20,6 @@ mod cost;
 mod crypto;
 mod db;
 mod dispatch_archive;
-mod dispatch_identity;
 mod dispatch_liveness;
 mod dispatchers;
 mod envelope_guard;
@@ -129,6 +128,7 @@ fn check_plugin_archive(args: &[String]) -> anyhow::Result<()> {
 }
 
 use cctui_server_core::client::{build_http_client, install_crypto_provider};
+use cctui_server_core::dispatch_identity;
 
 async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig, Vec<i64>)> {
     if let Err(e @ cctui_crypto::KeyError::InvalidHex(_)) = cctui_crypto::vault_key_checked() {
@@ -496,9 +496,9 @@ fn outer_routes() -> Router<AppState> {
         .route("/api/v1/dispatcher/ws", get(routes::dispatcher::ws))
         // Kube dispatch identity. Register carries the dispatcher key, redeem a
         // pod's service-account token, env the redeemed machine key.
-        .route("/api/v1/dispatch/register", post(dispatch_identity::register))
-        .route("/api/v1/dispatch/redeem", post(dispatch_identity::redeem))
-        .route("/api/v1/dispatch/{id}/env", get(dispatch_identity::env))
+        .route("/api/v1/dispatch/register", post(dispatch_identity::register::<AppState>))
+        .route("/api/v1/dispatch/redeem", post(dispatch_identity::redeem::<AppState>))
+        .route("/api/v1/dispatch/{id}/env", get(dispatch_identity::env::<AppState>))
         .route("/api/v1/triggers/{kind}", post(routes::triggers::ingest))
         // OAuth passthrough gateway. Auths via the session-scoped
         // token in the request's own Authorization header — NOT the user-token

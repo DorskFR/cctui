@@ -34,6 +34,7 @@ pub mod lifecycle;
 mod live_sessions;
 
 pub mod dispatch;
+pub mod dispatch_identity;
 pub mod dispatch_policy;
 
 pub mod provider_status;

@@ -27,6 +27,7 @@ tokio.workspace = true
 tracing.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true
+ring = "0.17"
 dashmap = "6"
 axum.workspace = true
 http = "1"
