@@ -83,7 +83,7 @@ pub struct SessionHookPolicy {
 /// Harnesses whose daemon adapter converts a [`HookPolicy`] into native hooks.
 #[must_use]
 pub fn supports_hook_policy(adapter_id: &str) -> bool {
-    adapter_id == "claude-code"
+    matches!(adapter_id, "claude-code" | "codex")
 }
 
 /// Trim commands, drop blank ones and duplicates, and enforce the limits.
@@ -113,6 +113,91 @@ pub fn normalize_rules(rules: Vec<HookRule>) -> Result<Vec<HookRule>, String> {
         return Err(format!("at most {MAX_RULES} hook rules"));
     }
     Ok(out)
+}
+
+/// The shim exits 0 to allow and 2 to deny; `|| exit 2` also blocks when the
+/// daemon binary is missing or crashes, since harnesses fail open on other codes.
+pub const NO_DIRECT_HARNESS_COMMAND: &str = "cctui-daemon hook-shim no-direct-harness || exit 2";
+pub const NO_DIRECT_HARNESS_TIMEOUT_SECS: u32 = 10;
+
+pub const DISPATCH_POLICY_FIELD: &str = "hook_policy";
+pub const DISPATCH_ADDITIONS_FIELD: &str = "hook_rules";
+
+/// A harness started from a shell would run outside the session's policy.
+#[must_use]
+pub fn no_direct_harness_rule() -> HookRule {
+    HookRule {
+        event: HookEvent::PreToolUse,
+        tool: ToolClass::Shell,
+        command: NO_DIRECT_HARNESS_COMMAND.to_owned(),
+        timeout_secs: Some(NO_DIRECT_HARNESS_TIMEOUT_SECS),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AddOnlyError {
+    Weakens(HookRule),
+    Invalid(String),
+}
+
+impl std::fmt::Display for AddOnlyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Weakens(rule) => {
+                let timeout =
+                    rule.timeout_secs.map_or_else(|| "the default".into(), |t| format!("{t}s"));
+                write!(
+                    f,
+                    "hook rules are add-only: `{}` on {:?} is inherited with a timeout of \
+                     {timeout} and cannot be restated with another one",
+                    rule.command, rule.event
+                )
+            }
+            Self::Invalid(reason) => f.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for AddOnlyError {}
+
+/// The inherited rules followed by the additions.
+///
+/// A rule is identified by its event, tool and command. An addition with a new
+/// command is a new rule even on an inherited event and tool: it runs next to
+/// the inherited one and never replaces it. An addition naming an inherited
+/// rule must restate it exactly; a changed timeout (which can make the hook
+/// time out and fail open) is rejected, never trimmed. Inherited rules cannot
+/// be omitted: they are always part of the result.
+///
+/// # Errors
+/// [`AddOnlyError::Weakens`] for a changed inherited rule,
+/// [`AddOnlyError::Invalid`] for a rule or a union over the limits.
+pub fn effective_rules(
+    inherited: &[HookRule],
+    additions: Vec<HookRule>,
+) -> Result<Vec<HookRule>, AddOnlyError> {
+    let inherited = normalize_rules(inherited.to_vec()).map_err(AddOnlyError::Invalid)?;
+    let additions = normalize_rules(additions).map_err(AddOnlyError::Invalid)?;
+    for added in additions.iter().filter(|a| !inherited.contains(a)) {
+        if let Some(parent) = inherited.iter().find(|r| same_rule(r, added)) {
+            return Err(AddOnlyError::Weakens(parent.clone()));
+        }
+    }
+    let mut all = inherited;
+    all.extend(additions);
+    normalize_rules(all).map_err(AddOnlyError::Invalid)
+}
+
+fn same_rule(a: &HookRule, b: &HookRule) -> bool {
+    a.event == b.event && a.tool == b.tool && a.command == b.command
+}
+
+#[must_use]
+pub fn from_dispatch_payload(payload: &serde_json::Value) -> Option<HookPolicy> {
+    payload
+        .get(DISPATCH_POLICY_FIELD)
+        .and_then(|v| serde_json::from_value::<HookPolicy>(v.clone()).ok())
+        .filter(|p| !p.rules.is_empty())
 }
 
 #[cfg(test)]
@@ -173,9 +258,79 @@ mod tests {
     }
 
     #[test]
-    fn only_claude_code_takes_a_hook_policy_today() {
+    fn claude_code_and_codex_take_a_hook_policy() {
         assert!(supports_hook_policy("claude-code"));
-        assert!(!supports_hook_policy("codex"));
+        assert!(supports_hook_policy("codex"));
         assert!(!supports_hook_policy("opencode"));
+    }
+
+    fn timed(command: &str, timeout_secs: Option<u32>) -> HookRule {
+        HookRule { timeout_secs, ..rule(HookEvent::PreToolUse, ToolClass::Shell, command) }
+    }
+
+    #[test]
+    fn an_addition_omitting_the_parent_rules_still_inherits_them() {
+        let parent = vec![timed("deny-rm", Some(30))];
+        let got = effective_rules(&parent, vec![timed("audit", None)]).unwrap();
+        assert_eq!(got, vec![timed("deny-rm", Some(30)), timed("audit", None)]);
+        assert_eq!(effective_rules(&parent, Vec::new()).unwrap(), parent);
+    }
+
+    #[test]
+    fn a_new_command_on_an_inherited_event_and_tool_is_an_addition_not_a_replacement() {
+        let parent = vec![timed("deny-rm", Some(30))];
+        let got = effective_rules(&parent, vec![timed("allow-everything", Some(30))]).unwrap();
+        assert_eq!(got, vec![timed("deny-rm", Some(30)), timed("allow-everything", Some(30))]);
+    }
+
+    #[test]
+    fn restating_an_inherited_rule_exactly_is_a_no_op() {
+        let parent = vec![timed("deny-rm", Some(30))];
+        let got = effective_rules(&parent, vec![timed("  deny-rm ", Some(30))]).unwrap();
+        assert_eq!(got, parent);
+        let both = vec![timed("deny-rm", Some(30)), timed("deny-rm", Some(60))];
+        assert_eq!(effective_rules(&both, vec![timed("deny-rm", Some(60))]).unwrap(), both);
+    }
+
+    #[test]
+    fn restating_an_inherited_rule_with_another_timeout_is_rejected() {
+        let parent = vec![timed("deny-rm", Some(30))];
+        for weaker in [Some(1), None, Some(600)] {
+            assert_eq!(
+                effective_rules(&parent, vec![timed("deny-rm", weaker)]),
+                Err(AddOnlyError::Weakens(timed("deny-rm", Some(30)))),
+            );
+        }
+        let err = effective_rules(&parent, vec![timed("deny-rm", Some(1))]).unwrap_err();
+        assert!(err.to_string().contains("add-only"), "{err}");
+    }
+
+    #[test]
+    fn additions_over_the_limits_are_rejected() {
+        let many: Vec<HookRule> = (0..=MAX_RULES).map(|i| timed(&format!("r{i}"), None)).collect();
+        assert!(matches!(effective_rules(&[], many), Err(AddOnlyError::Invalid(_))));
+        let parent: Vec<HookRule> = (0..MAX_RULES).map(|i| timed(&format!("p{i}"), None)).collect();
+        assert!(matches!(
+            effective_rules(&parent, vec![timed("one-more", None)]),
+            Err(AddOnlyError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn the_side_door_rule_guards_shell_calls_and_fails_closed() {
+        let r = no_direct_harness_rule();
+        assert_eq!((r.event, r.tool), (HookEvent::PreToolUse, ToolClass::Shell));
+        assert!(r.command.contains("hook-shim no-direct-harness"));
+        assert!(r.command.ends_with("|| exit 2"));
+        assert_eq!(normalize_rules(vec![r.clone()]).unwrap(), vec![r]);
+    }
+
+    #[test]
+    fn a_dispatch_payload_yields_its_written_policy() {
+        let policy = HookPolicy { rules: vec![no_direct_harness_rule()] };
+        let payload = serde_json::json!({ DISPATCH_POLICY_FIELD: &policy, "prompt": "go" });
+        assert_eq!(from_dispatch_payload(&payload), Some(policy));
+        assert_eq!(from_dispatch_payload(&serde_json::json!({ "prompt": "go" })), None);
+        assert_eq!(from_dispatch_payload(&serde_json::json!({ DISPATCH_POLICY_FIELD: 7 })), None);
     }
 }

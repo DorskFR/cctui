@@ -163,6 +163,12 @@ fn launch_error(error: core::launch::LaunchError) -> Failure {
                 Json(cctui_proto::api::ApiError { error: core::error::DB_ERROR.into() }),
             );
         }
+        core::launch::LaunchError::Policy(detail) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(cctui_proto::api::ApiError { error: format!("hook policy: {detail}") }),
+            );
+        }
         core::launch::LaunchError::Refused(detail) => {
             format!("the daemon refused the spawn: {detail}")
         }

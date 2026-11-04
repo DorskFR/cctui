@@ -31,6 +31,8 @@ pub enum LaunchError {
     Delivery(#[from] BusError),
     #[error("the daemon refused the spawn: {0}")]
     Refused(String),
+    #[error("hook policy: {0}")]
+    Policy(String),
 }
 
 /// Pre-mint the session identity only for a harness that accepts it.
@@ -101,9 +103,9 @@ pub async fn launch_durable(
 ) -> Result<(), LaunchError> {
     let command = spawn.command_id;
     let rules = crate::hook_policy::account_rules(&state.pool, &spawn.failed.session_id).await?;
-    let carried = crate::hook_policy::attach(&mut spawn.spec, rules);
+    let carried = crate::hook_policy::attach(&mut spawn.spec, rules).map_err(LaunchError::Policy)?;
     crate::machine_launches::prepare(&state.pool, command, actor, &spawn.failed).await?;
-    crate::hook_policy::record(&state.pool, command, carried.as_ref()).await?;
+    crate::hook_policy::record(&state.pool, command, &carried).await?;
     let result =
         launch_machine(&state.bus, &state.pending_commands, &state.command_waiters, spawn).await;
     match &result {
@@ -112,7 +114,7 @@ pub async fn launch_durable(
             crate::machine_launches::delivery_failed(&state.pool, command, &error.to_string())
                 .await?;
         }
-        Err(LaunchError::Refused(_) | LaunchError::Storage(_)) => {}
+        Err(LaunchError::Refused(_) | LaunchError::Storage(_) | LaunchError::Policy(_)) => {}
     }
     result
 }

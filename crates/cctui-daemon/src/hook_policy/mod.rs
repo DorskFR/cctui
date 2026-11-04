@@ -3,6 +3,7 @@
 
 pub mod claude_code;
 pub mod codex;
+pub mod no_direct_harness;
 pub mod shim;
 
 use cctui_proto::hook_policy::HookPolicy;

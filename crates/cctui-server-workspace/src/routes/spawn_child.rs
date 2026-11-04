@@ -18,13 +18,11 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 
-use cctui_proto::adapter::AdapterCommand;
 #[cfg(test)]
 use cctui_proto::api::SpawnCapability;
 use cctui_proto::api::{
     ApiError, ArchiveChildRequest, ArchiveChildResponse, SpawnChildRequest, SpawnChildResponse,
 };
-use cctui_proto::ws::DaemonFrameDown;
 use uuid::Uuid;
 
 use cctui_server_core::child_exec::{
@@ -197,21 +195,36 @@ impl ChildExecutionContext for AppState {
         child: Uuid,
         spec: cctui_proto::adapter::SessionSpec,
     ) -> Result<(), AppError> {
-        let frame = DaemonFrameDown::Command {
+        use cctui_server_core::launch::{LaunchError, MachineSpawn, launch_durable};
+        let failed = crate::state::FailedSpawnRow {
+            session_id: child.to_string(),
+            machine_id: parent.machine_uuid,
+            user_id: parent.user_id,
             adapter_id: spec.adapter_id.as_str().to_owned(),
-            command: Box::new(AdapterCommand::Spawn {
-                spec,
-                command_id: Some(child),
-                session_id: Some(child),
-            }),
-            trace: None,
+            working_dir: spec.working_dir.clone().unwrap_or_default(),
+            name: spec.name.clone(),
+            model: spec.model.clone(),
+            effort: spec.effort.clone(),
         };
-        self.bus
-            .command_daemon_for_session(parent.machine_uuid, &parent.session_id, frame)
-            .await
-            .map_err(|err| {
-                deny(StatusCode::SERVICE_UNAVAILABLE, format!("could not reach the daemon: {err}"))
-            })
+        let actor = child_spawner(&self.pool, parent).await;
+        let spawn = MachineSpawn {
+            machine_id: parent.machine_uuid,
+            command_id: child,
+            token_key: child,
+            spec,
+            failed,
+            route_session: Some(parent.session_id.clone()),
+        };
+        launch_durable(&self.core, actor, spawn).await.map_err(|error| match error {
+            LaunchError::Storage(error) => AppError::Db(error),
+            LaunchError::Policy(detail) => {
+                deny(StatusCode::BAD_REQUEST, format!("hook policy: {detail}"))
+            }
+            error => deny(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("could not reach the daemon: {error}"),
+            ),
+        })
     }
 }
 
@@ -1462,5 +1475,116 @@ mod tests {
         for u in [owner, grantee] {
             sqlx::query("DELETE FROM users WHERE id = $1").bind(u).execute(&pool).await.ok();
         }
+    }
+
+    fn policy_rule(command: &str, timeout_secs: Option<u32>) -> cctui_proto::hook_policy::HookRule {
+        cctui_proto::hook_policy::HookRule {
+            event: cctui_proto::hook_policy::HookEvent::PreToolUse,
+            tool: cctui_proto::hook_policy::ToolClass::Shell,
+            command: command.into(),
+            timeout_secs,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cctui_agent_child_carries_its_parents_hook_policy() {
+        use cctui_proto::adapter::AdapterCommand;
+        use cctui_proto::hook_policy::no_direct_harness_rule;
+        use cctui_proto::ws::DaemonFrameDown;
+        let name = "a_cctui_agent_child_carries_its_parents_hook_policy";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, machine) = (Uuid::new_v4(), Uuid::new_v4());
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, 'hp-test', $2)")
+            .bind(uid)
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(machine)
+            .bind(uid)
+            .bind(machine.to_string())
+            .bind(format!("kh-{machine}"))
+            .execute(&pool)
+            .await
+            .expect("seed machine");
+        let parent = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, working_dir, user_id, machine_uuid, adapter_id) \
+             VALUES ($1, $2, '/w', $3, $4, 'claude-code')",
+        )
+        .bind(&parent)
+        .bind(machine.to_string())
+        .bind(uid)
+        .bind(machine)
+        .execute(&pool)
+        .await
+        .expect("seed parent");
+        let deny_rm = policy_rule("deny-rm", Some(30));
+        let parent_policy =
+            cctui_server_core::hook_policy::carry("claude-code", vec![deny_rm.clone()]).unwrap();
+        sqlx::query(
+            "INSERT INTO machine_launches (command_id, session_id, machine_id, user_id, \
+             acting_user_id, adapter_id, working_dir, hook_policy) \
+             VALUES ($1, $2, $3, $4, $4, 'claude-code', '/w', $5)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(&parent)
+        .bind(machine)
+        .bind(uid)
+        .bind(sqlx::types::Json(&parent_policy))
+        .execute(&pool)
+        .await
+        .expect("record the parent's launch policy");
+
+        let state = AppState::for_test(pool.clone());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        state.bus.register_daemon(machine, Uuid::new_v4(), tx);
+        state.core.spawn_capabilities.insert(parent.clone(), cap(&["claude-code"], None, Some(5)));
+
+        let audit = policy_rule("audit", None);
+        let mut adding = req("claude-code", None);
+        adding.hook_rules = vec![audit.clone()];
+        let spawned = cctui_server_core::child_exec::spawn_child(&state, uid, &parent, &adding)
+            .await
+            .expect("child spawned");
+        let Some(DaemonFrameDown::Command { command, .. }) = rx.recv().await else {
+            panic!("expected a command frame")
+        };
+        let AdapterCommand::Spawn { spec, .. } = *command else { panic!("expected a spawn") };
+        let carried = spec.hook_policy.expect("the child carries a policy").rules;
+        assert_eq!(carried, vec![no_direct_harness_rule(), deny_rm.clone(), audit]);
+        let recorded =
+            cctui_server_core::hook_policy::for_session(&pool, &spawned.session_id).await.unwrap();
+        assert_eq!(recorded.rules, carried, "the child's effective policy is persisted");
+
+        let omitting = req("claude-code", None);
+        cctui_server_core::child_exec::spawn_child(&state, uid, &parent, &omitting)
+            .await
+            .expect("a child adding nothing still spawns");
+        let Some(DaemonFrameDown::Command { command, .. }) = rx.recv().await else {
+            panic!("expected a command frame")
+        };
+        let AdapterCommand::Spawn { spec, .. } = *command else { panic!("expected a spawn") };
+        assert!(spec.hook_policy.expect("policy").rules.contains(&deny_rm));
+
+        let mut weakening = req("claude-code", None);
+        weakening.hook_rules = vec![policy_rule("deny-rm", Some(1))];
+        let err = cctui_server_core::child_exec::spawn_child(&state, uid, &parent, &weakening)
+            .await
+            .expect_err("a weakening child is refused");
+        assert_eq!(err.into_parts().0, StatusCode::BAD_REQUEST);
+        assert!(rx.try_recv().is_err(), "nothing reached the daemon");
+
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM machines WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 }

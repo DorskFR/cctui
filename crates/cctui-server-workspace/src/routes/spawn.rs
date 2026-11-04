@@ -427,30 +427,18 @@ async fn execute_spawn(
         },
     )
     .await;
-    match launched {
-        Err(cctui_server_core::launch::LaunchError::Storage(error)) => {
-            tracing::error!(%error,"could not persist machine launch");
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError { error: crate::error::DB_ERROR.into() }),
-            ));
+    if let Err(error) = launched {
+        if matches!(
+            error,
+            cctui_server_core::launch::LaunchError::Delivery(_)
+                | cctui_server_core::launch::LaunchError::Policy(_)
+        ) && let Err(e) =
+            crate::routes::attachments::delete_attachments(&state.pool, &recorded_ids).await
+        {
+            tracing::warn!(session = %token_session_id, "undoing bootstrap attachments: {e}");
         }
-        Ok(()) => {}
-        Err(cctui_server_core::launch::LaunchError::Delivery(err)) => {
-            if let Err(e) =
-                crate::routes::attachments::delete_attachments(&state.pool, &recorded_ids).await
-            {
-                tracing::warn!(session = %token_session_id, "undoing bootstrap attachments: {e}");
-            }
-            return Err(dispatch_error(&err));
-        }
-        Err(cctui_server_core::launch::LaunchError::Refused(detail)) => {
-            tracing::warn!(machine = %req.machine_id, %command_id, %adapter_id, %detail, "spawn refused by the daemon");
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ApiError { error: format!("the daemon refused the spawn: {detail}") }),
-            ));
-        }
+        tracing::warn!(machine = %req.machine_id, %command_id, %adapter_id, %error, "spawn not launched");
+        return Err(launch_failure(error));
     }
 
     tracing::info!(machine = %req.machine_id, %command_id, %adapter_id, "spawn dispatched");
@@ -463,6 +451,24 @@ async fn execute_spawn(
             session_id: pre_session_id,
         }),
     ))
+}
+
+fn launch_failure(error: cctui_server_core::launch::LaunchError) -> (StatusCode, Json<ApiError>) {
+    use cctui_server_core::launch::LaunchError;
+    match error {
+        LaunchError::Storage(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError { error: crate::error::DB_ERROR.into() }),
+        ),
+        LaunchError::Delivery(err) => dispatch_error(&err),
+        LaunchError::Policy(detail) => {
+            (StatusCode::BAD_REQUEST, Json(ApiError { error: format!("hook policy: {detail}") }))
+        }
+        LaunchError::Refused(detail) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiError { error: format!("the daemon refused the spawn: {detail}") }),
+        ),
+    }
 }
 
 /// The 503 a spawn answers when its command never reached the daemon.

@@ -57,6 +57,8 @@ pub enum ShimCmd {
         #[arg(long)]
         run: String,
     },
+    /// Deny starting a harness directly from a shell command.
+    NoDirectHarness,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -319,7 +321,9 @@ pub fn decide(stdin: &str, tools: Tools, guard: impl Fn(&Value) -> Outcome) -> O
 
 #[must_use]
 pub fn run(cmd: &ShimCmd) -> i32 {
-    let ShimCmd::ApplyPatch { tools, run: guard } = cmd;
+    let ShimCmd::ApplyPatch { tools, run: guard } = cmd else {
+        return super::no_direct_harness::run();
+    };
     let mut stdin = String::new();
     let out = match std::io::stdin().read_to_string(&mut stdin) {
         Ok(_) => decide(&stdin, *tools, |payload| run_guard(guard, payload)),
