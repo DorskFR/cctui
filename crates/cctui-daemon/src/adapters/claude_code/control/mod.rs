@@ -21,6 +21,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use super::backfill::{self, BackfillConfig, CursorFile, default_cursor_path};
 use super::discovery::Discovery;
@@ -35,9 +36,13 @@ use crate::adapter_runtime::{CommandOutcome, Handled, Interrupter, SessionDriver
 
 mod delivered;
 mod diagnose;
+#[cfg(test)]
+mod lane_tests;
+mod lanes;
 mod liveness;
 mod removal;
 mod reply;
+mod reseed;
 mod settings;
 mod snapshot;
 mod spawn;
@@ -315,6 +320,12 @@ impl LiveSnapshot {
 /// Spawn-time `(model, effort)` pair remembered per worker `short`.
 type SpawnModelEffort = (Option<String>, Option<String>);
 
+type ForkParents = Arc<Mutex<HashMap<String, (String, &'static str)>>>;
+
+/// `claude rm` runs one at a time: an occupied worktree is resolved by
+/// removing its occupant, which must not race that occupant's own removal.
+const CONCURRENT_REMOVALS: usize = 1;
+
 /// How long after a reply op its turn id keeps landing on the session's user
 /// events. Claude emits the re-encodings within seconds; anything later is a
 /// different turn, most likely typed into the native TUI.
@@ -510,8 +521,8 @@ pub struct Driver {
     deferred_peer: HashMap<String, std::collections::VecDeque<String>>,
     /// Fingerprints of text this daemon delivered per session, so a transcript
     /// user line it wrote is never mistaken for harness-injected text.
-    delivered: delivered::Delivered,
-    voice: voice::VoiceClocks,
+    delivered: Arc<delivered::Delivered>,
+    voice: Arc<voice::VoiceClocks>,
     /// Parent session id remembered per freshly-forked child `short`.
     /// `fork` dispatches a new worker but the `SessionStarted` for it is emitted
     /// later by the poll loop when the short first appears in the roster — that
@@ -519,7 +530,7 @@ pub struct Driver {
     /// roster-discovery emit reads it to set `SessionMeta::parent_local_id` (the
     /// link the server resolves into `parent_id`). `Mutex` for the same reason as
     /// `spawn_model_effort`.
-    fork_parent_by_short: std::sync::Mutex<HashMap<String, (String, &'static str)>>,
+    fork_parent_by_short: ForkParents,
     /// The `SessionStarted` last emitted per listed short (`local_id`, meta),
     /// replayed on every connect edge. A registration lost with a dropped WS
     /// otherwise never reaches the server again: the short stays in `roster`,
@@ -565,6 +576,10 @@ pub struct Driver {
     /// command path can start/stop viewers.
     pty_view: super::pty_view::PtyViewManager,
     last_reseed: Option<Instant>,
+    reseeding: Option<tokio::task::JoinHandle<usize>>,
+    pulls: reseed::PullClock,
+    lanes: lanes::Lanes,
+    removals: Arc<tokio::sync::Semaphore>,
     /// Task-list folder watch per worker `short`.
     task_watches: HashMap<String, tasks::TaskWatch>,
 }
@@ -667,6 +682,8 @@ pub(super) struct LaunchEnv {
     pub plugin_dirs: Vec<String>,
     /// Server-resolved memory notes, staged and announced through the preamble.
     pub context: Vec<cctui_proto::api::SessionContextItem>,
+    /// Whether the server answered, which re-mints the session token.
+    pub pulled: bool,
 }
 
 /// Resolve a launch env into a full [`LaunchEnv`] from the server pull, shared
@@ -688,7 +705,13 @@ pub(super) async fn resolve_launch_env_for(
         with_bg_isolation(&mut env, std::env::var(BG_ISOLATION_ENV).ok(), None);
         return Ok(LaunchEnv { env, ..Default::default() });
     };
-    match server.gateway_env(mk, local_id).await {
+    let span = crate::adapter_runtime::child_span!(
+        "daemon.gateway_env",
+        "resolve_launch_env_for",
+        otel.kind = "client",
+        session_id = %local_id,
+    );
+    match server.gateway_env(mk, local_id).instrument(span).await {
         Ok(resp) => {
             let mut env = with_resume_guard(crate::adapters::gateway_env::launch_env_decision(
                 "claude",
@@ -705,7 +728,9 @@ pub(super) async fn resolve_launch_env_for(
                 std::env::var(BG_ISOLATION_ENV).ok(),
                 resp.settings.as_ref(),
             );
-            let plugin_dirs = crate::plugins::plugin_dirs(server, &resp.plugins).await;
+            let span = crate::adapter_runtime::child_span!("daemon.plugin_mirror", "plugin_dirs");
+            let plugin_dirs =
+                crate::plugins::plugin_dirs(server, &resp.plugins).instrument(span).await;
             Ok(LaunchEnv {
                 env,
                 settings: resp.settings,
@@ -713,6 +738,7 @@ pub(super) async fn resolve_launch_env_for(
                 spawn_capability: resp.spawn_capability,
                 plugin_dirs,
                 context: resp.context,
+                pulled: true,
             })
         }
         Err(e) => {
@@ -828,9 +854,9 @@ impl Driver {
             spawn_model_effort: std::sync::Mutex::new(HashMap::new()),
             pending_turns: std::sync::Mutex::new(HashMap::new()),
             deferred_peer: HashMap::new(),
-            delivered: delivered::Delivered::default(),
-            voice: voice::VoiceClocks::default(),
-            fork_parent_by_short: std::sync::Mutex::new(HashMap::new()),
+            delivered: Arc::default(),
+            voice: Arc::default(),
+            fork_parent_by_short: ForkParents::default(),
             announced_meta: std::sync::Mutex::new(HashMap::new()),
             connected: None,
             server: None,
@@ -843,6 +869,10 @@ impl Driver {
             spawn_permission_mode: std::sync::Mutex::new(HashMap::new()),
             pty_view,
             last_reseed: None,
+            reseeding: None,
+            pulls: reseed::PullClock::default(),
+            lanes: lanes::Lanes::default(),
+            removals: Arc::new(tokio::sync::Semaphore::new(CONCURRENT_REMOVALS)),
             task_watches: HashMap::new(),
         }
     }
@@ -949,9 +979,8 @@ impl Driver {
                     self.flush_before_teardown().await;
                     return Ok(());
                 }
-                Some(cmd) = self.commands.recv() => {
-                    crate::adapter_runtime::dispatch_command(&mut self, &events, cmd).await;
-                }
+                Some(done) = self.lanes.done_rx.recv() => self.finish_lane(&events, done).await,
+                Some(cmd) = self.commands.recv() => self.route_command(&events, cmd).await,
                 edge = next_edge(connected.as_mut()), if connected.is_some() => {
                     // Lagged is an edge like any other; Closed only retires
                     // the arm (a closed receiver is ready forever).
@@ -1081,23 +1110,64 @@ impl Driver {
         Ok(())
     }
 
-    async fn remove_session(
-        &self,
-        sock: &Path,
+    pub(super) fn remover(&self) -> removal::Remover {
+        removal::Remover {
+            claude_bin: self.cfg.claude_bin.clone(),
+            foreign_shorts: self.foreign_shorts.clone(),
+            events: self.events.clone(),
+        }
+    }
+
+    pub(super) fn launcher(&self) -> spawn::Launcher {
+        spawn::Launcher {
+            server: self.server.clone(),
+            machine_key: self.machine_key.clone(),
+            events: self.events.clone(),
+            jobs_root: self.cfg.jobs_root.clone(),
+            projects_root: self.cfg.projects_root.clone(),
+            hook_socket_path: self.cfg.hook_socket_path.clone(),
+            delivered: Arc::clone(&self.delivered),
+            fork_parent_by_short: Arc::clone(&self.fork_parent_by_short),
+            pulls: self.pulls.clone(),
+        }
+    }
+
+    pub(super) fn enqueue_remove(
+        &mut self,
+        sock: PathBuf,
         local_id: &str,
+        command_id: Option<uuid::Uuid>,
         initiator: RemoveInitiator,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Handled> {
         let short = self.resolve_short_for_removal(local_id)?;
         if !Self::removal_allowed(&self.foreign_shorts, &short, initiator) {
             tracing::info!(
                 %short, %local_id,
                 "skipping automatic removal of a claude job cctui did not start"
             );
-            return Ok(());
+            return Ok(Handled::Done);
         }
-        let rm = self.remove_job(sock, &short, local_id, initiator).await;
-        crate::configsweep::remove_session_files(&short);
-        rm
+        let (remover, removals, id) =
+            (self.remover(), Arc::clone(&self.removals), local_id.to_owned());
+        self.run_in_lane(local_id, command_id, async move {
+            let _turn = removals.acquire().await;
+            let rm = remover.remove_job(&sock, &short, &id, initiator).await;
+            crate::configsweep::remove_session_files(&short);
+            rm.into()
+        });
+        Ok(Handled::Deferred)
+    }
+
+    pub(super) fn enqueue_reply(&mut self, job: reply::ReplyJob, command_id: Option<uuid::Uuid>) {
+        let local_id = job.local_id().to_owned();
+        let (voice, hop_id) = (Arc::clone(&self.voice), local_id.clone());
+        self.run_in_lane(&local_id, command_id, async move {
+            let delivered = Box::pin(job.deliver()).await;
+            if delivered.is_ok() {
+                voice.hop(&hop_id, "delivered");
+            }
+            delivered.into()
+        });
     }
 
     async fn report_command(
@@ -1261,9 +1331,10 @@ impl Driver {
             self.churned = false;
             self.reconcile_tail(true).await;
         }
-        self.flush_deferred_peer(&sock).await;
-        if reseed_due(self.last_reseed, Self::reseed_interval(), reattached) {
-            self.reseed_gateway_env().await;
+        self.flush_deferred_peer(&sock);
+        let interval = Self::reseed_interval();
+        if reseed_due(self.last_reseed, interval, reattached) {
+            self.reseed_gateway_env(interval);
             self.last_reseed = Some(Instant::now());
         }
         Ok(())
@@ -1283,58 +1354,30 @@ impl Driver {
         drop_stale_ask(&self.pending_asks, &self.events, local_id).await;
     }
 
-    async fn flush_deferred_peer(&mut self, sock: &std::path::Path) {
+    fn flush_deferred_peer(&mut self, sock: &std::path::Path) {
         let ready: Vec<String> = self
             .deferred_peer
             .keys()
+            .filter(|id| !self.lanes.is_busy(id))
             .filter(|id| !self.pending_asks.lock().is_ok_and(|m| m.contains_key(*id)))
             .cloned()
             .collect();
         for local_id in ready {
-            let Some(mut queue) = self.deferred_peer.remove(&local_id) else { continue };
-            while let Some(text) = queue.pop_front() {
-                let env = std::collections::BTreeMap::default();
-                match Box::pin(self.deliver_reply(sock, &local_id, &text, None, &env, None)).await {
-                    Ok(()) => {}
-                    Err(err) if err.is::<reply::AskOpened>() => {
-                        queue.push_front(text);
-                        self.deferred_peer.insert(local_id.clone(), queue);
-                        break;
+            let Some(queue) = self.deferred_peer.remove(&local_id) else { continue };
+            let jobs: Vec<_> = queue
+                .into_iter()
+                .filter_map(|text| {
+                    let env = std::collections::BTreeMap::default();
+                    match self.reply_job(sock, &local_id, &text, None, env, None) {
+                        Ok(job) => Some((job, text)),
+                        Err(err) => {
+                            tracing::warn!(%local_id, %err, "deferred peer turn not delivered");
+                            None
+                        }
                     }
-                    Err(err) => tracing::warn!(%local_id, %err, "deferred peer turn not delivered"),
-                }
-            }
-        }
-    }
-
-    /// Renew each live account-bound worker's gateway token by re-pulling its
-    /// env. The token STRING is stable, so the running worker (and its persisted
-    /// `--settings` delivery) needs no rewrite — the pull only re-mints to bump
-    /// the short-TTL expiry. A genuinely env-less worker is deliberately NOT
-    /// force-respawned here; that fails loud at the launch chokepoint instead.
-    async fn reseed_gateway_env(&self) {
-        let (Some(server), Some(mk)) = (self.server.as_ref(), self.machine_key.as_ref()) else {
-            return;
-        };
-        let targets: Vec<String> = self
-            .short_by_session
-            .entries()
-            .into_iter()
-            .filter(|(_, short)| self.roster.contains(short))
-            .map(|(local_id, _)| local_id)
-            .collect();
-        let mut renewed = 0usize;
-        for local_id in &targets {
-            match server.gateway_env(mk, local_id).await {
-                Ok(resp) if resp.account_bound => renewed += 1,
-                Ok(_) => {}
-                Err(err) => {
-                    tracing::debug!(%local_id, %err, "gateway-env re-seed pull failed (will retry)");
-                }
-            }
-        }
-        if renewed > 0 {
-            tracing::info!(renewed, "re-seeded gateway env for live account-bound workers");
+                })
+                .collect();
+            self.run_in_lane(&local_id, None, lanes::deliver_in_order(jobs));
         }
     }
 
@@ -1451,11 +1494,9 @@ impl SessionDriver for Driver {
         }
         let sock = self.ensure_socket().await?;
         let env = std::collections::BTreeMap::default();
-        match Box::pin(self.deliver_reply(&sock, &local_id, &text, None, &env, None)).await {
-            Err(err) if err.is::<reply::AskOpened>() => self.defer_peer(&local_id, text),
-            other => other?,
-        }
-        Ok(Handled::Done)
+        let job = self.reply_job(&sock, &local_id, &text, None, env, None)?;
+        self.run_in_lane(&local_id, None, lanes::deliver_in_order(vec![(job, text)]));
+        Ok(Handled::Deferred)
     }
 
     async fn reply(
@@ -1470,9 +1511,9 @@ impl SessionDriver for Driver {
         self.voice.start(&local_id, &text, command_id);
         let sock = self.ensure_socket().await?;
         self.voice.hop(&local_id, "control socket located");
-        Box::pin(self.deliver_reply(&sock, &local_id, &text, ask_picks, &env, turn_id)).await?;
-        self.voice.hop(&local_id, "delivered");
-        Ok(Handled::Done)
+        let job = self.reply_job(&sock, &local_id, &text, ask_picks, env, turn_id)?;
+        self.enqueue_reply(job, command_id);
+        Ok(Handled::Deferred)
     }
 
     async fn recover_auth(
@@ -1537,12 +1578,11 @@ impl SessionDriver for Driver {
     async fn remove(
         &mut self,
         local_id: String,
-        _command_id: Option<uuid::Uuid>,
+        command_id: Option<uuid::Uuid>,
         initiator: RemoveInitiator,
     ) -> CommandOutcome {
         let sock = self.ensure_socket().await?;
-        self.remove_session(&sock, &local_id, initiator).await?;
-        Ok(Handled::Done)
+        self.enqueue_remove(sock, &local_id, command_id, initiator)
     }
 
     /// The control-socket reply can take as long as a cold worker bring-up
@@ -1558,9 +1598,8 @@ impl SessionDriver for Driver {
             anyhow::bail!("{refusal}");
         }
         let sock = self.ensure_socket().await?;
-        let dispatch =
-            self.prepare_spawn(&sock, &spec, session_id.map(|id| id.to_string())).await?;
-        dispatch.run_detached(self.events.clone(), command_id);
+        let plan = self.plan_spawn(&sock, &spec, session_id.map(|id| id.to_string()))?;
+        plan.run_detached(self.events.clone(), command_id);
         Ok(Handled::Deferred)
     }
 
@@ -1573,10 +1612,14 @@ impl SessionDriver for Driver {
         extract: Option<cctui_proto::adapter::ForkExtract>,
     ) -> CommandOutcome {
         let sock = self.ensure_socket().await?;
-        let dispatch = self
-            .prepare_fork(&sock, &parent_local_id, &spec, session_id.as_deref(), extract.as_ref())
-            .await?;
-        dispatch.run_detached(self.events.clone(), command_id);
+        let plan = self.plan_fork(
+            &sock,
+            &parent_local_id,
+            &spec,
+            session_id.as_deref(),
+            extract.as_ref(),
+        )?;
+        plan.run_detached(self.events.clone(), command_id);
         Ok(Handled::Deferred)
     }
 

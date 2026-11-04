@@ -67,11 +67,11 @@ impl Fingerprint {
     }
 }
 
-impl Driver {
+impl Delivered {
     /// Record text this daemon is about to deliver to `local_id`.
-    pub(super) fn note_delivered(&self, local_id: &str, text: &str) {
+    pub(super) fn note(&self, local_id: &str, text: &str) {
         let Some(fp) = fingerprint(text) else { return };
-        let Ok(mut map) = self.delivered.0.lock() else { return };
+        let Ok(mut map) = self.0.lock() else { return };
         let seen = map.entry(local_id.to_owned()).or_default();
         if seen.contains(&fp) {
             return;
@@ -80,6 +80,12 @@ impl Driver {
         if seen.len() > MAX_FINGERPRINTS {
             seen.remove(0);
         }
+    }
+}
+
+impl Driver {
+    pub(super) fn note_delivered(&self, local_id: &str, text: &str) {
+        self.delivered.note(local_id, text);
     }
 
     fn was_delivered(&self, local_id: &str, text: &str) -> bool {

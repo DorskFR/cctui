@@ -55,6 +55,10 @@ impl Driver {
     }
 
     async fn reprompt_stuck_turn(&self, short: &str, local_id: &str) {
+        if self.lanes.is_busy(local_id) {
+            tracing::info!(%short, "a delivery is in flight; no stuck-turn re-prompt");
+            return;
+        }
         tracing::warn!(
             %short,
             "dispatched session idle on an unfinished background task; re-prompting"
