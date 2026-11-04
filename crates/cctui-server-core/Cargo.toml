@@ -39,3 +39,4 @@ sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres",
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tower.workspace = true
+tempfile.workspace = true
