@@ -5,14 +5,16 @@ import { ANTHROPIC_TTL_MS, DEFAULT_TTL_MS } from './cacheTtl';
 
 const T0 = Date.UTC(2026, 0, 1, 12, 0, 0);
 
-function clock(over: Partial<{ now: number; working: boolean; adapter: string; last: number | null }> = {}) {
+function clock(
+	over: Partial<{ now: number; live: number | null; adapter: string; last: number | null }> = {}
+) {
 	const now = over.now ?? T0;
 	const last = over.last === undefined ? T0 : over.last;
 	return new CacheColdClock({
 		adapterId: () => over.adapter ?? 'claude-code',
 		model: () => null,
 		lastActivityAt: () => (last === null ? null : new Date(last).toISOString()),
-		working: () => over.working ?? false,
+		lastAgentAt: () => over.live ?? null,
 		clock: () => now
 	});
 }
@@ -46,9 +48,11 @@ describe('CacheColdClock', () => {
 		expect(clock({ now: T0 + ANTHROPIC_TTL_MS - COLD_WARN_MS - 1 }).imminent).toBe(false);
 	});
 
-	it('suppresses cold and countdown while a turn is in flight', () => {
-		expect(clock({ now: T0 + ANTHROPIC_TTL_MS + 1, working: true }).cold).toBe(false);
-		expect(clock({ now: T0 + ANTHROPIC_TTL_MS - 5_000, working: true }).imminent).toBe(false);
+	it('runs the window from a newer live agent event', () => {
+		const now = T0 + ANTHROPIC_TTL_MS + 1;
+		expect(clock({ now, live: T0 + 10 * 60_000 }).cold).toBe(false);
+		expect(clock({ now, live: T0 - 60_000 }).cold).toBe(true);
+		expect(clock({ now, last: null, live: T0 }).cold).toBe(true);
 	});
 
 	it('has no cache window without a last activity', () => {

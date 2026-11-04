@@ -2228,7 +2228,7 @@
 	"fork_prompt": "First message",
 	"fork_prompt_placeholder": "Optional: sent as the fork's first turn",
 	"settings_followup_when_cold_label": "Follow-up on a cold cache",
-	"settings_followup_when_cold_help": "When the prompt cache has expired. Follow-up: Send starts a follow-up session that carries only the user/assistant transcript, and archives this one. Ask: Send opens that follow-up prefilled. Offer: Send sends in place, with a link to the follow-up. Shift+Enter and the Send menu always send in place.",
+	"settings_followup_when_cold_help": "When the prompt cache has expired. Follow-up: Send starts a follow-up session that carries only the user/assistant transcript, and archives this one. Ask: Send opens that follow-up prefilled. Offer: Send sends in place, with a link to the follow-up. The Send menu always offers sending in place.",
 	"settings_followup_when_cold_off": "Off",
 	"settings_followup_when_cold_offer": "Offer",
 	"settings_prefer_followup_label": "Prefer follow-up over fork",

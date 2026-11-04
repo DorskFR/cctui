@@ -118,7 +118,7 @@ describe('settings routing', () => {
 		expect(resolveFollowupWhenCold('bogus', 'default')).toBe('auto');
 	});
 
-	it('routes Enter for every setting while cold, and always sends in place when warm or shifted', () => {
+	it('routes Enter for every setting while cold, and always sends in place when warm', () => {
 		const cold: Record<FollowupWhenCold, string> = {
 			auto: 'launch',
 			modal: 'followup',
@@ -126,10 +126,8 @@ describe('settings routing', () => {
 			off: 'send'
 		};
 		for (const [setting, route] of Object.entries(cold) as [FollowupWhenCold, string][]) {
-			expect(routeEnter(setting, true, false)).toBe(route);
-			expect(routeEnter(setting, true, true)).toBe('send');
-			expect(routeEnter(setting, false, false)).toBe('send');
-			expect(routeEnter(setting, false, true)).toBe('send');
+			expect(routeEnter(setting, true)).toBe(route);
+			expect(routeEnter(setting, false)).toBe('send');
 		}
 	});
 

@@ -107,6 +107,18 @@ test.describe('desktop', () => {
 		});
 	}
 
+	test('Shift+Enter on a cold session only inserts a newline', async ({ page }) => {
+		const stub = await stubCold(page);
+		await openSource(page);
+		await expect(send(page)).toContainText('Follow-up');
+		await message(page).fill(INSTRUCTION);
+		await message(page).press('Shift+Enter');
+		await message(page).pressSequentially('more');
+		await expect(message(page)).toHaveValue(`${INSTRUCTION}\nmore`);
+		await page.waitForTimeout(500);
+		expect(stub.spawns).toHaveLength(0);
+	});
+
 	for (const chord of ['Enter', 'Meta+Enter']) {
 		test(`${chord} in a cold tile launches the follow-up`, async ({ page }) => {
 			test.setTimeout(60_000);
