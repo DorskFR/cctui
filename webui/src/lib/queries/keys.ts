@@ -7,9 +7,14 @@ export const SYSTEM_MACHINE_KINDS = new Set(["dispatch", "ephemeral"]);
 export const qk = {
   version: ["version"] as const,
   capabilities: ["capabilities"] as const,
-  sessions: (archived: boolean) => ["sessions", { archived }] as const,
-  sessionSearch: (q: string, archived: boolean) =>
-    ["sessions", "search", { q, archived }] as const,
+  sessions: (archived: boolean, showHidden = false) =>
+    showHidden
+      ? (["sessions", { archived, showHidden: true }] as const)
+      : (["sessions", { archived }] as const),
+  sessionSearch: (q: string, archived: boolean, showHidden = false) =>
+    showHidden
+      ? (["sessions", "search", { q, archived, showHidden: true }] as const)
+      : (["sessions", "search", { q, archived }] as const),
   sessionStats: ["session-stats"] as const,
   tokenStats: ["token-stats"] as const,
   usageAnalytics: (days: number) => ["usage-analytics", { days }] as const,
@@ -41,6 +46,7 @@ export const qk = {
   sessionsAll: ["sessions"] as const,
   conversationAll: ["conversation"] as const,
   me: ["me"] as const,
+  hiddenOwners: ["hidden-owners"] as const,
   voiceConfig: ["voice-config"] as const,
   accounts: ["accounts"] as const,
   providerStatus: ["provider-status"] as const,

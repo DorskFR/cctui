@@ -135,6 +135,9 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
         ServerEvent::CctuiverseChanged { .. } => {
             waived("cctuiverse links are managed from the webui")
         }
+        ServerEvent::HiddenOwnersChanged { .. } => {
+            waived("the next session-list refresh applies the new hidden set")
+        }
         ServerEvent::UserActions { .. } => waived("no needs-you list; the counts ride on the rows"),
         ServerEvent::Event { .. } => {
             waived("the TUI has no event log view; the list refresh carries status")

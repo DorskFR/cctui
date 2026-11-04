@@ -13,10 +13,12 @@ import type { DailyCacheLoss } from "./types";
 export const useSessions = (
   archived: () => boolean,
   enabled: () => boolean = () => true,
+  showHidden: () => boolean = () => false,
 ) =>
   createQuery(() => ({
-    queryKey: qk.sessions(archived()),
-    queryFn: () => endpoints.sessions(archived()),
+    queryKey: qk.sessions(archived(), showHidden()),
+    queryFn: () => endpoints.sessions(archived(), showHidden()),
+    placeholderData: (prev: SessionListResponse | undefined) => prev,
     // Ws list patches and change ticks keep live fields current; this only
     // reconciles token totals, unread counts and last-message previews.
     refetchInterval: 60_000,

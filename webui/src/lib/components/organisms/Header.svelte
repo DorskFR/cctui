@@ -45,8 +45,8 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	$effect(() =>
 		ws.onListPatch((p) => {
 			const { session_id, ...fields } = p;
-			for (const archived of [false, true]) {
-				qc.setQueryData<SessionListResponse>(qk.sessions(archived), (old) =>
+			for (const key of [qk.sessions(false), qk.sessions(true), qk.sessions(false, true)]) {
+				qc.setQueryData<SessionListResponse>(key, (old) =>
 					old
 						? {
 								...old,

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { UserRow } from '@bindings/UserRow';
-	import { Avatar, Input, Button, Disclosure, Dot, Spinner, Text } from '@dorsk/tsumikit';
+	import { Avatar, Badge, Input, Button, Disclosure, Dot, Spinner, Text } from '@dorsk/tsumikit';
 	import PageHead from '$lib/components/molecules/PageHead.svelte';
 	import EnrollMachineCard from '$lib/components/organisms/EnrollMachineCard.svelte';
 	import { hashHue } from '$lib/format';
@@ -14,6 +14,7 @@
 		canCreate = false,
 		meta,
 		online,
+		hidden = () => false,
 		onselect,
 		oncreate
 	}: {
@@ -23,6 +24,7 @@
 		canCreate?: boolean;
 		meta: (u: UserRow) => string;
 		online: (u: UserRow) => boolean;
+		hidden?: (u: UserRow) => boolean;
 		onselect: (id: string) => void;
 		oncreate: () => void;
 	} = $props();
@@ -48,6 +50,9 @@
 				<span class="nm">{u.name}</span>
 				<span class="mt">{meta(u)}</span>
 			</span>
+			{#if hidden(u)}
+				<Badge tone="muted" size="xs" style="flex:none" data-journey="hidden-chip">{m.hidden_owners_chip()}</Badge>
+			{/if}
 			{#if !revoked}
 				<Dot status={online(u) ? 'active' : 'dead'} />
 			{/if}

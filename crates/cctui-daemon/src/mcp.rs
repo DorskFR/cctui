@@ -255,8 +255,9 @@ pub fn usage_tool_schema() -> Value {
         "description": "Report the rate limits and budget that apply to THIS session: the \
     account it is pinned to (which may be a shared or pool-elected one, not your own), that \
     account's usage windows, the caps in force, this session's dollar spend, how many of its \
-    CctuiAgent child slots are used, and whether each model it could run on is currently \
-    allowed or soft-limit blocked. Use it before dispatching \
+    CctuiAgent child slots are used, which account a child of each adapter would run on \
+    (child_accounts, or the reason its spawn would be refused), and whether each model it \
+    could run on is currently allowed or soft-limit blocked. Use it before dispatching \
     a batch of work, and when deciding which model to give a child: a blocked model wastes the \
     whole fan-out on 429s. Returns a one-line summary followed by the full JSON.",
         "inputSchema": {

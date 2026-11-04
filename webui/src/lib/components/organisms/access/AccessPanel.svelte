@@ -9,7 +9,8 @@
 	import EnrollMachineCard from '$lib/components/organisms/EnrollMachineCard.svelte';
 	import EditEntityModal from '$lib/components/molecules/EditEntityModal.svelte';
 	import SecretReveal from '$lib/components/molecules/SecretReveal.svelte';
-	import { useAccounts, useAllMachines, useMe, useUserActions, useUsers } from '$lib/queries';
+	import { useAccounts, useAllMachines, useHiddenOwners, useMe, useUserActions, useUsers } from '$lib/queries';
+	import { isHiddenOwner } from '$lib/hiddenOwners';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
 	import { m } from '$lib/paraglide/messages';
@@ -19,6 +20,8 @@
 	const users = useUsers(() => isAdmin);
 	const machines = useAllMachines(() => isAdmin);
 	const accounts = useAccounts();
+	const hiddenOwners = useHiddenOwners(() => isAdmin);
+	const userHidden = (u: UserRow) => isHiddenOwner(hiddenOwners.data?.owners, 'user', u.id);
 	const actions = useUserActions();
 
 	const self = $derived<UserRow | null>(
@@ -80,6 +83,7 @@
 				canCreate
 				meta={userMeta}
 				{online}
+				hidden={userHidden}
 				onselect={(id) => (picked = id)}
 				oncreate={() => (createOpen = true)}
 			/>

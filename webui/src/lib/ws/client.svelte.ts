@@ -226,6 +226,11 @@ export class WsClient {
 			case 'room_members':
 				this.markListDirty();
 				break;
+			case 'hidden_owners_changed':
+				void this.queryClient?.invalidateQueries({ queryKey: qk.hiddenOwners });
+				void this.queryClient?.invalidateQueries({ queryKey: qk.sessionsAll });
+				this.markListDirty();
+				break;
 			case 'cctuiverse_changed': {
 				const ev = { session_id: msg.session_id ?? null, room_id: msg.room_id ?? null };
 				for (const cb of this.cctuiverseCbs) cb(ev);

@@ -106,20 +106,166 @@ async fn parent_account_name(
     .flatten()
 }
 
-/// Mint the child's gateway env and resolve its model under the account that
-/// serves the child's family.
+/// The account a parent is bound to and the user it was bound for: a spawn
+/// grantee's tree runs on the grantee's accounts even though the machine owner
+/// owns the session.
+#[derive(Debug, Clone)]
+pub struct ParentBinding {
+    pub account: String,
+    pub account_user: Uuid,
+}
+
+/// `None` for an unbound parent, whose children run unbound too.
+pub async fn parent_binding(
+    state: &impl ChildExecutionContext,
+    parent_session: &str,
+    owner: Uuid,
+) -> Option<ParentBinding> {
+    let account = parent_account_name(state, parent_session).await?;
+    let account_user =
+        crate::gateway::mint::acting_user(state, parent_session, None).await.unwrap_or(owner);
+    Some(ParentBinding { account, account_user })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Landing {
+    pub account: String,
+    /// Set when the parent's account lacked the family and a member of the
+    /// parent's pool was elected instead.
+    pub pool: Option<Uuid>,
+}
+
+fn refuse(family: crate::gateway::Family, why: std::fmt::Arguments<'_>) -> AppError {
+    let family = family.label();
+    deny(StatusCode::CONFLICT, format!("could not provision the {family} child: {why}"))
+}
+
+fn db_error(context: &str, err: &dyn std::fmt::Display) -> AppError {
+    tracing::error!("{context}: {err}");
+    deny(StatusCode::INTERNAL_SERVER_ERROR, crate::error::DB_ERROR)
+}
+
+/// The account a child in `family` lands on.
 ///
-/// That is the parent's own account whenever it carries a credential in that
-/// family. It often does not: crossing families (a claude parent spawning a
-/// `codex` child) only works when ONE identity holds both providers, and a
-/// deployment is free to keep its openai credential on a SEPARATE account. The
-/// spawn capability advertises the adapter either way, so refusing here made
-/// `CctuiAgent` promise a child it could never provision. When the parent's
-/// account cannot serve the family we therefore elect one that can, among the
-/// accounts this user owns or has been shared, by the same ranking an
-/// `auto_account` spawn uses — most allocation left first.
-///
-/// A child of an unbound parent is unbound too (empty env, model as requested).
+/// The parent's own when it carries a credential in that family, else a member
+/// of the parent's account pool. A child never borrows any other account:
+/// outside a pool the spawn is refused.
+pub async fn child_landing(
+    state: &impl ChildExecutionContext,
+    parent_session: &str,
+    binding: &ParentBinding,
+    family: crate::gateway::Family,
+    model: Option<&str>,
+) -> Result<Landing, AppError> {
+    let rows =
+        crate::gateway::mint::account_provider_rows(state, binding.account_user, &binding.account)
+            .await
+            .map_err(|e| db_error("spawn-child: reading the parent's account", &e))?;
+    let Some(rows) = rows else {
+        return Err(refuse(
+            family,
+            format_args!("the parent's account `{}` no longer exists", binding.account),
+        ));
+    };
+    if rows.iter().any(|r| r.family() == family) {
+        return Ok(Landing { account: binding.account.clone(), pool: None });
+    }
+    let (account, label) = (&binding.account, family.label());
+    let missing = format!("the parent's account `{account}` has no {label} credential");
+    let Some(pool_id) = parent_pool_id(state, parent_session).await else {
+        return Err(refuse(
+            family,
+            format_args!("{missing}, and the parent is not bound to an account pool"),
+        ));
+    };
+    match crate::account_resolve::resolve_pool_by_id(
+        state,
+        binding.account_user,
+        family,
+        model,
+        pool_id,
+    )
+    .await
+    {
+        Ok((account, pool)) => Ok(Landing { account, pool: Some(pool) }),
+        Err(crate::account_resolve::ResolveError::Rejected(why)) => {
+            Err(refuse(family, format_args!("{missing}, and the parent's pool has none: {why}")))
+        }
+        Err(crate::account_resolve::ResolveError::Db) => {
+            Err(db_error("spawn-child: electing in the parent's pool", &"resolve failed"))
+        }
+    }
+}
+
+/// `model` as `row` serves it, or `None` when the row's catalog cannot serve
+/// it. Never substitutes another model: a fireworks catalog miss is a refusal,
+/// not its first entry.
+#[must_use]
+pub fn servable_model(row: &crate::gateway::mint::ProviderRow, model: &str) -> Option<String> {
+    let family = row.family();
+    let resolved = crate::gateway::mint::resolve_row_model(row, model, false);
+    let serves = crate::account_pick::serves_model(
+        family,
+        row.models.as_ref(),
+        row.model_aliases.as_ref(),
+        Some(model),
+    );
+    if family != crate::gateway::Family::Fireworks {
+        return serves.then_some(resolved);
+    }
+    let has_catalog =
+        row.models.as_ref().and_then(serde_json::Value::as_array).is_some_and(|a| !a.is_empty());
+    if !has_catalog {
+        return Some(resolved);
+    }
+    crate::gateway::mint::resolve_exact_catalog_model(row.models.as_ref(), &resolved)
+}
+
+/// The model the child runs on `account`. A requested model the account cannot
+/// serve is refused; only an adapter that needs a model and was given none gets
+/// the account's default.
+async fn child_model(
+    state: &impl ChildExecutionContext,
+    account_user: Uuid,
+    account: &str,
+    family: crate::gateway::Family,
+    adapter: &str,
+    wanted: Option<&str>,
+) -> Result<Option<String>, AppError> {
+    let Some(wanted) = wanted else {
+        if !cctui_proto::adapter::needs_model(adapter) {
+            return Ok(None);
+        }
+        let resolved =
+            crate::gateway::mint::resolve_account_model(state, account_user, account, family, "")
+                .await;
+        return Ok((!resolved.is_empty()).then_some(resolved));
+    };
+    let rows = crate::gateway::mint::account_provider_rows(state, account_user, account)
+        .await
+        .map_err(|e| db_error("spawn-child: reading the child's account", &e))?
+        .unwrap_or_default();
+    let Some(row) = rows.iter().find(|r| r.family() == family) else {
+        return Ok(Some(wanted.to_owned()));
+    };
+    let flipped =
+        crate::gateway::mint::flip_model_redirect(state, account_user, row.id, family, wanted)
+            .await;
+    servable_model(row, &flipped).map(Some).ok_or_else(|| {
+        deny(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "the account `{account}` cannot serve model {wanted:?} for the {adapter} child: \
+                 its {} catalog does not list it",
+                family.label()
+            ),
+        )
+    })
+}
+
+/// Mint the child's gateway env and resolve its model on the account it lands
+/// on (see [`child_landing`]). A child of an unbound parent is unbound too
+/// (empty env, model as requested).
 pub async fn child_account_env(
     state: &impl ChildExecutionContext,
     parent: &Parent,
@@ -129,163 +275,49 @@ pub async fn child_account_env(
     child_key: &str,
 ) -> Result<(std::collections::BTreeMap<String, String>, Option<String>), AppError> {
     let wanted = requested_model.map(str::trim).filter(|m| !m.is_empty()).map(str::to_owned);
-    let Some(parent_account) = parent_account_name(state, &parent.session_id).await else {
+    let Some(binding) = parent_binding(state, &parent.session_id, parent.user_id).await else {
         return Ok((std::collections::BTreeMap::new(), wanted));
     };
-    // The user the parent's account was bound for: a spawn grantee's tree runs
-    // on the grantee's accounts even though the machine owner owns the session.
-    let account_user = crate::gateway::mint::acting_user(state, &parent.session_id, None)
-        .await
-        .unwrap_or(parent.user_id);
-
-    let mut first_error = None;
-    let mut elected_pool = None;
-    let mut election_refusal = None;
-    for account in [Some(parent_account.clone()), None] {
-        // The second pass runs only when the parent's own account could not
-        // serve the family.
-        let account = if let Some(a) = account {
-            a
-        } else {
-            let (elected, pool, refusal) =
-                elect_family_account(state, parent, account_user, family, wanted.as_deref()).await;
-            election_refusal = refusal;
-            match elected {
-                Some(elected) if elected != parent_account => {
-                    tracing::info!(
-                        parent = %parent.session_id, child = %child_key,
-                        from = %parent_account, to = %elected, family = family.label(),
-                        pool = ?pool,
-                        "spawn-child: parent's account carries no credential in the child's \
-                         family, electing one that does"
-                    );
-                    elected_pool = pool;
-                    elected
-                }
-                _ => break,
-            }
-        };
-
-        let mut model = wanted.clone();
-        if model.is_some() || cctui_proto::adapter::needs_model(adapter) {
-            let resolved = crate::gateway::mint::resolve_account_model(
-                state,
-                account_user,
-                &account,
-                family,
-                model.as_deref().unwrap_or_default(),
-            )
-            .await;
-            model = (!resolved.is_empty()).then_some(resolved);
+    let landing =
+        child_landing(state, &parent.session_id, &binding, family, wanted.as_deref()).await?;
+    let model = child_model(
+        state,
+        binding.account_user,
+        &landing.account,
+        family,
+        adapter,
+        wanted.as_deref(),
+    )
+    .await?;
+    let env = crate::gateway::mint::mint_session_env(
+        state,
+        binding.account_user,
+        &landing.account,
+        family,
+        child_key,
+    )
+    .await
+    .map_err(|e| match e {
+        crate::gateway::mint::MintSessionEnvError::NoAccount => {
+            refuse(family, format_args!("the account `{}` no longer exists", landing.account))
         }
-        match crate::gateway::mint::mint_session_env(
-            state,
-            account_user,
-            &account,
+        crate::gateway::mint::MintSessionEnvError::NoProviderForFamily(f) => refuse(
             family,
-            child_key,
-        )
-        .await
-        {
-            Ok(env) => {
-                if let Some(pool_id) = elected_pool {
-                    crate::account_resolve::stamp_pool(state, child_key, pool_id).await;
-                }
-                return Ok((env, model));
-            }
-            // Only a missing provider is worth a second account: a vanished
-            // account or a DB fault would fail the same way on any of them.
-            Err(e @ crate::gateway::mint::MintSessionEnvError::NoProviderForFamily(_)) => {
-                first_error.get_or_insert(e);
-            }
-            Err(e) => {
-                first_error.get_or_insert(e);
-                break;
-            }
+            format_args!("the account `{}` has no {} credential", landing.account, f.label()),
+        ),
+        crate::gateway::mint::MintSessionEnvError::Db(err) => {
+            db_error("spawn-child: minting the child's gateway env", &err)
         }
+    })?;
+    if let Some(pool_id) = landing.pool {
+        crate::account_resolve::stamp_pool(state, child_key, pool_id).await;
     }
-
-    let why = match first_error {
-        Some(crate::gateway::mint::MintSessionEnvError::NoAccount) => {
-            "the parent's account no longer exists".to_owned()
-        }
-        // The election's own refusal is the useful one: "every candidate is out
-        // of allocation" sends the operator somewhere very different from
-        // "there is no such credential".
-        Some(crate::gateway::mint::MintSessionEnvError::NoProviderForFamily(f)) => election_refusal
-            .map_or_else(
-                || {
-                    format!(
-                        "no account you own carries a {} provider (the parent's does not, \
-                         and no other candidate was found)",
-                        f.label()
-                    )
-                },
-                |why| format!("no {} account could be elected: {why}", f.label()),
-            ),
-        Some(crate::gateway::mint::MintSessionEnvError::Db(err)) => {
-            tracing::error!(parent = %parent.session_id, "spawn-child mint failed: {err}");
-            crate::error::DB_ERROR.to_owned()
-        }
-        None => crate::error::DB_ERROR.to_owned(),
-    };
-    Err(deny(
-        StatusCode::CONFLICT,
-        format!("could not provision a {} child: {why}", family.label()),
-    ))
-}
-
-/// An account `account_user` may bind in `family`, ranked as an
-/// `auto_account` spawn ranks them. A ranking failure (every candidate out of
-/// allocation, or none serving the model) is not an error here: it only means
-/// there is no fallback, and the caller reports the original mint failure.
-async fn elect_family_account(
-    state: &impl ChildExecutionContext,
-    parent: &Parent,
-    account_user: Uuid,
-    family: crate::gateway::Family,
-    model: Option<&str>,
-) -> (Option<String>, Option<Uuid>, Option<String>) {
-    // A pool-bound parent never escapes its pool: the member set is the
-    // operator's explicit statement of what this tree may spend.
-    if let Some(pool_id) = parent_pool_id(state, &parent.session_id).await {
-        return match crate::account_resolve::resolve_pool_by_id(
-            state,
-            account_user,
-            family,
-            model,
-            pool_id,
-        )
-        .await
-        {
-            Ok((account, pool)) => (Some(account), Some(pool), None),
-            Err(e) => {
-                let why = match e {
-                    crate::account_resolve::ResolveError::Rejected(reason) => reason,
-                    crate::account_resolve::ResolveError::Db => crate::error::DB_ERROR.to_owned(),
-                };
-                tracing::warn!(
-                    parent = %parent.session_id, family = family.label(), %pool_id,
-                    "spawn-child: the parent's pool has no account for this family: {why}"
-                );
-                (None, None, Some(why))
-            }
-        };
-    }
-
-    match crate::machine_spawn::auto_account_name_scoped(state, account_user, family, model, true)
-        .await
-    {
-        Ok(elected) => (elected, None, None),
-        Err((_, e)) => {
-            let why = e.0.error;
-            tracing::warn!(
-                parent = %parent.session_id, family = family.label(),
-                "spawn-child: no fallback account for this family: {why}"
-            );
-            (None, None, Some(why))
-        }
-    }
+    tracing::info!(
+        parent = %parent.session_id, child = %child_key, family = family.label(),
+        parent_account = %binding.account, account = %landing.account, pool = ?landing.pool,
+        "spawn-child: child bound"
+    );
+    Ok((env, model))
 }
 
 /// The pool the parent's live gateway binding was stamped with, if any.
@@ -647,5 +679,77 @@ pub async fn ensure_descendant(
         Ok(())
     } else {
         Err(deny(StatusCode::NOT_FOUND, "no such session below this one"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::servable_model;
+    use crate::gateway::mint::ProviderRow;
+    use serde_json::json;
+
+    fn row(
+        provider: &str,
+        models: Option<serde_json::Value>,
+        aliases: Option<serde_json::Value>,
+    ) -> ProviderRow {
+        ProviderRow {
+            id: uuid::Uuid::nil(),
+            provider: provider.to_owned(),
+            model_aliases: aliases,
+            models,
+        }
+    }
+
+    fn kimi_catalog() -> serde_json::Value {
+        json!([
+            { "model": "accounts/fireworks/models/kimi-k3", "label": "kimi-k3" },
+            { "model": "accounts/fireworks/models/glm-5", "label": "glm-5" },
+        ])
+    }
+
+    #[test]
+    fn a_fireworks_catalog_miss_is_refused_not_swapped_for_its_first_entry() {
+        let fireworks = row("fireworks", Some(kimi_catalog()), None);
+        assert_eq!(servable_model(&fireworks, "gpt-5.5"), None);
+    }
+
+    #[test]
+    fn a_fireworks_model_resolves_by_label_id_or_alias() {
+        let fireworks = row("fireworks", Some(kimi_catalog()), Some(json!({ "fast": "glm-5" })));
+        assert_eq!(
+            servable_model(&fireworks, "kimi-k3").as_deref(),
+            Some("accounts/fireworks/models/kimi-k3")
+        );
+        assert_eq!(
+            servable_model(&fireworks, "accounts/fireworks/models/glm-5").as_deref(),
+            Some("accounts/fireworks/models/glm-5")
+        );
+        assert_eq!(
+            servable_model(&fireworks, "fast").as_deref(),
+            Some("accounts/fireworks/models/glm-5")
+        );
+    }
+
+    #[test]
+    fn a_row_without_a_catalog_serves_the_requested_model() {
+        assert_eq!(servable_model(&row("fireworks", None, None), "x").as_deref(), Some("x"));
+        assert_eq!(
+            servable_model(&row("openai", None, None), "gpt-5.5").as_deref(),
+            Some("gpt-5.5")
+        );
+    }
+
+    #[test]
+    fn a_closed_anthropic_catalog_refuses_what_it_does_not_list() {
+        let local = row("anthropic", Some(json!([{ "model": "qwen-coder" }])), None);
+        assert_eq!(servable_model(&local, "claude-opus-5-5"), None);
+        assert_eq!(servable_model(&local, "qwen-coder").as_deref(), Some("qwen-coder"));
+    }
+
+    #[test]
+    fn an_anthropic_alias_is_applied_to_the_served_model() {
+        let aliased = row("anthropic", None, Some(json!({ "opus": "claude-opus-5-5" })));
+        assert_eq!(servable_model(&aliased, "opus").as_deref(), Some("claude-opus-5-5"));
     }
 }

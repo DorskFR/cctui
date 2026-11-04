@@ -839,6 +839,10 @@ pub enum ServerEvent {
         /// The link's owner; scopes delivery.
         user_id: uuid::Uuid,
     },
+    /// This user's hidden users/machines list changed; refetch the session list.
+    HiddenOwnersChanged {
+        user_id: uuid::Uuid,
+    },
     /// The session's "needs you" list changed. Carries the whole list: a tab
     /// that missed an earlier frame must not have to reconstruct it.
     UserActions {

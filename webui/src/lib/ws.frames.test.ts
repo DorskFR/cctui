@@ -164,7 +164,8 @@ const fixtures = {
 	},
 	heartbeat: { type: 'heartbeat' },
 	resync: { type: 'resync', session_id: SID },
-	cctuiverse_changed: { type: 'cctuiverse_changed', user_id: USER, session_id: SID, room_id: null }
+	cctuiverse_changed: { type: 'cctuiverse_changed', user_id: USER, session_id: SID, room_id: null },
+	hidden_owners_changed: { type: 'hidden_owners_changed', user_id: USER }
 } satisfies { [K in ServerEvent['type']]: Extract<ServerEvent, { type: K }> };
 
 class FakeSocket {
@@ -235,7 +236,7 @@ describe('onFrame, one fixture per ServerEvent variant', () => {
 		]);
 	});
 
-	it.each(['status', 'session_registered', 'session_deregistered'] as const)(
+	it.each(['status', 'session_registered', 'session_deregistered', 'hidden_owners_changed'] as const)(
 		'%s bumps the list refresh tick',
 		(kind) => {
 			const { c, sock } = setup();

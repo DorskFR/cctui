@@ -96,6 +96,83 @@ pub struct BlockView {
     pub key: Option<String>,
 }
 
+/// Where a `CctuiAgent` child of one adapter would run: the account it would
+/// land on, or why its spawn would be refused.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ChildLandingView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub via_pool: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unbound: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refused: Option<String>,
+}
+
+/// Dry run of the spawn path's account decision for every adapter the
+/// session may spawn, with no model named.
+pub async fn child_landings(
+    state: &impl SessionLimitsContext,
+    session_id: &str,
+    owner: Uuid,
+    adapters: &[String],
+) -> BTreeMap<String, ChildLandingView> {
+    let binding = crate::child_exec::parent_binding(state, session_id, owner).await;
+    let mut out = BTreeMap::new();
+    for adapter in adapters {
+        let family = crate::gateway::Family::try_from_adapter(adapter);
+        let view = match (family, &binding) {
+            (None, _) => ChildLandingView {
+                refused: Some(format!("unknown harness {adapter:?}")),
+                ..ChildLandingView::default()
+            },
+            (Some(_), None) => ChildLandingView { unbound: true, ..ChildLandingView::default() },
+            (Some(family), Some(binding)) => {
+                match crate::child_exec::child_landing(state, session_id, binding, family, None)
+                    .await
+                {
+                    Ok(landing) => ChildLandingView {
+                        account: Some(landing.account),
+                        via_pool: landing.pool.is_some(),
+                        ..ChildLandingView::default()
+                    },
+                    Err(e) => ChildLandingView {
+                        refused: Some(match e {
+                            AppError::Status(_, msg) => msg,
+                            _ => crate::error::DB_ERROR.to_owned(),
+                        }),
+                        ..ChildLandingView::default()
+                    },
+                }
+            }
+        };
+        out.insert(adapter.clone(), view);
+    }
+    out
+}
+
+async fn spawnable_landings(
+    state: &impl SessionLimitsContext,
+    session_id: &str,
+    owner: Uuid,
+) -> BTreeMap<String, ChildLandingView> {
+    match crate::child_exec::capability_for(state, session_id).await {
+        Some(cap) => child_landings(state, session_id, owner, &cap.adapters).await,
+        None => BTreeMap::new(),
+    }
+}
+
+fn window_views(windows: Vec<UsageWindow>, now: chrono::DateTime<Utc>) -> Vec<WindowView> {
+    windows
+        .into_iter()
+        .map(|w| {
+            let pace = cctui_proto::api::pace::for_window(now, &w, None);
+            WindowView { window: w, pace }
+        })
+        .collect()
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct SessionLimits {
     pub session_id: String,
@@ -111,6 +188,8 @@ pub struct SessionLimits {
     pub block: Option<BlockView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub children: Option<ChildSlots>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub child_accounts: BTreeMap<String, ChildLandingView>,
     pub age_secs: u64,
     pub stale: bool,
 }
@@ -293,15 +372,10 @@ pub async fn inspect(
         })
         .collect();
 
-    let views = windows
-        .into_iter()
-        .map(|w| {
-            let pace = cctui_proto::api::pace::for_window(now, &w, None);
-            WindowView { window: w, pace }
-        })
-        .collect();
+    let views = window_views(windows, now);
 
     let children = state.limits_child_slots(session_id).await?;
+    let child_accounts = spawnable_landings(state, session_id, caller).await;
     Ok(SessionLimits {
         session_id: session_id.to_owned(),
         account: AccountView {
@@ -319,6 +393,7 @@ pub async fn inspect(
         per_model,
         block: soft_limit_reason.map(|reason| BlockView { reason, key: soft_limit_key }),
         children,
+        child_accounts,
         age_secs,
         stale: cache_stale,
     })

@@ -29,6 +29,7 @@ pub mod harness_catalogs;
 pub mod harness_models;
 pub mod harness_update;
 pub mod harnesses;
+pub mod hidden_owners;
 pub mod images;
 pub mod instance;
 pub mod internal;
