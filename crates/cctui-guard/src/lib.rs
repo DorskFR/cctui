@@ -7,6 +7,7 @@
 //!
 //! See the crate README for the canonical prompt-step and guard-rules format.
 
+pub mod capability;
 pub mod decision_log;
 pub mod dialect;
 pub mod engine;
@@ -18,6 +19,7 @@ pub mod resolve;
 pub mod rules;
 pub mod server;
 
+pub use capability::{ExecTable, Grants, Registry, ResolveError};
 pub use decision_log::{Decision, DecisionLog, Kind, Source, build_report};
 pub use dialect::{DIALECT_HEADER, Dialect};
 pub use engine::{Verdict, WorkflowEngine};

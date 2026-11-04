@@ -193,7 +193,7 @@ fn is_interpreter(tok: &str) -> bool {
 /// -c`, `eval`, `xargs`, `python -c`), config-injecting git options, or a
 /// risky `NAME=value` prefix — so only an explicit `Bash`/`*` grant, not a
 /// phrase, may clear it.
-fn segment_needs_bash_grant(seg: &str) -> bool {
+pub(crate) fn segment_needs_bash_grant(seg: &str) -> bool {
     if ["$(", "`", "<<", "<(", ">("].iter().any(|m| seg.contains(*m)) {
         return true;
     }

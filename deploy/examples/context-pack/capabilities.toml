@@ -1,0 +1,71 @@
+# Capability registry (context pack example). Steps grant capabilities by name:
+# `[allowed]: read:all, git:push`. Hosts are neutral placeholders.
+
+[capability."git:read"]
+description = "Inspect history and the working tree; fetch from the remote."
+exec = [
+  { bin = "git", subcommands = ["status"], allow_flags = ["-s", "--short", "-b", "--branch", "--porcelain"] },
+  { bin = "git", subcommands = ["log", "diff", "show"], allow_flags = [
+    "--oneline", "--stat", "--name-only", "--name-status", "--cached", "--staged",
+    "-p", "--patch", "--no-color", "-n=", "--max-count=", "--format=", "--pretty=",
+  ] },
+  { bin = "git", subcommands = ["fetch"], allow_flags = ["--prune", "--tags", "--depth="] },
+]
+net = ["github.example.com:443", "github.example.com:22"]
+
+[capability."git:commit"]
+description = "Switch branches and record commits locally."
+requires = ["git:read"]
+exec = [
+  { bin = "git", subcommands = ["checkout"], allow_flags = ["-b="] },
+  { bin = "git", subcommands = ["commit"], allow_flags = ["-m=", "--message=", "-a", "--all"] },
+]
+
+[capability."git:push"]
+description = "Push branches to the remote."
+requires = ["git:read"]
+exec = [{ bin = "git", subcommands = ["push"], allow_flags = ["-u", "--set-upstream"] }]
+assumes = ["branch protection rejects force-push and deletion of protected branches"]
+
+[capability."gh:read"]
+description = "Read pull requests and the GitHub API (GET only: no -X/-f/-F/--input)."
+exec = [
+  { bin = "gh", subcommands = ["pr list", "pr view"], allow_flags = [
+    "--json=", "--state=", "--limit=", "-L=", "--comments", "--jq=", "-q=",
+  ] },
+  { bin = "gh", subcommands = ["api"], allow_flags = ["--jq=", "-q=", "--paginate"] },
+]
+net = ["api.github.example.com:443"]
+
+[capability."gh:write"]
+description = "Open and edit pull requests."
+requires = ["gh:read", "git:push"]
+exec = [
+  { bin = "gh", subcommands = ["pr create", "pr edit"], allow_flags = [
+    "--title=", "-t=", "--body=", "-b=", "--body-file=", "-F=", "--base=", "-B=",
+    "--head=", "-H=", "--draft", "-d", "--fill",
+  ] },
+]
+
+[capability."read:all"]
+requires = ["git:read", "gh:read"]
+
+[capability."write:all"]
+requires = ["git:commit", "git:push", "gh:write"]
+
+[capability."remote:write"]
+requires = ["git:push", "gh:write"]
+
+[capability."model:api"]
+description = "The model gateway."
+net = ["api.example.com:443", "downloads.example.com:443"]
+
+[capability."oracle:external-sandbox"]
+net = ["sandbox.example.com:443"]
+
+[capability."oracle:payments-sandbox"]
+net = ["api.sandbox.stripe.example.com:443"]
+
+[capability."preview:acceptance"]
+description = "The deployed per-PR preview the acceptance agent drives."
+net = ["preview.example.com:443"]
