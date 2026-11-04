@@ -221,6 +221,7 @@ impl Dispatcher for EnrolledDispatcher {
             dedup_key: spec.dedup_key.map(ToOwned::to_owned),
             profile: None,
             payload: spec.payload.clone(),
+            traceparent: cctui_telemetry::current_traceparent().map(|(traceparent, _)| traceparent),
         };
         let reply =
             dispatch_held(&self.bus, self.dispatcher_id, &self.name, &wire, DISPATCH_HOLD).await?;
@@ -376,6 +377,7 @@ mod tests {
             dedup_key: None,
             profile: None,
             payload: serde_json::json!({}),
+            traceparent: None,
         };
         let reply = round_trip(
             &bus,
@@ -404,6 +406,7 @@ mod tests {
             dedup_key: Some("dedup-1".into()),
             profile: None,
             payload: serde_json::json!({}),
+            traceparent: None,
         }
     }
 

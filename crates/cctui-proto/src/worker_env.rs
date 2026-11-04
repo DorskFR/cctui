@@ -46,8 +46,8 @@ pub fn valid_plugin_env_name(name: &str) -> bool {
 /// routing, account env). The server strips any caller-supplied copy.
 pub const SERVER_ENV_KEYS_FIELD: &str = "server_env_keys";
 
-const DISPATCHER_OWNED_EXACT: [&str; 4] =
-    ["CCTUI_URL", "CCTUI_MACHINE_KEY", "SESSION_ID", "REPLY_URL"];
+const DISPATCHER_OWNED_EXACT: [&str; 5] =
+    ["CCTUI_URL", "CCTUI_MACHINE_KEY", "CCTUI_DISPATCH_ID", "SESSION_ID", "REPLY_URL"];
 
 fn is_dispatcher_owned(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
@@ -144,7 +144,14 @@ mod tests {
         });
         assert!(check_payload_env(&unlisted).unwrap_err().contains("LD_PRELOAD"));
 
-        for k in ["CCTUI_URL", "CCTUI_MACHINE_KEY", "SESSION_ID", "REPLY_URL", "TASK_ID"] {
+        for k in [
+            "CCTUI_URL",
+            "CCTUI_MACHINE_KEY",
+            "CCTUI_DISPATCH_ID",
+            "SESSION_ID",
+            "REPLY_URL",
+            "TASK_ID",
+        ] {
             let p = json!({ "env": { k: "x" }, SERVER_ENV_KEYS_FIELD: [k] });
             assert!(check_payload_env(&p).unwrap_err().contains(k), "{k}");
         }

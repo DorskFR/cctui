@@ -56,4 +56,9 @@ launch_error?: string | null,
  * The latest follow-up that continues this session (its `parent_id` is
  * this one and its relation is `followup`).
  */
-next_session_id?: string | null, };
+next_session_id?: string | null, 
+/**
+ * How many follow-ups continue this session, `next_session_id` included:
+ * above one, the thread forks here.
+ */
+followup_count?: number, };

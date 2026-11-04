@@ -292,12 +292,25 @@ pub struct Backfill {
     name: String,
     batch: i64,
     horizon: Horizon,
+    #[cfg(test)]
+    session: Option<String>,
 }
+
+#[cfg(not(test))]
+const SESSION_SCOPE: &str = "";
+#[cfg(test)]
+const SESSION_SCOPE: &str = " AND ($4::text IS NULL OR e.session_id = $4)";
 
 impl Backfill {
     #[must_use]
     pub fn new(name: &str, batch: i64) -> Self {
-        Self { name: name.to_owned(), batch, horizon: Horizon::new(COMMIT_LAG) }
+        Self {
+            name: name.to_owned(),
+            batch,
+            horizon: Horizon::new(COMMIT_LAG),
+            #[cfg(test)]
+            session: None,
+        }
     }
 
     /// Index the next batch in one short transaction. Returns how many events
@@ -326,14 +339,15 @@ impl Backfill {
         if cursor >= ceiling {
             return Ok(0);
         }
-        let rows: Vec<SourceRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "{SOURCE_SELECT} WHERE e.id > $1 AND e.id <= $2 ORDER BY e.id LIMIT $3"
+        let query = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "{SOURCE_SELECT} WHERE e.id > $1 AND e.id <= $2{SESSION_SCOPE} ORDER BY e.id LIMIT $3"
         )))
         .bind(cursor)
         .bind(ceiling)
-        .bind(self.batch)
-        .fetch_all(&mut *tx)
-        .await?;
+        .bind(self.batch);
+        #[cfg(test)]
+        let query = query.bind(self.session.as_deref());
+        let rows: Vec<SourceRow> = query.fetch_all(&mut *tx).await?;
         let read = rows.len();
         let next = if usize::try_from(self.batch).is_ok_and(|b| read < b) {
             ceiling
@@ -503,6 +517,46 @@ mod tests {
         steps
     }
 
+    fn scoped_walk(name: &str, sid: &str) -> Backfill {
+        Backfill {
+            name: name.to_owned(),
+            batch: 2,
+            horizon: Horizon::new(Duration::ZERO),
+            session: Some(sid.to_owned()),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_scoped_backfill_leaves_other_sessions_alone() {
+        let Some((pool, mine)) = seeded("search_backfill_scope_mine").await else { return };
+        let Some((other_pool, other)) = seeded("search_backfill_scope_other").await else {
+            return;
+        };
+        let first = insert_message(&pool, &mine, "mine before").await;
+        insert_message(&pool, &other, "someone else's event").await;
+        insert_message(&pool, &mine, "mine after").await;
+        let walk_name = format!("test-{mine}");
+        sqlx::query("INSERT INTO search_index_state (name, last_event_id) VALUES ($1, $2)")
+            .bind(&walk_name)
+            .bind(first - 1)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        drain(&mut scoped_walk(&walk_name, &mine), &pool).await;
+        assert!(chunk_count(&pool, &mine).await >= 2, "both of its own events are indexed");
+        assert_eq!(chunk_count(&pool, &other).await, 0, "the walk only reads its own session");
+
+        sqlx::query("DELETE FROM search_index_state WHERE name = $1")
+            .bind(&walk_name)
+            .execute(&pool)
+            .await
+            .unwrap();
+        for (p, sid) in [(&pool, &mine), (&other_pool, &other)] {
+            sqlx::query("DELETE FROM sessions WHERE id = $1").bind(sid).execute(p).await.unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn backfill_is_resumable_and_idempotent() {
         let name = "search_backfill_resumable";
@@ -521,8 +575,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut walk =
-            Backfill { name: walk_name.clone(), batch: 2, horizon: Horizon::new(Duration::ZERO) };
+        let mut walk = scoped_walk(&walk_name, &sid);
         assert_eq!(walk.step(&pool).await.unwrap(), 2);
         let cursor: i64 =
             sqlx::query_scalar("SELECT last_event_id FROM search_index_state WHERE name = $1")
@@ -535,8 +588,7 @@ mod tests {
             "the cursor stops at the last event of the batch: {cursor}"
         );
 
-        let mut resumed =
-            Backfill { name: walk_name.clone(), batch: 2, horizon: Horizon::new(Duration::ZERO) };
+        let mut resumed = scoped_walk(&walk_name, &sid);
         drain(&mut resumed, &pool).await;
         let total = chunk_count(&pool, &sid).await;
         assert!(total > 6, "the long event spans several chunks: {total}");

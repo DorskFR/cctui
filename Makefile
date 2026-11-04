@@ -4,6 +4,7 @@ CCTUI_AGENT_TOKENS ?= dev-agent
 CCTUI_ADMIN_TOKENS ?= dev-admin
 CCTUI_URL ?= http://localhost:8700
 CCTUI_TOKEN ?= dev-admin
+HEAVY ?= bash scripts/heavy.sh
 
 export DATABASE_URL
 export TEST_DATABASE_URL
@@ -47,7 +48,7 @@ build:  ## Build all crates in release mode
 	cargo build --release --workspace
 
 check:  ## Type check all crates
-	cargo check --workspace
+	$(HEAVY) cargo check --workspace
 
 # ── Format & Lint ──────────────────────────────────────────
 
@@ -56,16 +57,16 @@ fmt:  ## Auto-format Rust + non-Rust files
 	biome check --write .
 
 lint:  ## Run clippy with deny warnings
-	cargo clippy --workspace --all-targets -- -D warnings
+	$(HEAVY) cargo clippy --workspace --all-targets -- -D warnings
 
 # ── Test ───────────────────────────────────────────────────
 
 test: db/test/up db/test/migrate/up  ## Run all tests
-	DATABASE_URL=$(TEST_DATABASE_URL) cargo test --workspace
+	DATABASE_URL=$(TEST_DATABASE_URL) $(HEAVY) cargo test --workspace
 	@echo "Tests complete."
 
 test/unit:  ## Run unit tests only (no DB required)
-	env -u DATABASE_URL -u TEST_DATABASE_URL cargo test --workspace
+	env -u DATABASE_URL -u TEST_DATABASE_URL $(HEAVY) cargo test --workspace
 
 # ── Run ────────────────────────────────────────────────────
 
@@ -134,7 +135,7 @@ LOCAL_UNSET = env -u CCTUI_ADMIN_TOKENS -u CCTUI_VAULT_KEY -u CCTUI_TOKEN -u DAT
 LOCAL_DC = $(LOCAL_UNSET) docker compose -f $(LOCAL_COMPOSE) --env-file $(LOCAL_ENV)
 LOCAL_ADMIN_TOKEN = $$(sed -n 's/^CCTUI_ADMIN_TOKENS=//p' $(LOCAL_ENV) | cut -d, -f1)
 
-.PHONY: local/up local/down local/logs local/pull local/ps local/seed local/demo
+.PHONY: local/up local/down local/logs local/pull local/ps local/seed local/demo local/otel-trace
 
 $(LOCAL_ENV):
 	@umask 077 && { \
@@ -168,6 +169,13 @@ local/logs: $(LOCAL_ENV)  ## Tail logs from the local stack
 
 local/ps: $(LOCAL_ENV)  ## Show local stack status
 	$(LOCAL_DC) ps
+
+LOCAL_OTLP_PORT ?= 4318
+
+local/otel-trace: $(LOCAL_ENV)  ## Check one Launch click yields one webui→server→db→daemon trace (docs/tracing.md)
+	CCTUI_SERVER_OTLP_ENDPOINT=http://host.docker.internal:$(LOCAL_OTLP_PORT) $(LOCAL_DC) up -d cctui-server
+	@for i in $$(seq 60); do curl -s -o /dev/null $(CCTUI_URL)/api/v1/version && exit 0; sleep 1; done; echo "cctui-server did not come up" >&2; exit 1
+	$(LOCAL_UNSET) CCTUI_TOKEN="$(LOCAL_ADMIN_TOKEN)" OTEL_E2E_SINK_PORT=$(LOCAL_OTLP_PORT) npm --prefix webui run e2e:otel
 
 # ── Deploy ──────────────────────────────────────────────────
 

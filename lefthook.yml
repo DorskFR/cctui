@@ -5,9 +5,6 @@ pre-commit:
       glob: "*.rs"
       run: cargo +nightly fmt --all
       stage_fixed: true
-    clippy:
-      glob: "*.rs"
-      run: cargo clippy --workspace --all-targets -- -D warnings
     biome:
       glob: "*.{json,yaml,yml,md}"
       run: biome check --write --no-errors-on-unmatched {staged_files}
@@ -41,6 +38,9 @@ pre-commit:
     comment-refs:
       glob: "{*.rs,*.ts,*.svelte,*.sh,*.yml,*.yaml,*.service,*Dockerfile,Makefile,**/Makefile,docs/*.md,docs/**/*.md}"
       run: bash scripts/check-comment-refs.sh
+    migrations:
+      glob: "{migrations/*,crates/*/schema/*.sql,crates/*/src/schema.rs}"
+      run: bash scripts/check-migrations.sh
     # Private names stay out of the repo. The list is local
     # (~/.config/cctui/forbidden-terms.txt) and the FORBIDDEN_TERMS secret in CI;
     # hits print only their location.
@@ -60,6 +60,8 @@ pre-push:
       run: bash scripts/check-forbidden-terms.sh --pre-push
     # Each check runs only when the pushed commits touch its area (see
     # scripts/ci-changes.sh); CI runs the full suites.
+    clippy:
+      run: bash scripts/ci-prepush.sh clippy
     test:
       run: bash scripts/ci-prepush.sh rust
     webui-test:

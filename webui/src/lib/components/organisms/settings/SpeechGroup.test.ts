@@ -120,8 +120,8 @@ describe('speech settings', () => {
 		comp = mount(SpeechGroup, { target: document.body });
 		await settle();
 
-		expect(optionsOf('Speech-to-text model')).toEqual(['parakeet', 'whistle']);
-		expect(optionsOf('Text-to-speech model')).toEqual(['kokoro']);
+		expect(optionsOf('Speech-to-text model')).toEqual(['', 'parakeet', 'whistle']);
+		expect(optionsOf('Text-to-speech model')).toEqual(['', 'kokoro']);
 		expect(optionsOf('Voice')).toEqual(['custom', 'af_heart', 'bf_emma']);
 		expect(optionsOf('Summary model')).toEqual(['', 'qwen3-1.7b']);
 
@@ -151,7 +151,27 @@ describe('speech settings', () => {
 		});
 		comp = mount(SpeechGroup, { target: document.body });
 		await settle();
-		expect(optionsOf('Speech-to-text model')).toEqual(catalog.models);
+		expect(optionsOf('Speech-to-text model')).toEqual(['', ...catalog.models]);
+	});
+
+	it('turns speech-to-text and text-to-speech off separately with an empty model', async () => {
+		api.speechSettings.mockResolvedValue(info());
+		api.speechCatalog.mockResolvedValue(catalog);
+		comp = mount(SpeechGroup, { target: document.body });
+		await settle();
+
+		api.setSpeechSettings.mockResolvedValue(info({ config: { ...config, stt_model: '' } }));
+		choose('Speech-to-text model', '');
+		button('Save')?.click();
+		await settle();
+		expect(api.setSpeechSettings).toHaveBeenLastCalledWith({ config: { ...config, stt_model: '' } });
+
+		api.setSpeechSettings.mockResolvedValue(info({ config: { ...config, tts_model: '' } }));
+		choose('Speech-to-text model', 'parakeet');
+		choose('Text-to-speech model', '');
+		button('Save')?.click();
+		await settle();
+		expect(api.setSpeechSettings).toHaveBeenLastCalledWith({ config: { ...config, tts_model: '' } });
 	});
 
 	it('edits the part length in seconds and saves blank as the default', async () => {

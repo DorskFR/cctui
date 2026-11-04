@@ -312,6 +312,16 @@ impl SpeechClient {
         &self.config
     }
 
+    /// Speech-to-text is on: an empty model turns it off.
+    pub const fn can_transcribe(&self) -> bool {
+        !self.config.stt_model.is_empty()
+    }
+
+    /// Text-to-speech is on: an empty model turns it off.
+    pub const fn can_speak(&self) -> bool {
+        !self.config.tts_model.is_empty()
+    }
+
     fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
         let url = format!("{}/{path}", self.config.base_url.trim_end_matches('/'));
         let req = self.http.request(method, url);
@@ -360,6 +370,9 @@ impl SpeechClient {
         language: Option<&str>,
         model: Option<&str>,
     ) -> Result<String, SpeechError> {
+        if !self.can_transcribe() {
+            return Err(SpeechError::NotConfigured);
+        }
         let (model, language) = self.stt_route(language, model);
         let part = reqwest::multipart::Part::stream(audio)
             .file_name(format!("audio.{}", extension(mime)))
@@ -396,6 +409,9 @@ impl SpeechClient {
     ) -> Result<SttStream, SpeechError> {
         use tungstenite::client::IntoClientRequest;
 
+        if !self.can_transcribe() {
+            return Err(SpeechError::NotConfigured);
+        }
         let (model, language) = self.stt_route(language, None);
         let base = self.config.base_url.trim_end_matches('/');
         let mut url = reqwest::Url::parse(&format!("{base}/audio/transcriptions/stream"))
@@ -454,6 +470,9 @@ impl SpeechClient {
         format: Option<&str>,
         speed: Option<f32>,
     ) -> Result<reqwest::RequestBuilder, SpeechError> {
+        if !self.can_speak() {
+            return Err(SpeechError::NotConfigured);
+        }
         if text.chars().count() > MAX_TTS_INPUT_CHARS {
             return Err(SpeechError::InputTooLong);
         }
@@ -989,5 +1008,29 @@ mod tests {
             ..SpeechConfig::default()
         };
         assert!(matches!(SpeechClient::for_upstream(internal, None), Err(SpeechError::Url(_))));
+    }
+
+    #[tokio::test]
+    async fn an_empty_model_turns_its_half_off() {
+        let no_stt = SpeechClient::new(
+            http(),
+            SpeechConfig { stt_model: String::new(), ..SpeechConfig::default() },
+            None,
+        );
+        assert!(!no_stt.can_transcribe());
+        assert!(no_stt.can_speak());
+        let heard = no_stt.transcribe(Bytes::from_static(b"x"), "audio/webm", None, None).await;
+        assert!(matches!(heard, Err(SpeechError::NotConfigured)));
+        assert!(matches!(no_stt.stream_transcription(None).await, Err(SpeechError::NotConfigured)));
+
+        let no_tts = SpeechClient::new(
+            http(),
+            SpeechConfig { tts_model: String::new(), ..SpeechConfig::default() },
+            None,
+        );
+        assert!(no_tts.can_transcribe());
+        assert!(!no_tts.can_speak());
+        let spoken = no_tts.synthesize("hi", None, None, None).await;
+        assert!(matches!(spoken, Err(SpeechError::NotConfigured)));
     }
 }

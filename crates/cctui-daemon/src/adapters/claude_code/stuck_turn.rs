@@ -119,7 +119,7 @@ impl BgTaskLedger {
     }
 }
 
-fn notified_ids(line: &str) -> impl Iterator<Item = &str> {
+pub fn notified_ids(line: &str) -> impl Iterator<Item = &str> {
     line.split("<task-id>")
         .skip(1)
         .filter_map(|rest| rest.split_once("</task-id>").map(|(id, _)| id.trim()))
@@ -141,7 +141,7 @@ fn tool_result_texts(entry: &Value) -> Vec<&str> {
         .collect()
 }
 
-fn started_id(text: &str) -> Option<String> {
+pub fn started_id(text: &str) -> Option<String> {
     START_MARKERS.iter().find_map(|marker| {
         let rest = &text[text.find(marker)? + marker.len()..];
         let id: String = rest.chars().take_while(char::is_ascii_alphanumeric).collect();

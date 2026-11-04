@@ -62,8 +62,9 @@ export const qk = {
   cacheLoss: (days: number) => ["cache-loss", { days }] as const,
   sessionDiagnose: (id: string) => ["session-diagnose", id] as const,
   sessionLangfuse: (id: string) => ["session-langfuse", id] as const,
-  sessionThread: (id: string, next: string | null) =>
-    ["session-thread", id, next] as const,
+  sessionThreadAll: (id: string) => ["session-thread", id] as const,
+  sessionThread: (id: string, next: string | null, forks: string) =>
+    ["session-thread", id, next, forks] as const,
   recentDirs: (machineId: string) => ["recent-dirs", machineId] as const,
   machineDirs: (machineId: string, path: string) =>
     ["machine-dirs", machineId, path] as const,

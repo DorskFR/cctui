@@ -85,6 +85,7 @@ pub fn router(host: Host) -> Router {
         .route("/gateway/openai/{*path}", any(openai))
         .route("/gateway/fireworks/{*path}", any(fireworks))
         .route("/gateway/google/{*path}", any(google))
+        .layer(cctui_telemetry::http::trace_layer())
         .with_state(host)
 }
 

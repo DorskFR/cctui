@@ -2391,6 +2391,14 @@ pub const ROUTES: &[Route] = &[
         request: None,
         response: None,
     },
+    Route {
+        id: "post_otlp_v1_traces",
+        method: Method::Post,
+        path: "/otlp/v1/traces",
+        summary: "Forward the webui's OTLP trace export to this server's collector.",
+        request: None,
+        response: None,
+    },
 ];
 
 #[cfg(test)]

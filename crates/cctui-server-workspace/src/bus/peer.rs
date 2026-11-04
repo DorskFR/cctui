@@ -891,6 +891,7 @@ mod tests {
                 command_id: None,
                 turn_id: None,
             }),
+            trace: None,
         };
         assert_eq!(frame_session(&reply), Some("sess-1"));
 
@@ -905,6 +906,7 @@ mod tests {
             command: Box::new(cctui_proto::adapter::AdapterCommand::ResumeMarks {
                 marks: Vec::new(),
             }),
+            trace: None,
         };
         assert_eq!(frame_session(&spawn), None, "adapter-wide commands stay machine-scoped");
 

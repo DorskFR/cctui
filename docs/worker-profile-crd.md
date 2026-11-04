@@ -34,11 +34,12 @@ and is left untouched.
 | `image`, `command`, `args`, `resources`, `env` | operator | worker-container shape; `env` is non-secret |
 | `envFrom`, `volumeMounts` | operator | worker-container env sources / mounts; non-secret config, mounts name operator-owned `volumes` |
 | `workerContainer` | operator | overrides the sandboxed container name (default `worker`) |
-| `containers`, `initContainers`, `volumes`, `imagePullSecrets`, `nodeSelector`, `tolerations`, `runtimeClassName` | operator | passthrough pod shape; webhook does not sandbox these |
+| `containers`, `initContainers`, `volumes`, `imagePullSecrets`, `nodeSelector`, `tolerations`, `affinity`, `runtimeClassName` | operator | passthrough pod shape; webhook does not sandbox these |
 | `podAnnotations` | operator | stamped onto each instantiated pod's template metadata; the dispatcher's own `cctui.dev/*` session annotations win on key conflict |
+| `pod` | operator | `labels`, `annotations` (stamped onto the Job **and** its pod template) and `priorityClassName`, for clusters whose admission policies require them (see [Pod labels, annotations and priority](#pod-labels-annotations-and-priority)) |
 | `serviceAccountName` | operator | identity / secret scope mapping; the dispatch request never sets this |
 | `gpgSigning` | operator | opt-in; webhook wires a gpg-agent socket into the worker container |
-| `guard` | operator | guard-proxy sidecar `envFrom`/`env` layered over `guard-proxy-env`; widening needs `allowPrivateEgress` (see worker-contract.md) |
+| `guard` | operator | guard-proxy sidecar `envFrom`/`env` layered over `guard-proxy-env`; widening needs `allowPrivateEgress`; `cloudIdentity` confines a cloud identity webhook's token to the guard-proxy (see worker-contract.md) |
 | `posture` | operator | `root` or `nonroot`: the worker container's security posture (see [Posture](#posture)); unset is `root` |
 | `preflight` | operator | `mode` (`enforce`/`warn`/`off`) and extra `deny` targets for the worker's pre-flight isolation check, rendered as `CCTUI_PREFLIGHT_*` worker env after the per-run env, so neither the profile's own `env` nor a dispatch can override them (see worker-contract.md) |
 | per-run env (session id, reply URL, task payload, ...) | dispatcher | layered onto the worker `env` at Job creation |
@@ -57,6 +58,40 @@ entries, except the standard Kubernetes node-health and memory-pressure
 admission additions. Job templates receive no such exception: changing a
 profile's tolerations triggers the existing queued-Job drift repair. Profiles
 without the field keep their existing scheduling behavior.
+
+`spec.affinity` takes a Kubernetes `Affinity` (`nodeAffinity`, `podAffinity`,
+`podAntiAffinity`) and is passed to the Pod template verbatim. Admission
+requires the pod's affinity to equal the profile's, and a change triggers the
+same drift repair.
+
+## Pod labels, annotations and priority
+
+Some clusters' admission policies require labels, annotations or a priority
+class on every pod. `spec.pod` provides them:
+
+```yaml
+spec:
+  pod:
+    labels:
+      team: platform
+    annotations:
+      policy.example.dev/owner: platform
+    priorityClassName: cctui-workers
+```
+
+`labels` and `annotations` land on both the Job and its Pod template;
+`priorityClassName` on the Pod template. cctui-managed keys always win, and the
+validating webhook denies a pod whose profile tries to set one: labels and
+annotations under `cctui.dev/` or `batch.kubernetes.io/`, and the
+`job-name` / `controller-uid` labels the Job controller selects on. The
+dispatcher refuses to create the Job for such a profile, too.
+
+A pod's `priorityClassName` must equal the profile's. When the profile sets
+none, an admitted pod may still carry the cluster's global default class, which
+priority admission adds. Changing the class triggers the queued-Job drift
+repair. A profile without `spec.pod` renders the Job byte-for-byte as before.
+`podAnnotations` remains a template-only annotation map where the dispatcher's
+own keys win silently.
 
 ## Posture
 

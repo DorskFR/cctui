@@ -82,7 +82,7 @@ async fn immediate_refusal_keeps_failure_metadata_and_returns_the_reason() {
     let (command_id, token_key) = (spawn.command_id, spawn.token_key);
     let request = host.start(spawn);
     let frame = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
-    let DaemonFrameDown::Command { adapter_id, command } = frame else {
+    let DaemonFrameDown::Command { adapter_id, command, .. } = frame else {
         panic!("expected command")
     };
     let AdapterCommand::Spawn { command_id: sent, session_id, spec } = *command else {

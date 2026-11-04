@@ -384,7 +384,11 @@ mod tests {
     }
 
     fn command(command: cctui_proto::adapter::AdapterCommand) -> DaemonFrameDown {
-        DaemonFrameDown::Command { adapter_id: "codex".into(), command: Box::new(command) }
+        DaemonFrameDown::Command {
+            adapter_id: "codex".into(),
+            command: Box::new(command),
+            trace: None,
+        }
     }
 
     #[tokio::test]

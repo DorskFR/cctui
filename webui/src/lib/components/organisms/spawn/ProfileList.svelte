@@ -2,24 +2,12 @@
 	import type { SessionProfile } from '@bindings/SessionProfile';
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
-	import { Button } from '@dorsk/tsumikit';
 	import ProfileRow from './ProfileRow.svelte';
-	import ProfileAdjust from './ProfileAdjust.svelte';
-	import KitFields from './KitFields.svelte';
+	import ProfileForm from './ProfileForm.svelte';
+	import ProfilePicker from './ProfilePicker.svelte';
 	import { harnessModelsFallback } from '$lib/domainTables';
-	import {
-		EMPTY_SPEC,
-		moveProfile,
-		moveProfileOnto,
-		specChain,
-		specOf,
-		type ProfileSpecForm
-	} from './profiles';
-	import { nextRadioIndex } from './radioNav';
-	import { useProfileActions } from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { errMessage } from '$lib/api';
-	import { profileUsage } from '$lib/spawnMemory';
+	import { EMPTY_SPEC, sortProfiles, specChain, specOf, type ProfileSpecForm } from './profiles';
+	import { badgeLook } from './accountBadge';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -29,7 +17,6 @@
 		accounts,
 		pools = [],
 		usage,
-		usageRaw,
 		machineId,
 		busy = false,
 		oncreate,
@@ -42,93 +29,36 @@
 		accounts: OAuthAccount[];
 		pools?: AccountPoolView[];
 		usage: AccountUsageEntry[];
-		usageRaw: string;
 		machineId: string;
 		busy?: boolean;
-		oncreate: () => void;
+		/** Resolves true once the profile exists and is selected. */
+		oncreate: (name: string, spec: ProfileSpecForm) => Promise<boolean>;
 		onsave: (id: string, name: string, spec: ProfileSpecForm) => void;
 		ondelete: (id: string) => void;
 	} = $props();
 
-	let openId = $state<string | null>(null);
-	let pending = $state<SessionProfile[] | null>(null);
-	let dragId = $state('');
-	let overId = $state('');
-	let announcement = $state('');
-	let listEl = $state<HTMLElement | null>(null);
-	const actions = useProfileActions();
+	type FormState = { mode: 'edit'; id: string } | { mode: 'create' } | null;
 
-	const ordered = $derived(pending ?? profiles);
-	// One tab stop for the whole radiogroup; with nothing selected it is the first
-	// row, so the group stays reachable.
-	const tabbableId = $derived(
-		(ordered.some((p) => p.id === selectedId) ? selectedId : ordered[0]?.id) ?? null
-	);
+	let form = $state<FormState>(null);
+	let draft = $state<ProfileSpecForm>({ ...EMPTY_SPEC });
+	let listOpen = $state(false);
 
-	function nav(from: number, key: string): boolean {
-		const to = nextRadioIndex(key, from, ordered.length);
-		if (to === null) return false;
-		const p = ordered[to];
-		select(p.id);
-		listEl?.querySelector<HTMLElement>(`[data-profile-id="${p.id}"]`)?.focus();
-		return true;
-	}
+	const sorted = $derived(sortProfiles(profiles));
+	const current = $derived(profiles.find((p) => p.id === selectedId) ?? null);
+	const editing = $derived.by(() => {
+		const f = form;
+		return f?.mode === 'edit' ? (profiles.find((p) => p.id === f.id) ?? null) : null;
+	});
+	const creating = $derived(form?.mode === 'create');
 
-	async function persist(next: SessionProfile[]) {
-		const ids = next.map((p) => p.id);
-		if (ids.join() === profiles.map((p) => p.id).join()) return;
-		pending = next;
-		try {
-			await actions.reorder(ids);
-		} catch (e) {
-			toasts.error(m.spawn_profile_reorder_failed({ error: errMessage(e) }));
-		} finally {
-			pending = null;
-		}
-	}
-
-	function apply(id: string, next: SessionProfile[]) {
-		const to = next.findIndex((p) => p.id === id);
-		if (to >= 0) {
-			announcement = m.spawn_profile_moved({
-				name: next[to].name,
-				position: to + 1,
-				total: next.length
-			});
-		}
-		void persist(next);
-	}
-
-	const move = (id: string, delta: -1 | 1) => {
-		const from = ordered.findIndex((p) => p.id === id);
-		if (from < 0) return;
-		apply(id, moveProfile(ordered, id, from + delta));
-	};
-
-	// Pointer-driven drag: one gesture handled for mouse, pen and touch alike.
-	// The grip releases the implicit touch capture, so the row under the finger
-	// gets the `pointermove` and publishes itself as the drop target.
-	function grab(id: string) {
-		if (ordered.length < 2) return;
-		dragId = id;
-		overId = '';
-		const end = () => {
-			window.removeEventListener('pointerup', end);
-			window.removeEventListener('pointercancel', end);
-			const from = dragId;
-			const target = overId;
-			dragId = '';
-			overId = '';
-			if (from && target && target !== from) apply(from, moveProfileOnto(ordered, from, target));
-		};
-		window.addEventListener('pointerup', end);
-		window.addEventListener('pointercancel', end);
-	}
+	// The list and the form are exclusive: opening the list discards the form.
+	$effect(() => {
+		if (listOpen) form = null;
+	});
 
 	// With no profile the kit IS the one-off spec the spawn will use, so the
-	// editor binds straight to it. Seed it once — mirroring it into a second
-	// $state and syncing with an effect writes the parent on every run and
-	// re-enters until the tab dies.
+	// form binds straight to it. Seed it once: mirroring it into a second
+	// $state and syncing with an effect re-enters until the tab dies.
 	$effect(() => {
 		if (profiles.length === 0 && oneOff === null) oneOff = { ...EMPTY_SPEC };
 	});
@@ -140,106 +70,161 @@
 		defaultEffort: m.spawn_effort_default(),
 		defaultMode: m.spawn_mode_default_label()
 	});
+	// The badge carries the emoji, so the chain names the account in text only.
+	const plainAccounts = $derived(accounts.map((a) => ({ ...a, emoji: null })));
 	const modelLabel = (harness: string, alias: string) =>
 		harness === 'codex'
 			? alias
 			: (harnessModelsFallback('claude-code').models.find((x) => x.v === alias)?.label ?? alias);
-
-	function usageText(id: string): string {
-		const u = profileUsage(usageRaw, id);
-		if (!u) return '';
-		if ('week' in u) return m.spawn_profile_uses_week({ count: u.week });
-		const days = Math.floor((Date.now() - u.lastAt) / 86_400_000);
-		return days < 1 ? m.spawn_profile_last_used_today() : m.spawn_profile_last_used_days({ days });
-	}
+	const chainOf = (spec: ProfileSpecForm) =>
+		specChain(spec, plainAccounts, pools, chainLabels, modelLabel);
+	const badgeOf = (spec: ProfileSpecForm) => badgeLook(spec, accounts, pools);
+	const specFor = (p: SessionProfile) => (selectedId === p.id && oneOff ? oneOff : specOf(p));
 
 	function select(id: string) {
 		if (id !== selectedId) oneOff = null;
 		selectedId = id;
+		form = null;
 	}
-	function toggle(id: string) {
-		openId = openId === id ? null : id;
+	function toggleEdit() {
+		if (form?.mode === 'edit' || !current) {
+			form = null;
+			return;
+		}
+		draft = { ...specFor(current) };
+		form = { mode: 'edit', id: current.id };
+		listOpen = false;
 	}
-	function useOnce(p: SessionProfile, spec: ProfileSpecForm) {
-		selectedId = p.id;
+	function openCreate() {
+		draft = { ...(oneOff ?? (current ? specOf(current) : EMPTY_SPEC)) };
+		form = { mode: 'create' };
+		listOpen = false;
+	}
+	function useOnce(spec: ProfileSpecForm) {
+		if (editing) selectedId = editing.id;
 		oneOff = spec;
-		openId = null;
+		form = null;
 	}
-	function save(p: SessionProfile, name: string, spec: ProfileSpecForm) {
-		if (selectedId === p.id) oneOff = null;
-		openId = null;
-		onsave(p.id, name, spec);
+	function save(name: string, spec: ProfileSpecForm) {
+		if (!editing) return;
+		const id = editing.id;
+		if (selectedId === id) oneOff = null;
+		form = null;
+		onsave(id, name, spec);
+	}
+	function remove() {
+		if (form?.mode !== 'edit') return;
+		const id = form.id;
+		form = null;
+		ondelete(id);
+	}
+	async function create(name: string, spec: ProfileSpecForm) {
+		if (await oncreate(name, spec)) form = null;
 	}
 </script>
 
-<div
-	class="list"
-	role="radiogroup"
-	aria-label={m.spawn_profiles_aria()}
-	data-journey="profiles"
-	bind:this={listEl}
->
-	<!-- No saved profile yet: the bare kit stands in for the profile rows, so
-	     harness / account / model / effort / permissions are always reachable
-	     and a session can be started without creating a profile first. -->
-	{#if profiles.length === 0 && oneOff}
-		<KitFields bind:draft={oneOff} {accounts} {pools} {usage} {machineId} />
-	{/if}
-	{#each ordered as p, i (p.id)}
-		{@const spec = selectedId === p.id && oneOff ? oneOff : specOf(p)}
-		<ProfileRow
-			id={p.id}
-			name={p.name}
-			chain={specChain(spec, accounts, pools, chainLabels, modelLabel)}
-			usage={usageText(p.id)}
-			selected={selectedId === p.id}
-			open={openId === p.id}
-			position={i + 1}
-			total={ordered.length}
-			dragging={dragId === p.id}
-			dropTarget={overId === p.id && dragId !== p.id}
-			tabbable={tabbableId === p.id}
-			onselect={() => select(p.id)}
-			onnav={(key) => nav(i, key)}
-			ontoggle={() => toggle(p.id)}
-			onmove={ordered.length > 1 ? (delta) => move(p.id, delta) : undefined}
-			ongrab={() => grab(p.id)}
-			onover={() => {
-				if (dragId && dragId !== p.id) overId = p.id;
-			}}
-		>
-			<ProfileAdjust
-				profile={p}
-				initial={spec}
-				{accounts}
-				{pools}
-				{usage}
-				{machineId}
+<div class="list" data-journey="profiles">
+	{#if profiles.length === 0}
+		{#if oneOff}
+			<div class="form standalone" data-journey="profile-form" data-mode="create">
+				<ProfileForm
+					mode="create"
+					bind:draft={oneOff}
+					{profiles}
+					{accounts}
+					{pools}
+					{usage}
+					{machineId}
+					{busy}
+					onuseonce={(s) => (oneOff = s)}
+					oncreate={create}
+				/>
+			</div>
+		{/if}
+	{:else}
+		{#if creating}
+			<div class="draft" data-journey="profile-draft">
+				<ProfileRow id="new" name={m.spawn_profile_new()} chain={chainOf(draft)} badge={badgeOf(draft)} variant="draft" />
+			</div>
+		{:else}
+			<ProfilePicker
+				profiles={sorted}
+				{selectedId}
+				bind:open={listOpen}
+				attached={!!editing}
+				editing={!!editing}
 				{busy}
-				onuseonce={(s) => useOnce(p, s)}
-				onsave={(name, s) => save(p, name, s)}
-				ondelete={() => {
-					openId = null;
-					ondelete(p.id);
-				}}
+				{specFor}
+				{chainOf}
+				{badgeOf}
+				onselect={select}
+				onedit={toggleEdit}
+				onnew={openCreate}
 			/>
-		</ProfileRow>
-	{/each}
-	<div class="sr-only" role="status" aria-live="polite">{announcement}</div>
-	<div class="new">
-		<Button data-journey="new-profile" variant="link" size="sm" disabled={busy} onclick={oncreate}>{m.spawn_profile_new()}</Button>
-	</div>
+		{/if}
+		{#if editing}
+			{@const p = editing}
+			{#key p.id}
+				<div class="form" data-journey="profile-form" data-mode="edit" data-profile-id={p.id}>
+					<ProfileForm
+						mode="edit"
+						profile={p}
+						bind:draft
+						{profiles}
+						{accounts}
+						{pools}
+						{usage}
+						{machineId}
+						{busy}
+						onuseonce={useOnce}
+						onsave={save}
+						ondelete={remove}
+						oncancel={() => (form = null)}
+					/>
+				</div>
+			{/key}
+		{:else if creating}
+			<div class="form" data-journey="profile-form" data-mode="create">
+				<ProfileForm
+					mode="create"
+					bind:draft
+					{profiles}
+					{accounts}
+					{pools}
+					{usage}
+					{machineId}
+					{busy}
+					onuseonce={useOnce}
+					oncreate={create}
+					oncancel={() => (form = null)}
+				/>
+			</div>
+		{/if}
+	{/if}
 </div>
 
 <style>
 	.list {
 		display: flex;
 		flex-direction: column;
-		gap: var(--sp-2);
 	}
-	.new {
-		display: flex;
-		justify-content: flex-end;
-		padding: 0 var(--sp-1);
+	.draft {
+		padding: var(--sp-2);
+		border: var(--edge-width) dashed var(--accent);
+		border-end-start-radius: 0;
+		border-end-end-radius: 0;
+		border-start-start-radius: var(--r-md);
+		border-start-end-radius: var(--r-md);
+		background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+	}
+	.form {
+		border: var(--edge-width) solid var(--accent);
+		border-top: none;
+		border-radius: 0 0 var(--r-md) var(--r-md);
+		overflow: hidden;
+	}
+	.form.standalone {
+		border: var(--edge-width) solid var(--border);
+		border-radius: var(--r-md);
 	}
 </style>

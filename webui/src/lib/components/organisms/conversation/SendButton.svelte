@@ -4,6 +4,7 @@
 	// (unreadable), so the cold/imminent state lives in the label and the title.
 	import { SplitButton, type MenuItem } from '@dorsk/tsumikit';
 	import { compact } from '$lib/format';
+	import type { EnterRoute } from '$lib/followup';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -14,6 +15,8 @@
 		coldImminent,
 		coldCountdownSecs,
 		burstTokens,
+		route = 'send',
+		launching = false,
 		onclick
 	}: {
 		items: MenuItem[];
@@ -23,8 +26,30 @@
 		coldImminent: boolean;
 		coldCountdownSecs: number | null;
 		burstTokens: number | null;
+		/** Where a click goes; anything but `send` labels the follow-up. */
+		route?: EnterRoute;
+		launching?: boolean;
 		onclick: () => void;
 	} = $props();
+
+	const followup = $derived(cacheCold && route !== 'send');
+	const coldTitle = $derived(
+		burstTokens
+			? m.composer_cache_cold_burst({ tokens: compact(burstTokens) })
+			: m.composer_cache_cold()
+	);
+	const title = $derived(
+		followup
+			? route === 'launch'
+				? m.composer_followup_auto_title()
+				: m.composer_followup_modal_title()
+			: cacheCold
+				? coldTitle
+				: coldImminent
+					? m.composer_cache_imminent()
+					: undefined
+	);
+	const verb = $derived(followup ? m.composer_followup_send() : m.composer_send());
 </script>
 
 <SplitButton
@@ -34,21 +59,13 @@
 	label={m.composer_schedule_menu()}
 	{items}
 	placement="top-end"
-	{disabled}
+	disabled={disabled || launching}
 	{onclick}
-	title={cacheCold
-		? burstTokens
-			? m.composer_cache_cold_burst({ tokens: compact(burstTokens) })
-			: m.composer_cache_cold()
-		: coldImminent
-			? m.composer_cache_imminent()
-			: undefined}
+	{title}
 >
-	{#if uploading}{m.composer_uploading()}{:else if coldImminent}{m.composer_send()} (<span
+	{#if uploading}{m.composer_uploading()}{:else if launching}{m.composer_followup_launching()}{:else if coldImminent}{m.composer_send()} (<span
 			class="countdown">{coldCountdownSecs}s</span
-		>){:else if cacheCold && burstTokens}{m.composer_send()} ❄️ ~{compact(
-			burstTokens
-		)}{:else if cacheCold}{m.composer_send()}
+		>){:else if cacheCold && burstTokens}{verb} ❄️ ~{compact(burstTokens)}{:else if cacheCold}{verb}
 		❄️{:else}{m.composer_send()}{/if}
 </SplitButton>
 

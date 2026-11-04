@@ -35,8 +35,11 @@ pub fn audio_mime(format: &str) -> String {
 }
 
 fn config_info(c: SpeechConfig) -> VoiceConfigInfo {
+    let enabled = c.enabled && !c.base_url.is_empty();
     VoiceConfigInfo {
-        enabled: c.enabled && !c.base_url.is_empty(),
+        enabled,
+        stt: enabled && !c.stt_model.is_empty(),
+        tts: enabled && !c.tts_model.is_empty(),
         stt_model: c.stt_model,
         stt_language: c.stt_language,
         tts_model: c.tts_model,
@@ -241,6 +244,23 @@ mod tests {
         let info = config_info(c);
         assert!(info.enabled);
         assert!(!serde_json::to_string(&info).unwrap().contains("speech.example"));
+    }
+
+    #[test]
+    fn config_reports_stt_and_tts_separately() {
+        let on = SpeechConfig {
+            enabled: true,
+            base_url: "https://s.example/v1".into(),
+            ..SpeechConfig::default()
+        };
+        let both = config_info(on.clone());
+        assert_eq!((both.stt, both.tts), (true, true));
+        let no_stt = config_info(SpeechConfig { stt_model: String::new(), ..on.clone() });
+        assert_eq!((no_stt.enabled, no_stt.stt, no_stt.tts), (true, false, true));
+        let no_tts = config_info(SpeechConfig { tts_model: String::new(), ..on.clone() });
+        assert_eq!((no_tts.enabled, no_tts.stt, no_tts.tts), (true, true, false));
+        let off = config_info(SpeechConfig { enabled: false, ..on });
+        assert_eq!((off.stt, off.tts), (false, false));
     }
 
     #[test]

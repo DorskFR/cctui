@@ -3,7 +3,15 @@
 /**
  * `GET /voice/config`: what the webui may use, without the URL or key.
  */
-export type VoiceConfigInfo = { enabled: boolean, stt_model: string, stt_language: string | null, tts_model: string, tts_voice: string, tts_format: string, 
+export type VoiceConfigInfo = { enabled: boolean, 
+/**
+ * Speech-to-text is available: dictation and voice mode can listen.
+ */
+stt: boolean, 
+/**
+ * Text-to-speech is available: read-aloud and voice mode can speak.
+ */
+tts: boolean, stt_model: string, stt_language: string | null, tts_model: string, tts_voice: string, tts_format: string, 
 /**
  * Whether `/voice/speak` can summarize long text.
  */

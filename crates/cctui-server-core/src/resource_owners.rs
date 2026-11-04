@@ -53,5 +53,6 @@ pub async fn shareable_owner(
         }
         Shareable::ContextPack => return Ok(None),
     };
-    sqlx::query_scalar(sql).bind(id).fetch_optional(pool).await
+    cctui_telemetry::db::traced(sql, |sql| sqlx::query_scalar(sql).bind(id).fetch_optional(pool))
+        .await
 }

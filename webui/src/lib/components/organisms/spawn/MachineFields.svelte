@@ -20,7 +20,7 @@
 		type Query
 	} from '@dorsk/tsumikit';
 	import { makeCwdSchema, dirFromQuery } from './cwdSchema';
-	import { gitBadge, makeGitInfoWatcher } from './cwdGitInfo';
+	import { fsLiveness, gitBadge, makeGitInfoWatcher } from './cwdGitInfo';
 	import type { Form } from './types';
 	import { m } from '$lib/paraglide/messages';
 	import { promptHistory } from '$lib/drafts';
@@ -54,7 +54,7 @@
 	// the source of truth and the field's bare value mirrors it both ways,
 	// `lastDir` tracking what the field holds so the two syncs never loop.
 	const cwdSchema = makeCwdSchema(
-		() => form.machine_id,
+		() => (liveness === 'offline' ? '' : form.machine_id),
 		() => recentDirs,
 		m.spawn_cwd_label()
 	);
@@ -82,7 +82,7 @@
 	let cwdGit = $state<GitInfo | null>(null);
 	const cwdBadge = $derived(gitBadge(cwdGit));
 	const gitWatcher = makeGitInfoWatcher(fetchGitInfo, (info) => (cwdGit = info));
-	const liveness = $derived(machines.find((mc) => mc.machine_id === form.machine_id)?.liveness);
+	const liveness = $derived(fsLiveness(machines.find((mc) => mc.machine_id === form.machine_id)));
 	$effect(() => {
 		gitWatcher.update(form.machine_id, form.working_dir, liveness);
 		return gitWatcher.cancel;

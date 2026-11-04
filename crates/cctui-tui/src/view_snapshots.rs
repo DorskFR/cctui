@@ -1705,6 +1705,7 @@ fn machine_row(
         display_name: None,
         hue: None,
         liveness: tier,
+        connected: true,
         last_seen_at: ms_ago(2_000),
         resources: cpu.map(|cpu_pct| cctui_proto::resources::MachineResources {
             cpu_pct,

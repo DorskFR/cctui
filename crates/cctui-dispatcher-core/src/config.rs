@@ -39,6 +39,8 @@ pub trait DispatcherConfig: Serialize + DeserializeOwned {
         path.exists()
     }
 
+    /// `dispatcher_key` may be a secret ref (see `cctui_secrets::SCHEMES`),
+    /// resolved here so the rest of the dispatcher only sees the value.
     fn load_from(path: &Path) -> anyhow::Result<Self> {
         let raw = std::fs::read_to_string(path).map_err(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
@@ -51,7 +53,12 @@ pub trait DispatcherConfig: Serialize + DeserializeOwned {
                 anyhow::Error::new(err).context(format!("reading {}", path.display()))
             }
         })?;
-        Ok(toml::from_str(&raw)?)
+        let mut table: toml::Table = toml::from_str(&raw)?;
+        if let Some(toml::Value::String(key)) = table.get_mut("dispatcher_key") {
+            *key = cctui_secrets::resolve_blocking(key)
+                .map_err(|e| anyhow::anyhow!("dispatcher_key: {e}"))?;
+        }
+        Ok(toml::Value::Table(table).try_into()?)
     }
 
     fn save_to(&self, path: &Path) -> anyhow::Result<()> {
@@ -178,6 +185,50 @@ mod tests {
         let err = Probe::load_from(&scratch().join("dispatcher.toml")).unwrap_err().to_string();
         assert!(err.contains("not enrolled yet"), "{err}");
         assert!(err.contains(Probe::ENROLL_HINT), "{err}");
+    }
+
+    fn write_config(dir: &Path, dispatcher_key: &str) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join("dispatcher.toml");
+        let toml = format!(
+            "server_url = \"https://s.example.test\"\ndispatcher_key = {dispatcher_key:?}\n"
+        );
+        std::fs::write(&path, toml).unwrap();
+        path
+    }
+
+    #[test]
+    fn dispatcher_key_file_ref_resolves_at_load() {
+        let dir = scratch();
+        std::fs::create_dir_all(&dir).unwrap();
+        let key_path = dir.join("dispatcher-key");
+        std::fs::write(&key_path, "dk-from-file\n").unwrap();
+        let path = write_config(&dir, &format!("file:{}", key_path.display()));
+        let loaded = Probe::load_from(&path).unwrap();
+        assert_eq!(loaded.dispatcher_key(), "dk-from-file");
+        assert_eq!(loaded.server_url(), "https://s.example.test");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dispatcher_key_literal_with_colons_is_kept_verbatim() {
+        let dir = scratch();
+        for literal in ["dk:abc:def", "https://not-a-ref", "literal:file:/etc/passwd"] {
+            let loaded = Probe::load_from(&write_config(&dir, literal)).unwrap();
+            let want = literal.strip_prefix("literal:").unwrap_or(literal);
+            assert_eq!(loaded.dispatcher_key(), want);
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dispatcher_key_unresolvable_ref_error_names_the_ref() {
+        let dir = scratch();
+        let missing = format!("file:{}", dir.join("absent-key").display());
+        let err = Probe::load_from(&write_config(&dir, &missing)).unwrap_err().to_string();
+        assert!(err.contains("dispatcher_key"), "{err}");
+        assert!(err.contains(&missing), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

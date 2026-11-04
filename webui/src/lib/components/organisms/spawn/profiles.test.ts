@@ -14,6 +14,8 @@ import {
 	uniqueProfileName,
 	moveProfile,
 	moveProfileOnto,
+	profileNameTaken,
+	sortProfiles,
 	type ProfileSpecForm
 } from './profiles';
 
@@ -209,6 +211,44 @@ describe('uniqueProfileName / initialProfile', () => {
 		expect(initialProfile(list, 'p2')?.id).toBe('p2');
 		expect(initialProfile(list, 'zz')?.id).toBe('p1');
 		expect(initialProfile([], 'p1')).toBeNull();
+	});
+});
+
+describe('sortProfiles / profileNameTaken', () => {
+	it('orders A–Z by name, ignoring case and stored order, with numbers compared numerically', () => {
+		const list = [
+			profile({ id: 'a', name: 'orchestrator', sort_order: 0 }),
+			profile({ id: 'b', name: 'Profile 10', sort_order: 1 }),
+			profile({ id: 'c', name: 'Codex quick', sort_order: 2 }),
+			profile({ id: 'd', name: 'Profile 2', sort_order: 3 }),
+			profile({ id: 'e', name: 'Ébauche', sort_order: 4 })
+		];
+		expect(sortProfiles(list).map((p) => p.name)).toEqual([
+			'Codex quick',
+			'Ébauche',
+			'orchestrator',
+			'Profile 2',
+			'Profile 10'
+		]);
+		expect(list[0].id).toBe('a');
+	});
+
+	it('breaks name ties by id so the order is stable', () => {
+		const list = [profile({ id: 'z', name: 'Same' }), profile({ id: 'y', name: 'same' })];
+		expect(sortProfiles(list).map((p) => p.id)).toEqual(['y', 'z']);
+	});
+
+	it('falls back to the alphabetical first when the last-used profile is gone', () => {
+		const list = [profile({ id: 'p1', name: 'Zed' }), profile({ id: 'p2', name: 'Alpha' })];
+		expect(initialProfile(sortProfiles(list), 'deleted')?.id).toBe('p2');
+	});
+
+	it('flags a name another profile already uses, trimmed and in any case', () => {
+		const list = [profile({ id: 'p1', name: 'Orchestrator' }), profile({ id: 'p2', name: 'Codex' })];
+		expect(profileNameTaken('  orchestrator ', list)).toBe(true);
+		expect(profileNameTaken('Orchestrator', list, 'p1')).toBe(false);
+		expect(profileNameTaken('Codex', list, 'p1')).toBe(true);
+		expect(profileNameTaken('Fresh', list)).toBe(false);
 	});
 });
 

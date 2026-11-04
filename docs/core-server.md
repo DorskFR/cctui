@@ -37,6 +37,9 @@ The server requires PostgreSQL and these environment variables:
 | `CCTUI_EXTERNAL_URL` | Server URL reachable by workers, used for gateway routing |
 | `CCTUI_HOST`, `CCTUI_PORT` | Listen address; defaults `0.0.0.0:8700` |
 
+`DATABASE_URL` and `CCTUI_ADMIN_TOKENS` may be [secret refs](secret-refs.md)
+(`file:`, `env:`, `k8s:`, `bao:`, `aws-sm:`) instead of values.
+
 Generate and store the vault key and bootstrap token before starting. For example,
 `openssl rand -hex 32` generates each value. Put configuration in a protected env
 file and supply it to the process or container. For a local PostgreSQL test:

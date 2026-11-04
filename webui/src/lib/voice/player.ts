@@ -11,6 +11,22 @@ export interface AudioLike {
 	onerror: ((ev: Event | string) => void) | null;
 	play(): Promise<void>;
 	pause(): void;
+	load?(): void;
+	removeAttribute?(name: string): void;
+}
+
+/** Stops `a` and drops its media, so neither a late event nor an OS media
+ *  control (headset play, lock screen) can start it again. */
+export function releaseAudio(a: AudioLike) {
+	a.onended = null;
+	a.onerror = null;
+	a.pause();
+	if (a.removeAttribute) {
+		a.removeAttribute('src');
+		a.load?.();
+	} else {
+		a.src = '';
+	}
 }
 
 export interface PlayerOptions {
@@ -60,7 +76,7 @@ export class SpeechPlayer {
 			const a = this.opts.createAudio?.() ?? new Audio();
 			a.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=';
 			await a.play();
-			a.pause();
+			releaseAudio(a);
 		} catch {
 			/* a locked element just fails on the first real play instead */
 		}
@@ -88,11 +104,7 @@ export class SpeechPlayer {
 		this.queue = [];
 		const cur = this.current;
 		this.current = null;
-		if (cur) {
-			cur.onended = null;
-			cur.onerror = null;
-			cur.pause();
-		}
+		if (cur) releaseAudio(cur);
 		this.releaseUrl();
 		this.idle(true);
 	}
@@ -113,9 +125,17 @@ export class SpeechPlayer {
 		this.currentUrl = this.opts.createUrl?.(blob) ?? URL.createObjectURL(blob);
 		a.src = this.currentUrl;
 		a.playbackRate = this.opts.speed?.() ?? 1;
-		a.onended = () => this.next();
-		a.onerror = () => this.next();
-		void a.play().catch(() => this.next());
+		a.onended = () => this.finished(a);
+		a.onerror = () => this.finished(a);
+		void a.play().catch(() => this.finished(a));
+	}
+
+	/** `onerror` and a rejected `play()` can both report the same element;
+	 *  only the first report of the element playing now moves on. */
+	private finished(a: AudioLike) {
+		if (this.current !== a) return;
+		releaseAudio(a);
+		this.next();
 	}
 
 	private idle(idle: boolean) {

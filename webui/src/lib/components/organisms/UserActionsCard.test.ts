@@ -35,9 +35,7 @@ async function render(actions: UserAction[], interactive = true) {
 }
 
 const rowTitles = () =>
-	[...document.querySelectorAll<HTMLElement>('ul:not(.ua-resolved) li.ua-item')].map((li) =>
-		(li.querySelector('input[type=checkbox]') ? li.querySelector('label') : li)?.textContent?.trim()
-	);
+	[...document.querySelectorAll<HTMLElement>('[data-ua-row] [data-ua-title]')].map((t) => t.textContent?.trim());
 const text = () => document.body.textContent ?? '';
 const buttonByName = (re: RegExp) =>
 	[...document.querySelectorAll<HTMLButtonElement>('button')].find((b) =>
@@ -69,8 +67,29 @@ describe('UserActionsCard', () => {
 			action({ id: 'b', kind: 'decision', title: 'Pick a name' }),
 			action({ id: 'c', kind: 'input', title: 'Tell me the DSN' })
 		]);
-		expect(document.querySelectorAll('[data-tsu="Badge"]').length).toBe(0);
-		expect(text()).not.toMatch(/\b(do|decide|tell)\b/);
+		expect(rowTitles()).toEqual(['Rotate token', 'Pick a name', 'Tell me the DSN']);
+		expect(text()).not.toMatch(/\b(do|decide|action|decision|input)\b/);
+	});
+
+	it('marks each blocking row with a labelled warning icon and a data attribute', async () => {
+		await render([
+			action({ id: 'a', title: 'Plain' }),
+			action({ id: 'b', title: 'Urgent', blocking: true })
+		]);
+		const blocking = [...document.querySelectorAll<HTMLElement>('[data-ua-row][data-blocking]')];
+		expect(blocking.map((r) => r.querySelector('[data-ua-title]')?.textContent?.trim())).toEqual(['Urgent']);
+		expect(blocking[0].querySelector('[data-ua-title] [aria-label="Blocking"]')).not.toBeNull();
+		const plain = document.querySelector('[data-ua-row]:not([data-blocking])');
+		expect(plain?.querySelector('[aria-label="Blocking"]')).toBeNull();
+	});
+
+	it('keeps the title out of the checkbox label so clicking it never ticks', async () => {
+		const ontick = await render([action({ id: 'a', title: 'Click me', detail: 'more' })]);
+		const label = document.querySelector('[data-ua-row] label');
+		expect(label?.contains(document.querySelector('[data-ua-title]'))).toBeFalsy();
+		document.querySelector<HTMLElement>('[data-ua-title]')?.click();
+		await flush();
+		expect(ontick).not.toHaveBeenCalled();
 	});
 
 	it('ticks an item done from its checkbox', async () => {
@@ -85,24 +104,25 @@ describe('UserActionsCard', () => {
 		expect(text()).toContain('Read only');
 	});
 
-	it('opens the detail from a disclosure on the row and renders it as markdown', async () => {
+	it('collapses the detail by default behind the title and renders it as markdown', async () => {
 		await render([
 			action({ id: 'a', title: 'With detail', detail: 'Check **step 4**' }),
 			action({ id: 'b', title: 'Without detail' })
 		]);
-		const toggles = document.querySelectorAll<HTMLButtonElement>('button[aria-expanded]');
+		const toggles = document.querySelectorAll<HTMLButtonElement>('[data-ua-row] button[aria-expanded]');
 		expect(toggles.length).toBe(1);
+		expect(toggles[0].textContent?.trim()).toBe('With detail');
 		expect(toggles[0].getAttribute('aria-expanded')).toBe('false');
-		expect(document.querySelector('.ua-detail')).toBeNull();
-		expect(text()).not.toContain('step 4');
+		const panel = () => document.getElementById(toggles[0].getAttribute('aria-controls') ?? '');
+		expect(panel()?.hidden).toBe(true);
 		toggles[0].click();
 		await flush();
 		expect(toggles[0].getAttribute('aria-expanded')).toBe('true');
-		const detail = document.getElementById(toggles[0].getAttribute('aria-controls') ?? '');
-		expect(detail?.querySelector('strong')?.textContent).toBe('step 4');
+		expect(panel()?.hidden).toBe(false);
+		expect(panel()?.querySelector('.ua-detail strong')?.textContent).toBe('step 4');
 		toggles[0].click();
 		await flush();
-		expect(document.querySelector('.ua-detail')).toBeNull();
+		expect(panel()?.hidden).toBe(true);
 	});
 
 	it('folds done and dropped items into one summary row, expandable, each distinguishable', async () => {
@@ -162,15 +182,16 @@ describe('UserActionsCard', () => {
 		expect(buttonByName(/Show less/)).toBeTruthy();
 	});
 
-	it('reserves the chevron slot on rows without detail so titles share one edge', async () => {
+	it('starts every title on the same edge whether or not it has detail', async () => {
 		await render([
 			action({ id: 'a', title: 'With detail', detail: 'x' }),
 			action({ id: 'b', title: 'Without detail' })
 		]);
-		const slots = document.querySelectorAll('.ua-line .ua-toggle');
-		expect(slots.length).toBe(2);
-		expect(slots[0].querySelector('button')).not.toBeNull();
-		expect(slots[1].querySelector('button')).toBeNull();
+		const rows = [...document.querySelectorAll<HTMLElement>('[data-ua-row]')];
+		expect(rows.map((r) => r.querySelector(':scope > .ua-check + .ua-body [data-ua-title]') !== null)).toEqual([
+			true,
+			true
+		]);
 	});
 
 	it('uses no class name that a tsumikit global utility also styles', async () => {
@@ -185,7 +206,7 @@ describe('UserActionsCard', () => {
 		mustFind(/1 done/).click();
 		await flush();
 		const own = [...document.querySelectorAll<HTMLElement>('[class*="svelte-"]')]
-			.filter((el) => !el.hasAttribute('data-tsu'))
+			.filter((el) => !el.hasAttribute('data-tsu') && !el.closest('[data-tsu="Checkbox"]'))
 			.flatMap((el) => [...el.classList]);
 		expect(own.length).toBeGreaterThan(5);
 		const clashes = own.filter((c) => reserved.has(c));

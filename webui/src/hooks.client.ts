@@ -3,10 +3,11 @@
 // navigating/rendering — becomes an error toast, so a failure never blanks a
 // view silently. The browser console still gets the full error + stack for
 // debugging; the toast stays terse and carries no internals.
-import type { HandleClientError } from '@sveltejs/kit';
+import type { ClientInit, HandleClientError } from '@sveltejs/kit';
 import { toasts } from '$lib/toast.svelte';
 import { m } from '$lib/paraglide/messages';
 import { isStaleChunkError, recoverFromStaleChunk } from '$lib/staleChunk';
+import { initTelemetry } from '$lib/telemetry';
 
 function swallowedAsStaleChunk(text: string): boolean {
 	return isStaleChunkError(text) && recoverFromStaleChunk();
@@ -45,6 +46,10 @@ if (typeof window !== 'undefined') {
 		if (recoverFromStaleChunk()) e.preventDefault();
 	}) as EventListener);
 }
+
+export const init: ClientInit = () => {
+	void initTelemetry();
+};
 
 export const handleError: HandleClientError = ({ error }) => {
 	const text = message(error);

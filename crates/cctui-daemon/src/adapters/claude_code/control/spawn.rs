@@ -4,6 +4,7 @@ use super::{
     build_session_context, detect_whip_from_settings, dispatch_done, ensure_hook_settings, json,
     launch, mpsc, resolve_launch_env_for, socket, transcript,
 };
+use tracing::Instrument as _;
 
 impl Driver {
     /// Resume-on-reply: if `short` has no live worker, revive it
@@ -168,10 +169,14 @@ impl Driver {
             json!({ "intent": st.as_ref().and_then(|s| s.intent.clone()).unwrap_or_default() });
         let req = launch::dispatch_request(&ids, &cwd, &launch, None, &env, &seed);
         let session_id = ids.session_id;
+        super::super::canary::arm(local_id, short, &session_id, None);
         let resp: serde_json::Value = socket::call(sock, &req)
             .await
             .with_context(|| format!("resume dispatch for hibernated session {short}"))?;
         tracing::info!(?resp, %short, %session_id, "resumed hibernated session via dispatch");
+        if resp.get("via").and_then(serde_json::Value::as_str) == Some("spare") {
+            super::super::canary::mark_spare(&session_id);
+        }
 
         // Wait (bounded) for the revived worker to report alive, then give the
         // PTY a moment to finish booting so the reply isn't swallowed by a
@@ -242,10 +247,20 @@ impl Driver {
                 return;
             }
         };
+        let workdir = std::env::var("CCTUI_DISPATCH_WORKDIR").ok();
+        let span = crate::adapter_runtime::boot_spawn_span(
+            adapter.id(),
+            &session_id,
+            workdir.as_deref(),
+            &payload,
+        );
         if adapter.is_one_shot() {
             tracing::info!(session_id = %session_id, adapter = adapter.id(), "dispatch-on-start: launching one-shot dispatch");
             tokio::spawn(async move {
-                if let Err(err) = crate::dispatch::run_one_shot(adapter, &payload).await {
+                let ran =
+                    crate::dispatch::run_one_shot(adapter, &payload).instrument(span.clone()).await;
+                crate::adapter_runtime::record_spawn_outcome(&span, ran.as_ref().err());
+                if let Err(err) = ran {
                     tracing::error!(%err, adapter = adapter.id(), "dispatch-on-start: one-shot dispatch failed");
                     crate::dispatch::write_failure(
                         &payload,
@@ -271,10 +286,15 @@ impl Driver {
             }
         };
         tracing::info!(session_id = %session_id, "dispatch-on-start: launching dispatched session");
-        let dispatched = match self.prepare_spawn(&sock, &spec, Some(session_id.clone())).await {
-            Ok(dispatch) => dispatch.send().await,
-            Err(err) => Err(err),
-        };
+        let dispatched = async {
+            match self.prepare_spawn(&sock, &spec, Some(session_id.clone())).await {
+                Ok(dispatch) => dispatch.send().await,
+                Err(err) => Err(err),
+            }
+        }
+        .instrument(span.clone())
+        .await;
+        crate::adapter_runtime::record_spawn_outcome(&span, dispatched.as_ref().err());
         if let Err(err) = dispatched {
             tracing::error!(%err, session_id = %session_id, "dispatch-on-start: spawn failed");
         } else {
@@ -427,6 +447,7 @@ impl Driver {
             &dispatch_seed(spec),
         );
         let gate = self.launch_gate(session_id, short, spec.model.as_deref());
+        super::super::canary::arm(session_id, short, session_id, agent_tool.then_some(session_id));
         Ok(DeferredDispatch {
             sock: sock.to_path_buf(),
             req,
@@ -611,6 +632,12 @@ impl Driver {
             &launch_env.env,
             &dispatch_seed(spec),
         );
+        super::super::canary::arm(
+            session_id,
+            short,
+            session_id,
+            launch.mcp_config.is_some().then_some(session_id),
+        );
         tracing::info!(%cwd, %session_id, %parent_local_id, %resume_id, "fork prepared for control socket");
         Ok(DeferredDispatch {
             sock: sock.to_path_buf(),
@@ -643,6 +670,9 @@ impl DeferredDispatch {
             .inspect_err(|_| crate::configsweep::remove_session_files(&self.short))
             .with_context(|| format!("dispatch {}", self.what))?;
         tracing::info!(?resp, session_id = %self.session_id, "{} dispatched via control socket", self.what);
+        if resp.get("via").and_then(serde_json::Value::as_str) == Some("spare") {
+            super::super::canary::mark_spare(&self.session_id);
+        }
         if let Some(watchdog) = &self.watchdog {
             if let Err(stall) = watchdog.confirm(&self.sock, &self.short).await {
                 tracing::warn!(session_id = %self.session_id, short = %self.short, "{stall}");

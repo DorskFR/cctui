@@ -35,11 +35,19 @@ import { settings } from '$lib/settings.svelte';
 import { m } from '$lib/paraglide/messages';
 import type { EnvRow, Form, SpawnPrefill, Target } from './types';
 import { accountBacksAdapter, providerForAdapter, NO_ACCOUNT, poolName } from './options';
-import { applySpec, initialProfile, specFromForm, specOf, type ProfileSpecForm } from './profiles';
+import {
+	applySpec,
+	initialProfile,
+	sortProfiles,
+	specFromForm,
+	specOf,
+	type ProfileSpecForm
+} from './profiles';
 import { blank, seedForm } from './spawnSeed';
 import { SpawnRecall } from './spawnRecall';
 import { buildSpawnBody, draftBody, envMap } from './spawnBody';
 import { withoutInvite } from '$lib/cctuiverse';
+import { withUserSpan } from '$lib/telemetry';
 import {
 	autosave,
 	dispatchToK8s,
@@ -50,6 +58,7 @@ import {
 
 const ENV_KEY_RE = /^[A-Z_][A-Z0-9_]*$/;
 const PERSIST_DELAY_MS = 300;
+const SPAWN_SPAN = 'ui.spawn_session.launch';
 
 export interface SpawnFormOptions {
 	onclose: () => void;
@@ -263,7 +272,7 @@ export class SpawnForm {
 			if (machine === this.profileMachineApplied && stillThere) return;
 			this.profileMachineApplied = machine;
 			const last = settings.lastEntryFor(machine)?.profile_id ?? null;
-			this.selectedProfileId = initialProfile(profiles, last)?.id ?? null;
+			this.selectedProfileId = initialProfile(sortProfiles(profiles), last)?.id ?? null;
 			this.oneOff = null;
 		});
 		// First open with no profile yet: seed "Default" from the spawn memory.
@@ -446,13 +455,27 @@ export class SpawnForm {
 		drafts.set(PROFILE_USES, this.usageRaw);
 	}
 
+	/** Never the prompt or env values: only what identifies where it went. */
+	private spanAttrs(mode: 'launch' | 'draft' | 'dispatch') {
+		return mode === 'dispatch'
+			? { 'cctui.spawn.mode': mode, 'cctui.harness': this.form.dispatch_adapter || 'claude-code' }
+			: {
+					'cctui.spawn.mode': mode,
+					'cctui.machine_id': this.form.machine_id,
+					'cctui.harness': this.effectiveForm.adapter_id
+				};
+	}
+
 	submit = async () => {
 		if (!this.valid || this.busy) return;
 		this.busy = true;
 		promptHistory.push(this.form.prompt);
 		try {
-			if (this.target === 'machine') await spawnOnMachine(this);
-			else await dispatchToK8s(this);
+			if (this.target === 'machine') {
+				await withUserSpan(SPAWN_SPAN, this.spanAttrs('launch'), () => spawnOnMachine(this));
+			} else {
+				await withUserSpan(SPAWN_SPAN, this.spanAttrs('dispatch'), () => dispatchToK8s(this));
+			}
 		} catch (e) {
 			const msg = errMessage(e);
 			toasts.error(
@@ -469,7 +492,7 @@ export class SpawnForm {
 		if (!this.draftValid || this.busy) return;
 		this.busy = true;
 		try {
-			await saveDraft(this);
+			await withUserSpan(SPAWN_SPAN, this.spanAttrs('draft'), () => saveDraft(this));
 		} catch (e) {
 			toasts.error(m.spawn_toast_save_draft_failed({ error: errMessage(e) }));
 		} finally {

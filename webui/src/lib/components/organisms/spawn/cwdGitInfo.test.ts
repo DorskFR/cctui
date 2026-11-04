@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GitInfo } from '@bindings/GitInfo';
 import type { MachineLiveness } from '@bindings/MachineLiveness';
 import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
-import { gitBadge, makeGitInfoWatcher } from './cwdGitInfo';
+import { fsLiveness, gitBadge, makeGitInfoWatcher } from './cwdGitInfo';
 
 const repo = (over: Partial<GitInfo>): GitInfo => ({
 	is_repo: true,
@@ -10,12 +10,17 @@ const repo = (over: Partial<GitInfo>): GitInfo => ({
 	...over
 });
 
-const machine = (machine_id: string, liveness: MachineLiveness): MachineResourcesRow => ({
+const machine = (
+	machine_id: string,
+	liveness: MachineLiveness,
+	connected = liveness !== 'offline'
+): MachineResourcesRow => ({
 	machine_id,
 	name: machine_id,
 	display_name: null,
 	hue: null,
 	liveness,
+	connected,
 	last_seen_at: '2026-10-22T00:00:00Z',
 	resources: null,
 	updated_at: null
@@ -98,6 +103,25 @@ describe('makeGitInfoWatcher', () => {
 		await vi.advanceTimersByTimeAsync(300);
 		expect(fetch).toHaveBeenCalledTimes(1);
 		expect(results).toEqual([null, null, repo({ branch: 'main' })]);
+	});
+
+	it('never asks gitinfo of an online machine whose daemon socket is down', async () => {
+		const fetch = vi.fn(async () => repo({ branch: 'main' }));
+		const results: (GitInfo | null)[] = [];
+		const w = makeGitInfoWatcher(fetch, (i) => results.push(i), 300);
+		const rows = (connected: boolean) => [machine('m1', 'online', connected)];
+		const of = (list: MachineResourcesRow[]) =>
+			fsLiveness(list.find((mc) => mc.machine_id === 'm1'));
+		expect(of([])).toBeUndefined();
+		expect(of(rows(false))).toBe('offline');
+		w.update('m1', '/a', of(rows(false)));
+		await vi.advanceTimersByTimeAsync(300);
+		expect(fetch).not.toHaveBeenCalled();
+		expect(results).toEqual([null]);
+		w.update('m1', '/a', of(rows(true)));
+		await vi.advanceTimersByTimeAsync(300);
+		expect(fetch).toHaveBeenCalledTimes(1);
+		expect(results).toEqual([null, repo({ branch: 'main' })]);
 	});
 
 	it('drops a reply that lands after a newer update or cancel', async () => {

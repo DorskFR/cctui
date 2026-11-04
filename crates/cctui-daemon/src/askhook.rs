@@ -63,6 +63,12 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // `SessionStart` stdout is injected into the conversation, so stay silent.
+    if event == "start" {
+        report_session_start(sock, session_id);
+        return Ok(());
+    }
+
     // A `Stop` hook must stay silent on stdout: anything printed there is read
     // back as a hook decision.
     if event == "stop" {
@@ -176,6 +182,20 @@ pub fn report_turn_end(sock: &Path, session_id: &str) {
     if let Err(err) = send(sock, &line.to_string()) {
         eprintln!("cctui-daemon stop-hook: could not reach daemon at {}: {err}", sock.display());
     }
+}
+
+/// The hook canary: proves to the daemon that this worker loaded cctui's
+/// `--settings` hooks.
+pub fn report_session_start(sock: &Path, session_id: &str) {
+    let cctui = std::env::var(crate::preview::SESSION_ID_VAR).unwrap_or_default();
+    let line = session_start_line(session_id, &cctui);
+    if let Err(err) = send(sock, &line.to_string()) {
+        eprintln!("cctui-daemon start-hook: could not reach daemon at {}: {err}", sock.display());
+    }
+}
+
+fn session_start_line(session_id: &str, cctui_session: &str) -> Value {
+    json!({ "kind": "session_start", "session_id": session_id, "cctui_session": cctui_session })
 }
 
 /// Handle the `perm` (`PreToolUse` permission) hook event.
@@ -524,6 +544,14 @@ mod tests {
         connect_trusted(&path).expect("own-uid socket and peer are trusted");
         handle.join().unwrap().unwrap();
         assert!(connect_trusted(&tmp.path().join("missing.sock")).is_err());
+    }
+
+    #[test]
+    fn session_start_line_carries_both_session_ids() {
+        let v = session_start_line("claude-1", "local-1");
+        assert_eq!(v["kind"], "session_start");
+        assert_eq!(v["session_id"], "claude-1");
+        assert_eq!(v["cctui_session"], "local-1");
     }
 
     #[test]

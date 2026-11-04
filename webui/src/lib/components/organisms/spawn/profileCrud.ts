@@ -1,21 +1,22 @@
 import { errMessage } from '$lib/api';
 import { toasts } from '$lib/toast.svelte';
 import { m } from '$lib/paraglide/messages';
-import { specFromForm, uniqueProfileName, type ProfileSpecForm } from './profiles';
+import type { ProfileSpecForm } from './profiles';
 import type { SpawnForm } from './spawnForm.svelte';
 
-export async function createProfile(sf: SpawnForm) {
-	const base = sf.profileSpec ?? specFromForm(sf.form, sf.allAccounts, sf.allPools);
-	const name = uniqueProfileName(
-		m.spawn_profile_new_name(),
-		sf.profiles.map((p) => p.name)
-	);
+export async function createProfile(
+	sf: SpawnForm,
+	name: string,
+	spec: ProfileSpecForm
+): Promise<boolean> {
 	try {
-		const p = await sf.profileActions.create({ name, ...base });
+		const p = await sf.profileActions.create({ name, ...spec });
 		sf.selectedProfileId = p.id;
 		sf.oneOff = null;
+		return true;
 	} catch (e) {
 		toasts.error(m.spawn_profile_toast_failed({ error: errMessage(e) }));
+		return false;
 	}
 }
 

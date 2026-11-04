@@ -1,7 +1,8 @@
 <script lang="ts">
 	// Composer voice entry points: the mic dictates into the draft (tap to
-	// start, tap to send, or hold to talk), the toggle talks with the session
-	// hands-free. While recording, a large stop target sits above the composer.
+	// start, tap to send, or hold to talk), the toggle, shown only with
+	// `ontogglelive`, talks with the session hands-free. While recording, a
+	// large stop target sits above the composer.
 	import { Button, IconButton, Toggle } from '@dorsk/tsumikit';
 	import { errMessage } from '$lib/api';
 	import { toasts } from '$lib/toast.svelte';
@@ -11,13 +12,13 @@
 	import { m } from '$lib/paraglide/messages';
 
 	let {
-		live,
+		live = false,
 		ontogglelive,
 		ondictated,
 		disabled = false
 	}: {
-		live: boolean;
-		ontogglelive: () => void;
+		live?: boolean;
+		ontogglelive?: () => void;
 		/** A finished dictation; empty clips never reach here. */
 		ondictated: (text: string) => void;
 		disabled?: boolean;
@@ -38,6 +39,11 @@
 		const tick = setInterval(() => (elapsed = Date.now() - startedAt), 250);
 		return () => clearInterval(tick);
 	});
+
+	/** A long press must reach the gesture, not pan the page or open a menu. */
+	const micStyle = $derived(
+		`touch-action: none; user-select: none; -webkit-touch-callout: none;${recording ? ' --btn-on: var(--danger);' : ''}`
+	);
 
 	const timer = $derived.by(() => {
 		const s = Math.floor(elapsed / 1000);
@@ -122,7 +128,8 @@
 		disabled={disabled || live}
 		label={m.voice_dictate_hint()}
 		title={m.voice_dictate_hint()}
-		style={recording ? '--btn-on: var(--danger)' : undefined}
+		style={micStyle}
+		oncontextmenu={(e: MouseEvent) => e.preventDefault()}
 		onpointerdown={(e: PointerEvent) => {
 			e.preventDefault();
 			if (armed()) act(gesture.down(Date.now()));
@@ -132,14 +139,16 @@
 		onpointerleave={() => act(gesture.up(Date.now()))}
 		onkeydown={onkey}
 	/>
-	<Toggle
-		size="sm"
-		pressed={live}
-		{disabled}
-		aria-label={m.voice_live_hint()}
-		title={m.voice_live_hint()}
-		onclick={ontogglelive}>{m.voice_live_toggle()}</Toggle
-	>
+	{#if ontogglelive}
+		<Toggle
+			size="sm"
+			pressed={live}
+			{disabled}
+			aria-label={m.voice_live_hint()}
+			title={m.voice_live_hint()}
+			onclick={ontogglelive}>{m.voice_live_toggle()}</Toggle
+		>
+	{/if}
 </span>
 
 {#if recording}

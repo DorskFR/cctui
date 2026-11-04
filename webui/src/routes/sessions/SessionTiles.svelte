@@ -8,10 +8,12 @@
 	let {
 		sessions,
 		onNavigate,
+		onFollowup,
 		onoverflow
 	}: {
 		sessions: SessionListItem[];
 		onNavigate?: (id: string) => void;
+		onFollowup?: (s: SessionListItem, instruction?: string) => void;
 		/** The sessions the grid had no room for. Reported rather than rendered:
 		 *  a chip above the grid would eat the height the capacity is measured
 		 *  from, so the toolbar shows it instead. */
@@ -73,6 +75,7 @@
 				maximized={maximized === s.id}
 				onmaximize={() => (maximized = maximized === s.id ? null : s.id)}
 				{onNavigate}
+				{onFollowup}
 			/>
 		</div>
 	{/each}

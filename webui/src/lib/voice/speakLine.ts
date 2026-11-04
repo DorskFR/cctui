@@ -3,6 +3,7 @@
 import { api } from '$lib/api';
 import type { VoiceSpeakRequest } from '@bindings/VoiceSpeakRequest';
 import { routeToSpeaker } from './devices';
+import { releaseAudio } from './player';
 
 interface Current {
 	key: string;
@@ -17,7 +18,7 @@ function stopCurrent() {
 	const cur = current;
 	if (!cur) return;
 	current = null;
-	cur.audio.pause();
+	releaseAudio(cur.audio);
 	URL.revokeObjectURL(cur.url);
 	cur.onend();
 }

@@ -124,6 +124,7 @@ pub async fn stop_worker(host: &Host, machine: Uuid, session: &str, adapter: &st
                 local_id: session.to_owned(),
                 signal: None,
             }),
+            trace: None,
         },
     );
     match tokio::time::timeout(std::time::Duration::from_secs(2), delivery).await {

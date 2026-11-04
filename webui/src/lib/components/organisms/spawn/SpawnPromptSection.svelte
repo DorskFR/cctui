@@ -1,6 +1,7 @@
 <script lang="ts">
 	import MachineFields from './MachineFields.svelte';
 	import DispatchFields from './DispatchFields.svelte';
+	import SpawnDictation from './SpawnDictation.svelte';
 	import ProfileList from './ProfileList.svelte';
 	import type { SpawnForm } from './spawnForm.svelte';
 	import { createProfile, deleteProfile, saveProfile } from './profileCrud';
@@ -28,6 +29,7 @@
 		accounts={sf.allAccounts}
 		onsubmit={sf.submit}
 	/>
+	<SpawnDictation {sf} />
 {:else}
 	<MachineFields
 		bind:form={sf.form}
@@ -37,6 +39,7 @@
 		att={sf.att}
 		bind:promptEl={sf.promptEl}
 	/>
+	<SpawnDictation {sf} />
 	{#if hasInvite && !cctuiverseConfig.enabled}
 		<Callout tone="warn" style="flex-basis:100%">{m.cctuiverse_disabled_invite()}</Callout>
 	{:else if hasInvite}
@@ -49,10 +52,9 @@
 		accounts={sf.allAccounts}
 		pools={sf.allPools}
 		usage={sf.allUsage}
-		usageRaw={sf.usageRaw}
 		machineId={sf.form.machine_id}
 		busy={sf.busy}
-		oncreate={() => createProfile(sf)}
+		oncreate={(name, spec) => createProfile(sf, name, spec)}
 		onsave={(id, name, spec) => saveProfile(sf, id, name, spec)}
 		ondelete={(id) => deleteProfile(sf, id)}
 	/>

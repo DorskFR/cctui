@@ -22,6 +22,7 @@ vi.mock("$lib/queries", () => {
   return {
     useSessions: () => ({ data: { sessions: [] } }),
     useMachineResources: () => q(machineList),
+    useVoiceConfig: () => q(undefined),
     useDispatchers: () => q([{ id: "kube", name: "kube" }]),
     useRecentDirs: () => q([]),
     useAccounts: () => q([]),

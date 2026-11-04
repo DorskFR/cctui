@@ -1,7 +1,9 @@
 /** The dictation mic's gesture state: a tap starts recording and a second
  *  tap stops it; a press held past `HOLD_MS` records until release. */
 
-export const HOLD_MS = 300;
+/** Past the platform long-press delay, so a finger that lingers on a tap
+ *  still starts a hands-free recording. */
+export const HOLD_MS = 500;
 /** A recording stopped sooner than this holds nothing worth transcribing. */
 export const MIN_CLIP_MS = 300;
 

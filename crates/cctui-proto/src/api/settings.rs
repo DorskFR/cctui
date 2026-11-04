@@ -178,10 +178,16 @@ pub struct SpeechCatalog {
 }
 
 /// `GET /voice/config`: what the webui may use, without the URL or key.
+// Independent capability flags on a wire shape mirrored to TS, not a state machine.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct VoiceConfigInfo {
     pub enabled: bool,
+    /// Speech-to-text is available: dictation and voice mode can listen.
+    pub stt: bool,
+    /// Text-to-speech is available: read-aloud and voice mode can speak.
+    pub tts: bool,
     pub stt_model: String,
     pub stt_language: Option<String>,
     pub tts_model: String,

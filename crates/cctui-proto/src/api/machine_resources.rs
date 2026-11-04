@@ -17,6 +17,10 @@ pub struct MachineResourcesRow {
     /// Operator-set badge hue (0-359). `None` = hash of the name.
     pub hue: Option<i16>,
     pub liveness: crate::models::MachineLiveness,
+    /// A daemon WS for this machine is live on some server replica right now.
+    /// `liveness` can still read online between socket drops; fs routes need this.
+    #[serde(default)]
+    pub connected: bool,
     /// When the daemon was last heard from. The tier above is derived from this,
     /// but a reader that wants to show an age needs the stamp itself.
     pub last_seen_at: DateTime<Utc>,

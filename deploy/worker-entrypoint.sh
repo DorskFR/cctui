@@ -10,6 +10,22 @@ set -eu
 
 log() { echo "cctui-worker: $*"; }
 
+# git_retry <label> <cmd...>: one attempt plus one per delay (seconds) in
+# CCTUI_GIT_RETRY_DELAYS. <cmd> must wipe its own partial state.
+git_retry() {
+    _gr_label=$1; shift
+    _gr_n=1
+    for _gr_d in ${CCTUI_GIT_RETRY_DELAYS-2 5 10} ""; do
+        "$@" && return 0
+        [ -n "$_gr_d" ] || break
+        log "$_gr_label failed (attempt $_gr_n), retrying in ${_gr_d}s"
+        sleep "$_gr_d"
+        _gr_n=$((_gr_n + 1))
+    done
+    log "$_gr_label failed after $_gr_n attempt(s)"
+    return 1
+}
+
 # Emits one `--ro <path>` token per entry of CCTUI_WORKER_EXTRA_RO
 # (colon-separated), so derived images can add toolchain dirs to the Landlock
 # RO set.
@@ -129,6 +145,39 @@ fail_dispatch() {
         > "$RESULT_FILE"
     exit 1
 }
+
+# A kube dispatch holds only a placeholder machine key: the guard-proxy redeemed
+# the pod's service-account token for the real one and serves the payload env
+# on its health port. No env, or a failed redeem, fails the pod with the reason.
+DISPATCH_ENV_URL="${DISPATCH_ENV_URL:-http://127.0.0.1:${PROXY_HEALTH_PORT:-15002}/dispatch/env}"
+dispatch_identity_failed() {
+    echo "cctui-worker: dispatch identity: $1" >&2
+    { printf 'dispatch identity: %s' "$1" > "$TERMINATION_LOG"; } 2>/dev/null || true
+    exit 1
+}
+phase_dispatch_env() {
+    [ -n "${CCTUI_DISPATCH_ID:-}" ] || return 0
+    _de_out=$(curl -4 -sS --max-time 30 -w '\n%{http_code}' "$DISPATCH_ENV_URL" 2>&1 || true)
+    _de_code=$(printf '%s\n' "$_de_out" | tail -n 1)
+    _de_json=$(printf '%s\n' "$_de_out" | sed '$d')
+    if [ "$_de_code" != 200 ]; then
+        _de_why=$(printf '%s' "$_de_json" | jq -r '.error // empty' 2>/dev/null || true)
+        [ -n "$_de_why" ] || _de_why="guard-proxy answered HTTP ${_de_code:-000}: $_de_json"
+        dispatch_identity_failed "$_de_why"
+    fi
+    printf '%s' "$_de_json" | jq -e '.env | type == "object"' >/dev/null 2>&1 \
+        || dispatch_identity_failed "the dispatch env answer is not an env object"
+    for _de_k in $(printf '%s' "$_de_json" | jq -r '.env | keys[]'); do
+        case "$_de_k" in
+            "" | [0-9]* | *[!A-Za-z0-9_]*)
+                dispatch_identity_failed "the server sent an invalid env name" ;;
+        esac
+        _de_v=$(printf '%s' "$_de_json" | jq -r --arg k "$_de_k" '.env[$k]')
+        export "$_de_k=$_de_v"
+    done
+    log "dispatch: payload env fetched through the guard-proxy (dispatch ${CCTUI_DISPATCH_ID%%-*})"
+}
+phase_dispatch_env
 
 # Per-agent state under the worker home for the ACP agent a dispatch selects,
 # with the agent's own sandbox and telemetry off: the pod is already sandboxed
@@ -587,7 +636,8 @@ phase_workspace() {
             _wurl=$(git -C "/workspace/${TASK_REPO}" remote get-url origin 2>/dev/null || echo "")
             [ -n "$_wtok" ] && [ -n "$_wurl" ] \
                 && _wurl=$(printf '%s' "$_wurl" | sed "s,^https://,https://${_wtok}@,")
-            if git -C "/workspace/${TASK_REPO}" fetch -q "${_wurl:-origin}" "$TASK_REPO_REF" 2>/dev/null \
+            if git_retry "workspace: fetch $TASK_REPO_REF" \
+                    git -C "/workspace/${TASK_REPO}" fetch -q "${_wurl:-origin}" "$TASK_REPO_REF" 2>/dev/null \
                     && git -C "/workspace/${TASK_REPO}" checkout -q FETCH_HEAD 2>/dev/null; then
                 log "workspace: checked out TASK_REPO_REF=$TASK_REPO_REF"
             else
@@ -623,7 +673,6 @@ phase_workspace() {
         # identity token from the pod env and inject it into the clone URL, then
         # scrub it from the persisted remote.
         _dest="/workspace/${TASK_REPO:-repo}"
-        mkdir -p "$_dest"
         _wtok="${GITHUB_TOKEN:-}"
         if [ -z "$_wtok" ] && [ -n "${TASK_IDENTITY:-}" ]; then
             _wid=$(printf '%s' "$TASK_IDENTITY" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9' '_')
@@ -632,9 +681,17 @@ phase_workspace() {
         fi
         _curl="$TASK_REPO_URL"
         [ -n "$_wtok" ] && _curl=$(printf '%s' "$TASK_REPO_URL" | sed "s,^https://,https://${_wtok}@,")
-        if git clone --filter=blob:none "$_curl" "$_dest" 2>/dev/null; then
+        ws_clone() {
+            case "/${TASK_REPO:-repo}/" in
+                */../*|*/./*|*//*) ;;
+                *) rm -rf "$_dest" ;;
+            esac
+            mkdir -p "$_dest" && git clone --filter=blob:none "$_curl" "$_dest" 2>/dev/null
+        }
+        if git_retry "workspace: clone ${TASK_REPO:-repo}" ws_clone; then
             if [ -n "${TASK_REPO_REF:-}" ]; then
-                git -C "$_dest" fetch -q "$_curl" "$TASK_REPO_REF" 2>/dev/null \
+                git_retry "workspace: fetch $TASK_REPO_REF" \
+                    git -C "$_dest" fetch -q "$_curl" "$TASK_REPO_REF" 2>/dev/null \
                     && git -C "$_dest" checkout -q FETCH_HEAD 2>/dev/null \
                     || log "WARNING: could not check out TASK_REPO_REF=$TASK_REPO_REF"
             fi
@@ -817,19 +874,29 @@ phase_context_pack() {
         sed 's/^/cctui-worker: git: /' "$_giterr" | tail -5 >&2
         exit 1
     }
-    if [ -z "${CONTEXT_PACK_REF:-}" ]; then
-        # No ref ⇒ clone the remote's default branch.
-        pack_git clone --depth 1 "$_url" "$_tmp" \
-            || pack_fatal "context-pack clone failed (default branch)"
-    elif ! pack_git clone --depth 1 --branch "$CONTEXT_PACK_REF" "$_url" "$_tmp"; then
+    pack_reset() {
+        rm -rf "$_tmp"; mkdir -p "$_tmp"
+        if is_root; then chown "${WORKER_UID}:${WORKER_UID}" "$_tmp"; fi
+    }
+    pack_fetch_once() {
+        pack_reset
+        if [ -z "${CONTEXT_PACK_REF:-}" ]; then
+            pack_git clone --depth 1 "$_url" "$_tmp"
+            return
+        fi
+        pack_git clone --depth 1 --branch "$CONTEXT_PACK_REF" "$_url" "$_tmp" && return 0
         # Some refs are SHAs (not clonable by --branch): fetch the ref directly.
-        rm -rf "$_tmp"; _tmp=$(mktemp -d)
-        is_root && chown "${WORKER_UID}:${WORKER_UID}" "$_tmp"
-        { pack_git -C "$_tmp" init -q \
+        pack_reset
+        pack_git -C "$_tmp" init -q \
             && pack_git -C "$_tmp" remote add origin "$_url" \
             && pack_git -C "$_tmp" fetch --depth 1 -q origin "$CONTEXT_PACK_REF" \
-            && pack_git -C "$_tmp" checkout -q FETCH_HEAD; } \
-            || pack_fatal "context-pack fetch failed (CONTEXT_PACK_URL set, ref=$CONTEXT_PACK_REF)"
+            && pack_git -C "$_tmp" checkout -q FETCH_HEAD
+    }
+    if ! git_retry "context pack: fetch" pack_fetch_once; then
+        if [ -z "${CONTEXT_PACK_REF:-}" ]; then
+            pack_fatal "context-pack clone failed (default branch)"
+        fi
+        pack_fatal "context-pack fetch failed (CONTEXT_PACK_URL set, ref=$CONTEXT_PACK_REF)"
     fi
     rm -f "$_giterr"
 
@@ -1710,8 +1777,12 @@ _QUIET_LOGGED=""
 # Echoes registered | ended | quiet (inactive only by heartbeat age: keep
 # waiting) | unknown (transient or not listed yet; never death).
 # `-4` mirrors the callback curl (the worker forces IPv4 egress).
+# Root egress bypasses the guard-proxy, which holds a dispatched pod's real key.
+probe_curl() {
+    if [ -n "${CCTUI_DISPATCH_ID:-}" ]; then as_worker curl "$@"; else curl "$@"; fi
+}
 probe_session() {
-    _code=$(curl -4 -sS -o "$_PROBE_BODY" -w '%{http_code}' --max-time 5 \
+    _code=$(probe_curl -4 -sS -o "$_PROBE_BODY" -w '%{http_code}' --max-time 5 \
         -H "Authorization: Bearer $CCTUI_MACHINE_KEY" "$_SESSIONS_URL" 2>/dev/null) \
         || { echo unknown; return; }
     if [ "$_code" != 200 ]; then

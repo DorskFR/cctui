@@ -41,9 +41,10 @@
 		{ value: 'right', label: m.settings_spawn_dock_side_right() }
 	];
 	const followupColdOptions: SegmentOption[] = [
-		{ value: 'off', label: m.settings_followup_when_cold_off() },
+		{ value: 'auto', label: m.settings_followup_when_cold_auto() },
+		{ value: 'modal', label: m.settings_followup_when_cold_modal() },
 		{ value: 'offer', label: m.settings_followup_when_cold_offer() },
-		{ value: 'default', label: m.settings_followup_when_cold_default() }
+		{ value: 'off', label: m.settings_followup_when_cold_off() }
 	];
 </script>
 

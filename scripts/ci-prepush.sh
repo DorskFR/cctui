@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: ci-prepush.sh <rust|webui|schema>
+# Usage: ci-prepush.sh <rust|clippy|webui|schema>
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -23,12 +23,23 @@ if [ -n "$base" ]; then
 else
   changes="$(bash scripts/ci-changes.sh --all)"
 fi
-if ! grep -qx "$area=true" <<<"$changes"; then
+key="$area"
+[ "$area" = clippy ] && key=rust
+if ! grep -qx "$key=true" <<<"$changes"; then
   echo "pre-push $area: nothing to check since ${base:0:12}"
   exit 0
 fi
 
 case "$area" in
+  rust | clippy | webui)
+    [ -n "${CCTUI_HEAVY:-}" ] || exec bash scripts/heavy.sh bash scripts/ci-prepush.sh "$area"
+    ;;
+esac
+
+case "$area" in
+  clippy)
+    exec cargo clippy --workspace --all-targets -- -D warnings
+    ;;
   rust)
     # DB-gated tests skip themselves without DATABASE_URL; `make test` runs
     # them against one.
@@ -54,9 +65,9 @@ case "$area" in
     cd webui
     npm run --silent codegen:ensure
     if [ "${#files[@]}" -eq 0 ]; then
-      exec npx --no-install vitest run
+      exec bash ../scripts/heavy.sh npx --no-install vitest run
     fi
-    exec npx --no-install vitest related --run --passWithNoTests "${files[@]}"
+    exec bash ../scripts/heavy.sh npx --no-install vitest related --run --passWithNoTests "${files[@]}"
     ;;
   schema)
     url=https://json.schemastore.org/claude-code-settings.json
@@ -75,7 +86,7 @@ case "$area" in
     fi
     ;;
   *)
-    echo "usage: ci-prepush.sh <rust|webui|schema>" >&2
+    echo "usage: ci-prepush.sh <rust|clippy|webui|schema>" >&2
     exit 2
     ;;
 esac

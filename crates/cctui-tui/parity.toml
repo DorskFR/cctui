@@ -1650,6 +1650,12 @@ id = "get_version_self_update"
 tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
+[[route]]
+id = "post_otlp_v1_traces"
+# POST /otlp/v1/traces — Forward the webui's OTLP trace export to this server's collector.
+tui = "waived"
+reason = "browser trace export relay for the webui; the TUI emits no browser traces"
+
 # --- ServerEvent variants -----------------------------------------------------
 #
 # `tui` must agree with the per-variant arms in src/app/server_event.rs: an arm

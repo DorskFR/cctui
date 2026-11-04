@@ -691,3 +691,18 @@ describe('SessionsPage — spawn form and drafts', () => {
 		expect(sp.spawnPrefill?.draft_id).toBe('d');
 	});
 });
+
+describe('follow-up modal', () => {
+	it('opens prefilled with the archive checkbox ticked', async () => {
+		const { sp } = make();
+		await sp.followUp(session({ id: 'src' }), 'go on');
+		expect(sp.spawnPrefill).toMatchObject({ parent_session_id: 'src', archive_source: '1' });
+	});
+
+	it('stays unticked after a follow-up launched with it unticked', async () => {
+		const { sp } = make({}, { cctui_followup_archive_source: '0' });
+		await sp.followUp(session({ id: 'src' }));
+		expect(sp.spawnPrefill?.parent_session_id).toBe('src');
+		expect(sp.spawnPrefill).not.toHaveProperty('archive_source');
+	});
+});

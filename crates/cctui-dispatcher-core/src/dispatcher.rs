@@ -170,6 +170,7 @@ mod tests {
             dedup_key: None,
             profile: None,
             payload,
+            traceparent: None,
         }
     }
 

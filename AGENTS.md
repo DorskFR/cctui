@@ -20,6 +20,9 @@ Tsumikit, atomic design).
 - `migrations/` — sqlx Postgres migrations, applied on server start. See
   [docs/database-performance.md](docs/database-performance.md) for reading
   `pg_stat_statements` and index usage before adding or dropping an index.
+  The legacy `migrations/` stream is frozen at 191; new schema changes go in the
+  owning package's `crates/<package>/schema/NNNN_name.sql`, registered in its
+  `src/schema.rs`, and `scripts/check-migrations.sh` rejects collisions.
 
 ## The TUI is a first-class client
 

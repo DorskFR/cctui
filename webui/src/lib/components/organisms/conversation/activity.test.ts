@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { formatElapsed, lastProseLine, toolInvocationSummary, truncate } from './activity';
+import type { AgentEvent } from '@bindings/AgentEvent';
+import {
+	agentActivityAt,
+	formatElapsed,
+	lastProseLine,
+	toolInvocationSummary,
+	truncate,
+	workingAfter
+} from './activity';
 
 describe('toolInvocationSummary', () => {
 	it('prefixes a shell command with $', () => {
@@ -66,5 +74,61 @@ describe('lastProseLine', () => {
 	});
 	it('is null for blank prose', () => {
 		expect(lastProseLine('   \n\n')).toBeNull();
+	});
+});
+
+describe('workingAfter', () => {
+	const text = (meta: boolean, kind: string | null = null) =>
+		({ type: 'text', content: 'x', meta, kind, ts: 1 }) as AgentEvent;
+	const run = (events: AgentEvent[]) => events.reduce(workingAfter, false);
+
+	it('ends the turn on turn_end', () => {
+		expect(run([text(false), { type: 'turn_end', ts: 2 }])).toBe(false);
+	});
+
+	it('keeps a finished turn finished through the lines that trail turn_end', () => {
+		expect(
+			run([
+				text(false),
+				{ type: 'turn_end', ts: 2 },
+				text(true, 'turn_annotation'),
+				text(true, 'system_marker'),
+				text(true, 'queue_op'),
+				{ type: 'turn_summary', detail: 'done', status_category: 'done', needs_action: false, ts: 3 } as AgentEvent,
+				{ type: 'heartbeat', ts: 4 } as AgentEvent
+			])
+		).toBe(false);
+	});
+
+	it('starts a turn on agent output', () => {
+		expect(run([text(false)])).toBe(true);
+		expect(run([{ type: 'tool_call', tool: 'Bash', input: {}, ts: 1 } as unknown as AgentEvent])).toBe(true);
+	});
+});
+
+describe('agentActivityAt', () => {
+	const text = (meta: boolean, ts: number) => ({ type: 'text', content: 'x', meta, ts }) as AgentEvent;
+	const run = (events: AgentEvent[]) => events.reduce<number | null>(agentActivityAt, null);
+
+	it('keeps the newest prose, tool or user-message time', () => {
+		expect(
+			run([
+				text(false, 5),
+				{ type: 'tool_call', tool: 'Bash', input: {}, ts: 9 } as unknown as AgentEvent,
+				text(false, 7)
+			])
+		).toBe(9);
+	});
+
+	it('ignores meta lines, summaries and heartbeats', () => {
+		expect(
+			run([
+				text(false, 5),
+				text(true, 50),
+				{ type: 'heartbeat', ts: 60 } as AgentEvent,
+				{ type: 'turn_end', ts: 70 } as AgentEvent
+			])
+		).toBe(5);
+		expect(run([{ type: 'heartbeat', ts: 60 } as AgentEvent])).toBeNull();
 	});
 });

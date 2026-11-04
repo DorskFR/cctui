@@ -6,6 +6,7 @@
 // Live state is kept here (component-local, fed by ws listener callbacks) rather
 // than read off the ws singleton from a $derived — a $derived reading the
 // singleton's keyed state does NOT re-run on mutation (see ws.svelte.ts header).
+import { untrack } from 'svelte';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { TodoEntry } from '@bindings/TodoEntry';
 import type { UserAction } from '@bindings/UserAction';
@@ -22,7 +23,13 @@ import {
 } from '$lib/ws.svelte';
 import { eventDedup, markLive, parseAsk, parseTodos, todoProgress as deriveTodoProgress } from './format';
 import { resultAnswers } from './lines';
-import { lastProseLine, toolInvocationSummary, type ActivityTool } from './activity';
+import {
+	agentActivityAt,
+	lastProseLine,
+	toolInvocationSummary,
+	workingAfter,
+	type ActivityTool
+} from './activity';
 import type { AskQuestion, TodoItem, TodoProgress } from './types';
 import { drawerTodos, isTaskEvent } from './taskList';
 import { endpoints } from '$lib/queries';
@@ -121,6 +128,8 @@ export class ConversationStream {
 	retryingReplies = $state<Map<number, { attempt: number; max: number }>>(new Map());
 	// Activity indicator: true while claude is processing this turn.
 	working = $state(false);
+	/** Newest agent event seen live, in ms: anchors the cold-cache clock. */
+	lastAgentAt = $state<number | null>(null);
 	// Optimistic answer lock: locks both ask render sites to their
 	// answered state while a reply is in flight.
 	answering = $state(false);
@@ -141,7 +150,9 @@ export class ConversationStream {
 	// from the component rather than the constructor so $effect always runs in a
 	// proven component-init context.)
 	subscribe(sid: string): () => void {
-		this.live = ws.bufferedEvents(sid);
+		const buffered = ws.bufferedEvents(sid);
+		this.live = buffered;
+		this.lastAgentAt = buffered.reduce<number | null>(agentActivityAt, null);
 		this.answering = false;
 		this.working = false;
 		this.todos = null;
@@ -181,8 +192,6 @@ export class ConversationStream {
 					ws.clearPlan(this.#opts.id());
 				}
 			}
-			// Drive the activity indicator: a turn ends on `turn_end`; any
-			// substantive agent/tool/user event means work is in progress.
 			if (ev.type === 'tool_call' && (ev.tool === 'TodoWrite' || ev.tool === 'update_plan')) {
 				const t = parseTodos(ev.input);
 				if (t) {
@@ -194,8 +203,8 @@ export class ConversationStream {
 				this.#refreshTasks();
 			}
 			this.#trackActivity(ev);
-			if (ev.type === 'turn_end') this.working = false;
-			else if (ev.type !== 'heartbeat') this.working = true;
+			this.working = workingAfter(this.working, ev);
+			this.lastAgentAt = untrack(() => agentActivityAt(this.lastAgentAt, ev));
 		});
 		const offPerms = ws.onPerms(sid, (list) => {
 			this.perms = list;
@@ -404,6 +413,11 @@ export class ConversationStream {
 		return ws.trackedSend(this.#opts.id(), text, ts, undefined, turnId);
 	}
 
+	#began() {
+		this.working = true;
+		this.lastAgentAt = Date.now();
+	}
+
 	// Send a final message body (text + any appended staged-attachment paths).
 	// NB: a free-typed send does NOT dismiss a pending AskUserQuestion.
 	sendBody(text: string) {
@@ -411,7 +425,7 @@ export class ConversationStream {
 		// Sending always jumps to the latest message (classic chat UX).
 		this.#opts.pin();
 		const ok = this.#sendTracked(text);
-		if (ok) this.working = true;
+		if (ok) this.#began();
 		this.#opts.invalidateSessions();
 	}
 
@@ -419,7 +433,7 @@ export class ConversationStream {
 	// optimistic echo keeps its `ts`, so the bubble stays put.
 	retryFailed(ts: number) {
 		if (this.#opts.archived()) return;
-		this.working = true;
+		this.#began();
 		this.#opts.pin();
 		ws.retryNow(this.#opts.id(), ts);
 	}
@@ -439,7 +453,7 @@ export class ConversationStream {
 		this.markAsksResolved(qs ?? this.liveAskQuestions, this.ask?.question);
 		this.answering = true;
 		// Answering hands control back to claude — show the working indicator.
-		this.working = true;
+		this.#began();
 		// Dismiss the live prompt immediately — the daemon's AskResolved arrives a
 		// poll later.
 		this.ask = null;
@@ -459,7 +473,7 @@ export class ConversationStream {
 		const ok = ws.trackedSend(this.#opts.id(), text, ts, picks ?? undefined, turnId);
 		if (!ok) return;
 		this.answering = true;
-		this.working = true;
+		this.#began();
 		this.plan = null;
 		ws.clearPlan(this.#opts.id());
 		this.#opts.invalidateSessions();

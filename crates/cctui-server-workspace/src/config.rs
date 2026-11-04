@@ -10,6 +10,17 @@ pub struct HttpDispatcherConfig {
     pub token: Option<String>,
 }
 
+/// Env vars that may hold a secret ref instead of the value, resolved once at
+/// startup.
+pub const SECRET_ENV: [&str; 6] = [
+    "DATABASE_URL",
+    "CCTUI_GITHUB_TOKEN",
+    "GH_TOKEN",
+    "CCTUI_NTFY_TOKEN",
+    "CCTUI_CLAUDE_LITELLM_TOKEN",
+    "CCTUI_EMOJI_TOKEN",
+];
+
 pub const DEFAULT_UPLOAD_BODY_LIMIT: u64 = 24 * 1024 * 1024;
 pub const UPLOAD_BODY_LIMIT_ENV: &str = "CCTUI_UPLOAD_BODY_LIMIT";
 
@@ -267,8 +278,16 @@ impl Config {
         self.allowed_origins.iter().any(|o| o == origin)
     }
 
-    pub fn from_env() -> anyhow::Result<Self> {
-        Self::from_lookup(|k| env::var(k).ok())
+    pub async fn from_env() -> anyhow::Result<Self> {
+        let secrets = cctui_secrets::resolve_env(&SECRET_ENV, |k| env::var(k).ok()).await?;
+        Self::from_resolved(&secrets, |k| env::var(k).ok())
+    }
+
+    fn from_resolved(
+        secrets: &std::collections::HashMap<String, String>,
+        get: impl Fn(&str) -> Option<String>,
+    ) -> anyhow::Result<Self> {
+        Self::from_lookup(|k| secrets.get(k).cloned().or_else(|| get(k)))
     }
 
     /// Build the config from `get` (an env lookup), reporting every invalid
@@ -405,14 +424,17 @@ impl Config {
         })
     }
 
-    pub fn admin_tokens() -> Vec<String> {
-        env::var("CCTUI_ADMIN_TOKENS")
-            .unwrap_or_default()
-            .split(',')
-            .filter(|s| !s.is_empty())
-            .map(|s| s.trim().to_string())
-            .collect()
+    /// `CCTUI_ADMIN_TOKENS`, comma-separated; the whole value may be a secret
+    /// ref resolving to that list.
+    pub async fn admin_tokens() -> anyhow::Result<Vec<String>> {
+        const VAR: &str = "CCTUI_ADMIN_TOKENS";
+        let resolved = cctui_secrets::resolve_env(&[VAR], |k| env::var(k).ok()).await?;
+        Ok(split_admin_tokens(resolved.get(VAR).map_or("", String::as_str)))
     }
+}
+
+fn split_admin_tokens(raw: &str) -> Vec<String> {
+    raw.split(',').filter(|s| !s.is_empty()).map(|s| s.trim().to_string()).collect()
 }
 
 #[cfg(test)]
@@ -590,6 +612,41 @@ mod tests {
             ..base
         };
         assert_eq!(cfg.claude_litellm_visible_models().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn secret_env_refs_resolve_and_literal_urls_pass_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = dir.path().join("ntfy");
+        std::fs::write(&token, "ntfy-tok\n").unwrap();
+        let token_ref = format!("file:{}", token.display());
+        let env = |k: &str| match k {
+            "DATABASE_URL" => Some("postgres://user:pw@host/db".to_owned()),
+            "CCTUI_NTFY_TOKEN" => Some(token_ref.clone()),
+            "CCTUI_EMOJI_TOKEN" => Some("tok:with:colons".to_owned()),
+            _ => None,
+        };
+        let secrets = cctui_secrets::resolve_env(&SECRET_ENV, env).await.unwrap();
+        let cfg = Config::from_resolved(&secrets, env).unwrap();
+        assert_eq!(cfg.database_url, "postgres://user:pw@host/db");
+        assert_eq!(cfg.ntfy_token.as_deref(), Some("ntfy-tok"));
+        assert_eq!(cfg.emoji_token.as_deref(), Some("tok:with:colons"));
+    }
+
+    #[tokio::test]
+    async fn unresolvable_database_url_ref_names_the_var_and_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = format!("file:{}", dir.path().join("absent").display());
+        let env = |k: &str| (k == "DATABASE_URL").then(|| missing.clone());
+        let msg = cctui_secrets::resolve_env(&SECRET_ENV, env).await.unwrap_err().to_string();
+        assert!(msg.contains("DATABASE_URL"), "{msg}");
+        assert!(msg.contains(&missing), "{msg}");
+    }
+
+    #[test]
+    fn admin_tokens_split_on_commas_and_trim() {
+        assert_eq!(split_admin_tokens(" a , b,,c"), ["a", "b", "c"]);
+        assert!(split_admin_tokens("").is_empty());
     }
 
     #[test]

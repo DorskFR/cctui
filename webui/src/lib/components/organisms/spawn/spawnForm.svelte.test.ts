@@ -6,6 +6,7 @@ import { FOLLOWUP_RELATION } from '$lib/followup';
 import { attachmentStore } from '$lib/attachmentStore';
 import { SpawnForm, type SpawnFormOptions } from './spawnForm.svelte';
 import { saveDraft, spawnOnMachine } from './spawnSubmit';
+import { dictateIntoPrompt } from './spawnDictation';
 import { NO_ACCOUNT } from './options';
 
 const machineList = [
@@ -491,5 +492,28 @@ describe('SpawnForm native-id launch confirmation', () => {
 		await spawnOnMachine(sf);
 		expect(sf.form.prompt).toBe('Keep this unconfirmed request');
 		expect(discardDraft).not.toHaveBeenCalled();
+	});
+});
+
+describe('SpawnForm dictation', () => {
+	it('lands a dictated transcript in the prompt after what is typed', async () => {
+		const sf = open();
+		sf.form.working_dir = '/w';
+		await dictateIntoPrompt(sf, 'Fix the login bug', false);
+		expect(sf.buildSpawnBody().prompt).toBe('Fix the login bug');
+		await dictateIntoPrompt(sf, 'then add a test', false);
+		expect(sf.buildSpawnBody().prompt).toBe('Fix the login bug\n\nthen add a test');
+		expect(spawn).not.toHaveBeenCalled();
+	});
+
+	it('spawns with the transcript as the session prompt when auto-send is on', async () => {
+		const sf = open();
+		await settle();
+		sf.form.working_dir = '/w';
+		flushSync();
+		spawn.mockResolvedValue({ command_id: 'voice-command', session_id: null });
+		await dictateIntoPrompt(sf, 'Fix the login bug', true);
+		expect(spawn).toHaveBeenCalledTimes(1);
+		expect(spawn.mock.calls[0][0]).toMatchObject({ prompt: 'Fix the login bug', working_dir: '/w' });
 	});
 });

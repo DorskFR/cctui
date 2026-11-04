@@ -71,6 +71,7 @@ pub async fn launch_machine(
             command_id: Some(command_id),
             session_id: Some(token_key),
         }),
+        trace: None,
     };
     let verdict = wait_for_verdict(waiters, command_id);
     let registration = LaunchWaiter { waiters, command_id };

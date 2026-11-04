@@ -12,6 +12,11 @@ export type MachineResourcesRow = { machine_id: string, name: string, display_na
  */
 hue: number | null, liveness: MachineLiveness, 
 /**
+ * A daemon WS for this machine is live on some server replica right now.
+ * `liveness` can still read online between socket drops; fs routes need this.
+ */
+connected: boolean, 
+/**
  * When the daemon was last heard from. The tier above is derived from this,
  * but a reader that wants to show an age needs the stamp itself.
  */

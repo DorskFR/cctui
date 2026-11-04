@@ -22,6 +22,7 @@ vi.mock("$lib/queries", () => {
   const q = <T>(data: T) => ({ data, isLoading: false, isError: false });
   return {
     useMachineResources: () => q(machineList),
+    useVoiceConfig: () => q(undefined),
     useDispatchers: () => q([]),
     useSessions: () => q({ sessions: [] }),
     useRecentDirs: () => q(recentDirsData),

@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
-import { mount, unmount } from "svelte";
+import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SvelteMap } from "svelte/reactivity";
 import type { SessionProfile } from "@bindings/SessionProfile";
 import SpawnModal from "./SpawnModal.svelte";
 
@@ -16,16 +17,15 @@ const machineList = [
     updated_at: null,
   },
 ];
-const accounts = [
-  {
-    id: "a1",
-    name: "personal",
-    emoji: "🐼",
-    providers: [
-      { id: "pr1", provider: "anthropic", models: [], model_aliases: null },
-    ],
-  },
-];
+const personal = {
+  id: "a1",
+  name: "personal",
+  emoji: "🐼",
+  providers: [
+    { id: "pr1", provider: "anthropic", models: [], model_aliases: null },
+  ],
+};
+let accounts: Record<string, unknown>[] = [];
 const orchestrator: SessionProfile = {
   id: "p1",
   user_id: "u1",
@@ -46,7 +46,7 @@ const orchestrator: SessionProfile = {
 const codexQuick: SessionProfile = {
   ...orchestrator,
   id: "p2",
-  name: "Codex quick",
+  name: "Quick codex",
   harness: "codex",
   account_id: null,
   model_alias: null,
@@ -59,22 +59,31 @@ const spawn = vi.fn();
 const create = vi.fn();
 const update = vi.fn();
 const remember = vi.fn();
-const reorder = vi.fn();
+const remove = vi.fn();
+// Profiles the server holds after a delete; the derived profile list tracks it.
+const live = new SvelteMap<"list", SessionProfile[]>();
 
 vi.mock("$lib/queries", () => {
   const q = <T>(data: T) => ({ data, isLoading: false, isError: false });
   return {
     useMachineResources: () => q(machineList),
+    useVoiceConfig: () => q(undefined),
     useDispatchers: () => q([]),
     useSessions: () => q({ sessions: [] }),
     useRecentDirs: () => q([]),
-    useAccounts: () => q(accounts),
+    useAccounts: () => ({ data: accounts, isLoading: false, isError: false }),
     useAccountPools: () => q([{ id: "pool1", name: "shared", members: [] }]),
     useLabels: () => q({ labels: [] }),
     useContextItems: () => q([]),
     useResolvedContext: () => q({ rules: [], memories: [] }),
-    useProfiles: () => q(profileList),
-    useProfileActions: () => ({ create, update, remove: async () => {}, reorder }),
+    useProfiles: () => ({
+      get data() {
+        return live.get("list") ?? profileList;
+      },
+      isLoading: false,
+      isError: false,
+    }),
+    useProfileActions: () => ({ create, update, remove }),
     useAllAccountsUsage: () => q([]),
     useSessionActions: () => ({
       spawn,
@@ -113,7 +122,10 @@ let component: ReturnType<typeof mount> | undefined;
 
 beforeEach(() => {
   localStorage.clear();
-  profileList = [orchestrator, codexQuick];
+  // Stored order is the reverse of A–Z: the picker must ignore it.
+  profileList = [codexQuick, orchestrator];
+  accounts = [personal];
+  live.clear();
   lastEntry = null;
   spawn
     .mockReset()
@@ -122,7 +134,12 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({ ...orchestrator, id: "p-new", name: "Default" });
   update.mockReset().mockResolvedValue(orchestrator);
-  reorder.mockReset().mockResolvedValue([codexQuick, orchestrator]);
+  remove.mockReset().mockImplementation(async (id: string) => {
+    live.set(
+      "list",
+      (live.get("list") ?? profileList).filter((p) => p.id !== id),
+    );
+  });
   remember.mockReset();
 });
 afterEach(async () => {
@@ -144,6 +161,7 @@ async function open() {
     },
   });
   await tick(100);
+  stubPopover();
 }
 
 const buttons = () => [
@@ -166,21 +184,121 @@ const mode = (v: string) => {
   if (!el) throw new Error(`permission mode ${v} not found`);
   return el;
 };
-const profileRow = (id: string) => {
-  const el = document.querySelector<HTMLElement>(
-    `[role="radio"][data-profile-id="${id}"]`,
+// happy-dom implements no Popover API: the panel neither answers
+// show/hidePopover nor fires its own toggle, so both are wired to dispatch the
+// toggle a browser would.
+const trigger = () => {
+  const el = document.querySelector<HTMLButtonElement>(
+    '[data-journey="profiles"] [data-journey="profile-trigger"]',
   );
-  if (!el) throw new Error(`profile row ${id} not found`);
+  if (!el) throw new Error("profile picker trigger not found");
   return el;
 };
-const checked = (id: string) =>
-  profileRow(id).getAttribute("aria-checked") === "true";
-const pickProfile = (id: string) => {
-  const body = profileRow(id).querySelector<HTMLElement>(".body");
-  if (!body) throw new Error(`profile label ${id} not found`);
-  body.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+const panel = () => {
+  const id = trigger().getAttribute("popovertarget");
+  const el = id ? document.getElementById(id) : null;
+  if (!el) throw new Error("profile picker panel not found");
+  return el as HTMLElement & {
+    showPopover: () => void;
+    hidePopover: () => void;
+  };
 };
+function stubPopover() {
+  if (profileList.length === 0) return;
+  const el = panel();
+  const fire = (newState: "open" | "closed") =>
+    el.dispatchEvent(Object.assign(new Event("toggle"), { newState }));
+  el.showPopover = () => fire("open");
+  el.hidePopover = () => fire("closed");
+}
+const expanded = () => trigger().getAttribute("aria-expanded") === "true";
+async function clickPicker() {
+  trigger().click();
+  panel().showPopover();
+  await tick();
+  flushSync();
+}
 
+const cards = () => [
+  ...document.querySelectorAll<HTMLElement>('[data-journey="profile"]'),
+];
+const selectedCard = () =>
+  trigger().querySelector<HTMLElement>('[data-journey="profile"]')
+    ?.dataset.profileId ?? null;
+const options = () => [
+  ...document.querySelectorAll<HTMLElement>('[role="listbox"] [role="option"]'),
+];
+const optionNames = () =>
+  options().map((o) => o.querySelector(".name")?.textContent?.trim());
+const badge = (root: Element | null | undefined) =>
+  root?.querySelector<HTMLElement>('[data-journey="account-badge"]') ?? null;
+const cog = () => button("Adjust profile");
+const profileForm = () =>
+  document.querySelector<HTMLElement>('[data-journey="profile-form"]');
+const nameInput = () =>
+  profileForm()?.querySelector<HTMLInputElement>('input[id^="sp-profile-name"]') ??
+  null;
+async function typeName(v: string) {
+  const el = nameInput();
+  if (!el) throw new Error("profile name input not found");
+  el.value = v;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  await tick();
+  flushSync();
+}
+async function pickAccount(value: string) {
+  const select = profileForm()?.querySelector<HTMLSelectElement>(
+    'select[id^="sp-kit-account"]',
+  );
+  if (!select) throw new Error("account select not found");
+  const pick = [...select.options].find((o) => o.value === value);
+  if (!pick) throw new Error(`account option ${value} not found`);
+  pick.selected = true;
+  // happy-dom cannot match `option:checked`, which Svelte's select binding reads.
+  const nativeQuery = select.querySelector.bind(select);
+  select.querySelector = ((q: string) =>
+    q === ":checked" ? pick : nativeQuery(q)) as typeof select.querySelector;
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  await tick();
+  flushSync();
+}
+async function openNewProfile() {
+  await clickPicker();
+  const footer = panel().querySelector<HTMLButtonElement>(
+    '[data-journey="new-profile"]',
+  );
+  if (!footer) throw new Error("footer button not found");
+  footer.click();
+  await tick();
+  flushSync();
+}
+const option = (id: string) => {
+  const el = options().find((o) =>
+    o.querySelector(`[data-profile-id="${id}"]`),
+  );
+  if (!el) throw new Error(`profile option ${id} not found`);
+  return el;
+};
+async function pickProfile(id: string) {
+  await clickPicker();
+  option(id).click();
+  await tick();
+  flushSync();
+}
+const key = (
+  el: HTMLElement,
+  k: string,
+  mods: Partial<KeyboardEventInit> = {},
+) => {
+  const ev = new KeyboardEvent("keydown", {
+    key: k,
+    bubbles: true,
+    cancelable: true,
+    ...mods,
+  });
+  el.dispatchEvent(ev);
+  return ev;
+};
 async function submit() {
   spawnButton().click();
   await tick(80);
@@ -189,13 +307,161 @@ async function submit() {
 }
 
 describe("SpawnModal profiles", () => {
-  it("lists the profiles, selects the first and names it on the Launch button", async () => {
+  it("closed, it shows the selected profile as one card with its account badge and the cog inside", async () => {
     await open();
-    expect(checked("p1")).toBe(true);
-    expect(checked("p2")).toBe(false);
-    expect(document.body.textContent).toContain(
-      "Claude Code · 🐼 personal · Fable · medium · Yolo",
+    expect(selectedCard()).toBe("p1");
+    expect(cards()).toHaveLength(1);
+    expect(options()).toHaveLength(0);
+    expect(expanded()).toBe(false);
+    expect(trigger().getAttribute("aria-haspopup")).toBe("listbox");
+    expect(trigger().textContent).toContain(
+      "Claude Code · personal · Fable · medium · Yolo",
     );
+    const b = badge(trigger());
+    expect(b?.textContent?.trim()).toBe("🐼");
+    expect(b?.getAttribute("aria-hidden")).toBe("true");
+    expect(b?.dataset.kind).toBe("account");
+    const card = document.querySelector('[data-journey="profiles"]')
+      ?.firstElementChild;
+    expect(card?.contains(cog())).toBe(true);
+    expect(trigger().contains(cog())).toBe(false);
+  });
+
+  it("never shows a usage hint, closed or open", async () => {
+    localStorage.setItem(
+      "cctui_profile_uses",
+      JSON.stringify({ p1: [Date.now() - 1000], p2: [Date.now() - 1000] }),
+    );
+    await open();
+    expect(trigger().textContent).not.toMatch(/this week|today|ago/);
+    await clickPicker();
+    for (const o of options())
+      expect(o.textContent).not.toMatch(/this week|today|ago/);
+  });
+
+  it("opens an A–Z list (not the stored order) of badge rows with no grip, cog or tick, and a New profile footer", async () => {
+    await open();
+    await clickPicker();
+    expect(expanded()).toBe(true);
+    expect(optionNames()).toEqual(["Orchestrator", "Quick codex"]);
+    expect(option("p1").getAttribute("aria-selected")).toBe("true");
+    expect(option("p2").getAttribute("aria-selected")).toBe("false");
+    const rows = options();
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.querySelectorAll('[data-journey="account-badge"]')).toHaveLength(1);
+      expect(row.querySelector("button")).toBeNull();
+    }
+    expect(panel().querySelectorAll("button")).toHaveLength(1);
+    const footer = panel().querySelector('[data-journey="new-profile"]');
+    expect(footer?.textContent?.trim()).toBe("New profile");
+    expect(
+      panel().querySelector('[role="listbox"]')?.contains(footer ?? null),
+    ).toBe(false);
+  });
+
+  it("badges an account by emoji or initial, a pool by its initial and no account with ?", async () => {
+    accounts = [personal, { ...personal, id: "a2", name: "work", emoji: null }];
+    profileList = [
+      orchestrator,
+      { ...codexQuick, id: "p2", name: "B work", account_id: "a2" },
+      { ...codexQuick, id: "p3", name: "C pool", pool_id: "pool1" },
+      { ...codexQuick, id: "p4", name: "D none", no_account: true },
+      { ...codexQuick, id: "p5", name: "E auto" },
+    ];
+    await open();
+    await clickPicker();
+    const look = (id: string) => {
+      const b = badge(option(id));
+      return [b?.textContent?.trim(), b?.dataset.kind];
+    };
+    expect(look("p1")).toEqual(["🐼", "account"]);
+    expect(look("p2")).toEqual(["W", "account"]);
+    expect(look("p3")).toEqual(["S", "pool"]);
+    expect(look("p4")).toEqual(["?", "none"]);
+    expect(look("p5")).toEqual(["?", "none"]);
+    expect(badge(option("p1"))?.style.getPropertyValue("--mh")).not.toBe("");
+    expect(badge(option("p4"))?.style.getPropertyValue("--mh")).toBe("");
+  });
+
+  it("selecting a card closes the popover back to one card and launches with it", async () => {
+    await open();
+    await pickProfile("p2");
+    expect(expanded()).toBe(false);
+    expect(selectedCard()).toBe("p2");
+    expect(
+      cards().filter((c) => trigger().contains(c)).map((c) => c.dataset.profileId),
+    ).toEqual(["p2"]);
+    const body = await submit();
+    expect(body).toMatchObject({
+      adapter_id: "codex",
+      account: null,
+      auto_account: true,
+      effort: "high",
+      permission_mode: "auto",
+    });
+  });
+
+  it("arrow keys on the closed picker step through profiles in A–Z order without opening it", async () => {
+    await open();
+    trigger().focus();
+    const down = key(trigger(), "ArrowDown");
+    await tick();
+    expect(down.defaultPrevented).toBe(true);
+    expect(selectedCard()).toBe("p2");
+    expect(expanded()).toBe(false);
+    expect(options()).toHaveLength(0);
+
+    key(trigger(), "ArrowUp");
+    await tick();
+    expect(selectedCard()).toBe("p1");
+
+    key(trigger(), "End");
+    await tick();
+    expect(selectedCard()).toBe("p2");
+
+    key(trigger(), "Home");
+    await tick();
+    expect(selectedCard()).toBe("p1");
+    expect(expanded()).toBe(false);
+
+    key(trigger(), "ArrowDown");
+    await tick();
+    const body = await submit();
+    expect(body).toMatchObject({ adapter_id: "codex" });
+  });
+
+  it("Cmd+Enter and Ctrl+Enter on the picker still launch, without opening it", async () => {
+    await open();
+    trigger().focus();
+    const cmd = key(trigger(), "Enter", { metaKey: true });
+    await tick(80);
+    expect(cmd.defaultPrevented).toBe(true);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(spawn.mock.calls[0][0]).toMatchObject({ adapter_id: "claude-code" });
+    expect(expanded()).toBe(false);
+
+    await unmount(component as NonNullable<typeof component>);
+    component = undefined;
+    document.body.replaceChildren();
+    spawn.mockClear();
+    await open();
+    trigger().focus();
+    key(trigger(), "Enter", { ctrlKey: true });
+    await tick(80);
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("Escape closes the open picker and keeps the selection", async () => {
+    await open();
+    await clickPicker();
+    trigger().focus();
+    key(trigger(), "ArrowDown");
+    key(trigger(), "Escape");
+    await tick();
+    flushSync();
+    expect(expanded()).toBe(false);
+    expect(selectedCard()).toBe("p1");
   });
 
   it("spawns with the selected profile merged under the prompt and where", async () => {
@@ -221,44 +487,44 @@ describe("SpawnModal profiles", () => {
     ).toHaveLength(1);
   });
 
-  it("opens on the machine's last-used profile and switches on row pick", async () => {
+  it("opens on the machine's last-used profile", async () => {
     lastEntry = { profile_id: "p2" };
     await open();
-    expect(checked("p2")).toBe(true);
-    pickProfile("p1");
-    await tick();
-    expect(checked("p1")).toBe(true);
-    pickProfile("p2");
-    await tick();
-    const body = await submit();
-    expect(body).toMatchObject({
-      adapter_id: "codex",
-      account: null,
-      auto_account: true,
-      effort: "high",
-      permission_mode: "auto",
-    });
+    expect(selectedCard()).toBe("p2");
+    await pickProfile("p1");
+    expect(selectedCard()).toBe("p1");
   });
 
-  it("with no profile it renders the bare kit and settles (no effect loop)", async () => {
-    profileList = [];
+  it("the cog toggles an edit form for the current profile; Escape and opening the list discard it", async () => {
     await open();
-    await tick(120);
-    // An unguarded mirror of `oneOff` re-entered until Svelte threw
-    // effect_update_depth_exceeded and the tab died.
-    expect(mode("ask")).toBeTruthy();
-    expect(
-      document.querySelector('select[id^="sp-kit-account"]'),
-    ).not.toBeNull();
-    // The kit is editable and its writes land on the one-off spec.
-    mode("yolo").click();
+    cog().click();
     await tick();
-    expect(mode("yolo").getAttribute("aria-checked")).toBe("true");
+    expect(profileForm()?.dataset.mode).toBe("edit");
+    expect(profileForm()?.dataset.profileId).toBe("p1");
+    expect(nameInput()?.value).toBe("Orchestrator");
+    expect(cog().getAttribute("aria-expanded")).toBe("true");
+
+    cog().click();
+    await tick();
+    expect(profileForm()).toBeNull();
+
+    cog().click();
+    await tick();
+    key(nameInput() as HTMLInputElement, "Escape");
+    await tick();
+    flushSync();
+    expect(profileForm()).toBeNull();
+
+    cog().click();
+    await tick();
+    await clickPicker();
+    expect(expanded()).toBe(true);
+    expect(profileForm()).toBeNull();
   });
 
-  it('"Use once" adjusts this run only and marks the Launch button', async () => {
+  it('"Use once" adjusts this run only and leaves the profile untouched', async () => {
     await open();
-    button("Adjust profile").click();
+    cog().click();
     await tick();
     mode("ask").click();
     await tick();
@@ -266,13 +532,15 @@ describe("SpawnModal profiles", () => {
     button("Use once").click();
     await tick();
     expect(update).not.toHaveBeenCalled();
+    expect(profileForm()).toBeNull();
+    expect(trigger().textContent).toContain("· Ask");
     const body = await submit();
     expect(body).toMatchObject({ permission_mode: "ask", model: "fable" });
   });
 
   it('"Save to profile" persists the adjusted kit', async () => {
     await open();
-    button("Adjust profile").click();
+    cog().click();
     await tick();
     mode("auto").click();
     await tick();
@@ -288,6 +556,99 @@ describe("SpawnModal profiles", () => {
         permission_mode: "auto",
       },
     });
+  });
+
+  it("Delete removes the edited profile and falls back to the first remaining profile A–Z", async () => {
+    const beta = { ...codexQuick, id: "p3", name: "Beta" };
+    profileList = [codexQuick, beta, orchestrator];
+    lastEntry = { profile_id: "p1" };
+    await open();
+    expect(selectedCard()).toBe("p1");
+    cog().click();
+    await tick();
+    expect(() => button("Delete profile").click()).not.toThrow();
+    await tick(100);
+    flushSync();
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith("p1");
+    expect(profileForm()).toBeNull();
+    expect(selectedCard()).toBe("p3");
+  });
+
+  it("New profile opens an empty create form and a draft card, and writes nothing until Create profile", async () => {
+    await open();
+    await openNewProfile();
+    expect(
+      document.querySelector('[data-journey="profile-trigger"]'),
+    ).toBeNull();
+    expect(options()).toHaveLength(0);
+    expect(create).not.toHaveBeenCalled();
+    expect(profileForm()?.dataset.mode).toBe("create");
+    expect(nameInput()?.value).toBe("");
+    const draft = document.querySelector<HTMLElement>(
+      '[data-journey="profile-draft"]',
+    );
+    expect(draft?.textContent).toContain("New profile");
+    expect(badge(draft)?.textContent?.trim()).toBe("🐼");
+
+    const createBtn = button("Create profile");
+    expect(createBtn.disabled).toBe(true);
+    await typeName("  orchestrator ");
+    expect(button("Create profile").disabled).toBe(true);
+    await typeName("Reviewer");
+    expect(button("Create profile").disabled).toBe(false);
+    expect(create).not.toHaveBeenCalled();
+
+    button("Create profile").click();
+    await tick();
+    flushSync();
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0][0]).toMatchObject({
+      name: "Reviewer",
+      harness: "claude-code",
+      account_id: "a1",
+      model_alias: "fable",
+      permission_mode: "yolo",
+    });
+    expect(profileForm()).toBeNull();
+  });
+
+  it("the draft card's badge follows the Account field live", async () => {
+    await open();
+    await openNewProfile();
+    const draftBadge = () =>
+      badge(document.querySelector('[data-journey="profile-draft"]'));
+    expect(draftBadge()?.textContent?.trim()).toBe("🐼");
+    await pickAccount("\x00pool:pool1");
+    expect(draftBadge()?.textContent?.trim()).toBe("S");
+    await pickAccount("\x00no-account");
+    expect(draftBadge()?.textContent?.trim()).toBe("?");
+  });
+
+  it("Cancel on the create form writes nothing and returns to the previous selection", async () => {
+    await open();
+    await openNewProfile();
+    await typeName("Reviewer");
+    button("Cancel").click();
+    await tick();
+    flushSync();
+    expect(create).not.toHaveBeenCalled();
+    expect(profileForm()).toBeNull();
+    expect(selectedCard()).toBe("p1");
+  });
+
+  it('"Use once" on the create form spawns with the draft without saving it', async () => {
+    await open();
+    await openNewProfile();
+    mode("ask").click();
+    await tick();
+    button("Use once").click();
+    await tick();
+    flushSync();
+    expect(create).not.toHaveBeenCalled();
+    expect(profileForm()).toBeNull();
+    const body = await submit();
+    expect(body).toMatchObject({ permission_mode: "ask", model: "fable" });
   });
 
   it("spawns inside the profile's pool, and unbound for a no-account profile", async () => {
@@ -320,9 +681,9 @@ describe("SpawnModal profiles", () => {
     });
   });
 
-  it('offers pools and "no account" in the adjust panel and persists the pick', async () => {
+  it('offers pools and "no account" in the edit form and persists the pick', async () => {
     await open();
-    button("Adjust profile").click();
+    cog().click();
     await tick();
     const select = document.querySelector<HTMLSelectElement>(
       'select[id^="sp-kit-account"]',
@@ -330,19 +691,30 @@ describe("SpawnModal profiles", () => {
     if (!select) throw new Error("account select not found");
     const values = [...select.options].map((o) => o.value);
     expect(values).toEqual(["\x00pool:pool1", "a1", "", "\x00no-account"]);
-    const pick = select.options[0];
-    pick.selected = true;
-    // jsdom cannot match `option:checked`, which Svelte's select binding reads.
-    const nativeQuery = select.querySelector.bind(select);
-    select.querySelector = ((q: string) =>
-      q === ":checked" ? pick : nativeQuery(q)) as typeof select.querySelector;
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-    await tick();
+    await pickAccount("\x00pool:pool1");
     button("Save to profile").click();
     await tick();
     expect(update.mock.calls[0][1]).toMatchObject({
       spec: { account_id: null, pool_id: "pool1", no_account: false },
     });
+  });
+
+  it("with no profile it renders the create form on the one-off kit and settles (no effect loop)", async () => {
+    profileList = [];
+    await open();
+    await tick(120);
+    // An unguarded mirror of `oneOff` re-entered until Svelte threw
+    // effect_update_depth_exceeded and the tab died.
+    expect(profileForm()?.dataset.mode).toBe("create");
+    expect(button("Create profile")).toBeTruthy();
+    expect(() => button("Cancel")).toThrow();
+    expect(mode("ask")).toBeTruthy();
+    expect(
+      document.querySelector('select[id^="sp-kit-account"]'),
+    ).not.toBeNull();
+    mode("yolo").click();
+    await tick();
+    expect(mode("yolo").getAttribute("aria-checked")).toBe("true");
   });
 
   it('seeds a "Default" profile from the form when the user has none', async () => {
@@ -353,244 +725,5 @@ describe("SpawnModal profiles", () => {
       name: "Default",
       harness: "claude-code",
     });
-  });
-
-  const rowNames = () =>
-    [...document.querySelectorAll('[role="radio"] .body .name .truncate')].map((n) =>
-      n.textContent?.trim(),
-    );
-
-  const grip = (name: string) => {
-    const b = buttons().find((x) =>
-      (x.getAttribute("aria-label") ?? "").startsWith(`Reorder ${name},`),
-    );
-    if (!b) throw new Error(`grip for ${name} not found`);
-    return b;
-  };
-  const live = () =>
-    document
-      .querySelector('[role="status"][aria-live="polite"]')
-      ?.textContent?.trim() ?? "";
-  const pointer = (type: string, extra: Record<string, unknown> = {}) =>
-    Object.assign(new Event(type, { bubbles: true, cancelable: true }), {
-      pointerId: 1,
-      pointerType: "touch",
-      ...extra,
-    });
-
-  it("moves a profile with the arrow keys on the grip and persists the new order", async () => {
-    await open();
-    expect(rowNames()).toEqual(["Orchestrator", "Codex quick"]);
-
-    let release: (() => void) | undefined;
-    reorder.mockImplementationOnce(
-      () =>
-        new Promise((ok) => {
-          release = () => ok([codexQuick, orchestrator]);
-        }),
-    );
-
-    const handle = grip("Codex quick");
-    handle.focus();
-    expect(document.activeElement).toBe(handle);
-    handle.dispatchEvent(
-      new KeyboardEvent("keydown", {
-        key: "ArrowUp",
-        bubbles: true,
-        cancelable: true,
-      }),
-    );
-    await tick();
-
-    expect(reorder).toHaveBeenCalledWith(["p2", "p1"]);
-    expect(rowNames()).toEqual(["Codex quick", "Orchestrator"]);
-    expect(live()).toBe("Codex quick moved to position 1 of 2");
-
-    release?.();
-    await tick();
-    expect(reorder).toHaveBeenCalledTimes(1);
-  });
-
-  it("moves a profile by dragging its grip onto another row", async () => {
-    await open();
-    expect(rowNames()).toEqual(["Orchestrator", "Codex quick"]);
-
-    let release: (() => void) | undefined;
-    reorder.mockImplementationOnce(
-      () =>
-        new Promise((ok) => {
-          release = () => ok([codexQuick, orchestrator]);
-        }),
-    );
-
-    grip("Codex quick").dispatchEvent(pointer("pointerdown"));
-    await tick(10);
-    expect(profileRow("p2").className).toContain("dragging");
-
-    profileRow("p1").dispatchEvent(pointer("pointermove"));
-    await tick(10);
-    expect(profileRow("p1").className).toContain("drop-target");
-
-    window.dispatchEvent(pointer("pointerup"));
-    await tick();
-
-    expect(reorder).toHaveBeenCalledWith(["p2", "p1"]);
-    expect(rowNames()).toEqual(["Codex quick", "Orchestrator"]);
-    expect(live()).toBe("Codex quick moved to position 1 of 2");
-
-    release?.();
-    await tick();
-    expect(reorder).toHaveBeenCalledTimes(1);
-  });
-
-  it("a drag that ends on its own row leaves the order alone", async () => {
-    await open();
-    grip("Orchestrator").dispatchEvent(pointer("pointerdown"));
-    await tick(10);
-    profileRow("p1").dispatchEvent(pointer("pointermove"));
-    window.dispatchEvent(pointer("pointerup"));
-    await tick();
-    expect(reorder).not.toHaveBeenCalled();
-    expect(rowNames()).toEqual(["Orchestrator", "Codex quick"]);
-  });
-
-  it("offers one keyboard-reachable grip per row and no chevron buttons", async () => {
-    await open();
-    const grips = buttons().filter((b) =>
-      (b.getAttribute("aria-label") ?? "").startsWith("Reorder "),
-    );
-    expect(grips.map((g) => g.getAttribute("aria-label"))).toEqual([
-      "Reorder Orchestrator, position 1 of 2",
-      "Reorder Codex quick, position 2 of 2",
-    ]);
-    // Focusable without a mouse: real buttons, never disabled, never removed
-    // from the tab order — the arrow keys are the only reorder path a
-    // keyboard user has now that the chevrons are gone.
-    for (const g of grips) {
-      expect(g.tagName).toBe("BUTTON");
-      expect(g.disabled).toBe(false);
-      expect(g.getAttribute("tabindex")).toBeNull();
-      expect(g.getAttribute("title")).toBe(
-        "Drag to reorder, or press the up and down arrow keys",
-      );
-    }
-    expect(
-      buttons().some((b) =>
-        /^Move .* (up|down)$/.test(b.getAttribute("aria-label") ?? ""),
-      ),
-    ).toBe(false);
-  });
-
-  it("lays the row out grip → name → gear, grip outermost, with no radio input", async () => {
-    await open();
-    const head = profileRow("p1").querySelector(".head");
-    if (!head) throw new Error("row head not found");
-    const kind = (el: Element) => {
-      const aria = el.getAttribute("aria-label") ?? "";
-      if (aria.startsWith("Reorder ")) return "grip";
-      if (el.classList.contains("body")) return "body";
-      return "gear";
-    };
-    expect([...head.children].map(kind)).toEqual(["grip", "body", "gear"]);
-    expect(profileRow("p1").querySelector('input[type="radio"]')).toBeNull();
-  });
-
-  it("carries selection on the row itself, inside a radiogroup", async () => {
-    await open();
-    const group = document.querySelector('[role="radiogroup"][aria-label="Launch profiles"]');
-    expect(group).not.toBeNull();
-    expect(group?.contains(profileRow("p1"))).toBe(true);
-    expect(profileRow("p1").getAttribute("aria-label")).toBe("Orchestrator");
-    const describedBy = profileRow("p1").getAttribute("aria-describedby");
-    expect(document.getElementById(describedBy ?? "")?.textContent).toContain(
-      "Claude Code",
-    );
-  });
-
-  it("keeps one tab stop on the group and moves it with the selection", async () => {
-    await open();
-    const tabIndexes = () =>
-      [...document.querySelectorAll<HTMLElement>('[role="radio"][data-profile-id]')].map(
-        (el) => el.getAttribute("tabindex"),
-      );
-    expect(tabIndexes()).toEqual(["0", "-1"]);
-    pickProfile("p2");
-    await tick();
-    expect(tabIndexes()).toEqual(["-1", "0"]);
-  });
-
-  it("moves the selection with the arrow keys and selects on Space", async () => {
-    await open();
-    const key = (el: HTMLElement, k: string) => {
-      const ev = new KeyboardEvent("keydown", {
-        key: k,
-        bubbles: true,
-        cancelable: true,
-      });
-      el.dispatchEvent(ev);
-      return ev;
-    };
-
-    const down = key(profileRow("p1"), "ArrowDown");
-    await tick();
-    expect(down.defaultPrevented).toBe(true);
-    expect(checked("p2")).toBe(true);
-    expect(document.activeElement).toBe(profileRow("p2"));
-
-    key(profileRow("p2"), "ArrowDown");
-    await tick();
-    expect(checked("p1")).toBe(true);
-
-    key(profileRow("p1"), "End");
-    await tick();
-    expect(checked("p2")).toBe(true);
-
-    key(profileRow("p2"), "Home");
-    await tick();
-    expect(checked("p1")).toBe(true);
-
-    const space = key(profileRow("p1"), " ");
-    await tick();
-    expect(space.defaultPrevented).toBe(true);
-    expect(checked("p1")).toBe(true);
-
-    expect(key(profileRow("p1"), "Tab").defaultPrevented).toBe(false);
-  });
-
-  it("the gear and the grip never change the selection", async () => {
-    await open();
-    expect(checked("p1")).toBe(true);
-    const gear = [...profileRow("p2").querySelectorAll<HTMLButtonElement>("button")].find(
-      (b) => b.getAttribute("aria-label") === "Adjust profile",
-    );
-    if (!gear) throw new Error("gear not found");
-    gear.click();
-    await tick();
-    expect(checked("p1")).toBe(true);
-
-    grip("Codex quick").dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    await tick();
-    expect(checked("p1")).toBe(true);
-  });
-
-  it("reverts the optimistic order when the reorder call fails", async () => {
-    await open();
-    let release: (() => void) | undefined;
-    reorder.mockImplementationOnce(
-      () =>
-        new Promise((_ok, fail) => {
-          release = () => fail(new Error("nope"));
-        }),
-    );
-
-    grip("Codex quick").dispatchEvent(
-      new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }),
-    );
-    await tick();
-    expect(rowNames()).toEqual(["Codex quick", "Orchestrator"]);
-
-    release?.();
-    await tick();
-    expect(rowNames()).toEqual(["Orchestrator", "Codex quick"]);
   });
 });

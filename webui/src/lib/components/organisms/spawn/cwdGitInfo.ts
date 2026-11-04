@@ -1,5 +1,6 @@
 import type { GitInfo } from '@bindings/GitInfo';
 import type { MachineLiveness } from '@bindings/MachineLiveness';
+import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
 
 export const GIT_INFO_DEBOUNCE_MS = 300;
 
@@ -15,6 +16,15 @@ export function gitBadge(info: GitInfo | null | undefined): GitBadge | null {
 		return { text: `detached @${sha}`, worktree, sha };
 	}
 	return null;
+}
+
+// Liveness as the fs routes see it: a row whose daemon socket is down is
+// offline whatever its last heartbeat says, since those routes 503 then.
+export function fsLiveness(
+	row: Pick<MachineResourcesRow, 'liveness' | 'connected'> | undefined
+): MachineLiveness | undefined {
+	if (!row) return undefined;
+	return row.connected ? row.liveness : 'offline';
 }
 
 // Debounced (machine, path) lookup; only the latest request may deliver.

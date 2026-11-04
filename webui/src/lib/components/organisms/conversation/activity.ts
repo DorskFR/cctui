@@ -1,3 +1,5 @@
+import type { AgentEvent } from '@bindings/AgentEvent';
+
 const SUMMARY_MAX = 140;
 
 export interface ActivityTool {
@@ -56,4 +58,34 @@ export function lastProseLine(content: string): string | null {
 		.filter(Boolean);
 	const last = lines.at(-1);
 	return last ? truncate(last) : null;
+}
+
+/** Whether the agent is mid-turn after `ev`. Only agent work starts a turn:
+ *  meta lines and summaries trail `turn_end`, and must not reopen it. */
+export function workingAfter(working: boolean, ev: AgentEvent): boolean {
+	switch (ev.type) {
+		case 'turn_end':
+			return false;
+		case 'heartbeat':
+		case 'turn_summary':
+		case 'compact_summary':
+		case 'context_reset':
+			return working;
+		case 'text':
+			return ev.meta ? working : true;
+		default:
+			return true;
+	}
+}
+
+/** The newer of `at` and `ev`'s time when `ev` is a turn's traffic (prose,
+ *  tools, a user message), the moments that touch the prompt cache. */
+export function agentActivityAt(at: number | null, ev: AgentEvent): number | null {
+	const counts =
+		(ev.type === 'text' && !ev.meta) ||
+		ev.type === 'tool_call' ||
+		ev.type === 'tool_result' ||
+		ev.type === 'reply';
+	if (!counts || typeof ev.ts !== 'number') return at;
+	return at === null ? ev.ts : Math.max(at, ev.ts);
 }

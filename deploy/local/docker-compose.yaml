@@ -61,6 +61,10 @@ services:
       # loopback in every browser, so this needs no DNS and no certificate;
       # the port comes from CCTUI_EXTERNAL_URL.
       CCTUI_PREVIEW_HOST: ${CCTUI_PREVIEW_HOST:-cctui-pv-{id}.localhost}
+      # Empty keeps trace export off (docs/tracing.md).
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${CCTUI_SERVER_OTLP_ENDPOINT:-}
+    extra_hosts:
+      - host.docker.internal:host-gateway
     volumes:
       - ./plugins:/plugins:ro
     ports:
