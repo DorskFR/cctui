@@ -1,3 +1,5 @@
+import { type Query, walk } from '@dorsk/tsumikit';
+
 /**
  * Search-term parsing + highlighting.
  *
@@ -6,13 +8,6 @@
  * term (spaces preserved). Terms are AND-matched server-side; the client uses
  * the same split to highlight every term in snippets and the chat window.
  */
-const SMART_DOUBLE_QUOTES = /[“”„‟]/g;
-
-/** Keep in step with the server's `straighten_phrase_quotes`. */
-export function straightenPhraseQuotes(q: string): string {
-	return q.includes('"') ? q : q.replace(SMART_DOUBLE_QUOTES, '"');
-}
-
 export function tokenizeQuery(q: string): string[] {
 	const terms: string[] = [];
 	let cur = '';
@@ -55,4 +50,20 @@ export function highlightTerms(html: string, terms: string[]): string {
 	return html.replace(/<[^>]*>|[^<]+/g, (seg) =>
 		seg.startsWith('<') ? seg : seg.replace(re, '<mark class="search-hit">$1</mark>')
 	);
+}
+
+const SMART_DOUBLE_QUOTES = /[“”„‟]/g;
+
+/** Keep in step with the server's `straighten_phrase_quotes`. */
+export function straightenPhraseQuotes(q: string): string {
+	return q.includes('"') ? q : q.replace(SMART_DOUBLE_QUOTES, '"');
+}
+
+/** Free-text terms of a parsed query; a quoted phrase stays one term. */
+export function queryTerms(q: Query): string[] {
+	const terms: string[] = [];
+	walk(q.root, (n) => {
+		if (n.kind === 'text' && n.value) terms.push(n.value);
+	});
+	return terms.slice(0, 8);
 }

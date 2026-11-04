@@ -1,8 +1,8 @@
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { ConversationHit } from '@bindings/ConversationHit';
 import type { ConversationSearchResponse } from '@bindings/ConversationSearchResponse';
-import { filters, freeText, parse, type Schema } from '@dorsk/tsumikit';
-import { straightenPhraseQuotes, tokenizeQuery } from '$lib/search';
+import { filters, parse, type Schema } from '@dorsk/tsumikit';
+import { queryTerms, straightenPhraseQuotes } from '$lib/search';
 import { foldSearchText, markdownToSearchText } from '$lib/searchText';
 import { USER_PREFIX } from '$lib/ws/frames';
 import { buildConversationSearchSchema } from './searchSchema';
@@ -49,7 +49,7 @@ export class ConversationSearch {
 
 	#ast = $derived(parse(straightenPhraseQuotes(this.rawQuery), this.schema));
 	/** Only the free-text part is highlighted; field clauses are not text. */
-	terms = $derived(tokenizeQuery(freeText(this.#ast)));
+	terms = $derived(queryTerms(this.#ast));
 	count = $derived(this.hits.length);
 	/** The cursor's `seq`, or null before the first step. */
 	currentSeq = $derived(this.hits[this.index]?.seq ?? null);

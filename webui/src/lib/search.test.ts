@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { straightenPhraseQuotes, tokenizeQuery } from './search';
+import { parse } from '@dorsk/tsumikit';
+import { buildConversationSearchSchema } from './components/organisms/conversation/searchSchema';
+import { queryTerms, straightenPhraseQuotes, tokenizeQuery } from './search';
 
 describe('straightenPhraseQuotes', () => {
 	it('quotes a phrase pasted between smart quotes like a typed one', () => {
@@ -13,5 +15,13 @@ describe('straightenPhraseQuotes', () => {
 		const q = '"It’s “quoted” text"';
 		expect(straightenPhraseQuotes(q)).toBe(q);
 		expect(straightenPhraseQuotes('plain words')).toBe('plain words');
+	});
+});
+
+describe('queryTerms', () => {
+	it('keeps a quoted phrase as one term and skips field clauses', () => {
+		const schema = buildConversationSearchSchema(() => []);
+		const q = parse('role:user "master...HEAD (three dots)." gate', schema);
+		expect(queryTerms(q)).toEqual(['master...HEAD (three dots).', 'gate']);
 	});
 });
