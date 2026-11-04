@@ -172,8 +172,10 @@ phase_dispatch_env() {
             "" | [0-9]* | *[!A-Za-z0-9_]*)
                 dispatch_identity_failed "the server sent an invalid env name" ;;
         esac
-        _de_v=$(printf '%s' "$_de_json" | jq -r --arg k "$_de_k" '.env[$k]')
-        export "$_de_k=$_de_v"
+        _de_v=$(printf '%s' "$_de_json" \
+            | jq -j --arg k "$_de_k" '.env[$k] | if type == "string" then . else error end' \
+            && printf x) || dispatch_identity_failed "the server sent a non-string value for $_de_k"
+        export "$_de_k=${_de_v%x}"
     done
     log "dispatch: payload env fetched through the guard-proxy (dispatch ${CCTUI_DISPATCH_ID%%-*})"
 }

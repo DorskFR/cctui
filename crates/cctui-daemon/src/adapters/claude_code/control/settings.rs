@@ -399,6 +399,11 @@ fn ensure_hook_settings_in(
     }) {
         session_start.extend(wait);
     }
+    if let Some(serde_json::Value::Array(account)) =
+        account_settings.and_then(|a| a.pointer("/hooks/SessionStart"))
+    {
+        session_start.extend(account.iter().cloned());
+    }
     hooks["SessionStart"] = serde_json::Value::Array(session_start);
     let managed = managed_settings(hooks, gateway_env, model, effort);
     // Layer the server-provided per-account settings UNDERNEATH the managed
@@ -1306,6 +1311,35 @@ mod tests {
         let written: serde_json::Value =
             serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         assert_eq!(session_start_commands(&written).len(), 1);
+    }
+
+    #[test]
+    fn account_session_start_hooks_run_after_the_canary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let account = json!({ "hooks": { "SessionStart": [
+            { "matcher": "startup", "hooks": [{ "type": "command", "command": "acct-start" }] }
+        ] } });
+        let empty = std::collections::BTreeMap::new();
+        let path = ensure_hook_settings_in(
+            tmp.path(),
+            std::path::Path::new("/run/c.sock"),
+            false,
+            "canary4",
+            Some(&account),
+            &empty,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let commands = session_start_commands(&written);
+        assert_eq!(commands.len(), 2, "{commands:?}");
+        assert!(commands[0].contains("ask-hook --event start"), "{commands:?}");
+        assert_eq!(commands[1], "acct-start");
+        assert_eq!(written["hooks"]["SessionStart"][1]["matcher"], "startup");
     }
 
     #[test]

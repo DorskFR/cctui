@@ -25,6 +25,8 @@ case "$FAKE_CURL" in
     down)    echo 'curl: (7) Failed to connect to 127.0.0.1 port 15002' >&2; printf '\n000' ;;
     badname) printf '%s\n200' '{"env":{"BAD-NAME":"x"}}' ;;
     notenv)  printf '%s\n200' '{"oops":1}' ;;
+    pem)     printf '%s\n200' '{"env":{"KEY_PEM":"-----BEGIN-----\nabc\n-----END-----\n"}}' ;;
+    number)  printf '%s\n200' '{"env":{"PORT":8080}}' ;;
 esac
 EOF
 chmod +x "$TMP/bin/curl"
@@ -41,6 +43,7 @@ run() {
         phase_dispatch_env
         echo "FEATURE_FLAG=${FEATURE_FLAG:-}"
         echo "GREETING=${GREETING:-}"
+        printf "KEY_PEM=[%s]\n" "${KEY_PEM:-}"
     ' "$TMP/fns.sh" 2>&1
 }
 
@@ -75,5 +78,15 @@ out=$(run badname d-1); rc=$?
 check "invalid env name rc 1" 1 "$rc"
 out=$(run notenv d-1); rc=$?
 check "missing env object rc 1" 1 "$rc"
+
+echo "== 6. values are exported byte for byte =="
+out=$(run pem d-1); rc=$?
+check "rc 0" 0 "$rc"
+nl='
+'
+has "trailing newline survives" "-----END-----${nl}]" "$out"
+out=$(run number d-1); rc=$?
+check "non-string value rc 1" 1 "$rc"
+has "names the variable" "non-string value for PORT" "$(cat "$TMP/termination-log")"
 
 exit $fail
