@@ -166,12 +166,12 @@ async fn validate_inner(
 pub fn check_exposure(profile: &WorkerProfileSpec) -> Result<bool, String> {
     match (profile.exposure, profile.human_gate) {
         (None, _) => Ok(true),
-        (Some(exposure), None) if exposure.is_full() => Err(
-            "untrustedInput, sensitiveData and outward are all true with no spec.humanGate; \
+        (Some(exposure), None) if exposure.is_full() => {
+            Err("untrustedInput, sensitiveData and outward are all true with no spec.humanGate; \
              an unattended agent may hold at most two of the three: set humanGate \
              (noPush, draftPrOnly or outwardHeldForApproval) or drop one exposure"
-                .to_owned(),
-        ),
+                .to_owned())
+        }
         _ => Ok(false),
     }
 }

@@ -219,9 +219,9 @@ impl SecretRegistry {
 
     fn ttl_for(&self, name: &str) -> anyhow::Result<Option<Duration>> {
         let own = format!("{TTL_ENV_PREFIX}{}", env_fragment(name));
-        let raw = (self.ttl_lookup)(&own).map(|v| (own, v)).or_else(|| {
-            (self.ttl_lookup)(TTL_ENV).map(|v| (TTL_ENV.to_owned(), v))
-        });
+        let raw = (self.ttl_lookup)(&own)
+            .map(|v| (own, v))
+            .or_else(|| (self.ttl_lookup)(TTL_ENV).map(|v| (TTL_ENV.to_owned(), v)));
         let Some((var, raw)) = raw.filter(|(_, v)| !v.trim().is_empty()) else { return Ok(None) };
         let secs: u64 = raw
             .trim()

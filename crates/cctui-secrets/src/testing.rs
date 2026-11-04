@@ -179,10 +179,8 @@ fn bao_router(values: Values) -> Router {
                     if broken(&values) {
                         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                     }
-                    let data: serde_json::Map<String, serde_json::Value> = values
-                        .into_iter()
-                        .filter_map(|(k, v)| v.map(|v| (k, v.into())))
-                        .collect();
+                    let data: serde_json::Map<String, serde_json::Value> =
+                        values.into_iter().filter_map(|(k, v)| v.map(|v| (k, v.into()))).collect();
                     Json(serde_json::json!({ "data": { "data": data } })).into_response()
                 }
             }),

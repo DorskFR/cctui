@@ -61,12 +61,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    const KIND_REFS: [&str; 4] = [
-        "file:/run/secrets/gh",
-        "k8s:dev/creds#gh",
-        "bao:kv/data/creds#gh",
-        "aws-sm:creds/gh",
-    ];
+    const KIND_REFS: [&str; 4] =
+        ["file:/run/secrets/gh", "k8s:dev/creds#gh", "bao:kv/data/creds#gh", "aws-sm:creds/gh"];
 
     /// Serves one value for a ref of every kind; `None` is a backend outage.
     /// The engines themselves are tested in `cctui-secrets`.
@@ -154,10 +150,8 @@ mod tests {
 
         let buf = LogBuf::default();
         let writer = buf.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(move || writer.clone())
-            .with_ansi(false)
-            .finish();
+        let subscriber =
+            tracing_subscriber::fmt().with_writer(move || writer.clone()).with_ansi(false).finish();
         let report = {
             let _guard = tracing::subscriber::set_default(subscriber);
             source.refresh_all().await

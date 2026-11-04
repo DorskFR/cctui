@@ -132,14 +132,13 @@ async fn http_dispatchers(
             }
             None => None,
         };
-        dispatchers = dispatchers.with(Arc::new(
-            cctui_server_core::dispatchers::http::HttpDispatcher::new(
+        dispatchers =
+            dispatchers.with(Arc::new(cctui_server_core::dispatchers::http::HttpDispatcher::new(
                 &entry.id,
                 entry.url,
                 token,
                 client.clone(),
-            ),
-        ));
+            )));
     }
     Ok(dispatchers)
 }
