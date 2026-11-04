@@ -203,11 +203,10 @@ pub async fn register<S: CredentialContext + Clone + Send + Sync + 'static>(
 ) -> ApiResult<StatusCode> {
     let key = bearer(&headers)
         .ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "dispatcher key required"))?;
-    let (dispatcher_id, user_id) =
-        dispatcher_of(state.pool(), key)
-            .await
-            .map_err(|e| db_err(&e))?
-            .ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "invalid dispatcher key"))?;
+    let (dispatcher_id, user_id) = dispatcher_of(state.pool(), key)
+        .await
+        .map_err(|e| db_err(&e))?
+        .ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "invalid dispatcher key"))?;
     check_register(&req).map_err(|e| api_err(StatusCode::BAD_REQUEST, e))?;
     let vault = state.vault_key();
     let env = serde_json::to_string(&req.env)
@@ -271,10 +270,9 @@ pub async fn redeem<S: CredentialContext + Clone + Send + Sync + 'static>(
         .await
         .map_err(|e| db_err(&e))?
         .ok_or_else(|| api_err(StatusCode::CONFLICT, "dispatch identity was already redeemed"))?;
-    let machine_key =
-        cctui_crypto::decrypt(&sealed, &state.vault_key()).ok_or_else(|| {
-            api_err(StatusCode::INTERNAL_SERVER_ERROR, "stored machine key is unreadable")
-        })?;
+    let machine_key = cctui_crypto::decrypt(&sealed, &state.vault_key()).ok_or_else(|| {
+        api_err(StatusCode::INTERNAL_SERVER_ERROR, "stored machine key is unreadable")
+    })?;
     tracing::info!(
         dispatch = %id, session = %bound.session_id, pod = %pod.pod_name, issuer = %pod.issuer,
         service_account = ?pod.service_account, "dispatch identity redeemed"
@@ -294,12 +292,9 @@ pub async fn env<S: CredentialContext + Clone + Send + Sync + 'static>(
         take_env(state.pool(), id, key).await.map_err(|e| db_err(&e))?.ok_or_else(|| {
             api_err(StatusCode::NOT_FOUND, "no env for this key (not redeemed, or already read)")
         })?;
-    let env: BTreeMap<String, String> =
-        cctui_crypto::decrypt(&sealed, &state.vault_key())
-            .and_then(|json| serde_json::from_str(&json).ok())
-            .ok_or_else(|| {
-                api_err(StatusCode::INTERNAL_SERVER_ERROR, "stored env is unreadable")
-            })?;
+    let env: BTreeMap<String, String> = cctui_crypto::decrypt(&sealed, &state.vault_key())
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .ok_or_else(|| api_err(StatusCode::INTERNAL_SERVER_ERROR, "stored env is unreadable"))?;
     Ok(Json(EnvResponse { env }))
 }
 

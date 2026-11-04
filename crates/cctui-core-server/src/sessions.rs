@@ -68,11 +68,8 @@ async fn visible_sessions(
          ORDER BY s.registered_at DESC",
         cctui_server_core::live_sessions_predicate!("s"),
     );
-    let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
-        .bind(owner)
-        .bind(bound)
-        .fetch_all(pool)
-        .await?;
+    let rows: Vec<Row> =
+        sqlx::query_as(sqlx::AssertSqlSafe(sql)).bind(owner).bind(bound).fetch_all(pool).await?;
     let now = Utc::now();
     Ok(rows
         .into_iter()

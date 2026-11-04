@@ -41,6 +41,20 @@ fn unsupported(req: &SpawnRequest) -> Result<(), Failure> {
     }
     Ok(())
 }
+/// Registration currently binds credentials to the machine owner. Refuse a
+/// cross-user grant until execution records can preserve the acting user.
+fn require_owner(ctx: &AuthContext, owner: Uuid) -> Result<(), Failure> {
+    if !ctx.is_admin() && ctx.user_id != owner {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(cctui_proto::api::ApiError {
+                error: "cross-user machine launches are not yet available in the automation beta"
+                    .into(),
+            }),
+        ));
+    }
+    Ok(())
+}
 async fn execute(
     host: &Host,
     ctx: &AuthContext,
@@ -51,17 +65,7 @@ async fn execute(
     core::machine_policy::validate_env(req)?;
     let (machine, owner) =
         core::machine_policy::resolve_spawn_machine(host, ctx, &req.machine_id).await?;
-    // Registration currently binds credentials to the machine owner. Refuse a
-    // cross-user grant until execution records can preserve the acting user.
-    if !ctx.is_admin() && ctx.user_id != owner {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(cctui_proto::api::ApiError {
-                error: "cross-user machine launches are not yet available in the automation beta"
-                    .into(),
-            }),
-        ));
-    }
+    require_owner(ctx, owner)?;
     let adapter =
         core::machine_policy::spawn_adapter_on(host, machine, req.adapter_id.as_deref()).await?;
     let command_id = Uuid::new_v4();
