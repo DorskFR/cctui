@@ -199,9 +199,10 @@ pub async fn inherit_for_launch(
     Ok(carried)
 }
 
-/// The caller's `hook_rules` additions in a dispatch payload, already checked
-/// against the side-door rule every worker inherits: a dispatch weakening it is
-/// refused before anything is minted for the worker.
+/// Parse and check a dispatch payload's `hook_rules` additions.
+///
+/// They are checked against the side-door rule every worker inherits, so a
+/// dispatch weakening it is refused before anything is minted for the worker.
 ///
 /// # Errors
 /// [`PolicyError::Rejected`] for unreadable or weakening additions.
@@ -215,9 +216,11 @@ pub fn dispatch_additions(payload: &serde_json::Value) -> Result<Vec<HookRule>, 
     Ok(additions)
 }
 
-/// Replace whatever policy the caller put in a worker payload with the
-/// effective one: the worker's account rules plus the caller's
-/// `hook_rules` additions, under the same add-only rule as a child spawn.
+/// Write the worker's effective hook policy into its dispatch payload.
+///
+/// It replaces whatever policy the caller put there: the worker's account rules
+/// plus the caller's `hook_rules` additions, under the same add-only rule as a
+/// child spawn.
 ///
 /// # Errors
 /// Unreadable or weakening additions, or a failed lookup or record.
