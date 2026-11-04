@@ -37,6 +37,7 @@ pub mod settings;
 pub mod settings_catalog;
 pub mod shares;
 pub mod soft_limit;
+pub mod tool_guard;
 pub mod tool_policy;
 pub mod update_hook;
 pub mod uploads;
@@ -561,6 +562,9 @@ pub struct SessionListItem {
     /// above one, the thread forks here.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub followup_count: u32,
+    /// The gateway tool guard is lifted for this session.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tool_guard_bypass: bool,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]

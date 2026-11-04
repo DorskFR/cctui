@@ -497,6 +497,7 @@ fn skeleton_list_item(
         launch_error: None,
         next_session_id: None,
         followup_count: 0,
+        tool_guard_bypass: false,
     }
 }
 
@@ -624,13 +625,15 @@ struct SignalRow {
     last_keepalive_at: Option<DateTime<Utc>>,
     next_session_id: Option<String>,
     followup_count: i32,
+    tool_guard_bypass: bool,
 }
 
 const SIGNAL_SQL: &str = concat!(
     "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
             soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, \
             children, end_reason, end_detail, ended_at, permission_mode, archived_by, \
-            keepalive_json, last_keepalive_at, ",
+            keepalive_json, last_keepalive_at, \
+            tool_guard_bypass_by IS NOT NULL AS tool_guard_bypass, ",
     next_session_sql!(),
     " AS next_session_id, ",
     followup_count_sql!(),
@@ -1097,6 +1100,7 @@ fn apply_signals(
     s.last_tool_at = row.last_tool_at;
     s.last_tool_name = row.last_tool_name;
     s.tool_use_count = row.tool_use_count.clamp(0, i32::MAX) as u32;
+    s.tool_guard_bypass = row.tool_guard_bypass;
 }
 
 /// `(session_id, input, cache_read, cache_creation, created_at, rn)` from
@@ -1959,6 +1963,7 @@ type EndRow = (
     Option<String>,
     bool,
     Option<String>,
+    bool,
 );
 
 #[allow(clippy::too_many_lines)]
@@ -1970,15 +1975,16 @@ pub async fn get_session(
     {
         let registry = state.registry.read().await;
         if let Some(handle) = registry.get(&session_id) {
-            let permission_mode: Option<String> = sqlx::query_as::<_, (Option<String>,)>(
-                "SELECT permission_mode FROM sessions WHERE id = $1",
+            let row: Option<(Option<String>, bool)> = sqlx::query_as(
+                "SELECT permission_mode, tool_guard_bypass_by IS NOT NULL \
+                 FROM sessions WHERE id = $1",
             )
             .bind(&session_id)
             .fetch_optional(&state.pool)
             .await
             .ok()
-            .flatten()
-            .and_then(|(m,)| m);
+            .flatten();
+            let (permission_mode, tool_guard_bypass) = row.unwrap_or_default();
             let mut item = SessionListItem {
                 id: handle.session.id.clone(),
                 parent_id: handle.session.parent_id.clone(),
@@ -2041,6 +2047,7 @@ pub async fn get_session(
                 launch_error: None,
                 next_session_id: None,
                 followup_count: 0,
+                tool_guard_bypass,
             };
             item.user_actions =
                 fetch_user_actions(&state, std::slice::from_ref(&item.id)).await?.remove(&item.id);
@@ -2119,16 +2126,26 @@ pub async fn get_session(
         launch_error: None,
         next_session_id: None,
         followup_count: 0,
+        tool_guard_bypass: false,
     };
     let end: Option<EndRow> = sqlx::query_as(
-        "SELECT end_reason, end_detail, ended_at, todos, permission_mode, pinned, archived_by \
+        "SELECT end_reason, end_detail, ended_at, todos, permission_mode, pinned, archived_by, \
+                tool_guard_bypass_by IS NOT NULL \
          FROM sessions WHERE id = $1",
     )
     .bind(&item.id)
     .fetch_optional(&state.pool)
     .await?;
-    if let Some((end_reason, end_detail, ended_at, todos, permission_mode, pinned, archived_by)) =
-        end
+    if let Some((
+        end_reason,
+        end_detail,
+        ended_at,
+        todos,
+        permission_mode,
+        pinned,
+        archived_by,
+        tool_guard_bypass,
+    )) = end
     {
         item.end_reason = end_reason.as_deref().map(SessionEndReason::parse);
         item.end_detail = end_detail;
@@ -2137,6 +2154,7 @@ pub async fn get_session(
         item.permission_mode = permission_mode;
         item.pinned = pinned;
         item.archived_by = archived_by.as_deref().and_then(RemoveInitiator::parse);
+        item.tool_guard_bypass = tool_guard_bypass;
         item.auto_archive_at = crate::auto_archive::stale_archive_due(
             item.status,
             pinned,

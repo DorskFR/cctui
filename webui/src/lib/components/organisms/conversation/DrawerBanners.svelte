@@ -1,6 +1,10 @@
 <script lang="ts">
 	import { Button, Text } from '@dorsk/tsumikit';
 	import { useAccounts } from '$lib/queries';
+	import { useToolGuard, useToolGuardActions } from '$lib/queries/toolGuard';
+	import { canOfferBypass, nextBypassStep, type BypassStep } from '$lib/tool-guard-bypass.logic';
+	import { toasts } from '$lib/toast.svelte';
+	import { errMessage } from '$lib/api';
 	import AccountSwitchModal from './AccountSwitchModal.svelte';
 	import type { ConversationStream } from './stream.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -23,6 +27,30 @@
 	// Accounts are fetched lazily, only while the switcher is open or a block
 	// is active, so the common case pays nothing.
 	const accounts = useAccounts(() => acctModalOpen || softLimit !== null);
+
+	const guard = useToolGuard(
+		() => sessionId,
+		() => toolBlock !== null
+	);
+	const guardActions = useToolGuardActions();
+	const offerBypass = $derived(toolBlock !== null && canOfferBypass(guard.data));
+	let bypassStep = $state<BypassStep>('idle');
+	$effect(() => {
+		if (!toolBlock) bypassStep = 'idle';
+	});
+
+	async function bypass() {
+		bypassStep = nextBypassStep(bypassStep, 'commit');
+		try {
+			await guardActions.set(sessionId, true);
+			stream.dismissToolBlock();
+			toasts.ok(m.tool_guard_bypassed());
+		} catch (e) {
+			toasts.error(errMessage(e));
+		} finally {
+			bypassStep = nextBypassStep(bypassStep, 'settled');
+		}
+	}
 
 	// Auto-open the switcher the first time a given soft-limit block lands, so
 	// the stalled chat surfaces a way out without hunting for the key glyph.
@@ -56,11 +84,45 @@
 {#if toolBlock}
 	<div class="attn-banner tool-block-notice" role="alert">
 		<Text size="sm">
-			{m.conversation_tool_call_blocked({ tool: toolBlock.tool_name, rule: toolBlock.rule })}
+			{bypassStep === 'idle'
+				? m.conversation_tool_call_blocked({ tool: toolBlock.tool_name, rule: toolBlock.rule })
+				: m.tool_guard_bypass_confirm()}
 		</Text>
-		<Button size="sm" variant="ghost" onclick={() => stream.dismissToolBlock()}>
-			{m.conversation_tool_block_dismiss()}
-		</Button>
+		<span class="tool-block-actions">
+			{#if bypassStep === 'idle'}
+				{#if offerBypass}
+					<Button
+						size="sm"
+						tone="warn"
+						data-testid="tool-guard-bypass"
+						onclick={() => (bypassStep = nextBypassStep(bypassStep, 'ask'))}
+					>
+						{m.tool_guard_bypass()}
+					</Button>
+				{/if}
+				<Button size="sm" variant="ghost" onclick={() => stream.dismissToolBlock()}>
+					{m.conversation_tool_block_dismiss()}
+				</Button>
+			{:else}
+				<Button
+					size="sm"
+					tone="warn"
+					data-testid="tool-guard-bypass-confirm"
+					disabled={bypassStep === 'busy'}
+					onclick={bypass}
+				>
+					{m.tool_guard_bypass_confirm_yes()}
+				</Button>
+				<Button
+					size="sm"
+					variant="ghost"
+					disabled={bypassStep === 'busy'}
+					onclick={() => (bypassStep = nextBypassStep(bypassStep, 'cancel'))}
+				>
+					{m.common_cancel()}
+				</Button>
+			{/if}
+		</span>
 	</div>
 {/if}
 
@@ -88,6 +150,12 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+		gap: var(--sp-2);
+	}
+	.tool-block-actions {
+		display: inline-flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
 		gap: var(--sp-2);
 	}
 </style>

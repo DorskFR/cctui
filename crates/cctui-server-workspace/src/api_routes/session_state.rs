@@ -80,6 +80,14 @@ pub(super) fn register(r: Routes) -> Routes {
         sess_write(),
     )
     .add(
+        &[Method::GET, Method::PUT],
+        "/sessions/{id}/tool-guard",
+        "Read or toggle the session's gateway tool-guard bypass.",
+        get(routes::tool_guard::get_tool_guard).put(routes::tool_guard::put_tool_guard),
+        Authn::Bearer,
+        sess_write(),
+    )
+    .add(
         &[Method::POST],
         "/sessions/{id}/policy",
         "Set a session's permission policy.",

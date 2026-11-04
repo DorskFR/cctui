@@ -1282,6 +1282,8 @@ mod tests {
             r#"POST /sessions/{id}/set-model Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/switch-account Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/thread Bearer Resource(Session, Read, Path("id"))"#,
+            r#"GET /sessions/{id}/tool-guard Bearer Resource(Session, Write, Path("id"))"#,
+            r#"PUT /sessions/{id}/tool-guard Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/unarchive Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/unpin Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/user-actions Bearer Resource(Session, Read, Path("id"))"#,

@@ -2016,6 +2016,22 @@ pub const ROUTES: &[Route] = &[
         response: None,
     },
     Route {
+        id: "get_sessions_by_id_tool_guard",
+        method: Method::Get,
+        path: "/sessions/{id}/tool-guard",
+        summary: "Read or toggle the session's gateway tool-guard bypass.",
+        request: None,
+        response: Some("ToolGuardState"),
+    },
+    Route {
+        id: "put_sessions_by_id_tool_guard",
+        method: Method::Put,
+        path: "/sessions/{id}/tool-guard",
+        summary: "Read or toggle the session's gateway tool-guard bypass.",
+        request: Some("ToolGuardRequest"),
+        response: Some("ToolGuardState"),
+    },
+    Route {
         id: "post_sessions_by_id_policy",
         method: Method::Post,
         path: "/sessions/{id}/policy",
