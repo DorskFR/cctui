@@ -51,7 +51,7 @@ mod test_support;
 mod tests;
 mod voice;
 
-pub(super) use settings::ensure_hook_settings;
+pub(super) use settings::HookPosture;
 pub use settings::stage_mid_chat_files;
 use settings::{
     BG_ISOLATION_ENV, agent_relay_config, build_session_context, detect_whip_from_settings,

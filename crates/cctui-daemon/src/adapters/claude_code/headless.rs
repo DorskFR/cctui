@@ -36,11 +36,16 @@ use crate::adapter_runtime::{
 #[derive(Debug, Clone, Default)]
 struct SessionPosture {
     cwd: String,
-    settings_path: Option<String>,
+    /// `None` for a session this daemon process did not launch.
+    hooks: Option<super::control::HookPosture>,
     model: Option<String>,
     effort: Option<String>,
     permission_flag: Option<String>,
     name: Option<String>,
+}
+
+fn short_of(session_id: &str) -> &str {
+    &session_id[..8.min(session_id.len())]
 }
 
 /// Shared so an interrupt can write its `control_request` without waiting
@@ -265,26 +270,19 @@ impl SdkDriver {
         // managed hooks. Fail-closed inside `resolve_launch_env`.
         let launch_env = self.resolve_launch_env(&session_id, &spec.env).await?;
 
-        let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
-        let short = &session_id[..8.min(session_id.len())];
-        let settings = super::control::ensure_hook_settings(
+        let hooks = super::control::HookPosture::of(spec);
+        let settings = hooks.write(
             &self.cfg.hook_socket_path,
-            whip,
-            short,
-            launch_env.settings.as_ref(),
-            &launch_env.env,
-            None,
-            None,
-            launch_env.whip_phrases.as_ref(),
-            None,
-        )
-        .map(|p| p.to_string_lossy().into_owned());
+            short_of(&session_id),
+            &launch_env,
+            self.machine_key.as_deref(),
+        );
 
-        let mut base = LaunchArgs::from_spec(spec, settings.clone());
+        let mut base = LaunchArgs::from_spec(spec, settings);
         base.plugin_dirs.clone_from(&launch_env.plugin_dirs);
         let posture = SessionPosture {
             cwd: cwd.clone(),
-            settings_path: settings,
+            hooks: Some(hooks),
             model: base.model.clone(),
             effort: base.effort.clone(),
             permission_flag: base.permission_flag.clone(),
@@ -408,14 +406,26 @@ impl SdkDriver {
         if let Some(dead) = self.take_child(local_id) {
             dead.terminate().await;
         }
-        let posture = self.postures.get(local_id).cloned().ok_or_else(|| {
+        let mut posture = self.postures.get(local_id).cloned().ok_or_else(|| {
             anyhow::anyhow!("cannot (re)launch {local_id}: no known working_dir/posture")
         })?;
         self.register(local_id);
         let launch_env = self.resolve_launch_env(local_id, env_hint).await?;
+        let short = short_of(local_id);
+        let seal_key = self.machine_key.as_deref();
+        let hooks = match posture.hooks.take() {
+            Some(hooks) => hooks,
+            None => super::control::HookPosture::recover(short, seal_key).with_context(|| {
+                format!("refusing to relaunch {local_id} without its hook policy")
+            })?,
+        };
+        let settings_path = hooks.write(&self.cfg.hook_socket_path, short, &launch_env, seal_key);
+        if let Some(known) = self.postures.get_mut(local_id) {
+            known.hooks = Some(hooks);
+        }
         let launch = LaunchArgs {
             resume_from: Some(local_id.to_owned()),
-            settings_path: posture.settings_path.clone(),
+            settings_path,
             model: posture.model.clone(),
             effort: posture.effort.clone(),
             permission_flag: posture.permission_flag.clone(),
