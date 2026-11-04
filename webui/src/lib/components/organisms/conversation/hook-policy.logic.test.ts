@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import type { HookRule } from '@bindings/HookRule';
 import { describeRule, hookChip } from './hook-policy.logic';
 
-const deny = {
+const deny: HookRule = {
 	event: 'PreToolUse',
 	tool: 'shell',
 	command: '/opt/guard/deny-rm',
 	timeout_secs: null
-} as const;
+};
 
 describe('session hook chip', () => {
 	it('shows nothing when the launch carried no rules', () => {

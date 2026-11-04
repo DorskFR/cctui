@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { HookRule } from '@bindings/HookRule';
 import {
 	blankHook,
 	fromDraft,
@@ -9,7 +10,8 @@ import {
 	sameHooks,
 	takesTool,
 	toDraft,
-	toHookDrafts
+	toHookDrafts,
+	type HookDraft
 } from './tool-policy.logic';
 
 describe('tool policy draft', () => {
@@ -49,15 +51,15 @@ describe('tool policy draft', () => {
 });
 
 describe('hooks editor', () => {
-	const deny = {
+	const deny: HookRule = {
 		event: 'PreToolUse',
 		tool: 'shell',
 		command: '/opt/guard/deny-rm',
 		timeout_secs: 5
-	} as const;
+	};
 
 	it('round-trips stored rules through the editor rows', () => {
-		const stop = { event: 'Stop', tool: 'any', command: 'notify', timeout_secs: null } as const;
+		const stop: HookRule = { event: 'Stop', tool: 'any', command: 'notify', timeout_secs: null };
 		const rows = toHookDrafts([deny, stop]);
 		expect(rows[0]).toEqual({
 			event: 'PreToolUse',
@@ -70,15 +72,16 @@ describe('hooks editor', () => {
 	});
 
 	it('drops empty rows, trims commands and ignores a bad timeout', () => {
-		const rows = [
+		const rows: HookDraft[] = [
 			{ ...blankHook(), command: '  /opt/guard/deny-rm ', timeout: '5' },
 			{ ...blankHook(), command: '   ' },
-			{ ...blankHook(), event: 'Stop' as const, tool: 'file_edit' as const, command: 'n', timeout: '-3' }
+			{ event: 'Stop', tool: 'file_edit', command: 'n', timeout: '-3' }
 		];
-		expect(fromHookDrafts(rows)).toEqual([
+		const saved: HookRule[] = [
 			deny,
 			{ event: 'Stop', tool: 'any', command: 'n', timeout_secs: null }
-		]);
+		];
+		expect(fromHookDrafts(rows)).toEqual(saved);
 	});
 
 	it('offers a tool class only on tool events', () => {

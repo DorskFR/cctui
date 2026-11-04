@@ -40,29 +40,34 @@ export const sameDraft = (a: PolicyDraft, b: PolicyDraft) =>
 export const policyActive = (p: ToolPolicy) =>
 	p.terms.length + p.patterns.length + p.protected_owners.length > 0;
 
-export const HOOK_EVENTS: readonly HookEvent[] = [
+export const HOOK_EVENTS = [
 	'SessionStart',
 	'UserPromptSubmit',
 	'PreToolUse',
 	'PostToolUse',
 	'Stop'
-];
+] as const satisfies readonly HookEvent[];
 
-export const TOOL_CLASSES: readonly ToolClass[] = [
+export const TOOL_CLASSES = [
 	'shell',
 	'file_edit',
 	'file_write',
 	'subagent',
 	'any'
-];
+] as const satisfies readonly ToolClass[];
 
 export type HookDraft = { event: HookEvent; tool: ToolClass; command: string; timeout: string };
 
+const ANY_TOOL: ToolClass = 'any';
+
 export const takesTool = (event: HookEvent) => event === 'PreToolUse' || event === 'PostToolUse';
 
+const BLANK_EVENT: HookEvent = 'PreToolUse';
+const BLANK_TOOL: ToolClass = 'shell';
+
 export const blankHook = (): HookDraft => ({
-	event: 'PreToolUse',
-	tool: 'shell',
+	event: BLANK_EVENT,
+	tool: BLANK_TOOL,
 	command: '',
 	timeout: ''
 });
@@ -89,7 +94,7 @@ export const fromHookDrafts = (drafts: HookDraft[]): HookRule[] =>
 		.filter((d) => d.command.trim() !== '')
 		.map((d) => ({
 			event: d.event,
-			tool: takesTool(d.event) ? d.tool : 'any',
+			tool: takesTool(d.event) ? d.tool : ANY_TOOL,
 			command: d.command.trim(),
 			timeout_secs: timeoutSecs(d.timeout)
 		}));

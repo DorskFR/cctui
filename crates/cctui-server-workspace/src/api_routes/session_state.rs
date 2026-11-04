@@ -7,7 +7,7 @@ use axum::http::Method;
 use axum::routing::{get, patch, post};
 
 pub(super) fn register(r: Routes) -> Routes {
-    r.add(
+    let r = r.add(
         &[Method::GET],
         "/sessions/{id}/brief",
         "Render a session's user/assistant transcript as a capped markdown brief.",
@@ -78,8 +78,12 @@ pub(super) fn register(r: Routes) -> Routes {
         post(routes::sessions::set_keepalive),
         Authn::Bearer,
         sess_write(),
-    )
-    .add(
+    );
+    register_policies(r)
+}
+
+fn register_policies(r: Routes) -> Routes {
+    r.add(
         &[Method::GET],
         "/sessions/{id}/hook-policy",
         "Read the hook rules the session was launched with.",

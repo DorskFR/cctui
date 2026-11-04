@@ -46,6 +46,7 @@ export const qk = {
   providerStatus: ["provider-status"] as const,
   redirects: ["redirects"] as const,
   toolPolicy: (accountId: string) => ["tool-policy", accountId] as const,
+  hookPolicy: (sessionId: string) => ["hook-policy", sessionId] as const,
   serviceTokens: (accountId: string) => ["service-tokens", accountId] as const,
   accountPools: ["account-pools"] as const,
   accountPoolsUsage: ["account-pools-usage"] as const,
