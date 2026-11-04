@@ -30,6 +30,7 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration { version: 9, sql: include_str!("../schema/0009_dispatch_exposure.sql") },
     Migration { version: 10, sql: include_str!("../schema/0010_archived_claude_jobs_index.sql") },
     Migration { version: 11, sql: include_str!("../schema/0011_provider_usage_totals.sql") },
+    Migration { version: 12, sql: include_str!("../schema/0012_dispatch_handle_gone.sql") },
 ];
 
 const LEGACY_LAST: &str = include_str!("../../../migrations/191_file_blobs.up.sql");

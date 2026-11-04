@@ -40,6 +40,12 @@ const EXITED_AFTER_COMPLETION: &str = "completed (worker exited non-zero)";
 /// A workload completed after an explicit execution completion signal.
 pub const EXITED_CLEANLY: &str = "completed (worker exited)";
 
+/// A running session whose workload the dispatcher no longer knows.
+pub const WORKLOAD_GONE: &str = "dispatched workload no longer exists";
+
+/// Session advisory lock held by the one replica running a sweep.
+pub const SWEEP_LOCK_KEY: i64 = 0x6363_7475_695f_646c;
+
 /// The persisted end reason for a dispatcher's verbatim failure reason.
 ///
 /// Whatever kept the worker from starting (image, container config,
@@ -69,14 +75,18 @@ struct LiveHandle {
     machine_uuid: Option<Uuid>,
     dispatcher_name: String,
     handle: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    running: bool,
 }
 
 async fn live_handles(pool: &sqlx::PgPool) -> sqlx::Result<Vec<LiveHandle>> {
     sqlx::query_as(
-        "SELECT dh.session_id, s.user_id, s.machine_uuid, dh.dispatcher_name, dh.handle \
+        "SELECT dh.session_id, s.user_id, s.machine_uuid, dh.dispatcher_name, dh.handle, \
+                dh.created_at, COALESCE(s.status = ANY($2), false) AS running \
          FROM dispatch_handles dh \
          JOIN sessions s ON s.id = dh.session_id \
          WHERE dh.created_at > now() - ($1 || ' hours')::interval \
+           AND dh.gone_at IS NULL \
            AND (s.status = ANY($2) OR (s.status = 'ended' AND s.end_reason = ANY($3))) \
          ORDER BY dh.created_at \
          LIMIT $4",
@@ -89,7 +99,63 @@ async fn live_handles(pool: &sqlx::PgPool) -> sqlx::Result<Vec<LiveHandle>> {
     .await
 }
 
+/// The sweep on whichever replica takes the lock; the others skip this tick.
 pub async fn sweep(state: &impl DispatchLivenessContext) {
+    let Some(lock) = SweepLock::try_acquire(state.dispatch_pool()).await else {
+        return;
+    };
+    sweep_unlocked(state).await;
+    lock.release().await;
+}
+
+/// The lock lives on its connection's session: a holder dropped before
+/// [`SweepLock::release`] closes the connection instead of pooling the lock.
+struct SweepLock(Option<sqlx::pool::PoolConnection<sqlx::Postgres>>);
+
+impl SweepLock {
+    async fn try_acquire(pool: &sqlx::PgPool) -> Option<Self> {
+        let mut conn = pool
+            .acquire()
+            .await
+            .map_err(|err| tracing::warn!(%err, "dispatch liveness lock connection failed"))
+            .ok()?;
+        let locked = sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_lock($1)")
+            .bind(SWEEP_LOCK_KEY)
+            .fetch_one(&mut *conn)
+            .await;
+        match locked {
+            Ok(true) => Some(Self(Some(conn))),
+            Ok(false) => None,
+            Err(err) => {
+                tracing::warn!(%err, "dispatch liveness lock failed");
+                drop(conn.detach());
+                None
+            }
+        }
+    }
+
+    async fn release(mut self) {
+        let Some(mut conn) = self.0.take() else { return };
+        let unlocked = sqlx::query_scalar::<_, bool>("SELECT pg_advisory_unlock($1)")
+            .bind(SWEEP_LOCK_KEY)
+            .fetch_one(&mut *conn)
+            .await;
+        if !matches!(unlocked, Ok(true)) {
+            drop(conn.detach());
+        }
+    }
+}
+
+impl Drop for SweepLock {
+    fn drop(&mut self) {
+        if let Some(conn) = self.0.take() {
+            drop(conn.detach());
+        }
+    }
+}
+
+/// [`sweep`] without the cross-replica lock.
+pub async fn sweep_unlocked(state: &impl DispatchLivenessContext) {
     use futures_util::StreamExt;
     if let Err(err) = crate::store::dispatch_policies::prune_uses(state.dispatch_pool()).await {
         tracing::warn!(%err, "dispatch policy use prune failed");
@@ -208,11 +274,51 @@ async fn probe(state: &impl DispatchLivenessContext, row: LiveHandle) {
             Some(oom) => (SessionEndReason::OomKilled, oom),
             None => return,
         },
-        _ => return,
+        HandleStatus::Gone => match gone(state, &row).await {
+            Some(end) => end,
+            None => return,
+        },
+        HandleStatus::Running | HandleStatus::Queued => return,
     };
     if !end_session(state.dispatch_pool(), &row.session_id, end_reason, &detail).await {
         return;
     }
+    record_end(state, row, end_reason, &detail);
+}
+
+/// A vanished workload never answers again: its handle leaves the sweep, and
+/// a session still running on it ends lost unless it already did its work.
+async fn gone(
+    state: &impl DispatchLivenessContext,
+    row: &LiveHandle,
+) -> Option<(SessionEndReason, String)> {
+    let marked = sqlx::query(
+        "UPDATE dispatch_handles SET gone_at = now() \
+         WHERE session_id = $1 AND created_at = $2 AND gone_at IS NULL",
+    )
+    .bind(&row.session_id)
+    .bind(row.created_at)
+    .execute(state.dispatch_pool())
+    .await;
+    if let Err(err) = marked {
+        tracing::warn!(%err, session_id = %row.session_id, "gone dispatch handle not marked");
+    }
+    if !row.running {
+        return None;
+    }
+    Some(if state.execution_finished(&row.session_id).await {
+        (SessionEndReason::Completed, EXITED_CLEANLY.to_owned())
+    } else {
+        (SessionEndReason::DaemonLost, WORKLOAD_GONE.to_owned())
+    })
+}
+
+fn record_end(
+    state: &impl DispatchLivenessContext,
+    row: LiveHandle,
+    end_reason: SessionEndReason,
+    detail: &str,
+) {
     let severity = if end_reason == SessionEndReason::Completed {
         tracing::info!(session_id = %row.session_id, handle = %row.handle, "{detail}");
         events::Severity::Info

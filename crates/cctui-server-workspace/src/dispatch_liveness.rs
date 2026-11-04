@@ -55,13 +55,18 @@ use crate::store::dispatch_records;
 #[cfg(test)]
 use cctui_proto::api::WorkerExit;
 #[cfg(test)]
-use cctui_server_core::dispatch_liveness::EXITED_CLEANLY;
+use cctui_server_core::dispatch_liveness::{
+    EXITED_CLEANLY, SWEEP_LOCK_KEY, WORKLOAD_GONE, sweep_unlocked,
+};
 #[cfg(test)]
 use uuid::Uuid;
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use cctui_proto::ws::{DispatcherFrameDown, DispatcherFrameUp};
+    use sqlx::Connection;
     use tokio::sync::mpsc;
 
     use super::*;
@@ -173,7 +178,7 @@ mod tests {
             dispatcher,
             (Some("failed"), Some("OOMKilled (memory limit 8Gi)")),
         );
-        sweep(&state).await;
+        sweep_unlocked(&state).await;
         fake.abort();
 
         let want = (
@@ -228,7 +233,7 @@ mod tests {
         };
         let verdict = (Some("failed"), Some(BACKOFF));
         let fake = fake_dispatcher_exiting(&state, dispatcher, verdict, Some(exit));
-        sweep(&state).await;
+        sweep_unlocked(&state).await;
         fake.abort();
 
         let want = ("ended".into(), Some("oom_killed".into()), Some("OOMKilled".into()));
@@ -264,7 +269,7 @@ mod tests {
         }
         let oom = "OOMKilled (memory limit 8Gi)";
         let fake = fake_dispatcher(&state, dispatcher, (Some("complete"), Some(oom)));
-        sweep(&state).await;
+        sweep_unlocked(&state).await;
         fake.abort();
 
         assert_eq!(
@@ -302,7 +307,7 @@ mod tests {
         seed_handle(&pool, &sid, &name, "jobs/cctui-worker-unreg").await;
 
         let fake = fake_dispatcher(&state, dispatcher, (Some("failed"), Some("OOMKilled")));
-        sweep(&state).await;
+        sweep_unlocked(&state).await;
         fake.abort();
 
         let listed = dispatch_records::list_failed(&pool, Some(uid)).await.unwrap();
@@ -350,7 +355,7 @@ mod tests {
         };
         let verdict = (Some("failed"), Some(PREFLIGHT));
         let fake = fake_dispatcher_exiting(&state, dispatcher, verdict, Some(exit));
-        sweep(&state).await;
+        sweep_unlocked(&state).await;
         fake.abort();
 
         let listed = dispatch_records::list_failed(&pool, Some(admin)).await.unwrap();
@@ -422,7 +427,7 @@ mod tests {
             (Some("failed"), Some(BACKOFF)),
             Some(exit),
         );
-        sweep(&state).await;
+        sweep_unlocked(&state).await;
         fake.abort();
         Some((pool, uid, sid))
     }
@@ -482,7 +487,7 @@ mod tests {
         }
 
         let fake = fake_dispatcher(&state, dispatcher, (Some("complete"), None));
-        sweep(&state).await;
+        sweep_unlocked(&state).await;
         fake.abort();
 
         assert_eq!(
@@ -536,7 +541,7 @@ mod tests {
         }
 
         let fake = fake_dispatcher(&state, dispatcher, (Some("complete"), None));
-        sweep(&state).await;
+        sweep_unlocked(&state).await;
         fake.abort();
 
         assert_eq!(
@@ -616,7 +621,7 @@ mod tests {
         .unwrap();
 
         let fake = fake_dispatcher(&state, dispatcher, (Some("queued"), None));
-        sweep(&state).await;
+        sweep_unlocked(&state).await;
         fake.abort();
         assert_eq!(queue_state(&pool, &sid).await, (true, false));
         assert!(
@@ -625,7 +630,7 @@ mod tests {
         );
 
         let fake = fake_dispatcher(&state, dispatcher, (Some("running"), None));
-        sweep(&state).await;
+        sweep_unlocked(&state).await;
         fake.abort();
         assert_eq!(queue_state(&pool, &sid).await, (false, true), "the clock starts on resume");
         assert!(dispatch_records::list_failed(&pool, Some(uid)).await.unwrap().is_empty());
@@ -633,7 +638,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_running_or_gone_workload_leaves_the_session_alone() {
+    async fn a_running_workload_leaves_the_session_alone() {
         let Some(url) = crate::routes::gateway::test_db_url("dispatch_liveness_running") else {
             return;
         };
@@ -645,11 +650,180 @@ mod tests {
         let sid = crate::events::tests::seed_session(&pool, uid, machine, Some("run")).await;
         seed_handle(&pool, &sid, &name, "jobs/cctui-worker-run").await;
 
-        for verdict in [(Some("running"), None), (Some("gone"), None), (None, Some("api down"))] {
+        for verdict in [(Some("running"), None), (None, Some("api down"))] {
             let fake = fake_dispatcher(&state, dispatcher, verdict);
-            sweep(&state).await;
+            sweep_unlocked(&state).await;
             fake.abort();
             assert_eq!(status(&pool, &sid).await, ("active".into(), None, None), "{verdict:?}");
         }
+        forget_user(&pool, uid).await;
+    }
+
+    /// A fake dispatcher that answers every probe `verdict` and records the
+    /// handles it was asked about.
+    fn recording_dispatcher(
+        state: &AppState,
+        id: Uuid,
+        verdict: (Option<&'static str>, Option<&'static str>),
+    ) -> (tokio::task::JoinHandle<()>, Arc<Mutex<Vec<String>>>) {
+        let (tx, mut rx) = mpsc::channel::<DispatcherFrameDown>(8);
+        state.bus.register_dispatcher(id, tx);
+        let bus = state.bus.clone();
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let seen = asked.clone();
+        let task = tokio::spawn(async move {
+            while let Some(frame) = rx.recv().await {
+                let DispatcherFrameDown::Status { request_id, handle } = frame else {
+                    panic!("expected Status, got {frame:?}");
+                };
+                seen.lock().unwrap().push(handle.clone());
+                assert!(bus.resolve_dispatcher_reply(
+                    request_id,
+                    DispatcherFrameUp::StatusResult {
+                        request_id,
+                        handle,
+                        state: verdict.0.map(Into::into),
+                        error: verdict.1.map(Into::into),
+                        worker_exit: None,
+                    },
+                ));
+            }
+        });
+        (task, asked)
+    }
+
+    async fn gone_at_set(pool: &sqlx::PgPool, sid: &str) -> bool {
+        sqlx::query_scalar("SELECT gone_at IS NOT NULL FROM dispatch_handles WHERE session_id = $1")
+            .bind(sid)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_gone_handle_of_an_ended_session_is_not_probed_again() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_liveness_gone_ended") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let (uid, machine) = crate::events::tests::seed_user_machine(&pool, "dl-gone-end").await;
+        let name = format!("k8s-{uid}");
+        let dispatcher = seed_dispatcher(&pool, uid, &name).await;
+        let lost = crate::events::tests::seed_session(&pool, uid, machine, Some("lost")).await;
+        sqlx::query(
+            "UPDATE sessions SET status = 'ended', end_reason = 'daemon_lost', \
+             end_detail = 'daemon connection closed' WHERE id = $1",
+        )
+        .bind(&lost)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let handle = format!("jobs/cctui-worker-{lost}");
+        seed_handle(&pool, &lost, &name, &handle).await;
+
+        let (fake, asked) = recording_dispatcher(&state, dispatcher, (Some("gone"), None));
+        sweep_unlocked(&state).await;
+        sweep_unlocked(&state).await;
+        fake.abort();
+
+        let probes = asked.lock().unwrap().iter().filter(|h| **h == handle).count();
+        assert_eq!(probes, 1, "a gone handle is probed once");
+        assert!(gone_at_set(&pool, &lost).await);
+        assert_eq!(
+            status(&pool, &lost).await,
+            ("ended".into(), Some("daemon_lost".into()), Some("daemon connection closed".into())),
+            "an ended session keeps its end"
+        );
+        forget_user(&pool, uid).await;
+    }
+
+    #[tokio::test]
+    async fn a_running_session_whose_job_is_gone_ends_daemon_lost() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_liveness_gone_running")
+        else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let (uid, machine) = crate::events::tests::seed_user_machine(&pool, "dl-gone-run").await;
+        let name = format!("k8s-{uid}");
+        let dispatcher = seed_dispatcher(&pool, uid, &name).await;
+        let live = crate::events::tests::seed_session(&pool, uid, machine, Some("live")).await;
+        let done = crate::events::tests::seed_session(&pool, uid, machine, Some("done")).await;
+        let guard = cctui_proto::guard_step::GuardStepState { step: -1, ..Default::default() };
+        sqlx::query("INSERT INTO guard_steps (session_id, state) VALUES ($1, $2)")
+            .bind(&done)
+            .bind(sqlx::types::Json(&guard))
+            .execute(&pool)
+            .await
+            .unwrap();
+        for sid in [&live, &done] {
+            seed_handle(&pool, sid, &name, &format!("jobs/cctui-worker-{sid}")).await;
+        }
+
+        let (fake, asked) = recording_dispatcher(&state, dispatcher, (Some("gone"), None));
+        sweep_unlocked(&state).await;
+        sweep_unlocked(&state).await;
+        fake.abort();
+
+        assert_eq!(
+            status(&pool, &live).await,
+            ("ended".into(), Some("daemon_lost".into()), Some(WORKLOAD_GONE.into())),
+        );
+        assert_eq!(
+            status(&pool, &done).await,
+            ("ended".into(), Some("completed".into()), Some(EXITED_CLEANLY.into())),
+            "work already done stays completed"
+        );
+        let live_handle = format!("jobs/cctui-worker-{live}");
+        let probes = asked.lock().unwrap().iter().filter(|h| **h == live_handle).count();
+        assert_eq!(probes, 1, "the ended session is not probed again");
+        assert!(gone_at_set(&pool, &live).await);
+        forget_user(&pool, uid).await;
+    }
+
+    #[tokio::test]
+    async fn a_sweep_while_another_replica_holds_the_lock_is_a_no_op() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_liveness_locked") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let (uid, machine) = crate::events::tests::seed_user_machine(&pool, "dl-locked").await;
+        let name = format!("k8s-{uid}");
+        let dispatcher = seed_dispatcher(&pool, uid, &name).await;
+        let sid = crate::events::tests::seed_session(&pool, uid, machine, Some("locked")).await;
+        let handle = format!("jobs/cctui-worker-{sid}");
+        seed_handle(&pool, &sid, &name, &handle).await;
+
+        let mut replica = sqlx::PgConnection::connect(&url).await.expect("connect test db");
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(SWEEP_LOCK_KEY)
+            .execute(&mut replica)
+            .await
+            .unwrap();
+        let (fake, asked) =
+            recording_dispatcher(&state, dispatcher, (Some("failed"), Some("OOMKilled")));
+        sweep(&state).await;
+        assert!(
+            !asked.lock().unwrap().contains(&handle),
+            "the replica without the lock probes nothing"
+        );
+        assert_eq!(status(&pool, &sid).await, ("active".into(), None, None));
+
+        sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(SWEEP_LOCK_KEY)
+            .execute(&mut replica)
+            .await
+            .unwrap();
+        sweep(&state).await;
+        fake.abort();
+        assert_eq!(
+            status(&pool, &sid).await,
+            ("ended".into(), Some("oom_killed".into()), Some("OOMKilled".into())),
+            "the lock is free again once its holder releases it"
+        );
+        forget_user(&pool, uid).await;
     }
 }

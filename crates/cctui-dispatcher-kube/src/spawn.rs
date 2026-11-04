@@ -33,7 +33,9 @@ use cctui_proto::ws::WireDispatchSpec;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
-use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams, PropagationPolicy};
+use kube::api::{
+    Api, DeleteParams, ListParams, Patch, PatchParams, PostParams, Preconditions, PropagationPolicy,
+};
 use kube::{Client, Error as KubeError};
 use tokio_util::sync::CancellationToken;
 
@@ -448,21 +450,23 @@ impl Spawner {
 
     /// Delete a Job and block until its name is free (background propagation
     /// GCs pods async; poll until the read 404s so the recreate can't race).
-    async fn delete_and_wait(&self, name: &str) -> anyhow::Result<()> {
+    ///
+    /// With `uid`, only that Job is deleted: a Job a concurrent dispatch
+    /// already recreated under the name survives, and the caller's create
+    /// then answers `deduplicated`.
+    async fn delete_and_wait(&self, name: &str, uid: Option<&str>) -> anyhow::Result<()> {
         let jobs = self.jobs();
-        let dp = DeleteParams {
-            propagation_policy: Some(PropagationPolicy::Background),
-            ..Default::default()
-        };
-        match jobs.delete(name, &dp).await {
+        match jobs.delete(name, &delete_params(uid)).await {
             Ok(_) => {}
             Err(KubeError::Api(e)) if e.code == 404 => {}
+            Err(KubeError::Api(e)) if e.code == 409 && uid.is_some() => return Ok(()),
             Err(e) => anyhow::bail!("deleting terminal Job: {e}"),
         }
         for _ in 0..60 {
             match jobs.get(name).await {
                 Err(KubeError::Api(e)) if e.code == 404 => return Ok(()),
                 Err(e) => anyhow::bail!("waiting for Job deletion: {e}"),
+                Ok(job) if replaced(&job, uid) => return Ok(()),
                 Ok(_) => tokio::time::sleep(Duration::from_millis(500)).await,
             }
         }
@@ -570,7 +574,7 @@ impl Spawner {
         }
 
         // Terminal: delete + recreate so a fresh run fires the callback.
-        self.delete_and_wait(name).await?;
+        self.delete_and_wait(name, existing.metadata.uid.as_deref()).await?;
         match self.create(job).await {
             Ok(_) => Ok(self.outcome(name, if suspend { "queued" } else { "redispatched" })),
             // A concurrent re-dispatch beat us — its run owns the callback now.
@@ -756,7 +760,7 @@ impl Spawner {
                 return;
             }
         };
-        if let Err(e) = self.delete_and_wait(name).await {
+        if let Err(e) = self.delete_and_wait(name, None).await {
             tracing::warn!(job = %name, session = %session, error = %e, "deleting drifted worker Job failed; it stays stranded");
             return;
         }
@@ -1042,8 +1046,23 @@ impl Spawner {
 
     async fn cancel_worker(&self, handle: &str) -> anyhow::Result<()> {
         let name = handle.strip_prefix("jobs/").unwrap_or(handle);
-        self.delete_and_wait(name).await
+        self.delete_and_wait(name, None).await
     }
+}
+
+/// Background propagation, scoped to the Job `uid` names when given.
+fn delete_params(uid: Option<&str>) -> DeleteParams {
+    DeleteParams {
+        propagation_policy: Some(PropagationPolicy::Background),
+        preconditions: uid
+            .map(|uid| Preconditions { uid: Some(uid.to_owned()), resource_version: None }),
+        ..Default::default()
+    }
+}
+
+/// Whether the Job holding the name is no longer the one `uid` deleted.
+fn replaced(job: &Job, uid: Option<&str>) -> bool {
+    uid.is_some() && job.metadata.uid.as_deref() != uid
 }
 
 /// `spec.pod` labels or annotations under the cctui-managed `managed` keys,
@@ -2567,5 +2586,19 @@ mod tests {
             .filter_map(|j| j.metadata.name.as_deref())
             .collect();
         assert_eq!(resumed, ["early", "late"]);
+    }
+
+    #[test]
+    fn a_redispatch_deletes_only_the_terminal_job_it_read() {
+        let scoped = delete_params(Some("uid-old"));
+        assert_eq!(scoped.preconditions.and_then(|p| p.uid).as_deref(), Some("uid-old"));
+        assert!(delete_params(None).preconditions.is_none(), "a cancel deletes whatever holds it");
+
+        let mut job = Job::default();
+        job.metadata.uid = Some("uid-old".into());
+        assert!(!replaced(&job, Some("uid-old")), "the deleted Job is still going away");
+        job.metadata.uid = Some("uid-new".into());
+        assert!(replaced(&job, Some("uid-old")), "a concurrent dispatch already recreated it");
+        assert!(!replaced(&job, None));
     }
 }
