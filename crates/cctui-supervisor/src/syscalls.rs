@@ -60,10 +60,12 @@ pub fn id_setter_argc(name: &str) -> Option<u8> {
     }
 }
 
-/// `personality(2)` personas the filter lets through, as Docker's default
-/// profile does: the `0xffffffff` query, `PER_LINUX`, `PER_LINUX32` and their
-/// `UNAME26` variants. Any other persona (`ADDR_NO_RANDOMIZE`,
-/// `READ_IMPLIES_EXEC`, ...) weakens exploit mitigations and is denied.
+/// `personality(2)` personas the filter lets through.
+///
+/// As Docker's default profile does: the `0xffffffff` query, `PER_LINUX`,
+/// `PER_LINUX32` and their `UNAME26` variants. Any other persona
+/// (`ADDR_NO_RANDOMIZE`, `READ_IMPLIES_EXEC`, ...) weakens exploit mitigations
+/// and is denied.
 pub const PERSONALITY_ALLOWED: &[u64] = &[0x0, 0x8, 0x2_0000, 0x2_0008, 0xFFFF_FFFF];
 
 /// Persona values to let through for an argument-guarded `personality`, or

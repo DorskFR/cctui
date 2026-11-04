@@ -1,7 +1,9 @@
-//! Seccomp-BPF denylist: `EPERM` for a fixed set of dangerous syscalls,
-//! everything else allowed. `seccompiler` emits the program (arch guard,
-//! per-syscall comparisons, default allow) and `apply_filter` sets
-//! `PR_SET_NO_NEW_PRIVS` before installing it.
+//! Seccomp-BPF denylist.
+//!
+//! `EPERM` for a fixed set of dangerous syscalls, everything else allowed.
+//! `seccompiler` emits the program (arch guard, per-syscall comparisons,
+//! default allow) and `apply_filter` sets `PR_SET_NO_NEW_PRIVS` before
+//! installing it.
 
 use anyhow::{Context, Result, anyhow};
 use seccompiler::{
@@ -74,7 +76,8 @@ fn id_setter_rules(argc: u8, worker_id: u64) -> Result<Vec<SeccompRule>> {
 }
 
 /// One rule denying `personality` unless its persona argument is one of
-/// `allowed` (conditions within a rule are ANDed: "none of the allowed values").
+/// `allowed`: a rule matches only when all its conditions hold, i.e. when the
+/// persona is none of the allowed values.
 fn persona_rule(allowed: &[u64]) -> Result<Vec<SeccompRule>> {
     let conditions = allowed
         .iter()
@@ -142,13 +145,13 @@ mod tests {
     use crate::syscalls::PERSONALITY_ALLOWED;
 
     const RET_ALLOW: u32 = 0x7fff_0000;
-    const RET_EPERM: u32 = 0x0005_0000 | 1;
+    const RET_EPERM: u32 = 0x0005_0001;
     const WORKER: u32 = 1000;
 
     #[cfg(target_arch = "x86_64")]
-    const AUDIT_ARCH: u32 = 62 | 0x8000_0000 | 0x4000_0000;
+    const AUDIT_ARCH: u32 = 0x3e | 0x8000_0000 | 0x4000_0000;
     #[cfg(target_arch = "aarch64")]
-    const AUDIT_ARCH: u32 = 183 | 0x8000_0000 | 0x4000_0000;
+    const AUDIT_ARCH: u32 = 0xb7 | 0x8000_0000 | 0x4000_0000;
 
     /// `struct seccomp_data` as the kernel lays it out (little-endian).
     fn seccomp_data(nr: i64, args: [u64; 6]) -> Vec<u8> {
@@ -298,6 +301,7 @@ mod tests {
 
     /// Runs in the forked child: install the filter, then expect `EPERM` from
     /// calls that would otherwise fail with a different errno or succeed.
+    #[allow(unsafe_code)]
     fn probe_in_child(program: &BpfProgram, perf: i64, uring: i64, persona: i64) -> i32 {
         if seccompiler::apply_filter(program).is_err() {
             return 10;
@@ -327,6 +331,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn installed_filter_denies_new_syscalls_in_the_kernel() {
         let (program, _) = build(WORKER).unwrap();
         let blocked = blocked_syscalls().unwrap();

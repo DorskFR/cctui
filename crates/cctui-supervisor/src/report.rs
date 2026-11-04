@@ -9,6 +9,8 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 /// Effective hardening applied before exec.
+// Each bool is an independent fact the report records, not a state.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize)]
 pub struct Report {
     /// Landlock ABI/status used, or `"unavailable"`.
