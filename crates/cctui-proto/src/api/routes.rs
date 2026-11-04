@@ -2016,6 +2016,14 @@ pub const ROUTES: &[Route] = &[
         response: None,
     },
     Route {
+        id: "get_sessions_by_id_hook_policy",
+        method: Method::Get,
+        path: "/sessions/{id}/hook-policy",
+        summary: "Read the hook rules the session was launched with.",
+        request: None,
+        response: Some("SessionHookPolicy"),
+    },
+    Route {
         id: "get_sessions_by_id_tool_guard",
         method: Method::Get,
         path: "/sessions/{id}/tool-guard",

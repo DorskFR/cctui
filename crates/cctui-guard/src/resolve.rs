@@ -6,10 +6,14 @@
 //! redefines a set with `[name]:` replaces it and `[name]+:` extends it, so the
 //! prompt author's inline definitions always win — the prompt owns its control
 //! surface.
+//!
+//! `.toml` imports are capability registries, loaded by
+//! [`crate::capability::resolve_registry`] instead.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
+use crate::capability::is_registry_import;
 use crate::ir::Workflow;
 use crate::parser::rules_definitions;
 
@@ -58,7 +62,7 @@ pub fn resolve_sets(
     }
 
     let base_dir = prompt.parent().filter(|p| !p.as_os_str().is_empty());
-    for import in &workflow.rules {
+    for import in workflow.rules.iter().filter(|i| !is_registry_import(i)) {
         let path = base_dir.map_or_else(|| Path::new(import).to_path_buf(), |d| d.join(import));
         match std::fs::read_to_string(&path) {
             Ok(text) => {
@@ -134,6 +138,20 @@ mod tests {
         let resolved = resolve_sets(None, Path::new("/nonexistent"), &prompt, &wf);
         assert_eq!(resolved.import_errors.len(), 1);
         assert!(resolved.import_errors[0].contains("missing.md"));
+    }
+
+    #[test]
+    fn registry_imports_are_not_set_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let prompt = write(
+            dir.path(),
+            "task.md",
+            "[rules]: ./missing-caps.toml\n\n# Step 1\n[transition]: Exit\n",
+        );
+        let wf = Workflow::compile(&std::fs::read_to_string(&prompt).unwrap()).unwrap();
+        let resolved = resolve_sets(None, Path::new("/nonexistent"), &prompt, &wf);
+        assert!(resolved.import_errors.is_empty(), "{:?}", resolved.import_errors);
+        assert!(resolved.sets.is_empty());
     }
 
     #[test]

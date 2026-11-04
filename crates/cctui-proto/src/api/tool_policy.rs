@@ -18,3 +18,14 @@ pub struct ToolPolicy {
     #[serde(default)]
     pub exempt_roots: Vec<String>,
 }
+
+/// The account policy page: the gateway policy plus the hook rules every
+/// session the account launches carries.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AccountToolPolicy {
+    #[serde(flatten)]
+    pub guard: ToolPolicy,
+    #[serde(default)]
+    pub hooks: Vec<crate::hook_policy::HookRule>,
+}

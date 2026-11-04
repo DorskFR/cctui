@@ -1610,6 +1610,7 @@ mod tests {
                     env: std::collections::BTreeMap::new(),
                     bootstrap: serde_json::Value::Null,
                     parent_local_id: Some(parent.to_owned()),
+                    hook_policy: None,
                 },
                 command_id: Some(Uuid::new_v4()),
                 session_id: Some(Uuid::new_v4()),

@@ -402,6 +402,7 @@ async fn execute_spawn(
         env,
         bootstrap,
         parent_local_id: None,
+        hook_policy: None,
     };
     persist_spawn_capability(state, machine_uuid, req, permission_mode, &token_session_id).await;
     let launched = cctui_server_core::launch::launch_durable(
@@ -426,30 +427,18 @@ async fn execute_spawn(
         },
     )
     .await;
-    match launched {
-        Err(cctui_server_core::launch::LaunchError::Storage(error)) => {
-            tracing::error!(%error,"could not persist machine launch");
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError { error: crate::error::DB_ERROR.into() }),
-            ));
+    if let Err(error) = launched {
+        if matches!(
+            error,
+            cctui_server_core::launch::LaunchError::Delivery(_)
+                | cctui_server_core::launch::LaunchError::Policy(_)
+        ) && let Err(e) =
+            crate::routes::attachments::delete_attachments(&state.pool, &recorded_ids).await
+        {
+            tracing::warn!(session = %token_session_id, "undoing bootstrap attachments: {e}");
         }
-        Ok(()) => {}
-        Err(cctui_server_core::launch::LaunchError::Delivery(err)) => {
-            if let Err(e) =
-                crate::routes::attachments::delete_attachments(&state.pool, &recorded_ids).await
-            {
-                tracing::warn!(session = %token_session_id, "undoing bootstrap attachments: {e}");
-            }
-            return Err(dispatch_error(&err));
-        }
-        Err(cctui_server_core::launch::LaunchError::Refused(detail)) => {
-            tracing::warn!(machine = %req.machine_id, %command_id, %adapter_id, %detail, "spawn refused by the daemon");
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ApiError { error: format!("the daemon refused the spawn: {detail}") }),
-            ));
-        }
+        tracing::warn!(machine = %req.machine_id, %command_id, %adapter_id, %error, "spawn not launched");
+        return Err(launch_failure(error));
     }
 
     tracing::info!(machine = %req.machine_id, %command_id, %adapter_id, "spawn dispatched");
@@ -462,6 +451,24 @@ async fn execute_spawn(
             session_id: pre_session_id,
         }),
     ))
+}
+
+fn launch_failure(error: cctui_server_core::launch::LaunchError) -> (StatusCode, Json<ApiError>) {
+    use cctui_server_core::launch::LaunchError;
+    match error {
+        LaunchError::Storage(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError { error: crate::error::DB_ERROR.into() }),
+        ),
+        LaunchError::Delivery(err) => dispatch_error(&err),
+        LaunchError::Policy(detail) => {
+            (StatusCode::BAD_REQUEST, Json(ApiError { error: format!("hook policy: {detail}") }))
+        }
+        LaunchError::Refused(detail) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiError { error: format!("the daemon refused the spawn: {detail}") }),
+        ),
+    }
 }
 
 /// The 503 a spawn answers when its command never reached the daemon.
@@ -1844,6 +1851,53 @@ mod launch_gate_tests {
                     .unwrap();
             assert!(!registered, "the binding must precede registration");
         }
+    }
+
+    #[tokio::test]
+    async fn a_fork_carries_and_records_its_parents_hook_policy() {
+        use cctui_proto::hook_policy::{HookEvent, HookRule, ToolClass, no_direct_harness_rule};
+        let name = "a_fork_carries_and_records_its_parents_hook_policy";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let owner = seed_user(&pool).await;
+        let machine = seed_machine(&pool, owner).await;
+        let parent = seed_session(&pool, owner, machine).await;
+        let deny_rm = HookRule {
+            event: HookEvent::PreToolUse,
+            tool: ToolClass::Shell,
+            command: "deny-rm".into(),
+            timeout_secs: Some(30),
+        };
+        let carried =
+            cctui_server_core::hook_policy::carry("claude-code", vec![deny_rm.clone()]).unwrap();
+        sqlx::query(
+            "INSERT INTO machine_launches (command_id, session_id, machine_id, user_id, \
+             acting_user_id, adapter_id, working_dir, hook_policy) \
+             VALUES ($1, $2, $3, $4, $4, 'claude-code', '/w', $5)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(&parent)
+        .bind(machine)
+        .bind(owner)
+        .bind(sqlx::types::Json(&carried))
+        .execute(&pool)
+        .await
+        .unwrap();
+        let state = AppState::for_test(pool.clone());
+        let mut rx = daemon(&state, machine);
+        let child = fork(&state, caller(owner, SPAWNER), &parent).await.unwrap().unwrap();
+        let cctui_proto::ws::DaemonFrameDown::Command { command, .. } = rx.recv().await.unwrap()
+        else {
+            panic!("expected a fork command")
+        };
+        let cctui_proto::adapter::AdapterCommand::Fork { spec, .. } = *command else {
+            panic!("expected a fork")
+        };
+        let rules = spec.hook_policy.expect("the fork carries a policy").rules;
+        assert_eq!(rules, vec![no_direct_harness_rule(), deny_rm]);
+        let recorded = cctui_server_core::hook_policy::for_session(&pool, &child).await.unwrap();
+        assert_eq!(recorded.rules, rules, "the fork's policy is persisted under its key");
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(owner).execute(&pool).await.ok();
     }
 
     #[tokio::test]

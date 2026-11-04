@@ -27,6 +27,9 @@ pub struct Report {
     pub rw_paths: Vec<String>,
     /// The command (argv) that will be exec'd.
     pub command: Vec<String>,
+    /// Whether every exec is authorised by cctui-guard (`--guard-exec`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub exec_guarded: bool,
 }
 
 impl Report {

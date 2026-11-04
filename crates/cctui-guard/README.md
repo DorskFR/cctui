@@ -314,6 +314,121 @@ unreadable `[rules]` import is a lint error and refuses startup (fail closed);
 `lint --explain` prints each set's effective source (`inline`, `[rules] <path>`,
 `--rules`, `--rules-base`).
 
+## Capability registry
+
+Tool sets and network sets describe the same capability twice. A **capability
+registry** (`capabilities.toml`) describes it once; the exec table the exec loop
+consults and the guard-proxy `policy.json` are both generated from it, never
+hand-written.
+
+```toml
+[capability."git:read"]
+exec = [{ bin = "git", subcommands = ["status", "diff", "log", "show", "fetch"] }]
+net  = ["github.com:443"]
+
+[capability."git:push"]
+requires = ["git:read"]
+exec = [{ bin = "git", subcommands = ["push"], allow_flags = ["--set-upstream", "-u"] }]
+assumes = ["branch protection rejects force-push"]
+
+[capability."make:test"]
+exec = [{ bin = "make", subcommands = ["test", "lint"] }, { bin = "cargo" }]
+```
+
+Fields: `requires` (other capabilities, resolved transitively; a cycle or an
+unknown name is an error), `exec` (argv shapes, below), `net` (`host:port`),
+`assumes` (the server-side rule the capability relies on), `description`, and
+`extend = true` (append to a lower layer's definition instead of replacing it).
+
+A step grants capabilities in `[allowed]`, with no new syntax:
+
+```markdown
+[allowed]: Read, git:read, git:push, make:test
+```
+
+The namespace colon tells them apart: `git:push` is a capability, bare
+`Bash`/`Edit` stay harness tool names. Grants may also come through a set
+(`[all-git]: git:read, git:push`). A grant that does not resolve refuses
+startup.
+
+**Layering** mirrors the sets, lowest to highest: `--capabilities-base` (the
+image; defaults to `capabilities.toml` next to `--rules-base`) <
+`--capabilities` (the pack; defaults to `capabilities.toml` next to `--rules`)
+< each `[rules]: ./x.toml` import of the prompt in authored order. A missing
+base or pack file is skipped; a missing import or an unparsable layer refuses
+startup.
+
+**What a granting step compiles to:**
+
+- **exec table**: every binary its capabilities reach. An exec of a binary
+  absent from it, or of a granted binary with an ungranted subcommand or flag,
+  is denied. `[disallowed]` phrases still apply first. Steps that grant no
+  capability keep the phrase-only exec checks.
+- **`policy.json`**: default deny, allowing the union of the granted `net`
+  hosts, then the step's `[network]` hosts, then `--always-allow`.
+  `[network]` survives as an additive escape hatch for a one-off host;
+  `[network]: *` still opens egress.
+- **Bash hook**: a `Bash` call the phrase rules refuse passes when every
+  segment is a granted exec. Segments with substitution, redirection or a
+  background `&` are left to the phrase rules.
+
+### Matching (structural, no regex)
+
+1. The binary is the exec path's basename (argv[0] is caller-chosen).
+2. A per-binary model skips global flags to find the subcommand. `git`:
+   `-C <dir>`, `--git-dir`, `--work-tree`, `--namespace`, `--no-pager`, `-p`,
+   `-P`, … are skipped with their values; `-c k=v`, `--config-env`,
+   `--exec-path` change what git runs and pass only when listed in the rule's
+   `allow_flags`. `gh`: `-R`/`--repo <repo>`. An unknown global flag denies.
+   Other binaries: the subcommand is the first argument.
+3. `subcommands` are space-separated words (`"pr comment"`) matched against
+   the arguments that follow. Omit `subcommands` to grant a binary with any
+   arguments.
+4. Every later flag must be in `allow_flags`; **an unrecognised flag denies**.
+   Bundled short flags (`-uv`) are checked one by one. An entry ending in `=`
+   (`"-m="`, `"--format="`) takes a value, attached or as the next argument.
+   Arguments after `--` and non-flag arguments are not inspected.
+
+### What argv policy does not stop
+
+Argv policy is **coarse**: binary + subcommand is where it is reliable. It
+does not see:
+
+- `git push origin +main`: a force-push with no flag (refspec, not a flag).
+- aliases: `git config alias.p 'push --force'` then `git p` (do not grant
+  `git config`).
+- environment smuggling: `GIT_SSH_COMMAND`, hooks, `--receive-pack=…`.
+
+The guard stops the accident; **server-side rules stop the determined case**.
+Put the guarantee for destructive operations (force-push, branch deletion) in
+GitHub branch protection / rulesets, and record that reliance in the
+capability's `assumes`.
+
+### Lint and explain
+
+`lint` reports a grant that does not resolve (error), a capability in
+`[disallowed]` (warning: capabilities are only granted), and a `[network]`
+host a granted capability already covers (warning: drop it).
+
+```
+cctui-guard explain git:push [--prompt task.md] [--capabilities-base …] [--capabilities …]
+```
+
+prints the capability's effective requires, assumes, binaries with their argv
+predicates, and hosts, each annotated with the capability and layer it came
+from:
+
+```
+git:push (defined in --capabilities)
+  requires:
+    git:push -> git:read (--capabilities)
+  exec:
+    git push [flags: --set-upstream, -u] (git:push, --capabilities)
+    git status [no flags] (git:read, --capabilities-base)
+  net:
+    github.example.com:443 (git:read, --capabilities-base)
+```
+
 ## Proxy policy output
 
 On startup and on every transition, the engine writes `--policy-out`:

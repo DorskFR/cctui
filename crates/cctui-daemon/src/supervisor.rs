@@ -2067,6 +2067,7 @@ mod tests {
             env: std::collections::BTreeMap::new(),
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,
+            hook_policy: None,
         };
         let frame = cctui_proto::ws::DaemonFrameDown::Command {
             adapter_id: "opencode".to_owned(),

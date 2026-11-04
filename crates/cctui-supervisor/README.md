@@ -36,6 +36,7 @@ cctui-supervisor \
 | `--strict`      | Treat a missing/unenforced Landlock LSM as fatal instead of warning and continuing.          |
 | `--no-seccomp`  | Skip the seccomp filter (debugging only).                                                    |
 | `--no-privdrop` | Skip the capability drop / setuid (debugging only).                                          |
+| `--guard-exec <socket>` | Route every exec through cctui-guard (see below). Off unless given.                     |
 | `--dry-run`     | Print the resolved rules and exit without applying anything or exec'ing.                     |
 
 When no `--ro`/`--rw` flags are given, the neutral worker-contract defaults are
@@ -59,6 +60,16 @@ used:
 - **Privilege drop:** clears the inheritable, ambient and bounding capability
   sets, then `setgid`/`setuid` to the target uid (privilege drop happens before
   seccomp, since the filter blocks `setuid`).
+
+## Exec interception (`--guard-exec`)
+
+Before Landlock, the supervisor sets `no_new_privs`, installs a seccomp filter
+returning `SECCOMP_RET_USER_NOTIF` for `execve`/`execveat` (a foreign-arch
+syscall kills the process), and sends the listener fd to `cctui-guard
+--exec-socket` over the given unix socket. It continues only on the guard's
+`ok`; any other answer, a missing guard or a timeout aborts before the payload
+runs. Landlock then withholds execute rights on the RW paths, and an unenforced
+Landlock is fatal. The report gains `"exec_guarded": true`.
 
 ## Report shape
 

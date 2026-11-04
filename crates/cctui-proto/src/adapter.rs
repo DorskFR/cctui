@@ -1046,6 +1046,8 @@ pub struct SessionSpec {
     pub bootstrap: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_local_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_policy: Option<crate::hook_policy::HookPolicy>,
 }
 
 impl std::fmt::Debug for SessionSpec {
@@ -1062,6 +1064,7 @@ impl std::fmt::Debug for SessionSpec {
             .field("env", &format_args!("<{} secret(s) redacted>", self.env.len()))
             .field("bootstrap", &format_args!("<redacted>"))
             .field("parent_local_id", &self.parent_local_id)
+            .field("hook_policy", &self.hook_policy)
             .finish()
     }
 }
@@ -1256,7 +1259,40 @@ mod tests {
             env: std::collections::BTreeMap::new(),
             bootstrap: serde_json::Value::Null,
             parent_local_id: parent.map(str::to_owned),
+            hook_policy: None,
         }
+    }
+
+    #[test]
+    fn a_spawn_without_hook_policy_omits_it_and_old_frames_still_parse() {
+        let cmd = AdapterCommand::Spawn { spec: spec(None), command_id: None, session_id: None };
+        let json = serde_json::to_value(&cmd).unwrap();
+        assert!(json["spec"].get("hook_policy").is_none());
+        let back: AdapterCommand = serde_json::from_value(json).unwrap();
+        let AdapterCommand::Spawn { spec, .. } = back else { panic!("not a spawn") };
+        assert_eq!(spec.hook_policy, None);
+    }
+
+    #[test]
+    fn a_spawn_hook_policy_round_trips() {
+        use crate::hook_policy::{HookEvent, HookPolicy, HookRule, ToolClass};
+        let policy = HookPolicy {
+            rules: vec![HookRule {
+                event: HookEvent::PreToolUse,
+                tool: ToolClass::Shell,
+                command: "deny-rm".into(),
+                timeout_secs: Some(5),
+            }],
+        };
+        let cmd = AdapterCommand::Spawn {
+            spec: SessionSpec { hook_policy: Some(policy.clone()), ..spec(None) },
+            command_id: None,
+            session_id: None,
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        let back: AdapterCommand = serde_json::from_str(&json).unwrap();
+        let AdapterCommand::Spawn { spec, .. } = back else { panic!("not a spawn") };
+        assert_eq!(spec.hook_policy, Some(policy));
     }
 
     #[test]
@@ -1758,6 +1794,7 @@ mod tests {
             env: std::collections::BTreeMap::new(),
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,
+            hook_policy: None,
         };
         let json = serde_json::to_string(&spec).unwrap();
         let _back: SessionSpec = serde_json::from_str(&json).unwrap();

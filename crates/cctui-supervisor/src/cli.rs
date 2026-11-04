@@ -85,6 +85,13 @@ pub struct Cli {
     #[arg(long = "no-privdrop")]
     pub no_privdrop: bool,
 
+    /// Route every execve/execveat of the payload tree through cctui-guard: install
+    /// a seccomp user-notification filter, hand its listener fd to the guard
+    /// listening on this unix socket, and drop execute rights on the RW paths.
+    /// Any failure aborts before the payload runs.
+    #[arg(long = "guard-exec", value_name = "SOCKET")]
+    pub guard_exec: Option<PathBuf>,
+
     /// Print the resolved rules and exit without applying anything.
     #[arg(long = "dry-run")]
     pub dry_run: bool,
@@ -113,5 +120,35 @@ impl Cli {
         } else {
             self.rw.clone()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use clap::Parser;
+
+    use super::Cli;
+
+    #[test]
+    fn guard_exec_is_off_by_default() {
+        let cli = Cli::try_parse_from(["cctui-supervisor", "--", "cctui-daemon", "run"]).unwrap();
+        assert_eq!(cli.guard_exec, None);
+        assert_eq!(cli.command, ["cctui-daemon", "run"]);
+    }
+
+    #[test]
+    fn guard_exec_takes_the_socket_path() {
+        let cli = Cli::try_parse_from([
+            "cctui-supervisor",
+            "--guard-exec",
+            "/var/run/workflow-guard/exec.sock",
+            "--",
+            "cctui-daemon",
+        ])
+        .unwrap();
+        assert_eq!(cli.guard_exec.as_deref(), Some(Path::new("/var/run/workflow-guard/exec.sock")));
+        assert_eq!(cli.command, ["cctui-daemon"]);
     }
 }

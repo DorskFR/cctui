@@ -15,6 +15,29 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// Execution tables the dispatch path touches, as session-private copies.
+const TEMP_TABLES: &[&str] = &[
+    "CREATE TEMP TABLE users (LIKE public.users INCLUDING ALL)",
+    "CREATE TEMP TABLE user_acls (LIKE public.user_acls INCLUDING ALL)",
+    "CREATE TEMP TABLE key_acls (LIKE public.key_acls INCLUDING ALL)",
+    "CREATE TEMP TABLE machines (LIKE public.machines INCLUDING ALL)",
+    "CREATE TEMP TABLE auth_keys (LIKE public.auth_keys INCLUDING ALL)",
+    "CREATE TEMP TABLE accounts (LIKE public.accounts INCLUDING ALL)",
+    "CREATE TEMP TABLE account_pools (LIKE public.account_pools INCLUDING ALL)",
+    "CREATE TEMP TABLE account_providers (LIKE public.account_providers INCLUDING ALL)",
+    "CREATE TEMP TABLE dispatchers (LIKE public.dispatchers INCLUDING ALL)",
+    "CREATE TEMP TABLE sessions (LIKE public.sessions INCLUDING ALL)",
+    "CREATE TEMP TABLE session_spawn_capabilities (LIKE public.session_spawn_capabilities INCLUDING ALL)",
+    "CREATE TEMP TABLE dispatch_policies (LIKE public.dispatch_policies INCLUDING ALL)",
+    "CREATE TEMP TABLE dispatch_policy_uses (LIKE public.dispatch_policy_uses INCLUDING ALL)",
+    "CREATE TEMP TABLE dispatch_handles (LIKE public.dispatch_handles INCLUDING ALL)",
+    "CREATE TEMP TABLE dispatch_records (LIKE public.dispatch_records INCLUDING ALL)",
+    "CREATE TEMP TABLE session_tokens (LIKE public.session_tokens INCLUDING ALL)",
+    "CREATE TEMP TABLE account_tool_policies (LIKE public.account_tool_policies INCLUDING ALL)",
+    "CREATE TEMP TABLE session_hook_policies (LIKE public.session_hook_policies INCLUDING ALL)",
+    "CREATE TEMP TABLE machine_launches (LIKE public.machine_launches INCLUDING ALL)",
+];
+
 struct Host {
     pool: PgPool,
     bus: Bus,
@@ -102,23 +125,7 @@ impl Fixture {
             .connect(&url)
             .await
             .unwrap();
-        for ddl in [
-            "CREATE TEMP TABLE users (LIKE public.users INCLUDING ALL)",
-            "CREATE TEMP TABLE user_acls (LIKE public.user_acls INCLUDING ALL)",
-            "CREATE TEMP TABLE key_acls (LIKE public.key_acls INCLUDING ALL)",
-            "CREATE TEMP TABLE machines (LIKE public.machines INCLUDING ALL)",
-            "CREATE TEMP TABLE auth_keys (LIKE public.auth_keys INCLUDING ALL)",
-            "CREATE TEMP TABLE accounts (LIKE public.accounts INCLUDING ALL)",
-            "CREATE TEMP TABLE account_pools (LIKE public.account_pools INCLUDING ALL)",
-            "CREATE TEMP TABLE account_providers (LIKE public.account_providers INCLUDING ALL)",
-            "CREATE TEMP TABLE dispatchers (LIKE public.dispatchers INCLUDING ALL)",
-            "CREATE TEMP TABLE sessions (LIKE public.sessions INCLUDING ALL)",
-            "CREATE TEMP TABLE session_spawn_capabilities (LIKE public.session_spawn_capabilities INCLUDING ALL)",
-            "CREATE TEMP TABLE dispatch_policies (LIKE public.dispatch_policies INCLUDING ALL)",
-            "CREATE TEMP TABLE dispatch_policy_uses (LIKE public.dispatch_policy_uses INCLUDING ALL)",
-            "CREATE TEMP TABLE dispatch_handles (LIKE public.dispatch_handles INCLUDING ALL)",
-            "CREATE TEMP TABLE dispatch_records (LIKE public.dispatch_records INCLUDING ALL)",
-        ] {
+        for &ddl in TEMP_TABLES {
             sqlx::query(ddl).execute(&pool).await.unwrap();
         }
         for table in ["stream_events", "session_context", "session_attachments"] {
@@ -377,4 +384,49 @@ async fn repeated_dispatch_preserves_the_machine_key_and_repairs_a_legacy_missin
             .unwrap();
     assert_eq!(repaired.0, first.unwrap().0);
     assert_eq!(repaired.2, cctui_server_core::auth::sha256_hex(&repaired.1));
+}
+
+#[tokio::test]
+async fn a_dispatched_worker_payload_carries_the_effective_hook_policy() {
+    use cctui_proto::hook_policy::{from_dispatch_payload, no_direct_harness_rule};
+    let Some(mut f) = Fixture::new(StatusCode::OK, json!({"handle":"job/review"})).await else {
+        return;
+    };
+    let request = Fixture::request(json!({
+        "prompt_file": "review",
+        "hook_policy": {"rules": []},
+        "hook_rules": [{"event": "PreToolUse", "tool": "shell", "command": "audit"}],
+    }));
+    let (status, reply) = execute_dispatch(&f.host, &f.ctx, request).await.unwrap();
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (_, forwarded) = f.requests.try_recv().unwrap();
+    assert!(forwarded["payload"].get("hook_rules").is_none());
+    let policy = from_dispatch_payload(&forwarded["payload"]).expect("the worker gets a policy");
+    assert_eq!(policy.rules[0], no_direct_harness_rule());
+    assert_eq!(policy.rules[1].command, "audit");
+    let recorded =
+        cctui_server_core::hook_policy::for_session(&f.host.pool, &reply.session_id).await.unwrap();
+    assert_eq!(recorded.rules, policy.rules);
+
+    let count = |sql: &'static str| {
+        let pool = f.host.pool.clone();
+        async move { sqlx::query_scalar::<_, i64>(sql).fetch_one(&pool).await.unwrap() }
+    };
+    let keys = count("SELECT count(*) FROM auth_keys").await;
+    let policies = count("SELECT count(*) FROM session_hook_policies").await;
+    let refused = execute_dispatch(
+        &f.host,
+        &f.ctx,
+        Fixture::request(json!({"prompt_file": "review", "hook_rules": [{
+            "event": "PreToolUse", "tool": "shell",
+            "command": no_direct_harness_rule().command, "timeout_secs": 1,
+        }]})),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.0, StatusCode::BAD_REQUEST);
+    assert!(refused.1.error.contains("add-only"), "{}", refused.1.error);
+    assert_eq!(count("SELECT count(*) FROM auth_keys").await, keys, "no worker key minted");
+    assert_eq!(count("SELECT count(*) FROM session_hook_policies").await, policies);
+    assert!(f.requests.try_recv().is_err(), "nothing was forwarded");
 }

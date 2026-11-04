@@ -118,6 +118,7 @@ export async function stubApi(page: Page, sessions: unknown[], opts: StubOptions
 		if (path.endsWith('/user-actions')) return json({ session_id: path.split('/')[2], items: [] });
 		// `null`, not the generic `[]`: a truthy body renders the guard step chip.
 		if (/^\/sessions\/[^/]+\/guard$/.test(path)) return json(null);
+		if (/^\/sessions\/[^/]+\/hook-policy$/.test(path)) return json({ rules: [], status: null });
 		if (path === '/sessions' || path.startsWith('/sessions/search'))
 			return json({ sessions, total: sessions.length });
 		if (/^\/sessions\/[^/]+\/conversation/.test(path)) {

@@ -120,6 +120,11 @@ enum Cmd {
         #[arg(long)]
         sock: Option<PathBuf>,
     },
+    /// Internal: adapts a harness's hook payload for a cctui hook rule.
+    HookShim {
+        #[command(subcommand)]
+        shim: cctui_daemon::hook_policy::shim::ShimCmd,
+    },
     /// Check for a newer release, swap the binary in place, and have the
     /// running daemon re-exec onto it (same process, live sessions kept).
     Update,
@@ -548,6 +553,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Cmd::WhipStopHook { phrases, sock } => {
             std::process::exit(cctui_daemon::whipstop::run(phrases.as_deref(), sock.as_deref()))
         }
+        Cmd::HookShim { shim } => std::process::exit(cctui_daemon::hook_policy::shim::run(&shim)),
     }
 }
 

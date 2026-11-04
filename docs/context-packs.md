@@ -23,12 +23,19 @@ translation. Nothing here changes the Claude path — the Codex targets are
 | `skills/` | `~/.claude/skills/` | — (not a Codex concept; kept for reference) |
 | `rules/` | `~/.claude/rules/` (auto-loaded) | fold into `AGENTS.md` if always-on |
 | `docs/` | `~/.claude/docs/` (pull) | `/opt/context/docs/` (referenced by path) |
-| `hooks/` | `~/.claude/hooks/` + PreToolUse registration | — (Codex has no PreToolUse hook seam here) |
+| `hooks/` | `~/.claude/hooks/` + PreToolUse registration | — (the entrypoint registers its own guard shim in `$CODEX_HOME/hooks.json`) |
 | `guard-rules.md` | `cctui-guard` rules | `cctui-guard` rules (harness-independent) |
+| `capabilities.toml` | `cctui-guard` capability registry | same (harness-independent) |
 
-`guard-rules.md` and the guard are harness-independent: the egress fence is
-enforced by `cctui-guard-proxy` around whichever agent runs, so a pack's network
-policy applies to Codex exactly as to Claude.
+The guard is harness-independent. Its enforcement does not ride on any harness
+hook: the egress fence is `cctui-guard-proxy` around whichever agent runs, and
+with `CCTUI_GUARD_EXEC=1` every `execve` of the agent tree is judged against the
+step's granted capabilities (see "Exec interception" in `worker-contract.md`).
+The per-harness pre-tool hooks (Claude `PreToolUse`, the Codex and OpenCode
+shims) are steering: they refuse a tool call early with the same reason, but a
+repo or agent setting can switch them off. What only the hooks see are
+in-process tools that never exec (`Edit`, `Write`, `WebFetch`, MCP calls); see
+`harness-modes.md` §7.
 
 ### Instructions: `AGENTS.md` with a `CLAUDE.md` fallback
 

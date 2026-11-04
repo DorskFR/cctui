@@ -23,6 +23,8 @@
 		useSessionLangfuse
 	} from '$lib/queries';
 	import { useToolGuard, useToolGuardActions } from '$lib/queries/toolGuard';
+	import { useSessionHookPolicy } from '$lib/queries/hookPolicy';
+	import { describeRule, hookChip } from './hook-policy.logic';
 	import { canOfferBypass, guardOff } from '$lib/tool-guard-bypass.logic';
 	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
 	import CodexModelsRefresh from '$lib/components/molecules/CodexModelsRefresh.svelte';
@@ -83,6 +85,11 @@
 		() => detailsOpen
 	);
 	const toolGuardActions = useToolGuardActions();
+	const hookPolicy = useSessionHookPolicy(
+		() => session.id,
+		() => detailsOpen
+	);
+	const hooks = $derived(hookChip(hookPolicy.data));
 	const toolGuardSwitch = $derived(canOfferBypass(toolGuard.data, archived));
 	let toolGuardSaving = $state(false);
 	async function setToolGuard(on: boolean) {
@@ -319,6 +326,26 @@
 					<span class="mp-val"><LangfuseChip id={session.id} /></span>
 				</div>
 			{/if}
+			{#if hooks.kind !== 'none'}
+				<div class="mp-sep"></div>
+				<div class="mp-row" data-testid="hook-policy">
+					<span class="mp-key"><Text size="xs" tone="faint">{m.hook_policy_title()}</Text></span>
+					<span class="mp-val">
+						{#if hooks.kind === 'applied'}
+							<Badge size="xs" tone="accent">{m.hook_policy_count({ count: hooks.rules.length })}</Badge>
+						{:else}
+							<Badge size="xs" tone="warn" title={m.hook_policy_unguarded_help()}
+								>{m.hook_policy_unguarded()}</Badge
+							>
+						{/if}
+					</span>
+				</div>
+				<ul class="mp-hooks">
+					{#each hooks.rules as rule, i (i)}
+						<li><Text variant="code" size="xs" tone="muted">{describeRule(rule)}</Text></li>
+					{/each}
+				</ul>
+			{/if}
 			{#if toolGuardSwitch && toolGuard.data}
 				{@const tg = toolGuard.data}
 				<div class="mp-sep"></div>
@@ -459,6 +486,13 @@
 	}
 	.mp-sep {
 		border-top: 1px solid var(--border);
+	}
+	.mp-hooks {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+		min-width: 0;
+		overflow-wrap: anywhere;
 	}
 	.metapop .m-full,
 	.metapop .m-effort {

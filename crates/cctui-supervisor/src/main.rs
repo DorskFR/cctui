@@ -2,11 +2,12 @@
 //!
 //! Sequence (order matters):
 //!   1. parse + resolve paths
-//!   2. Landlock (best-effort; `--strict` makes a missing LSM fatal)
-//!   3. drop capabilities + setgid/setuid  -- BEFORE seccomp, which blocks setuid
-//!   4. seccomp denylist (inherited by the exec'd payload, cannot be undone)
-//!   5. write report
-//!   6. execvp the payload
+//!   2. with `--guard-exec`: exec user-notification filter, listener to the guard
+//!   3. Landlock (best-effort; `--strict` makes a missing LSM fatal)
+//!   4. drop capabilities + setgid/setuid  -- BEFORE seccomp, which blocks setuid
+//!   5. seccomp denylist (inherited by the exec'd payload, cannot be undone)
+//!   6. write report
+//!   7. execvp the payload
 
 use clap::Parser;
 
@@ -32,7 +33,7 @@ fn run() -> anyhow::Result<()> {
     use std::ffi::CString;
 
     use anyhow::{Context, bail};
-    use cctui_supervisor::{landlock_rules, privdrop, seccomp};
+    use cctui_supervisor::{privdrop, seccomp};
 
     // Hidden self-test hook (used by integration tests, no privileges needed):
     // install the seccomp denylist, then call unshare(0). `unshare` with no
@@ -56,17 +57,8 @@ fn run() -> anyhow::Result<()> {
         bail!("no command provided");
     }
 
-    // 1. Landlock (best-effort).
-    let landlock_outcome = landlock_rules::apply(&ro, &rw)?;
-    if !landlock_outcome.is_enforced() {
-        if cli.strict {
-            bail!("landlock not enforced and --strict set: {}", landlock_outcome.describe());
-        }
-        eprintln!(
-            "cctui-supervisor: warning: landlock {} -- continuing (seccomp + cap drop only)",
-            landlock_outcome.describe()
-        );
-    }
+    let exec_guarded = arm_exec_guard(&cli)?;
+    let landlock_outcome = apply_landlock(&cli, &ro, &rw, exec_guarded)?;
 
     // 2. Privilege drop (BEFORE seccomp: the denylist blocks setuid/setgid).
     let caps_dropped = if cli.no_privdrop {
@@ -101,6 +93,7 @@ fn run() -> anyhow::Result<()> {
             ro_paths: ro,
             rw_paths: rw,
             command: cli.command.clone(),
+            exec_guarded,
         };
         report.write_to(path)?;
     }
@@ -117,6 +110,54 @@ fn run() -> anyhow::Result<()> {
     // execvp only returns on failure.
     let err = nix::unistd::execvp(&prog, &argv).unwrap_err();
     bail!("exec {:?} failed: {}", cli.command[0], err);
+}
+
+/// Hand the exec user-notification listener to the guard when `--guard-exec`
+/// is set. Returns whether exec interception is armed; an error aborts the run.
+#[cfg(target_os = "linux")]
+fn arm_exec_guard(cli: &Cli) -> anyhow::Result<bool> {
+    use anyhow::Context;
+    use cctui_supervisor::exec_notify;
+
+    let Some(socket) = &cli.guard_exec else {
+        return Ok(false);
+    };
+    let listener = exec_notify::install().context("installing the exec notification filter")?;
+    exec_notify::hand_off(socket, listener, exec_notify::HANDOFF_TIMEOUT)
+        .context("handing the exec filter to cctui-guard")?;
+    eprintln!("cctui-supervisor: exec interception on (guard at {})", socket.display());
+    Ok(true)
+}
+
+/// Landlock, best-effort unless `--strict`. Under exec interception the RW paths
+/// lose execute rights and an unenforced ruleset is fatal.
+#[cfg(target_os = "linux")]
+fn apply_landlock(
+    cli: &Cli,
+    ro: &[String],
+    rw: &[String],
+    exec_guarded: bool,
+) -> anyhow::Result<cctui_supervisor::landlock_rules::Outcome> {
+    use anyhow::bail;
+    use cctui_supervisor::landlock_rules;
+
+    let outcome = landlock_rules::apply_with(ro, rw, !exec_guarded)?;
+    if !outcome.is_enforced() {
+        if cli.strict {
+            bail!("landlock not enforced and --strict set: {}", outcome.describe());
+        }
+        if exec_guarded {
+            bail!(
+                "landlock not enforced and --guard-exec needs it to keep RW paths noexec: {}",
+                outcome.describe()
+            );
+        }
+        eprintln!(
+            "cctui-supervisor: warning: landlock {} -- continuing (seccomp + cap drop only)",
+            outcome.describe()
+        );
+    }
+    Ok(outcome)
 }
 
 /// Self-test: install the seccomp denylist then exercise a denied syscall that
@@ -159,6 +200,9 @@ fn print_dry_run(cli: &Cli, ro: &[String], rw: &[String]) {
     }
     println!("User (uid/gid): {}", cli.user);
     println!("Strict: {}", cli.strict);
+    if let Some(socket) = &cli.guard_exec {
+        println!("Exec interception: cctui-guard at {} (RW paths noexec)", socket.display());
+    }
     println!("Seccomp: {}", if cli.no_seccomp { "disabled" } else { "enabled" });
     if !cli.no_seccomp {
         println!("Blocked syscalls:");

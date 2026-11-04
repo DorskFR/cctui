@@ -243,6 +243,7 @@ export const ROUTES = [
   { id: "post_sessions_by_id_pin", method: "POST", path: "/sessions/{id}/pin", summary: "Pin a single session.", request: null, response: null },
   { id: "post_sessions_by_id_unpin", method: "POST", path: "/sessions/{id}/unpin", summary: "Unpin a single session.", request: null, response: null },
   { id: "post_sessions_by_id_keepalive", method: "POST", path: "/sessions/{id}/keepalive", summary: "Set or clear the session's prompt-cache keep-alive schedule.", request: null, response: null },
+  { id: "get_sessions_by_id_hook_policy", method: "GET", path: "/sessions/{id}/hook-policy", summary: "Read the hook rules the session was launched with.", request: null, response: "SessionHookPolicy" },
   { id: "get_sessions_by_id_tool_guard", method: "GET", path: "/sessions/{id}/tool-guard", summary: "Read or toggle the session's gateway tool-guard bypass.", request: null, response: "ToolGuardState" },
   { id: "put_sessions_by_id_tool_guard", method: "PUT", path: "/sessions/{id}/tool-guard", summary: "Read or toggle the session's gateway tool-guard bypass.", request: "ToolGuardRequest", response: "ToolGuardState" },
   { id: "post_sessions_by_id_policy", method: "POST", path: "/sessions/{id}/policy", summary: "Set a session's permission policy.", request: null, response: null },

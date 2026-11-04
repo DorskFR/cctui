@@ -127,6 +127,7 @@ async fn execute(
         env: bound.env,
         bootstrap: serde_json::Value::Null,
         parent_local_id: None,
+        hook_policy: None,
     };
     core::launch::launch_durable(
         &host.core,
@@ -160,6 +161,12 @@ fn launch_error(error: core::launch::LaunchError) -> Failure {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(cctui_proto::api::ApiError { error: core::error::DB_ERROR.into() }),
+            );
+        }
+        core::launch::LaunchError::Policy(detail) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(cctui_proto::api::ApiError { error: format!("hook policy: {detail}") }),
             );
         }
         core::launch::LaunchError::Refused(detail) => {

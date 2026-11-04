@@ -1248,6 +1248,7 @@ mod tests {
             r#"POST /sessions/{id}/fork Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/guard Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/guard/transition Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/hook-policy Bearer Resource(Session, Read, Path("id"))"#,
             r#"GET /sessions/{id}/images/{image_id} Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/interrupt Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/keepalive Bearer Resource(Session, Write, Path("id"))"#,

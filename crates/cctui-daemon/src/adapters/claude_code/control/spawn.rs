@@ -1,8 +1,9 @@
+use super::settings::{LaunchPolicy, ensure_hook_settings, recover_hook_policy};
 use super::{
     AdapterEvent, Context, DeferredDispatch, DispatchDoneTracker, Driver, Duration, EndReason,
     JobIds, LaunchArgs, LaunchEnv, Path, PathBuf, SpawnWatchdog, StateJson, agent_relay_config,
-    build_session_context, detect_whip_from_settings, dispatch_done, ensure_hook_settings, json,
-    launch, mpsc, resolve_launch_env_for, socket, transcript,
+    build_session_context, detect_whip_from_settings, dispatch_done, json, launch, mpsc,
+    resolve_launch_env_for, socket, transcript,
 };
 use tracing::Instrument as _;
 
@@ -115,6 +116,9 @@ impl Driver {
         // `spec` to read it from directly, and defaulting false would silently
         // downgrade a 🐎 session's enforcement profile.
         let whip = detect_whip_from_settings(short);
+        let seal_key = self.machine_key.as_deref();
+        let policy = recover_hook_policy(short, seal_key)
+            .with_context(|| format!("refusing to resume {short} without its hook policy"))?;
         let st = StateJson::read(&self.cfg.jobs_root, short);
         // Carry the gateway env + the session's model/effort (from `state.json`)
         // into the managed `--settings` file so a spare-claimed resume
@@ -130,6 +134,7 @@ impl Driver {
             st.as_ref().and_then(|s| s.effort.as_deref()),
             launch.whip_phrases.as_ref(),
             None,
+            LaunchPolicy { policy: policy.as_ref(), seal_key },
         )
         .map(|p| p.to_string_lossy().into_owned());
 
@@ -353,6 +358,7 @@ impl Driver {
             env,
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,
+            hook_policy: cctui_proto::hook_policy::from_dispatch_payload(payload),
         })
     }
 
@@ -414,6 +420,10 @@ impl Driver {
             spec.effort.as_deref(),
             launch_env.whip_phrases.as_ref(),
             agent_tool.then_some(session_id),
+            LaunchPolicy {
+                policy: spec.hook_policy.as_ref(),
+                seal_key: self.machine_key.as_deref(),
+            },
         )
         .map(|p| p.to_string_lossy().into_owned());
         // A staging failure is fatal: silently dropping an attachment the user
@@ -611,6 +621,10 @@ impl Driver {
             None,
             launch_env.whip_phrases.as_ref(),
             launch.mcp_config.is_some().then_some(session_id),
+            LaunchPolicy {
+                policy: spec.hook_policy.as_ref(),
+                seal_key: self.machine_key.as_deref(),
+            },
         )
         .map(|p| p.to_string_lossy().into_owned());
         let prompt = spec.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty());
@@ -918,6 +932,17 @@ mod tests {
         dispatch.run_detached(tx, Some(uuid::Uuid::new_v4()));
         let (ok, error) = command_result(&mut rx).await;
         assert!(ok, "{error:?}");
+    }
+
+    #[test]
+    fn a_dispatch_spec_carries_the_payload_hook_policy() {
+        let policy = cctui_proto::hook_policy::HookPolicy {
+            rules: vec![cctui_proto::hook_policy::no_direct_harness_rule()],
+        };
+        let payload = serde_json::json!({ "prompt": "go", "hook_policy": &policy });
+        assert_eq!(Driver::build_dispatch_spec(&payload).expect("spec").hook_policy, Some(policy));
+        let bare = serde_json::json!({ "prompt": "go" });
+        assert_eq!(Driver::build_dispatch_spec(&bare).expect("spec").hook_policy, None);
     }
 
     #[test]

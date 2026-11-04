@@ -57,6 +57,16 @@ extra_rw_flags() {
     IFS=$_OLDIFS
 }
 
+# CCTUI_GUARD_EXEC=1 (exactly) makes cctui-guard authorise every exec of the
+# supervised tree via a seccomp user-notification filter, and makes the
+# supervisor's RW paths noexec. Any other value, or unset, leaves both off.
+GUARD_EXEC_SOCKET=/var/run/workflow-guard/exec.sock
+guard_exec_on() { [ "${CCTUI_GUARD_EXEC:-}" = 1 ]; }
+guard_exec_flags() {
+    guard_exec_on || return 0
+    printf '%s\n%s\n' --guard-exec "$GUARD_EXEC_SOCKET"
+}
+
 
 # ── Required platform identity ──────────────────────────────────────────────
 if [ -z "${CCTUI_MACHINE_KEY:-}" ]; then
@@ -173,7 +183,8 @@ phase_dispatch_env() {
                 dispatch_identity_failed "the server sent an invalid env name" ;;
             CONTEXT_PACK_*) ;;
             WORKER_* | GUARD_* | PROXY_* | POLICY_* | CONTEXT_* | PRIVATE_ALLOW_FILE \
-                | TERMINATION_LOG | DISPATCH_ENV_URL | NET_MODE | ACP_AGENTS | CCTUI_BASE_URL)
+                | TERMINATION_LOG | DISPATCH_ENV_URL | NET_MODE | ACP_AGENTS | CCTUI_BASE_URL \
+                | CCTUI_GUARD_EXEC)
                 dispatch_identity_failed "the server sent a reserved env name: $_de_k" ;;
         esac
         _de_v=$(printf '%s' "$_de_json" \
@@ -1179,6 +1190,7 @@ phase_codex_config() {
         printf 'http_headers = { "x-openai-actor-authorization" = "cctui-gateway" }\n'
         printf '[features]\n'
         printf 'fast_mode = false\n'
+        printf 'hooks = true\n'
         # MCP tables MUST stay last: a bare key after a [table] binds to it.
         if adapter_is_codex && [ -f "$CONTEXT_DIR/mcp.json" ]; then
             codex_mcp_toml "$CONTEXT_DIR/mcp.json"
@@ -1319,6 +1331,10 @@ phase_guard() {
         IFS=$_OLDIFS
     fi
 
+    if guard_exec_on; then
+        set -- "$@" --exec-socket "$GUARD_EXEC_SOCKET"
+    fi
+
     is_root || log "WARNING: guard: non-root start, cctui-guard runs as the agent's uid $(id -u)"
     cctui-guard "$@" &
     GUARD_PID=$!
@@ -1332,6 +1348,17 @@ phase_guard() {
     export CCTUI_GUARD_URL="http://127.0.0.1:${GUARD_PORT}"
     export PROMPT_FILE="$_prompt"
     log "guard: started (prompt=$_prompt, rules=$_rules, pid $GUARD_PID)"
+}
+
+# Exec interception has no policy to apply without the guard: refuse to start
+# rather than run the agent with the opt-in silently dropped.
+phase_guard_exec() {
+    guard_exec_on || return 0
+    if [ "$GUARD_ON" != on ]; then
+        log "FATAL: CCTUI_GUARD_EXEC=1 but cctui-guard is not running (no stepped prompt); refusing to start"
+        exit 1
+    fi
+    log "guard: exec interception on (socket $GUARD_EXEC_SOCKET); RW paths are noexec"
 }
 
 # ── Phase 6b: Pre-flight isolation check ────────────────────────────────────
@@ -1544,6 +1571,45 @@ phase_hardening() {
     log "hardening: net_mode=$NET_MODE guard=$GUARD_ON preflight=$PREFLIGHT_RESULT"
 }
 
+# Only with a live guard: the shims fail closed and would block every tool.
+# OpenCode sessions get an ephemeral XDG_CONFIG_HOME, hence OPENCODE_CONFIG_DIR.
+install_guard_shims() {
+    [ "${GUARD_ON:-}" = on ] || return 0
+    _shims="${GUARD_SHIMS_DIR:-/usr/local/share/cctui/guard-shims}"
+    if [ ! -d "$_shims" ]; then
+        log "WARNING: guard: no shims at $_shims; codex/opencode tool calls are not steered"
+        return 0
+    fi
+    _home="/home/${WORKER_USER}"
+
+    _ocdir="${OPENCODE_CONFIG_DIR:-${_home}/.config/cctui/opencode}"
+    mkdir -p "$_ocdir/plugins"
+    cp -f "$_shims/opencode/plugins/cctui-guard.js" "$_ocdir/plugins/cctui-guard.js"
+    export OPENCODE_CONFIG_DIR="$_ocdir"
+    chown -R "${WORKER_UID}:${WORKER_UID}" "$_ocdir" 2>/dev/null || true
+    log "guard: opencode plugin installed in $_ocdir/plugins"
+
+    _cxdir="${CODEX_HOME:-${_home}/.codex}"
+    _hooks="$_cxdir/hooks.json"
+    _cmd="$_shims/codex/pretool.sh"
+    mkdir -p "$_cxdir"
+    [ -s "$_hooks" ] || printf '{}\n' > "$_hooks"
+    _t=$(mktemp)
+    if jq --arg cmd "$_cmd" \
+        '.hooks = ((.hooks // {})
+         | .PreToolUse = ((.PreToolUse // [])
+           | if any(.[]?; ((.hooks // [])[]?.command // "") == $cmd) then .
+             else . + [{hooks: [{type: "command", command: $cmd}]}] end))' \
+        "$_hooks" > "$_t"; then
+        mv "$_t" "$_hooks"
+        chown "${WORKER_UID}:${WORKER_UID}" "$_hooks" 2>/dev/null || true
+        log "guard: codex PreToolUse shim registered in $_hooks"
+    else
+        rm -f "$_t"
+        log "WARNING: guard: $_hooks is not valid JSON; codex tool calls are not steered"
+    fi
+}
+
 # ── Phase 7b: Permission bypass seeding ─────────────────────────────────────
 # Seed claude's bypass-permissions and trust-dialog acceptance into the fresh
 # per-pod config, merged into existing files.
@@ -1593,6 +1659,7 @@ phase_permissions() {
             log "permissions: registered PreToolUse hook $(basename "$_hk")"
         done
     fi
+    install_guard_shims
     # .claude is a per-pod emptyDir (not the NFS home), so a recursive chown
     # is safe here (unlike the home).
     chown -R "${WORKER_UID}:${WORKER_UID}" "$_cfgdir" 2>/dev/null || true
@@ -1674,6 +1741,7 @@ phase_callback
 require_known_adapter
 phase_preflight
 phase_guard
+phase_guard_exec
 phase_permissions
 default_node_ca
 phase_hardening
@@ -1694,6 +1762,7 @@ run_supervised_daemon() {
         --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \
         --ro /var/run/workflow-guard --ro /var/run/guard-proxy --rw /var/run/gpg-agent \
         $(extra_rw_flags) \
+        $(guard_exec_flags) \
         --user "$WORKER_UID" \
         --report /tmp/hardening.json \
         -- cctui-daemon run --no-auto-update "$@"

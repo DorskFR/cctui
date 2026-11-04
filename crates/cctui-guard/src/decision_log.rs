@@ -21,6 +21,8 @@ use serde_json::{Value, json};
 pub enum Source {
     Guard,
     Proxy,
+    /// The guard's seccomp exec notifier.
+    Exec,
 }
 
 /// The event a record describes.
@@ -36,6 +38,8 @@ pub enum Kind {
     Enter,
     /// A guard-proxy egress verdict on a `host:port`.
     Network,
+    /// An `execve`/`execveat` verdict from the seccomp notifier.
+    Exec,
 }
 
 /// One appended decision line.
@@ -61,6 +65,9 @@ pub struct Decision {
     /// The matched rule or the denial reason; empty on a clean allow.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub rule: String,
+    /// The kernel-tokenized argv of an exec record.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub argv: Vec<String>,
 }
 
 /// Milliseconds-precision UTC timestamp without pulling in `chrono` (the guard
@@ -147,6 +154,7 @@ impl DecisionLog {
             target: target.to_string(),
             verdict: if allowed { "allow" } else { "deny" }.to_string(),
             rule: rule.to_string(),
+            argv: Vec::new(),
         });
     }
 
@@ -161,6 +169,7 @@ impl DecisionLog {
             target: String::new(),
             verdict: "enter".to_string(),
             rule: String::new(),
+            argv: Vec::new(),
         });
     }
 
@@ -176,6 +185,24 @@ impl DecisionLog {
             target: target.to_string(),
             verdict: verdict.to_string(),
             rule: rule.to_string(),
+            argv: Vec::new(),
+        });
+    }
+
+    /// Record an exec verdict: `tool` is the executed path, `argv` the
+    /// kernel-tokenized arguments. `step` is `None` when the verdict was reached
+    /// before the engine (unreadable target, timeout).
+    pub fn exec(&self, step: Option<i64>, path: &str, argv: &[String], allowed: bool, rule: &str) {
+        self.record(&Decision {
+            ts: now_ts(),
+            source: Source::Exec,
+            kind: Kind::Exec,
+            step,
+            tool: Some(path.to_string()),
+            target: argv.join(" "),
+            verdict: if allowed { "allow" } else { "deny" }.to_string(),
+            rule: rule.to_string(),
+            argv: argv.to_vec(),
         });
     }
 
@@ -190,6 +217,7 @@ impl DecisionLog {
             target: host_port.to_string(),
             verdict: if allowed { "allow" } else { "deny" }.to_string(),
             rule: rule.to_string(),
+            argv: Vec::new(),
         });
     }
 }
@@ -252,7 +280,7 @@ pub fn report_from_records(records: &[Decision]) -> Value {
 
     for r in records {
         match r.kind {
-            Kind::Check if r.verdict == "deny" => {
+            Kind::Check | Kind::Exec if r.verdict == "deny" => {
                 let key =
                     (r.step.unwrap_or(0), r.tool.clone().unwrap_or_default(), r.target.clone());
                 denied_tools.entry(key).or_default().observe(&r.ts);
@@ -419,6 +447,7 @@ mod tests {
                 target: String::new(),
                 verdict: "enter".into(),
                 rule: String::new(),
+                argv: Vec::new(),
             },
             deny_check("2026-07-27T10:00:01.000Z", 1, "Bash", "git push"),
             deny_check("2026-07-27T10:00:05.000Z", 1, "Bash", "git push"),
@@ -458,6 +487,57 @@ mod tests {
         assert_eq!(steps[1]["seconds"], 10);
     }
 
+    #[test]
+    fn exec_records_serialize_with_source_tool_argv_and_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("d.jsonl");
+        let log = DecisionLog::new(Some(path.clone()));
+        let argv = vec!["git".to_string(), "push".to_string(), "--force".to_string()];
+        log.exec(Some(3), "/usr/bin/git", &argv, false, "'git push' is disallowed in this step");
+        log.check(3, "Read", "/x", true, "");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut lines = text.lines();
+        let exec: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+        assert_eq!(exec["source"], "exec");
+        assert_eq!(exec["kind"], "exec");
+        assert_eq!(exec["step"], 3);
+        assert_eq!(exec["tool"], "/usr/bin/git");
+        assert_eq!(exec["argv"], json!(["git", "push", "--force"]));
+        assert_eq!(exec["target"], "git push --force");
+        assert_eq!(exec["verdict"], "deny");
+        assert_eq!(exec["rule"], "'git push' is disallowed in this step");
+        let check: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+        assert!(check.get("argv").is_none(), "non-exec records keep their shape: {check}");
+
+        let records = parse_log(&text);
+        assert_eq!(records[0].source, Source::Exec);
+        assert_eq!(records[0].argv, argv);
+    }
+
+    #[test]
+    fn stepless_exec_failure_omits_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("d.jsonl");
+        DecisionLog::new(Some(path.clone())).exec(None, "/bin/sh", &[], false, "timed out");
+        let line: Value =
+            serde_json::from_str(std::fs::read_to_string(&path).unwrap().trim()).unwrap();
+        assert!(line.get("step").is_none(), "{line}");
+        assert_eq!(line["verdict"], "deny");
+    }
+
+    #[test]
+    fn report_counts_exec_denials_with_tool_denials() {
+        let mut exec = deny_check("2026-07-27T10:00:02.000Z", 1, "/usr/bin/git", "git push");
+        exec.source = Source::Exec;
+        exec.kind = Kind::Exec;
+        let records = vec![enter("2026-07-27T10:00:00.000Z", 1), exec];
+        let report = report_from_records(&records);
+        let tools = report["denied_tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["tool"], "/usr/bin/git");
+        assert_eq!(tools[0]["target"], "git push");
+    }
+
     fn deny_check(ts: &str, step: i64, tool: &str, target: &str) -> Decision {
         Decision {
             ts: ts.into(),
@@ -468,6 +548,7 @@ mod tests {
             target: target.into(),
             verdict: "deny".into(),
             rule: "denied".into(),
+            argv: Vec::new(),
         }
     }
 
@@ -481,6 +562,7 @@ mod tests {
             target: String::new(),
             verdict: "enter".into(),
             rule: String::new(),
+            argv: Vec::new(),
         }
     }
 
@@ -494,6 +576,7 @@ mod tests {
             target: host.into(),
             verdict: "deny".into(),
             rule: "not in allow-list".into(),
+            argv: Vec::new(),
         }
     }
 }

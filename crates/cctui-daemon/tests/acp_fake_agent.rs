@@ -794,6 +794,7 @@ impl Harness {
             env,
             bootstrap: Value::Null,
             parent_local_id: None,
+            hook_policy: None,
         }
     }
 

@@ -327,6 +327,20 @@ pub async fn capability_for(
     }
 }
 
+/// A child never self-selects Fast: it inherits the bound account's default,
+/// else the standard tier.
+async fn child_service_tier(
+    state: &impl ChildExecutionContext,
+    family: crate::gateway::Family,
+    child_key: &str,
+) -> Option<String> {
+    if family != crate::gateway::Family::Openai {
+        return None;
+    }
+    let account_settings = crate::gateway::mint::resolve_session_settings(state, child_key).await;
+    Some(crate::settings_catalog::codex::resolve_service_tier(None, account_settings.as_ref()))
+}
+
 /// Prepare and deliver a child under its parent's existing capability.
 pub async fn spawn_child(
     state: &impl ChildExecutionContext,
@@ -343,6 +357,12 @@ pub async fn spawn_child(
         ));
     }
     let parent = load_parent(state, session_id, caller).await?;
+    let hook_policy = crate::hook_policy::for_child(
+        &state.child_state().pool,
+        &parent.session_id,
+        req.hook_rules.clone(),
+    )
+    .await?;
 
     let cap = capability_for(state, session_id).await;
     let usage = Usage { parent_mode: parent.permission_mode, ..Usage::default() };
@@ -387,15 +407,7 @@ pub async fn spawn_child(
         env.insert(AGENT_PROFILE_ENV.to_owned(), profile.to_owned());
     }
 
-    // A child never self-selects Fast: it inherits the bound account's default,
-    // else the standard tier.
-    let service_tier = if family == crate::gateway::Family::Openai {
-        let account_settings =
-            crate::gateway::mint::resolve_session_settings(state, &child_key).await;
-        Some(crate::settings_catalog::codex::resolve_service_tier(None, account_settings.as_ref()))
-    } else {
-        None
-    };
+    let service_tier = child_service_tier(state, family, &child_key).await;
     let child_cwd =
         req.cwd.clone().filter(|c| !c.trim().is_empty()).or_else(|| parent.working_dir.clone());
     state
@@ -413,6 +425,7 @@ pub async fn spawn_child(
         env,
         bootstrap: serde_json::Value::Null,
         parent_local_id: Some(parent.session_id.clone()),
+        hook_policy: Some(hook_policy),
     };
     state.child_state().spawn_capabilities.insert(child_key.clone(), child_cap);
 

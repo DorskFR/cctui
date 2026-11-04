@@ -8,10 +8,11 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use crate::capability::Grants;
 use crate::decision_log::{DecisionLog, build_report};
 use crate::ir::WorkflowStep;
 use crate::parser::{JudgeQuestion, expand_set};
-use crate::rules::check_rules;
+use crate::rules::{check_rules, segment_needs_bash_grant, split_bash_segments};
 
 /// Tools always allowed regardless of step rules.
 const ALWAYS_ALLOWED: &[&str] = &["ToolSearch", "TodoWrite"];
@@ -98,6 +99,8 @@ pub struct WorkflowEngine {
     /// Wall-clock ceiling for the `[llmjudge]` command; expiry is a fail-closed
     /// denial.
     judge_timeout: Duration,
+    /// Compiled capability grants of the steps that grant any.
+    grants: BTreeMap<u32, Grants>,
 }
 
 impl WorkflowEngine {
@@ -168,6 +171,7 @@ impl WorkflowEngine {
             report_out,
             gate_timeout: Duration::from_secs(DEFAULT_GATE_TIMEOUT_SECS),
             judge_timeout: Duration::from_secs(DEFAULT_JUDGE_TIMEOUT_SECS),
+            grants: BTreeMap::new(),
         };
 
         if let Some(parent) = engine.state_file.parent()
@@ -197,6 +201,22 @@ impl WorkflowEngine {
     pub const fn with_timeouts(mut self, gate: Duration, judge: Duration) -> Self {
         self.gate_timeout = gate;
         self.judge_timeout = judge;
+        self
+    }
+
+    /// Install the steps' compiled capability grants and rewrite the current
+    /// step's egress policy to include their hosts.
+    #[must_use]
+    pub fn with_grants(mut self, grants: BTreeMap<u32, Grants>) -> Self {
+        self.grants = grants;
+        if let Ok(step) = u32::try_from(self.read_state())
+            && let Err(e) = self.write_proxy_policy(step)
+        {
+            tracing::error!(
+                "failed to write proxy policy {}: {e}",
+                self.proxy_policy_file.display()
+            );
+        }
         self
     }
 
@@ -247,7 +267,8 @@ impl WorkflowEngine {
     /// Unguarded (no such step / step 0) = `default: allow`. A guarded step
     /// grants its `[network]` hosts (default deny), opens fully with
     /// `[network]: *`, and — when it omits `[network]` — falls back to deny
-    /// unless the document set `[network-default]: allow`.
+    /// unless the document set `[network-default]: allow`. A step that grants
+    /// capabilities is always default deny, with their `net` hosts first.
     fn write_proxy_policy(&self, step_num: u32) -> std::io::Result<()> {
         if !self.proxy_dir_present() {
             tracing::debug!(
@@ -261,6 +282,14 @@ impl WorkflowEngine {
             None => json!({ "allowed_hosts": [], "default": "allow" }),
             Some(step) if step.network.len() == 1 && step.network[0].trim() == "*" => {
                 json!({ "allowed_hosts": [], "default": "allow" })
+            }
+            Some(step) if self.grants.contains_key(&step_num) => {
+                let mut hosts = self.grants[&step_num].hosts();
+                hosts.extend(self.expand_network_rules(&step.network));
+                hosts.extend(self.always_allowed_hosts.iter().cloned());
+                let mut seen = HashSet::new();
+                hosts.retain(|h| seen.insert(h.clone()));
+                json!({ "allowed_hosts": hosts, "default": "deny" })
             }
             Some(step) if step.network.is_empty() => {
                 if self.guarded_default_allow {
@@ -492,7 +521,18 @@ impl WorkflowEngine {
         let allowed = step.allowed.expand(&self.tool_sets);
         let disallowed = step.disallowed.expand(&self.tool_sets);
 
-        let (ok, reason) = check_rules(tool, tool_input, &allowed, &disallowed);
+        let (mut ok, mut reason) = check_rules(tool, tool_input, &allowed, &disallowed);
+        if !ok
+            && tool == "Bash"
+            && let Some(grants) = self.grants.get(&step_u)
+        {
+            if bash_granted(grants, tool_input, &allowed, &disallowed) {
+                ok = true;
+                reason = String::new();
+            } else {
+                reason = self.bash_grant_reason(step_u, grants, tool_input, &reason);
+            }
+        }
         self.decision_log.check(step_num, tool, &check_target(tool, tool_input), ok, &reason);
         if !ok {
             tracing::info!("DENY [Step {step_u}] tool={tool} reason={reason}");
@@ -500,6 +540,131 @@ impl WorkflowEngine {
         }
         tracing::info!("ALLOW [Step {step_u}] tool={tool}");
         Verdict::Allow
+    }
+
+    /// Evaluate an exec seen by the seccomp notifier against the active step.
+    ///
+    /// Explicit `[disallowed]` phrases apply to every step: phrase allow-lists
+    /// and a `*` disallow are written for tool calls, and enforcing them on
+    /// every execve would deny the harness's own helpers. `commands` are the
+    /// argv renderings to match (see
+    /// [`crate::exec::ExecRequest::match_commands`]); any one matching denies.
+    /// A step that grants capabilities also requires the exec to match its
+    /// exec table, so an ungranted binary, subcommand or flag denies.
+    #[must_use]
+    pub fn check_exec(&self, path: &str, argv: &[String], commands: &[String]) -> Verdict {
+        let _guard = self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let step_num = self.read_state();
+        let Some((step_u, step)) = u32::try_from(step_num)
+            .ok()
+            .filter(|&n| n != 0)
+            .and_then(|n| self.steps.get(&n).map(|s| (n, s)))
+        else {
+            return Verdict::Allow;
+        };
+        let disallowed: Vec<String> =
+            step.disallowed.expand(&self.tool_sets).into_iter().filter(|kw| kw != "*").collect();
+        let allowed = ["Bash".to_string()];
+        for command in commands {
+            let (ok, reason) =
+                check_rules("Bash", &json!({ "command": command }), &allowed, &disallowed);
+            if !ok {
+                tracing::info!("DENY exec [Step {step_u}] {path} reason={reason}");
+                self.decision_log.exec(Some(step_num), path, argv, false, &reason);
+                return Verdict::deny(format!("[Step {step_u}] {reason}"));
+            }
+        }
+        if let Some(grants) = self.grants.get(&step_u)
+            && let Err(detail) = grants.exec.check(path, argv)
+        {
+            let reason = self.grant_reason(step_u, grants, path, argv, &detail);
+            tracing::info!("DENY exec [Step {step_u}] {path} reason={reason}");
+            self.decision_log.exec(Some(step_num), path, argv, false, &reason);
+            return Verdict::deny(format!("[Step {step_u}] {reason}"));
+        }
+        self.decision_log.exec(Some(step_num), path, argv, true, "");
+        Verdict::Allow
+    }
+
+    /// A grant denial in capability terms: the capability another step grants
+    /// for this exec when there is one, else the matcher's `detail`; either way
+    /// with the capabilities this step does grant.
+    fn grant_reason(
+        &self,
+        step_u: u32,
+        grants: &Grants,
+        path: &str,
+        argv: &[String],
+        detail: &str,
+    ) -> String {
+        let granted = grants.capabilities.join(", ");
+        self.grants
+            .iter()
+            .filter(|(id, _)| **id != step_u)
+            .find_map(|(_, g)| g.exec.check(path, argv).ok())
+            .map_or_else(
+                || format!("{detail} (granted in step {step_u}: {granted})"),
+                |cap| {
+                    format!("capability `{cap}` not granted in step {step_u} (granted: {granted})")
+                },
+            )
+    }
+
+    /// [`Self::grant_reason`] for the first segment of a refused `Bash` call
+    /// that the step's exec table rejects, else `phrase_reason` with the
+    /// granted list.
+    fn bash_grant_reason(
+        &self,
+        step_u: u32,
+        grants: &Grants,
+        tool_input: &Value,
+        phrase_reason: &str,
+    ) -> String {
+        let cmd = tool_input.get("command").and_then(Value::as_str).unwrap_or_default();
+        split_bash_segments(cmd)
+            .iter()
+            .filter_map(|seg| shlex::split(seg).filter(|argv| !argv.is_empty()))
+            .find_map(|argv| {
+                grants
+                    .exec
+                    .check(&argv[0], &argv)
+                    .err()
+                    .map(|detail| self.grant_reason(step_u, grants, &argv[0], &argv, &detail))
+            })
+            .unwrap_or_else(|| {
+                format!(
+                    "{phrase_reason} (granted in step {step_u}: {})",
+                    grants.capabilities.join(", ")
+                )
+            })
+    }
+
+    /// The first lines of `cctui-guard why`: the active step and what it
+    /// grants.
+    #[must_use]
+    pub fn why_header(&self) -> String {
+        let _guard = self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let step_num = self.read_state();
+        if step_num == STEP_EXITED {
+            return "session complete: no step is active\n".to_string();
+        }
+        let Some((step_u, step)) =
+            u32::try_from(step_num).ok().and_then(|n| self.steps.get(&n).map(|s| (n, s)))
+        else {
+            return "no active step: every exec is allowed\n".to_string();
+        };
+        let granted = self.grants.get(&step_u).map_or_else(
+            || "no capabilities (phrase rules only)".to_string(),
+            |g| g.capabilities.join(", "),
+        );
+        let title = if step.title.is_empty() { String::new() } else { format!(": {}", step.title) };
+        format!("step {step_u}{title}\ngranted: {granted}\n")
+    }
+
+    /// The decision-log sink, for verdicts reached outside the engine.
+    #[must_use]
+    pub const fn decision_log(&self) -> &DecisionLog {
+        &self.decision_log
     }
 
     /// Apply the always-allowed exit transition: mark the run exited and, if a
@@ -892,6 +1057,31 @@ fn judge_evidence(questions: &[JudgeQuestion], verdicts: &[(u8, String)], score:
             "answer": answer,
             "reason": reason,
         })).collect::<Vec<Value>>(),
+    })
+}
+
+/// A Bash call the phrase rules refused passes when every segment is either
+/// an exec the step's capabilities grant or allowed by phrase. Segments whose
+/// effect argv cannot show (substitution, redirection, background jobs) are
+/// left to the phrase rules; `[disallowed]` phrases still deny first.
+fn bash_granted(
+    grants: &Grants,
+    tool_input: &Value,
+    allowed: &[String],
+    disallowed: &[String],
+) -> bool {
+    let Some(cmd) = tool_input.get("command").and_then(Value::as_str) else {
+        return false;
+    };
+    if !check_rules("Bash", tool_input, &["Bash".to_string()], disallowed).0 {
+        return false;
+    }
+    split_bash_segments(cmd).iter().all(|seg| {
+        let vouchable = !segment_needs_bash_grant(seg) && !seg.contains(['>', '<', '&']);
+        let granted = vouchable
+            && shlex::split(seg)
+                .is_some_and(|argv| !argv.is_empty() && grants.exec.check(&argv[0], &argv).is_ok());
+        granted || check_rules("Bash", &json!({ "command": seg }), allowed, disallowed).0
     })
 }
 

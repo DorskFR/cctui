@@ -935,6 +935,28 @@ async fn resolve_account_routing(
     Ok(AccountRouting { mints, bound_pool })
 }
 
+/// Write the worker's effective hook policy into its payload and record it.
+async fn attach_hook_policy(
+    state: &impl DispatchContext,
+    req: &DispatchRequest,
+    session_id: &str,
+    forwarded_payload: &mut serde_json::Value,
+) -> DispatchResult<()> {
+    let adapter = payload_adapter(&req.payload).unwrap_or("claude-code");
+    crate::hook_policy::for_dispatch(state.dispatch_pool(), session_id, adapter, forwarded_payload)
+        .await
+        .map_err(|e| match e {
+            crate::hook_policy::PolicyError::Rejected(reason) => bad_request(reason),
+            crate::hook_policy::PolicyError::Db(error) => {
+                tracing::error!(session = %session_id, %error, "hook policy record failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "could not record the worker's hook policy".into() }),
+                )
+            }
+        })
+}
+
 /// Persist the worker child-spawn ceiling before forwarding.
 ///
 /// `payload.spawn_capability` declares what the dispatched worker may spawn
@@ -1115,6 +1137,7 @@ pub async fn execute_dispatch(
         None => None,
     };
     let mut v = validate_dispatch(state, ctx, &req).await?;
+    crate::hook_policy::dispatch_additions(&req.payload).map_err(|e| bad_request(e.to_string()))?;
 
     if let Some(uid) = real_user {
         inject_worker_credential(state, uid, &v.session_id, req.timeout, &mut v.forwarded_payload)
@@ -1126,6 +1149,7 @@ pub async fn execute_dispatch(
         }
     }
 
+    attach_hook_policy(state, &req, &v.session_id, &mut v.forwarded_payload).await?;
     state.register_completion_webhook(ctx, &req, &v.session_id).await;
     persist_spawn_capability(state, &v.session_id, &mut v.forwarded_payload, policy.is_some())
         .await?;
