@@ -1913,7 +1913,7 @@ mod tests {
         let streamed = "The reply starts streaming with this sentence. And then";
         h.signals.send(delta("m:0", streamed)).await.unwrap();
         let block = format!("{streamed} it ends here.");
-        h.signals.send(Signal::Text(block)).await.unwrap();
+        h.signals.send(Signal::Text(block.as_str().into())).await.unwrap();
         h.collect_until(|f| *f == state(VoiceState::Listening)).await;
         assert_eq!(
             Mock::log(&h.mock.synthesized),
@@ -2194,7 +2194,7 @@ mod tests {
     async fn a_block_longer_than_both_queues_is_spoken_to_the_end() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         let block = (1..=200).map(|i| format!("Line {i}.")).collect::<Vec<_>>().join(" ");
-        h.signals.send(Signal::Text(block)).await.unwrap();
+        h.signals.send(Signal::Text(block.as_str().into())).await.unwrap();
         h.collect_until(|f| {
             matches!(f, Outbound::Control(VoiceServerMsg::SpeakEnd { line_id }) if line_id == "1-200")
         })
