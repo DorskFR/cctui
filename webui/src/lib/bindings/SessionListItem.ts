@@ -65,4 +65,8 @@ followup_count?: number,
 /**
  * The gateway tool guard is lifted for this session.
  */
-tool_guard_bypass?: boolean, };
+tool_guard_bypass?: boolean, 
+/**
+ * The viewer hides this session's user or machine; only listed with `show_hidden`.
+ */
+hidden?: boolean, };

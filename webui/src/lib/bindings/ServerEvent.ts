@@ -38,4 +38,4 @@ user_id: string, } | { "type": "cctuiverse_changed", session_id?: string | null,
 /**
  * The link's owner; scopes delivery.
  */
-user_id: string, } | { "type": "user_actions", session_id: string, actions: Array<UserAction>, } | { "type": "event", event: EventRecord, } | { "type": "heartbeat", } | { "type": "resync", session_id?: string | null, };
+user_id: string, } | { "type": "hidden_owners_changed", user_id: string, } | { "type": "user_actions", session_id: string, actions: Array<UserAction>, } | { "type": "event", event: EventRecord, } | { "type": "heartbeat", } | { "type": "resync", session_id?: string | null, };
