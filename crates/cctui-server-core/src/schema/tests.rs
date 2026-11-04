@@ -17,7 +17,7 @@ async fn concurrent_core_bootstraps_create_only_execution_storage_without_extens
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(count, 38, "36 execution tables plus two schema tracking tables");
+        assert_eq!(count, 39, "37 execution tables plus two schema tracking tables");
         let extensions: Vec<String> =
             sqlx::query_scalar("SELECT extname FROM pg_extension ORDER BY extname")
                 .fetch_all(&pool)

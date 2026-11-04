@@ -35,6 +35,7 @@ const TEMP_TABLES: &[&str] = &[
     "CREATE TEMP TABLE session_tokens (LIKE public.session_tokens INCLUDING ALL)",
     "CREATE TEMP TABLE account_tool_policies (LIKE public.account_tool_policies INCLUDING ALL)",
     "CREATE TEMP TABLE session_hook_policies (LIKE public.session_hook_policies INCLUDING ALL)",
+    "CREATE TEMP TABLE machine_launches (LIKE public.machine_launches INCLUDING ALL)",
 ];
 
 struct Host {
