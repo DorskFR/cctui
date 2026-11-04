@@ -482,7 +482,9 @@ impl Spawner {
     }
 
     /// Spawn a worker Job for the session. The dispatch is registered with
-    /// the server before the Job exists, so its pod can never redeem early.
+    /// the server before the Job exists, so its pod can never redeem early; a
+    /// dispatch a live Job already absorbs is answered before registering, so
+    /// it leaves no identity row behind.
     async fn dispatch_worker(&self, spec: &WireDispatchSpec) -> anyhow::Result<SpawnOutcome> {
         if spec.session_id.is_empty() {
             anyhow::bail!("session_id is required");
@@ -499,6 +501,9 @@ impl Spawner {
             .map_err(|e| anyhow::anyhow!("reading WorkerProfile `{profile_name}`: {e}"))?;
 
         let name = worker_name(dedup_source(spec));
+        if self.absorbed_by_live_job(&name).await? {
+            return Ok(self.outcome(&name, "deduplicated"));
+        }
         self.enforce_inflight_cap(&name).await?;
         let suspend =
             self.profile_must_queue(&profile_name, profile.spec.max_inflight, &name).await?;
@@ -516,6 +521,18 @@ impl Spawner {
             Self::registration(&self.cctui_url, &profile.spec, spec, &self.namespace, identity)?;
         self.registry.register(&registration).await?;
         self.place_job(&job, suspend, &name).await
+    }
+
+    /// Whether a non-terminal Job already holds `name`. A concurrent dispatch
+    /// that slips past this still dedups in [`Self::place_job`]; its row then
+    /// lingers until the server's registration TTL drops it.
+    async fn absorbed_by_live_job(&self, name: &str) -> anyhow::Result<bool> {
+        let existing = self
+            .jobs()
+            .get_opt(name)
+            .await
+            .map_err(|e| anyhow::anyhow!("reading existing Job: {e}"))?;
+        Ok(absorbs(existing.as_ref()))
     }
 
     /// Create the Job. Idempotent: a repeat dispatch of the same dedup key
@@ -622,6 +639,10 @@ impl Spawner {
     /// Resume suspended Jobs into freed profile slots, oldest-first, forever.
     /// Runs beside the WS loop; queue state lives entirely in the cluster, so a
     /// dispatcher restart picks the queue back up from the Job list.
+    ///
+    /// A Job queued longer than the server's registration TTL (7 days) resumes
+    /// into a refused redeem and fails: the machine key is never stored in the
+    /// cluster, so the dispatcher has nothing to re-register it with.
     pub async fn run_queue_reconciler(self, shutdown: CancellationToken) {
         let mut tick = tokio::time::interval(QUEUE_RECONCILE_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1108,6 +1129,12 @@ impl Dispatcher for Spawner {
     async fn queue_position(&self, handle: &str) -> Option<u32> {
         self.worker_queue_position(handle).await
     }
+}
+
+/// Whether an existing Job of the same name takes over a dispatch: only a live
+/// one does, a terminal one is replaced.
+fn absorbs(existing: Option<&Job>) -> bool {
+    existing.is_some_and(|j| Spawner::job_terminal_state(j).is_none())
 }
 
 /// The order a profile's queue is resumed in: oldest first, then by name.
@@ -2419,6 +2446,17 @@ mod tests {
             v["status"] = json!({ "conditions": [{ "type": "Failed", "status": "True" }] });
         }
         serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn only_a_live_job_absorbs_a_repeat_dispatch_before_registration() {
+        assert!(!absorbs(None), "no Job yet: register and create");
+        assert!(absorbs(Some(&listed_job("w", "2026-10-21T10:00:00Z", false, false))));
+        assert!(absorbs(Some(&listed_job("w", "2026-10-21T10:00:00Z", true, false))), "queued");
+        assert!(
+            !absorbs(Some(&listed_job("w", "2026-10-21T10:00:00Z", false, true))),
+            "a terminal Job is redispatched, so the new dispatch registers"
+        );
     }
 
     #[test]

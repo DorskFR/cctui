@@ -1174,7 +1174,7 @@ mod tests {
             "GET /meta/usage-probes Bearer Authenticated",
             "GET /models/codex/catalog Bearer Authenticated",
             "GET /models/{harness} Bearer Authenticated",
-            "POST /otlp/v1/traces Bearer Authenticated",
+            "POST /otlp/v1/traces Bearer Human",
             "GET /passkeys Bearer Authenticated",
             "POST /passkeys/register/finish Bearer Authenticated",
             "POST /passkeys/register/start Bearer Authenticated",
