@@ -37,6 +37,7 @@ pub fn spawn_adapter(requested: Option<&str>) -> Result<String, String> {
 
 /// The requested adapter, refused when the machine reports its binary
 /// missing or a dropped privacy grant.
+#[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "spawn_adapter_on"))]
 pub async fn spawn_adapter_on(
     state: &CoreState,
     machine_uuid: Uuid,
@@ -76,6 +77,11 @@ pub fn spawnable_adapters(ids: Vec<String>) -> Vec<String> {
 
 /// Keyed by the id the worker will register as, and stored before dispatch so
 /// the capability resolves the moment the worker asks.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "persist_spawn_capability")
+)]
 pub async fn persist_spawn_capability(
     state: &impl LaunchCredentialsContext,
     machine_uuid: Uuid,
@@ -145,6 +151,11 @@ const SPAWN_SHARE_ACTION: &str = "spawn";
 /// [`resolve_owned_machine`], also admitting a user holding a live `spawn`
 /// share on the machine. A plain `use` share does not admit. The session stays
 /// the machine owner's either way.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "resolve_spawn_machine")
+)]
 pub async fn resolve_spawn_machine(
     state: &CoreState,
     ctx: &AuthContext,
@@ -212,8 +223,8 @@ pub async fn fill_spawner(pool: &sqlx::PgPool, session_id: &str, user_id: Uuid) 
 }
 
 /// Remember who asked for the spawn under `spawn_key`, and the name they
-/// gave it, and drop day-old intents nobody claimed. Best-effort: a lost
-/// intent leaves `spawned_by` unset and the name unpinned.
+/// gave it. Best-effort: a lost intent leaves `spawned_by` unset and the name
+/// unpinned.
 pub async fn remember_spawner(
     pool: &sqlx::PgPool,
     spawn_key: &str,
@@ -221,24 +232,28 @@ pub async fn remember_spawner(
     name: Option<&str>,
 ) {
     let name = name.map(str::trim).filter(|n| !n.is_empty());
-    let res = async {
-        cctui_telemetry::db::traced(
-            "DELETE FROM session_spawner_intents WHERE created_at < now() - interval '1 day'",
-            |sql| sqlx::query(sql).execute(pool),
-        )
-        .await?;
-        cctui_telemetry::db::traced(
-            "INSERT INTO session_spawner_intents (spawn_key, user_id, session_name) \
-             VALUES ($1, $2, $3) \
-             ON CONFLICT (spawn_key) DO UPDATE SET user_id = EXCLUDED.user_id, \
-                session_name = EXCLUDED.session_name, created_at = now()",
-            |sql| sqlx::query(sql).bind(spawn_key).bind(user_id).bind(name).execute(pool),
-        )
-        .await
-    }
+    let res = cctui_telemetry::db::traced(
+        "INSERT INTO session_spawner_intents (spawn_key, user_id, session_name) \
+         VALUES ($1, $2, $3) \
+         ON CONFLICT (spawn_key) DO UPDATE SET user_id = EXCLUDED.user_id, \
+            session_name = EXCLUDED.session_name, created_at = now()",
+        |sql| sqlx::query(sql).bind(spawn_key).bind(user_id).bind(name).execute(pool),
+    )
     .await;
     if let Err(e) = res {
         tracing::warn!(%spawn_key, error = %e, "could not record the spawner");
+    }
+}
+
+/// Drop spawner intents nobody claimed within a day.
+pub async fn purge_spawner_intents(pool: &sqlx::PgPool) {
+    let res = cctui_telemetry::db::traced(
+        "DELETE FROM session_spawner_intents WHERE created_at < now() - interval '1 day'",
+        |sql| sqlx::query(sql).execute(pool),
+    )
+    .await;
+    if let Err(e) = res {
+        tracing::warn!(error = %e, "spawner intent purge failed");
     }
 }
 

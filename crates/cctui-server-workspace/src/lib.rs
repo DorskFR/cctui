@@ -915,6 +915,9 @@ fn spawn_reaper_sweeps(state: &AppState) {
     spawn_sweep(state, |state| async move { usage_history::sweep(&state) });
     spawn_sweep(state, |state| async move { followup::sweep(&state.pool).await });
     spawn_sweep(state, |state| async move {
+        cctui_server_core::machine_policy::purge_spawner_intents(&state.pool).await;
+    });
+    spawn_sweep(state, |state| async move {
         reap_ephemeral_machines(&state).await;
         reap_ephemeral_keys(&state).await;
     });

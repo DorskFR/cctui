@@ -1,5 +1,6 @@
 //! Ownership checks and durable capabilities for daemon launch credential pulls.
 use crate::state::CoreState;
+use cctui_telemetry::db::traced;
 use uuid::Uuid;
 
 pub trait LaunchCredentialsContext: Sync {
@@ -19,6 +20,11 @@ pub trait LaunchCredentialsContext: Sync {
 /// while nothing yet contradicts the caller: a token already minted for another
 /// user means this id belongs to that user's session, and a machine key that
 /// knows the id is not thereby entitled to its credential.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "gateway_env_allowed", session_id = %session_id),
+)]
 pub async fn gateway_env_allowed(
     pool: &sqlx::PgPool,
     user_id: Uuid,
@@ -26,18 +32,16 @@ pub async fn gateway_env_allowed(
     session_id: &str,
 ) -> Result<bool, sqlx::Error> {
     let row: Option<(Option<Uuid>, Option<Uuid>, Option<String>)> =
-        sqlx::query_as("SELECT user_id, machine_uuid, status FROM sessions WHERE id = $1")
-            .bind(session_id)
-            .fetch_optional(pool)
-            .await?;
+        traced("SELECT user_id, machine_uuid, status FROM sessions WHERE id = $1", |sql| {
+            sqlx::query_as(sql).bind(session_id).fetch_optional(pool)
+        })
+        .await?;
     let Some((owner, machine, status)) = row else {
-        let foreign_token: bool = sqlx::query_scalar(
+        let foreign_token: bool = traced(
             "SELECT EXISTS (SELECT 1 FROM session_tokens \
                              WHERE session_id = $1 AND user_id IS NOT NULL AND user_id <> $2)",
+            |sql| sqlx::query_scalar(sql).bind(session_id).bind(user_id).fetch_one(pool),
         )
-        .bind(session_id)
-        .bind(user_id)
-        .fetch_one(pool)
         .await?;
         return Ok(!foreign_token);
     };
@@ -53,6 +57,11 @@ pub async fn gateway_env_allowed(
 /// disarm a live session's spawn tool, and to the machine default so a session
 /// nobody granted anything — an adopted native session, an undeclared dispatch —
 /// still gets the relay. Only a lookup failure yields `None`.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "spawn_capability_for", session_id = %session_id),
+)]
 pub async fn spawn_capability_for(
     state: &impl LaunchCredentialsContext,
     session_id: &str,

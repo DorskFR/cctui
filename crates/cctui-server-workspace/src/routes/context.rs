@@ -625,15 +625,12 @@ pub async fn remember_intent(
     scope: &StoredScope,
 ) {
     let ids: Vec<Uuid> = items.iter().filter(|i| i.kind != "rule").map(|i| i.id).collect();
-    let done = sqlx::query(
+    let done = cctui_telemetry::db::traced(
         "INSERT INTO session_context (spawn_key, item_ids, scope) VALUES ($1, $2, $3) \
          ON CONFLICT (spawn_key) DO UPDATE SET item_ids = EXCLUDED.item_ids, \
              scope = EXCLUDED.scope",
+        |sql| sqlx::query(sql).bind(spawn_key).bind(&ids).bind(Jsonb(scope)).execute(pool),
     )
-    .bind(spawn_key)
-    .bind(&ids)
-    .bind(Jsonb(scope))
-    .execute(pool)
     .await;
     if let Err(e) = done {
         tracing::warn!(%spawn_key, error = %e, "could not record the session context set");

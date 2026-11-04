@@ -1,5 +1,6 @@
 use super::{Family, session_token_ttl};
 
+use cctui_telemetry::db::traced;
 use chrono::Utc;
 use uuid::Uuid;
 
@@ -299,6 +300,52 @@ pub async fn mint_session_env_for_account(
     Ok(Some(mint_env_for_account(state, provider_id, &provider, session_id, None).await?))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionBinding {
+    pub acting: Option<Uuid>,
+    /// A `None` trust refuses that provider's mint and settings.
+    pub accounts: Vec<(Uuid, Option<Trust>)>,
+}
+
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "resolve_session_binding", session_id = %session_id),
+)]
+pub async fn resolve_session_binding(state: &impl MintContext, session_id: &str) -> SessionBinding {
+    let (acting, ids) = tokio::join!(
+        acting_user(state, session_id, None),
+        resolve_session_accounts(state, session_id)
+    );
+    let trusts =
+        futures_util::future::join_all(ids.iter().map(|&id| mint_trust(state, id, acting))).await;
+    SessionBinding { acting, accounts: ids.into_iter().zip(trusts).collect() }
+}
+
+/// Families mint in order: each one rewrites `sessions.account_id`, so the last wins.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "mint_binding_env", session_id = %session_id),
+)]
+pub async fn mint_binding_env(
+    state: &impl MintContext,
+    session_id: &str,
+    binding: &SessionBinding,
+) -> Result<std::collections::BTreeMap<String, String>, sqlx::Error> {
+    let mut env = std::collections::BTreeMap::new();
+    for &(provider_id, trust) in &binding.accounts {
+        let provider: Option<String> =
+            crate::store::account_providers::provider_by_id(state.pool(), provider_id).await?;
+        let Some(provider) = provider else { continue };
+        env.extend(
+            mint_env_trusted(state, provider_id, &provider, session_id, binding.acting, trust)
+                .await?,
+        );
+    }
+    Ok(env)
+}
+
 /// Restore gateway environment variables for a resumed session.
 ///
 /// Resolve a session's bound OAuth account and re-mint its gateway env, ready
@@ -342,22 +389,22 @@ pub async fn resolve_session_accounts(state: &impl MintContext, session_id: &str
     // desktop, a 401 loop on k8s). The revoked row still names the account;
     // `mint_env_for_account` then mints a FRESH live token — the dead token
     // itself is never resurrected.
-    let mut ids: Vec<Uuid> = sqlx::query_scalar(
+    let mut ids: Vec<Uuid> = traced(
         "SELECT DISTINCT ON (oa.family) st.account_id \
          FROM session_tokens st JOIN account_providers oa ON oa.id = st.account_id \
          WHERE st.session_id = $1 \
          ORDER BY oa.family, (st.revoked_at IS NULL) DESC, st.created_at DESC",
+        |sql| sqlx::query_scalar(sql).bind(session_id).fetch_all(state.pool()),
     )
-    .bind(session_id)
-    .fetch_all(state.pool())
     .await
     .unwrap_or_default();
     if ids.is_empty()
-        && let Some(aid) = sqlx::query_scalar::<_, Uuid>(
+        && let Some(aid) = traced(
             "SELECT account_id::uuid FROM sessions WHERE id = $1 AND account_id IS NOT NULL",
+            |sql| {
+                sqlx::query_scalar::<_, Uuid>(sql).bind(session_id).fetch_optional(state.pool())
+            },
         )
-        .bind(session_id)
-        .fetch_optional(state.pool())
         .await
         .ok()
         .flatten()
@@ -379,12 +426,11 @@ pub enum Trust {
 /// The `(account identity, owner)` behind a provider row, or `None` when the row
 /// is gone.
 async fn provider_account(pool: &sqlx::PgPool, provider_id: Uuid) -> Option<(Uuid, Uuid)> {
-    sqlx::query_as(
+    traced(
         "SELECT a.id, a.user_id FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
          WHERE ap.id = $1",
+        |sql| sqlx::query_as(sql).bind(provider_id).fetch_optional(pool),
     )
-    .bind(provider_id)
-    .fetch_optional(pool)
     .await
     .ok()
     .flatten()
@@ -417,13 +463,13 @@ pub async fn acting_user_in(
         "SELECT user_id FROM auth_keys WHERE session_id = $1 AND revoked_at IS NULL \
          ORDER BY created_at DESC LIMIT 1",
     ] {
-        if let Some(uid) = sqlx::query_scalar::<_, Option<Uuid>>(sql)
-            .bind(session_id)
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten()
-            .flatten()
+        if let Some(uid) = traced(sql, |sql| {
+            sqlx::query_scalar::<_, Option<Uuid>>(sql).bind(session_id).fetch_optional(pool)
+        })
+        .await
+        .ok()
+        .flatten()
+        .flatten()
         {
             return Some(uid);
         }
@@ -479,13 +525,11 @@ async fn revoke_session_provider_tokens(
     session_id: &str,
     provider_id: Uuid,
 ) {
-    if let Err(e) = sqlx::query(
+    if let Err(e) = traced(
         "UPDATE session_tokens SET revoked_at = now() \
          WHERE session_id = $1 AND account_id = $2 AND revoked_at IS NULL",
+        |sql| sqlx::query(sql).bind(session_id).bind(provider_id).execute(state.pool()),
     )
-    .bind(session_id)
-    .bind(provider_id)
-    .execute(state.pool())
     .await
     {
         tracing::error!(
@@ -514,9 +558,21 @@ pub async fn mint_env_for_account(
     session_id: &str,
     acting: Option<Uuid>,
 ) -> Result<std::collections::BTreeMap<String, String>, sqlx::Error> {
-    let family = Family::from_provider(provider);
     let acting = acting_user(state, session_id, acting).await;
-    let Some(trust) = mint_trust(state, account_id, acting).await else {
+    let trust = mint_trust(state, account_id, acting).await;
+    mint_env_trusted(state, account_id, provider, session_id, acting, trust).await
+}
+
+async fn mint_env_trusted(
+    state: &impl MintContext,
+    account_id: Uuid,
+    provider: &str,
+    session_id: &str,
+    acting: Option<Uuid>,
+    trust: Option<Trust>,
+) -> Result<std::collections::BTreeMap<String, String>, sqlx::Error> {
+    let family = Family::from_provider(provider);
+    let Some(trust) = trust else {
         tracing::warn!(
             %session_id,
             provider = %account_id,
@@ -541,7 +597,7 @@ pub async fn mint_env_for_account(
             // changes, the gateway just resolves it to the new account. The
             // `account_providers` join + family predicate confine the repoint to the
             // same-family token, leaving the other family's token untouched.
-            let _ = sqlx::query(
+            let _ = traced(
                 "UPDATE session_tokens AS st \
                     SET account_id = $2, revoked_at = NULL, expires_at = $4, \
                         user_id = COALESCE($5::uuid, st.user_id) \
@@ -549,13 +605,16 @@ pub async fn mint_env_for_account(
                  WHERE st.session_id = $1 AND st.revoked_at IS NULL \
                    AND st.account_id = oa.id \
                    AND oa.family = $3",
+                |sql| {
+                    sqlx::query(sql)
+                        .bind(session_id)
+                        .bind(account_id)
+                        .bind(family.label())
+                        .bind(Utc::now() + session_token_ttl())
+                        .bind(acting)
+                        .execute(state.pool())
+                },
             )
-            .bind(session_id)
-            .bind(account_id)
-            .bind(family.label())
-            .bind(Utc::now() + session_token_ttl())
-            .bind(acting)
-            .execute(state.pool())
             .await;
             // The reused token's fingerprint may have been flagged as a
             // spamming orphan while its binding was broken — the
@@ -571,18 +630,21 @@ pub async fn mint_env_for_account(
             let token = format!("cctui_s_{}", crate::auth::mint_secret());
             let token_hash = crate::auth::sha256_hex(&token);
             let enc = cctui_crypto::encrypt(&token, &key);
-            sqlx::query(
+            traced(
                 "INSERT INTO session_tokens \
                  (token_hash, session_id, account_id, encrypted_token, expires_at, user_id) \
                  VALUES ($1, $2, $3, $4, $5, $6)",
+                |sql| {
+                    sqlx::query(sql)
+                        .bind(&token_hash)
+                        .bind(session_id)
+                        .bind(account_id)
+                        .bind(&enc)
+                        .bind(Utc::now() + session_token_ttl())
+                        .bind(acting)
+                        .execute(state.pool())
+                },
             )
-            .bind(&token_hash)
-            .bind(session_id)
-            .bind(account_id)
-            .bind(&enc)
-            .bind(Utc::now() + session_token_ttl())
-            .bind(acting)
-            .execute(state.pool())
             .await?;
             token
         };
@@ -591,11 +653,10 @@ pub async fn mint_env_for_account(
     // server restart — the resume path re-mints from here. Best
     // effort: a session row may not exist yet at spawn-time mint (registration
     // races), so a no-op update is fine; the token row is the live binding.
-    let _ = sqlx::query("UPDATE sessions SET account_id = $2 WHERE id = $1")
-        .bind(session_id)
-        .bind(account_id.to_string())
-        .execute(state.pool())
-        .await;
+    let _ = traced("UPDATE sessions SET account_id = $2 WHERE id = $1", |sql| {
+        sqlx::query(sql).bind(session_id).bind(account_id.to_string()).execute(state.pool())
+    })
+    .await;
 
     let base = state.external_url().trim_end_matches('/');
     let mut env = std::collections::BTreeMap::new();
@@ -637,14 +698,7 @@ async fn codex_config_block(
     account_id: Uuid,
     trust: Trust,
 ) -> Option<String> {
-    let settings: Option<serde_json::Value> =
-        sqlx::query_scalar("SELECT settings_json FROM account_providers WHERE id = $1")
-            .bind(account_id)
-            .fetch_optional(state.pool())
-            .await
-            .ok()
-            .flatten();
-    let settings = settings?;
+    let settings = provider_settings_json(state, account_id).await?;
     let settings = match trust {
         Trust::Owner => settings,
         Trust::Grantee => crate::launch_settings::filter_settings(&settings).0,
@@ -701,17 +755,20 @@ pub async fn existing_session_token(
     family: Family,
     key: &[u8],
 ) -> Option<String> {
-    let enc: String = sqlx::query_scalar(
+    let enc: String = traced(
         "SELECT st.encrypted_token FROM session_tokens st \
          JOIN account_providers oa ON oa.id = st.account_id \
          WHERE st.session_id = $1 AND st.revoked_at IS NULL \
            AND st.encrypted_token IS NOT NULL \
            AND oa.family = $2 \
          ORDER BY st.created_at DESC LIMIT 1",
+        |sql| {
+            sqlx::query_scalar(sql)
+                .bind(session_id)
+                .bind(family.label())
+                .fetch_optional(state.pool())
+        },
     )
-    .bind(session_id)
-    .bind(family.label())
-    .fetch_optional(state.pool())
     .await
     .ok()
     .flatten()?;
@@ -867,13 +924,16 @@ pub async fn account_env_json(
     // `env_json` lives on the identity parent (`accounts`); `account_id`
     // here is the provider-row id (session_tokens FK), so join up
     // to the parent to read it.
-    let enc: String = sqlx::query_scalar::<_, Option<String>>(
+    let enc: String = traced(
         "SELECT a.env_json FROM accounts a \
          JOIN account_providers ap ON ap.account_id = a.id \
          WHERE ap.id = $1",
+        |sql| {
+            sqlx::query_scalar::<_, Option<String>>(sql)
+                .bind(account_id)
+                .fetch_optional(state.pool())
+        },
     )
-    .bind(account_id)
-    .fetch_optional(state.pool())
     .await
     .ok()
     .flatten()
@@ -912,43 +972,73 @@ pub async fn resolve_session_settings(
     state: &impl MintContext,
     session_id: &str,
 ) -> Option<serde_json::Value> {
-    let acting = acting_user(state, session_id, None).await;
+    let binding = resolve_session_binding(state, session_id).await;
+    binding_settings(state, session_id, &binding).await
+}
+
+/// Merged in binding order, later families winning a key clash.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "binding_settings", session_id = %session_id),
+)]
+pub async fn binding_settings(
+    state: &impl MintContext,
+    session_id: &str,
+    binding: &SessionBinding,
+) -> Option<serde_json::Value> {
+    let trusted = binding.accounts.iter().filter_map(|&(id, trust)| Some((id, trust?)));
+    let settings = futures_util::future::join_all(
+        trusted.map(|(id, trust)| account_settings(state, session_id, id, trust)),
+    )
+    .await;
     let mut merged: Option<serde_json::Value> = None;
-    for account_id in resolve_session_accounts(state, session_id).await {
-        let Some(trust) = mint_trust(state, account_id, acting).await else {
-            continue;
-        };
-        let settings: Option<serde_json::Value> =
-            sqlx::query_scalar("SELECT settings_json FROM account_providers WHERE id = $1")
-                .bind(account_id)
-                .fetch_optional(state.pool())
-                .await
-                .ok()
-                .flatten();
-        let settings = settings.filter(|v| !v.is_null()).map(|s| match trust {
-            Trust::Owner => s,
-            Trust::Grantee => {
-                let (kept, dropped) = crate::launch_settings::filter_settings(&s);
-                if !dropped.is_empty() {
-                    tracing::info!(
-                        %session_id,
-                        provider = %account_id,
-                        dropped = %dropped.join(","),
-                        "shared account: settings keys outside the share allowlist withheld from \
-                         the grantee"
-                    );
-                }
-                kept
-            }
-        });
-        if let Some(s) = settings {
-            match merged.as_mut() {
-                Some(base) => cctui_proto::util::deep_merge(base, s),
-                None => merged = Some(s),
-            }
+    for s in settings.into_iter().flatten() {
+        match merged.as_mut() {
+            Some(base) => cctui_proto::util::deep_merge(base, s),
+            None => merged = Some(s),
         }
     }
     merged
+}
+
+async fn account_settings(
+    state: &impl MintContext,
+    session_id: &str,
+    account_id: Uuid,
+    trust: Trust,
+) -> Option<serde_json::Value> {
+    let settings = provider_settings_json(state, account_id).await;
+    settings.filter(|v| !v.is_null()).map(|s| match trust {
+        Trust::Owner => s,
+        Trust::Grantee => {
+            let (kept, dropped) = crate::launch_settings::filter_settings(&s);
+            if !dropped.is_empty() {
+                tracing::info!(
+                    %session_id,
+                    provider = %account_id,
+                    dropped = %dropped.join(","),
+                    "shared account: settings keys outside the share allowlist withheld from \
+                     the grantee"
+                );
+            }
+            kept
+        }
+    })
+}
+
+async fn provider_settings_json(
+    state: &impl MintContext,
+    account_id: Uuid,
+) -> Option<serde_json::Value> {
+    traced("SELECT settings_json FROM account_providers WHERE id = $1", |sql| {
+        sqlx::query_scalar::<_, serde_json::Value>(sql)
+            .bind(account_id)
+            .fetch_optional(state.pool())
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Cut the ex-grantee's live gateway credentials for an account whose share was just revoked.
