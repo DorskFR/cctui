@@ -401,9 +401,7 @@ pub async fn resolve_session_accounts(state: &impl MintContext, session_id: &str
     if ids.is_empty()
         && let Some(aid) = traced(
             "SELECT account_id::uuid FROM sessions WHERE id = $1 AND account_id IS NOT NULL",
-            |sql| {
-                sqlx::query_scalar::<_, Uuid>(sql).bind(session_id).fetch_optional(state.pool())
-            },
+            |sql| sqlx::query_scalar::<_, Uuid>(sql).bind(session_id).fetch_optional(state.pool()),
         )
         .await
         .ok()

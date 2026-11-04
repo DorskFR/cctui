@@ -369,9 +369,12 @@ enum RequestTrace {
 
 impl RequestTrace {
     fn of(langfuse: Option<&Arc<dyn TraceSink>>) -> Self {
-        langfuse.map_or(Self::Off, |sink| {
-            if sink.captures_content() { Self::Full } else { Self::Shape }
-        })
+        langfuse.map_or(
+            Self::Off,
+            |sink| {
+                if sink.captures_content() { Self::Full } else { Self::Shape }
+            },
+        )
     }
 }
 

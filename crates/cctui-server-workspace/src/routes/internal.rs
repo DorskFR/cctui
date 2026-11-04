@@ -119,10 +119,7 @@ const fn route_op(request: &RouteRequest) -> &'static str {
     skip_all,
     fields(code.function.name = "deliver_local", bus.route.op = route_op(&request))
 )]
-async fn deliver_local(
-    state: &AppState,
-    request: RouteRequest,
-) -> Result<RouteResponse, BusError> {
+async fn deliver_local(state: &AppState, request: RouteRequest) -> Result<RouteResponse, BusError> {
     match request {
         RouteRequest::DaemonCommand { machine, frame } => {
             match crate::bus::peer::frame_session(&frame).map(ToOwned::to_owned) {

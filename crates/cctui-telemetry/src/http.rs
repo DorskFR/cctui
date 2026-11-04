@@ -4,8 +4,7 @@ use axum::extract::MatchedPath;
 use http::{Request, Response};
 use tower_http::classify::{ServerErrorsAsFailures, SharedClassifier};
 use tower_http::trace::{
-    DefaultOnBodyChunk, DefaultOnEos, DefaultOnRequest, MakeSpan, OnFailure, OnResponse,
-    TraceLayer,
+    DefaultOnBodyChunk, DefaultOnEos, DefaultOnRequest, MakeSpan, OnFailure, OnResponse, TraceLayer,
 };
 use tracing::Span;
 use tracing::field::Empty;
@@ -42,8 +41,7 @@ impl<B> MakeSpan<B> for ServerSpan {
         }
         let method = request.method().as_str();
         // No matched route: stray traffic, not worth an exported span.
-        let Some(route) = request.extensions().get::<MatchedPath>().map(MatchedPath::as_str)
-        else {
+        let Some(route) = request.extensions().get::<MatchedPath>().map(MatchedPath::as_str) else {
             tracing::debug!(method, path, host = header(request, "host"), "unrouted request");
             return Span::none();
         };

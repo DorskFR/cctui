@@ -270,19 +270,18 @@ async fn context_readable(
     user_id: Uuid,
     session_id: &str,
 ) -> Result<bool, sqlx::Error> {
-    let registered: bool =
-        traced("SELECT EXISTS (SELECT 1 FROM sessions WHERE id = $1)", |sql| {
-            sqlx::query_scalar(sql).bind(session_id).fetch_one(pool)
-        })
-        .await?;
+    let registered: bool = traced("SELECT EXISTS (SELECT 1 FROM sessions WHERE id = $1)", |sql| {
+        sqlx::query_scalar(sql).bind(session_id).fetch_one(pool)
+    })
+    .await?;
     if registered {
         return Ok(true);
     }
-    let owner: Option<Option<String>> = traced(
-        "SELECT scope->>'user_id' FROM session_context WHERE spawn_key = $1",
-        |sql| sqlx::query_scalar(sql).bind(session_id).fetch_optional(pool),
-    )
-    .await?;
+    let owner: Option<Option<String>> =
+        traced("SELECT scope->>'user_id' FROM session_context WHERE spawn_key = $1", |sql| {
+            sqlx::query_scalar(sql).bind(session_id).fetch_optional(pool)
+        })
+        .await?;
     Ok(owner.flatten().is_some_and(|o| o == user_id.to_string()))
 }
 
@@ -321,8 +320,8 @@ async fn user_settings_of(state: &AppState, user_id: Uuid) -> Option<serde_json:
         sqlx::query_scalar(sql).bind(user_id).fetch_optional(&state.pool)
     })
     .await
-        .ok()
-        .flatten()
+    .ok()
+    .flatten()
 }
 
 /// The skill bundles and setting env of every installed plugin the user

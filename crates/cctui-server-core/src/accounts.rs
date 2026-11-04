@@ -248,11 +248,11 @@ pub async fn fetch_account_info(
     )
     .await?;
     let Some(row) = row else { return Ok(None) };
-    let providers: Vec<ProviderInfo> = traced(
-        concat!(provider_select!(), " WHERE p.account_id = $1 ORDER BY p.family"),
-        |sql| sqlx::query_as(sql).bind(id).fetch_all(pool),
-    )
-    .await?;
+    let providers: Vec<ProviderInfo> =
+        traced(concat!(provider_select!(), " WHERE p.account_id = $1 ORDER BY p.family"), |sql| {
+            sqlx::query_as(sql).bind(id).fetch_all(pool)
+        })
+        .await?;
     let key = state.vault_key();
     Ok(Some(row.into_info(providers, &key)))
 }

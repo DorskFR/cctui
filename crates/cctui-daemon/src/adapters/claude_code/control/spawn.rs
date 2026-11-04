@@ -871,8 +871,10 @@ impl DeferredDispatch {
             super::super::canary::mark_spare(&self.session_id);
         }
         if let Some(watchdog) = &self.watchdog {
-            let span =
-                crate::adapter_runtime::child_span!("claude.spawn_confirm", "SpawnWatchdog::confirm");
+            let span = crate::adapter_runtime::child_span!(
+                "claude.spawn_confirm",
+                "SpawnWatchdog::confirm"
+            );
             if let Err(stall) = watchdog.confirm(&self.sock, &self.short).instrument(span).await {
                 tracing::warn!(session_id = %self.session_id, short = %self.short, "{stall}");
                 anyhow::bail!("{}: {stall}", self.what);

@@ -405,7 +405,10 @@ fn refresh_in_flight(account_id: Uuid) -> bool {
 
 #[derive(Debug, PartialEq, Eq)]
 enum Refresh {
-    Fetched { provider: String, usage: Option<serde_json::Value> },
+    Fetched {
+        provider: String,
+        usage: Option<serde_json::Value>,
+    },
     /// Another caller's read settled it, even by failing: the cached value.
     Shared(Option<serde_json::Value>),
 }
