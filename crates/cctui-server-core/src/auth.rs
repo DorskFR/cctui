@@ -183,7 +183,7 @@ pub fn worker_route<'a>(method: &http::Method, path: &'a str) -> WorkerRoute<'a>
         return WorkerRoute::Open;
     }
     match segments.as_slice() {
-        ["api", "v1", "daemon", "sessions", id, _, ..] => WorkerRoute::Session(*id),
+        ["api", "v1", "daemon", "sessions", id, _, ..] => WorkerRoute::Session(id),
         _ => WorkerRoute::Denied,
     }
 }
@@ -397,13 +397,7 @@ impl AuthConfig {
     }
 
     /// Cache `ctx` unless a purge landed since `epoch` was read.
-    fn cache_put_bound(
-        &self,
-        hash: String,
-        ctx: AuthContext,
-        bound: Option<String>,
-        epoch: u64,
-    ) {
+    fn cache_put_bound(&self, hash: String, ctx: AuthContext, bound: Option<String>, epoch: u64) {
         if let Ok(mut cache) = self.cache.lock()
             && self.epoch.load(Ordering::SeqCst) == epoch
         {

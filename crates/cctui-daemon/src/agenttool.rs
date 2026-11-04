@@ -1716,13 +1716,13 @@ fn proc_stat(pid: u32) -> Option<(u32, u64)> {
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn ancestry(pid: u32, stat: impl Fn(u32) -> Option<(u32, u64)>) -> Vec<ProcStamp> {
+fn ancestry(pid: u32, read_proc: impl Fn(u32) -> Option<(u32, u64)>) -> Vec<ProcStamp> {
     let mut chain = Vec::new();
-    let mut pid = pid;
-    while pid > 1 && chain.len() < MAX_ANCESTRY {
-        let Some((ppid, start)) = stat(pid) else { break };
-        chain.push(ProcStamp { pid, start });
-        pid = ppid;
+    let mut current = pid;
+    while current > 1 && chain.len() < MAX_ANCESTRY {
+        let Some((parent, start)) = read_proc(current) else { break };
+        chain.push(ProcStamp { pid: current, start });
+        current = parent;
     }
     chain
 }
@@ -1780,10 +1780,9 @@ fn claude_job_entry(path: &Path) -> Option<(String, ProcStamp)> {
         .or_else(|| path.file_stem()?.to_str()?.parse().ok())?;
     let (_, start) = proc_stat(pid)?;
     let recorded = v.get("procStart")?;
-    let matches = recorded.as_str().map_or_else(
-        || recorded.as_u64() == Some(start),
-        |s| s.parse::<u64>().ok() == Some(start),
-    );
+    let matches = recorded
+        .as_str()
+        .map_or_else(|| recorded.as_u64() == Some(start), |s| s.parse::<u64>().ok() == Some(start));
     matches.then_some((job, ProcStamp { pid, start }))
 }
 
@@ -3549,7 +3548,7 @@ mod tests {
 
     fn table(rows: &[(u32, u32, u64)]) -> impl Fn(u32) -> Option<(u32, u64)> {
         let map: HashMap<u32, (u32, u64)> =
-            rows.iter().map(|&(pid, ppid, start)| (pid, (ppid, start))).collect();
+            rows.iter().map(|&(child, parent, start)| (child, (parent, start))).collect();
         move |pid| map.get(&pid).copied()
     }
 

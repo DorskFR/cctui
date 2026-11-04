@@ -59,15 +59,15 @@ impl Verdict {
 /// Result of a `/transition` request.
 pub type TransitionResponse = Value;
 
-/// The workflow engine. Holds parsed steps + tool sets and the current step,
-/// mirrored to a state file for outside observers but never read back. All
-/// public methods take `&self` and lock internally, matching the threaded
-/// Python daemon.
+/// The workflow engine.
+///
+/// Holds parsed steps + tool sets and the current step, mirrored to a state
+/// file for outside observers but never read back. All public methods take
+/// `&self` and lock internally, matching the threaded Python daemon.
 pub struct WorkflowEngine {
     lock: Mutex<()>,
     state: Mutex<(i64, BTreeMap<u32, u32>)>,
     steps: BTreeMap<u32, WorkflowStep>,
-    step_numbers: Vec<u32>,
     tool_sets: HashMap<String, Vec<String>>,
     state_file: PathBuf,
     proxy_policy_file: PathBuf,
@@ -148,8 +148,7 @@ impl WorkflowEngine {
         decision_log: DecisionLog,
         report_out: Option<PathBuf>,
     ) -> Self {
-        let step_numbers: Vec<u32> = steps.keys().copied().collect();
-        let first = step_numbers.first().copied().unwrap_or(0);
+        let first = steps.keys().next().copied().unwrap_or(0);
         let mut visits = BTreeMap::new();
         if first != 0 {
             visits.insert(first, 1);
@@ -158,7 +157,6 @@ impl WorkflowEngine {
             lock: Mutex::new(()),
             state: Mutex::new((i64::from(first), visits.clone())),
             steps,
-            step_numbers,
             tool_sets,
             state_file,
             proxy_policy_file,

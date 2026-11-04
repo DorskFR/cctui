@@ -40,10 +40,8 @@ fn scrubbed() -> &'static [(&'static str, OsString)] {
 
 #[allow(unsafe_code)]
 fn scrub(names: &[&'static str]) -> Vars {
-    let taken = names
-        .iter()
-        .filter_map(|&name| std::env::var_os(name).map(|v| (name, v)))
-        .collect();
+    let taken =
+        names.iter().filter_map(|&name| std::env::var_os(name).map(|v| (name, v))).collect();
     for name in names {
         // SAFETY: only called from `main` before the runtime starts any thread.
         unsafe { std::env::remove_var(name) };

@@ -2013,10 +2013,7 @@ mod tests {
         assert!(drift_of(&job, &profile).is_some());
         let rebuilt = Spawner::rebuild_job(&job, &profile).unwrap();
         assert!(drift_of(&rebuilt, &profile).is_none());
-        assert_eq!(
-            rebuilt.spec.unwrap().template.spec.unwrap().enable_service_links,
-            Some(false)
-        );
+        assert_eq!(rebuilt.spec.unwrap().template.spec.unwrap().enable_service_links, Some(false));
     }
 
     #[test]
