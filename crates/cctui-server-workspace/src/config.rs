@@ -531,7 +531,6 @@ impl Config {
 /// config wiring; the engines themselves are tested in `cctui-secrets`.
 #[cfg(test)]
 pub(crate) mod test_refs {
-    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     use cctui_secrets::{Credential, RefResolver, SecretError, SecretRef, SecretRegistry};

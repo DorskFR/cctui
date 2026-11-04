@@ -252,7 +252,9 @@ impl SecretSource {
             return Ok(entry.credential.clone());
         }
         let result = self.resolver.resolve(r).await;
-        settle(&mut cache, key, r, result)
+        let out = settle(&mut cache, key, r, result);
+        drop(cache);
+        out
     }
 
     /// Re-resolves every cached ref now, as a TTL expiry would.

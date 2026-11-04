@@ -232,18 +232,20 @@ impl SecretRegistry {
 
     /// Re-resolves every tracked ref.
     pub async fn reload(&self) -> ReloadReport {
-        self.refresh_where(|_| true).await
+        self.refresh(None).await
     }
 
     /// Re-resolves the refs whose TTL has elapsed.
     pub async fn reload_due(&self) -> ReloadReport {
-        let now = Instant::now();
-        self.refresh_where(|s| s.due(now)).await
+        self.refresh(Some(Instant::now())).await
     }
 
-    async fn refresh_where(&self, pick: impl Fn(&Secret) -> bool) -> ReloadReport {
+    /// Every tracked ref, or only those due at `due_at`.
+    async fn refresh(&self, due_at: Option<Instant>) -> ReloadReport {
         let mut report = ReloadReport::default();
-        for secret in self.snapshot().into_iter().filter(|s| pick(s)) {
+        let picked: Vec<Secret> =
+            self.snapshot().into_iter().filter(|s| due_at.is_none_or(|now| s.due(now))).collect();
+        for secret in picked {
             let Some(r) = secret.reference() else { continue };
             let outcome = self.fetch(secret.name(), r).await;
             secret.mark_refreshed();

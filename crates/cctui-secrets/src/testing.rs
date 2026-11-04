@@ -1,9 +1,9 @@
-//! In-process doubles of every engine, for tests in crates that resolve their
-//! config through this one. One key is served by all four kinds at once, so a
-//! test can loop over [`KINDS`] and rotate or break the key in one call.
+//! In-process doubles of every secret engine, for tests.
+//!
+//! One key is served by all four kinds at once, so a test can loop over
+//! [`KINDS`] and rotate or break the key in one call.
 
 use std::collections::HashMap;
-use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
@@ -254,7 +254,7 @@ struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
 
 impl std::io::Write for CaptureWriter {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).write_all(data)?;
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).extend_from_slice(data);
         Ok(data.len())
     }
 
