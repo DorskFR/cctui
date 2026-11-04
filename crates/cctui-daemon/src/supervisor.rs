@@ -336,6 +336,10 @@ impl Supervisor {
                 break;
             }
             match self.run_once(shutdown.clone(), &mut running, &event_tx, &mut event_rx).await {
+                Ok(()) if shutdown.is_cancelled() => {
+                    tracing::info!("daemon WS closed for shutdown");
+                    break;
+                }
                 Ok(()) => {
                     tracing::info!("daemon WS closed cleanly, reconnecting");
                     self.established.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -530,12 +534,11 @@ impl Supervisor {
         stopped: impl Fn() -> bool,
     ) {
         let frames = drain_for_shutdown(batch, event_rx, scrub, stopped).await;
-        if !frames.is_empty()
-            && let Some(msg) = prepare_serialized(coalesce(frames)).into_message()
-        {
+        for msg in shutdown_messages(frames) {
             self.counters.add(Subsystem::Forward, msg.len() as u64);
             if let Err(err) = send_shutdown(sink, msg).await {
                 tracing::warn!(%err, "shutdown tail did not reach the wire");
+                break;
             }
         }
         if let Err(err) = send_shutdown(sink, Message::Close(None)).await {
@@ -1589,6 +1592,33 @@ async fn drain_for_shutdown(
         }
     }
     frames
+}
+
+const SHUTDOWN_MESSAGE_BUDGET: usize = cctui_proto::chunk::CHUNK_THRESHOLD - 64;
+
+/// Shutdown runs no chunk-ack loop, so each message must fit in one WS frame.
+fn shutdown_messages(frames: Vec<Vec<u8>>) -> Vec<Message> {
+    let mut groups: Vec<Vec<Vec<u8>>> = Vec::new();
+    let mut open = 0usize;
+    for frame in frames {
+        let len = frame.len() + 1;
+        if groups.is_empty() || open + len > SHUTDOWN_MESSAGE_BUDGET {
+            groups.push(Vec::new());
+            open = 0;
+        }
+        open += len;
+        groups.last_mut().expect("a group was opened above").push(frame);
+    }
+    groups
+        .into_iter()
+        .filter_map(|group| {
+            let msg = prepare_serialized(coalesce(group)).into_message();
+            if msg.is_none() {
+                tracing::warn!("a shutdown frame too large for one message was dropped");
+            }
+            msg
+        })
+        .collect()
 }
 
 /// The wire form a prepared frame takes: a ready-to-send text message, a
@@ -3199,6 +3229,66 @@ mod tests {
         let elapsed = started.elapsed();
         assert!(elapsed >= super::SHUTDOWN_DRAIN_MAX, "waited for the adapters: {elapsed:?}");
         assert!(elapsed < super::SHUTDOWN_DRAIN_MAX + super::SHUTDOWN_DRAIN_QUIET, "{elapsed:?}");
+    }
+
+    fn shutdown_local_ids(messages: Vec<tokio_tungstenite::tungstenite::Message>) -> Vec<String> {
+        use tokio_tungstenite::tungstenite::Message;
+        let mut ids = Vec::new();
+        for msg in messages {
+            let bytes = match msg {
+                Message::Text(t) => t.as_str().as_bytes().to_vec(),
+                Message::Binary(b) => cctui_proto::compress::zstd_decompress(&b).unwrap(),
+                other => panic!("unexpected shutdown message {other:?}"),
+            };
+            let frames = match serde_json::from_slice::<DaemonFrameUp>(&bytes).unwrap() {
+                DaemonFrameUp::Batch { frames } => frames,
+                frame => vec![frame],
+            };
+            for frame in frames {
+                let DaemonFrameUp::Event { event, .. } = frame else { panic!("expected events") };
+                let ended =
+                    matches!(event, cctui_proto::adapter::AdapterEvent::SessionEnded { .. });
+                let tag = if ended { "end:" } else { "" };
+                ids.push(format!("{tag}{}", super::event_local_id(&event)));
+            }
+        }
+        ids
+    }
+
+    #[test]
+    fn shutdown_tail_past_the_chunk_threshold_still_delivers_session_ended() {
+        let mut rng = 0x9e37_79b9_7f4a_7c15_u64;
+        let ended = |id: &str| {
+            ser(&DaemonFrameUp::Event {
+                adapter_id: "claude-code".into(),
+                event: cctui_proto::adapter::AdapterEvent::SessionEnded {
+                    local_id: id.to_owned(),
+                    reason: cctui_proto::adapter::EndReason::Completed,
+                },
+            })
+        };
+        let mut frames = vec![ended("first")];
+        frames.extend((0..40).map(|i| ser(&hi_entropy_event(&mut rng, i))));
+        frames.push(ended("last"));
+        let total: usize = frames.iter().map(Vec::len).sum();
+        assert!(total > cctui_proto::chunk::CHUNK_THRESHOLD, "tail must exceed one frame");
+
+        let messages = super::shutdown_messages(frames);
+        assert!(messages.len() > 1, "split across several messages");
+        let ids = shutdown_local_ids(messages);
+        let mut want = vec!["end:first".to_owned()];
+        want.extend((0..40).map(|i| format!("s{i}")));
+        want.push("end:last".to_owned());
+        assert_eq!(ids, want, "every frame survives, in drain order");
+    }
+
+    #[test]
+    fn small_shutdown_tail_stays_one_message() {
+        let frames: Vec<Vec<u8>> = (0..3).map(|i| ser(&synth_event(i))).collect();
+        let messages = super::shutdown_messages(frames);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(shutdown_local_ids(messages), ["sess-0", "sess-1", "sess-2"]);
+        assert!(super::shutdown_messages(Vec::new()).is_empty());
     }
 
     #[test]
