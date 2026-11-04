@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { HookRule } from '@bindings/HookRule';
+import type { SessionHookPolicy } from '@bindings/SessionHookPolicy';
 import { describeRule, hookChip } from './hook-policy.logic';
 
 const deny: HookRule = {
@@ -13,6 +14,11 @@ describe('session hook chip', () => {
 	it('shows nothing when the launch carried no rules', () => {
 		expect(hookChip(undefined)).toEqual({ kind: 'none' });
 		expect(hookChip({ rules: [], status: null })).toEqual({ kind: 'none' });
+	});
+
+	it('never throws on a malformed body, so the details popover still renders', () => {
+		expect(hookChip([] as unknown as SessionHookPolicy)).toEqual({ kind: 'none' });
+		expect(hookChip(null as unknown as SessionHookPolicy)).toEqual({ kind: 'none' });
 	});
 
 	it('counts the rules a harness applied', () => {

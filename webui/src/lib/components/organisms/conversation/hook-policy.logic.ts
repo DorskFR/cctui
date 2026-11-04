@@ -7,7 +7,9 @@ export type HookChip =
 	| { kind: 'unguarded'; rules: HookRule[] };
 
 export function hookChip(p: SessionHookPolicy | undefined): HookChip {
-	if (!p || p.rules.length === 0 || p.status == null) return { kind: 'none' };
+	if (!p || !Array.isArray(p.rules) || p.rules.length === 0 || p.status == null) {
+		return { kind: 'none' };
+	}
 	return p.status === 'applied'
 		? { kind: 'applied', rules: p.rules }
 		: { kind: 'unguarded', rules: p.rules };
