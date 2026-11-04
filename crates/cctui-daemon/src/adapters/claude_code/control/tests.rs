@@ -91,6 +91,57 @@ async fn a_dispatched_worker_spec_is_refused_when_its_settings_cannot_be_written
     std::fs::remove_dir_all(d.cfg.jobs_root.parent().unwrap()).unwrap();
 }
 
+#[tokio::test]
+async fn a_dispatched_pod_reports_a_refused_launch_and_sends_nothing() {
+    use cctui_proto::hook_policy::DISPATCH_POLICY_FIELD;
+    let (d, _events) = driver();
+    let tmp = tempfile::tempdir().unwrap();
+    let sock = tmp.path().join("claude.sock");
+    let ops = dead_worker_socket(&sock);
+    let _root = ConfigRootOverride::unwritable(tmp.path());
+    let payload = json!({ DISPATCH_POLICY_FIELD: stop_policy(), "prompt": "go" });
+    let mut spec = Driver::build_dispatch_spec(&payload).unwrap();
+    spec.working_dir = workdir_spec(&d).working_dir;
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut reported = Vec::new();
+    let dispatched = d
+        .dispatch_started_session(&sock, &spec, &id, |err| reported.push(format!("{err:#}")))
+        .await;
+    refused_for_hook_settings(dispatched);
+    assert_eq!(reported.len(), 1, "the refusal is reported exactly once");
+    assert!(reported[0].starts_with("refusing to launch"), "{}", reported[0]);
+    assert!(ops.lock().unwrap().is_empty(), "nothing reached the claude daemon");
+    std::fs::remove_dir_all(d.cfg.jobs_root.parent().unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn a_policy_spawn_without_a_machine_key_is_refused_before_any_settings_exist() {
+    let (d, _events) = driver();
+    assert!(d.machine_key.is_none());
+    let tmp = tempfile::tempdir().unwrap();
+    let _root = ConfigRootOverride::set(tmp.path());
+    let mut spec = workdir_spec(&d);
+    spec.hook_policy = Some(stop_policy());
+    let id = uuid::Uuid::new_v4().to_string();
+    let Err(err) = d.prepare_spawn(Path::new("/unused.sock"), &spec, Some(id)).await else {
+        panic!("a policy launch without a seal key was not refused");
+    };
+    assert!(
+        matches!(
+            err.downcast_ref::<HookSettingsError>(),
+            Some(HookSettingsError::PolicyNotKept { .. })
+        ),
+        "{err:#}"
+    );
+    let settings = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().starts_with("hook-settings-"))
+        .count();
+    assert_eq!(settings, 0, "no --settings file was written for the refused launch");
+    std::fs::remove_dir_all(d.cfg.jobs_root.parent().unwrap()).unwrap();
+}
+
 /// Answers every control-socket request with a dead worker and records its op.
 fn dead_worker_socket(sock: &Path) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};

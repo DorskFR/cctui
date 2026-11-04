@@ -292,14 +292,13 @@ impl Driver {
             }
         };
         tracing::info!(session_id = %session_id, "dispatch-on-start: launching dispatched session");
-        let dispatched = async {
-            match self.prepare_spawn(&sock, &spec, Some(session_id.clone())).await {
-                Ok(dispatch) => dispatch.send().await,
-                Err(err) => Err(err),
-            }
-        }
-        .instrument(span.clone())
-        .await;
+        let flow = format!("{}-dispatch", adapter.id());
+        let dispatched = self
+            .dispatch_started_session(&sock, &spec, &session_id, |err| {
+                crate::dispatch::write_failure(&payload, &flow, &format!("{err:#}"));
+            })
+            .instrument(span.clone())
+            .await;
         crate::adapter_runtime::record_spawn_outcome(&span, dispatched.as_ref().err());
         if let Err(err) = dispatched {
             tracing::error!(%err, session_id = %session_id, "dispatch-on-start: spawn failed");
@@ -316,6 +315,23 @@ impl Driver {
             }
             self.arm_stuck_turn(&session_id);
         }
+    }
+
+    /// Prepare and send a dispatched pod's own session. A launch refused before
+    /// anything reaches the claude daemon goes to `refused`, so the pod fails
+    /// on the reason instead of waiting out its boot deadline.
+    pub(super) async fn dispatch_started_session(
+        &self,
+        sock: &std::path::Path,
+        spec: &cctui_proto::adapter::SessionSpec,
+        session_id: &str,
+        refused: impl FnOnce(&anyhow::Error),
+    ) -> anyhow::Result<()> {
+        let dispatch = self
+            .prepare_spawn(sock, spec, Some(session_id.to_owned()))
+            .await
+            .inspect_err(refused)?;
+        dispatch.send().await
     }
 
     /// Build a [`SessionSpec`](cctui_proto::adapter::SessionSpec) from the

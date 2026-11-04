@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 use cctui_proto::hook_policy::HookPolicy;
 use cctui_proto::injected::SESSION_CONTEXT;
 
-use crate::hook_policy::HookPolicySink as _;
+use crate::hook_policy::HookPolicySink;
 use crate::hook_policy::claude_code::ClaudeCode;
 
 use super::{PathBuf, json};
@@ -283,13 +283,16 @@ pub(in crate::adapters::claude_code) struct LaunchPolicy<'a> {
     pub seal_key: Option<&'a str>,
 }
 
-/// The per-session `--settings` file could not be written. Without it claude
-/// would run with neither cctui's managed hooks nor the hook policy, so every
-/// launch path refuses instead.
+/// The per-session `--settings` file, or the hook policy it carries, could
+/// not be put in place. Claude would run unguarded, so every launch path
+/// refuses instead.
 #[derive(Debug)]
 pub(in crate::adapters::claude_code) enum HookSettingsError {
     NoConfigDir,
     Unwritable { path: PathBuf, cause: String },
+    PolicyNotApplied { cause: String },
+    /// A cold resume would find no sealed copy and run without the policy.
+    PolicyNotKept { path: PathBuf, cause: String },
 }
 
 impl HookSettingsError {
@@ -309,6 +312,17 @@ impl std::fmt::Display for HookSettingsError {
                 f,
                 "refusing to launch without cctui's hooks: cannot write the hook settings file \
                  {}: {cause}",
+                path.display()
+            ),
+            Self::PolicyNotApplied { cause } => write!(
+                f,
+                "refusing to launch without cctui's hooks: the hook policy cannot be applied: \
+                 {cause}"
+            ),
+            Self::PolicyNotKept { path, cause } => write!(
+                f,
+                "refusing to launch without cctui's hooks: cannot keep the sealed hook policy a \
+                 cold resume needs at {}: {cause}",
                 path.display()
             ),
         }
@@ -522,7 +536,7 @@ fn write_hook_settings_in(
     {
         session_start.extend(account.iter().cloned());
     }
-    finish_hooks(root, short, &mut hooks, session_start, hook_policy);
+    finish_hooks(&ClaudeCode, root, short, &mut hooks, session_start, hook_policy)?;
     let managed = managed_settings(hooks, gateway_env, model, effort);
     // Layer the server-provided per-account settings UNDERNEATH the managed
     // settings: account keys are merged in, but the managed keys
@@ -551,25 +565,24 @@ fn hook_policy_path(root: &std::path::Path, short: &str) -> PathBuf {
 /// Install the `SessionStart` groups, then append the policy after every
 /// cctui hook and keep it for a cold resume. No policy removes a stale copy
 /// left by an earlier launch of `short`.
-fn finish_hooks(
+fn finish_hooks<S: HookPolicySink<Launch = serde_json::Value>>(
+    sink: &S,
     root: &std::path::Path,
     short: &str,
     hooks: &mut serde_json::Value,
     session_start: Vec<serde_json::Value>,
     launch: LaunchPolicy<'_>,
-) {
+) -> Result<(), HookSettingsError> {
     hooks["SessionStart"] = serde_json::Value::Array(session_start);
     let path = hook_policy_path(root, short);
     let Some(policy) = launch.policy.filter(|p| !p.rules.is_empty()) else {
         forget_kept_policy(&path);
         let _ = std::fs::remove_file(path);
-        return;
+        return Ok(());
     };
-    if let Err(err) = ClaudeCode.apply(policy, hooks) {
-        tracing::warn!(%err, %short, "hook policy not applied");
-        return;
-    }
-    keep_policy(root, &path, short, policy, launch.seal_key);
+    sink.apply(policy, hooks)
+        .map_err(|err| HookSettingsError::PolicyNotApplied { cause: err.to_string() })?;
+    keep_policy(root, &path, short, policy, launch.seal_key)
 }
 
 /// Policies kept by this daemon process, keyed by their on-disk path. The
@@ -586,30 +599,36 @@ fn forget_kept_policy(path: &std::path::Path) {
 }
 
 /// The disk copy outlives a daemon restart. It sits in the agent-writable
-/// config dir, so it carries an HMAC keyed by the machine key and is only
-/// written when that key is known.
+/// config dir, so it carries an HMAC keyed by the machine key: without that
+/// key, or without a writable dir, the launch is refused. An enrolled daemon
+/// always has the key.
 fn keep_policy(
     root: &std::path::Path,
     path: &std::path::Path,
     short: &str,
     policy: &HookPolicy,
     seal_key: Option<&str>,
-) {
+) -> Result<(), HookSettingsError> {
+    let not_kept = |cause: &dyn std::fmt::Display| HookSettingsError::PolicyNotKept {
+        path: path.to_path_buf(),
+        cause: cause.to_string(),
+    };
+    let Some(key) = seal_key else {
+        forget_kept_policy(path);
+        let _ = std::fs::remove_file(path);
+        return Err(not_kept(&"no machine key to seal it with"));
+    };
+    let value = serde_json::to_value(policy).map_err(|err| not_kept(&err))?;
+    let mac = hex::encode(policy_mac(key, short, &value));
+    let doc = serde_json::to_vec(&json!({ "policy": value, "mac": mac }))
+        .map_err(|err| not_kept(&err))?;
+    std::fs::create_dir_all(root)
+        .and_then(|()| cctui_proto::util::write_private(path, &doc))
+        .map_err(|err| not_kept(&err))?;
     if let Ok(mut kept) = KEPT_POLICIES.lock() {
         kept.insert(path.to_path_buf(), policy.clone());
     }
-    let (Some(key), Ok(value)) = (seal_key, serde_json::to_value(policy)) else {
-        let _ = std::fs::remove_file(path);
-        return;
-    };
-    let mac = hex::encode(policy_mac(key, short, &value));
-    let doc = json!({ "policy": value, "mac": mac });
-    let written = std::fs::create_dir_all(root).and_then(|()| {
-        cctui_proto::util::write_private(path, &serde_json::to_vec(&doc).unwrap_or_default())
-    });
-    if let Err(err) = written {
-        tracing::warn!(%err, path = %path.display(), "hook policy: cannot keep it for resume");
-    }
+    Ok(())
 }
 
 /// The kept hook policy failed its integrity check: edited, unsealed, or
@@ -1576,7 +1595,25 @@ mod tests {
         account: Option<&serde_json::Value>,
         policy: Option<&HookPolicy>,
     ) -> serde_json::Value {
-        let path = write_hook_settings_in(
+        let path = write_account_and_policy(root, short, account, policy).unwrap();
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    fn write_with_policy_result(
+        root: &std::path::Path,
+        short: &str,
+        policy: Option<&HookPolicy>,
+    ) -> Result<PathBuf, HookSettingsError> {
+        write_account_and_policy(root, short, None, policy)
+    }
+
+    fn write_account_and_policy(
+        root: &std::path::Path,
+        short: &str,
+        account: Option<&serde_json::Value>,
+        policy: Option<&HookPolicy>,
+    ) -> Result<PathBuf, HookSettingsError> {
+        write_hook_settings_in(
             root,
             std::path::Path::new("/run/c.sock"),
             false,
@@ -1589,8 +1626,6 @@ mod tests {
             None,
             LaunchPolicy { policy, seal_key: Some(SEAL_KEY) },
         )
-        .unwrap();
-        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     }
 
     const SEAL_KEY: &str = "mk_test_machine_key";
@@ -1710,6 +1745,16 @@ mod tests {
         assert!(!root.exists());
     }
 
+    fn assert_names_policy_path(err: &HookSettingsError, root: &std::path::Path, short: &str) {
+        let HookSettingsError::PolicyNotKept { path, cause } = err else {
+            panic!("expected an unkept policy, got {err}");
+        };
+        assert_eq!(path, &hook_policy_path(root, short));
+        assert!(!cause.is_empty());
+        assert!(err.to_string().contains(&path.display().to_string()), "{err}");
+        assert!(err.to_string().starts_with("refusing to launch"), "{err}");
+    }
+
     #[test]
     fn an_unwritable_config_dir_is_an_error_with_a_policy_too() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1729,7 +1774,7 @@ mod tests {
             LaunchPolicy { policy: Some(&policy), seal_key: Some(SEAL_KEY) },
         )
         .unwrap_err();
-        assert_names_settings_path(&err, &root, "unwrit02");
+        assert_names_policy_path(&err, &root, "unwrit02");
     }
 
     #[test]
@@ -1740,7 +1785,7 @@ mod tests {
         let launch = super::super::LaunchEnv::default();
         let sock = std::path::Path::new("/run/c.sock");
         let err = posture.write_in(&root, sock, "unwrit03", &launch, Some(SEAL_KEY)).unwrap_err();
-        assert_names_settings_path(&err, &root, "unwrit03");
+        assert_names_policy_path(&err, &root, "unwrit03");
     }
 
     #[test]
@@ -1866,10 +1911,10 @@ mod tests {
     }
 
     #[test]
-    fn without_a_seal_key_the_policy_stays_in_memory_only() {
+    fn a_policy_launch_without_a_seal_key_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
         let policy = stop_policy();
-        let path = write_hook_settings_in(
+        let err = write_hook_settings_in(
             tmp.path(),
             std::path::Path::new("/run/c.sock"),
             false,
@@ -1881,11 +1926,96 @@ mod tests {
             None,
             None,
             LaunchPolicy { policy: Some(&policy), seal_key: None },
+        )
+        .unwrap_err();
+        let HookSettingsError::PolicyNotKept { path, .. } = &err else { panic!("{err}") };
+        assert_eq!(path, &hook_policy_path(tmp.path(), "nokey001"));
+        assert!(!path.exists());
+        assert!(!tmp.path().join("hook-settings-nokey001.json").exists(), "no settings file");
+        assert_eq!(recover_hook_policy_in(tmp.path(), "nokey001", None), Ok(None));
+    }
+
+    #[test]
+    fn a_launch_without_a_policy_needs_no_seal_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let empty = HookPolicy::default();
+        for (short, policy) in [("nokey002", None), ("nokey003", Some(&empty))] {
+            write_hook_settings_in(
+                tmp.path(),
+                std::path::Path::new("/run/c.sock"),
+                false,
+                short,
+                None,
+                &std::collections::BTreeMap::new(),
+                None,
+                None,
+                None,
+                None,
+                LaunchPolicy { policy, seal_key: None },
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn a_policy_launch_is_refused_when_its_sealed_copy_cannot_be_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(hook_policy_path(tmp.path(), "nokeep01")).unwrap();
+        let policy = stop_policy();
+        let err = write_with_policy_result(tmp.path(), "nokeep01", Some(&policy)).unwrap_err();
+        let HookSettingsError::PolicyNotKept { path, cause } = &err else { panic!("{err}") };
+        assert_eq!(path, &hook_policy_path(tmp.path(), "nokeep01"));
+        assert!(!cause.is_empty());
+        assert!(err.to_string().contains(&path.display().to_string()), "{err}");
+        assert!(!tmp.path().join("hook-settings-nokeep01.json").exists(), "no settings file");
+        assert_eq!(
+            recover_hook_policy_in(tmp.path(), "nokeep01", Some(SEAL_KEY)),
+            Err(TamperedPolicy),
+            "nothing usable was kept in memory either"
         );
-        assert!(path.is_ok());
-        assert!(!hook_policy_path(tmp.path(), "nokey001").exists());
-        assert_eq!(recover_hook_policy_in(tmp.path(), "nokey001", None), Ok(Some(policy)));
-        assert_eq!(recover_after_restart(tmp.path(), "nokey001", None), Ok(None));
+    }
+
+    struct NoSeamSink;
+
+    impl HookPolicySink for NoSeamSink {
+        type Launch = serde_json::Value;
+
+        fn apply(
+            &self,
+            _: &HookPolicy,
+            _: &mut serde_json::Value,
+        ) -> Result<(), crate::hook_policy::Unsupported> {
+            Err(crate::hook_policy::Unsupported { adapter: "test".into() })
+        }
+    }
+
+    #[test]
+    fn a_policy_the_sink_cannot_apply_is_refused_and_never_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let policy = stop_policy();
+        let mut hooks = json!({});
+        let err = finish_hooks(
+            &NoSeamSink,
+            tmp.path(),
+            "noseam01",
+            &mut hooks,
+            Vec::new(),
+            LaunchPolicy { policy: Some(&policy), seal_key: Some(SEAL_KEY) },
+        )
+        .unwrap_err();
+        assert!(matches!(err, HookSettingsError::PolicyNotApplied { .. }), "{err}");
+        assert!(err.to_string().starts_with("refusing to launch"), "{err}");
+        assert!(!hook_policy_path(tmp.path(), "noseam01").exists());
+        let empty = HookPolicy::default();
+        finish_hooks(
+            &NoSeamSink,
+            tmp.path(),
+            "noseam02",
+            &mut hooks,
+            Vec::new(),
+            LaunchPolicy { policy: Some(&empty), seal_key: None },
+        )
+        .expect("an empty policy never reaches the sink");
     }
 
     #[test]
