@@ -457,8 +457,18 @@ fn parse_cli() -> Cli {
     })
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    let cli = parse_cli();
+    if matches!(cli.cmd, Cmd::Run { .. }) {
+        cctui_daemon::harden::harden_run_process();
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(Box::pin(async_main(cli)))
+}
+
+async fn async_main(cli: Cli) -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     // `codex_app_server_stderr` is its own target, outside the `cctui_daemon`
     // tree, so journald keeps codex's stderr.
@@ -468,7 +478,6 @@ async fn main() -> anyhow::Result<()> {
         "cctui_daemon=info,codex_app_server_stderr=info",
     );
 
-    let cli = parse_cli();
     let path = cli.config.unwrap_or_else(Config::default_path);
 
     match cli.cmd {
