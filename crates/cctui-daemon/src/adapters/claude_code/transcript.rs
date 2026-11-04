@@ -555,6 +555,9 @@ pub(super) fn parse_line(local_id: &str, line: &Value, out: &mut Vec<AdapterEven
         // latch state: no user meaning, and `last-prompt` embeds `leafUuid` so
         // every one survives payload dedup as its own bubble.
         "last-prompt" | "atis-latch" => record_ignored(kind),
+        // Claude Code's own request bookkeeping (`api-request`, `-blob`,
+        // `-shape`): the conversation is already in the user/assistant lines.
+        k if k.starts_with("api-request") => record_ignored(kind),
         _ => record_unknown("unknown", kind),
     }
 }
@@ -2496,6 +2499,24 @@ mod tests {
         assert!(out.is_empty(), "deliberate drops must emit nothing");
         for label in ["ignored:last-prompt", "ignored:atis-latch"] {
             assert!(tally_for(label) >= 1, "{label} must be counted");
+        }
+    }
+
+    #[test]
+    fn api_request_records_are_metadata_not_unknown_shapes() {
+        let lines = [
+            json!({"type":"api-request","requestId":"req_1","model":"claude-opus-5-5"}),
+            json!({"type":"api-request-blob","hash":"d858","message":{"role":"system","content":[{"type":"text","text":"<task-notification>"}]}}),
+            json!({"type":"api-request-shape","shape":{"tools":3}}),
+        ];
+        let mut out = Vec::new();
+        for l in &lines {
+            parse_line("s", l, &mut out);
+        }
+        assert!(out.is_empty(), "request bookkeeping must emit nothing");
+        for kind in ["api-request", "api-request-blob", "api-request-shape"] {
+            assert!(tally_for(&format!("ignored:{kind}")) >= 1, "{kind} counted as ignored");
+            assert_eq!(tally_for(&format!("unknown:{kind}")), 0, "{kind} must not warn");
         }
     }
 
