@@ -1,11 +1,9 @@
-use cctui_server_core::test_support::with_isolated_database;
+use crate::test_support::with_isolated_database;
 
 use super::*;
 
 async fn provisioned(pool: &PgPool) {
-    cctui_server_core::schema::bootstrap(pool).await.unwrap();
-    let mut conn = cctui_server_core::schema::migration_connection(pool).await.unwrap();
-    crate::schema::provision(&mut conn).await.unwrap();
+    crate::schema::bootstrap(pool).await.unwrap();
 }
 
 fn request(dispatch_id: Uuid) -> RegisterRequest {
@@ -38,35 +36,6 @@ fn pod(name: &str) -> jwt::PodIdentity {
         pod_uid: "pod-uid".to_owned(),
         service_account: Some("worker".to_owned()),
     }
-}
-
-#[tokio::test]
-async fn the_workspace_package_installs_the_table_once() {
-    with_isolated_database("dispatch_identity_migration", |pool| async move {
-        provisioned(&pool).await;
-        let present: bool =
-            sqlx::query_scalar("SELECT to_regclass('public.dispatch_identities') IS NOT NULL")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert!(present);
-        let mut conn = cctui_server_core::schema::migration_connection(&pool).await.unwrap();
-        crate::schema::provision(&mut conn).await.unwrap();
-        drop(conn);
-        let versions: Vec<i64> = sqlx::query_scalar(
-            "SELECT version FROM _cctui_schema_migrations WHERE package = 'workspace' \
-             ORDER BY version",
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-        assert_eq!(versions, [1, 2]);
-
-        sqlx::raw_sql("DROP TABLE public.dispatch_identities").execute(&pool).await.unwrap();
-        sqlx::raw_sql(crate::schema::MIGRATIONS[1].sql).execute(&pool).await.unwrap();
-        assert!(register_row(&pool, &request(Uuid::new_v4())).await, "re-applied up works");
-    })
-    .await;
 }
 
 #[tokio::test]

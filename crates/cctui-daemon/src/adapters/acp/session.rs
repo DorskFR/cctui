@@ -336,6 +336,9 @@ impl AcpSession {
         let launch = self.launch()?;
         let connection =
             AcpConnection::open(&launch, Arc::clone(&self.rings), self.inbox_tx.clone()).await?;
+        if let (Some(relay), Some(pid)) = (&self.params.agent_mcp, connection.child.id()) {
+            crate::agenttool::bind_session_root(relay.session_key(), pid);
+        }
         self.connection = Some(connection);
 
         let init_raw = self

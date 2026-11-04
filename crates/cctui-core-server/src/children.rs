@@ -86,6 +86,7 @@ impl ChildExecutionContext for Host {
                 token_key: child,
                 spec,
                 failed,
+                route_session: Some(parent.session_id.clone()),
             },
         )
         .await;

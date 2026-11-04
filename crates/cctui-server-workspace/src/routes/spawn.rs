@@ -422,6 +422,7 @@ async fn execute_spawn(
                 model: spec_model,
                 effort: spec_effort,
             },
+            route_session: None,
         },
     )
     .await;

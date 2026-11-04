@@ -95,7 +95,8 @@ pub fn kill_switch() -> bool {
 #[must_use]
 pub fn in_worker_pod() -> bool {
     let set = |k: &str| std::env::var(k).is_ok_and(|v| !v.is_empty());
-    set("CCTUI_MACHINE_KEY") || set("KUBERNETES_SERVICE_HOST")
+    crate::harden::startup_var("CCTUI_MACHINE_KEY").is_some_and(|v| !v.is_empty())
+        || set("KUBERNETES_SERVICE_HOST")
 }
 
 /// The policy this daemon acts on: env kill switch, then worker pod, then

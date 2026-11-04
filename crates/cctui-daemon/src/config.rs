@@ -54,7 +54,8 @@ impl Config {
     /// fall back to the on-disk config.
     #[must_use]
     pub fn from_env() -> Option<Self> {
-        let machine_key = std::env::var("CCTUI_MACHINE_KEY").ok().filter(|s| !s.is_empty())?;
+        let machine_key =
+            crate::harden::startup_var("CCTUI_MACHINE_KEY").filter(|s| !s.is_empty())?;
         let server_url = std::env::var("CCTUI_SERVER_URL")
             .or_else(|_| std::env::var("CCTUI_URL"))
             .ok()

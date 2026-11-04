@@ -17,7 +17,7 @@ async fn concurrent_core_bootstraps_create_only_execution_storage_without_extens
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(count, 37, "35 execution tables plus two schema tracking tables");
+        assert_eq!(count, 38, "36 execution tables plus two schema tracking tables");
         let extensions: Vec<String> =
             sqlx::query_scalar("SELECT extname FROM pg_extension ORDER BY extname")
                 .fetch_all(&pool)
@@ -33,7 +33,7 @@ async fn concurrent_core_bootstraps_create_only_execution_storage_without_extens
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(entries, 4);
+        assert_eq!(entries, 5);
     })
     .await;
 }
@@ -127,6 +127,21 @@ async fn core_forward_migration_adds_durable_machine_launch_storage() {
 }
 
 #[tokio::test]
+async fn a_fresh_core_database_has_dispatch_identity_storage() {
+    with_isolated_database("core_dispatch_identities", |pool| async move {
+        bootstrap(&pool).await.unwrap();
+        let exists: bool =
+            sqlx::query_scalar("SELECT to_regclass('public.dispatch_identities') IS NOT NULL")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(exists, "kube dispatch registers its jobs on a core-only server");
+        bootstrap(&pool).await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_baseline_only_core_upgrades_without_changing_existing_data_or_history() {
     with_isolated_database("core_forward_upgrade", |pool| async move {
         bootstrap(&pool).await.unwrap();
@@ -142,7 +157,7 @@ async fn a_baseline_only_core_upgrades_without_changing_existing_data_or_history
         let name: String=sqlx::query_scalar("SELECT name FROM users WHERE key_hash='fixture-hash'").fetch_one(&pool).await.unwrap();
         assert_eq!(name,"fixture");
         let versions: Vec<i64>=sqlx::query_scalar("SELECT version FROM _cctui_schema_migrations WHERE package='core' ORDER BY version").fetch_all(&pool).await.unwrap();
-        assert_eq!(versions,[1,2,3,4]);
+        assert_eq!(versions,[1,2,3,4,5]);
     }).await;
 }
 

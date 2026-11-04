@@ -33,6 +33,7 @@ pub mod fatal;
 pub mod followledger;
 pub mod git;
 pub mod guardwatch;
+pub mod harden;
 pub mod harness_update;
 pub mod imagepost;
 pub mod launchgate;

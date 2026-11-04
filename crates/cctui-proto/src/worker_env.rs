@@ -5,12 +5,25 @@
 const RESERVED_EXACT: [&str; 5] = ["SESSION_ID", "REPLY_URL", "BASH_ENV", "ENV", "PATH"];
 const RESERVED_PREFIXES: [&str; 4] = ["CCTUI_", "TASK_", "LD_", "DYLD_"];
 
+const WORKER_INTERNAL_EXACT: [&str; 5] =
+    ["PRIVATE_ALLOW_FILE", "TERMINATION_LOG", "DISPATCH_ENV_URL", "NET_MODE", "ACP_AGENTS"];
+const WORKER_INTERNAL_PREFIXES: [&str; 4] = ["WORKER_", "GUARD_", "PROXY_", "POLICY_"];
+
+/// The worker entrypoint's own settings: operator plane, never payload.
+/// `CONTEXT_PACK_*` stays open: it is the documented payload pack selector.
+fn is_worker_internal(upper: &str) -> bool {
+    WORKER_INTERNAL_EXACT.contains(&upper)
+        || WORKER_INTERNAL_PREFIXES.iter().any(|p| upper.starts_with(p))
+        || (upper.starts_with("CONTEXT_") && !upper.starts_with("CONTEXT_PACK_"))
+}
+
 #[must_use]
 pub fn is_reserved_env_key(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
     RESERVED_EXACT.contains(&upper.as_str())
         || RESERVED_PREFIXES.iter().any(|p| upper.starts_with(p))
         || upper.ends_with("_PROXY")
+        || is_worker_internal(&upper)
 }
 
 const PLUGIN_DENIED_EXACT: [&str; 6] =
@@ -51,7 +64,9 @@ const DISPATCHER_OWNED_EXACT: [&str; 5] =
 
 fn is_dispatcher_owned(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
-    DISPATCHER_OWNED_EXACT.contains(&upper.as_str()) || upper.starts_with("TASK_")
+    DISPATCHER_OWNED_EXACT.contains(&upper.as_str())
+        || upper.starts_with("TASK_")
+        || is_worker_internal(&upper)
 }
 
 fn first_reserved(payload: &serde_json::Value, exempt: &[&str]) -> Result<(), String> {
@@ -116,6 +131,46 @@ mod tests {
             assert!(is_reserved_env_key(k), "{k} must be reserved");
         }
         for k in ["FEATURE_FLAG", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "PATHS", "MY_ENV"] {
+            assert!(!is_reserved_env_key(k), "{k} must be allowed");
+        }
+    }
+
+    #[test]
+    fn worker_entrypoint_internals_are_reserved_and_never_exempt() {
+        for k in [
+            "WORKER_UID",
+            "WORKER_USER",
+            "WORKER_HOME",
+            "WORKER_NET_ALLOW",
+            "WORKER_NET_MODE",
+            "PROXY_UID",
+            "PROXY_PORT",
+            "PROXY_HEALTH_PORT",
+            "GUARD_PORT",
+            "GUARD_STATE",
+            "GUARD_RULES_FILE",
+            "GUARD_PROXY_CA_FILE",
+            "POLICY_FILE",
+            "PRIVATE_ALLOW_FILE",
+            "CONTEXT_DIR",
+            "TERMINATION_LOG",
+            "DISPATCH_ENV_URL",
+            "NET_MODE",
+            "ACP_AGENTS",
+            "guard_state",
+        ] {
+            assert!(is_reserved_env_key(k), "{k} must be reserved");
+            let p = json!({ "env": { k: "x" }, SERVER_ENV_KEYS_FIELD: [k] });
+            assert!(check_payload_env(&p).unwrap_err().contains(k), "{k} exempted");
+        }
+        for k in [
+            "CONTEXT_PACK_URL",
+            "CONTEXT_PACK_REF",
+            "CONTEXT_PACK_SUBDIR",
+            "CONTEXT_PACK_TOKEN",
+            "NETWORK_NAME",
+            "MY_WORKER_UID",
+        ] {
             assert!(!is_reserved_env_key(k), "{k} must be allowed");
         }
     }

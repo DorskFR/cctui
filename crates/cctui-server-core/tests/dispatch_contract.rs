@@ -219,7 +219,7 @@ async fn dispatch_mints_scoped_worker_identity_and_records_the_forward_without_w
         .fetch_all(&f.host.pool)
         .await
         .unwrap();
-    assert_eq!(grants, ["dispatch", "read"]);
+    assert_eq!(grants, ["read"]);
     let outcome: String =
         sqlx::query_scalar("SELECT outcome FROM dispatch_records WHERE session_id = $1")
             .bind(&reply.session_id)

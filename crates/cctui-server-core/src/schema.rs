@@ -23,6 +23,7 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 4,
         sql: include_str!("../schema/0004_session_name_from_custom_title.sql"),
     },
+    Migration { version: 5, sql: include_str!("../schema/0005_dispatch_identities.sql") },
 ];
 
 const LEGACY_LAST: &str = include_str!("../../../migrations/191_file_blobs.up.sql");
@@ -172,6 +173,15 @@ pub async fn install_package(
         tx.commit().await?;
     }
     Ok(())
+}
+
+/// Record a package migration whose objects already exist, without running it.
+pub async fn adopt(
+    conn: &mut MigrationConnection,
+    package: &str,
+    migration: Migration,
+) -> Result<(), sqlx::Error> {
+    record(conn, package, migration, true).await
 }
 
 async fn verify_legacy(conn: &mut PgConnection) -> Result<(), sqlx::Error> {

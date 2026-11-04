@@ -171,9 +171,15 @@ phase_dispatch_env() {
         case "$_de_k" in
             "" | [0-9]* | *[!A-Za-z0-9_]*)
                 dispatch_identity_failed "the server sent an invalid env name" ;;
+            CONTEXT_PACK_*) ;;
+            WORKER_* | GUARD_* | PROXY_* | POLICY_* | CONTEXT_* | PRIVATE_ALLOW_FILE \
+                | TERMINATION_LOG | DISPATCH_ENV_URL | NET_MODE | ACP_AGENTS | CCTUI_BASE_URL)
+                dispatch_identity_failed "the server sent a reserved env name: $_de_k" ;;
         esac
-        _de_v=$(printf '%s' "$_de_json" | jq -r --arg k "$_de_k" '.env[$k]')
-        export "$_de_k=$_de_v"
+        _de_v=$(printf '%s' "$_de_json" \
+            | jq -j --arg k "$_de_k" '.env[$k] | if type == "string" then . else error end' \
+            && printf x) || dispatch_identity_failed "the server sent a non-string value for $_de_k"
+        export "$_de_k=${_de_v%x}"
     done
     log "dispatch: payload env fetched through the guard-proxy (dispatch ${CCTUI_DISPATCH_ID%%-*})"
 }
@@ -1674,8 +1680,8 @@ phase_hardening
 
 # ── Phase 8: Drop privileges + run ──────────────────────────────────────────
 # cctui-supervisor applies landlock + seccomp, drops all caps, setuids to the
-# worker, then exec's the daemon. RO: system + context/prompts; RW: workspace,
-# home, tmp, the guard/proxy state dirs. The supervisor's own --report captures
+# worker, then exec's the daemon. RO: system, context/prompts, the guard/proxy
+# state dirs; RW: workspace, home, tmp, gpg-agent. The supervisor's own --report captures
 # landlock/seccomp/uid for the hardening metadata. `exec` keeps a backgrounded
 # call's $! the daemon's pid: without it $! is a subshell that SIGTERM kills
 # while the daemon never sees the signal.
@@ -1686,7 +1692,7 @@ run_supervised_daemon() {
         --ro "$CONTEXT_DIR" \
         $(extra_ro_flags) \
         --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \
-        --rw /var/run/workflow-guard --ro /var/run/guard-proxy --rw /var/run/gpg-agent \
+        --ro /var/run/workflow-guard --ro /var/run/guard-proxy --rw /var/run/gpg-agent \
         $(extra_rw_flags) \
         --user "$WORKER_UID" \
         --report /tmp/hardening.json \

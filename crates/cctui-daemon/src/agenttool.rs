@@ -1595,10 +1595,13 @@ fn resume_follows(
 }
 
 async fn handle_connection(stream: UnixStream, server: ServerClient, machine_key: String) {
+    let peer_pid = stream.peer_cred().ok().and_then(|cred| cred.pid());
     let (read_half, mut write_half) = stream.into_split();
     let mut lines = BufReader::new(read_half).lines();
     let Ok(Some(line)) = lines.next_line().await else { return };
-    let call = match parse_call(&line) {
+    let call = match parse_call(&line)
+        .and_then(|call| verify_caller(&call.session_id, peer_pid).map(|()| call))
+    {
         Ok(call) => call,
         Err(err) => {
             let _ = write_line(&mut write_half, &json!({ "ok": false, "error": err })).await;
@@ -1674,6 +1677,156 @@ pub fn resolve_session_alias(id: &str) -> String {
         .ok()
         .and_then(|map| map.get(id).cloned())
         .unwrap_or_else(|| id.to_owned())
+}
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcStamp {
+    pid: u32,
+    start: u64,
+}
+
+#[cfg(any(target_os = "linux", test))]
+const MAX_ANCESTRY: usize = 64;
+
+#[cfg(target_os = "linux")]
+static SESSION_ROOTS: LazyLock<Mutex<HashMap<String, ProcStamp>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Only callers inside `pid`'s process tree may act as `session_key`.
+pub fn bind_session_root(session_key: &str, pid: u32) {
+    #[cfg(target_os = "linux")]
+    if !session_key.trim().is_empty()
+        && let Some((_, start)) = proc_stat(pid)
+        && let Ok(mut map) = SESSION_ROOTS.lock()
+    {
+        map.insert(session_key.to_owned(), ProcStamp { pid, start });
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (session_key, pid);
+}
+
+/// `(ppid, starttime)` from `/proc/<pid>/stat`. `comm` may hold spaces and
+/// parentheses, so fields are counted from its last `)`.
+#[cfg(target_os = "linux")]
+fn proc_stat(pid: u32) -> Option<(u32, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let fields: Vec<&str> = stat[stat.rfind(')')? + 1..].split_whitespace().collect();
+    Some((fields.get(1)?.parse().ok()?, fields.get(19)?.parse().ok()?))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn ancestry(pid: u32, read_proc: impl Fn(u32) -> Option<(u32, u64)>) -> Vec<ProcStamp> {
+    let mut chain = Vec::new();
+    let mut current = pid;
+    while current > 1 && chain.len() < MAX_ANCESTRY {
+        let Some((parent, start)) = read_proc(current) else { break };
+        chain.push(ProcStamp { pid: current, start });
+        current = parent;
+    }
+    chain
+}
+
+#[cfg(any(target_os = "linux", test))]
+const NOT_THIS_SESSION: &str = "refused: this call does not come from the session it names";
+
+#[cfg(any(target_os = "linux", test))]
+/// Whether a caller whose process ancestry is `chain` may act as `claimed`.
+/// The nearest ancestor that is a session root decides; a caller under no root
+/// may only name a session that has none.
+fn caller_may_act_as(
+    claimed: &str,
+    chain: &[ProcStamp],
+    roots: &[(String, ProcStamp)],
+) -> Result<(), String> {
+    let nearest = chain.iter().find_map(|node| {
+        let owners: Vec<&str> =
+            roots.iter().filter(|(_, root)| root == node).map(|(s, _)| s.as_str()).collect();
+        (!owners.is_empty()).then_some(owners)
+    });
+    let allowed = nearest.map_or_else(
+        || !roots.iter().any(|(owner, _)| owner == claimed),
+        |owners| owners.contains(&claimed),
+    );
+    if allowed { Ok(()) } else { Err(NOT_THIS_SESSION.to_owned()) }
+}
+
+#[cfg(target_os = "linux")]
+fn live_roots() -> Vec<(String, ProcStamp)> {
+    let Ok(mut map) = SESSION_ROOTS.lock() else { return Vec::new() };
+    map.retain(|_, root| proc_stat(root.pid).is_some_and(|(_, start)| start == root.start));
+    map.iter().map(|(key, root)| (resolve_session_alias(key), *root)).collect()
+}
+
+#[cfg(target_os = "linux")]
+fn claude_sessions_dir() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("CLAUDE_CONFIG_DIR") {
+        return Some(PathBuf::from(dir).join("sessions"));
+    }
+    Some(dirs::home_dir()?.join(".claude").join("sessions"))
+}
+
+#[cfg(target_os = "linux")]
+fn claude_job_entry(path: &Path) -> Option<(String, ProcStamp)> {
+    if path.extension().and_then(std::ffi::OsStr::to_str) != Some("json") {
+        return None;
+    }
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let job = v.get("jobId")?.as_str()?.to_owned();
+    let pid = v
+        .get("pid")
+        .and_then(Value::as_u64)
+        .and_then(|p| u32::try_from(p).ok())
+        .or_else(|| path.file_stem()?.to_str()?.parse().ok())?;
+    let (_, start) = proc_stat(pid)?;
+    let recorded = v.get("procStart")?;
+    let matches = recorded
+        .as_str()
+        .map_or_else(|| recorded.as_u64() == Some(start), |s| s.parse::<u64>().ok() == Some(start));
+    matches.then_some((job, ProcStamp { pid, start }))
+}
+
+/// Live claude jobs as roots. The job of `claimed` (its id's first 8 chars)
+/// is owned by `claimed`; every other job by a name no session carries. More
+/// than one live process for the claimed job is refused outright.
+#[cfg(target_os = "linux")]
+fn claude_job_roots_in(dir: &Path, claimed: &str) -> Result<Vec<(String, ProcStamp)>, String> {
+    let short = claimed.get(..8);
+    let Ok(entries) = std::fs::read_dir(dir) else { return Ok(Vec::new()) };
+    let roots: Vec<(String, ProcStamp)> = entries
+        .flatten()
+        .filter_map(|entry| claude_job_entry(&entry.path()))
+        .map(|(job, root)| {
+            let owner =
+                if Some(job.as_str()) == short { claimed.to_owned() } else { format!("job:{job}") };
+            (owner, root)
+        })
+        .collect();
+    let mut mine: Vec<ProcStamp> =
+        roots.iter().filter(|(owner, _)| owner == claimed).map(|(_, root)| *root).collect();
+    mine.sort_by_key(|root| (root.pid, root.start));
+    mine.dedup();
+    if mine.len() > 1 {
+        return Err(NOT_THIS_SESSION.to_owned());
+    }
+    Ok(roots)
+}
+
+#[cfg(target_os = "linux")]
+fn verify_caller(claimed: &str, peer_pid: Option<i32>) -> Result<(), String> {
+    let chain = peer_pid
+        .and_then(|pid| u32::try_from(pid).ok())
+        .map_or_else(Vec::new, |pid| ancestry(pid, proc_stat));
+    let mut roots = live_roots();
+    if let Some(dir) = claude_sessions_dir() {
+        roots.extend(claude_job_roots_in(&dir, claimed)?);
+    }
+    caller_may_act_as(claimed, &chain, &roots)
+}
+
+#[cfg(not(target_os = "linux"))]
+const fn verify_caller(_claimed: &str, _peer_pid: Option<i32>) -> Result<(), String> {
+    Ok(())
 }
 
 /// Path used when writing a session's MCP config, exposed for the launch path.
@@ -3391,5 +3544,112 @@ mod tests {
             &json!({ "ok": true, "result": "child agent finished without producing any output" }),
         );
         assert!(empty.contains("CctuiHistory"), "{empty}");
+    }
+
+    fn table(rows: &[(u32, u32, u64)]) -> impl Fn(u32) -> Option<(u32, u64)> {
+        let map: HashMap<u32, (u32, u64)> =
+            rows.iter().map(|&(child, parent, start)| (child, (parent, start))).collect();
+        move |pid| map.get(&pid).copied()
+    }
+
+    fn root(owner: &str, pid: u32, start: u64) -> (String, ProcStamp) {
+        (owner.to_owned(), ProcStamp { pid, start })
+    }
+
+    #[test]
+    fn a_call_claiming_another_sessions_id_is_refused() {
+        let procs = table(&[(100, 1, 10), (200, 1, 20), (210, 200, 21), (220, 210, 22)]);
+        let roots = [root("sess-a", 100, 10), root("sess-b", 200, 20)];
+        let chain = ancestry(220, procs);
+        assert_eq!(caller_may_act_as("sess-a", &chain, &roots), Err(NOT_THIS_SESSION.to_owned()));
+        assert_eq!(caller_may_act_as("sess-b", &chain, &roots), Ok(()));
+    }
+
+    #[test]
+    fn a_nested_sessions_relay_resolves_to_its_own_session() {
+        let procs = table(&[(100, 1, 10), (150, 100, 15), (300, 150, 30), (310, 300, 31)]);
+        let roots = [root("parent", 100, 10), root("child", 300, 30)];
+        let chain = ancestry(310, procs);
+        assert_eq!(caller_may_act_as("child", &chain, &roots), Ok(()));
+        assert!(caller_may_act_as("parent", &chain, &roots).is_err());
+    }
+
+    #[test]
+    fn a_recycled_pid_is_not_taken_for_the_root_it_replaced() {
+        let procs = table(&[(100, 1, 99), (110, 100, 100)]);
+        let roots = [root("sess-a", 100, 10)];
+        let chain = ancestry(110, procs);
+        assert!(caller_may_act_as("sess-a", &chain, &roots).is_err());
+    }
+
+    #[test]
+    fn a_caller_under_no_root_may_only_name_an_unrooted_session() {
+        let chain = ancestry(500, table(&[(500, 400, 50), (400, 1, 40)]));
+        let roots = [root("sess-a", 100, 10)];
+        assert!(caller_may_act_as("sess-a", &chain, &roots).is_err());
+        assert_eq!(caller_may_act_as("legacy", &chain, &roots), Ok(()));
+        assert_eq!(caller_may_act_as("legacy", &chain, &[]), Ok(()));
+    }
+
+    #[test]
+    fn an_aliased_launch_key_root_answers_for_the_real_session() {
+        bind_session_alias("launch-key-root-test", "thread_root_test");
+        let owner = resolve_session_alias("launch-key-root-test");
+        let chain = ancestry(20, table(&[(20, 10, 2), (10, 1, 1)]));
+        let roots = [root(&owner, 10, 1)];
+        assert_eq!(caller_may_act_as("thread_root_test", &chain, &roots), Ok(()));
+    }
+
+    #[test]
+    fn ancestry_stops_at_init_a_missing_parent_or_a_cycle() {
+        let walk = ancestry(30, table(&[(30, 20, 3), (20, 1, 2), (1, 0, 1)]));
+        assert_eq!(walk.iter().map(|p| p.pid).collect::<Vec<_>>(), [30, 20]);
+        assert_eq!(ancestry(30, table(&[(30, 99, 3)])).len(), 1);
+        assert_eq!(ancestry(7, table(&[(7, 8, 1), (8, 7, 1)])).len(), MAX_ANCESTRY);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_bound_root_resolves_from_this_process_and_a_dead_one_is_dropped() {
+        let me = std::process::id();
+        bind_session_root("root-bind-test", me);
+        let roots = live_roots();
+        assert!(roots.iter().any(|(owner, r)| owner == "root-bind-test" && r.pid == me));
+        let chain = ancestry(me, proc_stat);
+        assert_eq!(caller_may_act_as("root-bind-test", &chain, &roots), Ok(()));
+        SESSION_ROOTS
+            .lock()
+            .unwrap()
+            .insert("root-dead-test".to_owned(), ProcStamp { pid: me, start: u64::MAX });
+        assert!(!live_roots().iter().any(|(owner, _)| owner == "root-dead-test"));
+    }
+
+    #[cfg(target_os = "linux")]
+    fn write_job(dir: &Path, file: &str, pid: u32, job: &str, start: u64) {
+        let body = json!({ "pid": pid, "jobId": job, "procStart": start.to_string() });
+        std::fs::write(dir.join(file), body.to_string()).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_claude_job_is_a_root_only_when_unambiguous() {
+        let tmp = tempfile::tempdir().unwrap();
+        let me = std::process::id();
+        let (_, my_start) = proc_stat(me).unwrap();
+        let claimed = "abcd1234-0000-4000-8000-000000000000";
+        write_job(tmp.path(), "a.json", me, "abcd1234", my_start);
+        write_job(tmp.path(), "stale.json", me, "abcd1234", my_start + 1);
+        let roots = claude_job_roots_in(tmp.path(), claimed).unwrap();
+        assert_eq!(roots, [root(claimed, me, my_start)]);
+        let chain = ancestry(me, proc_stat);
+        assert_eq!(caller_may_act_as(claimed, &chain, &roots), Ok(()));
+        let other = "ffff0000-0000-4000-8000-000000000000";
+        let as_other = claude_job_roots_in(tmp.path(), other).unwrap();
+        assert!(caller_may_act_as(other, &chain, &as_other).is_err());
+
+        let parent = std::os::unix::process::parent_id();
+        let (_, parent_start) = proc_stat(parent).unwrap();
+        write_job(tmp.path(), "b.json", parent, "abcd1234", parent_start);
+        assert!(claude_job_roots_in(tmp.path(), claimed).is_err());
     }
 }

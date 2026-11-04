@@ -18,6 +18,9 @@ pub struct MachineSpawn {
     pub token_key: Uuid,
     pub spec: SessionSpec,
     pub failed: FailedSpawnRow,
+    /// Deliver on the connection that announced this session, not the
+    /// machine's newest one: dispatched workers share one machine identity.
+    pub route_session: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -63,7 +66,7 @@ pub async fn launch_machine(
     waiters: &CommandWaiters,
     spawn: MachineSpawn,
 ) -> Result<(), LaunchError> {
-    let MachineSpawn { machine_id, command_id, token_key, spec, failed } = spawn;
+    let MachineSpawn { machine_id, command_id, token_key, spec, failed, route_session } = spawn;
     let frame = DaemonFrameDown::Command {
         adapter_id: spec.adapter_id.as_str().to_owned(),
         command: Box::new(AdapterCommand::Spawn {
@@ -76,7 +79,11 @@ pub async fn launch_machine(
     let verdict = wait_for_verdict(waiters, command_id);
     let registration = LaunchWaiter { waiters, command_id };
     track_command(pending, command_id, None, Some(failed));
-    if let Err(error) = bus.command_daemon(machine_id, frame).await {
+    let delivered = match route_session.as_deref() {
+        Some(session) => bus.command_daemon_for_session(machine_id, session, frame).await,
+        None => bus.command_daemon(machine_id, frame).await,
+    };
+    if let Err(error) = delivered {
         pending.remove(&command_id);
         return Err(LaunchError::Delivery(error));
     }
