@@ -111,6 +111,7 @@ impl HookPolicySink for Codex {
         if policy.rules.is_empty() {
             return Ok(());
         }
+        let policy = super::materialize(policy, self.exe.as_deref());
         let config = object(config);
         let hooks = object(config.entry("hooks").or_insert_with(|| json!({})));
         for rule in &policy.rules {

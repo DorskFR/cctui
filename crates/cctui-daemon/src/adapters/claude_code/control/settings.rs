@@ -1703,6 +1703,37 @@ mod tests {
     }
 
     #[test]
+    fn a_first_spawn_posture_carries_the_spec_policy_into_the_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = std::path::Path::new("/run/c.sock");
+        let launch = super::super::LaunchEnv::default();
+        let spec = cctui_proto::adapter::SessionSpec {
+            permission_mode: Some(cctui_proto::adapter::PermissionMode::Whip),
+            hook_policy: Some(stop_policy()),
+            ..launch_argv_spec()
+        };
+        let posture = HookPosture::of(&spec);
+        assert!(posture.whip);
+        assert_eq!(posture.policy, Some(stop_policy()));
+
+        let path = posture.write_in(tmp.path(), sock, "first001", &launch, Some(SEAL_KEY)).unwrap();
+        let settings: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let stop = settings["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.last().unwrap()["hooks"][0]["command"], "p-stop");
+        assert!(stop_block_is_whip(settings.pointer("/hooks/Stop")));
+        assert_eq!(
+            recover_after_restart(tmp.path(), "first001", Some(SEAL_KEY)),
+            Ok(Some(stop_policy()))
+        );
+
+        let bare = HookPosture::of(&launch_argv_spec());
+        assert_eq!(bare.policy, None);
+        bare.write_in(tmp.path(), sock, "first002", &launch, Some(SEAL_KEY)).unwrap();
+        assert!(!hook_policy_path(tmp.path(), "first002").exists());
+    }
+
+    #[test]
     fn a_turn_posture_rewrites_the_settings_and_its_policy_every_time() {
         let tmp = tempfile::tempdir().unwrap();
         let sock = std::path::Path::new("/run/c.sock");

@@ -1854,6 +1854,53 @@ mod launch_gate_tests {
     }
 
     #[tokio::test]
+    async fn a_fork_carries_and_records_its_parents_hook_policy() {
+        use cctui_proto::hook_policy::{HookEvent, HookRule, ToolClass, no_direct_harness_rule};
+        let name = "a_fork_carries_and_records_its_parents_hook_policy";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let owner = seed_user(&pool).await;
+        let machine = seed_machine(&pool, owner).await;
+        let parent = seed_session(&pool, owner, machine).await;
+        let deny_rm = HookRule {
+            event: HookEvent::PreToolUse,
+            tool: ToolClass::Shell,
+            command: "deny-rm".into(),
+            timeout_secs: Some(30),
+        };
+        let carried =
+            cctui_server_core::hook_policy::carry("claude-code", vec![deny_rm.clone()]).unwrap();
+        sqlx::query(
+            "INSERT INTO machine_launches (command_id, session_id, machine_id, user_id, \
+             acting_user_id, adapter_id, working_dir, hook_policy) \
+             VALUES ($1, $2, $3, $4, $4, 'claude-code', '/w', $5)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(&parent)
+        .bind(machine)
+        .bind(owner)
+        .bind(sqlx::types::Json(&carried))
+        .execute(&pool)
+        .await
+        .unwrap();
+        let state = AppState::for_test(pool.clone());
+        let mut rx = daemon(&state, machine);
+        let child = fork(&state, caller(owner, SPAWNER), &parent).await.unwrap().unwrap();
+        let cctui_proto::ws::DaemonFrameDown::Command { command, .. } = rx.recv().await.unwrap()
+        else {
+            panic!("expected a fork command")
+        };
+        let cctui_proto::adapter::AdapterCommand::Fork { spec, .. } = *command else {
+            panic!("expected a fork")
+        };
+        let rules = spec.hook_policy.expect("the fork carries a policy").rules;
+        assert_eq!(rules, vec![no_direct_harness_rule(), deny_rm]);
+        let recorded = cctui_server_core::hook_policy::for_session(&pool, &child).await.unwrap();
+        assert_eq!(recorded.rules, rules, "the fork's policy is persisted under its key");
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(owner).execute(&pool).await.ok();
+    }
+
+    #[tokio::test]
     async fn fork_refuses_an_inaccessible_or_deleted_account() {
         let Some(url) =
             crate::routes::gateway::test_db_url("fork_refuses_an_inaccessible_or_deleted_account")

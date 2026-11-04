@@ -75,6 +75,9 @@ pub struct CodexDispatch {
     /// Service tier (`payload.service_tier`): `"default"` or `"fast"`. `None`
     /// inherits config.toml, and failing that codex's own `priority` default.
     pub service_tier: Option<String>,
+    /// `-c` overrides installing the effective hook policy the server wrote
+    /// into the payload.
+    pub hook_overrides: Vec<String>,
     /// Absolute path `codex exec -o` writes the final agent message to; also the
     /// runtime fallback when the JSONL stream carried no `agent_message`.
     pub last_message_file: String,
@@ -114,6 +117,9 @@ impl CodexDispatch {
         );
         let result_file = crate::dispatch::result_file();
         let timeout_secs = crate::dispatch::timeout_secs(crate::dispatch::DispatchAdapter::Codex);
+        let hook_overrides = cctui_proto::hook_policy::from_dispatch_payload(payload)
+            .map(|policy| hook_overrides(&policy))
+            .unwrap_or_default();
         Ok(Self {
             task_id,
             prompt,
@@ -121,6 +127,7 @@ impl CodexDispatch {
             model,
             effort,
             service_tier,
+            hook_overrides,
             last_message_file: "/tmp/cctui-codex-last-message.txt".to_owned(),
             result_file,
             timeout_secs,
@@ -156,6 +163,10 @@ impl CodexDispatch {
         if let Some(tier) = &self.service_tier {
             argv.push("-c".to_owned());
             argv.push(format!("service_tier=\"{tier}\""));
+        }
+        for config in &self.hook_overrides {
+            argv.push("-c".to_owned());
+            argv.push(config.clone());
         }
         // Prompt last, as a positional arg (stdin is closed at spawn).
         argv.push(self.prompt.clone());
@@ -350,6 +361,35 @@ impl CodexDispatch {
     }
 }
 
+/// The Codex sink's thread config as `codex exec -c key=value` overrides.
+fn hook_overrides(policy: &cctui_proto::hook_policy::HookPolicy) -> Vec<String> {
+    use crate::hook_policy::HookPolicySink as _;
+    let mut config = json!({});
+    let _ = crate::hook_policy::codex::Codex::current().apply(policy, &mut config);
+    config
+        .as_object()
+        .map(|o| o.iter().map(|(key, value)| format!("{key}={}", toml_inline(value))).collect())
+        .unwrap_or_default()
+}
+
+/// A TOML inline value. JSON string escapes are valid in TOML basic strings.
+fn toml_inline(value: &Value) -> String {
+    match value {
+        Value::Object(map) => {
+            let fields: Vec<String> = map
+                .iter()
+                .map(|(key, v)| format!("{} = {}", Value::String(key.clone()), toml_inline(v)))
+                .collect();
+            format!("{{{}}}", fields.join(", "))
+        }
+        Value::Array(items) => {
+            format!("[{}]", items.iter().map(toml_inline).collect::<Vec<_>>().join(", "))
+        }
+        Value::Null => "\"\"".to_owned(),
+        other => other.to_string(),
+    }
+}
+
 async fn publish(sink: Option<&crate::dispatch::EventSink>, event: AdapterEvent) {
     if let Some(sink) = sink
         && let Err(err) = sink.send(("codex".to_owned(), event)).await
@@ -527,6 +567,7 @@ mod tests {
             model: None,
             effort: None,
             service_tier: None,
+            hook_overrides: Vec::new(),
             last_message_file: "/tmp/last.txt".to_owned(),
             result_file: "/tmp/cctui-result.json".to_owned(),
             timeout_secs: 500,
@@ -629,6 +670,44 @@ mod tests {
                 "do the thing",
             ]
         );
+    }
+
+    #[test]
+    fn a_dispatched_codex_exec_carries_the_payload_hook_policy() {
+        let policy = cctui_proto::hook_policy::HookPolicy {
+            rules: vec![cctui_proto::hook_policy::no_direct_harness_rule()],
+        };
+        let payload = json!({ "prompt": "go", "hook_policy": policy });
+        let argv = CodexDispatch::from_payload(&payload).expect("payload").build_argv();
+        assert_eq!(argv.last().unwrap(), "go");
+        let overrides: Vec<&str> = argv
+            .windows(2)
+            .filter(|w| w[0] == "-c")
+            .map(|w| w[1].as_str())
+            .collect();
+        assert!(overrides.contains(&"bypass_hook_trust=true"), "{overrides:?}");
+        assert!(overrides.contains(&"features.hooks=true"), "{overrides:?}");
+        let hooks =
+            overrides.iter().find_map(|o| o.strip_prefix("hooks=")).expect("hooks override");
+        let parsed: toml::Table = toml::from_str(&format!("hooks = {hooks}")).expect("valid TOML");
+        let hook = &parsed["hooks"]["PreToolUse"][0];
+        assert_eq!(hook["matcher"].as_str(), Some("Bash"));
+        let command = hook["hooks"][0]["command"].as_str().unwrap();
+        assert!(command.ends_with("hook-shim no-direct-harness || exit 2"), "{command}");
+        assert!(!command.starts_with("cctui-daemon "), "the daemon's own binary runs it");
+        assert_eq!(hook["hooks"][0]["timeout"].as_integer(), Some(10));
+
+        let bare = CodexDispatch::from_payload(&json!({ "prompt": "go" })).expect("payload");
+        assert!(bare.hook_overrides.is_empty());
+    }
+
+    #[test]
+    fn toml_inline_values_round_trip_through_a_toml_parser() {
+        let value = json!({ "a b": ["x\"y\\z\n", 3, true], "n": { "k": "it's" } });
+        let parsed: toml::Table = toml::from_str(&format!("v = {}", toml_inline(&value))).unwrap();
+        assert_eq!(parsed["v"]["a b"][0].as_str(), Some("x\"y\\z\n"));
+        assert_eq!(parsed["v"]["a b"][1].as_integer(), Some(3));
+        assert_eq!(parsed["v"]["n"]["k"].as_str(), Some("it's"));
     }
 
     #[test]

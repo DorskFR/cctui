@@ -93,13 +93,20 @@ impl ChildExecutionContext for Host {
         if result.is_err() {
             self.session_usd_budgets.remove(&key);
         }
-        result.map_err(|error| match error {
-            core::launch::LaunchError::Storage(error) => AppError::Db(error),
-            error => AppError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                format!("could not reach the daemon: {error}"),
-            ),
-        })
+        result.map_err(child_launch_error)
+    }
+}
+
+fn child_launch_error(error: core::launch::LaunchError) -> AppError {
+    match error {
+        core::launch::LaunchError::Storage(error) => AppError::Db(error),
+        core::launch::LaunchError::Policy(detail) => {
+            AppError::new(StatusCode::BAD_REQUEST, format!("hook policy: {detail}"))
+        }
+        error => AppError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("could not reach the daemon: {error}"),
+        ),
     }
 }
 
@@ -236,4 +243,17 @@ async fn require_unstopped(
         return Err(AppError::new(StatusCode::GONE, "execution was stopped"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_child_over_the_hook_limits_is_a_bad_request_not_an_outage() {
+        let policy = child_launch_error(core::launch::LaunchError::Policy("at most 64".into()));
+        assert_eq!(policy.into_parts().0, StatusCode::BAD_REQUEST);
+        let refused = child_launch_error(core::launch::LaunchError::Refused("busy".into()));
+        assert_eq!(refused.into_parts().0, StatusCode::SERVICE_UNAVAILABLE);
+    }
 }

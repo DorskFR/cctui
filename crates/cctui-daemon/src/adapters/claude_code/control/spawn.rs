@@ -358,7 +358,7 @@ impl Driver {
             env,
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,
-            hook_policy: None,
+            hook_policy: cctui_proto::hook_policy::from_dispatch_payload(payload),
         })
     }
 
@@ -932,6 +932,17 @@ mod tests {
         dispatch.run_detached(tx, Some(uuid::Uuid::new_v4()));
         let (ok, error) = command_result(&mut rx).await;
         assert!(ok, "{error:?}");
+    }
+
+    #[test]
+    fn a_dispatch_spec_carries_the_payload_hook_policy() {
+        let policy = cctui_proto::hook_policy::HookPolicy {
+            rules: vec![cctui_proto::hook_policy::no_direct_harness_rule()],
+        };
+        let payload = serde_json::json!({ "prompt": "go", "hook_policy": &policy });
+        assert_eq!(Driver::build_dispatch_spec(&payload).expect("spec").hook_policy, Some(policy));
+        let bare = serde_json::json!({ "prompt": "go" });
+        assert_eq!(Driver::build_dispatch_spec(&bare).expect("spec").hook_policy, None);
     }
 
     #[test]

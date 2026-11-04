@@ -13,6 +13,7 @@ use cctui_proto::api::{
 };
 use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, PrStatusCache, classify};
 use cctui_proto::models::{Attention, Liveness, Session, SessionEndReason, SessionStatus};
+use cctui_server_core::hook_policy;
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
@@ -3544,7 +3545,7 @@ pub async fn fork_session(
     } else {
         None
     };
-    let spec = cctui_proto::adapter::SessionSpec {
+    let mut spec = cctui_proto::adapter::SessionSpec {
         adapter_id: cctui_proto::adapter::AdapterId::new(&adapter_id),
         working_dir: Some(working_dir),
         prompt: norm(req.prompt),
@@ -3558,6 +3559,7 @@ pub async fn fork_session(
         parent_local_id: None,
         hook_policy: None,
     };
+    hook_policy::inherit_for_launch(&state.pool, &session_id, &child_key, &mut spec).await?;
     let frame = fork_frame(
         &adapter_id,
         &session_id,

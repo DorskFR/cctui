@@ -16,6 +16,19 @@ use crate::error::AppError;
 use crate::state::AppState;
 
 type PolicyRow = (Vec<String>, Vec<String>, Vec<String>, Vec<String>, serde_json::Value);
+const MAX_ACCOUNT_HOOKS: usize = cctui_proto::hook_policy::MAX_RULES - 1;
+
+fn account_hooks(rules: Vec<HookRule>) -> Result<Vec<HookRule>, String> {
+    let rules = normalize_rules(rules)?;
+    if rules.len() > MAX_ACCOUNT_HOOKS {
+        return Err(format!(
+            "at most {MAX_ACCOUNT_HOOKS} hook rules per account: one slot is reserved for \
+             cctui's built-in rule"
+        ));
+    }
+    Ok(rules)
+}
+
 async fn owned(state: &AppState, ctx: &AuthContext, id: Uuid) -> Result<(), AppError> {
     let found: Option<Uuid> = sqlx::query_scalar(
         "SELECT id FROM accounts WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
@@ -60,7 +73,7 @@ pub async fn put_tool_policy(
     let bad = |e: String| AppError::new(StatusCode::BAD_REQUEST, e);
     let policy = AccountToolPolicy {
         guard: normalize_policy(req.guard).map_err(bad)?,
-        hooks: normalize_rules(req.hooks).map_err(bad)?,
+        hooks: account_hooks(req.hooks).map_err(bad)?,
     };
     if policy == AccountToolPolicy::default() {
         sqlx::query("DELETE FROM account_tool_policies WHERE account_id = $1")
@@ -207,6 +220,21 @@ mod tests {
         .await
         .unwrap()
         .0
+    }
+
+    #[test]
+    fn account_hooks_leave_a_slot_for_the_built_in_rule() {
+        let rules = |n: usize| -> Vec<HookRule> {
+            (0..n)
+                .map(|i| rule(HookEvent::PreToolUse, ToolClass::Shell, &format!("r{i}"), None))
+                .collect()
+        };
+        assert_eq!(account_hooks(rules(MAX_ACCOUNT_HOOKS)).unwrap().len(), 63);
+        let err = account_hooks(rules(MAX_ACCOUNT_HOOKS + 1)).unwrap_err();
+        assert!(err.contains("one slot is reserved"), "{err}");
+        let mut with_side_door = rules(MAX_ACCOUNT_HOOKS);
+        with_side_door.push(cctui_proto::hook_policy::no_direct_harness_rule());
+        assert!(cctui_proto::hook_policy::normalize_rules(with_side_door).is_ok());
     }
 
     #[tokio::test]

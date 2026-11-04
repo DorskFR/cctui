@@ -102,6 +102,36 @@ fn acp_agent_ids(quote: &str) -> String {
         .join(", ")
 }
 
+/// `CctuiAgent`'s `hook_rules`: what `agenttool` parses into `SpawnChildRequest`.
+fn hook_rules_schema() -> Value {
+    json!({
+        "type": "array",
+        "description": "Extra hook rules for the child, add-only: the child always keeps \
+    every rule this session runs under, and a rule restating one of them with another timeout \
+    is refused. Each rule is a shell command run on a harness event; exit 2 blocks.",
+        "items": {
+            "type": "object",
+            "properties": {
+                "event": {
+                    "type": "string",
+                    "enum": [
+                        "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop",
+                    ],
+                },
+                "tool": {
+                    "type": "string",
+                    "enum": ["shell", "file_edit", "file_write", "subagent", "any"],
+                    "description": "Tool events only. Default: any.",
+                },
+                "command": { "type": "string" },
+                "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 600 },
+            },
+            "required": ["event", "command"],
+            "additionalProperties": false,
+        },
+    })
+}
+
 /// The `CctuiAgent` input schema, as advertised to the model.
 #[must_use]
 pub fn tool_schema() -> Value {
@@ -170,6 +200,8 @@ pub fn tool_schema() -> Value {
                 "cwd": {
                     "type": "string",
                     "description": "Working directory for the child. Defaults to this session's.",
+                },
+                "hook_rules": hook_rules_schema(),
                 },
                 "timeout_secs": {
                     "type": "integer",
@@ -1028,10 +1060,20 @@ mod tests {
             "budget_usd",
             "cwd",
             "timeout_secs",
+            "hook_rules",
         ] {
             assert!(props.contains_key(key), "{key} missing from the schema");
         }
         assert_eq!(props["budget_usd"]["type"], "number");
+        assert_eq!(props["hook_rules"]["type"], "array");
+        assert!(props["hook_rules"]["description"].as_str().unwrap().contains("add-only"));
+        let rule: cctui_proto::hook_policy::HookRule = serde_json::from_value(json!({
+            "event": props["hook_rules"]["items"]["properties"]["event"]["enum"][2],
+            "tool": props["hook_rules"]["items"]["properties"]["tool"]["enum"][0],
+            "command": "audit",
+        }))
+        .expect("the schema's enums are the wire names");
+        assert_eq!(rule.tool, cctui_proto::hook_policy::ToolClass::Shell);
         assert_eq!(schema["inputSchema"]["additionalProperties"], json!(false));
     }
 

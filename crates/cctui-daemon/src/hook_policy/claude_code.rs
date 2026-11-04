@@ -52,6 +52,7 @@ impl HookPolicySink for ClaudeCode {
         if !hooks.is_object() {
             *hooks = json!({});
         }
+        let policy = super::materialize(policy, super::daemon_exe().as_deref());
         for rule in &policy.rules {
             let groups = &mut hooks[event_key(rule.event)];
             if !groups.is_array() {
