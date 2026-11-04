@@ -81,6 +81,10 @@ pub async fn sweep(state: &AppState) {
             return;
         }
     };
+    apply(state, rows).await;
+}
+
+async fn apply(state: &AppState, rows: Vec<(Uuid, DateTime<Utc>)>) {
     let newly_offline = newly_offline(rows.into_iter().map(|(id, last_seen_at)| {
         let tier = derive(last_seen_at);
         (id, tier, record_and_broadcast(state, id, tier))
@@ -197,8 +201,16 @@ mod tests {
             .await
             .unwrap();
         state.machine_liveness.insert(machine, MachineLiveness::Online);
+        let row: (Uuid, DateTime<Utc>) =
+            sqlx::query_as("SELECT id, last_seen_at FROM machines WHERE id = $1")
+                .bind(machine)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        // Only this machine: the shared test DB holds thousands of other
+        // tests' stale machines, which a full sweep would all take offline.
         for _ in 0..3 {
-            sweep(&state).await;
+            apply(&state, vec![row]).await;
         }
         let offline = events_once_recorded(&pool, machine).await;
         assert_eq!(offline.len(), 1, "one machine.offline, not one per sweep or per session");
