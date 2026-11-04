@@ -110,8 +110,11 @@ impl NewRecord {
             .and_then(serde_json::Value::as_str)
             .filter(|s| !s.is_empty())
             .map_or((None, false), |prompt| {
-                let (h, cut) = head(prompt, PROMPT_HEAD_BYTES);
-                (Some(h.to_owned()), cut)
+                let masked = cctui_crypto::redact::mask_user_spans(prompt);
+                let (h, cut) = head(&masked, PROMPT_HEAD_BYTES);
+                // The stored head is masked, so it cannot be replayed as the prompt.
+                let tagged = cctui_crypto::redact::has_user_spans(prompt);
+                (Some(h.to_owned()), cut || tagged)
             });
         let mut env_keys: Vec<String> = p
             .get("env")
@@ -706,6 +709,21 @@ mod tests {
         assert!(head.len() <= PROMPT_HEAD_BYTES && prompt.starts_with(head));
         assert!(rec.prompt_truncated);
         assert_eq!(stored(&rec).rerun_blocker(), Some(RerunBlocker::PromptTruncated));
+    }
+
+    #[test]
+    fn a_tagged_prompt_is_recorded_masked_and_blocks_the_rerun() {
+        let rec = NewRecord::from_request(
+            "s1",
+            None,
+            &req(&serde_json::json!({ "prompt": "use <redacted>hunter2-xyz</redacted> now" })),
+            None,
+            None,
+        );
+        assert_eq!(rec.prompt_head.as_deref(), Some("use [REDACTED:user] now"));
+        assert!(!format!("{rec:?}").contains("hunter2-xyz"));
+        assert_eq!(stored(&rec).rerun_blocker(), Some(RerunBlocker::PromptTruncated));
+        assert!(stored(&rec).replay_request().is_none());
     }
 
     #[test]

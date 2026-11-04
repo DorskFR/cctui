@@ -697,6 +697,7 @@ impl Supervisor {
                 let span =
                     crate::adapter_runtime::command_span(&adapter_id, &command, trace.as_ref());
                 let _entered = span.enter();
+                crate::user_redact::note_command(command.as_ref());
                 if let cctui_proto::adapter::AdapterCommand::WatchPty { local_id, watch } =
                     command.as_ref()
                     && let Some(pty_watch_tx) =
@@ -1380,10 +1381,12 @@ fn compile_scrub(cfg: &SecretScrubConfig) -> CompiledPatterns {
 }
 
 /// Redact secrets out of an event by round-tripping it through JSON and running
-/// [`redact::redact_json`] over every string leaf. A no-op when scrubbing is
-/// disabled; on the (structurally impossible) round-trip failure the original
-/// event is passed through unchanged rather than dropped.
-fn scrub_event(event: AdapterEvent, scrub: &CompiledPatterns) -> AdapterEvent {
+/// [`redact::redact_json`] over every string leaf. User `<redacted>` spans are
+/// masked first and always; the detector pass is skipped when scrubbing is
+/// disabled. On the (structurally impossible) round-trip failure the event is
+/// passed through unchanged rather than dropped.
+pub(crate) fn scrub_event(event: AdapterEvent, scrub: &CompiledPatterns) -> AdapterEvent {
+    let event = crate::user_redact::mask_event(event);
     if scrub.is_empty() {
         return event;
     }

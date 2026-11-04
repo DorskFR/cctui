@@ -72,7 +72,8 @@ pub async fn get_draft(
 }
 
 /// Upsert a draft, or delete it when the body is empty so a cleared composer
-/// leaves no row behind.
+/// leaves no row behind. `<redacted>` spans are stored masked: drafts and
+/// prompt history share this table.
 pub async fn put_draft(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -83,6 +84,7 @@ pub async fn put_draft(
     if body.text.is_empty() {
         return delete_draft(State(state), Extension(ctx), Path(key)).await;
     }
+    let text = cctui_crypto::redact::mask_user_spans(&body.text);
     let mut tx = state.pool.begin().await?;
     sqlx::query(
         "INSERT INTO user_drafts (user_id, key, text, updated_at) VALUES ($1, $2, $3, now()) \
@@ -90,7 +92,7 @@ pub async fn put_draft(
     )
     .bind(ctx.user_id)
     .bind(&key)
-    .bind(&body.text)
+    .bind(text.as_ref())
     .execute(&mut *tx)
     .await?;
     evict_over_cap(&mut tx, ctx.user_id).await?;
@@ -218,6 +220,54 @@ mod tests {
         assert_eq!(cleared, StatusCode::NO_CONTENT);
         let gone = get_draft(State(state), Extension(ctx(uid)), Path(key)).await;
         assert_eq!(gone.unwrap_err().status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn drafts_and_prompt_history_store_tagged_spans_masked() {
+        let Some(pool) = test_pool("drafts_and_prompt_history_store_tagged_spans_masked").await
+        else {
+            return;
+        };
+        let uid = insert_user(&pool, "draft-redact").await;
+        let state = AppState::for_test(pool.clone());
+        let draft_key = format!("cctui_draft_{uid}");
+        let history_key = cctui_proto::drafts::session_history_key(&format!("s-{uid}"));
+        let cases = [
+            (draft_key, "pw <REDACTED>hunter2-xyz</redacted> ok", "pw [REDACTED:user] ok"),
+            (
+                history_key,
+                "[\"older\",\"pw <redacted>hunter2-xyz\\nline2</redacted>\"]",
+                "[\"older\",\"pw [REDACTED:user]\"]",
+            ),
+            (
+                cctui_proto::drafts::PROMPT_HISTORY_KEY.to_owned(),
+                "[\"spawn with <redacted>hunter2-xyz</redacted>\"]",
+                "[\"spawn with [REDACTED:user]\"]",
+            ),
+        ];
+        for (key, sent, want) in cases {
+            put_draft(
+                State(state.clone()),
+                Extension(ctx(uid)),
+                Path(key.clone()),
+                Json(PutDraftRequest { text: sent.to_owned() }),
+            )
+            .await
+            .unwrap();
+            let row: String =
+                sqlx::query_scalar("SELECT text FROM user_drafts WHERE user_id = $1 AND key = $2")
+                    .bind(uid)
+                    .bind(&key)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert!(!row.contains("hunter2-xyz"), "plaintext stored under {key}: {row}");
+            assert_eq!(row, want);
+        }
+        let history = cctui_proto::drafts::session_history_key(&format!("s-{uid}"));
+        let got = get_draft(State(state), Extension(ctx(uid)), Path(history)).await.unwrap();
+        let parsed: Vec<String> = serde_json::from_str(&got.0.text).unwrap();
+        assert_eq!(parsed, ["older", "pw [REDACTED:user]"]);
     }
 
     /// Unbounded drafts are a per-user storage leak: keys are client-chosen, so

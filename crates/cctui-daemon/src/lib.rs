@@ -59,4 +59,5 @@ pub mod supervisor;
 pub mod text_deltas;
 pub mod toolblock_followup;
 pub mod updatehook;
+pub mod user_redact;
 pub mod whipstop;
