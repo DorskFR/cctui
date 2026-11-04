@@ -67,6 +67,15 @@ guard_exec_flags() {
     printf '%s\n%s\n' --guard-exec "$GUARD_EXEC_SOCKET"
 }
 
+# Landlock is mandatory: on a kernel without it the supervisor refuses to start.
+# Only CCTUI_LANDLOCK_STRICT=0 (exactly) makes it best-effort; a dispatch env
+# cannot set it.
+landlock_strict_on() { [ "${CCTUI_LANDLOCK_STRICT:-}" != 0 ]; }
+landlock_strict_flags() {
+    landlock_strict_on || return 0
+    printf '%s\n' --strict
+}
+
 
 # ── Required platform identity ──────────────────────────────────────────────
 if [ -z "${CCTUI_MACHINE_KEY:-}" ]; then
@@ -184,7 +193,7 @@ phase_dispatch_env() {
             CONTEXT_PACK_*) ;;
             WORKER_* | GUARD_* | PROXY_* | POLICY_* | CONTEXT_* | PRIVATE_ALLOW_FILE \
                 | TERMINATION_LOG | DISPATCH_ENV_URL | NET_MODE | ACP_AGENTS | CCTUI_BASE_URL \
-                | CCTUI_GUARD_EXEC)
+                | CCTUI_GUARD_EXEC | CCTUI_LANDLOCK_STRICT)
                 dispatch_identity_failed "the server sent a reserved env name: $_de_k" ;;
         esac
         _de_v=$(printf '%s' "$_de_json" \
@@ -468,10 +477,83 @@ phase_repo_registries() {
         && log "repo registries allowed: $(printf '%s' "$_rr_hps" | tr '\n' ',' | sed 's/,/, /g')"
 }
 
+# In-container transparent egress: the same rules net-init installs for the
+# sidecar mode. The worker uid's TCP is REDIRECTed to the proxy, its link-local
+# (cloud metadata / credential) and non-TCP egress REJECTed, UDP/53 to the
+# resolver excepted; IPv6 is denied wholesale. $1: the resolv.conf to read.
+install_transparent_rules() {
+    # Exempt root + proxy uid (avoid a redirect loop), loopback.
+    iptables -t nat -A OUTPUT -m owner --uid-owner 0 -j RETURN
+    iptables -t nat -A OUTPUT -m owner --uid-owner "$PROXY_UID" -j RETURN
+    iptables -t nat -A OUTPUT -d 127.0.0.0/8 -j RETURN
+
+    # First IPv4 resolver (IPv6 egress is denied below).
+    _dns=$(awk '/^nameserver/ && $2 ~ /^[0-9.]+$/ {print $2; exit}' "$1" 2>/dev/null || true)
+    if [ -n "$_dns" ]; then
+        iptables -t nat -A OUTPUT -d "$_dns" -j RETURN
+        log "iptables: RETURN DNS $_dns"
+    fi
+
+    # Operator-plane direct exemptions: comma-separated host:port, resolved to
+    # IPv4 (getent ahostsv4: dual-stack hosts return AAAA first) and RETURNed.
+    if [ -n "${WORKER_NET_EXEMPT:-}" ]; then
+        _OLDIFS=$IFS; IFS=,
+        for _e in $WORKER_NET_EXEMPT; do
+            IFS=$_OLDIFS
+            _h=$(printf '%s' "$_e" | sed 's,:.*$,,')
+            [ -n "$_h" ] || continue
+            _ip=$(getent ahostsv4 "$_h" 2>/dev/null | awk '{print $1; exit}' || true)
+            if [ -n "$_ip" ]; then
+                # One unreachable exempt host must not abort the setup (set -e).
+                if iptables -t nat -A OUTPUT -d "$_ip" -j RETURN 2>/dev/null; then
+                    log "iptables: RETURN exempt $_h ($_ip)"
+                else
+                    log "WARNING: iptables exempt rule failed for $_h ($_ip)"
+                fi
+            else
+                log "WARNING: could not resolve WORKER_NET_EXEMPT host $_h"
+            fi
+            IFS=,
+        done
+        IFS=$_OLDIFS
+    fi
+
+    # RETURN link-local from nat first, else the REDIRECT rewrites the
+    # destination and the filter REJECT cannot match it.
+    iptables -t nat -A OUTPUT -m owner --uid-owner "$WORKER_UID" -d 169.254.0.0/16 -j RETURN
+    iptables -A OUTPUT -m owner --uid-owner "$WORKER_UID" -d 169.254.0.0/16 -j REJECT
+    log "iptables: worker egress to 169.254.0.0/16 REJECTed (metadata/credential deny)"
+
+    iptables -t nat -A OUTPUT -p tcp -m owner --uid-owner "$WORKER_UID" \
+        -j REDIRECT --to-port "$PROXY_PORT"
+    log "iptables: worker egress (uid $WORKER_UID) -> :$PROXY_PORT"
+
+    # Only TCP reaches the proxy; REJECT (not DROP) so UDP/QUIC fails fast.
+    iptables -A OUTPUT -m owner --uid-owner "$WORKER_UID" -o lo -j ACCEPT
+    if [ -n "$_dns" ]; then
+        iptables -A OUTPUT -m owner --uid-owner "$WORKER_UID" -p udp -d "$_dns" --dport 53 -j ACCEPT
+    else
+        log "WARNING: no IPv4 nameserver in $1; worker UDP DNS is REJECTed"
+    fi
+    iptables -A OUTPUT -m owner --uid-owner "$WORKER_UID" ! -p tcp -j REJECT
+    log "iptables: worker non-TCP egress REJECTed (UDP/53 to ${_dns:-<none>} allowed)"
+
+    # The proxy + REDIRECT are IPv4-only (SO_ORIGINAL_DST): deny IPv6 egress.
+    if ip6tables -L >/dev/null 2>&1; then
+        ip6tables -A OUTPUT -o lo -j ACCEPT
+        ip6tables -A OUTPUT -j REJECT
+        log "ip6tables: IPv6 egress denied (forces IPv4 fallback)"
+    else
+        log "WARNING: ip6tables unavailable — IPv6 egress is UNFILTERED"
+    fi
+}
+
 NET_MODE=""
 phase_network() {
     # Decide the mode. Explicit WORKER_NET_MODE wins; else transparent iff we
-    # can actually install iptables rules (a proxy for CAP_NET_ADMIN).
+    # can actually install iptables rules (a proxy for CAP_NET_ADMIN). An
+    # auto-selected forward still faces an enforcing preflight, which its
+    # unfiltered egress fails.
     NET_MODE="${WORKER_NET_MODE:-}"
     if [ -z "$NET_MODE" ]; then
         if iptables -t nat -L >/dev/null 2>&1; then
@@ -503,65 +585,11 @@ phase_network() {
     fi
 
     if [ "$NET_MODE" = transparent ]; then
-        if iptables -t nat -L >/dev/null 2>&1; then
-            # Exempt root + proxy uid (avoid a redirect loop), loopback.
-            iptables -t nat -A OUTPUT -m owner --uid-owner 0 -j RETURN
-            iptables -t nat -A OUTPUT -m owner --uid-owner "$PROXY_UID" -j RETURN
-            iptables -t nat -A OUTPUT -d 127.0.0.0/8 -j RETURN
-
-            # DNS (TCP fallback; UDP/53 bypasses the TCP-only REDIRECT already).
-            _dns=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null || true)
-            if [ -n "$_dns" ]; then
-                iptables -t nat -A OUTPUT -d "$_dns" -j RETURN
-                log "iptables: RETURN DNS $_dns"
-            fi
-
-            # Operator-plane direct exemptions: comma-separated host:port.
-            # These bypass the proxy entirely (resolve to IPs and RETURN).
-            if [ -n "${WORKER_NET_EXEMPT:-}" ]; then
-                _OLDIFS=$IFS; IFS=,
-                for _e in $WORKER_NET_EXEMPT; do
-                    IFS=$_OLDIFS
-                    _h=$(printf '%s' "$_e" | sed 's,:.*$,,')
-                    [ -n "$_h" ] || continue
-                    # IPv4 only: this is an IPv4 iptables chain, and getent
-                    # hosts would return an AAAA record first for dual-stack
-                    # public hosts (e.g. automation.example.internal), which iptables rejects.
-                    _ip=$(getent ahostsv4 "$_h" 2>/dev/null | awk '{print $1; exit}' || true)
-                    if [ -n "$_ip" ]; then
-                        # Don't let one unreachable exempt host (set -e) abort
-                        # the whole guard setup — log and carry on.
-                        if iptables -t nat -A OUTPUT -d "$_ip" -j RETURN 2>/dev/null; then
-                            log "iptables: RETURN exempt $_h ($_ip)"
-                        else
-                            log "WARNING: iptables exempt rule failed for $_h ($_ip)"
-                        fi
-                    else
-                        log "WARNING: could not resolve WORKER_NET_EXEMPT host $_h"
-                    fi
-                    IFS=,
-                done
-                IFS=$_OLDIFS
-            fi
-
-            # Everything else from the worker: REDIRECT into the proxy.
-            iptables -t nat -A OUTPUT -p tcp -m owner --uid-owner "$WORKER_UID" \
-                -j REDIRECT --to-port "$PROXY_PORT"
-            log "iptables: worker egress (uid $WORKER_UID) -> :$PROXY_PORT"
-
-            # Deny IPv6 egress: the proxy + REDIRECT are IPv4-only
-            # (SO_ORIGINAL_DST), so any IPv6 egress would bypass the filter.
-            if ip6tables -L >/dev/null 2>&1; then
-                ip6tables -A OUTPUT -o lo -j ACCEPT
-                ip6tables -A OUTPUT -j REJECT
-                log "ip6tables: IPv6 egress denied (forces IPv4 fallback)"
-            else
-                log "WARNING: ip6tables unavailable — IPv6 egress is UNFILTERED"
-            fi
-        else
-            log "WARNING: transparent requested but iptables unavailable; falling back to forward"
-            NET_MODE=forward
+        if ! iptables -t nat -L >/dev/null 2>&1; then
+            log "FATAL: transparent egress needs iptables (CAP_NET_ADMIN), which is unusable here; refusing to start (set WORKER_NET_MODE=forward to opt into the honor-system proxy env)"
+            exit 1
         fi
+        install_transparent_rules /etc/resolv.conf
     fi
 
     if [ "$NET_MODE" = forward ]; then
@@ -1361,9 +1389,15 @@ phase_guard_exec() {
     log "guard: exec interception on (socket $GUARD_EXEC_SOCKET); RW paths are noexec"
 }
 
+phase_landlock() {
+    landlock_strict_on && return 0
+    log "WARNING: CCTUI_LANDLOCK_STRICT=0: Landlock is best-effort; on a kernel without it the agent runs WITHOUT filesystem confinement"
+}
+
 # ── Phase 6b: Pre-flight isolation check ────────────────────────────────────
-# An unset mode warns outside transparent-external: only there does net-init
-# filter the agent's non-proxied egress, so elsewhere the probes cannot pass.
+# An unset mode enforces, except when WORKER_NET_MODE=forward was asked for
+# explicitly: forward filters nothing, so its probes cannot pass and opting
+# into it is opting into a warning.
 PREFLIGHT_TIMEOUT=0.3
 PREFLIGHT_CONTROL_TIMEOUT=2
 PREFLIGHT_RESULT=off
@@ -1491,8 +1525,8 @@ preflight_control() {
 phase_preflight() {
     _mode="${CCTUI_PREFLIGHT_MODE:-}"
     if [ -z "$_mode" ]; then
-        _mode=warn
-        [ "$NET_MODE" = transparent-external ] && _mode=enforce
+        _mode=enforce
+        [ "$NET_MODE" = forward ] && [ "${WORKER_NET_MODE:-}" = forward ] && _mode=warn
     fi
     case "$_mode" in
         off) log "preflight: off"; PREFLIGHT_RESULT=off; return 0 ;;
@@ -1742,6 +1776,7 @@ require_known_adapter
 phase_preflight
 phase_guard
 phase_guard_exec
+phase_landlock
 phase_permissions
 default_node_ca
 phase_hardening
@@ -1763,6 +1798,7 @@ run_supervised_daemon() {
         --ro /var/run/workflow-guard --ro /var/run/guard-proxy --rw /var/run/gpg-agent \
         $(extra_rw_flags) \
         $(guard_exec_flags) \
+        $(landlock_strict_flags) \
         --user "$WORKER_UID" \
         --report /tmp/hardening.json \
         -- cctui-daemon run --no-auto-update "$@"

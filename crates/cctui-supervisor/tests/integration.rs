@@ -275,6 +275,82 @@ fn report_records_seccomp_when_enabled() {
 
     assert_eq!(v["seccomp_applied"].as_bool(), Some(true));
     let blocked = v["seccomp_blocked"].as_array().expect("array");
-    assert_eq!(blocked.len(), 21, "21 syscalls denied: {v}");
-    assert!(blocked.iter().any(|s| s == "unshare"), "unshare listed");
+    assert_eq!(blocked.len(), 32, "32 syscalls denied: {v}");
+    for name in ["unshare", "bpf", "keyctl", "io_uring_setup", "personality"] {
+        assert!(blocked.iter().any(|s| s == name), "{name} listed: {v}");
+    }
+}
+
+#[test]
+fn dry_run_reports_strict_landlock_by_default() {
+    let out = Command::new(bin())
+        .env_remove("CCTUI_LANDLOCK_STRICT")
+        .args(["--dry-run", "--", "true"])
+        .output()
+        .expect("run supervisor");
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("Strict: true"), "strict by default: {s}");
+}
+
+#[test]
+fn dry_run_honours_only_the_exact_opt_out() {
+    let strict_line = |value: &str| {
+        let out = Command::new(bin())
+            .env("CCTUI_LANDLOCK_STRICT", value)
+            .args(["--dry-run", "--", "true"])
+            .output()
+            .expect("run supervisor");
+        assert!(out.status.success());
+        let s = String::from_utf8_lossy(&out.stdout).into_owned();
+        s.lines().find(|l| l.starts_with("Strict: ")).unwrap_or_default().to_owned()
+    };
+    assert_eq!(strict_line("0"), "Strict: false");
+    assert_eq!(strict_line("false"), "Strict: true");
+    assert_eq!(strict_line("1"), "Strict: true");
+
+    let out = Command::new(bin())
+        .env("CCTUI_LANDLOCK_STRICT", "0")
+        .args(["--strict", "--dry-run", "--", "true"])
+        .output()
+        .expect("run supervisor");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Strict: true"), "--strict wins");
+}
+
+#[test]
+fn report_records_landlock_strictness() {
+    let run = |opt_out: bool| -> (serde_json::Value, String) {
+        let name = format!("cctui-sup-strict-{}-{opt_out}.json", std::process::id());
+        let tmp = std::env::temp_dir().join(name);
+        let _ = fs::remove_file(&tmp);
+        let mut cmd = Command::new(bin());
+        cmd.env_remove("CCTUI_LANDLOCK_STRICT");
+        if opt_out {
+            cmd.env("CCTUI_LANDLOCK_STRICT", "0");
+        }
+        let out = cmd
+            .args(["--no-privdrop", "--no-seccomp", "--rw", "/"])
+            .arg("--report")
+            .arg(&tmp)
+            .args(["--", "true"])
+            .output()
+            .expect("run supervisor");
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(out.status.success(), "opt_out={opt_out}: {stderr}");
+        let v = serde_json::from_str(&fs::read_to_string(&tmp).unwrap()).unwrap();
+        let _ = fs::remove_file(&tmp);
+        (v, stderr)
+    };
+
+    let (v, stderr) = run(true);
+    assert_eq!(v["landlock_strict"].as_bool(), Some(false), "{v}");
+    assert!(stderr.contains("WARNING: CCTUI_LANDLOCK_STRICT=0"), "opt-out is loud: {stderr}");
+
+    if !landlock_available() {
+        skip_or_fail_in_ci("report_records_landlock_strictness", "kernel reports no landlock LSM");
+        return;
+    }
+    let (v, stderr) = run(false);
+    assert_eq!(v["landlock_strict"].as_bool(), Some(true), "{v}");
+    assert!(!stderr.contains("WARNING: CCTUI_LANDLOCK_STRICT"), "{stderr}");
 }

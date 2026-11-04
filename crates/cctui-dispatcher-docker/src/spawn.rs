@@ -24,6 +24,7 @@ use cctui_dispatcher_core::{
 use cctui_proto::worker_env::check_payload_env;
 use cctui_proto::ws::WireDispatchSpec;
 
+use crate::config::{Confinement, Egress};
 use crate::exits::{self, Exit, Exits};
 
 const LABEL_ORIGIN: &str = "cctui.dev/origin";
@@ -35,6 +36,7 @@ pub struct Spawner {
     network: Option<String>,
     cctui_url: String,
     mounts: Vec<String>,
+    confinement: Confinement,
     docker: Docker,
     exits: Arc<Exits>,
 }
@@ -49,6 +51,7 @@ impl Spawner {
         network: Option<String>,
         cctui_url: String,
         mounts: Vec<String>,
+        confinement: Confinement,
     ) -> anyhow::Result<Self> {
         let docker = match docker_host {
             Some(host) => Docker::connect_with_http(host, 60, bollard::API_DEFAULT_VERSION)?,
@@ -57,19 +60,40 @@ impl Spawner {
         docker.ping().await?;
         let exits = Arc::new(Exits::default());
         exits::watch(docker.clone(), Arc::clone(&exits), format!("{LABEL_ORIGIN}={ORIGIN}"));
-        Ok(Self { image, network, cctui_url, mounts, docker, exits })
+        if confinement.egress == Egress::Forward {
+            tracing::warn!(
+                "egress=forward: cells get no NET_ADMIN and agent egress is only a proxy env the \
+                 agent can ignore"
+            );
+        }
+        if !confinement.landlock_strict {
+            tracing::warn!(
+                "landlock_strict=false: cells start without Landlock where the host lacks it"
+            );
+        }
+        Ok(Self { image, network, cctui_url, mounts, confinement, docker, exits })
     }
 
     fn worker_env(&self, spec: &WireDispatchSpec) -> anyhow::Result<Vec<String>> {
-        Self::build_worker_env(spec, &self.cctui_url)
+        Self::build_worker_env(spec, &self.cctui_url, self.confinement)
     }
 
-    fn build_worker_env(spec: &WireDispatchSpec, cctui_url: &str) -> anyhow::Result<Vec<String>> {
+    /// The cell env: the contract vars, then the dispatcher's own confinement
+    /// settings, which a payload cannot carry (`check_payload_env`).
+    fn build_worker_env(
+        spec: &WireDispatchSpec,
+        cctui_url: &str,
+        confinement: Confinement,
+    ) -> anyhow::Result<Vec<String>> {
         check_payload_env(&spec.payload).map_err(anyhow::Error::msg)?;
         let base = build_env(spec, cctui_url)?;
         let mut env = base.env;
         if let Some(k) = base.machine_key {
             env.push(format!("CCTUI_MACHINE_KEY={k}"));
+        }
+        env.push(format!("WORKER_NET_MODE={}", confinement.egress.net_mode()));
+        if !confinement.landlock_strict {
+            env.push("CCTUI_LANDLOCK_STRICT=0".to_owned());
         }
         Ok(env)
     }
@@ -81,11 +105,15 @@ impl Spawner {
         labels
     }
 
-    fn host_config(mounts: &[String], network: Option<&str>) -> HostConfig {
+    /// `NET_ADMIN` is the only capability ever added, and only for transparent
+    /// egress: the root entrypoint needs it to install the redirect, and the
+    /// supervisor clears every capability set before the agent runs.
+    fn host_config(mounts: &[String], network: Option<&str>, egress: Egress) -> HostConfig {
         HostConfig {
             auto_remove: Some(true),
             binds: if mounts.is_empty() { None } else { Some(mounts.to_vec()) },
             network_mode: network.map(ToOwned::to_owned),
+            cap_add: (egress == Egress::Transparent).then(|| vec!["NET_ADMIN".to_owned()]),
             ..Default::default()
         }
     }
@@ -107,7 +135,8 @@ impl Dispatcher for Spawner {
         let env = self.worker_env(spec)?;
 
         let labels = Self::discovery_labels(&spec.session_id);
-        let host_config = Self::host_config(&self.mounts, self.network.as_deref());
+        let host_config =
+            Self::host_config(&self.mounts, self.network.as_deref(), self.confinement.egress);
 
         let config = ContainerConfig {
             image: Some(self.image.clone()),
@@ -204,24 +233,70 @@ mod tests {
         }
     }
 
+    fn default_env(s: &WireDispatchSpec) -> anyhow::Result<Vec<String>> {
+        Spawner::build_worker_env(s, "https://cctui.example.test", Confinement::default())
+    }
+
     #[test]
     fn host_config_is_unprivileged_and_auto_removes() {
-        let hc = Spawner::host_config(&[], None);
-        assert_eq!(hc.privileged, None, "must never request a privileged container");
-        assert_eq!(hc.auto_remove, Some(true));
-        assert_eq!(hc.binds, None, "no mounts => no binds");
-        assert_eq!(hc.network_mode, None, "no host network / no explicit network");
-        assert_eq!(hc.cap_add, None, "no added capabilities");
-        assert_eq!(hc.pid_mode, None, "no host PID namespace");
-        assert_eq!(hc.ipc_mode, None, "no host IPC namespace");
-        assert_eq!(hc.userns_mode, None, "no host user namespace");
+        for egress in [Egress::Transparent, Egress::Forward] {
+            let hc = Spawner::host_config(&[], None, egress);
+            assert_eq!(hc.privileged, None, "must never request a privileged container");
+            assert_eq!(hc.auto_remove, Some(true));
+            assert_eq!(hc.binds, None, "no mounts => no binds");
+            assert_eq!(hc.network_mode, None, "no host network / no explicit network");
+            assert_eq!(hc.pid_mode, None, "no host PID namespace");
+            assert_eq!(hc.ipc_mode, None, "no host IPC namespace");
+            assert_eq!(hc.userns_mode, None, "no host user namespace");
+            assert_eq!(hc.security_opt, None, "default seccomp/apparmor profiles kept");
+            assert_eq!(hc.devices, None, "no host devices");
+        }
+    }
+
+    #[test]
+    fn transparent_egress_adds_exactly_net_admin() {
+        let hc = Spawner::host_config(&[], None, Egress::default());
+        assert_eq!(hc.cap_add, Some(vec!["NET_ADMIN".to_owned()]), "default cell gets NET_ADMIN");
+        assert_eq!(hc.cap_drop, None);
+    }
+
+    #[test]
+    fn forward_egress_adds_no_capability() {
+        let hc = Spawner::host_config(&[], None, Egress::Forward);
+        assert_eq!(hc.cap_add, None);
+    }
+
+    #[test]
+    fn the_cell_env_pins_the_egress_mode() {
+        let s = spec("sess-net", json!({ "flow": "review" }));
+        let env = default_env(&s).unwrap();
+        assert!(env.contains(&"WORKER_NET_MODE=transparent".to_owned()), "{env:?}");
+        assert!(env.iter().all(|e| !e.starts_with("CCTUI_LANDLOCK_STRICT=")), "strict by default");
+
+        let forward = Confinement { egress: Egress::Forward, ..Confinement::default() };
+        let env = Spawner::build_worker_env(&s, "https://c.example.test", forward).unwrap();
+        assert!(env.contains(&"WORKER_NET_MODE=forward".to_owned()), "{env:?}");
+    }
+
+    #[test]
+    fn best_effort_landlock_is_the_dispatchers_choice_only() {
+        let lax = Confinement { landlock_strict: false, ..Confinement::default() };
+        let s = spec("sess-ll", json!({ "flow": "review" }));
+        let env = Spawner::build_worker_env(&s, "https://c.example.test", lax).unwrap();
+        assert!(env.contains(&"CCTUI_LANDLOCK_STRICT=0".to_owned()), "{env:?}");
+
+        for key in ["CCTUI_LANDLOCK_STRICT", "WORKER_NET_MODE", "CCTUI_GUARD_EXEC"] {
+            let s = spec("sess-ll", json!({ "env": { key: "0" } }));
+            let err = default_env(&s).unwrap_err();
+            assert!(err.to_string().contains(key), "a payload must not set {key}: {err}");
+        }
     }
 
     #[test]
     fn host_config_preserves_read_only_binds() {
         let mounts =
             vec!["/host/cache:/cache:ro".to_owned(), "/host/certs:/etc/ssl/certs:ro".to_owned()];
-        let hc = Spawner::host_config(&mounts, Some("cctui-net"));
+        let hc = Spawner::host_config(&mounts, Some("cctui-net"), Egress::Transparent);
         assert_eq!(hc.privileged, None);
         let binds = hc.binds.expect("binds present");
         assert_eq!(binds, mounts, "configured RO binds pass through verbatim");
@@ -247,7 +322,7 @@ mod tests {
             "sess-123",
             json!({ "name": "Review #7", "cctui_machine_key": "SECRET", "flow": "review" }),
         );
-        let env = Spawner::build_worker_env(&s, "https://cctui.example.test").unwrap();
+        let env = default_env(&s).unwrap();
         assert!(env.contains(&"SESSION_ID=sess-123".to_owned()));
         assert!(env.contains(&"TASK_ID=sess-123".to_owned()));
         assert!(env.contains(&"TASK_NAME=Review #7".to_owned()));
@@ -262,7 +337,7 @@ mod tests {
     #[test]
     fn worker_env_omits_machine_key_when_payload_has_none() {
         let s = spec("sess-9", json!({ "flow": "review" }));
-        let env = Spawner::build_worker_env(&s, "https://cctui.example.test").unwrap();
+        let env = default_env(&s).unwrap();
         assert!(env.iter().all(|e| !e.starts_with("CCTUI_MACHINE_KEY=")));
     }
 
@@ -270,7 +345,7 @@ mod tests {
     fn worker_env_rejects_reserved_payload_env() {
         for key in ["CCTUI_URL", "CCTUI_MACHINE_KEY", "LD_PRELOAD", "HTTPS_PROXY"] {
             let s = spec("sess-r", json!({ "env": { key: "https://attacker.example" } }));
-            let err = Spawner::build_worker_env(&s, "https://cctui.example.test").unwrap_err();
+            let err = default_env(&s).unwrap_err();
             assert!(err.to_string().contains(key), "{err}");
         }
     }

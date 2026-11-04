@@ -13,6 +13,9 @@ use serde::Serialize;
 pub struct Report {
     /// Landlock ABI/status used, or `"unavailable"`.
     pub landlock: String,
+    /// Whether an unenforced Landlock ruleset was fatal (`false` only under the
+    /// `CCTUI_LANDLOCK_STRICT=0` opt-out).
+    pub landlock_strict: bool,
     /// Whether the seccomp denylist was installed.
     pub seccomp_applied: bool,
     /// Names of the syscalls denied by the seccomp filter (empty when not applied).
