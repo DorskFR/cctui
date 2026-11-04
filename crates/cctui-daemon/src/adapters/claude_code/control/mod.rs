@@ -52,13 +52,13 @@ mod tests;
 mod voice;
 
 pub(super) use settings::HookPosture;
-#[cfg(test)]
-pub(super) use settings::{ConfigRootOverride, HookSettingsError};
 pub use settings::stage_mid_chat_files;
 use settings::{
     BG_ISOLATION_ENV, agent_relay_config, build_session_context, detect_whip_from_settings,
     with_bg_isolation,
 };
+#[cfg(test)]
+pub(super) use settings::{ConfigRootOverride, HookSettingsError};
 
 /// How often a session with a text watcher has its transcript tailed
 /// between polls.

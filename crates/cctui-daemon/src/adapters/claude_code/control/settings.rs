@@ -289,10 +289,18 @@ pub(in crate::adapters::claude_code) struct LaunchPolicy<'a> {
 #[derive(Debug)]
 pub(in crate::adapters::claude_code) enum HookSettingsError {
     NoConfigDir,
-    Unwritable { path: PathBuf, cause: String },
-    PolicyNotApplied { cause: String },
+    Unwritable {
+        path: PathBuf,
+        cause: String,
+    },
+    PolicyNotApplied {
+        cause: String,
+    },
     /// A cold resume would find no sealed copy and run without the policy.
-    PolicyNotKept { path: PathBuf, cause: String },
+    PolicyNotKept {
+        path: PathBuf,
+        cause: String,
+    },
 }
 
 impl HookSettingsError {
