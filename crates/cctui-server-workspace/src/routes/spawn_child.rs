@@ -436,13 +436,9 @@ mod tests {
             return;
         };
         let uid = Uuid::new_v4();
-        let seeded = seed_accounts(
-            &pool,
-            uid,
-            "refuse",
-            &[("personal", "anthropic"), ("work", "openai")],
-        )
-        .await;
+        let seeded =
+            seed_accounts(&pool, uid, "refuse", &[("personal", "anthropic"), ("work", "openai")])
+                .await;
         let (parent_account, anthropic_provider) = seeded[0];
         let parent_name = account_name(&pool, parent_account).await;
         let parent_id = bind_parent(&pool, anthropic_provider).await;
@@ -553,13 +549,9 @@ mod tests {
             return;
         };
         let uid = Uuid::new_v4();
-        let seeded = seed_accounts(
-            &pool,
-            uid,
-            "landing",
-            &[("personal", "anthropic"), ("work", "openai")],
-        )
-        .await;
+        let seeded =
+            seed_accounts(&pool, uid, "landing", &[("personal", "anthropic"), ("work", "openai")])
+                .await;
         let (parent_account, anthropic_provider) = seeded[0];
         let parent_name = account_name(&pool, parent_account).await;
         let parent_id = bind_parent(&pool, anthropic_provider).await;

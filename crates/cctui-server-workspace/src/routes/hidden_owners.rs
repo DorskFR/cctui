@@ -435,7 +435,8 @@ mod tests {
 
     #[tokio::test]
     async fn hidden_machine_sessions_leave_the_admins_list_and_search_only() {
-        let Some(f) = fixture("hidden_machine_sessions_leave_the_admins_list_and_search_only").await
+        let Some(f) =
+            fixture("hidden_machine_sessions_leave_the_admins_list_and_search_only").await
         else {
             return;
         };
