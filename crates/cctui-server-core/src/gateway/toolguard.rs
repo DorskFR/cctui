@@ -2673,18 +2673,15 @@ mod tests {
             .connect(&url)
             .await
             .expect("connect test db");
-        for table in [
-            "users",
-            "accounts",
-            "account_providers",
-            "account_tool_policies",
-            "session_tokens",
-            "sessions",
+        for ddl in [
+            "CREATE TEMP TABLE users (LIKE public.users INCLUDING ALL)",
+            "CREATE TEMP TABLE accounts (LIKE public.accounts INCLUDING ALL)",
+            "CREATE TEMP TABLE account_providers (LIKE public.account_providers INCLUDING ALL)",
+            "CREATE TEMP TABLE account_tool_policies (LIKE public.account_tool_policies INCLUDING ALL)",
+            "CREATE TEMP TABLE session_tokens (LIKE public.session_tokens INCLUDING ALL)",
+            "CREATE TEMP TABLE sessions (LIKE public.sessions INCLUDING ALL)",
         ] {
-            sqlx::query(&format!("CREATE TEMP TABLE {table} (LIKE public.{table} INCLUDING ALL)"))
-                .execute(&pool)
-                .await
-                .expect("temp table");
+            sqlx::query(ddl).execute(&pool).await.expect("temp table");
         }
         let state = GuardContext {
             pool: pool.clone(),
