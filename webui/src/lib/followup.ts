@@ -112,9 +112,8 @@ export function followupPrefill(
 /** `launch`: spawn the follow-up now; `followup`: open the prefilled modal. */
 export type EnterRoute = 'send' | 'followup' | 'launch';
 
-// Shift+Enter always sends in place.
-export function routeEnter(setting: FollowupWhenCold, cold: boolean, shift: boolean): EnterRoute {
-	if (shift || !cold) return 'send';
+export function routeEnter(setting: FollowupWhenCold, cold: boolean): EnterRoute {
+	if (!cold) return 'send';
 	if (setting === 'auto') return 'launch';
 	if (setting === 'modal') return 'followup';
 	return 'send';

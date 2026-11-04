@@ -41,7 +41,7 @@
 	let {
 		session,
 		archived,
-		working,
+		lastAgentAt,
 		supportsAttachments,
 		scroll,
 		onsend,
@@ -57,7 +57,8 @@
 	}: {
 		session: SessionListItem;
 		archived: boolean;
-		working: boolean;
+		/** Newest agent event this pane saw stream in, in ms. */
+		lastAgentAt: number | null;
 		supportsAttachments: boolean;
 		scroll: ScrollController;
 		// Send a final message body (text + any appended staged-attachment paths).
@@ -124,7 +125,7 @@
 		adapterId: () => session.adapter_id,
 		model: () => session.model ?? null,
 		lastActivityAt: () => session.last_activity_at ?? null,
-		working: () => working
+		lastAgentAt: () => lastAgentAt
 	});
 	const burstTokens = $derived(session.estimated_burst_tokens ?? null);
 
@@ -143,7 +144,7 @@
 	// What Send / Enter does right now. A cold Send starts a follow-up only
 	// where this pane can open one.
 	const route = $derived(
-		onFollowup ? routeEnter(settings.followupWhenCold, cache.cold, false) : 'send'
+		onFollowup ? routeEnter(settings.followupWhenCold, cache.cold) : 'send'
 	);
 	const scheduleItems = $derived(
 		scheduleMenuItems({
@@ -389,11 +390,6 @@
 		if (e.key === 'Enter' && !coarsePointer && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
 			submit();
-			return;
-		}
-		if (e.key === 'Enter' && e.shiftKey && !coarsePointer && route !== 'send') {
-			e.preventDefault();
-			void send();
 		}
 	}
 </script>

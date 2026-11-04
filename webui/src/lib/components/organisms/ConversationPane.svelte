@@ -576,7 +576,7 @@
 				bind:this={composer}
 				{session}
 				{archived}
-				working={stream.working}
+				lastAgentAt={stream.lastAgentAt}
 				{voiceEnabled}
 				voiceLive={liveVoice.active}
 				onvoicelive={caps.live ? toggleLiveVoice : undefined}

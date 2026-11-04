@@ -77,3 +77,15 @@ export function workingAfter(working: boolean, ev: AgentEvent): boolean {
 			return true;
 	}
 }
+
+/** The newer of `at` and `ev`'s time when `ev` is a turn's traffic (prose,
+ *  tools, a user message), the moments that touch the prompt cache. */
+export function agentActivityAt(at: number | null, ev: AgentEvent): number | null {
+	const counts =
+		(ev.type === 'text' && !ev.meta) ||
+		ev.type === 'tool_call' ||
+		ev.type === 'tool_result' ||
+		ev.type === 'reply';
+	if (!counts || typeof ev.ts !== 'number') return at;
+	return at === null ? ev.ts : Math.max(at, ev.ts);
+}
