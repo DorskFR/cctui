@@ -41,7 +41,7 @@ where
 {
     tokio::spawn(async move {
         let renewed = futures_util::stream::iter(targets)
-            .map(|local_id| {
+            .map(move |local_id| {
                 let pulled = pull(local_id.clone());
                 let clock = clock.clone();
                 async move {
