@@ -516,6 +516,9 @@ fn check_common_template_conformance(
                 .to_owned(),
         );
     }
+    if spec.enable_service_links != Some(false) {
+        return Err("pod does not set enableServiceLinks: false".to_owned());
+    }
     if spec.service_account_name != profile.service_account_name {
         return Err(format!(
             "serviceAccountName `{}` does not match the profile's `{}` — the dispatch must not \
@@ -995,6 +998,7 @@ mod tests {
         let mut pod_spec = serde_json::Map::new();
         pod_spec.insert("restartPolicy".into(), serde_json::json!("Never"));
         pod_spec.insert("automountServiceAccountToken".into(), serde_json::json!(false));
+        pod_spec.insert("enableServiceLinks".into(), serde_json::json!(false));
         pod_spec.insert("containers".into(), serde_json::Value::Array(containers));
         if let Some(init) = &profile.init_containers {
             pod_spec.insert("initContainers".into(), serde_json::to_value(init).unwrap());
@@ -1097,6 +1101,15 @@ mod tests {
         let src = source("lean", lean_profile());
         let msg = deny_msg(decide(&pod, &src).await);
         assert!(msg.contains("automountServiceAccountToken"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn a_pod_with_service_links_is_denied() {
+        let mut pod = dispatched_pod("lean", &lean_profile());
+        pod.spec.as_mut().unwrap().enable_service_links = None;
+        let src = source("lean", lean_profile());
+        let msg = deny_msg(decide(&pod, &src).await);
+        assert!(msg.contains("enableServiceLinks"), "{msg}");
     }
 
     #[tokio::test]

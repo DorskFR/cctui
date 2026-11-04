@@ -381,6 +381,7 @@ impl Spawner {
         let mut pod_spec = serde_json::Map::new();
         pod_spec.insert("restartPolicy".into(), json!("Never"));
         pod_spec.insert("automountServiceAccountToken".into(), json!(false));
+        pod_spec.insert("enableServiceLinks".into(), json!(false));
         pod_spec.insert("containers".into(), Value::Array(containers));
         if let Some(init) = &profile.init_containers {
             pod_spec.insert("initContainers".into(), serde_json::to_value(init)?);
@@ -1379,6 +1380,11 @@ mod tests {
             "the agent container must never see the pod's service-account token"
         );
         assert_eq!(
+            v.pointer("/spec/template/spec/enableServiceLinks"),
+            Some(&json!(false)),
+            "the worker must not get service-link env for the namespace's Services"
+        );
+        assert_eq!(
             v.pointer("/spec/template/spec/serviceAccountName"),
             Some(&json!("worker-lean"))
         );
@@ -1488,6 +1494,7 @@ mod tests {
                     "spec": {
                         "restartPolicy": "Never",
                         "automountServiceAccountToken": false,
+                        "enableServiceLinks": false,
                         "serviceAccountName": "worker-lean",
                         "containers": [{
                             "name": "worker",
@@ -1995,6 +2002,21 @@ mod tests {
                 Some(&json!("sess-fields"))
             );
         }
+    }
+
+    #[test]
+    fn a_queued_job_with_service_links_drifts_and_is_rebuilt_without_them() {
+        let s = spec("sess-links", json!({}));
+        let profile = lean_profile();
+        let mut job = queued_job("lean", &profile, &s);
+        job.spec.as_mut().unwrap().template.spec.as_mut().unwrap().enable_service_links = None;
+        assert!(drift_of(&job, &profile).is_some());
+        let rebuilt = Spawner::rebuild_job(&job, &profile).unwrap();
+        assert!(drift_of(&rebuilt, &profile).is_none());
+        assert_eq!(
+            rebuilt.spec.unwrap().template.spec.unwrap().enable_service_links,
+            Some(false)
+        );
     }
 
     #[test]
