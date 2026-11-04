@@ -357,7 +357,7 @@ pub fn usage_cache_stale(entry_age: Option<std::time::Duration>, ttl: std::time:
     entry_age.is_none_or(|age| age >= ttl)
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 enum CacheLookup {
     Fresh(Option<serde_json::Value>),
     Stale(Option<serde_json::Value>),
@@ -403,7 +403,7 @@ fn refresh_in_flight(account_id: Uuid) -> bool {
     flight(account_id).lock.try_lock().is_err()
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 enum Refresh {
     Fetched { provider: String, usage: Option<serde_json::Value> },
     /// Another caller's read settled it, even by failing: the cached value.

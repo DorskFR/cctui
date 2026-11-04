@@ -52,7 +52,7 @@ pub struct TraceCapture {
     pub response_summary: Option<ResponseSummary>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResponseSummary {
     pub output_chars: Option<usize>,
     pub usage: Option<serde_json::Value>,
@@ -81,7 +81,7 @@ pub const TRACE_KEPT_FIELDS: [&str; 6] =
     ["model", "stream", "max_tokens", "temperature", "service_tier", "thinking"];
 pub const TRACE_COUNTED_FIELDS: [&str; 3] = ["messages", "system", "tools"];
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RequestShape {
     pub summary: serde_json::Value,
     pub model: Option<String>,
@@ -104,7 +104,7 @@ mod shape {
 
     impl<'de> Deserialize<'de> for Skip {
         fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-            d.deserialize_any(Scalar(Skip))
+            d.deserialize_any(Scalar(Self))
         }
     }
 
