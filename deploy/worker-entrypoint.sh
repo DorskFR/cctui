@@ -1218,7 +1218,8 @@ phase_codex_pack() {
 # ── Phase 5: Result callback trap ───────────────────────────────────────────
 # If REPLY_URL is set, install an EXIT/INT/TERM trap that POSTs the result JSON
 # once (RESULT_FILE if the session wrote a valid one, else a synthesized
-# failure). Wire shape per files/claude/automation-contract.md — tenant-visible, keep
+# failure, with cause idle-without-result when the daemon saw the turn end).
+# Wire shape per files/claude/automation-contract.md — tenant-visible, keep
 # identical. Skipped (no trap) when REPLY_URL is unset.
 RESULT_FILE="${RESULT_FILE:-/tmp/cctui-result.json}"
 export RESULT_FILE
@@ -1240,6 +1241,9 @@ worker_on_exit() {
     _code=$?
     if [ -s "$RESULT_FILE" ] && jq -e . "$RESULT_FILE" >/dev/null 2>&1; then
         send_callback "$(cat "$RESULT_FILE")"
+    elif dispatch_done_marker; then
+        send_callback "$(jq -nc --arg id "${TASK_ID:-}" \
+            '{task_id:$id, status:"failed", cause:"idle-without-result", error:"session ended its turn without writing a result"}')"
     else
         send_callback "$(jq -nc --arg id "${TASK_ID:-}" --arg code "$_code" \
             '{task_id:$id, status:"failed", error:("worker exited (code "+$code+") without a valid result")}')"
