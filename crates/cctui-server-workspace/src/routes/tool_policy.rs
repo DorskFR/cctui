@@ -123,7 +123,7 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::{ToolPolicy, get_tool_policy, put_tool_policy};
+    use super::{MAX_ACCOUNT_HOOKS, ToolPolicy, account_hooks, get_tool_policy, put_tool_policy};
     use crate::auth::{AuthContext, Scope};
     use crate::state::AppState;
 

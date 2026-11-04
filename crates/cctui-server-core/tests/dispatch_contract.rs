@@ -15,6 +15,28 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// Execution tables the dispatch path touches, as session-private copies.
+const TEMP_TABLES: &[&str] = &[
+    "CREATE TEMP TABLE users (LIKE public.users INCLUDING ALL)",
+    "CREATE TEMP TABLE user_acls (LIKE public.user_acls INCLUDING ALL)",
+    "CREATE TEMP TABLE key_acls (LIKE public.key_acls INCLUDING ALL)",
+    "CREATE TEMP TABLE machines (LIKE public.machines INCLUDING ALL)",
+    "CREATE TEMP TABLE auth_keys (LIKE public.auth_keys INCLUDING ALL)",
+    "CREATE TEMP TABLE accounts (LIKE public.accounts INCLUDING ALL)",
+    "CREATE TEMP TABLE account_pools (LIKE public.account_pools INCLUDING ALL)",
+    "CREATE TEMP TABLE account_providers (LIKE public.account_providers INCLUDING ALL)",
+    "CREATE TEMP TABLE dispatchers (LIKE public.dispatchers INCLUDING ALL)",
+    "CREATE TEMP TABLE sessions (LIKE public.sessions INCLUDING ALL)",
+    "CREATE TEMP TABLE session_spawn_capabilities (LIKE public.session_spawn_capabilities INCLUDING ALL)",
+    "CREATE TEMP TABLE dispatch_policies (LIKE public.dispatch_policies INCLUDING ALL)",
+    "CREATE TEMP TABLE dispatch_policy_uses (LIKE public.dispatch_policy_uses INCLUDING ALL)",
+    "CREATE TEMP TABLE dispatch_handles (LIKE public.dispatch_handles INCLUDING ALL)",
+    "CREATE TEMP TABLE dispatch_records (LIKE public.dispatch_records INCLUDING ALL)",
+    "CREATE TEMP TABLE session_tokens (LIKE public.session_tokens INCLUDING ALL)",
+    "CREATE TEMP TABLE account_tool_policies (LIKE public.account_tool_policies INCLUDING ALL)",
+    "CREATE TEMP TABLE session_hook_policies (LIKE public.session_hook_policies INCLUDING ALL)",
+];
+
 struct Host {
     pool: PgPool,
     bus: Bus,
@@ -102,26 +124,7 @@ impl Fixture {
             .connect(&url)
             .await
             .unwrap();
-        for ddl in [
-            "CREATE TEMP TABLE users (LIKE public.users INCLUDING ALL)",
-            "CREATE TEMP TABLE user_acls (LIKE public.user_acls INCLUDING ALL)",
-            "CREATE TEMP TABLE key_acls (LIKE public.key_acls INCLUDING ALL)",
-            "CREATE TEMP TABLE machines (LIKE public.machines INCLUDING ALL)",
-            "CREATE TEMP TABLE auth_keys (LIKE public.auth_keys INCLUDING ALL)",
-            "CREATE TEMP TABLE accounts (LIKE public.accounts INCLUDING ALL)",
-            "CREATE TEMP TABLE account_pools (LIKE public.account_pools INCLUDING ALL)",
-            "CREATE TEMP TABLE account_providers (LIKE public.account_providers INCLUDING ALL)",
-            "CREATE TEMP TABLE dispatchers (LIKE public.dispatchers INCLUDING ALL)",
-            "CREATE TEMP TABLE sessions (LIKE public.sessions INCLUDING ALL)",
-            "CREATE TEMP TABLE session_spawn_capabilities (LIKE public.session_spawn_capabilities INCLUDING ALL)",
-            "CREATE TEMP TABLE dispatch_policies (LIKE public.dispatch_policies INCLUDING ALL)",
-            "CREATE TEMP TABLE dispatch_policy_uses (LIKE public.dispatch_policy_uses INCLUDING ALL)",
-            "CREATE TEMP TABLE dispatch_handles (LIKE public.dispatch_handles INCLUDING ALL)",
-            "CREATE TEMP TABLE dispatch_records (LIKE public.dispatch_records INCLUDING ALL)",
-            "CREATE TEMP TABLE session_tokens (LIKE public.session_tokens INCLUDING ALL)",
-            "CREATE TEMP TABLE account_tool_policies (LIKE public.account_tool_policies INCLUDING ALL)",
-            "CREATE TEMP TABLE session_hook_policies (LIKE public.session_hook_policies INCLUDING ALL)",
-        ] {
+        for &ddl in TEMP_TABLES {
             sqlx::query(ddl).execute(&pool).await.unwrap();
         }
         for table in ["stream_events", "session_context", "session_attachments"] {

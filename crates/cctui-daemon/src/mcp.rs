@@ -202,7 +202,6 @@ pub fn tool_schema() -> Value {
                     "description": "Working directory for the child. Defaults to this session's.",
                 },
                 "hook_rules": hook_rules_schema(),
-                },
                 "timeout_secs": {
                     "type": "integer",
                     "description": "How long to wait for the child before giving up \
