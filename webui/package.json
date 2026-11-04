@@ -35,7 +35,7 @@
     "@dorsk/journey": "^0.8.2",
     "@inlang/paraglide-js": "^2.25.4",
     "@playwright/test": "^1.64.1",
-    "@sveltejs/adapter-static": "^3.0.8",
+    "@sveltejs/adapter-static": "^4.0.0",
     "@sveltejs/kit": "^2.70.3",
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@types/node": "^26.6.5",
