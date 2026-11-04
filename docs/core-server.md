@@ -3,8 +3,8 @@
 The opt-in `cctui-core-server` binary and `ghcr.io/dorskfr/cctui-core` image
 provide identity, encrypted provider accounts, credential proxying, machine and
 dispatcher enrollment, JSON dispatch/spawn, run results and cancellation. They do
-not serve a workspace UI, transcript search, uploads, plugins, voice or previews.
-Existing `cctui-server` installations and the `cctui` image remain the full product.
+not serve a workspace UI, transcript search, uploads, plugins, voice or previews;
+see [Not available on core](#not-available-on-core). Existing `cctui-server` installations and the `cctui` image remain the full product.
 
 The standalone host supports one active instance per database. Verified runs include real Claude/Codex machine
 execution, a Codex parent calling a Claude child and a sandboxed Kubernetes Codex
@@ -36,6 +36,8 @@ The server requires PostgreSQL and these environment variables:
 | `CCTUI_ADMIN_TOKENS` | Comma-separated bootstrap administrator bearer tokens |
 | `CCTUI_EXTERNAL_URL` | Server URL reachable by workers, used for gateway routing |
 | `CCTUI_HOST`, `CCTUI_PORT` | Listen address; defaults `0.0.0.0:8700` |
+| `CCTUI_DISPATCH_TRUSTED_ISSUERS` | Optional. Kubernetes service-account issuers whose tokens may redeem a kube dispatch identity; see [Dispatch identity](worker-contract.md#dispatch-identity-kube) |
+| `CCTUI_UPSTREAM_ALLOWED_HOSTS` | Optional. Extra `host[:port]` provider upstreams, such as an account's custom `base_url`; core reads this list only from the environment |
 
 `DATABASE_URL` and `CCTUI_ADMIN_TOKENS` may be [secret refs](secret-refs.md)
 (`file:`, `env:`, `k8s:`, `bao:`, `aws-sm:`) instead of values.
@@ -46,7 +48,7 @@ file and supply it to the process or container. For a local PostgreSQL test:
 
 ```sh
 docker run --rm --env-file /path/to/core.env --network host \
-  ghcr.io/dorskfr/cctui-core:0.27.0
+  ghcr.io/dorskfr/cctui-core:0.28.1
 ```
 
 `DATABASE_URL` and `CCTUI_EXTERNAL_URL` must be reachable from the container's
@@ -72,7 +74,9 @@ curl --fail-with-body "$CCTUI_URL/api/v1/admin/users" \
 ```
 
 Store the returned `key` securely as `CCTUI_USER_KEY`; it is shown once. It grants
-read, enrollment and dispatch access. Use `POST /api/v1/users/{id}/keys` with an
+read, enrollment and dispatch access. Dispatch with a user key: a dispatch made
+with a bootstrap administrator token gives the worker no machine key or gateway
+credentials. Use `POST /api/v1/users/{id}/keys` with an
 administrator token to issue narrower keys; `DELETE /api/v1/users/{id}/keys/{kid}`
 revokes them. A read-only key uses `{"label":"observer","scopes":["read"]}`.
 
@@ -120,7 +124,16 @@ The prompt file must exist where the executor expects it. Keep the returned
 `session_id`. Fetch `/api/v1/sessions/{session_id}/result` with the same user key
 for status/outcome, or POST `/api/v1/sessions/{session_id}/kill` to cancel.
 An executor acknowledgment means dispatch was accepted; it does not establish
-that the task completed. Failure notifications use the existing bounded retry
+that the task completed. Workers run unattended: a permission request, an
+`AskUserQuestion` or an `ExitPlanMode` call stops the worker with end reason
+`other`, in every permission mode.
+
+Kubernetes and Docker workers read `GET /api/v1/sessions` with their machine
+key to confirm their session registered; a session-bound worker key lists only
+its own session. A Claude worker that cannot read it fails at its boot deadline
+(`WORKER_BOOT_DEADLINE_SECS`, default 120 s). Core serves this route from
+0.28.1, together with the Kubernetes dispatch identity routes
+(`/api/v1/dispatch/register`, `/redeem`, `/{id}/env`). Failure notifications use the existing bounded retry
 policy and may be duplicated around crashes; they are not exactly-once delivery.
 
 Starting with beta.34, machine cancellation also accepts the returned command ID
@@ -166,6 +179,27 @@ Unknown delivery becomes `spawn_failed`; work is never automatically resent.
 
 Switching full to core deliberately removes access to workspace features and is
 an operator choice, separate from an ordinary full-server upgrade.
+
+## Not available on core
+
+The daemon still advertises these agent tools on core; each returns an error to
+the model: `CctuiPeers`, `CctuiSend`, `CctuiRoom`, `CctuiHistory`, `CctuiSpeak`,
+`CctuiUserActionAdd`, `CctuiUserActionTick` and `CctuiContext` `save`.
+`CctuiAgent` children work.
+
+- **Launch context:** no server-side plugins, skills, context packs, rules or
+  whip phrases. Git context packs fetched by the worker still work.
+- **Daemon uploads:** image markers stay plain paths; blobs over 512 KiB stay
+  inline in the event stream.
+- **Daemon maintenance:** no archived-job cleanup (`~/.claude/jobs` grows on
+  long-lived machines), no harness auto-update policy, no drain restart.
+- **Background tasks:** no stale-session reaper or auto-archive, so hung
+  sessions and completed children hold child slots until archived; no
+  machine-liveness sweep, provider-status poller or account re-auth warm-up.
+- **Management routes:** no account pools, account tool policy, redirects,
+  service tokens, dispatch policies, machine administration (list, revoke,
+  key rotation) or device login. A service user can only use dispatchers it
+  enrolled.
 
 
 ## Repeatable machine execution smoke
@@ -238,7 +272,8 @@ it), a fresh core database and the controlled provider. It verifies the terminal
 API result and final answer, retains Job/container diagnostics and deletes only
 its own Job and dispatcher container. The operator owns cluster/webhook cleanup.
 The Kubernetes smoke passed with the published beta.30 worker for Claude and
-Codex, including signed pinned context packs. This is
+Codex, including signed pinned context packs. Its tasks finish within the Claude
+boot deadline, so they do not exercise the worker liveness probe. This is
 single-server acceptance; it does not establish rolling or multi-replica support.
 
 

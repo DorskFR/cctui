@@ -1137,9 +1137,11 @@ steps, each with a log line:
   never registers (e.g. `claude daemon run` crash-looping behind a network
   deny), and a result grace ends the wait when `RESULT_FILE` is valid but the
   guard exit never arrives. The EXIT trap then POSTs the callback.
-- **Liveness probe.** It lists `GET /api/v1/sessions` (self-scoped to the
-  machine key) rather than `GET /sessions/{id}`, whose owner check rejects a
-  machine-key principal. The session id is stable because the daemon launches
+- **Liveness probe.** It lists `GET /api/v1/sessions` (scoped to the key's
+  owner; a session-bound worker key sees only its own session) rather than
+  `GET /sessions/{id}`, whose owner check rejects a machine-key principal. Full
+  and core (0.28.1 and later) serve it with the same `status` and
+  `last_heartbeat` semantics. The session id is stable because the daemon launches
   claude with `--session-id`; claude's own job id rotates on resume.
 - **Instructions placement.** The pack's `AGENTS.md`/`CLAUDE.md` go in the
   checkout's parent (`/workspace`): both harnesses walk up from the cwd and never

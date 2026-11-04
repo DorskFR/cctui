@@ -44,6 +44,7 @@ pub fn router(host: Host) -> Router {
             axum::routing::patch(core::targets::dispatcher_management::update_dispatcher)
                 .delete(core::targets::dispatcher_management::delete_dispatcher),
         )
+        .route("/api/v1/sessions", get(crate::sessions::list))
         .route("/api/v1/sessions/dispatch", post(dispatch))
         .route("/api/v1/sessions/spawn", post(crate::spawn::spawn))
         .route("/api/v1/sessions/{id}/result", get(crate::runs::result))
@@ -217,6 +218,11 @@ mod tests {
             .body(body.map_or_else(Body::empty, |json| Body::from(json.to_string())))
             .unwrap();
         super::router(host()).oneshot(req).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn the_liveness_session_list_is_mounted_behind_authentication() {
+        assert_eq!(status(Method::GET, "/api/v1/sessions", None).await, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
