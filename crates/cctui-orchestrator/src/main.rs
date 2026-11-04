@@ -8,7 +8,7 @@ use axum::{Json, Router};
 use cctui_orchestrator::envelope::{
     MutationOutcome, default_sidecar_image, is_eligible, is_injected, mutate_pod, profile_name,
 };
-use cctui_orchestrator::validate::{Decision, ProfileSource, Verdict, review};
+use cctui_orchestrator::validate::{Decision, ProfileSource, Verdict};
 use cctui_orchestrator::{GuardSpec, WorkerProfile, WorkerProfileSpec};
 use k8s_openapi::api::core::v1::Pod;
 use kube::core::admission::{AdmissionRequest, AdmissionResponse, AdmissionReview};
@@ -123,7 +123,10 @@ async fn validate_handler(
     let resp = AdmissionResponse::from(&req);
     let resp = if let Some(pod) = &req.object {
         let namespace = request_namespace(&req, pod);
-        respond(resp, review(pod, &namespace, state.profile_source.as_ref()).await)
+        let verdict =
+            cctui_orchestrator::validate::review(pod, &namespace, state.profile_source.as_ref())
+                .await;
+        respond(resp, verdict)
     } else {
         resp
     };
