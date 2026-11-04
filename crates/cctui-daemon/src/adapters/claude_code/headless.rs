@@ -276,9 +276,9 @@ impl SdkDriver {
             short_of(&session_id),
             &launch_env,
             self.machine_key.as_deref(),
-        );
+        )?;
 
-        let mut base = LaunchArgs::from_spec(spec, settings);
+        let mut base = LaunchArgs::from_spec(spec, Some(settings));
         base.plugin_dirs.clone_from(&launch_env.plugin_dirs);
         let posture = SessionPosture {
             cwd: cwd.clone(),
@@ -419,13 +419,14 @@ impl SdkDriver {
                 format!("refusing to relaunch {local_id} without its hook policy")
             })?,
         };
-        let settings_path = hooks.write(&self.cfg.hook_socket_path, short, &launch_env, seal_key);
+        let settings_path =
+            hooks.write(&self.cfg.hook_socket_path, short, &launch_env, seal_key)?;
         if let Some(known) = self.postures.get_mut(local_id) {
             known.hooks = Some(hooks);
         }
         let launch = LaunchArgs {
             resume_from: Some(local_id.to_owned()),
-            settings_path,
+            settings_path: Some(settings_path),
             model: posture.model.clone(),
             effort: posture.effort.clone(),
             permission_flag: posture.permission_flag.clone(),
@@ -787,7 +788,72 @@ fn idle_status(local_id: &str) -> AdapterEvent {
 
 #[cfg(test)]
 mod tests {
+    use super::super::control::{ConfigRootOverride, HookPosture, HookSettingsError};
     use super::*;
+
+    fn refusing_driver(tmp: &std::path::Path) -> (SdkDriver, mpsc::Receiver<AdapterEvent>) {
+        let (events, rx) = mpsc::channel(8);
+        let (_commands_tx, commands) = mpsc::channel(8);
+        let (_connected_tx, connected) = tokio::sync::broadcast::channel(1);
+        let bin = tmp.join("claude-must-not-run");
+        let ctx = AdapterCtx {
+            events,
+            commands,
+            pty_watch: None,
+            interrupts: None,
+            shutdown: CancellationToken::new(),
+            config: json!({ "claude_bin": bin }),
+            server: None,
+            machine_key: None,
+            connected,
+        };
+        (SdkDriver::new(ctx).0, rx)
+    }
+
+    fn policy_spec(cwd: &std::path::Path) -> SessionSpec {
+        serde_json::from_value(serde_json::json!({
+            "adapter_id": "claude-code",
+            "working_dir": cwd,
+            "prompt": "go",
+            "hook_policy": { "rules": [{ "event": "Stop", "command": "p-stop" }] },
+        }))
+        .unwrap()
+    }
+
+    fn refused_for_hook_settings(launched: anyhow::Result<()>) {
+        let err = launched.expect_err("the launch was not refused");
+        assert!(err.downcast_ref::<HookSettingsError>().is_some(), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn a_spawn_is_refused_without_starting_claude_when_its_settings_cannot_be_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _root = ConfigRootOverride::unwritable(tmp.path());
+        let (mut d, mut events) = refusing_driver(tmp.path());
+        let id = "5e550003-0000-4000-8000-000000000000".to_owned();
+        refused_for_hook_settings(d.spawn(&policy_spec(tmp.path()), id, None).await);
+        assert!(d.children.is_empty(), "no persistent claude child was started");
+        assert!(d.postures.is_empty());
+        assert!(events.try_recv().is_err(), "no SessionStarted for a refused spawn");
+    }
+
+    #[tokio::test]
+    async fn a_relaunch_is_refused_without_starting_claude_when_its_settings_cannot_be_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _root = ConfigRootOverride::unwritable(tmp.path());
+        let (mut d, mut events) = refusing_driver(tmp.path());
+        let id = "5e550004-0000-4000-8000-000000000000";
+        let posture = SessionPosture {
+            cwd: tmp.path().to_string_lossy().into_owned(),
+            hooks: Some(HookPosture::default()),
+            ..SessionPosture::default()
+        };
+        d.postures.insert(id.to_owned(), posture);
+        refused_for_hook_settings(d.ensure_child(id, &BTreeMap::new()).await);
+        assert!(d.children.is_empty(), "no persistent claude child was started");
+        assert!(d.postures[id].hooks.is_some(), "the posture survives for a later retry");
+        assert!(events.try_recv().is_err());
+    }
 
     #[test]
     fn idle_status_is_resumable_not_ended() {
