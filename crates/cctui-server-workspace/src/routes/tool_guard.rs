@@ -178,7 +178,7 @@ mod tests {
         driver: Uuid,
         stranger: Uuid,
         prov: Uuid,
-        owned: (String, String),
+        mine: (String, String),
         borrowed: (String, String),
     }
 
@@ -258,14 +258,14 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
-        let owned = seed_session(pool, owner, prov).await;
+        let mine = seed_session(pool, owner, prov).await;
         let borrowed = seed_session(pool, driver, prov).await;
-        Fixture { owner, driver, stranger, prov, owned, borrowed }
+        Fixture { owner, driver, stranger, prov, mine, borrowed }
     }
 
     async fn cleanup(pool: &PgPool, fx: &Fixture) {
         let users = vec![fx.owner, fx.driver, fx.stranger];
-        for (id, _) in [&fx.owned, &fx.borrowed] {
+        for (id, _) in [&fx.mine, &fx.borrowed] {
             sqlx::query("DELETE FROM session_tokens WHERE session_id = $1")
                 .bind(id)
                 .execute(pool)
@@ -322,11 +322,11 @@ mod tests {
     async fn tool_guard_auth_matrix() {
         let Some(pool) = connect("tool_guard_auth_matrix").await else { return };
         let fx = seed(&pool).await;
-        let (owned, borrowed) = (&fx.owned.0, &fx.borrowed.0);
+        let (mine, borrowed) = (&fx.mine.0, &fx.borrowed.0);
 
-        let view = get(&pool, human(fx.owner), owned).await;
+        let view = get(&pool, human(fx.owner), mine).await;
         assert!(view.policy_active && view.can_toggle && !view.bypass);
-        assert!(put(&pool, human(fx.owner), owned, true).await.unwrap().bypass, "account owner");
+        assert!(put(&pool, human(fx.owner), mine, true).await.unwrap().bypass, "account owner");
 
         let view = get(&pool, human(fx.driver), borrowed).await;
         assert!(view.policy_active && !view.can_toggle, "a borrowed account is not theirs");
@@ -338,25 +338,25 @@ mod tests {
         assert!(put(&pool, admin(fx.stranger), borrowed, true).await.unwrap().bypass, "admin");
 
         assert!(
-            crate::authz::authorize_session_write(&human(fx.stranger), owned, &pool).await.is_err(),
+            crate::authz::authorize_session_write(&human(fx.stranger), mine, &pool).await.is_err(),
             "the route's session guard stops a user who cannot manage the session"
         );
 
         let mut machine_key = human(fx.owner);
         machine_key.machine_id = Some(Uuid::new_v4());
         assert_eq!(
-            put(&pool, machine_key, owned, false).await.unwrap_err(),
+            put(&pool, machine_key, mine, false).await.unwrap_err(),
             StatusCode::FORBIDDEN,
             "a machine key is not a person"
         );
 
         let state = AppState::for_test(pool.clone());
         assert!(
-            state.auth_config.validate(&fx.owned.1).await.is_none(),
+            state.auth_config.validate(&fx.mine.1).await.is_none(),
             "a session token is not an API credential"
         );
         assert_eq!(
-            worker_route(&Method::PUT, &format!("/api/v1/sessions/{owned}/tool-guard")),
+            worker_route(&Method::PUT, &format!("/api/v1/sessions/{mine}/tool-guard")),
             WorkerRoute::Denied,
             "a session-bound worker key cannot reach the route"
         );
@@ -370,7 +370,7 @@ mod tests {
             return;
         };
         let fx = seed(&pool).await;
-        let (id, token) = (&fx.owned.0, &fx.owned.1);
+        let (id, token) = (&fx.mine.0, &fx.mine.1);
         let bus = AppState::for_test(pool.clone()).bus.clone();
         let guard = GuardContext { pool: pool.clone(), bus };
 
