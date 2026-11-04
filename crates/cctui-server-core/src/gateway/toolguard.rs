@@ -1123,8 +1123,11 @@ async fn policy_for_provider(
             protected_owners: owners.unwrap_or_default(),
             exempt_roots: roots.unwrap_or_default(),
         };
-        CompiledPolicy::compile(&p)
-            .map(|c| AccountPolicy { account_id, owner, policy: Arc::new(c) })
+        CompiledPolicy::compile(&p).map(|c| AccountPolicy {
+            account_id,
+            owner,
+            policy: Arc::new(c),
+        })
     });
     POLICY_CACHE.insert(
         provider_id,
@@ -1195,8 +1198,7 @@ pub async fn guard_for(
         return Ok(None);
     };
     let session = session_for_token(state, session_token).await;
-    if policy.exempts(session.cwd.as_deref()) || session.bypass.is_some_and(|b| b.honoured(owner))
-    {
+    if policy.exempts(session.cwd.as_deref()) || session.bypass.is_some_and(|b| b.honoured(owner)) {
         return Ok(None);
     }
     Ok(Some(ActiveGuard { policy, account_id, session_id: session.session_id }))

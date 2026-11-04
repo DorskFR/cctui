@@ -89,9 +89,8 @@ pub fn mask_event(event: AdapterEvent) -> AdapterEvent {
         other => other,
     };
     let Ok(mut value) = serde_json::to_value(&event) else { return event };
-    let literals = literals_of(
-        value.get("local_id").and_then(serde_json::Value::as_str).unwrap_or_default(),
-    );
+    let literals =
+        literals_of(value.get("local_id").and_then(serde_json::Value::as_str).unwrap_or_default());
     if redact::mask_user_json(&mut value, &literals) == 0 {
         return event;
     }

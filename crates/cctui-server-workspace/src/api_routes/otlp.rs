@@ -50,11 +50,8 @@ async fn forward(
     if !BY_USER.admit(&ctx.user_id.to_string(), EXPORTS_PER_USER_PER_MIN, Instant::now()) {
         return StatusCode::TOO_MANY_REQUESTS;
     }
-    let mut request = state
-        .http_client
-        .post(url)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(body);
+    let mut request =
+        state.http_client.post(url).header(header::CONTENT_TYPE, "application/json").body(body);
     if let Some(value) = headers.get(header::CONTENT_ENCODING) {
         request = request.header(header::CONTENT_ENCODING, value.clone());
     }

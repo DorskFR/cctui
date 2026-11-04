@@ -8,10 +8,7 @@ pub const BOOTSTRAP: &str = include_str!("../schema/0001_workspace.sql");
 pub const MIGRATIONS: &[Migration] = &[
     Migration { version: 1, sql: BOOTSTRAP },
     Migration { version: 2, sql: include_str!("../schema/0002_dispatch_identities.sql") },
-    Migration {
-        version: 3,
-        sql: include_str!("../schema/0003_scheduled_message_sealed_body.sql"),
-    },
+    Migration { version: 3, sql: include_str!("../schema/0003_scheduled_message_sealed_body.sql") },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.

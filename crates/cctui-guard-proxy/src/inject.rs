@@ -758,25 +758,23 @@ struct Dialer<'a> {
 impl Dialer<'_> {
     async fn dial(&self) -> Option<UpstreamConn> {
         let host = self.host;
-        let tcp = match tokio::time::timeout(
-            Duration::from_secs(10),
-            TcpStream::connect(self.addrs),
-        )
-        .await
-        {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => {
-                tracing::warn!("inject dial upstream {host} failed: {e}");
-                return None;
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "inject dial upstream {host} timed out ({} address(es))",
-                    self.addrs.len()
-                );
-                return None;
-            }
-        };
+        let tcp =
+            match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(self.addrs))
+                .await
+            {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => {
+                    tracing::warn!("inject dial upstream {host} failed: {e}");
+                    return None;
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "inject dial upstream {host} timed out ({} address(es))",
+                        self.addrs.len()
+                    );
+                    return None;
+                }
+            };
         match self.connector.connect(self.server_name.clone(), tcp).await {
             Ok(stream) => Some(UpstreamConn { stream, ubuf: HttpBuf::default(), reused: false }),
             Err(e) => {
