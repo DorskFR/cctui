@@ -11,7 +11,9 @@ use super::limits::{
 };
 use super::mint::session_id_for_token;
 use super::toolguard::{GuardContext, guard_for, guard_stream, guardable};
-use super::usage::{record_metered_usage, session_spend_usd_cached, usage_for_soft_limit};
+use super::usage::{
+    record_metered_usage, session_spend_usd_cached, usage_for_soft_limit_nonblocking,
+};
 
 use axum::body::{Body, Bytes};
 use axum::extract::Request;
@@ -43,13 +45,338 @@ pub struct TraceCapture {
     pub account_id: String,
     pub model: Option<String>,
     pub request: Option<serde_json::Value>,
+    /// `request` is a [`RequestShape::summary`], not the body.
+    pub request_redacted: bool,
+    /// Empty when `response_summary` is set.
     pub response: Vec<u8>,
+    pub response_summary: Option<ResponseSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResponseSummary {
+    pub output_chars: Option<usize>,
+    pub usage: Option<serde_json::Value>,
+}
+
+pub trait ResponseDigest: Send {
+    fn feed(&mut self, chunk: &[u8]);
+    fn finish(self: Box<Self>) -> ResponseSummary;
 }
 
 /// Optional tracing sink. Sampling is decided once per request.
 pub trait TraceSink: Send + Sync {
     fn should_sample(&self) -> bool;
     fn report(&self, capture: TraceCapture) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// `false`: the sink only wants [`RequestShape`] and a [`ResponseDigest`],
+    /// so the request streams upstream unbuffered.
+    fn captures_content(&self) -> bool {
+        true
+    }
+    fn response_digest(&self, _family: Family) -> Option<Box<dyn ResponseDigest>> {
+        None
+    }
+}
+
+pub const TRACE_KEPT_FIELDS: [&str; 6] =
+    ["model", "stream", "max_tokens", "temperature", "service_tier", "thinking"];
+pub const TRACE_COUNTED_FIELDS: [&str; 3] = ["messages", "system", "tools"];
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RequestShape {
+    pub summary: serde_json::Value,
+    pub model: Option<String>,
+}
+
+/// `None` exactly when the body is not JSON a `serde_json::Value` parse accepts.
+#[must_use]
+pub fn request_shape(body: &[u8]) -> Option<RequestShape> {
+    serde_json::from_slice::<shape::Shape>(body).ok().map(shape::Shape::into_request_shape)
+}
+
+mod shape {
+    use super::{RequestShape, TRACE_COUNTED_FIELDS, TRACE_KEPT_FIELDS};
+    use serde::de::{Deserialize, Deserializer, Error, MapAccess, SeqAccess, Visitor};
+    use serde_json::Value;
+
+    /// Visits through `deserialize_any` rather than `IgnoredAny`, so strings,
+    /// surrogates and nesting depth are validated as a `Value` parse does.
+    struct Skip;
+
+    impl<'de> Deserialize<'de> for Skip {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            d.deserialize_any(Scalar(Skip))
+        }
+    }
+
+    struct Scalar<T>(T);
+
+    impl<'de, T> Visitor<'de> for Scalar<T> {
+        type Value = T;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a JSON value")
+        }
+        fn visit_bool<E: Error>(self, _: bool) -> Result<T, E> {
+            Ok(self.0)
+        }
+        fn visit_i64<E: Error>(self, _: i64) -> Result<T, E> {
+            Ok(self.0)
+        }
+        fn visit_u64<E: Error>(self, _: u64) -> Result<T, E> {
+            Ok(self.0)
+        }
+        fn visit_f64<E: Error>(self, _: f64) -> Result<T, E> {
+            Ok(self.0)
+        }
+        fn visit_str<E: Error>(self, _: &str) -> Result<T, E> {
+            Ok(self.0)
+        }
+        fn visit_unit<E: Error>(self) -> Result<T, E> {
+            Ok(self.0)
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<T, A::Error> {
+            while seq.next_element::<Skip>()?.is_some() {}
+            Ok(self.0)
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<T, A::Error> {
+            while map.next_entry::<Skip, Skip>()?.is_some() {}
+            Ok(self.0)
+        }
+    }
+
+    /// An array's length; any other value counts as one.
+    struct Count(usize);
+
+    impl<'de> Deserialize<'de> for Count {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            d.deserialize_any(CountVisitor)
+        }
+    }
+
+    struct CountVisitor;
+
+    impl<'de> Visitor<'de> for CountVisitor {
+        type Value = Count;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a JSON value")
+        }
+        fn visit_bool<E: Error>(self, _: bool) -> Result<Count, E> {
+            Ok(Count(1))
+        }
+        fn visit_i64<E: Error>(self, _: i64) -> Result<Count, E> {
+            Ok(Count(1))
+        }
+        fn visit_u64<E: Error>(self, _: u64) -> Result<Count, E> {
+            Ok(Count(1))
+        }
+        fn visit_f64<E: Error>(self, _: f64) -> Result<Count, E> {
+            Ok(Count(1))
+        }
+        fn visit_str<E: Error>(self, _: &str) -> Result<Count, E> {
+            Ok(Count(1))
+        }
+        fn visit_unit<E: Error>(self) -> Result<Count, E> {
+            Ok(Count(1))
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Count, A::Error> {
+            let mut n = 0;
+            while seq.next_element::<Skip>()?.is_some() {
+                n += 1;
+            }
+            Ok(Count(n))
+        }
+        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Count, A::Error> {
+            Scalar(Count(1)).visit_map(map)
+        }
+    }
+
+    enum Field {
+        Kept(usize),
+        Counted(usize),
+        Other,
+    }
+
+    impl<'de> Deserialize<'de> for Field {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            d.deserialize_str(FieldVisitor)
+        }
+    }
+
+    struct FieldVisitor;
+
+    impl Visitor<'_> for FieldVisitor {
+        type Value = Field;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("an object key")
+        }
+        fn visit_str<E: Error>(self, key: &str) -> Result<Field, E> {
+            let kept = TRACE_KEPT_FIELDS.iter().position(|k| *k == key).map(Field::Kept);
+            let counted =
+                || TRACE_COUNTED_FIELDS.iter().position(|k| *k == key).map(Field::Counted);
+            Ok(kept.or_else(counted).unwrap_or(Field::Other))
+        }
+    }
+
+    #[derive(Default)]
+    pub(super) struct Shape {
+        kept: [Option<Value>; TRACE_KEPT_FIELDS.len()],
+        counts: [Option<usize>; TRACE_COUNTED_FIELDS.len()],
+    }
+
+    impl Shape {
+        pub(super) fn into_request_shape(self) -> RequestShape {
+            let model = self.kept[0].as_ref().and_then(Value::as_str).map(str::to_owned);
+            let mut out = serde_json::Map::new();
+            for (key, value) in TRACE_KEPT_FIELDS.iter().zip(self.kept) {
+                if let Some(value) = value {
+                    out.insert((*key).to_owned(), value);
+                }
+            }
+            for (key, n) in TRACE_COUNTED_FIELDS.iter().zip(self.counts) {
+                if let Some(n) = n {
+                    out.insert(format!("{key}_count"), Value::from(n));
+                }
+            }
+            out.insert("redacted".into(), Value::Bool(true));
+            RequestShape { summary: Value::Object(out), model }
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Shape {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            d.deserialize_any(ShapeVisitor)
+        }
+    }
+
+    struct ShapeVisitor;
+
+    impl<'de> Visitor<'de> for ShapeVisitor {
+        type Value = Shape;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a JSON value")
+        }
+        fn visit_bool<E: Error>(self, _: bool) -> Result<Shape, E> {
+            Ok(Shape::default())
+        }
+        fn visit_i64<E: Error>(self, _: i64) -> Result<Shape, E> {
+            Ok(Shape::default())
+        }
+        fn visit_u64<E: Error>(self, _: u64) -> Result<Shape, E> {
+            Ok(Shape::default())
+        }
+        fn visit_f64<E: Error>(self, _: f64) -> Result<Shape, E> {
+            Ok(Shape::default())
+        }
+        fn visit_str<E: Error>(self, _: &str) -> Result<Shape, E> {
+            Ok(Shape::default())
+        }
+        fn visit_unit<E: Error>(self) -> Result<Shape, E> {
+            Ok(Shape::default())
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Shape, A::Error> {
+            Scalar(Shape::default()).visit_seq(seq)
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Shape, A::Error> {
+            let mut shape = Shape::default();
+            while let Some(field) = map.next_key::<Field>()? {
+                match field {
+                    Field::Kept(i) => shape.kept[i] = Some(map.next_value::<Value>()?),
+                    Field::Counted(i) => shape.counts[i] = Some(map.next_value::<Count>()?.0),
+                    Field::Other => {
+                        map.next_value::<Skip>()?;
+                    }
+                }
+            }
+            Ok(shape)
+        }
+    }
+}
+
+/// Forwards the request body chunk for chunk, holding refcounted handles (no
+/// copy) only until the body ends, when its [`RequestShape`] is read.
+struct ShapeTee {
+    inner: BoxStream<'static, Result<Bytes, axum::Error>>,
+    held: Vec<Bytes>,
+    held_len: usize,
+    tracking: bool,
+    shape: Arc<std::sync::OnceLock<RequestShape>>,
+}
+
+impl ShapeTee {
+    fn new(
+        inner: BoxStream<'static, Result<Bytes, axum::Error>>,
+    ) -> (Self, Arc<std::sync::OnceLock<RequestShape>>) {
+        let shape = Arc::new(std::sync::OnceLock::new());
+        let tee =
+            Self { inner, held: Vec::new(), held_len: 0, tracking: true, shape: shape.clone() };
+        (tee, shape)
+    }
+
+    fn hold(&mut self, chunk: &Bytes) {
+        if !self.tracking {
+            return;
+        }
+        self.held_len += chunk.len();
+        if self.held_len > MAX_BUFFERED_BODY {
+            self.abandon();
+        } else {
+            self.held.push(chunk.clone());
+        }
+    }
+
+    fn abandon(&mut self) {
+        self.tracking = false;
+        self.held = Vec::new();
+    }
+
+    fn finish(&mut self) {
+        if !self.tracking {
+            return;
+        }
+        let shape = match self.held.as_slice() {
+            [one] => request_shape(one),
+            held => request_shape(&held.concat()),
+        };
+        if let Some(shape) = shape {
+            let _ = self.shape.set(shape);
+        }
+        self.abandon();
+    }
+}
+
+impl futures_util::Stream for ShapeTee {
+    type Item = Result<Bytes, axum::Error>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let next = std::task::ready!(self.inner.poll_next_unpin(cx));
+        match &next {
+            Some(Ok(chunk)) => self.hold(chunk),
+            Some(Err(_)) => self.abandon(),
+            None => self.finish(),
+        }
+        std::task::Poll::Ready(next)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RequestTrace {
+    Off,
+    Shape,
+    Full,
+}
+
+impl RequestTrace {
+    fn of(langfuse: Option<&Arc<dyn TraceSink>>) -> Self {
+        langfuse.map_or(Self::Off, |sink| {
+            if sink.captures_content() { Self::Full } else { Self::Shape }
+        })
+    }
+}
+
+const fn must_buffer(trace: RequestTrace, metered: bool, model_gate: bool, voice: bool) -> bool {
+    matches!(trace, RequestTrace::Full) || metered || model_gate || voice
 }
 
 /// Mandatory execution resources and explicit optional workspace adapters.
@@ -341,13 +668,38 @@ struct Observers {
 /// What was learned from the request body while preparing it.
 struct RequestInfo {
     traced_request: Option<serde_json::Value>,
+    request_redacted: bool,
+    /// Set once a streamed body has gone upstream in full.
+    request_shape: Option<Arc<std::sync::OnceLock<RequestShape>>>,
     request_model: Option<String>,
     voice: Option<Box<dyn ResponseTee>>,
+}
+
+impl RequestInfo {
+    const fn streamed(request_model: Option<String>) -> Self {
+        Self {
+            traced_request: None,
+            request_redacted: false,
+            request_shape: None,
+            request_model,
+            voice: None,
+        }
+    }
+
+    /// The body's model wins over the path's, as in [`buffered_payload`].
+    fn model(&self) -> Option<String> {
+        self.request_shape
+            .as_ref()
+            .and_then(|shape| shape.get())
+            .and_then(|shape| shape.model.clone())
+            .or_else(|| self.request_model.clone())
+    }
 }
 
 /// Map the worker's bearer (the session token) to an account. A missing
 /// bearer or one that doesn't resolve is a *cctui* rejection — distinguished
 /// from a provider rejection so the worker/operator knows which to fix.
+#[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "authenticate"))]
 async fn authenticate(
     state: &impl ProxyContext,
     headers: &HeaderMap,
@@ -397,9 +749,9 @@ async fn authenticate(
 /// configured windows gate; bypass near reset.
 ///
 /// The usage cache is warmed only by the accounts-page route, which headless
-/// dispatch never opens, so on the dispatch path we refresh it from upstream
-/// when cold/stale (throttled by the same TTL to avoid spamming Anthropic's
-/// rate-limited endpoint) before evaluating. Fetch errors fail open.
+/// dispatch never opens, so on the dispatch path a cold cache is read from
+/// upstream before evaluating and a stale one is served while it refreshes in
+/// the background. Fetch errors fail open.
 /// A `CctuiAgent` child carries its own `session_usd` cap, which the account's
 /// stored limits know nothing about. Overlay it here; the map is empty on the
 /// ordinary path, so this costs a lock-free length check per request.
@@ -407,6 +759,7 @@ async fn authenticate(
 /// Then the gateway rate limit: a pay-per-token provider's RPM/TPM tier is
 /// shared by every session on the account, so throttle at the proxy. Requests
 /// count on admission; tokens accrue when a response's usage lands. Unset ⇒ skip.
+#[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "admit"))]
 async fn admit(
     state: &impl ProxyContext,
     auth: &Authenticated,
@@ -416,7 +769,7 @@ async fn admit(
     let effective_limits = session_budget_limits(state, acct, session_token).await;
     let mut model_gate: Option<Vec<cctui_proto::api::soft_limit::UsageWindow>> = None;
     if !effective_limits.is_unset() {
-        let cached = usage_for_soft_limit(state, acct.id).await;
+        let cached = usage_for_soft_limit_nonblocking(state, acct.id).await;
         let mut windows = cached
             .as_ref()
             .map(cctui_proto::api::soft_limit::normalize_usage_windows)
@@ -492,6 +845,7 @@ async fn admit(
 
 /// Pick the upstream credentials, host and client for this account.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "resolve_upstream"))]
 async fn resolve_upstream(
     state: &impl ProxyContext,
     acct: &Account,
@@ -600,6 +954,7 @@ fn forward_headers(
 
 /// Resolve the request/response observers and adjust the outbound headers
 /// for them.
+#[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "observers"))]
 async fn observers(
     state: &impl ProxyContext,
     auth: &Authenticated,
@@ -621,12 +976,6 @@ async fn observers(
         headers.insert(SESSION_AFFINITY_HEADER, hv);
     }
 
-    // Langfuse tracing sink: only when configured AND this call is
-    // sampled do we reconstruct the bodies — otherwise the gateway stays a pure
-    // zero-copy passthrough (request streamed, response streamed). When tracing,
-    // we buffer the request body (it is the prompt, already fully in flight) so it
-    // can be both forwarded upstream and used as the generation input; the trace
-    // reads a parsed copy and the original bytes still go upstream.
     let langfuse = state.trace_sink().filter(|lf| lf.should_sample());
     let trace_session_id =
         if langfuse.is_some() { session_id_for_token(state, session_token).await } else { None };
@@ -662,6 +1011,7 @@ async fn observers(
 /// once when something needs to read it. Either way the client's bytes are what
 /// goes upstream. `path_model` is the model a Gemini call names in its path
 /// instead of its body.
+#[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "prepare_body"))]
 async fn prepare_body(
     state: &impl ProxyContext,
     auth: &Authenticated,
@@ -673,20 +1023,27 @@ async fn prepare_body(
 ) -> Result<(reqwest::Body, RequestInfo), Reply> {
     let Authenticated { session_token, acct } = auth;
     let Admission { effective_limits, model_gate } = admission;
-    if !(obs.langfuse.is_some()
-        || obs.fireworks
-        || model_gate.is_some()
-        || obs.voice_session.is_some())
-    {
+    let trace = RequestTrace::of(obs.langfuse.as_ref());
+    if !must_buffer(trace, obs.fireworks, model_gate.is_some(), obs.voice_session.is_some()) {
         let body_stream = req.into_body().into_data_stream();
-        return Ok((
-            reqwest::Body::wrap_stream(body_stream),
-            RequestInfo { traced_request: None, request_model: path_model, voice: None },
-        ));
+        if trace == RequestTrace::Shape {
+            let (tee, shape) = ShapeTee::new(body_stream.boxed());
+            let info = RequestInfo {
+                request_redacted: true,
+                request_shape: Some(shape),
+                ..RequestInfo::streamed(path_model)
+            };
+            return Ok((reqwest::Body::wrap_stream(tee), info));
+        }
+        return Ok((reqwest::Body::wrap_stream(body_stream), RequestInfo::streamed(path_model)));
     }
     let bytes = axum::body::to_bytes(req.into_body(), MAX_BUFFERED_BODY)
         .await
         .map_err(|_| Err(StatusCode::PAYLOAD_TOO_LARGE))?;
+    let summary = (trace == RequestTrace::Shape)
+        .then(|| request_shape(&bytes))
+        .flatten()
+        .map(|shape| shape.summary);
     let (payload, parsed, request_model) = buffered_payload(bytes, path_model);
     let voice = obs
         .voice_session
@@ -727,11 +1084,65 @@ async fn prepare_body(
     Ok((
         payload,
         RequestInfo {
-            traced_request: parsed.filter(|_| obs.langfuse.is_some()),
+            traced_request: match trace {
+                RequestTrace::Full => parsed,
+                RequestTrace::Shape => summary,
+                RequestTrace::Off => None,
+            },
+            request_redacted: trace == RequestTrace::Shape,
+            request_shape: None,
             request_model,
             voice,
         },
     ))
+}
+
+/// The upstream call, up to its response headers, as an exported client span:
+/// the server span's remainder is the gateway's own work.
+async fn send_traced(
+    request: reqwest::RequestBuilder,
+) -> Result<reqwest::Response, reqwest::Error> {
+    use tracing::Instrument;
+    let (client, request) = request.build_split();
+    let request = request?;
+    let method = request.method().as_str().to_owned();
+    let host = request.url().host_str().unwrap_or_default().to_owned();
+    let name = format!("{method} {host}");
+    let span = tracing::info_span!(
+        target: "otel",
+        "gateway.upstream",
+        otel.name = name.as_str(),
+        otel.kind = "client",
+        otel.status_code = tracing::field::Empty,
+        otel.status_description = tracing::field::Empty,
+        code.function.name = "send_upstream",
+        http.request.method = method.as_str(),
+        server.address = host.as_str(),
+        url.path = request.url().path(),
+        http.response.status_code = tracing::field::Empty,
+    );
+    let result = client.execute(request).instrument(span.clone()).await;
+    record_upstream_outcome(&span, &result);
+    result
+}
+
+fn record_upstream_outcome(
+    span: &tracing::Span,
+    result: &Result<reqwest::Response, reqwest::Error>,
+) {
+    match result {
+        Ok(response) => {
+            let status = response.status();
+            span.record("http.response.status_code", u64::from(status.as_u16()));
+            if status.is_client_error() || status.is_server_error() {
+                span.record("otel.status_code", "error");
+            }
+        }
+        Err(e) => {
+            span.record("otel.status_code", "error");
+            span.record("otel.status_description", tracing::field::display(e));
+        }
+    }
 }
 
 /// Send the request upstream and settle everything that depends only on the
@@ -745,7 +1156,7 @@ async fn send_upstream(
     is_anthropic: bool,
 ) -> Result<(reqwest::Response, StatusCode), Reply> {
     let Authenticated { session_token, acct } = auth;
-    let upstream = request.send().await.map_err(|e| {
+    let upstream = send_traced(request).await.map_err(|e| {
         tracing::error!(account = %acct.id, "gateway upstream error: {e}");
         Err(StatusCode::BAD_GATEWAY)
     })?;
@@ -787,7 +1198,7 @@ async fn send_upstream(
     // per session, so a burst-RPM 429 doesn't ping-pong the binding.
     if status == StatusCode::TOO_MANY_REQUESTS
         && let Some(target) =
-            pick_failover_target(state, session_token, acct.id, info.request_model.as_deref()).await
+            pick_failover_target(state, session_token, acct.id, info.model().as_deref()).await
         && rebind_session(state, &target, acct.id).await
     {
         return Err(Ok(failover_retry_response(
@@ -910,8 +1321,7 @@ async fn relay_response(
     let tx = spawn_observer(state, acct, obs, info, usage_session, usage_headers);
     let resp_stream = resp_stream.map(move |chunk| {
         if let Ok(bytes) = &chunk {
-            // Drop on backpressure rather than block the proxied response.
-            let _ = tx.try_send(bytes.to_vec());
+            let _ = tx.send(bytes.clone());
         }
         chunk
     });
@@ -922,11 +1332,10 @@ async fn relay_response(
 }
 
 /// Observed path: tee the response body. Each chunk is forwarded to the client
-/// verbatim AND copied into an accumulator task over a bounded channel. The
-/// copy is best-effort — if the task lags, `try_send` drops the chunk
-/// (we lose the trace/usage, never the proxied bytes). When the upstream stream
-/// ends the channel closes and the task reconstructs the trace and the metered
-/// usage. Nothing here blocks or delays the client stream.
+/// verbatim and handed, refcounted, to an observer task over an unbounded
+/// channel: no chunk is dropped and the client stream never waits, since the
+/// task only appends or digests. When the upstream stream ends the task meters
+/// the usage and reports the trace.
 fn spawn_observer(
     state: &impl ProxyContext,
     acct: &Account,
@@ -934,8 +1343,8 @@ fn spawn_observer(
     info: RequestInfo,
     usage_session: Option<String>,
     usage_headers: Option<(Option<String>, Option<String>)>,
-) -> tokio::sync::mpsc::Sender<Vec<u8>> {
-    let RequestInfo { traced_request, request_model, .. } = info;
+) -> tokio::sync::mpsc::UnboundedSender<Bytes> {
+    let RequestInfo { traced_request, request_redacted, request_shape, request_model, .. } = info;
     let trace_session_id = obs.trace_session_id;
     let trace_account_id = acct.id.to_string();
     let trace_model = request_model.clone();
@@ -946,11 +1355,18 @@ fn spawn_observer(
     let rate_windows = acct.rate_limits.tpm.is_some().then(|| state.rate_windows().clone());
     let rate_provider = acct.id;
     let langfuse = obs.langfuse;
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    let mut digest = langfuse.as_ref().and_then(|sink| sink.response_digest(family));
+    let keep_body = usage_session.is_some() || (langfuse.is_some() && digest.is_none());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
     tokio::spawn(async move {
         let mut buf = Vec::new();
         while let Some(chunk) = rx.recv().await {
-            buf.extend_from_slice(&chunk);
+            if let Some(digest) = digest.as_mut() {
+                digest.feed(&chunk);
+            }
+            if keep_body {
+                buf.extend_from_slice(&chunk);
+            }
         }
         let captured = match family {
             Family::Google => crate::cost::parse_gemini_usage(&buf),
@@ -975,14 +1391,21 @@ fn spawn_observer(
             record_metered_usage(pool, family, session_id, request_model, captured).await;
         }
         if let Some(langfuse) = langfuse {
+            let shape = request_shape.as_ref().and_then(|shape| shape.get());
+            let request = traced_request.or_else(|| shape.map(|s| s.summary.clone()));
+            let model = shape.and_then(|s| s.model.clone()).or(trace_model);
+            let response_summary = digest.map(ResponseDigest::finish);
+            let response = if response_summary.is_some() { Vec::new() } else { buf };
             langfuse
                 .report(TraceCapture {
                     family,
                     session_id: trace_session_id,
                     account_id: trace_account_id,
-                    model: trace_model,
-                    request: traced_request,
-                    response: buf,
+                    model,
+                    request,
+                    request_redacted,
+                    response,
+                    response_summary,
                 })
                 .await;
         }
@@ -1226,5 +1649,114 @@ mod tests {
         assert!(wants_affinity(Family::Fireworks, None));
         assert!(!wants_affinity(Family::Fireworks, Some(&off)));
         assert_eq!(SESSION_AFFINITY_HEADER, "x-session-affinity");
+    }
+}
+
+#[cfg(test)]
+mod trace_shape_tests {
+    use super::{
+        Arc, MAX_BUFFERED_BODY, RequestShape, RequestTrace, ShapeTee, must_buffer, request_shape,
+    };
+    use axum::body::Bytes;
+    use futures_util::StreamExt;
+    use serde_json::{Value, json};
+
+    const BODY: &[u8] = br#"{"model":"claude-opus-5","stream":true,"system":[{"type":"text","text":"s"}],"messages":[{"role":"user","content":"q é"}],"metadata":{"user_id":"u"},"max_tokens":64}"#;
+
+    fn tee_of(
+        chunks: Vec<Result<Bytes, axum::Error>>,
+    ) -> (ShapeTee, Arc<std::sync::OnceLock<RequestShape>>) {
+        ShapeTee::new(futures_util::stream::iter(chunks).boxed())
+    }
+
+    #[test]
+    fn only_a_content_capturing_trace_holds_the_body_back() {
+        assert!(!must_buffer(RequestTrace::Shape, false, false, false));
+        assert!(!must_buffer(RequestTrace::Off, false, false, false));
+        assert!(must_buffer(RequestTrace::Full, false, false, false));
+        assert!(must_buffer(RequestTrace::Shape, true, false, false), "metering reads the body");
+        assert!(must_buffer(RequestTrace::Shape, false, true, false), "a model gate reads it");
+        assert!(must_buffer(RequestTrace::Shape, false, false, true), "voice reads it");
+    }
+
+    #[tokio::test]
+    async fn a_content_free_trace_forwards_the_body_chunks_unchanged() {
+        let chunks: Vec<Bytes> = BODY.chunks(7).map(Bytes::copy_from_slice).collect();
+        let (tee, shape) = tee_of(chunks.iter().cloned().map(Ok).collect());
+        assert!(shape.get().is_none(), "read only once the body has gone upstream");
+        let forwarded: Vec<Bytes> = tee.map(Result::unwrap).collect().await;
+        assert_eq!(forwarded, chunks);
+        assert_eq!(forwarded.concat(), BODY);
+        assert_eq!(shape.get(), request_shape(BODY).as_ref());
+        let shape = shape.get().unwrap();
+        assert_eq!(shape.model.as_deref(), Some("claude-opus-5"));
+        assert_eq!(
+            shape.summary,
+            json!({
+                "model": "claude-opus-5",
+                "stream": true,
+                "max_tokens": 64,
+                "messages_count": 1,
+                "system_count": 1,
+                "redacted": true,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_body_past_the_buffer_cap_still_streams_but_is_not_shaped() {
+        static FILL: [u8; 1 << 20] = [b'a'; 1 << 20];
+        let mut chunks = vec![Bytes::from_static(br#"{"model":"m","x":""#)];
+        chunks.extend((0..=MAX_BUFFERED_BODY / FILL.len()).map(|_| Bytes::from_static(&FILL)));
+        chunks.push(Bytes::from_static(br#""}"#));
+        let total: usize = chunks.iter().map(Bytes::len).sum();
+        let (tee, shape) = tee_of(chunks.into_iter().map(Ok).collect());
+        let forwarded: usize = tee.map(|c| c.unwrap().len()).collect::<Vec<_>>().await.iter().sum();
+        assert!(total > MAX_BUFFERED_BODY);
+        assert_eq!(forwarded, total);
+        assert!(shape.get().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_failed_upload_is_not_shaped() {
+        let chunks = vec![Ok(Bytes::from_static(&BODY[..10])), Err(axum::Error::new("reset"))];
+        let (tee, shape) = tee_of(chunks);
+        let items: Vec<_> = tee.collect().await;
+        assert_eq!(items.len(), 2);
+        assert!(shape.get().is_none());
+    }
+
+    #[test]
+    fn the_shape_scan_accepts_exactly_what_a_value_parse_accepts() {
+        let deep = format!("{{\"tools\":{}{}}}", "[".repeat(200), "]".repeat(200));
+        let cases: [&[u8]; 14] = [
+            BODY,
+            b"",
+            b"[1,2]",
+            b"\"str\"",
+            b"null",
+            br#"{"model":"m"} x"#,
+            b"{\"messages\":[\"\xff\"]}",
+            br#"{"messages":["\ud800"]}"#,
+            br#"{"model":1e400}"#,
+            br#"{"other":1e400}"#,
+            br#"{"other":{"a":[1,{"b":"é\n"}]}}"#,
+            br#"{"messages":[1],"messages":"x","model":"escaped"}"#,
+            br#"{"tools":18446744073709551616,"stream":-0}"#,
+            deep.as_bytes(),
+        ];
+        for case in cases {
+            assert_eq!(
+                request_shape(case).is_some(),
+                serde_json::from_slice::<Value>(case).is_ok(),
+                "{}",
+                String::from_utf8_lossy(case)
+            );
+        }
+        let dup = request_shape(br#"{"messages":[1],"messages":"x","model":"escaped"}"#);
+        let dup = dup.unwrap();
+        assert_eq!(dup.model.as_deref(), Some("escaped"));
+        assert_eq!(dup.summary["messages_count"], json!(1));
+        assert_eq!(request_shape(b"[1,2]").unwrap().summary, json!({"redacted": true}));
     }
 }

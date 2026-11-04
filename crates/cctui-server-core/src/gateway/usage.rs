@@ -357,10 +357,119 @@ pub fn usage_cache_stale(entry_age: Option<std::time::Duration>, ttl: std::time:
     entry_age.is_none_or(|age| age >= ttl)
 }
 
+#[derive(Debug, PartialEq)]
+enum CacheLookup {
+    Fresh(Option<serde_json::Value>),
+    Stale(Option<serde_json::Value>),
+    Cold,
+}
+
+fn lookup(
+    cache: &dashmap::DashMap<Uuid, CachedUsage>,
+    account_id: Uuid,
+    ttl: std::time::Duration,
+) -> CacheLookup {
+    cache.get(&account_id).map_or(CacheLookup::Cold, |hit| {
+        if usage_cache_stale(Some(hit.fetched_at.elapsed()), ttl) {
+            CacheLookup::Stale(hit.usage.clone())
+        } else {
+            CacheLookup::Fresh(hit.usage.clone())
+        }
+    })
+}
+
+fn cached(
+    cache: &dashmap::DashMap<Uuid, CachedUsage>,
+    account_id: Uuid,
+) -> Option<serde_json::Value> {
+    cache.get(&account_id).and_then(|h| h.usage.clone())
+}
+
+/// One account's refresh slot: the lock admits one upstream read at a time,
+/// and `attempts` tells a caller that queued behind it that a read finished.
+#[derive(Default)]
+struct Flight {
+    lock: tokio::sync::Mutex<()>,
+    attempts: std::sync::atomic::AtomicU64,
+}
+
+fn flight(account_id: Uuid) -> std::sync::Arc<Flight> {
+    static FLIGHTS: std::sync::OnceLock<dashmap::DashMap<Uuid, std::sync::Arc<Flight>>> =
+        std::sync::OnceLock::new();
+    FLIGHTS.get_or_init(dashmap::DashMap::new).entry(account_id).or_default().clone()
+}
+
+fn refresh_in_flight(account_id: Uuid) -> bool {
+    flight(account_id).lock.try_lock().is_err()
+}
+
+#[derive(Debug, PartialEq)]
+enum Refresh {
+    Fetched { provider: String, usage: Option<serde_json::Value> },
+    /// Another caller's read settled it, even by failing: the cached value.
+    Shared(Option<serde_json::Value>),
+}
+
+/// Refresh the cache entry with at most one upstream read per account in flight.
+///
+/// A caller that queued behind a read takes that read's result, success or
+/// failure, instead of reading again.
+async fn refresh_once<Fut>(
+    cache: &dashmap::DashMap<Uuid, CachedUsage>,
+    account_id: Uuid,
+    ttl: std::time::Duration,
+    fetch: impl FnOnce() -> Fut + Send,
+) -> Refresh
+where
+    Fut: std::future::Future<Output = Result<(String, Option<serde_json::Value>), StatusCode>>
+        + Send,
+{
+    use std::sync::atomic::Ordering;
+    let flight = flight(account_id);
+    let seen = flight.attempts.load(Ordering::Acquire);
+    let turn = flight.lock.lock().await;
+    if flight.attempts.load(Ordering::Acquire) != seen
+        || matches!(lookup(cache, account_id, ttl), CacheLookup::Fresh(_))
+    {
+        drop(turn);
+        return Refresh::Shared(cached(cache, account_id));
+    }
+    let result = fetch().await;
+    if let Ok((_, usage)) = &result {
+        cache_usage(cache, account_id, usage.clone());
+    }
+    flight.attempts.fetch_add(1, Ordering::Release);
+    drop(turn);
+    match result {
+        Ok((provider, usage)) => Refresh::Fetched { provider, usage },
+        // Upstream hiccup (429/refresh fail): fall back to the last cached value.
+        Err(_) => Refresh::Shared(cached(cache, account_id)),
+    }
+}
+
+async fn refresh_and_report(
+    state: &impl UsageContext,
+    account_id: Uuid,
+    ttl: std::time::Duration,
+) -> Option<serde_json::Value> {
+    let refresh = refresh_once(state.usage_cache(), account_id, ttl, || {
+        fetch_usage_with_provider(state, account_id)
+    })
+    .await;
+    match refresh {
+        Refresh::Fetched { provider, usage } => {
+            state.usage_updated(account_id, provider, usage.as_ref()).await;
+            usage
+        }
+        Refresh::Shared(usage) => usage,
+    }
+}
+
 /// Usage payload for the soft-limit check on the dispatch hot path.
 ///
 /// Serves the per-account usage cache, refreshing it from upstream when it is cold or older than
-/// [`USAGE_CACHE_TTL`] (≤ once per TTL per account, so the rate-limited endpoint is never spammed).
+/// [`USAGE_CACHE_TTL`]. Concurrent callers share one upstream read per account, so the
+/// rate-limited endpoint is never spammed.
 ///
 /// On a fetch error it falls back to the last cached value, else `None` (fail open). Unlike the
 /// accounts-page route, this exists so the cap holds even when no human is viewing the account.
@@ -369,19 +478,62 @@ pub async fn usage_for_soft_limit(
     account_id: Uuid,
 ) -> Option<serde_json::Value> {
     let ttl = USAGE_CACHE_TTL.to_std().unwrap_or_default();
-    let entry_age = state.usage_cache().get(&account_id).map(|h| h.fetched_at.elapsed());
-    if !usage_cache_stale(entry_age, ttl) {
-        return state.usage_cache().get(&account_id).and_then(|h| h.usage.clone());
+    match lookup(state.usage_cache(), account_id, ttl) {
+        CacheLookup::Fresh(usage) => usage,
+        CacheLookup::Stale(_) | CacheLookup::Cold => {
+            refresh_and_report(state, account_id, ttl).await
+        }
     }
-    match fetch_usage_with_provider(state, account_id).await {
-        Ok((provider, usage)) => {
-            cache_usage(state.usage_cache(), account_id, usage.clone());
-            state.usage_updated(account_id, provider, usage.as_ref()).await;
+}
+
+/// Stale-while-revalidate: a stale entry is served at once and refreshed in the background.
+async fn serve_or_revalidate<Fut>(
+    cache: &dashmap::DashMap<Uuid, CachedUsage>,
+    account_id: Uuid,
+    ttl: std::time::Duration,
+    refresh: impl FnOnce() -> Fut + Send,
+    spawn: impl FnOnce(Fut) + Send,
+) -> Option<serde_json::Value>
+where
+    Fut: std::future::Future<Output = Option<serde_json::Value>> + Send,
+{
+    match lookup(cache, account_id, ttl) {
+        CacheLookup::Fresh(usage) => usage,
+        CacheLookup::Cold => refresh().await,
+        CacheLookup::Stale(usage) => {
+            if !refresh_in_flight(account_id) {
+                spawn(refresh());
+            }
             usage
         }
-        // Upstream hiccup (429/refresh fail): fall back to the last cached value.
-        Err(_) => state.usage_cache().get(&account_id).and_then(|h| h.usage.clone()),
     }
+}
+
+/// [`usage_for_soft_limit`] for a live gateway request: only a cold cache waits on upstream.
+///
+/// A stale entry is served as is while one background refresh replaces it, so a soft cap can
+/// lag by one refresh.
+pub async fn usage_for_soft_limit_nonblocking<S>(
+    state: &S,
+    account_id: Uuid,
+) -> Option<serde_json::Value>
+where
+    S: UsageContext + Clone + Send + 'static,
+{
+    let ttl = USAGE_CACHE_TTL.to_std().unwrap_or_default();
+    serve_or_revalidate(
+        state.usage_cache(),
+        account_id,
+        ttl,
+        || {
+            let state = state.clone();
+            async move { refresh_and_report(&state, account_id, ttl).await }
+        },
+        |refresh| {
+            tokio::spawn(refresh);
+        },
+    )
+    .await
 }
 
 /// Fetch the Anthropic OAuth usage windows for an account.
@@ -987,5 +1139,156 @@ mod tests {
         let parts: Vec<&str> = CLAUDE_CLI_VERSION.split('.').collect();
         assert_eq!(parts.len(), 3, "{CLAUDE_CLI_VERSION}");
         assert!(parts.iter().all(|n| n.parse::<u32>().is_ok()), "{CLAUDE_CLI_VERSION}");
+    }
+}
+
+#[cfg(test)]
+mod revalidate_tests {
+    use super::{CacheLookup, CachedUsage, Refresh, lookup, refresh_once, serve_or_revalidate};
+    use axum::http::StatusCode;
+    use dashmap::DashMap;
+    use serde_json::{Value, json};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+    use tokio::sync::Semaphore;
+    use uuid::Uuid;
+
+    const TTL: Duration = Duration::from_mins(3);
+    const CALLERS: usize = 8;
+
+    fn cache_with(id: Uuid, usage: Option<Value>) -> Arc<DashMap<Uuid, CachedUsage>> {
+        let cache = Arc::new(DashMap::new());
+        if let Some(usage) = usage {
+            let at = Instant::now().checked_sub(TTL + Duration::from_secs(1)).unwrap();
+            cache.insert(id, CachedUsage { fetched_at: at, usage: Some(usage) });
+        }
+        cache
+    }
+
+    async fn gated(
+        calls: &AtomicUsize,
+        gate: &Semaphore,
+        result: Result<Value, StatusCode>,
+    ) -> Result<(String, Option<Value>), StatusCode> {
+        calls.fetch_add(1, Ordering::SeqCst);
+        drop(gate.acquire().await.unwrap());
+        result.map(|usage| ("anthropic".to_owned(), Some(usage)))
+    }
+
+    async fn until_fetching(calls: &AtomicUsize) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while calls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the refresh starts");
+    }
+
+    async fn let_waiters_queue() {
+        for _ in 0..(4 * CALLERS) {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    fn spawn_refreshes(
+        cache: &Arc<DashMap<Uuid, CachedUsage>>,
+        id: Uuid,
+        calls: &Arc<AtomicUsize>,
+        gate: &Arc<Semaphore>,
+        result: &Result<Value, StatusCode>,
+    ) -> Vec<tokio::task::JoinHandle<Refresh>> {
+        (0..CALLERS)
+            .map(|_| {
+                let (cache, calls, gate) = (cache.clone(), calls.clone(), gate.clone());
+                let result = result.clone();
+                tokio::spawn(async move {
+                    refresh_once(&cache, id, TTL, || gated(&calls, &gate, result)).await
+                })
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_stale_entry_is_served_at_once_and_refreshed_once_in_the_background() {
+        let id = Uuid::new_v4();
+        let cache = cache_with(id, Some(json!({"utilization": 1})));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Semaphore::new(0));
+        let mut spawned = Vec::new();
+        for caller in 0..CALLERS {
+            let refresh = || {
+                let (cache, calls, gate) = (cache.clone(), calls.clone(), gate.clone());
+                async move {
+                    let fresh = json!({"utilization": 2});
+                    match refresh_once(&cache, id, TTL, || gated(&calls, &gate, Ok(fresh))).await {
+                        Refresh::Fetched { usage, .. } | Refresh::Shared(usage) => usage,
+                    }
+                }
+            };
+            let served = tokio::time::timeout(
+                Duration::from_secs(1),
+                serve_or_revalidate(&cache, id, TTL, refresh, |r| spawned.push(tokio::spawn(r))),
+            )
+            .await
+            .expect("a stale entry never waits on upstream");
+            assert_eq!(served, Some(json!({"utilization": 1})), "caller {caller}");
+            if caller == 0 {
+                until_fetching(&calls).await;
+            }
+        }
+        assert_eq!(spawned.len(), 1, "callers during a refresh start no second one");
+        gate.add_permits(CALLERS);
+        for task in spawned {
+            assert_eq!(task.await.unwrap(), Some(json!({"utilization": 2})));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(lookup(&cache, id, TTL), CacheLookup::Fresh(Some(json!({"utilization": 2}))));
+    }
+
+    #[tokio::test]
+    async fn a_cold_cache_blocks_and_concurrent_callers_share_one_fetch() {
+        let id = Uuid::new_v4();
+        let cache = cache_with(id, None);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Semaphore::new(0));
+        let fresh = json!({"utilization": 7});
+        let tasks = spawn_refreshes(&cache, id, &calls, &gate, &Ok(fresh.clone()));
+        until_fetching(&calls).await;
+        let_waiters_queue().await;
+        assert!(tasks.iter().all(|t| !t.is_finished()), "a cold cache waits on the read");
+        gate.add_permits(CALLERS);
+        let mut fetched = 0;
+        for task in tasks {
+            match task.await.unwrap() {
+                Refresh::Fetched { provider, usage } => {
+                    fetched += 1;
+                    assert_eq!(provider, "anthropic");
+                    assert_eq!(usage.as_ref(), Some(&fresh));
+                }
+                Refresh::Shared(usage) => assert_eq!(usage.as_ref(), Some(&fresh)),
+            }
+        }
+        assert_eq!(fetched, 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn waiters_share_a_failed_read_instead_of_retrying_it() {
+        let id = Uuid::new_v4();
+        let previous = json!({"utilization": 75});
+        let cache = cache_with(id, Some(previous.clone()));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Semaphore::new(0));
+        let tasks = spawn_refreshes(&cache, id, &calls, &gate, &Err(StatusCode::TOO_MANY_REQUESTS));
+        until_fetching(&calls).await;
+        let_waiters_queue().await;
+        gate.add_permits(CALLERS);
+        for task in tasks {
+            assert_eq!(task.await.unwrap(), Refresh::Shared(Some(previous.clone())));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(lookup(&cache, id, TTL), CacheLookup::Stale(Some(previous)));
     }
 }
