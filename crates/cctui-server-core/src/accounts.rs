@@ -18,9 +18,11 @@ use std::sync::Arc;
 use axum::Json;
 use axum::http::StatusCode;
 use base64::Engine;
+use cctui_telemetry::db::traced;
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use sha2::{Digest, Sha256};
+use tracing::field::Empty;
 use uuid::Uuid;
 
 pub use cctui_proto::api::accounts::{
@@ -158,16 +160,16 @@ impl AccountRow {
 /// Shared SELECT for [`ProviderInfo`]: per-provider token totals + a rough USD cost
 /// estimate.
 ///
-/// Tokens are recorded per session (`session_token_usage`); `session_tokens` bridges a
-/// session to the provider row it ran under. `SUM()` over bigint returns NUMERIC, so cast
-/// back to bigint for the i64 columns. Cost uses a per-provider blended per-million rate
-/// (input/output/cache weighted) — an estimate, not a meter. Append a `WHERE`/`ORDER BY`
-/// clause before use. Usage is read from the running per-(session, model) totals in
-/// `session_usage_totals`, one row per session and model rather than one per turn. The
-/// token totals are a correlated LATERAL rather than a grouped subquery so that selecting
-/// one provider aggregates one provider's rows instead of the whole table.
-pub const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, p.models, p.model_aliases, p.managed, \
-            p.base_url, p.auth_scheme, p.provider_account_id, \
+/// Totals are read from `account_provider_usage_totals`, kept per provider and model by
+/// triggers on `session_usage_totals` and `session_tokens`, so a read costs a few rows
+/// per provider whatever the history. `SUM()` over bigint returns NUMERIC, so cast back
+/// to bigint for the i64 columns. Cost uses a per-provider blended per-million rate
+/// (input/output/cache weighted), or the declared per-model prices for fireworks and
+/// google: an estimate, not a meter. Append a `WHERE`/`ORDER BY` clause before use.
+macro_rules! provider_select {
+    () => {
+        "SELECT p.id, p.account_id, p.provider, p.family, p.models, p.model_aliases, \
+            p.managed, p.base_url, p.auth_scheme, p.provider_account_id, \
             p.expires_at, p.created_at, p.last_used_at, \
             p.request_count, p.bytes_transferred, \
             p.soft_limits_json AS soft_limits, p.usage_notices, p.header_pin, \
@@ -187,57 +189,69 @@ pub const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.fami
              END / 1000000.0)::double precision AS est_cost_usd \
      FROM account_providers p \
      LEFT JOIN LATERAL ( \
-         SELECT SUM(stu.input_tokens)          AS input_tokens, \
-                SUM(stu.output_tokens)         AS output_tokens, \
-                SUM(stu.cache_read_tokens)     AS cache_read_tokens, \
-                SUM(stu.cache_creation_tokens) AS cache_creation_tokens \
-         FROM session_tokens st \
-         JOIN session_usage_totals stu ON stu.session_id = st.session_id \
-         WHERE st.account_id = p.id \
+         SELECT SUM(u.input_tokens)          AS input_tokens, \
+                SUM(u.output_tokens)         AS output_tokens, \
+                SUM(u.cache_read_tokens)     AS cache_read_tokens, \
+                SUM(u.cache_creation_tokens) AS cache_creation_tokens \
+         FROM account_provider_usage_totals u \
+         WHERE u.provider_id = p.id \
      ) t ON true \
      LEFT JOIN LATERAL ( \
          SELECT SUM(( \
-                  (stu.input_tokens + stu.cache_creation_tokens) \
+                  (u.input_tokens + u.cache_creation_tokens) \
                     * COALESCE((m.value->>'price_input_per_mtok')::double precision, 0) \
-                  + stu.cache_read_tokens \
+                  + u.cache_read_tokens \
                     * COALESCE((m.value->>'price_cached_input_per_mtok')::double precision, 0) \
-                  + stu.output_tokens \
+                  + u.output_tokens \
                     * COALESCE((m.value->>'price_output_per_mtok')::double precision, 0) \
                 ) / 1000000.0) AS usd \
-         FROM session_tokens st \
-         JOIN session_usage_totals stu ON stu.session_id = st.session_id \
+         FROM account_provider_usage_totals u \
          JOIN jsonb_array_elements( \
                 CASE WHEN jsonb_typeof(p.models) = 'array' THEN p.models ELSE '[]'::jsonb END \
-              ) m ON m.value->>'model' = stu.model \
-         WHERE st.account_id = p.id \
-     ) fw ON p.family IN ('fireworks', 'google')";
+              ) m ON m.value->>'model' = u.model \
+         WHERE u.provider_id = p.id \
+     ) fw ON p.family IN ('fireworks', 'google')"
+    };
+}
+
+/// The SQL of `provider_select!`.
+pub const PROVIDER_SELECT: &str = provider_select!();
 
 /// Identity SELECT for [`AccountRow`]. Append a `WHERE`/`ORDER BY` before use.
-pub const ACCOUNT_SELECT: &str = "SELECT a.id, a.name, a.emoji, a.user_id, u.name AS user_name, a.created_at, a.updated_at, \
-     a.env_json, a.pool_eligible, a.pool_weight \
-     FROM accounts a JOIN users u ON u.id = a.user_id";
+macro_rules! account_select {
+    () => {
+        "SELECT a.id, a.name, a.emoji, a.user_id, u.name AS user_name, a.created_at, \
+            a.updated_at, a.env_json, a.pool_eligible, a.pool_weight \
+         FROM accounts a JOIN users u ON u.id = a.user_id"
+    };
+}
+
+/// The SQL of `account_select!`.
+pub const ACCOUNT_SELECT: &str = account_select!();
 
 /// Fetch one account (owner-scoped: `owner` NULL = admin sees all) with its
 /// providers. `Ok(None)` = no such account for that scope.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "fetch_account_info", account_id = %id),
+)]
 pub async fn fetch_account_info(
     state: &impl AccountsContext,
     id: Uuid,
     owner: Option<Uuid>,
 ) -> Result<Option<AccountInfo>, sqlx::Error> {
     let pool = &state.account_core().pool;
-    let row: Option<AccountRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "{ACCOUNT_SELECT} WHERE a.id = $1 AND ($2::uuid IS NULL OR a.user_id = $2)"
-    )))
-    .bind(id)
-    .bind(owner)
-    .fetch_optional(pool)
+    let row: Option<AccountRow> = traced(
+        concat!(account_select!(), " WHERE a.id = $1 AND ($2::uuid IS NULL OR a.user_id = $2)"),
+        |sql| sqlx::query_as(sql).bind(id).bind(owner).fetch_optional(pool),
+    )
     .await?;
     let Some(row) = row else { return Ok(None) };
-    let providers: Vec<ProviderInfo> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "{PROVIDER_SELECT} WHERE p.account_id = $1 ORDER BY p.family"
-    )))
-    .bind(id)
-    .fetch_all(pool)
+    let providers: Vec<ProviderInfo> = traced(
+        concat!(provider_select!(), " WHERE p.account_id = $1 ORDER BY p.family"),
+        |sql| sqlx::query_as(sql).bind(id).fetch_all(pool),
+    )
     .await?;
     let key = state.vault_key();
     Ok(Some(row.into_info(providers, &key)))
@@ -248,10 +262,10 @@ pub async fn fetch_provider_info(
     pool: &sqlx::PgPool,
     id: Uuid,
 ) -> Result<Option<ProviderInfo>, sqlx::Error> {
-    sqlx::query_as(sqlx::AssertSqlSafe(format!("{PROVIDER_SELECT} WHERE p.id = $1")))
-        .bind(id)
-        .fetch_optional(pool)
-        .await
+    traced(concat!(provider_select!(), " WHERE p.id = $1"), |sql| {
+        sqlx::query_as(sql).bind(id).fetch_optional(pool)
+    })
+    .await
 }
 
 /// Request to move a provider between accounts of the same owner.
@@ -832,44 +846,64 @@ pub async fn insert_provider(
 /// `GET /api/v1/accounts` — the caller's own accounts with their providers
 /// (tokens never returned). Admin sees every account, with the owner's name
 /// joined in.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "list_accounts", accounts = Empty, providers = Empty),
+)]
 pub async fn list_accounts(
     state: &impl AccountsContext,
     ctx: &AuthContext,
 ) -> Result<Json<Vec<AccountInfo>>, AppError> {
-    let accounts: Vec<AccountRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "{ACCOUNT_SELECT} WHERE $1::uuid IS NULL OR a.user_id = $1 \
-           OR EXISTS (SELECT 1 FROM resource_shares s \
-                      WHERE s.resource_type = 'account' AND s.resource_id = a.id \
-                        AND s.grantee_id = $1 AND s.revoked_at IS NULL) \
-         ORDER BY a.name"
-    )))
-    .bind(ctx.owner_filter())
-    .fetch_all(&state.account_core().pool)
-    .await?;
-    let providers: Vec<ProviderInfo> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "{PROVIDER_SELECT} WHERE $1::uuid IS NULL OR p.user_id = $1 \
-           OR EXISTS (SELECT 1 FROM resource_shares s \
-                      WHERE s.resource_type = 'account' AND s.resource_id = p.account_id \
-                        AND s.grantee_id = $1 AND s.revoked_at IS NULL) \
-         ORDER BY p.family"
-    )))
-    .bind(ctx.owner_filter())
-    .fetch_all(&state.account_core().pool)
-    .await?;
+    let pool = &state.account_core().pool;
+    let owner = ctx.owner_filter();
+    let (accounts, providers): (Vec<AccountRow>, Vec<ProviderInfo>) = tokio::try_join!(
+        traced(
+            concat!(
+                account_select!(),
+                " WHERE $1::uuid IS NULL OR a.user_id = $1 \
+                   OR EXISTS (SELECT 1 FROM resource_shares s \
+                              WHERE s.resource_type = 'account' AND s.resource_id = a.id \
+                                AND s.grantee_id = $1 AND s.revoked_at IS NULL) \
+                 ORDER BY a.name"
+            ),
+            |sql| sqlx::query_as(sql).bind(owner).fetch_all(pool),
+        ),
+        traced(
+            concat!(
+                provider_select!(),
+                " WHERE $1::uuid IS NULL OR p.user_id = $1 \
+                   OR EXISTS (SELECT 1 FROM resource_shares s \
+                              WHERE s.resource_type = 'account' AND s.resource_id = p.account_id \
+                                AND s.grantee_id = $1 AND s.revoked_at IS NULL) \
+                 ORDER BY p.family"
+            ),
+            |sql| sqlx::query_as(sql).bind(owner).fetch_all(pool),
+        ),
+    )?;
+    tracing::Span::current()
+        .record("accounts", accounts.len())
+        .record("providers", providers.len());
+    Ok(Json(group_providers(accounts, providers, &state.vault_key())))
+}
 
+/// Attach each provider to its account, in the accounts' order.
+fn group_providers(
+    accounts: Vec<AccountRow>,
+    providers: Vec<ProviderInfo>,
+    key: &[u8],
+) -> Vec<AccountInfo> {
     let mut by_account: HashMap<Uuid, Vec<ProviderInfo>> = HashMap::new();
     for p in providers {
         by_account.entry(p.account_id).or_default().push(p);
     }
-    let key = state.vault_key();
-    let rows = accounts
+    accounts
         .into_iter()
         .map(|a| {
             let providers = by_account.remove(&a.id).unwrap_or_default();
-            a.into_info(providers, &key)
+            a.into_info(providers, key)
         })
-        .collect();
-    Ok(Json(rows))
+        .collect()
 }
 
 /// `GET /api/v1/accounts/{id}` — one account with its providers (owner-scoped;
@@ -1941,4 +1975,306 @@ pub async fn require_account_owner(
     .fetch_optional(&state.account_core().pool)
     .await?;
     owner.ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such account"))
+}
+
+#[cfg(test)]
+mod usage_totals_tests {
+    use super::{PROVIDER_SELECT, fetch_provider_info};
+    use crate::schema::{MIGRATIONS, bootstrap};
+    use crate::test_support::with_isolated_database;
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    /// Per-provider totals aggregated over every session's usage at read time.
+    const AGGREGATE: &str = "SELECT p.id, \
+            (COALESCE(t.input_tokens,0) + COALESCE(t.output_tokens,0) \
+             + COALESCE(t.cache_read_tokens,0) + COALESCE(t.cache_creation_tokens,0))::bigint, \
+            (CASE \
+               WHEN p.family IN ('fireworks', 'google') THEN COALESCE(fw.usd, 0) * 1000000.0 \
+               WHEN p.provider = 'openai' THEN \
+                 COALESCE(t.input_tokens,0)*1.25 + COALESCE(t.output_tokens,0)*10 \
+                 + COALESCE(t.cache_read_tokens,0)*0.125 + COALESCE(t.cache_creation_tokens,0)*1.25 \
+               ELSE \
+                 COALESCE(t.input_tokens,0)*3 + COALESCE(t.output_tokens,0)*15 \
+                 + COALESCE(t.cache_read_tokens,0)*0.3 + COALESCE(t.cache_creation_tokens,0)*3.75 \
+             END / 1000000.0)::double precision \
+         FROM account_providers p \
+         LEFT JOIN LATERAL ( \
+             SELECT SUM(stu.input_tokens) AS input_tokens, \
+                    SUM(stu.output_tokens) AS output_tokens, \
+                    SUM(stu.cache_read_tokens) AS cache_read_tokens, \
+                    SUM(stu.cache_creation_tokens) AS cache_creation_tokens \
+             FROM session_tokens st \
+             JOIN session_usage_totals stu ON stu.session_id = st.session_id \
+             WHERE st.account_id = p.id \
+         ) t ON true \
+         LEFT JOIN LATERAL ( \
+             SELECT SUM(( \
+                      (stu.input_tokens + stu.cache_creation_tokens) \
+                        * COALESCE((m.value->>'price_input_per_mtok')::double precision, 0) \
+                      + stu.cache_read_tokens \
+                        * COALESCE((m.value->>'price_cached_input_per_mtok')::double precision, 0) \
+                      + stu.output_tokens \
+                        * COALESCE((m.value->>'price_output_per_mtok')::double precision, 0) \
+                    ) / 1000000.0) AS usd \
+             FROM session_tokens st \
+             JOIN session_usage_totals stu ON stu.session_id = st.session_id \
+             JOIN jsonb_array_elements( \
+                    CASE WHEN jsonb_typeof(p.models) = 'array' THEN p.models ELSE '[]'::jsonb END \
+                  ) m ON m.value->>'model' = stu.model \
+             WHERE st.account_id = p.id \
+         ) fw ON p.family IN ('fireworks', 'google') \
+         ORDER BY p.id";
+
+    type Totals = Vec<(Uuid, i64, f64)>;
+
+    /// Every write that moves a provider's totals, in an order where each step still
+    /// has rows to act on.
+    const STEPS: [(&str, &str); 11] = [
+        (
+            "usage added",
+            "INSERT INTO session_token_usage (session_id, message_id, model, input_tokens, \
+             output_tokens) VALUES ('s1', 'm9', 'claude-x', 7, 11)",
+        ),
+        (
+            "usage re-recorded",
+            "UPDATE session_token_usage SET output_tokens = output_tokens + 5 \
+             WHERE session_id = 's3'",
+        ),
+        (
+            "usage model changed",
+            "UPDATE session_token_usage SET model = 'fw-b' \
+             WHERE session_id = 's3' AND message_id = 'm1'",
+        ),
+        (
+            "usage deleted",
+            "DELETE FROM session_token_usage WHERE session_id = 's2' AND message_id = 'm1'",
+        ),
+        ("token touched", "UPDATE session_tokens SET last_used_at = now()"),
+        (
+            "token rebound",
+            "UPDATE session_tokens SET account_id = \
+               (SELECT p.id FROM account_providers p JOIN accounts a ON a.id = p.account_id \
+                WHERE a.name = 'two') \
+             WHERE token_hash = 't-1a'",
+        ),
+        (
+            "session rekeyed",
+            "UPDATE session_tokens SET session_id = 's5' WHERE session_id = 's1'; \
+             UPDATE session_token_usage SET session_id = 's5' WHERE session_id = 's1'",
+        ),
+        (
+            "token added after usage",
+            "INSERT INTO session_tokens (token_hash, session_id, account_id) \
+             SELECT 't-3a', 's3', account_id FROM session_tokens WHERE token_hash = 't-4a'",
+        ),
+        ("duplicate token deleted", "DELETE FROM session_tokens WHERE token_hash = 't-4b'"),
+        ("session deleted", "DELETE FROM sessions WHERE id = 's3'"),
+        ("provider deleted", "DELETE FROM account_providers WHERE provider = 'openai'"),
+    ];
+
+    struct Seed {
+        anthropic: Uuid,
+        fireworks: Uuid,
+        spare: Uuid,
+    }
+
+    async fn aggregate(pool: &PgPool) -> Totals {
+        sqlx::query_as(AGGREGATE).fetch_all(pool).await.unwrap()
+    }
+
+    async fn listed(pool: &PgPool) -> Totals {
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT id, total_tokens, est_cost_usd FROM ({PROVIDER_SELECT}) q ORDER BY id"
+        )))
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn assert_listing_matches(pool: &PgPool, step: &str) -> Totals {
+        let (want, got) = (aggregate(pool).await, listed(pool).await);
+        assert_eq!(want.len(), got.len(), "{step}");
+        for ((wid, wtok, wusd), (gid, gtok, gusd)) in want.iter().zip(&got) {
+            assert_eq!((wid, wtok), (gid, gtok), "{step}");
+            let tolerance = 1e-9 * wusd.abs().max(1.0);
+            assert!((wusd - gusd).abs() <= tolerance, "{step}: {wusd} vs {gusd}");
+        }
+        got
+    }
+
+    async fn exec(pool: &PgPool, sql: &'static str) {
+        sqlx::raw_sql(sql).execute(pool).await.unwrap();
+    }
+
+    /// Apply the totals migration the way the schema runner does, in one transaction.
+    async fn migrate_totals(pool: &PgPool) {
+        let migration = MIGRATIONS.iter().find(|m| m.version == 11).expect("totals migration");
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::raw_sql(migration.sql).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    async fn provider(pool: &PgPool, user: Uuid, account: Uuid, kind: &str) -> Uuid {
+        let models = (kind == "fireworks").then(|| {
+            serde_json::json!([
+                {
+                    "model": "fw-a",
+                    "price_input_per_mtok": 0.9,
+                    "price_cached_input_per_mtok": 0.45,
+                    "price_output_per_mtok": 0.9,
+                },
+                { "model": "fw-b", "price_input_per_mtok": 3.0, "price_output_per_mtok": 8.0 },
+            ])
+        });
+        sqlx::query_scalar(
+            "INSERT INTO account_providers (user_id, account_id, provider, models) \
+             VALUES ($1, $2, $3, $4) RETURNING id",
+        )
+        .bind(user)
+        .bind(account)
+        .bind(kind)
+        .bind(models)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn token(pool: &PgPool, hash: &str, session: &str, provider: Uuid) {
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+        )
+        .bind(hash)
+        .bind(session)
+        .bind(provider)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn usage(pool: &PgPool, session: &str, message: &str, model: Option<&str>, n: [i64; 4]) {
+        sqlx::query(
+            "INSERT INTO session_token_usage (session_id, message_id, model, input_tokens, \
+             output_tokens, cache_read_tokens, cache_creation_tokens) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(session)
+        .bind(message)
+        .bind(model)
+        .bind(n[0])
+        .bind(n[1])
+        .bind(n[2])
+        .bind(n[3])
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Two accounts, four providers and five sessions. One session bills two providers,
+    /// one holds two tokens on the same provider, and tokens land before and after usage.
+    async fn seed(pool: &PgPool) -> Seed {
+        let user: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (id, name, key_hash) \
+             VALUES (gen_random_uuid(), 'usage', 'usage-hash') RETURNING id",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let machine: Uuid = sqlx::query_scalar(
+            "INSERT INTO machines (id, user_id, name, key_hash) \
+             VALUES (gen_random_uuid(), $1, 'm', 'mk') RETURNING id",
+        )
+        .bind(user)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let mut accounts = Vec::new();
+        for name in ["one", "two"] {
+            let id: Uuid = sqlx::query_scalar(
+                "INSERT INTO accounts (user_id, name) VALUES ($1, $2) RETURNING id",
+            )
+            .bind(user)
+            .bind(name)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            accounts.push(id);
+        }
+        let (one, two) = (accounts[0], accounts[1]);
+        let anthropic = provider(pool, user, one, "anthropic").await;
+        let openai = provider(pool, user, one, "openai").await;
+        let fireworks = provider(pool, user, one, "fireworks").await;
+        let spare = provider(pool, user, two, "anthropic").await;
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir) \
+             SELECT s, 'm', $1, $2, '/w' FROM unnest(ARRAY['s1', 's2', 's3', 's4', 's5']) s",
+        )
+        .bind(machine)
+        .bind(user)
+        .execute(pool)
+        .await
+        .unwrap();
+        token(pool, "t-1a", "s1", anthropic).await;
+        token(pool, "t-1o", "s1", openai).await;
+        token(pool, "t-2", "s2", openai).await;
+        token(pool, "t-3", "s3", fireworks).await;
+        usage(pool, "s1", "m1", Some("claude-x"), [1_000, 200, 30_000, 4_000]).await;
+        usage(pool, "s1", "m2", Some("claude-x"), [10, 20, 30, 40]).await;
+        usage(pool, "s1", "m3", None, [5, 6, 7, 8]).await;
+        usage(pool, "s2", "m1", Some("gpt-x"), [3_000, 900, 12_000, 0]).await;
+        usage(pool, "s3", "m1", Some("fw-a"), [70_000, 9_000, 1_000, 0]).await;
+        usage(pool, "s3", "m2", Some("fw-b"), [123_457, 1_111, 0, 0]).await;
+        usage(pool, "s3", "m3", Some("fw-unpriced"), [9, 9, 9, 9]).await;
+        usage(pool, "s4", "m1", Some("claude-y"), [400, 50, 6_000, 700]).await;
+        token(pool, "t-4a", "s4", anthropic).await;
+        token(pool, "t-4b", "s4", anthropic).await;
+        Seed { anthropic, fireworks, spare }
+    }
+
+    #[tokio::test]
+    async fn the_backfill_reproduces_the_aggregated_listing() {
+        with_isolated_database("provider_usage_backfill", |pool| async move {
+            bootstrap(&pool).await.unwrap();
+            exec(
+                &pool,
+                "DROP TABLE account_provider_usage_totals; \
+                 DROP FUNCTION account_provider_usage_from_session() CASCADE; \
+                 DROP FUNCTION account_provider_usage_from_token() CASCADE; \
+                 DROP FUNCTION account_provider_usage_bump(text, text, bigint, bigint, bigint, \
+                   bigint);",
+            )
+            .await;
+            let seed = seed(&pool).await;
+            let before = aggregate(&pool).await;
+            assert!(before.iter().filter(|(_, tokens, _)| *tokens > 0).count() >= 3, "{before:?}");
+            migrate_totals(&pool).await;
+            let after = assert_listing_matches(&pool, "backfilled").await;
+            let anthropic = after.iter().find(|(id, ..)| *id == seed.anthropic).unwrap();
+            assert_eq!(anthropic.1, 35_200 + 100 + 26 + 2 * 7_150);
+            migrate_totals(&pool).await;
+            assert_listing_matches(&pool, "backfill rerun").await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn running_totals_follow_every_usage_and_token_write() {
+        with_isolated_database("provider_usage_live", |pool| async move {
+            bootstrap(&pool).await.unwrap();
+            let seed = seed(&pool).await;
+            assert_listing_matches(&pool, "seeded").await;
+            for (step, sql) in STEPS {
+                exec(&pool, sql).await;
+                assert_listing_matches(&pool, step).await;
+            }
+            let want = aggregate(&pool).await;
+            for id in [seed.anthropic, seed.spare, seed.fireworks] {
+                let info = fetch_provider_info(&pool, id).await.unwrap().expect("provider row");
+                let row = want.iter().find(|(wid, ..)| *wid == id).unwrap();
+                assert_eq!(info.total_tokens, row.1, "{id}");
+                assert!(row.1 > 0 || id == seed.fireworks, "{id} lost its totals");
+            }
+        })
+        .await;
+    }
 }
