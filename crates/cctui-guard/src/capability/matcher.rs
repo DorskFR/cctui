@@ -200,13 +200,13 @@ impl ExecTable {
     }
 
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.bins.is_empty()
     }
 
     #[must_use]
     pub fn rules(&self, bin: &str) -> &[ExecRule] {
-        self.bins.get(bin).map_or(&[], Vec::as_slice)
+        self.bins.get(bin).map_or(&[][..], Vec::as_slice)
     }
 
     /// The table as pretty JSON, for golden tests and diagnostics.
@@ -222,10 +222,10 @@ impl ExecTable {
         let Some(rules) = self.bins.get(bin).filter(|r| !r.is_empty()) else {
             return Err(format!("`{bin}` is not granted by any capability of this step"));
         };
-        let args = argv.get(1..).unwrap_or(&[]);
+        let rest = argv.get(1..).unwrap_or(&[]);
         let mut best: Option<(&ExecRule, Miss)> = None;
         for rule in rules {
-            match rule.check(bin, args) {
+            match rule.check(bin, rest) {
                 Ok(()) => return Ok(&rule.capability),
                 Err(miss) => {
                     if best.as_ref().is_none_or(|(_, b)| miss.rank() > b.rank()) {

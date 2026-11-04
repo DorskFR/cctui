@@ -190,7 +190,7 @@ impl Registry {
     }
 
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.capabilities.is_empty()
     }
 
