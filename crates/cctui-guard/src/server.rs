@@ -13,17 +13,28 @@ use serde_json::{Value, json};
 
 use crate::dialect::{DIALECT_HEADER, Dialect};
 use crate::engine::WorkflowEngine;
+use crate::exec::why::{WhyRing, render};
 
 type Engine = Arc<WorkflowEngine>;
 
 /// Build the axum router for the guard daemon.
 pub fn router(engine: Engine) -> Router {
+    router_with_why(engine, Arc::default())
+}
+
+/// [`router`], with `GET /why` serving the exec notifier's recent denials.
+pub fn router_with_why(engine: Engine, why: Arc<WhyRing>) -> Router {
     Router::new()
         .route("/state", get(get_state).post(post_state))
         .route("/health", get(health))
         .route("/check", post(check))
         .route("/transition", post(transition))
         .with_state(engine)
+        .merge(Router::new().route("/why", get(get_why)).with_state(why))
+}
+
+async fn get_why(State(why): State<Arc<WhyRing>>) -> impl IntoResponse {
+    ([("Content-Type", "text/plain; charset=utf-8")], render(&why.recent()))
 }
 
 async fn health() -> impl IntoResponse {
@@ -110,4 +121,41 @@ async fn transition(State(engine): State<Engine>, Json(data): Json<Value>) -> im
             })
         });
     Json(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, HashMap};
+
+    use super::*;
+    use crate::exec::why::{Denial, fetch};
+
+    #[tokio::test]
+    async fn why_route_serves_recent_exec_denials() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Arc::new(WorkflowEngine::new(
+            BTreeMap::new(),
+            HashMap::new(),
+            dir.path().join("state"),
+            dir.path().join("policy.json"),
+            vec![],
+            dir.path().to_path_buf(),
+            None,
+            false,
+        ));
+        let why = Arc::new(WhyRing::default());
+        why.push(Denial {
+            pid: 42,
+            command: "git push".into(),
+            reason: "[Step 1] 'git push' is disallowed in this step".into(),
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move { axum::serve(listener, router_with_why(engine, why)).await });
+        let body = tokio::task::spawn_blocking(move || fetch(&addr)).await.unwrap().unwrap();
+        assert_eq!(
+            body,
+            "denied `git push` (pid 42) — [Step 1] 'git push' is disallowed in this step\n"
+        );
+    }
 }

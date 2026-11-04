@@ -10,6 +10,7 @@
 pub mod decision_log;
 pub mod dialect;
 pub mod engine;
+pub mod exec;
 pub mod ir;
 pub mod lint;
 pub mod parser;

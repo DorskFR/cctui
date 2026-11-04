@@ -53,10 +53,19 @@ impl Outcome {
 /// each path and filters failures), mirroring the Go "warning: cannot stat …
 /// (skipping)" behaviour.
 pub fn apply(ro: &[String], rw: &[String]) -> Result<Outcome> {
+    apply_with(ro, rw, true)
+}
+
+/// [`apply`], with `exec_on_rw: false` withholding `Execute` on the RW paths so
+/// a binary written there cannot be run.
+pub fn apply_with(ro: &[String], rw: &[String], exec_on_rw: bool) -> Result<Outcome> {
     // Read-write access at the target ABI already includes IoctlDev (the V5
     // write set), so RW device files (the pts PTY) remain ioctl-able.
     let readonly = AccessFs::from_read(TARGET_ABI);
-    let readwrite = AccessFs::from_all(TARGET_ABI);
+    let mut readwrite = AccessFs::from_all(TARGET_ABI);
+    if !exec_on_rw {
+        readwrite.remove(AccessFs::Execute);
+    }
 
     let status = Ruleset::default()
         .handle_access(AccessFs::from_all(TARGET_ABI))

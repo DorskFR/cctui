@@ -82,6 +82,7 @@ case, never a *no-`SESSION_ID`* case.
 | `CONTEXT_PACK_TOKEN_FROM` | — | Name of an env var holding the pack-clone token, when it differs from the task identity's (e.g. the task identity can't read the pack repo). Resolved before the `GITHUB_TOKEN` fallbacks; keeps a specific identity name out of the image. |
 | `GUARD_RULES_FILE` | `/opt/context/guard-rules.md` | Guard rules path; defaults into the fetched pack (the override/extend layer). |
 | `GUARD_RULES_BASE` | — | Operator base guard-rules parsed **before** `GUARD_RULES_FILE`. When a pack ships `guard-rules.md`, the entrypoint moves any prior `GUARD_RULES_FILE` here so the pack reuses/extends/overrides it. |
+| `CCTUI_GUARD_EXEC` | off | `1` (exactly) makes `cctui-guard` authorise every `execve`/`execveat` of the agent tree (see "Exec interception" below). Any other value or unset: off, and the worker runs exactly as without it. Reserved: a dispatch env cannot set it. |
 | `CCTUI_PREFLIGHT_MODE` | `enforce` in `transparent-external`, else `warn` | Pre-flight isolation check mode: `enforce`, `warn` or `off` (see below). An unknown value enforces. Set by the kube dispatcher from `spec.preflight.mode`. |
 | `CCTUI_PREFLIGHT_DENY` | — | Comma-separated extra pre-flight deny targets: `host:port` or a CIDR. Set from `spec.preflight.deny`. |
 | `NODE_OPTIONS` | `--use-openssl-ca` appended | Every node reads the system trust store (see "Node trust store" below). A value already naming `--use-openssl-ca`, `--use-bundled-ca` or `--use-system-ca` is left as is. |
@@ -244,6 +245,40 @@ transitions) up to the server on registration and on every change; the webui
 header shows it and can request a move, which the server relays back down as
 a `POST /transition`. The guard stays the only authority: cctui mirrors and
 asks, it never decides a step.
+
+### Exec interception (`CCTUI_GUARD_EXEC=1`)
+
+Opt-in. `cctui-supervisor --guard-exec /var/run/workflow-guard/exec.sock`
+installs a seccomp filter that turns every `execve`/`execveat` of the agent
+tree into a user notification, hands its listener fd to `cctui-guard
+--exec-socket` over that root-only socket (`SCM_RIGHTS`), then applies Landlock
+**without execute rights on the RW paths** (`/tmp`, `/workspace`, the worker
+home, `CCTUI_WORKER_EXTRA_RW`) so a binary written there cannot run. The filter
+is inherited by every child and cannot be removed, so `git`, `/usr/bin/git`,
+`sh -c "git push"`, `env -i git push` and a `subprocess` call all reach the
+guard with the kernel's path and argv; no shell parsing is involved.
+
+The guard judges each exec against the active step's explicit `[disallowed]`
+phrases (allow-lists and a `*` disallow keep governing tool calls only, since
+the harness execs its own helpers), logs it to the decision log as
+`"source": "exec"` with `tool` (the executed path), `argv` and `rule`, and on a
+denial writes `guard: denied `<argv>` — <reason>` to the process's own stderr
+before failing the exec with `EPERM`. `cctui-guard why` prints the last five
+denials, for when stderr went nowhere or the message landed on a wrapper shell.
+No step, step 0 and the post-Exit state allow every exec.
+
+Fail-closed by construction: a check that errors, cannot read the target, or
+takes longer than `--exec-timeout-ms` (default 5000) denies; once the guard
+dies every exec fails with `ENOSYS`. Start-up refuses (the worker exits) when
+the opt-in is set but no guard runs (no stepped prompt), when the guard cannot
+take the listener, or when Landlock is not enforced.
+
+Requirements: the entrypoint starts as root, the container keeps
+`CAP_SYS_PTRACE` (the guard reads `/proc/<pid>/mem` and duplicates the target's
+fd 2; the supervisor clears it from the agent's capability sets), Landlock, and
+Linux >= 5.9. Without `CAP_SYS_PTRACE` the guard refuses the hand-off and the
+worker does not start. A workflow that runs binaries from the workspace
+(`cargo test`, `node_modules/.bin`, `./scripts/*.sh`) fails under the opt-in.
 
 ### Built-in guard default (no `guard-rules.md`)
 
@@ -1030,6 +1065,8 @@ Two parts, surfaced for the daemon to attach as session metadata:
   ```
 
   `landlock` is `"unavailable"` when the kernel does not enforce the ruleset.
+  Under `CCTUI_GUARD_EXEC=1` the report also carries `"exec_guarded": true`;
+  the key is absent otherwise.
 
 ## Entrypoint phases
 

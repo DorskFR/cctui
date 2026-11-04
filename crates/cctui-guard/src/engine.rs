@@ -502,6 +502,46 @@ impl WorkflowEngine {
         Verdict::Allow
     }
 
+    /// Evaluate an exec seen by the seccomp notifier against the active step.
+    ///
+    /// Only explicit `[disallowed]` phrases apply: allow-lists and a `*`
+    /// disallow are written for tool calls, and enforcing them on every execve
+    /// would deny the harness's own helpers. `commands` are the argv renderings
+    /// to match (see [`crate::exec::ExecRequest::match_commands`]); any one
+    /// matching denies.
+    #[must_use]
+    pub fn check_exec(&self, path: &str, argv: &[String], commands: &[String]) -> Verdict {
+        let _guard = self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let step_num = self.read_state();
+        let Some((step_u, step)) = u32::try_from(step_num)
+            .ok()
+            .filter(|&n| n != 0)
+            .and_then(|n| self.steps.get(&n).map(|s| (n, s)))
+        else {
+            return Verdict::Allow;
+        };
+        let disallowed: Vec<String> =
+            step.disallowed.expand(&self.tool_sets).into_iter().filter(|kw| kw != "*").collect();
+        let allowed = ["Bash".to_string()];
+        for command in commands {
+            let (ok, reason) =
+                check_rules("Bash", &json!({ "command": command }), &allowed, &disallowed);
+            if !ok {
+                tracing::info!("DENY exec [Step {step_u}] {path} reason={reason}");
+                self.decision_log.exec(Some(step_num), path, argv, false, &reason);
+                return Verdict::deny(format!("[Step {step_u}] {reason}"));
+            }
+        }
+        self.decision_log.exec(Some(step_num), path, argv, true, "");
+        Verdict::Allow
+    }
+
+    /// The decision-log sink, for verdicts reached outside the engine.
+    #[must_use]
+    pub const fn decision_log(&self) -> &DecisionLog {
+        &self.decision_log
+    }
+
     /// Apply the always-allowed exit transition: mark the run exited and, if a
     /// proxy policy dir is present, relax the egress policy to the net-claude
     /// host set so the agent can still report its outcome.

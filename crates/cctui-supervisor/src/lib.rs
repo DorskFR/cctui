@@ -9,6 +9,8 @@ pub mod cli;
 pub mod report;
 
 #[cfg(target_os = "linux")]
+pub mod exec_notify;
+#[cfg(target_os = "linux")]
 pub mod landlock_rules;
 #[cfg(target_os = "linux")]
 pub mod privdrop;

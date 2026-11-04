@@ -11,11 +11,12 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 
 use cctui_guard::engine::WorkflowEngine;
+use cctui_guard::exec::WhyRing;
 use cctui_guard::ir::{NetworkDefault, Workflow};
 use cctui_guard::lint::{Diagnostic, LintReport, Severity};
 use cctui_guard::parser::step_heading_numbers;
 use cctui_guard::resolve::{ResolvedSets, resolve_sets};
-use cctui_guard::server::router;
+use cctui_guard::server::router_with_why;
 
 #[derive(Parser, Debug)]
 #[command(name = "cctui-guard", about = "Markdown-driven workflow guard daemon")]
@@ -99,12 +100,53 @@ struct Cli {
     /// fail-closed denial.
     #[arg(long = "judge-timeout", default_value_t = cctui_guard::engine::DEFAULT_JUDGE_TIMEOUT_SECS)]
     judge_timeout_secs: u64,
+
+    /// Unix socket on which cctui-supervisor hands over its exec
+    /// user-notification listener; every exec in the worker tree is then judged
+    /// here. Unset ⇒ no exec interception.
+    #[arg(long = "exec-socket")]
+    exec_socket: Option<PathBuf>,
+
+    /// Milliseconds an exec may wait for a verdict before it is denied.
+    #[arg(long = "exec-timeout-ms", default_value_t = 5000)]
+    exec_timeout_ms: u64,
 }
 
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Validate a prompt + rules and dump the resolved policy, without serving.
     Lint(LintArgs),
+    /// Print the most recent exec denials ("Permission denied" on a command).
+    Why(WhyArgs),
+}
+
+#[derive(Parser, Debug)]
+struct WhyArgs {
+    /// The running guard, as `host:port` or an `http://` URL.
+    #[arg(long, env = "CCTUI_GUARD_URL", default_value = "127.0.0.1:9999")]
+    guard: String,
+}
+
+fn guard_addr(guard: &str) -> &str {
+    guard.strip_prefix("http://").unwrap_or(guard).trim_end_matches('/')
+}
+
+#[cfg(target_os = "linux")]
+fn arm_exec(cli: &Cli, engine: &Arc<WorkflowEngine>, why: &Arc<WhyRing>) -> anyhow::Result<()> {
+    let Some(socket) = &cli.exec_socket else {
+        return Ok(());
+    };
+    let timeout = Duration::from_millis(cli.exec_timeout_ms);
+    cctui_guard::exec::spawn(socket, Arc::clone(engine), Arc::clone(why), timeout)
+        .map_err(|e| anyhow::anyhow!("exec socket {}: {e}", socket.display()))?;
+    tracing::info!("Exec hand-off socket bound at {}", socket.display());
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn arm_exec(cli: &Cli, _: &Arc<WorkflowEngine>, _: &Arc<WhyRing>) -> anyhow::Result<()> {
+    anyhow::ensure!(cli.exec_socket.is_none(), "--exec-socket needs Linux");
+    Ok(())
 }
 
 #[derive(Parser, Debug)]
@@ -256,6 +298,10 @@ async fn main() -> anyhow::Result<()> {
     if let Some(Command::Lint(args)) = &cli.command {
         return if run_lint(args)? { Ok(()) } else { std::process::exit(1) };
     }
+    if let Some(Command::Why(args)) = &cli.command {
+        print!("{}", cctui_guard::exec::why::fetch(guard_addr(&args.guard))?);
+        return Ok(());
+    }
 
     if cli.emit_schema {
         println!("{}", serde_json::to_string_pretty(&cctui_guard::ir::json_schema())?);
@@ -320,9 +366,37 @@ async fn main() -> anyhow::Result<()> {
         ),
     );
 
-    let app = router(engine);
+    let why = Arc::new(WhyRing::default());
+    arm_exec(&cli, &engine, &why)?;
+    let app = router_with_why(engine, why);
     let listener = tokio::net::TcpListener::bind(cli.listen).await?;
     tracing::info!("Listening on {}", cli.listen);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn why_accepts_the_hook_url_or_host_port() {
+        assert_eq!(guard_addr("http://127.0.0.1:9999"), "127.0.0.1:9999");
+        assert_eq!(guard_addr("http://127.0.0.1:9999/"), "127.0.0.1:9999");
+        assert_eq!(guard_addr("127.0.0.1:9999"), "127.0.0.1:9999");
+    }
+
+    #[test]
+    fn exec_interception_is_off_by_default() {
+        let cli = Cli::try_parse_from(["cctui-guard", "--prompt", "p.md"]).unwrap();
+        assert!(cli.exec_socket.is_none());
+        assert_eq!(cli.exec_timeout_ms, 5000);
+    }
+
+    #[test]
+    fn why_subcommand_parses() {
+        let cli = Cli::try_parse_from(["cctui-guard", "why", "--guard", "127.0.0.1:1"]).unwrap();
+        let Some(Command::Why(args)) = cli.command else { panic!("expected why") };
+        assert_eq!(args.guard, "127.0.0.1:1");
+    }
 }
