@@ -252,7 +252,7 @@ mod tests {
             ["aaaa0001", "aaaa0002"].into_iter().map(str::to_owned).collect();
         let removed = sweep_dir(dir, &live, SystemTime::now(), MAX_AGE).unwrap();
 
-        assert_eq!(removed, 150);
+        assert_eq!(removed, 50 * PREFIXES.len());
         for short in ["aaaa0001", "aaaa0002"] {
             for p in PREFIXES {
                 assert!(dir.join(format!("{p}{short}.json")).exists(), "{p}{short} must survive");
@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn per_session_removal_drops_all_three_and_nothing_else() {
+    fn per_session_removal_drops_every_prefix_and_nothing_else() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         for p in PREFIXES {
@@ -286,7 +286,7 @@ mod tests {
             seed(dir, &format!("{p}aaaa0002.json"), Duration::from_secs(1));
         }
 
-        assert_eq!(remove_session_files_in(dir, "aaaa0001"), 3);
+        assert_eq!(remove_session_files_in(dir, "aaaa0001"), PREFIXES.len());
         assert_eq!(remove_session_files_in(dir, "aaaa0001"), 0);
         for p in PREFIXES {
             assert!(!dir.join(format!("{p}aaaa0001.json")).exists());
