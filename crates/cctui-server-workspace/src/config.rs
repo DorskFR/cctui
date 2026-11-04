@@ -10,8 +10,8 @@ pub struct HttpDispatcherConfig {
     pub token: Option<String>,
 }
 
-/// Env vars that may hold a secret ref instead of the value, resolved once at
-/// startup.
+/// Env vars that may hold a secret ref instead of the value. Those in
+/// [`RELOADABLE_ENV`] follow a rotation; the rest resolve once at startup.
 pub const SECRET_ENV: [&str; 6] = [
     "DATABASE_URL",
     "CCTUI_GITHUB_TOKEN",
@@ -20,6 +20,8 @@ pub const SECRET_ENV: [&str; 6] = [
     "CCTUI_CLAUDE_LITELLM_TOKEN",
     "CCTUI_EMOJI_TOKEN",
 ];
+
+pub const RELOADABLE_ENV: [&str; 1] = ["DATABASE_URL"];
 
 pub const DEFAULT_UPLOAD_BODY_LIMIT: u64 = 24 * 1024 * 1024;
 pub const UPLOAD_BODY_LIMIT_ENV: &str = "CCTUI_UPLOAD_BODY_LIMIT";
@@ -278,9 +280,22 @@ impl Config {
         self.allowed_origins.iter().any(|o| o == origin)
     }
 
-    pub async fn from_env() -> anyhow::Result<Self> {
-        let secrets = cctui_secrets::resolve_env(&SECRET_ENV, |k| env::var(k).ok()).await?;
-        Self::from_resolved(&secrets, |k| env::var(k).ok())
+    /// Reads the environment, resolving secret refs through `secrets`, which
+    /// keeps tracking the [`RELOADABLE_ENV`] values.
+    pub async fn from_env(secrets: &cctui_secrets::SecretRegistry) -> anyhow::Result<Self> {
+        Self::from_secrets(secrets, |k| env::var(k).ok()).await
+    }
+
+    async fn from_secrets(
+        secrets: &cctui_secrets::SecretRegistry,
+        get: impl Fn(&str) -> Option<String> + Send + Sync,
+    ) -> anyhow::Result<Self> {
+        let resolved = resolve_secret_env(secrets, &get).await?;
+        let mut config = Self::from_resolved(&resolved, &get)?;
+        resolve_dispatcher_tokens(secrets, "CCTUI_HTTP_DISPATCHERS", &mut config.http_dispatchers)
+            .await?;
+        resolve_dispatcher_tokens(secrets, "CCTUI_DISPATCHERS", &mut config.dispatchers).await?;
+        Ok(config)
     }
 
     fn from_resolved(
@@ -426,11 +441,48 @@ impl Config {
 
     /// `CCTUI_ADMIN_TOKENS`, comma-separated; the whole value may be a secret
     /// ref resolving to that list.
-    pub async fn admin_tokens() -> anyhow::Result<Vec<String>> {
+    pub async fn admin_tokens(
+        secrets: &cctui_secrets::SecretRegistry,
+    ) -> anyhow::Result<Vec<String>> {
         const VAR: &str = "CCTUI_ADMIN_TOKENS";
-        let resolved = cctui_secrets::resolve_env(&[VAR], |k| env::var(k).ok()).await?;
-        Ok(split_admin_tokens(resolved.get(VAR).map_or("", String::as_str)))
+        let resolved = match env::var(VAR) {
+            Ok(raw) => secrets.resolve(VAR, &raw).await?,
+            Err(_) => String::new(),
+        };
+        Ok(split_admin_tokens(&resolved))
     }
+}
+
+async fn resolve_secret_env(
+    secrets: &cctui_secrets::SecretRegistry,
+    get: impl Fn(&str) -> Option<String> + Send + Sync,
+) -> anyhow::Result<std::collections::HashMap<String, String>> {
+    let mut out = std::collections::HashMap::new();
+    for name in SECRET_ENV {
+        let Some(raw) = get(name) else { continue };
+        let value = if RELOADABLE_ENV.contains(&name) {
+            secrets.register(name, &raw).await?.get().to_string()
+        } else {
+            secrets.resolve(name, &raw).await?
+        };
+        out.insert(name.to_owned(), value);
+    }
+    Ok(out)
+}
+
+/// Each dispatcher's `token` may be a secret ref. Errors name the variable and
+/// the dispatcher id, never the token.
+async fn resolve_dispatcher_tokens(
+    secrets: &cctui_secrets::SecretRegistry,
+    var: &str,
+    dispatchers: &mut [HttpDispatcherConfig],
+) -> anyhow::Result<()> {
+    for d in dispatchers {
+        if let Some(token) = &mut d.token {
+            *token = secrets.resolve(&format!("{var}[{}].token", d.id), token).await?;
+        }
+    }
+    Ok(())
 }
 
 fn split_admin_tokens(raw: &str) -> Vec<String> {
@@ -472,6 +524,51 @@ impl Config {
             emoji_model: None,
             emoji_token: None,
         }
+    }
+}
+
+/// A resolver serving one value for a ref of every kind, so tests exercise the
+/// config wiring; the engines themselves are tested in `cctui-secrets`.
+#[cfg(test)]
+pub mod test_refs {
+    use std::sync::{Arc, Mutex};
+
+    use cctui_secrets::{Credential, RefResolver, SecretError, SecretRef, SecretRegistry};
+
+    pub const KIND_REFS: [&str; 4] = [
+        "file:/run/secrets/value",
+        "k8s:dev/cctui#value",
+        "bao:kv/data/cctui#value",
+        "aws-sm:cctui/value",
+    ];
+
+    /// `None` fails every ref as a backend error.
+    pub struct RefMap(Mutex<Option<String>>);
+
+    impl RefMap {
+        pub fn set(&self, value: Option<&str>) {
+            *self.0.lock().unwrap() = value.map(str::to_owned);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RefResolver for RefMap {
+        async fn resolve(&self, r: &SecretRef) -> Result<Credential, SecretError> {
+            let shown = r.to_string();
+            if !KIND_REFS.iter().any(|k| SecretRef::parse(k).unwrap().to_string() == shown) {
+                return Err(SecretError::NotFound { what: r.to_string() });
+            }
+            let value = self.0.lock().unwrap().clone();
+            value
+                .map(Credential::new)
+                .ok_or_else(|| SecretError::Backend(anyhow::anyhow!("{r}: backend down")))
+        }
+    }
+
+    pub fn map_registry(value: &str) -> (Arc<RefMap>, SecretRegistry) {
+        let map = Arc::new(RefMap(Mutex::new(Some(value.to_owned()))));
+        let registry = SecretRegistry::new(map.clone()).with_ttl_lookup(Arc::new(|_: &str| None));
+        (map, registry)
     }
 }
 
@@ -614,6 +711,13 @@ mod tests {
         assert_eq!(cfg.claude_litellm_visible_models().len(), 1);
     }
 
+    fn file_registry() -> cctui_secrets::SecretRegistry {
+        let resolver: std::sync::Arc<dyn cctui_secrets::RefResolver> =
+            std::sync::Arc::new(cctui_secrets::Engines::new());
+        cctui_secrets::SecretRegistry::new(resolver)
+            .with_ttl_lookup(std::sync::Arc::new(|_: &str| None))
+    }
+
     #[tokio::test]
     async fn secret_env_refs_resolve_and_literal_urls_pass_through() {
         let dir = tempfile::tempdir().unwrap();
@@ -626,8 +730,7 @@ mod tests {
             "CCTUI_EMOJI_TOKEN" => Some("tok:with:colons".to_owned()),
             _ => None,
         };
-        let secrets = cctui_secrets::resolve_env(&SECRET_ENV, env).await.unwrap();
-        let cfg = Config::from_resolved(&secrets, env).unwrap();
+        let cfg = Config::from_secrets(&file_registry(), env).await.unwrap();
         assert_eq!(cfg.database_url, "postgres://user:pw@host/db");
         assert_eq!(cfg.ntfy_token.as_deref(), Some("ntfy-tok"));
         assert_eq!(cfg.emoji_token.as_deref(), Some("tok:with:colons"));
@@ -638,9 +741,67 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = format!("file:{}", dir.path().join("absent").display());
         let env = |k: &str| (k == "DATABASE_URL").then(|| missing.clone());
-        let msg = cctui_secrets::resolve_env(&SECRET_ENV, env).await.unwrap_err().to_string();
+        let msg = Config::from_secrets(&file_registry(), env).await.unwrap_err().to_string();
         assert!(msg.contains("DATABASE_URL"), "{msg}");
         assert!(msg.contains(&missing), "{msg}");
+    }
+
+    use super::test_refs::{KIND_REFS, map_registry};
+
+    #[tokio::test]
+    async fn http_dispatcher_tokens_resolve_from_every_ref_kind() {
+        for reference in KIND_REFS {
+            let dispatchers = format!(
+                r#"[{{"id":"ext","url":"http://x:9000","token":"{reference}"}},
+                    {{"id":"lit","url":"http://y:9000","token":"plain:tok"}},
+                    {{"id":"none","url":"http://z:9000"}}]"#
+            );
+            let legacy = format!(r#"[{{"id":"d","url":"http://d","token":"{reference}"}}]"#);
+            let env = |k: &str| match k {
+                "DATABASE_URL" => Some("postgres://x".to_owned()),
+                "CCTUI_HTTP_DISPATCHERS" => Some(dispatchers.clone()),
+                "CCTUI_DISPATCHERS" => Some(legacy.clone()),
+                _ => None,
+            };
+            let cfg = Config::from_secrets(&map_registry("dispatch-tok").1, env).await.unwrap();
+            let tokens: Vec<_> = cfg.http_dispatchers.iter().map(|d| d.token.as_deref()).collect();
+            assert_eq!(tokens, [Some("dispatch-tok"), Some("plain:tok"), None], "{reference}");
+            assert_eq!(cfg.dispatchers[0].token.as_deref(), Some("dispatch-tok"), "{reference}");
+        }
+    }
+
+    #[tokio::test]
+    async fn unresolvable_dispatcher_token_names_the_var_and_id_not_a_value() {
+        let env = |k: &str| match k {
+            "DATABASE_URL" => Some("postgres://x".to_owned()),
+            "CCTUI_HTTP_DISPATCHERS" => Some(
+                r#"[{"id":"ok","url":"http://a","token":"lit-secret-tok"},
+                    {"id":"ext","url":"http://b","token":"k8s:dev/other#value"}]"#
+                    .to_owned(),
+            ),
+            _ => None,
+        };
+        let msg = Config::from_secrets(&map_registry("v").1, env).await.unwrap_err().to_string();
+        assert!(msg.contains("CCTUI_HTTP_DISPATCHERS[ext].token"), "{msg}");
+        assert!(msg.contains("k8s:dev/other#value"), "{msg}");
+        assert!(!msg.contains("lit-secret-tok"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn database_url_is_tracked_for_reload_and_other_secrets_are_not() {
+        for reference in KIND_REFS {
+            let env = |k: &str| match k {
+                "DATABASE_URL" | "CCTUI_NTFY_TOKEN" => Some(reference.to_owned()),
+                _ => None,
+            };
+            let (_, registry) = map_registry("postgres://u:pw@db/app");
+            let cfg = Config::from_secrets(&registry, env).await.unwrap();
+            assert_eq!(cfg.database_url, "postgres://u:pw@db/app", "{reference}");
+            let tracked = registry.get("DATABASE_URL").expect("DATABASE_URL tracked");
+            let want = cctui_secrets::SecretRef::parse(reference).unwrap();
+            assert_eq!(tracked.reference(), Some(&want), "{reference}");
+            assert!(registry.get("CCTUI_NTFY_TOKEN").is_none(), "{reference}");
+        }
     }
 
     #[test]

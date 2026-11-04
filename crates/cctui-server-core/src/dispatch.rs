@@ -1115,6 +1115,7 @@ async fn forward_dispatch(
             // preserve the historical `dispatched`.
             status: handle.status.unwrap_or_else(|| "dispatched".into()),
             queue_position: handle.queue_position,
+            exposure: handle.exposure,
         }),
     ))
 }
@@ -1272,11 +1273,18 @@ async fn forward_recorded(
             records::delete(state.dispatch_pool(), sid).await
         }
         Ok((_, r)) => {
-            match records::set_outcome(state.dispatch_pool(), sid, "forwarded", None).await {
-                Ok(()) if r.status == "queued" => {
-                    records::set_queued(state.dispatch_pool(), sid, true).await.map(drop)
+            let forwarded =
+                match records::set_outcome(state.dispatch_pool(), sid, "forwarded", None).await {
+                    Ok(()) if r.status == "queued" => {
+                        records::set_queued(state.dispatch_pool(), sid, true).await.map(drop)
+                    }
+                    other => other,
+                };
+            match (forwarded, r.exposure) {
+                (Ok(()), Some(exposure)) => {
+                    records::set_exposure(state.dispatch_pool(), sid, exposure).await
                 }
-                other => other,
+                (forwarded, _) => forwarded,
             }
         }
         Err((_, e)) => {

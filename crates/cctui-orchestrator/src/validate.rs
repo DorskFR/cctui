@@ -11,8 +11,9 @@
 //! 2. sandbox-defeating footguns on the worker/pod;
 //! 3. profile conformance — the pod is exactly what the dispatcher + mutating
 //!    webhook would legitimately produce from the named profile, the
-//!    profile's `spec.guard` only tunes the guard-proxy within its rules, and
-//!    nothing in the profile contradicts its `spec.posture`.
+//!    profile's `spec.guard` only tunes the guard-proxy within its rules,
+//!    nothing in the profile contradicts its `spec.posture`, and a profile
+//!    exposed to all three Rule of Two legs names a `spec.humanGate`.
 
 use crate::envelope::{
     GUARD_PROXY_CONTAINER, NET_INIT_CONTAINER, PROXY_UID, VOL_GPG_AGENT, VOL_GUARD_PROXY_CA,
@@ -78,22 +79,53 @@ fn is_injected(pod: &Pod) -> bool {
         .is_some_and(|a| a.get(ANNOTATION_ENVELOPE_INJECTED).map(String::as_str) == Some("true"))
 }
 
-/// Validate a pod against the guardrails, resolving its profile via `source`.
-pub async fn validate(pod: &Pod, namespace: &str, source: &dyn ProfileSource) -> Decision {
-    if !is_eligible(pod) {
-        return Decision::Allow;
-    }
-    match validate_inner(pod, namespace, source).await {
-        Ok(()) => Decision::Allow,
-        Err(msg) => Decision::Deny(msg),
+/// A [`Decision`] plus the admission warnings returned to the API client.
+pub struct Verdict {
+    pub decision: Decision,
+    pub warnings: Vec<String>,
+    /// The admitted pod's profile sets no `spec.exposure`.
+    pub exposure_undeclared: bool,
+}
+
+impl Verdict {
+    const fn decided(decision: Decision) -> Self {
+        Self { decision, warnings: Vec::new(), exposure_undeclared: false }
     }
 }
 
+/// Admission warning for a pod whose profile sets no `spec.exposure`.
+pub const EXPOSURE_UNDECLARED: &str = "exposure undeclared";
+
+/// Validate a pod against the guardrails, resolving its profile via `source`.
+pub async fn validate(pod: &Pod, namespace: &str, source: &dyn ProfileSource) -> Decision {
+    review(pod, namespace, source).await.decision
+}
+
+/// [`validate`], keeping the warnings an admitted pod carries.
+pub async fn review(pod: &Pod, namespace: &str, source: &dyn ProfileSource) -> Verdict {
+    if !is_eligible(pod) {
+        return Verdict::decided(Decision::Allow);
+    }
+    match validate_inner(pod, namespace, source).await {
+        Ok(false) => Verdict::decided(Decision::Allow),
+        Ok(true) => Verdict {
+            decision: Decision::Allow,
+            warnings: vec![format!(
+                "WorkerProfile `{}`: {EXPOSURE_UNDECLARED}, set spec.exposure",
+                profile_name(pod).unwrap_or_default()
+            )],
+            exposure_undeclared: true,
+        },
+        Err(msg) => Verdict::decided(Decision::Deny(msg)),
+    }
+}
+
+/// `Ok(true)` admits a pod whose profile declares no exposure.
 async fn validate_inner(
     pod: &Pod,
     namespace: &str,
     source: &dyn ProfileSource,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let worker_name = worker_container_name(pod).to_owned();
     let spec = pod.spec.as_ref().ok_or_else(|| "profiled pod has no spec".to_owned())?;
 
@@ -121,8 +153,27 @@ async fn validate_inner(
             .map_err(|e| format!("WorkerProfile `{name}` spec.pod: {e}"))?;
     }
     check_posture(&profile).map_err(|e| format!("WorkerProfile `{name}` spec.posture: {e}"))?;
+    let undeclared = check_exposure(&profile)
+        .map_err(|e| format!("WorkerProfile `{name}` spec.exposure: {e}"))?;
     check_posture_annotation(annotations, &profile)?;
-    check_conformance(spec, worker, &worker_name, &profile)
+    check_conformance(spec, worker, &worker_name, &profile)?;
+    Ok(undeclared)
+}
+
+/// Refuse a profile whose agent holds untrusted input, sensitive data and
+/// outward action at once with no human gate. `Ok(true)` means the profile
+/// declares no exposure.
+pub fn check_exposure(profile: &WorkerProfileSpec) -> Result<bool, String> {
+    match (profile.exposure, profile.human_gate) {
+        (None, _) => Ok(true),
+        (Some(exposure), None) if exposure.is_full() => {
+            Err("untrustedInput, sensitiveData and outward are all true with no spec.humanGate; \
+             an unattended agent may hold at most two of the three: set humanGate \
+             (noPush, draftPrOnly or outwardHeldForApproval) or drop one exposure"
+                .to_owned())
+        }
+        _ => Ok(false),
+    }
 }
 
 fn annotated_posture(annotations: Option<&BTreeMap<String, String>>) -> Result<Posture, String> {
@@ -2254,6 +2305,85 @@ mod tests {
         assert!(template_drift(&template, &lean_profile()).is_none());
         let drift = template_drift(&template, &nonroot_profile()).expect("posture drift");
         assert!(drift.contains("posture"), "{drift}");
+    }
+
+    fn exposed_profile(exposure: serde_json::Value, gate: Option<&str>) -> WorkerProfileSpec {
+        let mut profile = serde_json::to_value(lean_profile()).unwrap();
+        profile["exposure"] = exposure;
+        if let Some(gate) = gate {
+            profile["humanGate"] = serde_json::json!(gate);
+        }
+        serde_json::from_value(profile).unwrap()
+    }
+
+    fn all_three() -> serde_json::Value {
+        serde_json::json!({ "untrustedInput": true, "sensitiveData": true, "outward": true })
+    }
+
+    async fn review_exposed(profile: WorkerProfileSpec) -> Verdict {
+        let pod = dispatched_pod("exposed", &profile);
+        review(&pod, "workers", &source("exposed", profile)).await
+    }
+
+    #[tokio::test]
+    async fn all_three_exposures_without_a_human_gate_are_refused() {
+        let verdict = review_exposed(exposed_profile(all_three(), None)).await;
+        let msg = deny_msg(verdict.decision);
+        assert!(msg.contains("WorkerProfile `exposed` spec.exposure"), "{msg}");
+        assert!(msg.contains("humanGate"), "{msg}");
+        assert!(verdict.warnings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn all_three_exposures_behind_any_human_gate_are_admitted() {
+        for gate in ["noPush", "draftPrOnly", "outwardHeldForApproval"] {
+            let verdict = review_exposed(exposed_profile(all_three(), Some(gate))).await;
+            assert!(matches!(verdict.decision, Decision::Allow), "{gate} must admit");
+            assert!(verdict.warnings.is_empty(), "{gate}: {:?}", verdict.warnings);
+            assert!(!verdict.exposure_undeclared);
+        }
+    }
+
+    #[tokio::test]
+    async fn two_of_three_exposures_are_admitted_without_a_gate() {
+        for missing in ["untrustedInput", "sensitiveData", "outward"] {
+            let mut exposure = all_three();
+            exposure[missing] = serde_json::json!(false);
+            let verdict = review_exposed(exposed_profile(exposure, None)).await;
+            assert!(matches!(verdict.decision, Decision::Allow), "without {missing} must admit");
+            assert!(verdict.warnings.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn undeclared_exposure_is_admitted_with_a_warning() {
+        let verdict = review_exposed(lean_profile()).await;
+        assert!(matches!(verdict.decision, Decision::Allow));
+        assert!(verdict.exposure_undeclared);
+        assert_eq!(verdict.warnings.len(), 1, "{:?}", verdict.warnings);
+        assert!(verdict.warnings[0].contains(EXPOSURE_UNDECLARED), "{:?}", verdict.warnings);
+        assert!(verdict.warnings[0].contains("`exposed`"), "{:?}", verdict.warnings);
+
+        let verdict =
+            review_exposed(exposed_profile(serde_json::Value::Null, Some("noPush"))).await;
+        assert!(matches!(verdict.decision, Decision::Allow));
+        assert!(verdict.warnings[0].contains(EXPOSURE_UNDECLARED));
+    }
+
+    #[tokio::test]
+    async fn unlabeled_pod_carries_no_exposure_warning() {
+        let mut pod = dispatched_pod("lean", &lean_profile());
+        pod.metadata.labels = None;
+        let verdict = review(&pod, "workers", &source("lean", lean_profile())).await;
+        assert!(matches!(verdict.decision, Decision::Allow));
+        assert!(verdict.warnings.is_empty());
+    }
+
+    #[test]
+    fn check_exposure_reports_undeclared_and_refuses_only_the_ungated_triple() {
+        assert_eq!(check_exposure(&lean_profile()), Ok(true));
+        assert!(check_exposure(&exposed_profile(all_three(), None)).is_err());
+        assert_eq!(check_exposure(&exposed_profile(all_three(), Some("noPush"))), Ok(false));
     }
 
     #[tokio::test]

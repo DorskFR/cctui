@@ -9,10 +9,15 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 /// Effective hardening applied before exec.
+// Each bool is an independent fact the report records, not a state.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize)]
 pub struct Report {
     /// Landlock ABI/status used, or `"unavailable"`.
     pub landlock: String,
+    /// Whether an unenforced Landlock ruleset was fatal (`false` only under the
+    /// `CCTUI_LANDLOCK_STRICT=0` opt-out).
+    pub landlock_strict: bool,
     /// Whether the seccomp denylist was installed.
     pub seccomp_applied: bool,
     /// Names of the syscalls denied by the seccomp filter (empty when not applied).

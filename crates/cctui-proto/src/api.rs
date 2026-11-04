@@ -1317,6 +1317,30 @@ pub struct DispatchResponse {
     /// 1-based place among the profile's queued workers while `queued`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_position: Option<u32>,
+    /// `None` when the dispatcher reports no exposure for the run's profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<DispatchExposure>,
+}
+
+/// The Rule of Two exposure the run's worker profile declares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct DispatchExposure {
+    pub untrusted_input: bool,
+    pub sensitive_data: bool,
+    pub outward: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub human_gate: Option<HumanGate>,
+}
+
+/// The human step bounding a worker's outward actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum HumanGate {
+    NoPush,
+    DraftPrOnly,
+    OutwardHeldForApproval,
 }
 
 /// Why a dispatched worker never ran to completion as a session.
@@ -1382,6 +1406,8 @@ pub struct FailedDispatch {
     pub dismissed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_exit: Option<WorkerExit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<DispatchExposure>,
 }
 
 /// How a dispatched worker's container ended, read from the cluster before

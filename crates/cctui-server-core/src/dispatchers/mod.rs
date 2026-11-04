@@ -17,6 +17,7 @@ pub struct DispatchHandle {
     pub status: Option<String>,
     /// 1-based place in the dispatcher's queue while held back.
     pub queue_position: Option<u32>,
+    pub exposure: Option<cctui_proto::api::DispatchExposure>,
 }
 
 /// Built by the route from a [`cctui_proto::api::DispatchRequest`].

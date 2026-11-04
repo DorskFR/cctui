@@ -21,13 +21,15 @@ const LIVENESS_TIMEOUT: Duration = Duration::from_mins(1);
 
 pub struct Runner<D: Dispatcher> {
     client: ServerClient,
-    key: String,
+    /// Read on every connection attempt, so a rotated key is used on the next
+    /// reconnect.
+    key: cctui_secrets::Secret,
     spawner: D,
 }
 
 impl<D: Dispatcher> Runner<D> {
     #[must_use]
-    pub const fn new(client: ServerClient, key: String, spawner: D) -> Self {
+    pub const fn new(client: ServerClient, key: cctui_secrets::Secret, spawner: D) -> Self {
         Self { client, key, spawner }
     }
 
@@ -55,7 +57,7 @@ impl<D: Dispatcher> Runner<D> {
     }
 
     async fn run_once(&self, shutdown: CancellationToken) -> anyhow::Result<()> {
-        let request = self.client.dispatcher_ws_request(&self.key)?;
+        let request = self.client.dispatcher_ws_request(&self.key.get())?;
         tracing::info!("connecting to dispatcher WS");
         let (ws, _) = tokio_tungstenite::connect_async(request).await?;
         let (mut sink, mut stream) = ws.split();

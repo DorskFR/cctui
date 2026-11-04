@@ -3,7 +3,7 @@
 //! Sequence (order matters):
 //!   1. parse + resolve paths
 //!   2. with `--guard-exec`: exec user-notification filter, listener to the guard
-//!   3. Landlock (best-effort; `--strict` makes a missing LSM fatal)
+//!   3. Landlock (a missing LSM is fatal unless `CCTUI_LANDLOCK_STRICT=0`)
 //!   4. drop capabilities + setgid/setuid  -- BEFORE seccomp, which blocks setuid
 //!   5. seccomp denylist (inherited by the exec'd payload, cannot be undone)
 //!   6. write report
@@ -57,8 +57,16 @@ fn run() -> anyhow::Result<()> {
         bail!("no command provided");
     }
 
+    let strict = cli.landlock_strict();
+    if !strict {
+        eprintln!(
+            "cctui-supervisor: WARNING: {}=0: Landlock is best-effort; on a kernel without it \
+             the payload runs WITHOUT filesystem confinement",
+            cctui_supervisor::cli::LANDLOCK_STRICT_ENV
+        );
+    }
     let exec_guarded = arm_exec_guard(&cli)?;
-    let landlock_outcome = apply_landlock(&cli, &ro, &rw, exec_guarded)?;
+    let landlock_outcome = apply_landlock(strict, &ro, &rw, exec_guarded)?;
 
     // 2. Privilege drop (BEFORE seccomp: the denylist blocks setuid/setgid).
     let caps_dropped = if cli.no_privdrop {
@@ -86,6 +94,7 @@ fn run() -> anyhow::Result<()> {
     if let Some(path) = &cli.report {
         let report = Report {
             landlock: landlock_outcome.describe(),
+            landlock_strict: strict,
             seccomp_applied,
             seccomp_blocked: blocked,
             caps_dropped,
@@ -129,11 +138,11 @@ fn arm_exec_guard(cli: &Cli) -> anyhow::Result<bool> {
     Ok(true)
 }
 
-/// Landlock, best-effort unless `--strict`. Under exec interception the RW paths
-/// lose execute rights and an unenforced ruleset is fatal.
+/// Landlock; an unenforced ruleset is fatal when `strict` or under exec
+/// interception, where the RW paths also lose execute rights.
 #[cfg(target_os = "linux")]
 fn apply_landlock(
-    cli: &Cli,
+    strict: bool,
     ro: &[String],
     rw: &[String],
     exec_guarded: bool,
@@ -143,8 +152,13 @@ fn apply_landlock(
 
     let outcome = landlock_rules::apply_with(ro, rw, !exec_guarded)?;
     if !outcome.is_enforced() {
-        if cli.strict {
-            bail!("landlock not enforced and --strict set: {}", outcome.describe());
+        if strict {
+            bail!(
+                "landlock not enforced ({}); refusing to run the payload unconfined (set {}=0 \
+                 to opt out)",
+                outcome.describe(),
+                cctui_supervisor::cli::LANDLOCK_STRICT_ENV
+            );
         }
         if exec_guarded {
             bail!(
@@ -199,7 +213,7 @@ fn print_dry_run(cli: &Cli, ro: &[String], rw: &[String]) {
         println!("  {p}");
     }
     println!("User (uid/gid): {}", cli.user);
-    println!("Strict: {}", cli.strict);
+    println!("Strict: {}", cli.landlock_strict());
     if let Some(socket) = &cli.guard_exec {
         println!("Exec interception: cctui-guard at {} (RW paths noexec)", socket.display());
     }

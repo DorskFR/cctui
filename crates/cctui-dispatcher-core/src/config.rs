@@ -42,21 +42,10 @@ pub trait DispatcherConfig: Serialize + DeserializeOwned {
     /// `dispatcher_key` may be a secret ref (see `cctui_secrets::SCHEMES`),
     /// resolved here so the rest of the dispatcher only sees the value.
     fn load_from(path: &Path) -> anyhow::Result<Self> {
-        let raw = std::fs::read_to_string(path).map_err(|err| {
-            if err.kind() == std::io::ErrorKind::NotFound {
-                anyhow::anyhow!(
-                    "no config at {} — this dispatcher is not enrolled yet. Run `{}` first.",
-                    path.display(),
-                    Self::ENROLL_HINT
-                )
-            } else {
-                anyhow::Error::new(err).context(format!("reading {}", path.display()))
-            }
-        })?;
-        let mut table: toml::Table = toml::from_str(&raw)?;
-        if let Some(toml::Value::String(key)) = table.get_mut("dispatcher_key") {
+        let mut table = read_table::<Self>(path)?;
+        if let Some(toml::Value::String(key)) = table.get_mut(KEY_FIELD) {
             *key = cctui_secrets::resolve_blocking(key)
-                .map_err(|e| anyhow::anyhow!("dispatcher_key: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("{KEY_FIELD}: {e}"))?;
         }
         Ok(toml::Value::Table(table).try_into()?)
     }
@@ -64,6 +53,38 @@ pub trait DispatcherConfig: Serialize + DeserializeOwned {
     fn save_to(&self, path: &Path) -> anyhow::Result<()> {
         write_private(path, toml::to_string_pretty(self)?.as_bytes())
     }
+}
+
+const KEY_FIELD: &str = "dispatcher_key";
+
+fn read_table<C: DispatcherConfig>(path: &Path) -> anyhow::Result<toml::Table> {
+    let raw = std::fs::read_to_string(path).map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            anyhow::anyhow!(
+                "no config at {} — this dispatcher is not enrolled yet. Run `{}` first.",
+                path.display(),
+                C::ENROLL_HINT
+            )
+        } else {
+            anyhow::Error::new(err).context(format!("reading {}", path.display()))
+        }
+    })?;
+    Ok(toml::from_str(&raw)?)
+}
+
+/// [`DispatcherConfig::load_from`] with `dispatcher_key` tracked by `secrets`,
+/// so a rotated key is used from the next connection on.
+pub async fn load_tracked<C: DispatcherConfig>(
+    path: &Path,
+    secrets: &cctui_secrets::SecretRegistry,
+) -> anyhow::Result<(C, cctui_secrets::Secret)> {
+    let mut table = read_table::<C>(path)?;
+    let key = match table.get(KEY_FIELD) {
+        Some(toml::Value::String(raw)) => secrets.register(KEY_FIELD, raw).await?,
+        _ => anyhow::bail!("{KEY_FIELD} missing from {}", path.display()),
+    };
+    table.insert(KEY_FIELD.to_owned(), toml::Value::String(key.get().to_string()));
+    Ok((toml::Value::Table(table).try_into()?, key))
 }
 
 /// Atomically replace `path` with `contents`, readable by the owner only.
@@ -100,6 +121,7 @@ pub fn write_private(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use cctui_secrets::testing::{Fixture, KINDS, capture_logs};
     use serde::Deserialize;
 
     use super::*;
@@ -228,6 +250,61 @@ mod tests {
         let err = Probe::load_from(&write_config(&dir, &missing)).unwrap_err().to_string();
         assert!(err.contains("dispatcher_key"), "{err}");
         assert!(err.contains(&missing), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn quiet_registry(fixture: &Fixture) -> cctui_secrets::SecretRegistry {
+        cctui_secrets::SecretRegistry::new(fixture.resolver())
+            .with_ttl_lookup(std::sync::Arc::new(|_: &str| None))
+    }
+
+    #[tokio::test]
+    async fn tracked_dispatcher_key_resolves_from_every_ref_kind_and_follows_rotation() {
+        let fixture = Fixture::start().await;
+        let dir = scratch();
+        fixture.set("dispatcher-key", "dk-v1");
+        for kind in KINDS {
+            let path = write_config(&dir, &fixture.reference(kind, "dispatcher-key"));
+            let secrets = quiet_registry(&fixture);
+            let (cfg, key) = load_tracked::<Probe>(&path, &secrets).await.unwrap();
+            assert_eq!(cfg.dispatcher_key(), "dk-v1", "{kind}");
+            assert_eq!(&*key.get(), "dk-v1", "{kind}");
+
+            fixture.set("dispatcher-key", "dk-v2");
+            secrets.reload().await;
+            assert_eq!(&*key.get(), "dk-v2", "{kind}: rotated");
+
+            fixture.break_key("dispatcher-key");
+            let logs = capture_logs();
+            assert_eq!(secrets.reload().await.failed, 1, "{kind}");
+            let text = logs.contents();
+            drop(logs);
+            assert_eq!(&*key.get(), "dk-v2", "{kind}: failed refresh keeps the key");
+            assert!(text.contains(KEY_FIELD), "{kind}: {text}");
+            assert!(!text.contains("dk-v2"), "{kind}: {text}");
+            fixture.set("dispatcher-key", "dk-v1");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn tracked_dispatcher_key_literal_is_kept_and_bad_ref_names_the_field() {
+        let fixture = Fixture::start().await;
+        let dir = scratch();
+        let secrets = quiet_registry(&fixture);
+        let (cfg, key) =
+            load_tracked::<Probe>(&write_config(&dir, "dk:abc"), &secrets).await.unwrap();
+        assert_eq!(cfg.dispatcher_key(), "dk:abc");
+        assert!(key.reference().is_none());
+
+        for kind in KINDS {
+            let missing = fixture.reference(kind, "absent-key");
+            let path = write_config(&dir, &missing);
+            let err = load_tracked::<Probe>(&path, &secrets).await.unwrap_err().to_string();
+            assert!(err.starts_with("dispatcher_key: "), "{kind}: {err}");
+            let shown = cctui_secrets::SecretRef::parse(&missing).unwrap().to_string();
+            assert!(err.contains(&shown), "{kind}: {err}");
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -168,14 +168,16 @@ async fn enroll<B: Backend>(
 }
 
 async fn run<B: Backend>(path: &Path) -> anyhow::Result<()> {
-    let cfg = B::Config::load_from(path)?;
+    let secrets = std::sync::Arc::new(cctui_secrets::SecretRegistry::from_env());
+    let (cfg, key) = crate::config::load_tracked::<B::Config>(path, &secrets).await?;
     let client = ServerClient::new(cfg.server_url(), B::KIND);
-    let auth = client.dispatcher_auth(cfg.dispatcher_key()).await?;
+    let auth = client.dispatcher_auth(&key.get()).await?;
     tracing::info!(user_id = %auth.user_id, "authenticated");
     let shutdown = CancellationToken::new();
     let signal = shutdown_signal()?;
     let spawner = B::spawner(&cfg, &shutdown).await?;
-    let runner = Runner::new(client, cfg.dispatcher_key().to_owned(), spawner);
+    let runner = Runner::new(client, key, spawner);
+    secrets.spawn_reloader();
     let signal_token = shutdown.clone();
     tokio::spawn(async move {
         signal.await;

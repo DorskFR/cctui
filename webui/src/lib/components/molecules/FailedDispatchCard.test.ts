@@ -121,4 +121,32 @@ describe('FailedDispatchCard', () => {
 		expect(document.querySelector('pre.log')).toBeNull();
 		expect(text()).toContain('Worker logs unavailable: needs `get` on `pods/log`');
 	});
+
+	it('shows the run exposure as three flags and its human gate', async () => {
+		await render(
+			dispatch({
+				exposure: { untrusted_input: true, sensitive_data: true, outward: false, human_gate: 'draft_pr_only' }
+			})
+		);
+		const flags = [...document.querySelectorAll<HTMLElement>('[data-exposure] [data-flag]')].map((b) => [
+			b.dataset.flag,
+			b.dataset.on,
+			b.textContent?.trim()
+		]);
+		expect(flags).toEqual([
+			['untrusted_input', 'true', 'untrusted input'],
+			['sensitive_data', 'true', 'sensitive data'],
+			['outward', 'false', 'outward']
+		]);
+		expect(document.querySelector('[data-exposure] [data-gate]')?.textContent?.trim()).toBe('draft PR only');
+	});
+
+	it('marks all three legs held with no gate, and shows no exposure when none was reported', async () => {
+		await render(dispatch({ exposure: { untrusted_input: true, sensitive_data: true, outward: true } }));
+		expect(document.querySelector('[data-exposure] [data-gate]')?.textContent?.trim()).toBe('no human gate');
+		unmount(comp!);
+		comp = null;
+		await render(dispatch());
+		expect(document.querySelector('[data-exposure]')).toBeNull();
+	});
 });

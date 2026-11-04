@@ -13,6 +13,7 @@ has()  { case "$3" in *"$2"*) ok "$1" ;; *) bad "$1: [$2] not in [$3]" ;; esac; 
 lacks(){ case "$3" in *"$2"*) bad "$1: [$2] unexpectedly in [$3]" ;; *) ok "$1" ;; esac; }
 
 DASH=$(command -v dash) || { echo "dash not installed"; exit 1; }
+GIT_BIN=$(command -v git) || { echo "git not installed"; exit 1; }
 [ "$(id -u)" != 0 ] || { echo "run as a non-root user"; exit 1; }
 
 TMP=$(mktemp -d)
@@ -56,6 +57,8 @@ EOF
   printf '#!/bin/sh\nexit 0\n' > "$_b/gpgconf"
   printf '#!/bin/sh\necho "SUPERVISOR $*"\necho "supervisor $*" >> "$CALLS"\n' > "$_b/cctui-supervisor"
   chmod +x "$_b"/*
+  # The entrypoint runs under PATH=$R/bin:/usr/bin:/bin; git may live elsewhere.
+  ln -sf "$GIT_BIN" "$_b/git"
 }
 
 setup_root() {

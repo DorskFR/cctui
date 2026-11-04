@@ -237,7 +237,7 @@ impl Dispatcher for EnrolledDispatcher {
                 if let Some(err) = error {
                     return Err(DispatchError::Backend(err));
                 }
-                Ok(DispatchHandle { handle, namespace, status, queue_position })
+                Ok(DispatchHandle { handle, namespace, status, queue_position, exposure: None })
             }
             other => Err(DispatchError::Backend(format!("unexpected dispatcher reply: {other:?}"))),
         }

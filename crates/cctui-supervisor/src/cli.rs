@@ -1,6 +1,6 @@
-//! CLI surface. Port of the Go `flag` parsing, extended with the configurable
-//! path sets, `--user`, `--report` and `--strict` the ticket calls for.
+//! CLI surface.
 
+use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -46,6 +46,17 @@ pub const DEFAULT_RW: &[&str] = &[
 /// Default uid the payload is dropped to (the worker user).
 pub const DEFAULT_UID: u32 = 1000;
 
+/// Operator opt-out of strict Landlock: only the exact value `0` makes a
+/// missing Landlock LSM non-fatal. Reserved: a dispatch env cannot set it.
+pub const LANDLOCK_STRICT_ENV: &str = "CCTUI_LANDLOCK_STRICT";
+
+/// Whether an unenforced Landlock ruleset is fatal. Strict unless
+/// `CCTUI_LANDLOCK_STRICT=0`; `--strict` overrides the opt-out.
+#[must_use]
+pub fn landlock_strict(flag: bool, env: Option<&OsStr>) -> bool {
+    flag || env.is_none_or(|v| v != OsStr::new("0"))
+}
+
 #[derive(Parser, Debug)]
 // The debug-toggle flags are genuinely independent booleans.
 #[allow(clippy::struct_excessive_bools)]
@@ -72,8 +83,8 @@ pub struct Cli {
     #[arg(long)]
     pub report: Option<PathBuf>,
 
-    /// Treat a missing/unenforced Landlock LSM as fatal instead of warning and
-    /// continuing with seccomp + capability drop.
+    /// Treat a missing/unenforced Landlock LSM as fatal. This is the default;
+    /// the flag additionally overrides a `CCTUI_LANDLOCK_STRICT=0` opt-out.
     #[arg(long)]
     pub strict: bool,
 
@@ -102,6 +113,12 @@ pub struct Cli {
 }
 
 impl Cli {
+    /// Effective Landlock strictness for this process (see [`landlock_strict`]).
+    #[must_use]
+    pub fn landlock_strict(&self) -> bool {
+        landlock_strict(self.strict, std::env::var_os(LANDLOCK_STRICT_ENV).as_deref())
+    }
+
     /// Resolved read-only set: provided `--ro` flags, or the neutral defaults.
     #[must_use]
     pub fn ro_paths(&self) -> Vec<String> {
@@ -125,11 +142,45 @@ impl Cli {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     use std::path::Path;
 
     use clap::Parser;
 
-    use super::Cli;
+    use super::{Cli, landlock_strict};
+
+    #[test]
+    fn landlock_is_strict_by_default() {
+        let cli = Cli::try_parse_from(["cctui-supervisor", "--", "cctui-daemon"]).unwrap();
+        assert!(!cli.strict, "no flag given");
+        assert!(landlock_strict(cli.strict, None), "strict without flag or env");
+    }
+
+    #[test]
+    fn only_an_exact_zero_opts_out_of_strict_landlock() {
+        assert!(!landlock_strict(false, Some(OsStr::new("0"))));
+        for v in ["1", "", "false", "off", "no", "00", " 0", "0 "] {
+            assert!(landlock_strict(false, Some(OsStr::new(v))), "{v:?} must stay strict");
+        }
+    }
+
+    #[test]
+    fn strict_flag_overrides_the_opt_out() {
+        let cli =
+            Cli::try_parse_from(["cctui-supervisor", "--strict", "--", "cctui-daemon"]).unwrap();
+        assert!(cli.strict);
+        assert!(landlock_strict(cli.strict, Some(OsStr::new("0"))));
+    }
+
+    #[test]
+    fn there_is_no_cli_flag_to_turn_strict_off() {
+        for flag in ["--no-strict", "--strict=false", "--lax"] {
+            assert!(
+                Cli::try_parse_from(["cctui-supervisor", flag, "--", "cctui-daemon"]).is_err(),
+                "{flag} must not parse"
+            );
+        }
+    }
 
     #[test]
     fn guard_exec_is_off_by_default() {

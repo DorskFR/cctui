@@ -27,6 +27,7 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration { version: 6, sql: include_str!("../schema/0006_session_tool_guard_bypass.sql") },
     Migration { version: 7, sql: include_str!("../schema/0007_account_hook_policy.sql") },
     Migration { version: 8, sql: include_str!("../schema/0008_session_hook_policies.sql") },
+    Migration { version: 9, sql: include_str!("../schema/0009_dispatch_exposure.sql") },
 ];
 
 const LEGACY_LAST: &str = include_str!("../../../migrations/191_file_blobs.up.sql");

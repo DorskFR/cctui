@@ -48,7 +48,7 @@ preflight_control() { [ "$CONTROL_OK" = 1 ]; }
 reset() {
   : > "$LOG"; : > "$PROBED"; rm -f "$RESULT_FILE" "$TERMINATION_LOG"
   REACHABLE=""; CONTROL_OK=1; PREFLIGHT_RESULT=off
-  NET_MODE=transparent-external; unset CCTUI_PREFLIGHT_MODE CCTUI_PREFLIGHT_DENY
+  NET_MODE=transparent-external; unset CCTUI_PREFLIGHT_MODE CCTUI_PREFLIGHT_DENY WORKER_NET_MODE
 }
 
 # phase_preflight exits on a fail-closed verdict, so run it in a subshell.
@@ -116,16 +116,30 @@ check "both named" \
   "preflight: direct public egress (1.1.1.1:80); proxy path to the cctui server failed (https://cctui.example.dev/health)" \
   "$(jq -r .error "$RESULT_FILE" 2>/dev/null)"
 
-echo "== 7. unset mode enforces only in transparent-external =="
+echo "== 7. unset mode enforces unless forward was explicitly requested =="
 reset
 NET_MODE=forward
 REACHABLE=1.1.1.1:80
-check "forward warns" 0 "$(run)"
+check "auto-selected forward enforces" 1 "$(run)"
+reset
+NET_MODE=forward
+WORKER_NET_MODE=forward
+REACHABLE=1.1.1.1:80
+check "explicit forward warns" 0 "$(run)"
 has "warned" "warn mode" "$(cat "$LOG")"
 reset
 NET_MODE=transparent
 REACHABLE=1.1.1.1:80
-check "transparent warns" 0 "$(run)"
+check "transparent enforces" 1 "$(run)"
+reset
+NET_MODE=transparent
+WORKER_NET_MODE=transparent
+REACHABLE=1.1.1.1:80
+check "explicit transparent enforces" 1 "$(run)"
+reset
+NET_MODE=transparent-external
+REACHABLE=1.1.1.1:80
+check "transparent-external enforces" 1 "$(run)"
 reset
 CCTUI_PREFLIGHT_MODE=enforce
 NET_MODE=forward

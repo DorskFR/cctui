@@ -29,6 +29,8 @@ use serde_json::{Value, json};
 
 pub use cctui_proto::api::langfuse::LangfuseSessionUsage;
 
+const SECRET_KEY_ENV: &str = "CCTUI_LANGFUSE_SECRET_KEY";
+
 /// Langfuse sink configuration (`[langfuse]` block / `CCTUI_LANGFUSE_*` env).
 /// Built only when host + public + secret are all present.
 #[derive(Debug, Clone)]
@@ -38,7 +40,8 @@ pub struct LangfuseConfig {
     /// Browser-facing base URL for deep links (defaults to `host` when unset).
     pub public_host: String,
     pub public_key: String,
-    pub secret_key: String,
+    /// Read on every request, so a rotated key lands on the next one.
+    pub secret_key: cctui_secrets::Secret,
     /// Fraction of calls to trace, `0.0..=1.0`. Defaults to `1.0` (trace all).
     pub sample_rate: f64,
     /// Whether prompts and completions are sent to Langfuse. One Langfuse
@@ -51,30 +54,44 @@ impl LangfuseConfig {
     /// Parse the Langfuse config from the environment. Returns `None` (feature
     /// dark) unless `CCTUI_LANGFUSE_HOST`, `CCTUI_LANGFUSE_PUBLIC_KEY`, and
     /// `CCTUI_LANGFUSE_SECRET_KEY` are all set and non-empty.
-    pub fn from_env() -> Option<Self> {
-        let nonempty = |k: &str| std::env::var(k).ok().filter(|s| !s.trim().is_empty());
-        let host = nonempty("CCTUI_LANGFUSE_HOST")?;
+    /// `CCTUI_LANGFUSE_SECRET_KEY` may be a secret ref, tracked by `secrets`
+    /// for reload; one that does not resolve is an error.
+    pub async fn from_env(secrets: &cctui_secrets::SecretRegistry) -> anyhow::Result<Option<Self>> {
+        Self::from_lookup(secrets, |k| std::env::var(k).ok()).await
+    }
+
+    async fn from_lookup(
+        secrets: &cctui_secrets::SecretRegistry,
+        get: impl Fn(&str) -> Option<String> + Send + Sync,
+    ) -> anyhow::Result<Option<Self>> {
+        let nonempty = |k: &str| get(k).filter(|s| !s.trim().is_empty());
+        let (Some(host), Some(public_key), Some(secret_raw)) = (
+            nonempty("CCTUI_LANGFUSE_HOST"),
+            nonempty("CCTUI_LANGFUSE_PUBLIC_KEY"),
+            nonempty(SECRET_KEY_ENV),
+        ) else {
+            return Ok(None);
+        };
+        let secret_key = secrets.register(SECRET_KEY_ENV, &secret_raw).await?;
         let public_host = nonempty("CCTUI_LANGFUSE_PUBLIC_HOST").unwrap_or_else(|| host.clone());
-        let public_key = nonempty("CCTUI_LANGFUSE_PUBLIC_KEY")?;
-        let secret_key = nonempty("CCTUI_LANGFUSE_SECRET_KEY")?;
         let sample_rate = nonempty("CCTUI_LANGFUSE_SAMPLE_RATE")
             .and_then(|s| s.parse::<f64>().ok())
             .map_or(1.0, |r| r.clamp(0.0, 1.0));
         let capture_content = nonempty("CCTUI_LANGFUSE_CAPTURE_CONTENT")
             .is_some_and(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"));
-        Some(Self {
+        Ok(Some(Self {
             host: host.trim_end_matches('/').to_string(),
             public_host: public_host.trim_end_matches('/').to_string(),
             public_key,
             secret_key,
             sample_rate,
             capture_content,
-        })
+        }))
     }
 
     /// The `Basic <base64(public:secret)>` header value for the ingestion API.
     fn basic_auth(&self) -> String {
-        let raw = format!("{}:{}", self.public_key, self.secret_key);
+        let raw = format!("{}:{}", self.public_key, self.secret_key.get());
         format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(raw))
     }
 }
@@ -638,11 +655,68 @@ mod tests {
             host: "https://lf.example/".into(),
             public_host: "https://lf.example/".into(),
             public_key: "pk".into(),
-            secret_key: "sk".into(),
+            secret_key: cctui_secrets::Secret::fixed(SECRET_KEY_ENV, "sk"),
             sample_rate: 1.0,
             capture_content: false,
         };
         assert!(cfg.basic_auth().starts_with("Basic "));
+    }
+
+    fn langfuse_env(secret: &str) -> impl Fn(&str) -> Option<String> + Send + Sync + '_ {
+        move |k| match k {
+            "CCTUI_LANGFUSE_HOST" => Some("https://lf.example/".to_owned()),
+            "CCTUI_LANGFUSE_PUBLIC_KEY" => Some("pk".to_owned()),
+            SECRET_KEY_ENV => Some(secret.to_owned()),
+            _ => None,
+        }
+    }
+
+    fn decoded_auth(cfg: &LangfuseConfig) -> String {
+        let header = cfg.basic_auth();
+        let b64 = header.strip_prefix("Basic ").unwrap();
+        String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b64).unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn langfuse_config_secret_key_resolves_from_every_ref_kind_and_follows_rotation() {
+        use crate::config::test_refs::{KIND_REFS, map_registry};
+        for reference in KIND_REFS {
+            let (map, registry) = map_registry("sk-v1");
+            let cfg = LangfuseConfig::from_lookup(&registry, langfuse_env(reference))
+                .await
+                .unwrap()
+                .expect("configured");
+            assert_eq!(decoded_auth(&cfg), "pk:sk-v1", "{reference}");
+
+            map.set(Some("sk-v2"));
+            registry.reload().await;
+            assert_eq!(decoded_auth(&cfg), "pk:sk-v2", "{reference}: next request uses it");
+
+            map.set(None);
+            registry.reload().await;
+            assert_eq!(decoded_auth(&cfg), "pk:sk-v2", "{reference}: failed refresh keeps it");
+        }
+    }
+
+    #[tokio::test]
+    async fn langfuse_config_literal_key_unchanged_and_bad_ref_names_the_var() {
+        use crate::config::test_refs::map_registry;
+        let (_, registry) = map_registry("unused");
+        let cfg = LangfuseConfig::from_lookup(&registry, langfuse_env("sk-lf-literal:x"))
+            .await
+            .unwrap()
+            .expect("configured");
+        assert_eq!(decoded_auth(&cfg), "pk:sk-lf-literal:x");
+
+        let msg = LangfuseConfig::from_lookup(&registry, langfuse_env("k8s:dev/absent#key"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains(SECRET_KEY_ENV), "{msg}");
+        assert!(msg.contains("k8s:dev/absent#key"), "{msg}");
+
+        let dark = LangfuseConfig::from_lookup(&registry, |_| None).await.unwrap();
+        assert!(dark.is_none());
     }
 
     #[test]
@@ -830,7 +904,7 @@ mod tests {
                 host: "h".into(),
                 public_host: "h".into(),
                 public_key: "p".into(),
-                secret_key: "s".into(),
+                secret_key: cctui_secrets::Secret::fixed(SECRET_KEY_ENV, "s"),
                 sample_rate: 1.0,
                 capture_content: false,
             },
@@ -842,7 +916,7 @@ mod tests {
                 host: "h".into(),
                 public_host: "h".into(),
                 public_key: "p".into(),
-                secret_key: "s".into(),
+                secret_key: cctui_secrets::Secret::fixed(SECRET_KEY_ENV, "s"),
                 sample_rate: 0.0,
                 capture_content: false,
             },
@@ -866,7 +940,7 @@ mod tests {
                 host: "h".into(),
                 public_host: "h".into(),
                 public_key: "p".into(),
-                secret_key: "s".into(),
+                secret_key: cctui_secrets::Secret::fixed(SECRET_KEY_ENV, "s"),
                 sample_rate: 1.0,
                 capture_content: false,
             },
