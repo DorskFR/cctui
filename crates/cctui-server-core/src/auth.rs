@@ -11,6 +11,9 @@ use axum::response::Response;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// A resolved principal and, for a dispatched worker's key, its session.
+type Resolved = (AuthContext, Option<String>);
+
 /// Cache TTL for positive auth lookups. Bounds revocation latency when a
 /// peer replica misses the purge broadcast.
 const CACHE_TTL: Duration = Duration::from_secs(30);
@@ -131,7 +134,113 @@ impl AuthContext {
 #[derive(Clone)]
 struct CacheEntry {
     ctx: AuthContext,
+    bound: Option<String>,
     expires: Instant,
+}
+
+/// The session a dispatched worker's key is bound to, set on requests made with
+/// such a key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundSession(pub String);
+
+/// The only scope a dispatched worker's key keeps.
+#[must_use]
+pub fn worker_key_scopes(scopes: &BTreeSet<Scope>) -> BTreeSet<Scope> {
+    scopes.iter().copied().filter(|s| *s == Scope::Read).collect()
+}
+
+/// Where a session-bound worker key may go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerRoute<'a> {
+    Denied,
+    Open,
+    /// Only for this session or one it spawned.
+    Session(&'a str),
+}
+
+/// The daemon-facing routes a dispatched worker uses, plus the session list its
+/// liveness probe reads (filtered to its own session).
+#[must_use]
+pub fn worker_route<'a>(method: &http::Method, path: &'a str) -> WorkerRoute<'a> {
+    const OPEN: &[&str] = &[
+        "/api/v1/version",
+        "/api/v1/manifest/daemon",
+        "/api/v1/daemon/auth",
+        "/api/v1/daemon/ws",
+        "/api/v1/daemon/version",
+    ];
+    const OPEN_UNDER: &[&str] =
+        &["/api/v1/daemon/binary/", "/api/v1/daemon/blobs/", "/api/v1/daemon/update-hook/"];
+    let segments: Vec<&str> = path.split('/').skip(1).collect();
+    if path.contains('%') || segments.iter().any(|s| s.is_empty() || *s == "." || *s == "..") {
+        return WorkerRoute::Denied;
+    }
+    if OPEN.contains(&path)
+        || (path == "/api/v1/sessions" && *method == http::Method::GET)
+        || OPEN_UNDER.iter().any(|p| path.starts_with(p) && segments.len() == 5)
+        || matches!(segments.as_slice(), ["api", "v1", "dispatch", _, "env"])
+    {
+        return WorkerRoute::Open;
+    }
+    match segments.as_slice() {
+        ["api", "v1", "daemon", "sessions", id, _, ..] => WorkerRoute::Session(*id),
+        _ => WorkerRoute::Denied,
+    }
+}
+
+/// Whether `id` was spawned, directly or further down, by session `root`.
+pub async fn session_descends_from(
+    pool: &PgPool,
+    id: &str,
+    root: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "WITH RECURSIVE up(id, depth) AS ( \
+             SELECT parent_id, 1 FROM spawn_tree_grants WHERE child_id = $1 \
+             UNION \
+             SELECT g.parent_id, up.depth + 1 FROM spawn_tree_grants g \
+             JOIN up ON g.child_id = up.id WHERE up.depth < 64) \
+         SELECT EXISTS (SELECT 1 FROM up WHERE id = $2)",
+    )
+    .bind(id)
+    .bind(root)
+    .fetch_one(pool)
+    .await
+}
+
+/// Confines a dispatched worker's key to its own session's daemon routes.
+/// Every other credential passes through untouched.
+pub async fn worker_key_gate(
+    axum::extract::State(config): axum::extract::State<AuthConfig>,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let path = request.uri().path().to_owned();
+    if path.starts_with("/gateway/") {
+        return Ok(next.run(request).await);
+    }
+    let Some(token) = bearer_or_cookie(request.headers()) else {
+        return Ok(next.run(request).await);
+    };
+    let Some((_, Some(bound))) = config.validate_bound(&token).await else {
+        return Ok(next.run(request).await);
+    };
+    let allowed = match worker_route(request.method(), &path) {
+        WorkerRoute::Denied => false,
+        WorkerRoute::Open => true,
+        WorkerRoute::Session(id) => {
+            id == bound
+                || session_descends_from(&config.pool, id, &bound).await.map_err(|e| {
+                    tracing::warn!("worker session lineage lookup failed: {e}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?
+        }
+    };
+    if !allowed {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    request.extensions_mut().insert(BoundSession(bound));
+    Ok(next.run(request).await)
 }
 
 #[derive(Clone)]
@@ -257,10 +366,14 @@ impl AuthConfig {
     }
 
     fn cache_get(&self, hash: &str) -> Option<AuthContext> {
+        self.cache_entry(hash).map(|entry| entry.ctx)
+    }
+
+    fn cache_entry(&self, hash: &str) -> Option<CacheEntry> {
         let mut cache = self.cache.lock().ok()?;
         if let Some(entry) = cache.get(hash).cloned() {
             if entry.expires > Instant::now() {
-                return Some(entry.ctx);
+                return Some(entry);
             }
             cache.remove(hash);
         }
@@ -278,12 +391,23 @@ impl AuthConfig {
         self.cache_get(hash).is_some()
     }
 
-    /// Cache `ctx` unless a purge landed since `epoch` was read.
+    #[cfg(any(test, feature = "test-support"))]
     fn cache_put(&self, hash: String, ctx: AuthContext, epoch: u64) {
+        self.cache_put_bound(hash, ctx, None, epoch);
+    }
+
+    /// Cache `ctx` unless a purge landed since `epoch` was read.
+    fn cache_put_bound(
+        &self,
+        hash: String,
+        ctx: AuthContext,
+        bound: Option<String>,
+        epoch: u64,
+    ) {
         if let Ok(mut cache) = self.cache.lock()
             && self.epoch.load(Ordering::SeqCst) == epoch
         {
-            cache.insert(hash, CacheEntry { ctx, expires: Instant::now() + CACHE_TTL });
+            cache.insert(hash, CacheEntry { ctx, bound, expires: Instant::now() + CACHE_TTL });
         }
     }
 
@@ -302,9 +426,14 @@ impl AuthConfig {
     }
 
     pub async fn validate(&self, token: &str) -> Option<AuthContext> {
+        self.validate_bound(token).await.map(|(ctx, _)| ctx)
+    }
+
+    /// [`Self::validate`], plus the session a dispatched worker's key is bound to.
+    pub async fn validate_bound(&self, token: &str) -> Option<(AuthContext, Option<String>)> {
         let hash = sha256_hex(token);
-        if let Some(ctx) = self.cache_get(&hash) {
-            return Some(ctx);
+        if let Some(entry) = self.cache_entry(&hash) {
+            return Some((entry.ctx, entry.bound));
         }
 
         let epoch = self.epoch.load(Ordering::SeqCst);
@@ -313,20 +442,23 @@ impl AuthConfig {
             resolved = self.reseed_env_admin(&hash).await;
         }
         match resolved {
-            Ok(Some(ctx)) => {
-                self.cache_put(hash, ctx.clone(), epoch);
-                Some(ctx)
+            Ok(Some((ctx, bound))) => {
+                self.cache_put_bound(hash, ctx.clone(), bound.clone(), epoch);
+                Some((ctx, bound))
             }
             Ok(None) => None,
             // Only here is revocation state unknowable, so only here may an env
             // admin token break the glass.
             Err(e) => {
                 tracing::warn!("auth lookup failed: {e}");
-                self.admin_token_hashes.contains(&hash).then(|| AuthContext {
-                    user_id: Uuid::nil(),
-                    key_id: Uuid::nil(),
-                    machine_id: None,
-                    scopes: Scope::all().into_iter().collect(),
+                self.admin_token_hashes.contains(&hash).then(|| {
+                    let ctx = AuthContext {
+                        user_id: Uuid::nil(),
+                        key_id: Uuid::nil(),
+                        machine_id: None,
+                        scopes: Scope::all().into_iter().collect(),
+                    };
+                    (ctx, None)
                 })
             }
         }
@@ -334,7 +466,7 @@ impl AuthConfig {
 
     /// An env admin token with no `auth_keys` row at all was never seeded (DB
     /// unavailable at startup): seed it and retry. A revoked row is final.
-    async fn reseed_env_admin(&self, hash: &str) -> Result<Option<AuthContext>, sqlx::Error> {
+    async fn reseed_env_admin(&self, hash: &str) -> Result<Option<Resolved>, sqlx::Error> {
         let seeded: bool =
             sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM auth_keys WHERE key_hash = $1)")
                 .bind(hash)
@@ -349,27 +481,31 @@ impl AuthConfig {
 
     /// The unified `auth_keys` table first, then the legacy tables so a
     /// credential that hasn't been backfilled still resolves.
-    async fn resolve(&self, hash: &str) -> Result<Option<AuthContext>, sqlx::Error> {
-        if let Some(ctx) = self.validate_api_key(hash).await? {
-            return Ok(Some(ctx));
+    async fn resolve(&self, hash: &str) -> Result<Option<Resolved>, sqlx::Error> {
+        if let Some(resolved) = self.validate_api_key(hash).await? {
+            return Ok(Some(resolved));
         }
-        self.validate_legacy(hash).await
+        Ok(self.validate_legacy(hash).await?.map(|ctx| (ctx, None)))
     }
 
     /// Resolve a token hash against the unified `auth_keys` table, gating on the owning user
     /// being live (revoked/disabled cascades) and the key itself being live (not
     /// revoked/expired).
     ///
-    /// Scopes = `key_acls` ∩ `user_acls`.
-    async fn validate_api_key(&self, hash: &str) -> Result<Option<AuthContext>, sqlx::Error> {
+    /// Scopes = `key_acls` ∩ `user_acls`, narrowed to [`worker_key_scopes`] for a
+    /// session-bound worker key.
+    async fn validate_api_key(&self, hash: &str) -> Result<Option<Resolved>, sqlx::Error> {
         #[derive(sqlx::FromRow)]
         struct KeyRow {
             id: Uuid,
             user_id: Uuid,
             machine_id: Option<Uuid>,
+            bound: Option<String>,
         }
         let row = sqlx::query_as::<_, KeyRow>(
-            "SELECT k.id, k.user_id, k.machine_id FROM auth_keys k \
+            "SELECT k.id, k.user_id, k.machine_id, \
+             CASE WHEN k.kind = 'ephemeral' THEN k.session_id END AS bound \
+             FROM auth_keys k \
              JOIN users u ON u.id = k.user_id \
              WHERE k.key_hash = $1 \
              AND k.revoked_at IS NULL \
@@ -379,15 +515,18 @@ impl AuthConfig {
         .bind(hash)
         .fetch_optional(&self.pool)
         .await?;
-        let Some(KeyRow { id: key_id, user_id, machine_id }) = row else {
+        let Some(KeyRow { id: key_id, user_id, machine_id, bound }) = row else {
             return Ok(None);
         };
-        let scopes = self.effective_scopes(key_id, user_id).await?;
+        let mut scopes = self.effective_scopes(key_id, user_id).await?;
+        if bound.is_some() {
+            scopes = worker_key_scopes(&scopes);
+        }
         self.touch_key(key_id);
         if let Some(mid) = machine_id {
             self.touch_machine(mid);
         }
-        Ok(Some(AuthContext { user_id, key_id, machine_id, scopes }))
+        Ok(Some((AuthContext { user_id, key_id, machine_id, scopes }, bound)))
     }
 
     /// Legacy resolution (`machines.key_hash`, `users.key_hash`, `user_tokens`).
@@ -1039,5 +1178,194 @@ mod tests {
             serde_json::to_value(CachePurge::All).unwrap(),
             serde_json::json!({"op": "all"})
         );
+    }
+
+    fn gated_app(config: AuthConfig) -> axum::Router {
+        async fn bound(worker: Option<axum::Extension<BoundSession>>) -> String {
+            worker.map(|axum::Extension(BoundSession(id))| id).unwrap_or_default()
+        }
+        axum::Router::new()
+            .route("/api/v1/sessions/dispatch", axum::routing::post(bound))
+            .route("/api/v1/sessions/spawn", axum::routing::post(bound))
+            .route("/api/v1/sessions/{id}/messages", axum::routing::get(bound))
+            .route("/api/v1/sessions", axum::routing::get(bound))
+            .route("/api/v1/daemon/sessions/{id}/limits", axum::routing::get(bound))
+            .layer(axum::middleware::from_fn_with_state(config, worker_key_gate))
+    }
+
+    async fn gated_status(app: &axum::Router, method: &str, uri: &str, auth: (&str, &str)) -> u16 {
+        use tower::ServiceExt;
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(auth.0, auth.1)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        app.clone().oneshot(request).await.unwrap().status().as_u16()
+    }
+
+    fn full_ctx() -> AuthContext {
+        AuthContext {
+            user_id: Uuid::new_v4(),
+            key_id: Uuid::new_v4(),
+            machine_id: Some(Uuid::new_v4()),
+            scopes: Scope::all().into_iter().collect(),
+        }
+    }
+
+    #[test]
+    fn worker_route_admits_only_the_worker_paths() {
+        use http::Method;
+        for path in [
+            "/api/v1/daemon/ws",
+            "/api/v1/daemon/auth",
+            "/api/v1/daemon/version",
+            "/api/v1/manifest/daemon",
+            "/api/v1/daemon/binary/linux-amd64",
+            "/api/v1/daemon/blobs/abc",
+            "/api/v1/daemon/update-hook/run-1",
+            "/api/v1/dispatch/d-1/env",
+        ] {
+            assert_eq!(worker_route(&Method::GET, path), WorkerRoute::Open, "{path}");
+        }
+        assert_eq!(worker_route(&Method::GET, "/api/v1/sessions"), WorkerRoute::Open);
+        assert_eq!(
+            worker_route(&Method::GET, "/api/v1/daemon/sessions/s-1/gateway-env"),
+            WorkerRoute::Session("s-1")
+        );
+        assert_eq!(
+            worker_route(&Method::POST, "/api/v1/daemon/sessions/s-1/user-actions/tick"),
+            WorkerRoute::Session("s-1")
+        );
+        for path in [
+            "/api/v1/sessions/dispatch",
+            "/api/v1/sessions/spawn",
+            "/api/v1/sessions/s-2/messages",
+            "/api/v1/ws",
+            "/api/v1/me",
+            "/api/v1/dispatch/register",
+            "/api/v1/daemon/sessions/s-1",
+            "/api/v1/daemon/../sessions/spawn",
+            "/api/v1/daemon/sessions/%2e%2e/limits",
+            "/api/v1/daemon//sessions/s-1/limits",
+            "/metrics",
+        ] {
+            assert_eq!(worker_route(&Method::GET, path), WorkerRoute::Denied, "{path}");
+            assert_eq!(worker_route(&Method::POST, path), WorkerRoute::Denied, "{path}");
+        }
+        assert_eq!(worker_route(&Method::POST, "/api/v1/sessions"), WorkerRoute::Denied);
+    }
+
+    #[test]
+    fn worker_key_scopes_keep_only_read() {
+        let all: BTreeSet<Scope> = Scope::all().into_iter().collect();
+        assert_eq!(worker_key_scopes(&all), std::iter::once(Scope::Read).collect::<BTreeSet<_>>());
+        let none: BTreeSet<Scope> = std::iter::once(Scope::Dispatch).collect();
+        assert!(worker_key_scopes(&none).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_worker_key_is_refused_dispatch_spawn_and_foreign_routes() {
+        let pool = PgPool::connect_lazy("postgres://invalid").unwrap();
+        pool.close().await;
+        let config = AuthConfig::new(Vec::new(), pool);
+        config.cache_put_bound(sha256_hex("worker-key"), full_ctx(), Some("s-own".into()), 0);
+        config.cache_put_bound(sha256_hex("user-key"), full_ctx(), None, 0);
+        let app = gated_app(config);
+        let worker = ("Authorization", "Bearer worker-key");
+
+        assert_eq!(gated_status(&app, "POST", "/api/v1/sessions/dispatch", worker).await, 403);
+        assert_eq!(gated_status(&app, "POST", "/api/v1/sessions/spawn", worker).await, 403);
+        assert_eq!(gated_status(&app, "GET", "/api/v1/sessions/s-own/messages", worker).await, 403);
+        let cookie = ("Cookie", "cctui_auth=worker-key");
+        assert_eq!(gated_status(&app, "POST", "/api/v1/sessions/spawn", cookie).await, 403);
+
+        let own = "/api/v1/daemon/sessions/s-own/limits";
+        assert_eq!(gated_status(&app, "GET", own, worker).await, 200);
+        assert_eq!(gated_status(&app, "GET", "/api/v1/sessions", worker).await, 200);
+
+        let user = ("Authorization", "Bearer user-key");
+        assert_eq!(gated_status(&app, "POST", "/api/v1/sessions/dispatch", user).await, 200);
+        assert_eq!(gated_status(&app, "POST", "/api/v1/sessions/spawn", user).await, 200);
+    }
+
+    #[tokio::test]
+    async fn the_gate_tells_the_session_list_which_session_is_the_workers() {
+        use tower::ServiceExt;
+        let pool = PgPool::connect_lazy("postgres://invalid").unwrap();
+        pool.close().await;
+        let config = AuthConfig::new(Vec::new(), pool);
+        config.cache_put_bound(sha256_hex("worker-key"), full_ctx(), Some("s-own".into()), 0);
+        let request = Request::builder()
+            .uri("/api/v1/sessions")
+            .header("Authorization", "Bearer worker-key")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = gated_app(config).oneshot(request).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 64).await.unwrap();
+        assert_eq!(body.as_ref(), b"s-own");
+    }
+
+    #[tokio::test]
+    async fn a_minted_worker_key_reaches_only_its_own_session_tree() {
+        let name = "a_minted_worker_key_reaches_only_its_own_session_tree";
+        let Some(url) = crate::test_support::db_url(name) else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("worker-gate-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut conn = pool.acquire().await.unwrap();
+        crate::store::acls::set_user_ceiling(&mut conn, uid, &Scope::all()).await.unwrap();
+        drop(conn);
+        let own = format!("own-{uid}");
+        let (child, grandchild) = (format!("child-{uid}"), format!("grandchild-{uid}"));
+        let token = format!("worker-{uid}");
+        let key_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO auth_keys (user_id, key_hash, kind, session_id, expires_at) \
+             VALUES ($1, $2, 'ephemeral', $3, now() + interval '1 hour') RETURNING id",
+        )
+        .bind(uid)
+        .bind(sha256_hex(&token))
+        .bind(&own)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        crate::store::acls::grant_key(&pool, key_id, Scope::all()).await.unwrap();
+        for (parent, kid) in [(&own, &child), (&child, &grandchild)] {
+            sqlx::query(
+                "INSERT INTO spawn_tree_grants (root_id, parent_id, child_id, budget_usd) \
+                 VALUES ($1, $2, $3, 0)",
+            )
+            .bind(&own)
+            .bind(parent)
+            .bind(kid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let config = AuthConfig::new(Vec::new(), pool);
+        let (ctx, bound) = config.validate_bound(&token).await.expect("the worker key resolves");
+        assert_eq!(bound.as_deref(), Some(own.as_str()));
+        assert_eq!(ctx.scopes, std::iter::once(Scope::Read).collect::<BTreeSet<_>>());
+
+        let app = gated_app(config);
+        let bearer = format!("Bearer {token}");
+        let worker = ("Authorization", bearer.as_str());
+        let limits = |id: &str| format!("/api/v1/daemon/sessions/{id}/limits");
+        assert_eq!(gated_status(&app, "GET", &limits(&own), worker).await, 200);
+        assert_eq!(gated_status(&app, "GET", &limits(&grandchild), worker).await, 200);
+        assert_eq!(gated_status(&app, "GET", &limits(&format!("other-{uid}")), worker).await, 403);
+        assert_eq!(gated_status(&app, "POST", "/api/v1/sessions/dispatch", worker).await, 403);
+        assert_eq!(gated_status(&app, "POST", "/api/v1/sessions/spawn", worker).await, 403);
     }
 }

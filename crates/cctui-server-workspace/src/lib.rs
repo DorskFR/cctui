@@ -370,6 +370,7 @@ fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) 
         // a second nest at `/api/v1` collides on axum's nest catch-all — so
         // `auth_middleware` cannot 401 a tokenless caller.
         .merge(public_api_router)
+        .layer(middleware::from_fn_with_state(auth_config.clone(), auth::worker_key_gate))
         // Credentialed CORS bound to an explicit origin allowlist (same-origin
         // webui + dev Vite, extendable via CCTUI_ALLOWED_ORIGINS). A wildcard
         // origin is invalid once credentials are allowed.

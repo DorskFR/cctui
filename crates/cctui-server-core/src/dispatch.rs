@@ -175,9 +175,9 @@ async fn ensure_dispatch_machine(
 /// already enforces `expires_at` and carries `machine_id` transparently, so the
 /// daemon accepts it exactly like any other machine key — with `kind`
 /// `'ephemeral'` and `session_id` set so the reaper can revoke it on the
-/// session's terminal state. Scopes mirror the owner's ceiling (same as the
-/// shared dispatch key did via the legacy machine path). Returns the plaintext
-/// token to inject as `CCTUI_MACHINE_KEY`.
+/// session's terminal state. It keeps only [`crate::auth::worker_key_scopes`] of
+/// the owner's ceiling. Returns the plaintext token to inject as
+/// `CCTUI_MACHINE_KEY`.
 async fn mint_ephemeral_dispatch_key(
     state: &impl DispatchContext,
     user_id: uuid::Uuid,
@@ -198,7 +198,8 @@ async fn mint_ephemeral_dispatch_key(
         .saturating_add(GRACE_SECS);
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(lifetime);
 
-    let scopes = crate::store::acls::user_ceiling(state.dispatch_pool(), user_id).await?;
+    let ceiling = crate::store::acls::user_ceiling(state.dispatch_pool(), user_id).await?;
+    let scopes = crate::auth::worker_key_scopes(&ceiling);
     let key_id: (uuid::Uuid,) = sqlx::query_as(
         "INSERT INTO auth_keys \
            (user_id, key_hash, key_preview, label, kind, machine_id, session_id, expires_at) \

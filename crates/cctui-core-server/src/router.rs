@@ -85,6 +85,10 @@ pub fn router(host: Host) -> Router {
         .route("/gateway/openai/{*path}", any(openai))
         .route("/gateway/fireworks/{*path}", any(fireworks))
         .route("/gateway/google/{*path}", any(google))
+        .layer(axum::middleware::from_fn_with_state(
+            host.auth_config.clone(),
+            core::auth::worker_key_gate,
+        ))
         .layer(cctui_telemetry::http::trace_layer())
         .with_state(host)
 }

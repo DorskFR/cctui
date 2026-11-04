@@ -89,7 +89,9 @@ impl ServerInjector {
 
     fn outbound_head(&self, head: &[u8]) -> Vec<u8> {
         let placeholder = format!("Bearer {PLACEHOLDER_MACHINE_KEY}");
-        if header_value(head, "authorization") == Some(placeholder.as_bytes()) {
+        let route = request_path(head)
+            .is_some_and(|p| is_worker_route(request_method(head).as_deref(), &p));
+        if route && header_value(head, "authorization") == Some(placeholder.as_bytes()) {
             rewrite_head(head, &AuthShape::Bearer, &self.machine_key, None)
         } else {
             head.to_vec()
@@ -181,6 +183,16 @@ impl ServerInjector {
         upstream.write_all(&body).await?;
         Ok(true)
     }
+}
+
+/// The server routes the worker's daemon and liveness probe call with the key.
+fn is_worker_route(method: Option<&str>, path: &str) -> bool {
+    let clean = !path.contains('%')
+        && path.split('/').skip(1).all(|s| !s.is_empty() && s != "." && s != "..");
+    clean
+        && (path.starts_with("/api/v1/daemon/")
+            || path == "/api/v1/manifest/daemon"
+            || (path == "/api/v1/sessions" && method == Some("GET")))
 }
 
 fn swap_placeholder(body: &[u8], machine_key: &str) -> Option<Vec<u8>> {
@@ -290,6 +302,64 @@ mod tests {
         let (resp, body) = read_message(&mut worker, true).await;
         assert!(resp.starts_with("HTTP/1.1 200"));
         assert_eq!(body, b"{}");
+    }
+
+    #[test]
+    fn worker_routes_cover_the_daemon_client_only() {
+        for path in [
+            "/api/v1/daemon/auth",
+            "/api/v1/daemon/ws",
+            "/api/v1/daemon/version",
+            "/api/v1/daemon/binary/linux-amd64",
+            "/api/v1/daemon/blobs/abc",
+            "/api/v1/daemon/sessions/s-1/gateway-env",
+            "/api/v1/daemon/sessions/s-1/spawn-child",
+            "/api/v1/manifest/daemon",
+        ] {
+            assert!(is_worker_route(Some("GET"), path), "{path}");
+        }
+        assert!(is_worker_route(Some("GET"), "/api/v1/sessions"));
+        assert!(!is_worker_route(Some("POST"), "/api/v1/sessions"));
+        for path in [
+            "/api/v1/sessions/dispatch",
+            "/api/v1/sessions/spawn",
+            "/api/v1/sessions/other/messages",
+            "/api/v1/ws",
+            "/api/v1/me",
+            "/api/v1/daemon/../sessions/spawn",
+            "/api/v1/daemon/%2e%2e/sessions/spawn",
+            "/api/v1/daemon//x",
+            "/metrics",
+        ] {
+            assert!(!is_worker_route(Some("POST"), path), "{path}");
+            assert!(!is_worker_route(Some("GET"), path), "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_placeholder_stays_a_placeholder_off_the_worker_routes() {
+        for line in [
+            "POST /api/v1/sessions/dispatch",
+            "POST /api/v1/sessions/spawn",
+            "GET /api/v1/sessions/other-session/messages",
+            "GET /api/v1/daemon/../sessions/spawn",
+        ] {
+            let (mut worker, mut server) = wired();
+            worker
+                .write_all(
+                    format!(
+                        "{line} HTTP/1.1\r\nHost: cctui.cctui.svc:8700\r\n\
+                         Authorization: Bearer {PLACEHOLDER_MACHINE_KEY}\r\n\
+                         Content-Length: 0\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            let (head, _) = read_message(&mut server, false).await;
+            assert!(!head.contains(KEY), "{line}: {head}");
+            assert!(head.contains(&format!("Bearer {PLACEHOLDER_MACHINE_KEY}")), "{line}: {head}");
+        }
     }
 
     #[tokio::test]
