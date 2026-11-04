@@ -8,6 +8,10 @@ pub const BOOTSTRAP: &str = include_str!("../schema/0001_workspace.sql");
 pub const MIGRATIONS: &[Migration] = &[
     Migration { version: 1, sql: BOOTSTRAP },
     Migration { version: 2, sql: include_str!("../schema/0002_dispatch_identities.sql") },
+    Migration {
+        version: 3,
+        sql: include_str!("../schema/0003_scheduled_message_sealed_body.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -81,7 +85,11 @@ mod tests {
             drop(conn);
             assert_eq!(
                 installations(&pool, "workspace").await,
-                [(1, "bootstrap".to_owned()), (2, "adopted".to_owned())]
+                [
+                    (1, "bootstrap".to_owned()),
+                    (2, "adopted".to_owned()),
+                    (3, "bootstrap".to_owned())
+                ]
             );
 
             sqlx::raw_sql("DROP TABLE public.dispatch_identities").execute(&pool).await.unwrap();
@@ -113,7 +121,11 @@ mod tests {
             assert_eq!(core, [1, 2, 3, 4, 5]);
             assert_eq!(
                 installations(&pool, "workspace").await,
-                [(1, "bootstrap".to_owned()), (2, "bootstrap".to_owned())]
+                [
+                    (1, "bootstrap".to_owned()),
+                    (2, "bootstrap".to_owned()),
+                    (3, "bootstrap".to_owned())
+                ]
             );
             let rows: i64 =
                 sqlx::query_scalar("SELECT count(*) FROM dispatch_identities WHERE dispatch_id=$1")
