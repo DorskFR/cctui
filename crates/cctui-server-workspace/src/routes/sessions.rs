@@ -1225,6 +1225,17 @@ pub fn ilike_contains(q: &str) -> String {
     format!("%{escaped}%")
 }
 
+const SMART_DOUBLE_QUOTES: &[char] = &['\u{201C}', '\u{201D}', '\u{201E}', '\u{201F}'];
+
+/// Left alone once a straight `"` is present: smart quotes inside its phrases
+/// are text.
+fn straighten_phrase_quotes(q: &str) -> std::borrow::Cow<'_, str> {
+    if q.contains('"') || !q.contains(SMART_DOUBLE_QUOTES) {
+        return std::borrow::Cow::Borrowed(q);
+    }
+    std::borrow::Cow::Owned(q.replace(SMART_DOUBLE_QUOTES, "\""))
+}
+
 /// [`ilike_contains`] over a free-text term folded like the indexed chunks.
 fn text_pattern(term: &str) -> String {
     ilike_contains(&crate::search_index::text::fold(term))
@@ -1547,7 +1558,7 @@ pub async fn search_sessions(
     let uid = ctx.owner_filter();
     // Parse the raw `q` into the AST. A blank query → `Empty` → browse.
     // A plain keyword parses to a single free-text leaf, so back-compat holds.
-    let root = cctui_query::parse(params.q.trim());
+    let root = cctui_query::parse(&straighten_phrase_quotes(params.q.trim()));
     let browse = root.is_empty();
     if browse && !params.include_archived {
         return Ok(Json(SessionListResponse::default()));
@@ -2718,7 +2729,7 @@ pub async fn search_conversation(
     Query(params): Query<ConversationSearchParams>,
 ) -> Result<Json<cctui_proto::api::ConversationSearchResponse>, AppError> {
     check_query_len(&params.q)?;
-    let root = cctui_query::parse(params.q.trim());
+    let root = cctui_query::parse(&straighten_phrase_quotes(params.q.trim()));
     let max_hits = params
         .limit
         .map_or(CONV_SEARCH_MAX_HITS, |l| usize::try_from(l.max(1)).unwrap_or(CONV_SEARCH_MAX_HITS))
@@ -5433,7 +5444,7 @@ mod tests {
         let hits = |q: &'static str| {
             let (pool, sid) = (pool.clone(), sid.clone());
             async move {
-                let root = cctui_query::parse(q);
+                let root = cctui_query::parse(&super::straighten_phrase_quotes(q));
                 let terms = super::Terms::of(&root.free_text_terms());
                 super::conv_search_rows(&pool, &sid, &terms, &super::conv_filters(&[]), None)
                     .await
@@ -5445,6 +5456,16 @@ mod tests {
         assert_eq!(hits("\"Change the gate to master...HEAD (three dots).\"").await, 1);
         assert_eq!(hits("\"the hidden tail phrase\"").await, 1, "text past 8 KB");
         assert_eq!(hits("\"It's \"").await, 1, "a straight quote finds a smart one");
+        assert_eq!(
+            hits("\"It\u{2019}s \u{201C}quoted\u{201D} text\"").await,
+            1,
+            "smart quotes copied inside a phrase"
+        );
+        assert_eq!(
+            hits("\u{201C}Change the gate to master...HEAD (three dots).\u{201D}").await,
+            1,
+            "a phrase pasted between smart quotes"
+        );
         assert_eq!(hits("\"first line second line third\"").await, 1, "multi-line copy");
         assert_eq!(hits("screenshot saved").await, 1);
         assert_eq!(hits("iVBORw0KGgo").await, 0, "image payloads are not indexed");
@@ -6117,6 +6138,20 @@ mod tests {
         assert!(sql.contains("s.working_dir ILIKE $1"));
         assert!(sql.contains("c.body ILIKE $1"));
         assert_eq!(params, vec!["%hello%".to_string()]);
+    }
+
+    #[test]
+    fn a_phrase_between_smart_quotes_parses_as_one_phrase() {
+        let q = super::straighten_phrase_quotes("\u{201C}master...HEAD (three dots).\u{201D} gate");
+        assert_eq!(
+            cctui_query::parse(&q).free_text_terms(),
+            vec!["master...HEAD (three dots).".to_string(), "gate".to_string()]
+        );
+        let low = super::straighten_phrase_quotes("\u{201E}so\u{201C}");
+        assert_eq!(cctui_query::parse(&low).free_text_terms(), vec!["so".to_string()]);
+        let kept = "\"It\u{2019}s \u{201C}quoted\u{201D} text\"";
+        assert_eq!(super::straighten_phrase_quotes(kept), kept, "straight quotes win");
+        assert_eq!(super::straighten_phrase_quotes("plain words"), "plain words");
     }
 
     #[test]

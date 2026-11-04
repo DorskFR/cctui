@@ -218,6 +218,60 @@ describe('ConversationSearch', () => {
 		expect(search.loading).toBe(false);
 	});
 
+	it('marks a failed request so the bar never reads it as no matches', async () => {
+		let fail = false;
+		const search = new ConversationSearch({
+			id: () => 's1',
+			fetchHits: async () => {
+				if (fail) throw new Error('504');
+				return res();
+			},
+			ensureSeqVisible: async () => true,
+			debounceMs: 0
+		});
+		search.setQuery('needle');
+		await search.run();
+		expect(search.count).toBe(3);
+
+		fail = true;
+		search.setQuery('needle more');
+		await search.run();
+		expect(search.failed).toBe(true);
+		expect(search.count, 'stale hits of the previous query are dropped').toBe(0);
+
+		fail = false;
+		await search.run();
+		expect(search.failed).toBe(false);
+		expect(search.count).toBe(3);
+
+		search.setQuery('');
+		expect(search.failed).toBe(false);
+	});
+
+	it('is loading while the request is in flight', async () => {
+		let release: (r: ConversationSearchResponse) => void = () => {};
+		const search = new ConversationSearch({
+			id: () => 's1',
+			fetchHits: () => new Promise((r) => (release = r)),
+			ensureSeqVisible: async () => true,
+			debounceMs: 0
+		});
+		search.setQuery('needle');
+		const done = search.run();
+		expect(search.loading).toBe(true);
+		expect(search.count).toBe(0);
+		release(res());
+		await done;
+		expect(search.loading).toBe(false);
+		expect(search.count).toBe(3);
+	});
+
+	it('highlights a phrase pasted between smart quotes as one term', () => {
+		const { search } = ctl();
+		search.rawQuery = '\u201cChange the gate to master...HEAD (three dots).\u201d';
+		expect(search.terms).toEqual(['Change the gate to master...HEAD (three dots).']);
+	});
+
 	it('runs nothing for a blank query', async () => {
 		const { search, fetchHits } = ctl();
 		search.setQuery('   ');

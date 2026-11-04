@@ -1243,6 +1243,8 @@
 	"search_field_title": "Titre",
 	"search_placeholder_id": "fragment d’ID…",
 	"search_placeholder_title": "titre de session…",
+	"search_status_failed": "Échec de la recherche",
+	"search_status_searching": "Recherche…",
 	"sessions_account_switch_aria": "Changer de compte (actuellement {name})",
 	"sessions_account_switch_tip": "compte : {name} — cliquer pour changer",
 	"sessions_account_tip": "compte : {name}",

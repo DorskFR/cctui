@@ -6,6 +6,13 @@
  * term (spaces preserved). Terms are AND-matched server-side; the client uses
  * the same split to highlight every term in snippets and the chat window.
  */
+const SMART_DOUBLE_QUOTES = /[“”„‟]/g;
+
+/** Keep in step with the server's `straighten_phrase_quotes`. */
+export function straightenPhraseQuotes(q: string): string {
+	return q.includes('"') ? q : q.replace(SMART_DOUBLE_QUOTES, '"');
+}
+
 export function tokenizeQuery(q: string): string[] {
 	const terms: string[] = [];
 	let cur = '';

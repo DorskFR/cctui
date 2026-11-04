@@ -16,14 +16,18 @@
 		inputHost?.querySelector('input')?.focus();
 	});
 
-	const counter = $derived(
-		search.count === 0
-			? m.conversation_search_no_hits()
-			: m.conversation_hit_counter({
-					n: search.index + 1,
-					total: search.truncated ? `${search.count}+` : search.count
-				})
-	);
+	function counterText(): string {
+		if (search.failed) return m.search_status_failed();
+		if (search.count === 0) {
+			return search.loading ? m.search_status_searching() : m.conversation_search_no_hits();
+		}
+		return m.conversation_hit_counter({
+			n: search.index + 1,
+			total: search.truncated ? `${search.count}+` : search.count
+		});
+	}
+
+	const counter = $derived(counterText());
 
 	function onkeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter') {

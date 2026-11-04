@@ -24,7 +24,7 @@ import {
 import { ApiError, errMessage } from "$lib/api";
 import { m } from "$lib/paraglide/messages";
 import { awaitSessionRow } from "$lib/awaitSessionRow";
-import { tokenizeQuery } from "$lib/search";
+import { straightenPhraseQuotes, tokenizeQuery } from "$lib/search";
 import { BRIEF_FETCH_MAX_BYTES, followupPrefill } from "$lib/followup";
 import { freeText, parse, type Schema } from "@dorsk/tsumikit";
 import {
@@ -349,7 +349,9 @@ export class SessionsPage {
   pagerActive = $derived(this.searching || this.showArchived);
   // Highlight only the free-text portion of the query (field clauses excluded).
   searchTerms = $derived.by(() =>
-    tokenizeQuery(freeText(parse(this.query, this.searchSchema))),
+    tokenizeQuery(
+      freeText(parse(straightenPhraseQuotes(this.query), this.searchSchema)),
+    ),
   );
   // Not searching ⇒ browse the archive (empty q, archived scope).
   #pagerArchived = $derived(this.searching ? this.showArchived : true);
