@@ -262,11 +262,11 @@ export const endpoints = {
   hiddenOwners: () => api.get<HiddenOwners>(path("get_me_hidden_owners")),
   hideOwner: (kind: HiddenOwnerKind, targetId: string) =>
     api.put<void>(
-      path("put_me_hidden_owners_by_kind_by_target_id", { kind, target_id: targetId }),
+      path("put_me_hidden_owners_by_kind_by_target", { kind, target_id: targetId }),
     ),
   unhideOwner: (kind: HiddenOwnerKind, targetId: string) =>
     api.del<void>(
-      path("delete_me_hidden_owners_by_kind_by_target_id", { kind, target_id: targetId }),
+      path("delete_me_hidden_owners_by_kind_by_target", { kind, target_id: targetId }),
     ),
   /** Aggregate session counts for the Overview — correct past the list's
    * 25-row display cap (the list-derived counts are not). */

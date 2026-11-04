@@ -18,7 +18,7 @@ function setup(initial: HiddenOwners = { owners: [] }) {
   return { qc, api, invalidate, actions: hiddenOwnerActions(qc, api) };
 }
 
-const invalidatedKeys = (spy: ReturnType<typeof vi.spyOn>) =>
+const invalidatedKeys = (spy: { mock: { calls: unknown[][] } }) =>
   spy.mock.calls.map((c) => (c[0] as { queryKey: unknown }).queryKey);
 
 describe("hiddenOwnerActions", () => {
@@ -78,10 +78,10 @@ describe("hidden-owner query keys", () => {
 
   it("builds the hidden-owner routes from the generated table", () => {
     expect(path("get_me_hidden_owners")).toBe("/me/hidden-owners");
-    expect(path("put_me_hidden_owners_by_kind_by_target_id", { kind: "user", target_id: "u1" })).toBe(
+    expect(path("put_me_hidden_owners_by_kind_by_target", { kind: "user", target_id: "u1" })).toBe(
       "/me/hidden-owners/user/u1",
     );
-    expect(path("delete_me_hidden_owners_by_kind_by_target_id", { kind: "machine", target_id: "m1" })).toBe(
+    expect(path("delete_me_hidden_owners_by_kind_by_target", { kind: "machine", target_id: "m1" })).toBe(
       "/me/hidden-owners/machine/m1",
     );
   });
