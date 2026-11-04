@@ -783,12 +783,15 @@ dependencies = [
 name = "cctui-crypto"
 version = "0.29.0-beta.2"
 dependencies = [
+ "anyhow",
+ "cctui-secrets",
  "chacha20poly1305",
  "hex",
  "hmac 0.12.1",
  "regex",
  "serde_json",
  "sha2 0.10.9",
+ "tokio",
  "tracing",
 ]
 
@@ -1037,6 +1040,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
