@@ -224,7 +224,7 @@ The dispatcher no longer needs RBAC on Secrets.
 | `/workspace` | RW | The task working tree (overlay, clone, or empty). |
 | `/opt/context` | RO after fetch | Context pack (prompts, docs, skills, guard rules). |
 | `/home/worker` | RW | Per-session agent state (`.claude`, `.codex`, `.mcp.json`, `.npmrc`, `.gnupg`). |
-| `/var/run/guard-proxy`, `/var/run/workflow-guard` | RW | Proxy policy + guard state. |
+| `/var/run/guard-proxy`, `/var/run/workflow-guard` | RO to the agent | Proxy policy + guard state, written only by the proxy and the guard. |
 | `/var/run/guard-proxy-ca` | RO | Per-pod guard-proxy CA (`ca.pem`); in the supervisor's Landlock RO set so `NODE_EXTRA_CA_CERTS` is readable after privdrop. |
 | `/var/run/gpg-agent` | RW | Shared `gpg-agent` emptyDir carrying the forwarded restricted signing socket (`transparent-external` only). |
 | `/tmp` | RW | Scratch, `RESULT_FILE`, hardening report. |

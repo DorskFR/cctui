@@ -1680,8 +1680,8 @@ phase_hardening
 
 # ── Phase 8: Drop privileges + run ──────────────────────────────────────────
 # cctui-supervisor applies landlock + seccomp, drops all caps, setuids to the
-# worker, then exec's the daemon. RO: system + context/prompts; RW: workspace,
-# home, tmp, the guard/proxy state dirs. The supervisor's own --report captures
+# worker, then exec's the daemon. RO: system, context/prompts, the guard/proxy
+# state dirs; RW: workspace, home, tmp, gpg-agent. The supervisor's own --report captures
 # landlock/seccomp/uid for the hardening metadata. `exec` keeps a backgrounded
 # call's $! the daemon's pid: without it $! is a subshell that SIGTERM kills
 # while the daemon never sees the signal.
@@ -1692,7 +1692,7 @@ run_supervised_daemon() {
         --ro "$CONTEXT_DIR" \
         $(extra_ro_flags) \
         --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \
-        --rw /var/run/workflow-guard --ro /var/run/guard-proxy --rw /var/run/gpg-agent \
+        --ro /var/run/workflow-guard --ro /var/run/guard-proxy --rw /var/run/gpg-agent \
         $(extra_rw_flags) \
         --user "$WORKER_UID" \
         --report /tmp/hardening.json \

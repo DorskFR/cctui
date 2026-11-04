@@ -59,11 +59,13 @@ impl Verdict {
 /// Result of a `/transition` request.
 pub type TransitionResponse = Value;
 
-/// The workflow engine. Holds parsed steps + tool sets and persists the current
-/// step to a root-owned state file. All public methods take `&self` and lock
-/// internally, matching the threaded Python daemon.
+/// The workflow engine. Holds parsed steps + tool sets and the current step,
+/// mirrored to a state file for outside observers but never read back. All
+/// public methods take `&self` and lock internally, matching the threaded
+/// Python daemon.
 pub struct WorkflowEngine {
     lock: Mutex<()>,
+    state: Mutex<(i64, BTreeMap<u32, u32>)>,
     steps: BTreeMap<u32, WorkflowStep>,
     step_numbers: Vec<u32>,
     tool_sets: HashMap<String, Vec<String>>,
@@ -147,8 +149,14 @@ impl WorkflowEngine {
         report_out: Option<PathBuf>,
     ) -> Self {
         let step_numbers: Vec<u32> = steps.keys().copied().collect();
+        let first = step_numbers.first().copied().unwrap_or(0);
+        let mut visits = BTreeMap::new();
+        if first != 0 {
+            visits.insert(first, 1);
+        }
         let engine = Self {
             lock: Mutex::new(()),
+            state: Mutex::new((i64::from(first), visits.clone())),
             steps,
             step_numbers,
             tool_sets,
@@ -168,11 +176,6 @@ impl WorkflowEngine {
             && let Err(e) = std::fs::create_dir_all(parent)
         {
             tracing::error!("failed to create guard state dir {}: {e}", parent.display());
-        }
-        let first = engine.step_numbers.first().copied().unwrap_or(0);
-        let mut visits = BTreeMap::new();
-        if first != 0 {
-            visits.insert(first, 1);
         }
         if let Err(e) = engine.write_state(i64::from(first), &visits) {
             tracing::error!(
@@ -200,36 +203,20 @@ impl WorkflowEngine {
     }
 
     fn write_state(&self, step: i64, visits: &BTreeMap<u32, u32>) -> std::io::Result<()> {
-        let visits: serde_json::Map<String, Value> =
+        let on_disk: serde_json::Map<String, Value> =
             visits.iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
-        std::fs::write(&self.state_file, json!({ "step": step, "visits": visits }).to_string())
+        std::fs::write(&self.state_file, json!({ "step": step, "visits": on_disk }).to_string())?;
+        *self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            (step, visits.clone());
+        Ok(())
     }
 
     fn read_state(&self) -> i64 {
         self.read_full_state().0
     }
 
-    /// Read the persisted `(step, visit-counts)`. Backward compatible with the
-    /// legacy `{"step": N}` files: a missing `visits` object reads as empty.
     fn read_full_state(&self) -> (i64, BTreeMap<u32, u32>) {
-        let default = i64::from(self.step_numbers.first().copied().unwrap_or(0));
-        let Ok(text) = std::fs::read_to_string(&self.state_file) else {
-            return (default, BTreeMap::new());
-        };
-        let Ok(value) = serde_json::from_str::<Value>(&text) else {
-            return (default, BTreeMap::new());
-        };
-        let step = value.get("step").and_then(Value::as_i64).unwrap_or(default);
-        let visits = value
-            .get("visits")
-            .and_then(Value::as_object)
-            .map(|m| {
-                m.iter()
-                    .filter_map(|(k, v)| Some((k.parse().ok()?, u32::try_from(v.as_u64()?).ok()?)))
-                    .collect()
-            })
-            .unwrap_or_default();
-        (step, visits)
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     /// Expand a step's `[network]` set names into concrete `host:port` entries.

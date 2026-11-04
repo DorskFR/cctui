@@ -902,12 +902,19 @@ max-visits: 1
 }
 
 #[test]
-fn legacy_state_file_without_visits_is_read() {
+fn an_external_state_file_rewrite_does_not_move_the_step() {
     let prompt = "\
-# Step 1
+### Step 1: Research
+[allowed]: Read
+[disallowed]: *
 [transition]: 2
 
-# Step 2
+### Step 2: Build
+[allowed]: *
+[transition]: 3
+
+### Step 3: Ship
+[allowed]: *
 [transition]: Exit
 ";
     let dir = tempfile::tempdir().unwrap();
@@ -922,8 +929,21 @@ fn legacy_state_file_without_visits_is_read() {
         None,
         false,
     );
+    let bash = || decision(&engine.check("Bash", &json!({ "command": "rm x" })));
+
+    std::fs::write(&state_file, "{\"step\": 3, \"visits\": {}}").unwrap();
+    assert_eq!(engine.get_state()["step"], json!(1));
+    assert_eq!(bash(), "deny", "still gated by Step 1");
+    assert_eq!(engine.transition(&json!(2))["ok"], json!(true), "Step 1 -> 2 still valid");
+
     std::fs::write(&state_file, "{\"step\": 1}").unwrap();
-    assert_eq!(engine.transition(&json!(2))["ok"], json!(true));
+    assert_eq!(engine.get_state()["step"], json!(2));
+    assert_eq!(bash(), "allow");
+    assert_eq!(engine.transition(&json!(3))["ok"], json!(true), "Step 2 -> 3 still valid");
+
+    let mirrored: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_file).unwrap()).unwrap();
+    assert_eq!(mirrored["step"], json!(3), "the file still mirrors the step");
 }
 
 #[test]
