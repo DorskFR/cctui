@@ -80,6 +80,14 @@ pub(super) fn register(r: Routes) -> Routes {
         sess_write(),
     )
     .add(
+        &[Method::GET],
+        "/sessions/{id}/hook-policy",
+        "Read the hook rules the session was launched with.",
+        get(routes::tool_policy::get_session_hook_policy),
+        Authn::Bearer,
+        sess_read(),
+    )
+    .add(
         &[Method::GET, Method::PUT],
         "/sessions/{id}/tool-guard",
         "Read or toggle the session's gateway tool-guard bypass.",

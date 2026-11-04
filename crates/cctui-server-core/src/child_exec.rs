@@ -413,6 +413,7 @@ pub async fn spawn_child(
         env,
         bootstrap: serde_json::Value::Null,
         parent_local_id: Some(parent.session_id.clone()),
+        hook_policy: None,
     };
     state.child_state().spawn_capabilities.insert(child_key.clone(), child_cap);
 

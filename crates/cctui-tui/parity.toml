@@ -1375,6 +1375,12 @@ tui = "waived"
 reason = "the daemon calls this, not a human client"
 
 [[route]]
+id = "get_sessions_by_id_hook_policy"
+# GET /sessions/{id}/hook-policy — Read the hook rules the session was launched with.
+tui = "waived"
+reason = "the launched hook rules are a read-only chip in the webui session details popover"
+
+[[route]]
 id = "get_sessions_by_id_tool_guard"
 # GET /sessions/{id}/tool-guard — Read or toggle the session's gateway tool-guard bypass.
 tui = "waived"

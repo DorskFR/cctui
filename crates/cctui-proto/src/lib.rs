@@ -17,6 +17,7 @@ pub mod github;
 pub mod guard_step;
 pub mod harness;
 pub mod harness_models;
+pub mod hook_policy;
 pub mod identity;
 pub mod ids;
 pub mod injected;

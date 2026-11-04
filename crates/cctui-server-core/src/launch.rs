@@ -97,10 +97,13 @@ pub async fn launch_machine(
 pub async fn launch_durable(
     state: &crate::state::CoreState,
     actor: Uuid,
-    spawn: MachineSpawn,
+    mut spawn: MachineSpawn,
 ) -> Result<(), LaunchError> {
     let command = spawn.command_id;
+    let rules = crate::hook_policy::account_rules(&state.pool, &spawn.failed.session_id).await?;
+    let carried = crate::hook_policy::attach(&mut spawn.spec, rules);
     crate::machine_launches::prepare(&state.pool, command, actor, &spawn.failed).await?;
+    crate::hook_policy::record(&state.pool, command, carried.as_ref()).await?;
     let result =
         launch_machine(&state.bus, &state.pending_commands, &state.command_waiters, spawn).await;
     match &result {

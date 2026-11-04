@@ -35,6 +35,7 @@ pub mod git;
 pub mod guardwatch;
 pub mod harden;
 pub mod harness_update;
+pub mod hook_policy;
 pub mod imagepost;
 pub mod launchgate;
 pub mod listdirs;

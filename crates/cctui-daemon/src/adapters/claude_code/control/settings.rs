@@ -1,6 +1,10 @@
 use std::fmt::Write as _;
 
+use cctui_proto::hook_policy::HookPolicy;
 use cctui_proto::injected::SESSION_CONTEXT;
+
+use crate::hook_policy::HookPolicySink as _;
+use crate::hook_policy::claude_code::ClaudeCode;
 
 use super::{PathBuf, json};
 
@@ -268,7 +272,38 @@ pub(in crate::adapters::claude_code) fn ensure_hook_settings(
     whip_phrases: Option<&serde_json::Value>,
     agent_relay_session: Option<&str>,
 ) -> Option<PathBuf> {
-    ensure_hook_settings_in(
+    ensure_hook_settings_with_policy(
+        sock,
+        whip,
+        short,
+        account_settings,
+        gateway_env,
+        model,
+        effort,
+        whip_phrases,
+        agent_relay_session,
+        None,
+    )
+}
+
+/// [`ensure_hook_settings`] plus the session's hook policy, appended after
+/// cctui's own hooks. The policy is also kept beside the settings file so a
+/// cold resume, which has no spawn spec, re-applies it: see
+/// [`recover_hook_policy`].
+#[allow(clippy::too_many_arguments)]
+pub(in crate::adapters::claude_code) fn ensure_hook_settings_with_policy(
+    sock: &std::path::Path,
+    whip: bool,
+    short: &str,
+    account_settings: Option<&serde_json::Value>,
+    gateway_env: &std::collections::BTreeMap<String, String>,
+    model: Option<&str>,
+    effort: Option<&str>,
+    whip_phrases: Option<&serde_json::Value>,
+    agent_relay_session: Option<&str>,
+    hook_policy: Option<&HookPolicy>,
+) -> Option<PathBuf> {
+    write_hook_settings_in(
         &config_root()?,
         sock,
         whip,
@@ -279,10 +314,12 @@ pub(in crate::adapters::claude_code) fn ensure_hook_settings(
         effort,
         whip_phrases,
         agent_relay_session,
+        hook_policy,
     )
 }
 
-#[allow(clippy::cognitive_complexity, clippy::too_many_arguments)]
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn ensure_hook_settings_in(
     root: &std::path::Path,
     sock: &std::path::Path,
@@ -294,6 +331,35 @@ fn ensure_hook_settings_in(
     effort: Option<&str>,
     whip_phrases: Option<&serde_json::Value>,
     agent_relay_session: Option<&str>,
+) -> Option<PathBuf> {
+    write_hook_settings_in(
+        root,
+        sock,
+        whip,
+        short,
+        account_settings,
+        gateway_env,
+        model,
+        effort,
+        whip_phrases,
+        agent_relay_session,
+        None,
+    )
+}
+
+#[allow(clippy::cognitive_complexity, clippy::too_many_arguments)]
+fn write_hook_settings_in(
+    root: &std::path::Path,
+    sock: &std::path::Path,
+    whip: bool,
+    short: &str,
+    account_settings: Option<&serde_json::Value>,
+    gateway_env: &std::collections::BTreeMap<String, String>,
+    model: Option<&str>,
+    effort: Option<&str>,
+    whip_phrases: Option<&serde_json::Value>,
+    agent_relay_session: Option<&str>,
+    hook_policy: Option<&HookPolicy>,
 ) -> Option<PathBuf> {
     let path = root.join(format!("hook-settings-{short}.json"));
     let exe = std::env::current_exe()
@@ -404,7 +470,7 @@ fn ensure_hook_settings_in(
     {
         session_start.extend(account.iter().cloned());
     }
-    hooks["SessionStart"] = serde_json::Value::Array(session_start);
+    finish_hooks(root, short, &mut hooks, session_start, hook_policy);
     let managed = managed_settings(hooks, gateway_env, model, effort);
     // Layer the server-provided per-account settings UNDERNEATH the managed
     // settings: account keys are merged in, but the managed keys
@@ -425,6 +491,48 @@ fn ensure_hook_settings_in(
         return None;
     }
     Some(path)
+}
+
+fn hook_policy_path(root: &std::path::Path, short: &str) -> PathBuf {
+    root.join(format!("hook-policy-{short}.json"))
+}
+
+/// Install the `SessionStart` groups, then append the policy after every
+/// cctui hook and keep it on disk for a cold resume. No policy removes a
+/// stale copy left by an earlier launch of `short`.
+fn finish_hooks(
+    root: &std::path::Path,
+    short: &str,
+    hooks: &mut serde_json::Value,
+    session_start: Vec<serde_json::Value>,
+    policy: Option<&HookPolicy>,
+) {
+    hooks["SessionStart"] = serde_json::Value::Array(session_start);
+    let path = hook_policy_path(root, short);
+    let Some(policy) = policy.filter(|p| !p.rules.is_empty()) else {
+        let _ = std::fs::remove_file(path);
+        return;
+    };
+    if let Err(err) = ClaudeCode.apply(policy, hooks) {
+        tracing::warn!(%err, %short, "hook policy not applied");
+        return;
+    }
+    let written = std::fs::create_dir_all(root).and_then(|()| {
+        cctui_proto::util::write_private(&path, &serde_json::to_vec(policy).unwrap_or_default())
+    });
+    if let Err(err) = written {
+        tracing::warn!(%err, path = %path.display(), "hook policy: cannot keep it for resume");
+    }
+}
+
+/// The hook policy `short` was spawned with, for a cold resume.
+pub(super) fn recover_hook_policy(short: &str) -> Option<HookPolicy> {
+    recover_hook_policy_in(&config_root()?, short)
+}
+
+fn recover_hook_policy_in(root: &std::path::Path, short: &str) -> Option<HookPolicy> {
+    let bytes = std::fs::read(hook_policy_path(root, short)).ok()?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 /// Rules every managed session denies. Deny rules hold even in
@@ -1092,6 +1200,7 @@ mod tests {
             env: std::collections::BTreeMap::new(),
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,
+            hook_policy: None,
         }
     }
 
@@ -1161,6 +1270,7 @@ mod tests {
             env,
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,
+            hook_policy: None,
         };
         let block = build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()], None, None);
         assert!(block.starts_with("<cctui-session-context>\n"));
@@ -1193,6 +1303,7 @@ mod tests {
             env: std::collections::BTreeMap::new(),
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,
+            hook_policy: None,
         };
         let cap = cctui_proto::api::SpawnCapability::machine_default();
         let block = build_session_context(&spec, "/work/cctui", &[], Some(&cap), None);
@@ -1225,6 +1336,126 @@ mod tests {
             .flat_map(|group| group["hooks"].as_array().cloned().unwrap_or_default())
             .map(|hook| hook["command"].as_str().unwrap_or_default().to_owned())
             .collect()
+    }
+
+    fn policy_rule(
+        event: cctui_proto::hook_policy::HookEvent,
+        tool: cctui_proto::hook_policy::ToolClass,
+        command: &str,
+    ) -> cctui_proto::hook_policy::HookRule {
+        cctui_proto::hook_policy::HookRule {
+            event,
+            tool,
+            command: command.into(),
+            timeout_secs: Some(9),
+        }
+    }
+
+    fn write_with_policy(
+        root: &std::path::Path,
+        short: &str,
+        account: Option<&serde_json::Value>,
+        policy: Option<&HookPolicy>,
+    ) -> serde_json::Value {
+        let path = write_hook_settings_in(
+            root,
+            std::path::Path::new("/run/c.sock"),
+            false,
+            short,
+            account,
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            None,
+            None,
+            policy,
+        )
+        .unwrap();
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    fn groups_with_matcher<'a>(
+        settings: &'a serde_json::Value,
+        event: &str,
+        matcher: &str,
+    ) -> Vec<&'a serde_json::Value> {
+        settings["hooks"][event]
+            .as_array()
+            .map(|groups| groups.iter().filter(|g| g["matcher"] == matcher).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn policy_hooks_join_the_settings_with_claude_matchers_and_cctui_hooks_stay_intact() {
+        use cctui_proto::hook_policy::{HookEvent, ToolClass};
+        let tmp = tempfile::tempdir().unwrap();
+        let policy = HookPolicy {
+            rules: vec![
+                policy_rule(HookEvent::PreToolUse, ToolClass::Shell, "p-shell"),
+                policy_rule(HookEvent::PreToolUse, ToolClass::FileEdit, "p-edit"),
+                policy_rule(HookEvent::PreToolUse, ToolClass::FileWrite, "p-write"),
+                policy_rule(HookEvent::PostToolUse, ToolClass::Subagent, "p-agent"),
+                policy_rule(HookEvent::PreToolUse, ToolClass::Any, "p-any"),
+                policy_rule(HookEvent::SessionStart, ToolClass::Any, "p-start"),
+                policy_rule(HookEvent::UserPromptSubmit, ToolClass::Any, "p-prompt"),
+                policy_rule(HookEvent::Stop, ToolClass::Any, "p-stop"),
+            ],
+        };
+        let account = json!({ "hooks": { "PreToolUse": [{ "matcher": "Bash", "hooks": [] }] } });
+        let bare = write_with_policy(tmp.path(), "nopolicy", Some(&account), None);
+        let merged = write_with_policy(tmp.path(), "policy01", Some(&account), Some(&policy));
+
+        for event in ["PreToolUse", "PostToolUse", "Stop", "SessionStart"] {
+            let cctui = bare["hooks"][event].as_array().unwrap();
+            let all = merged["hooks"][event].as_array().unwrap();
+            assert!(!cctui.is_empty(), "cctui registers {event}");
+            assert_eq!(
+                &all[..cctui.len()],
+                &cctui[..],
+                "cctui's {event} hooks come first, untouched"
+            );
+        }
+        let command = |g: &serde_json::Value| {
+            g["hooks"][0]["command"].as_str().unwrap_or_default().to_owned()
+        };
+        let only = |event: &str, matcher: &str| -> Vec<String> {
+            groups_with_matcher(&merged, event, matcher)
+                .into_iter()
+                .map(command)
+                .filter(|c| c.starts_with("p-"))
+                .collect()
+        };
+        assert_eq!(only("PreToolUse", "Bash"), ["p-shell"]);
+        assert_eq!(only("PreToolUse", "Edit|MultiEdit|NotebookEdit"), ["p-edit"]);
+        assert_eq!(only("PreToolUse", "Write"), ["p-write"]);
+        assert_eq!(only("PreToolUse", "*"), ["p-any"]);
+        assert_eq!(only("PostToolUse", "Task|Agent"), ["p-agent"]);
+        assert_eq!(merged["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"], "p-prompt");
+        assert_eq!(merged["hooks"]["UserPromptSubmit"][0].get("matcher"), None);
+        let stop = merged["hooks"]["Stop"].as_array().unwrap().last().unwrap();
+        assert_eq!(
+            stop,
+            &json!({ "hooks": [{ "type": "command", "command": "p-stop", "timeout": 9 }] })
+        );
+        let starts = session_start_commands(&merged);
+        assert!(starts[0].ends_with("ask-hook --event start --sock '/run/c.sock'"), "canary first");
+        assert_eq!(starts.last().map(String::as_str), Some("p-start"));
+        assert!(
+            merged["permissions"]["deny"].as_array().unwrap().contains(&json!("EnterWorktree")),
+            "managed denies survive"
+        );
+    }
+
+    #[test]
+    fn the_policy_is_kept_for_a_cold_resume_and_cleared_without_one() {
+        use cctui_proto::hook_policy::{HookEvent, ToolClass};
+        let tmp = tempfile::tempdir().unwrap();
+        let policy =
+            HookPolicy { rules: vec![policy_rule(HookEvent::Stop, ToolClass::Any, "p-stop")] };
+        write_with_policy(tmp.path(), "resume01", None, Some(&policy));
+        assert_eq!(recover_hook_policy_in(tmp.path(), "resume01"), Some(policy));
+        write_with_policy(tmp.path(), "resume01", None, None);
+        assert_eq!(recover_hook_policy_in(tmp.path(), "resume01"), None);
     }
 
     #[test]

@@ -1,9 +1,10 @@
 use super::{
     AdapterEvent, Context, DeferredDispatch, DispatchDoneTracker, Driver, Duration, EndReason,
     JobIds, LaunchArgs, LaunchEnv, Path, PathBuf, SpawnWatchdog, StateJson, agent_relay_config,
-    build_session_context, detect_whip_from_settings, dispatch_done, ensure_hook_settings, json,
-    launch, mpsc, resolve_launch_env_for, socket, transcript,
+    build_session_context, detect_whip_from_settings, dispatch_done, json, launch, mpsc,
+    resolve_launch_env_for, socket, transcript,
 };
+use super::settings::{ensure_hook_settings_with_policy, recover_hook_policy};
 use tracing::Instrument as _;
 
 impl Driver {
@@ -120,7 +121,7 @@ impl Driver {
         // into the managed `--settings` file so a spare-claimed resume
         // keeps its routing env and model/effort — the settings file survives the
         // spare-claim, the dispatch `env` and a `--model` CLI arg do not.
-        let settings_arg = ensure_hook_settings(
+        let settings_arg = ensure_hook_settings_with_policy(
             &self.cfg.hook_socket_path,
             whip,
             short,
@@ -130,6 +131,7 @@ impl Driver {
             st.as_ref().and_then(|s| s.effort.as_deref()),
             launch.whip_phrases.as_ref(),
             None,
+            recover_hook_policy(short).as_ref(),
         )
         .map(|p| p.to_string_lossy().into_owned());
 
@@ -353,6 +355,7 @@ impl Driver {
             env,
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,
+            hook_policy: None,
         })
     }
 
@@ -404,7 +407,7 @@ impl Driver {
         // The `SessionStart` hook that holds the first turn is only registered
         // when there is a relay to wait for.
         let agent_tool = launch.mcp_config.is_some();
-        launch.settings_path = ensure_hook_settings(
+        launch.settings_path = ensure_hook_settings_with_policy(
             &self.cfg.hook_socket_path,
             whip,
             short,
@@ -414,6 +417,7 @@ impl Driver {
             spec.effort.as_deref(),
             launch_env.whip_phrases.as_ref(),
             agent_tool.then_some(session_id),
+            spec.hook_policy.as_ref(),
         )
         .map(|p| p.to_string_lossy().into_owned());
         // A staging failure is fatal: silently dropping an attachment the user
@@ -601,7 +605,7 @@ impl Driver {
         launch.plugin_dirs.clone_from(&launch_env.plugin_dirs);
         launch.mcp_config =
             agent_relay_config(short, session_id, launch_env.spawn_capability.as_ref());
-        launch.settings_path = ensure_hook_settings(
+        launch.settings_path = ensure_hook_settings_with_policy(
             &self.cfg.hook_socket_path,
             whip,
             short,
@@ -611,6 +615,7 @@ impl Driver {
             None,
             launch_env.whip_phrases.as_ref(),
             launch.mcp_config.is_some().then_some(session_id),
+            spec.hook_policy.as_ref(),
         )
         .map(|p| p.to_string_lossy().into_owned());
         let prompt = spec.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty());

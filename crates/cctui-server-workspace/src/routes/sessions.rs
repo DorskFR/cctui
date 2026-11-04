@@ -3556,6 +3556,7 @@ pub async fn fork_session(
         env,
         bootstrap: serde_json::Value::Null,
         parent_local_id: None,
+        hook_policy: None,
     };
     let frame = fork_frame(
         &adapter_id,

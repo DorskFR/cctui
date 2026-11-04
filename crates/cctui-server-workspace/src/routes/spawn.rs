@@ -402,6 +402,7 @@ async fn execute_spawn(
         env,
         bootstrap,
         parent_local_id: None,
+        hook_policy: None,
     };
     persist_spawn_capability(state, machine_uuid, req, permission_mode, &token_session_id).await;
     let launched = cctui_server_core::launch::launch_durable(

@@ -127,6 +127,7 @@ async fn execute(
         env: bound.env,
         bootstrap: serde_json::Value::Null,
         parent_local_id: None,
+        hook_policy: None,
     };
     core::launch::launch_durable(
         &host.core,

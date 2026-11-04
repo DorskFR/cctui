@@ -57,6 +57,16 @@ extra_rw_flags() {
     IFS=$_OLDIFS
 }
 
+# CCTUI_GUARD_EXEC=1 (exactly) makes cctui-guard authorise every exec of the
+# supervised tree via a seccomp user-notification filter, and makes the
+# supervisor's RW paths noexec. Any other value, or unset, leaves both off.
+GUARD_EXEC_SOCKET=/var/run/workflow-guard/exec.sock
+guard_exec_on() { [ "${CCTUI_GUARD_EXEC:-}" = 1 ]; }
+guard_exec_flags() {
+    guard_exec_on || return 0
+    printf '%s\n%s\n' --guard-exec "$GUARD_EXEC_SOCKET"
+}
+
 
 # ── Required platform identity ──────────────────────────────────────────────
 if [ -z "${CCTUI_MACHINE_KEY:-}" ]; then
@@ -173,7 +183,8 @@ phase_dispatch_env() {
                 dispatch_identity_failed "the server sent an invalid env name" ;;
             CONTEXT_PACK_*) ;;
             WORKER_* | GUARD_* | PROXY_* | POLICY_* | CONTEXT_* | PRIVATE_ALLOW_FILE \
-                | TERMINATION_LOG | DISPATCH_ENV_URL | NET_MODE | ACP_AGENTS | CCTUI_BASE_URL)
+                | TERMINATION_LOG | DISPATCH_ENV_URL | NET_MODE | ACP_AGENTS | CCTUI_BASE_URL \
+                | CCTUI_GUARD_EXEC)
                 dispatch_identity_failed "the server sent a reserved env name: $_de_k" ;;
         esac
         _de_v=$(printf '%s' "$_de_json" \
@@ -1319,6 +1330,10 @@ phase_guard() {
         IFS=$_OLDIFS
     fi
 
+    if guard_exec_on; then
+        set -- "$@" --exec-socket "$GUARD_EXEC_SOCKET"
+    fi
+
     is_root || log "WARNING: guard: non-root start, cctui-guard runs as the agent's uid $(id -u)"
     cctui-guard "$@" &
     GUARD_PID=$!
@@ -1332,6 +1347,17 @@ phase_guard() {
     export CCTUI_GUARD_URL="http://127.0.0.1:${GUARD_PORT}"
     export PROMPT_FILE="$_prompt"
     log "guard: started (prompt=$_prompt, rules=$_rules, pid $GUARD_PID)"
+}
+
+# Exec interception has no policy to apply without the guard: refuse to start
+# rather than run the agent with the opt-in silently dropped.
+phase_guard_exec() {
+    guard_exec_on || return 0
+    if [ "$GUARD_ON" != on ]; then
+        log "FATAL: CCTUI_GUARD_EXEC=1 but cctui-guard is not running (no stepped prompt); refusing to start"
+        exit 1
+    fi
+    log "guard: exec interception on (socket $GUARD_EXEC_SOCKET); RW paths are noexec"
 }
 
 # ── Phase 6b: Pre-flight isolation check ────────────────────────────────────
@@ -1674,6 +1700,7 @@ phase_callback
 require_known_adapter
 phase_preflight
 phase_guard
+phase_guard_exec
 phase_permissions
 default_node_ca
 phase_hardening
@@ -1694,6 +1721,7 @@ run_supervised_daemon() {
         --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \
         --ro /var/run/workflow-guard --ro /var/run/guard-proxy --rw /var/run/gpg-agent \
         $(extra_rw_flags) \
+        $(guard_exec_flags) \
         --user "$WORKER_UID" \
         --report /tmp/hardening.json \
         -- cctui-daemon run --no-auto-update "$@"

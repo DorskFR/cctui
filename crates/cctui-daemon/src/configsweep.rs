@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime};
 
 use tokio_util::sync::CancellationToken;
 
-const PREFIXES: &[&str] = &["hook-settings-", "mcp-agent-", "whip-phrases-"];
+const PREFIXES: &[&str] = &["hook-policy-", "hook-settings-", "mcp-agent-", "whip-phrases-"];
 
 /// Files older than this go regardless of whether their session is still known.
 pub const MAX_AGE: Duration = Duration::from_hours(24 * 30);
