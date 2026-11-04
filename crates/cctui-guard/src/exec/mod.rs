@@ -1,6 +1,8 @@
-//! Exec interception. cctui-supervisor installs a seccomp user-notification
-//! filter on `execve`/`execveat` and hands its listener here; every exec in the
-//! worker tree then waits for this module's verdict from the engine.
+//! Exec interception.
+//!
+//! cctui-supervisor installs a seccomp user-notification filter on
+//! `execve`/`execveat` and hands its listener here; every exec in the worker
+//! tree then waits for this module's verdict from the engine.
 
 pub mod argv;
 pub mod decide;

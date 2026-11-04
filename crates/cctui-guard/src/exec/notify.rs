@@ -366,7 +366,7 @@ mod tests {
         if cfg!(target_arch = "x86_64") {
             assert_eq!(classify(0xC000_003E, 59), Some(ExecKind::Execve));
             assert_eq!(classify(0xC000_003E, 322), Some(ExecKind::Execveat));
-            assert_eq!(classify(0xC000_003E, 0x4000_0000 | 520), None);
+            assert_eq!(classify(0xC000_003E, 0x4000_0000 | 0x208), None);
             assert_eq!(classify(0x4000_0003, 11), None);
             assert_eq!(classify(0xC000_003E, 0), None);
         }
