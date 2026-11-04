@@ -171,6 +171,10 @@ phase_dispatch_env() {
         case "$_de_k" in
             "" | [0-9]* | *[!A-Za-z0-9_]*)
                 dispatch_identity_failed "the server sent an invalid env name" ;;
+            CONTEXT_PACK_*) ;;
+            WORKER_* | GUARD_* | PROXY_* | POLICY_* | CONTEXT_* | PRIVATE_ALLOW_FILE \
+                | TERMINATION_LOG | DISPATCH_ENV_URL | NET_MODE | ACP_AGENTS | CCTUI_BASE_URL)
+                dispatch_identity_failed "the server sent a reserved env name: $_de_k" ;;
         esac
         _de_v=$(printf '%s' "$_de_json" \
             | jq -j --arg k "$_de_k" '.env[$k] | if type == "string" then . else error end' \
