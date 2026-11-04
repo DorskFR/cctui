@@ -525,10 +525,13 @@ impl WorkflowEngine {
         if !ok
             && tool == "Bash"
             && let Some(grants) = self.grants.get(&step_u)
-            && bash_granted(grants, tool_input, &allowed, &disallowed)
         {
-            ok = true;
-            reason = String::new();
+            if bash_granted(grants, tool_input, &allowed, &disallowed) {
+                ok = true;
+                reason = String::new();
+            } else {
+                reason = self.bash_grant_reason(step_u, grants, tool_input, &reason);
+            }
         }
         self.decision_log.check(step_num, tool, &check_target(tool, tool_input), ok, &reason);
         if !ok {
@@ -572,14 +575,90 @@ impl WorkflowEngine {
             }
         }
         if let Some(grants) = self.grants.get(&step_u)
-            && let Err(reason) = grants.exec.check(path, argv)
+            && let Err(detail) = grants.exec.check(path, argv)
         {
+            let reason = self.grant_reason(step_u, grants, path, argv, &detail);
             tracing::info!("DENY exec [Step {step_u}] {path} reason={reason}");
             self.decision_log.exec(Some(step_num), path, argv, false, &reason);
             return Verdict::deny(format!("[Step {step_u}] {reason}"));
         }
         self.decision_log.exec(Some(step_num), path, argv, true, "");
         Verdict::Allow
+    }
+
+    /// A grant denial in capability terms: the capability another step grants
+    /// for this exec when there is one, else the matcher's `detail`; either way
+    /// with the capabilities this step does grant.
+    fn grant_reason(
+        &self,
+        step_u: u32,
+        grants: &Grants,
+        path: &str,
+        argv: &[String],
+        detail: &str,
+    ) -> String {
+        let granted = grants.capabilities.join(", ");
+        self.grants
+            .iter()
+            .filter(|(id, _)| **id != step_u)
+            .find_map(|(_, g)| g.exec.check(path, argv).ok())
+            .map_or_else(
+                || format!("{detail} (granted in step {step_u}: {granted})"),
+                |cap| {
+                    format!("capability `{cap}` not granted in step {step_u} (granted: {granted})")
+                },
+            )
+    }
+
+    /// [`Self::grant_reason`] for the first segment of a refused `Bash` call
+    /// that the step's exec table rejects, else `phrase_reason` with the
+    /// granted list.
+    fn bash_grant_reason(
+        &self,
+        step_u: u32,
+        grants: &Grants,
+        tool_input: &Value,
+        phrase_reason: &str,
+    ) -> String {
+        let cmd = tool_input.get("command").and_then(Value::as_str).unwrap_or_default();
+        split_bash_segments(cmd)
+            .iter()
+            .filter_map(|seg| shlex::split(seg).filter(|argv| !argv.is_empty()))
+            .find_map(|argv| {
+                grants
+                    .exec
+                    .check(&argv[0], &argv)
+                    .err()
+                    .map(|detail| self.grant_reason(step_u, grants, &argv[0], &argv, &detail))
+            })
+            .unwrap_or_else(|| {
+                format!(
+                    "{phrase_reason} (granted in step {step_u}: {})",
+                    grants.capabilities.join(", ")
+                )
+            })
+    }
+
+    /// The first lines of `cctui-guard why`: the active step and what it
+    /// grants.
+    #[must_use]
+    pub fn why_header(&self) -> String {
+        let _guard = self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let step_num = self.read_state();
+        if step_num == STEP_EXITED {
+            return "session complete: no step is active\n".to_string();
+        }
+        let Some((step_u, step)) =
+            u32::try_from(step_num).ok().and_then(|n| self.steps.get(&n).map(|s| (n, s)))
+        else {
+            return "no active step: every exec is allowed\n".to_string();
+        };
+        let granted = self.grants.get(&step_u).map_or_else(
+            || "no capabilities (phrase rules only)".to_string(),
+            |g| g.capabilities.join(", "),
+        );
+        let title = if step.title.is_empty() { String::new() } else { format!(": {}", step.title) };
+        format!("step {step_u}{title}\ngranted: {granted}\n")
     }
 
     /// The decision-log sink, for verdicts reached outside the engine.

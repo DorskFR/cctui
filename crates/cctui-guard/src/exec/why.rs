@@ -43,13 +43,15 @@ impl WhyRing {
     }
 }
 
-/// Plain-text rendering of [`WhyRing::recent`].
+/// Plain-text rendering of [`WhyRing::recent`] under `header` (the active
+/// step and its granted capabilities).
 #[must_use]
-pub fn render(recent: &[Denial]) -> String {
+pub fn render(header: &str, recent: &[Denial]) -> String {
+    let mut out = header.to_string();
     if recent.is_empty() {
-        return "no exec denials recorded\n".to_string();
+        out.push_str("no exec denials recorded\n");
+        return out;
     }
-    let mut out = String::new();
     for d in recent {
         let _ = writeln!(out, "denied `{}` (pid {}) — {}", d.command, d.pid, d.reason);
     }
@@ -97,11 +99,12 @@ mod tests {
 
     #[test]
     fn renders_each_denial_or_an_empty_note() {
-        assert_eq!(render(&[]), "no exec denials recorded\n");
-        let text = render(&[denial(2), denial(1)]);
+        assert_eq!(render("", &[]), "no exec denials recorded\n");
+        let text = render("step 1\n", &[denial(2), denial(1)]);
         assert_eq!(
             text,
-            "denied `git push 2` (pid 2) — reason 2\ndenied `git push 1` (pid 1) — reason 1\n"
+            "step 1\ndenied `git push 2` (pid 2) — reason 2\ndenied `git push 1` (pid 1) — \
+             reason 1\n"
         );
     }
 

@@ -29,12 +29,16 @@ pub fn router_with_why(engine: Engine, why: Arc<WhyRing>) -> Router {
         .route("/health", get(health))
         .route("/check", post(check))
         .route("/transition", post(transition))
-        .with_state(engine)
-        .merge(Router::new().route("/why", get(get_why)).with_state(why))
+        .with_state(Arc::clone(&engine))
+        .merge(Router::new().route("/why", get(get_why)).with_state((engine, why)))
 }
 
-async fn get_why(State(why): State<Arc<WhyRing>>) -> impl IntoResponse {
-    ([("Content-Type", "text/plain; charset=utf-8")], render(&why.recent()))
+async fn get_why(State((engine, why)): State<(Engine, Arc<WhyRing>)>) -> impl IntoResponse {
+    let header = tokio::task::spawn_blocking(move || engine.why_header()).await.unwrap_or_else(|e| {
+        tracing::error!("guard why task failed: {e}");
+        String::new()
+    });
+    ([("Content-Type", "text/plain; charset=utf-8")], render(&header, &why.recent()))
 }
 
 async fn health() -> impl IntoResponse {
@@ -155,7 +159,8 @@ mod tests {
         let body = tokio::task::spawn_blocking(move || fetch(&addr)).await.unwrap().unwrap();
         assert_eq!(
             body,
-            "denied `git push` (pid 42) — [Step 1] 'git push' is disallowed in this step\n"
+            "no active step: every exec is allowed\ndenied `git push` (pid 42) — [Step 1] 'git \
+             push' is disallowed in this step\n"
         );
     }
 }

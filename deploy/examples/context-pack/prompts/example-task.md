@@ -2,8 +2,12 @@
 
 A neutral example showing the prompt-step format `cctui-guard` parses. Set
 `TASK_PROMPT_FILE=example-task.md` to dispatch it; it resolves under
-`/opt/context/prompts/`. The `[allowed]`/`[network]` lines reference the sets
-defined in `../guard-rules.md`.
+`/opt/context/prompts/`. `[allowed]` names harness tools (`Read`, `Edit`,
+`Bash`, the tool sets of `../guard-rules.md`) and **capabilities** (`git:read`,
+`remote:write`, the `ns:name` entries of `../capabilities.toml`). A capability
+carries both the binaries a step may exec and the hosts it may reach, so no step
+needs a `[network]` line; keep one only for a genuine one-off host. Every step
+grants `harness:baseline`, the worker's own process tree.
 
 The first step is an **Intent+Acceptance ratify gate** (see the
 `intent-acceptance` skill): the agent emits what "done" means, the concrete
@@ -24,8 +28,8 @@ The third step implements, running exactly the oracle skills the plan selected
 (see the per-surface oracle skills — `golden-tests`, `render-check`,
 `endpoint-tests`, `roundtrip-check`, `contract-check`). Each exercises its
 surface in-pod against test-mode / replay and is granted only that surface's
-sandbox net-allow — never a third party's production host. Before introducing
-any new abstraction it runs the **prior-art** step (cite the existing
+sandbox capability (`oracle:*`) — never a third party's production host. Before
+introducing any new abstraction it runs the **prior-art** step (cite the existing
 util/type/component you'll reuse, or justify a new one — the retrieval half of
 the consistency problem), and the `[gate]` runs the **consistency-gates**
 (ast-grep / dependency-cruiser / jscpd) so a correct-but-inconsistent change
@@ -35,8 +39,8 @@ change (the ratchet) in the same diff.
 The last step is the mirror of the ratify gate — an **evidence-required "done"
 gate** (see the `evidence-gate` skill): the agent must assemble an `evidence[]`
 array (keyed to the plan's `required_evidence`) proving each acceptance
-condition before finalize unlocks. `remote-write` is only granted in the final
-step, and the `auto-merge` capability is granted there **only** when the plan
+condition before finalize unlocks. `remote:write` is only granted from Step 4
+on, and the `auto-merge` capability is granted there **only** when the plan
 says `autonomy: auto-merge`; otherwise the finalized PR routes to a human via
 `needs_human`. A `brand_gate: true` plan additionally routes the rendered
 copy/layout to a human taste sign-off. Human review becomes a glance at the
@@ -50,9 +54,9 @@ it cannot mark its own homework. It drives the per-PR preview env (Playwright fo
 a UI surface, HTTP for an API surface) and attaches an independent `pass|fail`
 verdict; a `fail` blocks merge regardless of what the implementer asserted. It is
 not a guarded step in *this* prompt — it is a distinct dispatch granted only the
-`net-preview` net-allow (plus `net-model`) and no code-write / remote-write
-capability; standing up the preview env it drives is infra, out of scope for the
-pack.
+`preview:acceptance` capability (plus `model:api`) and no code-write /
+`remote:write` capability; standing up the preview env it drives is infra, out
+of scope for the pack.
 
 The fifth step handles **inbound review comments** without capitulating (see the
 `comment-handling` skill): each comment is classified — `mechanical` (auto-fix,
@@ -74,9 +78,8 @@ callback) UNLESS every surface is low blast radius, in which case auto-ratify.
 Only transition to Step 2 once the artifact exists and is ratified. Persist it —
 it is reused verbatim as the acceptance script in Step 4.
 
-[allowed]: all-read
+[allowed]: code-read, harness:baseline, read:all, model:api
 [disallowed]: *
-[network]: net-model, net-vcs
 [transition]: 2, Exit
 
 # Step 2: Classify (select oracle-set, autonomy, brand gate)
@@ -89,9 +92,8 @@ surface), `brand_gate` (true iff a `brand-visible` surface is present), and the
 union `required_evidence`. Persist the plan — it conditions Steps 3 and 4. Do not
 modify anything in this step.
 
-[allowed]: all-read
+[allowed]: code-read, harness:baseline, model:api
 [disallowed]: *
-[network]: net-model
 [transition]: 3, Exit
 
 # Step 3: Implement
@@ -100,9 +102,10 @@ Make the change and run exactly the `oracles[]` the Step 2 plan selected — no
 more, no fewer (see the per-surface oracle skills: `golden-tests`,
 `render-check`, `endpoint-tests`, `roundtrip-check`, `contract-check`). Each
 oracle exercises its surface in-pod against test-mode / replay and emits the
-evidence Step 4 consumes. The network below grants only the per-surface sandbox
-sets — never a third party's production host; a surface that needs a host its set
-does not grant was mis-classified. Commit. Push only in Step 4.
+evidence Step 4 consumes. The `oracle:*` capabilities below grant only the
+per-surface sandbox hosts — never a third party's production host; a surface that
+needs a host its capability does not grant was mis-classified. Commit. Push only
+in Step 4.
 
 **Before** you write the first new utility/type/component, run the `prior-art`
 skill: search the generated helper index (`docs/helper-index.md`) for an existing
@@ -124,9 +127,8 @@ rather than its own drifting summary. Add a `[compact]` line to a step to also
 ask the agent to trim its working context (off by default — leave it out on
 large-context models where compaction loses more than it saves).
 
-[allowed]: all-read, code-write, Bash, git commit
+[allowed]: code-read, code-write, Bash, harness:baseline, read:all, git:commit, build:check, model:api, oracle:external-sandbox, oracle:payments-sandbox
 [disallowed]: remote-write
-[network]: net-model, net-external-sandbox, net-payments-sandbox
 [compact]: false
 [gate]: make oracle-check
 [transition]: 4, Exit
@@ -156,8 +158,8 @@ finalize the merge; otherwise leave the PR for a human and report `status:
 the rendered copy/layout to a human taste sign-off via `needs_human`, carrying
 the brand-visible evidence.
 
-The `[llmjudge]` below is the **semantic acceptance gate** (guard hardening,
-CCT-516) — the mirror of Step 3's deterministic `[gate]`. Where the gate proves
+The `[llmjudge]` below is the **semantic acceptance gate** — the mirror of Step
+3's deterministic `[gate]`. Where the gate proves
 mechanical facts (tests exit 0), the judge answers binary questions about the
 *meaning* of the evidence, in a clean context (the ratified artifact, the
 assembled `evidence[]`, and the diff — never this session's reasoning), and the
@@ -166,9 +168,8 @@ per-question verdicts come back as a `kind: "judge"` evidence entry — attach i
 to the result callback's `evidence[]` so the PR carries e.g. "5/6 verified; Q4
 FAILED: no test covers replayed delivery".
 
-[allowed]: all-read, remote-write, Bash
+[allowed]: code-read, Bash, harness:baseline, read:all, remote:write, schema:validate, model:api
 [disallowed]:
-[network]: net-model, net-vcs
 [llmjudge]
 - Does every acceptance condition in the ratified Step 1 artifact have at least one evidence[] entry that observably backs it? :: evidence[] covers only two of three conditions
 - Does the diff itself implement each acceptance condition, rather than only adding tests, docs, or scaffolding? :: the PR only adds a test asserting the current behavior
@@ -197,7 +198,6 @@ round-trip on an open judgment thread, report `status: "needs_human"` carrying
 both positions. The human merge gate from Step 4 is never bypassed — this step
 answers and fixes, it does not merge.
 
-[allowed]: all-read, code-write, Bash, git commit, github-write
+[allowed]: code-read, code-write, Bash, harness:baseline, read:all, git:commit, gh:write, gh:comment, build:check, model:api, oracle:external-sandbox, oracle:payments-sandbox
 [disallowed]:
-[network]: net-model, net-vcs, net-external-sandbox, net-payments-sandbox
 [transition]: Exit

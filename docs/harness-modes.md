@@ -278,3 +278,32 @@ Remaining Codex gaps:
   but inert.
 - How Codex treats a hook it kills on its own timeout was not probed. The shim's 10 s curl timeout keeps
   it well under the hook timeout.
+
+## 7. Enforcement is harness-independent; hooks steer
+
+Two layers enforce a guarded dispatch, and neither depends on the harness:
+
+- **Egress.** `cctui-guard-proxy` fences the pod's network. The step's granted
+  capabilities (plus any one-off `[network]` host) are the only hosts it lets
+  through.
+- **Exec.** With `CCTUI_GUARD_EXEC=1`, a seccomp user-notification filter sends
+  every `execve` of the agent tree to `cctui-guard`, which allows it only when
+  a capability of the active step grants that binary, subcommand and flags
+  (`worker-contract.md`, "Exec interception"). Claude Code, Codex and OpenCode
+  all reach `git`, `gh` and `curl` through `execve`, so the same step denies
+  the same command on every harness.
+
+The per-harness pre-tool hooks of §6 are **steering**: they refuse a tool call
+before it runs, with the same capability-worded reason the exec layer writes to
+stderr, so the model learns early and the decision log names the tool. A repo
+or agent setting can switch them off (§6 rows 2, 3, 6). That costs the early
+refusal, not the enforcement. When a command fails with `Permission denied`,
+the agent runs `cctui-guard why` (the pack's `AGENTS.md`/`CLAUDE.md` say so) to
+see the step, its granted capabilities and the recent denials.
+
+Residual gap: tools a harness runs **in-process** never exec, so only the hooks
+see them. `Edit`/`Write`/`apply_patch` file writes are bounded by Landlock (the
+RW paths), not by the step. `WebFetch` and MCP calls are bounded by the egress
+fence (the host must be granted), not by the step's tool list. Inside those
+bounds, a harness whose hooks are off can edit any writable file and call any
+reachable MCP server in any step.

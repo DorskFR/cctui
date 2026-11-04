@@ -260,12 +260,45 @@ guard with the kernel's path and argv; no shell parsing is involved.
 
 The guard judges each exec against the active step's explicit `[disallowed]`
 phrases (allow-lists and a `*` disallow keep governing tool calls only, since
-the harness execs its own helpers), logs it to the decision log as
-`"source": "exec"` with `tool` (the executed path), `argv` and `rule`, and on a
-denial writes `guard: denied `<argv>` — <reason>` to the process's own stderr
-before failing the exec with `EPERM`. `cctui-guard why` prints the last five
-denials, for when stderr went nowhere or the message landed on a wrapper shell.
-No step, step 0 and the post-Exit state allow every exec.
+the harness execs its own helpers). A step that grants capabilities is judged
+against its exec table as well: a binary, subcommand or flag no granted
+capability reaches is denied. That table covers the whole agent tree (the
+daemon, the harness, the shells its tools spawn, the guard shims), so every
+granting step also grants the pack's `harness:baseline`, which lists that tree
+(see `deploy/examples/context-pack/capabilities.toml`). Every verdict goes to
+the decision log as `"source": "exec"` with `tool` (the executed path), `argv`
+and `rule`; on a denial the guard writes `guard: denied `<argv>` — <reason>` to
+the process's own stderr before failing the exec with `EPERM`. A grant denial
+reads in capability terms, identically on the exec and the tool-hook path:
+
+```
+[Step 1] capability `git:push` not granted in step 1 (granted: harness:baseline, read:all, git:read, gh:read, model:api)
+```
+
+When no step of the prompt grants the exec, the reason is the argv mismatch
+(`` `curl` is not granted by any capability of this step``) followed by the
+same granted list. `cctui-guard why` prints the active step, the capabilities
+it grants and the last five denials, for when stderr went nowhere or the
+message landed on a wrapper shell (`sh -c "git push"` can be denied at the
+`sh` exec). Agents are told to run it through the
+pack's `AGENTS.md`/`CLAUDE.md`. No step, step 0 and the post-Exit state allow
+every exec.
+
+Environment and flags:
+
+| Name | Set by | Meaning |
+| --- | --- | --- |
+| `CCTUI_GUARD_EXEC` | dispatch profile | `1` arms interception (reserved, see the table above) |
+| `CCTUI_GUARD_URL` | entrypoint | the guard's HTTP address; `cctui-guard why` reads it (default `127.0.0.1:9999`) |
+| `--exec-socket` / `--guard-exec` | entrypoint | `/var/run/workflow-guard/exec.sock`, root-only; carries the listener fd from `cctui-supervisor` to `cctui-guard` |
+| `--exec-timeout-ms` | `cctui-guard` flag | per-exec decision ceiling, default 5000 |
+
+The guard runs as root outside the filtered tree (it is started before
+`cctui-supervisor`), so its own `[gate]` and `[llmjudge]` commands are not
+intercepted. Workspace binaries are withheld by Landlock, which grants no
+`EXECUTE` access on the RW paths: there is no `noexec` mount and no mount or
+user namespace is needed. The guard needs the same pid namespace as the agent
+tree, because it reads `/proc/<pid>/mem` and duplicates the target's fd 2.
 
 Fail-closed by construction: a check that errors, cannot read the target, or
 takes longer than `--exec-timeout-ms` (default 5000) denies; once the guard

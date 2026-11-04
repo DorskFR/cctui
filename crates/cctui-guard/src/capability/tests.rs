@@ -491,3 +491,122 @@ fn shipped_example_registry_loads_and_resolves() {
     let write = reg.compile(&names(&["remote:write"])).unwrap();
     assert!(write.exec.check("/usr/bin/git", &names(&["git", "push", "--force"])).is_err());
 }
+
+#[test]
+fn unknown_bin_denial_lists_the_steps_grants() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = registry(&[(TICKET_REGISTRY, "--capabilities")]);
+    let engine = engine_for(&dir, GRANT_PROMPT, &reg);
+    assert_eq!(
+        exec(&engine, "/usr/bin/curl", &["curl", "https://x"]),
+        Verdict::deny(
+            "[Step 1] `curl` is not granted by any capability of this step (granted in step 1: \
+             git:push, git:read, gh:comment, make:test)"
+        )
+    );
+}
+
+#[test]
+fn a_capability_another_step_grants_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = registry(&[(TICKET_REGISTRY, "--capabilities")]);
+    let engine = engine_for(&dir, GRANT_PROMPT, &reg);
+    assert_eq!(engine.transition(&json!(2))["ok"], true);
+    let expected =
+        Verdict::deny("[Step 2] capability `git:push` not granted in step 2 (granted: git:read)");
+    assert_eq!(exec(&engine, "/usr/bin/git", &["git", "push", "-u", "origin", "main"]), expected);
+    assert_eq!(engine.check("Bash", &json!({ "command": "git push -u origin main" })), expected);
+    assert_eq!(engine.why_header(), "step 2: Read only\ngranted: git:read\n");
+}
+
+const PACK: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/examples/context-pack");
+
+struct Pack {
+    workflow: Workflow,
+    sets: HashMap<String, Vec<String>>,
+    registry: LoadedRegistry,
+    import_errors: Vec<String>,
+}
+
+fn example_pack() -> Pack {
+    let pack = Path::new(PACK);
+    let prompt = pack.join("prompts/example-task.md");
+    let rules = pack.join("guard-rules.md");
+    let workflow = Workflow::compile(&std::fs::read_to_string(&prompt).unwrap()).unwrap();
+    let resolved = crate::resolve::resolve_sets(None, &rules, &prompt, &workflow);
+    let registry =
+        resolve_registry(None, Some(&adjacent(&rules)), Some(&prompt), Some(&workflow));
+    Pack { workflow, sets: resolved.sets, registry, import_errors: resolved.import_errors }
+}
+
+#[test]
+fn shipped_example_pack_lints_clean() {
+    let pack = example_pack();
+    assert!(pack.import_errors.is_empty(), "{:?}", pack.import_errors);
+    assert!(pack.registry.errors.is_empty(), "{:?}", pack.registry.errors);
+    let ids: Vec<u32> = pack.workflow.steps.iter().map(|s| s.id).collect();
+    let mut diags = crate::lint::lint(&pack.workflow, &pack.sets, &ids).diagnostics;
+    diags.extend(lint(&pack.workflow, &pack.sets, &pack.registry.registry));
+    let rendered: Vec<String> = diags.iter().map(ToString::to_string).collect();
+    assert!(rendered.is_empty(), "{rendered:#?}");
+}
+
+#[test]
+fn every_example_step_grants_capabilities_including_the_baseline() {
+    let pack = example_pack();
+    let steps = pack.workflow.into_steps();
+    let grants = compile_steps(&steps, &pack.sets, &pack.registry.registry).unwrap();
+    assert_eq!(grants.keys().collect::<Vec<_>>(), steps.keys().collect::<Vec<_>>());
+    for (id, g) in &grants {
+        assert!(g.capabilities.iter().any(|c| c == "harness:baseline"), "step {id}: {g:?}");
+        assert!(g.hosts().contains(&"api.example.com:443".to_string()), "step {id}: model:api");
+        for (path, argv) in [
+            ("/usr/local/bin/cctui-daemon", &["cctui-daemon", "run", "--no-auto-update"][..]),
+            ("/usr/local/bin/claude", &["claude", "-p", "x"][..]),
+            ("/bin/bash", &["bash", "-c", "-l", "rg -n foo"][..]),
+            ("/usr/bin/rg", &["rg", "-n", "foo", "src"][..]),
+            ("/usr/bin/curl", &["curl", "-s", "http://127.0.0.1:9999/state"][..]),
+            ("/usr/local/bin/cctui-guard", &["cctui-guard", "why"][..]),
+            ("/usr/bin/git", &["git", "status", "--porcelain", "--untracked-files=normal"][..]),
+            ("/usr/bin/git", &["git", "rev-parse", "--show-toplevel"][..]),
+            ("/usr/bin/sed", &["sed", "-n", "1,20p", "a.rs"][..]),
+        ] {
+            let got = g.exec.check(path, &names(argv));
+            assert_eq!(got, Ok("harness:baseline"), "step {id}: {argv:?}");
+        }
+        assert!(g.exec.check("/usr/bin/sed", &names(&["sed", "-i", "s/a/b/", "x"])).is_err());
+        assert!(g.exec.check("/usr/bin/git", &names(&["git", "config", "alias.p", "x"])).is_err());
+    }
+    for (id, cap) in [(1, "git:push"), (2, "git:read"), (3, "git:push")] {
+        assert!(!grants[&id].capabilities.iter().any(|c| c == cap), "step {id} grants {cap}");
+    }
+    assert!(grants[&4].capabilities.iter().any(|c| c == "git:push"));
+}
+
+#[test]
+fn example_pack_denial_and_why_name_the_step_and_its_grants() {
+    let pack = example_pack();
+    let steps = pack.workflow.into_steps();
+    let grants = compile_steps(&steps, &pack.sets, &pack.registry.registry).unwrap();
+    let granted = grants[&1].capabilities.join(", ");
+    let title = steps[&1].title.clone();
+    let dir = tempfile::tempdir().unwrap();
+    let engine = WorkflowEngine::new(
+        steps,
+        pack.sets,
+        dir.path().join("state"),
+        dir.path().join("policy.json"),
+        vec![],
+        dir.path().to_path_buf(),
+        None,
+        false,
+    )
+    .with_grants(grants);
+    let expected = Verdict::deny(format!(
+        "[Step 1] capability `git:push` not granted in step 1 (granted: {granted})"
+    ));
+    assert!(granted.starts_with("harness:baseline, "), "{granted}");
+    assert_eq!(exec(&engine, "/usr/bin/git", &["git", "push", "origin", "main"]), expected);
+    assert_eq!(engine.check("Bash", &json!({ "command": "git push origin main" })), expected);
+    assert_eq!(engine.why_header(), format!("step 1: {title}\ngranted: {granted}\n"));
+}
