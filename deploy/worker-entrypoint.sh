@@ -478,20 +478,41 @@ phase_repo_registries() {
 }
 
 # In-container transparent egress: the same rules net-init installs for the
-# sidecar mode. The worker uid's TCP is REDIRECTed to the proxy, its link-local
-# (cloud metadata / credential) and non-TCP egress REJECTed, UDP/53 to the
-# resolver excepted; IPv6 is denied wholesale. $1: the resolv.conf to read.
+# sidecar mode. Only PROXY_UID (and loopback) egresses directly: every other uid,
+# root included, has its TCP REDIRECTed to the proxy and everything else
+# REJECTed; link-local is REJECTed for all, IPv6 denied wholesale. There is no
+# negated owner match: a uid the rules do not name is confined, not exempt.
+# DNS goes to WORKER_DNS_RESOLVER (IPv4 or name, fatal when unresolvable) when
+# set, else to the first IPv4 nameserver as is. $1: the resolv.conf to read.
 install_transparent_rules() {
-    # Exempt root + proxy uid (avoid a redirect loop), loopback.
-    iptables -t nat -A OUTPUT -m owner --uid-owner 0 -j RETURN
+    _dns=$(awk '/^nameserver/ && $2 ~ /^[0-9.]+$/ {print $2; exit}' "$1" 2>/dev/null || true)
+    # Resolved before any rule exists, so the lookup still uses the resolver.
+    _rdns=$_dns
+    if [ -n "$_dns" ] && [ -n "${WORKER_DNS_RESOLVER:-}" ]; then
+        case "$WORKER_DNS_RESOLVER" in
+            *[!0-9.]*) _rdns=$(getent ahostsv4 "$WORKER_DNS_RESOLVER" 2>/dev/null \
+                | awk '{print $1; exit}' || true) ;;
+            *) _rdns=$WORKER_DNS_RESOLVER ;;
+        esac
+        if [ -z "$_rdns" ]; then
+            log "FATAL: cannot resolve WORKER_DNS_RESOLVER $WORKER_DNS_RESOLVER; refusing to start"
+            exit 1
+        fi
+    fi
+
     iptables -t nat -A OUTPUT -m owner --uid-owner "$PROXY_UID" -j RETURN
     iptables -t nat -A OUTPUT -d 127.0.0.0/8 -j RETURN
 
-    # First IPv4 resolver (IPv6 egress is denied below).
-    _dns=$(awk '/^nameserver/ && $2 ~ /^[0-9.]+$/ {print $2; exit}' "$1" 2>/dev/null || true)
     if [ -n "$_dns" ]; then
-        iptables -t nat -A OUTPUT -d "$_dns" -j RETURN
-        log "iptables: RETURN DNS $_dns"
+        for _p in udp tcp; do
+            if [ "$_rdns" = "$_dns" ]; then
+                iptables -t nat -A OUTPUT -p "$_p" -d "$_dns" --dport 53 -j RETURN
+            else
+                iptables -t nat -A OUTPUT -p "$_p" -d "$_dns" --dport 53 \
+                    -j DNAT --to-destination "$_rdns:53"
+            fi
+        done
+        log "iptables: DNS to $_dns:53 -> $_rdns:53"
     fi
 
     # Operator-plane direct exemptions: comma-separated host:port, resolved to
@@ -520,23 +541,24 @@ install_transparent_rules() {
 
     # RETURN link-local from nat first, else the REDIRECT rewrites the
     # destination and the filter REJECT cannot match it.
-    iptables -t nat -A OUTPUT -m owner --uid-owner "$WORKER_UID" -d 169.254.0.0/16 -j RETURN
-    iptables -A OUTPUT -m owner --uid-owner "$WORKER_UID" -d 169.254.0.0/16 -j REJECT
-    log "iptables: worker egress to 169.254.0.0/16 REJECTed (metadata/credential deny)"
+    iptables -t nat -A OUTPUT -d 169.254.0.0/16 -j RETURN
+    iptables -t nat -A OUTPUT -p tcp -j REDIRECT --to-port "$PROXY_PORT"
+    log "iptables: egress of every uid but $PROXY_UID -> :$PROXY_PORT"
 
-    iptables -t nat -A OUTPUT -p tcp -m owner --uid-owner "$WORKER_UID" \
-        -j REDIRECT --to-port "$PROXY_PORT"
-    log "iptables: worker egress (uid $WORKER_UID) -> :$PROXY_PORT"
+    iptables -A OUTPUT -m owner --uid-owner "$PROXY_UID" -j ACCEPT
+    iptables -A OUTPUT -d 169.254.0.0/16 -j REJECT
+    log "iptables: egress to 169.254.0.0/16 REJECTed (metadata/credential deny)"
 
     # Only TCP reaches the proxy; REJECT (not DROP) so UDP/QUIC fails fast.
-    iptables -A OUTPUT -m owner --uid-owner "$WORKER_UID" -o lo -j ACCEPT
-    if [ -n "$_dns" ]; then
-        iptables -A OUTPUT -m owner --uid-owner "$WORKER_UID" -p udp -d "$_dns" --dport 53 -j ACCEPT
+    iptables -A OUTPUT -o lo -j ACCEPT
+    if [ -n "$_rdns" ]; then
+        iptables -A OUTPUT -p udp -d "$_rdns" --dport 53 -j ACCEPT
+        iptables -A OUTPUT -p tcp -d "$_rdns" --dport 53 -j ACCEPT
     else
-        log "WARNING: no IPv4 nameserver in $1; worker UDP DNS is REJECTed"
+        log "WARNING: no IPv4 nameserver in $1; DNS is REJECTed"
     fi
-    iptables -A OUTPUT -m owner --uid-owner "$WORKER_UID" ! -p tcp -j REJECT
-    log "iptables: worker non-TCP egress REJECTed (UDP/53 to ${_dns:-<none>} allowed)"
+    iptables -A OUTPUT ! -p tcp -j REJECT
+    log "iptables: non-TCP egress REJECTed (DNS to ${_rdns:-<none>}:53 allowed)"
 
     # The proxy + REDIRECT are IPv4-only (SO_ORIGINAL_DST): deny IPv6 egress.
     if ip6tables -L >/dev/null 2>&1; then
@@ -587,6 +609,12 @@ phase_network() {
     if [ "$NET_MODE" = transparent ]; then
         if ! iptables -t nat -L >/dev/null 2>&1; then
             log "FATAL: transparent egress needs iptables (CAP_NET_ADMIN), which is unusable here; refusing to start (set WORKER_NET_MODE=forward to opt into the honor-system proxy env)"
+            exit 1
+        fi
+        # Only the proxy uid bypasses the redirect: a proxy left running as root
+        # would redirect its own upstream connects into itself.
+        if ! command -v setpriv >/dev/null 2>&1; then
+            log "FATAL: transparent egress needs setpriv to run the guard-proxy as uid $PROXY_UID; refusing to start"
             exit 1
         fi
         install_transparent_rules /etc/resolv.conf

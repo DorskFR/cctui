@@ -334,7 +334,7 @@ prompt step blocks; the default is the safe fallback, not a recommendation.
 
 | Mode | Capability at start | Mechanism |
 | --- | --- | --- |
-| `transparent` (default w/ NET_ADMIN) | **CAP_NET_ADMIN** | The same rules as net-init: iptables REDIRECTs worker-uid (1000) TCP egress to `:15001` (exempting root, the proxy uid, loopback, the first IPv4 resolver and `WORKER_NET_EXEMPT`); the filter table REJECTs the worker's `169.254.0.0/16` and non-TCP egress, UDP/53 to that resolver excepted. IPv6 egress denied (proxy is IPv4-only — forces IPv4 fallback). Unusable iptables is fatal, never a fallback to `forward`. |
+| `transparent` (default w/ NET_ADMIN) | **CAP_NET_ADMIN** | The same rules as net-init: only the proxy uid and loopback egress directly. Every other uid, root included, has its TCP REDIRECTed to `:15001` (except DNS to the resolver and `WORKER_NET_EXEMPT`); the filter table REJECTs `169.254.0.0/16` and all non-TCP egress for every uid but the proxy, DNS (UDP/TCP 53) to the resolver excepted. The resolver is `WORKER_DNS_RESOLVER` when set (DNAT, fatal when unresolvable), else the first IPv4 nameserver as is. IPv6 egress denied (proxy is IPv4-only — forces IPv4 fallback). Unusable iptables or a missing `setpriv` (the proxy must run as its own uid) is fatal, never a fallback to `forward`. |
 | `transparent-external` (explicit only) | **none** (in this container) | Same wire behaviour as `transparent`, but the proxy runs in a **separate sidecar container** and the iptables rules are installed by a **NET_ADMIN init container**. The entrypoint only seeds `policy.json` and waits for the sidecar's `:15002/ready`. |
 | `forward` (no NET_ADMIN) | **none** | No iptables. `HTTP_PROXY`/`HTTPS_PROXY=http://127.0.0.1:15001` exported for the worker tree; `NO_PROXY=127.0.0.1,localhost`. Honor-system: an agent that ignores the env egresses directly. Explicit opt-in only (`WORKER_NET_MODE=forward`, pre-flight `warn`); for rootless Docker / gVisor / Apple container. |
 
@@ -358,6 +358,14 @@ seccomp profile does not expose Landlock. On the default bridge network with a
 systemd-resolved host, Docker hands the cell a public resolver (`8.8.8.8`) that
 the pre-flight flags as `public DNS answers`; attach cells to a user-defined
 network (`network`), whose embedded resolver is on loopback.
+
+**Docker DNS gap.** A docker cell has no restricted resolver: its DNS goes to
+the first IPv4 nameserver Docker gives it (on a user-defined network the
+embedded `127.0.0.11`, reached over loopback), which recursively resolves public
+names, so an agent can still exfiltrate through DNS queries. `WORKER_DNS_RESOLVER`
+(IPv4 or name, set in the image or cell env) pins DNS to a restricted resolver
+when the nameserver is not on loopback; loopback is exempt before the DNS rules,
+as in net-init, so the embedded resolver is never rewritten.
 
 ### Daemon child-env capability scrub
 
