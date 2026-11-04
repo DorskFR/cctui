@@ -51,7 +51,17 @@ pub fn version_from_user_agent(user_agent: &str) -> Option<String> {
 /// silently assume compatibility).
 #[must_use]
 pub fn version_supported(version: &str) -> bool {
-    match (parse_semver(version), parse_semver(CODEX_MIN_VERSION)) {
+    at_least(version, CODEX_MIN_VERSION)
+}
+
+/// The first Codex probed to run `thread/start` `config.hooks` under
+/// `bypass_hook_trust`. An older one may ignore both keys and start the
+/// thread unguarded.
+pub const CODEX_HOOKS_MIN_VERSION: &str = "0.166.0";
+
+#[must_use]
+pub fn at_least(version: &str, min: &str) -> bool {
+    match (parse_semver(version), parse_semver(min)) {
         (Some(got), Some(min)) => got >= min,
         _ => false,
     }

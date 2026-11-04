@@ -2,6 +2,8 @@
 //! hook configuration at launch.
 
 pub mod claude_code;
+pub mod codex;
+pub mod shim;
 
 use cctui_proto::hook_policy::HookPolicy;
 
@@ -38,7 +40,6 @@ impl HookPolicySink for NoSeam {
     }
 }
 
-pub const CODEX: NoSeam = NoSeam("codex");
 pub const OPENCODE: NoSeam = NoSeam("opencode");
 
 #[cfg(test)]
@@ -59,13 +60,11 @@ mod tests {
 
     #[test]
     fn harnesses_without_a_seam_report_unsupported() {
-        for sink in [CODEX, OPENCODE] {
-            assert_eq!(
-                sink.apply(&policy(), &mut ()),
-                Err(Unsupported { adapter: sink.0.to_owned() })
-            );
-            assert!(!supports_hook_policy(sink.0), "the server must record {} unguarded", sink.0);
-        }
+        assert_eq!(
+            OPENCODE.apply(&policy(), &mut ()),
+            Err(Unsupported { adapter: OPENCODE.0.to_owned() })
+        );
+        assert!(!supports_hook_policy(OPENCODE.0), "the server must record opencode unguarded");
     }
 
     #[test]
@@ -73,5 +72,13 @@ mod tests {
         let mut hooks = serde_json::json!({});
         assert_eq!(claude_code::ClaudeCode.apply(&policy(), &mut hooks), Ok(()));
         assert!(supports_hook_policy(claude_code::ClaudeCode::ADAPTER));
+    }
+
+    #[test]
+    fn codex_takes_the_policy_as_the_server_expects() {
+        let mut config = serde_json::json!({});
+        assert_eq!(codex::Codex::current().apply(&policy(), &mut config), Ok(()));
+        assert_eq!(config["bypass_hook_trust"], true);
+        assert!(supports_hook_policy(codex::Codex::ADAPTER));
     }
 }

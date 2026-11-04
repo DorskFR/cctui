@@ -1,9 +1,12 @@
+use cctui_proto::hook_policy::HookPolicy;
 use serde_json::{Value, json};
 
 use super::rpc::ID_INITIALIZE;
 #[cfg(test)]
 use super::rpc::ID_THREAD_START;
 use crate::adapters::codex::contract;
+use crate::hook_policy::HookPolicySink as _;
+use crate::hook_policy::codex::Codex;
 
 /// Thread identity extracted from a `thread/start` response.
 #[derive(Debug, Clone)]
@@ -88,6 +91,28 @@ pub(in crate::adapters::codex) fn record_codex_version(response: &Value) -> Opti
     version
 }
 
+/// Why a launch carrying hook rules must not start on the app-server that
+/// answered `initialize` with `init`.
+pub(in crate::adapters::codex) fn hook_policy_refusal(
+    policy: Option<&HookPolicy>,
+    init: &Value,
+) -> Option<String> {
+    policy.filter(|p| !p.rules.is_empty())?;
+    let version = init
+        .pointer("/result/userAgent")
+        .and_then(Value::as_str)
+        .and_then(contract::version_from_user_agent);
+    match version {
+        Some(v) if contract::at_least(&v, contract::CODEX_HOOKS_MIN_VERSION) => None,
+        v => Some(format!(
+            "codex {} cannot enforce the session's hook rules (needs {} or newer): \
+             refusing to start it unguarded",
+            v.as_deref().unwrap_or("of unknown version"),
+            contract::CODEX_HOOKS_MIN_VERSION,
+        )),
+    }
+}
+
 /// The gateway routing block as a per-thread `ThreadStart`/`ThreadResumeParams`
 /// input rather than a process-level `-c` flag, so one app-server can host
 /// threads for several accounts at once.
@@ -160,6 +185,9 @@ pub struct ThreadConfig {
     pub approval_policy: Option<String>,
     /// Native `sandbox`.
     pub sandbox: Option<String>,
+    /// Converted into `config.hooks` last, so no overlay key can switch the
+    /// hooks or their trust bypass off.
+    pub hook_policy: Option<HookPolicy>,
 }
 
 impl ThreadConfig {
@@ -176,7 +204,14 @@ impl ThreadConfig {
             developer_instructions: None,
             approval_policy: None,
             sandbox: None,
+            hook_policy: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_hook_policy(mut self, policy: Option<HookPolicy>) -> Self {
+        self.hook_policy = policy.filter(|p| !p.rules.is_empty());
+        self
     }
 
     #[must_use]
@@ -238,6 +273,9 @@ impl ThreadConfig {
         if let Some(instructions) = &self.developer_instructions {
             map.insert("developerInstructions".to_owned(), json!(instructions));
             config["developer_instructions"] = json!(instructions);
+        }
+        if let Some(policy) = &self.hook_policy {
+            let _ = Codex::current().apply(policy, &mut config);
         }
         if config.as_object().is_some_and(|c| !c.is_empty()) {
             map.insert("config".to_owned(), config);
@@ -905,5 +943,82 @@ mod tests {
             .with_overlay(vec![("model_providers".to_owned(), "\"hijack\"".to_owned())]);
         let params = tc.start_params("/repo");
         assert_eq!(params["config"]["model_providers"]["cctui"]["name"], "cctui-gateway");
+    }
+
+    fn deny_policy() -> HookPolicy {
+        use cctui_proto::hook_policy::{HookEvent, HookRule, ToolClass};
+        HookPolicy {
+            rules: vec![
+                HookRule {
+                    event: HookEvent::PreToolUse,
+                    tool: ToolClass::Shell,
+                    command: "deny-shell".into(),
+                    timeout_secs: None,
+                },
+                HookRule {
+                    event: HookEvent::PreToolUse,
+                    tool: ToolClass::FileEdit,
+                    command: "deny-edit".into(),
+                    timeout_secs: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn every_thread_request_carries_the_hooks_with_features_on_and_trust_bypassed() {
+        let tc = ThreadConfig::new(&std::collections::BTreeMap::new(), Some("fast"))
+            .with_hook_policy(Some(deny_policy()));
+        for params in
+            [tc.start_params("/repo"), tc.resume_params("t1", "/repo"), tc.fork_params("t1", "/repo")]
+        {
+            let config = &params["config"];
+            assert_eq!(config["bypass_hook_trust"], true, "{params}");
+            assert_eq!(config["features.hooks"], true, "{params}");
+            assert_eq!(config["service_tier"], "fast", "{params}");
+            let pre = config["hooks"]["PreToolUse"].as_array().unwrap();
+            assert_eq!(pre.len(), 2, "{params}");
+            assert_eq!(pre[0]["matcher"], "Bash");
+            assert_eq!(pre[0]["hooks"][0]["command"], "deny-shell");
+            assert_eq!(pre[1]["matcher"], "apply_patch");
+            let edit = pre[1]["hooks"][0]["command"].as_str().unwrap();
+            assert!(edit.contains("hook-shim apply-patch --tools edit --run 'deny-edit'"), "{edit}");
+            assert!(!params.to_string().contains("\"ask\""), "{params}");
+        }
+    }
+
+    #[test]
+    fn an_overlay_cannot_switch_the_hooks_off() {
+        let tc = ThreadConfig::new(&std::collections::BTreeMap::new(), None)
+            .with_overlay(vec![
+                ("features.hooks".to_owned(), "false".to_owned()),
+                ("bypass_hook_trust".to_owned(), "false".to_owned()),
+                ("features".to_owned(), "{ hooks = false }".to_owned()),
+            ])
+            .with_hook_policy(Some(deny_policy()));
+        let config = &tc.start_params("/repo")["config"];
+        assert_eq!(config["features.hooks"], true);
+        assert_eq!(config["features"]["hooks"], true);
+        assert_eq!(config["bypass_hook_trust"], true);
+    }
+
+    #[test]
+    fn an_empty_hook_policy_sends_no_hook_keys() {
+        let tc = ThreadConfig::new(&std::collections::BTreeMap::new(), None)
+            .with_hook_policy(Some(HookPolicy::default()));
+        assert_eq!(tc.hook_policy, None);
+        assert!(tc.start_params("/repo").get("config").is_none());
+    }
+
+    #[test]
+    fn only_a_hook_capable_codex_may_start_a_guarded_thread() {
+        let init = |ua: &str| json!({ "result": { "userAgent": ua } });
+        let policy = deny_policy();
+        assert_eq!(hook_policy_refusal(Some(&policy), &init("codex/0.166.0")), None);
+        assert_eq!(hook_policy_refusal(Some(&policy), &init("codex/0.170.1 (linux)")), None);
+        assert!(hook_policy_refusal(Some(&policy), &init("codex/0.165.9")).is_some());
+        assert!(hook_policy_refusal(Some(&policy), &json!({ "result": {} })).is_some());
+        assert_eq!(hook_policy_refusal(None, &init("codex/0.1.0")), None);
+        assert_eq!(hook_policy_refusal(Some(&HookPolicy::default()), &init("codex/0.1.0")), None);
     }
 }

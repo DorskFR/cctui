@@ -511,6 +511,7 @@ impl CommandPump {
             cfg.model = Some(model.to_owned());
         }
         cfg.service_tier = spec_service_tier(spec.service_tier.as_deref(), served_settings);
+        cfg.hook_policy = spec.hook_policy.clone().filter(|p| !p.rules.is_empty());
         cfg
     }
 
@@ -669,7 +670,14 @@ impl CommandPump {
         {
             context = own;
         }
-        let cfg = self.launch_cfg(spec, served_settings.as_ref());
+        let mut cfg = self.launch_cfg(spec, served_settings.as_ref());
+        let parent_policy = self
+            .registry
+            .lock()
+            .await
+            .get(&parent_local_id)
+            .and_then(|r| r.cfg.hook_policy.clone());
+        cfg.hook_policy = inherit_hook_policy(parent_policy, cfg.hook_policy.take());
         let preflight = self.preflight(cfg.model.clone(), None);
         let skills =
             crate::plugins::resolve_session_skills(self.server.as_ref(), &launch_key, &plugins)
@@ -950,6 +958,20 @@ fn now_unix_ms() -> i64 {
 enum DispatchOutcome {
     Handled(bool),
     Missing,
+}
+
+/// A fork keeps every rule its parent thread ran under and adds its own.
+fn inherit_hook_policy(
+    parent: Option<cctui_proto::hook_policy::HookPolicy>,
+    own: Option<cctui_proto::hook_policy::HookPolicy>,
+) -> Option<cctui_proto::hook_policy::HookPolicy> {
+    let mut rules = parent.map(|p| p.rules).unwrap_or_default();
+    for rule in own.into_iter().flat_map(|p| p.rules) {
+        if !rules.contains(&rule) {
+            rules.push(rule);
+        }
+    }
+    (!rules.is_empty()).then_some(cctui_proto::hook_policy::HookPolicy { rules })
 }
 
 /// The key a fork's own context set is recorded under when its env is pulled
@@ -1260,6 +1282,25 @@ mod tests {
     use super::*;
     use cctui_proto::adapter::EndReason;
     use std::time::Duration;
+
+    #[test]
+    fn a_fork_keeps_its_parents_hook_rules_and_adds_its_own() {
+        use cctui_proto::hook_policy::{HookEvent, HookPolicy, HookRule, ToolClass};
+        let rule = |command: &str| HookRule {
+            event: HookEvent::PreToolUse,
+            tool: ToolClass::Shell,
+            command: command.into(),
+            timeout_secs: None,
+        };
+        let parent = HookPolicy { rules: vec![rule("a"), rule("b")] };
+        let own = HookPolicy { rules: vec![rule("b"), rule("c")] };
+        assert_eq!(
+            inherit_hook_policy(Some(parent.clone()), Some(own)),
+            Some(HookPolicy { rules: vec![rule("a"), rule("b"), rule("c")] })
+        );
+        assert_eq!(inherit_hook_policy(Some(parent.clone()), None), Some(parent));
+        assert_eq!(inherit_hook_policy(None, Some(HookPolicy::default())), None);
+    }
 
     mod sandbox_gate {
         use cctui_proto::adapter::PermissionMode;
