@@ -62,7 +62,7 @@ impl LangfuseConfig {
 
     async fn from_lookup(
         secrets: &cctui_secrets::SecretRegistry,
-        get: impl Fn(&str) -> Option<String>,
+        get: impl Fn(&str) -> Option<String> + Send + Sync,
     ) -> anyhow::Result<Option<Self>> {
         let nonempty = |k: &str| get(k).filter(|s| !s.trim().is_empty());
         let (Some(host), Some(public_key), Some(secret_raw)) = (
@@ -662,7 +662,7 @@ mod tests {
         assert!(cfg.basic_auth().starts_with("Basic "));
     }
 
-    fn langfuse_env(secret: &str) -> impl Fn(&str) -> Option<String> + '_ {
+    fn langfuse_env(secret: &str) -> impl Fn(&str) -> Option<String> + Send + Sync + '_ {
         move |k| match k {
             "CCTUI_LANGFUSE_HOST" => Some("https://lf.example/".to_owned()),
             "CCTUI_LANGFUSE_PUBLIC_KEY" => Some("pk".to_owned()),

@@ -216,15 +216,14 @@ fn apply_database_url(pool: &sqlx::PgPool, url: &str) {
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(500);
-    match url.parse::<sqlx::postgres::PgConnectOptions>() {
-        Ok(options) => {
-            pool.set_connect_options(options.log_slow_statements(
-                log::LevelFilter::Warn,
-                std::time::Duration::from_millis(slow_ms),
-            ));
-            tracing::info!("DATABASE_URL rotated; new pool connections use it");
-        }
-        Err(_) => tracing::warn!("rotated DATABASE_URL does not parse; keeping the previous one"),
+    if let Ok(options) = url.parse::<sqlx::postgres::PgConnectOptions>() {
+        pool.set_connect_options(options.log_slow_statements(
+            log::LevelFilter::Warn,
+            std::time::Duration::from_millis(slow_ms),
+        ));
+        tracing::info!("DATABASE_URL rotated; new pool connections use it");
+    } else {
+        tracing::warn!("rotated DATABASE_URL does not parse; keeping the previous one");
     }
 }
 

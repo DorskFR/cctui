@@ -288,7 +288,7 @@ impl Config {
 
     async fn from_secrets(
         secrets: &cctui_secrets::SecretRegistry,
-        get: impl Fn(&str) -> Option<String>,
+        get: impl Fn(&str) -> Option<String> + Send + Sync,
     ) -> anyhow::Result<Self> {
         let resolved = resolve_secret_env(secrets, &get).await?;
         let mut config = Self::from_resolved(&resolved, &get)?;
@@ -455,7 +455,7 @@ impl Config {
 
 async fn resolve_secret_env(
     secrets: &cctui_secrets::SecretRegistry,
-    get: impl Fn(&str) -> Option<String>,
+    get: impl Fn(&str) -> Option<String> + Send + Sync,
 ) -> anyhow::Result<std::collections::HashMap<String, String>> {
     let mut out = std::collections::HashMap::new();
     for name in SECRET_ENV {
@@ -530,7 +530,7 @@ impl Config {
 /// A resolver serving one value for a ref of every kind, so tests exercise the
 /// config wiring; the engines themselves are tested in `cctui-secrets`.
 #[cfg(test)]
-pub(crate) mod test_refs {
+pub mod test_refs {
     use std::sync::{Arc, Mutex};
 
     use cctui_secrets::{Credential, RefResolver, SecretError, SecretRef, SecretRegistry};
@@ -554,9 +554,8 @@ pub(crate) mod test_refs {
     #[async_trait::async_trait]
     impl RefResolver for RefMap {
         async fn resolve(&self, r: &SecretRef) -> Result<Credential, SecretError> {
-            let known: Vec<String> =
-                KIND_REFS.iter().map(|k| SecretRef::parse(k).unwrap().to_string()).collect();
-            if !known.contains(&r.to_string()) {
+            let shown = r.to_string();
+            if !KIND_REFS.iter().any(|k| SecretRef::parse(k).unwrap().to_string() == shown) {
                 return Err(SecretError::NotFound { what: r.to_string() });
             }
             let value = self.0.lock().unwrap().clone();
