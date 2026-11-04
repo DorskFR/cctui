@@ -21,6 +21,124 @@ async fn fork_dispatch_preserves_the_child_gateway_hint_when_the_pull_is_unavail
     std::fs::remove_dir_all(d.cfg.jobs_root.parent().unwrap()).unwrap();
 }
 
+fn refused_for_hook_settings<T>(launched: anyhow::Result<T>) {
+    let Err(err) = launched else { panic!("the launch was not refused") };
+    assert!(err.downcast_ref::<HookSettingsError>().is_some(), "{err:#}");
+    assert!(format!("{err:#}").contains("refusing to launch without cctui's hooks"), "{err:#}");
+}
+
+fn stop_policy() -> cctui_proto::hook_policy::HookPolicy {
+    use cctui_proto::hook_policy::{HookEvent, HookPolicy, HookRule, ToolClass};
+    HookPolicy {
+        rules: vec![HookRule {
+            event: HookEvent::Stop,
+            tool: ToolClass::Any,
+            command: "p-stop".into(),
+            timeout_secs: None,
+        }],
+    }
+}
+
+fn workdir_spec(d: &Driver) -> cctui_proto::adapter::SessionSpec {
+    let mut spec = launch_argv_spec();
+    spec.working_dir = Some(d.cfg.jobs_root.parent().unwrap().to_string_lossy().into_owned());
+    spec
+}
+
+#[tokio::test]
+async fn a_spawn_with_or_without_a_policy_is_refused_when_its_settings_cannot_be_written() {
+    let (d, mut events) = driver();
+    let tmp = tempfile::tempdir().unwrap();
+    let _root = ConfigRootOverride::unwritable(tmp.path());
+    for policy in [Some(stop_policy()), None] {
+        let mut spec = workdir_spec(&d);
+        spec.hook_policy = policy;
+        let id = uuid::Uuid::new_v4().to_string();
+        refused_for_hook_settings(
+            d.prepare_spawn(Path::new("/unused.sock"), &spec, Some(id)).await,
+        );
+    }
+    assert!(events.try_recv().is_err(), "a refused spawn reports through its command result");
+    std::fs::remove_dir_all(d.cfg.jobs_root.parent().unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn a_fork_is_refused_when_its_settings_cannot_be_written() {
+    let (d, _events) = driver();
+    let tmp = tempfile::tempdir().unwrap();
+    let _root = ConfigRootOverride::unwritable(tmp.path());
+    let child = uuid::Uuid::new_v4().to_string();
+    refused_for_hook_settings(
+        d.prepare_fork(Path::new("/unused.sock"), "parent", &workdir_spec(&d), Some(&child), None)
+            .await,
+    );
+    assert!(d.fork_parent_by_short.lock().unwrap().is_empty(), "the fork never linked its parent");
+    std::fs::remove_dir_all(d.cfg.jobs_root.parent().unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn a_dispatched_worker_spec_is_refused_when_its_settings_cannot_be_written() {
+    use cctui_proto::hook_policy::DISPATCH_POLICY_FIELD;
+    let (d, _events) = driver();
+    let tmp = tempfile::tempdir().unwrap();
+    let _root = ConfigRootOverride::unwritable(tmp.path());
+    let payload = json!({ DISPATCH_POLICY_FIELD: stop_policy(), "prompt": "go" });
+    let mut spec = Driver::build_dispatch_spec(&payload).unwrap();
+    assert!(spec.hook_policy.is_some());
+    spec.working_dir = workdir_spec(&d).working_dir;
+    let id = uuid::Uuid::new_v4().to_string();
+    refused_for_hook_settings(d.prepare_spawn(Path::new("/unused.sock"), &spec, Some(id)).await);
+    std::fs::remove_dir_all(d.cfg.jobs_root.parent().unwrap()).unwrap();
+}
+
+/// Answers every control-socket request with a dead worker and records its op.
+fn dead_worker_socket(sock: &Path) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::UnixListener::bind(sock).unwrap();
+    let ops = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = ops.clone();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let (read_half, mut write_half) = stream.into_split();
+            let mut line = String::new();
+            let mut reader = tokio::io::BufReader::new(read_half);
+            if reader.read_line(&mut line).await.is_err() {
+                continue;
+            }
+            let req: serde_json::Value = serde_json::from_str(line.trim()).unwrap_or_default();
+            seen.lock().unwrap().push(req["op"].as_str().unwrap_or("?").to_owned());
+            let _ = write_half.write_all(b"{\"ok\":true,\"alive\":false}\n").await;
+        }
+    });
+    ops
+}
+
+#[tokio::test]
+async fn a_cold_resume_is_refused_and_dispatches_nothing_when_its_settings_cannot_be_written() {
+    let (d, _events) = driver();
+    let tmp = tempfile::tempdir().unwrap();
+    let short = "c01dfee0";
+    let root = tmp.path().join("cfg");
+    std::fs::create_dir_all(root.join(format!("hook-settings-{short}.json"))).unwrap();
+    let _root = ConfigRootOverride::set(&root);
+    let sock = tmp.path().join("claude.sock");
+    let ops = dead_worker_socket(&sock);
+    let cwd = workdir_spec(&d).working_dir.unwrap();
+    let resumed = d
+        .resume_worker(
+            &sock,
+            short,
+            "local",
+            Some("c01dfee0-0000-4000-8000-000000000000"),
+            Some(&cwd),
+            &std::collections::BTreeMap::new(),
+        )
+        .await;
+    refused_for_hook_settings(resumed);
+    assert_eq!(*ops.lock().unwrap(), ["has"], "no dispatch reached the claude daemon");
+    std::fs::remove_dir_all(d.cfg.jobs_root.parent().unwrap()).unwrap();
+}
+
 #[test]
 fn supervise_daemon_defaults_on_and_is_disablable_by_config() {
     assert!(DriverConfig::default().supervise_daemon);

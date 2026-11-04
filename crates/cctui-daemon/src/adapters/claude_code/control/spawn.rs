@@ -135,8 +135,9 @@ impl Driver {
             launch.whip_phrases.as_ref(),
             None,
             LaunchPolicy { policy: policy.as_ref(), seal_key },
-        )
-        .map(|p| p.to_string_lossy().into_owned());
+        )?
+        .to_string_lossy()
+        .into_owned();
 
         // `/clear`/`/compact` rotate the live conversation into the id recorded
         // in `resumeSessionId`; resuming the stale spawn id would fork the
@@ -163,7 +164,7 @@ impl Driver {
         // token and 401ed/ConnectionRefused. The resumed session already carries
         // its model/effort in the transcript; only `spawn` seeds them as flags.
         let launch = LaunchArgs {
-            settings_path: settings_arg,
+            settings_path: Some(settings_arg),
             plugin_dirs: launch.plugin_dirs,
             ..resume_launch(&session_id)
         };
@@ -410,22 +411,25 @@ impl Driver {
         // The `SessionStart` hook that holds the first turn is only registered
         // when there is a relay to wait for.
         let agent_tool = launch.mcp_config.is_some();
-        launch.settings_path = ensure_hook_settings(
-            &self.cfg.hook_socket_path,
-            whip,
-            short,
-            launch_env.settings.as_ref(),
-            &launch_env.env,
-            spec.model.as_deref(),
-            spec.effort.as_deref(),
-            launch_env.whip_phrases.as_ref(),
-            agent_tool.then_some(session_id),
-            LaunchPolicy {
-                policy: spec.hook_policy.as_ref(),
-                seal_key: self.machine_key.as_deref(),
-            },
-        )
-        .map(|p| p.to_string_lossy().into_owned());
+        launch.settings_path = Some(
+            ensure_hook_settings(
+                &self.cfg.hook_socket_path,
+                whip,
+                short,
+                launch_env.settings.as_ref(),
+                &launch_env.env,
+                spec.model.as_deref(),
+                spec.effort.as_deref(),
+                launch_env.whip_phrases.as_ref(),
+                agent_tool.then_some(session_id),
+                LaunchPolicy {
+                    policy: spec.hook_policy.as_ref(),
+                    seal_key: self.machine_key.as_deref(),
+                },
+            )?
+            .to_string_lossy()
+            .into_owned(),
+        );
         // A staging failure is fatal: silently dropping an attachment the user
         // expects the worker to read would be worse.
         let staged = crate::adapters::uploads::stage_bootstrap(session_id, &spec.bootstrap)
@@ -611,22 +615,25 @@ impl Driver {
         launch.plugin_dirs.clone_from(&launch_env.plugin_dirs);
         launch.mcp_config =
             agent_relay_config(short, session_id, launch_env.spawn_capability.as_ref());
-        launch.settings_path = ensure_hook_settings(
-            &self.cfg.hook_socket_path,
-            whip,
-            short,
-            launch_env.settings.as_ref(),
-            &launch_env.env,
-            None,
-            None,
-            launch_env.whip_phrases.as_ref(),
-            launch.mcp_config.is_some().then_some(session_id),
-            LaunchPolicy {
-                policy: spec.hook_policy.as_ref(),
-                seal_key: self.machine_key.as_deref(),
-            },
-        )
-        .map(|p| p.to_string_lossy().into_owned());
+        launch.settings_path = Some(
+            ensure_hook_settings(
+                &self.cfg.hook_socket_path,
+                whip,
+                short,
+                launch_env.settings.as_ref(),
+                &launch_env.env,
+                None,
+                None,
+                launch_env.whip_phrases.as_ref(),
+                launch.mcp_config.is_some().then_some(session_id),
+                LaunchPolicy {
+                    policy: spec.hook_policy.as_ref(),
+                    seal_key: self.machine_key.as_deref(),
+                },
+            )?
+            .to_string_lossy()
+            .into_owned(),
+        );
         let prompt = spec.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty());
         if let Some(prompt) = prompt {
             self.note_delivered(session_id, prompt);

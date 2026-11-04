@@ -161,10 +161,10 @@ impl OneshotDriver {
             short_of(&session_id),
             &launch_env,
             self.machine_key.as_deref(),
-        );
+        )?;
         self.hook_postures.insert(session_id.clone(), posture);
 
-        let mut launch = LaunchArgs::from_spec(spec, settings);
+        let mut launch = LaunchArgs::from_spec(spec, Some(settings));
         launch.session_id = Some(session_id.clone());
         launch.plugin_dirs.clone_from(&launch_env.plugin_dirs);
         if let Some(parent) = &fork_parent {
@@ -247,7 +247,7 @@ impl OneshotDriver {
                 )?)
             }
         };
-        Ok(posture.write(&self.cfg.hook_socket_path, short, launch_env, seal_key))
+        Ok(Some(posture.write(&self.cfg.hook_socket_path, short, launch_env, seal_key)?))
     }
 
     /// Spawn one `claude -p` child, stream its stdout through the shared codec,
@@ -583,7 +583,67 @@ fn idle_status(local_id: &str) -> AdapterEvent {
 
 #[cfg(test)]
 mod tests {
+    use super::super::control::{ConfigRootOverride, HookPosture, HookSettingsError};
     use super::*;
+
+    fn refusing_driver(tmp: &std::path::Path) -> (OneshotDriver, mpsc::Receiver<AdapterEvent>) {
+        let (events, rx) = mpsc::channel(8);
+        let (_commands_tx, commands) = mpsc::channel(8);
+        let (_connected_tx, connected) = tokio::sync::broadcast::channel(1);
+        let bin = tmp.join("claude-must-not-run");
+        let ctx = AdapterCtx {
+            events,
+            commands,
+            pty_watch: None,
+            interrupts: None,
+            shutdown: CancellationToken::new(),
+            config: serde_json::json!({ "claude_bin": bin }),
+            server: None,
+            machine_key: None,
+            connected,
+        };
+        (OneshotDriver::new(ctx).0, rx)
+    }
+
+    fn policy_spec(cwd: &std::path::Path) -> SessionSpec {
+        serde_json::from_value(serde_json::json!({
+            "adapter_id": "claude-code",
+            "working_dir": cwd,
+            "prompt": "go",
+            "hook_policy": { "rules": [{ "event": "Stop", "command": "p-stop" }] },
+        }))
+        .unwrap()
+    }
+
+    fn refused_for_hook_settings(launched: anyhow::Result<()>) {
+        let err = launched.expect_err("the launch was not refused");
+        assert!(err.downcast_ref::<HookSettingsError>().is_some(), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn a_spawn_is_refused_without_starting_claude_when_its_settings_cannot_be_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _root = ConfigRootOverride::unwritable(tmp.path());
+        let (mut d, mut events) = refusing_driver(tmp.path());
+        let id = "5e550001-0000-4000-8000-000000000000".to_owned();
+        refused_for_hook_settings(d.spawn(&policy_spec(tmp.path()), id, None).await);
+        assert!(d.running.is_empty(), "no `claude -p` child was started");
+        assert!(d.cwds.is_empty() && d.hook_postures.is_empty());
+        assert!(events.try_recv().is_err(), "no SessionStarted for a refused spawn");
+    }
+
+    #[tokio::test]
+    async fn a_turn_is_refused_without_starting_claude_when_its_settings_cannot_be_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _root = ConfigRootOverride::unwritable(tmp.path());
+        let (mut d, mut events) = refusing_driver(tmp.path());
+        let id = "5e550002-0000-4000-8000-000000000000";
+        d.cwds.insert(id.to_owned(), tmp.path().to_string_lossy().into_owned());
+        d.hook_postures.insert(id.to_owned(), HookPosture::default());
+        refused_for_hook_settings(d.reply(id, "next", std::collections::BTreeMap::new()).await);
+        assert!(d.running.is_empty(), "no `claude -p` child was started");
+        assert!(events.try_recv().is_err());
+    }
 
     #[test]
     fn child_registration_keeps_the_parent_and_launch_key_for_policy_enforcement() {
