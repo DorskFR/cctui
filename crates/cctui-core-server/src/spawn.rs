@@ -127,7 +127,14 @@ async fn execute(
     core::launch::launch_durable(
         &host.core,
         ctx.user_id,
-        core::launch::MachineSpawn { machine_id: machine, command_id, token_key, spec, failed },
+        core::launch::MachineSpawn {
+            machine_id: machine,
+            command_id,
+            token_key,
+            spec,
+            failed,
+            route_session: None,
+        },
     )
     .await
     .map_err(launch_error)?;
