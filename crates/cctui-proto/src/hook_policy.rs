@@ -10,7 +10,7 @@ pub const MAX_RULES: usize = 64;
 pub const MAX_TIMEOUT_SECS: u32 = 600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(feature = "ts", derive(TS), ts(export, rename = "HookPolicyEvent"))]
 pub enum HookEvent {
     SessionStart,
     UserPromptSubmit,

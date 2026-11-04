@@ -14,7 +14,7 @@
 		Stack,
 		Textarea
 	} from '@dorsk/tsumikit';
-	import type { HookEvent } from '@bindings/HookEvent';
+	import type { HookPolicyEvent as HookEvent } from '@bindings/HookPolicyEvent';
 	import type { ToolClass } from '@bindings/ToolClass';
 	import { m } from '$lib/paraglide/messages';
 	import {

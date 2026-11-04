@@ -1,5 +1,5 @@
 import type { AccountToolPolicy } from '@bindings/AccountToolPolicy';
-import type { HookEvent } from '@bindings/HookEvent';
+import type { HookPolicyEvent as HookEvent } from '@bindings/HookPolicyEvent';
 import type { HookRule } from '@bindings/HookRule';
 import type { ToolClass } from '@bindings/ToolClass';
 import type { ToolPolicy } from '@bindings/ToolPolicy';

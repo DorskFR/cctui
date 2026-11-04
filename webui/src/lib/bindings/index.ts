@@ -137,6 +137,7 @@ export type * from './HarnessVersions';
 export type * from './HeatmapCell';
 export type * from './HookEvent';
 export type * from './HookPolicy';
+export type * from './HookPolicyEvent';
 export type * from './HookPolicyStatus';
 export type * from './HookRule';
 export type * from './IncidentSummary';
