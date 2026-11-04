@@ -494,7 +494,7 @@ impl Injector {
                 }
             };
             match self.serve_one(client, upstream.take(), dialer, rules, &head, &mut cbuf).await? {
-                Step::KeepAlive(conn) => upstream = Some(conn),
+                Step::KeepAlive(conn) => upstream = Some(*conn),
                 Step::Close => return Ok(()),
             }
         }
@@ -512,15 +512,10 @@ impl Injector {
     where
         C: AsyncRead + AsyncWrite + Unpin,
     {
-        let mut conn = match upstream {
-            Some(conn) => conn,
-            None => match dialer.dial().await {
-                Some(conn) => conn,
-                None => {
-                    bad_gateway(client).await?;
-                    return Ok(Step::Close);
-                }
-            },
+        let upstream = if upstream.is_some() { upstream } else { dialer.dial().await };
+        let Some(mut conn) = upstream else {
+            bad_gateway(client).await?;
+            return Ok(Step::Close);
         };
         let sent =
             self.send_request(client, &mut conn.stream, dialer.host, rules, head, cbuf).await?;
@@ -537,7 +532,7 @@ impl Injector {
         if framing == Framing::UntilClose || wants_close(head) || wants_close(&resp_head) {
             return Ok(Step::Close);
         }
-        Ok(Step::KeepAlive(conn))
+        Ok(Step::KeepAlive(Box::new(conn)))
     }
 
     async fn send_request<C, U>(
@@ -870,7 +865,7 @@ impl UpstreamConn {
 }
 
 enum Step {
-    KeepAlive(UpstreamConn),
+    KeepAlive(Box<UpstreamConn>),
     Close,
 }
 
