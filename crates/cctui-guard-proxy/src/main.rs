@@ -95,7 +95,9 @@ struct Args {
     #[arg(long, default_value = "/etc/guard-proxy/inject.json", env = "GUARD_PROXY_INJECT_CONFIG")]
     inject_config: PathBuf,
 
-    /// TTL of the in-memory secret cache; rotation lands within one TTL.
+    /// TTL of the in-memory secret cache; rotation lands within one TTL, or at
+    /// once on SIGHUP. A refresh that hits a backend failure keeps the cached
+    /// value.
     #[arg(long, default_value_t = 120, env = "GUARD_PROXY_SECRET_TTL_SECS")]
     secret_ttl_secs: u64,
 
@@ -258,6 +260,7 @@ fn build_injection(
         Box::new(build_engines(args)?),
         Duration::from_secs(args.secret_ttl_secs),
     ));
+    secrets.spawn_sighup_refresh();
     tracing::info!("{} injection rule(s), secret ttl={}s", rules.len(), args.secret_ttl_secs);
 
     let ghapp = build_ghapp(args, &secrets)?;

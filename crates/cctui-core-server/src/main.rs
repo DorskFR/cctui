@@ -8,9 +8,9 @@ use cctui_server_core::state::CoreState;
 use std::future::IntoFuture;
 use std::sync::Arc;
 
-/// Env vars that may hold a secret ref instead of the value.
-const SECRET_ENV: [&str; 4] =
-    ["DATABASE_URL", "CCTUI_ADMIN_TOKENS", "CCTUI_GITHUB_TOKEN", "GH_TOKEN"];
+/// Env vars that may hold a secret ref instead of the value. `DATABASE_URL`
+/// follows a rotation; the rest resolve once at startup.
+const SECRET_ENV: [&str; 3] = ["CCTUI_ADMIN_TOKENS", "CCTUI_GITHUB_TOKEN", "GH_TOKEN"];
 
 #[derive(clap::Parser)]
 #[command(version)]
@@ -25,9 +25,16 @@ async fn main() -> anyhow::Result<()> {
     let args = <Args as clap::Parser>::parse();
     cctui_server_core::client::install_crypto_provider();
     let _telemetry = cctui_telemetry::init("cctui-core-server", env!("CARGO_PKG_VERSION"), "error");
-    let secrets = cctui_secrets::resolve_env(&SECRET_ENV, |k| std::env::var(k).ok()).await?;
+    let registry = Arc::new(cctui_secrets::SecretRegistry::from_env());
+    let raw_url = std::env::var("DATABASE_URL").context("DATABASE_URL is required")?;
+    let database_url = registry.register("DATABASE_URL", &raw_url).await?.get();
+    let mut secrets = std::collections::HashMap::new();
+    for name in SECRET_ENV {
+        if let Ok(raw) = std::env::var(name) {
+            secrets.insert(name, registry.resolve(name, &raw).await?);
+        }
+    }
     let secret = |k: &str| secrets.get(k).cloned();
-    let database_url = secret("DATABASE_URL").context("DATABASE_URL is required")?;
     if args.init_db {
         let pool = sqlx::postgres::PgPoolOptions::new().connect(&database_url).await?;
         cctui_server_core::schema::bootstrap(&pool).await?;
@@ -51,26 +58,13 @@ async fn main() -> anyhow::Result<()> {
         .context("CCTUI_EXTERNAL_URL is required for worker gateway routing")?;
     let pool =
         sqlx::postgres::PgPoolOptions::new().max_connections(20).connect(&database_url).await?;
+    follow_database_url(&registry, &pool);
     let lease = ownership::RuntimeLease::acquire(&pool).await?;
     cctui_server_core::schema::bootstrap(&pool).await?;
     let auth = AuthConfig::new(admin_tokens, pool.clone());
     auth.seed_admin().await;
     let client = cctui_server_core::client::build_http_client();
-    let mut dispatchers = cctui_server_core::dispatchers::Registry::new();
-    if let Ok(raw) = std::env::var("CCTUI_HTTP_DISPATCHERS") {
-        let entries: Vec<HttpDispatcher> =
-            serde_json::from_str(&raw).context("invalid CCTUI_HTTP_DISPATCHERS")?;
-        for entry in entries {
-            dispatchers = dispatchers.with(Arc::new(
-                cctui_server_core::dispatchers::http::HttpDispatcher::new(
-                    &entry.id,
-                    entry.url,
-                    entry.token,
-                    client.clone(),
-                ),
-            ));
-        }
-    }
+    let dispatchers = http_dispatchers(&registry, &client).await?;
     let spawn_defaults = cctui_proto::api::settings::SpawnDefaults {
         max_children: optional_number("CCTUI_SPAWN_MAX_CHILDREN")?,
         max_depth: optional_number("CCTUI_SPAWN_MAX_DEPTH")?,
@@ -101,6 +95,7 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!(%address, version = env!("CARGO_PKG_VERSION"), "automation server listening");
     let _background = cctui_core_server::background::BackgroundTasks::start(host.clone());
+    registry.spawn_reloader();
     let serving = axum::serve(listener, cctui_core_server::router::router(host))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
@@ -118,6 +113,56 @@ struct HttpDispatcher {
     url: String,
     #[serde(default)]
     token: Option<String>,
+}
+
+/// `CCTUI_HTTP_DISPATCHERS`; each `token` may be a secret ref, resolved once.
+async fn http_dispatchers(
+    registry: &cctui_secrets::SecretRegistry,
+    client: &reqwest::Client,
+) -> anyhow::Result<cctui_server_core::dispatchers::Registry> {
+    let mut dispatchers = cctui_server_core::dispatchers::Registry::new();
+    let Ok(raw) = std::env::var("CCTUI_HTTP_DISPATCHERS") else { return Ok(dispatchers) };
+    let entries: Vec<HttpDispatcher> =
+        serde_json::from_str(&raw).context("invalid CCTUI_HTTP_DISPATCHERS")?;
+    for entry in entries {
+        let token = match entry.token {
+            Some(raw) => {
+                let name = format!("CCTUI_HTTP_DISPATCHERS[{}].token", entry.id);
+                Some(registry.resolve(&name, &raw).await?)
+            }
+            None => None,
+        };
+        dispatchers = dispatchers.with(Arc::new(
+            cctui_server_core::dispatchers::http::HttpDispatcher::new(
+                &entry.id,
+                entry.url,
+                token,
+                client.clone(),
+            ),
+        ));
+    }
+    Ok(dispatchers)
+}
+
+/// New pool connections use a rotated `DATABASE_URL`.
+fn follow_database_url(registry: &cctui_secrets::SecretRegistry, pool: &sqlx::PgPool) {
+    let Some(url) = registry.get("DATABASE_URL") else { return };
+    let mut changes = url.subscribe();
+    let pool = pool.clone();
+    tokio::spawn(async move {
+        while changes.changed().await.is_ok() {
+            let url = changes.borrow_and_update().clone();
+            match url.parse::<sqlx::postgres::PgConnectOptions>() {
+                Ok(options) => {
+                    pool.set_connect_options(options);
+                    tracing::info!("DATABASE_URL rotated; new pool connections use it");
+                }
+                Err(_) => {
+                    tracing::warn!("rotated DATABASE_URL does not parse; keeping the previous one");
+                }
+            }
+        }
+    });
 }
 
 fn optional_number<T: std::str::FromStr>(name: &str) -> anyhow::Result<Option<T>> {

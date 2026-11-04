@@ -106,8 +106,11 @@ pub async fn run() -> anyhow::Result<()> {
         env!("CARGO_PKG_VERSION"),
         "cctui_server=info,sqlx::query=warn",
     );
-    let (config, pool, auth_config, migrations) = bootstrap().await?;
-    let state = build_state(&config, pool, auth_config.clone()).await?;
+    let secrets = Arc::new(cctui_secrets::SecretRegistry::from_env());
+    let (config, pool, auth_config, migrations) = bootstrap(&secrets).await?;
+    let state = build_state(&config, pool, auth_config.clone(), &secrets).await?;
+    follow_database_url(&secrets, &state.pool);
+    secrets.spawn_reloader();
     record_boot_events(&state, &migrations);
     plugin_store::init(&state.pool, &state.plugins).await;
     plugin_host_token::reconcile_installed(&state.pool, &state.auth_config, &state.plugins).await;
@@ -130,12 +133,16 @@ fn check_plugin_archive(args: &[String]) -> anyhow::Result<()> {
 use cctui_server_core::client::{build_http_client, install_crypto_provider};
 use cctui_server_core::dispatch_identity;
 
-async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig, Vec<i64>)> {
-    if let Err(e @ cctui_crypto::KeyError::InvalidHex(_)) = cctui_crypto::vault_key_checked() {
+async fn bootstrap(
+    secrets: &cctui_secrets::SecretRegistry,
+) -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig, Vec<i64>)> {
+    if let Err(e @ (cctui_crypto::KeyError::InvalidHex(_) | cctui_crypto::KeyError::Ref(_))) =
+        cctui_crypto::vault_key_checked()
+    {
         anyhow::bail!("refusing to start: {e}");
     }
 
-    let config = Config::from_env().await?;
+    let config = Config::from_env(secrets).await?;
     let (pool, migrations) = db::connect_reporting(&config.database_url).await?;
     install_vault_key(&pool).await?;
     // One-release back-compat shim: if the retired
@@ -143,7 +150,7 @@ async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig, 
     // anthropic-compatible account per user so existing deployments keep working
     // until they migrate to first-class accounts.
     routes::accounts::sync_litellm_shim(&pool, &config).await;
-    let auth_config = auth::AuthConfig::new(Config::admin_tokens().await?, pool.clone());
+    let auth_config = auth::AuthConfig::new(Config::admin_tokens(secrets).await?, pool.clone());
     // resolve CCTUI_ADMIN_TOKENS to a seeded admin user + api_keys rows
     // with {admin} ceiling/grant, so the break-glass token is a real identity
     // rather than a user_id=None ghost. Idempotent, best-effort.
@@ -189,12 +196,48 @@ async fn install_vault_key(pool: &sqlx::PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// New pool connections use a rotated `DATABASE_URL`; open ones keep their
+/// session until the pool recycles them.
+fn follow_database_url(secrets: &cctui_secrets::SecretRegistry, pool: &sqlx::PgPool) {
+    let Some(url) = secrets.get("DATABASE_URL") else { return };
+    let mut changes = url.subscribe();
+    let pool = pool.clone();
+    tokio::spawn(async move {
+        while changes.changed().await.is_ok() {
+            let url = changes.borrow_and_update().clone();
+            apply_database_url(&pool, &url);
+        }
+    });
+}
+
+fn apply_database_url(pool: &sqlx::PgPool, url: &str) {
+    use sqlx::ConnectOptions as _;
+    let slow_ms = std::env::var("CCTUI_DB_SLOW_QUERY_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(500);
+    match url.parse::<sqlx::postgres::PgConnectOptions>() {
+        Ok(options) => {
+            pool.set_connect_options(options.log_slow_statements(
+                log::LevelFilter::Warn,
+                std::time::Duration::from_millis(slow_ms),
+            ));
+            tracing::info!("DATABASE_URL rotated; new pool connections use it");
+        }
+        Err(_) => tracing::warn!("rotated DATABASE_URL does not parse; keeping the previous one"),
+    }
+}
+
 async fn build_state(
     config: &Config,
     pool: sqlx::PgPool,
     auth_config: auth::AuthConfig,
+    secrets: &cctui_secrets::SecretRegistry,
 ) -> anyhow::Result<AppState> {
     let skills = init_skill_store().await;
+    let langfuse = langfuse::LangfuseConfig::from_env(secrets)
+        .await?
+        .map(|c| Arc::new(langfuse::LangfuseClient::new(c, build_http_client())));
     let dispatchers = init_dispatchers(config);
 
     let presence = Arc::new(presence::PodIdentity::from_env());
@@ -245,8 +288,7 @@ async fn build_state(
         internal_secret,
         // Optional Langfuse tracing sink. `None` (dark) unless the
         // CCTUI_LANGFUSE_* env is fully set — zero overhead on the gateway path.
-        langfuse: langfuse::LangfuseConfig::from_env()
-            .map(|c| Arc::new(langfuse::LangfuseClient::new(c, build_http_client()))),
+        langfuse,
         pending_oauth_logins: Arc::new(dashmap::DashMap::new()),
         pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
         codex_catalogs: Arc::new(dashmap::DashMap::new()),
@@ -1452,5 +1494,53 @@ mod http_tracing_tests {
             .to_ascii_lowercase();
         assert!(allowed.contains("traceparent"), "{allowed}");
         assert!(allowed.contains("tracestate"), "{allowed}");
+    }
+}
+
+#[cfg(test)]
+mod secret_reload_tests {
+    use std::time::Duration;
+
+    use sqlx::postgres::PgPoolOptions;
+
+    use super::{apply_database_url, follow_database_url};
+    use crate::config::test_refs::map_registry;
+
+    #[tokio::test]
+    async fn database_url_rotation_updates_the_pool_connect_config() {
+        let pool = PgPoolOptions::new().connect_lazy("postgres://old:pw@db-old:5432/app").unwrap();
+        apply_database_url(&pool, "postgres://new:pw2@db-new:6432/app2");
+        let options = pool.connect_options();
+        assert_eq!(options.get_username(), "new");
+        assert_eq!(options.get_host(), "db-new");
+        assert_eq!(options.get_port(), 6432);
+        assert_eq!(options.get_database(), Some("app2"));
+
+        apply_database_url(&pool, "not a url ::");
+        assert_eq!(pool.connect_options().get_host(), "db-new", "a bad URL keeps the old config");
+    }
+
+    #[tokio::test]
+    async fn database_url_ref_rotation_reaches_the_pool_config_and_failure_keeps_it() {
+        let (map, registry) = map_registry("postgres://u1:p1@db1/app");
+        let url = registry.register("DATABASE_URL", "k8s:dev/cctui#value").await.unwrap();
+        let pool = PgPoolOptions::new().connect_lazy(&url.get()).unwrap();
+        follow_database_url(&registry, &pool);
+
+        map.set(Some("postgres://u2:p2@db2/app"));
+        registry.reload().await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while pool.connect_options().get_host() != "db2" {
+            assert!(tokio::time::Instant::now() < deadline, "pool never saw the rotation");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(pool.connect_options().get_username(), "u2");
+
+        map.set(None);
+        let report = registry.reload().await;
+        assert_eq!(report.failed, 1);
+        tokio::task::yield_now().await;
+        assert_eq!(pool.connect_options().get_host(), "db2");
+        assert_eq!(&*url.get(), "postgres://u2:p2@db2/app");
     }
 }

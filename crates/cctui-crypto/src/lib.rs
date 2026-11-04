@@ -8,6 +8,11 @@
 //! Key: `CCTUI_VAULT_KEY`, hex-encoded, at least 32 bytes. Empty key =
 //! pass-through (dev/test, or a legacy instance; see [`resolve_startup_key`]); a longer key
 //! is stretched to 32 via SHA-256 so historical keys keep working.
+//!
+//! The variable may hold a secret ref (see `cctui_secrets::SCHEMES`). It is
+//! resolved once per process and never reloaded: every stored value is
+//! encrypted under the key, so swapping it at runtime would make them
+//! unreadable. Rotating it is a re-encryption, not a reload.
 
 pub mod redact;
 
@@ -100,7 +105,12 @@ pub enum KeyError {
     Unset,
     InvalidHex(hex::FromHexError),
     TooShort(usize),
+    /// The variable is a secret ref that did not resolve; carries the
+    /// resolver's error, which names the ref and never a value.
+    Ref(String),
 }
+
+pub const VAULT_KEY_ENV: &str = "CCTUI_VAULT_KEY";
 
 /// Minimum decoded vault key length, in bytes.
 pub const MIN_KEY_LEN: usize = 32;
@@ -115,11 +125,31 @@ impl std::fmt::Display for KeyError {
                 "CCTUI_VAULT_KEY decodes to {n} bytes; at least {MIN_KEY_LEN} are required \
                  (generate one with `openssl rand -hex 32`)"
             ),
+            Self::Ref(e) => write!(f, "CCTUI_VAULT_KEY: {e}"),
         }
     }
 }
 
 impl std::error::Error for KeyError {}
+
+fn resolve_raw(
+    raw: Option<String>,
+    resolve: impl FnOnce(&str) -> anyhow::Result<String>,
+) -> Result<Option<String>, String> {
+    raw.map(|raw| resolve(&raw).map_err(|e| format!("{e:#}"))).transpose()
+}
+
+fn resolved_var() -> Result<Result<String, std::env::VarError>, KeyError> {
+    static RESOLVED: std::sync::OnceLock<Result<Option<String>, String>> =
+        std::sync::OnceLock::new();
+    RESOLVED
+        .get_or_init(|| {
+            resolve_raw(std::env::var(VAULT_KEY_ENV).ok(), cctui_secrets::resolve_blocking)
+        })
+        .clone()
+        .map(|raw| raw.ok_or(std::env::VarError::NotPresent))
+        .map_err(KeyError::Ref)
+}
 
 fn key_from_env(var: Result<String, std::env::VarError>) -> Result<Vec<u8>, KeyError> {
     let raw = var.map_err(|_| KeyError::Unset)?;
@@ -149,16 +179,17 @@ fn weak_key_from_env(var: Result<String, std::env::VarError>) -> Vec<u8> {
             WEAK_KEY_WARNED.call_once(|| tracing::error!("{e}"));
             var.ok().and_then(|raw| hex::decode(raw.trim()).ok()).unwrap_or_default()
         }
+        Err(e @ KeyError::Ref(_)) => weak_key_from_ref_error(&e),
     }
 }
 
 /// Like [`vault_key`] but rejects an unset, non-hex or too-short key, so a
 /// caller can fail closed instead of silently degrading to pass-through.
 pub fn vault_key_checked() -> Result<Vec<u8>, KeyError> {
-    key_from_env(std::env::var("CCTUI_VAULT_KEY"))
+    key_from_env(resolved_var()?)
 }
 
-/// The hex-decoded vault key from `CCTUI_VAULT_KEY`.
+/// The hex-decoded vault key from the resolved `CCTUI_VAULT_KEY`.
 ///
 /// Unset yields an empty key (pass-through) so non-prod builds and tests don't
 /// panic. Invalid hex also degrades to pass-through, and a too-short key is
@@ -166,7 +197,16 @@ pub fn vault_key_checked() -> Result<Vec<u8>, KeyError> {
 /// weak or missing encryption is unacceptable.
 #[must_use]
 pub fn vault_key() -> Vec<u8> {
-    weak_key_from_env(std::env::var("CCTUI_VAULT_KEY"))
+    resolved_var().map_or_else(|e| weak_key_from_ref_error(&e), weak_key_from_env)
+}
+
+fn weak_key_from_ref_error(e: &KeyError) -> Vec<u8> {
+    WEAK_KEY_WARNED.call_once(|| {
+        tracing::error!(
+            "{e}; falling back to pass-through — vault values will be stored UNENCRYPTED"
+        );
+    });
+    Vec::new()
 }
 
 /// How the server may run with the configured key.
@@ -198,9 +238,10 @@ pub fn resolve_startup_key(
     }
 }
 
-/// [`resolve_startup_key`] against `CCTUI_VAULT_KEY`.
+/// [`resolve_startup_key`] against the resolved `CCTUI_VAULT_KEY`. A ref that
+/// fails to resolve refuses, whatever the vault holds.
 pub fn startup_key(has_encrypted_data: bool) -> Result<StartupKey, KeyError> {
-    resolve_startup_key(std::env::var("CCTUI_VAULT_KEY"), has_encrypted_data)
+    resolve_startup_key(resolved_var()?, has_encrypted_data)
 }
 
 /// Like [`vault_key`] but panics when `CCTUI_VAULT_KEY` is unset or not valid
@@ -371,6 +412,91 @@ mod tests {
                 StartupKey::Strong(hex::decode(&hex).unwrap())
             );
         }
+    }
+
+    struct Refs {
+        rt: tokio::runtime::Runtime,
+        fixture: cctui_secrets::testing::Fixture,
+    }
+
+    impl Refs {
+        fn start() -> Self {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .unwrap();
+            let fixture = rt.block_on(cctui_secrets::testing::Fixture::start());
+            Self { rt, fixture }
+        }
+
+        fn resolve(&self, raw: &str) -> Result<Result<String, std::env::VarError>, KeyError> {
+            resolve_raw(Some(raw.to_owned()), |r| {
+                self.rt.block_on(cctui_secrets::resolve_value(self.fixture.engines(), r))
+            })
+            .map(|v| v.ok_or(std::env::VarError::NotPresent))
+            .map_err(KeyError::Ref)
+        }
+    }
+
+    #[test]
+    fn vault_key_resolves_from_every_ref_kind_and_passes_the_startup_check() {
+        let refs = Refs::start();
+        let hex = "cd".repeat(32);
+        refs.fixture.set("vault-key", &hex);
+        for kind in cctui_secrets::testing::KINDS {
+            let var = refs.resolve(&refs.fixture.reference(kind, "vault-key")).unwrap();
+            assert_eq!(var.as_deref(), Ok(hex.as_str()), "{kind}");
+            assert_eq!(
+                resolve_startup_key(var, false).unwrap(),
+                StartupKey::Strong(hex::decode(&hex).unwrap()),
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn weak_key_behind_a_ref_is_still_refused_on_a_fresh_install() {
+        let refs = Refs::start();
+        refs.fixture.set("short-key", "00ff");
+        refs.fixture.set("not-hex", "zz");
+        for kind in cctui_secrets::testing::KINDS {
+            let short = refs.resolve(&refs.fixture.reference(kind, "short-key")).unwrap();
+            assert!(
+                matches!(resolve_startup_key(short.clone(), false), Err(KeyError::TooShort(2))),
+                "{kind}"
+            );
+            let legacy = resolve_startup_key(short, true).unwrap();
+            assert!(matches!(legacy, StartupKey::Legacy(ref k, _) if k == &[0x00, 0xff]), "{kind}");
+            let bad = refs.resolve(&refs.fixture.reference(kind, "not-hex")).unwrap();
+            let refused = resolve_startup_key(bad, true);
+            assert!(matches!(refused, Err(KeyError::InvalidHex(_))), "{kind}");
+        }
+    }
+
+    #[test]
+    fn unresolvable_ref_names_the_variable_and_ref_never_a_value() {
+        let refs = Refs::start();
+        refs.fixture.set("other-key", &"ef".repeat(32));
+        for kind in cctui_secrets::testing::KINDS {
+            let reference = refs.fixture.reference(kind, "missing-key");
+            let err = refs.resolve(&reference).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.starts_with("CCTUI_VAULT_KEY: "), "{kind}: {msg}");
+            let shown = cctui_secrets::SecretRef::parse(&reference).unwrap().to_string();
+            assert!(msg.contains(&shown), "{kind}: {msg}");
+            assert!(!msg.contains(&"ef".repeat(32)), "{kind}: {msg}");
+        }
+    }
+
+    #[test]
+    fn literal_and_unset_keys_resolve_unchanged() {
+        let refs = Refs::start();
+        let hex = "ab".repeat(32);
+        assert_eq!(refs.resolve(&hex).unwrap().as_deref(), Ok(hex.as_str()));
+        assert_eq!(refs.resolve(&format!("literal:{hex}")).unwrap().as_deref(), Ok(hex.as_str()));
+        let unset = resolve_raw(None, |_| unreachable!("nothing to resolve")).unwrap();
+        assert_eq!(unset, None);
     }
 
     #[test]
