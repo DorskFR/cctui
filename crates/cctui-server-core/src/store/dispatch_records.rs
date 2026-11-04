@@ -8,7 +8,8 @@ use std::sync::LazyLock;
 
 use cctui_crypto::redact::CompiledPatterns;
 use cctui_proto::api::{
-    DispatchRequest, FailedDispatch, FailedDispatchReason, RerunBlocker, WorkerExit,
+    DispatchExposure, DispatchRequest, FailedDispatch, FailedDispatchReason, RerunBlocker,
+    WorkerExit,
 };
 use sqlx::PgExecutor;
 use sqlx::types::Json;
@@ -288,6 +289,19 @@ pub async fn set_worker_exit(
     Ok(())
 }
 
+pub async fn set_exposure(
+    exec: impl PgExecutor<'_>,
+    session_id: &str,
+    exposure: DispatchExposure,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE dispatch_records SET exposure = $2 WHERE session_id = $1")
+        .bind(session_id)
+        .bind(Json(exposure))
+        .execute(exec)
+        .await?;
+    Ok(())
+}
+
 /// Marks records whose session registered, so a later session purge does not
 /// read as a worker that never came up.
 pub async fn mark_registered(exec: impl PgExecutor<'_>) -> Result<u64, sqlx::Error> {
@@ -357,6 +371,7 @@ struct FailedRow {
     detail: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
     worker_exit: Option<Json<WorkerExit>>,
+    exposure: Option<Json<DispatchExposure>>,
     superseded_by: Option<String>,
     dismissed: bool,
 }
@@ -403,6 +418,7 @@ impl From<FailedRow> for FailedDispatch {
             superseded_by: r.superseded_by,
             dismissed: r.dismissed,
             worker_exit: r.worker_exit.map(|j| j.0),
+            exposure: r.exposure.map(|j| j.0),
         }
     }
 }
@@ -447,7 +463,7 @@ pub async fn list_with_completed(
                 (r.replay IS NOT NULL) AS has_replay, r.outcome, \
                 COALESCE(r.end_reason, s.end_reason) AS end_reason, \
                 COALESCE(r.detail, s.end_detail) AS detail, r.created_at, r.worker_exit, \
-                sup.session_id AS superseded_by, (d.session_id IS NOT NULL) AS dismissed \
+                r.exposure, sup.session_id AS superseded_by, (d.session_id IS NOT NULL) AS dismissed \
          FROM dispatch_records r \
          LEFT JOIN sessions s ON s.id = r.session_id \
          LEFT JOIN dispatch_record_dismissals d \
@@ -909,6 +925,34 @@ mod tests {
         assert!(super::list(&pool, mine).await.unwrap().is_empty());
         assert_eq!(super::list_failed(&pool, Some(uid)).await.unwrap().len(), 2);
         cleanup(&pool, &[uid, admin]).await;
+    }
+
+    #[tokio::test]
+    async fn a_recorded_exposure_is_listed_on_the_failed_dispatch() {
+        use cctui_proto::api::{DispatchExposure, HumanGate};
+        let Some(url) = crate::test_support::db_url("dispatch_records_exposure") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let uid = seed_user(&pool).await;
+        let (exposed, bare) =
+            (format!("exp-{}", Uuid::new_v4()), format!("bare-{}", Uuid::new_v4()));
+        for s in [&exposed, &bare] {
+            refused(&pool, uid, s, &serde_json::json!({ "prompt": "go" })).await;
+        }
+        let exposure = DispatchExposure {
+            untrusted_input: true,
+            sensitive_data: true,
+            outward: true,
+            human_gate: Some(HumanGate::DraftPrOnly),
+        };
+        super::set_exposure(&pool, &exposed, exposure).await.unwrap();
+
+        let listed = super::list_failed(&pool, Some(uid)).await.unwrap();
+        let of = |sid: &str| listed.iter().find(|f| f.session_id == sid).unwrap().exposure;
+        assert_eq!(of(&exposed), Some(exposure));
+        assert_eq!(of(&bare), None);
+        cleanup(&pool, &[uid]).await;
     }
 
     async fn seed_session(pool: &sqlx::PgPool, sid: &str, uid: Uuid, end_reason: Option<&str>) {

@@ -230,6 +230,49 @@ pub struct WorkerProfileSpec {
     /// new profiles set `nonroot`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub posture: Option<Posture>,
+
+    /// Rule of Two exposure of the agent this profile runs. An unattended agent
+    /// holding all three needs a [`human_gate`](Self::human_gate); admission
+    /// refuses the profile's pods otherwise. Unset admits with an "exposure
+    /// undeclared" warning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<Exposure>,
+
+    /// The human step that bounds this profile's outward actions: `noPush`
+    /// (the worker cannot push), `draftPrOnly` (it only opens draft PRs a human
+    /// promotes) or `outwardHeldForApproval` (outward writes wait for a human
+    /// approval).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub human_gate: Option<HumanGate>,
+}
+
+/// What the agent is exposed to, each declared explicitly.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Exposure {
+    /// Reads input others wrote: ticket text, PR comments, web pages, messages.
+    pub untrusted_input: bool,
+
+    /// Reaches private repos, usable credentials or internal services.
+    pub sensitive_data: bool,
+
+    /// Acts outward: push, PR/issue comments, chat posts, any shared write.
+    pub outward: bool,
+}
+
+impl Exposure {
+    #[must_use]
+    pub const fn is_full(self) -> bool {
+        self.untrusted_input && self.sensitive_data && self.outward
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum HumanGate {
+    NoPush,
+    DraftPrOnly,
+    OutwardHeldForApproval,
 }
 
 /// Pre-flight isolation check settings for one profile.
@@ -687,6 +730,64 @@ preflight:
             posture.get("default").is_none(),
             "a schema default would be applied to stored profiles on read and flip them"
         );
+    }
+
+    #[test]
+    fn exposure_and_human_gate_deserialize_and_unset_stays_unset() {
+        let spec: WorkerProfileSpec = serde_norway::from_str(
+            "image: registry.example.com/worker:latest\n\
+             exposure:\n  untrustedInput: true\n  sensitiveData: true\n  outward: false\n\
+             humanGate: draftPrOnly\n",
+        )
+        .unwrap();
+        let exposure = spec.exposure.unwrap();
+        assert!(exposure.untrusted_input && exposure.sensitive_data && !exposure.outward);
+        assert!(!exposure.is_full());
+        assert_eq!(spec.human_gate, Some(HumanGate::DraftPrOnly));
+        let json = serde_json::to_value(&spec).unwrap();
+        assert_eq!(json["exposure"]["untrustedInput"], true);
+        assert_eq!(json["humanGate"], "draftPrOnly");
+
+        let lean: WorkerProfileSpec =
+            serde_norway::from_str("image: registry.example.com/worker:latest\n").unwrap();
+        assert!(lean.exposure.is_none() && lean.human_gate.is_none());
+        let lean_json = serde_json::to_value(&lean).unwrap();
+        assert!(lean_json.get("exposure").is_none() && lean_json.get("humanGate").is_none());
+
+        assert!(
+            serde_norway::from_str::<WorkerProfileSpec>(
+                "image: registry.example.com/worker:latest\nexposure:\n  outward: true\n"
+            )
+            .is_err(),
+            "a declared exposure names all three"
+        );
+        assert!(
+            serde_norway::from_str::<WorkerProfileSpec>(
+                "image: registry.example.com/worker:latest\nhumanGate: trustMe\n"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn crd_exposure_requires_all_three_and_enumerates_the_gates() {
+        let crd = serde_json::to_value(WorkerProfile::crd()).unwrap();
+        let props = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+            ["properties"];
+        let exposure = &props["exposure"];
+        assert_eq!(exposure["type"], "object");
+        assert_eq!(
+            exposure["required"],
+            serde_json::json!(["outward", "sensitiveData", "untrustedInput"])
+        );
+        for key in ["untrustedInput", "sensitiveData", "outward"] {
+            assert_eq!(exposure["properties"][key]["type"], "boolean", "{key}");
+        }
+        let gates = props["humanGate"]["enum"].as_array().expect("humanGate is an enum");
+        for want in ["noPush", "draftPrOnly", "outwardHeldForApproval"] {
+            assert!(gates.contains(&serde_json::json!(want)), "{want} missing from {gates:?}");
+        }
+        assert!(props["humanGate"].get("default").is_none());
     }
 
     #[test]

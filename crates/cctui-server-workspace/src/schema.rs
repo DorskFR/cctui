@@ -115,7 +115,7 @@ mod tests {
             provisioned(&pool).await;
             let core: Vec<i64> =
                 installations(&pool, "core").await.into_iter().map(|(v, _)| v).collect();
-            assert_eq!(core, [1, 2, 3, 4, 5, 6, 7, 8]);
+            assert_eq!(core, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
             assert_eq!(
                 installations(&pool, "workspace").await,
                 [

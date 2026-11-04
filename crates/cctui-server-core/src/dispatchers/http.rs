@@ -34,6 +34,8 @@ struct DispatchReply {
     status: Option<String>,
     #[serde(default)]
     queue_position: Option<u32>,
+    #[serde(default)]
+    exposure: Option<cctui_proto::api::DispatchExposure>,
 }
 
 impl HttpDispatcher {
@@ -91,6 +93,38 @@ impl Dispatcher for HttpDispatcher {
             namespace: reply.namespace,
             status: reply.status,
             queue_position: reply.queue_position,
+            exposure: reply.exposure,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cctui_proto::api::{DispatchExposure, HumanGate};
+
+    #[test]
+    fn a_reply_carries_the_profile_exposure_when_the_dispatcher_reports_it() {
+        let reply: super::DispatchReply = serde_json::from_value(serde_json::json!({
+            "handle": "job/w-1",
+            "exposure": {
+                "untrusted_input": true,
+                "sensitive_data": true,
+                "outward": true,
+                "human_gate": "outward_held_for_approval"
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            reply.exposure,
+            Some(DispatchExposure {
+                untrusted_input: true,
+                sensitive_data: true,
+                outward: true,
+                human_gate: Some(HumanGate::OutwardHeldForApproval),
+            })
+        );
+        let older: super::DispatchReply =
+            serde_json::from_value(serde_json::json!({ "handle": "job/w-1" })).unwrap();
+        assert!(older.exposure.is_none());
     }
 }

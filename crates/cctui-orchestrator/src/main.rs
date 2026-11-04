@@ -8,7 +8,7 @@ use axum::{Json, Router};
 use cctui_orchestrator::envelope::{
     MutationOutcome, default_sidecar_image, is_eligible, is_injected, mutate_pod, profile_name,
 };
-use cctui_orchestrator::validate::{Decision, ProfileSource, validate};
+use cctui_orchestrator::validate::{Decision, ProfileSource, Verdict, review};
 use cctui_orchestrator::{GuardSpec, WorkerProfile, WorkerProfileSpec};
 use k8s_openapi::api::core::v1::Pod;
 use kube::core::admission::{AdmissionRequest, AdmissionResponse, AdmissionReview};
@@ -123,14 +123,34 @@ async fn validate_handler(
     let resp = AdmissionResponse::from(&req);
     let resp = if let Some(pod) = &req.object {
         let namespace = request_namespace(&req, pod);
-        match validate(pod, &namespace, state.profile_source.as_ref()).await {
-            Decision::Allow => resp,
-            Decision::Deny(msg) => resp.deny(msg),
-        }
+        respond(resp, review(pod, &namespace, state.profile_source.as_ref()).await)
     } else {
         resp
     };
     Json(resp.into_review_for_pod())
+}
+
+/// Audit annotation key the validating webhook sets on an admitted pod whose
+/// profile declares no exposure; the API server prefixes it with the webhook name.
+const AUDIT_EXPOSURE: &str = "exposure";
+
+fn respond(mut resp: AdmissionResponse, verdict: Verdict) -> AdmissionResponse {
+    match verdict.decision {
+        Decision::Deny(msg) => resp.deny(msg),
+        Decision::Allow => {
+            if verdict.exposure_undeclared {
+                tracing::warn!(
+                    warnings = ?verdict.warnings,
+                    "admitting a worker pod whose profile declares no exposure"
+                );
+                resp.audit_annotations.insert(AUDIT_EXPOSURE.to_owned(), "undeclared".to_owned());
+            }
+            if !verdict.warnings.is_empty() {
+                resp.warnings = Some(verdict.warnings);
+            }
+            resp
+        }
+    }
 }
 
 /// `AdmissionResponse::into_review` yields `AdmissionReview<DynamicObject>`; the
@@ -420,6 +440,49 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn admission_request() -> AdmissionRequest<Pod> {
+        let review: AdmissionReview<Pod> =
+            serde_json::from_value(review_json(serde_json::json!({}))).unwrap();
+        review.try_into().unwrap()
+    }
+
+    #[test]
+    fn an_undeclared_exposure_admits_with_a_warning_and_an_audit_annotation() {
+        let req = admission_request();
+        let warning = "WorkerProfile `lean`: exposure undeclared, set spec.exposure".to_owned();
+        let resp = respond(
+            AdmissionResponse::from(&req),
+            Verdict {
+                decision: Decision::Allow,
+                warnings: vec![warning.clone()],
+                exposure_undeclared: true,
+            },
+        );
+        assert!(resp.allowed);
+        assert_eq!(resp.warnings, Some(vec![warning]));
+        assert_eq!(
+            resp.audit_annotations.get(AUDIT_EXPOSURE).map(String::as_str),
+            Some("undeclared")
+        );
+
+        let resp = respond(
+            AdmissionResponse::from(&req),
+            Verdict { decision: Decision::Allow, warnings: Vec::new(), exposure_undeclared: false },
+        );
+        assert!(resp.allowed && resp.warnings.is_none() && resp.audit_annotations.is_empty());
+
+        let resp = respond(
+            AdmissionResponse::from(&req),
+            Verdict {
+                decision: Decision::Deny("spec.exposure: no gate".into()),
+                warnings: Vec::new(),
+                exposure_undeclared: false,
+            },
+        );
+        assert!(!resp.allowed);
+        assert_eq!(resp.result.message, "spec.exposure: no gate");
     }
 
     #[tokio::test]

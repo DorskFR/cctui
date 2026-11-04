@@ -629,6 +629,7 @@ mod tests {
                 namespace: None,
                 status: status.into(),
                 queue_position: None,
+                exposure: None,
             }),
         ))
     }
@@ -799,6 +800,7 @@ mod tests {
                 namespace: None,
                 status: None,
                 queue_position: None,
+                exposure: None,
             })
         }
     }

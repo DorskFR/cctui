@@ -1585,6 +1585,28 @@ spec:
                   type: object
                 nullable: true
                 type: array
+              exposure:
+                description: |-
+                  Rule of Two exposure of the agent this profile runs. An unattended agent
+                  holding all three needs a [`human_gate`](Self::human_gate); admission
+                  refuses the profile's pods otherwise. Unset admits with an "exposure
+                  undeclared" warning.
+                nullable: true
+                properties:
+                  outward:
+                    description: 'Acts outward: push, PR/issue comments, chat posts, any shared write.'
+                    type: boolean
+                  sensitiveData:
+                    description: Reaches private repos, usable credentials or internal services.
+                    type: boolean
+                  untrustedInput:
+                    description: 'Reads input others wrote: ticket text, PR comments, web pages, messages.'
+                    type: boolean
+                required:
+                - outward
+                - sensitiveData
+                - untrustedInput
+                type: object
               gpgSigning:
                 description: |-
                   Requests that the webhook wire a gpg-agent socket into the worker
@@ -1901,6 +1923,19 @@ spec:
                     nullable: true
                     type: array
                 type: object
+              humanGate:
+                description: |-
+                  The human step that bounds this profile's outward actions: `noPush`
+                  (the worker cannot push), `draftPrOnly` (it only opens draft PRs a human
+                  promotes) or `outwardHeldForApproval` (outward writes wait for a human
+                  approval).
+                enum:
+                - noPush
+                - draftPrOnly
+                - outwardHeldForApproval
+                - null
+                nullable: true
+                type: string
               image:
                 description: Image for the worker container.
                 type: string

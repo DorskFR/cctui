@@ -2,6 +2,7 @@
 	import { Badge, Button, Card, Disclosure, IconButton, Link, Text } from '@dorsk/tsumikit';
 	import type { FailedDispatch } from '@bindings/FailedDispatch';
 	import { errMessage } from '$lib/api';
+	import { exposureView } from '$lib/dispatchExposure';
 	import { sessionHref } from '$lib/sessionFailureToast';
 	import { m } from '$lib/paraglide/messages';
 	import { getLocale } from '$lib/paraglide/runtime';
@@ -51,6 +52,7 @@
 	const at = $derived(new Date(dispatch.dispatched_at).toLocaleString(getLocale()));
 	const supersededBy = $derived(dispatch.superseded_by ?? null);
 	const exit = $derived(dispatch.worker_exit ?? null);
+	const exposure = $derived(exposureView(dispatch.exposure));
 	const exitLine = $derived.by(() => {
 		if (exit?.exit_code == null) return null;
 		const line = m.dispatch_failed_exit({
@@ -121,6 +123,27 @@
 			{@render dismissButton()}
 			<div class="body">
 				<Text size="xs" tone="faint">{m.dispatch_failed_dispatched_at({ at })}</Text>
+				{#if exposure}
+					<div class="exposure" data-exposure>
+						<Text size="xs" tone="faint">{m.exposure_label()}</Text>
+						{#each exposure.flags as flag (flag.key)}
+							<Badge
+								size="xs"
+								tone={flag.on ? 'warn' : 'muted'}
+								removed={!flag.on}
+								data-flag={flag.key}
+								data-on={String(flag.on)}
+							>
+								{flag.label}
+							</Badge>
+						{/each}
+						{#if exposure.gate}
+							<Badge size="xs" tone="ok" data-gate>{exposure.gate}</Badge>
+						{:else if exposure.ungated}
+							<Badge size="xs" tone="danger" data-gate>{m.exposure_no_gate()}</Badge>
+						{/if}
+					</div>
+				{/if}
 				{#if dispatch.detail}
 					<pre class="detail">{dispatch.detail}</pre>
 				{/if}
@@ -173,6 +196,12 @@
 		gap: var(--sp-2);
 		min-width: 0;
 		flex: 1 1 16rem;
+	}
+	.exposure {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: var(--sp-1);
 	}
 	.body {
 		display: flex;
