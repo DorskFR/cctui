@@ -28,6 +28,7 @@ import {
 import type { Line, MsgCategory } from "./types";
 import { parseResultImages } from "$lib/resultImages";
 import { VOICE_TOOL } from "./voiceNote";
+import { redactUserSpans } from "$lib/redactTag";
 
 export interface LineBuildCtx {
   visible: (c: MsgCategory) => boolean;
@@ -382,7 +383,7 @@ function buildLine(
     case "reply":
       // `reply` is only ever our own optimistic echo of typed input.
       if (!e.content.trim()) return null;
-      return userTurn(e.content, Number(e.ts), false, ctx, poll, e.turn_id);
+      return userTurn(redactUserSpans(e.content), Number(e.ts), false, ctx, poll, e.turn_id);
     case "tool_call": {
       if (e.tool === "AskUserQuestion") {
         const ask = parseAsk(e.input);

@@ -2,6 +2,7 @@ import type { AgentEvent } from '@bindings/AgentEvent';
 import type { SessionEndReason } from '@bindings/SessionEndReason';
 import type { ServerEvent } from '@bindings/ServerEvent';
 import type { AccountUsage } from '../queries/types';
+import { redactUserSpans } from '../redactTag';
 
 export interface CommandOutcome {
 	ok: boolean;
@@ -72,7 +73,7 @@ export function streamListPatch(sessionId: string, ev: AgentEvent): SessionListP
  * defensively: trim each line, drop blank lines, and reduce every `- <path>`
  * bullet to its basename so absolute-path differences don't matter. */
 export function canonUserBody(body: string): string {
-	return body
+	return redactUserSpans(body)
 		.split('\n')
 		.map((line) => {
 			const trimmed = line.trim();

@@ -6,6 +6,7 @@
  */
 
 import { escapeHtml, highlightCode, stripAnsi } from "$lib/highlight";
+import { m } from "$lib/paraglide/messages";
 
 export { escapeHtml, stripAnsi };
 
@@ -207,6 +208,10 @@ export function renderImageMarkers(text: string, sessionId: string): string {
   return out;
 }
 
+function userRedactedPill(): string {
+  return `<span class="md-redacted" data-redacted="user" title="${escapeHtml(m.redacted_tag_pill_tooltip())}">${escapeHtml(m.redacted_tag_pill())}</span>`;
+}
+
 export function renderMarkdown(
   src: string,
   opts: { tables?: boolean; sessionId?: string; machineId?: string } = {},
@@ -288,6 +293,11 @@ export function renderMarkdown(
         return `${BLOCK_L}s${i}${BLOCK_R}`;
       },
     );
+
+  s = s.replace(/\[REDACTED:user\]/g, () => {
+    const i = blocks.push(userRedactedPill()) - 1;
+    return `${BLOCK_L}s${i}${BLOCK_R}`;
+  });
 
   // Leaked harness pseudo-tags -> muted chip (don't show as broken text).
   s = s.replace(PSEUDO_TAG, '<span class="md-meta-tag">&lt;$1&gt;</span>');

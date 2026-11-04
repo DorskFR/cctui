@@ -42,6 +42,17 @@
 	border-radius: 4px;
 	padding: 0 3px;
 }
+.bubble .md-redacted {
+	font-family: var(--font-mono);
+	font-size: 0.85em;
+	color: var(--text-faint);
+	background: var(--bg-elevated-2);
+	border: 1px dashed var(--border-strong);
+	border-radius: var(--r-pill);
+	padding: 0 var(--sp-2);
+	cursor: help;
+	white-space: nowrap;
+}
 .bubble .md-pre {
 	background: var(--bg);
 	padding: var(--sp-2);
