@@ -288,10 +288,17 @@ fn scan_batch(
     for (id, mut payload) in rows {
         out.cursor = id;
         out.scanned += 1;
+        let user = cctui_crypto::redact::mask_user_json(
+            &mut payload,
+            &cctui_crypto::redact::UserLiterals::new(),
+        );
         if want_samples {
             cctui_crypto::redact::collect_samples(&payload, patterns, &mut out.samples);
         }
-        let hits = cctui_crypto::redact::redact_json_stats(&mut payload, patterns);
+        let mut hits = cctui_crypto::redact::redact_json_stats(&mut payload, patterns);
+        if user > 0 {
+            *hits.entry(cctui_crypto::redact::USER_CATEGORY.to_owned()).or_insert(0) += user;
+        }
         if hits.is_empty() {
             continue;
         }
@@ -811,6 +818,22 @@ mod tests {
             .await
             .unwrap();
         cleanup(&pool, uid, machine).await;
+    }
+
+    #[test]
+    fn a_stored_tagged_span_is_rescrubbed_with_no_detector_enabled() {
+        let rows = vec![
+            (1, json!({"role": "user", "text": "pw <Redacted>hunter2-xyz</REDACTED> ok"})),
+            (2, json!({"role": "user", "text": "nothing here"})),
+            (3, json!({"role": "user", "text": "already [REDACTED:user] ok"})),
+        ];
+        let none = cctui_crypto::redact::CompiledPatterns::disabled();
+        let out = super::scan_batch(rows, &none, true);
+        assert_eq!(out.scanned, 3);
+        assert_eq!(out.changed, 1);
+        assert_eq!(out.stats.get(cctui_crypto::redact::USER_CATEGORY), Some(&1));
+        let masked = json!({"role": "user", "text": "pw [REDACTED:user] ok"});
+        assert_eq!(out.updates, vec![(1, masked)]);
     }
 
     #[test]

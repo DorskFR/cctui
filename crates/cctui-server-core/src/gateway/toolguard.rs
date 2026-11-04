@@ -1023,20 +1023,54 @@ pub fn rewrite_json(policy: &CompiledPolicy, body: &[u8]) -> Option<(Vec<u8>, Bl
 
 // ---- policy lookup ----
 
-type PolicyRow =
-    (Uuid, Option<Vec<String>>, Option<Vec<String>>, Option<Vec<String>>, Option<Vec<String>>);
+type PolicyRow = (
+    Uuid,
+    Uuid,
+    Option<Vec<String>>,
+    Option<Vec<String>>,
+    Option<Vec<String>>,
+    Option<Vec<String>>,
+);
+
+#[derive(Clone)]
+struct AccountPolicy {
+    account_id: Uuid,
+    owner: Uuid,
+    policy: Arc<CompiledPolicy>,
+}
 
 struct CachedPolicy {
     at: Instant,
     account_id: Option<Uuid>,
-    policy: Option<(Uuid, Arc<CompiledPolicy>)>,
+    policy: Option<AccountPolicy>,
 }
 
 static POLICY_CACHE: LazyLock<DashMap<Uuid, CachedPolicy>> = LazyLock::new(DashMap::new);
 
 const SESSION_TTL: Duration = Duration::from_mins(5);
 const SESSION_CACHE_MAX: usize = 4096;
-type CachedSession = (Instant, Option<String>, Option<String>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Bypass {
+    by: Uuid,
+    admin: bool,
+}
+
+impl Bypass {
+    /// A user can only lift the policy of an account they own, unless admin.
+    fn honoured(self, owner: Uuid) -> bool {
+        self.admin || self.by == owner
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CachedSession {
+    at: Instant,
+    session_id: Option<String>,
+    cwd: Option<String>,
+    bypass: Option<Bypass>,
+}
+
 static SESSION_CACHE: LazyLock<DashMap<String, CachedSession>> = LazyLock::new(DashMap::new);
 
 /// Drop an account's cached policy after an edit, so this replica applies it at
@@ -1045,20 +1079,29 @@ pub fn invalidate_policy_cache(account_id: Uuid) {
     POLICY_CACHE.retain(|_, c| c.account_id != Some(account_id));
 }
 
+/// Drop a session's cached lookup after its bypass is toggled, so the next
+/// gateway request sees the change. Single-replica: another replica would keep
+/// its entry for up to [`SESSION_TTL`].
+pub fn invalidate_session_guard(session_id: &str) {
+    SESSION_CACHE.retain(|_, c| c.session_id.as_deref() != Some(session_id));
+}
+
 /// `Err` only when the lookup failed and nothing is cached: the caller must not
 /// forward unguarded.
 async fn policy_for_provider(
     state: &GuardContext,
     provider_id: Uuid,
-) -> Result<Option<(Uuid, Arc<CompiledPolicy>)>, sqlx::Error> {
+) -> Result<Option<AccountPolicy>, sqlx::Error> {
     if let Some(entry) = POLICY_CACHE.get(&provider_id)
         && entry.at.elapsed() < POLICY_TTL
     {
         return Ok(entry.policy.clone());
     }
     let row: Result<Option<PolicyRow>, _> = sqlx::query_as(
-        "SELECT ap.account_id, p.terms, p.patterns, p.protected_owners, p.exempt_roots \
+        "SELECT ap.account_id, a.user_id, p.terms, p.patterns, p.protected_owners, \
+                p.exempt_roots \
          FROM account_providers ap \
+         JOIN accounts a ON a.id = ap.account_id \
          LEFT JOIN account_tool_policies p ON p.account_id = ap.account_id \
          WHERE ap.id = $1",
     )
@@ -1073,14 +1116,18 @@ async fn policy_for_provider(
         }
     };
     let account_id = row.as_ref().map(|r| r.0);
-    let policy = row.and_then(|(account_id, terms, patterns, owners, roots)| {
+    let policy = row.and_then(|(account_id, owner, terms, patterns, owners, roots)| {
         let p = ToolPolicy {
             terms: terms.unwrap_or_default(),
             patterns: patterns.unwrap_or_default(),
             protected_owners: owners.unwrap_or_default(),
             exempt_roots: roots.unwrap_or_default(),
         };
-        CompiledPolicy::compile(&p).map(|c| (account_id, Arc::new(c)))
+        CompiledPolicy::compile(&p).map(|c| AccountPolicy {
+            account_id,
+            owner,
+            policy: Arc::new(c),
+        })
     });
     POLICY_CACHE.insert(
         provider_id,
@@ -1089,13 +1136,13 @@ async fn policy_for_provider(
     Ok(policy)
 }
 
-/// The token's session id and cwd. An unknown cwd (lookup failure, missing
-/// session row or NULL `working_dir`) is scanned and not cached, so a session
-/// whose row lands after its first request is resolved on the next one.
+/// The token's session id, cwd and bypass. An unknown cwd (lookup failure,
+/// missing session row or NULL `working_dir`) is scanned and not cached, so a
+/// session whose row lands after its first request is resolved on the next one.
 async fn session_for_token(state: &GuardContext, session_token: &str) -> CachedSession {
     let hash = crate::auth::sha256_hex(session_token);
     if let Some(c) = SESSION_CACHE.get(&hash)
-        && c.0.elapsed() < SESSION_TTL
+        && c.at.elapsed() < SESSION_TTL
     {
         return c.value().clone();
     }
@@ -1106,17 +1153,42 @@ async fn session_for_token(state: &GuardContext, session_token: &str) -> CachedS
     .bind(&hash)
     .fetch_optional(&state.pool)
     .await;
-    let Ok(row) = row else { return (Instant::now(), None, None) };
-    let (session_id, cwd) = row.map_or((None, None), |(s, c)| (Some(s), c));
-    let entry = (Instant::now(), session_id, cwd);
-    if entry.2.is_none() {
+    let unknown = CachedSession { at: Instant::now(), session_id: None, cwd: None, bypass: None };
+    let Ok(Some((session_id, cwd))) = row else { return unknown };
+    let bypass = session_bypass(state, &session_id).await;
+    let entry = CachedSession { at: Instant::now(), session_id: Some(session_id), cwd, bypass };
+    if entry.cwd.is_none() {
         return entry;
     }
     if SESSION_CACHE.len() >= SESSION_CACHE_MAX {
-        SESSION_CACHE.retain(|_, c| c.0.elapsed() < SESSION_TTL);
+        SESSION_CACHE.retain(|_, c| c.at.elapsed() < SESSION_TTL);
     }
     SESSION_CACHE.insert(hash, entry.clone());
     entry
+}
+
+/// Kept apart from the session lookup so a failure here leaves the session
+/// guarded and its blocks reported: no bypass, or a setter who is not admin.
+async fn session_bypass(state: &GuardContext, session_id: &str) -> Option<Bypass> {
+    let by: Result<Option<Option<Uuid>>, _> =
+        sqlx::query_scalar("SELECT tool_guard_bypass_by FROM sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_optional(&state.pool)
+            .await;
+    let by = match by {
+        Ok(by) => by.flatten()?,
+        Err(e) => {
+            tracing::warn!(session = session_id, error = %e, "tool guard bypass lookup failed");
+            return None;
+        }
+    };
+    let admin: Result<bool, _> = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM user_acls WHERE user_id = $1 AND scope = 'admin')",
+    )
+    .bind(by)
+    .fetch_one(&state.pool)
+    .await;
+    Some(Bypass { by, admin: admin.unwrap_or(false) })
 }
 
 /// What the proxy needs to guard one response.
@@ -1127,21 +1199,24 @@ pub struct ActiveGuard {
     session_id: Option<String>,
 }
 
-/// `Ok(None)` when the account has no effective policy or the session is
-/// exempt; `Err` when the policy could not be read at all.
+/// `Ok(None)` when the account has no effective policy, the session is exempt,
+/// or its bypass was set by the account's owner or an admin; `Err` when the
+/// policy could not be read at all.
 pub async fn guard_for(
     state: &GuardContext,
     provider_id: Uuid,
     session_token: &str,
 ) -> Result<Option<ActiveGuard>, sqlx::Error> {
-    let Some((account_id, policy)) = policy_for_provider(state, provider_id).await? else {
+    let Some(AccountPolicy { account_id, owner, policy }) =
+        policy_for_provider(state, provider_id).await?
+    else {
         return Ok(None);
     };
-    let (_, session_id, cwd) = session_for_token(state, session_token).await;
-    if policy.exempts(cwd.as_deref()) {
+    let session = session_for_token(state, session_token).await;
+    if policy.exempts(session.cwd.as_deref()) || session.bypass.is_some_and(|b| b.honoured(owner)) {
         return Ok(None);
     }
-    Ok(Some(ActiveGuard { policy, account_id, session_id }))
+    Ok(Some(ActiveGuard { policy, account_id, session_id: session.session_id }))
 }
 
 async fn record_block(state: &GuardContext, guard: &ActiveGuard, block: Block) {
@@ -2326,9 +2401,9 @@ mod tests {
         let hash = crate::auth::sha256_hex(&token);
         let prov = seed_exempt_policy(&pool, uid, &session_id, &hash).await;
 
-        let (_, sid, cwd) = session_for_token(&state, &token).await;
-        assert_eq!(sid.as_deref(), Some(session_id.as_str()));
-        assert!(cwd.is_none(), "no session row yet");
+        let first = session_for_token(&state, &token).await;
+        assert_eq!(first.session_id.as_deref(), Some(session_id.as_str()));
+        assert!(first.cwd.is_none(), "no session row yet");
         assert!(!SESSION_CACHE.contains_key(&hash), "an unknown cwd must not be cached");
         assert!(
             guard_for(&state, prov, &token).await.unwrap().is_some(),
@@ -2362,5 +2437,274 @@ mod tests {
 
         SESSION_CACHE.remove(&hash);
         cleanup_seeded(&pool, uid, &session_id).await;
+    }
+
+    struct BypassFixture {
+        owner: Uuid,
+        stranger: Uuid,
+        admin: Uuid,
+        prov: Uuid,
+        bypassed: (String, String),
+        sibling: (String, String),
+    }
+
+    async fn seed_user(pool: &sqlx::PgPool, uid: Uuid) {
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("toolguard-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(pool)
+            .await
+            .expect("seed user");
+    }
+
+    async fn seed_guarded_session(
+        pool: &sqlx::PgPool,
+        owner: Uuid,
+        prov: Uuid,
+        parent: Option<&str>,
+    ) -> (String, String) {
+        let id = format!("toolguard-{}", Uuid::new_v4());
+        let token = format!("tok-{id}");
+        sqlx::query(
+            "INSERT INTO sessions (id, parent_id, machine_id, working_dir, user_id, status) \
+             VALUES ($1, $2, 'm1', '/work/repo', $3, 'active')",
+        )
+        .bind(&id)
+        .bind(parent)
+        .bind(owner)
+        .execute(pool)
+        .await
+        .expect("seed session");
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+        )
+        .bind(crate::auth::sha256_hex(&token))
+        .bind(&id)
+        .bind(prov)
+        .execute(pool)
+        .await
+        .expect("seed token");
+        (id, token)
+    }
+
+    async fn seed_policy_account(pool: &sqlx::PgPool, owner: Uuid) -> Uuid {
+        let acct = Uuid::new_v4();
+        let prov = Uuid::new_v4();
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(acct)
+            .bind(owner)
+            .bind(format!("toolguard-acct-{owner}"))
+            .execute(pool)
+            .await
+            .expect("seed account");
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'anthropic', 'x', $3)",
+        )
+        .bind(prov)
+        .bind(owner)
+        .bind(acct)
+        .execute(pool)
+        .await
+        .expect("seed provider");
+        sqlx::query("INSERT INTO account_tool_policies (account_id, terms) VALUES ($1, $2)")
+            .bind(acct)
+            .bind(vec![TERM.to_owned()])
+            .execute(pool)
+            .await
+            .expect("seed policy");
+        prov
+    }
+
+    async fn seed_bypass_fixture(pool: &sqlx::PgPool) -> BypassFixture {
+        let (owner, stranger, admin) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        for uid in [owner, stranger, admin] {
+            seed_user(pool, uid).await;
+        }
+        sqlx::query("INSERT INTO user_acls (user_id, scope) VALUES ($1, 'admin')")
+            .bind(admin)
+            .execute(pool)
+            .await
+            .expect("seed admin acl");
+        let prov = seed_policy_account(pool, owner).await;
+        let bypassed = seed_guarded_session(pool, owner, prov, None).await;
+        let sibling = seed_guarded_session(pool, owner, prov, Some(&bypassed.0)).await;
+        BypassFixture { owner, stranger, admin, prov, bypassed, sibling }
+    }
+
+    async fn set_bypass(pool: &sqlx::PgPool, session_id: &str, by: Option<Uuid>) {
+        sqlx::query(
+            "UPDATE sessions SET tool_guard_bypass_by = $2, \
+                 tool_guard_bypass_at = CASE WHEN $2::uuid IS NULL THEN NULL ELSE now() END \
+             WHERE id = $1",
+        )
+        .bind(session_id)
+        .bind(by)
+        .execute(pool)
+        .await
+        .expect("set bypass");
+    }
+
+    async fn cleanup_bypass_fixture(pool: &sqlx::PgPool, fx: &BypassFixture) {
+        for (id, token) in [&fx.bypassed, &fx.sibling] {
+            SESSION_CACHE.remove(&crate::auth::sha256_hex(token));
+            sqlx::query("DELETE FROM session_tokens WHERE session_id = $1")
+                .bind(id)
+                .execute(pool)
+                .await
+                .expect("cleanup tokens");
+        }
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+            .bind(fx.owner)
+            .execute(pool)
+            .await
+            .expect("cleanup sessions");
+        sqlx::query("DELETE FROM users WHERE id = ANY($1)")
+            .bind(vec![fx.owner, fx.stranger, fx.admin])
+            .execute(pool)
+            .await
+            .expect("cleanup users");
+    }
+
+    async fn guard_state(test: &str) -> Option<GuardContext> {
+        let url = crate::test_support::db_url(test)?;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        Some(GuardContext { pool, bus: crate::bus::Bus::new(Box::new(crate::bus::NoopTransport)) })
+    }
+
+    async fn guarded(state: &GuardContext, prov: Uuid, token: &str) -> bool {
+        guard_for(state, prov, token).await.unwrap().is_some()
+    }
+
+    #[tokio::test]
+    async fn a_session_bypass_is_honoured_only_for_the_owner_or_an_admin() {
+        let Some(state) =
+            guard_state("a_session_bypass_is_honoured_only_for_the_owner_or_an_admin").await
+        else {
+            return;
+        };
+        let pool = state.pool.clone();
+        let fx = seed_bypass_fixture(&pool).await;
+        let (id, token) = (&fx.bypassed.0, &fx.bypassed.1);
+
+        assert!(guarded(&state, fx.prov, token).await, "no bypass: guarded");
+
+        set_bypass(&pool, id, Some(fx.owner)).await;
+        invalidate_session_guard(id);
+        assert!(
+            !guarded(&state, fx.prov, token).await,
+            "the account owner's bypass lifts the guard"
+        );
+        assert!(
+            guarded(&state, fx.prov, &fx.sibling.1).await,
+            "a child of the bypassed session is guarded"
+        );
+
+        set_bypass(&pool, id, Some(fx.stranger)).await;
+        invalidate_session_guard(id);
+        assert!(guarded(&state, fx.prov, token).await, "a non-owner's bypass is not honoured");
+
+        set_bypass(&pool, id, Some(fx.admin)).await;
+        invalidate_session_guard(id);
+        assert!(!guarded(&state, fx.prov, token).await, "an admin's bypass lifts the guard");
+
+        set_bypass(&pool, id, None).await;
+        invalidate_session_guard(id);
+        assert!(
+            guarded(&state, fx.prov, token).await,
+            "clearing the bypass guards the next request"
+        );
+
+        cleanup_bypass_fixture(&pool, &fx).await;
+    }
+
+    #[tokio::test]
+    async fn invalidating_a_session_guard_drops_only_that_sessions_cache_entry() {
+        let Some(state) =
+            guard_state("invalidating_a_session_guard_drops_only_that_sessions_cache_entry").await
+        else {
+            return;
+        };
+        let pool = state.pool.clone();
+        let fx = seed_bypass_fixture(&pool).await;
+        let (id, token) = (&fx.bypassed.0, &fx.bypassed.1);
+        let hash = crate::auth::sha256_hex(token);
+        let sibling_hash = crate::auth::sha256_hex(&fx.sibling.1);
+
+        assert!(guard_for(&state, fx.prov, token).await.unwrap().is_some());
+        assert!(guard_for(&state, fx.prov, &fx.sibling.1).await.unwrap().is_some());
+        assert!(SESSION_CACHE.contains_key(&hash) && SESSION_CACHE.contains_key(&sibling_hash));
+
+        set_bypass(&pool, id, Some(fx.owner)).await;
+        assert!(
+            guard_for(&state, fx.prov, token).await.unwrap().is_some(),
+            "without invalidation the cached lookup still guards"
+        );
+
+        invalidate_session_guard(id);
+        assert!(!SESSION_CACHE.contains_key(&hash), "the toggled session's entry is dropped");
+        assert!(SESSION_CACHE.contains_key(&sibling_hash), "other sessions stay cached");
+        assert!(
+            guard_for(&state, fx.prov, token).await.unwrap().is_none(),
+            "the next request sees the bypass"
+        );
+
+        cleanup_bypass_fixture(&pool, &fx).await;
+    }
+
+    #[tokio::test]
+    async fn a_core_only_database_without_user_acls_still_guards_and_reports() {
+        let name = "a_core_only_database_without_user_acls_still_guards_and_reports";
+        let Some(url) = crate::test_support::db_url(name) else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    sqlx::query("SET search_path = pg_temp").execute(conn).await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        for ddl in [
+            "CREATE TEMP TABLE users (LIKE public.users INCLUDING ALL)",
+            "CREATE TEMP TABLE accounts (LIKE public.accounts INCLUDING ALL)",
+            "CREATE TEMP TABLE account_providers (LIKE public.account_providers INCLUDING ALL)",
+            "CREATE TEMP TABLE account_tool_policies (LIKE public.account_tool_policies INCLUDING ALL)",
+            "CREATE TEMP TABLE session_tokens (LIKE public.session_tokens INCLUDING ALL)",
+            "CREATE TEMP TABLE sessions (LIKE public.sessions INCLUDING ALL)",
+        ] {
+            sqlx::query(ddl).execute(&pool).await.expect("temp table");
+        }
+        let state = GuardContext {
+            pool: pool.clone(),
+            bus: crate::bus::Bus::new(Box::new(crate::bus::NoopTransport)),
+        };
+        let owner = Uuid::new_v4();
+        seed_user(&pool, owner).await;
+        let prov = seed_policy_account(&pool, owner).await;
+        let (id, token) = seed_guarded_session(&pool, owner, prov, None).await;
+
+        let guard = guard_for(&state, prov, &token).await.unwrap().expect("guarded");
+        assert_eq!(
+            guard.session_id.as_deref(),
+            Some(id.as_str()),
+            "the session still resolves, so its blocks are reported"
+        );
+
+        set_bypass(&pool, &id, Some(owner)).await;
+        invalidate_session_guard(&id);
+        assert!(
+            guard_for(&state, prov, &token).await.unwrap().is_none(),
+            "the owner's bypass needs no user_acls"
+        );
+        invalidate_session_guard(&id);
     }
 }

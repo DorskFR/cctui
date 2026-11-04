@@ -350,11 +350,37 @@ pub trait SessionDriver: Send {
 const MAX_PARKED_SPANS: usize = 256;
 
 /// `daemon.command` spans waiting for their command to cross the adapter
-/// channel, keyed by command id.
-static PARKED_SPANS: std::sync::LazyLock<std::sync::Mutex<BTreeMap<Uuid, tracing::Span>>> =
+/// channel, keyed by command id and stamped with their parking order.
+#[derive(Default)]
+struct ParkedSpans {
+    spans: BTreeMap<Uuid, (u64, tracing::Span)>,
+    next: u64,
+}
+
+impl ParkedSpans {
+    /// When full, the oldest span goes: its command was never drained, and
+    /// dropping the last handle ends it.
+    fn park(&mut self, command_id: Uuid, span: tracing::Span) {
+        if self.spans.len() >= MAX_PARKED_SPANS
+            && !self.spans.contains_key(&command_id)
+            && let Some(oldest) =
+                self.spans.iter().min_by_key(|(_, (seq, _))| *seq).map(|(id, _)| *id)
+        {
+            self.spans.remove(&oldest);
+        }
+        self.next += 1;
+        self.spans.insert(command_id, (self.next, span));
+    }
+
+    fn take(&mut self, command_id: Uuid) -> Option<tracing::Span> {
+        self.spans.remove(&command_id).map(|(_, span)| span)
+    }
+}
+
+static PARKED_SPANS: std::sync::LazyLock<std::sync::Mutex<ParkedSpans>> =
     std::sync::LazyLock::new(Default::default);
 
-fn parked_spans() -> std::sync::MutexGuard<'static, BTreeMap<Uuid, tracing::Span>> {
+fn parked_spans() -> std::sync::MutexGuard<'static, ParkedSpans> {
     PARKED_SPANS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
@@ -390,16 +416,13 @@ pub fn park_span(command_id: Option<Uuid>, span: &tracing::Span) {
     if span.is_none() {
         return;
     }
-    let mut parked = parked_spans();
-    if parked.len() < MAX_PARKED_SPANS {
-        parked.insert(command_id, span.clone());
-    }
+    parked_spans().park(command_id, span.clone());
 }
 
 /// The span parked for `command_id`, or [`tracing::Span::none`].
 #[must_use]
 pub fn take_span(command_id: Option<Uuid>) -> tracing::Span {
-    command_id.and_then(|id| parked_spans().remove(&id)).unwrap_or_else(tracing::Span::none)
+    command_id.and_then(|id| parked_spans().take(id)).unwrap_or_else(tracing::Span::none)
 }
 
 fn spawn_span(adapter: &str, spec: &SessionSpec, session_id: Option<&str>) -> tracing::Span {
@@ -625,6 +648,35 @@ mod tests {
         park_span(Some(id), &span);
         assert!(take_span(Some(id)).is_none());
         assert!(take_span(None).is_none());
+    }
+
+    #[test]
+    fn a_full_parking_lot_evicts_and_ends_the_oldest_span() {
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder().with_simple_exporter(exporter.clone()).build();
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test")));
+        let ids: Vec<Uuid> = (0..=MAX_PARKED_SPANS).map(|_| Uuid::new_v4()).collect();
+        let mut parked = ParkedSpans::default();
+        tracing::subscriber::with_default(subscriber, || {
+            for (n, id) in ids.iter().enumerate() {
+                parked.park(*id, tracing::info_span!("daemon.command", n));
+            }
+        });
+
+        assert_eq!(parked.spans.len(), MAX_PARKED_SPANS);
+        assert!(parked.take(ids[0]).is_none(), "the oldest span was evicted");
+        let newest = parked.take(ids[MAX_PARKED_SPANS]).expect("the newest span is still parked");
+        assert!(!newest.is_none());
+        let finished = exporter.get_finished_spans().expect("exporter readable");
+        assert_eq!(finished.len(), 1, "only the evicted span has ended: {finished:?}");
+        let first =
+            |kv: &opentelemetry::KeyValue| kv.key.as_str() == "n" && kv.value.as_str() == "0";
+        assert!(finished[0].attributes.iter().any(first), "{finished:?}");
     }
 
     #[test]

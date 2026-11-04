@@ -84,11 +84,46 @@ pub fn undeliverable_reason(session_status: Option<&str>) -> Option<&'static str
     }
 }
 
+pub const SEAL_NEEDS_KEY: &str = "a message with <redacted> spans can only be scheduled when \
+     the server has a vault key (CCTUI_VAULT_KEY)";
+const UNSEALABLE: &str = "the sealed message could not be decrypted with the vault key";
+
+/// The stored form of `content`: `<redacted>` spans masked in the shown body,
+/// the real text kept only encrypted. `key` is read only when there is a span.
+pub fn seal(
+    content: &str,
+    key: impl FnOnce() -> Vec<u8>,
+) -> Result<(String, Option<String>), &'static str> {
+    if !cctui_crypto::redact::has_user_spans(content) {
+        return Ok((content.to_owned(), None));
+    }
+    let key = key();
+    if key.is_empty() {
+        return Err(SEAL_NEEDS_KEY);
+    }
+    let masked = cctui_crypto::redact::mask_user_spans(content).into_owned();
+    Ok((masked, Some(crate::crypto::encrypt(content, &key))))
+}
+
+/// The text to deliver: the sealed original when there is one.
+pub fn delivery_text(
+    row: &ClaimedRow,
+    key: impl FnOnce() -> Vec<u8>,
+) -> Result<String, &'static str> {
+    let Some(sealed) = &row.sealed_body else { return Ok(row.body.clone()) };
+    let key = key();
+    if key.is_empty() {
+        return Err(UNSEALABLE);
+    }
+    crate::crypto::decrypt(sealed, &key).ok_or(UNSEALABLE)
+}
+
 #[derive(sqlx::FromRow)]
 pub struct ClaimedRow {
     pub id: uuid::Uuid,
     pub session_id: String,
     pub body: String,
+    pub sealed_body: Option<String>,
     pub ask_picks: Option<serde_json::Value>,
     pub attempts: i32,
     pub turn_id: uuid::Uuid,
@@ -108,7 +143,8 @@ const CLAIM_SQL: &str = "\
             ORDER BY deliver_at \
             LIMIT $2 \
             FOR UPDATE SKIP LOCKED) \
-        RETURNING q.id, q.session_id, q.body, q.ask_picks, q.attempts, q.turn_id, q.user_id) \
+        RETURNING q.id, q.session_id, q.body, q.sealed_body, q.ask_picks, q.attempts, q.turn_id, \
+                  q.user_id) \
     SELECT c.*, s.status AS session_status, s.tempo AS session_tempo \
     FROM claimed c LEFT JOIN sessions s ON s.id = c.session_id";
 
@@ -117,7 +153,7 @@ const CLAIM_ONE_SQL: &str = "\
         UPDATE session_message_queue \
         SET state = 'sending', next_attempt_at = now() + ($3 || ' seconds')::interval \
         WHERE id = $1 AND session_id = $2 AND state = 'scheduled' \
-        RETURNING id, session_id, body, ask_picks, attempts, turn_id, user_id) \
+        RETURNING id, session_id, body, sealed_body, ask_picks, attempts, turn_id, user_id) \
     SELECT c.*, s.status AS session_status, s.tempo AS session_tempo \
     FROM claimed c LEFT JOIN sessions s ON s.id = c.session_id";
 
@@ -212,6 +248,13 @@ pub async fn deliver(state: &AppState, row: ClaimedRow) -> Result<(), String> {
         mark_dead(&state.pool, row.id, row.attempts + 1, reason).await;
         return Err(reason.to_owned());
     }
+    let text = match delivery_text(&row, crate::crypto::vault_key) {
+        Ok(text) => text,
+        Err(reason) => {
+            mark_dead(&state.pool, row.id, row.attempts + 1, reason).await;
+            return Err(reason.to_owned());
+        }
+    };
     let env = crate::routes::gateway::resume_env_for_session(state, &row.session_id).await;
     let command_id = uuid::Uuid::new_v4();
     crate::state::track_command(
@@ -227,7 +270,7 @@ pub async fn deliver(state: &AppState, row: ClaimedRow) -> Result<(), String> {
         cctui_proto::adapter::AdapterCommand::Reply {
             local_id: row.session_id.clone(),
             recover_auth: false,
-            text: row.body,
+            text,
             ask_picks,
             env,
             command_id: Some(command_id),
@@ -630,6 +673,57 @@ mod reply_gate_tests {
 
         assert_eq!(reply(&state, caller(owner, READ_ONLY), &live).await, Ok(()));
         assert!(replied(&mut rx), "typing into a live session is unchanged");
+    }
+
+    #[tokio::test]
+    async fn a_scheduled_redacted_span_is_stored_sealed_and_delivered_real() {
+        let name = "a_scheduled_redacted_span_is_stored_sealed_and_delivered_real";
+        let Some(state) = state(name).await else { return };
+        crate::crypto::install_vault_key(vec![7u8; 32]);
+        let pool = state.pool.clone();
+        let (owner, machine) = seed_owner(&pool, DISPATCH).await;
+        let mut rx = daemon(&state, machine);
+        let live = seed_session(&pool, owner, machine, "idle").await;
+        let content = "log in with <redacted>hunter2-xyz</redacted> please";
+        let at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+
+        let (_, Json(resp)) = crate::routes::scheduled_messages::schedule(
+            &state,
+            &caller(owner, DISPATCH),
+            &live,
+            content,
+            &at,
+        )
+        .await
+        .unwrap();
+        let id = resp.command_id;
+        let row: String = sqlx::query_scalar(
+            "SELECT row_to_json(q)::text FROM session_message_queue q WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(!row.contains("hunter2-xyz"), "plaintext stored: {row}");
+        assert!(row.contains("log in with [REDACTED:user] please"), "{row}");
+
+        let Json(listed) =
+            crate::routes::scheduled_messages::list(State(state.clone()), Path(live.clone()))
+                .await
+                .unwrap();
+        let shown = listed.iter().find(|m| m.id == id).expect("listed");
+        assert_eq!(shown.body, "log in with [REDACTED:user] please");
+
+        let row = claim_one(&pool, &live, id).await.unwrap().expect("claimed");
+        deliver_due(&state, row).await;
+        assert_eq!(queue_state(&pool, id).await.0, "sent");
+        match rx.try_recv() {
+            Ok(DaemonFrameDown::Command { command, .. }) => match *command {
+                AdapterCommand::Reply { text, .. } => assert_eq!(text, content),
+                other => panic!("expected a reply, got {other:?}"),
+            },
+            other => panic!("nothing delivered: {other:?}"),
+        }
     }
 
     #[tokio::test]

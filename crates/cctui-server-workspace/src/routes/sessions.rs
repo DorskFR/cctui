@@ -497,6 +497,7 @@ fn skeleton_list_item(
         launch_error: None,
         next_session_id: None,
         followup_count: 0,
+        tool_guard_bypass: false,
     }
 }
 
@@ -624,13 +625,15 @@ struct SignalRow {
     last_keepalive_at: Option<DateTime<Utc>>,
     next_session_id: Option<String>,
     followup_count: i32,
+    tool_guard_bypass: bool,
 }
 
 const SIGNAL_SQL: &str = concat!(
     "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
             soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, \
             children, end_reason, end_detail, ended_at, permission_mode, archived_by, \
-            keepalive_json, last_keepalive_at, ",
+            keepalive_json, last_keepalive_at, \
+            tool_guard_bypass_by IS NOT NULL AS tool_guard_bypass, ",
     next_session_sql!(),
     " AS next_session_id, ",
     followup_count_sql!(),
@@ -1097,6 +1100,7 @@ fn apply_signals(
     s.last_tool_at = row.last_tool_at;
     s.last_tool_name = row.last_tool_name;
     s.tool_use_count = row.tool_use_count.clamp(0, i32::MAX) as u32;
+    s.tool_guard_bypass = row.tool_guard_bypass;
 }
 
 /// `(session_id, input, cache_read, cache_creation, created_at, rn)` from
@@ -1223,6 +1227,17 @@ const SEARCH_TEXT_CAP: u32 = 8192;
 pub fn ilike_contains(q: &str) -> String {
     let escaped = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
     format!("%{escaped}%")
+}
+
+const SMART_DOUBLE_QUOTES: &[char] = &['\u{201C}', '\u{201D}', '\u{201E}', '\u{201F}'];
+
+/// Left alone once a straight `"` is present: smart quotes inside its phrases
+/// are text.
+fn straighten_phrase_quotes(q: &str) -> std::borrow::Cow<'_, str> {
+    if q.contains('"') || !q.contains(SMART_DOUBLE_QUOTES) {
+        return std::borrow::Cow::Borrowed(q);
+    }
+    std::borrow::Cow::Owned(q.replace(SMART_DOUBLE_QUOTES, "\""))
 }
 
 /// [`ilike_contains`] over a free-text term folded like the indexed chunks.
@@ -1547,7 +1562,7 @@ pub async fn search_sessions(
     let uid = ctx.owner_filter();
     // Parse the raw `q` into the AST. A blank query → `Empty` → browse.
     // A plain keyword parses to a single free-text leaf, so back-compat holds.
-    let root = cctui_query::parse(params.q.trim());
+    let root = cctui_query::parse(&straighten_phrase_quotes(params.q.trim()));
     let browse = root.is_empty();
     if browse && !params.include_archived {
         return Ok(Json(SessionListResponse::default()));
@@ -1948,7 +1963,12 @@ type EndRow = (
     Option<String>,
     bool,
     Option<String>,
+    bool,
 );
+
+const END_ROW_SQL: &str = "SELECT end_reason, end_detail, ended_at, todos, permission_mode, \
+                                  pinned, archived_by, tool_guard_bypass_by IS NOT NULL \
+                           FROM sessions WHERE id = $1";
 
 #[allow(clippy::too_many_lines)]
 pub async fn get_session(
@@ -1959,15 +1979,16 @@ pub async fn get_session(
     {
         let registry = state.registry.read().await;
         if let Some(handle) = registry.get(&session_id) {
-            let permission_mode: Option<String> = sqlx::query_as::<_, (Option<String>,)>(
-                "SELECT permission_mode FROM sessions WHERE id = $1",
+            let row: Option<(Option<String>, bool)> = sqlx::query_as(
+                "SELECT permission_mode, tool_guard_bypass_by IS NOT NULL \
+                 FROM sessions WHERE id = $1",
             )
             .bind(&session_id)
             .fetch_optional(&state.pool)
             .await
             .ok()
-            .flatten()
-            .and_then(|(m,)| m);
+            .flatten();
+            let (permission_mode, tool_guard_bypass) = row.unwrap_or_default();
             let mut item = SessionListItem {
                 id: handle.session.id.clone(),
                 parent_id: handle.session.parent_id.clone(),
@@ -2030,6 +2051,7 @@ pub async fn get_session(
                 launch_error: None,
                 next_session_id: None,
                 followup_count: 0,
+                tool_guard_bypass,
             };
             item.user_actions =
                 fetch_user_actions(&state, std::slice::from_ref(&item.id)).await?.remove(&item.id);
@@ -2108,16 +2130,20 @@ pub async fn get_session(
         launch_error: None,
         next_session_id: None,
         followup_count: 0,
+        tool_guard_bypass: false,
     };
-    let end: Option<EndRow> = sqlx::query_as(
-        "SELECT end_reason, end_detail, ended_at, todos, permission_mode, pinned, archived_by \
-         FROM sessions WHERE id = $1",
-    )
-    .bind(&item.id)
-    .fetch_optional(&state.pool)
-    .await?;
-    if let Some((end_reason, end_detail, ended_at, todos, permission_mode, pinned, archived_by)) =
-        end
+    let end: Option<EndRow> =
+        sqlx::query_as(END_ROW_SQL).bind(&item.id).fetch_optional(&state.pool).await?;
+    if let Some((
+        end_reason,
+        end_detail,
+        ended_at,
+        todos,
+        permission_mode,
+        pinned,
+        archived_by,
+        tool_guard_bypass,
+    )) = end
     {
         item.end_reason = end_reason.as_deref().map(SessionEndReason::parse);
         item.end_detail = end_detail;
@@ -2126,6 +2152,7 @@ pub async fn get_session(
         item.permission_mode = permission_mode;
         item.pinned = pinned;
         item.archived_by = archived_by.as_deref().and_then(RemoveInitiator::parse);
+        item.tool_guard_bypass = tool_guard_bypass;
         item.auto_archive_at = crate::auto_archive::stale_archive_due(
             item.status,
             pinned,
@@ -2718,7 +2745,7 @@ pub async fn search_conversation(
     Query(params): Query<ConversationSearchParams>,
 ) -> Result<Json<cctui_proto::api::ConversationSearchResponse>, AppError> {
     check_query_len(&params.q)?;
-    let root = cctui_query::parse(params.q.trim());
+    let root = cctui_query::parse(&straighten_phrase_quotes(params.q.trim()));
     let max_hits = params
         .limit
         .map_or(CONV_SEARCH_MAX_HITS, |l| usize::try_from(l.max(1)).unwrap_or(CONV_SEARCH_MAX_HITS))
@@ -4110,9 +4137,9 @@ impl<'a> DraftRowFields<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Bucket, EndRow, RemoveInitiator, ResultRow, SessionChild, SqlParam, attention_from_bucket,
-        bucket_from_signals, cap_unread, compile_node, derive_liveness, field_values_sql,
-        make_snippet, normalize_last_message, remove_command, snippet_sql,
+        Bucket, END_ROW_SQL, EndRow, RemoveInitiator, ResultRow, SessionChild, SqlParam,
+        attention_from_bucket, bucket_from_signals, cap_unread, compile_node, derive_liveness,
+        field_values_sql, make_snippet, normalize_last_message, remove_command, snippet_sql,
     };
     use crate::auth::AuthContext;
     use axum::http::StatusCode;
@@ -5433,7 +5460,7 @@ mod tests {
         let hits = |q: &'static str| {
             let (pool, sid) = (pool.clone(), sid.clone());
             async move {
-                let root = cctui_query::parse(q);
+                let root = cctui_query::parse(&super::straighten_phrase_quotes(q));
                 let terms = super::Terms::of(&root.free_text_terms());
                 super::conv_search_rows(&pool, &sid, &terms, &super::conv_filters(&[]), None)
                     .await
@@ -5445,6 +5472,16 @@ mod tests {
         assert_eq!(hits("\"Change the gate to master...HEAD (three dots).\"").await, 1);
         assert_eq!(hits("\"the hidden tail phrase\"").await, 1, "text past 8 KB");
         assert_eq!(hits("\"It's \"").await, 1, "a straight quote finds a smart one");
+        assert_eq!(
+            hits("\"It\u{2019}s \u{201C}quoted\u{201D} text\"").await,
+            1,
+            "smart quotes copied inside a phrase"
+        );
+        assert_eq!(
+            hits("\u{201C}Change the gate to master...HEAD (three dots).\u{201D}").await,
+            1,
+            "a phrase pasted between smart quotes"
+        );
         assert_eq!(hits("\"first line second line third\"").await, 1, "multi-line copy");
         assert_eq!(hits("screenshot saved").await, 1);
         assert_eq!(hits("iVBORw0KGgo").await, 0, "image payloads are not indexed");
@@ -6120,6 +6157,20 @@ mod tests {
     }
 
     #[test]
+    fn a_phrase_between_smart_quotes_parses_as_one_phrase() {
+        let q = super::straighten_phrase_quotes("\u{201C}master...HEAD (three dots).\u{201D} gate");
+        assert_eq!(
+            cctui_query::parse(&q).free_text_terms(),
+            vec!["master...HEAD (three dots).".to_string(), "gate".to_string()]
+        );
+        let low = super::straighten_phrase_quotes("\u{201E}so\u{201C}");
+        assert_eq!(cctui_query::parse(&low).free_text_terms(), vec!["so".to_string()]);
+        let kept = "\"It\u{2019}s \u{201C}quoted\u{201D} text\"";
+        assert_eq!(super::straighten_phrase_quotes(kept), kept, "straight quotes win");
+        assert_eq!(super::straighten_phrase_quotes("plain words"), "plain words");
+    }
+
+    #[test]
     fn free_text_patterns_are_folded_like_the_chunks() {
         let (_, params) = compile("\"it\u{2019}s  \u{201C}done\u{201D}\"");
         assert_eq!(params, vec!["%it's \"done\"%".to_string()]);
@@ -6518,14 +6569,11 @@ mod tests {
             .await
             .expect("set posture");
 
-        let row: Option<EndRow> = sqlx::query_as(
-            "SELECT end_reason, end_detail, ended_at, todos, permission_mode, pinned, archived_by \
-             FROM sessions WHERE id = $1",
-        )
-        .bind(&sid)
-        .fetch_optional(&pool)
-        .await
-        .expect("read session");
+        let row: Option<EndRow> = sqlx::query_as(END_ROW_SQL)
+            .bind(&sid)
+            .fetch_optional(&pool)
+            .await
+            .expect("read session");
         assert_eq!(row.expect("session row").4.as_deref(), Some("plan"));
 
         sqlx::query("DELETE FROM sessions WHERE id = $1")

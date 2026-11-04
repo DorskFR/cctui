@@ -12,7 +12,7 @@
 	import ThreadMenu from './ThreadMenu.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
-	import { Badge, Icon, IconButton, Popover, Select, Text, WorkingDir } from '@dorsk/tsumikit';
+	import { Badge, Icon, IconButton, Popover, Select, Switch, Text, WorkingDir } from '@dorsk/tsumikit';
 	import { harnessModelsFallback } from '$lib/domainTables';
 	import { harnessCapabilities } from '$lib/harnesses';
 	import { harnessTable } from '$lib/harnesses.svelte';
@@ -22,6 +22,8 @@
 		useSessionActions,
 		useSessionLangfuse
 	} from '$lib/queries';
+	import { useToolGuard, useToolGuardActions } from '$lib/queries/toolGuard';
+	import { canOfferBypass, guardOff } from '$lib/tool-guard-bypass.logic';
 	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
 	import CodexModelsRefresh from '$lib/components/molecules/CodexModelsRefresh.svelte';
 	import GuardStepChip from '$lib/components/molecules/GuardStepChip.svelte';
@@ -75,6 +77,25 @@
 		() => detailsOpen && langfuseAvailable
 	);
 	const calls = $derived(Number(lf.data?.trace_count ?? 0));
+
+	const toolGuard = useToolGuard(
+		() => session.id,
+		() => detailsOpen
+	);
+	const toolGuardActions = useToolGuardActions();
+	const toolGuardSwitch = $derived(canOfferBypass(toolGuard.data, archived));
+	let toolGuardSaving = $state(false);
+	async function setToolGuard(on: boolean) {
+		toolGuardSaving = true;
+		try {
+			await toolGuardActions.set(session.id, !on);
+			toasts.ok(on ? m.tool_guard_restored() : m.tool_guard_bypassed());
+		} catch (e) {
+			toasts.error(errMessage(e));
+		} finally {
+			toolGuardSaving = false;
+		}
+	}
 
 	// In-place model/effort editor, where the harness can switch model.
 	const canSetModel = $derived(harnessCapabilities(session.adapter_id, harnessTable()).set_model);
@@ -228,6 +249,11 @@
 			ontransition={archived ? undefined : requestGuardTransition}
 		/>
 	{/if}
+	{#if guardOff(session)}
+		<Badge tone="warn" shrink={false} title={m.tool_guard_badge_title()} data-testid="tool-guard-off"
+			>{m.tool_guard_badge()}</Badge
+		>
+	{/if}
 	<div class="meta-trail">
 	<span class="tokens"><TokenUsage usage={session.token_usage} /></span>
 	<span class="langfuse"><LangfuseChip id={session.id} /></span>
@@ -292,6 +318,25 @@
 					<span class="mp-key"><Text size="xs" tone="faint">{m.drawer_details_langfuse()}</Text></span>
 					<span class="mp-val"><LangfuseChip id={session.id} /></span>
 				</div>
+			{/if}
+			{#if toolGuardSwitch && toolGuard.data}
+				{@const tg = toolGuard.data}
+				<div class="mp-sep"></div>
+				<div class="mp-row" data-testid="tool-guard-switch">
+					<span class="mp-key"><Text size="xs" tone="faint">{m.tool_guard_label()}</Text></span>
+					<span class="mp-val">
+						<Switch
+							size="sm"
+							labelVisible
+							label={tg.bypass ? m.tool_guard_off() : m.tool_guard_on()}
+							disabled={toolGuardSaving}
+							bind:checked={() => !tg.bypass, (on) => void setToolGuard(on)}
+						/>
+					</span>
+				</div>
+				{#if tg.bypass && tg.by}
+					<Text size="xs" tone="faint">{m.tool_guard_off_by({ name: tg.by })}</Text>
+				{/if}
 			{/if}
 		</div>
 	</Popover>

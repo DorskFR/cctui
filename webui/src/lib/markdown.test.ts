@@ -164,3 +164,16 @@ describe('renderMarkdown local path links', () => {
 		expect(got.map((a) => a.text)).toEqual(['/tmp/x.md', '/tmp/y.md', '/tmp/z.md']);
 	});
 });
+
+describe('renderMarkdown user-redacted pill', () => {
+	it('renders [REDACTED:user] as a pill with the hidden-by-you tooltip', () => {
+		const html = renderMarkdown('token is [REDACTED:user], ok');
+		expect(html).toContain('<span class="md-redacted" data-redacted="user" title="hidden by you">');
+		expect(html).not.toContain('[REDACTED:user]');
+	});
+
+	it('leaves other redaction categories and code blocks alone', () => {
+		expect(renderMarkdown('[REDACTED:aws_key]')).not.toContain('md-redacted');
+		expect(renderMarkdown('```\n[REDACTED:user]\n```')).not.toContain('md-redacted');
+	});
+});

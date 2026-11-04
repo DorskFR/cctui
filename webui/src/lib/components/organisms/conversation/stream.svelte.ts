@@ -509,12 +509,14 @@ export class ConversationStream {
 
 	// Discard a still-pending optimistic echo (edit/recover). Stops
 	// tracking/retrying the send and drops the echo from both the local
-	// buffer and the ws optimistic store. The caller pulls the recovered
-	// text into the composer.
-	discardOptimistic(ts: number) {
+	// buffer and the ws optimistic store. Returns the text as typed (the
+	// bubble shows it masked) for the caller to pull into the composer.
+	discardOptimistic(ts: number): string | null {
 		const id = this.#opts.id();
+		const echo = this.live.find((e) => e.type === 'reply' && e.ts === ts);
 		ws.cancelSend(id, ts);
 		ws.dropOptimistic(id, ts);
 		this.live = this.live.filter((e) => !(e.type === 'reply' && e.ts === ts));
+		return echo?.type === 'reply' ? echo.content : null;
 	}
 }

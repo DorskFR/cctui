@@ -8,6 +8,7 @@ pub const BOOTSTRAP: &str = include_str!("../schema/0001_workspace.sql");
 pub const MIGRATIONS: &[Migration] = &[
     Migration { version: 1, sql: BOOTSTRAP },
     Migration { version: 2, sql: include_str!("../schema/0002_dispatch_identities.sql") },
+    Migration { version: 3, sql: include_str!("../schema/0003_scheduled_message_sealed_body.sql") },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -81,7 +82,11 @@ mod tests {
             drop(conn);
             assert_eq!(
                 installations(&pool, "workspace").await,
-                [(1, "bootstrap".to_owned()), (2, "adopted".to_owned())]
+                [
+                    (1, "bootstrap".to_owned()),
+                    (2, "adopted".to_owned()),
+                    (3, "bootstrap".to_owned())
+                ]
             );
 
             sqlx::raw_sql("DROP TABLE public.dispatch_identities").execute(&pool).await.unwrap();
@@ -97,7 +102,7 @@ mod tests {
         with_isolated_database("dispatch_identity_preexisting", |pool| async move {
             provisioned(&pool).await;
             sqlx::raw_sql(
-                "DELETE FROM _cctui_schema_migrations WHERE package = 'core' AND version = 5; \
+                "DELETE FROM _cctui_schema_migrations WHERE package = 'core' AND version >= 5; \
                  UPDATE _cctui_schema_migrations SET installation = 'bootstrap' \
                  WHERE package = 'workspace' AND version = 2",
             )
@@ -110,10 +115,14 @@ mod tests {
             provisioned(&pool).await;
             let core: Vec<i64> =
                 installations(&pool, "core").await.into_iter().map(|(v, _)| v).collect();
-            assert_eq!(core, [1, 2, 3, 4, 5]);
+            assert_eq!(core, [1, 2, 3, 4, 5, 6]);
             assert_eq!(
                 installations(&pool, "workspace").await,
-                [(1, "bootstrap".to_owned()), (2, "bootstrap".to_owned())]
+                [
+                    (1, "bootstrap".to_owned()),
+                    (2, "bootstrap".to_owned()),
+                    (3, "bootstrap".to_owned())
+                ]
             );
             let rows: i64 =
                 sqlx::query_scalar("SELECT count(*) FROM dispatch_identities WHERE dispatch_id=$1")

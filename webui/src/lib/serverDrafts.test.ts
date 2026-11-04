@@ -170,3 +170,69 @@ describe('load', () => {
 		expect(put).not.toHaveBeenCalled();
 	});
 });
+
+describe('redacted spans', () => {
+	it('syncs the masked form while the local copy keeps the real value', async () => {
+		const { drafts, composerKey } = await fresh();
+		const key = composerKey('r1');
+		drafts.set(key, 'login with <redacted>hunter2-xyz</redacted> please');
+		vi.runAllTimers();
+
+		expect(put).toHaveBeenCalledTimes(1);
+		expect(put.mock.calls[0][1]).toEqual({ text: 'login with [REDACTED:user] please' });
+		expect(JSON.stringify(put.mock.calls)).not.toContain('hunter2-xyz');
+		expect(drafts.get(key)).toContain('hunter2-xyz');
+	});
+
+	it('masks the prompt inside a spawn slot and keeps the document valid', async () => {
+		const { drafts, spawnSlotKey } = await fresh();
+		drafts.set(
+			spawnSlotKey('m1', '/repo'),
+			JSON.stringify({ prompt: 'deploy <redacted>s3cr3t\nline</redacted>', name: 'n' })
+		);
+		vi.runAllTimers();
+
+		const sent = put.mock.calls[0][1].text as string;
+		expect(sent).not.toContain('s3cr3t');
+		expect(JSON.parse(sent).prompt).toBe('deploy [REDACTED:user]');
+	});
+
+	it('masks the one-time import of a pre-existing local draft', async () => {
+		const { composerKey, serverDrafts } = await fresh();
+		localStorage.setItem(composerKey('old'), 'x <redacted>hunter2-xyz</redacted>');
+
+		await serverDrafts.load();
+		vi.runAllTimers();
+
+		expect(put).toHaveBeenCalledTimes(1);
+		expect(put.mock.calls[0][1]).toEqual({ text: 'x [REDACTED:user]' });
+	});
+
+	it('keeps the local real value when the server copy is its masked form', async () => {
+		const { drafts, composerKey, serverDrafts } = await fresh();
+		const key = composerKey('r2');
+		const real = 'x <redacted>hunter2-xyz</redacted>';
+		drafts.set(key, real);
+		put.mockClear();
+		get.mockResolvedValue({
+			drafts: [{ key, text: 'x [REDACTED:user]', updated_at: '2026-01-01T00:00:00Z' }]
+		});
+
+		await serverDrafts.load();
+
+		expect(drafts.get(key)).toBe(real);
+	});
+
+	it('stores sent-message and spawn-prompt history masked, locally and remotely', async () => {
+		const { history, promptHistory } = await fresh();
+		history.push('s1', 'use <REDACTED>hunter2-xyz</REDACTED>');
+		promptHistory.push('spawn with <redacted>tok-123</redacted>');
+		vi.runAllTimers();
+
+		expect(history.get('s1')).toEqual(['use [REDACTED:user]']);
+		expect(promptHistory.get()).toEqual(['spawn with [REDACTED:user]']);
+		const sent = JSON.stringify(put.mock.calls);
+		expect(sent).not.toContain('hunter2-xyz');
+		expect(sent).not.toContain('tok-123');
+	});
+});

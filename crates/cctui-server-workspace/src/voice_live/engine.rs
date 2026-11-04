@@ -83,8 +83,35 @@ pub enum Signal {
         text: String,
     },
     /// A final assistant prose block.
-    Text(String),
+    Text(Block),
     TurnEnd,
+}
+
+/// A final assistant prose block and the sequence number of its stored event,
+/// which tells the same block delivered again from a line said twice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Block {
+    pub content: String,
+    pub seq: Option<i64>,
+}
+
+impl From<&str> for Block {
+    fn from(content: &str) -> Self {
+        Self { content: content.to_owned(), seq: None }
+    }
+}
+
+/// A block's identity: its sequence number, else its text.
+#[derive(Debug, PartialEq, Eq)]
+enum BlockKey {
+    Seq(i64),
+    Text(String),
+}
+
+impl BlockKey {
+    fn of(block: &Block) -> Self {
+        block.seq.map_or_else(|| Self::Text(squash(&block.content)), Self::Seq)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -666,7 +693,7 @@ struct Engine<B: VoiceBackend> {
     delta_item: Option<String>,
     /// Final blocks read since the last prompt, so one delivered again is not
     /// read again.
-    blocks: Vec<String>,
+    blocks: Vec<BlockKey>,
     /// When a quiet stream speaks its buffered tail.
     pause_at: Option<Instant>,
     turn_active: bool,
@@ -912,10 +939,10 @@ impl<B: VoiceBackend> Engine<B> {
                 let ready = self.main.delta(item, text);
                 self.play(ready).await;
             }
-            Signal::Text(content) => {
+            Signal::Text(block) => {
                 let id = self.turns.text();
                 if !self.turns.is_cut(id) {
-                    self.block(&content).await;
+                    self.block(&block).await;
                 }
             }
             Signal::TurnEnd => self.turn_end().await,
@@ -959,12 +986,13 @@ impl<B: VoiceBackend> Engine<B> {
 
     /// A final block: spoken whole when nothing streamed, otherwise only
     /// what its deltas missed.
-    async fn block(&mut self, content: &str) {
-        let said = squash(content);
-        if self.blocks.contains(&said) {
+    async fn block(&mut self, block: &Block) {
+        let key = BlockKey::of(block);
+        if self.blocks.contains(&key) {
             return;
         }
-        self.blocks.push(said);
+        self.blocks.push(key);
+        let content = block.content.as_str();
         self.mark_text("block");
         if !self.streamed.trim().is_empty() {
             let (later, missed) = reconcile(&self.streamed, content);
@@ -1865,12 +1893,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_short_line_said_twice_in_one_turn_is_spoken_twice() {
+        let mut h = start(Mock::default(), Prefs::default()).await;
+        let done = |seq| Signal::Text(Block { content: "Done.".into(), seq: Some(seq) });
+        h.signals.send(done(10)).await.unwrap();
+        h.signals.send(done(10)).await.unwrap();
+        h.signals.send(done(11)).await.unwrap();
+        h.signals.send(Signal::TurnEnd).await.unwrap();
+        let said = Outbound::Audio(Bytes::from_static(b"Done."));
+        h.collect_until(|f| *f == said).await;
+        h.collect_until(|f| *f == said).await;
+        h.quiet().await;
+        assert_eq!(Mock::log(&h.mock.synthesized), vec!["Done.", "Done."]);
+    }
+
+    #[tokio::test]
     async fn deltas_that_miss_a_blocks_end_speak_only_the_missing_part() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         let streamed = "The reply starts streaming with this sentence. And then";
         h.signals.send(delta("m:0", streamed)).await.unwrap();
         let block = format!("{streamed} it ends here.");
-        h.signals.send(Signal::Text(block)).await.unwrap();
+        h.signals.send(Signal::Text(block.as_str().into())).await.unwrap();
         h.collect_until(|f| *f == state(VoiceState::Listening)).await;
         assert_eq!(
             Mock::log(&h.mock.synthesized),
@@ -2151,7 +2194,7 @@ mod tests {
     async fn a_block_longer_than_both_queues_is_spoken_to_the_end() {
         let mut h = start(Mock::default(), Prefs::default()).await;
         let block = (1..=200).map(|i| format!("Line {i}.")).collect::<Vec<_>>().join(" ");
-        h.signals.send(Signal::Text(block)).await.unwrap();
+        h.signals.send(Signal::Text(block.as_str().into())).await.unwrap();
         h.collect_until(|f| {
             matches!(f, Outbound::Control(VoiceServerMsg::SpeakEnd { line_id }) if line_id == "1-200")
         })

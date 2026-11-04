@@ -456,6 +456,16 @@ export const endpoints = {
    *  the project keys never reach the browser. */
   sessionLangfuse: (id: string) =>
     api.get<LangfuseSessionUsage>(`/sessions/${id}/langfuse`),
+  /** The session's gateway tool-guard bypass, and whether the caller may lift it. */
+  toolGuard: (id: string) =>
+    api.get<import("@bindings/ToolGuardState").ToolGuardState>(
+      path("get_sessions_by_id_tool_guard", { id }),
+    ),
+  putToolGuard: (id: string, bypass: boolean) =>
+    api.put<import("@bindings/ToolGuardState").ToolGuardState>(
+      path("put_sessions_by_id_tool_guard", { id }),
+      { bypass } satisfies import("@bindings/ToolGuardRequest").ToolGuardRequest,
+    ),
   events: (query: Record<string, string>) => api.get<EventPage>("/events", query),
   sessionEvents: (id: string, query: Record<string, string> = {}) =>
     api.get<EventPage>(`/sessions/${encodeURIComponent(id)}/events`, query),

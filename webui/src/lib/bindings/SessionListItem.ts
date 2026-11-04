@@ -61,4 +61,8 @@ next_session_id?: string | null,
  * How many follow-ups continue this session, `next_session_id` included:
  * above one, the thread forks here.
  */
-followup_count?: number, };
+followup_count?: number, 
+/**
+ * The gateway tool guard is lifted for this session.
+ */
+tool_guard_bypass?: boolean, };

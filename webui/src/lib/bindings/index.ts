@@ -306,6 +306,8 @@ export type * from './TickUserActionRequest';
 export type * from './TodoEntry';
 export type * from './TokenUsage';
 export type * from './TokenUsageWindows';
+export type * from './ToolGuardRequest';
+export type * from './ToolGuardState';
 export type * from './ToolPolicy';
 export type * from './TrafficError';
 export type * from './TrafficFrame';

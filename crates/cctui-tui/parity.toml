@@ -1375,6 +1375,18 @@ tui = "waived"
 reason = "the daemon calls this, not a human client"
 
 [[route]]
+id = "get_sessions_by_id_tool_guard"
+# GET /sessions/{id}/tool-guard — Read or toggle the session's gateway tool-guard bypass.
+tui = "waived"
+reason = "the per-session tool-guard bypass is a webui drawer switch and block-banner action"
+
+[[route]]
+id = "put_sessions_by_id_tool_guard"
+# PUT /sessions/{id}/tool-guard — Read or toggle the session's gateway tool-guard bypass.
+tui = "waived"
+reason = "the per-session tool-guard bypass is a webui drawer switch and block-banner action"
+
+[[route]]
 id = "post_sessions_by_id_policy"
 # POST /sessions/{id}/policy — Set a session's permission policy.
 tui = "waived"

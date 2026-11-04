@@ -12,8 +12,11 @@ the untraced behaviour.
 | webui | `window.CCTUI_CONFIG.otel = { endpoint, serviceName?, sampleRatio? }` in `config.js` | Spans POST to `${endpoint}/v1/traces` as OTLP/JSON. Use `'/api/v1/otlp'`. |
 
 The browser never talks to the collector. It posts to the server's
-`POST /api/v1/otlp/v1/traces`, which takes the same login as the rest of the
-API (the auth cookie rides a same-origin request), caps the body at 1 MiB, and
+`POST /api/v1/otlp/v1/traces`, which takes a user login (the auth cookie rides a
+same-origin request; machine keys get 403), throttles each user to 120 exports a
+minute, caps the body at 1 MiB, accepts only uncompressed OTLP/JSON (415
+otherwise) whose every resource `service.name` is `cctui-webui` or starts with
+`cctui-webui-` (400 otherwise, so a custom `serviceName` needs that prefix), and
 forwards it verbatim (`Content-Type`, `Content-Encoding`) to the server's own
 traces endpoint: `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, else
 `OTEL_EXPORTER_OTLP_ENDPOINT` + `/v1/traces`. With the server exporter off it

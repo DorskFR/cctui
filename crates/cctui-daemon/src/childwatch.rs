@@ -49,6 +49,11 @@ pub const QUIET_DONE_MIN_AGE: Duration = Duration::from_mins(1);
 /// Claude Code starts a new turn on its own once such a task completes, and
 /// that turn carries the real answer.
 pub const BG_TASK_QUIET_CAP: Duration = Duration::from_mins(20);
+/// How long background tasks keep holding a turn a `Stop` hook already ended:
+/// a task that outlives its turn (a dev server, a watcher) never notifies.
+pub const BG_TASK_TURN_END_HOLD: Duration = Duration::from_mins(3);
+/// How a `TaskStop` (or older `KillShell`) result names the task it stopped.
+const STOP_MARKERS: [&str; 2] = ["Successfully stopped task: ", "Successfully killed shell: "];
 /// The one `stop_reason` that means the model handed back rather than lining up
 /// another tool call.
 const TURN_END_STOP_REASON: &str = "end_turn";
@@ -251,10 +256,12 @@ impl ChildSnapshot {
 
     /// Whether outstanding background tasks keep the turn open: their
     /// completion starts the turn that answers. A child that handed a question
-    /// back to its parent is not held.
+    /// back to its parent is not held, nor one whose turn ended
+    /// [`BG_TASK_TURN_END_HOLD`] ago with no notification since.
     fn waits_on_background(&self, now: Instant) -> bool {
         self.bg_tasks > 0
             && self.blocked_kind != Some(BlockKind::Status)
+            && self.turn_end_at.is_none_or(|at| now.duration_since(at) < BG_TASK_TURN_END_HOLD)
             && now.duration_since(self.last_event_at.unwrap_or(self.registered_at))
                 < BG_TASK_QUIET_CAP
     }
@@ -698,8 +705,12 @@ fn apply_tool_use(w: &mut Watch, payload: &serde_json::Value) {
         } else {
             w.state.tool_errors = 0;
         }
-        if let Some(id) = tool_result_texts(payload).into_iter().find_map(started_id) {
+        let texts = tool_result_texts(payload);
+        if let Some(id) = texts.iter().copied().find_map(started_id) {
             w.state.bg_tasks.insert(id);
+        }
+        for id in texts.iter().copied().filter_map(stopped_id) {
+            w.state.bg_tasks.remove(id);
         }
     }
     // Tool traffic is proof of an in-flight turn.
@@ -785,6 +796,15 @@ fn tool_result_texts(payload: &serde_json::Value) -> Vec<&str> {
         }
         _ => Vec::new(),
     }
+}
+
+/// The background task a stop result reports stopped.
+fn stopped_id(text: &str) -> Option<&str> {
+    STOP_MARKERS.iter().find_map(|marker| {
+        let rest = &text[text.find(marker)? + marker.len()..];
+        let end = rest.find(|c: char| !c.is_ascii_alphanumeric()).unwrap_or(rest.len());
+        (end > 0).then(|| &rest[..end])
+    })
 }
 
 /// The text of an assistant message, ignoring thinking blocks and user turns.
@@ -1043,6 +1063,58 @@ mod tests {
         assert!(matches!(snap.assess(Instant::now()), Assessment::Running(_)));
         let later = Instant::now() + BG_TASK_QUIET_CAP;
         assert!(matches!(snap.assess(later), Assessment::Finished(_)));
+    }
+
+    fn bg_stopped(local_id: &str, id: &str) -> AdapterEvent {
+        AdapterEvent::ToolUse {
+            local_id: local_id.to_owned(),
+            payload: json!({
+                "kind": "tool_result",
+                "content": json!({
+                    "message": format!("Successfully stopped task: {id} (npm run dev)"),
+                    "task_id": id,
+                    "task_type": "local_bash",
+                    "command": "npm run dev",
+                })
+                .to_string(),
+            }),
+        }
+    }
+
+    #[test]
+    fn a_background_hold_lapses_shortly_after_a_confirmed_turn_end() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&msg("child-1", "user", "start the dev server"));
+        watch.observe(&bg_started("child-1", "dev1"));
+        watch.observe(&msg_stopping("child-1", "dev server up on :5173", "end_turn"));
+        watch.note_turn_end("child-1");
+        let snap = h.snapshot().unwrap();
+        assert!(matches!(snap.assess(Instant::now()), Assessment::Running(_)));
+        let later = Instant::now() + BG_TASK_TURN_END_HOLD;
+        match snap.assess(later) {
+            Assessment::Finished(out) => {
+                assert_eq!(out.final_text.as_deref(), Some("dev server up on :5173"));
+            }
+            Assessment::Running(line) => panic!("still held: {line}"),
+        }
+    }
+
+    #[test]
+    fn a_stopped_background_task_no_longer_holds_the_turn() {
+        assert_eq!(stopped_id("Successfully killed shell: bash1 (sleep 99)"), Some("bash1"));
+        assert_eq!(stopped_id("Command running in background with ID: b1."), None);
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&msg("child-1", "user", "run it then stop it"));
+        watch.observe(&bg_started("child-1", "bmwb3frgk"));
+        watch.observe(&bg_started("child-1", "other1"));
+        watch.observe(&bg_stopped("child-1", "bmwb3frgk"));
+        assert_eq!(h.snapshot().unwrap().bg_tasks, 1, "only the stopped task is cleared");
+        watch.observe(&bg_stopped("child-1", "other1"));
+        watch.observe(&msg_stopping("child-1", "stopped the dev server", "end_turn"));
+        let out = finished(&h).expect("no task left to wait on");
+        assert_eq!(out.final_text.as_deref(), Some("stopped the dev server"));
     }
 
     #[test]

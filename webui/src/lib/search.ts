@@ -1,3 +1,5 @@
+import { type Query, walk } from '@dorsk/tsumikit';
+
 /**
  * Search-term parsing + highlighting.
  *
@@ -48,4 +50,22 @@ export function highlightTerms(html: string, terms: string[]): string {
 	return html.replace(/<[^>]*>|[^<]+/g, (seg) =>
 		seg.startsWith('<') ? seg : seg.replace(re, '<mark class="search-hit">$1</mark>')
 	);
+}
+
+const SMART_DOUBLE_QUOTES = /[“”„‟]/g;
+
+/** Keep in step with the server's `straighten_phrase_quotes`. */
+export function straightenPhraseQuotes(q: string): string {
+	return q.includes('"') ? q : q.replace(SMART_DOUBLE_QUOTES, '"');
+}
+
+/** Free-text terms of `q`, parsed from `input`. The parser merges adjacent
+ *  words and phrases into one text node, so each node's source span is
+ *  re-tokenised: a quoted phrase stays one term, a bare word is its own. */
+export function queryTerms(q: Query, input: string): string[] {
+	const terms: string[] = [];
+	walk(q.root, (n) => {
+		if (n.kind === 'text') terms.push(...tokenizeQuery(input.slice(n.span[0], n.span[1])));
+	});
+	return terms.slice(0, 8);
 }

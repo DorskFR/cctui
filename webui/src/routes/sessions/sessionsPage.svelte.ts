@@ -24,9 +24,9 @@ import {
 import { ApiError, errMessage } from "$lib/api";
 import { m } from "$lib/paraglide/messages";
 import { awaitSessionRow } from "$lib/awaitSessionRow";
-import { tokenizeQuery } from "$lib/search";
+import { queryTerms, straightenPhraseQuotes } from "$lib/search";
 import { BRIEF_FETCH_MAX_BYTES, followupPrefill } from "$lib/followup";
-import { freeText, parse, type Schema } from "@dorsk/tsumikit";
+import { parse, type Schema } from "@dorsk/tsumikit";
 import {
   buildSessionSearchSchema,
   contextForField,
@@ -348,9 +348,10 @@ export class SessionsPage {
   // `showArchived`) or, with no query, the paged archive browse.
   pagerActive = $derived(this.searching || this.showArchived);
   // Highlight only the free-text portion of the query (field clauses excluded).
-  searchTerms = $derived.by(() =>
-    tokenizeQuery(freeText(parse(this.query, this.searchSchema))),
-  );
+  searchTerms = $derived.by(() => {
+    const input = straightenPhraseQuotes(this.query);
+    return queryTerms(parse(input, this.searchSchema), input);
+  });
   // Not searching ⇒ browse the archive (empty q, archived scope).
   #pagerArchived = $derived(this.searching ? this.showArchived : true);
   // Refetched pages can shift by a row when sessions move in or out of scope

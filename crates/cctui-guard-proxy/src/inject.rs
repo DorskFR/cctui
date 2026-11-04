@@ -461,80 +461,111 @@ impl Injector {
         anyhow::ensure!(!rules.is_empty(), "no injection rule for {host}");
 
         let mut client = self.acceptor.accept(PrefixedStream::new(conn, prefix)).await?;
-        let server_name = ServerName::try_from(host.clone())?;
-        let upstream =
-            match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(addrs)).await {
-                Ok(Ok(s)) => s,
-                Ok(Err(e)) => {
-                    tracing::warn!("inject dial upstream {host} failed: {e}");
-                    return Ok(());
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        "inject dial upstream {host} timed out ({} address(es))",
-                        addrs.len()
-                    );
-                    return Ok(());
-                }
-            };
-        let mut upstream = match self.connector.connect(server_name, upstream).await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!("inject upstream TLS to {host} failed: {e}");
-                return Ok(());
-            }
+        let dialer = Dialer {
+            connector: &self.connector,
+            server_name: ServerName::try_from(host.clone())?,
+            host: &host,
+            addrs,
         };
-
-        self.pump(&mut client, &mut upstream, &host, &rules).await
+        self.pump(&mut client, &dialer, &rules).await
     }
 
-    async fn pump<C, U>(
+    /// An upstream that closes an idle keep-alive is dropped and redialled on
+    /// the next request: the client must never see a bare EOF.
+    async fn pump<C>(
+        &self,
+        client: &mut C,
+        dialer: &Dialer<'_>,
+        rules: &[InjectionRule],
+    ) -> anyhow::Result<()>
+    where
+        C: AsyncRead + AsyncWrite + Unpin,
+    {
+        let mut cbuf = HttpBuf::default();
+        let mut upstream: Option<UpstreamConn> = None;
+        loop {
+            let head = match next_request(&mut cbuf, client, upstream.as_mut()).await? {
+                Idle::Request(head) => head,
+                Idle::ClientClosed => return Ok(()),
+                Idle::UpstreamClosed => {
+                    tracing::debug!("inject upstream {} closed an idle keep-alive", dialer.host);
+                    upstream = None;
+                    continue;
+                }
+            };
+            match self.serve_one(client, upstream.take(), dialer, rules, &head, &mut cbuf).await? {
+                Step::KeepAlive(conn) => upstream = Some(*conn),
+                Step::Close => return Ok(()),
+            }
+        }
+    }
+
+    async fn serve_one<C>(
+        &self,
+        client: &mut C,
+        upstream: Option<UpstreamConn>,
+        dialer: &Dialer<'_>,
+        rules: &[InjectionRule],
+        head: &[u8],
+        cbuf: &mut HttpBuf,
+    ) -> anyhow::Result<Step>
+    where
+        C: AsyncRead + AsyncWrite + Unpin,
+    {
+        let upstream = if upstream.is_some() { upstream } else { dialer.dial().await };
+        let Some(mut conn) = upstream else {
+            bad_gateway(client).await?;
+            return Ok(Step::Close);
+        };
+        let sent =
+            self.send_request(client, &mut conn.stream, dialer.host, rules, head, cbuf).await?;
+        let Some(resp_head) = conn.await_response(sent, dialer).await else {
+            bad_gateway(client).await?;
+            return Ok(Step::Close);
+        };
+        let framing = response_framing(&resp_head, request_method(head).as_deref());
+        client.write_all(&resp_head).await?;
+        conn.ubuf.relay_body(&mut conn.stream, client, framing).await?;
+        client.flush().await?;
+        conn.reused = true;
+
+        if framing == Framing::UntilClose || wants_close(head) || wants_close(&resp_head) {
+            return Ok(Step::Close);
+        }
+        Ok(Step::KeepAlive(Box::new(conn)))
+    }
+
+    async fn send_request<C, U>(
         &self,
         client: &mut C,
         upstream: &mut U,
         host: &str,
         rules: &[InjectionRule],
-    ) -> anyhow::Result<()>
+        head: &[u8],
+        cbuf: &mut HttpBuf,
+    ) -> anyhow::Result<Sent>
     where
-        C: AsyncRead + AsyncWrite + Unpin,
-        U: AsyncRead + AsyncWrite + Unpin,
+        C: AsyncRead + Unpin,
+        U: AsyncWrite + Unpin,
     {
-        let mut cbuf = HttpBuf::default();
-        let mut ubuf = HttpBuf::default();
-        loop {
-            let Some(head) = cbuf.read_head(client).await? else {
-                return Ok(()); // client closed
-            };
-            let method = request_method(&head);
-            // Every rule path-scoped and none matching ⇒ forward the agent's
-            // head unchanged (same fail-closed stance as a credential miss).
-            match select_rule(rules, &request_path(&head).unwrap_or_default()) {
-                Some(rule) if matches!(rule.shape, AuthShape::SigV4 { .. }) => {
-                    self.forward_sigv4(client, upstream, host, rule, &head, &mut cbuf).await?;
-                }
-                rule => {
-                    let outbound = match rule {
-                        Some(rule) => self.inject_head(host, rule, &head).await,
-                        None => head.clone(),
-                    };
-                    upstream.write_all(&outbound).await?;
-                    cbuf.relay_body(client, upstream, body_framing(&head, false)).await?;
-                }
+        let mut tee = ReplayTee::new(upstream);
+        // Every rule path-scoped and none matching ⇒ forward the agent's
+        // head unchanged (same fail-closed stance as a credential miss).
+        match select_rule(rules, &request_path(head).unwrap_or_default()) {
+            Some(rule) if matches!(rule.shape, AuthShape::SigV4 { .. }) => {
+                self.forward_sigv4(client, &mut tee, host, rule, head, cbuf).await?;
             }
-            upstream.flush().await?;
-
-            let Some(resp_head) = ubuf.read_head(upstream).await? else {
-                return Ok(()); // upstream closed after the request
-            };
-            client.write_all(&resp_head).await?;
-            ubuf.relay_body(upstream, client, response_framing(&resp_head, method.as_deref()))
-                .await?;
-            client.flush().await?;
-
-            if wants_close(&head) || wants_close(&resp_head) {
-                return Ok(());
+            rule => {
+                let outbound = match rule {
+                    Some(rule) => self.inject_head(host, rule, head).await,
+                    None => head.to_vec(),
+                };
+                tee.write_all(&outbound).await?;
+                cbuf.relay_body(client, &mut tee, body_framing(head, false)).await?;
             }
         }
+        tee.flush().await?;
+        Ok(tee.into_sent())
     }
 
     /// Builds the outbound request head. On a successful fetch: strip the
@@ -709,6 +740,240 @@ impl Injector {
 }
 
 const MAX_SIGV4_BODY: usize = 1024 * 1024;
+
+const MAX_REPLAY_BYTES: usize = 1024 * 1024;
+
+const BAD_GATEWAY: &[u8] = b"HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n\
+Content-Length: 37\r\nConnection: close\r\n\r\nupstream closed without a response.\r\n";
+
+type UpstreamTls = tokio_rustls::client::TlsStream<TcpStream>;
+
+struct Dialer<'a> {
+    connector: &'a TlsConnector,
+    server_name: ServerName<'static>,
+    host: &'a str,
+    addrs: &'a [SocketAddr],
+}
+
+impl Dialer<'_> {
+    async fn dial(&self) -> Option<UpstreamConn> {
+        let host = self.host;
+        let tcp =
+            match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(self.addrs))
+                .await
+            {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => {
+                    tracing::warn!("inject dial upstream {host} failed: {e}");
+                    return None;
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "inject dial upstream {host} timed out ({} address(es))",
+                        self.addrs.len()
+                    );
+                    return None;
+                }
+            };
+        match self.connector.connect(self.server_name.clone(), tcp).await {
+            Ok(stream) => Some(UpstreamConn { stream, ubuf: HttpBuf::default(), reused: false }),
+            Err(e) => {
+                tracing::warn!("inject upstream TLS to {host} failed: {e}");
+                None
+            }
+        }
+    }
+}
+
+struct UpstreamConn {
+    stream: UpstreamTls,
+    ubuf: HttpBuf,
+    reused: bool,
+}
+
+enum ResponseHead {
+    Head(Vec<u8>),
+    ClosedEarly,
+    Broken,
+}
+
+impl UpstreamConn {
+    async fn read_response_head(&mut self, host: &str) -> ResponseHead {
+        match self.ubuf.read_head(&mut self.stream).await {
+            Ok(Some(head)) => ResponseHead::Head(head),
+            Ok(None) => ResponseHead::ClosedEarly,
+            Err(_) if self.ubuf.buf.is_empty() => ResponseHead::ClosedEarly,
+            Err(e) => {
+                tracing::warn!("inject upstream {host} broke mid response head: {e}");
+                ResponseHead::Broken
+            }
+        }
+    }
+
+    /// The response head for `sent`, replaying it once on a fresh connection
+    /// when a reused one closed before answering. `None` ⇒ answer 502.
+    #[allow(clippy::cognitive_complexity)]
+    async fn await_response(&mut self, sent: Sent, dialer: &Dialer<'_>) -> Option<Vec<u8>> {
+        let host = dialer.host;
+        let first = if sent.upstream_failed {
+            ResponseHead::ClosedEarly
+        } else {
+            self.read_response_head(host).await
+        };
+        match first {
+            ResponseHead::Head(head) => return Some(head),
+            ResponseHead::Broken => return None,
+            ResponseHead::ClosedEarly => {}
+        }
+        if !self.reused {
+            tracing::warn!("inject upstream {host} closed a fresh connection before responding");
+            return None;
+        }
+        let Some(replay) = sent.replay else {
+            tracing::warn!(
+                "inject upstream {host} dropped a reused connection before responding; request \
+                 exceeds the {MAX_REPLAY_BYTES}-byte replay cap"
+            );
+            return None;
+        };
+        tracing::info!(
+            "inject upstream {host} dropped a reused connection before responding; replaying"
+        );
+        let mut fresh = dialer.dial().await?;
+        let written = async {
+            fresh.stream.write_all(&replay).await?;
+            fresh.stream.flush().await
+        }
+        .await;
+        if let Err(e) = written {
+            tracing::warn!("inject replay to {host} failed: {e}");
+            return None;
+        }
+        match fresh.read_response_head(host).await {
+            ResponseHead::Head(head) => {
+                *self = fresh;
+                Some(head)
+            }
+            ResponseHead::ClosedEarly | ResponseHead::Broken => {
+                tracing::warn!("inject replay to {host} got no response");
+                None
+            }
+        }
+    }
+}
+
+enum Step {
+    KeepAlive(Box<UpstreamConn>),
+    Close,
+}
+
+enum Idle {
+    Request(Vec<u8>),
+    ClientClosed,
+    UpstreamClosed,
+}
+
+/// Waits for the next client request head while watching the idle upstream.
+/// Any upstream readiness counts as closed: a stray byte would desync framing.
+async fn next_request<C: AsyncRead + Unpin>(
+    cbuf: &mut HttpBuf,
+    client: &mut C,
+    upstream: Option<&mut UpstreamConn>,
+) -> anyhow::Result<Idle> {
+    let Some(up) = upstream else {
+        return Ok(cbuf.read_head(client).await?.map_or(Idle::ClientClosed, Idle::Request));
+    };
+    let mut probe = [0u8; 1];
+    tokio::select! {
+        biased;
+        head = cbuf.read_head(client) => Ok(head?.map_or(Idle::ClientClosed, Idle::Request)),
+        _ = up.stream.read(&mut probe) => Ok(Idle::UpstreamClosed),
+    }
+}
+
+async fn bad_gateway<C: AsyncWrite + Unpin>(client: &mut C) -> anyhow::Result<()> {
+    client.write_all(BAD_GATEWAY).await?;
+    client.flush().await?;
+    let _ = client.shutdown().await;
+    Ok(())
+}
+
+struct Sent {
+    replay: Option<Vec<u8>>,
+    upstream_failed: bool,
+}
+
+/// Writes through to the upstream while keeping a capped copy for a replay.
+/// An upstream write error is recorded, not returned, so the client's body is
+/// still drained and the exchange can be replayed or answered with a 502.
+struct ReplayTee<'a, W> {
+    inner: &'a mut W,
+    copy: Vec<u8>,
+    overflow: bool,
+    failed: bool,
+}
+
+impl<'a, W> ReplayTee<'a, W> {
+    const fn new(inner: &'a mut W) -> Self {
+        Self { inner, copy: Vec::new(), overflow: false, failed: false }
+    }
+
+    fn record(&mut self, bytes: &[u8]) {
+        if self.overflow {
+            return;
+        }
+        if self.copy.len() + bytes.len() > MAX_REPLAY_BYTES {
+            self.overflow = true;
+            self.copy = Vec::new();
+        } else {
+            self.copy.extend_from_slice(bytes);
+        }
+    }
+
+    fn into_sent(self) -> Sent {
+        Sent { replay: (!self.overflow).then_some(self.copy), upstream_failed: self.failed }
+    }
+}
+
+impl<W: AsyncWrite + Unpin> AsyncWrite for ReplayTee<'_, W> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        let n = if this.failed {
+            buf.len()
+        } else {
+            match Pin::new(&mut *this.inner).poll_write(cx, buf) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Ok(n)) if n > 0 || buf.is_empty() => n,
+                Poll::Ready(Ok(_) | Err(_)) => {
+                    this.failed = true;
+                    buf.len()
+                }
+            }
+        };
+        this.record(&buf[..n]);
+        Poll::Ready(Ok(n))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if !this.failed {
+            match Pin::new(&mut *this.inner).poll_flush(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Err(_)) => this.failed = true,
+            }
+        }
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut *self.get_mut().inner).poll_shutdown(cx)
+    }
+}
 
 /// Rebuilds a request head with a fresh `SigV4` signature over `body`: the
 /// agent's `Authorization` and `x-amz-*` signing artifacts are stripped, every
@@ -1800,6 +2065,16 @@ mod tests {
         upstream_port: u16,
         request: &str,
     ) -> String {
+        let mut tls = connect_client(inj, client_ca, upstream_port).await;
+        exchange(&mut tls, &mut HttpBuf::default(), request).await.1
+    }
+
+    /// A client TLS connection through a spawned injector to `upstream_port`.
+    async fn connect_client(
+        inj: Arc<Injector>,
+        client_ca: &Arc<PerPodCa>,
+        upstream_port: u16,
+    ) -> tokio_rustls::client::TlsStream<TcpStream> {
         install_crypto();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1815,15 +2090,22 @@ mod tests {
         let connector = TlsConnector::from(Arc::new(cfg));
         let sock = TcpStream::connect(addr).await.unwrap();
         let name = ServerName::try_from("localhost").unwrap();
-        let mut tls = connector.connect(name, sock).await.unwrap();
-        tls.write_all(request.as_bytes()).await.unwrap();
+        connector.connect(name, sock).await.unwrap()
+    }
 
+    /// Sends `request` and reads one full response: `(head, body)`.
+    async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
+        tls: &mut S,
+        buf: &mut HttpBuf,
+        request: &str,
+    ) -> (Vec<u8>, String) {
+        tls.write_all(request.as_bytes()).await.unwrap();
+        tls.flush().await.unwrap();
         let method = request.split(' ').next().unwrap_or("GET").to_owned();
-        let mut buf = HttpBuf::default();
-        let resp = buf.read_head(&mut tls).await.unwrap().unwrap();
+        let resp = buf.read_head(tls).await.unwrap().expect("a response, never a bare EOF");
         let mut body = Vec::new();
-        buf.relay_body(&mut tls, &mut body, response_framing(&resp, Some(&method))).await.unwrap();
-        String::from_utf8(body).unwrap()
+        buf.relay_body(tls, &mut body, response_framing(&resp, Some(&method))).await.unwrap();
+        (resp, String::from_utf8(body).unwrap())
     }
 
     #[tokio::test]
@@ -1997,5 +2279,201 @@ mod tests {
         // A non-injection host is never terminated — transparent.rs splices it
         // through byte-for-byte (covered by the transparent splice tests).
         assert!(!inj.should_inject("example.com"));
+    }
+
+    // ---- Upstream keep-alive loss --------------------------------------------
+
+    struct ScriptedUpstream {
+        up: Upstream,
+        conns: Arc<AtomicUsize>,
+        closed: Arc<tokio::sync::Notify>,
+    }
+
+    /// HTTPS upstream whose connection `i` answers `plan(i).0` keep-alive
+    /// requests with `conn<i>|<body>`, then, if `plan(i).1`, reads one more
+    /// request in full and closes without answering it.
+    async fn spawn_scripted_upstream(plan: fn(usize) -> (usize, bool)) -> ScriptedUpstream {
+        install_crypto();
+        let ca = Arc::new(PerPodCa::generate().unwrap());
+        let mut cfg = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_cert_resolver(Arc::new(SniResolver(ca.clone())));
+        cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let acceptor = TlsAcceptor::from(Arc::new(cfg));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let conns = Arc::new(AtomicUsize::new(0));
+        let closed = Arc::new(tokio::sync::Notify::new());
+        let (rc, cc, closed_tx) = (requests.clone(), conns.clone(), closed.clone());
+        tokio::spawn(async move {
+            loop {
+                let Ok((sock, _)) = listener.accept().await else { return };
+                let idx = cc.fetch_add(1, Ordering::SeqCst);
+                let (acceptor, rc, closed_tx) = (acceptor.clone(), rc.clone(), closed_tx.clone());
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(sock).await else { return };
+                    scripted_conn(&mut tls, idx, plan(idx), &rc).await;
+                    let _ = tls.shutdown().await;
+                    drop(tls);
+                    closed_tx.notify_one();
+                });
+            }
+        });
+        ScriptedUpstream { up: Upstream { addr, ca, requests }, conns, closed }
+    }
+
+    async fn scripted_conn<S: AsyncRead + AsyncWrite + Unpin>(
+        tls: &mut S,
+        idx: usize,
+        (answers, swallow_next): (usize, bool),
+        requests: &AtomicUsize,
+    ) {
+        let mut buf = HttpBuf::default();
+        for _ in 0..answers {
+            let Ok(Some(req)) = buf.read_head(tls).await else { return };
+            requests.fetch_add(1, Ordering::SeqCst);
+            let mut body = format!("conn{idx}|").into_bytes();
+            if buf.relay_body(tls, &mut body, body_framing(&req, false)).await.is_err() {
+                return;
+            }
+            let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+            if tls.write_all(resp.as_bytes()).await.is_err()
+                || tls.write_all(&body).await.is_err()
+                || tls.flush().await.is_err()
+            {
+                return;
+            }
+        }
+        if swallow_next && let Ok(Some(req)) = buf.read_head(tls).await {
+            requests.fetch_add(1, Ordering::SeqCst);
+            let _ = buf.relay_body(tls, &mut Vec::new(), body_framing(&req, false)).await;
+        }
+    }
+
+    const SERVE_ALL: (usize, bool) = (usize::MAX, false);
+
+    fn post(body: &str) -> String {
+        format!(
+            "POST /repos/acme/repo/issues/1/comments HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer X\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    #[tokio::test]
+    async fn inject_post_after_upstream_closed_idle_keepalive_succeeds_on_same_client_conn() {
+        let up = spawn_scripted_upstream(|i| if i == 0 { (1, false) } else { SERVE_ALL }).await;
+        let (inj, ca) = injector_for(&up.up, MockBackend(Ok("T")), AuthShape::Bearer);
+        let mut tls = connect_client(Arc::new(inj), &ca, up.up.addr.port()).await;
+        let mut buf = HttpBuf::default();
+
+        let (head, body) = exchange(&mut tls, &mut buf, &post("one")).await;
+        assert_eq!(response_status(&head), Some(200));
+        assert_eq!(body, "conn0|one");
+
+        up.closed.notified().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let (head, body) = exchange(&mut tls, &mut buf, &post("two")).await;
+        assert_eq!(response_status(&head), Some(200), "{}", as_text(&head));
+        assert_eq!(body, "conn1|two");
+        assert_eq!(up.conns.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn inject_reused_upstream_dropping_post_before_response_is_replayed_once() {
+        let up = spawn_scripted_upstream(|i| if i == 0 { (1, true) } else { SERVE_ALL }).await;
+        let (inj, ca) = injector_for(&up.up, MockBackend(Ok("T")), AuthShape::Bearer);
+        let mut tls = connect_client(Arc::new(inj), &ca, up.up.addr.port()).await;
+        let mut buf = HttpBuf::default();
+
+        let (_, body) = exchange(&mut tls, &mut buf, &post("one")).await;
+        assert_eq!(body, "conn0|one");
+        let (head, body) = exchange(&mut tls, &mut buf, &post(r#"{"body":"card"}"#)).await;
+        assert_eq!(response_status(&head), Some(200), "{}", as_text(&head));
+        assert_eq!(body, r#"conn1|{"body":"card"}"#, "the replay must carry the same body");
+        assert_eq!(up.conns.load(Ordering::SeqCst), 2);
+        assert_eq!(up.up.requests.load(Ordering::SeqCst), 3, "one swallowed, one replayed");
+
+        let (_, body) = exchange(&mut tls, &mut buf, &post("three")).await;
+        assert_eq!(body, "conn1|three", "the replayed connection is kept alive");
+    }
+
+    #[tokio::test]
+    async fn inject_post_too_large_to_replay_gets_502_with_connection_close() {
+        let up = spawn_scripted_upstream(|_| (1, true)).await;
+        let (inj, ca) = injector_for(&up.up, MockBackend(Ok("T")), AuthShape::Bearer);
+        let mut tls = connect_client(Arc::new(inj), &ca, up.up.addr.port()).await;
+        let mut buf = HttpBuf::default();
+
+        let (_, body) = exchange(&mut tls, &mut buf, &post("one")).await;
+        assert_eq!(body, "conn0|one");
+        let big = post(&"a".repeat(MAX_REPLAY_BYTES + 1));
+        let (head, _) = exchange(&mut tls, &mut buf, &big).await;
+        assert_eq!(response_status(&head), Some(502), "{}", as_text(&head));
+        assert!(wants_close(&head), "{}", as_text(&head));
+        assert_eq!(up.conns.load(Ordering::SeqCst), 1, "unreplayable requests are not redialled");
+    }
+
+    #[tokio::test]
+    async fn inject_fresh_upstream_closing_before_response_answers_502() {
+        let up = spawn_scripted_upstream(|_| (0, true)).await;
+        let (inj, ca) = injector_for(&up.up, MockBackend(Ok("T")), AuthShape::Bearer);
+        let mut tls = connect_client(Arc::new(inj), &ca, up.up.addr.port()).await;
+        let (head, _) = exchange(&mut tls, &mut HttpBuf::default(), &post("one")).await;
+        assert_eq!(response_status(&head), Some(502), "{}", as_text(&head));
+        assert!(wants_close(&head));
+        assert_eq!(up.conns.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn inject_unreachable_upstream_answers_502() {
+        let port = {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let up = spawn_upstream().await;
+        let (inj, ca) = injector_for(&up, MockBackend(Ok("T")), AuthShape::Bearer);
+        let mut tls = connect_client(Arc::new(inj), &ca, port).await;
+        let (head, _) = exchange(&mut tls, &mut HttpBuf::default(), &post("one")).await;
+        assert_eq!(response_status(&head), Some(502), "{}", as_text(&head));
+    }
+
+    #[tokio::test]
+    async fn replay_tee_records_after_upstream_failure_and_caps_the_copy() {
+        struct Broken;
+        impl AsyncWrite for Broken {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+                _: &[u8],
+            ) -> Poll<std::io::Result<usize>> {
+                Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+            }
+            fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+                Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+            }
+            fn poll_shutdown(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+        let mut broken = Broken;
+        let mut tee = ReplayTee::new(&mut broken);
+        tee.write_all(b"POST / HTTP/1.1\r\n\r\n").await.unwrap();
+        tee.flush().await.unwrap();
+        let sent = tee.into_sent();
+        assert!(sent.upstream_failed);
+        assert_eq!(sent.replay.as_deref(), Some(&b"POST / HTTP/1.1\r\n\r\n"[..]));
+
+        let mut sink = Vec::new();
+        let mut tee = ReplayTee::new(&mut sink);
+        tee.write_all(&vec![b'a'; MAX_REPLAY_BYTES + 1]).await.unwrap();
+        let sent = tee.into_sent();
+        assert!(!sent.upstream_failed);
+        assert!(sent.replay.is_none());
+        assert_eq!(sink.len(), MAX_REPLAY_BYTES + 1, "the upstream still gets every byte");
     }
 }

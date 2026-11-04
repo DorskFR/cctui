@@ -31,7 +31,8 @@ use crate::bus::{VOICE_WATCH_REFRESH, VoiceEvent};
 use crate::speech::{SpeechClient, SpeechError, SttStream};
 use crate::state::AppState;
 pub use engine::{
-    AudioStream, Inbound, Outbound, Prefs, Signal, VoiceBackend, picked_language, run_voice_loop,
+    AudioStream, Block, Inbound, Outbound, Prefs, Signal, VoiceBackend, picked_language,
+    run_voice_loop,
 };
 use text::{UTTERANCE_SAMPLE_RATE, pcm16_to_wav};
 
@@ -229,8 +230,8 @@ fn signal_of(event: &AgentEvent) -> Option<Signal> {
             let prompt = content.strip_prefix(USER_PREFIX).unwrap_or_default();
             Some(Signal::TurnStart(prompt.trim().to_owned()))
         }
-        AgentEvent::Text { content, meta: false, kind: None, .. } => {
-            Some(Signal::Text(content.clone()))
+        AgentEvent::Text { content, meta: false, kind: None, seq, .. } => {
+            Some(Signal::Text(Block { content: content.clone(), seq: *seq }))
         }
         _ => None,
     }

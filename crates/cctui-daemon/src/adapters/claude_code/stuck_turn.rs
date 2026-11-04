@@ -33,6 +33,9 @@ const START_MARKERS: [&str; 3] = [
     "moved to the background as task ",
 ];
 
+const MONITOR_MARKER: &str = "Monitor started (task ";
+const ASYNC_AGENT_MARKER: &str = "Async agent launched";
+
 pub(super) fn secs_from_env(var: Option<&str>, default: u64) -> Duration {
     Duration::from_secs(var.and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(default))
 }
@@ -94,12 +97,12 @@ impl BgTaskLedger {
 
     fn feed_line(&mut self, line: &str) {
         if line.contains("<task-notification>") {
-            for id in notified_ids(line) {
+            for id in terminal_ids(line) {
                 self.outstanding.remove(id);
             }
             return;
         }
-        if !line.contains("background") {
+        if !line.contains("background") && !line.contains(MONITOR_MARKER) {
             return;
         }
         let Ok(entry) = serde_json::from_str::<Value>(line) else { return };
@@ -112,7 +115,7 @@ impl BgTaskLedger {
             .pointer("/toolUseResult/backgroundTaskId")
             .and_then(Value::as_str)
             .map(str::to_owned)
-            .or_else(|| texts.iter().find_map(|t| started_id(t)));
+            .or_else(|| texts.iter().find_map(|t| ledger_started_id(t)));
         if let Some(id) = id.filter(|id| !id.is_empty()) {
             self.outstanding.insert(id, output);
         }
@@ -123,6 +126,33 @@ pub fn notified_ids(line: &str) -> impl Iterator<Item = &str> {
     line.split("<task-id>")
         .skip(1)
         .filter_map(|rest| rest.split_once("</task-id>").map(|(id, _)| id.trim()))
+}
+
+/// Ids of the notifications that end their task. A Monitor also notifies each
+/// event it sees, without a `<status>`, while it keeps watching.
+fn terminal_ids(line: &str) -> impl Iterator<Item = &str> {
+    line.split("<task-notification>").skip(1).filter_map(|block| {
+        let block = block.split("</task-notification>").next().unwrap_or(block);
+        if !block.contains("<status>") {
+            return None;
+        }
+        let rest = block.split_once("<task-id>")?.1;
+        rest.split_once("</task-id>").map(|(id, _)| id.trim())
+    })
+}
+
+/// [`started_id`], plus a Monitor watch and a background Agent. A foreground
+/// Agent's result names its `agentId` too, so only a launch counts.
+fn ledger_started_id(text: &str) -> Option<String> {
+    started_id(text)
+        .or_else(|| id_after(text, MONITOR_MARKER))
+        .or_else(|| id_after(text, "agentId: ").filter(|_| text.contains(ASYNC_AGENT_MARKER)))
+}
+
+fn id_after(text: &str, marker: &str) -> Option<String> {
+    let rest = &text[text.find(marker)? + marker.len()..];
+    let id: String = rest.chars().take_while(char::is_ascii_alphanumeric).collect();
+    (!id.is_empty()).then_some(id)
 }
 
 fn tool_result_texts(entry: &Value) -> Vec<&str> {
@@ -142,11 +172,7 @@ fn tool_result_texts(entry: &Value) -> Vec<&str> {
 }
 
 pub fn started_id(text: &str) -> Option<String> {
-    START_MARKERS.iter().find_map(|marker| {
-        let rest = &text[text.find(marker)? + marker.len()..];
-        let id: String = rest.chars().take_while(char::is_ascii_alphanumeric).collect();
-        (!id.is_empty()).then_some(id)
-    })
+    START_MARKERS.iter().find_map(|marker| id_after(text, marker))
 }
 
 fn output_path(text: &str) -> Option<PathBuf> {
@@ -298,6 +324,55 @@ mod tests {
         append(&moved, &[ASSISTANT]);
         ledger.scan(&moved);
         assert!(!ledger.has_outstanding(), "a new transcript path starts a fresh ledger");
+    }
+
+    const MONITOR_START: &str = r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"tm","type":"tool_result","content":"Monitor started (task b3bzv1ch3, expires in 30m unless the source ends first; you get one notice at expiry). You will be notified on each event."}]},"toolUseResult":{"taskId":"b3bzv1ch3","timeoutMs":1800000,"persistent":false}}"#;
+    const ASYNC_AGENT: &str = r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"ta","type":"tool_result","content":[{"type":"text","text":"Async agent launched successfully.\nagentId: a516e4c3eb9cc21fd (internal ID)\nThe agent is working in the background. You will be notified automatically when it completes."}]}]}}"#;
+    const FOREGROUND_AGENT: &str = r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"tf","type":"tool_result","content":[{"type":"text","text":"The tests run in the background job.\nagentId: a0000fore (use SendMessage to continue this agent)"}]}]}}"#;
+
+    fn monitor_event(id: &str) -> String {
+        format!(
+            r#"{{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>{id}</task-id>\n<summary>Monitor event: \"CI\"</summary>\n<event>pending</event>\n</task-notification>"}}"#
+        )
+    }
+
+    #[test]
+    fn ledger_keeps_a_monitor_through_its_events_until_the_stream_ends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("s.jsonl");
+        let mut ledger = BgTaskLedger::default();
+        append(&path, &[MONITOR_START, ASSISTANT]);
+        ledger.scan(&path);
+        assert_eq!(ledger.outstanding.keys().collect::<Vec<_>>(), ["b3bzv1ch3"]);
+
+        append(&path, &[&monitor_event("b3bzv1ch3"), &monitor_event("b3bzv1ch3")]);
+        ledger.scan(&path);
+        assert!(ledger.has_outstanding(), "an event notice is not the end of the watch");
+
+        append(&path, &[&notification("b3bzv1ch3")]);
+        ledger.scan(&path);
+        assert!(!ledger.has_outstanding());
+    }
+
+    #[test]
+    fn ledger_tracks_a_background_agent_but_not_a_foreground_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("s.jsonl");
+        let mut ledger = BgTaskLedger::default();
+        append(&path, &[FOREGROUND_AGENT, ASYNC_AGENT]);
+        ledger.scan(&path);
+        assert_eq!(ledger.outstanding.keys().collect::<Vec<_>>(), ["a516e4c3eb9cc21fd"]);
+        append(&path, &[&notification("a516e4c3eb9cc21fd")]);
+        ledger.scan(&path);
+        assert!(!ledger.has_outstanding());
+    }
+
+    #[test]
+    fn terminal_ids_skip_status_less_notices() {
+        let line = "<task-notification><task-id>m1</task-id><event>x</event></task-notification>\
+                    <task-notification><task-id>b2</task-id><status>failed</status></task-notification>";
+        assert_eq!(terminal_ids(line).collect::<Vec<_>>(), ["b2"]);
+        assert_eq!(notified_ids(line).collect::<Vec<_>>(), ["m1", "b2"], "shared helper unchanged");
     }
 
     #[test]

@@ -19,6 +19,8 @@
 	import ArchivedActions from './ArchivedActions.svelte';
 	import ScheduleCustomModal from './ScheduleCustomModal.svelte';
 	import ScheduledMessages from './ScheduledMessages.svelte';
+	import RedactedChips from './RedactedChips.svelte';
+	import { wrapRedacted } from '$lib/redactTag';
 	import SendButton from './SendButton.svelte';
 	import VoiceControls from './VoiceControls.svelte';
 	import { CacheColdClock } from './cacheCold.svelte';
@@ -383,9 +385,24 @@
 		typeof window.matchMedia === 'function' &&
 		window.matchMedia('(pointer: coarse)').matches;
 
-	// Plain Enter is the Textarea's `submitOn`; only history nav and the
-	// always-available mod+Enter chord are handled here.
+	async function wrapSelection() {
+		const el = scroll.textarea;
+		if (!el) return;
+		const next = wrapRedacted(input, el.selectionStart, el.selectionEnd);
+		input = next.text;
+		resetHistoryNav();
+		await tick();
+		el.setSelectionRange(next.selStart, next.selEnd);
+	}
+
+	// Plain Enter is the Textarea's `submitOn`; only history nav, the
+	// always-available mod+Enter chord and the redact wrap are handled here.
 	function onKey(e: KeyboardEvent) {
+		if (e.key.toLowerCase() === 'r' && e.shiftKey && (e.ctrlKey || e.metaKey) && !e.altKey) {
+			e.preventDefault();
+			void wrapSelection();
+			return;
+		}
 		if (nav.handleKey(e)) return;
 		if (e.key === 'Enter' && !coarsePointer && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
@@ -434,6 +451,9 @@
 					onclick={() => (coldOfferDismissed = session.id)}
 				/>
 			</div>
+		{/if}
+		{#if !folded}
+			<RedactedChips text={input} />
 		{/if}
 		{#snippet leadingTools()}
 			{#if supportsAttachments}

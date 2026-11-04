@@ -360,8 +360,8 @@
 	// text back into the composer to fix and resend.
 	function editPending(text: string, ts: number) {
 		if (archived) return;
-		stream.discardOptimistic(ts);
-		composer?.loadDraft(text);
+		const typed = stream.discardOptimistic(ts);
+		composer?.loadDraft(typed ?? text);
 	}
 
 	function quoteLine(ln: Line, selection: string | null) {
