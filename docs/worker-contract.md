@@ -815,6 +815,12 @@ Synthesized failure (no valid `RESULT_FILE`):
 { "task_id": "<TASK_ID>", "status": "failed", "error": "worker exited (code N) without a valid result" }
 ```
 
+When the daemon wrote the `dispatch_done` marker (the session ended its turn) but no
+valid `RESULT_FILE` exists, the synthesized failure carries
+`"cause": "idle-without-result"` and `"error": "session ended its turn without writing a
+result"`. The work may be done, so callers check for its artifacts (a PR) before
+reporting nothing happened.
+
 Flows add their own fields on top (e.g. `review-pr` adds `review_id`, `verdicts`,
 `review_body`). Do not invent fields a flow does not consume. `REPLY_URL` is a
 bearer capability — whoever holds it can forge the verdict — so it is never
