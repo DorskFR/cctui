@@ -969,9 +969,11 @@ mod tests {
     fn every_thread_request_carries_the_hooks_with_features_on_and_trust_bypassed() {
         let tc = ThreadConfig::new(&std::collections::BTreeMap::new(), Some("fast"))
             .with_hook_policy(Some(deny_policy()));
-        for params in
-            [tc.start_params("/repo"), tc.resume_params("t1", "/repo"), tc.fork_params("t1", "/repo")]
-        {
+        for params in [
+            tc.start_params("/repo"),
+            tc.resume_params("t1", "/repo"),
+            tc.fork_params("t1", "/repo"),
+        ] {
             let config = &params["config"];
             assert_eq!(config["bypass_hook_trust"], true, "{params}");
             assert_eq!(config["features.hooks"], true, "{params}");
@@ -982,7 +984,10 @@ mod tests {
             assert_eq!(pre[0]["hooks"][0]["command"], "deny-shell");
             assert_eq!(pre[1]["matcher"], "apply_patch");
             let edit = pre[1]["hooks"][0]["command"].as_str().unwrap();
-            assert!(edit.contains("hook-shim apply-patch --tools edit --run 'deny-edit'"), "{edit}");
+            assert!(
+                edit.contains("hook-shim apply-patch --tools edit --run 'deny-edit'"),
+                "{edit}"
+            );
             assert!(!params.to_string().contains("\"ask\""), "{params}");
         }
     }

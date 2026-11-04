@@ -534,8 +534,7 @@ fn example_pack() -> Pack {
     let rules = pack.join("guard-rules.md");
     let workflow = Workflow::compile(&std::fs::read_to_string(&prompt).unwrap()).unwrap();
     let resolved = crate::resolve::resolve_sets(None, &rules, &prompt, &workflow);
-    let registry =
-        resolve_registry(None, Some(&adjacent(&rules)), Some(&prompt), Some(&workflow));
+    let registry = resolve_registry(None, Some(&adjacent(&rules)), Some(&prompt), Some(&workflow));
     Pack { workflow, sets: resolved.sets, registry, import_errors: resolved.import_errors }
 }
 

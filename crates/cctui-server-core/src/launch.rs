@@ -103,7 +103,8 @@ pub async fn launch_durable(
 ) -> Result<(), LaunchError> {
     let command = spawn.command_id;
     let rules = crate::hook_policy::account_rules(&state.pool, &spawn.failed.session_id).await?;
-    let carried = crate::hook_policy::attach(&mut spawn.spec, rules).map_err(LaunchError::Policy)?;
+    let carried =
+        crate::hook_policy::attach(&mut spawn.spec, rules).map_err(LaunchError::Policy)?;
     crate::machine_launches::prepare(&state.pool, command, actor, &spawn.failed).await?;
     crate::hook_policy::record(&state.pool, command, &carried).await?;
     let result =

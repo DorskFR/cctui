@@ -680,11 +680,8 @@ mod tests {
         let payload = json!({ "prompt": "go", "hook_policy": policy });
         let argv = CodexDispatch::from_payload(&payload).expect("payload").build_argv();
         assert_eq!(argv.last().unwrap(), "go");
-        let overrides: Vec<&str> = argv
-            .windows(2)
-            .filter(|w| w[0] == "-c")
-            .map(|w| w[1].as_str())
-            .collect();
+        let overrides: Vec<&str> =
+            argv.windows(2).filter(|w| w[0] == "-c").map(|w| w[1].as_str()).collect();
         assert!(overrides.contains(&"bypass_hook_trust=true"), "{overrides:?}");
         assert!(overrides.contains(&"features.hooks=true"), "{overrides:?}");
         let hooks =

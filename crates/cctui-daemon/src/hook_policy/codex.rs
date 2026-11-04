@@ -226,7 +226,8 @@ mod tests {
     #[test]
     fn without_the_shim_file_rules_block_instead_of_running_unguarded() {
         let mut config = json!({});
-        let policy = HookPolicy { rules: vec![rule(HookEvent::PreToolUse, ToolClass::FileEdit, "g")] };
+        let policy =
+            HookPolicy { rules: vec![rule(HookEvent::PreToolUse, ToolClass::FileEdit, "g")] };
         Codex { exe: None }.apply(&policy, &mut config).unwrap();
         let command = config["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str().unwrap();
         assert!(command.ends_with("exit 2"), "{command}");

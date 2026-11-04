@@ -124,9 +124,7 @@ fn basename(s: &str) -> &str {
 /// separator, since the kernel's argv carries no shell meaning.
 fn sanitize(arg: &str) -> String {
     arg.chars()
-        .map(|c| {
-            if c.is_alphanumeric() || "-_./=:+,@%^~*?[]{}!".contains(c) { c } else { ' ' }
-        })
+        .map(|c| if c.is_alphanumeric() || "-_./=:+,@%^~*?[]{}!".contains(c) { c } else { ' ' })
         .collect()
 }
 
@@ -302,8 +300,8 @@ mod tests {
 
     #[test]
     fn shell_syntax_inside_args_is_neutralised() {
-        let cmds = req("/bin/sh", &["sh", "-c", "git push && echo $(id) > /tmp/x; a|b"])
-            .match_commands();
+        let cmds =
+            req("/bin/sh", &["sh", "-c", "git push && echo $(id) > /tmp/x; a|b"]).match_commands();
         assert_eq!(cmds.len(), 1);
         for bad in ["&", "$", "(", ">", ";", "|", "'", "\""] {
             assert!(!cmds[0].contains(bad), "{bad} survived in {:?}", cmds[0]);

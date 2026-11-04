@@ -130,8 +130,7 @@ fn validate(name: &str, def: &CapabilityDef) -> Result<(), String> {
         return Err(format!("requires '{bad}' is not a capability name"));
     }
     for spec in &def.exec {
-        if spec.bin.is_empty() || spec.bin.contains('/') || spec.bin.contains(char::is_whitespace)
-        {
+        if spec.bin.is_empty() || spec.bin.contains('/') || spec.bin.contains(char::is_whitespace) {
             return Err(format!("exec bin '{}' must be a bare binary name", spec.bin));
         }
         if let Some(subs) = &spec.subcommands

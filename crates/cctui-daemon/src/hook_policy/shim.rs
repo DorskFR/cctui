@@ -158,7 +158,8 @@ pub fn parse_patch(text: &str) -> Result<Vec<FileOp>, String> {
             std::mem::replace(&mut open, Open::None).close(&mut ops);
             ops.push(FileOp::Delete { path: path.to_owned() });
         } else if let Some(path) = marker(line, "*** Update File:") {
-            let next = Open::Update { path: path.to_owned(), move_to: None, hunks: Hunks::default() };
+            let next =
+                Open::Update { path: path.to_owned(), move_to: None, hunks: Hunks::default() };
             std::mem::replace(&mut open, next).close(&mut ops);
         } else if let Some(dest) = marker(line, "*** Move to:") {
             let Open::Update { move_to, .. } = &mut open else {
@@ -458,7 +459,13 @@ mod tests {
         };
         assert_eq!(
             names(Tools::Any),
-            ["Write src/new.rs", "Edit src/lib.rs", "Write src/gone.rs", "Edit a.txt", "Edit b.txt"]
+            [
+                "Write src/new.rs",
+                "Edit src/lib.rs",
+                "Write src/gone.rs",
+                "Edit a.txt",
+                "Edit b.txt"
+            ]
         );
         assert_eq!(names(Tools::Edit), ["Edit src/lib.rs", "Edit a.txt", "Edit b.txt"]);
         assert_eq!(names(Tools::Write), ["Write src/new.rs", "Write src/gone.rs"]);

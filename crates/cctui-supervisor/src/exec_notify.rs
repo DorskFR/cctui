@@ -37,10 +37,8 @@ pub struct Abi {
 const X32_SYSCALL_BIT: u32 = 0x4000_0000;
 
 /// x86-64 `execve`, `execveat`, and their x32 numbers (same audit arch).
-pub const X86_64: Abi = Abi {
-    arch: 0xC000_003E,
-    traced: &[59, 322, X32_SYSCALL_BIT | 0x208, X32_SYSCALL_BIT | 0x221],
-};
+pub const X86_64: Abi =
+    Abi { arch: 0xC000_003E, traced: &[59, 322, X32_SYSCALL_BIT | 0x208, X32_SYSCALL_BIT | 0x221] };
 
 /// aarch64 `execve`, `execveat`.
 pub const AARCH64: Abi = Abi { arch: 0xC000_00B7, traced: &[221, 281] };

@@ -926,6 +926,7 @@ dependencies = [
  "axum",
  "clap",
  "insta",
+ "libc",
  "reqwest",
  "rustls",
  "schemars 1.2.3",
@@ -934,6 +935,7 @@ dependencies = [
  "shlex",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]

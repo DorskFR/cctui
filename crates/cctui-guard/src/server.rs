@@ -34,10 +34,11 @@ pub fn router_with_why(engine: Engine, why: Arc<WhyRing>) -> Router {
 }
 
 async fn get_why(State((engine, why)): State<(Engine, Arc<WhyRing>)>) -> impl IntoResponse {
-    let header = tokio::task::spawn_blocking(move || engine.why_header()).await.unwrap_or_else(|e| {
-        tracing::error!("guard why task failed: {e}");
-        String::new()
-    });
+    let header =
+        tokio::task::spawn_blocking(move || engine.why_header()).await.unwrap_or_else(|e| {
+            tracing::error!("guard why task failed: {e}");
+            String::new()
+        });
     ([("Content-Type", "text/plain; charset=utf-8")], render(&header, &why.recent()))
 }
 

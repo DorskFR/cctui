@@ -17,10 +17,7 @@ use crate::error::AppError;
 ///
 /// # Errors
 /// The lookup failed: the caller must not launch without the rules.
-pub async fn account_rules(
-    pool: &PgPool,
-    session_id: &str,
-) -> Result<Vec<HookRule>, sqlx::Error> {
+pub async fn account_rules(pool: &PgPool, session_id: &str) -> Result<Vec<HookRule>, sqlx::Error> {
     let stored: Vec<serde_json::Value> = sqlx::query_scalar(
         "SELECT DISTINCT ON (p.account_id) p.hooks \
          FROM session_tokens st \
@@ -377,26 +374,32 @@ mod tests {
 
     #[tokio::test]
     async fn the_launch_record_round_trips_and_resolves_by_registered_id() {
-        crate::test_support::with_isolated_database("hook_policy_launch_record", |pool| async move {
-            crate::schema::bootstrap(&pool).await.unwrap();
-            let (user, machine) = fixture(&pool).await;
-            let command = launch(&pool, user, machine, "codex").await;
-            let key = command.to_string();
-            let carried = attach(&mut spec("codex"), vec![deny_shell()]).unwrap();
-            record(&pool, command, &carried).await.unwrap();
-            let real = format!("thread-{command}");
-            sqlx::query(
-                "UPDATE machine_launches SET registered_session_id = $2 WHERE command_id = $1",
-            )
-            .bind(command)
-            .bind(&real)
-            .execute(&pool)
-            .await
-            .unwrap();
-            assert_eq!(for_session(&pool, &real).await.unwrap(), carried);
-            assert_eq!(for_session(&pool, &key).await.unwrap(), carried);
-            assert_eq!(for_session(&pool, "nobody").await.unwrap(), SessionHookPolicy::default());
-        })
+        crate::test_support::with_isolated_database(
+            "hook_policy_launch_record",
+            |pool| async move {
+                crate::schema::bootstrap(&pool).await.unwrap();
+                let (user, machine) = fixture(&pool).await;
+                let command = launch(&pool, user, machine, "codex").await;
+                let key = command.to_string();
+                let carried = attach(&mut spec("codex"), vec![deny_shell()]).unwrap();
+                record(&pool, command, &carried).await.unwrap();
+                let real = format!("thread-{command}");
+                sqlx::query(
+                    "UPDATE machine_launches SET registered_session_id = $2 WHERE command_id = $1",
+                )
+                .bind(command)
+                .bind(&real)
+                .execute(&pool)
+                .await
+                .unwrap();
+                assert_eq!(for_session(&pool, &real).await.unwrap(), carried);
+                assert_eq!(for_session(&pool, &key).await.unwrap(), carried);
+                assert_eq!(
+                    for_session(&pool, "nobody").await.unwrap(),
+                    SessionHookPolicy::default()
+                );
+            },
+        )
         .await;
     }
 
@@ -422,19 +425,22 @@ mod tests {
 
     #[tokio::test]
     async fn a_child_request_weakening_a_parent_rule_is_rejected_with_400() {
-        crate::test_support::with_isolated_database("hook_policy_child_weakens", |pool| async move {
-            crate::schema::bootstrap(&pool).await.unwrap();
-            let (user, machine) = fixture(&pool).await;
-            let parent_rules = HookPolicy { rules: vec![shell("deny-rm", Some(30))] };
-            let (parent, _) =
-                launched_with(&pool, user, machine, "claude-code", Some(parent_rules)).await;
-            let side_door = HookRule { timeout_secs: Some(1), ..no_direct_harness_rule() };
-            for weaker in [shell("deny-rm", Some(1)), side_door] {
-                let err = for_child(&pool, &parent, vec![weaker]).await.unwrap_err();
-                assert!(matches!(err, PolicyError::Rejected(_)), "{err}");
-                assert_eq!(AppError::from(err).status(), StatusCode::BAD_REQUEST);
-            }
-        })
+        crate::test_support::with_isolated_database(
+            "hook_policy_child_weakens",
+            |pool| async move {
+                crate::schema::bootstrap(&pool).await.unwrap();
+                let (user, machine) = fixture(&pool).await;
+                let parent_rules = HookPolicy { rules: vec![shell("deny-rm", Some(30))] };
+                let (parent, _) =
+                    launched_with(&pool, user, machine, "claude-code", Some(parent_rules)).await;
+                let side_door = HookRule { timeout_secs: Some(1), ..no_direct_harness_rule() };
+                for weaker in [shell("deny-rm", Some(1)), side_door] {
+                    let err = for_child(&pool, &parent, vec![weaker]).await.unwrap_err();
+                    assert!(matches!(err, PolicyError::Rejected(_)), "{err}");
+                    assert_eq!(AppError::from(err).status(), StatusCode::BAD_REQUEST);
+                }
+            },
+        )
         .await;
     }
 

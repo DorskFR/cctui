@@ -241,11 +241,11 @@ impl OneshotDriver {
         let seal_key = self.machine_key.as_deref();
         let posture = match self.hook_postures.entry(local_id.to_owned()) {
             Entry::Occupied(known) => known.into_mut(),
-            Entry::Vacant(slot) => slot.insert(
-                super::control::HookPosture::recover(short, seal_key).with_context(|| {
-                    format!("refusing a turn for {local_id} without its hook policy")
-                })?,
-            ),
+            Entry::Vacant(slot) => {
+                slot.insert(super::control::HookPosture::recover(short, seal_key).with_context(
+                    || format!("refusing a turn for {local_id} without its hook policy"),
+                )?)
+            }
         };
         Ok(posture.write(&self.cfg.hook_socket_path, short, launch_env, seal_key))
     }

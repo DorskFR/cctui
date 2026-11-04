@@ -103,7 +103,10 @@ enum Inspected {
     /// The target died or its syscall was interrupted; nothing to answer.
     Gone,
     Unreadable(String),
-    Checked { outcome: Outcome, request: ExecRequest },
+    Checked {
+        outcome: Outcome,
+        request: ExecRequest,
+    },
 }
 
 pub fn bind(path: &Path) -> io::Result<UnixListener> {
@@ -312,10 +315,11 @@ impl Task {
             return;
         }
         let (tx, rx) = mpsc::sync_channel(1);
-        let spawned = std::thread::Builder::new().name("guard-exec-stderr".into()).spawn(move || {
-            let _ = File::from(stderr).write_all(message.as_bytes());
-            let _ = tx.send(());
-        });
+        let spawned =
+            std::thread::Builder::new().name("guard-exec-stderr".into()).spawn(move || {
+                let _ = File::from(stderr).write_all(message.as_bytes());
+                let _ = tx.send(());
+            });
         if spawned.is_ok() {
             let _ = rx.recv_timeout(STDERR_WRITE_TIMEOUT);
         }

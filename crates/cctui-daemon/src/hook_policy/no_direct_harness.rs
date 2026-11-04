@@ -183,8 +183,7 @@ fn program_and_args(words: &[Word]) -> Option<(&Word, &[Word])> {
         if word.mentions_harness || !WRAPPERS.contains(&name) {
             return Some((word, &words[i + 1..]));
         }
-        if name == "command" && words.get(i + 1).is_some_and(|w| w.text == "-v" || w.text == "-V")
-        {
+        if name == "command" && words.get(i + 1).is_some_and(|w| w.text == "-v" || w.text == "-V") {
             return None;
         }
         i = skip_wrapper_options(words, i + 1, wrapper_arg_flags(name));

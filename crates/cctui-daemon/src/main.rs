@@ -553,9 +553,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Cmd::WhipStopHook { phrases, sock } => {
             std::process::exit(cctui_daemon::whipstop::run(phrases.as_deref(), sock.as_deref()))
         }
-        Cmd::HookShim { shim } => {
-            std::process::exit(cctui_daemon::hook_policy::shim::run(&shim))
-        }
+        Cmd::HookShim { shim } => std::process::exit(cctui_daemon::hook_policy::shim::run(&shim)),
     }
 }
 

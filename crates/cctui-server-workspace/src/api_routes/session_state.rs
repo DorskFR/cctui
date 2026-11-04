@@ -7,78 +7,79 @@ use axum::http::Method;
 use axum::routing::{get, patch, post};
 
 pub(super) fn register(r: Routes) -> Routes {
-    let r = r.add(
-        &[Method::GET],
-        "/sessions/{id}/brief",
-        "Render a session's user/assistant transcript as a capped markdown brief.",
-        get(crate::brief::session_brief),
-        Authn::Bearer,
-        sess_read(),
-    )
-    .add(
-        &[Method::GET],
-        "/sessions/{id}/thread",
-        "List the follow-up thread a session belongs to, oldest first.",
-        get(crate::followup::session_thread),
-        Authn::Bearer,
-        sess_read(),
-    )
-    .add(
-        &[Method::POST],
-        "/sessions/{id}/fork",
-        "Fork a session into a new one.",
-        post(routes::sessions::fork_session),
-        Authn::Bearer,
-        sess_write(),
-    )
-    .add(
-        &[Method::POST],
-        "/sessions/{id}/auto-approve",
-        "Toggle auto-approval of tool-use for a session.",
-        post(routes::sessions::set_auto_approve),
-        Authn::Bearer,
-        sess_write(),
-    )
-    .add(
-        &[Method::POST],
-        "/sessions/{id}/archive",
-        "Archive a single session.",
-        post(routes::sessions::archive_session),
-        Authn::Bearer,
-        sess_write(),
-    )
-    .add(
-        &[Method::POST],
-        "/sessions/{id}/unarchive",
-        "Unarchive a single session.",
-        post(routes::sessions::unarchive_session),
-        Authn::Bearer,
-        sess_write(),
-    )
-    .add(
-        &[Method::POST],
-        "/sessions/{id}/pin",
-        "Pin a single session.",
-        post(routes::sessions::pin_session),
-        Authn::Bearer,
-        sess_write(),
-    )
-    .add(
-        &[Method::POST],
-        "/sessions/{id}/unpin",
-        "Unpin a single session.",
-        post(routes::sessions::unpin_session),
-        Authn::Bearer,
-        sess_write(),
-    )
-    .add(
-        &[Method::POST],
-        "/sessions/{id}/keepalive",
-        "Set or clear the session's prompt-cache keep-alive schedule.",
-        post(routes::sessions::set_keepalive),
-        Authn::Bearer,
-        sess_write(),
-    );
+    let r = r
+        .add(
+            &[Method::GET],
+            "/sessions/{id}/brief",
+            "Render a session's user/assistant transcript as a capped markdown brief.",
+            get(crate::brief::session_brief),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
+            &[Method::GET],
+            "/sessions/{id}/thread",
+            "List the follow-up thread a session belongs to, oldest first.",
+            get(crate::followup::session_thread),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/fork",
+            "Fork a session into a new one.",
+            post(routes::sessions::fork_session),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/auto-approve",
+            "Toggle auto-approval of tool-use for a session.",
+            post(routes::sessions::set_auto_approve),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/archive",
+            "Archive a single session.",
+            post(routes::sessions::archive_session),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/unarchive",
+            "Unarchive a single session.",
+            post(routes::sessions::unarchive_session),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/pin",
+            "Pin a single session.",
+            post(routes::sessions::pin_session),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/unpin",
+            "Unpin a single session.",
+            post(routes::sessions::unpin_session),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/keepalive",
+            "Set or clear the session's prompt-cache keep-alive schedule.",
+            post(routes::sessions::set_keepalive),
+            Authn::Bearer,
+            sess_write(),
+        );
     register_policies(r)
 }
 

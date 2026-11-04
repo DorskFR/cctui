@@ -1,10 +1,10 @@
+use super::settings::{LaunchPolicy, ensure_hook_settings, recover_hook_policy};
 use super::{
     AdapterEvent, Context, DeferredDispatch, DispatchDoneTracker, Driver, Duration, EndReason,
     JobIds, LaunchArgs, LaunchEnv, Path, PathBuf, SpawnWatchdog, StateJson, agent_relay_config,
     build_session_context, detect_whip_from_settings, dispatch_done, json, launch, mpsc,
     resolve_launch_env_for, socket, transcript,
 };
-use super::settings::{LaunchPolicy, ensure_hook_settings, recover_hook_policy};
 use tracing::Instrument as _;
 
 impl Driver {
