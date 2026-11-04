@@ -1661,7 +1661,7 @@ mod trace_shape_tests {
     use futures_util::StreamExt;
     use serde_json::{Value, json};
 
-    const BODY: &[u8] = br#"{"model":"claude-opus-5","stream":true,"system":[{"type":"text","text":"s"}],"messages":[{"role":"user","content":"q é"}],"metadata":{"user_id":"u"},"max_tokens":64}"#;
+    const BODY: &[u8] = r#"{"model":"claude-opus-5","stream":true,"system":[{"type":"text","text":"s"}],"messages":[{"role":"user","content":"q é"}],"metadata":{"user_id":"u"},"max_tokens":64}"#.as_bytes();
 
     fn tee_of(
         chunks: Vec<Result<Bytes, axum::Error>>,
@@ -1740,7 +1740,7 @@ mod trace_shape_tests {
             br#"{"messages":["\ud800"]}"#,
             br#"{"model":1e400}"#,
             br#"{"other":1e400}"#,
-            br#"{"other":{"a":[1,{"b":"é\n"}]}}"#,
+            r#"{"other":{"a":[1,{"b":"é\n"}]}}"#.as_bytes(),
             br#"{"messages":[1],"messages":"x","model":"escaped"}"#,
             br#"{"tools":18446744073709551616,"stream":-0}"#,
             deep.as_bytes(),

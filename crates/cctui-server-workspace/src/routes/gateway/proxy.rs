@@ -163,7 +163,7 @@ mod tests {
 
     const SESSION: &str = "0123abcd-ef00-0000-0000-000000000000";
 
-    const ANTHROPIC_REQUEST: &[u8] = br#"{"model":"claude-opus-5","max_tokens":32000,"stream":true,"temperature":1,"thinking":{"type":"enabled","budget_tokens":31999},"metadata":{"user_id":"u"},"system":[{"type":"text","text":"SECRET system","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"key SECRET-sk é\n"}]},{"role":"assistant","content":"ok"},{"role":"user","content":"go"}],"tools":[{"name":"Bash","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}},{"name":"Read","input_schema":{}}]}"#;
+    const ANTHROPIC_REQUEST: &[u8] = r#"{"model":"claude-opus-5","max_tokens":32000,"stream":true,"temperature":1,"thinking":{"type":"enabled","budget_tokens":31999},"metadata":{"user_id":"u"},"system":[{"type":"text","text":"SECRET system","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"key SECRET-sk é\n"}]},{"role":"assistant","content":"ok"},{"role":"user","content":"go"}],"tools":[{"name":"Bash","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}},{"name":"Read","input_schema":{}}]}"#.as_bytes();
 
     const ANTHROPIC_SSE: &str = concat!(
         "event: message_start\n",
