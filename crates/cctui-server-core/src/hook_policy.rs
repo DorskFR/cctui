@@ -163,7 +163,8 @@ pub async fn inherited_rules(
     pool: &PgPool,
     parent_session_id: &str,
 ) -> Result<Vec<HookRule>, sqlx::Error> {
-    let mut rules = for_session(pool, parent_session_id).await?.rules;
+    let mut rules = vec![no_direct_harness_rule()];
+    rules.extend(for_session(pool, parent_session_id).await?.rules);
     rules.extend(account_rules(pool, parent_session_id).await?);
     Ok(rules)
 }
@@ -198,6 +199,22 @@ pub async fn inherit_for_launch(
     Ok(carried)
 }
 
+/// The caller's `hook_rules` additions in a dispatch payload, already checked
+/// against the side-door rule every worker inherits: a dispatch weakening it is
+/// refused before anything is minted for the worker.
+///
+/// # Errors
+/// [`PolicyError::Rejected`] for unreadable or weakening additions.
+pub fn dispatch_additions(payload: &serde_json::Value) -> Result<Vec<HookRule>, PolicyError> {
+    let additions = match payload.get(DISPATCH_ADDITIONS_FIELD) {
+        None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(raw) => serde_json::from_value::<Vec<HookRule>>(raw.clone())
+            .map_err(|e| PolicyError::Rejected(format!("invalid payload.hook_rules: {e}")))?,
+    };
+    effective_rules(&[no_direct_harness_rule()], additions.clone())?;
+    Ok(additions)
+}
+
 /// Replace whatever policy the caller put in a worker payload with the
 /// effective one: the worker's account rules plus the caller's
 /// `hook_rules` additions, under the same add-only rule as a child spawn.
@@ -210,16 +227,14 @@ pub async fn for_dispatch(
     adapter: &str,
     payload: &mut serde_json::Value,
 ) -> Result<(), PolicyError> {
+    let additions = dispatch_additions(payload)?;
     let Some(obj) = payload.as_object_mut() else {
         return Err(PolicyError::Rejected("dispatch payload must be an object".into()));
     };
     obj.remove(DISPATCH_POLICY_FIELD);
-    let additions = match obj.remove(DISPATCH_ADDITIONS_FIELD) {
-        None | Some(serde_json::Value::Null) => Vec::new(),
-        Some(raw) => serde_json::from_value::<Vec<HookRule>>(raw)
-            .map_err(|e| PolicyError::Rejected(format!("invalid payload.hook_rules: {e}")))?,
-    };
-    let inherited = account_rules(pool, session_id).await?;
+    obj.remove(DISPATCH_ADDITIONS_FIELD);
+    let mut inherited = vec![no_direct_harness_rule()];
+    inherited.extend(account_rules(pool, session_id).await?);
     let rules = effective_rules(&inherited, additions)?;
     let carried = carry(adapter, rules).map_err(PolicyError::Rejected)?;
     record_for_session(pool, session_id, &carried).await?;
@@ -309,6 +324,17 @@ mod tests {
             .map(|i| shell(&format!("r{i}"), None))
             .collect();
         assert!(attach(&mut spec("claude-code"), many).is_err());
+    }
+
+    #[test]
+    fn dispatch_additions_cannot_weaken_the_side_door_rule() {
+        let weaker = HookRule { timeout_secs: Some(1), ..no_direct_harness_rule() };
+        let payload = serde_json::json!({ "hook_rules": [weaker] });
+        assert!(matches!(dispatch_additions(&payload), Err(PolicyError::Rejected(_))));
+        let payload = serde_json::json!({ "hook_rules": [no_direct_harness_rule(), deny_shell()] });
+        assert_eq!(dispatch_additions(&payload).unwrap().len(), 2);
+        assert!(dispatch_additions(&serde_json::json!({})).unwrap().is_empty());
+        assert!(dispatch_additions(&serde_json::json!({ "hook_rules": 7 })).is_err());
     }
 
     #[test]

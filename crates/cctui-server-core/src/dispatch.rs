@@ -1137,6 +1137,7 @@ pub async fn execute_dispatch(
         None => None,
     };
     let mut v = validate_dispatch(state, ctx, &req).await?;
+    crate::hook_policy::dispatch_additions(&req.payload).map_err(|e| bad_request(e.to_string()))?;
 
     if let Some(uid) = real_user {
         inject_worker_credential(state, uid, &v.session_id, req.timeout, &mut v.forwarded_payload)

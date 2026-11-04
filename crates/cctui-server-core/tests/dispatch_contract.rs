@@ -408,6 +408,12 @@ async fn a_dispatched_worker_payload_carries_the_effective_hook_policy() {
         cctui_server_core::hook_policy::for_session(&f.host.pool, &reply.session_id).await.unwrap();
     assert_eq!(recorded.rules, policy.rules);
 
+    let count = |sql: &'static str| {
+        let pool = f.host.pool.clone();
+        async move { sqlx::query_scalar::<_, i64>(sql).fetch_one(&pool).await.unwrap() }
+    };
+    let keys = count("SELECT count(*) FROM auth_keys").await;
+    let policies = count("SELECT count(*) FROM session_hook_policies").await;
     let refused = execute_dispatch(
         &f.host,
         &f.ctx,
@@ -419,4 +425,8 @@ async fn a_dispatched_worker_payload_carries_the_effective_hook_policy() {
     .await
     .unwrap_err();
     assert_eq!(refused.0, StatusCode::BAD_REQUEST);
+    assert!(refused.1.error.contains("add-only"), "{}", refused.1.error);
+    assert_eq!(count("SELECT count(*) FROM auth_keys").await, keys, "no worker key minted");
+    assert_eq!(count("SELECT count(*) FROM session_hook_policies").await, policies);
+    assert!(f.requests.try_recv().is_err(), "nothing was forwarded");
 }
