@@ -1667,11 +1667,13 @@ mod spawn_share_tests {
     }
 
     async fn intents_under(pool: &sqlx::PgPool, table: &str, key: &str) -> i64 {
-        sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE spawn_key = $1"))
-            .bind(key)
-            .fetch_one(pool)
-            .await
-            .unwrap()
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT count(*) FROM {table} WHERE spawn_key = $1"
+        )))
+        .bind(key)
+        .fetch_one(pool)
+        .await
+        .unwrap()
     }
 
     /// `validate_spawn` returns only once every intent is written, and
@@ -1741,7 +1743,7 @@ mod spawn_share_tests {
             "session_followup_intents",
             "session_context",
         ] {
-            sqlx::query(&format!("DELETE FROM {table} WHERE spawn_key = $1"))
+            sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table} WHERE spawn_key = $1")))
                 .bind(&key)
                 .execute(&pool)
                 .await
