@@ -552,6 +552,7 @@ fn write_hook_settings_in(
     // clobbered.
     let mut settings = merge_account_under_managed(managed, account_settings);
     deny_worktrees(&mut settings);
+    approve_project_mcp_servers(&mut settings);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|err| {
             HookSettingsError::at(&path, format_args!("cannot create {}: {err}", dir.display()))
@@ -805,6 +806,22 @@ fn deny_worktrees(settings: &mut serde_json::Value) {
         }
     }
 }
+
+/// Approve the trusted folder's `.mcp.json` servers up front, unless the
+/// account settings already decide. Outside `bypassPermissions`, a new
+/// project server opens Claude Code's "new MCP servers found in this project"
+/// picker before the first turn. A background worker has nobody to answer it:
+/// a spare claimed in `default` or `acceptEdits` waits on that picker forever
+/// and never shows in `claude agents`, while `bypassPermissions` approves
+/// them on its own. The servers' tool calls still go through the session's
+/// permission mode, and an untrusted folder loads no project server at all.
+fn approve_project_mcp_servers(settings: &mut serde_json::Value) {
+    if let Some(obj) = settings.as_object_mut() {
+        obj.entry(PROJECT_MCP_KEY).or_insert(json!(true));
+    }
+}
+
+const PROJECT_MCP_KEY: &str = "enableAllProjectMcpServers";
 
 /// Claude Code runs hook commands through a shell; an unquoted macOS
 /// `~/Library/Application Support/...` path would split into two arguments.
@@ -2103,6 +2120,26 @@ mod tests {
         assert_eq!(with_account["env"]["KEEP"], json!("1"));
         let bare = write_with_policy(tmp.path(), "pinon002", None, Some(&stop_policy()));
         assert_eq!(bare["disableAllHooks"], json!(false));
+    }
+
+    #[test]
+    fn every_generated_settings_file_approves_project_mcp_servers() {
+        // Outside bypassPermissions an unapproved `.mcp.json` server opens a
+        // picker no background worker can answer, so the launch never starts.
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = write_with_policy(tmp.path(), "mcpok001", None, None);
+        assert_eq!(bare[PROJECT_MCP_KEY], json!(true));
+        let with_policy = write_with_policy(tmp.path(), "mcpok002", None, Some(&stop_policy()));
+        assert_eq!(with_policy[PROJECT_MCP_KEY], json!(true));
+    }
+
+    #[test]
+    fn an_account_choice_on_project_mcp_servers_is_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let account = json!({ PROJECT_MCP_KEY: false, "disabledMcpjsonServers": ["wiki"] });
+        let merged = write_with_policy(tmp.path(), "mcpok003", Some(&account), None);
+        assert_eq!(merged[PROJECT_MCP_KEY], json!(false), "the account decided");
+        assert_eq!(merged["disabledMcpjsonServers"], json!(["wiki"]));
     }
 
     #[test]
