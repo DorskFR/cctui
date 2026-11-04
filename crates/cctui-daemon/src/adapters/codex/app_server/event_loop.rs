@@ -173,6 +173,9 @@ impl CodexSession {
             .stderr(Stdio::piped())
             .spawn()
             .with_context(|| format!("spawn `{} app-server`", self.cfg.bin))?;
+        if let (Some(relay), Some(pid)) = (&self.agent_mcp, spawned.id()) {
+            crate::agenttool::bind_session_root(relay.session_key(), pid);
+        }
 
         let stdin = RpcStdin {
             inner: RpcSink::Stdio(spawned.stdin.take().context("child stdin missing")?),
