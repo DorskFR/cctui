@@ -59,11 +59,13 @@ export function straightenPhraseQuotes(q: string): string {
 	return q.includes('"') ? q : q.replace(SMART_DOUBLE_QUOTES, '"');
 }
 
-/** Free-text terms of a parsed query; a quoted phrase stays one term. */
-export function queryTerms(q: Query): string[] {
+/** Free-text terms of `q`, parsed from `input`. The parser merges adjacent
+ *  words and phrases into one text node, so each node's source span is
+ *  re-tokenised: a quoted phrase stays one term, a bare word is its own. */
+export function queryTerms(q: Query, input: string): string[] {
 	const terms: string[] = [];
 	walk(q.root, (n) => {
-		if (n.kind === 'text' && n.value) terms.push(n.value);
+		if (n.kind === 'text') terms.push(...tokenizeQuery(input.slice(n.span[0], n.span[1])));
 	});
 	return terms.slice(0, 8);
 }

@@ -21,7 +21,12 @@ describe('straightenPhraseQuotes', () => {
 describe('queryTerms', () => {
 	it('keeps a quoted phrase as one term and skips field clauses', () => {
 		const schema = buildConversationSearchSchema(() => []);
-		const q = parse('role:user "master...HEAD (three dots)." gate', schema);
-		expect(queryTerms(q)).toEqual(['master...HEAD (three dots).', 'gate']);
+		const input = 'role:user "master...HEAD (three dots)." gate';
+		expect(queryTerms(parse(input, schema), input)).toEqual([
+			'master...HEAD (three dots).',
+			'gate'
+		]);
+		const words = 'foo "a b" bar';
+		expect(queryTerms(parse(words, schema), words)).toEqual(['foo', 'a b', 'bar']);
 	});
 });

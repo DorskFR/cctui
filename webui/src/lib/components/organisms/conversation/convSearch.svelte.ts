@@ -47,9 +47,10 @@ export class ConversationSearch {
 	 *  constructor has yet to assign, and the bar wants the same instance. */
 	readonly schema: Schema = buildConversationSearchSchema(() => this.tools);
 
-	#ast = $derived(parse(straightenPhraseQuotes(this.rawQuery), this.schema));
+	#input = $derived(straightenPhraseQuotes(this.rawQuery));
+	#ast = $derived(parse(this.#input, this.schema));
 	/** Only the free-text part is highlighted; field clauses are not text. */
-	terms = $derived(queryTerms(this.#ast));
+	terms = $derived(queryTerms(this.#ast, this.#input));
 	count = $derived(this.hits.length);
 	/** The cursor's `seq`, or null before the first step. */
 	currentSeq = $derived(this.hits[this.index]?.seq ?? null);
