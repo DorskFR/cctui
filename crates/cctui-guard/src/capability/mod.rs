@@ -1,6 +1,8 @@
-//! The capability registry, the one authored policy source. A step grants
-//! capabilities in `[allowed]` (`git:push`: the colon separates them from
-//! harness tool names); both the exec table and `policy.json` derive from it.
+//! The capability registry, the one authored policy source.
+//!
+//! A step grants capabilities in `[allowed]` (`git:push`: the colon separates
+//! them from harness tool names); both the exec table and `policy.json` derive
+//! from it.
 
 pub mod matcher;
 
@@ -59,6 +61,7 @@ struct RegistryFile {
 }
 
 /// A capability with every entry tagged by the registry layer that wrote it.
+///
 /// `assumes` names a server-side rule (branch protection, RBAC) the capability
 /// relies on for what argv policy cannot stop.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -457,10 +460,12 @@ fn apply_path(loaded: &mut LoadedRegistry, path: &Path, layer: &str, required: b
     }
 }
 
-/// Load the layered registry, lowest to highest precedence: `base` (the
-/// image) < `pack` (next to `--rules`) < each `.toml` `[rules]` import of the
-/// prompt in authored order. Missing `base`/`pack` files are skipped; a
-/// missing import or any unparsable layer is an error.
+/// Load the layered registry.
+///
+/// Lowest to highest precedence: `base` (the image) < `pack` (next to
+/// `--rules`) < each `.toml` `[rules]` import of the prompt in authored order.
+/// Missing `base`/`pack` files are skipped; a missing import or any unparsable
+/// layer is an error.
 #[must_use]
 pub fn resolve_registry(
     base: Option<&Path>,

@@ -472,14 +472,14 @@ async fn main() -> anyhow::Result<()> {
         WorkflowEngine::new_with_log(
             steps,
             tool_sets,
-            cli.state,
-            cli.policy_out,
-            cli.always_allow,
-            cli.gate_cwd,
-            cli.judge_cmd,
+            cli.state.clone(),
+            cli.policy_out.clone(),
+            cli.always_allow.clone(),
+            cli.gate_cwd.clone(),
+            cli.judge_cmd.clone(),
             guarded_default_allow,
-            cctui_guard::decision_log::DecisionLog::new(cli.decision_log),
-            cli.report_out,
+            cctui_guard::decision_log::DecisionLog::new(cli.decision_log.clone()),
+            cli.report_out.clone(),
         )
         .with_timeouts(
             Duration::from_secs(cli.gate_timeout_secs),
