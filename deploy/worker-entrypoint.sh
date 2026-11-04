@@ -1190,6 +1190,7 @@ phase_codex_config() {
         printf 'http_headers = { "x-openai-actor-authorization" = "cctui-gateway" }\n'
         printf '[features]\n'
         printf 'fast_mode = false\n'
+        printf 'hooks = true\n'
         # MCP tables MUST stay last: a bare key after a [table] binds to it.
         if adapter_is_codex && [ -f "$CONTEXT_DIR/mcp.json" ]; then
             codex_mcp_toml "$CONTEXT_DIR/mcp.json"
@@ -1570,6 +1571,45 @@ phase_hardening() {
     log "hardening: net_mode=$NET_MODE guard=$GUARD_ON preflight=$PREFLIGHT_RESULT"
 }
 
+# Only with a live guard: the shims fail closed and would block every tool.
+# OpenCode sessions get an ephemeral XDG_CONFIG_HOME, hence OPENCODE_CONFIG_DIR.
+install_guard_shims() {
+    [ "${GUARD_ON:-}" = on ] || return 0
+    _shims="${GUARD_SHIMS_DIR:-/usr/local/share/cctui/guard-shims}"
+    if [ ! -d "$_shims" ]; then
+        log "WARNING: guard: no shims at $_shims; codex/opencode tool calls are not steered"
+        return 0
+    fi
+    _home="/home/${WORKER_USER}"
+
+    _ocdir="${OPENCODE_CONFIG_DIR:-${_home}/.config/cctui/opencode}"
+    mkdir -p "$_ocdir/plugins"
+    cp -f "$_shims/opencode/plugins/cctui-guard.js" "$_ocdir/plugins/cctui-guard.js"
+    export OPENCODE_CONFIG_DIR="$_ocdir"
+    chown -R "${WORKER_UID}:${WORKER_UID}" "$_ocdir" 2>/dev/null || true
+    log "guard: opencode plugin installed in $_ocdir/plugins"
+
+    _cxdir="${CODEX_HOME:-${_home}/.codex}"
+    _hooks="$_cxdir/hooks.json"
+    _cmd="$_shims/codex/pretool.sh"
+    mkdir -p "$_cxdir"
+    [ -s "$_hooks" ] || printf '{}\n' > "$_hooks"
+    _t=$(mktemp)
+    if jq --arg cmd "$_cmd" \
+        '.hooks = ((.hooks // {})
+         | .PreToolUse = ((.PreToolUse // [])
+           | if any(.[]?; ((.hooks // [])[]?.command // "") == $cmd) then .
+             else . + [{hooks: [{type: "command", command: $cmd}]}] end))' \
+        "$_hooks" > "$_t"; then
+        mv "$_t" "$_hooks"
+        chown "${WORKER_UID}:${WORKER_UID}" "$_hooks" 2>/dev/null || true
+        log "guard: codex PreToolUse shim registered in $_hooks"
+    else
+        rm -f "$_t"
+        log "WARNING: guard: $_hooks is not valid JSON; codex tool calls are not steered"
+    fi
+}
+
 # ── Phase 7b: Permission bypass seeding ─────────────────────────────────────
 # Seed claude's bypass-permissions and trust-dialog acceptance into the fresh
 # per-pod config, merged into existing files.
@@ -1619,6 +1659,7 @@ phase_permissions() {
             log "permissions: registered PreToolUse hook $(basename "$_hk")"
         done
     fi
+    install_guard_shims
     # .claude is a per-pod emptyDir (not the NFS home), so a recursive chown
     # is safe here (unlike the home).
     chown -R "${WORKER_UID}:${WORKER_UID}" "$_cfgdir" 2>/dev/null || true

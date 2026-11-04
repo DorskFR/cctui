@@ -249,3 +249,32 @@ enforcement against a config attack, but a hook that crashes still fails open. C
 content because of `write_stdin` (row 5) and fail-open errors (row 4). Neither harness can stop an
 obfuscated shell command from defeating a content-matching guard. Enforcement still has to come from
 the exec-interception/sandbox layer.
+
+### Guard steering shims
+
+Each shim turns its harness's pre-tool callback into `POST $CCTUI_GUARD_URL/check?dialect=…` and adds
+no logic of its own. They live in `deploy/guard-shims/` and fail closed: only an explicit guard allow lets
+the call run. A deny, an `ask`, an unset `CCTUI_GUARD_URL`, an unreachable or hung guard (10 s,
+`CCTUI_GUARD_TIMEOUT`), a non-2xx answer, an unreadable answer and malformed hook input all block. The guard's
+deny reason reaches the model verbatim, which is the steering channel.
+
+| Shim | Seam | Covers | Blocks with |
+|---|---|---|---|
+| `opencode/plugins/cctui-guard.js` | `tool.execute.before` plugin, `dialect=opencode` | every OpenCode tool. Built-in names are sent as Claude's (`bash` → `Bash`, `edit` → `Edit`, …, `filePath` also as `file_path`) so guard rules match. MCP tools pass through unchanged | a thrown `Error` whose message is the reason |
+| `codex/pretool.sh` | `PreToolUse` in `$CODEX_HOME/hooks.json`, no matcher, `dialect=codex` | `Bash`, `apply_patch`, `mcp__<server>__<tool>`, verbatim | exit 2, reason on stderr. `ask` is never emitted (row 4) |
+| `claude/pretool.sh` | `PreToolUse` command hook, `dialect=claude` | every Claude tool | exit 2, reason on stderr. Reference only: the deployed Claude hook ships in the context pack |
+
+The worker entrypoint installs the OpenCode and Codex shims only when the guard is running, since they
+would block every tool without one. It copies the plugin into `OPENCODE_CONFIG_DIR`, because OpenCode sessions get an
+ephemeral `XDG_CONFIG_HOME`. It registers the Codex shim once in `$CODEX_HOME/hooks.json` and sets
+`features.hooks = true` in the managed `config.toml` block.
+
+Remaining Codex gaps:
+
+- `write_stdin` into an interactive `exec_command` session never fires `PreToolUse` (row 5). Commands
+  typed into a `bash -i` the guard allowed are unchecked.
+- A user `hooks.json` hook only runs once Codex trusts it. cctui-spawned threads need `bypass_hook_trust`
+  (or the hook injected through `params.config.hooks`). Until the daemon sends it, the Codex shim is installed
+  but inert.
+- How Codex treats a hook it kills on its own timeout was not probed. The shim's 10 s curl timeout keeps
+  it well under the hook timeout.
