@@ -1499,6 +1499,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_dispatch_watching_ci_with_a_monitor_holds_until_the_stream_ends() {
+        let (mut d, _rx) = driver();
+        let sid = "abcd1234-5678-90ab-cdef-000000000000";
+        let tool = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_m","name":"Monitor","input":{"command":"gh pr checks 7 --watch","description":"PR CI"}}]}}"#;
+        let started = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_m","content":"Monitor started (task bmon1x, expires in 30m unless the source ends first). You will be notified on each event."}]},"toolUseResult":{"taskId":"bmon1x","timeoutMs":1800000,"persistent":false}}"#;
+        let marker = dispatch_with_transcript(&mut d, &[PROMPT, tool, started]);
+        let ten_min = std::time::Duration::from_mins(10);
+        *d.stuck_turn.lock().unwrap() = Some(
+            crate::adapters::claude_code::stuck_turn::StuckTurnWatchdog::new(sid, ten_min, ten_min),
+        );
+        let mut idle = snap("abcd1234", "working", None);
+        idle.tempo = Some("idle".into());
+        let path = d.transcript_locations["abcd1234"].path.clone();
+        let append = |line: &str| {
+            let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+            std::io::Write::write_all(&mut file, format!("{line}\n").as_bytes()).unwrap();
+        };
+
+        d.tail_transcripts().await;
+        d.tick_stuck_turn(std::slice::from_ref(&idle)).await;
+        for _ in 0..3 {
+            d.tick_dispatch_done(std::slice::from_ref(&idle));
+        }
+        assert!(!marker.exists(), "a live Monitor holds the marker past the turn end");
+
+        append(
+            r#"{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>bmon1x</task-id>\n<summary>Monitor event: \"PR CI\"</summary>\n<event>build pending</event>\n</task-notification>"}"#,
+        );
+        d.tick_stuck_turn(std::slice::from_ref(&idle)).await;
+        d.tail_transcripts().await;
+        for _ in 0..3 {
+            d.tick_dispatch_done(std::slice::from_ref(&idle));
+        }
+        assert!(!marker.exists(), "a Monitor event notice does not end the watch");
+
+        append(
+            r#"{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>bmon1x</task-id>\n<status>completed</status>\n<summary>Monitor \"PR CI\" stream ended</summary>\n</task-notification>"}"#,
+        );
+        d.tick_stuck_turn(std::slice::from_ref(&idle)).await;
+        d.tail_transcripts().await;
+        d.tick_dispatch_done(std::slice::from_ref(&idle));
+        d.tick_dispatch_done(std::slice::from_ref(&idle));
+        assert!(marker.exists(), "settles once the Monitor stream ended");
+    }
+
+    #[tokio::test]
     async fn a_dispatch_with_only_its_prompt_is_not_finished() {
         let (mut d, mut rx) = driver();
         let marker = dispatch_with_transcript(&mut d, &[PROMPT]);
