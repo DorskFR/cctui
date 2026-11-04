@@ -78,7 +78,7 @@ pub struct NoSeam(pub &'static str);
 impl HookPolicySink for NoSeam {
     type Launch = ();
 
-    fn apply(&self, _: &HookPolicy, _: &mut ()) -> Result<(), Unsupported> {
+    fn apply(&self, _: &HookPolicy, &mut (): &mut ()) -> Result<(), Unsupported> {
         Err(Unsupported { adapter: self.0.to_owned() })
     }
 }

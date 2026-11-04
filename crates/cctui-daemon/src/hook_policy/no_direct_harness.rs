@@ -1,6 +1,7 @@
-//! `cctui-daemon hook-shim no-direct-harness`: the `PreToolUse` shell guard
-//! every session inherits. A harness started from a shell runs outside the
-//! session's hook policy, so the model is pointed at `CctuiAgent` instead.
+//! `cctui-daemon hook-shim no-direct-harness`: the inherited shell guard.
+//!
+//! A harness started from a shell runs outside the session's hook policy, so
+//! this `PreToolUse` hook points the model at `CctuiAgent` instead.
 //!
 //! It cannot see through variables or generated code: this is steering, the
 //! exec-interception layer is the enforcement.
