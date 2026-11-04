@@ -145,9 +145,11 @@ fn db_error(context: &str, err: &dyn std::fmt::Display) -> AppError {
     deny(StatusCode::INTERNAL_SERVER_ERROR, crate::error::DB_ERROR)
 }
 
-/// The account a child in `family` lands on: the parent's own when it carries a
-/// credential in that family, else a member of the parent's account pool. A
-/// child never borrows any other account: outside a pool the spawn is refused.
+/// The account a child in `family` lands on.
+///
+/// The parent's own when it carries a credential in that family, else a member
+/// of the parent's account pool. A child never borrows any other account:
+/// outside a pool the spawn is refused.
 pub async fn child_landing(
     state: &impl ChildExecutionContext,
     parent_session: &str,
@@ -253,8 +255,8 @@ async fn child_model(
         deny(
             StatusCode::BAD_REQUEST,
             format!(
-                "the account `{account}` cannot serve model {wanted:?} for a {adapter} child: its \
-                 {} catalog does not list it",
+                "the account `{account}` cannot serve model {wanted:?} for the {adapter} child: \
+                 its {} catalog does not list it",
                 family.label()
             ),
         )
