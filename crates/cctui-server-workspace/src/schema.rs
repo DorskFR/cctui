@@ -105,7 +105,7 @@ mod tests {
         with_isolated_database("dispatch_identity_preexisting", |pool| async move {
             provisioned(&pool).await;
             sqlx::raw_sql(
-                "DELETE FROM _cctui_schema_migrations WHERE package = 'core' AND version = 5; \
+                "DELETE FROM _cctui_schema_migrations WHERE package = 'core' AND version >= 5; \
                  UPDATE _cctui_schema_migrations SET installation = 'bootstrap' \
                  WHERE package = 'workspace' AND version = 2",
             )
@@ -118,7 +118,7 @@ mod tests {
             provisioned(&pool).await;
             let core: Vec<i64> =
                 installations(&pool, "core").await.into_iter().map(|(v, _)| v).collect();
-            assert_eq!(core, [1, 2, 3, 4, 5]);
+            assert_eq!(core, [1, 2, 3, 4, 5, 6]);
             assert_eq!(
                 installations(&pool, "workspace").await,
                 [
