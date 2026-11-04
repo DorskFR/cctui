@@ -44,6 +44,7 @@ pub fn router(host: Host) -> Router {
             axum::routing::patch(core::targets::dispatcher_management::update_dispatcher)
                 .delete(core::targets::dispatcher_management::delete_dispatcher),
         )
+        .route("/api/v1/sessions", get(crate::sessions::list))
         .route("/api/v1/sessions/dispatch", post(dispatch))
         .route("/api/v1/sessions/spawn", post(crate::spawn::spawn))
         .route("/api/v1/sessions/{id}/result", get(crate::runs::result))
@@ -74,6 +75,9 @@ pub fn router(host: Host) -> Router {
             "/api/v1/dispatcher/ws",
             get(core::targets::dispatcher::ws::<core::state::CoreState>),
         )
+        .route("/api/v1/dispatch/register", post(core::dispatch_identity::register::<Host>))
+        .route("/api/v1/dispatch/redeem", post(core::dispatch_identity::redeem::<Host>))
+        .route("/api/v1/dispatch/{id}/env", get(core::dispatch_identity::env::<Host>))
         .route("/api/v1/daemon/version", get(crate::daemon::version))
         .route("/api/v1/daemon/auth", post(crate::daemon::auth))
         .route("/api/v1/daemon/ws", get(crate::daemon::ws))
@@ -85,6 +89,10 @@ pub fn router(host: Host) -> Router {
         .route("/gateway/openai/{*path}", any(openai))
         .route("/gateway/fireworks/{*path}", any(fireworks))
         .route("/gateway/google/{*path}", any(google))
+        .layer(axum::middleware::from_fn_with_state(
+            host.auth_config.clone(),
+            core::auth::worker_key_gate,
+        ))
         .layer(cctui_telemetry::http::trace_layer())
         .with_state(host)
 }
@@ -172,4 +180,71 @@ async fn version() -> Json<cctui_proto::api::version::VersionInfo> {
 }
 async fn capabilities() -> Json<cctui_proto::api::capabilities::CapabilitiesResponse> {
     Json(cctui_proto::api::capabilities::CapabilitiesResponse::core())
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode, header};
+    use cctui_server_core::auth::AuthConfig;
+    use cctui_server_core::bus::{Bus, NoopTransport};
+    use cctui_server_core::state::CoreState;
+    use std::sync::Arc;
+    use tower::ServiceExt as _;
+
+    fn host() -> crate::host::Host {
+        cctui_server_core::client::install_crypto_provider();
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://cctui@127.0.0.1:1/unreachable")
+            .unwrap();
+        crate::host::Host::new(
+            CoreState::new(
+                pool.clone(),
+                AuthConfig::new(Vec::new(), pool),
+                Bus::new(Box::new(NoopTransport)),
+                cctui_server_core::client::build_http_client(),
+                Arc::new(cctui_server_core::dispatchers::Registry::new()),
+            ),
+            vec![42; 32],
+            "https://automation.example.invalid".into(),
+        )
+    }
+
+    async fn status(method: Method, uri: &str, body: Option<serde_json::Value>) -> StatusCode {
+        let req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(body.map_or_else(Body::empty, |json| Body::from(json.to_string())))
+            .unwrap();
+        super::router(host()).oneshot(req).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn the_liveness_session_list_is_mounted_behind_authentication() {
+        assert_eq!(status(Method::GET, "/api/v1/sessions", None).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn the_kube_dispatch_identity_routes_are_mounted_and_self_authenticated() {
+        let id = uuid::Uuid::new_v4();
+        let register = serde_json::json!({
+            "dispatch_id": id, "session_id": "s", "namespace": "cctui",
+            "job_name": "cctui-worker-0123456789ab", "machine_key": "cctui_m_x", "env": {}
+        });
+        assert_eq!(
+            status(Method::POST, "/api/v1/dispatch/register", Some(register)).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status(Method::GET, &format!("/api/v1/dispatch/{id}/env"), None).await,
+            StatusCode::UNAUTHORIZED
+        );
+        let redeem = serde_json::json!({ "dispatch_id": id, "token": "not-a-jwt" });
+        let redeemed = status(Method::POST, "/api/v1/dispatch/redeem", Some(redeem)).await;
+        assert!(
+            matches!(redeemed, StatusCode::UNAUTHORIZED | StatusCode::SERVICE_UNAVAILABLE),
+            "{redeemed}"
+        );
+    }
 }

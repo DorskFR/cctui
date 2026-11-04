@@ -317,6 +317,7 @@ type LastMessageRow = (String, Option<String>, Option<bool>, DateTime<Utc>);
 pub async fn list_sessions(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
+    worker: Option<Extension<crate::auth::BoundSession>>,
     Query(params): Query<ListParams>,
     req_headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
@@ -341,6 +342,9 @@ pub async fn list_sessions(
             .filter(|row| !live_ids.contains(&row.id))
             .map(|row| (row.registered_at, db_list_item(row))),
     );
+    if let Some(Extension(crate::auth::BoundSession(own))) = &worker {
+        with_ts.retain(|(_, s)| s.id == *own);
+    }
 
     let sessions = enrich_and_sort(&state, Some(ctx.user_id), with_ts).await?;
     Ok(crate::http_cache::json_with_etag(

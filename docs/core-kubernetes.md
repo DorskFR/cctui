@@ -12,11 +12,11 @@ and dispatches through `POST /api/v1/sessions/dispatch`.
    your secret manager. The core host provisions its schema at startup; run
    one replica per database with a `Recreate` strategy. Core still requires
    PostgreSQL features including PL/pgSQL; Aurora DSQL is not a substitute.
-2. Run `ghcr.io/dorskfr/cctui-core:0.27.1`, expose port 8700 and configure
+2. Run `ghcr.io/dorskfr/cctui-core:0.28.1`, expose port 8700 and configure
    `/health` and `/ready` probes. Set the external URL to an address reachable
    by workers. Put caller ingress and authentication in front of the API.
 3. Apply the release's `workerprofile-crd.yaml`. Deploy
-   `ghcr.io/dorskfr/cctui-orchestrator:0.27.1` with webhook TLS, its Service
+   `ghcr.io/dorskfr/cctui-orchestrator:0.28.1` with webhook TLS, its Service
    on 8443, mutating/validating webhook registrations and fail-closed admission.
    Provide the `guard-proxy-env` and `guard-proxy-inject` ConfigMaps consumed
    by the envelope. Keep its sidecar image aligned with the worker release.
@@ -35,19 +35,24 @@ and dispatches through `POST /api/v1/sessions/dispatch`.
 6. Enroll the dispatcher with `cctui-dispatcher-kube enroll`, including
    `--namespace`, `--default-profile` and a worker-reachable
    `--worker-cctui-url`. Persist its returned configuration as a Secret and
-   run `ghcr.io/dorskfr/cctui-dispatcher-kube:0.27.1`. Its RBAC needs Jobs,
+   run `ghcr.io/dorskfr/cctui-dispatcher-kube:0.28.1`. Its RBAC needs Jobs,
    Pods (including logs) and WorkerProfiles; it creates no Secrets, since each
    dispatch is registered with the server instead. An identity that can only
    create/delete Jobs is insufficient. See the operations in
    `crates/cctui-dispatcher-kube/src/spawn.rs` when scoping verbs. The server
    must trust the cluster's service-account issuer
    (`CCTUI_DISPATCH_TRUSTED_ISSUERS`) so worker pods can redeem their identity;
-   see [Dispatch identity](./worker-contract.md#dispatch-identity-kube).
+   see [Dispatch identity](./worker-contract.md#dispatch-identity-kube). Core
+   serves the dispatch identity routes and the worker liveness route
+   (`GET /api/v1/sessions`) from 0.28.1; with an older core, workers cannot
+   redeem their identity and Claude workers fail at their boot deadline.
 7. Bootstrap service identity, provider accounts and a scoped caller key via
    the core API. Configure your trigger service with the dispatcher/profile
    and context pack. Test both directions: the caller must reach core, and
    the worker must reach the reply URL. A private callback needs an explicit
-   network path and matching guard configuration.
+   network path and matching guard configuration. Agent tools and
+   management routes that core lacks are listed in
+   [Not available on core](./core-server.md#not-available-on-core).
 
 For an upgrade, apply the CRD first, then update orchestrator and dispatcher,
 then add `tolerations` to profiles. An older CRD prunes unknown fields and an
@@ -73,7 +78,7 @@ node group. Unit tests do not establish Bottlerocket or spot compatibility.
   --context-pack`. The fixture starts a local isolated core and provider;
   its advertised core URL must route back to that fixture, and the kubeconfig
   must be usable inside its dispatcher container. Set
-  `CCTUI_TEST_DISPATCHER_IMAGE=ghcr.io/dorskfr/cctui-dispatcher-kube:0.27.1`
+  `CCTUI_TEST_DISPATCHER_IMAGE=ghcr.io/dorskfr/cctui-dispatcher-kube:0.28.1`
   to exercise this release rather than the script's compatibility baseline.
 - Run a long disposable task, then interrupt its disposable worker node.
   Verify the run leaves running state, exposes the failure reason and releases

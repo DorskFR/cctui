@@ -25,6 +25,11 @@ case "$FAKE_CURL" in
     down)    echo 'curl: (7) Failed to connect to 127.0.0.1 port 15002' >&2; printf '\n000' ;;
     badname) printf '%s\n200' '{"env":{"BAD-NAME":"x"}}' ;;
     notenv)  printf '%s\n200' '{"oops":1}' ;;
+    pem)     printf '%s\n200' '{"env":{"KEY_PEM":"-----BEGIN-----\nabc\n-----END-----\n"}}' ;;
+    number)  printf '%s\n200' '{"env":{"PORT":8080}}' ;;
+    uid)     printf '%s\n200' '{"env":{"FEATURE_FLAG":"on","WORKER_UID":"0"}}' ;;
+    state)   printf '%s\n200' '{"env":{"GUARD_STATE":"/tmp/agent-owned"}}' ;;
+    pack)    printf '%s\n200' '{"env":{"CONTEXT_PACK_URL":"https://git/p.git"}}' ;;
 esac
 EOF
 chmod +x "$TMP/bin/curl"
@@ -41,6 +46,22 @@ run() {
         phase_dispatch_env
         echo "FEATURE_FLAG=${FEATURE_FLAG:-}"
         echo "GREETING=${GREETING:-}"
+        printf "KEY_PEM=[%s]\n" "${KEY_PEM:-}"
+    ' "$TMP/fns.sh" 2>&1
+}
+
+run_internals() {
+    PATH="$TMP/bin:$PATH" FAKE_CURL="$1" CCTUI_DISPATCH_ID=d-1 \
+        TERMINATION_LOG="$TMP/termination-log" bash -c '
+        set -eu
+        log() { echo "cctui-worker: $*"; }
+        DISPATCH_ENV_URL=http://127.0.0.1:15002/dispatch/env
+        WORKER_UID=1000
+        GUARD_STATE=/var/run/workflow-guard/state
+        trap "echo WORKER_UID=\$WORKER_UID; echo GUARD_STATE=\$GUARD_STATE" EXIT
+        . "$0"
+        phase_dispatch_env
+        echo "CONTEXT_PACK_URL=${CONTEXT_PACK_URL:-}"
     ' "$TMP/fns.sh" 2>&1
 }
 
@@ -75,5 +96,30 @@ out=$(run badname d-1); rc=$?
 check "invalid env name rc 1" 1 "$rc"
 out=$(run notenv d-1); rc=$?
 check "missing env object rc 1" 1 "$rc"
+
+echo "== 6. values are exported byte for byte =="
+out=$(run pem d-1); rc=$?
+check "rc 0" 0 "$rc"
+nl='
+'
+has "trailing newline survives" "-----END-----${nl}]" "$out"
+out=$(run number d-1); rc=$?
+check "non-string value rc 1" 1 "$rc"
+has "names the variable" "non-string value for PORT" "$(cat "$TMP/termination-log")"
+
+echo "== 7. a hostile answer cannot override the entrypoint's internals =="
+rm -f "$TMP/termination-log"
+out=$(run_internals uid); rc=$?
+check "WORKER_UID rc 1" 1 "$rc"
+has "WORKER_UID unchanged" "WORKER_UID=1000" "$out"
+has "names the reserved key" "reserved env name: WORKER_UID" "$(cat "$TMP/termination-log")"
+rm -f "$TMP/termination-log"
+out=$(run_internals state); rc=$?
+check "GUARD_STATE rc 1" 1 "$rc"
+has "GUARD_STATE unchanged" "GUARD_STATE=/var/run/workflow-guard/state" "$out"
+has "names the reserved key" "reserved env name: GUARD_STATE" "$(cat "$TMP/termination-log")"
+out=$(run_internals pack); rc=$?
+check "CONTEXT_PACK_URL rc 0" 0 "$rc"
+has "CONTEXT_PACK_URL exported" "CONTEXT_PACK_URL=https://git/p.git" "$out"
 
 exit $fail

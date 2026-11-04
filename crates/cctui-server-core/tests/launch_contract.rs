@@ -49,6 +49,7 @@ impl Host {
                 model: None,
                 effort: None,
             },
+            route_session: None,
         }
     }
 
@@ -182,4 +183,42 @@ async fn unavailable_launch_storage_prevents_delivery_to_a_connected_daemon() {
     assert!(matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
     assert!(state.pending_commands.is_empty());
     assert!(state.command_waiters.is_empty());
+}
+
+async fn spawned_on(rx: &mut mpsc::Receiver<DaemonFrameDown>) -> bool {
+    matches!(
+        tokio::time::timeout(Duration::from_millis(200), rx.recv()).await,
+        Ok(Some(DaemonFrameDown::Command { .. }))
+    )
+}
+
+#[tokio::test]
+async fn a_session_routed_spawn_goes_to_the_parents_connection_not_the_newest() {
+    let host = Host::new();
+    let machine = Uuid::new_v4();
+    let (old_conn, new_conn) = (Uuid::new_v4(), Uuid::new_v4());
+    let (old_tx, mut old_rx) = mpsc::channel(4);
+    let (new_tx, mut new_rx) = mpsc::channel(4);
+    host.bus.register_daemon(machine, old_conn, old_tx);
+    host.bus.register_daemon(machine, new_conn, new_tx);
+    host.bus.bind_session_conn("parent", old_conn);
+    let mut spawn = Host::spawn(machine);
+    spawn.route_session = Some("parent".into());
+    let request = host.start(spawn);
+    assert!(spawned_on(&mut old_rx).await, "the parent's connection receives the spawn");
+    assert!(!spawned_on(&mut new_rx).await, "the newest connection must not receive it");
+    request.abort();
+}
+
+#[tokio::test]
+async fn an_unbound_session_routed_spawn_falls_back_to_the_machine() {
+    let host = Host::new();
+    let machine = Uuid::new_v4();
+    let (tx, mut rx) = mpsc::channel(4);
+    host.bus.register_daemon(machine, Uuid::new_v4(), tx);
+    let mut spawn = Host::spawn(machine);
+    spawn.route_session = Some("unannounced".into());
+    let request = host.start(spawn);
+    assert!(spawned_on(&mut rx).await);
+    request.abort();
 }

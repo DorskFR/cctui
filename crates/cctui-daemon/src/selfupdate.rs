@@ -545,6 +545,7 @@ pub fn reexec(exe: &Path) -> ! {
     let mut cmd = std::process::Command::new(exe);
     cmd.args(&args[1..]);
     crate::runlock::export_for_reexec(&mut cmd);
+    crate::harden::export_for_reexec(&mut cmd);
     let err = cmd.exec();
     eprintln!("re-exec failed: {err}");
     std::process::exit(1);

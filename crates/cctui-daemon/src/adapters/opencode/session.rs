@@ -449,6 +449,9 @@ impl OpenCodeSession {
             .spawn()
             .with_context(|| format!("spawn `{} serve`", self.params.cfg.bin))?;
         self.server_pid = child.id();
+        if let (Some(relay), Some(pid)) = (&self.params.agent_mcp, child.id()) {
+            crate::agenttool::bind_session_root(relay.session_key(), pid);
+        }
         drain_child_logs(&mut child, &self.rings);
 
         let base = format!("http://{}:{port}", self.params.cfg.hostname);

@@ -1,7 +1,8 @@
 //! Minimal HTTP health endpoint on its own listener (`:15002` by default) for
 //! container probes. `/health` and `/ready` return `200 OK`; `/dispatch/env`
-//! hands a dispatched worker its payload env; everything else `404`.
+//! hands a dispatched worker its payload env, to loopback peers only; everything else `404`.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -17,11 +18,11 @@ pub async fn serve(
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     loop {
-        let (stream, _peer) = listener.accept().await?;
+        let (stream, peer) = listener.accept().await?;
         let policy = policy.clone();
         let dispatch = dispatch.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle(stream, &policy, dispatch.as_deref()).await {
+            if let Err(e) = handle(stream, peer.ip(), &policy, dispatch.as_deref()).await {
                 tracing::debug!("health connection ended: {e}");
             }
         });
@@ -31,6 +32,7 @@ pub async fn serve(
 fn json_response(status: u16, body: &str) -> Vec<u8> {
     let reason = match status {
         200 => "OK",
+        403 => "Forbidden",
         404 => "Not Found",
         502 => "Bad Gateway",
         503 => "Service Unavailable",
@@ -46,6 +48,7 @@ fn json_response(status: u16, body: &str) -> Vec<u8> {
 
 async fn handle(
     mut conn: TcpStream,
+    peer: IpAddr,
     policy: &PolicyManager,
     dispatch: Option<&DispatchIdentity>,
 ) -> anyhow::Result<()> {
@@ -58,6 +61,11 @@ async fn handle(
     let path = text.lines().next().and_then(|line| line.split_whitespace().nth(1)).unwrap_or("");
 
     if path == "/dispatch/env" {
+        if !peer.to_canonical().is_loopback() {
+            let body = r#"{"error":"dispatch env is only served to the pod's own loopback"}"#;
+            conn.write_all(&json_response(403, body)).await?;
+            return Ok(());
+        }
         let Some(dispatch) = dispatch else {
             let body = r#"{"error":"this pod has no dispatch identity"}"#;
             conn.write_all(&json_response(404, body)).await?;
@@ -105,7 +113,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            handle(stream, &policy, None).await.unwrap();
+            handle(stream, LOOPBACK, &policy, None).await.unwrap();
         });
 
         let mut conn = TcpStream::connect(addr).await.unwrap();
@@ -117,7 +125,13 @@ mod tests {
         assert!(resp.ends_with("OK"));
     }
 
+    const LOOPBACK: IpAddr = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+
     async fn get(path: &str, dispatch: Option<Arc<DispatchIdentity>>) -> String {
+        get_from(LOOPBACK, path, dispatch).await
+    }
+
+    async fn get_from(peer: IpAddr, path: &str, dispatch: Option<Arc<DispatchIdentity>>) -> String {
         let (dir, policy_path) = temp_policy();
         std::mem::forget(dir);
         let policy = Arc::new(PolicyManager::new(&policy_path));
@@ -125,7 +139,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            handle(stream, &policy, dispatch.as_deref()).await.unwrap();
+            handle(stream, peer, &policy, dispatch.as_deref()).await.unwrap();
         });
         let mut conn = TcpStream::connect(addr).await.unwrap();
         conn.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes()).await.unwrap();
@@ -138,6 +152,23 @@ mod tests {
     async fn dispatch_env_without_an_identity_is_404() {
         let resp = get("/dispatch/env", None).await;
         assert!(resp.starts_with("HTTP/1.1 404"), "got: {resp}");
+    }
+
+    #[tokio::test]
+    async fn dispatch_env_is_refused_to_a_non_loopback_peer() {
+        let identity = DispatchIdentity::redeem(crate::dispatch::DispatchConfig {
+            dispatch_id: "d-1".to_owned(),
+            server: crate::dispatch::ServerTarget::parse("http://127.0.0.1:9").unwrap(),
+            token_path: "/nonexistent/cctui-token".into(),
+        })
+        .await;
+        let identity = Some(Arc::new(identity));
+        let pod_peer: IpAddr = "10.42.1.7".parse().unwrap();
+        let resp = get_from(pod_peer, "/dispatch/env", identity.clone()).await;
+        assert!(resp.starts_with("HTTP/1.1 403"), "got: {resp}");
+        let mapped: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        let resp = get_from(mapped, "/dispatch/env", identity).await;
+        assert!(resp.starts_with("HTTP/1.1 503"), "got: {resp}");
     }
 
     #[tokio::test]
@@ -162,7 +193,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            handle(stream, &policy, None).await.unwrap();
+            handle(stream, LOOPBACK, &policy, None).await.unwrap();
         });
 
         let mut conn = TcpStream::connect(addr).await.unwrap();
