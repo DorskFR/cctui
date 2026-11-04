@@ -161,7 +161,7 @@ fn every_exec_fails_once_the_guard_dies() {
     let d = dir.path();
     let mut guard = start_guard(d, free_port());
     let script = format!(r#"sleep 2; /bin/true; echo "rc=$?" > {d}/death"#, d = d.display());
-    let mut run = supervised(d, &script).stderr(Stdio::piped()).spawn().unwrap();
+    let run = supervised(d, &script).stderr(Stdio::piped()).spawn().unwrap();
     std::thread::sleep(Duration::from_millis(700));
     guard.kill().unwrap();
     let _ = guard.wait();

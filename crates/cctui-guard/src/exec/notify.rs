@@ -80,18 +80,18 @@ pub fn read_request(
     mem: &impl Memory,
     pid: u32,
     kind: ExecKind,
-    args: &[u64; 6],
+    regs: &[u64; 6],
 ) -> io::Result<ExecRequest> {
     let (path_ptr, argv_ptr) = match kind {
-        ExecKind::Execve => (args[0], args[1]),
-        ExecKind::Execveat => (args[1], args[2]),
+        ExecKind::Execve => (regs[0], regs[1]),
+        ExecKind::Execveat => (regs[1], regs[2]),
     };
     let path = argv::read_cstring(mem, path_ptr, argv::MAX_PATH)?;
     let path = String::from_utf8_lossy(&path).into_owned();
     let argv = argv::read_argv(mem, argv_ptr)?;
     let path = match kind {
         ExecKind::Execve => path,
-        ExecKind::Execveat => resolve_at(&path, args[0] as u32, args[4], |fd| {
+        ExecKind::Execveat => resolve_at(&path, regs[0] as u32, regs[4], |fd| {
             let link = std::fs::read_link(format!("/proc/{pid}/fd/{fd}")).ok()?;
             Some(link.to_string_lossy().into_owned())
         }),

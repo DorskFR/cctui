@@ -85,8 +85,10 @@ pub fn respond(listener: BorrowedFd<'_>, sizes: Sizes, id: u64, allow: bool) -> 
 /// its pid was not reused.
 pub fn id_valid(listener: BorrowedFd<'_>, id: u64) -> bool {
     // SAFETY: the kernel reads one u64 from `id`.
-    unsafe { libc::ioctl(listener.as_raw_fd(), libc::SECCOMP_IOCTL_NOTIF_ID_VALID, &raw const id) }
-        == 0
+    let ret = unsafe {
+        libc::ioctl(listener.as_raw_fd(), libc::SECCOMP_IOCTL_NOTIF_ID_VALID, &raw const id)
+    };
+    ret == 0
 }
 
 pub fn pidfd_open(pid: u32) -> io::Result<OwnedFd> {

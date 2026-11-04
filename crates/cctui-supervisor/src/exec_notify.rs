@@ -39,7 +39,7 @@ const X32_SYSCALL_BIT: u32 = 0x4000_0000;
 /// x86-64 `execve`, `execveat`, and their x32 numbers (same audit arch).
 pub const X86_64: Abi = Abi {
     arch: 0xC000_003E,
-    traced: &[59, 322, X32_SYSCALL_BIT | 520, X32_SYSCALL_BIT | 545],
+    traced: &[59, 322, X32_SYSCALL_BIT | 0x208, X32_SYSCALL_BIT | 0x221],
 };
 
 /// aarch64 `execve`, `execveat`.
@@ -160,7 +160,7 @@ mod sys {
     }
 
     pub fn send_fd(stream: &UnixStream, fd: BorrowedFd<'_>) -> std::io::Result<()> {
-        let mut payload = [b'F'];
+        let mut payload = *b"F";
         let mut iov = libc::iovec { iov_base: payload.as_mut_ptr().cast(), iov_len: 1 };
         let mut control = [0u64; 8];
         let fd_len = std::mem::size_of::<RawFd>() as libc::c_uint;

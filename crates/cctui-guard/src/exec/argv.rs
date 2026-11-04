@@ -136,19 +136,19 @@ impl ExecRequest {
     /// different program, that rendering is judged too.
     #[must_use]
     pub fn match_commands(&self) -> Vec<String> {
-        let args: Vec<String> = self.argv.iter().skip(1).map(|a| sanitize(a.as_str())).collect();
-        let args = args.join(" ");
+        let rest: Vec<String> = self.argv.iter().skip(1).map(|a| sanitize(a.as_str())).collect();
+        let rest = rest.join(" ");
         let mut programs = vec![sanitize(basename(&self.path))];
-        if let Some(arg0) = self.argv.first() {
-            let arg0 = sanitize(basename(arg0));
-            if !arg0.trim().is_empty() && arg0 != programs[0] {
-                programs.push(arg0);
+        if let Some(first) = self.argv.first() {
+            let named = sanitize(basename(first));
+            if !named.trim().is_empty() && named != programs[0] {
+                programs.push(named);
             }
         }
         programs
             .into_iter()
             .filter(|p| !p.trim().is_empty())
-            .map(|p| format!("{} {args}", p.trim()).trim().to_string())
+            .map(|p| format!("{} {rest}", p.trim()).trim().to_string())
             .collect()
     }
 
