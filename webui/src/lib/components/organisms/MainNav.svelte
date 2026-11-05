@@ -3,7 +3,8 @@
 	// bottom it is the fixed phone bar; in the header it is the same items laid
 	// out the same way. Which one shows is the nav position setting.
 	import { page } from '$app/state';
-	import { Badge, Icon } from '@dorsk/tsumikit';
+	import { Icon } from '@dorsk/tsumikit';
+	import CountChip from '$lib/components/atoms/CountChip.svelte';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import { usePlugins, useSessions } from '$lib/queries';
 	import { pageNavItems } from '$lib/plugins/pageRoute';
@@ -48,13 +49,7 @@
 				<span class="cell" class:active>
 					<span class="ico"
 						><Icon name={it.iconName} size={20} />{#if it.href === '/sessions' && unread > 0}<span class="unread"
-								><Badge
-									size="xs"
-									numeric
-									tone="danger"
-									style="--badge-bg: var(--danger); --badge-fg: var(--text-on-accent); --badge-border: var(--danger)"
-									>{unread > 99 ? '99+' : unread}</Badge
-								></span
+								><CountChip count={unread} tone="active" label={m.shell_nav_unread({ count: unread })} /></span
 							>{/if}</span
 					>
 					<span class="lbl">{it.label}</span>

@@ -29,7 +29,7 @@
 			passkeys = cfg;
 			if (!cfg?.available || !cfg.enrolled) return;
 			if (cfg.auto_prompt) {
-				await signInWithPasskey();
+				await signInWithPasskey(false);
 			} else if (await conditionalUiSupported()) {
 				armConditional();
 			}
@@ -49,7 +49,9 @@
 		void auth.loginWithPasskey('conditional', conditional.signal).catch(() => {});
 	}
 
-	async function signInWithPasskey() {
+	/** Only an attempt the user started reports a failure: an automatic prompt
+	 *  that the browser refuses (no gesture, no credential) is not their error. */
+	async function signInWithPasskey(userInitiated = true) {
 		if (passkeyBusy) return;
 		// A conditional request already holds the authenticator; drop it or the
 		// modal call is rejected outright.
@@ -59,10 +61,9 @@
 		err = '';
 		try {
 			const ok = await auth.loginWithPasskey();
-			if (!ok) err = m.login_passkey_failed();
+			if (!ok && userInitiated) err = m.login_passkey_failed();
 		} catch (e) {
-			// A dismissed dialog is a choice, not an error worth shouting about.
-			if (!(e instanceof PasskeyAborted)) err = m.login_passkey_failed();
+			if (userInitiated && !(e instanceof PasskeyAborted)) err = m.login_passkey_failed();
 		} finally {
 			passkeyBusy = false;
 		}
@@ -105,7 +106,7 @@
 			{m.login_sign_in()}
 		</Button>
 		{#if offerPasskey}
-			<Button block type="button" loading={passkeyBusy} disabled={passkeyBusy} onclick={signInWithPasskey}>
+			<Button block type="button" loading={passkeyBusy} disabled={passkeyBusy} onclick={() => signInWithPasskey()}>
 				{m.login_passkey_button()}
 			</Button>
 		{/if}

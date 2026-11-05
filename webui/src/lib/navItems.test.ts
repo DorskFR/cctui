@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { isNavActive, navItems } from './navItems';
+import { m } from '$lib/paraglide/messages';
 
 describe('navItems', () => {
 	it('lists the route tabs with sessions second and settings last', () => {
@@ -27,6 +28,10 @@ describe('navItems', () => {
 			pages: [{ href: '/apps/ghreview', label: 'Review', iconName: 'pull-request' }]
 		}).map((i) => i.href);
 		expect(hrefs.indexOf('/apps/ghreview')).toBe(hrefs.indexOf('/settings') - 1);
+	});
+
+	it('names the landing page after its heading', () => {
+		expect(navItems()[0].label).toBe(m.home_usage_page_title());
 	});
 
 	it('names a kit icon for every built-in entry', () => {

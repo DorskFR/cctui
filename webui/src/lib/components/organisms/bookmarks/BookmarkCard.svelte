@@ -5,9 +5,7 @@
 	import { highlightTerms } from '$lib/search';
 	import { bookmarkLine, isDeadLink, sourceHref } from '$lib/bookmarks';
 	import { settings } from '$lib/settings.svelte';
-	import MessageBubble, {
-		roleColor
-	} from '$lib/components/organisms/conversation/MessageBubble.svelte';
+	import MessageBubble from '$lib/components/organisms/conversation/MessageBubble.svelte';
 	import { isMachineUuid } from '$lib/components/organisms/conversation/lineRender.svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -104,8 +102,8 @@
 		</span>
 	</header>
 
-	<div class="lmeta" style:--bc={roleColor(line.role, line.mcp)}>
-		<Badge size="xs" uppercase color="var(--bc)">{line.mcp ? 'mcp' : line.role}</Badge>
+	<div class="lmeta">
+		<Text variant="eyebrow" tone="muted">{line.mcp ? 'mcp' : line.role}</Text>
 		{#if code}
 			<span class="tool-name">{line.role === 'result' ? '↳ ' : ''}{line.tool ?? 'tool'}</span>
 		{/if}
@@ -163,10 +161,10 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);
-		padding: var(--sp-3);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-md);
-		background: var(--surface);
+		padding: var(--sp-4);
+		border: 1px solid var(--surface-edge, transparent);
+		border-radius: var(--r-md);
+		background: var(--bg-elevated);
 	}
 	header {
 		display: flex;
@@ -176,7 +174,7 @@
 	.title {
 		margin: 0;
 		font-size: var(--fs-md);
-		font-weight: var(--fw-medium);
+		font-weight: 600;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;

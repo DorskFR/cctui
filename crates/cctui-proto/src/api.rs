@@ -941,7 +941,11 @@ pub struct ConversationSearchResponse {
 pub struct SessionStats {
     /// Includes archived.
     pub total: i64,
+    /// Deprecated alias of `working`.
     pub live: i64,
+    /// Same buckets as the session list.
+    #[serde(default)]
+    pub working: i64,
     pub needs_input: i64,
     pub archived: i64,
     /// Registered in local calendar periods, including archived.

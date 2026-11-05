@@ -15,16 +15,27 @@ const versionData = {
 };
 const sessionsData = { sessions: [] as SessionListItem[] };
 
+const usageData: { data: unknown[] } = { data: [] };
+const machinesData: { data: unknown[] } = { data: [] };
+const { refreshVersion } = vi.hoisted(() => ({ refreshVersion: vi.fn() }));
+
 vi.mock('$lib/queries', () => ({
-	qk: { sessions: (a: boolean) => ['sessions', a], sessionsAll: ['sessions'] },
+	qk: {
+		sessions: (a: boolean) => ['sessions', a],
+		sessionsAll: ['sessions'],
+		machineResources: ['machine-resources'],
+		version: ['version']
+	},
+	usageKeys: { all: () => ['usage'], one: (id: string) => ['usage', id] },
+	endpoints: { refreshVersion },
 	useMe: () => ({ data: { user_name: 'dorsk', role: 'admin' } }),
 	useVersion: () => ({ data: versionData }),
 	useSessions: () => ({ data: sessionsData }),
 	useAccounts: () => ({ data: [] }),
-	useAllAccountsUsage: () => ({ data: [] }),
+	useAllAccountsUsage: () => usageData,
 	useProviderStatus: () => ({ data: [] }),
 	useRedirectChips: () => ({ data: [] }),
-	useMachineResources: () => ({ data: [] }),
+	useMachineResources: () => machinesData,
 	usePlugins: () => ({ data: [] })
 }));
 vi.mock('@tanstack/svelte-query', () => ({
@@ -61,6 +72,10 @@ afterEach(cleanup);
 beforeEach(() => {
 	goto.mockClear();
 	versionData.latest_version = null;
+	versionData.version = '0.11.0';
+	usageData.data = [];
+	machinesData.data = [];
+	refreshVersion.mockReset();
 	sessionsData.sessions = [];
 	notify.enabled = false;
 });
@@ -131,20 +146,93 @@ describe('notifications', () => {
 	});
 });
 
-describe('the version block shows ui and srv only', () => {
-	it('renders ui and srv only, with the update state left to the avatar dot', () => {
-		versionData.latest_version = '0.12.0';
+describe('the header carries no version unless it needs attention', () => {
+	it('shows nothing when ui and server agree and no update is out', () => {
+		render();
+		expect(document.querySelector('.vers')).toBeNull();
+		expect(document.querySelector('.lead')?.textContent).not.toContain('v0.11.0');
+	});
+
+	it('shows both versions when the ui and the server differ', () => {
+		versionData.version = '0.12.0';
 		render();
 		const vers = document.querySelector('.vers') as HTMLElement;
-		expect(vers.textContent).toContain('ui v');
-		expect(vers.textContent).toContain('srv v0.11.0');
-		expect(vers.textContent).not.toContain('v0.12.0');
+		expect(vers.textContent).toContain('ui v0.11.0');
+		expect(vers.textContent).toContain('srv v0.12.0');
+	});
+
+	it('shows an update chip and the avatar dot when an update is out', () => {
+		versionData.latest_version = '0.12.0';
+		render();
+		expect(document.querySelector('.vers')?.textContent).toContain('0.12.0');
 		expect(document.querySelector('.pill [data-tsu="Avatar"] [data-tsu="Dot"]')).not.toBeNull();
 	});
 
 	it('drops the alert dot when there is no update', () => {
 		render();
 		expect(document.querySelector('.pill [data-tsu="Avatar"] [data-tsu="Dot"]')).toBeNull();
+	});
+});
+
+describe('the account menu', () => {
+	it('carries the version with a check for updates', async () => {
+		refreshVersion.mockResolvedValue({ ...versionData, latest_version: null });
+		render();
+		await openUserMenu();
+		const row = rowByText('Version 0.11.0');
+		expect(row?.textContent).toContain('Check for updates');
+		row?.click();
+		await Promise.resolve();
+		expect(refreshVersion).toHaveBeenCalledOnce();
+	});
+
+	it('offers Appearance, and the header no longer holds the theme or text-size pickers', async () => {
+		render();
+		const tail = document.querySelector('.tail') as HTMLElement;
+		expect(tail.querySelector('[data-tsu="ThemePicker"]')).toBeNull();
+		await openUserMenu();
+		expect(rowByText('Appearance')).not.toBeNull();
+	});
+
+	it('links admins to the events page', async () => {
+		render();
+		await openUserMenu();
+		rowByText('Events')?.click();
+		expect(goto).toHaveBeenCalledWith('/events');
+	});
+});
+
+describe('the status button', () => {
+	const usageRow = (utilization: number) => ({
+		account: 'a1',
+		account_name: 'dev1',
+		account_emoji: null,
+		header_pin: true,
+		account_id: 'p1',
+		provider: 'anthropic',
+		usage: null,
+		windows: [{ key: 'weekly_all', kind: 'weekly_all', label: 'Weekly', utilization }],
+		age_secs: 0,
+		limit_reset: null
+	});
+
+	it('is absent when there is nothing to report', () => {
+		render();
+		expect(document.querySelector('.status')).toBeNull();
+	});
+
+	it('reads the worst window as text, neutral below the limit', () => {
+		usageData.data = [usageRow(42.4)];
+		render();
+		const status = document.querySelector('.status') as HTMLElement;
+		expect(status.textContent).toContain('7d 42%');
+		expect(status.dataset.tone).toBe('ok');
+	});
+
+	it('turns amber near the wall', () => {
+		usageData.data = [usageRow(93)];
+		render();
+		expect((document.querySelector('.status') as HTMLElement).dataset.tone).toBe('warn');
 	});
 });
 

@@ -111,7 +111,7 @@
 		{:else}
 			{#each changelog.data.releases as rel (rel.version)}
 				<section class="release">
-					<Text as="div" weight="bold" variant="code">
+					<Text as="div" weight="bold" numeric>
 						<a class="rel-link" href={rel.url} target="_blank" rel="noopener">v{rel.version}</a>
 					</Text>
 					{#if rel.body}

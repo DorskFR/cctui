@@ -6,37 +6,61 @@
 		label,
 		suffix,
 		warn = false,
-		compact = false
+		compact = false,
+		href,
+		action
 	}: {
 		value: number | string;
 		label: string;
 		suffix?: string;
 		warn?: boolean;
 		compact?: boolean;
+		href?: string;
+		action?: { href: string; label: string };
 	} = $props();
 </script>
 
-<Card padding={compact ? 'sm' : 'md'}>
-	<div class="tile" class:compact>
-		<div class="num">
-			<Text
-				size={compact ? 'lg' : '2xl'}
-				weight="semibold"
-				numeric
-				leading="none"
-				tone={warn ? 'warn' : 'default'}
-			>
-				{value}
-			</Text>
-			{#if suffix}
-				<Text size={compact ? 'xs' : 'sm'} tone="faint" numeric leading="none">{suffix}</Text>
-			{/if}
+<div class="wrap" class:linked={!!href}>
+	<Card padding={compact ? 'sm' : 'md'}>
+		<div class="tile" class:compact>
+			<div class="num">
+				<Text
+					size={compact ? 'lg' : '2xl'}
+					weight="semibold"
+					numeric
+					leading="none"
+					tone={warn ? 'warn' : 'default'}
+				>
+					{value}
+				</Text>
+				{#if suffix}
+					<Text size={compact ? 'xs' : 'sm'} tone="faint" numeric leading="none">{suffix}</Text>
+				{/if}
+			</div>
+			<span class="foot">
+				{#if href}
+					<a class="cover" {href}><Text size="xs" tone="muted">{label}</Text></a>
+				{:else}
+					<Text size="xs" tone="muted">{label}</Text>
+				{/if}
+				{#if action}<a class="action" href={action.href}>{action.label}</a>{/if}
+			</span>
 		</div>
-		<Text size="xs" tone="muted">{label}</Text>
-	</div>
-</Card>
+	</Card>
+</div>
 
 <style>
+	.wrap {
+		position: relative;
+		border-radius: var(--r-md);
+	}
+	.wrap.linked:hover {
+		background: var(--bg-elevated-2);
+	}
+	.wrap:has(.cover:focus-visible) {
+		outline: 2px solid var(--focus-ring, var(--accent));
+		outline-offset: 2px;
+	}
 	.tile {
 		display: flex;
 		flex-direction: column;
@@ -51,5 +75,33 @@
 		display: flex;
 		align-items: baseline;
 		gap: 1px;
+	}
+	.foot {
+		display: flex;
+		align-items: baseline;
+		gap: var(--sp-2);
+		min-width: 0;
+	}
+	.cover {
+		color: inherit;
+		text-decoration: none;
+		outline: none;
+	}
+	/* The whole tile is the hit area of its link. */
+	.cover::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+	}
+	.action {
+		position: relative;
+		z-index: 1;
+		font-size: var(--fs-xs);
+		color: var(--text-muted);
+		text-decoration: underline;
+		text-underline-offset: 2px;
+	}
+	.action:hover {
+		color: var(--text);
 	}
 </style>

@@ -15,9 +15,16 @@ describe('normalizeUserCode', () => {
 		expect(normalizeUserCode('BCDF-2345')).toBe('BCDF-2345');
 	});
 
-	it('leaves a partial code ungrouped so typing is not fought', () => {
+	it('leaves the first half ungrouped so backspacing over the hyphen is not fought', () => {
 		expect(normalizeUserCode('bcd')).toBe('BCD');
+		expect(normalizeUserCode('bcdf')).toBe('BCDF');
 		expect(normalizeUserCode('')).toBe('');
+	});
+
+	it('inserts the hyphen as soon as the second half starts', () => {
+		expect(normalizeUserCode('bcdf2')).toBe('BCDF-2');
+		expect(normalizeUserCode('BCDF-23')).toBe('BCDF-23');
+		expect(isCompleteUserCode('BCDF-234')).toBe(false);
 	});
 
 	it('never grows past one code', () => {
