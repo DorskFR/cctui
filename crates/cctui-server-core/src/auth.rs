@@ -18,13 +18,18 @@ type Resolved = (AuthContext, Option<String>);
 /// peer replica misses the purge broadcast.
 const CACHE_TTL: Duration = Duration::from_secs(30);
 
-/// What to drop from an auth cache: one token hash, or everything (scope edits,
-/// user revoke/disable, where the affected hashes aren't tracked).
+/// What to drop from a replica's caches.
+///
+/// One auth token hash, the whole auth cache (scope edits, user revoke/disable,
+/// where the affected hashes aren't tracked), a session's tool-guard lookup, or
+/// an account's tool policy.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum CachePurge {
     Key { key_hash: String },
     All,
+    ToolGuardSession { session_id: String },
+    ToolPolicy { account_id: Uuid },
 }
 
 /// Carries a local purge to the other replicas.
@@ -417,6 +422,18 @@ impl AuthConfig {
         self.purge_everywhere(CachePurge::All);
     }
 
+    /// Drop a session's cached tool-guard lookup, here and on every peer
+    /// replica, after its bypass is toggled.
+    pub fn purge_tool_guard_session(&self, session_id: &str) {
+        self.purge_everywhere(CachePurge::ToolGuardSession { session_id: session_id.to_owned() });
+    }
+
+    /// Drop an account's cached tool policy, here and on every peer replica,
+    /// after an edit.
+    pub fn purge_tool_policy(&self, account_id: Uuid) {
+        self.purge_everywhere(CachePurge::ToolPolicy { account_id });
+    }
+
     fn purge_everywhere(&self, purge: CachePurge) {
         self.purge_local(&purge);
         if let Some(peers) = self.peers.get() {
@@ -426,6 +443,17 @@ impl AuthConfig {
 
     /// Apply a purge to this replica only; the receiving end of a peer relay.
     pub fn purge_local(&self, purge: &CachePurge) {
+        match purge {
+            CachePurge::ToolGuardSession { session_id } => {
+                crate::gateway::toolguard::invalidate_session_guard(session_id);
+                return;
+            }
+            CachePurge::ToolPolicy { account_id } => {
+                crate::gateway::toolguard::invalidate_policy_cache(*account_id);
+                return;
+            }
+            CachePurge::Key { .. } | CachePurge::All => {}
+        }
         self.epoch.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut cache) = self.cache.lock() {
             match purge {
@@ -433,6 +461,7 @@ impl AuthConfig {
                     cache.remove(key_hash);
                 }
                 CachePurge::All => cache.clear(),
+                CachePurge::ToolGuardSession { .. } | CachePurge::ToolPolicy { .. } => {}
             }
         }
     }
@@ -1309,6 +1338,14 @@ mod tests {
         assert_eq!(
             serde_json::to_value(CachePurge::All).unwrap(),
             serde_json::json!({"op": "all"})
+        );
+        assert_eq!(
+            serde_json::to_value(CachePurge::ToolGuardSession { session_id: "s".into() }).unwrap(),
+            serde_json::json!({"op": "tool_guard_session", "session_id": "s"})
+        );
+        assert_eq!(
+            serde_json::to_value(CachePurge::ToolPolicy { account_id: Uuid::nil() }).unwrap(),
+            serde_json::json!({"op": "tool_policy", "account_id": Uuid::nil()})
         );
     }
 

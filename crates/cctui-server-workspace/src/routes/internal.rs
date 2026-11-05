@@ -234,8 +234,9 @@ pub async fn bus_publish(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /internal/auth/purge` — drop an entry (or everything) from THIS
-/// pod's auth cache after a revocation or scope edit on the sending pod.
+/// `POST /internal/auth/purge` — drop an auth entry (or everything), a tool-guard
+/// session lookup or an account tool policy from THIS
+/// pod's caches after the matching change on the sending pod.
 /// Local only, never re-broadcast.
 pub async fn auth_purge(
     State(state): State<AppState>,
