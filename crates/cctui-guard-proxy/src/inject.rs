@@ -750,12 +750,12 @@ type UpstreamTls = tokio_rustls::client::TlsStream<TcpStream>;
 
 /// Opens fresh upstream connections for a forwarding loop that must survive
 /// the upstream closing an idle keep-alive.
-pub trait Redial {
-    type Stream: AsyncRead + AsyncWrite + Unpin;
+pub trait Redial: Sync {
+    type Stream: AsyncRead + AsyncWrite + Unpin + Send;
 
     fn host(&self) -> &str;
 
-    async fn dial(&self) -> Option<UpstreamConn<Self::Stream>>;
+    fn dial(&self) -> impl Future<Output = Option<UpstreamConn<Self::Stream>>> + Send;
 }
 
 pub struct Dialer<'a> {

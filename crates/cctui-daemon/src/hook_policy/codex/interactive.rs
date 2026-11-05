@@ -1,7 +1,8 @@
-//! `cctui-daemon hook-shim no-interactive-shell`: refuses shell commands that
-//! open an interactive program, because Codex's `write_stdin` into a `tty`
-//! session never fires `PreToolUse`. `tool_input.tty: false` passes: Codex
-//! refuses stdin writes to those. Steering only.
+//! `cctui-daemon hook-shim no-interactive-shell`: refuses interactive sessions.
+//!
+//! Codex's `write_stdin` into a `tty` session never fires `PreToolUse`.
+//! `tool_input.tty: false` passes: Codex refuses stdin writes to those.
+//! Steering only.
 //!
 //! Exit 2 denies; so does anything unreadable, as Codex fails open otherwise.
 
@@ -491,7 +492,7 @@ impl Lexer<'_> {
                 }
                 self.end_command(!or);
             }
-            '<' | '>' if self.peek_at(1) == Some('(') => {
+            '<' | '>' | '$' if self.peek_at(1) == Some('(') => {
                 self.pos += 2;
                 self.substitution(')')?;
             }
@@ -505,10 +506,6 @@ impl Lexer<'_> {
             '\'' => self.single_quoted()?,
             '"' => self.double_quoted()?,
             '\\' => self.escaped(),
-            '$' if self.peek_at(1) == Some('(') => {
-                self.pos += 2;
-                self.substitution(')')?;
-            }
             '`' => {
                 self.pos += 1;
                 self.substitution('`')?;

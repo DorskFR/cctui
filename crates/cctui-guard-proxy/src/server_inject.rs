@@ -323,6 +323,7 @@ mod tests {
 
     /// Hands out pre-made upstream ends in order; `None` once exhausted.
     struct Duplexes {
+        host: &'static str,
         ends: Mutex<VecDeque<DuplexStream>>,
         dials: AtomicUsize,
     }
@@ -331,7 +332,7 @@ mod tests {
         type Stream = DuplexStream;
 
         fn host(&self) -> &str {
-            "cctui.cctui.svc"
+            self.host
         }
 
         async fn dial(&self) -> Option<UpstreamConn<DuplexStream>> {
@@ -352,7 +353,11 @@ mod tests {
             ends.push_back(proxy_upstream);
             servers.push_back(server);
         }
-        let dialer = Arc::new(Duplexes { ends: Mutex::new(ends), dials: AtomicUsize::new(0) });
+        let dialer = Arc::new(Duplexes {
+            host: "cctui.cctui.svc",
+            ends: Mutex::new(ends),
+            dials: AtomicUsize::new(0),
+        });
         let (inj, d) = (injector(), dialer.clone());
         tokio::spawn(async move { Box::pin(inj.pump(proxy_client, &*d)).await });
         (worker, servers, dialer)
@@ -673,9 +678,9 @@ mod tests {
         assert_eq!(response_status(resp.as_bytes()), Some(502), "{resp}");
         assert!(wants_close(resp.as_bytes()), "{resp}");
         assert_eq!(dialer.dials.load(Ordering::SeqCst), 2, "replayed exactly once");
-        let mut rest = Vec::new();
-        worker.read_to_end(&mut rest).await.unwrap();
-        assert!(rest.is_empty(), "the worker connection is closed after the 502");
+        let mut tail = Vec::new();
+        worker.read_to_end(&mut tail).await.unwrap();
+        assert!(tail.is_empty(), "the worker connection is closed after the 502");
     }
 
     #[tokio::test]
