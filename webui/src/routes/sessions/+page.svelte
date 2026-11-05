@@ -7,7 +7,6 @@
 		useInvalidateSessions,
 		useLabels,
 		useMachineResources,
-		useMe,
 		endpoints,
 		qk
 	} from '$lib/queries';
@@ -19,10 +18,11 @@
 	import ConversationDrawer from '$lib/components/organisms/ConversationDrawer.svelte';
 	import ConversationDock from '$lib/components/organisms/ConversationDock.svelte';
 	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
-	import { dockLayout } from '$lib/spawnDock.svelte';
+	import { dockLayout, launchDock } from '$lib/spawnDock.svelte';
 	import StatsDock from '$lib/components/organisms/statsdock/StatsDock.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
-	import { Callout, ConfirmModal, Icon, Toggle } from '@dorsk/tsumikit';
+	import { Callout, ConfirmModal } from '@dorsk/tsumikit';
+	import { confirmDialog } from '$lib/confirmDialog.svelte';
 	import { visibleSessions } from '$lib/hiddenOwners';
 	import SessionSections from './SessionSections.svelte';
 	import SessionTiles from './SessionTiles.svelte';
@@ -46,6 +46,7 @@
 		sessionIdFromLocation,
 		sessionHrefFor,
 		sessionNavState,
+		statusParamQuery,
 		toGroupDimension,
 		urlSyncFor,
 		withoutViewParam
@@ -54,13 +55,9 @@
 
 	// Live buckets always show non-archived sessions; the archive is a separate
 	// paginated section below.
-	const me = useMe();
-	const isAdmin = $derived(me.data?.role === 'admin');
-	let showHidden = $state(false);
 	const sessions = useSessions(
 		() => false,
-		() => true,
-		() => isAdmin && showHidden
+		() => true
 	);
 	const qc = useQueryClient();
 	const invalidateSessions = useInvalidateSessions();
@@ -87,19 +84,26 @@
 		refetchLive: () => qc.invalidateQueries({ queryKey: qk.sessions(false) }),
 		dockLayout,
 		clearUrlSession: () => replaceUrlSession(null),
-		confirm: (message) => confirm(message),
+		confirm: (message) =>
+			confirmDialog({ title: message, confirmLabel: m.list_confirm_discard(), tone: 'danger' }),
 		spawnSlot: {
 			currentKey: currentSpawnSlot,
 			read: readSpawnSlot,
 			write: (key, payload) => drafts.set(key, JSON.stringify(payload)),
 			clear: clearSpawnSlot
 		},
-		sessions: () => visibleSessions(sessions.data?.sessions ?? [], isAdmin && showHidden),
+		sessions: () => visibleSessions(sessions.data?.sessions ?? [], false),
 		sessionsLoading: () => sessions.isLoading,
 		allSessions: () => allSessions.data?.sessions ?? [],
 		labels: () => labelsQuery.data?.labels,
-		renderedOrder: renderedIds,
-		showHidden: () => isAdmin && showHidden
+		renderedOrder: renderedIds
+	});
+
+	$effect(() => {
+		launchDock.conversationOpen = !!sp.liveOpen;
+		return () => {
+			launchDock.conversationOpen = false;
+		};
 	});
 
 	// Shallow routing never advances `page.url`, and popstate restores the
@@ -120,6 +124,15 @@
 			sp.viewMode = parseViewMode(want);
 			const href = withoutViewParam(location.href);
 			if (href) replaceState(href, page.state);
+		});
+	});
+
+	$effect(() => {
+		const hit = statusParamQuery(liveUrl().href);
+		if (!hit) return;
+		untrack(() => {
+			if (hit.query) sp.rawQuery = hit.query;
+			replaceState(hit.href, page.state);
 		});
 	});
 
@@ -303,20 +316,7 @@
 
 
 {#snippet trailingControls()}
-	{#if isAdmin}
-		<Toggle
-			pressed={showHidden}
-			title={m.hidden_owners_show_hidden_title()}
-			data-journey="show-hidden"
-			onclick={() => (showHidden = !showHidden)}
-		>
-			<Icon name={showHidden ? 'eye' : 'eye-off'} size={14} />
-			{m.hidden_owners_show_hidden()}
-		</Toggle>
-	{/if}
-	{#if sp.tiles && tilesOverflow.length}
-		<TilesOverflowChip items={tilesOverflow} onOpen={(s) => (sp.openSession = s)} />
-	{/if}
+	<TilesOverflowChip items={tilesOverflow} onOpen={(s) => (sp.openSession = s)} />
 {/snippet}
 
 <SessionControls
@@ -338,7 +338,7 @@
 	onStartSelect={() => (sp.list.selecting = true)}
 	onCancelSelect={sp.list.exitSelect}
 	onNew={sp.dockSide ? undefined : () => (sp.showSpawn = true)}
-	trailing={isAdmin || (sp.tiles && tilesOverflow.length) ? trailingControls : undefined}
+	trailing={sp.tiles && tilesOverflow.length ? trailingControls : undefined}
 	onUpdateLabel={sp.updateLabel}
 	onDeleteLabel={sp.deleteLabel}
 	scopeMachine={sp.openSession ? (sp.openSession.machine_name ?? sp.openSession.machine_id) : null}

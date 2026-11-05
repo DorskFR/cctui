@@ -98,11 +98,12 @@
 	}
 	.grid dt {
 		color: var(--text-faint);
-		font-family: var(--font-mono, monospace);
+		font-family: var(--font-label);
 	}
 	.grid dd {
 		margin: 0;
-		font-family: var(--font-mono, monospace);
+		font-family: var(--font-numeric);
+		font-variant-numeric: tabular-nums;
 		word-break: break-word;
 		color: var(--text);
 	}

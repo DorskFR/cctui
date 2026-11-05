@@ -220,3 +220,14 @@ describe('maxDockWidth', () => {
 		expect(maxDockWidth(0)).toBe(DOCK_MIN_PX);
 	});
 });
+
+describe('resolveDocks with a conversation open', () => {
+	it('folds the launch form back into the New session button and keeps the stats panel', () => {
+		const inputs = { spawn: on('left'), stats: on('right'), wide: true, veryWide: true };
+		const r = resolveDocks({ ...inputs, conversationOpen: true });
+		expect(r.spawn).toBeNull();
+		expect(r.left).toBeNull();
+		expect(r.stats).toBe('right');
+		expect(resolveDocks({ ...inputs, conversationOpen: false })).toEqual(resolveDocks(inputs));
+	});
+});

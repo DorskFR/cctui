@@ -6,6 +6,7 @@ import { m } from '$lib/paraglide/messages';
 import { highlightTerms } from '$lib/search';
 import { type SessionEnd, sessionEnd } from '$lib/sessionEnd';
 import { displayNameOf } from '$lib/sessionName';
+import { modelShort } from '$lib/format';
 import {
 	type ToolActivity,
 	branchOf,
@@ -25,6 +26,8 @@ export type SubagentToggle = {
 
 export type PrLink = { href: string; label: string };
 
+export type Rail = 'attention' | 'working' | null;
+
 export interface SessionView {
 	s: SessionListItem;
 	child: boolean;
@@ -37,6 +40,7 @@ export interface SessionView {
 	act: ToolActivity;
 	livenessClass: string;
 	needsInput: boolean;
+	rail: Rail;
 	end: SessionEnd | null;
 	showStatusBadge: boolean;
 	branch: string | null;
@@ -118,6 +122,29 @@ export function prLinksOf(s: SessionListItem): PrLink[] {
 	});
 }
 
+export function railOf(s: SessionListItem, needsInput: boolean, stale: boolean): Rail {
+	if (needsInput) return 'attention';
+	if (s.status === 'archived' || s.status === 'draft' || stale) return null;
+	return s.bucket === 'working' ? 'working' : null;
+}
+
+export function projectOf(workingDir: string): string {
+	return workingDir.split('/').filter(Boolean).pop() ?? '';
+}
+
+export function metaParts(
+	s: SessionListItem,
+	opts: { showMachine: boolean; branch: string | null }
+): string[] {
+	const machine = opts.showMachine ? s.machine_name || s.machine_id.slice(0, 8) : null;
+	return [
+		machine,
+		projectOf(s.working_dir),
+		opts.branch,
+		s.model ? modelShort(s.model) : null
+	].filter((p): p is string => !!p);
+}
+
 export function livenessClassOf(s: SessionListItem, stale: boolean): string {
 	if (s.hibernated) return 'dot-hibernated';
 	if (stale || s.liveness === 'stale') return 'dot-stale';
@@ -166,6 +193,7 @@ export function buildView(
 	}
 ): SessionView {
 	const stale = isStaleWorking(s, opts.now);
+	const needsInput = s.attention === 'needs_input' && s.status !== 'archived';
 	return {
 		s,
 		child: opts.child,
@@ -180,7 +208,8 @@ export function buildView(
 		stale,
 		act: toolActivity(s, opts.now),
 		livenessClass: livenessClassOf(s, stale),
-		needsInput: s.attention === 'needs_input' && s.status !== 'archived',
+		needsInput,
+		rail: railOf(s, needsInput, stale),
 		end: sessionEnd(s),
 		showStatusBadge: s.status === 'new' || s.status === 'archived',
 		branch: branchOf(s),

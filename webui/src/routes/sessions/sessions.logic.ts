@@ -15,6 +15,7 @@ import { hashHue } from '$lib/format';
 import { labelHue } from '$lib/labels';
 import { m } from '$lib/paraglide/messages';
 import { nestsUnderParent } from '$lib/followup';
+import { STATE_BUCKETS } from '$lib/searchSchema';
 
 // ── View picker ───────────────────────────────────────────────────
 export type ViewMode = 'list' | 'card';
@@ -609,6 +610,17 @@ export function withoutViewParam(href: string): string | null {
 	if (!url.searchParams.has('view')) return null;
 	url.searchParams.delete('view');
 	return url.href;
+}
+
+// `/sessions?status=working|needs-input` (the Usage page's tiles) as a search
+// clause plus the address without the param, or null when there is none.
+export function statusParamQuery(href: string): { query: string; href: string } | null {
+	const url = new URL(href);
+	const status = url.searchParams.get('status');
+	if (status === null) return null;
+	url.searchParams.delete('status');
+	const query = status in STATE_BUCKETS ? `state:${status}` : '';
+	return { query, href: url.href };
 }
 
 // Freshest object for the open drawer: refetches churn the object, so prefer a

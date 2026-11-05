@@ -108,7 +108,7 @@ export interface SessionsPageDeps {
   refetchLive: () => Promise<unknown>;
   dockLayout: () => DockLayout;
   clearUrlSession: () => void;
-  confirm: (message: string) => boolean;
+  confirm: (message: string) => boolean | Promise<boolean>;
   spawnSlot: {
     currentKey: () => string;
     read: (key: string) => SpawnSlotPayload | null;
@@ -121,7 +121,6 @@ export interface SessionsPageDeps {
   labels: () => Label[] | undefined;
   // Visual document order of the rendered rows, for shift-range selection.
   renderedOrder: () => string[];
-  showHidden?: () => boolean;
 }
 
 export type { ViewMode } from "$lib/sessionsView.svelte";
@@ -201,24 +200,16 @@ export class SessionsPage {
     this.#d = d;
     this.#pager = createInfiniteQuery(
       () => ({
-        queryKey: qk.sessionSearch(
-          this.serverQuery,
-          this.#pagerArchived,
-          d.showHidden?.() ?? false,
-        ),
-        queryFn: ({ queryKey: [, , key], pageParam, signal }) => {
-          const args = [
+        queryKey: qk.sessionSearch(this.serverQuery, this.#pagerArchived),
+        queryFn: ({ queryKey: [, , key], pageParam, signal }) =>
+          d.api.searchSessions(
             key.q,
             key.archived,
             PAGE,
             pageParam.offset,
             pageParam.cursor,
             signal,
-          ] as const;
-          return "showHidden" in key
-            ? d.api.searchSessions(...args, true)
-            : d.api.searchSessions(...args);
-        },
+          ),
         initialPageParam: FIRST_PAGE,
         getNextPageParam: nextSearchPage,
         enabled: this.pagerActive,
@@ -700,7 +691,7 @@ export class SessionsPage {
   };
 
   discardDraft = async (s: SessionListItem) => {
-    if (!this.#d.confirm(m.sessions_confirm_discard_draft())) return;
+    if (!(await this.#d.confirm(m.sessions_confirm_discard_draft()))) return;
     try {
       await this.#d.actions.discardDraft(s.id);
       this.#d.spawnSlot.clear(s.machine_id, s.working_dir);

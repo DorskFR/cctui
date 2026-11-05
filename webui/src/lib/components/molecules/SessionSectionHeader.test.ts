@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, tick, unmount, type ComponentProps } from 'svelte';
 import SessionSectionHeader from './SessionSectionHeader.svelte';
+import { m } from '$lib/paraglide/messages';
 
 let comp: ReturnType<typeof mount> | null = null;
 afterEach(() => {
@@ -95,5 +96,15 @@ describe('SessionSectionHeader', () => {
 		created?.click();
 		flushSync();
 		expect(onsort).toHaveBeenCalledWith('created');
+	});
+
+	it('counts with a real plural', () => {
+		expect(m.list_group_count({ count: 1 })).toBe('1 session');
+		expect(m.list_group_count({ count: 2 })).toBe('2 sessions');
+	});
+
+	it('keeps the controls showing while the section is collapsed', () => {
+		render({ hidden: true });
+		expect(document.querySelector('.ssh.collapsed')).not.toBeNull();
 	});
 });

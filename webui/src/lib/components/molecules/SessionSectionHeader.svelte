@@ -69,10 +69,10 @@
 		if (!el) return false;
 		return width < 27.75 * parseFloat(getComputedStyle(el).fontSize);
 	});
-	const countLabel = $derived(tight ? String(count) : m.sessions_group_count({ count }));
+	const countLabel = $derived(tight ? String(count) : m.list_group_count({ count }));
 </script>
 
-<div class="ssh" bind:this={el} bind:clientWidth={width} bind:clientHeight={height}>
+<div class="ssh" class:collapsed={hidden} bind:this={el} bind:clientWidth={width} bind:clientHeight={height}>
 	<SectionHeader
 		variant="group"
 		level={3}
@@ -86,7 +86,14 @@
 </div>
 
 {#snippet headerActions()}
-	<Menu label={m.sessions_sort_menu_label()} items={sortItems} bare placement="bottom-end">
+	<span class="acts">
+	<Menu
+		label={m.sessions_sort_menu_label()}
+		items={sortItems}
+		bare
+		triggerClass="hit-target"
+		placement="bottom-end"
+	>
 		{#snippet trigger()}
 			<Text
 				data-journey="group-sort"
@@ -102,6 +109,7 @@
 	</Menu>
 	<IconButton
 		inline
+		class="hit-target"
 		data-journey="group-hide"
 		icon={hidden ? 'eye' : 'eye-off'}
 		size={14}
@@ -112,6 +120,7 @@
 	{#if onarchive}
 		<IconButton
 			inline
+			class="hit-target"
 			data-journey="group-archive"
 			icon="archive"
 			size={14}
@@ -122,11 +131,27 @@
 			onclick={onarchive}
 		/>
 	{/if}
+	</span>
 {/snippet}
 
 <style>
 	.ssh {
 		container: ssh / inline-size;
+	}
+	.acts {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-2);
+	}
+	@media (hover: hover) and (pointer: fine) {
+		.ssh:not(.collapsed) .acts {
+			opacity: 0;
+			transition: opacity var(--dur-fast) var(--ease);
+		}
+		.ssh:hover .acts,
+		.ssh:focus-within .acts {
+			opacity: 1;
+		}
 	}
 	@container ssh (max-width: 27.75em) {
 		.sort-words {

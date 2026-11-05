@@ -1,18 +1,18 @@
 <script lang="ts">
 	import { m } from '$lib/paraglide/messages';
 	import { safeHref } from '$lib/safeHref';
-	import { Badge, Cluster, Icon, Stack, WorkingDir } from '@dorsk/tsumikit';
+	import { Cluster, Stack, Text } from '@dorsk/tsumikit';
 	import PrIcon from '$lib/components/atoms/PrIcon.svelte';
 	import DraftActions from './DraftActions.svelte';
 	import Readout from './Readout.svelte';
-	import type { SessionActions, SessionView } from './view';
+	import { projectOf, type SessionActions, type SessionView } from './view';
 
-	// Two lines: cwd chip · branch chip · PR links (wrapping) / Σ ↑ ↓ ⚡ $ ·
-	// model · effort · logo. The path and the branch keep their text; only the
-	// readout degrades when the `sess-card` container is cramped.
+	// Two lines: project · branch · PR links / tokens · cost · model · effort ·
+	// logo. The full path is the title here and lives in the drawer.
 	let { view, actions }: { view: SessionView; actions: SessionActions } = $props();
 
 	const s = $derived(view.s);
+	const where = $derived([projectOf(s.working_dir), view.branch].filter(Boolean).join(' · '));
 
 	// A session can accumulate a dozen PRs; the footer is one line, so only the
 	// most recent few are linked and the rest collapse into a hoverable count.
@@ -24,21 +24,9 @@
 
 <Stack gap="var(--sp-1)" style="min-width:0">
 	<Cluster gap="var(--sp-2)" align="center" style="min-width:0">
-		<span class="cwd">
-			<WorkingDir
-				path={s.working_dir}
-				copy
-				full
-				title={m.sessions_workdir_copy_title({ path: s.working_dir })}
-				style="min-width:0;max-width:100%"
-			/>
-		</span>
-		{#if view.branch}
-			<span class="branch" title={m.sessions_branch_title({ branch: view.branch })}>
-				<Badge mono style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%">
-					<Icon name="fork" size={12} label={m.sessions_branch_label()} />
-					<span class="branch-name">{view.branch}</span>
-				</Badge>
+		{#if where}
+			<span class="where" title={view.branch ? `${s.working_dir} · ${view.branch}` : s.working_dir}>
+				<Text size="xs" tone="muted" truncate>{where}</Text>
 			</span>
 		{/if}
 		{#if view.prLinks.length > 0}
@@ -69,23 +57,10 @@
 </Stack>
 
 <style>
-	/* WorkingDir's fit algorithm reserves a rail-width share of the row, which
-	   left a constant gap before the branch chip; `full` sizes it to the path
-	   and this cap keeps a long one from pushing everything else out. */
-	.cwd {
-		display: inline-flex;
-		min-width: 0;
-		max-width: 100%;
-	}
-	.branch {
+	.where {
 		display: inline-flex;
 		min-width: 0;
 		flex: 0 1 auto;
-	}
-	.branch-name {
-		overflow: hidden;
-		white-space: nowrap;
-		text-overflow: ellipsis;
 	}
 	.prs {
 		display: inline-flex;

@@ -7,6 +7,7 @@ import {
 	sessionNavState,
 	urlSyncFor,
 	withoutViewParam,
+	statusParamQuery,
 	archivedDescendantsOf,
 	branchOf,
 	bucketInSection,
@@ -1205,5 +1206,23 @@ describe('withoutViewParam', () => {
 	});
 	it('leaves a pushed session URL alone once the override is gone', () => {
 		expect(withoutViewParam('http://h/sessions/abc')).toBeNull();
+	});
+});
+
+describe('statusParamQuery', () => {
+	it('turns the Usage tiles link into a state clause and drops the param', () => {
+		expect(statusParamQuery('http://h/sessions?status=working')).toEqual({
+			query: 'state:working',
+			href: 'http://h/sessions'
+		});
+		expect(statusParamQuery('http://h/sessions?status=needs-input&view=list')).toEqual({
+			query: 'state:needs-input',
+			href: 'http://h/sessions?view=list'
+		});
+	});
+
+	it('drops an unknown status without filtering, and is null without one', () => {
+		expect(statusParamQuery('http://h/sessions?status=bogus')).toEqual({ query: '', href: 'http://h/sessions' });
+		expect(statusParamQuery('http://h/sessions')).toBeNull();
 	});
 });
