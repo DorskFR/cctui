@@ -540,6 +540,7 @@ fn write_hook_settings_in(
     let mut settings = merge_account_under_managed(managed, account_settings);
     deny_worktrees(&mut settings);
     approve_project_mcp_servers(&mut settings);
+    accept_auto_mode_opt_in(&mut settings);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|err| {
             HookSettingsError::at(&path, format_args!("cannot create {}: {err}", dir.display()))
@@ -957,6 +958,20 @@ fn approve_project_mcp_servers(settings: &mut serde_json::Value) {
 }
 
 const PROJECT_MCP_KEY: &str = "enableAllProjectMcpServers";
+
+/// Pre-accept Claude Code's auto-mode opt-in dialog, unless the account
+/// settings already decide.
+///
+/// A machine that never accepted it would otherwise hold an `auto` launch on a
+/// dialog no background worker can answer. Picking `auto` in cctui is the
+/// consent; the classifier still judges every action.
+fn accept_auto_mode_opt_in(settings: &mut serde_json::Value) {
+    if let Some(obj) = settings.as_object_mut() {
+        obj.entry(AUTO_OPT_IN_KEY).or_insert(json!(true));
+    }
+}
+
+const AUTO_OPT_IN_KEY: &str = "skipAutoPermissionPrompt";
 
 /// Claude Code runs hook commands through a shell; an unquoted macOS
 /// `~/Library/Application Support/...` path would split into two arguments.
@@ -2266,6 +2281,16 @@ mod tests {
         assert_eq!(bare[PROJECT_MCP_KEY], json!(true));
         let with_policy = write_with_policy(tmp.path(), "mcpok002", None, Some(&stop_policy()));
         assert_eq!(with_policy[PROJECT_MCP_KEY], json!(true));
+    }
+
+    #[test]
+    fn every_generated_settings_file_accepts_the_auto_mode_opt_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = write_with_policy(tmp.path(), "autook01", None, None);
+        assert_eq!(bare[AUTO_OPT_IN_KEY], json!(true));
+        let account = json!({ AUTO_OPT_IN_KEY: false });
+        let merged = write_with_policy(tmp.path(), "autook02", Some(&account), None);
+        assert_eq!(merged[AUTO_OPT_IN_KEY], json!(false), "the account decided");
     }
 
     #[test]

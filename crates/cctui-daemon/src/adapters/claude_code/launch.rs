@@ -235,7 +235,7 @@ mod tests {
                 "--name",
                 "task",
                 "--permission-mode",
-                "acceptEdits",
+                "auto",
                 "--effort",
                 "high",
                 "--model",

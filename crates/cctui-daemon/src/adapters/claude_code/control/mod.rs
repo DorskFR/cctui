@@ -568,6 +568,7 @@ pub struct Driver {
     /// worker `short` at spawn/fork time. `Mutex` for the same
     /// reason as `spawn_model_effort`.
     spawn_permission_mode: std::sync::Mutex<HashMap<String, String>>,
+    auto_mode_watch: std::sync::Mutex<super::auto_mode::AutoModeWatch>,
     /// Read-only live-view PTY relay. Opens a fresh viewer attach per
     /// watched session while a browser has its terminal open, forwarding
     /// coalesced PTY bytes as `PtyChunk` events. Interior-mutable so the `&self`
@@ -869,6 +870,7 @@ impl Driver {
             last_status_at: HashMap::new(),
             last_parsed: HashMap::new(),
             spawn_permission_mode: std::sync::Mutex::new(HashMap::new()),
+            auto_mode_watch: std::sync::Mutex::default(),
             pty_view,
             last_reseed: None,
             reseeding: None,

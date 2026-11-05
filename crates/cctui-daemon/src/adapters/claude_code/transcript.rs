@@ -591,7 +591,7 @@ fn session_status(
 fn permission_mode_from_claude(raw: &str) -> Option<PermissionMode> {
     match raw {
         "bypassPermissions" => Some(PermissionMode::Yolo),
-        "acceptEdits" => Some(PermissionMode::Auto),
+        "auto" | "acceptEdits" => Some(PermissionMode::Auto),
         "default" => Some(PermissionMode::Ask),
         _ => None,
     }
@@ -2521,6 +2521,13 @@ mod tests {
     }
 
     #[test]
+    fn claude_auto_mode_reads_back_as_auto() {
+        assert_eq!(permission_mode_from_claude("auto"), Some(PermissionMode::Auto));
+        assert_eq!(permission_mode_from_claude("acceptEdits"), Some(PermissionMode::Auto));
+        assert_eq!(permission_mode_from_claude("plan"), None);
+    }
+
+    #[test]
     fn session_facts_become_status_not_timeline_lines() {
         let cases = [
             (
@@ -2530,6 +2537,11 @@ mod tests {
             ),
             (
                 json!({"type":"permission-mode","permissionMode":"acceptEdits"}),
+                None,
+                Some(PermissionMode::Auto),
+            ),
+            (
+                json!({"type":"permission-mode","permissionMode":"auto"}),
                 None,
                 Some(PermissionMode::Auto),
             ),

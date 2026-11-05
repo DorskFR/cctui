@@ -504,6 +504,11 @@ impl Driver {
         {
             map.insert(short.to_owned(), super::super::diagnose::permission_label(mode).to_owned());
         }
+        if spec.permission_mode == Some(cctui_proto::adapter::PermissionMode::Auto)
+            && let Ok(mut watch) = self.auto_mode_watch.lock()
+        {
+            watch.arm(short);
+        }
     }
 
     /// Fork an existing conversation into a brand-new claude session.
@@ -1217,7 +1222,7 @@ mod tests {
                 "--name",
                 "task",
                 "--permission-mode",
-                "acceptEdits",
+                "auto",
                 "--mcp-config",
                 "/cfg/mcp.json",
                 "--settings",
@@ -1257,7 +1262,7 @@ mod tests {
                 "--name",
                 "task",
                 "--permission-mode",
-                "acceptEdits",
+                "auto",
                 "--effort",
                 "high",
                 "--model",
@@ -1314,7 +1319,7 @@ mod tests {
                 "--name",
                 "task",
                 "--permission-mode",
-                "acceptEdits",
+                "auto",
                 "--effort",
                 "high",
                 "--model",

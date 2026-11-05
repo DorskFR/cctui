@@ -981,6 +981,7 @@ mod scenarios {
         scenario!(an_inexpressible_mode_is_refused_before_spawn),
         scenario!(a_missing_login_is_an_actionable_spawn_failure),
         scenario!(interrupt_cancels_a_stalled_turn),
+        scenario!(an_interrupt_right_behind_a_prompt_still_cancels_it),
         scenario!(diagnose_carries_agent_info_and_the_rings),
         scenario!(config_options_populate_the_catalog_and_set_model_round_trips),
         scenario!(legacy_models_populate_the_catalog_and_set_model_round_trips),
@@ -1486,6 +1487,48 @@ mod scenarios {
         let (ok, error) =
             command_result(&events, SPAWN).ok_or_else(|| anyhow::anyhow!("no spawn result"))?;
         anyhow::ensure!(!ok && error.as_deref() == Some(detail.as_str()), "{error:?}");
+        h.finish().await;
+        Ok(())
+    }
+
+    /// The Interrupt reaches the session before the turn's `active` status is
+    /// out, inside the window where `session/cancel` could overtake the prompt.
+    pub async fn an_interrupt_right_behind_a_prompt_still_cancels_it() -> anyhow::Result<()> {
+        let mut h = start(&FAKE_ROW, &exe());
+        let mut script = full_script();
+        script["turn"] = json!("stall");
+        h.spawn(&script, None, "first").await;
+        let events = h
+            .until(
+                |e| matches!(e, AdapterEvent::Status { tempo: Some(t), .. } if t == "active"),
+                Duration::from_secs(30),
+            )
+            .await?;
+        let local_id =
+            started(&events).ok_or_else(|| anyhow::anyhow!("no SessionStarted"))?.to_owned();
+        let interrupt = |command_id| AdapterCommand::Interrupt {
+            local_id: local_id.clone(),
+            command_id: Some(command_id),
+        };
+        h.send(interrupt(INTERRUPT)).await;
+        h.until(is_idle, Duration::from_secs(30)).await?;
+        for round in 0..5 {
+            let id = uuid::Uuid::new_v4();
+            h.reply(&local_id, &format!("again {round}")).await;
+            h.send(interrupt(id)).await;
+            let rest = h.until(is_idle, Duration::from_secs(30)).await?;
+            anyhow::ensure!(
+                command_result(&rest, id) == Some((true, None)),
+                "round {round}: interrupt acked: {rest:#?}"
+            );
+            anyhow::ensure!(
+                matches!(rest.last(), Some(AdapterEvent::Status { detail: Some(d), .. }) if d == "turn interrupted"),
+                "round {round}: the prompt it trailed was cancelled: {rest:#?}"
+            );
+        }
+        h.send(AdapterCommand::Kill { local_id, signal: None }).await;
+        h.until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))
+            .await?;
         h.finish().await;
         Ok(())
     }

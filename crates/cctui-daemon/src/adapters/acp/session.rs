@@ -892,11 +892,12 @@ impl AcpSession {
         self.turn = Some(Turn { turn_id });
         self.quota = None;
         self.context_usage = None;
+        let reply = cx.start_request("session/prompt", params, TURN_TIMEOUT);
         let events = self.events.clone();
         let id = local_id.to_owned();
         self.turn_task = Some(tokio::spawn(async move {
             let _ = events.send(status(&id, Some("active".to_owned()), None, None)).await;
-            cx.request("session/prompt", params, TURN_TIMEOUT).await
+            reply.await
         }));
         if let Some(command_id) = command_id {
             let events = self.events.clone();
