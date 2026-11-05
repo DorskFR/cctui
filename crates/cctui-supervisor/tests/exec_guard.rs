@@ -70,6 +70,8 @@ fn supervised(dir: &Path, script: &str) -> Command {
     supervised_with(dir, script, &[])
 }
 
+/// The script runs from a file: a `sh -c` argv carrying it would be judged
+/// on its whole text, denying the driver before any probe runs.
 fn supervised_with(dir: &Path, script: &str, extra: &[&str]) -> Command {
     let guard_dir = guard_bin().parent().unwrap().to_path_buf();
     let mut cmd = Command::new(supervisor());
@@ -80,7 +82,9 @@ fn supervised_with(dir: &Path, script: &str, extra: &[&str]) -> Command {
     cmd.args(["--rw", "/dev"]).arg("--rw").arg(dir);
     cmd.args(["--no-privdrop", "--guard-exec"]).arg(dir.join("exec.sock"));
     cmd.args(extra);
-    cmd.args(["--", "/bin/sh", "-c", script]);
+    let probe = dir.join("probe.sh");
+    fs::write(&probe, script).unwrap();
+    cmd.args(["--", "/bin/sh"]).arg(probe);
     cmd
 }
 
