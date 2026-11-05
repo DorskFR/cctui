@@ -37,7 +37,10 @@ const kitPanel = readFileSync('node_modules/@dorsk/tsumikit/dist/components/layo
 describe('ConversationDrawer scrim', () => {
 	it('dims the page at 40% behind the overlay drawer, whatever the theme', () => {
 		expect(drawer).toContain('scrim={false}');
-		expect(drawer).toMatch(/<Scrim \{onclose\} hideBelow="959px"/);
+		const scrim = drawer.slice(drawer.indexOf('<Scrim'), drawer.indexOf('/>', drawer.indexOf('<Scrim')));
+		expect(scrim).toContain('{onclose}');
+		expect(scrim).toContain('hideBelow="959px"');
+		expect(scrim).toContain('background: var(--chrome-scrim)');
 		expect(drawer).toContain('--chrome-scrim: color-mix(in srgb, black 40%, transparent)');
 		expect(drawer.indexOf('<Scrim')).toBeLessThan(drawer.indexOf('<ResizablePanel'));
 	});
