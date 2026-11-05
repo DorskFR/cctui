@@ -160,6 +160,59 @@ impl UserLiterals {
     }
 }
 
+/// Where a trailing fragment of `s` could still grow into a tag or an echo
+/// with the next chunk: the first unclosed open tag, else the start of the
+/// longest suffix that is a proper prefix of the open tag or of a literal.
+fn stream_hold_from(s: &str, literals: &UserLiterals) -> usize {
+    let lower = s.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(at) = lower[from..].find(OPEN) {
+        let open = from + at;
+        if !lower[open + OPEN.len()..].contains(CLOSE) {
+            return open;
+        }
+        from = open + OPEN.len();
+    }
+    let longest = literals.values.iter().map(String::len).chain([OPEN.len()]).max().unwrap_or(0);
+    let floor = s.len().saturating_sub(longest);
+    (floor..s.len())
+        .filter(|&i| s.is_char_boundary(i))
+        .find(|&i| {
+            let tail = &s[i..];
+            OPEN.starts_with(&lower[i..])
+                || literals.values.iter().any(|v| v.len() > tail.len() && v.starts_with(tail))
+        })
+        .unwrap_or(s.len())
+}
+
+/// Splits streamed text `s` into what can be shown now, masked, and what must
+/// wait for the next chunk because a tag or an echo may straddle the cut.
+/// Feed the held part back in front of the next chunk.
+#[must_use]
+pub fn split_streamed(s: &str, literals: &UserLiterals) -> (String, String) {
+    let (masked, _) = mask_user_text(s, literals);
+    let cut = stream_hold_from(&masked, literals);
+    (masked[..cut].to_owned(), masked[cut..].to_owned())
+}
+
+/// Adds the value of every tagged span found in any string leaf of `value`.
+pub fn collect_user_literals(value: &Value, into: &mut UserLiterals) {
+    match value {
+        Value::String(s) => into.extend_from_text(s),
+        Value::Array(items) => {
+            for v in items {
+                collect_user_literals(v, into);
+            }
+        }
+        Value::Object(map) => {
+            for v in map.values() {
+                collect_user_literals(v, into);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Mask tagged spans, then every echo of `literals`. Returns the text and the
 /// number of substitutions.
 #[must_use]
@@ -318,6 +371,68 @@ mod tests {
         let mut v = json!({"role": "assistant", "text": "I am the assistant"});
         assert_eq!(mask_user_json(&mut v, &lits), 1);
         assert_eq!(v, json!({"role": "assistant", "text": "I am the [REDACTED:user]"}));
+    }
+
+    /// Feeds `chunks` through [`split_streamed`] like a delta stream and
+    /// returns everything emitted.
+    fn streamed(chunks: &[&str], lits: &UserLiterals) -> Vec<String> {
+        let mut held = String::new();
+        chunks
+            .iter()
+            .map(|c| {
+                let (emit, hold) = split_streamed(&format!("{held}{c}"), lits);
+                held = hold;
+                emit
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_echo_split_across_chunks_never_shows() {
+        let mut lits = UserLiterals::new();
+        lits.insert("hunter2-xyz");
+        let out = streamed(&["Using hun", "ter2-x", "yz now."], &lits);
+        let joined = out.concat();
+        assert_eq!(joined, "Using [REDACTED:user] now.");
+        for (i, emit) in out.iter().enumerate() {
+            for frag in ["hun", "ter2", "yz"] {
+                assert!(!emit.contains(frag), "chunk {i} shows {frag:?}: {out:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_tag_split_across_chunks_never_shows_its_value() {
+        let chunks = ["pw <red", "acted>hunter", "2-xyz</reda", "cted> ok"];
+        let out = streamed(&chunks, &UserLiterals::new());
+        assert_eq!(out.concat(), "pw [REDACTED:user] ok");
+        assert!(out.iter().all(|e| !e.contains("hunter")), "{out:?}");
+        assert_eq!(out[0], "pw ");
+    }
+
+    #[test]
+    fn plain_streamed_text_is_not_held() {
+        let mut lits = UserLiterals::new();
+        lits.insert("hunter2-xyz");
+        assert_eq!(streamed(&["Hello ", "wor", "ld"], &lits), ["Hello ", "wor", "ld"]);
+        let (emit, hold) = split_streamed("a < b and c", &UserLiterals::new());
+        assert_eq!((emit.as_str(), hold.as_str()), ("a < b and c", ""));
+    }
+
+    #[test]
+    fn a_held_fragment_that_does_not_grow_into_a_literal_is_released() {
+        let mut lits = UserLiterals::new();
+        lits.insert("hunter2-xyz");
+        let out = streamed(&["the hun", "ting season"], &lits);
+        assert_eq!(out, ["the ", "hunting season"]);
+    }
+
+    #[test]
+    fn literals_are_collected_from_every_string_leaf() {
+        let mut lits = UserLiterals::new();
+        let v = json!({"payload": {"text": "go <redacted>hunter2-xyz</redacted>"}, "n": [1, "x"]});
+        collect_user_literals(&v, &mut lits);
+        assert!(lits.contains("hunter2-xyz"));
     }
 
     #[test]

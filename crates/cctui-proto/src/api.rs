@@ -1367,6 +1367,8 @@ pub enum FailedDispatchReason {
 pub enum RerunBlocker {
     Env,
     PromptTruncated,
+    /// The prompt had `<redacted>` spans, stored only masked.
+    PromptRedacted,
     PayloadTooLarge,
 }
 

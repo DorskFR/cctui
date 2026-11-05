@@ -201,3 +201,78 @@ fn another_sessions_echo_is_left_alone() {
     let other = scrubbed(message("user-redact-bystander", json!({"text": SECRET})));
     assert_eq!(other["payload"]["text"], SECRET);
 }
+
+fn deltas(sid: &str, item: &str, chunks: &[&str]) -> Vec<String> {
+    chunks
+        .iter()
+        .map(|c| {
+            let out = scrubbed(AdapterEvent::TextDelta {
+                local_id: sid.to_owned(),
+                item_id: item.to_owned(),
+                delta: (*c).to_owned(),
+            });
+            assert_eq!(out["kind"], "text_delta");
+            out["delta"].as_str().unwrap().to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn an_echo_split_across_two_text_deltas_never_shows() {
+    let sid = "user-redact-split-echo";
+    send(sid, PROMPT);
+    let out = deltas(sid, "m:0", &["Using hunt", "er2-xyz now."]);
+    assert_eq!(out.concat(), "Using [REDACTED:user] now.");
+    for emitted in &out {
+        assert!(!emitted.contains("hunt") && !emitted.contains("er2-xyz"), "{out:?}");
+    }
+}
+
+#[test]
+fn a_tag_split_across_text_deltas_never_shows_its_value() {
+    let sid = "user-redact-split-tag";
+    let out = deltas(sid, "m:0", &["pw <reda", "cted>open-sesame-", "42</redacted> ok"]);
+    assert_eq!(out.concat(), "pw [REDACTED:user] ok");
+    assert!(out.iter().all(|d| !d.contains("sesame")), "{out:?}");
+}
+
+#[test]
+fn a_held_delta_fragment_is_dropped_with_its_turn() {
+    let sid = "user-redact-split-turn";
+    send(sid, PROMPT);
+    assert_eq!(deltas(sid, "m:0", &["ok hunt"]), ["ok "]);
+    scrubbed(AdapterEvent::TurnEnd { local_id: sid.to_owned(), ts: None });
+    assert_eq!(deltas(sid, "m:1", &["er"]), ["er"], "nothing carried into the next turn");
+}
+
+#[test]
+fn an_unkeyed_spawns_values_join_the_echo_set_once_the_session_starts() {
+    let sid = "user-redact-unkeyed-ses";
+    let cwd = "/w/user-redact-unkeyed";
+    let spawn: AdapterCommand = serde_json::from_value(json!({
+        "kind": "spawn",
+        "spec": {"adapter_id": "codex", "working_dir": cwd, "prompt": PROMPT},
+    }))
+    .unwrap();
+    note_command(&spawn);
+    let meta = SessionMeta { working_dir: Some(cwd.to_owned()), ..SessionMeta::default() };
+    scrubbed(AdapterEvent::SessionStarted { local_id: sid.to_owned(), meta });
+    assert_masked(vec![
+        message(sid, json!({"role": "assistant", "text": format!("Using {SECRET} now.")})),
+        tool(sid, json!({"tool": "Bash", "input": {"command": format!("echo {SECRET}")}})),
+    ]);
+    let other_sid = "user-redact-unkeyed-other";
+    let other_dir = Some("/w/user-redact-other".to_owned());
+    let meta = SessionMeta { working_dir: other_dir, ..SessionMeta::default() };
+    scrubbed(AdapterEvent::SessionStarted { local_id: other_sid.to_owned(), meta });
+    let other = scrubbed(message(other_sid, json!({"text": SECRET})));
+    assert_eq!(other["payload"]["text"], SECRET, "a session in another directory is not it");
+}
+
+#[test]
+fn a_tagged_value_seen_in_an_event_joins_that_sessions_echo_set() {
+    let sid = "user-redact-learned";
+    scrubbed(message(sid, json!({"role": "user", "text": PROMPT})));
+    let echo = scrubbed(message(sid, json!({"role": "assistant", "text": SECRET})));
+    assert_eq!(echo["payload"]["text"], USER_PLACEHOLDER);
+}

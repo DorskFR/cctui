@@ -65,6 +65,13 @@ describe('FailedDispatchCard', () => {
 		expect(rerunButton()).toBeUndefined();
 	});
 
+	it('a dispatch whose prompt was masked says so and offers no one-click re-run', async () => {
+		await render(dispatch({ prompt_head: 'use [REDACTED:user] now', rerun_blocked: 'prompt_redacted' }));
+		expect(text()).toContain('<redacted> parts are stored only masked');
+		expect(text()).not.toContain('only the start of the prompt');
+		expect(rerunButton()).toBeUndefined();
+	});
+
 	it('shows why a re-dispatch failed', async () => {
 		await render(dispatch({ reason: 'oom_killed' }), async () => {
 			throw new Error('dispatch policy violated (daily_cap)');

@@ -592,11 +592,7 @@ async fn save_draft(
     let mut payload = req.clone();
     payload.env.clear();
     payload.save_draft = false;
-    let draft_json = serde_json::to_value(&payload).map_err(|e| {
-        tracing::error!("serializing draft payload: {e}");
-        AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not encode draft")
-    })?;
-    let metadata = serde_json::json!({ "draft": draft_json });
+    let metadata = draft_metadata(payload, crate::crypto::vault_key)?;
 
     let draft_id = Uuid::new_v4();
     let name = req.name.as_deref().filter(|n| !n.trim().is_empty());
@@ -646,6 +642,55 @@ async fn save_draft(
     ))
 }
 
+/// Key of the vault-encrypted original prompt beside `metadata.draft`.
+pub const DRAFT_SEALED_PROMPT: &str = "draft_sealed_prompt";
+const DRAFT_SEAL_NEEDS_KEY: &str = "a draft whose prompt has <redacted> spans can only be saved \
+     when the server has a vault key (CCTUI_VAULT_KEY)";
+const DRAFT_UNSEALABLE: &str = "the draft's sealed prompt does not decrypt with the vault key";
+
+/// `{ "draft": payload }` with the prompt's `<redacted>` spans masked; the
+/// real prompt is kept only encrypted, under [`DRAFT_SEALED_PROMPT`].
+pub fn draft_metadata(
+    mut payload: SpawnRequest,
+    key: impl FnOnce() -> Vec<u8>,
+) -> Result<serde_json::Value, AppError> {
+    let mut sealed = None;
+    if let Some(prompt) = payload.prompt.as_deref() {
+        let (masked, s) = crate::scheduled_messages::seal(prompt, key)
+            .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, DRAFT_SEAL_NEEDS_KEY))?;
+        payload.prompt = Some(masked);
+        sealed = s;
+    }
+    let draft = serde_json::to_value(&payload).map_err(|e| {
+        tracing::error!("serializing draft payload: {e}");
+        AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not encode draft")
+    })?;
+    let mut metadata = serde_json::json!({ "draft": draft });
+    if let Some(sealed) = sealed {
+        metadata[DRAFT_SEALED_PROMPT] = serde_json::Value::String(sealed);
+    }
+    Ok(metadata)
+}
+
+/// Puts the real prompt back into a draft read from `metadata`.
+fn unseal_draft_prompt(
+    req: &mut SpawnRequest,
+    metadata: &serde_json::Value,
+    key: impl FnOnce() -> Vec<u8>,
+) -> Result<(), AppError> {
+    let Some(sealed) = metadata.get(DRAFT_SEALED_PROMPT).and_then(serde_json::Value::as_str)
+    else {
+        return Ok(());
+    };
+    let unsealable = || AppError::new(StatusCode::INTERNAL_SERVER_ERROR, DRAFT_UNSEALABLE);
+    let key = key();
+    if key.is_empty() {
+        return Err(unsealable());
+    }
+    req.prompt = Some(crate::crypto::decrypt(sealed, &key).ok_or_else(unsealable)?);
+    Ok(())
+}
+
 /// `POST /api/v1/sessions/{id}/launch`. Promote a draft to a live
 /// spawn: read the stored payload, merge the freshly-entered env, dispatch the
 /// real spawn (minting account gateway env), then delete the draft row. The
@@ -689,6 +734,7 @@ pub async fn launch_stored_draft(
                 AppError::new(StatusCode::BAD_REQUEST, format!("corrupt draft payload: {e}"))
             })
         })?;
+    unseal_draft_prompt(&mut req, &metadata, crate::crypto::vault_key)?;
     // Env is entered fresh at launch; account gateway env is minted in dispatch.
     req.env = env;
     req.save_draft = false;
@@ -2290,5 +2336,107 @@ mod launch_gate_tests {
         assert_eq!(switch(&state, as_owner.clone(), &sid, &mine).await, Ok(()));
         assert_eq!(binding(&pool, &sid).await, (my_provider, Some(owner)), "the owner took over");
         assert_eq!(switch(&state, as_owner, &sid, &other).await, not_found);
+    }
+}
+
+#[cfg(test)]
+mod draft_seal_tests {
+    use axum::extract::{Path, State};
+    use axum::{Extension, Json};
+    use cctui_proto::api::SpawnRequest;
+
+    use super::spawn_share_tests::{SPAWNER, caller, seed_machine, seed_user};
+    use super::{DRAFT_SEALED_PROMPT, draft_metadata, unseal_draft_prompt};
+
+    const TAGGED: &str = "log in with <redacted>hunter2-xyz</redacted> please";
+    const MASKED: &str = "log in with [REDACTED:user] please";
+
+    fn request(machine: &str, prompt: &str) -> SpawnRequest {
+        serde_json::from_value(serde_json::json!({
+            "machine_id": machine, "working_dir": "/w", "prompt": prompt,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_tagged_draft_prompt_is_stored_masked_and_unsealed_real() {
+        let key = vec![7u8; 32];
+        let meta = draft_metadata(request("m", TAGGED), || key.clone()).unwrap();
+        assert!(!meta.to_string().contains("hunter2-xyz"), "{meta}");
+        assert_eq!(meta["draft"]["prompt"], MASKED);
+
+        let mut req: SpawnRequest = serde_json::from_value(meta["draft"].clone()).unwrap();
+        unseal_draft_prompt(&mut req, &meta, || key.clone()).unwrap();
+        assert_eq!(req.prompt.as_deref(), Some(TAGGED));
+    }
+
+    #[test]
+    fn a_plain_draft_prompt_needs_no_key_and_seals_nothing() {
+        let meta = draft_metadata(request("m", "plain"), || panic!("no span, no key")).unwrap();
+        assert_eq!(meta["draft"]["prompt"], "plain");
+        assert!(meta.get(DRAFT_SEALED_PROMPT).is_none());
+    }
+
+    #[test]
+    fn a_tagged_draft_without_a_vault_key_is_refused() {
+        let err = draft_metadata(request("m", TAGGED), Vec::new).unwrap_err();
+        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    async fn stored_metadata(pool: &sqlx::PgPool, id: &str) -> serde_json::Value {
+        sqlx::query_scalar("SELECT metadata FROM sessions WHERE id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_saved_and_edited_draft_row_holds_no_plaintext() {
+        let name = "a_saved_and_edited_draft_row_holds_no_plaintext";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        crate::crypto::install_vault_key(vec![7u8; 32]);
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let owner = seed_user(&pool).await;
+        let machine = seed_machine(&pool, owner).await.to_string();
+        let state = crate::state::AppState::for_test(pool.clone());
+        let ctx = caller(owner, SPAWNER);
+
+        let mut req = request(&machine, TAGGED);
+        req.save_draft = true;
+        let (_, Json(saved)) = super::save_draft(&state, &ctx, &req, &[]).await.unwrap();
+        let id = saved.command_id.to_string();
+        let row: String =
+            sqlx::query_scalar("SELECT row_to_json(s)::text FROM sessions s WHERE id = $1")
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(!row.contains("hunter2-xyz"), "plaintext stored: {row}");
+        assert!(row.contains(MASKED), "{row}");
+
+        let edit = |prompt: &str| {
+            crate::routes::sessions::update_draft(
+                State(state.clone()),
+                Extension(ctx.clone()),
+                Path(id.clone()),
+                Json(request(&machine, prompt)),
+            )
+        };
+        edit(MASKED).await.unwrap();
+        let meta = stored_metadata(&pool, &id).await;
+        assert!(!meta.to_string().contains("hunter2-xyz"), "{meta}");
+        let mut back: SpawnRequest = serde_json::from_value(meta["draft"].clone()).unwrap();
+        unseal_draft_prompt(&mut back, &meta, crate::crypto::vault_key).unwrap();
+        assert_eq!(back.prompt.as_deref(), Some(TAGGED), "an unchanged edit keeps the real value");
+
+        edit("now <REDACTED>other-value</redacted>").await.unwrap();
+        let meta = stored_metadata(&pool, &id).await;
+        assert!(!meta.to_string().contains("other-value"), "{meta}");
+        assert_eq!(meta["draft"]["prompt"], "now [REDACTED:user]");
+
+        edit("rewritten").await.unwrap();
+        let meta = stored_metadata(&pool, &id).await;
+        assert!(meta.get(DRAFT_SEALED_PROMPT).is_none(), "a rewritten prompt drops the old seal");
     }
 }
