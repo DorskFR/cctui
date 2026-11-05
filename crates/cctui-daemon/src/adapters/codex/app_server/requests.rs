@@ -979,7 +979,7 @@ mod tests {
             assert_eq!(config["features.hooks"], true, "{params}");
             assert_eq!(config["service_tier"], "fast", "{params}");
             let pre = config["hooks"]["PreToolUse"].as_array().unwrap();
-            assert_eq!(pre.len(), 2, "{params}");
+            assert_eq!(pre.len(), 3, "{params}");
             assert_eq!(pre[0]["matcher"], "Bash");
             assert_eq!(pre[0]["hooks"][0]["command"], "deny-shell");
             assert_eq!(pre[1]["matcher"], "apply_patch");
@@ -988,6 +988,10 @@ mod tests {
                 edit.contains("hook-shim apply-patch --tools edit --run 'deny-edit'"),
                 "{edit}"
             );
+            assert_eq!(pre[2]["matcher"], "Bash", "{params}");
+            let refusal = pre[2]["hooks"][0]["command"].as_str().unwrap();
+            assert!(refusal.ends_with("hook-shim no-interactive-shell || exit 2"), "{refusal}");
+            assert!(!refusal.starts_with("cctui-daemon "), "the daemon's own binary runs it");
             assert!(!params.to_string().contains("\"ask\""), "{params}");
         }
     }
