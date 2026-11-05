@@ -121,7 +121,7 @@ test('an unknown address shows a way back instead of a bare 404', async ({ page 
 test('the system bar carries neither the ? nor a bell button (CCT-1012)', async ({ page }) => {
 	await openSessions(page, DESKTOP);
 	const tail = page.locator('header.hd .tail');
-	await expect(tail.locator('a[href="/settings/guides"]')).toHaveCount(0);
+	await expect(tail.locator('a[href^="/settings/interface#guides"], a[href="/settings/guides"]')).toHaveCount(0);
 	await expect(tail.getByText('?', { exact: true })).toHaveCount(0);
 	await expect(tail.getByText('🔔')).toHaveCount(0);
 	await expect(tail.getByText('🔕')).toHaveCount(0);

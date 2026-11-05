@@ -573,7 +573,7 @@ pub struct SessionListItem {
     /// The gateway tool guard is lifted for this session.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tool_guard_bypass: bool,
-    /// The viewer hides this session's user or machine; only listed with `show_hidden`.
+    /// The viewer hides this session's user or machine. Hidden sessions are filtered out of lists.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
 }

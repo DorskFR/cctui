@@ -51,9 +51,9 @@ export const init: ClientInit = () => {
 	void initTelemetry();
 };
 
-export const handleError: HandleClientError = ({ error }) => {
+export const handleError: HandleClientError = ({ error, status }) => {
 	const text = message(error);
-	if (!swallowedAsStaleChunk(text)) toasts.error(text);
+	if (status !== 404 && !swallowedAsStaleChunk(text)) toasts.error(text);
 	// Returned shape is exposed to the app as `page.error`; keep it message-only.
 	return { message: text };
 };

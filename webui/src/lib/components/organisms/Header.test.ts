@@ -103,7 +103,7 @@ describe('the system bar carries neither the ? nor the bell', () => {
 		render();
 		const tail = document.querySelector('.tail') as HTMLElement;
 		expect(tail.textContent).not.toContain('?');
-		expect(tail.querySelector('a[href="/settings/guides"]')).toBeNull();
+		expect(tail.querySelector('a[href^="/settings/interface#guides"], a[href="/settings/guides"]')).toBeNull();
 	});
 
 	it('leaves Getting started to Settings › Guides, not the user menu', async () => {

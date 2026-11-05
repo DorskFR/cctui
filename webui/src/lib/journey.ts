@@ -135,7 +135,7 @@ export async function guideReady(id: string): Promise<boolean> {
 	return Boolean(await host.probes[probe]());
 }
 
-export const GUIDES_ROUTE = '/settings/guides';
+export const GUIDES_ROUTE = '/settings/interface#guides';
 
 /** The guides whose lesson leaves something observable behind: a user who
  *  already has the result counts as done without taking the tour. */
@@ -405,7 +405,7 @@ async function returnTo(opts: StartGuideOptions): Promise<void> {
  *  one on top of it; it still hands the user back to the guides. */
 async function concludeGuide(ir: IR, conclusion: { title: string; xp: number; next?: string }): Promise<void> {
 	if (!isDeck(ir)) await showConclusion(conclusion);
-	if (location.pathname !== GUIDES_ROUTE) await goto(GUIDES_ROUTE);
+	if (location.pathname + location.hash !== GUIDES_ROUTE) await goto(GUIDES_ROUTE);
 }
 
 /** A guide with a `DONE_PROBES` entry produces something observable, so the
