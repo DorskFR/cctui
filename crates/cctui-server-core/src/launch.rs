@@ -156,6 +156,17 @@ pub async fn no_daemon_detail(pool: &sqlx::PgPool, machine: Uuid) -> &'static st
     no_daemon_message(last_seen.map(crate::targets::derive_liveness))
 }
 
+/// What a launch tells the user when its command never reached the daemon.
+pub const DAEMON_DISCONNECTED: &str = "daemon disconnected mid-dispatch";
+
+/// The detail for a delivery to `machine` that failed with `error`.
+pub async fn delivery_detail(pool: &sqlx::PgPool, machine: Uuid, error: &BusError) -> &'static str {
+    match error {
+        BusError::NoDaemon(_) => no_daemon_detail(pool, machine).await,
+        _ => DAEMON_DISCONNECTED,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

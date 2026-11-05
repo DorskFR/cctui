@@ -2795,7 +2795,7 @@ async fn conv_search_rows(
     let mut rows: Vec<ConvSearchRow> = Vec::new();
     let mut after = 0_i64;
     loop {
-        let (hi, seen) = match conv_window(&mut *tx, session_id, after, limits.window).await {
+        let (hi, seen) = match conv_window(&mut tx, session_id, after, limits.window).await {
             Ok((Some(hi), seen)) => (hi, seen),
             Ok((None, _)) => return Ok(ConvScan { rows, partial: false }),
             Err(e) if is_statement_timeout(&e) => return Ok(ConvScan { rows, partial: true }),
@@ -3672,19 +3672,9 @@ pub async fn fork_session(
     );
     crate::routes::context::inherit_intent(&state.pool, &child_key, &session_id).await;
     crate::routes::spawn::remember_spawner(&state.pool, &child_key, ctx.user_id, None).await;
-    match state.bus.command_daemon_for_session(machine_uuid, &session_id, frame).await {
-        Ok(()) => {}
-        Err(crate::bus::BusError::NoDaemon(_)) => {
-            let detail =
-                cctui_server_core::launch::no_daemon_detail(&state.pool, machine_uuid).await;
-            return Err(AppError::new(StatusCode::SERVICE_UNAVAILABLE, detail));
-        }
-        Err(_) => {
-            return Err(AppError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "daemon disconnected mid-dispatch",
-            ));
-        }
+    if let Err(err) = state.bus.command_daemon_for_session(machine_uuid, &session_id, frame).await {
+        let detail = cctui_server_core::launch::delivery_detail(&state.pool, machine_uuid, &err);
+        return Err(AppError::new(StatusCode::SERVICE_UNAVAILABLE, detail.await));
     }
     tracing::info!(parent = %session_id, %command_id, %adapter_id, child = ?child_session_id, "fork dispatched");
     events::record(
