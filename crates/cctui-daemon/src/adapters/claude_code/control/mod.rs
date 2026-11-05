@@ -58,10 +58,10 @@ mod tests;
 mod voice;
 
 pub(super) use settings::HookPosture;
-pub use settings::{forget_session_file, stage_mid_chat_files};
 use settings::{BG_ISOLATION_ENV, agent_relay_config, build_session_context, with_bg_isolation};
 #[cfg(test)]
 pub(super) use settings::{ConfigRootOverride, HookSettingsError};
+pub use settings::{forget_session_file, stage_mid_chat_files};
 
 /// How often a session with a text watcher has its transcript tailed
 /// between polls.

@@ -31,10 +31,7 @@ pub fn connect_options(database_url: &str) -> Result<PgConnectOptions, sqlx::Err
     connect_options_with(database_url, slow_query_ms())
 }
 
-fn connect_options_with(
-    database_url: &str,
-    slow_ms: u32,
-) -> Result<PgConnectOptions, sqlx::Error> {
+fn connect_options_with(database_url: &str, slow_ms: u32) -> Result<PgConnectOptions, sqlx::Error> {
     let options = PgConnectOptions::from_str(database_url)?;
     let threshold = Duration::from_millis(u64::from(slow_ms));
     Ok(options.log_slow_statements(log::LevelFilter::Warn, threshold))

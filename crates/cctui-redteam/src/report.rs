@@ -15,7 +15,12 @@ pub struct ScenarioReport {
 
 impl ScenarioReport {
     #[must_use]
-    pub fn judge(id: String, class: String, probes: Vec<ProbeResult>, sink_hits: Vec<SinkHit>) -> Self {
+    pub fn judge(
+        id: String,
+        class: String,
+        probes: Vec<ProbeResult>,
+        sink_hits: Vec<SinkHit>,
+    ) -> Self {
         let verdict = oracle::classify(&probes, &sink_hits);
         Self { id, class, verdict, probes, sink_hits }
     }
@@ -59,8 +64,16 @@ mod tests {
     #[test]
     fn a_contained_scenario_renders_its_verdict_and_every_probe_row() {
         let probes = vec![
-            ProbeResult { id: "EGR-01".to_owned(), verdict: ProbeVerdict::Blocked, detail: "no response".to_owned() },
-            ProbeResult { id: "EGR-03".to_owned(), verdict: ProbeVerdict::Skipped, detail: "no dig".to_owned() },
+            ProbeResult {
+                id: "EGR-01".to_owned(),
+                verdict: ProbeVerdict::Blocked,
+                detail: "no response".to_owned(),
+            },
+            ProbeResult {
+                id: "EGR-03".to_owned(),
+                verdict: ProbeVerdict::Skipped,
+                detail: "no dig".to_owned(),
+            },
         ];
         let report = ScenarioReport::judge("egr".to_owned(), "EGR".to_owned(), probes, vec![]);
         assert_eq!(report.verdict, Verdict::Contained);
@@ -76,7 +89,11 @@ mod tests {
         let report = ScenarioReport::judge(
             "egr".to_owned(),
             "EGR".to_owned(),
-            vec![ProbeResult { id: "EGR-01".to_owned(), verdict: ProbeVerdict::Blocked, detail: String::new() }],
+            vec![ProbeResult {
+                id: "EGR-01".to_owned(),
+                verdict: ProbeVerdict::Blocked,
+                detail: String::new(),
+            }],
             vec![SinkHit::tcp("10.0.0.9:443", "cnry-x")],
         );
         assert_eq!(report.verdict, Verdict::Escaped);

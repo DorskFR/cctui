@@ -2612,8 +2612,11 @@ mod tests {
 
         let calm = HookPosture::default();
         let path = calm.write_in(tmp.path(), sock, "calm0001", &launch, Some(SEAL_KEY)).unwrap();
-        std::fs::write(&path, br#"{"hooks":{"Stop":[{"hooks":[{"command":"x whip-stop-hook"}]}]}}"#)
-            .unwrap();
+        std::fs::write(
+            &path,
+            br#"{"hooks":{"Stop":[{"hooks":[{"command":"x whip-stop-hook"}]}]}}"#,
+        )
+        .unwrap();
         assert_eq!(restart("calm0001"), Ok(false), "the settings file is never read for whip");
 
         let sealed = hook_posture_path(tmp.path(), "calm0001");

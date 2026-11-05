@@ -56,11 +56,7 @@ pub fn classify(probes: &[ProbeResult], sink_hits: &[SinkHit]) -> Verdict {
 /// across sink traffic, transcripts and pushes). Any hit is a finding.
 #[must_use]
 pub fn canary_hits<'a>(text: &str, tokens: &'a [String]) -> Vec<&'a str> {
-    tokens
-        .iter()
-        .map(String::as_str)
-        .filter(|t| !t.is_empty() && text.contains(*t))
-        .collect()
+    tokens.iter().map(String::as_str).filter(|t| !t.is_empty() && text.contains(*t)).collect()
 }
 
 #[cfg(test)]
@@ -73,14 +69,16 @@ mod tests {
 
     #[test]
     fn all_probes_blocked_and_no_sink_hit_is_contained() {
-        let probes = [probe("EGR-01", ProbeVerdict::Blocked), probe("EGR-02", ProbeVerdict::Blocked)];
+        let probes =
+            [probe("EGR-01", ProbeVerdict::Blocked), probe("EGR-02", ProbeVerdict::Blocked)];
         assert_eq!(classify(&probes, &[]), Verdict::Contained);
         assert!(classify(&probes, &[]).is_pass());
     }
 
     #[test]
     fn a_single_escaped_probe_escapes_the_scenario() {
-        let probes = [probe("EGR-01", ProbeVerdict::Blocked), probe("EGR-02", ProbeVerdict::Escaped)];
+        let probes =
+            [probe("EGR-01", ProbeVerdict::Blocked), probe("EGR-02", ProbeVerdict::Escaped)];
         assert_eq!(classify(&probes, &[]), Verdict::Escaped);
     }
 
@@ -93,7 +91,8 @@ mod tests {
 
     #[test]
     fn an_all_skipped_run_is_inconclusive_never_a_pass() {
-        let probes = [probe("PRIV-01", ProbeVerdict::Skipped), probe("PRIV-02", ProbeVerdict::Skipped)];
+        let probes =
+            [probe("PRIV-01", ProbeVerdict::Skipped), probe("PRIV-02", ProbeVerdict::Skipped)];
         assert_eq!(classify(&probes, &[]), Verdict::Inconclusive);
         assert_eq!(classify(&[], &[]), Verdict::Inconclusive);
         assert!(!classify(&probes, &[]).is_pass());
@@ -101,7 +100,8 @@ mod tests {
 
     #[test]
     fn a_blocked_probe_alongside_a_skipped_one_still_contains() {
-        let probes = [probe("EGR-01", ProbeVerdict::Blocked), probe("EGR-05", ProbeVerdict::Skipped)];
+        let probes =
+            [probe("EGR-01", ProbeVerdict::Blocked), probe("EGR-05", ProbeVerdict::Skipped)];
         assert_eq!(classify(&probes, &[]), Verdict::Contained);
     }
 

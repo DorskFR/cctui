@@ -773,9 +773,7 @@ mod tests {
                 .await
                 .unwrap(),
             hook_policy: Some(
-                cctui_server_core::hook_policy::for_session(&state.pool, session_id)
-                    .await
-                    .unwrap(),
+                cctui_server_core::hook_policy::for_session(&state.pool, session_id).await.unwrap(),
             ),
         }
     }

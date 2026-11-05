@@ -103,10 +103,8 @@ mod tests {
         let resolver: std::sync::Arc<dyn RefResolver> = std::sync::Arc::new(Engines::new());
         let secrets =
             SecretRegistry::new(resolver).with_ttl_lookup(std::sync::Arc::new(|_: &str| None));
-        let key = secrets
-            .register("dispatcher_key", &format!("file:{}", path.display()))
-            .await
-            .unwrap();
+        let key =
+            secrets.register("dispatcher_key", &format!("file:{}", path.display())).await.unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let registry =
             DispatchRegistry::new(format!("http://{}", listener.local_addr().unwrap()), key);

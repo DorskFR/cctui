@@ -679,8 +679,7 @@ fn unseal_draft_prompt(
     metadata: &serde_json::Value,
     key: impl FnOnce() -> Vec<u8>,
 ) -> Result<(), AppError> {
-    let Some(sealed) = metadata.get(DRAFT_SEALED_PROMPT).and_then(serde_json::Value::as_str)
-    else {
+    let Some(sealed) = metadata.get(DRAFT_SEALED_PROMPT).and_then(serde_json::Value::as_str) else {
         return Ok(());
     };
     let unsealable = || AppError::new(StatusCode::INTERNAL_SERVER_ERROR, DRAFT_UNSEALABLE);

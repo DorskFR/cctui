@@ -1190,8 +1190,8 @@ mod tests {
             async move {
                 let mut rounds = 0u32;
                 while !stop.load(Ordering::SeqCst) {
-                    let either = cfg.validate(&old).await.is_some()
-                        || cfg.validate(&new).await.is_some();
+                    let either =
+                        cfg.validate(&old).await.is_some() || cfg.validate(&new).await.is_some();
                     assert!(either, "neither the old nor the new admin token authenticated");
                     rounds += 1;
                     tokio::task::yield_now().await;

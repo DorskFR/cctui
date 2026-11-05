@@ -29,7 +29,12 @@ pub struct SinkHit {
 impl SinkHit {
     #[must_use]
     pub fn tcp(peer: &str, token: &str) -> Self {
-        Self { channel: Channel::Tcp, peer: peer.to_owned(), token: token.to_owned(), detail: String::new() }
+        Self {
+            channel: Channel::Tcp,
+            peer: peer.to_owned(),
+            token: token.to_owned(),
+            detail: String::new(),
+        }
     }
 }
 
@@ -154,7 +159,15 @@ mod tests {
     #[tokio::test]
     async fn an_http_connection_is_logged_and_a_raw_tcp_connection_is_logged() {
         let hits: Hits = Arc::new(Mutex::new(Vec::new()));
-        record(&hits, SinkHit { channel: Channel::Http, peer: "1.2.3.4:5".to_owned(), token: "t".to_owned(), detail: "GET /x".to_owned() });
+        record(
+            &hits,
+            SinkHit {
+                channel: Channel::Http,
+                peer: "1.2.3.4:5".to_owned(),
+                token: "t".to_owned(),
+                detail: "GET /x".to_owned(),
+            },
+        );
         record(&hits, SinkHit::tcp("1.2.3.4:6", ""));
         let snap = snapshot(&hits);
         assert_eq!(snap.len(), 2);
