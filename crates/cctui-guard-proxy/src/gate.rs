@@ -233,10 +233,12 @@ impl GatePolicy {
         let field = |name: &str| json.get(name).and_then(Value::as_str);
         let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
         match rest.as_slice() {
-            ["git", "refs"] => field("ref").and_then(|r| r.strip_prefix("refs/heads/")).map_or_else(
-                || refuse(gate, "a write to a ref that is not a branch"),
-                |name| self.branch_verdict(gate, name),
-            ),
+            ["git", "refs"] => {
+                field("ref").and_then(|r| r.strip_prefix("refs/heads/")).map_or_else(
+                    || refuse(gate, "a write to a ref that is not a branch"),
+                    |name| self.branch_verdict(gate, name),
+                )
+            }
             ["contents", ..] | ["merge-upstream"] => self.named_branch(gate, field("branch")),
             ["merges"] => self.named_branch(gate, field("base")),
             ["pulls"] if method == "POST" => {

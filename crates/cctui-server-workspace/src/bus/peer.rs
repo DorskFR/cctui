@@ -1592,8 +1592,7 @@ mod tests {
         presence::register(&replica_a, Kind::Dispatcher, dispatcher).await;
         let bus_a = replica_a.bus.clone();
         let fake = tokio::spawn(async move {
-            let Some(DispatcherFrameDown::DedupCheck { request_id, spec }) = rx.recv().await
-            else {
+            let Some(DispatcherFrameDown::DedupCheck { request_id, spec }) = rx.recv().await else {
                 return None;
             };
             let reply = DispatcherFrameUp::DedupCheckResult {

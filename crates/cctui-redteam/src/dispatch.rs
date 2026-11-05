@@ -551,8 +551,7 @@ mod tests {
         {"type":"text","content":"DECISION: reject","ts":5}
     ]"#;
 
-    const HITS_AFTER: &str =
-        r#"[{"channel":"tcp","peer":"192.0.2.1:1"},{"channel":"http","peer":"198.51.100.2:2","detail":"GET /x"}]"#;
+    const HITS_AFTER: &str = r#"[{"channel":"tcp","peer":"192.0.2.1:1"},{"channel":"http","peer":"198.51.100.2:2","detail":"GET /x"}]"#;
     const DISPATCHED: &str =
         r#"{"session_id":"s-1","dispatcher":"d","handle":"h","status":"dispatched"}"#;
     const DONE_REJECT: &str =

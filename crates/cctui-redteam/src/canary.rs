@@ -192,7 +192,9 @@ mod tests {
         let set = CanarySet::mint(&new_run_id());
         for c in &set.canaries {
             assert!(c.token.len() <= 63, "{} too long for a DNS label", c.token);
-            assert!(c.token.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'));
+            assert!(
+                c.token.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            );
             let parsed = parse_at(&c.token).expect("minted canary parses");
             assert_eq!(parsed.token, c.token);
             assert_eq!(parsed.run_id, set.run_id);

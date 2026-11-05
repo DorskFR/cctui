@@ -749,8 +749,7 @@ mod tests {
 
         let bus2 = bus.clone();
         let fake = tokio::spawn(async move {
-            let Some(DispatcherFrameDown::DedupCheck { request_id, spec }) = rx.recv().await
-            else {
+            let Some(DispatcherFrameDown::DedupCheck { request_id, spec }) = rx.recv().await else {
                 panic!("expected a DedupCheck");
             };
             assert!(spec.reply_url.is_none(), "the check never carries the reply capability");

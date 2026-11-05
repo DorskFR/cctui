@@ -52,7 +52,9 @@ fn tcp_port(port: &Value) -> Option<u16> {
 }
 
 fn tcp_ports(ports: Option<&Value>) -> Vec<u16> {
-    ports.and_then(Value::as_array).map_or_else(Vec::new, |a| a.iter().filter_map(tcp_port).collect())
+    ports
+        .and_then(Value::as_array)
+        .map_or_else(Vec::new, |a| a.iter().filter_map(tcp_port).collect())
 }
 
 fn kube_ips(item: &Value) -> Vec<String> {
@@ -61,7 +63,11 @@ fn kube_ips(item: &Value) -> Vec<String> {
         .and_then(Value::as_array)
         .map_or_else(Vec::new, |a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect());
     let ips = if listed.is_empty() {
-        item.pointer("/spec/clusterIP").and_then(Value::as_str).map(str::to_owned).into_iter().collect()
+        item.pointer("/spec/clusterIP")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .into_iter()
+            .collect()
     } else {
         listed
     };
@@ -168,7 +174,8 @@ mod tests {
     fn a_service_list_yields_every_unsanctioned_tcp_address() {
         let sanctioned = vec!["cctui/server".to_owned(), "mesh/*".to_owned()];
         let got = from_inventory(&sample_service_list(), &sanctioned);
-        let lines: Vec<String> = got.iter().map(|t| format!("{} {}", t.authority(), t.id)).collect();
+        let lines: Vec<String> =
+            got.iter().map(|t| format!("{} {}", t.authority(), t.id)).collect();
         assert_eq!(
             lines,
             vec![

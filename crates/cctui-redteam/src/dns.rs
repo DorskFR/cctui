@@ -108,7 +108,8 @@ pub fn respond(packet: &[u8], query: &Query, zone: &Zone, answer: Option<Ipv4Add
     } else {
         (REFUSED, 0)
     };
-    let ip = answer.filter(|_| rcode == NOERROR && query.qtype == TYPE_A && query.qclass == CLASS_IN);
+    let ip =
+        answer.filter(|_| rcode == NOERROR && query.qtype == TYPE_A && query.qclass == CLASS_IN);
     let flags = QR | opcode | aa | (query.flags & RD) | rcode;
     let mut out = Vec::with_capacity(query.question_end + 16);
     out.extend_from_slice(&query.id.to_be_bytes());
@@ -253,8 +254,14 @@ mod tests {
     fn an_in_zone_canary_query_is_answered_and_recorded_with_its_canary() {
         let hits: Hits = Arc::default();
         let name = format!("{}.sink.example.com", CANARY.to_ascii_uppercase());
-        let reply = handle(&query(42, &name, TYPE_A, RD), "198.51.100.7:5353", &zone(), Some(ANSWER), &hits)
-            .unwrap();
+        let reply = handle(
+            &query(42, &name, TYPE_A, RD),
+            "198.51.100.7:5353",
+            &zone(),
+            Some(ANSWER),
+            &hits,
+        )
+        .unwrap();
         assert_eq!(be16(&reply, 0), Some(42));
         let flags = reply_flags(&reply);
         assert_eq!(flags & QR, QR);
@@ -275,7 +282,8 @@ mod tests {
     fn an_out_of_zone_query_is_refused_but_still_recorded() {
         let hits: Hits = Arc::default();
         let reply =
-            handle(&query(1, "www.example.org", TYPE_A, RD), "p", &zone(), Some(ANSWER), &hits).unwrap();
+            handle(&query(1, "www.example.org", TYPE_A, RD), "p", &zone(), Some(ANSWER), &hits)
+                .unwrap();
         let flags = reply_flags(&reply);
         assert_eq!(flags & 0x000F, REFUSED);
         assert_eq!(flags & AA, 0);
@@ -289,7 +297,8 @@ mod tests {
     fn a_non_a_in_zone_query_gets_an_authoritative_empty_answer() {
         let hits: Hits = Arc::default();
         let reply =
-            handle(&query(3, "x.sink.example.com", 28, 0), "p", &zone(), Some(ANSWER), &hits).unwrap();
+            handle(&query(3, "x.sink.example.com", 28, 0), "p", &zone(), Some(ANSWER), &hits)
+                .unwrap();
         assert_eq!(reply_flags(&reply) & 0x000F, NOERROR);
         assert_eq!(reply_flags(&reply) & AA, AA);
         assert_eq!(be16(&reply, 6), Some(0));
@@ -314,7 +323,9 @@ mod tests {
         empty[5] = 0;
         let mut compressed = good[..HEADER].to_vec();
         compressed.extend_from_slice(&[0xC0, 0x0C, 0, 1, 0, 1]);
-        for bad in [&response[..], &good[..good.len() - 2], &empty[..], &compressed[..], &[0u8; 5][..]] {
+        for bad in
+            [&response[..], &good[..good.len() - 2], &empty[..], &compressed[..], &[0u8; 5][..]]
+        {
             assert!(handle(bad, "p", &zone(), None, &hits).is_none());
         }
         assert!(hits.lock().unwrap().is_empty());

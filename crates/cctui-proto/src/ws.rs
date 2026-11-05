@@ -386,13 +386,25 @@ pub struct WireDispatchSpec {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum DispatcherFrameDown {
-    Dispatch { request_id: uuid::Uuid, spec: WireDispatchSpec },
-    Status { request_id: uuid::Uuid, handle: String },
-    Cancel { request_id: uuid::Uuid, handle: String },
+    Dispatch {
+        request_id: uuid::Uuid,
+        spec: WireDispatchSpec,
+    },
+    Status {
+        request_id: uuid::Uuid,
+        handle: String,
+    },
+    Cancel {
+        request_id: uuid::Uuid,
+        handle: String,
+    },
     /// Ask whether a dispatch of `spec` would join a live worker; nothing is
     /// created. Sent only to a dispatcher that announced
     /// [`DISPATCHER_FEATURE_DEDUP_CHECK`].
-    DedupCheck { request_id: uuid::Uuid, spec: WireDispatchSpec },
+    DedupCheck {
+        request_id: uuid::Uuid,
+        spec: WireDispatchSpec,
+    },
 }
 
 /// [`DispatcherFrameUp::Capabilities`] feature: the dispatcher answers
@@ -1593,7 +1605,8 @@ mod tests {
         .unwrap();
         assert_eq!(caps, r#"{"type":"capabilities","features":["dedup_check"]}"#);
 
-        let miss = r#"{"type":"dedup_check_result","request_id":"00000000-0000-0000-0000-000000000000"}"#;
+        let miss =
+            r#"{"type":"dedup_check_result","request_id":"00000000-0000-0000-0000-000000000000"}"#;
         let Ok(DispatcherFrameUp::DedupCheckResult { handle, error, .. }) =
             serde_json::from_str::<DispatcherFrameUp>(miss)
         else {

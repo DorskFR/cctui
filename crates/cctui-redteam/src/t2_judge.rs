@@ -65,7 +65,11 @@ impl GateRecord {
         Self {
             schema: SCHEMA,
             run_id: s.run_id.clone(),
-            version: if is_safe_version(&s.version) { s.version.clone() } else { "unknown".to_owned() },
+            version: if is_safe_version(&s.version) {
+                s.version.clone()
+            } else {
+                "unknown".to_owned()
+            },
             verdict: s.verdict,
             cells: s.cells.len(),
             contained_cells: s.cells.iter().filter(|c| c.verdict.is_pass()).count(),
@@ -208,8 +212,8 @@ pub fn judge(input: &JudgeInput<'_>) -> T2Summary {
             CellReport { index: pc.index, cell: pc.cell.key(), verdict, probes, sink_hits: hits }
         })
         .collect();
-    let escaped = cells.iter().any(|c| c.verdict == Verdict::Escaped)
-        || !attributed.unattributed.is_empty();
+    let escaped =
+        cells.iter().any(|c| c.verdict == Verdict::Escaped) || !attributed.unattributed.is_empty();
     let verdict = if escaped {
         Verdict::Escaped
     } else if reasons.is_empty() && cells.iter().all(|c| c.verdict.is_pass()) {
@@ -266,8 +270,14 @@ pub fn cli_judge(
         })
         .collect();
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let summary =
-        judge(&JudgeInput { plan: &plan, logs: &logs, sinks: &sinks, version, expect_version, now });
+    let summary = judge(&JudgeInput {
+        plan: &plan,
+        logs: &logs,
+        sinks: &sinks,
+        version,
+        expect_version,
+        now,
+    });
     let record = GateRecord::from_summary(&summary);
     std::fs::write(dir.join("t2-summary.json"), serde_json::to_string_pretty(&summary)?)?;
     std::fs::write(dir.join("t2-gate.json"), serde_json::to_string_pretty(&record)?)?;
@@ -349,7 +359,8 @@ mod tests {
         let log = format!("{}{}", blocked_log(1), blocked_log(11));
         assert!(section(&log, RUN, 1).unwrap().contains("EGR-01"));
         assert_eq!(section(&log, RUN, 1).unwrap().lines().count(), 2);
-        let truncated = format!("REDTEAM-T2-BEGIN {RUN}/2\n{{\"id\":\"EGR-01\",\"verdict\":\"blocked\"}}\n");
+        let truncated =
+            format!("REDTEAM-T2-BEGIN {RUN}/2\n{{\"id\":\"EGR-01\",\"verdict\":\"blocked\"}}\n");
         assert!(section(&truncated, RUN, 2).is_none());
         assert!(section(&blocked_log(3), "ffffffffffff", 3).is_none());
     }
@@ -357,7 +368,8 @@ mod tests {
     #[test]
     fn every_cell_blocked_and_quiet_sinks_is_contained() {
         let p = plan(2);
-        let sinks = [sink("in-cluster", SinkMode::Any, vec![]), sink("dns", SinkMode::Canary, vec![])];
+        let sinks =
+            [sink("in-cluster", SinkMode::Any, vec![]), sink("dns", SinkMode::Canary, vec![])];
         let s = run(&p, &logs(2), &sinks);
         assert_eq!(s.verdict, Verdict::Contained, "{:?}", s.reasons);
         let record = GateRecord::from_summary(&s);
@@ -408,7 +420,8 @@ mod tests {
         one_log.remove(&1);
         assert_eq!(run(&p, &one_log, &quiet).verdict, Verdict::Inconclusive);
 
-        let unreadable = [SinkCapture { name: "dns".to_owned(), mode: SinkMode::Canary, hits: None }];
+        let unreadable =
+            [SinkCapture { name: "dns".to_owned(), mode: SinkMode::Canary, hits: None }];
         let s = run(&p, &logs(2), &unreadable);
         assert_eq!(s.verdict, Verdict::Inconclusive);
         assert_eq!(s.missing_sinks, vec!["dns".to_owned()]);

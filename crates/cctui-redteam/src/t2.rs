@@ -89,8 +89,10 @@ impl T2Config {
 
     fn validate(&self) -> anyhow::Result<()> {
         for sink in &self.sinks {
-            let charset =
-                sink.name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            let charset = sink
+                .name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
             if sink.name.is_empty() || !charset {
                 bail!("sink name `{}` must be [a-z0-9-]+", sink.name);
             }
