@@ -284,6 +284,19 @@ pub enum HumanGate {
     OutwardHeldForApproval,
 }
 
+impl HumanGate {
+    /// The profile spelling, which the guard-proxy reads from
+    /// `GUARD_PROXY_HUMAN_GATE`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NoPush => "noPush",
+            Self::DraftPrOnly => "draftPrOnly",
+            Self::OutwardHeldForApproval => "outwardHeldForApproval",
+        }
+    }
+}
+
 /// Pre-flight isolation check settings for one profile.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, JsonSchema)]
 #[serde(rename_all = "camelCase")]

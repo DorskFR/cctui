@@ -16,9 +16,9 @@
 //!    exposed to all three Rule of Two legs names a `spec.humanGate`.
 
 use crate::envelope::{
-    GUARD_PROXY_CONTAINER, NET_INIT_CONTAINER, PROXY_UID, VOL_GPG_AGENT, VOL_GUARD_PROXY_CA,
-    VOL_GUARD_PROXY_INJECT, VOL_GUARD_PROXY_SA_TOKEN, VOL_GUARD_STATE, VOL_HOME, VOL_OVERLAY,
-    VOL_PROXY_POLICY, WARM_REPO_DIR_ENV, WORKER_UID, has_overlay, worker_added_caps,
+    GUARD_ENV_HUMAN_GATE, GUARD_PROXY_CONTAINER, NET_INIT_CONTAINER, PROXY_UID, VOL_GPG_AGENT,
+    VOL_GUARD_PROXY_CA, VOL_GUARD_PROXY_INJECT, VOL_GUARD_PROXY_SA_TOKEN, VOL_GUARD_STATE, VOL_HOME,
+    VOL_OVERLAY, VOL_PROXY_POLICY, WARM_REPO_DIR_ENV, WORKER_UID, has_overlay, worker_added_caps,
     worker_envelope_mounts,
 };
 use crate::{
@@ -387,6 +387,9 @@ pub fn check_guard(guard: &GuardSpec) -> Result<(), String> {
                 "env `{GUARD_ENV_IDENTITY}` is set per dispatch (`cctui.dev/guard-identity`), \
                  not per profile"
             ));
+        }
+        if env.name == GUARD_ENV_HUMAN_GATE {
+            return Err(format!("env `{GUARD_ENV_HUMAN_GATE}` is set by spec.humanGate"));
         }
         if !guard.allow_private_egress && widens_private_egress(env) {
             return Err(format!(
@@ -1154,6 +1157,7 @@ mod tests {
             posture: profile.posture(),
             dispatched: false,
             exec_interception: profile.exec_interception(),
+            human_gate: profile.human_gate,
         };
         envelope::inject(&pod, &cfg)
     }
@@ -1815,6 +1819,7 @@ mod tests {
             posture: profile.posture(),
             dispatched: false,
             exec_interception: false,
+            human_gate: None,
         };
         pod.metadata.annotations.as_mut().unwrap().remove(ANNOTATION_ENVELOPE_INJECTED);
         let pod = envelope::inject(&pod, &cfg);
@@ -1940,6 +1945,17 @@ mod tests {
             .await,
         );
         assert!(msg.contains("per dispatch"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn guard_env_cannot_set_the_human_gate() {
+        let msg = deny_msg(
+            decide_with_guard(serde_json::json!({
+                "env": [{ "name": "GUARD_PROXY_HUMAN_GATE", "value": "noPush" }]
+            }))
+            .await,
+        );
+        assert!(msg.contains("spec.humanGate"), "{msg}");
     }
 
     #[tokio::test]

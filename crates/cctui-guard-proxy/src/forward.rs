@@ -15,6 +15,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::denylist::host_is_denied;
+use crate::gate::GatePolicy;
 use crate::inject::Injector;
 use crate::policy::PolicyManager;
 use crate::private_allow::PrivateAllow;
@@ -24,6 +25,7 @@ pub struct ForwardListener {
     policy: Arc<PolicyManager>,
     injection: Option<Arc<Injector>>,
     private: Arc<PrivateAllow>,
+    gate: Arc<GatePolicy>,
 }
 
 impl ForwardListener {
@@ -34,7 +36,13 @@ impl ForwardListener {
         private: Arc<PrivateAllow>,
     ) -> anyhow::Result<Self> {
         let listener = TcpListener::bind(addr).await?;
-        Ok(Self { listener, policy, injection, private })
+        Ok(Self { listener, policy, injection, private, gate: Arc::new(GatePolicy::default()) })
+    }
+
+    #[must_use]
+    pub fn with_gate(mut self, gate: Arc<GatePolicy>) -> Self {
+        self.gate = gate;
+        self
     }
 
     pub async fn serve(self) -> anyhow::Result<()> {
@@ -43,8 +51,9 @@ impl ForwardListener {
             let policy = self.policy.clone();
             let injection = self.injection.clone();
             let private = self.private.clone();
+            let gate = self.gate.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_connection(stream, policy, injection, private).await {
+                if let Err(e) = handle_connection(stream, policy, injection, private, gate).await {
                     tracing::debug!("forward connection ended: {e}");
                 }
             });
@@ -102,15 +111,16 @@ async fn handle_connection(
     policy: Arc<PolicyManager>,
     injection: Option<Arc<Injector>>,
     private: Arc<PrivateAllow>,
+    gate: Arc<GatePolicy>,
 ) -> anyhow::Result<()> {
     let Some(req) = read_request(&mut conn).await? else {
         return Ok(());
     };
 
     if req.method.eq_ignore_ascii_case("CONNECT") {
-        handle_connect(conn, &req.target, &policy, injection.as_deref(), &private).await
+        handle_connect(conn, &req.target, &policy, injection.as_deref(), &private, &gate).await
     } else {
-        handle_http(conn, &req, &policy, &private).await
+        handle_http(conn, &req, &policy, &private, &gate).await
     }
 }
 
@@ -125,9 +135,19 @@ async fn handle_connect(
     policy: &PolicyManager,
     injection: Option<&Injector>,
     private: &PrivateAllow,
+    gate: &GatePolicy,
 ) -> anyhow::Result<()> {
     let host_port = normalize_authority(target, 443);
     let (host, port) = split_host_port(&host_port, 443);
+
+    let intercepted = injection.is_some_and(|i| i.should_inject(&host));
+    if let Some(reason) = gate.refuse_connection(&host, intercepted) {
+        tracing::warn!("DENY (human gate) CONNECT {host_port}: {reason}");
+        policy.record(&host_port, false, &reason);
+        conn.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await?;
+        return Ok(());
+    }
 
     if host_is_denied(&host, private.exempts(&host, port)) {
         tracing::warn!("DENY (builtin) CONNECT {host_port}");
@@ -206,6 +226,7 @@ async fn handle_http(
     req: &Request,
     policy: &PolicyManager,
     private: &PrivateAllow,
+    gate: &GatePolicy,
 ) -> anyhow::Result<()> {
     let Some((host_port, _path)) = split_absolute_uri(&req.target) else {
         tracing::info!("DENY HTTP (non-absolute target {})", req.target);
@@ -217,6 +238,13 @@ async fn handle_http(
     };
 
     let (host, port) = split_host_port(&host_port, 80);
+    if let Some(reason) = gate.refuse_connection(&host, false) {
+        tracing::warn!("DENY (human gate) HTTP {} {}: {reason}", req.method, req.target);
+        policy.record(&host_port, false, &reason);
+        conn.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await?;
+        return Ok(());
+    }
     if host_is_denied(&host, private.exempts(&host, port)) {
         tracing::warn!("DENY (builtin) HTTP {} {}", req.method, req.target);
         policy.record(&host_port, false, "builtin denylist");
@@ -306,13 +334,23 @@ mod tests {
     }
 
     async fn start_forward_inner(policy_json: &str, private: PrivateAllow) -> std::net::SocketAddr {
+        start_forward_gated(policy_json, private, GatePolicy::default()).await
+    }
+
+    async fn start_forward_gated(
+        policy_json: &str,
+        private: PrivateAllow,
+        gate: GatePolicy,
+    ) -> std::net::SocketAddr {
         let (dir, path) = write_policy(policy_json);
         // Keep the tempdir alive for the process lifetime of the test.
         std::mem::forget(dir);
         let policy = Arc::new(PolicyManager::new(&path));
         policy.load().unwrap();
-        let listener =
-            ForwardListener::bind("127.0.0.1:0", policy, None, Arc::new(private)).await.unwrap();
+        let listener = ForwardListener::bind("127.0.0.1:0", policy, None, Arc::new(private))
+            .await
+            .unwrap()
+            .with_gate(Arc::new(gate));
         let addr = listener.listener.local_addr().unwrap();
         tokio::spawn(async move { listener.serve().await });
         addr
@@ -386,6 +424,44 @@ mod tests {
         let mut echo_buf = [0u8; 4];
         conn.read_exact(&mut echo_buf).await.unwrap();
         assert_eq!(&echo_buf, b"ping");
+    }
+
+    async fn first_response(proxy: std::net::SocketAddr, request: &str) -> String {
+        let mut conn = TcpStream::connect(proxy).await.unwrap();
+        conn.write_all(request.as_bytes()).await.unwrap();
+        let mut buf = [0u8; 64];
+        let n = conn.read(&mut buf).await.unwrap();
+        String::from_utf8_lossy(&buf[..n]).into_owned()
+    }
+
+    #[tokio::test]
+    async fn unparseable_gate_refuses_an_allowed_connect() {
+        use crate::gate::Gate;
+
+        let echo = start_echo().await;
+        let policy_json = format!(r#"{{"allowed_hosts": ["{echo}"], "default": "deny"}}"#);
+        let gate = GatePolicy::new(Gate::parse(Some("no-push")), &[]);
+        let proxy = start_forward_gated(&policy_json, PrivateAllow::for_tests(true, ""), gate);
+        let resp = first_response(proxy.await, &format!("CONNECT {echo} HTTP/1.1\r\n\r\n")).await;
+        assert!(resp.starts_with("HTTP/1.1 403"), "got: {resp}");
+    }
+
+    #[tokio::test]
+    async fn enforced_gate_refuses_github_it_cannot_intercept() {
+        use crate::gate::{Gate, HumanGate};
+
+        let allow_all = r#"{"allowed_hosts": ["github.com:*", "api.github.com:*"]}"#;
+        for gate in [HumanGate::NoPush, HumanGate::DraftPrOnly] {
+            let policy = GatePolicy::new(Gate::Declared(gate), &[]);
+            let private = PrivateAllow::for_tests(true, "");
+            let proxy = start_forward_gated(allow_all, private, policy).await;
+            let connect = "CONNECT github.com:443 HTTP/1.1\r\nHost: github.com:443\r\n\r\n";
+            let resp = first_response(proxy, connect).await;
+            assert!(resp.starts_with("HTTP/1.1 403"), "{gate:?} CONNECT got: {resp}");
+            let plain = "GET http://api.github.com/ HTTP/1.1\r\nHost: api.github.com\r\n\r\n";
+            let resp = first_response(proxy, plain).await;
+            assert!(resp.starts_with("HTTP/1.1 403"), "{gate:?} HTTP got: {resp}");
+        }
     }
 
     #[tokio::test]

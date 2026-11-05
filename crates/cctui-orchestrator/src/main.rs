@@ -7,7 +7,8 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use cctui_orchestrator::envelope::{
-    MutationOutcome, default_sidecar_image, is_eligible, is_injected, mutate_pod, profile_name,
+    MutationOutcome, ProfileFlags, default_sidecar_image, is_eligible, is_injected, mutate_pod,
+    profile_name,
 };
 use cctui_orchestrator::validate::{Decision, ProfileSource, Verdict};
 use cctui_orchestrator::{GuardSpec, WorkerProfile, WorkerProfileSpec};
@@ -50,26 +51,27 @@ fn request_namespace(req: &AdmissionRequest<Pod>, pod: &Pod) -> String {
         .unwrap_or_else(|| "default".to_owned())
 }
 
-/// The source profile's `spec.guard` and exec-interception opt-in for a pod
-/// about to be injected. A missing profile renders neither (the validating
+/// The source profile's `spec.guard` and envelope flags for a pod about to be
+/// injected. A missing profile renders neither (the validating
 /// webhook denies the pod); a lookup failure is an `Err` so the pod is denied
 /// fail-closed.
 async fn profile_guard(
     state: &AppState,
     req: &AdmissionRequest<Pod>,
     pod: &Pod,
-) -> anyhow::Result<(Option<GuardSpec>, bool)> {
+) -> anyhow::Result<(Option<GuardSpec>, ProfileFlags)> {
     if !is_eligible(pod) || is_injected(pod) {
-        return Ok((None, false));
+        return Ok((None, ProfileFlags::default()));
     }
-    let Some(name) = profile_name(pod) else { return Ok((None, false)) };
+    let Some(name) = profile_name(pod) else { return Ok((None, ProfileFlags::default())) };
     let namespace = request_namespace(req, pod);
     let profile = state.profile_source.get(&namespace, name).await.map_err(|e| {
         anyhow::anyhow!("cannot resolve WorkerProfile `{name}` in `{namespace}`: {e}")
     })?;
-    Ok(profile.map_or((None, false), |p| {
-        let exec_interception = p.exec_interception();
-        (p.guard, exec_interception)
+    Ok(profile.map_or((None, ProfileFlags::default()), |p| {
+        let flags =
+            ProfileFlags { exec_interception: p.exec_interception(), human_gate: p.human_gate };
+        (p.guard, flags)
     }))
 }
 
@@ -87,9 +89,10 @@ async fn mutate(
 
     let mut resp = AdmissionResponse::from(&req);
     if let Some(pod) = &req.object {
+        let image = &state.sidecar_image;
         let outcome = profile_guard(&state, &req, pod)
             .await
-            .and_then(|(guard, exec)| mutate_pod(pod, &state.sidecar_image, guard.as_ref(), exec));
+            .and_then(|(guard, flags)| mutate_pod(pod, image, guard.as_ref(), flags));
         match outcome {
             Ok(MutationOutcome::Patch(patch)) => {
                 tracing::info!(

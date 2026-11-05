@@ -48,7 +48,9 @@ The sidecar/init image defaults to `ghcr.io/dorskfr/cctui-worker:<version>`
    `envFrom` the `guard-proxy-env` ConfigMap; `runAsUser/runAsGroup 1337`,
    `allowPrivilegeEscalation false`, caps drop `ALL`; startupProbe
    `GET /health:15002`. When `guard-identity` is set, `GUARD_PROXY_IDENTITY` is
-   upserted over the ConfigMap default. It alone mounts the `guard-proxy-sa-token`
+   upserted over the ConfigMap default. The profile's `spec.humanGate`, when
+   set, is rendered last as `GUARD_PROXY_HUMAN_GATE` (see worker-profile-crd.md,
+   Rule of Two). It alone mounts the `guard-proxy-sa-token`
    projected volume at `/var/run/secrets/kubernetes.io/serviceaccount` (the pod
    sets `automountServiceAccountToken: false`), which holds two tokens: `token`
    (default audience, 3600s, for Vault login and `k8s:` refs) and `cctui-token`
