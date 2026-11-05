@@ -1110,7 +1110,7 @@ impl Driver {
         Ok(())
     }
 
-    pub(super) fn remover(&self) -> removal::Remover {
+    fn remover(&self) -> removal::Remover {
         removal::Remover {
             claude_bin: self.cfg.claude_bin.clone(),
             foreign_shorts: self.foreign_shorts.clone(),
@@ -1118,7 +1118,7 @@ impl Driver {
         }
     }
 
-    pub(super) fn launcher(&self) -> spawn::Launcher {
+    fn launcher(&self) -> spawn::Launcher {
         spawn::Launcher {
             server: self.server.clone(),
             machine_key: self.machine_key.clone(),
@@ -1158,7 +1158,7 @@ impl Driver {
         Ok(Handled::Deferred)
     }
 
-    pub(super) fn enqueue_reply(&mut self, job: reply::ReplyJob, command_id: Option<uuid::Uuid>) {
+    fn enqueue_reply(&mut self, job: reply::ReplyJob, command_id: Option<uuid::Uuid>) {
         let local_id = job.local_id().to_owned();
         let (voice, hop_id) = (Arc::clone(&self.voice), local_id.clone());
         self.run_in_lane(&local_id, command_id, async move {
@@ -1598,7 +1598,8 @@ impl SessionDriver for Driver {
             anyhow::bail!("{refusal}");
         }
         let sock = self.ensure_socket().await?;
-        let plan = self.plan_spawn(&sock, &spec, session_id.map(|id| id.to_string()))?;
+        let session_id = session_id.map(|id| id.to_string());
+        let plan = self.plan_spawn(&sock, &spec, session_id.as_deref())?;
         plan.run_detached(self.events.clone(), command_id);
         Ok(Handled::Deferred)
     }

@@ -999,7 +999,8 @@ mod submit_tests {
             write_state(&jobs_root, &short, "active", chrono::Utc::now().timestamp_millis() - 5000);
         }
         let (server, ops) = fake_daemon(&sock, transcript, (jobs_root, short.clone()), taken);
-        let job = driver.reply_job_for(&sock, &short, "sess", text, None, Default::default());
+        let env = std::collections::BTreeMap::default();
+        let job = driver.reply_job_for(&sock, &short, "sess", text, None, env);
         let submit = Box::pin(job.submit_text(false));
         tokio::time::timeout(std::time::Duration::from_secs(10), submit).await.unwrap().unwrap();
         server.abort();

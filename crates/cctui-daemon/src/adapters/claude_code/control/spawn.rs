@@ -381,10 +381,7 @@ impl Driver {
         session_id: &str,
         refused: impl FnOnce(&anyhow::Error),
     ) -> anyhow::Result<()> {
-        let dispatch = self
-            .prepare_spawn(sock, spec, Some(session_id.to_owned()))
-            .await
-            .inspect_err(refused)?;
+        let dispatch = self.prepare_spawn(sock, spec, Some(session_id)).await.inspect_err(refused)?;
         dispatch.send().await
     }
 
@@ -454,7 +451,7 @@ impl Driver {
         &self,
         sock: &std::path::Path,
         spec: &cctui_proto::adapter::SessionSpec,
-        forced_session_id: Option<String>,
+        forced_session_id: Option<&str>,
     ) -> anyhow::Result<DeferredDispatch> {
         Box::pin(self.plan_spawn(sock, spec, forced_session_id)?.build()).await
     }
@@ -465,10 +462,10 @@ impl Driver {
         &self,
         sock: &std::path::Path,
         spec: &cctui_proto::adapter::SessionSpec,
-        forced_session_id: Option<String>,
+        forced_session_id: Option<&str>,
     ) -> anyhow::Result<LaunchPlan> {
         let cwd = require_dir(spec.working_dir.as_deref(), "spawn")?.to_owned();
-        let ids = launch::job_ids(forced_session_id.as_deref());
+        let ids = launch::job_ids(forced_session_id);
         self.remember_launch_posture(&ids.short, spec);
         // A `CctuiAgent` child links to its caller through the same stash the
         // fork path uses: roster discovery emits the `SessionStarted` and has no
@@ -526,6 +523,7 @@ impl Driver {
     /// id), else the parent's `sessionId`, else the `parent_local_id`
     /// itself (covers reopening an archived parent whose `state.json` was removed
     /// by `claude rm` but whose transcript still resumes).
+    #[cfg(test)]
     pub(super) async fn prepare_fork(
         &self,
         sock: &std::path::Path,
@@ -886,6 +884,7 @@ impl DeferredDispatch {
 
     /// [`send`](Self::send) on its own task, reporting the outcome as the
     /// `CommandResult` for `command_id`.
+    #[cfg(test)]
     pub(super) fn run_detached(
         self,
         events: mpsc::Sender<AdapterEvent>,
