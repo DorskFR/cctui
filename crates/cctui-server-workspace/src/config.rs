@@ -464,7 +464,7 @@ impl Config {
     /// `CCTUI_ADMIN_TOKENS`, comma-separated, tracked for reloads; the whole
     /// value may be a secret ref resolving to that list. `None` when unset.
     pub async fn admin_tokens(secrets: &SecretRegistry) -> anyhow::Result<Option<Secret>> {
-        admin_tokens_from(secrets, env::var(ADMIN_TOKENS_ENV).ok()).await
+        admin_tokens_from(secrets, env::var(ADMIN_TOKENS_ENV).ok().as_deref()).await
     }
 }
 
@@ -472,10 +472,10 @@ pub const ADMIN_TOKENS_ENV: &str = "CCTUI_ADMIN_TOKENS";
 
 async fn admin_tokens_from(
     secrets: &SecretRegistry,
-    raw: Option<String>,
+    raw: Option<&str>,
 ) -> anyhow::Result<Option<Secret>> {
     let Some(raw) = raw else { return Ok(None) };
-    Ok(Some(secrets.register(ADMIN_TOKENS_ENV, &raw).await?))
+    Ok(Some(secrets.register(ADMIN_TOKENS_ENV, raw).await?))
 }
 
 /// Each dispatcher's `token` may be a secret ref, tracked for reloads. Errors
@@ -736,12 +736,12 @@ mod tests {
         };
         let cfg = Config::from_secrets(&file_registry(), env).await.unwrap();
         assert_eq!(cfg.database_url, "postgres://user:pw@host/db");
-        assert_eq!(current(cfg.ntfy_token.as_ref()).as_deref(), Some("ntfy-tok"));
-        assert_eq!(current(cfg.emoji_token.as_ref()).as_deref(), Some("tok:with:colons"));
+        assert_eq!(cfg.ntfy_token.as_ref().map(value).as_deref(), Some("ntfy-tok"));
+        assert_eq!(cfg.emoji_token.as_ref().map(value).as_deref(), Some("tok:with:colons"));
     }
 
-    fn current(secret: Option<&Secret>) -> Option<String> {
-        secret.map(|s| s.get().to_string())
+    fn value(secret: &Secret) -> String {
+        secret.get().to_string()
     }
 
     #[tokio::test]
@@ -773,10 +773,10 @@ mod tests {
             };
             let cfg = Config::from_secrets(&map_registry("dispatch-tok").1, env).await.unwrap();
             let tokens: Vec<_> =
-                cfg.http_dispatchers.iter().map(|d| current(d.bearer.as_ref())).collect();
+                cfg.http_dispatchers.iter().map(|d| d.bearer.as_ref().map(value)).collect();
             let want = [Some("dispatch-tok".to_owned()), Some("plain:tok".to_owned()), None];
             assert_eq!(tokens, want, "{reference}");
-            let legacy = current(cfg.dispatchers[0].bearer.as_ref());
+            let legacy = cfg.dispatchers[0].bearer.as_ref().map(value);
             assert_eq!(legacy.as_deref(), Some("dispatch-tok"), "{reference}");
         }
     }
@@ -833,7 +833,7 @@ mod tests {
         let cfg = Config::from_secrets(&registry, env).await.unwrap();
         let sent = cfg.http_dispatchers[0].bearer.as_ref().unwrap().subscribe();
         let legacy = cfg.dispatchers[0].bearer.as_ref().unwrap().subscribe();
-        assert_eq!(current(cfg.github_token.as_ref()).as_deref(), Some("tok-v1"));
+        assert_eq!(cfg.github_token.as_ref().map(value).as_deref(), Some("tok-v1"));
 
         map.set(Some("tok-v2"));
         registry.reload().await;
@@ -843,7 +843,7 @@ mod tests {
             ("litellm", &cfg.claude_litellm_token),
             ("emoji", &cfg.emoji_token),
         ] {
-            assert_eq!(current(token.as_ref()).as_deref(), Some("tok-v2"), "{name}");
+            assert_eq!(token.as_ref().map(value).as_deref(), Some("tok-v2"), "{name}");
         }
         assert_eq!(cfg.emoji_picker().unwrap().token.as_deref(), Some("tok-v2"));
         assert_eq!(&**sent.borrow(), "tok-v2", "http dispatcher");
@@ -851,7 +851,7 @@ mod tests {
 
         map.set(None);
         assert!(registry.reload().await.failed > 0);
-        assert_eq!(current(cfg.ntfy_token.as_ref()).as_deref(), Some("tok-v2"));
+        assert_eq!(cfg.ntfy_token.as_ref().map(value).as_deref(), Some("tok-v2"));
     }
 
     #[tokio::test]
@@ -866,13 +866,13 @@ mod tests {
         assert_eq!(cfg.github_token.as_ref().map(Secret::name), Some("GH_TOKEN"));
         map.set(Some("gh-v2"));
         registry.reload().await;
-        assert_eq!(current(cfg.github_token.as_ref()).as_deref(), Some("gh-v2"));
+        assert_eq!(cfg.github_token.as_ref().map(value).as_deref(), Some("gh-v2"));
     }
 
     #[tokio::test]
     async fn a_reloaded_admin_tokens_ref_swaps_the_accepted_token() {
         let (map, registry) = map_registry("adm-old");
-        let admin = admin_tokens_from(&registry, Some(REF.to_owned())).await.unwrap().unwrap();
+        let admin = admin_tokens_from(&registry, Some(REF)).await.unwrap().unwrap();
         let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
         pool.close().await;
         let auth =

@@ -55,6 +55,7 @@ impl HttpDispatcher {
         Self::reloadable(id, url, token.map(|t| watch::channel(Arc::from(t)).1), client)
     }
 
+    #[must_use]
     pub fn reloadable(
         id: impl Into<String>,
         url: impl Into<String>,

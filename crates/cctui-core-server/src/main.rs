@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let vault_key = cctui_crypto::vault_key_checked()?;
     let admin = secret("CCTUI_ADMIN_TOKENS");
-    let admin_tokens = admin.as_ref().map(|s| parse_admin_tokens(&s.get())).unwrap_or_default();
+    let admin_tokens = admin.as_ref().map_or_else(Vec::new, |s| parse_admin_tokens(&s.get()));
     anyhow::ensure!(!admin_tokens.is_empty(), "CCTUI_ADMIN_TOKENS is required");
     let address = format!(
         "{}:{}",

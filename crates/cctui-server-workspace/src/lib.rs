@@ -153,7 +153,7 @@ async fn bootstrap(
     follow_litellm_token(&pool, &config);
     let admin_tokens = Config::admin_tokens(secrets).await?;
     let auth_config = auth::AuthConfig::new(
-        admin_tokens.as_ref().map(|s| auth::parse_admin_tokens(&s.get())).unwrap_or_default(),
+        admin_tokens.as_ref().map_or_else(Vec::new, |s| auth::parse_admin_tokens(&s.get())),
         pool.clone(),
     );
     // resolve CCTUI_ADMIN_TOKENS to a seeded admin user + api_keys rows

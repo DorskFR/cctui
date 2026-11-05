@@ -20,6 +20,7 @@ fn env_u32(name: &str, default: u32) -> u32 {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
+#[must_use]
 pub fn slow_query_ms() -> u32 {
     env_u32("CCTUI_DB_SLOW_QUERY_MS", 500)
 }
