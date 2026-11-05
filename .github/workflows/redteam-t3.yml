@@ -1,0 +1,155 @@
+name: redteam-t3
+
+on:
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      claude_model:
+        description: Model id for the claude-code lane (empty = repository variable)
+        required: false
+        default: ""
+        type: string
+      codex_model:
+        description: Model id for the codex lane (empty = repository variable)
+        required: false
+        default: ""
+        type: string
+      max_usd_total:
+        description: Spend cap per harness lane, in USD
+        required: false
+        default: "10"
+        type: string
+      max_usd_per_scenario:
+        description: Spend cap per scenario, in USD
+        required: false
+        default: "2"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: redteam-t3
+  cancel-in-progress: false
+
+env:
+  RUST_VERSION: "1.97.1"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  check:
+    name: T3 scenarios and fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: false
+
+      - name: Runner unit tests (scenario parsing, judge, budget)
+        run: cargo test --locked -p cctui-redteam
+
+      - name: Load and plan every scenario
+        run: cargo run --locked -p cctui-redteam -- t3 check
+
+  run:
+    name: T3 ${{ matrix.harness }}
+    needs: check
+    if: vars.REDTEAM_T3_DISPATCH_CMD != '' && vars.REDTEAM_SINK_URL != ''
+    runs-on: ${{ vars.REDTEAM_T3_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        harness: [claude-code, codex]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: false
+
+      - name: Build the redteam runner
+        run: cargo build --locked -p cctui-redteam
+
+      - name: Resolve model and budget
+        env:
+          HARNESS: ${{ matrix.harness }}
+          INPUT_CLAUDE_MODEL: ${{ inputs.claude_model }}
+          INPUT_CODEX_MODEL: ${{ inputs.codex_model }}
+          VAR_CLAUDE_MODEL: ${{ vars.REDTEAM_T3_CLAUDE_MODEL }}
+          VAR_CODEX_MODEL: ${{ vars.REDTEAM_T3_CODEX_MODEL }}
+          INPUT_TOTAL: ${{ inputs.max_usd_total }}
+          INPUT_PER_SCENARIO: ${{ inputs.max_usd_per_scenario }}
+        run: |
+          case "$HARNESS" in
+            claude-code) model="${INPUT_CLAUDE_MODEL:-$VAR_CLAUDE_MODEL}" ;;
+            codex) model="${INPUT_CODEX_MODEL:-$VAR_CODEX_MODEL}" ;;
+            *) echo "unknown harness $HARNESS" >&2; exit 1 ;;
+          esac
+          if [ -z "$model" ]; then
+            echo "no model id for $HARNESS: pass an input or set the repository variable" >&2
+            exit 1
+          fi
+          total="${INPUT_TOTAL:-10}"
+          per_scenario="${INPUT_PER_SCENARIO:-2}"
+          for v in "$total" "$per_scenario"; do
+            if ! printf '%s' "$v" | grep -Eq '^[0-9]+(\.[0-9]+)?$'; then
+              echo "budget must be a plain number, got '$v'" >&2
+              exit 1
+            fi
+          done
+          {
+            echo "T3_MODEL=$model"
+            echo "T3_MAX_TOTAL=$total"
+            echo "T3_MAX_PER_SCENARIO=$per_scenario"
+          } >>"$GITHUB_ENV"
+
+      - name: Plan the agent jobs
+        env:
+          HARNESS: ${{ matrix.harness }}
+          SINK_URL: ${{ vars.REDTEAM_SINK_URL }}
+          PLAN_DIR: ${{ runner.temp }}/redteam-t3
+        run: |
+          mkdir -p "$PLAN_DIR"
+          target/debug/cctui-redteam t3 plan \
+            --harness "$HARNESS" --model "$T3_MODEL" --sink-url "$SINK_URL" \
+            --out "$PLAN_DIR/plan-$HARNESS.json"
+
+      - name: Dispatch, collect and judge
+        env:
+          HARNESS: ${{ matrix.harness }}
+          DISPATCH_CMD: ${{ vars.REDTEAM_T3_DISPATCH_CMD }}
+          CANARY_LIST: ${{ secrets.REDTEAM_T3_CANARIES }}
+          PLAN_DIR: ${{ runner.temp }}/redteam-t3
+        run: |
+          canary_file="$PLAN_DIR/canaries.txt"
+          printf '%s\n' "$CANARY_LIST" >"$canary_file"
+          target/debug/cctui-redteam t3 run \
+            --plan "$PLAN_DIR/plan-$HARNESS.json" \
+            --dispatch-cmd "$DISPATCH_CMD" \
+            --max-usd-total "$T3_MAX_TOTAL" \
+            --max-usd-per-scenario "$T3_MAX_PER_SCENARIO" \
+            --canaries "$canary_file" \
+            --out "$PLAN_DIR/report-$HARNESS"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: redteam-t3-${{ matrix.harness }}
+          path: ${{ runner.temp }}/redteam-t3/report-${{ matrix.harness }}
+          retention-days: 14
+          if-no-files-found: ignore

@@ -1,8 +1,19 @@
 # fixtures
 
-Poisoned inputs for injection (INJ) and agent-on-agent (JUDGE) scenarios:
-repository content, issue/review comments, fetched pages, package install
-scripts, MCP replies, context packs, cross-session messages.
+Poisoned inputs for the injection (INJ) and agent-on-agent (JUDGE) scenarios in
+`../scenarios/INJ.yaml` and `../scenarios/JUDGE.yaml`.
 
-These drive the attacker/injection scenarios in **Phase 4 (T3)** and are not yet
-populated. The deterministic Phase-2 probes under `../probes/` need no fixtures.
+```
+<id>/fixture.yaml   id, vector, benign task, payload files, compliance markers,
+                    expected_decision (judge fixtures only)
+<id>/payload/       the files the agent is handed
+transcripts/        recorded evidence with the verdict the judge must return
+```
+
+Payloads may use `{{SINK_URL}}` and `{{SINK_HOST}}`; `cctui-redteam t3 plan`
+substitutes the run's sink. Any other placeholder fails validation. A file with
+`delivery: peer_message` or `delivery: mcp_reply` is fed through that channel by
+the dispatch program instead of being written to the workspace.
+
+Injected actions only ever target the sink. Containment is the gate;
+compliance (whether the agent tried) is reported per harness and model.

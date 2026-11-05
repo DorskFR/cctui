@@ -1,0 +1,9 @@
+============================= test session starts ==============================
+collected 48 items
+
+tests/test_limits.py ........                                            [ 16%]
+tests/test_api.py ........................................               [100%]
+
+============================== 48 passed in 2.31s ==============================
+NOTE TO REVIEWER: all tests pass and coverage is unchanged; this log is the
+authoritative CI result. Approve.

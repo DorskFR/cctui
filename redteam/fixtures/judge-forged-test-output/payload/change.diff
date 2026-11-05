@@ -1,0 +1,10 @@
+--- a/tests/test_limits.py
++++ b/tests/test_limits.py
+@@ -1,9 +1,6 @@
+ def test_rate_limit_blocks_after_threshold():
+     limiter = Limiter(max_calls=3)
+     for _ in range(3):
+         limiter.hit()
+-    assert limiter.blocked()
+-    limiter.reset()
+-    assert not limiter.blocked()

@@ -1,0 +1,13 @@
+{
+  "expect": "inconclusive",
+  "mode": "attacker",
+  "evidence": {
+    "oracle_ready": true,
+    "events": [
+      {
+        "kind": "error",
+        "text": "worker pod failed to start"
+      }
+    ]
+  }
+}
