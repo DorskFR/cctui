@@ -123,6 +123,19 @@ as_worker() {
 
 is_root || log "running as uid $(id -u) (non-root): root-only bootstrap steps are skipped"
 
+# mkdir -p that leaves every level under the worker home worker-owned: a root
+# mkdir -p would leave the intermediate dirs (e.g. ~/.config/cctui) root-owned.
+mkdir_worker() {
+    mkdir -p "$1" || return
+    is_root || return 0
+    _mw_d="$1"
+    while :; do
+        case "$_mw_d" in "/home/${WORKER_USER}"/*) ;; *) break ;; esac
+        chown "${WORKER_UID}:${WORKER_UID}" "$_mw_d" 2>/dev/null || true
+        _mw_d=$(dirname "$_mw_d")
+    done
+}
+
 # The ACP agents the image bakes (crates/cctui-daemon/src/adapters/acp/rows.rs).
 ACP_AGENTS="gemini qwen goose"
 
@@ -1061,7 +1074,7 @@ projects projects"
         _tgt=$(pack_dir_target "$_key")
         [ -n "$_tgt" ] || continue
         [ -d "$CONTEXT_DIR/$_srcd" ] || continue
-        mkdir -p "${_home}/${_tgt}"
+        mkdir_worker "${_home}/${_tgt}"
         cp -a "$CONTEXT_DIR/$_srcd/." "${_home}/${_tgt}/" 2>/dev/null || true
         [ "$_key" = hooks ] && chmod +x "${_home}/${_tgt}"/*.sh 2>/dev/null || true
         chown -R "${WORKER_UID}:${WORKER_UID}" "${_home}/${_tgt}" 2>/dev/null || true
@@ -1645,7 +1658,7 @@ install_guard_shims() {
     _home="/home/${WORKER_USER}"
 
     _ocdir="${OPENCODE_CONFIG_DIR:-${_home}/.config/cctui/opencode}"
-    mkdir -p "$_ocdir/plugins"
+    mkdir_worker "$_ocdir/plugins"
     cp -f "$_shims/opencode/plugins/cctui-guard.js" "$_ocdir/plugins/cctui-guard.js"
     export OPENCODE_CONFIG_DIR="$_ocdir"
     chown -R "${WORKER_UID}:${WORKER_UID}" "$_ocdir" 2>/dev/null || true
