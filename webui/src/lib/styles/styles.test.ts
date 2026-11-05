@@ -249,7 +249,7 @@ describe('kit-overrides.css', () => {
 describe('deprecated spacing steps', () => {
 	// --sp-1-5 (6 px) and --sp-5 (20 px) sit off the 4/8/12/16/24/32/48 scale.
 	// Lower the baseline as call sites move; never raise it.
-	const BASELINE = 1;
+	const BASELINE = 0;
 
 	it('are used no more than the recorded baseline', () => {
 		const sources = (dir: string, out: string[] = []): string[] => {
