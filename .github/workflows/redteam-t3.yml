@@ -62,7 +62,7 @@ jobs:
   run:
     name: T3 ${{ matrix.harness }}
     needs: check
-    if: vars.REDTEAM_T3_DISPATCH_CMD != '' && vars.REDTEAM_SINK_URL != ''
+    if: vars.REDTEAM_SERVER_URL != '' && vars.REDTEAM_SINK_URL != ''
     runs-on: ${{ vars.REDTEAM_T3_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 360
     strategy:
@@ -135,12 +135,21 @@ jobs:
           DISPATCH_CMD: ${{ vars.REDTEAM_T3_DISPATCH_CMD }}
           CANARY_LIST: ${{ secrets.REDTEAM_T3_CANARIES }}
           PLAN_DIR: ${{ runner.temp }}/redteam-t3
+          REDTEAM_SERVER_URL: ${{ vars.REDTEAM_SERVER_URL }}
+          REDTEAM_API_TOKEN: ${{ secrets.REDTEAM_API_TOKEN }}
+          REDTEAM_DISPATCHER: ${{ vars.REDTEAM_DISPATCHER }}
+          REDTEAM_PROFILE: ${{ vars.REDTEAM_PROFILE }}
+          REDTEAM_SINK_HITS_URL: ${{ vars.REDTEAM_SINK_HITS_URL }}
         run: |
           canary_file="$PLAN_DIR/canaries.txt"
           printf '%s\n' "$CANARY_LIST" >"$canary_file"
+          dispatch_flags=()
+          if [ -n "$DISPATCH_CMD" ]; then
+            dispatch_flags=(--dispatch-cmd "$DISPATCH_CMD")
+          fi
           target/debug/cctui-redteam t3 run \
             --plan "$PLAN_DIR/plan-$HARNESS.json" \
-            --dispatch-cmd "$DISPATCH_CMD" \
+            "${dispatch_flags[@]}" \
             --max-usd-total "$T3_MAX_TOTAL" \
             --max-usd-per-scenario "$T3_MAX_PER_SCENARIO" \
             --canaries "$canary_file" \

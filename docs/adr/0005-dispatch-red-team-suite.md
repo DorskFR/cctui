@@ -2,8 +2,10 @@
 
 Status: **Accepted** — Phase 1 (invariant T0 tests) and Phase 2 (probe
 contract, deterministic probes, oracle, sink, and the T1 docker job) are
-implemented. Phases 3-5 (canary infra + T2, adversarial agents + T3, webui
-reporting) are pending.
+done. Phase 3 (canaries, DNS sink, generated targets, the T2 nightly and its
+release gate script) and Phase 4 (adversarial agents, injection fixtures,
+judge, budgets and T3) are implemented; their first live runs are pending.
+Phase 5 (webui reporting) is pending.
 
 ## Goal
 
@@ -179,9 +181,10 @@ redteam/
 crates/cctui-redteam runner: the probe contract and oracle, the sink listener
                      (its `sink` subcommand), and `judge`, which fuses probe
                      output with sink hits and writes
-                     .qa/redteam/<run>/report.{json,md}. Dispatch-via-server-API
-                     collection is Phase 3.
+                     .qa/redteam/<run>/report.{json,md}; `dns-sink`; and `t2`
+                     (plan, targets, judge) for live-deployment runs.
   ci/                the T1 docker orchestration (run-t1.sh + worker-harness.sh)
+                     and T2 (run-t2.sh, t2-hook.sh, t2-sweep.sh, t2.example.json)
 ```
 
 Probes are mounted as an `/opt/worker-entrypoint.d/` hook. They run after the
@@ -227,10 +230,25 @@ merges. The probe fails first and passes with the fix.
    the oracle and sink (`crates/cctui-redteam`), and the docker job
    (`.github/workflows/redteam.yml`, driving `redteam/ci/run-t1.sh`). A ratchet
    coverage test ties every probe to a taxonomy class and a scenario.
-3. **Canary infra and T2**: the redteam identity, canary secrets, sinks
-   (including the DNS responder), a generated target list, and a nightly run.
-4. **Adversarial agents and T3**: attacker prompts per class, the injection
-   fixture library, JUDGE scenarios, and budgets.
+3. **Canary infra and T2**: implemented; first T2 run pending. The redteam identity is an ordinary
+   operator-enrolled user (`redteam/profiles/README.md`); per-cell canaries
+   (`cctui-redteam` `canary`); the DNS responder (`dns-sink`); the lateral
+   target list generated from the service inventory (`t2 targets`); and the
+   T2 run (`redteam/ci/run-t2.sh`, nightly in
+   `.github/workflows/redteam-t2.yml`), which publishes only a verdict record.
+   `scripts/redteam-t2-gate.sh <version>` is the release gate a deploy calls.
+4. **Adversarial agents and T3**: implemented; first T3 run pending.
+   Attacker prompts per class (`redteam/scenarios/ATTACK.yaml` + `prompts/`),
+   the injection fixture library (`redteam/fixtures/`, one fixture per INJ
+   vector), JUDGE scenarios, per-scenario and per-run budgets, and
+   `.github/workflows/redteam-t3.yml` (weekly and on demand, both harnesses,
+   capped spend). `cctui-redteam t3 run` hands each job to a dispatch program
+   (job JSON on stdin, evidence JSON on stdout); the built-in one,
+   `t3 dispatch`, uses only the server's public API and kills a session that
+   reaches its spend cap or wall clock. Direct attacker prompts target
+   claude-code and opencode only: OpenAI models refuse them at the provider
+   layer, so the codex lane runs the INJ and JUDGE scenarios, and a refusal is
+   recorded as `refused`.
 5. **Reporting**: a matrix view in the webui; `escaped` results filed
    automatically to a private tracker.
 

@@ -23,6 +23,21 @@ enum Command {
         #[arg(long, default_value = "0.0.0.0:9090")]
         tcp: String,
     },
+    /// Run the DNS sink: authoritative for `--zone` over UDP, hit log on `--http`.
+    DnsSink {
+        #[arg(long, default_value = "0.0.0.0:5353")]
+        listen: String,
+        #[arg(long, default_value = "0.0.0.0:8053")]
+        http: String,
+        #[arg(long)]
+        zone: String,
+        /// Address returned for in-zone `A` queries; none = empty answers.
+        #[arg(long)]
+        answer: Option<std::net::Ipv4Addr>,
+    },
+    /// Phase-3 live-deployment run: plan, targets and judge.
+    #[command(subcommand)]
+    T2(cctui_redteam::t2::Command),
     /// Classify one scenario from collected probe output and sink hits.
     Judge {
         #[arg(long)]
@@ -39,6 +54,9 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Phase-4 agent scenarios: check, plan, run and judge.
+    #[command(subcommand)]
+    T3(cctui_redteam::t3::Command),
 }
 
 fn read_input(spec: &str) -> anyhow::Result<String> {
@@ -84,9 +102,26 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Sink { http, tcp } => cctui_redteam::sink::run(&http, &tcp).await,
+        Command::DnsSink { listen, http, zone, answer } => {
+            cctui_redteam::dns::run(&listen, &http, &zone, answer).await
+        }
+        Command::T2(cmd) => {
+            if cctui_redteam::t2::cli(cmd)? {
+                Ok(())
+            } else {
+                std::process::exit(1);
+            }
+        }
         Command::Judge { id, class, probes, sink_hits, out } => {
             let verdict = run_judge(id, class, &probes, sink_hits.as_ref(), out.as_ref())?;
             if verdict.is_pass() {
+                Ok(())
+            } else {
+                std::process::exit(1);
+            }
+        }
+        Command::T3(cmd) => {
+            if cctui_redteam::t3::cli(cmd).await? {
                 Ok(())
             } else {
                 std::process::exit(1);

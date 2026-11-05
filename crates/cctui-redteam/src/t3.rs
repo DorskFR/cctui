@@ -232,8 +232,12 @@ pub enum Command {
     Run {
         #[arg(long)]
         plan: PathBuf,
+        /// Dispatch program; absent = this binary's own `t3 dispatch`.
         #[arg(long)]
-        dispatch_cmd: PathBuf,
+        dispatch_cmd: Option<PathBuf>,
+        /// Argument passed to `--dispatch-cmd`, repeatable.
+        #[arg(long = "dispatch-arg", allow_hyphen_values = true)]
+        dispatch_args: Vec<String>,
         #[arg(long)]
         max_usd_total: f64,
         #[arg(long)]
@@ -244,6 +248,11 @@ pub enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Dispatch one job (JSON on stdin) through the server API and print its evidence JSON.
+    ///
+    /// Reads `REDTEAM_SERVER_URL`, `REDTEAM_API_TOKEN`, `REDTEAM_DISPATCHER`,
+    /// `REDTEAM_PROFILE`, `REDTEAM_SINK_HITS_URL` and `REDTEAM_POLL_SECS`.
+    Dispatch,
     /// Judge one job's collected evidence.
     Judge {
         #[arg(long)]
@@ -275,7 +284,8 @@ fn check(scenarios: &Path, fixtures: &Path) -> anyhow::Result<bool> {
 
 fn run(
     plan_path: &Path,
-    dispatch_cmd: PathBuf,
+    dispatch_cmd: Option<PathBuf>,
+    dispatch_args: Vec<String>,
     caps: (f64, f64),
     canaries: Option<&Path>,
     out: &Path,
@@ -283,8 +293,11 @@ fn run(
     let jobs: Vec<AgentJob> = serde_json::from_str(&std::fs::read_to_string(plan_path)?)?;
     let canaries = read_canaries(canaries)?;
     let mut ledger = Ledger::new(caps.0, caps.1);
-    let mut d =
-        CommandDispatch { program: dispatch_cmd, args: Vec::new(), grace: Duration::from_mins(1) };
+    let (program, args) = match dispatch_cmd {
+        Some(program) => (program, dispatch_args),
+        None => (std::env::current_exe()?, vec!["t3".to_owned(), "dispatch".to_owned()]),
+    };
+    let mut d = CommandDispatch { program, args, grace: Duration::from_mins(1) };
     let reports = run_jobs(&jobs, &mut ledger, &canaries, &mut d);
     std::fs::create_dir_all(out)?;
     std::fs::write(out.join("report.json"), serde_json::to_string_pretty(&reports)?)?;
@@ -295,7 +308,7 @@ fn run(
 }
 
 /// Run a `t3` subcommand; `Ok(false)` means the run did not pass.
-pub fn cli(cmd: Command) -> anyhow::Result<bool> {
+pub async fn cli(cmd: Command) -> anyhow::Result<bool> {
     match cmd {
         Command::Check { scenarios, fixtures } => check(&scenarios, &fixtures),
         Command::Plan { scenarios, fixtures, harness, model, sink_url, out } => {
@@ -309,6 +322,7 @@ pub fn cli(cmd: Command) -> anyhow::Result<bool> {
         Command::Run {
             plan: plan_path,
             dispatch_cmd,
+            dispatch_args,
             max_usd_total,
             max_usd_per_scenario,
             canaries,
@@ -316,10 +330,12 @@ pub fn cli(cmd: Command) -> anyhow::Result<bool> {
         } => run(
             &plan_path,
             dispatch_cmd,
+            dispatch_args,
             (max_usd_total, max_usd_per_scenario),
             canaries.as_deref(),
             &out,
         ),
+        Command::Dispatch => crate::dispatch::cli_main().await,
         Command::Judge { job, evidence, canaries } => {
             let job: AgentJob = serde_json::from_str(&std::fs::read_to_string(job)?)?;
             let ev: Evidence = serde_json::from_str(&std::fs::read_to_string(evidence)?)?;
