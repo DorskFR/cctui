@@ -84,7 +84,7 @@
 	"access_policy_confirm_remove": "Remove the dispatch policy of {name}? It will dispatch unrestricted again.",
 	"access_tabs_label": "Access sections",
 	"access_tag_admin": "admin",
-	"access_title": "Access",
+	"access_title": "Users & keys",
 	"access_user_meta": "{machines} machines · {accounts} accounts",
 	"account_delete_help": "Deleting \"{name}\" removes the identity and every provider credential under it. This cannot be undone.",
 	"account_emoji_clear": "Clear",
@@ -214,6 +214,15 @@
 	"accounts_soft_limits_label": "Soft limits",
 	"accounts_title": "Accounts",
 	"accounts_until": "until",
+	"acct_delete_title": "Delete account \"{name}\"?",
+	"acct_pool_delete_title": "Delete pool \"{name}\"?",
+	"acct_remove_provider_confirm": "Remove provider",
+	"acct_remove_provider_help": "Remove the {provider} credential from \"{name}\". The account and its other providers stay.",
+	"acct_remove_provider_message": "Sessions on this account can no longer run on {provider}, and its usage and limits stop being tracked. The account and its other providers stay.",
+	"acct_remove_provider_title": "Remove {provider} from \"{name}\"?",
+	"acct_share_revoke_confirm": "Revoke access",
+	"acct_share_revoke_message": "{name} can no longer use {noun} for new sessions.",
+	"launch_manage_profiles": "Manage profiles…",
 	"ask_answered": "Answered.",
 	"ask_answering": "Answering…",
 	"ask_choose_any": "(choose any)",
@@ -270,6 +279,49 @@
 	"common_all": "All",
 	"common_apply": "Apply",
 	"common_cancel": "Cancel",
+	"ds_stat_tokens": [
+		{
+			"declarations": ["input n", "input v", "local nPlural = n: plural"],
+			"selectors": ["nPlural"],
+			"match": {
+				"nPlural=one": "{v} token",
+				"nPlural=other": "{v} tokens"
+			}
+		}
+	],
+	"ds_stat_tools": [
+		{
+			"declarations": ["input n", "input v", "local nPlural = n: plural"],
+			"selectors": ["nPlural"],
+			"match": {
+				"nPlural=one": "{v} tool",
+				"nPlural=other": "{v} tools"
+			}
+		}
+	],
+	"ds_stat_files": [
+		{
+			"declarations": ["input n", "input v", "local nPlural = n: plural"],
+			"selectors": ["nPlural"],
+			"match": {
+				"nPlural=one": "{v} file",
+				"nPlural=other": "{v} files"
+			}
+		}
+	],
+	"ds_stat_messages": [
+		{
+			"declarations": ["input n", "input v", "local nPlural = n: plural"],
+			"selectors": ["nPlural"],
+			"match": {
+				"nPlural=one": "{v} message",
+				"nPlural=other": "{v} messages"
+			}
+		}
+	],
+	"ds_stat_input": "{v} input",
+	"ds_stat_output": "{v} output",
+	"ds_stat_cache": "{v} cached",
 	"common_clipboard_unavailable": "Clipboard unavailable",
 	"common_close": "Close",
 	"common_confirm": "Confirm",
@@ -715,6 +767,24 @@
 	"drawer_model_aria": "Model",
 	"drawer_more_actions": "More actions",
 	"drawer_terminal_label": "Terminal",
+	"chrome_stop": "Stop",
+	"chrome_stop_title": "Stop the running turn",
+	"chrome_text_size": "Text size",
+	"chrome_auto_approve_on": "Auto-approve: on",
+	"chrome_auto_approve_off": "Auto-approve: off",
+	"chrome_panels": "Panels",
+	"chrome_panels_aria": "Show or hide side panels",
+	"chrome_context_narrow": "Context {count}",
+	"chrome_cost_langfuse": "{cost} · Langfuse",
+	"chrome_cost_estimate": "{cost} · estimate",
+	"chrome_cost_estimate_title": "Estimated by the harness from token prices; Langfuse is not configured or has no traces yet",
+	"chrome_cost_harness_row": "Harness estimate",
+	"chrome_cost_plan": "Billed to plan",
+	"chrome_close_conversation": "Close conversation",
+	"chrome_missing_title": "This session was archived or deleted",
+	"chrome_missing_body": "No session with id {id} is open to you. Archived sessions are still reachable from the archived search.",
+	"chrome_missing_search": "Search archived sessions",
+	"chrome_missing_back": "Back to sessions",
 	"drawer_no_inplace_model_title": "Claude can't switch model in place — fork to change model",
 	"drawer_rename": "Rename",
 	"drawer_resize_panel": "Resize panel",
@@ -853,7 +923,7 @@
 	"home_cache_loss_title_7d": "Lost to cache busts · last 7 days",
 	"home_cache_loss_ttl_expired": "TTL expired",
 	"home_cache_loss_unknown": "Unknown",
-	"home_enroll_install": "Install {daemon} on the target machine (from GitHub Releases), then enroll it with a user token (create one on the Access page):",
+	"home_enroll_install": "Install {daemon} on the target machine (from GitHub Releases), then enroll it with a user token (create one under Users & keys):",
 	"home_enroll_run_as_service": "Then run it as a service:",
 	"home_enroll_title": "Enroll a machine",
 	"home_overview_title": "Overview",
@@ -948,6 +1018,63 @@
 	"limits_never": "never",
 	"limits_unlimited": "unlimited",
 	"limits_using": "▲ using {pct}%",
+	"list_auto_approve": "auto-approve",
+	"list_confirm_discard": "Discard",
+	"list_failed_cause_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} dispatch",
+				"countPlural=other": "{count} dispatches"
+			}
+		}
+	],
+	"list_failed_details": "Details",
+	"list_failed_dismiss_message": "They leave the session list and stay listed under Failed dispatches for 7 days.",
+	"list_failed_dismiss_title": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "Dismiss {count} failed dispatch?",
+				"countPlural=other": "Dismiss {count} failed dispatches?"
+			}
+		}
+	],
+	"list_failed_mixed": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} cause",
+				"countPlural=other": "{count} different causes"
+			}
+		}
+	],
+	"list_failed_review": "Review",
+	"list_failed_summary": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} dispatch failed",
+				"countPlural=other": "{count} dispatches failed"
+			}
+		}
+	],
+	"list_group_count": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} session",
+				"countPlural=other": "{count} sessions"
+			}
+		}
+	],
+	"list_search_field_state": "State",
+	"list_search_placeholder": "Search sessions",
 	"login_invalid_token": "Invalid or unauthorized token.",
 	"login_passkey_button": "Sign in with a passkey",
 	"login_passkey_failed": "That passkey was not accepted. Try again, or sign in with your token.",
@@ -1065,6 +1192,33 @@
 	"nav_user_menu": "Account menu",
 	"nav_users": "Users",
 	"nav_ws_status": "websocket: {status}",
+	"shell_appearance": "Appearance…",
+	"shell_appearance_more": "More in Settings",
+	"shell_appearance_text_size": "Text size",
+	"shell_appearance_theme": "Theme",
+	"shell_appearance_title": "Appearance",
+	"shell_bookmark_delete_confirm": "Delete bookmark",
+	"shell_bookmark_delete_message": "The saved text is gone for good.",
+	"shell_bookmark_delete_title": "Delete this bookmark?",
+	"shell_error_go_sessions": "Go to sessions",
+	"shell_error_not_found_body": "There is no page at this address.",
+	"shell_error_not_found_title": "Page not found",
+	"shell_error_recent": "Recent sessions",
+	"shell_error_title": "Something went wrong",
+	"shell_events": "Events",
+	"shell_nav_unread": "{count} unread",
+	"shell_nav_usage": "Usage",
+	"shell_stat_working": "Working",
+	"shell_status_aria": "Usage and machines: {usage}",
+	"shell_status_machines_heading": "Machines",
+	"shell_status_open_accounts": "Open accounts",
+	"shell_status_providers_heading": "Provider status",
+	"shell_status_usage_heading": "Usage",
+	"shell_status_usage_none": "no usage reported",
+	"shell_status_usage_title": "Fullest window: {window} {pct}% ({account})",
+	"shell_update_chip": "Update to v{version}",
+	"shell_version_check": "Version {version} · Check for updates",
+	"shell_version_mismatch_title": "The web UI and the server run different versions",
 	"net_stats_api": "API (decompressed)",
 	"net_stats_requests": "{count} msg",
 	"net_stats_title": "Data loaded since page load",
@@ -2338,7 +2492,7 @@
 	"conversation_tool_block_dismiss": "Dismiss",
 	"settings_plugins_intro": "Panes and message actions that plug into a session's conversation drawer. Only plugins an admin enabled for this instance are listed; everything is off until you switch it on here.",
 	"settings_plugins_empty_title": "No plugins available",
-	"settings_plugins_empty_help": "An admin installs plugins on this page, or points the server's CCTUI_PLUGINS_DIR at a plugins folder.",
+	"settings_plugins_empty_help": "An admin installs plugins under Settings › Instance › Plugins, or points the server's CCTUI_PLUGINS_DIR at a plugins folder.",
 	"settings_plugins_load_failed": "The plugin list could not be loaded.",
 	"settings_plugins_skills_only": "skills only",
 	"settings_plugins_config_env": "Passed to your sessions as {env}",
@@ -2472,6 +2626,12 @@
 	"voice_dictate_stop": "Stop and send",
 	"voice_dictate_discard": "Discard recording",
 	"voice_live_hint": "Live voice conversation with this session",
+	"tx_line_more": "More message actions",
+	"tx_activity_waiting": "Waiting for you",
+	"tx_activity_waiting_since": "Waiting for you · {ago}",
+	"tx_voice_options": "Voice options",
+	"tx_voice_live": "Live voice",
+	"tx_prompt_tools": "Message tools",
 	"voice_live_connecting": "Connecting",
 	"voice_live_listening": "Listening",
 	"voice_live_thinking": "Thinking",
@@ -2554,5 +2714,109 @@
 	"cctuiverse_disabled_invite": "The prompt contains a cctuiverse invite, but cctuiverse is disabled on this server. Remove the link before launching.",
 	"cctuiverse_label_required": "Give this session a name or a link label before joining.",
 	"cctuiverse_dispatch_unsupported": "The prompt contains a cctuiverse invite: joining needs a machine session. Launch on a machine, or remove the link.",
-	"cctuiverse_label_placeholder": "e.g. my agent"
+	"cctuiverse_label_placeholder": "e.g. my agent",
+	"set_nav_interface": "Interface",
+	"set_nav_accounts": "Accounts",
+	"set_nav_notifications": "Notifications & Voice",
+	"set_scope_instance_admin_only": "Instance · admin only",
+	"set_theme_title": "Theme & look",
+	"set_theme_desc": "Theme, text size, language and toast position follow you on every device. Look, motion and sound effects are kept on this device only.",
+	"set_this_device": "This device",
+	"set_look_help": "Surfaces, edges and elevation; colours stay the same.",
+	"set_motion_help": "Micro-interactions on buttons, switches, tabs and cards.",
+	"set_motion_tune": "Adjust motion effects",
+	"set_sound_help": "Short UI sounds on clicks, toggles and results. Off by default.",
+	"set_sound_tune": "Volume and preview",
+	"set_layout_title": "Layout & panels",
+	"set_panels_title": "Panels on the Sessions screen",
+	"set_panels_col_panel": "Panel",
+	"set_panels_col_shown": "Always visible",
+	"set_panels_col_side": "Side",
+	"set_panels_col_width": "Width",
+	"set_panels_shown_label": "Show the {panel}",
+	"set_panels_side_label": "Side of the {panel}",
+	"set_panels_width_px": "{px} px",
+	"set_panels_width_default": "Default",
+	"set_monitoring_title": "Machines in the header",
+	"set_conversation_display_title": "Conversation display",
+	"set_storage_title": "Storage on this device",
+	"set_profile_title": "Profile",
+	"set_profile_name_label": "Display name",
+	"set_profile_name_help": "An admin can rename you under Instance › Users & keys.",
+	"set_profile_role_label": "Role",
+	"set_profile_role_admin": "Admin",
+	"set_profile_role_user": "User",
+	"set_profile_revoke_label": "Revoke this key",
+	"set_profile_revoke_help": "Revokes {key}, the key this browser signed in with. You are signed out at once.",
+	"set_profile_revoke_help_generic": "Revokes the key this browser signed in with. You are signed out at once.",
+	"set_profile_revoke_button": "Revoke key",
+	"set_profile_revoke_title": "Revoke this key?",
+	"set_profile_revoke_message": "This browser is signed out at once, and anything else using this key stops working. Your other keys and passkeys are not touched.",
+	"set_profile_revoke_confirm": "Revoke key",
+	"set_security_title": "Sign-in & security",
+	"set_device_approvals_label": "Approve a device",
+	"set_device_approvals_help": "A CLI or TUI signing in shows a short code; enter it to let that device in.",
+	"set_device_approvals_link": "Open device approval",
+	"set_my_machines_title": "My machines",
+	"set_my_machines_desc": "Your machines and the harness adapters they offer. An admin manages every machine under Instance.",
+	"set_providers_title": "Provider accounts",
+	"set_providers_desc": "The AI provider accounts and pools sessions run on.",
+	"set_providers_open_board": "Open the full board",
+	"set_launch_title": "Launch & profiles",
+	"set_launch_desc": "What a new session starts with: a saved profile, the harness mode and its name.",
+	"set_profiles_group": "Profiles",
+	"set_automation_title": "Automation",
+	"set_notification_sound_help": "A short ping with each notification. Separate from the UI sound effects under Interface.",
+	"set_voice_group_devices": "Devices",
+	"set_voice_group_listening": "Listening",
+	"set_voice_group_speaking": "Speaking",
+	"set_general_title": "General",
+	"set_self_update_clear_hint": "Saved as soon as a machine and a directory are set; empty the directory to clear it.",
+	"set_harnesses_title": "Machines & harnesses",
+	"set_limits_title": "Limits",
+	"set_uploads_reset_label": "Saved upload caps",
+	"set_event_retention_title": "Event retention",
+	"set_event_retention_label": "Keep events for (days)",
+	"set_event_retention_help": "Older lifecycle events are deleted. 0 keeps every event. Default: {days} days.",
+	"set_event_retention_reset_label": "Saved retention",
+	"set_event_retention_saved": "Event retention saved",
+	"set_network_title": "Gateway & network",
+	"set_integrations_title": "Integrations",
+	"set_instance_plugins_title": "Plugins",
+	"set_plugin_uninstall_title": "Uninstall {name}?",
+	"set_plugin_uninstall_confirm": "Uninstall",
+	"set_plugin_secret_clear_title": "Clear this secret?",
+	"set_plugin_secret_clear_confirm": "Clear secret",
+	"set_plugin_rotate_title": "Rotate the proxy secret?",
+	"set_plugin_rotate_confirm": "Rotate secret",
+	"set_dispatcher_remove_title": "Remove {name}?",
+	"set_dispatcher_remove_confirm": "Remove dispatcher",
+	"set_visibility_label": "Show sessions in my list",
+	"set_visibility_user_label": "Show {name}'s sessions in my list",
+	"set_visibility_machine_label": "Show sessions from {name} in my list",
+	"set_visibility_column": "In my list",
+	"set_user_state_online": "online",
+	"set_user_state_offline": "offline",
+	"set_user_state_machines_online": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} machine online",
+				"countPlural=other": "{count} machines online"
+			}
+		}
+	],
+	"set_events_filter_kind": "Kind",
+	"set_events_filter_severity": "Severity",
+	"set_events_children_created": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} subagent created",
+				"countPlural=other": "{count} subagents created"
+			}
+		}
+	]
 }
