@@ -28,17 +28,15 @@ impl<'a> JobHandle<'a> {
 
     /// Whether `job` runs the session this handle was issued for.
     pub(super) fn owns(self, job: &Job) -> bool {
-        let Some(session) = self.session else { return true };
-        job_session(job).is_none_or(|owner| owner == session)
+        self.session.is_none_or(|session| job_session(job).is_none_or(|owner| owner == session))
     }
 }
 
 /// The handle of `session`'s run in the Job called `name`.
 pub(super) fn format(name: &str, session: Option<&str>) -> String {
-    match session.filter(|s| !s.is_empty()) {
-        Some(session) => format!("jobs/{name}/{session}"),
-        None => format!("jobs/{name}"),
-    }
+    session
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| format!("jobs/{name}"), |session| format!("jobs/{name}/{session}"))
 }
 
 /// The session a Job was created for.
