@@ -114,6 +114,7 @@ fn exporter_filter_admits_request_and_frame_spans_under_a_narrow_log_filter() {
         assert!(tracing::enabled!(target: "cctui_telemetry::http", tracing::Level::INFO));
         assert!(tracing::enabled!(target: "cctui_telemetry::db", tracing::Level::INFO));
         assert!(tracing::enabled!(target: "cctui_server_core::bus", tracing::Level::INFO));
+        assert!(tracing::enabled!(target: "otel", tracing::Level::INFO));
         assert!(!tracing::enabled!(target: "cctui_server_core::bus", tracing::Level::DEBUG));
     });
 }

@@ -21,7 +21,7 @@ pub trait Backend {
 
     type Config: DispatcherConfig;
     type EnrollArgs: Args;
-    type Spawner: Dispatcher;
+    type Spawner: Dispatcher + 'static;
 
     fn config(args: Self::EnrollArgs, enrolled: Enrolled) -> Self::Config;
 

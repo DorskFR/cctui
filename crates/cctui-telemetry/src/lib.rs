@@ -160,7 +160,7 @@ fn env_filter(default_filter: &str) -> EnvFilter {
     EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter))
 }
 
-const EXPORTED_TARGETS: &[&str] = &["cctui_telemetry=info", "cctui_server_core=info"];
+const EXPORTED_TARGETS: &[&str] = &["cctui_telemetry=info", "cctui_server_core=info", "otel=info"];
 
 /// The log filter, widened so request and WS-frame spans are exported
 /// whatever the log targets are.

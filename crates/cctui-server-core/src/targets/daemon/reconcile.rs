@@ -32,16 +32,17 @@ pub async fn archived_jobs(
     machine_id: Uuid,
     shorts: &[String],
 ) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT id FROM sessions \
-         WHERE machine_uuid = $1 AND status = 'archived' AND adapter_id = 'claude-code' \
-           AND left(id, 8) = ANY($2)",
-    )
-    .bind(machine_id)
-    .bind(shorts)
-    .fetch_all(pool)
+    cctui_telemetry::db::traced(ARCHIVED_JOBS, |sql| {
+        sqlx::query_scalar(sql).bind(machine_id).bind(shorts).fetch_all(pool)
+    })
     .await
 }
+
+/// Matches `idx_sessions_archived_claude_short` column for column, predicate for
+/// predicate, so each reported prefix is one index probe.
+const ARCHIVED_JOBS: &str = "SELECT id FROM sessions \
+     WHERE machine_uuid = $1 AND status = 'archived' AND adapter_id = 'claude-code' \
+       AND left(id, 8) = ANY($2)";
 
 /// Rebuild and deliver current configuration to the machine's live daemon.
 pub async fn push_reconcile(
@@ -297,5 +298,59 @@ mod tests {
         ] {
             sqlx::query(sql).bind(uid).execute(&pool).await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn archived_jobs_probes_the_prefix_index_on_a_large_dispatch_machine() {
+        crate::test_support::with_isolated_database("archived_jobs_index", |pool| async move {
+            crate::schema::bootstrap(&pool).await.unwrap();
+            let (uid, machine) = (Uuid::new_v4(), Uuid::new_v4());
+            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, 'dispatch', 'h')")
+                .bind(uid)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', 'mk')",
+            )
+            .bind(machine)
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, \
+                 status, adapter_id) \
+                 SELECT lpad(g::text, 8, '0') || '-job', 'm', $1, $2, '/w', \
+                        CASE WHEN g % 10 = 0 THEN 'active' ELSE 'archived' END, 'claude-code' \
+                 FROM generate_series(1, 5000) g",
+            )
+            .bind(machine)
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("ANALYZE sessions").execute(&pool).await.unwrap();
+
+            let reported: Vec<String> =
+                ["00000042", "00000043", "00000050", "zzzzzzzz"].map(String::from).into();
+            let mut tx = pool.begin().await.unwrap();
+            sqlx::query("SET LOCAL enable_seqscan = off").execute(&mut *tx).await.unwrap();
+            let explain = format!("EXPLAIN (FORMAT JSON) {ARCHIVED_JOBS}");
+            let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(explain))
+                .bind(machine)
+                .bind(&reported)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            tx.rollback().await.unwrap();
+            let plan = plan.to_string();
+            assert!(plan.contains("idx_sessions_archived_claude_short"), "{plan}");
+
+            let mut got = super::archived_jobs(&pool, machine, &reported).await.unwrap();
+            got.sort_unstable();
+            assert_eq!(got, ["00000042-job", "00000043-job"]);
+        })
+        .await;
     }
 }

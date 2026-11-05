@@ -24,6 +24,15 @@ impl Drop for Fixture {
         self.task.abort();
     }
 }
+/// Each test's runtime sweeps under its own lock key, so a parallel test's
+/// runtime never takes its liveness tick.
+fn start_runtime(f: &Fixture) -> cctui_core_server::background::BackgroundTasks {
+    let key = uuid::Uuid::new_v4().as_bytes()[..8].try_into().unwrap();
+    cctui_core_server::background::BackgroundTasks::start_with_liveness_lock(
+        f.host.clone(),
+        i64::from_ne_bytes(key),
+    )
+}
 impl Fixture {
     async fn new() -> Option<Self> {
         Self::with_dispatchers(cctui_server_core::dispatchers::Registry::new()).await
@@ -1306,7 +1315,7 @@ async fn runtime_retires_stale_ephemeral_workers_and_revokes_cached_session_keys
         .await
         .unwrap();
     assert!(disabled, "a zero TTL disables machine retirement");
-    let runtime = cctui_core_server::background::BackgroundTasks::start(f.host.clone());
+    let runtime = start_runtime(&f);
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let retired: bool = sqlx::query_scalar("SELECT revoked_at IS NOT NULL AND deleted_at IS NOT NULL FROM machines WHERE id=$1")
@@ -1367,7 +1376,7 @@ async fn completion_runtime_freezes_failure_payloads_and_preserves_the_retry_bud
     // this exercises delivery failure without contacting an external receiver.
     sqlx::query("INSERT INTO session_webhooks (session_id,notify_url,task_id) VALUES ($1,'https://127.0.0.1:1/hook','fixture-task')")
         .bind(&session).execute(&f.pool).await.unwrap();
-    let runtime = cctui_core_server::background::BackgroundTasks::start(f.host.clone());
+    let runtime = start_runtime(&f);
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let attempts: i32 =
@@ -1710,7 +1719,7 @@ async fn workload_runtime_records_a_dispatcher_reported_oom_as_a_terminal_owned_
             );
         }
     });
-    let runtime = cctui_core_server::background::BackgroundTasks::start(f.host.clone());
+    let runtime = start_runtime(&f);
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let reason: Option<String> =

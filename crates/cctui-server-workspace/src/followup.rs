@@ -139,13 +139,11 @@ pub fn parent_of(req: &SpawnRequest) -> Option<&str> {
 /// Best-effort: a lost intent leaves the session unlinked.
 pub async fn remember_intent(pool: &PgPool, spawn_key: &str, req: &SpawnRequest) {
     let Some(parent) = parent_of(req) else { return };
-    if let Err(e) = sqlx::query(
+    if let Err(e) = cctui_telemetry::db::traced(
         "INSERT INTO session_followup_intents (spawn_key, parent_session_id) VALUES ($1, $2) \
          ON CONFLICT (spawn_key) DO UPDATE SET parent_session_id = EXCLUDED.parent_session_id",
+        |sql| sqlx::query(sql).bind(spawn_key).bind(parent).execute(pool),
     )
-    .bind(spawn_key)
-    .bind(parent)
-    .execute(pool)
     .await
     {
         tracing::warn!(%spawn_key, error = %e, "could not record the follow-up intent");

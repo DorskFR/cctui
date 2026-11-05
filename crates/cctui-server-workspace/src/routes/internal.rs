@@ -90,13 +90,37 @@ fn daemon_response(response: DaemonResponse) -> RouteResponse {
 /// isn't here (it moved, or the presence row was stale) the miss is reported
 /// in the body and the sending pod surfaces it honestly — one hop, never a
 /// re-forward.
+#[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "bus_route"))]
 pub async fn bus_route(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<RouteRequest>,
 ) -> Result<Json<RouteResponse>, StatusCode> {
     authenticate(&state, &headers)?;
-    let outcome: Result<RouteResponse, BusError> = match request {
+    let outcome = deliver_local(&state, request).await;
+    Ok(Json(outcome.unwrap_or_else(|err| RouteResponse::from_error(&err))))
+}
+
+const fn route_op(request: &RouteRequest) -> &'static str {
+    match request {
+        RouteRequest::DaemonCommand { .. } => "daemon_command",
+        RouteRequest::DaemonStageFiles { .. } => "daemon_stage_files",
+        RouteRequest::DaemonListDirs { .. } => "daemon_list_dirs",
+        RouteRequest::DaemonGitInfo { .. } => "daemon_git_info",
+        RouteRequest::DaemonReadFile { .. } => "daemon_read_file",
+        RouteRequest::DaemonDiagnose { .. } => "daemon_diagnose",
+        RouteRequest::DispatcherCommand { .. } => "dispatcher_command",
+        RouteRequest::DispatcherRequest { .. } => "dispatcher_request",
+    }
+}
+
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "deliver_local", bus.route.op = route_op(&request))
+)]
+async fn deliver_local(state: &AppState, request: RouteRequest) -> Result<RouteResponse, BusError> {
+    match request {
         RouteRequest::DaemonCommand { machine, frame } => {
             match crate::bus::peer::frame_session(&frame).map(ToOwned::to_owned) {
                 Some(session) => state
@@ -150,8 +174,7 @@ pub async fn bus_route(
             .request_dispatcher_local(dispatcher, request_id, frame)
             .await
             .map(|frame| RouteResponse::DispatcherReply { frame }),
-    };
-    Ok(Json(outcome.unwrap_or_else(|err| RouteResponse::from_error(&err))))
+    }
 }
 
 /// `POST /internal/bus/publish` — ingest a batch of relayed events into THIS

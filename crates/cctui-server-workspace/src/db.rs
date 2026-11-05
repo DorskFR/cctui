@@ -20,6 +20,20 @@ fn env_u32(name: &str, default: u32) -> u32 {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
+/// Acquiring skips sqlx's liveness ping, a full round trip per statement: a
+/// dead connection fails its query and is dropped, and the idle and lifetime
+/// caps recycle half-open sockets.
+fn pool_options(max_connections: u32, min_connections: u32, acquire_secs: u32) -> PgPoolOptions {
+    let secs = |name, default| Duration::from_secs(u64::from(env_u32(name, default)));
+    PgPoolOptions::new()
+        .max_connections(max_connections)
+        .min_connections(min_connections)
+        .acquire_timeout(Duration::from_secs(u64::from(acquire_secs)))
+        .test_before_acquire(false)
+        .idle_timeout(secs("CCTUI_DB_IDLE_TIMEOUT_SECS", 300))
+        .max_lifetime(secs("CCTUI_DB_MAX_LIFETIME_SECS", 1800))
+}
+
 #[cfg(test)]
 pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
     connect_reporting(database_url).await.map(|(pool, _)| pool)
@@ -40,10 +54,7 @@ pub async fn connect_reporting(database_url: &str) -> Result<(PgPool, Vec<i64>),
         Duration::from_millis(u64::from(slow_query_ms)),
     );
 
-    let pool = PgPoolOptions::new()
-        .max_connections(max_connections)
-        .min_connections(min_connections)
-        .acquire_timeout(Duration::from_secs(u64::from(acquire_timeout)))
+    let pool = pool_options(max_connections, min_connections, acquire_timeout)
         .connect_with(connect_options)
         .await?;
 
@@ -135,6 +146,18 @@ async fn reconcile_migration_checksums(pool: &PgPool) -> Result<(), sqlx::Error>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pool_acquires_without_a_ping_and_recycles_idle_connections() {
+        let options = pool_options(20, 5, 5);
+        assert!(!options.get_test_before_acquire());
+        assert_eq!(options.get_max_connections(), 20);
+        assert_eq!(options.get_min_connections(), 5);
+        assert_eq!(options.get_acquire_timeout(), Duration::from_secs(5));
+        let idle = options.get_idle_timeout().expect("idle timeout set");
+        let lifetime = options.get_max_lifetime().expect("max lifetime set");
+        assert!(idle <= lifetime, "{idle:?} > {lifetime:?}");
+    }
 
     #[tokio::test]
     async fn a_migration_from_a_newer_release_does_not_block_startup() {

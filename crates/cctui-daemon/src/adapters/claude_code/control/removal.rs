@@ -1,10 +1,31 @@
 use super::super::session_registry;
 use super::{
     AdapterEvent, Context, Driver, Duration, HashMap, HashSet, MAX_REMOVE_ATTEMPTS,
-    RemoveInitiator, json, socket,
+    RemoveInitiator, json, mpsc, socket,
 };
+use tracing::Instrument as _;
+
+/// What a removal needs once it leaves the driver loop.
+pub(super) struct Remover {
+    pub(super) claude_bin: String,
+    pub(super) foreign_shorts: HashSet<String>,
+    pub(super) events: mpsc::Sender<AdapterEvent>,
+}
 
 impl Driver {
+    /// Whether this `Remove` may touch `short`. A claude job cctui did not
+    /// start is removed only when a human asked; no automatic path may kill it
+    /// or `claude rm` it.
+    pub(super) fn removal_allowed(
+        foreign: &HashSet<String>,
+        short: &str,
+        initiator: RemoveInitiator,
+    ) -> bool {
+        initiator == RemoveInitiator::User || !foreign.contains(short)
+    }
+}
+
+impl Remover {
     /// Poll the `has` op until the worker is no longer alive (or we give up).
     /// `claude rm` is documented to work on already-exited sessions; racing it
     /// against a still-live worker is undefined, so we drain the kill first.
@@ -37,17 +58,19 @@ impl Driver {
     /// success; any other non-zero exit (typically a worktree with
     /// uncommitted changes) is a real failure the archive must report.
     pub(super) async fn claude_rm(&self, short: &str) -> anyhow::Result<ClaudeRmOutcome> {
-        let mut cmd = tokio::process::Command::new(&self.cfg.claude_bin);
+        let mut cmd = tokio::process::Command::new(&self.claude_bin);
         cmd.arg("rm")
             .arg(short)
             // `claude` lives in `~/.local/bin`, off launchd's minimal PATH
             // — give the child an augmented PATH so exec succeeds.
             .env("PATH", crate::childenv::child_path());
         crate::childenv::ScrubChildEnv::scrub_child_env(&mut cmd);
+        let span = crate::adapter_runtime::child_span!("claude.rm", "claude_rm", short = %short);
         let out = cmd
             .output()
+            .instrument(span)
             .await
-            .with_context(|| format!("spawning `{} rm {short}`", self.cfg.claude_bin))?;
+            .with_context(|| format!("spawning `{} rm {short}`", self.claude_bin))?;
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
         let outcome = classify_claude_rm(out.status.code(), out.status.success(), &stdout, &stderr);
@@ -69,17 +92,6 @@ impl Driver {
             }
         }
         Ok(outcome)
-    }
-
-    /// Whether this `Remove` may touch `short`. A claude job cctui did not
-    /// start is removed only when a human asked; no automatic path may kill it
-    /// or `claude rm` it.
-    pub(super) fn removal_allowed(
-        foreign: &HashSet<String>,
-        short: &str,
-        initiator: RemoveInitiator,
-    ) -> bool {
-        initiator == RemoveInitiator::User || !foreign.contains(short)
     }
 
     /// Stop the worker behind `short` and delete its job metadata.
@@ -108,7 +120,7 @@ impl Driver {
             if *tries > MAX_REMOVE_ATTEMPTS {
                 anyhow::bail!("claude rm {target}: still occupied after {tries} attempts");
             }
-            if !Self::removal_allowed(&self.foreign_shorts, &target, initiator) {
+            if !Driver::removal_allowed(&self.foreign_shorts, &target, initiator) {
                 tracing::info!(
                     %target,
                     "skipping automatic removal of a claude job cctui did not start"
@@ -126,7 +138,7 @@ impl Driver {
                     let occupant = job.filter(|j| {
                         j != &target
                             && !stack.contains(j)
-                            && Self::removal_allowed(&self.foreign_shorts, j, initiator)
+                            && Driver::removal_allowed(&self.foreign_shorts, j, initiator)
                     });
                     if let Some(occupant) = occupant {
                         tracing::info!(%target, %occupant, "removing the occupant first");
@@ -183,7 +195,7 @@ impl Driver {
     /// Surface a `claude rm` occupancy on the session itself, so the UI can
     /// explain why an archived session still owns a job.
     pub(super) async fn report_occupied(&self, local_id: &str, detail: &str) {
-        self.emit(AdapterEvent::Status {
+        let status = AdapterEvent::Status {
             local_id: local_id.to_owned(),
             tempo: None,
             state: None,
@@ -195,8 +207,8 @@ impl Driver {
             effort: None,
             permission_mode: None,
             children: Vec::new(),
-        })
-        .await;
+        };
+        let _ = self.events.send(status).await;
     }
 }
 
@@ -307,14 +319,15 @@ mod tests {
 
         // No socket and no `claude` binary: reaching either the kill or
         // `claude rm` would surface as an error.
-        d.remove_job(
-            std::path::Path::new("/nonexistent/control.sock"),
-            "beefbeef",
-            "sess-1",
-            RemoveInitiator::Automatic,
-        )
-        .await
-        .expect("an automatic remove must report success without acting");
+        d.remover()
+            .remove_job(
+                std::path::Path::new("/nonexistent/control.sock"),
+                "beefbeef",
+                "sess-1",
+                RemoveInitiator::Automatic,
+            )
+            .await
+            .expect("an automatic remove must report success without acting");
     }
 
     #[tokio::test]
@@ -326,6 +339,7 @@ mod tests {
         d.apply_snapshot(vec![human]).await;
 
         let err = d
+            .remover()
             .remove_job(
                 std::path::Path::new("/nonexistent/control.sock"),
                 "beefbeef",

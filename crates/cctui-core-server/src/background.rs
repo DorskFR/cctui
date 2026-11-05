@@ -13,6 +13,13 @@ pub struct BackgroundTasks {
 impl BackgroundTasks {
     #[must_use]
     pub fn start(host: Host) -> Self {
+        Self::start_with_liveness_lock(host, cctui_server_core::dispatch_liveness::SWEEP_LOCK_KEY)
+    }
+
+    /// [`Self::start`] with the advisory lock key its workload sweep takes;
+    /// runtimes sharing a key share one sweeper.
+    #[must_use]
+    pub fn start_with_liveness_lock(host: Host, liveness_lock: i64) -> Self {
         let webhook_host = host.clone();
         let webhook = periodic(move || {
             let host = webhook_host.clone();
@@ -21,7 +28,9 @@ impl BackgroundTasks {
         let workload_host = host.clone();
         let workloads = periodic(move || {
             let host = workload_host.clone();
-            async move { cctui_server_core::dispatch_liveness::sweep(&host).await }
+            async move {
+                cctui_server_core::dispatch_liveness::sweep_with_lock(&host, liveness_lock).await;
+            }
         });
         let launch_host = host.clone();
         let launches = periodic(move || {

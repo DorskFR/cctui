@@ -29,11 +29,10 @@ const BATCH: i64 = 100;
 /// Remember that the session spawned under `spawn_key` wants archiving once
 /// its first turn ends. Best-effort: a lost intent leaves the session listed.
 pub async fn remember_intent(state: &AppState, spawn_key: &str) {
-    if let Err(e) = sqlx::query(
+    if let Err(e) = cctui_telemetry::db::traced(
         "INSERT INTO session_auto_archive (spawn_key) VALUES ($1) ON CONFLICT (spawn_key) DO NOTHING",
+        |sql| sqlx::query(sql).bind(spawn_key).execute(&state.pool),
     )
-    .bind(spawn_key)
-    .execute(&state.pool)
     .await
     {
         tracing::warn!(%spawn_key, error = %e, "could not record the auto-archive intent");

@@ -18,6 +18,24 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use uuid::Uuid;
 
+/// A child of the current span for the I/O a command waits on, or
+/// [`tracing::Span::none`] outside a command: the 2s roster poll stays silent.
+macro_rules! child_span {
+    ($name:literal, $function:literal $(, $($fields:tt)+)?) => {
+        if tracing::Span::current().is_disabled() {
+            tracing::Span::none()
+        } else {
+            tracing::info_span!(
+                target: "otel",
+                $name,
+                code.function.name = $function
+                $(, $($fields)+)?
+            )
+        }
+    };
+}
+pub(crate) use child_span;
+
 /// A `WatchPty` routed off the command path: `(local_id, watch)`.
 pub type PtyWatch = (String, bool);
 
@@ -401,6 +419,7 @@ pub fn command_span(
         otel.kind = "consumer",
         messaging.system = "cctui-ws",
         messaging.operation = "process",
+        code.function.name = "dispatch_command",
         adapter_id,
         command = command.kind_name(),
     );
@@ -608,13 +627,18 @@ async fn report_outcomes(
             Some(err.to_string())
         }
     };
-    for &command_id in command_ids {
-        let event =
-            AdapterEvent::CommandResult { command_id, ok: error.is_none(), error: error.clone() };
-        if events.send(event).await.is_err() {
-            tracing::debug!(adapter, %command_id, "command result dropped: event channel closed");
+    let span = child_span!("daemon.report_outcome", "report_outcomes", ok = error.is_none());
+    async {
+        for &command_id in command_ids {
+            let ok = error.is_none();
+            let event = AdapterEvent::CommandResult { command_id, ok, error: error.clone() };
+            if events.send(event).await.is_err() {
+                tracing::debug!(adapter, %command_id, "command result dropped: event channel closed");
+            }
         }
     }
+    .instrument(span)
+    .await;
 }
 
 /// Feed `commands` to `driver` one at a time until shutdown fires or the
@@ -726,6 +750,35 @@ mod tests {
         assert_ne!(root.span_context.trace_id().to_string(), TRACE_ID);
         assert_eq!(root.parent_span_id, SpanId::INVALID);
         assert!(matches!(root.status, Status::Error { .. }), "{:?}", root.status);
+    }
+
+    #[test]
+    fn io_spans_open_only_under_a_command_span() {
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder().with_simple_exporter(exporter.clone()).build();
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test")));
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        tracing::subscriber::with_default(subscriber, || {
+            rt.block_on(async {
+                let (tx, _rx) = mpsc::channel(4);
+                report_outcomes("test", &tx, &[Uuid::new_v4()], Ok(Handled::Done)).await;
+                let command = tracing::info_span!("daemon.command");
+                report_outcomes("test", &tx, &[Uuid::new_v4()], Ok(Handled::Done))
+                    .instrument(command)
+                    .await;
+            });
+        });
+
+        let spans = exporter.get_finished_spans().expect("exporter readable");
+        let reports: Vec<_> = spans.iter().filter(|s| s.name == "daemon.report_outcome").collect();
+        assert_eq!(reports.len(), 1, "the poll-path report opens no span: {spans:?}");
+        let command = spans.iter().find(|s| s.name == "daemon.command").expect("command span");
+        assert_eq!(reports[0].parent_span_id, command.span_context.span_id());
     }
 
     #[test]

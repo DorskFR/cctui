@@ -1,13 +1,27 @@
 use super::settings::{LaunchPolicy, ensure_hook_settings, recover_hook_policy};
 use super::{
-    AdapterEvent, Context, DeferredDispatch, DispatchDoneTracker, Driver, Duration, EndReason,
-    JobIds, LaunchArgs, LaunchEnv, Path, PathBuf, SpawnWatchdog, StateJson, agent_relay_config,
-    build_session_context, detect_whip_from_settings, dispatch_done, json, launch, mpsc,
-    resolve_launch_env_for, socket, transcript,
+    AdapterEvent, Arc, Context, DeferredDispatch, DispatchDoneTracker, Driver, Duration, EndReason,
+    ForkParents, JobIds, LaunchArgs, LaunchEnv, Path, PathBuf, SpawnWatchdog, StateJson,
+    agent_relay_config, build_session_context, detect_whip_from_settings, dispatch_done, json,
+    launch, mpsc, resolve_launch_env_for, socket, transcript,
 };
 use tracing::Instrument as _;
 
-impl Driver {
+/// What a (re)launch needs once it leaves the driver loop.
+#[derive(Clone)]
+pub(super) struct Launcher {
+    pub(super) server: Option<crate::client::ServerClient>,
+    pub(super) machine_key: Option<String>,
+    pub(super) events: mpsc::Sender<AdapterEvent>,
+    pub(super) jobs_root: PathBuf,
+    pub(super) projects_root: PathBuf,
+    pub(super) hook_socket_path: PathBuf,
+    pub(super) delivered: Arc<super::delivered::Delivered>,
+    pub(super) fork_parent_by_short: ForkParents,
+    pub(super) pulls: super::reseed::PullClock,
+}
+
+impl Launcher {
     /// Resume-on-reply: if `short` has no live worker, revive it
     /// before a reply is delivered. The claude control socket cannot wake an
     /// exited job itself — `attach`/`reply` both return ENOJOB; the picker's
@@ -56,23 +70,30 @@ impl Driver {
         )
         .await
         {
-            Ok(launch) => Ok(launch),
+            Ok(launch) => {
+                if launch.pulled {
+                    self.pulls.note(local_id);
+                }
+                Ok(launch)
+            }
             // Surface the fail-closed refusal as a visible failure state before
             // aborting, so the UI shows the account problem rather than the launch
             // silently dying.
             Err(e) => {
-                self.emit(AdapterEvent::SessionEnded {
-                    local_id: local_id.to_owned(),
-                    reason: EndReason::Crashed {
-                        detail: format!(
-                            "account-bound session refused: the server returned no gateway \
-                             credential (account missing/unmintable). The worker was NOT \
-                             launched on ambient credentials — reconnect the account in cctui. \
-                             ({e})"
-                        ),
-                    },
-                })
-                .await;
+                let _ = self
+                    .events
+                    .send(AdapterEvent::SessionEnded {
+                        local_id: local_id.to_owned(),
+                        reason: EndReason::Crashed {
+                            detail: format!(
+                                "account-bound session refused: the server returned no gateway \
+                                 credential (account missing/unmintable). The worker was NOT \
+                                 launched on ambient credentials — reconnect the account in cctui. \
+                                 ({e})"
+                            ),
+                        },
+                    })
+                    .await;
                 Err(e)
             }
         }
@@ -119,13 +140,13 @@ impl Driver {
         let seal_key = self.machine_key.as_deref();
         let policy = recover_hook_policy(short, seal_key)
             .with_context(|| format!("refusing to resume {short} without its hook policy"))?;
-        let st = StateJson::read(&self.cfg.jobs_root, short);
+        let st = StateJson::read(&self.jobs_root, short);
         // Carry the gateway env + the session's model/effort (from `state.json`)
         // into the managed `--settings` file so a spare-claimed resume
         // keeps its routing env and model/effort — the settings file survives the
         // spare-claim, the dispatch `env` and a `--model` CLI arg do not.
         let settings_arg = ensure_hook_settings(
-            &self.cfg.hook_socket_path,
+            &self.hook_socket_path,
             whip,
             short,
             launch.settings.as_ref(),
@@ -199,6 +220,39 @@ impl Driver {
             }
         }
         anyhow::bail!("resumed session {short} did not come alive within 10s");
+    }
+}
+
+impl Driver {
+    pub(super) async fn resume_if_hibernated(
+        &self,
+        sock: &std::path::Path,
+        short: &str,
+        local_id: &str,
+        env: &std::collections::BTreeMap<String, String>,
+    ) -> anyhow::Result<()> {
+        self.launcher().resume_if_hibernated(sock, short, local_id, env).await
+    }
+
+    pub(super) async fn resolve_launch_env(
+        &self,
+        local_id: &str,
+        hint: &std::collections::BTreeMap<String, String>,
+    ) -> anyhow::Result<LaunchEnv> {
+        self.launcher().resolve_launch_env(local_id, hint).await
+    }
+
+    pub(super) async fn resume_worker(
+        &self,
+        sock: &std::path::Path,
+        short: &str,
+        local_id: &str,
+        fallback_session_id: Option<&str>,
+        fallback_cwd: Option<&str>,
+        env: &std::collections::BTreeMap<String, String>,
+    ) -> anyhow::Result<()> {
+        let launcher = self.launcher();
+        launcher.resume_worker(sock, short, local_id, fallback_session_id, fallback_cwd, env).await
     }
 
     /// Dispatched-worker bring-up.
@@ -327,10 +381,8 @@ impl Driver {
         session_id: &str,
         refused: impl FnOnce(&anyhow::Error),
     ) -> anyhow::Result<()> {
-        let dispatch = self
-            .prepare_spawn(sock, spec, Some(session_id.to_owned()))
-            .await
-            .inspect_err(refused)?;
+        let dispatch =
+            self.prepare_spawn(sock, spec, Some(session_id)).await.inspect_err(refused)?;
         dispatch.send().await
     }
 
@@ -400,12 +452,22 @@ impl Driver {
         &self,
         sock: &std::path::Path,
         spec: &cctui_proto::adapter::SessionSpec,
-        forced_session_id: Option<String>,
+        forced_session_id: Option<&str>,
     ) -> anyhow::Result<DeferredDispatch> {
-        let cwd = require_dir(spec.working_dir.as_deref(), "spawn")?;
-        let ids = launch::job_ids(forced_session_id.as_deref());
-        let (short, session_id) = (ids.short.as_str(), ids.session_id.as_str());
-        self.remember_launch_posture(short, spec);
+        Box::pin(self.plan_spawn(sock, spec, forced_session_id)?.build()).await
+    }
+
+    /// The in-memory half of a spawn; the server pull, plugin mirroring and
+    /// file writes wait for [`LaunchPlan::build`], off the loop.
+    pub(super) fn plan_spawn(
+        &self,
+        sock: &std::path::Path,
+        spec: &cctui_proto::adapter::SessionSpec,
+        forced_session_id: Option<&str>,
+    ) -> anyhow::Result<LaunchPlan> {
+        let cwd = require_dir(spec.working_dir.as_deref(), "spawn")?.to_owned();
+        let ids = launch::job_ids(forced_session_id);
+        self.remember_launch_posture(&ids.short, spec);
         // A `CctuiAgent` child links to its caller through the same stash the
         // fork path uses: roster discovery emits the `SessionStarted` and has no
         // other way to know the spawn had a parent. Relation "subagent", not
@@ -413,8 +475,164 @@ impl Driver {
         if let Some(parent) = spec.parent_local_id.as_deref()
             && let Ok(mut map) = self.fork_parent_by_short.lock()
         {
-            map.insert(short.to_owned(), (parent.to_owned(), "subagent"));
+            map.insert(ids.short.clone(), (parent.to_owned(), "subagent"));
         }
+        Ok(LaunchPlan {
+            sock: sock.to_path_buf(),
+            spec: spec.clone(),
+            ids,
+            cwd,
+            launcher: self.launcher(),
+            fork: None,
+        })
+    }
+
+    /// Stash the launch model/effort and posture keyed by `short`: the Status
+    /// emit falls back to them while `state.json` is still being written (or is
+    /// transiently gone across a `/clear`), and the diagnose report reads them.
+    pub(super) fn remember_launch_posture(
+        &self,
+        short: &str,
+        spec: &cctui_proto::adapter::SessionSpec,
+    ) {
+        let model = spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty());
+        let effort = spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty());
+        if (model.is_some() || effort.is_some())
+            && let Ok(mut map) = self.spawn_model_effort.lock()
+        {
+            map.insert(short.to_owned(), (model.map(str::to_owned), effort.map(str::to_owned)));
+        }
+        if let Some(mode) = spec.permission_mode
+            && let Ok(mut map) = self.spawn_permission_mode.lock()
+        {
+            map.insert(short.to_owned(), super::super::diagnose::permission_label(mode).to_owned());
+        }
+    }
+
+    /// Fork an existing conversation into a brand-new claude session.
+    ///
+    /// Mirrors [`Self::prepare_spawn`] — mints a fresh `short`/`sessionId`/`nonce`
+    /// and dispatches a new worker via the control socket — but prepends
+    /// `--resume <parent-session-id> --fork-session` to the launch argv so claude
+    /// copies the parent's history into the new session id, leaving the parent
+    /// intact. `--model`/`--effort` from `spec` ride on top (this is the
+    /// supported "switch model mid-conversation" path).
+    ///
+    /// The parent session id is resolved to the id claude should resume from:
+    /// the parent's on-disk `resumeSessionId` when present (so a `/clear`ed or
+    /// `/compact`ed parent forks from the live conversation, not the stale spawn
+    /// id), else the parent's `sessionId`, else the `parent_local_id`
+    /// itself (covers reopening an archived parent whose `state.json` was removed
+    /// by `claude rm` but whose transcript still resumes).
+    #[cfg(test)]
+    pub(super) async fn prepare_fork(
+        &self,
+        sock: &std::path::Path,
+        parent_local_id: &str,
+        spec: &cctui_proto::adapter::SessionSpec,
+        forced_session_id: Option<&str>,
+        extract: Option<&cctui_proto::adapter::ForkExtract>,
+    ) -> anyhow::Result<DeferredDispatch> {
+        let plan = self.plan_fork(sock, parent_local_id, spec, forced_session_id, extract)?;
+        Box::pin(plan.build()).await
+    }
+
+    pub(super) fn plan_fork(
+        &self,
+        sock: &std::path::Path,
+        parent_local_id: &str,
+        spec: &cctui_proto::adapter::SessionSpec,
+        forced_session_id: Option<&str>,
+        extract: Option<&cctui_proto::adapter::ForkExtract>,
+    ) -> anyhow::Result<LaunchPlan> {
+        let cwd = require_dir(spec.working_dir.as_deref(), "fork")?.to_owned();
+        let resume_id = self
+            .resolve_short_for_removal(parent_local_id)
+            .ok()
+            .and_then(|short| StateJson::read(&self.cfg.jobs_root, &short))
+            .and_then(|st| st.resume_session_id.or(st.session_id))
+            .unwrap_or_else(|| parent_local_id.to_owned());
+        let ids = launch::job_ids(forced_session_id);
+        self.remember_launch_posture(&ids.short, spec);
+        Ok(LaunchPlan {
+            sock: sock.to_path_buf(),
+            spec: spec.clone(),
+            ids,
+            cwd,
+            launcher: self.launcher(),
+            fork: Some(ForkFrom {
+                parent_local_id: parent_local_id.to_owned(),
+                resume_id,
+                extract: extract.cloned(),
+            }),
+        })
+    }
+}
+
+pub(super) struct LaunchPlan {
+    sock: PathBuf,
+    spec: cctui_proto::adapter::SessionSpec,
+    ids: JobIds,
+    cwd: String,
+    launcher: Launcher,
+    fork: Option<ForkFrom>,
+}
+
+struct ForkFrom {
+    parent_local_id: String,
+    resume_id: String,
+    extract: Option<cctui_proto::adapter::ForkExtract>,
+}
+
+impl LaunchPlan {
+    pub(super) async fn build(self) -> anyhow::Result<DeferredDispatch> {
+        let Self { sock, spec, ids, cwd, launcher, fork } = self;
+        match fork {
+            None => launcher.finish_spawn(sock, &spec, ids, &cwd).await,
+            Some(from) => launcher.finish_fork(sock, &spec, ids, &cwd, from).await,
+        }
+    }
+
+    /// [`Self::build`] and [`DeferredDispatch::send`] on their own task,
+    /// reporting the outcome as the `CommandResult` for `command_id`.
+    pub(super) fn run_detached(
+        self,
+        events: mpsc::Sender<AdapterEvent>,
+        command_id: Option<uuid::Uuid>,
+    ) {
+        detach(events, command_id, self.launch());
+    }
+
+    async fn launch(self) -> anyhow::Result<()> {
+        Box::pin(self.build()).await?.send().await
+    }
+}
+
+fn detach<F>(events: mpsc::Sender<AdapterEvent>, command_id: Option<uuid::Uuid>, work: F)
+where
+    F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    tokio::spawn(
+        async move {
+            let res = work.await;
+            if let Err(err) = &res {
+                tracing::warn!(%err, "command dispatch failed");
+            }
+            Driver::report_command(&events, command_id, res).await;
+        }
+        .instrument(tracing::Span::current()),
+    );
+}
+
+impl Launcher {
+    async fn finish_spawn(
+        &self,
+        sock: PathBuf,
+        spec: &cctui_proto::adapter::SessionSpec,
+        ids: JobIds,
+        cwd: &str,
+    ) -> anyhow::Result<DeferredDispatch> {
+        let (short, session_id) = (ids.short.as_str(), ids.session_id.as_str());
         let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
         // Resolved before the managed settings file so the account settings are
         // merged under the managed hooks. Fail-closed: account-bound but
@@ -429,7 +647,7 @@ impl Driver {
         let agent_tool = launch.mcp_config.is_some();
         launch.settings_path = Some(
             ensure_hook_settings(
-                &self.cfg.hook_socket_path,
+                &self.hook_socket_path,
                 whip,
                 short,
                 launch_env.settings.as_ref(),
@@ -467,7 +685,7 @@ impl Driver {
             Some(b) if !b.is_empty() => format!("{session_context}\n\n{b}"),
             _ => session_context,
         };
-        self.note_delivered(session_id, &prompt);
+        self.delivered.note(session_id, &prompt);
         let req = launch::dispatch_request(
             &ids,
             cwd,
@@ -479,44 +697,24 @@ impl Driver {
         let gate = self.launch_gate(session_id, short, spec.model.as_deref());
         super::super::canary::arm(session_id, short, session_id, agent_tool.then_some(session_id));
         Ok(DeferredDispatch {
-            sock: sock.to_path_buf(),
+            sock,
             req,
-            short: ids.short.clone(),
+            short: ids.short,
             what: format!("spawn in {cwd}"),
-            session_id: ids.session_id.clone(),
+            session_id: ids.session_id,
             gate,
-            watchdog: Some(
-                SpawnWatchdog::new(self.cfg.jobs_root.clone())
-                    .with_server(self.server.as_ref().map(|s| s.base_url().to_owned())),
-            ),
+            watchdog: Some(self.watchdog()),
         })
     }
 
-    /// Stash the launch model/effort and posture keyed by `short`: the Status
-    /// emit falls back to them while `state.json` is still being written (or is
-    /// transiently gone across a `/clear`), and the diagnose report reads them.
-    pub(super) fn remember_launch_posture(
-        &self,
-        short: &str,
-        spec: &cctui_proto::adapter::SessionSpec,
-    ) {
-        let model = spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty());
-        let effort = spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty());
-        if (model.is_some() || effort.is_some())
-            && let Ok(mut map) = self.spawn_model_effort.lock()
-        {
-            map.insert(short.to_owned(), (model.map(str::to_owned), effort.map(str::to_owned)));
-        }
-        if let Some(mode) = spec.permission_mode
-            && let Ok(mut map) = self.spawn_permission_mode.lock()
-        {
-            map.insert(short.to_owned(), super::super::diagnose::permission_label(mode).to_owned());
-        }
+    fn watchdog(&self) -> SpawnWatchdog {
+        SpawnWatchdog::new(self.jobs_root.clone())
+            .with_server(self.server.as_ref().map(|s| s.base_url().to_owned()))
     }
 
     /// The limits gate for a launch, or `None` when no server is configured to
     /// ask — an unattached daemon launches unconditionally.
-    pub(super) fn launch_gate(
+    fn launch_gate(
         &self,
         session_id: &str,
         short: &str,
@@ -531,39 +729,19 @@ impl Driver {
         )
     }
 
-    /// Fork an existing conversation into a brand-new claude session.
-    ///
-    /// Mirrors [`spawn`] — mints a fresh `short`/`sessionId`/`nonce` and
-    /// dispatches a new worker via the control socket — but prepends `--resume
-    /// <parent-session-id> --fork-session` to the launch argv so claude copies
-    /// the parent's history into the new session id, leaving the parent intact.
-    /// `--model`/`--effort` from `spec` ride on top (this is the supported
-    /// "switch model mid-conversation" path).
-    ///
-    /// The parent session id is resolved to the id claude should resume from:
-    /// the parent's on-disk `resumeSessionId` when present (so a `/clear`ed or
-    /// `/compact`ed parent forks from the live conversation, not the stale spawn
-    /// id), else the parent's `sessionId`, else the `parent_local_id`
-    /// itself (covers reopening an archived parent whose `state.json` was removed
-    /// by `claude rm` but whose transcript still resumes).
-    ///
-    /// The child's `SessionStarted` is emitted later by the roster-discovery
-    /// path, which has no fork context, so we stash `parent_local_id` keyed by
-    /// the new `short` in `fork_parent_by_short` for it to read.
     /// Write a sliced copy of the parent transcript as the child's own
     /// `<child>.jsonl` for a subset fork. Reads the parent JSONL,
     /// keeps only the lines the `extract` selects, and writes the repaired
     /// slice to the child's path under the SAME encoded cwd. Writes are strictly
     /// to the new child file — the parent transcript is never touched.
-    pub(super) fn materialize_fork_slice(
+    fn materialize_fork_slice(
         &self,
         cwd: &str,
         parent_session_id: &str,
         child_session_id: &str,
         extract: &cctui_proto::adapter::ForkExtract,
     ) -> anyhow::Result<()> {
-        let parent_path =
-            transcript::transcript_path(&self.cfg.projects_root, cwd, parent_session_id);
+        let parent_path = transcript::transcript_path(&self.projects_root, cwd, parent_session_id);
         let raw = std::fs::read_to_string(&parent_path).with_context(|| {
             format!("fork slice: read parent transcript {}", parent_path.display())
         })?;
@@ -574,8 +752,7 @@ impl Driver {
             .collect::<Result<_, _>>()
             .with_context(|| format!("fork slice: parse {}", parent_path.display()))?;
         let kept = super::super::fork_slice::slice_transcript(&lines, extract, child_session_id)?;
-        let child_path =
-            transcript::transcript_path(&self.cfg.projects_root, cwd, child_session_id);
+        let child_path = transcript::transcript_path(&self.projects_root, cwd, child_session_id);
         if let Some(dir) = child_path.parent() {
             std::fs::create_dir_all(dir)
                 .with_context(|| format!("fork slice: create child dir {}", dir.display()))?;
@@ -594,35 +771,20 @@ impl Driver {
         Ok(())
     }
 
-    pub(super) async fn prepare_fork(
+    async fn finish_fork(
         &self,
-        sock: &std::path::Path,
-        parent_local_id: &str,
+        sock: PathBuf,
         spec: &cctui_proto::adapter::SessionSpec,
-        forced_session_id: Option<&str>,
-        extract: Option<&cctui_proto::adapter::ForkExtract>,
+        ids: JobIds,
+        cwd: &str,
+        from: ForkFrom,
     ) -> anyhow::Result<DeferredDispatch> {
-        let cwd = require_dir(spec.working_dir.as_deref(), "fork")?;
-
-        // Resolve the id to resume+fork from. Prefer the parent's on-disk
-        // `resumeSessionId` (the live conversation head after `/clear`/`/compact`),
-        // then its `sessionId`, then the raw parent id (archived
-        // parent whose job state was removed by `claude rm`, but whose transcript
-        // still resumes — the native "reopen archived as a new conversation").
-        let resume_id = self
-            .resolve_short_for_removal(parent_local_id)
-            .ok()
-            .and_then(|short| StateJson::read(&self.cfg.jobs_root, &short))
-            .and_then(|st| st.resume_session_id.or(st.session_id))
-            .unwrap_or_else(|| parent_local_id.to_owned());
-
-        let ids = launch::job_ids(forced_session_id);
+        let ForkFrom { parent_local_id, resume_id, extract } = from;
         let (short, session_id) = (ids.short.as_str(), ids.session_id.as_str());
-        if let Some(extract) = extract {
+        if let Some(extract) = &extract {
             self.materialize_fork_slice(cwd, &resume_id, session_id, extract)?;
         }
         let mut launch = fork_launch(spec, &resume_id, session_id, extract.is_some());
-        self.remember_launch_posture(short, spec);
         let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
         // The server binds the child before dispatch. Pull its own credential;
         // the pushed env covers a transient pull failure without reusing the
@@ -633,7 +795,7 @@ impl Driver {
             agent_relay_config(short, session_id, launch_env.spawn_capability.as_ref());
         launch.settings_path = Some(
             ensure_hook_settings(
-                &self.cfg.hook_socket_path,
+                &self.hook_socket_path,
                 whip,
                 short,
                 launch_env.settings.as_ref(),
@@ -652,15 +814,13 @@ impl Driver {
         );
         let prompt = spec.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty());
         if let Some(prompt) = prompt {
-            self.note_delivered(session_id, prompt);
+            self.delivered.note(session_id, prompt);
         }
-
-        // Remember the parent BEFORE dispatching so the roster-discovery emit
-        // (which can race in on the very next poll) finds the link.
+        // Before dispatching: the roster-discovery emit can race in on the very
+        // next poll and must find the link.
         if let Ok(mut map) = self.fork_parent_by_short.lock() {
-            map.insert(short.to_owned(), (parent_local_id.to_owned(), "fork"));
+            map.insert(short.to_owned(), (parent_local_id.clone(), "fork"));
         }
-
         let req = launch::dispatch_request(
             &ids,
             cwd,
@@ -676,17 +836,15 @@ impl Driver {
             launch.mcp_config.is_some().then_some(session_id),
         );
         tracing::info!(%cwd, %session_id, %parent_local_id, %resume_id, "fork prepared for control socket");
+        let gate = self.launch_gate(session_id, short, spec.model.as_deref());
         Ok(DeferredDispatch {
-            sock: sock.to_path_buf(),
+            sock,
             req,
-            short: ids.short.clone(),
+            short: ids.short,
             what: format!("fork of {parent_local_id} in {cwd}"),
-            session_id: ids.session_id.clone(),
-            gate: self.launch_gate(&ids.session_id, &ids.short, spec.model.as_deref()),
-            watchdog: Some(
-                SpawnWatchdog::new(self.cfg.jobs_root.clone())
-                    .with_server(self.server.as_ref().map(|s| s.base_url().to_owned())),
-            ),
+            session_id: ids.session_id,
+            gate,
+            watchdog: Some(self.watchdog()),
         })
     }
 }
@@ -700,7 +858,8 @@ impl DeferredDispatch {
     /// kept, since the worker may still come up late.
     pub async fn send(self) -> anyhow::Result<()> {
         if let Some(gate) = &self.gate {
-            gate.run().await;
+            let span = crate::adapter_runtime::child_span!("daemon.preflight", "Preflight::run");
+            gate.run().instrument(span).await;
         }
         let resp: serde_json::Value = socket::call(&self.sock, &self.req)
             .await
@@ -711,7 +870,11 @@ impl DeferredDispatch {
             super::super::canary::mark_spare(&self.session_id);
         }
         if let Some(watchdog) = &self.watchdog {
-            if let Err(stall) = watchdog.confirm(&self.sock, &self.short).await {
+            let span = crate::adapter_runtime::child_span!(
+                "claude.spawn_confirm",
+                "SpawnWatchdog::confirm"
+            );
+            if let Err(stall) = watchdog.confirm(&self.sock, &self.short).instrument(span).await {
                 tracing::warn!(session_id = %self.session_id, short = %self.short, "{stall}");
                 anyhow::bail!("{}: {stall}", self.what);
             }
@@ -722,18 +885,13 @@ impl DeferredDispatch {
 
     /// [`send`](Self::send) on its own task, reporting the outcome as the
     /// `CommandResult` for `command_id`.
+    #[cfg(test)]
     pub(super) fn run_detached(
         self,
         events: mpsc::Sender<AdapterEvent>,
         command_id: Option<uuid::Uuid>,
     ) {
-        tokio::spawn(async move {
-            let res = self.send().await;
-            if let Err(err) = &res {
-                tracing::warn!(%err, "command dispatch failed");
-            }
-            Driver::report_command(&events, command_id, res).await;
-        });
+        detach(events, command_id, self.send());
     }
 }
 

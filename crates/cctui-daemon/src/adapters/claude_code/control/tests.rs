@@ -55,7 +55,7 @@ async fn a_spawn_with_or_without_a_policy_is_refused_when_its_settings_cannot_be
         spec.hook_policy = policy;
         let id = uuid::Uuid::new_v4().to_string();
         refused_for_hook_settings(
-            d.prepare_spawn(Path::new("/unused.sock"), &spec, Some(id)).await,
+            d.prepare_spawn(Path::new("/unused.sock"), &spec, Some(&id)).await,
         );
     }
     assert!(events.try_recv().is_err(), "a refused spawn reports through its command result");
@@ -87,7 +87,7 @@ async fn a_dispatched_worker_spec_is_refused_when_its_settings_cannot_be_written
     assert!(spec.hook_policy.is_some());
     spec.working_dir = workdir_spec(&d).working_dir;
     let id = uuid::Uuid::new_v4().to_string();
-    refused_for_hook_settings(d.prepare_spawn(Path::new("/unused.sock"), &spec, Some(id)).await);
+    refused_for_hook_settings(d.prepare_spawn(Path::new("/unused.sock"), &spec, Some(&id)).await);
     std::fs::remove_dir_all(d.cfg.jobs_root.parent().unwrap()).unwrap();
 }
 
@@ -123,7 +123,7 @@ async fn a_policy_spawn_without_a_machine_key_is_refused_before_any_settings_exi
     let mut spec = workdir_spec(&d);
     spec.hook_policy = Some(stop_policy());
     let id = uuid::Uuid::new_v4().to_string();
-    let Err(err) = d.prepare_spawn(Path::new("/unused.sock"), &spec, Some(id)).await else {
+    let Err(err) = d.prepare_spawn(Path::new("/unused.sock"), &spec, Some(&id)).await else {
         panic!("a policy launch without a seal key was not refused");
     };
     assert!(

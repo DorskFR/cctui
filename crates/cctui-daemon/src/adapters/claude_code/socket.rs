@@ -14,6 +14,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+use tracing::Instrument as _;
 
 use super::composer;
 
@@ -79,7 +80,13 @@ pub async fn one_shot(socket: &Path, request: &Value) -> Result<Value> {
 /// [`one_shot`] with an explicit bound on the whole exchange.
 pub async fn one_shot_within(socket: &Path, request: &Value, bound: Duration) -> Result<Value> {
     let op = request.get("op").and_then(Value::as_str).unwrap_or("?").to_owned();
-    match tokio::time::timeout(bound, exchange(socket, request)).await {
+    let span = crate::adapter_runtime::child_span!(
+        "claude.socket",
+        "one_shot",
+        otel.kind = "client",
+        rpc.method = %op,
+    );
+    match tokio::time::timeout(bound, exchange(socket, request)).instrument(span).await {
         Ok(res) => res,
         Err(_) => bail!(
             "claude daemon did not answer `{op}` within {}s ({})",

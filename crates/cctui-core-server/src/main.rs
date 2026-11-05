@@ -56,8 +56,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let external_url = std::env::var("CCTUI_EXTERNAL_URL")
         .context("CCTUI_EXTERNAL_URL is required for worker gateway routing")?;
-    let pool =
-        sqlx::postgres::PgPoolOptions::new().max_connections(20).connect(&database_url).await?;
+    let pool = pool_options().connect(&database_url).await?;
     follow_database_url(&registry, &pool);
     let lease = ownership::RuntimeLease::acquire(&pool).await?;
     cctui_server_core::schema::bootstrap(&pool).await?;
@@ -143,6 +142,16 @@ async fn http_dispatchers(
     Ok(dispatchers)
 }
 
+/// Acquiring skips sqlx's per-statement liveness ping: a dead connection fails
+/// its query and is dropped, and the idle and lifetime caps recycle the rest.
+fn pool_options() -> sqlx::postgres::PgPoolOptions {
+    sqlx::postgres::PgPoolOptions::new()
+        .max_connections(20)
+        .test_before_acquire(false)
+        .idle_timeout(std::time::Duration::from_mins(5))
+        .max_lifetime(std::time::Duration::from_mins(30))
+}
+
 /// New pool connections use a rotated `DATABASE_URL`.
 fn follow_database_url(registry: &cctui_secrets::SecretRegistry, pool: &sqlx::PgPool) {
     let Some(url) = registry.get("DATABASE_URL") else { return };
@@ -169,5 +178,17 @@ fn optional_number<T: std::str::FromStr>(name: &str) -> anyhow::Result<Option<T>
         Ok(raw) => raw.trim().parse().map(Some).map_err(|_| anyhow::anyhow!("invalid {name}")),
         Err(std::env::VarError::NotPresent) => Ok(None),
         Err(error) => Err(error).with_context(|| format!("invalid {name}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_pool_acquires_without_a_ping_and_keeps_its_size() {
+        let options = super::pool_options();
+        assert!(!options.get_test_before_acquire());
+        assert_eq!(options.get_max_connections(), 20);
+        assert!(options.get_idle_timeout().is_some());
+        assert!(options.get_max_lifetime().is_some());
     }
 }
