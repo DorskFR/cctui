@@ -43,9 +43,18 @@
 
 <div class="drawer-host">
 	<!-- Our own scrim, not the kit's: the kit tints with the page colour,
-	     which barely dims a dark theme and lightens a light one. -->
-	<Scrim {onclose} hideBelow="959px" label={m.chrome_close_conversation()} style="background: var(--chrome-scrim)" />
+	     which barely dims a dark theme and lightens a light one. The kit panel
+	     isolates its own stacking context, so the scrim and the panel are
+	     layered here, inside .drawer-host: scrim 0, panel 1. -->
+	<Scrim
+		{onclose}
+		z={0}
+		hideBelow="959px"
+		label={m.chrome_close_conversation()}
+		style="background: var(--chrome-scrim)"
+	/>
 	<ResizablePanel
+		style="z-index: 1"
 		mode="overlay"
 		side="right"
 		open
