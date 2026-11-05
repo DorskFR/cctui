@@ -7,7 +7,8 @@
 //! webhook, not here. Secret-ref-shaped payload env is rejected.
 //!
 //! - Job name = `cctui-worker-<sha1(dedup_key||session_id)[:12]>`; a 409 on an
-//!   in-flight Job is `deduplicated`, on a terminal one `redispatched`.
+//!   in-flight Job is `deduplicated`, on a terminal one `redispatched`. The
+//!   handle also names the session the Job runs.
 //! - No Secret is created: the machine key and payload `env` are registered
 //!   with the server under a fresh dispatch id, and the Job carries only that
 //!   id. The pod's guard-proxy redeems its service-account token for them.
@@ -40,6 +41,7 @@ use kube::{Client, Error as KubeError};
 use tokio_util::sync::CancellationToken;
 
 mod exposure;
+mod handle;
 mod queue_hold;
 mod registry;
 mod worker_exit;
@@ -479,9 +481,9 @@ impl Spawner {
         self.jobs().create(&PostParams::default(), job).await
     }
 
-    fn outcome(&self, name: &str, status: &str) -> SpawnOutcome {
+    fn outcome(&self, name: &str, session: Option<&str>, status: &str) -> SpawnOutcome {
         SpawnOutcome {
-            handle: format!("jobs/{name}"),
+            handle: handle::format(name, session),
             namespace: Some(self.namespace.clone()),
             status: status.to_owned(),
             exposure: None,
@@ -510,8 +512,9 @@ impl Spawner {
         let exposure =
             profile.spec.exposure.map(|e| exposure::wire_exposure(e, profile.spec.human_gate));
         let name = worker_name(dedup_source(spec));
-        if self.absorbed_by_live_job(&name).await? {
-            return Ok(SpawnOutcome { exposure, ..self.outcome(&name, "deduplicated") });
+        if let Some(live) = self.absorbing_job(&name).await? {
+            let joined = self.outcome(&name, handle::job_session(&live), "deduplicated");
+            return Ok(SpawnOutcome { exposure, ..joined });
         }
         self.enforce_inflight_cap(&name).await?;
         let suspend =
@@ -533,16 +536,23 @@ impl Spawner {
         Ok(SpawnOutcome { exposure, ..placed })
     }
 
-    /// Whether a non-terminal Job already holds `name`. A concurrent dispatch
+    /// The non-terminal Job already holding `name`. A concurrent dispatch
     /// that slips past this still dedups in [`Self::place_job`]; its row then
     /// lingers until the server's registration TTL drops it.
-    async fn absorbed_by_live_job(&self, name: &str) -> anyhow::Result<bool> {
+    async fn absorbing_job(&self, name: &str) -> anyhow::Result<Option<Job>> {
         let existing = self
             .jobs()
             .get_opt(name)
             .await
             .map_err(|e| anyhow::anyhow!("reading existing Job: {e}"))?;
-        Ok(absorbs(existing.as_ref()))
+        Ok(existing.filter(|job| absorbs(Some(job))))
+    }
+
+    /// The session of whichever Job holds `name` now; `None` when it cannot be
+    /// read.
+    async fn holder_session(&self, name: &str) -> Option<String> {
+        let job = self.jobs().get_opt(name).await.ok()??;
+        handle::job_session(&job).map(ToOwned::to_owned)
     }
 
     /// Create the Job. Idempotent: a repeat dispatch of the same dedup key
@@ -556,8 +566,9 @@ impl Spawner {
         name: &str,
     ) -> anyhow::Result<SpawnOutcome> {
         let status = if suspend { "queued" } else { "dispatched" };
+        let ours = handle::job_session(job);
         match self.create(job).await {
-            Ok(_) => return Ok(self.outcome(name, status)),
+            Ok(_) => return Ok(self.outcome(name, ours, status)),
             Err(KubeError::Api(e)) if e.code == 409 => {}
             Err(e) => anyhow::bail!("creating Job: {e}"),
         }
@@ -569,22 +580,25 @@ impl Spawner {
             // Raced its own teardown — name is free again, create afresh.
             Err(KubeError::Api(e)) if e.code == 404 => {
                 self.create(job).await.map_err(|e| anyhow::anyhow!("creating Job: {e}"))?;
-                return Ok(self.outcome(name, status));
+                return Ok(self.outcome(name, ours, status));
             }
             Err(e) => anyhow::bail!("reading existing Job: {e}"),
         };
 
         if Self::job_terminal_state(&existing).is_none() {
             // In flight: keep idempotent dedup; the original run fires the callback.
-            return Ok(self.outcome(name, "deduplicated"));
+            return Ok(self.outcome(name, handle::job_session(&existing), "deduplicated"));
         }
 
         // Terminal: delete + recreate so a fresh run fires the callback.
         self.delete_and_wait(name, existing.metadata.uid.as_deref()).await?;
         match self.create(job).await {
-            Ok(_) => Ok(self.outcome(name, if suspend { "queued" } else { "redispatched" })),
+            Ok(_) => Ok(self.outcome(name, ours, if suspend { "queued" } else { "redispatched" })),
             // A concurrent re-dispatch beat us — its run owns the callback now.
-            Err(KubeError::Api(e)) if e.code == 409 => Ok(self.outcome(name, "deduplicated")),
+            Err(KubeError::Api(e)) if e.code == 409 => {
+                let winner = self.holder_session(name).await;
+                Ok(self.outcome(name, winner.as_deref(), "deduplicated"))
+            }
             Err(e) => anyhow::bail!("recreating Job: {e}"),
         }
     }
@@ -934,12 +948,16 @@ impl Spawner {
     /// `Failed` with a reason, so the server's death-detector fires promptly
     /// instead of reading the workload as alive until the backoff budget runs.
     async fn worker_status(&self, handle: &str) -> anyhow::Result<(HandleState, Option<String>)> {
-        let name = handle.strip_prefix("jobs/").unwrap_or(handle);
+        let run = handle::JobHandle::parse(handle);
+        let name = run.name;
         let job = match self.jobs().get(name).await {
             Ok(j) => j,
             Err(KubeError::Api(e)) if e.code == 404 => return Ok((HandleState::Gone, None)),
             Err(e) => anyhow::bail!("reading Job {name}: {e}"),
         };
+        if !run.owns(&job) {
+            return Ok((HandleState::Gone, None));
+        }
         match Self::job_terminal_state(&job) {
             Some("Complete") => {
                 return Ok((HandleState::Complete, self.pod_oom_reason(name).await));
@@ -968,7 +986,7 @@ impl Spawner {
     }
 
     async fn worker_queue_position(&self, handle: &str) -> Option<u32> {
-        let name = handle.strip_prefix("jobs/").unwrap_or(handle);
+        let name = handle::JobHandle::parse(handle).name;
         let job = self.jobs().get(name).await.ok()?;
         let profile = job.metadata.labels.as_ref()?.get(LABEL_WORKER_PROFILE)?;
         let lp = ListParams::default().labels(&format!(
@@ -1068,9 +1086,25 @@ impl Spawner {
         None
     }
 
+    /// Delete the handle's Job. A session-bound handle deletes only the Job
+    /// still running its session, so cancelling an earlier run never takes
+    /// down a later run of the same dedup key.
     async fn cancel_worker(&self, handle: &str) -> anyhow::Result<()> {
-        let name = handle.strip_prefix("jobs/").unwrap_or(handle);
-        self.delete_and_wait(name, None).await
+        let run = handle::JobHandle::parse(handle);
+        if run.session.is_none() {
+            return self.delete_and_wait(run.name, None).await;
+        }
+        let job = self
+            .jobs()
+            .get_opt(run.name)
+            .await
+            .map_err(|e| anyhow::anyhow!("reading Job {}: {e}", run.name))?;
+        match job {
+            Some(job) if run.owns(&job) => {
+                self.delete_and_wait(run.name, job.metadata.uid.as_deref()).await
+            }
+            _ => Ok(()),
+        }
     }
 }
 
@@ -2624,5 +2658,29 @@ mod tests {
         job.metadata.uid = Some("uid-new".into());
         assert!(replaced(&job, Some("uid-old")), "a concurrent dispatch already recreated it");
         assert!(!replaced(&job, None));
+    }
+
+    #[test]
+    fn a_failed_later_run_of_the_same_key_is_never_an_earlier_sessions_workload() {
+        let mut first = spec("11111111-1111-4111-8111-111111111111", json!({}));
+        first.dedup_key = Some("pr-review-7".to_owned());
+        let mut later = spec("22222222-2222-4222-8222-222222222222", json!({}));
+        later.dedup_key = first.dedup_key.clone();
+        let name = worker_name(dedup_source(&first));
+        assert_eq!(name, worker_name(dedup_source(&later)), "both runs share one Job name");
+
+        let mut job: Job = serde_json::from_value(build("lean", &lean_profile(), &later)).unwrap();
+        job.status = serde_json::from_value(json!({
+            "conditions": [{ "type": "Failed", "status": "True", "reason": "BackoffLimitExceeded" }]
+        }))
+        .unwrap();
+        let current = handle::format(&name, handle::job_session(&job));
+        assert_eq!(current, format!("jobs/{name}/{}", later.session_id));
+        assert!(handle::JobHandle::parse(&current).owns(&job), "the failed run is its own");
+        let earlier = handle::format(&name, Some(&first.session_id));
+        assert!(
+            !handle::JobHandle::parse(&earlier).owns(&job),
+            "the earlier session reads its workload gone, not the later run's failure"
+        );
     }
 }

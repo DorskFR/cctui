@@ -205,9 +205,10 @@ fn rerun_refusal(
     use cctui_proto::api::RerunBlocker;
     match blocker {
         RerunBlocker::Env => format!(
-            "the dispatch carried env values ({}) that the server does not keep; \
-             re-send it from its original caller",
-            record.env_keys.join(", ")
+            "the dispatch carried env values the server does not keep ({}): only the \
+             context-pack selectors without credentials are stored; re-send it from its \
+             original caller",
+            record.missing_env().join(", ")
         ),
         RerunBlocker::PromptTruncated => {
             "only the head of the prompt was stored; re-send it from its original caller".into()
@@ -223,7 +224,7 @@ fn rerun_refusal(
 
 /// `POST /api/v1/dispatch-records/{id}/redispatch` — send a recorded
 /// dispatch again as a new one, for its dispatcher or an admin. Only stored
-/// fields are re-sent: no env, no reply or notify callback.
+/// fields are re-sent: no secret env, no reply or notify callback.
 pub async fn redispatch(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -263,6 +264,65 @@ pub async fn redispatch(
         tracing::warn!(session = %session_id, error = %e, "re-dispatch not recorded");
     }
     out
+}
+
+/// Delete the workload of a killed dispatched session no daemon took the kill
+/// for, so a worker that never started (a `Pending` pod) stops holding its
+/// slot. `true` once the dispatcher dropped it.
+pub async fn cancel_dispatched_workload(state: &AppState, session_id: &str) -> bool {
+    let row: Result<Option<(String, String, Option<uuid::Uuid>)>, sqlx::Error> = sqlx::query_as(
+        "SELECT dh.dispatcher_name, dh.handle, COALESCE(s.user_id, r.user_id) \
+         FROM dispatch_handles dh \
+         LEFT JOIN sessions s ON s.id = dh.session_id \
+         LEFT JOIN dispatch_records r ON r.session_id = dh.session_id \
+         WHERE dh.session_id = $1 AND dh.gone_at IS NULL",
+    )
+    .bind(session_id)
+    .fetch_optional(&state.pool)
+    .await;
+    let (name, handle, owner) = match row {
+        Ok(Some(row)) => row,
+        Ok(None) => return false,
+        Err(e) => {
+            tracing::warn!(%session_id, error = %e, "dispatch handle lookup failed");
+            return false;
+        }
+    };
+    let Some(dispatcher) = killed_sessions_dispatcher(state, owner, &name).await else {
+        tracing::warn!(%session_id, dispatcher = %name, "killed session's dispatcher unavailable");
+        return false;
+    };
+    if let Err(e) = dispatcher.cancel(&handle).await {
+        tracing::warn!(%session_id, %handle, error = %e, "killed session's workload not deleted");
+        return false;
+    }
+    let marked = sqlx::query(
+        "UPDATE dispatch_handles SET gone_at = now() WHERE session_id = $1 AND handle = $2",
+    )
+    .bind(session_id)
+    .bind(&handle)
+    .execute(&state.pool)
+    .await;
+    if let Err(e) = marked {
+        tracing::warn!(%session_id, error = %e, "cancelled dispatch handle not marked gone");
+    }
+    tracing::info!(%session_id, %handle, "killed session's workload deleted");
+    true
+}
+
+/// The dispatcher a handle was forwarded to, resolved the way the liveness
+/// sweep does: the owner's, else across owners for an admin dispatch.
+async fn killed_sessions_dispatcher(
+    state: &AppState,
+    owner: Option<uuid::Uuid>,
+    name: &str,
+) -> Option<std::sync::Arc<dyn crate::dispatchers::Dispatcher>> {
+    use cctui_server_core::dispatch::resolve_dispatcher as resolve;
+    match resolve(state, owner, name).await {
+        Ok(Some(d)) => Some(d),
+        _ if owner.is_none() => None,
+        _ => resolve(state, None, name).await.ok().flatten(),
+    }
 }
 
 /// A dispatch may name an existing session id as its retry target, so the
@@ -1017,5 +1077,106 @@ mod tests {
         payload["env"]["LD_PRELOAD"] = "/evil.so".into();
         let err = cctui_proto::worker_env::check_payload_env(&payload).unwrap_err();
         assert!(err.contains("LD_PRELOAD"), "{err}");
+    }
+
+    /// A fake dispatcher that acknowledges every `Cancel` and records its handle.
+    fn cancelling_dispatcher(
+        state: &crate::state::AppState,
+        id: uuid::Uuid,
+    ) -> (tokio::task::JoinHandle<()>, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use cctui_proto::ws::{DispatcherFrameDown, DispatcherFrameUp};
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<DispatcherFrameDown>(8);
+        state.bus.register_dispatcher(id, tx);
+        let bus = state.bus.clone();
+        let cancelled = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = cancelled.clone();
+        let task = tokio::spawn(async move {
+            while let Some(frame) = rx.recv().await {
+                let DispatcherFrameDown::Cancel { request_id, handle } = frame else {
+                    panic!("expected Cancel, got {frame:?}");
+                };
+                seen.lock().unwrap().push(handle.clone());
+                assert!(bus.resolve_dispatcher_reply(
+                    request_id,
+                    DispatcherFrameUp::CancelResult { request_id, handle, ok: true, error: None },
+                ));
+            }
+        });
+        (task, cancelled)
+    }
+
+    #[tokio::test]
+    async fn killing_a_dispatched_session_with_no_live_worker_deletes_its_job() {
+        use axum::extract::{Path, State};
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_kill_pending") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let state = crate::state::AppState::for_test(pool.clone());
+        let (uid, machine) = crate::events::tests::seed_user_machine(&pool, "kill-pending").await;
+        let name = format!("k8s-{uid}");
+        let dispatcher: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO dispatchers (user_id, name, kind, key_hash, key_preview) \
+             VALUES ($1, $2, 'kubernetes', $3, 'dk-test') RETURNING id",
+        )
+        .bind(uid)
+        .bind(&name)
+        .bind(format!("dk-{uid}"))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let pending =
+            crate::events::tests::seed_session(&pool, uid, machine, Some("pending")).await;
+        let handle = format!("jobs/cctui-worker-pending/{pending}");
+        sqlx::query(
+            "INSERT INTO dispatch_handles (session_id, dispatcher_name, handle) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind(&pending)
+        .bind(&name)
+        .bind(&handle)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let (fake, cancelled) = cancelling_dispatcher(&state, dispatcher);
+
+        let ctx = axum::Extension(crate::auth::AuthContext {
+            user_id: uid,
+            key_id: uid,
+            machine_id: None,
+            scopes: [crate::auth::Scope::Read, crate::auth::Scope::Dispatch].into_iter().collect(),
+        });
+        let code =
+            crate::routes::sessions::kill_session(State(state.clone()), ctx, Path(pending.clone()))
+                .await
+                .expect("kill");
+        assert_eq!(code, axum::http::StatusCode::NO_CONTENT);
+        assert_eq!(*cancelled.lock().unwrap(), [handle], "the dispatcher deleted the Job");
+        let gone: bool = sqlx::query_scalar(
+            "SELECT gone_at IS NOT NULL FROM dispatch_handles WHERE session_id = $1",
+        )
+        .bind(&pending)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(gone, "the deleted handle leaves the liveness sweep");
+        assert!(
+            !super::cancel_dispatched_workload(&state, &pending).await,
+            "a handle already gone is not cancelled twice"
+        );
+        assert_eq!(cancelled.lock().unwrap().len(), 1);
+        fake.abort();
+
+        sqlx::query("DELETE FROM dispatch_handles WHERE session_id = $1")
+            .bind(&pending)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&pending).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM dispatchers WHERE id = $1")
+            .bind(dispatcher)
+            .execute(&pool)
+            .await
+            .ok();
     }
 }

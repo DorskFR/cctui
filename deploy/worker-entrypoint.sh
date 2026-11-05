@@ -2069,13 +2069,34 @@ await_dispatch_done() {
     done
 }
 
+# The daemon refused the dispatched session's launch, or exited without ever
+# registering it.
+session_never_started() {
+    if result_valid; then
+        [ "$(jq -r '.cause // empty' "$RESULT_FILE" 2>/dev/null)" = launch-refused ]
+        return
+    fi
+    ! dispatch_done_marker && ! guard_exited && [ "$_SEEN_ALIVE" = 0 ]
+}
+
+# Non-zero when the dispatched session never started, with the launch error as
+# the container's termination message, so the Job fails on the real cause.
+dispatch_exit() {
+    session_never_started || exit 0
+    _why=$(jq -r '.error // empty' "$RESULT_FILE" 2>/dev/null || true)
+    _why="${_why:-the daemon exited before registering the session}"
+    log "dispatch: session ${SESSION_ID%%-*} never started: $_why"
+    { printf 'launch refused: %s' "$_why" > "$TERMINATION_LOG"; } 2>/dev/null || true
+    exit 1
+}
+
 if [ -n "${SESSION_ID:-}" ] && [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
     log "dispatched worker -> background cctui-daemon + dual-signal wait"
     run_supervised_daemon "$@" &
     DAEMON_PID=$!
     await_dispatch_done
     stop_daemon_gracefully
-    exit 0
+    dispatch_exit
 fi
 
 log "thin worker -> exec cctui-supervisor -> cctui-daemon (run forever)"

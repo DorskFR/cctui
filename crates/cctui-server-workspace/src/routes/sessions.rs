@@ -3045,12 +3045,15 @@ pub async fn kill_session(
     // Best-effort: also dispatch to the daemon so the running worker is
     // actually killed via the `claude daemon` socket. The DB update
     // below remains source-of-truth.
-    let _ = crate::bus::dispatch(
+    let delivered = crate::bus::dispatch(
         &state,
         &session_id,
         cctui_proto::adapter::AdapterCommand::Kill { local_id: session_id.clone(), signal: None },
     )
     .await;
+    if delivered.is_err() {
+        let _ = crate::routes::dispatch::cancel_dispatched_workload(&state, &session_id).await;
+    }
     // Kill drops the in-memory handle and marks the DB row inactive. The
     // session isn't archived — later activity can revive it.
     crate::store::sessions::set_inactive(&state.pool, &session_id, false).await?;
