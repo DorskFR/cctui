@@ -435,6 +435,7 @@ pub enum ResponseFormat {
 ///
 /// SSE reconstruction concatenates `content_block_delta` text deltas and pulls
 /// usage from `message_start` (input tokens) + `message_delta` (output tokens).
+#[cfg(test)]
 pub fn reconstruct_anthropic(body: &[u8]) -> (Option<String>, Option<Value>) {
     reconstruct(ResponseFormat::Anthropic, body)
 }
@@ -446,6 +447,7 @@ pub fn reconstruct_anthropic(body: &[u8]) -> (Option<String>, Option<Value>) {
 /// `thought`; usage is the last chunk's cumulative `usageMetadata`, mapped like
 /// the other families: `input` = prompt minus cached, `cache_read_input_tokens`
 /// = cached, `output` = candidates plus thoughts.
+#[cfg(test)]
 pub fn reconstruct_gemini(body: &[u8]) -> (Option<String>, Option<Value>) {
     reconstruct(ResponseFormat::Gemini, body)
 }
@@ -460,6 +462,7 @@ pub fn reconstruct_gemini(body: &[u8]) -> (Option<String>, Option<Value>) {
 /// `response.usage` object. Usage maps into the same Langfuse keys the Anthropic
 /// path uses: `input` = `input_tokens - cached_tokens`, `cache_read_input_tokens`
 /// = `cached_tokens`, `output` = `output_tokens`.
+#[cfg(test)]
 pub fn reconstruct_openai(body: &[u8]) -> (Option<String>, Option<Value>) {
     reconstruct(ResponseFormat::Openai, body)
 }
