@@ -477,7 +477,8 @@ async fn execute_spawn(
             tracing::warn!(session = %token_session_id, "undoing bootstrap attachments: {e}");
         }
         tracing::warn!(machine = %req.machine_id, %command_id, %adapter_id, %error, "spawn not launched");
-        return Err(launch_failure(error));
+        let no_daemon = no_daemon_wording(state, machine_uuid, &error).await;
+        return Err(launch_failure(error, no_daemon));
     }
 
     tracing::info!(machine = %req.machine_id, %command_id, %adapter_id, "spawn dispatched");
@@ -492,14 +493,32 @@ async fn execute_spawn(
     ))
 }
 
-fn launch_failure(error: cctui_server_core::launch::LaunchError) -> (StatusCode, Json<ApiError>) {
+/// The no-daemon wording for `machine`, read only when `error` needs it.
+async fn no_daemon_wording(
+    state: &AppState,
+    machine: Uuid,
+    error: &cctui_server_core::launch::LaunchError,
+) -> &'static str {
+    use cctui_server_core::launch::{DAEMON_OFFLINE, LaunchError, no_daemon_detail};
+    match error {
+        LaunchError::Delivery(crate::bus::BusError::NoDaemon(_)) => {
+            no_daemon_detail(&state.pool, machine).await
+        }
+        _ => DAEMON_OFFLINE,
+    }
+}
+
+fn launch_failure(
+    error: cctui_server_core::launch::LaunchError,
+    no_daemon: &'static str,
+) -> (StatusCode, Json<ApiError>) {
     use cctui_server_core::launch::LaunchError;
     match error {
         LaunchError::Storage(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError { error: crate::error::DB_ERROR.into() }),
         ),
-        LaunchError::Delivery(err) => dispatch_error(&err),
+        LaunchError::Delivery(err) => dispatch_error(&err, no_daemon),
         LaunchError::Policy(detail) => {
             (StatusCode::BAD_REQUEST, Json(ApiError { error: format!("hook policy: {detail}") }))
         }
@@ -511,11 +530,12 @@ fn launch_failure(error: cctui_server_core::launch::LaunchError) -> (StatusCode,
 }
 
 /// The 503 a spawn answers when its command never reached the daemon.
-fn dispatch_error(err: &crate::bus::BusError) -> (StatusCode, Json<ApiError>) {
+fn dispatch_error(
+    err: &crate::bus::BusError,
+    no_daemon: &'static str,
+) -> (StatusCode, Json<ApiError>) {
     let error = match err {
-        crate::bus::BusError::NoDaemon(_) => {
-            "daemon for that machine is offline — start `cctui-daemon` first"
-        }
+        crate::bus::BusError::NoDaemon(_) => no_daemon,
         _ => "daemon disconnected mid-dispatch",
     };
     (StatusCode::SERVICE_UNAVAILABLE, Json(ApiError { error: error.into() }))

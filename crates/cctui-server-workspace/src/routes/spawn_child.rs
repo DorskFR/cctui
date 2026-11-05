@@ -215,16 +215,22 @@ impl ChildExecutionContext for AppState {
             failed,
             route_session: Some(parent.session_id.clone()),
         };
-        launch_durable(&self.core, actor, spawn).await.map_err(|error| match error {
-            LaunchError::Storage(error) => AppError::Db(error),
-            LaunchError::Policy(detail) => {
-                deny(StatusCode::BAD_REQUEST, format!("hook policy: {detail}"))
+        let machine = parent.machine_uuid;
+        match launch_durable(&self.core, actor, spawn).await {
+            Ok(()) => Ok(()),
+            Err(LaunchError::Storage(error)) => Err(AppError::Db(error)),
+            Err(LaunchError::Policy(detail)) => {
+                Err(deny(StatusCode::BAD_REQUEST, format!("hook policy: {detail}")))
             }
-            error => deny(
+            Err(LaunchError::Delivery(crate::bus::BusError::NoDaemon(_))) => {
+                let detail = cctui_server_core::launch::no_daemon_detail(&self.pool, machine).await;
+                Err(deny(StatusCode::SERVICE_UNAVAILABLE, detail))
+            }
+            Err(error) => Err(deny(
                 StatusCode::SERVICE_UNAVAILABLE,
                 format!("could not reach the daemon: {error}"),
-            ),
-        })
+            )),
+        }
     }
 }
 

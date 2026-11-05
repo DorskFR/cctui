@@ -14,8 +14,12 @@ impl Driver {
             env("CCTUI_STUCK_TURN_END_SECS").as_deref(),
             stuck_turn::DEFAULT_END_SECS,
         );
+        let ceiling = stuck_turn::secs_from_env(
+            env("CCTUI_STUCK_TURN_CEILING_SECS").as_deref(),
+            stuck_turn::DEFAULT_CEILING_SECS,
+        );
         if let Ok(mut guard) = self.stuck_turn.lock() {
-            *guard = Some(StuckTurnWatchdog::new(session_id, reprompt, end));
+            *guard = Some(StuckTurnWatchdog::new(session_id, reprompt, end).with_ceiling(ceiling));
         }
     }
 

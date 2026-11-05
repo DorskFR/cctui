@@ -4,7 +4,7 @@
 	import { Button, Callout, Container, Spinner, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { nest, idsForSection, machineGroupLiveness } from './sessions.logic';
+	import { nest, idsForSection, machineGroupLiveness, sectionVisibility } from './sessions.logic';
 	import type { SessionsPage } from './sessionsPage.svelte';
 	import SessionGroupHeader from './SessionGroupHeader.svelte';
 	import SessionRows from './SessionRows.svelte';
@@ -23,6 +23,25 @@
 		pending: (id: string) => number;
 		machineLiveness: (name: string) => 'online' | 'stale' | 'offline' | null;
 	} = $props();
+
+	const archNest = $derived(nest(sp.pageRows));
+	const archTop = $derived(
+		archNest.topLevel.filter((s) => sp.keepRow(s) && !sp.pinnedArchivedKidIds.has(s.id))
+	);
+	const vis = $derived(
+		sectionVisibility({
+			groups: sp.list.liveSectionCounts,
+			drafts: sp.sections.has('drafts') ? sp.list.draftRows.length : null,
+			archived: sp.showArchived
+				? {
+						rows: archTop.length,
+						loading: sp.pageLoading,
+						more: !sp.pageDone && sp.pageRows.length > 0,
+						error: !!sp.pageError
+					}
+				: null
+		})
+	);
 </script>
 
 <!-- Shared section wrapper: card-detailed fills the content column, which the
@@ -137,13 +156,13 @@
 		<PendingSpawnRows {sp} />
 		{#if sp.sessionsLoading}
 			<div class="placeholder"><Spinner label={m.common_loading()} /></div>
-		{:else if !sp.list.hasLiveRows && !sp.showArchived && !sp.sections.has('drafts')}
+		{:else if vis.empty}
 			<div class="placeholder">
 				<Text tone="muted">{m.sessions_empty_sections()}</Text>
 				<FirstRunChecklist />
 			</div>
 		{:else if sp.groupBy !== 'status'}
-			{#each sp.list.groupedSections as g (g.key)}
+			{#each sp.list.groupedSections.filter((g) => vis.groups.has(`dim:${g.key}`)) as g (g.key)}
 				{@const key = `dim:${g.key}`}
 				<div class="section">
 					{@render groupHeader(key, g.label, g.sessions.length, {
@@ -158,7 +177,7 @@
 				</div>
 			{/each}
 		{:else}
-			{#each sp.list.groups as g (g.key)}
+			{#each sp.list.groups.filter((g) => vis.groups.has(g.key)) as g (g.key)}
 				<div class="section" data-journey="section" data-journey-key={g.key}>
 					{@render groupHeader(g.key, g.label, g.sessions.length, {
 						bucket: g.key,
@@ -174,7 +193,7 @@
 			{/each}
 		{/if}
 
-		{#if sp.sections.has('drafts')}
+		{#if vis.drafts}
 			<div class="section" data-journey="section" data-journey-key="drafts">
 				{@render groupHeader('drafts', m.sessions_section_drafts(), sp.list.draftRows.length, {})}
 				{#if !sp.hiddenSections.has('drafts')}
@@ -183,20 +202,12 @@
 			</div>
 		{/if}
 
-		{#if sp.showArchived}
-			{@const ns = nest(sp.pageRows)}
-			{@const archTop = ns.topLevel.filter(
-				(s) => sp.keepRow(s) && !sp.pinnedArchivedKidIds.has(s.id)
-			)}
+		{#if vis.archived}
 			<div class="section">
 				{@render groupHeader('archived', m.sessions_section_archived(), archTop.length, {})}
 				{#if !sp.hiddenSections.has('archived')}
-					{#if sp.pageRows.length === 0 && !sp.pageLoading}
-						<div class="placeholder"><Text tone="muted">{m.sessions_no_archived()}</Text></div>
-					{:else}
-						<ArchivedRows {sp} rows={archTop} childGroups={ns.childGroups} hl={sp.searchTerms} {pending} />
-						{@render loadMore()}
-					{/if}
+					<ArchivedRows {sp} rows={archTop} childGroups={archNest.childGroups} hl={sp.searchTerms} {pending} />
+					{@render loadMore()}
 				{/if}
 			</div>
 		{/if}

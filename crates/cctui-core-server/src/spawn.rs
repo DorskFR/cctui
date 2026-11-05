@@ -129,7 +129,7 @@ async fn execute(
         parent_local_id: None,
         hook_policy: None,
     };
-    core::launch::launch_durable(
+    if let Err(error) = core::launch::launch_durable(
         &host.core,
         ctx.user_id,
         core::launch::MachineSpawn {
@@ -142,7 +142,9 @@ async fn execute(
         },
     )
     .await
-    .map_err(launch_error)?;
+    {
+        return Err(launch_error(host, machine, error).await);
+    }
     Ok((
         StatusCode::ACCEPTED,
         Json(SpawnResponse {
@@ -154,7 +156,7 @@ async fn execute(
     ))
 }
 
-fn launch_error(error: core::launch::LaunchError) -> Failure {
+async fn launch_error(host: &Host, machine: Uuid, error: core::launch::LaunchError) -> Failure {
     let detail = match error {
         core::launch::LaunchError::Storage(error) => {
             tracing::error!(%error,"could not persist launch");
@@ -172,10 +174,9 @@ fn launch_error(error: core::launch::LaunchError) -> Failure {
         core::launch::LaunchError::Refused(detail) => {
             format!("the daemon refused the spawn: {detail}")
         }
-        core::launch::LaunchError::Delivery(core::bus::BusError::NoDaemon(_)) => {
-            "daemon for that machine is offline — start `cctui-daemon` first".into()
+        core::launch::LaunchError::Delivery(error) => {
+            core::launch::delivery_detail(&host.pool, machine, &error).await.into()
         }
-        core::launch::LaunchError::Delivery(_) => "daemon disconnected mid-dispatch".into(),
     };
     (StatusCode::SERVICE_UNAVAILABLE, Json(cctui_proto::api::ApiError { error: detail }))
 }

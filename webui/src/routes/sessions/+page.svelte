@@ -42,7 +42,14 @@
 	import { TILES_BOOT_KEY } from './tilesBoot';
 	import { settings } from '$lib/settings.svelte';
 	import { m } from '$lib/paraglide/messages';
-	import { sessionIdFromLocation, sessionHrefFor, toGroupDimension } from './sessions.logic';
+	import {
+		sessionIdFromLocation,
+		sessionHrefFor,
+		sessionNavState,
+		toGroupDimension,
+		urlSyncFor,
+		withoutViewParam
+	} from './sessions.logic';
 	import { SessionsPage } from './sessionsPage.svelte';
 
 	// Live buckets always show non-archived sessions; the archive is a separate
@@ -79,7 +86,7 @@
 		invalidateSessions,
 		refetchLive: () => qc.invalidateQueries({ queryKey: qk.sessions(false) }),
 		dockLayout,
-		clearUrlSession: () => setUrlSession(null, true),
+		clearUrlSession: () => replaceUrlSession(null),
 		confirm: (message) => confirm(message),
 		spawnSlot: {
 			currentKey: currentSpawnSlot,
@@ -95,15 +102,25 @@
 		showHidden: () => isAdmin && showHidden
 	});
 
+	// Shallow routing never advances `page.url`, and popstate restores the
+	// `page.url` saved with the entry, not the entry's address: only the address
+	// bar is current. `page.url`/`page.state` are read to re-run on navigation.
+	const liveUrl = (): URL => {
+		void page.url;
+		void page.state;
+		return new URL(location.href);
+	};
+
 	// Escape hatch: /sessions?view=list|grid|tiles sets (and persists) the mode,
 	// so a stored choice that misbehaves can always be overridden by URL.
 	$effect(() => {
-		const want = page.url.searchParams.get('view');
+		const want = liveUrl().searchParams.get('view');
 		if (!want || !(isViewMode(want) || want === 'card')) return;
-		untrack(() => (sp.viewMode = parseViewMode(want)));
-		const url = new URL(page.url);
-		url.searchParams.delete('view');
-		replaceState(url, page.state);
+		untrack(() => {
+			sp.viewMode = parseViewMode(want);
+			const href = withoutViewParam(location.href);
+			if (href) replaceState(href, page.state);
+		});
 	});
 
 	// A tiles render that takes the tab down never clears this breadcrumb, so the
@@ -151,48 +168,56 @@
 	// We track the last id we synced to the URL so list refetches (which churn
 	// the session object) don't re-push.
 	let lastUrlId: string | null = null;
-	// Seed lastUrlId from the URL on mount so a deep-link load doesn't double-push,
-	// while opening a session from the list DOES push a history entry — so the
-	// browser Back button (and the drawer's < button) returns to /sessions instead
-	// of skipping the list. `mounted` is reactive so the
-	// drawer→URL effect re-runs once the initial sync is in place.
+	// Seeded from the URL on mount so a deep-link load doesn't double-push.
+	// `mounted` is reactive so the drawer→URL effect re-runs once seeded.
 	let mounted = $state(false);
+	// Id opened without a navigation of its own (the restored dock).
+	let quietOpen: string | null = null;
 	let tilesOverflow = $state<SessionListItem[]>([]);
-	// Derive the session id from the URL pathname rather than `page.params`.
-	// `setUrlSession` navigates with shallow routing (pushState/replaceState),
-	// which updates `page.url` but does NOT re-resolve the matched route — so
-	// `page.params.session` stays pinned to whatever the [session] route bound on
-	// the last full navigation. After closing the drawer pushes `/sessions`, the
-	// stale param would still read `<uuid>`, reopen the session, and re-push
-	// the URL (the back chevron never clearing /sessions/<uuid>). Parsing the
-	// live pathname keeps the URL→drawer effect honest under shallow routing.
-	const sessionIdFromUrl = (): string | null =>
-		sessionIdFromLocation(page.url.pathname, page.url.searchParams);
+	// Not `page.params`/`page.url`: shallow routing leaves both on the last full
+	// navigation, so they can name a session the address bar no longer shows.
+	const sessionIdFromUrl = (): string | null => {
+		const url = liveUrl();
+		return sessionIdFromLocation(url.pathname, url.searchParams);
+	};
 	onMount(() => {
 		lastUrlId = sessionIdFromUrl();
 		mounted = true;
 	});
 
-	function setUrlSession(id: string | null, replace = false) {
+	function replaceUrlSession(id: string | null) {
 		const href = sessionHrefFor(location.href, id);
-		if (href === null) return;
-		if (replace) replaceState(href, {});
-		else pushState(href, {});
+		if (href !== null) replaceState(href, {});
+	}
+
+	function syncUrlSession(id: string | null, quiet: boolean) {
+		const urlId = sessionIdFromLocation(location.pathname, new URLSearchParams(location.search));
+		const { fromList } = sessionNavState(untrack(() => page.state));
+		const how = urlSyncFor({ to: id, urlId, fromList: !!fromList, quiet });
+		if (how === 'back') return history.back();
+		const href = how && sessionHrefFor(location.href, id);
+		if (!href) return;
+		if (how === 'push') pushState(href, { fromList: true } as App.PageState);
+		else replaceState(href, (id && fromList ? { fromList } : {}) as App.PageState);
 	}
 
 	// URL → drawer: react to the `session` param (initial load, back/forward,
 	// pasted link). Only act when it differs from what's already open. The
 	// `openSession` read is untracked: if this effect depended on it,
 	// any `openSession = …` (card click, notification) would re-run it *before*
-	// the drawer→URL effect below pushes `?session=<id>` — the still-empty URL
+	// the drawer→URL effect below writes the id — the still-empty URL
 	// param then hit the `openSession = null` branch and closed the drawer in
 	// the same flush, so conversations never opened. Depending only on the URL
 	// keeps this effect to its job: URL changes drive the drawer, not vice versa.
 	$effect(() => {
 		const id = sessionIdFromUrl();
 		if (id === untrack(() => sp.openSession?.id ?? null)) return;
-		if (id) void sp.openById(id);
-		else sp.openSession = null;
+		if (!id) {
+			sp.openSession = null;
+			return;
+		}
+		const spawned = sessionNavState(untrack(() => page.state)).spawned === id;
+		void sp.openById(id, { spawned });
 	});
 
 	// drawer → URL: reflect the open session into the address bar so it's always
@@ -202,10 +227,8 @@
 		if (sp.urlResolving) return;
 		if (!mounted) return;
 		if (id === lastUrlId) return;
-		// Always push so opening/closing a session is a real history step and Back
-		// returns to the list. The deep-link case is handled by seeding lastUrlId
-		// on mount (above), so no redundant entry is added on first load.
-		setUrlSession(id, false);
+		syncUrlSession(id, id !== null && id === quietOpen);
+		quietOpen = null;
 		lastUrlId = id;
 	});
 
@@ -219,7 +242,9 @@
 		if (untrack(() => sp.openSession) || sessionIdFromUrl()) return;
 		const last = drafts.get(LAST_DOCKED_SESSION);
 		const row = last ? untrack(() => sp.items.find((s) => s.id === last)) : undefined;
-		if (row) sp.openSession = row;
+		if (!row) return;
+		quietOpen = row.id;
+		sp.openSession = row;
 	});
 	$effect(() => {
 		const id = sp.openSession?.id;
@@ -316,6 +341,8 @@
 	trailing={isAdmin || (sp.tiles && tilesOverflow.length) ? trailingControls : undefined}
 	onUpdateLabel={sp.updateLabel}
 	onDeleteLabel={sp.deleteLabel}
+	scopeMachine={sp.openSession ? (sp.openSession.machine_name ?? sp.openSession.machine_id) : null}
+	scopeDir={sp.openSession?.working_dir || null}
 />
 
 {#if sp.list.selecting}

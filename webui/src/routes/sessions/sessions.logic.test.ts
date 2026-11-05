@@ -3,6 +3,10 @@ import type { SessionListItem } from '@bindings/SessionListItem';
 import type { JsonValue } from '@bindings/serde_json/JsonValue';
 import {
 	accountTrafficWarning,
+	sectionVisibility,
+	sessionNavState,
+	urlSyncFor,
+	withoutViewParam,
 	archivedDescendantsOf,
 	branchOf,
 	bucketInSection,
@@ -1113,5 +1117,93 @@ describe('machineGroupLiveness', () => {
 		expect(machineGroupLiveness(null, [persistent])).toBeNull();
 		expect(machineGroupLiveness(null, [session({ machine_kind: null, liveness: 'active' })])).toBeNull();
 		expect(machineGroupLiveness(null, [])).toBeNull();
+	});
+});
+
+describe('urlSyncFor', () => {
+	const sync = (to: string | null, urlId: string | null, fromList = false, quiet = false) =>
+		urlSyncFor({ to, urlId, fromList, quiet });
+
+	it('pushes one entry when a session opens over the list', () => {
+		expect(sync('a', null)).toBe('push');
+	});
+	it('replaces the entry when switching from one session to another', () => {
+		expect(sync('b', 'a', true)).toBe('replace');
+		expect(sync('b', 'a', false)).toBe('replace');
+	});
+	it('pops back to the list entry it was pushed from on close', () => {
+		expect(sync(null, 'a', true)).toBe('back');
+	});
+	it('replaces on close when no list entry sits underneath', () => {
+		expect(sync(null, 'a', false)).toBe('replace');
+	});
+	it('does nothing once the URL already shows the session (Back, Forward, a pasted link)', () => {
+		expect(sync('a', 'a', true)).toBeNull();
+		expect(sync(null, null, true)).toBeNull();
+	});
+	it('never adds an entry for a quiet open', () => {
+		expect(sync('a', null, false, true)).toBe('replace');
+	});
+});
+
+describe('sessionNavState', () => {
+	it('reads the flags the page stores and tolerates an empty state', () => {
+		expect(sessionNavState({ fromList: true, spawned: 'x' })).toEqual({ fromList: true, spawned: 'x' });
+		expect(sessionNavState(undefined)).toEqual({});
+	});
+});
+
+describe('sectionVisibility', () => {
+	const archive = (over: Partial<{ rows: number; loading: boolean; more: boolean; error: boolean }>) => ({
+		rows: 0,
+		loading: false,
+		more: false,
+		error: false,
+		...over
+	});
+
+	it('shows only the non-empty groups', () => {
+		const v = sectionVisibility({
+			groups: [
+				{ key: 'pinned', count: 0 },
+				{ key: 'working', count: 2 }
+			],
+			drafts: null,
+			archived: null
+		});
+		expect([...v.groups]).toEqual(['working']);
+		expect(v.empty).toBe(false);
+	});
+	it('hides an enabled Drafts section with no drafts', () => {
+		expect(sectionVisibility({ groups: [], drafts: 0, archived: null })).toMatchObject({ drafts: false, empty: true });
+		expect(sectionVisibility({ groups: [], drafts: 1, archived: null })).toMatchObject({ drafts: true, empty: false });
+	});
+	it('treats an archive with no first-page rows and nothing in flight as empty', () => {
+		expect(sectionVisibility({ groups: [], drafts: null, archived: archive({}) }).empty).toBe(true);
+	});
+	it('keeps the archive while its first page loads, more pages remain or it failed', () => {
+		for (const over of [{ loading: true }, { more: true }, { error: true }, { rows: 1 }]) {
+			const v = sectionVisibility({ groups: [], drafts: null, archived: archive(over) });
+			expect(v.archived).toBe(true);
+			expect(v.empty).toBe(false);
+		}
+	});
+	it('is empty only when every enabled section is', () => {
+		const v = sectionVisibility({
+			groups: [{ key: 'working', count: 0 }],
+			drafts: 0,
+			archived: archive({})
+		});
+		expect(v).toMatchObject({ drafts: false, archived: false, empty: true });
+		expect(v.groups.size).toBe(0);
+	});
+});
+
+describe('withoutViewParam', () => {
+	it('drops only the view override', () => {
+		expect(withoutViewParam('http://h/sessions?view=list&q=a')).toBe('http://h/sessions?q=a');
+	});
+	it('leaves a pushed session URL alone once the override is gone', () => {
+		expect(withoutViewParam('http://h/sessions/abc')).toBeNull();
 	});
 });

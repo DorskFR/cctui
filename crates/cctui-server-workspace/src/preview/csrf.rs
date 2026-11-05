@@ -81,11 +81,16 @@ mod tests {
         Router::new()
             .route("/x", get(|| async { "get" }).post(|| async { "post" }))
             .route("/y", post(|| async { "post" }))
+            .route("/otlp/v1/traces", post(|| async { "post" }))
             .layer(axum::middleware::from_fn_with_state(origins, middleware))
     }
 
     async fn status(method: &str, headers: &[(&str, &str)]) -> StatusCode {
-        let mut req = http::Request::builder().method(method).uri("/x");
+        status_at(method, "/x", headers).await
+    }
+
+    async fn status_at(method: &str, path: &str, headers: &[(&str, &str)]) -> StatusCode {
+        let mut req = http::Request::builder().method(method).uri(path);
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
@@ -120,6 +125,31 @@ mod tests {
             status("DELETE", &[cookie, ("origin", "https://evil.example")]).await,
             StatusCode::FORBIDDEN
         );
+    }
+
+    #[tokio::test]
+    async fn otlp_export_from_the_app_origin_passes_and_opaque_origins_do_not() {
+        let cookie = ("cookie", "cctui_auth=tok");
+        let json = ("content-type", "application/json");
+        let otlp = "/otlp/v1/traces";
+        let app_origin = ("origin", "https://cctui.example");
+        assert_eq!(status_at("POST", otlp, &[cookie, json, app_origin]).await, StatusCode::OK);
+        assert_eq!(
+            status_at("POST", otlp, &[cookie, json, ("origin", "null")]).await,
+            StatusCode::FORBIDDEN
+        );
+        for path in ["/x", "/y"] {
+            assert_eq!(
+                status_at("POST", path, &[cookie, ("origin", "null")]).await,
+                StatusCode::FORBIDDEN,
+                "{path}"
+            );
+            assert_eq!(
+                status_at("DELETE", path, &[cookie, ("origin", "null")]).await,
+                StatusCode::FORBIDDEN,
+                "{path}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -2,7 +2,13 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import { SessionsListController, type SessionsListInputs } from './SessionsListController.svelte';
-import type { Section, Dimension, SessionSort } from './sessions.logic';
+import {
+	inEnabledSections,
+	sectionVisibility,
+	type Section,
+	type Dimension,
+	type SessionSort
+} from './sessions.logic';
 
 function session(over: Partial<SessionListItem>): SessionListItem {
 	return {
@@ -223,5 +229,68 @@ describe('SessionsListController — tile rows', () => {
 		setSections(new Set<Section>(['starred', 'live', 'dispatched']));
 		setItems([session({ id: 'live' }), session({ id: 'disp', machine_kind: 'dispatch' })]);
 		expect(ctl.tileRows.map((s) => s.id).sort()).toEqual(['disp', 'live']);
+	});
+});
+
+describe('SessionsListController — section visibility', () => {
+	const W = session({ id: 'w', bucket: 'working' });
+	const D = session({ id: 'd', bucket: 'working', machine_kind: 'dispatch' });
+	const X = session({ id: 'x', status: 'archived', bucket: 'done' });
+
+	// Archived rows come from the pager, narrowed like `SessionsPage.keepRow`.
+	function rendered(sections: Section[], rows: SessionListItem[]) {
+		const enabled = new Set(sections);
+		const { ctl, setItems, setSections, setGroupBy } = make();
+		setSections(enabled);
+		setGroupBy('status');
+		setItems(rows.filter((s) => s.status !== 'archived'));
+		const archived = rows.filter((s) => s.status === 'archived' && inEnabledSections(s, enabled));
+		const vis = sectionVisibility({
+			groups: ctl.liveSectionCounts,
+			drafts: enabled.has('drafts') ? ctl.draftRows.length : null,
+			archived: enabled.has('archived')
+				? { rows: archived.length, loading: false, more: false, error: false }
+				: null
+		});
+		const shown = ctl.liveSectionCounts
+			.filter((g) => vis.groups.has(g.key))
+			.map((g) => `${g.key} ${g.count}`);
+		if (vis.archived) shown.push(`archived ${archived.length}`);
+		expect(vis.empty).toBe(shown.length === 0);
+		return shown;
+	}
+
+	const cases: [string, Section[], SessionListItem[], string[]][] = [
+		['live only, nothing', ['live'], [], []],
+		['live only, one working', ['live'], [W], ['working 1']],
+		['live only, one archived', ['live'], [X], []],
+		['live only, working + archived', ['live'], [W, X], ['working 1']],
+		['archived only, nothing', ['archived'], [], []],
+		['archived only, one working', ['archived'], [W], []],
+		['archived only, one archived', ['archived'], [X], ['archived 1']],
+		['archived only, working + archived', ['archived'], [W, X], ['archived 1']],
+		['live + archived, nothing', ['live', 'archived'], [], []],
+		['live + archived, one working', ['live', 'archived'], [W], ['working 1']],
+		['live + archived, one archived', ['live', 'archived'], [X], ['archived 1']],
+		['live + archived, both', ['live', 'archived'], [W, X], ['working 1', 'archived 1']],
+		['dispatched only, nothing', ['dispatched'], [], []],
+		['dispatched only, one working', ['dispatched'], [W], []],
+		['dispatched only, one dispatched', ['dispatched'], [D], ['dispatched 1']],
+		['dispatched only, dispatched + archived', ['dispatched'], [D, X], ['dispatched 1']]
+	];
+	for (const [name, sections, rows, want] of cases) {
+		it(`renders exactly the non-empty enabled sections: ${name}`, () => {
+			expect(rendered(sections, rows)).toEqual(want);
+		});
+	}
+
+	it('keys group-by sections like their collapse toggles and drops empty ones', () => {
+		const { ctl, setItems, setGroupBy } = make();
+		setGroupBy('working_dir');
+		setItems([session({ id: 'a', working_dir: '/w/a' })]);
+		const counts = ctl.liveSectionCounts;
+		expect(counts.length).toBe(1);
+		expect(counts[0].key.startsWith('dim:')).toBe(true);
+		expect(counts[0].count).toBe(1);
 	});
 });

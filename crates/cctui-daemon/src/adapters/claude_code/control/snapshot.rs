@@ -536,7 +536,17 @@ impl Driver {
                         ),
                     );
                 }
+                let short = self.short_by_session.get(&loc.offset_key);
                 for evt in events {
+                    if let Some(text) = short.as_deref().and_then(|s| self.auto_fallback(s, &evt)) {
+                        tracing::warn!(local_id = %loc.local_id, %text, "auto mode fallback");
+                        self.emit(AdapterEvent::Message {
+                            local_id: loc.local_id.clone(),
+                            payload: super::super::auto_mode::marker_payload(&text),
+                            turn_id: None,
+                        })
+                        .await;
+                    }
                     self.emit_fresh(evt).await;
                 }
                 if new_off != off {
@@ -554,8 +564,15 @@ impl Driver {
         dirty
     }
 
+    fn auto_fallback(&self, short: &str, evt: &AdapterEvent) -> Option<String> {
+        self.auto_mode_watch.lock().ok()?.observe(short, evt)
+    }
+
     async fn reap_gone(&mut self, short: &str) {
         self.last_status.remove(short);
+        if let Ok(mut watch) = self.auto_mode_watch.lock() {
+            watch.forget(short);
+        }
         self.status_resend.remove(short);
         self.task_watches.remove(short);
         if let Ok(mut m) = self.announced_meta.lock() {

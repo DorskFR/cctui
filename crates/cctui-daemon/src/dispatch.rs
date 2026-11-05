@@ -196,20 +196,38 @@ pub fn write_result(
     flow: &str,
     outcome: &Outcome,
 ) -> anyhow::Result<()> {
-    let body = serde_json::to_string(&result_json(task_id, flow, outcome))
-        .unwrap_or_else(|_| "{}".to_owned());
-    std::fs::write(path, body).with_context(|| format!("writing result file {path}"))?;
+    write_verdict(path, &result_json(task_id, flow, outcome))?;
     tracing::info!(task_id, flow, status = %outcome.status, "dispatch: wrote {path}");
     Ok(())
+}
+
+fn write_verdict(path: &str, verdict: &Value) -> anyhow::Result<()> {
+    let body = serde_json::to_string(verdict).unwrap_or_else(|_| "{}".to_owned());
+    std::fs::write(path, body).with_context(|| format!("writing result file {path}"))
+}
+
+/// The `cause` of a verdict whose session never started; the entrypoint exits
+/// non-zero on it.
+pub const LAUNCH_REFUSED: &str = "launch-refused";
+
+/// The `failed` verdict of a launch refused before any harness ran.
+#[must_use]
+pub fn launch_refused_json(task_id: &str, flow: &str, reason: &str) -> Value {
+    let mut verdict = result_json(task_id, flow, &Outcome::failed(reason));
+    if let Some(obj) = verdict.as_object_mut() {
+        obj.insert("cause".to_owned(), json!(LAUNCH_REFUSED));
+    }
+    verdict
 }
 
 /// Fail the dispatch before any harness runs, so the pod ends on the verdict
 /// instead of waiting out its boot deadline.
 pub fn write_failure(payload: &Value, flow: &str, reason: &str) {
-    if let Err(err) =
-        write_result(&result_file(), &task_id(payload), flow, &Outcome::failed(reason))
-    {
-        tracing::error!(%err, "dispatch: could not write the failure verdict");
+    let path = result_file();
+    let task = task_id(payload);
+    match write_verdict(&path, &launch_refused_json(&task, flow, reason)) {
+        Ok(()) => tracing::info!(task_id = %task, flow, "dispatch: launch refused, wrote {path}"),
+        Err(err) => tracing::error!(%err, "dispatch: could not write the failure verdict"),
     }
 }
 
@@ -556,6 +574,29 @@ mod tests {
         assert_eq!(r["status"], json!("failed"));
         assert_eq!(r["error"], json!("boom"));
         assert!(r.get("message").is_none());
+    }
+
+    #[test]
+    fn a_refused_launch_is_a_failed_verdict_the_entrypoint_exits_non_zero_on() {
+        let v = launch_refused_json("t-1", "claude-code-dispatch", "hook policy unavailable");
+        assert_eq!(v["status"], "failed");
+        assert_eq!(v["cause"], LAUNCH_REFUSED);
+        assert_eq!(v["error"], "hook policy unavailable");
+        assert_eq!(v["task_id"], "t-1");
+        let ran = result_json("t-1", "claude-code-dispatch", &Outcome::failed("turn failed"));
+        assert!(ran.get("cause").is_none(), "a session that ran is never a refused launch");
+    }
+
+    #[test]
+    fn write_failure_tags_the_result_file_as_a_refused_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("result.json");
+        write_verdict(path.to_str().unwrap(), &launch_refused_json("t-2", "dispatch", "no hooks"))
+            .unwrap();
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["cause"], LAUNCH_REFUSED);
+        assert_eq!(written["error"], "no hooks");
     }
 
     #[tokio::test]

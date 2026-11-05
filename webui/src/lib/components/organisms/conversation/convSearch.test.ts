@@ -14,6 +14,7 @@ function res(over: Partial<ConversationSearchResponse> = {}): ConversationSearch
 		hits: [hit(10), hit(20), hit(30)],
 		total: 3,
 		truncated: false,
+		partial: false,
 		tools: ['Bash'],
 		...over
 	};

@@ -2694,73 +2694,138 @@ type ConvSearchRow = (i64, String, serde_json::Value, DateTime<Utc>);
 
 /// `$1` the session id, `$2…$n+1` the folded ILIKE patterns — all of them
 /// required of one and the same event, each in any of its chunks — then
-/// `after`, `before` and the scan cap; with a `gap`, `$n+5…$2n+4` the unfolded
-/// patterns its unchunked events must all carry in their capped `search_text`.
+/// `after`, `before` and the row cap; with a `gap`, the next `n` the unfolded
+/// patterns its unchunked events must all carry in their capped `search_text`;
+/// last, the event-id window `(lo, hi]`.
+///
+/// Every pattern is a correlated probe of the event's own chunks, so a window
+/// costs a primary-key lookup per event in it, never a trigram scan of the
+/// whole session.
 fn conv_search_sql(n_patterns: usize, gap: Option<Unchunked>) -> String {
     let (a, b, l) = (n_patterns + 2, n_patterns + 3, n_patterns + 4);
+    let gap = gap.filter(|_| n_patterns > 0);
+    let lo = l + 1 + if gap.is_some() { n_patterns } else { 0 };
+    let hi = lo + 1;
     let text_where = if n_patterns == 0 {
         "TRUE".to_string()
     } else {
-        let sets = (2..=n_patterns + 1)
+        let chunked = (2..=n_patterns + 1)
             .map(|i| {
                 format!(
-                    "SELECT c.event_id FROM search_chunks c \
-                     WHERE c.session_id = $1 AND c.body ILIKE ${i}"
+                    "EXISTS (SELECT 1 FROM search_chunks c \
+                     WHERE c.event_id = e.id AND c.body ILIKE ${i})"
                 )
             })
             .collect::<Vec<_>>()
-            .join(" INTERSECT ");
+            .join(" AND ");
         let unchunked = gap.map_or_else(String::new, |g| {
             use std::fmt::Write as _;
             let raw = (l + 1..=l + n_patterns).fold(String::new(), |mut acc, i| {
-                let _ = write!(acc, " AND left(u.search_text, {SEARCH_TEXT_CAP}) ILIKE ${i}");
+                let _ = write!(acc, " AND left(e.search_text, {SEARCH_TEXT_CAP}) ILIKE ${i}");
                 acc
             });
-            format!(
-                " UNION SELECT u.id FROM stream_events u \
-                  WHERE u.session_id = $1 AND {}{raw}",
-                unchunked_ids("u", g)
-            )
+            format!(" OR ({}{raw})", unchunked_ids("e", g))
         });
-        format!("e.id IN (({sets}){unchunked})")
+        format!("({chunked}){unchunked}")
     };
     format!(
         "SELECT e.id, e.event_type, e.payload, e.created_at \
          FROM stream_events e \
-         WHERE e.session_id = $1 AND ({text_where}) \
+         WHERE e.session_id = $1 AND e.id > ${lo} AND e.id <= ${hi} AND ({text_where}) \
            AND (${a}::timestamptz IS NULL OR e.created_at >= ${a}) \
            AND (${b}::timestamptz IS NULL OR e.created_at < ${b}) \
          ORDER BY e.id ASC LIMIT ${l}"
     )
 }
 
-/// The candidate rows of a conversation search, under
-/// [`SEARCH_STATEMENT_TIMEOUT`]; `None` when it ran out of time.
+/// How the conversation scan walks a session: `window` events per statement,
+/// and no new window once `budget` has passed.
+#[derive(Debug, Clone, Copy)]
+struct ConvScanLimits {
+    window: i64,
+    budget: std::time::Duration,
+}
+
+impl ConvScanLimits {
+    const DEFAULT: Self = Self { window: 2_000, budget: SEARCH_BUDGET };
+}
+
+/// The rows a conversation scan found, oldest first; `partial` when time ran
+/// out before the newest window was searched.
+struct ConvScan {
+    rows: Vec<ConvSearchRow>,
+    partial: bool,
+}
+
+/// The highest id and the size of the next window of at most `size` session
+/// events past `after`.
+async fn conv_window(
+    conn: &mut sqlx::PgConnection,
+    session_id: &str,
+    after: i64,
+    size: i64,
+) -> Result<(Option<i64>, i64), sqlx::Error> {
+    sqlx::query_as(
+        "SELECT max(id), count(*) FROM (SELECT id FROM stream_events \
+         WHERE session_id = $1 AND id > $2 ORDER BY id LIMIT $3) w",
+    )
+    .bind(session_id)
+    .bind(after)
+    .bind(size)
+    .fetch_one(conn)
+    .await
+}
+
+/// The candidate rows of a conversation search, scanned in event-id windows
+/// under [`SEARCH_STATEMENT_TIMEOUT`] each, so a timeout or the budget ends the
+/// scan with the hits found so far instead of none.
 async fn conv_search_rows(
     pool: &sqlx::PgPool,
     session_id: &str,
     terms: &Terms,
     filters: &ConvSearchFilters,
     gap: Option<Unchunked>,
-) -> Result<Option<Vec<ConvSearchRow>>, sqlx::Error> {
+    limits: ConvScanLimits,
+) -> Result<ConvScan, sqlx::Error> {
+    let deadline = std::time::Instant::now() + limits.budget;
     let mut tx = pool.begin().await?;
     sqlx::query(SEARCH_STATEMENT_TIMEOUT).execute(&mut *tx).await?;
     let gap = gap.filter(|_| !terms.is_empty());
     let sql = conv_search_sql(terms.len(), gap);
-    let mut query = sqlx::query_as::<_, ConvSearchRow>(sqlx::AssertSqlSafe(sql)).bind(session_id);
-    for t in &terms.folded {
-        query = query.bind(ilike_contains(t));
-    }
-    query = query.bind(filters.after).bind(filters.before).bind(CONV_SEARCH_SCAN_CAP);
-    if gap.is_some() {
-        for t in &terms.raw {
+    let mut rows: Vec<ConvSearchRow> = Vec::new();
+    let mut after = 0_i64;
+    loop {
+        let (hi, seen) = match conv_window(&mut tx, session_id, after, limits.window).await {
+            Ok((Some(hi), seen)) => (hi, seen),
+            Ok((None, _)) => return Ok(ConvScan { rows, partial: false }),
+            Err(e) if is_statement_timeout(&e) => return Ok(ConvScan { rows, partial: true }),
+            Err(e) => return Err(e),
+        };
+        let cap = CONV_SEARCH_SCAN_CAP - i64::try_from(rows.len()).unwrap_or(i64::MAX);
+        let mut query =
+            sqlx::query_as::<_, ConvSearchRow>(sqlx::AssertSqlSafe(sql.clone())).bind(session_id);
+        for t in &terms.folded {
             query = query.bind(ilike_contains(t));
         }
-    }
-    match query.fetch_all(&mut *tx).await {
-        Ok(rows) => Ok(Some(rows)),
-        Err(e) if is_statement_timeout(&e) => Ok(None),
-        Err(e) => Err(e),
+        query = query.bind(filters.after).bind(filters.before).bind(cap);
+        if gap.is_some() {
+            for t in &terms.raw {
+                query = query.bind(ilike_contains(t));
+            }
+        }
+        match query.bind(after).bind(hi).fetch_all(&mut *tx).await {
+            Ok(found) => rows.extend(found),
+            Err(e) if is_statement_timeout(&e) => return Ok(ConvScan { rows, partial: true }),
+            Err(e) => return Err(e),
+        }
+        let full = i64::try_from(rows.len()).unwrap_or(i64::MAX) >= CONV_SEARCH_SCAN_CAP;
+        if full || seen < limits.window {
+            return Ok(ConvScan { rows, partial: false });
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(ConvScan { rows, partial: true });
+        }
+        after = hi;
     }
 }
 
@@ -2787,6 +2852,7 @@ pub async fn search_conversation(
             hits: Vec::new(),
             total: 0,
             truncated: false,
+            partial: false,
             tools: Vec::new(),
         }));
     }
@@ -2799,13 +2865,9 @@ pub async fn search_conversation(
     let gap = crate::search_index::unchunked(&state.pool).await?;
     let needles = terms.needles();
 
-    let Some(rows) = conv_search_rows(&state.pool, &session_id, &terms, &filters, gap).await?
-    else {
-        return Err(AppError::new(
-            StatusCode::GATEWAY_TIMEOUT,
-            "search timed out: add a word, quote a phrase or narrow it with after:/before:",
-        ));
-    };
+    let ConvScan { rows, partial } =
+        conv_search_rows(&state.pool, &session_id, &terms, &filters, gap, ConvScanLimits::DEFAULT)
+            .await?;
     let scanned = i64::try_from(rows.len()).unwrap_or(i64::MAX);
 
     let pinned: HashSet<i64> = if filters.pinned.is_some() {
@@ -2826,7 +2888,7 @@ pub async fn search_conversation(
     let adapter_id = adapter.as_deref().unwrap_or("claude-code");
 
     let mut hits: Vec<cctui_proto::api::ConversationHit> = Vec::new();
-    let mut truncated = scanned >= CONV_SEARCH_SCAN_CAP;
+    let mut truncated = partial || scanned >= CONV_SEARCH_SCAN_CAP;
     let mut tools: Vec<String> = Vec::new();
     for (id, event_type, payload, created_at) in rows {
         let Some(client) = crate::normalize::for_client(adapter_id, &event_type, payload) else {
@@ -2854,7 +2916,13 @@ pub async fn search_conversation(
         });
     }
     let total = u32::try_from(hits.len()).unwrap_or(u32::MAX);
-    Ok(Json(cctui_proto::api::ConversationSearchResponse { hits, total, truncated, tools }))
+    Ok(Json(cctui_proto::api::ConversationSearchResponse {
+        hits,
+        total,
+        truncated,
+        partial,
+        tools,
+    }))
 }
 
 pub async fn send_message(
@@ -3045,12 +3113,15 @@ pub async fn kill_session(
     // Best-effort: also dispatch to the daemon so the running worker is
     // actually killed via the `claude daemon` socket. The DB update
     // below remains source-of-truth.
-    let _ = crate::bus::dispatch(
+    let delivered = crate::bus::dispatch(
         &state,
         &session_id,
         cctui_proto::adapter::AdapterCommand::Kill { local_id: session_id.clone(), signal: None },
     )
     .await;
+    if delivered.is_err() {
+        let _ = crate::routes::dispatch::cancel_dispatched_workload(&state, &session_id).await;
+    }
     // Kill drops the in-memory handle and marks the DB row inactive. The
     // session isn't archived — later activity can revive it.
     crate::store::sessions::set_inactive(&state.pool, &session_id, false).await?;
@@ -3601,14 +3672,10 @@ pub async fn fork_session(
     );
     crate::routes::context::inherit_intent(&state.pool, &child_key, &session_id).await;
     crate::routes::spawn::remember_spawner(&state.pool, &child_key, ctx.user_id, None).await;
-    state.bus.command_daemon_for_session(machine_uuid, &session_id, frame).await.map_err(
-        |err| match err {
-            crate::bus::BusError::NoDaemon(_) => {
-                AppError::new(StatusCode::SERVICE_UNAVAILABLE, "daemon for that machine is offline")
-            }
-            _ => AppError::new(StatusCode::SERVICE_UNAVAILABLE, "daemon disconnected mid-dispatch"),
-        },
-    )?;
+    if let Err(err) = state.bus.command_daemon_for_session(machine_uuid, &session_id, frame).await {
+        let detail = cctui_server_core::launch::delivery_detail(&state.pool, machine_uuid, &err);
+        return Err(AppError::new(StatusCode::SERVICE_UNAVAILABLE, detail.await));
+    }
     tracing::info!(parent = %session_id, %command_id, %adapter_id, child = ?child_session_id, "fork dispatched");
     events::record(
         &state,
@@ -5451,14 +5518,16 @@ mod tests {
         let sql = super::conv_search_sql(3, None);
         assert_eq!(sql.matches("c.body ILIKE $").count(), 3);
         assert!(sql.contains("$2") && sql.contains("$3") && sql.contains("$4"));
-        assert_eq!(sql.matches(" INTERSECT ").count(), 2, "terms are ANDed per event: {sql}");
-        assert_eq!(sql.matches("c.session_id = $1").count(), 3, "every probe stays in the session");
+        assert_eq!(sql.matches(" AND EXISTS ").count(), 2, "terms are ANDed per event: {sql}");
+        assert_eq!(sql.matches("c.event_id = e.id").count(), 3, "each probe is the event's own");
         assert!(!sql.contains("search_text"), "{sql}");
         assert!(sql.contains("WHERE e.session_id = $1"), "the hit list never leaves the session");
         assert!(sql.ends_with("ORDER BY e.id ASC LIMIT $7"), "oldest first: {sql}");
+        assert!(sql.contains("WHERE e.session_id = $1 AND e.id > $8 AND e.id <= $9"), "{sql}");
 
         let none = super::conv_search_sql(0, None);
         assert!(none.contains("AND (TRUE)"));
+        assert!(none.contains("e.id > $5 AND e.id <= $6"), "{none}");
         assert!(none.ends_with("ORDER BY e.id ASC LIMIT $4"));
     }
 
@@ -5592,11 +5661,13 @@ mod tests {
             async move {
                 let root = cctui_query::parse(&super::straighten_phrase_quotes(q));
                 let terms = super::Terms::of(&root.free_text_terms());
-                super::conv_search_rows(&pool, &sid, &terms, &super::conv_filters(&[]), None)
+                let filters = super::conv_filters(&[]);
+                let limits = super::ConvScanLimits::DEFAULT;
+                let scan = super::conv_search_rows(&pool, &sid, &terms, &filters, None, limits)
                     .await
-                    .unwrap()
-                    .expect("no timeout")
-                    .len()
+                    .unwrap();
+                assert!(!scan.partial, "no timeout");
+                scan.rows.len()
             }
         };
         assert_eq!(hits("\"Change the gate to master...HEAD (three dots).\"").await, 1);
@@ -5626,6 +5697,60 @@ mod tests {
         sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
     }
 
+    async fn conv_scan(
+        pool: &sqlx::PgPool,
+        sid: &str,
+        q: &str,
+        limits: super::ConvScanLimits,
+    ) -> super::ConvScan {
+        let terms = super::Terms::of(&cctui_query::parse(q).free_text_terms());
+        super::conv_search_rows(pool, sid, &terms, &super::conv_filters(&[]), None, limits)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn conversation_search_out_of_time_returns_the_windows_it_reached() {
+        let Some((pool, sid)) = seeded_session("conversation_search_partial").await else {
+            return;
+        };
+        let before: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM stream_events WHERE session_id = $1")
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        for i in 0..5 {
+            let say = serde_json::json!({"role": "assistant", "text": format!("needle {i}")});
+            insert_payload(&pool, &sid, "message", say).await;
+        }
+        index_session(&pool, &sid).await;
+        let texts = |scan: &super::ConvScan| {
+            scan.rows
+                .iter()
+                .map(|r| r.2["text"].as_str().unwrap_or_default().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let narrow = before + 2;
+
+        let cut = super::ConvScanLimits { window: narrow, budget: std::time::Duration::ZERO };
+        let scan = conv_scan(&pool, &sid, "needle", cut).await;
+        assert!(scan.partial, "windows were left unscanned");
+        assert_eq!(texts(&scan), ["needle 0", "needle 1"], "the hits of the first window");
+
+        let walked = super::ConvScanLimits { window: narrow, budget: super::SEARCH_BUDGET };
+        let scan = conv_scan(&pool, &sid, "needle", walked).await;
+        assert!(!scan.partial);
+        assert_eq!(scan.rows.len(), 5, "every window walked: {:?}", texts(&scan));
+
+        let one = super::ConvScanLimits { window: 10_000, budget: std::time::Duration::ZERO };
+        let scan = conv_scan(&pool, &sid, "needle", one).await;
+        assert!(!scan.partial, "a single window covers the session");
+        assert_eq!(scan.rows.len(), 5);
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
+    }
+
     #[test]
     fn the_unchunked_fallback_probes_the_indexed_search_text_expression() {
         let index =
@@ -5649,10 +5774,11 @@ mod tests {
         assert_eq!(texts, ["%fix%", "%\u{FB01}x%"], "search_text is matched unfolded");
 
         let conv = super::conv_search_sql(2, gap);
-        assert!(conv.contains("u.session_id = $1 AND u.id > 10 AND (u.id < 500"), "{conv}");
+        assert!(conv.contains(" OR (e.id > 10 AND (e.id < 500 OR NOT EXISTS"), "{conv}");
         for i in [7, 8] {
-            assert!(conv.contains(&format!("left(u.search_text, 8192) ILIKE ${i}")), "{conv}");
+            assert!(conv.contains(&format!("left(e.search_text, 8192) ILIKE ${i}")), "{conv}");
         }
+        assert!(conv.contains("e.session_id = $1 AND e.id > $9 AND e.id <= $10"), "{conv}");
         assert!(conv.ends_with("ORDER BY e.id ASC LIMIT $6"), "{conv}");
 
         let snip = snippet_sql(2, gap);
@@ -5702,13 +5828,13 @@ mod tests {
             let (pool, sid) = (pool.clone(), sid.clone());
             async move {
                 let terms = super::Terms::of(&cctui_query::parse(q).free_text_terms());
-                super::conv_search_rows(&pool, &sid, &terms, &super::conv_filters(&[]), gap)
+                let filters = super::conv_filters(&[]);
+                let limits = super::ConvScanLimits::DEFAULT;
+                let scan = super::conv_search_rows(&pool, &sid, &terms, &filters, gap, limits)
                     .await
-                    .unwrap()
-                    .expect("no timeout")
-                    .into_iter()
-                    .map(|r| r.0)
-                    .collect::<Vec<_>>()
+                    .unwrap();
+                assert!(!scan.partial, "no timeout");
+                scan.rows.into_iter().map(|r| r.0).collect::<Vec<_>>()
             }
         };
         assert_eq!(hits("\"ancient unchunked phrase\"", gap).await, [old]);
@@ -5806,7 +5932,14 @@ mod tests {
                     for p in &patterns {
                         q = q.bind(p);
                     }
-                    q.bind(after).bind(before).bind(100_i64).fetch_all(&pool).await.unwrap()
+                    q.bind(after)
+                        .bind(before)
+                        .bind(100_i64)
+                        .bind(0_i64)
+                        .bind(i64::MAX)
+                        .fetch_all(&pool)
+                        .await
+                        .unwrap()
                 }
             };
         let texts = |rows: Vec<super::ConvSearchRow>| {

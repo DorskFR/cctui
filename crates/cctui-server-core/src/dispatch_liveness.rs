@@ -61,7 +61,10 @@ pub fn end_reason_for(reason: &str) -> SessionEndReason {
         | "InvalidImageName"
         | "CreateContainerError"
         | "CreateContainerConfigError" => SessionEndReason::SpawnFailed,
-        _ if reason.starts_with("pod pending") || reason.starts_with("preflight:") => {
+        _ if reason.starts_with("pod pending")
+            || reason.starts_with("preflight:")
+            || reason.starts_with("launch refused:") =>
+        {
             SessionEndReason::SpawnFailed
         }
         _ => SessionEndReason::Crashed,
@@ -433,6 +436,11 @@ mod tests {
                 "preflight: k8s API reachable (kubernetes.default.svc:443)",
                 SessionEndReason::SpawnFailed,
             ),
+            ("launch refused: hook policy unavailable", SessionEndReason::SpawnFailed),
+            (
+                "launch refused: the daemon exited before registering the session",
+                SessionEndReason::SpawnFailed,
+            ),
             ("pod failed", SessionEndReason::Crashed),
             ("container restart-looping", SessionEndReason::Crashed),
             ("container exited with code 137", SessionEndReason::Crashed),
@@ -442,6 +450,12 @@ mod tests {
         ] {
             assert_eq!(end_reason_for(reason), want, "{reason:?}");
         }
+    }
+
+    #[test]
+    fn a_refused_launch_keeps_its_detail() {
+        let reason = "launch refused: hook policy unavailable".to_owned();
+        assert_eq!(failure_text(Some(reason.clone()), None), reason);
     }
 
     #[test]

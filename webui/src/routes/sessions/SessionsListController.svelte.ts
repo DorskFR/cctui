@@ -92,11 +92,14 @@ export class SessionsListController {
 			: groupRows(this.#sort(this.#liveTopFiltered), this.#in.groupBy())
 	);
 	get hasLiveRows(): boolean {
-		return bucketed(this.#in.groupBy())
-			? this.groups.some((g) => g.sessions.length > 0)
-			: this.groupedSections.length > 0;
+		return this.liveSectionCounts.some((g) => g.count > 0);
 	}
-
+	// Row count per rendered live section, keyed like their collapse toggles.
+	get liveSectionCounts(): { key: string; count: number }[] {
+		return bucketed(this.#in.groupBy())
+			? this.groups.map((g) => ({ key: g.key, count: g.sessions.length }))
+			: this.groupedSections.map((g) => ({ key: `dim:${g.key}`, count: g.sessions.length }));
+	}
 
 	toggleGroup = (parentId: string, key: string) => {
 		const id = groupId(parentId, key);

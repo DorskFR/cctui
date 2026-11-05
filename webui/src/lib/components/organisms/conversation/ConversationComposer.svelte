@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { tick, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+	import { sessionHref } from '$lib/sessionFailureToast';
 	import { insertBlock } from './insertText';
 	import { insertAtCaret, quoteMarkdown } from './format';
 	import { errMessage } from '$lib/api';
@@ -277,7 +279,11 @@
 			} else {
 				toasts.ok(m.composer_followup_launched());
 			}
-			if (out.sessionId) void goto(`/sessions/${out.sessionId}`);
+			if (out.sessionId)
+				void goto(sessionHref(out.sessionId), {
+					replaceState: true,
+					state: { ...page.state, spawned: out.sessionId } as App.PageState
+				});
 		} finally {
 			launching = false;
 		}

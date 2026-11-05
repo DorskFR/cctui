@@ -67,17 +67,32 @@ impl Requester {
         params: Value,
         timeout: Duration,
     ) -> anyhow::Result<Value> {
-        let message = UntypedMessage::new(method, params)
-            .map_err(|e| anyhow::anyhow!("encoding {method}: {}", rpc_error_text(&e)))?;
-        let sent = self.cx.send_request(message);
-        match tokio::time::timeout(timeout, sent.block_task()).await {
-            Ok(Ok(value)) => Ok(value),
-            Ok(Err(err)) => Err(RpcError {
-                code: i64::from(i32::from(err.code)),
-                message: rpc_error_text(&err),
+        self.start_request(method, params, timeout).await
+    }
+
+    /// Queue the request now; the returned future only awaits the answer.
+    ///
+    /// A message sent after this call reaches the agent after the request.
+    pub fn start_request(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> impl Future<Output = anyhow::Result<Value>> + Send + use<> {
+        let method = method.to_owned();
+        let sent = UntypedMessage::new(&method, params).map(|m| self.cx.send_request(m));
+        async move {
+            let sent =
+                sent.map_err(|e| anyhow::anyhow!("encoding {method}: {}", rpc_error_text(&e)))?;
+            match tokio::time::timeout(timeout, sent.block_task()).await {
+                Ok(Ok(value)) => Ok(value),
+                Ok(Err(err)) => Err(RpcError {
+                    code: i64::from(i32::from(err.code)),
+                    message: rpc_error_text(&err),
+                }
+                .into()),
+                Err(_) => Err(anyhow::anyhow!("{method} did not answer within {timeout:?}")),
             }
-            .into()),
-            Err(_) => Err(anyhow::anyhow!("{method} did not answer within {timeout:?}")),
         }
     }
 

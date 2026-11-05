@@ -978,11 +978,15 @@ impl PermissionMode {
         }
     }
 
+    /// Claude Code's `--permission-mode` value; `auto` is its classifier mode.
+    ///
+    /// `acceptEdits` stays an accepted alias of [`Self::Auto`] on the way in
+    /// (see [`Self::from_session_label`]) but is never launched.
     #[must_use]
     pub const fn claude_flag(self) -> &'static str {
         match self {
             Self::Yolo | Self::Whip => "bypassPermissions",
-            Self::Auto => "acceptEdits",
+            Self::Auto => "auto",
             Self::Ask => "default",
         }
     }
@@ -1193,6 +1197,20 @@ mod tests {
                 "{mode:?} → {sandbox}"
             );
         }
+    }
+
+    #[test]
+    fn claude_flag_launches_auto_as_the_classifier_mode() {
+        assert_eq!(PermissionMode::Auto.claude_flag(), "auto");
+        assert_eq!(PermissionMode::Ask.claude_flag(), "default");
+        for mode in [PermissionMode::Yolo, PermissionMode::Whip] {
+            assert_eq!(mode.claude_flag(), "bypassPermissions");
+        }
+        for mode in PermissionMode::ALL {
+            let back = PermissionMode::from_session_label(mode.claude_flag()).unwrap();
+            assert_eq!(back.rank(), mode.rank(), "{mode:?}");
+        }
+        assert_eq!(PermissionMode::from_session_label("acceptEdits"), Some(PermissionMode::Auto));
     }
 
     #[test]

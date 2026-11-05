@@ -13,6 +13,7 @@
 //!   until the legacy path is retired.
 
 mod attach;
+mod auto_mode;
 mod backfill;
 mod canary;
 pub(crate) mod claude_service;
