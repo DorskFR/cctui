@@ -551,10 +551,15 @@ impl Bus {
     }
 
     /// Whether THIS pod terminates `machine`'s daemon WS.
-    #[cfg_attr(not(test), allow(dead_code))]
     #[must_use]
     pub fn daemon_connected(&self, machine: Uuid) -> bool {
         self.inner.daemons.contains_key(&machine)
+    }
+
+    /// Whether a connection of THIS pod announced `session_id` for `machine`.
+    #[must_use]
+    pub fn holds_session(&self, machine: Uuid, session_id: &str) -> bool {
+        self.bound_channel(machine, session_id).is_some()
     }
 
     /// Register the outbound channel of a freshly connected enrolled

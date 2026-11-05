@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 use crate::bus::peer::{RouteRequest, RouteResponse, WireBusEvent};
 use crate::bus::{BusError, DaemonRequest, DaemonResponse};
+use crate::presence::Kind;
 use crate::routes::permissions::{PendingAsk, PendingPermission, PendingPlan};
 use crate::state::AppState;
 
@@ -97,8 +98,45 @@ pub async fn bus_route(
     Json(request): Json<RouteRequest>,
 ) -> Result<Json<RouteResponse>, StatusCode> {
     authenticate(&state, &headers)?;
+    let held = if headers.contains_key(crate::bus::peer::PROBE_HEADER) {
+        held_rows(&state, &request)
+    } else {
+        Vec::new()
+    };
     let outcome = deliver_local(&state, request).await;
+    if outcome.is_ok() {
+        restore_presence(&state, held).await;
+    }
     Ok(Json(outcome.unwrap_or_else(|err| RouteResponse::from_error(&err))))
+}
+
+fn held_rows(state: &AppState, request: &RouteRequest) -> Vec<(Kind, Uuid)> {
+    let Some(machine) = request.machine() else { return Vec::new() };
+    let mut rows = Vec::new();
+    if state.bus.daemon_connected(machine) {
+        rows.push((Kind::Daemon, machine));
+    }
+    if let Some(session) = request
+        .session()
+        .filter(|session| state.bus.holds_session(machine, session))
+        .and_then(|session| Uuid::parse_str(session).ok())
+    {
+        rows.push((Kind::Session, session));
+    }
+    rows
+}
+
+/// A peer found this pod only by probing, so the presence rows that should
+/// have named it are gone. Re-registering also re-arms their heartbeat.
+async fn restore_presence(state: &AppState, rows: Vec<(Kind, Uuid)>) {
+    for (kind, id) in rows {
+        tracing::warn!(
+            kind = kind.as_str(),
+            %id,
+            "peer probe reached a connection this pod holds without a presence row",
+        );
+        crate::presence::register(state, kind, id).await;
+    }
 }
 
 const fn route_op(request: &RouteRequest) -> &'static str {

@@ -1,7 +1,9 @@
 //! Delivery and early acknowledgment for a prepared, authorized machine spawn.
 
 use cctui_proto::adapter::{AdapterCommand, SessionSpec};
+use cctui_proto::models::MachineLiveness;
 use cctui_proto::ws::DaemonFrameDown;
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use uuid::Uuid;
 
@@ -118,4 +120,90 @@ pub async fn launch_durable(
         Err(LaunchError::Refused(_) | LaunchError::Storage(_) | LaunchError::Policy(_)) => {}
     }
     result
+}
+
+/// What a launch tells the user when the daemon's machine is offline.
+pub const DAEMON_OFFLINE: &str = "daemon for that machine is offline — start `cctui-daemon` first";
+
+/// What a launch tells the user when the machine is online but no replica
+/// reached its daemon connection.
+pub const DAEMON_REPLICA_UNREACHABLE: &str =
+    "could not reach the daemon's replica — the machine is online, try again";
+
+/// The no-daemon message for a machine in `liveness`.
+#[must_use]
+pub const fn no_daemon_message(liveness: Option<MachineLiveness>) -> &'static str {
+    match liveness {
+        Some(MachineLiveness::Online) => DAEMON_REPLICA_UNREACHABLE,
+        Some(MachineLiveness::Stale | MachineLiveness::Offline) | None => DAEMON_OFFLINE,
+    }
+}
+
+/// [`no_daemon_message`] for `machine`'s heartbeat as stored.
+///
+/// A heartbeat inside the online window means a live daemon some replica
+/// holds, so the miss is cross-replica routing, not the daemon being down.
+pub async fn no_daemon_detail(pool: &sqlx::PgPool, machine: Uuid) -> &'static str {
+    let last_seen = sqlx::query_scalar::<_, DateTime<Utc>>(
+        "SELECT last_seen_at FROM machines WHERE id = $1",
+    )
+    .bind(machine)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or_else(|err| {
+        tracing::warn!(%err, %machine, "machine liveness read failed");
+        None
+    });
+    no_daemon_message(last_seen.map(crate::targets::derive_liveness))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_online_machine_is_never_called_offline() {
+        assert_eq!(no_daemon_message(Some(MachineLiveness::Online)), DAEMON_REPLICA_UNREACHABLE);
+        assert!(!DAEMON_REPLICA_UNREACHABLE.contains("offline"));
+        assert!(DAEMON_REPLICA_UNREACHABLE.contains("could not reach the daemon's replica"));
+        for tier in [Some(MachineLiveness::Stale), Some(MachineLiveness::Offline), None] {
+            assert_eq!(no_daemon_message(tier), DAEMON_OFFLINE);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_stored_heartbeat_picks_the_message() {
+        let Some(url) = crate::test_support::db_url("no_daemon_detail") else { return };
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let user = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(user)
+            .bind(format!("no-daemon-{user}"))
+            .bind(format!("kh-{user}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let seed = async |age: chrono::Duration| {
+            let machine = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO machines (id, user_id, name, key_hash, last_seen_at) \
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(machine)
+            .bind(user)
+            .bind(format!("m-{machine}"))
+            .bind(format!("mk-{machine}"))
+            .bind(Utc::now() - age)
+            .execute(&pool)
+            .await
+            .unwrap();
+            machine
+        };
+        let online = seed(chrono::Duration::seconds(10)).await;
+        let gone = seed(chrono::Duration::hours(2)).await;
+
+        assert_eq!(no_daemon_detail(&pool, online).await, DAEMON_REPLICA_UNREACHABLE);
+        assert_eq!(no_daemon_detail(&pool, gone).await, DAEMON_OFFLINE);
+        assert_eq!(no_daemon_detail(&pool, Uuid::new_v4()).await, DAEMON_OFFLINE);
+    }
 }
