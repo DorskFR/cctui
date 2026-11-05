@@ -1,6 +1,6 @@
 # Example WorkerProfile shape for a red-team cell on kube. Same placement and
-# policies as production workers; its own service identity reads only canary
-# secrets (wired in Phase 3). Values are placeholders for a PUBLIC repo.
+# policies as production workers, running the probe image (README.md); its own
+# service identity reads only canary secrets. Values are placeholders.
 apiVersion: cctui.dev/v1
 kind: WorkerProfile
 metadata:

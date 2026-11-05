@@ -9,6 +9,7 @@ use tokio::net::{TcpListener, TcpStream};
 pub enum Channel {
     Http,
     Tcp,
+    Dns,
 }
 
 /// One connection that reached the sink.
