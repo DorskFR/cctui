@@ -381,29 +381,27 @@ fn allowed_write(gate: HumanGate, method: &str, rest: &[&str]) -> Review {
     }
     let allowed = matches!(
         (method, rest),
-        ("POST", ["issues"] | ["issues", _, "comments"] | ["pulls", _, "comments"])
-            | ("PATCH", ["issues", _])
+        (
+            "POST",
+            ["issues"]
+                | ["issues" | "pulls", _, "comments"]
+                | ["issues" | "comments", _, "reactions"]
+                | ["issues" | "pulls", "comments", _, "reactions"]
+                | ["pulls", _, "reviews"]
+                | ["pulls", _, "reviews", _, "events"]
+                | ["pulls", _, "comments", _, "replies"]
+                | ["git", "blobs" | "trees" | "commits" | "tags"]
+        ) | ("PATCH", ["issues", _])
             | ("PATCH" | "DELETE", ["issues" | "pulls", "comments", _])
             | ("POST" | "PUT" | "DELETE", ["issues", _, "labels"])
-            | ("DELETE", ["issues", _, "labels", _])
-            | ("POST" | "DELETE", ["issues", _, "assignees"])
-            | (
-                "POST",
-                ["issues", _, "reactions"]
-                    | ["issues" | "pulls", "comments", _, "reactions"]
-                    | ["comments", _, "reactions"]
-            )
             | (
                 "DELETE",
-                ["issues", _, "reactions", _]
+                ["issues", _, "labels", _]
+                    | ["issues" | "comments", _, "reactions", _]
                     | ["issues" | "pulls", "comments", _, "reactions", _]
-                    | ["comments", _, "reactions", _]
             )
-            | ("POST", ["pulls", _, "reviews"] | ["pulls", _, "reviews", _, "events"])
+            | ("POST" | "DELETE", ["issues", _, "assignees"] | ["pulls", _, "requested_reviewers"])
             | ("PUT" | "DELETE", ["pulls", _, "reviews", _])
-            | ("POST", ["pulls", _, "comments", _, "replies"])
-            | ("POST" | "DELETE", ["pulls", _, "requested_reviewers"])
-            | ("POST", ["git", "blobs" | "trees" | "commits" | "tags"])
     );
     if allowed { Review::Allow } else { refuse(gate, "a write outside its allow-list") }
 }
