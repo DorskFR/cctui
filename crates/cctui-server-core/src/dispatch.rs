@@ -1202,6 +1202,8 @@ async fn deduplicated_early(
 
 /// Refuse `additions` that weaken a rule of an account the dispatch is about
 /// to mint for, before any worker credential exists.
+///
+/// Only accounts `user` owns count: the worker never carries another owner's rules.
 #[tracing::instrument(
     target = "otel",
     skip_all,
@@ -1209,6 +1211,7 @@ async fn deduplicated_early(
 )]
 async fn refuse_weakened_account_rules(
     state: &impl DispatchContext,
+    user: uuid::Uuid,
     mints: &[crate::gateway::mint::ProviderRow],
     additions: Vec<cctui_proto::hook_policy::HookRule>,
 ) -> DispatchResult<()> {
@@ -1220,11 +1223,13 @@ async fn refuse_weakened_account_rules(
     let stored: Vec<serde_json::Value> = sqlx::query_scalar(
         "SELECT DISTINCT ON (p.account_id) p.hooks \
          FROM account_providers ap \
+         JOIN accounts a ON a.id = ap.account_id \
          JOIN account_tool_policies p ON p.account_id = ap.account_id \
-         WHERE ap.id = ANY($1) \
+         WHERE ap.id = ANY($1) AND a.user_id = $2 \
          ORDER BY p.account_id",
     )
     .bind(&ids)
+    .bind(user)
     .fetch_all(state.dispatch_pool())
     .await
     .map_err(|error| {
@@ -1276,7 +1281,7 @@ pub async fn execute_dispatch(
 
     if let Some(uid) = real_user {
         let routing = resolve_account_routing(state, &req, uid, &mut v.forwarded_payload).await?;
-        refuse_weakened_account_rules(state, &routing.mints, additions).await?;
+        refuse_weakened_account_rules(state, uid, &routing.mints, additions).await?;
         inject_worker_credential(state, uid, &v.session_id, req.timeout, &mut v.forwarded_payload)
             .await?;
         mint_gateway_env(state, routing.mints, &v.session_id, &mut v.forwarded_payload).await?;

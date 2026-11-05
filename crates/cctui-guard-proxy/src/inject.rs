@@ -2042,10 +2042,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gate_refuses_a_push_addressed_to_another_host() {
+        for gate in [crate::gate::HumanGate::NoPush, crate::gate::HumanGate::DraftPrOnly] {
+            let inj = gated_injector(gate);
+            let (head, body) = receive_pack("feature/x");
+            let (mut w, mut client) = tokio::io::duplex(64);
+            tokio::spawn(async move {
+                let _ = w.write_all(&body).await;
+            });
+            let mut cbuf = HttpBuf::default();
+            let refusal = inj.gate_refusal(&mut client, "api.github.com", &head, &mut cbuf).await;
+            assert!(refusal.unwrap().is_some_and(|r| r.contains("Host header")), "{gate:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn gate_refuses_a_body_too_large_to_review() {
         let inj = gated_injector(crate::gate::HumanGate::DraftPrOnly);
         let len = crate::gate::MAX_REVIEW_BYTES * 2;
-        let head = format!("POST /repos/o/r/pulls HTTP/1.1\r\nContent-Length: {len}\r\n\r\n");
+        let head = format!(
+            "POST /repos/o/r/pulls HTTP/1.1\r\nHost: api.github.com\r\n\
+             Content-Length: {len}\r\n\r\n"
+        );
         let (mut w, mut client) = tokio::io::duplex(8192);
         tokio::spawn(async move {
             let _ = w.write_all(&vec![b' '; len]).await;

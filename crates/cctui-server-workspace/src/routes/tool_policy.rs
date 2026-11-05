@@ -175,11 +175,13 @@ mod tests {
         .unwrap();
         let session = format!("hook-policy-{}", Uuid::new_v4());
         sqlx::query(
-            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+            "INSERT INTO session_tokens (token_hash, session_id, account_id, user_id) \
+             VALUES ($1, $2, $3, $4)",
         )
         .bind(format!("th-{session}"))
         .bind(&session)
         .bind(provider)
+        .bind(owner)
         .execute(pool)
         .await
         .unwrap();

@@ -20,6 +20,41 @@ const DEFAULT_PROTECTED: [&str; 3] = ["main", "master", "trunk"];
 const POLICED_HOSTS: [&str; 5] =
     ["github.com", "www.github.com", "gist.github.com", "api.github.com", "uploads.github.com"];
 
+/// Mutations a gate lets through once `REF_MUTATIONS` and the per-gate
+/// refusals are ruled out.
+const ALLOWED_MUTATIONS: [&str; 30] = [
+    "createPullRequest",
+    "updatePullRequest",
+    "updatePullRequestBranch",
+    "markPullRequestReadyForReview",
+    "addComment",
+    "updateIssueComment",
+    "deleteIssueComment",
+    "addReaction",
+    "removeReaction",
+    "createIssue",
+    "updateIssue",
+    "closeIssue",
+    "reopenIssue",
+    "addLabelsToLabelable",
+    "removeLabelsFromLabelable",
+    "addAssigneesToAssignable",
+    "removeAssigneesFromAssignable",
+    "addPullRequestReview",
+    "submitPullRequestReview",
+    "updatePullRequestReview",
+    "deletePullRequestReview",
+    "addPullRequestReviewComment",
+    "updatePullRequestReviewComment",
+    "deletePullRequestReviewComment",
+    "addPullRequestReviewThread",
+    "addPullRequestReviewThreadReply",
+    "resolveReviewThread",
+    "unresolveReviewThread",
+    "requestReviews",
+    "convertPullRequestToDraft",
+];
+
 const REF_MUTATIONS: [&str; 12] = [
     "createRef",
     "updateRef",
@@ -138,6 +173,9 @@ impl GatePolicy {
     #[must_use]
     pub fn review_head(&self, host: &str, head: &[u8]) -> Review {
         let Some(gate) = self.enforced() else { return Review::Allow };
+        if !addresses(host, head) {
+            return refuse(gate, "a request whose Host header is not the host it connected to");
+        }
         let host = host.to_ascii_lowercase();
         if !is_policed(&host) {
             return Review::Allow;
@@ -199,10 +237,12 @@ impl GatePolicy {
         if !call.writes() {
             return Review::Allow;
         }
-        let Some(rest) = repo_rest(&call.lower) else { return Review::Allow };
+        let Some(rest) = repo_rest(&call.lower) else {
+            return refuse(gate, "an API write outside a repository");
+        };
         let original = &call.segments[call.lower.len() - rest.len()..];
         if gate == HumanGate::NoPush {
-            no_push_rest(gate, rest)
+            no_push_rest(gate, &call.method, rest)
         } else {
             self.draft_rest(gate, &call.method, rest, original)
         }
@@ -223,9 +263,10 @@ impl GatePolicy {
             ["git", "refs", ..] => refuse(gate, "a write to a ref that is not a branch"),
             ["contents", ..] | ["merges" | "merge-upstream"] => Review::NeedBody,
             ["pulls", _, "merge"] => refuse(gate, "a pull request merge"),
+            ["pulls", _, "update-branch"] if method == "PUT" => Review::Allow,
             ["branches", _, "rename"] => refuse(gate, "a branch rename"),
             ["releases", ..] => refuse(gate, "a release"),
-            _ => Review::Allow,
+            _ => allowed_write(gate, method, &rest),
         }
     }
 
@@ -246,6 +287,13 @@ impl GatePolicy {
                     Review::Allow
                 } else {
                     refuse(gate, "a pull request that is not a draft")
+                }
+            }
+            ["pulls", _] if method == "PATCH" => {
+                if only_keys(json, &["title", "body"]) {
+                    Review::Allow
+                } else {
+                    refuse(gate, "a pull request edit beyond its title and body")
                 }
             }
             _ => refuse(gate, "a request it cannot classify"),
@@ -309,7 +357,7 @@ fn git_head(gate: HumanGate, call: &Call) -> Review {
     }
 }
 
-fn no_push_rest(gate: HumanGate, rest: &[String]) -> Review {
+fn no_push_rest(gate: HumanGate, method: &str, rest: &[String]) -> Review {
     let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
     match rest.as_slice() {
         [] | ["transfer"] => refuse(gate, "a repository settings write"),
@@ -319,7 +367,72 @@ fn no_push_rest(gate: HumanGate, rest: &[String]) -> Review {
         ["pulls", _, "update-branch"] => refuse(gate, "a pull request branch update"),
         ["branches", _, "rename"] => refuse(gate, "a branch rename"),
         ["releases", ..] => refuse(gate, "a release"),
-        _ => Review::Allow,
+        ["pulls"] if method == "POST" => Review::Allow,
+        _ => allowed_write(gate, method, &rest),
+    }
+}
+
+/// The repository writes both gates let through: comments, reviews,
+/// reactions, issues, pull request title/body edits and git objects that move
+/// no ref.
+fn allowed_write(gate: HumanGate, method: &str, rest: &[&str]) -> Review {
+    if method == "PATCH" && matches!(rest, ["pulls", _]) {
+        return Review::NeedBody;
+    }
+    let allowed = matches!(
+        (method, rest),
+        (
+            "POST",
+            ["issues"]
+                | ["issues" | "pulls", _, "comments"]
+                | ["issues" | "comments", _, "reactions"]
+                | ["issues" | "pulls", "comments", _, "reactions"]
+                | ["pulls", _, "reviews"]
+                | ["pulls", _, "reviews", _, "events"]
+                | ["pulls", _, "comments", _, "replies"]
+                | ["git", "blobs" | "trees" | "commits" | "tags"]
+        ) | ("PATCH", ["issues", _])
+            | ("PATCH" | "DELETE", ["issues" | "pulls", "comments", _])
+            | ("POST" | "PUT" | "DELETE", ["issues", _, "labels"])
+            | (
+                "DELETE",
+                ["issues", _, "labels", _]
+                    | ["issues" | "comments", _, "reactions", _]
+                    | ["issues" | "pulls", "comments", _, "reactions", _]
+            )
+            | ("POST" | "DELETE", ["issues", _, "assignees"] | ["pulls", _, "requested_reviewers"])
+            | ("PUT" | "DELETE", ["pulls", _, "reviews", _])
+    );
+    if allowed { Review::Allow } else { refuse(gate, "a write outside its allow-list") }
+}
+
+const PR_EDIT_INPUT: [&str; 4] = ["pullRequestId", "title", "body", "clientMutationId"];
+
+fn only_keys(json: &Value, keys: &[&str]) -> bool {
+    json.as_object().is_some_and(|o| o.keys().all(|k| keys.contains(&k.as_str())))
+}
+
+/// True when the request's single `Host` header names `host`, ignoring port
+/// and case.
+fn addresses(host: &str, head: &[u8]) -> bool {
+    let mut values = head.split(|&b| b == b'\n').skip(1).filter_map(|line| {
+        let colon = line.iter().position(|&b| b == b':')?;
+        line[..colon].eq_ignore_ascii_case(b"host").then_some(&line[colon + 1..])
+    });
+    let (Some(value), None) = (values.next(), values.next()) else { return false };
+    std::str::from_utf8(value)
+        .is_ok_and(|v| strip_port(v.trim()).eq_ignore_ascii_case(strip_port(host.trim())))
+}
+
+fn strip_port(authority: &str) -> &str {
+    if let Some(end) = authority.strip_prefix('[').and_then(|a| a.find(']')) {
+        return &authority[..end + 2];
+    }
+    match authority.rsplit_once(':') {
+        Some((name, port)) if !name.contains(':') && port.bytes().all(|b| b.is_ascii_digit()) => {
+            name
+        }
+        _ => authority,
     }
 }
 
@@ -339,31 +452,86 @@ fn graphql_body(gate: HumanGate, json: &Value) -> Review {
     let Some(tokens) = graphql_tokens(query) else {
         return refuse(gate, "a GraphQL document it cannot parse");
     };
-    let draft_only = gate == HumanGate::DraftPrOnly;
-    for (i, token) in tokens.iter().enumerate() {
-        let Tok::Name(name) = *token else { continue };
-        let refused = REF_MUTATIONS.contains(&name)
-            || (!draft_only && name == "updatePullRequestBranch")
-            || (draft_only && name == "markPullRequestReadyForReview");
-        if refused {
-            return refuse(gate, &format!("the `{name}` mutation"));
-        }
-        if draft_only && name == "createPullRequest" && !creates_draft(&tokens[i + 1..], json) {
-            return refuse(gate, "a pull request that is not a draft");
+    let Some(fields) = mutation_fields(&tokens) else {
+        return refuse(gate, "a GraphQL mutation it cannot read");
+    };
+    for i in fields {
+        let Tok::Name(name) = tokens[i] else { continue };
+        if let Review::Refuse(reason) = mutation_verdict(gate, name, &tokens[i + 1..], json) {
+            return Review::Refuse(reason);
         }
     }
     Review::Allow
 }
 
-/// True only for `createPullRequest(input: $v)` whose `$v` sets `draft: true`.
-fn creates_draft(after: &[Tok<'_>], json: &Value) -> bool {
+fn mutation_verdict(gate: HumanGate, name: &str, after: &[Tok<'_>], json: &Value) -> Review {
+    let draft_only = gate == HumanGate::DraftPrOnly;
+    let refused = REF_MUTATIONS.contains(&name)
+        || (!draft_only && name == "updatePullRequestBranch")
+        || (draft_only && name == "markPullRequestReadyForReview");
+    if refused {
+        return refuse(gate, &format!("the `{name}` mutation"));
+    }
+    let input = input_var(after, json);
+    let draft = input.and_then(|i| i.get("draft")) == Some(&Value::Bool(true));
+    let title_body = input.is_some_and(|i| only_keys(i, &PR_EDIT_INPUT));
+    match name {
+        "createPullRequest" if draft_only && !draft => {
+            refuse(gate, "a pull request that is not a draft")
+        }
+        "updatePullRequest" if !title_body => {
+            refuse(gate, "a pull request edit beyond its title and body")
+        }
+        _ if ALLOWED_MUTATIONS.contains(&name) => Review::Allow,
+        _ => refuse(gate, &format!("the `{name}` mutation, which is not on its allow-list")),
+    }
+}
+
+/// Token indices of the top-level field names of every `mutation` operation.
+///
+/// `None` when the document is unbalanced or a mutation selects through a
+/// fragment.
+fn mutation_fields(tokens: &[Tok<'_>]) -> Option<Vec<usize>> {
+    let mut fields = Vec::new();
+    let (mut depth, mut parens) = (0usize, 0usize);
+    let (mut pending, mut in_mutation) = (false, false);
+    for (i, token) in tokens.iter().enumerate() {
+        match *token {
+            Tok::Punct('(') => parens += 1,
+            Tok::Punct(')') => parens = parens.checked_sub(1)?,
+            _ if parens > 0 => {}
+            Tok::Punct('{') => {
+                if depth == 0 {
+                    in_mutation = pending;
+                    pending = false;
+                }
+                depth += 1;
+            }
+            Tok::Punct('}') => depth = depth.checked_sub(1)?,
+            Tok::Name("mutation") if depth == 0 => pending = true,
+            Tok::Name("query" | "subscription" | "fragment") if depth == 0 => pending = false,
+            Tok::Punct('.') if depth == 1 && in_mutation => return None,
+            Tok::Name(_) if depth == 1 && in_mutation => {
+                let directive = i > 0 && tokens[i - 1] == Tok::Punct('@');
+                let alias = tokens.get(i + 1) == Some(&Tok::Punct(':'));
+                if !directive && !alias {
+                    fields.push(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    (depth == 0 && parens == 0).then_some(fields)
+}
+
+/// The variable `$v` in `(input: $v)` right after a mutation field name.
+fn input_var<'a>(after: &[Tok<'_>], json: &'a Value) -> Option<&'a Value> {
     let [Tok::Punct('('), Tok::Name("input"), Tok::Punct(':'), Tok::Var(var), Tok::Punct(')'), ..] =
         after
     else {
-        return false;
+        return None;
     };
-    json.get("variables").and_then(|v| v.get(*var)).and_then(|input| input.get("draft"))
-        == Some(&Value::Bool(true))
+    json.get("variables").and_then(|v| v.get(*var))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -584,8 +752,8 @@ mod tests {
         GatePolicy::new(Gate::Declared(gate), &[])
     }
 
-    fn head(method: &str, target: &str) -> Vec<u8> {
-        format!("{method} {target} HTTP/1.1\r\nHost: x\r\n\r\n").into_bytes()
+    fn head(host: &str, method: &str, target: &str) -> Vec<u8> {
+        format!("{method} {target} HTTP/1.1\r\nHost: {host}\r\n\r\n").into_bytes()
     }
 
     fn pkt(line: &str) -> String {
@@ -604,7 +772,7 @@ mod tests {
 
     /// Head first, then the whole body, the way the injector reviews.
     fn review(p: &GatePolicy, host: &str, method: &str, target: &str, body: &[u8]) -> Review {
-        let h = head(method, target);
+        let h = head(host, method, target);
         match p.review_head(host, &h) {
             Review::NeedBody => p.review_body(host, &h, body, true),
             other => other,
@@ -770,7 +938,7 @@ mod tests {
     #[test]
     fn draft_pr_only_decides_a_push_from_its_command_list_alone() {
         let p = policy(HumanGate::DraftPrOnly);
-        let h = head("POST", RECEIVE);
+        let h = head("github.com", "POST", RECEIVE);
         assert_eq!(p.review_head("github.com", &h), Review::NeedBody);
         let body = push_body(&["refs/heads/feature"]);
         assert_eq!(p.review_body("github.com", &h, &body[..20], false), Review::NeedBody);
@@ -864,10 +1032,230 @@ mod tests {
         assert!(refused(&api(&p, "POST", "/graphql", br#"{"query":"mutation { a(s: \"x) }"}"#)));
         let upload = "/repos/o/r/releases/1/assets";
         assert!(refused(&review(&p, "uploads.github.com", "POST", upload, b"")));
-        let over = b"POST /repos/o/r/pulls HTTP/1.1\r\nX-HTTP-Method-Override: PUT\r\n\r\n";
+        let over = b"POST /repos/o/r/pulls HTTP/1.1\r\nHost: api.github.com\r\n\
+                     X-HTTP-Method-Override: PUT\r\n\r\n";
         assert!(refused(&p.review_head("api.github.com", over)));
-        let gz = b"POST /graphql HTTP/1.1\r\nContent-Encoding: gzip\r\n\r\n";
+        let gz = b"POST /graphql HTTP/1.1\r\nHost: api.github.com\r\n\
+                   Content-Encoding: gzip\r\n\r\n";
         assert!(refused(&p.review_body("api.github.com", gz, b"\x1f\x8b", true)));
+    }
+
+    fn with_host(sni: &str, host_header: &str, method: &str, target: &str) -> Review {
+        let h = format!("{method} {target} HTTP/1.1\r\nHost: {host_header}\r\n\r\n");
+        policy(HumanGate::NoPush).review_head(sni, h.as_bytes())
+    }
+
+    #[test]
+    fn host_mismatch_is_refused_both_ways_under_each_gate() {
+        for gate in [HumanGate::NoPush, HumanGate::DraftPrOnly] {
+            let p = policy(gate);
+            for (sni, host, method, target) in [
+                ("api.github.com", "github.com", "POST", RECEIVE),
+                ("api.github.com", "github.com:443", "GET", "/o/r.git/info/refs"),
+                ("github.com", "api.github.com", "PUT", "/repos/o/r/pulls/7/merge"),
+                ("github.com", "api.github.com", "POST", "/graphql"),
+                ("github.com", "uploads.github.com", "POST", "/repos/o/r/releases/1/assets"),
+                ("registry.npmjs.org", "github.com", "POST", RECEIVE),
+            ] {
+                let h = format!("{method} {target} HTTP/1.1\r\nHost: {host}\r\n\r\n");
+                let verdict = p.review_head(sni, h.as_bytes());
+                assert!(
+                    matches!(&verdict, Review::Refuse(r) if r.contains("Host header")),
+                    "{gate:?} {sni} / {host}: {verdict:?}"
+                );
+            }
+            for h in [
+                &b"GET /o/r.git/info/refs HTTP/1.1\r\n\r\n"[..],
+                &b"GET / HTTP/1.1\r\nHost: github.com\r\nHost: api.github.com\r\n\r\n"[..],
+                &b"GET / HTTP/1.1\r\nHost: github.com.evil.example\r\n\r\n"[..],
+                &b"GET / HTTP/1.1\r\nX-Host: github.com\r\n\r\n"[..],
+            ] {
+                assert!(refused(&p.review_head("github.com", h)), "{gate:?} {h:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn matched_host_is_reviewed_as_before() {
+        for host in ["api.github.com", "API.GitHub.com", "api.github.com:443", " api.github.com "] {
+            let comment = "/repos/o/r/issues/3/comments";
+            assert_eq!(with_host("api.github.com", host, "POST", comment), Review::Allow, "{host}");
+            let merge = "/repos/o/r/pulls/7/merge";
+            let verdict = with_host("api.github.com", host, "PUT", merge);
+            assert!(
+                matches!(&verdict, Review::Refuse(r) if r.contains("merge")),
+                "{host}: {verdict:?}"
+            );
+        }
+        let fetch = "/o/r.git/info/refs?service=git-upload-pack";
+        assert_eq!(with_host("github.com", "GitHub.com:443", "GET", fetch), Review::Allow);
+        let npm = "registry.npmjs.org";
+        assert_eq!(with_host(npm, npm, "GET", "/x"), Review::Allow);
+        assert_eq!(strip_port("[::1]:8443"), "[::1]");
+        assert_eq!(strip_port("github.com:443"), "github.com");
+        assert_eq!(strip_port("github.com"), "github.com");
+    }
+
+    #[test]
+    fn no_gate_ignores_a_host_mismatch() {
+        let mismatch = format!("POST {RECEIVE} HTTP/1.1\r\nHost: github.com\r\n\r\n");
+        let bare = b"PUT /repos/o/r/pulls/7/merge HTTP/1.1\r\n\r\n";
+        for p in [GatePolicy::default(), policy(HumanGate::OutwardHeldForApproval)] {
+            assert_eq!(p.review_head("api.github.com", mismatch.as_bytes()), Review::Allow);
+            assert_eq!(p.review_head("github.com", bare), Review::Allow);
+            assert_eq!(api(&p, "POST", "/repos/o/r/hooks", b"{}"), Review::Allow);
+            assert_eq!(api(&p, "POST", "/user/repos", b"{}"), Review::Allow);
+            let ruleset = "mutation { createRepositoryRuleset(input: {}) { clientMutationId } }";
+            assert_eq!(graphql(&p, ruleset, &Value::Null), Review::Allow);
+        }
+    }
+
+    #[test]
+    fn enforced_gate_refuses_writes_outside_the_allow_list() {
+        for gate in [HumanGate::NoPush, HumanGate::DraftPrOnly] {
+            let p = policy(gate);
+            for (method, target, body) in [
+                ("POST", "/repos/o/r/actions/workflows/release.yml/dispatches", &b"{}"[..]),
+                ("POST", "/repos/o/r/dispatches", &br#"{"event_type":"x"}"#[..]),
+                ("POST", "/repos/o/r/actions/runs/1/rerun", &b"{}"[..]),
+                ("POST", "/repos/o/r/actions/runs/1/rerun-failed-jobs", &b"{}"[..]),
+                ("PUT", "/repos/o/r/actions/secrets/TOKEN", &b"{}"[..]),
+                ("PUT", "/repos/o/r/actions/permissions", &b"{}"[..]),
+                ("DELETE", "/repos/o/r/branches/main/protection", &b""[..]),
+                ("PUT", "/repos/o/r/branches/main/protection", &b"{}"[..]),
+                ("POST", "/repos/o/r/rulesets", &b"{}"[..]),
+                ("PUT", "/repos/o/r/rulesets/1", &b"{}"[..]),
+                ("DELETE", "/repos/o/r/rulesets/1", &b""[..]),
+                ("POST", "/repos/o/r/keys", &br#"{"key":"k","read_only":false}"#[..]),
+                ("POST", "/repos/o/r/hooks", &b"{}"[..]),
+                ("PATCH", "/repos/o/r/hooks/1", &b"{}"[..]),
+                ("PUT", "/repos/o/r/collaborators/someone", &b"{}"[..]),
+                ("PUT", "/repos/o/r/environments/prod", &b"{}"[..]),
+                ("POST", "/repos/o/r/statuses/abc", &br#"{"state":"success"}"#[..]),
+                ("POST", "/repos/o/r/check-runs", &b"{}"[..]),
+                ("POST", "/repos/o/r/forks", &b"{}"[..]),
+                ("POST", "/repos/o/r/labels", &b"{}"[..]),
+                ("PATCH", "/repos/o/r/pulls/7", &br#"{"base":"release"}"#[..]),
+                ("PATCH", "/repos/o/r/pulls/7", &br#"{"title":"t","state":"closed"}"#[..]),
+                ("PATCH", "/repos/o/r/pulls/7", &b"[]"[..]),
+                ("PUT", "/repositories/42/hooks", &b"{}"[..]),
+                ("POST", "/user/repos", &b"{}"[..]),
+                ("POST", "/user/keys", &b"{}"[..]),
+                ("POST", "/orgs/o/repos", &b"{}"[..]),
+                ("PUT", "/orgs/o/actions/secrets/X", &b"{}"[..]),
+                ("POST", "/gists", &b"{}"[..]),
+                ("POST", "/repos/o", &b"{}"[..]),
+            ] {
+                assert!(refused(&api(&p, method, target, body)), "{gate:?} {method} {target}");
+            }
+        }
+    }
+
+    #[test]
+    fn enforced_gate_allows_the_listed_writes() {
+        for gate in [HumanGate::NoPush, HumanGate::DraftPrOnly] {
+            let p = policy(gate);
+            for (method, target, body) in [
+                ("POST", "/repos/o/r/issues", &br#"{"title":"t"}"#[..]),
+                ("PATCH", "/repos/o/r/issues/3", &br#"{"state":"closed"}"#[..]),
+                ("POST", "/repos/o/r/issues/3/comments", &br#"{"body":"hi"}"#[..]),
+                ("PATCH", "/repos/o/r/issues/comments/9", &br#"{"body":"hi"}"#[..]),
+                ("DELETE", "/repos/o/r/issues/comments/9", &b""[..]),
+                ("POST", "/repos/o/r/issues/3/labels", &br#"{"labels":["bug"]}"#[..]),
+                ("PUT", "/repos/o/r/issues/3/labels", &br#"{"labels":["bug"]}"#[..]),
+                ("DELETE", "/repos/o/r/issues/3/labels/bug", &b""[..]),
+                ("POST", "/repos/o/r/issues/3/assignees", &b"{}"[..]),
+                ("POST", "/repos/o/r/issues/3/reactions", &br#"{"content":"+1"}"#[..]),
+                ("POST", "/repos/o/r/issues/comments/9/reactions", &b"{}"[..]),
+                ("POST", "/repos/o/r/pulls/comments/9/reactions", &b"{}"[..]),
+                ("DELETE", "/repos/o/r/issues/3/reactions/5", &b""[..]),
+                ("POST", "/repos/o/r/pulls/7/reviews", &br#"{"event":"COMMENT"}"#[..]),
+                ("PUT", "/repos/o/r/pulls/7/reviews/1", &br#"{"body":"b"}"#[..]),
+                ("POST", "/repos/o/r/pulls/7/reviews/1/events", &b"{}"[..]),
+                ("DELETE", "/repos/o/r/pulls/7/reviews/1", &b""[..]),
+                ("POST", "/repos/o/r/pulls/7/comments", &br#"{"body":"b"}"#[..]),
+                ("POST", "/repos/o/r/pulls/7/comments/2/replies", &br#"{"body":"b"}"#[..]),
+                ("PATCH", "/repos/o/r/pulls/comments/2", &br#"{"body":"b"}"#[..]),
+                ("POST", "/repos/o/r/pulls/7/requested_reviewers", &b"{}"[..]),
+                ("POST", "/repos/o/r/pulls", &br#"{"head":"f","base":"main","draft":true}"#[..]),
+                ("PATCH", "/repos/o/r/pulls/7", &br#"{"title":"t","body":"b"}"#[..]),
+                ("PATCH", "/repositories/42/pulls/7", &br#"{"body":"b"}"#[..]),
+                ("POST", "/repos/o/r/git/blobs", &b"{}"[..]),
+                ("POST", "/repos/o/r/git/trees", &b"{}"[..]),
+                ("POST", "/repos/o/r/git/commits", &b"{}"[..]),
+            ] {
+                let verdict = api(&p, method, target, body);
+                assert_eq!(verdict, Review::Allow, "{gate:?} {method} {target}");
+            }
+        }
+    }
+
+    #[test]
+    fn enforced_gate_refuses_an_unknown_graphql_mutation() {
+        let input = serde_json::json!({ "i": {} });
+        for gate in [HumanGate::NoPush, HumanGate::DraftPrOnly] {
+            let p = policy(gate);
+            for name in [
+                "createBranchProtectionRule",
+                "updateBranchProtectionRule",
+                "deleteBranchProtectionRule",
+                "createRepositoryRuleset",
+                "deleteRepositoryRuleset",
+                "createDeployment",
+                "someFutureMutation",
+            ] {
+                let query = format!("mutation Op($i: X!) {{ {name}(input: $i) {{ id }} }}");
+                assert!(refused(&graphql(&p, &query, &input)), "{gate:?} {name}");
+            }
+            for query in [
+                "mutation { addComment(input: {}) { x } a: deleteRepositoryRuleset { x } }",
+                "mutation { ...M } fragment M on Mutation { mergeBranch(input: {}) { x } }",
+                "mutation { ... on Mutation { createRef(input: {}) { x } } }",
+                "query { viewer { login } } mutation M { createRepositoryRuleset { x } }",
+                "mutation @skip(if: false) { createBranchProtectionRule(input: {}) { x } }",
+                "mutation { addComment(input: {}) { x } ",
+            ] {
+                assert!(refused(&graphql(&p, query, &Value::Null)), "{gate:?} {query}");
+            }
+            let base = serde_json::json!({ "i": { "pullRequestId": "p", "baseRefName": "main" } });
+            let update = "mutation($i: X!) { updatePullRequest(input: $i) { x } }";
+            assert!(refused(&graphql(&p, update, &base)), "{gate:?} updatePullRequest base");
+            let inline = "mutation { updatePullRequest(input: {title: \"t\"}) { x } }";
+            assert!(refused(&graphql(&p, inline, &Value::Null)), "{gate:?} inline update");
+        }
+    }
+
+    #[test]
+    fn enforced_gate_allows_the_listed_graphql_mutations() {
+        let input = serde_json::json!({ "i": { "subjectId": "s", "body": "b" } });
+        for gate in [HumanGate::NoPush, HumanGate::DraftPrOnly] {
+            let p = policy(gate);
+            for name in [
+                "addComment",
+                "updateIssueComment",
+                "addReaction",
+                "createIssue",
+                "updateIssue",
+                "addLabelsToLabelable",
+                "addPullRequestReview",
+                "submitPullRequestReview",
+                "addPullRequestReviewThread",
+                "resolveReviewThread",
+                "requestReviews",
+            ] {
+                let query = format!(
+                    "mutation Op($i: X! = {{a: 1}}) @dir {{ out: {name}(input: $i) \
+                     @include(if: true) {{ clientMutationId deleteRef }} }}"
+                );
+                assert_eq!(graphql(&p, &query, &input), Review::Allow, "{gate:?} {name}");
+            }
+            let edit = serde_json::json!({ "i": { "pullRequestId": "p", "title": "t" } });
+            let update = "mutation($i: X!) { updatePullRequest(input: $i) { x } }";
+            assert_eq!(graphql(&p, update, &edit), Review::Allow, "{gate:?}");
+            let read = "query Q { repository(owner: \"o\", name: \"r\") { mergeBranch: id } } \
+                        fragment F on Repository { deleteRef: id }";
+            assert_eq!(graphql(&p, read, &Value::Null), Review::Allow, "{gate:?}");
+        }
     }
 
     #[test]

