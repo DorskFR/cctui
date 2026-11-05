@@ -831,7 +831,10 @@ mod tests {
         };
         let (code, reason) = deny("bash -i");
         assert_eq!(code, BLOCK);
-        assert!(reason.unwrap().contains("`bash` opens an interactive session"));
+        assert!(reason.unwrap().contains("`bash -i` opens an interactive session"));
+        let (code, reason) = deny("vim notes.md");
+        assert_eq!(code, BLOCK);
+        assert!(reason.unwrap().contains("`vim` opens an interactive session"));
         assert_eq!(deny("cargo test"), (0, None));
         let (code, reason) = deny("echo 'unterminated");
         assert_eq!(code, BLOCK);
