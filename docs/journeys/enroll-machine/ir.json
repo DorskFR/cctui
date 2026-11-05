@@ -1,7 +1,7 @@
 {
 	"id": "enroll-machine",
 	"version": 1,
-	"route": "/settings/users",
+	"route": "/settings/instance",
 	"level": "checked",
 	"steps": [
 		{
@@ -11,7 +11,7 @@
 			},
 			"guide": "next",
 			"timeout": 10000,
-			"route": "/settings/users",
+			"route": "/settings/instance",
 			"target": "enroll",
 			"say": {
 				"title": {
