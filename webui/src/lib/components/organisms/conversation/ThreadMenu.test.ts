@@ -9,6 +9,7 @@ const query = vi.hoisted(() => ({ data: undefined as { sessions: ThreadSession[]
 const goto = vi.hoisted(() => vi.fn());
 vi.mock('$lib/queries', () => ({ useSessionThread: () => query }));
 vi.mock('$app/navigation', () => ({ goto }));
+vi.mock('$app/state', () => ({ page: { state: { fromList: true } } }));
 vi.mock('$lib/paraglide/messages', () => ({
 	m: {
 		drawer_thread_menu: () => 'Sessions in this thread',
@@ -171,7 +172,10 @@ describe('ThreadMenu', () => {
 
 		rows[2].click();
 		flushSync();
-		expect(goto).toHaveBeenCalledWith('/sessions/c');
+		expect(goto).toHaveBeenCalledWith('/sessions/c', {
+			replaceState: true,
+			state: { fromList: true }
+		});
 	});
 
 	it('renders a fork as branches with the current session highlighted', async () => {
@@ -190,7 +194,10 @@ describe('ThreadMenu', () => {
 
 		rows[3].click();
 		flushSync();
-		expect(goto).toHaveBeenCalledWith('/sessions/b');
+		expect(goto).toHaveBeenCalledWith('/sessions/b', {
+			replaceState: true,
+			state: { fromList: true }
+		});
 	});
 
 	it('does not navigate when the current session is picked', async () => {

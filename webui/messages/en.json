@@ -1479,6 +1479,7 @@
 	"sessions_toast_draft_schedule_cancelled": "Schedule cancelled",
 	"sessions_toast_edit_draft_failed": "Could not edit draft: {error}",
 	"sessions_toast_fork_slow": "Forked conversation is taking a while to appear — it will show in the list shortly.",
+	"sessions_toast_spawn_slow": "New session is taking a while to appear — it will show in the list shortly.",
 	"sessions_toast_launch_failed": "Could not launch the session: {error}",
 	"sessions_toast_not_found": "Session not found — it may have been deleted.",
 	"sessions_toast_open_failed": "Could not open session: {error}",

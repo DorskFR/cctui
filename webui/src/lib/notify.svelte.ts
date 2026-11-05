@@ -176,7 +176,7 @@ class Notifier {
       n.onclick = () => {
         window.focus();
         this.pendingOpen = s.id;
-        void goto("/sessions");
+        if (!/^\/sessions(\/|$)/.test(location.pathname)) void goto("/sessions");
         n.close();
       };
     } catch {
