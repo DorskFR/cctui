@@ -1557,23 +1557,12 @@ mod tests {
         sqlx::query_scalar(sql).bind(session).fetch_one(pool).await.unwrap()
     }
 
-    /// The dispatcher's WS lives on A and the dispatch lands on B. B reads the
-    /// announced check from the shared dispatcher row, asks A over the route,
-    /// and answers `deduplicated` before minting, registering or recording.
-    #[tokio::test]
-    async fn a_dispatch_on_the_replica_without_the_dispatcher_is_deduplicated_before_any_prep() {
-        use cctui_proto::ws::DISPATCHER_FEATURE_DEDUP_CHECK;
-        use cctui_server_core::auth::{AuthContext, Scope};
-        use cctui_server_core::dispatch::execute_dispatch;
-        let Some(pool) = presence_pool().await else { return };
-        let pod_a = format!("cct1749-a-{}", Uuid::new_v4().simple());
-        let (replica_a, port_a) = route_replica(&pool, &pod_a, "127.0.0.49").await;
-        let (uid, dispatcher) = (Uuid::new_v4(), Uuid::new_v4());
-        let name = format!("cct1749-{}", dispatcher.simple());
+    /// A user owning dispatcher `name` whose connection announced the dedup check.
+    async fn seed_announced_dispatcher(pool: &PgPool, uid: Uuid, dispatcher: Uuid, name: &str) {
         sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $2)")
             .bind(uid)
-            .bind(&name)
-            .execute(&pool)
+            .bind(name)
+            .execute(pool)
             .await
             .unwrap();
         sqlx::query(
@@ -1582,11 +1571,26 @@ mod tests {
         )
         .bind(dispatcher)
         .bind(uid)
-        .bind(&name)
-        .bind(vec![DISPATCHER_FEATURE_DEDUP_CHECK.to_owned()])
-        .execute(&pool)
+        .bind(name)
+        .bind(vec![cctui_proto::ws::DISPATCHER_FEATURE_DEDUP_CHECK.to_owned()])
+        .execute(pool)
         .await
         .unwrap();
+    }
+
+    /// The dispatcher's WS lives on A and the dispatch lands on B. B reads the
+    /// announced check from the shared dispatcher row, asks A over the route,
+    /// and answers `deduplicated` before minting, registering or recording.
+    #[tokio::test]
+    async fn a_dispatch_on_the_replica_without_the_dispatcher_is_deduplicated_before_any_prep() {
+        use cctui_server_core::auth::{AuthContext, Scope};
+        use cctui_server_core::dispatch::execute_dispatch;
+        let Some(pool) = presence_pool().await else { return };
+        let pod_a = format!("cct1749-a-{}", Uuid::new_v4().simple());
+        let (replica_a, port_a) = route_replica(&pool, &pod_a, "127.0.0.49").await;
+        let (uid, dispatcher) = (Uuid::new_v4(), Uuid::new_v4());
+        let name = format!("cct1749-{}", dispatcher.simple());
+        seed_announced_dispatcher(&pool, uid, dispatcher, &name).await;
         let (tx, mut rx) = mpsc::channel(8);
         replica_a.bus.register_dispatcher(dispatcher, tx);
         presence::register(&replica_a, Kind::Dispatcher, dispatcher).await;

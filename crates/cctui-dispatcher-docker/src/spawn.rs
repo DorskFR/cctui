@@ -401,10 +401,8 @@ mod tests {
         let chunked = head.contains("transfer-encoding: chunked");
         loop {
             let body = &buf[end..];
-            let done = match length {
-                Some(len) => body.len() >= len,
-                None => !chunked || body.ends_with(b"0\r\n\r\n"),
-            };
+            let done = length
+                .map_or_else(|| !chunked || body.ends_with(b"0\r\n\r\n"), |len| body.len() >= len);
             if done {
                 return Some(String::from_utf8_lossy(&buf[..end]).into_owned());
             }
@@ -424,8 +422,8 @@ mod tests {
             while let Ok((mut tcp, _)) = listener.accept().await {
                 let held = held.clone();
                 tokio::spawn(async move {
-                    let Some(head) = read_request(&mut tcp).await else { return };
-                    let mut words = head.split_whitespace();
+                    let Some(request) = read_request(&mut tcp).await else { return };
+                    let mut words = request.split_whitespace();
                     let method = words.next().unwrap_or_default();
                     let path = words.next().unwrap_or_default();
                     let exists = held.as_deref().is_some_and(|n| path.contains(n));
