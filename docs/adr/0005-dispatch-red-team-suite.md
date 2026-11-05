@@ -1,6 +1,9 @@
 # 0005 — Red-team suite for dispatched work
 
-Status: **Proposed**
+Status: **Accepted** — Phase 1 (invariant T0 tests) and Phase 2 (probe
+contract, deterministic probes, oracle, sink, and the T1 docker job) are
+implemented. Phases 3-5 (canary infra + T2, adversarial agents + T3, webui
+reporting) are pending.
 
 ## Goal
 
@@ -165,14 +168,20 @@ Each scenario declares the cells it targets.
 ```
 redteam/
   probes/            POSIX sh, one file per probe ID; prints JSON lines
-                     {"id":"EGR-03","verdict":"contained|escaped","detail":...}
+                     {"id":"EGR-03","verdict":"blocked|escaped|skipped","detail":...}
+                     (the per-probe verdict; the oracle aggregates these into
+                     the per-scenario contained|escaped|refused|inconclusive)
   scenarios/         YAML: id, class, cells, mode (probe|attacker|injection),
                      prompt or fixture, expected oracle silence, timeout, budget
   fixtures/          poisoned repos, pages, packages, MCP replies, messages
   sink/              listener (HTTP + TCP + DNS), one static binary
   profiles/          example redteam worker profiles
-crates/cctui-redteam runner: dispatch via the server API, collect oracle
-                     signals, judge, write .qa/redteam/<run>/report.{json,md}
+crates/cctui-redteam runner: the probe contract and oracle, the sink listener
+                     (its `sink` subcommand), and `judge`, which fuses probe
+                     output with sink hits and writes
+                     .qa/redteam/<run>/report.{json,md}. Dispatch-via-server-API
+                     collection is Phase 3.
+  ci/                the T1 docker orchestration (run-t1.sh + worker-harness.sh)
 ```
 
 Probes are mounted as an `/opt/worker-entrypoint.d/` hook. They run after the
@@ -195,6 +204,12 @@ A second run uses the other harness as attacker against the same cell.
 | T2 | nightly and before deploying a new version | Every probe in every valid cell of a live deployment, with no model spend |
 | T3 | weekly and on demand | Attacker and injection scenarios, both harnesses, capped budget |
 
+T1 runs in `.github/workflows/redteam.yml` on PRs that touch the paths above and
+on `workflow_dispatch`: it builds the worker image, stands up the real sandbox
+(transparent redirect, guard-proxy, supervisor) with the sink as a sibling
+container, runs every deterministic probe, and fails if the oracle does not
+return `contained`.
+
 **Release gate:** deploying a new server, dispatcher or worker version requires
 a green T2 on that version.
 
@@ -203,10 +218,17 @@ merges. The probe fails first and passes with the fix.
 
 ## Phases
 
-1. **Invariant tests (T0)**, one per invariant above.
-2. **Probe harness and T1**: the probe contract, plus the docker CI job.
-3. **Canary infra and T2**: the redteam identity, canary secrets, sinks, a
-   generated target list, and a nightly run.
+1. **Invariant tests (T0)** — *done*. Each Phase-1 finding landed with its
+   in-process unit test; the surviving invariants are covered by the existing
+   suites in `cctui-guard-proxy`, `cctui-supervisor`, `cctui-proto`
+   (`worker_env`), `cctui-daemon` (`agenttool`, `harden`), `cctui-server-core`
+   (`auth`, dispatch identity) and `cctui-orchestrator` (`validate`).
+2. **Probe harness and T1** — *done*. The probe contract (`redteam/probes/`),
+   the oracle and sink (`crates/cctui-redteam`), and the docker job
+   (`.github/workflows/redteam.yml`, driving `redteam/ci/run-t1.sh`). A ratchet
+   coverage test ties every probe to a taxonomy class and a scenario.
+3. **Canary infra and T2**: the redteam identity, canary secrets, sinks
+   (including the DNS responder), a generated target list, and a nightly run.
 4. **Adversarial agents and T3**: attacker prompts per class, the injection
    fixture library, JUDGE scenarios, and budgets.
 5. **Reporting**: a matrix view in the webui; `escaped` results filed

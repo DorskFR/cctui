@@ -1,0 +1,74 @@
+name: redteam
+
+on:
+  pull_request:
+    paths:
+      - "deploy/**"
+      - "crates/cctui-guard/**"
+      - "crates/cctui-guard-proxy/**"
+      - "crates/cctui-supervisor/**"
+      - "crates/cctui-dispatcher-core/**"
+      - "crates/cctui-dispatcher-docker/**"
+      - "crates/cctui-dispatcher-kube/**"
+      - "crates/cctui-dispatcher-apple/**"
+      - "crates/cctui-orchestrator/**"
+      - "crates/cctui-daemon/src/adapters/**"
+      - "crates/cctui-redteam/**"
+      - "redteam/**"
+      - ".github/workflows/redteam.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: redteam-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Keep in lockstep with rust-toolchain.toml and deploy/*.Dockerfile.
+  RUST_VERSION: "1.97.1"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  t1:
+    name: T1 deterministic probes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: false
+
+      - name: Build the redteam runner (sink + oracle)
+        run: cargo build --locked -p cctui-redteam
+
+      - name: Run the runner's own unit tests
+        run: cargo test --locked -p cctui-redteam
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Build the worker image under test
+        run: docker build -f deploy/worker.Dockerfile -t cctui-worker:redteam .
+
+      - name: T1 probes against the real sandbox + sink
+        id: t1
+        env:
+          WORKER_IMAGE: cctui-worker:redteam
+          REDTEAM_BIN: ${{ github.workspace }}/target/debug/cctui-redteam
+          REPORT_DIR: ${{ runner.temp }}/redteam
+        run: bash redteam/ci/run-t1.sh "$REPORT_DIR"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: redteam-t1-report
+          path: ${{ runner.temp }}/redteam
+          retention-days: 7
+          if-no-files-found: ignore

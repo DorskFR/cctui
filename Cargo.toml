@@ -17,6 +17,7 @@ members = [
     "crates/cctui-orchestrator",
     "crates/cctui-proto",
     "crates/cctui-query",
+    "crates/cctui-redteam",
     "crates/cctui-secrets",
     "crates/cctui-server",
     "crates/cctui-server-core",
