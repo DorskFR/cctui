@@ -70,8 +70,9 @@ impl Requester {
         self.start_request(method, params, timeout).await
     }
 
-    /// Queues the request before returning, so a message sent after this call
-    /// reaches the agent after it; the future only awaits the answer.
+    /// Queue the request now; the returned future only awaits the answer.
+    ///
+    /// A message sent after this call reaches the agent after the request.
     pub fn start_request(
         &self,
         method: &str,

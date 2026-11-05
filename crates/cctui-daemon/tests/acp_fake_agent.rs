@@ -1491,8 +1491,9 @@ mod scenarios {
         Ok(())
     }
 
-    /// The Interrupt reaches the session before the turn's `active` status is
-    /// out, inside the window where `session/cancel` could overtake the prompt.
+    /// An Interrupt handled before the turn's `active` status still cancels it.
+    ///
+    /// That is the window where `session/cancel` could overtake the prompt.
     pub async fn an_interrupt_right_behind_a_prompt_still_cancels_it() -> anyhow::Result<()> {
         let mut h = start(&FAKE_ROW, &exe());
         let mut script = full_script();

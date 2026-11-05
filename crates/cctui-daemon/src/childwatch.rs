@@ -51,8 +51,9 @@ pub const QUIET_DONE_MIN_AGE: Duration = Duration::from_mins(1);
 /// Claude Code starts a new turn on its own once such a task completes, and
 /// that turn carries the real answer.
 pub const BG_TASK_QUIET_CAP: Duration = Duration::from_mins(20);
-/// How long background tasks keep holding a turn a `Stop` hook already ended:
-/// a task that outlives its turn (a dev server, a watcher) never notifies. A
+/// How long background tasks keep holding a turn a `Stop` hook already ended.
+///
+/// A task that outlives its turn (a dev server, a watcher) never notifies. A
 /// Monitor does, at the latest when it expires, so it is not cut short here.
 pub const BG_TASK_TURN_END_HOLD: Duration = Duration::from_mins(3);
 /// The one `stop_reason` that means the model handed back rather than lining up
@@ -257,9 +258,10 @@ impl ChildSnapshot {
         Assessment::Running(self.progress_line())
     }
 
-    /// Whether outstanding background tasks keep the turn open: their
-    /// completion starts the turn that answers. A child that handed a question
-    /// back to its parent is not held, nor one whose turn ended
+    /// Whether outstanding background tasks keep the turn open.
+    ///
+    /// Their completion starts the turn that answers. A child that handed a
+    /// question back to its parent is not held, nor one whose turn ended
     /// [`BG_TASK_TURN_END_HOLD`] ago with no notification since and no
     /// Monitor running.
     fn waits_on_background(&self, now: Instant) -> bool {
@@ -673,8 +675,9 @@ fn apply_message(w: &mut Watch, local_id: &str, payload: &serde_json::Value) {
     }
 }
 
-/// A notice for a tracked task opens the turn Claude Code starts on its own:
-/// every turn-end reading so far belongs to the interim reply. The interim
+/// A notice for a tracked task opens the turn Claude Code starts on its own.
+///
+/// Every turn-end reading so far belongs to the interim reply; the interim
 /// text stays as the fallback answer. A Monitor's per-event notice leaves its
 /// task running.
 fn apply_task_notification(w: &mut Watch, text: &str) {

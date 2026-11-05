@@ -161,8 +161,7 @@ impl BgTaskLedger {
     }
 }
 
-/// A Monitor runs until its `timeoutMs` from the start line, or for good when
-/// `persistent`.
+/// When a Monitor stops: `timeoutMs` after its start line, never if `persistent`.
 fn monitor_expiry(entry: &Value) -> Expiry {
     let result = entry.get("toolUseResult");
     if result.and_then(|r| r.get("persistent")).and_then(Value::as_bool) == Some(true) {
@@ -179,9 +178,10 @@ fn monitor_expiry(entry: &Value) -> Expiry {
     Expiry::At(started + Duration::from_millis(ms))
 }
 
-/// Each `<task-notification>` in `line`: its task id, and whether it ends the
-/// task. A Monitor also notifies each event it sees, without a `<status>`,
-/// while it keeps watching.
+/// Each `<task-notification>` in `line`: its task id, and whether it ends it.
+///
+/// A Monitor also notifies each event it sees, without a `<status>`, while it
+/// keeps watching.
 pub fn task_notices(line: &str) -> impl Iterator<Item = (&str, bool)> {
     line.split("<task-notification>").skip(1).filter_map(|block| {
         let block = block.split("</task-notification>").next().unwrap_or(block);
@@ -195,9 +195,10 @@ fn terminal_ids(line: &str) -> impl Iterator<Item = &str> {
     task_notices(line).filter_map(|(id, terminal)| terminal.then_some(id))
 }
 
-/// The task a tool result sent to the background: a command or MCP call, a
-/// Monitor watch, or a background Agent. A foreground Agent's result names its
-/// `agentId` too, so only a launch counts.
+/// The task a tool result sent to the background.
+///
+/// A command or MCP call, a Monitor watch, or a background Agent. A foreground
+/// Agent's result names its `agentId` too, so only a launch counts.
 pub fn started_id(text: &str) -> Option<String> {
     START_MARKERS
         .iter()

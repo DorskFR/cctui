@@ -959,8 +959,7 @@ fn approve_project_mcp_servers(settings: &mut serde_json::Value) {
 
 const PROJECT_MCP_KEY: &str = "enableAllProjectMcpServers";
 
-/// Pre-accept Claude Code's auto-mode opt-in dialog, unless the account
-/// settings already decide.
+/// Pre-accept Claude Code's auto-mode opt-in dialog unless the account decides.
 ///
 /// A machine that never accepted it would otherwise hold an `auto` launch on a
 /// dialog no background worker can answer. Picking `auto` in cctui is the
