@@ -939,7 +939,7 @@ mod tests {
         let pool = sqlx::PgPool::connect(&url).await.expect("connect");
         let state = AppState::for_test(pool.clone());
         let (uid, mid) = seed_machine(&pool, "genv-policy").await;
-        let (other_uid, other_mid) = seed_machine(&pool, "genv-policy-other").await;
+        let (ub, mb) = seed_machine(&pool, "genv-policy-other").await;
         let sid = seed_owned_session(&pool, uid, mid).await;
 
         let none = super::gateway_env_for(&state, uid, mid, &sid, true).await.expect("pull");
@@ -956,8 +956,7 @@ mod tests {
         let wire = serde_json::to_value(&pulled).unwrap();
         assert_eq!(wire["hook_policy"]["status"], serde_json::json!("applied"));
 
-        let foreign =
-            super::gateway_env_for(&state, other_uid, other_mid, &sid, true).await.expect("pull");
+        let foreign = super::gateway_env_for(&state, ub, mb, &sid, true).await.expect("pull");
         assert_eq!(foreign.hook_policy, None, "another machine never sees the policy");
 
         sqlx::query("DELETE FROM session_hook_policies WHERE session_id = $1")
@@ -970,7 +969,7 @@ mod tests {
             .execute(&pool)
             .await
             .ok();
-        drop_machines(&pool, &[sid], &[(uid, mid), (other_uid, other_mid)]).await;
+        drop_machines(&pool, &[sid], &[(uid, mid), (ub, mb)]).await;
     }
 
     #[test]

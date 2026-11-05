@@ -563,9 +563,12 @@ static PINNED_SETTINGS: LazyLock<Mutex<HashMap<PathBuf, Vec<u8>>>> =
 
 fn write_pinned(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut pinned = PINNED_SETTINGS.lock().unwrap_or_else(PoisonError::into_inner);
-    cctui_proto::util::write_private(path, bytes)?;
-    pinned.insert(path.to_path_buf(), bytes.to_vec());
-    Ok(())
+    let written = cctui_proto::util::write_private(path, bytes);
+    if written.is_ok() {
+        pinned.insert(path.to_path_buf(), bytes.to_vec());
+    }
+    drop(pinned);
+    written
 }
 
 /// Put back what this process last wrote to `path`. `Ok(false)` when the file

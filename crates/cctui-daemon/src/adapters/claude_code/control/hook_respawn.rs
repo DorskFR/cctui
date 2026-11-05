@@ -37,24 +37,22 @@ impl Driver {
     }
 }
 
-fn respawn_cold(
+async fn respawn_cold(
     launcher: spawn::Launcher,
     remover: removal::Remover,
     sock: PathBuf,
     short: String,
     local_id: String,
-) -> impl std::future::Future<Output = LaneOutcome> + Send + 'static {
-    async move {
-        let result = restart(&launcher, &remover, &sock, &short, &local_id).await;
-        let text = match &result {
-            Ok(()) => canary::RESPAWNED.to_owned(),
-            Err(err) => format!("{RESPAWN_FAILED}: {err:#}"),
-        };
-        let payload = canary::marker_payload(&text);
-        let message = AdapterEvent::Message { local_id, payload, turn_id: None };
-        let _ = launcher.events.send(message).await;
-        result.into()
-    }
+) -> LaneOutcome {
+    let result = restart(&launcher, &remover, &sock, &short, &local_id).await;
+    let text = match &result {
+        Ok(()) => canary::RESPAWNED.to_owned(),
+        Err(err) => format!("{RESPAWN_FAILED}: {err:#}"),
+    };
+    let payload = canary::marker_payload(&text);
+    let message = AdapterEvent::Message { local_id, payload, turn_id: None };
+    let _ = launcher.events.send(message).await;
+    result.into()
 }
 
 /// The launch pull is checked first: a worker stopped without one to relaunch
