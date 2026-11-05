@@ -997,6 +997,9 @@ that never reports back is re-prompted once after 10 minutes of quiet
 (`CCTUI_STUCK_TURN_REPROMPT_SECS`), and ended after a further 10 minutes
 (`CCTUI_STUCK_TURN_END_SECS`) with `end_reason: "other"` and an `end_detail`
 starting `stuck_waiting`, so the worker exits and frees its profile slot.
+While a Monitor the agent started is still running (before its own expiry, or
+indefinitely when persistent), neither step fires, for at most 2 hours of
+quiet (`CCTUI_STUCK_TURN_CEILING_SECS`); past that the clock runs as above.
 
 ### Auto-archive when the run ends
 
