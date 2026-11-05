@@ -159,7 +159,8 @@ start).
 pages), `sensitiveData` (private repos, usable credentials, internal
 services) and `outward` (push, comments, chat posts, any shared write). An
 unattended agent may hold at most two. A profile that declares all three needs
-`spec.humanGate`, or the validating webhook denies its pods. A profile with no
+an enforced `spec.humanGate` (`noPush` or `draftPrOnly`), or the validating
+webhook denies its pods. A profile with no
 `exposure` is admitted with an "exposure undeclared" warning.
 
 ```yaml
@@ -178,7 +179,7 @@ GitHub egress (`github.com`, `www.github.com`, `gist.github.com`,
 |---|---|
 | `noPush` | `git push` (receive-pack discovery and upload); API writes to refs (`git/refs`), contents, merges (`merges`, `merge-upstream`, `pulls/{n}/merge`), `pulls/{n}/update-branch`, branch renames, releases, repository settings/deletion/transfer; the GraphQL mutations that move a ref or merge (`createRef`, `updateRef(s)`, `deleteRef`, `createCommitOnBranch`, `mergeBranch`, `mergePullRequest`, `enablePullRequestAutoMerge`, `enqueuePullRequest`, `revertPullRequest`, `updatePullRequestBranch`, `updateRepository`, `archiveRepository`) |
 | `draftPrOnly` | a push or API write to a protected branch, or to a ref that is not a branch (tags included); a pull request created without `draft: true` (REST body, or GraphQL `createPullRequest(input: $v)` whose `$v.draft` is `true`; an inline input is refused); `markPullRequestReadyForReview`; every merge; branch renames, releases, repository settings writes; the same ref-moving GraphQL mutations as `noPush` except `updatePullRequestBranch` |
-| `outwardHeldForApproval` | nothing yet: there is no approval flow to hold an outward write for. Declaring it satisfies admission but nothing enforces it. |
+| `outwardHeldForApproval` | nothing yet: there is no approval flow to hold an outward write for. Admission denies it on a profile that declares all three exposures; on any other profile it is a no-op. |
 
 Comments, issues, reviews and reads pass under every gate; `noPush` still lets
 the agent open pull requests from branches that already exist.
