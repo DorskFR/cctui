@@ -1,4 +1,4 @@
-import { filters, parse, serializeFilter, type FilterNode, type Schema } from '@dorsk/tsumikit';
+import { filters, parse, serializeFilter, type FilterNode, type OperatorId, type Schema } from '@dorsk/tsumikit';
 
 export type TimeScope = '24h' | '7d' | '30d';
 export const TIME_SCOPES: readonly TimeScope[] = ['24h', '7d', '30d'];
@@ -15,15 +15,22 @@ export function sinceDay(t: TimeScope, now: number): string {
 	return new Date(now - SCOPE_DAYS[t] * DAY_MS).toISOString().slice(0, 10);
 }
 
+const filter = (field: string, op: OperatorId, value: string): FilterNode => ({
+	kind: 'filter',
+	field,
+	op,
+	values: [value],
+	span: [0, 0]
+});
+
 function clause(s: Scope, now: number): FilterNode {
-	const base = { kind: 'filter', span: [0, 0] } as const;
 	switch (s.kind) {
 		case 'machine':
-			return { ...base, field: 'machine', op: 'eq', values: [s.value] };
+			return filter('machine', 'eq', s.value);
 		case 'dir':
-			return { ...base, field: 'dir', op: 'contains', values: [s.value] };
+			return filter('dir', 'contains', s.value);
 		case 'time':
-			return { ...base, field: 'created', op: 'gte', values: [sinceDay(s.value, now)] };
+			return filter('created', 'gte', sinceDay(s.value, now));
 	}
 }
 
