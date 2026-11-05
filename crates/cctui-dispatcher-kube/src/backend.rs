@@ -37,13 +37,17 @@ impl Backend for Kube {
         }
     }
 
-    async fn spawner(cfg: &Config, shutdown: &CancellationToken) -> anyhow::Result<Spawner> {
+    async fn spawner(
+        cfg: &Config,
+        key: &cctui_dispatcher_core::secrets::Secret,
+        shutdown: &CancellationToken,
+    ) -> anyhow::Result<Spawner> {
         use cctui_dispatcher_core::DispatcherConfig;
         let spawner = Spawner::connect(
             cfg.namespace.clone(),
             cfg.default_profile.clone(),
             cfg.worker_url().to_owned(),
-            DispatchRegistry::new(cfg.server_url.clone(), cfg.dispatcher_key.clone()),
+            DispatchRegistry::new(cfg.server_url.clone(), key.clone()),
         )
         .await?;
         tokio::spawn(spawner.clone().run_queue_reconciler(shutdown.clone()));

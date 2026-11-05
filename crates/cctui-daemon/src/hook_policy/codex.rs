@@ -12,11 +12,35 @@
 //! `features` table) rides along because a trusted repo's or the user's
 //! `features.hooks = false` otherwise drops every hook, injected ones included.
 
+pub mod interactive;
+
 use cctui_proto::hook_policy::{HookEvent, HookPolicy, HookRule, ToolClass};
 use serde_json::{Value, json};
 
 use super::shim::Tools;
 use super::{HookPolicySink, Unsupported};
+
+/// Rides along with every shell guard: commands typed into an interactive
+/// session through `write_stdin` never reach `PreToolUse`.
+pub const NO_INTERACTIVE_SHELL_COMMAND: &str =
+    "cctui-daemon hook-shim no-interactive-shell || exit 2";
+const NO_INTERACTIVE_SHELL_TIMEOUT_SECS: u32 = 10;
+
+fn with_interactive_refusal(policy: &HookPolicy) -> HookPolicy {
+    let mut policy = policy.clone();
+    let guards_shell = policy.rules.iter().any(|r| {
+        r.event == HookEvent::PreToolUse && matches!(r.tool, ToolClass::Shell | ToolClass::Any)
+    });
+    if guards_shell && !policy.rules.iter().any(|r| r.command == NO_INTERACTIVE_SHELL_COMMAND) {
+        policy.rules.push(HookRule {
+            event: HookEvent::PreToolUse,
+            tool: ToolClass::Shell,
+            command: NO_INTERACTIVE_SHELL_COMMAND.to_owned(),
+            timeout_secs: Some(NO_INTERACTIVE_SHELL_TIMEOUT_SECS),
+        });
+    }
+    policy
+}
 
 pub struct Codex {
     /// The daemon binary the `hook-shim` runs from. `None`: rules that need
@@ -111,7 +135,7 @@ impl HookPolicySink for Codex {
         if policy.rules.is_empty() {
             return Ok(());
         }
-        let policy = super::materialize(policy, self.exe.as_deref());
+        let policy = super::materialize(&with_interactive_refusal(policy), self.exe.as_deref());
         let config = object(config);
         let hooks = object(config.entry("hooks").or_insert_with(|| json!({})));
         for rule in &policy.rules {
@@ -181,10 +205,21 @@ mod tests {
                 "features.hooks": true,
                 "bypass_hook_trust": true,
                 "hooks": {
-                    "PreToolUse": [{
-                        "matcher": "Bash",
-                        "hooks": [{ "type": "command", "command": "deny-rm", "timeout": 7 }],
-                    }],
+                    "PreToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [{ "type": "command", "command": "deny-rm", "timeout": 7 }],
+                        },
+                        {
+                            "matcher": "Bash",
+                            "hooks": [{
+                                "type": "command",
+                                "command":
+                                    "'/opt/cctui daemon' hook-shim no-interactive-shell || exit 2",
+                                "timeout": 10,
+                            }],
+                        },
+                    ],
                     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "audit" }] }],
                 },
             })
@@ -221,6 +256,82 @@ mod tests {
             post["hooks"][0]["command"],
             "'/opt/cctui daemon' hook-shim apply-patch --tools any --run 'a'"
         );
+    }
+
+    fn pre_tool_commands(config: &Value) -> Vec<String> {
+        config["hooks"]["PreToolUse"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|g| g["hooks"][0]["command"].as_str())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn a_shell_guard_brings_the_interactive_session_refusal_once() {
+        for tool in [ToolClass::Shell, ToolClass::Any] {
+            let mut config = json!({});
+            let policy = HookPolicy { rules: vec![rule(HookEvent::PreToolUse, tool, "guard")] };
+            sink().apply(&policy, &mut config).unwrap();
+            let refusal = &config["hooks"]["PreToolUse"][1];
+            assert_eq!(refusal["matcher"], "Bash", "{config}");
+            assert_eq!(
+                refusal["hooks"][0]["command"],
+                "'/opt/cctui daemon' hook-shim no-interactive-shell || exit 2"
+            );
+            assert_eq!(refusal["hooks"][0]["timeout"], 10);
+        }
+
+        let already = HookPolicy {
+            rules: vec![
+                rule(HookEvent::PreToolUse, ToolClass::Shell, "guard"),
+                HookRule {
+                    timeout_secs: Some(10),
+                    ..rule(HookEvent::PreToolUse, ToolClass::Shell, NO_INTERACTIVE_SHELL_COMMAND)
+                },
+            ],
+        };
+        let mut config = json!({});
+        sink().apply(&already, &mut config).unwrap();
+        let refusals = pre_tool_commands(&config)
+            .into_iter()
+            .filter(|c| c.contains("no-interactive-shell"))
+            .count();
+        assert_eq!(refusals, 1, "{config}");
+    }
+
+    #[test]
+    fn no_shell_guard_means_no_interactive_session_refusal() {
+        let mut config = json!({});
+        let policy = HookPolicy {
+            rules: vec![
+                rule(HookEvent::PreToolUse, ToolClass::FileEdit, "g"),
+                rule(HookEvent::PostToolUse, ToolClass::Shell, "audit"),
+            ],
+        };
+        sink().apply(&policy, &mut config).unwrap();
+        assert!(!config.to_string().contains("no-interactive-shell"), "{config}");
+    }
+
+    #[test]
+    fn without_the_daemon_binary_the_interactive_refusal_blocks() {
+        let mut config = json!({});
+        let policy = HookPolicy { rules: vec![rule(HookEvent::PreToolUse, ToolClass::Shell, "g")] };
+        Codex { exe: None }.apply(&policy, &mut config).unwrap();
+        assert_eq!(pre_tool_commands(&config), ["g", super::super::UNRESOLVED_DAEMON]);
+    }
+
+    #[test]
+    fn the_shim_cli_takes_no_interactive_shell() {
+        use clap::Parser as _;
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            shim: super::super::shim::ShimCmd,
+        }
+        let cli = Cli::try_parse_from(["hook-shim", "no-interactive-shell"]).unwrap();
+        assert!(matches!(cli.shim, super::super::shim::ShimCmd::NoInteractiveShell));
     }
 
     #[test]

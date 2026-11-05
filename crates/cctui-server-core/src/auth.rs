@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use axum::extract::Request;
@@ -243,10 +243,27 @@ pub async fn worker_key_gate(
     Ok(next.run(request).await)
 }
 
+/// `CCTUI_ADMIN_TOKENS`, comma-separated, blanks dropped.
+#[must_use]
+pub fn parse_admin_tokens(raw: &str) -> Vec<String> {
+    raw.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect()
+}
+
+struct AdminTokens {
+    tokens: Vec<String>,
+    hashes: Vec<String>,
+}
+
+impl AdminTokens {
+    fn new(tokens: Vec<String>) -> Self {
+        let hashes = tokens.iter().map(|t| sha256_hex(t)).collect();
+        Self { tokens, hashes }
+    }
+}
+
 #[derive(Clone)]
 pub struct AuthConfig {
-    pub admin_tokens: Vec<String>,
-    admin_token_hashes: Vec<String>,
+    admin: Arc<RwLock<Arc<AdminTokens>>>,
     pub pool: PgPool,
     cache: Arc<Mutex<HashMap<String, CacheEntry>>>,
     /// Bumped by every purge so a lookup that raced it doesn't re-cache the
@@ -258,15 +275,69 @@ pub struct AuthConfig {
 impl AuthConfig {
     #[must_use]
     pub fn new(admin_tokens: Vec<String>, pool: PgPool) -> Self {
-        let admin_token_hashes = admin_tokens.iter().map(|t| sha256_hex(t)).collect();
         Self {
-            admin_tokens,
-            admin_token_hashes,
+            admin: Arc::new(RwLock::new(Arc::new(AdminTokens::new(admin_tokens)))),
             pool,
             cache: Arc::new(Mutex::new(HashMap::new())),
             epoch: Arc::new(AtomicU64::new(0)),
             peers: Arc::new(OnceLock::new()),
         }
+    }
+
+    fn admin(&self) -> Arc<AdminTokens> {
+        Arc::clone(&self.admin.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    fn is_env_admin(&self, hash: &str) -> bool {
+        self.admin().hashes.iter().any(|h| h == hash)
+    }
+
+    /// Replaces the env admin tokens. The new set authenticates from the swap
+    /// on (seeded on first use if seeding here fails); tokens no longer in it
+    /// are revoked and purged afterwards, so one of the two always works.
+    pub async fn set_admin_tokens(&self, tokens: Vec<String>) {
+        let next = Arc::new(AdminTokens::new(tokens));
+        let previous = std::mem::replace(
+            &mut *self.admin.write().unwrap_or_else(PoisonError::into_inner),
+            Arc::clone(&next),
+        );
+        let retired: Vec<String> =
+            previous.hashes.iter().filter(|h| !next.hashes.contains(h)).cloned().collect();
+        self.seed_admin().await;
+        if !retired.is_empty() {
+            self.retire_env_admin(&retired).await;
+        }
+    }
+
+    async fn retire_env_admin(&self, hashes: &[String]) {
+        if let Err(e) = sqlx::query(
+            "UPDATE auth_keys SET revoked_at = now() \
+             WHERE key_hash = ANY($1) AND user_id = $2 AND kind = 'admin' \
+             AND revoked_at IS NULL",
+        )
+        .bind(hashes)
+        .bind(Uuid::nil())
+        .execute(&self.pool)
+        .await
+        {
+            tracing::warn!("retiring rotated-out env admin tokens failed: {e}");
+        }
+        for hash in hashes {
+            self.purge(hash);
+        }
+    }
+
+    /// Applies every change of `raw`, a `CCTUI_ADMIN_TOKENS` value, with
+    /// [`Self::set_admin_tokens`].
+    pub fn follow_admin_tokens(&self, mut raw: tokio::sync::watch::Receiver<Arc<str>>) {
+        let auth = self.clone();
+        tokio::spawn(async move {
+            while raw.changed().await.is_ok() {
+                let value = raw.borrow_and_update().clone();
+                auth.set_admin_tokens(parse_admin_tokens(&value)).await;
+                tracing::info!("CCTUI_ADMIN_TOKENS rotated");
+            }
+        });
     }
 
     /// Broadcast every purge to the other replicas. Shared by all clones; a
@@ -283,7 +354,8 @@ impl AuthConfig {
     /// logged, never fatal, because env-token validation also still works through the cheap
     /// env short-circuit in `validate()`.
     pub async fn seed_admin(&self) {
-        if self.admin_tokens.is_empty() {
+        let admin = self.admin();
+        if admin.tokens.is_empty() {
             return;
         }
         let admin_user_id = Uuid::nil(); // stable, reserved id for the seeded admin
@@ -310,7 +382,7 @@ impl AuthConfig {
             .execute(&self.pool)
             .await;
         }
-        for token in &self.admin_tokens {
+        for token in &admin.tokens {
             let hash = sha256_hex(token);
             let key_id: Option<(Uuid,)> = sqlx::query_as(
                 "INSERT INTO auth_keys (user_id, key_hash, label, kind) \
@@ -329,7 +401,7 @@ impl AuthConfig {
                 tracing::warn!("seed_admin: grant env key failed: {e}");
             }
         }
-        tracing::info!(count = self.admin_tokens.len(), "seeded admin user + env keys");
+        tracing::info!(count = admin.tokens.len(), "seeded admin user + env keys");
     }
 
     /// Purge a cached entry by its key hash, here and on every peer replica.
@@ -432,7 +504,7 @@ impl AuthConfig {
 
         let epoch = self.epoch.load(Ordering::SeqCst);
         let mut resolved = self.resolve(&hash).await;
-        if matches!(resolved, Ok(None)) && self.admin_token_hashes.contains(&hash) {
+        if matches!(resolved, Ok(None)) && self.is_env_admin(&hash) {
             resolved = self.reseed_env_admin(&hash).await;
         }
         match resolved {
@@ -445,7 +517,7 @@ impl AuthConfig {
             // admin token break the glass.
             Err(e) => {
                 tracing::warn!("auth lookup failed: {e}");
-                self.admin_token_hashes.contains(&hash).then(|| {
+                self.is_env_admin(&hash).then(|| {
                     let ctx = AuthContext {
                         user_id: Uuid::nil(),
                         key_id: Uuid::nil(),
@@ -1073,6 +1145,72 @@ mod tests {
 
         sqlx::query("DELETE FROM auth_keys WHERE key_hash = $1")
             .bind(&hash)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn admin_tokens_split_on_commas_and_trim() {
+        assert_eq!(parse_admin_tokens(" a , b,, ,c"), ["a", "b", "c"]);
+        assert!(parse_admin_tokens("").is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_admin_token_swap_moves_the_break_glass_fallback() {
+        let pool = PgPool::connect_lazy("postgres://invalid").unwrap();
+        pool.close().await;
+        let cfg = AuthConfig::new(vec!["admin-old".into()], pool);
+        let clone = cfg.clone();
+        assert!(cfg.validate("admin-old").await.is_some_and(|c| c.is_admin()));
+
+        cfg.set_admin_tokens(vec!["admin-new".into()]).await;
+        assert!(clone.validate("admin-new").await.is_some_and(|c| c.is_admin()), "clones see it");
+        assert!(clone.validate("admin-old").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_rotated_env_admin_token_takes_over_with_no_gap() {
+        let name = "a_rotated_env_admin_token_takes_over_with_no_gap";
+        let Some(url) = crate::test_support::db_url(name) else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(4)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let old = format!("env-admin-old-{}", Uuid::new_v4());
+        let new = format!("env-admin-new-{}", Uuid::new_v4());
+        let cfg = AuthConfig::new(vec![old.clone()], pool.clone());
+        cfg.seed_admin().await;
+        assert!(cfg.validate(&old).await.is_some_and(|c| c.is_admin()), "cached before the swap");
+
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let probe = tokio::spawn({
+            let (cfg, old, new, stop) = (cfg.clone(), old.clone(), new.clone(), stop.clone());
+            async move {
+                let mut rounds = 0u32;
+                while !stop.load(Ordering::SeqCst) {
+                    let either =
+                        cfg.validate(&old).await.is_some() || cfg.validate(&new).await.is_some();
+                    assert!(either, "neither the old nor the new admin token authenticated");
+                    rounds += 1;
+                    tokio::task::yield_now().await;
+                }
+                rounds
+            }
+        });
+        tokio::task::yield_now().await;
+        cfg.set_admin_tokens(vec![new.clone()]).await;
+        stop.store(true, Ordering::SeqCst);
+        assert!(probe.await.expect("the probe never saw a gap") > 0);
+
+        assert!(cfg.validate(&new).await.is_some_and(|c| c.is_admin()), "new token accepted");
+        assert!(cfg.validate(&old).await.is_none(), "old token rejected after the swap");
+        let fresh = AuthConfig::new(vec![new.clone()], pool.clone());
+        assert!(fresh.validate(&old).await.is_none(), "the old row is revoked, not just uncached");
+
+        sqlx::query("DELETE FROM auth_keys WHERE key_hash = ANY($1)")
+            .bind(vec![sha256_hex(&old), sha256_hex(&new)])
             .execute(&pool)
             .await
             .unwrap();

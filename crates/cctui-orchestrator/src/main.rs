@@ -1,5 +1,6 @@
 //! Admission webhook server: the mutating endpoint injects the secretless-worker
-//! envelope into profiled pods (reading only the profile's `spec.guard`), the
+//! envelope into profiled pods (reading only the profile's `spec.guard` and its
+//! exec-interception opt-in), the
 //! validating endpoint checks them against their `WorkerProfile`.
 
 use axum::http::StatusCode;
@@ -49,23 +50,27 @@ fn request_namespace(req: &AdmissionRequest<Pod>, pod: &Pod) -> String {
         .unwrap_or_else(|| "default".to_owned())
 }
 
-/// The source profile's `spec.guard` for a pod about to be injected. A missing
-/// profile renders no guard overrides (the validating webhook denies the pod);
-/// a lookup failure is an `Err` so the pod is denied fail-closed.
+/// The source profile's `spec.guard` and exec-interception opt-in for a pod
+/// about to be injected. A missing profile renders neither (the validating
+/// webhook denies the pod); a lookup failure is an `Err` so the pod is denied
+/// fail-closed.
 async fn profile_guard(
     state: &AppState,
     req: &AdmissionRequest<Pod>,
     pod: &Pod,
-) -> anyhow::Result<Option<GuardSpec>> {
+) -> anyhow::Result<(Option<GuardSpec>, bool)> {
     if !is_eligible(pod) || is_injected(pod) {
-        return Ok(None);
+        return Ok((None, false));
     }
-    let Some(name) = profile_name(pod) else { return Ok(None) };
+    let Some(name) = profile_name(pod) else { return Ok((None, false)) };
     let namespace = request_namespace(req, pod);
     let profile = state.profile_source.get(&namespace, name).await.map_err(|e| {
         anyhow::anyhow!("cannot resolve WorkerProfile `{name}` in `{namespace}`: {e}")
     })?;
-    Ok(profile.and_then(|p| p.guard))
+    Ok(profile.map_or((None, false), |p| {
+        let exec_interception = p.exec_interception();
+        (p.guard, exec_interception)
+    }))
 }
 
 #[allow(clippy::cognitive_complexity)]
@@ -84,7 +89,7 @@ async fn mutate(
     if let Some(pod) = &req.object {
         let outcome = profile_guard(&state, &req, pod)
             .await
-            .and_then(|guard| mutate_pod(pod, &state.sidecar_image, guard.as_ref()));
+            .and_then(|(guard, exec)| mutate_pod(pod, &state.sidecar_image, guard.as_ref(), exec));
         match outcome {
             Ok(MutationOutcome::Patch(patch)) => {
                 tracing::info!(

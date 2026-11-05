@@ -1,0 +1,13 @@
+# Example WorkerProfile shape for a red-team cell on kube. Same placement and
+# policies as production workers; its own service identity reads only canary
+# secrets (wired in Phase 3). Values are placeholders for a PUBLIC repo.
+apiVersion: cctui.dev/v1
+kind: WorkerProfile
+metadata:
+  name: redteam
+spec:
+  posture: nonroot
+  egress: transparent
+  landlockStrict: true
+  netAllow: []
+  serviceAccountName: cctui-redteam

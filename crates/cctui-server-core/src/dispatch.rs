@@ -1141,6 +1141,51 @@ async fn forward_dispatch(
     ))
 }
 
+/// Refuse `additions` that weaken a rule of an account the dispatch is about
+/// to mint for, before any worker credential exists.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "refuse_weakened_account_rules")
+)]
+async fn refuse_weakened_account_rules(
+    state: &impl DispatchContext,
+    mints: &[crate::gateway::mint::ProviderRow],
+    additions: Vec<cctui_proto::hook_policy::HookRule>,
+) -> DispatchResult<()> {
+    use cctui_proto::hook_policy::{HookRule, effective_rules, no_direct_harness_rule};
+    if additions.is_empty() || mints.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<uuid::Uuid> = mints.iter().map(|row| row.id).collect();
+    let stored: Vec<serde_json::Value> = sqlx::query_scalar(
+        "SELECT DISTINCT ON (p.account_id) p.hooks \
+         FROM account_providers ap \
+         JOIN account_tool_policies p ON p.account_id = ap.account_id \
+         WHERE ap.id = ANY($1) \
+         ORDER BY p.account_id",
+    )
+    .bind(&ids)
+    .fetch_all(state.dispatch_pool())
+    .await
+    .map_err(|error| {
+        tracing::error!(%error, "account hook rules lookup failed");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError { error: "could not read the worker's account hook rules".into() }),
+        )
+    })?;
+    let mut inherited = vec![no_direct_harness_rule()];
+    let mut account = Vec::new();
+    for value in stored {
+        if let Ok(more) = serde_json::from_value::<Vec<HookRule>>(value) {
+            account.extend(more);
+        }
+    }
+    inherited.extend(cctui_proto::hook_policy::normalize_rules(account).unwrap_or_default());
+    effective_rules(&inherited, additions).map(drop).map_err(|e| bad_request(e.to_string()))
+}
+
 /// Authorize, prepare and forward a dispatch through shared execution services.
 ///
 /// validate → resolve identity/accounts → execute. The shared dispatch-machine
@@ -1164,12 +1209,14 @@ pub async fn execute_dispatch(
         None => None,
     };
     let mut v = validate_dispatch(state, ctx, &req).await?;
-    crate::hook_policy::dispatch_additions(&req.payload).map_err(|e| bad_request(e.to_string()))?;
+    let additions = crate::hook_policy::dispatch_additions(&req.payload)
+        .map_err(|e| bad_request(e.to_string()))?;
 
     if let Some(uid) = real_user {
+        let routing = resolve_account_routing(state, &req, uid, &mut v.forwarded_payload).await?;
+        refuse_weakened_account_rules(state, &routing.mints, additions).await?;
         inject_worker_credential(state, uid, &v.session_id, req.timeout, &mut v.forwarded_payload)
             .await?;
-        let routing = resolve_account_routing(state, &req, uid, &mut v.forwarded_payload).await?;
         mint_gateway_env(state, routing.mints, &v.session_id, &mut v.forwarded_payload).await?;
         if let Some(pool_id) = routing.bound_pool {
             crate::account_resolve::stamp_pool(state, &v.session_id, pool_id)

@@ -482,7 +482,7 @@ impl Injector {
         C: AsyncRead + AsyncWrite + Unpin,
     {
         let mut cbuf = HttpBuf::default();
-        let mut upstream: Option<UpstreamConn> = None;
+        let mut upstream: Option<UpstreamConn<UpstreamTls>> = None;
         loop {
             let head = match next_request(&mut cbuf, client, upstream.as_mut()).await? {
                 Idle::Request(head) => head,
@@ -503,12 +503,12 @@ impl Injector {
     async fn serve_one<C>(
         &self,
         client: &mut C,
-        upstream: Option<UpstreamConn>,
+        upstream: Option<UpstreamConn<UpstreamTls>>,
         dialer: &Dialer<'_>,
         rules: &[InjectionRule],
         head: &[u8],
         cbuf: &mut HttpBuf,
-    ) -> anyhow::Result<Step>
+    ) -> anyhow::Result<Step<UpstreamTls>>
     where
         C: AsyncRead + AsyncWrite + Unpin,
     {
@@ -741,54 +741,86 @@ impl Injector {
 
 const MAX_SIGV4_BODY: usize = 1024 * 1024;
 
-const MAX_REPLAY_BYTES: usize = 1024 * 1024;
+pub const MAX_REPLAY_BYTES: usize = 1024 * 1024;
 
 const BAD_GATEWAY: &[u8] = b"HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n\
 Content-Length: 37\r\nConnection: close\r\n\r\nupstream closed without a response.\r\n";
 
 type UpstreamTls = tokio_rustls::client::TlsStream<TcpStream>;
 
-struct Dialer<'a> {
-    connector: &'a TlsConnector,
-    server_name: ServerName<'static>,
-    host: &'a str,
-    addrs: &'a [SocketAddr],
+/// Opens fresh upstream connections for a forwarding loop that must survive
+/// the upstream closing an idle keep-alive.
+pub trait Redial: Sync {
+    type Stream: AsyncRead + AsyncWrite + Unpin + Send;
+
+    fn host(&self) -> &str;
+
+    fn dial(&self) -> impl Future<Output = Option<UpstreamConn<Self::Stream>>> + Send;
 }
 
-impl Dialer<'_> {
-    async fn dial(&self) -> Option<UpstreamConn> {
+pub struct Dialer<'a> {
+    pub connector: &'a TlsConnector,
+    pub server_name: ServerName<'static>,
+    pub host: &'a str,
+    pub addrs: &'a [SocketAddr],
+}
+
+/// Plain TCP to a fixed address list.
+pub struct TcpDialer<'a> {
+    pub host: &'a str,
+    pub addrs: &'a [SocketAddr],
+}
+
+async fn connect_tcp(host: &str, addrs: &[SocketAddr]) -> Option<TcpStream> {
+    match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(addrs)).await {
+        Ok(Ok(s)) => Some(s),
+        Ok(Err(e)) => {
+            tracing::warn!("dial upstream {host} failed: {e}");
+            None
+        }
+        Err(_) => {
+            tracing::warn!("dial upstream {host} timed out ({} address(es))", addrs.len());
+            None
+        }
+    }
+}
+
+impl Redial for TcpDialer<'_> {
+    type Stream = TcpStream;
+
+    fn host(&self) -> &str {
+        self.host
+    }
+
+    async fn dial(&self) -> Option<UpstreamConn<TcpStream>> {
+        connect_tcp(self.host, self.addrs).await.map(UpstreamConn::fresh)
+    }
+}
+
+impl Redial for Dialer<'_> {
+    type Stream = UpstreamTls;
+
+    fn host(&self) -> &str {
+        self.host
+    }
+
+    async fn dial(&self) -> Option<UpstreamConn<UpstreamTls>> {
         let host = self.host;
-        let tcp =
-            match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(self.addrs))
-                .await
-            {
-                Ok(Ok(s)) => s,
-                Ok(Err(e)) => {
-                    tracing::warn!("inject dial upstream {host} failed: {e}");
-                    return None;
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        "inject dial upstream {host} timed out ({} address(es))",
-                        self.addrs.len()
-                    );
-                    return None;
-                }
-            };
+        let tcp = connect_tcp(host, self.addrs).await?;
         match self.connector.connect(self.server_name.clone(), tcp).await {
-            Ok(stream) => Some(UpstreamConn { stream, ubuf: HttpBuf::default(), reused: false }),
+            Ok(stream) => Some(UpstreamConn::fresh(stream)),
             Err(e) => {
-                tracing::warn!("inject upstream TLS to {host} failed: {e}");
+                tracing::warn!("upstream TLS to {host} failed: {e}");
                 None
             }
         }
     }
 }
 
-struct UpstreamConn {
-    stream: UpstreamTls,
-    ubuf: HttpBuf,
-    reused: bool,
+pub struct UpstreamConn<S> {
+    pub stream: S,
+    pub ubuf: HttpBuf,
+    pub reused: bool,
 }
 
 enum ResponseHead {
@@ -797,14 +829,18 @@ enum ResponseHead {
     Broken,
 }
 
-impl UpstreamConn {
+impl<S: AsyncRead + AsyncWrite + Unpin> UpstreamConn<S> {
+    pub const fn fresh(stream: S) -> Self {
+        Self { stream, ubuf: HttpBuf { buf: Vec::new() }, reused: false }
+    }
+
     async fn read_response_head(&mut self, host: &str) -> ResponseHead {
         match self.ubuf.read_head(&mut self.stream).await {
             Ok(Some(head)) => ResponseHead::Head(head),
             Ok(None) => ResponseHead::ClosedEarly,
             Err(_) if self.ubuf.buf.is_empty() => ResponseHead::ClosedEarly,
             Err(e) => {
-                tracing::warn!("inject upstream {host} broke mid response head: {e}");
+                tracing::warn!("upstream {host} broke mid response head: {e}");
                 ResponseHead::Broken
             }
         }
@@ -813,8 +849,11 @@ impl UpstreamConn {
     /// The response head for `sent`, replaying it once on a fresh connection
     /// when a reused one closed before answering. `None` ⇒ answer 502.
     #[allow(clippy::cognitive_complexity)]
-    async fn await_response(&mut self, sent: Sent, dialer: &Dialer<'_>) -> Option<Vec<u8>> {
-        let host = dialer.host;
+    pub async fn await_response<D>(&mut self, sent: Sent, dialer: &D) -> Option<Vec<u8>>
+    where
+        D: Redial<Stream = S>,
+    {
+        let host = dialer.host();
         let first = if sent.upstream_failed {
             ResponseHead::ClosedEarly
         } else {
@@ -826,19 +865,17 @@ impl UpstreamConn {
             ResponseHead::ClosedEarly => {}
         }
         if !self.reused {
-            tracing::warn!("inject upstream {host} closed a fresh connection before responding");
+            tracing::warn!("upstream {host} closed a fresh connection before responding");
             return None;
         }
         let Some(replay) = sent.replay else {
             tracing::warn!(
-                "inject upstream {host} dropped a reused connection before responding; request \
+                "upstream {host} dropped a reused connection before responding; request \
                  exceeds the {MAX_REPLAY_BYTES}-byte replay cap"
             );
             return None;
         };
-        tracing::info!(
-            "inject upstream {host} dropped a reused connection before responding; replaying"
-        );
+        tracing::info!("upstream {host} dropped a reused connection before responding; replaying");
         let mut fresh = dialer.dial().await?;
         let written = async {
             fresh.stream.write_all(&replay).await?;
@@ -846,7 +883,7 @@ impl UpstreamConn {
         }
         .await;
         if let Err(e) = written {
-            tracing::warn!("inject replay to {host} failed: {e}");
+            tracing::warn!("replay to {host} failed: {e}");
             return None;
         }
         match fresh.read_response_head(host).await {
@@ -855,19 +892,19 @@ impl UpstreamConn {
                 Some(head)
             }
             ResponseHead::ClosedEarly | ResponseHead::Broken => {
-                tracing::warn!("inject replay to {host} got no response");
+                tracing::warn!("replay to {host} got no response");
                 None
             }
         }
     }
 }
 
-enum Step {
-    KeepAlive(Box<UpstreamConn>),
+pub enum Step<S> {
+    KeepAlive(Box<UpstreamConn<S>>),
     Close,
 }
 
-enum Idle {
+pub enum Idle {
     Request(Vec<u8>),
     ClientClosed,
     UpstreamClosed,
@@ -875,11 +912,15 @@ enum Idle {
 
 /// Waits for the next client request head while watching the idle upstream.
 /// Any upstream readiness counts as closed: a stray byte would desync framing.
-async fn next_request<C: AsyncRead + Unpin>(
+pub async fn next_request<C, S>(
     cbuf: &mut HttpBuf,
     client: &mut C,
-    upstream: Option<&mut UpstreamConn>,
-) -> anyhow::Result<Idle> {
+    upstream: Option<&mut UpstreamConn<S>>,
+) -> anyhow::Result<Idle>
+where
+    C: AsyncRead + Unpin,
+    S: AsyncRead + Unpin,
+{
     let Some(up) = upstream else {
         return Ok(cbuf.read_head(client).await?.map_or(Idle::ClientClosed, Idle::Request));
     };
@@ -891,14 +932,14 @@ async fn next_request<C: AsyncRead + Unpin>(
     }
 }
 
-async fn bad_gateway<C: AsyncWrite + Unpin>(client: &mut C) -> anyhow::Result<()> {
+pub async fn bad_gateway<C: AsyncWrite + Unpin>(client: &mut C) -> anyhow::Result<()> {
     client.write_all(BAD_GATEWAY).await?;
     client.flush().await?;
     let _ = client.shutdown().await;
     Ok(())
 }
 
-struct Sent {
+pub struct Sent {
     replay: Option<Vec<u8>>,
     upstream_failed: bool,
 }
@@ -906,7 +947,7 @@ struct Sent {
 /// Writes through to the upstream while keeping a capped copy for a replay.
 /// An upstream write error is recorded, not returned, so the client's body is
 /// still drained and the exchange can be replayed or answered with a 502.
-struct ReplayTee<'a, W> {
+pub struct ReplayTee<'a, W> {
     inner: &'a mut W,
     copy: Vec<u8>,
     overflow: bool,
@@ -914,7 +955,7 @@ struct ReplayTee<'a, W> {
 }
 
 impl<'a, W> ReplayTee<'a, W> {
-    const fn new(inner: &'a mut W) -> Self {
+    pub const fn new(inner: &'a mut W) -> Self {
         Self { inner, copy: Vec::new(), overflow: false, failed: false }
     }
 
@@ -930,7 +971,7 @@ impl<'a, W> ReplayTee<'a, W> {
         }
     }
 
-    fn into_sent(self) -> Sent {
+    pub fn into_sent(self) -> Sent {
         Sent { replay: (!self.overflow).then_some(self.copy), upstream_failed: self.failed }
     }
 }

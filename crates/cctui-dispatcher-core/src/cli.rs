@@ -26,9 +26,10 @@ pub trait Backend {
     fn config(args: Self::EnrollArgs, enrolled: Enrolled) -> Self::Config;
 
     /// Build the spawner for `run`. Background tasks it starts must stop when
-    /// `shutdown` fires.
+    /// `shutdown` fires. `key` is the dispatcher key, tracked for reloads.
     fn spawner(
         cfg: &Self::Config,
+        key: &crate::secrets::Secret,
         shutdown: &CancellationToken,
     ) -> impl Future<Output = anyhow::Result<Self::Spawner>>;
 
@@ -175,7 +176,7 @@ async fn run<B: Backend>(path: &Path) -> anyhow::Result<()> {
     tracing::info!(user_id = %auth.user_id, "authenticated");
     let shutdown = CancellationToken::new();
     let signal = shutdown_signal()?;
-    let spawner = B::spawner(&cfg, &shutdown).await?;
+    let spawner = B::spawner(&cfg, &key, &shutdown).await?;
     let runner = Runner::new(client, key, spawner);
     secrets.spawn_reloader();
     let signal_token = shutdown.clone();

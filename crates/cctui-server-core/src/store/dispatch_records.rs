@@ -386,9 +386,19 @@ fn reason(outcome: &str, end_reason: Option<&str>) -> FailedDispatchReason {
     }
 }
 
-const fn blocker(env: bool, truncated: bool, has_replay: bool) -> Option<RerunBlocker> {
+/// `truncated` with a placeholder in the stored head means a span was masked.
+fn blocker(
+    env: bool,
+    head: Option<&str>,
+    truncated: bool,
+    has_replay: bool,
+) -> Option<RerunBlocker> {
+    let masked =
+        truncated && head.is_some_and(|h| h.contains(cctui_crypto::redact::USER_PLACEHOLDER));
     if env {
         Some(RerunBlocker::Env)
+    } else if masked {
+        Some(RerunBlocker::PromptRedacted)
     } else if truncated {
         Some(RerunBlocker::PromptTruncated)
     } else if !has_replay {
@@ -402,7 +412,12 @@ impl From<FailedRow> for FailedDispatch {
     fn from(r: FailedRow) -> Self {
         Self {
             reason: reason(&r.outcome, r.end_reason.as_deref()),
-            rerun_blocked: blocker(!r.env_keys.is_empty(), r.prompt_truncated, r.has_replay),
+            rerun_blocked: blocker(
+                !r.env_keys.is_empty(),
+                r.prompt_head.as_deref(),
+                r.prompt_truncated,
+                r.has_replay,
+            ),
             session_id: r.session_id,
             dispatcher: r.dispatcher_name,
             name: r.name,
@@ -579,8 +594,13 @@ pub struct StoredRecord {
 
 impl StoredRecord {
     #[must_use]
-    pub const fn rerun_blocker(&self) -> Option<RerunBlocker> {
-        blocker(!self.env_keys.is_empty(), self.prompt_truncated, self.replay.is_some())
+    pub fn rerun_blocker(&self) -> Option<RerunBlocker> {
+        blocker(
+            !self.env_keys.is_empty(),
+            self.prompt_head.as_deref(),
+            self.prompt_truncated,
+            self.replay.is_some(),
+        )
     }
 
     /// The stored request, prompt restored, as a new dispatch. `None` when a
@@ -738,8 +758,21 @@ mod tests {
         );
         assert_eq!(rec.prompt_head.as_deref(), Some("use [REDACTED:user] now"));
         assert!(!format!("{rec:?}").contains("hunter2-xyz"));
-        assert_eq!(stored(&rec).rerun_blocker(), Some(RerunBlocker::PromptTruncated));
+        assert_eq!(stored(&rec).rerun_blocker(), Some(RerunBlocker::PromptRedacted));
         assert!(stored(&rec).replay_request().is_none());
+    }
+
+    #[test]
+    fn a_prompt_quoting_the_placeholder_is_not_reported_masked() {
+        let rec = NewRecord::from_request(
+            "s1",
+            None,
+            &req(&serde_json::json!({ "prompt": "explain [REDACTED:user] pills" })),
+            None,
+            None,
+        );
+        assert!(!rec.prompt_truncated);
+        assert_eq!(stored(&rec).rerun_blocker(), None);
     }
 
     #[test]

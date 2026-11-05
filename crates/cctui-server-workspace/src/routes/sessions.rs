@@ -4104,15 +4104,19 @@ pub async fn update_draft(
         .await
         .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     let fields = DraftRowFields::from_request(&req);
-    let draft_json = serde_json::to_value(fields.payload).map_err(|e| {
-        tracing::error!("serializing draft payload: {e}");
-        AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not encode draft")
-    })?;
-    let metadata =
-        serde_json::json!({ "draft": draft_json, "draft_saved_at": Utc::now().to_rfc3339() });
+    let mut metadata =
+        crate::routes::spawn::draft_metadata(fields.payload, crate::crypto::vault_key)?;
+    metadata["draft_saved_at"] = serde_json::Value::String(Utc::now().to_rfc3339());
+    let shown_prompt = metadata["draft"]["prompt"].as_str().map(str::to_owned);
     let res = sqlx::query(
         r"UPDATE sessions
-          SET machine_id = $2, machine_uuid = $3, working_dir = $4, metadata = $5,
+          SET machine_id = $2, machine_uuid = $3, working_dir = $4,
+              metadata = CASE
+                  WHEN metadata->'draft'->>'prompt' IS NOT DISTINCT FROM $10
+                   AND metadata->'draft_sealed_prompt' IS NOT NULL
+                  THEN jsonb_build_object('draft_sealed_prompt', metadata->'draft_sealed_prompt')
+                  ELSE '{}'::jsonb
+              END || $5,
               adapter_id = $6, session_name = $7, model = $8, effort = $9,
               last_heartbeat = now()
           WHERE id = $1 AND status = 'draft'",
@@ -4126,6 +4130,7 @@ pub async fn update_draft(
     .bind(fields.name)
     .bind(fields.model)
     .bind(fields.effort)
+    .bind(shown_prompt)
     .execute(&state.pool)
     .await?;
     if res.rows_affected() == 0 {

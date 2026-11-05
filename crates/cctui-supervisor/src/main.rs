@@ -66,7 +66,8 @@ fn run() -> anyhow::Result<()> {
         );
     }
     let exec_guarded = arm_exec_guard(&cli)?;
-    let landlock_outcome = apply_landlock(strict, &ro, &rw, exec_guarded)?;
+    let exec_rw = if exec_guarded { exec_subtrees(&cli, &rw)? } else { Vec::new() };
+    let landlock_outcome = apply_landlock(strict, &ro, &rw, &exec_rw, exec_guarded)?;
 
     // 2. Privilege drop (BEFORE seccomp: the denylist blocks setuid/setgid).
     let caps_dropped = if cli.no_privdrop {
@@ -103,6 +104,7 @@ fn run() -> anyhow::Result<()> {
             rw_paths: rw,
             command: cli.command.clone(),
             exec_guarded,
+            exec_rw_paths: exec_rw,
         };
         report.write_to(path)?;
     }
@@ -138,19 +140,34 @@ fn arm_exec_guard(cli: &Cli) -> anyhow::Result<bool> {
     Ok(true)
 }
 
+/// The RW subtrees that keep execute rights under exec interception, created
+/// (worker-owned when the user switch will happen) if missing.
+#[cfg(target_os = "linux")]
+fn exec_subtrees(cli: &Cli, rw: &[String]) -> anyhow::Result<Vec<String>> {
+    use anyhow::Context;
+    use cctui_supervisor::landlock_rules;
+
+    let owner = (!cli.no_privdrop && nix::unistd::Uid::effective().is_root()).then_some(cli.user);
+    let kept = landlock_rules::prepare_exec_rw(&cli.exec_rw_paths(), rw, owner)
+        .context("preparing the executable RW subtrees")?;
+    eprintln!("cctui-supervisor: RW paths noexec except beneath {kept:?}");
+    Ok(kept)
+}
+
 /// Landlock; an unenforced ruleset is fatal when `strict` or under exec
-/// interception, where the RW paths also lose execute rights.
+/// interception, where the RW paths outside `exec_rw` also lose execute rights.
 #[cfg(target_os = "linux")]
 fn apply_landlock(
     strict: bool,
     ro: &[String],
     rw: &[String],
+    exec_rw: &[String],
     exec_guarded: bool,
 ) -> anyhow::Result<cctui_supervisor::landlock_rules::Outcome> {
     use anyhow::bail;
     use cctui_supervisor::landlock_rules;
 
-    let outcome = landlock_rules::apply_with(ro, rw, !exec_guarded)?;
+    let outcome = landlock_rules::apply_with(ro, rw, exec_rw, exec_guarded)?;
     if !outcome.is_enforced() {
         if strict {
             bail!(
@@ -216,6 +233,10 @@ fn print_dry_run(cli: &Cli, ro: &[String], rw: &[String]) {
     println!("Strict: {}", cli.landlock_strict());
     if let Some(socket) = &cli.guard_exec {
         println!("Exec interception: cctui-guard at {} (RW paths noexec)", socket.display());
+        println!("Executable RW subtrees:");
+        for p in cli.exec_rw_paths() {
+            println!("  {p}");
+        }
     }
     println!("Seccomp: {}", if cli.no_seccomp { "disabled" } else { "enabled" });
     if !cli.no_seccomp {

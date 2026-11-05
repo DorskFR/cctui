@@ -3,4 +3,4 @@
 /**
  * Why a failed dispatch cannot be re-run in one click.
  */
-export type RerunBlocker = "env" | "prompt_truncated" | "payload_too_large";
+export type RerunBlocker = "env" | "prompt_truncated" | "prompt_redacted" | "payload_too_large";

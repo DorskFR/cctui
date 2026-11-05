@@ -413,11 +413,13 @@ impl SdkDriver {
         let launch_env = self.resolve_launch_env(local_id, env_hint).await?;
         let short = short_of(local_id);
         let seal_key = self.machine_key.as_deref();
-        let hooks = match posture.hooks.take() {
-            Some(hooks) => hooks,
-            None => super::control::HookPosture::recover(short, seal_key).with_context(|| {
+        let hooks = if let Some(hooks) = posture.hooks.take() {
+            hooks
+        } else {
+            let recorded = launch_env.hook_policy.as_ref();
+            super::control::HookPosture::recover(short, seal_key, recorded).with_context(|| {
                 format!("refusing to relaunch {local_id} without its hook policy")
-            })?,
+            })?
         };
         let settings_path =
             hooks.write(&self.cfg.hook_socket_path, short, &launch_env, seal_key)?;

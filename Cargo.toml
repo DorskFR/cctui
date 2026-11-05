@@ -17,6 +17,7 @@ members = [
     "crates/cctui-orchestrator",
     "crates/cctui-proto",
     "crates/cctui-query",
+    "crates/cctui-redteam",
     "crates/cctui-secrets",
     "crates/cctui-server",
     "crates/cctui-server-core",
@@ -27,7 +28,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.29.0-beta.8"
+version = "0.29.0-beta.9"
 edition = "2024"
 license = "MIT"
 authors = ["DorskFR"]

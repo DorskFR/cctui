@@ -23,8 +23,9 @@ use crate::envelope::{
 };
 use crate::{
     ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_POSTURE, ANNOTATION_WORKER_CONTAINER,
-    DEFAULT_WORKER_CONTAINER, GuardSpec, LABEL_WORKER_PROFILE, Posture, RESERVED_POD_KEY_PREFIXES,
-    RESERVED_POD_LABELS, WorkerPodSpec, WorkerProfileSpec,
+    DEFAULT_WORKER_CONTAINER, EXEC_INTERCEPTION_CAP, GUARD_EXEC_ENV, GuardSpec,
+    LABEL_WORKER_PROFILE, Posture, RESERVED_POD_KEY_PREFIXES, RESERVED_POD_LABELS, WorkerPodSpec,
+    WorkerProfileSpec,
 };
 use k8s_openapi::api::core::v1::{
     Affinity, Container, NodeSelectorTerm, Pod, PodSpec, PodTemplateSpec, SecurityContext,
@@ -153,6 +154,8 @@ async fn validate_inner(
             .map_err(|e| format!("WorkerProfile `{name}` spec.pod: {e}"))?;
     }
     check_posture(&profile).map_err(|e| format!("WorkerProfile `{name}` spec.posture: {e}"))?;
+    check_exec_capability(worker, &worker_name, &profile)
+        .map_err(|e| format!("WorkerProfile `{name}`: {e}"))?;
     let undeclared = check_exposure(&profile)
         .map_err(|e| format!("WorkerProfile `{name}` spec.exposure: {e}"))?;
     check_posture_annotation(annotations, &profile)?;
@@ -211,6 +214,13 @@ pub fn check_posture(profile: &WorkerProfileSpec) -> Result<(), String> {
     if profile.posture() == Posture::Root {
         return Ok(());
     }
+    if profile.exec_interception() {
+        return Err(format!(
+            "nonroot: env `{GUARD_EXEC_ENV}=1` turns on exec interception, which needs \
+             `{EXEC_INTERCEPTION_CAP}` in cctui-guard and a uid {WORKER_UID} worker cannot hold \
+             it — use posture root or drop the env"
+        ));
+    }
     check_no_overlay(profile)?;
     for c in profile.init_containers.iter().flatten().chain(profile.containers.iter().flatten()) {
         check_unprivileged(c)?;
@@ -242,6 +252,28 @@ fn check_no_overlay(profile: &WorkerProfileSpec) -> Result<(), String> {
             "nonroot: volumeMount `{}` at `{}` is the root posture's overlay — nonroot has no \
              overlay",
             m.name, m.mount_path
+        ));
+    }
+    Ok(())
+}
+
+/// `SYS_PTRACE` reaches the worker only for a profile that opts into exec
+/// interception.
+fn check_exec_capability(
+    worker: &Container,
+    worker_name: &str,
+    profile: &WorkerProfileSpec,
+) -> Result<(), String> {
+    let adds_ptrace = worker
+        .security_context
+        .as_ref()
+        .and_then(|sc| sc.capabilities.as_ref())
+        .and_then(|caps| caps.add.as_ref())
+        .is_some_and(|add| add.iter().any(|c| c == EXEC_INTERCEPTION_CAP));
+    if adds_ptrace && !profile.exec_interception() {
+        return Err(format!(
+            "worker container `{worker_name}` adds capability `{EXEC_INTERCEPTION_CAP}`, which \
+             only a profile opted into exec interception (env `{GUARD_EXEC_ENV}=1`) may hold"
         ));
     }
     Ok(())
@@ -488,7 +520,10 @@ fn check_sandbox(
             && let Some(add) = &caps.add
         {
             let sanctioned = worker_added_caps(posture);
-            if let Some(extra) = add.iter().find(|c| !sanctioned.contains(&c.as_str())) {
+            let exec_cap = |c: &str| posture == Posture::Root && c == EXEC_INTERCEPTION_CAP;
+            if let Some(extra) =
+                add.iter().find(|c| !sanctioned.contains(&c.as_str()) && !exec_cap(c.as_str()))
+            {
                 return Err(format!(
                     "worker container `{worker_name}` adds capability `{extra}` beyond the \
                      sanctioned envelope set {sanctioned:?} of posture {}",
@@ -1118,6 +1153,7 @@ mod tests {
             guard: profile.guard.clone(),
             posture: profile.posture(),
             dispatched: false,
+            exec_interception: profile.exec_interception(),
         };
         envelope::inject(&pod, &cfg)
     }
@@ -1419,6 +1455,74 @@ mod tests {
         assert!(deny_msg(decide(&pod, &src).await).contains("NET_RAW"));
     }
 
+    fn exec_profile(value: &str) -> WorkerProfileSpec {
+        let mut profile = lean_profile();
+        profile.env.get_or_insert_with(Vec::new).push(
+            serde_json::from_value(serde_json::json!({ "name": GUARD_EXEC_ENV, "value": value }))
+                .unwrap(),
+        );
+        profile
+    }
+
+    fn worker_caps(pod: &mut Pod) -> &mut Vec<String> {
+        worker_mut(pod)
+            .security_context
+            .as_mut()
+            .unwrap()
+            .capabilities
+            .as_mut()
+            .unwrap()
+            .add
+            .as_mut()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn exec_interception_profile_may_add_sys_ptrace() {
+        let profile = exec_profile("1");
+        assert!(profile.exec_interception());
+        let mut pod = dispatched_pod("exec", &profile);
+        assert!(worker_caps(&mut pod).contains(&EXEC_INTERCEPTION_CAP.to_owned()));
+        assert!(matches!(decide(&pod, &source("exec", profile)).await, Decision::Allow));
+    }
+
+    #[tokio::test]
+    async fn sys_ptrace_without_the_exec_interception_opt_in_is_denied() {
+        let profiles = [lean_profile(), exec_profile("true"), exec_profile("0"), exec_profile("")];
+        for profile in profiles {
+            assert!(!profile.exec_interception());
+            let mut pod = dispatched_pod("lean", &profile);
+            assert!(!worker_caps(&mut pod).contains(&EXEC_INTERCEPTION_CAP.to_owned()));
+            worker_caps(&mut pod).push(EXEC_INTERCEPTION_CAP.to_owned());
+            let msg = deny_msg(decide(&pod, &source("lean", profile)).await);
+            assert!(
+                msg.contains(EXEC_INTERCEPTION_CAP) && msg.contains("exec interception"),
+                "{msg}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn sys_ptrace_on_a_nonroot_worker_is_denied() {
+        let mut profile = exec_profile("1");
+        profile.posture = Some(Posture::Nonroot);
+        let mut pod = dispatched_pod("exec", &profile);
+        let sc = worker_mut(&mut pod).security_context.as_mut().unwrap();
+        sc.capabilities.as_mut().unwrap().add = Some(vec![EXEC_INTERCEPTION_CAP.to_owned()]);
+        let msg = deny_msg(decide(&pod, &source("exec", profile)).await);
+        assert!(msg.contains(EXEC_INTERCEPTION_CAP), "{msg}");
+    }
+
+    #[test]
+    fn a_nonroot_profile_cannot_opt_into_exec_interception() {
+        let mut profile = exec_profile("1");
+        profile.posture = Some(Posture::Nonroot);
+        let msg = check_posture(&profile).unwrap_err();
+        assert!(msg.contains(GUARD_EXEC_ENV) && msg.contains("posture root"), "{msg}");
+        profile.posture = Some(Posture::Root);
+        assert_eq!(check_posture(&profile), Ok(()));
+    }
+
     #[tokio::test]
     async fn hostpath_mounted_into_worker_is_denied() {
         use k8s_openapi::api::core::v1::{HostPathVolumeSource, Volume, VolumeMount};
@@ -1710,6 +1814,7 @@ mod tests {
             guard: profile.guard.clone(),
             posture: profile.posture(),
             dispatched: false,
+            exec_interception: false,
         };
         pod.metadata.annotations.as_mut().unwrap().remove(ANNOTATION_ENVELOPE_INJECTED);
         let pod = envelope::inject(&pod, &cfg);

@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex, PoisonError};
 
-use cctui_proto::hook_policy::HookPolicy;
+use cctui_proto::hook_policy::{HookPolicy, HookPolicyStatus, SessionHookPolicy};
 use cctui_proto::injected::SESSION_CONTEXT;
 
 use crate::hook_policy::HookPolicySink;
@@ -114,21 +115,7 @@ pub fn stage_mid_chat_files(
     crate::adapters::uploads::stage_files(session_id, uploads)
 }
 
-/// Recover a session's whip posture from the per-session settings file the
-/// original spawn wrote for `short`. Every session registers a `hooks.Stop`
-/// block, so the discriminator is the `whip-stop-hook` command inside it. Used
-/// by cold resume, which has no `spec` to read `permission_mode` from.
-/// Absent/unreadable file → not whip.
-pub(super) fn detect_whip_from_settings(short: &str) -> bool {
-    let Some(path) = hook_settings_path(&format!("hook-settings-{short}.json")) else {
-        return false;
-    };
-    std::fs::read(&path)
-        .ok()
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .is_some_and(|v| stop_block_is_whip(v.pointer("/hooks/Stop")))
-}
-
+#[cfg(test)]
 fn stop_block_is_whip(stop: Option<&serde_json::Value>) -> bool {
     stop.and_then(|s| serde_json::to_string(s).ok()).is_some_and(|s| s.contains("whip-stop-hook"))
 }
@@ -562,9 +549,110 @@ fn write_hook_settings_in(
         serde_json::to_vec_pretty(&settings).map_err(|err| HookSettingsError::at(&path, err))?;
     // The file carries the gateway bearer token, so it must never exist
     // world-readable, not even briefly.
-    cctui_proto::util::write_private(&path, &bytes)
-        .map_err(|err| HookSettingsError::at(&path, err))?;
+    write_pinned(&path, &bytes).map_err(|err| HookSettingsError::at(&path, err))?;
+    keep_whip(root, short, whip, hook_policy.seal_key);
     Ok(path)
+}
+
+/// What this process last wrote to each `--settings` file. Claude Code's own
+/// respawns re-read the file from `respawnFlags`, so the poll puts these bytes
+/// back whenever the agent changes it. The lock spans the disk write so a
+/// restore never lands an older copy over a newer one.
+static PINNED_SETTINGS: LazyLock<Mutex<HashMap<PathBuf, Vec<u8>>>> =
+    LazyLock::new(Default::default);
+
+fn write_pinned(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut pinned = PINNED_SETTINGS.lock().unwrap_or_else(PoisonError::into_inner);
+    let written = cctui_proto::util::write_private(path, bytes);
+    if written.is_ok() {
+        pinned.insert(path.to_path_buf(), bytes.to_vec());
+    }
+    drop(pinned);
+    written
+}
+
+/// Put back what this process last wrote to `path`. `Ok(false)` when the file
+/// is intact or this process never wrote it.
+pub(super) fn restore_pinned_settings(path: &std::path::Path) -> std::io::Result<bool> {
+    let pinned = PINNED_SETTINGS.lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(want) = pinned.get(path) else { return Ok(false) };
+    let intact = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
+        && std::fs::read(path).is_ok_and(|have| have == *want);
+    if intact {
+        return Ok(false);
+    }
+    cctui_proto::util::write_private(path, want)?;
+    drop(pinned);
+    Ok(true)
+}
+
+/// Drop what this process kept for `path`, a per-session config file that is
+/// being deleted.
+pub fn forget_session_file(path: &std::path::Path) {
+    forget_kept_policy(path);
+    KEPT_WHIPS.lock().unwrap_or_else(PoisonError::into_inner).remove(path);
+    PINNED_SETTINGS.lock().unwrap_or_else(PoisonError::into_inner).remove(path);
+}
+
+fn hook_posture_path(root: &std::path::Path, short: &str) -> PathBuf {
+    root.join(format!("hook-posture-{short}.json"))
+}
+
+/// Whip postures this process launched with, keyed by their on-disk path.
+static KEPT_WHIPS: LazyLock<Mutex<HashMap<PathBuf, bool>>> = LazyLock::new(Default::default);
+
+/// Keep `short`'s whip posture for a cold resume: in memory, and on disk
+/// sealed like the policy. Without a key only the memory copy is kept.
+fn keep_whip(root: &std::path::Path, short: &str, whip: bool, seal_key: Option<&str>) {
+    let path = hook_posture_path(root, short);
+    KEPT_WHIPS.lock().unwrap_or_else(PoisonError::into_inner).insert(path.clone(), whip);
+    let Some(key) = seal_key else {
+        let _ = std::fs::remove_file(&path);
+        return;
+    };
+    let mac = hex::encode(posture_mac(key, short, whip));
+    let written = serde_json::to_vec(&json!({ "whip": whip, "mac": mac }))
+        .map_err(std::io::Error::other)
+        .and_then(|doc| cctui_proto::util::write_private(&path, &doc));
+    if let Err(err) = written {
+        tracing::warn!(%short, %err, path = %path.display(), "whip posture not kept on disk");
+    }
+}
+
+fn posture_mac(key: &str, short: &str, whip: bool) -> [u8; 32] {
+    let mode: &[u8] = if whip { b"whip" } else { b"none" };
+    hmac_sha256(key.as_bytes(), &[b"cctui-hook-posture\0", short.as_bytes(), b"\0", mode])
+}
+
+/// The whip posture `short` was launched with. A missing record is not whip;
+/// an unsealed or edited one is refused.
+pub(super) fn recover_whip(short: &str, seal_key: Option<&str>) -> Result<bool, TamperedPolicy> {
+    config_root().map_or(Ok(false), |root| recover_whip_in(&root, short, seal_key))
+}
+
+fn recover_whip_in(
+    root: &std::path::Path,
+    short: &str,
+    seal_key: Option<&str>,
+) -> Result<bool, TamperedPolicy> {
+    let path = hook_posture_path(root, short);
+    let kept = KEPT_WHIPS.lock().unwrap_or_else(PoisonError::into_inner).get(&path).copied();
+    if let Some(whip) = kept {
+        return Ok(whip);
+    }
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err(TamperedPolicy),
+    };
+    let key = seal_key.ok_or(TamperedPolicy)?;
+    let doc: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| TamperedPolicy)?;
+    let whip = doc["whip"].as_bool().ok_or(TamperedPolicy)?;
+    let mac = doc["mac"].as_str().and_then(|m| hex::decode(m).ok()).ok_or(TamperedPolicy)?;
+    if !same_mac(&mac, &posture_mac(key, short, whip)) {
+        return Err(TamperedPolicy);
+    }
+    Ok(whip)
 }
 
 fn hook_policy_path(root: &std::path::Path, short: &str) -> PathBuf {
@@ -653,6 +741,50 @@ impl std::fmt::Display for TamperedPolicy {
 
 impl std::error::Error for TamperedPolicy {}
 
+/// A cold resume cannot rebuild the posture the session was launched with.
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::adapters::claude_code) enum UnrecoverablePosture {
+    Tampered,
+    /// The server recorded an applied policy but served no rules.
+    Withheld,
+}
+
+impl From<TamperedPolicy> for UnrecoverablePosture {
+    fn from(_: TamperedPolicy) -> Self {
+        Self::Tampered
+    }
+}
+
+impl std::fmt::Display for UnrecoverablePosture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tampered => std::fmt::Display::fmt(&TamperedPolicy, f),
+            Self::Withheld => {
+                f.write_str("the server recorded an applied hook policy but served no rules")
+            }
+        }
+    }
+}
+
+impl std::error::Error for UnrecoverablePosture {}
+
+/// The policy a cold resume relaunches with. The server's record wins; the
+/// kept copy is consulted only when the server has none, or did not answer.
+pub(super) fn resume_hook_policy(
+    recorded: Option<&SessionHookPolicy>,
+    kept: impl FnOnce() -> Result<Option<HookPolicy>, TamperedPolicy>,
+) -> Result<Option<HookPolicy>, UnrecoverablePosture> {
+    match recorded {
+        Some(record) if record.status == Some(HookPolicyStatus::Applied) => {
+            if record.rules.is_empty() {
+                return Err(UnrecoverablePosture::Withheld);
+            }
+            Ok(Some(HookPolicy { rules: record.rules.clone() }))
+        }
+        _ => kept().map_err(Into::into),
+    }
+}
+
 /// The hook policy `short` was launched with, for a cold resume. `Ok(None)`
 /// when it was launched without one.
 pub(super) fn recover_hook_policy(
@@ -731,12 +863,15 @@ impl HookPosture {
     }
 
     /// The posture of a session this daemon process did not launch.
+    /// `recorded` is the server's record of the launch, which wins over the
+    /// agent-writable disk copy.
     pub(in crate::adapters::claude_code) fn recover(
         short: &str,
         seal_key: Option<&str>,
-    ) -> Result<Self, TamperedPolicy> {
-        let policy = recover_hook_policy(short, seal_key)?;
-        Ok(Self { whip: detect_whip_from_settings(short), policy })
+        recorded: Option<&SessionHookPolicy>,
+    ) -> Result<Self, UnrecoverablePosture> {
+        let policy = resume_hook_policy(recorded, || recover_hook_policy(short, seal_key))?;
+        Ok(Self { whip: recover_whip(short, seal_key)?, policy })
     }
 
     pub(in crate::adapters::claude_code) fn write(
@@ -2418,5 +2553,171 @@ mod tests {
              reports \"No such tool available\" on your first turn, it lost that race: wait a few seconds and retry the \
              call once before concluding the tool is missing.\n"
         );
+    }
+
+    fn applied(rules: Vec<cctui_proto::hook_policy::HookRule>) -> SessionHookPolicy {
+        SessionHookPolicy { rules, status: Some(HookPolicyStatus::Applied) }
+    }
+
+    #[test]
+    fn a_cold_resume_reapplies_the_server_policy_when_the_kept_copy_was_deleted() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_with_policy(tmp.path(), "gone0001", None, Some(&stop_policy()));
+        std::fs::remove_file(hook_policy_path(tmp.path(), "gone0001")).unwrap();
+        let kept = || recover_after_restart(tmp.path(), "gone0001", Some(SEAL_KEY));
+        assert_eq!(kept(), Ok(None), "the deleted copy alone looks policy-less");
+
+        let recorded = applied(stop_policy().rules);
+        assert_eq!(resume_hook_policy(Some(&recorded), kept), Ok(Some(stop_policy())));
+        let withheld = applied(Vec::new());
+        assert_eq!(resume_hook_policy(Some(&withheld), kept), Err(UnrecoverablePosture::Withheld));
+        assert_eq!(resume_hook_policy(Some(&SessionHookPolicy::default()), kept), Ok(None));
+        assert_eq!(resume_hook_policy(None, kept), Ok(None));
+
+        let _root = ConfigRootOverride::set(tmp.path());
+        let posture = HookPosture::recover("gone0001", Some(SEAL_KEY), Some(&recorded)).unwrap();
+        assert_eq!(posture.policy, Some(stop_policy()));
+        assert_eq!(
+            HookPosture::recover("gone0001", Some(SEAL_KEY), Some(&withheld)).unwrap_err(),
+            UnrecoverablePosture::Withheld,
+            "the resume is refused"
+        );
+    }
+
+    #[test]
+    fn the_server_policy_wins_over_a_tampered_kept_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_with_policy(tmp.path(), "edit0001", None, Some(&stop_policy()));
+        std::fs::write(hook_policy_path(tmp.path(), "edit0001"), b"{}").unwrap();
+        let kept = || recover_after_restart(tmp.path(), "edit0001", Some(SEAL_KEY));
+        assert_eq!(resume_hook_policy(None, kept), Err(UnrecoverablePosture::Tampered));
+        let recorded = applied(stop_policy().rules);
+        assert_eq!(resume_hook_policy(Some(&recorded), kept), Ok(Some(stop_policy())));
+    }
+
+    #[test]
+    fn a_cold_resume_takes_whip_from_the_sealed_posture_not_the_settings_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = std::path::Path::new("/run/c.sock");
+        let launch = super::super::LaunchEnv::default();
+        let restart = |short: &str| {
+            forget_session_file(&hook_posture_path(tmp.path(), short));
+            recover_whip_in(tmp.path(), short, Some(SEAL_KEY))
+        };
+
+        let whip = HookPosture { whip: true, policy: None };
+        let path = whip.write_in(tmp.path(), sock, "whip0001", &launch, Some(SEAL_KEY)).unwrap();
+        std::fs::write(&path, br#"{"hooks":{"Stop":[]}}"#).unwrap();
+        assert_eq!(restart("whip0001"), Ok(true), "stripping the whip hook does not downgrade");
+
+        let calm = HookPosture::default();
+        let path = calm.write_in(tmp.path(), sock, "calm0001", &launch, Some(SEAL_KEY)).unwrap();
+        std::fs::write(
+            &path,
+            br#"{"hooks":{"Stop":[{"hooks":[{"command":"x whip-stop-hook"}]}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(restart("calm0001"), Ok(false), "the settings file is never read for whip");
+
+        let sealed = hook_posture_path(tmp.path(), "calm0001");
+        let mut doc: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&sealed).unwrap()).unwrap();
+        doc["whip"] = json!(true);
+        std::fs::write(&sealed, serde_json::to_vec(&doc).unwrap()).unwrap();
+        assert_eq!(restart("calm0001"), Err(TamperedPolicy), "a forged posture is refused");
+
+        std::fs::remove_file(&sealed).unwrap();
+        assert_eq!(restart("calm0001"), Ok(false));
+        assert_eq!(recover_whip_in(tmp.path(), "none0001", None), Ok(false));
+    }
+
+    #[test]
+    fn a_changed_settings_file_is_put_back_before_a_native_respawn_reads_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_account_and_policy(tmp.path(), "pin00001", None, None).unwrap();
+        let ours = std::fs::read(&path).unwrap();
+        assert!(!restore_pinned_settings(&path).unwrap(), "an intact file is left alone");
+
+        std::fs::write(&path, br#"{"disableAllHooks":true}"#).unwrap();
+        assert!(restore_pinned_settings(&path).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), ours);
+
+        std::fs::remove_file(&path).unwrap();
+        assert!(restore_pinned_settings(&path).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), ours);
+
+        let decoy = tmp.path().join("decoy.json");
+        std::fs::write(&decoy, br#"{"disableAllHooks":true}"#).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&decoy, &path).unwrap();
+        assert!(restore_pinned_settings(&path).unwrap());
+        assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_file());
+        assert_eq!(std::fs::read(&path).unwrap(), ours);
+        assert_eq!(std::fs::read(&decoy).unwrap(), br#"{"disableAllHooks":true}"#);
+
+        let foreign = tmp.path().join("hook-settings-other001.json");
+        std::fs::write(&foreign, b"{}").unwrap();
+        assert!(!restore_pinned_settings(&foreign).unwrap(), "a file never written is not touched");
+        assert_eq!(std::fs::read(&foreign).unwrap(), b"{}");
+    }
+
+    #[test]
+    fn a_settings_rewrite_moves_the_pin_with_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = std::path::Path::new("/run/c.sock");
+        let launch = super::super::LaunchEnv::default();
+        let path = HookPosture::default()
+            .write_in(tmp.path(), sock, "pin00002", &launch, Some(SEAL_KEY))
+            .unwrap();
+        let first = std::fs::read(&path).unwrap();
+        HookPosture { whip: true, policy: None }
+            .write_in(tmp.path(), sock, "pin00002", &launch, Some(SEAL_KEY))
+            .unwrap();
+        let second = std::fs::read(&path).unwrap();
+        assert_ne!(first, second);
+        assert!(!restore_pinned_settings(std::path::Path::new(&path)).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), second);
+    }
+
+    #[test]
+    fn the_config_sweep_forgets_what_this_process_kept_for_the_files_it_removes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let short = "aaaa0d01";
+        write_with_policy(tmp.path(), short, None, Some(&stop_policy()));
+        let policy = hook_policy_path(tmp.path(), short);
+        let posture = hook_posture_path(tmp.path(), short);
+        let settings = tmp.path().join(format!("hook-settings-{short}.json"));
+        assert!(KEPT_POLICIES.lock().unwrap().contains_key(&policy));
+        assert!(KEPT_WHIPS.lock().unwrap().contains_key(&posture));
+        assert!(PINNED_SETTINGS.lock().unwrap().contains_key(&settings));
+
+        let later = std::time::SystemTime::now() + std::time::Duration::from_hours(2);
+        let live = std::collections::HashSet::<String>::new();
+        let removed =
+            crate::configsweep::sweep_dir(tmp.path(), &live, later, crate::configsweep::MAX_AGE)
+                .unwrap();
+        assert_eq!(removed, 3);
+
+        assert!(!KEPT_POLICIES.lock().unwrap().contains_key(&policy));
+        assert!(!KEPT_WHIPS.lock().unwrap().contains_key(&posture));
+        assert!(!PINNED_SETTINGS.lock().unwrap().contains_key(&settings));
+        assert_eq!(recover_hook_policy_in(tmp.path(), short, Some(SEAL_KEY)), Ok(None));
+        assert!(!restore_pinned_settings(&settings).unwrap());
+        assert!(!settings.exists(), "a swept settings file is not resurrected");
+    }
+
+    #[test]
+    fn forgetting_a_deleted_file_drops_its_kept_entry_even_when_the_disk_copy_is_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_with_policy(tmp.path(), "aaaa0d02", None, Some(&stop_policy()));
+        let policy = hook_policy_path(tmp.path(), "aaaa0d02");
+        std::fs::remove_file(&policy).unwrap();
+        assert_eq!(
+            recover_hook_policy_in(tmp.path(), "aaaa0d02", Some(SEAL_KEY)),
+            Ok(Some(stop_policy())),
+            "the memory copy outlives the disk copy"
+        );
+        forget_session_file(&policy);
+        assert_eq!(recover_hook_policy_in(tmp.path(), "aaaa0d02", Some(SEAL_KEY)), Ok(None));
     }
 }

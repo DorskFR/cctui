@@ -2027,6 +2027,7 @@
 	"dispatch_failed_rerun_note": "Redispatcher envoie les champs enregistrés comme un nouveau dispatch ; son résultat n'est pas renvoyé à l'appelant d'origine.",
 	"dispatch_failed_rerun_env": "Impossible de redispatcher d'ici : son env ({keys}) n'est pas enregistré. Renvoyez-le depuis l'appelant d'origine.",
 	"dispatch_failed_rerun_prompt": "Impossible de redispatcher d'ici : seul le début du prompt est enregistré. Renvoyez-le depuis l'appelant d'origine.",
+	"dispatch_failed_rerun_redacted": "Impossible de redispatcher d'ici : les passages <redacted> du prompt ne sont enregistrés que masqués. Renvoyez-le depuis l'appelant d'origine.",
 	"dispatch_failed_rerun_payload": "Impossible de redispatcher d'ici : le payload était trop volumineux pour être enregistré. Renvoyez-le depuis l'appelant d'origine.",
 	"dispatch_failed_dismiss": "Masquer",
 	"dispatch_failed_dismiss_all": "Tout masquer",

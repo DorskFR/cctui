@@ -33,7 +33,7 @@ async fn concurrent_core_bootstraps_create_only_execution_storage_without_extens
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(entries, 12);
+        assert_eq!(entries, 13);
     })
     .await;
 }
@@ -157,7 +157,7 @@ async fn a_baseline_only_core_upgrades_without_changing_existing_data_or_history
         let name: String=sqlx::query_scalar("SELECT name FROM users WHERE key_hash='fixture-hash'").fetch_one(&pool).await.unwrap();
         assert_eq!(name,"fixture");
         let versions: Vec<i64>=sqlx::query_scalar("SELECT version FROM _cctui_schema_migrations WHERE package='core' ORDER BY version").fetch_all(&pool).await.unwrap();
-        assert_eq!(versions,[1,2,3,4,5,6,7,8,9,10,11,12]);
+        assert_eq!(versions,[1,2,3,4,5,6,7,8,9,10,11,12,13]);
     }).await;
 }
 

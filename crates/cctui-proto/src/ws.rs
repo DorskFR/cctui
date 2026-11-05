@@ -415,6 +415,9 @@ pub enum DispatcherFrameUp {
         /// 1-based place among the profile's queued workers.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         queue_position: Option<u32>,
+        /// Rule of Two exposure the worker's profile declares.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exposure: Option<crate::api::DispatchExposure>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -1510,6 +1513,7 @@ mod tests {
                 namespace: None,
                 status: Some("dispatched".into()),
                 queue_position: None,
+                exposure: None,
                 error: None,
             },
             DispatcherFrameUp::StatusResult {
@@ -1530,6 +1534,34 @@ mod tests {
             let json = serde_json::to_string(&f).unwrap();
             let _back: DispatcherFrameUp = serde_json::from_str(&json).unwrap();
         }
+    }
+
+    #[test]
+    fn a_dispatch_result_carries_the_exposure_and_reads_without_it() {
+        let old = r#"{"type":"dispatch_result","request_id":"00000000-0000-0000-0000-000000000000","session_id":"s","handle":"jobs/w","status":"dispatched"}"#;
+        let exposure_of = |json: &str| match serde_json::from_str::<DispatcherFrameUp>(json) {
+            Ok(DispatcherFrameUp::DispatchResult { exposure, .. }) => exposure,
+            other => panic!("expected a DispatchResult: {other:?}"),
+        };
+        assert!(exposure_of(old).is_none());
+        let declared = crate::api::DispatchExposure {
+            untrusted_input: true,
+            sensitive_data: false,
+            outward: true,
+            human_gate: Some(crate::api::HumanGate::NoPush),
+        };
+        let frame = DispatcherFrameUp::DispatchResult {
+            request_id: uuid::Uuid::nil(),
+            session_id: "s".into(),
+            handle: "jobs/w".into(),
+            namespace: None,
+            status: Some("dispatched".into()),
+            queue_position: None,
+            exposure: Some(declared),
+            error: None,
+        };
+        let json = serde_json::to_string(&frame).unwrap();
+        assert_eq!(exposure_of(&json), Some(declared));
     }
 
     #[test]

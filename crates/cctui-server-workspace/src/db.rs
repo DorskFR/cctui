@@ -20,6 +20,23 @@ fn env_u32(name: &str, default: u32) -> u32 {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
+#[must_use]
+pub fn slow_query_ms() -> u32 {
+    env_u32("CCTUI_DB_SLOW_QUERY_MS", 500)
+}
+
+/// `database_url` with statements slower than `CCTUI_DB_SLOW_QUERY_MS` logged
+/// at warn.
+pub fn connect_options(database_url: &str) -> Result<PgConnectOptions, sqlx::Error> {
+    connect_options_with(database_url, slow_query_ms())
+}
+
+fn connect_options_with(database_url: &str, slow_ms: u32) -> Result<PgConnectOptions, sqlx::Error> {
+    let options = PgConnectOptions::from_str(database_url)?;
+    let threshold = Duration::from_millis(u64::from(slow_ms));
+    Ok(options.log_slow_statements(log::LevelFilter::Warn, threshold))
+}
+
 /// Acquiring skips sqlx's liveness ping, a full round trip per statement: a
 /// dead connection fails its query and is dropped, and the idle and lifetime
 /// caps recycle half-open sockets.
@@ -47,12 +64,8 @@ pub async fn connect_reporting(database_url: &str) -> Result<(PgPool, Vec<i64>),
     let max_connections = env_u32("CCTUI_DB_MAX_CONNECTIONS", 20);
     let min_connections = env_u32("CCTUI_DB_MIN_CONNECTIONS", 5);
     let acquire_timeout = env_u32("CCTUI_DB_ACQUIRE_TIMEOUT_SECS", 5);
-    let slow_query_ms = env_u32("CCTUI_DB_SLOW_QUERY_MS", 500);
-
-    let connect_options = PgConnectOptions::from_str(database_url)?.log_slow_statements(
-        log::LevelFilter::Warn,
-        Duration::from_millis(u64::from(slow_query_ms)),
-    );
+    let slow_query_ms = slow_query_ms();
+    let connect_options = connect_options_with(database_url, slow_query_ms)?;
 
     let pool = pool_options(max_connections, min_connections, acquire_timeout)
         .connect_with(connect_options)
@@ -157,6 +170,15 @@ mod tests {
         let idle = options.get_idle_timeout().expect("idle timeout set");
         let lifetime = options.get_max_lifetime().expect("max lifetime set");
         assert!(idle <= lifetime, "{idle:?} > {lifetime:?}");
+    }
+
+    #[test]
+    fn connect_options_log_statements_slower_than_the_threshold() {
+        let options = connect_options_with("postgres://u:p@db/app", 1234).unwrap();
+        let shown = format!("{options:?}");
+        assert!(shown.contains("slow_statements_level: Warn"), "{shown}");
+        assert!(shown.contains("slow_statements_duration: 1.234s"), "{shown}");
+        assert_eq!(options.get_host(), "db");
     }
 
     #[tokio::test]

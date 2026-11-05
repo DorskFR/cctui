@@ -212,6 +212,9 @@ fn rerun_refusal(
         RerunBlocker::PromptTruncated => {
             "only the head of the prompt was stored; re-send it from its original caller".into()
         }
+        RerunBlocker::PromptRedacted => {
+            "<redacted> spans were stored only masked; re-send it from its original caller".into()
+        }
         RerunBlocker::PayloadTooLarge => {
             "the payload was too large to store; re-send it from its original caller".into()
         }

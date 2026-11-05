@@ -2027,6 +2027,7 @@
 	"dispatch_failed_rerun_note": "Re-dispatching sends the stored fields as a new dispatch; its result is not posted back to the original caller.",
 	"dispatch_failed_rerun_env": "Can't be re-dispatched from here: its env ({keys}) is not stored. Re-send it from its original caller.",
 	"dispatch_failed_rerun_prompt": "Can't be re-dispatched from here: only the start of the prompt is stored. Re-send it from its original caller.",
+	"dispatch_failed_rerun_redacted": "Can't be re-dispatched from here: the prompt's <redacted> parts are stored only masked. Re-send it from its original caller.",
 	"dispatch_failed_rerun_payload": "Can't be re-dispatched from here: the payload was too large to store. Re-send it from its original caller.",
 	"dispatch_failed_dismiss": "Dismiss",
 	"dispatch_failed_dismiss_all": "Dismiss all",

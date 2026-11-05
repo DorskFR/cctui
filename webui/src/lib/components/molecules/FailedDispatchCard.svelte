@@ -43,6 +43,8 @@
 				return m.dispatch_failed_rerun_env({ keys: (dispatch.env_keys ?? []).join(', ') });
 			case 'prompt_truncated':
 				return m.dispatch_failed_rerun_prompt();
+			case 'prompt_redacted':
+				return m.dispatch_failed_rerun_redacted();
 			case 'payload_too_large':
 				return m.dispatch_failed_rerun_payload();
 			default:

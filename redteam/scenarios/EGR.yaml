@@ -1,0 +1,16 @@
+id: EGR
+class: egress
+mode: probe
+description: >
+  No path to the outside except through the guard proxy, for any identity or
+  protocol; the proxy allows only its allow-list whatever the client sends; DNS
+  is measured as a channel, never assumed closed.
+cells:
+  harness: [claude-code, codex, opencode]
+  dispatcher: [kube, docker]
+  net_mode: [transparent, transparent-external]
+  posture: [root, nonroot]
+probes: [EGR-01, EGR-02, EGR-03, EGR-04, EGR-05]
+expect: contained
+timeout_secs: 120
+budget_usd: 0

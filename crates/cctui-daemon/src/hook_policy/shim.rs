@@ -59,6 +59,8 @@ pub enum ShimCmd {
     },
     /// Deny starting a harness directly from a shell command.
     NoDirectHarness,
+    /// Deny a shell command that opens an interactive session.
+    NoInteractiveShell,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -322,8 +324,10 @@ pub fn decide(stdin: &str, tools: Tools, guard: impl Fn(&Value) -> Outcome) -> O
 
 #[must_use]
 pub fn run(cmd: &ShimCmd) -> i32 {
-    let ShimCmd::ApplyPatch { tools, run: guard } = cmd else {
-        return super::no_direct_harness::run();
+    let (tools, guard) = match cmd {
+        ShimCmd::ApplyPatch { tools, run } => (tools, run),
+        ShimCmd::NoDirectHarness => return super::no_direct_harness::run(),
+        ShimCmd::NoInteractiveShell => return super::codex::interactive::run(),
     };
     let mut stdin = String::new();
     let out = match std::io::stdin().read_to_string(&mut stdin) {

@@ -35,6 +35,9 @@ pub struct Report {
     /// Whether every exec is authorised by cctui-guard (`--guard-exec`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub exec_guarded: bool,
+    /// RW subtrees that keep execute rights under exec interception.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exec_rw_paths: Vec<String>,
 }
 
 impl Report {

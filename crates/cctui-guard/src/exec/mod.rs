@@ -129,6 +129,56 @@ mod tests {
     }
 
     #[test]
+    fn an_exec_check_does_not_wait_on_a_running_gate() {
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().unwrap();
+        let started = dir.path().join("gate-started");
+        let prompt = format!(
+            "# Step 1: Work\n[allowed]: code-read\n[disallowed]: git push\n[gate]: touch {} && \
+             sleep 3\n[transition]: 2\n\n# Step 2: Done\n[allowed]: code-read\n[transition]: \
+             Exit\n",
+            started.display()
+        );
+        let e = Arc::new(WorkflowEngine::new(
+            Workflow::compile(&prompt).unwrap().into_steps(),
+            parse_guard_rules_str(RULES),
+            dir.path().join("state"),
+            dir.path().join("policy.json"),
+            vec![],
+            dir.path().to_path_buf(),
+            None,
+            false,
+        ));
+        let transition = {
+            let e = Arc::clone(&e);
+            std::thread::spawn(move || e.transition(&serde_json::json!(2)))
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !started.exists() {
+            assert!(Instant::now() < deadline, "the gate never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let start = Instant::now();
+        let checked = {
+            let e = Arc::clone(&e);
+            super::decide::within(Duration::from_secs(1), move || {
+                (check(&e, "/usr/bin/git", &["git", "push"]), e.why_header())
+            })
+        };
+        let elapsed = start.elapsed();
+        let (verdict, header) = checked.expect("exec check must not wait for the gate");
+        assert!(elapsed < Duration::from_secs(1), "waited {elapsed:?}");
+        assert!(denied(&verdict), "step 1 stays in force while its gate runs: {verdict:?}");
+        assert!(header.starts_with("step 1"), "{header}");
+
+        assert_eq!(transition.join().unwrap()["ok"], true);
+        assert_eq!(check(&e, "/usr/bin/git", &["git", "push"]), Verdict::Allow);
+    }
+
+    #[test]
     fn no_active_step_allows() {
         let dir = tempfile::tempdir().unwrap();
         let e = WorkflowEngine::new(

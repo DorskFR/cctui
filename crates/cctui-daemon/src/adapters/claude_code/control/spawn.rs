@@ -1,9 +1,9 @@
-use super::settings::{LaunchPolicy, ensure_hook_settings, recover_hook_policy};
+use super::settings::{LaunchPolicy, ensure_hook_settings};
 use super::{
     AdapterEvent, Arc, Context, DeferredDispatch, DispatchDoneTracker, Driver, Duration, EndReason,
-    ForkParents, JobIds, LaunchArgs, LaunchEnv, Path, PathBuf, SpawnWatchdog, StateJson,
-    agent_relay_config, build_session_context, detect_whip_from_settings, dispatch_done, json,
-    launch, mpsc, resolve_launch_env_for, socket, transcript,
+    ForkParents, HookPosture, JobIds, LaunchArgs, LaunchEnv, Path, PathBuf, SpawnWatchdog,
+    StateJson, agent_relay_config, build_session_context, dispatch_done, json, launch, mpsc,
+    resolve_launch_env_for, socket, transcript,
 };
 use tracing::Instrument as _;
 
@@ -131,14 +131,11 @@ impl Launcher {
 
         // Re-apply the managed hook settings on cold resume so the revived worker
         // keeps its ask/permission/Stop hooks AND picks up the (possibly
-        // refreshed) per-account settings the env pull re-served.
-        // `whip` is recovered from the settings file the original spawn wrote for
-        // this `short` (its Stop hook runs `whip-stop-hook`) — cold resume has no
-        // `spec` to read it from directly, and defaulting false would silently
-        // downgrade a 🐎 session's enforcement profile.
-        let whip = detect_whip_from_settings(short);
+        // refreshed) per-account settings the env pull re-served. Cold resume
+        // has no `spec`: the policy comes from the server's record and the whip
+        // posture from the sealed copy, never from the agent-writable settings.
         let seal_key = self.machine_key.as_deref();
-        let policy = recover_hook_policy(short, seal_key)
+        let posture = HookPosture::recover(short, seal_key, launch.hook_policy.as_ref())
             .with_context(|| format!("refusing to resume {short} without its hook policy"))?;
         let st = StateJson::read(&self.jobs_root, short);
         // Carry the gateway env + the session's model/effort (from `state.json`)
@@ -147,7 +144,7 @@ impl Launcher {
         // spare-claim, the dispatch `env` and a `--model` CLI arg do not.
         let settings_arg = ensure_hook_settings(
             &self.hook_socket_path,
-            whip,
+            posture.whip,
             short,
             launch.settings.as_ref(),
             &env,
@@ -155,7 +152,7 @@ impl Launcher {
             st.as_ref().and_then(|s| s.effort.as_deref()),
             launch.whip_phrases.as_ref(),
             None,
-            LaunchPolicy { policy: policy.as_ref(), seal_key },
+            LaunchPolicy { policy: posture.policy.as_ref(), seal_key },
         )?
         .to_string_lossy()
         .into_owned();

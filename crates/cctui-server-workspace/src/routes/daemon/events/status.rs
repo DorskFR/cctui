@@ -214,15 +214,11 @@ fn spawn_emoji_refine(state: &AppState, local_id: &str, name: &str, decorated: &
         return;
     };
     let (endpoint, model, token) =
-        (picker.endpoint.to_owned(), picker.model.to_owned(), picker.token.map(str::to_owned));
+        (picker.endpoint.to_owned(), picker.model.to_owned(), picker.token);
     let (pool, id) = (state.pool.clone(), local_id.to_owned());
     let (plain, guard) = (name.to_owned(), decorated.to_owned());
     tokio::spawn(async move {
-        let picker = crate::session_emoji::Picker {
-            endpoint: &endpoint,
-            model: &model,
-            token: token.as_deref(),
-        };
+        let picker = crate::session_emoji::Picker { endpoint: &endpoint, model: &model, token };
         let Some(emoji) = crate::session_emoji::pick_with_model(&client, picker, &plain).await
         else {
             return;

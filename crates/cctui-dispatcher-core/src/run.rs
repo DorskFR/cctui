@@ -178,6 +178,7 @@ async fn dispatch_frame<D: Dispatcher>(
                 namespace: out.namespace,
                 status: Some(out.status),
                 queue_position,
+                exposure: out.exposure,
                 error: None,
             }
         }
@@ -190,6 +191,7 @@ async fn dispatch_frame<D: Dispatcher>(
                 namespace: None,
                 status: None,
                 queue_position: None,
+                exposure: None,
                 error: Some(err.to_string()),
             }
         }
@@ -269,6 +271,7 @@ mod tests {
                 handle: format!("jobs/{}", spec.session_id),
                 status: "dispatched".into(),
                 namespace: None,
+                exposure: None,
             })
         }
 

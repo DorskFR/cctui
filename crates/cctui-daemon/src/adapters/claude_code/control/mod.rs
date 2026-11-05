@@ -36,6 +36,7 @@ use crate::adapter_runtime::{CommandOutcome, Handled, Interrupter, SessionDriver
 
 mod delivered;
 mod diagnose;
+mod hook_respawn;
 #[cfg(test)]
 mod lane_tests;
 mod lanes;
@@ -57,13 +58,10 @@ mod tests;
 mod voice;
 
 pub(super) use settings::HookPosture;
-pub use settings::stage_mid_chat_files;
-use settings::{
-    BG_ISOLATION_ENV, agent_relay_config, build_session_context, detect_whip_from_settings,
-    with_bg_isolation,
-};
+use settings::{BG_ISOLATION_ENV, agent_relay_config, build_session_context, with_bg_isolation};
 #[cfg(test)]
 pub(super) use settings::{ConfigRootOverride, HookSettingsError};
+pub use settings::{forget_session_file, stage_mid_chat_files};
 
 /// How often a session with a text watcher has its transcript tailed
 /// between polls.
@@ -684,6 +682,9 @@ pub(super) struct LaunchEnv {
     pub context: Vec<cctui_proto::api::SessionContextItem>,
     /// Whether the server answered, which re-mints the session token.
     pub pulled: bool,
+    /// The server's record of the session's launch policy; `None` when the
+    /// pull did not happen or the server predates it.
+    pub hook_policy: Option<cctui_proto::hook_policy::SessionHookPolicy>,
 }
 
 /// Resolve a launch env into a full [`LaunchEnv`] from the server pull, shared
@@ -739,6 +740,7 @@ pub(super) async fn resolve_launch_env_for(
                 plugin_dirs,
                 context: resp.context,
                 pulled: true,
+                hook_policy: resp.hook_policy,
             })
         }
         Err(e) => {
@@ -1323,8 +1325,15 @@ impl Driver {
         };
         self.liveness.set_host(&sock);
         let canary_roster: Vec<_> = resp.jobs.iter().map(LiveSnapshot::canary_view).collect();
+        let idle: HashSet<String> = resp
+            .jobs
+            .iter()
+            .filter(|j| !j.dying && j.tempo.as_deref() == Some("idle"))
+            .map(|j| j.short.clone())
+            .collect();
         self.apply_snapshot(resp.jobs).await;
         self.check_canaries(&canary_roster).await;
+        self.respawn_hookless_workers(&sock, &idle);
         self.probe_liveness(&sock).await;
         let reattached = self.churned;
         if self.churned {

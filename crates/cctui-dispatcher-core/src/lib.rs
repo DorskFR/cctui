@@ -19,6 +19,7 @@ pub mod config;
 pub mod dispatcher;
 pub mod run;
 
+pub use cctui_secrets as secrets;
 pub use client::{EnrollResponse, ServerClient};
 pub use config::DispatcherConfig;
 pub use dispatcher::{

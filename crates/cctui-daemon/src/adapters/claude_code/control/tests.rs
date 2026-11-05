@@ -523,3 +523,47 @@ async fn the_interrupter_drops_a_stale_ask_only_when_one_is_up() {
     assert!(matches!(rx.try_recv(), Ok(AdapterEvent::PlanResolved { .. })));
     assert!(rx.try_recv().is_err(), "a second drop emits nothing");
 }
+
+#[tokio::test]
+async fn the_launch_pull_carries_the_servers_hook_policy_record() {
+    use std::io::{Read, Write};
+
+    use cctui_proto::hook_policy::{HookPolicyStatus, SessionHookPolicy};
+
+    let recorded =
+        SessionHookPolicy { rules: stop_policy().rules, status: Some(HookPolicyStatus::Applied) };
+    let body = serde_json::to_string(&cctui_proto::api::GatewayEnvResponse {
+        account_bound: false,
+        hook_policy: Some(recorded.clone()),
+        ..Default::default()
+    })
+    .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let (mut sock, _) = listener.accept().unwrap();
+        let _ = sock.read(&mut [0u8; 4096]).unwrap();
+        let _ = write!(
+            sock,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+    });
+
+    let server = crate::client::ServerClient::new(format!("http://{addr}"));
+    let launch = resolve_launch_env_for(
+        Some(&server),
+        Some(&"machine-key".to_owned()),
+        "s1",
+        &std::collections::BTreeMap::new(),
+    )
+    .await
+    .expect("an unbound session launches");
+    assert!(launch.pulled);
+    assert_eq!(launch.hook_policy, Some(recorded));
+
+    let offline = resolve_launch_env_for(None, None, "s1", &std::collections::BTreeMap::new())
+        .await
+        .expect("no server degrades to the hint");
+    assert_eq!(offline.hook_policy, None, "no pull, no record: the kept copy decides");
+}

@@ -10,8 +10,9 @@ mod entropy;
 mod user;
 
 pub use self::user::{
-    MIN_ECHO_LITERAL_LEN, USER_CATEGORY, USER_PLACEHOLDER, UserLiterals, has_user_spans,
-    mask_user_json, mask_user_spans, mask_user_text, user_span_values,
+    MIN_ECHO_LITERAL_LEN, USER_CATEGORY, USER_PLACEHOLDER, UserLiterals, collect_user_literals,
+    has_user_spans, mask_user_json, mask_user_spans, mask_user_text, split_streamed,
+    user_span_values,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
