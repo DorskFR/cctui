@@ -101,56 +101,36 @@ async fn live_handles(pool: &sqlx::PgPool) -> sqlx::Result<Vec<LiveHandle>> {
 
 /// The sweep on whichever replica takes the lock; the others skip this tick.
 pub async fn sweep(state: &impl DispatchLivenessContext) {
-    let Some(lock) = SweepLock::try_acquire(state.dispatch_pool()).await else {
-        return;
+    sweep_with_lock(state, SWEEP_LOCK_KEY).await;
+}
+
+/// [`sweep`] under advisory lock `key`, which every replica of one deployment
+/// shares.
+///
+/// The lock lives on a connection of its own, outside the pool, so holding it
+/// never takes a pooled connection from the sweep or anything else. Closing
+/// that connection, or dropping it mid-sweep, ends its session and the lock.
+pub async fn sweep_with_lock(state: &impl DispatchLivenessContext, key: i64) {
+    use sqlx::Connection;
+    let pool = state.dispatch_pool();
+    let mut lock = match sqlx::PgConnection::connect_with(&pool.connect_options()).await {
+        Ok(conn) => conn,
+        Err(err) => {
+            tracing::warn!(%err, "dispatch liveness lock connection failed");
+            return;
+        }
     };
-    sweep_unlocked(state).await;
-    lock.release().await;
-}
-
-/// The lock lives on its connection's session: a holder dropped before
-/// [`SweepLock::release`] closes the connection instead of pooling the lock.
-struct SweepLock(Option<sqlx::pool::PoolConnection<sqlx::Postgres>>);
-
-impl SweepLock {
-    async fn try_acquire(pool: &sqlx::PgPool) -> Option<Self> {
-        let mut conn = pool
-            .acquire()
-            .await
-            .map_err(|err| tracing::warn!(%err, "dispatch liveness lock connection failed"))
-            .ok()?;
-        let locked = sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_lock($1)")
-            .bind(SWEEP_LOCK_KEY)
-            .fetch_one(&mut *conn)
-            .await;
-        match locked {
-            Ok(true) => Some(Self(Some(conn))),
-            Ok(false) => None,
-            Err(err) => {
-                tracing::warn!(%err, "dispatch liveness lock failed");
-                drop(conn.detach());
-                None
-            }
-        }
+    let locked = sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_lock($1)")
+        .bind(key)
+        .fetch_one(&mut lock)
+        .await;
+    match locked {
+        Ok(true) => sweep_unlocked(state).await,
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, "dispatch liveness lock failed"),
     }
-
-    async fn release(mut self) {
-        let Some(mut conn) = self.0.take() else { return };
-        let unlocked = sqlx::query_scalar::<_, bool>("SELECT pg_advisory_unlock($1)")
-            .bind(SWEEP_LOCK_KEY)
-            .fetch_one(&mut *conn)
-            .await;
-        if !matches!(unlocked, Ok(true)) {
-            drop(conn.detach());
-        }
-    }
-}
-
-impl Drop for SweepLock {
-    fn drop(&mut self) {
-        if let Some(conn) = self.0.take() {
-            drop(conn.detach());
-        }
+    if let Err(err) = lock.close().await {
+        tracing::debug!(%err, "dispatch liveness lock connection close failed");
     }
 }
 
