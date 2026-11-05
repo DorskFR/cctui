@@ -464,9 +464,12 @@ mod tests {
     }
 
     fn reply(routes: &Routes, key: &str) -> (u16, String) {
-        let next = routes.lock().unwrap().iter_mut().find(|(k, _)| k == key).and_then(|(_, q)| {
-            if q.len() > 1 { q.pop_front() } else { q.front().cloned() }
-        });
+        let next = routes
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|(k, _)| k == key)
+            .and_then(|(_, q)| if q.len() > 1 { q.pop_front() } else { q.front().cloned() });
         next.unwrap_or_else(|| (404, "{}".to_owned()))
     }
 
