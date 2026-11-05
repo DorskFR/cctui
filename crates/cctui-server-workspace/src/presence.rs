@@ -63,10 +63,11 @@ pub struct PodIdentity {
     /// Routable IP peers can reach this pod's HTTP port on. `None` disables
     /// registration (this pod never OWNS forwardable rows).
     pub ip: Option<String>,
-    /// The `ws_presence` rows this pod currently owns. The heartbeat re-upserts
-    /// them, so a row reaped while the DB was unreachable comes back on the
-    /// next tick instead of staying gone until the WS reconnects.
-    owned: DashMap<(Kind, Uuid), ()>,
+    /// The `ws_presence` rows this pod currently owns, with the connection
+    /// that registered each. The heartbeat re-upserts them, so a row reaped
+    /// while the DB was unreachable comes back on the next tick instead of
+    /// staying gone until the WS reconnects.
+    owned: DashMap<(Kind, Uuid), Uuid>,
     /// Set by [`withdraw`] on shutdown: the heartbeat must not resurrect rows
     /// peers are meant to stop routing to.
     withdrawn: AtomicBool,
@@ -102,8 +103,17 @@ impl PodIdentity {
 /// registries. No-op without a pod IP. Best-effort — a presence write failure
 /// must never break the WS itself.
 pub async fn register(state: &AppState, kind: Kind, entity_id: Uuid) {
+    register_conn(state, kind, entity_id, Uuid::nil()).await;
+}
+
+/// [`register`] on behalf of connection `conn`, which alone may unregister it.
+pub async fn register_conn(state: &AppState, kind: Kind, entity_id: Uuid, conn: Uuid) {
     let Some(ip) = state.presence.ip.as_deref() else { return };
-    state.presence.owned.insert((kind, entity_id), ());
+    state.presence.owned.insert((kind, entity_id), conn);
+    upsert(state, kind, entity_id, ip).await;
+}
+
+async fn upsert(state: &AppState, kind: Kind, entity_id: Uuid, ip: &str) {
     if let Err(err) = sqlx::query(
         "INSERT INTO ws_presence (kind, entity_id, pod, pod_ip, connected_at, heartbeat_at) \
          VALUES ($1, $2, $3, $4, now(), now()) \
@@ -127,10 +137,19 @@ pub async fn register(state: &AppState, kind: Kind, entity_id: Uuid) {
 /// itself), our late disconnect cleanup must not delete the new owner's row —
 /// the cross-pod twin of the `remove_if(same_channel)` guard.
 pub async fn unregister(state: &AppState, kind: Kind, entity_id: Uuid) {
-    if state.presence.ip.is_none() {
+    unregister_conn(state, kind, entity_id, Uuid::nil()).await;
+}
+
+/// [`unregister`] by connection `conn`: a no-op once another connection on
+/// this pod registered the entity, so a late close never deletes a
+/// reconnect's row. A registration landing while the delete is in flight is
+/// written back after it.
+pub async fn unregister_conn(state: &AppState, kind: Kind, entity_id: Uuid, conn: Uuid) {
+    let Some(ip) = state.presence.ip.as_deref() else { return };
+    let key = (kind, entity_id);
+    if state.presence.owned.remove_if(&key, |_, owner| *owner == conn).is_none() {
         return;
     }
-    state.presence.owned.remove(&(kind, entity_id));
     if let Err(err) =
         sqlx::query("DELETE FROM ws_presence WHERE kind = $1 AND entity_id = $2 AND pod = $3")
             .bind(kind.as_str())
@@ -140,6 +159,9 @@ pub async fn unregister(state: &AppState, kind: Kind, entity_id: Uuid) {
             .await
     {
         tracing::warn!(%err, %entity_id, kind = kind.as_str(), "ws_presence unregister failed");
+    }
+    if state.presence.owned.contains_key(&key) {
+        upsert(state, kind, entity_id, ip).await;
     }
 }
 
@@ -454,8 +476,8 @@ mod tests {
         let a = PodIdentity::for_test(&format!("{prefix}a"), &ip_a);
         let reaped = Uuid::new_v4();
         let moved = Uuid::new_v4();
-        a.owned.insert((Kind::Daemon, reaped), ());
-        a.owned.insert((Kind::Session, moved), ());
+        a.owned.insert((Kind::Daemon, reaped), Uuid::nil());
+        a.owned.insert((Kind::Session, moved), Uuid::nil());
         sqlx::query(
             "INSERT INTO ws_presence (kind, entity_id, pod, pod_ip) VALUES ('session', $1, $2, $3)",
         )
@@ -489,7 +511,7 @@ mod tests {
         let ip_b = format!("{prefix}10.0.3.2");
         let a = PodIdentity::for_test(&format!("{prefix}a"), &ip_a);
         let machine = Uuid::new_v4();
-        a.owned.insert((Kind::Daemon, machine), ());
+        a.owned.insert((Kind::Daemon, machine), Uuid::nil());
         heartbeat_tick(&pool, &a).await;
 
         assert!(!forget_owner(&pool, Kind::Daemon, machine, &ip_b).await);
@@ -510,7 +532,7 @@ mod tests {
         let a = PodIdentity::for_test(&format!("{prefix}a"), &ip_a);
         let b = PodIdentity::for_test(&format!("{prefix}b"), &format!("{prefix}10.0.4.2"));
         let machine = Uuid::new_v4();
-        a.owned.insert((Kind::Daemon, machine), ());
+        a.owned.insert((Kind::Daemon, machine), Uuid::nil());
         heartbeat_tick(&pool, &a).await;
         assert_eq!(
             peer_owner_ip(&pool, &b.pod, Kind::Daemon, machine).await.as_deref(),
@@ -524,6 +546,46 @@ mod tests {
         heartbeat_tick(&pool, &a).await;
         assert!(!pod_exists(&pool, &a.pod).await, "a withdrawn pod stays gone");
         assert_eq!(ws_owner(&pool, Kind::Daemon, machine).await, None);
+        wipe(&pool, &prefix).await;
+    }
+
+    /// A daemon reconnects to the same pod: the old connection's close runs
+    /// after the new one registered. The row and its heartbeat entry belong
+    /// to the new connection and survive; only the new one's close drops them.
+    #[tokio::test]
+    async fn a_late_close_of_the_old_connection_keeps_the_reconnects_row() {
+        let Some(pool) = pool().await else { return };
+        let prefix = prefix("reconnect");
+        let mut state = AppState::for_test(pool.clone());
+        state.presence = std::sync::Arc::new(PodIdentity::for_test(
+            &format!("{prefix}a"),
+            &format!("{prefix}10.0.5.1"),
+        ));
+        let machine = Uuid::new_v4();
+        let key = (Kind::Daemon, machine);
+        let (old, new) = (Uuid::new_v4(), Uuid::new_v4());
+
+        register_conn(&state, Kind::Daemon, machine, old).await;
+        register_conn(&state, Kind::Daemon, machine, new).await;
+        unregister_conn(&state, Kind::Daemon, machine, old).await;
+        assert_eq!(ws_owner(&pool, Kind::Daemon, machine).await, Some(state.presence.pod.clone()));
+        assert_eq!(state.presence.owned.get(&key).map(|owner| *owner), Some(new));
+
+        sqlx::query("DELETE FROM ws_presence WHERE entity_id = $1")
+            .bind(machine)
+            .execute(&pool)
+            .await
+            .unwrap();
+        heartbeat_tick(&pool, &state.presence).await;
+        assert_eq!(
+            ws_owner(&pool, Kind::Daemon, machine).await,
+            Some(state.presence.pod.clone()),
+            "the heartbeat still re-asserts the live connection's row",
+        );
+
+        unregister_conn(&state, Kind::Daemon, machine, new).await;
+        assert_eq!(ws_owner(&pool, Kind::Daemon, machine).await, None);
+        assert!(!state.presence.owned.contains_key(&key));
         wipe(&pool, &prefix).await;
     }
 }

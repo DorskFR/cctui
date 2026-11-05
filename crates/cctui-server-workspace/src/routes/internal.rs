@@ -110,32 +110,32 @@ pub async fn bus_route(
     Ok(Json(outcome.unwrap_or_else(|err| RouteResponse::from_error(&err))))
 }
 
-fn held_rows(state: &AppState, request: &RouteRequest) -> Vec<(Kind, Uuid)> {
+fn held_rows(state: &AppState, request: &RouteRequest) -> Vec<(Kind, Uuid, Uuid)> {
     let Some(machine) = request.machine() else { return Vec::new() };
     let mut rows = Vec::new();
-    if state.bus.daemon_connected(machine) {
-        rows.push((Kind::Daemon, machine));
+    if let Some(conn) = state.bus.machine_conn(machine) {
+        rows.push((Kind::Daemon, machine, conn));
     }
-    if let Some(session) = request
-        .session()
-        .filter(|session| state.bus.holds_session(machine, session))
-        .and_then(|session| Uuid::parse_str(session).ok())
+    if let Some(session) = request.session()
+        && let Some(conn) = state.bus.session_conn(machine, session)
+        && let Ok(session) = Uuid::parse_str(session)
     {
-        rows.push((Kind::Session, session));
+        rows.push((Kind::Session, session, conn));
     }
     rows
 }
 
 /// A peer found this pod only by probing, so the presence rows that should
-/// have named it are gone. Re-registering also re-arms their heartbeat.
-async fn restore_presence(state: &AppState, rows: Vec<(Kind, Uuid)>) {
-    for (kind, id) in rows {
+/// have named it are gone. Re-registering under the holding connection also
+/// re-arms their heartbeat and lets that connection's close drop them.
+async fn restore_presence(state: &AppState, rows: Vec<(Kind, Uuid, Uuid)>) {
+    for (kind, id, conn) in rows {
         tracing::warn!(
             kind = kind.as_str(),
             %id,
             "peer probe reached a connection this pod holds without a presence row",
         );
-        crate::presence::register(state, kind, id).await;
+        crate::presence::register_conn(state, kind, id, conn).await;
     }
 }
 
