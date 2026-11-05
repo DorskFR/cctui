@@ -12,7 +12,9 @@ bad()  { printf '  FAIL %s\n' "$1"; fail=1; }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1: expected [$2] got [$3]"; fi; }
 log()  { :; }
 
-eval "$(awk '/^install_guard_shims\(\)/,/^}/' "$ENTRY")"
+for _fn in is_root mkdir_worker install_guard_shims; do
+    eval "$(awk "/^${_fn}\\(\\)/,/^}/" "$ENTRY")"
+done
 type install_guard_shims >/dev/null 2>&1 || { echo "FAIL install_guard_shims not found"; exit 1; }
 
 tmp="$(mktemp -d)"
