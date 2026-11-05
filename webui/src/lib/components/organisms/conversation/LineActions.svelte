@@ -1,7 +1,6 @@
 <script lang="ts">
-	// Per-message action cluster at the right of the meta row: pin, save-as-image,
-	// copy-as-Markdown, quote-reply, bookmark. Excluded from the saved image.
-	import { Button, Icon, IconButton } from '@dorsk/tsumikit';
+	// Excluded from the saved image.
+	import { Icon, IconButton, Menu, type MenuItem } from '@dorsk/tsumikit';
 	import { bubbleSelection } from './lineActions';
 	import type { Line } from './types';
 	import { m } from '$lib/paraglide/messages';
@@ -23,7 +22,7 @@
 		pinnable: boolean;
 		pinned?: boolean;
 		onpin?: (ln: Line) => void;
-		onsaveimage: (e: MouseEvent, ln: Line) => void;
+		onsaveimage: (node: HTMLElement, ln: Line) => void;
 		oncopymarkdown: (ln: Line) => void;
 		/** Omit to hide the bookmark action. */
 		onbookmark?: (ln: Line) => void;
@@ -36,52 +35,82 @@
 		speaking?: boolean;
 	} = $props();
 
+	let root = $state<HTMLElement>();
+
 	// Clicking collapses the selection, so it is read on pointerdown.
 	let picked: string | null = null;
 	function grabSelection(e: Event) {
 		const line = (e.currentTarget as HTMLElement).closest('.line');
 		picked = bubbleSelection(line?.querySelector('.bubble') ?? null);
 	}
+
+	const items = $derived.by(() => {
+		const out: MenuItem[] = [];
+		if (pinnable) {
+			out.push({
+				id: 'pin',
+				label: pinned ? m.conversation_unpin_label() : m.conversation_pin_label(),
+				icon: pinned ? 'pin-off' : 'pin',
+				onselect: () => onpin?.(ln)
+			});
+		}
+		if (onspeak) {
+			out.push({
+				id: 'speak',
+				label: speaking ? m.voice_line_speaking() : m.voice_line_speak(),
+				icon: speaking ? 'stop' : 'play',
+				onselect: () => onspeak?.(ln)
+			});
+		}
+		out.push({
+			id: 'markdown',
+			label: m.conversation_copy_markdown_label(),
+			icon: 'markdown',
+			onselect: () => oncopymarkdown(ln)
+		});
+		out.push({
+			id: 'image',
+			label: m.conversation_save_image_label(),
+			icon: 'image',
+			onselect: () => {
+				const line = root?.closest<HTMLElement>('.line');
+				if (line) onsaveimage(line, ln);
+			}
+		});
+		if (onbookmark) {
+			out.push({
+				id: 'bookmark',
+				label: m.bookmarks_line_label(),
+				icon: 'bookmark',
+				pressed: bookmarked,
+				attrs: {
+					title: bookmarked ? m.bookmarks_line_saved_title() : m.bookmarks_line_title()
+				},
+				onselect: () => onbookmark?.(ln)
+			});
+		}
+		return out;
+	});
 </script>
 
-<span class="line-actions" class:has-pin={pinned} data-journey="line-actions">
-	{#if pinnable}
-		<Button
-			variant="ghost"
-			iconInline
-			aria-pressed={pinned}
-			aria-label={pinned ? m.conversation_unpin_label() : m.conversation_pin_label()}
-			title={pinned ? m.conversation_unpin_title() : m.conversation_pin_title()}
-			style="--btn-on: var(--warn)"
-			onclick={() => onpin?.(ln)}
-		>
-			<Icon name="pin" size={16} filled={pinned} />
-		</Button>
+<span class="line-actions" class:has-pin={pinned} bind:this={root} data-journey="line-actions">
+	{#if speaking}
+		<IconButton
+			inline
+			glyphSize={16}
+			icon="stop"
+			pressed
+			style="--btn-on: var(--role-assistant)"
+			label={m.voice_line_speaking()}
+			title={m.voice_line_speaking()}
+			onclick={() => onspeak?.(ln)}
+		/>
 	{/if}
-	<!-- Copy-as-Markdown uses the same markdown glyph as the
-	     conversation-level copy; save-as-image uses a
-	     plain image icon and sits right next to it. -->
-	<IconButton
-		inline
-		glyphSize={16}
-		icon="image"
-		label={m.conversation_save_image_label()}
-		title={m.conversation_save_image_title()}
-		onclick={(e) => onsaveimage(e, ln)}
-	/>
-	<IconButton
-		inline
-		glyphSize={16}
-		icon="markdown"
-		label={m.conversation_copy_markdown_label()}
-		title={m.conversation_copy_markdown_title()}
-		onclick={() => oncopymarkdown(ln)}
-	/>
 	{#if onquote}
 		<IconButton
 			inline
 			glyphSize={16}
-			icon="back"
+			icon="quote"
 			class="quote-btn"
 			label={m.conversation_quote_label()}
 			title={m.conversation_quote_title()}
@@ -93,36 +122,16 @@
 			}}
 		/>
 	{/if}
-	{#if onspeak}
-		<IconButton
-			inline
-			glyphSize={16}
-			icon={speaking ? 'stop' : 'play'}
-			pressed={speaking}
-			style="--btn-on: var(--role-assistant)"
-			label={speaking ? m.voice_line_speaking() : m.voice_line_speak()}
-			title={speaking ? m.voice_line_speaking() : m.voice_line_speak()}
-			onclick={() => onspeak?.(ln)}
-		/>
-	{/if}
-	{#if onbookmark}
-		<IconButton
-			inline
-			glyphSize={14}
-			emoji="◈"
-			pressed={bookmarked}
-			style="--btn-on: var(--role-assistant)"
-			label={m.bookmarks_line_label()}
-			title={bookmarked ? m.bookmarks_line_saved_title() : m.bookmarks_line_title()}
-			onclick={() => onbookmark?.(ln)}
-		/>
-	{/if}
+	<Menu label={m.tx_line_more()} {items} placement="bottom-end" variant="ghost" box="sm">
+		{#snippet trigger()}<Icon name="more" size={16} />{/snippet}
+	</Menu>
 </span>
 
 <style>
 	.line-actions {
 		margin-left: auto;
 		display: inline-flex;
+		flex: none;
 		align-items: center;
 		gap: var(--sp-1);
 	}

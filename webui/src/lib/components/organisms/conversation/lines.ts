@@ -21,9 +21,11 @@ import {
   type InjectedBlock,
   taskNotificationText,
   parseTodos,
+  resultText,
   stampTurns,
   todoSignature,
   stripAttachmentDecorations,
+  unescapeJsonText,
 } from "./format";
 import type { Line, MsgCategory } from "./types";
 import { parseResultImages } from "$lib/resultImages";
@@ -117,7 +119,7 @@ function userTurn(
   turnId?: string | null,
   scheduledAt?: string | null,
 ): Line[] {
-  const { blocks: all, prose } = splitInjected(content);
+  const { blocks: all, prose } = splitInjected(unescapeJsonText(content));
   // The spoken-style wrapper is the mic's doing, not context worth a line.
   const blocks = all.filter((b) => b.attrs.voice !== "spoken");
   const meta = mayBeMeta && looksMeta(prose);
@@ -420,7 +422,7 @@ function buildLine(
     case "tool_result": {
       if (!ctx.visible(resultCategory(e))) return null;
       const parsed = parseResultImages(e.output_summary);
-      const text = parsed?.text ?? e.output_summary;
+      const text = parsed?.text ?? resultText(e.output_summary);
       return {
         role: "result",
         ts: Number(e.ts),

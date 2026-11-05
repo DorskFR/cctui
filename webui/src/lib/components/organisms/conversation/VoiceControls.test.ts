@@ -158,8 +158,8 @@ describe('VoiceControls dictation gestures', () => {
 });
 
 describe('VoiceControls without voice mode', () => {
-	it('shows the mic but no voice-mode toggle when no live handler is given', () => {
-		const toggle = () => document.querySelector('[aria-label="Live voice conversation with this session"]');
+	it('shows the mic but no voice-options caret when no live handler is given', () => {
+		const toggle = () => document.querySelector('[aria-label="Voice options"]');
 		expect(toggle()).not.toBeNull();
 		if (comp) unmount(comp);
 		document.body.innerHTML = '';
@@ -167,5 +167,38 @@ describe('VoiceControls without voice mode', () => {
 		flushSync();
 		expect(mic()).not.toBeNull();
 		expect(toggle()).toBeNull();
+	});
+});
+
+describe('VoiceControls live voice entry', () => {
+	it('draws one mic, with live voice behind the caret menu', () => {
+		const mics = [...document.querySelectorAll('button')].filter((b) =>
+			/dictate|voice mode|live voice/i.test(b.getAttribute('aria-label') ?? '')
+		);
+		expect(mics).toHaveLength(1);
+		expect(document.querySelector('[aria-label="Voice options"]')).not.toBeNull();
+	});
+
+	it('starts live voice from the menu item', async () => {
+		if (comp) unmount(comp);
+		document.body.innerHTML = '';
+		const ontogglelive = vi.fn();
+		comp = mount(VoiceControls, { target: document.body, props: { ontogglelive, ondictated } });
+		flushSync();
+		const panel = document.querySelector('[popover]') as
+			| (HTMLElement & { hidePopover?: () => void })
+			| null;
+		expect(panel).not.toBeNull();
+		if (panel && typeof panel.hidePopover !== 'function') panel.hidePopover = () => {};
+		const toggle = new Event('toggle') as Event & { newState: string };
+		toggle.newState = 'open';
+		panel?.dispatchEvent(toggle);
+		flushSync();
+		const row = [...document.querySelectorAll<HTMLElement>('[role^="menuitem"]')].find((r) =>
+			r.textContent?.includes('Live voice')
+		);
+		expect(row).toBeDefined();
+		row?.click();
+		expect(ontogglelive).toHaveBeenCalledOnce();
 	});
 });

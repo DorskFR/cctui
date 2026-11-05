@@ -115,3 +115,18 @@ describe('DrawerBanners tool-block bypass', () => {
 		expect(toasts.error).toHaveBeenCalledOnce();
 	});
 });
+
+describe('DrawerBanners needs-input', () => {
+	it('draws no banner over the transcript for a session waiting on the user', () => {
+		stream.toolBlock = null;
+		const host = document.createElement('div');
+		document.body.appendChild(host);
+		comp = mount(DrawerBanners, {
+			target: host,
+			props: { sessionId: 's-1', needsInput: true, stream } as never
+		});
+		flushSync();
+		expect(host.querySelector('.attn-banner')).toBeNull();
+		expect(host.textContent).not.toContain('Waiting for your input');
+	});
+});

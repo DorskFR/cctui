@@ -338,3 +338,27 @@ describe('images in CctuiAgent / CctuiSend results', () => {
 		expect(el.querySelector('.result-images')).toBeNull();
 	});
 });
+
+describe('meta row', () => {
+	it('labels the role as text, never a filled badge', async () => {
+		const el = await render(line({ role: 'result', tool: 'Bash', text: 'ok', html: undefined }));
+		expect(el.querySelector('.lmeta [data-tsu="Badge"]')).toBeNull();
+		expect(el.querySelector('.role')?.textContent).toContain('result');
+		expect(el.querySelector('.tool-name')?.textContent).toContain('Bash');
+	});
+
+	it('shows a 24-hour HH:MM time', async () => {
+		const ts = new Date(2026, 0, 2, 21, 5, 7).getTime();
+		const el = await render(line({ ts }));
+		const time = el.querySelector('time.ltime');
+		expect(time?.textContent).toMatch(/^21[:.h]05$/);
+		expect(time?.getAttribute('datetime')).toBe(new Date(ts).toISOString());
+	});
+
+	it('reveals the line actions on hover or focus only, always on touch', () => {
+		const css = lineSource.slice(lineSource.indexOf('<style>'));
+		expect(css).toMatch(/\.actions-slot\s*\{[^}]*opacity:\s*0/);
+		expect(css).toMatch(/\.line:hover \.actions-slot,\s*\.line:focus-within \.actions-slot\s*\{\s*opacity:\s*1/);
+		expect(css).toMatch(/@media \(pointer: coarse\)\s*\{\s*\.actions-slot\s*\{\s*opacity:\s*1/);
+	});
+});

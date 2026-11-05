@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
 import PermissionCard from './PermissionCard.svelte';
+import source from './PermissionCard.svelte?raw';
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -29,6 +30,8 @@ async function render(req: object) {
 }
 
 const buttons = () => [...document.querySelectorAll<HTMLButtonElement>('button')];
+const variants = () =>
+	buttons().map((b) => b.className.match(/\bbtn-(primary|ghost|danger)\b/)?.[1] ?? 'default');
 
 describe('PermissionCard', () => {
 	it('keeps the two buttons for a native harness', async () => {
@@ -38,7 +41,7 @@ describe('PermissionCard', () => {
 		expect(onrespond).toHaveBeenCalledWith('call-1', true);
 	});
 
-	it("renders the agent's own options in order", async () => {
+	it('puts the safe choices first and allow once last as the only primary', async () => {
 		await render({
 			...base,
 			options: [
@@ -49,11 +52,29 @@ describe('PermissionCard', () => {
 			]
 		});
 		expect(buttons().map((b) => b.textContent?.trim())).toEqual([
-			'Always allow',
-			'Allow once',
 			'Reject',
-			'reject_always'
+			'reject_always',
+			'Always allow',
+			'Allow once'
 		]);
+		expect(variants()).toEqual(['ghost', 'ghost', 'default', 'primary']);
+	});
+
+	it('never paints Deny red', async () => {
+		await render(base);
+		expect(variants()).toEqual(['ghost', 'primary']);
+		expect(source).not.toContain("'danger'");
+	});
+
+	it('promotes the only allow option when there is no allow once', async () => {
+		await render({
+			...base,
+			options: [
+				{ option_id: 'a-always', name: 'Always allow', kind: 'allow_always' },
+				{ option_id: 'r-once', name: 'Reject', kind: 'reject_once' }
+			]
+		});
+		expect(variants()).toEqual(['ghost', 'primary']);
 	});
 
 	it('answers with the picked option id and its polarity', async () => {
@@ -64,9 +85,9 @@ describe('PermissionCard', () => {
 				{ option_id: 'r-once', name: 'Reject', kind: 'reject_once' }
 			]
 		});
-		buttons()[0].click();
-		expect(onrespond).toHaveBeenLastCalledWith('call-1', true, 'a-always');
 		buttons()[1].click();
+		expect(onrespond).toHaveBeenLastCalledWith('call-1', true, 'a-always');
+		buttons()[0].click();
 		expect(onrespond).toHaveBeenLastCalledWith('call-1', false, 'r-once');
 	});
 });

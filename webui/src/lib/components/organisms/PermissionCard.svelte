@@ -12,8 +12,21 @@
 		onrespond: (rid: string, allow: boolean, optionId?: string) => void;
 	} = $props();
 
-	const options = $derived(req.options ?? []);
 	const allows = (kind: string) => kind.startsWith('allow');
+
+	// Safe choices first, the one-shot allow last as the only primary.
+	const options = $derived.by(() => {
+		const all = req.options ?? [];
+		const primary =
+			all.find((o) => o.kind === 'allow_once') ?? all.find((o) => allows(o.kind)) ?? null;
+		const rejects = all.filter((o) => !allows(o.kind));
+		const others = all.filter((o) => allows(o.kind) && o !== primary);
+		return [
+			...rejects.map((o) => ({ o, variant: 'ghost' as const })),
+			...others.map((o) => ({ o, variant: 'default' as const })),
+			...(primary ? [{ o: primary, variant: 'primary' as const }] : [])
+		];
+	});
 
 	// ExitPlanMode fallback: the preview is the tool-input JSON with a `.plan`
 	// markdown string. Render it as markdown (mirroring PlanCard) instead of a
@@ -40,16 +53,14 @@
 	{:else if req.input_preview}<pre class="prev mono">{req.input_preview}</pre>{/if}
 	<div class="row acts">
 		{#if options.length}
-			{#each options as o (o.option_id)}
-				<Button
-					variant={allows(o.kind) ? 'primary' : 'danger'}
-					block
-					onclick={() => onrespond(req.request_id, allows(o.kind), o.option_id)}>{o.name || o.kind}</Button
+			{#each options as { o, variant } (o.option_id)}
+				<Button {variant} onclick={() => onrespond(req.request_id, allows(o.kind), o.option_id)}
+					>{o.name || o.kind}</Button
 				>
 			{/each}
 		{:else}
-			<Button variant="danger" block onclick={() => onrespond(req.request_id, false)}>{m.permission_deny()}</Button>
-			<Button variant="primary" block onclick={() => onrespond(req.request_id, true)}>{m.permission_allow()}</Button>
+			<Button variant="ghost" onclick={() => onrespond(req.request_id, false)}>{m.permission_deny()}</Button>
+			<Button variant="primary" onclick={() => onrespond(req.request_id, true)}>{m.permission_allow()}</Button>
 		{/if}
 	</div>
 </Card>
@@ -79,5 +90,6 @@
 	.acts {
 		gap: var(--sp-2);
 		flex-wrap: wrap;
+		justify-content: flex-end;
 	}
 </style>

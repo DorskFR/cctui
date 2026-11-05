@@ -34,7 +34,8 @@ test('live voice initialises the VAD without an error toast', async ({ page }) =
 	await waitForDrawerOpen(page);
 
 	const ortModule = page.waitForResponse((r) => r.url().endsWith('/vad/ort-wasm-simd-threaded.mjs'));
-	await page.getByRole('button', { name: 'Live voice conversation with this session' }).click();
+	await page.getByRole('button', { name: 'Voice options' }).click();
+	await page.getByRole('menuitemcheckbox', { name: /Live voice/ }).click();
 
 	const mjs = await ortModule;
 	expect(mjs.status()).toBe(200);

@@ -1,19 +1,31 @@
 <script lang="ts">
+	import { relativeTime } from '@dorsk/tsumikit';
+	import StatText from '$lib/components/atoms/StatText.svelte';
 	import { now as clockNow } from '$lib/clock.svelte';
 	import type { ConversationStream } from './stream.svelte';
 	import { formatElapsed } from './activity';
 	import { m } from '$lib/paraglide/messages';
 
-	let { stream, archived = false }: { stream: ConversationStream; archived?: boolean } = $props();
+	let {
+		stream,
+		archived = false,
+		needsInput = false
+	}: {
+		stream: ConversationStream;
+		archived?: boolean;
+		/** The session's list attention, so this line and the list agree. */
+		needsInput?: boolean;
+	} = $props();
 
-	// The agent is blocked on the user while an ask/plan/permission is pending —
-	// same gating the inline spinner this replaces used.
-	const active = $derived(
-		stream.working && !archived && !stream.ask && !stream.plan && stream.perms.length === 0
-	);
+	const blocked = $derived(!!stream.ask || !!stream.plan || stream.perms.length > 0);
+	const active = $derived(stream.working && !archived && !blocked);
+	const waiting = $derived(!archived && !active && (needsInput || blocked));
 
 	// Ticks only while a turn is live, so an idle drawer costs no timer.
-	const now = $derived(active ? clockNow(1_000) : Date.now());
+	const now = $derived(active ? clockNow(1_000) : waiting ? clockNow(30_000) : Date.now());
+	const waited = $derived(
+		waiting && typeof stream.lastAgentAt === 'number' ? relativeTime(stream.lastAgentAt, now, false, true) : null
+	);
 
 	const tool = $derived(active ? stream.currentTool : null);
 	const progress = $derived(stream.todoProgress);
@@ -30,21 +42,31 @@
 {#if !archived}
 	<div
 		class="activity"
-		class:idle={!active}
+		class:idle={!active && !waiting}
+		class:waiting
 		role="status"
 		aria-live="polite"
 		data-journey="activity"
-		data-journey-key={active ? 'live' : 'idle'}
+		data-journey-key={active ? 'live' : waiting ? 'waiting' : 'idle'}
 	>
 		<div class="row">
 			<span class="dot" class:spin={active} aria-hidden="true"></span>
 			<span class="status" title={active ? status : undefined}>
-				{active ? status : m.conversation_activity_idle()}
+				{#if active}
+					{status}
+				{:else if waiting}
+					{waited ? m.tx_activity_waiting_since({ ago: waited }) : m.tx_activity_waiting()}
+				{:else}
+					{m.conversation_activity_idle()}
+				{/if}
 			</span>
 			{#if active}
 				<span class="meta">
 					{#if turnElapsed}<span>{turnElapsed}</span>{/if}
-					{#if tokens > 0}<span>↓{stream.turnTokensIn} ↑{stream.turnTokensOut}</span>{/if}
+					{#if tokens > 0}
+						<StatText value={stream.turnTokensIn} kind="input" />
+						<StatText value={stream.turnTokensOut} kind="output" />
+					{/if}
 					{#if progress}<span>{progress.done}/{progress.total}</span>{/if}
 				</span>
 			{/if}
@@ -75,6 +97,13 @@
 	}
 	.activity.idle {
 		color: var(--text-faint);
+	}
+	.activity.waiting {
+		color: var(--warn);
+		font-weight: var(--fw-semibold);
+	}
+	.activity.waiting .dot {
+		background: var(--status-attention, var(--warn));
 	}
 	.row {
 		display: flex;
