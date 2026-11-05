@@ -381,7 +381,8 @@ impl Driver {
         session_id: &str,
         refused: impl FnOnce(&anyhow::Error),
     ) -> anyhow::Result<()> {
-        let dispatch = self.prepare_spawn(sock, spec, Some(session_id)).await.inspect_err(refused)?;
+        let dispatch =
+            self.prepare_spawn(sock, spec, Some(session_id)).await.inspect_err(refused)?;
         dispatch.send().await
     }
 
