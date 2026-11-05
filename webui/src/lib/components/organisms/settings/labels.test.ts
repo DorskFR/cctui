@@ -3,7 +3,9 @@ import { flushSync, mount, unmount, type Component } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AppearanceSection from './AppearanceSection.svelte';
 import ExecutionSection from './ExecutionSection.svelte';
+import LaunchSection from './LaunchSection.svelte';
 import NotificationsSection from './NotificationsSection.svelte';
+import PanelsTable from './PanelsTable.svelte';
 import PrivacySection from './PrivacySection.svelte';
 import SectionHost from './section.host.test.svelte';
 import SessionsSection from './SessionsSection.svelte';
@@ -51,8 +53,10 @@ afterEach(() => {
 
 const sections: [string, Component<Record<string, never>>][] = [
 	['Appearance', AppearanceSection as Component<Record<string, never>>],
-	['Sessions', SessionsSection as Component<Record<string, never>>],
-	['Execution', ExecutionSection as Component<Record<string, never>>],
+	['Panels', PanelsTable as Component<Record<string, never>>],
+	['Launch', LaunchSection as Component<Record<string, never>>],
+	['Conversation', SessionsSection as Component<Record<string, never>>],
+	['Automation', ExecutionSection as Component<Record<string, never>>],
 	['Privacy', PrivacySection as Component<Record<string, never>>],
 	['Notifications', NotificationsSection as Component<Record<string, never>>]
 ];

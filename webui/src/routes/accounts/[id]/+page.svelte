@@ -9,10 +9,9 @@
 		type AccountProvider
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
-	import { providerLabel } from '$lib/providers';
 	import { m } from '$lib/paraglide/messages';
 	import { tick } from 'svelte';
-	import { Breadcrumb, Button, Text } from '@dorsk/tsumikit';
+	import { Breadcrumb, Text } from '@dorsk/tsumikit';
 	import PageHead from '$lib/components/molecules/PageHead.svelte';
 	import AccountEditorModal from '$lib/components/organisms/accounts/AccountEditorModal.svelte';
 	import { availableKinds } from '$lib/components/organisms/accounts/account-editor.logic';
@@ -30,6 +29,10 @@
 	import ServiceTokensSection from '$lib/components/organisms/accounts/account-page/ServiceTokensSection.svelte';
 	import DangerSection from '$lib/components/organisms/accounts/account-page/DangerSection.svelte';
 	import ProviderSettingsSection from '$lib/components/organisms/accounts/account-page/ProviderSettingsSection.svelte';
+	import {
+		confirmDeleteAccount,
+		confirmRemoveProvider
+	} from '$lib/components/organisms/accounts/account-page/confirms';
 
 	const accounts = useAccounts();
 	const actions = useAccountActions();
@@ -77,27 +80,22 @@
 		revealSettings();
 	});
 
-	function removeProvider(p: AccountProvider) {
-		if (!account) return;
-		if (
-			!confirm(
-				m.accounts_confirm_remove_provider({
-					provider: providerLabel(p.provider),
-					name: account.name
-				})
-			)
-		)
-			return;
+	async function removeProvider(p: AccountProvider) {
+		const acct = account;
+		if (!acct || !(await confirmRemoveProvider(p.provider, acct.name))) return;
 		guard(
-			actions.removeProvider(account.id, p.id).then(() => toasts.ok(m.accounts_provider_removed()))
+			actions.removeProvider(acct.id, p.id).then(() => {
+				toasts.ok(m.accounts_provider_removed());
+				dropSelection();
+			})
 		);
 	}
 
-	function removeAccount() {
-		if (!account) return;
-		if (!confirm(m.accounts_confirm_delete_account({ name: account.name }))) return;
+	async function removeAccount() {
+		const acct = account;
+		if (!acct || !(await confirmDeleteAccount(acct.name))) return;
 		guard(
-			actions.remove(account.id).then(() => {
+			actions.remove(acct.id).then(() => {
 				toasts.ok(m.accounts_deleted());
 				goto(ACCOUNTS_HREF);
 			})
@@ -114,9 +112,7 @@
 	/>
 
 	{#if account}
-		<PageHead title={account.name}>
-			<Button as="a" href={ACCOUNTS_HREF}>{m.account_back()}</Button>
-		</PageHead>
+		<PageHead title={account.name} />
 
 		<div class="sections">
 			<IdentitySection {account} {owner} />
@@ -127,7 +123,6 @@
 				onadd={() => editor?.openAddProvider(account)}
 				onedit={(p) => selectProvider(p, true)}
 				onreauth={(p) => editor?.reauth(account, p)}
-				onremove={removeProvider}
 			/>
 			{#if selected}
 				<ProviderSettingsSection
@@ -138,6 +133,7 @@
 					initialPage={landingPage}
 					onselect={(p) => selectProvider(p)}
 					onmoved={dropSelection}
+					onremove={removeProvider}
 				/>
 			{/if}
 			<EnvSection {account} />

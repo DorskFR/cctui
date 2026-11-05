@@ -37,7 +37,6 @@
 	{#snippet legend()}
 		<Input
 			size="sm"
-			mono
 			width="10rem"
 			bind:value={name}
 			placeholder={m.pools_name_placeholder()}

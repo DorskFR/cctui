@@ -66,3 +66,19 @@ describe('SERVER_FIELDS', () => {
 		);
 	});
 });
+
+describe('state filter', () => {
+	it('narrows the loaded list by bucket on the client, never sent to the server', () => {
+		const { serverQuery, clientFilters } = splitQuery('state:needs-input foo', schema);
+		expect(serverQuery).toBe('foo');
+		expect(matchesClientFilters(session({ bucket: 'blocked' }), clientFilters)).toBe(true);
+		expect(matchesClientFilters(session({ bucket: 'working' }), clientFilters)).toBe(false);
+	});
+
+	it('supports negation', () => {
+		const { clientFilters } = splitQuery('state!=working', schema);
+		expect(clientFilters.map((f) => f.op)).toEqual(['ne']);
+		expect(matchesClientFilters(session({ bucket: 'working' }), clientFilters)).toBe(false);
+		expect(matchesClientFilters(session({ bucket: 'done' }), clientFilters)).toBe(true);
+	});
+});

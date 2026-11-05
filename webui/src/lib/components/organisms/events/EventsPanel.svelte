@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { Text } from '@dorsk/tsumikit';
 	import PageHead from '$lib/components/molecules/PageHead.svelte';
 	import EventFeed from './EventFeed.svelte';
 	import EventFilterBar from './EventFilterBar.svelte';
@@ -12,9 +11,8 @@
 	const admin = $derived(me.data?.scopes?.includes('admin') ?? false);
 </script>
 
-<div class="panel">
-	<PageHead title={m.events_title()} />
-	<Text size="sm" tone="faint">{m.events_subtitle()}</Text>
+<div class="panel" data-journey="page" data-journey-key="events">
+	<PageHead title={m.events_title()} subtitle={m.events_subtitle()} />
 	<EventFilterBar bind:filters {admin} />
 	<EventFeed {filters} />
 </div>

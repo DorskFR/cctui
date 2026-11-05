@@ -23,7 +23,8 @@
 		badgeOf,
 		onselect,
 		onedit,
-		onnew
+		onnew,
+		manageHref
 	}: {
 		/** Already in display order. */
 		profiles: SessionProfile[];
@@ -37,8 +38,11 @@
 		chainOf: (spec: ProfileSpecForm) => string;
 		badgeOf: (spec: ProfileSpecForm) => BadgeLook;
 		onselect: (id: string) => void;
-		onedit: () => void;
-		onnew: () => void;
+		/** Absent: no cog. */
+		onedit?: () => void;
+		onnew?: () => void;
+		/** The footer links here instead of offering "New profile". */
+		manageHref?: string;
 	} = $props();
 
 	const uid = Math.random().toString(36).slice(2, 8);
@@ -172,11 +176,10 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="card" bind:this={cardEl} {onkeydowncapture}>
+<div class="card" class:no-tools={!onedit} bind:this={cardEl} {onkeydowncapture}>
 	<Popover
 		bind:open
 		bare
-		hitArea="compact"
 		gap={0}
 		label={m.spawn_profiles_aria()}
 		placement="bottom-start"
@@ -230,20 +233,26 @@
 				{/each}
 			</div>
 			<div class="footer">
-				<Button
-					data-journey="new-profile"
-					variant="link"
-					size="sm"
-					disabled={busy}
-					onclick={() => {
-						open = false;
-						onnew();
-					}}>{m.spawn_profile_new()}</Button
-				>
+				{#if manageHref}
+					<Button data-journey="manage-profiles" variant="link" size="sm" href={manageHref}>
+						{m.launch_manage_profiles()}
+					</Button>
+				{:else if onnew}
+					<Button
+						data-journey="new-profile"
+						variant="link"
+						size="sm"
+						disabled={busy}
+						onclick={() => {
+							open = false;
+							onnew?.();
+						}}>{m.spawn_profile_new()}</Button
+					>
+				{/if}
 			</div>
 		</div>
 	</Popover>
-	{#if current}
+	{#if current && onedit}
 		<span class="tools">
 			<span class="cog">
 				<IconButton
@@ -308,6 +317,9 @@
 		color: color-mix(in srgb, var(--accent) 70%, var(--text-muted));
 		--icon-size: var(--control-icon-md);
 		transition: rotate var(--dur-fast) var(--ease-out);
+	}
+	.no-tools .chevron {
+		margin-inline-start: 0;
 	}
 	.chevron.open {
 		rotate: 180deg;

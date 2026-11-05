@@ -21,7 +21,8 @@
 		busy = false,
 		oncreate,
 		onsave,
-		ondelete
+		ondelete,
+		manageHref
 	}: {
 		profiles: SessionProfile[];
 		selectedId: string | null;
@@ -35,6 +36,8 @@
 		oncreate: (name: string, spec: ProfileSpecForm) => Promise<boolean>;
 		onsave: (id: string, name: string, spec: ProfileSpecForm) => void;
 		ondelete: (id: string) => void;
+		/** Pick-only: no inline editing, the picker links here to manage profiles. */
+		manageHref?: string;
 	} = $props();
 
 	type FormState = { mode: 'edit'; id: string } | { mode: 'create' } | null;
@@ -157,9 +160,10 @@
 				{specFor}
 				{chainOf}
 				{badgeOf}
+				{manageHref}
 				onselect={select}
-				onedit={toggleEdit}
-				onnew={openCreate}
+				onedit={manageHref ? undefined : toggleEdit}
+				onnew={manageHref ? undefined : openCreate}
 			/>
 		{/if}
 		{#if editing}

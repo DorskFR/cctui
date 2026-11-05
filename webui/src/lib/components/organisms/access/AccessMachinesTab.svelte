@@ -9,6 +9,7 @@
 		Dot,
 		IconButton,
 		Modal,
+		Switch,
 		Text,
 		Timestamp
 	} from '@dorsk/tsumikit';
@@ -58,14 +59,17 @@
 	const groups = $derived(splitRevoked(shown));
 	const rows = $derived(visibleRows(shown, showRevoked));
 
-	const columns: Column<MachineRow>[] = [
+	const columns = $derived<Column<MachineRow>[]>([
 		{ key: 'machine', label: m.users_col_machine(), role: 'title' },
 		{ key: 'status', label: m.users_col_status(), width: '7rem', nowrap: true, role: 'meta' },
 		{ key: 'seen', label: m.users_col_last_seen(), width: '8rem', nowrap: true, role: 'meta' },
 		{ key: 'preview', label: m.access_col_preview(), width: '9rem', nowrap: true, role: 'detail', hideBelow: 'md' },
 		{ key: 'kind', label: m.access_col_kind(), width: '6rem', nowrap: true, role: 'meta', hideBelow: 'sm' },
-		{ key: 'actions', label: '', width: '8.5rem', nowrap: true, align: 'right', role: 'actions' }
-	];
+		...(canManage
+			? [{ key: 'visible', label: m.set_visibility_column(), width: '7rem', nowrap: true, role: 'meta' } as const]
+			: []),
+		{ key: 'actions', label: '', width: '7rem', nowrap: true, align: 'right', role: 'actions' }
+	]);
 
 	const liveText = (mc: MachineRow) =>
 		mc.revoked_at
@@ -85,13 +89,9 @@
 	function save(mc: MachineRow, displayName: string | null, hue: number | null) {
 		guard(actions.updateMachine(userId, mc.id, displayName, hue));
 	}
-	function toggleHidden(mc: MachineRow) {
+	function setVisible(mc: MachineRow, visible: boolean) {
 		const name = mc.display_name || mc.name;
-		guard(
-			machineHidden(mc)
-				? hiddenActions.unhide('machine', mc.id).then(() => toasts.ok(m.hidden_owners_unhidden_toast({ name })))
-				: hiddenActions.hide('machine', mc.id, name).then(() => toasts.ok(m.hidden_owners_hidden_toast({ name })))
-		);
+		guard(visible ? hiddenActions.unhide('machine', mc.id) : hiddenActions.hide('machine', mc.id, name));
 	}
 	function drop(mc: MachineRow) {
 		guard(mc.revoked_at ? actions.purgeMachine(userId, mc.id) : actions.revokeMachine(userId, mc.id));
@@ -122,6 +122,17 @@
 {#snippet colKind(mc: MachineRow)}
 	<Text size="xs" tone="faint">{mc.kind}</Text>
 {/snippet}
+{#snippet colVisible(mc: MachineRow)}
+	{#if !mc.revoked_at}
+		<Switch
+			size="sm"
+			bind:checked={() => !machineHidden(mc), (v) => setVisible(mc, v)}
+			label={m.set_visibility_machine_label({ name: mc.display_name || mc.name })}
+			data-journey="machine-visibility"
+			data-journey-key={mc.id}
+		/>
+	{/if}
+{/snippet}
 {#snippet colActions(mc: MachineRow)}
 	<span class="row-actions">
 		<IconButton
@@ -132,17 +143,6 @@
 			title={m.events_machine_history_button()}
 			onclick={() => (historyTarget = mc)}
 		/>
-		{#if canManage && !mc.revoked_at}
-			<IconButton
-				inline
-				icon={machineHidden(mc) ? 'eye' : 'eye-off'}
-				size={14}
-				label={machineHidden(mc) ? m.hidden_owners_unhide() : m.hidden_owners_hide()}
-				title={machineHidden(mc) ? m.hidden_owners_unhide() : m.hidden_owners_hide()}
-				data-journey="hide-machine"
-				onclick={() => toggleHidden(mc)}
-			/>
-		{/if}
 		{#if mayShare && mc.kind !== 'dispatch' && !mc.revoked_at}
 			<IconButton
 				inline
@@ -209,6 +209,7 @@
 			seen: colSeen,
 			preview: colPreview,
 			kind: colKind,
+			visible: colVisible,
 			actions: colActions
 		}}
 	/>

@@ -4,6 +4,7 @@
 	import { copyText } from '$lib/clipboard';
 	import { endpoints, qk, usePluginInstanceSettings } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
+	import { confirmDialog } from '$lib/confirmDialog.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	let { pluginId }: { pluginId: string } = $props();
@@ -53,16 +54,27 @@
 		}, m.settings_plugins_instance_saved());
 	}
 
-	function clearSecret(key: string) {
-		if (!confirm(m.settings_plugins_instance_secret_clear_confirm())) return;
+	async function clearSecret(key: string) {
+		const ok = await confirmDialog({
+			title: m.set_plugin_secret_clear_title(),
+			message: m.settings_plugins_instance_secret_clear_confirm(),
+			confirmLabel: m.set_plugin_secret_clear_confirm()
+		});
+		if (!ok) return;
 		void run(
 			() => endpoints.savePluginInstanceSettings(pluginId, { [key]: '' }),
 			m.settings_plugins_instance_secret_cleared()
 		);
 	}
 
-	function rotate() {
-		if (!confirm(m.settings_plugins_instance_proxy_rotate_confirm())) return;
+	async function rotate() {
+		const ok = await confirmDialog({
+			title: m.set_plugin_rotate_title(),
+			message: m.settings_plugins_instance_proxy_rotate_confirm(),
+			confirmLabel: m.set_plugin_rotate_confirm(),
+			tone: 'warn'
+		});
+		if (!ok) return;
 		void run(async () => {
 			const minted = await endpoints.rotatePluginProxySecret(pluginId);
 			revealed = minted.secret;

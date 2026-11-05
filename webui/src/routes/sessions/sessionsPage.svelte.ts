@@ -108,7 +108,7 @@ export interface SessionsPageDeps {
   refetchLive: () => Promise<unknown>;
   dockLayout: () => DockLayout;
   clearUrlSession: () => void;
-  confirm: (message: string) => boolean;
+  confirm: (message: string) => boolean | Promise<boolean>;
   spawnSlot: {
     currentKey: () => string;
     read: (key: string) => SpawnSlotPayload | null;
@@ -121,7 +121,6 @@ export interface SessionsPageDeps {
   labels: () => Label[] | undefined;
   // Visual document order of the rendered rows, for shift-range selection.
   renderedOrder: () => string[];
-  showHidden?: () => boolean;
 }
 
 export type { ViewMode } from "$lib/sessionsView.svelte";
@@ -169,8 +168,10 @@ export class SessionsPage {
   set openSession(v: SessionListItem | null) {
     this.#openReq++;
     this.urlResolving = false;
+    this.missingId = null;
     this.#open = v;
   }
+  missingId = $state<string | null>(null);
   showSpawn = $state(false);
   // Bumped whenever the docked form is done with (spawned, drafted, cleared,
   // or handed a prefill) so it remounts and reseeds exactly like a reopened
@@ -201,24 +202,16 @@ export class SessionsPage {
     this.#d = d;
     this.#pager = createInfiniteQuery(
       () => ({
-        queryKey: qk.sessionSearch(
-          this.serverQuery,
-          this.#pagerArchived,
-          d.showHidden?.() ?? false,
-        ),
-        queryFn: ({ queryKey: [, , key], pageParam, signal }) => {
-          const args = [
+        queryKey: qk.sessionSearch(this.serverQuery, this.#pagerArchived),
+        queryFn: ({ queryKey: [, , key], pageParam, signal }) =>
+          d.api.searchSessions(
             key.q,
             key.archived,
             PAGE,
             pageParam.offset,
             pageParam.cursor,
             signal,
-          ] as const;
-          return "showHidden" in key
-            ? d.api.searchSessions(...args, true)
-            : d.api.searchSessions(...args);
-        },
+          ),
         initialPageParam: FIRST_PAGE,
         getNextPageParam: nextSearchPage,
         enabled: this.pagerActive,
@@ -517,6 +510,7 @@ export class SessionsPage {
   // whose row may not exist yet.
   openById = async (id: string, opts: { spawned?: boolean } = {}) => {
     const req = ++this.#openReq;
+    this.missingId = null;
     const found = this.#loaded.find((s) => s.id === id);
     if (found) {
       this.urlResolving = false;
@@ -538,13 +532,9 @@ export class SessionsPage {
       if (req === this.#openReq) this.#open = row;
     } catch (e) {
       if (req !== this.#openReq) return;
-      // Archived/ended sessions resolve from the DB, so a 404 means the
-      // session was actually DELETED — only then toast + drop the id.
-      // Transient errors leave the URL intact so a retry/refresh can recover.
       if (e instanceof ApiError && e.status === 404) {
-        this.#d.toasts.error(m.sessions_toast_not_found());
         this.#open = null;
-        this.#d.clearUrlSession();
+        this.missingId = id;
       } else {
         this.#d.toasts.error(
           m.sessions_toast_open_failed({ error: errMessage(e) }),
@@ -700,7 +690,7 @@ export class SessionsPage {
   };
 
   discardDraft = async (s: SessionListItem) => {
-    if (!this.#d.confirm(m.sessions_confirm_discard_draft())) return;
+    if (!(await this.#d.confirm(m.sessions_confirm_discard_draft()))) return;
     try {
       await this.#d.actions.discardDraft(s.id);
       this.#d.spawnSlot.clear(s.machine_id, s.working_dir);

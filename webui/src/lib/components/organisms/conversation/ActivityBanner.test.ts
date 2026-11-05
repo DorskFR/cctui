@@ -50,7 +50,7 @@ describe('ActivityBanner', () => {
 		expect(document.querySelector('.activity')).toBeNull();
 	});
 
-	it('stays idle while the agent is blocked on the user', () => {
+	it('says it is waiting for the user while an ask, plan or permission is pending', () => {
 		const blocked = [
 			{ ask: { question: 'which?', questions: null } },
 			{ plan: { plan: '# plan' } },
@@ -68,7 +68,12 @@ describe('ActivityBanner', () => {
 		];
 		for (const b of blocked) {
 			render(stream({ working: true, lastAssistantLine: 'thinking', ...b }));
-			expect(document.querySelector('.activity')?.classList.contains('idle')).toBe(true);
+			const el = document.querySelector('.activity');
+			expect(el?.classList.contains('idle')).toBe(false);
+			expect(el?.classList.contains('waiting')).toBe(true);
+			expect(el?.getAttribute('data-journey-key')).toBe('waiting');
+			expect(text()).toContain('Waiting for you');
+			expect(text()).not.toContain('Idle');
 			unmount(comp!);
 			comp = null;
 			document.body.innerHTML = '';
@@ -129,7 +134,7 @@ describe('ActivityBanner', () => {
 
 	it('shows per-turn token counters only once tokens have accrued', () => {
 		render(stream({ working: true, turnStartedAt: Date.now(), lastAssistantLine: 'x' }));
-		expect(text()).not.toContain('↓');
+		expect(text()).not.toContain('input');
 		unmount(comp!);
 		comp = null;
 		document.body.innerHTML = '';
@@ -137,7 +142,26 @@ describe('ActivityBanner', () => {
 		render(
 			stream({ working: true, turnStartedAt: Date.now(), turnTokensIn: 120, turnTokensOut: 34, lastAssistantLine: 'x' })
 		);
-		expect(text()).toContain('↓120');
-		expect(text()).toContain('↑34');
+		expect(text()).toContain('120 input');
+		expect(text()).toContain('34 output');
+		expect(text()).not.toMatch(/[↓↑]/);
+	});
+
+	it('shows the needs-input attention with how long it has waited', () => {
+		comp = mount(ActivityBanner, {
+			target: document.body,
+			props: {
+				stream: stream({ lastAgentAt: Date.now() - 19 * 60_000 }),
+				needsInput: true
+			}
+		});
+		expect(document.querySelector('.activity')?.classList.contains('waiting')).toBe(true);
+		expect(text()).toContain('Waiting for you · 19m');
+	});
+
+	it('stays idle when nothing is pending and the session does not need input', () => {
+		render(stream({ lastAgentAt: Date.now() - 60_000 }));
+		expect(document.querySelector('.activity')?.classList.contains('idle')).toBe(true);
+		expect(text()).toContain('Idle');
 	});
 });

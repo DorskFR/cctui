@@ -21,7 +21,7 @@
 	panelStyle="min-width:280px;max-width:min(90vw,32rem);padding:var(--sp-2) var(--sp-3)"
 >
 	{#snippet trigger()}
-		<Text size="xs" tone="faint" variant="code">↓ {formatBytes(net.total)}</Text>
+		<Text size="xs" tone="faint" numeric>↓ {formatBytes(net.total)}</Text>
 	{/snippet}
 	{#if open}
 		<div class="net-panel">
@@ -68,12 +68,14 @@
 		gap: var(--sp-3);
 		font-size: var(--fs-xs);
 		color: var(--text-muted);
-		font-family: var(--font-mono, monospace);
+		font-family: var(--font-numeric, inherit);
+		font-variant-numeric: tabular-nums;
 	}
 	.net-row.route {
 		color: var(--text);
 	}
 	.net-route {
+		font-family: var(--font-mono);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;

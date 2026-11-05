@@ -2,15 +2,16 @@
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import SessionDot from '$lib/components/molecules/SessionDot.svelte';
 	import SessionGlyphs from '$lib/components/molecules/SessionGlyphs.svelte';
+	import StatText from '$lib/components/atoms/StatText.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { settings } from '$lib/settings.svelte';
-	import { Badge, Text, Timestamp } from '@dorsk/tsumikit';
+	import { Text, Timestamp } from '@dorsk/tsumikit';
 	import { accountTrafficWarning } from '../../../../routes/sessions/sessions.logic';
 	import Gutter from './Gutter.svelte';
 	import { needsYouOf, type SessionActions, type SessionView } from './view';
 
-	// gutter · star/dot/machine/account glyphs · title · labels · ⚙N cadence — the lead
-	// group both the compact row and the detailed card header open with.
+	// Card: gutter · star/dot/machine/account glyphs · title · labels · activity.
+	// Row: gutter · dot · title; the row owns the rest of its line.
 	let {
 		view,
 		actions,
@@ -18,7 +19,6 @@
 	}: {
 		view: SessionView;
 		actions: SessionActions;
-		/** Compact row: capped title, no activity detail headline. */
 		row?: boolean;
 	} = $props();
 
@@ -36,22 +36,21 @@
 	selected={actions.selected}
 	subagentToggles={actions.subagentToggles}
 />
-{#if view.child}
+{#if view.child || row}
 	<SessionDot session={s} livenessClass={view.livenessClass} now={view.now} />
-	<span class="sub-badge"><Badge tone="info" size="xs">{m.sessions_subagent_badge()}</Badge></span>
 {:else}
 	<SessionGlyphs
 		session={s}
 		livenessClass={view.livenessClass}
 		now={view.now}
-		stack={row ? 'auto' : 'never'}
+		stack="never"
 		showMachine={view.showMachine}
 		accountWarn={accountTrafficWarning(s)}
 		showAccountName={settings.accountNames}
 		onTogglePin={actions.selectable ? undefined : actions.onTogglePin}
 	/>
 {/if}
-<span class="title" class:capped={row}>
+<span class="title" class:row>
 	<Text
 		data-journey="title"
 		weight="semibold"
@@ -60,8 +59,7 @@
 		style="min-width:0;max-width:100%">{view.title}</Text
 	>
 </span>
-{#if row}<span class="row-break" aria-hidden="true"></span>{/if}
-{#if s.labels.length > 0 || actions.labelEditable}
+{#if !row && (s.labels.length > 0 || actions.labelEditable)}
 	<span class="labels" class:empty={s.labels.length === 0}><LabelBadge
 		labels={s.labels}
 		editable={actions.labelEditable}
@@ -73,7 +71,7 @@
 		onDelete={actions.onDeleteLabel}
 	/></span>
 {/if}
-{#if act.show && !view.stale}
+{#if !row && act.show && !view.stale}
 	<span
 		class="activity"
 		class:asleep={act.asleep}
@@ -83,7 +81,7 @@
 	>
 		{#if act.count > 0 || act.ageMs !== null}
 			<span class="act-cadence"
-				>⚙{act.count}{#if act.ageMs !== null && s.last_tool_at}&nbsp;·&nbsp;<Timestamp
+				><StatText value={act.count} kind="tools" />{#if act.ageMs !== null && s.last_tool_at}&nbsp;·&nbsp;<Timestamp
 						value={s.last_tool_at}
 						mode="relative"
 						size="xs"
@@ -106,55 +104,23 @@
 				>{m.sessions_needs_you({ count: needsYou.count + needsYou.child })}</span
 			>
 		{/if}
-		{#if headline && !row}<span class="act-detail">{headline}</span>{/if}
+		{#if headline}<span class="act-detail">{headline}</span>{/if}
 	</span>
 {/if}
 
 <style>
-	.labels,
-	.sub-badge {
+	.labels {
 		display: contents;
-	}
-	/* Em, not rem: at a large text scale the row runs out of room well before
-	   its pixel width says so. */
-	@container sess-row (max-width: 20em) {
-		.labels.empty,
-		.sub-badge {
-			display: none;
-		}
 	}
 	.title {
 		display: inline-flex;
 		flex: 0 1 auto;
 		min-width: 0;
 	}
-	/* `ch` has to resolve against the title's own size, not the row's. */
-	.title.capped {
+	.title.row {
+		flex: 1 1 auto;
+		min-width: 8ch;
 		font-size: var(--fs-md);
-		max-width: min(28ch, 40%);
-	}
-	/* The surrounding chips have degraded by here, so the title takes the slack
-	   instead of being the first thing squeezed: a capped, shrinkable title goes
-	   to zero width on a phone, which is both unreadable and untappable. */
-	@container sess-row (max-width: 36.25em) {
-		.title.capped {
-			flex: 1 1 auto;
-			max-width: none;
-			min-width: 6ch;
-		}
-	}
-	/* On a phone the title owns the first line; the chips wrap under it. Pairs
-	   with the row's `wrapAt`. */
-	.row-break {
-		display: none;
-	}
-	@container sess-row (max-width: 30em) {
-		.row-break {
-			display: block;
-			flex: 0 0 100%;
-			height: 0;
-			margin-top: calc(-1 * var(--row-gap, 0px));
-		}
 	}
 	.activity {
 		display: inline-flex;
@@ -166,11 +132,6 @@
 		font-size: var(--fs-xs);
 		color: var(--text-faint);
 		white-space: nowrap;
-	}
-	@container sess-row (max-width: 42.75em) {
-		.activity {
-			display: none;
-		}
 	}
 	.act-cadence {
 		flex: none;

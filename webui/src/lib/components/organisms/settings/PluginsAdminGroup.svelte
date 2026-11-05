@@ -9,6 +9,7 @@
 	import type { CatalogPluginInfo } from '@bindings/CatalogPluginInfo';
 	import { copyText } from '$lib/clipboard';
 	import { toasts } from '$lib/toast.svelte';
+	import { confirmDialog } from '$lib/confirmDialog.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	let { isAdmin = false }: { isAdmin?: boolean } = $props();
@@ -77,13 +78,18 @@
 		);
 	}
 
-	function uninstall(plugin: AdminPluginInfo) {
-		if (!confirm(m.settings_plugins_admin_uninstall_confirm({ name: plugin.name }))) return;
+	async function uninstall(plugin: AdminPluginInfo) {
+		const ok = await confirmDialog({
+			title: m.set_plugin_uninstall_title({ name: plugin.name }),
+			message: m.settings_plugins_admin_uninstall_confirm({ name: plugin.name }),
+			confirmLabel: m.set_plugin_uninstall_confirm()
+		});
+		if (!ok) return;
 		void run(() => endpoints.uninstallPlugin(plugin.id), m.settings_plugins_admin_uninstalled({ name: plugin.name }));
 	}
 </script>
 
-<div id="instance-plugins" data-journey="plugins-admin">
+<div data-journey="plugins-admin">
 	<SettingGroup title={m.settings_plugins_group_manage()}>
 		{#if minted}
 			<Callout tone="warn" data-journey="plugin-admin-proxy-secret">
@@ -101,7 +107,7 @@
 				</div>
 			</Callout>
 		{/if}
-		<SettingRow label={m.settings_plugins_admin_label()} help={m.settings_plugins_admin_help()} server admin wide selfLabelled>
+		<SettingRow label={m.settings_plugins_admin_label()} help={m.settings_plugins_admin_help()} wide selfLabelled>
 			<div class="plugins">
 				{#if plugins.isError}
 					<EmptyState size="compact" tone="danger" icon="warning" title={m.settings_plugins_load_failed()} />
@@ -168,8 +174,6 @@
 		<SettingRow
 			label={m.settings_plugins_admin_catalog_label()}
 			help={m.settings_plugins_admin_catalog_help()}
-			server
-			admin
 			wide
 			selfLabelled
 		>
@@ -219,8 +223,6 @@
 		<SettingRow
 			label={m.settings_plugins_admin_manual_label()}
 			help={m.settings_plugins_admin_manual_help()}
-			server
-			admin
 			wide
 			selfLabelled
 		>

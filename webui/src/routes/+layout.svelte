@@ -32,6 +32,7 @@
 	import { dockLayout } from '$lib/spawnDock.svelte';
 	import { sessionsView } from '$lib/sessionsView.svelte';
 	import { mountJourneys } from '$lib/journey';
+	import ConfirmHost from '$lib/components/molecules/ConfirmHost.svelte';
 
 	let { children } = $props();
 	let workspaceAvailable = $state<boolean | null>(null);
@@ -214,6 +215,7 @@
 		{/if}
 	{/key}
 	<div class="toaster-host" data-toast-pos={settings.toastPosition}><Toaster /></div>
+	<ConfirmHost />
 </PersistQueryClientProvider>
 
 <style>

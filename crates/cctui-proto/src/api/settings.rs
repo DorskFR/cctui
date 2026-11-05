@@ -105,6 +105,27 @@ pub struct UploadCapsRequest {
     pub caps: Option<UploadCaps>,
 }
 
+/// The `event_retention_days` instance setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct EventRetentionInfo {
+    /// Days of events kept; `0` keeps every event.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub days: i64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub default_days: i64,
+    /// `settings` once an admin saved a value, else `default`.
+    pub source: SettingSource,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct EventRetentionRequest {
+    /// `null` clears the saved value, restoring the default.
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub days: Option<i64>,
+}
+
 /// Non-secret part of the `speech` instance setting.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]

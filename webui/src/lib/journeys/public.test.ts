@@ -460,7 +460,7 @@ describe('book fidelity', () => {
 
 	it('shoots the guides screen, which the book had never photographed', () => {
 		const guides = book('settings-tour').steps.find((s) => s.id === 'guides')!;
-		expect(guides.route).toBe('/settings/guides');
+		expect(guides.route).toBe('/settings/interface');
 		expect(guides.capture?.name).toBe('guides');
 		expect(JSON.stringify(guides.target)).toContain('guide');
 	});

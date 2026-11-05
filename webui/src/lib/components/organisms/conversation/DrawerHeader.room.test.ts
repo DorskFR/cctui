@@ -2,11 +2,12 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 import header from './DrawerHeader.svelte?raw';
+import modals from './DrawerHeaderModals.svelte?raw';
 import RoomBadge from '$lib/components/molecules/RoomBadge.svelte';
 
 const markup = header.slice(header.indexOf('</script>'));
-const title = markup.slice(markup.indexOf('<div class="dtitle">'), markup.indexOf('<FontScalePicker'));
-const items = header.slice(header.indexOf('const overflowItems'), header.indexOf(']);', header.indexOf('const overflowItems')));
+const titleStart = markup.indexOf('{#snippet titleBlock()}');
+const title = markup.slice(titleStart, markup.indexOf('{/snippet}', titleStart));
 
 let comp: ReturnType<typeof mount> | null = null;
 afterEach(() => {
@@ -21,7 +22,7 @@ function render(name: string | null) {
 }
 
 describe('drawer header room control', () => {
-	it('keeps no room trigger in the title row', () => {
+	it('keeps no room trigger in the title', () => {
 		expect(title).not.toContain('<Popover');
 		expect(title).not.toContain('RoomMenu');
 		expect(title).not.toContain('roomtrigger');
@@ -42,12 +43,12 @@ describe('drawer header room control', () => {
 	});
 
 	it('offers the room picker from the ⋯ menu', () => {
-		expect(items).toContain('m.rooms_menu_action()');
-		expect(items).toContain('onselect: () => (roomOpen = true)');
+		expect(header).toContain('room: onsetroom ? () => (roomOpen = true) : undefined');
+		expect(markup).toContain('bind:roomOpen');
 	});
 
 	it('opens the shared RoomMenu from that entry', () => {
-		const modal = markup.slice(markup.indexOf('{#if roomOpen}'));
+		const modal = modals.slice(modals.indexOf('{#if roomOpen}'));
 		expect(modal).toContain('<RoomMenu');
 		expect(modal).toContain('current={session.room_id ?? null}');
 		expect(modal).toContain('onsetroom?.(session.id, pick)');

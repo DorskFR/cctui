@@ -55,44 +55,37 @@ function render(props: Record<string, unknown>): HTMLElement {
 }
 
 describe('SessionCard modes', () => {
-	it('the compact row has no preview clamp and carries the machine badge, cwd and branch inline', () => {
+	it('the compact row gives the name its own line and puts machine · project · branch · model in muted sans below', () => {
 		const el = render({ variant: 'row', pendingCount: 2 });
 		expect(el.querySelector('.sc-wrap.compact')).not.toBeNull();
-		expect(el.querySelector('.preview')).toBeNull();
-		expect(el.querySelector('[data-tsu="WorkingDir"]')).not.toBeNull();
-		expect(el.querySelector('.branch')?.getAttribute('title')).toContain('cct-925-sessions-modes');
-		const machine = el.querySelector('.badge[style*="--mh"]');
-		expect(machine?.querySelector('.full')?.textContent).toBe('dev1');
-		expect(machine?.querySelector('.initial')?.textContent).toBe('D1');
-		expect(machine?.getAttribute('title')).toBe('dev1');
+		expect(el.querySelector('.title.row')).not.toBeNull();
+		expect(el.querySelector('[data-tsu="WorkingDir"]')).toBeNull();
+		expect(el.querySelector('.line2 .meta')?.textContent?.trim()).toBe(
+			'dev1 · cctui · cct-925-sessions-modes · opus-4-8'
+		);
+		expect(el.querySelector('.line2 .preview')?.textContent?.trim()).toBe('hello');
 		expect(el.textContent).toContain('2 perm');
+		expect(el.textContent).not.toContain('Σ');
 	});
 
-	// jsdom does not evaluate the container queries that pick between these, so
-	// the assertion is that every step exists for the stylesheet to choose from.
-	it('carries every degradation step of the model chip, and a capped title', () => {
-		const el = render({ variant: 'row' });
-		const model = el.querySelector('.model');
-		expect(model?.querySelector('.full')?.textContent).toBe('opus-4-8');
-		expect(model?.querySelector('.fam')?.textContent).toBe('opus');
-		expect(model?.querySelector('.abbr')?.textContent).toBe('Op.');
-		expect(model?.getAttribute('title')).toBe('opus-4-8 · high');
-		expect(el.querySelector('.title.capped')).not.toBeNull();
-	});
-
-	it('hides the machine badge when the section header already names it', () => {
+	it('hides the machine when the section header already names it', () => {
 		const el = render({ variant: 'row', showMachine: false });
-		expect(el.querySelector('.badge[style*="--mh"]')).toBeNull();
+		expect(el.querySelector('.line2 .meta')?.textContent?.trim()).toBe(
+			'cctui · cct-925-sessions-modes · opus-4-8'
+		);
 	});
 
-	it('the detailed card pins a footer with cwd, branch and the PR link', () => {
+	it('the detailed card footer reads project · branch in sans, with the PR link', () => {
 		const el = render({ variant: 'card' });
 		expect(el.querySelector('.preview')?.textContent).toBe('hello');
-		expect(el.querySelector('.branch')?.getAttribute('title')).toContain('cct-925-sessions-modes');
+		const where = el.querySelector('.where');
+		expect(where?.textContent?.trim()).toBe('cctui · cct-925-sessions-modes');
+		expect(where?.getAttribute('title')).toContain('/home/dorsk/Documents/cctui');
+		expect(el.querySelector('[data-tsu="WorkingDir"]')).toBeNull();
 		const pr = el.querySelector('a.pr-link');
 		expect(pr?.textContent?.trim()).toBe('DorskFR/cctui#311');
 		expect(pr?.getAttribute('href')).toBe('https://github.com/DorskFR/cctui/pull/311');
-		expect(el.textContent).toContain('opus-4-8');
+		expect(el.querySelector('.model .full')?.textContent).toBe('opus-4-8');
 	});
 
 	it('is the sess-card size container every readout degrades against', () => {

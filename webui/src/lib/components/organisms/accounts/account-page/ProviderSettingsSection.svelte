@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { AccountProvider, OAuthAccount } from '$lib/queries';
 	import { providerLabel } from '$lib/providers';
-	import { Card, Tabs } from '@dorsk/tsumikit';
+	import { Button, Card, Tabs, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import ProviderSettings from '../provider-drawer/ProviderSettings.svelte';
 	import type { PageId } from '../provider-drawer/pages.logic';
@@ -13,7 +13,8 @@
 		accounts = [],
 		initialPage,
 		onselect,
-		onmoved
+		onmoved,
+		onremove
 	}: {
 		account: OAuthAccount;
 		providers: AccountProvider[];
@@ -22,6 +23,8 @@
 		initialPage?: PageId;
 		onselect: (p: AccountProvider) => void;
 		onmoved: () => void;
+		/** Absent: no danger zone. */
+		onremove?: (p: AccountProvider) => void;
 	} = $props();
 
 	const tabs = $derived(providers.map((p) => ({ id: p.id, label: providerLabel(p.provider) })));
@@ -55,4 +58,28 @@
 			{onmoved}
 		/>
 	{/key}
+	{#if onremove}
+		<div class="danger" data-journey="provider-danger">
+			<Text as="p" tone="muted" size="sm" measure="60ch">
+				{m.acct_remove_provider_help({ provider: providerLabel(selected.provider), name: account.name })}
+			</Text>
+			<Button size="sm" variant="danger" onclick={() => onremove?.(selected)}>
+				{m.acct_remove_provider_confirm()}
+			</Button>
+		</div>
+	{/if}
 </Card>
+
+<style>
+	.danger {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--sp-3);
+		margin-top: var(--sp-4);
+		padding: var(--sp-3);
+		border-radius: var(--r-md);
+		background: color-mix(in srgb, var(--danger) 8%, transparent);
+	}
+</style>

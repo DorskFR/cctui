@@ -1,14 +1,15 @@
 <script lang="ts">
-	// Settings › Appearance: theme, look, motion, sound, text size, interface
-	// language, toast position. Look, motion and sound live in the kit's own
-	// browser storage; the other blob-backed wrappers on `settings` drive the runtime
-	// theme/fontScale singletons AND persist, so this section and the header
-	// pickers share one round-tripping surface.
+	// Interface › Theme & look. Theme, text size, language and toast position
+	// ride the settings blob and follow the user; look, motion and sound effects
+	// live in the kit's own browser storage, which the section says once.
 	import {
+		FX_FAMILIES,
+		fx,
 		LookPicker,
 		MotionSettings,
 		SegmentedControl,
 		Select,
+		sound,
 		SoundSettings,
 		Switch,
 		Text
@@ -17,7 +18,7 @@
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
-	import { settings, type NavPosition, type ToastPosition } from '$lib/settings.svelte';
+	import { settings, type ToastPosition } from '$lib/settings.svelte';
 	import { LOCALE_LABELS, LOCALES, type Locale } from '$lib/locale.svelte';
 	import { theme } from '$lib/theme.svelte';
 	import { themePickerGroups } from '$lib/components/molecules/themePicker.logic';
@@ -30,8 +31,6 @@
 	function scaleOf(id: string): number {
 		return SCALE_LEVELS.find((l) => l.id === id)?.value ?? 1;
 	}
-	// Auto first (its label recalls the remembered light and dark themes), then
-	// the light and dark sections. Same groups as the header picker.
 	const themeGroups = $derived(
 		themePickerGroups(theme.all, theme.pref, {
 			auto: m.theme_auto_label(),
@@ -39,18 +38,19 @@
 			dark: m.theme_group_dark()
 		})
 	);
+
+	const motionOn = $derived(FX_FAMILIES.some((f) => fx.settings[f] !== 'none'));
+	function setMotion(on: boolean) {
+		if (on) fx.reset();
+		else for (const f of FX_FAMILIES) fx.set(f, 'none');
+	}
 </script>
 
 {#snippet scaleGlyph(o: SegmentOption)}
 	<Text style="font-size: {Math.min(scaleOf(o.value), 1.5)}em; line-height: 1" aria-hidden="true">A</Text>
 {/snippet}
 
-<SettingSection
-	id="appearance"
-	icon="◐"
-	title={m.settings_nav_appearance()}
-	description={m.settings_appearance_desc()}
->
+<SettingSection id="theme" icon="◐" title={m.set_theme_title()} description={m.set_theme_desc()}>
 	<SettingGroup>
 		<SettingRow label={m.settings_theme_label()} help={m.settings_theme_help()}>
 			<Select
@@ -67,36 +67,6 @@
 					</optgroup>
 				{/each}
 			</Select>
-		</SettingRow>
-		<SettingRow label={m.settings_look_label()} help={m.settings_look_help()} selfLabelled>
-			<div data-testid="appearance-look">
-				<LookPicker looks={LOOKS} experimental={false} size="sm" control label={m.settings_look_label()} />
-			</div>
-		</SettingRow>
-		<SettingRow label={m.settings_motion_label()} help={m.settings_motion_help()} selfLabelled>
-			<div data-testid="appearance-motion">
-				<MotionSettings
-					size="sm"
-					control
-					label={m.settings_motion_label()}
-					resetLabel={m.settings_motion_reset()}
-					reducedMotionHint={m.settings_motion_reduced_hint()}
-				/>
-			</div>
-		</SettingRow>
-		<SettingRow label={m.settings_sound_label()} help={m.settings_sound_help()} selfLabelled>
-			<div data-testid="appearance-sound">
-				<SoundSettings
-					size="sm"
-					control
-					label={m.settings_sound_label()}
-					switchLabel={m.settings_sound_switch()}
-					volumeLabel={m.settings_sound_volume()}
-					previewLabel={m.settings_sound_preview()}
-					offHint={m.settings_sound_off_hint()}
-					reducedMotionHint={m.settings_sound_reduced_hint()}
-				/>
-			</div>
 		</SettingRow>
 		<SettingRow label={m.settings_font_size_label()} selfLabelled>
 			<SegmentedControl
@@ -138,15 +108,53 @@
 				<option value="right">{m.settings_toast_position_right()}</option>
 			</Select>
 		</SettingRow>
-		<SettingRow label={m.settings_nav_position_label()} help={m.settings_nav_position_help()}>
-			<Select
-				value={settings.nav}
-				style="width:100%"
-				onchange={(e) => settings.setNav((e.currentTarget as HTMLSelectElement).value as NavPosition)}
-			>
-				<option value="top">{m.settings_nav_position_top()}</option>
-				<option value="bottom">{m.settings_nav_position_bottom()}</option>
-			</Select>
+	</SettingGroup>
+
+	<SettingGroup title={m.set_this_device()}>
+		<SettingRow label={m.settings_look_label()} help={m.set_look_help()} selfLabelled>
+			<div data-testid="appearance-look">
+				<LookPicker looks={LOOKS} experimental={false} size="sm" control label={m.settings_look_label()} />
+			</div>
+		</SettingRow>
+		<SettingRow label={m.settings_motion_label()} help={m.set_motion_help()} selfLabelled>
+			<div class="pair" data-testid="appearance-motion">
+				<Switch bind:checked={() => motionOn, setMotion} label={m.settings_motion_label()} />
+				<MotionSettings
+					size="sm"
+					variant="ghost"
+					label={m.set_motion_tune()}
+					resetLabel={m.settings_motion_reset()}
+					reducedMotionHint={m.settings_motion_reduced_hint()}
+					disabled={!motionOn}
+				/>
+			</div>
+		</SettingRow>
+		<SettingRow label={m.settings_sound_switch()} help={m.set_sound_help()} selfLabelled>
+			<div class="pair" data-testid="appearance-sound">
+				<Switch
+					bind:checked={() => sound.enabled, (v) => sound.setEnabled(v)}
+					label={m.settings_sound_switch()}
+				/>
+				<SoundSettings
+					size="sm"
+					variant="ghost"
+					label={m.set_sound_tune()}
+					switchLabel={m.settings_sound_switch()}
+					volumeLabel={m.settings_sound_volume()}
+					previewLabel={m.settings_sound_preview()}
+					offHint={m.settings_sound_off_hint()}
+					reducedMotionHint={m.settings_sound_reduced_hint()}
+					disabled={!sound.enabled}
+				/>
+			</div>
 		</SettingRow>
 	</SettingGroup>
 </SettingSection>
+
+<style>
+	.pair {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-2);
+	}
+</style>

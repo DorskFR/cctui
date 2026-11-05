@@ -1,5 +1,5 @@
-// Read-only lists shown under Settings › Execution / Privacy, plus the
-// text-normalizing helper the page filter uses.
+// The Settings area map and its redirects, the cross-area filter, and the
+// read-only stall-phrase list shown under Sessions › Automation.
 
 // Mirrors the daemon's compiled STALL_PHRASES (crates/cctui-daemon/src/whipstop.rs)
 // so users can see what `extend` extends — kept in sync by hand.
@@ -102,109 +102,127 @@ export function applySettingsFilter(root: ParentNode, query: string): number {
 }
 
 /**
- * The routed Settings pages, in navigation order. The order is also the scope
- * grouping: every "you" page comes before every "instance" page, so the nav can
- * render one heading per scope without reordering.
+ * The routed Settings areas, in navigation order. Every "you" area comes
+ * before the admin-only Instance, so the nav renders one heading per scope
+ * without reordering.
  */
 export const SETTINGS_PAGES = [
-	'appearance',
+	'interface',
+	'accounts',
 	'sessions',
-	'macros',
-	'context',
-	'plugins',
-	'execution',
-	'privacy',
 	'notifications',
-	'monitoring',
-	'events',
-	'security',
-	'guides',
-	'users',
-	'dispatchers',
-	'instance',
-	'uploads'
+	'plugins',
+	'instance'
 ] as const;
 
 export type SettingsPage = (typeof SETTINGS_PAGES)[number];
 
-export const DEFAULT_SETTINGS_PAGE: SettingsPage = 'appearance';
+export const DEFAULT_SETTINGS_PAGE: SettingsPage = 'interface';
 
 export const SETTINGS_SCOPES = ['you', 'instance'] as const;
 export type SettingsScope = (typeof SETTINGS_SCOPES)[number];
 
-const INSTANCE_PAGES: readonly SettingsPage[] = [
-	'users',
-	'dispatchers',
-	'instance',
-	'uploads'
-];
-
 export function settingsScope(page: SettingsPage): SettingsScope {
-	return INSTANCE_PAGES.includes(page) ? 'instance' : 'you';
+	return page === 'instance' ? 'instance' : 'you';
 }
 
-export function pagesInScope(scope: SettingsScope): SettingsPage[] {
-	return SETTINGS_PAGES.filter((p) => settingsScope(p) === scope);
+/**
+ * The subsection anchors of each area. Every area stays mounted, so an anchor
+ * is unique across all of them, not just within its own page.
+ */
+export const SETTINGS_ANCHORS = {
+	interface: ['theme', 'layout', 'monitoring', 'conversation-display', 'guides', 'storage'],
+	accounts: ['profile', 'security', 'machines', 'providers'],
+	sessions: ['profiles', 'macros', 'conversation', 'context', 'privacy', 'automation'],
+	notifications: ['notifications', 'voice'],
+	plugins: ['plugins'],
+	instance: [
+		'general',
+		'self-update',
+		'users',
+		'dispatchers',
+		'harnesses',
+		'limits',
+		'spawn-limits',
+		'uploads',
+		'event-retention',
+		'network',
+		'upstreams',
+		'integrations',
+		'speech',
+		'instance-plugins'
+	]
+} as const satisfies Record<SettingsPage, readonly string[]>;
+
+export function settingsHref(page: SettingsPage, anchor?: string): string {
+	return anchor ? `/settings/${page}#${anchor}` : `/settings/${page}`;
 }
 
-/** Anchors older deep links point at, and the page that now owns them. */
-const HASH_ALIASES: Record<string, SettingsPage> = {
-	storage: 'sessions',
-	version: 'instance',
-	'passkey-sign-in': 'instance',
-	'upload-caps': 'uploads',
-	'self-update': 'instance',
-	'net-stats': 'instance',
-	upstreams: 'instance',
-	'spawn-limits': 'instance',
-	theme: 'appearance',
-	language: 'appearance',
-	spawn: 'sessions',
-	harness: 'execution',
-	redaction: 'privacy',
-	secrets: 'privacy',
-	notify: 'notifications',
-	resources: 'monitoring',
-	passkeys: 'security',
-	memory: 'context',
-	skills: 'plugins',
-	onboarding: 'guides',
-	tour: 'guides',
-	access: 'users',
-	keys: 'users',
-	machines: 'users',
-	tokens: 'users'
+/** Former `/settings/<slug>` pages and where their content lives now. */
+export const LEGACY_PAGES: Readonly<Record<string, string>> = {
+	appearance: settingsHref('interface', 'theme'),
+	macros: settingsHref('sessions', 'macros'),
+	context: settingsHref('sessions', 'context'),
+	execution: settingsHref('sessions', 'profiles'),
+	privacy: settingsHref('sessions', 'privacy'),
+	monitoring: settingsHref('interface', 'monitoring'),
+	events: '/events',
+	security: settingsHref('accounts', 'security'),
+	guides: settingsHref('interface', 'guides'),
+	users: settingsHref('instance', 'users'),
+	dispatchers: settingsHref('instance', 'dispatchers'),
+	uploads: settingsHref('instance', 'uploads')
 };
 
-/** Former settings pages that are top-level screens again. */
-export const MOVED_OUT: Record<string, string> = {
-	accounts: '/accounts'
+/** Anchors of the old single-page Settings that are not anchors any more. */
+const HASH_ALIASES: Readonly<Record<string, string>> = {
+	version: settingsHref('instance', 'general'),
+	'passkey-sign-in': settingsHref('instance', 'general'),
+	'upload-caps': settingsHref('instance', 'uploads'),
+	'net-stats': settingsHref('instance', 'general'),
+	language: settingsHref('interface', 'theme'),
+	spawn: settingsHref('interface', 'layout'),
+	harness: settingsHref('sessions', 'profiles'),
+	redaction: settingsHref('sessions', 'privacy'),
+	secrets: settingsHref('sessions', 'privacy'),
+	notify: settingsHref('notifications', 'notifications'),
+	resources: settingsHref('interface', 'monitoring'),
+	passkeys: settingsHref('accounts', 'security'),
+	memory: settingsHref('sessions', 'context'),
+	skills: settingsHref('plugins'),
+	onboarding: settingsHref('interface', 'guides'),
+	tour: settingsHref('interface', 'guides'),
+	access: settingsHref('instance', 'users'),
+	keys: settingsHref('instance', 'users'),
+	tokens: settingsHref('instance', 'users')
 };
 
 export function isSettingsPage(slug: string | null | undefined): slug is SettingsPage {
 	return !!slug && (SETTINGS_PAGES as readonly string[]).includes(slug);
 }
 
-/** `/settings#passkeys` and friends keep working: hash → owning page. */
-export function pageForHash(hash: string | null | undefined): SettingsPage {
+/** The area owning a subsection anchor, if any. */
+export function pageOfAnchor(anchor: string): SettingsPage | null {
+	for (const page of SETTINGS_PAGES) {
+		if ((SETTINGS_ANCHORS[page] as readonly string[]).includes(anchor)) return page;
+	}
+	return null;
+}
+
+/** Where an old `/settings/<slug>` now lives; `null` when the slug is current. */
+export function legacySettingsTarget(slug: string | null | undefined): string | null {
+	if (isSettingsPage(slug)) return null;
+	return (slug && LEGACY_PAGES[slug]) || settingsHref(DEFAULT_SETTINGS_PAGE);
+}
+
+/** `/settings#passkeys` and friends keep working: hash → its current location. */
+export function settingsLocationForHash(hash: string | null | undefined): string {
 	const id = (hash ?? '').replace(/^#/, '').trim().toLowerCase();
-	if (isSettingsPage(id)) return id;
-	return HASH_ALIASES[id] ?? DEFAULT_SETTINGS_PAGE;
-}
-
-export function settingsHref(page: SettingsPage): string {
-	return `/settings/${page}`;
-}
-
-export function pagerNeighbours(page: SettingsPage): {
-	prev: SettingsPage | null;
-	next: SettingsPage | null;
-} {
-	const i = SETTINGS_PAGES.indexOf(page);
-	return {
-		prev: i > 0 ? SETTINGS_PAGES[i - 1] : null,
-		next: i >= 0 && i < SETTINGS_PAGES.length - 1 ? SETTINGS_PAGES[i + 1] : null
-	};
+	if (!id) return settingsHref(DEFAULT_SETTINGS_PAGE);
+	if (isSettingsPage(id)) return settingsHref(id);
+	const page = pageOfAnchor(id);
+	if (page) return settingsHref(page, id);
+	return LEGACY_PAGES[id] ?? HASH_ALIASES[id] ?? settingsHref(DEFAULT_SETTINGS_PAGE);
 }
 
 /**

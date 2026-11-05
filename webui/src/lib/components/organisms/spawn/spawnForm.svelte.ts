@@ -15,7 +15,6 @@ import {
 	endpoints
 } from '$lib/queries';
 import { toasts } from '$lib/toast.svelte';
-import { submitChordLabel } from '$lib/platform';
 import {
 	drafts,
 	promptHistory,
@@ -202,9 +201,7 @@ export class SpawnForm {
 	draftValid = $derived(
 		this.target === 'machine' && this.spawnValid && this.att.images.pending.length === 0
 	);
-	spawnLabel = $derived(
-		`${this.target !== 'machine' ? m.spawn_action_dispatch() : m.spawn_action_spawn()} (${submitChordLabel()})`
-	);
+	spawnLabel = $derived(this.target !== 'machine' ? m.spawn_action_dispatch() : m.spawn_action_spawn());
 	noMachines = $derived(this.target === 'machine' && this.machineList.length === 0);
 	disabledReason = $derived(this.noMachines ? m.spawn_no_machines_hint() : undefined);
 

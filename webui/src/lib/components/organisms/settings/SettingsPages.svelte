@@ -1,97 +1,51 @@
 <script lang="ts">
-	// Every settings page, mounted at once, one shown. Keeping them all in the
-	// DOM is what lets the search box filter across pages and jump to whichever
+	// Every settings area, mounted at once, one shown. Keeping them all in the
+	// DOM is what lets the search box filter across areas and jump to whichever
 	// one still has a match — the rows carry their own localized copy, so there
-	// is no second catalogue to search.
-	import AppearanceSection from './AppearanceSection.svelte';
-	import SessionsSection from './SessionsSection.svelte';
-	import HiddenOwnersSection from './HiddenOwnersSection.svelte';
-	import MacrosSection from './MacrosSection.svelte';
-	import ContextSection from './ContextSection.svelte';
-	import PluginsSection from './PluginsSection.svelte';
-	import ExecutionSection from './ExecutionSection.svelte';
-	import PrivacySection from './PrivacySection.svelte';
+	// is no second catalogue to search. Screens embedded in an area (provider
+	// accounts, users, dispatchers, the profile editor) mount only while their
+	// area is shown.
+	import AccountsArea from './AccountsArea.svelte';
+	import InstanceArea from './InstanceArea.svelte';
+	import InterfaceArea from './InterfaceArea.svelte';
 	import NotificationsSection from './NotificationsSection.svelte';
+	import PluginsSection from './PluginsSection.svelte';
+	import SessionsArea from './SessionsArea.svelte';
 	import VoiceSection from './VoiceSection.svelte';
-	import MonitoringSection from './MonitoringSection.svelte';
-	import SecuritySection from './SecuritySection.svelte';
-	import GuidesSection from './GuidesSection.svelte';
-	import AccessPanel from '$lib/components/organisms/access/AccessPanel.svelte';
-	import EventsPanel from '$lib/components/organisms/events/EventsPanel.svelte';
-	import DispatchersPanel from '$lib/components/organisms/DispatchersPanel.svelte';
-	import InstanceSection from './InstanceSection.svelte';
-	import UploadsSection from './UploadsSection.svelte';
 	import type { SettingsPage } from './settings.logic';
 
 	let { current, isAdmin }: { current: SettingsPage; isAdmin: boolean } = $props();
 </script>
 
-<div class="pg" class:on={current === 'appearance'} data-settings-page="appearance" data-journey="page" data-journey-key="appearance">
-	<AppearanceSection />
+<div class="pg" class:on={current === 'interface'} data-settings-page="interface" data-journey="page" data-journey-key="interface">
+	<InterfaceArea />
+</div>
+<div class="pg" class:on={current === 'accounts'} data-settings-page="accounts" data-journey="page" data-journey-key="accounts">
+	<AccountsArea active={current === 'accounts'} />
 </div>
 <div class="pg" class:on={current === 'sessions'} data-settings-page="sessions" data-journey="page" data-journey-key="sessions">
-	<SessionsSection />
-	<HiddenOwnersSection {isAdmin} />
-</div>
-<div class="pg" class:on={current === 'macros'} data-settings-page="macros" data-journey="page" data-journey-key="macros">
-	<MacrosSection />
-</div>
-<div class="pg" class:on={current === 'context'} data-settings-page="context" data-journey="page" data-journey-key="context">
-	<ContextSection />
-</div>
-<div class="pg" class:on={current === 'plugins'} data-settings-page="plugins" data-journey="page" data-journey-key="plugins">
-	<PluginsSection {isAdmin} />
-</div>
-<div class="pg" class:on={current === 'execution'} data-settings-page="execution" data-journey="page" data-journey-key="execution">
-	<ExecutionSection />
-</div>
-<div class="pg" class:on={current === 'privacy'} data-settings-page="privacy" data-journey="page" data-journey-key="privacy">
-	<PrivacySection />
+	<SessionsArea active={current === 'sessions'} />
 </div>
 <div class="pg" class:on={current === 'notifications'} data-settings-page="notifications" data-journey="page" data-journey-key="notifications">
 	<NotificationsSection />
 	<VoiceSection />
 </div>
-<div class="pg" class:on={current === 'monitoring'} data-settings-page="monitoring" data-journey="page" data-journey-key="monitoring">
-	<MonitoringSection />
+<div class="pg" class:on={current === 'plugins'} data-settings-page="plugins" data-journey="page" data-journey-key="plugins">
+	<PluginsSection />
 </div>
-<div class="pg" class:on={current === 'security'} data-settings-page="security" data-journey="page" data-journey-key="security">
-	<SecuritySection />
-</div>
-<div class="pg" class:on={current === 'guides'} data-settings-page="guides" data-journey="page" data-journey-key="guides">
-	<GuidesSection />
-</div>
-<!-- Events, users and dispatchers are screens, not rows of settings: the
-     cross-page filter has nothing to match in them, and mounting their queries
-     on every other settings page would be pure cost. They render only when
-     they are the page being shown. -->
-{#if current === 'events'}
-	<div class="pg on" data-settings-page="events" data-journey="page" data-journey-key="events">
-		<EventsPanel />
+{#if isAdmin}
+	<div class="pg" class:on={current === 'instance'} data-settings-page="instance" data-journey="page" data-journey-key="instance">
+		<InstanceArea active={current === 'instance'} />
 	</div>
 {/if}
-{#if current === 'users'}
-	<div class="pg on" data-settings-page="users" data-journey="page" data-journey-key="users">
-		<AccessPanel />
-	</div>
-{/if}
-{#if current === 'dispatchers'}
-	<div class="pg on" data-settings-page="dispatchers" data-journey="page" data-journey-key="dispatchers">
-		<DispatchersPanel />
-	</div>
-{/if}
-<div class="pg" class:on={current === 'instance'} data-settings-page="instance" data-journey="page" data-journey-key="instance">
-	<InstanceSection {isAdmin} />
-</div>
-<div class="pg" class:on={current === 'uploads'} data-settings-page="uploads" data-journey="page" data-journey-key="uploads">
-	<UploadsSection {isAdmin} />
-</div>
 
 <style>
 	.pg {
 		display: none;
 	}
 	.pg.on {
-		display: block;
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-8);
 	}
 </style>

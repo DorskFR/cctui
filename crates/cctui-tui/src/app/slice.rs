@@ -131,7 +131,7 @@ pub fn summary(app: &App) -> Summary {
     };
     app.stats.as_ref().map_or_else(
         || Summary { live: i64::try_from(app.active_count).unwrap_or(i64::MAX), ..shared },
-        |stats| Summary { live: stats.live, pending: false, ..shared },
+        |stats| Summary { live: stats.working, pending: false, ..shared },
     )
 }
 
@@ -249,6 +249,7 @@ mod tests {
         SessionStats {
             total: 12,
             live: 3,
+            working: 3,
             needs_input: 2,
             archived: 4,
             today: 5,

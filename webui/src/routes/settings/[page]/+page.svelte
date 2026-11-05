@@ -1,9 +1,9 @@
 <script lang="ts">
-	// User settings, one page per topic. The blob behind them is server-persisted
+	// Settings, one route per area. The blob behind most rows is server-persisted
 	// (GET/PUT /api/v1/settings, localStorage-mirrored); this shell only owns the
-	// navigation: the page nav, the cross-page search, the save indicator and the
-	// pager. Every page stays mounted (SettingsPages) so the search can filter
-	// across all of them and jump to the one that still matches.
+	// area nav, the cross-area search and the save indicator. Every area stays
+	// mounted (SettingsPages) so the search can filter across all of them and
+	// jump to the one that still matches.
 	import { tick } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page as route } from '$app/state';
@@ -17,7 +17,6 @@
 		firstMatchingPage,
 		firstMatchingRow,
 		isSettingsPage,
-		MOVED_OUT,
 		settingsHref,
 		type SettingsPage
 	} from '$lib/components/organisms/settings/settings.logic';
@@ -32,28 +31,19 @@
 		isSettingsPage(route.params.page) ? route.params.page : DEFAULT_SETTINGS_PAGE
 	);
 	$effect(() => {
-		const slug = route.params.page ?? '';
-		if (!isSettingsPage(slug))
-			void goto(MOVED_OUT[slug] ?? settingsHref(DEFAULT_SETTINGS_PAGE), { replaceState: true });
+		if (current === 'instance' && me.data && !isAdmin)
+			void goto(settingsHref(DEFAULT_SETTINGS_PAGE), { replaceState: true });
 	});
 
 	const entries = $derived<TocEntry[]>([
-		{ page: 'appearance', icon: 'palette', label: m.settings_nav_appearance() },
+		{ page: 'interface', icon: 'palette', label: m.set_nav_interface() },
+		{ page: 'accounts', icon: 'user', label: m.set_nav_accounts() },
 		{ page: 'sessions', icon: 'list', label: m.settings_nav_sessions() },
-		{ page: 'macros', icon: 'zap', label: m.settings_nav_macros() },
-		{ page: 'context', icon: 'book', label: m.settings_nav_context() },
+		{ page: 'notifications', icon: 'bell', label: m.set_nav_notifications() },
 		{ page: 'plugins', icon: 'grid', label: m.settings_nav_plugins() },
-		{ page: 'execution', icon: 'play', label: m.settings_nav_execution() },
-		{ page: 'privacy', icon: 'eye-off', label: m.settings_nav_privacy() },
-		{ page: 'notifications', icon: 'bell', label: m.settings_notifications_title() },
-		{ page: 'monitoring', icon: 'live', label: m.settings_nav_monitoring() },
-		{ page: 'events', icon: 'clock', label: m.settings_nav_events() },
-		{ page: 'security', icon: 'lock', label: m.settings_nav_security() },
-		{ page: 'guides', icon: 'life-buoy', label: m.settings_nav_guides() },
-		{ page: 'users', icon: 'users', label: m.settings_nav_users() },
-		{ page: 'dispatchers', icon: 'send', label: m.settings_nav_dispatchers() },
-		{ page: 'instance', icon: 'settings', label: m.settings_nav_instance(), admin: true },
-		{ page: 'uploads', icon: 'upload', label: m.settings_nav_uploads(), admin: true }
+		...(isAdmin
+			? [{ page: 'instance', icon: 'settings', label: m.settings_nav_instance() } as const]
+			: [])
 	]);
 
 	// The filter reads the rendered rows back instead of keeping a parallel

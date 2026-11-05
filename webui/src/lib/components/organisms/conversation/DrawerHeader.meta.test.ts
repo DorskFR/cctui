@@ -1,6 +1,9 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import header from './HeaderMeta.svelte?raw';
+import details from './HeaderMetaDetails.svelte?raw';
+import model from './HeaderModel.svelte?raw';
+import chip from '$lib/components/molecules/LangfuseChip.svelte?raw';
 import host from './DrawerHeader.svelte?raw';
 import en from '../../../../../messages/en.json?raw';
 import fr from '../../../../../messages/fr.json?raw';
@@ -8,8 +11,15 @@ import fr from '../../../../../messages/fr.json?raw';
 const markup = header.slice(header.indexOf('</script>'));
 const script = header.slice(0, header.indexOf('</script>'));
 const css = header.slice(header.indexOf('<style>'));
-const trail = markup.slice(markup.indexOf('<div class="meta-trail">'), markup.indexOf('{#if keepaliveOpen}'));
+const modelCss = model.slice(model.indexOf('<style>'));
+const trail = markup.slice(markup.indexOf('<div class="meta-trail">'), markup.indexOf('<Popover'));
 const popover = markup.slice(markup.indexOf('<Popover'), markup.indexOf('</Popover>'));
+const queryBody = (src: string, q: string) => {
+	const at = src.indexOf(q);
+	expect(at, q).toBeGreaterThan(-1);
+	const rest = src.slice(at);
+	return rest.slice(0, rest.indexOf('\n\t}'));
+};
 
 describe('drawer header meta row', () => {
 	it('keeps cwd and branch on the row at every width', () => {
@@ -22,67 +32,93 @@ describe('drawer header meta row', () => {
 		expect(host).toContain('container: drawer-head / inline-size');
 		expect(css).toContain('@container drawer-head (max-width: 40rem)');
 		expect(css).toContain('@container drawer-head (max-width: 26rem)');
-		expect(css).not.toContain('@media');
-		expect(header).not.toContain('clientWidth={headWidth}');
+		for (const src of [css, modelCss]) expect(src).not.toContain('@media');
 		expect(script).not.toContain('getComputedStyle');
 	});
 
-	it('drops langfuse below 40rem, and the model badge, its editor and Σ below 26rem', () => {
-		const wide = css.slice(css.indexOf('@container drawer-head (max-width: 40rem)'));
-		expect(wide.slice(0, wide.indexOf('\n\t}'))).toContain('.langfuse,');
-		const narrow = css.slice(css.indexOf('@container drawer-head (max-width: 26rem)'));
-		const body = narrow.slice(0, narrow.indexOf('\n\t}'));
-		expect(body).toContain('.model,');
-		expect(body).toContain('.model-edit');
-		expect(body).toContain('.tokens');
+	it('drops the cost below 40rem, and the model and the token total below 26rem', () => {
+		expect(queryBody(css, '@container drawer-head (max-width: 40rem)')).toContain('.cost');
+		expect(queryBody(css, '@container drawer-head (max-width: 26rem)')).toContain('.tokens');
+		const narrowModel = queryBody(modelCss, '@container drawer-head (max-width: 26rem)');
+		expect(narrowModel).toContain('.strip .model,');
+		expect(narrowModel).toContain('.strip .model-edit');
 	});
 
-	it('declares the model-edit base rule before the query that hides it', () => {
-		expect(css.indexOf('.model-edit {')).toBeLessThan(css.indexOf('@container drawer-head (max-width: 26rem)'));
+	it('spells the token total as words, not Σ ↑ ↓ ⚡', () => {
+		expect(trail).toContain('<StatText value={totals.total} kind="tokens" />');
+		expect(header).not.toContain('<TokenUsage');
+		for (const glyph of ['Σ', '↑', '↓', '⚡', '💥']) {
+			expect(markup, glyph).not.toContain(glyph);
+			expect(details.slice(details.indexOf('</script>')), glyph).not.toContain(glyph);
+		}
 	});
 
-	it('makes the adapter logo the one trigger, with no separate ⓘ button', () => {
+	it('shows one cost and names its source', () => {
+		expect(script).toContain('headerCost(Number(session.token_usage.cost_usd) || 0, lf.data)');
+		expect(trail).toContain("{#if cost.source === 'langfuse'}");
+		expect(trail).toContain('<LangfuseChip id={session.id} />');
+		expect(trail).toContain('m.chrome_cost_estimate(');
+		expect(chip).toContain('m.chrome_cost_langfuse({ cost: costLabel })');
+		expect(chip).not.toContain('sessions_langfuse_calls_short');
+	});
+
+	it('never paints a cost in the success colour', () => {
+		for (const src of [header, details, chip]) expect(src).not.toContain('tone="success"');
+	});
+
+	it('labels a plan-billed session instead of showing $0.00', () => {
+		const cost = details.slice(details.indexOf('data-testid="header-cost"'));
+		expect(cost.slice(0, cost.indexOf('</span>'))).toContain('m.chrome_cost_plan()');
+		expect(details).toContain('showHarnessEstimate(cost, harnessUsd)');
+	});
+
+	it('reads numbers in sans tabular figures, not mono', () => {
+		const grid = details.slice(details.indexOf('<div class="mp-grid">'), details.indexOf('{#if bust}'));
+		expect(grid).not.toContain('variant="code"');
+		expect(grid).toContain('<Text numeric');
+	});
+
+	it('makes the adapter logo the one trigger', () => {
 		expect(popover).toContain('{#snippet trigger()}<AdapterIcon');
 		expect(trail).not.toContain('<Icon name="info"');
-		expect(css).not.toContain('.meta-details');
 		expect(popover).toContain('box="sm"');
 	});
 
-	// The panel is the full readout, not a copy of the row's compact chips: the
-	// row degrades to a logo on a phone, so every figure has to be reachable here.
-	it('puts the droppable items behind the trigger, model editor included', () => {
-		expect(popover).toContain("{@render modelMeta('drawer-details')}");
-		expect(popover).toContain('m.drawer_details_in()');
-		expect(popover).toContain('m.drawer_details_out()');
-		expect(popover).toContain('m.drawer_details_cache_read()');
-		expect(popover).toContain('m.drawer_details_cache_write()');
-		expect(popover).toContain('m.drawer_details_total()');
-		expect(popover).toContain('m.drawer_details_cost()');
-		expect(popover).toContain('<LangfuseChip');
-		const snippet = markup.slice(markup.indexOf('{#snippet modelMeta'), markup.indexOf('{#snippet modelMeta') + 2000);
-		expect(snippet).toContain('<ModelPicker');
-		expect(snippet).toContain('onclick={applyModelChange}');
-		expect(snippet).toContain('onclick={() => (modelEditing = false)}');
-		expect(snippet).toContain('onclick={openModelEditor}');
+	it('puts the full readout behind the trigger, model editor included', () => {
+		expect(popover).toContain('<HeaderMetaDetails');
+		for (const k of [
+			'm.drawer_details_in()',
+			'm.drawer_details_out()',
+			'm.drawer_details_cache_read()',
+			'm.drawer_details_cache_write()',
+			'm.drawer_details_total()',
+			'm.drawer_details_cost()',
+			'<LangfuseChip'
+		])
+			expect(details, k).toContain(k);
+		expect(details).toContain('idPrefix="drawer-details" inPopover');
+		expect(model).toContain('<ModelPicker');
+		expect(model).toContain('onclick={apply}');
+		expect(model).toContain('onclick={() => (editing = false)}');
+		expect(model).toContain('onclick={openEditor}');
 	});
 
 	it('gives the two model editor instances distinct ids', () => {
-		expect(markup).toContain('{#snippet modelMeta(idPrefix: string)}');
-		expect(markup).toContain('id="{idPrefix}-model"');
-		expect(markup).not.toContain('id="drawer-model"');
+		expect(model).toContain('id="{idPrefix}-model"');
+		expect(trail).toContain('idPrefix="drawer"');
+		expect(model).not.toContain('id="drawer-model"');
 	});
 
 	it('names the trigger and lets the kit own aria-expanded and Escape', () => {
 		expect(popover).toContain('label={m.drawer_meta_details()}');
-		expect(header).toContain('Popover,');
 		for (const msgs of [en, fr]) expect(JSON.parse(msgs).drawer_meta_details).toBeTruthy();
 	});
 
-	it('un-hides everything the row dropped once it is inside the popover', () => {
-		expect(css).toContain('.metapop .m-full');
-		expect(css).toContain('.metapop .m-short');
-		expect(css).toContain('.metapop .model-edit');
-		expect(css).toContain('.metapop .model {');
+	it('keeps the full model form inside the popover whatever the row width', () => {
+		expect(model).toContain('class:strip={!inPopover}');
+		const wide = queryBody(modelCss, '@container drawer-head (max-width: 40rem)');
+		expect(wide).toContain('.strip .m-full');
+		expect(wide).not.toMatch(/^\s+\.m-full/m);
 	});
 
 	it('clamps the panel to the viewport so it cannot clip on a phone', () => {
@@ -90,12 +126,14 @@ describe('drawer header meta row', () => {
 	});
 
 	it('only shows the Langfuse rows when the sink reported calls', () => {
-		expect(popover).toContain('{#if calls > 0}');
-		expect(script).toContain('detailsOpen && langfuseAvailable');
+		expect(details).toContain('{#if calls > 0}');
+		expect(script).toContain('() => langfuseAvailable');
 	});
 
 	it('adds no horizontal overflow escape hatch', () => {
-		expect(header).not.toContain(':global(');
-		expect(header).not.toContain('overflow-x');
+		for (const src of [header, details, model]) {
+			expect(src).not.toContain(':global(');
+			expect(src).not.toContain('overflow-x');
+		}
 	});
 });

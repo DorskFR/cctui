@@ -22,7 +22,7 @@
 	</div>
 	{#each MSG_GROUPS as g (g.id)}
 		<div class="group" role="group" aria-label={msgGroupLabel(g.id)}>
-			<Text tone="faint" size="xs" weight="medium">{msgGroupLabel(g.id)}</Text>
+			<Text variant="eyebrow" tone="muted">{msgGroupLabel(g.id)}</Text>
 			{#each g.categories as c (c)}
 				<Checkbox
 					label={msgCategoryLabel(c)}

@@ -236,7 +236,7 @@ describe('a guide starts only from a click', () => {
 
 describe('the guides page is where a tour hands back', () => {
 	it('points at the page the guides are launched from', () => {
-		expect(GUIDES_ROUTE).toBe('/settings/guides');
+		expect(GUIDES_ROUTE).toBe('/settings/interface#guides');
 	});
 
 	it('opens an anchored guide on a route, whether the step or the journey carries it', () => {

@@ -131,23 +131,23 @@
 
 	// Surface state lives inline on the Card: scoped CSS can't reach a child
 	// component's root. The transform is only set mid-swipe — at rest it would
-	// trap the stacked pseudo-elements' z-index inside the card. The attention
-	// fill is opaque so a stacked back-card never bleeds through.
+	// trap the stacked pseudo-elements' z-index inside the card.
+	const rail = $derived(
+		view.rail === 'attention'
+			? 'var(--status-attention)'
+			: view.rail === 'working'
+				? 'var(--status-working)'
+				: accentHue != null
+					? `hsl(${accentHue} var(--mach-border-sl))`
+					: null
+	);
 	const cardStyle = $derived(
 		[
 			swipe.x !== 0 ? `transform: translateX(${swipe.x}px)` : '',
 			`transition: ${swipe.active ? 'none' : 'transform 0.2s var(--ease)'}`,
-			view.needsInput
-				? 'background: var(--attention-bg-solid); border-left: 3px solid var(--attention-bar)'
-				: '',
-			child && !view.needsInput
-				? 'border-color: color-mix(in srgb, var(--info) 45%, var(--border))'
-				: '',
-			accentHue != null && !view.needsInput
-				? `--mh:${accentHue}; background: color-mix(in srgb, hsl(var(--mh) 65% 50%) 8%, var(--bg-elevated)); border-left: 3px solid hsl(var(--mh) var(--mach-border-sl))`
-				: '',
+			rail ? `border-left: var(--status-rail-w) solid ${rail}` : '',
 			selected
-				? 'background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent)'
+				? 'background-image: linear-gradient(var(--row-selected-bg), var(--row-selected-bg)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent)'
 				: ''
 		]
 			.filter(Boolean)

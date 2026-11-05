@@ -11,12 +11,12 @@
 
 	let {
 		sessionId,
-		needsInput,
 		stream,
 		acctModalOpen = $bindable(false)
 	}: {
 		sessionId: string;
-		needsInput: boolean;
+		/** Unused: the activity line shows the needs-input state. */
+		needsInput?: boolean;
 		stream: ConversationStream;
 		acctModalOpen?: boolean;
 	} = $props();
@@ -65,10 +65,6 @@
 		}
 	});
 </script>
-
-{#if needsInput}
-	<div class="attn-banner">{m.conversation_waiting_input()}</div>
-{/if}
 
 {#if softLimit}
 	<!-- Slim notice once the auto-opened modal is dismissed, so the stalled chat

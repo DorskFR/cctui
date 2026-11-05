@@ -353,12 +353,12 @@ mod tests {
         })
     }
 
-    async fn listed(state: &AppState, viewer: Uuid, show_hidden: bool) -> HashMap<String, bool> {
+    async fn listed(state: &AppState, viewer: Uuid) -> HashMap<String, bool> {
         let response = list_sessions(
             State(state.clone()),
             Extension(ctx(viewer, true)),
             None,
-            Query(ListParams { include_archived: false, show_hidden }),
+            Query(ListParams { include_archived: false }),
             HeaderMap::new(),
         )
         .await
@@ -367,7 +367,7 @@ mod tests {
         flags(&serde_json::from_slice(&body).unwrap())
     }
 
-    async fn searched(f: &Fixture, viewer: Uuid, show_hidden: bool) -> HashMap<String, bool> {
+    async fn searched(f: &Fixture, viewer: Uuid) -> HashMap<String, bool> {
         let Json(found) = search_sessions(
             State(f.state.clone()),
             Extension(ctx(viewer, true)),
@@ -377,7 +377,6 @@ mod tests {
                 limit: Some(50),
                 offset: None,
                 cursor: None,
-                show_hidden,
             }),
         )
         .await
@@ -404,6 +403,14 @@ mod tests {
         assert_eq!(status, StatusCode::NO_CONTENT);
     }
 
+    #[test]
+    fn older_clients_sending_show_hidden_are_still_accepted() {
+        let uri: axum::http::Uri =
+            "/sessions?include_archived=true&show_hidden=true".parse().unwrap();
+        let Query(params) = Query::<ListParams>::try_from_uri(&uri).unwrap();
+        assert!(params.include_archived);
+    }
+
     #[tokio::test]
     async fn hidden_user_sessions_leave_the_admins_list_and_search_only() {
         let Some(f) = fixture("hidden_user_sessions_leave_the_admins_list_and_search_only").await
@@ -413,24 +420,21 @@ mod tests {
         set_hidden(&f, HiddenOwnerKind::User, f.user, true).await;
         set_hidden(&f, HiddenOwnerKind::User, f.user, true).await;
 
-        let mine = listed(&f.state, f.admin, false).await;
+        let mine = listed(&f.state, f.admin).await;
         assert!(!mine.contains_key(&f.user_session), "hidden user's session listed");
         assert_eq!(mine.get(&f.machine_session), Some(&false));
-        let found = searched(&f, f.admin, false).await;
+        let found = searched(&f, f.admin).await;
         assert!(!found.contains_key(&f.user_session), "hidden user's session found");
         assert_eq!(found.get(&f.machine_session), Some(&false));
 
-        let theirs = listed(&f.state, f.other_admin, false).await;
+        let theirs = listed(&f.state, f.other_admin).await;
         assert_eq!(theirs.get(&f.user_session), Some(&false), "another admin still sees it");
-        assert!(searched(&f, f.other_admin, false).await.contains_key(&f.user_session));
-
-        assert_eq!(listed(&f.state, f.admin, true).await.get(&f.user_session), Some(&true));
-        assert_eq!(searched(&f, f.admin, true).await.get(&f.user_session), Some(&true));
+        assert!(searched(&f, f.other_admin).await.contains_key(&f.user_session));
 
         set_hidden(&f, HiddenOwnerKind::User, f.user, false).await;
         set_hidden(&f, HiddenOwnerKind::User, f.user, false).await;
-        assert_eq!(listed(&f.state, f.admin, false).await.get(&f.user_session), Some(&false));
-        assert!(searched(&f, f.admin, false).await.contains_key(&f.user_session));
+        assert_eq!(listed(&f.state, f.admin).await.get(&f.user_session), Some(&false));
+        assert!(searched(&f, f.admin).await.contains_key(&f.user_session));
     }
 
     #[tokio::test]
@@ -442,16 +446,14 @@ mod tests {
         };
         set_hidden(&f, HiddenOwnerKind::Machine, f.machine, true).await;
 
-        let mine = listed(&f.state, f.admin, false).await;
+        let mine = listed(&f.state, f.admin).await;
         assert!(!mine.contains_key(&f.machine_session), "hidden machine's session listed");
         assert_eq!(mine.get(&f.user_session), Some(&false));
-        assert!(!searched(&f, f.admin, false).await.contains_key(&f.machine_session));
-        assert!(listed(&f.state, f.other_admin, false).await.contains_key(&f.machine_session));
-        assert_eq!(listed(&f.state, f.admin, true).await.get(&f.machine_session), Some(&true));
-        assert_eq!(searched(&f, f.admin, true).await.get(&f.machine_session), Some(&true));
+        assert!(!searched(&f, f.admin).await.contains_key(&f.machine_session));
+        assert!(listed(&f.state, f.other_admin).await.contains_key(&f.machine_session));
 
         set_hidden(&f, HiddenOwnerKind::Machine, f.machine, false).await;
-        assert!(listed(&f.state, f.admin, false).await.contains_key(&f.machine_session));
+        assert!(listed(&f.state, f.admin).await.contains_key(&f.machine_session));
     }
 
     #[tokio::test]

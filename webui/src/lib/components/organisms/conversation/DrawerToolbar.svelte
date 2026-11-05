@@ -1,7 +1,6 @@
 <script lang="ts">
-	// Conversation toolbar, one row at every width: message filters on the left,
-	// auto-approve, terminal, plugin panes and pins right-aligned. Narrow drawers
-	// drop every label and keep the icons.
+	// Message filters on the left; auto-approve, side panels, context and pins
+	// right-aligned. Narrow bars drop the secondary labels, never the state words.
 	import {
 		MSG_CATEGORIES,
 		QUICK_FILTERS,
@@ -12,7 +11,7 @@
 	} from './filters';
 	import FilterMenu from './FilterMenu.svelte';
 	import { quickFilterLabel, type MsgCategory, type QuickFilterId, type ViewOpts } from './types';
-	import { Icon, Popover, Toggle } from '@dorsk/tsumikit';
+	import { Icon, Menu, Popover, Switch, Toggle, type MenuItem } from '@dorsk/tsumikit';
 	import PinsPanel from './PinsPanel.svelte';
 	import SessionContextChip from './SessionContextChip.svelte';
 	import type { MessagePin } from '@bindings/MessagePin';
@@ -37,14 +36,14 @@
 		view: ViewOpts;
 		autoApprove: boolean;
 		ontoggleAuto: () => void;
-		/** Read-only live terminal pane; omit the handler to hide the toggle. */
+		/** Read-only live terminal pane; omit the handler to hide the entry. */
 		terminalOpen?: boolean;
 		ontoggleTerminal?: () => void;
-		/** Enabled plugin panes; one toggle each, pressed while its pane is open. */
+		/** Enabled plugin panes; one entry each, checked while its pane is open. */
 		plugins?: PluginButton[];
 		pins?: MessagePin[];
 		lines?: Line[];
-		/** Omit both to hide the pins button (e.g. no session context). */
+		/** Omit both to hide the pins button. */
 		onjumpseq?: (seq: number) => void;
 		onunpin?: (seq: number) => void;
 		/** Omit to hide the session context chip. */
@@ -54,14 +53,39 @@
 
 	// One pinned height for every control, so glyph fonts can't size them.
 	const CTL = 'height:var(--bar-ctl-h);box-sizing:border-box;padding-block:0;line-height:1';
-
-	const QUICK_TINT: Record<QuickFilterId, string> = {
-		assistant: 'var(--role-assistant)',
-		user: 'var(--role-user)',
-		tools: 'var(--role-tool)'
-	};
+	// One selected look for every filter: neutral fill and a check, never a role colour.
+	const PILL = `${CTL};--toggle-accent: var(--text)`;
 
 	const offCount = $derived(MSG_CATEGORIES.filter((c) => !view.msgFilter[c]).length);
+
+	const panelItems = $derived<MenuItem[]>([
+		...(ontoggleTerminal
+			? [
+					{
+						label: m.drawer_terminal_label(),
+						icon: 'tv' as const,
+						pressed: terminalOpen,
+						keepOpen: true,
+						attrs: { title: m.conversation_terminal_title(), 'data-journey': 'terminal' },
+						onselect: ontoggleTerminal
+					}
+				]
+			: []),
+		...plugins.map((p) => ({
+			id: `plugin-${p.id}`,
+			label: p.label,
+			icon: p.icon,
+			pressed: p.open,
+			keepOpen: true,
+			attrs: {
+				title: m.drawer_plugin_toggle({ name: p.label }),
+				'data-journey': 'plugin',
+				'data-plugin': p.id
+			} as MenuItem['attrs'],
+			onselect: p.onselect
+		}))
+	]);
+	const panelsOpen = $derived((!!ontoggleTerminal && terminalOpen) || plugins.some((p) => p.open));
 
 	function quickTitle(id: QuickFilterId): string {
 		const label = quickFilterLabel(id);
@@ -83,106 +107,96 @@
 </script>
 
 <div class="toolbar">
-	<!-- Quick category toggles + the full per-category picker. A quick chip is
-	     "on" only when every category it covers is on; a partly-on group gets a
-	     dashed border instead. -->
-	<div class="tagbar row" data-journey="filters" role="group" aria-label={m.conversation_msg_filter_aria()}>
-		{#each QUICK_FILTERS as q (q.id)}
-			<Toggle
-				pill
-				data-journey="quick"
-				data-journey-key={q.id}
-				pressed={quickOn(view.msgFilter, q.id)}
-				style={`${CTL};--toggle-accent: ${QUICK_TINT[q.id]}${quickPartial(view.msgFilter, q.id) ? ';border-style:dashed' : ''}`}
-				title={quickTitle(q.id)}
-				onclick={() => toggleQuick(q.id)}
-			>
-				{quickFilterLabel(q.id)}
-			</Toggle>
-		{/each}
-		<Popover
-			label={m.conversation_filter_menu_aria()}
-			placement="bottom-start"
-			variant="toggle"
-			pill
-			style={CTL}
-			data-journey="filter-menu"
-		>
-			{#snippet trigger()}
-				<Icon name="filter" size={12} />
-				<span class="wide"
-					>{offCount > 0
-						? m.conversation_filters_off_count({ count: offCount })
-						: m.conversation_filters()}</span
-				>{#if offCount > 0}<span class="narrow">{offCount}</span>{/if}
-			{/snippet}
-			<FilterMenu
-				filter={view.msgFilter}
-				ontoggle={toggleCategory}
-				onall={(on) => (view.msgFilter = allFilter(on))}
-			/>
-		</Popover>
-	</div>
-	<div class="behbar row" role="group" aria-label={m.conversation_behavior_aria()}>
-		<Toggle
-			pressed={autoApprove}
-			style={`${CTL};--toggle-accent: var(--warn)`}
-			title={m.conversation_auto_approve_title()}
-			aria-label={m.conversation_auto_approve_aria()}
-			onclick={ontoggleAuto}
-			><span class="glyph" aria-hidden="true">⚡</span><span class="wide"
-				>{m.conversation_auto_approve_btn()}</span
-			></Toggle
-		>
-		{#if ontoggleTerminal}
-			<Toggle
-				pressed={terminalOpen}
-				style={CTL}
-				title={m.conversation_terminal_title()}
-				aria-label={m.drawer_terminal_label()}
-				data-journey="terminal"
-				onclick={ontoggleTerminal}
-				><Icon name="tv" size={12} /><span class="wide">{m.drawer_terminal_label()}</span></Toggle
-			>
-		{/if}
-		{#each plugins as p (p.id)}
-			<Toggle
-				pressed={p.open}
-				style={CTL}
-				title={m.drawer_plugin_toggle({ name: p.label })}
-				aria-label={p.label}
-				data-journey="plugin"
-				data-plugin={p.id}
-				onclick={p.onselect}
-				><Icon name={p.icon} size={12} /><span class="wide">{p.label}</span></Toggle
-			>
-		{/each}
-		{#if sessionId}
-			<SessionContextChip {sessionId} canAttach={contextAttachable} style={CTL} />
-		{/if}
-		{#if onjumpseq && onunpin}
+	<div class="tbrow">
+		<!-- A quick chip is "on" only when every category it covers is on; a
+		     partly-on group gets a dashed border instead. -->
+		<div class="tagbar row" data-journey="filters" role="group" aria-label={m.conversation_msg_filter_aria()}>
+			{#each QUICK_FILTERS as q (q.id)}
+				{@const on = quickOn(view.msgFilter, q.id)}
+				<Toggle
+					pill
+					data-journey="quick"
+					data-journey-key={q.id}
+					pressed={on}
+					style={`${PILL}${quickPartial(view.msgFilter, q.id) ? ';border-style:dashed' : ''}`}
+					title={quickTitle(q.id)}
+					onclick={() => toggleQuick(q.id)}
+				>
+					{#if on}<Icon name="check" size={12} />{/if}{quickFilterLabel(q.id)}
+				</Toggle>
+			{/each}
 			<Popover
-				label={m.conversation_pins_aria()}
-				placement="bottom-end"
+				label={m.conversation_filter_menu_aria()}
+				placement="bottom-start"
 				variant="toggle"
+				pill
 				style={CTL}
+				data-journey="filter-menu"
 			>
 				{#snippet trigger()}
-					<Icon name="pin" size={12} filled={pins.length > 0} />
-					<span class="wide">{m.conversation_pins()}</span>{pins.length ? ` ${pins.length}` : ''}
+					<Icon name="filter" size={12} />
+					<span class="wide"
+						>{offCount > 0
+							? m.conversation_filters_off_count({ count: offCount })
+							: m.conversation_filters()}</span
+					>{#if offCount > 0}<span class="narrow">{offCount}</span>{/if}
 				{/snippet}
-				<PinsPanel {pins} {lines} onjump={onjumpseq} {onunpin} />
+				<FilterMenu
+					filter={view.msgFilter}
+					ontoggle={toggleCategory}
+					onall={(on) => (view.msgFilter = allFilter(on))}
+				/>
 			</Popover>
-		{/if}
+		</div>
+		<div class="behbar row" role="group" aria-label={m.conversation_behavior_aria()}>
+			<span class="auto" title={m.conversation_auto_approve_title()} data-journey="auto-approve">
+				<Switch
+					size="sm"
+					labelVisible
+					label={autoApprove ? m.chrome_auto_approve_on() : m.chrome_auto_approve_off()}
+					bind:checked={() => autoApprove, () => ontoggleAuto()}
+				/>
+			</span>
+			{#if panelItems.length > 0}
+				<Menu
+					label={m.chrome_panels_aria()}
+					items={panelItems}
+					placement="bottom-end"
+					variant="toggle"
+					style={CTL}
+					data-journey="panels"
+				>
+					{#snippet trigger()}
+						<Icon name="layout-grid" size={12} />{m.chrome_panels()}{#if panelsOpen}<span
+								class="dot"
+								aria-hidden="true"
+							></span>{/if}
+					{/snippet}
+				</Menu>
+			{/if}
+			{#if sessionId}
+				<SessionContextChip {sessionId} canAttach={contextAttachable} style={CTL} />
+			{/if}
+			{#if onjumpseq && onunpin}
+				<Popover
+					label={m.conversation_pins_aria()}
+					placement="bottom-end"
+					variant="toggle"
+					style={CTL}
+				>
+					{#snippet trigger()}
+						<Icon name="pin" size={12} filled={pins.length > 0} />
+						<span class="wide">{m.conversation_pins()}</span>{pins.length ? ` ${pins.length}` : ''}
+					{/snippet}
+					<PinsPanel {pins} {lines} onjump={onjumpseq} {onunpin} />
+				</Popover>
+			{/if}
+		</div>
 	</div>
 </div>
 
 <style>
 	.toolbar {
-		display: flex;
-		flex-wrap: nowrap;
-		align-items: center;
-		gap: var(--sp-2) var(--sp-3);
 		padding: var(--sp-2) var(--sp-3);
 		border-bottom: 1px solid var(--border);
 		font-size: var(--fs-xs);
@@ -195,18 +209,17 @@
 		--sp-2: 8px;
 		--sp-3: 12px;
 	}
+	.tbrow {
+		display: flex;
+		flex-wrap: nowrap;
+		align-items: center;
+		gap: var(--sp-2) var(--sp-3);
+	}
 	.tagbar,
 	.behbar {
 		gap: var(--sp-1);
 		flex-wrap: nowrap;
 		align-items: center;
-	}
-	.glyph {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		min-width: 1em;
-		line-height: 1;
 	}
 	/* Overflow is absorbed by the filters group, never by auto-approve or pins. */
 	.tagbar {
@@ -219,6 +232,17 @@
 		margin-left: auto;
 		padding-left: var(--sp-3);
 		border-left: 1px solid var(--border);
+	}
+	.auto {
+		display: inline-flex;
+		align-items: center;
+		white-space: nowrap;
+	}
+	.dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: currentColor;
 	}
 	.narrow {
 		display: none;
@@ -234,6 +258,18 @@
 		.behbar {
 			padding-left: 0;
 			border-left: none;
+		}
+	}
+	/* A phone gets two rows rather than a clipped one. */
+	@container drawer-toolbar (max-width: 560px) {
+		.tbrow {
+			flex-wrap: wrap;
+		}
+		.tagbar {
+			flex: 1 1 100%;
+		}
+		.behbar {
+			margin-left: 0;
 		}
 	}
 </style>

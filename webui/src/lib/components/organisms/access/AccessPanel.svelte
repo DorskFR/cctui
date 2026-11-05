@@ -9,8 +9,17 @@
 	import EnrollMachineCard from '$lib/components/organisms/EnrollMachineCard.svelte';
 	import EditEntityModal from '$lib/components/molecules/EditEntityModal.svelte';
 	import SecretReveal from '$lib/components/molecules/SecretReveal.svelte';
-	import { useAccounts, useAllMachines, useHiddenOwners, useMe, useUserActions, useUsers } from '$lib/queries';
-	import { isHiddenOwner } from '$lib/hiddenOwners';
+	import {
+		useAccounts,
+		useAllMachines,
+		useHiddenOwnerActions,
+		useHiddenOwners,
+		useMe,
+		useUserActions,
+		useUsers
+	} from '$lib/queries';
+	import { canHideUser, isHiddenOwner } from '$lib/hiddenOwners';
+	import { userStateWords } from './access.logic';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
 	import { m } from '$lib/paraglide/messages';
@@ -22,6 +31,11 @@
 	const accounts = useAccounts();
 	const hiddenOwners = useHiddenOwners(() => isAdmin);
 	const userHidden = (u: UserRow) => isHiddenOwner(hiddenOwners.data?.owners, 'user', u.id);
+	const hiddenActions = useHiddenOwnerActions();
+	function setVisible(u: UserRow, visible: boolean) {
+		const work = visible ? hiddenActions.unhide('user', u.id) : hiddenActions.hide('user', u.id, u.name);
+		work.catch((e: unknown) => toasts.error(errMessage(e)));
+	}
 	const actions = useUserActions();
 
 	const self = $derived<UserRow | null>(
@@ -45,11 +59,12 @@
 
 	const accountsOf = (userId: string) => (accounts.data ?? []).filter((a) => a.user_id === userId);
 	const machinesOf = (userId: string) => (machines.data ?? []).filter((mc) => mc.user_id === userId);
-	const userMeta = (u: UserRow) =>
-		u.revoked_at
-			? m.access_revoked_meta()
-			: m.access_user_meta({ machines: machinesOf(u.id).length, accounts: accountsOf(u.id).length });
-	const online = (u: UserRow) => machinesOf(u.id).some((mc) => mc.liveness === 'online');
+	const userMeta = (u: UserRow) => {
+		if (u.revoked_at) return m.access_revoked_meta();
+		const counts = m.access_user_meta({ machines: machinesOf(u.id).length, accounts: accountsOf(u.id).length });
+		const online = machinesOf(u.id).filter((mc) => mc.liveness === 'online').length;
+		return `${counts} · ${userStateWords(online, machinesOf(u.id).length)}`;
+	};
 
 	let secret = $state<{ title: string; value: string } | null>(null);
 	let createOpen = $state(false);
@@ -72,8 +87,8 @@
 		breakpoint="48rem"
 		selected={!!selected}
 		onback={() => (picked = '')}
-		backLabel={m.access_title()}
-		listLabel={m.access_title()}
+		backLabel={m.settings_nav_users()}
+		listLabel={m.settings_nav_users()}
 	>
 		{#snippet list()}
 			<AccessUserList
@@ -82,8 +97,9 @@
 				{selectedId}
 				canCreate
 				meta={userMeta}
-				{online}
 				hidden={userHidden}
+				hideable={(u) => canHideUser(me.data?.user_id, u.id)}
+				onvisible={setVisible}
 				onselect={(id) => (picked = id)}
 				oncreate={() => (createOpen = true)}
 			/>
@@ -109,7 +125,7 @@
 	</MasterDetail>
 {:else if self}
 	<div class="solo">
-		<EnrollMachineCard dashed />
+		<EnrollMachineCard />
 		<AccessDetail
 			user={self}
 			isAdmin={false}

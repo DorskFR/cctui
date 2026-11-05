@@ -1,47 +1,36 @@
 <script lang="ts">
 	import { updated } from '$app/state';
 	import { ws } from '$lib/ws.svelte';
-	import { useMe, useVersion, useSessions, qk } from '$lib/queries';
+	import { useVersion, useSessions, qk } from '$lib/queries';
 	import { setUploadCaps } from '$lib/uploadCaps.svelte';
-	import { releaseChannel, versionLine } from '$lib/releaseChannel';
-	import { MediaQuery } from 'svelte/reactivity';
+	import { versionLine } from '$lib/releaseChannel';
 	import type { SessionListResponse } from '@bindings/SessionListResponse';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { fontScale } from '$lib/fontscale.svelte';
-	import { auth } from '$lib/auth.svelte';
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
-	import { toasts } from '$lib/toast.svelte';
-	import { Avatar, Dot, FontScalePicker, Menu, Text, ThemePicker } from '@dorsk/tsumikit';
-	import type { MenuItem } from '@dorsk/tsumikit';
+	import { Text } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import MainNav from '$lib/components/organisms/MainNav.svelte';
-	import UsageBattery from '$lib/components/molecules/UsageBattery.svelte';
-import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
-	import ProviderStatusDot from '$lib/components/molecules/ProviderStatusDot.svelte';
-	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
+	import AccountMenu from '$lib/components/organisms/header/AccountMenu.svelte';
+	import HeaderStatus from '$lib/components/organisms/header/HeaderStatus.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	const version = useVersion();
-	const me = useMe();
-	let updateOpen = $state(false);
 	const instanceName = $derived(version.data?.instance_name ?? null);
 	$effect(() => notify.setInstanceName(instanceName));
 	$effect(() => setUploadCaps(version.data?.upload_caps));
 
-	// Global "needs input" watcher. Header is always mounted inside
-	// the query provider, so it's the natural home for the cross-route watcher.
+	// Header is always mounted inside the query provider, so it hosts the
+	// cross-route list watcher that drives notifications.
 	const qc = useQueryClient();
 	const sessions = useSessions(() => false);
 
-	// Live ws changes → refetch the list even on routes other than /sessions.
 	$effect(() => {
 		void ws.changeTick;
 		qc.invalidateQueries({ queryKey: qk.sessionsAll });
 	});
 
-	// Cheap per-session ws patches applied to both list caches in place —
-	// no refetch. The 60s poll reconciles anything the patch can't know.
 	$effect(() =>
 		ws.onListPatch((p) => {
 			const { session_id, ...fields } = p;
@@ -63,87 +52,21 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	const needsInput = $derived(
 		(sessions.data?.sessions ?? []).filter((s) => s.attention === 'needs_input')
 	);
-
-	// Drive notifications + title badge off the list's attention flags.
 	$effect(() => notify.reconcile(needsInput));
-
-	async function toggleNotify() {
-		if (notify.enabled) {
-			notify.disable();
-			settings.recordNotifyEnabled();
-			toasts.info(m.nav_notify_off());
-			return;
-		}
-		if (!notify.supported) {
-			toasts.error(m.nav_notify_unsupported());
-			return;
-		}
-		const ok = await notify.enable();
-		settings.recordNotifyEnabled();
-		if (ok) toasts.ok(m.nav_notify_on());
-		else toasts.error(m.nav_notify_blocked());
-	}
-
-	const userName = $derived(me.data?.user_name ?? '');
-	const userRole = $derived(me.data?.role ?? '');
-	const roleSuffix = $derived(
-		userRole && userRole.toLowerCase() !== userName.toLowerCase() ? userRole : ''
-	);
-	const latest = $derived(version.data?.latest_version ?? null);
-	const notifyLabel = $derived(
-		notify.enabled ? m.nav_notify_on_label() : m.nav_notify_off_label()
-	);
 
 	// The kit font picker writes the kit store; the blob follows so the choice
 	// round-trips across devices.
-	// (The theme picker is app-owned and persists through `settings.setTheme`.)
 	$effect(() => {
 		const f = fontScale.current;
 		const d = settings.state.display;
 		if (d.fontScale !== f) settings.setDisplay({ fontScale: f });
 	});
 
-	// Below the nav breakpoint `.vers` is hidden, so the menu carries the version.
-	const narrow = new MediaQuery('(max-width: 47.999rem)');
 	const srvVersion = $derived(version.data?.version);
-	const userMenu = $derived<MenuItem[]>([
-		...(narrow.current
-			? [
-					{
-						label: versionLine(__CLIENT_VERSION__, srvVersion),
-						icon: 'git-commit' as const,
-						disabled: true,
-						tag:
-							releaseChannel(srvVersion ?? __CLIENT_VERSION__) === 'beta'
-								? m.release_channel_beta()
-								: undefined
-					}
-				]
-			: []),
-		...(latest
-			? [
-					{
-						label: m.nav_update_available({ version: latest }),
-						icon: 'arrow-up' as const,
-						tag: `v${latest}`,
-						tagTone: 'danger' as const,
-						onselect: () => (updateOpen = true)
-					}
-				]
-			: []),
-		{
-			label: notifyLabel,
-			icon: 'bell' as const,
-			pressed: notify.enabled,
-			onselect: () => void toggleNotify()
-		},
-		{ label: m.nav_log_out(), icon: 'log-out' as const, danger: true, onselect: () => void auth.logout() }
-	]);
+	const mismatch = $derived(!!srvVersion && srvVersion !== __CLIENT_VERSION__);
+	const latest = $derived(version.data?.latest_version ?? null);
+	let updateOpen = $state(false);
 </script>
-
-{#snippet alertDot()}
-	<Dot color="var(--danger)" />
-{/snippet}
 
 <header class="hd">
 	<div class="hd-inner">
@@ -160,31 +83,28 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 				class:mid={ws.status === 'connecting'}
 				title={m.nav_ws_status({ status: ws.status })}
 			></span>
-			<span class="vers">
-				<Text size="xs" tone="faint" variant="code">ui v{__CLIENT_VERSION__}</Text>
-				{#if version.data}
-					<NavLink href={version.data.commit_url} target="_blank" rel="noopener">
-						<Text size="xs" tone="faint" variant="code">srv v{version.data.version}</Text>
-					</NavLink>
-					{#if releaseChannel(version.data.version) === 'beta'}
-						<span title={m.release_channel_beta_title()}>
-							<Text size="xs" tone="accent" variant="code" weight="bold">{m.release_channel_beta()}</Text>
+			{#if mismatch || latest || updated.current}
+				<span class="vers">
+					{#if updated.current}
+						<button
+							type="button"
+							class="chip"
+							title={m.reload_new_ui_title()}
+							onclick={() => location.reload()}>{m.reload_new_ui_hint()}</button
+						>
+					{:else if latest}
+						<button type="button" class="chip" onclick={() => (updateOpen = true)}
+							>{m.shell_update_chip({ version: latest })}</button
+						>
+					{:else if mismatch}
+						<span class="chip static" title={m.shell_version_mismatch_title()}>
+							<Text size="xs" tone="muted" numeric
+								>{versionLine(__CLIENT_VERSION__, srvVersion)}</Text
+							>
 						</span>
 					{/if}
-				{/if}
-				{#if updated.current}
-					<button
-						type="button"
-						class="reload"
-						title={m.reload_new_ui_title()}
-						onclick={() => location.reload()}
-					>
-						<Text size="xs" tone="accent" variant="code" weight="bold"
-							>{m.reload_new_ui_hint()}</Text
-						>
-					</button>
-				{/if}
-			</span>
+				</span>
+			{/if}
 		</div>
 		<div class="tabs">
 			{#if settings.nav === 'top'}
@@ -192,51 +112,11 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 			{/if}
 		</div>
 		<div class="tail">
-			<span class="batt"><ProviderStatusDot /><ResourceBattery /><UsageBattery /></span>
-			<span class="divider" aria-hidden="true"></span>
-			<span class="prefs">
-				<ThemePicker
-					auto
-					autoLabel={m.theme_auto_label()}
-					autoHelp={m.theme_auto_help()}
-					lightLabel={m.theme_group_light()}
-					darkLabel={m.theme_group_dark()}
-					box="md"
-					placement="bottom-end"
-				/>
-				<FontScalePicker />
-			</span>
-			<Menu label={m.nav_user_menu()} items={userMenu} bare placement="bottom-end">
-				{#snippet trigger()}
-					<span class="pill">
-						<Avatar
-							name={userName || userRole}
-							tone="accent"
-							size={24}
-							decorative
-							status={latest ? alertDot : undefined}
-						/>
-						<span class="who">
-							{#if userName}<span class="who-name">{userName}</span>{/if}
-							{#if userName && roleSuffix}<span class="who-sep">·</span>{/if}
-							{#if roleSuffix}<span class="who-role">{roleSuffix}</span>{/if}
-						</span>
-					</span>
-				{/snippet}
-			</Menu>
+			<HeaderStatus />
+			<AccountMenu bind:updateOpen />
 		</div>
 	</div>
 </header>
-
-{#if updateOpen && version.data?.latest_version}
-	<UpdateModal
-		latestVersion={version.data.latest_version}
-		latestUrl={version.data.latest_url ?? version.data.repo_url}
-		selfUpdateReady={version.data.self_update_ready}
-		selfUpdateHook={version.data.self_update_hook}
-		onclose={() => (updateOpen = false)}
-	/>
-{/if}
 
 <style>
 	.hd {
@@ -271,9 +151,7 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 		padding-inline: max(var(--sp-4), var(--safe-left)) max(var(--sp-4), var(--safe-right));
 		height: var(--header-h);
 		/* The brand and the account cluster take the width they need; the nav
-		   centres in what is left. Equal thirds put the nav on the header's true
-		   centre but capped the cluster at a third, which the usage strip
-		   outgrows — it then spilled back over the nav. */
+		   centres in what is left. */
 		display: grid;
 		grid-template-columns: auto minmax(0, 1fr) auto;
 		align-items: center;
@@ -326,92 +204,36 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	.conn.mid {
 		background: var(--warn);
 	}
-	/* ui / srv stacked in one column: two lines cost no more width than one, so
-	   the block never has to compete with the nav for room. It cannot wrap, so
-	   below the nav breakpoint it goes away entirely rather than run under the
-	   account cluster, and the account menu shows the version instead. */
 	.vers {
-		display: none;
-		flex-direction: column;
-		align-items: flex-start;
-		flex: none;
-		line-height: 1;
-		white-space: nowrap;
-	}
-	@media (min-width: 48rem) {
-		.vers {
-			display: flex;
-		}
-	}
-	.reload {
-		border: 0;
-		padding: 0;
-		background: none;
-		cursor: pointer;
-		font: inherit;
-		text-decoration: underline;
-	}
-	.prefs {
 		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-1);
 		flex: none;
-	}
-	.batt {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		flex: none;
-	}
-	.batt:empty {
-		display: none;
-	}
-	.divider {
-		flex: none;
-		width: 1px;
-		height: 20px;
-		background: var(--border);
-	}
-	.batt:empty + .divider {
-		display: none;
-	}
-	.pill {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-2);
-		height: 32px;
-		padding: 0 var(--sp-3) 0 var(--sp-1);
-		border: 1px solid var(--border);
-		border-radius: var(--r-pill);
-		color: var(--text);
-		font-size: var(--fs-sm);
-		max-width: 16rem;
-	}
-	.pill:hover {
-		background: var(--bg-elevated-2);
-	}
-	.who {
-		display: inline-flex;
-		align-items: baseline;
-		gap: var(--sp-1);
 		min-width: 0;
+	}
+	.chip {
+		display: inline-flex;
+		align-items: center;
+		min-height: var(--hit-min, 24px);
+		padding: 0 8px;
+		border: 0;
+		border-radius: var(--r-pill);
+		background: var(--bg-elevated-2);
+		color: var(--text);
+		font: inherit;
+		font-size: 12px;
+		font-weight: 600;
 		white-space: nowrap;
+		cursor: pointer;
 	}
-	.who-name {
-		font-weight: var(--fw-medium);
-		overflow: hidden;
-		text-overflow: ellipsis;
+	.chip:hover {
+		background: color-mix(in srgb, var(--bg-elevated-2) 80%, var(--text) 8%);
 	}
-	.who-sep,
-	.who-role {
-		color: var(--text-muted);
+	.chip.static {
+		cursor: default;
+		background: none;
 	}
 	@media (max-width: 47.999rem) {
-		.who {
+		.chip.static {
 			display: none;
-		}
-		.pill {
-			padding-right: var(--sp-1);
 		}
 	}
 </style>

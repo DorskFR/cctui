@@ -2,7 +2,7 @@
 	// A single rendered conversation message. Pure presentation: the meta row
 	// (role badge, tool name, time, delivery state, actions), the bubble and the
 	// footers, delegating retry/edit/save/copy to callbacks.
-	import { Badge, Checkbox, Link, Timestamp, Tooltip } from '@dorsk/tsumikit';
+	import { Checkbox, Link, Text, Tooltip } from '@dorsk/tsumikit';
 	import ContextBlock from './ContextBlock.svelte';
 	import HarnessCommandCard from './HarnessCommandCard.svelte';
 	import LineActions from './LineActions.svelte';
@@ -24,6 +24,7 @@
 	import { sessionHref } from '$lib/sessionFailureToast';
 	import { renderImageMarkers } from '$lib/markdown';
 	import { renderResultImages } from '$lib/resultImages';
+	import { lineTime } from './format';
 
 	let {
 		ln,
@@ -55,7 +56,7 @@
 		sessionId?: string | null;
 		onretry: (ts: number) => void;
 		onedit: (text: string, ts: number) => void;
-		onsaveimage: (e: MouseEvent, ln: Line) => void;
+		onsaveimage: (node: HTMLElement, ln: Line) => void;
 		oncopymarkdown: (ln: Line) => void;
 		// Subset-fork affordances: only assistant lines carry the
 		// `messageId` anchor shared by the line and the on-disk transcript.
@@ -124,6 +125,16 @@
 			: ''
 	);
 
+	const roleLabel = $derived(
+		ln.context
+			? contextLabel
+			: ln.voice
+				? m.voice_live_toggle()
+				: ln.mcp
+					? 'mcp'
+					: ln.role
+	);
+
 	const forkAnchor = $derived(
 		forkable && ln.role === 'assistant' && ln.messageId ? ln.messageId : null
 	);
@@ -154,19 +165,15 @@
 				/>
 			</span>
 		{/if}
-		{#if ln.role === 'assistant' && ln.turn !== undefined}
-			<Tooltip text={`turn ${ln.turn}`}>
-				{#snippet trigger()}<Badge size="xs" uppercase color="var(--bc)">{ln.role}</Badge>{/snippet}
-			</Tooltip>
-		{:else if ln.context}
-			<Badge size="xs" uppercase color="var(--bc)">{contextLabel}</Badge>
-		{:else if ln.voice}
-			<Badge size="xs" uppercase color="var(--bc)">{m.voice_live_toggle()}</Badge>
-		{:else}
-			<Badge size="xs" uppercase color="var(--bc)"
-				>{ln.mcp ? 'mcp' : ln.role === 'result' ? 'result' : ln.role}</Badge
-			>
-		{/if}
+		<span class="role">
+			{#if ln.role === 'assistant' && ln.turn !== undefined}
+				<Tooltip text={`turn ${ln.turn}`}>
+					{#snippet trigger()}<Text variant="eyebrow" tone="inherit">{ln.role}</Text>{/snippet}
+				</Tooltip>
+			{:else}
+				<Text variant="eyebrow" tone="inherit">{roleLabel}</Text>
+			{/if}
+		</span>
 		{#if ln.context?.session}
 			<span class="who context-from" title={ln.context.session}>
 				·
@@ -180,36 +187,43 @@
 			</span>
 		{/if}
 		{#if ln.role === 'tool' || ln.role === 'result'}
-			<span class="who tool-name">{ln.role === 'result' ? '↳ ' : ''}{ln.tool ?? 'tool'}</span>
+			<span class="tool-name" title={ln.tool ?? 'tool'}
+				>{ln.role === 'result' ? '↳ ' : ''}{ln.tool ?? 'tool'}</span
+			>
 		{/if}
 		{#if ln.role === 'peer' && ln.peerRoom}
-			<Badge size="xs" color="var(--bc)">{m.rooms_line_from_room({ room: ln.peerRoom })}</Badge>
+			<Text variant="eyebrow" tone="muted">{m.rooms_line_from_room({ room: ln.peerRoom })}</Text>
 		{/if}
 		{#if ln.role === 'peer' && ln.peerRemote}
-			<Badge size="xs" color="var(--bc)" title={m.cctuiverse_external_title()}>{m.cctuiverse_external_badge()}</Badge>
+			<Text variant="eyebrow" tone="muted" title={m.cctuiverse_external_title()}
+				>{m.cctuiverse_external_badge()}</Text
+			>
 		{/if}
 		{#if ln.role === 'peer' && ln.peerFrom}
 			<span class="who peer-from" title={ln.peerFrom}>· {ln.peerFrom}</span>
 		{/if}
-		{#if ln.role === 'marker'}
-			<span class="marker-ts"><Timestamp value={ln.ts} mode="time" tone="faint" size="xs" /></span>
-		{:else}
-			<Timestamp value={ln.ts} mode="time" tone="faint" size="xs" />
-		{/if}
+		<time
+			class="ltime num"
+			class:marker-ts={ln.role === 'marker'}
+			datetime={new Date(ln.ts).toISOString()}
+			title={new Date(ln.ts).toLocaleString()}>{lineTime(ln.ts)}</time
+		>
 		<LineDelivery {ln} {archived} {queueWaiting} {onretry} {onedit} />
-		<LineActions
-			{ln}
-			{pinnable}
-			{pinned}
-			{onpin}
-			{onsaveimage}
-			{oncopymarkdown}
-			{onbookmark}
-			{bookmarked}
-			onquote={quotable ? onquote : undefined}
-			onspeak={ln.role === 'assistant' && ln.text ? onspeak : undefined}
-			{speaking}
-		/>
+		<span class="actions-slot">
+			<LineActions
+				{ln}
+				{pinnable}
+				{pinned}
+				{onpin}
+				{onsaveimage}
+				{oncopymarkdown}
+				{onbookmark}
+				{bookmarked}
+				onquote={quotable ? onquote : undefined}
+				onspeak={ln.role === 'assistant' && ln.text ? onspeak : undefined}
+				{speaking}
+			/>
+		</span>
 	</div>
 	{#if ln.role === 'thinking'}
 		<ThinkingBubble html={ln.html} redacted={ln.redacted} noReply={ln.noReply} />
@@ -314,6 +328,32 @@
 		gap: var(--sp-2);
 		font-size: var(--fs-xs);
 		color: var(--text-faint);
+		flex-wrap: nowrap;
+		min-width: 0;
+	}
+	.role {
+		flex: none;
+		color: color-mix(in srgb, var(--bc) 55%, var(--text-muted));
+	}
+	.ltime {
+		flex: none;
+		white-space: nowrap;
+		color: var(--text-faint);
+	}
+	.actions-slot {
+		margin-left: auto;
+		flex: none;
+		display: inline-flex;
+		opacity: 0;
+	}
+	.line:hover .actions-slot,
+	.line:focus-within .actions-slot {
+		opacity: 1;
+	}
+	@media (pointer: coarse) {
+		.actions-slot {
+			opacity: 1;
+		}
 	}
 	.fork-check {
 		display: inline-flex;
@@ -346,13 +386,13 @@
 	}
 	.tool-name {
 		font-family: var(--font-mono);
-		color: var(--text-muted);
-		text-transform: none;
-		letter-spacing: 0;
+		font-weight: var(--fw-semibold);
+		color: var(--text);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		max-width: 60%;
+		min-width: 0;
+		flex: 0 1 auto;
 	}
 	/* Pinned line marker: a warm rail down its left edge. */
 	.line.pinned {
@@ -376,11 +416,11 @@
 	}
 	/* The marker timestamp shows only on hover so a burst of them cannot
 	   dominate the log. */
-	.line.marker .marker-ts {
+	.marker-ts {
 		visibility: hidden;
 	}
-	.line.marker:hover .marker-ts,
-	.line.marker:focus-within .marker-ts {
+	.line:hover .marker-ts,
+	.line:focus-within .marker-ts {
 		visibility: visible;
 	}
 </style>

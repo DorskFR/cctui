@@ -142,12 +142,11 @@ pub const LIVENESS_DEAD_SECS: i64 = 60 * 60;
 
 /// Query params for `GET /sessions`. Archived sessions are hidden unless
 /// `?include_archived=true`.
+/// Older clients still send `show_hidden`; unknown keys are ignored.
 #[derive(Debug, Default, Deserialize)]
 pub struct ListParams {
     #[serde(default)]
     pub include_archived: bool,
-    #[serde(default)]
-    pub show_hidden: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -345,7 +344,7 @@ pub async fn list_sessions(
             .filter(|row| !live_ids.contains(&row.id))
             .map(|row| (row.registered_at, db_list_item(row))),
     );
-    screen_hidden(&state, &ctx, params.show_hidden, &mut with_ts).await?;
+    screen_hidden(&state, &ctx, &mut with_ts).await?;
     if let Some(Extension(crate::auth::BoundSession(own))) = &worker {
         with_ts.retain(|(_, s)| s.id == *own);
     }
@@ -361,7 +360,6 @@ pub async fn list_sessions(
 async fn screen_hidden(
     state: &AppState,
     ctx: &AuthContext,
-    show: bool,
     with_ts: &mut Vec<(DateTime<Utc>, SessionListItem)>,
 ) -> Result<(), AppError> {
     let Some(set) = crate::routes::hidden_owners::applying_to(&state.pool, ctx).await? else {
@@ -369,13 +367,7 @@ async fn screen_hidden(
     };
     let ids: Vec<String> = with_ts.iter().map(|(_, s)| s.id.clone()).collect();
     let hidden = crate::routes::hidden_owners::hidden_session_ids(&state.pool, &set, &ids).await?;
-    if show {
-        for (_, item) in with_ts {
-            item.hidden = hidden.contains(&item.id);
-        }
-    } else {
-        with_ts.retain(|(_, item)| !hidden.contains(&item.id));
-    }
+    with_ts.retain(|(_, item)| !hidden.contains(&item.id));
     Ok(())
 }
 
@@ -1219,8 +1211,6 @@ pub struct SearchParams {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
     pub cursor: Option<String>,
-    #[serde(default)]
-    pub show_hidden: bool,
 }
 
 /// Shared SELECT + machine-name and room joins: the full `DbSession`
@@ -1622,7 +1612,7 @@ pub async fn search_sessions(
 
     let mut with_ts: Vec<(DateTime<Utc>, SessionListItem)> =
         found.rows.into_iter().map(|row| (row.registered_at, db_list_item(row))).collect();
-    screen_hidden(&state, &ctx, params.show_hidden, &mut with_ts).await?;
+    screen_hidden(&state, &ctx, &mut with_ts).await?;
     let mut sessions = enrich_and_sort(&state, Some(ctx.user_id), with_ts).await?;
 
     // Attach a transcript snippet per session, windowed around the keyword.

@@ -11,6 +11,8 @@ export { SPAWN_DOCK_WIDTH, STATS_DOCK_WIDTH } from './dock';
 const wide = new MediaQuery('(min-width: 64rem)');
 const veryWide = new MediaQuery('(min-width: 96rem)');
 
+export const launchDock = $state({ conversationOpen: false });
+
 /** Where the spawn form, the stats panel and the conversation are docked right now, and the
  *  width the Sessions screen must keep clear on each edge. */
 export function dockLayout(): DockLayout {
@@ -20,7 +22,8 @@ export function dockLayout(): DockLayout {
 		conversation: settings.conversationDock,
 		wide: wide.current,
 		veryWide: veryWide.current,
-		tiles: sessionsView.tiles
+		tiles: sessionsView.tiles,
+		conversationOpen: launchDock.conversationOpen
 	});
 }
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { confirmDialog } from '$lib/confirmDialog.svelte';
 	import { untrack } from 'svelte';
 	import { errMessage } from '$lib/api';
 	import { useAccountPoolActions, type OAuthAccount } from '$lib/queries';
@@ -93,7 +94,13 @@
 	}
 
 	async function remove() {
-		if (!pool || !confirm(m.pools_delete_confirm())) return;
+		if (!pool) return;
+		const ok = await confirmDialog({
+			title: m.acct_pool_delete_title({ name: pool.name }),
+			message: m.pools_delete_confirm(),
+			confirmLabel: m.pools_delete()
+		});
+		if (!ok) return;
 		try {
 			await actions.remove(pool.id);
 			toasts.ok(m.pools_deleted());

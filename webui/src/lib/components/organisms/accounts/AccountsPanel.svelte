@@ -8,19 +8,20 @@
 		useRedirectChips,
 		useRedirectActions,
 		useUsers,
-		type OAuthAccount,
-		type AccountProvider
+		type OAuthAccount
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
-	import { providerLabel } from '$lib/providers';
 	import AccountCard from '$lib/components/organisms/AccountCard.svelte';
 	import AccountsBoard from './AccountsBoard.svelte';
 	import AccountEditorModal from './AccountEditorModal.svelte';
 	import { availableKinds } from './account-editor.logic';
 	import { accountHref } from './account-page/account-nav.logic';
+	import { confirmDeleteAccount } from './account-page/confirms';
 	import { Button } from '@dorsk/tsumikit';
 	import PageHead from '$lib/components/molecules/PageHead.svelte';
 	import { m } from '$lib/paraglide/messages';
+
+	let { heading = true }: { heading?: boolean } = $props();
 
 	const accounts = useAccounts();
 	const pools = useAccountPools();
@@ -68,31 +69,27 @@
 	};
 	const clearRedirect = (ruleId: string) => guard(redirectActions.remove(ruleId));
 
-	function removeAccount(a: OAuthAccount) {
-		if (!confirm(m.accounts_confirm_delete_account({ name: a.name }))) return;
+	async function removeAccount(a: OAuthAccount) {
+		if (!(await confirmDeleteAccount(a.name))) return;
 		guard(actions.remove(a.id).then(() => toasts.ok(m.accounts_deleted())));
-	}
-
-	function removeProvider(a: OAuthAccount, p: AccountProvider) {
-		if (
-			!confirm(
-				m.accounts_confirm_remove_provider({ provider: providerLabel(p.provider), name: a.name })
-			)
-		)
-			return;
-		guard(actions.removeProvider(a.id, p.id).then(() => toasts.ok(m.accounts_provider_removed())));
 	}
 
 	const isManaged = (a: OAuthAccount) => a.providers.length > 0 && a.providers.every((p) => p.managed);
 </script>
 
+{#snippet headActions()}
+	<Button data-journey="new-pool" onclick={() => (drafting = true)} disabled={drafting}>{m.accounts_add_pool()}</Button>
+	<Button variant="primary" data-journey="new-account" onclick={() => editor?.openCreate()}>
+		{m.accounts_new_account()}
+	</Button>
+{/snippet}
+
 <div class="panel">
-	<PageHead title={m.accounts_title()}>
-		<Button data-journey="new-pool" onclick={() => (drafting = true)} disabled={drafting}>{m.accounts_add_pool()}</Button>
-		<Button variant="primary" data-journey="new-account" onclick={() => editor?.openCreate()}>
-			{m.accounts_new_account()}
-		</Button>
-	</PageHead>
+	{#if heading}
+		<PageHead title={m.accounts_title()}>{@render headActions()}</PageHead>
+	{:else}
+		<div class="actions">{@render headActions()}</div>
+	{/if}
 
 	<AccountsBoard
 		accounts={rows}
@@ -123,7 +120,6 @@
 				onaddprovider={() => editor?.openAddProvider(a)}
 				oneditprovider={(p) => goto(accountHref(a.id, p.id))}
 				onreauthprovider={(p) => editor?.reauth(a, p)}
-				onremoveprovider={(p) => removeProvider(a, p)}
 			/>
 		{/snippet}
 	</AccountsBoard>
@@ -136,5 +132,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-4);
+	}
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: var(--sp-2);
 	}
 </style>

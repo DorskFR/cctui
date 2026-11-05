@@ -17,8 +17,8 @@
 	const wastedWeekly = $derived(wastedPct(closes.data?.summary, 'weekly_all'));
 	const pctOrDash = (v: number | null) => (v === null ? '–' : `${v}%`);
 	const label = (key: MetricKey) =>
-		key === 'live'
-			? m.home_stat_live()
+		key === 'working'
+			? m.shell_stat_working()
 			: key === 'needs_input'
 				? m.home_stat_needs_input()
 				: key === 'machines'
@@ -28,7 +28,14 @@
 
 <div class="tiles">
 	{#each tiles as t (t.key)}
-		<MetricTile compact value={num(t.value)} suffix={t.suffix} warn={t.warn} label={label(t.key)} />
+		<MetricTile
+			compact
+			value={num(t.value)}
+			suffix={t.suffix}
+			warn={t.warn}
+			label={label(t.key)}
+			href={t.href}
+		/>
 	{/each}
 	{#if wasted5h !== null || wastedWeekly !== null}
 		<div class="wide">

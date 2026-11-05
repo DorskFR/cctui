@@ -53,6 +53,8 @@ export const ROUTES = [
   { id: "post_voice_speak", method: "POST", path: "/voice/speak", summary: "Synthesize text to audio with the instance speech service.", request: null, response: null },
   { id: "get_admin_instance_upload_caps", method: "GET", path: "/admin/instance/upload-caps", summary: "Read or set the per-upload file count and size caps (admin).", request: null, response: null },
   { id: "put_admin_instance_upload_caps", method: "PUT", path: "/admin/instance/upload-caps", summary: "Read or set the per-upload file count and size caps (admin).", request: null, response: null },
+  { id: "get_admin_instance_event_retention", method: "GET", path: "/admin/instance/event-retention", summary: "Read or set how many days of events the server keeps; 0 keeps every event (admin).", request: null, response: null },
+  { id: "put_admin_instance_event_retention", method: "PUT", path: "/admin/instance/event-retention", summary: "Read or set how many days of events the server keeps; 0 keeps every event (admin).", request: null, response: null },
   { id: "get_admin_harness_autoupdate", method: "GET", path: "/admin/harness-autoupdate", summary: "Read the harness auto-update settings of every machine, or set the instance default (admin).", request: null, response: null },
   { id: "put_admin_harness_autoupdate", method: "PUT", path: "/admin/harness-autoupdate", summary: "Read the harness auto-update settings of every machine, or set the instance default (admin).", request: null, response: null },
   { id: "put_admin_harness_autoupdate_by_machine", method: "PUT", path: "/admin/harness-autoupdate/{machine_id}", summary: "Set or clear one machine's harness auto-update override (admin).", request: null, response: null },

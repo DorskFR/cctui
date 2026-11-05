@@ -84,5 +84,7 @@ it('renders the foldable controls inline, not in the menu, above the fold', asyn
 	expect(document.querySelector('.inline-fold')).not.toBeNull();
 	const menu = panel().querySelector('[data-journey="display-options"]');
 	expect(menu?.querySelector('[data-journey="view"]')).toBeNull();
-	expect(menu?.children).toHaveLength(2);
+	expect(menu?.querySelectorAll('[data-journey="dimension"]')).toHaveLength(2);
+	expect(menu?.textContent).toContain('Select multiple');
+	expect(menu?.children).toHaveLength(3);
 });

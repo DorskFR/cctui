@@ -35,3 +35,13 @@ export function parseSpawnDraft(draft: Record<keyof SpawnDefaults, string>): Spa
 	if (Object.values(out).some((v) => v === undefined)) return null;
 	return out as SpawnDefaults;
 }
+
+export const EVENT_RETENTION_MAX_DAYS = 3650;
+
+/** Whole days from 0 (keep every event) to ten years; `null` when invalid. */
+export function parseRetentionDays(raw: string): number | null {
+	const s = raw.trim();
+	if (!/^\d+$/.test(s)) return null;
+	const n = Number(s);
+	return n <= EVENT_RETENTION_MAX_DAYS ? n : null;
+}

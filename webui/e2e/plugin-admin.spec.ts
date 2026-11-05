@@ -124,7 +124,7 @@ test.describe('plugins page (admin)', () => {
 			{ id: 'demo', name: 'Demo', description: 'd', version: '0.0.1', source: 'installed', enabled: false },
 			{ id: 'local', name: 'Local', description: 'l', version: '0.0.2', source: 'directory', enabled: true }
 		]);
-		await page.goto('/settings/plugins');
+		await page.goto('/settings/instance#instance-plugins');
 		const group = page.locator('[data-journey="plugins-admin"]');
 		await expect(group).toBeVisible();
 		await expect(row(page, 'demo')).toContainText('0.0.1');
@@ -152,13 +152,13 @@ test.describe('plugins page (admin)', () => {
 		expect(state.calls).toContain('GET /api/v1/admin/plugins/catalog');
 		expect(catalogPosts).toEqual([{ catalog: 'catalogged' }]);
 
-		page.once('dialog', (d) => d.accept());
 		await row(page, 'fromurl').locator('[data-journey="plugin-admin-uninstall"]').click();
+		await page.getByRole('dialog').getByRole('button', { name: 'Uninstall' }).click();
 		await expect(row(page, 'fromurl')).toHaveCount(0);
 		expect(state.calls).toContain('DELETE /api/v1/admin/plugins/fromurl');
 
-		await page.goto('/settings/instance');
-		await expect(page.locator('[data-journey="plugins-admin"]')).toHaveCount(0);
+		await page.goto('/settings/plugins');
+		await expect(page.locator('[data-settings-page="plugins"] [data-journey="plugins-admin"]')).toHaveCount(0);
 	});
 
 	test('users only see instance-enabled plugins, with the form behind their own switch', async ({ page }) => {

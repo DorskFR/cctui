@@ -110,6 +110,8 @@ export type * from './EnvKind';
 export type * from './EnvVar';
 export type * from './EventPage';
 export type * from './EventRecord';
+export type * from './EventRetentionInfo';
+export type * from './EventRetentionRequest';
 export type * from './FailedDispatch';
 export type * from './FailedDispatchReason';
 export type * from './ForkExtract';

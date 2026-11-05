@@ -15,19 +15,17 @@
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
-	import { clearSessionRoom, setSessionRoom, setSessionRoomByName } from '$lib/rooms';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { drafts, VIEW_OPTS } from '$lib/drafts';
 	import { supportsAttachments as adapterSupportsAttachments } from '$lib/attachments';
 	import { harnessCapabilities } from '$lib/harnesses';
 	import { harnessTable } from '$lib/harnesses.svelte';
 	import { Dropzone } from '@dorsk/tsumikit';
-	import ForkModal from './conversation/ForkModal.svelte';
 	import DrawerHeader from './conversation/DrawerHeader.svelte';
+	import PaneOverlays from './conversation/PaneOverlays.svelte';
 	import DrawerToolbar from './conversation/DrawerToolbar.svelte';
 	import ActivityBanner from './conversation/ActivityBanner.svelte';
 	import DrawerBanners from './conversation/DrawerBanners.svelte';
-	import ForkSelectBar from './conversation/ForkSelectBar.svelte';
 	import AutoArchiveNotice from './conversation/AutoArchiveNotice.svelte';
 	import TaskPanel from './conversation/TaskPanel.svelte';
 	import SessionEventsPanel from './conversation/SessionEventsPanel.svelte';
@@ -40,7 +38,6 @@
 	import { useHarnesses, usePlugins } from '$lib/queries';
 	import { settings } from '$lib/settings.svelte';
 	import { scheduledTurns, useScheduledMessages } from '$lib/queries/scheduled';
-	import BookmarkSaveModal from './bookmarks/BookmarkSaveModal.svelte';
 	import type { Line, MsgCategory, ViewOpts } from './conversation/types';
 	import { parseViewOpts } from './conversation/filters';
 	import { lineMarkdown, mergeEventSources } from './conversation/format';
@@ -56,9 +53,10 @@
 	import { MessagePins } from './conversation/messagePins.svelte';
 	import { BookmarkSaver } from './conversation/bookmarkSave.svelte';
 	import { guardEscape } from './conversation/escapeGuard';
+	import { paneRooms } from './conversation/paneRooms';
+	import { LineSpeaker } from './conversation/lineSpeaker.svelte';
 	import { livenessClass } from './conversation/liveness';
 	import { ownsSession } from './conversation/ownership';
-	import { useOwnerHideMenu } from '$lib/ownerHideMenu.svelte';
 	import { notify } from '$lib/notify.svelte';
 	import type { ConversationChrome } from './conversation/chrome';
 	import { m } from '$lib/paraglide/messages';
@@ -66,7 +64,6 @@
 	import { voiceTranscriptLanded } from './conversation/voiceMessage';
 	import { LiveVoice } from '$lib/voice/liveVoice.svelte';
 	import { SpeechPlayer } from '$lib/voice/player';
-	import { speakText } from '$lib/voice/speakLine';
 	import { voiceCaps } from '$lib/voice/capabilities';
 	import { acquireWakeLock } from '$lib/voice/wakeLock';
 	import { ttsMime } from '$lib/voice/mime';
@@ -115,10 +112,6 @@
 		() => me.data?.role === 'admin' && !!me.data?.user_id
 	);
 	const owned = $derived(ownsSession(me.data, myMachines.data, session.machine_id));
-	const ownerMenu = useOwnerHideMenu(
-		() => session,
-		() => me.data
-	);
 	const needsInput = $derived(session.attention === 'needs_input' && !archived);
 	const showStatusBadge = $derived(session.status === 'new' || session.status === 'archived');
 	const qc = useQueryClient();
@@ -150,26 +143,7 @@
 
 	const togglePin = (s: SessionListItem) => (s.pinned ? actions.unpin(s.id) : actions.pin(s.id));
 
-	// Room is a field on the session, so a change invalidates the session list
-	// that the grouping and the card badge read.
-	async function setRoom(sessionId: string, pick: { id: string } | { name: string }) {
-		try {
-			if ('id' in pick) await setSessionRoom(sessionId, pick.id);
-			else await setSessionRoomByName(sessionId, pick.name);
-			void qc.invalidateQueries({ queryKey: qk.sessionsAll });
-		} catch (e) {
-			toasts.error(errMessage(e));
-		}
-	}
-
-	async function clearRoom(sessionId: string) {
-		try {
-			await clearSessionRoom(sessionId);
-			void qc.invalidateQueries({ queryKey: qk.sessionsAll });
-		} catch (e) {
-			toasts.error(errMessage(e));
-		}
-	}
+	const rooms = paneRooms(qc);
 
 	// Shared by the viewport (binds the scroller) and the composer (binds the
 	// textarea, whose growth must re-pin the viewport).
@@ -409,26 +383,8 @@
 	$effect(() => {
 		if (!caps.live) untrack(() => liveVoice.stop());
 	});
-	let speakingKey = $state<string | null>(null);
-	async function speakLine(ln: Line) {
-		if (!ln.key || !ln.text) return;
-		const key = ln.key;
-		try {
-			const outcome = await speakText(key, ln.text, {
-				voice: settings.voice.voice,
-				speed: settings.voice.speed,
-				summarize: settings.voice.summarizeLong,
-				speaker: settings.voice.speakerId,
-				onend: () => {
-					if (speakingKey === key) speakingKey = null;
-				}
-			});
-			speakingKey = outcome === 'started' ? key : null;
-		} catch (e) {
-			speakingKey = null;
-			toasts.error(errMessage(e));
-		}
-	}
+	const speaker = new LineSpeaker();
+	const speakLine = speaker.speak;
 
 	function followup(instruction?: string) {
 		onFollowup?.(session, instruction);
@@ -472,6 +428,7 @@
 				{isCodexSession}
 				livenessClass={livenessClass(session)}
 				{showStatusBadge}
+				working={stream.working}
 				{maximized}
 				compact={chrome === 'tile'}
 				{onmaximize}
@@ -500,9 +457,8 @@
 				onDetachLabel={actions.detachLabel}
 				onUpdateLabel={actions.updateLabel}
 				onDeleteLabel={actions.deleteLabel}
-				onsetroom={setRoom}
-				onclearroom={clearRoom}
-				ownerItems={ownerMenu.items}
+				onsetroom={rooms.set}
+				onclearroom={rooms.clear}
 			/>
 
 			{#if chrome !== 'tile'}
@@ -533,7 +489,7 @@
 				<TerminalPane sessionId={id} onclose={() => (terminalOpen = false)} />
 			{/if}
 
-			<DrawerBanners sessionId={id} {needsInput} {stream} bind:acctModalOpen />
+			<DrawerBanners sessionId={id} {stream} bind:acctModalOpen />
 
 			<Conversation
 				{stream}
@@ -565,10 +521,10 @@
 				onpluginaction={(a) => plugins.openWith(a.pluginId, a.params)}
 				onquote={quoteLine}
 				onspeak={caps.tts ? speakLine : undefined}
-				{speakingKey}
+				speakingKey={speaker.key}
 			/>
 
-			<ActivityBanner {stream} {archived} />
+			<ActivityBanner {stream} {archived} {needsInput} />
 			<AutoArchiveNotice {session} onpin={() => togglePin(session)} />
 
 			{#if liveVoice.active}
@@ -599,42 +555,15 @@
 			</Dropzone>
 		</div>
 
-		{#if forkSelect.active}
-			<ForkSelectBar
-				contained={chrome === 'tile'}
-				count={forkSelect.selected.size}
-				onfork={forkSelection}
-				onforkall={fork.openDialog}
-				oncancel={forkSelect.exit}
-			/>
-		{/if}
-
-		{#if fork.open}
-			<ForkModal
-				{archived}
-				{isCodexSession}
-				parentTokens={fork.parentTokens}
-				models={fork.models}
-				efforts={fork.efforts}
-				forking={fork.forking}
-				extractLabel={fork.extractLabel}
-				bind:model={fork.model}
-				bind:effort={fork.effort}
-				bind:prompt={fork.prompt}
-				oncancel={fork.cancel}
-				onsubmit={fork.submit}
-			/>
-		{/if}
-
-	{#if bookmarks.draft}
-		<BookmarkSaveModal
-			heading={m.bookmarks_save_title()}
-			saveLabel={m.bookmarks_save_action()}
-			title={bookmarks.draft.title}
-			onsave={bookmarks.save}
-			onclose={bookmarks.close}
+		<PaneOverlays
+			{fork}
+			{forkSelect}
+			{bookmarks}
+			{archived}
+			{isCodexSession}
+			contained={chrome === 'tile'}
+			onforkselection={forkSelection}
 		/>
-	{/if}
 </div>
 
 <style>

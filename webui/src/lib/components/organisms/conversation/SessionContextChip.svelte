@@ -26,7 +26,7 @@
 		{#snippet trigger()}
 			<Icon name="book" size={12} />
 			<span class="wide">{m.conversation_context_chip({ rules, memories })}</span><span class="narrow"
-				>{rules + memories}</span
+				>{m.chrome_context_narrow({ count: rules + memories })}</span
 			>
 		{/snippet}
 		<SessionContextPanel {sessionId} attached={ctx.data} {canAttach} />

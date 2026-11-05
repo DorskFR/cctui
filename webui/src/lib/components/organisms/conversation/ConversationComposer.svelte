@@ -1,24 +1,14 @@
 <script lang="ts">
 	import { tick, untrack } from 'svelte';
-	import { goto } from '$app/navigation';
-	import { page } from '$app/state';
-	import { sessionHref } from '$lib/sessionFailureToast';
 	import { insertBlock } from './insertText';
 	import { insertAtCaret, quoteMarkdown } from './format';
-	import { errMessage } from '$lib/api';
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
 	import PromptField from '$lib/components/organisms/PromptField.svelte';
-	import {
-		endpoints,
-		pendingScheduled,
-		useScheduledActions,
-		useScheduledMessages,
-		useSessionActions,
-		useSessionAttachments
-	} from '$lib/queries';
-	import { Button, FileButton, IconButton, InputGroup, Text, formatTimestamp } from '@dorsk/tsumikit';
+	import { useSessionActions, useSessionAttachments } from '$lib/queries';
+	import { FileButton, InputGroup } from '@dorsk/tsumikit';
 	import ArchivedActions from './ArchivedActions.svelte';
+	import ColdOffer from './ColdOffer.svelte';
 	import ScheduleCustomModal from './ScheduleCustomModal.svelte';
 	import ScheduledMessages from './ScheduledMessages.svelte';
 	import RedactedChips from './RedactedChips.svelte';
@@ -27,9 +17,9 @@
 	import VoiceControls from './VoiceControls.svelte';
 	import { CacheColdClock } from './cacheCold.svelte';
 	import { PromptAttachments } from '$lib/promptAttachments.svelte';
-	import { scheduleBody } from './scheduleBody';
+	import { ComposerSchedule } from './composerSchedule.svelte';
+	import { launchFromComposer } from './composerLaunch';
 	import { scheduleMenuItems } from './scheduleMenu';
-	import { parseCustom, toLocalInput } from './scheduleTimes';
 	import { drafts, composerKey, history as msgHistory } from '$lib/drafts';
 	import { serverDrafts } from '$lib/serverDrafts';
 	import { HistoryNav } from '$lib/historyNav';
@@ -37,10 +27,7 @@
 	import type { ScrollController } from './scroll.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { settings } from '$lib/settings.svelte';
-	import { BRIEF_FETCH_MAX_BYTES, launchFollowup, routeEnter, showColdOffer } from '$lib/followup';
-	import { ws } from '$lib/ws.svelte';
-	import { pendingSpawns } from '$lib/pendingSpawns.svelte';
-	import { findSpawnedSession } from '$lib/components/organisms/spawn/spawnMatch';
+	import { routeEnter, showColdOffer } from '$lib/followup';
 
 	let {
 		session,
@@ -134,16 +121,16 @@
 	});
 	const burstTokens = $derived(session.estimated_burst_tokens ?? null);
 
-	// ── Scheduled send ───────────────────────────────────────────
-	const scheduled = useScheduledMessages(() => session.id);
-	const scheduledActions = useScheduledActions(() => session.id);
-	const scheduledCount = $derived(pendingScheduled(scheduled.data).length);
+	const schedule = new ComposerSchedule({
+		sessionId: () => session.id,
+		draft: () => input,
+		archived: () => archived,
+		att,
+		stageFiles: (files) => stageFiles(files),
+		restore: (text) => (input = text),
+		sent: (text) => clearSent(text)
+	});
 	let scheduledEl = $state<HTMLElement>();
-	let customOpen = $state(false);
-	let customValue = $state('');
-	const canSchedule = $derived(
-		(!!input.trim() || att.files.length > 0) && !att.uploading && att.images.pending.length === 0
-	);
 	const actions = useSessionActions();
 	let launching = $state(false);
 	// What Send / Enter does right now. A cold Send starts a follow-up only
@@ -154,55 +141,22 @@
 	const scheduleItems = $derived(
 		scheduleMenuItems({
 			now: cache.now,
-			canSchedule,
-			scheduledCount,
-			onpreset: (at) => void scheduleAt(at),
-			oncustom: () => {
-				customValue = toLocalInput(new Date(Date.now() + 3_600_000));
-				customOpen = true;
-			},
+			canSchedule: schedule.canSchedule,
+			scheduledCount: schedule.count,
+			onpreset: (at) => void schedule.at(at),
+			oncustom: () => schedule.openCustom(),
 			onlist: () => scheduledEl?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }),
 			cold:
 				route === 'send'
 					? null
-					: { burstTokens, canSend: canSchedule && !launching, onsendhere: send, onoptions: followup }
+					: {
+							burstTokens,
+							canSend: schedule.canSchedule && !launching,
+							onsendhere: send,
+							onoptions: followup
+						}
 		})
 	);
-
-	async function scheduleAt(at: Date) {
-		const text = input.trim();
-		if ((!text && !att.files.length) || archived || att.uploading) return;
-		if (att.error) {
-			toasts.error(att.error);
-			return;
-		}
-		const out = await scheduleBody(
-			text,
-			(t) => att.stage(t, stageFiles),
-			(body) => scheduledActions.schedule(body, at)
-		);
-		if (!out.ok) {
-			if (out.restore !== null) input = out.restore;
-			if (out.error) toasts.error(m.composer_schedule_failed({ message: errMessage(out.error) }));
-			return;
-		}
-		toasts.info(
-			m.composer_schedule_toast({
-				when: formatTimestamp(at, 'datetime')
-			})
-		);
-		clearSent(text);
-	}
-
-	function scheduleCustom() {
-		const at = parseCustom(customValue, new Date());
-		if (!at) {
-			toasts.error(m.composer_schedule_custom_invalid());
-			return;
-		}
-		customOpen = false;
-		void scheduleAt(at);
-	}
 
 	let coldOfferDismissed = $state<string | null>(null);
 	const coldOffer = $derived(
@@ -239,53 +193,7 @@
 		launching = true;
 		const source = session;
 		try {
-			const out = await launchFollowup(source, text, {
-				brief: (id) => endpoints.brief(id, BRIEF_FETCH_MAX_BYTES),
-				spawn: (body, files) => actions.spawn(body, files),
-				awaitSpawn: async (commandId, sessionId) => {
-					let found = sessionId;
-					const outcome = await ws.awaitSpawn(commandId, sessionId, {
-						probe: async () => {
-							const { sessions } = await endpoints.sessions(false);
-							const hit = findSpawnedSession(sessions, source.machine_id, commandId, found);
-							if (hit) found = hit.id;
-							return hit;
-						}
-					});
-					return { ...outcome, sessionId: found };
-				},
-				archive: (id) => actions.archive(id)
-			});
-			if (out.status === 'failed') {
-				toasts.error(
-					m.spawn_toast_spawn_failed({
-						error: out.error == null ? m.spawn_error_unknown() : errMessage(out.error)
-					})
-				);
-				return;
-			}
-			clearSent(text, source.id);
-			if (out.status === 'unconfirmed') {
-				pendingSpawns.add({
-					commandId: out.commandId,
-					sessionId: out.sessionId,
-					machineId: source.machine_id,
-					name: '',
-					workingDir: source.working_dir
-				});
-				toasts.info(m.composer_followup_unconfirmed());
-				return;
-			}
-			if (out.archiveError !== undefined) {
-				toasts.error(m.composer_followup_archive_failed({ error: errMessage(out.archiveError) }));
-			} else {
-				toasts.ok(m.composer_followup_launched());
-			}
-			if (out.sessionId)
-				void goto(sessionHref(out.sessionId), {
-					replaceState: true,
-					state: { ...page.state, spawned: out.sessionId } as App.PageState
-				});
+			if (await launchFromComposer(source, text, actions)) clearSent(text, source.id);
 		} finally {
 			launching = false;
 		}
@@ -439,26 +347,12 @@
 			</div>
 		{/if}
 		{#if coldOffer && !folded}
-			<div class="cold-offer" data-testid="cold-offer">
-				<Text tone="muted" size="sm">
-					{#if route === 'launch'}
-						{m.composer_followup_auto_offer()}
-						<Button variant="link" size="sm" onclick={() => void send()}
-							>{m.composer_followup_send_here_link()}</Button
-						>
-					{:else}
-						{m.composer_followup_offer()}
-						<Button variant="link" size="sm" onclick={followup}>{m.composer_followup_start()}</Button>
-					{/if}
-				</Text>
-				<IconButton
-					icon="x"
-					variant="ghost"
-					box="xs"
-					label={m.composer_followup_dismiss()}
-					onclick={() => (coldOfferDismissed = session.id)}
-				/>
-			</div>
+			<ColdOffer
+				{route}
+				onsendhere={() => void send()}
+				onfollowup={followup}
+				ondismiss={() => (coldOfferDismissed = session.id)}
+			/>
 		{/if}
 		{#if !folded}
 			<RedactedChips text={input} bind:revealed />
@@ -515,6 +409,7 @@
 					{burstTokens}
 					{route}
 					{launching}
+					active={focused || !!input.trim() || att.files.length > 0}
 					onclick={submit}
 				/>
 			{/snippet}
@@ -522,12 +417,12 @@
 	{/if}
 </div>
 
-{#if customOpen}
+{#if schedule.customOpen}
 	<ScheduleCustomModal
 		now={cache.now}
-		bind:value={customValue}
-		onconfirm={scheduleCustom}
-		onclose={() => (customOpen = false)}
+		bind:value={schedule.customValue}
+		onconfirm={() => schedule.confirmCustom()}
+		onclose={() => (schedule.customOpen = false)}
 	/>
 {/if}
 
@@ -561,12 +456,6 @@
 		outline: 2px dashed var(--c-blue);
 		outline-offset: -2px;
 		background: color-mix(in srgb, var(--c-blue) 8%, var(--bg-elevated));
-	}
-	.cold-offer {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--sp-2);
 	}
 	.attachments {
 		width: 100%;

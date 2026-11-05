@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { useAccounts, useMachineResources, useSessionStats, useTokenStats } from '$lib/queries';
+	import { useMachineResources, useSessionStats, useSessions, useTokenStats } from '$lib/queries';
 	import { getLocale } from '$lib/paraglide/runtime';
 	import { m } from '$lib/paraglide/messages';
 	import SessionPeriodSummary from '$lib/components/organisms/overview/SessionPeriodSummary.svelte';
@@ -8,20 +8,21 @@
 	import UsageAnalyticsSection from '$lib/components/organisms/overview/UsageAnalyticsSection.svelte';
 	import { Card, Stack } from '@dorsk/tsumikit';
 	import PageHead from '$lib/components/molecules/PageHead.svelte';
-	import { buildMetricTiles, machinesOnline, type MetricKey } from './home.logic';
+	import { buildMetricTiles, needsInputTarget, type MetricKey } from './home.logic';
 
 	const stats = useSessionStats();
 	const tokens = useTokenStats();
 	const machines = useMachineResources(() => true);
-	const accounts = useAccounts();
+	const sessions = useSessions(() => false);
 
 	const machineRows = $derived(machines.data ?? []);
 
 	const num = (n: number) => n.toLocaleString(getLocale());
 	const tiles = $derived(buildMetricTiles(stats.data, machineRows));
+	const openTarget = $derived(needsInputTarget(sessions.data?.sessions));
 	const tileLabel = (key: MetricKey, sub: number | undefined) =>
-		key === 'live'
-			? m.home_stat_live()
+		key === 'working'
+			? m.shell_stat_working()
 			: key === 'needs_input'
 				? m.home_stat_needs_input()
 				: key === 'machines'
@@ -29,7 +30,7 @@
 					: m.home_stat_total_sessions_archived({ n: num(sub ?? 0) });
 </script>
 
-<Stack gap="var(--sp-5)">
+<Stack gap="var(--sp-6)">
 	<PageHead title={m.home_usage_page_title()} />
 
 	<div class="tiles" data-journey="tiles">
@@ -40,6 +41,10 @@
 					suffix={t.suffix}
 					warn={t.warn}
 					label={tileLabel(t.key, t.sub)}
+					href={t.href}
+					action={t.key === 'needs_input' && openTarget
+						? { href: openTarget, label: m.common_open() }
+						: undefined}
 				/>
 			</div>
 		{/each}

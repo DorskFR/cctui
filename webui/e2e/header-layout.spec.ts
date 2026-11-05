@@ -28,26 +28,25 @@ async function openSessions(page: Page, viewport: { width: number; height: numbe
 	await page.waitForTimeout(500);
 }
 
-test('desktop: the version block clears every control in the tail', async ({ page }, testInfo) => {
+test('desktop: the tail is the status button and the account menu only', async ({ page }, testInfo) => {
 	await openSessions(page, DESKTOP);
 
+	const tail = page.locator('header.hd .tail');
+	await expect(tail.locator('[data-tsu="ThemePicker"]')).toHaveCount(0);
+	await expect(tail.locator('[data-tsu="FontScalePicker"]')).toHaveCount(0);
+	expect(await tail.locator(':scope > *').count()).toBeLessThanOrEqual(2);
+
+	const lead = page.locator('header.hd .lead');
 	const vers = page.locator('header.hd .vers');
-	await expect(vers).toBeVisible();
-	const versBox = (await vers.boundingBox()) as Box;
+	if ((await vers.count()) === 0) await expect(lead).not.toContainText(/srv v\d/);
 
 	const neighbours = [
 		...(await boxes(page.locator('header.hd .tail > *'))),
-		...(await boxes(page.locator('header.hd .tail button, header.hd .tail a'))),
-		...(await boxes(page.locator('header.hd .conn'))),
 		...(await boxes(page.locator('header.hd .tabs a')))
 	];
-	expect(neighbours.length).toBeGreaterThan(0);
-
-	console.log('vers', JSON.stringify(versBox));
-	for (const n of neighbours) console.log('tail', n.label, JSON.stringify(n.box));
-
-	const hits = neighbours.filter((n) => intersects(versBox, n.box));
-	expect(hits.map((h) => h.label)).toEqual([]);
+	for (const v of await boxes(vers)) {
+		expect(neighbours.filter((n) => intersects(v.box, n.box)).map((n) => n.label)).toEqual([]);
+	}
 
 	await page.screenshot({
 		path: testInfo.outputPath('desktop-1280.png'),
@@ -55,37 +54,74 @@ test('desktop: the version block clears every control in the tail', async ({ pag
 	});
 });
 
-test('mobile: the version block yields instead of overlapping', async ({ page }, testInfo) => {
-	await openSessions(page, MOBILE);
+test('the account menu carries the version, Appearance and the update check', async ({ page }) => {
+	for (const viewport of [DESKTOP, MOBILE]) {
+		await openSessions(page, viewport);
+		await page.getByRole('button', { name: 'Account menu' }).click();
+		const menu = page.getByRole('menu');
+		await expect(menu).toContainText(/Version .*Check for updates|Newer version available/);
+		await expect(menu.getByRole('menuitem', { name: /Appearance/ })).toBeVisible();
+		await page.keyboard.press('Escape');
+	}
+});
 
-	const vers = page.locator('header.hd .vers');
-	await expect(vers).toBeHidden();
+test('Appearance opens the theme and text-size pickers with a link to Settings', async ({ page }) => {
+	await openSessions(page, DESKTOP);
+	await page.getByRole('button', { name: 'Account menu' }).click();
+	await page.getByRole('menuitem', { name: /Appearance/ }).click();
+	const dialog = page.getByRole('dialog');
+	await expect(dialog.locator('[data-tsu="ThemePicker"]')).toBeVisible();
+	await expect(dialog.getByRole('link', { name: 'More in Settings' })).toHaveAttribute(
+		'href',
+		'/settings/interface#theme'
+	);
+});
 
-	const all = await boxes(page.locator('header.hd .vers'));
-	const neighbours = await boxes(page.locator('header.hd .tail > *'));
-	expect(neighbours.length).toBeGreaterThan(0);
-	for (const v of all) for (const n of neighbours) expect(intersects(v.box, n.box)).toBe(false);
+test.describe('touch', () => {
+	test.use({ hasTouch: true, isMobile: true, viewport: MOBILE });
 
-	await page.screenshot({
-		path: testInfo.outputPath('mobile-390.png'),
-		clip: { x: 0, y: 0, width: MOBILE.width, height: 80 }
+	test('every header control answers a 44 px thumb', async ({ page }, testInfo) => {
+		await page.goto('/sessions');
+		await page.locator('header.hd .pill').waitFor();
+		await page.waitForTimeout(500);
+
+		const controls = page.locator('header.hd .tail button, header.hd .tail a');
+		const n = await controls.count();
+		expect(n).toBeGreaterThan(0);
+		for (let i = 0; i < n; i++) {
+			const el = controls.nth(i);
+			if (!(await el.isVisible())) continue;
+			const misses = await el.evaluate((node) => {
+				const r = node.getBoundingClientRect();
+				const cx = r.left + r.width / 2;
+				const cy = r.top + r.height / 2;
+				const out: string[] = [];
+				for (const [dx, dy] of [[0, -21], [0, 21], [-21, 0], [21, 0]]) {
+					const hit = document.elementFromPoint(cx + dx, cy + dy);
+					if (!hit || !(node === hit || node.contains(hit))) out.push(`${dx},${dy}`);
+				}
+				return out;
+			});
+			expect(misses, `control #${i}`).toEqual([]);
+		}
+
+		await page.screenshot({
+			path: testInfo.outputPath('mobile-390.png'),
+			clip: { x: 0, y: 0, width: MOBILE.width, height: 80 }
+		});
 	});
 });
 
-test('mobile: the versions hidden from the bar stay readable in Settings › Instance', async ({
-	page
-}) => {
-	await page.setViewportSize(MOBILE);
-	await page.goto('/settings/instance');
-	const body = page.locator('body');
-	await expect(body).toContainText(/srv \d+\.\d+\.\d+/);
-	await expect(body).toContainText(/\bui (dev|\d+\.\d+\.\d+)/);
+test('an unknown address shows a way back instead of a bare 404', async ({ page }) => {
+	await page.goto('/does-not-exist');
+	await expect(page.getByRole('heading', { name: 'Page not found' })).toBeVisible();
+	await expect(page.getByRole('link', { name: 'Go to sessions' })).toHaveAttribute('href', '/sessions');
 });
 
 test('the system bar carries neither the ? nor a bell button (CCT-1012)', async ({ page }) => {
 	await openSessions(page, DESKTOP);
 	const tail = page.locator('header.hd .tail');
-	await expect(tail.locator('a[href="/settings/guides"]')).toHaveCount(0);
+	await expect(tail.locator('a[href^="/settings/interface#guides"], a[href="/settings/guides"]')).toHaveCount(0);
 	await expect(tail.getByText('?', { exact: true })).toHaveCount(0);
 	await expect(tail.getByText('🔔')).toHaveCount(0);
 	await expect(tail.getByText('🔕')).toHaveCount(0);

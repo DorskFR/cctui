@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { EventRecord } from '@bindings/EventRecord';
-	import { Badge, Dot, Text, Timestamp } from '@dorsk/tsumikit';
+	import { Dot, Text, Timestamp } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import { formatRow, type ActorKind, type EventFamily } from '$lib/events';
@@ -39,9 +39,9 @@
 	<span class="dot"><Dot status={row.dot} role="img" aria-label={row.severity} title={row.severity} /></span>
 	<span class="time"><Timestamp value={row.occurredAt} mode="relative" short size="xs" tone="faint" /></span>
 	<span class="verb">
-		<Badge size="xs" tone={row.severity === 'info' ? 'neutral' : row.severity === 'warn' ? 'warn' : 'danger'} mono>
+		<Text variant="eyebrow" tone={row.severity === 'info' ? 'muted' : row.severity === 'warn' ? 'warn' : 'danger'} nowrap>
 			{compact ? row.verb : `${familyLabel[row.family]()} · ${row.verb}`}
-		</Badge>
+		</Text>
 	</span>
 	<span class="summary" class:blank={!row.summary}><Text size="sm" truncate title={row.summary}>{row.summary}</Text></span>
 	{#if showSubjects && !compact}
@@ -50,14 +50,14 @@
 				{#if row.sessionHref}
 					<span class="link">
 						<NavLink href={row.sessionHref}>
-							<Badge size="xs" icon="list" title={row.sessionName ?? undefined}>{row.sessionName ?? m.events_session_fallback()}</Badge>
+							<Text size="xs" tone="accent" truncate title={row.sessionName ?? undefined}>{row.sessionName ?? m.events_session_fallback()}</Text>
 						</NavLink>
 					</span>
 				{:else}
 					<span class="link">
-						<Badge size="xs" icon="list" tone="muted" title={m.events_session_deleted()}>
+						<Text size="xs" tone="faint" truncate title={m.events_session_deleted()}>
 							{row.sessionName ?? m.events_session_fallback()}
-						</Badge>
+						</Text>
 					</span>
 				{/if}
 			{/if}

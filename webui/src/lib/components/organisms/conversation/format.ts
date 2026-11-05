@@ -684,6 +684,61 @@ export function assignLineKeys(lines: Line[]): Line[] {
 	return lines;
 }
 
+const LINE_TIME = new Intl.DateTimeFormat(undefined, {
+	hour: '2-digit',
+	minute: '2-digit',
+	hourCycle: 'h23'
+});
+
+export function lineTime(ts: number): string {
+	return LINE_TIME.format(ts);
+}
+
+export function textBlocksText(s: string): string | null {
+	const head = s.trim();
+	if (!head.startsWith('[') || !head.endsWith(']') || !head.includes('"text"')) return null;
+	let blocks: unknown;
+	try {
+		blocks = JSON.parse(head);
+	} catch {
+		return null;
+	}
+	if (!Array.isArray(blocks) || blocks.length === 0) return null;
+	const texts: string[] = [];
+	for (const b of blocks) {
+		if (!b || typeof b !== 'object') return null;
+		const block = b as Record<string, unknown>;
+		if (block.type !== 'text' || typeof block.text !== 'string') return null;
+		texts.push(block.text);
+	}
+	return texts.join('\n\n');
+}
+
+const BARE_QUOTE = /(^|[^\\])"/;
+
+/** Undo one level of JSON string encoding: a whole JSON string literal, or
+ * text whose every quote is escaped (`\"`) and so was encoded once too often. */
+export function unescapeJsonText(s: string): string {
+	const t = s.trim();
+	const literal = t.length >= 2 && t.startsWith('"') && t.endsWith('"') ? parseJsonString(t) : null;
+	if (literal !== null) return literal;
+	if (!s.includes('\\"') || BARE_QUOTE.test(s)) return s;
+	return s.replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\\\/g, '\\');
+}
+
+function parseJsonString(s: string): string | null {
+	try {
+		const v: unknown = JSON.parse(s);
+		return typeof v === 'string' ? v : null;
+	} catch {
+		return null;
+	}
+}
+
+export function resultText(s: string): string {
+	return textBlocksText(s) ?? unescapeJsonText(s);
+}
+
 // JSON.stringify only emits \n / \t inside string literals, so expanding them
 // for display is safe (display-only — the text is never parsed back).
 export function expandJsonEscapes(s: string): string {

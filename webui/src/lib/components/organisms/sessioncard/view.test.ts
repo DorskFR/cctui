@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@bindings/SessionListItem';
-import { contextCountsOf, needsYouOf, scheduledLaunchOf, titleOf } from './view';
+import { contextCountsOf, metaParts, needsYouOf, projectOf, railOf, scheduledLaunchOf, titleOf } from './view';
 
 const session = (over: Partial<SessionListItem>): SessionListItem =>
 	({ id: 'a1e5bd0f2c3d4e5f6', labels: [], working_dir: '/home/me/cctui', ...over }) as SessionListItem;
@@ -96,5 +96,30 @@ describe('contextCountsOf', () => {
 			rules: 0,
 			memories: 3
 		});
+	});
+});
+
+describe('railOf', () => {
+	it('marks needs-input above working, and nothing for idle, stale or archived rows', () => {
+		expect(railOf(session({ bucket: 'working' }), true, false)).toBe('attention');
+		expect(railOf(session({ bucket: 'working', status: 'active' }), false, false)).toBe('working');
+		expect(railOf(session({ bucket: 'working' }), false, true)).toBeNull();
+		expect(railOf(session({ bucket: 'working', status: 'archived' }), false, false)).toBeNull();
+		expect(railOf(session({ bucket: 'done' }), false, false)).toBeNull();
+	});
+});
+
+describe('metaParts', () => {
+	it('reads machine · project · branch · model, the project as the last path segment', () => {
+		const s = session({ machine_name: 'kumo', working_dir: '/home/me/tsumikit/', model: 'claude-opus-4-1' });
+		const parts = metaParts(s, { showMachine: true, branch: 'main' });
+		expect(parts.slice(0, 3)).toEqual(['kumo', 'tsumikit', 'main']);
+		expect(parts).toHaveLength(4);
+	});
+
+	it('drops the machine under a machine header and skips what the session lacks', () => {
+		const s = session({ machine_name: 'kumo', working_dir: '/w/cctui', model: null });
+		expect(metaParts(s, { showMachine: false, branch: null })).toEqual(['cctui']);
+		expect(projectOf('/')).toBe('');
 	});
 });

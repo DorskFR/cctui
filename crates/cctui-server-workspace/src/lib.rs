@@ -1129,6 +1129,8 @@ mod tests {
             "PUT /admin/harness-autoupdate/{machine_id} Bearer Scope(Admin)",
             "POST /admin/harness-autoupdate/{machine_id}/restart Bearer Scope(Admin)",
             "PUT /admin/instance Bearer Scope(Admin)",
+            "GET /admin/instance/event-retention Bearer Scope(Admin)",
+            "PUT /admin/instance/event-retention Bearer Scope(Admin)",
             "GET /admin/instance/self-update Bearer Scope(Admin)",
             "PUT /admin/instance/self-update Bearer Scope(Admin)",
             "GET /admin/instance/spawn-defaults Bearer Scope(Admin)",

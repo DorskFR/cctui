@@ -131,7 +131,7 @@ test('412px touch: tapping the centre of each line-action icon hits that icon', 
 	await openDrawer(page, 412);
 	const cluster = page.locator('[data-journey="line-actions"]').first();
 	await cluster.scrollIntoViewIfNeeded();
-	const buttons = cluster.locator('button');
+	const buttons = cluster.locator('button:not([popover] button)');
 	const count = await buttons.count();
 	expect(count).toBeGreaterThan(1);
 

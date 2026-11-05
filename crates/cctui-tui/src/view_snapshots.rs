@@ -1637,6 +1637,7 @@ fn app_with_stats() -> crate::app::App {
         Action::Slice(SliceAction::StatsLoaded(Box::new(cctui_proto::api::SessionStats {
             total: 18,
             live: 3,
+            working: 3,
             needs_input: 1,
             archived: 6,
             today: 4,

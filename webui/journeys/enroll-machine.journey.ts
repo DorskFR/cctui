@@ -1,6 +1,6 @@
 import { defineJourney } from '@dorsk/journey';
 
-const ACCESS = '/settings/users';
+const ACCESS = '/settings/instance';
 
 export default defineJourney({
 	id: 'enroll-machine',

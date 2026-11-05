@@ -72,6 +72,7 @@ export interface DockInputs {
 	veryWide: boolean;
 	/** Tiles mode: the panes own the whole viewport, so nothing docks. */
 	tiles?: boolean;
+	conversationOpen?: boolean;
 }
 
 /** Resolve which panel goes where. A viewport too narrow for the requested
@@ -91,7 +92,8 @@ export function resolveDocks({
 	conversation,
 	wide,
 	veryWide,
-	tiles
+	tiles,
+	conversationOpen
 }: DockInputs): DockLayout {
 	const none: DockLayout = {
 		conversation: null,
@@ -105,7 +107,7 @@ export function resolveDocks({
 	const convSide = conversation?.enabled ? conversation.side : null;
 	const awayFromConv = (side: DockSide): DockSide =>
 		side === convSide ? (side === 'left' ? 'right' : 'left') : side;
-	let spawnSide = spawn.enabled ? awayFromConv(spawn.side) : null;
+	let spawnSide = spawn.enabled && !conversationOpen ? awayFromConv(spawn.side) : null;
 	let statsSide = stats.enabled ? awayFromConv(stats.side) : null;
 	if (convSide && !veryWide) {
 		spawnSide = null;

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
 	import type { LabelOwner } from '$lib/labels';
-	import { AutoGrid, Badge, Button, FileButton, Icon, Popover } from '@dorsk/tsumikit';
+	import { Badge, Button, FileButton, Icon, Popover } from '@dorsk/tsumikit';
 	import { labelTint, hueToColor } from '$lib/labels';
 	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
 	import type { PromptAttachments } from '$lib/promptAttachments.svelte';
@@ -54,10 +54,7 @@
 </script>
 
 <div class="addons">
-	<span class="addon-title">{m.spawn_optional_settings()}</span>
-	<!-- Button labels never wrap, so the column floor must fit the longest localized
-	     label plus icon ("Fichiers" / "Env vars"); short labels let three fit on a phone. -->
-	<AutoGrid min="8rem" gap="var(--sp-2)" maxCols={3} align="stretch">
+	<div class="addon-row" role="group" aria-label={m.spawn_optional_settings()}>
 		<!-- The panel renders in the browser top layer, so it is neither clipped by
 		     the Spawn Modal's <dialog> nor by its scrolling body. -->
 		<Popover
@@ -65,14 +62,13 @@
 			placement="bottom-start"
 			role="menu"
 			haspopup="menu"
-			block
-			control
-			style="gap: var(--sp-2)"
+			variant="ghost"
+			size="sm"
 			panelStyle="max-height:calc(100dvh - 1rem);overflow-y:auto;overflow-x:hidden"
 			onopen={() => panel?.focusSearch()}
 		>
 			{#snippet trigger()}
-				<Icon name="tag" />{m.spawn_add_label()}
+				<Icon name="plus" />{m.spawn_add_label()}
 			{/snippet}
 			<LabelMenu
 				bind:this={panel}
@@ -87,10 +83,17 @@
 			/>
 		</Popover>
 		{#if attachments}
-			<FileButton label={m.spawn_add_files()} icon="file-text" multiple onfiles={att.add} />
+			<FileButton
+				label={m.spawn_add_files()}
+				icon="plus"
+				variant="ghost"
+				size="sm"
+				multiple
+				onfiles={att.add}
+			/>
 		{/if}
-		<Button block onclick={addEnvRow}><Icon name="plus" />{m.spawn_add_env_vars()}</Button>
-	</AutoGrid>
+		<Button variant="ghost" size="sm" onclick={addEnvRow}><Icon name="plus" />{m.spawn_add_env_vars()}</Button>
+	</div>
 
 	{#if selectedLabels.length}
 		<div class="addon-labels">
@@ -117,10 +120,11 @@
 		flex-direction: column;
 		gap: var(--sp-2);
 	}
-	.addon-title {
-		font-size: var(--fs-sm);
-		font-weight: var(--fw-medium);
-		color: var(--text-muted);
+	.addon-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--sp-1);
 	}
 	.addon-labels {
 		display: flex;

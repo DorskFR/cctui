@@ -52,7 +52,7 @@
 
 {#snippet star()}
 	<span
-		class="star"
+		class="star hit-target"
 		class:on={session.pinned}
 		role="button"
 		tabindex="0"

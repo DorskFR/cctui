@@ -63,3 +63,18 @@ describe('SendButton', () => {
 		expect(main.disabled).toBe(true);
 	});
 });
+
+describe('SendButton emphasis', () => {
+	const isPrimary = () =>
+		document.querySelector('[data-tsu="SplitButton"]')?.classList.contains('split-primary') ?? false;
+
+	it('is outlined while the field is empty and unfocused', () => {
+		render({ cacheCold: false, active: false });
+		expect(isPrimary()).toBe(false);
+	});
+
+	it('fills once the field has text or focus', () => {
+		render({ cacheCold: false, active: true });
+		expect(isPrimary()).toBe(true);
+	});
+});

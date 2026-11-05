@@ -66,8 +66,7 @@
 </script>
 
 <div class="page">
-	<PageHead title={m.bookmarks_title()} />
-	<Text size="sm" tone="faint">{m.bookmarks_subtitle()}</Text>
+	<PageHead title={m.bookmarks_title()} subtitle={m.bookmarks_subtitle()} />
 
 	<Input
 		icon="search"
@@ -115,10 +114,10 @@
 
 <ConfirmModal
 	open={deleting !== null}
-	tone="warn"
-	title={m.bookmarks_delete()}
-	message={m.bookmarks_delete_confirm()}
-	confirmLabel={m.bookmarks_delete()}
+	tone="danger"
+	title={m.shell_bookmark_delete_title()}
+	message={m.shell_bookmark_delete_message()}
+	confirmLabel={m.shell_bookmark_delete_confirm()}
 	onconfirm={confirmDelete}
 	oncancel={() => (deleting = null)}
 />
@@ -127,11 +126,8 @@
 	.page {
 		display: flex;
 		flex-direction: column;
-		gap: var(--sp-3);
-		padding: var(--sp-4);
-		max-width: 60rem;
+		gap: var(--sp-4);
 		width: 100%;
-		margin: 0 auto;
 	}
 	.cards {
 		display: flex;

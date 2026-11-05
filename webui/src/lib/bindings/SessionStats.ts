@@ -7,7 +7,15 @@ export type SessionStats = {
 /**
  * Includes archived.
  */
-total: number, live: number, needs_input: number, archived: number, 
+total: number, 
+/**
+ * Deprecated alias of `working`.
+ */
+live: number, 
+/**
+ * Same buckets as the session list.
+ */
+working: number, needs_input: number, archived: number, 
 /**
  * Registered in local calendar periods, including archived.
  */

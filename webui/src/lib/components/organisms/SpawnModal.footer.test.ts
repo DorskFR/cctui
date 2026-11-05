@@ -109,4 +109,12 @@ describe("SpawnModal footer row", () => {
     await open({ docked: "right" });
     expect(document.querySelector(".dock-foot .foot-row")).not.toBeNull();
   });
+
+  it("labels the primary with the verb alone and keeps the chord hint out of it", async () => {
+    await open();
+    const primary = row()?.querySelector<HTMLElement>('[data-journey="submit"] button, button[data-journey="submit"]');
+    expect(primary?.textContent?.trim()).toBe("Launch");
+    expect(row()?.textContent).not.toMatch(/Ctrl|⌘|Enter/);
+    expect(document.querySelector(".chord-hint")).not.toBeNull();
+  });
 });

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { errMessage } from '$lib/api';
+	import { confirmDialog } from '$lib/confirmDialog.svelte';
 	import { useResourceShares, useResourceShareActions } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { Button, Input, Select, Text, Timestamp } from '@dorsk/tsumikit';
@@ -57,7 +58,12 @@
 	}
 
 	async function revoke(userId: string, name: string) {
-		if (!confirm(m.providers_share_confirm_revoke({ name, noun }))) return;
+		const ok = await confirmDialog({
+			title: m.providers_share_confirm_revoke({ name, noun }),
+			message: m.acct_share_revoke_message({ name, noun }),
+			confirmLabel: m.acct_share_revoke_confirm()
+		});
+		if (!ok) return;
 		try {
 			await shareActions.revoke(resourceType, id, userId);
 			toasts.ok(m.providers_share_revoked());

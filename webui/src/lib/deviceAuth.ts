@@ -14,8 +14,8 @@ export function normalizeUserCode(raw: string): string {
 		.join('')
 		.toUpperCase()
 		.slice(0, CODE_LENGTH);
-	return stripped.length === CODE_LENGTH
-		? `${stripped.slice(0, 4)}-${stripped.slice(4)}`
+	return stripped.length > CODE_LENGTH / 2
+		? `${stripped.slice(0, CODE_LENGTH / 2)}-${stripped.slice(CODE_LENGTH / 2)}`
 		: stripped;
 }
 

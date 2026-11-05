@@ -15,7 +15,7 @@ vi.mock('$lib/toast.svelte', () => ({ toasts: { ok: vi.fn(), error: vi.fn() } })
 
 import SpawnLimitsGroup from './SpawnLimitsGroup.svelte';
 import UpstreamHostsGroup from './UpstreamHostsGroup.svelte';
-import { parseSpawnDraft } from './serverSettings.logic';
+import { parseRetentionDays, parseSpawnDraft } from './serverSettings.logic';
 
 let comp: ReturnType<typeof mount> | null = null;
 afterEach(() => {
@@ -38,6 +38,10 @@ const input = (label: string) =>
 const type = (el: HTMLInputElement, value: string) => {
 	el.value = value;
 	el.dispatchEvent(new Event('input', { bubbles: true }));
+	flushSync();
+};
+const commit = (el: HTMLInputElement) => {
+	el.dispatchEvent(new Event('change', { bubbles: true }));
 	flushSync();
 };
 
@@ -68,15 +72,27 @@ describe('parseSpawnDraft', () => {
 	});
 });
 
+describe('parseRetentionDays', () => {
+	it('accepts whole days from zero to ten years', () => {
+		expect(parseRetentionDays('0')).toBe(0);
+		expect(parseRetentionDays(' 30 ')).toBe(30);
+		expect(parseRetentionDays('3650')).toBe(3650);
+	});
+
+	it('rejects anything else', () => {
+		for (const bad of ['', '-1', '1.5', 'x', '3651']) expect(parseRetentionDays(bad)).toBeNull();
+	});
+});
+
 describe('CctuiAgent limits', () => {
-	it('shows effective value with its source and saves a new value', async () => {
+	it('shows effective value with its source and saves a new value once committed', async () => {
 		api.spawnDefaults.mockResolvedValue(spawnInfo());
 		comp = mount(SpawnLimitsGroup, { target: document.body });
 		await settle();
 		expect(document.body.textContent).toContain('Effective: 2 (from env)');
 		expect(document.body.textContent).toContain('Effective: unlimited (built-in default)');
 		expect(input('Max live children')?.placeholder).toBe('unlimited');
-		expect(button('Save')?.disabled).toBe(true);
+		expect(button('Save')).toBeUndefined();
 
 		api.setSpawnDefaults.mockResolvedValue(
 			spawnInfo({
@@ -86,7 +102,8 @@ describe('CctuiAgent limits', () => {
 			})
 		);
 		type(input('Max live children'), '4');
-		button('Save')?.click();
+		expect(api.setSpawnDefaults).not.toHaveBeenCalled();
+		commit(input('Max live children'));
 		await settle();
 		expect(api.setSpawnDefaults).toHaveBeenCalledWith({
 			max_children: 4,
@@ -110,7 +127,9 @@ describe('CctuiAgent limits', () => {
 		comp = mount(SpawnLimitsGroup, { target: document.body });
 		await settle();
 		type(input('Max depth'), '0');
-		expect(button('Save')?.disabled).toBe(true);
+		commit(input('Max depth'));
+		await settle();
+		expect(api.setSpawnDefaults).not.toHaveBeenCalled();
 		expect(document.body.textContent).toContain('positive whole numbers');
 	});
 });

@@ -80,12 +80,8 @@
 
 	const searchId = $props.id();
 
-	// Overflow menu: the toolbar grew too many buttons and squeezed the
-	// search bar. A ⋯ Popover collapses the secondary controls — the native
-	// popover gives light dismiss, Escape and focus return. On desktop it holds
-	// the two DimensionPickers (color-by · group-by) so the search bar reclaims
-	// width; below the fold the label/view/select controls move in too, leaving
-	// only the section filter inline.
+	// The ⋯ menu always holds Select and the two DimensionPickers; below the
+	// fold the label filter and view picker join them.
 	//
 	// The fold is measured, not queried: the panel renders in the top layer, so a
 	// `@container` rule on the bar cannot reliably style its contents. The bar's
@@ -104,9 +100,8 @@
 	});
 </script>
 
-<!-- Controls that stay inline on desktop but fold into the ⋯ menu on narrow
-     widths: label filter, view picker, multi-select toggle. Rendered
-     via a snippet so the inline copy and the menu copy share one source. -->
+<!-- Label filter and view picker: inline on desktop, in the ⋯ menu on narrow
+     widths, one snippet for both copies. -->
 {#snippet listChecks()}
 	<Icon label={m.sessions_select_multiple()} size={18}>
 		<path d="m3 17 2 2 4-4" />
@@ -119,30 +114,6 @@
 {#snippet foldControls(menu: boolean)}
 	<LabelFilter {menu} {labels} bind:selected={labelFilter} onUpdate={onUpdateLabel} onDelete={onDeleteLabel} />
 	<ViewPicker {menu} {tiles} bind:view />
-	<!-- Stays mounted (disabled) while searching: unmounting it re-wraps the
-	     flex bar mid-type and makes the search field jump. -->
-	{#if selecting}
-		<!-- Cancel selection. -->
-		{#if menu}
-			<Button variant="ghost" size="sm" block style={MENU_ROW} onclick={onCancelSelect}>
-				<span style={MENU_ROW_ICON}><Icon name="x" size={18} /></span><span>{m.sessions_cancel_selection()}</span>
-			</Button>
-		{:else}
-			<Button class="ctl" square title={m.sessions_cancel_selection()} aria-label={m.sessions_cancel_selection()} onclick={onCancelSelect}>
-				<Icon name="x" size={18} />
-			</Button>
-		{/if}
-	{:else if menu}
-		<Button variant="ghost" size="sm" block style={MENU_ROW} disabled={searching} onclick={onStartSelect}>
-			<span style={MENU_ROW_ICON}>{@render listChecks()}</span><span>{m.sessions_select_multiple()}</span>
-		</Button>
-	{:else}
-		<!-- "Select multiple" wants a checklist/multi-select glyph the registry
-		     doesn't ship; feed Icon a raw list-checks svg via its children. -->
-		<Button class="ctl" square disabled={searching} title={m.sessions_select_multiple()} aria-label={m.sessions_select_multiple()} onclick={onStartSelect}>
-			{@render listChecks()}
-		</Button>
-	{/if}
 {/snippet}
 
 <div class="bar row" class:sticky class:flush bind:this={barEl}>
@@ -158,6 +129,7 @@
 				schema={searchSchema}
 				bind:value={rawQuery}
 				placeholder={sessionSearchPlaceholder()}
+				font="sans"
 			/>
 		</Field>
 	</div>
@@ -167,6 +139,13 @@
 	     (display:contents); below it they move into the ⋯ menu instead. -->
 	{#if !narrow}
 		<div class="inline-fold">{@render foldControls(false)}</div>
+	{/if}
+	{#if selecting}
+		<span class="ctl-item">
+			<Button class="ctl" square title={m.sessions_cancel_selection()} aria-label={m.sessions_cancel_selection()} onclick={onCancelSelect}>
+				<Icon name="x" size={18} />
+			</Button>
+		</span>
 	{/if}
 	<span class="ctl-item">
 		<Popover
@@ -183,10 +162,13 @@
 			{#snippet trigger()}
 				<Icon name="more" size={18} />
 			{/snippet}
-			<!-- The two DimensionPickers live here at all widths; below the fold the
-			     foldable controls join them. -->
 			<div class="menu" data-journey="display-options">
 				{#if narrow}{@render foldControls(true)}{/if}
+				{#if !selecting}
+					<Button variant="ghost" size="sm" block style={MENU_ROW} disabled={searching} onclick={onStartSelect}>
+						<span style={MENU_ROW_ICON}>{@render listChecks()}</span><span>{m.sessions_select_multiple()}</span>
+					</Button>
+				{/if}
 				<DimensionPicker menu kind="group" value={groupBy} onchange={onGroupBy} />
 				<DimensionPicker menu kind="color" value={colorBy} onchange={onColorBy} />
 			</div>
@@ -228,6 +210,7 @@
 	.bar.flush {
 		margin-bottom: 0;
 		padding-top: var(--sp-2);
+		padding-inline: var(--sp-4);
 		padding-bottom: 0;
 	}
 	.bar {

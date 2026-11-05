@@ -10,26 +10,23 @@
 	import { useAccountActions } from '$lib/queries';
 	import { errMessage } from '$lib/api';
 	import { toasts } from '$lib/toast.svelte';
+	import { fullTime } from './card/redirect.logic';
 
 	let {
 		provider,
 		usageEnabled = true,
 		canManage = false,
-		canRemove = false,
 		dense = false,
 		onedit,
-		onreauth,
-		onremove
+		onreauth
 	}: {
 		provider: AccountProvider;
 		usageEnabled?: boolean;
 		canManage?: boolean;
-		canRemove?: boolean;
 		/** Gauges only: the header popover has no room for models, counters or the reset button. */
 		dense?: boolean;
 		onedit?: () => void;
 		onreauth?: () => void;
-		onremove?: () => void;
 	} = $props();
 
 	const p = $derived(provider);
@@ -85,16 +82,6 @@
 				<Button size="sm" variant="primary" onclick={onreauth}>{m.providers_reauthenticate()}</Button>
 			{/if}
 			<IconButton icon="settings" label={m.providers_edit()} inline size={14} onclick={onedit} />
-			{#if canRemove}
-				<IconButton
-					icon="x"
-					label={m.providers_remove_aria({ provider: providerLabel(p.provider) })}
-					inline
-					hoverDanger
-					size={13}
-					onclick={onremove}
-				/>
-			{/if}
 		{/if}
 	</div>
 
@@ -116,7 +103,10 @@
 	<div class="stats">
 		<Text as="span" size="xs" tone="faint">{m.providers_requests({ n: compact(p.request_count) })}</Text>
 		<Text as="span" size="xs" tone="faint">
-			{m.providers_used()} <Timestamp value={p.last_used_at} mode="relative" tone="inherit" />
+			{m.providers_used()}
+			<span title={fullTime(p.last_used_at)}
+				><Timestamp value={p.last_used_at} mode="relative" details={false} tone="inherit" /></span
+			>
 		</Text>
 	</div>
 	{/if}
@@ -128,16 +118,12 @@
 		flex-direction: column;
 		gap: var(--sp-2);
 		padding: var(--sp-3) var(--sp-4);
-		border-right: 1px solid var(--border);
 		min-width: 0;
 		overflow: hidden;
 	}
 	.column.dense {
 		gap: var(--sp-1);
 		padding: var(--sp-2) var(--sp-3);
-	}
-	.column:last-child {
-		border-right: 0;
 	}
 	.head {
 		display: flex;
@@ -171,5 +157,6 @@
 		gap: var(--sp-4);
 		margin-top: auto;
 		padding-top: var(--sp-1);
+		font-variant-numeric: tabular-nums;
 	}
 </style>

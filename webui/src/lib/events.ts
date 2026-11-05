@@ -167,3 +167,48 @@ export function formatRow(ev: EventRecord): EventRowView {
 		machineId: ev.machine_id
 	};
 }
+
+export type FeedItem =
+	| { type: 'event'; event: EventRecord }
+	| { type: 'children'; key: string; parentId: string | null; events: EventRecord[] };
+
+function childParent(ev: EventRecord): string | null | undefined {
+	if (ev.kind !== 'session.created') return undefined;
+	const d = ev.detail;
+	if (!d || typeof d !== 'object' || Array.isArray(d) || d.origin !== 'child') return undefined;
+	return typeof d.parent_session_id === 'string' ? d.parent_session_id : null;
+}
+
+/** Runs of two or more consecutive "child session created" rows under the
+ *  same parent fold into one item; everything else passes through. */
+export function foldChildCreations(rows: readonly EventRecord[]): FeedItem[] {
+	const out: FeedItem[] = [];
+	let run: EventRecord[] = [];
+	let runParent: string | null | undefined;
+	const flush = () => {
+		if (run.length >= 2) {
+			out.push({ type: 'children', key: `children-${run[0].id}`, parentId: runParent ?? null, events: run });
+		} else {
+			for (const event of run) out.push({ type: 'event', event });
+		}
+		run = [];
+		runParent = undefined;
+	};
+	for (const ev of rows) {
+		const parent = childParent(ev);
+		if (parent !== undefined && (run.length === 0 || parent === runParent)) {
+			run.push(ev);
+			runParent = parent;
+			continue;
+		}
+		flush();
+		if (parent !== undefined) {
+			run.push(ev);
+			runParent = parent;
+		} else {
+			out.push({ type: 'event', event: ev });
+		}
+	}
+	flush();
+	return out;
+}

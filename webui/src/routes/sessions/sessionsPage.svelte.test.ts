@@ -532,19 +532,34 @@ describe('SessionsPage — pinned parents and the open drawer', () => {
 		expect(sp.liveOpen?.name).toBe('renamed');
 	});
 
-	it('fetches an unknown id and drops the URL only on a 404', async () => {
+	it('fetches an unknown id, and on a 404 keeps the URL and marks the id missing', async () => {
 		const { sp, api, deps, toasts } = make();
 		await sp.openById('remote');
 		expect(api.session).toHaveBeenCalledWith('remote');
 		expect(sp.openSession?.id).toBe('remote');
 		api.session.mockRejectedValueOnce(new Error('offline'));
 		await sp.openById('flaky');
-		expect(deps.clearUrlSession).not.toHaveBeenCalled();
+		expect(sp.missingId).toBeNull();
 		api.session.mockRejectedValueOnce(new ApiError(404, 'gone'));
 		await sp.openById('gone');
 		expect(sp.openSession).toBeNull();
-		expect(deps.clearUrlSession).toHaveBeenCalledTimes(1);
-		expect(toasts.error).toHaveBeenCalledTimes(2);
+		expect(sp.missingId).toBe('gone');
+		expect(deps.clearUrlSession).not.toHaveBeenCalled();
+		expect(toasts.error).toHaveBeenCalledTimes(1);
+	});
+
+	it('clears the missing id once another session opens', async () => {
+		const { sp, api } = make();
+		api.session.mockRejectedValueOnce(new ApiError(404, 'gone'));
+		await sp.openById('gone');
+		expect(sp.missingId).toBe('gone');
+		await sp.openById('remote');
+		expect(sp.missingId).toBeNull();
+		expect(sp.openSession?.id).toBe('remote');
+		api.session.mockRejectedValueOnce(new ApiError(404, 'gone'));
+		await sp.openById('gone');
+		sp.openSession = null;
+		expect(sp.missingId).toBeNull();
 	});
 
 	it('opens a just-spawned id whose row 404s once, without a not-found toast', async () => {

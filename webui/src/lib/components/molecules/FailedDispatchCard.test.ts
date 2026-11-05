@@ -36,9 +36,13 @@ function dispatch(over: Partial<FailedDispatch> = {}): FailedDispatch {
 async function render(
 	d: FailedDispatch,
 	onrerun: (id: string) => Promise<unknown> = vi.fn(async () => {}),
-	ondismiss?: (id: string) => Promise<unknown>
+	ondismiss?: (id: string) => Promise<unknown>,
+	showCause?: boolean
 ) {
-	comp = mount(FailedDispatchCard, { target: document.body, props: { dispatch: d, onrerun, ondismiss } });
+	comp = mount(FailedDispatchCard, {
+		target: document.body,
+		props: { dispatch: d, onrerun, ondismiss, showCause }
+	});
 	await flush();
 	return onrerun;
 }
@@ -50,7 +54,10 @@ describe('FailedDispatchCard', () => {
 		const onrerun = await render(dispatch());
 		expect(text()).toContain('never started');
 		expect(text()).toContain('triage-PROJ-9');
-		expect(text()).toContain('kube · tonbo · cctui · opus');
+		expect(document.querySelector('[data-meta]')?.textContent).toBe('tonbo · cctui · opus');
+		expect(document.querySelector('[data-dispatcher]')?.getAttribute('href')).toBe(
+			'/settings/instance#dispatchers'
+		);
 		expect(document.querySelector('pre.prompt')?.textContent).toBe('fix the flaky test');
 		rerunButton()?.click();
 		await flush();
@@ -99,7 +106,7 @@ describe('FailedDispatchCard', () => {
 		expect(text()).toContain('resolved');
 		expect(text()).toContain('crashed');
 		expect(text()).toContain('Superseded by');
-		const link = document.querySelector('a');
+		const link = document.querySelector<HTMLAnchorElement>('a[href^="/sessions/"]');
 		expect(link?.getAttribute('href')).toBe('/sessions/b7e2c9d1-0000-4000-8000-000000000000');
 		expect(link?.textContent).toBe('b7e2c9d1');
 		expect(rerunButton()).toBeUndefined();
@@ -155,5 +162,18 @@ describe('FailedDispatchCard', () => {
 		comp = null;
 		await render(dispatch());
 		expect(document.querySelector('[data-exposure]')).toBeNull();
+	});
+
+	it('under a cause header drops the reason and the re-run explanation', async () => {
+		await render(dispatch({ rerun_blocked: 'env', env_keys: ['GITHUB_TOKEN'] }), undefined, undefined, false);
+		expect(text()).not.toContain('never started');
+		expect(text()).not.toContain('GITHUB_TOKEN');
+		expect(text()).toContain('triage-PROJ-9');
+	});
+
+	it('links the prompt file when the repo is a GitHub slug', async () => {
+		await render(dispatch({ repo: 'DorskFR/cctui', prompt_file: 'prompts/triage.md' }));
+		const a = [...document.querySelectorAll('a')].find((x) => x.textContent?.includes('prompts/triage.md'));
+		expect(a?.getAttribute('href')).toBe('https://github.com/DorskFR/cctui/blob/HEAD/prompts/triage.md');
 	});
 });

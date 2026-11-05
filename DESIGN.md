@@ -60,6 +60,56 @@ When something doesn't fit a Tsumikit component:
 - Favour composition (small atoms/molecules) over configuration flags that make
   one component do many things.
 
+## Visual rules
+
+Every screen is checked against these. Tokens live in
+`webui/src/lib/styles/variables.css`; the few kit overrides we carry live in
+`webui/src/lib/styles/kit-overrides.css`, each marked `/* tsumikit: … */` so it
+can move upstream.
+
+- **One filled primary per view.** `variant="primary"` once; secondary actions
+  are outlined (the default), tertiary are ghost or text. Red fill only for an
+  irreversible destructive confirm.
+- **The accent is not a status.** `--accent` marks the primary action, focus and
+  the selected state. Status uses `--status-working` / `--status-attention` /
+  `--status-failed` / `--status-idle`; `--danger` and `--c-red` mean failure or
+  destruction only. Every theme keeps its accent at least 30° of hue from green,
+  amber and red (`tokens.contract.test.ts`).
+- **Three text tiers.** Body `--text`, secondary `--text-muted`, and
+  `--text-faint` only for uppercase labels. Weights: 400 body, 600 emphasis,
+  700 titles; no 500 in new code.
+- **Type scale.** Inter (bundled, no CDN), whole-pixel sizes on the steps
+  12 / 13 / 15 / 16 / 18 / 22 / 28. 16 px is for prose.
+- **Mono for code only.** Paths, hashes, ids, commands, tool I/O and code use
+  `--font-mono` / `variant="code"`. Counts, costs, dates, model names and
+  versions use sans with tabular digits: the `.num` utility or `StatText`.
+- **Words, not glyphs.** Data carries its unit word ("25M tokens", "31 tools",
+  "$2.38") via `StatText`. Icon-only is reserved for universal actions: search,
+  close, back, more (⋯), copy, pin.
+- **Shade over borders.** Cards sit on the elevation steps with no outer edge
+  (`--surface-edge` is transparent). Keep 1 px lines only as `--divider` inside
+  dense tables, and on inputs and focus rings.
+- **Hit targets.** Every control is at least 24 px on a fine pointer and 44 px
+  on a coarse one (`--hit-min`). Kit `Button`/`IconButton` already grow on
+  touch: don't pass `hitArea="compact"` outside dense tables. Raw `<button>` /
+  `<a>` icon targets take the `.hit-target` class. Measure with
+  `elementFromPoint`, not the bounding box.
+- **Spacing scale.** `--sp-1, 2, 3, 4, 6, 8, 12` (4 to 48 px); `--sp-0-5` for
+  hairline nudges. `--sp-1-5` and `--sp-5` are off-scale and ratcheted down
+  by `styles.test.ts`. Page titles use `PageHead`: 4 px to the subtitle, 16 px
+  to the content.
+- **Destructive actions confirm in-app.** `await confirmDialog({ title,
+  message, confirmLabel })` (danger tone by default), or a declarative
+  `ConfirmModal` with `tone="danger"`. Native `confirm()` / `alert()` /
+  `prompt()` are banned by Biome and a source test. The confirm label is a
+  verb naming the act ("Delete bookmark"), and the message says what stops
+  working.
+- **Unread counts are neutral.** `CountChip`; the active (accent) tone only on
+  the nav item.
+- **Role and kind labels** are `<Text variant="eyebrow" tone="muted">`, never a
+  filled or outlined pill.
+- **Files stay under ~300 lines** (see File size); split before adding.
+
 ## Z-scale and the top layer
 
 - We keep a z-index scale in `variables.css` (`--z-header/nav: 50`,

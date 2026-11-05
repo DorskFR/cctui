@@ -1,56 +1,44 @@
 <script lang="ts">
-	import { Badge, Button, Card, Disclosure, IconButton, Link, Text } from '@dorsk/tsumikit';
+	import { Badge, Button, Disclosure, IconButton, Link, Text, Timestamp } from '@dorsk/tsumikit';
 	import type { FailedDispatch } from '@bindings/FailedDispatch';
 	import { errMessage } from '$lib/api';
 	import { exposureView } from '$lib/dispatchExposure';
 	import { sessionHref } from '$lib/sessionFailureToast';
 	import { m } from '$lib/paraglide/messages';
 	import { getLocale } from '$lib/paraglide/runtime';
+	import {
+		DISPATCHERS_HREF,
+		blockedExplanation,
+		promptFileHref,
+		reasonLabel
+	} from '../../../routes/dispatch-failures/causes';
 
 	let {
 		dispatch,
 		onrerun,
-		ondismiss
+		ondismiss,
+		showCause = true
 	}: {
 		dispatch: FailedDispatch;
 		onrerun: (sessionId: string) => Promise<unknown>;
 		ondismiss?: (sessionId: string) => Promise<unknown>;
+		showCause?: boolean;
 	} = $props();
 
 	let busy = $state(false);
 	let error = $state<string | null>(null);
 
-	const reason = $derived(
-		{
-			refused: m.dispatch_failed_refused(),
-			never_registered: m.dispatch_failed_never_registered(),
-			oom_killed: m.sessions_end_oom_killed(),
-			crashed: m.sessions_end_crashed(),
-			spawn_failed: m.sessions_end_spawn_failed()
-		}[dispatch.reason]
-	);
+	const reason = $derived(reasonLabel(dispatch.reason));
 	const title = $derived(
 		dispatch.name?.trim() || dispatch.prompt_file || dispatch.session_id.slice(0, 8)
 	);
 	const meta = $derived(
-		[dispatch.dispatcher, dispatch.profile, dispatch.repo, dispatch.model, dispatch.adapter]
-			.filter(Boolean)
-			.join(' · ')
+		[dispatch.profile, dispatch.repo, dispatch.model, dispatch.adapter].filter(Boolean).join(' · ')
 	);
-	const blocked = $derived.by(() => {
-		switch (dispatch.rerun_blocked) {
-			case 'env':
-				return m.dispatch_failed_rerun_env({ keys: (dispatch.env_keys ?? []).join(', ') });
-			case 'prompt_truncated':
-				return m.dispatch_failed_rerun_prompt();
-			case 'prompt_redacted':
-				return m.dispatch_failed_rerun_redacted();
-			case 'payload_too_large':
-				return m.dispatch_failed_rerun_payload();
-			default:
-				return null;
-		}
-	});
+	const blocked = $derived(blockedExplanation(dispatch));
+	const promptHref = $derived(
+		dispatch.prompt_file ? promptFileHref(dispatch.repo, dispatch.prompt_file) : null
+	);
 	const at = $derived(new Date(dispatch.dispatched_at).toLocaleString(getLocale()));
 	const supersededBy = $derived(dispatch.superseded_by ?? null);
 	const exit = $derived(dispatch.worker_exit ?? null);
@@ -80,51 +68,72 @@
 	}
 </script>
 
-{#snippet dismissButton()}
-	{#if ondismiss}
-		<IconButton
-			icon="x"
-			label={m.dispatch_failed_dismiss()}
-			inline
-			size={13}
-			disabled={busy}
-			onclick={() => ondismiss && run(ondismiss)}
-		/>
-	{/if}
-{/snippet}
-
-{#if supersededBy}
-	<Card padding="sm" data-journey="failed-dispatch" data-resolved>
-		<div class="row resolved">
-			<div class="lead">
-				<Badge tone="ok" size="sm" border>{m.dispatch_failed_resolved()}</Badge>
-				<Text weight="bold" truncate>{title}</Text>
-				<Text size="xs" tone="faint" truncate>{reason}</Text>
-				<Text size="xs" tone="muted">
-					{m.dispatch_failed_superseded_by()}
-					<Link href={sessionHref(supersededBy)}>{supersededBy.slice(0, 8)}</Link>
-				</Text>
-			</div>
-			{@render dismissButton()}
-			{#if error}
-				<Text size="sm" tone="danger">{error}</Text>
-			{/if}
-		</div>
-	</Card>
-{:else}
-	<Card padding="sm" data-journey="failed-dispatch">
-		<div class="row">
-			<div class="lead">
-				<Badge tone="danger" size="sm" border>{reason}</Badge>
-				{#if dispatch.dismissed}
-					<Badge tone="muted" size="sm">{m.dispatch_failed_dismissed()}</Badge>
+<div class="fd" data-journey="failed-dispatch" data-resolved={supersededBy ? '' : undefined}>
+	<div class="line">
+		{#if supersededBy}
+			<Badge tone="ok" size="sm">{m.dispatch_failed_resolved()}</Badge>
+		{:else if showCause}
+			<Badge tone="danger" size="sm">{reason}</Badge>
+		{/if}
+		<span class="title"><Text weight="semibold" truncate>{title}</Text></span>
+		<Timestamp value={dispatch.dispatched_at} mode="relative" size="xs" tone="faint" />
+		{#if dispatch.dismissed}
+			<Text variant="eyebrow" tone="muted">{m.dispatch_failed_dismissed()}</Text>
+		{/if}
+		{#if dispatch.prompt_file}
+			<span class="file" title={m.dispatch_failed_prompt_file({ file: dispatch.prompt_file })}>
+				{#if promptHref}
+					<Link href={promptHref} target="_blank" rel="noopener noreferrer"
+						><Text size="xs" mono truncate>{dispatch.prompt_file}</Text></Link
+					>
+				{:else}
+					<Text size="xs" mono tone="muted" truncate>{dispatch.prompt_file}</Text>
 				{/if}
-				<Text weight="bold" truncate>{title}</Text>
-				<Text size="xs" tone="faint" variant="code" truncate>{meta}</Text>
-			</div>
-			{@render dismissButton()}
+			</span>
+		{/if}
+		<Link href={DISPATCHERS_HREF} tone="muted" data-dispatcher
+			><Text size="xs" tone="inherit">{dispatch.dispatcher}</Text></Link
+		>
+		<span class="spacer"></span>
+		{#if !blocked && !supersededBy}
+			<Button size="sm" variant="ghost" disabled={busy} onclick={() => run(onrerun)}>
+				{m.dispatch_failed_rerun()}
+			</Button>
+		{/if}
+		{#if ondismiss}
+			<IconButton
+				icon="x"
+				variant="ghost"
+				box="sm"
+				label={m.dispatch_failed_dismiss()}
+				title={m.dispatch_failed_dismiss()}
+				disabled={busy}
+				onclick={() => ondismiss && run(ondismiss)}
+			/>
+		{/if}
+	</div>
+	{#if supersededBy}
+		<Text size="xs" tone="muted">
+			{reason} ·
+			{m.dispatch_failed_superseded_by()}
+			<Link href={sessionHref(supersededBy)}>{supersededBy.slice(0, 8)}</Link>
+		</Text>
+	{:else if showCause && blocked}
+		<Text size="sm" tone="muted">{blocked}</Text>
+	{/if}
+	{#if error}
+		<Text size="sm" tone="danger">{error}</Text>
+	{/if}
+	{#if !supersededBy}
+		<Disclosure size="compact" chevron="start">
+			{#snippet header()}
+				<Text size="xs" tone="faint">{m.list_failed_details()}</Text>
+			{/snippet}
 			<div class="body">
 				<Text size="xs" tone="faint">{m.dispatch_failed_dispatched_at({ at })}</Text>
+				{#if meta}
+					<Text size="xs" tone="muted" data-meta>{meta}</Text>
+				{/if}
 				{#if exposure}
 					<div class="exposure" data-exposure>
 						<Text size="xs" tone="faint">{m.exposure_label()}</Text>
@@ -153,51 +162,55 @@
 					<Text size="sm" tone="muted">{exitLine}</Text>
 				{/if}
 				{#if exit?.log_tail}
-					<Disclosure open size="compact" chevron="start">
-						{#snippet header()}
-							<Text size="xs" tone="faint">{m.dispatch_failed_log_tail()}</Text>
-						{/snippet}
-						<pre class="log">{exit.log_tail}</pre>
-					</Disclosure>
+					<Text size="xs" tone="faint">{m.dispatch_failed_log_tail()}</Text>
+					<pre class="log">{exit.log_tail}</pre>
 				{:else if exit?.logs_error}
 					<Text size="xs" tone="faint">{m.dispatch_failed_logs_unavailable({ error: exit.logs_error })}</Text>
 				{/if}
 				{#if dispatch.prompt_head}
 					<pre class="prompt">{dispatch.prompt_head}</pre>
-				{:else if dispatch.prompt_file}
-					<Text size="sm" tone="muted">{m.dispatch_failed_prompt_file({ file: dispatch.prompt_file })}</Text>
 				{/if}
-				{#if blocked}
-					<Text size="sm" tone="muted">{blocked}</Text>
-				{:else}
+				{#if !blocked}
 					<Text size="xs" tone="faint">{m.dispatch_failed_rerun_note()}</Text>
 				{/if}
-				{#if error}
-					<Text size="sm" tone="danger">{error}</Text>
-				{/if}
 			</div>
-			{#if !blocked}
-				<Button size="sm" variant="ghost" disabled={busy} onclick={() => run(onrerun)}>
-					{m.dispatch_failed_rerun()}
-				</Button>
-			{/if}
-		</div>
-	</Card>
-{/if}
+		</Disclosure>
+	{/if}
+</div>
 
 <style>
-	.row {
+	.fd {
 		display: flex;
-		align-items: flex-start;
-		gap: var(--sp-3);
-		flex-wrap: wrap;
+		flex-direction: column;
+		gap: var(--sp-1);
+		min-width: 0;
 	}
-	.lead {
+	.line {
 		display: flex;
 		align-items: center;
-		gap: var(--sp-2);
+		flex-wrap: wrap;
+		gap: var(--sp-1) var(--sp-2);
 		min-width: 0;
-		flex: 1 1 16rem;
+	}
+	.title {
+		display: inline-flex;
+		min-width: 0;
+		flex: 0 1 auto;
+	}
+	.file {
+		display: inline-flex;
+		min-width: 0;
+		max-width: 24rem;
+	}
+	.spacer {
+		flex: 1;
+	}
+	.body {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-1);
+		padding-block: var(--sp-1);
+		min-width: 0;
 	}
 	.exposure {
 		display: flex;
@@ -205,33 +218,23 @@
 		flex-wrap: wrap;
 		gap: var(--sp-1);
 	}
-	.body {
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-1);
-		flex: 1 1 100%;
-		min-width: 0;
-	}
 	pre {
 		margin: 0;
 		max-height: 8rem;
 		overflow: auto;
 		white-space: pre-wrap;
-		font: var(--font-mono, monospace);
-		font-size: var(--fs-xs, 0.75rem);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
 		user-select: text;
 	}
 	.detail {
 		color: var(--danger);
 	}
-	.prompt {
+	.prompt,
+	.log {
 		color: var(--text-muted);
 	}
 	.log {
 		max-height: 16rem;
-		color: var(--text-muted);
-	}
-	.resolved {
-		align-items: center;
 	}
 </style>

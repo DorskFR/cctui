@@ -1,9 +1,9 @@
 <script lang="ts">
 	// Composer voice entry points: the mic dictates into the draft (tap to
-	// start, tap to send, or hold to talk), the toggle, shown only with
-	// `ontogglelive`, talks with the session hands-free. While recording, a
-	// large stop target sits above the composer.
-	import { Button, IconButton, Toggle } from '@dorsk/tsumikit';
+	// start, tap to send, or hold to talk); with `ontogglelive`, the caret
+	// beside it offers live voice. While recording, a large stop target sits
+	// above the composer.
+	import { Button, Icon, IconButton, Menu, type MenuItem } from '@dorsk/tsumikit';
 	import { errMessage } from '$lib/api';
 	import { toasts } from '$lib/toast.svelte';
 	import { Dictation } from '$lib/voice/dictation';
@@ -43,6 +43,21 @@
 	/** A long press must reach the gesture, not pan the page or open a menu. */
 	const micStyle = $derived(
 		`touch-action: none; user-select: none; -webkit-touch-callout: none;${recording ? ' --btn-on: var(--danger);' : ''}`
+	);
+
+	const voiceItems = $derived<MenuItem[]>(
+		ontogglelive
+			? [
+					{
+						id: 'live',
+						label: m.tx_voice_live(),
+						icon: 'live',
+						pressed: live,
+						attrs: { title: m.voice_live_hint() },
+						onselect: () => ontogglelive?.()
+					}
+				]
+			: []
 	);
 
 	const timer = $derived.by(() => {
@@ -118,7 +133,7 @@
 	}
 </script>
 
-<span class="voice-controls" data-journey="voice-controls">
+<span class="voice-controls" class:split={!!ontogglelive} data-journey="voice-controls">
 	<IconButton
 		emoji="🎙"
 		box="sm"
@@ -140,14 +155,17 @@
 		onkeydown={onkey}
 	/>
 	{#if ontogglelive}
-		<Toggle
-			size="sm"
-			pressed={live}
+		<Menu
+			label={m.tx_voice_options()}
+			title={m.tx_voice_options()}
+			items={voiceItems}
+			placement="top-start"
+			variant="ghost"
+			box="sm"
 			{disabled}
-			aria-label={m.voice_live_hint()}
-			title={m.voice_live_hint()}
-			onclick={ontogglelive}>{m.voice_live_toggle()}</Toggle
 		>
+			{#snippet trigger()}<Icon name="chevron-up" size={14} />{/snippet}
+		</Menu>
 	{/if}
 </span>
 
@@ -184,6 +202,9 @@
 		display: inline-flex;
 		align-items: center;
 		gap: var(--sp-1);
+	}
+	.voice-controls.split {
+		gap: 0;
 	}
 	.recording {
 		position: fixed;

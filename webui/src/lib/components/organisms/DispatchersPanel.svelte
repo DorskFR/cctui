@@ -14,6 +14,7 @@
 	import type { Column } from '@dorsk/tsumikit';
 	import { livenessLabel, livenessTone } from '$lib/dispatchers.logic';
 	import InlineCode, { SLOT } from '$lib/components/atoms/InlineCode.svelte';
+	import { confirmDialog } from '$lib/confirmDialog.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	// Embedded under a page that already shows an <h1>, the panel's own heading
@@ -111,8 +112,13 @@
 		}
 	}
 
-	function remove(d: UserDispatcher) {
-		if (!confirm(m.dispatch_confirm_remove({ name: d.name }))) return;
+	async function remove(d: UserDispatcher) {
+		const ok = await confirmDialog({
+			title: m.set_dispatcher_remove_title({ name: d.name }),
+			message: m.dispatch_confirm_remove({ name: d.name }),
+			confirmLabel: m.set_dispatcher_remove_confirm()
+		});
+		if (!ok) return;
 		guard(actions.remove(d.id).then(() => toasts.ok(m.dispatch_toast_removed())));
 	}
 

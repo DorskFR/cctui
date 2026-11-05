@@ -5,6 +5,7 @@ import {
 	keyIcon,
 	scopeCells,
 	splitRevoked,
+	userStateWords,
 	visibleRows
 } from './access.logic';
 
@@ -53,5 +54,15 @@ describe('row glyphs', () => {
 	it('marks machine keys with a screen and everything else with a person', () => {
 		expect(keyIcon('machine')).toBe('tv');
 		expect(keyIcon('user')).toBe('user');
+	});
+});
+
+describe('userStateWords', () => {
+	it('says the state in words, not with a colour', () => {
+		expect(userStateWords(0, 3)).toBe('offline');
+		expect(userStateWords(0, 0)).toBe('offline');
+		expect(userStateWords(1, 1)).toBe('online');
+		expect(userStateWords(1, 4)).toBe('1 machine online');
+		expect(userStateWords(2, 5)).toBe('2 machines online');
 	});
 });

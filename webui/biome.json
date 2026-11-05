@@ -26,6 +26,18 @@
       },
       "correctness": {
         "noUnsafeOptionalChaining": "warn"
+      },
+      "style": {
+        "noRestrictedGlobals": {
+          "level": "error",
+          "options": {
+            "deniedGlobals": {
+              "confirm": "Use confirmDialog() from $lib/confirmDialog.svelte, or a ConfirmModal with tone=\"danger\".",
+              "alert": "Show a toast or an inline Callout instead of a native alert().",
+              "prompt": "Use a Modal with an input (EditEntityModal) instead of a native prompt()."
+            }
+          }
+        }
       }
     }
   }

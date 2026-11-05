@@ -43,10 +43,10 @@ afterEach(() => {
 	vi.clearAllMocks();
 });
 
-function render(data: PluginInfo[] | undefined, over: Partial<typeof query> = {}, isAdmin = false) {
+function render(data: PluginInfo[] | undefined, over: Partial<typeof query> = {}) {
 	Object.assign(query, { data, isPending: data === undefined, isError: false }, over);
 	adminGate.mockReturnValue(adminQuery);
-	comp = mount(PluginsSection, { target: document.body, props: { isAdmin } });
+	comp = mount(PluginsSection, { target: document.body });
 	flushSync();
 }
 
@@ -74,24 +74,13 @@ describe('PluginsSection', () => {
 		render([]);
 		const empty = document.querySelector('[data-journey="plugins-empty"]');
 		expect(empty?.textContent).toContain('CCTUI_PLUGINS_DIR');
-		expect(empty?.textContent).toContain('on this page');
+		expect(empty?.textContent).toContain('Instance');
 		expect(document.querySelector('[data-journey="plugin-switch"]')).toBeNull();
 	});
-	it('renders the admin block above the user list for admins', () => {
-		settings.setPluginEnabled('yubisashi', false);
-		render([plugin()], {}, true);
-		const admin = document.querySelector('[data-journey="plugins-admin"]');
-		const userSwitch = document.querySelector('[data-journey="plugin-switch"]');
-		expect(admin).not.toBeNull();
-		expect(userSwitch).not.toBeNull();
-		if (!admin || !userSwitch) throw new Error('unreachable');
-		expect(admin.compareDocumentPosition(userSwitch) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-		expect(adminGate).toHaveBeenCalled();
-		expect(adminGate.mock.calls.every(([enabled]) => enabled())).toBe(true);
-	});
-	it('hides the admin block from non-admins and never enables the admin queries', () => {
+	it('leaves plugin management to Instance and never enables the admin queries', () => {
 		settings.setPluginEnabled('yubisashi', false);
 		render([plugin()]);
+		expect(document.querySelector('[data-journey="plugin-switch"]')).not.toBeNull();
 		expect(document.querySelector('[data-journey="plugins-admin"]')).toBeNull();
 		expect(document.querySelector('[data-journey="plugin-admin-url"]')).toBeNull();
 		expect(adminGate.mock.calls.some(([enabled]) => enabled())).toBe(false);

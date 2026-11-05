@@ -34,7 +34,7 @@
 					max="100"
 					step="1"
 					size="sm"
-					mono
+					class="num"
 					width="64px"
 					disabled={!value.enabled}
 					bind:value={value.used_pct}
@@ -48,7 +48,7 @@
 					min="0"
 					step="1"
 					size="sm"
-					mono
+					class="num"
 					width="64px"
 					disabled={!value.enabled}
 					bind:value={value.expires_within_hours}
@@ -64,7 +64,7 @@
 					max="100"
 					step="1"
 					size="sm"
-					mono
+					class="num"
 					width="64px"
 					disabled={!value.enabled}
 					bind:value={value.weekly_max_pct}

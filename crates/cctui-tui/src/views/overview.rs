@@ -158,6 +158,7 @@ mod tests {
             Action::Slice(SliceAction::StatsLoaded(Box::new(cctui_proto::api::SessionStats {
                 total: 12,
                 live: 3,
+                working: 3,
                 needs_input: 0,
                 archived: 4,
                 today: 5,

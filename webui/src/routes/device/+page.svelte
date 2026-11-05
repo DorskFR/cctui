@@ -4,6 +4,7 @@
 	import { Button, Callout, Cluster, Input, Spinner, Stack, Text } from '@dorsk/tsumikit';
 	import PageHead from '$lib/components/molecules/PageHead.svelte';
 	import {
+		CODE_LENGTH,
 		codeFromSearch,
 		isCompleteUserCode,
 		isDecidable,
@@ -21,6 +22,7 @@
 	let busy = $state(false);
 	let decided = $state<'approved' | 'denied' | null>(null);
 	const facts = $derived(info ? requesterFacts(info, Date.now()) : []);
+	const complete = $derived(isCompleteUserCode(code));
 
 	async function lookup() {
 		const wanted = normalizeUserCode(code);
@@ -66,23 +68,34 @@
 	<Text tone="muted">{m.device_intro()}</Text>
 
 	<form
+		class="code-form"
 		onsubmit={(e) => {
 			e.preventDefault();
 			void lookup();
 		}}
 	>
-		<Cluster gap="var(--sp-2)" align="center">
-			<Input
-				aria-label={m.device_code_label()}
-				placeholder="XXXX-XXXX"
-				value={code}
-				oninput={(e) =>
-					(code = normalizeUserCode((e.currentTarget as HTMLInputElement).value))}
-			/>
-			<Button type="submit" disabled={busy || !isCompleteUserCode(code)}>
-				{m.device_lookup()}
-			</Button>
-		</Cluster>
+		<label class="code-label" for="device-code">{m.device_code_label()}</label>
+		<Input
+			id="device-code"
+			mono
+			size="lg"
+			width="13rem"
+			placeholder="XXXX-XXXX"
+			maxlength={CODE_LENGTH + 1}
+			autocomplete="one-time-code"
+			autocapitalize="characters"
+			spellcheck={false}
+			style="text-align: center; letter-spacing: 0.12em; text-transform: uppercase;"
+			value={code}
+			oninput={(e) => (code = normalizeUserCode((e.currentTarget as HTMLInputElement).value))}
+		/>
+		<Button
+			type="submit"
+			variant={complete && !info ? 'primary' : 'default'}
+			disabled={busy || !complete}
+		>
+			{m.device_lookup()}
+		</Button>
 	</form>
 
 	{#if prefilled && !info && !error}
@@ -128,3 +141,17 @@
 		</Stack>
 	{/if}
 </Stack>
+
+<style>
+	.code-form {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: var(--sp-3);
+		padding: var(--sp-6) 0;
+	}
+	.code-label {
+		font-size: var(--fs-sm);
+		color: var(--text-muted);
+	}
+</style>

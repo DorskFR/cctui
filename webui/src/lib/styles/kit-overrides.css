@@ -1,0 +1,41 @@
+/*
+ * The only sanctioned overrides of kit tokens and kit components. Each rule is
+ * marked `tsumikit:` with what it asks of the kit, so it can be lifted upstream
+ * and deleted here.
+ */
+
+/* tsumikit: whole-pixel sizes on 12/13/15/16/18/22/28; 2xs aliases the 12 floor, 3xl the 28 top. */
+:root {
+  --fs-2xs: round(0.75rem * var(--fs-scale), 1px);
+  --fs-xs: round(0.75rem * var(--fs-scale), 1px);
+  --fs-sm: round(0.8125rem * var(--fs-scale), 1px);
+  --fs-base: round(0.9375rem * var(--fs-scale), 1px);
+  --fs-md: round(1rem * var(--fs-scale), 1px);
+  --fs-lg: round(1.125rem * var(--fs-scale), 1px);
+  --fs-xl: round(1.375rem * var(--fs-scale), 1px);
+  --fs-2xl: round(1.75rem * var(--fs-scale), 1px);
+  --fs-3xl: round(1.75rem * var(--fs-scale), 1px);
+}
+
+/* tsumikit: compact controls reach the full 44 px touch target on coarse pointers. */
+@media (pointer: coarse) {
+  :root {
+    --touch-target-compact: 44px;
+  }
+}
+
+/* tsumikit: dense tables keep a hairline divider once Card loses its edge. */
+[data-tsu="DataTable"] {
+  --surface-edge: var(--divider);
+}
+
+/* tsumikit: accent at least 30° of hue from green, amber and red (the orange accent read as a warning). */
+[data-theme="gruvbox"] {
+  --c-accent: #83a598;
+  --c-accent-dim: #458588;
+}
+
+/* tsumikit: muted text one clear step below body text (5.1:1 on the base, 1.6x dimmer than text). */
+[data-theme="everforest"] {
+  --c-text-muted: #9da9a0;
+}

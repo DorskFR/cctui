@@ -18,9 +18,24 @@ export const SERVER_FIELDS = new Set([
 
 /** The free-text search bar placeholder, in the active locale. A function (not a
  *  const) so it re-reads the locale each render. */
-export const sessionSearchPlaceholder = (): string => m.search_bar_placeholder();
+export const sessionSearchPlaceholder = (): string => m.list_search_placeholder();
 
 export type FetchValues = (field: string, q: string) => Promise<string[]>;
+
+export const STATE_BUCKETS: Record<string, SessionListItem['bucket']> = {
+	working: 'working',
+	'needs-input': 'blocked',
+	review: 'review',
+	done: 'done'
+};
+
+const stateLabel = (v: string): string =>
+	({
+		working: m.sessions_bucket_working(),
+		'needs-input': m.sessions_bucket_blocked(),
+		review: m.sessions_bucket_review(),
+		done: m.sessions_bucket_done()
+	})[v] ?? v;
 
 function providerFor(field: string, fetchValues: FetchValues) {
 	return async (q: string): Promise<ValueOption[]> => {
@@ -73,6 +88,13 @@ export function buildSessionSearchSchema(fetchValues: FetchValues): Schema {
 					value: v,
 					label: v
 				}))
+			},
+			{
+				name: 'state',
+				label: m.list_search_field_state(),
+				type: 'enum',
+				operators: ['eq', 'ne', 'in'],
+				options: Object.keys(STATE_BUCKETS).map((v) => ({ value: v, label: stateLabel(v) }))
 			},
 			{
 				name: 'model',
@@ -198,6 +220,10 @@ function matchesOne(s: SessionListItem, f: FilterNode): boolean {
 	if (f.field === 'id') {
 		const hit = f.values.some((v) => s.id.toLowerCase().includes(v.toLowerCase()));
 		return f.op === 'not_contains' ? !hit : hit;
+	}
+	if (f.field === 'state') {
+		const hit = f.values.some((v) => STATE_BUCKETS[v] === s.bucket);
+		return f.op === 'ne' ? !hit : hit;
 	}
 	if (f.field === 'created') {
 		const t = s.registered_at ? Date.parse(s.registered_at) : Number.NaN;

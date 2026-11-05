@@ -8,9 +8,9 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json};
 
 pub use cctui_proto::api::settings::{
-    SettingSource, SpawnDefaults, SpawnDefaultsInfo, SpeechCatalog, SpeechConfig,
-    SpeechSettingsInfo, SpeechSettingsRequest, UploadCapsInfo, UploadCapsRequest,
-    UpstreamHostsInfo, UpstreamHostsRequest,
+    EventRetentionInfo, EventRetentionRequest, SettingSource, SpawnDefaults, SpawnDefaultsInfo,
+    SpeechCatalog, SpeechConfig, SpeechSettingsInfo, SpeechSettingsRequest, UploadCapsInfo,
+    UploadCapsRequest, UpstreamHostsInfo, UpstreamHostsRequest,
 };
 
 use crate::auth::{AuthContext, Scope};
@@ -284,6 +284,52 @@ pub async fn update_upload_caps(
     Ok(Json(read_upload_caps(&state.pool).await))
 }
 
+/// Ten years: past that, "keep forever" (`0`) is the honest setting.
+const EVENT_RETENTION_MAX_DAYS: i64 = 3650;
+
+const fn event_retention_info(saved: Option<i64>, effective: i64) -> EventRetentionInfo {
+    EventRetentionInfo {
+        days: effective,
+        default_days: cctui_server_core::events::DEFAULT_RETENTION_DAYS,
+        source: if saved.is_some() { SettingSource::Settings } else { SettingSource::Default },
+    }
+}
+
+async fn read_event_retention(pool: &sqlx::PgPool) -> EventRetentionInfo {
+    let saved = stored::<i64>(pool, cctui_server_core::events::RETENTION_KEY).await;
+    event_retention_info(saved, cctui_server_core::events::retention_days(pool).await)
+}
+
+fn validate_event_retention(days: i64) -> Result<i64, AppError> {
+    if (0..=EVENT_RETENTION_MAX_DAYS).contains(&days) {
+        Ok(days)
+    } else {
+        Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            format!("days must be between 0 and {EVENT_RETENTION_MAX_DAYS}"),
+        ))
+    }
+}
+
+pub async fn get_event_retention(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<EventRetentionInfo>, AppError> {
+    admin(&ctx)?;
+    Ok(Json(read_event_retention(&state.pool).await))
+}
+
+pub async fn update_event_retention(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Json(req): Json<EventRetentionRequest>,
+) -> Result<Json<EventRetentionInfo>, AppError> {
+    admin(&ctx)?;
+    let value = req.days.map(validate_event_retention).transpose()?.map(serde_json::Value::from);
+    store(&state.pool, cctui_server_core::events::RETENTION_KEY, value).await?;
+    Ok(Json(read_event_retention(&state.pool).await))
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct StoredSpeech {
     #[serde(flatten)]
@@ -502,6 +548,28 @@ mod tests {
             machine_id: None,
             scopes: scopes.iter().copied().collect::<BTreeSet<_>>(),
         }
+    }
+
+    #[test]
+    fn event_retention_reports_where_the_value_comes_from() {
+        let default = cctui_server_core::events::DEFAULT_RETENTION_DAYS;
+        let info = event_retention_info(None, default);
+        assert_eq!(info.source, SettingSource::Default);
+        assert_eq!((info.days, info.default_days), (default, default));
+
+        let info = event_retention_info(Some(0), 0);
+        assert_eq!(info.source, SettingSource::Settings);
+        assert_eq!(info.days, 0);
+    }
+
+    #[test]
+    fn event_retention_accepts_zero_to_ten_years_only() {
+        assert_eq!(validate_event_retention(0).ok(), Some(0));
+        assert_eq!(validate_event_retention(30).ok(), Some(30));
+        let max = EVENT_RETENTION_MAX_DAYS;
+        assert_eq!(validate_event_retention(max).ok(), Some(max));
+        assert!(validate_event_retention(-1).is_err());
+        assert!(validate_event_retention(EVENT_RETENTION_MAX_DAYS + 1).is_err());
     }
 
     #[test]

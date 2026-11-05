@@ -110,40 +110,81 @@ describe('pin glyph', () => {
 
 	it('uses the same icon for the per-message action', () => {
 		expect(lineSource).not.toContain("pinned ? '★' : '☆'");
-		expect(lineSource).toContain('<Icon name="pin" size={16} filled={pinned} />');
+		expect(lineSource).toContain("icon: pinned ? 'pin-off' : 'pin'");
+		expect(lineSource).not.toContain('★');
 	});
 });
 
-describe('terminal toggle', () => {
-	it('is hidden without a handler', async () => {
+describe('panels menu', () => {
+	const trigger = (bar: HTMLElement) => bar.querySelector('[data-journey="panels"]') as HTMLElement | null;
+
+	it('is hidden when there is no panel to open', async () => {
 		const bar = await render({});
-		expect(bar.querySelector('[data-journey="terminal"]')).toBeNull();
+		expect(trigger(bar)).toBeNull();
 	});
 
-	it('sits between auto-approve and the plugins, icon plus a narrow-hidden label', async () => {
-		const ontoggleTerminal = vi.fn();
+	it('is one labelled trigger instead of a row of unlabelled toggles', async () => {
 		const bar = await render({
-			ontoggleTerminal,
+			ontoggleTerminal: vi.fn(),
 			plugins: [{ id: 'demo', label: 'yubisashi', icon: 'eye', open: false, onselect: vi.fn() }]
 		});
-		const buttons = [...bar.querySelectorAll('.behbar button')];
-		expect(buttons[0].textContent).toContain('⚡');
-		expect(buttons[1].getAttribute('data-journey')).toBe('terminal');
-		expect(buttons[2].getAttribute('data-journey')).toBe('plugin');
-		const term = buttons[1] as HTMLButtonElement;
-		expect(term.querySelector('svg[data-tsu="Icon"]')).not.toBeNull();
-		expect(term.querySelector('.wide')?.textContent).toBe('Terminal');
-		expect(term.getAttribute('aria-label')).toBe('Terminal');
-		expect(term.getAttribute('title')).toBeTruthy();
-		expect(term.getAttribute('aria-pressed')).toBe('false');
-		term.click();
-		expect(ontoggleTerminal).toHaveBeenCalledOnce();
+		const t = trigger(bar);
+		expect(t).not.toBeNull();
+		expect(t?.textContent).toContain('Panels');
+		expect(bar.querySelector('.behbar > [data-journey="terminal"]')).toBeNull();
+		expect(bar.querySelector('.behbar > [data-journey="plugin"]')).toBeNull();
 	});
 
-	it('reads as pressed while the pane is open', async () => {
-		const bar = await render({ ontoggleTerminal: vi.fn(), terminalOpen: true });
-		const term = bar.querySelector('[data-journey="terminal"]') as HTMLButtonElement;
-		expect(term.getAttribute('aria-pressed')).toBe('true');
+	it('lists the terminal and every plugin pane as checkable entries that keep the menu open', () => {
+		const items = toolbarSource.slice(
+			toolbarSource.indexOf('const panelItems'),
+			toolbarSource.indexOf('const panelsOpen')
+		);
+		expect(items).toContain('pressed: terminalOpen');
+		expect(items).toContain('pressed: p.open');
+		expect(items.match(/keepOpen: true/g)?.length).toBe(2);
+		expect(items).toContain("'data-journey': 'terminal'");
+		expect(items).toContain("'data-journey': 'plugin'");
+		expect(items).toContain("'data-plugin': p.id");
+		expect(items).toContain('onselect: ontoggleTerminal');
+		expect(items).toContain('onselect: p.onselect');
+	});
+});
+
+describe('auto-approve', () => {
+	it('is a switch that says its state in words', async () => {
+		const bar = await render({ autoApprove: false });
+		const sw = bar.querySelector('[data-journey="auto-approve"] [role="switch"]') as HTMLElement;
+		expect(sw).not.toBeNull();
+		expect(sw.getAttribute('aria-checked')).toBe('false');
+		expect(bar.querySelector('[data-journey="auto-approve"]')?.textContent).toContain('Auto-approve: off');
+		expect(toolbarSource).not.toContain('⚡');
+	});
+
+	it('reads on when the session auto-approves, and asks the parent to flip it', async () => {
+		const ontoggleAuto = vi.fn();
+		const bar = await render({ autoApprove: true, ontoggleAuto });
+		const sw = bar.querySelector('[data-journey="auto-approve"] [role="switch"]') as HTMLElement;
+		expect(sw.getAttribute('aria-checked')).toBe('true');
+		expect(bar.textContent).toContain('Auto-approve: on');
+		sw.click();
+		expect(ontoggleAuto).toHaveBeenCalledOnce();
+	});
+});
+
+describe('filter pills', () => {
+	it('share one neutral selected style with a check, no role tint', async () => {
+		expect(toolbarSource).not.toContain('QUICK_TINT');
+		expect(toolbarSource).not.toContain('--role-');
+		expect(toolbarSource).toContain("const PILL = `${CTL};--toggle-accent: var(--text)`");
+		const bar = await render({ view: { ...view(), msgFilter: { ...allFilter(true), user: false } } });
+		const pills = [...bar.querySelectorAll('[data-journey="quick"]')] as HTMLElement[];
+		expect(pills).toHaveLength(3);
+		for (const p of pills) {
+			const on = p.getAttribute('aria-pressed') === 'true';
+			expect(!!p.querySelector('svg[data-tsu="Icon"]'), p.textContent ?? '').toBe(on);
+		}
+		expect(pills.find((p) => p.dataset.journeyKey === 'user')?.getAttribute('aria-pressed')).toBe('false');
 	});
 });
 
@@ -153,13 +194,6 @@ describe('single-row toolbar', () => {
 		expect(bar.textContent).not.toMatch(/JSON|Diff|Tables|Diagnose/);
 		expect(bar.querySelector('[data-journey="mobile-panel"]')).toBeNull();
 		expect(toolbarSource).not.toContain('mobilePanel');
-	});
-
-	it('marks auto-approve with a zap and keeps its accessible name', async () => {
-		const bar = await render({});
-		const auto = bar.querySelector('.behbar button') as HTMLElement;
-		expect(auto.textContent).toContain('⚡');
-		expect(auto.getAttribute('aria-label')).toBeTruthy();
 	});
 
 	it('shows how many categories are hidden next to the filter icon', async () => {
@@ -206,23 +240,14 @@ describe('drawer toolbar sizing', () => {
 		expect(toolbarSource).not.toContain('const TRIG');
 	});
 
-	it('gives auto-approve and pins the same box construction', () => {
+	it('gives every toggle and popover trigger the same pinned box', () => {
 		const toggles = toolbarSource.match(/<Toggle\b[\s\S]*?>/g) ?? [];
-		expect(toggles.length).toBeGreaterThanOrEqual(3);
-		for (const t of toggles) expect(t, t.slice(0, 60)).toContain('style={');
-		for (const t of toggles) expect(t, t.slice(0, 60)).toMatch(/\$\{CTL\}|style=\{CTL\}/);
-		const triggers = toolbarSource.match(/<Popover[\s\S]*?>/g) ?? [];
-		expect(triggers.length).toBe(2);
+		expect(toggles.length).toBeGreaterThanOrEqual(1);
+		for (const t of toggles) expect(t, t.slice(0, 60)).toMatch(/\$\{PILL\}/);
+		const triggers = toolbarSource.match(/<(Popover|Menu)\b[\s\S]*?>/g) ?? [];
+		expect(triggers.length).toBe(3);
 		for (const p of triggers) expect(p).toContain('variant="toggle"');
 		for (const p of triggers) expect(p).toContain('style={CTL}');
-	});
-
-	it('neutralises the emoji line box so it cannot set the height', () => {
-		expect(toolbarSource).toContain('<span class="glyph" aria-hidden="true">⚡</span>');
-		const glyph = toolbarSource.slice(toolbarSource.indexOf('\t.glyph {'));
-		const body = glyph.slice(0, glyph.indexOf('}'));
-		expect(body).toContain('line-height: 1');
-		expect(body).toContain('min-width: 1em');
 	});
 
 	it('matches the two chip icons in size', () => {
@@ -230,13 +255,9 @@ describe('drawer toolbar sizing', () => {
 		expect(toolbarSource).toContain('<Icon name="pin" size={12}');
 	});
 
-	it('keeps the compact ⚡ and 📌 named and right-aligned', () => {
-		expect(toolbarSource).toContain('aria-label={m.conversation_auto_approve_aria()}');
+	it('keeps auto-approve and pins named and right-aligned', () => {
 		expect(toolbarSource).toContain('title={m.conversation_auto_approve_title()}');
 		expect(toolbarSource).toContain('label={m.conversation_pins_aria()}');
-		// Shape-independent: the hit stepper left this rule, so `margin-left` is no
-		// longer its first declaration — what matters is that the group still
-		// right-aligns.
 		const behbarRules = css
 			.split('.behbar {')
 			.slice(1)
@@ -245,41 +266,17 @@ describe('drawer toolbar sizing', () => {
 		expect(behbarRules.some((r) => r.includes('margin-left: auto;'))).toBe(true);
 	});
 
+	it('wraps to two rows on a phone instead of clipping', () => {
+		const q = css.slice(css.indexOf('@container drawer-toolbar (max-width: 560px)'));
+		expect(q).toContain('.tbrow {\n\t\t\tflex-wrap: wrap;');
+	});
+
 	it('adds no :global override', () => {
 		expect(toolbarSource).not.toContain(':global(');
 	});
 });
 
 describe('plugin pane toggles', () => {
-	const plugin = (open = false, onselect = vi.fn()) => ({
-		id: 'demo',
-		label: 'yubisashi',
-		icon: 'eye' as const,
-		open,
-		onselect
-	});
-
-	it('sit in the behavior group beside auto-approve, with icon and narrow-hidden name', async () => {
-		const onselect = vi.fn();
-		const bar = await render({ plugins: [plugin(false, onselect)] });
-		const btn = bar.querySelector('.behbar [data-journey="plugin"][data-plugin="demo"]') as HTMLButtonElement;
-		expect(btn).not.toBeNull();
-		expect(btn.querySelector('svg[data-tsu="Icon"]')).not.toBeNull();
-		expect(btn.querySelector('.wide')?.textContent).toBe('yubisashi');
-		expect(btn.getAttribute('aria-label')).toBe('yubisashi');
-		expect(btn.getAttribute('aria-pressed')).toBe('false');
-		expect(btn.previousElementSibling?.getAttribute('aria-pressed')).toBe('false');
-		btn.click();
-		expect(onselect).toHaveBeenCalledOnce();
-	});
-
-	it('read as pressed while the pane is open', async () => {
-		const bar = await render({ plugins: [plugin(true)] });
-		const btn = bar.querySelector('[data-journey="plugin"]') as HTMLButtonElement;
-		expect(btn.getAttribute('aria-pressed')).toBe('true');
-		expect(btn.classList.contains('on')).toBe(true);
-	});
-
 	// The header does import `$lib/plugins/*` for the per-session issue slot, so
 	// this guards the pane list and the toggle specifically, not the substring.
 	it('render nowhere else: the header lost its copy', () => {
