@@ -92,9 +92,10 @@ impl Posture {
 /// Worker env that turns on exec interception; only the exact value `1` does.
 pub const GUARD_EXEC_ENV: &str = "CCTUI_GUARD_EXEC";
 
-/// Capability `cctui-guard` needs to read an intercepted exec's arguments
-/// (`pidfd_getfd`, `/proc/<pid>/mem`). Only an exec-interception profile's
-/// worker may hold it.
+/// Capability `cctui-guard` needs to read an intercepted exec's arguments.
+///
+/// It uses `pidfd_getfd` and `/proc/<pid>/mem`. Only an exec-interception
+/// profile's worker may hold it.
 pub const EXEC_INTERCEPTION_CAP: &str = "SYS_PTRACE";
 
 /// Pod annotation the webhook stamps (`"true"`) after injecting the envelope.
@@ -423,8 +424,9 @@ impl WorkerProfileSpec {
         self.posture.unwrap_or(Posture::Root)
     }
 
-    /// Whether the profile opts into exec interception: its own `env` sets
-    /// [`GUARD_EXEC_ENV`] to the literal `1`.
+    /// Whether the profile opts into exec interception.
+    ///
+    /// Its own `env` must set [`GUARD_EXEC_ENV`] to the literal `1`.
     #[must_use]
     pub fn exec_interception(&self) -> bool {
         self.env

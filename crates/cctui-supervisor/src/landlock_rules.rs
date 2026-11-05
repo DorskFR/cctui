@@ -54,10 +54,11 @@ pub struct Grant {
     pub access: BitFlags<AccessFs>,
 }
 
-/// The rules [`apply_with`] installs. Under `guard_exec` the RW paths lose
-/// `Execute` and only the `exec_rw` subtrees get it back, as an `Execute`-only
-/// grant: Landlock unions every rule above a path, so such a grant never adds
-/// write access anywhere.
+/// The rules [`apply_with`] installs.
+///
+/// Under `guard_exec` the RW paths lose `Execute` and only the `exec_rw`
+/// subtrees get it back, as an `Execute`-only grant: Landlock unions every
+/// rule above a path, so such a grant never adds write access anywhere.
 #[must_use]
 pub fn plan(ro: &[String], rw: &[String], exec_rw: &[String], guard_exec: bool) -> Vec<Grant> {
     let mut readwrite = AccessFs::from_all(TARGET_ABI);
@@ -85,8 +86,10 @@ pub fn apply(ro: &[String], rw: &[String]) -> Result<Outcome> {
     apply_with(ro, rw, &[], false)
 }
 
-/// [`apply`] per [`plan`]: with `guard_exec`, a binary written to an RW path
-/// outside the `exec_rw` subtrees cannot be run.
+/// [`apply`] per [`plan`].
+///
+/// With `guard_exec`, a binary written to an RW path outside the `exec_rw`
+/// subtrees cannot be run.
 pub fn apply_with(
     ro: &[String],
     rw: &[String],
@@ -113,11 +116,12 @@ pub fn apply_with(
     })
 }
 
-/// Vet the executable subtrees and create the missing ones, so a toolchain
-/// installed after boot (`cargo install`, an npx cache) lands inside a rule
-/// that already exists. Kept: an absolute entry without `..` beneath an RW
-/// path, reached without a symlink below that path. Created directories are
-/// owned by `owner` when given.
+/// Vet the executable subtrees and create the missing ones.
+///
+/// A toolchain installed after boot (`cargo install`, an npx cache) then lands
+/// inside a rule that already exists. Kept: an absolute entry without `..`
+/// beneath an RW path, reached without a symlink below that path. Created
+/// directories are owned by `owner` when given.
 pub fn prepare_exec_rw(
     exec_rw: &[String],
     rw: &[String],

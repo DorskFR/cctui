@@ -126,8 +126,9 @@ pub fn worker_security_context(posture: Posture) -> SecurityContext {
     worker_security_context_with(posture, false)
 }
 
-/// [`worker_security_context`], adding [`EXEC_INTERCEPTION_CAP`] to the root
-/// set when `exec_interception`. Nonroot never gains it.
+/// [`worker_security_context`], optionally with [`EXEC_INTERCEPTION_CAP`].
+///
+/// The root set gains it when `exec_interception`; nonroot never does.
 #[must_use]
 pub fn worker_security_context_with(posture: Posture, exec_interception: bool) -> SecurityContext {
     if posture == Posture::Nonroot {
@@ -171,8 +172,7 @@ pub struct EnvelopeConfig {
     pub guard: Option<GuardSpec>,
     pub posture: Posture,
     pub dispatched: bool,
-    /// The source profile opts into exec interception
-    /// ([`crate::WorkerProfileSpec::exec_interception`]).
+    /// See [`crate::WorkerProfileSpec::exec_interception`].
     pub exec_interception: bool,
 }
 

@@ -43,9 +43,10 @@ pub const DEFAULT_RW: &[&str] = &[
     "/var/run/guard-proxy",
 ];
 
-/// Default subtrees of the RW paths that keep execute rights under
-/// `--guard-exec`; every other RW path is noexec there. Applied when no
-/// `--exec-rw` flag is given.
+/// Default RW subtrees that keep execute rights under `--guard-exec`.
+///
+/// Every other RW path is noexec there. Applied when no `--exec-rw` flag is
+/// given.
 ///
 /// `/workspace` holds what a coding agent must run: build outputs
 /// (`target/`), package bins (`node_modules/.bin`) and repo scripts. They
@@ -170,8 +171,10 @@ impl Cli {
         }
     }
 
-    /// Requested executable RW subtrees: none under `--no-exec-rw`, else the
-    /// `--exec-rw` flags, or [`DEFAULT_EXEC_RW`].
+    /// Requested executable RW subtrees.
+    ///
+    /// None under `--no-exec-rw`, else the `--exec-rw` flags, or
+    /// [`DEFAULT_EXEC_RW`].
     #[must_use]
     pub fn exec_rw_paths(&self) -> Vec<String> {
         if self.no_exec_rw {
