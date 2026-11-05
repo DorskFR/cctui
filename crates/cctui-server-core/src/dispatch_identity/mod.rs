@@ -123,10 +123,11 @@ async fn insert(pool: &PgPool, r: &Registration<'_>) -> Result<bool, sqlx::Error
     Ok(done.rows_affected() == 1)
 }
 
-/// Keep a queued, unredeemed registration of `dispatcher_id` and its sealed
-/// worker key alive [`REGISTRATION_TTL_DAYS`] ahead. The key's own lifetime is
-/// kept aside so redeem can re-arm it from the pod's start. `false` when there
-/// is no such live registration.
+/// Keep a queued registration and its sealed worker key alive.
+///
+/// Only a live, unredeemed registration of `dispatcher_id` is held, for
+/// [`REGISTRATION_TTL_DAYS`] ahead. The key's own lifetime is kept aside so
+/// redeem can re-arm it from the pod's start. `false` when nothing was held.
 async fn hold_queued(
     pool: &PgPool,
     dispatch_id: Uuid,

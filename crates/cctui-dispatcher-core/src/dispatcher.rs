@@ -36,9 +36,11 @@ impl HandleState {
     }
 }
 
-/// Outcome of a dispatch: an opaque handle, the idempotency status reported back
-/// to the server verbatim, and an optional namespace and profile exposure (kube
-/// sets them; docker and apple leave them `None`).
+/// Outcome of a dispatch.
+///
+/// An opaque handle, the idempotency status reported back to the server
+/// verbatim, and an optional namespace and profile exposure (kube sets them;
+/// docker and apple leave them `None`).
 #[derive(Debug, Clone)]
 pub struct SpawnOutcome {
     pub handle: String,
