@@ -6,74 +6,92 @@ import pane from '../ConversationPane.svelte?raw';
 import meta from './HeaderMeta.svelte?raw';
 import footer from '../sessioncard/Footer.svelte?raw';
 
-const items = () => {
-	const start = header.indexOf('const overflowItems');
-	expect(start).toBeGreaterThan(-1);
-	return header.slice(start, header.indexOf(']);', start));
+const script = header.slice(0, header.indexOf('</script>'));
+const markup = header.slice(header.indexOf('</script>'));
+const block = (name: string) => {
+	const start = script.indexOf(`const ${name}`);
+	expect(start, name).toBeGreaterThan(-1);
+	return script.slice(start, script.indexOf(');\n', start));
 };
+const bar = () => markup.slice(markup.indexOf('<Toolbar'), markup.indexOf('</Toolbar>'));
 
-const markup = () => header.slice(header.indexOf('</script>'));
+describe('drawer header row', () => {
+	it('keeps only back, title, search, stop and ⋯ inline', () => {
+		const inline = bar();
+		expect(inline).not.toContain('<FontScalePicker');
+		expect(inline).not.toMatch(/icon="archive"/);
+		expect(inline).not.toMatch(/icon="stop"/);
+		expect(inline).not.toMatch(/icon="edit"/);
+		expect(inline).toContain('icon="chevron-left"');
+		expect(inline).toContain('icon="search"');
+		expect(inline).toContain('<Menu label={m.drawer_more_actions()} items={overflowItems}');
+	});
+
+	it('offers Stop only while a turn runs, outlined with a spinner and a word', () => {
+		expect(script).toContain('const stoppable = $derived(working && !archived)');
+		const stop = bar().slice(bar().indexOf('{#if stoppable}'));
+		const btn = stop.slice(0, stop.indexOf('{/if}'));
+		expect(btn).toContain('<Button');
+		expect(btn).not.toContain('variant="primary"');
+		expect(btn).not.toContain('tone="danger"');
+		expect(btn).toContain('<Spinner');
+		expect(btn).toContain('{m.chrome_stop()}');
+		expect(btn).toContain('onclick={oninterrupt}');
+		expect(pane).toContain('working={stream.working}');
+	});
+
+	it('gives the title its own line when the drawer is narrow', () => {
+		expect(script).toContain('const titleOwnLine = $derived(collapsed && !compact)');
+		const after = markup.slice(markup.indexOf('</Toolbar>'));
+		expect(after).toMatch(/\{#if titleOwnLine\}\s*\{@render titleBlock\(\)\}/);
+	});
+
+	it('anchors the tours on the same elements', () => {
+		expect(markup).toContain('data-journey="header"');
+		expect(markup).toContain('data-journey="actions"');
+		expect(markup).toContain('data-journey="find"');
+	});
+});
 
 describe('drawer header ⋯ menu', () => {
-	it('renders its own always-present menu, not the collapse-only kit overflow', () => {
-		expect(markup()).toContain('<Menu label={m.drawer_more_actions()} items={overflowItems}');
-		expect(markup()).not.toMatch(/<Toolbar[^>]*\bitems=/);
-		const menuAt = markup().indexOf('<Menu');
-		const lastIf = markup().lastIndexOf('{#if', menuAt);
-		const lastEnd = markup().lastIndexOf('{/if}', menuAt);
-		expect(lastEnd).toBeGreaterThan(lastIf);
+	const items = block('overflowItems');
+
+	it('builds the grouped menu and separates the groups', () => {
+		expect(items).toContain('groupedMenu(');
+		expect(items).toContain('drawerMenuGroups(');
+		expect(items).toContain('menuSeparator');
+		expect(markup).toContain('{#snippet menuSeparator()}');
+		expect(markup).toContain('role="separator"');
 	});
 
-	it('holds copy link and fork permanently, and no terminal entry', () => {
-		const list = items();
-		expect(list).toContain('m.drawer_copy_link_label()');
-		expect(list).toContain('m.drawer_fork_label()');
-		expect(list).toContain('pressed: onforkselect ? forkSelectActive : undefined');
-		expect(list).not.toContain('m.drawer_terminal_label()');
-		expect(list).not.toContain('terminal');
-		expect(header).not.toContain('onterminal');
+	it('hands the menu the text-size row and every action', () => {
+		expect(items).toContain('textSize: textSizeRow');
+		expect(markup).toMatch(/\{#snippet textSizeRow\(\)\}[\s\S]*?<FontScalePicker/);
+		for (const k of ['copylink: oncopylink', 'archive: onarchive', 'rename: startRename', 'forkselect: onforkselect'])
+			expect(items).toContain(k);
+		expect(items).toContain('room: onsetroom ? () => (roomOpen = true) : undefined');
 	});
 
-	it('only stands in for rename while the bar is collapsed', () => {
-		expect(items()).toMatch(/\.\.\.\(collapsed\s*\?\s*\[\s*renaming/);
+	it('has no interrupt entry and no hide-owner entry', () => {
+		expect(header).not.toContain('ownerItems');
+		expect(header).not.toContain('m.drawer_interrupt_label()');
+		expect(pane).not.toContain('useOwnerHideMenu');
+	});
+
+	it('keeps the inline search collapsible into the menu', () => {
+		expect(items).toContain('collapsed,');
+		expect(items).toContain('search: onsearch');
 		expect(header).toContain('collapseBelow="{COLLAPSE_BELOW}px"');
-	});
-
-	it('does not render the menu actions inline', () => {
-		for (const icon of ['link', 'markdown', 'download', 'fork']) {
-			expect(markup(), icon).not.toMatch(new RegExp(`<IconButton[^>]*icon="${icon}"`));
-		}
-	});
-
-	it('gives every entry an icon, checkable ones included', () => {
-		const entries = items()
-			.split(/\blabel:/)
-			.slice(1);
-		expect(entries.length).toBeGreaterThanOrEqual(6);
-		for (const e of entries) expect(e, e.slice(0, 40)).toMatch(/\bicon:/);
-		expect(items()).toContain("icon: 'recycle' as const");
-		expect(header).toMatch(/followupItem = \$derived<MenuItem \| null>\([\s\S]*?icon: 'arrow-right'/);
-	});
-
-	it('anchors the tour on the menu trigger', () => {
-		expect(markup()).toContain('data-journey="actions"');
-		expect(markup()).not.toContain('data-journey="fork"');
+		expect(bar()).toMatch(/<IconButton\s+data-overflow[\s\S]{0,200}icon="search"/);
 	});
 
 	it('wires the terminal to the toolbar, not the header', () => {
 		const head = pane.slice(pane.indexOf('<DrawerHeader'), pane.indexOf('/>', pane.indexOf('<DrawerHeader')));
-		const bar = pane.slice(pane.indexOf('<DrawerToolbar'), pane.indexOf('/>', pane.indexOf('<DrawerToolbar')));
+		const tb = pane.slice(pane.indexOf('<DrawerToolbar'), pane.indexOf('/>', pane.indexOf('<DrawerToolbar')));
 		expect(head).not.toContain('terminal');
-		expect(bar).toContain('{terminalOpen}');
-		expect(bar).toContain('ontoggleTerminal=');
-		expect(toolbar).toContain('data-journey="terminal"');
-	});
-
-	it('offers find-in-conversation inline and in the collapsed menu, never both', () => {
-		expect(markup()).toMatch(/<IconButton\s+data-overflow[\s\S]{0,200}icon="search"/);
-		const collapsedOnly = items().slice(0, items().indexOf('m.drawer_copy_link_label'));
-		expect(collapsedOnly).toContain('m.conversation_search_label()');
-		expect(items().slice(collapsedOnly.length)).not.toContain('m.conversation_search_label()');
+		expect(tb).toContain('{terminalOpen}');
+		expect(tb).toContain('ontoggleTerminal=');
+		expect(toolbar).toContain("'data-journey': 'terminal'");
 	});
 
 	it('binds ⌘F / Ctrl+F to the find bar and gives it first refusal on Escape', () => {
@@ -93,7 +111,7 @@ describe('drawer header ⋯ menu', () => {
 
 describe('issue linking', () => {
 	it('is gone: no menu entry, link modal, or detected-id chip; labels are the only tagging', () => {
-		expect(items()).not.toContain('plugin_issue_menu');
+		expect(header).not.toContain('plugin_issue_menu');
 		expect(header).not.toContain('IssueLinkModal');
 		expect(header).not.toContain('detectedIssue');
 		expect(meta).not.toContain('PluginChips');

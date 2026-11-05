@@ -1,15 +1,12 @@
 <script lang="ts">
 	import { useCapabilities, useSessionLangfuse } from '$lib/queries';
-	import { compact } from '$lib/format';
+	import { formatStat } from '$lib/statText';
 	import { hasLangfuseCost, langfuseCostLabel } from '$lib/spend';
 	import { Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
-	// Per-session Langfuse cost/usage chip. Shows `$cost · N calls`
-	// with a deep link into Langfuse, gated on the server capability so it stays
-	// hidden unless the sink is configured. Keys live only on the server: the
-	// figures are proxied through `/sessions/{id}/langfuse`, the browser never
-	// talks to Langfuse. Fail-open — hidden while empty or on error.
+	// Keys live only on the server: the figures are proxied through
+	// `/sessions/{id}/langfuse`, the browser never talks to Langfuse.
 	let {
 		id,
 		enabled = true
@@ -44,7 +41,11 @@
 			? [
 					m.sessions_langfuse_cost({ cost: costLabel }),
 					m.sessions_langfuse_calls({ count: usage.trace_count }),
-					`↑${compact(Number(usage.input_tokens))} ↓${compact(Number(usage.output_tokens))} ⚡${compact(Number(usage.cache_read))}`
+					[
+						formatStat(Number(usage.input_tokens), 'input'),
+						formatStat(Number(usage.output_tokens), 'output'),
+						formatStat(Number(usage.cache_read), 'cache')
+					].join(' · ')
 				].join('\n')
 			: ''
 	);
@@ -54,12 +55,10 @@
 	<span class="lf" title={tip}>
 		{#if deepLink}
 			<a href={deepLink} target="_blank" rel="noopener noreferrer" class="lf-link">
-				<Text numeric size="xs" tone="muted" weight="semibold">{costLabel}</Text>
-				<Text size="xs" tone="faint">{m.sessions_langfuse_calls_short({ count: usage?.trace_count ?? 0 })} ↗</Text>
+				<Text numeric size="xs" tone="muted">{m.chrome_cost_langfuse({ cost: costLabel })} ↗</Text>
 			</a>
 		{:else}
-			<Text numeric size="xs" tone="muted" weight="semibold">{costLabel}</Text>
-			<Text size="xs" tone="faint">{m.sessions_langfuse_calls_short({ count: usage?.trace_count ?? 0 })}</Text>
+			<Text numeric size="xs" tone="muted">{m.chrome_cost_langfuse({ cost: costLabel })}</Text>
 		{/if}
 	</span>
 {/if}

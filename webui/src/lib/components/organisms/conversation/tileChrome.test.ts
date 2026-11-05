@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MIN_PANE_CHROME, MIN_PANE_HEIGHT } from '$lib/tiles';
 import header from './DrawerHeader.svelte?raw';
+import menu from './drawerMenu.ts?raw';
 import composer from './ConversationComposer.svelte?raw';
 import pane from '../ConversationPane.svelte?raw';
 
@@ -18,13 +19,10 @@ describe('a tile wears one row of header chrome', () => {
 		expect(markup).toContain('{#if session.labels.length > 0 && !compact}');
 	});
 
-	it('puts interrupt and archive behind the ⋯ menu instead of the bar', () => {
-		expect(markup).toContain('{#if !archived && !compact}');
-		const start = header.indexOf('const overflowItems');
-		const items = header.slice(start, header.indexOf(']);', start));
-		expect(items).toContain('...(compact && !archived');
-		expect(items).toContain("icon: 'stop' as const");
-		expect(items).toContain("icon: 'archive' as const");
+	it('keeps archive behind the ⋯ menu and Stop only while a turn runs', () => {
+		expect(menu).toContain("if (!s.archived) session.push({ label: m.drawer_archive(), icon: 'archive'");
+		expect(markup).not.toMatch(/<IconButton[^>]*icon="archive"/);
+		expect(markup).toContain('{#if stoppable}');
 	});
 
 	it('keeps the bar in its collapsed density whatever a tile measures', () => {

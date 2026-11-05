@@ -3,9 +3,10 @@ import { describe, expect, it } from 'vitest';
 import header from './DrawerHeader.svelte?raw';
 
 const markup = header.slice(header.indexOf('</script>'));
-const controls = markup
-	.split(/(?=<IconButton|<FontScalePicker|<Menu )/)
-	.filter((c) => /^<(IconButton|FontScalePicker|Menu )/.test(c))
+const bar = markup.slice(markup.indexOf('<Toolbar'), markup.indexOf('</Toolbar>'));
+const controls = bar
+	.split(/(?=<IconButton|<Button|<Menu )/)
+	.filter((c) => /^<(IconButton|Button|Menu )/.test(c))
 	.map((c) => c.slice(0, c.indexOf('>') + 1));
 
 const named = (label: string) => {
@@ -17,19 +18,15 @@ const named = (label: string) => {
 describe('drawer header control chrome', () => {
 	it('sizes every control from one box per density', () => {
 		expect(header).toContain("const box: 'sm' | 'md' = $derived(collapsed ? 'sm' : 'md')");
-		for (const c of controls) expect(c, c).toContain('{box}');
-		expect(markup).not.toContain("box={collapsed ? 'sm' : 'lg'}");
-		expect(markup).not.toMatch(/box="(xs|sm|md|lg)"/);
+		for (const c of controls) expect(c, c).toMatch(/\{box\}|size=\{box\}/);
+		expect(bar).not.toMatch(/box="(xs|sm|md|lg)"/);
 	});
 
-	it('gives every trailing control the same chip chrome', () => {
-		for (const label of ['m.drawer_archive()', 'm.drawer_interrupt_label()', 'm.drawer_rename()']) {
+	it('gives the icon actions the chip chrome and the ⋯ trigger the matching popover chrome', () => {
+		for (const label of ['m.conversation_search_label()', 'm.common_save()']) {
 			expect(named(label)).toContain('chip');
 		}
-		expect(markup).not.toContain('chip={!collapsed}');
-		for (const label of ['<FontScalePicker', 'm.drawer_more_actions()']) {
-			expect(named(label)).toContain('style={CHIP_CHROME}');
-		}
+		expect(named('m.drawer_more_actions()')).toContain('style={CHIP_CHROME}');
 		expect(header).toContain('--pop-trigger-border: var(--border-strong)');
 	});
 
@@ -42,5 +39,11 @@ describe('drawer header control chrome', () => {
 		expect(trigger).not.toContain('<IconButton');
 		expect(trigger).toContain('data-journey="actions"');
 		expect(trigger).toContain('title={m.drawer_more_actions()}');
+	});
+
+	it('has no filled or red control in the bar', () => {
+		expect(bar).not.toContain('variant="primary"');
+		expect(bar).not.toContain('tone="danger"');
+		expect(bar).not.toContain('tone="warn"');
 	});
 });

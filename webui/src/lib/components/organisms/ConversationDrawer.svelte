@@ -2,7 +2,7 @@
 	// The drawer is now only the side panel: everything inside it is
 	// ConversationPane, which the tiles view mounts without a panel around it.
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { Button, ResizablePanel, Text } from '@dorsk/tsumikit';
+	import { Button, ResizablePanel, Scrim, Text } from '@dorsk/tsumikit';
 	import ConversationPane from './ConversationPane.svelte';
 	import { drafts, VIEW_OPTS } from '$lib/drafts';
 	import { parseViewOpts } from './conversation/filters';
@@ -42,10 +42,14 @@
 </script>
 
 <div class="drawer-host">
+	<!-- Our own scrim, not the kit's: the kit tints with the page colour,
+	     which barely dims a dark theme and lightens a light one. -->
+	<Scrim {onclose} hideBelow="959px" label={m.chrome_close_conversation()} style="background: var(--chrome-scrim)" />
 	<ResizablePanel
 		mode="overlay"
 		side="right"
 		open
+		scrim={false}
 		{onclose}
 		label={m.settings_group_conversation()}
 		width={paneWidth ?? DRAWER_DEFAULT_PX}
@@ -101,5 +105,6 @@
 	.drawer-host {
 		position: relative;
 		z-index: var(--z-drawer);
+		--chrome-scrim: color-mix(in srgb, black 40%, transparent);
 	}
 </style>
