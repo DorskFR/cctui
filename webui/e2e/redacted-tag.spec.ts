@@ -30,18 +30,20 @@ const chips = (page: Page) => page.locator('[data-journey="composer"] [data-test
 test.describe('redacted tags', () => {
 	test.use({ viewport: { width: 1536, height: 900 } });
 
-	test('a closed span shows as a masked chip that reveals locally on click', async ({ page }) => {
+	test('a closed span gets a chip that reveals it in the field on click', async ({ page }) => {
 		await open(page);
 		await message(page).fill(`login with <redacted>${SECRET}</redacted> please`);
+		const masked = page.locator('[data-journey="composer"] [data-tsu="TextareaMirror"] .masked');
 
 		await expect(chips(page)).toHaveCount(1);
-		await expect(chips(page)).toHaveText('••••••');
 		await expect(chips(page)).not.toContainText(SECRET);
+		await expect(masked).toHaveCount(1);
 
 		await chips(page).click();
-		await expect(chips(page)).toHaveText(SECRET);
+		await expect(chips(page)).toHaveAttribute('aria-pressed', 'true');
+		await expect(masked).toHaveCount(0);
 		await chips(page).click();
-		await expect(chips(page)).toHaveText('••••••');
+		await expect(masked).toHaveCount(1);
 	});
 
 	test('Ctrl+Shift+R wraps the selection in tags', async ({ page }) => {

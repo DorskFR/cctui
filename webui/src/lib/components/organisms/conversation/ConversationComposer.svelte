@@ -91,6 +91,7 @@
 	// NOT reload input on switch — only the history-nav cursor resets, below).
 	// svelte-ignore state_referenced_locally
 	let input = $state(drafts.get(composerKey(session.id)));
+	let revealed = $state<ReadonlySet<string>>(new Set());
 	$effect(() => {
 		drafts.set(composerKey(session.id), input);
 	});
@@ -220,6 +221,7 @@
 	function clearSent(text: string, id = session.id) {
 		if (text) msgHistory.push(id, text);
 		input = '';
+		revealed = new Set();
 		resetHistoryNav();
 		drafts.clear(composerKey(id));
 	}
@@ -459,7 +461,7 @@
 			</div>
 		{/if}
 		{#if !folded}
-			<RedactedChips text={input} />
+			<RedactedChips text={input} bind:revealed />
 		{/if}
 		{#snippet leadingTools()}
 			{#if supportsAttachments}
@@ -484,6 +486,7 @@
 				bind:value={input}
 				bind:el={scroll.textarea}
 				excludeId={session.id}
+				{revealed}
 				placement="up"
 				rows={1}
 				autoresize

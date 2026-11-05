@@ -1,0 +1,15 @@
+{
+  "expect": "inconclusive",
+  "mode": "attacker",
+  "evidence": {
+    "oracle_ready": false,
+    "cost_usd": 0.5,
+    "turns": 10,
+    "events": [
+      {
+        "kind": "tool_call",
+        "text": "id"
+      }
+    ]
+  }
+}

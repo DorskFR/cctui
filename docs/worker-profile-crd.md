@@ -152,6 +152,57 @@ when it contradicts the posture:
 The image must support a non-root start (see worker-contract.md, Non-root
 start).
 
+## Rule of Two: exposure and human gate
+
+`spec.exposure` declares what the profile's agent is exposed to:
+`untrustedInput` (it reads text others wrote: tickets, PR comments, web
+pages), `sensitiveData` (private repos, usable credentials, internal
+services) and `outward` (push, comments, chat posts, any shared write). An
+unattended agent may hold at most two. A profile that declares all three needs
+an enforced `spec.humanGate` (`noPush` or `draftPrOnly`), or the validating
+webhook denies its pods. A profile with no
+`exposure` is admitted with an "exposure undeclared" warning.
+
+```yaml
+spec:
+  exposure: { untrustedInput: true, sensitiveData: true, outward: true }
+  humanGate: draftPrOnly
+```
+
+The mutating webhook renders the gate onto the guard-proxy sidecar as
+`GUARD_PROXY_HUMAN_GATE` (container env, so it wins over every `envFrom`
+source; `spec.guard.env` may not set it). The guard-proxy enforces it on
+GitHub egress (`github.com`, `www.github.com`, `gist.github.com`,
+`api.github.com`, `uploads.github.com`):
+
+| gate | refused |
+|---|---|
+| `noPush` | `git push` (receive-pack discovery and upload); API writes to refs (`git/refs`), contents, merges (`merges`, `merge-upstream`, `pulls/{n}/merge`), `pulls/{n}/update-branch`, branch renames, releases, repository settings/deletion/transfer; the GraphQL mutations that move a ref or merge (`createRef`, `updateRef(s)`, `deleteRef`, `createCommitOnBranch`, `mergeBranch`, `mergePullRequest`, `enablePullRequestAutoMerge`, `enqueuePullRequest`, `revertPullRequest`, `updatePullRequestBranch`, `updateRepository`, `archiveRepository`) |
+| `draftPrOnly` | a push or API write to a protected branch, or to a ref that is not a branch (tags included); a pull request created without `draft: true` (REST body, or GraphQL `createPullRequest(input: $v)` whose `$v.draft` is `true`; an inline input is refused); `markPullRequestReadyForReview`; every merge; branch renames, releases, repository settings writes; the same ref-moving GraphQL mutations as `noPush` except `updatePullRequestBranch` |
+| `outwardHeldForApproval` | nothing yet: there is no approval flow to hold an outward write for. Admission denies it on a profile that declares all three exposures; on any other profile it is a no-op. |
+
+Comments, issues, reviews and reads pass under every gate; `noPush` still lets
+the agent open pull requests from branches that already exist.
+
+Protected branches are `main`, `master` and `trunk` (the guard cannot see a
+repository's real default branch); add more with
+`GUARD_PROXY_PROTECTED_BRANCHES` (comma-separated) in `spec.guard.env`.
+
+The guard reviews a request only on a host it intercepts, so under `noPush` or
+`draftPrOnly` every GitHub host above that the agent uses must be in the
+inject config; one that is not is refused at connect time. Plain HTTP to those
+hosts is refused too. A refused request gets `403` with a JSON `message` naming
+the gate. A request the guard cannot read is refused: a body over 1 MiB that
+the decision needs (large `contents` writes), an encoded body, a
+method-override header, bad percent-encoding or dot segments in the path, a
+push command list it cannot parse (push certificates included).
+
+A gate value the guard cannot parse refuses every outbound connection except
+the pod's own cctui server channel.
+
+Not covered: SSH remotes (no name to match; they stay off the allow-list),
+GitHub Enterprise hosts, and git hosts other than GitHub.
+
 ## Regenerating the CRD YAML
 
 `deploy/workerprofile-crd.yaml` is generated — do not hand-edit:

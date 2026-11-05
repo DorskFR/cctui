@@ -13,6 +13,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::denylist::{host_is_denied, ip_is_denied};
+use crate::gate::GatePolicy;
 use crate::inject::Injector;
 use crate::peek::{extract_http_host, extract_sni};
 use crate::policy::PolicyManager;
@@ -36,6 +37,7 @@ pub struct TransparentListener {
     injection: Option<Arc<Injector>>,
     private: Arc<PrivateAllow>,
     server: Option<Arc<ServerInjector>>,
+    gate: Arc<GatePolicy>,
 }
 
 impl TransparentListener {
@@ -46,12 +48,25 @@ impl TransparentListener {
         private: Arc<PrivateAllow>,
     ) -> anyhow::Result<Self> {
         let listener = TcpListener::bind(addr).await?;
-        Ok(Self { listener, policy, injection, private, server: None })
+        Ok(Self {
+            listener,
+            policy,
+            injection,
+            private,
+            server: None,
+            gate: Arc::new(GatePolicy::default()),
+        })
     }
 
     #[must_use]
     pub fn with_server(mut self, server: Option<Arc<ServerInjector>>) -> Self {
         self.server = server;
+        self
+    }
+
+    #[must_use]
+    pub fn with_gate(mut self, gate: Arc<GatePolicy>) -> Self {
+        self.gate = gate;
         self
     }
 
@@ -62,9 +77,10 @@ impl TransparentListener {
             let injection = self.injection.clone();
             let private = self.private.clone();
             let server = self.server.clone();
+            let gate = self.gate.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_connection(stream, policy, injection, private, server).await
-                {
+                let shared = Shared { policy, injection, private, server, gate };
+                if let Err(e) = handle_connection(stream, shared).await {
                     tracing::debug!("transparent connection ended: {e}");
                 }
             });
@@ -94,16 +110,19 @@ async fn peek_name(conn: &mut TcpStream) -> anyhow::Result<Peeked> {
     Ok(Peeked { buf, sni, http_host })
 }
 
-// Linear name-recovery → fail-closed policy check → dial → splice flow; the
-// complexity is the per-step error branches, not nesting.
-#[allow(clippy::cognitive_complexity)]
-async fn handle_connection(
-    mut conn: TcpStream,
+struct Shared {
     policy: Arc<PolicyManager>,
     injection: Option<Arc<Injector>>,
     private: Arc<PrivateAllow>,
     server: Option<Arc<ServerInjector>>,
-) -> anyhow::Result<()> {
+    gate: Arc<GatePolicy>,
+}
+
+// Linear name-recovery → fail-closed policy check → dial → splice flow; the
+// complexity is the per-step error branches, not nesting.
+#[allow(clippy::cognitive_complexity)]
+async fn handle_connection(mut conn: TcpStream, shared: Shared) -> anyhow::Result<()> {
+    let Shared { policy, injection, private, server, gate } = shared;
     let dst = original_dst(&conn)?;
     let host_port = dst.to_string();
     let port = dst.port();
@@ -133,6 +152,16 @@ async fn handle_connection(
             "DENY (builtin) transparent {policy_target} (orig={host_port} sni={sni:?} host={http_host:?})"
         );
         policy.record(&policy_target, false, "builtin denylist");
+        return Ok(());
+    }
+
+    let intercepted = matches!(
+        (injection.as_ref(), sni.as_deref()),
+        (Some(injector), Some(sni)) if injector.should_inject(sni)
+    );
+    if let Some(reason) = gate.refuse_connection(&host, intercepted) {
+        tracing::warn!("DENY (human gate) transparent {policy_target}: {reason}");
+        policy.record(&policy_target, false, &reason);
         return Ok(());
     }
 

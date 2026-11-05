@@ -1,6 +1,7 @@
 # Example docker-dispatcher confinement for a red-team cell. Transparent egress
 # (NET_ADMIN + iptables redirect), strict Landlock, a deny-all allow-list. The
-# cell holds only canary credentials; any canary use is a finding (Phase 3).
+# cell runs the probe image (README.md) and holds only canary credentials; any
+# canary seen at a sink is a finding.
 egress: transparent
 landlock_strict: true
 net_allow: []

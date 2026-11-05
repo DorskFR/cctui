@@ -78,6 +78,16 @@ impl Spawner {
         Self::build_worker_env(spec, &self.cctui_url, self.confinement)
     }
 
+    /// The container name a dispatch maps to and its env.
+    ///
+    /// Errors wherever `dispatch` errors before it tries to create anything.
+    fn admit(&self, spec: &WireDispatchSpec) -> anyhow::Result<(String, Vec<String>)> {
+        if spec.session_id.is_empty() {
+            anyhow::bail!("session_id is required");
+        }
+        Ok((worker_name(dedup_source(spec)), self.worker_env(spec)?))
+    }
+
     /// The cell env: the contract vars, then the dispatcher's own confinement
     /// settings, which a payload cannot carry (`check_payload_env`).
     fn build_worker_env(
@@ -128,11 +138,7 @@ impl Dispatcher for Spawner {
     /// of the same key reuses the deterministic name; a 409 (name in use) is
     /// reported as `deduplicated` rather than clobbering the running worker.
     async fn dispatch(&self, spec: &WireDispatchSpec) -> anyhow::Result<SpawnOutcome> {
-        if spec.session_id.is_empty() {
-            anyhow::bail!("session_id is required");
-        }
-        let name = worker_name(dedup_source(spec));
-        let env = self.worker_env(spec)?;
+        let (name, env) = self.admit(spec)?;
 
         let labels = Self::discovery_labels(&spec.session_id);
         let host_config =
@@ -150,12 +156,7 @@ impl Dispatcher for Spawner {
         match self.docker.create_container(Some(opts), config).await {
             Ok(_) => {}
             Err(bollard::errors::Error::DockerResponseServerError { status_code: 409, .. }) => {
-                return Ok(SpawnOutcome {
-                    handle: format!("container/{name}"),
-                    status: "deduplicated".to_owned(),
-                    namespace: None,
-                    exposure: None,
-                });
+                return Ok(deduplicated(&name));
             }
             Err(e) => anyhow::bail!("creating container: {e}"),
         }
@@ -214,6 +215,32 @@ impl Dispatcher for Spawner {
             }
             Err(e) => anyhow::bail!("removing container {name}: {e}"),
         }
+    }
+
+    fn supports_dedup_check(&self) -> bool {
+        true
+    }
+
+    /// A create 409s whenever any container holds the name, so the check is
+    /// whether one does.
+    async fn dedup_check(&self, spec: &WireDispatchSpec) -> anyhow::Result<Option<SpawnOutcome>> {
+        let (name, _) = self.admit(spec)?;
+        match self.docker.inspect_container(&name, None).await {
+            Ok(_) => Ok(Some(deduplicated(&name))),
+            Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => {
+                Ok(None)
+            }
+            Err(e) => anyhow::bail!("inspecting container {name}: {e}"),
+        }
+    }
+}
+
+fn deduplicated(name: &str) -> SpawnOutcome {
+    SpawnOutcome {
+        handle: format!("container/{name}"),
+        status: "deduplicated".to_owned(),
+        namespace: None,
+        exposure: None,
     }
 }
 
@@ -350,5 +377,114 @@ mod tests {
             let err = default_env(&s).unwrap_err();
             assert!(err.to_string().contains(key), "{err}");
         }
+    }
+
+    /// The request line and headers, with any body read off the socket.
+    async fn read_request(tcp: &mut tokio::net::TcpStream) -> Option<String> {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        let end = loop {
+            if let Some(at) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break at + 4;
+            }
+            match tcp.read(&mut chunk).await {
+                Ok(0) | Err(_) => return None,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        };
+        let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+        let length = head
+            .lines()
+            .find_map(|l| l.strip_prefix("content-length:"))
+            .and_then(|v| v.trim().parse::<usize>().ok());
+        let chunked = head.contains("transfer-encoding: chunked");
+        loop {
+            let body = &buf[end..];
+            let done = length
+                .map_or_else(|| !chunked || body.ends_with(b"0\r\n\r\n"), |len| body.len() >= len);
+            if done {
+                return Some(String::from_utf8_lossy(&buf[..end]).into_owned());
+            }
+            match tcp.read(&mut chunk).await {
+                Ok(0) | Err(_) => return None,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        }
+    }
+
+    /// A stand-in docker API where a container named `held` exists or not.
+    async fn fake_docker(held: Option<String>) -> Spawner {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut tcp, _)) = listener.accept().await {
+                let held = held.clone();
+                tokio::spawn(async move {
+                    let Some(request) = read_request(&mut tcp).await else { return };
+                    let mut words = request.split_whitespace();
+                    let method = words.next().unwrap_or_default();
+                    let path = words.next().unwrap_or_default();
+                    let exists = held.as_deref().is_some_and(|n| path.contains(n));
+                    let (status, body) = match method {
+                        "GET" if exists => ("200 OK", r#"{"Id":"c0","State":{"Running":true}}"#),
+                        "POST" if path.contains("/containers/create") && held.is_some() => {
+                            ("409 Conflict", r#"{"message":"name in use"}"#)
+                        }
+                        "POST" if path.contains("/containers/create") => {
+                            ("201 Created", r#"{"Id":"c1","Warnings":[]}"#)
+                        }
+                        "POST" if path.ends_with("/start") => ("204 No Content", ""),
+                        _ => ("404 Not Found", r#"{"message":"No such container"}"#),
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n\
+                         content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = tcp.write_all(response.as_bytes()).await;
+                    let _ = tcp.shutdown().await;
+                });
+            }
+        });
+
+        Spawner {
+            image: "example.com/worker:latest".into(),
+            network: None,
+            cctui_url: "https://cctui.example.test".into(),
+            mounts: Vec::new(),
+            confinement: Confinement::default(),
+            docker: Docker::connect_with_http(&url, 5, bollard::API_DEFAULT_VERSION).unwrap(),
+            exits: Arc::new(Exits::default()),
+        }
+    }
+
+    /// The check and the create path share one admission step and the same
+    /// name rule: a held name is `deduplicated` onto the same handle by both,
+    /// a free one lets the create go through while the check answers none, and
+    /// a dispatch the create path refuses errors in the check too.
+    #[tokio::test]
+    async fn the_dedup_check_agrees_with_the_create_path() {
+        let mut s = spec("fresh-session", json!({}));
+        s.dedup_key = Some("triage-PROJ-1".into());
+        let name = worker_name("triage-PROJ-1");
+
+        let held = fake_docker(Some(name.clone())).await;
+        let checked = held.dedup_check(&s).await.unwrap().expect("a held name deduplicates");
+        let created = held.dispatch(&s).await.unwrap();
+        assert_eq!(created.status, "deduplicated");
+        assert_eq!(checked.handle, format!("container/{name}"));
+        assert_eq!((&checked.handle, &checked.status), (&created.handle, &created.status));
+
+        let free = fake_docker(None).await;
+        assert!(free.dedup_check(&s).await.unwrap().is_none());
+        assert_eq!(free.dispatch(&s).await.unwrap().status, "dispatched");
+
+        let mut refused = s;
+        refused.session_id = String::new();
+        assert!(held.dedup_check(&refused).await.is_err());
+        assert!(held.dispatch(&refused).await.is_err());
+        assert!(held.supports_dedup_check());
     }
 }

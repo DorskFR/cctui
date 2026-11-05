@@ -426,6 +426,20 @@ pub async fn resolve_dispatcher(
     user_id: Option<uuid::Uuid>,
     name: &str,
 ) -> Result<Option<std::sync::Arc<dyn Dispatcher>>, DispatchError> {
+    Ok(resolve_target(state, user_id, name).await?.map(|t| t.dispatcher))
+}
+
+/// A resolved dispatcher, with its enrolled form when it has one.
+struct Target {
+    dispatcher: std::sync::Arc<dyn Dispatcher>,
+    enrolled: Option<std::sync::Arc<EnrolledDispatcher>>,
+}
+
+async fn resolve_target(
+    state: &impl DispatchContext,
+    user_id: Option<uuid::Uuid>,
+    name: &str,
+) -> Result<Option<Target>, DispatchError> {
     let owner_filter = match user_id {
         Some(uid) => {
             let granted = crate::store::dispatch_policies::grants_dispatcher(
@@ -439,27 +453,28 @@ pub async fn resolve_dispatcher(
         }
         None => None,
     };
-    let row: Option<(uuid::Uuid,)> = sqlx::query_as(
-        "SELECT id FROM dispatchers \
+    let row: Option<(uuid::Uuid, bool)> = sqlx::query_as(
+        "SELECT id, $3 = ANY(features) FROM dispatchers \
          WHERE ($1::uuid IS NULL OR user_id = $1) AND name = $2 \
          AND deleted_at IS NULL AND revoked_at IS NULL \
          ORDER BY created_at LIMIT 1",
     )
     .bind(owner_filter)
     .bind(name)
+    .bind(cctui_proto::ws::DISPATCHER_FEATURE_DEDUP_CHECK)
     .fetch_optional(state.dispatch_pool())
     .await
     .map_err(|e| DispatchError::Backend(format!("dispatcher lookup: {e}")))?;
-    if let Some((dispatcher_id,)) = row {
-        return Ok(Some(std::sync::Arc::new(EnrolledDispatcher::new(
-            name,
-            dispatcher_id,
-            state.dispatch_bus().clone(),
-        ))));
+    if let Some((dispatcher_id, dedup_check)) = row {
+        let enrolled = std::sync::Arc::new(
+            EnrolledDispatcher::new(name, dispatcher_id, state.dispatch_bus().clone())
+                .with_dedup_check(dedup_check),
+        );
+        return Ok(Some(Target { dispatcher: enrolled.clone(), enrolled: Some(enrolled) }));
     }
     // Fall back to a global env-configured http dispatcher (escape hatch).
     match state.dispatchers().get(name) {
-        Ok(d) => Ok(Some(d)),
+        Ok(dispatcher) => Ok(Some(Target { dispatcher, enrolled: None })),
         Err(DispatchError::UnknownDispatcher(_)) => Ok(None),
         Err(e) => Err(e),
     }
@@ -472,6 +487,7 @@ pub type DispatchResult<T> = Result<T, (StatusCode, Json<ApiError>)>;
 /// display name carried over, no credentials injected yet).
 struct ValidatedDispatch {
     dispatcher: std::sync::Arc<dyn Dispatcher>,
+    enrolled: Option<std::sync::Arc<EnrolledDispatcher>>,
     session_id: String,
     dedup_key: Option<String>,
     caller: String,
@@ -500,8 +516,9 @@ async fn validate_dispatch(
     ctx: &AuthContext,
     req: &DispatchRequest,
 ) -> DispatchResult<ValidatedDispatch> {
-    let dispatcher = match resolve_dispatcher(state, ctx.owner_filter(), &req.dispatcher).await {
-        Ok(Some(d)) => d,
+    let resolved = resolve_target(state, ctx.owner_filter(), &req.dispatcher).await;
+    let Target { dispatcher, enrolled } = match resolved {
+        Ok(Some(t)) => t,
         Ok(None) => {
             let known = state.dispatchers().ids().join(", ");
             tracing::warn!(
@@ -599,7 +616,7 @@ async fn validate_dispatch(
         obj.entry("name").or_insert_with(|| serde_json::Value::String(name.clone()));
     }
 
-    Ok(ValidatedDispatch { dispatcher, session_id, dedup_key, caller, forwarded_payload })
+    Ok(ValidatedDispatch { dispatcher, enrolled, session_id, dedup_key, caller, forwarded_payload })
 }
 
 /// Resolve the caller's stable dispatch machine and forward a per-session
@@ -1049,7 +1066,7 @@ async fn forward_dispatch(
     req: &DispatchRequest,
     v: &ValidatedDispatch,
 ) -> DispatchResult<(StatusCode, Json<DispatchResponse>)> {
-    let ValidatedDispatch { dispatcher, session_id, dedup_key, caller, forwarded_payload } = v;
+    let ValidatedDispatch { dispatcher, session_id, dedup_key, caller, forwarded_payload, .. } = v;
     let origin = dispatcher.id();
     let spec = DispatchSpec {
         session_id,
@@ -1061,17 +1078,7 @@ async fn forward_dispatch(
 
     let handle = match dispatcher.dispatch(&spec).instrument(step("dispatcher_round_trip")).await {
         Ok(h) => {
-            state.notify(DispatchNotification {
-                title: format!("Dispatch forwarded → {}", req.dispatcher),
-                message: format!(
-                    "user: {caller}\nsession: {session_id}\nhandle: {}\nnamespace: {}\nstatus: {}",
-                    h.handle,
-                    h.namespace.as_deref().unwrap_or("-"),
-                    h.status.as_deref().unwrap_or("dispatched"),
-                ),
-                tags: "white_check_mark".into(),
-                priority: 3,
-            });
+            notify_forwarded(state, req, v, &h);
             // Persist the opaque handle so the completion-webhook sweep can ask
             // this dispatcher whether the workload later died without a
             // conclusion. Owner-scoped re-resolution in the sweep uses
@@ -1123,11 +1130,36 @@ async fn forward_dispatch(
         }
     };
 
-    Ok((
+    Ok(accepted(v, handle))
+}
+
+fn notify_forwarded(
+    state: &impl DispatchContext,
+    req: &DispatchRequest,
+    v: &ValidatedDispatch,
+    h: &crate::dispatchers::DispatchHandle,
+) {
+    state.notify(DispatchNotification {
+        title: format!("Dispatch forwarded → {}", req.dispatcher),
+        message: format!(
+            "user: {}\nsession: {}\nhandle: {}\nnamespace: {}\nstatus: {}",
+            v.caller,
+            v.session_id,
+            h.handle,
+            h.namespace.as_deref().unwrap_or("-"),
+            h.status.as_deref().unwrap_or("dispatched"),
+        ),
+        tags: "white_check_mark".into(),
+        priority: 3,
+    });
+}
+
+fn accepted(v: &ValidatedDispatch, handle: crate::dispatchers::DispatchHandle) -> Forwarded {
+    (
         StatusCode::ACCEPTED,
         Json(DispatchResponse {
-            session_id: session_id.clone(),
-            dispatcher: origin.to_string(),
+            session_id: v.session_id.clone(),
+            dispatcher: v.dispatcher.id().to_string(),
             handle: handle.handle,
             namespace: handle.namespace,
             // Surface the dispatcher's outcome verbatim so a re-dispatch onto a
@@ -1138,7 +1170,34 @@ async fn forward_dispatch(
             queue_position: handle.queue_position,
             exposure: handle.exposure,
         }),
-    ))
+    )
+}
+
+/// Answer `deduplicated` before any prep when a live worker holds the dedup key.
+///
+/// No key or token is minted and nothing is registered or recorded, as a
+/// deduplicated forward leaves nothing of its own behind.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "deduplicated_early")
+)]
+async fn deduplicated_early(
+    state: &impl DispatchContext,
+    req: &DispatchRequest,
+    v: &ValidatedDispatch,
+) -> Option<Forwarded> {
+    let enrolled = v.enrolled.as_ref()?;
+    let spec = DispatchSpec {
+        session_id: &v.session_id,
+        timeout_minutes: req.timeout,
+        reply_url: None,
+        dedup_key: Some(v.dedup_key.as_deref()?),
+        payload: &v.forwarded_payload,
+    };
+    let joined = enrolled.dedup_check(&spec).instrument(step("dedup_check")).await?;
+    notify_forwarded(state, req, v, &joined);
+    Some(accepted(v, joined))
 }
 
 /// Refuse `additions` that weaken a rule of an account the dispatch is about
@@ -1211,6 +1270,9 @@ pub async fn execute_dispatch(
     let mut v = validate_dispatch(state, ctx, &req).await?;
     let additions = crate::hook_policy::dispatch_additions(&req.payload)
         .map_err(|e| bad_request(e.to_string()))?;
+    if let Some(joined) = deduplicated_early(state, &req, &v).await {
+        return Ok(shown_queued(joined));
+    }
 
     if let Some(uid) = real_user {
         let routing = resolve_account_routing(state, &req, uid, &mut v.forwarded_payload).await?;

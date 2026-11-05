@@ -4,6 +4,7 @@ import {
 	hasUnclosedTag,
 	redactStoredText,
 	redactUserSpans,
+	redactedSegments,
 	redactedSpans,
 	wrapRedacted
 } from './redactTag';
@@ -137,5 +138,73 @@ describe('optimistic echo reconciliation', () => {
 		} as unknown as AgentEvent;
 		expect(userMsgKey(typed)).toBe(userMsgKey(stored));
 		expect(userMsgKey(typed)).not.toContain('hunter2-xyz');
+	});
+});
+
+describe('redactedSegments', () => {
+	const joined = (t: string) =>
+		redactedSegments(t)
+			.map((s) => s.text)
+			.join('');
+	const masked = (t: string, revealed?: Set<string>) =>
+		redactedSegments(t, revealed)
+			.filter((s) => s.mask)
+			.map((s) => s.text);
+
+	it('masks only the inside of a closed span, tags stay plain', () => {
+		expect(redactedSegments('pw <redacted>hunter2</redacted>!')).toEqual([
+			{ text: 'pw <redacted>' },
+			{ text: 'hunter2', mask: true },
+			{ text: '</redacted>!' }
+		]);
+	});
+
+	it('returns nothing to mask for plain or empty text', () => {
+		expect(redactedSegments('')).toEqual([]);
+		expect(redactedSegments('plain')).toEqual([{ text: 'plain' }]);
+	});
+
+	it('leaves an unclosed tag unmasked, since it is sent as written', () => {
+		const t = 'x <redacted>oops';
+		expect(masked(t)).toEqual([]);
+		expect(joined(t)).toBe(t);
+	});
+
+	it('masks a closed span before an unclosed one', () => {
+		const t = '<redacted>a1</redacted> then <redacted>oops';
+		expect(masked(t)).toEqual(['a1']);
+		expect(joined(t)).toBe(t);
+	});
+
+	it('splits adjacent spans and keeps case-insensitive tags', () => {
+		const t = '<redacted>a</redacted><REDACTED>b</REDACTED>';
+		expect(redactedSegments(t)).toEqual([
+			{ text: '<redacted>' },
+			{ text: 'a', mask: true },
+			{ text: '</redacted><REDACTED>' },
+			{ text: 'b', mask: true },
+			{ text: '</REDACTED>' }
+		]);
+	});
+
+	it('masks a nested span up to the first close, like the server', () => {
+		const t = '<redacted>a<redacted>b</redacted>c</redacted>';
+		expect(masked(t)).toEqual(['a<redacted>b']);
+		expect(joined(t)).toBe(t);
+	});
+
+	it('leaves an empty span unmasked', () => {
+		expect(masked('<redacted></redacted>')).toEqual([]);
+	});
+
+	it('unmasks revealed values only', () => {
+		const t = '<redacted>a1</redacted> <redacted>b2</redacted>';
+		expect(masked(t, new Set(['b2']))).toEqual(['a1']);
+	});
+
+	it('round-trips multi-line text byte for byte', () => {
+		const t = 'line1\r\n<redacted>multi\nline</redacted>\ttail 🔑';
+		expect(joined(t)).toBe(t);
+		expect(masked(t)).toEqual(['multi\nline']);
 	});
 });

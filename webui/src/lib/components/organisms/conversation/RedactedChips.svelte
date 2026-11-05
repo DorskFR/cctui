@@ -3,11 +3,17 @@
 	import { m } from '$lib/paraglide/messages';
 	import { hasUnclosedTag, redactedSpans } from '$lib/redactTag';
 
-	let { text }: { text: string } = $props();
+	let {
+		text,
+		revealed = $bindable(new Set())
+	}: {
+		text: string;
+		/** Span values the prompt field shows in clear. */
+		revealed?: ReadonlySet<string>;
+	} = $props();
 
 	const spans = $derived(redactedSpans(text));
 	const unclosed = $derived(hasUnclosedTag(text));
-	let revealed = $state<Set<string>>(new Set());
 
 	function toggle(value: string) {
 		const next = new Set(revealed);
@@ -21,7 +27,7 @@
 	<div class="redacted" data-testid="redacted-chips">
 		{#if spans.length}
 			<Text size="xs" tone="faint">{m.redacted_tag_chips_label()}</Text>
-			{#each spans as span (span.start)}
+			{#each spans as span, i (span.start)}
 				{@const open = revealed.has(span.value)}
 				<Button
 					variant="ghost"
@@ -33,7 +39,7 @@
 					aria-label={open ? m.redacted_tag_chip_hide() : m.redacted_tag_chip_reveal()}
 					onclick={() => toggle(span.value)}
 				>
-					<span class="value">{open ? span.value : '••••••'}</span>
+					<span class="value">{i + 1}</span>
 				</Button>
 			{/each}
 		{/if}
@@ -54,9 +60,5 @@
 	}
 	.value {
 		font-family: var(--font-mono);
-		max-width: 24ch;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
 	}
 </style>

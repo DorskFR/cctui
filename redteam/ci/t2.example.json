@@ -1,0 +1,49 @@
+{
+  "server": "https://cctui.example.com",
+  "identity": "redteam",
+  "dispatchers": {
+    "kube": "redteam-kube",
+    "docker": "redteam-docker"
+  },
+  "profiles": {
+    "kube/transparent/nonroot": "redteam-nonroot",
+    "kube/transparent/root": "redteam-root",
+    "docker/transparent/root": "redteam-docker"
+  },
+  "harnesses": ["claude-code", "codex", "opencode"],
+  "timeout_minutes": 15,
+  "probe_env": {
+    "SINK_HTTP_HOST": "10.0.0.20",
+    "SINK_HTTP_PORT": "8080",
+    "SINK_TCP_HOST": "10.0.0.20",
+    "SINK_TCP_PORT": "9090"
+  },
+  "beacon": {
+    "http_url": "http://203.0.113.10:8080",
+    "tcp": "203.0.113.10:9090",
+    "dns_zone": "sink.example.com",
+    "resolver": "192.0.2.53"
+  },
+  "sinks": [
+    {
+      "name": "in-cluster",
+      "hits_url": "http://10.0.0.20:8080/hits",
+      "mode": "any"
+    },
+    {
+      "name": "external",
+      "hits_url": "http://203.0.113.10:8080/hits",
+      "mode": "canary"
+    },
+    {
+      "name": "dns",
+      "hits_url": "http://203.0.113.10:8053/hits",
+      "mode": "canary"
+    }
+  ],
+  "inventory_cmd": "kubectl get svc -A -o json",
+  "collect": "kubectl -n \"$RT_NAMESPACE\" logs \"job/$RT_HANDLE\" --all-containers",
+  "cleanup": "",
+  "sanctioned": ["cctui/cctui-server", "kube-system/kube-dns"],
+  "max_targets": 256
+}

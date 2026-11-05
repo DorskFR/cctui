@@ -34,6 +34,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::aws_creds::{AmbientAws, AwsCredentials};
+use crate::gate::{self, GatePolicy, Review};
 use crate::ghapp::GhAppMinter;
 use crate::secrets::{Credential, SecretError, SecretRef, SecretSource, render_identity};
 
@@ -394,6 +395,7 @@ pub struct Injector {
     ghapp: Option<Arc<GhAppMinter>>,
     /// Built only when a `SigV4` rule signs with ambient credentials.
     ambient: Option<Arc<AmbientAws>>,
+    gate: Arc<GatePolicy>,
 }
 
 impl Injector {
@@ -417,7 +419,14 @@ impl Injector {
             .then(AmbientAws::default_chain)
             .transpose()?
             .map(Arc::new);
-        Ok(Self { acceptor, connector, secrets, policy, ghapp, ambient })
+        let gate = Arc::new(GatePolicy::default());
+        Ok(Self { acceptor, connector, secrets, policy, ghapp, ambient, gate })
+    }
+
+    #[must_use]
+    pub fn with_gate(mut self, gate: Arc<GatePolicy>) -> Self {
+        self.gate = gate;
+        self
     }
 
     pub fn build_connector(
@@ -512,6 +521,15 @@ impl Injector {
     where
         C: AsyncRead + AsyncWrite + Unpin,
     {
+        if let Some(reason) = self.gate_refusal(client, dialer.host, head, cbuf).await? {
+            tracing::warn!(
+                "REFUSE {} {}: {reason}",
+                dialer.host,
+                request_path(head).unwrap_or_default()
+            );
+            refuse_request(client, &reason).await?;
+            return Ok(Step::Close);
+        }
         let upstream = if upstream.is_some() { upstream } else { dialer.dial().await };
         let Some(mut conn) = upstream else {
             bad_gateway(client).await?;
@@ -533,6 +551,37 @@ impl Injector {
             return Ok(Step::Close);
         }
         Ok(Step::KeepAlive(Box::new(conn)))
+    }
+
+    /// Buffers as much of the body as the human gate needs, without consuming
+    /// it, so an allowed request is relayed byte for byte.
+    async fn gate_refusal<C>(
+        &self,
+        client: &mut C,
+        host: &str,
+        head: &[u8],
+        cbuf: &mut HttpBuf,
+    ) -> anyhow::Result<Option<String>>
+    where
+        C: AsyncRead + Unpin,
+    {
+        let mut review = self.gate.review_head(host, head);
+        let framing = body_framing(head, false);
+        while review == Review::NeedBody {
+            review = {
+                let (body, complete) = gate::body_prefix(cbuf.buffered(), framing);
+                self.gate.review_body(host, head, &body, complete)
+            };
+            if review == Review::NeedBody
+                && (cbuf.buffered().len() > gate::MAX_REVIEW_BYTES || !cbuf.fill(client).await?)
+            {
+                review = Review::Refuse(UNREVIEWABLE_BODY.to_owned());
+            }
+        }
+        Ok(match review {
+            Review::Refuse(reason) => Some(reason),
+            Review::Allow | Review::NeedBody => None,
+        })
     }
 
     async fn send_request<C, U>(
@@ -932,6 +981,22 @@ where
     }
 }
 
+const UNREVIEWABLE_BODY: &str = "human gate refuses a request body it could not review";
+
+async fn refuse_request<C: AsyncWrite + Unpin>(client: &mut C, reason: &str) -> anyhow::Result<()> {
+    let body = serde_json::json!({ "message": reason }).to_string();
+    let head = format!(
+        "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n",
+        body.len()
+    );
+    client.write_all(head.as_bytes()).await?;
+    client.write_all(body.as_bytes()).await?;
+    client.flush().await?;
+    let _ = client.shutdown().await;
+    Ok(())
+}
+
 pub async fn bad_gateway<C: AsyncWrite + Unpin>(client: &mut C) -> anyhow::Result<()> {
     client.write_all(BAD_GATEWAY).await?;
     client.flush().await?;
@@ -1282,6 +1347,18 @@ impl HttpBuf {
                 }
             }
         }
+    }
+
+    pub const fn buffered(&self) -> &[u8] {
+        self.buf.as_slice()
+    }
+
+    /// Reads more of `src` into the buffer, consuming nothing; `false` on EOF.
+    pub async fn fill<S: AsyncRead + Unpin>(&mut self, src: &mut S) -> anyhow::Result<bool> {
+        let mut chunk = [0u8; 8192];
+        let n = src.read(&mut chunk).await?;
+        self.buf.extend_from_slice(&chunk[..n]);
+        Ok(n > 0)
     }
 
     /// Bytes read past the last message head, e.g. the first frames after a
@@ -1904,6 +1981,90 @@ mod tests {
         let mut rest = vec![0u8; 5];
         src.read_exact(&mut rest).await.unwrap();
         assert_eq!(&rest, b"WORLD", "bytes after the body must stay unconsumed");
+    }
+
+    fn gated_injector(gate: crate::gate::HumanGate) -> Injector {
+        let backend = Box::new(MockBackend(Err(())));
+        let secrets = Arc::new(SecretSource::new(backend, Duration::ZERO));
+        let ca = Arc::new(PerPodCa::generate().unwrap());
+        let gate = GatePolicy::new(crate::gate::Gate::Declared(gate), &[]);
+        Injector::new(ca, secrets, InjectionPolicy::new(Vec::new()), None)
+            .unwrap()
+            .with_gate(Arc::new(gate))
+    }
+
+    fn receive_pack(branch: &str) -> (Vec<u8>, Vec<u8>) {
+        let oid = "1".repeat(40);
+        let command = format!("{} {oid} refs/heads/{branch}\0report-status\n", "0".repeat(40));
+        let mut body = format!("{:04x}{command}0000", command.len() + 4).into_bytes();
+        body.extend_from_slice(&[0x50; 4096]);
+        let head = format!(
+            "POST /o/r.git/git-receive-pack HTTP/1.1\r\nHost: github.com\r\n\
+             Content-Length: {}\r\n\r\n",
+            body.len()
+        );
+        (head.into_bytes(), body)
+    }
+
+    #[tokio::test]
+    async fn gate_reviews_a_push_without_consuming_its_body() {
+        let inj = gated_injector(crate::gate::HumanGate::DraftPrOnly);
+        let (head, body) = receive_pack("feature/x");
+        let (mut w, mut client) = tokio::io::duplex(64);
+        let sent = body.clone();
+        tokio::spawn(async move { w.write_all(&sent).await.unwrap() });
+        let mut cbuf = HttpBuf::default();
+        let refusal = inj.gate_refusal(&mut client, "github.com", &head, &mut cbuf).await;
+        assert_eq!(refusal.unwrap(), None);
+        assert!(cbuf.buffered().len() < body.len(), "only the command list is buffered");
+        let mut relayed = Vec::new();
+        cbuf.relay_body(&mut client, &mut relayed, body_framing(&head, false)).await.unwrap();
+        assert_eq!(relayed, body, "an allowed push is relayed byte for byte");
+    }
+
+    #[tokio::test]
+    async fn gate_refuses_a_default_branch_push_before_dialing() {
+        let inj = gated_injector(crate::gate::HumanGate::DraftPrOnly);
+        let (head, body) = receive_pack("main");
+        let (mut w, mut client) = tokio::io::duplex(64);
+        tokio::spawn(async move {
+            let _ = w.write_all(&body).await;
+        });
+        let mut cbuf = HttpBuf::default();
+        let refusal = inj.gate_refusal(&mut client, "github.com", &head, &mut cbuf).await;
+        assert!(refusal.unwrap().is_some_and(|r| r.contains("`main`")));
+
+        let no_push = gated_injector(crate::gate::HumanGate::NoPush);
+        let mut empty = HttpBuf::default();
+        let (_w, mut idle) = tokio::io::duplex(64);
+        let refusal = no_push.gate_refusal(&mut idle, "github.com", &head, &mut empty).await;
+        assert!(refusal.unwrap().is_some(), "noPush refuses from the head alone");
+    }
+
+    #[tokio::test]
+    async fn gate_refuses_a_body_too_large_to_review() {
+        let inj = gated_injector(crate::gate::HumanGate::DraftPrOnly);
+        let len = crate::gate::MAX_REVIEW_BYTES * 2;
+        let head = format!("POST /repos/o/r/pulls HTTP/1.1\r\nContent-Length: {len}\r\n\r\n");
+        let (mut w, mut client) = tokio::io::duplex(8192);
+        tokio::spawn(async move {
+            let _ = w.write_all(&vec![b' '; len]).await;
+        });
+        let mut cbuf = HttpBuf::default();
+        let refusal =
+            inj.gate_refusal(&mut client, "api.github.com", head.as_bytes(), &mut cbuf).await;
+        assert_eq!(refusal.unwrap().as_deref(), Some(UNREVIEWABLE_BODY));
+    }
+
+    #[tokio::test]
+    async fn refused_request_gets_a_403_with_the_reason() {
+        let mut out = Vec::new();
+        refuse_request(&mut out, "human gate noPush refuses a git push").await.unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{text}");
+        assert!(text.contains("Connection: close"), "{text}");
+        let body = r#"{"message":"human gate noPush refuses a git push"}"#;
+        assert!(text.ends_with(body), "{text}");
     }
 
     #[tokio::test]

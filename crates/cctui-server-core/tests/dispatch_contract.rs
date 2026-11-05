@@ -546,3 +546,146 @@ async fn an_enrolled_dispatchers_reported_exposure_lands_on_the_dispatch_record(
         assert_eq!(recorded, reported);
     }
 }
+
+/// How the fake enrolled dispatcher meets a dedup check.
+#[derive(Clone, Copy, Debug)]
+enum Probe {
+    /// A live worker holds the dedup key.
+    Live,
+    /// The worker that held the key is terminal: the dispatch redispatches.
+    Terminal,
+    /// The check is never answered.
+    Silent,
+    /// The dispatcher's current connection never announced the check.
+    Unannounced,
+}
+
+/// Enroll a fake dispatcher named `enrolled` that meets dedup checks per
+/// `probe` and answers a dispatch `redispatched`; returns the frames it saw.
+async fn enrolled_dispatcher(f: &Fixture, probe: Probe) -> Arc<Mutex<Vec<&'static str>>> {
+    use cctui_proto::ws::{DISPATCHER_FEATURE_DEDUP_CHECK, DispatcherFrameDown, DispatcherFrameUp};
+    use cctui_server_core::dispatchers::enrolled::{clear_features, record_features};
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO dispatchers (id, user_id, name, kind) \
+         VALUES ($1, $2, 'enrolled', 'kubernetes')",
+    )
+    .bind(id)
+    .bind(f.ctx.user_id)
+    .execute(&f.host.pool)
+    .await
+    .unwrap();
+    let pool = &f.host.pool;
+    let announced = [DISPATCHER_FEATURE_DEDUP_CHECK.to_owned()];
+    record_features(pool, id, &announced).await.unwrap();
+    if matches!(probe, Probe::Unannounced) {
+        clear_features(pool, id).await.unwrap();
+    }
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<DispatcherFrameDown>(8);
+    f.host.bus.register_dispatcher(id, tx);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (bus, log) = (f.host.bus.clone(), seen.clone());
+    tokio::spawn(async move {
+        while let Some(frame) = rx.recv().await {
+            match frame {
+                DispatcherFrameDown::DedupCheck { request_id, .. } => {
+                    log.lock().unwrap().push("dedup_check");
+                    let handle = match probe {
+                        Probe::Silent => continue,
+                        Probe::Live => Some("jobs/worker/first-session".to_owned()),
+                        Probe::Terminal | Probe::Unannounced => None,
+                    };
+                    let reply = DispatcherFrameUp::DedupCheckResult {
+                        request_id,
+                        handle,
+                        namespace: Some("cctui".into()),
+                        queue_position: None,
+                        exposure: None,
+                        error: None,
+                    };
+                    assert!(bus.resolve_dispatcher_reply(request_id, reply));
+                }
+                DispatcherFrameDown::Dispatch { request_id, spec } => {
+                    log.lock().unwrap().push("dispatch");
+                    let reply = DispatcherFrameUp::DispatchResult {
+                        request_id,
+                        handle: format!("jobs/worker/{}", spec.session_id),
+                        session_id: spec.session_id,
+                        namespace: Some("cctui".into()),
+                        status: Some("redispatched".into()),
+                        queue_position: None,
+                        exposure: None,
+                        error: None,
+                    };
+                    assert!(bus.resolve_dispatcher_reply(request_id, reply));
+                }
+                _ => {}
+            }
+        }
+    });
+    seen
+}
+
+fn logical_request() -> DispatchRequest {
+    let mut request = Fixture::request(json!({"prompt_file": "review"}));
+    request.dispatcher = "enrolled".into();
+    request.session_id = Some("logical-review".into());
+    request
+}
+
+async fn count(pool: &PgPool, sql: &'static str) -> i64 {
+    sqlx::query_scalar(sql).fetch_one(pool).await.unwrap()
+}
+
+#[tokio::test]
+async fn a_dispatch_onto_a_live_worker_is_deduplicated_before_any_key_token_or_record() {
+    let Some(f) = Fixture::new(StatusCode::OK, json!({})).await else { return };
+    let seen = enrolled_dispatcher(&f, Probe::Live).await;
+    let (status, reply) = execute_dispatch(&f.host, &f.ctx, logical_request()).await.unwrap();
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(reply.status, "deduplicated");
+    assert_eq!(reply.handle, "jobs/worker/first-session");
+    assert_eq!(reply.namespace.as_deref(), Some("cctui"));
+    assert_eq!(*seen.lock().unwrap(), ["dedup_check"], "no Dispatch frame is sent");
+    for sql in [
+        "SELECT count(*) FROM machines",
+        "SELECT count(*) FROM auth_keys",
+        "SELECT count(*) FROM session_tokens",
+        "SELECT count(*) FROM dispatch_records",
+        "SELECT count(*) FROM dispatch_handles",
+        "SELECT count(*) FROM session_spawn_capabilities",
+    ] {
+        assert_eq!(count(&f.host.pool, sql).await, 0, "{sql}");
+    }
+    assert_eq!(*f.host.callbacks.lock().unwrap(), ["notify", "notify"], "no webhook, no context");
+}
+
+#[tokio::test]
+async fn a_terminal_unanswered_or_unannounced_check_takes_the_full_dispatch_path() {
+    for (probe, frames) in [
+        (Probe::Terminal, &["dedup_check", "dispatch"][..]),
+        (Probe::Silent, &["dedup_check", "dispatch"][..]),
+        (Probe::Unannounced, &["dispatch"][..]),
+    ] {
+        let Some(f) = Fixture::new(StatusCode::OK, json!({})).await else { return };
+        let seen = enrolled_dispatcher(&f, probe).await;
+        let started = std::time::Instant::now();
+        let (status, reply) = execute_dispatch(&f.host, &f.ctx, logical_request()).await.unwrap();
+        assert_eq!(status, StatusCode::ACCEPTED, "{probe:?}");
+        assert_eq!(reply.status, "redispatched", "{probe:?}");
+        assert_eq!(*seen.lock().unwrap(), frames, "{probe:?}");
+        assert!(started.elapsed() < Duration::from_secs(10), "{probe:?}: the check is bounded");
+        assert_eq!(
+            count(&f.host.pool, "SELECT count(*) FROM auth_keys WHERE kind = 'ephemeral'").await,
+            1,
+            "{probe:?}: the worker key is minted"
+        );
+        let outcome: String =
+            sqlx::query_scalar("SELECT outcome FROM dispatch_records WHERE session_id = $1")
+                .bind(&reply.session_id)
+                .fetch_one(&f.host.pool)
+                .await
+                .unwrap();
+        assert_eq!(outcome, "forwarded", "{probe:?}");
+    }
+}

@@ -81,6 +81,22 @@ pub trait Dispatcher: Send + Sync {
     fn queue_position(&self, _handle: &str) -> impl Future<Output = Option<u32>> + Send {
         std::future::ready(None)
     }
+
+    /// Whether [`Self::dedup_check`] is implemented; announced to the server.
+    fn supports_dedup_check(&self) -> bool {
+        false
+    }
+
+    /// The `deduplicated` outcome `dispatch` would answer, found without creating.
+    ///
+    /// `None` when `dispatch` would create or redispatch. Must follow the exact dedup rules of `dispatch`, an error included
+    /// wherever `dispatch` errors before deduplicating.
+    fn dedup_check(
+        &self,
+        _spec: &WireDispatchSpec,
+    ) -> impl Future<Output = anyhow::Result<Option<SpawnOutcome>>> + Send {
+        std::future::ready(Ok(None))
+    }
 }
 
 /// `cctui-worker-<sha1(dedup_source)[:12]>` — deterministic so a repeat dispatch

@@ -16,14 +16,14 @@
 //!    exposed to all three Rule of Two legs names a `spec.humanGate`.
 
 use crate::envelope::{
-    GUARD_PROXY_CONTAINER, NET_INIT_CONTAINER, PROXY_UID, VOL_GPG_AGENT, VOL_GUARD_PROXY_CA,
-    VOL_GUARD_PROXY_INJECT, VOL_GUARD_PROXY_SA_TOKEN, VOL_GUARD_STATE, VOL_HOME, VOL_OVERLAY,
-    VOL_PROXY_POLICY, WARM_REPO_DIR_ENV, WORKER_UID, has_overlay, worker_added_caps,
-    worker_envelope_mounts,
+    GUARD_ENV_HUMAN_GATE, GUARD_PROXY_CONTAINER, NET_INIT_CONTAINER, PROXY_UID, VOL_GPG_AGENT,
+    VOL_GUARD_PROXY_CA, VOL_GUARD_PROXY_INJECT, VOL_GUARD_PROXY_SA_TOKEN, VOL_GUARD_STATE,
+    VOL_HOME, VOL_OVERLAY, VOL_PROXY_POLICY, WARM_REPO_DIR_ENV, WORKER_UID, has_overlay,
+    worker_added_caps, worker_envelope_mounts,
 };
 use crate::{
     ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_POSTURE, ANNOTATION_WORKER_CONTAINER,
-    DEFAULT_WORKER_CONTAINER, EXEC_INTERCEPTION_CAP, GUARD_EXEC_ENV, GuardSpec,
+    DEFAULT_WORKER_CONTAINER, EXEC_INTERCEPTION_CAP, GUARD_EXEC_ENV, GuardSpec, HumanGate,
     LABEL_WORKER_PROFILE, Posture, RESERVED_POD_KEY_PREFIXES, RESERVED_POD_LABELS, WorkerPodSpec,
     WorkerProfileSpec,
 };
@@ -164,15 +164,21 @@ async fn validate_inner(
 }
 
 /// Refuse a profile whose agent holds untrusted input, sensitive data and
-/// outward action at once with no human gate. `Ok(true)` means the profile
-/// declares no exposure.
+/// outward action at once without an enforced human gate. `Ok(true)` means the
+/// profile declares no exposure.
 pub fn check_exposure(profile: &WorkerProfileSpec) -> Result<bool, String> {
     match (profile.exposure, profile.human_gate) {
         (None, _) => Ok(true),
         (Some(exposure), None) if exposure.is_full() => {
             Err("untrustedInput, sensitiveData and outward are all true with no spec.humanGate; \
              an unattended agent may hold at most two of the three: set humanGate \
-             (noPush, draftPrOnly or outwardHeldForApproval) or drop one exposure"
+             (noPush or draftPrOnly) or drop one exposure"
+                .to_owned())
+        }
+        (Some(exposure), Some(HumanGate::OutwardHeldForApproval)) if exposure.is_full() => {
+            Err("humanGate outwardHeldForApproval is not enforced yet, so it cannot bound \
+             untrustedInput, sensitiveData and outward together: use noPush or draftPrOnly, \
+             or drop one exposure"
                 .to_owned())
         }
         _ => Ok(false),
@@ -387,6 +393,9 @@ pub fn check_guard(guard: &GuardSpec) -> Result<(), String> {
                 "env `{GUARD_ENV_IDENTITY}` is set per dispatch (`cctui.dev/guard-identity`), \
                  not per profile"
             ));
+        }
+        if env.name == GUARD_ENV_HUMAN_GATE {
+            return Err(format!("env `{GUARD_ENV_HUMAN_GATE}` is set by spec.humanGate"));
         }
         if !guard.allow_private_egress && widens_private_egress(env) {
             return Err(format!(
@@ -1154,6 +1163,7 @@ mod tests {
             posture: profile.posture(),
             dispatched: false,
             exec_interception: profile.exec_interception(),
+            human_gate: profile.human_gate,
         };
         envelope::inject(&pod, &cfg)
     }
@@ -1815,6 +1825,7 @@ mod tests {
             posture: profile.posture(),
             dispatched: false,
             exec_interception: false,
+            human_gate: None,
         };
         pod.metadata.annotations.as_mut().unwrap().remove(ANNOTATION_ENVELOPE_INJECTED);
         let pod = envelope::inject(&pod, &cfg);
@@ -1940,6 +1951,17 @@ mod tests {
             .await,
         );
         assert!(msg.contains("per dispatch"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn guard_env_cannot_set_the_human_gate() {
+        let msg = deny_msg(
+            decide_with_guard(serde_json::json!({
+                "env": [{ "name": "GUARD_PROXY_HUMAN_GATE", "value": "noPush" }]
+            }))
+            .await,
+        );
+        assert!(msg.contains("spec.humanGate"), "{msg}");
     }
 
     #[tokio::test]
@@ -2440,12 +2462,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn all_three_exposures_behind_any_human_gate_are_admitted() {
-        for gate in ["noPush", "draftPrOnly", "outwardHeldForApproval"] {
+    async fn all_three_exposures_behind_an_enforced_human_gate_are_admitted() {
+        for gate in ["noPush", "draftPrOnly"] {
             let verdict = review_exposed(exposed_profile(all_three(), Some(gate))).await;
             assert!(matches!(verdict.decision, Decision::Allow), "{gate} must admit");
             assert!(verdict.warnings.is_empty(), "{gate}: {:?}", verdict.warnings);
             assert!(!verdict.exposure_undeclared);
+        }
+    }
+
+    #[tokio::test]
+    async fn all_three_exposures_behind_outward_held_for_approval_are_refused() {
+        let profile = exposed_profile(all_three(), Some("outwardHeldForApproval"));
+        let msg = deny_msg(review_exposed(profile).await.decision);
+        assert!(msg.contains("WorkerProfile `exposed` spec.exposure"), "{msg}");
+        assert!(msg.contains("not enforced yet"), "{msg}");
+        assert!(msg.contains("noPush or draftPrOnly"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn outward_held_for_approval_without_all_three_exposures_is_admitted() {
+        for missing in ["untrustedInput", "sensitiveData", "outward"] {
+            let mut exposure = all_three();
+            exposure[missing] = serde_json::json!(false);
+            let profile = exposed_profile(exposure, Some("outwardHeldForApproval"));
+            let verdict = review_exposed(profile).await;
+            assert!(matches!(verdict.decision, Decision::Allow), "without {missing} must admit");
+            assert!(verdict.warnings.is_empty(), "{missing}: {:?}", verdict.warnings);
         }
     }
 
@@ -2489,6 +2532,8 @@ mod tests {
         assert_eq!(check_exposure(&lean_profile()), Ok(true));
         assert!(check_exposure(&exposed_profile(all_three(), None)).is_err());
         assert_eq!(check_exposure(&exposed_profile(all_three(), Some("noPush"))), Ok(false));
+        let held = exposed_profile(all_three(), Some("outwardHeldForApproval"));
+        assert!(check_exposure(&held).is_err());
     }
 
     #[tokio::test]
