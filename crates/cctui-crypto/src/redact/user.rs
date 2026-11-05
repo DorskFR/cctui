@@ -376,13 +376,13 @@ mod tests {
     /// Feeds `chunks` through [`split_streamed`] like a delta stream and
     /// returns everything emitted.
     fn streamed(chunks: &[&str], lits: &UserLiterals) -> Vec<String> {
-        let mut held = String::new();
+        let mut carry = String::new();
         chunks
             .iter()
             .map(|c| {
-                let (emit, hold) = split_streamed(&format!("{held}{c}"), lits);
-                held = hold;
-                emit
+                let (shown, rest) = split_streamed(&format!("{carry}{c}"), lits);
+                carry = rest;
+                shown
             })
             .collect()
     }

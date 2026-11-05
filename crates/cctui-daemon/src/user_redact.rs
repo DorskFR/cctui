@@ -153,6 +153,7 @@ fn all_literals() -> UserLiterals {
 }
 
 /// `text` with tagged spans and every session's echoes masked.
+#[must_use]
 pub fn mask_any(text: &str) -> std::borrow::Cow<'_, str> {
     let (out, _) = redact::mask_user_text(text, &all_literals());
     out
@@ -162,7 +163,8 @@ pub fn mask_any(text: &str) -> std::borrow::Cow<'_, str> {
 /// across chunks; the rest waits in front of the item's next delta.
 fn mask_delta(local_id: &str, item_id: &str, delta: String) -> String {
     let literals = literals_of(local_id);
-    let carry = match held().remove(local_id) {
+    let previous = held().remove(local_id);
+    let carry = match previous {
         Some((item, text)) if item == item_id => text,
         _ => String::new(),
     };

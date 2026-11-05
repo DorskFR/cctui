@@ -654,13 +654,14 @@ pub fn draft_metadata(
     mut payload: SpawnRequest,
     key: impl FnOnce() -> Vec<u8>,
 ) -> Result<serde_json::Value, AppError> {
-    let mut sealed = None;
-    if let Some(prompt) = payload.prompt.as_deref() {
-        let (masked, s) = crate::scheduled_messages::seal(prompt, key)
+    let sealed = if let Some(prompt) = payload.prompt.as_deref() {
+        let (masked, sealed) = crate::scheduled_messages::seal(prompt, key)
             .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, DRAFT_SEAL_NEEDS_KEY))?;
         payload.prompt = Some(masked);
-        sealed = s;
-    }
+        sealed
+    } else {
+        None
+    };
     let draft = serde_json::to_value(&payload).map_err(|e| {
         tracing::error!("serializing draft payload: {e}");
         AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not encode draft")
@@ -2423,19 +2424,20 @@ mod draft_seal_tests {
                 Json(request(&machine, prompt)),
             )
         };
-        edit(MASKED).await.unwrap();
+        assert_eq!(edit(MASKED).await.unwrap().0.status, "draft");
         let meta = stored_metadata(&pool, &id).await;
         assert!(!meta.to_string().contains("hunter2-xyz"), "{meta}");
         let mut back: SpawnRequest = serde_json::from_value(meta["draft"].clone()).unwrap();
         unseal_draft_prompt(&mut back, &meta, crate::crypto::vault_key).unwrap();
         assert_eq!(back.prompt.as_deref(), Some(TAGGED), "an unchanged edit keeps the real value");
 
-        edit("now <REDACTED>other-value</redacted>").await.unwrap();
+        let Json(edited) = edit("now <REDACTED>other-value</redacted>").await.unwrap();
+        assert_eq!(edited.command_id.to_string(), id);
         let meta = stored_metadata(&pool, &id).await;
         assert!(!meta.to_string().contains("other-value"), "{meta}");
         assert_eq!(meta["draft"]["prompt"], "now [REDACTED:user]");
 
-        edit("rewritten").await.unwrap();
+        assert_eq!(edit("rewritten").await.unwrap().0.status, "draft");
         let meta = stored_metadata(&pool, &id).await;
         assert!(meta.get(DRAFT_SEALED_PROMPT).is_none(), "a rewritten prompt drops the old seal");
     }
