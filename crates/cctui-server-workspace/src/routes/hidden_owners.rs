@@ -431,7 +431,6 @@ mod tests {
         assert_eq!(theirs.get(&f.user_session), Some(&false), "another admin still sees it");
         assert!(searched(&f, f.other_admin).await.contains_key(&f.user_session));
 
-
         set_hidden(&f, HiddenOwnerKind::User, f.user, false).await;
         set_hidden(&f, HiddenOwnerKind::User, f.user, false).await;
         assert_eq!(listed(&f.state, f.admin).await.get(&f.user_session), Some(&false));

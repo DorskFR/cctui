@@ -109,13 +109,13 @@ pub(super) fn register(r: Routes) -> Routes {
 }
 
 fn register_event_retention(r: Routes) -> Routes {
-    r
-        .add(
-            &[GET, Method::PUT],
-            "/admin/instance/event-retention",
-            "Read or set how many days of events the server keeps; 0 keeps every event (admin).",
-            get(routes::server_settings::get_event_retention).put(routes::server_settings::update_event_retention),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
+    r.add(
+        &[GET, Method::PUT],
+        "/admin/instance/event-retention",
+        "Read or set how many days of events the server keeps; 0 keeps every event (admin).",
+        get(routes::server_settings::get_event_retention)
+            .put(routes::server_settings::update_event_retention),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
 }
