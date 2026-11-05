@@ -61,7 +61,7 @@
 	{#if onremove}
 		<div class="danger" data-journey="provider-danger">
 			<div class="danger-text">
-				<Text as="h3" size="sm" weight="semibold" tone="danger">{m.account_section_danger()}</Text>
+				<h3 class="danger-title">{m.account_section_danger()}</h3>
 				<Text as="p" tone="muted" size="sm" measure="60ch">
 					{m.acct_remove_provider_help({ provider: providerLabel(selected.provider), name: account.name })}
 				</Text>
@@ -84,6 +84,12 @@
 		padding: var(--sp-3);
 		border-radius: var(--r-md);
 		background: color-mix(in srgb, var(--danger) 10%, var(--bg-elevated));
+	}
+	.danger-title {
+		margin: 0;
+		font-size: var(--fs-sm);
+		font-weight: var(--fw-semibold);
+		color: var(--danger);
 	}
 	.danger-text {
 		display: flex;

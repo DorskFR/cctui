@@ -222,6 +222,7 @@ describe('ProfileList as a picker (manageHref)', () => {
 		expect(link?.textContent?.trim()).toBe('Manage profiles…');
 		expect(profileForm()).toBeNull();
 	});
+});
 
 describe('ProfileList trigger', () => {
 	it('as the editor with nothing selected, opens on the first profile A–Z with its cog', async () => {

@@ -12,7 +12,7 @@
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
-	import { Button, MasterDetail, NavItem, Text } from '@dorsk/tsumikit';
+	import { Button, Heading, MasterDetail, NavItem, Text } from '@dorsk/tsumikit';
 	import UsageNoticesEditor from '$lib/components/molecules/UsageNoticesEditor.svelte';
 	import AutoLimitResetEditor from '$lib/components/molecules/AutoLimitResetEditor.svelte';
 	import FireworksProviderEditor from '$lib/components/organisms/FireworksProviderEditor.svelte';
@@ -178,7 +178,7 @@
 
 	{#snippet pageBody()}
 		<div class="pane">
-			<Text as="h3" size="sm" weight="semibold">{LABELS[edit.page]()}</Text>
+			<Heading level={3} size="sm">{LABELS[edit.page]()}</Heading>
 			{#if edit.page === 'aliases'}
 				<AliasesPage bind:rows={edit.aliasRows} models={edit.models} />
 			{:else if edit.page === 'limits'}

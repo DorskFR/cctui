@@ -19,8 +19,7 @@ use crate::state::AppState;
 
 /// One row of the per-session classification signals
 /// (`tempo`, `agent_state`, `activity`, `soft_limit_reason`, machine `kind`).
-type SignalRow =
-    (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
+type SignalRow = (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
 
 /// Machines whose sessions the list groups under "Dispatched" instead of their bucket.
 const SYSTEM_MACHINE_KINDS: [&str; 2] = ["dispatch", "ephemeral"];

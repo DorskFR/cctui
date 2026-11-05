@@ -143,6 +143,7 @@
 </script>
 
 <span
+	role="group"
 	class="voice-controls"
 	class:split={!!ontogglelive}
 	data-journey="voice-controls"

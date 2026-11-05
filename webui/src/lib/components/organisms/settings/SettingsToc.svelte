@@ -153,7 +153,7 @@
 			display: block;
 			overflow-x: auto;
 			scrollbar-width: none;
-			mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent);
+			mask-image: linear-gradient(to right, var(--text) calc(100% - 2.5rem), transparent);
 		}
 		.toc {
 			display: none;
