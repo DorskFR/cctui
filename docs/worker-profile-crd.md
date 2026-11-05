@@ -177,12 +177,31 @@ GitHub egress (`github.com`, `www.github.com`, `gist.github.com`,
 
 | gate | refused |
 |---|---|
-| `noPush` | `git push` (receive-pack discovery and upload); API writes to refs (`git/refs`), contents, merges (`merges`, `merge-upstream`, `pulls/{n}/merge`), `pulls/{n}/update-branch`, branch renames, releases, repository settings/deletion/transfer; the GraphQL mutations that move a ref or merge (`createRef`, `updateRef(s)`, `deleteRef`, `createCommitOnBranch`, `mergeBranch`, `mergePullRequest`, `enablePullRequestAutoMerge`, `enqueuePullRequest`, `revertPullRequest`, `updatePullRequestBranch`, `updateRepository`, `archiveRepository`) |
-| `draftPrOnly` | a push or API write to a protected branch, or to a ref that is not a branch (tags included); a pull request created without `draft: true` (REST body, or GraphQL `createPullRequest(input: $v)` whose `$v.draft` is `true`; an inline input is refused); `markPullRequestReadyForReview`; every merge; branch renames, releases, repository settings writes; the same ref-moving GraphQL mutations as `noPush` except `updatePullRequestBranch` |
+| `noPush` | `git push` (receive-pack discovery and upload); API writes to refs (`git/refs`), contents, merges (`merges`, `merge-upstream`, `pulls/{n}/merge`), `pulls/{n}/update-branch`, branch renames, releases, repository settings/deletion/transfer; the GraphQL mutations that move a ref or merge (`createRef`, `updateRef(s)`, `deleteRef`, `createCommitOnBranch`, `mergeBranch`, `mergePullRequest`, `enablePullRequestAutoMerge`, `enqueuePullRequest`, `revertPullRequest`, `updatePullRequestBranch`, `updateRepository`, `archiveRepository`); every API write and mutation outside the allow-list below |
+| `draftPrOnly` | a push or API write to a protected branch, or to a ref that is not a branch (tags included); a pull request created without `draft: true` (REST body, or GraphQL `createPullRequest(input: $v)` whose `$v.draft` is `true`; an inline input is refused); `markPullRequestReadyForReview`; every merge; branch renames, releases, repository settings writes; the same ref-moving GraphQL mutations as `noPush` except `updatePullRequestBranch`; every API write and mutation outside the allow-list below |
 | `outwardHeldForApproval` | nothing yet: there is no approval flow to hold an outward write for. Admission denies it on a profile that declares all three exposures; on any other profile it is a no-op. |
 
-Comments, issues, reviews and reads pass under every gate; `noPush` still lets
-the agent open pull requests from branches that already exist.
+Under `noPush` and `draftPrOnly`, reads pass and an `api.github.com` write
+(any method but `GET`, `HEAD`, `OPTIONS`) is refused unless it is one of:
+
+| allowed write | REST (under `repos/{o}/{r}` or `repositories/{id}`) | GraphQL mutation |
+|---|---|---|
+| issues | `POST issues`, `PATCH issues/{n}`, labels and assignees on `issues/{n}` | `createIssue`, `updateIssue`, `closeIssue`, `reopenIssue`, `addLabelsToLabelable`, `removeLabelsFromLabelable`, `addAssigneesToAssignable`, `removeAssigneesFromAssignable` |
+| comments | `POST issues/{n}/comments`, `PATCH`/`DELETE issues/comments/{id}` | `addComment`, `updateIssueComment`, `deleteIssueComment` |
+| reviews | `pulls/{n}/reviews[/{id}[/events]]`, `pulls/{n}/comments[/{id}/replies]`, `PATCH`/`DELETE pulls/comments/{id}`, `pulls/{n}/requested_reviewers` | `addPullRequestReview`, `submitPullRequestReview`, `updatePullRequestReview`, `deletePullRequestReview`, `addPullRequestReviewComment`, `updatePullRequestReviewComment`, `deletePullRequestReviewComment`, `addPullRequestReviewThread`, `addPullRequestReviewThreadReply`, `resolveReviewThread`, `unresolveReviewThread`, `requestReviews` |
+| reactions | `POST`/`DELETE` `reactions` on an issue, an issue comment or a review comment | `addReaction`, `removeReaction` |
+| pull requests | `POST pulls` (a draft under `draftPrOnly`), `PATCH pulls/{n}` whose body sets only `title`/`body` | `createPullRequest` (a draft under `draftPrOnly`), `updatePullRequest` whose `input` variable sets only `pullRequestId`, `title`, `body`, `clientMutationId`, `convertPullRequestToDraft`, `markPullRequestReadyForReview` (`noPush` only) |
+| branch writes | `draftPrOnly` only: `git/refs`, `contents`, `merges`, `merge-upstream` to an unprotected branch, `pulls/{n}/update-branch` | `updatePullRequestBranch` (`draftPrOnly` only) |
+| git objects | `POST git/blobs`, `git/trees`, `git/commits`, `git/tags` | |
+
+Everything else is refused, among them Actions workflow dispatch and re-runs,
+`dispatches`, secrets, deploy keys, webhooks, collaborators, environments,
+branch protection, rulesets, commit statuses and check runs, a pull request
+`base` change, and every write outside a repository (`/user`, `/orgs`,
+`/gists`). A GraphQL document is classified by the top-level fields of each
+`mutation` operation; one that selects them through a fragment is refused.
+Under `noPush`, pull requests can still be opened from branches that already
+exist.
 
 Protected branches are `main`, `master` and `trunk` (the guard cannot see a
 repository's real default branch); add more with
@@ -190,7 +209,10 @@ repository's real default branch); add more with
 
 The guard reviews a request only on a host it intercepts, so under `noPush` or
 `draftPrOnly` every GitHub host above that the agent uses must be in the
-inject config; one that is not is refused at connect time. Plain HTTP to those
+inject config; one that is not is refused at connect time. Under either gate
+every intercepted request must carry exactly one `Host` header naming the host
+it connected to (TLS SNI or `CONNECT` authority; port and case ignored), so a
+request cannot be reviewed as one GitHub host and routed to another. Plain HTTP to those
 hosts is refused too. A refused request gets `403` with a JSON `message` naming
 the gate. A request the guard cannot read is refused: a body over 1 MiB that
 the decision needs (large `contents` writes), an encoded body, a
