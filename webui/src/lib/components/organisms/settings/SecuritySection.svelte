@@ -1,11 +1,13 @@
 <script lang="ts">
-	// Settings › Security: the caller's own WebAuthn credentials (list, enrol,
-	// test, revoke). The server-wide sign-in knob lives under Instance. The list
-	// is loaded on demand rather than through the query cache: it changes only
-	// from this screen.
-	import { Button, Icon, Input, Text, Timestamp } from '@dorsk/tsumikit';
+	// Accounts › Sign-in & security: the caller's own WebAuthn credentials
+	// (list, enrol, test, revoke) and where to approve a device. There are no
+	// passwords. The server-wide sign-in knob lives under Instance. The list is
+	// loaded on demand rather than through the query cache: it changes only from
+	// this screen.
+	import { Button, Icon, Input, Link, Text, Timestamp } from '@dorsk/tsumikit';
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-		import SettingSection from '$lib/components/molecules/SettingSection.svelte';
+	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
+	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
 	import { endpoints } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { auth } from '$lib/auth.svelte';
@@ -96,7 +98,7 @@
 <SettingSection
 	id="security"
 	icon="⚿"
-	title={m.settings_nav_security()}
+	title={m.set_security_title()}
 	description={passkeysUsable ? m.settings_passkeys_help() : m.settings_passkeys_unavailable()}
 >
 	{#if passkeysUsable}
@@ -151,6 +153,11 @@
 			</div>
 		</SettingGroup>
 	{/if}
+	<SettingGroup>
+		<SettingRow label={m.set_device_approvals_label()} help={m.set_device_approvals_help()} selfLabelled>
+			<Link href="/device">{m.set_device_approvals_link()}</Link>
+		</SettingRow>
+	</SettingGroup>
 </SettingSection>
 
 <style>

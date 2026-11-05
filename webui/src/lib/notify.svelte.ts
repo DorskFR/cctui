@@ -3,8 +3,7 @@ import { goto } from "$app/navigation";
 import { m } from "$lib/paraglide/messages";
 import type { SessionListItem } from "@bindings/SessionListItem";
 
-const KEY_ENABLED = "cctui_notify_enabled";
-const KEY_SOUND = "cctui_notify_sound";
+const LEGACY_KEYS = ["cctui_notify_enabled", "cctui_notify_sound"];
 const BRAND = "cctui";
 
 /**
@@ -16,6 +15,10 @@ const BRAND = "cctui";
  * The title badge (`(N) cctui`) updates regardless of notification
  * permission, so it degrades gracefully when notifications are denied or the
  * page isn't a secure context.
+ *
+ * `enabled` and `sound` are runtime mirrors of the settings blob
+ * (`display.notifyEnabled` / `display.notifySound`), the one stored value:
+ * `settings` replays it through `applyPersisted` and records every toggle.
  */
 class Notifier {
   permission = $state<NotificationPermission>("default");
@@ -42,10 +45,7 @@ class Notifier {
   constructor() {
     if (browser) {
       this.permission = this.supported ? Notification.permission : "denied";
-      this.enabled =
-        localStorage.getItem(KEY_ENABLED) === "1" &&
-        this.permission === "granted";
-      this.sound = localStorage.getItem(KEY_SOUND) !== "0";
+      for (const key of LEGACY_KEYS) localStorage.removeItem(key);
     }
   }
 
@@ -67,28 +67,23 @@ class Notifier {
   async enable(): Promise<boolean> {
     const ok = await this.requestPermission();
     this.enabled = ok;
-    if (browser) localStorage.setItem(KEY_ENABLED, ok ? "1" : "0");
     return ok;
   }
 
   disable() {
     this.enabled = false;
-    if (browser) localStorage.setItem(KEY_ENABLED, "0");
   }
 
   setSound(on: boolean) {
     this.sound = on;
-    if (browser) localStorage.setItem(KEY_SOUND, on ? "1" : "0");
   }
 
   /** Reflect the server-persisted display settings on load. Never requests
    *  permission: `enabled` only sticks while the browser still grants it. */
   applyPersisted(enabled: boolean, sound: boolean) {
     if (!browser) return;
-    this.setSound(sound);
-    const on = enabled && this.permission === "granted";
-    this.enabled = on;
-    localStorage.setItem(KEY_ENABLED, on ? "1" : "0");
+    this.sound = sound;
+    this.enabled = enabled && this.permission === "granted";
   }
 
   /**

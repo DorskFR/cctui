@@ -73,6 +73,8 @@ function type(input: HTMLInputElement, value: string) {
 	flushSync();
 }
 
+vi.mock('$lib/confirmDialog.svelte', () => ({ confirmDialog: vi.fn(async () => true) }));
+
 beforeEach(() => {
 	document.body.innerHTML = '';
 	query.data = undefined;
@@ -81,12 +83,10 @@ beforeEach(() => {
 	endpoints.savePluginInstanceSettings.mockClear();
 	endpoints.rotatePluginProxySecret.mockClear();
 	copyText.mockClear();
-	// happy-dom has no `confirm`, so there is nothing to spy on: install one.
-	vi.stubGlobal('confirm', vi.fn(() => true));
 });
 
 afterEach(() => {
-	vi.unstubAllGlobals();
+	vi.clearAllMocks();
 });
 
 describe('plugin instance settings form', () => {

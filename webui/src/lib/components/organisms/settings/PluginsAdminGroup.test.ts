@@ -40,6 +40,7 @@ vi.mock('$lib/clipboard', () => ({ copyText: vi.fn(async () => undefined) }));
 vi.mock('@tanstack/svelte-query', () => ({ useQueryClient: () => ({ invalidateQueries }) }));
 
 import PluginsAdminGroup from './PluginsAdminGroup.svelte';
+import { confirmQueue } from '$lib/confirmDialog.svelte';
 
 let comp: ReturnType<typeof mount> | null = null;
 afterEach(() => {
@@ -189,15 +190,16 @@ describe('PluginsAdminGroup', () => {
 
 	it('uninstalls after confirmation only', async () => {
 		render([installed]);
-		const confirm = vi.fn(() => false);
-		vi.stubGlobal('confirm', confirm);
 		document.querySelector<HTMLElement>('[data-journey="plugin-admin-uninstall"]')?.click();
+		await tick();
+		expect(confirmQueue.current?.tone).toBe('danger');
+		confirmQueue.settle(confirmQueue.current!.id, false);
 		await tick();
 		expect(endpoints.uninstallPlugin).not.toHaveBeenCalled();
-		confirm.mockReturnValue(true);
 		document.querySelector<HTMLElement>('[data-journey="plugin-admin-uninstall"]')?.click();
 		await tick();
+		confirmQueue.settle(confirmQueue.current!.id, true);
+		await tick();
 		expect(endpoints.uninstallPlugin).toHaveBeenCalledWith('yubisashi');
-		vi.unstubAllGlobals();
 	});
 });

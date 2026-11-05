@@ -496,6 +496,22 @@ pub const ROUTES: &[Route] = &[
         response: None,
     },
     Route {
+        id: "get_admin_instance_event_retention",
+        method: Method::Get,
+        path: "/admin/instance/event-retention",
+        summary: "Read or set how many days of events the server keeps; 0 keeps every event (admin).",
+        request: None,
+        response: None,
+    },
+    Route {
+        id: "put_admin_instance_event_retention",
+        method: Method::Put,
+        path: "/admin/instance/event-retention",
+        summary: "Read or set how many days of events the server keeps; 0 keeps every event (admin).",
+        request: None,
+        response: None,
+    },
+    Route {
         id: "get_admin_harness_autoupdate",
         method: Method::Get,
         path: "/admin/harness-autoupdate",

@@ -121,8 +121,8 @@ export default defineJourney({
 			say: {
 				title: { en: 'Whose tokens?', fr: 'Les jetons de qui ?' },
 				body: {
-					en: 'Open AI accounts to see whose.',
-					fr: 'Ouvrez Comptes IA pour voir ceux de qui.'
+					en: 'Open Accounts to see whose.',
+					fr: 'Ouvrez Comptes pour voir ceux de qui.'
 				}
 			}
 		},
@@ -135,8 +135,8 @@ export default defineJourney({
 			say: {
 				title: { en: 'Whose tokens?', fr: 'Les jetons de qui ?' },
 				body: {
-					en: 'Open AI accounts to see whose.',
-					fr: 'Ouvrez Comptes IA pour voir ceux de qui.'
+					en: 'Open Accounts to see whose.',
+					fr: 'Ouvrez Comptes pour voir ceux de qui.'
 				}
 			}
 		},
@@ -156,28 +156,28 @@ export default defineJourney({
 		{
 			id: 'to-users',
 			when: { viewport: 'desktop' },
-			target: 'settings-nav[users]',
+			target: 'settings-nav[instance]',
 			do: { kind: 'click' },
 			guide: 'next',
 			say: {
 				title: { en: 'And where does it run?', fr: 'Et où cela s’exécute-t-il ?' },
 				body: {
-					en: 'Not here — cctui runs nothing itself. Open Users & keys to meet the machines that do.',
-					fr: 'Pas ici — cctui n’exécute rien lui-même. Ouvrez Utilisateurs et clés pour rencontrer les machines qui le font.'
+					en: 'Not here — cctui runs nothing itself. Open Instance: its Users & keys meet the machines that do.',
+					fr: 'Pas ici — cctui n’exécute rien lui-même. Ouvrez Instance : ses Utilisateurs et clés présentent les machines qui le font.'
 				}
 			}
 		},
 		{
 			id: 'to-users-mobile',
 			when: { viewport: 'mobile' },
-			target: 'settings-tab[users]',
+			target: 'settings-tab[instance]',
 			do: { kind: 'click' },
 			guide: 'next',
 			say: {
 				title: { en: 'And where does it run?', fr: 'Et où cela s’exécute-t-il ?' },
 				body: {
-					en: 'Not here — cctui runs nothing itself. Open Users & keys to meet the machines that do.',
-					fr: 'Pas ici — cctui n’exécute rien lui-même. Ouvrez Utilisateurs et clés pour rencontrer les machines qui le font.'
+					en: 'Not here — cctui runs nothing itself. Open Instance: its Users & keys meet the machines that do.',
+					fr: 'Pas ici — cctui n’exécute rien lui-même. Ouvrez Instance : ses Utilisateurs et clés présentent les machines qui le font.'
 				}
 			}
 		},
@@ -208,7 +208,7 @@ export default defineJourney({
 		},
 		{
 			id: 'guides',
-			route: '/settings/guides',
+			route: '/settings/interface',
 			target: 'guide[sessions-list]',
 			say: {
 				title: { en: 'Now walk it for real', fr: 'Maintenant, parcourez-la pour de vrai' },

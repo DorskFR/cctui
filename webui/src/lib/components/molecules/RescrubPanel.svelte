@@ -117,7 +117,6 @@
 <SettingRow
 	label={m.settings_rescrub_label()}
 	help={m.settings_rescrub_help()}
-	server
 	wide
 	selfLabelled
 >

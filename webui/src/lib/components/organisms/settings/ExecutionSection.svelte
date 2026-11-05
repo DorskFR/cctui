@@ -1,26 +1,14 @@
 <script lang="ts">
-	// Settings › Execution: the Claude harness mode (three radio cards) and the
-	// whip-mode stall phrases. Both live on the server: the mode reaches a
-	// connected daemon within ~1 s, the phrases apply at the next spawn.
-	import { Badge, Disclosure, OptionButton, SegmentedControl, Text, Textarea } from '@dorsk/tsumikit';
+	// Sessions › Automation: whip mode's stall phrases (applied at the next
+	// spawn) and auto-archiving of dispatched sessions.
+	import { Badge, Disclosure, Input, SegmentedControl, Switch, Text, Textarea } from '@dorsk/tsumikit';
 	import type { SegmentOption } from '@dorsk/tsumikit';
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
-	import { settings, type HarnessMode, type WhipMode } from '$lib/settings.svelte';
+	import { settings, type WhipMode } from '$lib/settings.svelte';
 	import { BUILTIN_STALL_PHRASES } from './settings.logic';
 	import { m } from '$lib/paraglide/messages';
-
-	const harnessMode = $derived(settings.harnessMode);
-	const harnessOpts: { v: HarnessMode; label: string; help: string }[] = [
-		{ v: 'bg', label: m.settings_harness_bg_label(), help: m.settings_harness_bg_help() },
-		{ v: 'sdk', label: m.settings_harness_sdk_label(), help: m.settings_harness_sdk_help() },
-		{
-			v: 'oneshot',
-			label: m.settings_harness_oneshot_label(),
-			help: m.settings_harness_oneshot_help()
-		}
-	];
 
 	// `extend` appends to the daemon's compiled defaults; `replace` swaps them.
 	// One phrase per line; the server trims/lowercases/dedupes/caps on save.
@@ -37,43 +25,23 @@
 		{ value: 'extend', label: m.settings_whip_mode_extend_short() },
 		{ value: 'replace', label: m.settings_whip_mode_replace_short() }
 	];
+
+	const dispatchArchive = $derived(settings.dispatchAutoArchive);
+	function onGrace(e: Event) {
+		settings.setDispatchAutoArchiveGraceSecs((e.currentTarget as HTMLInputElement).valueAsNumber);
+	}
+	function onKeepProfiles(e: Event) {
+		settings.setDispatchAutoArchiveKeepProfiles((e.currentTarget as HTMLInputElement).value.split(','));
+	}
 </script>
 
-<SettingSection
-	id="execution"
-	icon="▶"
-	title={m.settings_nav_execution()}
-	description={m.settings_execution_desc()}
->
-	<SettingGroup>
-		<SettingRow label={m.settings_harness_execution_label()} server wide selfLabelled>
-			<div class="radios" role="radiogroup" aria-label={m.settings_harness_execution_label()} data-journey="harness-mode">
-				{#each harnessOpts as o (o.v)}
-					<OptionButton
-						block
-						align="start"
-						selected={harnessMode === o.v}
-						role="radio"
-						aria-checked={harnessMode === o.v}
-						onclick={() => settings.setHarnessMode(o.v)}
-					>
-						<span class="radio-body">
-							<Text weight="semibold" size="sm" as="span">{o.label}</Text>
-							<Text size="xs" tone="faint" as="span">{o.help}</Text>
-						</span>
-					</OptionButton>
-				{/each}
-			</div>
-		</SettingRow>
-	</SettingGroup>
-
+<SettingSection id="automation" icon="⚙" title={m.set_automation_title()}>
 	<SettingGroup title={m.settings_whip_title()}>
 		<SettingRow
 			label={m.settings_whip_phrase_list_label()}
 			help={whip.mode === 'replace'
 				? m.settings_whip_mode_replace_help()
 				: m.settings_whip_mode_extend_help()}
-			server
 			selfLabelled
 		>
 			<SegmentedControl
@@ -123,20 +91,47 @@
 			</Disclosure>
 		</div>
 	</SettingGroup>
+
+	<SettingGroup title={m.settings_group_dispatch()}>
+		<SettingRow label={m.settings_dispatch_archive_label()} help={m.settings_dispatch_archive_help()}>
+			<Switch
+				bind:checked={() => dispatchArchive, (v) => settings.setDispatchAutoArchive(v)}
+				label={m.settings_dispatch_archive_label()}
+			/>
+		</SettingRow>
+		<SettingRow
+			label={m.settings_dispatch_archive_grace_label()}
+			help={m.settings_dispatch_archive_grace_help()}
+			disabled={!dispatchArchive}
+		>
+			<Input
+				type="number"
+				min="0"
+				max="3600"
+				step="1"
+				value={settings.dispatchAutoArchiveGraceSecs}
+				disabled={!dispatchArchive}
+				onchange={onGrace}
+				aria-label={m.settings_dispatch_archive_grace_label()}
+			/>
+		</SettingRow>
+		<SettingRow
+			label={m.settings_dispatch_archive_keep_label()}
+			help={m.settings_dispatch_archive_keep_help()}
+			disabled={!dispatchArchive}
+		>
+			<Input
+				style="width:100%"
+				value={settings.dispatchAutoArchiveKeepProfiles.join(', ')}
+				disabled={!dispatchArchive}
+				onchange={onKeepProfiles}
+				aria-label={m.settings_dispatch_archive_keep_label()}
+			/>
+		</SettingRow>
+	</SettingGroup>
 </SettingSection>
 
 <style>
-	.radios {
-		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-		gap: var(--sp-2);
-	}
-	.radio-body {
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-1);
-		text-align: left;
-	}
 	.defaults {
 		border-top: 1px solid var(--border);
 	}
@@ -145,10 +140,5 @@
 		flex-wrap: wrap;
 		gap: var(--sp-1);
 		padding: 0 var(--sp-4) var(--sp-3);
-	}
-	@media (max-width: 47.999rem) {
-		.radios {
-			grid-template-columns: minmax(0, 1fr);
-		}
 	}
 </style>

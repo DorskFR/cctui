@@ -45,7 +45,7 @@
 		</Callout>
 	{/if}
 	<SettingGroup>
-		<SettingRow label={m.settings_redaction_enable_label()} help={m.settings_redaction_enable_help()} server>
+		<SettingRow label={m.settings_redaction_enable_label()} help={m.settings_redaction_enable_help()}>
 			<Switch
 				bind:checked={() => scrubEnabled, (v) => settings.setSecretScrubEnabled(v)}
 				label={m.settings_redaction_enable_label()}

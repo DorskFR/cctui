@@ -1,12 +1,13 @@
 import { defineJourney } from '@dorsk/journey';
 
 /**
- * Pages are reached by having the user click the page switcher: `settings-goto`
+ * Areas are reached by having the user click the area switcher: `settings-goto`
  * is on the wide list and on the narrow tab strip, exactly one of which is ever
  * visible, so one step serves both widths. Each content step still declares its
  * `route` — a no-op once the click arrived, and the fallback if it did not.
  */
-const APPEARANCE = '/settings/appearance';
+const INTERFACE = '/settings/interface';
+const SESSIONS = '/settings/sessions';
 const hop = (page: string) => ({
 	css: `.toc [data-journey="settings-nav"][data-journey-key="${page}"], .tabs [data-journey="settings-tab"][data-journey-key="${page}"]`
 });
@@ -15,13 +16,13 @@ export default defineJourney({
 	id: 'settings-tour',
 	title: { en: 'Tune how agents behave', fr: 'Régler le comportement des agents' },
 	description: { en: 'Settings cover the look of the app, how sessions run, and what never leaves the machine.', fr: 'Les réglages couvrent l’apparence de l’application, l’exécution des sessions et ce qui ne quitte jamais la machine.' },
-	route: APPEARANCE,
+	route: INTERFACE,
 	variants: { viewport: ['desktop', 'mobile'], theme: ['dark'] },
 	level: 'checked',
 	steps: [
 		{
 			id: 'theme',
-			route: APPEARANCE,
+			route: INTERFACE,
 			target: 'theme',
 			say: {
 				title: { en: 'Start with the one you will look at all day', fr: 'Commencez par celui que vous regarderez toute la journée' },
@@ -46,34 +47,24 @@ export default defineJourney({
 			do: { kind: 'click' },
 			guide: 'next',
 			say: {
-				title: { en: 'Settings are one page per subject', fr: 'Les réglages : une page par sujet' },
+				title: { en: 'Settings come in a few areas', fr: 'Les réglages tiennent en quelques rubriques' },
 				body: { en: 'The highlighted switcher is how you move between them — a list beside the page on a wide screen, a strip of tabs along the top on a narrow one. Pick “Sessions” from it, not from the app’s own nav.', fr: 'Le sélecteur en surbrillance permet de passer de l’une à l’autre — une liste à côté de la page sur grand écran, une rangée d’onglets en haut sur écran étroit. Choisissez « Sessions » dedans, pas dans la navigation de l’application.' }
 			}
 		},
 		{
 			id: 'sessions',
-			route: '/settings/sessions',
+			route: SESSIONS,
 			target: 'setting[auto-resume]',
 			say: {
 				title: { en: 'Defaults for every run', fr: 'Les valeurs par défaut de chaque exécution' },
-				body: { en: 'This page decides how the sessions list and the conversation behave before you touch either — sort order, density, grouping, and this one: whether a dropped connection silently resumes the run or leaves it for you to notice.', fr: 'Cette page décide du comportement de la liste des sessions et de la conversation avant toute intervention — tri, densité, regroupement, et ceci : si une connexion perdue reprend l’exécution en silence ou vous laisse le constater.' }
+				body: { en: 'This area decides how sessions launch and how a conversation behaves before you touch either — profiles, follow-ups, archiving, and this one: whether a dropped connection silently resumes the run or leaves it for you to notice.', fr: 'Cette rubrique décide du lancement des sessions et du comportement d’une conversation avant toute intervention — profils, relances, archivage, et ceci : si une connexion perdue reprend l’exécution en silence ou vous laisse le constater.' }
 			},
 			expect: [{ visible: 'setting[auto-resume]' }],
 			capture: 'sessions'
 		},
 		{
-			id: 'to-execution',
-			target: hop('execution'),
-			do: { kind: 'click' },
-			guide: 'next',
-			say: {
-				title: { en: 'Now the one that matters most', fr: 'Passons au plus important' },
-				body: { en: 'Pick “Execution” from the highlighted switcher.', fr: 'Choisissez « Exécution » dans le sélecteur en surbrillance.' }
-			}
-		},
-		{
 			id: 'harness',
-			route: '/settings/execution',
+			route: SESSIONS,
 			target: 'harness-mode',
 			say: {
 				title: { en: 'The single most consequential setting', fr: 'Le réglage le plus lourd de conséquences' },
@@ -83,18 +74,8 @@ export default defineJourney({
 			capture: 'execution'
 		},
 		{
-			id: 'to-privacy',
-			target: hop('privacy'),
-			do: { kind: 'click' },
-			guide: 'next',
-			say: {
-				title: { en: 'And what never leaves', fr: 'Et ce qui ne sort jamais' },
-				body: { en: 'Pick “Privacy” from the highlighted switcher.', fr: 'Choisissez « Confidentialité » dans le sélecteur en surbrillance.' }
-			}
-		},
-		{
 			id: 'patterns',
-			route: '/settings/privacy',
+			route: SESSIONS,
 			target: 'redact-patterns',
 			say: {
 				title: { en: 'Secrets never reach the transcript', fr: 'Les secrets n’atteignent jamais la transcription' },
@@ -105,21 +86,21 @@ export default defineJourney({
 		},
 		{
 			id: 'to-guides',
-			target: hop('guides'),
+			target: hop('interface'),
 			do: { kind: 'click' },
 			guide: 'next',
 			say: {
-				title: { en: 'One page left', fr: 'Reste une page' },
-				body: { en: 'Pick “Guides” from the highlighted switcher — the page you started this from.', fr: 'Choisissez « Guides » dans le sélecteur en surbrillance — la page d’où vous avez lancé ceci.' }
+				title: { en: 'Back where you started', fr: 'Retour au point de départ' },
+				body: { en: 'Pick “Interface” from the highlighted switcher — the guides live at the bottom of it.', fr: 'Choisissez « Interface » dans le sélecteur en surbrillance — les guides sont tout en bas.' }
 			}
 		},
 		{
 			id: 'guides',
-			route: '/settings/guides',
+			route: INTERFACE,
 			target: 'guide[welcome]',
 			say: {
 				title: { en: 'Every guide lives here', fr: 'Tous les guides vivent ici' },
-				body: { en: 'This page is the curriculum: what each guide teaches, what it is worth, and what is still locked. Replay any of them whenever you like — nothing here changes your instance. There are more pages than the four we walked; notifications, plugins, macros and the admin ones are all worth a look once you are running.', fr: 'Cette page est le programme : ce que chaque guide enseigne, sa valeur, et ce qui reste verrouillé. Rejouez-en un quand vous voulez — rien ici ne modifie votre instance. Il y a plus de pages que les quatre parcourues ; notifications, extensions, macros et les pages d’administration méritent un coup d’œil une fois lancé.' }
+				body: { en: 'This page is the curriculum: what each guide teaches, what it is worth, and what is still locked. Replay any of them whenever you like — nothing here changes your instance. There is more than what we walked; accounts, notifications, plugins, macros and the admin Instance area are all worth a look once you are running.', fr: 'Cette page est le programme : ce que chaque guide enseigne, sa valeur, et ce qui reste verrouillé. Rejouez-en un quand vous voulez — rien ici ne modifie votre instance. Il y a plus que ce que nous avons parcouru ; comptes, notifications, extensions, macros et la rubrique d’administration Instance méritent un coup d’œil une fois lancé.' }
 			},
 			expect: [{ visible: 'guide[welcome]' }],
 			capture: 'guides'

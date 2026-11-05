@@ -54,8 +54,8 @@ describe('welcome spec', () => {
 			['to-settings', 'nav[settings]'],
 			['to-accounts', 'settings-nav[accounts]'],
 			['to-accounts-mobile', 'settings-tab[accounts]'],
-			['to-users', 'settings-nav[users]'],
-			['to-users-mobile', 'settings-tab[users]']
+			['to-users', 'settings-nav[instance]'],
+			['to-users-mobile', 'settings-tab[instance]']
 		]);
 		expect(hops.filter((s) => s.id.endsWith('-mobile')).map((s) => s.when)).toEqual([
 			{ viewport: 'mobile' },
@@ -77,7 +77,7 @@ describe('welcome spec', () => {
 
 	it('ends on the guides page, pointing at the guide to take next', () => {
 		const last = pub.steps.at(-1)!;
-		expect(last.route).toBe('/settings/guides');
+		expect(last.route).toBe('/settings/interface');
 		expect(last.target).toBe('guide[sessions-list]');
 	});
 

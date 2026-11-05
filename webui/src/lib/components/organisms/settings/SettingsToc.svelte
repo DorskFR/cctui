@@ -1,9 +1,9 @@
 <script lang="ts">
-	// Navigation of the Settings screen: a search box that reaches every page and
-	// one link per page — each entry is a route, the current one marked with an
+	// Navigation of the Settings screen: a search box that reaches every area and
+	// one link per area — each entry is a route, the current one marked with an
 	// accent bar. On narrow screens the list gives way to a row of tabs (the
 	// search box moves to the page head there).
-	import { Icon, Input, Badge, Tabs, Text, type IconName, type TabItem } from '@dorsk/tsumikit';
+	import { Icon, Input, Tabs, Text, type IconName, type TabItem } from '@dorsk/tsumikit';
 	import { goto } from '$app/navigation';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import {
@@ -19,7 +19,6 @@
 		page: SettingsPage;
 		icon: IconName;
 		label: string;
-		admin?: boolean;
 	}
 
 	let {
@@ -33,7 +32,7 @@
 	} = $props();
 
 	const scopeLabel = (s: SettingsScope) =>
-		s === 'you' ? m.settings_scope_you() : m.settings_scope_instance();
+		s === 'you' ? m.settings_scope_you() : m.set_scope_instance_admin_only();
 	const groups = $derived(
 		SETTINGS_SCOPES.map((scope) => ({
 			scope,
@@ -88,9 +87,6 @@
 				<span class="toc-item" class:active={active === e.page}>
 					<span class="ico" class:on={active === e.page}><Icon name={e.icon} size={16} /></span>
 					<Text size="sm" tone={active === e.page ? 'default' : 'muted'}>{e.label}</Text>
-					{#if e.admin}
-						<span class="tag"><Badge tone="warn" size="sm" border>{m.settings_scope_admin()}</Badge></span>
-					{/if}
 				</span>
 			</NavLink>
 		{/each}
@@ -142,9 +138,6 @@
 	.ico.on {
 		color: var(--accent);
 	}
-	.tag {
-		margin-left: auto;
-	}
 	.tabs {
 		display: none;
 	}
@@ -167,9 +160,6 @@
 		}
 		.toc-item.active {
 			border-color: var(--accent-dim, var(--accent));
-		}
-		.tag {
-			display: none;
 		}
 	}
 </style>

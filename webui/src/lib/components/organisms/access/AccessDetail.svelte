@@ -9,6 +9,7 @@
 		Heading,
 		Icon,
 		Menu,
+		Switch,
 		Tabs,
 		Text,
 		Timestamp
@@ -121,15 +122,6 @@
 						disabled: !!user.revoked_at,
 						onselect: () => toggleDisabled()
 					},
-					...(hideable
-						? [
-								{
-									label: hidden ? m.hidden_owners_unhide() : m.hidden_owners_hide(),
-									icon: hidden ? ('eye' as const) : ('eye-off' as const),
-									onselect: () => toggleHidden()
-								}
-							]
-						: []),
 					user.revoked_at
 						? {
 								label: m.access_menu_purge(),
@@ -166,13 +158,8 @@
 				)
 		);
 	}
-	function toggleHidden() {
-		const name = user.name;
-		guard(
-			hidden
-				? hiddenActions.unhide('user', user.id).then(() => toasts.ok(m.hidden_owners_unhidden_toast({ name })))
-				: hiddenActions.hide('user', user.id, name).then(() => toasts.ok(m.hidden_owners_hidden_toast({ name })))
-		);
+	function setVisible(visible: boolean) {
+		guard(visible ? hiddenActions.unhide('user', user.id) : hiddenActions.hide('user', user.id, user.name));
 	}
 	function setCeiling(scopes: string[]) {
 		guard(actions.setUserScopes(user.id, scopes));
@@ -224,6 +211,16 @@
 			</div>
 		</div>
 		<div class="spacer"></div>
+		{#if hideable}
+			<Switch
+				bind:checked={() => !hidden, setVisible}
+				label={m.set_visibility_label()}
+				labelVisible
+				size="sm"
+				data-journey="user-visibility"
+				data-journey-key={user.id}
+			/>
+		{/if}
 		{#if menuItems.length}
 			<Menu label={m.common_actions()} items={menuItems} placement="bottom-end" box="sm">
 				{#snippet trigger()}<Icon name="more" size={16} />{/snippet}

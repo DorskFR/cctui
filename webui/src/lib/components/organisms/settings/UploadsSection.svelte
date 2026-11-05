@@ -1,20 +1,18 @@
 <script lang="ts">
-	// Settings › Uploads: the three per-upload soft caps, plus read-only copy
-	// for the two limits this page cannot move — the router's boot-time body
-	// ceiling (env + restart) and the daemon's own compiled-in limits.
+	// Instance › Limits › Uploads: the three per-upload soft caps, saved when a
+	// field is committed, plus read-only copy for the limits this page cannot
+	// move — the router's boot-time body ceiling (env + restart) and the
+	// daemon's own compiled-in limits.
 	import { Badge, Button, Input, Text } from '@dorsk/tsumikit';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
 	import { endpoints, qk, useVersion } from '$lib/queries';
 	import { fmtSize, DEFAULT_UPLOAD_CAPS } from '$lib/attachments';
 	import { toasts } from '$lib/toast.svelte';
 	import type { UploadCapsInfo } from '@bindings/UploadCapsInfo';
 	import { m } from '$lib/paraglide/messages';
 	import { sourceLabel } from './serverSettings.logic';
-
-	let { isAdmin = false }: { isAdmin?: boolean } = $props();
 
 	const MB = 1024 * 1024;
 	const toMb = (bytes: number) => Math.round((bytes / MB) * 100) / 100;
@@ -26,7 +24,6 @@
 	let info = $state<UploadCapsInfo | null>(null);
 	let saving = $state(false);
 	$effect(() => {
-		if (!isAdmin) return;
 		endpoints
 			.uploadCaps()
 			.then((next) => (info = next))
@@ -59,6 +56,10 @@
 		draft.max_files > 0 && draft.max_file_bytes > 0 && draft.max_total_bytes > 0
 	);
 
+	function commit() {
+		if (dirty && valid && !saving) void save();
+	}
+
 	async function save(reset = false) {
 		saving = true;
 		try {
@@ -73,55 +74,24 @@
 	}
 </script>
 
-<SettingSection
-	id="uploads"
-	icon="⇪"
-	title={m.settings_nav_uploads()}
-	description={m.settings_uploads_desc()}
-	admin={isAdmin}
->
+<div id="uploads">
 	<SettingGroup title={m.settings_uploads_group_now()}>
 		<SettingRow label={m.settings_uploads_max_files_label()} help={m.settings_uploads_max_files_help()}>
-			{#if isAdmin}
-				<Input type="number" min="1" step="1" bind:value={files} aria-label={m.settings_uploads_max_files_label()} />
-			{:else}
-				<Text size="sm" variant="code">{effective.max_files}</Text>
-			{/if}
+			<Input type="number" min="1" step="1" bind:value={files} onchange={commit} aria-label={m.settings_uploads_max_files_label()} />
 		</SettingRow>
-		<SettingRow
-			label={m.settings_uploads_max_file_label()}
-			help={m.settings_uploads_max_file_help()}
-		>
-			{#if isAdmin}
-				<Input type="number" min="1" step="1" bind:value={fileMb} aria-label={m.settings_uploads_max_file_label()} />
-			{:else}
-				<Text size="sm" variant="code">{fmtSize(effective.max_file_bytes)}</Text>
-			{/if}
+		<SettingRow label={m.settings_uploads_max_file_label()} help={m.settings_uploads_max_file_help()}>
+			<Input type="number" min="1" step="1" bind:value={fileMb} onchange={commit} aria-label={m.settings_uploads_max_file_label()} />
 		</SettingRow>
-		<SettingRow
-			label={m.settings_uploads_max_total_label()}
-			help={m.settings_uploads_max_total_help()}
-		>
-			{#if isAdmin}
-				<Input type="number" min="1" step="1" bind:value={totalMb} aria-label={m.settings_uploads_max_total_label()} />
-			{:else}
-				<Text size="sm" variant="code">{fmtSize(effective.max_total_bytes)}</Text>
-			{/if}
+		<SettingRow label={m.settings_uploads_max_total_label()} help={m.settings_uploads_max_total_help()}>
+			<Input type="number" min="1" step="1" bind:value={totalMb} onchange={commit} aria-label={m.settings_uploads_max_total_label()} />
 		</SettingRow>
-		{#if isAdmin}
-			<SettingRow label={m.settings_uploads_apply_label()} help={m.settings_uploads_apply_help()} server admin selfLabelled>
+		{#if info?.source === 'settings'}
+			<SettingRow label={m.set_uploads_reset_label()} help={m.settings_uploads_apply_help()} selfLabelled>
 				<div class="actions">
-					{#if info}
-						<Badge size="sm">{sourceLabel(info.source)}</Badge>
-					{/if}
-					<Button disabled={!dirty || !valid || saving} onclick={() => save()}>
-						{m.settings_admin_instance_save()}
+					<Badge size="sm">{sourceLabel(info.source)}</Badge>
+					<Button variant="ghost" disabled={saving} onclick={() => save(true)}>
+						{m.settings_reset()}
 					</Button>
-					{#if info?.source === 'settings'}
-						<Button variant="ghost" disabled={saving} onclick={() => save(true)}>
-							{m.settings_reset()}
-						</Button>
-					{/if}
 				</div>
 			</SettingRow>
 		{/if}
@@ -135,7 +105,7 @@
 				: m.settings_uploads_ceiling_help_generic()}
 			selfLabelled
 		>
-			<Text size="sm" variant="code" tone="faint">
+			<Text size="sm" tone="faint" class="num">
 				{info ? fmtSize(info.body_limit_bytes) : '—'}
 			</Text>
 		</SettingRow>
@@ -149,7 +119,7 @@
 			<Text size="sm" tone="faint">{m.settings_uploads_fixed()}</Text>
 		</SettingRow>
 	</SettingGroup>
-</SettingSection>
+</div>
 
 <style>
 	.actions {

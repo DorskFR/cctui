@@ -38,6 +38,10 @@
 		!!info && FIELDS.some(({ key }) => draft[key].trim() !== (info?.settings[key]?.toString() ?? ''))
 	);
 
+	function commit() {
+		if (dirty && parsed && !saving) void save(parsed);
+	}
+
 	async function save(next: SpawnDefaults) {
 		saving = true;
 		try {
@@ -64,7 +68,7 @@
 
 <div id="spawn-limits">
 	<SettingGroup title={m.settings_spawn_limits_label()}>
-		<SettingRow label={m.settings_spawn_limits_label()} help={m.settings_spawn_limits_help()} server admin wide selfLabelled>
+		<SettingRow label={m.settings_spawn_limits_label()} help={m.settings_spawn_limits_help()} wide selfLabelled>
 			<div class="fields">
 				{#each FIELDS as f (f.key)}
 					<div class="field">
@@ -74,6 +78,7 @@
 							inputmode={f.key === 'max_tree_budget_usd' ? 'decimal' : 'numeric'}
 							placeholder={fallback(f.key)}
 							aria-label={f.label()}
+							onchange={commit}
 						/>
 						<Text size="xs" tone="faint" variant="code">{effective(f.key)}</Text>
 						{#if info?.sources[f.key] === 'settings'}
@@ -92,11 +97,6 @@
 				{#if !parsed}
 					<Text size="xs" tone="danger">{m.settings_spawn_limits_invalid()}</Text>
 				{/if}
-				<div>
-					<Button disabled={!dirty || !parsed || saving} onclick={() => parsed && save(parsed)}>
-						{m.settings_admin_instance_save()}
-					</Button>
-				</div>
 			</div>
 		</SettingRow>
 	</SettingGroup>

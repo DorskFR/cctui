@@ -84,6 +84,14 @@ pub(super) fn register(r: Routes) -> Routes {
         )
         .add(
             &[GET, Method::PUT],
+            "/admin/instance/event-retention",
+            "Read or set how many days of events the server keeps; 0 keeps every event (admin).",
+            get(routes::server_settings::get_event_retention).put(routes::server_settings::update_event_retention),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[GET, Method::PUT],
             "/admin/harness-autoupdate",
             "Read the harness auto-update settings of every machine, or set the instance default (admin).",
             get(routes::harness_update::read).put(routes::harness_update::set_instance),

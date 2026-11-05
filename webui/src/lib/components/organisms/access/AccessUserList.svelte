@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { UserRow } from '@bindings/UserRow';
-	import { Avatar, Badge, Input, Button, Disclosure, Dot, Spinner, Text } from '@dorsk/tsumikit';
-	import PageHead from '$lib/components/molecules/PageHead.svelte';
+	import { Avatar, Badge, Input, Button, Disclosure, Spinner, Switch, Text } from '@dorsk/tsumikit';
 	import EnrollMachineCard from '$lib/components/organisms/EnrollMachineCard.svelte';
 	import { hashHue } from '$lib/format';
 	import { m } from '$lib/paraglide/messages';
@@ -13,8 +12,9 @@
 		selectedId,
 		canCreate = false,
 		meta,
-		online,
 		hidden = () => false,
+		hideable = () => true,
+		onvisible,
 		onselect,
 		oncreate
 	}: {
@@ -22,9 +22,12 @@
 		loading?: boolean;
 		selectedId: string;
 		canCreate?: boolean;
+		/** The muted second line: counts and state in words. */
 		meta: (u: UserRow) => string;
-		online: (u: UserRow) => boolean;
 		hidden?: (u: UserRow) => boolean;
+		hideable?: (u: UserRow) => boolean;
+		/** Present for admins: the "Show sessions in my list" switch per user. */
+		onvisible?: (u: UserRow, visible: boolean) => void;
 		onselect: (id: string) => void;
 		oncreate: () => void;
 	} = $props();
@@ -39,7 +42,7 @@
 		<Button
 			variant="ghost"
 			block
-			style="justify-content:flex-start; gap:var(--sp-2); padding:10px var(--sp-3); border-radius:0"
+			style="flex:1; min-width:0; justify-content:flex-start; gap:var(--sp-2); padding:10px var(--sp-3); border-radius:0"
 			data-journey="user"
 			data-journey-key={u.name}
 			aria-current={u.id === selectedId ? 'true' : undefined}
@@ -53,19 +56,27 @@
 			{#if hidden(u)}
 				<Badge tone="muted" size="xs" style="flex:none" data-journey="hidden-chip">{m.hidden_owners_chip()}</Badge>
 			{/if}
-			{#if !revoked}
-				<Dot status={online(u) ? 'active' : 'dead'} />
-			{/if}
 		</Button>
+		{#if onvisible && !revoked && hideable(u)}
+			<span class="vis">
+				<Switch
+					size="sm"
+					bind:checked={() => !hidden(u), (v) => onvisible(u, v)}
+					label={m.set_visibility_user_label({ name: u.name })}
+					data-journey="user-visibility"
+					data-journey-key={u.id}
+				/>
+			</span>
+		{/if}
 	</div>
 {/snippet}
 
 <div class="master">
-	<PageHead title={m.access_title()}>
-		{#if canCreate}
+	{#if canCreate}
+		<div class="head">
 			<Button variant="primary" onclick={oncreate}>{m.users_new_user()}</Button>
-		{/if}
-	</PageHead>
+		</div>
+	{/if}
 
 	<Input
 		icon="search"
@@ -97,7 +108,7 @@
 		{/if}
 	</div>
 
-	<EnrollMachineCard dashed />
+	<EnrollMachineCard />
 </div>
 
 <style>
@@ -125,9 +136,20 @@
 		place-items: center;
 		padding: var(--sp-4);
 	}
+	.head {
+		display: flex;
+		justify-content: flex-end;
+	}
 	.row {
+		display: flex;
+		align-items: center;
 		border-left: 2px solid transparent;
 		border-bottom: 1px solid var(--border);
+	}
+	.vis {
+		display: inline-flex;
+		flex: none;
+		padding-inline-end: var(--sp-3);
 	}
 	.row:last-child {
 		border-bottom: 0;
@@ -144,18 +166,21 @@
 		min-width: 0;
 		display: flex;
 		flex-direction: column;
+		gap: var(--sp-1);
 		text-align: start;
 	}
 	.nm {
 		font-size: var(--fs-sm);
-		font-weight: var(--fw-medium);
+		font-weight: var(--fw-semibold);
+		line-height: var(--lh-snug, 1.3);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 	.mt {
 		font-size: var(--fs-xs);
-		color: var(--text-faint);
+		line-height: var(--lh-snug, 1.3);
+		color: var(--text-muted);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;

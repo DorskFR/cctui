@@ -224,6 +224,18 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "get_admin_instance_event_retention"
+# GET /admin/instance/event-retention — Read or set how many days of events the server keeps; 0 keeps every event (admin).
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "put_admin_instance_event_retention"
+# PUT /admin/instance/event-retention — Read or set how many days of events the server keeps; 0 keeps every event (admin).
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "get_admin_instance_upload_caps"
 # GET /admin/instance/upload-caps — Read or set the per-upload file count and size caps (admin).
 tui = "waived"

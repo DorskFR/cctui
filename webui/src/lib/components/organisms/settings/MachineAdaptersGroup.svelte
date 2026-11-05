@@ -71,8 +71,6 @@
 	<SettingRow
 		label={m.settings_machine_adapters_label()}
 		help={m.settings_machine_adapters_help()}
-		server
-		admin={isAdmin}
 		wide
 		selfLabelled
 	>

@@ -1,5 +1,5 @@
 <script lang="ts">
-	// Settings › Resource monitoring: every machine this instance has a daemon
+	// Interface › Machines in the header: every machine this instance has a daemon
 	// on, one checkbox each. A ticked machine gets a CPU / memory / disk gauge
 	// in the header strip (ResourceBattery). The list is the same query the
 	// strip reads, so the figures shown here are the live ones.
@@ -25,7 +25,7 @@
 	}
 </script>
 
-<SettingSection id="monitoring" icon="▥" title={m.settings_monitoring_title()}>
+<SettingSection id="monitoring" icon="▥" title={m.set_monitoring_title()}>
 	<SettingGroup>
 		<SettingRow
 			label={m.settings_monitoring_machines_label()}

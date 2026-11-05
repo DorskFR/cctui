@@ -1,3 +1,5 @@
+import { m } from '$lib/paraglide/messages';
+
 export const ALL_SCOPES = ['read', 'dispatch', 'enroll', 'admin'] as const;
 export type ScopeName = (typeof ALL_SCOPES)[number];
 
@@ -35,3 +37,10 @@ export function filterByName<T extends { name: string }>(rows: readonly T[], que
 }
 
 export const keyIcon = (kind: string): 'tv' | 'user' => (kind === 'machine' ? 'tv' : 'user');
+
+/** A user's machine state in words: "online", "2 machines online", "offline". */
+export function userStateWords(online: number, total: number): string {
+	if (online <= 0) return m.set_user_state_offline();
+	if (online === 1 && total === 1) return m.set_user_state_online();
+	return m.set_user_state_machines_online({ count: online });
+}

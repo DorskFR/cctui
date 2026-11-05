@@ -1122,6 +1122,15 @@ class Settings {
     this.setDisplay({ notifyEnabled: notify.enabled });
   }
 
+  /** Turn browser notifications on (asking for permission) or off, and store
+   *  the outcome. Resolves to the resulting state. */
+  async setNotifyEnabled(on: boolean): Promise<boolean> {
+    if (on) await notify.enable();
+    else notify.disable();
+    this.recordNotifyEnabled();
+    return notify.enabled;
+  }
+
   private applyDisplay() {
     const d = this.state.display;
     theme.hydrate(preferenceFrom(d, theme.slotOf));

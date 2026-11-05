@@ -8,21 +8,21 @@ import {
 	fuzzyMatches,
 	isFiltered,
 	isSettingsPage,
+	LEGACY_PAGES,
+	legacySettingsTarget,
 	normalizeForFilter,
-	pageForHash,
-	pagerNeighbours,
-	pagesInScope,
-	MOVED_OUT,
+	pageOfAnchor,
+	SETTINGS_ANCHORS,
 	SETTINGS_PAGES,
-	SETTINGS_SCOPES,
 	settingsHref,
+	settingsLocationForHash,
 	settingsScope
 } from './settings.logic';
 
 function tree(): HTMLElement {
 	const root = document.createElement('div');
 	root.innerHTML = `
-		<div data-settings-page="appearance">
+		<div data-settings-page="interface">
 			<section data-setting-section>
 				<div data-setting-group>
 					<div data-setting-row>Theme</div>
@@ -30,7 +30,7 @@ function tree(): HTMLElement {
 				</div>
 			</section>
 		</div>
-		<div data-settings-page="security">
+		<div data-settings-page="accounts">
 			<section data-setting-section>
 				<div data-setting-group>
 					<div data-setting-row>Passkeys</div>
@@ -65,49 +65,125 @@ describe('applySettingsFilter', () => {
 	});
 });
 
-describe('page map', () => {
-	it('starts on the default page and knows every slug', () => {
+describe('area map', () => {
+	it('shows the five areas plus the admin-only Instance, Interface first', () => {
+		expect([...SETTINGS_PAGES]).toEqual([
+			'interface',
+			'accounts',
+			'sessions',
+			'notifications',
+			'plugins',
+			'instance'
+		]);
 		expect(SETTINGS_PAGES[0]).toBe(DEFAULT_SETTINGS_PAGE);
-		expect(SETTINGS_PAGES.every(isSettingsPage)).toBe(true);
+		expect(SETTINGS_PAGES.filter((p) => settingsScope(p) === 'instance')).toEqual(['instance']);
 		expect(isSettingsPage('nope')).toBe(false);
 		expect(isSettingsPage(undefined)).toBe(false);
 	});
 
-	it('maps a page slug to its route', () => {
-		expect(settingsHref('security')).toBe('/settings/security');
+	it('links an area and one of its subsections', () => {
+		expect(settingsHref('accounts')).toBe('/settings/accounts');
+		expect(settingsHref('interface', 'theme')).toBe('/settings/interface#theme');
+	});
+
+	it('keeps every anchor unique across areas, since all areas stay mounted', () => {
+		const all = Object.values(SETTINGS_ANCHORS).flat();
+		expect(new Set(all).size).toBe(all.length);
+		for (const page of SETTINGS_PAGES) {
+			for (const anchor of SETTINGS_ANCHORS[page]) expect(pageOfAnchor(anchor)).toBe(page);
+		}
+	});
+
+	it('resolves the anchors other screens link to', () => {
+		for (const href of [
+			'/settings/interface#theme',
+			'/settings/sessions#profiles',
+			'/settings/accounts#providers',
+			'/settings/instance#users',
+			'/settings/instance#dispatchers'
+		]) {
+			const [path, anchor] = href.split('#');
+			expect(pageOfAnchor(anchor)).toBe(path.slice('/settings/'.length));
+		}
+	});
+});
+
+describe('old settings URLs', () => {
+	const OLD_PAGES = [
+		'appearance',
+		'sessions',
+		'macros',
+		'context',
+		'plugins',
+		'execution',
+		'privacy',
+		'notifications',
+		'monitoring',
+		'events',
+		'security',
+		'guides',
+		'users',
+		'dispatchers',
+		'instance',
+		'uploads'
+	];
+
+	function resolves(href: string): boolean {
+		if (href === '/events') return true;
+		const [path, anchor] = href.split('#');
+		const page = path.slice('/settings/'.length);
+		if (!isSettingsPage(page)) return false;
+		return anchor === undefined || pageOfAnchor(anchor) === page;
+	}
+
+	it('sends every one of the 16 old pages to a location that exists', () => {
+		expect(OLD_PAGES).toHaveLength(16);
+		for (const slug of OLD_PAGES) {
+			const to = legacySettingsTarget(slug);
+			if (isSettingsPage(slug)) expect(to).toBeNull();
+			else expect(to && resolves(to), `${slug} → ${to}`).toBe(true);
+		}
+	});
+
+	it('maps the pages that moved into an area', () => {
+		expect(legacySettingsTarget('appearance')).toBe('/settings/interface#theme');
+		expect(legacySettingsTarget('security')).toBe('/settings/accounts#security');
+		expect(legacySettingsTarget('users')).toBe('/settings/instance#users');
+		expect(legacySettingsTarget('dispatchers')).toBe('/settings/instance#dispatchers');
+		expect(legacySettingsTarget('uploads')).toBe('/settings/instance#uploads');
+		expect(legacySettingsTarget('events')).toBe('/events');
+		expect(legacySettingsTarget('guides')).toBe('/settings/interface#guides');
+	});
+
+	it('sends an unknown slug to the first area', () => {
+		expect(legacySettingsTarget('nope')).toBe('/settings/interface');
+		expect(legacySettingsTarget(undefined)).toBe('/settings/interface');
+	});
+
+	it('points every legacy entry at a location that exists', () => {
+		for (const [slug, to] of Object.entries(LEGACY_PAGES)) {
+			expect(resolves(to), `${slug} → ${to}`).toBe(true);
+		}
 	});
 
 	it('keeps old /settings#anchor deep links working', () => {
-		expect(pageForHash('#security')).toBe('security');
-		expect(pageForHash('passkeys')).toBe('security');
-		expect(pageForHash('#Storage')).toBe('sessions');
-		expect(pageForHash('#passkey-sign-in')).toBe('instance');
-		expect(pageForHash('#self-update')).toBe('instance');
-		expect(pageForHash('#upstreams')).toBe('instance');
-		expect(pageForHash('#spawn-limits')).toBe('instance');
-		expect(pageForHash('#redaction')).toBe('privacy');
-		expect(pageForHash('')).toBe(DEFAULT_SETTINGS_PAGE);
-		expect(pageForHash(null)).toBe(DEFAULT_SETTINGS_PAGE);
-		expect(pageForHash('#whatever')).toBe(DEFAULT_SETTINGS_PAGE);
-		expect(pageForHash('#memory')).toBe('context');
-		expect(pageForHash('#skills')).toBe('plugins');
-	});
-
-	it('groups every page under exactly one scope, you before instance', () => {
-		const grouped = SETTINGS_SCOPES.flatMap(pagesInScope);
-		expect(grouped).toEqual([...SETTINGS_PAGES]);
-		expect(settingsScope('appearance')).toBe('you');
-		expect(settingsScope('guides')).toBe('you');
-		expect(settingsScope('instance')).toBe('instance');
-	});
-
-	it('pages in order, with no neighbour past either end', () => {
-		const first = SETTINGS_PAGES[0];
-		const last = SETTINGS_PAGES[SETTINGS_PAGES.length - 1];
-		expect(pagerNeighbours(first).prev).toBeNull();
-		expect(pagerNeighbours(first).next).toBe(SETTINGS_PAGES[1]);
-		expect(pagerNeighbours(last).next).toBeNull();
-		expect(pagerNeighbours('privacy')).toEqual({ prev: 'execution', next: 'notifications' });
+		expect(settingsLocationForHash('#security')).toBe('/settings/accounts#security');
+		expect(settingsLocationForHash('passkeys')).toBe('/settings/accounts#security');
+		expect(settingsLocationForHash('#Storage')).toBe('/settings/interface#storage');
+		expect(settingsLocationForHash('#passkey-sign-in')).toBe('/settings/instance#general');
+		expect(settingsLocationForHash('#self-update')).toBe('/settings/instance#self-update');
+		expect(settingsLocationForHash('#upstreams')).toBe('/settings/instance#upstreams');
+		expect(settingsLocationForHash('#spawn-limits')).toBe('/settings/instance#spawn-limits');
+		expect(settingsLocationForHash('#redaction')).toBe('/settings/sessions#privacy');
+		expect(settingsLocationForHash('#memory')).toBe('/settings/sessions#context');
+		expect(settingsLocationForHash('#skills')).toBe('/settings/plugins');
+		expect(settingsLocationForHash('#access')).toBe('/settings/instance#users');
+		expect(settingsLocationForHash('#tokens')).toBe('/settings/instance#users');
+		expect(settingsLocationForHash('#appearance')).toBe('/settings/interface#theme');
+		expect(settingsLocationForHash('#sessions')).toBe('/settings/sessions');
+		expect(settingsLocationForHash('')).toBe('/settings/interface');
+		expect(settingsLocationForHash(null)).toBe('/settings/interface');
+		expect(settingsLocationForHash('#whatever')).toBe('/settings/interface');
 	});
 });
 
@@ -139,16 +215,16 @@ describe('cross-page search', () => {
 	it('filters rows on every page at once', () => {
 		const root = tree();
 		expect(applySettingsFilter(root, 'passkeys')).toBe(1);
-		expect(firstMatchingPage(root)).toBe('security');
-		expect(firstMatchingRow(root, 'security')?.textContent).toBe('Passkeys');
-		expect(firstMatchingRow(root, 'appearance')).toBeNull();
+		expect(firstMatchingPage(root)).toBe('accounts');
+		expect(firstMatchingRow(root, 'accounts')?.textContent).toBe('Passkeys');
+		expect(firstMatchingRow(root, 'interface')).toBeNull();
 	});
 
 	it('jumps to the first page in navigation order that still matches', () => {
 		const root = tree();
 		applySettingsFilter(root, 'e');
-		expect(firstMatchingPage(root)).toBe('appearance');
-		expect(firstMatchingRow(root, 'appearance')?.textContent).toBe('Theme');
+		expect(firstMatchingPage(root)).toBe('interface');
+		expect(firstMatchingRow(root, 'interface')?.textContent).toBe('Theme');
 	});
 
 	it('reports no page when nothing matches', () => {
@@ -161,28 +237,6 @@ describe('cross-page search', () => {
 		expect(normalizeForFilter('Réglages')).toBe('reglages');
 		const root = tree();
 		expect(applySettingsFilter(root, 'THEME')).toBe(1);
-		expect(firstMatchingPage(root)).toBe('appearance');
-	});
-});
-
-describe('the admin screens moved out of the main nav', () => {
-	it('routes users and dispatchers as instance-scoped settings pages', () => {
-		for (const page of ['users', 'dispatchers'] as const) {
-			expect(isSettingsPage(page)).toBe(true);
-			expect(settingsScope(page)).toBe('instance');
-			expect(settingsHref(page)).toBe(`/settings/${page}`);
-		}
-	});
-
-	it('forwards the old access anchors to the users page', () => {
-		for (const hash of ['#access', '#keys', '#machines', '#tokens']) {
-			expect(pageForHash(hash)).toBe('users');
-		}
-	});
-
-	it('scopes the event log to you, and sends accounts back to its own screen', () => {
-		expect(settingsScope('events')).toBe('you');
-		expect(isSettingsPage('accounts')).toBe(false);
-		expect(MOVED_OUT.accounts).toBe('/accounts');
+		expect(firstMatchingPage(root)).toBe('interface');
 	});
 });
