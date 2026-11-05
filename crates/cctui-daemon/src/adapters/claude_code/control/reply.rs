@@ -270,16 +270,23 @@ impl ReplyJob {
         // an ESC ESC draft restore. Only an idle worker with no form up is safe
         // to clear (mid-turn the composer is a queue, and a form eats the keys).
         // The paced clear costs a spoken prompt over a second, so it is skipped
-        // when the last reply left the composer empty and no ESC came since.
+        // when the last reply left the composer empty and no ESC came since, or
+        // when one screen probe reads the composer empty.
         let may_clear = !had_pending_ask && !self.busy;
         if may_clear && spoken && socket::composer_known_empty(short) {
+            tracing::debug!(%short, composer_clear = "skipped_known_empty", "pre-reply clear");
             hop("composer clear skipped");
         } else if may_clear {
-            match socket::attach_clear_composer(sock, short).await {
-                Ok(()) => tracing::debug!(%short, "cleared composer before reply"),
-                Err(err) => tracing::warn!(%err, %short, "failed to clear composer before reply"),
-            }
-            hop("composer cleared");
+            let clear = socket::attach_clear_composer_unless_empty(sock, short).await;
+            let outcome = clear.unwrap_or_else(|err| {
+                tracing::warn!(%err, %short, "failed to clear composer before reply");
+                socket::ComposerClear::Cleared
+            });
+            tracing::debug!(%short, composer_clear = outcome.as_str(), "pre-reply clear");
+            hop(match outcome {
+                socket::ComposerClear::Skipped => "composer empty on screen",
+                socket::ComposerClear::Cleared => "composer cleared",
+            });
         }
         // Baseline before the reply op: a build that auto-submits multiline
         // replies grows the transcript immediately, and a later baseline would
@@ -923,17 +930,28 @@ mod submit_tests {
         WorkingBeforeTheReply,
     }
 
-    /// A control socket recording each request's op. An Enter on an attach
+    const EMPTY_SCREEN: &str =
+        "\x1b[2J\x1b[1;1H\u{256d}\x1b[2;1H\u{2502} > \u{2502}\x1b[3;1H\u{2570}";
+    const DRAFT_SCREEN: &str =
+        "\x1b[2J\x1b[1;1H\u{256d}\x1b[2;1H\u{2502} > restored draft \u{2502}\x1b[3;1H\u{2570}";
+
+    type Log<T> = Arc<Mutex<Vec<T>>>;
+
+    /// A control socket recording each request's op and every keystroke typed
+    /// on an attach, which repaints `screen` first. An Enter on an attach
     /// submits; `reply` submits on its own as `taken` says.
     fn fake_daemon(
         sock: &Path,
         transcript: PathBuf,
         state: (PathBuf, String),
         taken: Taken,
-    ) -> (tokio::task::JoinHandle<()>, Arc<Mutex<Vec<String>>>) {
+        screen: &'static str,
+    ) -> (tokio::task::JoinHandle<()>, Log<String>, Log<u8>) {
         let listener = tokio::net::UnixListener::bind(sock).unwrap();
         let ops = Arc::new(Mutex::new(Vec::new()));
         let seen = ops.clone();
+        let typed = Arc::new(Mutex::new(Vec::new()));
+        let typed_seen = typed.clone();
         let server = tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
@@ -961,21 +979,34 @@ mod submit_tests {
                 if op != "attach" {
                     continue;
                 }
+                write.write_all(screen.as_bytes()).await.unwrap();
                 let mut keys = [0_u8; 64];
                 while let Ok(n) = reader.read(&mut keys).await {
                     if n == 0 {
                         break;
                     }
+                    typed_seen.lock().unwrap().extend_from_slice(&keys[..n]);
                     if keys[..n].contains(&b'\r') {
                         append_line(&transcript, "user");
                     }
                 }
             }
         });
-        (server, ops)
+        (server, ops, typed)
     }
 
     async fn deliver(text: &str, known_empty: bool, taken: Taken) -> Vec<String> {
+        deliver_onto("", text, known_empty, taken).await.0
+    }
+
+    /// Deliver `text` to a worker whose attach repaints `screen`; returns the
+    /// ops in order and every keystroke typed on an attach.
+    async fn deliver_onto(
+        screen: &'static str,
+        text: &str,
+        known_empty: bool,
+        taken: Taken,
+    ) -> (Vec<String>, Vec<u8>) {
         let (mut driver, _events) = super::super::test_support::driver();
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("control.sock");
@@ -998,14 +1029,17 @@ mod submit_tests {
         if matches!(taken, Taken::WorkingBeforeTheReply) {
             write_state(&jobs_root, &short, "active", chrono::Utc::now().timestamp_millis() - 5000);
         }
-        let (server, ops) = fake_daemon(&sock, transcript, (jobs_root, short.clone()), taken);
+        let (server, ops, typed) =
+            fake_daemon(&sock, transcript, (jobs_root, short.clone()), taken, screen);
         let env = std::collections::BTreeMap::default();
         let job = driver.reply_job_for(&sock, &short, "sess", text, None, env);
         let submit = Box::pin(job.submit_text(false));
         tokio::time::timeout(std::time::Duration::from_secs(10), submit).await.unwrap().unwrap();
         server.abort();
         assert!(socket::composer_known_empty(&short), "a submitted reply empties the composer");
-        ops.lock().unwrap().clone()
+        let ops = ops.lock().unwrap().clone();
+        let typed = typed.lock().unwrap().clone();
+        (ops, typed)
     }
 
     #[tokio::test]
@@ -1015,7 +1049,39 @@ mod submit_tests {
 
     #[tokio::test]
     async fn a_spoken_prompt_still_clears_a_composer_not_known_empty() {
-        assert_eq!(deliver(SPOKEN, false, Taken::UserLine).await, ["attach", "reply"]);
+        assert_eq!(deliver(SPOKEN, false, Taken::UserLine).await, ["attach", "attach", "reply"]);
+    }
+
+    /// An idle worker whose screen shows an empty composer gets the reply
+    /// typed straight in: one probe attach, no keystroke, no paced clear.
+    #[tokio::test]
+    async fn an_empty_composer_on_screen_skips_the_clear() {
+        for text in [SPOKEN, "one line"] {
+            let started = std::time::Instant::now();
+            let (ops, typed) = deliver_onto(EMPTY_SCREEN, text, false, Taken::UserLine).await;
+            assert_eq!(ops, ["attach", "reply"]);
+            assert!(typed.is_empty(), "no key may reach an empty composer: {typed:?}");
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(1),
+                "the skip must beat the paced clear, took {:?}",
+                started.elapsed()
+            );
+        }
+    }
+
+    /// A draft on screen, or a screen with no composer row, keeps the exact
+    /// paced clear before the reply.
+    #[tokio::test]
+    async fn a_draft_or_unreadable_screen_keeps_the_paced_clear() {
+        for screen in [DRAFT_SCREEN, "  Read(foo.rs)\n", ""] {
+            let (ops, typed) = deliver_onto(screen, "one line", false, Taken::UserLine).await;
+            assert_eq!(ops, ["attach", "attach", "reply"], "screen {screen:?}");
+            assert_eq!(
+                typed,
+                b"\x15\x7f".repeat(socket::CLEAR_COMPOSER_LINES),
+                "screen {screen:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1040,13 +1106,13 @@ mod submit_tests {
     async fn a_typed_reply_keeps_the_clear_and_the_enter() {
         assert_eq!(
             deliver("line one\nline two", true, Taken::UserLine).await,
-            ["attach", "reply", "attach"]
+            ["attach", "attach", "reply", "attach"]
         );
         assert_eq!(
             deliver("line one\nline two", true, Taken::Working).await,
-            ["attach", "reply", "attach"]
+            ["attach", "attach", "reply", "attach"]
         );
-        assert_eq!(deliver("one line", true, Taken::UserLine).await, ["attach", "reply"]);
+        assert_eq!(deliver("one line", true, Taken::UserLine).await, ["attach", "attach", "reply"]);
     }
 
     #[test]
