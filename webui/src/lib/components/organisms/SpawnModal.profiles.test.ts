@@ -232,46 +232,8 @@ const optionNames = () =>
   options().map((o) => o.querySelector(".name")?.textContent?.trim());
 const badge = (root: Element | null | undefined) =>
   root?.querySelector<HTMLElement>('[data-journey="account-badge"]') ?? null;
-const cog = () => button("Adjust profile");
 const profileForm = () =>
   document.querySelector<HTMLElement>('[data-journey="profile-form"]');
-const nameInput = () =>
-  profileForm()?.querySelector<HTMLInputElement>('input[id^="sp-profile-name"]') ??
-  null;
-async function typeName(v: string) {
-  const el = nameInput();
-  if (!el) throw new Error("profile name input not found");
-  el.value = v;
-  el.dispatchEvent(new Event("input", { bubbles: true }));
-  await tick();
-  flushSync();
-}
-async function pickAccount(value: string) {
-  const select = profileForm()?.querySelector<HTMLSelectElement>(
-    'select[id^="sp-kit-account"]',
-  );
-  if (!select) throw new Error("account select not found");
-  const pick = [...select.options].find((o) => o.value === value);
-  if (!pick) throw new Error(`account option ${value} not found`);
-  pick.selected = true;
-  // happy-dom cannot match `option:checked`, which Svelte's select binding reads.
-  const nativeQuery = select.querySelector.bind(select);
-  select.querySelector = ((q: string) =>
-    q === ":checked" ? pick : nativeQuery(q)) as typeof select.querySelector;
-  select.dispatchEvent(new Event("change", { bubbles: true }));
-  await tick();
-  flushSync();
-}
-async function openNewProfile() {
-  await clickPicker();
-  const footer = panel().querySelector<HTMLButtonElement>(
-    '[data-journey="new-profile"]',
-  );
-  if (!footer) throw new Error("footer button not found");
-  footer.click();
-  await tick();
-  flushSync();
-}
 const option = (id: string) => {
   const el = options().find((o) =>
     o.querySelector(`[data-profile-id="${id}"]`),
@@ -307,7 +269,7 @@ async function submit() {
 }
 
 describe("SpawnModal profiles", () => {
-  it("closed, it shows the selected profile as one card with its account badge and the cog inside", async () => {
+  it("closed, it shows the selected profile as one card with its account badge and no cog", async () => {
     await open();
     expect(selectedCard()).toBe("p1");
     expect(cards()).toHaveLength(1);
@@ -321,10 +283,7 @@ describe("SpawnModal profiles", () => {
     expect(b?.textContent?.trim()).toBe("🐼");
     expect(b?.getAttribute("aria-hidden")).toBe("true");
     expect(b?.dataset.kind).toBe("account");
-    const card = document.querySelector('[data-journey="profiles"]')
-      ?.firstElementChild;
-    expect(card?.contains(cog())).toBe(true);
-    expect(trigger().contains(cog())).toBe(false);
+    expect(() => button("Adjust profile")).toThrow();
   });
 
   it("never shows a usage hint, closed or open", async () => {
@@ -339,7 +298,7 @@ describe("SpawnModal profiles", () => {
       expect(o.textContent).not.toMatch(/this week|today|ago/);
   });
 
-  it("opens an A–Z list (not the stored order) of badge rows with no grip, cog or tick, and a New profile footer", async () => {
+  it("opens an A–Z list (not the stored order) of badge rows with no grip, cog or tick, and a Manage profiles footer", async () => {
     await open();
     await clickPicker();
     expect(expanded()).toBe(true);
@@ -352,9 +311,11 @@ describe("SpawnModal profiles", () => {
       expect(row.querySelectorAll('[data-journey="account-badge"]')).toHaveLength(1);
       expect(row.querySelector("button")).toBeNull();
     }
-    expect(panel().querySelectorAll("button")).toHaveLength(1);
-    const footer = panel().querySelector('[data-journey="new-profile"]');
-    expect(footer?.textContent?.trim()).toBe("New profile");
+    expect(panel().querySelectorAll("button")).toHaveLength(0);
+    expect(panel().querySelector('[data-journey="new-profile"]')).toBeNull();
+    const footer = panel().querySelector('a[data-journey="manage-profiles"]');
+    expect(footer?.textContent?.trim()).toBe("Manage profiles…");
+    expect(footer?.getAttribute("href")).toBe("/settings/sessions#profiles");
     expect(
       panel().querySelector('[role="listbox"]')?.contains(footer ?? null),
     ).toBe(false);
@@ -495,162 +456,6 @@ describe("SpawnModal profiles", () => {
     expect(selectedCard()).toBe("p1");
   });
 
-  it("the cog toggles an edit form for the current profile; Escape and opening the list discard it", async () => {
-    await open();
-    cog().click();
-    await tick();
-    expect(profileForm()?.dataset.mode).toBe("edit");
-    expect(profileForm()?.dataset.profileId).toBe("p1");
-    expect(nameInput()?.value).toBe("Orchestrator");
-    expect(cog().getAttribute("aria-expanded")).toBe("true");
-
-    cog().click();
-    await tick();
-    expect(profileForm()).toBeNull();
-
-    cog().click();
-    await tick();
-    key(nameInput() as HTMLInputElement, "Escape");
-    await tick();
-    flushSync();
-    expect(profileForm()).toBeNull();
-
-    cog().click();
-    await tick();
-    await clickPicker();
-    expect(expanded()).toBe(true);
-    expect(profileForm()).toBeNull();
-  });
-
-  it('"Use once" adjusts this run only and leaves the profile untouched', async () => {
-    await open();
-    cog().click();
-    await tick();
-    mode("ask").click();
-    await tick();
-    expect(document.body.textContent).toContain("1 changes");
-    button("Use once").click();
-    await tick();
-    expect(update).not.toHaveBeenCalled();
-    expect(profileForm()).toBeNull();
-    expect(trigger().textContent).toContain("· Ask");
-    const body = await submit();
-    expect(body).toMatchObject({ permission_mode: "ask", model: "fable" });
-  });
-
-  it('"Save to profile" persists the adjusted kit', async () => {
-    await open();
-    cog().click();
-    await tick();
-    mode("auto").click();
-    await tick();
-    button("Save to profile").click();
-    await tick();
-    expect(update).toHaveBeenCalledTimes(1);
-    expect(update.mock.calls[0][0]).toBe("p1");
-    expect(update.mock.calls[0][1]).toMatchObject({
-      name: "Orchestrator",
-      spec: {
-        harness: "claude-code",
-        account_id: "a1",
-        permission_mode: "auto",
-      },
-    });
-  });
-
-  it("Delete removes the edited profile and falls back to the first remaining profile A–Z", async () => {
-    const beta = { ...codexQuick, id: "p3", name: "Beta" };
-    profileList = [codexQuick, beta, orchestrator];
-    lastEntry = { profile_id: "p1" };
-    await open();
-    expect(selectedCard()).toBe("p1");
-    cog().click();
-    await tick();
-    expect(() => button("Delete profile").click()).not.toThrow();
-    await tick(100);
-    flushSync();
-    expect(remove).toHaveBeenCalledTimes(1);
-    expect(remove).toHaveBeenCalledWith("p1");
-    expect(profileForm()).toBeNull();
-    expect(selectedCard()).toBe("p3");
-  });
-
-  it("New profile opens an empty create form and a draft card, and writes nothing until Create profile", async () => {
-    await open();
-    await openNewProfile();
-    expect(
-      document.querySelector('[data-journey="profile-trigger"]'),
-    ).toBeNull();
-    expect(options()).toHaveLength(0);
-    expect(create).not.toHaveBeenCalled();
-    expect(profileForm()?.dataset.mode).toBe("create");
-    expect(nameInput()?.value).toBe("");
-    const draft = document.querySelector<HTMLElement>(
-      '[data-journey="profile-draft"]',
-    );
-    expect(draft?.textContent).toContain("New profile");
-    expect(badge(draft)?.textContent?.trim()).toBe("🐼");
-
-    const createBtn = button("Create profile");
-    expect(createBtn.disabled).toBe(true);
-    await typeName("  orchestrator ");
-    expect(button("Create profile").disabled).toBe(true);
-    await typeName("Reviewer");
-    expect(button("Create profile").disabled).toBe(false);
-    expect(create).not.toHaveBeenCalled();
-
-    button("Create profile").click();
-    await tick();
-    flushSync();
-    expect(create).toHaveBeenCalledTimes(1);
-    expect(create.mock.calls[0][0]).toMatchObject({
-      name: "Reviewer",
-      harness: "claude-code",
-      account_id: "a1",
-      model_alias: "fable",
-      permission_mode: "yolo",
-    });
-    expect(profileForm()).toBeNull();
-  });
-
-  it("the draft card's badge follows the Account field live", async () => {
-    await open();
-    await openNewProfile();
-    const draftBadge = () =>
-      badge(document.querySelector('[data-journey="profile-draft"]'));
-    expect(draftBadge()?.textContent?.trim()).toBe("🐼");
-    await pickAccount("\x00pool:pool1");
-    expect(draftBadge()?.textContent?.trim()).toBe("S");
-    await pickAccount("\x00no-account");
-    expect(draftBadge()?.textContent?.trim()).toBe("?");
-  });
-
-  it("Cancel on the create form writes nothing and returns to the previous selection", async () => {
-    await open();
-    await openNewProfile();
-    await typeName("Reviewer");
-    button("Cancel").click();
-    await tick();
-    flushSync();
-    expect(create).not.toHaveBeenCalled();
-    expect(profileForm()).toBeNull();
-    expect(selectedCard()).toBe("p1");
-  });
-
-  it('"Use once" on the create form spawns with the draft without saving it', async () => {
-    await open();
-    await openNewProfile();
-    mode("ask").click();
-    await tick();
-    button("Use once").click();
-    await tick();
-    flushSync();
-    expect(create).not.toHaveBeenCalled();
-    expect(profileForm()).toBeNull();
-    const body = await submit();
-    expect(body).toMatchObject({ permission_mode: "ask", model: "fable" });
-  });
-
   it("spawns inside the profile's pool, and unbound for a no-account profile", async () => {
     profileList = [
       { ...orchestrator, account_id: null, pool_id: "pool1" },
@@ -678,24 +483,6 @@ describe("SpawnModal profiles", () => {
       account: null,
       no_account: true,
       auto_account: false,
-    });
-  });
-
-  it('offers pools and "no account" in the edit form and persists the pick', async () => {
-    await open();
-    cog().click();
-    await tick();
-    const select = document.querySelector<HTMLSelectElement>(
-      'select[id^="sp-kit-account"]',
-    );
-    if (!select) throw new Error("account select not found");
-    const values = [...select.options].map((o) => o.value);
-    expect(values).toEqual(["\x00pool:pool1", "a1", "", "\x00no-account"]);
-    await pickAccount("\x00pool:pool1");
-    button("Save to profile").click();
-    await tick();
-    expect(update.mock.calls[0][1]).toMatchObject({
-      spec: { account_id: null, pool_id: "pool1", no_account: false },
     });
   });
 

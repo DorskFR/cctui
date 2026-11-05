@@ -1,18 +1,13 @@
 <script lang="ts">
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import type { AccountProvider, OAuthAccount } from '$lib/queries';
-	import { useAllAccountsUsage, useResourceShares } from '$lib/queries';
-	import AccountAvatar from '$lib/components/molecules/AccountAvatar.svelte';
-	import ResourceShares from '$lib/components/molecules/ResourceShares.svelte';
 	import ProviderColumn from '$lib/components/organisms/accounts/ProviderColumn.svelte';
-	import { exhaustedWindow } from '$lib/components/organisms/accounts/pools.logic';
+	import AccountCardHead from '$lib/components/organisms/accounts/card/AccountCardHead.svelte';
+	import AccountCardFoot from '$lib/components/organisms/accounts/card/AccountCardFoot.svelte';
+	import AccountRedirectForm from '$lib/components/organisms/accounts/card/AccountRedirectForm.svelte';
+	import { openRedirectTargets } from '$lib/components/organisms/accounts/card/redirect.logic';
 	import { accountHandleDrag } from '$lib/components/organisms/accounts/handleDrag.svelte';
-	import { providerLabel } from '$lib/providers';
-	import {
-		componentNames,
-		indicatorTone
-	} from '$lib/components/molecules/provider-status.logic';
-	import { Badge, Button, Checkbox, Icon, Menu, Select, Text, Timestamp, type MenuItem } from '@dorsk/tsumikit';
+	import { Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -33,7 +28,6 @@
 		onaddprovider,
 		oneditprovider,
 		onreauthprovider,
-		onremoveprovider,
 		onsetredirect,
 		onclearredirect
 	}: {
@@ -59,46 +53,14 @@
 		onaddprovider?: () => void;
 		oneditprovider?: (p: AccountProvider) => void;
 		onreauthprovider?: (p: AccountProvider) => void;
-		onremoveprovider?: (p: AccountProvider) => void;
 		onsetredirect?: (targetId: string, untilHours: number | null, families: string[]) => void;
 		onclearredirect?: (ruleId: string) => void;
 	} = $props();
 
 	const a = $derived(account);
-
-	const usage = useAllAccountsUsage(() => enabled);
-	const exhausted = $derived(exhaustedWindow(usage.data, a.id));
-	const exhaustedLabel = $derived(
-		exhausted
-			? m.accounts_exhausted({
-					window: `${providerLabel(exhausted.provider)} ${exhausted.window.label}`
-				})
-			: null
-	);
-	// Read off the usage rows the card already fetches: the server attaches the
-	// family's incident reading to a credential only while it is degraded.
-	const upstream = $derived(
-		(usage.data ?? [])
-			.filter((e) => e.account === a.id && e.provider_status)
-			.map((e) => ({ provider: e.provider, status: e.provider_status! }))
-	);
-
-	const shares = useResourceShares(
-		() => 'account',
-		() => a.id,
-		() => canShare && enabled
-	);
-	const sharedWith = $derived((shares.data ?? []).map((s) => s.user_name).join(', '));
-	let sharingOpen = $state(false);
-
-	const meta = $derived(
-		[
-			showOwner && a.user_name ? m.accounts_owner_meta({ owner: a.user_name }) : null,
-			pool ? m.accounts_pool_meta({ pool: pool.name }) : null
-		]
-			.filter(Boolean)
-			.join(' · ')
-	);
+	const ownFamilies = $derived(a.providers.map((p) => p.family));
+	const openTargets = $derived(openRedirectTargets(redirectTargets, ownFamilies, redirects));
+	let redirectOpen = $state(false);
 
 	const drag = accountHandleDrag({
 		accountId: () => a.id,
@@ -106,176 +68,47 @@
 		pools: () => pools,
 		onmovepool: () => onmovepool
 	});
-
-	let redirectOpen = $state(false);
-	let redirectTarget = $state('');
-	let redirectHours = $state('');
-
-	const availableFamilies = (t: { families: string[] }) => {
-		const mine = new Set(a.providers.map((p) => p.family));
-		const ruled = new Set(redirects.map((r) => r.family));
-		return t.families.filter((f) => mine.has(f) && !ruled.has(f));
-	};
-	const openTargets = $derived(redirectTargets.filter((t) => availableFamilies(t).length > 0));
-	const targetFamilies = $derived.by(() => {
-		const t = openTargets.find((t) => t.id === redirectTarget);
-		return t ? availableFamilies(t) : [];
-	});
-	let redirectFamilies = $derived<string[]>(targetFamilies);
-
-	const menu = $derived<MenuItem[]>([
-		{ label: m.common_edit(), icon: 'edit', onselect: () => onedit?.() },
-		...(canAddProvider
-			? [{ label: m.accounts_add_provider(), icon: 'plus' as const, onselect: () => onaddprovider?.() }]
-			: []),
-		...(onsetredirect && openTargets.length > 0
-			? [
-					{
-						label: m.accounts_redirect_button(),
-						icon: 'arrow-right' as const,
-						onselect: () => (redirectOpen = !redirectOpen)
-					}
-				]
-			: []),
-		...pools
-			.filter((p) => p.id !== pool?.id)
-			.map((p) => ({ label: m.pools_move_to({ name: p.name }), icon: 'life-buoy' as const, onselect: () => onmovepool?.(p) })),
-		...(pool ? [{ label: m.pools_leave(), onselect: () => onmovepool?.(null) }] : []),
-		{ label: m.common_delete(), icon: 'trash', danger: true, onselect: () => onremove?.() }
-	]);
-
-	function toggleFamily(f: string) {
-		redirectFamilies = redirectFamilies.includes(f)
-			? redirectFamilies.filter((x) => x !== f)
-			: [...redirectFamilies, f];
-	}
-
-	function submitRedirect() {
-		if (!redirectTarget || redirectFamilies.length === 0) return;
-		onsetredirect?.(
-			redirectTarget,
-			redirectHours === '' ? null : Number(redirectHours),
-			redirectFamilies
-		);
-		redirectOpen = false;
-		redirectTarget = '';
-		redirectHours = '';
-	}
 </script>
 
-<article class="acct" class:compact class:lifted={drag.touchDragging} id={a.id} data-journey="account" data-journey-key={a.name}>
-	<header class="head">
-		{#if onmovepool && !managed && !compact}
-			<span
-				class="handle"
-				data-journey="drag-handle"
-				draggable="true"
-				role="img"
-				aria-label={m.pools_drag_handle()}
-				title={m.pools_drag_handle()}
-				ondragstart={drag.dragStart}
-				ondragend={drag.dragEnd}
-				onpointerdown={drag.pointerDown}
-				onpointermove={drag.pointerMove}
-				onpointerup={drag.pointerUp}
-				onpointercancel={drag.pointerCancel}>⋮⋮</span
-			>
-		{/if}
-		<AccountAvatar emoji={a.emoji} name={a.name} id={a.id} size={28} decorative />
-		<div class="title">
-			<h2 class="name"><Text as="span" size="md" weight="semibold" wrap="anywhere">{a.name}</Text></h2>
-			{#if meta}
-				<Text as="span" tone="faint" size="xs">{meta}</Text>
-			{/if}
-		</div>
-		{#if exhausted && exhaustedLabel}
-			<span class="exhausted">
-				<span class="dot"></span>
-				<Text as="span" size="xs" tone="danger">
-					{exhaustedLabel}{#if exhausted.window.resets_at}{' · '}<Timestamp
-							value={exhausted.window.resets_at}
-							mode="relative"
-							tone="inherit"
-						/>{/if}
-				</Text>
-			</span>
-		{/if}
-		{#each upstream as u (u.provider)}
-			{@const detail = m.provider_status_account_badge({
-				provider: providerLabel(u.provider),
-				detail: componentNames(u.status).join(', ') || u.status.description || u.status.indicator
-			})}
-			<a
-				class="upstream"
-				class:dense={compact}
-				href={u.status.url}
-				target="_blank"
-				rel="noopener"
-				data-tone={indicatorTone(u.status.indicator)}
-				title={compact ? detail : u.status.description}
-				aria-label={detail}
-			>
-				<span class="dot"></span>
-				<Text as="span" size="xs" tone="inherit">{compact ? providerLabel(u.provider) : detail}</Text>
-			</a>
-		{/each}
-		{#each redirects as r (r.id)}
-			<Badge
-				size="sm"
-				removable={!!onclearredirect}
-				actionLabel={m.accounts_redirect_clear()}
-				onremove={() => onclearredirect?.(r.id)}
-				style="border-radius:var(--r-sm);flex-wrap:wrap;white-space:normal;gap:var(--sp-2)"
-			>
-				<Text as="span" tone="faint" size="xs">{r.family}</Text>
-				<Text as="span" size="sm">{m.accounts_redirect_to({ target: r.targetName })}</Text>
-				{#if r.until}
-					<Text as="span" tone="faint" size="xs">{m.accounts_until()} <Timestamp value={r.until} mode="relative" tone="inherit" /></Text>
-				{/if}
-			</Badge>
-		{/each}
-		<span class="spacer"></span>
-		{#if compact}
-			<!-- gauges only -->
-		{:else if managed}
-			<Text as="span" tone="faint" size="xs">{m.accounts_managed_readonly()}</Text>
-		{:else}
-			<span class="actions" data-journey="account-menu">
-				<Menu label={m.accounts_more()} items={menu} placement="bottom-end" box="sm">
-					{#snippet trigger()}<Icon name="more" size={16} />{/snippet}
-				</Menu>
-			</span>
-		{/if}
-	</header>
+<article
+	class="acct"
+	class:compact
+	class:lifted={drag.touchDragging}
+	id={a.id}
+	data-journey="account"
+	data-journey-key={a.name}
+>
+	<AccountCardHead
+		account={a}
+		{pool}
+		{pools}
+		{drag}
+		{enabled}
+		{managed}
+		{canAddProvider}
+		{showOwner}
+		{compact}
+		{redirects}
+		canRedirect={!!onsetredirect && openTargets.length > 0}
+		{onedit}
+		{onremove}
+		{onmovepool}
+		{onaddprovider}
+		{onclearredirect}
+		ontoggleredirect={() => (redirectOpen = !redirectOpen)}
+	/>
 
 	{#if redirectOpen}
-		<div class="redirect-form">
-			<Text as="span" tone="muted" size="sm">{m.accounts_redirect_pick()}</Text>
-			<Select bind:value={redirectTarget} aria-label={m.accounts_redirect_pick()}>
-				<option value="" disabled></option>
-				{#each openTargets as t (t.id)}
-					<option value={t.id}>{t.name}</option>
-				{/each}
-			</Select>
-			{#each targetFamilies as f (f)}
-				<Checkbox label={f} checked={redirectFamilies.includes(f)} onchange={() => toggleFamily(f)} />
-			{/each}
-			<Select bind:value={redirectHours} aria-label={m.a11y_redirect_expiry()}>
-				<option value="">{m.accounts_redirect_no_expiry()}</option>
-				{#each ['1', '5', '24'] as h (h)}
-					<option value={h}>{m.accounts_redirect_hours({ n: h })}</option>
-				{/each}
-			</Select>
-			<Button
-				size="sm"
-				variant="primary"
-				disabled={!redirectTarget || redirectFamilies.length === 0}
-				onclick={submitRedirect}
-			>
-				{m.accounts_redirect_set()}
-			</Button>
-			<Button size="sm" onclick={() => (redirectOpen = false)}>{m.common_cancel()}</Button>
-		</div>
+		<AccountRedirectForm
+			targets={openTargets}
+			{ownFamilies}
+			{redirects}
+			onsubmit={(targetId, untilHours, families) => {
+				onsetredirect?.(targetId, untilHours, families);
+				redirectOpen = false;
+			}}
+			oncancel={() => (redirectOpen = false)}
+		/>
 	{/if}
 
 	<div class="columns">
@@ -284,11 +117,9 @@
 				provider={p}
 				usageEnabled={enabled}
 				canManage={!p.managed && !compact}
-				canRemove={!p.managed && !compact}
 				dense={compact}
 				onedit={() => oneditprovider?.(p)}
 				onreauth={() => onreauthprovider?.(p)}
-				onremove={() => onremoveprovider?.(p)}
 			/>
 		{:else}
 			<div class="none"><Text tone="faint" size="sm">{m.accounts_no_credentials()}</Text></div>
@@ -296,39 +127,17 @@
 	</div>
 
 	{#if !compact}
-	<footer class="foot">
-		{#if canShare}
-			<Text as="span" size="xs" tone="muted">
-				{#if sharedWith}
-					{m.accounts_shared_with()} <Text as="span" size="xs" weight="semibold" tone="default">{sharedWith}</Text>
-				{:else}
-					{m.accounts_shared_none()}
-				{/if}
-			</Text>
-			<Button variant="link" size="sm" style="font-size: var(--fs-xs)" onclick={() => (sharingOpen = !sharingOpen)}>
-				{m.accounts_manage_sharing()}
-			</Button>
-		{/if}
-		<span class="spacer"></span>
-		<Text as="span" size="xs" tone="faint">
-			{m.accounts_created()} <Timestamp value={a.created_at} mode="short-iso" mono tone="inherit" />
-		</Text>
-	</footer>
-	{/if}
-	{#if canShare && sharingOpen}
-		<div class="sharing">
-			<ResourceShares resourceType="account" id={a.id} noun={m.accounts_share_noun()} {enabled} />
-		</div>
+		<AccountCardFoot account={a} {canShare} {enabled} />
 	{/if}
 </article>
 
 <style>
+	/* Depth from the elevated shade; the head and foot are bands, not rules. */
 	.acct {
 		container: acct-row / inline-size;
 		display: flex;
 		flex-direction: column;
 		min-width: 0;
-		border: 1px solid var(--border);
 		border-radius: var(--r-lg);
 		background: var(--bg-elevated);
 		overflow: hidden;
@@ -338,92 +147,6 @@
 		outline: 2px solid var(--accent);
 		opacity: 0.85;
 	}
-	.head {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: var(--sp-2) var(--sp-3);
-		padding: var(--sp-3) var(--sp-4);
-		border-bottom: 1px solid var(--border);
-		min-width: 0;
-	}
-	.handle {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		min-width: var(--touch-target, 2.75rem);
-		min-height: var(--touch-target, 2.75rem);
-		margin: calc(-1 * var(--sp-2)) 0 calc(-1 * var(--sp-2)) calc(-1 * var(--sp-2));
-		color: var(--text-faint);
-		letter-spacing: -0.15em;
-		cursor: grab;
-		user-select: none;
-		/* The browser would claim a pan and cancel the pointer mid-drag. */
-		touch-action: none;
-	}
-	.handle:active {
-		cursor: grabbing;
-	}
-	.title {
-		display: flex;
-		align-items: baseline;
-		gap: var(--sp-2);
-		min-width: 0;
-	}
-	.name {
-		margin: 0;
-		min-width: 0;
-	}
-	.exhausted {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-2);
-	}
-	.dot {
-		width: var(--sp-2);
-		height: var(--sp-2);
-		border-radius: var(--r-pill);
-		background: var(--danger);
-	}
-	/* Wraps within the header row rather than widening it, like the exhausted
-	   chip beside it. */
-	.upstream {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-2);
-		flex-wrap: wrap;
-		text-decoration: none;
-		color: var(--danger);
-	}
-	.upstream[data-tone='warn'] {
-		color: var(--warn);
-	}
-	.upstream[data-tone='warn'] .dot {
-		background: var(--warn);
-	}
-	.upstream.dense {
-		flex-wrap: nowrap;
-		gap: var(--sp-1);
-		white-space: nowrap;
-	}
-	.upstream:hover {
-		text-decoration: underline;
-	}
-	.spacer {
-		flex: 1;
-	}
-	.acct.compact .head {
-		gap: var(--sp-1) var(--sp-2);
-		padding: var(--sp-2) var(--sp-3);
-	}
-	.redirect-form {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: var(--sp-2);
-		padding: var(--sp-2) var(--sp-4);
-		border-bottom: 1px solid var(--border);
-	}
 	.columns {
 		display: grid;
 		grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -431,27 +154,10 @@
 	.none {
 		padding: var(--sp-3) var(--sp-4);
 	}
-	.foot {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-4);
-		padding: var(--sp-2) var(--sp-4);
-		background: var(--bg);
-		border-top: 1px solid var(--border);
-	}
-	.sharing {
-		padding: var(--sp-3) var(--sp-4);
-		border-top: 1px solid var(--border);
-	}
 	@container acct-row (max-width: 66rem) {
 		.columns {
 			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
-	}
-	.actions {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-2);
 	}
 	@container acct-row (max-width: 34rem) {
 		.columns {

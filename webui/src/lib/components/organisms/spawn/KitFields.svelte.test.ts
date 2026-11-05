@@ -83,3 +83,13 @@ describe('KitFields account pick follows the harness', () => {
 		expect(draft.pool_id).toBeNull();
 	});
 });
+
+describe('KitFields harness picker', () => {
+	it('is the kit SegmentedControl with the selected harness checked', () => {
+		render({ harness: 'claude-code' });
+		const group = document.querySelector('[data-tsu="SegmentedControl"]');
+		expect(group?.getAttribute('role')).toBe('radiogroup');
+		expect(harnessCard('Claude Code').getAttribute('aria-checked')).toBe('true');
+		expect(harnessCard('Codex').getAttribute('aria-checked')).toBe('false');
+	});
+});

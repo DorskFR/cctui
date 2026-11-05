@@ -123,7 +123,7 @@ test('390px: closed, the picker is one card and Labels/Files/Env vars and Launch
 	expect(scrolled).toEqual([]);
 });
 
-test('390px: the open dropdown scrolls internally and keeps the New profile footer pinned', async ({ page }) => {
+test('390px: the open dropdown scrolls internally and keeps the Manage profiles footer pinned', async ({ page }) => {
 	await stub(page);
 	const dialog = await openSpawn(page);
 
@@ -141,7 +141,7 @@ test('390px: the open dropdown scrolls internally and keeps the New profile foot
 	);
 
 	const list = pop.getByRole('listbox');
-	const footer = pop.getByRole('button', { name: 'New profile' });
+	const footer = pop.getByRole('link', { name: 'Manage profiles…' });
 	const overflow = await list.evaluate((el) => el.scrollHeight - el.clientHeight);
 	expect(overflow).toBeGreaterThan(0);
 
@@ -190,20 +190,14 @@ function near(a: number, b: number) {
 	expect(Math.abs(a - b)).toBeLessThanOrEqual(1);
 }
 
-test('the closed card carries the badge and the cog inside it, and the open panel is attached at its width', async ({
+test('the closed card carries the badge and no cog, and the open panel is attached at its width', async ({
 	page
 }) => {
 	await stub(page, makeProfiles(3));
 	const dialog = await openSpawn(page);
 	const card = trigger(dialog);
-	const cardBox = await box(card);
 	await expect(card.locator('[data-journey="account-badge"]')).toBeVisible();
-	const cog = dialog.getByRole('button', { name: 'Adjust profile' });
-	const cogBox = await box(cog);
-	expect(cogBox.x).toBeGreaterThan(cardBox.x);
-	expect(cogBox.x + cogBox.width).toBeLessThan(cardBox.x + cardBox.width);
-	expect(cogBox.y).toBeGreaterThanOrEqual(cardBox.y);
-	expect(cogBox.y + cogBox.height).toBeLessThanOrEqual(cardBox.y + cardBox.height);
+	await expect(dialog.getByRole('button', { name: 'Adjust profile' })).toHaveCount(0);
 
 	await card.click();
 	const pop = panel(page);
@@ -220,47 +214,17 @@ test('the closed card carries the badge and the cog inside it, and the open pane
 	else near(popBox.y, openCard.y + openCard.height);
 });
 
-test('the cog opens an edit form attached under the card at its width; the list closes it', async ({ page }) => {
-	await stub(page, makeProfiles(3));
-	const dialog = await openSpawn(page);
-	await dialog.getByRole('button', { name: 'Adjust profile' }).click();
-	const form = dialog.locator('[data-journey="profile-form"][data-mode="edit"]');
-	await expect(form).toBeVisible();
-	const cardBox = await box(trigger(dialog));
-	const formBox = await box(form);
-	near(formBox.width, cardBox.width);
-	near(formBox.x, cardBox.x);
-	near(formBox.y, cardBox.y + cardBox.height);
-
-	await trigger(dialog).click();
-	await expect(panel(page)).toBeVisible();
-	await expect(form).toHaveCount(0);
-});
-
-test('New profile writes nothing until Create profile, and Cancel leaves the list unchanged', async ({ page }) => {
+test('the launch form never edits a profile: Manage profiles links to Settings and writes nothing', async ({
+	page
+}) => {
 	const writes = await stub(page, makeProfiles(3));
 	const dialog = await openSpawn(page);
 
 	await trigger(dialog).click();
-	await panel(page).getByRole('button', { name: 'New profile' }).click();
-	const form = dialog.locator('[data-journey="profile-form"][data-mode="create"]');
-	await expect(form).toBeVisible();
-	await expect(dialog.locator('[data-journey="profile-draft"]')).toContainText('New profile');
-	const create = form.getByRole('button', { name: 'Create profile' });
-	await expect(create).toBeDisabled();
-	await form.getByLabel('Profile name').fill('profile 1');
-	await expect(create).toBeDisabled();
-	await form.getByLabel('Profile name').fill('Reviewer');
-	await expect(create).toBeEnabled();
-	await form.getByRole('button', { name: 'Cancel' }).click();
-	await expect(form).toHaveCount(0);
-	await expect(trigger(dialog).locator('[data-profile-id="p0"]')).toBeVisible();
+	const pop = panel(page);
+	await expect(pop.getByRole('button', { name: 'New profile' })).toHaveCount(0);
+	const manage = pop.getByRole('link', { name: 'Manage profiles…' });
+	await expect(manage).toHaveAttribute('href', '/settings/sessions#profiles');
+	await expect(dialog.locator('[data-journey="profile-form"]')).toHaveCount(0);
 	expect(writes).toEqual([]);
-
-	await trigger(dialog).click();
-	await panel(page).getByRole('button', { name: 'New profile' }).click();
-	await form.getByLabel('Profile name').fill('Reviewer');
-	await form.getByRole('button', { name: 'Create profile' }).click();
-	await expect.poll(() => writes).toEqual(['POST /api/v1/profiles']);
-	await expect(form).toHaveCount(0);
 });

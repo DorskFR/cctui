@@ -1,35 +1,17 @@
 <script lang="ts">
-	import { AutoGrid, Button, Callout, Dropzone, Modal, SplitButton, resizeHandle } from '@dorsk/tsumikit';
-	import ScheduleCustomModal from './conversation/ScheduleCustomModal.svelte';
-	import { scheduleMenuItems } from './conversation/scheduleMenu';
-	import { parseCustom, toLocalInput } from './conversation/scheduleTimes';
-	import { toasts } from '$lib/toast.svelte';
+	import { Dropzone, Modal } from '@dorsk/tsumikit';
 	import { submitChord } from '$lib/platform';
 	import { dialogBackdropGuard } from '$lib/dialogBackdropGuard';
-	import { settings, type SpawnDockSide } from '$lib/settings.svelte';
+	import type { SpawnDockSide } from '$lib/settings.svelte';
 	import { SPAWN_DOCK_WIDTH } from '$lib/spawnDock.svelte';
-	import { DOCK_MIN_PX, maxDockWidth } from '$lib/dock';
 	import { m } from '$lib/paraglide/messages';
 	import type { SpawnPrefill } from './spawn/types';
 	import { SpawnForm } from './spawn/spawnForm.svelte';
+	import SpawnDock from './spawn/SpawnDock.svelte';
+	import SpawnFooter from './spawn/SpawnFooter.svelte';
 	import SpawnTargetSection from './spawn/SpawnTargetSection.svelte';
 	import SpawnPromptSection from './spawn/SpawnPromptSection.svelte';
 	import SpawnGrantsSection from './spawn/SpawnGrantsSection.svelte';
-
-	// The kit's Button/SplitButton take no flex prop whose basis is the content
-	// (`grow` is `1 1 0`, i.e. equal columns), so the footer buttons carry theirs
-	// inline. The primary's basis is the width below which it would be squeezed:
-	// past it the row wraps and it spans the whole footer.
-	const FOOT_GROW = 'flex: 1 1 auto';
-	const FOOT_PRIMARY_GROW = 'flex: 1 1 11rem';
-	// SplitButton packs its two segments at the start of its box, so a stretched
-	// root would leave slack after the caret; a grid root hands the slack to the
-	// main segment and keeps the caret glued to it.
-	const FOOT_SPLIT_GROW = `${FOOT_PRIMARY_GROW}; display: grid; grid-template-columns: 1fr auto`;
-
-	let dragging = $state(false);
-	let viewportWidth = $state(0);
-	const maxPx = $derived(maxDockWidth(viewportWidth));
 
 	let {
 		onclose,
@@ -69,37 +51,6 @@
 		docked: () => !!docked
 	});
 
-	let customOpen = $state(false);
-	let customValue = $state('');
-	// The presets are relative to now, so a form left open past a cutoff
-	// (e.g. "later today") must not keep offering a time that has passed.
-	let now = $state(Date.now());
-	$effect(() => {
-		const t = setInterval(() => (now = Date.now()), 60_000);
-		return () => clearInterval(t);
-	});
-	const scheduleItems = $derived(
-		scheduleMenuItems({
-			now,
-			canSchedule: sf.draftValid && !sf.busy,
-			onpreset: (at) => void sf.scheduleLaunch(at),
-			oncustom: () => {
-				customValue = toLocalInput(new Date(Date.now() + 3_600_000));
-				customOpen = true;
-			}
-		})
-	);
-
-	function scheduleCustom() {
-		const at = parseCustom(customValue, new Date());
-		if (!at) {
-			toasts.error(m.composer_schedule_custom_invalid());
-			return;
-		}
-		customOpen = false;
-		void sf.scheduleLaunch(at);
-	}
-
 	/** Whether the form holds anything the user would miss. */
 	export function isDirty(): boolean {
 		return sf.isDirty();
@@ -116,46 +67,8 @@
 
 <!-- The form body and the action row are snippets so the Modal and the docked
      panel render the very same markup; only the chrome around them differs. -->
-<svelte:window bind:innerWidth={viewportWidth} />
-
 {#if docked}
-	<aside
-		class="dock"
-		class:dock-left={docked === 'left'}
-		class:stacked
-		aria-label={m.spawn_modal_title()}
-		style:--spawn-dock-w={dockWidth}
-	>
-	<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-	<div
-		class="grip"
-		class:grip-left={docked === 'left'}
-		class:dragging
-		role="separator"
-		tabindex="0"
-		aria-orientation="vertical"
-		aria-valuemin={DOCK_MIN_PX}
-		aria-valuemax={maxPx}
-		aria-label={m.dock_resize_grip()}
-		title={m.dock_resize_grip()}
-		use:resizeHandle={{
-			side: docked,
-			min: DOCK_MIN_PX,
-			max: maxPx,
-			onwidth: (px) => settings.setSpawnDock({ width: px }),
-			onreset: () => settings.setSpawnDock({ width: undefined }),
-			onactive: (a) => {
-				dragging = a;
-				document.body.classList.toggle('dock-resizing', a);
-			}
-		}}
-	></div>
-		<div class="dock-head">
-			<span>{m.spawn_modal_title()}</span>
-		</div>
-		<div class="dock-body">{@render body()}</div>
-		<div class="dock-foot">{@render footer()}</div>
-	</aside>
+	<SpawnDock side={docked} {stacked} width={dockWidth} {body} {footer} />
 {:else}
 	<Modal
 		title={m.spawn_modal_title()}
@@ -194,192 +107,13 @@
 	</Dropzone>
 {/snippet}
 {#snippet footer()}
-	{#if sf.spawnFailure}
-		<Callout tone="danger" title={m.spawn_failure_inline()} style="flex-basis:100%">
-			<pre class="spawn-failure-detail">{sf.spawnFailure}</pre>
-		</Callout>
-	{/if}
-	<div class="foot-row">
-		<Button style={FOOT_GROW} onclick={sf.clearForm}>{m.spawn_clear()}</Button>
-		{#if sf.target === 'machine'}
-			<Button
-				data-journey="draft"
-				style={FOOT_GROW}
-				disabled={sf.busy || !sf.draftValid}
-				title={sf.disabledReason}
-				onclick={sf.submitDraft}
-			>
-				{m.spawn_draft()}
-			</Button>
-		{/if}
-		<!-- No machines: nothing to schedule either, and only a plain Button can
-		     carry the disabled reason as its own title. -->
-		{#if sf.target === 'machine' && !sf.noMachines}
-			<SplitButton
-				data-journey="submit"
-				variant="primary"
-				caret="half"
-				style={FOOT_SPLIT_GROW}
-				placement="top-end"
-				label={m.spawn_schedule_menu()}
-				items={scheduleItems}
-				loading={sf.busy}
-				disabled={sf.busy || !sf.valid}
-				menuDisabled={!sf.draftValid}
-				title={sf.disabledReason}
-				onclick={sf.submit}
-			>
-				{sf.spawnLabel}
-			</SplitButton>
-		{:else}
-			<Button
-				data-journey="submit"
-				variant="primary"
-				style={FOOT_PRIMARY_GROW}
-				loading={sf.busy}
-				disabled={sf.busy || !sf.valid}
-				title={sf.disabledReason}
-				onclick={sf.submit}
-			>
-				{sf.spawnLabel}
-			</Button>
-		{/if}
-	</div>
+	<SpawnFooter {sf} />
 {/snippet}
-
-{#if customOpen}
-	<ScheduleCustomModal
-		now={Date.now()}
-		bind:value={customValue}
-		onconfirm={scheduleCustom}
-		onclose={() => (customOpen = false)}
-	/>
-{/if}
 
 <style>
 	.stack {
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
-	}
-	.spawn-failure-detail {
-		margin: var(--sp-1) 0 0;
-		max-height: 8rem;
-		overflow-y: auto;
-		overflow-x: hidden;
-		white-space: pre-wrap;
-		font-family: var(--font-mono);
-		font-size: var(--text-xs);
-	}
-	/* Docked panel: pinned to one edge between the header and the bottom nav,
-	   scrolling its body on its own. The layout reserves the same width. */
-	.dock {
-		position: fixed;
-		top: calc(var(--header-h) + var(--safe-top));
-		bottom: var(--bottom-chrome, calc(var(--nav-h) + var(--safe-bottom)));
-		right: 0;
-		width: var(--spawn-dock-w);
-		display: flex;
-		flex-direction: column;
-		background: var(--bg-elevated);
-		border-left: 1px solid var(--border);
-		z-index: 4;
-	}
-	.dock.dock-left {
-		right: auto;
-		left: 0;
-		border-left: 0;
-		border-right: 1px solid var(--border);
-	}
-	.dock.stacked {
-		bottom: 50%;
-	}
-	/* A 10px hit area straddling the panel's border, with a 2px line that only
-	   shows on hover, focus or while dragging. */
-	.grip {
-		position: absolute;
-		top: 0;
-		bottom: 0;
-		left: -5px;
-		width: 10px;
-		cursor: ew-resize;
-		touch-action: none;
-		z-index: 1;
-	}
-	.grip-left {
-		left: auto;
-		right: -5px;
-	}
-	/* An always-visible knob in the middle of the edge, like the kit's panel handle. */
-	.grip::before {
-		content: '';
-		position: absolute;
-		top: 50%;
-		left: 3px;
-		width: 4px;
-		height: 2.5rem;
-		margin-top: -1.25rem;
-		border-radius: var(--r-pill);
-		background: var(--border-strong);
-	}
-	.grip:hover::before,
-	.grip.dragging::before {
-		background: var(--accent);
-	}
-	.grip::after {
-		content: '';
-		position: absolute;
-		top: 0;
-		bottom: 0;
-		left: 4px;
-		width: 2px;
-		background: var(--accent);
-		opacity: 0;
-		transition: opacity 0.12s var(--ease);
-	}
-	.grip:hover::after,
-	.grip:focus-visible::after,
-	.grip.dragging::after {
-		opacity: 1;
-	}
-	.grip:focus-visible {
-		outline: none;
-	}
-	@media (hover: none) {
-		.grip::after {
-			opacity: 0.35;
-		}
-	}
-	.dock-head {
-		flex: none;
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--sp-2);
-		padding: var(--sp-3) var(--sp-3) var(--sp-2);
-		font-weight: var(--fw-semibold);
-		border-bottom: 1px solid var(--border);
-	}
-	.dock-body {
-		flex: 1;
-		min-height: 0;
-		overflow-y: auto;
-		overflow-x: hidden;
-		padding: var(--sp-3);
-	}
-	.dock-foot {
-		flex: none;
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--sp-2);
-		padding: var(--sp-2) var(--sp-3);
-		border-top: 1px solid var(--border);
-	}
-	.foot-row {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--sp-2);
-		flex: 1 1 auto;
-		width: 100%;
 	}
 </style>

@@ -13,6 +13,8 @@
 
 	let { sf }: { sf: SpawnForm } = $props();
 
+	const MANAGE_PROFILES_HREF = '/settings/sessions#profiles';
+
 	$effect(() => {
 		void loadCctuiverseConfig();
 	});
@@ -28,8 +30,9 @@
 		dispatcherIds={sf.dispatcherIds}
 		accounts={sf.allAccounts}
 		onsubmit={sf.submit}
-	/>
-	<SpawnDictation {sf} />
+	>
+		{#snippet tools()}<SpawnDictation {sf} />{/snippet}
+	</DispatchFields>
 {:else}
 	<MachineFields
 		bind:form={sf.form}
@@ -38,8 +41,9 @@
 		onsubmit={sf.submit}
 		att={sf.att}
 		bind:promptEl={sf.promptEl}
-	/>
-	<SpawnDictation {sf} />
+	>
+		{#snippet tools()}<SpawnDictation {sf} />{/snippet}
+	</MachineFields>
 	{#if hasInvite && !cctuiverseConfig.enabled}
 		<Callout tone="warn" style="flex-basis:100%">{m.cctuiverse_disabled_invite()}</Callout>
 	{:else if hasInvite}
@@ -57,5 +61,6 @@
 		oncreate={(name, spec) => createProfile(sf, name, spec)}
 		onsave={(id, name, spec) => saveProfile(sf, id, name, spec)}
 		ondelete={(id) => deleteProfile(sf, id)}
+		manageHref={MANAGE_PROFILES_HREF}
 	/>
 {/if}

@@ -7,9 +7,10 @@
 	import { harnessModelsFallback } from '$lib/domainTables';
 	import EffortSlider from './EffortSlider.svelte';
 	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
-	import { Button, Field, Input, Kbd, Select, Text, Textarea } from '@dorsk/tsumikit';
-	import { useHarnessModels, useSessions } from '$lib/queries';
-	import SessionMention from '$lib/components/molecules/SessionMention.svelte';
+	import type { Snippet } from 'svelte';
+	import { Button, Field, Input, Kbd, Select, Text } from '@dorsk/tsumikit';
+	import { useHarnessModels } from '$lib/queries';
+	import PromptField from '$lib/components/organisms/PromptField.svelte';
 	import {
 		accountAdapters,
 		providerForAdapter,
@@ -33,7 +34,8 @@
 		form = $bindable(),
 		dispatcherIds,
 		accounts,
-		onsubmit
+		onsubmit,
+		tools: extraTools
 	}: {
 		form: Form;
 		dispatcherIds: string[];
@@ -41,11 +43,10 @@
 		accounts: OAuthAccount[];
 		// Submit the spawn form from the prompt textarea (Ctrl/⌘+Enter).
 		onsubmit?: () => void;
+		/** Extra controls for the prompt field's toolbar, after prompt history. */
+		tools?: Snippet;
 	} = $props();
 
-	// `#` session-mention popover on the prompt (see SessionMention).
-	const sessionsQuery = useSessions(() => false);
-	const mentionSessions = $derived(sessionsQuery.data?.sessions ?? []);
 	let promptEl = $state<HTMLTextAreaElement | null>(null);
 
 	const nav = new HistoryNav({
@@ -145,35 +146,33 @@
 	<Text tone="faint" size="xs">{m.dispatch_ticket_hint()}</Text>
 </Field>
 
-<Field for="sp-prompt-d">
+<Field for="sp-prompt-d" label={m.dispatch_prompt_label()}>
 	{#snippet hint()}
-		<Kbd keys="mod+enter" />
-		{m.spawn_submit_hint_dispatch()}
+		<span class="chord-hint"><Kbd keys="mod+enter" /> {m.spawn_submit_hint_dispatch()}</span>
 	{/snippet}
-	<div class="prompt-head">
-		<PromptHistoryMenu
-			onpick={(v) => {
-				nav.recall(v);
-				promptEl?.focus();
-			}}
-		/>
-		<label class="prompt-label" for="sp-prompt-d">{m.dispatch_prompt_label()}</label>
-	</div>
-	<SessionMention bind:value={form.prompt} el={promptEl} sessions={mentionSessions}>
-		<Textarea
-			id="sp-prompt-d"
-			style="min-height:8rem;max-height:60vh;resize:none;overflow-y:auto"
-			placeholder={m.dispatch_prompt_placeholder()}
-			bind:value={form.prompt}
-			bind:el={promptEl}
-			autoresize
-			submitOn="mod-enter"
-			onsubmit={() => onsubmit?.()}
-			onkeydown={(e: KeyboardEvent) => {
-				nav.handleKey(e);
-			}}
-		/>
-	</SessionMention>
+	<PromptField
+		id="sp-prompt-d"
+		style="min-height:8rem;max-height:60vh;resize:none;overflow-y:auto"
+		placeholder={m.dispatch_prompt_placeholder()}
+		bind:value={form.prompt}
+		bind:el={promptEl}
+		autoresize
+		submitOn="mod-enter"
+		onsubmit={() => onsubmit?.()}
+		onkeydown={(e: KeyboardEvent) => {
+			nav.handleKey(e);
+		}}
+	>
+		{#snippet tools()}
+			<PromptHistoryMenu
+				onpick={(v) => {
+					nav.recall(v);
+					promptEl?.focus();
+				}}
+			/>
+			{@render extraTools?.()}
+		{/snippet}
+	</PromptField>
 </Field>
 
 <Field label={m.dispatch_prompt_file_label()} for="sp-prompt-file">
@@ -213,7 +212,7 @@
 	</div>
 	<div class="grow">
 		<Field label={m.dispatch_timeout_label()} for="sp-timeout">
-			<Input id="sp-timeout" mono inputmode="numeric" placeholder={m.dispatch_timeout_placeholder()} bind:value={form.timeout} />
+			<Input id="sp-timeout" class="num" inputmode="numeric" placeholder={m.dispatch_timeout_placeholder()} bind:value={form.timeout} />
 		</Field>
 	</div>
 </div>
@@ -282,16 +281,10 @@
 {/if}
 
 <style>
-	.prompt-head {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
-		min-height: var(--box-sm);
-	}
-	.prompt-label {
-		font-size: var(--fs-sm);
-		font-weight: var(--fw-medium);
-		color: var(--text-muted);
+	@media (pointer: coarse) {
+		.chord-hint {
+			display: none;
+		}
 	}
 	.row.gap {
 		display: flex;

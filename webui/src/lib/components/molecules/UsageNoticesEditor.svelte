@@ -25,7 +25,7 @@
 				max="100"
 				step="1"
 				size="sm"
-				mono
+				class="num"
 				width="56px"
 				disabled={!value.enabled}
 				bind:value={value.step_pct}

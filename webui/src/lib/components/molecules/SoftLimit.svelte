@@ -150,7 +150,7 @@
 			{#if usd}
 				<label class="ctrl">
 					<Text as="span" tone="faint" size="xs">{m.softlimit_cap_usd_label()}</Text>
-					<Input type="number" step="0.01" size="sm" mono width="6rem" bind:value={capUsd} placeholder="e.g. 5.00" />
+					<Input type="number" step="0.01" size="sm" class="num" width="6rem" bind:value={capUsd} placeholder="e.g. 5.00" />
 				</label>
 			{/if}
 			{#if !usd}
@@ -162,7 +162,7 @@
 						max="100"
 						step="0.1"
 						size="sm"
-						mono
+						class="num"
 						width="5rem"
 						bind:value={paceCap}
 						placeholder="e.g. 1.5"
@@ -171,7 +171,7 @@
 			{/if}
 			<label class="ctrl">
 				<Text as="span" tone="faint" size="xs">{m.softlimit_bypass_label()}</Text>
-				<Input type="number" size="sm" mono width="5rem" bind:value={bypass} placeholder="e.g. 30" />
+				<Input type="number" size="sm" class="num" width="5rem" bind:value={bypass} placeholder="e.g. 30" />
 			</label>
 		</div>
 	{/if}

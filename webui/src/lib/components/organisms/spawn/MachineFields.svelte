@@ -2,6 +2,7 @@
 	// The "Machine" branch of the spawn form: where (machine badge · cwd ·
 	// branch), the session name, and the prompt. The harness / account / model /
 	// effort / permission knobs come from the selected profile (ProfileList).
+	import type { Snippet } from 'svelte';
 	import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
 	import { useGitInfo } from '$lib/queries';
 	import PromptField from '$lib/components/organisms/PromptField.svelte';
@@ -34,7 +35,8 @@
 		recentDirs,
 		onsubmit,
 		att,
-		promptEl = $bindable(null)
+		promptEl = $bindable(null),
+		tools: extraTools
 	}: {
 		form: Form;
 		machines: MachineResourcesRow[];
@@ -42,6 +44,8 @@
 		onsubmit?: () => void;
 		att?: PromptAttachments;
 		promptEl?: HTMLTextAreaElement | null;
+		/** Extra controls for the prompt field's toolbar, after prompt history. */
+		tools?: Snippet;
 	} = $props();
 
 	let revealed = $state<ReadonlySet<string>>(new Set());
@@ -143,20 +147,10 @@
 	bind:value={form.name}
 />
 
-<Field for="sp-prompt">
+<Field for="sp-prompt" label={m.spawn_prompt_label()}>
 	{#snippet hint()}
-		<Kbd keys="mod+enter" />
-		{m.spawn_submit_hint_spawn()}
+		<span class="chord-hint"><Kbd keys="mod+enter" /> {m.spawn_submit_hint_spawn()}</span>
 	{/snippet}
-	<div class="prompt-head">
-		<PromptHistoryMenu
-			onpick={(v) => {
-				nav.recall(v);
-				promptEl?.focus();
-			}}
-		/>
-		<label class="prompt-label" for="sp-prompt">{m.spawn_prompt_label()}</label>
-	</div>
 	<PromptField
 		{att}
 		bind:value={form.prompt}
@@ -172,21 +166,25 @@
 		onkeydown={(e: KeyboardEvent) => {
 			nav.handleKey(e);
 		}}
-	/>
+	>
+		{#snippet tools()}
+			<PromptHistoryMenu
+				onpick={(v) => {
+					nav.recall(v);
+					promptEl?.focus();
+				}}
+			/>
+			{@render extraTools?.()}
+		{/snippet}
+	</PromptField>
 	<RedactedChips text={form.prompt} bind:revealed />
 </Field>
 
 <style>
-	.prompt-head {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
-		min-height: var(--box-sm);
-	}
-	.prompt-label {
-		font-size: var(--fs-sm);
-		font-weight: var(--fw-medium);
-		color: var(--text-muted);
+	@media (pointer: coarse) {
+		.chord-hint {
+			display: none;
+		}
 	}
 	.where {
 		display: flex;
