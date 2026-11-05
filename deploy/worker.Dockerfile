@@ -310,6 +310,8 @@ COPY --from=bins /cctui-daemon       /usr/local/bin/cctui-daemon
 COPY --from=bins /cctui-guard-proxy  /usr/local/bin/cctui-guard-proxy
 COPY --from=bins /cctui-supervisor   /usr/local/bin/cctui-supervisor
 COPY --from=bins /cctui-guard        /usr/local/bin/cctui-guard
+# `guard why` lists the recent exec denials an agent hits under exec interception.
+RUN ln -s cctui-guard /usr/local/bin/guard && guard why --help >/dev/null
 COPY deploy/worker-entrypoint.sh   /usr/local/bin/cctui-worker-entrypoint
 # worker-net-init — pod-netns iptables for the k8s sidecar mode: run
 # from a NET_ADMIN init container so the worker container needs no privileged.

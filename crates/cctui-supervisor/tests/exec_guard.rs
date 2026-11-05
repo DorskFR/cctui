@@ -67,6 +67,10 @@ fn start_guard(dir: &Path, port: u16) -> Child {
 }
 
 fn supervised(dir: &Path, script: &str) -> Command {
+    supervised_with(dir, script, &[])
+}
+
+fn supervised_with(dir: &Path, script: &str, extra: &[&str]) -> Command {
     let guard_dir = guard_bin().parent().unwrap().to_path_buf();
     let mut cmd = Command::new(supervisor());
     for ro in ["/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/proc"] {
@@ -75,6 +79,7 @@ fn supervised(dir: &Path, script: &str) -> Command {
     cmd.arg("--ro").arg(&guard_dir);
     cmd.args(["--rw", "/dev"]).arg("--rw").arg(dir);
     cmd.args(["--no-privdrop", "--guard-exec"]).arg(dir.join("exec.sock"));
+    cmd.args(extra);
     cmd.args(["--", "/bin/sh", "-c", script]);
     cmd
 }
@@ -172,4 +177,31 @@ fn every_exec_fails_once_the_guard_dies() {
         "exec after guard death must fail: {death:?} / {}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+#[test]
+#[ignore = "needs root + CAP_SYS_PTRACE + Landlock; see module docs"]
+fn only_the_exec_rw_subtrees_of_rw_paths_execute() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let mut guard = start_guard(d, free_port());
+    let bin = d.join("tools").join("bin");
+    let script = format!(
+        r#"
+D={d}
+cp /bin/true "$D/tools/bin/ok" && chmod +x "$D/tools/bin/ok"
+cp /bin/true "$D/elsewhere" && chmod +x "$D/elsewhere"
+"$D/tools/bin/ok"; echo "inside $?" >> "$D/rc"
+"$D/elsewhere"; echo "outside $?" >> "$D/rc"
+"#,
+        d = d.display()
+    );
+    let out = supervised_with(d, &script, &["--exec-rw", bin.to_str().unwrap()]).output().unwrap();
+    let _ = guard.kill();
+    let _ = guard.wait();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "supervised run failed: {stderr}");
+    assert!(bin.is_dir(), "the supervisor creates a missing exec subtree");
+    assert_eq!(rc(d, "inside"), 0, "an exec-rw subtree executes: {stderr}");
+    assert_eq!(rc(d, "outside"), 126, "the rest of the RW path stays noexec");
 }

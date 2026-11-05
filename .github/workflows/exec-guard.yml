@@ -1,0 +1,46 @@
+name: exec-guard
+
+on:
+  pull_request:
+    paths:
+      - crates/cctui-supervisor/**
+      - crates/cctui-guard/**
+      - .github/workflows/exec-guard.yml
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: exec-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep in lockstep with the deploy/worker.Dockerfile builder image.
+  BUILD_IMAGE: rust:1.97.1-slim-trixie@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c
+
+jobs:
+  kernel-matrix:
+    name: exec interception (privileged)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Host kernel has Landlock
+        run: |
+          uname -r
+          cat /sys/kernel/security/lsm
+          grep -qw landlock /sys/kernel/security/lsm
+
+      - name: Ignored exec_guard tests as root in a privileged container
+        run: |
+          docker run --rm --privileged \
+            -e CI=true -e SQLX_OFFLINE=true -e CARGO_INCREMENTAL=0 \
+            -v "$GITHUB_WORKSPACE:/src" -w /src \
+            "$BUILD_IMAGE" sh -euc '
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends git python3 >/dev/null
+              cargo build --locked -p cctui-guard -p cctui-supervisor
+              cargo test --locked -p cctui-supervisor --test exec_guard -- --ignored --nocapture
+            '

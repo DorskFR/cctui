@@ -43,6 +43,28 @@ pub const DEFAULT_RW: &[&str] = &[
     "/var/run/guard-proxy",
 ];
 
+/// Default subtrees of the RW paths that keep execute rights under
+/// `--guard-exec`; every other RW path is noexec there. Applied when no
+/// `--exec-rw` flag is given.
+///
+/// `/workspace` holds what a coding agent must run: build outputs
+/// (`target/`), package bins (`node_modules/.bin`) and repo scripts. They
+/// appear in checkouts made after boot, and Landlock binds existing inodes,
+/// not globs, so the workspace as a whole keeps execute. The home entries are
+/// where toolchains install at run time (`cargo install`, rustup,
+/// `pip --user`, mise, the npx cache MCP servers run from); missing ones are
+/// created, worker-owned, before the ruleset is applied. `/tmp`, `/dev`, the
+/// rest of the home and the guard state stay noexec, and every exec, wherever
+/// it lives, is still authorised by cctui-guard.
+pub const DEFAULT_EXEC_RW: &[&str] = &[
+    "/workspace",
+    "/home/worker/.cargo",
+    "/home/worker/.rustup",
+    "/home/worker/.local/bin",
+    "/home/worker/.local/share/mise",
+    "/home/worker/.npm/_npx",
+];
+
 /// Default uid the payload is dropped to (the worker user).
 pub const DEFAULT_UID: u32 = 1000;
 
@@ -103,6 +125,15 @@ pub struct Cli {
     #[arg(long = "guard-exec", value_name = "SOCKET")]
     pub guard_exec: Option<PathBuf>,
 
+    /// Subtree of an RW path that keeps execute rights under `--guard-exec`
+    /// (repeatable). Overrides the default set entirely.
+    #[arg(long = "exec-rw", value_name = "PATH", conflicts_with = "no_exec_rw")]
+    pub exec_rw: Vec<String>,
+
+    /// Under `--guard-exec`, leave every RW path noexec.
+    #[arg(long = "no-exec-rw")]
+    pub no_exec_rw: bool,
+
     /// Print the resolved rules and exit without applying anything.
     #[arg(long = "dry-run")]
     pub dry_run: bool,
@@ -138,6 +169,19 @@ impl Cli {
             self.rw.clone()
         }
     }
+
+    /// Requested executable RW subtrees: none under `--no-exec-rw`, else the
+    /// `--exec-rw` flags, or [`DEFAULT_EXEC_RW`].
+    #[must_use]
+    pub fn exec_rw_paths(&self) -> Vec<String> {
+        if self.no_exec_rw {
+            Vec::new()
+        } else if self.exec_rw.is_empty() {
+            DEFAULT_EXEC_RW.iter().map(ToString::to_string).collect()
+        } else {
+            self.exec_rw.clone()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -147,7 +191,7 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Cli, landlock_strict};
+    use super::{Cli, DEFAULT_EXEC_RW, DEFAULT_RW, landlock_strict};
 
     #[test]
     fn landlock_is_strict_by_default() {
@@ -201,5 +245,30 @@ mod tests {
         .unwrap();
         assert_eq!(cli.guard_exec.as_deref(), Some(Path::new("/var/run/workflow-guard/exec.sock")));
         assert_eq!(cli.command, ["cctui-daemon"]);
+    }
+
+    #[test]
+    fn exec_rw_defaults_lie_under_the_default_rw_set_and_never_under_tmp() {
+        for entry in DEFAULT_EXEC_RW {
+            let path = Path::new(entry);
+            assert!(DEFAULT_RW.iter().any(|rw| path.starts_with(rw)), "{entry} is not RW");
+            assert!(!path.starts_with("/tmp") && !path.starts_with("/dev"), "{entry}");
+        }
+        assert!(!DEFAULT_EXEC_RW.contains(&"/home/worker"), "the home itself stays noexec");
+    }
+
+    #[test]
+    fn exec_rw_flags_override_or_clear_the_defaults() {
+        let parse = |args: &[&str]| {
+            let mut argv = vec!["cctui-supervisor"];
+            argv.extend_from_slice(args);
+            argv.extend_from_slice(&["--", "cctui-daemon"]);
+            Cli::try_parse_from(argv).unwrap().exec_rw_paths()
+        };
+        assert_eq!(parse(&[]), DEFAULT_EXEC_RW);
+        assert_eq!(parse(&["--exec-rw", "/workspace/bin"]), ["/workspace/bin"]);
+        assert!(parse(&["--no-exec-rw"]).is_empty());
+        let both = ["cctui-supervisor", "--no-exec-rw", "--exec-rw", "/workspace", "--", "x"];
+        assert!(Cli::try_parse_from(both).is_err(), "--no-exec-rw and --exec-rw conflict");
     }
 }

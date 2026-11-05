@@ -64,7 +64,8 @@ pub type TransitionResponse = Value;
 ///
 /// Holds parsed steps + tool sets and the current step, mirrored to a state
 /// file for outside observers but never read back. All public methods take
-/// `&self` and lock internally, matching the threaded Python daemon.
+/// `&self`; transitions and tool checks serialise on `lock`, exec checks only
+/// read the current step snapshot.
 pub struct WorkflowEngine {
     lock: Mutex<()>,
     state: Mutex<(i64, BTreeMap<u32, u32>)>,
@@ -551,9 +552,12 @@ impl WorkflowEngine {
     /// [`crate::exec::ExecRequest::match_commands`]); any one matching denies.
     /// A step that grants capabilities also requires the exec to match its
     /// exec table, so an ungranted binary, subcommand or flag denies.
+    ///
+    /// Never takes the transition lock: a transition holds it while its
+    /// `[gate]`/`[llmjudge]` runs, and an exec waiting on it would time out
+    /// into a denial. The step in force until the transition commits decides.
     #[must_use]
     pub fn check_exec(&self, path: &str, argv: &[String], commands: &[String]) -> Verdict {
-        let _guard = self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let step_num = self.read_state();
         let Some((step_u, step)) = u32::try_from(step_num)
             .ok()
@@ -643,7 +647,6 @@ impl WorkflowEngine {
     /// grants.
     #[must_use]
     pub fn why_header(&self) -> String {
-        let _guard = self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let step_num = self.read_state();
         if step_num == STEP_EXITED {
             return "session complete: no step is active\n".to_string();
