@@ -83,7 +83,7 @@
 		<Link href="/accounts">{m.set_providers_open_board()}</Link>
 	{/snippet}
 	{#if active}
-		<div class="board"><AccountsPanel /></div>
+		<div class="board"><AccountsPanel heading={false} /></div>
 	{/if}
 </SettingSection>
 

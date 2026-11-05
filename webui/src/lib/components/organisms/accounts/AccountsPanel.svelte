@@ -21,6 +21,8 @@
 	import PageHead from '$lib/components/molecules/PageHead.svelte';
 	import { m } from '$lib/paraglide/messages';
 
+	let { heading = true }: { heading?: boolean } = $props();
+
 	const accounts = useAccounts();
 	const pools = useAccountPools();
 	const actions = useAccountActions();
@@ -75,13 +77,19 @@
 	const isManaged = (a: OAuthAccount) => a.providers.length > 0 && a.providers.every((p) => p.managed);
 </script>
 
+{#snippet headActions()}
+	<Button data-journey="new-pool" onclick={() => (drafting = true)} disabled={drafting}>{m.accounts_add_pool()}</Button>
+	<Button variant="primary" data-journey="new-account" onclick={() => editor?.openCreate()}>
+		{m.accounts_new_account()}
+	</Button>
+{/snippet}
+
 <div class="panel">
-	<PageHead title={m.accounts_title()}>
-		<Button data-journey="new-pool" onclick={() => (drafting = true)} disabled={drafting}>{m.accounts_add_pool()}</Button>
-		<Button variant="primary" data-journey="new-account" onclick={() => editor?.openCreate()}>
-			{m.accounts_new_account()}
-		</Button>
-	</PageHead>
+	{#if heading}
+		<PageHead title={m.accounts_title()}>{@render headActions()}</PageHead>
+	{:else}
+		<div class="actions">{@render headActions()}</div>
+	{/if}
 
 	<AccountsBoard
 		accounts={rows}
@@ -124,5 +132,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-4);
+	}
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: var(--sp-2);
 	}
 </style>

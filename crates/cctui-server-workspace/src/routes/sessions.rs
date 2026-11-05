@@ -142,13 +142,11 @@ pub const LIVENESS_DEAD_SECS: i64 = 60 * 60;
 
 /// Query params for `GET /sessions`. Archived sessions are hidden unless
 /// `?include_archived=true`.
+/// Older clients still send `show_hidden`; unknown keys are ignored.
 #[derive(Debug, Default, Deserialize)]
 pub struct ListParams {
     #[serde(default)]
     pub include_archived: bool,
-    /// Ignored: hidden owners always stay out. Accepted for older clients.
-    #[serde(default)]
-    pub show_hidden: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -1213,9 +1211,6 @@ pub struct SearchParams {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
     pub cursor: Option<String>,
-    /// Ignored: hidden owners always stay out. Accepted for older clients.
-    #[serde(default)]
-    pub show_hidden: bool,
 }
 
 /// Shared SELECT + machine-name and room joins: the full `DbSession`

@@ -8,7 +8,7 @@ use axum::http::Method;
 use axum::routing::{get, post, put};
 
 pub(super) fn register(r: Routes) -> Routes {
-    r
+    register_event_retention(r)
         // Admin surface: every route is `forbid_or` (Scope::Admin).
         .add(
             &[Method::POST, GET],
@@ -84,14 +84,6 @@ pub(super) fn register(r: Routes) -> Routes {
         )
         .add(
             &[GET, Method::PUT],
-            "/admin/instance/event-retention",
-            "Read or set how many days of events the server keeps; 0 keeps every event (admin).",
-            get(routes::server_settings::get_event_retention).put(routes::server_settings::update_event_retention),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[GET, Method::PUT],
             "/admin/harness-autoupdate",
             "Read the harness auto-update settings of every machine, or set the instance default (admin).",
             get(routes::harness_update::read).put(routes::harness_update::set_instance),
@@ -111,6 +103,18 @@ pub(super) fn register(r: Routes) -> Routes {
             "/admin/harness-autoupdate/{machine_id}/restart",
             "Restart one harness's long-lived process on a machine once it is idle (admin).",
             post(routes::harness_update::restart_harness),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+}
+
+fn register_event_retention(r: Routes) -> Routes {
+    r
+        .add(
+            &[GET, Method::PUT],
+            "/admin/instance/event-retention",
+            "Read or set how many days of events the server keeps; 0 keeps every event (admin).",
+            get(routes::server_settings::get_event_retention).put(routes::server_settings::update_event_retention),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
         )
