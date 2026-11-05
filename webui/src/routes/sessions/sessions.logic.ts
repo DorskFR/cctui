@@ -612,14 +612,15 @@ export function withoutViewParam(href: string): string | null {
 	return url.href;
 }
 
-// `/sessions?status=working|needs-input` (the Usage page's tiles) as a search
+// `/sessions?status=working|needs-input|archived` (Usage tiles, missing session) as a search
 // clause plus the address without the param, or null when there is none.
 export function statusParamQuery(href: string): { query: string; href: string } | null {
 	const url = new URL(href);
 	const status = url.searchParams.get('status');
 	if (status === null) return null;
 	url.searchParams.delete('status');
-	const query = status in STATE_BUCKETS ? `state:${status}` : '';
+	const query =
+		status === 'archived' ? 'status:archived' : status in STATE_BUCKETS ? `state:${status}` : '';
 	return { query, href: url.href };
 }
 

@@ -1221,6 +1221,13 @@ describe('statusParamQuery', () => {
 		});
 	});
 
+	it('maps archived to the server status clause', () => {
+		expect(statusParamQuery('http://h/sessions?status=archived')).toEqual({
+			query: 'status:archived',
+			href: 'http://h/sessions'
+		});
+	});
+
 	it('drops an unknown status without filtering, and is null without one', () => {
 		expect(statusParamQuery('http://h/sessions?status=bogus')).toEqual({ query: '', href: 'http://h/sessions' });
 		expect(statusParamQuery('http://h/sessions')).toBeNull();

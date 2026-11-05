@@ -17,6 +17,7 @@
 	import { ws } from '$lib/ws.svelte';
 	import ConversationDrawer from '$lib/components/organisms/ConversationDrawer.svelte';
 	import ConversationDock from '$lib/components/organisms/ConversationDock.svelte';
+	import SessionMissing from './[session]/SessionMissing.svelte';
 	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
 	import { dockLayout, launchDock } from '$lib/spawnDock.svelte';
 	import StatsDock from '$lib/components/organisms/statsdock/StatsDock.svelte';
@@ -237,7 +238,7 @@
 	// a shareable link. Skip while we're resolving a URL-driven open (no echo).
 	$effect(() => {
 		const id = sp.openSession?.id ?? null;
-		if (sp.urlResolving) return;
+		if (sp.urlResolving || sp.missingId) return;
 		if (!mounted) return;
 		if (id === lastUrlId) return;
 		syncUrlSession(id, id !== null && id === quietOpen);
@@ -263,6 +264,11 @@
 		const id = sp.openSession?.id;
 		if (id && sp.docks.conversation) drafts.set(LAST_DOCKED_SESSION, id);
 	});
+	const closeMissing = () => {
+		sp.missingId = null;
+		lastUrlId = null;
+		replaceUrlSession(null);
+	};
 	const closeDocked = () => {
 		drafts.clear(LAST_DOCKED_SESSION);
 		sp.openSession = null;
@@ -365,7 +371,11 @@
 	<SessionSections {sp} {pending} {machineLiveness} />
 {/if}
 
-{#if sp.docks.conversation}
+{#if sp.missingId}
+	<div class="missing-pane">
+		<SessionMissing id={sp.missingId} onclose={closeMissing} />
+	</div>
+{:else if sp.docks.conversation}
 	<ConversationDock
 		side={sp.docks.conversation}
 		width={sp.docks[sp.docks.conversation] ?? ''}
@@ -436,3 +446,16 @@
 {#if sp.docks.stats && sp.docks[sp.docks.stats]}
 	<StatsDock side={sp.docks.stats} stacked={sp.docks.stacked} width={sp.docks[sp.docks.stats] ?? ''} />
 {/if}
+
+<style>
+	.missing-pane {
+		position: fixed;
+		top: calc(var(--header-h) + var(--safe-top));
+		right: 0;
+		bottom: 0;
+		z-index: 20;
+		width: min(40rem, 100%);
+		background: var(--bg-elevated);
+		box-shadow: var(--shadow-lg);
+	}
+</style>
