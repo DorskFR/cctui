@@ -10,7 +10,7 @@ use cctui_proto::api::tool_policy::AccountToolPolicy;
 use cctui_proto::hook_policy::{HookRule, SessionHookPolicy, normalize_rules};
 use uuid::Uuid;
 
-use super::gateway::toolguard::{ToolPolicy, invalidate_policy_cache, normalize_policy};
+use super::gateway::toolguard::{ToolPolicy, normalize_policy};
 use crate::auth::AuthContext;
 use crate::error::AppError;
 use crate::state::AppState;
@@ -100,7 +100,7 @@ pub async fn put_tool_policy(
         .execute(&state.pool)
         .await?;
     }
-    invalidate_policy_cache(id);
+    state.auth_config.purge_tool_policy(id);
     Ok(Json(policy))
 }
 
