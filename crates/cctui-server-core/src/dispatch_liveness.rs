@@ -40,6 +40,12 @@ const EXITED_AFTER_COMPLETION: &str = "completed (worker exited non-zero)";
 /// A workload completed after an explicit execution completion signal.
 pub const EXITED_CLEANLY: &str = "completed (worker exited)";
 
+/// A running session whose workload the dispatcher no longer knows.
+pub const WORKLOAD_GONE: &str = "dispatched workload no longer exists";
+
+/// Session advisory lock held by the one replica running a sweep.
+pub const SWEEP_LOCK_KEY: i64 = 0x6363_7475_695f_646c;
+
 /// The persisted end reason for a dispatcher's verbatim failure reason.
 ///
 /// Whatever kept the worker from starting (image, container config,
@@ -55,7 +61,10 @@ pub fn end_reason_for(reason: &str) -> SessionEndReason {
         | "InvalidImageName"
         | "CreateContainerError"
         | "CreateContainerConfigError" => SessionEndReason::SpawnFailed,
-        _ if reason.starts_with("pod pending") || reason.starts_with("preflight:") => {
+        _ if reason.starts_with("pod pending")
+            || reason.starts_with("preflight:")
+            || reason.starts_with("launch refused:") =>
+        {
             SessionEndReason::SpawnFailed
         }
         _ => SessionEndReason::Crashed,
@@ -69,14 +78,18 @@ struct LiveHandle {
     machine_uuid: Option<Uuid>,
     dispatcher_name: String,
     handle: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    running: bool,
 }
 
 async fn live_handles(pool: &sqlx::PgPool) -> sqlx::Result<Vec<LiveHandle>> {
     sqlx::query_as(
-        "SELECT dh.session_id, s.user_id, s.machine_uuid, dh.dispatcher_name, dh.handle \
+        "SELECT dh.session_id, s.user_id, s.machine_uuid, dh.dispatcher_name, dh.handle, \
+                dh.created_at, COALESCE(s.status = ANY($2), false) AS running \
          FROM dispatch_handles dh \
          JOIN sessions s ON s.id = dh.session_id \
          WHERE dh.created_at > now() - ($1 || ' hours')::interval \
+           AND dh.gone_at IS NULL \
            AND (s.status = ANY($2) OR (s.status = 'ended' AND s.end_reason = ANY($3))) \
          ORDER BY dh.created_at \
          LIMIT $4",
@@ -89,7 +102,43 @@ async fn live_handles(pool: &sqlx::PgPool) -> sqlx::Result<Vec<LiveHandle>> {
     .await
 }
 
+/// The sweep on whichever replica takes the lock; the others skip this tick.
 pub async fn sweep(state: &impl DispatchLivenessContext) {
+    sweep_with_lock(state, SWEEP_LOCK_KEY).await;
+}
+
+/// [`sweep`] under advisory lock `key`, which every replica of one deployment
+/// shares.
+///
+/// The lock lives on a connection of its own, outside the pool, so holding it
+/// never takes a pooled connection from the sweep or anything else. Closing
+/// that connection, or dropping it mid-sweep, ends its session and the lock.
+pub async fn sweep_with_lock(state: &impl DispatchLivenessContext, key: i64) {
+    use sqlx::Connection;
+    let pool = state.dispatch_pool();
+    let mut lock = match sqlx::PgConnection::connect_with(&pool.connect_options()).await {
+        Ok(conn) => conn,
+        Err(err) => {
+            tracing::warn!(%err, "dispatch liveness lock connection failed");
+            return;
+        }
+    };
+    let locked = sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_lock($1)")
+        .bind(key)
+        .fetch_one(&mut lock)
+        .await;
+    match locked {
+        Ok(true) => sweep_unlocked(state).await,
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, "dispatch liveness lock failed"),
+    }
+    if let Err(err) = lock.close().await {
+        tracing::debug!(%err, "dispatch liveness lock connection close failed");
+    }
+}
+
+/// [`sweep`] without the cross-replica lock.
+pub async fn sweep_unlocked(state: &impl DispatchLivenessContext) {
     use futures_util::StreamExt;
     if let Err(err) = crate::store::dispatch_policies::prune_uses(state.dispatch_pool()).await {
         tracing::warn!(%err, "dispatch policy use prune failed");
@@ -208,11 +257,51 @@ async fn probe(state: &impl DispatchLivenessContext, row: LiveHandle) {
             Some(oom) => (SessionEndReason::OomKilled, oom),
             None => return,
         },
-        _ => return,
+        HandleStatus::Gone => match gone(state, &row).await {
+            Some(end) => end,
+            None => return,
+        },
+        HandleStatus::Running | HandleStatus::Queued => return,
     };
     if !end_session(state.dispatch_pool(), &row.session_id, end_reason, &detail).await {
         return;
     }
+    record_end(state, row, end_reason, &detail);
+}
+
+/// A vanished workload never answers again: its handle leaves the sweep, and
+/// a session still running on it ends lost unless it already did its work.
+async fn gone(
+    state: &impl DispatchLivenessContext,
+    row: &LiveHandle,
+) -> Option<(SessionEndReason, String)> {
+    let marked = sqlx::query(
+        "UPDATE dispatch_handles SET gone_at = now() \
+         WHERE session_id = $1 AND created_at = $2 AND gone_at IS NULL",
+    )
+    .bind(&row.session_id)
+    .bind(row.created_at)
+    .execute(state.dispatch_pool())
+    .await;
+    if let Err(err) = marked {
+        tracing::warn!(%err, session_id = %row.session_id, "gone dispatch handle not marked");
+    }
+    if !row.running {
+        return None;
+    }
+    Some(if state.execution_finished(&row.session_id).await {
+        (SessionEndReason::Completed, EXITED_CLEANLY.to_owned())
+    } else {
+        (SessionEndReason::DaemonLost, WORKLOAD_GONE.to_owned())
+    })
+}
+
+fn record_end(
+    state: &impl DispatchLivenessContext,
+    row: LiveHandle,
+    end_reason: SessionEndReason,
+    detail: &str,
+) {
     let severity = if end_reason == SessionEndReason::Completed {
         tracing::info!(session_id = %row.session_id, handle = %row.handle, "{detail}");
         events::Severity::Info
@@ -347,6 +436,11 @@ mod tests {
                 "preflight: k8s API reachable (kubernetes.default.svc:443)",
                 SessionEndReason::SpawnFailed,
             ),
+            ("launch refused: hook policy unavailable", SessionEndReason::SpawnFailed),
+            (
+                "launch refused: the daemon exited before registering the session",
+                SessionEndReason::SpawnFailed,
+            ),
             ("pod failed", SessionEndReason::Crashed),
             ("container restart-looping", SessionEndReason::Crashed),
             ("container exited with code 137", SessionEndReason::Crashed),
@@ -356,6 +450,12 @@ mod tests {
         ] {
             assert_eq!(end_reason_for(reason), want, "{reason:?}");
         }
+    }
+
+    #[test]
+    fn a_refused_launch_keeps_its_detail() {
+        let reason = "launch refused: hook policy unavailable".to_owned();
+        assert_eq!(failure_text(Some(reason.clone()), None), reason);
     }
 
     #[test]

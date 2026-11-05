@@ -36,6 +36,7 @@ fn spec_without_dir(adapter: &str) -> SessionSpec {
         env: BTreeMap::new(),
         bootstrap: serde_json::Value::Null,
         parent_local_id: None,
+        hook_policy: None,
     }
 }
 

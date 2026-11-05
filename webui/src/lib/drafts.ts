@@ -1,5 +1,6 @@
 import { browser } from '$app/environment';
 import { attachmentStore } from './attachmentStore';
+import { redactUserSpans } from './redactTag';
 
 /** Where a roaming key's value is mirrored to, once `serverDrafts` installs
  *  itself. Kept as an injected hook rather than an import so this module stays
@@ -93,7 +94,7 @@ function readHistory(key: string): string[] {
 
 function pushHistory(key: string, value: string, max: number) {
 	if (!browser) return;
-	const v = value.trim();
+	const v = redactUserSpans(value.trim());
 	if (!v) return;
 	const list = readHistory(key).filter((x) => x !== v);
 	list.push(v);

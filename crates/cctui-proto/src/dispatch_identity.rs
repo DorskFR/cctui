@@ -19,6 +19,12 @@ pub fn env_path(dispatch_id: Uuid) -> String {
     format!("/api/v1/dispatch/{dispatch_id}/env")
 }
 
+/// Keeps a queued dispatch's registration from expiring.
+#[must_use]
+pub fn hold_path(dispatch_id: Uuid) -> String {
+    format!("/api/v1/dispatch/{dispatch_id}/hold")
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegisterRequest {
     pub dispatch_id: Uuid,
@@ -55,6 +61,12 @@ mod tests {
     fn env_path_names_the_dispatch() {
         let id = Uuid::nil();
         assert_eq!(env_path(id), "/api/v1/dispatch/00000000-0000-0000-0000-000000000000/env");
+    }
+
+    #[test]
+    fn hold_path_names_the_dispatch() {
+        let id = Uuid::nil();
+        assert_eq!(hold_path(id), "/api/v1/dispatch/00000000-0000-0000-0000-000000000000/hold");
     }
 
     #[test]

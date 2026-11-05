@@ -8,7 +8,7 @@ use cctui_proto::api::SpawnResponse;
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
-use crate::scheduled_messages::{claim_one, deliver, parse_deliver_at};
+use crate::scheduled_messages::{claim_one, deliver, parse_deliver_at, seal};
 use crate::state::AppState;
 
 type ApiResult<T> = Result<T, AppError>;
@@ -75,14 +75,17 @@ pub async fn schedule(
     validate_body(content).map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e))?;
     let deliver_at = parse_deliver_at(raw_deliver_at, Utc::now())
         .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let (body, sealed_body) = seal(content, crate::crypto::vault_key)
+        .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e))?;
     let id: uuid::Uuid = sqlx::query_scalar(
         "INSERT INTO session_message_queue \
-           (session_id, user_id, body, deliver_at, next_attempt_at, origin) \
-         VALUES ($1, $2, $3, $4, $4, 'human') RETURNING id",
+           (session_id, user_id, body, sealed_body, deliver_at, next_attempt_at, origin) \
+         VALUES ($1, $2, $3, $4, $5, $5, 'human') RETURNING id",
     )
     .bind(session_id)
     .bind(ctx.user_id)
-    .bind(content)
+    .bind(body)
+    .bind(sealed_body)
     .bind(deliver_at)
     .fetch_one(&state.pool)
     .await?;
@@ -125,9 +128,18 @@ pub async fn update(
 ) -> ApiResult<StatusCode> {
     let patch =
         validate_patch(patch, Utc::now()).map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e))?;
+    let (body, sealed_body) = match patch.body.as_deref() {
+        None => (None, None),
+        Some(body) => {
+            let (body, sealed) = seal(body, crate::crypto::vault_key)
+                .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e))?;
+            (Some(body), sealed)
+        }
+    };
     let res = sqlx::query(
         "UPDATE session_message_queue SET \
            body = COALESCE($3, body), \
+           sealed_body = CASE WHEN $3::text IS NULL THEN sealed_body ELSE $5 END, \
            deliver_at = COALESCE($4, deliver_at), \
            next_attempt_at = COALESCE($4, next_attempt_at), \
            attempts = CASE WHEN $4 IS NULL THEN attempts ELSE 0 END \
@@ -135,8 +147,9 @@ pub async fn update(
     )
     .bind(queue_id)
     .bind(&session_id)
-    .bind(patch.body)
+    .bind(body)
     .bind(patch.deliver_at)
+    .bind(sealed_body)
     .execute(&state.pool)
     .await?;
     if res.rows_affected() == 0 {
@@ -204,6 +217,31 @@ mod tests {
         let ok = validate_patch(patch(Some("new"), Some("2026-09-25T09:00:00Z")), now()).unwrap();
         assert_eq!(ok.body.as_deref(), Some("new"));
         assert_eq!(ok.deliver_at.map(|d| d.to_rfc3339()), Some("2026-09-25T09:00:00+00:00".into()));
+    }
+
+    #[test]
+    fn a_tagged_body_is_stored_masked_and_sealed() {
+        let key = vec![7u8; 32];
+        let content = "deploy with <redacted>hunter2-xyz</redacted>";
+        let (body, sealed) = seal(content, || key.clone()).unwrap();
+        assert_eq!(body, "deploy with [REDACTED:user]");
+        let sealed = sealed.expect("the real text is kept sealed");
+        assert!(!sealed.contains("hunter2-xyz"));
+        assert_eq!(crate::crypto::decrypt(&sealed, &key).as_deref(), Some(content));
+    }
+
+    #[test]
+    fn an_untagged_body_is_stored_as_is_without_reading_the_key() {
+        let (body, sealed) = seal("plain", || panic!("no span, no key read")).unwrap();
+        assert_eq!((body.as_str(), sealed), ("plain", None));
+    }
+
+    #[test]
+    fn a_tagged_body_is_refused_without_a_vault_key() {
+        assert_eq!(
+            seal("<redacted>hunter2-xyz</redacted>", Vec::new),
+            Err(crate::scheduled_messages::SEAL_NEEDS_KEY)
+        );
     }
 
     #[test]

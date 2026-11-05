@@ -18,6 +18,24 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use uuid::Uuid;
 
+/// A child of the current span for the I/O a command waits on, or
+/// [`tracing::Span::none`] outside a command: the 2s roster poll stays silent.
+macro_rules! child_span {
+    ($name:literal, $function:literal $(, $($fields:tt)+)?) => {
+        if tracing::Span::current().is_disabled() {
+            tracing::Span::none()
+        } else {
+            tracing::info_span!(
+                target: "otel",
+                $name,
+                code.function.name = $function
+                $(, $($fields)+)?
+            )
+        }
+    };
+}
+pub(crate) use child_span;
+
 /// A `WatchPty` routed off the command path: `(local_id, watch)`.
 pub type PtyWatch = (String, bool);
 
@@ -350,11 +368,37 @@ pub trait SessionDriver: Send {
 const MAX_PARKED_SPANS: usize = 256;
 
 /// `daemon.command` spans waiting for their command to cross the adapter
-/// channel, keyed by command id.
-static PARKED_SPANS: std::sync::LazyLock<std::sync::Mutex<BTreeMap<Uuid, tracing::Span>>> =
+/// channel, keyed by command id and stamped with their parking order.
+#[derive(Default)]
+struct ParkedSpans {
+    spans: BTreeMap<Uuid, (u64, tracing::Span)>,
+    next: u64,
+}
+
+impl ParkedSpans {
+    /// When full, the oldest span goes: its command was never drained, and
+    /// dropping the last handle ends it.
+    fn park(&mut self, command_id: Uuid, span: tracing::Span) {
+        if self.spans.len() >= MAX_PARKED_SPANS
+            && !self.spans.contains_key(&command_id)
+            && let Some(oldest) =
+                self.spans.iter().min_by_key(|(_, (seq, _))| *seq).map(|(id, _)| *id)
+        {
+            self.spans.remove(&oldest);
+        }
+        self.next += 1;
+        self.spans.insert(command_id, (self.next, span));
+    }
+
+    fn take(&mut self, command_id: Uuid) -> Option<tracing::Span> {
+        self.spans.remove(&command_id).map(|(_, span)| span)
+    }
+}
+
+static PARKED_SPANS: std::sync::LazyLock<std::sync::Mutex<ParkedSpans>> =
     std::sync::LazyLock::new(Default::default);
 
-fn parked_spans() -> std::sync::MutexGuard<'static, BTreeMap<Uuid, tracing::Span>> {
+fn parked_spans() -> std::sync::MutexGuard<'static, ParkedSpans> {
     PARKED_SPANS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
@@ -375,6 +419,7 @@ pub fn command_span(
         otel.kind = "consumer",
         messaging.system = "cctui-ws",
         messaging.operation = "process",
+        code.function.name = "dispatch_command",
         adapter_id,
         command = command.kind_name(),
     );
@@ -390,16 +435,13 @@ pub fn park_span(command_id: Option<Uuid>, span: &tracing::Span) {
     if span.is_none() {
         return;
     }
-    let mut parked = parked_spans();
-    if parked.len() < MAX_PARKED_SPANS {
-        parked.insert(command_id, span.clone());
-    }
+    parked_spans().park(command_id, span.clone());
 }
 
 /// The span parked for `command_id`, or [`tracing::Span::none`].
 #[must_use]
 pub fn take_span(command_id: Option<Uuid>) -> tracing::Span {
-    command_id.and_then(|id| parked_spans().remove(&id)).unwrap_or_else(tracing::Span::none)
+    command_id.and_then(|id| parked_spans().take(id)).unwrap_or_else(tracing::Span::none)
 }
 
 fn spawn_span(adapter: &str, spec: &SessionSpec, session_id: Option<&str>) -> tracing::Span {
@@ -585,13 +627,18 @@ async fn report_outcomes(
             Some(err.to_string())
         }
     };
-    for &command_id in command_ids {
-        let event =
-            AdapterEvent::CommandResult { command_id, ok: error.is_none(), error: error.clone() };
-        if events.send(event).await.is_err() {
-            tracing::debug!(adapter, %command_id, "command result dropped: event channel closed");
+    let span = child_span!("daemon.report_outcome", "report_outcomes", ok = error.is_none());
+    async {
+        for &command_id in command_ids {
+            let ok = error.is_none();
+            let event = AdapterEvent::CommandResult { command_id, ok, error: error.clone() };
+            if events.send(event).await.is_err() {
+                tracing::debug!(adapter, %command_id, "command result dropped: event channel closed");
+            }
         }
     }
+    .instrument(span)
+    .await;
 }
 
 /// Feed `commands` to `driver` one at a time until shutdown fires or the
@@ -625,6 +672,35 @@ mod tests {
         park_span(Some(id), &span);
         assert!(take_span(Some(id)).is_none());
         assert!(take_span(None).is_none());
+    }
+
+    #[test]
+    fn a_full_parking_lot_evicts_and_ends_the_oldest_span() {
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder().with_simple_exporter(exporter.clone()).build();
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test")));
+        let ids: Vec<Uuid> = (0..=MAX_PARKED_SPANS).map(|_| Uuid::new_v4()).collect();
+        let mut parked = ParkedSpans::default();
+        tracing::subscriber::with_default(subscriber, || {
+            for (n, id) in ids.iter().enumerate() {
+                parked.park(*id, tracing::info_span!("daemon.command", n));
+            }
+        });
+
+        assert_eq!(parked.spans.len(), MAX_PARKED_SPANS);
+        assert!(parked.take(ids[0]).is_none(), "the oldest span was evicted");
+        let newest = parked.take(ids[MAX_PARKED_SPANS]).expect("the newest span is still parked");
+        assert!(!newest.is_none());
+        let finished = exporter.get_finished_spans().expect("exporter readable");
+        assert_eq!(finished.len(), 1, "only the evicted span has ended: {finished:?}");
+        let first =
+            |kv: &opentelemetry::KeyValue| kv.key.as_str() == "n" && kv.value.as_str() == "0";
+        assert!(finished[0].attributes.iter().any(first), "{finished:?}");
     }
 
     #[test]
@@ -674,6 +750,35 @@ mod tests {
         assert_ne!(root.span_context.trace_id().to_string(), TRACE_ID);
         assert_eq!(root.parent_span_id, SpanId::INVALID);
         assert!(matches!(root.status, Status::Error { .. }), "{:?}", root.status);
+    }
+
+    #[test]
+    fn io_spans_open_only_under_a_command_span() {
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder().with_simple_exporter(exporter.clone()).build();
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test")));
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        tracing::subscriber::with_default(subscriber, || {
+            rt.block_on(async {
+                let (tx, _rx) = mpsc::channel(4);
+                report_outcomes("test", &tx, &[Uuid::new_v4()], Ok(Handled::Done)).await;
+                let command = tracing::info_span!("daemon.command");
+                report_outcomes("test", &tx, &[Uuid::new_v4()], Ok(Handled::Done))
+                    .instrument(command)
+                    .await;
+            });
+        });
+
+        let spans = exporter.get_finished_spans().expect("exporter readable");
+        let reports: Vec<_> = spans.iter().filter(|s| s.name == "daemon.report_outcome").collect();
+        assert_eq!(reports.len(), 1, "the poll-path report opens no span: {spans:?}");
+        let command = spans.iter().find(|s| s.name == "daemon.command").expect("command span");
+        assert_eq!(reports[0].parent_span_id, command.span_context.span_id());
     }
 
     #[test]

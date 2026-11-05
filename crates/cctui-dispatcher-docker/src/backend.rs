@@ -2,7 +2,7 @@ use cctui_dispatcher_core::cli::{Backend, Enrolled};
 use clap::Args;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::Config;
+use crate::config::{Config, Egress};
 use crate::spawn::Spawner;
 
 pub struct Docker;
@@ -21,6 +21,14 @@ pub struct EnrollArgs {
     /// Bind mount(s) for spawned containers (`/host:/container[:ro]`).
     #[arg(long)]
     pub mount: Vec<String>,
+    /// Agent egress confinement. `transparent` grants cells `NET_ADMIN` for the
+    /// in-cell redirect; `forward` only exports a proxy env the agent can ignore.
+    #[arg(long, value_enum, default_value_t = Egress::Transparent)]
+    pub egress: Egress,
+    /// Let cells start on a host that does not expose Landlock (filesystem
+    /// confinement becomes best-effort).
+    #[arg(long)]
+    pub landlock_best_effort: bool,
 }
 
 impl Backend for Docker {
@@ -42,10 +50,16 @@ impl Backend for Docker {
             network: args.network,
             docker_host: args.docker_host,
             mounts: args.mount,
+            egress: args.egress,
+            landlock_strict: !args.landlock_best_effort,
         }
     }
 
-    async fn spawner(cfg: &Config, _shutdown: &CancellationToken) -> anyhow::Result<Spawner> {
+    async fn spawner(
+        cfg: &Config,
+        _key: &cctui_dispatcher_core::secrets::Secret,
+        _shutdown: &CancellationToken,
+    ) -> anyhow::Result<Spawner> {
         use cctui_dispatcher_core::DispatcherConfig;
         Spawner::connect(
             cfg.docker_host.as_deref(),
@@ -53,12 +67,17 @@ impl Backend for Docker {
             cfg.network.clone(),
             cfg.worker_url().to_owned(),
             cfg.mounts.clone(),
+            cfg.confinement(),
         )
         .await
     }
 
     fn status_lines(cfg: &Config) -> Vec<(&'static str, String)> {
-        vec![("image", cfg.image.clone())]
+        vec![
+            ("image", cfg.image.clone()),
+            ("egress", cfg.egress.net_mode().to_owned()),
+            ("landlock", if cfg.landlock_strict { "strict" } else { "best-effort" }.to_owned()),
+        ]
     }
 }
 
@@ -111,6 +130,47 @@ mod tests {
         assert_eq!(backend.network.as_deref(), Some("net"));
         assert_eq!(backend.docker_host.as_deref(), Some("unix:///var/run/docker.sock"));
         assert_eq!(backend.mount, vec!["/a:/a".to_owned(), "/b:/b:ro".to_owned()]);
+        assert_eq!(backend.egress, Egress::Transparent, "transparent unless asked otherwise");
+        assert!(!backend.landlock_best_effort);
+    }
+
+    #[test]
+    fn forward_egress_and_best_effort_landlock_are_explicit_flags() {
+        let cli = try_parse_from::<Docker, _, _>([
+            "cctui-dispatcher-docker",
+            "enroll",
+            "--server-url",
+            "u",
+            "--token",
+            "t",
+            "--name",
+            "n",
+            "--image",
+            "i",
+            "--egress",
+            "forward",
+            "--landlock-best-effort",
+        ])
+        .unwrap();
+        let Cmd::Enroll { backend, .. } = cli.cmd else { panic!("expected enroll") };
+        assert_eq!(backend.egress, Egress::Forward);
+        assert!(backend.landlock_best_effort);
+
+        let bad = try_parse_from::<Docker, _, _>([
+            "cctui-dispatcher-docker",
+            "enroll",
+            "--server-url",
+            "u",
+            "--token",
+            "t",
+            "--name",
+            "n",
+            "--image",
+            "i",
+            "--egress",
+            "none",
+        ]);
+        assert!(bad.is_err(), "unknown egress mode must not parse");
     }
 
     #[test]

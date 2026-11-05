@@ -188,6 +188,7 @@ mod tests {
             env: std::collections::BTreeMap::new(),
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,
+            hook_policy: None,
         }
     }
 
@@ -234,7 +235,7 @@ mod tests {
                 "--name",
                 "task",
                 "--permission-mode",
-                "acceptEdits",
+                "auto",
                 "--effort",
                 "high",
                 "--model",

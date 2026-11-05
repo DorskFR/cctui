@@ -24,6 +24,7 @@ use cctui_dispatcher_core::{
 use cctui_proto::worker_env::check_payload_env;
 use cctui_proto::ws::WireDispatchSpec;
 
+use crate::config::{Confinement, Egress};
 use crate::exits::{self, Exit, Exits};
 
 const LABEL_ORIGIN: &str = "cctui.dev/origin";
@@ -35,6 +36,7 @@ pub struct Spawner {
     network: Option<String>,
     cctui_url: String,
     mounts: Vec<String>,
+    confinement: Confinement,
     docker: Docker,
     exits: Arc<Exits>,
 }
@@ -49,6 +51,7 @@ impl Spawner {
         network: Option<String>,
         cctui_url: String,
         mounts: Vec<String>,
+        confinement: Confinement,
     ) -> anyhow::Result<Self> {
         let docker = match docker_host {
             Some(host) => Docker::connect_with_http(host, 60, bollard::API_DEFAULT_VERSION)?,
@@ -57,19 +60,50 @@ impl Spawner {
         docker.ping().await?;
         let exits = Arc::new(Exits::default());
         exits::watch(docker.clone(), Arc::clone(&exits), format!("{LABEL_ORIGIN}={ORIGIN}"));
-        Ok(Self { image, network, cctui_url, mounts, docker, exits })
+        if confinement.egress == Egress::Forward {
+            tracing::warn!(
+                "egress=forward: cells get no NET_ADMIN and agent egress is only a proxy env the \
+                 agent can ignore"
+            );
+        }
+        if !confinement.landlock_strict {
+            tracing::warn!(
+                "landlock_strict=false: cells start without Landlock where the host lacks it"
+            );
+        }
+        Ok(Self { image, network, cctui_url, mounts, confinement, docker, exits })
     }
 
     fn worker_env(&self, spec: &WireDispatchSpec) -> anyhow::Result<Vec<String>> {
-        Self::build_worker_env(spec, &self.cctui_url)
+        Self::build_worker_env(spec, &self.cctui_url, self.confinement)
     }
 
-    fn build_worker_env(spec: &WireDispatchSpec, cctui_url: &str) -> anyhow::Result<Vec<String>> {
+    /// The container name a dispatch maps to and its env.
+    ///
+    /// Errors wherever `dispatch` errors before it tries to create anything.
+    fn admit(&self, spec: &WireDispatchSpec) -> anyhow::Result<(String, Vec<String>)> {
+        if spec.session_id.is_empty() {
+            anyhow::bail!("session_id is required");
+        }
+        Ok((worker_name(dedup_source(spec)), self.worker_env(spec)?))
+    }
+
+    /// The cell env: the contract vars, then the dispatcher's own confinement
+    /// settings, which a payload cannot carry (`check_payload_env`).
+    fn build_worker_env(
+        spec: &WireDispatchSpec,
+        cctui_url: &str,
+        confinement: Confinement,
+    ) -> anyhow::Result<Vec<String>> {
         check_payload_env(&spec.payload).map_err(anyhow::Error::msg)?;
         let base = build_env(spec, cctui_url)?;
         let mut env = base.env;
         if let Some(k) = base.machine_key {
             env.push(format!("CCTUI_MACHINE_KEY={k}"));
+        }
+        env.push(format!("WORKER_NET_MODE={}", confinement.egress.net_mode()));
+        if !confinement.landlock_strict {
+            env.push("CCTUI_LANDLOCK_STRICT=0".to_owned());
         }
         Ok(env)
     }
@@ -81,11 +115,15 @@ impl Spawner {
         labels
     }
 
-    fn host_config(mounts: &[String], network: Option<&str>) -> HostConfig {
+    /// `NET_ADMIN` is the only capability ever added, and only for transparent
+    /// egress: the root entrypoint needs it to install the redirect, and the
+    /// supervisor clears every capability set before the agent runs.
+    fn host_config(mounts: &[String], network: Option<&str>, egress: Egress) -> HostConfig {
         HostConfig {
             auto_remove: Some(true),
             binds: if mounts.is_empty() { None } else { Some(mounts.to_vec()) },
             network_mode: network.map(ToOwned::to_owned),
+            cap_add: (egress == Egress::Transparent).then(|| vec!["NET_ADMIN".to_owned()]),
             ..Default::default()
         }
     }
@@ -100,14 +138,11 @@ impl Dispatcher for Spawner {
     /// of the same key reuses the deterministic name; a 409 (name in use) is
     /// reported as `deduplicated` rather than clobbering the running worker.
     async fn dispatch(&self, spec: &WireDispatchSpec) -> anyhow::Result<SpawnOutcome> {
-        if spec.session_id.is_empty() {
-            anyhow::bail!("session_id is required");
-        }
-        let name = worker_name(dedup_source(spec));
-        let env = self.worker_env(spec)?;
+        let (name, env) = self.admit(spec)?;
 
         let labels = Self::discovery_labels(&spec.session_id);
-        let host_config = Self::host_config(&self.mounts, self.network.as_deref());
+        let host_config =
+            Self::host_config(&self.mounts, self.network.as_deref(), self.confinement.egress);
 
         let config = ContainerConfig {
             image: Some(self.image.clone()),
@@ -121,11 +156,7 @@ impl Dispatcher for Spawner {
         match self.docker.create_container(Some(opts), config).await {
             Ok(_) => {}
             Err(bollard::errors::Error::DockerResponseServerError { status_code: 409, .. }) => {
-                return Ok(SpawnOutcome {
-                    handle: format!("container/{name}"),
-                    status: "deduplicated".to_owned(),
-                    namespace: None,
-                });
+                return Ok(deduplicated(&name));
             }
             Err(e) => anyhow::bail!("creating container: {e}"),
         }
@@ -139,6 +170,7 @@ impl Dispatcher for Spawner {
             handle: format!("container/{name}"),
             status: "dispatched".to_owned(),
             namespace: None,
+            exposure: None,
         })
     }
 
@@ -184,6 +216,32 @@ impl Dispatcher for Spawner {
             Err(e) => anyhow::bail!("removing container {name}: {e}"),
         }
     }
+
+    fn supports_dedup_check(&self) -> bool {
+        true
+    }
+
+    /// A create 409s whenever any container holds the name, so the check is
+    /// whether one does.
+    async fn dedup_check(&self, spec: &WireDispatchSpec) -> anyhow::Result<Option<SpawnOutcome>> {
+        let (name, _) = self.admit(spec)?;
+        match self.docker.inspect_container(&name, None).await {
+            Ok(_) => Ok(Some(deduplicated(&name))),
+            Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => {
+                Ok(None)
+            }
+            Err(e) => anyhow::bail!("inspecting container {name}: {e}"),
+        }
+    }
+}
+
+fn deduplicated(name: &str) -> SpawnOutcome {
+    SpawnOutcome {
+        handle: format!("container/{name}"),
+        status: "deduplicated".to_owned(),
+        namespace: None,
+        exposure: None,
+    }
 }
 
 #[cfg(test)]
@@ -204,24 +262,70 @@ mod tests {
         }
     }
 
+    fn default_env(s: &WireDispatchSpec) -> anyhow::Result<Vec<String>> {
+        Spawner::build_worker_env(s, "https://cctui.example.test", Confinement::default())
+    }
+
     #[test]
     fn host_config_is_unprivileged_and_auto_removes() {
-        let hc = Spawner::host_config(&[], None);
-        assert_eq!(hc.privileged, None, "must never request a privileged container");
-        assert_eq!(hc.auto_remove, Some(true));
-        assert_eq!(hc.binds, None, "no mounts => no binds");
-        assert_eq!(hc.network_mode, None, "no host network / no explicit network");
-        assert_eq!(hc.cap_add, None, "no added capabilities");
-        assert_eq!(hc.pid_mode, None, "no host PID namespace");
-        assert_eq!(hc.ipc_mode, None, "no host IPC namespace");
-        assert_eq!(hc.userns_mode, None, "no host user namespace");
+        for egress in [Egress::Transparent, Egress::Forward] {
+            let hc = Spawner::host_config(&[], None, egress);
+            assert_eq!(hc.privileged, None, "must never request a privileged container");
+            assert_eq!(hc.auto_remove, Some(true));
+            assert_eq!(hc.binds, None, "no mounts => no binds");
+            assert_eq!(hc.network_mode, None, "no host network / no explicit network");
+            assert_eq!(hc.pid_mode, None, "no host PID namespace");
+            assert_eq!(hc.ipc_mode, None, "no host IPC namespace");
+            assert_eq!(hc.userns_mode, None, "no host user namespace");
+            assert_eq!(hc.security_opt, None, "default seccomp/apparmor profiles kept");
+            assert_eq!(hc.devices, None, "no host devices");
+        }
+    }
+
+    #[test]
+    fn transparent_egress_adds_exactly_net_admin() {
+        let hc = Spawner::host_config(&[], None, Egress::default());
+        assert_eq!(hc.cap_add, Some(vec!["NET_ADMIN".to_owned()]), "default cell gets NET_ADMIN");
+        assert_eq!(hc.cap_drop, None);
+    }
+
+    #[test]
+    fn forward_egress_adds_no_capability() {
+        let hc = Spawner::host_config(&[], None, Egress::Forward);
+        assert_eq!(hc.cap_add, None);
+    }
+
+    #[test]
+    fn the_cell_env_pins_the_egress_mode() {
+        let s = spec("sess-net", json!({ "flow": "review" }));
+        let env = default_env(&s).unwrap();
+        assert!(env.contains(&"WORKER_NET_MODE=transparent".to_owned()), "{env:?}");
+        assert!(env.iter().all(|e| !e.starts_with("CCTUI_LANDLOCK_STRICT=")), "strict by default");
+
+        let forward = Confinement { egress: Egress::Forward, ..Confinement::default() };
+        let env = Spawner::build_worker_env(&s, "https://c.example.test", forward).unwrap();
+        assert!(env.contains(&"WORKER_NET_MODE=forward".to_owned()), "{env:?}");
+    }
+
+    #[test]
+    fn best_effort_landlock_is_the_dispatchers_choice_only() {
+        let lax = Confinement { landlock_strict: false, ..Confinement::default() };
+        let s = spec("sess-ll", json!({ "flow": "review" }));
+        let env = Spawner::build_worker_env(&s, "https://c.example.test", lax).unwrap();
+        assert!(env.contains(&"CCTUI_LANDLOCK_STRICT=0".to_owned()), "{env:?}");
+
+        for key in ["CCTUI_LANDLOCK_STRICT", "WORKER_NET_MODE", "CCTUI_GUARD_EXEC"] {
+            let s = spec("sess-ll", json!({ "env": { key: "0" } }));
+            let err = default_env(&s).unwrap_err();
+            assert!(err.to_string().contains(key), "a payload must not set {key}: {err}");
+        }
     }
 
     #[test]
     fn host_config_preserves_read_only_binds() {
         let mounts =
             vec!["/host/cache:/cache:ro".to_owned(), "/host/certs:/etc/ssl/certs:ro".to_owned()];
-        let hc = Spawner::host_config(&mounts, Some("cctui-net"));
+        let hc = Spawner::host_config(&mounts, Some("cctui-net"), Egress::Transparent);
         assert_eq!(hc.privileged, None);
         let binds = hc.binds.expect("binds present");
         assert_eq!(binds, mounts, "configured RO binds pass through verbatim");
@@ -247,7 +351,7 @@ mod tests {
             "sess-123",
             json!({ "name": "Review #7", "cctui_machine_key": "SECRET", "flow": "review" }),
         );
-        let env = Spawner::build_worker_env(&s, "https://cctui.example.test").unwrap();
+        let env = default_env(&s).unwrap();
         assert!(env.contains(&"SESSION_ID=sess-123".to_owned()));
         assert!(env.contains(&"TASK_ID=sess-123".to_owned()));
         assert!(env.contains(&"TASK_NAME=Review #7".to_owned()));
@@ -262,7 +366,7 @@ mod tests {
     #[test]
     fn worker_env_omits_machine_key_when_payload_has_none() {
         let s = spec("sess-9", json!({ "flow": "review" }));
-        let env = Spawner::build_worker_env(&s, "https://cctui.example.test").unwrap();
+        let env = default_env(&s).unwrap();
         assert!(env.iter().all(|e| !e.starts_with("CCTUI_MACHINE_KEY=")));
     }
 
@@ -270,8 +374,117 @@ mod tests {
     fn worker_env_rejects_reserved_payload_env() {
         for key in ["CCTUI_URL", "CCTUI_MACHINE_KEY", "LD_PRELOAD", "HTTPS_PROXY"] {
             let s = spec("sess-r", json!({ "env": { key: "https://attacker.example" } }));
-            let err = Spawner::build_worker_env(&s, "https://cctui.example.test").unwrap_err();
+            let err = default_env(&s).unwrap_err();
             assert!(err.to_string().contains(key), "{err}");
         }
+    }
+
+    /// The request line and headers, with any body read off the socket.
+    async fn read_request(tcp: &mut tokio::net::TcpStream) -> Option<String> {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        let end = loop {
+            if let Some(at) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break at + 4;
+            }
+            match tcp.read(&mut chunk).await {
+                Ok(0) | Err(_) => return None,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        };
+        let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+        let length = head
+            .lines()
+            .find_map(|l| l.strip_prefix("content-length:"))
+            .and_then(|v| v.trim().parse::<usize>().ok());
+        let chunked = head.contains("transfer-encoding: chunked");
+        loop {
+            let body = &buf[end..];
+            let done = length
+                .map_or_else(|| !chunked || body.ends_with(b"0\r\n\r\n"), |len| body.len() >= len);
+            if done {
+                return Some(String::from_utf8_lossy(&buf[..end]).into_owned());
+            }
+            match tcp.read(&mut chunk).await {
+                Ok(0) | Err(_) => return None,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        }
+    }
+
+    /// A stand-in docker API where a container named `held` exists or not.
+    async fn fake_docker(held: Option<String>) -> Spawner {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut tcp, _)) = listener.accept().await {
+                let held = held.clone();
+                tokio::spawn(async move {
+                    let Some(request) = read_request(&mut tcp).await else { return };
+                    let mut words = request.split_whitespace();
+                    let method = words.next().unwrap_or_default();
+                    let path = words.next().unwrap_or_default();
+                    let exists = held.as_deref().is_some_and(|n| path.contains(n));
+                    let (status, body) = match method {
+                        "GET" if exists => ("200 OK", r#"{"Id":"c0","State":{"Running":true}}"#),
+                        "POST" if path.contains("/containers/create") && held.is_some() => {
+                            ("409 Conflict", r#"{"message":"name in use"}"#)
+                        }
+                        "POST" if path.contains("/containers/create") => {
+                            ("201 Created", r#"{"Id":"c1","Warnings":[]}"#)
+                        }
+                        "POST" if path.ends_with("/start") => ("204 No Content", ""),
+                        _ => ("404 Not Found", r#"{"message":"No such container"}"#),
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n\
+                         content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = tcp.write_all(response.as_bytes()).await;
+                    let _ = tcp.shutdown().await;
+                });
+            }
+        });
+
+        Spawner {
+            image: "example.com/worker:latest".into(),
+            network: None,
+            cctui_url: "https://cctui.example.test".into(),
+            mounts: Vec::new(),
+            confinement: Confinement::default(),
+            docker: Docker::connect_with_http(&url, 5, bollard::API_DEFAULT_VERSION).unwrap(),
+            exits: Arc::new(Exits::default()),
+        }
+    }
+
+    /// The check and the create path share one admission step and the same
+    /// name rule: a held name is `deduplicated` onto the same handle by both,
+    /// a free one lets the create go through while the check answers none, and
+    /// a dispatch the create path refuses errors in the check too.
+    #[tokio::test]
+    async fn the_dedup_check_agrees_with_the_create_path() {
+        let mut s = spec("fresh-session", json!({}));
+        s.dedup_key = Some("triage-PROJ-1".into());
+        let name = worker_name("triage-PROJ-1");
+
+        let held = fake_docker(Some(name.clone())).await;
+        let checked = held.dedup_check(&s).await.unwrap().expect("a held name deduplicates");
+        let created = held.dispatch(&s).await.unwrap();
+        assert_eq!(created.status, "deduplicated");
+        assert_eq!(checked.handle, format!("container/{name}"));
+        assert_eq!((&checked.handle, &checked.status), (&created.handle, &created.status));
+
+        let free = fake_docker(None).await;
+        assert!(free.dedup_check(&s).await.unwrap().is_none());
+        assert_eq!(free.dispatch(&s).await.unwrap().status, "dispatched");
+
+        let mut refused = s;
+        refused.session_id = String::new();
+        assert!(held.dedup_check(&refused).await.is_err());
+        assert!(held.dispatch(&refused).await.is_err());
+        assert!(held.supports_dedup_check());
     }
 }

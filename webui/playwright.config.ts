@@ -46,7 +46,13 @@ export default defineConfig({
 		},
 		{
 			name: 'drawer',
-			testMatch: ['drawer-scrollbars.spec.ts', 'composer-inset.spec.ts', 'mobile-hscroll.spec.ts', 'cold-followup.spec.ts'],
+			testMatch: [
+				'drawer-scrollbars.spec.ts',
+				'composer-inset.spec.ts',
+				'mobile-hscroll.spec.ts',
+				'cold-followup.spec.ts',
+				'drawer-hidden-owners.spec.ts'
+			],
 			use: { baseURL: headerUrl }
 		},
 		// CI runs this and the two drawer projects: every request is stubbed
@@ -56,7 +62,7 @@ export default defineConfig({
 			name: 'hermetic',
 			// Anchored to the filename: testMatch sees the absolute path, so a bare
 			// `tiles-` also matches every spec under a directory whose name starts with it.
-			testMatch: /(^|[\\/])(tiles-|fontscale-|voice-|settings-)[^\\/]*\.spec\.ts$/,
+			testMatch: /(^|[\\/])(tiles-|fontscale-|voice-|settings-|redacted-|sessions-)[^\\/]*\.spec\.ts$/,
 			use: { baseURL: headerUrl }
 		},
 		{

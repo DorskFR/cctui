@@ -20,7 +20,9 @@ use cctui_proto::adapter::{AdapterEvent, EndReason};
 use cctui_proto::classifier::{Bucket, ClassifyInput, classify};
 use tokio::sync::Notify;
 
-use crate::adapters::claude_code::stuck_turn::{notified_ids, started_id};
+use crate::adapters::claude_code::stuck_turn::{
+    is_monitor_start, started_id, stopped_id, task_notices,
+};
 
 /// After a done-classified status, how long to keep waiting for the final
 /// assistant text to land (claude's transcript tail can lag the status poll).
@@ -49,6 +51,11 @@ pub const QUIET_DONE_MIN_AGE: Duration = Duration::from_mins(1);
 /// Claude Code starts a new turn on its own once such a task completes, and
 /// that turn carries the real answer.
 pub const BG_TASK_QUIET_CAP: Duration = Duration::from_mins(20);
+/// How long background tasks keep holding a turn a `Stop` hook already ended.
+///
+/// A task that outlives its turn (a dev server, a watcher) never notifies. A
+/// Monitor does, at the latest when it expires, so it is not cut short here.
+pub const BG_TASK_TURN_END_HOLD: Duration = Duration::from_mins(3);
 /// The one `stop_reason` that means the model handed back rather than lining up
 /// another tool call.
 const TURN_END_STOP_REASON: &str = "end_turn";
@@ -134,6 +141,7 @@ struct WatchState {
     awaiting_prompt: Option<String>,
     /// Background tasks started and not yet notified as completed.
     bg_tasks: BTreeSet<String>,
+    monitors: BTreeSet<String>,
     last_event_at: Option<Instant>,
 }
 
@@ -165,6 +173,7 @@ pub struct ChildSnapshot {
     tokens: u64,
     awaiting_prompt: bool,
     bg_tasks: usize,
+    monitors: usize,
     last_event_at: Option<Instant>,
 }
 
@@ -249,12 +258,17 @@ impl ChildSnapshot {
         Assessment::Running(self.progress_line())
     }
 
-    /// Whether outstanding background tasks keep the turn open: their
-    /// completion starts the turn that answers. A child that handed a question
-    /// back to its parent is not held.
+    /// Whether outstanding background tasks keep the turn open.
+    ///
+    /// Their completion starts the turn that answers. A child that handed a
+    /// question back to its parent is not held, nor one whose turn ended
+    /// [`BG_TASK_TURN_END_HOLD`] ago with no notification since and no
+    /// Monitor running.
     fn waits_on_background(&self, now: Instant) -> bool {
         self.bg_tasks > 0
             && self.blocked_kind != Some(BlockKind::Status)
+            && (self.monitors > 0
+                || self.turn_end_at.is_none_or(|at| now.duration_since(at) < BG_TASK_TURN_END_HOLD))
             && now.duration_since(self.last_event_at.unwrap_or(self.registered_at))
                 < BG_TASK_QUIET_CAP
     }
@@ -442,6 +456,7 @@ impl ChildWatch {
             tokens: w.state.tokens,
             awaiting_prompt: w.state.awaiting_prompt.is_some(),
             bg_tasks: w.state.bg_tasks.len(),
+            monitors: w.state.monitors.len(),
             last_event_at: w.state.last_event_at,
         })
     }
@@ -660,15 +675,22 @@ fn apply_message(w: &mut Watch, local_id: &str, payload: &serde_json::Value) {
     }
 }
 
-/// A completed background task opens the turn Claude Code starts on its own:
-/// every turn-end reading so far belongs to the interim reply. The interim
-/// text stays as the fallback answer.
+/// A notice for a tracked task opens the turn Claude Code starts on its own.
+///
+/// Every turn-end reading so far belongs to the interim reply; the interim
+/// text stays as the fallback answer. A Monitor's per-event notice leaves its
+/// task running.
 fn apply_task_notification(w: &mut Watch, text: &str) {
-    let mut cleared = false;
-    for id in notified_ids(text) {
-        cleared |= w.state.bg_tasks.remove(id);
+    let mut touched = false;
+    for (id, terminal) in task_notices(text) {
+        touched |= if terminal {
+            w.state.monitors.remove(id);
+            w.state.bg_tasks.remove(id)
+        } else {
+            w.state.bg_tasks.contains(id)
+        };
     }
-    if cleared && w.state.awaiting_prompt.is_none() {
+    if touched && w.state.awaiting_prompt.is_none() {
         w.state.done_since = None;
         w.state.tail = Tail::Other;
         w.state.turn_end_at = None;
@@ -698,8 +720,16 @@ fn apply_tool_use(w: &mut Watch, payload: &serde_json::Value) {
         } else {
             w.state.tool_errors = 0;
         }
-        if let Some(id) = tool_result_texts(payload).into_iter().find_map(started_id) {
+        let texts = tool_result_texts(payload);
+        if let Some(id) = texts.iter().copied().find_map(started_id) {
+            if texts.iter().any(|t| is_monitor_start(t)) {
+                w.state.monitors.insert(id.clone());
+            }
             w.state.bg_tasks.insert(id);
+        }
+        for id in texts.iter().copied().filter_map(stopped_id) {
+            w.state.monitors.remove(id);
+            w.state.bg_tasks.remove(id);
         }
     }
     // Tool traffic is proof of an in-flight turn.
@@ -1043,6 +1073,130 @@ mod tests {
         assert!(matches!(snap.assess(Instant::now()), Assessment::Running(_)));
         let later = Instant::now() + BG_TASK_QUIET_CAP;
         assert!(matches!(snap.assess(later), Assessment::Finished(_)));
+    }
+
+    fn bg_stopped(local_id: &str, id: &str) -> AdapterEvent {
+        AdapterEvent::ToolUse {
+            local_id: local_id.to_owned(),
+            payload: json!({
+                "kind": "tool_result",
+                "content": json!({
+                    "message": format!("Successfully stopped task: {id} (npm run dev)"),
+                    "task_id": id,
+                    "task_type": "local_bash",
+                    "command": "npm run dev",
+                })
+                .to_string(),
+            }),
+        }
+    }
+
+    #[test]
+    fn a_background_hold_lapses_shortly_after_a_confirmed_turn_end() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&msg("child-1", "user", "start the dev server"));
+        watch.observe(&bg_started("child-1", "dev1"));
+        watch.observe(&msg_stopping("child-1", "dev server up on :5173", "end_turn"));
+        watch.note_turn_end("child-1");
+        let snap = h.snapshot().unwrap();
+        assert!(matches!(snap.assess(Instant::now()), Assessment::Running(_)));
+        let later = Instant::now() + BG_TASK_TURN_END_HOLD;
+        match snap.assess(later) {
+            Assessment::Finished(out) => {
+                assert_eq!(out.final_text.as_deref(), Some("dev server up on :5173"));
+            }
+            Assessment::Running(line) => panic!("still held: {line}"),
+        }
+    }
+
+    #[test]
+    fn a_stopped_background_task_no_longer_holds_the_turn() {
+        assert_eq!(stopped_id("Successfully killed shell: bash1 (sleep 99)"), Some("bash1"));
+        assert_eq!(stopped_id("Command running in background with ID: b1."), None);
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&msg("child-1", "user", "run it then stop it"));
+        watch.observe(&bg_started("child-1", "bmwb3frgk"));
+        watch.observe(&bg_started("child-1", "other1"));
+        watch.observe(&bg_stopped("child-1", "bmwb3frgk"));
+        assert_eq!(h.snapshot().unwrap().bg_tasks, 1, "only the stopped task is cleared");
+        watch.observe(&bg_stopped("child-1", "other1"));
+        watch.observe(&msg_stopping("child-1", "stopped the dev server", "end_turn"));
+        let out = finished(&h).expect("no task left to wait on");
+        assert_eq!(out.final_text.as_deref(), Some("stopped the dev server"));
+    }
+
+    fn monitor_started(local_id: &str, id: &str) -> AdapterEvent {
+        AdapterEvent::ToolUse {
+            local_id: local_id.to_owned(),
+            payload: json!({
+                "kind": "tool_result",
+                "content": format!(
+                    "Monitor started (task {id}, expires in 30m unless the source ends first; \
+                     you get one notice at expiry). You will be notified on each event."
+                ),
+            }),
+        }
+    }
+
+    fn monitor_event(local_id: &str, id: &str) -> AdapterEvent {
+        AdapterEvent::Message {
+            local_id: local_id.to_owned(),
+            payload: json!({
+                "role": "user",
+                "meta": true,
+                "text": format!(
+                    "<task-notification><task-id>{id}</task-id><summary>Monitor event: CI</summary>\
+                     <event>pending</event></task-notification>"
+                ),
+            }),
+            turn_id: None,
+        }
+    }
+
+    #[test]
+    fn a_child_waiting_on_a_monitor_is_held_through_its_event_notices() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&msg("child-1", "user", "watch CI"));
+        watch.observe(&monitor_started("child-1", "b3bzv1ch3"));
+        watch.observe(&msg_stopping("child-1", "watching CI", "end_turn"));
+        watch.note_turn_end("child-1");
+        assert_eq!(h.snapshot().unwrap().bg_tasks, 1, "a Monitor start is a background task");
+        assert!(finished(&h).is_none(), "the Monitor holds the turn open");
+
+        watch.observe(&monitor_event("child-1", "b3bzv1ch3"));
+        assert_eq!(h.snapshot().unwrap().bg_tasks, 1, "an event notice is not the end of it");
+        watch.observe(&msg_stopping("child-1", "CI still pending", "end_turn"));
+        watch.note_turn_end("child-1");
+        let snap = h.snapshot().unwrap();
+        let past_hold = Instant::now() + BG_TASK_TURN_END_HOLD;
+        assert!(
+            matches!(snap.assess(past_hold), Assessment::Running(_)),
+            "a Monitor outlasts the short turn-end hold"
+        );
+        assert!(
+            matches!(snap.assess(Instant::now() + BG_TASK_QUIET_CAP), Assessment::Finished(_)),
+            "but not the quiet cap"
+        );
+
+        watch.observe(&bg_notified("child-1", "b3bzv1ch3"));
+        watch.observe(&msg_stopping("child-1", "CI green", "end_turn"));
+        let out = finished(&h).expect("the Monitor's final notice ends the wait");
+        assert_eq!(out.final_text.as_deref(), Some("CI green"));
+    }
+
+    #[test]
+    fn a_status_less_notice_for_an_untracked_task_changes_nothing() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&msg("child-1", "user", "build it"));
+        watch.observe(&tool_use("child-1", "Bash"));
+        watch.observe(&msg_stopping("child-1", "built", "end_turn"));
+        watch.observe(&monitor_event("child-1", "unknown1"));
+        let out = finished(&h).expect("a stray event notice does not reopen the turn");
+        assert_eq!(out.final_text.as_deref(), Some("built"));
     }
 
     #[test]

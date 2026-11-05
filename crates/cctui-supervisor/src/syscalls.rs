@@ -1,9 +1,7 @@
 //! Per-architecture syscall-number tables for the seccomp denylist.
 //!
-//! Faithful port of `syscalls_amd64.go` / `syscalls_arm64.go` from the Go
-//! reference. The `(name, reason)` pairs come from `seccomp.go`'s
-//! `blockedSyscalls` map; the numbers are looked up per target arch so the
-//! emitted BPF program matches the kernel's syscall ABI exactly.
+//! The numbers are looked up per target arch so the emitted BPF program
+//! matches the kernel's syscall ABI exactly.
 
 /// A blocked syscall: stable name, the reason it is denied (for the report /
 /// logging), and its number on the current target architecture.
@@ -62,8 +60,29 @@ pub fn id_setter_argc(name: &str) -> Option<u8> {
     }
 }
 
-/// Names + reasons, ported verbatim from `seccomp.go` `blockedSyscalls`.
-/// Order is fixed here (the Go map is unordered) for deterministic output.
+/// `personality(2)` personas the filter lets through.
+///
+/// As Docker's default profile does: the `0xffffffff` query, `PER_LINUX`,
+/// `PER_LINUX32` and their `UNAME26` variants. Any other persona
+/// (`ADDR_NO_RANDOMIZE`, `READ_IMPLIES_EXEC`, ...) weakens exploit mitigations
+/// and is denied.
+pub const PERSONALITY_ALLOWED: &[u64] = &[0x0, 0x8, 0x2_0000, 0x2_0008, 0xFFFF_FFFF];
+
+/// Persona values to let through for an argument-guarded `personality`, or
+/// `None` for every other syscall.
+#[must_use]
+pub fn allowed_personas(name: &str) -> Option<&'static [u64]> {
+    match name {
+        "personality" => Some(PERSONALITY_ALLOWED),
+        _ => None,
+    }
+}
+
+/// Denied syscalls and why. Order is fixed for deterministic output.
+///
+/// The `io_uring` calls are denied with `EPERM`, which libuv (node, claude) and
+/// tokio treat as "`io_uring` unavailable" and fall back to their thread pools,
+/// exactly as under Docker's default profile.
 const DENYLIST: &[(&str, &str)] = &[
     // Process debugging / escape
     ("ptrace", "attach to other processes"),
@@ -91,6 +110,19 @@ const DENYLIST: &[(&str, &str)] = &[
     // Namespace escape
     ("unshare", "create new namespaces"),
     ("setns", "enter another namespace"),
+    // Kernel attack surface
+    ("bpf", "load eBPF programs / maps"),
+    ("perf_event_open", "kernel performance monitoring"),
+    ("userfaultfd", "page-fault handling used to win kernel races"),
+    ("io_uring_setup", "io_uring bypasses the seccomp filter for its ops"),
+    ("io_uring_enter", "io_uring bypasses the seccomp filter for its ops"),
+    ("io_uring_register", "io_uring bypasses the seccomp filter for its ops"),
+    ("open_by_handle_at", "open files outside the mount namespace by handle"),
+    ("personality", "disable ASLR / enable READ_IMPLIES_EXEC"),
+    // Kernel keyring
+    ("keyctl", "manipulate kernel keyrings"),
+    ("add_key", "add a key to a kernel keyring"),
+    ("request_key", "request a key from a kernel keyring"),
 ];
 
 /// Returns the `(name, number)` table for the build target architecture, or
@@ -138,6 +170,17 @@ const AMD64: &[(&str, i64)] = &[
     ("delete_module", 176),
     ("unshare", 272),
     ("setns", 308),
+    ("bpf", 321),
+    ("perf_event_open", 298),
+    ("userfaultfd", 323),
+    ("io_uring_setup", 425),
+    ("io_uring_enter", 426),
+    ("io_uring_register", 427),
+    ("open_by_handle_at", 304),
+    ("personality", 135),
+    ("keyctl", 250),
+    ("add_key", 248),
+    ("request_key", 249),
 ];
 
 /// arm64 syscall numbers. Source: `linux/include/uapi/asm-generic/unistd.h`
@@ -165,6 +208,17 @@ const ARM64: &[(&str, i64)] = &[
     ("delete_module", 106),
     ("unshare", 97),
     ("setns", 268),
+    ("bpf", 280),
+    ("perf_event_open", 241),
+    ("userfaultfd", 282),
+    ("io_uring_setup", 425),
+    ("io_uring_enter", 426),
+    ("io_uring_register", 427),
+    ("open_by_handle_at", 265),
+    ("personality", 92),
+    ("keyctl", 219),
+    ("add_key", 217),
+    ("request_key", 218),
 ];
 
 #[cfg(test)]
@@ -173,12 +227,44 @@ mod tests {
 
     #[test]
     fn denylist_has_expected_entries() {
-        // Same 21 syscalls as the Go reference's blockedSyscalls map.
-        assert_eq!(DENYLIST.len(), 21);
-        assert!(DENYLIST.iter().any(|(n, _)| *n == "unshare"));
-        assert!(DENYLIST.iter().any(|(n, _)| *n == "ptrace"));
-        assert!(DENYLIST.iter().any(|(n, _)| *n == "pivot_root"));
-        assert!(DENYLIST.iter().any(|(n, _)| *n == "chroot"));
+        assert_eq!(DENYLIST.len(), 32);
+        for name in [
+            "unshare",
+            "ptrace",
+            "pivot_root",
+            "chroot",
+            "bpf",
+            "keyctl",
+            "add_key",
+            "request_key",
+            "userfaultfd",
+            "perf_event_open",
+            "io_uring_setup",
+            "io_uring_enter",
+            "io_uring_register",
+            "open_by_handle_at",
+            "personality",
+        ] {
+            assert!(DENYLIST.iter().any(|(n, _)| *n == name), "{name} must be denied");
+        }
+    }
+
+    #[test]
+    fn denylist_names_are_unique() {
+        let mut names: Vec<&str> = DENYLIST.iter().map(|(n, _)| *n).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), DENYLIST.len());
+    }
+
+    #[test]
+    fn only_personality_is_persona_guarded() {
+        assert_eq!(allowed_personas("personality"), Some(PERSONALITY_ALLOWED));
+        assert!(PERSONALITY_ALLOWED.contains(&0xFFFF_FFFF), "the query must stay allowed");
+        assert!(!PERSONALITY_ALLOWED.contains(&0x0004_0000), "ADDR_NO_RANDOMIZE must be denied");
+        for (name, _) in DENYLIST.iter().filter(|(n, _)| *n != "personality") {
+            assert_eq!(allowed_personas(name), None, "{name}");
+        }
     }
 
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -201,5 +287,30 @@ mod tests {
         assert_eq!(find("ptrace"), 101);
         assert_eq!(find("unshare"), 272);
         assert_eq!(find("mount"), 165);
+        assert_eq!(find("bpf"), 321);
+        assert_eq!(find("keyctl"), 250);
+        assert_eq!(find("add_key"), 248);
+        assert_eq!(find("request_key"), 249);
+        assert_eq!(find("userfaultfd"), 323);
+        assert_eq!(find("perf_event_open"), 298);
+        assert_eq!(find("io_uring_setup"), 425);
+        assert_eq!(find("io_uring_enter"), 426);
+        assert_eq!(find("io_uring_register"), 427);
+        assert_eq!(find("open_by_handle_at"), 304);
+        assert_eq!(find("personality"), 135);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn arm64_known_numbers() {
+        let blocked = blocked_syscalls().unwrap();
+        let find = |name: &str| blocked.iter().find(|b| b.name == name).unwrap().num;
+        assert_eq!(find("bpf"), 280);
+        assert_eq!(find("keyctl"), 219);
+        assert_eq!(find("userfaultfd"), 282);
+        assert_eq!(find("perf_event_open"), 241);
+        assert_eq!(find("io_uring_setup"), 425);
+        assert_eq!(find("open_by_handle_at"), 265);
+        assert_eq!(find("personality"), 92);
     }
 }

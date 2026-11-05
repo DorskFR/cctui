@@ -225,3 +225,90 @@ soft-limit and usage windows keep working across modes.
 
 For anything where metering certainty matters, keep `bg` until the §3
 measurement is done — and re-check if the billing split un-pauses.
+
+---
+
+## 6. Hook enforcement per harness (probed 2026-11-04)
+
+Claude Code 2.1.318, codex-cli 0.166.0. Codex cases run against a scripted mock Responses API, with hooks injected the way the daemon
+does it (`thread/start` `params.config.hooks` + `bypass_hook_trust = true`).
+
+| # | Question | Claude Code | Codex | Workaround |
+|---|---|---|---|---|
+| 1 | Spawned agents run the parent's hooks | **Yes**: an Agent-tool subagent's Bash fires the `--settings` PreToolUse (with `agent_id`) and is blocked | **Yes**: a `spawn_agent` child inherits `params.config.hooks` and `bypass_hook_trust`; its PreToolUse fires (parent `session_id`, child `agent_id`) and exit 2 blocks. A repo-defined agent role whose `config_file` sets `features.hooks = false` does not shed them | none needed |
+| 2 | Injected hooks add to, or replace, file hooks | Add: `--settings` hooks and project hooks both run | Add: user `hooks.json`, project `.codex/hooks.json` and injected hooks (source `sessionFlags`) all run. `bypass_hook_trust` also runs **untrusted** user/project hooks. **Not add-only**: `features.hooks = false` in a trusted project's `.codex/config.toml`, or in `$CODEX_HOME/config.toml`, drops every hook including the injected ones (an untrusted project's config is ignored) | send `features.hooks = true` in `params.config` (or launch with `--enable hooks`); both outrank project and user config |
+| 3 | A repo/user setting switches off `--settings` hooks | **Yes, hole**: `disableAllHooks: true` in project `settings.json`, `settings.local.json` or user `settings.json` silences them. `allowManagedHooksOnly` in a project file is ignored | n/a (see row 2) | put `"disableAllHooks": false` in the `--settings` file (outranks project/local/user); `--setting-sources` also excludes the offending layer |
+| 4 | Codex JSON decisions match Claude's | reference behaviour | PreToolUse `permissionDecision: "deny"` blocks and feeds the reason to the model. `additionalContext` reaches the model from SessionStart, UserPromptSubmit and PostToolUse. Stop `decision: "block"` continues the turn (second Stop has `stop_hook_active`). **`"ask"` is unsupported and fails open: the tool runs.** A hook that exits 1 or prints invalid JSON also fails open | map `ask` → `deny` in the Codex converter; shims must exit 2 on internal errors |
+| 5 | MCP tool calls reach PreToolUse | supported (not re-probed) | **Yes**: `tool_name: "mcp__<server>__<tool>"`; exit 2 and JSON deny both stop the call before the server sees it. **Hole**: `write_stdin` into an interactive `exec_command` session never fires PreToolUse, so a `Bash` content guard sees `bash -i` but not the commands typed into it | No launch switch removes `write_stdin` while a shell tool exists: `features.unified_exec = false` falls back to the model's catalog shell type, which is still `exec_command` + `write_stdin`, and only `features.shell_tool = false` (no shell at all) drops it. Codex rejects non-empty `write_stdin` into a session opened with `tty: false`, so next to every shell guard the converter adds `cctui-daemon hook-shim no-interactive-shell`, which refuses commands that open an interactive program (steering) |
+| 6 | The agent edits hook config mid-session | **Hole**: an agent-written `disableAllHooks: true` in `.claude/settings.json` takes effect on the **next turn of the same process** and on every `--resume`. The `--settings` file is not reloaded in-process but is re-read by every relaunch, and it sits agent-writable in `~/.config/cctui/hook-settings-<short>.json` | Hooks are snapshotted per thread at `thread/start`: mid-thread edits (adding or disabling) do nothing. Every **new thread** on the same app-server reads the edited project/`$CODEX_HOME` config, so an agent-written `features.hooks = false` persists to future sessions | Claude: `"disableAllHooks": false` in `--settings`, and regenerate the settings file on every launch/resume (or pass it as inline JSON). Codex: `features.hooks = true` in `params.config` |
+
+**Verdict.** As shipped today, inherited hooks are **steering, not enforcement**, on both harnesses: a repo,
+user or agent-written setting turns them off (Claude rows 3 and 6, Codex rows 2 and 6). With the row workarounds applied,
+config tampering stops working and inheritance holds on both harnesses (row 1). Claude hooks are then
+enforcement against a config attack, but a hook that crashes still fails open. Codex hooks stay **steering** for shell
+content because of `write_stdin` (row 5) and fail-open errors (row 4). Neither harness can stop an
+obfuscated shell command from defeating a content-matching guard. Enforcement still has to come from
+the exec-interception/sandbox layer.
+
+### Guard steering shims
+
+Each shim turns its harness's pre-tool callback into `POST $CCTUI_GUARD_URL/check?dialect=…` and adds
+no logic of its own. They live in `deploy/guard-shims/` and fail closed: only an explicit guard allow lets
+the call run. A deny, an `ask`, an unset `CCTUI_GUARD_URL`, an unreachable or hung guard (10 s,
+`CCTUI_GUARD_TIMEOUT`), a non-2xx answer, an unreadable answer and malformed hook input all block. The guard's
+deny reason reaches the model verbatim, which is the steering channel.
+
+| Shim | Seam | Covers | Blocks with |
+|---|---|---|---|
+| `opencode/plugins/cctui-guard.js` | `tool.execute.before` plugin, `dialect=opencode` | every OpenCode tool. Built-in names are sent as Claude's (`bash` → `Bash`, `edit` → `Edit`, …, `filePath` also as `file_path`) so guard rules match. MCP tools pass through unchanged | a thrown `Error` whose message is the reason |
+| `codex/pretool.sh` | `PreToolUse` in `$CODEX_HOME/hooks.json`, no matcher, `dialect=codex` | `Bash`, `apply_patch`, `mcp__<server>__<tool>`, verbatim | exit 2, reason on stderr. `ask` is never emitted (row 4) |
+| `claude/pretool.sh` | `PreToolUse` command hook, `dialect=claude` | every Claude tool | exit 2, reason on stderr. Reference only: the deployed Claude hook ships in the context pack |
+
+The worker entrypoint installs the OpenCode and Codex shims only when the guard is running, since they
+would block every tool without one. It copies the plugin into `OPENCODE_CONFIG_DIR`, because OpenCode sessions get an
+ephemeral `XDG_CONFIG_HOME`. It registers the Codex shim once in `$CODEX_HOME/hooks.json` and sets
+`features.hooks = true` in the managed `config.toml` block.
+
+Remaining Codex gaps:
+
+- `write_stdin` into an interactive `exec_command` session never fires `PreToolUse` (row 5), and the
+  `exec_command` payload does not carry `tty`. The Codex converter adds a `Bash` PreToolUse rule,
+  `hook-shim no-interactive-shell`, to every policy that guards shell calls. It refuses interactive
+  shells (`bash -i`, a bare `sh`), REPLs started without a script (`python3`, `node`, `psql db`),
+  full-screen programs (`vim`, `less`, `tmux`, `ssh`) and `docker exec -it`, and follows `-c`,
+  `eval` and command substitutions. Piped, redirected and heredoc input passes. It is steering
+  only: any program can read a tty, so commands typed into one stay unchecked.
+- A user `hooks.json` hook only runs once Codex trusts it. cctui-spawned threads need `bypass_hook_trust`
+  (or the hook injected through `params.config.hooks`). Until the daemon sends it, the Codex shim is installed
+  but inert.
+- How Codex treats a hook it kills on its own timeout was not probed. The shim's 10 s curl timeout keeps
+  it well under the hook timeout.
+
+## 7. Enforcement is harness-independent; hooks steer
+
+Two layers enforce a guarded dispatch, and neither depends on the harness:
+
+- **Egress.** `cctui-guard-proxy` fences the pod's network. The step's granted
+  capabilities (plus any one-off `[network]` host) are the only hosts it lets
+  through.
+- **Exec.** With `CCTUI_GUARD_EXEC=1`, a seccomp user-notification filter sends
+  every `execve` of the agent tree to `cctui-guard`, which allows it only when
+  a capability of the active step grants that binary, subcommand and flags
+  (`worker-contract.md`, "Exec interception"). Claude Code, Codex and OpenCode
+  all reach `git`, `gh` and `curl` through `execve`, so the same step denies
+  the same command on every harness.
+
+The per-harness pre-tool hooks of §6 are **steering**: they refuse a tool call
+before it runs, with the same capability-worded reason the exec layer writes to
+stderr, so the model learns early and the decision log names the tool. A repo
+or agent setting can switch them off (§6 rows 2, 3, 6). That costs the early
+refusal, not the enforcement. When a command fails with `Permission denied`,
+the agent runs `cctui-guard why` (the pack's `AGENTS.md`/`CLAUDE.md` say so) to
+see the step, its granted capabilities and the recent denials.
+
+Residual gap: tools a harness runs **in-process** never exec, so only the hooks
+see them. `Edit`/`Write`/`apply_patch` file writes are bounded by Landlock (the
+RW paths), not by the step. `WebFetch` and MCP calls are bounded by the egress
+fence (the host must be granted), not by the step's tool list. Inside those
+bounds, a harness whose hooks are off can edit any writable file and call any
+reachable MCP server in any step.

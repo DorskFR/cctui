@@ -44,9 +44,9 @@ impl Driver {
             self.auth_recovery_quiescent(&short) && tail_has_gateway_auth_error(&path)?,
             "auth recovery refused: worker made progress"
         );
-        self.stop_worker(sock, &short).await;
+        self.remover().stop_worker(sock, &short).await;
         anyhow::ensure!(
-            Self::await_worker_exit(sock, &short).await,
+            super::removal::Remover::await_worker_exit(sock, &short).await,
             "auth recovery aborted: old worker did not exit"
         );
         self.resume_if_hibernated(sock, &short, local_id, &launch.env).await?;
@@ -87,40 +87,24 @@ impl Driver {
         silent_since_native_respawn(status, on_disk.as_ref())
     }
 
-    /// Deliver a user message to a worker, handling a pending `AskUserQuestion`
-    /// form. With structured `ask_picks` and the hook-captured questions we
-    /// answer the form *natively* — keystrokes on the real form, so claude
-    /// records a genuine `tool_result` with the selected labels.
-    /// Otherwise (free-text answer, missing questions, keystroke failure) fall
-    /// back to dismiss-then-reply: attach+ESC the form away, then `reply` the
-    /// text (claude records the ask as declined and reads the text as a new
-    /// user turn).
-    // Sequential reply-delivery pipeline (resolve short → resume-on-reply →
-    // ask-form vs text → submit) whose complexity is linear `?`-propagating I/O
-    // steps plus hibernation/ENOJOB recovery branches, not nesting. Splitting risks
-    // the resume/recovery control flow; kept whole deliberately.
-    #[allow(clippy::cognitive_complexity)]
-    pub(super) async fn deliver_reply(
+    /// Prepare a reply for delivery off the loop. The turn id and the
+    /// fingerprint are recorded first, so the transcript tail cannot observe
+    /// the injected turn ahead of them.
+    pub(super) fn reply_job(
         &self,
         sock: &std::path::Path,
         local_id: &str,
         text: &str,
         ask_picks: Option<Vec<Vec<usize>>>,
-        env: &std::collections::BTreeMap<String, String>,
+        env: std::collections::BTreeMap<String, String>,
         turn_id: Option<uuid::Uuid>,
-    ) -> anyhow::Result<()> {
-        // Recorded before the op so the transcript tail cannot observe the
-        // injected turn ahead of its id. A reply with no id clears any previous
-        // one rather than letting it leak onto an unrelated turn.
+    ) -> anyhow::Result<ReplyJob> {
         self.note_turn(local_id, turn_id);
         self.note_delivered(local_id, text);
-        // Hibernated sessions (worker exited, job state still on disk)
-        // have left `short_by_session`, so fall back to deriving the
-        // short from the session id — same as the removal path. The derived
-        // short is a pure function of the session id, so it "resolves" on a
-        // machine that has never seen the session; without the on-disk job
-        // check a misrouted reply would cold-resume a duplicate worker for
-        // another daemon's session.
+        // A hibernated session has left `short_by_session`, so derive the short
+        // from the session id. That resolves on any machine, so without the
+        // on-disk job check a misrouted reply would cold-resume a duplicate
+        // worker for another daemon's session.
         let short = if let Ok(short) = self.resolve_short(local_id) {
             short
         } else {
@@ -131,16 +115,100 @@ impl Driver {
             );
             short
         };
-        // Resume-on-reply: a reply to an exited worker is
-        // ENOJOB'd by the claude daemon and silently lost. Revive it
-        // first via a resume `dispatch`, then deliver as normal. Live
-        // workers take the existing path with zero extra ops.
-        self.resume_if_hibernated(sock, &short, local_id, env).await?;
-        // If an AskUserQuestion form is up in the worker's PTY, a bare
-        // `reply` just presses Enter on the highlighted option — claude
-        // records option 1 ("Proceed"-style) and the user's text is
-        // swallowed.
-        let peer = crate::adapters::is_peer_envelope(text);
+        Ok(self.reply_job_for(sock, &short, local_id, text, ask_picks, env))
+    }
+
+    pub(super) fn reply_job_for(
+        &self,
+        sock: &std::path::Path,
+        short: &str,
+        local_id: &str,
+        text: &str,
+        ask_picks: Option<Vec<Vec<usize>>>,
+        env: std::collections::BTreeMap<String, String>,
+    ) -> ReplyJob {
+        ReplyJob {
+            sock: sock.to_path_buf(),
+            short: short.to_owned(),
+            local_id: local_id.to_owned(),
+            text: text.to_owned(),
+            ask_picks,
+            env,
+            busy: self.is_busy(short),
+            pinned_transcript: self.transcript_locations.get(short).map(|loc| loc.path.clone()),
+            pending_asks: self.pending_asks.clone(),
+            voice: std::sync::Arc::clone(&self.voice),
+            launcher: self.launcher(),
+        }
+    }
+
+    pub(super) async fn deliver_reply(
+        &self,
+        sock: &std::path::Path,
+        local_id: &str,
+        text: &str,
+        ask_picks: Option<Vec<Vec<usize>>>,
+        env: &std::collections::BTreeMap<String, String>,
+        turn_id: Option<uuid::Uuid>,
+    ) -> anyhow::Result<()> {
+        let job = self.reply_job(sock, local_id, text, ask_picks, env.clone(), turn_id)?;
+        Box::pin(job.deliver()).await
+    }
+
+    /// Whether the worker's last status reported a non-idle tempo (mid-turn).
+    pub(super) fn is_busy(&self, short: &str) -> bool {
+        self.last_status
+            .get(short)
+            .and_then(|s| s.tempo.as_deref())
+            .is_some_and(|tempo| tempo != "idle")
+    }
+}
+
+/// One reply on its way into a worker. The loop-owned state it needs is
+/// read when the job is built: the session's lane keeps every other command
+/// for it waiting until the job is done.
+pub(super) struct ReplyJob {
+    sock: std::path::PathBuf,
+    short: String,
+    local_id: String,
+    text: String,
+    ask_picks: Option<Vec<Vec<usize>>>,
+    env: std::collections::BTreeMap<String, String>,
+    busy: bool,
+    pinned_transcript: Option<std::path::PathBuf>,
+    pending_asks: super::super::PendingAsks,
+    voice: std::sync::Arc<super::voice::VoiceClocks>,
+    launcher: super::spawn::Launcher,
+}
+
+impl ReplyJob {
+    pub(super) fn local_id(&self) -> &str {
+        &self.local_id
+    }
+
+    async fn resolved(&self) {
+        let local_id = self.local_id.clone();
+        let events = &self.launcher.events;
+        let _ = events.send(AdapterEvent::AskResolved { local_id: local_id.clone() }).await;
+        let _ = events.send(AdapterEvent::PlanResolved { local_id }).await;
+    }
+
+    /// Deliver a user message to a worker, handling a pending `AskUserQuestion`
+    /// form. With structured `ask_picks` and the hook-captured questions we
+    /// answer the form *natively* — keystrokes on the real form, so claude
+    /// records a genuine `tool_result` with the selected labels.
+    /// Otherwise (free-text answer, missing questions, keystroke failure) fall
+    /// back to dismiss-then-reply: attach+ESC the form away, then `reply` the
+    /// text (claude records the ask as declined and reads the text as a new
+    /// user turn).
+    #[allow(clippy::cognitive_complexity)]
+    pub(super) async fn deliver(&self) -> anyhow::Result<()> {
+        let (sock, short, local_id) = (self.sock.as_path(), self.short.as_str(), &self.local_id);
+        // A reply to an exited worker is ENOJOB'd and lost: revive it first.
+        self.launcher.resume_if_hibernated(sock, short, local_id, &self.env).await?;
+        // A bare `reply` into an open AskUserQuestion form presses Enter on the
+        // highlighted option and swallows the text.
+        let peer = crate::adapters::is_peer_envelope(&self.text);
         let pending_ask = match self.pending_asks.lock() {
             Ok(m) if peer && m.contains_key(local_id) => return Err(AskOpened.into()),
             Ok(mut m) => m.remove(local_id),
@@ -148,90 +216,49 @@ impl Driver {
         };
         let had_pending_ask = pending_ask.is_some();
         if let Some(questions) = pending_ask {
-            // Native answer first: drive the real form via keystrokes.
-            let native_picks = ask_picks
+            let native_picks = self
+                .ask_picks
                 .as_ref()
                 .and_then(|picks| questions.as_ref().and_then(|q| ask_keystrokes(q, picks)));
             if let Some(chunks) = native_picks {
-                match socket::attach_answer_keys(sock, &short, &chunks).await {
+                match socket::attach_answer_keys(sock, short, &chunks).await {
                     Ok(()) => {
                         tracing::info!(%short, "answered ask form natively via keystrokes");
-                        // PostToolUse fires for the real answer and emits
-                        // `resolved`, but synthesize one too so the live card
-                        // drops immediately (it's idempotent client-side).
-                        let _ = self
-                            .events
-                            .send(AdapterEvent::AskResolved { local_id: local_id.to_owned() })
-                            .await;
-                        // A plan prompt is stored in the same pending map; emit
-                        // PlanResolved too so a live Plan card drops. Idempotent
-                        // (clients only clear their own kind).
-                        let _ = self
-                            .events
-                            .send(AdapterEvent::PlanResolved { local_id: local_id.to_owned() })
-                            .await;
+                        // PostToolUse emits `resolved` too; this one drops the
+                        // live card at once (idempotent client-side).
+                        self.resolved().await;
                         return Ok(());
                     }
                     Err(err) => {
-                        // do NOT fall through to attach+ESC here. The
-                        // pending-ask record can be stale (the form already
-                        // resolved in the native TUI or timed out, and the
-                        // `resolved` hook hasn't reached us yet), in which case
-                        // an ESC lands on whatever is now on screen — typically a
-                        // running tool — and aborts the turn. That is exactly the
-                        // "answering interrupted the tool" symptom. A stray text
-                        // reply is harmless by comparison, so just deliver it.
+                        // No ESC fallback: the pending-ask record can be stale,
+                        // and an ESC would then abort whatever runs on screen.
+                        // A stray text reply is harmless by comparison.
                         tracing::warn!(%err, %short, "native ask answer failed; delivering text reply without ESC");
                     }
                 }
-            } else if ask_picks.is_none() {
-                // Genuine free-text answer: the user typed prose rather than
-                // picking options, so the form must be dismissed before the text
-                // lands or claude records option 1 + swallows the text.
-                // This is the only path that intentionally dismisses the form.
-                if let Err(err) = socket::attach_interrupt(sock, &short).await {
+            } else if self.ask_picks.is_none() {
+                // A free-text answer: the form must go before the text lands,
+                // or claude records option 1 and swallows the text.
+                if let Err(err) = socket::attach_interrupt(sock, short).await {
                     tracing::warn!(%err, %short, "failed to dismiss pending ask form");
                 } else {
                     tracing::info!(%short, "dismissed pending ask form before free-text reply");
-                    // PostToolUse never fires for a cancelled ask, so synthesize
-                    // `resolved` so the server/clients drop the live card.
-                    let _ = self
-                        .events
-                        .send(AdapterEvent::AskResolved { local_id: local_id.to_owned() })
-                        .await;
-                    let _ = self
-                        .events
-                        .send(AdapterEvent::PlanResolved { local_id: local_id.to_owned() })
-                        .await;
-                    // Give the TUI a beat to settle after the ESC before the
-                    // reply lands.
+                    // PostToolUse never fires for a cancelled ask.
+                    self.resolved().await;
+                    // Give the TUI a beat to settle after the ESC.
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 }
             }
-            // Fallback paths (native answer failed, or option picks with an
-            // unanswerable shape) deliver the text reply without dismissing the
-            // form. The user has still answered, so tell clients to drop the live
-            // card; idempotent if a real `resolved` hook follows, and a harmless
-            // repeat of the free-text branch's own emit above.
-            let _ =
-                self.events.send(AdapterEvent::AskResolved { local_id: local_id.to_owned() }).await;
-            let _ = self
-                .events
-                .send(AdapterEvent::PlanResolved { local_id: local_id.to_owned() })
-                .await;
+            // The user has answered either way: drop the live card.
+            self.resolved().await;
         }
-        Box::pin(self.submit_text(sock, &short, local_id, text, had_pending_ask)).await
+        Box::pin(self.submit_text(had_pending_ask)).await
     }
 
-    /// Type `text` into the worker's composer and see it submitted.
-    async fn submit_text(
-        &self,
-        sock: &std::path::Path,
-        short: &str,
-        local_id: &str,
-        text: &str,
-        had_pending_ask: bool,
-    ) -> anyhow::Result<()> {
+    /// Type the text into the worker's composer and see it submitted.
+    async fn submit_text(&self, had_pending_ask: bool) -> anyhow::Result<()> {
+        let (sock, short, local_id, text) =
+            (self.sock.as_path(), self.short.as_str(), self.local_id.as_str(), self.text.as_str());
         let spoken = cctui_proto::injected::is_spoken_prompt(text);
         let hop = |name: &str| {
             if spoken {
@@ -243,21 +270,28 @@ impl Driver {
         // an ESC ESC draft restore. Only an idle worker with no form up is safe
         // to clear (mid-turn the composer is a queue, and a form eats the keys).
         // The paced clear costs a spoken prompt over a second, so it is skipped
-        // when the last reply left the composer empty and no ESC came since.
-        let may_clear = !had_pending_ask && !self.is_busy(short);
+        // when the last reply left the composer empty and no ESC came since, or
+        // when one screen probe reads the composer empty.
+        let may_clear = !had_pending_ask && !self.busy;
         if may_clear && spoken && socket::composer_known_empty(short) {
+            tracing::debug!(%short, composer_clear = "skipped_known_empty", "pre-reply clear");
             hop("composer clear skipped");
         } else if may_clear {
-            match socket::attach_clear_composer(sock, short).await {
-                Ok(()) => tracing::debug!(%short, "cleared composer before reply"),
-                Err(err) => tracing::warn!(%err, %short, "failed to clear composer before reply"),
-            }
-            hop("composer cleared");
+            let clear = socket::attach_clear_composer_unless_empty(sock, short).await;
+            let outcome = clear.unwrap_or_else(|err| {
+                tracing::warn!(%err, %short, "failed to clear composer before reply");
+                socket::ComposerClear::Cleared
+            });
+            tracing::debug!(%short, composer_clear = outcome.as_str(), "pre-reply clear");
+            hop(match outcome {
+                socket::ComposerClear::Skipped => "composer empty on screen",
+                socket::ComposerClear::Cleared => "composer cleared",
+            });
         }
         // Baseline before the reply op: a build that auto-submits multiline
         // replies grows the transcript immediately, and a later baseline would
         // hide that submit from the confirm loop.
-        let confirm = self.submit_confirm(short, local_id);
+        let confirm = self.submit_confirm();
         let sent_at = chrono::Utc::now().timestamp_millis();
         let resp =
             socket::one_shot(sock, &json!({"proto":1,"op":"reply","short":short,"text":text}))
@@ -266,7 +300,7 @@ impl Driver {
         hop("reply op acked");
         let typed = resp.get("ok") != Some(&serde_json::Value::Bool(false));
         let submitted = if text.contains('\n') {
-            if spoken && self.prompt_taken(short, &confirm, sent_at).await {
+            if spoken && self.prompt_taken(&confirm, sent_at).await {
                 hop("submitted without an Enter");
                 true
             } else if let Err(err) = Box::pin(socket::attach_submit(sock, short, &confirm)).await {
@@ -289,12 +323,7 @@ impl Driver {
     /// own: its user line, the answer starting, or the worker persisting a
     /// working tempo since. Pressing Enter into a worker already answering
     /// waits out its spinner and can submit an empty line.
-    async fn prompt_taken(
-        &self,
-        short: &str,
-        confirm: &socket::SubmitConfirm,
-        sent_at: i64,
-    ) -> bool {
+    async fn prompt_taken(&self, confirm: &socket::SubmitConfirm, sent_at: i64) -> bool {
         if matches!(confirm, socket::SubmitConfirm::Composer) {
             return false;
         }
@@ -302,7 +331,7 @@ impl Driver {
         loop {
             if socket::turn_entry_landed(confirm)
                 || working_since(
-                    super::StateJson::read(&self.cfg.jobs_root, short).as_ref(),
+                    super::StateJson::read(&self.launcher.jobs_root, &self.short).as_ref(),
                     sent_at,
                 )
             {
@@ -320,25 +349,17 @@ impl Driver {
     /// emptying when mid-turn (a submit only queues the message, so the
     /// transcript won't grow and the spinner repaints either way), repaint when
     /// no transcript can be located.
-    pub(super) fn submit_confirm(&self, short: &str, session_id: &str) -> socket::SubmitConfirm {
-        if self.is_busy(short) {
+    fn submit_confirm(&self) -> socket::SubmitConfirm {
+        if self.busy {
             return socket::SubmitConfirm::Composer;
         }
-        let path = self.transcript_locations.get(short).map(|loc| loc.path.clone()).or_else(|| {
-            transcript::newest_transcript_for_session(&self.cfg.projects_root, session_id)
+        let path = self.pinned_transcript.clone().or_else(|| {
+            transcript::newest_transcript_for_session(&self.launcher.projects_root, &self.local_id)
         });
         path.map_or(socket::SubmitConfirm::Repaint, |path| {
             let baseline = std::fs::metadata(&path).map_or(0, |m| m.len());
             socket::SubmitConfirm::Transcript { path, baseline }
         })
-    }
-
-    /// Whether the worker's last status reported a non-idle tempo (mid-turn).
-    pub(super) fn is_busy(&self, short: &str) -> bool {
-        self.last_status
-            .get(short)
-            .and_then(|s| s.tempo.as_deref())
-            .is_some_and(|tempo| tempo != "idle")
     }
 }
 
@@ -909,17 +930,28 @@ mod submit_tests {
         WorkingBeforeTheReply,
     }
 
-    /// A control socket recording each request's op. An Enter on an attach
+    const EMPTY_SCREEN: &str =
+        "\x1b[2J\x1b[1;1H\u{256d}\x1b[2;1H\u{2502} > \u{2502}\x1b[3;1H\u{2570}";
+    const DRAFT_SCREEN: &str =
+        "\x1b[2J\x1b[1;1H\u{256d}\x1b[2;1H\u{2502} > restored draft \u{2502}\x1b[3;1H\u{2570}";
+
+    type Log<T> = Arc<Mutex<Vec<T>>>;
+
+    /// A control socket recording each request's op and every keystroke typed
+    /// on an attach, which repaints `screen` first. An Enter on an attach
     /// submits; `reply` submits on its own as `taken` says.
     fn fake_daemon(
         sock: &Path,
         transcript: PathBuf,
         state: (PathBuf, String),
         taken: Taken,
-    ) -> (tokio::task::JoinHandle<()>, Arc<Mutex<Vec<String>>>) {
+        screen: &'static str,
+    ) -> (tokio::task::JoinHandle<()>, Log<String>, Log<u8>) {
         let listener = tokio::net::UnixListener::bind(sock).unwrap();
         let ops = Arc::new(Mutex::new(Vec::new()));
         let seen = ops.clone();
+        let typed = Arc::new(Mutex::new(Vec::new()));
+        let typed_seen = typed.clone();
         let server = tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
@@ -947,21 +979,34 @@ mod submit_tests {
                 if op != "attach" {
                     continue;
                 }
+                write.write_all(screen.as_bytes()).await.unwrap();
                 let mut keys = [0_u8; 64];
                 while let Ok(n) = reader.read(&mut keys).await {
                     if n == 0 {
                         break;
                     }
+                    typed_seen.lock().unwrap().extend_from_slice(&keys[..n]);
                     if keys[..n].contains(&b'\r') {
                         append_line(&transcript, "user");
                     }
                 }
             }
         });
-        (server, ops)
+        (server, ops, typed)
     }
 
     async fn deliver(text: &str, known_empty: bool, taken: Taken) -> Vec<String> {
+        deliver_onto("", text, known_empty, taken).await.0
+    }
+
+    /// Deliver `text` to a worker whose attach repaints `screen`; returns the
+    /// ops in order and every keystroke typed on an attach.
+    async fn deliver_onto(
+        screen: &'static str,
+        text: &str,
+        known_empty: bool,
+        taken: Taken,
+    ) -> (Vec<String>, Vec<u8>) {
         let (mut driver, _events) = super::super::test_support::driver();
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("control.sock");
@@ -984,17 +1029,17 @@ mod submit_tests {
         if matches!(taken, Taken::WorkingBeforeTheReply) {
             write_state(&jobs_root, &short, "active", chrono::Utc::now().timestamp_millis() - 5000);
         }
-        let (server, ops) = fake_daemon(&sock, transcript, (jobs_root, short.clone()), taken);
-        tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            Box::pin(driver.submit_text(&sock, &short, "sess", text, false)),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let (server, ops, typed) =
+            fake_daemon(&sock, transcript, (jobs_root, short.clone()), taken, screen);
+        let env = std::collections::BTreeMap::default();
+        let job = driver.reply_job_for(&sock, &short, "sess", text, None, env);
+        let submit = Box::pin(job.submit_text(false));
+        tokio::time::timeout(std::time::Duration::from_secs(10), submit).await.unwrap().unwrap();
         server.abort();
         assert!(socket::composer_known_empty(&short), "a submitted reply empties the composer");
-        ops.lock().unwrap().clone()
+        let ops = ops.lock().unwrap().clone();
+        let typed = typed.lock().unwrap().clone();
+        (ops, typed)
     }
 
     #[tokio::test]
@@ -1004,7 +1049,39 @@ mod submit_tests {
 
     #[tokio::test]
     async fn a_spoken_prompt_still_clears_a_composer_not_known_empty() {
-        assert_eq!(deliver(SPOKEN, false, Taken::UserLine).await, ["attach", "reply"]);
+        assert_eq!(deliver(SPOKEN, false, Taken::UserLine).await, ["attach", "attach", "reply"]);
+    }
+
+    /// An idle worker whose screen shows an empty composer gets the reply
+    /// typed straight in: one probe attach, no keystroke, no paced clear.
+    #[tokio::test]
+    async fn an_empty_composer_on_screen_skips_the_clear() {
+        for text in [SPOKEN, "one line"] {
+            let started = std::time::Instant::now();
+            let (ops, typed) = deliver_onto(EMPTY_SCREEN, text, false, Taken::UserLine).await;
+            assert_eq!(ops, ["attach", "reply"]);
+            assert!(typed.is_empty(), "no key may reach an empty composer: {typed:?}");
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(1),
+                "the skip must beat the paced clear, took {:?}",
+                started.elapsed()
+            );
+        }
+    }
+
+    /// A draft on screen, or a screen with no composer row, keeps the exact
+    /// paced clear before the reply.
+    #[tokio::test]
+    async fn a_draft_or_unreadable_screen_keeps_the_paced_clear() {
+        for screen in [DRAFT_SCREEN, "  Read(foo.rs)\n", ""] {
+            let (ops, typed) = deliver_onto(screen, "one line", false, Taken::UserLine).await;
+            assert_eq!(ops, ["attach", "attach", "reply"], "screen {screen:?}");
+            assert_eq!(
+                typed,
+                b"\x15\x7f".repeat(socket::CLEAR_COMPOSER_LINES),
+                "screen {screen:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1029,13 +1106,13 @@ mod submit_tests {
     async fn a_typed_reply_keeps_the_clear_and_the_enter() {
         assert_eq!(
             deliver("line one\nline two", true, Taken::UserLine).await,
-            ["attach", "reply", "attach"]
+            ["attach", "attach", "reply", "attach"]
         );
         assert_eq!(
             deliver("line one\nline two", true, Taken::Working).await,
-            ["attach", "reply", "attach"]
+            ["attach", "attach", "reply", "attach"]
         );
-        assert_eq!(deliver("one line", true, Taken::UserLine).await, ["attach", "reply"]);
+        assert_eq!(deliver("one line", true, Taken::UserLine).await, ["attach", "attach", "reply"]);
     }
 
     #[test]

@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 use crate::bus::peer::{RouteRequest, RouteResponse, WireBusEvent};
 use crate::bus::{BusError, DaemonRequest, DaemonResponse};
+use crate::presence::Kind;
 use crate::routes::permissions::{PendingAsk, PendingPermission, PendingPlan};
 use crate::state::AppState;
 
@@ -90,13 +91,74 @@ fn daemon_response(response: DaemonResponse) -> RouteResponse {
 /// isn't here (it moved, or the presence row was stale) the miss is reported
 /// in the body and the sending pod surfaces it honestly — one hop, never a
 /// re-forward.
+#[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "bus_route"))]
 pub async fn bus_route(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<RouteRequest>,
 ) -> Result<Json<RouteResponse>, StatusCode> {
     authenticate(&state, &headers)?;
-    let outcome: Result<RouteResponse, BusError> = match request {
+    let held = if headers.contains_key(crate::bus::peer::PROBE_HEADER) {
+        held_rows(&state, &request)
+    } else {
+        Vec::new()
+    };
+    let outcome = deliver_local(&state, request).await;
+    if outcome.is_ok() {
+        restore_presence(&state, held).await;
+    }
+    Ok(Json(outcome.unwrap_or_else(|err| RouteResponse::from_error(&err))))
+}
+
+fn held_rows(state: &AppState, request: &RouteRequest) -> Vec<(Kind, Uuid, Uuid)> {
+    let Some(machine) = request.machine() else { return Vec::new() };
+    let mut rows = Vec::new();
+    if let Some(conn) = state.bus.machine_conn(machine) {
+        rows.push((Kind::Daemon, machine, conn));
+    }
+    if let Some(session) = request.session()
+        && let Some(conn) = state.bus.session_conn(machine, session)
+        && let Ok(session) = Uuid::parse_str(session)
+    {
+        rows.push((Kind::Session, session, conn));
+    }
+    rows
+}
+
+/// A peer found this pod only by probing, so the presence rows that should
+/// have named it are gone. Re-registering under the holding connection also
+/// re-arms their heartbeat and lets that connection's close drop them.
+async fn restore_presence(state: &AppState, rows: Vec<(Kind, Uuid, Uuid)>) {
+    for (kind, id, conn) in rows {
+        tracing::warn!(
+            kind = kind.as_str(),
+            %id,
+            "peer probe reached a connection this pod holds without a presence row",
+        );
+        crate::presence::register_conn(state, kind, id, conn).await;
+    }
+}
+
+const fn route_op(request: &RouteRequest) -> &'static str {
+    match request {
+        RouteRequest::DaemonCommand { .. } => "daemon_command",
+        RouteRequest::DaemonStageFiles { .. } => "daemon_stage_files",
+        RouteRequest::DaemonListDirs { .. } => "daemon_list_dirs",
+        RouteRequest::DaemonGitInfo { .. } => "daemon_git_info",
+        RouteRequest::DaemonReadFile { .. } => "daemon_read_file",
+        RouteRequest::DaemonDiagnose { .. } => "daemon_diagnose",
+        RouteRequest::DispatcherCommand { .. } => "dispatcher_command",
+        RouteRequest::DispatcherRequest { .. } => "dispatcher_request",
+    }
+}
+
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "deliver_local", bus.route.op = route_op(&request))
+)]
+async fn deliver_local(state: &AppState, request: RouteRequest) -> Result<RouteResponse, BusError> {
+    match request {
         RouteRequest::DaemonCommand { machine, frame } => {
             match crate::bus::peer::frame_session(&frame).map(ToOwned::to_owned) {
                 Some(session) => state
@@ -150,8 +212,7 @@ pub async fn bus_route(
             .request_dispatcher_local(dispatcher, request_id, frame)
             .await
             .map(|frame| RouteResponse::DispatcherReply { frame }),
-    };
-    Ok(Json(outcome.unwrap_or_else(|err| RouteResponse::from_error(&err))))
+    }
 }
 
 /// `POST /internal/bus/publish` — ingest a batch of relayed events into THIS

@@ -24,9 +24,9 @@ import {
 import { ApiError, errMessage } from "$lib/api";
 import { m } from "$lib/paraglide/messages";
 import { awaitSessionRow } from "$lib/awaitSessionRow";
-import { tokenizeQuery } from "$lib/search";
+import { queryTerms, straightenPhraseQuotes } from "$lib/search";
 import { BRIEF_FETCH_MAX_BYTES, followupPrefill } from "$lib/followup";
-import { freeText, parse, type Schema } from "@dorsk/tsumikit";
+import { parse, type Schema } from "@dorsk/tsumikit";
 import {
   buildSessionSearchSchema,
   contextForField,
@@ -121,6 +121,7 @@ export interface SessionsPageDeps {
   labels: () => Label[] | undefined;
   // Visual document order of the rendered rows, for shift-range selection.
   renderedOrder: () => string[];
+  showHidden?: () => boolean;
 }
 
 export type { ViewMode } from "$lib/sessionsView.svelte";
@@ -158,7 +159,18 @@ export class SessionsPage {
   // narrowed to sessions carrying at least one of them (OR semantics).
   labelFilter = $state(new Set<string>());
 
-  openSession = $state<SessionListItem | null>(null);
+  #open = $state<SessionListItem | null>(null);
+  #openReq = 0;
+  // Any direct pick supersedes a URL-driven open still in flight, so a fetch
+  // that lands after Back cannot reopen (and re-push) the session left behind.
+  get openSession(): SessionListItem | null {
+    return this.#open;
+  }
+  set openSession(v: SessionListItem | null) {
+    this.#openReq++;
+    this.urlResolving = false;
+    this.#open = v;
+  }
   showSpawn = $state(false);
   // Bumped whenever the docked form is done with (spawned, drafted, cleared,
   // or handed a prefill) so it remounts and reseeds exactly like a reopened
@@ -189,16 +201,24 @@ export class SessionsPage {
     this.#d = d;
     this.#pager = createInfiniteQuery(
       () => ({
-        queryKey: qk.sessionSearch(this.serverQuery, this.#pagerArchived),
-        queryFn: ({ queryKey: [, , { q, archived }], pageParam, signal }) =>
-          d.api.searchSessions(
-            q,
-            archived,
+        queryKey: qk.sessionSearch(
+          this.serverQuery,
+          this.#pagerArchived,
+          d.showHidden?.() ?? false,
+        ),
+        queryFn: ({ queryKey: [, , key], pageParam, signal }) => {
+          const args = [
+            key.q,
+            key.archived,
             PAGE,
             pageParam.offset,
             pageParam.cursor,
             signal,
-          ),
+          ] as const;
+          return "showHidden" in key
+            ? d.api.searchSessions(...args, true)
+            : d.api.searchSessions(...args);
+        },
         initialPageParam: FIRST_PAGE,
         getNextPageParam: nextSearchPage,
         enabled: this.pagerActive,
@@ -348,9 +368,10 @@ export class SessionsPage {
   // `showArchived`) or, with no query, the paged archive browse.
   pagerActive = $derived(this.searching || this.showArchived);
   // Highlight only the free-text portion of the query (field clauses excluded).
-  searchTerms = $derived.by(() =>
-    tokenizeQuery(freeText(parse(this.query, this.searchSchema))),
-  );
+  searchTerms = $derived.by(() => {
+    const input = straightenPhraseQuotes(this.query);
+    return queryTerms(parse(input, this.searchSchema), input);
+  });
   // Not searching ⇒ browse the archive (empty q, archived scope).
   #pagerArchived = $derived(this.searching ? this.showArchived : true);
   // Refetched pages can shift by a row when sessions move in or out of scope
@@ -492,45 +513,69 @@ export class SessionsPage {
 
   // Open a session by id, from the loaded lists or, if absent (purged from the
   // live view, on another page, etc.), fetched directly so a pasted link still
-  // resolves.
-  openById = async (id: string) => {
+  // resolves. `spawned` marks an id handed over by a spawn that just finished,
+  // whose row may not exist yet.
+  openById = async (id: string, opts: { spawned?: boolean } = {}) => {
+    const req = ++this.#openReq;
     const found = this.#loaded.find((s) => s.id === id);
     if (found) {
-      this.openSession = found;
+      this.urlResolving = false;
+      this.#open = found;
       return;
     }
     this.urlResolving = true;
     try {
-      this.openSession = await this.#d.api.session(id);
+      if (opts.spawned) await this.#openSpawned(id, req);
+      else await this.#openFetched(id, req);
+    } finally {
+      if (req === this.#openReq) this.urlResolving = false;
+    }
+  };
+
+  #openFetched = async (id: string, req: number) => {
+    try {
+      const row = await this.#d.api.session(id);
+      if (req === this.#openReq) this.#open = row;
     } catch (e) {
+      if (req !== this.#openReq) return;
       // Archived/ended sessions resolve from the DB, so a 404 means the
       // session was actually DELETED — only then toast + drop the id.
       // Transient errors leave the URL intact so a retry/refresh can recover.
       if (e instanceof ApiError && e.status === 404) {
         this.#d.toasts.error(m.sessions_toast_not_found());
-        this.openSession = null;
+        this.#open = null;
         this.#d.clearUrlSession();
       } else {
         this.#d.toasts.error(
           m.sessions_toast_open_failed({ error: errMessage(e) }),
         );
       }
-    } finally {
-      this.urlResolving = false;
     }
   };
+
+  #openSpawned = async (id: string, req: number) => {
+    const row = await this.#awaitRow(id);
+    if (req !== this.#openReq) return;
+    if (row) this.#open = row;
+    else this.#d.toasts.error(m.sessions_toast_spawn_slow());
+  };
+
+  #awaitRow = (id: string) =>
+    awaitSessionRow(id, {
+      loaded: () => this.#loaded,
+      fetchOne: (sid) => this.#d.api.session(sid),
+      refetchLive: () => this.#d.refetchLive(),
+    });
 
   // Open a freshly forked session: the server pre-minted its id but the DB row
   // only appears once the daemon launches the worker and the next roster poll
   // lands (~2-3s). Poll a few times so it opens in place without a manual
   // refresh, and without a false "not found" during the gap.
   navigateToForked = async (id: string) => {
-    const row = await awaitSessionRow(id, {
-      loaded: () => this.#loaded,
-      fetchOne: (sid) => this.#d.api.session(sid),
-      refetchLive: () => this.#d.refetchLive(),
-    });
-    if (row) this.openSession = row;
+    const req = ++this.#openReq;
+    const row = await this.#awaitRow(id);
+    if (req !== this.#openReq) return;
+    if (row) this.#open = row;
     else this.#d.toasts.error(m.sessions_toast_fork_slow());
   };
 

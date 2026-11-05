@@ -14,6 +14,7 @@ mod aws_creds;
 mod denylist;
 mod dispatch;
 mod forward;
+mod gate;
 mod ghapp;
 mod health;
 mod inject;
@@ -33,6 +34,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::dispatch::{DispatchConfig, DispatchIdentity, ServerTarget};
 use crate::forward::ForwardListener;
+use crate::gate::{Gate, GatePolicy, HumanGate};
 use crate::ghapp::{GhAppConfig, GhAppMinter};
 use crate::inject::{InjectionPolicy, InjectionRule, Injector, PerPodCa};
 use crate::policy::PolicyManager;
@@ -95,7 +97,9 @@ struct Args {
     #[arg(long, default_value = "/etc/guard-proxy/inject.json", env = "GUARD_PROXY_INJECT_CONFIG")]
     inject_config: PathBuf,
 
-    /// TTL of the in-memory secret cache; rotation lands within one TTL.
+    /// TTL of the in-memory secret cache; rotation lands within one TTL, or at
+    /// once on SIGHUP. A refresh that hits a backend failure keeps the cached
+    /// value.
     #[arg(long, default_value_t = 120, env = "GUARD_PROXY_SECRET_TTL_SECS")]
     secret_ttl_secs: u64,
 
@@ -173,6 +177,16 @@ struct Args {
         env = "GUARD_PROXY_GITHUB_APP_API_BASE"
     )]
     github_app_api_base: String,
+
+    /// The profile's `humanGate`, rendered by the admission webhook. A value
+    /// that does not parse refuses every outbound connection.
+    #[arg(long, env = "GUARD_PROXY_HUMAN_GATE")]
+    human_gate: Option<String>,
+
+    /// Branch names a `draftPrOnly` gate protects on top of `main`, `master`
+    /// and `trunk`.
+    #[arg(long, value_delimiter = ',', env = "GUARD_PROXY_PROTECTED_BRANCHES")]
+    protected_branches: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -242,12 +256,30 @@ fn build_ca(args: &Args) -> anyhow::Result<Arc<PerPodCa>> {
     Ok(ca)
 }
 
+fn build_gate(args: &Args) -> Arc<GatePolicy> {
+    let policy = GatePolicy::new(Gate::parse(args.human_gate.as_deref()), &args.protected_branches);
+    match policy.gate() {
+        Gate::Open => {}
+        Gate::Unparseable => tracing::error!(
+            "human gate {:?} does not parse: every outbound connection is refused",
+            args.human_gate.as_deref().unwrap_or_default()
+        ),
+        Gate::Declared(HumanGate::OutwardHeldForApproval) => tracing::warn!(
+            "human gate outwardHeldForApproval is declared but the guard has no approval flow \
+             to hold outward writes for: not enforced here"
+        ),
+        Gate::Declared(declared) => tracing::info!("human gate {} enforced", declared.as_str()),
+    }
+    Arc::new(policy)
+}
+
 /// Builds the TLS injector over the rule set. Returns `None` (passthrough)
 /// when no rules are configured.
 fn build_injection(
     args: &Args,
     rules: Vec<InjectionRule>,
     ca: Option<Arc<PerPodCa>>,
+    gate: Arc<GatePolicy>,
 ) -> anyhow::Result<Option<Arc<Injector>>> {
     if rules.is_empty() {
         tracing::info!("no injection rules configured — TLS passthrough only");
@@ -258,10 +290,11 @@ fn build_injection(
         Box::new(build_engines(args)?),
         Duration::from_secs(args.secret_ttl_secs),
     ));
+    secrets.spawn_sighup_refresh();
     tracing::info!("{} injection rule(s), secret ttl={}s", rules.len(), args.secret_ttl_secs);
 
     let ghapp = build_ghapp(args, &secrets)?;
-    let injector = Injector::new(ca, secrets, InjectionPolicy::new(rules), ghapp)?;
+    let injector = Injector::new(ca, secrets, InjectionPolicy::new(rules), ghapp)?.with_gate(gate);
     Ok(Some(Arc::new(injector)))
 }
 
@@ -361,7 +394,8 @@ async fn main() -> anyhow::Result<()> {
         .transpose()?
         .map(Arc::new);
     let inject_hosts: Vec<String> = rules.iter().map(|r| r.host.clone()).collect();
-    let injection = build_injection(&args, rules, ca)?;
+    let gate = build_gate(&args);
+    let injection = build_injection(&args, rules, ca, gate.clone())?;
     let private =
         Arc::new(PrivateAllow::from_env(Some(args.private_allow_file.clone()), &inject_hosts));
 
@@ -391,7 +425,8 @@ async fn main() -> anyhow::Result<()> {
         Mode::Transparent => {
             let listener = TransparentListener::bind(&args.listen, policy, injection, private)
                 .await?
-                .with_server(server);
+                .with_server(server)
+                .with_gate(gate);
             tracing::info!("transparent proxy listening on {}", args.listen);
             listener.serve().await?;
         }
@@ -399,7 +434,9 @@ async fn main() -> anyhow::Result<()> {
             if server.is_some() {
                 tracing::warn!("forward mode does not inject the dispatch machine key");
             }
-            let listener = ForwardListener::bind(&args.listen, policy, injection, private).await?;
+            let listener = ForwardListener::bind(&args.listen, policy, injection, private)
+                .await?
+                .with_gate(gate);
             tracing::info!("forward proxy listening on {}", args.listen);
             listener.serve().await?;
         }
@@ -519,6 +556,16 @@ mod tests {
         assert_eq!(args.github_app_id.as_deref(), Some("123"));
         assert_eq!(args.github_app_installation_id.as_deref(), Some("456"));
         assert_eq!(args.github_app_repos, vec!["cctui", "infra"]);
+    }
+
+    #[test]
+    fn human_gate_flags_parse_and_default_open() {
+        let args = parse(&[]);
+        assert_eq!(build_gate(&args).gate(), Gate::Open);
+        let args = parse(&["--human-gate", "draftPrOnly", "--protected-branches", "release,dev"]);
+        assert_eq!(build_gate(&args).gate(), Gate::Declared(HumanGate::DraftPrOnly));
+        assert_eq!(args.protected_branches, vec!["release", "dev"]);
+        assert_eq!(build_gate(&parse(&["--human-gate", "bogus"])).gate(), Gate::Unparseable);
     }
 
     fn test_secrets() -> Arc<SecretSource> {

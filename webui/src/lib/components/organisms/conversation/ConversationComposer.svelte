@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { tick, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+	import { sessionHref } from '$lib/sessionFailureToast';
 	import { insertBlock } from './insertText';
 	import { insertAtCaret, quoteMarkdown } from './format';
 	import { errMessage } from '$lib/api';
@@ -19,6 +21,8 @@
 	import ArchivedActions from './ArchivedActions.svelte';
 	import ScheduleCustomModal from './ScheduleCustomModal.svelte';
 	import ScheduledMessages from './ScheduledMessages.svelte';
+	import RedactedChips from './RedactedChips.svelte';
+	import { wrapRedacted } from '$lib/redactTag';
 	import SendButton from './SendButton.svelte';
 	import VoiceControls from './VoiceControls.svelte';
 	import { CacheColdClock } from './cacheCold.svelte';
@@ -87,6 +91,7 @@
 	// NOT reload input on switch — only the history-nav cursor resets, below).
 	// svelte-ignore state_referenced_locally
 	let input = $state(drafts.get(composerKey(session.id)));
+	let revealed = $state<ReadonlySet<string>>(new Set());
 	$effect(() => {
 		drafts.set(composerKey(session.id), input);
 	});
@@ -216,6 +221,7 @@
 	function clearSent(text: string, id = session.id) {
 		if (text) msgHistory.push(id, text);
 		input = '';
+		revealed = new Set();
 		resetHistoryNav();
 		drafts.clear(composerKey(id));
 	}
@@ -275,7 +281,11 @@
 			} else {
 				toasts.ok(m.composer_followup_launched());
 			}
-			if (out.sessionId) void goto(`/sessions/${out.sessionId}`);
+			if (out.sessionId)
+				void goto(sessionHref(out.sessionId), {
+					replaceState: true,
+					state: { ...page.state, spawned: out.sessionId } as App.PageState
+				});
 		} finally {
 			launching = false;
 		}
@@ -383,9 +393,24 @@
 		typeof window.matchMedia === 'function' &&
 		window.matchMedia('(pointer: coarse)').matches;
 
-	// Plain Enter is the Textarea's `submitOn`; only history nav and the
-	// always-available mod+Enter chord are handled here.
+	async function wrapSelection() {
+		const el = scroll.textarea;
+		if (!el) return;
+		const next = wrapRedacted(input, el.selectionStart, el.selectionEnd);
+		input = next.text;
+		resetHistoryNav();
+		await tick();
+		el.setSelectionRange(next.selStart, next.selEnd);
+	}
+
+	// Plain Enter is the Textarea's `submitOn`; only history nav, the
+	// always-available mod+Enter chord and the redact wrap are handled here.
 	function onKey(e: KeyboardEvent) {
+		if (e.key.toLowerCase() === 'r' && e.shiftKey && (e.ctrlKey || e.metaKey) && !e.altKey) {
+			e.preventDefault();
+			void wrapSelection();
+			return;
+		}
 		if (nav.handleKey(e)) return;
 		if (e.key === 'Enter' && !coarsePointer && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
@@ -435,6 +460,9 @@
 				/>
 			</div>
 		{/if}
+		{#if !folded}
+			<RedactedChips text={input} bind:revealed />
+		{/if}
 		{#snippet leadingTools()}
 			{#if supportsAttachments}
 				<FileButton
@@ -458,6 +486,7 @@
 				bind:value={input}
 				bind:el={scroll.textarea}
 				excludeId={session.id}
+				{revealed}
 				placement="up"
 				rows={1}
 				autoresize

@@ -5,6 +5,7 @@
 	// is no second catalogue to search.
 	import AppearanceSection from './AppearanceSection.svelte';
 	import SessionsSection from './SessionsSection.svelte';
+	import HiddenOwnersSection from './HiddenOwnersSection.svelte';
 	import MacrosSection from './MacrosSection.svelte';
 	import ContextSection from './ContextSection.svelte';
 	import PluginsSection from './PluginsSection.svelte';
@@ -30,6 +31,7 @@
 </div>
 <div class="pg" class:on={current === 'sessions'} data-settings-page="sessions" data-journey="page" data-journey-key="sessions">
 	<SessionsSection />
+	<HiddenOwnersSection {isAdmin} />
 </div>
 <div class="pg" class:on={current === 'macros'} data-settings-page="macros" data-journey="page" data-journey-key="macros">
 	<MacrosSection />

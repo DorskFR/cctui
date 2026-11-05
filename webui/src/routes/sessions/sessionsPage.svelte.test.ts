@@ -6,6 +6,7 @@ import type { SessionListItem } from '@bindings/SessionListItem';
 import type { SessionListResponse } from '@bindings/SessionListResponse';
 import type { Label } from '@bindings/Label';
 import { ApiError } from '$lib/api';
+import { m } from '$lib/paraglide/messages';
 import { qk } from '$lib/queries';
 import {
 	LIST_HIDDEN,
@@ -544,6 +545,62 @@ describe('SessionsPage — pinned parents and the open drawer', () => {
 		expect(sp.openSession).toBeNull();
 		expect(deps.clearUrlSession).toHaveBeenCalledTimes(1);
 		expect(toasts.error).toHaveBeenCalledTimes(2);
+	});
+
+	it('opens a just-spawned id whose row 404s once, without a not-found toast', async () => {
+		const { sp, api, deps, toasts } = make();
+		api.session.mockRejectedValueOnce(new ApiError(404, 'not yet'));
+		const opening = sp.openById('followup', { spawned: true });
+		await vi.advanceTimersByTimeAsync(500);
+		await opening;
+		expect(api.session).toHaveBeenCalledTimes(2);
+		expect(sp.openSession?.id).toBe('followup');
+		expect(toasts.error).not.toHaveBeenCalled();
+		expect(deps.clearUrlSession).not.toHaveBeenCalled();
+		expect(sp.urlResolving).toBe(false);
+	});
+
+	it('says a spawned session is slow, not deleted, when its row never shows', async () => {
+		const { sp, api, deps, toasts } = make();
+		api.session.mockRejectedValue(new ApiError(404, 'not yet'));
+		const opening = sp.openById('followup', { spawned: true });
+		await vi.advanceTimersByTimeAsync(16 * 500);
+		await opening;
+		expect(sp.openSession).toBeNull();
+		expect(toasts.error).toHaveBeenCalledTimes(1);
+		expect(toasts.error).toHaveBeenCalledWith(m.sessions_toast_spawn_slow());
+		expect(deps.clearUrlSession).not.toHaveBeenCalled();
+	});
+
+	it('drops a URL-driven open that resolves after the user navigated away', async () => {
+		const { sp, api, toasts, deps } = make();
+		let resolve!: (s: SessionListItem) => void;
+		api.session.mockImplementationOnce(() => new Promise((r) => (resolve = r)));
+		const opening = sp.openById('slow');
+		expect(sp.urlResolving).toBe(true);
+		sp.openSession = null;
+		expect(sp.urlResolving).toBe(false);
+		resolve(session({ id: 'slow' }));
+		await opening;
+		expect(sp.openSession).toBeNull();
+
+		api.session.mockRejectedValueOnce(new ApiError(404, 'gone'));
+		const failing = sp.openById('gone');
+		sp.openSession = session({ id: 'picked' });
+		await failing;
+		expect(sp.openSession?.id).toBe('picked');
+		expect(toasts.error).not.toHaveBeenCalled();
+		expect(deps.clearUrlSession).not.toHaveBeenCalled();
+	});
+
+	it('lets a direct pick win over a fork still waiting for its row', async () => {
+		const { sp, api } = make();
+		api.session.mockRejectedValueOnce(new ApiError(404, 'not yet'));
+		const forking = sp.navigateToForked('fork');
+		sp.openSession = session({ id: 'picked' });
+		await vi.advanceTimersByTimeAsync(500);
+		await forking;
+		expect(sp.openSession?.id).toBe('picked');
 	});
 
 	it('focuses the transcript hit only for a card opened while searching', async () => {

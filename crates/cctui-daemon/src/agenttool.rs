@@ -284,6 +284,11 @@ fn parse_spawn_agent(args: &Value) -> Result<CallKind, String> {
     let Some(model) = string_arg(args, "model") else {
         return Err(missing_model_error());
     };
+    let hook_rules = match args.get("hook_rules") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(raw) => serde_json::from_value(raw.clone())
+            .map_err(|e| format!("hook_rules must be a list of hook rules: {e}"))?,
+    };
     Ok(CallKind::Spawn(SpawnChildRequest {
         adapter,
         prompt,
@@ -294,6 +299,7 @@ fn parse_spawn_agent(args: &Value) -> Result<CallKind, String> {
         permission_mode: string_arg(args, "permission_mode")
             .and_then(|m| serde_json::from_value(Value::String(m)).ok()),
         name: string_arg(args, "name"),
+        hook_rules,
     }))
 }
 
@@ -1864,6 +1870,27 @@ mod tests {
     }
 
     #[test]
+    fn a_spawn_call_carries_its_hook_rule_additions() {
+        let call = |rules: Value| {
+            json!({
+                "kind": "spawn_agent",
+                "session_id": "parent-1",
+                "args": {
+                    "adapter": "claude-code", "prompt": "go", "model": "m", "hook_rules": rules,
+                },
+            })
+            .to_string()
+        };
+        let rules = json!([{"event": "PreToolUse", "tool": "shell", "command": "audit"}]);
+        let CallKind::Spawn(req) = parse_call(&call(rules)).unwrap().kind else {
+            panic!("expected spawn")
+        };
+        assert_eq!(req.hook_rules.len(), 1);
+        assert_eq!(req.hook_rules[0].command, "audit");
+        assert!(parse_call(&call(json!("nope"))).is_err());
+    }
+
+    #[test]
     fn parses_a_full_spawn_call() {
         let line = json!({
             "kind": "spawn_agent",
@@ -2296,6 +2323,7 @@ mod tests {
             cwd: None,
             permission_mode: None,
             name: None,
+            hook_rules: Vec::new(),
         });
         let note = dispatch_note(&spawn, Duration::from_hours(2));
         assert!(note.contains("spawned on model claude-opus-5[1m]"), "{note}");

@@ -76,6 +76,24 @@ async fn assert_credentials(pool: &PgPool) {
     assert_eq!(cctui_crypto::decrypt(&token, KEY).as_deref(), Some("fixture-provider-secret"));
 }
 
+/// Forward core migrations may add columns during adoption: existing rows keep
+/// every value they had and gain only NULLs.
+fn without_added_columns(after: &Value, before: &Value) -> Value {
+    let mut out = after.clone();
+    for (table, rows) in out.as_object_mut().into_iter().flatten() {
+        let Some(old_rows) = before.get(table).and_then(Value::as_array) else { continue };
+        for (row, old) in rows.as_array_mut().into_iter().flatten().zip(old_rows) {
+            let (Some(row), Some(old)) = (row.as_object_mut(), old.as_object()) else { continue };
+            row.retain(|k, v| {
+                let kept = old.contains_key(k);
+                assert!(kept || v.is_null(), "{table}.{k} gained a value during adoption: {v}");
+                kept
+            });
+        }
+    }
+    out
+}
+
 async fn schema_shape(pool: &PgPool) -> Value {
     sqlx::query_scalar("WITH tables AS ( \
         SELECT c.oid,c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace \
@@ -118,7 +136,7 @@ async fn legacy_full_adoption_preserves_data_checksums_and_the_older_migrator() 
         let history: Vec<(i64,Vec<u8>)>=sqlx::query_as("SELECT version,checksum FROM _sqlx_migrations ORDER BY version")
             .fetch_all(&pool).await.unwrap();
         migrate(&pool).await.unwrap();
-        assert_eq!(execution_data(&pool).await,before);
+        assert_eq!(without_added_columns(&execution_data(&pool).await,&before),before);
         let after: Vec<(i64,Vec<u8>)>=sqlx::query_as("SELECT version,checksum FROM _sqlx_migrations ORDER BY version")
             .fetch_all(&pool).await.unwrap();
         assert_eq!(after,history);

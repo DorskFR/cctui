@@ -108,7 +108,7 @@ impl Spawner {
     }
 
     pub(super) async fn read_worker_exit(&self, handle: &str) -> Option<WorkerExit> {
-        let name = handle.strip_prefix("jobs/").unwrap_or(handle);
+        let name = super::handle::JobHandle::parse(handle).name;
         let lp = ListParams::default().labels(&format!("job-name={name}"));
         let pods = self.pods().list(&lp).await.ok()?.items;
         let (mut exit, target) = exit_of(&pods)?;

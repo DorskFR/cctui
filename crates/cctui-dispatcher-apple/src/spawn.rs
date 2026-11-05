@@ -304,6 +304,7 @@ impl<C: ContainerCli> Dispatcher for Spawner<C> {
                 handle: format!("container/{name}"),
                 status: "dispatched".to_owned(),
                 namespace: None,
+                exposure: None,
             });
         }
         if Self::is_name_in_use(&out.stderr) {
@@ -311,6 +312,7 @@ impl<C: ContainerCli> Dispatcher for Spawner<C> {
                 handle: format!("container/{name}"),
                 status: "deduplicated".to_owned(),
                 namespace: None,
+                exposure: None,
             });
         }
         anyhow::bail!("`container run` failed ({:?}): {}", out.code, out.stderr.trim());

@@ -7,6 +7,7 @@ use crate::gateway::mint::MintContext;
 use axum::Json;
 use axum::http::StatusCode;
 use cctui_proto::api::{ApiError, DispatchRequest, DispatchResponse};
+use tracing::Instrument;
 
 /// Optional host notification; the full host retains its configured delivery.
 pub struct DispatchNotification {
@@ -425,6 +426,20 @@ pub async fn resolve_dispatcher(
     user_id: Option<uuid::Uuid>,
     name: &str,
 ) -> Result<Option<std::sync::Arc<dyn Dispatcher>>, DispatchError> {
+    Ok(resolve_target(state, user_id, name).await?.map(|t| t.dispatcher))
+}
+
+/// A resolved dispatcher, with its enrolled form when it has one.
+struct Target {
+    dispatcher: std::sync::Arc<dyn Dispatcher>,
+    enrolled: Option<std::sync::Arc<EnrolledDispatcher>>,
+}
+
+async fn resolve_target(
+    state: &impl DispatchContext,
+    user_id: Option<uuid::Uuid>,
+    name: &str,
+) -> Result<Option<Target>, DispatchError> {
     let owner_filter = match user_id {
         Some(uid) => {
             let granted = crate::store::dispatch_policies::grants_dispatcher(
@@ -438,27 +453,28 @@ pub async fn resolve_dispatcher(
         }
         None => None,
     };
-    let row: Option<(uuid::Uuid,)> = sqlx::query_as(
-        "SELECT id FROM dispatchers \
+    let row: Option<(uuid::Uuid, bool)> = sqlx::query_as(
+        "SELECT id, $3 = ANY(features) FROM dispatchers \
          WHERE ($1::uuid IS NULL OR user_id = $1) AND name = $2 \
          AND deleted_at IS NULL AND revoked_at IS NULL \
          ORDER BY created_at LIMIT 1",
     )
     .bind(owner_filter)
     .bind(name)
+    .bind(cctui_proto::ws::DISPATCHER_FEATURE_DEDUP_CHECK)
     .fetch_optional(state.dispatch_pool())
     .await
     .map_err(|e| DispatchError::Backend(format!("dispatcher lookup: {e}")))?;
-    if let Some((dispatcher_id,)) = row {
-        return Ok(Some(std::sync::Arc::new(EnrolledDispatcher::new(
-            name,
-            dispatcher_id,
-            state.dispatch_bus().clone(),
-        ))));
+    if let Some((dispatcher_id, dedup_check)) = row {
+        let enrolled = std::sync::Arc::new(
+            EnrolledDispatcher::new(name, dispatcher_id, state.dispatch_bus().clone())
+                .with_dedup_check(dedup_check),
+        );
+        return Ok(Some(Target { dispatcher: enrolled.clone(), enrolled: Some(enrolled) }));
     }
     // Fall back to a global env-configured http dispatcher (escape hatch).
     match state.dispatchers().get(name) {
-        Ok(d) => Ok(Some(d)),
+        Ok(dispatcher) => Ok(Some(Target { dispatcher, enrolled: None })),
         Err(DispatchError::UnknownDispatcher(_)) => Ok(None),
         Err(e) => Err(e),
     }
@@ -471,6 +487,7 @@ pub type DispatchResult<T> = Result<T, (StatusCode, Json<ApiError>)>;
 /// display name carried over, no credentials injected yet).
 struct ValidatedDispatch {
     dispatcher: std::sync::Arc<dyn Dispatcher>,
+    enrolled: Option<std::sync::Arc<EnrolledDispatcher>>,
     session_id: String,
     dedup_key: Option<String>,
     caller: String,
@@ -493,13 +510,15 @@ fn provision_err() -> (StatusCode, Json<ApiError>) {
 
 /// Resolve the dispatcher, mint the session identity, alert that a dispatch
 /// arrived, then run the caller/payload checks.
+#[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "validate_dispatch"))]
 async fn validate_dispatch(
     state: &impl DispatchContext,
     ctx: &AuthContext,
     req: &DispatchRequest,
 ) -> DispatchResult<ValidatedDispatch> {
-    let dispatcher = match resolve_dispatcher(state, ctx.owner_filter(), &req.dispatcher).await {
-        Ok(Some(d)) => d,
+    let resolved = resolve_target(state, ctx.owner_filter(), &req.dispatcher).await;
+    let Target { dispatcher, enrolled } = match resolved {
+        Ok(Some(t)) => t,
         Ok(None) => {
             let known = state.dispatchers().ids().join(", ");
             tracing::warn!(
@@ -597,7 +616,7 @@ async fn validate_dispatch(
         obj.entry("name").or_insert_with(|| serde_json::Value::String(name.clone()));
     }
 
-    Ok(ValidatedDispatch { dispatcher, session_id, dedup_key, caller, forwarded_payload })
+    Ok(ValidatedDispatch { dispatcher, enrolled, session_id, dedup_key, caller, forwarded_payload })
 }
 
 /// Resolve the caller's stable dispatch machine and forward a per-session
@@ -608,6 +627,11 @@ async fn validate_dispatch(
 /// logical machine, but a leaked worker key only impersonates its own session
 /// and expires with it. `ensure_dispatch_machine` is kept for the row (and
 /// `dispatch_key` rotation) it owns.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "inject_worker_credential")
+)]
 async fn inject_worker_credential(
     state: &impl DispatchContext,
     uid: uuid::Uuid,
@@ -852,6 +876,7 @@ async fn expand_provider_rows(
 /// Mint a session-scoped gateway token per provider row and merge the gateway
 /// base-url + token env into `payload.env` so the worker pod routes through
 /// the passthrough gateway.
+#[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "mint_gateway_env"))]
 async fn mint_gateway_env(
     state: &impl DispatchContext,
     mints: Vec<crate::gateway::mint::ProviderRow>,
@@ -914,6 +939,11 @@ pub fn merge_server_env(
 /// Account-scoped routing on the dispatch path: resolve which accounts the
 /// dispatch runs through, map the model through their aliases, and expand them
 /// into the provider rows to mint.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "resolve_account_routing")
+)]
 async fn resolve_account_routing(
     state: &impl DispatchContext,
     req: &DispatchRequest,
@@ -935,6 +965,29 @@ async fn resolve_account_routing(
     Ok(AccountRouting { mints, bound_pool })
 }
 
+/// Write the worker's effective hook policy into its payload and record it.
+#[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "attach_hook_policy"))]
+async fn attach_hook_policy(
+    state: &impl DispatchContext,
+    req: &DispatchRequest,
+    session_id: &str,
+    forwarded_payload: &mut serde_json::Value,
+) -> DispatchResult<()> {
+    let adapter = payload_adapter(&req.payload).unwrap_or("claude-code");
+    crate::hook_policy::for_dispatch(state.dispatch_pool(), session_id, adapter, forwarded_payload)
+        .await
+        .map_err(|e| match e {
+            crate::hook_policy::PolicyError::Rejected(reason) => bad_request(reason),
+            crate::hook_policy::PolicyError::Db(error) => {
+                tracing::error!(session = %session_id, %error, "hook policy record failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "could not record the worker's hook policy".into() }),
+                )
+            }
+        })
+}
+
 /// Persist the worker child-spawn ceiling before forwarding.
 ///
 /// `payload.spawn_capability` declares what the dispatched worker may spawn
@@ -942,6 +995,11 @@ async fn resolve_account_routing(
 /// the worker must not be able to read or restate its own capability. A
 /// policy-bound worker may spawn no children: they would escape the policy,
 /// so its dispatch is refused when that ceiling cannot be persisted.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "persist_spawn_capability")
+)]
 pub async fn persist_spawn_capability(
     state: &impl DispatchContext,
     session_id: &str,
@@ -1002,12 +1060,13 @@ pub fn dispatch_ceiling(payload: &serde_json::Value) -> cctui_proto::adapter::Pe
 
 /// Forward the prepared dispatch, persist the returned handle and map a
 /// placement failure onto the error surface.
+#[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "forward_dispatch"))]
 async fn forward_dispatch(
     state: &impl DispatchContext,
     req: &DispatchRequest,
     v: &ValidatedDispatch,
 ) -> DispatchResult<(StatusCode, Json<DispatchResponse>)> {
-    let ValidatedDispatch { dispatcher, session_id, dedup_key, caller, forwarded_payload } = v;
+    let ValidatedDispatch { dispatcher, session_id, dedup_key, caller, forwarded_payload, .. } = v;
     let origin = dispatcher.id();
     let spec = DispatchSpec {
         session_id,
@@ -1017,19 +1076,9 @@ async fn forward_dispatch(
         payload: forwarded_payload,
     };
 
-    let handle = match dispatcher.dispatch(&spec).await {
+    let handle = match dispatcher.dispatch(&spec).instrument(step("dispatcher_round_trip")).await {
         Ok(h) => {
-            state.notify(DispatchNotification {
-                title: format!("Dispatch forwarded → {}", req.dispatcher),
-                message: format!(
-                    "user: {caller}\nsession: {session_id}\nhandle: {}\nnamespace: {}\nstatus: {}",
-                    h.handle,
-                    h.namespace.as_deref().unwrap_or("-"),
-                    h.status.as_deref().unwrap_or("dispatched"),
-                ),
-                tags: "white_check_mark".into(),
-                priority: 3,
-            });
+            notify_forwarded(state, req, v, &h);
             // Persist the opaque handle so the completion-webhook sweep can ask
             // this dispatcher whether the workload later died without a
             // conclusion. Owner-scoped re-resolution in the sweep uses
@@ -1043,7 +1092,8 @@ async fn forward_dispatch(
                    dispatcher_name = EXCLUDED.dispatcher_name, \
                    handle = EXCLUDED.handle, \
                    namespace = EXCLUDED.namespace, \
-                   created_at = now()",
+                   created_at = now(), \
+                   gone_at = NULL",
             )
             .bind(session_id)
             .bind(origin)
@@ -1080,11 +1130,36 @@ async fn forward_dispatch(
         }
     };
 
-    Ok((
+    Ok(accepted(v, handle))
+}
+
+fn notify_forwarded(
+    state: &impl DispatchContext,
+    req: &DispatchRequest,
+    v: &ValidatedDispatch,
+    h: &crate::dispatchers::DispatchHandle,
+) {
+    state.notify(DispatchNotification {
+        title: format!("Dispatch forwarded → {}", req.dispatcher),
+        message: format!(
+            "user: {}\nsession: {}\nhandle: {}\nnamespace: {}\nstatus: {}",
+            v.caller,
+            v.session_id,
+            h.handle,
+            h.namespace.as_deref().unwrap_or("-"),
+            h.status.as_deref().unwrap_or("dispatched"),
+        ),
+        tags: "white_check_mark".into(),
+        priority: 3,
+    });
+}
+
+fn accepted(v: &ValidatedDispatch, handle: crate::dispatchers::DispatchHandle) -> Forwarded {
+    (
         StatusCode::ACCEPTED,
         Json(DispatchResponse {
-            session_id: session_id.clone(),
-            dispatcher: origin.to_string(),
+            session_id: v.session_id.clone(),
+            dispatcher: v.dispatcher.id().to_string(),
             handle: handle.handle,
             namespace: handle.namespace,
             // Surface the dispatcher's outcome verbatim so a re-dispatch onto a
@@ -1093,8 +1168,86 @@ async fn forward_dispatch(
             // preserve the historical `dispatched`.
             status: handle.status.unwrap_or_else(|| "dispatched".into()),
             queue_position: handle.queue_position,
+            exposure: handle.exposure,
         }),
-    ))
+    )
+}
+
+/// Answer `deduplicated` before any prep when a live worker holds the dedup key.
+///
+/// No key or token is minted and nothing is registered or recorded, as a
+/// deduplicated forward leaves nothing of its own behind.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "deduplicated_early")
+)]
+async fn deduplicated_early(
+    state: &impl DispatchContext,
+    req: &DispatchRequest,
+    v: &ValidatedDispatch,
+) -> Option<Forwarded> {
+    let enrolled = v.enrolled.as_ref()?;
+    let spec = DispatchSpec {
+        session_id: &v.session_id,
+        timeout_minutes: req.timeout,
+        reply_url: None,
+        dedup_key: Some(v.dedup_key.as_deref()?),
+        payload: &v.forwarded_payload,
+    };
+    let joined = enrolled.dedup_check(&spec).instrument(step("dedup_check")).await?;
+    notify_forwarded(state, req, v, &joined);
+    Some(accepted(v, joined))
+}
+
+/// Refuse `additions` that weaken a rule of an account the dispatch is about
+/// to mint for, before any worker credential exists.
+///
+/// Only accounts `user` owns count: the worker never carries another owner's rules.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "refuse_weakened_account_rules")
+)]
+async fn refuse_weakened_account_rules(
+    state: &impl DispatchContext,
+    user: uuid::Uuid,
+    mints: &[crate::gateway::mint::ProviderRow],
+    additions: Vec<cctui_proto::hook_policy::HookRule>,
+) -> DispatchResult<()> {
+    use cctui_proto::hook_policy::{HookRule, effective_rules, no_direct_harness_rule};
+    if additions.is_empty() || mints.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<uuid::Uuid> = mints.iter().map(|row| row.id).collect();
+    let stored: Vec<serde_json::Value> = sqlx::query_scalar(
+        "SELECT DISTINCT ON (p.account_id) p.hooks \
+         FROM account_providers ap \
+         JOIN accounts a ON a.id = ap.account_id \
+         JOIN account_tool_policies p ON p.account_id = ap.account_id \
+         WHERE ap.id = ANY($1) AND a.user_id = $2 \
+         ORDER BY p.account_id",
+    )
+    .bind(&ids)
+    .bind(user)
+    .fetch_all(state.dispatch_pool())
+    .await
+    .map_err(|error| {
+        tracing::error!(%error, "account hook rules lookup failed");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError { error: "could not read the worker's account hook rules".into() }),
+        )
+    })?;
+    let mut inherited = vec![no_direct_harness_rule()];
+    let mut account = Vec::new();
+    for value in stored {
+        if let Ok(more) = serde_json::from_value::<Vec<HookRule>>(value) {
+            account.extend(more);
+        }
+    }
+    inherited.extend(cctui_proto::hook_policy::normalize_rules(account).unwrap_or_default());
+    effective_rules(&inherited, additions).map(drop).map_err(|e| bad_request(e.to_string()))
 }
 
 /// Authorize, prepare and forward a dispatch through shared execution services.
@@ -1104,6 +1257,7 @@ async fn forward_dispatch(
 /// NOT `owner_filter()`, which is a query-result scoping switch that returns
 /// `None` for admins. Only the env admin token has no real user (`user_id` is
 /// nil); it dispatches without the shared identity.
+#[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "execute_dispatch"))]
 pub async fn execute_dispatch(
     state: &impl DispatchContext,
     ctx: &AuthContext,
@@ -1111,25 +1265,44 @@ pub async fn execute_dispatch(
 ) -> DispatchResult<Forwarded> {
     let real_user = (ctx.user_id != uuid::Uuid::nil()).then_some(ctx.user_id);
     let policy = match real_user {
-        Some(uid) => crate::dispatch_policy::enforce(state.dispatch_pool(), uid, &mut req).await?,
+        Some(uid) => {
+            crate::dispatch_policy::enforce(state.dispatch_pool(), uid, &mut req)
+                .instrument(step("enforce"))
+                .await?
+        }
         None => None,
     };
     let mut v = validate_dispatch(state, ctx, &req).await?;
+    let additions = crate::hook_policy::dispatch_additions(&req.payload)
+        .map_err(|e| bad_request(e.to_string()))?;
+    if let Some(joined) = deduplicated_early(state, &req, &v).await {
+        return Ok(shown_queued(joined));
+    }
 
     if let Some(uid) = real_user {
+        let routing = resolve_account_routing(state, &req, uid, &mut v.forwarded_payload).await?;
+        refuse_weakened_account_rules(state, uid, &routing.mints, additions).await?;
         inject_worker_credential(state, uid, &v.session_id, req.timeout, &mut v.forwarded_payload)
             .await?;
-        let routing = resolve_account_routing(state, &req, uid, &mut v.forwarded_payload).await?;
         mint_gateway_env(state, routing.mints, &v.session_id, &mut v.forwarded_payload).await?;
         if let Some(pool_id) = routing.bound_pool {
-            crate::account_resolve::stamp_pool(state, &v.session_id, pool_id).await;
+            crate::account_resolve::stamp_pool(state, &v.session_id, pool_id)
+                .instrument(step("stamp_pool"))
+                .await;
         }
     }
 
-    state.register_completion_webhook(ctx, &req, &v.session_id).await;
+    attach_hook_policy(state, &req, &v.session_id, &mut v.forwarded_payload).await?;
+    state
+        .register_completion_webhook(ctx, &req, &v.session_id)
+        .instrument(step("register_completion_webhook"))
+        .await;
     persist_spawn_capability(state, &v.session_id, &mut v.forwarded_payload, policy.is_some())
         .await?;
-    state.remember_dispatch_context(real_user, &req, &v.session_id).await;
+    state
+        .remember_dispatch_context(real_user, &req, &v.session_id)
+        .instrument(step("remember_dispatch_context"))
+        .await;
     let record = crate::store::dispatch_records::NewRecord::from_request(
         &v.session_id,
         real_user,
@@ -1146,6 +1319,16 @@ pub async fn execute_dispatch(
 }
 
 pub type Forwarded = (StatusCode, Json<DispatchResponse>);
+
+/// A dispatch step implemented outside this module, exported under `name`.
+fn step(name: &'static str) -> tracing::Span {
+    tracing::info_span!(
+        target: "otel",
+        "dispatch_step",
+        otel.name = name,
+        code.function.name = name
+    )
+}
 
 /// A re-send that joined a run still held in the queue answers `queued`, so a
 /// retrying caller sees it waits; policy and records saw `deduplicated`.
@@ -1179,6 +1362,11 @@ fn cap_refused(
 ///
 /// The reservation is a short per-user locked transaction, so no connection
 /// is held across the forward. Without a policy, `forward` runs as is.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "forward_within_policy")
+)]
 pub async fn forward_within_policy<F, Fut>(
     pool: &sqlx::PgPool,
     bound: Option<(uuid::Uuid, &cctui_proto::api::admin::DispatchPolicyRules)>,
@@ -1231,6 +1419,7 @@ where
 
 /// A replay that coalesced onto another session's run leaves no record: its
 /// own session never registers.
+#[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "forward_recorded"))]
 async fn forward_recorded(
     state: &impl DispatchContext,
     req: &DispatchRequest,
@@ -1248,11 +1437,18 @@ async fn forward_recorded(
             records::delete(state.dispatch_pool(), sid).await
         }
         Ok((_, r)) => {
-            match records::set_outcome(state.dispatch_pool(), sid, "forwarded", None).await {
-                Ok(()) if r.status == "queued" => {
-                    records::set_queued(state.dispatch_pool(), sid, true).await.map(drop)
+            let forwarded =
+                match records::set_outcome(state.dispatch_pool(), sid, "forwarded", None).await {
+                    Ok(()) if r.status == "queued" => {
+                        records::set_queued(state.dispatch_pool(), sid, true).await.map(drop)
+                    }
+                    other => other,
+                };
+            match (forwarded, r.exposure) {
+                (Ok(()), Some(exposure)) => {
+                    records::set_exposure(state.dispatch_pool(), sid, exposure).await
                 }
-                other => other,
+                (forwarded, _) => forwarded,
             }
         }
         Err((_, e)) => {

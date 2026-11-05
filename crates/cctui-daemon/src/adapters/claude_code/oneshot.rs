@@ -9,6 +9,7 @@
 //! listener; `SetModel` is unsupported in place.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -46,15 +47,19 @@ pub(super) struct OneshotDriver {
     /// Working dir per session, captured at spawn so a later `Resume`/`Reply`
     /// re-invokes in the right place even without an on-disk job state.
     cwds: HashMap<String, String>,
-    /// Per-session launch posture (permission flag / settings) captured at
-    /// spawn so resume/reply turns keep the same hook wiring.
-    settings_path: Option<String>,
+    /// Hook posture captured at spawn: every turn regenerates its
+    /// `--settings` file from it.
+    hook_postures: HashMap<String, super::control::HookPosture>,
     /// Shared maps for the ask/permission hook listener. The listener resolves
     /// the live `session_id` a hook reports through [`SessionMap`]; oneshot keys
     /// on the full session id so we register an identity mapping per session.
     session_map: SessionMap,
     pending_asks: PendingAsks,
     pending_perm_hooks: PendingPermHooks,
+}
+
+fn short_of(session_id: &str) -> &str {
+    &session_id[..8.min(session_id.len())]
 }
 
 impl OneshotDriver {
@@ -69,7 +74,7 @@ impl OneshotDriver {
             running: HashMap::new(),
             names: HashMap::new(),
             cwds: HashMap::new(),
-            settings_path: None,
+            hook_postures: HashMap::new(),
             session_map: Arc::default(),
             pending_asks: Arc::default(),
             pending_perm_hooks: Arc::default(),
@@ -150,25 +155,16 @@ impl OneshotDriver {
         // `resolve_launch_env`.
         let launch_env = self.resolve_launch_env(&session_id, &spec.env).await?;
 
-        // Ensure the ask/permission hook is wired for this run (idempotent),
-        // per-session so distinct sessions don't clobber each other's settings.
-        let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
-        let short = &session_id[..8.min(session_id.len())];
-        let settings = super::control::ensure_hook_settings(
+        let posture = super::control::HookPosture::of(spec);
+        let settings = posture.write(
             &self.cfg.hook_socket_path,
-            whip,
-            short,
-            launch_env.settings.as_ref(),
-            &launch_env.env,
-            None,
-            None,
-            launch_env.whip_phrases.as_ref(),
-            None,
-        )
-        .map(|p| p.to_string_lossy().into_owned());
-        self.settings_path.clone_from(&settings);
+            short_of(&session_id),
+            &launch_env,
+            self.machine_key.as_deref(),
+        )?;
+        self.hook_postures.insert(session_id.clone(), posture);
 
-        let mut launch = LaunchArgs::from_spec(spec, settings);
+        let mut launch = LaunchArgs::from_spec(spec, Some(settings));
         launch.session_id = Some(session_id.clone());
         launch.plugin_dirs.clone_from(&launch_env.plugin_dirs);
         if let Some(parent) = &fork_parent {
@@ -208,7 +204,7 @@ impl OneshotDriver {
         let launch_env = self.resolve_launch_env(local_id, &env_hint).await?;
         let launch = LaunchArgs {
             resume_from: Some(local_id.to_owned()),
-            settings_path: self.settings_path.clone(),
+            settings_path: self.turn_settings(local_id, &launch_env)?,
             plugin_dirs: launch_env.plugin_dirs,
             ..LaunchArgs::default()
         };
@@ -226,11 +222,35 @@ impl OneshotDriver {
             self.resolve_launch_env(local_id, &std::collections::BTreeMap::new()).await?;
         let launch = LaunchArgs {
             resume_from: Some(local_id.to_owned()),
-            settings_path: self.settings_path.clone(),
+            settings_path: self.turn_settings(local_id, &launch_env)?,
             plugin_dirs: launch_env.plugin_dirs,
             ..LaunchArgs::default()
         };
         self.launch_turn(local_id, &cwd, launch.to_argv(), "", &launch_env.env).await
+    }
+
+    /// Regenerate `local_id`'s `--settings` file for its next turn. A session
+    /// launched before a daemon restart gets its posture back from the kept,
+    /// sealed policy; a tampered one refuses the turn.
+    fn turn_settings(
+        &mut self,
+        local_id: &str,
+        launch_env: &super::control::LaunchEnv,
+    ) -> anyhow::Result<Option<String>> {
+        let short = short_of(local_id);
+        let seal_key = self.machine_key.as_deref();
+        let posture = match self.hook_postures.entry(local_id.to_owned()) {
+            Entry::Occupied(known) => known.into_mut(),
+            Entry::Vacant(slot) => {
+                let recorded = launch_env.hook_policy.as_ref();
+                let recovered = super::control::HookPosture::recover(short, seal_key, recorded)
+                    .with_context(|| {
+                        format!("refusing a turn for {local_id} without its hook policy")
+                    })?;
+                slot.insert(recovered)
+            }
+        };
+        Ok(Some(posture.write(&self.cfg.hook_socket_path, short, launch_env, seal_key)?))
     }
 
     /// Spawn one `claude -p` child, stream its stdout through the shared codec,
@@ -478,6 +498,7 @@ impl SessionDriver for OneshotDriver {
         self.kill(&local_id).await;
         self.names.remove(&local_id);
         self.cwds.remove(&local_id);
+        self.hook_postures.remove(&local_id);
         self.forget(&local_id);
         self.emit(AdapterEvent::SessionEnded { local_id, reason: EndReason::Killed }).await;
         Ok(Handled::Done)
@@ -565,7 +586,67 @@ fn idle_status(local_id: &str) -> AdapterEvent {
 
 #[cfg(test)]
 mod tests {
+    use super::super::control::{ConfigRootOverride, HookPosture, HookSettingsError};
     use super::*;
+
+    fn refusing_driver(tmp: &std::path::Path) -> (OneshotDriver, mpsc::Receiver<AdapterEvent>) {
+        let (events, rx) = mpsc::channel(8);
+        let (_commands_tx, commands) = mpsc::channel(8);
+        let (_connected_tx, connected) = tokio::sync::broadcast::channel(1);
+        let bin = tmp.join("claude-must-not-run");
+        let ctx = AdapterCtx {
+            events,
+            commands,
+            pty_watch: None,
+            interrupts: None,
+            shutdown: CancellationToken::new(),
+            config: serde_json::json!({ "claude_bin": bin }),
+            server: None,
+            machine_key: None,
+            connected,
+        };
+        (OneshotDriver::new(ctx).0, rx)
+    }
+
+    fn policy_spec(cwd: &std::path::Path) -> SessionSpec {
+        serde_json::from_value(serde_json::json!({
+            "adapter_id": "claude-code",
+            "working_dir": cwd,
+            "prompt": "go",
+            "hook_policy": { "rules": [{ "event": "Stop", "command": "p-stop" }] },
+        }))
+        .unwrap()
+    }
+
+    fn refused_for_hook_settings(launched: anyhow::Result<()>) {
+        let err = launched.expect_err("the launch was not refused");
+        assert!(err.downcast_ref::<HookSettingsError>().is_some(), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn a_spawn_is_refused_without_starting_claude_when_its_settings_cannot_be_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _root = ConfigRootOverride::unwritable(tmp.path());
+        let (mut d, mut events) = refusing_driver(tmp.path());
+        let id = "5e550001-0000-4000-8000-000000000000".to_owned();
+        refused_for_hook_settings(d.spawn(&policy_spec(tmp.path()), id, None).await);
+        assert!(d.running.is_empty(), "no `claude -p` child was started");
+        assert!(d.cwds.is_empty() && d.hook_postures.is_empty());
+        assert!(events.try_recv().is_err(), "no SessionStarted for a refused spawn");
+    }
+
+    #[tokio::test]
+    async fn a_turn_is_refused_without_starting_claude_when_its_settings_cannot_be_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _root = ConfigRootOverride::unwritable(tmp.path());
+        let (mut d, mut events) = refusing_driver(tmp.path());
+        let id = "5e550002-0000-4000-8000-000000000000";
+        d.cwds.insert(id.to_owned(), tmp.path().to_string_lossy().into_owned());
+        d.hook_postures.insert(id.to_owned(), HookPosture::default());
+        refused_for_hook_settings(d.reply(id, "next", std::collections::BTreeMap::new()).await);
+        assert!(d.running.is_empty(), "no `claude -p` child was started");
+        assert!(events.try_recv().is_err());
+    }
 
     #[test]
     fn child_registration_keeps_the_parent_and_launch_key_for_policy_enforcement() {

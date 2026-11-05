@@ -1,14 +1,15 @@
 //! What each dispatch asked for, kept so a worker that never registers can be identified and
 //! re-run.
 //!
-//! Env values, callback URLs, the callback secret and the worker key are never stored; the
-//! prompt is kept to its first 2 KiB.
+//! Callback URLs, the callback secret and the worker key are never stored, nor are env values
+//! beyond the context-pack selectors a re-run needs; the prompt is kept to its first 2 KiB.
 
 use std::sync::LazyLock;
 
 use cctui_crypto::redact::CompiledPatterns;
 use cctui_proto::api::{
-    DispatchRequest, FailedDispatch, FailedDispatchReason, RerunBlocker, WorkerExit,
+    DispatchExposure, DispatchRequest, FailedDispatch, FailedDispatchReason, RerunBlocker,
+    WorkerExit,
 };
 use sqlx::PgExecutor;
 use sqlx::types::Json;
@@ -21,6 +22,8 @@ const WORKER_LOG_MAX_BYTES: usize = 8 * 1024;
 const WORKER_TEXT_MAX_BYTES: usize = 1024;
 const LIST_LIMIT: i64 = 100;
 const SESSION_FAILURES: &[&str] = &["oom_killed", "crashed", "spawn_failed"];
+const REPLAYABLE_ENV: &[&str] = &["CONTEXT_PACK_URL", "CONTEXT_PACK_REF", "CONTEXT_PACK_SUBDIR"];
+const REPLAYABLE_ENV_MAX_BYTES: usize = 2048;
 const STRIPPED_PAYLOAD_KEYS: &[&str] = &[
     "env",
     "prompt",
@@ -68,12 +71,58 @@ fn text(payload: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// A value safe to keep: no credentials in a URL, nothing the redactor masks.
+fn plain_value(value: &str) -> bool {
+    let authority = value
+        .split_once("://")
+        .map_or("", |(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or(""));
+    value.len() <= REPLAYABLE_ENV_MAX_BYTES
+        && !authority.contains('@')
+        && !value.contains('?')
+        && scrubbed(Some(value), value.len(), false).as_deref() == Some(value)
+}
+
+/// The payload env a re-run carries again: the context-pack selectors, never
+/// a token or a value that looks secret.
+fn replayable_env(payload: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    payload
+        .get("env")
+        .and_then(serde_json::Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter(|(key, _)| REPLAYABLE_ENV.contains(&key.as_str()))
+        .filter_map(|(key, value)| {
+            let text = value.as_str().filter(|v| plain_value(v))?;
+            Some((key.clone(), serde_json::Value::String(text.to_owned())))
+        })
+        .collect()
+}
+
+/// The env keys of a stored replay.
+fn replay_env_keys(replay: Option<&serde_json::Value>) -> Vec<String> {
+    replay
+        .and_then(|r| r.get("payload")?.get("env")?.as_object())
+        .map(|env| env.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// The dispatch's env keys a re-run would not carry, sorted.
+fn missing_env(env_keys: &[String], kept: &[String]) -> Vec<String> {
+    let mut missing: Vec<String> = env_keys.iter().filter(|k| !kept.contains(k)).cloned().collect();
+    missing.sort_unstable();
+    missing
+}
+
 /// No session id, so a re-run is a new dispatch.
 fn replay_of(req: &DispatchRequest, name: Option<&str>) -> Option<serde_json::Value> {
     let mut payload = req.payload.clone();
+    let env = replayable_env(&req.payload);
     if let Some(obj) = payload.as_object_mut() {
         for key in STRIPPED_PAYLOAD_KEYS {
             obj.remove(*key);
+        }
+        if !env.is_empty() {
+            obj.insert("env".into(), serde_json::Value::Object(env));
         }
         if let Some(name) = name {
             obj.entry("name").or_insert_with(|| serde_json::Value::String(name.to_owned()));
@@ -110,8 +159,11 @@ impl NewRecord {
             .and_then(serde_json::Value::as_str)
             .filter(|s| !s.is_empty())
             .map_or((None, false), |prompt| {
-                let (h, cut) = head(prompt, PROMPT_HEAD_BYTES);
-                (Some(h.to_owned()), cut)
+                let masked = cctui_crypto::redact::mask_user_spans(prompt);
+                let (h, cut) = head(&masked, PROMPT_HEAD_BYTES);
+                // The stored head is masked, so it cannot be replayed as the prompt.
+                let tagged = cctui_crypto::redact::has_user_spans(prompt);
+                (Some(h.to_owned()), cut || tagged)
             });
         let mut env_keys: Vec<String> = p
             .get("env")
@@ -285,6 +337,19 @@ pub async fn set_worker_exit(
     Ok(())
 }
 
+pub async fn set_exposure(
+    exec: impl PgExecutor<'_>,
+    session_id: &str,
+    exposure: DispatchExposure,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE dispatch_records SET exposure = $2 WHERE session_id = $1")
+        .bind(session_id)
+        .bind(Json(exposure))
+        .execute(exec)
+        .await?;
+    Ok(())
+}
+
 /// Marks records whose session registered, so a later session purge does not
 /// read as a worker that never came up.
 pub async fn mark_registered(exec: impl PgExecutor<'_>) -> Result<u64, sqlx::Error> {
@@ -348,12 +413,14 @@ struct FailedRow {
     prompt_file: Option<String>,
     prompt_truncated: bool,
     env_keys: Vec<String>,
+    replay_env_keys: Vec<String>,
     has_replay: bool,
     outcome: String,
     end_reason: Option<String>,
     detail: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
     worker_exit: Option<Json<WorkerExit>>,
+    exposure: Option<Json<DispatchExposure>>,
     superseded_by: Option<String>,
     dismissed: bool,
 }
@@ -368,9 +435,19 @@ fn reason(outcome: &str, end_reason: Option<&str>) -> FailedDispatchReason {
     }
 }
 
-const fn blocker(env: bool, truncated: bool, has_replay: bool) -> Option<RerunBlocker> {
+/// `truncated` with a placeholder in the stored head means a span was masked.
+fn blocker(
+    env: bool,
+    head: Option<&str>,
+    truncated: bool,
+    has_replay: bool,
+) -> Option<RerunBlocker> {
+    let masked =
+        truncated && head.is_some_and(|h| h.contains(cctui_crypto::redact::USER_PLACEHOLDER));
     if env {
         Some(RerunBlocker::Env)
+    } else if masked {
+        Some(RerunBlocker::PromptRedacted)
     } else if truncated {
         Some(RerunBlocker::PromptTruncated)
     } else if !has_replay {
@@ -384,7 +461,12 @@ impl From<FailedRow> for FailedDispatch {
     fn from(r: FailedRow) -> Self {
         Self {
             reason: reason(&r.outcome, r.end_reason.as_deref()),
-            rerun_blocked: blocker(!r.env_keys.is_empty(), r.prompt_truncated, r.has_replay),
+            rerun_blocked: blocker(
+                !missing_env(&r.env_keys, &r.replay_env_keys).is_empty(),
+                r.prompt_head.as_deref(),
+                r.prompt_truncated,
+                r.has_replay,
+            ),
             session_id: r.session_id,
             dispatcher: r.dispatcher_name,
             name: r.name,
@@ -400,6 +482,7 @@ impl From<FailedRow> for FailedDispatch {
             superseded_by: r.superseded_by,
             dismissed: r.dismissed,
             worker_exit: r.worker_exit.map(|j| j.0),
+            exposure: r.exposure.map(|j| j.0),
         }
     }
 }
@@ -441,10 +524,13 @@ pub async fn list_with_completed(
     let rows: Vec<FailedRow> = sqlx::query_as(
         "SELECT r.session_id, r.dispatcher_name, r.name, r.profile, r.repo, r.model, r.adapter, \
                 r.prompt_head, r.prompt_file, r.prompt_truncated, r.env_keys, \
+                CASE WHEN jsonb_typeof(r.replay->'payload'->'env') = 'object' \
+                     THEN ARRAY(SELECT jsonb_object_keys(r.replay->'payload'->'env')) \
+                     ELSE '{}'::text[] END AS replay_env_keys, \
                 (r.replay IS NOT NULL) AS has_replay, r.outcome, \
                 COALESCE(r.end_reason, s.end_reason) AS end_reason, \
                 COALESCE(r.detail, s.end_detail) AS detail, r.created_at, r.worker_exit, \
-                sup.session_id AS superseded_by, (d.session_id IS NOT NULL) AS dismissed \
+                r.exposure, sup.session_id AS superseded_by, (d.session_id IS NOT NULL) AS dismissed \
          FROM dispatch_records r \
          LEFT JOIN sessions s ON s.id = r.session_id \
          LEFT JOIN dispatch_record_dismissals d \
@@ -559,9 +645,21 @@ pub struct StoredRecord {
 }
 
 impl StoredRecord {
+    /// The dispatch's env keys a re-run would not carry: secret, or not a
+    /// context-pack selector.
     #[must_use]
-    pub const fn rerun_blocker(&self) -> Option<RerunBlocker> {
-        blocker(!self.env_keys.is_empty(), self.prompt_truncated, self.replay.is_some())
+    pub fn missing_env(&self) -> Vec<String> {
+        missing_env(&self.env_keys, &replay_env_keys(self.replay.as_ref()))
+    }
+
+    #[must_use]
+    pub fn rerun_blocker(&self) -> Option<RerunBlocker> {
+        blocker(
+            !self.missing_env().is_empty(),
+            self.prompt_head.as_deref(),
+            self.prompt_truncated,
+            self.replay.is_some(),
+        )
     }
 
     /// The stored request, prompt restored, as a new dispatch. `None` when a
@@ -693,6 +791,82 @@ mod tests {
     }
 
     #[test]
+    fn a_context_pack_dispatch_re_runs_with_its_pack_env_and_no_secret() {
+        let rec = NewRecord::from_request(
+            "s1",
+            None,
+            &req(&serde_json::json!({
+                "prompt": "review the PR",
+                "env": {
+                    "CONTEXT_PACK_URL": "https://git.example.test/org/packs.git",
+                    "CONTEXT_PACK_SUBDIR": "review",
+                    "CONTEXT_PACK_REF": "main",
+                },
+            })),
+            None,
+            None,
+        );
+        assert_eq!(rec.env_keys, ["CONTEXT_PACK_REF", "CONTEXT_PACK_SUBDIR", "CONTEXT_PACK_URL"]);
+        let record = stored(&rec);
+        assert!(record.missing_env().is_empty());
+        assert_eq!(record.rerun_blocker(), None);
+        let rerun = record.replay_request().expect("a pack dispatch re-runs");
+        let url = &rerun.payload["env"]["CONTEXT_PACK_URL"];
+        assert_eq!(url, "https://git.example.test/org/packs.git");
+        assert_eq!(rerun.payload["env"]["CONTEXT_PACK_SUBDIR"], "review");
+        assert_eq!(rerun.payload["env"]["CONTEXT_PACK_REF"], "main");
+        assert_eq!(rerun.payload["prompt"], "review the PR");
+        assert!(rerun.session_id.is_none(), "a re-run is a new dispatch");
+    }
+
+    #[test]
+    fn secret_env_is_never_stored_and_the_blocker_names_only_what_is_missing() {
+        let rec = NewRecord::from_request(
+            "s1",
+            None,
+            &req(&serde_json::json!({
+                "prompt": "go",
+                "env": {
+                    "CONTEXT_PACK_URL": "https://git.example.test/org/packs.git",
+                    "CONTEXT_PACK_SUBDIR": "review",
+                    "CONTEXT_PACK_TOKEN": "ghp_PACKSECRET",
+                    "GITHUB_TOKEN": "ghp_SECRETVALUE",
+                },
+            })),
+            None,
+            None,
+        );
+        let replay = rec.replay.as_ref().unwrap().to_string();
+        for secret in ["ghp_PACKSECRET", "ghp_SECRETVALUE", "CONTEXT_PACK_TOKEN", "GITHUB_TOKEN"] {
+            assert!(!replay.contains(secret), "{secret} reached the stored replay: {replay}");
+        }
+        assert!(replay.contains("packs.git"), "the pack selector is kept: {replay}");
+        let record = stored(&rec);
+        assert_eq!(record.missing_env(), ["CONTEXT_PACK_TOKEN", "GITHUB_TOKEN"]);
+        assert_eq!(record.rerun_blocker(), Some(RerunBlocker::Env));
+        assert!(record.replay_request().is_none());
+    }
+
+    #[test]
+    fn a_pack_url_carrying_credentials_is_not_kept() {
+        for url in [
+            "https://x-access-token:ghs_SECRET@git.example.test/org/packs.git",
+            "https://git.example.test/org/packs.git?token=SECRET",
+        ] {
+            let rec = NewRecord::from_request(
+                "s1",
+                None,
+                &req(&serde_json::json!({ "prompt": "go", "env": { "CONTEXT_PACK_URL": url } })),
+                None,
+                None,
+            );
+            let replay = rec.replay.as_ref().unwrap().to_string();
+            assert!(!replay.contains("SECRET"), "{url} reached the stored replay: {replay}");
+            assert_eq!(stored(&rec).missing_env(), ["CONTEXT_PACK_URL"], "{url}");
+        }
+    }
+
+    #[test]
     fn a_long_prompt_keeps_its_head_and_blocks_the_rerun() {
         let prompt = "é".repeat(PROMPT_HEAD_BYTES);
         let rec = NewRecord::from_request(
@@ -706,6 +880,34 @@ mod tests {
         assert!(head.len() <= PROMPT_HEAD_BYTES && prompt.starts_with(head));
         assert!(rec.prompt_truncated);
         assert_eq!(stored(&rec).rerun_blocker(), Some(RerunBlocker::PromptTruncated));
+    }
+
+    #[test]
+    fn a_tagged_prompt_is_recorded_masked_and_blocks_the_rerun() {
+        let rec = NewRecord::from_request(
+            "s1",
+            None,
+            &req(&serde_json::json!({ "prompt": "use <redacted>hunter2-xyz</redacted> now" })),
+            None,
+            None,
+        );
+        assert_eq!(rec.prompt_head.as_deref(), Some("use [REDACTED:user] now"));
+        assert!(!format!("{rec:?}").contains("hunter2-xyz"));
+        assert_eq!(stored(&rec).rerun_blocker(), Some(RerunBlocker::PromptRedacted));
+        assert!(stored(&rec).replay_request().is_none());
+    }
+
+    #[test]
+    fn a_prompt_quoting_the_placeholder_is_not_reported_masked() {
+        let rec = NewRecord::from_request(
+            "s1",
+            None,
+            &req(&serde_json::json!({ "prompt": "explain [REDACTED:user] pills" })),
+            None,
+            None,
+        );
+        assert!(!rec.prompt_truncated);
+        assert_eq!(stored(&rec).rerun_blocker(), None);
     }
 
     #[test]
@@ -847,6 +1049,42 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn a_listed_pack_dispatch_is_re_runnable_and_a_secret_env_one_names_its_keys() {
+        let Some(url) = crate::test_support::db_url("dispatch_records_pack_rerun") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let uid = seed_user(&pool).await;
+        let (pack, secret) =
+            (format!("pack-{}", Uuid::new_v4()), format!("secret-{}", Uuid::new_v4()));
+        let env = serde_json::json!({
+            "CONTEXT_PACK_URL": "https://git.example.test/org/packs.git",
+            "CONTEXT_PACK_SUBDIR": "review",
+        });
+        refused(&pool, uid, &pack, &serde_json::json!({ "prompt": "go", "env": env })).await;
+        let mut with_secret = env;
+        with_secret["GITHUB_TOKEN"] = "ghp_SECRETVALUE".into();
+        refused(&pool, uid, &secret, &serde_json::json!({ "prompt": "go", "env": with_secret }))
+            .await;
+
+        let listed = super::list_failed(&pool, Some(uid)).await.unwrap();
+        let card = |sid: &str| listed.iter().find(|f| f.session_id == sid).unwrap();
+        assert_eq!(card(&pack).rerun_blocked, None, "the pack env is stored for the re-run");
+        assert_eq!(card(&secret).rerun_blocked, Some(RerunBlocker::Env));
+        let stored = super::get(&pool, &secret).await.unwrap().unwrap();
+        assert_eq!(stored.missing_env(), ["GITHUB_TOKEN"]);
+        let rerun = super::get(&pool, &pack).await.unwrap().unwrap().replay_request().unwrap();
+        assert_eq!(rerun.payload["env"]["CONTEXT_PACK_SUBDIR"], "review");
+
+        sqlx::query("DELETE FROM dispatch_records WHERE user_id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &[uid]).await;
+    }
+
     /// A dismissal hides the card from the one who dismissed it only, and
     /// stays in the history.
     #[tokio::test]
@@ -891,6 +1129,34 @@ mod tests {
         assert!(super::list(&pool, mine).await.unwrap().is_empty());
         assert_eq!(super::list_failed(&pool, Some(uid)).await.unwrap().len(), 2);
         cleanup(&pool, &[uid, admin]).await;
+    }
+
+    #[tokio::test]
+    async fn a_recorded_exposure_is_listed_on_the_failed_dispatch() {
+        use cctui_proto::api::{DispatchExposure, HumanGate};
+        let Some(url) = crate::test_support::db_url("dispatch_records_exposure") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let uid = seed_user(&pool).await;
+        let (exposed, bare) =
+            (format!("exp-{}", Uuid::new_v4()), format!("bare-{}", Uuid::new_v4()));
+        for s in [&exposed, &bare] {
+            refused(&pool, uid, s, &serde_json::json!({ "prompt": "go" })).await;
+        }
+        let exposure = DispatchExposure {
+            untrusted_input: true,
+            sensitive_data: true,
+            outward: true,
+            human_gate: Some(HumanGate::DraftPrOnly),
+        };
+        super::set_exposure(&pool, &exposed, exposure).await.unwrap();
+
+        let listed = super::list_failed(&pool, Some(uid)).await.unwrap();
+        let of = |sid: &str| listed.iter().find(|f| f.session_id == sid).unwrap().exposure;
+        assert_eq!(of(&exposed), Some(exposure));
+        assert_eq!(of(&bare), None);
+        cleanup(&pool, &[uid]).await;
     }
 
     async fn seed_session(pool: &sqlx::PgPool, sid: &str, uid: Uuid, end_reason: Option<&str>) {

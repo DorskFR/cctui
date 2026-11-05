@@ -26,6 +26,7 @@
 	import { promptHistory } from '$lib/drafts';
 	import { HistoryNav } from '$lib/historyNav';
 	import PromptHistoryMenu from '$lib/components/molecules/PromptHistoryMenu.svelte';
+	import RedactedChips from '$lib/components/organisms/conversation/RedactedChips.svelte';
 
 	let {
 		form = $bindable(),
@@ -42,6 +43,8 @@
 		att?: PromptAttachments;
 		promptEl?: HTMLTextAreaElement | null;
 	} = $props();
+
+	let revealed = $state<ReadonlySet<string>>(new Set());
 
 	const nav = new HistoryNav({
 		list: () => promptHistory.get(),
@@ -160,6 +163,7 @@
 		bind:el={promptEl}
 		data-journey="prompt"
 		id="sp-prompt"
+		{revealed}
 		rows={10}
 		placeholder={m.spawn_prompt_placeholder()}
 		resize="bottom"
@@ -169,6 +173,7 @@
 			nav.handleKey(e);
 		}}
 	/>
+	<RedactedChips text={form.prompt} bind:revealed />
 </Field>
 
 <style>

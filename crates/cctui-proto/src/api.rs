@@ -14,6 +14,7 @@ pub mod events;
 pub mod gateway;
 pub mod guard_step;
 pub mod harness_update;
+pub mod hidden_owners;
 pub mod instance;
 pub mod langfuse;
 pub mod limit_reset;
@@ -37,6 +38,7 @@ pub mod settings;
 pub mod settings_catalog;
 pub mod shares;
 pub mod soft_limit;
+pub mod tool_guard;
 pub mod tool_policy;
 pub mod update_hook;
 pub mod uploads;
@@ -197,6 +199,9 @@ pub struct SpawnChildRequest {
     pub permission_mode: Option<crate::adapter::PermissionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Added to the parent's rules, never instead of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hook_rules: Vec<crate::hook_policy::HookRule>,
 }
 
 /// Body for `POST /api/v1/daemon/sessions/{id}/message-peer`: `session_id` is
@@ -275,6 +280,10 @@ pub struct GatewayEnvResponse {
     /// already resolved by the server.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context: Vec<SessionContextItem>,
+    /// The policy the session's newest launch recorded, empty when none did.
+    /// `None` from a server that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_policy: Option<crate::hook_policy::SessionHookPolicy>,
 }
 
 /// One resolved context item as the daemon needs it: enough to stage the body
@@ -561,6 +570,12 @@ pub struct SessionListItem {
     /// above one, the thread forks here.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub followup_count: u32,
+    /// The gateway tool guard is lifted for this session.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tool_guard_bypass: bool,
+    /// The viewer hides this session's user or machine; only listed with `show_hidden`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -905,12 +920,17 @@ pub struct ConversationHit {
 
 /// `total` counts the hits returned; `truncated` says the scan stopped at the
 /// cap, so the real total is higher.
+///
+/// `partial` says the scan ran out of time first: the hits cover the oldest
+/// part of the conversation only, and `truncated` is set too.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ConversationSearchResponse {
     pub hits: Vec<ConversationHit>,
     pub total: u32,
     pub truncated: bool,
+    #[serde(default)]
+    pub partial: bool,
     /// Tool ids seen among the hits, for the `tool:` autocomplete.
     pub tools: Vec<String>,
 }
@@ -1310,6 +1330,30 @@ pub struct DispatchResponse {
     /// 1-based place among the profile's queued workers while `queued`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_position: Option<u32>,
+    /// `None` when the dispatcher reports no exposure for the run's profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<DispatchExposure>,
+}
+
+/// The Rule of Two exposure the run's worker profile declares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct DispatchExposure {
+    pub untrusted_input: bool,
+    pub sensitive_data: bool,
+    pub outward: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub human_gate: Option<HumanGate>,
+}
+
+/// The human step bounding a worker's outward actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum HumanGate {
+    NoPush,
+    DraftPrOnly,
+    OutwardHeldForApproval,
 }
 
 /// Why a dispatched worker never ran to completion as a session.
@@ -1332,6 +1376,8 @@ pub enum FailedDispatchReason {
 pub enum RerunBlocker {
     Env,
     PromptTruncated,
+    /// The prompt had `<redacted>` spans, stored only masked.
+    PromptRedacted,
     PayloadTooLarge,
 }
 
@@ -1375,6 +1421,8 @@ pub struct FailedDispatch {
     pub dismissed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_exit: Option<WorkerExit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<DispatchExposure>,
 }
 
 /// How a dispatched worker's container ended, read from the cluster before

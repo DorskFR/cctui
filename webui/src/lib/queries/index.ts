@@ -15,3 +15,4 @@ export * from "./bookmarks";
 export * from "./plugins";
 export * from "./scheduled";
 export * from "./events";
+export * from "./hiddenOwners";

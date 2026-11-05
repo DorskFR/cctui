@@ -64,6 +64,14 @@ const AUTH_PURGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3
 const REOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 const REOWN_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// Marks a route request sent to a peer no presence row named, so a peer that
+/// does hold the connection restores its own row.
+pub const PROBE_HEADER: &str = "x-cctui-bus-probe";
+
+const fn is_miss(err: &BusError) -> bool {
+    matches!(err, BusError::NoDaemon(_) | BusError::NoDispatcher(_))
+}
+
 // ---- wire types (shared with `crate::routes::internal`) ----
 
 /// Body of `POST /internal/bus/route`: one frame/round-trip addressed at a WS
@@ -114,6 +122,32 @@ pub enum RouteRequest {
         request_id: Uuid,
         frame: DispatcherFrameDown,
     },
+}
+
+impl RouteRequest {
+    #[must_use]
+    pub const fn machine(&self) -> Option<Uuid> {
+        match self {
+            Self::DaemonCommand { machine, .. }
+            | Self::DaemonStageFiles { machine, .. }
+            | Self::DaemonListDirs { machine, .. }
+            | Self::DaemonGitInfo { machine, .. }
+            | Self::DaemonReadFile { machine, .. }
+            | Self::DaemonDiagnose { machine, .. } => Some(*machine),
+            Self::DispatcherCommand { .. } | Self::DispatcherRequest { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn session(&self) -> Option<&str> {
+        match self {
+            Self::DaemonCommand { frame, .. } => frame_session(frame),
+            Self::DaemonStageFiles { local_id, .. } | Self::DaemonDiagnose { local_id, .. } => {
+                Some(local_id)
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Body of the `POST /internal/bus/route` response. Always HTTP 200 from the
@@ -330,33 +364,98 @@ impl PeerHttpTransport {
             .map(|ip| Owner { kind: target.kind, id: target.id, ip })
     }
 
-    /// Look up the live peer owning `target`'s WS and POST the route request to
-    /// it. No live owner, a rejected request, or a moved connection all map to
-    /// the honest miss error; peer-side delivery failures are decoded back into
-    /// their [`BusError`] variants. An owner that cannot be reached at all is a
-    /// replaced pod: its row is forgotten (only while it still names that IP)
-    /// and the request waits up to [`REOWN_WAIT`] for the daemon's reconnect to
-    /// record a new owner, then is retried once there.
+    /// Route through the recorded owner, else [`Self::probe`] the live peers.
     async fn route(
         &self,
         target: Target,
         request: &RouteRequest,
         timeout: std::time::Duration,
     ) -> Result<RouteResponse, BusError> {
-        let Some(owner) = self.resolve(target).await else {
-            return Err(Self::miss(target.kind, target.id));
-        };
-        if let Some(response) = self.post(&owner, target, request, timeout).await? {
-            return Ok(response);
+        let mut tried = Vec::new();
+        if let Some(owner) = self.resolve(target).await
+            && let Some(outcome) = self.via_owner(owner, target, request, timeout, &mut tried).await
+        {
+            return outcome;
+        }
+        self.probe(target, request, timeout, tried).await
+    }
+
+    /// Deliver through the recorded owner. `None` is a miss the caller may
+    /// probe past, with every peer asked noted in `tried`. An owner that
+    /// cannot be reached at all is a replaced pod: its row is forgotten (only
+    /// while it still names that IP) and the request waits up to
+    /// [`REOWN_WAIT`] for the daemon's reconnect to record a new owner, then
+    /// is retried once there.
+    async fn via_owner(
+        &self,
+        owner: Owner,
+        target: Target,
+        request: &RouteRequest,
+        timeout: std::time::Duration,
+        tried: &mut Vec<String>,
+    ) -> Option<Result<RouteResponse, BusError>> {
+        tried.push(owner.ip.clone());
+        match self.post(&owner, target, request, timeout, false).await {
+            Ok(Some(response)) => return Some(Ok(response)),
+            Ok(None) => {}
+            Err(err) if is_miss(&err) => return None,
+            Err(err) => return Some(Err(err)),
         }
         self.forget(&owner, target).await;
-        let Some(fresh) = self.await_replacement(target, &owner.ip).await else {
-            return Err(Self::miss(target.kind, target.id));
-        };
-        if let Some(response) = self.post(&fresh, target, request, timeout).await? {
-            return Ok(response);
+        let fresh = self.await_replacement(target, &owner.ip).await?;
+        tried.push(fresh.ip.clone());
+        match self.post(&fresh, target, request, timeout, false).await {
+            Ok(Some(response)) => Some(Ok(response)),
+            Ok(None) => {
+                self.forget(&fresh, target).await;
+                None
+            }
+            Err(err) if is_miss(&err) => None,
+            Err(err) => Some(Err(err)),
         }
-        self.forget(&fresh, target).await;
+    }
+
+    /// Offer `request` to every live peer not yet `tried`, in turn. A presence
+    /// row can be lost while its connection lives on, and each peer delivers
+    /// only to a connection it holds, so the first that does wins.
+    async fn probe(
+        &self,
+        target: Target,
+        request: &RouteRequest,
+        timeout: std::time::Duration,
+        mut tried: Vec<String>,
+    ) -> Result<RouteResponse, BusError> {
+        let owners = tried.len();
+        let mut peers = presence::live_peer_pods(&self.pool, &self.pod).await;
+        peers.retain(|ip| !tried.contains(ip));
+        let mut unreachable = Vec::new();
+        for ip in peers {
+            let peer = Owner { kind: target.kind, id: target.id, ip };
+            tried.push(peer.ip.clone());
+            match self.post(&peer, target, request, timeout, true).await {
+                Ok(Some(response)) => {
+                    tracing::info!(
+                        peer = %peer.ip,
+                        target = %target.id,
+                        kind = target.kind.as_str(),
+                        "peer bus probe reached a connection no live presence row named",
+                    );
+                    return Ok(response);
+                }
+                Ok(None) => unreachable.push(peer.ip),
+                Err(err) if is_miss(&err) => {}
+                Err(err) => return Err(err),
+            }
+        }
+        tracing::warn!(
+            target = %target.id,
+            kind = target.kind.as_str(),
+            session = ?target.session,
+            owner_rows = owners,
+            ?tried,
+            ?unreachable,
+            "peer bus route missed: no peer holds a connection for the target",
+        );
         Err(Self::miss(target.kind, target.id))
     }
 
@@ -379,24 +478,22 @@ impl PeerHttpTransport {
 
     /// One POST to one owner. `Err` is a final bus error; `Ok(None)` is a
     /// connection-level failure (nothing listens at the owner's IP) the caller
-    /// may retry elsewhere.
+    /// may retry elsewhere. A `probe` tells the peer no presence row named it.
     async fn post(
         &self,
         owner: &Owner,
         target: Target,
         request: &RouteRequest,
         timeout: std::time::Duration,
+        probe: bool,
     ) -> Result<Option<RouteResponse>, BusError> {
         let url = format!("{}/internal/bus/route", peer_base(&owner.ip, self.port));
-        let response = match self
-            .client
-            .post(&url)
-            .bearer_auth(&self.secret)
-            .timeout(timeout)
-            .json(request)
-            .send()
-            .await
-        {
+        let mut builder =
+            self.client.post(&url).bearer_auth(&self.secret).timeout(timeout).json(request);
+        if probe {
+            builder = builder.header(PROBE_HEADER, "1");
+        }
+        let response = match builder.send().await {
             Ok(r) => r,
             Err(err) if err.is_connect() => return Ok(None),
             Err(err) => {
@@ -415,12 +512,25 @@ impl PeerHttpTransport {
                 status = %response.status(),
                 owner = %owner.ip,
                 target = %target.id,
+                probe,
                 "peer bus route rejected"
             );
             return Err(Self::miss(target.kind, target.id));
         }
         match response.json::<RouteResponse>().await {
             Ok(RouteResponse::Err { code, message, allowed_folders }) => {
+                if matches!(code, WireErrorCode::NoDaemon | WireErrorCode::NoDispatcher) {
+                    tracing::warn!(
+                        peer = %owner.ip,
+                        owner_row = owner.kind.as_str(),
+                        target = %target.id,
+                        kind = target.kind.as_str(),
+                        session = ?target.session,
+                        probe,
+                        %message,
+                        "peer bus route missed: the peer holds no matching connection",
+                    );
+                }
                 Err(decode_error(code, message, allowed_folders, target.id))
             }
             Ok(ok) => Ok(Some(ok)),
@@ -1320,6 +1430,247 @@ mod tests {
         let err = transport.forward_daemon(machine, reconcile()).await.unwrap_err();
         assert!(matches!(err, BusError::NoDaemon(m) if m == machine), "{err:?}");
         assert_eq!(owner_ip(&pool, machine).await, None);
+    }
+
+    /// A replica serving the real `/internal/bus/route`, bound on its own
+    /// loopback `ip` so no other test's stub peer answers in its place.
+    async fn route_replica(pool: &PgPool, pod: &str, ip: &str) -> (crate::state::AppState, u16) {
+        let mut state = crate::state::AppState::for_test(pool.clone());
+        state.presence = Arc::new(crate::presence::PodIdentity::for_test(pod, ip));
+        state.internal_secret = Some(Arc::from("cct1747"));
+        let app = axum::Router::new()
+            .route("/internal/bus/route", axum::routing::post(crate::routes::internal::bus_route))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind((ip, 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (state, port)
+    }
+
+    fn top_level_spawn(machine_id: Uuid) -> cctui_server_core::launch::MachineSpawn {
+        let token_key = Uuid::new_v4();
+        cctui_server_core::launch::MachineSpawn {
+            machine_id,
+            command_id: Uuid::new_v4(),
+            token_key,
+            spec: serde_json::from_value(serde_json::json!({
+                "adapter_id": "claude-code", "working_dir": "/tmp", "prompt": "hi"
+            }))
+            .unwrap(),
+            failed: cctui_server_core::commands::FailedSpawnRow {
+                session_id: token_key.to_string(),
+                machine_id,
+                user_id: Uuid::new_v4(),
+                adapter_id: "claude-code".into(),
+                working_dir: "/tmp".into(),
+                name: None,
+                model: None,
+                effort: None,
+            },
+            route_session: None,
+        }
+    }
+
+    async fn spawned_command(rx: &mut mpsc::Receiver<DaemonFrameDown>) -> Option<Uuid> {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the spawn reached the daemon")?;
+        let DaemonFrameDown::Command { command, .. } = frame else { return None };
+        let cctui_proto::adapter::AdapterCommand::Spawn { command_id, .. } = *command else {
+            return None;
+        };
+        command_id
+    }
+
+    async fn daemon_owner(pool: &PgPool, machine: Uuid) -> Option<String> {
+        sqlx::query_scalar("SELECT pod FROM ws_presence WHERE kind = 'daemon' AND entity_id = $1")
+            .bind(machine)
+            .fetch_optional(pool)
+            .await
+            .unwrap()
+    }
+
+    /// Two replicas share one database; the daemon's WS lives on A and the
+    /// spawn lands on B. B forwards to A through the owner row, and once that
+    /// row is lost while the connection lives on, B's probe still reaches A,
+    /// which restores its row.
+    #[tokio::test]
+    async fn a_spawn_on_the_replica_without_the_daemon_reaches_it() {
+        let Some(pool) = presence_pool().await else { return };
+        let ip_a = "127.0.0.47";
+        let pod_a = format!("cct1747-a-{}", Uuid::new_v4().simple());
+        let (replica_a, port_a) = route_replica(&pool, &pod_a, ip_a).await;
+        let machine = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel(8);
+        replica_a.bus.register_daemon(machine, Uuid::new_v4(), tx);
+        crate::presence::register(&replica_a, Kind::Daemon, machine).await;
+
+        let bus_b = crate::bus::Bus::new(Box::new(PeerHttpTransport::new(
+            pool.clone(),
+            crate::build_http_client(),
+            format!("cct1747-b-{}", Uuid::new_v4().simple()),
+            port_a,
+            "cct1747".into(),
+        )));
+        let pending = dashmap::DashMap::new();
+        let waiters: cctui_server_core::commands::CommandWaiters = Arc::default();
+        let launch = async |spawn: cctui_server_core::launch::MachineSpawn| {
+            cctui_server_core::launch::launch_machine(&bus_b, &pending, &waiters, spawn).await
+        };
+
+        let spawn = top_level_spawn(machine);
+        let command = spawn.command_id;
+        launch(spawn).await.expect("spawn via the owner row");
+        assert_eq!(spawned_command(&mut rx).await, Some(command));
+
+        sqlx::query("DELETE FROM ws_presence WHERE entity_id = $1")
+            .bind(machine)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO pods (pod, pod_ip, started_at, heartbeat_at) \
+             VALUES ($1, $2, now(), now())",
+        )
+        .bind(&pod_a)
+        .bind(ip_a)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let spawn = top_level_spawn(machine);
+        let command = spawn.command_id;
+        let probed = launch(spawn).await;
+
+        sqlx::query("DELETE FROM pods WHERE pod = $1").bind(&pod_a).execute(&pool).await.unwrap();
+        let restored = daemon_owner(&pool, machine).await;
+        sqlx::query("DELETE FROM ws_presence WHERE entity_id = $1")
+            .bind(machine)
+            .execute(&pool)
+            .await
+            .unwrap();
+        probed.expect("spawn via the probe with no owner row");
+        assert_eq!(spawned_command(&mut rx).await, Some(command));
+        assert_eq!(restored, Some(pod_a), "the probed replica restores its presence row");
+    }
+
+    async fn count_for_session(pool: &PgPool, sql: &'static str, session: &str) -> i64 {
+        sqlx::query_scalar(sql).bind(session).fetch_one(pool).await.unwrap()
+    }
+
+    /// A user owning dispatcher `name` whose connection announced the dedup check.
+    async fn seed_announced_dispatcher(pool: &PgPool, uid: Uuid, dispatcher: Uuid, name: &str) {
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $2)")
+            .bind(uid)
+            .bind(name)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO dispatchers (id, user_id, name, kind, features) \
+             VALUES ($1, $2, $3, 'kubernetes', $4)",
+        )
+        .bind(dispatcher)
+        .bind(uid)
+        .bind(name)
+        .bind(vec![cctui_proto::ws::DISPATCHER_FEATURE_DEDUP_CHECK.to_owned()])
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// The dispatcher's WS lives on A and the dispatch lands on B. B reads the
+    /// announced check from the shared dispatcher row, asks A over the route,
+    /// and answers `deduplicated` before minting, registering or recording.
+    #[tokio::test]
+    async fn a_dispatch_on_the_replica_without_the_dispatcher_is_deduplicated_before_any_prep() {
+        use cctui_server_core::auth::{AuthContext, Scope};
+        use cctui_server_core::dispatch::execute_dispatch;
+        let Some(pool) = presence_pool().await else { return };
+        let pod_a = format!("cct1749-a-{}", Uuid::new_v4().simple());
+        let (replica_a, port_a) = route_replica(&pool, &pod_a, "127.0.0.49").await;
+        let (uid, dispatcher) = (Uuid::new_v4(), Uuid::new_v4());
+        let name = format!("cct1749-{}", dispatcher.simple());
+        seed_announced_dispatcher(&pool, uid, dispatcher, &name).await;
+        let (tx, mut rx) = mpsc::channel(8);
+        replica_a.bus.register_dispatcher(dispatcher, tx);
+        presence::register(&replica_a, Kind::Dispatcher, dispatcher).await;
+        let bus_a = replica_a.bus.clone();
+        let fake = tokio::spawn(async move {
+            let Some(DispatcherFrameDown::DedupCheck { request_id, spec }) = rx.recv().await else {
+                return None;
+            };
+            let reply = DispatcherFrameUp::DedupCheckResult {
+                request_id,
+                handle: Some("jobs/worker/first-session".into()),
+                namespace: Some("cctui".into()),
+                queue_position: None,
+                exposure: None,
+                error: None,
+            };
+            assert!(bus_a.resolve_dispatcher_reply(request_id, reply));
+            spec.dedup_key
+        });
+
+        let mut replica_b = crate::state::AppState::for_test(pool.clone());
+        replica_b.bus = crate::bus::Bus::new(Box::new(PeerHttpTransport::new(
+            pool.clone(),
+            crate::build_http_client(),
+            format!("cct1749-b-{}", Uuid::new_v4().simple()),
+            port_a,
+            "cct1747".into(),
+        )));
+        let ctx = AuthContext {
+            user_id: uid,
+            key_id: Uuid::new_v4(),
+            machine_id: None,
+            scopes: [Scope::Read, Scope::Dispatch].into_iter().collect(),
+        };
+        let request = cctui_proto::api::DispatchRequest {
+            dispatcher: name.clone(),
+            session_id: Some("cct1749-logical".into()),
+            timeout: Some(1),
+            reply_url: None,
+            notify_url: None,
+            notify_secret: None,
+            payload: serde_json::json!({"prompt_file": "review"}),
+            account: None,
+            provider: None,
+            accounts: Vec::new(),
+        };
+        let outcome = execute_dispatch(&replica_b, &ctx, request).await;
+        let asked = tokio::time::timeout(std::time::Duration::from_secs(5), fake).await;
+
+        let session = outcome.as_ref().map(|(_, r)| r.session_id.clone()).unwrap_or_default();
+        let keys = "SELECT count(*) FROM auth_keys WHERE session_id = $1";
+        let records = "SELECT count(*) FROM dispatch_records WHERE session_id = $1";
+        let handles = "SELECT count(*) FROM dispatch_handles WHERE session_id = $1";
+        let left = [
+            count_for_session(&pool, keys, &session).await,
+            count_for_session(&pool, records, &session).await,
+            count_for_session(&pool, handles, &session).await,
+        ];
+        sqlx::query("DELETE FROM ws_presence WHERE entity_id = $1")
+            .bind(dispatcher)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM dispatchers WHERE id = $1")
+            .bind(dispatcher)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.unwrap();
+
+        let (status, axum::Json(reply)) =
+            outcome.unwrap_or_else(|(code, e)| panic!("dispatch refused ({code}): {}", e.error));
+        assert_eq!(status, axum::http::StatusCode::ACCEPTED);
+        assert_eq!(reply.status, "deduplicated");
+        assert_eq!(reply.handle, "jobs/worker/first-session");
+        assert_eq!(
+            asked.expect("A's dispatcher was asked").unwrap().as_deref(),
+            Some("cct1749-logical")
+        );
+        assert_eq!(left, [0, 0, 0], "no worker key, record or handle row for the session");
     }
 
     #[tokio::test]

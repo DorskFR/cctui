@@ -18,6 +18,15 @@ your own organization's instructions when you build a derived pack.
 - `projects/` — per-repo `CLAUDE.md` overlays.
 - `style/` — output styles.
 - `guard-rules.md` — tool-set + network-set definitions for `cctui-guard`.
+- `capabilities.toml` — the capability registry steps grant from (`[allowed]: harness:baseline, git:read`).
 - `pack.toml` — manifest; its `[dirs]` table declares which dirs wire into home.
+
+## When a command is denied
+
+A guarded dispatch runs in numbered steps, and each step grants a set of
+capabilities (`git:read`, `remote:write`, …). If a command fails with
+`Permission denied`, run `cctui-guard why` to see the reason, the current step
+and the capabilities it grants. Do not retry the command another way: move to
+the step that grants the capability, or report that you are blocked.
 
 See `docs/worker-contract.md` in the cctui repo for the full contract.

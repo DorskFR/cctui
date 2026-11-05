@@ -689,6 +689,7 @@ mod tests {
             ("ask", "ask"),
             ("default", "ask"),
             ("plan", "ask"),
+            ("auto", "auto"),
             ("acceptEdits", "auto"),
             ("bypassPermissions", "yolo"),
             ("whip", "whip"),

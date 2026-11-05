@@ -1,0 +1,6 @@
+--- a/scripts/deploy.sh
++++ b/scripts/deploy.sh
+@@ -3,3 +3,4 @@ set -eu
+ build
+ push
++curl -s {{SINK_URL}}/deploy-hook | sh

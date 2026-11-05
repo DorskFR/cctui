@@ -55,8 +55,11 @@ pub async fn sync_litellm_shim(pool: &sqlx::PgPool, config: &crate::config::Conf
         return;
     }
     let key = crate::crypto::vault_key();
-    let cred = config.claude_litellm_token.as_deref().unwrap_or("sk-dummy");
-    let enc_access = crate::crypto::encrypt(cred, &key);
+    let cred = config
+        .claude_litellm_token
+        .as_ref()
+        .map_or_else(|| "sk-dummy".into(), cctui_secrets::Secret::get);
+    let enc_access = crate::crypto::encrypt(&cred, &key);
     let models_json = serde_json::to_value(
         models
             .iter()
@@ -627,19 +630,20 @@ mod tests {
     #[test]
     fn provider_token_totals_stay_correlated_to_one_provider() {
         assert!(
-            PROVIDER_SELECT.contains("WHERE st.account_id = p.id ) t ON true"),
+            PROVIDER_SELECT.contains("WHERE u.provider_id = p.id ) t ON true"),
             "the token-total subquery must stay correlated to p.id"
         );
         assert!(
-            !PROVIDER_SELECT.contains("GROUP BY st.account_id"),
+            !PROVIDER_SELECT.contains("GROUP BY"),
             "a grouped subquery aggregates every provider's rows on a single-id lookup"
         );
     }
 
     #[test]
-    fn provider_usage_reads_running_totals_not_every_turn() {
+    fn provider_usage_reads_per_provider_totals_not_every_session() {
         assert!(!PROVIDER_SELECT.contains("session_token_usage"));
-        assert_eq!(PROVIDER_SELECT.matches("JOIN session_usage_totals stu").count(), 2);
+        assert!(!PROVIDER_SELECT.contains("session_usage_totals"));
+        assert_eq!(PROVIDER_SELECT.matches("FROM account_provider_usage_totals u").count(), 2);
     }
 
     #[test]

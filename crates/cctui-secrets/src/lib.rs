@@ -5,11 +5,13 @@
 //! redacts `Debug` so values never reach logs, and an engine failure is
 //! `SecretError::Backend` — distinct from `NotFound` — so callers fail closed
 //! instead of using a blank secret. A fetch past TTL re-reads the engine, so
-//! store-side rotation lands within one TTL.
+//! store-side rotation lands within one TTL; if that re-read hits a backend
+//! failure the last good value stays in use, while `NotFound` drops it.
 //!
 //! Config values go through [`SecretValue`]: a value starting with one of
 //! [`SCHEMES`] is a ref, anything else is a literal, and a `literal:` prefix
-//! forces the rest to be taken verbatim.
+//! forces the rest to be taken verbatim. Values resolved at startup that must
+//! follow a rotation live in a [`SecretRegistry`].
 //!
 //! The `bao`, `k8s` and `aws-sm` engines are cargo features; a ref to an engine
 //! that is not compiled in fails as `Backend`. The HTTP engines expect the
@@ -21,6 +23,14 @@ mod aws;
 mod bao;
 #[cfg(feature = "k8s")]
 mod k8s;
+mod reload;
+#[cfg(all(
+    any(test, feature = "test-support"),
+    feature = "bao",
+    feature = "k8s",
+    feature = "aws-sm"
+))]
+pub mod testing;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -35,6 +45,9 @@ pub use aws::AwsSecretsManager;
 pub use bao::VaultClient;
 #[cfg(feature = "k8s")]
 pub use k8s::K8sClient;
+pub use reload::{
+    ReloadReport, Secret, SecretRegistry, Sighup, TTL_ENV, TTL_ENV_PREFIX, TtlLookup,
+};
 
 /// Prefixes that make a config value a [`SecretRef`].
 pub const SCHEMES: [&str; 6] = ["env:", "file:", "vault:", "bao:", "aws-sm:", "k8s:"];
@@ -73,8 +86,8 @@ pub enum SecretError {
     /// as credential-less.
     #[error("secret not found: {what}")]
     NotFound { what: String },
-    /// The engine failed. The caller must fail closed — never use a blank or
-    /// stale-beyond-TTL secret.
+    /// The engine failed. The caller must fail closed — never use a blank
+    /// secret.
     #[error("secret backend failure: {0}")]
     Backend(anyhow::Error),
 }
@@ -220,6 +233,7 @@ pub struct SecretSource {
 
 struct CacheEntry {
     fetched_at: Instant,
+    reference: SecretRef,
     credential: Credential,
 }
 
@@ -237,20 +251,82 @@ impl SecretSource {
         {
             return Ok(entry.credential.clone());
         }
-        match self.resolver.resolve(r).await {
-            Ok(credential) => {
-                cache.insert(
-                    key,
-                    CacheEntry { fetched_at: Instant::now(), credential: credential.clone() },
+        let result = self.resolver.resolve(r).await;
+        let out = settle(&mut cache, key, r, result);
+        drop(cache);
+        out
+    }
+
+    /// Re-resolves every cached ref now, as a TTL expiry would.
+    pub async fn refresh_all(&self) -> ReloadReport {
+        let mut cache = self.cache.lock().await;
+        let refs: Vec<(String, SecretRef)> =
+            cache.iter().map(|(k, e)| (k.clone(), e.reference.clone())).collect();
+        let mut report = ReloadReport::default();
+        for (key, r) in refs {
+            let before = cache.get(&key).map(|e| e.credential.value.clone());
+            let result = self.resolver.resolve(&r).await;
+            let resolved = result.is_ok();
+            match settle(&mut cache, key, &r, result) {
+                Ok(c) if resolved && before.as_deref() != Some(c.expose()) => report.changed += 1,
+                Ok(_) if resolved => report.unchanged += 1,
+                _ => report.failed += 1,
+            }
+        }
+        drop(cache);
+        report
+    }
+
+    /// Runs [`Self::refresh_all`] on every SIGHUP until the runtime stops.
+    pub fn spawn_sighup_refresh(self: &std::sync::Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let source = std::sync::Arc::clone(self);
+        let mut hup = Sighup::new();
+        tokio::spawn(async move {
+            loop {
+                hup.recv().await;
+                let report = source.refresh_all().await;
+                tracing::info!(?report, "SIGHUP: cached secrets refreshed");
+            }
+        })
+    }
+}
+
+/// Applies one engine answer to the cache. A backend failure keeps serving the
+/// previous value (retried after another TTL); `NotFound` drops it.
+fn settle(
+    cache: &mut HashMap<String, CacheEntry>,
+    key: String,
+    r: &SecretRef,
+    result: Result<Credential, SecretError>,
+) -> Result<Credential, SecretError> {
+    match result {
+        Ok(credential) => {
+            cache.insert(
+                key,
+                CacheEntry {
+                    fetched_at: Instant::now(),
+                    reference: r.clone(),
+                    credential: credential.clone(),
+                },
+            );
+            Ok(credential)
+        }
+        Err(SecretError::Backend(e)) => match cache.get_mut(&key) {
+            Some(entry) => {
+                tracing::warn!(
+                    reference = %r,
+                    "secret refresh failed, keeping the previous value: {e:#}"
                 );
-                Ok(credential)
+                entry.fetched_at = Instant::now();
+                Ok(entry.credential.clone())
             }
-            Err(e) => {
-                // Fail closed: drop any expired entry rather than serving it.
-                cache.remove(&key);
-                drop(cache);
-                Err(e)
+            None => Err(SecretError::Backend(e)),
+        },
+        Err(e) => {
+            if cache.remove(&key).is_some() {
+                tracing::warn!(reference = %r, "cached secret dropped: {e}");
             }
+            Err(e)
         }
     }
 }

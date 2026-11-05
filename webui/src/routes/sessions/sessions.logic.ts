@@ -577,6 +577,40 @@ export function sessionHrefFor(currentHref: string, id: string | null): string |
 	return url.href === currentHref ? null : url.href;
 }
 
+// History state the sessions page keeps on its own entries: `fromList` marks
+// an entry pushed on top of the list, `spawned` an id a spawn just handed over.
+export interface SessionNavState {
+	fromList?: boolean;
+	spawned?: string;
+}
+export const sessionNavState = (state: unknown): SessionNavState =>
+	(state ?? {}) as SessionNavState;
+
+export type UrlSync = 'push' | 'replace' | 'back';
+
+// How the address bar follows the open session. Opening one from the list
+// pushes a single entry; switching sessions replaces it; closing pops back to
+// the list entry when this one was pushed from it. `quiet` opens (restoring
+// the docked conversation) never add an entry.
+export function urlSyncFor(a: {
+	to: string | null;
+	urlId: string | null;
+	fromList: boolean;
+	quiet: boolean;
+}): UrlSync | null {
+	if (a.to === a.urlId) return null;
+	if (a.to === null) return a.fromList ? 'back' : 'replace';
+	return a.urlId === null && !a.quiet ? 'push' : 'replace';
+}
+
+// The live address with the `?view=` override dropped, or null when it has none.
+export function withoutViewParam(href: string): string | null {
+	const url = new URL(href);
+	if (!url.searchParams.has('view')) return null;
+	url.searchParams.delete('view');
+	return url.href;
+}
+
 // Freshest object for the open drawer: refetches churn the object, so prefer a
 // live copy from the loaded pools, else the fallback already held.
 export function pickFreshSession(
@@ -657,6 +691,28 @@ export function bucketInSection(key: GroupKey, sections: Set<Section>): boolean 
 	if (key === 'pinned') return sections.has('starred');
 	if (key === 'dispatched') return sections.has('dispatched');
 	return sections.has('live');
+}
+
+// Which list sections render: each enabled section only when it has rows,
+// `null` meaning the section is filtered out. The archive is paged, so it
+// still counts while its first page loads, more pages remain or it failed.
+export interface SectionVisibilityInput {
+	groups: { key: string; count: number }[];
+	drafts: number | null;
+	archived: { rows: number; loading: boolean; more: boolean; error: boolean } | null;
+}
+export interface SectionVisibility {
+	groups: Set<string>;
+	drafts: boolean;
+	archived: boolean;
+	empty: boolean;
+}
+export function sectionVisibility(i: SectionVisibilityInput): SectionVisibility {
+	const groups = new Set(i.groups.filter((g) => g.count > 0).map((g) => g.key));
+	const drafts = (i.drafts ?? 0) > 0;
+	const a = i.archived;
+	const archived = !!a && (a.rows > 0 || a.loading || a.more || a.error);
+	return { groups, drafts, archived, empty: groups.size === 0 && !drafts && !archived };
 }
 
 // ── Draft payload + spawn prefills ─────────────────────────────────

@@ -106,8 +106,11 @@ pub async fn run() -> anyhow::Result<()> {
         env!("CARGO_PKG_VERSION"),
         "cctui_server=info,sqlx::query=warn",
     );
-    let (config, pool, auth_config, migrations) = bootstrap().await?;
-    let state = build_state(&config, pool, auth_config.clone()).await?;
+    let secrets = Arc::new(cctui_secrets::SecretRegistry::from_env());
+    let (config, pool, auth_config, migrations) = bootstrap(&secrets).await?;
+    let state = build_state(&config, pool, auth_config.clone(), &secrets).await?;
+    follow_database_url(&secrets, &state.pool);
+    secrets.spawn_reloader();
     record_boot_events(&state, &migrations);
     plugin_store::init(&state.pool, &state.plugins).await;
     plugin_host_token::reconcile_installed(&state.pool, &state.auth_config, &state.plugins).await;
@@ -130,12 +133,16 @@ fn check_plugin_archive(args: &[String]) -> anyhow::Result<()> {
 use cctui_server_core::client::{build_http_client, install_crypto_provider};
 use cctui_server_core::dispatch_identity;
 
-async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig, Vec<i64>)> {
-    if let Err(e @ cctui_crypto::KeyError::InvalidHex(_)) = cctui_crypto::vault_key_checked() {
+async fn bootstrap(
+    secrets: &cctui_secrets::SecretRegistry,
+) -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig, Vec<i64>)> {
+    if let Err(e @ (cctui_crypto::KeyError::InvalidHex(_) | cctui_crypto::KeyError::Ref(_))) =
+        cctui_crypto::vault_key_checked()
+    {
         anyhow::bail!("refusing to start: {e}");
     }
 
-    let config = Config::from_env().await?;
+    let config = Config::from_env(secrets).await?;
     let (pool, migrations) = db::connect_reporting(&config.database_url).await?;
     install_vault_key(&pool).await?;
     // One-release back-compat shim: if the retired
@@ -143,12 +150,34 @@ async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig, 
     // anthropic-compatible account per user so existing deployments keep working
     // until they migrate to first-class accounts.
     routes::accounts::sync_litellm_shim(&pool, &config).await;
-    let auth_config = auth::AuthConfig::new(Config::admin_tokens().await?, pool.clone());
+    follow_litellm_token(&pool, &config);
+    let admin_tokens = Config::admin_tokens(secrets).await?;
+    let auth_config = auth::AuthConfig::new(
+        admin_tokens.as_ref().map_or_else(Vec::new, |s| auth::parse_admin_tokens(&s.get())),
+        pool.clone(),
+    );
     // resolve CCTUI_ADMIN_TOKENS to a seeded admin user + api_keys rows
     // with {admin} ceiling/grant, so the break-glass token is a real identity
     // rather than a user_id=None ghost. Idempotent, best-effort.
     auth_config.seed_admin().await;
+    if let Some(admin) = &admin_tokens {
+        auth_config.follow_admin_tokens(admin.subscribe());
+    }
     Ok((config, pool, auth_config, migrations))
+}
+
+/// Re-runs the litellm shim when its token rotates, so the managed providers
+/// carry the new credential.
+fn follow_litellm_token(pool: &sqlx::PgPool, config: &Config) {
+    let Some(token) = &config.claude_litellm_token else { return };
+    let mut changes = token.subscribe();
+    let (pool, config) = (pool.clone(), config.clone());
+    tokio::spawn(async move {
+        while changes.changed().await.is_ok() {
+            routes::accounts::sync_litellm_shim(&pool, &config).await;
+            tracing::info!("CCTUI_CLAUDE_LITELLM_TOKEN rotated; managed providers updated");
+        }
+    });
 }
 
 /// Boot rows: `system.server_started` always, `system.migrations_applied` when some ran.
@@ -189,12 +218,39 @@ async fn install_vault_key(pool: &sqlx::PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// New pool connections use a rotated `DATABASE_URL`; open ones keep their
+/// session until the pool recycles them.
+fn follow_database_url(secrets: &cctui_secrets::SecretRegistry, pool: &sqlx::PgPool) {
+    let Some(url) = secrets.get("DATABASE_URL") else { return };
+    let mut changes = url.subscribe();
+    let pool = pool.clone();
+    tokio::spawn(async move {
+        while changes.changed().await.is_ok() {
+            let url = changes.borrow_and_update().clone();
+            apply_database_url(&pool, &url);
+        }
+    });
+}
+
+fn apply_database_url(pool: &sqlx::PgPool, url: &str) {
+    if let Ok(options) = db::connect_options(url) {
+        pool.set_connect_options(options);
+        tracing::info!("DATABASE_URL rotated; new pool connections use it");
+    } else {
+        tracing::warn!("rotated DATABASE_URL does not parse; keeping the previous one");
+    }
+}
+
 async fn build_state(
     config: &Config,
     pool: sqlx::PgPool,
     auth_config: auth::AuthConfig,
+    secrets: &cctui_secrets::SecretRegistry,
 ) -> anyhow::Result<AppState> {
     let skills = init_skill_store().await;
+    let langfuse = langfuse::LangfuseConfig::from_env(secrets)
+        .await?
+        .map(|c| Arc::new(langfuse::LangfuseClient::new(c, build_http_client())));
     let dispatchers = init_dispatchers(config);
 
     let presence = Arc::new(presence::PodIdentity::from_env());
@@ -245,8 +301,7 @@ async fn build_state(
         internal_secret,
         // Optional Langfuse tracing sink. `None` (dark) unless the
         // CCTUI_LANGFUSE_* env is fully set — zero overhead on the gateway path.
-        langfuse: langfuse::LangfuseConfig::from_env()
-            .map(|c| Arc::new(langfuse::LangfuseClient::new(c, build_http_client()))),
+        langfuse,
         pending_oauth_logins: Arc::new(dashmap::DashMap::new()),
         pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
         codex_catalogs: Arc::new(dashmap::DashMap::new()),
@@ -499,6 +554,7 @@ fn outer_routes() -> Router<AppState> {
         .route("/api/v1/dispatch/register", post(dispatch_identity::register::<AppState>))
         .route("/api/v1/dispatch/redeem", post(dispatch_identity::redeem::<AppState>))
         .route("/api/v1/dispatch/{id}/env", get(dispatch_identity::env::<AppState>))
+        .route("/api/v1/dispatch/{id}/hold", post(dispatch_identity::hold::<AppState>))
         .route("/api/v1/triggers/{kind}", post(routes::triggers::ingest))
         // OAuth passthrough gateway. Auths via the session-scoped
         // token in the request's own Authorization header — NOT the user-token
@@ -754,10 +810,10 @@ fn init_dispatchers(config: &Config) -> Arc<dispatchers::Registry> {
 
     for d in config.http_dispatchers.iter().chain(config.dispatchers.iter()) {
         tracing::info!(id = %d.id, url = %d.url, "http dispatcher registered");
-        registry = registry.with(Arc::new(dispatchers::http::HttpDispatcher::new(
+        registry = registry.with(Arc::new(dispatchers::http::HttpDispatcher::reloadable(
             &d.id,
             &d.url,
-            d.token.clone(),
+            d.bearer.as_ref().map(cctui_secrets::Secret::subscribe),
             build_http_client(),
         )));
     }
@@ -873,6 +929,9 @@ fn spawn_reaper_sweeps(state: &AppState) {
     spawn_sweep(state, |state| async move { spawn_labels::sweep(&state.pool).await });
     spawn_sweep(state, |state| async move { usage_history::sweep(&state) });
     spawn_sweep(state, |state| async move { followup::sweep(&state.pool).await });
+    spawn_sweep(state, |state| async move {
+        cctui_server_core::machine_policy::purge_spawner_intents(&state.pool).await;
+    });
     spawn_sweep(state, |state| async move {
         reap_ephemeral_machines(&state).await;
         reap_ephemeral_keys(&state).await;
@@ -1170,11 +1229,14 @@ mod tests {
             r#"GET /machines/{machine_id}/status Bearer Resource(Machine, Read, Path("machine_id"))"#,
             "GET /manifest/daemon Bearer Authenticated",
             "GET /me Bearer Authenticated",
+            "GET /me/hidden-owners Bearer Scope(Admin)",
+            "DELETE /me/hidden-owners/{kind}/{target_id} Bearer Scope(Admin)",
+            "PUT /me/hidden-owners/{kind}/{target_id} Bearer Scope(Admin)",
             "DELETE /me/key Bearer Authenticated",
             "GET /meta/usage-probes Bearer Authenticated",
             "GET /models/codex/catalog Bearer Authenticated",
             "GET /models/{harness} Bearer Authenticated",
-            "POST /otlp/v1/traces Bearer Authenticated",
+            "POST /otlp/v1/traces Bearer Human",
             "GET /passkeys Bearer Authenticated",
             "POST /passkeys/register/finish Bearer Authenticated",
             "POST /passkeys/register/start Bearer Authenticated",
@@ -1248,6 +1310,7 @@ mod tests {
             r#"POST /sessions/{id}/fork Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/guard Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/guard/transition Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/hook-policy Bearer Resource(Session, Read, Path("id"))"#,
             r#"GET /sessions/{id}/images/{image_id} Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/interrupt Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/keepalive Bearer Resource(Session, Write, Path("id"))"#,
@@ -1282,6 +1345,8 @@ mod tests {
             r#"POST /sessions/{id}/set-model Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/switch-account Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/thread Bearer Resource(Session, Read, Path("id"))"#,
+            r#"GET /sessions/{id}/tool-guard Bearer Resource(Session, Write, Path("id"))"#,
+            r#"PUT /sessions/{id}/tool-guard Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/unarchive Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/unpin Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/user-actions Bearer Resource(Session, Read, Path("id"))"#,
@@ -1449,5 +1514,63 @@ mod http_tracing_tests {
             .to_ascii_lowercase();
         assert!(allowed.contains("traceparent"), "{allowed}");
         assert!(allowed.contains("tracestate"), "{allowed}");
+    }
+}
+
+#[cfg(test)]
+mod secret_reload_tests {
+    use std::time::Duration;
+
+    use sqlx::postgres::PgPoolOptions;
+
+    use super::{apply_database_url, follow_database_url};
+    use crate::config::test_refs::map_registry;
+
+    #[tokio::test]
+    async fn database_url_rotation_updates_the_pool_connect_config() {
+        let pool = PgPoolOptions::new().connect_lazy("postgres://old:pw@db-old:5432/app").unwrap();
+        apply_database_url(&pool, "postgres://new:pw2@db-new:6432/app2");
+        let options = pool.connect_options();
+        assert_eq!(options.get_username(), "new");
+        assert_eq!(options.get_host(), "db-new");
+        assert_eq!(options.get_port(), 6432);
+        assert_eq!(options.get_database(), Some("app2"));
+
+        apply_database_url(&pool, "not a url ::");
+        assert_eq!(pool.connect_options().get_host(), "db-new", "a bad URL keeps the old config");
+    }
+
+    #[tokio::test]
+    async fn the_slow_query_threshold_survives_a_database_url_rotation() {
+        let pool = PgPoolOptions::new().connect_lazy("postgres://old:pw@db-old:5432/app").unwrap();
+        apply_database_url(&pool, "postgres://new:pw2@db-new:6432/app2");
+        let shown = format!("{:?}", pool.connect_options());
+        let want = Duration::from_millis(u64::from(crate::db::slow_query_ms()));
+        assert!(shown.contains("slow_statements_level: Warn"), "{shown}");
+        assert!(shown.contains(&format!("slow_statements_duration: {want:?}")), "{shown}");
+    }
+
+    #[tokio::test]
+    async fn database_url_ref_rotation_reaches_the_pool_config_and_failure_keeps_it() {
+        let (map, registry) = map_registry("postgres://u1:p1@db1/app");
+        let url = registry.register("DATABASE_URL", "k8s:dev/cctui#value").await.unwrap();
+        let pool = PgPoolOptions::new().connect_lazy(&url.get()).unwrap();
+        follow_database_url(&registry, &pool);
+
+        map.set(Some("postgres://u2:p2@db2/app"));
+        registry.reload().await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while pool.connect_options().get_host() != "db2" {
+            assert!(tokio::time::Instant::now() < deadline, "pool never saw the rotation");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(pool.connect_options().get_username(), "u2");
+
+        map.set(None);
+        let report = registry.reload().await;
+        assert_eq!(report.failed, 1);
+        tokio::task::yield_now().await;
+        assert_eq!(pool.connect_options().get_host(), "db2");
+        assert_eq!(&*url.get(), "postgres://u2:p2@db2/app");
     }
 }

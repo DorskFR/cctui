@@ -11,19 +11,21 @@
 //! 2. sandbox-defeating footguns on the worker/pod;
 //! 3. profile conformance — the pod is exactly what the dispatcher + mutating
 //!    webhook would legitimately produce from the named profile, the
-//!    profile's `spec.guard` only tunes the guard-proxy within its rules, and
-//!    nothing in the profile contradicts its `spec.posture`.
+//!    profile's `spec.guard` only tunes the guard-proxy within its rules,
+//!    nothing in the profile contradicts its `spec.posture`, and a profile
+//!    exposed to all three Rule of Two legs names a `spec.humanGate`.
 
 use crate::envelope::{
-    GUARD_PROXY_CONTAINER, NET_INIT_CONTAINER, PROXY_UID, VOL_GPG_AGENT, VOL_GUARD_PROXY_CA,
-    VOL_GUARD_PROXY_INJECT, VOL_GUARD_PROXY_SA_TOKEN, VOL_GUARD_STATE, VOL_HOME, VOL_OVERLAY,
-    VOL_PROXY_POLICY, WARM_REPO_DIR_ENV, WORKER_UID, has_overlay, worker_added_caps,
-    worker_envelope_mounts,
+    GUARD_ENV_HUMAN_GATE, GUARD_PROXY_CONTAINER, NET_INIT_CONTAINER, PROXY_UID, VOL_GPG_AGENT,
+    VOL_GUARD_PROXY_CA, VOL_GUARD_PROXY_INJECT, VOL_GUARD_PROXY_SA_TOKEN, VOL_GUARD_STATE,
+    VOL_HOME, VOL_OVERLAY, VOL_PROXY_POLICY, WARM_REPO_DIR_ENV, WORKER_UID, has_overlay,
+    worker_added_caps, worker_envelope_mounts,
 };
 use crate::{
     ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_POSTURE, ANNOTATION_WORKER_CONTAINER,
-    DEFAULT_WORKER_CONTAINER, GuardSpec, LABEL_WORKER_PROFILE, Posture, RESERVED_POD_KEY_PREFIXES,
-    RESERVED_POD_LABELS, WorkerPodSpec, WorkerProfileSpec,
+    DEFAULT_WORKER_CONTAINER, EXEC_INTERCEPTION_CAP, GUARD_EXEC_ENV, GuardSpec, HumanGate,
+    LABEL_WORKER_PROFILE, Posture, RESERVED_POD_KEY_PREFIXES, RESERVED_POD_LABELS, WorkerPodSpec,
+    WorkerProfileSpec,
 };
 use k8s_openapi::api::core::v1::{
     Affinity, Container, NodeSelectorTerm, Pod, PodSpec, PodTemplateSpec, SecurityContext,
@@ -78,22 +80,53 @@ fn is_injected(pod: &Pod) -> bool {
         .is_some_and(|a| a.get(ANNOTATION_ENVELOPE_INJECTED).map(String::as_str) == Some("true"))
 }
 
-/// Validate a pod against the guardrails, resolving its profile via `source`.
-pub async fn validate(pod: &Pod, namespace: &str, source: &dyn ProfileSource) -> Decision {
-    if !is_eligible(pod) {
-        return Decision::Allow;
-    }
-    match validate_inner(pod, namespace, source).await {
-        Ok(()) => Decision::Allow,
-        Err(msg) => Decision::Deny(msg),
+/// A [`Decision`] plus the admission warnings returned to the API client.
+pub struct Verdict {
+    pub decision: Decision,
+    pub warnings: Vec<String>,
+    /// The admitted pod's profile sets no `spec.exposure`.
+    pub exposure_undeclared: bool,
+}
+
+impl Verdict {
+    const fn decided(decision: Decision) -> Self {
+        Self { decision, warnings: Vec::new(), exposure_undeclared: false }
     }
 }
 
+/// Admission warning for a pod whose profile sets no `spec.exposure`.
+pub const EXPOSURE_UNDECLARED: &str = "exposure undeclared";
+
+/// Validate a pod against the guardrails, resolving its profile via `source`.
+pub async fn validate(pod: &Pod, namespace: &str, source: &dyn ProfileSource) -> Decision {
+    review(pod, namespace, source).await.decision
+}
+
+/// [`validate`], keeping the warnings an admitted pod carries.
+pub async fn review(pod: &Pod, namespace: &str, source: &dyn ProfileSource) -> Verdict {
+    if !is_eligible(pod) {
+        return Verdict::decided(Decision::Allow);
+    }
+    match validate_inner(pod, namespace, source).await {
+        Ok(false) => Verdict::decided(Decision::Allow),
+        Ok(true) => Verdict {
+            decision: Decision::Allow,
+            warnings: vec![format!(
+                "WorkerProfile `{}`: {EXPOSURE_UNDECLARED}, set spec.exposure",
+                profile_name(pod).unwrap_or_default()
+            )],
+            exposure_undeclared: true,
+        },
+        Err(msg) => Verdict::decided(Decision::Deny(msg)),
+    }
+}
+
+/// `Ok(true)` admits a pod whose profile declares no exposure.
 async fn validate_inner(
     pod: &Pod,
     namespace: &str,
     source: &dyn ProfileSource,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let worker_name = worker_container_name(pod).to_owned();
     let spec = pod.spec.as_ref().ok_or_else(|| "profiled pod has no spec".to_owned())?;
 
@@ -121,8 +154,35 @@ async fn validate_inner(
             .map_err(|e| format!("WorkerProfile `{name}` spec.pod: {e}"))?;
     }
     check_posture(&profile).map_err(|e| format!("WorkerProfile `{name}` spec.posture: {e}"))?;
+    check_exec_capability(worker, &worker_name, &profile)
+        .map_err(|e| format!("WorkerProfile `{name}`: {e}"))?;
+    let undeclared = check_exposure(&profile)
+        .map_err(|e| format!("WorkerProfile `{name}` spec.exposure: {e}"))?;
     check_posture_annotation(annotations, &profile)?;
-    check_conformance(spec, worker, &worker_name, &profile)
+    check_conformance(spec, worker, &worker_name, &profile)?;
+    Ok(undeclared)
+}
+
+/// Refuse a profile whose agent holds untrusted input, sensitive data and
+/// outward action at once without an enforced human gate. `Ok(true)` means the
+/// profile declares no exposure.
+pub fn check_exposure(profile: &WorkerProfileSpec) -> Result<bool, String> {
+    match (profile.exposure, profile.human_gate) {
+        (None, _) => Ok(true),
+        (Some(exposure), None) if exposure.is_full() => {
+            Err("untrustedInput, sensitiveData and outward are all true with no spec.humanGate; \
+             an unattended agent may hold at most two of the three: set humanGate \
+             (noPush or draftPrOnly) or drop one exposure"
+                .to_owned())
+        }
+        (Some(exposure), Some(HumanGate::OutwardHeldForApproval)) if exposure.is_full() => {
+            Err("humanGate outwardHeldForApproval is not enforced yet, so it cannot bound \
+             untrustedInput, sensitiveData and outward together: use noPush or draftPrOnly, \
+             or drop one exposure"
+                .to_owned())
+        }
+        _ => Ok(false),
+    }
 }
 
 fn annotated_posture(annotations: Option<&BTreeMap<String, String>>) -> Result<Posture, String> {
@@ -160,6 +220,13 @@ pub fn check_posture(profile: &WorkerProfileSpec) -> Result<(), String> {
     if profile.posture() == Posture::Root {
         return Ok(());
     }
+    if profile.exec_interception() {
+        return Err(format!(
+            "nonroot: env `{GUARD_EXEC_ENV}=1` turns on exec interception, which needs \
+             `{EXEC_INTERCEPTION_CAP}` in cctui-guard and a uid {WORKER_UID} worker cannot hold \
+             it — use posture root or drop the env"
+        ));
+    }
     check_no_overlay(profile)?;
     for c in profile.init_containers.iter().flatten().chain(profile.containers.iter().flatten()) {
         check_unprivileged(c)?;
@@ -191,6 +258,28 @@ fn check_no_overlay(profile: &WorkerProfileSpec) -> Result<(), String> {
             "nonroot: volumeMount `{}` at `{}` is the root posture's overlay — nonroot has no \
              overlay",
             m.name, m.mount_path
+        ));
+    }
+    Ok(())
+}
+
+/// `SYS_PTRACE` reaches the worker only for a profile that opts into exec
+/// interception.
+fn check_exec_capability(
+    worker: &Container,
+    worker_name: &str,
+    profile: &WorkerProfileSpec,
+) -> Result<(), String> {
+    let adds_ptrace = worker
+        .security_context
+        .as_ref()
+        .and_then(|sc| sc.capabilities.as_ref())
+        .and_then(|caps| caps.add.as_ref())
+        .is_some_and(|add| add.iter().any(|c| c == EXEC_INTERCEPTION_CAP));
+    if adds_ptrace && !profile.exec_interception() {
+        return Err(format!(
+            "worker container `{worker_name}` adds capability `{EXEC_INTERCEPTION_CAP}`, which \
+             only a profile opted into exec interception (env `{GUARD_EXEC_ENV}=1`) may hold"
         ));
     }
     Ok(())
@@ -304,6 +393,9 @@ pub fn check_guard(guard: &GuardSpec) -> Result<(), String> {
                 "env `{GUARD_ENV_IDENTITY}` is set per dispatch (`cctui.dev/guard-identity`), \
                  not per profile"
             ));
+        }
+        if env.name == GUARD_ENV_HUMAN_GATE {
+            return Err(format!("env `{GUARD_ENV_HUMAN_GATE}` is set by spec.humanGate"));
         }
         if !guard.allow_private_egress && widens_private_egress(env) {
             return Err(format!(
@@ -437,7 +529,10 @@ fn check_sandbox(
             && let Some(add) = &caps.add
         {
             let sanctioned = worker_added_caps(posture);
-            if let Some(extra) = add.iter().find(|c| !sanctioned.contains(&c.as_str())) {
+            let exec_cap = |c: &str| posture == Posture::Root && c == EXEC_INTERCEPTION_CAP;
+            if let Some(extra) =
+                add.iter().find(|c| !sanctioned.contains(&c.as_str()) && !exec_cap(c.as_str()))
+            {
                 return Err(format!(
                     "worker container `{worker_name}` adds capability `{extra}` beyond the \
                      sanctioned envelope set {sanctioned:?} of posture {}",
@@ -1067,6 +1162,8 @@ mod tests {
             guard: profile.guard.clone(),
             posture: profile.posture(),
             dispatched: false,
+            exec_interception: profile.exec_interception(),
+            human_gate: profile.human_gate,
         };
         envelope::inject(&pod, &cfg)
     }
@@ -1368,6 +1465,74 @@ mod tests {
         assert!(deny_msg(decide(&pod, &src).await).contains("NET_RAW"));
     }
 
+    fn exec_profile(value: &str) -> WorkerProfileSpec {
+        let mut profile = lean_profile();
+        profile.env.get_or_insert_with(Vec::new).push(
+            serde_json::from_value(serde_json::json!({ "name": GUARD_EXEC_ENV, "value": value }))
+                .unwrap(),
+        );
+        profile
+    }
+
+    fn worker_caps(pod: &mut Pod) -> &mut Vec<String> {
+        worker_mut(pod)
+            .security_context
+            .as_mut()
+            .unwrap()
+            .capabilities
+            .as_mut()
+            .unwrap()
+            .add
+            .as_mut()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn exec_interception_profile_may_add_sys_ptrace() {
+        let profile = exec_profile("1");
+        assert!(profile.exec_interception());
+        let mut pod = dispatched_pod("exec", &profile);
+        assert!(worker_caps(&mut pod).contains(&EXEC_INTERCEPTION_CAP.to_owned()));
+        assert!(matches!(decide(&pod, &source("exec", profile)).await, Decision::Allow));
+    }
+
+    #[tokio::test]
+    async fn sys_ptrace_without_the_exec_interception_opt_in_is_denied() {
+        let profiles = [lean_profile(), exec_profile("true"), exec_profile("0"), exec_profile("")];
+        for profile in profiles {
+            assert!(!profile.exec_interception());
+            let mut pod = dispatched_pod("lean", &profile);
+            assert!(!worker_caps(&mut pod).contains(&EXEC_INTERCEPTION_CAP.to_owned()));
+            worker_caps(&mut pod).push(EXEC_INTERCEPTION_CAP.to_owned());
+            let msg = deny_msg(decide(&pod, &source("lean", profile)).await);
+            assert!(
+                msg.contains(EXEC_INTERCEPTION_CAP) && msg.contains("exec interception"),
+                "{msg}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn sys_ptrace_on_a_nonroot_worker_is_denied() {
+        let mut profile = exec_profile("1");
+        profile.posture = Some(Posture::Nonroot);
+        let mut pod = dispatched_pod("exec", &profile);
+        let sc = worker_mut(&mut pod).security_context.as_mut().unwrap();
+        sc.capabilities.as_mut().unwrap().add = Some(vec![EXEC_INTERCEPTION_CAP.to_owned()]);
+        let msg = deny_msg(decide(&pod, &source("exec", profile)).await);
+        assert!(msg.contains(EXEC_INTERCEPTION_CAP), "{msg}");
+    }
+
+    #[test]
+    fn a_nonroot_profile_cannot_opt_into_exec_interception() {
+        let mut profile = exec_profile("1");
+        profile.posture = Some(Posture::Nonroot);
+        let msg = check_posture(&profile).unwrap_err();
+        assert!(msg.contains(GUARD_EXEC_ENV) && msg.contains("posture root"), "{msg}");
+        profile.posture = Some(Posture::Root);
+        assert_eq!(check_posture(&profile), Ok(()));
+    }
+
     #[tokio::test]
     async fn hostpath_mounted_into_worker_is_denied() {
         use k8s_openapi::api::core::v1::{HostPathVolumeSource, Volume, VolumeMount};
@@ -1659,6 +1824,8 @@ mod tests {
             guard: profile.guard.clone(),
             posture: profile.posture(),
             dispatched: false,
+            exec_interception: false,
+            human_gate: None,
         };
         pod.metadata.annotations.as_mut().unwrap().remove(ANNOTATION_ENVELOPE_INJECTED);
         let pod = envelope::inject(&pod, &cfg);
@@ -1784,6 +1951,17 @@ mod tests {
             .await,
         );
         assert!(msg.contains("per dispatch"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn guard_env_cannot_set_the_human_gate() {
+        let msg = deny_msg(
+            decide_with_guard(serde_json::json!({
+                "env": [{ "name": "GUARD_PROXY_HUMAN_GATE", "value": "noPush" }]
+            }))
+            .await,
+        );
+        assert!(msg.contains("spec.humanGate"), "{msg}");
     }
 
     #[tokio::test]
@@ -2254,6 +2432,108 @@ mod tests {
         assert!(template_drift(&template, &lean_profile()).is_none());
         let drift = template_drift(&template, &nonroot_profile()).expect("posture drift");
         assert!(drift.contains("posture"), "{drift}");
+    }
+
+    fn exposed_profile(exposure: serde_json::Value, gate: Option<&str>) -> WorkerProfileSpec {
+        let mut profile = serde_json::to_value(lean_profile()).unwrap();
+        profile["exposure"] = exposure;
+        if let Some(gate) = gate {
+            profile["humanGate"] = serde_json::json!(gate);
+        }
+        serde_json::from_value(profile).unwrap()
+    }
+
+    fn all_three() -> serde_json::Value {
+        serde_json::json!({ "untrustedInput": true, "sensitiveData": true, "outward": true })
+    }
+
+    async fn review_exposed(profile: WorkerProfileSpec) -> Verdict {
+        let pod = dispatched_pod("exposed", &profile);
+        review(&pod, "workers", &source("exposed", profile)).await
+    }
+
+    #[tokio::test]
+    async fn all_three_exposures_without_a_human_gate_are_refused() {
+        let verdict = review_exposed(exposed_profile(all_three(), None)).await;
+        let msg = deny_msg(verdict.decision);
+        assert!(msg.contains("WorkerProfile `exposed` spec.exposure"), "{msg}");
+        assert!(msg.contains("humanGate"), "{msg}");
+        assert!(verdict.warnings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn all_three_exposures_behind_an_enforced_human_gate_are_admitted() {
+        for gate in ["noPush", "draftPrOnly"] {
+            let verdict = review_exposed(exposed_profile(all_three(), Some(gate))).await;
+            assert!(matches!(verdict.decision, Decision::Allow), "{gate} must admit");
+            assert!(verdict.warnings.is_empty(), "{gate}: {:?}", verdict.warnings);
+            assert!(!verdict.exposure_undeclared);
+        }
+    }
+
+    #[tokio::test]
+    async fn all_three_exposures_behind_outward_held_for_approval_are_refused() {
+        let profile = exposed_profile(all_three(), Some("outwardHeldForApproval"));
+        let msg = deny_msg(review_exposed(profile).await.decision);
+        assert!(msg.contains("WorkerProfile `exposed` spec.exposure"), "{msg}");
+        assert!(msg.contains("not enforced yet"), "{msg}");
+        assert!(msg.contains("noPush or draftPrOnly"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn outward_held_for_approval_without_all_three_exposures_is_admitted() {
+        for missing in ["untrustedInput", "sensitiveData", "outward"] {
+            let mut exposure = all_three();
+            exposure[missing] = serde_json::json!(false);
+            let profile = exposed_profile(exposure, Some("outwardHeldForApproval"));
+            let verdict = review_exposed(profile).await;
+            assert!(matches!(verdict.decision, Decision::Allow), "without {missing} must admit");
+            assert!(verdict.warnings.is_empty(), "{missing}: {:?}", verdict.warnings);
+        }
+    }
+
+    #[tokio::test]
+    async fn two_of_three_exposures_are_admitted_without_a_gate() {
+        for missing in ["untrustedInput", "sensitiveData", "outward"] {
+            let mut exposure = all_three();
+            exposure[missing] = serde_json::json!(false);
+            let verdict = review_exposed(exposed_profile(exposure, None)).await;
+            assert!(matches!(verdict.decision, Decision::Allow), "without {missing} must admit");
+            assert!(verdict.warnings.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn undeclared_exposure_is_admitted_with_a_warning() {
+        let verdict = review_exposed(lean_profile()).await;
+        assert!(matches!(verdict.decision, Decision::Allow));
+        assert!(verdict.exposure_undeclared);
+        assert_eq!(verdict.warnings.len(), 1, "{:?}", verdict.warnings);
+        assert!(verdict.warnings[0].contains(EXPOSURE_UNDECLARED), "{:?}", verdict.warnings);
+        assert!(verdict.warnings[0].contains("`exposed`"), "{:?}", verdict.warnings);
+
+        let verdict =
+            review_exposed(exposed_profile(serde_json::Value::Null, Some("noPush"))).await;
+        assert!(matches!(verdict.decision, Decision::Allow));
+        assert!(verdict.warnings[0].contains(EXPOSURE_UNDECLARED));
+    }
+
+    #[tokio::test]
+    async fn unlabeled_pod_carries_no_exposure_warning() {
+        let mut pod = dispatched_pod("lean", &lean_profile());
+        pod.metadata.labels = None;
+        let verdict = review(&pod, "workers", &source("lean", lean_profile())).await;
+        assert!(matches!(verdict.decision, Decision::Allow));
+        assert!(verdict.warnings.is_empty());
+    }
+
+    #[test]
+    fn check_exposure_reports_undeclared_and_refuses_only_the_ungated_triple() {
+        assert_eq!(check_exposure(&lean_profile()), Ok(true));
+        assert!(check_exposure(&exposed_profile(all_three(), None)).is_err());
+        assert_eq!(check_exposure(&exposed_profile(all_three(), Some("noPush"))), Ok(false));
+        let held = exposed_profile(all_three(), Some("outwardHeldForApproval"));
+        assert!(check_exposure(&held).is_err());
     }
 
     #[tokio::test]

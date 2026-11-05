@@ -9,10 +9,15 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 /// Effective hardening applied before exec.
+// Each bool is an independent fact the report records, not a state.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize)]
 pub struct Report {
     /// Landlock ABI/status used, or `"unavailable"`.
     pub landlock: String,
+    /// Whether an unenforced Landlock ruleset was fatal (`false` only under the
+    /// `CCTUI_LANDLOCK_STRICT=0` opt-out).
+    pub landlock_strict: bool,
     /// Whether the seccomp denylist was installed.
     pub seccomp_applied: bool,
     /// Names of the syscalls denied by the seccomp filter (empty when not applied).
@@ -27,6 +32,12 @@ pub struct Report {
     pub rw_paths: Vec<String>,
     /// The command (argv) that will be exec'd.
     pub command: Vec<String>,
+    /// Whether every exec is authorised by cctui-guard (`--guard-exec`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub exec_guarded: bool,
+    /// RW subtrees that keep execute rights under exec interception.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exec_rw_paths: Vec<String>,
 }
 
 impl Report {

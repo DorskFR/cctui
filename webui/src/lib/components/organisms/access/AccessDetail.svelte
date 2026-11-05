@@ -3,6 +3,7 @@
 	import type { MenuItem } from '@dorsk/tsumikit';
 	import {
 		Avatar,
+		Badge,
 		ConfirmModal,
 		Dot,
 		Heading,
@@ -14,7 +15,17 @@
 	} from '@dorsk/tsumikit';
 	import EditEntityModal from '$lib/components/molecules/EditEntityModal.svelte';
 	import { hashHue } from '$lib/format';
-	import { type OAuthAccount, useMachines, useTokens, useUserAcls, useUserActions, useUserKeys } from '$lib/queries';
+	import {
+		type OAuthAccount,
+		useHiddenOwnerActions,
+		useHiddenOwners,
+		useMachines,
+		useTokens,
+		useUserAcls,
+		useUserActions,
+		useUserKeys
+	} from '$lib/queries';
+	import { isHiddenOwner } from '$lib/hiddenOwners';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
 	import { m } from '$lib/paraglide/messages';
@@ -55,6 +66,10 @@
 		() => isAdmin
 	);
 	const actions = useUserActions();
+	const hiddenOwners = useHiddenOwners(() => isAdmin);
+	const hiddenActions = useHiddenOwnerActions();
+	const hidden = $derived(isHiddenOwner(hiddenOwners.data?.owners, 'user', user.id));
+	const hideable = $derived(isAdmin && !isSelf);
 	const guard = (p: Promise<unknown>) => p.catch((e: unknown) => toasts.error(errMessage(e)));
 
 	const ceiling = $derived(new Set(acls.data?.scopes ?? []));
@@ -106,6 +121,15 @@
 						disabled: !!user.revoked_at,
 						onselect: () => toggleDisabled()
 					},
+					...(hideable
+						? [
+								{
+									label: hidden ? m.hidden_owners_unhide() : m.hidden_owners_hide(),
+									icon: hidden ? ('eye' as const) : ('eye-off' as const),
+									onselect: () => toggleHidden()
+								}
+							]
+						: []),
 					user.revoked_at
 						? {
 								label: m.access_menu_purge(),
@@ -142,6 +166,14 @@
 				)
 		);
 	}
+	function toggleHidden() {
+		const name = user.name;
+		guard(
+			hidden
+				? hiddenActions.unhide('user', user.id).then(() => toasts.ok(m.hidden_owners_unhidden_toast({ name })))
+				: hiddenActions.hide('user', user.id, name).then(() => toasts.ok(m.hidden_owners_hidden_toast({ name })))
+		);
+	}
 	function setCeiling(scopes: string[]) {
 		guard(actions.setUserScopes(user.id, scopes));
 	}
@@ -163,6 +195,9 @@
 		<div class="who">
 			<div class="line">
 				<Heading level={2} size="lg">{user.name}</Heading>
+				{#if hidden}
+					<Badge tone="muted" size="xs" data-journey="hidden-chip">{m.hidden_owners_chip()}</Badge>
+				{/if}
 				<span class="status">
 					<Dot status={statusDot} />
 					<Text size="sm" tone="muted">{statusText}</Text>

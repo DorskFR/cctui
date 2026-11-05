@@ -313,11 +313,11 @@ pub fn single_emoji(reply: &str) -> Option<String> {
 }
 
 /// A configured small-model emoji picker (see `Config::emoji_picker`).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Picker<'a> {
     pub endpoint: &'a str,
     pub model: &'a str,
-    pub token: Option<&'a str>,
+    pub token: Option<std::sync::Arc<str>>,
 }
 
 /// What we ask the model. Kept blunt on purpose: the reply is validated by

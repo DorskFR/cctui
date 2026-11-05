@@ -4,6 +4,11 @@ Shared tool-set and network-set definitions consumed by `cctui-guard`. Each
 definition is `[name]: member, member, …`; blank lines and `#` comments are
 ignored. Sets may reference other sets (expanded recursively).
 
+Steps grant **capabilities** from `capabilities.toml` next to this file; a
+capability carries both its binaries and its hosts. The tool sets below name
+harness tools (`Read`, `Edit`) for `[allowed]`/`[disallowed]`; the network sets
+stay for a `[network]` one-off a capability does not cover.
+
 This fixture is NEUTRAL — every host is a placeholder (`example.com`,
 `internal.invalid`). A real pack lists your actual model gateway, VCS host, etc.
 

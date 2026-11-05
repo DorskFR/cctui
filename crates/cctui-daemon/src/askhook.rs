@@ -212,20 +212,27 @@ fn session_start_line(session_id: &str, cctui_session: &str) -> Value {
 /// letting Claude Code's normal flow proceed) instead of parking for a human
 /// decision over the daemon socket.
 ///
-/// Two cases defer:
+/// Three cases defer:
 /// - `AskUserQuestion` — answered via its own pre/post hook + the reply path,
 ///   never as a tool permission.
 /// - `permission_mode == "bypassPermissions"` (yolo) — the user has explicitly
 ///   opted out of every prompt. Claude Code still fires `PreToolUse` hooks in this
 ///   mode, so without this guard the hook would park every tool for a human
 ///   decision and resurrect a permission prompt for every action, defeating
-///   bypass mode. Only `default`/`acceptEdits`/
-///   `plan` modes — where a prompt would otherwise render — use the hook.
+///   bypass mode.
+/// - `permission_mode == "auto"` — Claude Code's classifier decides; parking
+///   first would turn auto mode into asking a human.
+///
+/// Only `default`/`acceptEdits`/`plan` modes — where a prompt would otherwise
+/// render — use the hook.
 fn perm_hook_defers(payload: &Value, tool: &str) -> bool {
     if tool == "AskUserQuestion" {
         return true;
     }
-    payload.get("permission_mode").and_then(Value::as_str) == Some("bypassPermissions")
+    matches!(
+        payload.get("permission_mode").and_then(Value::as_str),
+        Some("bypassPermissions" | "auto")
+    )
 }
 
 /// `EnterPlanMode` deny decision. Approving a plan switches the
@@ -670,6 +677,14 @@ mod tests {
         assert!(perm_hook_defers(&bypass, "Bash"));
         assert!(perm_hook_defers(&bypass, "Edit"));
         assert!(perm_hook_defers(&bypass, "Task"));
+    }
+
+    #[test]
+    fn perm_hook_defers_to_the_auto_mode_classifier() {
+        let auto = json!({"permission_mode": "auto"});
+        for tool in ["Bash", "Edit", "Write", "WebFetch", "Task"] {
+            assert!(perm_hook_defers(&auto, tool), "{tool}");
+        }
     }
 
     #[test]

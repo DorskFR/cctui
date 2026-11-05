@@ -331,6 +331,9 @@ struct Inner {
     /// Connection ids per machine, so a shared identity can be recognised as
     /// ambiguous instead of silently resolving to whichever pod connected last.
     machine_conns: DashMap<Uuid, std::collections::HashSet<Uuid>>,
+    /// Machines whose identity one daemon owns alone: their overlapping
+    /// connections are that daemon's reconnect, so the newest one wins.
+    exclusive: DashMap<Uuid, ()>,
     /// Which connection announced each session — the routing address for every
     /// session-scoped frame.
     session_conn: DashMap<String, Uuid>,
@@ -390,6 +393,7 @@ impl Bus {
                 conns: DashMap::new(),
                 priority: DashMap::new(),
                 machine_conns: DashMap::new(),
+                exclusive: DashMap::new(),
                 session_conn: DashMap::new(),
                 dispatchers: DashMap::new(),
                 pending_stage: DashMap::new(),
@@ -422,6 +426,17 @@ impl Bus {
         self.inner.daemons.insert(machine, tx);
     }
 
+    /// [`Self::register_daemon`] for a machine identity no other daemon shares.
+    pub fn register_exclusive_daemon(
+        &self,
+        machine: Uuid,
+        conn_id: Uuid,
+        tx: mpsc::Sender<DaemonFrameDown>,
+    ) {
+        self.inner.exclusive.insert(machine, ());
+        self.register_daemon(machine, conn_id, tx);
+    }
+
     pub fn register_daemon_priority(&self, conn_id: Uuid, tx: mpsc::Sender<DaemonFrameDown>) {
         self.inner.priority.insert(conn_id, tx);
     }
@@ -441,10 +456,13 @@ impl Bus {
     ) -> bool {
         self.inner.conns.remove(&conn_id);
         self.inner.priority.remove(&conn_id);
-        self.inner.machine_conns.remove_if_mut(&machine, |_, conns| {
+        let last = self.inner.machine_conns.remove_if_mut(&machine, |_, conns| {
             conns.remove(&conn_id);
             conns.is_empty()
         });
+        if last.is_some() {
+            self.inner.exclusive.remove(&machine);
+        }
         self.inner.session_conn.retain(|_, owner| *owner != conn_id);
         self.inner.daemons.remove_if(&machine, |_, current| current.same_channel(tx)).is_some()
     }
@@ -464,7 +482,8 @@ impl Bus {
     /// The channel a SESSION-scoped frame must take. The connection that
     /// announced the session when known and authenticated as the session's
     /// owning `machine`; otherwise the machine entry, but only
-    /// while that machine has at most one live connection here. With several
+    /// while that machine has at most one live connection here or its
+    /// identity is exclusive. With several
     /// connections and no binding, any choice is a coin flip that silently
     /// delivers one session's command to another's worker, so refuse instead.
     fn session_channel(
@@ -475,7 +494,8 @@ impl Bus {
         if let Some(tx) = self.bound_channel(machine, session_id) {
             return Some(tx);
         }
-        let ambiguous = self.inner.machine_conns.get(&machine).is_some_and(|conns| conns.len() > 1);
+        let ambiguous = !self.inner.exclusive.contains_key(&machine)
+            && self.inner.machine_conns.get(&machine).is_some_and(|conns| conns.len() > 1);
         if ambiguous {
             tracing::warn!(
                 %machine,
@@ -551,10 +571,23 @@ impl Bus {
     }
 
     /// Whether THIS pod terminates `machine`'s daemon WS.
-    #[cfg_attr(not(test), allow(dead_code))]
     #[must_use]
     pub fn daemon_connected(&self, machine: Uuid) -> bool {
         self.inner.daemons.contains_key(&machine)
+    }
+
+    /// The connection behind `machine`'s entry on THIS pod.
+    #[must_use]
+    pub fn machine_conn(&self, machine: Uuid) -> Option<Uuid> {
+        let tx = self.inner.daemons.get(&machine).map(|r| r.clone())?;
+        self.inner.conns.iter().find(|e| e.value().1.same_channel(&tx)).map(|e| *e.key())
+    }
+
+    /// The connection of THIS pod that announced `session_id` for `machine`.
+    #[must_use]
+    pub fn session_conn(&self, machine: Uuid, session_id: &str) -> Option<Uuid> {
+        let conn = self.inner.session_conn.get(session_id).map(|r| *r)?;
+        self.inner.conns.get(&conn).is_some_and(|entry| entry.0 == machine).then_some(conn)
     }
 
     /// Register the outbound channel of a freshly connected enrolled
@@ -1576,6 +1609,41 @@ mod tests {
 
     /// A shared identity with no binding is ambiguous: refuse loudly rather
     /// than deliver one worker's command to another's.
+    /// An ordinary machine's overlapping connections are one daemon's
+    /// reconnect: an unannounced session's command takes the newest one
+    /// instead of being refused, locally and on a forwarded delivery.
+    #[tokio::test]
+    async fn an_exclusive_machines_newest_connection_takes_unannounced_sessions() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (old_tx, mut old_rx) = mpsc::channel(8);
+        let (new_tx, mut new_rx) = mpsc::channel(8);
+        bus.register_exclusive_daemon(machine, Uuid::new_v4(), old_tx);
+        let new_conn = Uuid::new_v4();
+        bus.register_exclusive_daemon(machine, new_conn, new_tx.clone());
+
+        bus.command_daemon_for_session(machine, "unannounced", reply("unannounced")).await.unwrap();
+        bus.command_daemon_local_for_session(machine, "archived", reply("archived")).await.unwrap();
+        assert_eq!(replied_to(&new_rx.recv().await.unwrap()), "unannounced");
+        assert_eq!(replied_to(&new_rx.recv().await.unwrap()), "archived");
+        assert!(old_rx.try_recv().is_err(), "the superseded connection gets nothing");
+
+        assert!(bus.unregister_daemon(machine, new_conn, &new_tx));
+        let (shared_a, _rx_a) = mpsc::channel(8);
+        let (shared_b, _rx_b) = mpsc::channel(8);
+        let other = Uuid::new_v4();
+        bus.register_daemon(other, Uuid::new_v4(), shared_a);
+        bus.register_daemon(other, Uuid::new_v4(), shared_b);
+        let err = bus
+            .command_daemon_local_for_session(other, "unannounced", reply("unannounced"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, BusError::NoDaemon(m) if m == other),
+            "a shared identity still refuses"
+        );
+    }
+
     #[tokio::test]
     async fn unbound_session_on_a_shared_machine_is_no_daemon() {
         let bus = bus();
@@ -1610,6 +1678,7 @@ mod tests {
                     env: std::collections::BTreeMap::new(),
                     bootstrap: serde_json::Value::Null,
                     parent_local_id: Some(parent.to_owned()),
+                    hook_policy: None,
                 },
                 command_id: Some(Uuid::new_v4()),
                 session_id: Some(Uuid::new_v4()),

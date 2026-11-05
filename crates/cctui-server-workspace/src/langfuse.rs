@@ -29,6 +29,8 @@ use serde_json::{Value, json};
 
 pub use cctui_proto::api::langfuse::LangfuseSessionUsage;
 
+const SECRET_KEY_ENV: &str = "CCTUI_LANGFUSE_SECRET_KEY";
+
 /// Langfuse sink configuration (`[langfuse]` block / `CCTUI_LANGFUSE_*` env).
 /// Built only when host + public + secret are all present.
 #[derive(Debug, Clone)]
@@ -38,7 +40,8 @@ pub struct LangfuseConfig {
     /// Browser-facing base URL for deep links (defaults to `host` when unset).
     pub public_host: String,
     pub public_key: String,
-    pub secret_key: String,
+    /// Read on every request, so a rotated key lands on the next one.
+    pub secret_key: cctui_secrets::Secret,
     /// Fraction of calls to trace, `0.0..=1.0`. Defaults to `1.0` (trace all).
     pub sample_rate: f64,
     /// Whether prompts and completions are sent to Langfuse. One Langfuse
@@ -51,30 +54,44 @@ impl LangfuseConfig {
     /// Parse the Langfuse config from the environment. Returns `None` (feature
     /// dark) unless `CCTUI_LANGFUSE_HOST`, `CCTUI_LANGFUSE_PUBLIC_KEY`, and
     /// `CCTUI_LANGFUSE_SECRET_KEY` are all set and non-empty.
-    pub fn from_env() -> Option<Self> {
-        let nonempty = |k: &str| std::env::var(k).ok().filter(|s| !s.trim().is_empty());
-        let host = nonempty("CCTUI_LANGFUSE_HOST")?;
+    /// `CCTUI_LANGFUSE_SECRET_KEY` may be a secret ref, tracked by `secrets`
+    /// for reload; one that does not resolve is an error.
+    pub async fn from_env(secrets: &cctui_secrets::SecretRegistry) -> anyhow::Result<Option<Self>> {
+        Self::from_lookup(secrets, |k| std::env::var(k).ok()).await
+    }
+
+    async fn from_lookup(
+        secrets: &cctui_secrets::SecretRegistry,
+        get: impl Fn(&str) -> Option<String> + Send + Sync,
+    ) -> anyhow::Result<Option<Self>> {
+        let nonempty = |k: &str| get(k).filter(|s| !s.trim().is_empty());
+        let (Some(host), Some(public_key), Some(secret_raw)) = (
+            nonempty("CCTUI_LANGFUSE_HOST"),
+            nonempty("CCTUI_LANGFUSE_PUBLIC_KEY"),
+            nonempty(SECRET_KEY_ENV),
+        ) else {
+            return Ok(None);
+        };
+        let secret_key = secrets.register(SECRET_KEY_ENV, &secret_raw).await?;
         let public_host = nonempty("CCTUI_LANGFUSE_PUBLIC_HOST").unwrap_or_else(|| host.clone());
-        let public_key = nonempty("CCTUI_LANGFUSE_PUBLIC_KEY")?;
-        let secret_key = nonempty("CCTUI_LANGFUSE_SECRET_KEY")?;
         let sample_rate = nonempty("CCTUI_LANGFUSE_SAMPLE_RATE")
             .and_then(|s| s.parse::<f64>().ok())
             .map_or(1.0, |r| r.clamp(0.0, 1.0));
         let capture_content = nonempty("CCTUI_LANGFUSE_CAPTURE_CONTENT")
             .is_some_and(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"));
-        Some(Self {
+        Ok(Some(Self {
             host: host.trim_end_matches('/').to_string(),
             public_host: public_host.trim_end_matches('/').to_string(),
             public_key,
             secret_key,
             sample_rate,
             capture_content,
-        })
+        }))
     }
 
     /// The `Basic <base64(public:secret)>` header value for the ingestion API.
     fn basic_auth(&self) -> String {
-        let raw = format!("{}:{}", self.public_key, self.secret_key);
+        let raw = format!("{}:{}", self.public_key, self.secret_key.get());
         format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(raw))
     }
 }
@@ -102,6 +119,10 @@ pub struct TracePayload {
     /// hit, so busts read red in the trace view.
     pub level: Option<&'static str>,
     pub status_message: Option<String>,
+    /// `request` is already the content-free shape.
+    pub request_redacted: bool,
+    /// `output` is already the content-free placeholder.
+    pub output_redacted: bool,
 }
 
 /// The Langfuse sink. Cheap to clone (shares the `reqwest::Client`); present in
@@ -203,6 +224,10 @@ impl LangfuseClient {
         Ok(usage)
     }
 
+    pub const fn captures_content(&self) -> bool {
+        self.config.capture_content
+    }
+
     /// Whether this call should be sampled (cheap, sync — checked before the
     /// trace task is spawned and before any payload is reconstructed).
     pub fn should_sample(&self) -> bool {
@@ -227,20 +252,25 @@ impl LangfuseClient {
 /// on, keeping the request's non-content shape (`model`, `stream`, counts) so a
 /// redacted trace is still diagnosable.
 fn redact_unless_captured(mut payload: TracePayload, capture_content: bool) -> TracePayload {
-    const KEEP: [&str; 6] =
-        ["model", "stream", "max_tokens", "temperature", "service_tier", "thinking"];
+    use cctui_server_core::gateway::proxy::{TRACE_COUNTED_FIELDS, TRACE_KEPT_FIELDS};
     if capture_content {
+        return payload;
+    }
+    if !payload.output_redacted {
+        payload.output = payload.output.map(|o| redacted_output(o.chars().count()));
+    }
+    if payload.request_redacted {
         return payload;
     }
     payload.request = payload.request.map(|req| {
         let mut out = serde_json::Map::new();
         if let Some(obj) = req.as_object() {
-            for k in KEEP {
+            for k in TRACE_KEPT_FIELDS {
                 if let Some(v) = obj.get(k) {
                     out.insert(k.to_owned(), v.clone());
                 }
             }
-            for k in ["messages", "system", "tools"] {
+            for k in TRACE_COUNTED_FIELDS {
                 if let Some(n) = obj.get(k).and_then(|v| v.as_array()).map(Vec::len) {
                     out.insert(format!("{k}_count"), json!(n));
                 } else if obj.contains_key(k) {
@@ -251,8 +281,12 @@ fn redact_unless_captured(mut payload: TracePayload, capture_content: bool) -> T
         out.insert("redacted".into(), json!(true));
         Value::Object(out)
     });
-    payload.output = payload.output.map(|o| format!("[redacted: {} chars]", o.chars().count()));
     payload
+}
+
+#[must_use]
+pub fn redacted_output(chars: usize) -> String {
+    format!("[redacted: {chars} chars]")
 }
 
 /// Build the ingestion batch (one `trace-create` + one `generation-create`) and
@@ -262,10 +296,46 @@ async fn post_ingestion(
     config: &LangfuseConfig,
     payload: TracePayload,
 ) -> Result<(), String> {
-    let trace_id = uuid::Uuid::new_v4().to_string();
-    let gen_id = uuid::Uuid::new_v4().to_string();
-    let now = chrono::Utc::now().to_rfc3339();
-    let payload = redact_unless_captured(payload, config.capture_content);
+    let batch = ingestion_batch(payload, config.capture_content, &BatchIds::fresh());
+    let resp = http
+        .post(format!("{}/api/public/ingestion", config.host))
+        .header(reqwest::header::AUTHORIZATION, config.basic_auth())
+        .json(&batch)
+        .send()
+        .await
+        .map_err(|e| format!("transport: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("status {}", resp.status()));
+    }
+    Ok(())
+}
+
+/// The ids and timestamp an ingestion batch is stamped with.
+pub struct BatchIds {
+    pub trace: String,
+    pub generation: String,
+    pub trace_event: String,
+    pub generation_event: String,
+    pub now: String,
+}
+
+impl BatchIds {
+    fn fresh() -> Self {
+        let id = || uuid::Uuid::new_v4().to_string();
+        Self {
+            trace: id(),
+            generation: id(),
+            trace_event: id(),
+            generation_event: id(),
+            now: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+}
+
+/// The exact ingestion body posted for `payload`.
+pub fn ingestion_batch(payload: TracePayload, capture_content: bool, ids: &BatchIds) -> Value {
+    let BatchIds { trace: trace_id, generation: gen_id, now, .. } = ids;
+    let payload = redact_unless_captured(payload, capture_content);
     let ctx = &payload.ctx;
 
     let mut metadata = serde_json::Map::new();
@@ -306,7 +376,7 @@ async fn post_ingestion(
     trace_body.insert("tags".into(), json!(tags));
 
     let trace_event = json!({
-        "id": uuid::Uuid::new_v4().to_string(),
+        "id": ids.trace_event,
         "type": "trace-create",
         "timestamp": now,
         "body": Value::Object(trace_body),
@@ -328,25 +398,13 @@ async fn post_ingestion(
         "statusMessage": payload.status_message,
     });
     let gen_event = json!({
-        "id": uuid::Uuid::new_v4().to_string(),
+        "id": ids.generation_event,
         "type": "generation-create",
         "timestamp": now,
         "body": gen_body,
     });
 
-    let batch = json!({ "batch": [trace_event, gen_event] });
-
-    let resp = http
-        .post(format!("{}/api/public/ingestion", config.host))
-        .header(reqwest::header::AUTHORIZATION, config.basic_auth())
-        .json(&batch)
-        .send()
-        .await
-        .map_err(|e| format!("transport: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("status {}", resp.status()));
-    }
-    Ok(())
+    json!({ "batch": [trace_event, gen_event] })
 }
 
 /// The 8-hex worker shortcode is the leading hex of the session id (CCT — the
@@ -363,21 +421,296 @@ fn rand_unit() -> f64 {
     (n >> 11) as f64 / (1u64 << 53) as f64
 }
 
+/// The response wire format a trace is reconstructed from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResponseFormat {
+    Anthropic,
+    Openai,
+    Gemini,
+}
+
 /// Reconstruct the completion text + token usage from an Anthropic Messages
 /// response body, handling both the buffered single-JSON shape and the SSE
 /// stream (`event: ...\ndata: {...}` lines). Returns `(output_text, usage)`.
 ///
 /// SSE reconstruction concatenates `content_block_delta` text deltas and pulls
 /// usage from `message_start` (input tokens) + `message_delta` (output tokens).
+#[cfg(test)]
 pub fn reconstruct_anthropic(body: &[u8]) -> (Option<String>, Option<Value>) {
+    reconstruct(ResponseFormat::Anthropic, body)
+}
+
+/// Reconstruct the completion text + token usage from a Gemini
+/// `generateContent` body or a `streamGenerateContent?alt=sse` stream.
+///
+/// Text is the concatenation of every candidate `text` part that is not a
+/// `thought`; usage is the last chunk's cumulative `usageMetadata`, mapped like
+/// the other families: `input` = prompt minus cached, `cache_read_input_tokens`
+/// = cached, `output` = candidates plus thoughts.
+#[cfg(test)]
+pub fn reconstruct_gemini(body: &[u8]) -> (Option<String>, Option<Value>) {
+    reconstruct(ResponseFormat::Gemini, body)
+}
+
+/// Reconstruct the completion text + token usage from an `OpenAI` Responses API
+/// response body (what codex speaks), handling both the buffered single-JSON
+/// shape and the SSE stream (`data: {...}` lines). Returns `(output_text,
+/// usage)`.
+///
+/// SSE reconstruction concatenates `response.output_text.delta` deltas and pulls
+/// usage from the terminal `response.completed`/`response.incomplete` event's
+/// `response.usage` object. Usage maps into the same Langfuse keys the Anthropic
+/// path uses: `input` = `input_tokens - cached_tokens`, `cache_read_input_tokens`
+/// = `cached_tokens`, `output` = `output_tokens`.
+#[cfg(test)]
+pub fn reconstruct_openai(body: &[u8]) -> (Option<String>, Option<Value>) {
+    reconstruct(ResponseFormat::Openai, body)
+}
+
+pub fn reconstruct(format: ResponseFormat, body: &[u8]) -> (Option<String>, Option<Value>) {
     let text = String::from_utf8_lossy(body);
-    // Non-SSE: a single JSON object (e.g. non-streaming `/v1/messages`).
-    if let Ok(v) = serde_json::from_str::<Value>(text.trim())
-        && (v.get("content").is_some() || v.get("usage").is_some())
-    {
-        return (anthropic_output_text(&v), v.get("usage").map(normalize_usage));
+    if let Some(whole) = whole_body(format, text.trim()) {
+        return whole;
     }
-    reconstruct_sse(&text)
+    let mut fold = Fold::<String>::new(format);
+    for line in text.lines() {
+        fold.line(line);
+    }
+    fold.finish()
+}
+
+/// A body that is one JSON object of the format's non-streaming shape.
+fn whole_body(format: ResponseFormat, trimmed: &str) -> Option<(Option<String>, Option<Value>)> {
+    let v = serde_json::from_str::<Value>(trimmed).ok()?;
+    match format {
+        ResponseFormat::Anthropic => (v.get("content").is_some() || v.get("usage").is_some())
+            .then(|| (anthropic_output_text(&v), v.get("usage").map(normalize_usage))),
+        ResponseFormat::Openai => (v.get("output").is_some() || v.get("usage").is_some())
+            .then(|| (openai_output_text(&v), v.get("usage").map(openai_usage))),
+        ResponseFormat::Gemini => {
+            (v.get("candidates").is_some() || v.get("usageMetadata").is_some()).then(|| {
+                let mut fold = Fold::<String>::new(format);
+                fold.event(&v);
+                fold.finish()
+            })
+        }
+    }
+}
+
+trait TextOut: Default {
+    fn append(&mut self, text: &str);
+    fn is_blank(&self) -> bool;
+}
+
+impl TextOut for String {
+    fn append(&mut self, text: &str) {
+        self.push_str(text);
+    }
+    fn is_blank(&self) -> bool {
+        self.is_empty()
+    }
+}
+
+#[derive(Default)]
+struct CharCount(usize);
+
+impl TextOut for CharCount {
+    fn append(&mut self, text: &str) {
+        self.0 += text.chars().count();
+    }
+    fn is_blank(&self) -> bool {
+        self.0 == 0
+    }
+}
+
+/// One SSE stream folded line by line, into its text or just its length.
+struct Fold<T> {
+    format: ResponseFormat,
+    text: T,
+    saw_event: bool,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    cache_read: Option<u64>,
+    cache_creation: Option<u64>,
+    usage: Option<Value>,
+}
+
+impl<T: TextOut> Fold<T> {
+    fn new(format: ResponseFormat) -> Self {
+        Self {
+            format,
+            text: T::default(),
+            saw_event: false,
+            input_tokens: None,
+            output_tokens: None,
+            cache_read: None,
+            cache_creation: None,
+            usage: None,
+        }
+    }
+
+    fn line(&mut self, line: &str) {
+        let Some(data) = line.strip_prefix("data:") else { return };
+        let data = data.trim();
+        if self.format == ResponseFormat::Openai && data == "[DONE]" {
+            return;
+        }
+        if let Ok(ev) = serde_json::from_str::<Value>(data) {
+            self.event(&ev);
+        }
+    }
+
+    fn event(&mut self, ev: &Value) {
+        self.saw_event = true;
+        match self.format {
+            ResponseFormat::Anthropic => self.anthropic_event(ev),
+            ResponseFormat::Openai => self.openai_event(ev),
+            ResponseFormat::Gemini => {
+                if let Some(t) = gemini_text(ev) {
+                    self.text.append(&t);
+                }
+                if let Some(u) = ev.get("usageMetadata") {
+                    self.usage = Some(gemini_usage(u));
+                }
+            }
+        }
+    }
+
+    fn anthropic_event(&mut self, ev: &Value) {
+        match ev.get("type").and_then(Value::as_str) {
+            Some("content_block_delta") => {
+                if let Some(t) = ev.pointer("/delta/text").and_then(Value::as_str) {
+                    self.text.append(t);
+                }
+            }
+            Some("message_start") => {
+                if let Some(u) = ev.pointer("/message/usage") {
+                    let n = |k: &str| u.get(k).and_then(Value::as_u64);
+                    self.input_tokens = n("input_tokens").or(self.input_tokens);
+                    self.cache_read = n("cache_read_input_tokens").or(self.cache_read);
+                    self.cache_creation = n("cache_creation_input_tokens").or(self.cache_creation);
+                }
+            }
+            Some("message_delta") => {
+                if let Some(u) = ev.get("usage") {
+                    let output = u.get("output_tokens").and_then(Value::as_u64);
+                    self.output_tokens = output.or(self.output_tokens);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn openai_event(&mut self, ev: &Value) {
+        match ev.get("type").and_then(Value::as_str) {
+            Some("response.output_text.delta") => {
+                if let Some(t) = ev.get("delta").and_then(Value::as_str) {
+                    self.text.append(t);
+                }
+            }
+            Some("response.completed" | "response.incomplete") => {
+                if let Some(u) = ev.pointer("/response/usage") {
+                    self.usage = Some(openai_usage(u));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn finish(self) -> (Option<T>, Option<Value>) {
+        if !self.saw_event {
+            return (None, None);
+        }
+        let usage = match self.format {
+            ResponseFormat::Anthropic => {
+                let (input, output) = (self.input_tokens, self.output_tokens);
+                (input.is_some() || output.is_some())
+                    .then(|| usage_details(input, output, self.cache_read, self.cache_creation))
+            }
+            ResponseFormat::Openai | ResponseFormat::Gemini => self.usage,
+        };
+        ((!self.text.is_blank()).then_some(self.text), usage)
+    }
+}
+
+/// What a content-free trace keeps of a response, read as it streams.
+///
+/// An SSE stream is folded line by line and only its text length is kept. Any
+/// other body may be one JSON object, which only a whole-body parse reads the
+/// way [`reconstruct`] does, so it is kept until the end.
+pub struct TraceDigest {
+    format: ResponseFormat,
+    state: DigestState,
+}
+
+enum DigestState {
+    Leading(Vec<u8>),
+    Whole(Vec<u8>),
+    Lines { partial: Vec<u8>, fold: Fold<CharCount> },
+}
+
+impl TraceDigest {
+    #[must_use]
+    pub const fn new(format: ResponseFormat) -> Self {
+        Self { format, state: DigestState::Leading(Vec::new()) }
+    }
+
+    fn feed_lines(partial: &mut Vec<u8>, fold: &mut Fold<CharCount>, chunk: &[u8]) {
+        let mut rest = chunk;
+        while let Some(end) = rest.iter().position(|b| *b == b'\n') {
+            partial.extend_from_slice(&rest[..end]);
+            let line = String::from_utf8_lossy(partial);
+            fold.line(line.strip_suffix('\r').unwrap_or(&line));
+            partial.clear();
+            rest = &rest[end + 1..];
+        }
+        partial.extend_from_slice(rest);
+    }
+}
+
+impl cctui_server_core::gateway::proxy::ResponseDigest for TraceDigest {
+    fn feed(&mut self, chunk: &[u8]) {
+        match &mut self.state {
+            DigestState::Leading(lead) => {
+                let Some(first) = chunk.iter().find(|b| !b.is_ascii_whitespace()) else {
+                    lead.extend_from_slice(chunk);
+                    return;
+                };
+                // A JSON object cannot start with a letter or `:`, so the body
+                // is an event stream; anything else may be one object.
+                if first.is_ascii_alphabetic() || *first == b':' {
+                    let mut partial = std::mem::take(lead);
+                    let mut fold = Fold::new(self.format);
+                    Self::feed_lines(&mut partial, &mut fold, chunk);
+                    self.state = DigestState::Lines { partial, fold };
+                } else {
+                    let mut whole = std::mem::take(lead);
+                    whole.extend_from_slice(chunk);
+                    self.state = DigestState::Whole(whole);
+                }
+            }
+            DigestState::Whole(whole) => whole.extend_from_slice(chunk),
+            DigestState::Lines { partial, fold } => Self::feed_lines(partial, fold, chunk),
+        }
+    }
+
+    fn finish(self: Box<Self>) -> cctui_server_core::gateway::proxy::ResponseSummary {
+        let Self { format, state } = *self;
+        let (output_chars, usage) = match state {
+            DigestState::Leading(body) | DigestState::Whole(body) => {
+                let (output, usage) = reconstruct(format, &body);
+                (output.map(|o| o.chars().count()), usage)
+            }
+            DigestState::Lines { partial, mut fold } => {
+                if !partial.is_empty() {
+                    fold.line(&String::from_utf8_lossy(&partial));
+                }
+                let (text, usage) = fold.finish();
+                (text.map(|count| count.0), usage)
+            }
+        };
+        cctui_server_core::gateway::proxy::ResponseSummary { output_chars, usage }
+    }
 }
 
 /// Extract concatenated text from a non-streaming Messages `content` array.
@@ -389,80 +722,6 @@ fn anthropic_output_text(v: &Value) -> Option<String> {
         .filter_map(|b| b.get("text").and_then(Value::as_str))
         .collect();
     (!s.is_empty()).then_some(s)
-}
-
-/// Reconstruct from an SSE stream: concatenate text deltas, merge usage from
-/// `message_start` + `message_delta`.
-fn reconstruct_sse(text: &str) -> (Option<String>, Option<Value>) {
-    let mut out = String::new();
-    let mut input_tokens: Option<u64> = None;
-    let mut output_tokens: Option<u64> = None;
-    let mut cache_read: Option<u64> = None;
-    let mut cache_creation: Option<u64> = None;
-    let mut saw_event = false;
-
-    for line in text.lines() {
-        let Some(data) = line.strip_prefix("data:") else { continue };
-        let Ok(ev) = serde_json::from_str::<Value>(data.trim()) else { continue };
-        saw_event = true;
-        match ev.get("type").and_then(Value::as_str) {
-            Some("content_block_delta") => {
-                if let Some(t) = ev.pointer("/delta/text").and_then(Value::as_str) {
-                    out.push_str(t);
-                }
-            }
-            Some("message_start") => {
-                if let Some(u) = ev.pointer("/message/usage") {
-                    input_tokens = u.get("input_tokens").and_then(Value::as_u64).or(input_tokens);
-                    cache_read =
-                        u.get("cache_read_input_tokens").and_then(Value::as_u64).or(cache_read);
-                    cache_creation = u
-                        .get("cache_creation_input_tokens")
-                        .and_then(Value::as_u64)
-                        .or(cache_creation);
-                }
-            }
-            Some("message_delta") => {
-                if let Some(u) = ev.get("usage") {
-                    output_tokens =
-                        u.get("output_tokens").and_then(Value::as_u64).or(output_tokens);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if !saw_event {
-        return (None, None);
-    }
-    let usage = (input_tokens.is_some() || output_tokens.is_some())
-        .then(|| usage_details(input_tokens, output_tokens, cache_read, cache_creation));
-    ((!out.is_empty()).then_some(out), usage)
-}
-
-/// Reconstruct the completion text + token usage from a Gemini
-/// `generateContent` body or a `streamGenerateContent?alt=sse` stream.
-///
-/// Text is the concatenation of every candidate `text` part that is not a
-/// `thought`; usage is the last chunk's cumulative `usageMetadata`, mapped like
-/// the other families: `input` = prompt minus cached, `cache_read_input_tokens`
-/// = cached, `output` = candidates plus thoughts.
-pub fn reconstruct_gemini(body: &[u8]) -> (Option<String>, Option<Value>) {
-    let text = String::from_utf8_lossy(body);
-    let chunks: Vec<Value> = match serde_json::from_str::<Value>(text.trim()) {
-        Ok(v) if v.get("candidates").is_some() || v.get("usageMetadata").is_some() => vec![v],
-        _ => text
-            .lines()
-            .filter_map(|line| line.strip_prefix("data:"))
-            .filter_map(|data| serde_json::from_str::<Value>(data.trim()).ok())
-            .collect(),
-    };
-    if chunks.is_empty() {
-        return (None, None);
-    }
-    let out: String = chunks.iter().filter_map(gemini_text).collect();
-    let usage = chunks.iter().rev().find_map(|c| c.get("usageMetadata")).map(gemini_usage);
-    ((!out.is_empty()).then_some(out), usage)
 }
 
 fn gemini_text(chunk: &Value) -> Option<String> {
@@ -489,27 +748,6 @@ fn gemini_usage(u: &Value) -> Value {
     usage_details(input, output, cached, None)
 }
 
-/// Reconstruct the completion text + token usage from an `OpenAI` Responses API
-/// response body (what codex speaks), handling both the buffered single-JSON
-/// shape and the SSE stream (`data: {...}` lines). Returns `(output_text,
-/// usage)`.
-///
-/// SSE reconstruction concatenates `response.output_text.delta` deltas and pulls
-/// usage from the terminal `response.completed`/`response.incomplete` event's
-/// `response.usage` object. Usage maps into the same Langfuse keys the Anthropic
-/// path uses: `input` = `input_tokens - cached_tokens`, `cache_read_input_tokens`
-/// = `cached_tokens`, `output` = `output_tokens`.
-pub fn reconstruct_openai(body: &[u8]) -> (Option<String>, Option<Value>) {
-    let text = String::from_utf8_lossy(body);
-    // Non-SSE: a single Responses object with a top-level `usage` and `output`.
-    if let Ok(v) = serde_json::from_str::<Value>(text.trim())
-        && (v.get("output").is_some() || v.get("usage").is_some())
-    {
-        return (openai_output_text(&v), v.get("usage").map(openai_usage));
-    }
-    reconstruct_openai_sse(&text)
-}
-
 /// Extract concatenated text from a non-streaming Responses `output` array
 /// (`output[].content[]` items of type `output_text`).
 fn openai_output_text(v: &Value) -> Option<String> {
@@ -522,43 +760,6 @@ fn openai_output_text(v: &Value) -> Option<String> {
         .filter_map(|c| c.get("text").and_then(Value::as_str))
         .collect();
     (!s.is_empty()).then_some(s)
-}
-
-/// Reconstruct from an `OpenAI` Responses SSE stream: concatenate
-/// `response.output_text.delta` deltas, pull usage from the terminal
-/// `response.completed`/`response.incomplete` event.
-fn reconstruct_openai_sse(text: &str) -> (Option<String>, Option<Value>) {
-    let mut out = String::new();
-    let mut usage: Option<Value> = None;
-    let mut saw_event = false;
-
-    for line in text.lines() {
-        let Some(data) = line.strip_prefix("data:") else { continue };
-        let trimmed = data.trim();
-        if trimmed == "[DONE]" {
-            continue;
-        }
-        let Ok(ev) = serde_json::from_str::<Value>(trimmed) else { continue };
-        saw_event = true;
-        match ev.get("type").and_then(Value::as_str) {
-            Some("response.output_text.delta") => {
-                if let Some(t) = ev.get("delta").and_then(Value::as_str) {
-                    out.push_str(t);
-                }
-            }
-            Some("response.completed" | "response.incomplete") => {
-                if let Some(u) = ev.pointer("/response/usage") {
-                    usage = Some(openai_usage(u));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if !saw_event {
-        return (None, None);
-    }
-    ((!out.is_empty()).then_some(out), usage)
 }
 
 /// Map an `OpenAI` Responses `usage` object into the shared Langfuse
@@ -638,11 +839,68 @@ mod tests {
             host: "https://lf.example/".into(),
             public_host: "https://lf.example/".into(),
             public_key: "pk".into(),
-            secret_key: "sk".into(),
+            secret_key: cctui_secrets::Secret::fixed(SECRET_KEY_ENV, "sk"),
             sample_rate: 1.0,
             capture_content: false,
         };
         assert!(cfg.basic_auth().starts_with("Basic "));
+    }
+
+    fn langfuse_env(secret: &str) -> impl Fn(&str) -> Option<String> + Send + Sync + '_ {
+        move |k| match k {
+            "CCTUI_LANGFUSE_HOST" => Some("https://lf.example/".to_owned()),
+            "CCTUI_LANGFUSE_PUBLIC_KEY" => Some("pk".to_owned()),
+            SECRET_KEY_ENV => Some(secret.to_owned()),
+            _ => None,
+        }
+    }
+
+    fn decoded_auth(cfg: &LangfuseConfig) -> String {
+        let header = cfg.basic_auth();
+        let b64 = header.strip_prefix("Basic ").unwrap();
+        String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b64).unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn langfuse_config_secret_key_resolves_from_every_ref_kind_and_follows_rotation() {
+        use crate::config::test_refs::{KIND_REFS, map_registry};
+        for reference in KIND_REFS {
+            let (map, registry) = map_registry("sk-v1");
+            let cfg = LangfuseConfig::from_lookup(&registry, langfuse_env(reference))
+                .await
+                .unwrap()
+                .expect("configured");
+            assert_eq!(decoded_auth(&cfg), "pk:sk-v1", "{reference}");
+
+            map.set(Some("sk-v2"));
+            registry.reload().await;
+            assert_eq!(decoded_auth(&cfg), "pk:sk-v2", "{reference}: next request uses it");
+
+            map.set(None);
+            registry.reload().await;
+            assert_eq!(decoded_auth(&cfg), "pk:sk-v2", "{reference}: failed refresh keeps it");
+        }
+    }
+
+    #[tokio::test]
+    async fn langfuse_config_literal_key_unchanged_and_bad_ref_names_the_var() {
+        use crate::config::test_refs::map_registry;
+        let (_, registry) = map_registry("unused");
+        let cfg = LangfuseConfig::from_lookup(&registry, langfuse_env("sk-lf-literal:x"))
+            .await
+            .unwrap()
+            .expect("configured");
+        assert_eq!(decoded_auth(&cfg), "pk:sk-lf-literal:x");
+
+        let msg = LangfuseConfig::from_lookup(&registry, langfuse_env("k8s:dev/absent#key"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains(SECRET_KEY_ENV), "{msg}");
+        assert!(msg.contains("k8s:dev/absent#key"), "{msg}");
+
+        let dark = LangfuseConfig::from_lookup(&registry, |_| None).await.unwrap();
+        assert!(dark.is_none());
     }
 
     #[test]
@@ -830,7 +1088,7 @@ mod tests {
                 host: "h".into(),
                 public_host: "h".into(),
                 public_key: "p".into(),
-                secret_key: "s".into(),
+                secret_key: cctui_secrets::Secret::fixed(SECRET_KEY_ENV, "s"),
                 sample_rate: 1.0,
                 capture_content: false,
             },
@@ -842,7 +1100,7 @@ mod tests {
                 host: "h".into(),
                 public_host: "h".into(),
                 public_key: "p".into(),
-                secret_key: "s".into(),
+                secret_key: cctui_secrets::Secret::fixed(SECRET_KEY_ENV, "s"),
                 sample_rate: 0.0,
                 capture_content: false,
             },
@@ -866,7 +1124,7 @@ mod tests {
                 host: "h".into(),
                 public_host: "h".into(),
                 public_key: "p".into(),
-                secret_key: "s".into(),
+                secret_key: cctui_secrets::Secret::fixed(SECRET_KEY_ENV, "s"),
                 sample_rate: 1.0,
                 capture_content: false,
             },
@@ -914,6 +1172,8 @@ mod tests {
             usage: Some(json!({"input": 10, "output": 5})),
             level: None,
             status_message: None,
+            request_redacted: false,
+            output_redacted: false,
         }
     }
 

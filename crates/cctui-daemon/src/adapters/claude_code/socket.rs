@@ -14,6 +14,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+use tracing::Instrument as _;
 
 use super::composer;
 
@@ -79,7 +80,13 @@ pub async fn one_shot(socket: &Path, request: &Value) -> Result<Value> {
 /// [`one_shot`] with an explicit bound on the whole exchange.
 pub async fn one_shot_within(socket: &Path, request: &Value, bound: Duration) -> Result<Value> {
     let op = request.get("op").and_then(Value::as_str).unwrap_or("?").to_owned();
-    match tokio::time::timeout(bound, exchange(socket, request)).await {
+    let span = crate::adapter_runtime::child_span!(
+        "claude.socket",
+        "one_shot",
+        otel.kind = "client",
+        rpc.method = %op,
+    );
+    match tokio::time::timeout(bound, exchange(socket, request)).instrument(span).await {
         Ok(res) => res,
         Err(_) => bail!(
             "claude daemon did not answer `{op}` within {}s ({})",
@@ -394,7 +401,28 @@ async fn probe_composer(socket: &Path, short: &str) -> composer::ComposerState {
     /// Bound on the whole probe — an unattachable worker must not hang a submit.
     const TIMEOUT: Duration = Duration::from_secs(3);
 
-    match tokio::time::timeout(TIMEOUT, attach_screen(socket, short, WINDOW)).await {
+    read_composer(socket, short, WINDOW, WINDOW, TIMEOUT).await
+}
+
+/// Read the composer off a fresh repaint, returning once the repaint has gone
+/// quiet. Only fit for an idle worker, whose screen stops changing after the
+/// repaint; a busy one repaints its spinner and simply runs to the window.
+async fn probe_composer_settled(socket: &Path, short: &str) -> composer::ComposerState {
+    const WINDOW: Duration = Duration::from_millis(700);
+    const QUIET: Duration = Duration::from_millis(250);
+    const TIMEOUT: Duration = Duration::from_secs(3);
+
+    read_composer(socket, short, WINDOW, QUIET, TIMEOUT).await
+}
+
+async fn read_composer(
+    socket: &Path,
+    short: &str,
+    window: Duration,
+    quiet: Duration,
+    bound: Duration,
+) -> composer::ComposerState {
+    match tokio::time::timeout(bound, attach_screen(socket, short, window, quiet)).await {
         Ok(Ok(screen)) => composer::composer_state(&screen),
         Ok(Err(err)) => {
             tracing::debug!(%err, %short, "composer probe failed");
@@ -404,10 +432,18 @@ async fn probe_composer(socket: &Path, short: &str) -> composer::ComposerState {
     }
 }
 
-/// Read one full screen frame from a worker: a fresh attach makes the worker
-/// repaint everything, so `window` of coalesced bytes is the current screen.
-/// Never writes after the request — the bytes would land as keystrokes.
-async fn attach_screen(socket: &Path, short: &str, window: Duration) -> Result<String> {
+/// Read one full screen frame from a worker.
+///
+/// A fresh attach makes the worker repaint everything, so the bytes coalesced
+/// within `window`, or until `quiet` passes with no new byte after the first,
+/// are the current screen. Never writes after the request — the bytes would
+/// land as keystrokes.
+async fn attach_screen(
+    socket: &Path,
+    short: &str,
+    window: Duration,
+    quiet: Duration,
+) -> Result<String> {
     let (mut reader, _write_half) = attach_handshake(socket, short).await?;
     let mut frame: Vec<u8> = Vec::new();
     let mut buf = vec![0_u8; READ_BUF];
@@ -417,7 +453,8 @@ async fn attach_screen(socket: &Path, short: &str, window: Duration) -> Result<S
         if now >= deadline {
             break;
         }
-        match tokio::time::timeout(deadline - now, reader.read(&mut buf)).await {
+        let wait = if frame.is_empty() { deadline - now } else { (deadline - now).min(quiet) };
+        match tokio::time::timeout(wait, reader.read(&mut buf)).await {
             Ok(Ok(0)) => bail!("worker detached during screen probe"),
             Ok(Ok(n)) => frame.extend_from_slice(&buf[..n]),
             Ok(Err(err)) => return Err(err.into()),
@@ -533,6 +570,41 @@ pub const CLEAR_COMPOSER_LINES: usize = 4;
 pub async fn attach_clear_composer(socket: &Path, short: &str) -> Result<()> {
     let chunks = vec![b"\x15\x7f".to_vec(); CLEAR_COMPOSER_LINES];
     attach_send_chunks(socket, short, &chunks).await
+}
+
+/// What the pre-reply clear did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposerClear {
+    /// A screen probe read an empty composer, so no key was sent.
+    Skipped,
+    /// The paced clear ran: the probe saw a draft or could not read the screen.
+    Cleared,
+}
+
+impl ComposerClear {
+    /// Stable label for logs and spans.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Skipped => "skipped_empty_screen",
+            Self::Cleared => "cleared",
+        }
+    }
+}
+
+/// Empty the composer before a `reply` unless one screen probe shows it empty.
+///
+/// A draft, a form or an unreadable screen gets the full
+/// [`attach_clear_composer`], keystroke for keystroke.
+pub async fn attach_clear_composer_unless_empty(
+    socket: &Path,
+    short: &str,
+) -> Result<ComposerClear> {
+    if probe_composer_settled(socket, short).await == composer::ComposerState::Empty {
+        return Ok(ComposerClear::Skipped);
+    }
+    attach_clear_composer(socket, short).await?;
+    Ok(ComposerClear::Cleared)
 }
 
 /// Attach to a worker's PTY mirror, inject `keys` as raw keystroke bytes, hold
@@ -933,6 +1005,91 @@ mod tests {
 
         attach_clear_composer(&sock, "aaaaaaaa").await.expect("clear should succeed");
         server.await.unwrap();
+    }
+
+    type Counter = std::sync::Arc<std::sync::atomic::AtomicU32>;
+    type Typed = std::sync::Arc<std::sync::Mutex<Vec<u8>>>;
+
+    /// Fake idle worker: every attach repaints `frame`, then every keystroke
+    /// is recorded. Returns the attach count and the keys typed.
+    fn spawn_idle_worker(
+        listener: tokio::net::UnixListener,
+        frame: &'static str,
+    ) -> (tokio::task::JoinHandle<()>, Counter, Typed) {
+        let attaches = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let typed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let attach_count = std::sync::Arc::clone(&attaches);
+        let keys_seen = std::sync::Arc::clone(&typed);
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else { return };
+                let (read_half, mut write_half) = stream.into_split();
+                let mut reader = BufReader::new(read_half);
+                let mut req = String::new();
+                if reader.read_line(&mut req).await.unwrap_or(0) == 0 {
+                    continue;
+                }
+                attach_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                write_half.write_all(b"{\"ok\":true,\"op\":\"attach\"}\n").await.unwrap();
+                write_half.write_all(frame.as_bytes()).await.unwrap();
+                let mut rest = Vec::new();
+                reader.read_to_end(&mut rest).await.unwrap();
+                keys_seen.lock().unwrap().extend_from_slice(&rest);
+            }
+        });
+        (server, attaches, typed)
+    }
+
+    /// An idle screen whose prompt row is empty needs no clear: one probe
+    /// attach, no keystroke, well under the paced clear's cost.
+    #[tokio::test]
+    async fn clear_unless_empty_skips_an_empty_composer() {
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let frame = "\x1b[2J\x1b[1;1H\u{2502} > \u{2502}\x1b[2;1H  ? for shortcuts";
+        let (server, attaches, typed) = spawn_idle_worker(listener, frame);
+
+        let started = tokio::time::Instant::now();
+        let outcome = attach_clear_composer_unless_empty(&sock, "aaaaaaaa").await.unwrap();
+        let took = started.elapsed();
+        assert_eq!(outcome, ComposerClear::Skipped);
+        assert!(took < Duration::from_millis(600), "the probe must settle early, took {took:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(attaches.load(Ordering::SeqCst), 1, "only the probe attaches");
+        assert!(typed.lock().unwrap().is_empty(), "no key may reach the composer");
+        server.abort();
+    }
+
+    /// A draft on screen, a screen with no prompt row and a silent attach all
+    /// keep today's clear: exactly `CLEAR_COMPOSER_LINES` Ctrl+U+Backspace steps.
+    #[tokio::test]
+    async fn clear_unless_empty_keeps_the_paced_clear_otherwise() {
+        use std::sync::atomic::Ordering;
+        let frames = [
+            "\x1b[2J\x1b[1;1H\u{2502} > restored draft \u{2502}",
+            "\x1b[2J\x1b[1;1H\u{2502} > \u{2502}\x1b[2;1H\u{2502}   [Image #1] \u{2502}",
+            "  Read(foo.rs)\n",
+            "",
+        ];
+        for frame in frames {
+            let dir = tempfile::tempdir().unwrap();
+            let sock = dir.path().join("control.sock");
+            let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+            let (server, attaches, typed) = spawn_idle_worker(listener, frame);
+
+            let outcome = attach_clear_composer_unless_empty(&sock, "aaaaaaaa").await.unwrap();
+            assert_eq!(outcome, ComposerClear::Cleared, "frame {frame:?}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert_eq!(attaches.load(Ordering::SeqCst), 2, "probe then clear, frame {frame:?}");
+            assert_eq!(
+                *typed.lock().unwrap(),
+                b"\x15\x7f".repeat(CLEAR_COMPOSER_LINES),
+                "frame {frame:?}"
+            );
+            server.abort();
+        }
     }
 
     /// Transcript mode stops re-pressing Enter once two presses each drew a

@@ -3,6 +3,7 @@ import { api } from './api';
 import type { DraftList } from '@bindings/DraftList';
 import type { PutDraftRequest } from '@bindings/PutDraftRequest';
 import { type DraftRemote, drafts, hydrateLocal, localRoamingKeys, setDraftRemote } from './drafts';
+import { redactStoredText } from './redactTag';
 
 /** Set once this browser's pre-existing drafts have been pushed up, so a later
  *  visit does not resurrect a draft the user deleted on another device. */
@@ -53,7 +54,7 @@ class ServerDrafts implements DraftRemote {
 		this.#timers.delete(key);
 		this.#pending.delete(key);
 		if (text === undefined) return;
-		const body: PutDraftRequest = { text };
+		const body: PutDraftRequest = { text: redactStoredText(text) };
 		void api.put(draftPath(key), body, keepalive ? { keepalive: true } : undefined).catch(() => {
 			/* offline / 401 — the local mirror still holds the text */
 		});
@@ -96,6 +97,10 @@ class ServerDrafts implements DraftRemote {
 			// Adopting the server's text makes a write queued before the load stale:
 			// letting it fire would push this tab's older copy back over it.
 			this.#cancel(d.key);
+			// The server only ever holds the masked form: keep this browser's real
+			// value when it is what the server copy was masked from.
+			const mine = drafts.get(d.key);
+			if (mine && redactStoredText(mine) === d.text) continue;
 			hydrateLocal(d.key, d.text);
 		}
 		if (localStorage.getItem(IMPORTED)) return;

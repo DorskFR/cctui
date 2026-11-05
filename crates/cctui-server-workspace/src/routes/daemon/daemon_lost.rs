@@ -47,6 +47,7 @@ pub(super) fn schedule_daemon_lost(
             tracing::info!(%machine_id, "daemon_lost mark skipped — machine heartbeating elsewhere");
             return;
         }
+        complete_finished_dispatches(&state, machine_id, &left).await;
         for session_id in mark_daemon_lost(&state.pool, machine_id, &left).await {
             crate::events::record(
                 &state,
@@ -125,6 +126,102 @@ async fn mark_guard_exited(
         }
         Err(err) => {
             tracing::warn!(%err, %machine_id, "guard-exited completion failed");
+            Vec::new()
+        }
+    }
+}
+
+/// `end_detail` of a dispatched run completed on the evidence its daemon's
+/// own end would have carried.
+const FINISHED_BEFORE_END: &str = "finished; its daemon disconnected before reporting the end";
+
+/// A dispatched run that settled done ends `completed`: that is the end its
+/// daemon sends at shutdown, which a socket closed first never delivers.
+async fn complete_finished_dispatches(state: &AppState, machine_id: Uuid, sessions: &[String]) {
+    for session_id in mark_finished_dispatches(&state.pool, machine_id, sessions).await {
+        crate::routes::gateway::revoke_session_tokens(state, &session_id).await;
+        crate::events::record(
+            state,
+            crate::events::Event::new(
+                crate::events::kind::SESSION_ENDED,
+                crate::events::Actor::Daemon,
+            )
+            .session(session_id)
+            .machine(machine_id)
+            .detail(serde_json::json!({
+                "end_reason": "completed",
+                "end_detail": FINISHED_BEFORE_END,
+            })),
+        );
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct DispatchedRow {
+    id: String,
+    #[sqlx(flatten)]
+    result: cctui_server_core::results::ResultRow,
+}
+
+/// The ids ended `completed`: dispatched sessions the result endpoint reports
+/// done, unless a workflow guard has not reached its exit.
+async fn mark_finished_dispatches(
+    pool: &sqlx::PgPool,
+    machine_id: Uuid,
+    sessions: &[String],
+) -> Vec<String> {
+    let candidates = sqlx::query_as::<_, DispatchedRow>(
+        "SELECT id, adapter_id, end_reason, ended_at, status, tempo, agent_state, activity, \
+                soft_limit_reason \
+         FROM sessions \
+         WHERE machine_uuid = $1 AND id = ANY($2) AND status IN ('new', 'active', 'inactive') \
+           AND end_reason IS NULL \
+           AND EXISTS (SELECT 1 FROM dispatch_records r WHERE r.session_id = sessions.id) \
+           AND NOT EXISTS (SELECT 1 FROM guard_steps g \
+                WHERE g.session_id = sessions.id AND (g.state->>'step')::bigint >= 0)",
+    )
+    .bind(machine_id)
+    .bind(sessions)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_else(|err| {
+        tracing::warn!(%err, %machine_id, "finished dispatch lookup failed");
+        Vec::new()
+    });
+    let finished: Vec<String> = candidates
+        .into_iter()
+        .filter(|row| row.result.done())
+        .filter(|row| crate::guard_step::get(&row.id).is_none_or(|step| step.exited()))
+        .map(|row| row.id)
+        .collect();
+    if finished.is_empty() {
+        return finished;
+    }
+    match sqlx::query_scalar::<_, String>(
+        "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = 'completed', \
+             end_detail = $3 \
+         WHERE machine_uuid = $1 AND id = ANY($2) AND status IN ('new', 'active', 'inactive') \
+           AND end_reason IS NULL \
+         RETURNING id",
+    )
+    .bind(machine_id)
+    .bind(&finished)
+    .bind(FINISHED_BEFORE_END)
+    .fetch_all(pool)
+    .await
+    {
+        Ok(ids) => {
+            if !ids.is_empty() {
+                tracing::info!(
+                    %machine_id,
+                    count = ids.len(),
+                    "finished dispatched sessions completed on disconnect"
+                );
+            }
+            ids
+        }
+        Err(err) => {
+            tracing::warn!(%err, %machine_id, "finished dispatch completion failed");
             Vec::new()
         }
     }
@@ -528,6 +625,74 @@ mod tests {
         assert_eq!(end_reason(&exited_here).await.as_deref(), Some("completed"));
         assert_eq!(end_reason(&mid_workflow).await.as_deref(), Some("daemon_lost"));
         assert_eq!(end_reason(&unguarded).await.as_deref(), Some("daemon_lost"));
+    }
+
+    /// A dispatched run that settled done before its worker's socket closed
+    /// ends `completed` though no `SessionEnded` arrived; a busy run, an
+    /// interactive session and a guard short of its exit still end lost.
+    #[tokio::test]
+    async fn a_finished_dispatch_without_session_ended_ends_completed() {
+        let Some(url) = crate::routes::gateway::test_db_url("daemon_lost_finished_dispatch") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let (uid, mid) = crate::events::tests::seed_user_machine(&pool, "dl-finished").await;
+        let seed = async |signals: &str, dispatched: bool, guard: Option<i64>| {
+            let sid = crate::events::tests::seed_session(&pool, uid, mid, None).await;
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "UPDATE sessions SET {signals} WHERE id = $1"
+            )))
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .expect("set signals");
+            if dispatched {
+                sqlx::query(
+                    "INSERT INTO dispatch_records (session_id, user_id, dispatcher_name, outcome) \
+                     VALUES ($1, $2, 'fixture', 'registered')",
+                )
+                .bind(&sid)
+                .bind(uid)
+                .execute(&pool)
+                .await
+                .expect("seed dispatch record");
+            }
+            if let Some(step) = guard {
+                let guard = cctui_proto::guard_step::GuardStepState { step, ..Default::default() };
+                sqlx::query("INSERT INTO guard_steps (session_id, state) VALUES ($1, $2)")
+                    .bind(&sid)
+                    .bind(sqlx::types::Json(&guard))
+                    .execute(&pool)
+                    .await
+                    .expect("seed guard step");
+            }
+            sid
+        };
+        let settled = "tempo = 'idle', agent_state = 'done'";
+        let finished = seed(settled, true, None).await;
+        let busy = seed("tempo = 'active', agent_state = 'working'", true, None).await;
+        let interactive = seed(settled, false, None).await;
+        let mid_workflow = seed(settled, true, Some(2)).await;
+        let sessions =
+            vec![finished.clone(), busy.clone(), interactive.clone(), mid_workflow.clone()];
+
+        let completed = super::mark_finished_dispatches(&pool, mid, &sessions).await;
+        assert_eq!(completed, vec![finished.clone()]);
+
+        let mut lost = super::mark_daemon_lost(&pool, mid, &sessions).await;
+        lost.sort();
+        let mut want = vec![busy, interactive, mid_workflow];
+        want.sort();
+        assert_eq!(lost, want, "a completed dispatch is never re-marked daemon_lost");
+
+        let (end_reason, end_detail): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT end_reason, end_detail FROM sessions WHERE id = $1")
+                .bind(&finished)
+                .fetch_one(&pool)
+                .await
+                .expect("session row");
+        assert_eq!(end_reason.as_deref(), Some("completed"));
+        assert_eq!(end_detail.as_deref(), Some(super::FINISHED_BEFORE_END));
     }
 
     /// A dispatched pod that reconnected to a peer replica re-announced its

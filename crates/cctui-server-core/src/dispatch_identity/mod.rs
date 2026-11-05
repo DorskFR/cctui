@@ -17,8 +17,10 @@ use uuid::Uuid;
 
 use crate::gateway::credentials::CredentialContext;
 
-/// A queued Job may wait long before its pod starts; past this the
-/// registration is dropped and a late pod fails its redeem.
+/// How long a registration nobody holds lives.
+///
+/// Past it a late pod fails its redeem. A dispatcher holding a queued Job keeps
+/// it this far ahead.
 const REGISTRATION_TTL_DAYS: i32 = 7;
 const K8S_NAME_MAX: usize = 63;
 
@@ -121,6 +123,59 @@ async fn insert(pool: &PgPool, r: &Registration<'_>) -> Result<bool, sqlx::Error
     .execute(pool)
     .await?;
     Ok(done.rows_affected() == 1)
+}
+
+/// Keep a queued registration and its sealed worker key alive.
+///
+/// Only a live, unredeemed registration of `dispatcher_id` is held, for
+/// [`REGISTRATION_TTL_DAYS`] ahead. The key's own lifetime is kept aside so
+/// redeem can re-arm it from the pod's start. `false` when nothing was held.
+async fn hold_queued(
+    pool: &PgPool,
+    dispatch_id: Uuid,
+    dispatcher_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let held: i64 = sqlx::query_scalar(
+        "WITH reg AS ( \
+             SELECT d.dispatch_id, COALESCE(d.key_lifetime, ( \
+                 SELECT k.expires_at - k.created_at FROM auth_keys k \
+                 WHERE k.key_hash = d.machine_key_hash AND k.kind = 'ephemeral')) AS lifetime \
+             FROM dispatch_identities d \
+             WHERE d.dispatch_id = $1 AND d.dispatcher_id = $2 \
+             AND d.redeemed_at IS NULL AND d.expires_at > now() \
+         ), held AS ( \
+             UPDATE dispatch_identities d SET held_at = now(), key_lifetime = reg.lifetime, \
+             expires_at = GREATEST(d.expires_at, now() + make_interval(days => $3)) \
+             FROM reg WHERE d.dispatch_id = reg.dispatch_id \
+             AND d.redeemed_at IS NULL AND d.expires_at > now() \
+             RETURNING d.machine_key_hash, d.expires_at \
+         ), kept AS ( \
+             UPDATE auth_keys k SET expires_at = GREATEST(k.expires_at, held.expires_at) \
+             FROM held WHERE k.key_hash = held.machine_key_hash AND k.kind = 'ephemeral' \
+             AND k.revoked_at IS NULL AND k.expires_at > now() \
+             RETURNING k.id \
+         ) SELECT count(*) FROM held",
+    )
+    .bind(dispatch_id)
+    .bind(dispatcher_id)
+    .bind(REGISTRATION_TTL_DAYS)
+    .fetch_one(pool)
+    .await?;
+    Ok(held > 0)
+}
+
+/// Give a held registration's key back its own lifetime, counted from redeem.
+async fn rearm_held_key(pool: &PgPool, dispatch_id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE auth_keys k SET expires_at = now() + d.key_lifetime \
+         FROM dispatch_identities d \
+         WHERE d.dispatch_id = $1 AND d.held_at IS NOT NULL AND d.key_lifetime IS NOT NULL \
+         AND k.key_hash = d.machine_key_hash AND k.kind = 'ephemeral' AND k.revoked_at IS NULL",
+    )
+    .bind(dispatch_id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,6 +283,28 @@ pub async fn register<S: CredentialContext + Clone + Send + Sync + 'static>(
     Ok(StatusCode::CREATED)
 }
 
+/// `POST /api/v1/dispatch/{id}/hold`: keep a queued Job's registration alive.
+///
+/// The dispatcher still holds this dispatch's Job in its queue, so its
+/// registration must not expire yet.
+pub async fn hold<S: CredentialContext + Clone + Send + Sync + 'static>(
+    State(state): State<S>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> ApiResult<StatusCode> {
+    let key = bearer(&headers)
+        .ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "dispatcher key required"))?;
+    let (dispatcher_id, _) = dispatcher_of(state.pool(), key)
+        .await
+        .map_err(|e| db_err(&e))?
+        .ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "invalid dispatcher key"))?;
+    if !hold_queued(state.pool(), id, dispatcher_id).await.map_err(|e| db_err(&e))? {
+        return Err(api_err(StatusCode::NOT_FOUND, "no live, unredeemed registration to hold"));
+    }
+    tracing::debug!(dispatch = %id, %dispatcher_id, "queued dispatch registration held");
+    Ok(StatusCode::NO_CONTENT)
+}
+
 fn rejected(dispatch_id: Uuid, why: &jwt::Rejection) -> (StatusCode, Json<ApiError>) {
     tracing::warn!(dispatch = %dispatch_id, reason = %why, "dispatch redeem rejected");
     let status = match why {
@@ -273,6 +350,9 @@ pub async fn redeem<S: CredentialContext + Clone + Send + Sync + 'static>(
     let machine_key = cctui_crypto::decrypt(&sealed, &state.vault_key()).ok_or_else(|| {
         api_err(StatusCode::INTERNAL_SERVER_ERROR, "stored machine key is unreadable")
     })?;
+    if let Err(error) = rearm_held_key(state.pool(), id).await {
+        tracing::warn!(dispatch = %id, %error, "held worker key keeps its queue expiry");
+    }
     tracing::info!(
         dispatch = %id, session = %bound.session_id, pod = %pod.pod_name, issuer = %pod.issuer,
         service_account = ?pod.service_account, "dispatch identity redeemed"

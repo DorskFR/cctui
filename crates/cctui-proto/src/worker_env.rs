@@ -59,8 +59,15 @@ pub fn valid_plugin_env_name(name: &str) -> bool {
 /// routing, account env). The server strips any caller-supplied copy.
 pub const SERVER_ENV_KEYS_FIELD: &str = "server_env_keys";
 
-const DISPATCHER_OWNED_EXACT: [&str; 5] =
-    ["CCTUI_URL", "CCTUI_MACHINE_KEY", "CCTUI_DISPATCH_ID", "SESSION_ID", "REPLY_URL"];
+const DISPATCHER_OWNED_EXACT: [&str; 7] = [
+    "CCTUI_URL",
+    "CCTUI_MACHINE_KEY",
+    "CCTUI_DISPATCH_ID",
+    "CCTUI_GUARD_EXEC",
+    "CCTUI_LANDLOCK_STRICT",
+    "SESSION_ID",
+    "REPLY_URL",
+];
 
 fn is_dispatcher_owned(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
@@ -182,6 +189,16 @@ mod tests {
         assert!(err.contains("CCTUI_URL"), "{err}");
         assert!(check_payload_env(&json!({ "env": { "OK": "1" } })).is_ok());
         assert!(check_payload_env(&json!({})).is_ok());
+    }
+
+    #[test]
+    fn confinement_switches_can_never_be_server_exempted() {
+        for k in ["CCTUI_GUARD_EXEC", "CCTUI_LANDLOCK_STRICT", "cctui_landlock_strict"] {
+            let p = json!({ "env": { k: "0" }, SERVER_ENV_KEYS_FIELD: [k] });
+            let err = check_payload_env(&p).unwrap_err();
+            assert!(err.contains(k), "{k}: {err}");
+            assert!(check_caller_payload_env(&p).is_err(), "{k}");
+        }
     }
 
     #[test]

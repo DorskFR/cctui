@@ -7,7 +7,8 @@
 //! webhook, not here. Secret-ref-shaped payload env is rejected.
 //!
 //! - Job name = `cctui-worker-<sha1(dedup_key||session_id)[:12]>`; a 409 on an
-//!   in-flight Job is `deduplicated`, on a terminal one `redispatched`.
+//!   in-flight Job is `deduplicated`, on a terminal one `redispatched`. The
+//!   handle also names the session the Job runs.
 //! - No Secret is created: the machine key and payload `env` are registered
 //!   with the server under a fresh dispatch id, and the Job carries only that
 //!   id. The pod's guard-proxy redeems its service-account token for them.
@@ -33,10 +34,15 @@ use cctui_proto::ws::WireDispatchSpec;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
-use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams, PropagationPolicy};
+use kube::api::{
+    Api, DeleteParams, ListParams, Patch, PatchParams, PostParams, Preconditions, PropagationPolicy,
+};
 use kube::{Client, Error as KubeError};
 use tokio_util::sync::CancellationToken;
 
+mod exposure;
+mod handle;
+mod queue_hold;
 mod registry;
 mod worker_exit;
 
@@ -74,6 +80,15 @@ struct RunEnv {
     machine_key: Option<String>,
     env: std::collections::BTreeMap<String, String>,
     identity: Option<String>,
+}
+
+/// See [`Spawner::admit`].
+struct Admission {
+    profile_name: String,
+    profile: WorkerProfileSpec,
+    exposure: Option<cctui_proto::api::DispatchExposure>,
+    name: String,
+    joined: Option<SpawnOutcome>,
 }
 
 #[derive(Clone, Copy)]
@@ -448,21 +463,23 @@ impl Spawner {
 
     /// Delete a Job and block until its name is free (background propagation
     /// GCs pods async; poll until the read 404s so the recreate can't race).
-    async fn delete_and_wait(&self, name: &str) -> anyhow::Result<()> {
+    ///
+    /// With `uid`, only that Job is deleted: a Job a concurrent dispatch
+    /// already recreated under the name survives, and the caller's create
+    /// then answers `deduplicated`.
+    async fn delete_and_wait(&self, name: &str, uid: Option<&str>) -> anyhow::Result<()> {
         let jobs = self.jobs();
-        let dp = DeleteParams {
-            propagation_policy: Some(PropagationPolicy::Background),
-            ..Default::default()
-        };
-        match jobs.delete(name, &dp).await {
+        match jobs.delete(name, &delete_params(uid)).await {
             Ok(_) => {}
             Err(KubeError::Api(e)) if e.code == 404 => {}
+            Err(KubeError::Api(e)) if e.code == 409 && uid.is_some() => return Ok(()),
             Err(e) => anyhow::bail!("deleting terminal Job: {e}"),
         }
         for _ in 0..60 {
             match jobs.get(name).await {
                 Err(KubeError::Api(e)) if e.code == 404 => return Ok(()),
                 Err(e) => anyhow::bail!("waiting for Job deletion: {e}"),
+                Ok(job) if replaced(&job, uid) => return Ok(()),
                 Ok(_) => tokio::time::sleep(Duration::from_millis(500)).await,
             }
         }
@@ -473,17 +490,49 @@ impl Spawner {
         self.jobs().create(&PostParams::default(), job).await
     }
 
-    fn outcome(&self, name: &str, status: &str) -> SpawnOutcome {
+    fn outcome(&self, name: &str, session: Option<&str>, status: &str) -> SpawnOutcome {
         SpawnOutcome {
-            handle: format!("jobs/{name}"),
+            handle: handle::format(name, session),
             namespace: Some(self.namespace.clone()),
             status: status.to_owned(),
+            exposure: None,
         }
     }
 
     /// Spawn a worker Job for the session. The dispatch is registered with
-    /// the server before the Job exists, so its pod can never redeem early.
+    /// the server before the Job exists, so its pod can never redeem early; a
+    /// dispatch a live Job already absorbs is answered before registering, so
+    /// it leaves no identity row behind.
     async fn dispatch_worker(&self, spec: &WireDispatchSpec) -> anyhow::Result<SpawnOutcome> {
+        let Admission { profile_name, profile, exposure, name, joined } = self.admit(spec).await?;
+        if let Some(joined) = joined {
+            return Ok(joined);
+        }
+        self.enforce_inflight_cap(&name).await?;
+        let suspend = self.profile_must_queue(&profile_name, profile.max_inflight, &name).await?;
+        let identity = JobIdentity { name: &name, dispatch_id: uuid::Uuid::new_v4() };
+        let job = Self::build_job(
+            &self.cctui_url,
+            &profile_name,
+            &profile,
+            spec,
+            identity,
+            self.default_deadline_secs,
+            suspend,
+        )?;
+        let registration =
+            Self::registration(&self.cctui_url, &profile, spec, &self.namespace, identity)?;
+        self.registry.register(&registration).await?;
+        let placed = self.place_job(&job, suspend, &name).await?;
+        Ok(SpawnOutcome { exposure, ..placed })
+    }
+
+    /// Resolve a dispatch up to its dedup decision, registering nothing.
+    ///
+    /// Yields the profile it selects (an unknown one errors) and the live Job,
+    /// if any, that absorbs it. The dedup check answers from this same step, so
+    /// it cannot disagree with the create path.
+    async fn admit(&self, spec: &WireDispatchSpec) -> anyhow::Result<Admission> {
         if spec.session_id.is_empty() {
             anyhow::bail!("session_id is required");
         }
@@ -496,26 +545,35 @@ impl Spawner {
         let profile = profiles
             .get(&profile_name)
             .await
-            .map_err(|e| anyhow::anyhow!("reading WorkerProfile `{profile_name}`: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("reading WorkerProfile `{profile_name}`: {e}"))?
+            .spec;
 
+        let exposure = profile.exposure.map(|e| exposure::wire_exposure(e, profile.human_gate));
         let name = worker_name(dedup_source(spec));
-        self.enforce_inflight_cap(&name).await?;
-        let suspend =
-            self.profile_must_queue(&profile_name, profile.spec.max_inflight, &name).await?;
-        let identity = JobIdentity { name: &name, dispatch_id: uuid::Uuid::new_v4() };
-        let job = Self::build_job(
-            &self.cctui_url,
-            &profile_name,
-            &profile.spec,
-            spec,
-            identity,
-            self.default_deadline_secs,
-            suspend,
-        )?;
-        let registration =
-            Self::registration(&self.cctui_url, &profile.spec, spec, &self.namespace, identity)?;
-        self.registry.register(&registration).await?;
-        self.place_job(&job, suspend, &name).await
+        let joined = self.absorbing_job(&name).await?.map(|live| SpawnOutcome {
+            exposure,
+            ..self.outcome(&name, handle::job_session(&live), "deduplicated")
+        });
+        Ok(Admission { profile_name, profile, exposure, name, joined })
+    }
+
+    /// The non-terminal Job already holding `name`. A concurrent dispatch
+    /// that slips past this still dedups in [`Self::place_job`]; its row then
+    /// lingers until the server's registration TTL drops it.
+    async fn absorbing_job(&self, name: &str) -> anyhow::Result<Option<Job>> {
+        let existing = self
+            .jobs()
+            .get_opt(name)
+            .await
+            .map_err(|e| anyhow::anyhow!("reading existing Job: {e}"))?;
+        Ok(existing.filter(|job| absorbs(Some(job))))
+    }
+
+    /// The session of whichever Job holds `name` now; `None` when it cannot be
+    /// read.
+    async fn holder_session(&self, name: &str) -> Option<String> {
+        let job = self.jobs().get_opt(name).await.ok()??;
+        handle::job_session(&job).map(ToOwned::to_owned)
     }
 
     /// Create the Job. Idempotent: a repeat dispatch of the same dedup key
@@ -529,8 +587,9 @@ impl Spawner {
         name: &str,
     ) -> anyhow::Result<SpawnOutcome> {
         let status = if suspend { "queued" } else { "dispatched" };
+        let ours = handle::job_session(job);
         match self.create(job).await {
-            Ok(_) => return Ok(self.outcome(name, status)),
+            Ok(_) => return Ok(self.outcome(name, ours, status)),
             Err(KubeError::Api(e)) if e.code == 409 => {}
             Err(e) => anyhow::bail!("creating Job: {e}"),
         }
@@ -542,22 +601,25 @@ impl Spawner {
             // Raced its own teardown — name is free again, create afresh.
             Err(KubeError::Api(e)) if e.code == 404 => {
                 self.create(job).await.map_err(|e| anyhow::anyhow!("creating Job: {e}"))?;
-                return Ok(self.outcome(name, status));
+                return Ok(self.outcome(name, ours, status));
             }
             Err(e) => anyhow::bail!("reading existing Job: {e}"),
         };
 
         if Self::job_terminal_state(&existing).is_none() {
             // In flight: keep idempotent dedup; the original run fires the callback.
-            return Ok(self.outcome(name, "deduplicated"));
+            return Ok(self.outcome(name, handle::job_session(&existing), "deduplicated"));
         }
 
         // Terminal: delete + recreate so a fresh run fires the callback.
-        self.delete_and_wait(name).await?;
+        self.delete_and_wait(name, existing.metadata.uid.as_deref()).await?;
         match self.create(job).await {
-            Ok(_) => Ok(self.outcome(name, if suspend { "queued" } else { "redispatched" })),
+            Ok(_) => Ok(self.outcome(name, ours, if suspend { "queued" } else { "redispatched" })),
             // A concurrent re-dispatch beat us — its run owns the callback now.
-            Err(KubeError::Api(e)) if e.code == 409 => Ok(self.outcome(name, "deduplicated")),
+            Err(KubeError::Api(e)) if e.code == 409 => {
+                let winner = self.holder_session(name).await;
+                Ok(self.outcome(name, winner.as_deref(), "deduplicated"))
+            }
             Err(e) => anyhow::bail!("recreating Job: {e}"),
         }
     }
@@ -622,7 +684,10 @@ impl Spawner {
     /// Resume suspended Jobs into freed profile slots, oldest-first, forever.
     /// Runs beside the WS loop; queue state lives entirely in the cluster, so a
     /// dispatcher restart picks the queue back up from the Job list.
+    ///
+    /// Every queued Job's server registration is held alive while it waits.
     pub async fn run_queue_reconciler(self, shutdown: CancellationToken) {
+        let mut holds = queue_hold::QueueHolds::default();
         let mut tick = tokio::time::interval(QUEUE_RECONCILE_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -630,13 +695,29 @@ impl Spawner {
                 () = shutdown.cancelled() => return,
                 _ = tick.tick() => {}
             }
-            if let Err(e) = self.reconcile_queues().await {
+            if let Err(e) = self.reconcile_queues(&mut holds).await {
                 tracing::warn!(error = %e, "queue reconcile failed");
             }
         }
     }
 
-    async fn reconcile_queues(&self) -> anyhow::Result<()> {
+    async fn hold_queued(&self, queued: &[&Job], holds: &mut queue_hold::QueueHolds) {
+        let ids = queued.iter().filter_map(|job| -> Option<uuid::Uuid> {
+            job.metadata.annotations.as_ref()?.get(ANNOTATION_DISPATCH_ID)?.parse().ok()
+        });
+        let now = std::time::Instant::now();
+        for id in holds.due(ids, now) {
+            match self.registry.hold(id).await {
+                Ok(()) => holds.held(id, now),
+                Err(e) => {
+                    tracing::warn!(dispatch = %id, error = %e, "queued registration hold failed");
+                    holds.failed(id, now);
+                }
+            }
+        }
+    }
+
+    async fn reconcile_queues(&self, holds: &mut queue_hold::QueueHolds) -> anyhow::Result<()> {
         let lp = ListParams::default().labels(&format!("{LABEL_ORIGIN}=cctui-kube-dispatcher"));
         let jobs = self.jobs().list(&lp).await?;
 
@@ -655,6 +736,9 @@ impl Spawner {
                 entry.0.push(job);
             }
         }
+
+        let queued: Vec<&Job> = by_profile.values().flat_map(|(_, q)| q.iter().copied()).collect();
+        self.hold_queued(&queued, holds).await;
 
         let profiles: Api<WorkerProfile> = Api::namespaced(self.client.clone(), &self.namespace);
         for (profile_name, (running, queued)) in by_profile {
@@ -735,7 +819,7 @@ impl Spawner {
                 return;
             }
         };
-        if let Err(e) = self.delete_and_wait(name).await {
+        if let Err(e) = self.delete_and_wait(name, None).await {
             tracing::warn!(job = %name, session = %session, error = %e, "deleting drifted worker Job failed; it stays stranded");
             return;
         }
@@ -885,12 +969,16 @@ impl Spawner {
     /// `Failed` with a reason, so the server's death-detector fires promptly
     /// instead of reading the workload as alive until the backoff budget runs.
     async fn worker_status(&self, handle: &str) -> anyhow::Result<(HandleState, Option<String>)> {
-        let name = handle.strip_prefix("jobs/").unwrap_or(handle);
+        let run = handle::JobHandle::parse(handle);
+        let name = run.name;
         let job = match self.jobs().get(name).await {
             Ok(j) => j,
             Err(KubeError::Api(e)) if e.code == 404 => return Ok((HandleState::Gone, None)),
             Err(e) => anyhow::bail!("reading Job {name}: {e}"),
         };
+        if !run.owns(&job) {
+            return Ok((HandleState::Gone, None));
+        }
         match Self::job_terminal_state(&job) {
             Some("Complete") => {
                 return Ok((HandleState::Complete, self.pod_oom_reason(name).await));
@@ -919,7 +1007,7 @@ impl Spawner {
     }
 
     async fn worker_queue_position(&self, handle: &str) -> Option<u32> {
-        let name = handle.strip_prefix("jobs/").unwrap_or(handle);
+        let name = handle::JobHandle::parse(handle).name;
         let job = self.jobs().get(name).await.ok()?;
         let profile = job.metadata.labels.as_ref()?.get(LABEL_WORKER_PROFILE)?;
         let lp = ListParams::default().labels(&format!(
@@ -1019,10 +1107,41 @@ impl Spawner {
         None
     }
 
+    /// Delete the handle's Job. A session-bound handle deletes only the Job
+    /// still running its session, so cancelling an earlier run never takes
+    /// down a later run of the same dedup key.
     async fn cancel_worker(&self, handle: &str) -> anyhow::Result<()> {
-        let name = handle.strip_prefix("jobs/").unwrap_or(handle);
-        self.delete_and_wait(name).await
+        let run = handle::JobHandle::parse(handle);
+        if run.session.is_none() {
+            return self.delete_and_wait(run.name, None).await;
+        }
+        let job = self
+            .jobs()
+            .get_opt(run.name)
+            .await
+            .map_err(|e| anyhow::anyhow!("reading Job {}: {e}", run.name))?;
+        match job {
+            Some(job) if run.owns(&job) => {
+                self.delete_and_wait(run.name, job.metadata.uid.as_deref()).await
+            }
+            _ => Ok(()),
+        }
     }
+}
+
+/// Background propagation, scoped to the Job `uid` names when given.
+fn delete_params(uid: Option<&str>) -> DeleteParams {
+    DeleteParams {
+        propagation_policy: Some(PropagationPolicy::Background),
+        preconditions: uid
+            .map(|uid| Preconditions { uid: Some(uid.to_owned()), resource_version: None }),
+        ..Default::default()
+    }
+}
+
+/// Whether the Job holding the name is no longer the one `uid` deleted.
+fn replaced(job: &Job, uid: Option<&str>) -> bool {
+    uid.is_some() && job.metadata.uid.as_deref() != uid
 }
 
 /// `spec.pod` labels or annotations under the cctui-managed `managed` keys,
@@ -1108,6 +1227,20 @@ impl Dispatcher for Spawner {
     async fn queue_position(&self, handle: &str) -> Option<u32> {
         self.worker_queue_position(handle).await
     }
+
+    fn supports_dedup_check(&self) -> bool {
+        true
+    }
+
+    async fn dedup_check(&self, spec: &WireDispatchSpec) -> anyhow::Result<Option<SpawnOutcome>> {
+        Ok(self.admit(spec).await?.joined)
+    }
+}
+
+/// Whether an existing Job of the same name takes over a dispatch: only a live
+/// one does, a terminal one is replaced.
+fn absorbs(existing: Option<&Job>) -> bool {
+    existing.is_some_and(|j| Spawner::job_terminal_state(j).is_none())
 }
 
 /// The order a profile's queue is resumed in: oldest first, then by name.
@@ -2422,6 +2555,17 @@ mod tests {
     }
 
     #[test]
+    fn only_a_live_job_absorbs_a_repeat_dispatch_before_registration() {
+        assert!(!absorbs(None), "no Job yet: register and create");
+        assert!(absorbs(Some(&listed_job("w", "2026-10-21T10:00:00Z", false, false))));
+        assert!(absorbs(Some(&listed_job("w", "2026-10-21T10:00:00Z", true, false))), "queued");
+        assert!(
+            !absorbs(Some(&listed_job("w", "2026-10-21T10:00:00Z", false, true))),
+            "a terminal Job is redispatched, so the new dispatch registers"
+        );
+    }
+
+    #[test]
     fn queue_position_counts_only_suspended_live_jobs_oldest_first() {
         let jobs = vec![
             listed_job("c", "2026-10-21T10:00:03Z", true, false),
@@ -2529,5 +2673,147 @@ mod tests {
             .filter_map(|j| j.metadata.name.as_deref())
             .collect();
         assert_eq!(resumed, ["early", "late"]);
+    }
+
+    #[test]
+    fn a_redispatch_deletes_only_the_terminal_job_it_read() {
+        let scoped = delete_params(Some("uid-old"));
+        assert_eq!(scoped.preconditions.and_then(|p| p.uid).as_deref(), Some("uid-old"));
+        assert!(delete_params(None).preconditions.is_none(), "a cancel deletes whatever holds it");
+
+        let mut job = Job::default();
+        job.metadata.uid = Some("uid-old".into());
+        assert!(!replaced(&job, Some("uid-old")), "the deleted Job is still going away");
+        job.metadata.uid = Some("uid-new".into());
+        assert!(replaced(&job, Some("uid-old")), "a concurrent dispatch already recreated it");
+        assert!(!replaced(&job, None));
+    }
+
+    #[test]
+    fn a_failed_later_run_of_the_same_key_is_never_an_earlier_sessions_workload() {
+        let mut first = spec("11111111-1111-4111-8111-111111111111", json!({}));
+        first.dedup_key = Some("pr-review-7".to_owned());
+        let mut later = spec("22222222-2222-4222-8222-222222222222", json!({}));
+        later.dedup_key = first.dedup_key.clone();
+        let name = worker_name(dedup_source(&first));
+        assert_eq!(name, worker_name(dedup_source(&later)), "both runs share one Job name");
+
+        let mut job: Job = serde_json::from_value(build("lean", &lean_profile(), &later)).unwrap();
+        job.status = serde_json::from_value(json!({
+            "conditions": [{ "type": "Failed", "status": "True", "reason": "BackoffLimitExceeded" }]
+        }))
+        .unwrap();
+        let current = handle::format(&name, handle::job_session(&job));
+        assert_eq!(current, format!("jobs/{name}/{}", later.session_id));
+        assert!(handle::JobHandle::parse(&current).owns(&job), "the failed run is its own");
+        let earlier = handle::format(&name, Some(&first.session_id));
+        assert!(
+            !handle::JobHandle::parse(&earlier).owns(&job),
+            "the earlier session reads its workload gone, not the later run's failure"
+        );
+    }
+
+    const NOT_FOUND: &str = r#"{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"not found","reason":"NotFound","details":{},"code":404}"#;
+
+    /// A stand-in API server holding WorkerProfile `p` and, when given, the
+    /// Job every dispatch maps to; every other request is a 404.
+    async fn fake_api(default_profile: &str, job: Option<&Job>) -> Spawner {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let profile = serde_json::to_string(&WorkerProfile::new("p", lean_profile())).unwrap();
+        let job = job.map(|j| serde_json::to_string(j).unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut tcp, _)) = listener.accept().await {
+                let (profile, job) = (profile.clone(), job.clone());
+                tokio::spawn(async move {
+                    let mut head = Vec::new();
+                    let mut chunk = [0_u8; 4096];
+                    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match tcp.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => head.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let head = String::from_utf8_lossy(&head);
+                    let path = head.split_whitespace().nth(1).unwrap_or_default();
+                    let found = if path.contains("/workerprofiles/p") {
+                        Some(profile)
+                    } else if path.contains("/jobs/") {
+                        job
+                    } else {
+                        None
+                    };
+                    let (status, body) = found.map_or_else(
+                        || ("404 Not Found", NOT_FOUND.to_owned()),
+                        |body| ("200 OK", body),
+                    );
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n\
+                         content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = tcp.write_all(response.as_bytes()).await;
+                    let _ = tcp.shutdown().await;
+                });
+            }
+        });
+        cctui_dispatcher_core::install_crypto_provider();
+        let client = Client::try_from(kube::Config::new(url.parse().unwrap())).unwrap();
+        Spawner {
+            namespace: "ns".into(),
+            default_profile: default_profile.into(),
+            cctui_url: "http://cctui.example.test".into(),
+            client,
+            registry: DispatchRegistry::new(
+                url,
+                cctui_dispatcher_core::secrets::Secret::fixed("dispatcher_key", "dk-test"),
+            ),
+            max_inflight: 0,
+            default_deadline_secs: 3600,
+        }
+    }
+
+    fn held_job(terminal: bool) -> Job {
+        let mut job = listed_job("held", "2026-10-21T10:00:00Z", false, terminal);
+        job.metadata.annotations =
+            Some([(ANNOTATION_SESSION_ID.to_owned(), "first-session".to_owned())].into());
+        job
+    }
+
+    /// The check and the create path answer from the same admission step: a
+    /// live Job is `deduplicated` onto the same handle by both, a terminal Job
+    /// or none lets the create path go on past dedup (to the registration a
+    /// keyless payload cannot pass) while the check answers none, and a
+    /// missing profile errors in both.
+    #[tokio::test]
+    async fn the_dedup_check_agrees_with_the_create_path() {
+        let mut s = spec("fresh-session", json!({}));
+        s.dedup_key = Some("triage-PROJ-1".into());
+        let name = worker_name("triage-PROJ-1");
+
+        let live = fake_api("p", Some(&held_job(false))).await;
+        let checked = live.dedup_check(&s).await.unwrap().expect("a live Job absorbs the check");
+        let created = live.dispatch(&s).await.unwrap();
+        assert_eq!(created.status, "deduplicated");
+        assert_eq!(checked.handle, format!("jobs/{name}/first-session"));
+        assert_eq!(
+            (&checked.handle, &checked.namespace, &checked.status, checked.exposure),
+            (&created.handle, &created.namespace, &created.status, created.exposure)
+        );
+
+        for job in [Some(held_job(true)), None] {
+            let spawner = fake_api("p", job.as_ref()).await;
+            assert!(spawner.dedup_check(&s).await.unwrap().is_none(), "{job:?}");
+            let err = spawner.dispatch(&s).await.unwrap_err().to_string();
+            assert!(err.contains("cctui_machine_key"), "the create path went on: {err}");
+        }
+
+        let unprofiled = fake_api("missing", Some(&held_job(false))).await;
+        let check = unprofiled.dedup_check(&s).await.unwrap_err().to_string();
+        let create = unprofiled.dispatch(&s).await.unwrap_err().to_string();
+        assert!(check.contains("reading WorkerProfile `missing`"), "{check}");
+        assert!(create.contains("reading WorkerProfile `missing`"), "{create}");
+        assert!(unprofiled.supports_dedup_check());
     }
 }

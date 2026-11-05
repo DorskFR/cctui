@@ -1,12 +1,12 @@
 //! Pruning of the per-session files the claude adapter writes into
-//! `~/.config/cctui`: `hook-settings-<short>.json`, `mcp-agent-<short>.json`
-//! and `whip-phrases-<short>.json`.
+//! `~/.config/cctui` (see `PREFIXES`), and of what the daemon keeps in
+//! memory for them.
 //!
 //! Two mechanisms, because neither alone is sufficient:
 //!
 //! * A targeted delete when a session ends *for good* (archived, spawn failed,
 //!   reaped). A plain worker exit is NOT such a point — cold resume reads the
-//!   hook-settings file back to recover the whip posture.
+//!   kept policy and posture back.
 //! * A sweep at daemon boot and every few hours for everything the targeted
 //!   path missed (daemon killed mid-flight, sessions removed server-side):
 //!   files whose `<short>` matches no session this machine still knows about,
@@ -19,7 +19,8 @@ use std::time::{Duration, SystemTime};
 
 use tokio_util::sync::CancellationToken;
 
-const PREFIXES: &[&str] = &["hook-settings-", "mcp-agent-", "whip-phrases-"];
+const PREFIXES: &[&str] =
+    &["hook-policy-", "hook-posture-", "hook-settings-", "mcp-agent-", "whip-phrases-"];
 
 /// Files older than this go regardless of whether their session is still known.
 pub const MAX_AGE: Duration = Duration::from_hours(24 * 30);
@@ -87,10 +88,12 @@ pub fn remove_session_files(short: &str) {
 }
 
 fn remove_session_files_in(dir: &Path, short: &str) -> usize {
-    PREFIXES
-        .iter()
-        .filter(|p| std::fs::remove_file(dir.join(format!("{p}{short}.json"))).is_ok())
-        .count()
+    PREFIXES.iter().filter(|p| remove(&dir.join(format!("{p}{short}.json")))).count()
+}
+
+fn remove(path: &Path) -> bool {
+    crate::adapters::claude_code::forget_session_file(path);
+    std::fs::remove_file(path).is_ok()
 }
 
 fn expired(modified: SystemTime, now: SystemTime, max_age: Duration) -> bool {
@@ -120,7 +123,7 @@ pub fn sweep_dir<S: std::hash::BuildHasher>(
         if !stale && (live.contains(short) || too_young(modified, now)) {
             continue;
         }
-        if std::fs::remove_file(entry.path()).is_ok() {
+        if remove(&entry.path()) {
             removed += 1;
         }
     }
@@ -196,6 +199,7 @@ mod tests {
         assert_eq!(session_short("hook-settings-aabb0011.json"), Some("aabb0011"));
         assert_eq!(session_short("mcp-agent-deadbeef.json"), Some("deadbeef"));
         assert_eq!(session_short("whip-phrases-00000000.json"), Some("00000000"));
+        assert_eq!(session_short("hook-posture-aabb0011.json"), Some("aabb0011"));
 
         for other in [
             "ask-hook-settings.json",
@@ -252,7 +256,7 @@ mod tests {
             ["aaaa0001", "aaaa0002"].into_iter().map(str::to_owned).collect();
         let removed = sweep_dir(dir, &live, SystemTime::now(), MAX_AGE).unwrap();
 
-        assert_eq!(removed, 150);
+        assert_eq!(removed, 50 * PREFIXES.len());
         for short in ["aaaa0001", "aaaa0002"] {
             for p in PREFIXES {
                 assert!(dir.join(format!("{p}{short}.json")).exists(), "{p}{short} must survive");
@@ -278,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn per_session_removal_drops_all_three_and_nothing_else() {
+    fn per_session_removal_drops_every_prefix_and_nothing_else() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         for p in PREFIXES {
@@ -286,7 +290,7 @@ mod tests {
             seed(dir, &format!("{p}aaaa0002.json"), Duration::from_secs(1));
         }
 
-        assert_eq!(remove_session_files_in(dir, "aaaa0001"), 3);
+        assert_eq!(remove_session_files_in(dir, "aaaa0001"), PREFIXES.len());
         assert_eq!(remove_session_files_in(dir, "aaaa0001"), 0);
         for p in PREFIXES {
             assert!(!dir.join(format!("{p}aaaa0001.json")).exists());

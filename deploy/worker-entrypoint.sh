@@ -57,6 +57,25 @@ extra_rw_flags() {
     IFS=$_OLDIFS
 }
 
+# CCTUI_GUARD_EXEC=1 (exactly) makes cctui-guard authorise every exec of the
+# supervised tree via a seccomp user-notification filter, and makes the
+# supervisor's RW paths noexec. Any other value, or unset, leaves both off.
+GUARD_EXEC_SOCKET=/var/run/workflow-guard/exec.sock
+guard_exec_on() { [ "${CCTUI_GUARD_EXEC:-}" = 1 ]; }
+guard_exec_flags() {
+    guard_exec_on || return 0
+    printf '%s\n%s\n' --guard-exec "$GUARD_EXEC_SOCKET"
+}
+
+# Landlock is mandatory: on a kernel without it the supervisor refuses to start.
+# Only CCTUI_LANDLOCK_STRICT=0 (exactly) makes it best-effort; a dispatch env
+# cannot set it.
+landlock_strict_on() { [ "${CCTUI_LANDLOCK_STRICT:-}" != 0 ]; }
+landlock_strict_flags() {
+    landlock_strict_on || return 0
+    printf '%s\n' --strict
+}
+
 
 # ── Required platform identity ──────────────────────────────────────────────
 if [ -z "${CCTUI_MACHINE_KEY:-}" ]; then
@@ -103,6 +122,19 @@ as_worker() {
 }
 
 is_root || log "running as uid $(id -u) (non-root): root-only bootstrap steps are skipped"
+
+# mkdir -p that leaves every level under the worker home worker-owned: a root
+# mkdir -p would leave the intermediate dirs (e.g. ~/.config/cctui) root-owned.
+mkdir_worker() {
+    mkdir -p "$1" || return
+    is_root || return 0
+    _mw_d="$1"
+    while :; do
+        case "$_mw_d" in "/home/${WORKER_USER}"/*) ;; *) break ;; esac
+        chown "${WORKER_UID}:${WORKER_UID}" "$_mw_d" 2>/dev/null || true
+        _mw_d=$(dirname "$_mw_d")
+    done
+}
 
 # The ACP agents the image bakes (crates/cctui-daemon/src/adapters/acp/rows.rs).
 ACP_AGENTS="gemini qwen goose"
@@ -173,7 +205,8 @@ phase_dispatch_env() {
                 dispatch_identity_failed "the server sent an invalid env name" ;;
             CONTEXT_PACK_*) ;;
             WORKER_* | GUARD_* | PROXY_* | POLICY_* | CONTEXT_* | PRIVATE_ALLOW_FILE \
-                | TERMINATION_LOG | DISPATCH_ENV_URL | NET_MODE | ACP_AGENTS | CCTUI_BASE_URL)
+                | TERMINATION_LOG | DISPATCH_ENV_URL | NET_MODE | ACP_AGENTS | CCTUI_BASE_URL \
+                | CCTUI_GUARD_EXEC | CCTUI_LANDLOCK_STRICT)
                 dispatch_identity_failed "the server sent a reserved env name: $_de_k" ;;
         esac
         _de_v=$(printf '%s' "$_de_json" \
@@ -457,10 +490,105 @@ phase_repo_registries() {
         && log "repo registries allowed: $(printf '%s' "$_rr_hps" | tr '\n' ',' | sed 's/,/, /g')"
 }
 
+# In-container transparent egress: the same rules net-init installs for the
+# sidecar mode. Only PROXY_UID (and loopback) egresses directly: every other uid,
+# root included, has its TCP REDIRECTed to the proxy and everything else
+# REJECTed; link-local is REJECTed for all, IPv6 denied wholesale. There is no
+# negated owner match: a uid the rules do not name is confined, not exempt.
+# DNS goes to WORKER_DNS_RESOLVER (IPv4 or name, fatal when unresolvable) when
+# set, else to the first IPv4 nameserver as is. $1: the resolv.conf to read.
+install_transparent_rules() {
+    _dns=$(awk '/^nameserver/ && $2 ~ /^[0-9.]+$/ {print $2; exit}' "$1" 2>/dev/null || true)
+    # Resolved before any rule exists, so the lookup still uses the resolver.
+    _rdns=$_dns
+    if [ -n "$_dns" ] && [ -n "${WORKER_DNS_RESOLVER:-}" ]; then
+        case "$WORKER_DNS_RESOLVER" in
+            *[!0-9.]*) _rdns=$(getent ahostsv4 "$WORKER_DNS_RESOLVER" 2>/dev/null \
+                | awk '{print $1; exit}' || true) ;;
+            *) _rdns=$WORKER_DNS_RESOLVER ;;
+        esac
+        if [ -z "$_rdns" ]; then
+            log "FATAL: cannot resolve WORKER_DNS_RESOLVER $WORKER_DNS_RESOLVER; refusing to start"
+            exit 1
+        fi
+    fi
+
+    iptables -t nat -A OUTPUT -m owner --uid-owner "$PROXY_UID" -j RETURN
+    iptables -t nat -A OUTPUT -d 127.0.0.0/8 -j RETURN
+
+    if [ -n "$_dns" ]; then
+        for _p in udp tcp; do
+            if [ "$_rdns" = "$_dns" ]; then
+                iptables -t nat -A OUTPUT -p "$_p" -d "$_dns" --dport 53 -j RETURN
+            else
+                iptables -t nat -A OUTPUT -p "$_p" -d "$_dns" --dport 53 \
+                    -j DNAT --to-destination "$_rdns:53"
+            fi
+        done
+        log "iptables: DNS to $_dns:53 -> $_rdns:53"
+    fi
+
+    # Operator-plane direct exemptions: comma-separated host:port, resolved to
+    # IPv4 (getent ahostsv4: dual-stack hosts return AAAA first) and RETURNed.
+    if [ -n "${WORKER_NET_EXEMPT:-}" ]; then
+        _OLDIFS=$IFS; IFS=,
+        for _e in $WORKER_NET_EXEMPT; do
+            IFS=$_OLDIFS
+            _h=$(printf '%s' "$_e" | sed 's,:.*$,,')
+            [ -n "$_h" ] || continue
+            _ip=$(getent ahostsv4 "$_h" 2>/dev/null | awk '{print $1; exit}' || true)
+            if [ -n "$_ip" ]; then
+                # One unreachable exempt host must not abort the setup (set -e).
+                if iptables -t nat -A OUTPUT -d "$_ip" -j RETURN 2>/dev/null; then
+                    log "iptables: RETURN exempt $_h ($_ip)"
+                else
+                    log "WARNING: iptables exempt rule failed for $_h ($_ip)"
+                fi
+            else
+                log "WARNING: could not resolve WORKER_NET_EXEMPT host $_h"
+            fi
+            IFS=,
+        done
+        IFS=$_OLDIFS
+    fi
+
+    # RETURN link-local from nat first, else the REDIRECT rewrites the
+    # destination and the filter REJECT cannot match it.
+    iptables -t nat -A OUTPUT -d 169.254.0.0/16 -j RETURN
+    iptables -t nat -A OUTPUT -p tcp -j REDIRECT --to-port "$PROXY_PORT"
+    log "iptables: egress of every uid but $PROXY_UID -> :$PROXY_PORT"
+
+    iptables -A OUTPUT -m owner --uid-owner "$PROXY_UID" -j ACCEPT
+    iptables -A OUTPUT -d 169.254.0.0/16 -j REJECT
+    log "iptables: egress to 169.254.0.0/16 REJECTed (metadata/credential deny)"
+
+    # Only TCP reaches the proxy; REJECT (not DROP) so UDP/QUIC fails fast.
+    iptables -A OUTPUT -o lo -j ACCEPT
+    if [ -n "$_rdns" ]; then
+        iptables -A OUTPUT -p udp -d "$_rdns" --dport 53 -j ACCEPT
+        iptables -A OUTPUT -p tcp -d "$_rdns" --dport 53 -j ACCEPT
+    else
+        log "WARNING: no IPv4 nameserver in $1; DNS is REJECTed"
+    fi
+    iptables -A OUTPUT ! -p tcp -j REJECT
+    log "iptables: non-TCP egress REJECTed (DNS to ${_rdns:-<none>}:53 allowed)"
+
+    # The proxy + REDIRECT are IPv4-only (SO_ORIGINAL_DST): deny IPv6 egress.
+    if ip6tables -L >/dev/null 2>&1; then
+        ip6tables -A OUTPUT -o lo -j ACCEPT
+        ip6tables -A OUTPUT -j REJECT
+        log "ip6tables: IPv6 egress denied (forces IPv4 fallback)"
+    else
+        log "WARNING: ip6tables unavailable — IPv6 egress is UNFILTERED"
+    fi
+}
+
 NET_MODE=""
 phase_network() {
     # Decide the mode. Explicit WORKER_NET_MODE wins; else transparent iff we
-    # can actually install iptables rules (a proxy for CAP_NET_ADMIN).
+    # can actually install iptables rules (a proxy for CAP_NET_ADMIN). An
+    # auto-selected forward still faces an enforcing preflight, which its
+    # unfiltered egress fails.
     NET_MODE="${WORKER_NET_MODE:-}"
     if [ -z "$NET_MODE" ]; then
         if iptables -t nat -L >/dev/null 2>&1; then
@@ -492,65 +620,17 @@ phase_network() {
     fi
 
     if [ "$NET_MODE" = transparent ]; then
-        if iptables -t nat -L >/dev/null 2>&1; then
-            # Exempt root + proxy uid (avoid a redirect loop), loopback.
-            iptables -t nat -A OUTPUT -m owner --uid-owner 0 -j RETURN
-            iptables -t nat -A OUTPUT -m owner --uid-owner "$PROXY_UID" -j RETURN
-            iptables -t nat -A OUTPUT -d 127.0.0.0/8 -j RETURN
-
-            # DNS (TCP fallback; UDP/53 bypasses the TCP-only REDIRECT already).
-            _dns=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null || true)
-            if [ -n "$_dns" ]; then
-                iptables -t nat -A OUTPUT -d "$_dns" -j RETURN
-                log "iptables: RETURN DNS $_dns"
-            fi
-
-            # Operator-plane direct exemptions: comma-separated host:port.
-            # These bypass the proxy entirely (resolve to IPs and RETURN).
-            if [ -n "${WORKER_NET_EXEMPT:-}" ]; then
-                _OLDIFS=$IFS; IFS=,
-                for _e in $WORKER_NET_EXEMPT; do
-                    IFS=$_OLDIFS
-                    _h=$(printf '%s' "$_e" | sed 's,:.*$,,')
-                    [ -n "$_h" ] || continue
-                    # IPv4 only: this is an IPv4 iptables chain, and getent
-                    # hosts would return an AAAA record first for dual-stack
-                    # public hosts (e.g. automation.example.internal), which iptables rejects.
-                    _ip=$(getent ahostsv4 "$_h" 2>/dev/null | awk '{print $1; exit}' || true)
-                    if [ -n "$_ip" ]; then
-                        # Don't let one unreachable exempt host (set -e) abort
-                        # the whole guard setup — log and carry on.
-                        if iptables -t nat -A OUTPUT -d "$_ip" -j RETURN 2>/dev/null; then
-                            log "iptables: RETURN exempt $_h ($_ip)"
-                        else
-                            log "WARNING: iptables exempt rule failed for $_h ($_ip)"
-                        fi
-                    else
-                        log "WARNING: could not resolve WORKER_NET_EXEMPT host $_h"
-                    fi
-                    IFS=,
-                done
-                IFS=$_OLDIFS
-            fi
-
-            # Everything else from the worker: REDIRECT into the proxy.
-            iptables -t nat -A OUTPUT -p tcp -m owner --uid-owner "$WORKER_UID" \
-                -j REDIRECT --to-port "$PROXY_PORT"
-            log "iptables: worker egress (uid $WORKER_UID) -> :$PROXY_PORT"
-
-            # Deny IPv6 egress: the proxy + REDIRECT are IPv4-only
-            # (SO_ORIGINAL_DST), so any IPv6 egress would bypass the filter.
-            if ip6tables -L >/dev/null 2>&1; then
-                ip6tables -A OUTPUT -o lo -j ACCEPT
-                ip6tables -A OUTPUT -j REJECT
-                log "ip6tables: IPv6 egress denied (forces IPv4 fallback)"
-            else
-                log "WARNING: ip6tables unavailable — IPv6 egress is UNFILTERED"
-            fi
-        else
-            log "WARNING: transparent requested but iptables unavailable; falling back to forward"
-            NET_MODE=forward
+        if ! iptables -t nat -L >/dev/null 2>&1; then
+            log "FATAL: transparent egress needs iptables (CAP_NET_ADMIN), which is unusable here; refusing to start (set WORKER_NET_MODE=forward to opt into the honor-system proxy env)"
+            exit 1
         fi
+        # Only the proxy uid bypasses the redirect: a proxy left running as root
+        # would redirect its own upstream connects into itself.
+        if ! command -v setpriv >/dev/null 2>&1; then
+            log "FATAL: transparent egress needs setpriv to run the guard-proxy as uid $PROXY_UID; refusing to start"
+            exit 1
+        fi
+        install_transparent_rules /etc/resolv.conf
     fi
 
     if [ "$NET_MODE" = forward ]; then
@@ -994,7 +1074,7 @@ projects projects"
         _tgt=$(pack_dir_target "$_key")
         [ -n "$_tgt" ] || continue
         [ -d "$CONTEXT_DIR/$_srcd" ] || continue
-        mkdir -p "${_home}/${_tgt}"
+        mkdir_worker "${_home}/${_tgt}"
         cp -a "$CONTEXT_DIR/$_srcd/." "${_home}/${_tgt}/" 2>/dev/null || true
         [ "$_key" = hooks ] && chmod +x "${_home}/${_tgt}"/*.sh 2>/dev/null || true
         chown -R "${WORKER_UID}:${WORKER_UID}" "${_home}/${_tgt}" 2>/dev/null || true
@@ -1179,6 +1259,7 @@ phase_codex_config() {
         printf 'http_headers = { "x-openai-actor-authorization" = "cctui-gateway" }\n'
         printf '[features]\n'
         printf 'fast_mode = false\n'
+        printf 'hooks = true\n'
         # MCP tables MUST stay last: a bare key after a [table] binds to it.
         if adapter_is_codex && [ -f "$CONTEXT_DIR/mcp.json" ]; then
             codex_mcp_toml "$CONTEXT_DIR/mcp.json"
@@ -1319,6 +1400,10 @@ phase_guard() {
         IFS=$_OLDIFS
     fi
 
+    if guard_exec_on; then
+        set -- "$@" --exec-socket "$GUARD_EXEC_SOCKET"
+    fi
+
     is_root || log "WARNING: guard: non-root start, cctui-guard runs as the agent's uid $(id -u)"
     cctui-guard "$@" &
     GUARD_PID=$!
@@ -1334,9 +1419,26 @@ phase_guard() {
     log "guard: started (prompt=$_prompt, rules=$_rules, pid $GUARD_PID)"
 }
 
+# Exec interception has no policy to apply without the guard: refuse to start
+# rather than run the agent with the opt-in silently dropped.
+phase_guard_exec() {
+    guard_exec_on || return 0
+    if [ "$GUARD_ON" != on ]; then
+        log "FATAL: CCTUI_GUARD_EXEC=1 but cctui-guard is not running (no stepped prompt); refusing to start"
+        exit 1
+    fi
+    log "guard: exec interception on (socket $GUARD_EXEC_SOCKET); RW paths are noexec"
+}
+
+phase_landlock() {
+    landlock_strict_on && return 0
+    log "WARNING: CCTUI_LANDLOCK_STRICT=0: Landlock is best-effort; on a kernel without it the agent runs WITHOUT filesystem confinement"
+}
+
 # ── Phase 6b: Pre-flight isolation check ────────────────────────────────────
-# An unset mode warns outside transparent-external: only there does net-init
-# filter the agent's non-proxied egress, so elsewhere the probes cannot pass.
+# An unset mode enforces, except when WORKER_NET_MODE=forward was asked for
+# explicitly: forward filters nothing, so its probes cannot pass and opting
+# into it is opting into a warning.
 PREFLIGHT_TIMEOUT=0.3
 PREFLIGHT_CONTROL_TIMEOUT=2
 PREFLIGHT_RESULT=off
@@ -1464,8 +1566,8 @@ preflight_control() {
 phase_preflight() {
     _mode="${CCTUI_PREFLIGHT_MODE:-}"
     if [ -z "$_mode" ]; then
-        _mode=warn
-        [ "$NET_MODE" = transparent-external ] && _mode=enforce
+        _mode=enforce
+        [ "$NET_MODE" = forward ] && [ "${WORKER_NET_MODE:-}" = forward ] && _mode=warn
     fi
     case "$_mode" in
         off) log "preflight: off"; PREFLIGHT_RESULT=off; return 0 ;;
@@ -1544,6 +1646,45 @@ phase_hardening() {
     log "hardening: net_mode=$NET_MODE guard=$GUARD_ON preflight=$PREFLIGHT_RESULT"
 }
 
+# Only with a live guard: the shims fail closed and would block every tool.
+# OpenCode sessions get an ephemeral XDG_CONFIG_HOME, hence OPENCODE_CONFIG_DIR.
+install_guard_shims() {
+    [ "${GUARD_ON:-}" = on ] || return 0
+    _shims="${GUARD_SHIMS_DIR:-/usr/local/share/cctui/guard-shims}"
+    if [ ! -d "$_shims" ]; then
+        log "WARNING: guard: no shims at $_shims; codex/opencode tool calls are not steered"
+        return 0
+    fi
+    _home="/home/${WORKER_USER}"
+
+    _ocdir="${OPENCODE_CONFIG_DIR:-${_home}/.config/cctui/opencode}"
+    mkdir_worker "$_ocdir/plugins"
+    cp -f "$_shims/opencode/plugins/cctui-guard.js" "$_ocdir/plugins/cctui-guard.js"
+    export OPENCODE_CONFIG_DIR="$_ocdir"
+    chown -R "${WORKER_UID}:${WORKER_UID}" "$_ocdir" 2>/dev/null || true
+    log "guard: opencode plugin installed in $_ocdir/plugins"
+
+    _cxdir="${CODEX_HOME:-${_home}/.codex}"
+    _hooks="$_cxdir/hooks.json"
+    _cmd="$_shims/codex/pretool.sh"
+    mkdir -p "$_cxdir"
+    [ -s "$_hooks" ] || printf '{}\n' > "$_hooks"
+    _t=$(mktemp)
+    if jq --arg cmd "$_cmd" \
+        '.hooks = ((.hooks // {})
+         | .PreToolUse = ((.PreToolUse // [])
+           | if any(.[]?; ((.hooks // [])[]?.command // "") == $cmd) then .
+             else . + [{hooks: [{type: "command", command: $cmd}]}] end))' \
+        "$_hooks" > "$_t"; then
+        mv "$_t" "$_hooks"
+        chown "${WORKER_UID}:${WORKER_UID}" "$_hooks" 2>/dev/null || true
+        log "guard: codex PreToolUse shim registered in $_hooks"
+    else
+        rm -f "$_t"
+        log "WARNING: guard: $_hooks is not valid JSON; codex tool calls are not steered"
+    fi
+}
+
 # ── Phase 7b: Permission bypass seeding ─────────────────────────────────────
 # Seed claude's bypass-permissions and trust-dialog acceptance into the fresh
 # per-pod config, merged into existing files.
@@ -1593,6 +1734,7 @@ phase_permissions() {
             log "permissions: registered PreToolUse hook $(basename "$_hk")"
         done
     fi
+    install_guard_shims
     # .claude is a per-pod emptyDir (not the NFS home), so a recursive chown
     # is safe here (unlike the home).
     chown -R "${WORKER_UID}:${WORKER_UID}" "$_cfgdir" 2>/dev/null || true
@@ -1674,6 +1816,8 @@ phase_callback
 require_known_adapter
 phase_preflight
 phase_guard
+phase_guard_exec
+phase_landlock
 phase_permissions
 default_node_ca
 phase_hardening
@@ -1694,6 +1838,8 @@ run_supervised_daemon() {
         --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \
         --ro /var/run/workflow-guard --ro /var/run/guard-proxy --rw /var/run/gpg-agent \
         $(extra_rw_flags) \
+        $(guard_exec_flags) \
+        $(landlock_strict_flags) \
         --user "$WORKER_UID" \
         --report /tmp/hardening.json \
         -- cctui-daemon run --no-auto-update "$@"
@@ -1923,13 +2069,34 @@ await_dispatch_done() {
     done
 }
 
+# The daemon refused the dispatched session's launch, or exited without ever
+# registering it.
+session_never_started() {
+    if result_valid; then
+        [ "$(jq -r '.cause // empty' "$RESULT_FILE" 2>/dev/null)" = launch-refused ]
+        return
+    fi
+    ! dispatch_done_marker && ! guard_exited && [ "$_SEEN_ALIVE" = 0 ]
+}
+
+# Non-zero when the dispatched session never started, with the launch error as
+# the container's termination message, so the Job fails on the real cause.
+dispatch_exit() {
+    session_never_started || exit 0
+    _why=$(jq -r '.error // empty' "$RESULT_FILE" 2>/dev/null || true)
+    _why="${_why:-the daemon exited before registering the session}"
+    log "dispatch: session ${SESSION_ID%%-*} never started: $_why"
+    { printf 'launch refused: %s' "$_why" > "$TERMINATION_LOG"; } 2>/dev/null || true
+    exit 1
+}
+
 if [ -n "${SESSION_ID:-}" ] && [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
     log "dispatched worker -> background cctui-daemon + dual-signal wait"
     run_supervised_daemon "$@" &
     DAEMON_PID=$!
     await_dispatch_done
     stop_daemon_gracefully
-    exit 0
+    dispatch_exit
 fi
 
 log "thin worker -> exec cctui-supervisor -> cctui-daemon (run forever)"

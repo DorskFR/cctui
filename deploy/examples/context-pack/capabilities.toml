@@ -1,0 +1,160 @@
+# Capability registry (context pack example). Steps grant capabilities by name:
+# `[allowed]: harness:baseline, read:all, git:push`. Hosts are neutral
+# placeholders.
+
+# Under exec interception (CCTUI_GUARD_EXEC=1) a granting step denies every
+# binary its capabilities do not reach, and that includes the worker's own
+# process tree: the daemon, the harness, the shells its Bash tool spawns, the
+# guard shims, the transition curl. Every step that grants capabilities must
+# grant this one too.
+#
+# What it does not cover, on purpose: git beyond local inspection (fetch is
+# git:read, network), package managers, build tools, anything that writes to a
+# remote. It does not stop filesystem writes either: a shell redirect is no
+# exec, so file writes are bounded by Landlock and the tool hooks, not here.
+# curl is here for the guard's own API; its egress is still fenced by the proxy
+# policy of the step.
+[capability."harness:baseline"]
+description = "The worker's own process tree plus read-only inspection tools."
+exec = [
+  { bin = "cctui-daemon" },
+  { bin = "cctui-guard" },
+  { bin = "claude" },
+  { bin = "codex" },
+  { bin = "opencode" },
+  { bin = "node" },
+  { bin = "npx" },
+  { bin = "sh" },
+  { bin = "bash" },
+  { bin = "dash" },
+  { bin = "env" },
+  { bin = "curl" },
+  { bin = "true" },
+  { bin = "false" },
+  { bin = "test" },
+  { bin = "sleep" },
+  { bin = "which" },
+  { bin = "uname" },
+  { bin = "id" },
+  { bin = "hostname" },
+  { bin = "date" },
+  { bin = "pwd" },
+  { bin = "dirname" },
+  { bin = "basename" },
+  { bin = "realpath" },
+  { bin = "readlink" },
+  { bin = "stat" },
+  { bin = "file" },
+  { bin = "ls" },
+  { bin = "cat" },
+  { bin = "head" },
+  { bin = "tail" },
+  { bin = "wc" },
+  { bin = "sort" },
+  { bin = "uniq" },
+  { bin = "cut" },
+  { bin = "tr" },
+  { bin = "diff" },
+  { bin = "grep" },
+  { bin = "rg" },
+  { bin = "find" },
+  { bin = "jq" },
+  { bin = "sed", subcommands = ["-n"], allow_flags = ["-E", "-r", "-e="] },
+  { bin = "git", subcommands = [
+    "status", "rev-parse", "log", "diff", "show", "ls-files", "symbolic-ref",
+    "branch --show-current", "remote -v", "remote get-url", "config --get",
+    "worktree list",
+  ], allow_flags = [
+    "--porcelain", "--untracked-files=", "-u=", "-z", "-s", "--short", "-b", "--branch",
+    "--show-toplevel", "--git-dir", "--git-common-dir", "--abbrev-ref", "--verify", "-q",
+    "--quiet", "--is-inside-work-tree",
+    "--oneline", "--stat", "--name-only", "--name-status", "--cached", "--staged",
+    "-p", "--patch", "--no-color", "-n=", "--max-count=", "--format=", "--pretty=",
+    "--no-patch", "--no-renames", "--others", "--exclude-standard",
+  ] },
+]
+
+[capability."git:read"]
+description = "Inspect history and the working tree; fetch from the remote."
+exec = [
+  { bin = "git", subcommands = ["status"], allow_flags = ["-s", "--short", "-b", "--branch", "--porcelain"] },
+  { bin = "git", subcommands = ["log", "diff", "show"], allow_flags = [
+    "--oneline", "--stat", "--name-only", "--name-status", "--cached", "--staged",
+    "-p", "--patch", "--no-color", "-n=", "--max-count=", "--format=", "--pretty=",
+  ] },
+  { bin = "git", subcommands = ["fetch"], allow_flags = ["--prune", "--tags", "--depth="] },
+]
+net = ["github.example.com:443", "github.example.com:22"]
+
+[capability."git:commit"]
+description = "Switch branches, stage and record commits locally."
+requires = ["git:read"]
+exec = [
+  { bin = "git", subcommands = ["add"], allow_flags = ["-A", "--all", "-u", "--update"] },
+  { bin = "git", subcommands = ["checkout"], allow_flags = ["-b="] },
+  { bin = "git", subcommands = ["commit"], allow_flags = ["-m=", "--message=", "-a", "--all"] },
+]
+
+[capability."git:push"]
+description = "Push branches to the remote."
+requires = ["git:read"]
+exec = [{ bin = "git", subcommands = ["push"], allow_flags = ["-u", "--set-upstream"] }]
+assumes = ["branch protection rejects force-push and deletion of protected branches"]
+
+[capability."gh:read"]
+description = "Read pull requests and the GitHub API (GET only: no -X/-f/-F/--input)."
+exec = [
+  { bin = "gh", subcommands = ["pr list", "pr view"], allow_flags = [
+    "--json=", "--state=", "--limit=", "-L=", "--comments", "--jq=", "-q=",
+  ] },
+  { bin = "gh", subcommands = ["api"], allow_flags = ["--jq=", "-q=", "--paginate"] },
+]
+net = ["api.github.example.com:443"]
+
+[capability."gh:write"]
+description = "Open and edit pull requests."
+requires = ["gh:read", "git:push"]
+exec = [
+  { bin = "gh", subcommands = ["pr create", "pr edit"], allow_flags = [
+    "--title=", "-t=", "--body=", "-b=", "--body-file=", "-F=", "--base=", "-B=",
+    "--head=", "-H=", "--draft", "-d", "--fill",
+  ] },
+]
+
+[capability."gh:comment"]
+description = "Reply on pull requests."
+requires = ["gh:read"]
+exec = [
+  { bin = "gh", subcommands = ["pr comment"], allow_flags = ["--body=", "-b=", "--body-file=", "-F="] },
+]
+
+[capability."build:check"]
+description = "The pack's oracle and consistency targets (placeholders a real pack replaces)."
+exec = [{ bin = "make", subcommands = ["oracle-check", "consistency-check", "test", "lint"] }]
+
+[capability."schema:validate"]
+description = "Validate the result envelope against the pack's JSON schemas."
+exec = [{ bin = "check-jsonschema", subcommands = ["--schemafile"] }]
+
+[capability."read:all"]
+requires = ["git:read", "gh:read"]
+
+[capability."write:all"]
+requires = ["git:commit", "git:push", "gh:write"]
+
+[capability."remote:write"]
+requires = ["git:push", "gh:write"]
+
+[capability."model:api"]
+description = "The model gateway."
+net = ["api.example.com:443", "downloads.example.com:443"]
+
+[capability."oracle:external-sandbox"]
+net = ["sandbox.example.com:443"]
+
+[capability."oracle:payments-sandbox"]
+net = ["api.sandbox.stripe.example.com:443"]
+
+[capability."preview:acceptance"]
+description = "The deployed per-PR preview the acceptance agent drives."
+net = ["preview.example.com:443"]

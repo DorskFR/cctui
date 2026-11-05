@@ -13,16 +13,31 @@ default = ["bao", "k8s", "aws-sm"]
 bao = ["dep:reqwest", "dep:serde_json"]
 k8s = ["dep:reqwest", "dep:serde_json", "dep:base64"]
 aws-sm = ["dep:cctui-aws", "dep:reqwest", "dep:serde_json"]
+test-support = [
+    "bao",
+    "k8s",
+    "aws-sm",
+    "dep:axum",
+    "dep:base64",
+    "dep:rustls",
+    "dep:tempfile",
+    "dep:tracing-subscriber",
+]
 
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 reqwest = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 cctui-aws = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 
 [dev-dependencies]
 axum.workspace = true
@@ -31,3 +46,4 @@ rustls.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber.workspace = true

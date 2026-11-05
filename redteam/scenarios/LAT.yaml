@@ -1,0 +1,16 @@
+id: LAT
+class: lateral
+mode: probe
+description: >
+  Nothing in the cluster is reachable except sanctioned destinations, and only
+  for their sanctioned use; the built-in denylist blocks private and metadata
+  ranges even when a policy lists them.
+cells:
+  harness: [claude-code, codex, opencode]
+  dispatcher: [kube, docker]
+  net_mode: [transparent]
+  posture: [root, nonroot]
+probes: [LAT-01, LAT-02]
+expect: contained
+timeout_secs: 120
+budget_usd: 0

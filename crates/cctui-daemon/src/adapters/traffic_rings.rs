@@ -67,7 +67,7 @@ fn ring_scrub() -> Arc<CompiledPatterns> {
 }
 
 fn redact_text(text: &str) -> String {
-    let mut value = Value::String(text.to_owned());
+    let mut value = Value::String(crate::user_redact::mask_any(text).into_owned());
     redact::redact_json(&mut value, &ring_scrub());
     match value {
         Value::String(s) => s,
@@ -172,7 +172,9 @@ impl TrafficRings {
     /// A frame whose label the caller supplies, on an explicit transport: one
     /// adapter can own several paths (opencode's HTTP calls and SSE stream).
     pub fn note_frame(&self, transport: &str, direction: &str, label: &str, body: &str) {
-        let json = truncate_chars(&redact_text(&truncate_chars(body, RPC_SCAN_MAX)), RPC_FRAME_MAX);
+        let body = crate::user_redact::mask_any(body);
+        let json =
+            truncate_chars(&redact_text(&truncate_chars(&body, RPC_SCAN_MAX)), RPC_FRAME_MAX);
         Self::push(
             &self.rpc,
             RPC_RING,
@@ -282,6 +284,36 @@ mod tests {
         assert!(!rings.stderr_tail()[0].line.contains("ACME-424242"));
 
         set_ring_scrub(&[]);
+    }
+
+    #[test]
+    fn rings_hold_no_tagged_value_nor_its_echo() {
+        let secret = "ring-hunter2-xyz";
+        let prompt = format!("log in with <redacted>{secret}</redacted> please");
+        crate::user_redact::note_command(&cctui_proto::adapter::AdapterCommand::SendMessage {
+            local_id: "ring-redact".to_owned(),
+            text: prompt.clone(),
+        });
+        let rings = TrafficRings::default();
+        rings.note_rpc("out", &json!({"method": "turn/start", "params": {"input": prompt}}));
+        rings.note_rpc(
+            "in",
+            &json!({"method": "item/completed", "params": {"output": format!("pw {secret}")}}),
+        );
+        let straddle = "ring-straddle-value";
+        let padded = format!("<redacted>{straddle}{}</redacted>", "y".repeat(RPC_SCAN_MAX));
+        rings.note_frame(TRANSPORT_SSE, "in", "big", &padded);
+        rings.note_stderr(&format!("echo {secret}"));
+        rings.note_protocol_error(&format!("turn/start: rejected {prompt}"));
+
+        for frame in rings.rpc_tail() {
+            assert!(!frame.json.contains(secret), "{}", frame.json);
+            assert!(!frame.json.contains(straddle), "a span cut by the scan cap leaked");
+        }
+        assert!(rings.rpc_tail()[0].json.contains("[REDACTED:user]"));
+        assert!(!rings.stderr_tail()[0].line.contains(secret));
+        assert!(!rings.protocol_errors()[0].message.contains(secret));
+        assert_eq!(crate::user_redact::mask_any("<redacted>abc</redacted>"), "[REDACTED:user]");
     }
 
     #[test]

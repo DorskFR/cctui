@@ -152,14 +152,19 @@ impl Conn {
         // stale entry exists, overwrite it (newest connection wins).
         // A replacement or downgraded daemon must advertise support again.
         state.auth_recovery_daemons.remove(&machine_id);
-        state.bus.register_daemon(machine_id, self.id, tx.clone());
+        if self.shared {
+            state.bus.register_daemon(machine_id, self.id, tx.clone());
+        } else {
+            state.bus.register_exclusive_daemon(machine_id, self.id, tx.clone());
+        }
         state.bus.register_daemon_priority(self.id, priority_tx);
         if !self.shared {
             PENDING_DAEMON_LOST.cancel_machine(machine_id);
         }
         // Replica-aware presence: record this pod as the WS owner so a
         // peer replica can forward daemon-targeted requests here.
-        crate::presence::register(state, crate::presence::Kind::Daemon, machine_id).await;
+        crate::presence::register_conn(state, crate::presence::Kind::Daemon, machine_id, self.id)
+            .await;
         report_connect_flap(state, machine_id).await;
         crate::events::record(
             state,
@@ -238,7 +243,8 @@ impl Conn {
                     PENDING_DAEMON_LOST.announced(&local_id);
                 }
                 if first && let Ok(session) = Uuid::parse_str(&local_id) {
-                    crate::presence::register(state, crate::presence::Kind::Session, session).await;
+                    let kind = crate::presence::Kind::Session;
+                    crate::presence::register_conn(state, kind, session, conn_id).await;
                 }
             }
         }
@@ -261,7 +267,8 @@ impl Conn {
         // Session rows belong to THIS connection, so they go whether or not the
         // machine entry was still ours.
         for session in sessions.iter().filter_map(|s| Uuid::parse_str(s).ok()) {
-            crate::presence::unregister(state, crate::presence::Kind::Session, session).await;
+            let kind = crate::presence::Kind::Session;
+            crate::presence::unregister_conn(state, kind, session, self.id).await;
         }
         // Detach, don't close: a rolling restart reconnects the daemon (maybe
         // on another pod) and it re-announces these previews by id.
@@ -272,7 +279,8 @@ impl Conn {
         if newest {
             state.auth_recovery_daemons.remove(&machine_id);
             state.preview.detach_machine(&state.pool, machine_id).await;
-            crate::presence::unregister(state, crate::presence::Kind::Daemon, machine_id).await;
+            let kind = crate::presence::Kind::Daemon;
+            crate::presence::unregister_conn(state, kind, machine_id, self.id).await;
             crate::events::record(
                 state,
                 crate::events::Event::new(

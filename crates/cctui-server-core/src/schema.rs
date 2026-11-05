@@ -24,6 +24,15 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../schema/0004_session_name_from_custom_title.sql"),
     },
     Migration { version: 5, sql: include_str!("../schema/0005_dispatch_identities.sql") },
+    Migration { version: 6, sql: include_str!("../schema/0006_session_tool_guard_bypass.sql") },
+    Migration { version: 7, sql: include_str!("../schema/0007_account_hook_policy.sql") },
+    Migration { version: 8, sql: include_str!("../schema/0008_session_hook_policies.sql") },
+    Migration { version: 9, sql: include_str!("../schema/0009_dispatch_exposure.sql") },
+    Migration { version: 10, sql: include_str!("../schema/0010_archived_claude_jobs_index.sql") },
+    Migration { version: 11, sql: include_str!("../schema/0011_provider_usage_totals.sql") },
+    Migration { version: 12, sql: include_str!("../schema/0012_dispatch_handle_gone.sql") },
+    Migration { version: 13, sql: include_str!("../schema/0013_dispatch_identity_hold.sql") },
+    Migration { version: 14, sql: include_str!("../schema/0014_dispatcher_features.sql") },
 ];
 
 const LEGACY_LAST: &str = include_str!("../../../migrations/191_file_blobs.up.sql");

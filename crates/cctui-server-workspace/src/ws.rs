@@ -10,6 +10,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::auth::{AuthContext, Scope};
+use crate::routes::hidden_owners::{self, HiddenSet, SessionPlacement};
 use crate::state::AppState;
 
 /// Authorize a WS command against a session for the connected principal,
@@ -367,6 +368,7 @@ async fn run_tui_socket(
     ctx: AuthContext,
     event_tx: FrameTx,
     text_watches: TextWatches,
+    viewing: Viewing,
 ) {
     // Relay tasks keyed by session id, so a resubscribe replaces (not stacks)
     // the per-session relay and an unsubscribe can tear it down.
@@ -376,7 +378,6 @@ async fn run_tui_socket(
     // per-socket so a disconnect decrements the shared watcher refcount and the
     // daemon stops streaming to a browser that vanished without unwatching.
     let mut pty_watches: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut viewing: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     while let Some(msg) = stream.next().await {
         let text = match msg {
@@ -402,13 +403,21 @@ async fn run_tui_socket(
                     tracing::debug!(session_id = %session_id, user_id = %ctx.user_id, "tui_ws: subscribe denied (not owner)");
                     continue;
                 }
-                if viewing.insert(session_id.clone()) && state.bus.view_watch_inc(&session_id) {
+                let fresh = viewing
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(session_id.clone());
+                if fresh && state.bus.view_watch_inc(&session_id) {
                     crate::session_viewers::opened(&state, &session_id).await;
                 }
                 handle_subscribe(session_id, &state, &event_tx, &mut sub_handles).await;
             }
             TuiCommand::Unsubscribe { session_id } => {
-                if viewing.remove(&session_id) {
+                let was_viewing = viewing
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&session_id);
+                if was_viewing {
                     stop_viewing(&state, &session_id).await;
                 }
                 // Tear down this session's relay task so it stops delivering
@@ -532,7 +541,9 @@ async fn run_tui_socket(
     for (_, handle) in sub_handles {
         handle.abort();
     }
-    for session_id in viewing {
+    let viewed =
+        std::mem::take(&mut *viewing.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+    for session_id in viewed {
         stop_viewing(&state, &session_id).await;
     }
     // Decrement every terminal this socket still watched so a browser that
@@ -561,6 +572,9 @@ async fn stop_viewing(state: &AppState, session_id: &str) {
 /// Sessions whose streamed assistant text THIS socket receives, shared with
 /// its relay task so only a watching socket is handed the deltas.
 type TextWatches = Arc<std::sync::Mutex<std::collections::HashSet<String>>>;
+
+/// Sessions THIS socket has open, shared with its relay task.
+type Viewing = Arc<std::sync::Mutex<std::collections::HashSet<String>>>;
 
 /// Toggle this socket's text watch of `session_id`: same refcount edges as
 /// the terminal watch, toward the daemon's text gate.
@@ -731,7 +745,8 @@ fn audience(event: &ServerEvent) -> Audience {
             SharedWith(Owned::Dispatcher(*dispatcher_id))
         }
         ServerEvent::RoomMembers { user_id, .. }
-        | ServerEvent::CctuiverseChanged { user_id, .. } => OwnerOf(Owned::User(*user_id)),
+        | ServerEvent::CctuiverseChanged { user_id, .. }
+        | ServerEvent::HiddenOwnersChanged { user_id } => OwnerOf(Owned::User(*user_id)),
         ServerEvent::GithubEvent { .. } => AdminsOnly,
         ServerEvent::ScheduledLaunch { user_id, .. } => {
             user_id.map_or(AdminsOnly, |u| OwnerOf(Owned::User(u)))
@@ -933,6 +948,97 @@ impl<F: EventFilter> EventFilter for TextScoped<F> {
     }
 }
 
+/// The viewer's hidden set and where a session runs, for [`HiddenScoped`].
+trait HiddenLookup: Sync {
+    fn hidden(&self, viewer: uuid::Uuid) -> impl Future<Output = Arc<HiddenSet>> + Send;
+    fn placement(&self, session_id: &str) -> impl Future<Output = Option<SessionPlacement>> + Send;
+    fn forget(&self, viewer: uuid::Uuid);
+}
+
+impl HiddenLookup for sqlx::PgPool {
+    async fn hidden(&self, viewer: uuid::Uuid) -> Arc<HiddenSet> {
+        hidden_owners::hidden_set(self, viewer).await.unwrap_or_else(|e| {
+            tracing::error!(%viewer, "db error (ws hidden owners): {e}");
+            Arc::default()
+        })
+    }
+
+    async fn placement(&self, session_id: &str) -> Option<SessionPlacement> {
+        hidden_owners::placement(self, session_id).await.unwrap_or_else(|e| {
+            tracing::error!(%session_id, "db error (ws session placement): {e}");
+            None
+        })
+    }
+
+    fn forget(&self, viewer: uuid::Uuid) {
+        hidden_owners::invalidate(viewer);
+    }
+}
+
+/// An admin's socket skips the events of sessions they hide, except the ones
+/// it has open; a hidden-list change reaches only its own user, and refreshes
+/// this pod's copy when it was made on another.
+struct HiddenScoped<F, L> {
+    inner: F,
+    is_admin: bool,
+    viewer: uuid::Uuid,
+    lookup: L,
+    viewing: Viewing,
+    placements: std::collections::HashMap<Owned, (Option<SessionPlacement>, tokio::time::Instant)>,
+}
+
+impl<F: Send, L: HiddenLookup + Send> HiddenScoped<F, L> {
+    async fn hides(&mut self, event: &ServerEvent) -> bool {
+        let Audience::OwnerOf(Owned::Session(id)) = audience(event) else { return false };
+        if self.viewing.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&id) {
+            return false;
+        }
+        let set = self.lookup.hidden(self.viewer).await;
+        if set.is_empty() {
+            return false;
+        }
+        let owned = Owned::Session(id.clone());
+        if matches!(event, ServerEvent::SessionRegistered { .. }) {
+            self.placements.remove(&owned);
+        }
+        let placement = self.placement(&owned, &id).await;
+        if matches!(event, ServerEvent::SessionDeregistered { .. }) {
+            self.placements.remove(&owned);
+        }
+        placement.is_some_and(|p| set.hides(p))
+    }
+
+    async fn placement(&mut self, owned: &Owned, id: &str) -> Option<SessionPlacement> {
+        let now = tokio::time::Instant::now();
+        if let Some(&(cached, expires)) = self.placements.get(owned)
+            && expires > now
+        {
+            return cached;
+        }
+        let resolved = self.lookup.placement(id).await;
+        make_room(&mut self.placements, now);
+        let ttl = if resolved.is_some() { OWNER_TTL } else { UNKNOWN_OWNER_TTL };
+        self.placements.insert(owned.clone(), (resolved, now + ttl));
+        resolved
+    }
+}
+
+impl<F: EventFilter, L: HiddenLookup + Send> EventFilter for HiddenScoped<F, L> {
+    async fn allows(&mut self, event: &ServerEvent) -> bool {
+        if let ServerEvent::HiddenOwnersChanged { user_id } = event {
+            if *user_id != self.viewer {
+                return false;
+            }
+            self.lookup.forget(*user_id);
+            return true;
+        }
+        if self.is_admin && self.hides(event).await {
+            return false;
+        }
+        self.inner.allows(event).await
+    }
+}
+
 /// Forward every permitted frame to the socket as-is. Events lost to lag are
 /// unrecoverable, so the client is told to refetch instead.
 async fn relay_server_frames(
@@ -963,19 +1069,27 @@ async fn handle_tui_ws(socket: WebSocket, state: AppState, ctx: AuthContext) {
     let (tx, rx) = mpsc::channel::<Frame>(256);
 
     let text_watches = TextWatches::default();
-    let filter = TextScoped {
-        inner: OwnerFilter {
-            is_admin: ctx.is_admin(),
-            user_id: ctx.user_id,
-            lookup: state.pool.clone(),
-            cache: OwnerCache::default(),
+    let viewing = Viewing::default();
+    let filter = HiddenScoped {
+        inner: TextScoped {
+            inner: OwnerFilter {
+                is_admin: ctx.is_admin(),
+                user_id: ctx.user_id,
+                lookup: state.pool.clone(),
+                cache: OwnerCache::default(),
+            },
+            watches: text_watches.clone(),
         },
-        watches: text_watches.clone(),
+        is_admin: ctx.is_admin(),
+        viewer: ctx.user_id,
+        lookup: state.pool.clone(),
+        viewing: viewing.clone(),
+        placements: std::collections::HashMap::new(),
     };
     tokio::spawn(relay_server_frames(state.bus.subscribe_server(), filter, tx.clone()));
 
     spawn_send_task(sink, rx);
-    run_tui_socket(stream, state, ctx, tx, text_watches).await;
+    run_tui_socket(stream, state, ctx, tx, text_watches, viewing).await;
 
     tracing::debug!("TUI WebSocket disconnected");
 }
@@ -993,11 +1107,13 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        Audience, EventFilter, OWNER_TTL, Owned, OwnerCache, OwnerFilter, OwnerLookup, audience,
-        origin_permitted, permission_target, relay_server_frames, replay_pending, spawn_relay_task,
+        Audience, EventFilter, HiddenLookup, HiddenScoped, OWNER_TTL, Owned, OwnerCache,
+        OwnerFilter, OwnerLookup, Viewing, audience, origin_permitted, permission_target,
+        relay_server_frames, replay_pending, spawn_relay_task,
     };
     use crate::bus::ServerFrame;
     use crate::config::Config;
+    use crate::routes::hidden_owners::{HiddenSet, SessionPlacement};
     use crate::routes::permissions::{PendingPermission, PermissionStore};
 
     fn cfg() -> Config {
@@ -1451,5 +1567,129 @@ mod tests {
             carol.allows(&event).await;
         }
         assert_eq!(owners.calls.load(Ordering::SeqCst), calls, "grants are cached");
+    }
+
+    /// Bob's sessions run on Bob's machine, everyone else's on Alice's.
+    #[derive(Default, Clone)]
+    struct FakeHidden {
+        set: HiddenSet,
+        forgotten: Arc<AtomicUsize>,
+    }
+
+    impl HiddenLookup for FakeHidden {
+        async fn hidden(&self, _viewer: Uuid) -> Arc<HiddenSet> {
+            Arc::new(self.set.clone())
+        }
+
+        async fn placement(&self, session_id: &str) -> Option<SessionPlacement> {
+            let bob = session_id.contains("bob");
+            let (owner, machine) = if bob { (BOB, BOB_MACHINE) } else { (ALICE, ALICE_MACHINE) };
+            Some(SessionPlacement { owner: Some(owner), machine: Some(machine) })
+        }
+
+        fn forget(&self, _viewer: Uuid) {
+            self.forgotten.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn hiding(
+        viewer: Uuid,
+        is_admin: bool,
+        lookup: FakeHidden,
+    ) -> (HiddenScoped<OwnerFilter<FakeOwners>, FakeHidden>, Viewing) {
+        let viewing = Viewing::default();
+        let filter = HiddenScoped {
+            inner: OwnerFilter {
+                is_admin,
+                user_id: viewer,
+                lookup: FakeOwners::default(),
+                cache: OwnerCache::default(),
+            },
+            is_admin,
+            viewer,
+            lookup,
+            viewing: viewing.clone(),
+            placements: std::collections::HashMap::new(),
+        };
+        (filter, viewing)
+    }
+
+    fn hiding_set(users: &[Uuid], machines: &[Uuid]) -> FakeHidden {
+        FakeHidden {
+            set: HiddenSet {
+                users: users.iter().copied().collect(),
+                machines: machines.iter().copied().collect(),
+            },
+            ..FakeHidden::default()
+        }
+    }
+
+    fn pty_chunk(id: &str) -> ServerEvent {
+        ServerEvent::PtyChunk { session_id: id.into(), data: String::new() }
+    }
+
+    fn session_events(id: &str) -> Vec<ServerEvent> {
+        vec![
+            ServerEvent::SessionRegistered { session: session(id) },
+            ServerEvent::Status { session_id: id.into(), status: SessionStatus::Active },
+            pty_chunk(id),
+            ServerEvent::SessionDeregistered { session_id: id.into() },
+        ]
+    }
+
+    #[tokio::test]
+    async fn hidden_user_sessions_skip_the_admins_socket() {
+        let (mut dave, _) = hiding(DAVE, true, hiding_set(&[BOB], &[]));
+        for event in session_events("sess-bob") {
+            assert!(!dave.allows(&event).await, "hidden session reached the admin: {event:?}");
+        }
+        for event in session_events("sess-alice") {
+            assert!(dave.allows(&event).await, "visible session dropped: {event:?}");
+        }
+        let liveness = ServerEvent::MachineLiveness {
+            machine_id: BOB_MACHINE,
+            liveness: cctui_proto::models::MachineLiveness::Online,
+        };
+        assert!(dave.allows(&liveness).await, "only session events are hidden");
+    }
+
+    #[tokio::test]
+    async fn hidden_machine_sessions_skip_the_admins_socket() {
+        let (mut dave, _) = hiding(DAVE, true, hiding_set(&[], &[BOB_MACHINE]));
+        for event in session_events("sess-bob") {
+            assert!(!dave.allows(&event).await, "hidden machine's session reached: {event:?}");
+        }
+        assert!(dave.allows(&pty_chunk("sess-alice")).await);
+    }
+
+    #[tokio::test]
+    async fn hidden_session_open_on_the_socket_keeps_streaming() {
+        let (mut dave, viewing) = hiding(DAVE, true, hiding_set(&[BOB], &[]));
+        viewing.lock().unwrap().insert("sess-bob".to_owned());
+        assert!(dave.allows(&bob_stream()).await, "an opened hidden session goes dark");
+        viewing.lock().unwrap().clear();
+        assert!(!dave.allows(&bob_stream()).await);
+    }
+
+    #[tokio::test]
+    async fn hidden_nothing_or_non_admin_passes_through_to_the_owner_rule() {
+        let (mut dave, _) = hiding(DAVE, true, FakeHidden::default());
+        assert!(dave.allows(&bob_stream()).await);
+        let (mut bob, _) = hiding(BOB, false, hiding_set(&[BOB], &[BOB_MACHINE]));
+        assert!(bob.allows(&bob_stream()).await, "a non-admin's own sessions are never hidden");
+        let (mut alice, _) = hiding(ALICE, false, FakeHidden::default());
+        assert!(!alice.allows(&bob_stream()).await, "the owner rule still applies");
+    }
+
+    #[tokio::test]
+    async fn hidden_owners_changed_reaches_only_its_user_and_refreshes_their_set() {
+        let lookup = FakeHidden::default();
+        let (mut dave, _) = hiding(DAVE, true, lookup.clone());
+        let changed = |user_id| ServerEvent::HiddenOwnersChanged { user_id };
+        assert_eq!(audience(&changed(DAVE)), Audience::OwnerOf(Owned::User(DAVE)));
+        assert!(dave.allows(&changed(DAVE)).await);
+        assert_eq!(lookup.forgotten.load(Ordering::SeqCst), 1);
+        assert!(!dave.allows(&changed(ALICE)).await, "another admin's change is not news");
+        assert_eq!(lookup.forgotten.load(Ordering::SeqCst), 1);
     }
 }

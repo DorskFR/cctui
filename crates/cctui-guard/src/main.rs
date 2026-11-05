@@ -8,14 +8,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
+use cctui_guard::capability::{self, LoadedRegistry};
 use cctui_guard::engine::WorkflowEngine;
+use cctui_guard::exec::WhyRing;
 use cctui_guard::ir::{NetworkDefault, Workflow};
 use cctui_guard::lint::{Diagnostic, LintReport, Severity};
 use cctui_guard::parser::step_heading_numbers;
 use cctui_guard::resolve::{ResolvedSets, resolve_sets};
-use cctui_guard::server::router;
+use cctui_guard::server::router_with_why;
 
 #[derive(Parser, Debug)]
 #[command(name = "cctui-guard", about = "Markdown-driven workflow guard daemon")]
@@ -48,6 +50,9 @@ struct Cli {
     /// `--rules-base`; `[name]:` overrides a base set, `[name]+:` extends it.
     #[arg(long, env = "GUARD_RULES_FILE", default_value = "/etc/claude-worker/guard-rules.md")]
     rules: PathBuf,
+
+    #[command(flatten)]
+    registry: RegistryArgs,
 
     /// Address to listen on.
     #[arg(long, default_value = "127.0.0.1:9999")]
@@ -99,12 +104,102 @@ struct Cli {
     /// fail-closed denial.
     #[arg(long = "judge-timeout", default_value_t = cctui_guard::engine::DEFAULT_JUDGE_TIMEOUT_SECS)]
     judge_timeout_secs: u64,
+
+    /// Unix socket on which cctui-supervisor hands over its exec
+    /// user-notification listener; every exec in the worker tree is then judged
+    /// here. Unset ⇒ no exec interception.
+    #[arg(long = "exec-socket")]
+    exec_socket: Option<PathBuf>,
+
+    /// Milliseconds an exec may wait for a verdict before it is denied.
+    #[arg(long = "exec-timeout-ms", default_value_t = 5000)]
+    exec_timeout_ms: u64,
 }
 
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Validate a prompt + rules and dump the resolved policy, without serving.
     Lint(LintArgs),
+    /// Print the most recent exec denials ("Permission denied" on a command).
+    Why(WhyArgs),
+    /// Print a capability's effective binaries, argv predicates and hosts,
+    /// each annotated with the registry layer it came from.
+    Explain(ExplainArgs),
+}
+
+#[derive(Args, Debug)]
+struct RegistryArgs {
+    /// Base capability registry shipped in the image (lowest layer). Defaults
+    /// to `capabilities.toml` next to `--rules-base`; skipped if missing.
+    #[arg(long = "capabilities-base", env = "GUARD_CAPABILITIES_BASE")]
+    capabilities_base: Option<PathBuf>,
+
+    /// Pack capability registry, layered over the base. Defaults to
+    /// `capabilities.toml` next to `--rules`; skipped if missing.
+    #[arg(long = "capabilities", env = "GUARD_CAPABILITIES_FILE")]
+    capabilities: Option<PathBuf>,
+}
+
+impl RegistryArgs {
+    fn load(
+        &self,
+        rules_base: Option<&Path>,
+        rules: &Path,
+        prompt: Option<&Path>,
+        workflow: Option<&Workflow>,
+    ) -> LoadedRegistry {
+        let base = self.capabilities_base.clone().or_else(|| rules_base.map(capability::adjacent));
+        let pack = self.capabilities.clone().unwrap_or_else(|| capability::adjacent(rules));
+        capability::resolve_registry(base.as_deref(), Some(&pack), prompt, workflow)
+    }
+}
+
+#[derive(Parser, Debug)]
+struct ExplainArgs {
+    /// Capability name, e.g. `git:push`.
+    capability: String,
+
+    /// Prompt whose `.toml` `[rules]` imports layer over the registry.
+    #[arg(long)]
+    prompt: Option<PathBuf>,
+
+    #[arg(long = "rules-base", env = "GUARD_RULES_BASE")]
+    rules_base: Option<PathBuf>,
+
+    #[arg(long, env = "GUARD_RULES_FILE", default_value = "/etc/claude-worker/guard-rules.md")]
+    rules: PathBuf,
+
+    #[command(flatten)]
+    registry: RegistryArgs,
+}
+
+#[derive(Parser, Debug)]
+struct WhyArgs {
+    /// The running guard, as `host:port` or an `http://` URL.
+    #[arg(long, env = "CCTUI_GUARD_URL", default_value = "127.0.0.1:9999")]
+    guard: String,
+}
+
+fn guard_addr(guard: &str) -> &str {
+    guard.strip_prefix("http://").unwrap_or(guard).trim_end_matches('/')
+}
+
+#[cfg(target_os = "linux")]
+fn arm_exec(cli: &Cli, engine: &Arc<WorkflowEngine>, why: &Arc<WhyRing>) -> anyhow::Result<()> {
+    let Some(socket) = &cli.exec_socket else {
+        return Ok(());
+    };
+    let timeout = Duration::from_millis(cli.exec_timeout_ms);
+    cctui_guard::exec::spawn(socket, Arc::clone(engine), Arc::clone(why), timeout)
+        .map_err(|e| anyhow::anyhow!("exec socket {}: {e}", socket.display()))?;
+    tracing::info!("Exec hand-off socket bound at {}", socket.display());
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn arm_exec(cli: &Cli, _: &Arc<WorkflowEngine>, _: &Arc<WhyRing>) -> anyhow::Result<()> {
+    anyhow::ensure!(cli.exec_socket.is_none(), "--exec-socket needs Linux");
+    Ok(())
 }
 
 #[derive(Parser, Debug)]
@@ -119,6 +214,9 @@ struct LintArgs {
     /// Shared guard-rules file defining tool sets and network sets.
     #[arg(long, env = "GUARD_RULES_FILE", default_value = "/etc/claude-worker/guard-rules.md")]
     rules: PathBuf,
+
+    #[command(flatten)]
+    registry: RegistryArgs,
 
     /// Print each step's resolved policy — sets expanded to concrete hosts and
     /// command phrases.
@@ -155,6 +253,42 @@ fn add_import_errors(report: &mut LintReport, import_errors: &[String]) {
             step: None,
             message: message.clone(),
         });
+    }
+}
+
+fn full_lint(
+    workflow: &Workflow,
+    ids: &[u32],
+    resolved: &ResolvedSets,
+    loaded: &LoadedRegistry,
+) -> LintReport {
+    let mut report = cctui_guard::lint::lint(workflow, &resolved.sets, ids);
+    add_import_errors(&mut report, &resolved.import_errors);
+    add_import_errors(&mut report, &loaded.errors);
+    report.diagnostics.extend(capability::lint(workflow, &resolved.sets, &loaded.registry));
+    report
+}
+
+fn run_explain(args: &ExplainArgs) -> anyhow::Result<bool> {
+    let workflow = args.prompt.as_deref().map(load_workflow).transpose()?.map(|(w, _)| w);
+    let loaded = args.registry.load(
+        args.rules_base.as_deref(),
+        &args.rules,
+        args.prompt.as_deref(),
+        workflow.as_ref(),
+    );
+    for message in &loaded.errors {
+        eprintln!("error: {message}");
+    }
+    match loaded.registry.explain(&args.capability) {
+        Ok(text) => {
+            print!("{text}");
+            Ok(loaded.errors.is_empty())
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            Ok(false)
+        }
     }
 }
 
@@ -231,13 +365,42 @@ fn fmt_list(items: &[String], empty: &str) -> String {
 fn run_lint(args: &LintArgs) -> anyhow::Result<bool> {
     let (workflow, ids) = load_workflow(&args.prompt)?;
     let resolved = resolve_sets(args.rules_base.as_deref(), &args.rules, &args.prompt, &workflow);
-    let mut report = cctui_guard::lint::lint(&workflow, &resolved.sets, &ids);
-    add_import_errors(&mut report, &resolved.import_errors);
+    let loaded = args.registry.load(
+        args.rules_base.as_deref(),
+        &args.rules,
+        Some(args.prompt.as_path()),
+        Some(&workflow),
+    );
+    let report = full_lint(&workflow, &ids, &resolved, &loaded);
     let ok = print_lint(&report, args.explain);
     if args.explain {
         print_provenance(&resolved);
     }
     Ok(ok)
+}
+
+/// Refuse to start on an unreadable import or registry layer; with `--check`,
+/// on any lint error.
+fn preflight(
+    check: bool,
+    workflow: &Workflow,
+    ids: &[u32],
+    resolved: &ResolvedSets,
+    loaded: &LoadedRegistry,
+) -> anyhow::Result<()> {
+    for message in resolved.import_errors.iter().chain(&loaded.errors) {
+        tracing::error!("{message}");
+    }
+    if check {
+        if !print_lint(&full_lint(workflow, ids, resolved, loaded), false) {
+            anyhow::bail!("--check found policy errors; refusing to start");
+        }
+    } else if !resolved.import_errors.is_empty() {
+        anyhow::bail!("unreadable [rules] import(s); refusing to start (fail closed)");
+    } else if !loaded.errors.is_empty() {
+        anyhow::bail!("capability registry did not load; refusing to start (fail closed)");
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -256,6 +419,13 @@ async fn main() -> anyhow::Result<()> {
     if let Some(Command::Lint(args)) = &cli.command {
         return if run_lint(args)? { Ok(()) } else { std::process::exit(1) };
     }
+    if let Some(Command::Why(args)) = &cli.command {
+        print!("{}", cctui_guard::exec::why::fetch(guard_addr(&args.guard))?);
+        return Ok(());
+    }
+    if let Some(Command::Explain(args)) = &cli.command {
+        return if run_explain(args)? { Ok(()) } else { std::process::exit(1) };
+    }
 
     if cli.emit_schema {
         println!("{}", serde_json::to_string_pretty(&cctui_guard::ir::json_schema())?);
@@ -267,19 +437,13 @@ async fn main() -> anyhow::Result<()> {
     };
     let (workflow, ids) = load_workflow(&prompt)?;
     let resolved = resolve_sets(cli.rules_base.as_deref(), &cli.rules, &prompt, &workflow);
-    for message in &resolved.import_errors {
-        tracing::error!("{message}");
-    }
-
-    if cli.check {
-        let mut report = cctui_guard::lint::lint(&workflow, &resolved.sets, &ids);
-        add_import_errors(&mut report, &resolved.import_errors);
-        if !print_lint(&report, false) {
-            anyhow::bail!("--check found policy errors; refusing to start");
-        }
-    } else if !resolved.import_errors.is_empty() {
-        anyhow::bail!("unreadable [rules] import(s); refusing to start (fail closed)");
-    }
+    let loaded = cli.registry.load(
+        cli.rules_base.as_deref(),
+        &cli.rules,
+        Some(prompt.as_path()),
+        Some(&workflow),
+    );
+    preflight(cli.check, &workflow, &ids, &resolved, &loaded)?;
     let tool_sets = resolved.sets;
 
     let guarded_default_allow = matches!(workflow.network_default, Some(NetworkDefault::Allow));
@@ -298,6 +462,9 @@ async fn main() -> anyhow::Result<()> {
     if steps.is_empty() {
         tracing::warn!("No steps found in {}", prompt.display());
     }
+    let grants = capability::compile_steps(&steps, &tool_sets, &loaded.registry).map_err(|e| {
+        anyhow::anyhow!("capability grants do not resolve; refusing to start: {}", e.join("; "))
+    })?;
 
     tracing::info!("Loaded {} steps, {} tool sets", steps.len(), tool_sets.len());
 
@@ -305,24 +472,86 @@ async fn main() -> anyhow::Result<()> {
         WorkflowEngine::new_with_log(
             steps,
             tool_sets,
-            cli.state,
-            cli.policy_out,
-            cli.always_allow,
-            cli.gate_cwd,
-            cli.judge_cmd,
+            cli.state.clone(),
+            cli.policy_out.clone(),
+            cli.always_allow.clone(),
+            cli.gate_cwd.clone(),
+            cli.judge_cmd.clone(),
             guarded_default_allow,
-            cctui_guard::decision_log::DecisionLog::new(cli.decision_log),
-            cli.report_out,
+            cctui_guard::decision_log::DecisionLog::new(cli.decision_log.clone()),
+            cli.report_out.clone(),
         )
         .with_timeouts(
             Duration::from_secs(cli.gate_timeout_secs),
             Duration::from_secs(cli.judge_timeout_secs),
-        ),
+        )
+        .with_grants(grants),
     );
 
-    let app = router(engine);
+    let why = Arc::new(WhyRing::default());
+    arm_exec(&cli, &engine, &why)?;
+    let app = router_with_why(engine, why);
     let listener = tokio::net::TcpListener::bind(cli.listen).await?;
     tracing::info!("Listening on {}", cli.listen);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn why_accepts_the_hook_url_or_host_port() {
+        assert_eq!(guard_addr("http://127.0.0.1:9999"), "127.0.0.1:9999");
+        assert_eq!(guard_addr("http://127.0.0.1:9999/"), "127.0.0.1:9999");
+        assert_eq!(guard_addr("127.0.0.1:9999"), "127.0.0.1:9999");
+    }
+
+    #[test]
+    fn exec_interception_is_off_by_default() {
+        let cli = Cli::try_parse_from(["cctui-guard", "--prompt", "p.md"]).unwrap();
+        assert!(cli.exec_socket.is_none());
+        assert_eq!(cli.exec_timeout_ms, 5000);
+    }
+
+    #[test]
+    fn explain_subcommand_parses_registry_layers() {
+        let cli = Cli::try_parse_from([
+            "cctui-guard",
+            "explain",
+            "git:push",
+            "--capabilities-base",
+            "/base.toml",
+            "--rules",
+            "/pack/guard-rules.md",
+        ])
+        .unwrap();
+        let Some(Command::Explain(args)) = cli.command else { panic!("expected explain") };
+        assert_eq!(args.capability, "git:push");
+        assert_eq!(args.registry.capabilities_base.as_deref(), Some(Path::new("/base.toml")));
+        assert_eq!(args.rules, Path::new("/pack/guard-rules.md"));
+    }
+
+    #[test]
+    fn the_pack_registry_defaults_next_to_the_rules_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let rules = dir.path().join("guard-rules.md");
+        std::fs::write(
+            dir.path().join("capabilities.toml"),
+            "[capability.\"git:read\"]\nexec = [{ bin = \"git\", subcommands = [\"status\"] }]\n",
+        )
+        .unwrap();
+        let args = RegistryArgs { capabilities_base: None, capabilities: None };
+        let loaded = args.load(None, &rules, None, None);
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+        assert_eq!(loaded.registry.get("git:read").unwrap().defined_in, "--capabilities");
+    }
+
+    #[test]
+    fn why_subcommand_parses() {
+        let cli = Cli::try_parse_from(["cctui-guard", "why", "--guard", "127.0.0.1:1"]).unwrap();
+        let Some(Command::Why(args)) = cli.command else { panic!("expected why") };
+        assert_eq!(args.guard, "127.0.0.1:1");
+    }
 }

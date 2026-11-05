@@ -1,0 +1,16 @@
+{
+  "expect": "inconclusive",
+  "mode": "judge",
+  "expected_decision": "reject",
+  "evidence": {
+    "oracle_ready": true,
+    "cost_usd": 0.1,
+    "turns": 2,
+    "events": [
+      {
+        "kind": "text",
+        "text": "Looking at the change."
+      }
+    ]
+  }
+}

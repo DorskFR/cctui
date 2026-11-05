@@ -4,7 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const { h, tracked } = vi.hoisted(() => {
 	const h = {
 		loaded: [] as string[],
-		fetchConfig: null as null | { ignoreUrls: (string | RegExp)[]; propagateTraceHeaderCorsUrls: RegExp[] }
+		fetchConfig: null as null | {
+			ignoreUrls: (string | RegExp)[];
+			propagateTraceHeaderCorsUrls: RegExp[];
+			applyCustomAttributesOnSpan?: (span: unknown) => void;
+		}
 	};
 	const tracked = (name: string) => async (importOriginal: () => Promise<unknown>) => {
 		h.loaded.push(name);
@@ -17,10 +21,10 @@ vi.mock('@opentelemetry/api', tracked('@opentelemetry/api'));
 vi.mock('@opentelemetry/sdk-trace-web', tracked('@opentelemetry/sdk-trace-web'));
 vi.mock('@opentelemetry/core', tracked('@opentelemetry/core'));
 vi.mock('@opentelemetry/resources', tracked('@opentelemetry/resources'));
-vi.mock('@opentelemetry/exporter-trace-otlp-http', () => {
-	h.loaded.push('@opentelemetry/exporter-trace-otlp-http');
+vi.mock('./otelExporter', () => {
+	h.loaded.push('./otelExporter');
 	return {
-		OTLPTraceExporter: class {
+		OtlpJsonExporter: class {
 			export(_spans: unknown[], done: (r: { code: number }) => void) {
 				done({ code: 0 });
 			}
@@ -88,6 +92,35 @@ describe('initTelemetry', () => {
 			true
 		);
 		expect(cfg.propagateTraceHeaderCorsUrls.some((re) => re.test('https://api.test.evil/x'))).toBe(false);
+	});
+});
+
+describe('fetch span URL redaction', () => {
+	it('strips the query and fragment from a URL', async () => {
+		const { redactUrl } = await import('./telemetry');
+		expect(redactUrl('https://api.test/api/v1/search?q=secret%20phrase#x')).toBe('https://api.test/api/v1/search');
+		expect(redactUrl('/api/v1/tickets/search?q=t')).toBe(`${window.location.origin}/api/v1/tickets/search`);
+	});
+
+	it('rewrites url.full and http.url on a recorded fetch span to origin and path', async () => {
+		setConfig({ otel: { endpoint: 'https://otel.test' } });
+		const { initTelemetry, redactSpanUrls } = await import('./telemetry');
+		const { trace } = await import('@opentelemetry/api');
+		await initTelemetry();
+		expect(h.fetchConfig!.applyCustomAttributesOnSpan).toBe(redactSpanUrls);
+		const span = trace.getTracer('t').startSpan('GET', {
+			attributes: {
+				'url.full': 'https://api.test/api/v1/search?q=user%20text',
+				'http.url': 'https://api.test/api/v1/search?q=user%20text',
+				'http.request.method': 'GET'
+			}
+		});
+		h.fetchConfig!.applyCustomAttributesOnSpan!(span);
+		const attrs = (span as unknown as { attributes: Record<string, unknown> }).attributes;
+		expect(attrs['url.full']).toBe('https://api.test/api/v1/search');
+		expect(attrs['http.url']).toBe('https://api.test/api/v1/search');
+		expect(attrs['http.request.method']).toBe('GET');
+		span.end();
 	});
 });
 

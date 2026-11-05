@@ -19,8 +19,8 @@ use super::registry::{
     CodexLiveSnapshot, SessionCommand, SessionRecord, forget_interrupts, register_interrupts,
 };
 use super::requests::{
-    ThreadConfig, ThreadInfo, initialize_req, initialized_notification, record_codex_version,
-    thread_info, turn_interrupt_req, turn_start_req, turn_steer_req,
+    ThreadConfig, ThreadInfo, hook_policy_refusal, initialize_req, initialized_notification,
+    record_codex_version, thread_info, turn_interrupt_req, turn_start_req, turn_steer_req,
 };
 use super::rpc::{
     HANDSHAKE_TIMEOUT, ID_INITIALIZE, ID_THREAD_START, Incoming, NO_TURN_IN_FLIGHT, PendingRpc,
@@ -800,6 +800,10 @@ impl<'a> EventLoop<'a> {
         }
         match (pending.method.as_str(), outcome) {
             ("initialize", Ok(_)) => {
+                let policy = self.session.cfg.hook_policy.as_ref();
+                if let Some(detail) = hook_policy_refusal(policy, response) {
+                    return Ok(self.refuse_launch(&detail).await);
+                }
                 self.on_initialized(response).await?;
                 Ok(Flow::Continue)
             }
@@ -851,6 +855,14 @@ impl<'a> EventLoop<'a> {
             }
             (_, Ok(_)) => Ok(Flow::Continue),
         }
+    }
+
+    async fn refuse_launch(&mut self, detail: &str) -> Flow {
+        tracing::error!(%detail, "codex: refusing the launch");
+        self.session.fail_handshake(self.ack, detail).await;
+        self.stop = Some(Stop::HandshakeFailed);
+        kill_child(&mut self.child);
+        Flow::Break
     }
 
     async fn on_initialized(&mut self, response: &Value) -> Result<()> {
@@ -1464,6 +1476,113 @@ done
         shutdown.cancel();
         assert!(ok, "{error:?}");
         assert!(marker.exists());
+    }
+
+    /// Reports `$VERSION`, writes the `thread/start` line to `$MARKER`, then
+    /// answers it with `$REPLY`.
+    const FAKE_HOOK_SERVER: &str = r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) echo '{"jsonrpc":"2.0","id":1,"result":{"userAgent":"codex/$VERSION"}}' ;;
+    *'"method":"thread/start"'*) printf '%s\n' "$line" > "$MARKER"; echo '$REPLY' ;;
+  esac
+done
+"#;
+
+    const STARTED: &str =
+        r#"{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"t-1","cwd":"/tmp"}}}"#;
+    const REJECTED: &str =
+        r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32600,"message":"invalid config: hooks"}}"#;
+
+    fn hook_server_script(version: &str, marker: &std::path::Path, reply: &str) -> String {
+        FAKE_HOOK_SERVER
+            .replace("$VERSION", version)
+            .replace("$MARKER", &marker.to_string_lossy())
+            .replace("$REPLY", reply)
+    }
+
+    fn deny_shell_policy() -> cctui_proto::hook_policy::HookPolicy {
+        use cctui_proto::hook_policy::{HookEvent, HookPolicy, HookRule, ToolClass};
+        HookPolicy {
+            rules: vec![HookRule {
+                event: HookEvent::PreToolUse,
+                tool: ToolClass::Shell,
+                command: "deny-shell".into(),
+                timeout_secs: None,
+            }],
+        }
+    }
+
+    fn run_guarded_spawn(bin: String) -> (Uuid, mpsc::Receiver<AdapterEvent>, CancellationToken) {
+        let (tx, rx) = mpsc::channel(64);
+        let command_id = Uuid::new_v4();
+        let shutdown = CancellationToken::new();
+        let session = CodexSession::new_fresh(
+            AppServerConfig {
+                bin,
+                hook_policy: Some(deny_shell_policy()),
+                ..AppServerConfig::default()
+            },
+            "/tmp".to_string(),
+            std::collections::BTreeMap::new(),
+            None,
+            None,
+            Vec::new(),
+            Some(command_id),
+            None,
+            None,
+            tx,
+            LiveSessionRegistry::default(),
+            SessionRegistry::default(),
+            shutdown.clone(),
+        );
+        tokio::spawn(session.run());
+        (command_id, rx, shutdown)
+    }
+
+    #[tokio::test]
+    async fn a_guarded_thread_start_carries_the_hooks_on_the_wire() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("thread-start");
+        let (_bin_dir, bin) = fake_codex(&hook_server_script("0.166.0", &marker, STARTED));
+        let (_, mut rx, shutdown) = run_guarded_spawn(bin);
+        let (ok, error) = spawn_result(&mut rx).await;
+        shutdown.cancel();
+        assert!(ok, "{error:?}");
+        let line = std::fs::read_to_string(&marker).unwrap();
+        let req: Value = serde_json::from_str(line.trim()).unwrap();
+        let config = &req["params"]["config"];
+        assert_eq!(config["bypass_hook_trust"], true, "{req}");
+        assert_eq!(config["features.hooks"], true, "{req}");
+        assert_eq!(config["hooks"]["PreToolUse"][0]["matcher"], "Bash", "{req}");
+        assert_eq!(config["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "deny-shell");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_hook_config_fails_the_spawn() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("thread-start");
+        let (_bin_dir, bin) = fake_codex(&hook_server_script("0.166.0", &marker, REJECTED));
+        let (command_id, mut rx, shutdown) = run_guarded_spawn(bin);
+        let (ok, error) = spawn_result(&mut rx).await;
+        shutdown.cancel();
+        assert!(!ok, "{command_id} must not start unguarded");
+        let error = error.unwrap();
+        assert!(error.contains("invalid config: hooks"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_codex_too_old_for_hooks_is_refused_before_thread_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("thread-start");
+        let (_bin_dir, bin) = fake_codex(&hook_server_script("0.165.9", &marker, STARTED));
+        let (_, mut rx, shutdown) = run_guarded_spawn(bin);
+        let (ok, error) = spawn_result(&mut rx).await;
+        shutdown.cancel();
+        assert!(!ok);
+        let error = error.unwrap();
+        assert!(error.contains("refusing to start it unguarded"), "{error}");
+        assert!(!marker.exists(), "no thread may start without its hooks");
     }
 
     /// Answers the handshake, then runs `$TURN` for a `turn/start`. Echoes the

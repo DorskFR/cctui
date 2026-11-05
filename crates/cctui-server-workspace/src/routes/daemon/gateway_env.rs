@@ -6,6 +6,8 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 use cctui_server_core::launch_credentials::{gateway_env_allowed, spawn_capability_for};
+use cctui_telemetry::db::traced;
+use tracing::Instrument;
 
 impl cctui_server_core::launch_credentials::LaunchCredentialsContext for AppState {
     fn launch_state(&self) -> &cctui_server_core::state::CoreState {
@@ -58,15 +60,31 @@ pub async fn session_gateway_env(
     let Some(machine_id) = ctx.machine_id else {
         return Err(StatusCode::FORBIDDEN);
     };
+    gateway_env_for(&state, ctx.user_id, machine_id, &session_id, query.rules).await.map(Json)
+}
 
-    let allowed = gateway_env_allowed(&state.pool, ctx.user_id, machine_id, &session_id)
-        .await
-        .map_err(|e| {
+/// Every branch runs to completion, never cancelled by a sibling's error: a
+/// mint dropped between its token write and its `sessions` write would leave
+/// the binding half-moved.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "gateway_env_for", session_id = %session_id),
+)]
+async fn gateway_env_for(
+    state: &AppState,
+    user_id: Uuid,
+    machine_id: Uuid,
+    session_id: &str,
+    rules: bool,
+) -> Result<cctui_proto::api::GatewayEnvResponse, StatusCode> {
+    let allowed =
+        gateway_env_allowed(&state.pool, user_id, machine_id, session_id).await.map_err(|e| {
             tracing::error!(%session_id, "daemon gateway-env ownership lookup failed: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
     if !allowed {
-        return Ok(Json(cctui_proto::api::GatewayEnvResponse {
+        return Ok(cctui_proto::api::GatewayEnvResponse {
             account_bound: false,
             env: std::collections::BTreeMap::default(),
             settings: None,
@@ -74,91 +92,125 @@ pub async fn session_gateway_env(
             spawn_capability: None,
             plugins: Vec::new(),
             context: Vec::new(),
-        }));
+            hook_policy: None,
+        });
     }
 
-    // The machine user's whip stall-phrase override rides this pull to
-    // reach the connectionless `whip-stop-hook`; per-user, so it applies whether
-    // or not the session is account-bound.
-    let user_settings = user_settings_of(&state, ctx.user_id).await;
+    let (user_settings, (), spawn_capability, context, bound, hook_policy) = tokio::join!(
+        user_settings_of(state, user_id),
+        sync_plugins(state),
+        spawn_capability_for(state, session_id),
+        owned_launch_context(&state.pool, user_id, session_id, rules),
+        bound_launch(state, session_id),
+        recorded_hook_policy(&state.pool, session_id),
+    );
+    let context = context?;
+    let bound = bound?;
+    let hook_policy = hook_policy?;
+    // The machine user's whip stall-phrase override rides this pull to reach
+    // the connectionless `whip-stop-hook`, bound or not.
     let whip_phrases =
         user_settings.as_ref().and_then(crate::routes::settings::whip_stop_phrases_of);
-    crate::plugin_store::sync_or_warn(&state.pool, &state.plugins).await;
     let plugins = session_plugins(&state.plugins, user_settings.as_ref());
+    let (account_bound, env, settings) = bound.map_or_else(
+        || (false, std::collections::BTreeMap::default(), None),
+        |BoundLaunch { env, settings }| (true, env, settings),
+    );
+    Ok(cctui_proto::api::GatewayEnvResponse {
+        account_bound,
+        env,
+        settings,
+        whip_phrases,
+        spawn_capability,
+        plugins,
+        context,
+        hook_policy: Some(hook_policy),
+    })
+}
 
-    // Resolve EVERY bound family (one account per family) and re-mint each, so a
-    // worker carrying both claude + codex creds gets both restored on launch,
-    // not just the last-minted family. The families emit disjoint env
-    // keys, so the merge never collides.
-    let accounts = crate::routes::gateway::resolve_session_accounts(&state, &session_id).await;
-    if accounts.is_empty() {
-        return Ok(Json(cctui_proto::api::GatewayEnvResponse {
-            account_bound: false,
-            env: std::collections::BTreeMap::default(),
-            settings: None,
-            whip_phrases,
-            spawn_capability: spawn_capability_for(&state, &session_id).await,
-            plugins,
-            context: launch_context(&state.pool, ctx.user_id, machine_id, &session_id, query.rules)
-                .await?,
-        }));
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "recorded_hook_policy", session_id = %session_id),
+)]
+async fn recorded_hook_policy(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+) -> Result<cctui_proto::hook_policy::SessionHookPolicy, StatusCode> {
+    cctui_server_core::hook_policy::for_session(pool, session_id).await.map_err(|e| {
+        tracing::error!(%session_id, "daemon gateway-env hook policy lookup failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })
+}
+
+#[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "sync_plugins"))]
+async fn sync_plugins(state: &AppState) {
+    crate::plugin_store::sync_or_warn(&state.pool, &state.plugins).await;
+}
+
+/// Re-mint every bound family (one account each, disjoint env keys) and serve
+/// their merged `settings_json`; `None` when the session binds no account.
+///
+/// A family whose account row is gone is skipped, so with every family gone
+/// the env is empty and the daemon fails closed. A DB failure is a 500: the
+/// daemon then falls back to its pushed env hint.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "bound_launch", session_id = %session_id),
+)]
+async fn bound_launch(
+    state: &AppState,
+    session_id: &str,
+) -> Result<Option<BoundLaunch>, StatusCode> {
+    let binding = crate::routes::gateway::resolve_session_binding(state, session_id).await;
+    if binding.accounts.is_empty() {
+        return Ok(None);
     }
-    let mut env = std::collections::BTreeMap::new();
-    for account_id in accounts {
-        match crate::routes::gateway::mint_session_env_for_account(&state, account_id, &session_id)
-            .await
-        {
-            Ok(Some(e)) => env.extend(e),
-            // This family's account row is gone — skip it; other families may
-            // still mint. With every family gone, `env` stays empty and we report
-            // bound + empty below so the daemon fails closed instead of launching
-            // a worker that will 401.
-            Ok(None) => {}
-            // Transient DB failure: let the daemon fall back to its pushed env hint.
-            Err(e) => {
-                tracing::error!(%session_id, "daemon gateway-env mint failed: {e}");
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-        }
-    }
-    // Merge the bound account(s)' per-account `settings_json` so it
-    // rides alongside the gateway env on this same pull. Re-served on every
-    // (re)launch, it survives a daemon / claude-daemon restart; the daemon
-    // deep-merges it UNDER its managed hook settings when writing the worker's
-    // `--settings` file (that daemon-side merge is).
-    let mut settings = crate::routes::gateway::resolve_session_settings(&state, &session_id).await;
+    let (env, mut settings, adapter) = tokio::join!(
+        crate::routes::gateway::mint_binding_env(state, session_id, &binding),
+        crate::routes::gateway::binding_settings(state, session_id, &binding),
+        session_adapter(state, session_id),
+    );
+    let env = env.map_err(|e| {
+        tracing::error!(%session_id, "daemon gateway-env mint failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     // Codex defaults to the `priority` tier, so a relaunch with no opinion is the
     // expensive one. Serve a concrete tier to a codex session, and only to one:
     // the OpenAI-wire ACP agents share the family but cannot use the key.
-    let adapter = crate::store::sessions::adapter_id(&state.pool, &session_id)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
     if crate::settings_catalog::codex::adapter_takes_service_tier(&adapter) {
         settings = crate::settings_catalog::codex::overlay_service_tier(settings);
     }
     // This pull only happens when the daemon is actually (re)launching the
-    // worker — a session marked `ended` (possibly by a spurious end)
-    // is provably coming back to life, so un-stick the terminal status here.
-    // `archived` stays parked: un-archiving is an explicit user action.
-    let _ = sqlx::query(
-        "UPDATE sessions SET status = 'active', ended_at = NULL, end_reason = NULL, end_detail = NULL \
-         WHERE id = $1 AND status = 'ended'",
+    // worker, so a session marked `ended` (possibly by a spurious end) is
+    // coming back to life. `archived` stays parked: un-archiving is an explicit
+    // user action.
+    let _ = traced(
+        "UPDATE sessions SET status = 'active', ended_at = NULL, end_reason = NULL, \
+         end_detail = NULL WHERE id = $1 AND status = 'ended'",
+        |sql| sqlx::query(sql).bind(session_id).execute(&state.pool),
     )
-    .bind(&session_id)
-    .execute(&state.pool)
     .await;
-    Ok(Json(cctui_proto::api::GatewayEnvResponse {
-        account_bound: true,
-        env,
-        settings,
-        whip_phrases,
-        spawn_capability: spawn_capability_for(&state, &session_id).await,
-        plugins,
-        context: launch_context(&state.pool, ctx.user_id, machine_id, &session_id, query.rules)
-            .await?,
-    }))
+    Ok(Some(BoundLaunch { env, settings }))
+}
+
+struct BoundLaunch {
+    env: std::collections::BTreeMap<String, String>,
+    settings: Option<serde_json::Value>,
+}
+
+async fn session_adapter(state: &AppState, session_id: &str) -> String {
+    crate::store::sessions::adapter_id(&state.pool, session_id)
+        .instrument(tracing::info_span!(
+            target: "otel",
+            "session_adapter",
+            code.function.name = "session_adapter"
+        ))
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default()
 }
 
 /// `GET /api/v1/daemon/sessions/{id}/context` — [`session_context`] without
@@ -199,8 +251,25 @@ async fn launch_context(
     Ok(if allowed { session_context(pool, session_id, rules).await } else { Vec::new() })
 }
 
-/// A key with no session row is readable only when the set recorded under it
-/// is the caller's.
+/// [`launch_context`] for a caller [`gateway_env_allowed`] already let through.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "owned_launch_context", session_id = %session_id),
+)]
+async fn owned_launch_context(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    session_id: &str,
+    rules: bool,
+) -> Result<Vec<cctui_proto::api::SessionContextItem>, StatusCode> {
+    let readable = context_readable(pool, user_id, session_id).await.map_err(|e| {
+        tracing::error!(%session_id, "daemon context ownership lookup failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(if readable { session_context(pool, session_id, rules).await } else { Vec::new() })
+}
+
 async fn context_allowed(
     pool: &sqlx::PgPool,
     user_id: Uuid,
@@ -210,19 +279,28 @@ async fn context_allowed(
     if !gateway_env_allowed(pool, user_id, machine_id, session_id).await? {
         return Ok(false);
     }
-    let registered: bool =
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sessions WHERE id = $1)")
-            .bind(session_id)
-            .fetch_one(pool)
-            .await?;
+    context_readable(pool, user_id, session_id).await
+}
+
+/// A key with no session row is readable only when the set recorded under it
+/// is the caller's.
+async fn context_readable(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    session_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let registered: bool = traced("SELECT EXISTS (SELECT 1 FROM sessions WHERE id = $1)", |sql| {
+        sqlx::query_scalar(sql).bind(session_id).fetch_one(pool)
+    })
+    .await?;
     if registered {
         return Ok(true);
     }
     let owner: Option<Option<String>> =
-        sqlx::query_scalar("SELECT scope->>'user_id' FROM session_context WHERE spawn_key = $1")
-            .bind(session_id)
-            .fetch_optional(pool)
-            .await?;
+        traced("SELECT scope->>'user_id' FROM session_context WHERE spawn_key = $1", |sql| {
+            sqlx::query_scalar(sql).bind(session_id).fetch_optional(pool)
+        })
+        .await?;
     Ok(owner.flatten().is_some_and(|o| o == user_id.to_string()))
 }
 
@@ -236,6 +314,11 @@ async fn session_context(
     rules: bool,
 ) -> Vec<cctui_proto::api::SessionContextItem> {
     crate::routes::context::for_launch(pool, session_id, rules)
+        .instrument(tracing::info_span!(
+            target: "otel",
+            "session_context",
+            code.function.name = "session_context"
+        ))
         .await
         .into_iter()
         .map(|i| cctui_proto::api::SessionContextItem {
@@ -252,12 +335,12 @@ async fn session_context(
 /// `user_settings.data`, or `None` when unset / reduced to the default. Read from
 /// the DB on the same gateway-env pull that carries the account settings.
 async fn user_settings_of(state: &AppState, user_id: Uuid) -> Option<serde_json::Value> {
-    sqlx::query_scalar("SELECT data FROM user_settings WHERE user_id = $1")
-        .bind(user_id)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten()
+    traced("SELECT data FROM user_settings WHERE user_id = $1", |sql| {
+        sqlx::query_scalar(sql).bind(user_id).fetch_optional(&state.pool)
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// The skill bundles and setting env of every installed plugin the user
@@ -633,6 +716,258 @@ mod tests {
             .await
             .ok();
         drop_machines(&pool, &[], &[(ua, ma), (ub, mb)]).await;
+    }
+
+    /// The sequential chain `gateway_env_for` replaced, kept as the oracle.
+    async fn sequential_gateway_env(
+        state: &AppState,
+        user_id: Uuid,
+        machine_id: Uuid,
+        session_id: &str,
+    ) -> cctui_proto::api::GatewayEnvResponse {
+        use crate::routes::gateway::{
+            mint_session_env_for_account, resolve_session_accounts, resolve_session_settings,
+        };
+        assert!(gateway_env_allowed(&state.pool, user_id, machine_id, session_id).await.unwrap());
+        let user_settings = user_settings_of(state, user_id).await;
+        let whip_phrases =
+            user_settings.as_ref().and_then(crate::routes::settings::whip_stop_phrases_of);
+        crate::plugin_store::sync_or_warn(&state.pool, &state.plugins).await;
+        let plugins = session_plugins(&state.plugins, user_settings.as_ref());
+        let accounts = resolve_session_accounts(state, session_id).await;
+        let mut env = std::collections::BTreeMap::new();
+        let mut settings = None;
+        if !accounts.is_empty() {
+            for account in &accounts {
+                if let Some(e) =
+                    mint_session_env_for_account(state, *account, session_id).await.unwrap()
+                {
+                    env.extend(e);
+                }
+            }
+            settings = resolve_session_settings(state, session_id).await;
+            let adapter = crate::store::sessions::adapter_id(&state.pool, session_id)
+                .await
+                .unwrap()
+                .unwrap_or_default();
+            if crate::settings_catalog::codex::adapter_takes_service_tier(&adapter) {
+                settings = crate::settings_catalog::codex::overlay_service_tier(settings);
+            }
+            sqlx::query(
+                "UPDATE sessions SET status = 'active', ended_at = NULL, end_reason = NULL, \
+                 end_detail = NULL WHERE id = $1 AND status = 'ended'",
+            )
+            .bind(session_id)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        }
+        cctui_proto::api::GatewayEnvResponse {
+            account_bound: !accounts.is_empty(),
+            env,
+            settings,
+            whip_phrases,
+            spawn_capability: spawn_capability_for(state, session_id).await,
+            plugins,
+            context: launch_context(&state.pool, user_id, machine_id, session_id, true)
+                .await
+                .unwrap(),
+            hook_policy: Some(
+                cctui_server_core::hook_policy::for_session(&state.pool, session_id).await.unwrap(),
+            ),
+        }
+    }
+
+    async fn end_session(pool: &sqlx::PgPool, sid: &str) {
+        sqlx::query("UPDATE sessions SET status = 'ended', ended_at = now() WHERE id = $1")
+            .bind(sid)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn session_status(pool: &sqlx::PgPool, sid: &str) -> String {
+        sqlx::query_scalar("SELECT status FROM sessions WHERE id = $1")
+            .bind(sid)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// Binds `sid` to one account carrying `providers`, each with its own
+    /// `settings_json`, minting the first token of every family.
+    async fn bind_families(
+        state: &AppState,
+        uid: Uuid,
+        sid: &str,
+        providers: &[(&str, serde_json::Value)],
+    ) -> Uuid {
+        let account: Uuid =
+            sqlx::query_scalar("INSERT INTO accounts (user_id, name) VALUES ($1, $2) RETURNING id")
+                .bind(uid)
+                .bind(format!("genv-same-{}", Uuid::new_v4()))
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        for (provider, settings) in providers {
+            let row: Uuid = sqlx::query_scalar(
+                "INSERT INTO account_providers (user_id, account_id, provider, settings_json) \
+                 VALUES ($1, $2, $3, $4) RETURNING id",
+            )
+            .bind(uid)
+            .bind(account)
+            .bind(provider)
+            .bind(settings)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+            crate::routes::gateway::mint_session_env_for_account(state, row, sid)
+                .await
+                .unwrap()
+                .expect("provider row exists");
+        }
+        account
+    }
+
+    /// The concurrent, de-duplicated pull answers exactly what the sequential
+    /// chain answered, for one and for two bound families, and still un-ends
+    /// an `ended` session.
+    #[tokio::test]
+    async fn gateway_env_answers_as_the_sequential_chain_did() {
+        let Some(url) = crate::routes::gateway::test_db_url("gateway_env_same_answer") else {
+            return;
+        };
+        crate::crypto::install_vault_key(vec![7u8; 32]);
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let state = AppState::for_test(pool.clone());
+        let cases: [(&str, &[(&str, serde_json::Value)]); 2] = [
+            ("claude-code", &[("anthropic", serde_json::json!({ "theme": "dark" }))]),
+            (
+                "codex",
+                &[
+                    ("anthropic", serde_json::json!({ "theme": "dark" })),
+                    ("openai", serde_json::json!({ "model_reasoning_summary": "auto" })),
+                ],
+            ),
+        ];
+        for (adapter, providers) in cases {
+            let (uid, mid) = seed_machine(&pool, "genv-same").await;
+            let sid = seed_owned_session(&pool, uid, mid).await;
+            sqlx::query("UPDATE sessions SET adapter_id = $2 WHERE id = $1")
+                .bind(&sid)
+                .bind(adapter)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let account = bind_families(&state, uid, &sid, providers).await;
+
+            end_session(&pool, &sid).await;
+            let before = sequential_gateway_env(&state, uid, mid, &sid).await;
+            assert_eq!(session_status(&pool, &sid).await, "active");
+            end_session(&pool, &sid).await;
+            let after = super::gateway_env_for(&state, uid, mid, &sid, true).await.expect("pull");
+            assert_eq!(session_status(&pool, &sid).await, "active", "{adapter}: un-ended");
+
+            assert!(after.account_bound, "{adapter}");
+            assert_eq!(
+                after.env.keys().filter(|k| k.ends_with("_BASE_URL")).count(),
+                providers.len(),
+                "{adapter}: every family minted: {:?}",
+                after.env.keys()
+            );
+            assert!(after.settings.is_some(), "{adapter}: settings served");
+            assert_eq!(
+                serde_json::to_value(&after).unwrap(),
+                serde_json::to_value(&before).unwrap(),
+                "{adapter}: same answer as the sequential chain"
+            );
+
+            sqlx::query("DELETE FROM session_tokens WHERE session_id = $1")
+                .bind(&sid)
+                .execute(&pool)
+                .await
+                .ok();
+            sqlx::query("DELETE FROM session_spawn_capabilities WHERE session_id = $1")
+                .bind(&sid)
+                .execute(&pool)
+                .await
+                .ok();
+            sqlx::query("DELETE FROM accounts WHERE id = $1")
+                .bind(account)
+                .execute(&pool)
+                .await
+                .ok();
+            drop_machines(&pool, &[sid], &[(uid, mid)]).await;
+        }
+    }
+
+    /// An unbound session answers unbound, as before, and stays `ended`.
+    #[tokio::test]
+    async fn an_unbound_gateway_env_answers_as_the_sequential_chain_did() {
+        let Some(url) = crate::routes::gateway::test_db_url("gateway_env_same_unbound") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let state = AppState::for_test(pool.clone());
+        let (uid, mid) = seed_machine(&pool, "genv-unbound").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
+        end_session(&pool, &sid).await;
+
+        let before = sequential_gateway_env(&state, uid, mid, &sid).await;
+        let after = super::gateway_env_for(&state, uid, mid, &sid, true).await.expect("pull");
+        assert!(!after.account_bound);
+        assert!(after.env.is_empty());
+        assert_eq!(serde_json::to_value(&after).unwrap(), serde_json::to_value(&before).unwrap());
+        assert_eq!(session_status(&pool, &sid).await, "ended", "only a bound relaunch un-ends");
+
+        sqlx::query("DELETE FROM session_spawn_capabilities WHERE session_id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .ok();
+        drop_machines(&pool, &[sid], &[(uid, mid)]).await;
+    }
+
+    #[tokio::test]
+    async fn gateway_env_serves_the_recorded_hook_policy_to_the_owning_machine_only() {
+        use cctui_proto::hook_policy::{HookPolicyStatus, SessionHookPolicy};
+        let Some(url) = crate::routes::gateway::test_db_url("gateway_env_hook_policy") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let state = AppState::for_test(pool.clone());
+        let (uid, mid) = seed_machine(&pool, "genv-policy").await;
+        let (ub, mb) = seed_machine(&pool, "genv-policy-other").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
+
+        let none = super::gateway_env_for(&state, uid, mid, &sid, true).await.expect("pull");
+        assert_eq!(none.hook_policy, Some(SessionHookPolicy::default()));
+
+        let carried = cctui_server_core::hook_policy::carry("claude-code", Vec::new()).unwrap();
+        assert_eq!(carried.status, Some(HookPolicyStatus::Applied));
+        cctui_server_core::hook_policy::record_for_session(&pool, &sid, &carried)
+            .await
+            .expect("record");
+
+        let pulled = super::gateway_env_for(&state, uid, mid, &sid, true).await.expect("pull");
+        assert_eq!(pulled.hook_policy, Some(carried));
+        let wire = serde_json::to_value(&pulled).unwrap();
+        assert_eq!(wire["hook_policy"]["status"], serde_json::json!("applied"));
+
+        let foreign = super::gateway_env_for(&state, ub, mb, &sid, true).await.expect("pull");
+        assert_eq!(foreign.hook_policy, None, "another machine never sees the policy");
+
+        sqlx::query("DELETE FROM session_hook_policies WHERE session_id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM session_spawn_capabilities WHERE session_id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .ok();
+        drop_machines(&pool, &[sid], &[(uid, mid), (ub, mb)]).await;
     }
 
     #[test]

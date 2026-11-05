@@ -632,6 +632,24 @@ tui = "handled"
 module = "auth.rs"
 
 [[route]]
+id = "get_me_hidden_owners"
+# GET /me/hidden-owners — Your hidden users and machines: their sessions stay out of your lists (admin).
+tui = "waived"
+reason = "hiding users and machines is managed from the webui; the TUI list honours it through the server-side filter"
+
+[[route]]
+id = "put_me_hidden_owners_by_kind_by_target"
+# PUT /me/hidden-owners/{kind}/{target_id} — Hide a user's or machine's sessions from your own lists (admin).
+tui = "waived"
+reason = "hiding users and machines is managed from the webui; the TUI list honours it through the server-side filter"
+
+[[route]]
+id = "delete_me_hidden_owners_by_kind_by_target"
+# DELETE /me/hidden-owners/{kind}/{target_id} — Show a hidden user's or machine's sessions in your lists again (admin).
+tui = "waived"
+reason = "hiding users and machines is managed from the webui; the TUI list honours it through the server-side filter"
+
+[[route]]
 id = "get_auth_device_by_user_code"
 # GET /auth/device/{user_code} — What a pending device login is asking for.
 tui = "waived"
@@ -1375,6 +1393,24 @@ tui = "waived"
 reason = "the daemon calls this, not a human client"
 
 [[route]]
+id = "get_sessions_by_id_hook_policy"
+# GET /sessions/{id}/hook-policy — Read the hook rules the session was launched with.
+tui = "waived"
+reason = "the launched hook rules are a read-only chip in the webui session details popover"
+
+[[route]]
+id = "get_sessions_by_id_tool_guard"
+# GET /sessions/{id}/tool-guard — Read or toggle the session's gateway tool-guard bypass.
+tui = "waived"
+reason = "the per-session tool-guard bypass is a webui drawer switch and block-banner action"
+
+[[route]]
+id = "put_sessions_by_id_tool_guard"
+# PUT /sessions/{id}/tool-guard — Read or toggle the session's gateway tool-guard bypass.
+tui = "waived"
+reason = "the per-session tool-guard bypass is a webui drawer switch and block-banner action"
+
+[[route]]
 id = "post_sessions_by_id_policy"
 # POST /sessions/{id}/policy — Set a session's permission policy.
 tui = "waived"
@@ -1805,6 +1841,11 @@ reason = "the TUI session list does not group by room"
 name = "cctuiverse_changed"
 tui = "waived"
 reason = "cctuiverse links are managed from the webui"
+
+[[ws_event]]
+name = "hidden_owners_changed"
+tui = "waived"
+reason = "the next session-list refresh applies the new hidden set"
 
 [[ws_event]]
 name = "user_actions"

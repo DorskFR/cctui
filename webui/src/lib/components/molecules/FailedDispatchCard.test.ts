@@ -65,6 +65,13 @@ describe('FailedDispatchCard', () => {
 		expect(rerunButton()).toBeUndefined();
 	});
 
+	it('a dispatch whose prompt was masked says so and offers no one-click re-run', async () => {
+		await render(dispatch({ prompt_head: 'use [REDACTED:user] now', rerun_blocked: 'prompt_redacted' }));
+		expect(text()).toContain('<redacted> parts are stored only masked');
+		expect(text()).not.toContain('only the start of the prompt');
+		expect(rerunButton()).toBeUndefined();
+	});
+
 	it('shows why a re-dispatch failed', async () => {
 		await render(dispatch({ reason: 'oom_killed' }), async () => {
 			throw new Error('dispatch policy violated (daily_cap)');
@@ -120,5 +127,33 @@ describe('FailedDispatchCard', () => {
 		);
 		expect(document.querySelector('pre.log')).toBeNull();
 		expect(text()).toContain('Worker logs unavailable: needs `get` on `pods/log`');
+	});
+
+	it('shows the run exposure as three flags and its human gate', async () => {
+		await render(
+			dispatch({
+				exposure: { untrusted_input: true, sensitive_data: true, outward: false, human_gate: 'draft_pr_only' }
+			})
+		);
+		const flags = [...document.querySelectorAll<HTMLElement>('[data-exposure] [data-flag]')].map((b) => [
+			b.dataset.flag,
+			b.dataset.on,
+			b.textContent?.trim()
+		]);
+		expect(flags).toEqual([
+			['untrusted_input', 'true', 'untrusted input'],
+			['sensitive_data', 'true', 'sensitive data'],
+			['outward', 'false', 'outward']
+		]);
+		expect(document.querySelector('[data-exposure] [data-gate]')?.textContent?.trim()).toBe('draft PR only');
+	});
+
+	it('marks all three legs held with no gate, and shows no exposure when none was reported', async () => {
+		await render(dispatch({ exposure: { untrusted_input: true, sensitive_data: true, outward: true } }));
+		expect(document.querySelector('[data-exposure] [data-gate]')?.textContent?.trim()).toBe('no human gate');
+		unmount(comp!);
+		comp = null;
+		await render(dispatch());
+		expect(document.querySelector('[data-exposure]')).toBeNull();
 	});
 });

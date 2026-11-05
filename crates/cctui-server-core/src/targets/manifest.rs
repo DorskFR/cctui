@@ -20,7 +20,8 @@ use serde::Serialize;
 /// Host configuration for same-origin daemon distribution.
 pub trait DistributionContext: Clone + Send + Sync + 'static {
     fn distribution_url(&self) -> &str;
-    fn github_token(&self) -> Option<&str>;
+    /// Read per request so a rotated token lands on the next download.
+    fn github_token(&self) -> Option<std::sync::Arc<str>>;
 }
 
 /// GitHub `owner/repo` to fetch daemon release assets from. Defaults to the
@@ -164,7 +165,7 @@ pub async fn download_daemon_binary<S: DistributionContext>(
     let rel_url = format!("https://api.github.com/repos/{}/releases/tags/v{version}", repo());
     let rel: GhRelease = client
         .get(&rel_url)
-        .bearer_auth(token)
+        .bearer_auth(&token)
         .header(header::USER_AGENT, "cctui-server")
         .header(header::ACCEPT, "application/vnd.github+json")
         .send()

@@ -31,6 +31,7 @@ pub(super) fn launch_argv_spec() -> cctui_proto::adapter::SessionSpec {
         env: std::collections::BTreeMap::new(),
         bootstrap: serde_json::Value::Null,
         parent_local_id: None,
+        hook_policy: None,
     }
 }
 

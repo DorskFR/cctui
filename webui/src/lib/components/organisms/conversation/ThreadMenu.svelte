@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import { Badge, Icon, Menu, Text, relativeTime, type MenuItem } from '@dorsk/tsumikit';
 	import { sessionHref } from '$lib/sessionFailureToast';
 	import { useSessionThread } from '$lib/queries';
@@ -26,7 +27,7 @@
 			content: row,
 			attrs: e.current ? { 'aria-current': 'page' } : {},
 			onselect: () => {
-				if (!e.current) void goto(sessionHref(e.id));
+				if (!e.current) void goto(sessionHref(e.id), { replaceState: true, state: page.state });
 			}
 		}))
 	);

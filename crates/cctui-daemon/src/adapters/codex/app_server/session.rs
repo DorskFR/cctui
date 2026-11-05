@@ -306,7 +306,8 @@ impl CodexSession {
         let config = ThreadConfig::new(&self.env, self.cfg.service_tier.as_deref())
             .with_tool_env(self.skills.env.clone())
             .with_developer_instructions(self.developer_instructions())
-            .with_permissions(&self.cfg.approval_policy, &self.cfg.sandbox_mode);
+            .with_permissions(&self.cfg.approval_policy, &self.cfg.sandbox_mode)
+            .with_hook_policy(self.cfg.hook_policy.clone());
         if shared { config.with_overlay(shared_overlay(&self.cfg, &self.env)) } else { config }
     }
 

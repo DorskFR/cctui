@@ -68,7 +68,7 @@ case, never a *no-`SESSION_ID`* case.
 
 | Var | Default | Meaning |
 | --- | --- | --- |
-| `WORKER_NET_MODE` | auto | `transparent`, `transparent-external`, or `forward`. Auto = `transparent` when iptables is usable (CAP_NET_ADMIN), else `forward`. `transparent-external` is never auto-selected — set it only when the pod runs the guard-proxy sidecar + net-init init container (see below). |
+| `WORKER_NET_MODE` | auto | `transparent`, `transparent-external`, or `forward`. Auto = `transparent` when iptables is usable (CAP_NET_ADMIN), else `forward`, which then faces an enforcing pre-flight it cannot pass. An explicit `transparent` with unusable iptables refuses to start. `forward` is an explicit opt-in only. `transparent-external` is never auto-selected — set it only when the pod runs the guard-proxy sidecar + net-init init container (see below). |
 | `WORKER_NET_EXEMPT` | — | Comma-separated `host:port` that **bypass** the proxy (resolved to a single IP at boot, iptables `RETURN`'d). Transparent mode only. IP-pinned — use only for **IP-stable** hosts; CDN/multi-IP hosts will rotate off the exempted IP. |
 | `WORKER_NET_ALLOW` | — | Comma-separated `host:port` allowed **through** the proxy by **SNI** (IP-independent). Folded into the seeded `policy.json` and re-applied as `cctui-guard --always-allow` so it survives per-step rewrites. The right tool for CDN/multi-IP SaaS APIs (e.g. a YouTrack host). |
 | `WORKER_REPO_REGISTRIES` | on | After the repo lands in `/workspace/<repo>`, its manifests (up to three levels deep; `.git`, `node_modules`, `target`, `vendor`, `.venv` skipped) add their package registry to the seeded `policy.json` as plain egress (no credential injection): `package.json`/`package-lock.json`/`npm-shrinkwrap.json` → `registry.npmjs.org:443`; `pyproject.toml`/`uv.lock`/`requirements*.txt` → `pypi.org:443`, `files.pythonhosted.org:443`; `Cargo.toml` → `index.crates.io:443`, `static.crates.io:443`, `crates.io:443`; `go.mod` → `proxy.golang.org:443`, `sum.golang.org:443`. Not `--always-allow`'d: under a guarded workflow the per-step `[network]` policy replaces them. `0`/`false`/`off`/`no` disables it per profile. |
@@ -82,7 +82,9 @@ case, never a *no-`SESSION_ID`* case.
 | `CONTEXT_PACK_TOKEN_FROM` | — | Name of an env var holding the pack-clone token, when it differs from the task identity's (e.g. the task identity can't read the pack repo). Resolved before the `GITHUB_TOKEN` fallbacks; keeps a specific identity name out of the image. |
 | `GUARD_RULES_FILE` | `/opt/context/guard-rules.md` | Guard rules path; defaults into the fetched pack (the override/extend layer). |
 | `GUARD_RULES_BASE` | — | Operator base guard-rules parsed **before** `GUARD_RULES_FILE`. When a pack ships `guard-rules.md`, the entrypoint moves any prior `GUARD_RULES_FILE` here so the pack reuses/extends/overrides it. |
-| `CCTUI_PREFLIGHT_MODE` | `enforce` in `transparent-external`, else `warn` | Pre-flight isolation check mode: `enforce`, `warn` or `off` (see below). An unknown value enforces. Set by the kube dispatcher from `spec.preflight.mode`. |
+| `CCTUI_GUARD_EXEC` | off | `1` (exactly) makes `cctui-guard` authorise every `execve`/`execveat` of the agent tree (see "Exec interception" below). Any other value or unset: off, and the worker runs exactly as without it. Reserved: a dispatch env cannot set it. |
+| `CCTUI_LANDLOCK_STRICT` | strict | `0` (exactly) lets the supervisor start when the kernel does not enforce Landlock, logging a `WARNING` from both the entrypoint and the supervisor; the agent then runs with seccomp + capability drop but **no filesystem confinement**. Any other value or unset: a kernel without Landlock refuses to start. Per profile or per docker dispatcher (`landlock_strict = false`). Reserved: a dispatch env cannot set it. |
+| `CCTUI_PREFLIGHT_MODE` | `enforce`, except `warn` under an explicit `WORKER_NET_MODE=forward` | Pre-flight isolation check mode: `enforce`, `warn` or `off` (see below). An unknown value enforces. Set by the kube dispatcher from `spec.preflight.mode`. |
 | `CCTUI_PREFLIGHT_DENY` | — | Comma-separated extra pre-flight deny targets: `host:port` or a CIDR. Set from `spec.preflight.deny`. |
 | `NODE_OPTIONS` | `--use-openssl-ca` appended | Every node reads the system trust store (see "Node trust store" below). A value already naming `--use-openssl-ca`, `--use-bundled-ca` or `--use-system-ca` is left as is. |
 | `CCTUI_DISPATCH_WORKDIR` | `/workspace/$TASK_REPO` if that dir exists (else `/workspace`) | Session working directory. Defaulted to the checked-out repo after `phase_workspace` so the CLI grants edit-in-place (a cwd inside the repo) instead of blocking background edits with "call `EnterWorktree` first"; an explicit operator/dispatcher value always wins. |
@@ -245,6 +247,73 @@ header shows it and can request a move, which the server relays back down as
 a `POST /transition`. The guard stays the only authority: cctui mirrors and
 asks, it never decides a step.
 
+### Exec interception (`CCTUI_GUARD_EXEC=1`)
+
+Opt-in. `cctui-supervisor --guard-exec /var/run/workflow-guard/exec.sock`
+installs a seccomp filter that turns every `execve`/`execveat` of the agent
+tree into a user notification, hands its listener fd to `cctui-guard
+--exec-socket` over that root-only socket (`SCM_RIGHTS`), then applies Landlock
+**without execute rights on the RW paths** (`/tmp`, `/workspace`, the worker
+home, `CCTUI_WORKER_EXTRA_RW`) so a binary written there cannot run. The filter
+is inherited by every child and cannot be removed, so `git`, `/usr/bin/git`,
+`sh -c "git push"`, `env -i git push` and a `subprocess` call all reach the
+guard with the kernel's path and argv; no shell parsing is involved.
+
+The guard judges each exec against the active step's explicit `[disallowed]`
+phrases (allow-lists and a `*` disallow keep governing tool calls only, since
+the harness execs its own helpers). A step that grants capabilities is judged
+against its exec table as well: a binary, subcommand or flag no granted
+capability reaches is denied. That table covers the whole agent tree (the
+daemon, the harness, the shells its tools spawn, the guard shims), so every
+granting step also grants the pack's `harness:baseline`, which lists that tree
+(see `deploy/examples/context-pack/capabilities.toml`). Every verdict goes to
+the decision log as `"source": "exec"` with `tool` (the executed path), `argv`
+and `rule`; on a denial the guard writes `guard: denied `<argv>` — <reason>` to
+the process's own stderr before failing the exec with `EPERM`. A grant denial
+reads in capability terms, identically on the exec and the tool-hook path:
+
+```
+[Step 1] capability `git:push` not granted in step 1 (granted: harness:baseline, read:all, git:read, gh:read, model:api)
+```
+
+When no step of the prompt grants the exec, the reason is the argv mismatch
+(`` `curl` is not granted by any capability of this step``) followed by the
+same granted list. `cctui-guard why` prints the active step, the capabilities
+it grants and the last five denials, for when stderr went nowhere or the
+message landed on a wrapper shell (`sh -c "git push"` can be denied at the
+`sh` exec). Agents are told to run it through the
+pack's `AGENTS.md`/`CLAUDE.md`. No step, step 0 and the post-Exit state allow
+every exec.
+
+Environment and flags:
+
+| Name | Set by | Meaning |
+| --- | --- | --- |
+| `CCTUI_GUARD_EXEC` | dispatch profile | `1` arms interception (reserved, see the table above) |
+| `CCTUI_GUARD_URL` | entrypoint | the guard's HTTP address; `cctui-guard why` reads it (default `127.0.0.1:9999`) |
+| `--exec-socket` / `--guard-exec` | entrypoint | `/var/run/workflow-guard/exec.sock`, root-only; carries the listener fd from `cctui-supervisor` to `cctui-guard` |
+| `--exec-timeout-ms` | `cctui-guard` flag | per-exec decision ceiling, default 5000 |
+
+The guard runs as root outside the filtered tree (it is started before
+`cctui-supervisor`), so its own `[gate]` and `[llmjudge]` commands are not
+intercepted. Workspace binaries are withheld by Landlock, which grants no
+`EXECUTE` access on the RW paths: there is no `noexec` mount and no mount or
+user namespace is needed. The guard needs the same pid namespace as the agent
+tree, because it reads `/proc/<pid>/mem` and duplicates the target's fd 2.
+
+Fail-closed by construction: a check that errors, cannot read the target, or
+takes longer than `--exec-timeout-ms` (default 5000) denies; once the guard
+dies every exec fails with `ENOSYS`. Start-up refuses (the worker exits) when
+the opt-in is set but no guard runs (no stepped prompt), when the guard cannot
+take the listener, or when Landlock is not enforced.
+
+Requirements: the entrypoint starts as root, the container keeps
+`CAP_SYS_PTRACE` (the guard reads `/proc/<pid>/mem` and duplicates the target's
+fd 2; the supervisor clears it from the agent's capability sets), Landlock, and
+Linux >= 5.9. Without `CAP_SYS_PTRACE` the guard refuses the hand-off and the
+worker does not start. A workflow that runs binaries from the workspace
+(`cargo test`, `node_modules/.bin`, `./scripts/*.sh`) fails under the opt-in.
+
 ### Built-in guard default (no `guard-rules.md`)
 
 A pack's `guard-rules.md` is optional. When none is present — a manual job with
@@ -265,12 +334,38 @@ prompt step blocks; the default is the safe fallback, not a recommendation.
 
 | Mode | Capability at start | Mechanism |
 | --- | --- | --- |
-| `transparent` (default w/ NET_ADMIN) | **CAP_NET_ADMIN** | iptables REDIRECTs worker-uid (1000) TCP egress to `:15001`. Exempts root, the proxy uid, loopback, DNS, the `CCTUI_URL` host, and `WORKER_NET_EXEMPT`. IPv6 egress denied (proxy is IPv4-only — forces IPv4 fallback). |
+| `transparent` (default w/ NET_ADMIN) | **CAP_NET_ADMIN** | The same rules as net-init: only the proxy uid and loopback egress directly. Every other uid, root included, has its TCP REDIRECTed to `:15001` (except DNS to the resolver and `WORKER_NET_EXEMPT`); the filter table REJECTs `169.254.0.0/16` and all non-TCP egress for every uid but the proxy, DNS (UDP/TCP 53) to the resolver excepted. The resolver is `WORKER_DNS_RESOLVER` when set (DNAT, fatal when unresolvable), else the first IPv4 nameserver as is. IPv6 egress denied (proxy is IPv4-only — forces IPv4 fallback). Unusable iptables or a missing `setpriv` (the proxy must run as its own uid) is fatal, never a fallback to `forward`. |
 | `transparent-external` (explicit only) | **none** (in this container) | Same wire behaviour as `transparent`, but the proxy runs in a **separate sidecar container** and the iptables rules are installed by a **NET_ADMIN init container**. The entrypoint only seeds `policy.json` and waits for the sidecar's `:15002/ready`. |
-| `forward` (no NET_ADMIN) | **none** | No iptables. `HTTP_PROXY`/`HTTPS_PROXY=http://127.0.0.1:15001` exported for the worker tree; `NO_PROXY=127.0.0.1,localhost`. For rootless Docker / gVisor / Apple container. |
+| `forward` (no NET_ADMIN) | **none** | No iptables. `HTTP_PROXY`/`HTTPS_PROXY=http://127.0.0.1:15001` exported for the worker tree; `NO_PROXY=127.0.0.1,localhost`. Honor-system: an agent that ignores the env egresses directly. Explicit opt-in only (`WORKER_NET_MODE=forward`, pre-flight `warn`); for rootless Docker / gVisor / Apple container. |
 
 The proxy listens on `:15001` (traffic) and `:15002` (`/health`, `/ready`).
 Capabilities are dropped entirely before the daemon runs — see hardening below.
+
+**Docker dispatcher cells.** `cctui-dispatcher-docker` confines egress with
+`egress` in `dispatcher.toml` (`--egress` at enroll):
+
+| `egress` | Cell | Env set by the dispatcher |
+| --- | --- | --- |
+| `transparent` (default) | `cap_add: [NET_ADMIN]`, nothing else added | `WORKER_NET_MODE=transparent` |
+| `forward` | no added capability | `WORKER_NET_MODE=forward` |
+
+`NET_ADMIN` is held only by the root entrypoint that installs the rules; the
+supervisor clears every capability set before the agent runs. A host whose
+cells cannot run iptables fails every dispatch until the operator opts into
+`forward`. `landlock_strict = false` (`--landlock-best-effort`) sets
+`CCTUI_LANDLOCK_STRICT=0` in the cell, for a host whose kernel or Docker
+seccomp profile does not expose Landlock. On the default bridge network with a
+systemd-resolved host, Docker hands the cell a public resolver (`8.8.8.8`) that
+the pre-flight flags as `public DNS answers`; attach cells to a user-defined
+network (`network`), whose embedded resolver is on loopback.
+
+**Docker DNS gap.** A docker cell has no restricted resolver: its DNS goes to
+the first IPv4 nameserver Docker gives it (on a user-defined network the
+embedded `127.0.0.11`, reached over loopback), which recursively resolves public
+names, so an agent can still exfiltrate through DNS queries. `WORKER_DNS_RESOLVER`
+(IPv4 or name, set in the image or cell env) pins DNS to a restricted resolver
+when the nameserver is not on loopback; loopback is exempt before the DNS rules,
+as in net-init, so the embedded resolver is never rewritten.
 
 ### Daemon child-env capability scrub
 
@@ -528,9 +623,9 @@ The kube dispatcher reports the termination message as the failure, so it
 becomes the failed dispatch's detail with end reason `spawn_failed`. The worker
 dies before its session registers, so the detail lands on the dispatch record. `warn` logs `WARNING: preflight: …` and continues. `off` skips the
 check. The verdict is also recorded as `preflight` in the hardening report. An
-unset mode enforces only in `transparent-external`. Only there does net-init
-filter the agent's non-proxied egress (UDP, link-local, IPv6), so in the
-single-container modes the probes would fail by design.
+unset mode enforces, except under an explicit `WORKER_NET_MODE=forward`:
+forward filters none of the agent's non-proxied egress, so its probes fail by
+design and opting into it is opting into the warning.
 
 **Not probed:**
 - Credentials the operator configured explicitly: `AWS_ACCESS_KEY_ID` /
@@ -902,6 +997,9 @@ that never reports back is re-prompted once after 10 minutes of quiet
 (`CCTUI_STUCK_TURN_REPROMPT_SECS`), and ended after a further 10 minutes
 (`CCTUI_STUCK_TURN_END_SECS`) with `end_reason: "other"` and an `end_detail`
 starting `stuck_waiting`, so the worker exits and frees its profile slot.
+While a Monitor the agent started is still running (before its own expiry, or
+indefinitely when persistent), neither step fires, for at most 2 hours of
+quiet (`CCTUI_STUCK_TURN_CEILING_SECS`); past that the clock runs as above.
 
 ### Auto-archive when the run ends
 
@@ -1019,6 +1117,7 @@ Two parts, surfaced for the daemon to attach as session metadata:
   ```json
   {
     "landlock": "V5 (fully-enforced)",
+    "landlock_strict": true,
     "seccomp_applied": true,
     "seccomp_blocked": ["ptrace", "..."],
     "caps_dropped": true,
@@ -1029,7 +1128,19 @@ Two parts, surfaced for the daemon to attach as session metadata:
   }
   ```
 
-  `landlock` is `"unavailable"` when the kernel does not enforce the ruleset.
+  `landlock` is `"unavailable"` when the kernel does not enforce the ruleset,
+  which only happens under `CCTUI_LANDLOCK_STRICT=0`: `landlock_strict` records
+  whether an unenforced ruleset was fatal. `seccomp_blocked` lists the denied
+  syscalls: process debugging (`ptrace`, `process_vm_readv`/`writev`), uid/gid
+  changes (a no-op to the worker id is allowed), mounts and root changes,
+  kernel/module loading, namespaces (`unshare`, `setns`), kernel attack surface
+  (`bpf`, `perf_event_open`, `userfaultfd`, `io_uring_setup`/`enter`/`register`,
+  `open_by_handle_at`), the keyring (`keyctl`, `add_key`, `request_key`) and
+  `personality` except the query and the `PER_LINUX`/`PER_LINUX32`/`UNAME26`
+  personas. Denied calls return `EPERM`; libuv (node) and tokio read that as
+  "io_uring unavailable" and use their thread pools.
+  Under `CCTUI_GUARD_EXEC=1` the report also carries `"exec_guarded": true`;
+  the key is absent otherwise.
 
 ## Entrypoint phases
 
@@ -1078,8 +1189,9 @@ input), then drops to uid 1000 (see Non-root start for a uid 1000 start):
    the dispatch workdir and register any context-pack `PreToolUse` hooks.
 10. **Hardening** — append `--use-openssl-ca` to `NODE_OPTIONS` (see Node
     trust store), assemble `WORKER_HARDENING_JSON`.
-11. **Drop + run** — `exec cctui-supervisor --ro … --rw … --user 1000
-    --report /tmp/hardening.json -- cctui-daemon run --no-auto-update`.
+11. **Drop + run** — `exec cctui-supervisor --ro … --rw … --strict --user 1000
+    --report /tmp/hardening.json -- cctui-daemon run --no-auto-update`
+    (`--strict` omitted under `CCTUI_LANDLOCK_STRICT=0`).
 
 ### Non-root start
 

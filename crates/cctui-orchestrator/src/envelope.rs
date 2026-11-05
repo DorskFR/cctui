@@ -12,8 +12,8 @@
 use crate::{
     ANNOTATION_DISPATCH_ID, ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_GPG_SIGNING,
     ANNOTATION_GUARD_IDENTITY, ANNOTATION_POSTURE, ANNOTATION_SERVER_URL,
-    ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, GuardSpec, LABEL_WORKER_PROFILE,
-    Posture,
+    ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, EXEC_INTERCEPTION_CAP, GuardSpec,
+    HumanGate, LABEL_WORKER_PROFILE, Posture,
 };
 use k8s_openapi::api::core::v1::{
     AppArmorProfile, Capabilities, ConfigMapEnvSource, ConfigMapProjection, ConfigMapVolumeSource,
@@ -30,6 +30,7 @@ pub const NET_INIT_CONTAINER: &str = "net-init";
 pub const GUARD_PROXY_CONTAINER: &str = "guard-proxy";
 const CONFIGMAP_GUARD_PROXY_ENV: &str = "guard-proxy-env";
 const CONFIGMAP_GUARD_PROXY_INJECT: &str = "guard-proxy-inject";
+pub const GUARD_ENV_HUMAN_GATE: &str = "GUARD_PROXY_HUMAN_GATE";
 
 pub const VOL_HOME: &str = "home";
 pub const VOL_OVERLAY: &str = "overlay";
@@ -123,20 +124,29 @@ fn restricted(uid: i64) -> SecurityContext {
 
 #[must_use]
 pub fn worker_security_context(posture: Posture) -> SecurityContext {
-    match posture {
-        Posture::Root => SecurityContext {
-            run_as_user: Some(0),
-            app_armor_profile: Some(AppArmorProfile {
-                type_: "Unconfined".to_owned(),
-                localhost_profile: None,
-            }),
-            capabilities: Some(Capabilities {
-                drop: Some(vec!["ALL".to_owned()]),
-                add: Some(WORKER_ADDED_CAPS.iter().map(|s| (*s).to_owned()).collect()),
-            }),
-            ..SecurityContext::default()
-        },
-        Posture::Nonroot => restricted(WORKER_UID),
+    worker_security_context_with(posture, false)
+}
+
+/// [`worker_security_context`], optionally with [`EXEC_INTERCEPTION_CAP`].
+///
+/// The root set gains it when `exec_interception`; nonroot never does.
+#[must_use]
+pub fn worker_security_context_with(posture: Posture, exec_interception: bool) -> SecurityContext {
+    if posture == Posture::Nonroot {
+        return restricted(WORKER_UID);
+    }
+    let mut add: Vec<String> = WORKER_ADDED_CAPS.iter().map(|s| (*s).to_owned()).collect();
+    if exec_interception {
+        add.push(EXEC_INTERCEPTION_CAP.to_owned());
+    }
+    SecurityContext {
+        run_as_user: Some(0),
+        app_armor_profile: Some(AppArmorProfile {
+            type_: "Unconfined".to_owned(),
+            localhost_profile: None,
+        }),
+        capabilities: Some(Capabilities { drop: Some(vec!["ALL".to_owned()]), add: Some(add) }),
+        ..SecurityContext::default()
     }
 }
 
@@ -163,10 +173,28 @@ pub struct EnvelopeConfig {
     pub guard: Option<GuardSpec>,
     pub posture: Posture,
     pub dispatched: bool,
+    /// See [`crate::WorkerProfileSpec::exec_interception`].
+    pub exec_interception: bool,
+    /// See [`crate::WorkerProfileSpec::human_gate`].
+    pub human_gate: Option<HumanGate>,
+}
+
+/// What the source profile contributes to the envelope besides `spec.guard`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProfileFlags {
+    /// See [`crate::WorkerProfileSpec::exec_interception`].
+    pub exec_interception: bool,
+    /// See [`crate::WorkerProfileSpec::human_gate`].
+    pub human_gate: Option<HumanGate>,
 }
 
 impl EnvelopeConfig {
-    fn from_pod(pod: &Pod, sidecar_image: &str, guard: Option<&GuardSpec>) -> anyhow::Result<Self> {
+    fn from_pod(
+        pod: &Pod,
+        sidecar_image: &str,
+        guard: Option<&GuardSpec>,
+        flags: ProfileFlags,
+    ) -> anyhow::Result<Self> {
         let annotations = pod.metadata.annotations.as_ref();
         let get = |key: &str| annotations.and_then(|a| a.get(key)).map(String::as_str);
         let posture = Posture::from_annotation(get(ANNOTATION_POSTURE)).ok_or_else(|| {
@@ -186,6 +214,8 @@ impl EnvelopeConfig {
             guard: guard.cloned(),
             posture,
             dispatched: get(ANNOTATION_DISPATCH_ID).is_some(),
+            exec_interception: flags.exec_interception,
+            human_gate: flags.human_gate,
         })
     }
 }
@@ -227,13 +257,15 @@ pub fn profile_name(pod: &Pod) -> Option<&str> {
 
 /// Evaluate `pod` for envelope injection.
 ///
-/// `guard` is the source profile's `spec.guard`. A serialization failure or an
+/// `guard` is the source profile's `spec.guard`, `flags` the rest it renders
+/// into the envelope. A serialization failure or an
 /// unknown posture annotation is an `Err` so the admission webhook fails closed
 /// (deny) instead of admitting an unpatched, unsandboxed worker.
 pub fn mutate_pod(
     pod: &Pod,
     sidecar_image: &str,
     guard: Option<&GuardSpec>,
+    flags: ProfileFlags,
 ) -> anyhow::Result<MutationOutcome> {
     if !is_eligible(pod) {
         return Ok(MutationOutcome::NotEligible);
@@ -241,7 +273,7 @@ pub fn mutate_pod(
     if is_injected(pod) {
         return Ok(MutationOutcome::AlreadyInjected);
     }
-    let cfg = EnvelopeConfig::from_pod(pod, sidecar_image, guard)?;
+    let cfg = EnvelopeConfig::from_pod(pod, sidecar_image, guard, flags)?;
     let injected = inject(pod, &cfg);
     let before =
         serde_json::to_value(pod).map_err(|e| anyhow::anyhow!("serializing admitted pod: {e}"))?;
@@ -291,7 +323,8 @@ pub fn inject(pod: &Pod, cfg: &EnvelopeConfig) -> Pod {
 }
 
 fn sandbox_worker(worker: &mut Container, cfg: &EnvelopeConfig) {
-    worker.security_context = Some(worker_security_context(cfg.posture));
+    worker.security_context =
+        Some(worker_security_context_with(cfg.posture, cfg.exec_interception));
 
     let env = worker.env.get_or_insert_with(Vec::new);
     if !has_overlay(cfg.posture) {
@@ -374,6 +407,14 @@ fn guard_proxy_container(cfg: &EnvelopeConfig) -> Container {
     if cfg.dispatched {
         env.push(annotation_env("CCTUI_DISPATCH_ID", ANNOTATION_DISPATCH_ID));
         env.push(annotation_env("CCTUI_DISPATCH_SERVER_URL", ANNOTATION_SERVER_URL));
+    }
+    env.retain(|e| e.name != GUARD_ENV_HUMAN_GATE);
+    if let Some(gate) = cfg.human_gate {
+        env.push(EnvVar {
+            name: GUARD_ENV_HUMAN_GATE.to_owned(),
+            value: Some(gate.as_str().to_owned()),
+            value_from: None,
+        });
     }
 
     Container {
@@ -598,7 +639,9 @@ mod tests {
     }
 
     fn apply_with(pod: &Pod, guard: Option<&GuardSpec>) -> Pod {
-        let patch = match mutate_pod(pod, IMG, guard).expect("mutate_pod must not error") {
+        let patch = match mutate_pod(pod, IMG, guard, ProfileFlags::default())
+            .expect("mutate_pod must not error")
+        {
             MutationOutcome::Patch(p) => p,
             other => panic!("eligible pod must yield a patch, got {other:?}"),
         };
@@ -976,10 +1019,35 @@ mod tests {
         assert_eq!(caps.add.as_deref(), Some(&["NET_ADMIN".to_owned()][..]));
     }
 
+    fn worker_caps(pod: &Pod, exec_interception: bool) -> Vec<String> {
+        let flags = ProfileFlags { exec_interception, ..ProfileFlags::default() };
+        let patch = match mutate_pod(pod, IMG, None, flags).unwrap() {
+            MutationOutcome::Patch(p) => p,
+            other => panic!("eligible pod must yield a patch, got {other:?}"),
+        };
+        let mut doc = serde_json::to_value(pod).unwrap();
+        json_patch::patch(&mut doc, &patch.0).unwrap();
+        let out: Pod = serde_json::from_value(doc).unwrap();
+        let sc = worker(&out, "worker").security_context.clone().unwrap();
+        sc.capabilities.and_then(|c| c.add).unwrap_or_default()
+    }
+
+    #[test]
+    fn only_an_exec_interception_root_worker_gains_sys_ptrace() {
+        let ptrace = EXEC_INTERCEPTION_CAP.to_owned();
+        let plain = worker_caps(&lean_pod(), false);
+        assert!(!plain.contains(&ptrace), "{plain:?}");
+        let opted = worker_caps(&lean_pod(), true);
+        assert!(opted.contains(&ptrace), "{opted:?}");
+        assert!(WORKER_ADDED_CAPS.iter().all(|c| opted.contains(&(*c).to_owned())), "{opted:?}");
+        let nonroot = worker_caps(&nonroot_pod(), true);
+        assert!(nonroot.is_empty(), "nonroot never gains a capability: {nonroot:?}");
+    }
+
     #[test]
     fn unknown_posture_annotation_fails_closed() {
         let pod = with_annotation(lean_pod(), ANNOTATION_POSTURE, "restricted");
-        let err = mutate_pod(&pod, IMG, None).unwrap_err().to_string();
+        let err = mutate_pod(&pod, IMG, None, ProfileFlags::default()).unwrap_err().to_string();
         assert!(err.contains("restricted") && err.contains(ANNOTATION_POSTURE), "{err}");
     }
 
@@ -1206,6 +1274,40 @@ mod tests {
         assert_eq!(id.value.as_deref(), Some("release-bot"));
     }
 
+    fn rendered_gate(human_gate: Option<HumanGate>, guard: Option<&GuardSpec>) -> Vec<String> {
+        let flags = ProfileFlags { human_gate, ..ProfileFlags::default() };
+        let MutationOutcome::Patch(patch) = mutate_pod(&lean_pod(), IMG, guard, flags).unwrap()
+        else {
+            panic!("eligible pod must yield a patch");
+        };
+        let mut doc = serde_json::to_value(lean_pod()).unwrap();
+        json_patch::patch(&mut doc, &patch.0).unwrap();
+        let out: Pod = serde_json::from_value(doc).unwrap();
+        let inits = out.spec.unwrap().init_containers.unwrap();
+        let gp = inits.into_iter().find(|c| c.name == GUARD_PROXY_CONTAINER).unwrap();
+        gp.env
+            .into_iter()
+            .flatten()
+            .filter(|e| e.name == GUARD_ENV_HUMAN_GATE)
+            .map(|e| e.value.unwrap_or_default())
+            .collect()
+    }
+
+    #[test]
+    fn declared_human_gate_reaches_the_guard_proxy_over_guard_env() {
+        let guard: GuardSpec = serde_json::from_value(serde_json::json!({
+            "env": [{ "name": GUARD_ENV_HUMAN_GATE, "value": "bogus" }]
+        }))
+        .unwrap();
+        assert_eq!(rendered_gate(Some(HumanGate::DraftPrOnly), Some(&guard)), ["draftPrOnly"]);
+        assert_eq!(rendered_gate(Some(HumanGate::NoPush), None), ["noPush"]);
+        assert_eq!(
+            rendered_gate(Some(HumanGate::OutwardHeldForApproval), None),
+            ["outwardHeldForApproval"]
+        );
+        assert!(rendered_gate(None, None).is_empty(), "no gate renders nothing");
+    }
+
     #[test]
     fn gpg_annotation_wires_gpg_agent() {
         let mut pod = lean_pod();
@@ -1239,7 +1341,10 @@ mod tests {
         let once = apply(&lean_pod());
         assert!(is_injected(&once));
         assert!(
-            matches!(mutate_pod(&once, IMG, None).unwrap(), MutationOutcome::AlreadyInjected),
+            matches!(
+                mutate_pod(&once, IMG, None, ProfileFlags::default()).unwrap(),
+                MutationOutcome::AlreadyInjected
+            ),
             "second pass must not double-inject"
         );
     }
@@ -1249,7 +1354,10 @@ mod tests {
         let mut pod = lean_pod();
         pod.metadata.labels = None;
         assert!(!is_eligible(&pod));
-        assert!(matches!(mutate_pod(&pod, IMG, None).unwrap(), MutationOutcome::NotEligible));
+        assert!(matches!(
+            mutate_pod(&pod, IMG, None, ProfileFlags::default()).unwrap(),
+            MutationOutcome::NotEligible
+        ));
     }
 
     #[test]

@@ -1,8 +1,8 @@
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { ConversationHit } from '@bindings/ConversationHit';
 import type { ConversationSearchResponse } from '@bindings/ConversationSearchResponse';
-import { filters, freeText, parse, type Schema } from '@dorsk/tsumikit';
-import { tokenizeQuery } from '$lib/search';
+import { filters, parse, type Schema } from '@dorsk/tsumikit';
+import { queryTerms, straightenPhraseQuotes } from '$lib/search';
 import { foldSearchText, markdownToSearchText } from '$lib/searchText';
 import { USER_PREFIX } from '$lib/ws/frames';
 import { buildConversationSearchSchema } from './searchSchema';
@@ -39,6 +39,7 @@ export class ConversationSearch {
 	index = $state(-1);
 	truncated = $state(false);
 	loading = $state(false);
+	failed = $state(false);
 	/** Tool ids seen in this session's hits, feeding the `tool:` autocomplete. */
 	tools = $state<string[]>([]);
 
@@ -46,9 +47,10 @@ export class ConversationSearch {
 	 *  constructor has yet to assign, and the bar wants the same instance. */
 	readonly schema: Schema = buildConversationSearchSchema(() => this.tools);
 
-	#ast = $derived(parse(this.rawQuery, this.schema));
+	#input = $derived(straightenPhraseQuotes(this.rawQuery));
+	#ast = $derived(parse(this.#input, this.schema));
 	/** Only the free-text part is highlighted; field clauses are not text. */
-	terms = $derived(tokenizeQuery(freeText(this.#ast)));
+	terms = $derived(queryTerms(this.#ast, this.#input));
 	count = $derived(this.hits.length);
 	/** The cursor's `seq`, or null before the first step. */
 	currentSeq = $derived(this.hits[this.index]?.seq ?? null);
@@ -115,6 +117,7 @@ export class ConversationSearch {
 		const ctl = new AbortController();
 		this.#inflight = ctl;
 		this.loading = true;
+		this.failed = false;
 		try {
 			const res = await this.#d.fetchHits(id, raw, ctl.signal);
 			if (req !== this.#reqId) return;
@@ -127,7 +130,12 @@ export class ConversationSearch {
 			const at = keep === null ? -1 : res.hits.findIndex((h) => h.seq === keep);
 			this.index = at;
 		} catch (e) {
-			if (req === this.#reqId) this.#d.onerror?.(e);
+			if (req !== this.#reqId) return;
+			this.hits = [];
+			this.index = -1;
+			this.truncated = false;
+			this.failed = true;
+			this.#d.onerror?.(e);
 		} finally {
 			if (req === this.#reqId) this.loading = false;
 		}
@@ -189,6 +197,7 @@ export class ConversationSearch {
 		this.index = -1;
 		this.truncated = false;
 		this.loading = false;
+		this.failed = false;
 	}
 
 	async #goto(i: number): Promise<void> {

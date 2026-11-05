@@ -28,6 +28,7 @@ impl RefResolver for MockResolver {
         self.calls.fetch_add(1, Ordering::SeqCst);
         match &*self.response.lock().unwrap() {
             Ok(v) => Ok(Credential::new(v.clone())),
+            Err("missing") => Err(SecretError::NotFound { what: "mock".to_owned() }),
             Err(msg) => Err(SecretError::Backend(anyhow::anyhow!(*msg))),
         }
     }
@@ -90,14 +91,49 @@ async fn engine_error_fails_closed_and_is_not_cached() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn engine_error_past_ttl_drops_stale_entry() {
+async fn backend_error_past_ttl_keeps_the_previous_value_and_retries_after_a_ttl() {
     let mock = std::sync::Arc::new(MockResolver::ok("v1"));
     let source = SecretSource::new(Box::new(ArcResolver(mock.clone())), Duration::from_mins(2));
     let r = env_ref("CRED_X");
     assert_eq!(source.fetch(&r).await.unwrap().expose(), "v1");
     *mock.response.lock().unwrap() = Err("engine down");
     tokio::time::advance(Duration::from_secs(121)).await;
-    assert!(matches!(source.fetch(&r).await, Err(SecretError::Backend(_))));
+    assert_eq!(source.fetch(&r).await.unwrap().expose(), "v1");
+    assert_eq!(source.fetch(&r).await.unwrap().expose(), "v1");
+    assert_eq!(mock.calls.load(Ordering::SeqCst), 2, "a failed refresh waits another TTL");
+    *mock.response.lock().unwrap() = Ok("v2".to_owned());
+    tokio::time::advance(Duration::from_secs(121)).await;
+    assert_eq!(source.fetch(&r).await.unwrap().expose(), "v2");
+}
+
+#[tokio::test(start_paused = true)]
+async fn not_found_past_ttl_drops_the_entry() {
+    let mock = std::sync::Arc::new(MockResolver::ok("v1"));
+    let source = SecretSource::new(Box::new(ArcResolver(mock.clone())), Duration::from_mins(2));
+    let r = env_ref("CRED_X");
+    assert_eq!(source.fetch(&r).await.unwrap().expose(), "v1");
+    *mock.response.lock().unwrap() = Err("missing");
+    tokio::time::advance(Duration::from_secs(121)).await;
+    assert!(matches!(source.fetch(&r).await, Err(SecretError::NotFound { .. })));
+    assert!(matches!(source.fetch(&r).await, Err(SecretError::NotFound { .. })));
+}
+
+#[tokio::test(start_paused = true)]
+async fn refresh_all_rotates_before_the_ttl_and_keeps_the_value_on_failure() {
+    let mock = std::sync::Arc::new(MockResolver::ok("v1"));
+    let source = SecretSource::new(Box::new(ArcResolver(mock.clone())), Duration::from_hours(1));
+    let r = env_ref("CRED_X");
+    assert_eq!(source.fetch(&r).await.unwrap().expose(), "v1");
+
+    *mock.response.lock().unwrap() = Ok("v2".to_owned());
+    let report = source.refresh_all().await;
+    assert_eq!(report, ReloadReport { changed: 1, unchanged: 0, failed: 0 });
+    assert_eq!(source.fetch(&r).await.unwrap().expose(), "v2");
+
+    *mock.response.lock().unwrap() = Err("engine down");
+    let report = source.refresh_all().await;
+    assert_eq!(report, ReloadReport { changed: 0, unchanged: 0, failed: 1 });
+    assert_eq!(source.fetch(&r).await.unwrap().expose(), "v2");
 }
 
 #[test]

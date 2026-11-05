@@ -29,6 +29,7 @@ use uuid::Uuid;
 
 use cctui_server_core::launch::spawn_ids;
 use cctui_telemetry::db::traced;
+use tracing::Instrument;
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
@@ -175,20 +176,19 @@ async fn validate_spawn(
     let command_id = Uuid::new_v4();
     let (pre_session_id, token_key) = spawn_ids(&adapter_id, command_id);
     let token_session_id = token_key.to_string();
-    if req.auto_archive {
-        crate::auto_archive::remember_intent(state, &token_session_id).await;
-    }
-    remember_spawner(&state.pool, &token_session_id, ctx.user_id, req.name.as_deref()).await;
-    // In the machine owner's vocabulary: an admin's picker holds labels of
-    // every user, and the session belongs to the owner.
-    let label_ids =
-        crate::spawn_labels::for_spawn(&state.pool, &req.label_ids, ctx.owner_filter(), owner)
-            .await;
-    crate::spawn_labels::remember_intent(&state.pool, &token_session_id, &label_ids).await;
-    crate::followup::remember_intent(&state.pool, &token_session_id, req).await;
-    let (context, scope) =
-        resolve_spawn_context(state, ctx, req, &label_ids, owner, machine_uuid, &adapter_id).await;
-    crate::routes::context::remember_intent(&state.pool, &token_session_id, &context, &scope).await;
+    // Every intent is written before this returns: a fast daemon's
+    // `SessionStarted` consumes them as soon as the spawn is delivered.
+    let key = token_session_id.as_str();
+    let (context, (), (), ()) = tokio::join!(
+        remember_context(state, ctx, req, key, owner, machine_uuid, &adapter_id),
+        async {
+            if req.auto_archive {
+                crate::auto_archive::remember_intent(state, key).await;
+            }
+        },
+        remember_spawner(&state.pool, key, ctx.user_id, req.name.as_deref()),
+        crate::followup::remember_intent(&state.pool, key, req),
+    );
     // Accounts are user-owned. The admin token has no user identity, so it
     // resolves the account against the target machine's owner —
     // the session runs on that user's machine with that user's account.
@@ -208,6 +208,29 @@ async fn validate_spawn(
     })
 }
 
+/// The spawn's labels and context set, recorded under `spawn_key`.
+async fn remember_context(
+    state: &AppState,
+    ctx: &AuthContext,
+    req: &SpawnRequest,
+    spawn_key: &str,
+    owner: Uuid,
+    machine_uuid: Uuid,
+    adapter_id: &str,
+) -> Vec<crate::routes::context::ContextItem> {
+    // In the machine owner's vocabulary: an admin's picker holds labels of
+    // every user, and the session belongs to the owner.
+    let label_ids =
+        crate::spawn_labels::for_spawn(&state.pool, &req.label_ids, ctx.owner_filter(), owner)
+            .await;
+    let ((), (context, scope)) = tokio::join!(
+        crate::spawn_labels::remember_intent(&state.pool, spawn_key, &label_ids),
+        resolve_spawn_context(state, ctx, req, &label_ids, owner, machine_uuid, adapter_id),
+    );
+    crate::routes::context::remember_intent(&state.pool, spawn_key, &context, &scope).await;
+    context
+}
+
 /// Resolve the reusable context for this spawn: the matching rules, the
 /// request's explicit picks, the profile's pinned items and — when the request
 /// asks for `auto` — every enabled memory whose filter matches the spawn's
@@ -216,6 +239,11 @@ async fn validate_spawn(
 ///
 /// Best-effort: a lookup failure launches the session without context rather
 /// than refusing it. Context is a convenience, never a precondition.
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "resolve_spawn_context")
+)]
 async fn resolve_spawn_context(
     state: &AppState,
     ctx: &AuthContext,
@@ -277,6 +305,7 @@ async fn profile_context_names(
         .collect()
 }
 
+#[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "stage_uploads"))]
 async fn stage_uploads(
     state: &AppState,
     token_session_id: &str,
@@ -314,6 +343,11 @@ async fn stage_uploads(
     Ok((bootstrap, recorded.iter().map(|a| a.id).collect()))
 }
 
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "spawn_service_tier")
+)]
 async fn spawn_service_tier(
     state: &AppState,
     adapter_id: &str,
@@ -402,6 +436,7 @@ async fn execute_spawn(
         env,
         bootstrap,
         parent_local_id: None,
+        hook_policy: None,
     };
     persist_spawn_capability(state, machine_uuid, req, permission_mode, &token_session_id).await;
     let launched = cctui_server_core::launch::launch_durable(
@@ -425,31 +460,25 @@ async fn execute_spawn(
             route_session: None,
         },
     )
+    .instrument(tracing::info_span!(
+        target: "otel",
+        "launch_durable",
+        code.function.name = "launch_durable"
+    ))
     .await;
-    match launched {
-        Err(cctui_server_core::launch::LaunchError::Storage(error)) => {
-            tracing::error!(%error,"could not persist machine launch");
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError { error: crate::error::DB_ERROR.into() }),
-            ));
+    if let Err(error) = launched {
+        if matches!(
+            error,
+            cctui_server_core::launch::LaunchError::Delivery(_)
+                | cctui_server_core::launch::LaunchError::Policy(_)
+        ) && let Err(e) =
+            crate::routes::attachments::delete_attachments(&state.pool, &recorded_ids).await
+        {
+            tracing::warn!(session = %token_session_id, "undoing bootstrap attachments: {e}");
         }
-        Ok(()) => {}
-        Err(cctui_server_core::launch::LaunchError::Delivery(err)) => {
-            if let Err(e) =
-                crate::routes::attachments::delete_attachments(&state.pool, &recorded_ids).await
-            {
-                tracing::warn!(session = %token_session_id, "undoing bootstrap attachments: {e}");
-            }
-            return Err(dispatch_error(&err));
-        }
-        Err(cctui_server_core::launch::LaunchError::Refused(detail)) => {
-            tracing::warn!(machine = %req.machine_id, %command_id, %adapter_id, %detail, "spawn refused by the daemon");
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ApiError { error: format!("the daemon refused the spawn: {detail}") }),
-            ));
-        }
+        tracing::warn!(machine = %req.machine_id, %command_id, %adapter_id, %error, "spawn not launched");
+        let no_daemon = no_daemon_wording(state, machine_uuid, &error).await;
+        return Err(launch_failure(error, no_daemon));
     }
 
     tracing::info!(machine = %req.machine_id, %command_id, %adapter_id, "spawn dispatched");
@@ -464,12 +493,49 @@ async fn execute_spawn(
     ))
 }
 
-/// The 503 a spawn answers when its command never reached the daemon.
-fn dispatch_error(err: &crate::bus::BusError) -> (StatusCode, Json<ApiError>) {
-    let error = match err {
-        crate::bus::BusError::NoDaemon(_) => {
-            "daemon for that machine is offline — start `cctui-daemon` first"
+/// The no-daemon wording for `machine`, read only when `error` needs it.
+async fn no_daemon_wording(
+    state: &AppState,
+    machine: Uuid,
+    error: &cctui_server_core::launch::LaunchError,
+) -> &'static str {
+    use cctui_server_core::launch::{DAEMON_OFFLINE, LaunchError, no_daemon_detail};
+    match error {
+        LaunchError::Delivery(crate::bus::BusError::NoDaemon(_)) => {
+            no_daemon_detail(&state.pool, machine).await
         }
+        _ => DAEMON_OFFLINE,
+    }
+}
+
+fn launch_failure(
+    error: cctui_server_core::launch::LaunchError,
+    no_daemon: &'static str,
+) -> (StatusCode, Json<ApiError>) {
+    use cctui_server_core::launch::LaunchError;
+    match error {
+        LaunchError::Storage(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError { error: crate::error::DB_ERROR.into() }),
+        ),
+        LaunchError::Delivery(err) => dispatch_error(&err, no_daemon),
+        LaunchError::Policy(detail) => {
+            (StatusCode::BAD_REQUEST, Json(ApiError { error: format!("hook policy: {detail}") }))
+        }
+        LaunchError::Refused(detail) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiError { error: format!("the daemon refused the spawn: {detail}") }),
+        ),
+    }
+}
+
+/// The 503 a spawn answers when its command never reached the daemon.
+fn dispatch_error(
+    err: &crate::bus::BusError,
+    no_daemon: &'static str,
+) -> (StatusCode, Json<ApiError>) {
+    let error = match err {
+        crate::bus::BusError::NoDaemon(_) => no_daemon,
         _ => "daemon disconnected mid-dispatch",
     };
     (StatusCode::SERVICE_UNAVAILABLE, Json(ApiError { error: error.into() }))
@@ -546,11 +612,7 @@ async fn save_draft(
     let mut payload = req.clone();
     payload.env.clear();
     payload.save_draft = false;
-    let draft_json = serde_json::to_value(&payload).map_err(|e| {
-        tracing::error!("serializing draft payload: {e}");
-        AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not encode draft")
-    })?;
-    let metadata = serde_json::json!({ "draft": draft_json });
+    let metadata = draft_metadata(payload, crate::crypto::vault_key)?;
 
     let draft_id = Uuid::new_v4();
     let name = req.name.as_deref().filter(|n| !n.trim().is_empty());
@@ -600,6 +662,55 @@ async fn save_draft(
     ))
 }
 
+/// Key of the vault-encrypted original prompt beside `metadata.draft`.
+pub const DRAFT_SEALED_PROMPT: &str = "draft_sealed_prompt";
+const DRAFT_SEAL_NEEDS_KEY: &str = "a draft whose prompt has <redacted> spans can only be saved \
+     when the server has a vault key (CCTUI_VAULT_KEY)";
+const DRAFT_UNSEALABLE: &str = "the draft's sealed prompt does not decrypt with the vault key";
+
+/// `{ "draft": payload }` with the prompt's `<redacted>` spans masked; the
+/// real prompt is kept only encrypted, under [`DRAFT_SEALED_PROMPT`].
+pub fn draft_metadata(
+    mut payload: SpawnRequest,
+    key: impl FnOnce() -> Vec<u8>,
+) -> Result<serde_json::Value, AppError> {
+    let sealed = if let Some(prompt) = payload.prompt.as_deref() {
+        let (masked, sealed) = crate::scheduled_messages::seal(prompt, key)
+            .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, DRAFT_SEAL_NEEDS_KEY))?;
+        payload.prompt = Some(masked);
+        sealed
+    } else {
+        None
+    };
+    let draft = serde_json::to_value(&payload).map_err(|e| {
+        tracing::error!("serializing draft payload: {e}");
+        AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not encode draft")
+    })?;
+    let mut metadata = serde_json::json!({ "draft": draft });
+    if let Some(sealed) = sealed {
+        metadata[DRAFT_SEALED_PROMPT] = serde_json::Value::String(sealed);
+    }
+    Ok(metadata)
+}
+
+/// Puts the real prompt back into a draft read from `metadata`.
+fn unseal_draft_prompt(
+    req: &mut SpawnRequest,
+    metadata: &serde_json::Value,
+    key: impl FnOnce() -> Vec<u8>,
+) -> Result<(), AppError> {
+    let Some(sealed) = metadata.get(DRAFT_SEALED_PROMPT).and_then(serde_json::Value::as_str) else {
+        return Ok(());
+    };
+    let unsealable = || AppError::new(StatusCode::INTERNAL_SERVER_ERROR, DRAFT_UNSEALABLE);
+    let key = key();
+    if key.is_empty() {
+        return Err(unsealable());
+    }
+    req.prompt = Some(crate::crypto::decrypt(sealed, &key).ok_or_else(unsealable)?);
+    Ok(())
+}
+
 /// `POST /api/v1/sessions/{id}/launch`. Promote a draft to a live
 /// spawn: read the stored payload, merge the freshly-entered env, dispatch the
 /// real spawn (minting account gateway env), then delete the draft row. The
@@ -643,6 +754,7 @@ pub async fn launch_stored_draft(
                 AppError::new(StatusCode::BAD_REQUEST, format!("corrupt draft payload: {e}"))
             })
         })?;
+    unseal_draft_prompt(&mut req, &metadata, crate::crypto::vault_key)?;
     // Env is entered fresh at launch; account gateway env is minted in dispatch.
     req.env = env;
     req.save_draft = false;
@@ -1619,6 +1731,129 @@ mod spawn_share_tests {
         assert_eq!(register(None).await, (None, None), "no name, nothing pinned");
         assert_eq!(register(Some("   ")).await, (None, None), "a blank name is no name");
     }
+
+    async fn intents_under(pool: &sqlx::PgPool, table: &str, key: &str) -> i64 {
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT count(*) FROM {table} WHERE spawn_key = $1"
+        )))
+        .bind(key)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    /// `validate_spawn` returns only once every intent is written, and
+    /// `execute_spawn` is what delivers the command, so a daemon answering
+    /// `SessionStarted` at once still finds all of them.
+    #[tokio::test]
+    async fn every_spawn_intent_is_written_before_the_spawn_is_delivered() {
+        let Some(url) = crate::routes::gateway::test_db_url(
+            "every_spawn_intent_is_written_before_the_spawn_is_delivered",
+        ) else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let owner = seed_user(&pool).await;
+        let machine = seed_machine(&pool, owner).await;
+        let label: Uuid = sqlx::query_scalar(
+            "INSERT INTO labels (name, color, user_id) VALUES ($1, '#abcdef', $2) RETURNING id",
+        )
+        .bind(format!("intent-{owner}"))
+        .bind(owner)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let parent = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status) \
+             VALUES ($1, $2, $3, $4, '/w', 'active')",
+        )
+        .bind(&parent)
+        .bind(machine.to_string())
+        .bind(machine)
+        .bind(owner)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let state = crate::state::AppState::for_test(pool.clone());
+        let req: cctui_proto::api::SpawnRequest = serde_json::from_value(serde_json::json!({
+            "machine_id": machine.to_string(),
+            "working_dir": "/w",
+            "name": "intents",
+            "auto_archive": true,
+            "label_ids": [label.to_string()],
+            "relation": crate::followup::RELATION,
+            "parent_session_id": parent,
+        }))
+        .unwrap();
+
+        let target = super::validate_spawn(&state, &caller(owner, SPAWNER), &req)
+            .await
+            .map_err(|(code, _)| code)
+            .expect("a valid spawn");
+        let key = target.token_session_id;
+        for table in [
+            "session_auto_archive",
+            "session_spawner_intents",
+            "session_label_intents",
+            "session_followup_intents",
+            "session_context",
+        ] {
+            assert_eq!(intents_under(&pool, table, &key).await, 1, "{table}");
+        }
+
+        for table in [
+            "session_auto_archive",
+            "session_spawner_intents",
+            "session_label_intents",
+            "session_followup_intents",
+            "session_context",
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table} WHERE spawn_key = $1")))
+                .bind(&key)
+                .execute(&pool)
+                .await
+                .ok();
+        }
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&parent).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM labels WHERE id = $1").bind(label).execute(&pool).await.ok();
+    }
+
+    /// Recording a spawn no longer purges; the reaper sweep drops intents
+    /// nobody claimed within a day and keeps the rest.
+    #[tokio::test]
+    async fn only_the_sweep_purges_day_old_spawner_intents() {
+        let Some(url) =
+            crate::routes::gateway::test_db_url("only_the_sweep_purges_day_old_spawner_intents")
+        else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let owner = seed_user(&pool).await;
+        let stale = Uuid::new_v4().to_string();
+        let fresh = Uuid::new_v4().to_string();
+        super::remember_spawner(&pool, &stale, owner, None).await;
+        sqlx::query(
+            "UPDATE session_spawner_intents SET created_at = now() - interval '2 days' \
+             WHERE spawn_key = $1",
+        )
+        .bind(&stale)
+        .execute(&pool)
+        .await
+        .unwrap();
+        super::remember_spawner(&pool, &fresh, owner, None).await;
+        assert_eq!(
+            intents_under(&pool, "session_spawner_intents", &stale).await,
+            1,
+            "recording a spawn leaves the purge to the sweep"
+        );
+
+        cctui_server_core::machine_policy::purge_spawner_intents(&pool).await;
+        assert_eq!(intents_under(&pool, "session_spawner_intents", &stale).await, 0);
+        assert_eq!(intents_under(&pool, "session_spawner_intents", &fresh).await, 1);
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(owner).execute(&pool).await.ok();
+    }
 }
 
 #[cfg(test)]
@@ -1844,6 +2079,53 @@ mod launch_gate_tests {
                     .unwrap();
             assert!(!registered, "the binding must precede registration");
         }
+    }
+
+    #[tokio::test]
+    async fn a_fork_carries_and_records_its_parents_hook_policy() {
+        use cctui_proto::hook_policy::{HookEvent, HookRule, ToolClass, no_direct_harness_rule};
+        let name = "a_fork_carries_and_records_its_parents_hook_policy";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let owner = seed_user(&pool).await;
+        let machine = seed_machine(&pool, owner).await;
+        let parent = seed_session(&pool, owner, machine).await;
+        let deny_rm = HookRule {
+            event: HookEvent::PreToolUse,
+            tool: ToolClass::Shell,
+            command: "deny-rm".into(),
+            timeout_secs: Some(30),
+        };
+        let carried =
+            cctui_server_core::hook_policy::carry("claude-code", vec![deny_rm.clone()]).unwrap();
+        sqlx::query(
+            "INSERT INTO machine_launches (command_id, session_id, machine_id, user_id, \
+             acting_user_id, adapter_id, working_dir, hook_policy) \
+             VALUES ($1, $2, $3, $4, $4, 'claude-code', '/w', $5)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(&parent)
+        .bind(machine)
+        .bind(owner)
+        .bind(sqlx::types::Json(&carried))
+        .execute(&pool)
+        .await
+        .unwrap();
+        let state = AppState::for_test(pool.clone());
+        let mut rx = daemon(&state, machine);
+        let child = fork(&state, caller(owner, SPAWNER), &parent).await.unwrap().unwrap();
+        let cctui_proto::ws::DaemonFrameDown::Command { command, .. } = rx.recv().await.unwrap()
+        else {
+            panic!("expected a fork command")
+        };
+        let cctui_proto::adapter::AdapterCommand::Fork { spec, .. } = *command else {
+            panic!("expected a fork")
+        };
+        let rules = spec.hook_policy.expect("the fork carries a policy").rules;
+        assert_eq!(rules, vec![no_direct_harness_rule(), deny_rm]);
+        let recorded = cctui_server_core::hook_policy::for_session(&pool, &child).await.unwrap();
+        assert_eq!(recorded.rules, rules, "the fork's policy is persisted under its key");
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(owner).execute(&pool).await.ok();
     }
 
     #[tokio::test]
@@ -2074,5 +2356,108 @@ mod launch_gate_tests {
         assert_eq!(switch(&state, as_owner.clone(), &sid, &mine).await, Ok(()));
         assert_eq!(binding(&pool, &sid).await, (my_provider, Some(owner)), "the owner took over");
         assert_eq!(switch(&state, as_owner, &sid, &other).await, not_found);
+    }
+}
+
+#[cfg(test)]
+mod draft_seal_tests {
+    use axum::extract::{Path, State};
+    use axum::{Extension, Json};
+    use cctui_proto::api::SpawnRequest;
+
+    use super::spawn_share_tests::{SPAWNER, caller, seed_machine, seed_user};
+    use super::{DRAFT_SEALED_PROMPT, draft_metadata, unseal_draft_prompt};
+
+    const TAGGED: &str = "log in with <redacted>hunter2-xyz</redacted> please";
+    const MASKED: &str = "log in with [REDACTED:user] please";
+
+    fn request(machine: &str, prompt: &str) -> SpawnRequest {
+        serde_json::from_value(serde_json::json!({
+            "machine_id": machine, "working_dir": "/w", "prompt": prompt,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_tagged_draft_prompt_is_stored_masked_and_unsealed_real() {
+        let key = vec![7u8; 32];
+        let meta = draft_metadata(request("m", TAGGED), || key.clone()).unwrap();
+        assert!(!meta.to_string().contains("hunter2-xyz"), "{meta}");
+        assert_eq!(meta["draft"]["prompt"], MASKED);
+
+        let mut req: SpawnRequest = serde_json::from_value(meta["draft"].clone()).unwrap();
+        unseal_draft_prompt(&mut req, &meta, || key.clone()).unwrap();
+        assert_eq!(req.prompt.as_deref(), Some(TAGGED));
+    }
+
+    #[test]
+    fn a_plain_draft_prompt_needs_no_key_and_seals_nothing() {
+        let meta = draft_metadata(request("m", "plain"), || panic!("no span, no key")).unwrap();
+        assert_eq!(meta["draft"]["prompt"], "plain");
+        assert!(meta.get(DRAFT_SEALED_PROMPT).is_none());
+    }
+
+    #[test]
+    fn a_tagged_draft_without_a_vault_key_is_refused() {
+        let err = draft_metadata(request("m", TAGGED), Vec::new).unwrap_err();
+        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    async fn stored_metadata(pool: &sqlx::PgPool, id: &str) -> serde_json::Value {
+        sqlx::query_scalar("SELECT metadata FROM sessions WHERE id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_saved_and_edited_draft_row_holds_no_plaintext() {
+        let name = "a_saved_and_edited_draft_row_holds_no_plaintext";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        crate::crypto::install_vault_key(vec![7u8; 32]);
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let owner = seed_user(&pool).await;
+        let machine = seed_machine(&pool, owner).await.to_string();
+        let state = crate::state::AppState::for_test(pool.clone());
+        let ctx = caller(owner, SPAWNER);
+
+        let mut req = request(&machine, TAGGED);
+        req.save_draft = true;
+        let (_, Json(saved)) = super::save_draft(&state, &ctx, &req, &[]).await.unwrap();
+        let id = saved.command_id.to_string();
+        let row: String =
+            sqlx::query_scalar("SELECT row_to_json(s)::text FROM sessions s WHERE id = $1")
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(!row.contains("hunter2-xyz"), "plaintext stored: {row}");
+        assert!(row.contains(MASKED), "{row}");
+
+        let edit = |prompt: &str| {
+            crate::routes::sessions::update_draft(
+                State(state.clone()),
+                Extension(ctx.clone()),
+                Path(id.clone()),
+                Json(request(&machine, prompt)),
+            )
+        };
+        assert_eq!(edit(MASKED).await.unwrap().0.status, "draft");
+        let meta = stored_metadata(&pool, &id).await;
+        assert!(!meta.to_string().contains("hunter2-xyz"), "{meta}");
+        let mut back: SpawnRequest = serde_json::from_value(meta["draft"].clone()).unwrap();
+        unseal_draft_prompt(&mut back, &meta, crate::crypto::vault_key).unwrap();
+        assert_eq!(back.prompt.as_deref(), Some(TAGGED), "an unchanged edit keeps the real value");
+
+        let Json(edited) = edit("now <REDACTED>other-value</redacted>").await.unwrap();
+        assert_eq!(edited.command_id.to_string(), id);
+        let meta = stored_metadata(&pool, &id).await;
+        assert!(!meta.to_string().contains("other-value"), "{meta}");
+        assert_eq!(meta["draft"]["prompt"], "now [REDACTED:user]");
+
+        assert_eq!(edit("rewritten").await.unwrap().0.status, "draft");
+        let meta = stored_metadata(&pool, &id).await;
+        assert!(meta.get(DRAFT_SEALED_PROMPT).is_none(), "a rewritten prompt drops the old seal");
     }
 }

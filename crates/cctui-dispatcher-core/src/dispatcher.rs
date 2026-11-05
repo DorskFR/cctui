@@ -36,14 +36,17 @@ impl HandleState {
     }
 }
 
-/// Outcome of a dispatch: an opaque handle, the idempotency status reported back
-/// to the server verbatim, and an optional namespace (kube sets it; docker and
-/// apple leave it `None`).
+/// Outcome of a dispatch.
+///
+/// An opaque handle, the idempotency status reported back to the server
+/// verbatim, and an optional namespace and profile exposure (kube sets them;
+/// docker and apple leave them `None`).
 #[derive(Debug, Clone)]
 pub struct SpawnOutcome {
     pub handle: String,
     pub status: String,
     pub namespace: Option<String>,
+    pub exposure: Option<cctui_proto::api::DispatchExposure>,
 }
 
 /// A platform executor: a running worker reported/cancelled by opaque handle.
@@ -77,6 +80,22 @@ pub trait Dispatcher: Send + Sync {
     /// queued or the platform has no queue.
     fn queue_position(&self, _handle: &str) -> impl Future<Output = Option<u32>> + Send {
         std::future::ready(None)
+    }
+
+    /// Whether [`Self::dedup_check`] is implemented; announced to the server.
+    fn supports_dedup_check(&self) -> bool {
+        false
+    }
+
+    /// The `deduplicated` outcome `dispatch` would answer, found without creating.
+    ///
+    /// `None` when `dispatch` would create or redispatch. Must follow the exact dedup rules of `dispatch`, an error included
+    /// wherever `dispatch` errors before deduplicating.
+    fn dedup_check(
+        &self,
+        _spec: &WireDispatchSpec,
+    ) -> impl Future<Output = anyhow::Result<Option<SpawnOutcome>>> + Send {
+        std::future::ready(Ok(None))
     }
 }
 

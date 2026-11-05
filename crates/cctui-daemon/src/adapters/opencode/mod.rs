@@ -532,6 +532,7 @@ fn restored_agent(record: &persist::Record, cfg: &OpenCodeConfig) -> Option<Stri
         env: record.agent.iter().map(|agent| (AGENT_ENV.to_owned(), agent.clone())).collect(),
         bootstrap: serde_json::Value::Null,
         parent_local_id: None,
+        hook_policy: None,
     };
     agent_of(&spec, cfg)
 }
@@ -786,6 +787,7 @@ mod tests {
             env: env_of(env),
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,
+            hook_policy: None,
         }
     }
 

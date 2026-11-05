@@ -1,4 +1,4 @@
-import type { Attributes, Tracer } from '@opentelemetry/api';
+import type { Attributes, Span, Tracer } from '@opentelemetry/api';
 import { apiOrigin, otelConfig, type OtelConfig } from './config';
 
 type Otel = typeof import('@opentelemetry/api');
@@ -12,6 +12,26 @@ export function tracesUrl(endpoint: string): string {
 }
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const URL_ATTRS = ['url.full', 'http.url'] as const;
+
+/** Drops the query and fragment: search routes carry user text in `?q=`. */
+export function redactUrl(raw: string): string {
+	try {
+		const u = new URL(raw, window.location.href);
+		return `${u.origin}${u.pathname}`;
+	} catch {
+		return raw.split(/[?#]/, 1)[0];
+	}
+}
+
+export function redactSpanUrls(span: Span): void {
+	const attrs = (span as unknown as { attributes?: Attributes }).attributes;
+	for (const key of URL_ATTRS) {
+		const v = attrs?.[key];
+		if (typeof v === 'string') span.setAttribute(key, redactUrl(v));
+	}
+}
 
 /** Starts browser tracing when `CCTUI_CONFIG.otel` is set; otherwise loads nothing. */
 export function initTelemetry(): Promise<void> {
@@ -27,7 +47,7 @@ async function start(cfg: OtelConfig) {
 		import('@opentelemetry/sdk-trace-web'),
 		import('@opentelemetry/core'),
 		import('@opentelemetry/resources'),
-		import('@opentelemetry/exporter-trace-otlp-http'),
+		import('./otelExporter'),
 		import('@opentelemetry/instrumentation'),
 		import('@opentelemetry/instrumentation-fetch')
 	]);
@@ -38,7 +58,7 @@ async function start(cfg: OtelConfig) {
 			'service.version': __CLIENT_VERSION__
 		}),
 		sampler: new web.ParentBasedSampler({ root: new web.TraceIdRatioBasedSampler(cfg.sampleRatio ?? 1) }),
-		spanProcessors: [new web.BatchSpanProcessor(new exporter.OTLPTraceExporter({ url }))]
+		spanProcessors: [new web.BatchSpanProcessor(new exporter.OtlpJsonExporter(url))]
 	});
 	provider.register({ propagator: new core.W3CTraceContextPropagator() });
 	instrumentation.registerInstrumentations({
@@ -47,7 +67,8 @@ async function start(cfg: OtelConfig) {
 			new fetchInstr.FetchInstrumentation({
 				propagateTraceHeaderCorsUrls: [new RegExp(`^${escapeRe(apiOrigin())}/`)],
 				ignoreUrls: [url, /\/(stream|sse)(\?|$)/],
-				clearTimingResources: true
+				clearTimingResources: true,
+				applyCustomAttributesOnSpan: redactSpanUrls
 			})
 		]
 	});

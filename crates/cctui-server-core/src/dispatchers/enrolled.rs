@@ -66,17 +66,50 @@ const MAX_HELD_DISPATCHES: usize = 32;
 /// so one cap.
 static HELD: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(MAX_HELD_DISPATCHES));
 
+/// How long a dispatch waits on the dedup pre-check before taking the full path.
+const DEDUP_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Record the features a dispatcher announced on its current connection.
+///
+/// Stored on its row so a replica that does not hold the connection sees them.
+pub async fn record_features(
+    pool: &sqlx::PgPool,
+    dispatcher_id: Uuid,
+    features: &[String],
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE dispatchers SET features = $2 WHERE id = $1")
+        .bind(dispatcher_id)
+        .bind(features)
+        .execute(pool)
+        .await
+        .map(drop)
+}
+
+/// Forget what a dispatcher announced, as a new connection of it opens.
+pub async fn clear_features(pool: &sqlx::PgPool, dispatcher_id: Uuid) -> Result<(), sqlx::Error> {
+    record_features(pool, dispatcher_id, &[]).await
+}
+
 pub struct EnrolledDispatcher {
     /// The dispatcher's display name (the `dispatcher` field of the caller's
     /// request) — surfaced as the dispatcher id to the caller.
     name: String,
     dispatcher_id: Uuid,
     bus: Bus,
+    /// Its current connection announced the dedup pre-check.
+    dedup_check: bool,
 }
 
 impl EnrolledDispatcher {
     pub fn new(name: impl Into<String>, dispatcher_id: Uuid, bus: Bus) -> Self {
-        Self { name: name.into(), dispatcher_id, bus }
+        Self { name: name.into(), dispatcher_id, bus, dedup_check: false }
+    }
+
+    /// Mark the dispatcher as answering the dedup pre-check.
+    #[must_use]
+    pub const fn with_dedup_check(mut self, announced: bool) -> Self {
+        self.dedup_check = announced;
+        self
     }
 
     /// Send a frame over the dispatcher's live channel and await the
@@ -88,6 +121,75 @@ impl EnrolledDispatcher {
         frame: DispatcherFrameDown,
     ) -> Result<DispatcherFrameUp, DispatchError> {
         round_trip(&self.bus, self.dispatcher_id, &self.name, request_id, frame).await
+    }
+
+    /// The live worker a dispatch of `spec` would be `deduplicated` onto.
+    ///
+    /// Asked of the dispatcher before any server-side prep. `None` (it would
+    /// not deduplicate, never announced the check, failed or did not answer
+    /// within [`DEDUP_CHECK_TIMEOUT`]) means the dispatch takes the full path.
+    pub async fn dedup_check(&self, spec: &DispatchSpec<'_>) -> Option<DispatchHandle> {
+        if !self.dedup_check {
+            return None;
+        }
+        let wire = WireDispatchSpec { reply_url: None, ..wire_spec(spec) };
+        dedup_check(&self.bus, self.dispatcher_id, &self.name, wire, DEDUP_CHECK_TIMEOUT).await
+    }
+}
+
+fn wire_spec(spec: &DispatchSpec<'_>) -> WireDispatchSpec {
+    WireDispatchSpec {
+        session_id: spec.session_id.to_owned(),
+        timeout_minutes: spec.timeout_minutes,
+        reply_url: spec.reply_url.map(ToOwned::to_owned),
+        dedup_key: spec.dedup_key.map(ToOwned::to_owned),
+        profile: None,
+        payload: spec.payload.clone(),
+        traceparent: cctui_telemetry::current_traceparent().map(|(traceparent, _)| traceparent),
+    }
+}
+
+async fn dedup_check(
+    bus: &Bus,
+    dispatcher_id: Uuid,
+    name: &str,
+    spec: WireDispatchSpec,
+    timeout: Duration,
+) -> Option<DispatchHandle> {
+    let request_id = Uuid::new_v4();
+    let frame = DispatcherFrameDown::DedupCheck { request_id, spec };
+    let pending = bus.request_dispatcher(dispatcher_id, request_id, frame);
+    let reply = match tokio::time::timeout(timeout, pending).await {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(err)) => {
+            tracing::debug!(dispatcher = name, %err, "dedup check not answered");
+            return None;
+        }
+        Err(_) => {
+            tracing::debug!(dispatcher = name, "dedup check timed out");
+            return None;
+        }
+    };
+    match reply {
+        DispatcherFrameUp::DedupCheckResult {
+            handle: Some(handle),
+            namespace,
+            queue_position,
+            exposure,
+            error: None,
+            ..
+        } => Some(DispatchHandle {
+            handle,
+            namespace,
+            status: Some("deduplicated".to_owned()),
+            queue_position,
+            exposure,
+        }),
+        DispatcherFrameUp::DedupCheckResult { error: Some(err), .. } => {
+            tracing::debug!(dispatcher = name, %err, "dedup check failed");
+            None
+        }
+        _ => None,
     }
 }
 
@@ -214,15 +316,7 @@ impl Dispatcher for EnrolledDispatcher {
     }
 
     async fn dispatch(&self, spec: &DispatchSpec<'_>) -> Result<DispatchHandle, DispatchError> {
-        let wire = WireDispatchSpec {
-            session_id: spec.session_id.to_owned(),
-            timeout_minutes: spec.timeout_minutes,
-            reply_url: spec.reply_url.map(ToOwned::to_owned),
-            dedup_key: spec.dedup_key.map(ToOwned::to_owned),
-            profile: None,
-            payload: spec.payload.clone(),
-            traceparent: cctui_telemetry::current_traceparent().map(|(traceparent, _)| traceparent),
-        };
+        let wire = wire_spec(spec);
         let reply =
             dispatch_held(&self.bus, self.dispatcher_id, &self.name, &wire, DISPATCH_HOLD).await?;
         match reply {
@@ -231,13 +325,14 @@ impl Dispatcher for EnrolledDispatcher {
                 namespace,
                 status,
                 queue_position,
+                exposure,
                 error,
                 ..
             } => {
                 if let Some(err) = error {
                     return Err(DispatchError::Backend(err));
                 }
-                Ok(DispatchHandle { handle, namespace, status, queue_position })
+                Ok(DispatchHandle { handle, namespace, status, queue_position, exposure })
             }
             other => Err(DispatchError::Backend(format!("unexpected dispatcher reply: {other:?}"))),
         }
@@ -364,6 +459,7 @@ mod tests {
                     namespace: None,
                     status: Some("dispatched".into()),
                     queue_position: None,
+                    exposure: None,
                     error: None,
                 },
             ));
@@ -435,6 +531,7 @@ mod tests {
                     namespace: Some("cctui".into()),
                     status: Some("dispatched".into()),
                     queue_position: None,
+                    exposure: None,
                     error: None,
                 },
             ));
@@ -517,6 +614,7 @@ mod tests {
                     namespace: None,
                     status: Some("dispatched".into()),
                     queue_position: None,
+                    exposure: None,
                     error: None,
                 },
             ));
@@ -525,6 +623,140 @@ mod tests {
         dispatch_held_with(&exhausted, &bus, id, "k8s", &spec("sess-c"), Duration::from_secs(2))
             .await
             .expect("a present dispatcher needs no hold permit");
+        fake.await.unwrap();
+    }
+
+    fn dedup_reply(request_id: Uuid, handle: Option<&str>) -> DispatcherFrameUp {
+        DispatcherFrameUp::DedupCheckResult {
+            request_id,
+            handle: handle.map(ToOwned::to_owned),
+            namespace: Some("cctui".into()),
+            queue_position: Some(2),
+            exposure: None,
+            error: None,
+        }
+    }
+
+    /// A fake dispatcher that answers the first frame with `reply` (or never,
+    /// when `None`) and hands back that frame.
+    fn answering(
+        bus: &Bus,
+        id: Uuid,
+        reply: Option<fn(Uuid) -> DispatcherFrameUp>,
+    ) -> tokio::task::JoinHandle<DispatcherFrameDown> {
+        let (tx, mut rx) = mpsc::channel::<DispatcherFrameDown>(8);
+        bus.register_dispatcher(id, tx);
+        let bus = bus.clone();
+        tokio::spawn(async move {
+            let frame = rx.recv().await.unwrap();
+            if let (Some(reply), DispatcherFrameDown::DedupCheck { request_id, .. }) =
+                (reply, &frame)
+            {
+                assert!(bus.resolve_dispatcher_reply(*request_id, reply(*request_id)));
+            }
+            frame
+        })
+    }
+
+    #[tokio::test]
+    async fn a_live_worker_answers_deduplicated_with_its_handle_and_queue_position() {
+        let bus = bus();
+        let id = Uuid::new_v4();
+        let fake = answering(&bus, id, Some(|rid| dedup_reply(rid, Some("jobs/w/s-1"))));
+        let joined = dedup_check(&bus, id, "k8s", spec("sess-new"), Duration::from_secs(2))
+            .await
+            .expect("a live worker deduplicates");
+        assert_eq!(joined.handle, "jobs/w/s-1");
+        assert_eq!(joined.status.as_deref(), Some("deduplicated"));
+        assert_eq!((joined.namespace.as_deref(), joined.queue_position), (Some("cctui"), Some(2)));
+        let DispatcherFrameDown::DedupCheck { spec: sent, .. } = fake.await.unwrap() else {
+            panic!("the check is a DedupCheck frame");
+        };
+        assert_eq!(sent.dedup_key.as_deref(), Some("dedup-1"));
+    }
+
+    #[tokio::test]
+    async fn no_live_worker_an_error_or_another_reply_falls_through() {
+        let replies: [fn(Uuid) -> DispatcherFrameUp; 3] = [
+            |rid| dedup_reply(rid, None),
+            |rid| DispatcherFrameUp::DedupCheckResult {
+                request_id: rid,
+                handle: Some("jobs/w".into()),
+                namespace: None,
+                queue_position: None,
+                exposure: None,
+                error: Some("reading WorkerProfile `x`: 404".into()),
+            },
+            |rid| DispatcherFrameUp::CancelResult {
+                request_id: rid,
+                handle: String::new(),
+                ok: false,
+                error: None,
+            },
+        ];
+        for reply in replies {
+            let bus = bus();
+            let id = Uuid::new_v4();
+            let fake = answering(&bus, id, Some(reply));
+            assert!(
+                dedup_check(&bus, id, "k8s", spec("sess-x"), Duration::from_secs(2))
+                    .await
+                    .is_none()
+            );
+            fake.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_check_falls_through_within_its_timeout() {
+        let bus = bus();
+        let id = Uuid::new_v4();
+        let _fake = answering(&bus, id, None);
+        let started = tokio::time::Instant::now();
+        assert!(
+            dedup_check(&bus, id, "k8s", spec("sess-slow"), Duration::from_millis(300))
+                .await
+                .is_none()
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(
+            dedup_check(&bus, Uuid::new_v4(), "k8s", spec("s"), Duration::from_secs(2))
+                .await
+                .is_none(),
+            "an offline dispatcher falls through to the held dispatch"
+        );
+    }
+
+    /// A dispatcher that never announced the check (an older build that would
+    /// drop its connection on the unknown frame) is never sent one.
+    #[tokio::test]
+    async fn a_dispatcher_without_the_feature_is_never_asked() {
+        let bus = bus();
+        let id = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel::<DispatcherFrameDown>(8);
+        bus.register_dispatcher(id, tx);
+        let payload = serde_json::json!({});
+        let spec = DispatchSpec {
+            session_id: "sess-old",
+            timeout_minutes: None,
+            reply_url: Some("https://cb.example.test"),
+            dedup_key: Some("dedup-1"),
+            payload: &payload,
+        };
+        let unannounced = EnrolledDispatcher::new("k8s", id, bus.clone());
+        assert!(unannounced.dedup_check(&spec).await.is_none());
+        assert!(rx.try_recv().is_err(), "no frame reaches a dispatcher without the feature");
+
+        let bus2 = bus.clone();
+        let fake = tokio::spawn(async move {
+            let Some(DispatcherFrameDown::DedupCheck { request_id, spec }) = rx.recv().await else {
+                panic!("expected a DedupCheck");
+            };
+            assert!(spec.reply_url.is_none(), "the check never carries the reply capability");
+            assert!(bus2.resolve_dispatcher_reply(request_id, dedup_reply(request_id, None)));
+        });
+        let announced = EnrolledDispatcher::new("k8s", id, bus).with_dedup_check(true);
+        assert!(announced.dedup_check(&spec).await.is_none());
         fake.await.unwrap();
     }
 

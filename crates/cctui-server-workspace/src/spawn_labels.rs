@@ -175,6 +175,7 @@ pub async fn attach_to_session(
 /// them: the requested ids the caller may use (`visible_to`, `None` for an
 /// admin), mapped onto `owner`'s vocabulary. Best-effort, like every label
 /// path: a lookup failure spawns without labels rather than refusing.
+#[tracing::instrument(target = "otel", skip_all, fields(code.function.name = "for_spawn"))]
 pub async fn for_spawn(
     pool: &PgPool,
     label_ids: &[String],
@@ -218,13 +219,11 @@ pub async fn remember_intent(pool: &PgPool, spawn_key: &str, label_ids: &[String
     if ids.is_empty() {
         return;
     }
-    if let Err(e) = sqlx::query(
+    if let Err(e) = cctui_telemetry::db::traced(
         "INSERT INTO session_label_intents (spawn_key, label_ids) VALUES ($1, $2) \
          ON CONFLICT (spawn_key) DO UPDATE SET label_ids = EXCLUDED.label_ids",
+        |sql| sqlx::query(sql).bind(spawn_key).bind(&ids).execute(pool),
     )
-    .bind(spawn_key)
-    .bind(&ids)
-    .execute(pool)
     .await
     {
         tracing::warn!(%spawn_key, error = %e, "could not record the spawn labels");

@@ -5,6 +5,11 @@ Guidance for agents and contributors working in this repository.
 See [DESIGN.md](./DESIGN.md) for the webui design conventions (Svelte 5,
 Tsumikit, atomic design).
 
+If a command fails with `Permission denied`, run `cctui-guard why` to see the
+reason, the current workflow step and the capabilities it grants. Do not retry
+the command another way: move to the step that grants the capability, or report
+that you are blocked.
+
 ## Repo layout
 
 - `crates/cctui-server` — the full distribution's binary entry point.

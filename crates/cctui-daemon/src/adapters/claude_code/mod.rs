@@ -13,11 +13,12 @@
 //!   until the legacy path is retired.
 
 mod attach;
+mod auto_mode;
 mod backfill;
 mod canary;
 pub(crate) mod claude_service;
 mod control;
-pub(crate) use control::stage_mid_chat_files;
+pub(crate) use control::{forget_session_file, stage_mid_chat_files};
 mod composer;
 mod diagnose;
 mod discovery;

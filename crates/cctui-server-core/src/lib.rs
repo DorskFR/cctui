@@ -25,6 +25,7 @@ pub mod registry;
 pub mod client;
 pub mod outbound;
 
+pub mod hook_policy;
 pub mod launch;
 
 pub mod launch_settings;

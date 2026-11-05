@@ -1,4 +1,7 @@
+use std::collections::HashMap;
 use std::env;
+
+use cctui_secrets::{Secret, SecretRegistry};
 
 /// One external dispatcher registration, parsed from `CCTUI_HTTP_DISPATCHERS`
 /// (a JSON array of these). `token`, when set, is sent as a bearer secret.
@@ -6,12 +9,16 @@ use std::env;
 pub struct HttpDispatcherConfig {
     pub id: String,
     pub url: String,
+    /// As configured: a literal or a secret ref.
     #[serde(default)]
     pub token: Option<String>,
+    /// `token` resolved and tracked for reloads.
+    #[serde(skip)]
+    pub bearer: Option<Secret>,
 }
 
-/// Env vars that may hold a secret ref instead of the value, resolved once at
-/// startup.
+/// Env vars that may hold a secret ref instead of the value; every one
+/// follows a rotation.
 pub const SECRET_ENV: [&str; 6] = [
     "DATABASE_URL",
     "CCTUI_GITHUB_TOKEN",
@@ -178,7 +185,7 @@ pub struct Config {
     /// manifest falls back to the raw GitHub release URLs and the proxy
     /// 302-redirects there — letting selfupdate degrade gracefully (it fails
     /// for a private repo, which is the intended no-op until a token is set).
-    pub github_token: Option<String>,
+    pub github_token: Option<Secret>,
     /// External dispatcher registrations, parsed from `CCTUI_HTTP_DISPATCHERS`.
     pub http_dispatchers: Vec<HttpDispatcherConfig>,
     /// Http dispatcher registrations parsed from `CCTUI_DISPATCHERS`,
@@ -194,7 +201,7 @@ pub struct Config {
     /// ntfy access token (`CCTUI_NTFY_TOKEN`, provisioned from vault). Its
     /// presence is the on/off switch for dispatch push notifications: when
     /// unset, `ntfy::notify` is a no-op.
-    pub ntfy_token: Option<String>,
+    pub ntfy_token: Option<Secret>,
     /// ntfy topic URL to POST notifications to (`CCTUI_NTFY_URL`, a full topic
     /// URL, e.g. `https://ntfy.example.com/cctui-dispatch`). No default: when
     /// unset, push notifications stay off.
@@ -209,7 +216,7 @@ pub struct Config {
     /// Bearer token injected as `ANTHROPIC_AUTH_TOKEN` for the custom endpoint
     /// (`CCTUI_CLAUDE_LITELLM_TOKEN`). Optional: an open proxy accepts any value,
     /// so when unset we inject a dummy. Never exposed to clients.
-    pub claude_litellm_token: Option<String>,
+    pub claude_litellm_token: Option<Secret>,
     /// Operator-declared self-hosted Claude models (`CCTUI_CLAUDE_LITELLM_MODELS`,
     /// JSON array of `{model,label}`). Only surfaced to clients when
     /// `claude_litellm_endpoint` is also set — see [`Config::claude_litellm_visible_models`].
@@ -224,7 +231,7 @@ pub struct Config {
     /// they gate the model path.
     pub emoji_model: Option<String>,
     /// Optional bearer for [`Self::emoji_endpoint`].
-    pub emoji_token: Option<String>,
+    pub emoji_token: Option<Secret>,
 }
 
 /// A daemon holds one connection; the rest is headroom for the overlap of a
@@ -278,13 +285,44 @@ impl Config {
         self.allowed_origins.iter().any(|o| o == origin)
     }
 
-    pub async fn from_env() -> anyhow::Result<Self> {
-        let secrets = cctui_secrets::resolve_env(&SECRET_ENV, |k| env::var(k).ok()).await?;
-        Self::from_resolved(&secrets, |k| env::var(k).ok())
+    /// Reads the environment, resolving secret refs through `secrets`, which
+    /// keeps tracking the [`SECRET_ENV`] values and the dispatcher tokens.
+    pub async fn from_env(secrets: &SecretRegistry) -> anyhow::Result<Self> {
+        Self::from_secrets(secrets, |k| env::var(k).ok()).await
+    }
+
+    async fn from_secrets(
+        secrets: &SecretRegistry,
+        get: impl Fn(&str) -> Option<String> + Send + Sync,
+    ) -> anyhow::Result<Self> {
+        let tracked = secrets.register_env(&SECRET_ENV, &get).await?;
+        let resolved: HashMap<String, String> =
+            tracked.iter().map(|(k, v)| (k.clone(), v.get().to_string())).collect();
+        let mut config = Self::from_resolved(&resolved, &get)?;
+        config.track_secrets(&tracked);
+        resolve_dispatcher_tokens(secrets, "CCTUI_HTTP_DISPATCHERS", &mut config.http_dispatchers)
+            .await?;
+        resolve_dispatcher_tokens(secrets, "CCTUI_DISPATCHERS", &mut config.dispatchers).await?;
+        Ok(config)
+    }
+
+    /// Swaps each token's startup value for its tracked handle, matched by
+    /// the variable it was read from.
+    fn track_secrets(&mut self, tracked: &HashMap<String, Secret>) {
+        for slot in [
+            &mut self.github_token,
+            &mut self.ntfy_token,
+            &mut self.claude_litellm_token,
+            &mut self.emoji_token,
+        ] {
+            if let Some(handle) = slot.as_ref().and_then(|s| tracked.get(s.name())).cloned() {
+                *slot = Some(handle);
+            }
+        }
     }
 
     fn from_resolved(
-        secrets: &std::collections::HashMap<String, String>,
+        secrets: &HashMap<String, String>,
         get: impl Fn(&str) -> Option<String>,
     ) -> anyhow::Result<Self> {
         Self::from_lookup(|k| secrets.get(k).cloned().or_else(|| get(k)))
@@ -342,6 +380,7 @@ impl Config {
             anyhow::bail!("invalid configuration:\n  {}", errors.join("\n  "));
         }
 
+        let token = |k: &str| set(k).map(|v| Secret::fixed(k, &v));
         let external_url =
             get("CCTUI_EXTERNAL_URL").unwrap_or_else(|| "http://localhost:8700".into());
         let allowed_origins =
@@ -373,9 +412,7 @@ impl Config {
             max_daemon_ws_conns: daemon_ws_cap(get("CCTUI_MAX_DAEMON_WS_CONNS")),
             trusted_proxy_hops: trusted_hops(get("CCTUI_TRUSTED_PROXY_HOPS")),
             cctuiverse: CctuiverseConfig::from_lookup(&get),
-            github_token: get("CCTUI_GITHUB_TOKEN")
-                .or_else(|| get("GH_TOKEN"))
-                .filter(|s| !s.trim().is_empty()),
+            github_token: token("CCTUI_GITHUB_TOKEN").or_else(|| token("GH_TOKEN")),
             http_dispatchers,
             dispatchers: set("CCTUI_DISPATCHERS")
                 .map(|s| parse_dispatchers(&s))
@@ -384,15 +421,15 @@ impl Config {
                 get("CCTUI_EPHEMERAL_MACHINE_TTL_HOURS"),
                 2,
             ),
-            ntfy_token: set("CCTUI_NTFY_TOKEN"),
+            ntfy_token: token("CCTUI_NTFY_TOKEN"),
             ntfy_url: set("CCTUI_NTFY_URL"),
             claude_litellm_endpoint: set("CCTUI_CLAUDE_LITELLM_ENDPOINT"),
-            claude_litellm_token: set("CCTUI_CLAUDE_LITELLM_TOKEN"),
+            claude_litellm_token: token("CCTUI_CLAUDE_LITELLM_TOKEN"),
             emoji_endpoint: get("CCTUI_EMOJI_ENDPOINT")
                 .map(|s| s.trim().trim_end_matches('/').to_owned())
                 .filter(|s| !s.is_empty()),
             emoji_model: set("CCTUI_EMOJI_MODEL"),
-            emoji_token: set("CCTUI_EMOJI_TOKEN"),
+            emoji_token: token("CCTUI_EMOJI_TOKEN"),
             claude_litellm_models,
         })
     }
@@ -420,21 +457,40 @@ impl Config {
         Some(crate::session_emoji::Picker {
             endpoint: self.emoji_endpoint.as_deref()?,
             model: self.emoji_model.as_deref()?,
-            token: self.emoji_token.as_deref(),
+            token: self.emoji_token.as_ref().map(Secret::get),
         })
     }
 
-    /// `CCTUI_ADMIN_TOKENS`, comma-separated; the whole value may be a secret
-    /// ref resolving to that list.
-    pub async fn admin_tokens() -> anyhow::Result<Vec<String>> {
-        const VAR: &str = "CCTUI_ADMIN_TOKENS";
-        let resolved = cctui_secrets::resolve_env(&[VAR], |k| env::var(k).ok()).await?;
-        Ok(split_admin_tokens(resolved.get(VAR).map_or("", String::as_str)))
+    /// `CCTUI_ADMIN_TOKENS`, comma-separated, tracked for reloads; the whole
+    /// value may be a secret ref resolving to that list. `None` when unset.
+    pub async fn admin_tokens(secrets: &SecretRegistry) -> anyhow::Result<Option<Secret>> {
+        admin_tokens_from(secrets, env::var(ADMIN_TOKENS_ENV).ok().as_deref()).await
     }
 }
 
-fn split_admin_tokens(raw: &str) -> Vec<String> {
-    raw.split(',').filter(|s| !s.is_empty()).map(|s| s.trim().to_string()).collect()
+pub const ADMIN_TOKENS_ENV: &str = "CCTUI_ADMIN_TOKENS";
+
+async fn admin_tokens_from(
+    secrets: &SecretRegistry,
+    raw: Option<&str>,
+) -> anyhow::Result<Option<Secret>> {
+    let Some(raw) = raw else { return Ok(None) };
+    Ok(Some(secrets.register(ADMIN_TOKENS_ENV, raw).await?))
+}
+
+/// Each dispatcher's `token` may be a secret ref, tracked for reloads. Errors
+/// name the variable and the dispatcher id, never the token.
+async fn resolve_dispatcher_tokens(
+    secrets: &SecretRegistry,
+    var: &str,
+    dispatchers: &mut [HttpDispatcherConfig],
+) -> anyhow::Result<()> {
+    for d in dispatchers {
+        if let Some(token) = &d.token {
+            d.bearer = Some(secrets.register(&format!("{var}[{}].token", d.id), token).await?);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -472,6 +528,51 @@ impl Config {
             emoji_model: None,
             emoji_token: None,
         }
+    }
+}
+
+/// A resolver serving one value for a ref of every kind, so tests exercise the
+/// config wiring; the engines themselves are tested in `cctui-secrets`.
+#[cfg(test)]
+pub mod test_refs {
+    use std::sync::{Arc, Mutex};
+
+    use cctui_secrets::{Credential, RefResolver, SecretError, SecretRef, SecretRegistry};
+
+    pub const KIND_REFS: [&str; 4] = [
+        "file:/run/secrets/value",
+        "k8s:dev/cctui#value",
+        "bao:kv/data/cctui#value",
+        "aws-sm:cctui/value",
+    ];
+
+    /// `None` fails every ref as a backend error.
+    pub struct RefMap(Mutex<Option<String>>);
+
+    impl RefMap {
+        pub fn set(&self, value: Option<&str>) {
+            *self.0.lock().unwrap() = value.map(str::to_owned);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RefResolver for RefMap {
+        async fn resolve(&self, r: &SecretRef) -> Result<Credential, SecretError> {
+            let shown = r.to_string();
+            if !KIND_REFS.iter().any(|k| SecretRef::parse(k).unwrap().to_string() == shown) {
+                return Err(SecretError::NotFound { what: r.to_string() });
+            }
+            let value = self.0.lock().unwrap().clone();
+            value
+                .map(Credential::new)
+                .ok_or_else(|| SecretError::Backend(anyhow::anyhow!("{r}: backend down")))
+        }
+    }
+
+    pub fn map_registry(value: &str) -> (Arc<RefMap>, SecretRegistry) {
+        let map = Arc::new(RefMap(Mutex::new(Some(value.to_owned()))));
+        let registry = SecretRegistry::new(map.clone()).with_ttl_lookup(Arc::new(|_: &str| None));
+        (map, registry)
     }
 }
 
@@ -608,10 +709,17 @@ mod tests {
         // Both set → surfaced (the shim then synthesizes managed accounts).
         let cfg = Config {
             claude_litellm_endpoint: Some("https://litellm.example/".into()),
-            claude_litellm_token: Some("tok".into()),
+            claude_litellm_token: Some(Secret::fixed("CCTUI_CLAUDE_LITELLM_TOKEN", "tok")),
             ..base
         };
         assert_eq!(cfg.claude_litellm_visible_models().len(), 1);
+    }
+
+    fn file_registry() -> cctui_secrets::SecretRegistry {
+        let resolver: std::sync::Arc<dyn cctui_secrets::RefResolver> =
+            std::sync::Arc::new(cctui_secrets::Engines::new());
+        cctui_secrets::SecretRegistry::new(resolver)
+            .with_ttl_lookup(std::sync::Arc::new(|_: &str| None))
     }
 
     #[tokio::test]
@@ -626,11 +734,14 @@ mod tests {
             "CCTUI_EMOJI_TOKEN" => Some("tok:with:colons".to_owned()),
             _ => None,
         };
-        let secrets = cctui_secrets::resolve_env(&SECRET_ENV, env).await.unwrap();
-        let cfg = Config::from_resolved(&secrets, env).unwrap();
+        let cfg = Config::from_secrets(&file_registry(), env).await.unwrap();
         assert_eq!(cfg.database_url, "postgres://user:pw@host/db");
-        assert_eq!(cfg.ntfy_token.as_deref(), Some("ntfy-tok"));
-        assert_eq!(cfg.emoji_token.as_deref(), Some("tok:with:colons"));
+        assert_eq!(cfg.ntfy_token.as_ref().map(value).as_deref(), Some("ntfy-tok"));
+        assert_eq!(cfg.emoji_token.as_ref().map(value).as_deref(), Some("tok:with:colons"));
+    }
+
+    fn value(secret: &Secret) -> String {
+        secret.get().to_string()
     }
 
     #[tokio::test]
@@ -638,15 +749,153 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = format!("file:{}", dir.path().join("absent").display());
         let env = |k: &str| (k == "DATABASE_URL").then(|| missing.clone());
-        let msg = cctui_secrets::resolve_env(&SECRET_ENV, env).await.unwrap_err().to_string();
+        let msg = Config::from_secrets(&file_registry(), env).await.unwrap_err().to_string();
         assert!(msg.contains("DATABASE_URL"), "{msg}");
         assert!(msg.contains(&missing), "{msg}");
     }
 
-    #[test]
-    fn admin_tokens_split_on_commas_and_trim() {
-        assert_eq!(split_admin_tokens(" a , b,,c"), ["a", "b", "c"]);
-        assert!(split_admin_tokens("").is_empty());
+    use super::test_refs::{KIND_REFS, map_registry};
+
+    #[tokio::test]
+    async fn http_dispatcher_tokens_resolve_from_every_ref_kind() {
+        for reference in KIND_REFS {
+            let dispatchers = format!(
+                r#"[{{"id":"ext","url":"http://x:9000","token":"{reference}"}},
+                    {{"id":"lit","url":"http://y:9000","token":"plain:tok"}},
+                    {{"id":"none","url":"http://z:9000"}}]"#
+            );
+            let legacy = format!(r#"[{{"id":"d","url":"http://d","token":"{reference}"}}]"#);
+            let env = |k: &str| match k {
+                "DATABASE_URL" => Some("postgres://x".to_owned()),
+                "CCTUI_HTTP_DISPATCHERS" => Some(dispatchers.clone()),
+                "CCTUI_DISPATCHERS" => Some(legacy.clone()),
+                _ => None,
+            };
+            let cfg = Config::from_secrets(&map_registry("dispatch-tok").1, env).await.unwrap();
+            let tokens: Vec<_> =
+                cfg.http_dispatchers.iter().map(|d| d.bearer.as_ref().map(value)).collect();
+            let want = [Some("dispatch-tok".to_owned()), Some("plain:tok".to_owned()), None];
+            assert_eq!(tokens, want, "{reference}");
+            let legacy = cfg.dispatchers[0].bearer.as_ref().map(value);
+            assert_eq!(legacy.as_deref(), Some("dispatch-tok"), "{reference}");
+        }
+    }
+
+    #[tokio::test]
+    async fn unresolvable_dispatcher_token_names_the_var_and_id_not_a_value() {
+        let env = |k: &str| match k {
+            "DATABASE_URL" => Some("postgres://x".to_owned()),
+            "CCTUI_HTTP_DISPATCHERS" => Some(
+                r#"[{"id":"ok","url":"http://a","token":"lit-secret-tok"},
+                    {"id":"ext","url":"http://b","token":"k8s:dev/other#value"}]"#
+                    .to_owned(),
+            ),
+            _ => None,
+        };
+        let msg = Config::from_secrets(&map_registry("v").1, env).await.unwrap_err().to_string();
+        assert!(msg.contains("CCTUI_HTTP_DISPATCHERS[ext].token"), "{msg}");
+        assert!(msg.contains("k8s:dev/other#value"), "{msg}");
+        assert!(!msg.contains("lit-secret-tok"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn every_secret_env_ref_is_tracked_for_reload() {
+        for reference in KIND_REFS {
+            let env = |k: &str| SECRET_ENV.contains(&k).then(|| reference.to_owned());
+            let (_, registry) = map_registry("postgres://u:pw@db/app");
+            let cfg = Config::from_secrets(&registry, env).await.unwrap();
+            assert_eq!(cfg.database_url, "postgres://u:pw@db/app", "{reference}");
+            let want = cctui_secrets::SecretRef::parse(reference).unwrap();
+            for name in SECRET_ENV {
+                let tracked = registry.get(name).unwrap_or_else(|| panic!("{name} tracked"));
+                assert_eq!(tracked.reference(), Some(&want), "{name} {reference}");
+            }
+        }
+    }
+
+    const REF: &str = "k8s:dev/cctui#value";
+
+    #[tokio::test]
+    async fn every_config_token_reads_the_rotated_value_after_a_reload() {
+        let dispatchers = format!(r#"[{{"id":"ext","url":"http://x:9000","token":"{REF}"}}]"#);
+        let env = |k: &str| match k {
+            "DATABASE_URL" => Some("postgres://x".to_owned()),
+            "CCTUI_GITHUB_TOKEN"
+            | "CCTUI_NTFY_TOKEN"
+            | "CCTUI_CLAUDE_LITELLM_TOKEN"
+            | "CCTUI_EMOJI_TOKEN" => Some(REF.to_owned()),
+            "CCTUI_EMOJI_ENDPOINT" => Some("http://emoji".to_owned()),
+            "CCTUI_EMOJI_MODEL" => Some("small".to_owned()),
+            "CCTUI_HTTP_DISPATCHERS" | "CCTUI_DISPATCHERS" => Some(dispatchers.clone()),
+            _ => None,
+        };
+        let (map, registry) = map_registry("tok-v1");
+        let cfg = Config::from_secrets(&registry, env).await.unwrap();
+        let sent = cfg.http_dispatchers[0].bearer.as_ref().unwrap().subscribe();
+        let legacy = cfg.dispatchers[0].bearer.as_ref().unwrap().subscribe();
+        assert_eq!(cfg.github_token.as_ref().map(value).as_deref(), Some("tok-v1"));
+
+        map.set(Some("tok-v2"));
+        registry.reload().await;
+        for (name, token) in [
+            ("github", &cfg.github_token),
+            ("ntfy", &cfg.ntfy_token),
+            ("litellm", &cfg.claude_litellm_token),
+            ("emoji", &cfg.emoji_token),
+        ] {
+            assert_eq!(token.as_ref().map(value).as_deref(), Some("tok-v2"), "{name}");
+        }
+        assert_eq!(cfg.emoji_picker().unwrap().token.as_deref(), Some("tok-v2"));
+        assert_eq!(&**sent.borrow(), "tok-v2", "http dispatcher");
+        assert_eq!(&**legacy.borrow(), "tok-v2", "legacy dispatcher");
+
+        map.set(None);
+        assert!(registry.reload().await.failed > 0);
+        assert_eq!(cfg.ntfy_token.as_ref().map(value).as_deref(), Some("tok-v2"));
+    }
+
+    #[tokio::test]
+    async fn the_gh_token_fallback_follows_a_reload_too() {
+        let env = |k: &str| match k {
+            "DATABASE_URL" => Some("postgres://x".to_owned()),
+            "GH_TOKEN" => Some(REF.to_owned()),
+            _ => None,
+        };
+        let (map, registry) = map_registry("gh-v1");
+        let cfg = Config::from_secrets(&registry, env).await.unwrap();
+        assert_eq!(cfg.github_token.as_ref().map(Secret::name), Some("GH_TOKEN"));
+        map.set(Some("gh-v2"));
+        registry.reload().await;
+        assert_eq!(cfg.github_token.as_ref().map(value).as_deref(), Some("gh-v2"));
+    }
+
+    #[tokio::test]
+    async fn a_reloaded_admin_tokens_ref_swaps_the_accepted_token() {
+        let (map, registry) = map_registry("adm-old");
+        let admin = admin_tokens_from(&registry, Some(REF)).await.unwrap().unwrap();
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+        pool.close().await;
+        let auth =
+            crate::auth::AuthConfig::new(crate::auth::parse_admin_tokens(&admin.get()), pool);
+        auth.follow_admin_tokens(admin.subscribe());
+        assert!(auth.validate("adm-old").await.is_some());
+
+        map.set(Some("adm-new, adm-other"));
+        registry.reload().await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while auth.validate("adm-new").await.is_none() {
+            assert!(tokio::time::Instant::now() < deadline, "the new admin token never took");
+            tokio::task::yield_now().await;
+        }
+        assert!(auth.validate("adm-other").await.is_some());
+        assert!(auth.validate("adm-old").await.is_none(), "the old admin token is rejected");
+    }
+
+    #[tokio::test]
+    async fn unset_admin_tokens_track_nothing() {
+        let (_, registry) = map_registry("v");
+        assert!(admin_tokens_from(&registry, None).await.unwrap().is_none());
+        assert!(registry.get(ADMIN_TOKENS_ENV).is_none());
     }
 
     #[test]

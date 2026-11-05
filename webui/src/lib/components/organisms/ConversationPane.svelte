@@ -58,6 +58,7 @@
 	import { guardEscape } from './conversation/escapeGuard';
 	import { livenessClass } from './conversation/liveness';
 	import { ownsSession } from './conversation/ownership';
+	import { useOwnerHideMenu } from '$lib/ownerHideMenu.svelte';
 	import { notify } from '$lib/notify.svelte';
 	import type { ConversationChrome } from './conversation/chrome';
 	import { m } from '$lib/paraglide/messages';
@@ -114,6 +115,10 @@
 		() => me.data?.role === 'admin' && !!me.data?.user_id
 	);
 	const owned = $derived(ownsSession(me.data, myMachines.data, session.machine_id));
+	const ownerMenu = useOwnerHideMenu(
+		() => session,
+		() => me.data
+	);
 	const needsInput = $derived(session.attention === 'needs_input' && !archived);
 	const showStatusBadge = $derived(session.status === 'new' || session.status === 'archived');
 	const qc = useQueryClient();
@@ -360,8 +365,8 @@
 	// text back into the composer to fix and resend.
 	function editPending(text: string, ts: number) {
 		if (archived) return;
-		stream.discardOptimistic(ts);
-		composer?.loadDraft(text);
+		const typed = stream.discardOptimistic(ts);
+		composer?.loadDraft(typed ?? text);
 	}
 
 	function quoteLine(ln: Line, selection: string | null) {
@@ -497,6 +502,7 @@
 				onDeleteLabel={actions.deleteLabel}
 				onsetroom={setRoom}
 				onclearroom={clearRoom}
+				ownerItems={ownerMenu.items}
 			/>
 
 			{#if chrome !== 'tile'}

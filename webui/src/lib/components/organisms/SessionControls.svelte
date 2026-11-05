@@ -11,6 +11,7 @@
 	import DimensionPicker from '../molecules/DimensionPicker.svelte';
 	import { MENU_ROW, MENU_ROW_ICON } from '../molecules/menuRow';
 	import MacrosMenu from './MacrosMenu.svelte';
+	import SearchScopeChips from '../molecules/SearchScopeChips.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import type { Dimension } from '../../../routes/sessions/sessions.logic';
 	import type { ViewMode } from '$lib/sessionsView.svelte';
@@ -41,7 +42,9 @@
 		onNew,
 		trailing,
 		onUpdateLabel,
-		onDeleteLabel
+		onDeleteLabel,
+		scopeMachine = null,
+		scopeDir = null
 	}: {
 		rawQuery: string;
 		searchSchema: Schema;
@@ -71,6 +74,8 @@
 		flush?: boolean;
 		onUpdateLabel?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
 		onDeleteLabel?: (labelId: string) => void | Promise<void>;
+		scopeMachine?: string | null;
+		scopeDir?: string | null;
 	} = $props();
 
 	const searchId = $props.id();
@@ -201,6 +206,11 @@
 	     tools) onto a fresh line below title+New. Hidden on desktop where everything
 	     sits on one row. -->
 	<span class="row-break break-tools" aria-hidden="true"></span>
+	{#if rawQuery.trim()}
+		<div class="scope-row">
+			<SearchScopeChips bind:rawQuery schema={searchSchema} machine={scopeMachine} dir={scopeDir} />
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -255,6 +265,9 @@
 	.search-box {
 		flex: 1 1 0;
 		min-width: 0;
+	}
+	.scope-row {
+		flex-basis: 100%;
 	}
 	.title-wrap {
 		display: flex;

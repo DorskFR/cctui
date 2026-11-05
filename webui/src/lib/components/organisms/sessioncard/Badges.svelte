@@ -22,6 +22,9 @@
 		style="flex:none"
 		title={m.sessions_unread_title({ count: view.unreadCount })}>{view.unreadCount}</Badge
 	>{/if}
+{#if s.hidden}<Badge tone="muted" size="xs" style="flex:none" data-journey="hidden-chip" title={m.hidden_owners_chip_title()}
+		>{m.hidden_owners_chip()}</Badge
+	>{/if}
 {#if s.auto_approve}<Badge tone="warn" size="xs" style="flex:none" title={m.sessions_auto_approve_title()}>⚡</Badge>{/if}
 <RoomBadge name={s.room_name} />
 {#if context}<ContextCountsBadge counts={context} />{/if}

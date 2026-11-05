@@ -310,6 +310,8 @@ COPY --from=bins /cctui-daemon       /usr/local/bin/cctui-daemon
 COPY --from=bins /cctui-guard-proxy  /usr/local/bin/cctui-guard-proxy
 COPY --from=bins /cctui-supervisor   /usr/local/bin/cctui-supervisor
 COPY --from=bins /cctui-guard        /usr/local/bin/cctui-guard
+# `guard why` lists the recent exec denials an agent hits under exec interception.
+RUN ln -s cctui-guard /usr/local/bin/guard && guard why --help >/dev/null
 COPY deploy/worker-entrypoint.sh   /usr/local/bin/cctui-worker-entrypoint
 # worker-net-init — pod-netns iptables for the k8s sidecar mode: run
 # from a NET_ADMIN init container so the worker container needs no privileged.
@@ -318,6 +320,9 @@ COPY deploy/worker-net-init.sh     /usr/local/bin/cctui-worker-net-init
 # holding the signing key and forwards only its restricted --extra-socket, then
 # exec's cctui-guard-proxy. Passthrough when no GPG_PRIVATE_KEY is present.
 COPY deploy/guard-proxy-entrypoint.sh /usr/local/bin/cctui-guard-proxy-entrypoint
+# Fail-closed pre-tool shims (opencode plugin, codex hook) that the entrypoint
+# installs when the guard is on.
+COPY --chmod=0755 deploy/guard-shims/ /usr/local/share/cctui/guard-shims/
 
 # Sandbox state dirs the entrypoint and proxy/guard write into. /opt/context is
 # the context-pack mount target (read-only after fetch). /workspace and

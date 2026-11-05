@@ -45,6 +45,9 @@ pub struct AppServerConfig {
     /// start. Defaults to refusing: dropping to no sandbox is a security
     /// downgrade the operator must opt into.
     pub sandbox_fallback: SandboxFallback,
+    /// The hook rules the launch carried. Per-thread like `service_tier` and
+    /// persisted with it, so a resume or fork re-sends them.
+    pub hook_policy: Option<cctui_proto::hook_policy::HookPolicy>,
 }
 
 /// `codex_sandbox_fallback` in `daemon.toml`. Serialized because it rides
@@ -78,6 +81,7 @@ impl Default for AppServerConfig {
             service_tier: None,
             model_catalog: true,
             sandbox_fallback: SandboxFallback::Error,
+            hook_policy: None,
         }
     }
 }
