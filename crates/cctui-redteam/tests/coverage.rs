@@ -2,6 +2,7 @@
 //! class and every class with probes has a scenario that lists each of them.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::path::PathBuf;
 
 const CLASSES: &[&str] = &["EGR", "LAT", "SEC", "PRIV", "GUARD", "AUTH", "INJ", "JUDGE", "RES"];
@@ -13,16 +14,19 @@ fn redteam_dir() -> PathBuf {
 fn probe_ids() -> BTreeMap<String, Vec<String>> {
     let mut by_class: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for entry in std::fs::read_dir(redteam_dir().join("probes")).expect("probes dir") {
-        let name = entry.unwrap().file_name().to_string_lossy().into_owned();
-        if !name.ends_with(".sh") || name == "lib.sh" || name == "run-all.sh" {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(OsStr::to_str) != Some("sh") {
             continue;
         }
-        let stem = name.trim_end_matches(".sh");
+        let stem = path.file_stem().and_then(OsStr::to_str).unwrap_or_default();
+        if stem == "lib" || stem == "run-all" {
+            continue;
+        }
         let mut parts = stem.splitn(3, '-');
         let class = parts.next().unwrap_or_default().to_owned();
         let num = parts.next().unwrap_or_default();
-        assert!(CLASSES.contains(&class.as_str()), "{name}: unknown class `{class}`");
-        assert!(num.chars().all(|c| c.is_ascii_digit()) && !num.is_empty(), "{name}: bad id");
+        assert!(CLASSES.contains(&class.as_str()), "{stem}: unknown class `{class}`");
+        assert!(num.chars().all(|c| c.is_ascii_digit()) && !num.is_empty(), "{stem}: bad id");
         by_class.entry(class.clone()).or_default().push(format!("{class}-{num}"));
     }
     by_class
