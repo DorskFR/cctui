@@ -662,6 +662,9 @@ struct StatusSnapshot {
     /// native daemon revived from one that is genuinely mid-turn.
     source: Option<String>,
     started_at: Option<i64>,
+    /// An `AskUserQuestion` form is open on screen, read from `needs`: a
+    /// hookless worker never reports it any other way.
+    asking: bool,
 }
 
 /// Everything the launch chokepoint pulls from the server's durable binding for
@@ -1327,15 +1330,14 @@ impl Driver {
         };
         self.liveness.set_host(&sock);
         let canary_roster: Vec<_> = resp.jobs.iter().map(LiveSnapshot::canary_view).collect();
-        let idle: HashSet<String> = resp
+        let respawn_points: HashMap<String, hook_respawn::RespawnPoint> = resp
             .jobs
             .iter()
-            .filter(|j| !j.dying && j.tempo.as_deref() == Some("idle"))
-            .map(|j| j.short.clone())
+            .filter_map(|j| Some((j.short.clone(), hook_respawn::RespawnPoint::of(j)?)))
             .collect();
         self.apply_snapshot(resp.jobs).await;
         self.check_canaries(&canary_roster).await;
-        self.respawn_hookless_workers(&sock, &idle);
+        self.respawn_hookless_workers(&sock, &respawn_points);
         self.probe_liveness(&sock).await;
         let reattached = self.churned;
         if self.churned {
