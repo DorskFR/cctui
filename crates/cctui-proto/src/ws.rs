@@ -389,7 +389,15 @@ pub enum DispatcherFrameDown {
     Dispatch { request_id: uuid::Uuid, spec: WireDispatchSpec },
     Status { request_id: uuid::Uuid, handle: String },
     Cancel { request_id: uuid::Uuid, handle: String },
+    /// Ask whether a dispatch of `spec` would join a live worker; nothing is
+    /// created. Sent only to a dispatcher that announced
+    /// [`DISPATCHER_FEATURE_DEDUP_CHECK`].
+    DedupCheck { request_id: uuid::Uuid, spec: WireDispatchSpec },
 }
+
+/// [`DispatcherFrameUp::Capabilities`] feature: the dispatcher answers
+/// [`DispatcherFrameDown::DedupCheck`].
+pub const DISPATCHER_FEATURE_DEDUP_CHECK: &str = "dedup_check";
 
 /// Dispatcher → server frames on `/api/v1/dispatcher/ws`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -437,6 +445,28 @@ pub enum DispatcherFrameUp {
         request_id: uuid::Uuid,
         handle: String,
         ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Optional protocol features, sent right after `Hello`.
+    Capabilities {
+        #[serde(default)]
+        features: Vec<String>,
+    },
+    /// Answer to `DedupCheck`.
+    ///
+    /// `handle` is the live worker a dispatch would be `deduplicated` onto;
+    /// `None` means it would not deduplicate (or the check failed: `error`).
+    DedupCheckResult {
+        request_id: uuid::Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        handle: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        queue_position: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exposure: Option<crate::api::DispatchExposure>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -1534,6 +1564,42 @@ mod tests {
             let json = serde_json::to_string(&f).unwrap();
             let _back: DispatcherFrameUp = serde_json::from_str(&json).unwrap();
         }
+    }
+
+    #[test]
+    fn dedup_check_frames_roundtrip() {
+        let down = DispatcherFrameDown::DedupCheck {
+            request_id: uuid::Uuid::nil(),
+            spec: WireDispatchSpec {
+                session_id: "sess-1".into(),
+                timeout_minutes: None,
+                reply_url: None,
+                dedup_key: Some("triage-PROJ-1".into()),
+                profile: None,
+                payload: serde_json::json!({}),
+                traceparent: None,
+            },
+        };
+        let json = serde_json::to_string(&down).unwrap();
+        assert!(json.contains(r#""type":"dedup_check""#), "{json}");
+        assert!(matches!(
+            serde_json::from_str::<DispatcherFrameDown>(&json).unwrap(),
+            DispatcherFrameDown::DedupCheck { .. }
+        ));
+
+        let caps = serde_json::to_string(&DispatcherFrameUp::Capabilities {
+            features: vec![DISPATCHER_FEATURE_DEDUP_CHECK.into()],
+        })
+        .unwrap();
+        assert_eq!(caps, r#"{"type":"capabilities","features":["dedup_check"]}"#);
+
+        let miss = r#"{"type":"dedup_check_result","request_id":"00000000-0000-0000-0000-000000000000"}"#;
+        let Ok(DispatcherFrameUp::DedupCheckResult { handle, error, .. }) =
+            serde_json::from_str::<DispatcherFrameUp>(miss)
+        else {
+            panic!("a bare dedup_check_result parses");
+        };
+        assert_eq!((handle, error), (None, None));
     }
 
     #[test]

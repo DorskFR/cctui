@@ -1553,6 +1553,123 @@ mod tests {
         assert_eq!(restored, Some(pod_a), "the probed replica restores its presence row");
     }
 
+    async fn count_for_session(pool: &PgPool, sql: &'static str, session: &str) -> i64 {
+        sqlx::query_scalar(sql).bind(session).fetch_one(pool).await.unwrap()
+    }
+
+    /// The dispatcher's WS lives on A and the dispatch lands on B. B reads the
+    /// announced check from the shared dispatcher row, asks A over the route,
+    /// and answers `deduplicated` before minting, registering or recording.
+    #[tokio::test]
+    async fn a_dispatch_on_the_replica_without_the_dispatcher_is_deduplicated_before_any_prep() {
+        use cctui_proto::ws::DISPATCHER_FEATURE_DEDUP_CHECK;
+        use cctui_server_core::auth::{AuthContext, Scope};
+        use cctui_server_core::dispatch::execute_dispatch;
+        let Some(pool) = presence_pool().await else { return };
+        let pod_a = format!("cct1749-a-{}", Uuid::new_v4().simple());
+        let (replica_a, port_a) = route_replica(&pool, &pod_a, "127.0.0.49").await;
+        let (uid, dispatcher) = (Uuid::new_v4(), Uuid::new_v4());
+        let name = format!("cct1749-{}", dispatcher.simple());
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $2)")
+            .bind(uid)
+            .bind(&name)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO dispatchers (id, user_id, name, kind, features) \
+             VALUES ($1, $2, $3, 'kubernetes', $4)",
+        )
+        .bind(dispatcher)
+        .bind(uid)
+        .bind(&name)
+        .bind(vec![DISPATCHER_FEATURE_DEDUP_CHECK.to_owned()])
+        .execute(&pool)
+        .await
+        .unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        replica_a.bus.register_dispatcher(dispatcher, tx);
+        presence::register(&replica_a, Kind::Dispatcher, dispatcher).await;
+        let bus_a = replica_a.bus.clone();
+        let fake = tokio::spawn(async move {
+            let Some(DispatcherFrameDown::DedupCheck { request_id, spec }) = rx.recv().await
+            else {
+                return None;
+            };
+            let reply = DispatcherFrameUp::DedupCheckResult {
+                request_id,
+                handle: Some("jobs/worker/first-session".into()),
+                namespace: Some("cctui".into()),
+                queue_position: None,
+                exposure: None,
+                error: None,
+            };
+            assert!(bus_a.resolve_dispatcher_reply(request_id, reply));
+            spec.dedup_key
+        });
+
+        let mut replica_b = crate::state::AppState::for_test(pool.clone());
+        replica_b.bus = crate::bus::Bus::new(Box::new(PeerHttpTransport::new(
+            pool.clone(),
+            crate::build_http_client(),
+            format!("cct1749-b-{}", Uuid::new_v4().simple()),
+            port_a,
+            "cct1747".into(),
+        )));
+        let ctx = AuthContext {
+            user_id: uid,
+            key_id: Uuid::new_v4(),
+            machine_id: None,
+            scopes: [Scope::Read, Scope::Dispatch].into_iter().collect(),
+        };
+        let request = cctui_proto::api::DispatchRequest {
+            dispatcher: name.clone(),
+            session_id: Some("cct1749-logical".into()),
+            timeout: Some(1),
+            reply_url: None,
+            notify_url: None,
+            notify_secret: None,
+            payload: serde_json::json!({"prompt_file": "review"}),
+            account: None,
+            provider: None,
+            accounts: Vec::new(),
+        };
+        let outcome = execute_dispatch(&replica_b, &ctx, request).await;
+        let asked = tokio::time::timeout(std::time::Duration::from_secs(5), fake).await;
+
+        let session = outcome.as_ref().map(|(_, r)| r.session_id.clone()).unwrap_or_default();
+        let keys = "SELECT count(*) FROM auth_keys WHERE session_id = $1";
+        let records = "SELECT count(*) FROM dispatch_records WHERE session_id = $1";
+        let handles = "SELECT count(*) FROM dispatch_handles WHERE session_id = $1";
+        let left = [
+            count_for_session(&pool, keys, &session).await,
+            count_for_session(&pool, records, &session).await,
+            count_for_session(&pool, handles, &session).await,
+        ];
+        sqlx::query("DELETE FROM ws_presence WHERE entity_id = $1")
+            .bind(dispatcher)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM dispatchers WHERE id = $1")
+            .bind(dispatcher)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.unwrap();
+
+        let (status, axum::Json(reply)) =
+            outcome.unwrap_or_else(|(code, e)| panic!("dispatch refused ({code}): {}", e.error));
+        assert_eq!(status, axum::http::StatusCode::ACCEPTED);
+        assert_eq!(reply.status, "deduplicated");
+        assert_eq!(reply.handle, "jobs/worker/first-session");
+        assert_eq!(
+            asked.expect("A's dispatcher was asked").unwrap().as_deref(),
+            Some("cct1749-logical")
+        );
+        assert_eq!(left, [0, 0, 0], "no worker key, record or handle row for the session");
+    }
+
     #[tokio::test]
     async fn an_unreachable_peer_does_not_stall_the_others() {
         let (replica, base) = replica_with_cached("h").await;

@@ -420,6 +420,12 @@ async fn handle(socket: WebSocket, state: impl DispatcherContext, dispatcher_id:
     // Newest connection wins (mirrors the daemon hub); registered with the
     // bus.
     state.dispatcher_core().bus.register_dispatcher(dispatcher_id, tx.clone());
+    // What an earlier connection announced must not outlive it: this one
+    // re-announces right after its hello.
+    let pool = &state.dispatcher_core().pool;
+    if let Err(err) = crate::dispatchers::enrolled::clear_features(pool, dispatcher_id).await {
+        tracing::warn!(%dispatcher_id, %err, "dispatcher features not cleared");
+    }
     // Replica-aware presence: record this pod as the WS owner so a
     // peer replica can forward dispatches here instead of reporting offline.
     state.register_dispatcher_presence(dispatcher_id).await;
@@ -517,12 +523,24 @@ async fn process_frame(state: &CoreState, dispatcher_id: Uuid, frame: Dispatcher
                 cctui_proto::models::MachineLiveness::Online,
             );
         }
+        DispatcherFrameUp::Capabilities { features } => {
+            tracing::info!(%dispatcher_id, ?features, "dispatcher capabilities");
+            let recorded = crate::dispatchers::enrolled::record_features(
+                &state.pool,
+                dispatcher_id,
+                &features,
+            );
+            if let Err(err) = recorded.await {
+                tracing::warn!(%dispatcher_id, %err, "dispatcher features not recorded");
+            }
+        }
         // Every reply carries the request_id the dispatch path is awaiting; fire
         // the matching oneshot parked in the bus. An unknown id means the route
         // already timed out.
         DispatcherFrameUp::DispatchResult { request_id, .. }
         | DispatcherFrameUp::StatusResult { request_id, .. }
-        | DispatcherFrameUp::CancelResult { request_id, .. } => {
+        | DispatcherFrameUp::CancelResult { request_id, .. }
+        | DispatcherFrameUp::DedupCheckResult { request_id, .. } => {
             if !state.bus.resolve_dispatcher_reply(request_id, frame) {
                 tracing::debug!(%request_id, "dispatcher reply for unknown request (timed out?)");
             }

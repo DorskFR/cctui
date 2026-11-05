@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cctui_proto::backoff::Backoff;
-use cctui_proto::ws::{DispatcherFrameDown, DispatcherFrameUp};
+use cctui_proto::ws::{DISPATCHER_FEATURE_DEDUP_CHECK, DispatcherFrameDown, DispatcherFrameUp};
 use futures_util::{Sink, SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{self, Message};
@@ -72,6 +72,10 @@ impl<D: Dispatcher + 'static> Runner<D> {
             version: env!("CARGO_PKG_VERSION").to_owned(),
         };
         send_frame(&mut sink, &hello).await?;
+        if self.spawner.supports_dedup_check() {
+            let features = vec![DISPATCHER_FEATURE_DEDUP_CHECK.to_owned()];
+            send_frame(&mut sink, &DispatcherFrameUp::Capabilities { features }).await?;
+        }
 
         let mut ping = tokio::time::interval(PING_INTERVAL);
         ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -95,7 +99,7 @@ impl<D: Dispatcher + 'static> Runner<D> {
                     let Some(msg) = msg else { return Ok(()); };
                     let msg = msg?;
                     last_rx = tokio::time::Instant::now();
-                    if let Some(frame) = parse_frame(msg)? {
+                    if let Some(frame) = parse_frame(msg) {
                         let spawner = Arc::clone(&self.spawner);
                         let tx = replies_tx.clone();
                         tokio::spawn(async move {
@@ -198,6 +202,36 @@ async fn dispatch_frame<D: Dispatcher>(
     }
 }
 
+async fn dedup_check_frame<D: Dispatcher>(
+    spawner: &D,
+    request_id: uuid::Uuid,
+    spec: &cctui_proto::ws::WireDispatchSpec,
+) -> DispatcherFrameUp {
+    let (joined, error) = spawner
+        .dedup_check(spec)
+        .await
+        .map_or_else(|err| (None, Some(err.to_string())), |joined| (joined, None));
+    let Some(out) = joined else {
+        return DispatcherFrameUp::DedupCheckResult {
+            request_id,
+            handle: None,
+            namespace: None,
+            queue_position: None,
+            exposure: None,
+            error,
+        };
+    };
+    let queue_position = spawner.queue_position(&out.handle).await;
+    DispatcherFrameUp::DedupCheckResult {
+        request_id,
+        handle: Some(out.handle),
+        namespace: out.namespace,
+        queue_position,
+        exposure: out.exposure,
+        error: None,
+    }
+}
+
 /// Drive a server-sent frame against the dispatcher, producing the reply
 /// frame. Errors are reported back in-band (never panic the loop) so the
 /// server can surface a dispatch failure instead of hanging.
@@ -208,6 +242,9 @@ async fn handle_frame<D: Dispatcher>(spawner: &D, frame: DispatcherFrameDown) ->
         }
         DispatcherFrameDown::Status { request_id, handle } => {
             status_frame(spawner, request_id, handle).await
+        }
+        DispatcherFrameDown::DedupCheck { request_id, spec } => {
+            dedup_check_frame(spawner, request_id, &spec).await
         }
         DispatcherFrameDown::Cancel { request_id, handle } => match spawner.cancel(&handle).await {
             Ok(()) => DispatcherFrameUp::CancelResult { request_id, handle, ok: true, error: None },
@@ -225,13 +262,16 @@ async fn handle_frame<D: Dispatcher>(spawner: &D, frame: DispatcherFrameDown) ->
     }
 }
 
-fn parse_frame(msg: Message) -> anyhow::Result<Option<DispatcherFrameDown>> {
+/// A frame this build cannot read is skipped, never fatal to the connection.
+fn parse_frame(msg: Message) -> Option<DispatcherFrameDown> {
     let txt = match msg {
         Message::Text(t) => t.to_string(),
         Message::Binary(b) => String::from_utf8_lossy(&b).to_string(),
-        _ => return Ok(None),
+        _ => return None,
     };
-    Ok(Some(serde_json::from_str(&txt)?))
+    serde_json::from_str(&txt)
+        .inspect_err(|err| tracing::warn!(%err, "unreadable dispatcher frame; ignoring"))
+        .ok()
 }
 
 #[cfg(test)]
@@ -348,5 +388,124 @@ mod tests {
 
         shutdown.cancel();
         tokio::time::timeout(std::time::Duration::from_secs(5), run).await.unwrap().unwrap();
+    }
+
+    /// A live worker for dedup key `live`, a failing read for `broken`, none
+    /// otherwise.
+    struct LiveDedup;
+
+    impl Dispatcher for LiveDedup {
+        fn kind(&self) -> &'static str {
+            "test"
+        }
+
+        async fn dispatch(&self, _spec: &WireDispatchSpec) -> anyhow::Result<SpawnOutcome> {
+            anyhow::bail!("a dedup check never dispatches")
+        }
+
+        async fn status(&self, _handle: &str) -> anyhow::Result<(HandleState, Option<String>)> {
+            Ok((HandleState::Running, None))
+        }
+
+        async fn cancel(&self, _handle: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn queue_position(&self, _handle: &str) -> Option<u32> {
+            Some(3)
+        }
+
+        fn supports_dedup_check(&self) -> bool {
+            true
+        }
+
+        async fn dedup_check(
+            &self,
+            spec: &WireDispatchSpec,
+        ) -> anyhow::Result<Option<SpawnOutcome>> {
+            match spec.dedup_key.as_deref() {
+                Some("live") => Ok(Some(SpawnOutcome {
+                    handle: "jobs/live".into(),
+                    status: "deduplicated".into(),
+                    namespace: Some("ns".into()),
+                    exposure: None,
+                })),
+                Some("broken") => anyhow::bail!("reading WorkerProfile"),
+                _ => Ok(None),
+            }
+        }
+    }
+
+    fn keyed(dedup_key: &str) -> WireDispatchSpec {
+        WireDispatchSpec {
+            session_id: "fresh".into(),
+            timeout_minutes: None,
+            reply_url: None,
+            dedup_key: Some(dedup_key.into()),
+            profile: None,
+            payload: serde_json::json!({}),
+            traceparent: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_dedup_check_is_announced_answered_and_an_unknown_frame_is_skipped() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let runner = Runner::new(
+            ServerClient::new(format!("http://{addr}"), "test"),
+            cctui_secrets::Secret::fixed("dispatcher-key", "dk-test"),
+            LiveDedup,
+        );
+        let shutdown = CancellationToken::new();
+        let run = tokio::spawn(runner.run(shutdown.clone()));
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        assert!(matches!(next_up(&mut ws).await, DispatcherFrameUp::Hello { .. }));
+        let DispatcherFrameUp::Capabilities { features } = next_up(&mut ws).await else {
+            panic!("capabilities follow the hello");
+        };
+        assert_eq!(features, [cctui_proto::ws::DISPATCHER_FEATURE_DEDUP_CHECK]);
+
+        let unknown = String::from(r#"{"type":"from_a_newer_server"}"#);
+        ws.send(Message::Text(unknown.into())).await.unwrap();
+
+        for (key, want_handle, want_error) in
+            [("live", Some("jobs/live"), false), ("gone", None, false), ("broken", None, true)]
+        {
+            let request_id = uuid::Uuid::new_v4();
+            let check = DispatcherFrameDown::DedupCheck { request_id, spec: keyed(key) };
+            send_down(&mut ws, &check).await;
+            let reply = next_up(&mut ws).await;
+            let DispatcherFrameUp::DedupCheckResult {
+                request_id: answered,
+                handle,
+                namespace,
+                queue_position,
+                error,
+                ..
+            } = reply
+            else {
+                panic!("a dedup check is answered in kind: {reply:?}");
+            };
+            assert_eq!(answered, request_id);
+            assert_eq!(handle.as_deref(), want_handle, "{key}");
+            assert_eq!(error.is_some(), want_error, "{key}");
+            let joined = want_handle.is_some();
+            assert_eq!(namespace.is_some(), joined, "{key}");
+            assert_eq!(queue_position, joined.then_some(3), "{key}");
+        }
+
+        shutdown.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(5), run).await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn a_dispatcher_without_the_check_says_it_would_not_deduplicate() {
+        let release = Arc::new(Notify::new());
+        let held = HeldDispatch { release };
+        assert!(!held.supports_dedup_check());
+        let out = futures_util::FutureExt::now_or_never(held.dedup_check(&keyed("live")));
+        assert!(matches!(out, Some(Ok(None))));
     }
 }

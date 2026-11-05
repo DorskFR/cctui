@@ -82,6 +82,15 @@ struct RunEnv {
     identity: Option<String>,
 }
 
+/// See [`Spawner::admit`].
+struct Admission {
+    profile_name: String,
+    profile: WorkerProfileSpec,
+    exposure: Option<cctui_proto::api::DispatchExposure>,
+    name: String,
+    joined: Option<SpawnOutcome>,
+}
+
 #[derive(Clone, Copy)]
 struct JobIdentity<'a> {
     name: &'a str,
@@ -495,6 +504,35 @@ impl Spawner {
     /// dispatch a live Job already absorbs is answered before registering, so
     /// it leaves no identity row behind.
     async fn dispatch_worker(&self, spec: &WireDispatchSpec) -> anyhow::Result<SpawnOutcome> {
+        let Admission { profile_name, profile, exposure, name, joined } = self.admit(spec).await?;
+        if let Some(joined) = joined {
+            return Ok(joined);
+        }
+        self.enforce_inflight_cap(&name).await?;
+        let suspend = self.profile_must_queue(&profile_name, profile.max_inflight, &name).await?;
+        let identity = JobIdentity { name: &name, dispatch_id: uuid::Uuid::new_v4() };
+        let job = Self::build_job(
+            &self.cctui_url,
+            &profile_name,
+            &profile,
+            spec,
+            identity,
+            self.default_deadline_secs,
+            suspend,
+        )?;
+        let registration =
+            Self::registration(&self.cctui_url, &profile, spec, &self.namespace, identity)?;
+        self.registry.register(&registration).await?;
+        let placed = self.place_job(&job, suspend, &name).await?;
+        Ok(SpawnOutcome { exposure, ..placed })
+    }
+
+    /// Resolve a dispatch up to its dedup decision, registering nothing.
+    ///
+    /// Yields the profile it selects (an unknown one errors) and the live Job,
+    /// if any, that absorbs it. The dedup check answers from this same step, so
+    /// it cannot disagree with the create path.
+    async fn admit(&self, spec: &WireDispatchSpec) -> anyhow::Result<Admission> {
         if spec.session_id.is_empty() {
             anyhow::bail!("session_id is required");
         }
@@ -507,33 +545,16 @@ impl Spawner {
         let profile = profiles
             .get(&profile_name)
             .await
-            .map_err(|e| anyhow::anyhow!("reading WorkerProfile `{profile_name}`: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("reading WorkerProfile `{profile_name}`: {e}"))?
+            .spec;
 
-        let exposure =
-            profile.spec.exposure.map(|e| exposure::wire_exposure(e, profile.spec.human_gate));
+        let exposure = profile.exposure.map(|e| exposure::wire_exposure(e, profile.human_gate));
         let name = worker_name(dedup_source(spec));
-        if let Some(live) = self.absorbing_job(&name).await? {
-            let joined = self.outcome(&name, handle::job_session(&live), "deduplicated");
-            return Ok(SpawnOutcome { exposure, ..joined });
-        }
-        self.enforce_inflight_cap(&name).await?;
-        let suspend =
-            self.profile_must_queue(&profile_name, profile.spec.max_inflight, &name).await?;
-        let identity = JobIdentity { name: &name, dispatch_id: uuid::Uuid::new_v4() };
-        let job = Self::build_job(
-            &self.cctui_url,
-            &profile_name,
-            &profile.spec,
-            spec,
-            identity,
-            self.default_deadline_secs,
-            suspend,
-        )?;
-        let registration =
-            Self::registration(&self.cctui_url, &profile.spec, spec, &self.namespace, identity)?;
-        self.registry.register(&registration).await?;
-        let placed = self.place_job(&job, suspend, &name).await?;
-        Ok(SpawnOutcome { exposure, ..placed })
+        let joined = self.absorbing_job(&name).await?.map(|live| SpawnOutcome {
+            exposure,
+            ..self.outcome(&name, handle::job_session(&live), "deduplicated")
+        });
+        Ok(Admission { profile_name, profile, exposure, name, joined })
     }
 
     /// The non-terminal Job already holding `name`. A concurrent dispatch
@@ -1205,6 +1226,14 @@ impl Dispatcher for Spawner {
 
     async fn queue_position(&self, handle: &str) -> Option<u32> {
         self.worker_queue_position(handle).await
+    }
+
+    fn supports_dedup_check(&self) -> bool {
+        true
+    }
+
+    async fn dedup_check(&self, spec: &WireDispatchSpec) -> anyhow::Result<Option<SpawnOutcome>> {
+        Ok(self.admit(spec).await?.joined)
     }
 }
 
@@ -2682,5 +2711,109 @@ mod tests {
             !handle::JobHandle::parse(&earlier).owns(&job),
             "the earlier session reads its workload gone, not the later run's failure"
         );
+    }
+
+    const NOT_FOUND: &str = r#"{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"not found","reason":"NotFound","details":{},"code":404}"#;
+
+    /// A stand-in API server holding WorkerProfile `p` and, when given, the
+    /// Job every dispatch maps to; every other request is a 404.
+    async fn fake_api(default_profile: &str, job: Option<&Job>) -> Spawner {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let profile = serde_json::to_string(&WorkerProfile::new("p", lean_profile())).unwrap();
+        let job = job.map(|j| serde_json::to_string(j).unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut tcp, _)) = listener.accept().await {
+                let (profile, job) = (profile.clone(), job.clone());
+                tokio::spawn(async move {
+                    let mut head = Vec::new();
+                    let mut chunk = [0_u8; 4096];
+                    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match tcp.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => head.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let head = String::from_utf8_lossy(&head);
+                    let path = head.split_whitespace().nth(1).unwrap_or_default();
+                    let found = if path.contains("/workerprofiles/p") {
+                        Some(profile)
+                    } else if path.contains("/jobs/") {
+                        job
+                    } else {
+                        None
+                    };
+                    let (status, body) = found.map_or_else(
+                        || ("404 Not Found", NOT_FOUND.to_owned()),
+                        |body| ("200 OK", body),
+                    );
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n\
+                         content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = tcp.write_all(response.as_bytes()).await;
+                    let _ = tcp.shutdown().await;
+                });
+            }
+        });
+        cctui_dispatcher_core::install_crypto_provider();
+        let client = Client::try_from(kube::Config::new(url.parse().unwrap())).unwrap();
+        Spawner {
+            namespace: "ns".into(),
+            default_profile: default_profile.into(),
+            cctui_url: "http://cctui.example.test".into(),
+            client,
+            registry: DispatchRegistry::new(
+                url,
+                cctui_dispatcher_core::secrets::Secret::fixed("dispatcher_key", "dk-test"),
+            ),
+            max_inflight: 0,
+            default_deadline_secs: 3600,
+        }
+    }
+
+    fn held_job(terminal: bool) -> Job {
+        let mut job = listed_job("held", "2026-10-21T10:00:00Z", false, terminal);
+        job.metadata.annotations =
+            Some([(ANNOTATION_SESSION_ID.to_owned(), "first-session".to_owned())].into());
+        job
+    }
+
+    /// The check and the create path answer from the same admission step: a
+    /// live Job is `deduplicated` onto the same handle by both, a terminal Job
+    /// or none lets the create path go on past dedup (to the registration a
+    /// keyless payload cannot pass) while the check answers none, and a
+    /// missing profile errors in both.
+    #[tokio::test]
+    async fn the_dedup_check_agrees_with_the_create_path() {
+        let mut s = spec("fresh-session", json!({}));
+        s.dedup_key = Some("triage-PROJ-1".into());
+        let name = worker_name("triage-PROJ-1");
+
+        let live = fake_api("p", Some(&held_job(false))).await;
+        let checked = live.dedup_check(&s).await.unwrap().expect("a live Job absorbs the check");
+        let created = live.dispatch(&s).await.unwrap();
+        assert_eq!(created.status, "deduplicated");
+        assert_eq!(checked.handle, format!("jobs/{name}/first-session"));
+        assert_eq!(
+            (&checked.handle, &checked.namespace, &checked.status, checked.exposure),
+            (&created.handle, &created.namespace, &created.status, created.exposure)
+        );
+
+        for job in [Some(held_job(true)), None] {
+            let spawner = fake_api("p", job.as_ref()).await;
+            assert!(spawner.dedup_check(&s).await.unwrap().is_none(), "{job:?}");
+            let err = spawner.dispatch(&s).await.unwrap_err().to_string();
+            assert!(err.contains("cctui_machine_key"), "the create path went on: {err}");
+        }
+
+        let unprofiled = fake_api("missing", Some(&held_job(false))).await;
+        let check = unprofiled.dedup_check(&s).await.unwrap_err().to_string();
+        let create = unprofiled.dispatch(&s).await.unwrap_err().to_string();
+        assert!(check.contains("reading WorkerProfile `missing`"), "{check}");
+        assert!(create.contains("reading WorkerProfile `missing`"), "{create}");
+        assert!(unprofiled.supports_dedup_check());
     }
 }
