@@ -89,7 +89,11 @@ async fn connection(
         owners: SessionOwners::new(machine, user),
         announced: HashSet::new(),
     };
-    conn.host.bus.register_daemon(machine, conn.id, tx.clone());
+    if shared {
+        conn.host.bus.register_daemon(machine, conn.id, tx.clone());
+    } else {
+        conn.host.bus.register_exclusive_daemon(machine, conn.id, tx.clone());
+    }
     conn.host.bus.register_daemon_priority(conn.id, priority);
     if !shared {
         PENDING_DAEMON_LOST.cancel_machine(machine);
