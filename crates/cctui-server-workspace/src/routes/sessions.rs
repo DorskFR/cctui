@@ -2697,36 +2697,36 @@ type ConvSearchRow = (i64, String, serde_json::Value, DateTime<Utc>);
 /// `after`, `before` and the row cap; with a `gap`, the next `n` the unfolded
 /// patterns its unchunked events must all carry in their capped `search_text`;
 /// last, the event-id window `(lo, hi]`.
+///
+/// Every pattern is a correlated probe of the event's own chunks, so a window
+/// costs a primary-key lookup per event in it, never a trigram scan of the
+/// whole session.
 fn conv_search_sql(n_patterns: usize, gap: Option<Unchunked>) -> String {
     let (a, b, l) = (n_patterns + 2, n_patterns + 3, n_patterns + 4);
-    let lo = l + 1 + if gap.is_some() && n_patterns > 0 { n_patterns } else { 0 };
+    let gap = gap.filter(|_| n_patterns > 0);
+    let lo = l + 1 + if gap.is_some() { n_patterns } else { 0 };
     let hi = lo + 1;
     let text_where = if n_patterns == 0 {
         "TRUE".to_string()
     } else {
-        let sets = (2..=n_patterns + 1)
+        let chunked = (2..=n_patterns + 1)
             .map(|i| {
                 format!(
-                    "SELECT c.event_id FROM search_chunks c \
-                     WHERE c.session_id = $1 AND c.event_id > ${lo} AND c.event_id <= ${hi} \
-                     AND c.body ILIKE ${i}"
+                    "EXISTS (SELECT 1 FROM search_chunks c \
+                     WHERE c.event_id = e.id AND c.body ILIKE ${i})"
                 )
             })
             .collect::<Vec<_>>()
-            .join(" INTERSECT ");
+            .join(" AND ");
         let unchunked = gap.map_or_else(String::new, |g| {
             use std::fmt::Write as _;
             let raw = (l + 1..=l + n_patterns).fold(String::new(), |mut acc, i| {
-                let _ = write!(acc, " AND left(u.search_text, {SEARCH_TEXT_CAP}) ILIKE ${i}");
+                let _ = write!(acc, " AND left(e.search_text, {SEARCH_TEXT_CAP}) ILIKE ${i}");
                 acc
             });
-            format!(
-                " UNION SELECT u.id FROM stream_events u \
-                  WHERE u.session_id = $1 AND {} AND u.id > ${lo} AND u.id <= ${hi}{raw}",
-                unchunked_ids("u", g)
-            )
+            format!(" OR ({}{raw})", unchunked_ids("e", g))
         });
-        format!("e.id IN (({sets}){unchunked})")
+        format!("({chunked}){unchunked}")
     };
     format!(
         "SELECT e.id, e.event_type, e.payload, e.created_at \
@@ -5534,17 +5534,12 @@ mod tests {
         let sql = super::conv_search_sql(3, None);
         assert_eq!(sql.matches("c.body ILIKE $").count(), 3);
         assert!(sql.contains("$2") && sql.contains("$3") && sql.contains("$4"));
-        assert_eq!(sql.matches(" INTERSECT ").count(), 2, "terms are ANDed per event: {sql}");
-        assert_eq!(sql.matches("c.session_id = $1").count(), 3, "every probe stays in the session");
+        assert_eq!(sql.matches(" AND EXISTS ").count(), 2, "terms are ANDed per event: {sql}");
+        assert_eq!(sql.matches("c.event_id = e.id").count(), 3, "each probe is the event's own");
         assert!(!sql.contains("search_text"), "{sql}");
         assert!(sql.contains("WHERE e.session_id = $1"), "the hit list never leaves the session");
         assert!(sql.ends_with("ORDER BY e.id ASC LIMIT $7"), "oldest first: {sql}");
         assert!(sql.contains("WHERE e.session_id = $1 AND e.id > $8 AND e.id <= $9"), "{sql}");
-        assert_eq!(
-            sql.matches("c.event_id > $8 AND c.event_id <= $9").count(),
-            3,
-            "every chunk probe stays in the window: {sql}"
-        );
 
         let none = super::conv_search_sql(0, None);
         assert!(none.contains("AND (TRUE)"));
@@ -5795,11 +5790,11 @@ mod tests {
         assert_eq!(texts, ["%fix%", "%\u{FB01}x%"], "search_text is matched unfolded");
 
         let conv = super::conv_search_sql(2, gap);
-        assert!(conv.contains("u.session_id = $1 AND u.id > 10 AND (u.id < 500"), "{conv}");
+        assert!(conv.contains(" OR (e.id > 10 AND (e.id < 500 OR NOT EXISTS"), "{conv}");
         for i in [7, 8] {
-            assert!(conv.contains(&format!("left(u.search_text, 8192) ILIKE ${i}")), "{conv}");
+            assert!(conv.contains(&format!("left(e.search_text, 8192) ILIKE ${i}")), "{conv}");
         }
-        assert!(conv.contains("AND u.id > $9 AND u.id <= $10"), "{conv}");
+        assert!(conv.contains("e.session_id = $1 AND e.id > $9 AND e.id <= $10"), "{conv}");
         assert!(conv.ends_with("ORDER BY e.id ASC LIMIT $6"), "{conv}");
 
         let snip = snippet_sql(2, gap);

@@ -10,6 +10,10 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration { version: 2, sql: include_str!("../schema/0002_dispatch_identities.sql") },
     Migration { version: 3, sql: include_str!("../schema/0003_scheduled_message_sealed_body.sql") },
     Migration { version: 4, sql: include_str!("../schema/0004_user_hidden_owners.sql") },
+    Migration {
+        version: 5,
+        sql: include_str!("../schema/0005_search_chunks_gin_fastupdate_off.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -87,7 +91,8 @@ mod tests {
                     (1, "bootstrap".to_owned()),
                     (2, "adopted".to_owned()),
                     (3, "bootstrap".to_owned()),
-                    (4, "bootstrap".to_owned())
+                    (4, "bootstrap".to_owned()),
+                    (5, "bootstrap".to_owned())
                 ]
             );
 
@@ -95,6 +100,22 @@ mod tests {
             sqlx::raw_sql(super::MIGRATIONS[1].sql).execute(&pool).await.unwrap();
             let inserted = insert_identity(&pool, uuid::Uuid::new_v4()).await;
             assert_eq!(inserted, 1, "re-applied up works");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn search_chunk_inserts_bypass_the_gin_pending_list() {
+        with_isolated_database("search_chunks_fastupdate", |pool| async move {
+            provisioned(&pool).await;
+            let options: Vec<String> = sqlx::query_scalar(
+                "SELECT unnest(reloptions) FROM pg_class \
+                 WHERE oid = 'public.idx_search_chunks_session_body_trgm'::regclass",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert!(options.iter().any(|o| o == "fastupdate=off"), "{options:?}");
         })
         .await;
     }
@@ -124,7 +145,8 @@ mod tests {
                     (1, "bootstrap".to_owned()),
                     (2, "bootstrap".to_owned()),
                     (3, "bootstrap".to_owned()),
-                    (4, "bootstrap".to_owned())
+                    (4, "bootstrap".to_owned()),
+                    (5, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =

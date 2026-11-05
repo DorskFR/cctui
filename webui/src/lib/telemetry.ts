@@ -47,7 +47,7 @@ async function start(cfg: OtelConfig) {
 		import('@opentelemetry/sdk-trace-web'),
 		import('@opentelemetry/core'),
 		import('@opentelemetry/resources'),
-		import('@opentelemetry/exporter-trace-otlp-http'),
+		import('./otelExporter'),
 		import('@opentelemetry/instrumentation'),
 		import('@opentelemetry/instrumentation-fetch')
 	]);
@@ -58,7 +58,7 @@ async function start(cfg: OtelConfig) {
 			'service.version': __CLIENT_VERSION__
 		}),
 		sampler: new web.ParentBasedSampler({ root: new web.TraceIdRatioBasedSampler(cfg.sampleRatio ?? 1) }),
-		spanProcessors: [new web.BatchSpanProcessor(new exporter.OTLPTraceExporter({ url }))]
+		spanProcessors: [new web.BatchSpanProcessor(new exporter.OtlpJsonExporter(url))]
 	});
 	provider.register({ propagator: new core.W3CTraceContextPropagator() });
 	instrumentation.registerInstrumentations({

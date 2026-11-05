@@ -21,10 +21,10 @@ vi.mock('@opentelemetry/api', tracked('@opentelemetry/api'));
 vi.mock('@opentelemetry/sdk-trace-web', tracked('@opentelemetry/sdk-trace-web'));
 vi.mock('@opentelemetry/core', tracked('@opentelemetry/core'));
 vi.mock('@opentelemetry/resources', tracked('@opentelemetry/resources'));
-vi.mock('@opentelemetry/exporter-trace-otlp-http', () => {
-	h.loaded.push('@opentelemetry/exporter-trace-otlp-http');
+vi.mock('./otelExporter', () => {
+	h.loaded.push('./otelExporter');
 	return {
-		OTLPTraceExporter: class {
+		OtlpJsonExporter: class {
 			export(_spans: unknown[], done: (r: { code: number }) => void) {
 				done({ code: 0 });
 			}
