@@ -102,12 +102,19 @@
 		showHidden: () => isAdmin && showHidden
 	});
 
+	// Shallow routing never advances `page.url`, and popstate restores the
+	// `page.url` saved with the entry, not the entry's address: only the address
+	// bar is current. `page.url`/`page.state` are read to re-run on navigation.
+	const liveUrl = (): URL => {
+		void page.url;
+		void page.state;
+		return new URL(location.href);
+	};
+
 	// Escape hatch: /sessions?view=list|grid|tiles sets (and persists) the mode,
 	// so a stored choice that misbehaves can always be overridden by URL.
-	// `page.url` is not updated by shallow routing, so the rewrite works on the
-	// live address: rebuilt from `page.url` it would undo the drawer's pushState.
 	$effect(() => {
-		const want = page.url.searchParams.get('view');
+		const want = liveUrl().searchParams.get('view');
 		if (!want || !(isViewMode(want) || want === 'card')) return;
 		untrack(() => {
 			sp.viewMode = parseViewMode(want);
@@ -167,17 +174,12 @@
 	// Id opened without a navigation of its own (the restored dock).
 	let quietOpen: string | null = null;
 	let tilesOverflow = $state<SessionListItem[]>([]);
-	// Derive the session id from the URL pathname rather than `page.params`.
-	// `syncUrlSession` navigates with shallow routing (pushState/replaceState),
-	// which does NOT re-resolve the matched route (`page.url` only follows
-	// popstate and real navigations) — so
-	// `page.params.session` stays pinned to whatever the [session] route bound on
-	// the last full navigation. After closing the drawer returns to `/sessions`, the
-	// stale param would still read `<uuid>`, reopen the session, and re-push
-	// the URL (the back chevron never clearing /sessions/<uuid>). Parsing the
-	// live pathname keeps the URL→drawer effect honest under shallow routing.
-	const sessionIdFromUrl = (): string | null =>
-		sessionIdFromLocation(page.url.pathname, page.url.searchParams);
+	// Not `page.params`/`page.url`: shallow routing leaves both on the last full
+	// navigation, so they can name a session the address bar no longer shows.
+	const sessionIdFromUrl = (): string | null => {
+		const url = liveUrl();
+		return sessionIdFromLocation(url.pathname, url.searchParams);
+	};
 	onMount(() => {
 		lastUrlId = sessionIdFromUrl();
 		mounted = true;
