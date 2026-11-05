@@ -25,7 +25,7 @@ pub struct Notification {
 /// no-op. Never blocks the caller and never propagates errors — at most it
 /// logs a warning if the POST fails.
 pub fn notify(config: &Config, n: Notification) {
-    let Some(token) = config.ntfy_token.clone() else {
+    let Some(token) = config.ntfy_token.as_ref().map(cctui_secrets::Secret::get) else {
         return;
     };
     let Some(url) = config.ntfy_url.clone() else {

@@ -55,8 +55,11 @@ pub async fn sync_litellm_shim(pool: &sqlx::PgPool, config: &crate::config::Conf
         return;
     }
     let key = crate::crypto::vault_key();
-    let cred = config.claude_litellm_token.as_deref().unwrap_or("sk-dummy");
-    let enc_access = crate::crypto::encrypt(cred, &key);
+    let cred = config
+        .claude_litellm_token
+        .as_ref()
+        .map_or_else(|| "sk-dummy".into(), cctui_secrets::Secret::get);
+    let enc_access = crate::crypto::encrypt(&cred, &key);
     let models_json = serde_json::to_value(
         models
             .iter()

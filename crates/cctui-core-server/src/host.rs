@@ -24,7 +24,7 @@ pub struct Host {
     pub(crate) lifecycle: Arc<tokio::sync::Mutex<()>>,
     vault_key: Arc<Vec<u8>>,
     external_url: Arc<str>,
-    github_token: Option<Arc<str>>,
+    github_token: Option<cctui_secrets::Secret>,
     spawn_defaults: cctui_proto::api::settings::SpawnDefaults,
     oauth_logins: core::accounts::PendingOAuthLogins,
     pub(crate) ephemeral_machine_ttl_secs: u64,
@@ -44,8 +44,8 @@ impl Host {
         }
     }
     #[must_use]
-    pub fn with_github_token(mut self, token: Option<String>) -> Self {
-        self.github_token = token.map(Into::into);
+    pub fn with_github_token(mut self, token: Option<cctui_secrets::Secret>) -> Self {
+        self.github_token = token;
         self
     }
     #[must_use]
@@ -267,7 +267,52 @@ impl core::targets::manifest::DistributionContext for Host {
     fn distribution_url(&self) -> &str {
         &self.external_url
     }
-    fn github_token(&self) -> Option<&str> {
-        self.github_token.as_deref()
+    fn github_token(&self) -> Option<Arc<str>> {
+        self.github_token.as_ref().map(cctui_secrets::Secret::get)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use cctui_secrets::{Engines, RefResolver, SecretRegistry};
+    use cctui_server_core::auth::AuthConfig;
+    use cctui_server_core::bus::{Bus, NoopTransport};
+    use cctui_server_core::state::CoreState;
+    use cctui_server_core::targets::manifest::DistributionContext as _;
+
+    #[tokio::test]
+    async fn a_rotated_github_token_reaches_the_next_download() {
+        cctui_server_core::client::install_crypto_provider();
+        let path = std::env::temp_dir().join(format!("cctui-gh-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&path, "ghp-v1\n").unwrap();
+        let resolver: Arc<dyn RefResolver> = Arc::new(Engines::new());
+        let registry = SecretRegistry::new(resolver).with_ttl_lookup(Arc::new(|_: &str| None));
+        let token = registry
+            .register("CCTUI_GITHUB_TOKEN", &format!("file:{}", path.display()))
+            .await
+            .unwrap();
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://cctui@127.0.0.1:1/unreachable")
+            .unwrap();
+        let host = super::Host::new(
+            CoreState::new(
+                pool.clone(),
+                AuthConfig::new(Vec::new(), pool),
+                Bus::new(Box::new(NoopTransport)),
+                cctui_server_core::client::build_http_client(),
+                Arc::new(cctui_server_core::dispatchers::Registry::new()),
+            ),
+            vec![42; 32],
+            "https://automation.example.invalid".into(),
+        )
+        .with_github_token(Some(token));
+        assert_eq!(host.github_token().as_deref(), Some("ghp-v1"));
+
+        std::fs::write(&path, "ghp-v2\n").unwrap();
+        assert_eq!(registry.reload().await.changed, 1);
+        assert_eq!(host.github_token().as_deref(), Some("ghp-v2"));
+        std::fs::remove_file(&path).unwrap();
     }
 }

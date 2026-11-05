@@ -30,14 +30,20 @@ and logs a warning with the variable name and the ref.
 
 | Consumer | Follows a rotation | Picked up |
 | --- | --- | --- |
-| Full server | `DATABASE_URL`, `CCTUI_LANGFUSE_SECRET_KEY` | new pool connections; the next Langfuse request |
-| Core server | `DATABASE_URL` | new pool connections |
-| Dispatchers | `dispatcher_key` | the next connection to the server |
+| Full server | every ref above except `CCTUI_VAULT_KEY` | new pool connections; the next request that uses the token |
+| Core server | every ref above except `CCTUI_VAULT_KEY` | new pool connections; the next request that uses the token |
+| Dispatchers | `dispatcher_key` | the next connection to the server; the kube dispatcher's next Job registration |
 | Guard proxy | every inject-config secret | the next request after the refresh |
 
-Every other server value, and the HTTP dispatcher tokens, still resolve once
-at startup. Open pool connections keep their session until the pool recycles
-them.
+Open pool connections keep their session until the pool recycles them. A
+rotated `CCTUI_CLAUDE_LITELLM_TOKEN` re-runs the litellm shim, so the managed
+providers carry the new credential.
+
+A rotated `CCTUI_ADMIN_TOKENS` swaps the whole list at once: the new tokens
+work from the swap on, then the tokens dropped from the list have their
+`auth_keys` rows revoked and their cached sessions purged on every replica.
+A revoked env token stays revoked, so putting it back in the list does not
+revive it; add a new token instead.
 
 The TTL is off by default. `CCTUI_SECRETS_TTL=<seconds>` sets it for every
 ref of a server or dispatcher; `CCTUI_SECRETS_TTL_<NAME>` sets it for one

@@ -55,6 +55,7 @@ impl Backend for Apple {
 
     async fn spawner(
         cfg: &Config,
+        _key: &cctui_dispatcher_core::secrets::Secret,
         _shutdown: &CancellationToken,
     ) -> anyhow::Result<Spawner<RealCli>> {
         use cctui_dispatcher_core::DispatcherConfig;

@@ -55,7 +55,11 @@ impl Backend for Docker {
         }
     }
 
-    async fn spawner(cfg: &Config, _shutdown: &CancellationToken) -> anyhow::Result<Spawner> {
+    async fn spawner(
+        cfg: &Config,
+        _key: &cctui_dispatcher_core::secrets::Secret,
+        _shutdown: &CancellationToken,
+    ) -> anyhow::Result<Spawner> {
         use cctui_dispatcher_core::DispatcherConfig;
         Spawner::connect(
             cfg.docker_host.as_deref(),

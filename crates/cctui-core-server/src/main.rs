@@ -2,14 +2,14 @@
 mod ownership;
 use anyhow::Context;
 use cctui_core_server::host::Host;
-use cctui_server_core::auth::AuthConfig;
+use cctui_server_core::auth::{AuthConfig, parse_admin_tokens};
 use cctui_server_core::bus::{Bus, NoopTransport};
 use cctui_server_core::state::CoreState;
 use std::future::IntoFuture;
 use std::sync::Arc;
 
-/// Env vars that may hold a secret ref instead of the value. `DATABASE_URL`
-/// follows a rotation; the rest resolve once at startup.
+/// Env vars that may hold a secret ref instead of the value; each follows a
+/// rotation, as does `DATABASE_URL`.
 const SECRET_ENV: [&str; 3] = ["CCTUI_ADMIN_TOKENS", "CCTUI_GITHUB_TOKEN", "GH_TOKEN"];
 
 #[derive(clap::Parser)]
@@ -28,12 +28,7 @@ async fn main() -> anyhow::Result<()> {
     let registry = Arc::new(cctui_secrets::SecretRegistry::from_env());
     let raw_url = std::env::var("DATABASE_URL").context("DATABASE_URL is required")?;
     let database_url = registry.register("DATABASE_URL", &raw_url).await?.get();
-    let mut secrets = std::collections::HashMap::new();
-    for name in SECRET_ENV {
-        if let Ok(raw) = std::env::var(name) {
-            secrets.insert(name, registry.resolve(name, &raw).await?);
-        }
-    }
+    let secrets = registry.register_env(&SECRET_ENV, |k| std::env::var(k).ok()).await?;
     let secret = |k: &str| secrets.get(k).cloned();
     if args.init_db {
         let pool = sqlx::postgres::PgPoolOptions::new().connect(&database_url).await?;
@@ -41,13 +36,8 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     let vault_key = cctui_crypto::vault_key_checked()?;
-    let admin_tokens: Vec<String> = secret("CCTUI_ADMIN_TOKENS")
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-        .collect();
+    let admin = secret("CCTUI_ADMIN_TOKENS");
+    let admin_tokens = admin.as_ref().map(|s| parse_admin_tokens(&s.get())).unwrap_or_default();
     anyhow::ensure!(!admin_tokens.is_empty(), "CCTUI_ADMIN_TOKENS is required");
     let address = format!(
         "{}:{}",
@@ -62,6 +52,9 @@ async fn main() -> anyhow::Result<()> {
     cctui_server_core::schema::bootstrap(&pool).await?;
     let auth = AuthConfig::new(admin_tokens, pool.clone());
     auth.seed_admin().await;
+    if let Some(admin) = &admin {
+        auth.follow_admin_tokens(admin.subscribe());
+    }
     let client = cctui_server_core::client::build_http_client();
     let dispatchers = http_dispatchers(&registry, &client).await?;
     let spawn_defaults = cctui_proto::api::settings::SpawnDefaults {
@@ -114,7 +107,8 @@ struct HttpDispatcher {
     token: Option<String>,
 }
 
-/// `CCTUI_HTTP_DISPATCHERS`; each `token` may be a secret ref, resolved once.
+/// `CCTUI_HTTP_DISPATCHERS`; each `token` may be a secret ref, tracked for
+/// reloads.
 async fn http_dispatchers(
     registry: &cctui_secrets::SecretRegistry,
     client: &reqwest::Client,
@@ -127,17 +121,17 @@ async fn http_dispatchers(
         let token = match entry.token {
             Some(raw) => {
                 let name = format!("CCTUI_HTTP_DISPATCHERS[{}].token", entry.id);
-                Some(registry.resolve(&name, &raw).await?)
+                Some(registry.register(&name, &raw).await?.subscribe())
             }
             None => None,
         };
-        dispatchers =
-            dispatchers.with(Arc::new(cctui_server_core::dispatchers::http::HttpDispatcher::new(
-                &entry.id,
-                entry.url,
-                token,
-                client.clone(),
-            )));
+        let dispatcher = cctui_server_core::dispatchers::http::HttpDispatcher::reloadable(
+            &entry.id,
+            entry.url,
+            token,
+            client.clone(),
+        );
+        dispatchers = dispatchers.with(Arc::new(dispatcher));
     }
     Ok(dispatchers)
 }

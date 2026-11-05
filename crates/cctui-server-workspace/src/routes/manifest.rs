@@ -9,8 +9,8 @@ impl DistributionContext for AppState {
     fn distribution_url(&self) -> &str {
         &self.config.external_url
     }
-    fn github_token(&self) -> Option<&str> {
-        self.config.github_token.as_deref()
+    fn github_token(&self) -> Option<std::sync::Arc<str>> {
+        self.config.github_token.as_ref().map(cctui_secrets::Secret::get)
     }
 }
 pub async fn daemon_manifest(

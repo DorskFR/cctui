@@ -150,12 +150,34 @@ async fn bootstrap(
     // anthropic-compatible account per user so existing deployments keep working
     // until they migrate to first-class accounts.
     routes::accounts::sync_litellm_shim(&pool, &config).await;
-    let auth_config = auth::AuthConfig::new(Config::admin_tokens(secrets).await?, pool.clone());
+    follow_litellm_token(&pool, &config);
+    let admin_tokens = Config::admin_tokens(secrets).await?;
+    let auth_config = auth::AuthConfig::new(
+        admin_tokens.as_ref().map(|s| auth::parse_admin_tokens(&s.get())).unwrap_or_default(),
+        pool.clone(),
+    );
     // resolve CCTUI_ADMIN_TOKENS to a seeded admin user + api_keys rows
     // with {admin} ceiling/grant, so the break-glass token is a real identity
     // rather than a user_id=None ghost. Idempotent, best-effort.
     auth_config.seed_admin().await;
+    if let Some(admin) = &admin_tokens {
+        auth_config.follow_admin_tokens(admin.subscribe());
+    }
     Ok((config, pool, auth_config, migrations))
+}
+
+/// Re-runs the litellm shim when its token rotates, so the managed providers
+/// carry the new credential.
+fn follow_litellm_token(pool: &sqlx::PgPool, config: &Config) {
+    let Some(token) = &config.claude_litellm_token else { return };
+    let mut changes = token.subscribe();
+    let (pool, config) = (pool.clone(), config.clone());
+    tokio::spawn(async move {
+        while changes.changed().await.is_ok() {
+            routes::accounts::sync_litellm_shim(&pool, &config).await;
+            tracing::info!("CCTUI_CLAUDE_LITELLM_TOKEN rotated; managed providers updated");
+        }
+    });
 }
 
 /// Boot rows: `system.server_started` always, `system.migrations_applied` when some ran.
@@ -211,16 +233,8 @@ fn follow_database_url(secrets: &cctui_secrets::SecretRegistry, pool: &sqlx::PgP
 }
 
 fn apply_database_url(pool: &sqlx::PgPool, url: &str) {
-    use sqlx::ConnectOptions as _;
-    let slow_ms = std::env::var("CCTUI_DB_SLOW_QUERY_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(500);
-    if let Ok(options) = url.parse::<sqlx::postgres::PgConnectOptions>() {
-        pool.set_connect_options(options.log_slow_statements(
-            log::LevelFilter::Warn,
-            std::time::Duration::from_millis(slow_ms),
-        ));
+    if let Ok(options) = db::connect_options(url) {
+        pool.set_connect_options(options);
         tracing::info!("DATABASE_URL rotated; new pool connections use it");
     } else {
         tracing::warn!("rotated DATABASE_URL does not parse; keeping the previous one");
@@ -796,10 +810,10 @@ fn init_dispatchers(config: &Config) -> Arc<dispatchers::Registry> {
 
     for d in config.http_dispatchers.iter().chain(config.dispatchers.iter()) {
         tracing::info!(id = %d.id, url = %d.url, "http dispatcher registered");
-        registry = registry.with(Arc::new(dispatchers::http::HttpDispatcher::new(
+        registry = registry.with(Arc::new(dispatchers::http::HttpDispatcher::reloadable(
             &d.id,
             &d.url,
-            d.token.clone(),
+            d.bearer.as_ref().map(cctui_secrets::Secret::subscribe),
             build_http_client(),
         )));
     }
@@ -1524,6 +1538,16 @@ mod secret_reload_tests {
 
         apply_database_url(&pool, "not a url ::");
         assert_eq!(pool.connect_options().get_host(), "db-new", "a bad URL keeps the old config");
+    }
+
+    #[tokio::test]
+    async fn the_slow_query_threshold_survives_a_database_url_rotation() {
+        let pool = PgPoolOptions::new().connect_lazy("postgres://old:pw@db-old:5432/app").unwrap();
+        apply_database_url(&pool, "postgres://new:pw2@db-new:6432/app2");
+        let shown = format!("{:?}", pool.connect_options());
+        let want = Duration::from_millis(u64::from(crate::db::slow_query_ms()));
+        assert!(shown.contains("slow_statements_level: Warn"), "{shown}");
+        assert!(shown.contains(&format!("slow_statements_duration: {want:?}")), "{shown}");
     }
 
     #[tokio::test]
