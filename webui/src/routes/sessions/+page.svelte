@@ -47,7 +47,8 @@
 		sessionHrefFor,
 		sessionNavState,
 		toGroupDimension,
-		urlSyncFor
+		urlSyncFor,
+		withoutViewParam
 	} from './sessions.logic';
 	import { SessionsPage } from './sessionsPage.svelte';
 
@@ -103,13 +104,16 @@
 
 	// Escape hatch: /sessions?view=list|grid|tiles sets (and persists) the mode,
 	// so a stored choice that misbehaves can always be overridden by URL.
+	// `page.url` is not updated by shallow routing, so the rewrite works on the
+	// live address: rebuilt from `page.url` it would undo the drawer's pushState.
 	$effect(() => {
 		const want = page.url.searchParams.get('view');
 		if (!want || !(isViewMode(want) || want === 'card')) return;
-		untrack(() => (sp.viewMode = parseViewMode(want)));
-		const url = new URL(page.url);
-		url.searchParams.delete('view');
-		replaceState(url, page.state);
+		untrack(() => {
+			sp.viewMode = parseViewMode(want);
+			const href = withoutViewParam(location.href);
+			if (href) replaceState(href, page.state);
+		});
 	});
 
 	// A tiles render that takes the tab down never clears this breadcrumb, so the
@@ -165,7 +169,8 @@
 	let tilesOverflow = $state<SessionListItem[]>([]);
 	// Derive the session id from the URL pathname rather than `page.params`.
 	// `syncUrlSession` navigates with shallow routing (pushState/replaceState),
-	// which updates `page.url` but does NOT re-resolve the matched route — so
+	// which does NOT re-resolve the matched route (`page.url` only follows
+	// popstate and real navigations) — so
 	// `page.params.session` stays pinned to whatever the [session] route bound on
 	// the last full navigation. After closing the drawer returns to `/sessions`, the
 	// stale param would still read `<uuid>`, reopen the session, and re-push

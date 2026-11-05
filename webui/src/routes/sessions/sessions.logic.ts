@@ -603,6 +603,14 @@ export function urlSyncFor(a: {
 	return a.urlId === null && !a.quiet ? 'push' : 'replace';
 }
 
+// The live address with the `?view=` override dropped, or null when it has none.
+export function withoutViewParam(href: string): string | null {
+	const url = new URL(href);
+	if (!url.searchParams.has('view')) return null;
+	url.searchParams.delete('view');
+	return url.href;
+}
+
 // Freshest object for the open drawer: refetches churn the object, so prefer a
 // live copy from the loaded pools, else the fallback already held.
 export function pickFreshSession(

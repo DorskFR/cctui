@@ -6,6 +6,7 @@ import {
 	sectionVisibility,
 	sessionNavState,
 	urlSyncFor,
+	withoutViewParam,
 	archivedDescendantsOf,
 	branchOf,
 	bucketInSection,
@@ -1195,5 +1196,14 @@ describe('sectionVisibility', () => {
 		});
 		expect(v).toMatchObject({ drafts: false, archived: false, empty: true });
 		expect(v.groups.size).toBe(0);
+	});
+});
+
+describe('withoutViewParam', () => {
+	it('drops only the view override', () => {
+		expect(withoutViewParam('http://h/sessions?view=list&q=a')).toBe('http://h/sessions?q=a');
+	});
+	it('leaves a pushed session URL alone once the override is gone', () => {
+		expect(withoutViewParam('http://h/sessions/abc')).toBeNull();
 	});
 });

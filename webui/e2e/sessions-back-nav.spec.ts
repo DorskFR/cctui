@@ -28,7 +28,7 @@ async function open(page: Page, id: string) {
 test('Back from a session switched to from another lands on the list', async ({ page }) => {
 	const errors = watch(page);
 	await openList(page);
-	await row(page, A.id).click();
+	await row(page, A.id).locator('[data-journey="title"]').click();
 	await expect.poll(() => path(page)).toBe(`/sessions/${A.id}`);
 	await waitForDrawerOpen(page);
 	await open(page, B.id);
