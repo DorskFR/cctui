@@ -69,7 +69,7 @@ mod tests {
         let sid = format!("{name}-{}", uuid::Uuid::new_v4());
         sqlx::query(
             "INSERT INTO sessions (id, machine_id, working_dir, status) \
-             VALUES ($1, 'm', '/w', 'idle')",
+             VALUES ($1, 'm', '/w', 'active')",
         )
         .bind(&sid)
         .execute(&mut *tx)
