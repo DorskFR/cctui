@@ -507,7 +507,8 @@ impl Spawner {
             .await
             .map_err(|e| anyhow::anyhow!("reading WorkerProfile `{profile_name}`: {e}"))?;
 
-        let exposure = exposure::profile_exposure(profile.spec.exposure, profile.spec.human_gate);
+        let exposure =
+            profile.spec.exposure.map(|e| exposure::wire_exposure(e, profile.spec.human_gate));
         let name = worker_name(dedup_source(spec));
         if self.absorbed_by_live_job(&name).await? {
             return Ok(SpawnOutcome { exposure, ..self.outcome(&name, "deduplicated") });

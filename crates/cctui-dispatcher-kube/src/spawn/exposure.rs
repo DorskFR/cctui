@@ -3,16 +3,14 @@
 use cctui_orchestrator::{Exposure, HumanGate};
 use cctui_proto::api::{self, DispatchExposure};
 
-pub fn profile_exposure(
-    exposure: Option<Exposure>,
-    gate: Option<HumanGate>,
-) -> Option<DispatchExposure> {
-    exposure.map(|e| DispatchExposure {
-        untrusted_input: e.untrusted_input,
-        sensitive_data: e.sensitive_data,
-        outward: e.outward,
+#[must_use]
+pub fn wire_exposure(exposure: Exposure, gate: Option<HumanGate>) -> DispatchExposure {
+    DispatchExposure {
+        untrusted_input: exposure.untrusted_input,
+        sensitive_data: exposure.sensitive_data,
+        outward: exposure.outward,
         human_gate: gate.map(wire_gate),
-    })
+    }
 }
 
 const fn wire_gate(gate: HumanGate) -> api::HumanGate {
@@ -32,16 +30,16 @@ mod tests {
     #[test]
     fn a_declared_exposure_carries_its_human_gate() {
         assert_eq!(
-            profile_exposure(Some(FULL), Some(HumanGate::DraftPrOnly)),
-            Some(DispatchExposure {
+            wire_exposure(FULL, Some(HumanGate::DraftPrOnly)),
+            DispatchExposure {
                 untrusted_input: true,
                 sensitive_data: true,
                 outward: true,
                 human_gate: Some(api::HumanGate::DraftPrOnly),
-            })
+            }
         );
         let lean = Exposure { untrusted_input: true, sensitive_data: false, outward: false };
-        let mapped = profile_exposure(Some(lean), None).unwrap();
+        let mapped = wire_exposure(lean, None);
         assert!(mapped.untrusted_input && !mapped.sensitive_data && !mapped.outward);
         assert_eq!(mapped.human_gate, None);
     }
@@ -55,10 +53,5 @@ mod tests {
         ] {
             assert_eq!(serde_json::to_value(wire_gate(gate)).unwrap(), wire);
         }
-    }
-
-    #[test]
-    fn an_undeclared_exposure_reports_none_even_with_a_gate() {
-        assert_eq!(profile_exposure(None, Some(HumanGate::NoPush)), None);
     }
 }

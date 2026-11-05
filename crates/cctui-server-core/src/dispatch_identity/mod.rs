@@ -17,8 +17,10 @@ use uuid::Uuid;
 
 use crate::gateway::credentials::CredentialContext;
 
-/// A registration nobody holds is dropped after this and a late pod fails its
-/// redeem. A dispatcher holding a queued Job keeps it this far ahead.
+/// How long a registration nobody holds lives.
+///
+/// Past it a late pod fails its redeem. A dispatcher holding a queued Job keeps
+/// it this far ahead.
 const REGISTRATION_TTL_DAYS: i32 = 7;
 const K8S_NAME_MAX: usize = 63;
 
@@ -162,8 +164,7 @@ async fn hold_queued(
     Ok(held > 0)
 }
 
-/// A held registration's key was kept alive for the queue: give it back its
-/// own lifetime, counted from the redeem.
+/// Give a held registration's key back its own lifetime, counted from redeem.
 async fn rearm_held_key(pool: &PgPool, dispatch_id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE auth_keys k SET expires_at = now() + d.key_lifetime \
@@ -282,8 +283,10 @@ pub async fn register<S: CredentialContext + Clone + Send + Sync + 'static>(
     Ok(StatusCode::CREATED)
 }
 
-/// `POST /api/v1/dispatch/{id}/hold`: the dispatcher still holds this
-/// dispatch's Job in its queue, so its registration must not expire yet.
+/// `POST /api/v1/dispatch/{id}/hold`: keep a queued Job's registration alive.
+///
+/// The dispatcher still holds this dispatch's Job in its queue, so its
+/// registration must not expire yet.
 pub async fn hold<S: CredentialContext + Clone + Send + Sync + 'static>(
     State(state): State<S>,
     Path(id): Path<Uuid>,

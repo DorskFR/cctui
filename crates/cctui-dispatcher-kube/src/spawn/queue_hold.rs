@@ -17,8 +17,10 @@ pub struct QueueHolds {
 }
 
 impl QueueHolds {
-    /// The `queued` dispatches due a hold at `now`. A dispatch no longer queued
-    /// is forgotten; one seen for the first time is due at once.
+    /// The `queued` dispatches due a hold at `now`.
+    ///
+    /// A dispatch no longer queued is forgotten; one seen for the first time is
+    /// due at once.
     pub fn due(&mut self, queued: impl IntoIterator<Item = Uuid>, now: Instant) -> Vec<Uuid> {
         let queued: BTreeSet<Uuid> = queued.into_iter().collect();
         self.next.retain(|id, _| queued.contains(id));
