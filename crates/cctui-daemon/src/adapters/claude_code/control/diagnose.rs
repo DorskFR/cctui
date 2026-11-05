@@ -8,7 +8,7 @@ use super::super::diagnose::{
     ActivityInput, ActivityVerdict, ArbitrationInput, arbitrate, arbitrate_activity, now_unix_ms,
     to_unix_ms,
 };
-use super::{AdapterEvent, Driver, PendingPerm, StateJson, SystemTime, detect_whip_from_settings};
+use super::{AdapterEvent, Driver, PendingPerm, StateJson, SystemTime};
 
 /// Hook- and control-socket-side prompt state for one session.
 struct PromptSignals {
@@ -248,15 +248,19 @@ impl Driver {
         )
     }
 
+    fn sealed_whip(&self, short: &str) -> bool {
+        super::settings::recover_whip(short, self.machine_key.as_deref()).unwrap_or(false)
+    }
+
     fn permission_mode_fact(&self, short: Option<&str>) -> DiagnoseFact<String> {
         let recorded = short
             .and_then(|s| self.spawn_permission_mode.lock().ok().and_then(|m| m.get(s).cloned()));
         match recorded {
             Some(label) => DiagnoseFact::undated(label, "spawn"),
-            // The spawn-time record dies with the daemon process; the whip
-            // Stop hook in the managed settings file survives on disk.
-            None if short.is_some_and(detect_whip_from_settings) => {
-                DiagnoseFact::undated("whip".to_owned(), "settings-file")
+            // The spawn-time record dies with the daemon process; the sealed
+            // posture survives on disk.
+            None if short.is_some_and(|s| self.sealed_whip(s)) => {
+                DiagnoseFact::undated("whip".to_owned(), "sealed-posture")
             }
             None => DiagnoseFact::missing(
                 "spawn",

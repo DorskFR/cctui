@@ -195,6 +195,7 @@ impl Driver {
         // Observation timestamp for the diagnose report: when
         // this short was last seen on the control socket.
         self.last_status_at.insert(job.short.clone(), std::time::SystemTime::now());
+        restore_managed_settings(&job.short);
 
         if job.is_dead() {
             self.liveness.forget(&job.short);
@@ -783,6 +784,21 @@ impl Driver {
             })
             .await;
         }
+    }
+}
+
+/// Claude Code respawns a worker from the `--settings` path in its
+/// `respawnFlags`, so the file must hold what cctui wrote before any respawn
+/// reads it. Only files this process wrote are touched.
+fn restore_managed_settings(short: &str) {
+    let Some(path) = super::settings::hook_settings_path(&format!("hook-settings-{short}.json"))
+    else {
+        return;
+    };
+    match super::settings::restore_pinned_settings(&path) {
+        Ok(true) => tracing::warn!(%short, "restored the managed settings file the worker changed"),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%short, %err, "managed settings file not restored"),
     }
 }
 

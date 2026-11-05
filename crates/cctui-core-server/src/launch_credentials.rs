@@ -40,10 +40,16 @@ pub async fn gateway_env(
         spawn_capability: None,
         plugins: Vec::new(),
         context: Vec::new(),
+        hook_policy: None,
     };
     if !allowed {
         return Ok(Json(reply));
     }
+    reply.hook_policy = Some(
+        core::hook_policy::for_session(&host.pool, &session)
+            .await
+            .map_err(|error| db_error(&error))?,
+    );
     reply.spawn_capability = spawn_capability_for(&host, &session).await;
     let binding = core::gateway::mint::resolve_session_binding(&host, &session).await;
     if binding.accounts.is_empty() {

@@ -2,7 +2,7 @@
 //! dropped. Any later hook or relay connect clears the flag: whether
 //! `SessionStart` fires on every launch path is not guaranteed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -13,6 +13,11 @@ pub(super) const WINDOW: Duration = Duration::from_secs(30);
 const STALE: Duration = Duration::from_mins(5);
 
 const HOOKS_LOST: &str = "Questions, permission prompts and turn ends will not reach cctui.";
+
+const RESPAWN_SCHEDULED: &str =
+    "cctui will restart the worker once, cold, at its next idle point so it loads them.";
+
+pub(super) const RESPAWNED: &str = "cctui restarted the worker cold to load its hooks.";
 
 const EXITED_WITHOUT_DETAIL: &str = "worker exited before cctui hooks loaded; Claude Code may \
                                      have refused a launch flag (disableSideloadFlags)";
@@ -88,6 +93,10 @@ struct Watch {
 #[derive(Debug, Default)]
 pub(super) struct Canary {
     watches: HashMap<String, Watch>,
+    /// Spare-claimed sessions owed a cold respawn: `local_id` to short.
+    respawns_due: HashMap<String, String>,
+    /// Sessions that were ever owed one, so a session gets at most one.
+    respawn_owed: HashSet<String>,
 }
 
 impl Canary {
@@ -156,7 +165,15 @@ impl Canary {
                 Step::Wait => true,
                 Step::Done => false,
                 Step::Flag(verdict) => {
-                    notices.push((local_id.clone(), verdict.notice()));
+                    let mut text = verdict.notice();
+                    if verdict == (Verdict::HooksBlocked { spare: true })
+                        && self.respawn_owed.insert(local_id.clone())
+                    {
+                        self.respawns_due.insert(local_id.clone(), watch.short.clone());
+                        text.push(' ');
+                        text.push_str(RESPAWN_SCHEDULED);
+                    }
+                    notices.push((local_id.clone(), text));
                     let keep = !matches!(verdict, Verdict::ExitedEarly(_));
                     watch.flagged = Some(verdict);
                     keep
@@ -167,7 +184,23 @@ impl Canary {
                 }
             }
         });
+        let watches = &self.watches;
+        self.respawns_due.retain(|local_id, _| {
+            watches
+                .get(local_id)
+                .is_some_and(|w| matches!(w.flagged, Some(Verdict::HooksBlocked { .. })))
+        });
         notices
+    }
+
+    /// The `(local_id, short)` pairs still owed their cold respawn.
+    pub(super) fn respawns_due(&self) -> Vec<(String, String)> {
+        self.respawns_due.iter().map(|(id, short)| (id.clone(), short.clone())).collect()
+    }
+
+    /// Take `local_id`'s owed respawn; `false` when none is owed.
+    pub(super) fn claim_respawn(&mut self, local_id: &str) -> bool {
+        self.respawns_due.remove(local_id).is_some()
     }
 }
 
@@ -249,6 +282,14 @@ pub(super) fn mark_spare(id: &str) {
     }
 }
 
+pub(super) fn respawns_due() -> Vec<(String, String)> {
+    CANARY.lock().map_or_else(|_| Vec::new(), |c| c.respawns_due())
+}
+
+pub(super) fn claim_respawn(local_id: &str) -> bool {
+    CANARY.lock().is_ok_and(|mut c| c.claim_respawn(local_id))
+}
+
 pub(super) fn flagged_notice(local_id: &str) -> Option<String> {
     CANARY.lock().ok()?.flagged(local_id).map(Verdict::notice)
 }
@@ -313,6 +354,57 @@ mod tests {
         assert!(notices[0].1.contains("pre-warmed spare"), "{}", notices[0].1);
         assert!(!notices[0].1.contains("allowManagedHooksOnly"), "{}", notices[0].1);
         assert_eq!(c.flagged("loc-1"), Some(&Verdict::HooksBlocked { spare: true }));
+    }
+
+    #[test]
+    fn a_hookless_spare_claim_is_owed_exactly_one_cold_respawn() {
+        let (mut c, t0) = armed(None);
+        c.mark_spare("claude-1");
+        let roster = [live("abcd1234")];
+        c.observe(&roster, t0, &never);
+        let notices = c.observe(&roster, t0 + WINDOW, &never);
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].1.contains(RESPAWN_SCHEDULED), "{}", notices[0].1);
+        assert_eq!(c.respawns_due(), [("loc-1".to_owned(), "abcd1234".to_owned())]);
+
+        c.observe(&roster, t0 + WINDOW * 2, &never);
+        assert_eq!(c.respawns_due().len(), 1, "a later poll does not owe a second one");
+        assert!(c.claim_respawn("loc-1"));
+        assert!(!c.claim_respawn("loc-1"));
+        assert!(c.respawns_due().is_empty());
+
+        let t1 = t0 + WINDOW * 3;
+        c.arm("loc-1", "abcd1234", "claude-1", None, t1, T0_MS + 90_000);
+        c.mark_spare("claude-1");
+        c.observe(&roster, t1, &never);
+        let again = c.observe(&roster, t1 + WINDOW, &never);
+        assert_eq!(again.len(), 1);
+        assert!(!again[0].1.contains(RESPAWN_SCHEDULED), "{}", again[0].1);
+        assert!(c.respawns_due().is_empty(), "the respawned worker is not respawned again");
+    }
+
+    #[test]
+    fn a_cold_launch_without_hooks_is_not_respawned() {
+        let (mut c, t0) = armed(None);
+        let roster = [live("abcd1234")];
+        c.observe(&roster, t0, &never);
+        let notices = c.observe(&roster, t0 + WINDOW, &never);
+        assert!(!notices[0].1.contains(RESPAWN_SCHEDULED), "{}", notices[0].1);
+        assert!(c.respawns_due().is_empty());
+    }
+
+    #[test]
+    fn hooks_that_start_firing_cancel_the_owed_respawn() {
+        let (mut c, t0) = armed(None);
+        c.mark_spare("claude-1");
+        let roster = [live("abcd1234")];
+        c.observe(&roster, t0, &never);
+        c.observe(&roster, t0 + WINDOW, &never);
+        assert_eq!(c.respawns_due().len(), 1);
+        c.ping("claude-1");
+        c.observe(&roster, t0 + WINDOW * 2, &never);
+        assert!(c.respawns_due().is_empty());
+        assert!(!c.claim_respawn("loc-1"));
     }
 
     #[test]

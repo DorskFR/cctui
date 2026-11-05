@@ -280,6 +280,10 @@ pub struct GatewayEnvResponse {
     /// already resolved by the server.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context: Vec<SessionContextItem>,
+    /// The policy the session's newest launch recorded, empty when none did.
+    /// `None` from a server that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_policy: Option<crate::hook_policy::SessionHookPolicy>,
 }
 
 /// One resolved context item as the daemon needs it: enough to stage the body

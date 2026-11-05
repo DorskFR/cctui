@@ -92,18 +92,21 @@ async fn gateway_env_for(
             spawn_capability: None,
             plugins: Vec::new(),
             context: Vec::new(),
+            hook_policy: None,
         });
     }
 
-    let (user_settings, (), spawn_capability, context, bound) = tokio::join!(
+    let (user_settings, (), spawn_capability, context, bound, hook_policy) = tokio::join!(
         user_settings_of(state, user_id),
         sync_plugins(state),
         spawn_capability_for(state, session_id),
         owned_launch_context(&state.pool, user_id, session_id, rules),
         bound_launch(state, session_id),
+        recorded_hook_policy(&state.pool, session_id),
     );
     let context = context?;
     let bound = bound?;
+    let hook_policy = hook_policy?;
     // The machine user's whip stall-phrase override rides this pull to reach
     // the connectionless `whip-stop-hook`, bound or not.
     let whip_phrases =
@@ -121,6 +124,22 @@ async fn gateway_env_for(
         spawn_capability,
         plugins,
         context,
+        hook_policy: Some(hook_policy),
+    })
+}
+
+#[tracing::instrument(
+    target = "otel",
+    skip_all,
+    fields(code.function.name = "recorded_hook_policy", session_id = %session_id),
+)]
+async fn recorded_hook_policy(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+) -> Result<cctui_proto::hook_policy::SessionHookPolicy, StatusCode> {
+    cctui_server_core::hook_policy::for_session(pool, session_id).await.map_err(|e| {
+        tracing::error!(%session_id, "daemon gateway-env hook policy lookup failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
     })
 }
 
@@ -753,6 +772,11 @@ mod tests {
             context: launch_context(&state.pool, user_id, machine_id, session_id, true)
                 .await
                 .unwrap(),
+            hook_policy: Some(
+                cctui_server_core::hook_policy::for_session(&state.pool, session_id)
+                    .await
+                    .unwrap(),
+            ),
         }
     }
 
@@ -904,6 +928,49 @@ mod tests {
             .await
             .ok();
         drop_machines(&pool, &[sid], &[(uid, mid)]).await;
+    }
+
+    #[tokio::test]
+    async fn gateway_env_serves_the_recorded_hook_policy_to_the_owning_machine_only() {
+        use cctui_proto::hook_policy::{HookPolicyStatus, SessionHookPolicy};
+        let Some(url) = crate::routes::gateway::test_db_url("gateway_env_hook_policy") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let state = AppState::for_test(pool.clone());
+        let (uid, mid) = seed_machine(&pool, "genv-policy").await;
+        let (other_uid, other_mid) = seed_machine(&pool, "genv-policy-other").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
+
+        let none = super::gateway_env_for(&state, uid, mid, &sid, true).await.expect("pull");
+        assert_eq!(none.hook_policy, Some(SessionHookPolicy::default()));
+
+        let carried = cctui_server_core::hook_policy::carry("claude-code", Vec::new()).unwrap();
+        assert_eq!(carried.status, Some(HookPolicyStatus::Applied));
+        cctui_server_core::hook_policy::record_for_session(&pool, &sid, &carried)
+            .await
+            .expect("record");
+
+        let pulled = super::gateway_env_for(&state, uid, mid, &sid, true).await.expect("pull");
+        assert_eq!(pulled.hook_policy, Some(carried));
+        let wire = serde_json::to_value(&pulled).unwrap();
+        assert_eq!(wire["hook_policy"]["status"], serde_json::json!("applied"));
+
+        let foreign =
+            super::gateway_env_for(&state, other_uid, other_mid, &sid, true).await.expect("pull");
+        assert_eq!(foreign.hook_policy, None, "another machine never sees the policy");
+
+        sqlx::query("DELETE FROM session_hook_policies WHERE session_id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM session_spawn_capabilities WHERE session_id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .ok();
+        drop_machines(&pool, &[sid], &[(uid, mid), (other_uid, other_mid)]).await;
     }
 
     #[test]
