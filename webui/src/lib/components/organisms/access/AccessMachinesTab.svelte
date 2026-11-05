@@ -59,7 +59,7 @@
 	const groups = $derived(splitRevoked(shown));
 	const rows = $derived(visibleRows(shown, showRevoked));
 
-	const columns: Column<MachineRow>[] = [
+	const columns = $derived<Column<MachineRow>[]>([
 		{ key: 'machine', label: m.users_col_machine(), role: 'title' },
 		{ key: 'status', label: m.users_col_status(), width: '7rem', nowrap: true, role: 'meta' },
 		{ key: 'seen', label: m.users_col_last_seen(), width: '8rem', nowrap: true, role: 'meta' },
@@ -69,7 +69,7 @@
 			? [{ key: 'visible', label: m.set_visibility_column(), width: '7rem', nowrap: true, role: 'meta' } as const]
 			: []),
 		{ key: 'actions', label: '', width: '7rem', nowrap: true, align: 'right', role: 'actions' }
-	];
+	]);
 
 	const liveText = (mc: MachineRow) =>
 		mc.revoked_at

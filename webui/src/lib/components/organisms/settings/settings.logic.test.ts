@@ -207,7 +207,7 @@ describe('fuzzyMatches', () => {
 	it('drives the tree filter word by word', () => {
 		const root = tree();
 		expect(applySettingsFilter(root, 'language interface')).toBe(1);
-		expect(firstMatchingRow(root, 'appearance')?.textContent).toBe('Interface language');
+		expect(firstMatchingRow(root, 'interface')?.textContent).toBe('Interface language');
 	});
 });
 

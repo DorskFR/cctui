@@ -125,6 +125,24 @@ async function typeName(v: string) {
 	await tick();
 	flushSync();
 }
+// happy-dom has no Popover API, and the kit renders the panel's content only
+// once it has opened: dispatch the toggle a browser would.
+async function openPicker() {
+	const el = panel() as HTMLElement & { showPopover: () => void; hidePopover: () => void };
+	const fire = (newState: 'open' | 'closed') =>
+		el.dispatchEvent(Object.assign(new Event('toggle'), { newState }));
+	el.showPopover = () => fire('open');
+	el.hidePopover = () => fire('closed');
+	(document.querySelector('[data-journey="profile-trigger"]') as HTMLElement).click();
+	el.showPopover();
+	await tick();
+	flushSync();
+}
+const newProfile = () => {
+	const b = panel().querySelector<HTMLButtonElement>('[data-journey="new-profile"]');
+	if (!b) throw new Error('New profile footer not found');
+	return b;
+};
 async function click(b: HTMLElement) {
 	b.click();
 	await tick();
@@ -173,7 +191,8 @@ describe('ProfileList as the profile editor (no manageHref)', () => {
 
 	it('New profile writes nothing until Create profile, and Cancel discards it', async () => {
 		await open();
-		await click(panel().querySelector<HTMLButtonElement>('[data-journey="new-profile"]') as HTMLElement);
+		await openPicker();
+		await click(newProfile());
 		expect(profileForm()?.dataset.mode).toBe('create');
 		expect(button('Create profile').disabled).toBe(true);
 		await typeName('Reviewer');
@@ -182,7 +201,8 @@ describe('ProfileList as the profile editor (no manageHref)', () => {
 		expect(oncreate).not.toHaveBeenCalled();
 		expect(profileForm()).toBeNull();
 
-		await click(panel().querySelector<HTMLButtonElement>('[data-journey="new-profile"]') as HTMLElement);
+		await openPicker();
+		await click(newProfile());
 		await typeName('Reviewer');
 		await click(button('Create profile'));
 		expect(oncreate).toHaveBeenCalledTimes(1);
@@ -195,6 +215,7 @@ describe('ProfileList as a picker (manageHref)', () => {
 	it('offers no cog and no New profile; the footer links to manageHref', async () => {
 		await open('/settings/sessions#profiles');
 		expect(hasButton('Adjust profile')).toBe(false);
+		await openPicker();
 		expect(panel().querySelector('[data-journey="new-profile"]')).toBeNull();
 		const link = panel().querySelector<HTMLAnchorElement>('a[data-journey="manage-profiles"]');
 		expect(link?.getAttribute('href')).toBe('/settings/sessions#profiles');

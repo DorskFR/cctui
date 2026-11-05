@@ -209,7 +209,9 @@
 	   right below, so no bottom margin either. */
 	.bar.flush {
 		margin-bottom: 0;
-		padding: var(--sp-2) var(--sp-4) 0;
+		padding-top: var(--sp-2);
+		padding-inline: var(--sp-4);
+		padding-bottom: 0;
 	}
 	.bar {
 		margin-bottom: var(--sp-4);

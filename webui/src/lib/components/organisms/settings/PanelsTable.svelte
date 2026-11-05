@@ -63,13 +63,14 @@
 						/>
 					</td>
 					<td>
-						<SegmentedControl
-							options={sideOptions}
-							label={m.set_panels_side_label({ panel: d.label })}
-							control
-							disabled={!d.state.enabled}
-							bind:value={() => d.state.side, (v) => d.set({ side: v as SpawnDockSide })}
-						/>
+						<span class="side" class:off={!d.state.enabled} inert={!d.state.enabled}>
+							<SegmentedControl
+								options={sideOptions}
+								label={m.set_panels_side_label({ panel: d.label })}
+								control
+								bind:value={() => d.state.side, (v) => d.set({ side: v as SpawnDockSide })}
+							/>
+						</span>
 					</td>
 					<td>
 						{#if d.state.width}
@@ -107,6 +108,12 @@
 	}
 	tbody tr + tr > * {
 		border-top: 1px solid var(--divider, var(--border));
+	}
+	.side {
+		display: inline-flex;
+	}
+	.side.off {
+		opacity: 0.45;
 	}
 	.width {
 		display: inline-flex;

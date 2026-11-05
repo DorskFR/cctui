@@ -43,7 +43,7 @@
 	// Self-update target: which enrolled machine + directory the "Update"
 	// button hands the deployment to. The server never learns how cctui is
 	// deployed there — the agent reads that machine's own notes.
-	const allMachines = useAllMachines();
+	const allMachines = useAllMachines(() => true);
 	let suTarget = $state<SelfUpdateTargetInfo | null>(null);
 	let suMachine = $state('');
 	let suDir = $state('');

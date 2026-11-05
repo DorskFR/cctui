@@ -27,7 +27,7 @@ export function reasonLabel(reason: FailedDispatchReason): string {
 export function blockedExplanation(d: FailedDispatch): string | null {
 	switch (d.rerun_blocked) {
 		case 'env':
-			return m.dispatch_failed_rerun_env({ keys: (d.env_keys ?? []).join(', ') });
+			return m.dispatch_failed_rerun_env({ keys: [...(d.env_keys ?? [])].sort().join(', ') });
 		case 'prompt_truncated':
 			return m.dispatch_failed_rerun_prompt();
 		case 'prompt_redacted':

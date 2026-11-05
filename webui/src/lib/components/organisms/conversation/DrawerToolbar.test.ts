@@ -110,7 +110,8 @@ describe('pin glyph', () => {
 
 	it('uses the same icon for the per-message action', () => {
 		expect(lineSource).not.toContain("pinned ? '★' : '☆'");
-		expect(lineSource).toContain('<Icon name="pin" size={16} filled={pinned} />');
+		expect(lineSource).toContain("icon: pinned ? 'pin-off' : 'pin'");
+		expect(lineSource).not.toContain('★');
 	});
 });
 
