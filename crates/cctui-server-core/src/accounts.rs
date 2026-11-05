@@ -2239,9 +2239,7 @@ mod usage_totals_tests {
                 &pool,
                 "DROP TABLE account_provider_usage_totals; \
                  DROP FUNCTION account_provider_usage_from_session() CASCADE; \
-                 DROP FUNCTION account_provider_usage_from_token() CASCADE; \
-                 DROP FUNCTION account_provider_usage_bump(text, text, bigint, bigint, bigint, \
-                   bigint);",
+                 DROP FUNCTION account_provider_usage_from_token() CASCADE;",
             )
             .await;
             let seed = seed(&pool).await;
@@ -2255,6 +2253,40 @@ mod usage_totals_tests {
             assert_listing_matches(&pool, "backfill rerun").await;
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn usage_writes_survive_a_schema_installed_in_pg_temp() {
+        let Some(url) = crate::test_support::db_url("provider_usage_pg_temp") else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    sqlx::query("SET search_path=pg_temp").execute(conn).await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .unwrap();
+        for migration in MIGRATIONS {
+            let ddl = migration.sql.replace("public.", "pg_temp.");
+            sqlx::raw_sql(sqlx::AssertSqlSafe(ddl)).execute(&pool).await.unwrap();
+        }
+        let seed = seed(&pool).await;
+        let usage: i64 = sqlx::query_scalar("SELECT count(*) FROM session_token_usage")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(usage, 8, "every seeded usage row is written");
+        let listed = assert_listing_matches(&pool, "pg_temp schema").await;
+        let anthropic = listed.iter().find(|(id, ..)| *id == seed.anthropic).unwrap();
+        assert_eq!(anthropic.1, 35_200 + 100 + 26 + 2 * 7_150);
+        for (step, sql) in STEPS {
+            exec(&pool, sql).await;
+            assert_listing_matches(&pool, step).await;
+        }
+        pool.close().await;
     }
 
     #[tokio::test]

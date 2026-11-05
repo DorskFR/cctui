@@ -148,8 +148,8 @@ fn pool_options() -> sqlx::postgres::PgPoolOptions {
     sqlx::postgres::PgPoolOptions::new()
         .max_connections(20)
         .test_before_acquire(false)
-        .idle_timeout(std::time::Duration::from_secs(300))
-        .max_lifetime(std::time::Duration::from_secs(1800))
+        .idle_timeout(std::time::Duration::from_mins(5))
+        .max_lifetime(std::time::Duration::from_mins(30))
 }
 
 /// New pool connections use a rotated `DATABASE_URL`.

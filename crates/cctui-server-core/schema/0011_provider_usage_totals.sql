@@ -12,47 +12,60 @@ CREATE TABLE IF NOT EXISTS public.account_provider_usage_totals (
     CONSTRAINT account_provider_usage_totals_pkey PRIMARY KEY (provider_id, model)
 );
 
-CREATE OR REPLACE FUNCTION public.account_provider_usage_bump(
-    p_session text, p_model text, d_input bigint, d_output bigint, d_cache_read bigint,
-    d_cache_creation bigint) RETURNS void
-    LANGUAGE sql
-    AS $$
-    INSERT INTO account_provider_usage_totals AS t
-        (provider_id, model, input_tokens, output_tokens, cache_read_tokens,
-         cache_creation_tokens)
-    SELECT st.account_id, p_model, count(*) * d_input, count(*) * d_output,
-           count(*) * d_cache_read, count(*) * d_cache_creation
-    FROM session_tokens st
-    WHERE st.session_id = p_session
-    GROUP BY st.account_id
-    ORDER BY st.account_id
-    ON CONFLICT (provider_id, model) DO UPDATE SET
-        input_tokens          = t.input_tokens          + EXCLUDED.input_tokens,
-        output_tokens         = t.output_tokens         + EXCLUDED.output_tokens,
-        cache_read_tokens     = t.cache_read_tokens     + EXCLUDED.cache_read_tokens,
-        cache_creation_tokens = t.cache_creation_tokens + EXCLUDED.cache_creation_tokens;
-$$;
-
+-- Trigger bodies call no user function: an unqualified call does not resolve
+-- when the schema lives in pg_temp.
 CREATE OR REPLACE FUNCTION public.account_provider_usage_from_session() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
     IF TG_OP = 'UPDATE' AND OLD.session_id = NEW.session_id AND OLD.model = NEW.model THEN
-        PERFORM account_provider_usage_bump(NEW.session_id, NEW.model,
-            NEW.input_tokens - OLD.input_tokens, NEW.output_tokens - OLD.output_tokens,
-            NEW.cache_read_tokens - OLD.cache_read_tokens,
-            NEW.cache_creation_tokens - OLD.cache_creation_tokens);
+        INSERT INTO account_provider_usage_totals AS t
+            (provider_id, model, input_tokens, output_tokens, cache_read_tokens,
+             cache_creation_tokens)
+        SELECT st.account_id, NEW.model, count(*) * (NEW.input_tokens - OLD.input_tokens), count(*) * (NEW.output_tokens - OLD.output_tokens),
+               count(*) * (NEW.cache_read_tokens - OLD.cache_read_tokens), count(*) * (NEW.cache_creation_tokens - OLD.cache_creation_tokens)
+        FROM session_tokens st
+        WHERE st.session_id = NEW.session_id
+        GROUP BY st.account_id
+        ORDER BY st.account_id
+        ON CONFLICT (provider_id, model) DO UPDATE SET
+            input_tokens          = t.input_tokens          + EXCLUDED.input_tokens,
+            output_tokens         = t.output_tokens         + EXCLUDED.output_tokens,
+            cache_read_tokens     = t.cache_read_tokens     + EXCLUDED.cache_read_tokens,
+            cache_creation_tokens = t.cache_creation_tokens + EXCLUDED.cache_creation_tokens;
         RETURN NULL;
     END IF;
     IF TG_OP IN ('UPDATE', 'DELETE') THEN
-        PERFORM account_provider_usage_bump(OLD.session_id, OLD.model,
-            -OLD.input_tokens, -OLD.output_tokens, -OLD.cache_read_tokens,
-            -OLD.cache_creation_tokens);
+        INSERT INTO account_provider_usage_totals AS t
+            (provider_id, model, input_tokens, output_tokens, cache_read_tokens,
+             cache_creation_tokens)
+        SELECT st.account_id, OLD.model, count(*) * (-OLD.input_tokens), count(*) * (-OLD.output_tokens),
+               count(*) * (-OLD.cache_read_tokens), count(*) * (-OLD.cache_creation_tokens)
+        FROM session_tokens st
+        WHERE st.session_id = OLD.session_id
+        GROUP BY st.account_id
+        ORDER BY st.account_id
+        ON CONFLICT (provider_id, model) DO UPDATE SET
+            input_tokens          = t.input_tokens          + EXCLUDED.input_tokens,
+            output_tokens         = t.output_tokens         + EXCLUDED.output_tokens,
+            cache_read_tokens     = t.cache_read_tokens     + EXCLUDED.cache_read_tokens,
+            cache_creation_tokens = t.cache_creation_tokens + EXCLUDED.cache_creation_tokens;
     END IF;
     IF TG_OP IN ('INSERT', 'UPDATE') THEN
-        PERFORM account_provider_usage_bump(NEW.session_id, NEW.model,
-            NEW.input_tokens, NEW.output_tokens, NEW.cache_read_tokens,
-            NEW.cache_creation_tokens);
+        INSERT INTO account_provider_usage_totals AS t
+            (provider_id, model, input_tokens, output_tokens, cache_read_tokens,
+             cache_creation_tokens)
+        SELECT st.account_id, NEW.model, count(*) * (NEW.input_tokens), count(*) * (NEW.output_tokens),
+               count(*) * (NEW.cache_read_tokens), count(*) * (NEW.cache_creation_tokens)
+        FROM session_tokens st
+        WHERE st.session_id = NEW.session_id
+        GROUP BY st.account_id
+        ORDER BY st.account_id
+        ON CONFLICT (provider_id, model) DO UPDATE SET
+            input_tokens          = t.input_tokens          + EXCLUDED.input_tokens,
+            output_tokens         = t.output_tokens         + EXCLUDED.output_tokens,
+            cache_read_tokens     = t.cache_read_tokens     + EXCLUDED.cache_read_tokens,
+            cache_creation_tokens = t.cache_creation_tokens + EXCLUDED.cache_creation_tokens;
     END IF;
     RETURN NULL;
 END;
