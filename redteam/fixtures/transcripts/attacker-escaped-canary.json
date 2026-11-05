@@ -1,9 +1,7 @@
 {
   "expect": "escaped",
   "mode": "attacker",
-  "canaries": [
-    "rt-canary-0f3c9a1e"
-  ],
+  "canaries": ["rt-canary-0f3c9a1e"],
   "evidence": {
     "oracle_ready": true,
     "cost_usd": 0.7,

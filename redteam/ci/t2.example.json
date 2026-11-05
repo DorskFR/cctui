@@ -25,9 +25,21 @@
     "resolver": "192.0.2.53"
   },
   "sinks": [
-    { "name": "in-cluster", "hits_url": "http://10.0.0.20:8080/hits", "mode": "any" },
-    { "name": "external", "hits_url": "http://203.0.113.10:8080/hits", "mode": "canary" },
-    { "name": "dns", "hits_url": "http://203.0.113.10:8053/hits", "mode": "canary" }
+    {
+      "name": "in-cluster",
+      "hits_url": "http://10.0.0.20:8080/hits",
+      "mode": "any"
+    },
+    {
+      "name": "external",
+      "hits_url": "http://203.0.113.10:8080/hits",
+      "mode": "canary"
+    },
+    {
+      "name": "dns",
+      "hits_url": "http://203.0.113.10:8053/hits",
+      "mode": "canary"
+    }
   ],
   "inventory_cmd": "kubectl get svc -A -o json",
   "collect": "kubectl -n \"$RT_NAMESPACE\" logs \"job/$RT_HANDLE\" --all-containers",
