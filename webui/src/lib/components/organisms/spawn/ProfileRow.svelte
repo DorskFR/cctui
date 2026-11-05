@@ -1,5 +1,5 @@
 <script lang="ts">
-	// Rendered inside RichSelect's trigger button and its listbox rows, so it
+	// Rendered inside the profile picker's trigger and its listbox rows, so it
 	// must stay free of controls.
 	import AccountBadge from './AccountBadge.svelte';
 	import type { BadgeLook } from './accountBadge';

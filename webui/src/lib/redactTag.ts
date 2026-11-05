@@ -4,6 +4,8 @@ export const USER_REDACTED = '[REDACTED:user]';
 const SPAN = /<redacted>([\s\S]*?)<\/redacted>/gi;
 const OPEN = /<redacted>/i;
 const CLOSE = /<\/redacted>/i;
+const OPEN_LEN = '<redacted>'.length;
+const CLOSE_LEN = '</redacted>'.length;
 
 export interface RedactedSpan {
 	start: number;
@@ -17,6 +19,26 @@ export function redactedSpans(text: string): RedactedSpan[] {
 		if (!m[1]) continue;
 		out.push({ start: m.index, end: m.index + m[0].length, value: m[1] });
 	}
+	return out;
+}
+
+export interface RedactedSegment {
+	text: string;
+	mask?: boolean;
+}
+
+/** Splits `text` for the Textarea mirror overlay: the inside of every closed
+ *  span is masked unless its value is in `revealed`. The texts concatenate back
+ *  to `text`. */
+export function redactedSegments(text: string, revealed?: ReadonlySet<string>): RedactedSegment[] {
+	const out: RedactedSegment[] = [];
+	let at = 0;
+	for (const span of redactedSpans(text)) {
+		out.push({ text: text.slice(at, span.start + OPEN_LEN) });
+		out.push({ text: span.value, mask: !revealed?.has(span.value) });
+		at = span.end - CLOSE_LEN;
+	}
+	if (at < text.length) out.push({ text: text.slice(at) });
 	return out;
 }
 
