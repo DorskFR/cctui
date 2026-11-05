@@ -50,16 +50,42 @@ describe('variables.css is a kit import, not a fork', () => {
 				'--attention-bg-solid',
 				'--c-brown',
 				'--content-wide',
+				'--count-bg',
+				'--count-bg-active',
+				'--count-fg',
+				'--count-fg-active',
+				'--divider',
+				'--hit-min',
 				'--role-context',
 				'--role-peer',
 				'--role-poll',
 				'--role-queued',
 				'--role-summary',
 				'--role-thinking',
+				'--row-selected-bg',
+				'--status-attention',
+				'--status-failed',
+				'--status-idle',
+				'--status-rail-w',
+				'--status-working',
+				'--surface-edge',
 				'--term-bg'
 			]
 		);
 	});
+
+	it('raises the hit floor to the kit touch target on coarse pointers', () => {
+		expect(variables).toMatch(/@media \(pointer: coarse\) \{\s*:root \{\s*--hit-min: var\(--touch-target\);/);
+	});
+
+	it.each(['dark', ...THEMES.map((t) => t.id).filter((id) => id !== 'dark')])(
+		'%s resolves the status, count and selection tokens to colours',
+		(id) => {
+			const scopes = [block(variables, ':root'), ...(id === 'dark' ? [] : [block(themes, `[data-theme="${id}"]`)]), block(tokens, ':root')];
+			for (const t of ['--status-working', '--status-attention', '--status-failed', '--status-idle', '--count-bg', '--count-fg', '--count-bg-active', '--count-fg-active', '--row-selected-bg', '--divider'])
+				expect(resolve(t, scopes), `${id} ${t}`).not.toMatch(/var\(/);
+		}
+	);
 
 	it('gets the box scale and touch target from the kit', () => {
 		const root = block(tokens, ':root');
@@ -93,6 +119,15 @@ describe('app.css does not re-declare kit classes', () => {
 	it('imports the kit reset and utilities', () => {
 		expect(app).toContain('@import "@dorsk/tsumikit/styles/reset.css";');
 		expect(app).toContain('@import "@dorsk/tsumikit/styles/utilities.css";');
+	});
+	it('loads the bundled Inter first and the kit overrides after the kit', () => {
+		const imports = [...app.matchAll(/^@import "([^"]+)";/gm)].map((m) => m[1]);
+		expect(imports[0]).toBe('@dorsk/tsumikit/styles/font.css');
+		expect(imports.at(-1)).toBe('./kit-overrides.css');
+	});
+	it('declares the .num and .hit-target utilities', () => {
+		expect(app).toMatch(/^\.num \{[^}]*font-family: var\(--font-numeric\);[^}]*tabular-nums/m);
+		expect(app).toMatch(/^\.hit-target::before \{[^}]*inset: min\(0px, calc\(\(100% - var\(--hit-min\)\) \/ 2\)\)/m);
 	});
 	it.each(['.btn-icon', '.btn-icon-inline', '.btn-control', '.btn-control-square', '.card', '.card-tap', '.container', '.stack', '.row', '.sr-only', '.divider', '.empty'])(
 		'%s is not declared',
@@ -184,4 +219,51 @@ describe('the journey overlay is themed from the palette, not the library fallba
 				expect(resolve(name, scopes), `${id} ${name}`).not.toMatch(/var\(/);
 		}
 	);
+});
+
+describe('kit-overrides.css', () => {
+	const overrides = read('src/lib/styles/kit-overrides.css');
+
+	it('marks every rule with what it asks of the kit', () => {
+		const rules = [...overrides.matchAll(/^(?:@media[^{]+|[^\s/*@}][^{]*)\{/gm)].map((m) => m.index);
+		for (const at of rules) {
+			const before = overrides.slice(0, at).trimEnd();
+			expect(before.endsWith('*/') && /\/\* tsumikit: [^*]+\*\/$/.test(before), overrides.slice(at, at + 40)).toBe(true);
+		}
+		expect(rules.length).toBeGreaterThan(0);
+	});
+
+	it('rounds every font-size token to a whole pixel', () => {
+		const root = block(overrides, ':root');
+		for (const step of ['2xs', 'xs', 'sm', 'base', 'md', 'lg', 'xl', '2xl', '3xl'])
+			expect(root.get(`--fs-${step}`), step).toMatch(/^round\(.+, 1px\)$/);
+	});
+
+	it('floors the scale at 12 px and tops it at 28 px', () => {
+		const root = block(overrides, ':root');
+		expect(root.get('--fs-2xs')).toBe(root.get('--fs-xs'));
+		expect(root.get('--fs-3xl')).toBe(root.get('--fs-2xl'));
+	});
+});
+
+describe('deprecated spacing steps', () => {
+	// --sp-1-5 (6 px) and --sp-5 (20 px) sit off the 4/8/12/16/24/32/48 scale.
+	// Lower the baseline as call sites move; never raise it.
+	const BASELINE = 1;
+
+	it('are used no more than the recorded baseline', () => {
+		const sources = (dir: string, out: string[] = []): string[] => {
+			for (const name of readdirSync(dir)) {
+				const p = join(dir, name);
+				if (statSync(p).isDirectory()) {
+					if (name !== 'paraglide' && name !== 'styles') sources(p, out);
+				} else if (/\.(svelte|css|ts)$/.test(name) && !name.endsWith('.test.ts')) out.push(p);
+			}
+			return out;
+		};
+		const hits: string[] = [];
+		for (const f of sources('src'))
+			for (const m of readFileSync(f, 'utf8').matchAll(/var\(--sp-(?:1-5|5)\b[^)]*\)/g)) hits.push(`${f}: ${m[0]}`);
+		expect(hits.length, hits.join('\n')).toBeLessThanOrEqual(BASELINE);
+	});
 });

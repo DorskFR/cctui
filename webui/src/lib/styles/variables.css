@@ -41,4 +41,33 @@
 
   /* The one centred content column every route renders in. */
   --content-wide: 1180px;
+
+  /* Status hues are semantic and never the accent: the accent marks the one
+     primary action, focus and selection. */
+  --status-working: var(--c-green);
+  --status-attention: var(--c-amber);
+  --status-failed: var(--c-red);
+  --status-idle: var(--text-faint);
+  --status-rail-w: 3px;
+  --row-selected-bg: color-mix(in srgb, var(--accent) 10%, transparent);
+
+  --count-bg: var(--bg-elevated-2);
+  --count-fg: var(--text);
+  --count-bg-active: var(--accent);
+  --count-fg-active: var(--text-on-accent);
+
+  /* Depth comes from shade: cards drop their outer edge, and the divider is
+     for dense tables only. */
+  --divider: color-mix(in srgb, var(--border) 70%, transparent);
+  --surface-edge: transparent;
+
+  /* Smallest hit box for any interactive element (WCAG 2.5.8 on fine
+     pointers, the kit touch target on coarse ones). */
+  --hit-min: 24px;
+}
+
+@media (pointer: coarse) {
+  :root {
+    --hit-min: var(--touch-target);
+  }
 }

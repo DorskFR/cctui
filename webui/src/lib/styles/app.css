@@ -3,9 +3,11 @@
  * utilities come from the kit; only app-specific global rules live below —
  * mostly styles for {@html}-rendered markup that no component scope can reach.
  */
+@import "@dorsk/tsumikit/styles/font.css";
 @import "./variables.css";
 @import "@dorsk/tsumikit/styles/reset.css";
 @import "@dorsk/tsumikit/styles/utilities.css";
+@import "./kit-overrides.css";
 
 /* Height of the chrome pinned to the bottom of the viewport. Everything that
  * has to stop above it (content padding, the fixed docked panels) reads this.
@@ -38,6 +40,24 @@ code {
 
 .muted {
   color: var(--text-muted);
+}
+
+/* Counts, costs, dates and other data: sans with aligned digits. Mono is for
+ * code, paths, ids, hashes and commands only. */
+.num {
+  font-family: var(--font-numeric);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Grows the hit box of a raw icon button or link to --hit-min without moving
+ * its layout box. */
+.hit-target {
+  position: relative;
+}
+.hit-target::before {
+  content: "";
+  position: absolute;
+  inset: min(0px, calc((100% - var(--hit-min)) / 2));
 }
 
 /* DataTable rowClass hook (revoked keys/tokens/machines). */
