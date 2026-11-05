@@ -48,6 +48,13 @@
 			attrs: { 'data-journey': 'settings-tab', 'data-journey-key': e.page }
 		}))
 	);
+	// The strip scrolls sideways on narrow screens: keep the current area in view.
+	let strip = $state<HTMLElement | null>(null);
+	$effect(() => {
+		strip
+			?.querySelector(`[data-journey-key="${active}"]`)
+			?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+	});
 	let tab = $derived(active as string);
 	$effect(() => {
 		if (tab !== active) void goto(settingsHref(tab as SettingsPage), { noScroll: true });
@@ -56,7 +63,7 @@
 
 <!-- `settings-goto` is on whichever of these two is visible at this width, so a
      guide can ask for "the page switcher" once instead of per viewport. -->
-<div class="tabs" data-journey="settings-goto">
+<div class="tabs" data-journey="settings-goto" bind:this={strip}>
 	<Tabs {tabs} bind:value={tab} label={m.settings_title()}>
 		{#snippet panel()}{/snippet}
 	</Tabs>
@@ -145,6 +152,8 @@
 		.tabs {
 			display: block;
 			overflow-x: auto;
+			scrollbar-width: none;
+			mask-image: linear-gradient(to right, var(--text) calc(100% - 2.5rem), transparent);
 		}
 		.toc {
 			display: none;

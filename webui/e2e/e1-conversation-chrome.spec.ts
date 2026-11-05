@@ -34,6 +34,30 @@ test('the overlay drawer dims the page behind it', async ({ page }) => {
 	await expect(page.locator(header)).toHaveCount(0);
 });
 
+test('the scrim sits under the drawer: its own controls take the clicks', async ({ page }) => {
+	await openDrawer(page, { width: 1440, height: 900 });
+	await expect(page.locator('[data-tsu="Scrim"]')).toHaveCount(1);
+	const details = page.locator('[data-journey="head-details"]');
+	const box = (await details.boundingBox())!;
+	const hit = await page.evaluate(
+		({ x, y }) => {
+			const el = document.elementFromPoint(x, y);
+			return {
+				inPanel: !!el?.closest('[data-tsu="ResizablePanel"] .panel'),
+				scrim: !!el?.closest('[data-tsu="Scrim"]')
+			};
+		},
+		{ x: box.x + box.width / 2, y: box.y + box.height / 2 }
+	);
+	expect(hit).toEqual({ inPanel: true, scrim: false });
+	await details.click();
+	await expect(page.locator('.metapop')).toBeVisible();
+	await page.keyboard.press('Escape');
+	await page.locator('[data-journey="header"] [aria-haspopup="menu"]').click();
+	await expect(page.locator('[role="menu"]').last()).toBeVisible();
+	await expect(page.locator('[data-journey="header"]')).toHaveCount(1);
+});
+
 test('auto-approve is a switch that says its state', async ({ page }) => {
 	await openDrawer(page, WIDE);
 	const auto = page.locator('[data-journey="auto-approve"]');

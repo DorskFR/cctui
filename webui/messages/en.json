@@ -201,14 +201,18 @@
 	"acct_remove_provider_title": "Remove {provider} from \"{name}\"?",
 	"acct_share_revoke_confirm": "Revoke access",
 	"acct_share_revoke_message": "{name} can no longer use {noun} for new sessions.",
+	"acct_windows_cache": "Cache",
+	"acct_windows_in": "In",
+	"acct_windows_out": "Out",
 	"launch_manage_profiles": "Manage profiles…",
+	"launch_profile_trigger": "Launch profile: {name}",
 	"ask_answered": "Answered.",
 	"ask_answering": "Answering…",
 	"ask_choose_any": "(choose any)",
 	"ask_no_preview": "No preview for this option.",
 	"ask_other_placeholder": "Other…",
-	"ask_question_heading": "❓ Question",
-	"ask_questions_heading": "❓ Questions",
+	"ask_question_heading": "Question",
+	"ask_questions_heading": "Questions",
 	"ask_send_answer": "Send answer",
 	"attachments_missing_dropped": "{count} attachment(s) could not be restored; their references were removed from the prompt",
 	"auto_archive_done": "Archived automatically after sitting idle.",
@@ -685,7 +689,6 @@
 	"drawer_details_total": "Total",
 	"drawer_details_cost": "Cost",
 	"drawer_details_calls": "Calls",
-	"drawer_details_langfuse": "Langfuse",
 	"drawer_details_bust": "Cache bust",
 	"drawer_model_aria": "Model",
 	"drawer_more_actions": "More actions",
@@ -911,7 +914,13 @@
 			}
 		}
 	],
+	"list_failed_cause_env": "env not stored",
+	"list_failed_cause_none": "can be re-dispatched",
+	"list_failed_cause_payload": "payload too large to store",
+	"list_failed_cause_prompt": "prompt only partly stored",
+	"list_failed_cause_redacted": "prompt stored masked",
 	"list_failed_details": "Details",
+	"list_filter_no_match": "No sessions match “{query}”.",
 	"list_failed_dismiss_message": "They leave the session list and stay listed under Failed dispatches for 7 days.",
 	"list_failed_dismiss_title": [
 		{
@@ -1068,7 +1077,6 @@
 	"shell_events": "Events",
 	"shell_nav_unread": "{count} unread",
 	"shell_nav_usage": "Usage",
-	"shell_stat_working": "Working",
 	"shell_status_aria": "Usage and machines: {usage}",
 	"shell_status_machines_heading": "Machines",
 	"shell_status_open_accounts": "Open accounts",
@@ -2340,6 +2348,7 @@
 	"tx_voice_options": "Voice options",
 	"tx_voice_live": "Live voice",
 	"tx_prompt_tools": "Message tools",
+	"tx_stop_hook": "Stop hook: {hook}",
 	"voice_live_connecting": "Connecting",
 	"voice_live_listening": "Listening",
 	"voice_live_thinking": "Thinking",
@@ -2526,5 +2535,57 @@
 				"countPlural=other": "{count} subagents created"
 			}
 		}
-	]
+	],
+	"set_events_sessions_created": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} session created",
+				"countPlural=other": "{count} sessions created"
+			}
+		}
+	],
+	"set_count_machines": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} machine",
+				"countPlural=other": "{count} machines"
+			}
+		}
+	],
+	"set_count_accounts": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} account",
+				"countPlural=other": "{count} accounts"
+			}
+		}
+	],
+	"set_harness_update_which": "Harnesses to update",
+	"set_passkey_revoke_title": "Delete the passkey “{label}”?",
+	"set_passkey_revoke_message": "You can no longer sign in with it. Your token and other passkeys keep working.",
+	"set_search_sections": "Sections",
+	"set_kw_theme": "appearance colours dark light font text size language toast",
+	"set_kw_layout": "navigation panels dock launch stats conversation width list account names",
+	"set_kw_profile": "name role key revoke sign out",
+	"set_kw_security": "passkey passkeys sign-in login webauthn fingerprint device approval",
+	"set_kw_machines": "machines adapters harness",
+	"set_kw_providers": "provider accounts pools anthropic openai claude codex oauth sharing",
+	"set_kw_launch": "profiles profile launch new session execution harness mode emoji",
+	"set_kw_context": "rules memory notes templates",
+	"set_kw_privacy": "redaction secrets patterns rescrub detectors",
+	"set_kw_automation": "whip stall phrases dispatched auto-archive",
+	"set_kw_general": "instance name self-update update passkey sign-in network diagnostics",
+	"set_kw_users": "users keys tokens machines enroll access dispatch policy hidden show sessions",
+	"set_kw_harnesses": "machines harnesses auto-update adapters",
+	"set_kw_limits": "limits cctuiagent spawn children depth budget uploads event retention",
+	"set_kw_network": "gateway upstream hosts allowlist",
+	"set_kw_integrations": "speech voice transcription tts stt",
+	"set_kw_instance_plugins": "plugins install uninstall catalog",
+	"set_customize": "Customize…"
 }

@@ -29,6 +29,7 @@
 				<section class="cause">
 					<header class="cause-head">
 						<Badge tone="danger" size="sm">{c.reason}</Badge>
+						<Text size="sm" weight="semibold">{c.cause}</Text>
 						<Text size="sm" tone="muted" numeric>{m.list_failed_cause_count({ count: c.items.length })}</Text>
 					</header>
 					{#if c.explanation}
@@ -51,7 +52,7 @@
 					</header>
 					<ul class="rows">
 						{#each resolved as d (d.session_id)}
-							<li><FailedDispatchCard dispatch={d} onrerun={redispatch} /></li>
+							<li><FailedDispatchCard dispatch={d} onrerun={redispatch} showCause={false} /></li>
 						{/each}
 					</ul>
 				</section>

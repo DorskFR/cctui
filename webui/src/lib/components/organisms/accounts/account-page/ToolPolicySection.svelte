@@ -170,6 +170,7 @@
 						<IconButton
 							icon="trash"
 							variant="ghost"
+							hoverDanger
 							label={m.hook_policy_remove()}
 							onclick={() => (hookEdits = hooks.filter((_, j) => j !== i))}
 						/>

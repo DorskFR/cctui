@@ -16,7 +16,7 @@
 	const list = $derived(plugins.data ?? []);
 </script>
 
-<SettingSection id="plugins" icon="⧉" title={m.settings_nav_plugins()}>
+<SettingSection id="plugins" icon="grid" title={m.settings_nav_plugins()}>
 	{#snippet descriptionSlot()}
 		<Text size="sm" tone="faint">{m.settings_plugins_intro()}</Text>
 	{/snippet}

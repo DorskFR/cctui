@@ -65,6 +65,24 @@ describe('applySettingsFilter', () => {
 	});
 });
 
+describe('a section matched by name', () => {
+	it('stays whole even when none of its rows match', () => {
+		const root = document.createElement('div');
+		root.innerHTML = `
+			<section data-setting-section id="security">
+				<div data-setting-group><div data-setting-row>vaultwarden</div></div>
+			</section>
+			<section data-setting-section id="theme">
+				<div data-setting-group><div data-setting-row>Theme</div></div>
+			</section>
+		`;
+		document.body.append(root);
+		expect(applySettingsFilter(root, 'passkey', new Set(['security']))).toBe(1);
+		expect(isFiltered(root.querySelector<HTMLElement>('#security [data-setting-row]')!)).toBe(false);
+		expect(isFiltered(root.querySelector<HTMLElement>('#theme')!)).toBe(true);
+	});
+});
+
 describe('area map', () => {
 	it('shows the five areas plus the admin-only Instance, Interface first', () => {
 		expect([...SETTINGS_PAGES]).toEqual([

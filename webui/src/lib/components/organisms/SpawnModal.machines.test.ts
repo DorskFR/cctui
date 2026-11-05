@@ -104,6 +104,15 @@ describe("SpawnModal working directory field", () => {
       "m-uuid-1",
     );
   });
+  it("sets the machine select beside the path field, not inside its box", async () => {
+    await open();
+    const select = document.querySelector<HTMLSelectElement>(
+      'select[aria-label="Machine"]',
+    );
+    const field = cwd()?.closest('[data-tsu="FilterInput"]');
+    expect(field).toBeTruthy();
+    expect(field?.contains(select ?? null)).toBe(false);
+  });
 });
 
 describe("SpawnModal with no machines enrolled", () => {

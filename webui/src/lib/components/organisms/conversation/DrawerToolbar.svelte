@@ -51,8 +51,9 @@
 		contextAttachable?: boolean;
 	} = $props();
 
-	// One pinned height for every control, so glyph fonts can't size them.
-	const CTL = 'height:var(--bar-ctl-h);box-sizing:border-box;padding-block:0;line-height:1';
+	// One pinned height for every control, so glyph fonts can't size them; a
+	// touch target on coarse pointers.
+	const CTL = 'height:max(var(--bar-ctl-h), var(--hit-min));box-sizing:border-box;padding-block:0;line-height:1';
 	// One selected look for every filter: neutral fill and a check, never a role colour.
 	const PILL = `${CTL};--toggle-accent: var(--text)`;
 
@@ -214,6 +215,12 @@
 		flex-wrap: nowrap;
 		align-items: center;
 		gap: var(--sp-2) var(--sp-3);
+	}
+	/* The kit's slab stops at 40px; touch needs the full target. */
+	@media (pointer: coarse) {
+		.toolbar {
+			--touch-slab: min(-8px, calc((100% - var(--hit-min)) / 2));
+		}
 	}
 	.tagbar,
 	.behbar {

@@ -17,10 +17,27 @@
   --fs-3xl: round(1.75rem * var(--fs-scale), 1px);
 }
 
-/* tsumikit: compact controls reach the full 44 px touch target on coarse pointers. */
+/* tsumikit: Inter's tnum swaps in a padded tabular hyphen (hyphen.tf), so ids, dates and model names in
+   tabular-nums runs read "2026 - 07 - 10"; this later face serves U+2D from a feature-less subset. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./fonts/inter-hyphen.woff2") format("woff2");
+  unicode-range: U+002D;
+}
+
+/* tsumikit: markdown prose in the body tier; the kit paints it in --c-text-muted. */
+:root {
+  --md-text: var(--c-text);
+}
+
+/* tsumikit: compact controls reach the full 44 px touch target on coarse pointers (the slab every compact control reads is re-derived here so it follows). */
 @media (pointer: coarse) {
   :root {
     --touch-target-compact: 44px;
+    --touch-slab: min(-8px, calc((100% - var(--touch-target-compact)) / 2));
   }
 }
 

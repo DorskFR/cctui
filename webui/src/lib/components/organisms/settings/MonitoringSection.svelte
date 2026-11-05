@@ -25,7 +25,7 @@
 	}
 </script>
 
-<SettingSection id="monitoring" icon="▥" title={m.set_monitoring_title()}>
+<SettingSection id="monitoring" icon="live" title={m.set_monitoring_title()}>
 	<SettingGroup>
 		<SettingRow
 			label={m.settings_monitoring_machines_label()}

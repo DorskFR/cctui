@@ -82,7 +82,7 @@
 		onEdit?: (s: SessionListItem) => void;
 		onDiscard?: (s: SessionListItem) => void;
 		onCancelSchedule?: (s: SessionListItem) => void;
-		/** Color-by hue for the left strip; null = none. */
+		/** Color-by hue, shown as a swatch on the row; null = none. */
 		accentHue?: number | null;
 	} = $props();
 
@@ -132,15 +132,12 @@
 	// Surface state lives inline on the Card: scoped CSS can't reach a child
 	// component's root. The transform is only set mid-swipe — at rest it would
 	// trap the stacked pseudo-elements' z-index inside the card.
-	const rail = $derived(
-		view.rail === 'attention'
-			? 'var(--status-attention)'
-			: view.rail === 'working'
-				? 'var(--status-working)'
-				: accentHue != null
-					? `hsl(${accentHue} var(--mach-border-sl))`
-					: null
-	);
+	const RAILS = {
+		attention: 'var(--status-attention)',
+		working: 'var(--status-working)',
+		failed: 'var(--status-failed)'
+	} as const;
+	const rail = $derived(view.rail ? RAILS[view.rail] : null);
 	const cardStyle = $derived(
 		[
 			swipe.x !== 0 ? `transform: translateX(${swipe.x}px)` : '',
@@ -203,7 +200,7 @@
 		onclick={handleClick}
 	>
 		{#if row}
-			<CompactRow {view} {actions} />
+			<CompactRow {view} {actions} hue={accentHue} />
 		{:else}
 			<DetailedCard {view} {actions} />
 		{/if}

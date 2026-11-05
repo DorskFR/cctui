@@ -219,7 +219,7 @@
 		   baseline every other page aligns to. */
 		padding: 0 0 var(--sp-2);
 		gap: var(--sp-2);
-		align-items: center;
+		align-items: flex-start;
 		/* Wrap so controls reflow onto a second line instead of overflowing when
 		   the UI scale grows the title/buttons. */
 		flex-wrap: wrap;
@@ -254,7 +254,8 @@
 	}
 	.title-wrap {
 		display: flex;
-		align-self: center;
+		align-items: center;
+		min-height: var(--control-height-default);
 		min-width: 0;
 	}
 	/* Each bar child is a local element so the narrow-width `order` reshuffle
@@ -262,6 +263,8 @@
 	.ctl-item,
 	.new-wrap {
 		display: flex;
+		align-items: center;
+		min-height: var(--control-height-default);
 		flex: none;
 	}
 	.new-label {

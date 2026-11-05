@@ -75,13 +75,13 @@ afterEach(async () => {
 
 const tick = (ms = 40) => new Promise((r) => setTimeout(r, ms));
 
-async function open(manageHref?: string) {
+async function open(manageHref?: string, selected: string | null = 'p1') {
 	component = mount(Host, {
 		target: document.body,
 		props: {
 			profiles: [codexQuick, orchestrator],
 			accounts,
-			selected: 'p1',
+			selected,
 			manageHref,
 			oncreate,
 			onsave,
@@ -221,5 +221,21 @@ describe('ProfileList as a picker (manageHref)', () => {
 		expect(link?.getAttribute('href')).toBe('/settings/sessions#profiles');
 		expect(link?.textContent?.trim()).toBe('Manage profiles…');
 		expect(profileForm()).toBeNull();
+	});
+});
+
+describe('ProfileList trigger', () => {
+	it('as the editor with nothing selected, opens on the first profile A–Z with its cog', async () => {
+		await open(undefined, null);
+		expect(state.selectedId).toBe('p1');
+		const trigger = document.querySelector('[data-journey="profile-trigger"]');
+		expect(trigger?.querySelector('[data-profile-id="p1"]')).not.toBeNull();
+		expect(trigger?.getAttribute('aria-label')).toBe('Launch profile: Orchestrator');
+		expect(hasButton('Adjust profile')).toBe(true);
+	});
+
+	it('as a picker, leaves the selection to the launch form', async () => {
+		await open('/settings/sessions#profiles', null);
+		expect(state.selectedId).toBeNull();
 	});
 });

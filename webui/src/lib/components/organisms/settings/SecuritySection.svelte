@@ -15,6 +15,7 @@
 	import type { PasskeyConfig } from '@bindings/PasskeyConfig';
 	import type { PasskeyRow } from '@bindings/PasskeyRow';
 	import type { JsonValue } from '@bindings/serde_json/JsonValue';
+	import { confirmDialog } from '$lib/confirmDialog.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	let passkeyCfg = $state<PasskeyConfig | null>(null);
@@ -79,7 +80,13 @@
 		}
 	}
 
-	async function revokePasskey(id: string) {
+	async function revokePasskey(id: string, label: string) {
+		const ok = await confirmDialog({
+			title: m.set_passkey_revoke_title({ label }),
+			message: m.set_passkey_revoke_message(),
+			confirmLabel: m.settings_passkeys_revoke()
+		});
+		if (!ok) return;
 		try {
 			await endpoints.revokePasskey(id);
 			await loadPasskeys();
@@ -97,7 +104,7 @@
 
 <SettingSection
 	id="security"
-	icon="⚿"
+	icon="lock"
 	title={m.set_security_title()}
 	description={passkeysUsable ? m.settings_passkeys_help() : m.settings_passkeys_unavailable()}
 >
@@ -121,7 +128,7 @@
 							<Text size="xs" tone="danger" as="div">{m.settings_passkeys_not_discoverable()}</Text>
 						{/if}
 					</div>
-					<Button size="sm" variant="ghost" hoverDanger onclick={() => revokePasskey(key.id)}>
+					<Button size="sm" variant="danger" onclick={() => revokePasskey(key.id, key.label)}>
 						{m.settings_passkeys_revoke()}
 					</Button>
 				</div>
@@ -137,7 +144,7 @@
 						if (e.key === 'Enter' && !passkeyBusy) enrollPasskey();
 					}}
 				/>
-				<Button variant="primary" disabled={passkeyBusy} onclick={enrollPasskey}>
+				<Button disabled={passkeyBusy} onclick={enrollPasskey}>
 					{m.settings_passkeys_add()}
 				</Button>
 				{#if passkeyList.length > 0}

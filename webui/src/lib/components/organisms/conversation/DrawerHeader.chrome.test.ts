@@ -41,6 +41,15 @@ describe('drawer header control chrome', () => {
 		expect(trigger).toContain('title={m.drawer_more_actions()}');
 	});
 
+	it('makes every header and meta control a full touch target on coarse pointers', () => {
+		const css = header.slice(header.indexOf('<style>'));
+		const coarse = css.slice(css.indexOf('@media (pointer: coarse)'));
+		const body = coarse.slice(0, coarse.indexOf('\n\t}'));
+		for (const v of ['--box-sm', '--box-md', '--box-lg']) expect(body).toContain(`${v}: var(--hit-min);`);
+		expect(body).toContain('--touch-slab: min(-8px, calc((100% - var(--hit-min)) / 2));');
+		expect(body).toMatch(/\.dhead \{/);
+	});
+
 	it('has no filled or red control in the bar', () => {
 		expect(bar).not.toContain('variant="primary"');
 		expect(bar).not.toContain('tone="danger"');

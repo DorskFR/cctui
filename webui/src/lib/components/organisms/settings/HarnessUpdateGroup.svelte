@@ -65,6 +65,11 @@
 		}
 	}
 
+	/** Saves the instance policy once a field is committed; no Save button. */
+	function commit() {
+		if (dirty && !saving) void run(() => endpoints.setHarnessAutoupdate(draft));
+	}
+
 	function toggleHarness(h: string, on: boolean) {
 		harnesses = on ? [...new Set([...harnesses, h])] : harnesses.filter((x) => x !== h);
 	}
@@ -116,30 +121,37 @@
 </script>
 
 <SettingGroup title={m.settings_harness_update_label()}>
-	<SettingRow
-		label={m.settings_harness_update_enable()}
-		help={m.settings_harness_update_help()}
-		wide
-		selfLabelled
-	>
+	<SettingRow label={m.settings_harness_update_enable()} help={m.settings_harness_update_help()}>
+		<Switch
+			bind:checked={() => enabled, (v) => {
+				enabled = v;
+				commit();
+			}}
+			label={m.settings_harness_update_enable()}
+			disabled={saving}
+		/>
+	</SettingRow>
+	<SettingRow label={m.settings_harness_update_interval()} disabled={!enabled}>
+		<Input
+			bind:value={hours}
+			inputmode="numeric"
+			disabled={!enabled}
+			onchange={commit}
+		/>
+	</SettingRow>
+	<SettingRow label={m.set_harness_update_which()} disabled={!enabled} selfLabelled>
 		<div class="policy">
-			<Switch bind:checked={enabled} label={m.settings_harness_update_enable()} />
-			<Input
-				bind:value={hours}
-				inputmode="numeric"
-				aria-label={m.settings_harness_update_interval()}
-				placeholder={m.settings_harness_update_interval()}
-			/>
 			{#each harnessIds as h (h)}
 				<Checkbox
 					label={h}
 					checked={harnesses.includes(h)}
-					onchange={(e) => toggleHarness(h, (e.currentTarget as HTMLInputElement).checked)}
+					disabled={!enabled}
+					onchange={(e) => {
+						toggleHarness(h, (e.currentTarget as HTMLInputElement).checked);
+						commit();
+					}}
 				/>
 			{/each}
-			<Button disabled={!dirty || saving} onclick={() => run(() => endpoints.setHarnessAutoupdate(draft))}>
-				{m.settings_admin_instance_save()}
-			</Button>
 		</div>
 	</SettingRow>
 

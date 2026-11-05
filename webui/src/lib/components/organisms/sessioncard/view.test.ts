@@ -107,6 +107,13 @@ describe('railOf', () => {
 		expect(railOf(session({ bucket: 'working', status: 'archived' }), false, false)).toBeNull();
 		expect(railOf(session({ bucket: 'done' }), false, false)).toBeNull();
 	});
+
+	it('marks a failed end red, never a colour-by hue', () => {
+		const failed = { kind: 'crashed', label: 'crashed', badge: 'crashed', detail: null, tone: 'danger', muted: false };
+		expect(railOf(session({ bucket: 'done' }), false, false, failed as never)).toBe('failed');
+		expect(railOf(session({ bucket: 'done' }), false, false, { ...failed, muted: true } as never)).toBeNull();
+		expect(railOf(session({ bucket: 'done', machine_kind: 'dispatch' }), false, false)).toBeNull();
+	});
 });
 
 describe('metaParts', () => {

@@ -18,8 +18,11 @@ use crate::routes::sessions::{attention_from_bucket, bucket_from_signals};
 use crate::state::AppState;
 
 /// One row of the per-session classification signals
-/// (`tempo`, `agent_state`, `activity`, `soft_limit_reason`).
-type SignalRow = (Option<String>, Option<String>, Option<String>, Option<String>);
+/// (`tempo`, `agent_state`, `activity`, `soft_limit_reason`, machine `kind`).
+type SignalRow = (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
+
+/// Machines whose sessions the list groups under "Dispatched" instead of their bucket.
+const SYSTEM_MACHINE_KINDS: [&str; 2] = ["dispatch", "ephemeral"];
 
 /// Query params for `GET /sessions/recent-dirs` — the last working dirs used
 /// on a given machine, for the spawn working-directory picker.
@@ -132,7 +135,7 @@ pub async fn session_stats(
             .await?;
 
     let signal_rows: Vec<SignalRow> = sqlx::query_as(concat!(
-        "SELECT s.tempo, s.agent_state, s.activity, s.soft_limit_reason \
+        "SELECT s.tempo, s.agent_state, s.activity, s.soft_limit_reason, m.kind \
                  FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
                  WHERE ",
         live_sessions_predicate!("s"),
@@ -156,11 +159,13 @@ pub async fn session_stats(
     }))
 }
 
-/// Working and Needs-input counts, classified exactly like the session list.
+/// Working and Needs-input counts, grouped exactly like the session list:
+/// a blocked session counts wherever it runs, but a dispatched one is never
+/// "Working" there.
 fn count_list_buckets(rows: &[SignalRow]) -> (i64, i64) {
     let pr_cache = HashMap::new();
     let (mut working, mut needs_input) = (0_i64, 0_i64);
-    for (tempo, agent_state, activity, soft_limit_reason) in rows {
+    for (tempo, agent_state, activity, soft_limit_reason, kind) in rows {
         let bucket = bucket_from_signals(
             tempo.as_deref(),
             agent_state.as_deref(),
@@ -171,7 +176,9 @@ fn count_list_buckets(rows: &[SignalRow]) -> (i64, i64) {
         );
         if attention_from_bucket(bucket).is_some() {
             needs_input += 1;
-        } else if bucket == Bucket::Working {
+        } else if bucket == Bucket::Working
+            && !kind.as_deref().is_some_and(|k| SYSTEM_MACHINE_KINDS.contains(&k))
+        {
             working += 1;
         }
     }
@@ -500,7 +507,11 @@ mod tests {
     #[test]
     fn list_bucket_counts_follow_the_session_list_classifier() {
         let own = |v: Option<&str>| v.map(str::to_owned);
-        let row = |tempo, state, activity, soft| (own(tempo), own(state), own(activity), own(soft));
+        let row = |tempo, state, activity, soft| {
+            (own(tempo), own(state), own(activity), own(soft), Some("user".to_owned()))
+        };
+        let dispatched =
+            |tempo, soft| (own(tempo), None, None, own(soft), Some("dispatch".to_owned()));
         let rows = vec![
             row(Some("active"), None, None, None),
             row(None, Some("working"), None, None),
@@ -509,8 +520,10 @@ mod tests {
             row(Some("active"), None, None, Some("soft limit")),
             row(None, None, Some("success"), None),
             row(None, None, Some("failure"), None),
+            dispatched(Some("active"), None),
+            dispatched(Some("blocked"), None),
         ];
-        assert_eq!(count_list_buckets(&rows), (3, 2));
+        assert_eq!(count_list_buckets(&rows), (3, 3));
         assert_eq!(count_list_buckets(&[]), (0, 0));
     }
 

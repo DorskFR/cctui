@@ -111,24 +111,27 @@
 
 <div class="where" data-journey="where">
 	<Field label={m.spawn_cwd_label()} for="sp-cwd">
-		<FilterInput
-			id="sp-cwd"
-			key="cwd"
-			schema={cwdSchema}
-			bind:value={cwdRaw}
-			icon={null}
-			showClear={false}
-			placeholder="/home/user/project"
-			title={form.working_dir || undefined}
-			onchange={onCwdChange}
-		>
-			{#snippet inline()}
-				<MachinePicker bind:value={form.machine_id} {machines} label={m.spawn_machine_label()} />
-			{/snippet}
-			{#snippet display()}
-				<WorkingDir path={form.working_dir} shrink minLeaf={12} />
-			{/snippet}
-		</FilterInput>
+		<!-- Two sibling controls, never one nested in the other's box. -->
+		<div class="where-row">
+			<MachinePicker bind:value={form.machine_id} {machines} label={m.spawn_machine_label()} />
+			<div class="cwd">
+				<FilterInput
+					id="sp-cwd"
+					key="cwd"
+					schema={cwdSchema}
+					bind:value={cwdRaw}
+					icon={null}
+					showClear={false}
+					placeholder="/home/user/project"
+					title={form.working_dir || undefined}
+					onchange={onCwdChange}
+				>
+					{#snippet display()}
+						<WorkingDir path={form.working_dir} shrink minLeaf={12} />
+					{/snippet}
+				</FilterInput>
+			</div>
+		</div>
 	</Field>
 	<!-- Always one line tall so the form doesn't jump when a branch resolves. -->
 	<span class="branch" title={cwdBadge ? cwdBadgeTitle : undefined}>
@@ -190,6 +193,16 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-1);
+		min-width: 0;
+	}
+	.where-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--sp-2);
+		min-width: 0;
+	}
+	.cwd {
+		flex: 1 1 12rem;
 		min-width: 0;
 	}
 	.branch {

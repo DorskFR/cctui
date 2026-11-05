@@ -212,7 +212,7 @@ describe('drawer toolbar sizing', () => {
 	it('switches form on the bar width, not the viewport', () => {
 		expect(css).toContain('container: drawer-toolbar / inline-size');
 		expect(css).toContain('@container drawer-toolbar (max-width: 1000px)');
-		expect(css).not.toContain('@media');
+		expect(css).not.toMatch(/@media[^{]*width/);
 	});
 
 	it('drops the labels in the compact form and right-aligns the behaviour group at every width', () => {
@@ -235,7 +235,7 @@ describe('drawer toolbar sizing', () => {
 	it('pins every control in the bar to one height', () => {
 		expect(css).toContain('--bar-ctl-h: 24px');
 		expect(toolbarSource).toContain(
-			"const CTL = 'height:var(--bar-ctl-h);box-sizing:border-box;padding-block:0;line-height:1'"
+			"const CTL = 'height:max(var(--bar-ctl-h), var(--hit-min));box-sizing:border-box;padding-block:0;line-height:1'"
 		);
 		expect(toolbarSource).not.toContain('const TRIG');
 	});
@@ -269,6 +269,14 @@ describe('drawer toolbar sizing', () => {
 	it('wraps to two rows on a phone instead of clipping', () => {
 		const q = css.slice(css.indexOf('@container drawer-toolbar (max-width: 560px)'));
 		expect(q).toContain('.tbrow {\n\t\t\tflex-wrap: wrap;');
+	});
+
+	it('gives every control a full touch target on coarse pointers', () => {
+		const coarse = css.slice(css.indexOf('@media (pointer: coarse)'));
+		expect(coarse.slice(0, coarse.indexOf('\n\t}'))).toContain(
+			'--touch-slab: min(-8px, calc((100% - var(--hit-min)) / 2));'
+		);
+		expect(toolbarSource).toContain('max(var(--bar-ctl-h), var(--hit-min))');
 	});
 
 	it('adds no :global override', () => {

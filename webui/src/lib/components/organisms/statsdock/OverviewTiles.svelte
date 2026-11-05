@@ -18,9 +18,9 @@
 	const pctOrDash = (v: number | null) => (v === null ? '–' : `${v}%`);
 	const label = (key: MetricKey) =>
 		key === 'working'
-			? m.shell_stat_working()
+			? m.sessions_bucket_working()
 			: key === 'needs_input'
-				? m.home_stat_needs_input()
+				? m.sessions_bucket_blocked()
 				: key === 'machines'
 					? m.home_stat_machines_online()
 					: m.home_stat_total_sessions();

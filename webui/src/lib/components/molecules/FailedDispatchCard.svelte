@@ -71,14 +71,14 @@
 <div class="fd" data-journey="failed-dispatch" data-resolved={supersededBy ? '' : undefined}>
 	<div class="line">
 		{#if supersededBy}
-			<Badge tone="ok" size="sm">{m.dispatch_failed_resolved()}</Badge>
+			{#if showCause}<Badge tone="ok" size="sm">{m.dispatch_failed_resolved()}</Badge>{/if}
 		{:else if showCause}
 			<Badge tone="danger" size="sm">{reason}</Badge>
 		{/if}
 		<span class="title"><Text weight="semibold" truncate>{title}</Text></span>
 		<Timestamp value={dispatch.dispatched_at} mode="relative" size="xs" tone="faint" />
 		{#if dispatch.dismissed}
-			<Text variant="eyebrow" tone="muted">{m.dispatch_failed_dismissed()}</Text>
+			<Text size="xs" tone="faint">{m.dispatch_failed_dismissed()}</Text>
 		{/if}
 		{#if dispatch.prompt_file}
 			<span class="file" title={m.dispatch_failed_prompt_file({ file: dispatch.prompt_file })}>
@@ -96,7 +96,7 @@
 		>
 		<span class="spacer"></span>
 		{#if !blocked && !supersededBy}
-			<Button size="sm" variant="ghost" disabled={busy} onclick={() => run(onrerun)}>
+			<Button size="sm" disabled={busy} onclick={() => run(onrerun)}>
 				{m.dispatch_failed_rerun()}
 			</Button>
 		{/if}

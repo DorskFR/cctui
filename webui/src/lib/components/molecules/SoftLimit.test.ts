@@ -50,3 +50,22 @@ describe('SoftLimit column widths', () => {
 		expect(wide.querySelector('.label')?.textContent).toBe('Weekly');
 	});
 });
+
+describe('SoftLimit reset time', () => {
+	it('renders the countdown as plain text, its detail in the row tooltip', () => {
+		const soon = new Date(Date.now() + 3 * 3_600_000).toISOString();
+		const bar = render({ utilization: 42, resets: soon });
+		const time = bar.querySelector('time');
+		expect(time).not.toBeNull();
+		expect(time?.classList.contains('ts-trigger')).toBe(false);
+		expect(bar.closest('.soft-limit')?.getAttribute('title')).toBeTruthy();
+	});
+});
+
+describe('SoftLimit cap handle', () => {
+	it('is uncapped without a soft limit, and capped where one applies', () => {
+		expect(render({ utilization: 5 }).classList.contains('uncapped')).toBe(true);
+		expect(render({ utilization: 5, cap: 100 }).classList.contains('uncapped')).toBe(true);
+		expect(render({ utilization: 5, cap: 80 }).classList.contains('uncapped')).toBe(false);
+	});
+});

@@ -22,16 +22,17 @@
 	const openTarget = $derived(needsInputTarget(sessions.data?.sessions));
 	const tileLabel = (key: MetricKey, sub: number | undefined) =>
 		key === 'working'
-			? m.shell_stat_working()
+			? m.sessions_bucket_working()
 			: key === 'needs_input'
-				? m.home_stat_needs_input()
+				? m.sessions_bucket_blocked()
 				: key === 'machines'
 					? m.home_stat_machines_online()
 					: m.home_stat_total_sessions_archived({ n: num(sub ?? 0) });
 </script>
 
+<PageHead title={m.home_usage_page_title()} />
+
 <Stack gap="var(--sp-6)">
-	<PageHead title={m.home_usage_page_title()} />
 
 	<div class="tiles" data-journey="tiles">
 		{#each tiles as t (t.key)}

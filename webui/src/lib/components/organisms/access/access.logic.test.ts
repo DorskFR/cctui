@@ -5,6 +5,7 @@ import {
 	keyIcon,
 	scopeCells,
 	splitRevoked,
+	userMetaWords,
 	userStateWords,
 	visibleRows
 } from './access.logic';
@@ -64,5 +65,13 @@ describe('userStateWords', () => {
 		expect(userStateWords(1, 1)).toBe('online');
 		expect(userStateWords(1, 4)).toBe('1 machine online');
 		expect(userStateWords(2, 5)).toBe('2 machines online');
+	});
+});
+
+describe('userMetaWords', () => {
+	it('pluralises each count', () => {
+		expect(userMetaWords(1, 1, 1)).toBe('1 machine · 1 account · online');
+		expect(userMetaWords(5, 3, 4)).toBe('5 machines · 3 accounts · 4 machines online');
+		expect(userMetaWords(0, 0, 0)).toBe('0 machines · 0 accounts · offline');
 	});
 });

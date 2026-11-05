@@ -50,12 +50,19 @@
 </div>
 
 <style>
+	/* A grid so the kit Card stretches to the tallest tile in its row. */
 	.wrap {
 		position: relative;
+		display: grid;
+		height: 100%;
 		border-radius: var(--r-md);
+		transition: box-shadow var(--dur-fast, 120ms) var(--ease-out, ease);
+	}
+	.wrap.linked {
+		cursor: pointer;
 	}
 	.wrap.linked:hover {
-		background: var(--bg-elevated-2);
+		box-shadow: 0 0 0 1px var(--border-strong);
 	}
 	.wrap:has(.cover:focus-visible) {
 		outline: 2px solid var(--focus-ring, var(--accent));

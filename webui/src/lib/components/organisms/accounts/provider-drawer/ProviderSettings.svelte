@@ -12,7 +12,7 @@
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
-	import { Button, MasterDetail, NavItem, Text } from '@dorsk/tsumikit';
+	import { Button, Heading, MasterDetail, NavItem, Text } from '@dorsk/tsumikit';
 	import UsageNoticesEditor from '$lib/components/molecules/UsageNoticesEditor.svelte';
 	import AutoLimitResetEditor from '$lib/components/molecules/AutoLimitResetEditor.svelte';
 	import FireworksProviderEditor from '$lib/components/organisms/FireworksProviderEditor.svelte';
@@ -156,6 +156,8 @@
 		onback={() => (picked = false)}
 		backLabel={m.drawer_back()}
 		listLabel={m.account_section_provider_settings()}
+		detail={pageBody}
+		empty={pageBody}
 	>
 		{#snippet list()}
 			<nav class="nav">
@@ -172,71 +174,70 @@
 				{/each}
 			</nav>
 		{/snippet}
-		{#snippet detailHeader()}
-			<Text as="div" size="sm" weight="semibold">{LABELS[edit.page]()}</Text>
-		{/snippet}
-		{#snippet detail()}
-			<div class="pane">
-				{#if edit.page === 'aliases'}
-					<AliasesPage bind:rows={edit.aliasRows} models={edit.models} />
-				{:else if edit.page === 'limits'}
-					<LimitsPage
-						rows={softRows}
-						{windows}
-						bind:edits={edit.soft}
-						bind:rate={edit.rate}
-					/>
-					{#if kind === 'anthropic' || kind === 'openai'}
-						<AutoLimitResetEditor bind:value={edit.autoReset} family={kind} />
-						<UsageNoticesEditor bind:value={edit.notices} />
-					{/if}
-				{:else if edit.page === 'resets'}
-					<LimitResetsPage entries={usage.data?.limit_resets ?? []} {claiming} onclaim={claim} />
-				{:else if edit.page === 'models'}
-					<ModelsPage
-						fireworks={edit.isFireworks}
-						bind:models={edit.models}
-						bind:settings={edit.providerSettings}
-					/>
-				{:else}
-					<SettingsPage
-						groups={groupsOn(edit.page)}
-						bind:settings={edit.settings}
-						preset={catalog.data?.preset}
-						loading={catalogLoading}
-						failed={catalogFailed}
-					>
-						{#if edit.page === 'gateway'}
-							{#if edit.isFireworks}
-								<FireworksProviderEditor
-									section="gateway"
-									bind:settings={edit.providerSettings}
-									bind:models={edit.models}
-								/>
-							{/if}
-						{:else if edit.page === 'advanced'}
-							<AdvancedPage
-								endpoint={edit.isFireworks || edit.isCompatible}
-								rawJson={edit.isAnthropic}
-								{settableKeys}
-								{blockedKeys}
-								catalogReady={!!catalog.data}
-								{claimed}
-								bind:baseUrl={edit.baseUrl}
-								bind:credential={edit.credential}
-								bind:authScheme={edit.authScheme}
-								bind:usageProbe={edit.usageProbe}
-								bind:settings={edit.settings}
-								{moveTargets}
-								moveFamily={p.family}
-								onmove={move}
+	</MasterDetail>
+
+	{#snippet pageBody()}
+		<div class="pane">
+			<Heading level={3} size="sm">{LABELS[edit.page]()}</Heading>
+			{#if edit.page === 'aliases'}
+				<AliasesPage bind:rows={edit.aliasRows} models={edit.models} />
+			{:else if edit.page === 'limits'}
+				<LimitsPage
+					rows={softRows}
+					{windows}
+					bind:edits={edit.soft}
+					bind:rate={edit.rate}
+				/>
+				{#if kind === 'anthropic' || kind === 'openai'}
+					<AutoLimitResetEditor bind:value={edit.autoReset} family={kind} />
+					<UsageNoticesEditor bind:value={edit.notices} />
+				{/if}
+			{:else if edit.page === 'resets'}
+				<LimitResetsPage entries={usage.data?.limit_resets ?? []} {claiming} onclaim={claim} />
+			{:else if edit.page === 'models'}
+				<ModelsPage
+					fireworks={edit.isFireworks}
+					bind:models={edit.models}
+					bind:settings={edit.providerSettings}
+				/>
+			{:else}
+				<SettingsPage
+					groups={groupsOn(edit.page)}
+					bind:settings={edit.settings}
+					preset={catalog.data?.preset}
+					loading={catalogLoading}
+					failed={catalogFailed}
+				>
+					{#if edit.page === 'gateway'}
+						{#if edit.isFireworks}
+							<FireworksProviderEditor
+								section="gateway"
+								bind:settings={edit.providerSettings}
+								bind:models={edit.models}
 							/>
 						{/if}
-					</SettingsPage>
-				{/if}
-			</div>
-		{/snippet}
-	</MasterDetail>
+					{:else if edit.page === 'advanced'}
+						<AdvancedPage
+							endpoint={edit.isFireworks || edit.isCompatible}
+							rawJson={edit.isAnthropic}
+							{settableKeys}
+							{blockedKeys}
+							catalogReady={!!catalog.data}
+							{claimed}
+							bind:baseUrl={edit.baseUrl}
+							bind:credential={edit.credential}
+							bind:authScheme={edit.authScheme}
+							bind:usageProbe={edit.usageProbe}
+							bind:settings={edit.settings}
+							{moveTargets}
+							moveFamily={p.family}
+							onmove={move}
+						/>
+					{/if}
+				</SettingsPage>
+			{/if}
+		</div>
+	{/snippet}
 
 	<div class="foot">
 		<Text as="span" size="xs" tone="faint">
@@ -261,6 +262,9 @@
 	}
 	.pane {
 		container-type: inline-size;
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-3);
 	}
 	.foot {
 		display: flex;

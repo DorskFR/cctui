@@ -41,7 +41,7 @@
 </script>
 
 <span class="guard" data-journey="head-guard" title={hint}>
-	<Badge tone={exited ? 'muted' : 'info'} mono style="display:inline-flex;align-items:center;gap:var(--sp-1);min-width:0;max-width:100%">
+	<Badge tone={exited ? 'muted' : 'info'} style="display:inline-flex;align-items:center;gap:var(--sp-1);min-width:0;max-width:100%">
 		<span class="label">⛨ {label}</span>
 		{#if !exited && ontransition}
 			<Select
@@ -70,6 +70,7 @@
 	}
 	.label {
 		min-width: 0;
+		font-family: var(--font-mono);
 		overflow: hidden;
 		white-space: nowrap;
 		text-overflow: ellipsis;

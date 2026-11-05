@@ -70,11 +70,11 @@
 	<Text size="xs" tone="muted">{providerLabel(t.provider)}</Text>
 {/snippet}
 {#snippet colCreated(t: ServiceTokenRow)}
-	<Timestamp value={t.created_at} mode="short-iso" size="xs" tone="faint" />
+	<Timestamp value={t.created_at} mode="short-iso" details={false} size="xs" tone="faint" />
 {/snippet}
 {#snippet colUsed(t: ServiceTokenRow)}
 	{#if t.last_used_at}
-		<Timestamp value={t.last_used_at} mode="relative" size="xs" tone="faint" />
+		<Timestamp value={t.last_used_at} mode="relative" details={false} size="xs" tone="faint" />
 	{:else}
 		<Text size="xs" tone="faint">{m.service_tokens_never_used()}</Text>
 	{/if}

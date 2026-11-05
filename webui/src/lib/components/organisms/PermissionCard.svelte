@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { renderMarkdown } from '$lib/markdown';
 	import type { PermReq } from '$lib/ws.svelte';
-	import { Badge, Button, Card, Text } from '@dorsk/tsumikit';
+	import { Button, Card, Text } from '@dorsk/tsumikit';
+	import { permissionArgs } from './PermissionCard.logic';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -40,16 +41,32 @@
 			return null;
 		}
 	});
+
+	const args = $derived(planMarkdown === null ? permissionArgs(req.input_preview) : null);
+	const description = $derived(
+		req.description && req.description.trim() !== req.tool_name ? req.description : null
+	);
 </script>
 
 <Card tone="attention" padding="sm" gap="var(--sp-2)">
-	<div class="row">
-		<Badge tone="warn">{m.permission_badge()}</Badge>
-		<Text variant="code" weight="semibold" truncate>{req.tool_name}</Text>
+	<div class="row head">
+		<Text variant="eyebrow" tone="muted">{m.permission_badge()}</Text>
+		<Text mono weight="semibold" truncate>{req.tool_name}</Text>
 	</div>
-	{#if req.description}<Text as="p" tone="muted" size="sm">{req.description}</Text>{/if}
+	{#if description}<Text as="p" tone="muted" size="sm">{description}</Text>{/if}
 	{#if planMarkdown != null}
 		<div class="plan-body">{@html renderMarkdown(planMarkdown)}</div>
+	{:else if args}
+		{#if args.description}<Text as="p" size="sm">{args.description}</Text>{/if}
+		{#if args.command}<pre class="prev mono">{args.command}</pre>{/if}
+		{#if args.fields.length}
+			<dl class="fields">
+				{#each args.fields as [k, v] (k)}
+					<dt>{k}</dt>
+					<dd class="mono">{v}</dd>
+				{/each}
+			</dl>
+		{/if}
 	{:else if req.input_preview}<pre class="prev mono">{req.input_preview}</pre>{/if}
 	<div class="row acts">
 		{#if options.length}
@@ -77,6 +94,27 @@
 		font-size: var(--fs-xs);
 		white-space: pre-wrap;
 		word-break: break-word;
+	}
+	.head {
+		gap: var(--sp-2);
+		align-items: baseline;
+	}
+	.fields {
+		display: grid;
+		grid-template-columns: auto 1fr;
+		gap: var(--sp-1) var(--sp-3);
+		margin: 0;
+		font-size: var(--fs-xs);
+	}
+	.fields dt {
+		color: var(--text-muted);
+	}
+	.fields dd {
+		margin: 0;
+		white-space: pre-wrap;
+		word-break: break-word;
+		max-height: 8rem;
+		overflow-y: auto;
 	}
 	.plan-body {
 		max-height: 12rem;

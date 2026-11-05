@@ -48,7 +48,7 @@
 	}
 </script>
 
-<SettingSection id="profile" icon="◉" title={m.set_profile_title()}>
+<SettingSection id="profile" icon="user" title={m.set_profile_title()}>
 	<SettingGroup>
 		<SettingRow label={m.set_profile_name_label()} help={m.set_profile_name_help()} selfLabelled>
 			<Text size="sm" weight="semibold">{me.data?.user_name ?? '—'}</Text>
@@ -70,14 +70,14 @@
 
 <SecuritySection />
 
-<SettingSection id="machines" icon="▥" title={m.set_my_machines_title()} description={m.set_my_machines_desc()}>
+<SettingSection id="machines" icon="tv" title={m.set_my_machines_title()} description={m.set_my_machines_desc()}>
 	<MachineAdaptersGroup />
 	{#if active && me.data && !isAdmin}
 		<div data-journey="page" data-journey-key="users"><AccessPanel /></div>
 	{/if}
 </SettingSection>
 
-<SettingSection id="providers" icon="◎" title={m.set_providers_title()}>
+<SettingSection id="providers" icon="key-round" title={m.set_providers_title()}>
 	{#snippet descriptionSlot()}
 		{m.set_providers_desc()}
 		<Link href="/accounts">{m.set_providers_open_board()}</Link>

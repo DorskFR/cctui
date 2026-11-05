@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import drawer from './ConversationDrawer.svelte?raw';
 import pane from './ConversationPane.svelte?raw';
@@ -31,11 +32,25 @@ describe('ConversationDrawer is only the panel', () => {
 	});
 });
 
+const kitPanel = readFileSync('node_modules/@dorsk/tsumikit/dist/components/layouts/ResizablePanel.svelte', 'utf8');
+
 describe('ConversationDrawer scrim', () => {
 	it('dims the page at 40% behind the overlay drawer, whatever the theme', () => {
 		expect(drawer).toContain('scrim={false}');
-		expect(drawer).toMatch(/<Scrim \{onclose\} hideBelow="959px"/);
+		const scrim = drawer.slice(drawer.indexOf('<Scrim'), drawer.indexOf('/>', drawer.indexOf('<Scrim')));
+		expect(scrim).toContain('{onclose}');
+		expect(scrim).toContain('hideBelow="959px"');
+		expect(scrim).toContain('background: var(--chrome-scrim)');
 		expect(drawer).toContain('--chrome-scrim: color-mix(in srgb, black 40%, transparent)');
+		expect(drawer.indexOf('<Scrim')).toBeLessThan(drawer.indexOf('<ResizablePanel'));
+	});
+
+	it('sits under the panel: the kit isolates the panel, so the layers are set here', () => {
+		expect(kitPanel).toMatch(/\.panel-layout \{[^}]*isolation: isolate;/);
+		const scrim = drawer.slice(drawer.indexOf('<Scrim'), drawer.indexOf('/>', drawer.indexOf('<Scrim')));
+		expect(scrim).toContain('z={0}');
+		const panel = drawer.slice(drawer.indexOf('<ResizablePanel'), drawer.indexOf('>', drawer.indexOf('<ResizablePanel')));
+		expect(panel).toContain('style="z-index: 1"');
 		expect(drawer.indexOf('<Scrim')).toBeLessThan(drawer.indexOf('<ResizablePanel'));
 	});
 
@@ -66,7 +81,7 @@ describe('ConversationPane chrome', () => {
 	});
 
 	it('feeds the needs-input state to the activity line, not the banners', () => {
-		expect(pane).toContain('<ActivityBanner {stream} {archived} {needsInput} />');
+		expect(pane).toContain('<ActivityBanner {stream} {archived} {needsInput} since={session.last_activity_at} />');
 		expect(pane).toContain('<DrawerBanners sessionId={id} {stream} bind:acctModalOpen />');
 	});
 

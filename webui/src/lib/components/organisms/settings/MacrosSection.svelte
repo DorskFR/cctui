@@ -54,7 +54,7 @@
 	const orNull = (v: string) => (v.trim() ? v.trim() : null);
 </script>
 
-<SettingSection id="macros" icon="⚡" title={m.settings_nav_macros()}>
+<SettingSection id="macros" icon="zap" title={m.settings_nav_macros()}>
 	{#snippet descriptionSlot()}
 		<Text size="sm" tone="faint">{m.settings_macros_intro()}</Text>
 	{/snippet}
@@ -98,7 +98,7 @@
 			{/if}
 			{#if !draft}
 				<div class="add">
-					<Button variant="primary" onclick={startNew}>{m.settings_macros_add()}</Button>
+					<Button onclick={startNew}>{m.settings_macros_add()}</Button>
 				</div>
 			{/if}
 		</SettingRow>

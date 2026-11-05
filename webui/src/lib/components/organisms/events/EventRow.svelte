@@ -2,7 +2,6 @@
 	import type { EventRecord } from '@bindings/EventRecord';
 	import { Dot, Text, Timestamp } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
-	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import { formatRow, type ActorKind, type EventFamily } from '$lib/events';
 	import { m } from '$lib/paraglide/messages';
 
@@ -39,7 +38,7 @@
 	<span class="dot"><Dot status={row.dot} role="img" aria-label={row.severity} title={row.severity} /></span>
 	<span class="time"><Timestamp value={row.occurredAt} mode="relative" short size="xs" tone="faint" /></span>
 	<span class="verb">
-		<Text variant="eyebrow" tone={row.severity === 'info' ? 'muted' : row.severity === 'warn' ? 'warn' : 'danger'} nowrap>
+		<Text variant="eyebrow" tone="muted" nowrap>
 			{compact ? row.verb : `${familyLabel[row.family]()} · ${row.verb}`}
 		</Text>
 	</span>
@@ -62,7 +61,7 @@
 				{/if}
 			{/if}
 			{#if row.machineId}
-				<MachineBadge name={row.machineLabel} id={row.machineId} />
+				<Text size="xs" tone="faint" truncate>{row.machineLabel ?? m.events_family_machine()}</Text>
 			{/if}
 		</span>
 	{/if}
@@ -72,7 +71,7 @@
 <style>
 	.row {
 		display: grid;
-		grid-template-columns: auto auto auto minmax(0, 1fr) minmax(0, auto) auto;
+		grid-template-columns: auto auto auto minmax(0, 1fr) minmax(0, 18rem) 5rem;
 		align-items: center;
 		gap: var(--sp-2);
 		padding: var(--sp-2) var(--sp-3);
@@ -92,8 +91,8 @@
 		min-width: 0;
 	}
 	.subjects {
-		gap: var(--sp-1);
-		max-width: 24rem;
+		gap: var(--sp-2);
+		justify-content: flex-start;
 	}
 	.link {
 		display: inline-flex;

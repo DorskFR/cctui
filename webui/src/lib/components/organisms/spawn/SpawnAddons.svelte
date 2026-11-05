@@ -64,6 +64,7 @@
 			haspopup="menu"
 			variant="ghost"
 			size="sm"
+			style="gap: var(--sp-2)"
 			panelStyle="max-height:calc(100dvh - 1rem);overflow-y:auto;overflow-x:hidden"
 			onopen={() => panel?.focusSearch()}
 		>

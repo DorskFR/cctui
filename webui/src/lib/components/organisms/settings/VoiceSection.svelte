@@ -58,7 +58,7 @@
 </script>
 
 {#if caps.stt || caps.tts}
-	<SettingSection id="voice" icon="🔊" title={m.settings_voice_title()}>
+	<SettingSection id="voice" icon="volume" title={m.settings_voice_title()}>
 		{#if caps.stt || (caps.tts && canPickSpeaker())}
 			<SettingGroup title={m.set_voice_group_devices()}>
 				{#if caps.stt}

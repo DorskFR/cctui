@@ -15,26 +15,28 @@
 		week: m.home_window_week,
 		month: m.home_window_month
 	};
-	const TH = 'font-size:10.5px;letter-spacing:.06em';
+	const heads = $derived([
+		{ full: m.home_usage_input(), short: m.acct_windows_in() },
+		{ full: m.home_usage_output(), short: m.acct_windows_out() },
+		{ full: m.home_usage_cache(), short: m.acct_windows_cache() }
+	]);
 </script>
 
 <div class="table">
-	<div class="row">
+	<div class="row head">
 		<div class="cell">
-			<Text size="xs" tone="faint" uppercase style={TH}>{m.home_windows_col_window()}</Text>
+			<Text size="xs" tone="faint" nowrap>{m.home_windows_col_window()}</Text>
 		</div>
 		<div class="cell bar">
-			<Text size="xs" tone="faint" uppercase style={TH}>{m.home_windows_col_volume()}</Text>
+			<Text size="xs" tone="faint" nowrap>{m.home_windows_col_volume()}</Text>
 		</div>
-		<div class="cell end">
-			<Text size="xs" tone="faint" uppercase style={TH}>↑ {m.home_usage_input()}</Text>
-		</div>
-		<div class="cell end">
-			<Text size="xs" tone="faint" uppercase style={TH}>↓ {m.home_usage_output()}</Text>
-		</div>
-		<div class="cell end">
-			<Text size="xs" tone="faint" uppercase style={TH}>⚡ {m.home_usage_cache()}</Text>
-		</div>
+		{#each heads as h (h.full)}
+			<div class="cell end" title={h.full}>
+				<Text size="xs" tone="faint" nowrap>
+					<span class="full">{h.full}</span><span class="short">{h.short}</span>
+				</Text>
+			</div>
+		{/each}
 	</div>
 	{#each rows as r (r.key)}
 		<div class="row">
@@ -85,6 +87,15 @@
 		.bar {
 			display: none;
 		}
+		.full {
+			display: none;
+		}
+		.short {
+			display: inline;
+		}
+	}
+	.short {
+		display: none;
 	}
 	.track {
 		height: 0.375rem;

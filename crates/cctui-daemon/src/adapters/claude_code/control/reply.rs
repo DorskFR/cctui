@@ -137,6 +137,7 @@ impl Driver {
             busy: self.is_busy(short),
             pinned_transcript: self.transcript_locations.get(short).map(|loc| loc.path.clone()),
             pending_asks: self.pending_asks.clone(),
+            form_open: self.last_status.get(short).is_some_and(|s| s.asking),
             voice: std::sync::Arc::clone(&self.voice),
             launcher: self.launcher(),
         }
@@ -177,6 +178,8 @@ pub(super) struct ReplyJob {
     busy: bool,
     pinned_transcript: Option<std::path::PathBuf>,
     pending_asks: super::super::PendingAsks,
+    /// The last roster poll showed a question form no hook reported.
+    form_open: bool,
     voice: std::sync::Arc<super::voice::VoiceClocks>,
     launcher: super::spawn::Launcher,
 }
@@ -200,7 +203,7 @@ impl ReplyJob {
     /// Otherwise (free-text answer, missing questions, keystroke failure) fall
     /// back to dismiss-then-reply: attach+ESC the form away, then `reply` the
     /// text (claude records the ask as declined and reads the text as a new
-    /// user turn).
+    /// user turn). A form no hook reported is always dismissed that way.
     #[allow(clippy::cognitive_complexity)]
     pub(super) async fn deliver(&self) -> anyhow::Result<()> {
         let (sock, short, local_id) = (self.sock.as_path(), self.short.as_str(), &self.local_id);
@@ -214,6 +217,13 @@ impl ReplyJob {
             Ok(mut m) => m.remove(local_id),
             Err(_) => None,
         };
+        let hookless_form = pending_ask.is_none()
+            && self.form_open
+            && super::hook_respawn::still_asking(sock, short).await;
+        if peer && hookless_form {
+            return Err(AskOpened.into());
+        }
+        let pending_ask = pending_ask.or_else(|| hookless_form.then_some(None));
         let had_pending_ask = pending_ask.is_some();
         if let Some(questions) = pending_ask {
             let native_picks = self
@@ -236,7 +246,7 @@ impl ReplyJob {
                         tracing::warn!(%err, %short, "native ask answer failed; delivering text reply without ESC");
                     }
                 }
-            } else if self.ask_picks.is_none() {
+            } else if self.ask_picks.is_none() || hookless_form {
                 // A free-text answer: the form must go before the text lands,
                 // or claude records option 1 and swallows the text.
                 if let Err(err) = socket::attach_interrupt(sock, short).await {
@@ -596,6 +606,7 @@ mod auth_recovery_tests {
             effort: None,
             source: None,
             started_at: None,
+            asking: false,
         };
         driver.last_status.insert(short.into(), status);
         let error = driver
@@ -813,6 +824,7 @@ mod auth_recovery_tests {
             effort: None,
             source: Some("respawn".into()),
             started_at: Some(started_at),
+            asking: false,
         }
     }
 
@@ -1131,5 +1143,124 @@ mod submit_tests {
         assert!(!working_since(Some(&state("idle", "2026-10-22T03:20:01.000Z")), sent));
         assert!(!working_since(Some(&state("active", "not a time")), sent));
         assert!(!working_since(None, sent));
+    }
+}
+
+#[cfg(test)]
+mod hookless_form_tests {
+    use std::sync::{Arc, Mutex};
+
+    use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _};
+
+    use super::{AskOpened, socket};
+
+    type Log<T> = Arc<Mutex<Vec<T>>>;
+
+    /// A claude daemon whose roster lists `short` with `live_needs`, and
+    /// which records every op and every key typed on an attach.
+    fn fake_daemon(
+        sock: &std::path::Path,
+        short: String,
+        live_needs: Option<&'static str>,
+    ) -> (tokio::task::JoinHandle<()>, Log<String>, Log<u8>) {
+        let listener = tokio::net::UnixListener::bind(sock).unwrap();
+        let (ops, typed) = (Log::default(), Log::default());
+        let (seen, keys_seen) = (ops.clone(), typed.clone());
+        let server = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (read, mut write) = stream.into_split();
+                let mut reader = tokio::io::BufReader::new(read);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let op = request["op"].as_str().unwrap().to_owned();
+                seen.lock().unwrap().push(op.clone());
+                let tempo = if live_needs.is_some() { "blocked" } else { "idle" };
+                let resp = match op.as_str() {
+                    "has" => serde_json::json!({"ok": true, "alive": true}),
+                    "list" => serde_json::json!({"ok": true, "jobs": [
+                        {"short": short, "tempo": tempo, "needs": live_needs}
+                    ]}),
+                    _ => serde_json::json!({"ok": true}),
+                };
+                write.write_all(format!("{resp}\n").as_bytes()).await.unwrap();
+                if op != "attach" {
+                    continue;
+                }
+                let mut keys = [0_u8; 64];
+                while let Ok(n) = reader.read(&mut keys).await {
+                    if n == 0 {
+                        break;
+                    }
+                    keys_seen.lock().unwrap().extend_from_slice(&keys[..n]);
+                }
+            }
+        });
+        (server, ops, typed)
+    }
+
+    /// Deliver `text` while the last poll saw a hookless question form and
+    /// the live roster shows `live_needs`.
+    async fn deliver(
+        text: &str,
+        live_needs: Option<&'static str>,
+    ) -> (anyhow::Result<()>, Vec<String>, Vec<u8>) {
+        let (mut driver, _events) = super::super::test_support::driver();
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("control.sock");
+        let short = format!("s-{}", uuid::Uuid::new_v4());
+        driver.last_status.insert(
+            short.clone(),
+            super::super::StatusSnapshot {
+                tempo: Some("blocked".into()),
+                state: None,
+                detail: None,
+                name: None,
+                activity: None,
+                model: None,
+                effort: None,
+                source: None,
+                started_at: None,
+                asking: true,
+            },
+        );
+        let (server, ops, typed) = fake_daemon(&sock, short.clone(), live_needs);
+        let env = std::collections::BTreeMap::default();
+        let job = driver.reply_job_for(&sock, &short, "sess", text, None, env);
+        let delivered = Box::pin(job.deliver());
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(10), delivered).await.unwrap();
+        server.abort();
+        socket::note_composer_emptied(&short, socket::keys_epoch(&short));
+        let ops = ops.lock().unwrap().clone();
+        let typed = typed.lock().unwrap().clone();
+        (result, ops, typed)
+    }
+
+    #[tokio::test]
+    async fn a_reply_dismisses_a_question_form_no_hook_reported() {
+        let (result, ops, typed) =
+            deliver("B2, ship it", Some("answer: Which runner? (B1 · B2)")).await;
+        result.unwrap();
+        assert_eq!(ops, ["has", "list", "attach", "reply"]);
+        assert_eq!(typed, b"\x1b", "the form goes before the text lands");
+    }
+
+    #[tokio::test]
+    async fn a_form_already_closed_on_screen_gets_no_escape() {
+        let (result, ops, typed) = deliver("B2, ship it", None).await;
+        result.unwrap();
+        assert_eq!(ops, ["has", "list", "reply"]);
+        assert!(typed.is_empty(), "an ESC would abort the running turn: {typed:?}");
+    }
+
+    #[tokio::test]
+    async fn a_peer_message_waits_out_a_hookless_question_form() {
+        let peer = "<cctui-peer-message from=\"x\">hi</cctui-peer-message>";
+        let (result, ops, typed) = deliver(peer, Some("answer question")).await;
+        assert!(result.unwrap_err().is::<AskOpened>());
+        assert_eq!(ops, ["has", "list"]);
+        assert!(typed.is_empty());
     }
 }

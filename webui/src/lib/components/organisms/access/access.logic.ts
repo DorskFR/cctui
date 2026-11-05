@@ -44,3 +44,12 @@ export function userStateWords(online: number, total: number): string {
 	if (online === 1 && total === 1) return m.set_user_state_online();
 	return m.set_user_state_machines_online({ count: online });
 }
+
+/** A user row's muted line: "1 machine · 3 accounts · online". */
+export function userMetaWords(machines: number, accounts: number, online: number): string {
+	return [
+		m.set_count_machines({ count: machines }),
+		m.set_count_accounts({ count: accounts }),
+		userStateWords(online, machines)
+	].join(' · ');
+}

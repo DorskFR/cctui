@@ -357,8 +357,12 @@ describe('meta row', () => {
 
 	it('reveals the line actions on hover or focus only, always on touch', () => {
 		const css = lineSource.slice(lineSource.indexOf('<style>'));
-		expect(css).toMatch(/\.actions-slot\s*\{[^}]*opacity:\s*0/);
-		expect(css).toMatch(/\.line:hover \.actions-slot,\s*\.line:focus-within \.actions-slot\s*\{\s*opacity:\s*1/);
-		expect(css).toMatch(/@media \(pointer: coarse\)\s*\{\s*\.actions-slot\s*\{\s*opacity:\s*1/);
+		const hidden = css.slice(css.indexOf('@media (hover: hover) and (pointer: fine)'));
+		expect(hidden).toMatch(/\.actions-slot\s*\{\s*opacity:\s*0;\s*pointer-events:\s*none;/);
+		expect(hidden).toMatch(
+			/\.line:hover \.actions-slot,\s*\.line:focus-within \.actions-slot\s*\{\s*opacity:\s*1;\s*pointer-events:\s*auto;/
+		);
+		const base = css.slice(css.indexOf('.actions-slot {'), css.indexOf('@media (hover: hover)'));
+		expect(base).not.toMatch(/opacity|pointer-events/);
 	});
 });

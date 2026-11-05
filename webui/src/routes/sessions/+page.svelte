@@ -22,7 +22,7 @@
 	import { dockLayout, launchDock } from '$lib/spawnDock.svelte';
 	import StatsDock from '$lib/components/organisms/statsdock/StatsDock.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
-	import { Callout, ConfirmModal } from '@dorsk/tsumikit';
+	import { Callout, ConfirmModal, IconButton, ResizablePanel, Scrim, Text } from '@dorsk/tsumikit';
 	import { confirmDialog } from '$lib/confirmDialog.svelte';
 	import { visibleSessions } from '$lib/hiddenOwners';
 	import SessionSections from './SessionSections.svelte';
@@ -101,7 +101,7 @@
 	});
 
 	$effect(() => {
-		launchDock.conversationOpen = !!sp.liveOpen;
+		launchDock.conversationOpen = !!sp.liveOpen || !!sp.missingId;
 		return () => {
 			launchDock.conversationOpen = false;
 		};
@@ -372,8 +372,37 @@
 {/if}
 
 {#if sp.missingId}
-	<div class="missing-pane">
-		<SessionMissing id={sp.missingId} onclose={closeMissing} />
+	<div class="missing-host">
+		<Scrim
+			onclose={closeMissing}
+			z={0}
+			label={m.chrome_close_conversation()}
+			style="background: var(--chrome-scrim)"
+		/>
+		<ResizablePanel
+			style="z-index: 1"
+			mode="overlay"
+			side="right"
+			open
+			scrim={false}
+			onclose={closeMissing}
+			label={m.settings_group_conversation()}
+			width={640}
+			minWidth={360}
+			maxWidth="100vw"
+			widthKey="cctui_drawer_width"
+			fullWidthBelow="959px"
+		>
+			{#snippet panel()}
+				<div class="missing-pane" data-testid="session-missing-pane">
+					<header class="missing-head">
+						<Text weight="semibold" truncate>{m.settings_group_conversation()}</Text>
+						<IconButton icon="x" label={m.chrome_close_conversation()} onclick={closeMissing} />
+					</header>
+					<SessionMissing id={sp.missingId ?? ''} onclose={closeMissing} />
+				</div>
+			{/snippet}
+		</ResizablePanel>
 	</div>
 {:else if sp.docks.conversation}
 	<ConversationDock
@@ -448,14 +477,24 @@
 {/if}
 
 <style>
+	.missing-host {
+		position: relative;
+		z-index: var(--z-drawer);
+		--chrome-scrim: color-mix(in srgb, black 40%, transparent);
+	}
 	.missing-pane {
-		position: fixed;
-		top: calc(var(--header-h) + var(--safe-top));
-		right: 0;
-		bottom: 0;
-		z-index: 20;
-		width: min(40rem, 100%);
-		background: var(--bg-elevated);
-		box-shadow: var(--shadow-lg);
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+		min-height: 0;
+	}
+	.missing-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--sp-2);
+		padding: var(--sp-2) var(--sp-4);
+		padding-top: calc(var(--sp-2) + var(--safe-top));
+		border-bottom: 1px solid var(--divider);
 	}
 </style>

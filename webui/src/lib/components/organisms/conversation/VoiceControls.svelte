@@ -45,13 +45,22 @@
 		`touch-action: none; user-select: none; -webkit-touch-callout: none;${recording ? ' --btn-on: var(--danger);' : ''}`
 	);
 
+	// The menu opens above the whole composer so it never covers its notices.
+	let root = $state<HTMLElement>();
+	let menuGap = $state(6);
+	function measureGap() {
+		const composer = root?.closest('[data-journey="composer"]');
+		if (!root || !composer) return;
+		menuGap = Math.max(6, root.getBoundingClientRect().top - composer.getBoundingClientRect().top + 6);
+	}
+
 	const voiceItems = $derived<MenuItem[]>(
 		ontogglelive
 			? [
 					{
 						id: 'live',
 						label: m.tx_voice_live(),
-						icon: 'live',
+						icon: 'volume-high',
 						pressed: live,
 						attrs: { title: m.voice_live_hint() },
 						onselect: () => ontogglelive?.()
@@ -133,7 +142,15 @@
 	}
 </script>
 
-<span class="voice-controls" class:split={!!ontogglelive} data-journey="voice-controls">
+<span
+	role="group"
+	class="voice-controls"
+	class:split={!!ontogglelive}
+	data-journey="voice-controls"
+	bind:this={root}
+	onpointerenter={measureGap}
+	onfocusin={measureGap}
+>
 	<IconButton
 		emoji="🎙"
 		box="sm"
@@ -155,6 +172,7 @@
 		onkeydown={onkey}
 	/>
 	{#if ontogglelive}
+		<span class="divider" aria-hidden="true"></span>
 		<Menu
 			label={m.tx_voice_options()}
 			title={m.tx_voice_options()}
@@ -162,6 +180,7 @@
 			placement="top-start"
 			variant="ghost"
 			box="sm"
+			gap={menuGap}
 			{disabled}
 		>
 			{#snippet trigger()}<Icon name="chevron-up" size={14} />{/snippet}
@@ -205,6 +224,14 @@
 	}
 	.voice-controls.split {
 		gap: 0;
+		border: 1px solid var(--border);
+		border-radius: var(--r-sm);
+	}
+	.divider {
+		align-self: stretch;
+		width: 1px;
+		margin-block: var(--sp-1);
+		background: var(--border);
 	}
 	.recording {
 		position: fixed;

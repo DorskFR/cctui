@@ -45,8 +45,9 @@
 		}
 	}
 
+	/** Saves the fields the admin touched once one is committed (blur or Enter). */
 	function save() {
-		if (!dirty) return;
+		if (!dirty || busy) return;
 		const values = { ...draft };
 		void run(async () => {
 			await endpoints.savePluginInstanceSettings(pluginId, values);
@@ -108,6 +109,7 @@
 							data-journey="plugin-instance-secret"
 							data-key={d.key}
 							oninput={(e) => (draft = { ...draft, [d.key]: (e.currentTarget as HTMLInputElement).value })}
+							onchange={save}
 						/>
 						<Badge
 							size="sm"
@@ -141,21 +143,12 @@
 						data-journey="plugin-instance-field"
 						data-key={d.key}
 						oninput={(e) => (draft = { ...draft, [d.key]: (e.currentTarget as HTMLInputElement).value })}
+						onchange={save}
 					/>
 				{/if}
 			</Field>
 		{/each}
 		{#if decls.length > 0}
-			<div class="actions">
-				<Button size="sm" disabled={!dirty || busy} data-journey="plugin-instance-save" onclick={save}>
-					{m.common_save()}
-				</Button>
-				{#if dirty}
-					<Button size="sm" variant="ghost" disabled={busy} onclick={() => (draft = {})}>
-						{m.common_cancel()}
-					</Button>
-				{/if}
-			</div>
 			<Text size="xs" tone="faint">{m.settings_plugins_instance_secret_help()}</Text>
 		{/if}
 		{#if upstreamKey !== null}

@@ -64,6 +64,7 @@ fn live(d: &mut Driver, short: &str) -> String {
         effort: None,
         source: None,
         started_at: None,
+        asking: false,
     };
     d.last_status.insert(short.to_owned(), status);
     local_id

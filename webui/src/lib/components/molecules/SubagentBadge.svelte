@@ -65,6 +65,11 @@
 </span>
 
 <style>
+	/* Above a neighbour's enlarged hit area, so a near-miss still toggles the group. */
+	.subagent-badge {
+		position: relative;
+		z-index: 1;
+	}
 	/* Transparent hit slop so a near-miss toggles the group instead of opening the session. */
 	.slop {
 		position: absolute;

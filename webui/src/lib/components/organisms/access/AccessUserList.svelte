@@ -63,6 +63,7 @@
 					size="sm"
 					bind:checked={() => !hidden(u), (v) => onvisible(u, v)}
 					label={m.set_visibility_user_label({ name: u.name })}
+					title={m.set_visibility_user_label({ name: u.name })}
 					data-journey="user-visibility"
 					data-journey-key={u.id}
 				/>
@@ -72,21 +73,28 @@
 {/snippet}
 
 <div class="master">
-	{#if canCreate}
-		<div class="head">
-			<Button variant="primary" onclick={oncreate}>{m.users_new_user()}</Button>
-		</div>
-	{/if}
-
-	<Input
-		icon="search"
-		type="search"
-		aria-label={m.access_filter_placeholder()}
-		placeholder={m.access_filter_placeholder()}
-		bind:value={query}
-	/>
+	<div class="head">
+		<span class="search">
+			<Input
+				icon="search"
+				type="search"
+				aria-label={m.access_filter_placeholder()}
+				placeholder={m.access_filter_placeholder()}
+				bind:value={query}
+			/>
+		</span>
+		{#if canCreate}
+			<Button onclick={oncreate}>{m.users_new_user()}</Button>
+		{/if}
+	</div>
 
 	<div class="list">
+		{#if onvisible && !loading && matched.length > 0}
+			<div class="cols" aria-hidden="true">
+				<Text variant="eyebrow" tone="muted">{m.settings_nav_users()}</Text>
+				<Text variant="eyebrow" tone="muted">{m.set_visibility_column()}</Text>
+			</div>
+		{/if}
 		{#if loading}
 			<div class="msg"><Spinner /></div>
 		{:else if matched.length === 0}
@@ -138,7 +146,18 @@
 	}
 	.head {
 		display: flex;
-		justify-content: flex-end;
+		align-items: center;
+		gap: var(--sp-2);
+	}
+	.search {
+		flex: 1;
+		min-width: 0;
+	}
+	.cols {
+		display: flex;
+		justify-content: space-between;
+		padding: var(--sp-2) var(--sp-3);
+		border-bottom: 1px solid var(--border);
 	}
 	.row {
 		display: flex;

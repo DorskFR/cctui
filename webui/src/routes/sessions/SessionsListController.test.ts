@@ -114,6 +114,16 @@ describe('SessionsListController — buckets', () => {
 		setItems([session({ id: 'hidden', bucket: 'working' }), session({ id: 'shown', bucket: 'working' })]);
 		expect(working(ctl).map((s) => s.id)).toEqual(['shown']);
 	});
+
+	it('keeps a parent whose subagent matches the client filter', () => {
+		const { ctl, setItems } = make({ matchesClient: (s) => s.bucket === 'blocked' });
+		setItems([
+			session({ id: 'parent', bucket: 'working' }),
+			session({ id: 'kid', parent_id: 'parent', bucket: 'blocked', metadata: {} }),
+			session({ id: 'other', bucket: 'working' })
+		]);
+		expect(working(ctl).map((s) => s.id)).toEqual(['parent']);
+	});
 });
 
 describe('SessionsListController — group-by dimension', () => {

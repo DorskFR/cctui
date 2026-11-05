@@ -374,6 +374,19 @@
 	.dbar.compact {
 		--box-lg: var(--box-sm);
 	}
+	/* Touch: every header and meta control is at least a full touch target. */
+	@media (pointer: coarse) {
+		.dhead {
+			--touch-slab: min(-8px, calc((100% - var(--hit-min)) / 2));
+			--box-sm: var(--hit-min);
+			--box-md: var(--hit-min);
+			--box-lg: var(--hit-min);
+		}
+		.dbar,
+		.dbar.compact {
+			--box-lg: var(--hit-min);
+		}
+	}
 	.hlabels {
 		display: flex;
 		min-width: 0;

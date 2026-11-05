@@ -201,14 +201,18 @@
 	"acct_remove_provider_title": "Retirer {provider} de « {name} » ?",
 	"acct_share_revoke_confirm": "Retirer l'accès",
 	"acct_share_revoke_message": "{name} ne pourra plus utiliser {noun} pour de nouvelles sessions.",
+	"acct_windows_cache": "Cache",
+	"acct_windows_in": "Entrée",
+	"acct_windows_out": "Sortie",
 	"launch_manage_profiles": "Gérer les profils…",
+	"launch_profile_trigger": "Profil de lancement : {name}",
 	"ask_answered": "Répondu.",
 	"ask_answering": "Réponse en cours…",
 	"ask_choose_any": "(choix multiple)",
 	"ask_no_preview": "Aucun aperçu pour cette option.",
 	"ask_other_placeholder": "Autre…",
-	"ask_question_heading": "❓ Question",
-	"ask_questions_heading": "❓ Questions",
+	"ask_question_heading": "Question",
+	"ask_questions_heading": "Questions",
 	"ask_send_answer": "Envoyer la réponse",
 	"attachments_missing_dropped": "{count} pièce(s) jointe(s) n'ont pas pu être restaurées ; leurs références ont été retirées du prompt",
 	"auto_archive_done": "Archivée automatiquement après une période d'inactivité.",
@@ -685,7 +689,6 @@
 	"drawer_details_total": "Total",
 	"drawer_details_cost": "Coût",
 	"drawer_details_calls": "Appels",
-	"drawer_details_langfuse": "Langfuse",
 	"drawer_details_bust": "Purge du cache",
 	"drawer_model_aria": "Modèle",
 	"drawer_more_actions": "Plus d'actions",
@@ -911,7 +914,13 @@
 			}
 		}
 	],
+	"list_failed_cause_env": "env non conservé",
+	"list_failed_cause_none": "peut être re-dispatché",
+	"list_failed_cause_payload": "charge trop grande pour être conservée",
+	"list_failed_cause_prompt": "prompt conservé en partie",
+	"list_failed_cause_redacted": "prompt conservé masqué",
 	"list_failed_details": "Détails",
+	"list_filter_no_match": "Aucune session ne correspond à « {query} ».",
 	"list_failed_dismiss_message": "Ils quittent la liste des sessions et restent listés dans Dispatches en échec pendant 7 jours.",
 	"list_failed_dismiss_title": [
 		{
@@ -1068,7 +1077,6 @@
 	"shell_events": "Événements",
 	"shell_nav_unread": "{count} non lus",
 	"shell_nav_usage": "Utilisation",
-	"shell_stat_working": "En cours",
 	"shell_status_aria": "Utilisation et machines : {usage}",
 	"shell_status_machines_heading": "Machines",
 	"shell_status_open_accounts": "Ouvrir les comptes",
@@ -2340,6 +2348,7 @@
 	"tx_voice_options": "Options vocales",
 	"tx_voice_live": "Voix en direct",
 	"tx_prompt_tools": "Outils du message",
+	"tx_stop_hook": "Hook d'arrêt : {hook}",
 	"voice_live_connecting": "Connexion",
 	"voice_live_listening": "À l'écoute",
 	"voice_live_thinking": "Réflexion",
@@ -2526,5 +2535,57 @@
 				"countPlural=other": "{count} sous-agents créés"
 			}
 		}
-	]
+	],
+	"set_events_sessions_created": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} session créée",
+				"countPlural=other": "{count} sessions créées"
+			}
+		}
+	],
+	"set_count_machines": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} machine",
+				"countPlural=other": "{count} machines"
+			}
+		}
+	],
+	"set_count_accounts": [
+		{
+			"declarations": ["input count", "local countPlural = count: plural"],
+			"selectors": ["countPlural"],
+			"match": {
+				"countPlural=one": "{count} compte",
+				"countPlural=other": "{count} comptes"
+			}
+		}
+	],
+	"set_harness_update_which": "Harnais à mettre à jour",
+	"set_passkey_revoke_title": "Supprimer la passkey « {label} » ?",
+	"set_passkey_revoke_message": "Vous ne pourrez plus vous connecter avec. Votre jeton et vos autres passkeys continuent de fonctionner.",
+	"set_search_sections": "Rubriques",
+	"set_kw_theme": "apparence couleurs sombre clair police taille texte langue notification appearance theme",
+	"set_kw_layout": "navigation panneaux dock lancement statistiques conversation largeur liste noms de compte",
+	"set_kw_profile": "nom rôle clé révoquer déconnexion",
+	"set_kw_security": "passkey passkeys connexion webauthn empreinte appareil approbation",
+	"set_kw_machines": "machines adaptateurs harnais",
+	"set_kw_providers": "fournisseur comptes pools anthropic openai claude codex oauth partage",
+	"set_kw_launch": "profils profil lancement nouvelle session exécution harnais mode emoji",
+	"set_kw_context": "règles mémoire notes modèles",
+	"set_kw_privacy": "masquage secrets motifs rescrub détecteurs",
+	"set_kw_automation": "whip phrases d'arrêt sessions réparties archivage automatique",
+	"set_kw_general": "instance nom mise à jour passkey connexion réseau diagnostic",
+	"set_kw_users": "utilisateurs clés jetons machines enrôlement accès politique masqué afficher sessions",
+	"set_kw_harnesses": "machines harnais mise à jour automatique adaptateurs",
+	"set_kw_limits": "limites cctuiagent enfants profondeur budget envois conservation événements",
+	"set_kw_network": "passerelle hôtes amont liste autorisée",
+	"set_kw_integrations": "parole voix transcription tts stt",
+	"set_kw_instance_plugins": "plugins installer désinstaller catalogue",
+	"set_customize": "Personnaliser…"
 }

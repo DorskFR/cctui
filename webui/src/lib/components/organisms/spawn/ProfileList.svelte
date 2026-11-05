@@ -54,6 +54,14 @@
 	});
 	const creating = $derived(form?.mode === 'create');
 
+	// The editor (no manageHref) has no spawn form choosing for it: it opens on
+	// the first profile so the card always shows one and offers its cog.
+	$effect(() => {
+		if (manageHref || !sorted.length || sorted.some((p) => p.id === selectedId)) return;
+		selectedId = sorted[0].id;
+		oneOff = null;
+	});
+
 	// The list and the form are exclusive: opening the list discards the form.
 	$effect(() => {
 		if (listOpen) form = null;

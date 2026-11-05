@@ -48,9 +48,17 @@ export class SessionsListController {
 	}
 
 	#sort = (rows: SessionListItem[]) => sortSessions(rows, this.#in.sort(), this.#in.sortDir());
+	// A parent stays when a subagent nested under it matches, so a filter on a
+	// child's state still shows the row it lives under.
+	#matchesClientDeep = (s: SessionListItem, depth = 0): boolean =>
+		this.#in.matchesClient(s) ||
+		(depth < 5 &&
+			(this.#liveNest.childGroups.get(s.id) ?? []).some((g) =>
+				g.agents.some((a) => this.#matchesClientDeep(a, depth + 1))
+			));
 	#keep = (s: SessionListItem): boolean =>
 		this.#in.matchesLabel(s) &&
-		this.#in.matchesClient(s) &&
+		this.#matchesClientDeep(s) &&
 		matchesUnreadFilter(s, this.#in.sections());
 
 	draftRows = $derived.by(() => this.#in.items().filter((s) => s.status === 'draft'));

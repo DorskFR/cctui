@@ -159,9 +159,15 @@ export function buildSessionSearchSchema(fetchValues: FetchValues): Schema {
  *  autocomplete: the raw query with `field`'s clause (the one being completed)
  *  and all client-only clauses stripped by span, so suggestions co-occur with
  *  what's already typed. */
+// `status:working` names a list bucket, not a server status: it is evaluated on
+// the client like `state:`.
+const isClientFilter = (f: FilterNode): boolean =>
+	!SERVER_FIELDS.has(f.field) ||
+	(f.field === 'status' && f.values.length > 0 && f.values.every((v) => v in STATE_BUCKETS));
+
 export function contextForField(raw: string, schema: Schema, field: string): string {
 	const ast = parse(raw, schema);
-	const drop = filters(ast).filter((f) => f.field === field || !SERVER_FIELDS.has(f.field));
+	const drop = filters(ast).filter((f) => f.field === field || isClientFilter(f));
 	let out = raw;
 	for (const f of [...drop].sort((a, b) => b.span[0] - a.span[0])) {
 		const [a, b] = f.span;
@@ -182,7 +188,7 @@ export interface SplitQuery {
 // `created` must be stripped before send and applied to the loaded list.
 export function splitQuery(raw: string, schema: Schema): SplitQuery {
 	const ast = parse(raw, schema);
-	const clientFilters = filters(ast).filter((f) => !SERVER_FIELDS.has(f.field));
+	const clientFilters = filters(ast).filter(isClientFilter);
 	let serverQuery = raw;
 	for (const f of [...clientFilters].sort((a, b) => b.span[0] - a.span[0])) {
 		const [a, b] = f.span;
@@ -221,7 +227,7 @@ function matchesOne(s: SessionListItem, f: FilterNode): boolean {
 		const hit = f.values.some((v) => s.id.toLowerCase().includes(v.toLowerCase()));
 		return f.op === 'not_contains' ? !hit : hit;
 	}
-	if (f.field === 'state') {
+	if (f.field === 'state' || f.field === 'status') {
 		const hit = f.values.some((v) => STATE_BUCKETS[v] === s.bucket);
 		return f.op === 'ne' ? !hit : hit;
 	}

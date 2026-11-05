@@ -79,7 +79,7 @@
 </script>
 
 {#if visible}
-	<Popover {label} placement="bottom-end" bare>
+	<Popover {label} placement="bottom-end" gap={14} bare>
 		{#snippet trigger()}
 			<span
 				class="status"
@@ -170,10 +170,14 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-4);
+		padding: var(--sp-3);
+		text-align: start;
 		/* The kit caps .pop-panel at 22rem and spends sp-1 + 1px border on chrome. */
 		width: 21rem;
 		max-width: 100%;
-		max-height: 75dvh;
+		max-height: calc(
+			100dvh - var(--header-h) - var(--safe-top) - var(--bottom-chrome, 0px) - var(--sp-8)
+		);
 		overflow: hidden auto;
 		overscroll-behavior: contain;
 	}

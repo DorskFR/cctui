@@ -85,7 +85,8 @@
 	let width = $state(0);
 	const isDense = $derived(dense ?? isDenseWidth(width));
 
-	let barCap: number | null = $derived(capToBar(cap));
+	// No soft limit is uncapped, not a cap at 100%: CapBar then draws no live handle at the end.
+	let barCap: number | null = $derived(capToBar(cap) >= 100 ? null : capToBar(cap));
 	const tooltipPct = $derived(capToBar(cap));
 	function commit(next: number | null) {
 		const value = capFromBar(next);
@@ -122,6 +123,7 @@
 		{readoutText}{#if showReset && resets}{' ·\u00a0'}<Timestamp
 				value={resets}
 				mode="relative"
+				details={false}
 				tone="inherit"
 			/>{/if}{#if paceKind === 'flame'}{' 🔥'}{/if}
 	</span>
@@ -133,6 +135,7 @@
 		layout={isDense ? 'stacked' : 'row'}
 		value={pct ?? 0}
 		bind:cap={barCap}
+		clearAtMax
 		step={5}
 		warnAt={75}
 		labelWidth={USAGE_LABEL_W}

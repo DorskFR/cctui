@@ -44,6 +44,13 @@ describe('drawer header meta row', () => {
 		expect(narrowModel).toContain('.strip .model-edit');
 	});
 
+	it('renders the branch name in the mono font, not the kit Badge mono flag', () => {
+		const branch = markup.slice(markup.indexOf('{#if branch}'), markup.indexOf('{/if}', markup.indexOf('{#if branch}')));
+		expect(branch).not.toMatch(/<Badge[^>]*\bmono\b/);
+		expect(branch).toContain('<span class="ellipsis code">{branch}</span>');
+		expect(css).toMatch(/\.code \{\n\t\tfont-family: var\(--font-mono\);/);
+	});
+
 	it('spells the token total as words, not Σ ↑ ↓ ⚡', () => {
 		expect(trail).toContain('<StatText value={totals.total} kind="tokens" />');
 		expect(header).not.toContain('<TokenUsage');
@@ -60,6 +67,21 @@ describe('drawer header meta row', () => {
 		expect(trail).toContain('m.chrome_cost_estimate(');
 		expect(chip).toContain('m.chrome_cost_langfuse({ cost: costLabel })');
 		expect(chip).not.toContain('sessions_langfuse_calls_short');
+	});
+
+	it('shows the cost once in the details, with its source and Langfuse link', () => {
+		const cost = details.slice(details.indexOf('data-testid="header-cost"'));
+		const cell = cost.slice(0, cost.indexOf('</span>'));
+		expect(cell).toContain("{#if cost?.source === 'langfuse'}");
+		expect(cell).toContain('<LangfuseChip id={session.id} />');
+		expect(details.match(/<LangfuseChip/g)).toHaveLength(1);
+		expect(details).not.toContain('m.drawer_details_langfuse()');
+	});
+
+	it('keeps row labels on one line next to a long value', () => {
+		const dcss = details.slice(details.indexOf('<style>'));
+		expect(dcss).toMatch(/\.mp-row > \.mp-key \{[^}]*flex: none;[^}]*white-space: nowrap;/);
+		expect(dcss).toMatch(/\.mp-val \{[^}]*flex: 1 1 auto;/);
 	});
 
 	it('never paints a cost in the success colour', () => {

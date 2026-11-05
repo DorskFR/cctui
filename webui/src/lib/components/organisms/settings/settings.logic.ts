@@ -65,7 +65,7 @@ export function fuzzyMatches(text: string, query: string): boolean {
 /**
  * Apply a free-text filter to the rendered settings tree: a row stays when its
  * text matches the query (see `fuzzyMatches`), a group stays when it keeps a row, a section when it
- * keeps a group. Without a query everything shows, row-less empty states included. Returns the number of visible rows so the page can show an
+ * keeps a group. A section in `keepSections` (matched by name in the section index) stays whole. Without a query everything shows, row-less empty states included. Returns the number of visible rows so the page can show an
  * empty state. DOM-driven on purpose — the rows already carry their localized
  * copy, so there is no second catalogue to keep in sync. Visibility goes
  * through `style.display` rather than `hidden`: the rows set their own
@@ -78,10 +78,21 @@ export function isFiltered(el: HTMLElement): boolean {
 	return el.style.display === 'none';
 }
 
-export function applySettingsFilter(root: ParentNode, query: string): number {
+export function applySettingsFilter(
+	root: ParentNode,
+	query: string,
+	keepSections: ReadonlySet<string> = new Set()
+): number {
 	const q = query.trim();
 	let visible = 0;
 	for (const section of root.querySelectorAll<HTMLElement>('[data-setting-section]')) {
+		if (q && keepSections.has(section.id)) {
+			show(section, true);
+			for (const el of section.querySelectorAll<HTMLElement>('[data-setting-group], [data-setting-row]'))
+				show(el, true);
+			visible += Math.max(1, section.querySelectorAll('[data-setting-row]').length);
+			continue;
+		}
 		let sectionAny = false;
 		for (const group of section.querySelectorAll<HTMLElement>('[data-setting-group]')) {
 			let groupAny = false;

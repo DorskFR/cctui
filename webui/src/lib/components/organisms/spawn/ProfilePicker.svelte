@@ -181,7 +181,7 @@
 		bind:open
 		bare
 		gap={0}
-		label={m.spawn_profiles_aria()}
+		label={current ? m.launch_profile_trigger({ name: current.name }) : m.spawn_profiles_aria()}
 		placement="bottom-start"
 		role="group"
 		haspopup="listbox"

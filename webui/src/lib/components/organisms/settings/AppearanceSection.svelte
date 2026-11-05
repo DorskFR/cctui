@@ -6,11 +6,9 @@
 		FX_FAMILIES,
 		fx,
 		LookPicker,
-		MotionSettings,
 		SegmentedControl,
 		Select,
 		sound,
-		SoundSettings,
 		Switch,
 		Text
 	} from '@dorsk/tsumikit';
@@ -18,6 +16,8 @@
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
+	import MotionCustomize from './MotionCustomize.svelte';
+	import SoundCustomize from './SoundCustomize.svelte';
 	import { settings, type ToastPosition } from '$lib/settings.svelte';
 	import { LOCALE_LABELS, LOCALES, type Locale } from '$lib/locale.svelte';
 	import { theme } from '$lib/theme.svelte';
@@ -50,7 +50,7 @@
 	<Text style="font-size: {Math.min(scaleOf(o.value), 1.5)}em; line-height: 1" aria-hidden="true">A</Text>
 {/snippet}
 
-<SettingSection id="theme" icon="◐" title={m.set_theme_title()} description={m.set_theme_desc()}>
+<SettingSection id="theme" icon="palette" title={m.set_theme_title()} description={m.set_theme_desc()}>
 	<SettingGroup>
 		<SettingRow label={m.settings_theme_label()} help={m.settings_theme_help()}>
 			<Select
@@ -118,33 +118,16 @@
 		</SettingRow>
 		<SettingRow label={m.settings_motion_label()} help={m.set_motion_help()} selfLabelled>
 			<div class="pair" data-testid="appearance-motion">
+				<MotionCustomize disabled={!motionOn} />
 				<Switch bind:checked={() => motionOn, setMotion} label={m.settings_motion_label()} />
-				<MotionSettings
-					size="sm"
-					variant="ghost"
-					label={m.set_motion_tune()}
-					resetLabel={m.settings_motion_reset()}
-					reducedMotionHint={m.settings_motion_reduced_hint()}
-					disabled={!motionOn}
-				/>
 			</div>
 		</SettingRow>
 		<SettingRow label={m.settings_sound_switch()} help={m.set_sound_help()} selfLabelled>
 			<div class="pair" data-testid="appearance-sound">
+				<SoundCustomize disabled={!sound.enabled} />
 				<Switch
 					bind:checked={() => sound.enabled, (v) => sound.setEnabled(v)}
 					label={m.settings_sound_switch()}
-				/>
-				<SoundSettings
-					size="sm"
-					variant="ghost"
-					label={m.set_sound_tune()}
-					switchLabel={m.settings_sound_switch()}
-					volumeLabel={m.settings_sound_volume()}
-					previewLabel={m.settings_sound_preview()}
-					offHint={m.settings_sound_off_hint()}
-					reducedMotionHint={m.settings_sound_reduced_hint()}
-					disabled={!sound.enabled}
 				/>
 			</div>
 		</SettingRow>

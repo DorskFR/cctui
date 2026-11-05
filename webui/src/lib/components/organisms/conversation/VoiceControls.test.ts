@@ -171,6 +171,12 @@ describe('VoiceControls without voice mode', () => {
 });
 
 describe('VoiceControls live voice entry', () => {
+	it('groups the mic and the caret as one split control', () => {
+		const group = document.querySelector('[data-journey="voice-controls"]');
+		expect(group?.classList.contains('split')).toBe(true);
+		expect(group?.querySelector('.divider')).not.toBeNull();
+	});
+
 	it('draws one mic, with live voice behind the caret menu', () => {
 		const mics = [...document.querySelectorAll('button')].filter((b) =>
 			/dictate|voice mode|live voice/i.test(b.getAttribute('aria-label') ?? '')

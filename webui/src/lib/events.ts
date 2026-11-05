@@ -170,44 +170,40 @@ export function formatRow(ev: EventRecord): EventRowView {
 
 export type FeedItem =
 	| { type: 'event'; event: EventRecord }
-	| { type: 'children'; key: string; parentId: string | null; events: EventRecord[] };
+	| { type: 'children'; key: string; allChildren: boolean; events: EventRecord[] };
 
-function childParent(ev: EventRecord): string | null | undefined {
-	if (ev.kind !== 'session.created') return undefined;
+const isCreation = (ev: EventRecord) => ev.kind === 'session.created';
+
+function isChildCreation(ev: EventRecord): boolean {
 	const d = ev.detail;
-	if (!d || typeof d !== 'object' || Array.isArray(d) || d.origin !== 'child') return undefined;
-	return typeof d.parent_session_id === 'string' ? d.parent_session_id : null;
+	return isCreation(ev) && !!d && typeof d === 'object' && !Array.isArray(d) && d.origin === 'child';
 }
 
-/** Runs of two or more consecutive "child session created" rows under the
- *  same parent fold into one item; everything else passes through. */
+/** Runs of two or more consecutive "session created" rows (spawned, child or
+ *  daemon-registered alike) fold into one item; everything else passes through. */
 export function foldChildCreations(rows: readonly EventRecord[]): FeedItem[] {
 	const out: FeedItem[] = [];
 	let run: EventRecord[] = [];
-	let runParent: string | null | undefined;
 	const flush = () => {
 		if (run.length >= 2) {
-			out.push({ type: 'children', key: `children-${run[0].id}`, parentId: runParent ?? null, events: run });
+			out.push({
+				type: 'children',
+				key: `created-${run[0].id}`,
+				allChildren: run.every(isChildCreation),
+				events: run
+			});
 		} else {
 			for (const event of run) out.push({ type: 'event', event });
 		}
 		run = [];
-		runParent = undefined;
 	};
 	for (const ev of rows) {
-		const parent = childParent(ev);
-		if (parent !== undefined && (run.length === 0 || parent === runParent)) {
+		if (isCreation(ev)) {
 			run.push(ev);
-			runParent = parent;
 			continue;
 		}
 		flush();
-		if (parent !== undefined) {
-			run.push(ev);
-			runParent = parent;
-		} else {
-			out.push({ type: 'event', event: ev });
-		}
+		out.push({ type: 'event', event: ev });
 	}
 	flush();
 	return out;
