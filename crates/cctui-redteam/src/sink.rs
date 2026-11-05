@@ -11,9 +11,11 @@ pub enum Channel {
     Tcp,
 }
 
-/// One connection that reached the sink. Its mere existence is the finding: the
-/// sink sits where no sanctioned destination is, so any hit is egress or
-/// lateral reach. `token` carries any canary echoed by the client.
+/// One connection that reached the sink.
+///
+/// Its mere existence is the finding: the sink sits where no sanctioned
+/// destination is, so any hit is egress or lateral reach. `token` carries any
+/// canary echoed by the client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SinkHit {
     pub channel: Channel,
@@ -41,9 +43,10 @@ fn snapshot(hits: &Hits) -> Vec<SinkHit> {
     hits.lock().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
-/// Pull a canary out of an HTTP request line or headers: the probes echo the
-/// token they were handed in the path (`/canary/<tok>`) or an `X-Canary`
-/// header, so a hit ties back to the credential whose use it proves.
+/// Pull a canary out of an HTTP request line or headers.
+///
+/// The probes echo the token they were handed in the path (`/canary/<tok>`) or
+/// an `X-Canary` header, so a hit ties back to the credential it proves use of.
 fn extract_token(request: &str) -> String {
     for line in request.lines() {
         if let Some(rest) = line.strip_prefix("GET /canary/") {
