@@ -68,7 +68,7 @@ async fn profile_guard(
     let profile = state.profile_source.get(&namespace, name).await.map_err(|e| {
         anyhow::anyhow!("cannot resolve WorkerProfile `{name}` in `{namespace}`: {e}")
     })?;
-    Ok(profile.map_or((None, ProfileFlags::default()), |p| {
+    Ok(profile.map_or_else(|| (None, ProfileFlags::default()), |p| {
         let flags =
             ProfileFlags { exec_interception: p.exec_interception(), human_gate: p.human_gate };
         (p.guard, flags)
