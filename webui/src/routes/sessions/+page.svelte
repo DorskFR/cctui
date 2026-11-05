@@ -334,6 +334,8 @@
 	trailing={isAdmin || (sp.tiles && tilesOverflow.length) ? trailingControls : undefined}
 	onUpdateLabel={sp.updateLabel}
 	onDeleteLabel={sp.deleteLabel}
+	scopeMachine={sp.openSession ? (sp.openSession.machine_name ?? sp.openSession.machine_id) : null}
+	scopeDir={sp.openSession?.working_dir || null}
 />
 
 {#if sp.list.selecting}
