@@ -464,12 +464,10 @@ mod tests {
     }
 
     fn reply(routes: &Routes, key: &str) -> (u16, String) {
-        let mut routes = routes.lock().unwrap();
-        let Some((_, queue)) = routes.iter_mut().find(|(k, _)| k == key) else {
-            return (404, "{}".to_owned());
-        };
-        let next = if queue.len() > 1 { queue.pop_front() } else { queue.front().cloned() };
-        next.unwrap_or((404, "{}".to_owned()))
+        let next = routes.lock().unwrap().iter_mut().find(|(k, _)| k == key).and_then(|(_, q)| {
+            if q.len() > 1 { q.pop_front() } else { q.front().cloned() }
+        });
+        next.unwrap_or_else(|| (404, "{}".to_owned()))
     }
 
     async fn handle(conn: &mut TcpStream, routes: &Routes, log: &Log) -> std::io::Result<()> {
@@ -498,7 +496,7 @@ mod tests {
             }
             buf.extend_from_slice(&chunk[..n]);
         }
-        let body = String::from_utf8_lossy(&buf[end..]).to_string();
+        let body = String::from_utf8_lossy(&buf[end..]).into_owned();
         let mut parts = head.split_whitespace();
         let method = parts.next().unwrap_or_default().to_ascii_uppercase();
         let path = parts.next().unwrap_or_default().split('?').next().unwrap_or_default();
@@ -659,8 +657,9 @@ mod tests {
             log.iter().find(|l| l.starts_with("POST /api/v1/sessions/dispatch")).unwrap();
         assert!(dispatch.contains("auth=true"));
         assert!(dispatch.contains("base64 -d"));
-        let hits = log.iter().filter(|l| l.starts_with("GET /hits"));
-        assert!(hits.clone().count() == 2 && hits.clone().all(|l| l.contains("auth=false")));
+        let hits: Vec<&String> = log.iter().filter(|l| l.starts_with("GET /hits")).collect();
+        assert_eq!(hits.len(), 2);
+        assert!(hits.iter().all(|l| l.contains("auth=false")));
     }
 
     #[tokio::test]

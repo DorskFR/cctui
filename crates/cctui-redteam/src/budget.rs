@@ -43,31 +43,31 @@ pub enum Admission {
 /// Run-wide ledger: each scenario is admitted with a cap no larger than what is left.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ledger {
-    total_usd: f64,
-    per_scenario_usd: f64,
-    spent_usd: f64,
+    total: f64,
+    per_scenario: f64,
+    spent: f64,
 }
 
 impl Ledger {
     #[must_use]
     pub const fn new(total_usd: f64, per_scenario_usd: f64) -> Self {
-        Self { total_usd, per_scenario_usd, spent_usd: 0.0 }
+        Self { total: total_usd, per_scenario: per_scenario_usd, spent: 0.0 }
     }
 
     #[must_use]
     pub const fn spent(&self) -> f64 {
-        self.spent_usd
+        self.spent
     }
 
     #[must_use]
     pub const fn remaining(&self) -> f64 {
-        (self.total_usd - self.spent_usd).max(0.0)
+        (self.total - self.spent).max(0.0)
     }
 
     /// Admit a scenario asking for `requested`, capped by the per-scenario and remaining budget.
     #[must_use]
     pub const fn admit(&self, requested: f64) -> Admission {
-        let cap = requested.min(self.per_scenario_usd).min(self.remaining());
+        let cap = requested.min(self.per_scenario).min(self.remaining());
         if cap.is_finite() && cap >= MIN_VIABLE_USD {
             Admission::Admitted(cap)
         } else {
@@ -78,7 +78,7 @@ impl Ledger {
     /// Charge what a scenario actually cost; returns whether it overran its cap.
     pub const fn settle(&mut self, cap: f64, actual: f64) -> bool {
         let actual = if actual.is_finite() { actual.max(0.0) } else { cap };
-        self.spent_usd += actual;
+        self.spent += actual;
         actual > cap
     }
 }
