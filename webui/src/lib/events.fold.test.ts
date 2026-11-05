@@ -21,31 +21,30 @@ function ev(kind: string, detail: EventRecord['detail'] = {}): EventRecord {
 const child = (parent: string) => ev('session.created', { origin: 'child', parent_session_id: parent });
 
 describe('foldChildCreations', () => {
-	it('folds a run of child creations under one parent', () => {
+	it('folds a run of child creations and says they are all subagents', () => {
 		const rows = [child('p1'), child('p1'), child('p1'), ev('session.ended')];
 		const items = foldChildCreations(rows);
 		expect(items.map((i) => i.type)).toEqual(['children', 'event']);
 		const folded = items[0];
 		expect(folded.type === 'children' && folded.events.length).toBe(3);
-		expect(folded.type === 'children' && folded.parentId).toBe('p1');
+		expect(folded.type === 'children' && folded.allChildren).toBe(true);
 	});
 
-	it('leaves a lone child creation as a plain row', () => {
-		const items = foldChildCreations([child('p1'), ev('session.ended')]);
-		expect(items.map((i) => i.type)).toEqual(['event', 'event']);
-	});
-
-	it('starts a new run when the parent changes', () => {
-		const items = foldChildCreations([child('p1'), child('p1'), child('p2'), child('p2')]);
-		expect(items.map((i) => (i.type === 'children' ? i.parentId : 'event'))).toEqual(['p1', 'p2']);
-	});
-
-	it('never folds other creations', () => {
+	it('folds mixed creations the way real feeds interleave them', () => {
 		const rows = [
 			ev('session.created', { origin: 'spawned' }),
-			ev('session.created', { origin: 'daemon-registered' })
+			child('p1'),
+			ev('session.created', { origin: 'spawned' }),
+			ev('session.ended')
 		];
-		expect(foldChildCreations(rows).every((i) => i.type === 'event')).toBe(true);
+		const items = foldChildCreations(rows);
+		expect(items.map((i) => i.type)).toEqual(['children', 'event']);
+		expect(items[0].type === 'children' && items[0].allChildren).toBe(false);
+	});
+
+	it('leaves a lone creation as a plain row', () => {
+		const items = foldChildCreations([child('p1'), ev('session.ended')]);
+		expect(items.map((i) => i.type)).toEqual(['event', 'event']);
 	});
 
 	it('keeps every event, in order', () => {

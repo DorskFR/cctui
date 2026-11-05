@@ -209,9 +209,9 @@
 
 <style>
 	.ask {
-		border: 1px solid var(--c-violet);
+		border: 1px solid var(--attention-bar);
 		border-radius: var(--r-md);
-		background: color-mix(in srgb, var(--c-violet) 6%, var(--bg-elevated));
+		background: var(--attention-bg-solid);
 		padding: var(--sp-3);
 		margin: var(--sp-2) 0;
 		display: flex;

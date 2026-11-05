@@ -21,37 +21,37 @@
 
 <InstanceSection />
 
-<SettingSection id="users" icon="◍" title={m.settings_nav_users()}>
+<SettingSection id="users" icon="users" title={m.settings_nav_users()}>
 	{#if active}
 		<div data-journey="page" data-journey-key="users"><AccessPanel /></div>
 	{/if}
 </SettingSection>
 
-<SettingSection id="dispatchers" icon="➤" title={m.settings_nav_dispatchers()}>
+<SettingSection id="dispatchers" icon="send" title={m.settings_nav_dispatchers()}>
 	{#if active}
 		<div data-journey="page" data-journey-key="dispatchers"><DispatchersPanel heading={false} /></div>
 	{/if}
 </SettingSection>
 
-<SettingSection id="harnesses" icon="▥" title={m.set_harnesses_title()}>
+<SettingSection id="harnesses" icon="settings" title={m.set_harnesses_title()}>
 	<HarnessUpdateGroup />
 	<MachineAdaptersGroup isAdmin />
 </SettingSection>
 
-<SettingSection id="limits" icon="◔" title={m.set_limits_title()}>
+<SettingSection id="limits" icon="filter" title={m.set_limits_title()}>
 	<SpawnLimitsGroup />
 	<UploadsSection />
 	<EventRetentionGroup />
 </SettingSection>
 
-<SettingSection id="network" icon="⇄" title={m.set_network_title()}>
+<SettingSection id="network" icon="link" title={m.set_network_title()}>
 	<UpstreamHostsGroup />
 </SettingSection>
 
-<SettingSection id="integrations" icon="♪" title={m.set_integrations_title()}>
+<SettingSection id="integrations" icon="volume-high" title={m.set_integrations_title()}>
 	<SpeechGroup />
 </SettingSection>
 
-<SettingSection id="instance-plugins" icon="⧉" title={m.set_instance_plugins_title()}>
+<SettingSection id="instance-plugins" icon="grid" title={m.set_instance_plugins_title()}>
 	<PluginsAdminGroup isAdmin />
 </SettingSection>

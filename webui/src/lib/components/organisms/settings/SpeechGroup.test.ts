@@ -45,6 +45,7 @@ const choose = (label: string, value: string) => {
 const type = (el: HTMLInputElement, value: string) => {
 	el.value = value;
 	el.dispatchEvent(new Event('input', { bubbles: true }));
+	el.dispatchEvent(new Event('change', { bubbles: true }));
 	flushSync();
 };
 
@@ -81,11 +82,11 @@ describe('speech settings', () => {
 		await settle();
 		expect(document.body.textContent).toContain('no key');
 		expect(input('Base URL').value).toBe(config.base_url);
-		expect(button('Save')?.disabled).toBe(true);
+		expect(button('Save')).toBeUndefined();
+		expect(api.setSpeechSettings).not.toHaveBeenCalled();
 
 		api.setSpeechSettings.mockResolvedValue(info({ has_key: true }));
 		type(input('API key'), ' sk-new ');
-		button('Save')?.click();
 		await settle();
 		expect(api.setSpeechSettings).toHaveBeenCalledWith({ config, api_key: 'sk-new' });
 		expect(document.body.textContent).toContain('key set');
@@ -93,7 +94,6 @@ describe('speech settings', () => {
 
 		api.setSpeechSettings.mockResolvedValue(info({ has_key: true, config: { ...config, tts_voice: 'bf_emma' } }));
 		choose('Voice', 'bf_emma');
-		button('Save')?.click();
 		await settle();
 		expect(api.setSpeechSettings).toHaveBeenLastCalledWith({ config: { ...config, tts_voice: 'bf_emma' } });
 
@@ -125,13 +125,16 @@ describe('speech settings', () => {
 		expect(optionsOf('Voice')).toEqual(['custom', 'af_heart', 'bf_emma']);
 		expect(optionsOf('Summary model')).toEqual(['', 'qwen3-1.7b']);
 
-		api.setSpeechSettings.mockResolvedValue(info());
+		const picked = { ...config, tts_voice: 'custom', stt_model: 'whistle' };
+		api.setSpeechSettings.mockResolvedValue(info({ config: picked }));
 		choose('Speech-to-text model', 'whistle');
+		await settle();
+		expect(api.setSpeechSettings).toHaveBeenLastCalledWith({ config: picked });
+		api.setSpeechSettings.mockResolvedValue(info({ config: { ...picked, summary_model: 'qwen3-1.7b' } }));
 		choose('Summary model', 'qwen3-1.7b');
-		button('Save')?.click();
 		await settle();
 		expect(api.setSpeechSettings).toHaveBeenLastCalledWith({
-			config: { ...config, tts_voice: 'custom', stt_model: 'whistle', summary_model: 'qwen3-1.7b' }
+			config: { ...picked, summary_model: 'qwen3-1.7b' }
 		});
 
 		button('Test')?.click();
@@ -162,14 +165,14 @@ describe('speech settings', () => {
 
 		api.setSpeechSettings.mockResolvedValue(info({ config: { ...config, stt_model: '' } }));
 		choose('Speech-to-text model', '');
-		button('Save')?.click();
 		await settle();
 		expect(api.setSpeechSettings).toHaveBeenLastCalledWith({ config: { ...config, stt_model: '' } });
 
-		api.setSpeechSettings.mockResolvedValue(info({ config: { ...config, tts_model: '' } }));
+		api.setSpeechSettings.mockResolvedValue(info());
 		choose('Speech-to-text model', 'parakeet');
+		await settle();
+		api.setSpeechSettings.mockResolvedValue(info({ config: { ...config, tts_model: '' } }));
 		choose('Text-to-speech model', '');
-		button('Save')?.click();
 		await settle();
 		expect(api.setSpeechSettings).toHaveBeenLastCalledWith({ config: { ...config, tts_model: '' } });
 	});
@@ -184,13 +187,11 @@ describe('speech settings', () => {
 
 		api.setSpeechSettings.mockResolvedValue(info({ config: { ...config, stt_part_ms: 1500 } }));
 		type(field, '1.5');
-		button('Save')?.click();
 		await settle();
 		expect(api.setSpeechSettings).toHaveBeenLastCalledWith({ config: { ...config, stt_part_ms: 1500 } });
 
 		api.setSpeechSettings.mockResolvedValue(info());
 		type(input('Text appears after (seconds of speech)'), '');
-		button('Save')?.click();
 		await settle();
 		expect(api.setSpeechSettings).toHaveBeenLastCalledWith({ config });
 	});
@@ -202,7 +203,6 @@ describe('speech settings', () => {
 		comp = mount(SpeechGroup, { target: document.body });
 		await settle();
 		type(input('Base URL'), '');
-		button('Save')?.click();
 		await settle();
 		expect(toast.error).toHaveBeenCalledWith('base_url is required to enable speech');
 	});

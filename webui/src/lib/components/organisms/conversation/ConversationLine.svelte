@@ -344,15 +344,18 @@
 		margin-left: auto;
 		flex: none;
 		display: inline-flex;
-		opacity: 0;
 	}
-	.line:hover .actions-slot,
-	.line:focus-within .actions-slot {
-		opacity: 1;
-	}
-	@media (pointer: coarse) {
+	/* Hidden actions must never take a tap: only a hover-capable fine pointer
+	   gets them hidden, and then they take no pointer events until revealed. */
+	@media (hover: hover) and (pointer: fine) {
 		.actions-slot {
+			opacity: 0;
+			pointer-events: none;
+		}
+		.line:hover .actions-slot,
+		.line:focus-within .actions-slot {
 			opacity: 1;
+			pointer-events: auto;
 		}
 	}
 	.fork-check {

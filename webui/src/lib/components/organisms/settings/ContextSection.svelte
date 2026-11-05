@@ -177,7 +177,7 @@
 	{/if}
 {/snippet}
 
-<SettingSection id="context" icon="❖" title={m.settings_nav_context()}>
+<SettingSection id="context" icon="book" title={m.settings_nav_context()}>
 	{#snippet descriptionSlot()}
 		<Text size="sm" tone="faint">{m.settings_context_intro()}</Text>
 	{/snippet}
@@ -209,7 +209,6 @@
 									{#if item.pending}
 										<Button
 											size="sm"
-											variant="primary"
 											disabled={busy}
 											onclick={() => {
 												cancel();
@@ -228,7 +227,7 @@
 				{/if}
 				{#if !draft}
 					<div class="add">
-						<Button variant="primary" onclick={() => startNew(bucket.kind)}>{bucket.add}</Button>
+						<Button onclick={() => startNew(bucket.kind)}>{bucket.add}</Button>
 					</div>
 				{/if}
 			</SettingRow>

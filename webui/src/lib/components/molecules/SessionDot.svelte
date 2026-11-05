@@ -37,7 +37,7 @@
 	{#snippet trigger()}
 		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 		<span
-			class="dot {livenessClass}"
+			class="dot hit-target {livenessClass}"
 			role="img"
 			tabindex="0"
 			aria-label={m.sessions_dot_aria()}

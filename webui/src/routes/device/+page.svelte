@@ -77,7 +77,6 @@
 		<label class="code-label" for="device-code">{m.device_code_label()}</label>
 		<Input
 			id="device-code"
-			mono
 			size="lg"
 			width="13rem"
 			placeholder="XXXX-XXXX"
@@ -85,7 +84,7 @@
 			autocomplete="one-time-code"
 			autocapitalize="characters"
 			spellcheck={false}
-			style="text-align: center; letter-spacing: 0.12em; text-transform: uppercase;"
+			style="font-family: var(--font-mono); font-variant-numeric: normal; text-align: center; text-transform: uppercase;"
 			value={code}
 			oninput={(e) => (code = normalizeUserCode((e.currentTarget as HTMLInputElement).value))}
 		/>

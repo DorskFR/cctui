@@ -109,3 +109,25 @@ describe('HarnessUpdateGroup restart when idle', () => {
 		expect(toasts.ok).not.toHaveBeenCalled();
 	});
 });
+
+describe('HarnessUpdateGroup instance policy', () => {
+	it('saves as soon as a field is committed, with no Save button', async () => {
+		api.harnessAutoupdate.mockResolvedValue(info([]));
+		api.setHarnessAutoupdate.mockResolvedValue({
+			instance: { ...policy, enabled: true },
+			machines: []
+		});
+		comp = mount(HarnessUpdateGroup, { target: document.body });
+		await settle();
+		expect([...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'Save')).toBe(false);
+
+		document.querySelector<HTMLElement>('[role="switch"]')!.click();
+		await settle();
+		expect(api.setHarnessAutoupdate).toHaveBeenCalledWith({ enabled: true, interval_hours: 24, harnesses: [] });
+
+		const hours = [...document.querySelectorAll('label')]
+			.find((l) => l.textContent?.includes('Every (hours)'))
+			?.getAttribute('for');
+		expect(hours && document.getElementById(hours)).toBeTruthy();
+	});
+});

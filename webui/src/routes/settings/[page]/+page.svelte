@@ -11,6 +11,7 @@
 	import PageHead from '$lib/components/molecules/PageHead.svelte';
 	import SettingsToc, { type TocEntry } from '$lib/components/organisms/settings/SettingsToc.svelte';
 	import SettingsPages from '$lib/components/organisms/settings/SettingsPages.svelte';
+	import { searchSections } from '$lib/components/organisms/settings/settingsIndex';
 	import {
 		applySettingsFilter,
 		DEFAULT_SETTINGS_PAGE,
@@ -57,22 +58,25 @@
 	let query = $state('');
 	let content = $state<HTMLElement | null>(null);
 	let visibleRows = $state(-1);
+	const sectionHits = $derived(searchSections(query, isAdmin));
 	$effect(() => {
 		const q = query;
 		const here = current;
-		void isAdmin;
+		const hits = sectionHits;
 		if (!content) return;
 		const root = content;
 		const timer = setTimeout(() => {
 			void tick().then(() => {
-				visibleRows = applySettingsFilter(root, q);
+				visibleRows = applySettingsFilter(root, q, new Set(hits.map((h) => h.anchor)));
 				if (!q.trim()) return;
-				const target = firstMatchingPage(root);
+				const hit = hits[0];
+				const target = hit?.page ?? firstMatchingPage(root);
 				if (target && target !== here) {
 					void goto(settingsHref(target), { replaceState: true, noScroll: true, keepFocus: true });
 					return;
 				}
-				firstMatchingRow(root, here)?.scrollIntoView({ block: 'nearest' });
+				const el = hit ? document.getElementById(hit.anchor) : firstMatchingRow(root, here);
+				el?.scrollIntoView({ block: 'nearest' });
 			});
 		}, FILTER_DEBOUNCE_MS);
 		return () => clearTimeout(timer);
@@ -129,6 +133,18 @@
 					{/if}
 					<Text size="xs" tone={settings.saveStatus === 'error' ? 'danger' : 'faint'}>{saveLabel}</Text>
 				</span>
+			{/if}
+
+			{#if sectionHits.length}
+				<nav class="hits" aria-label={m.set_search_sections()}>
+					<Text variant="eyebrow" tone="muted">{m.set_search_sections()}</Text>
+					{#each sectionHits as h (h.anchor)}
+						<a class="hit" href={settingsHref(h.page, h.anchor)}>
+							<Text size="sm" tone="muted">{h.area} ›</Text>
+							<Text size="sm">{h.title}</Text>
+						</a>
+					{/each}
+				</nav>
 			{/if}
 
 			<div class="content" bind:this={content}>
@@ -188,6 +204,20 @@
 	}
 	.content {
 		min-width: 0;
+	}
+	.hits {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--sp-1) var(--sp-3);
+	}
+	.hit {
+		display: inline-flex;
+		gap: var(--sp-1);
+		text-decoration: none;
+	}
+	.hit:hover {
+		text-decoration: underline;
 	}
 	.empty {
 		padding: var(--sp-6) 0;

@@ -87,7 +87,7 @@
 				{#if item.type === 'event'}
 					<EventRow event={item.event} />
 				{:else}
-					<EventChildrenRow events={item.events} />
+					<EventChildrenRow events={item.events} allChildren={item.allChildren} />
 				{/if}
 			{/each}
 		</ul>

@@ -9,6 +9,7 @@
 	let err = $state('');
 	let busy = $state(false);
 	let passkeyBusy = $state(false);
+	let tokenEl = $state<HTMLInputElement | null>(null);
 	let passkeys = $state<PasskeyConfig | null>(null);
 	// Cancels a pending conditional-mediation request. A conditional `get()`
 	// stays open until it is used or aborted, and only one may be in flight, so
@@ -71,7 +72,11 @@
 
 	async function submit(e: SubmitEvent) {
 		e.preventDefault();
-		if (!token.trim() || busy) return;
+		if (busy) return;
+		if (!token.trim()) {
+			tokenEl?.focus();
+			return;
+		}
 		busy = true;
 		err = '';
 		try {
@@ -99,10 +104,17 @@
 				autocomplete={offerPasskey ? 'current-password webauthn' : 'current-password'}
 				placeholder={m.login_token_placeholder()}
 				bind:value={token}
+				bind:el={tokenEl}
 			/>
 		</Field>
 		{#if err}<Text as="div" tone="danger" size="sm">{err}</Text>{/if}
-		<Button variant="primary" block type="submit" loading={busy} disabled={busy || !token.trim()}>
+		<Button
+			variant={token.trim() ? 'primary' : 'default'}
+			block
+			type="submit"
+			loading={busy}
+			disabled={busy}
+		>
 			{m.login_sign_in()}
 		</Button>
 		{#if offerPasskey}

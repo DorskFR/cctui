@@ -11,8 +11,10 @@
 	import { settingsApi } from './settingsApi';
 	import { parseRetentionDays, sourceLabel } from './serverSettings.logic';
 
+	const DEFAULT_DAYS = 90;
+
 	let info = $state<EventRetentionInfo | null>(null);
-	let draft = $state('');
+	let draft = $state(String(DEFAULT_DAYS));
 	let saving = $state(false);
 
 	function apply(next: EventRetentionInfo) {
@@ -51,10 +53,11 @@
 	<SettingGroup title={m.set_event_retention_title()}>
 		<SettingRow
 			label={m.set_event_retention_label()}
-			help={m.set_event_retention_help({ days: info?.default_days ?? 90 })}
+			help={m.set_event_retention_help({ days: info?.default_days ?? DEFAULT_DAYS })}
 		>
 			<Input
 				inputmode="numeric"
+				placeholder={String(info?.default_days ?? DEFAULT_DAYS)}
 				bind:value={draft}
 				onchange={commit}
 				invalid={parsed === null}

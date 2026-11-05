@@ -524,7 +524,7 @@
 				speakingKey={speaker.key}
 			/>
 
-			<ActivityBanner {stream} {archived} {needsInput} />
+			<ActivityBanner {stream} {archived} {needsInput} since={session.last_activity_at} />
 			<AutoArchiveNotice {session} onpin={() => togglePin(session)} />
 
 			{#if liveVoice.active}

@@ -49,15 +49,19 @@ code {
   font-variant-numeric: tabular-nums;
 }
 
-/* Grows the hit box of a raw icon button or link to --hit-min without moving
- * its layout box. */
-.hit-target {
+/* Grows the hit box of a raw icon button or link to --hit-min, centred on it,
+ * without moving its layout box or painting anything. Kit controls size their
+ * own hit area and own their pseudo-elements, so the class is inert on them. */
+.hit-target:not([data-tsu], .btn, .pop-trigger) {
   position: relative;
 }
-.hit-target::before {
+.hit-target:not([data-tsu], .btn, .pop-trigger)::before {
   content: "";
   position: absolute;
   inset: min(0px, calc((100% - var(--hit-min)) / 2));
+  background: none;
+  border: 0;
+  box-shadow: none;
 }
 
 /* DataTable rowClass hook (revoked keys/tokens/machines). */

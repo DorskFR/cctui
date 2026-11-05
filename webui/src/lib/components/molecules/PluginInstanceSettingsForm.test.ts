@@ -114,18 +114,22 @@ describe('plugin instance settings form', () => {
 		query.data = settings();
 		query.isPending = false;
 		render();
-		type(field('plugin-instance-secret', 'webhookSecret'), 'hunter2');
-		(at('plugin-instance-save') as HTMLButtonElement).click();
+		const secret = field('plugin-instance-secret', 'webhookSecret');
+		type(secret, 'hunter2');
+		secret.dispatchEvent(new Event('change', { bubbles: true }));
 		await vi.waitFor(() => expect(endpoints.savePluginInstanceSettings).toHaveBeenCalled());
 		expect(endpoints.savePluginInstanceSettings).toHaveBeenCalledWith('ghreview', { webhookSecret: 'hunter2' });
 		unmount(component);
 	});
 
-	it('cannot save while nothing was typed', () => {
+	it('saves nothing when a field is committed untouched, and has no Save button', () => {
 		query.data = settings();
 		query.isPending = false;
 		render();
-		expect((at('plugin-instance-save') as HTMLButtonElement).disabled).toBe(true);
+		expect(at('plugin-instance-save')).toBeNull();
+		field('plugin-instance-field', 'upstream').dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+		expect(endpoints.savePluginInstanceSettings).not.toHaveBeenCalled();
 		unmount(component);
 	});
 

@@ -9,12 +9,15 @@
 	let {
 		stream,
 		archived = false,
-		needsInput = false
+		needsInput = false,
+		since = null
 	}: {
 		stream: ConversationStream;
 		archived?: boolean;
 		/** The session's list attention, so this line and the list agree. */
 		needsInput?: boolean;
+		/** The session's last activity, for the wait time when this pane saw no agent event. */
+		since?: string | number | null;
 	} = $props();
 
 	const blocked = $derived(!!stream.ask || !!stream.plan || stream.perms.length > 0);
@@ -23,8 +26,9 @@
 
 	// Ticks only while a turn is live, so an idle drawer costs no timer.
 	const now = $derived(active ? clockNow(1_000) : waiting ? clockNow(30_000) : Date.now());
+	const waitedFrom = $derived(typeof stream.lastAgentAt === 'number' ? stream.lastAgentAt : since);
 	const waited = $derived(
-		waiting && typeof stream.lastAgentAt === 'number' ? relativeTime(stream.lastAgentAt, now, false, true) : null
+		waiting && waitedFrom != null ? relativeTime(waitedFrom, now, false, true) || null : null
 	);
 
 	const tool = $derived(active ? stream.currentTool : null);

@@ -11,7 +11,7 @@
 	import { m } from '$lib/paraglide/messages';
 </script>
 
-<SettingSection id="notifications" icon="🔔" title={m.settings_notifications_title()}>
+<SettingSection id="notifications" icon="bell" title={m.settings_notifications_title()}>
 	<SettingGroup>
 		<SettingRow label={m.settings_notify_input_label()} help={m.settings_notify_input_help()}>
 			<Switch

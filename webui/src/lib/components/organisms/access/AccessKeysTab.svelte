@@ -136,7 +136,7 @@
 			</Button>
 		{/if}
 		{#if canManage}
-			<Button variant="primary" size="sm" onclick={() => (mintOpen = true)}>{m.users_mint_key()}</Button>
+			<Button size="sm" onclick={() => (mintOpen = true)}>{m.users_mint_key()}</Button>
 		{/if}
 	</div>
 	<DataTable

@@ -60,9 +60,12 @@
 	{/key}
 	{#if onremove}
 		<div class="danger" data-journey="provider-danger">
-			<Text as="p" tone="muted" size="sm" measure="60ch">
-				{m.acct_remove_provider_help({ provider: providerLabel(selected.provider), name: account.name })}
-			</Text>
+			<div class="danger-text">
+				<Text as="h3" size="sm" weight="semibold" tone="danger">{m.account_section_danger()}</Text>
+				<Text as="p" tone="muted" size="sm" measure="60ch">
+					{m.acct_remove_provider_help({ provider: providerLabel(selected.provider), name: account.name })}
+				</Text>
+			</div>
 			<Button size="sm" variant="danger" onclick={() => onremove?.(selected)}>
 				{m.acct_remove_provider_confirm()}
 			</Button>
@@ -80,6 +83,11 @@
 		margin-top: var(--sp-4);
 		padding: var(--sp-3);
 		border-radius: var(--r-md);
-		background: color-mix(in srgb, var(--danger) 8%, transparent);
+		background: color-mix(in srgb, var(--danger) 10%, var(--bg-elevated));
+	}
+	.danger-text {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-1);
 	}
 </style>

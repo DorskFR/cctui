@@ -91,3 +91,33 @@ describe('PermissionCard', () => {
 		expect(onrespond).toHaveBeenLastCalledWith('call-1', false, 'r-once');
 	});
 });
+
+describe('PermissionCard arguments', () => {
+	it('names the tool once and reads the Bash arguments as command and description', async () => {
+		await render({
+			...base,
+			tool_name: 'Bash',
+			description: 'Bash',
+			input_preview: '{"command":"ls -la","description":"List files in current directory"}'
+		});
+		const body = document.body.textContent ?? '';
+		expect(body.match(/Bash/g)).toHaveLength(1);
+		expect(document.querySelector('pre')?.textContent).toBe('ls -la');
+		expect(body).toContain('List files in current directory');
+		expect(body).not.toContain('{"command"');
+		expect(document.querySelector('[data-tsu="Badge"]')).toBeNull();
+	});
+
+	it('lists other arguments as labelled fields', async () => {
+		await render({ ...base, input_preview: '{"path":".","limit":5}' });
+		const dts = [...document.querySelectorAll('dt')].map((d) => d.textContent);
+		const dds = [...document.querySelectorAll('dd')].map((d) => d.textContent);
+		expect(dts).toEqual(['path', 'limit']);
+		expect(dds).toEqual(['.', '5']);
+	});
+
+	it('keeps a preview that is not JSON verbatim', async () => {
+		await render({ ...base, input_preview: 'rm -rf build' });
+		expect(document.querySelector('pre')?.textContent).toBe('rm -rf build');
+	});
+});

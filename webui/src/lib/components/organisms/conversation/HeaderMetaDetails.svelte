@@ -97,12 +97,10 @@
 		<span class="mp-num"><Text numeric size="xs" weight="semibold">{compact(totals.total)}</Text></span>
 		<span class="mp-key"><Text size="xs" weight="semibold">{m.drawer_details_cost()}</Text></span>
 		<span class="mp-num" data-testid="header-cost">
-			{#if cost}
-				<Text numeric size="xs" weight="semibold"
-					>{cost.source === 'langfuse'
-						? m.chrome_cost_langfuse({ cost: usd(cost.value) })
-						: m.chrome_cost_estimate({ cost: usd(cost.value) })}</Text
-				>
+			{#if cost?.source === 'langfuse'}
+				<LangfuseChip id={session.id} />
+			{:else if cost}
+				<Text numeric size="xs" weight="semibold">{m.chrome_cost_estimate({ cost: usd(cost.value) })}</Text>
 			{:else}
 				<Text size="xs" tone="muted">{m.chrome_cost_plan()}</Text>
 			{/if}
@@ -130,10 +128,6 @@
 		<div class="mp-row">
 			<span class="mp-key"><Text size="xs" tone="muted">{m.drawer_details_calls()}</Text></span>
 			<span class="mp-num"><Text numeric size="xs">{calls}</Text></span>
-		</div>
-		<div class="mp-row">
-			<span class="mp-key"><Text size="xs" tone="muted">{m.drawer_details_langfuse()}</Text></span>
-			<span class="mp-val"><LangfuseChip id={session.id} /></span>
 		</div>
 	{/if}
 	{#if hooks.kind !== 'none'}
@@ -202,12 +196,18 @@
 	.mp-key {
 		min-width: 0;
 	}
+	.mp-row > .mp-key {
+		flex: none;
+		white-space: nowrap;
+	}
 	.mp-num {
 		justify-self: end;
 		white-space: nowrap;
 	}
 	.mp-val {
 		display: inline-flex;
+		flex: 1 1 auto;
+		justify-content: flex-end;
 		align-items: center;
 		min-width: 0;
 		text-align: right;

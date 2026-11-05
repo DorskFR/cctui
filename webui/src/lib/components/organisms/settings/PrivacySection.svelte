@@ -30,7 +30,7 @@
 
 <SettingSection
 	id="privacy"
-	icon="◈"
+	icon="eye-off"
 	title={m.settings_nav_privacy()}
 	description={m.settings_redaction_help()}
 >

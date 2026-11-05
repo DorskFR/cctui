@@ -158,8 +158,12 @@
 			<div class="placeholder"><Spinner label={m.common_loading()} /></div>
 		{:else if vis.empty}
 			<div class="placeholder">
-				<Text tone="muted">{m.sessions_empty_sections()}</Text>
-				<FirstRunChecklist />
+				{#if sp.rawQuery.trim()}
+					<Text tone="muted">{m.list_filter_no_match({ query: sp.rawQuery.trim() })}</Text>
+				{:else}
+					<Text tone="muted">{m.sessions_empty_sections()}</Text>
+					<FirstRunChecklist />
+				{/if}
 			</div>
 		{:else if sp.groupBy !== 'status'}
 			{#each sp.list.groupedSections.filter((g) => vis.groups.has(`dim:${g.key}`)) as g (g.key)}

@@ -91,7 +91,6 @@
 		label={m.sessions_sort_menu_label()}
 		items={sortItems}
 		bare
-		triggerClass="hit-target"
 		placement="bottom-end"
 	>
 		{#snippet trigger()}
@@ -109,7 +108,6 @@
 	</Menu>
 	<IconButton
 		inline
-		class="hit-target"
 		data-journey="group-hide"
 		icon={hidden ? 'eye' : 'eye-off'}
 		size={14}
@@ -120,7 +118,6 @@
 	{#if onarchive}
 		<IconButton
 			inline
-			class="hit-target"
 			data-journey="group-archive"
 			icon="archive"
 			size={14}

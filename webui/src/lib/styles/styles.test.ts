@@ -127,7 +127,14 @@ describe('app.css does not re-declare kit classes', () => {
 	});
 	it('declares the .num and .hit-target utilities', () => {
 		expect(app).toMatch(/^\.num \{[^}]*font-family: var\(--font-numeric\);[^}]*tabular-nums/m);
-		expect(app).toMatch(/^\.hit-target::before \{[^}]*inset: min\(0px, calc\(\(100% - var\(--hit-min\)\) \/ 2\)\)/m);
+		expect(app).toMatch(/^\.hit-target:not\(\[data-tsu\], \.btn, \.pop-trigger\)::before \{[^}]*inset: min\(0px, calc\(\(100% - var\(--hit-min\)\) \/ 2\)\)/m);
+	});
+	it('keeps .hit-target off kit controls, which own their pseudo-elements', () => {
+		const rules = [...app.matchAll(/^([^\n{]*\.hit-target[^\n{]*)\{/gm)].map((m) => m[1].trim());
+		expect(rules.length).toBeGreaterThan(0);
+		for (const sel of rules) expect(sel).toMatch(/^\.hit-target:not\(\[data-tsu\], \.btn, \.pop-trigger\)/);
+		const before = app.slice(app.indexOf('.hit-target:not([data-tsu], .btn, .pop-trigger)::before'));
+		expect(before.slice(0, before.indexOf('}'))).toContain('background: none;');
 	});
 	it.each(['.btn-icon', '.btn-icon-inline', '.btn-control', '.btn-control-square', '.card', '.card-tap', '.container', '.stack', '.row', '.sr-only', '.divider', '.empty'])(
 		'%s is not declared',
@@ -231,6 +238,34 @@ describe('kit-overrides.css', () => {
 			expect(before.endsWith('*/') && /\/\* tsumikit: [^*]+\*\/$/.test(before), overrides.slice(at, at + 40)).toBe(true);
 		}
 		expect(rules.length).toBeGreaterThan(0);
+	});
+
+	it('grows the kit tap-area slab to 44 px on coarse pointers', () => {
+		const coarse = overrides.slice(overrides.indexOf('@media (pointer: coarse) {'));
+		const body = coarse.slice(0, coarse.indexOf('\n}'));
+		expect(body).toContain('--touch-target-compact: 44px;');
+		expect(body).toContain('--touch-slab: min(-8px, calc((100% - var(--touch-target-compact)) / 2));');
+		expect(block(tokens, ':root').get('--touch-slab')).toContain('var(--touch-target-compact)');
+		const kitReads = walk('node_modules/@dorsk/tsumikit/dist/components')
+			.map((f) => readFileSync(f, 'utf8'))
+			.join('\n');
+		expect(kitReads).toContain('var(--touch-slab)');
+	});
+
+	it('renders markdown prose in the body text tier', () => {
+		expect(overrides).toMatch(/:root \{\s*--md-text: var\(--c-text\);/);
+	});
+
+	it('serves the hyphen from a bundled face without the tabular-figure substitution', () => {
+		const face = overrides.slice(overrides.indexOf('@font-face {'), overrides.indexOf('}', overrides.indexOf('@font-face {')));
+		expect(face).toContain('font-family: "Inter";');
+		expect(face).toContain('unicode-range: U+002D;');
+		const src = face.match(/url\("\.\/([^"]+)"\)/)?.[1];
+		expect(src).toBe('fonts/inter-hyphen.woff2');
+		const size = statSync(`src/lib/styles/${src}`).size;
+		expect(size).toBeGreaterThan(0);
+		expect(size).toBeLessThan(4096);
+		expect(app.indexOf('./kit-overrides.css')).toBeGreaterThan(app.indexOf('@dorsk/tsumikit/styles/font.css'));
 	});
 
 	it('rounds every font-size token to a whole pixel', () => {

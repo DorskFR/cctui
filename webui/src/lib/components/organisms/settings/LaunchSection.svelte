@@ -24,7 +24,7 @@
 	];
 </script>
 
-<SettingSection id="profiles" icon="▶" title={m.set_launch_title()} description={m.set_launch_desc()}>
+<SettingSection id="profiles" icon="play" title={m.set_launch_title()} description={m.set_launch_desc()}>
 	<SettingGroup title={m.set_profiles_group()}>
 		{#if active}
 			<ProfilesEditor />

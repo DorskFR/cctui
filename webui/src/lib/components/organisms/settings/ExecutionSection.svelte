@@ -35,7 +35,7 @@
 	}
 </script>
 
-<SettingSection id="automation" icon="⚙" title={m.set_automation_title()}>
+<SettingSection id="automation" icon="recycle" title={m.set_automation_title()}>
 	<SettingGroup title={m.settings_whip_title()}>
 		<SettingRow
 			label={m.settings_whip_phrase_list_label()}
@@ -58,7 +58,7 @@
 				mono
 				autoresize
 				rows={6}
-				style="width:100%;min-height:9rem"
+				style="width:100%;min-height:9rem;font-family:var(--font-mono)"
 				value={whipPhrasesText}
 				placeholder={'pour une autre session\nprêt pour ta relecture'}
 				onchange={(e) => setWhipPhrasesText((e.currentTarget as HTMLTextAreaElement).value)}
@@ -85,7 +85,7 @@
 				{/snippet}
 				<div class="chips">
 					{#each BUILTIN_STALL_PHRASES as p (p)}
-						<Badge mono size="sm" border>{p}</Badge>
+						<Badge size="sm" border><span class="code">{p}</span></Badge>
 					{/each}
 				</div>
 			</Disclosure>
@@ -134,6 +134,9 @@
 <style>
 	.defaults {
 		border-top: 1px solid var(--border);
+	}
+	.code {
+		font-family: var(--font-mono);
 	}
 	.chips {
 		display: flex;

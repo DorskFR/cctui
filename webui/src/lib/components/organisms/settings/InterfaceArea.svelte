@@ -17,7 +17,7 @@
 
 <AppearanceSection />
 
-<SettingSection id="layout" icon="▤" title={m.set_layout_title()}>
+<SettingSection id="layout" icon="layout-grid" title={m.set_layout_title()}>
 	<SettingGroup>
 		<SettingRow label={m.settings_nav_position_label()} help={m.settings_nav_position_help()}>
 			<Select
@@ -58,7 +58,7 @@
 
 <MonitoringSection />
 
-<SettingSection id="conversation-display" icon="❝" title={m.set_conversation_display_title()}>
+<SettingSection id="conversation-display" icon="quote" title={m.set_conversation_display_title()}>
 	<SettingGroup>
 		<SettingRow
 			label={m.settings_role_tinted_background_label()}

@@ -87,6 +87,11 @@
 			toasts.ok(m.settings_speech_saved());
 		});
 
+	/** Every field saves once committed (blur, Enter or a pick); there is no Save button. */
+	function commit() {
+		if (dirty && !busy) void save();
+	}
+
 	const loadCatalog = () =>
 		run(async () => {
 			catalog = await endpoints.speechCatalog();
@@ -118,7 +123,11 @@
 					checked={draft.enabled}
 					label={m.settings_speech_enabled()}
 					size="sm"
-					onclick={() => draft && (draft.enabled = !draft.enabled)}
+					onclick={() => {
+						if (!draft) return;
+						draft.enabled = !draft.enabled;
+						commit();
+					}}
 				/>
 			</SettingRow>
 			<SettingRow label={m.settings_speech_url()}>
@@ -127,6 +136,7 @@
 					placeholder="https://speech.example/v1"
 					aria-label={m.settings_speech_url()}
 					oninput={(e: Event) => draft && (draft.base_url = inputValue(e))}
+					onchange={commit}
 				/>
 			</SettingRow>
 			<SettingRow label={m.settings_speech_key()} wide selfLabelled>
@@ -139,6 +149,7 @@
 						bind:value={keyDraft}
 						placeholder={m.settings_speech_key_placeholder()}
 						aria-label={m.settings_speech_key()}
+						onchange={commit}
 					/>
 					{#if info.has_key}
 						<Button variant="ghost" disabled={busy} onclick={() => save(true)}>
@@ -153,7 +164,11 @@
 						value={draft[field]}
 						aria-label={label}
 						style="width:100%"
-						onchange={(e: Event) => draft && (draft[field] = selectValue(e))}
+						onchange={(e: Event) => {
+							if (!draft) return;
+							draft[field] = selectValue(e);
+							commit();
+						}}
 					>
 						{#if field !== 'tts_voice'}
 							<option value="">{m.settings_speech_summary_off()}</option>
@@ -172,7 +187,11 @@
 					value={draft.summary_model}
 					aria-label={m.settings_speech_summary_model()}
 					style="width:100%"
-					onchange={(e: Event) => draft && (draft.summary_model = selectValue(e))}
+					onchange={(e: Event) => {
+						if (!draft) return;
+						draft.summary_model = selectValue(e);
+						commit();
+					}}
 				>
 					<option value="">{m.settings_speech_summary_off()}</option>
 					{#each choices(catalog.text_models, draft.summary_model) as id (id)}
@@ -186,6 +205,7 @@
 					placeholder="en"
 					aria-label={m.settings_speech_stt_language()}
 					oninput={(e: Event) => draft && (draft.stt_language = inputValue(e))}
+					onchange={commit}
 				/>
 			</SettingRow>
 			<SettingRow label={m.settings_speech_stt_part()} help={m.settings_speech_stt_part_help()}>
@@ -198,13 +218,18 @@
 					placeholder="3"
 					aria-label={m.settings_speech_stt_part()}
 					oninput={(e: Event) => draft && (draft.stt_part_ms = partMs(e))}
+					onchange={commit}
 				/>
 			</SettingRow>
 			<SettingRow label={m.settings_speech_tts_format()}>
 				<Select
 					value={draft.tts_format}
 					aria-label={m.settings_speech_tts_format()}
-					onchange={(e: Event) => draft && (draft.tts_format = selectValue(e))}
+					onchange={(e: Event) => {
+						if (!draft) return;
+						draft.tts_format = selectValue(e);
+						commit();
+					}}
 				>
 					{#each FORMATS as f (f)}
 						<option value={f}>{f}</option>
@@ -212,7 +237,6 @@
 				</Select>
 			</SettingRow>
 			<div class="line actions">
-				<Button disabled={!dirty || busy} onclick={() => save()}>{m.settings_speech_save()}</Button>
 				<Button variant="ghost" disabled={busy || dirty || !info.config.enabled} onclick={loadCatalog}>
 					{m.settings_speech_load()}
 				</Button>

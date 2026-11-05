@@ -81,7 +81,7 @@ describe('ConversationPane chrome', () => {
 	});
 
 	it('feeds the needs-input state to the activity line, not the banners', () => {
-		expect(pane).toContain('<ActivityBanner {stream} {archived} {needsInput} />');
+		expect(pane).toContain('<ActivityBanner {stream} {archived} {needsInput} since={session.last_activity_at} />');
 		expect(pane).toContain('<DrawerBanners sessionId={id} {stream} bind:acctModalOpen />');
 	});
 

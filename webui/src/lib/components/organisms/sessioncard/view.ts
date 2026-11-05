@@ -26,7 +26,7 @@ export type SubagentToggle = {
 
 export type PrLink = { href: string; label: string };
 
-export type Rail = 'attention' | 'working' | null;
+export type Rail = 'attention' | 'working' | 'failed' | null;
 
 export interface SessionView {
 	s: SessionListItem;
@@ -122,8 +122,14 @@ export function prLinksOf(s: SessionListItem): PrLink[] {
 	});
 }
 
-export function railOf(s: SessionListItem, needsInput: boolean, stale: boolean): Rail {
+export function railOf(
+	s: SessionListItem,
+	needsInput: boolean,
+	stale: boolean,
+	end: SessionEnd | null = null
+): Rail {
 	if (needsInput) return 'attention';
+	if (end?.tone === 'danger' && !end.muted) return 'failed';
 	if (s.status === 'archived' || s.status === 'draft' || stale) return null;
 	return s.bucket === 'working' ? 'working' : null;
 }
@@ -194,6 +200,7 @@ export function buildView(
 ): SessionView {
 	const stale = isStaleWorking(s, opts.now);
 	const needsInput = s.attention === 'needs_input' && s.status !== 'archived';
+	const end = sessionEnd(s);
 	return {
 		s,
 		child: opts.child,
@@ -209,8 +216,8 @@ export function buildView(
 		act: toolActivity(s, opts.now),
 		livenessClass: livenessClassOf(s, stale),
 		needsInput,
-		rail: railOf(s, needsInput, stale),
-		end: sessionEnd(s),
+		rail: railOf(s, needsInput, stale, end),
+		end,
 		showStatusBadge: s.status === 'new' || s.status === 'archived',
 		branch: branchOf(s),
 		remote: remoteOf(s),

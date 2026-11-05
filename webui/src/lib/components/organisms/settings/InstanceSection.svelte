@@ -81,7 +81,7 @@
 	}
 </script>
 
-<SettingSection id="general" icon="⚙" title={m.set_general_title()}>
+<SettingSection id="general" icon="settings" title={m.set_general_title()}>
 	<SettingGroup>
 		<SettingRow label={m.settings_admin_instance_name_label()} help={m.settings_admin_instance_name_help()}>
 			<Input

@@ -14,10 +14,15 @@
 	import Lead from './Lead.svelte';
 	import { metaParts, needsYouOf, statusLabel, type SessionActions, type SessionView } from './view';
 
-	// Line 1: gutter · dot · name (takes the width) · labels · status · counts ·
-	// tokens · time, with pin and the label picker on hover. Line 2: machine ·
-	// project · branch · model in muted sans, then the last message.
-	let { view, actions }: { view: SessionView; actions: SessionActions } = $props();
+	// Line 1: gutter · dot · name (takes the width) · trail (labels · status ·
+	// counts · tokens · time, pin and label picker on hover). Line 2: machine ·
+	// project · branch · model in muted sans, then the last message. On a narrow
+	// row the trail moves to line 2 so the name keeps the whole first line.
+	let {
+		view,
+		actions,
+		hue = null
+	}: { view: SessionView; actions: SessionActions; hue?: number | null } = $props();
 	const s = $derived(view.s);
 	const meta = $derived(metaParts(s, { showMachine: view.showMachine, branch: view.branch }).join(' · '));
 	const needsYou = $derived(needsYouOf(s));
@@ -37,6 +42,8 @@
 <div class="crow">
 	<div class="line1">
 		<Lead {view} {actions} row />
+		<span class="brk" aria-hidden="true"></span>
+		<span class="trail">
 		{#if s.labels.length > 0 || actions.labelEditable}
 			<span class="labels" class:hover-act={s.labels.length === 0}
 				><LabelBadge
@@ -92,9 +99,11 @@
 		{#if s.last_message_at}<span class="time"
 				><Timestamp value={s.last_message_at} mode="relative" tone="faint" size="xs" /></span
 			>{/if}
+		</span>
 	</div>
-	{#if meta || preview}
+	{#if meta || preview || hue != null}
 		<div class="line2">
+			{#if hue != null}<span class="hue" style:--mh={hue} aria-hidden="true"></span>{/if}
 			{#if meta}<span class="meta"><Text size="xs" tone="muted" truncate>{meta}</Text></span>{/if}
 			{#if preview}
 				<span class="preview"
@@ -125,6 +134,23 @@
 		align-items: center;
 		gap: var(--sp-2);
 		min-width: 0;
+	}
+	.trail {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-2);
+		flex: 0 1 auto;
+		min-width: 0;
+	}
+	.brk {
+		display: none;
+	}
+	.hue {
+		flex: none;
+		width: 8px;
+		height: 8px;
+		border-radius: 2px;
+		background: hsl(var(--mh) 65% 55%);
 	}
 	.labels {
 		display: inline-flex;
@@ -191,6 +217,36 @@
 	@container sess-row (max-width: 36.25em) {
 		.preview {
 			display: none;
+		}
+		.crow {
+			flex-flow: row wrap;
+			align-items: center;
+			gap: var(--sp-1) var(--sp-2);
+		}
+		.line1,
+		.line2 {
+			display: contents;
+		}
+		.brk {
+			display: block;
+			flex: 0 0 100%;
+			height: 0;
+			order: 1;
+		}
+		.hue,
+		.meta {
+			order: 2;
+		}
+		.meta {
+			flex: 1 1 0;
+		}
+		.trail {
+			order: 3;
+			flex: none;
+		}
+		.account {
+			order: 4;
+			margin-inline-start: 0;
 		}
 	}
 	@container sess-row (max-width: 26em) {

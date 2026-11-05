@@ -26,11 +26,24 @@ describe('groupByCause', () => {
 		expect(groups[1].explanation).toBeNull();
 	});
 
-	it('splits the same reason with a different blocker or different env keys', () => {
-		expect(causeKey(d({ rerun_blocked: 'env', env_keys: ['A'] }))).not.toBe(
+	it('keys on reason and blocker only, so env key sets do not split a group', () => {
+		expect(causeKey(d({ rerun_blocked: 'env', env_keys: ['A'] }))).toBe(
 			causeKey(d({ rerun_blocked: 'env', env_keys: ['B'] }))
 		);
 		expect(causeKey(d())).not.toBe(causeKey(d({ rerun_blocked: 'prompt_truncated' })));
+	});
+
+	it('names the cause in every group so equal reasons read apart', () => {
+		const groups = groupByCause([
+			d({ reason: 'crashed' }),
+			d({ reason: 'crashed', rerun_blocked: 'env', env_keys: ['A'] }),
+			d({ reason: 'crashed', rerun_blocked: 'env', env_keys: ['B'] })
+		]);
+		expect(groups.map((g) => [g.reason, g.cause, g.items.length])).toEqual([
+			['crashed', 'can be re-dispatched', 1],
+			['crashed', 'env not stored', 2]
+		]);
+		expect(groups[1].explanation).toContain('A, B');
 	});
 });
 

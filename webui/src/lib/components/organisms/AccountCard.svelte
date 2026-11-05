@@ -147,9 +147,11 @@
 		outline: 2px solid var(--accent);
 		opacity: 0.85;
 	}
+	/* Whitespace, not rules, between provider columns. */
 	.columns {
 		display: grid;
 		grid-template-columns: repeat(3, minmax(0, 1fr));
+		column-gap: var(--sp-6);
 	}
 	.none {
 		padding: var(--sp-3) var(--sp-4);

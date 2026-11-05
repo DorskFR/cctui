@@ -101,4 +101,23 @@ describe('ProviderSettingsSection', () => {
 		expect(onmoved).not.toHaveBeenCalled();
 		expect(document.getElementById('provider-settings')).not.toBeNull();
 	});
+
+	it('renders the landing page beside the section list without a pick', () => {
+		render({});
+		const heading = document.querySelector('[data-tsu="MasterDetail"] .md-detail-body h3');
+		expect(heading?.textContent?.trim()).toBe('Limits');
+		expect(document.querySelector('.md-detail-header')).toBeNull();
+	});
+
+	it('shows a titled danger zone only with onremove, and hands it the selected provider', () => {
+		render({});
+		expect(document.querySelector('[data-journey="provider-danger"]')).toBeNull();
+		if (comp) unmount(comp);
+		const onremove = vi.fn();
+		render({ onremove });
+		const zone = document.querySelector('[data-journey="provider-danger"]');
+		expect(zone?.textContent).toContain('Danger zone');
+		button('Remove provider').click();
+		expect(onremove).toHaveBeenCalledWith(claude);
+	});
 });

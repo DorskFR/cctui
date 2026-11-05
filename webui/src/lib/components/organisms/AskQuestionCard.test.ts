@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
 import AskQuestionCard from './AskQuestionCard.svelte';
+import askSource from './AskQuestionCard.svelte?raw';
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -160,5 +161,14 @@ describe('two single-select questions with descriptions', () => {
 			comp = null;
 			document.body.innerHTML = '';
 		}
+	});
+});
+
+describe('AskQuestionCard attention styling', () => {
+	it('frames a pending question in the attention colour, not violet or red', () => {
+		const css = askSource.slice(askSource.indexOf('<style>'));
+		const ask = css.slice(css.indexOf('.ask {'), css.indexOf('}', css.indexOf('.ask {')));
+		expect(ask).toContain('var(--attention-bar)');
+		expect(ask).not.toMatch(/--c-violet|--c-red|--danger/);
 	});
 });

@@ -19,7 +19,7 @@
 		useUsers
 	} from '$lib/queries';
 	import { canHideUser, isHiddenOwner } from '$lib/hiddenOwners';
-	import { userStateWords } from './access.logic';
+	import { userMetaWords } from './access.logic';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
 	import { m } from '$lib/paraglide/messages';
@@ -61,9 +61,9 @@
 	const machinesOf = (userId: string) => (machines.data ?? []).filter((mc) => mc.user_id === userId);
 	const userMeta = (u: UserRow) => {
 		if (u.revoked_at) return m.access_revoked_meta();
-		const counts = m.access_user_meta({ machines: machinesOf(u.id).length, accounts: accountsOf(u.id).length });
-		const online = machinesOf(u.id).filter((mc) => mc.liveness === 'online').length;
-		return `${counts} · ${userStateWords(online, machinesOf(u.id).length)}`;
+		const machines = machinesOf(u.id);
+		const online = machines.filter((mc) => mc.liveness === 'online').length;
+		return userMetaWords(machines.length, accountsOf(u.id).length, online);
 	};
 
 	let secret = $state<{ title: string; value: string } | null>(null);

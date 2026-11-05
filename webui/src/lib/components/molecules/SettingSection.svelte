@@ -2,7 +2,7 @@
 	// One subsection of a Settings area: glyph + title + one-line description,
 	// then its groups. `id` is the anchor other screens link to.
 	import type { Snippet } from 'svelte';
-	import { Heading, Text } from '@dorsk/tsumikit';
+	import { Heading, Icon, Text, type IconName } from '@dorsk/tsumikit';
 
 	let {
 		id,
@@ -13,7 +13,7 @@
 		descriptionSlot
 	}: {
 		id: string;
-		icon: string;
+		icon: IconName;
 		title: string;
 		description?: string;
 		children?: Snippet;
@@ -23,7 +23,7 @@
 
 <section {id} class="sec" data-setting-section>
 	<div class="sec-h">
-		<Text tone="accent" as="span">{icon}</Text>
+		<span class="ico"><Icon name={icon} size={18} /></span>
 		<Heading level={2} size="md">{title}</Heading>
 	</div>
 	{#if descriptionSlot}
@@ -44,7 +44,12 @@
 	.sec-h {
 		display: flex;
 		align-items: center;
-		gap: var(--sp-3);
+		gap: var(--sp-2);
+	}
+	.ico {
+		display: inline-flex;
+		flex: none;
+		color: var(--accent);
 	}
 	.groups {
 		display: flex;

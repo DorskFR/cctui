@@ -33,7 +33,7 @@
 	}
 </script>
 
-<SettingSection id="storage" icon="▣" title={m.set_storage_title()}>
+<SettingSection id="storage" icon="archive" title={m.set_storage_title()}>
 	<SettingGroup>
 		<SettingRow
 			label={m.settings_storage_attachments_label()}
@@ -43,7 +43,7 @@
 				<Text size="sm" tone="faint">
 					{bytes > 0 ? m.settings_storage_used({ size: fmtSize(bytes) }) : m.settings_storage_empty()}
 				</Text>
-				<Button size="sm" variant="ghost" disabled={busy || bytes === 0} onclick={clear}>
+				<Button size="sm" variant="danger" disabled={busy || bytes === 0} onclick={clear}>
 					{m.settings_storage_clear()}
 				</Button>
 			</div>

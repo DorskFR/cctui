@@ -75,6 +75,14 @@ describe('state filter', () => {
 		expect(matchesClientFilters(session({ bucket: 'working' }), clientFilters)).toBe(false);
 	});
 
+	it('treats status:working as the Working bucket, not a server status', () => {
+		const { serverQuery, clientFilters } = splitQuery('status:working', schema);
+		expect(serverQuery).toBe('');
+		expect(matchesClientFilters(session({ bucket: 'working' }), clientFilters)).toBe(true);
+		expect(matchesClientFilters(session({ bucket: 'done' }), clientFilters)).toBe(false);
+		expect(splitQuery('status:active', schema).serverQuery).toBe('status:active');
+	});
+
 	it('supports negation', () => {
 		const { clientFilters } = splitQuery('state!=working', schema);
 		expect(clientFilters.map((f) => f.op)).toEqual(['ne']);

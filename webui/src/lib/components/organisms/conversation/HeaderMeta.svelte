@@ -101,9 +101,9 @@
 	</span>
 	{#if branch}
 		<span class="branch">
-			<Badge mono title={m.sessions_branch_title({ branch })} style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%">
+			<Badge title={m.sessions_branch_title({ branch })} style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%">
 				<Icon name="fork" size={12} label={m.sessions_branch_label()} />
-				<span class="ellipsis">{branch}</span>
+				<span class="ellipsis code">{branch}</span>
 			</Badge>
 		</span>
 	{/if}
@@ -139,6 +139,7 @@
 			label={m.drawer_meta_details()}
 			placement="bottom-end"
 			box="sm"
+			style="min-width: var(--hit-min); min-height: var(--hit-min)"
 			panelStyle="min-width: min(19rem, calc(100vw - 2 * var(--sp-3))); max-width: min(26rem, calc(100vw - 2 * var(--sp-3)))"
 			data-journey="head-details"
 			bind:open={detailsOpen}
@@ -178,6 +179,9 @@
 		flex: 0 3 auto;
 		min-width: 4.5rem;
 		max-width: 14rem;
+	}
+	.code {
+		font-family: var(--font-mono);
 	}
 	.ellipsis {
 		min-width: 0;

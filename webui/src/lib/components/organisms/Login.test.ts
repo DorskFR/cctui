@@ -68,3 +68,34 @@ describe('Login passkey errors', () => {
 		expect(document.body.textContent).toContain(passkeyFailedText);
 	});
 });
+
+describe('Sign in button', () => {
+	const signIn = () =>
+		[...document.querySelectorAll('button')].find(
+			(b) => b.textContent?.trim() === 'Sign in'
+		) as HTMLButtonElement;
+
+	it('is never a dimmed, disabled primary: outlined until a token is typed, then primary', async () => {
+		auth.passkeyConfig.mockResolvedValue(null);
+		comp = mount(Login, { target: document.body });
+		await settle();
+		expect(signIn().disabled).toBe(false);
+		expect(signIn().classList.contains('btn-primary')).toBe(false);
+
+		const input = document.querySelector('input') as HTMLInputElement;
+		input.value = 'tok';
+		input.dispatchEvent(new Event('input', { bubbles: true }));
+		await settle();
+		expect(signIn().classList.contains('btn-primary')).toBe(true);
+	});
+
+	it('submitting an empty token sends nothing', async () => {
+		auth.passkeyConfig.mockResolvedValue(null);
+		auth.login.mockReset();
+		comp = mount(Login, { target: document.body });
+		await settle();
+		signIn().click();
+		await settle();
+		expect(auth.login).not.toHaveBeenCalled();
+	});
+});

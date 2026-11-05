@@ -18,7 +18,7 @@
 	];
 </script>
 
-<SettingSection id="conversation" icon="❞" title={m.settings_group_conversation()}>
+<SettingSection id="conversation" icon="reply" title={m.settings_group_conversation()}>
 	<SettingGroup>
 		<SettingRow
 			label={m.settings_followup_when_cold_label()}

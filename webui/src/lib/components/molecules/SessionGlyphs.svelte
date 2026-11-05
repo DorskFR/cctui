@@ -79,7 +79,14 @@
 	>
 {/snippet}
 {#snippet account()}
-	<AccountBadge name={session.account_name} warn={accountWarn} showName={showAccountName} onclick={onAccountClick} />
+	{#if onAccountClick}
+		<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+		<span class="acct hit-target" onclick={(e) => e.target === e.currentTarget && onAccountClick?.()}
+			><AccountBadge name={session.account_name} warn={accountWarn} showName={showAccountName} onclick={onAccountClick} /></span
+		>
+	{:else}
+		<AccountBadge name={session.account_name} warn={accountWarn} showName={showAccountName} />
+	{/if}
 {/snippet}
 
 <!-- Folded, the stack owns its taps: they open the big tiles instead of the row. -->
@@ -112,6 +119,9 @@
 	.star.on,
 	.star:hover {
 		color: var(--warn);
+	}
+	.acct {
+		display: inline-flex;
 	}
 	.mach-tile {
 		display: inline-flex;

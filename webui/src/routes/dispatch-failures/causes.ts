@@ -5,6 +5,7 @@ import { m } from '$lib/paraglide/messages';
 export interface FailureCause {
 	key: string;
 	reason: string;
+	cause: string;
 	explanation: string | null;
 	items: FailedDispatch[];
 }
@@ -39,9 +40,23 @@ export function blockedExplanation(d: FailedDispatch): string | null {
 	}
 }
 
+export function causeLabel(d: FailedDispatch): string {
+	switch (d.rerun_blocked) {
+		case 'env':
+			return m.list_failed_cause_env();
+		case 'prompt_truncated':
+			return m.list_failed_cause_prompt();
+		case 'prompt_redacted':
+			return m.list_failed_cause_redacted();
+		case 'payload_too_large':
+			return m.list_failed_cause_payload();
+		default:
+			return m.list_failed_cause_none();
+	}
+}
+
 export function causeKey(d: FailedDispatch): string {
-	const keys = d.rerun_blocked === 'env' ? [...(d.env_keys ?? [])].sort().join(',') : '';
-	return `${d.reason}|${d.rerun_blocked ?? ''}|${keys}`;
+	return `${d.reason}|${d.rerun_blocked ?? ''}`;
 }
 
 export function groupByCause(list: readonly FailedDispatch[]): FailureCause[] {
@@ -54,9 +69,14 @@ export function groupByCause(list: readonly FailedDispatch[]): FailureCause[] {
 			groups.set(key, {
 				key,
 				reason: reasonLabel(d.reason),
-				explanation: blockedExplanation(d),
+				cause: causeLabel(d),
+				explanation: null,
 				items: [d]
 			});
+	}
+	for (const g of groups.values()) {
+		const envKeys = [...new Set(g.items.flatMap((d) => d.env_keys ?? []))];
+		g.explanation = blockedExplanation({ ...g.items[0], env_keys: envKeys });
 	}
 	return [...groups.values()];
 }

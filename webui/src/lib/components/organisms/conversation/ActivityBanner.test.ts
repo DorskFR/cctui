@@ -165,3 +165,16 @@ describe('ActivityBanner', () => {
 		expect(text()).toContain('Idle');
 	});
 });
+
+describe('ActivityBanner wait time', () => {
+	it('falls back to the session activity time when the pane saw no agent event', () => {
+		comp = mount(ActivityBanner, {
+			target: document.body,
+			props: {
+				stream: stream({ lastAgentAt: null, ask: { question: 'which?', questions: null } }),
+				since: new Date(Date.now() - 19 * 60_000).toISOString()
+			}
+		});
+		expect(text()).toContain('Waiting for you · 19m');
+	});
+});

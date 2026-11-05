@@ -4,7 +4,7 @@
 	import EventRow from './EventRow.svelte';
 	import { m } from '$lib/paraglide/messages';
 
-	let { events }: { events: EventRecord[] } = $props();
+	let { events, allChildren }: { events: EventRecord[]; allChildren: boolean } = $props();
 
 	const latest = $derived(events[0]);
 </script>
@@ -16,7 +16,11 @@
 				<Dot status="active" role="img" aria-label="info" title="info" />
 				<Timestamp value={latest.occurred_at} mode="relative" short size="xs" tone="faint" />
 				<Text variant="eyebrow" tone="muted" nowrap>{m.events_family_session()}</Text>
-				<Text size="sm">{m.set_events_children_created({ count: events.length })}</Text>
+				<Text size="sm">
+					{allChildren
+						? m.set_events_children_created({ count: events.length })
+						: m.set_events_sessions_created({ count: events.length })}
+				</Text>
 			</span>
 		{/snippet}
 		<ul class="children">

@@ -97,7 +97,7 @@
 
 <SettingSection
 	id="guides"
-	icon="◇"
+	icon="life-buoy"
 	title={m.settings_guides_title()}
 	description={m.settings_guides_description()}
 >

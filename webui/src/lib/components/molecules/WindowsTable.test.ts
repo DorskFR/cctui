@@ -46,4 +46,13 @@ describe('WindowsTable', () => {
 		const fills = [...el.querySelectorAll<HTMLElement>('.fill')];
 		expect(fills.every((f) => f.style.width === '0%')).toBe(true);
 	});
+
+	it('heads the figures with words, a short form for narrow columns and the full one as title', () => {
+		const el = render(undefined);
+		const head = el.querySelector('.row.head');
+		expect(head?.textContent).not.toMatch(/[↑↓⚡]/);
+		const titled = [...(head?.querySelectorAll<HTMLElement>('[title]') ?? [])];
+		expect(titled.map((c) => c.title)).toEqual(['Input', 'Output', 'Cache read']);
+		expect(titled.map((c) => c.querySelector('.short')?.textContent)).toEqual(['In', 'Out', 'Cache']);
+	});
 });
