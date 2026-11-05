@@ -1073,15 +1073,15 @@ struct CachedSession {
 
 static SESSION_CACHE: LazyLock<DashMap<String, CachedSession>> = LazyLock::new(DashMap::new);
 
-/// Drop an account's cached policy after an edit, so this replica applies it at
-/// once. Other replicas pick it up within [`POLICY_TTL`].
+/// Drop an account's cached policy on this replica only. Edits go through
+/// [`crate::auth::AuthConfig::purge_tool_policy`], which also reaches peers.
 pub fn invalidate_policy_cache(account_id: Uuid) {
     POLICY_CACHE.retain(|_, c| c.account_id != Some(account_id));
 }
 
-/// Drop a session's cached lookup after its bypass is toggled, so the next
-/// gateway request sees the change. Single-replica: another replica would keep
-/// its entry for up to [`SESSION_TTL`].
+/// Drop a session's cached lookup on this replica only. Bypass toggles go
+/// through [`crate::auth::AuthConfig::purge_tool_guard_session`], which also
+/// reaches peers.
 pub fn invalidate_session_guard(session_id: &str) {
     SESSION_CACHE.retain(|_, c| c.session_id.as_deref() != Some(session_id));
 }
@@ -2656,6 +2656,88 @@ mod tests {
         );
 
         cleanup_bypass_fixture(&pool, &fx).await;
+    }
+
+    #[derive(Default)]
+    struct RecordingRelay(std::sync::Mutex<Vec<crate::auth::CachePurge>>);
+
+    impl crate::auth::PurgeRelay for RecordingRelay {
+        fn relay(&self, purge: crate::auth::CachePurge) {
+            self.0.lock().unwrap().push(purge);
+        }
+    }
+
+    fn relayed_auth_config() -> (crate::auth::AuthConfig, Arc<RecordingRelay>) {
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+        let cfg = crate::auth::AuthConfig::new(vec![], pool);
+        let relay = Arc::new(RecordingRelay::default());
+        cfg.set_peers(relay.clone());
+        (cfg, relay)
+    }
+
+    fn cache_session(hash: &str, session_id: &str) {
+        SESSION_CACHE.insert(
+            hash.to_owned(),
+            CachedSession {
+                at: Instant::now(),
+                session_id: Some(session_id.to_owned()),
+                cwd: None,
+                bypass: None,
+            },
+        );
+    }
+
+    fn cache_policy(provider_id: Uuid, account_id: Uuid) {
+        POLICY_CACHE.insert(
+            provider_id,
+            CachedPolicy { at: Instant::now(), account_id: Some(account_id), policy: None },
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_guard_purges_are_relayed_to_peers() {
+        let (cfg, relay) = relayed_auth_config();
+        let (session, account) = (Uuid::new_v4().to_string(), Uuid::new_v4());
+        let (hash, provider) = (Uuid::new_v4().to_string(), Uuid::new_v4());
+        cache_session(&hash, &session);
+        cache_policy(provider, account);
+
+        cfg.purge_tool_guard_session(&session);
+        cfg.purge_tool_policy(account);
+        assert!(!SESSION_CACHE.contains_key(&hash), "the local session entry is dropped");
+        assert!(!POLICY_CACHE.contains_key(&provider), "the local policy entry is dropped");
+        assert_eq!(
+            *relay.0.lock().unwrap(),
+            vec![
+                crate::auth::CachePurge::ToolGuardSession { session_id: session },
+                crate::auth::CachePurge::ToolPolicy { account_id: account },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_relayed_tool_guard_purge_drops_the_entry_without_rebroadcasting() {
+        let (cfg, relay) = relayed_auth_config();
+        let (session, other_session) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+        let (hash, other_hash) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+        let (account, other_account) = (Uuid::new_v4(), Uuid::new_v4());
+        let (provider, other_provider) = (Uuid::new_v4(), Uuid::new_v4());
+        cache_session(&hash, &session);
+        cache_session(&other_hash, &other_session);
+        cache_policy(provider, account);
+        cache_policy(other_provider, other_account);
+
+        cfg.purge_local(&crate::auth::CachePurge::ToolGuardSession { session_id: session });
+        assert!(!SESSION_CACHE.contains_key(&hash));
+        assert!(SESSION_CACHE.contains_key(&other_hash), "other sessions stay cached");
+
+        cfg.purge_local(&crate::auth::CachePurge::ToolPolicy { account_id: account });
+        assert!(!POLICY_CACHE.contains_key(&provider));
+        assert!(POLICY_CACHE.contains_key(&other_provider), "other accounts stay cached");
+
+        assert!(relay.0.lock().unwrap().is_empty(), "a peer's purge must not loop back");
+        SESSION_CACHE.remove(&other_hash);
+        POLICY_CACHE.remove(&other_provider);
     }
 
     #[tokio::test]
