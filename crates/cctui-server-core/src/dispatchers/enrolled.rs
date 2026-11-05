@@ -231,13 +231,14 @@ impl Dispatcher for EnrolledDispatcher {
                 namespace,
                 status,
                 queue_position,
+                exposure,
                 error,
                 ..
             } => {
                 if let Some(err) = error {
                     return Err(DispatchError::Backend(err));
                 }
-                Ok(DispatchHandle { handle, namespace, status, queue_position, exposure: None })
+                Ok(DispatchHandle { handle, namespace, status, queue_position, exposure })
             }
             other => Err(DispatchError::Backend(format!("unexpected dispatcher reply: {other:?}"))),
         }
@@ -364,6 +365,7 @@ mod tests {
                     namespace: None,
                     status: Some("dispatched".into()),
                     queue_position: None,
+                    exposure: None,
                     error: None,
                 },
             ));
@@ -435,6 +437,7 @@ mod tests {
                     namespace: Some("cctui".into()),
                     status: Some("dispatched".into()),
                     queue_position: None,
+                    exposure: None,
                     error: None,
                 },
             ));
@@ -517,6 +520,7 @@ mod tests {
                     namespace: None,
                     status: Some("dispatched".into()),
                     queue_position: None,
+                    exposure: None,
                     error: None,
                 },
             ));

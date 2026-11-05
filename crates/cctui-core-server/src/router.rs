@@ -78,6 +78,7 @@ pub fn router(host: Host) -> Router {
         .route("/api/v1/dispatch/register", post(core::dispatch_identity::register::<Host>))
         .route("/api/v1/dispatch/redeem", post(core::dispatch_identity::redeem::<Host>))
         .route("/api/v1/dispatch/{id}/env", get(core::dispatch_identity::env::<Host>))
+        .route("/api/v1/dispatch/{id}/hold", post(core::dispatch_identity::hold::<Host>))
         .route("/api/v1/daemon/version", get(crate::daemon::version))
         .route("/api/v1/daemon/auth", post(crate::daemon::auth))
         .route("/api/v1/daemon/ws", get(crate::daemon::ws))

@@ -36,6 +36,7 @@ const TEMP_TABLES: &[&str] = &[
     "CREATE TEMP TABLE account_tool_policies (LIKE public.account_tool_policies INCLUDING ALL)",
     "CREATE TEMP TABLE session_hook_policies (LIKE public.session_hook_policies INCLUDING ALL)",
     "CREATE TEMP TABLE machine_launches (LIKE public.machine_launches INCLUDING ALL)",
+    "CREATE TEMP TABLE resource_shares (LIKE public.resource_shares INCLUDING ALL)",
 ];
 
 struct Host {
@@ -429,4 +430,119 @@ async fn a_dispatched_worker_payload_carries_the_effective_hook_policy() {
     assert_eq!(count("SELECT count(*) FROM auth_keys").await, keys, "no worker key minted");
     assert_eq!(count("SELECT count(*) FROM session_hook_policies").await, policies);
     assert!(f.requests.try_recv().is_err(), "nothing was forwarded");
+}
+
+#[tokio::test]
+async fn weakening_an_account_hook_rule_is_refused_before_any_worker_credential_is_minted() {
+    let Some(mut f) = Fixture::new(StatusCode::OK, json!({"handle":"job/review"})).await else {
+        return;
+    };
+    let (account, provider) = (Uuid::new_v4(), Uuid::new_v4());
+    sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, 'reviewer')")
+        .bind(account)
+        .bind(f.ctx.user_id)
+        .execute(&f.host.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO account_providers \
+         (id, user_id, account_id, provider, auth_scheme, encrypted_access_token, base_url) \
+         VALUES ($1, $2, $3, 'anthropic-compatible', 'api_key', $4, 'https://upstream.invalid')",
+    )
+    .bind(provider)
+    .bind(f.ctx.user_id)
+    .bind(account)
+    .bind(cctui_crypto::encrypt("upstream-fixture", &[42; 32]))
+    .execute(&f.host.pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO account_tool_policies (account_id, hooks) VALUES ($1, $2)")
+        .bind(account)
+        .bind(json!([{"event": "PreToolUse", "tool": "shell", "command": "account-audit"}]))
+        .execute(&f.host.pool)
+        .await
+        .unwrap();
+    let mut request = Fixture::request(json!({"prompt_file": "review", "hook_rules": [{
+        "event": "PreToolUse", "tool": "shell", "command": "account-audit", "timeout_secs": 1,
+    }]}));
+    request.account = Some("reviewer".into());
+    let refused = execute_dispatch(&f.host, &f.ctx, request).await.unwrap_err();
+    assert_eq!(refused.0, StatusCode::BAD_REQUEST);
+    assert!(refused.1.error.contains("add-only"), "{}", refused.1.error);
+    let count = |sql: &'static str| {
+        let pool = f.host.pool.clone();
+        async move { sqlx::query_scalar::<_, i64>(sql).fetch_one(&pool).await.unwrap() }
+    };
+    assert_eq!(count("SELECT count(*) FROM auth_keys").await, 0, "no worker key minted");
+    assert_eq!(count("SELECT count(*) FROM session_tokens").await, 0, "no gateway token minted");
+    assert_eq!(count("SELECT count(*) FROM session_hook_policies").await, 0);
+    assert!(f.requests.try_recv().is_err(), "nothing was forwarded");
+
+    let mut request = Fixture::request(json!({"prompt_file": "review", "hook_rules": [{
+        "event": "PreToolUse", "tool": "shell", "command": "account-audit",
+    }]}));
+    request.account = Some("reviewer".into());
+    let (status, _) = execute_dispatch(&f.host, &f.ctx, request).await.unwrap();
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(count("SELECT count(*) FROM session_tokens").await, 1);
+}
+
+#[tokio::test]
+async fn an_enrolled_dispatchers_reported_exposure_lands_on_the_dispatch_record() {
+    use cctui_proto::api::{DispatchExposure, HumanGate};
+    use cctui_proto::ws::{DispatcherFrameDown, DispatcherFrameUp};
+    let declared = DispatchExposure {
+        untrusted_input: true,
+        sensitive_data: true,
+        outward: true,
+        human_gate: Some(HumanGate::DraftPrOnly),
+    };
+    for reported in [Some(declared), None] {
+        let Some(f) = Fixture::new(StatusCode::OK, json!({})).await else { return };
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO dispatchers (id, user_id, name, kind) \
+             VALUES ($1, $2, 'enrolled', 'kubernetes')",
+        )
+        .bind(id)
+        .bind(f.ctx.user_id)
+        .execute(&f.host.pool)
+        .await
+        .unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<DispatcherFrameDown>(8);
+        f.host.bus.register_dispatcher(id, tx);
+        let bus = f.host.bus.clone();
+        let fake = tokio::spawn(async move {
+            let Some(DispatcherFrameDown::Dispatch { request_id, spec }) = rx.recv().await else {
+                panic!("expected a Dispatch frame");
+            };
+            assert!(bus.resolve_dispatcher_reply(
+                request_id,
+                DispatcherFrameUp::DispatchResult {
+                    request_id,
+                    session_id: spec.session_id,
+                    handle: "jobs/worker".into(),
+                    namespace: Some("cctui".into()),
+                    status: Some("dispatched".into()),
+                    queue_position: None,
+                    exposure: reported,
+                    error: None,
+                },
+            ));
+        });
+        let mut request = Fixture::request(json!({"prompt_file": "review"}));
+        request.dispatcher = "enrolled".into();
+        let (status, reply) = execute_dispatch(&f.host, &f.ctx, request).await.unwrap();
+        fake.await.unwrap();
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(reply.exposure, reported);
+        let recorded: Option<Value> =
+            sqlx::query_scalar("SELECT exposure FROM dispatch_records WHERE session_id = $1")
+                .bind(&reply.session_id)
+                .fetch_one(&f.host.pool)
+                .await
+                .unwrap();
+        let recorded = recorded.map(|v| serde_json::from_value::<DispatchExposure>(v).unwrap());
+        assert_eq!(recorded, reported);
+    }
 }

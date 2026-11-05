@@ -154,6 +154,7 @@ impl Dispatcher for Spawner {
                     handle: format!("container/{name}"),
                     status: "deduplicated".to_owned(),
                     namespace: None,
+                    exposure: None,
                 });
             }
             Err(e) => anyhow::bail!("creating container: {e}"),
@@ -168,6 +169,7 @@ impl Dispatcher for Spawner {
             handle: format!("container/{name}"),
             status: "dispatched".to_owned(),
             namespace: None,
+            exposure: None,
         })
     }
 

@@ -39,6 +39,8 @@ use kube::api::{
 use kube::{Client, Error as KubeError};
 use tokio_util::sync::CancellationToken;
 
+mod exposure;
+mod queue_hold;
 mod registry;
 mod worker_exit;
 
@@ -482,6 +484,7 @@ impl Spawner {
             handle: format!("jobs/{name}"),
             namespace: Some(self.namespace.clone()),
             status: status.to_owned(),
+            exposure: None,
         }
     }
 
@@ -504,9 +507,10 @@ impl Spawner {
             .await
             .map_err(|e| anyhow::anyhow!("reading WorkerProfile `{profile_name}`: {e}"))?;
 
+        let exposure = exposure::profile_exposure(profile.spec.exposure, profile.spec.human_gate);
         let name = worker_name(dedup_source(spec));
         if self.absorbed_by_live_job(&name).await? {
-            return Ok(self.outcome(&name, "deduplicated"));
+            return Ok(SpawnOutcome { exposure, ..self.outcome(&name, "deduplicated") });
         }
         self.enforce_inflight_cap(&name).await?;
         let suspend =
@@ -524,7 +528,8 @@ impl Spawner {
         let registration =
             Self::registration(&self.cctui_url, &profile.spec, spec, &self.namespace, identity)?;
         self.registry.register(&registration).await?;
-        self.place_job(&job, suspend, &name).await
+        let placed = self.place_job(&job, suspend, &name).await?;
+        Ok(SpawnOutcome { exposure, ..placed })
     }
 
     /// Whether a non-terminal Job already holds `name`. A concurrent dispatch
@@ -644,10 +649,9 @@ impl Spawner {
     /// Runs beside the WS loop; queue state lives entirely in the cluster, so a
     /// dispatcher restart picks the queue back up from the Job list.
     ///
-    /// A Job queued longer than the server's registration TTL (7 days) resumes
-    /// into a refused redeem and fails: the machine key is never stored in the
-    /// cluster, so the dispatcher has nothing to re-register it with.
+    /// Every queued Job's server registration is held alive while it waits.
     pub async fn run_queue_reconciler(self, shutdown: CancellationToken) {
+        let mut holds = queue_hold::QueueHolds::default();
         let mut tick = tokio::time::interval(QUEUE_RECONCILE_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -655,13 +659,29 @@ impl Spawner {
                 () = shutdown.cancelled() => return,
                 _ = tick.tick() => {}
             }
-            if let Err(e) = self.reconcile_queues().await {
+            if let Err(e) = self.reconcile_queues(&mut holds).await {
                 tracing::warn!(error = %e, "queue reconcile failed");
             }
         }
     }
 
-    async fn reconcile_queues(&self) -> anyhow::Result<()> {
+    async fn hold_queued(&self, queued: &[&Job], holds: &mut queue_hold::QueueHolds) {
+        let ids = queued.iter().filter_map(|job| -> Option<uuid::Uuid> {
+            job.metadata.annotations.as_ref()?.get(ANNOTATION_DISPATCH_ID)?.parse().ok()
+        });
+        let now = std::time::Instant::now();
+        for id in holds.due(ids, now) {
+            match self.registry.hold(id).await {
+                Ok(()) => holds.held(id, now),
+                Err(e) => {
+                    tracing::warn!(dispatch = %id, error = %e, "queued registration hold failed");
+                    holds.failed(id, now);
+                }
+            }
+        }
+    }
+
+    async fn reconcile_queues(&self, holds: &mut queue_hold::QueueHolds) -> anyhow::Result<()> {
         let lp = ListParams::default().labels(&format!("{LABEL_ORIGIN}=cctui-kube-dispatcher"));
         let jobs = self.jobs().list(&lp).await?;
 
@@ -680,6 +700,9 @@ impl Spawner {
                 entry.0.push(job);
             }
         }
+
+        let queued: Vec<&Job> = by_profile.values().flat_map(|(_, q)| q.iter().copied()).collect();
+        self.hold_queued(&queued, holds).await;
 
         let profiles: Api<WorkerProfile> = Api::namespaced(self.client.clone(), &self.namespace);
         for (profile_name, (running, queued)) in by_profile {

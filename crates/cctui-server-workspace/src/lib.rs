@@ -540,6 +540,7 @@ fn outer_routes() -> Router<AppState> {
         .route("/api/v1/dispatch/register", post(dispatch_identity::register::<AppState>))
         .route("/api/v1/dispatch/redeem", post(dispatch_identity::redeem::<AppState>))
         .route("/api/v1/dispatch/{id}/env", get(dispatch_identity::env::<AppState>))
+        .route("/api/v1/dispatch/{id}/hold", post(dispatch_identity::hold::<AppState>))
         .route("/api/v1/triggers/{kind}", post(routes::triggers::ingest))
         // OAuth passthrough gateway. Auths via the session-scoped
         // token in the request's own Authorization header — NOT the user-token
