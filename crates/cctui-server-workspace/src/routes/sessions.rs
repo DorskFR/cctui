@@ -2865,15 +2865,9 @@ pub async fn search_conversation(
     let gap = crate::search_index::unchunked(&state.pool).await?;
     let needles = terms.needles();
 
-    let ConvScan { rows, partial } = conv_search_rows(
-        &state.pool,
-        &session_id,
-        &terms,
-        &filters,
-        gap,
-        ConvScanLimits::DEFAULT,
-    )
-    .await?;
+    let ConvScan { rows, partial } =
+        conv_search_rows(&state.pool, &session_id, &terms, &filters, gap, ConvScanLimits::DEFAULT)
+            .await?;
     let scanned = i64::try_from(rows.len()).unwrap_or(i64::MAX);
 
     let pinned: HashSet<i64> = if filters.pinned.is_some() {

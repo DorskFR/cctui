@@ -538,8 +538,7 @@ impl Driver {
                 }
                 let short = self.short_by_session.get(&loc.offset_key);
                 for evt in events {
-                    if let Some(text) = short.as_deref().and_then(|s| self.auto_fallback(s, &evt))
-                    {
+                    if let Some(text) = short.as_deref().and_then(|s| self.auto_fallback(s, &evt)) {
                         tracing::warn!(local_id = %loc.local_id, %text, "auto mode fallback");
                         self.emit(AdapterEvent::Message {
                             local_id: loc.local_id.clone(),

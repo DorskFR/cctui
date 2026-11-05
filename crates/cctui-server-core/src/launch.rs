@@ -144,16 +144,15 @@ pub const fn no_daemon_message(liveness: Option<MachineLiveness>) -> &'static st
 /// A heartbeat inside the online window means a live daemon some replica
 /// holds, so the miss is cross-replica routing, not the daemon being down.
 pub async fn no_daemon_detail(pool: &sqlx::PgPool, machine: Uuid) -> &'static str {
-    let last_seen = sqlx::query_scalar::<_, DateTime<Utc>>(
-        "SELECT last_seen_at FROM machines WHERE id = $1",
-    )
-    .bind(machine)
-    .fetch_optional(pool)
-    .await
-    .unwrap_or_else(|err| {
-        tracing::warn!(%err, %machine, "machine liveness read failed");
-        None
-    });
+    let last_seen =
+        sqlx::query_scalar::<_, DateTime<Utc>>("SELECT last_seen_at FROM machines WHERE id = $1")
+            .bind(machine)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or_else(|err| {
+                tracing::warn!(%err, %machine, "machine liveness read failed");
+                None
+            });
     no_daemon_message(last_seen.map(crate::targets::derive_liveness))
 }
 

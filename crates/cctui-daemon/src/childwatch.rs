@@ -266,9 +266,7 @@ impl ChildSnapshot {
         self.bg_tasks > 0
             && self.blocked_kind != Some(BlockKind::Status)
             && (self.monitors > 0
-                || self
-                    .turn_end_at
-                    .is_none_or(|at| now.duration_since(at) < BG_TASK_TURN_END_HOLD))
+                || self.turn_end_at.is_none_or(|at| now.duration_since(at) < BG_TASK_TURN_END_HOLD))
             && now.duration_since(self.last_event_at.unwrap_or(self.registered_at))
                 < BG_TASK_QUIET_CAP
     }

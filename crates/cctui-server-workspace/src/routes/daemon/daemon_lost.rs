@@ -639,11 +639,13 @@ mod tests {
         let (uid, mid) = crate::events::tests::seed_user_machine(&pool, "dl-finished").await;
         let seed = async |signals: &str, dispatched: bool, guard: Option<i64>| {
             let sid = crate::events::tests::seed_session(&pool, uid, mid, None).await;
-            sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE sessions SET {signals} WHERE id = $1")))
-                .bind(&sid)
-                .execute(&pool)
-                .await
-                .expect("set signals");
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "UPDATE sessions SET {signals} WHERE id = $1"
+            )))
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .expect("set signals");
             if dispatched {
                 sqlx::query(
                     "INSERT INTO dispatch_records (session_id, user_id, dispatcher_name, outcome) \
