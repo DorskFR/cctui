@@ -215,7 +215,7 @@ pub fn classify(
     if input.tempo == Some("active") || matches!(input.state, Some("working" | "running")) {
         return Bucket::Working;
     }
-    if is_terminal(input.state) || input.tempo == Some("idle") || input.state == Some("idle") {
+    if is_terminal(input.state) {
         return Bucket::Done;
     }
     Bucket::Working
@@ -377,23 +377,6 @@ mod tests {
         s.state = Some("done");
         s.children = &children;
         assert_eq!(classify(&s, &cache), Bucket::Done);
-    }
-
-    #[test]
-    fn a_turn_end_without_a_later_status_is_done() {
-        let mut s = snap();
-        s.tempo = Some("idle");
-        s.state = Some("idle");
-        assert_eq!(classify(&s, &HashMap::new()), Bucket::Done);
-        s.state = None;
-        assert_eq!(classify(&s, &HashMap::new()), Bucket::Done);
-        s.tempo = None;
-        s.state = Some("idle");
-        assert_eq!(classify(&s, &HashMap::new()), Bucket::Done);
-        s.tempo = Some("idle");
-        s.state = Some("working");
-        assert_eq!(classify(&s, &HashMap::new()), Bucket::Working, "the roster still reads busy");
-        assert_eq!(classify(&snap(), &HashMap::new()), Bucket::Working, "no signal yet");
     }
 
     #[test]
