@@ -23,6 +23,7 @@ mod policy;
 mod private_allow;
 mod secrets;
 mod server_inject;
+mod shutdown;
 mod transparent;
 
 use std::path::PathBuf;
@@ -187,6 +188,11 @@ struct Args {
     /// and `trunk`.
     #[arg(long, value_delimiter = ',', env = "GUARD_PROXY_PROTECTED_BRANCHES")]
     protected_branches: Vec<String>,
+
+    /// On SIGTERM/SIGINT, how long in-flight connections may finish before
+    /// they are cut. Keep well inside the pod's terminationGracePeriodSeconds.
+    #[arg(long, default_value_t = 10, env = "GUARD_PROXY_SHUTDOWN_DRAIN_SECS")]
+    shutdown_drain_secs: u64,
 }
 
 #[derive(Debug, Subcommand)]
@@ -356,13 +362,22 @@ async fn fetch_secret(args: &Args, template: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    let rt = tokio::runtime::Runtime::new()?;
+    let res = rt.block_on(async {
+        if let Some(Cmd::FetchSecret { secret_ref }) = &args.command {
+            return fetch_secret(&args, secret_ref).await;
+        }
+        run(args).await
+    });
+    rt.shutdown_timeout(Duration::from_secs(1));
+    res
+}
 
-    if let Some(Cmd::FetchSecret { secret_ref }) = &args.command {
-        return fetch_secret(&args, secret_ref).await;
-    }
+async fn run(args: Args) -> anyhow::Result<()> {
+    let shutdown = shutdown::termination()?;
+    let drain = Duration::from_secs(args.shutdown_drain_secs);
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -428,7 +443,7 @@ async fn main() -> anyhow::Result<()> {
                 .with_server(server)
                 .with_gate(gate);
             tracing::info!("transparent proxy listening on {}", args.listen);
-            listener.serve().await?;
+            listener.serve_until(shutdown, drain).await?;
         }
         Mode::Forward => {
             if server.is_some() {
@@ -438,10 +453,11 @@ async fn main() -> anyhow::Result<()> {
                 .await?
                 .with_gate(gate);
             tracing::info!("forward proxy listening on {}", args.listen);
-            listener.serve().await?;
+            listener.serve_until(shutdown, drain).await?;
         }
     }
 
+    tracing::info!("guard-proxy stopped");
     Ok(())
 }
 

@@ -45,19 +45,28 @@ impl ForwardListener {
         self
     }
 
+    #[cfg(test)]
     pub async fn serve(self) -> anyhow::Result<()> {
-        loop {
-            let (stream, _peer) = self.listener.accept().await?;
-            let policy = self.policy.clone();
-            let injection = self.injection.clone();
-            let private = self.private.clone();
-            let gate = self.gate.clone();
-            tokio::spawn(async move {
+        self.serve_until(std::future::pending(), Duration::ZERO).await
+    }
+
+    pub async fn serve_until(
+        self,
+        shutdown: impl std::future::Future<Output = ()>,
+        drain: Duration,
+    ) -> anyhow::Result<()> {
+        let Self { listener, policy, injection, private, gate } = self;
+        crate::shutdown::serve_until(listener, shutdown, drain, move |stream| {
+            let (policy, injection, private, gate) =
+                (policy.clone(), injection.clone(), private.clone(), gate.clone());
+            async move {
                 if let Err(e) = handle_connection(stream, policy, injection, private, gate).await {
                     tracing::debug!("forward connection ended: {e}");
                 }
-            });
-        }
+            }
+        })
+        .await?;
+        Ok(())
     }
 }
 
