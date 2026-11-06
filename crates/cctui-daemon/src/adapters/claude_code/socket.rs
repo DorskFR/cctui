@@ -562,14 +562,15 @@ pub const CLEAR_COMPOSER_LINES: usize = 4;
 
 /// Empty the worker's TUI composer before a `reply` types into it. ESC ESC in
 /// the terminal restores the previous prompt as a draft, and the `reply` op
-/// appends to whatever is there. Each paced step is Ctrl+U (kill to line
-/// start) followed by Backspace (join onto the previous line), so a multiline
-/// draft is eaten one line per step; both keys are no-ops on an empty
-/// composer. Never a bare ESC: idle ESC is exactly what restores the draft,
-/// and mid-turn it aborts the turn.
+/// appends to whatever is there. Each Ctrl+U (kill to line start) plus
+/// Backspace (join onto the previous line) eats one line of a multiline
+/// draft; both keys are no-ops on an empty composer. Sent as one write: the
+/// composer's key parser splits the burst (verified against claude 2.1.318),
+/// unlike the form renderer [`attach_answer_keys`] paces for. Never a bare
+/// ESC: idle ESC is exactly what restores the draft, and mid-turn it aborts
+/// the turn.
 pub async fn attach_clear_composer(socket: &Path, short: &str) -> Result<()> {
-    let chunks = vec![b"\x15\x7f".to_vec(); CLEAR_COMPOSER_LINES];
-    attach_send_chunks(socket, short, &chunks).await
+    attach_send_keys(socket, short, &b"\x15\x7f".repeat(CLEAR_COMPOSER_LINES)).await
 }
 
 /// What the pre-reply clear did.
@@ -577,7 +578,7 @@ pub async fn attach_clear_composer(socket: &Path, short: &str) -> Result<()> {
 pub enum ComposerClear {
     /// A screen probe read an empty composer, so no key was sent.
     Skipped,
-    /// The paced clear ran: the probe saw a draft or could not read the screen.
+    /// The clear ran: the probe saw a draft or could not read the screen.
     Cleared,
 }
 
@@ -595,7 +596,7 @@ impl ComposerClear {
 /// Empty the composer before a `reply` unless one screen probe shows it empty.
 ///
 /// A draft, a form or an unreadable screen gets the full
-/// [`attach_clear_composer`], keystroke for keystroke.
+/// [`attach_clear_composer`].
 pub async fn attach_clear_composer_unless_empty(
     socket: &Path,
     short: &str,
@@ -963,11 +964,11 @@ mod tests {
         assert!(!composer_known_empty(&other), "per worker");
     }
 
-    /// The pre-reply clear must be exactly `CLEAR_COMPOSER_LINES` paced
-    /// Ctrl+U+Backspace steps and nothing else: no ESC (idle ESC restores the
-    /// draft we are trying to remove), no Enter.
+    /// The pre-reply clear is exactly `CLEAR_COMPOSER_LINES` Ctrl+U+Backspace
+    /// steps in one burst and nothing else: no ESC (idle ESC restores the
+    /// draft we are trying to remove), no Enter, no pacing.
     #[tokio::test]
-    async fn attach_clear_composer_sends_paced_kill_line_steps() {
+    async fn attach_clear_composer_sends_kill_line_steps_in_one_burst() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("control.sock");
         let listener = tokio::net::UnixListener::bind(&sock).unwrap();
@@ -982,29 +983,26 @@ mod tests {
             assert_eq!(req.get("op").and_then(Value::as_str), Some("attach"));
             write_half.write_all(b"{\"ok\":true,\"op\":\"attach\"}\n").await.unwrap();
 
-            let mut keys = Vec::new();
-            let mut step = [0_u8; 2];
-            let mut last = tokio::time::Instant::now();
-            for i in 0..CLEAR_COMPOSER_LINES {
-                reader.read_exact(&mut step).await.unwrap();
-                let now = tokio::time::Instant::now();
-                if i > 0 {
-                    assert!(
-                        now - last >= std::time::Duration::from_millis(300),
-                        "step {i} unpaced"
-                    );
-                }
-                last = now;
-                keys.extend_from_slice(&step);
-            }
+            let mut first = [0_u8; 1];
+            reader.read_exact(&mut first).await.unwrap();
+            let mut keys = first.to_vec();
+            let mut rest = vec![0_u8; 2 * CLEAR_COMPOSER_LINES - 1];
+            tokio::time::timeout(Duration::from_millis(100), reader.read_exact(&mut rest))
+                .await
+                .expect("the clear must arrive as one burst, not paced steps")
+                .unwrap();
+            keys.extend_from_slice(&rest);
             assert_eq!(keys, b"\x15\x7f".repeat(CLEAR_COMPOSER_LINES));
-            let mut rest = Vec::new();
-            reader.read_to_end(&mut rest).await.unwrap();
-            assert!(rest.is_empty(), "unexpected trailing keys: {rest:?}");
+            let mut trailing = Vec::new();
+            reader.read_to_end(&mut trailing).await.unwrap();
+            assert!(trailing.is_empty(), "unexpected trailing keys: {trailing:?}");
         });
 
+        let started = tokio::time::Instant::now();
         attach_clear_composer(&sock, "aaaaaaaa").await.expect("clear should succeed");
+        let took = started.elapsed();
         server.await.unwrap();
+        assert!(took < Duration::from_millis(500), "the clear must not pace, took {took:?}");
     }
 
     type Counter = std::sync::Arc<std::sync::atomic::AtomicU32>;
@@ -1041,7 +1039,7 @@ mod tests {
     }
 
     /// An idle screen whose prompt row is empty needs no clear: one probe
-    /// attach, no keystroke, well under the paced clear's cost.
+    /// attach, no keystroke.
     #[tokio::test]
     async fn clear_unless_empty_skips_an_empty_composer() {
         use std::sync::atomic::Ordering;
@@ -1063,9 +1061,9 @@ mod tests {
     }
 
     /// A draft on screen, a screen with no prompt row and a silent attach all
-    /// keep today's clear: exactly `CLEAR_COMPOSER_LINES` Ctrl+U+Backspace steps.
+    /// keep the clear: exactly `CLEAR_COMPOSER_LINES` Ctrl+U+Backspace steps.
     #[tokio::test]
-    async fn clear_unless_empty_keeps_the_paced_clear_otherwise() {
+    async fn clear_unless_empty_clears_otherwise() {
         use std::sync::atomic::Ordering;
         let frames = [
             "\x1b[2J\x1b[1;1H\u{2502} > restored draft \u{2502}",
