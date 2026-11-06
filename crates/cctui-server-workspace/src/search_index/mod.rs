@@ -81,36 +81,19 @@ where
     Ok(done.rows_affected())
 }
 
-/// A just-ingested event, chunked off the ingest path.
-pub struct NewEvent {
-    pub event_id: i64,
-    pub session_id: String,
-    pub adapter_id: String,
-    pub event_type: &'static str,
-    pub payload: Value,
-}
-
-/// Chunk and insert freshly ingested events in the background; a failure only
+/// Insert freshly ingested events' chunks in the background; a failure only
 /// delays them until the backfill reaches their ids.
-pub fn index_new(pool: &PgPool, events: Vec<NewEvent>) {
-    if events.is_empty() {
+pub fn index_new(pool: &PgPool, rows: Vec<Chunked>) {
+    if rows.is_empty() {
         return;
     }
     let pool = pool.clone();
     tokio::spawn(async move {
-        if let Some(first) = events.iter().map(|e| e.event_id).min()
+        if let Some(first) = rows.iter().map(|e| e.event_id).min()
             && let Err(err) = record_live_from(&pool, first).await
         {
             tracing::warn!(%err, "recording the first inline-indexed event failed");
         }
-        let rows: Vec<Chunked> = events
-            .into_iter()
-            .map(|e| Chunked {
-                bodies: chunk_event(&e.adapter_id, e.event_type, e.payload),
-                event_id: e.event_id,
-                session_id: e.session_id,
-            })
-            .collect();
         if let Err(err) = insert_chunks(&pool, &rows).await {
             tracing::warn!(%err, "inline search indexing failed");
         }
