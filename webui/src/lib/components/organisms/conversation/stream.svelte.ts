@@ -173,16 +173,17 @@ export class ConversationStream {
 			const echoed = (e: AgentEvent) => e.type === 'reply' && userMsgKey(e) === key;
 			if (key !== null && this.live.some(echoed)) return;
 			this.live = [...this.live, ev];
-			// A pending live ask/plan is superseded the instant the agent streams a
-			// fresh substantive (non-user, non-heartbeat) event past it:
-			// the question was skipped/answered out-of-band and the turn moved on, so
-			// the daemon's AskResolved/onAsk(null) can be missed by a half-open ws. While a prompt is
-			// genuinely pending claude is blocked and emits nothing, so this can't
-			// race a still-open question. Remember it resolved so its late transcript
-			// line stays suppressed. User echoes (key !== null) never clear
-			// a prompt — a free-typed send doesn't dismiss an ask.
+			// Agent output past a pending ask/plan means it was resolved out-of-band
+			// (a half-open ws can miss AskResolved). The hook's ask outruns the
+			// transcript tail, so only output after the ask's own tool call counts.
+			// User echoes (key !== null) never clear a prompt.
 			if (ev.type !== 'heartbeat' && key === null) {
-				if (this.ask) {
+				// No live ask/plan event is guaranteed to release the lock after an
+				// answer sent from a transcript card.
+				if (ev.type !== 'tool_result') this.answering = false;
+				const backlog = this.ask !== null && !this.#askCallSeen;
+				if (backlog && this.#isLiveAskCall(ev)) this.#askCallSeen = true;
+				if (this.ask && !backlog) {
 					this.markAsksResolved(this.liveAskQuestions, this.ask.question);
 					this.ask = null;
 					ws.clearAsk(this.#opts.id());
@@ -216,6 +217,9 @@ export class ConversationStream {
 			// means its late transcript line must stay suppressed.
 			if (!q && this.ask) this.markAsksResolved(this.liveAskQuestions, this.ask.question);
 			this.ask = q;
+			this.#askCallSeen = untrack(() =>
+				[...(this.#opts.historyData() ?? []), ...this.live].some((e) => this.#isLiveAskCall(e))
+			);
 			// A fresh ask (or a resolution) supersedes any in-flight answer lock.
 			this.answering = false;
 			// A pending question means claude is waiting on the user, not working.
@@ -362,6 +366,16 @@ export class ConversationStream {
 	// Parsed structured questions for the live prompt, or null → text fallback.
 	get liveAskQuestions(): AskQuestion[] | null {
 		return this.ask?.questions ? parseAsk({ questions: this.ask.questions }) : null;
+	}
+
+	#askCallSeen = false;
+
+	#isLiveAskCall(ev: AgentEvent): boolean {
+		if (!this.ask || ev.type !== 'tool_call' || ev.tool !== 'AskUserQuestion') return false;
+		const q = parseAsk(ev.input)?.[0]?.question;
+		if (!q) return false;
+		const liveQ = this.liveAskQuestions?.[0]?.question;
+		return liveQ !== undefined ? q === liveQ : this.ask.question.includes(q);
 	}
 
 	#askKey = (q: string) => `${this.#opts.id()}|${q}`;
