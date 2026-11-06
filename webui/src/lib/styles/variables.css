@@ -53,8 +53,10 @@
 
   --count-bg: var(--bg-elevated-2);
   --count-fg: var(--text);
-  --count-bg-active: var(--accent);
-  --count-fg-active: var(--text-on-accent);
+  /* Violet: clear of the accent, the info blue of the subagent count and
+     the danger red. */
+  --count-bg-unread: var(--c-violet);
+  --count-fg-unread: var(--bg);
 
   /* Depth comes from shade: cards drop their outer edge, and the divider is
      for dense tables only. */

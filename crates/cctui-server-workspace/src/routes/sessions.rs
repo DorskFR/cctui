@@ -282,19 +282,36 @@ const SESSION_TOTALS_SQL: &str = "SELECT session_id, NULLIF(model, ''), \
             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens \
      FROM session_usage_totals WHERE session_id = ANY($1)";
 
-/// Unread messages per listed session, counting at most 100 per session: one
-/// past the badge's 99 ceiling, so a never-read session stops at the cap
-/// instead of counting its whole history.
+/// Unread = completed turns: an assistant reply counts when the next user line
+/// or `turn_duration` annotation follows it, or when it is the newest and the
+/// agent is not mid-turn. The 400-row window bounds a never-read session.
 const UNREAD_COUNT_SQL: &str = "SELECT s.session_id, u.n \
      FROM unnest($1::text[]) AS s(session_id) \
      LEFT JOIN session_reads sr ON sr.session_id = s.session_id AND sr.user_id = $2 \
+     LEFT JOIN sessions ss ON ss.id = s.session_id \
      CROSS JOIN LATERAL ( \
-         SELECT COUNT(*) AS n FROM ( \
-             SELECT 1 FROM stream_events se \
-             WHERE se.session_id = s.session_id AND se.event_type = 'message' \
-               AND (sr.last_seen_at IS NULL OR se.created_at > sr.last_seen_at) \
-             LIMIT 100 \
-         ) capped \
+         SELECT COUNT(*) FILTER (WHERE w.reply AND (NOT w.newer_reply \
+                    OR (w.newer_reply IS NULL \
+                        AND COALESCE(ss.agent_state, '') NOT IN ('working', 'running')))) AS n \
+         FROM ( \
+             SELECT k.reply, \
+                    lag(k.reply) OVER (ORDER BY k.created_at DESC, k.id DESC) AS newer_reply \
+             FROM ( \
+                 SELECT se.id, se.created_at, se.payload->>'role' = 'assistant' AS reply \
+                 FROM stream_events se \
+                 WHERE se.session_id = s.session_id AND se.event_type = 'message' \
+                   AND (sr.last_seen_at IS NULL OR se.created_at > sr.last_seen_at) \
+                   AND ((se.payload->>'role' = 'assistant' \
+                         AND (se.payload->'meta') IS DISTINCT FROM 'true'::jsonb \
+                         AND btrim(COALESCE(se.payload->>'text', se.payload->>'content', '')) \
+                             <> '') \
+                        OR se.payload->>'role' = 'user' \
+                        OR (se.payload->>'role' = 'turn_annotation' \
+                            AND se.payload->>'annotation' = 'turn_duration')) \
+                 ORDER BY se.created_at DESC, se.id DESC \
+                 LIMIT 400 \
+             ) k \
+         ) w \
      ) u";
 
 /// The two newest usage rows per listed session, `rn` 1 = newest: one short
@@ -817,9 +834,7 @@ async fn fetch_last_messages(
         .collect())
 }
 
-/// Unread `message` count per session for the viewer: messages newer than
-/// their `session_reads.last_seen_at`, all of them when they have never seen
-/// the session. Capped at 99 for the badge.
+/// [`UNREAD_COUNT_SQL`] for the viewer, past their `session_reads.last_seen_at`.
 async fn fetch_unread_counts(
     state: &AppState,
     session_ids: &[String],
@@ -5402,57 +5417,222 @@ mod tests {
         sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
     }
 
-    #[tokio::test]
-    async fn unread_count_stops_at_the_cap() {
-        let Some((pool, sid)) = seeded_session("unread_count_stops_at_the_cap").await else {
-            return;
-        };
-        let uid: uuid::Uuid = sqlx::query_scalar("SELECT user_id FROM sessions WHERE id = $1")
-            .bind(&sid)
-            .fetch_one(&pool)
+    struct UnreadFixture {
+        pool: sqlx::PgPool,
+        sid: String,
+        uid: uuid::Uuid,
+        clock: std::sync::atomic::AtomicI64,
+    }
+
+    impl UnreadFixture {
+        async fn new(test_name: &str) -> Option<Self> {
+            let (pool, sid) = seeded_session(test_name).await?;
+            sqlx::query("DELETE FROM stream_events WHERE session_id = $1")
+                .bind(&sid)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let uid = sqlx::query_scalar("SELECT user_id FROM sessions WHERE id = $1")
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            Some(Self { pool, sid, uid, clock: std::sync::atomic::AtomicI64::new(0) })
+        }
+
+        fn tick(&self) -> DateTime<Utc> {
+            let n = self.clock.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            Utc::now() - Duration::hours(1) + Duration::seconds(n)
+        }
+
+        async fn push(&self, event_type: &str, mut payload: serde_json::Value) {
+            let at = self.tick();
+            payload["fixture_seq"] = at.timestamp_micros().into();
+            sqlx::query(
+                "INSERT INTO stream_events (session_id, event_type, payload, created_at) \
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(&self.sid)
+            .bind(event_type)
+            .bind(payload)
+            .bind(at)
+            .execute(&self.pool)
             .await
             .unwrap();
-        let unread = || {
-            let pool = pool.clone();
-            let sid = sid.clone();
-            async move {
-                let rows: Vec<(String, i64)> = sqlx::query_as(super::UNREAD_COUNT_SQL)
-                    .bind(vec![sid.clone()])
-                    .bind(uid)
-                    .fetch_all(&pool)
-                    .await
-                    .unwrap();
-                assert_eq!(rows.len(), 1);
-                rows[0].1
-            }
-        };
-        assert_eq!(unread().await, 7, "never read: every message of the fixture");
+        }
 
-        sqlx::query(
-            "INSERT INTO stream_events (session_id, event_type, payload) \
-             SELECT $1, 'message', jsonb_build_object('role', 'assistant', 'text', g::text) \
-             FROM generate_series(1, 150) g",
+        async fn say(&self, role: &str, text: &str) {
+            self.push("message", serde_json::json!({ "role": role, "text": text })).await;
+        }
+
+        async fn tool(&self) {
+            self.push("tool_use", serde_json::json!({ "tool": "Bash", "input": {} })).await;
+            self.push("tool_use", serde_json::json!({ "tool_result": "ok" })).await;
+        }
+
+        async fn turn_done(&self) {
+            self.push(
+                "message",
+                serde_json::json!({
+                    "role": "turn_annotation", "annotation": "turn_duration",
+                    "text": "turn_duration:1200",
+                }),
+            )
+            .await;
+        }
+
+        async fn agent_state(&self, state: &str) {
+            sqlx::query("UPDATE sessions SET agent_state = $2 WHERE id = $1")
+                .bind(&self.sid)
+                .bind(state)
+                .execute(&self.pool)
+                .await
+                .unwrap();
+        }
+
+        async fn read_now(&self) {
+            sqlx::query(
+                "INSERT INTO session_reads (session_id, user_id, last_seen_at) VALUES ($1, $2, $3) \
+                 ON CONFLICT (session_id, user_id) DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at",
+            )
+            .bind(&self.sid)
+            .bind(self.uid)
+            .bind(self.tick())
+            .execute(&self.pool)
+            .await
+            .unwrap();
+        }
+
+        async fn unread(&self) -> i64 {
+            let rows: Vec<(String, i64)> = sqlx::query_as(super::UNREAD_COUNT_SQL)
+                .bind(vec![self.sid.clone()])
+                .bind(self.uid)
+                .fetch_all(&self.pool)
+                .await
+                .unwrap();
+            assert_eq!(rows.len(), 1);
+            rows[0].1
+        }
+
+        async fn drop_session(self) {
+            sqlx::query("DELETE FROM sessions WHERE id = $1")
+                .bind(&self.sid)
+                .execute(&self.pool)
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn unread_counts_one_per_completed_turn() {
+        let Some(f) = UnreadFixture::new("unread_counts_one_per_completed_turn").await else {
+            return;
+        };
+        f.agent_state("idle").await;
+
+        f.say("user", "run the checks").await;
+        f.tool().await;
+        f.turn_done().await;
+        assert_eq!(f.unread().await, 0, "a tool-only turn leaves nothing to read");
+
+        f.say("user", "now fix it").await;
+        f.say("assistant", "looking").await;
+        f.tool().await;
+        f.say("assistant", "found it").await;
+        f.tool().await;
+        f.say("assistant", "fixed").await;
+        f.turn_done().await;
+        assert_eq!(f.unread().await, 1, "a multi-message turn reads as one");
+
+        f.push("message", serde_json::json!({ "role": "system_marker", "text": "mode: plan" }))
+            .await;
+        f.push("message", serde_json::json!({ "role": "assistant_thinking", "text": "hmm" })).await;
+        f.push(
+            "message",
+            serde_json::json!({ "role": "assistant", "text": "background done", "meta": true }),
         )
-        .bind(&sid)
-        .execute(&pool)
+        .await;
+        f.push("message", serde_json::json!({ "role": "assistant", "text": "  " })).await;
+        f.push("message", serde_json::json!({ "role": "summary", "status_category": "done" }))
+            .await;
+        f.push("session_ended", serde_json::json!({ "reason": "exit" })).await;
+        assert_eq!(f.unread().await, 1, "markers, system and meta lines never count");
+
+        f.say("user", "and the docs").await;
+        f.say("assistant", "updated the docs").await;
+        f.say("user", "thanks").await;
+        assert_eq!(f.unread().await, 2, "a user line closes the turn before it");
+
+        f.drop_session().await;
+    }
+
+    #[tokio::test]
+    async fn unread_waits_for_a_running_turn_to_end() {
+        let Some(f) = UnreadFixture::new("unread_waits_for_a_running_turn_to_end").await else {
+            return;
+        };
+        f.agent_state("working").await;
+        f.say("user", "deploy").await;
+        f.say("assistant", "building the image").await;
+        assert_eq!(f.unread().await, 0, "mid-turn text is not a turn end");
+
+        f.turn_done().await;
+        assert_eq!(f.unread().await, 1, "the turn_duration annotation closes it");
+
+        f.say("user", "status?").await;
+        f.say("assistant", "deployed").await;
+        assert_eq!(f.unread().await, 1);
+        f.agent_state("idle").await;
+        assert_eq!(f.unread().await, 2, "an idle agent's last reply ends its turn");
+
+        f.drop_session().await;
+    }
+
+    #[tokio::test]
+    async fn reading_clears_unread_until_the_next_turn_ends() {
+        let Some(f) = UnreadFixture::new("reading_clears_unread").await else {
+            return;
+        };
+        f.agent_state("idle").await;
+        f.say("user", "one").await;
+        f.say("assistant", "first answer").await;
+        f.say("user", "two").await;
+        f.say("assistant", "second answer").await;
+        assert_eq!(f.unread().await, 2);
+
+        f.read_now().await;
+        assert_eq!(f.unread().await, 0);
+
+        f.say("user", "three").await;
+        f.tool().await;
+        f.say("assistant", "third answer").await;
+        assert_eq!(f.unread().await, 1);
+
+        f.drop_session().await;
+    }
+
+    #[tokio::test]
+    async fn unread_count_stops_at_the_cap() {
+        let Some(f) = UnreadFixture::new("unread_count_stops_at_the_cap").await else {
+            return;
+        };
+        sqlx::query(
+            "INSERT INTO stream_events (session_id, event_type, payload, created_at) \
+             SELECT $1, 'message', \
+                    jsonb_build_object('role', CASE g % 2 WHEN 0 THEN 'user' ELSE 'assistant' END, \
+                                       'text', g::text), \
+                    now() - interval '1 hour' + g * interval '1 second' \
+             FROM generate_series(1, 1000) g",
+        )
+        .bind(&f.sid)
+        .execute(&f.pool)
         .await
         .unwrap();
-        let n = unread().await;
-        assert_eq!(n, 100);
+        let n = f.unread().await;
+        assert!((100..=200).contains(&n), "the scan window bounds the count: {n}");
         assert_eq!(super::cap_unread(n), 99);
 
-        sqlx::query(
-            "INSERT INTO session_reads (session_id, user_id, last_seen_at) \
-             VALUES ($1, $2, now() + interval '1 minute')",
-        )
-        .bind(&sid)
-        .bind(uid)
-        .execute(&pool)
-        .await
-        .unwrap();
-        assert_eq!(unread().await, 0);
-
-        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
+        f.drop_session().await;
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@
 		count,
 		tone = 'neutral',
 		label
-	}: { count: number; tone?: 'neutral' | 'active'; label?: string } = $props();
+	}: { count: number; tone?: 'neutral' | 'unread'; label?: string } = $props();
 
 	const shown = $derived(count > 99 ? '99+' : String(count));
 </script>
@@ -11,7 +11,7 @@
 {#if count > 0}
 	<span
 		class="count num"
-		class:active={tone === 'active'}
+		class:unread={tone === 'unread'}
 		role={label ? 'img' : undefined}
 		aria-label={label}>{shown}</span
 	>
@@ -33,8 +33,8 @@
 		font-weight: var(--fw-semibold);
 		line-height: 1;
 	}
-	.active {
-		background: var(--count-bg-active);
-		color: var(--count-fg-active);
+	.unread {
+		background: var(--count-bg-unread);
+		color: var(--count-fg-unread);
 	}
 </style>
