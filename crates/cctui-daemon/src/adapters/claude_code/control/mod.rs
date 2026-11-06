@@ -36,7 +36,6 @@ use crate::adapter_runtime::{CommandOutcome, Handled, Interrupter, SessionDriver
 
 mod delivered;
 mod diagnose;
-mod hook_respawn;
 mod hookless_turn;
 #[cfg(test)]
 mod lane_tests;
@@ -1334,14 +1333,8 @@ impl Driver {
         };
         self.liveness.set_host(&sock);
         let canary_roster: Vec<_> = resp.jobs.iter().map(LiveSnapshot::canary_view).collect();
-        let respawn_points: HashMap<String, hook_respawn::RespawnPoint> = resp
-            .jobs
-            .iter()
-            .filter_map(|j| Some((j.short.clone(), hook_respawn::RespawnPoint::of(j)?)))
-            .collect();
         self.apply_snapshot(resp.jobs).await;
         self.check_canaries(&canary_roster).await;
-        self.respawn_hookless_workers(&sock, &respawn_points);
         self.probe_liveness(&sock).await;
         let reattached = self.churned;
         if self.churned {
