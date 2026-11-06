@@ -67,6 +67,7 @@ async fn a_failed_package_rolls_back_its_schema_and_tracking() {
             "fixture",
             &[Migration {
                 version: 1,
+                name: "partial",
                 sql: "CREATE TABLE fixture_partial (id bigint); SELECT 1/0;",
             }],
             false,
@@ -166,20 +167,93 @@ async fn failed_forward_sql_keeps_prior_migrations_and_can_resume() {
     with_isolated_database("package_forward_rollback", |pool| async move {
         bootstrap(&pool).await.unwrap();
         let mut conn=migration_connection(&pool).await.unwrap();
-        let baseline=Migration{version:1,sql:"CREATE TABLE fixture_forward (value text); INSERT INTO fixture_forward VALUES ('keep');"};
-        let failed=Migration{version:2,sql:"ALTER TABLE fixture_forward ADD COLUMN partial bigint; SELECT 1/0;"};
+        let baseline=Migration{version:1,name:"baseline",sql:"CREATE TABLE fixture_forward (value text); INSERT INTO fixture_forward VALUES ('keep');"};
+        let failed=Migration{version:2,name:"failed",sql:"ALTER TABLE fixture_forward ADD COLUMN partial bigint; SELECT 1/0;"};
         assert!(install_package(&mut conn,"fixture",&[baseline,failed],false).await.is_err());
         let absent:bool=sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='fixture_forward' AND column_name='partial')").fetch_one(&mut *conn).await.unwrap();
         assert!(absent);
         let count:i64=sqlx::query_scalar("SELECT count(*) FROM _cctui_schema_migrations WHERE package='fixture'").fetch_one(&mut *conn).await.unwrap();
         assert_eq!(count,1);
-        let fixed=Migration{version:2,sql:"ALTER TABLE fixture_forward ADD COLUMN finished bigint;"};
+        let fixed=Migration{version:2,name:"fixed",sql:"ALTER TABLE fixture_forward ADD COLUMN finished bigint;"};
         install_package(&mut conn,"fixture",&[baseline,fixed],false).await.unwrap();
         install_package(&mut conn,"fixture",&[baseline,fixed],false).await.unwrap();
         let value:String=sqlx::query_scalar("SELECT value FROM fixture_forward").fetch_one(&mut *conn).await.unwrap();
         assert_eq!(value,"keep");
         assert!(install_package(&mut conn,"fixture",&[baseline],false).await.is_err(),"unknown newer versions are refused");
     }).await;
+}
+
+#[derive(Clone, Default)]
+struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+impl std::io::Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl Captured {
+    fn lines(&self) -> Vec<String> {
+        let text = String::from_utf8(std::mem::take(&mut *self.0.lock().unwrap())).unwrap();
+        text.lines().filter(|l| l.contains("migration")).map(str::to_owned).collect()
+    }
+}
+
+#[tokio::test]
+async fn each_pending_migration_logs_its_start_and_completion_before_the_summary() {
+    use tracing::instrument::WithSubscriber;
+    with_isolated_database("migration_logging", |pool| async move {
+        bootstrap(&pool).await.unwrap();
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || writer.clone())
+            .finish();
+        let migrations = [
+            Migration {
+                version: 1,
+                name: "first",
+                sql: "CREATE TABLE fixture_logged (id bigint);",
+            },
+            Migration { version: 2, name: "second", sql: "SELECT pg_sleep(0.05);" },
+        ];
+        let mut conn = migration_connection(&pool).await.unwrap();
+        install_package(&mut conn, "fixture", &migrations, false)
+            .with_subscriber(subscriber)
+            .await
+            .unwrap();
+        let lines = captured.lines();
+        let expected = [
+            "applying migration 1 first; this can take a while on large tables",
+            "applied migration 1 first in ",
+            "applying migration 2 second; this can take a while on large tables",
+            "applied migration 2 second in ",
+            "applied 2 fixture migrations in ",
+        ];
+        assert_eq!(lines.len(), expected.len(), "{lines:#?}");
+        for (line, message) in lines.iter().zip(expected) {
+            assert!(line.contains(" INFO ") && line.contains(message), "{message:?} in {line:?}");
+            assert!(line.contains("package=\"fixture\""), "{line}");
+        }
+        assert!(lines[3].contains("elapsed="), "{}", lines[3]);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer({
+                let writer = captured.clone();
+                move || writer.clone()
+            })
+            .finish();
+        install_package(&mut conn, "fixture", &migrations, false)
+            .with_subscriber(subscriber)
+            .await
+            .unwrap();
+        assert!(captured.lines().is_empty(), "an up-to-date package logs nothing");
+    })
+    .await;
 }
 
 #[tokio::test]
