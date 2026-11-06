@@ -37,6 +37,7 @@ use crate::adapter_runtime::{CommandOutcome, Handled, Interrupter, SessionDriver
 mod delivered;
 mod diagnose;
 mod hook_respawn;
+mod hookless_turn;
 #[cfg(test)]
 mod lane_tests;
 mod lanes;
@@ -404,6 +405,8 @@ pub struct Driver {
     /// if unchanged: the one `last_status` remembers may have died with the
     /// previous connection.
     status_resend: HashSet<String>,
+    /// Per `local_id`, the last turn end read from a hookless worker's transcript.
+    hookless_turn_ends: HashMap<String, String>,
     /// Shorts claude reports dead-but-still-listed. Once we emit the
     /// dead transition (hibernated or `SessionEnded`) we record the short here
     /// and suppress further live-status emits for it, so the still-present
@@ -836,6 +839,7 @@ impl Driver {
             roster: HashSet::new(),
             last_status: HashMap::new(),
             status_resend: HashSet::new(),
+            hookless_turn_ends: HashMap::new(),
             dead_shorts: HashSet::new(),
             liveness: liveness::Liveness::default(),
             foreign_shorts: HashSet::new(),
