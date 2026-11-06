@@ -33,12 +33,14 @@ impl Ingest {
                 event_type: "message",
                 payload: payload.clone(),
                 turn_id: *turn_id,
+                chunked: false,
             },
             AdapterEvent::ToolUse { local_id, payload } => NewEvent {
                 local_id: local_id.clone(),
                 event_type: "tool_use",
                 payload: payload.clone(),
                 turn_id: None,
+                chunked: false,
             },
             _ => return Err(Box::new(DaemonFrameUp::Event { adapter_id, event })),
         };
@@ -75,12 +77,10 @@ pub(super) async fn ingest_run(
         if row.event_type == "message" {
             crate::keepalive::observe_message(state, &row.local_id, &mut row.payload).await;
         }
-        searchable.push((
-            adapter_id.clone(),
-            row.local_id.clone(),
-            row.event_type,
-            row.payload.clone(),
-        ));
+        let bodies =
+            crate::search_index::chunk_event(&adapter_id, row.event_type, row.payload.clone());
+        row.chunked = !bodies.is_empty();
+        searchable.push((row.local_id.clone(), bodies));
         events.push((adapter_id, event));
         rows.push(row);
     }
@@ -96,14 +96,8 @@ pub(super) async fn ingest_run(
         searchable
             .into_iter()
             .zip(seqs.iter().copied())
-            .filter_map(|((adapter_id, session_id, event_type, payload), seq)| {
-                seq.map(|event_id| crate::search_index::NewEvent {
-                    event_id,
-                    session_id,
-                    adapter_id,
-                    event_type,
-                    payload,
-                })
+            .filter_map(|((session_id, bodies), seq)| {
+                seq.map(|event_id| crate::search_index::Chunked { event_id, session_id, bodies })
             })
             .collect(),
     );
@@ -178,6 +172,8 @@ pub(super) struct NewEvent {
     event_type: &'static str,
     payload: serde_json::Value,
     turn_id: Option<Uuid>,
+    /// Searched through its chunks, so it stores an empty `search_text`.
+    chunked: bool,
 }
 
 /// Rows per `stream_events` statement: bounds one statement's bind size.
@@ -198,6 +194,7 @@ pub(super) async fn insert_events(
         let mut types = Vec::with_capacity(chunk.len());
         let mut payloads = Vec::with_capacity(chunk.len());
         let mut turns = Vec::with_capacity(chunk.len());
+        let mut chunked = Vec::with_capacity(chunk.len());
         let mut links = Vec::with_capacity(chunk.len());
         for row in chunk.iter_mut() {
             strip_nul(&mut row.payload);
@@ -206,22 +203,24 @@ pub(super) async fn insert_events(
             types.push(row.event_type);
             payloads.push(std::mem::take(&mut row.payload));
             turns.push(row.turn_id);
+            chunked.push(row.chunked);
         }
         let inserted: Vec<(i64, i64)> = sqlx::query_as(
             "WITH src AS ( \
                  SELECT nextval(pg_get_serial_sequence('stream_events', 'id')) AS id, r.* \
                  FROM ( \
                      SELECT u.* \
-                     FROM unnest($1::text[], $2::text[], $3::jsonb[], $4::uuid[]) \
-                          WITH ORDINALITY AS u(session_id, event_type, payload, turn_id, ord) \
+                     FROM unnest($1::text[], $2::text[], $3::jsonb[], $4::uuid[], $7::bool[]) \
+                          WITH ORDINALITY AS u(session_id, event_type, payload, turn_id, chunked, ord) \
                      WHERE EXISTS ( \
                          SELECT 1 FROM sessions s \
                          WHERE s.id = u.session_id AND s.machine_uuid = $5 AND s.user_id = $6) \
                      ORDER BY u.ord \
                  ) r \
              ), ins AS ( \
-                 INSERT INTO stream_events (id, session_id, event_type, payload, turn_id) \
-                 SELECT id, session_id, event_type, payload, turn_id FROM src ORDER BY ord \
+                 INSERT INTO stream_events (id, session_id, event_type, payload, turn_id, search_text) \
+                 SELECT id, session_id, event_type, payload, turn_id, CASE WHEN chunked THEN '' END \
+                 FROM src ORDER BY ord \
                  ON CONFLICT DO NOTHING \
                  RETURNING id \
              ) \
@@ -233,6 +232,7 @@ pub(super) async fn insert_events(
         .bind(&turns)
         .bind(machine_id)
         .bind(user_id)
+        .bind(&chunked)
         .fetch_all(pool)
         .await?;
         let mut seqs = vec![None; chunk.len()];
@@ -276,6 +276,7 @@ pub(super) fn backfill(local_id: &str, n: usize) -> Vec<NewEvent> {
             event_type: "message",
             payload: serde_json::json!({ "type": "assistant", "text": format!("line {i}") }),
             turn_id: None,
+            chunked: false,
         })
         .collect()
 }
@@ -408,6 +409,7 @@ mod tests {
             event_type: "message",
             payload: payload.clone(),
             turn_id,
+            chunked: false,
         };
 
         let sent = insert_events(&pool, mid, uid, vec![user_line(Some(Uuid::new_v4()))])
@@ -542,6 +544,7 @@ mod tests {
             event_type: "message",
             payload: json!({ "type": "assistant", "text": "line 7" }),
             turn_id: None,
+            chunked: false,
         });
         let seqs = insert_events(&pool, mid, uid, rows).await.expect("insert");
         assert_eq!(seqs.len(), n + 1);
@@ -630,6 +633,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn only_unchunked_rows_keep_a_search_text() {
+        let Some(url) = crate::routes::gateway::test_db_url("search_text_on_insert") else {
+            return;
+        };
+        let pool = crate::db::connect(&url).await.expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "search_text_on_insert").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
+        let row = |text: &str, chunked| NewEvent {
+            local_id: sid.clone(),
+            event_type: "message",
+            payload: json!({ "role": "assistant", "text": text }),
+            turn_id: None,
+            chunked,
+        };
+        let seqs = insert_events(&pool, mid, uid, vec![row("chunked", true), row("raw", false)])
+            .await
+            .expect("insert");
+        let text = |id: Option<i64>| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, String>(
+                    "SELECT search_text FROM stream_events WHERE id = $1",
+                )
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .expect("row")
+            }
+        };
+        assert_eq!(text(seqs[0]).await, "");
+        assert_eq!(text(seqs[1]).await, "raw   ");
+
+        sqlx::query(
+            "UPDATE stream_events \
+             SET payload = jsonb_set(payload, ARRAY['text'], to_jsonb(payload ->> 'text' || ' edited')) \
+             WHERE id = ANY($1)",
+        )
+        .bind(seqs.iter().flatten().copied().collect::<Vec<_>>())
+        .execute(&pool)
+        .await
+        .expect("update");
+        assert_eq!(text(seqs[0]).await, "", "a chunked row stays out of the trigram index");
+        assert_eq!(text(seqs[1]).await, "raw edited   ");
+
+        sqlx::query("DELETE FROM stream_events WHERE session_id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .ok();
+        drop_machines(&pool, &[sid], &[(uid, mid)]).await;
+    }
+
+    #[tokio::test]
     async fn an_image_result_is_stored_once_by_reference_and_served_to_each_session() {
         let Some(url) = crate::routes::gateway::test_db_url("image_ingest") else {
             return;
@@ -655,6 +711,7 @@ mod tests {
                 event_type: "tool_use",
                 payload,
                 turn_id: None,
+                chunked: false,
             });
         }
         let seqs = insert_events(&pool, mid, uid, rows).await.expect("insert");
