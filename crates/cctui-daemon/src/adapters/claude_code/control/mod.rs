@@ -37,6 +37,7 @@ use crate::adapter_runtime::{CommandOutcome, Handled, Interrupter, SessionDriver
 mod delivered;
 mod diagnose;
 mod hook_respawn;
+mod hookless_turn;
 #[cfg(test)]
 mod lane_tests;
 mod lanes;
@@ -404,6 +405,8 @@ pub struct Driver {
     /// if unchanged: the one `last_status` remembers may have died with the
     /// previous connection.
     status_resend: HashSet<String>,
+    /// Per `local_id`, the last turn end read from a hookless worker's transcript.
+    hookless_turn_ends: HashMap<String, String>,
     /// Shorts claude reports dead-but-still-listed. Once we emit the
     /// dead transition (hibernated or `SessionEnded`) we record the short here
     /// and suppress further live-status emits for it, so the still-present
@@ -662,6 +665,9 @@ struct StatusSnapshot {
     /// native daemon revived from one that is genuinely mid-turn.
     source: Option<String>,
     started_at: Option<i64>,
+    /// An `AskUserQuestion` form is open on screen, read from `needs`: a
+    /// hookless worker never reports it any other way.
+    asking: bool,
 }
 
 /// Everything the launch chokepoint pulls from the server's durable binding for
@@ -833,6 +839,7 @@ impl Driver {
             roster: HashSet::new(),
             last_status: HashMap::new(),
             status_resend: HashSet::new(),
+            hookless_turn_ends: HashMap::new(),
             dead_shorts: HashSet::new(),
             liveness: liveness::Liveness::default(),
             foreign_shorts: HashSet::new(),
@@ -1327,15 +1334,14 @@ impl Driver {
         };
         self.liveness.set_host(&sock);
         let canary_roster: Vec<_> = resp.jobs.iter().map(LiveSnapshot::canary_view).collect();
-        let idle: HashSet<String> = resp
+        let respawn_points: HashMap<String, hook_respawn::RespawnPoint> = resp
             .jobs
             .iter()
-            .filter(|j| !j.dying && j.tempo.as_deref() == Some("idle"))
-            .map(|j| j.short.clone())
+            .filter_map(|j| Some((j.short.clone(), hook_respawn::RespawnPoint::of(j)?)))
             .collect();
         self.apply_snapshot(resp.jobs).await;
         self.check_canaries(&canary_roster).await;
-        self.respawn_hookless_workers(&sock, &idle);
+        self.respawn_hookless_workers(&sock, &respawn_points);
         self.probe_liveness(&sock).await;
         let reattached = self.churned;
         if self.churned {

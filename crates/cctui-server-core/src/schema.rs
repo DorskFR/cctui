@@ -2,7 +2,7 @@
 use sha2::{Digest, Sha256, Sha384};
 use sqlx::{Connection, PgConnection, PgPool};
 use std::ops::{Deref, DerefMut};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Immutable execution baseline corresponding to legacy schema 191.
 pub const BOOTSTRAP: &str = include_str!("../schema/0001_execution.sql");
@@ -12,27 +12,77 @@ pub const LEGACY_BASELINE: i64 = 191;
 #[derive(Debug, Clone, Copy)]
 pub struct Migration {
     pub version: i64,
+    pub name: &'static str,
     pub sql: &'static str,
 }
 
 pub const MIGRATIONS: &[Migration] = &[
-    Migration { version: 1, sql: BOOTSTRAP },
-    Migration { version: 2, sql: include_str!("../schema/0002_machine_launches.sql") },
-    Migration { version: 3, sql: include_str!("../schema/0003_execution_stops.sql") },
+    Migration { version: 1, name: "execution", sql: BOOTSTRAP },
+    Migration {
+        version: 2,
+        name: "machine_launches",
+        sql: include_str!("../schema/0002_machine_launches.sql"),
+    },
+    Migration {
+        version: 3,
+        name: "execution_stops",
+        sql: include_str!("../schema/0003_execution_stops.sql"),
+    },
     Migration {
         version: 4,
+        name: "session_name_from_custom_title",
         sql: include_str!("../schema/0004_session_name_from_custom_title.sql"),
     },
-    Migration { version: 5, sql: include_str!("../schema/0005_dispatch_identities.sql") },
-    Migration { version: 6, sql: include_str!("../schema/0006_session_tool_guard_bypass.sql") },
-    Migration { version: 7, sql: include_str!("../schema/0007_account_hook_policy.sql") },
-    Migration { version: 8, sql: include_str!("../schema/0008_session_hook_policies.sql") },
-    Migration { version: 9, sql: include_str!("../schema/0009_dispatch_exposure.sql") },
-    Migration { version: 10, sql: include_str!("../schema/0010_archived_claude_jobs_index.sql") },
-    Migration { version: 11, sql: include_str!("../schema/0011_provider_usage_totals.sql") },
-    Migration { version: 12, sql: include_str!("../schema/0012_dispatch_handle_gone.sql") },
-    Migration { version: 13, sql: include_str!("../schema/0013_dispatch_identity_hold.sql") },
-    Migration { version: 14, sql: include_str!("../schema/0014_dispatcher_features.sql") },
+    Migration {
+        version: 5,
+        name: "dispatch_identities",
+        sql: include_str!("../schema/0005_dispatch_identities.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "session_tool_guard_bypass",
+        sql: include_str!("../schema/0006_session_tool_guard_bypass.sql"),
+    },
+    Migration {
+        version: 7,
+        name: "account_hook_policy",
+        sql: include_str!("../schema/0007_account_hook_policy.sql"),
+    },
+    Migration {
+        version: 8,
+        name: "session_hook_policies",
+        sql: include_str!("../schema/0008_session_hook_policies.sql"),
+    },
+    Migration {
+        version: 9,
+        name: "dispatch_exposure",
+        sql: include_str!("../schema/0009_dispatch_exposure.sql"),
+    },
+    Migration {
+        version: 10,
+        name: "archived_claude_jobs_index",
+        sql: include_str!("../schema/0010_archived_claude_jobs_index.sql"),
+    },
+    Migration {
+        version: 11,
+        name: "provider_usage_totals",
+        sql: include_str!("../schema/0011_provider_usage_totals.sql"),
+    },
+    Migration {
+        version: 12,
+        name: "dispatch_handle_gone",
+        sql: include_str!("../schema/0012_dispatch_handle_gone.sql"),
+    },
+    Migration {
+        version: 13,
+        name: "dispatch_identity_hold",
+        sql: include_str!("../schema/0013_dispatch_identity_hold.sql"),
+    },
+    Migration {
+        version: 14,
+        name: "dispatcher_features",
+        sql: include_str!("../schema/0014_dispatcher_features.sql"),
+    },
 ];
 
 const LEGACY_LAST: &str = include_str!("../../../migrations/191_file_blobs.up.sql");
@@ -172,15 +222,50 @@ pub async fn install_package(
     {
         return Err(incompatible(format!("unsupported or altered {package} schema migration")));
     }
-    for migration in &migrations[rows.len()..] {
+    let pending = &migrations[rows.len()..];
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let started = Instant::now();
+    for migration in pending {
+        let (version, name) = (migration.version, migration.name);
+        let adopting = adopted && version == 1;
+        if adopting {
+            tracing::info!(package, version, name, "adopting existing migration {version} {name}");
+        } else {
+            tracing::info!(
+                package,
+                version,
+                name,
+                "applying migration {version} {name}; this can take a while on large tables"
+            );
+        }
+        let applying = Instant::now();
         let mut tx = conn.begin().await?;
-        let adopting = adopted && migration.version == 1;
         if !adopting {
             sqlx::raw_sql(migration.sql).execute(&mut *tx).await?;
         }
         record(&mut tx, package, *migration, adopting).await?;
         tx.commit().await?;
+        if !adopting {
+            let elapsed = applying.elapsed();
+            tracing::info!(
+                package,
+                version,
+                name,
+                ?elapsed,
+                "applied migration {version} {name} in {elapsed:?}"
+            );
+        }
     }
+    let elapsed = started.elapsed();
+    tracing::info!(
+        package,
+        count = pending.len(),
+        ?elapsed,
+        "applied {} {package} migrations in {elapsed:?}",
+        pending.len()
+    );
     Ok(())
 }
 

@@ -7,7 +7,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use cctui_proto::api::tool_guard::{ToolGuardRequest, ToolGuardState};
-use cctui_server_core::gateway::toolguard::{CompiledPolicy, ToolPolicy, invalidate_session_guard};
+use cctui_server_core::gateway::toolguard::{CompiledPolicy, ToolPolicy};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -130,7 +130,7 @@ pub async fn put_tool_guard(
     if updated.rows_affected() == 0 {
         return Err(AppError::new(StatusCode::NOT_FOUND, "session not found"));
     }
-    invalidate_session_guard(&id);
+    state.auth_config.purge_tool_guard_session(&id);
     tracing::info!(
         session = %id,
         user = %ctx.user_id,

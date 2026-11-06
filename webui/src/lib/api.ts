@@ -1,5 +1,6 @@
 import { apiBase } from './config';
 import { auth } from './auth.svelte';
+import { backendHealth, isNetworkError, isOutageStatus } from './backendHealth.svelte';
 import { net } from './netstats.svelte';
 
 export class ApiError extends Error {
@@ -51,6 +52,22 @@ function rememberEtag(url: string, etag: string, text: string) {
 	}
 }
 
+function observe(res: Response) {
+	if (isOutageStatus(res.status)) backendHealth.reportFailure();
+	else if (res.ok || res.status === 304) backendHealth.reportOk();
+}
+
+async function cctuiFetch(url: string, init: RequestInit): Promise<Response> {
+	try {
+		const res = await fetch(url, init);
+		observe(res);
+		return res;
+	} catch (e) {
+		if (isNetworkError(e)) backendHealth.reportFailure();
+		throw e;
+	}
+}
+
 async function handle<T>(res: Response, url: string = res.url, session = true): Promise<T> {
 	if (res.status === 401 && session) {
 		auth.markLoggedOut();
@@ -98,7 +115,7 @@ export async function request<T>(base: string, path: string, opts: RequestOpts =
 
 	// Auth rides the `HttpOnly` cookie; `credentials: 'include'` makes
 	// the browser attach it (works same-origin without CORS credential config).
-	const res = await fetch(url, {
+	const res = await (token ? fetch : cctuiFetch)(url, {
 		method,
 		headers,
 		credentials: token ? 'omit' : 'include',
@@ -112,7 +129,7 @@ export async function request<T>(base: string, path: string, opts: RequestOpts =
 
 /** Raw cookie-authed fetch for callers that branch on the `Response` itself. */
 export function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
-	return fetch(url, { ...init, credentials: 'include' });
+	return cctuiFetch(url, { ...init, credentials: 'include' });
 }
 
 /** Fetch a same-origin file/blob href; the caller inspects status and body. */

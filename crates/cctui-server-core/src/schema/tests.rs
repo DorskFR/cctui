@@ -67,6 +67,7 @@ async fn a_failed_package_rolls_back_its_schema_and_tracking() {
             "fixture",
             &[Migration {
                 version: 1,
+                name: "partial",
                 sql: "CREATE TABLE fixture_partial (id bigint); SELECT 1/0;",
             }],
             false,
@@ -166,14 +167,14 @@ async fn failed_forward_sql_keeps_prior_migrations_and_can_resume() {
     with_isolated_database("package_forward_rollback", |pool| async move {
         bootstrap(&pool).await.unwrap();
         let mut conn=migration_connection(&pool).await.unwrap();
-        let baseline=Migration{version:1,sql:"CREATE TABLE fixture_forward (value text); INSERT INTO fixture_forward VALUES ('keep');"};
-        let failed=Migration{version:2,sql:"ALTER TABLE fixture_forward ADD COLUMN partial bigint; SELECT 1/0;"};
+        let baseline=Migration{version:1,name:"baseline",sql:"CREATE TABLE fixture_forward (value text); INSERT INTO fixture_forward VALUES ('keep');"};
+        let failed=Migration{version:2,name:"failed",sql:"ALTER TABLE fixture_forward ADD COLUMN partial bigint; SELECT 1/0;"};
         assert!(install_package(&mut conn,"fixture",&[baseline,failed],false).await.is_err());
         let absent:bool=sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='fixture_forward' AND column_name='partial')").fetch_one(&mut *conn).await.unwrap();
         assert!(absent);
         let count:i64=sqlx::query_scalar("SELECT count(*) FROM _cctui_schema_migrations WHERE package='fixture'").fetch_one(&mut *conn).await.unwrap();
         assert_eq!(count,1);
-        let fixed=Migration{version:2,sql:"ALTER TABLE fixture_forward ADD COLUMN finished bigint;"};
+        let fixed=Migration{version:2,name:"fixed",sql:"ALTER TABLE fixture_forward ADD COLUMN finished bigint;"};
         install_package(&mut conn,"fixture",&[baseline,fixed],false).await.unwrap();
         install_package(&mut conn,"fixture",&[baseline,fixed],false).await.unwrap();
         let value:String=sqlx::query_scalar("SELECT value FROM fixture_forward").fetch_one(&mut *conn).await.unwrap();

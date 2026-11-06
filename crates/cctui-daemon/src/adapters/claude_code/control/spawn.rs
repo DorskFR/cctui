@@ -114,12 +114,27 @@ impl Launcher {
         fallback_cwd: Option<&str>,
         env: &std::collections::BTreeMap<String, String>,
     ) -> anyhow::Result<()> {
+        self.resume_worker_via(sock, short, local_id, fallback_session_id, fallback_cwd, env)
+            .await
+            .map(|_| ())
+    }
+
+    /// [`Self::resume_worker`], reporting how the claude daemon served it.
+    pub(super) async fn resume_worker_via(
+        &self,
+        sock: &std::path::Path,
+        short: &str,
+        local_id: &str,
+        fallback_session_id: Option<&str>,
+        fallback_cwd: Option<&str>,
+        env: &std::collections::BTreeMap<String, String>,
+    ) -> anyhow::Result<Resumed> {
         let alive = |resp: &serde_json::Value| {
             resp.get("alive").and_then(serde_json::Value::as_bool).unwrap_or(false)
         };
         let has = socket::one_shot(sock, &json!({"proto":1,"op":"has","short":short})).await?;
         if alive(&has) {
-            return Ok(());
+            return Ok(Resumed::AlreadyAlive);
         }
 
         // Re-derive the gateway env + per-account settings from the server's
@@ -198,7 +213,8 @@ impl Launcher {
             .await
             .with_context(|| format!("resume dispatch for hibernated session {short}"))?;
         tracing::info!(?resp, %short, %session_id, "resumed hibernated session via dispatch");
-        if resp.get("via").and_then(serde_json::Value::as_str) == Some("spare") {
+        let resumed = Resumed::of(&resp);
+        if resumed == Resumed::Spare {
             super::super::canary::mark_spare(&session_id);
         }
 
@@ -213,10 +229,30 @@ impl Launcher {
                 && alive(&resp)
             {
                 tokio::time::sleep(Duration::from_millis(1500)).await;
-                return Ok(());
+                return Ok(resumed);
             }
         }
         anyhow::bail!("resumed session {short} did not come alive within 10s");
+    }
+}
+
+/// How the claude daemon served a resume: `via` on its dispatch reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Resumed {
+    AlreadyAlive,
+    Cold,
+    Spare,
+    /// A reply without a `via` this version of cctui knows.
+    Unreported,
+}
+
+impl Resumed {
+    pub(super) fn of(resp: &serde_json::Value) -> Self {
+        match resp.get("via").and_then(serde_json::Value::as_str) {
+            Some("cold") => Self::Cold,
+            Some("spare") => Self::Spare,
+            _ => Self::Unreported,
+        }
     }
 }
 
