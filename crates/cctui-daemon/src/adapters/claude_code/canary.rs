@@ -12,13 +12,8 @@ pub(super) const WINDOW: Duration = Duration::from_secs(30);
 /// watchdog owns the never-started case.
 const STALE: Duration = Duration::from_mins(5);
 
-const HOOKS_LOST: &str = "Questions and permission prompts will not reach cctui, and turn ends \
-                          arrive late, read from the transcript.";
-
-const RESPAWN_SCHEDULED: &str =
-    "cctui will restart the worker once at its next idle point so it loads them.";
-
-pub(super) const RESPAWNED: &str = "cctui restarted the worker cold to load its hooks.";
+const HOOKS_LOST: &str = "Questions and permission prompts from this session will not reach \
+                          cctui; turn ends are read from the transcript.";
 
 const EXITED_WITHOUT_DETAIL: &str = "worker exited before cctui hooks loaded; Claude Code may \
                                      have refused a launch flag (disableSideloadFlags)";
@@ -54,6 +49,14 @@ impl Verdict {
                 format!("worker exited before cctui hooks loaded: {detail}")
             }
             Self::ExitedEarly(None) => EXITED_WITHOUT_DETAIL.to_owned(),
+        }
+    }
+
+    const fn kind(&self) -> &'static str {
+        match self {
+            Self::HooksBlocked { .. } => "hooks",
+            Self::McpBlocked => "mcp",
+            Self::ExitedEarly(_) => "exited",
         }
     }
 
@@ -94,10 +97,9 @@ struct Watch {
 #[derive(Debug, Default)]
 pub(super) struct Canary {
     watches: HashMap<String, Watch>,
-    /// Spare-claimed sessions owed a cold respawn: `local_id` to short.
-    respawns_due: HashMap<String, String>,
-    /// Sessions that were ever owed one, so a session gets at most one.
-    respawn_owed: HashSet<String>,
+    /// `(local_id, verdict kind)` already warned about: a session's resumes
+    /// keep the flag but never repeat the marker.
+    warned: HashSet<(String, &'static str)>,
 }
 
 impl Canary {
@@ -171,15 +173,9 @@ impl Canary {
                 Step::Wait => true,
                 Step::Done => false,
                 Step::Flag(verdict) => {
-                    let mut text = verdict.notice();
-                    if verdict == (Verdict::HooksBlocked { spare: true })
-                        && self.respawn_owed.insert(local_id.clone())
-                    {
-                        self.respawns_due.insert(local_id.clone(), watch.short.clone());
-                        text.push(' ');
-                        text.push_str(RESPAWN_SCHEDULED);
+                    if self.warned.insert((local_id.clone(), verdict.kind())) {
+                        notices.push((local_id.clone(), verdict.notice()));
                     }
-                    notices.push((local_id.clone(), text));
                     let keep = !matches!(verdict, Verdict::ExitedEarly(_));
                     watch.flagged = Some(verdict);
                     keep
@@ -190,23 +186,7 @@ impl Canary {
                 }
             }
         });
-        let watches = &self.watches;
-        self.respawns_due.retain(|local_id, _| {
-            watches
-                .get(local_id)
-                .is_some_and(|w| matches!(w.flagged, Some(Verdict::HooksBlocked { .. })))
-        });
         notices
-    }
-
-    /// The `(local_id, short)` pairs still owed their cold respawn.
-    pub(super) fn respawns_due(&self) -> Vec<(String, String)> {
-        self.respawns_due.iter().map(|(id, short)| (id.clone(), short.clone())).collect()
-    }
-
-    /// Take `local_id`'s owed respawn; `false` when none is owed.
-    pub(super) fn claim_respawn(&mut self, local_id: &str) -> bool {
-        self.respawns_due.remove(local_id).is_some()
     }
 }
 
@@ -286,14 +266,6 @@ pub(super) fn mark_spare(id: &str) {
     if let Ok(mut c) = CANARY.lock() {
         c.mark_spare(id);
     }
-}
-
-pub(super) fn respawns_due() -> Vec<(String, String)> {
-    CANARY.lock().map_or_else(|_| Vec::new(), |c| c.respawns_due())
-}
-
-pub(super) fn claim_respawn(local_id: &str) -> bool {
-    CANARY.lock().is_ok_and(|mut c| c.claim_respawn(local_id))
 }
 
 pub(super) fn hooks_missing(local_id: &str) -> bool {
@@ -382,54 +354,37 @@ mod tests {
     }
 
     #[test]
-    fn a_hookless_spare_claim_is_owed_exactly_one_cold_respawn() {
+    fn a_session_is_warned_once_even_across_resumes() {
         let (mut c, t0) = armed(None);
         c.mark_spare("claude-1");
         let roster = [live("abcd1234")];
         c.observe(&roster, t0, &never);
         let notices = c.observe(&roster, t0 + WINDOW, &never);
         assert_eq!(notices.len(), 1);
-        assert!(notices[0].1.contains(RESPAWN_SCHEDULED), "{}", notices[0].1);
-        assert_eq!(c.respawns_due(), [("loc-1".to_owned(), "abcd1234".to_owned())]);
-
-        c.observe(&roster, t0 + WINDOW * 2, &never);
-        assert_eq!(c.respawns_due().len(), 1, "a later poll does not owe a second one");
-        assert!(c.claim_respawn("loc-1"));
-        assert!(!c.claim_respawn("loc-1"));
-        assert!(c.respawns_due().is_empty());
+        assert!(notices[0].1.contains(HOOKS_LOST), "{}", notices[0].1);
+        assert!(!notices[0].1.to_lowercase().contains("restart"), "{}", notices[0].1);
 
         let t1 = t0 + WINDOW * 3;
         c.arm("loc-1", "abcd1234", "claude-1", None, t1, T0_MS + 90_000);
         c.mark_spare("claude-1");
         c.observe(&roster, t1, &never);
-        let again = c.observe(&roster, t1 + WINDOW, &never);
-        assert_eq!(again.len(), 1);
-        assert!(!again[0].1.contains(RESPAWN_SCHEDULED), "{}", again[0].1);
-        assert!(c.respawns_due().is_empty(), "the respawned worker is not respawned again");
+        assert!(c.observe(&roster, t1 + WINDOW, &never).is_empty(), "no second marker");
+        assert!(c.hooks_missing("loc-1"), "the resumed session is still known hookless");
     }
 
     #[test]
-    fn a_cold_launch_without_hooks_is_not_respawned() {
-        let (mut c, t0) = armed(None);
+    fn another_kind_of_failure_still_gets_its_own_warning() {
+        let (mut c, t0) = armed(Some("loc-1"));
         let roster = [live("abcd1234")];
         c.observe(&roster, t0, &never);
-        let notices = c.observe(&roster, t0 + WINDOW, &never);
-        assert!(!notices[0].1.contains(RESPAWN_SCHEDULED), "{}", notices[0].1);
-        assert!(c.respawns_due().is_empty());
-    }
-
-    #[test]
-    fn hooks_that_start_firing_cancel_the_owed_respawn() {
-        let (mut c, t0) = armed(None);
-        c.mark_spare("claude-1");
-        let roster = [live("abcd1234")];
-        c.observe(&roster, t0, &never);
-        c.observe(&roster, t0 + WINDOW, &never);
-        assert_eq!(c.respawns_due().len(), 1);
+        assert_eq!(c.observe(&roster, t0 + WINDOW, &never).len(), 1);
+        let t1 = t0 + WINDOW * 3;
+        c.arm("loc-1", "abcd1234", "claude-1", Some("loc-1"), t1, T0_MS + 90_000);
         c.ping("claude-1");
-        c.observe(&roster, t0 + WINDOW * 2, &never);
-        assert!(c.respawns_due().is_empty());
-        assert!(!c.claim_respawn("loc-1"));
+        c.observe(&roster, t1, &never);
+        let notices = c.observe(&roster, t1 + WINDOW, &never);
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].1.contains("cctui MCP server not connected"), "{}", notices[0].1);
     }
 
     #[test]

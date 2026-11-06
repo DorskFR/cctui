@@ -5,6 +5,30 @@ use super::{AdapterEvent, Driver, json, socket, transcript};
 const TAKEN_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
 const TAKEN_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
+/// Whether `job` sits on an open `AskUserQuestion` form. Without hooks such a
+/// form is invisible to cctui except through the roster.
+pub(super) fn asking(job: &super::LiveSnapshot) -> bool {
+    !job.dying
+        && job.tempo.as_deref() == Some("blocked")
+        && job.needs.as_deref().is_some_and(is_question)
+}
+
+/// Claude Code's `needs` for an open `AskUserQuestion` form: `answer: <question>
+/// (<options>)`, or `answer question` when it has no text.
+fn is_question(needs: &str) -> bool {
+    let needs = needs.trim();
+    needs == "answer question" || needs.starts_with("answer:")
+}
+
+/// Whether `short`'s live roster entry still shows a question form. Checked
+/// before an ESC, which would abort the turn if the form already closed.
+async fn still_asking(sock: &std::path::Path, short: &str) -> bool {
+    let list = json!({"proto": 1, "op": "list"});
+    socket::call::<super::ListResponse>(sock, &list)
+        .await
+        .is_ok_and(|resp| resp.jobs.iter().any(|j| j.short == short && asking(j)))
+}
+
 impl Driver {
     /// Repair only the idle worker named by a recovery request. Resolve its
     /// durable gateway binding BEFORE stopping it, then resume the same saved
@@ -217,9 +241,8 @@ impl ReplyJob {
             Ok(mut m) => m.remove(local_id),
             Err(_) => None,
         };
-        let hookless_form = pending_ask.is_none()
-            && self.form_open
-            && super::hook_respawn::still_asking(sock, short).await;
+        let hookless_form =
+            pending_ask.is_none() && self.form_open && still_asking(sock, short).await;
         if peer && hookless_form {
             return Err(AskOpened.into());
         }
@@ -1253,6 +1276,30 @@ mod hookless_form_tests {
         result.unwrap();
         assert_eq!(ops, ["has", "list", "reply"]);
         assert!(typed.is_empty(), "an ESC would abort the running turn: {typed:?}");
+    }
+
+    fn job(tempo: &str, needs: Option<&str>) -> super::super::LiveSnapshot {
+        serde_json::from_value(serde_json::json!({
+            "short": "abcd1234",
+            "tempo": tempo,
+            "needs": needs,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn only_an_open_question_form_counts_as_asking() {
+        assert!(super::asking(&job("blocked", Some("answer: Which runner? (B1 · B2 · B3)"))));
+        assert!(super::asking(&job("blocked", Some("answer question"))));
+        assert!(!super::asking(&job("idle", None)));
+        assert!(!super::asking(&job("active", None)));
+        assert!(!super::asking(&job("blocked", Some("approve Bash: ls"))));
+        assert!(!super::asking(&job("blocked", Some("approve plan"))));
+        assert!(!super::asking(&job("blocked", Some("answering the review"))));
+        assert!(!super::asking(&job("blocked", None)));
+        let mut dying = job("blocked", Some("answer question"));
+        dying.dying = true;
+        assert!(!super::asking(&dying));
     }
 
     #[tokio::test]
