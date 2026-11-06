@@ -437,9 +437,14 @@ impl Driver {
         // question. The `AskUserQuestion` PreToolUse hook delivers the real
         // prompt over the daemon socket.
 
+        let (tempo, state) = if self.hookless_turn_ended(job, &local_id).await {
+            (Some("idle".to_owned()), Some("done".to_owned()))
+        } else {
+            (job.tempo.clone(), job.state.clone())
+        };
         let snap = StatusSnapshot {
-            tempo: job.tempo.clone(),
-            state: job.state.clone(),
+            tempo: tempo.clone(),
+            state: state.clone(),
             detail: job.detail.clone(),
             name: name.clone(),
             activity: activity.clone(),
@@ -457,8 +462,8 @@ impl Driver {
         self.last_status.insert(job.short.clone(), snap);
         self.emit(AdapterEvent::Status {
             local_id,
-            tempo: job.tempo.clone(),
-            state: job.state.clone(),
+            tempo,
+            state,
             detail: job.detail.clone(),
             activity,
             name,
@@ -616,6 +621,7 @@ impl Driver {
                 })
                 .await;
             }
+            self.hookless_turn_ends.remove(&loc.local_id);
             self.short_by_session.remove(&loc.local_id);
             self.session_to_local
                 .lock()

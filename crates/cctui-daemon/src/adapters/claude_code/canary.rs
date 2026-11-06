@@ -12,10 +12,11 @@ pub(super) const WINDOW: Duration = Duration::from_secs(30);
 /// watchdog owns the never-started case.
 const STALE: Duration = Duration::from_mins(5);
 
-const HOOKS_LOST: &str = "Questions, permission prompts and turn ends will not reach cctui.";
+const HOOKS_LOST: &str = "Questions and permission prompts will not reach cctui, and turn ends \
+                          arrive late, read from the transcript.";
 
 const RESPAWN_SCHEDULED: &str =
-    "cctui will restart the worker once, cold, at its next idle point so it loads them.";
+    "cctui will restart the worker once at its next idle point so it loads them.";
 
 pub(super) const RESPAWNED: &str = "cctui restarted the worker cold to load its hooks.";
 
@@ -148,6 +149,11 @@ impl Canary {
 
     pub(super) fn flagged(&self, local_id: &str) -> Option<&Verdict> {
         self.watches.get(local_id).and_then(|w| w.flagged.as_ref())
+    }
+
+    /// Whether `local_id`'s worker is known to run without cctui's hooks.
+    pub(super) fn hooks_missing(&self, local_id: &str) -> bool {
+        matches!(self.flagged(local_id), Some(Verdict::HooksBlocked { .. }))
     }
 
     /// Advance every watch against one roster poll; returns the notices to
@@ -290,6 +296,25 @@ pub(super) fn claim_respawn(local_id: &str) -> bool {
     CANARY.lock().is_ok_and(|mut c| c.claim_respawn(local_id))
 }
 
+pub(super) fn hooks_missing(local_id: &str) -> bool {
+    #[cfg(test)]
+    if FLAGGED_IN_TEST.lock().is_ok_and(|ids| ids.contains(local_id)) {
+        return true;
+    }
+    CANARY.lock().is_ok_and(|c| c.hooks_missing(local_id))
+}
+
+/// Other tests' `observe` calls prune the shared canary, so a test flags here.
+#[cfg(test)]
+static FLAGGED_IN_TEST: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
+
+#[cfg(test)]
+pub(super) fn flag_hooks_missing(local_id: &str) {
+    if let Ok(mut ids) = FLAGGED_IN_TEST.lock() {
+        ids.insert(local_id.to_owned());
+    }
+}
+
 pub(super) fn flagged_notice(local_id: &str) -> Option<String> {
     CANARY.lock().ok()?.flagged(local_id).map(Verdict::notice)
 }
@@ -405,6 +430,25 @@ mod tests {
         c.observe(&roster, t0 + WINDOW * 2, &never);
         assert!(c.respawns_due().is_empty());
         assert!(!c.claim_respawn("loc-1"));
+    }
+
+    #[test]
+    fn hooks_count_as_missing_only_while_the_hook_flag_stands() {
+        let (mut c, t0) = armed(None);
+        let roster = [live("abcd1234")];
+        c.observe(&roster, t0, &never);
+        assert!(!c.hooks_missing("loc-1"), "still inside the window");
+        c.observe(&roster, t0 + WINDOW, &never);
+        assert!(c.hooks_missing("loc-1"));
+        c.ping("claude-1");
+        c.observe(&roster, t0 + WINDOW * 2, &never);
+        assert!(!c.hooks_missing("loc-1"), "a later hook clears it");
+
+        let (mut mcp, t0) = armed(Some("mcp-1"));
+        mcp.ping("claude-1");
+        mcp.observe(&roster, t0, &never);
+        mcp.observe(&roster, t0 + WINDOW, &never);
+        assert!(!mcp.hooks_missing("loc-1"), "a missing MCP relay is not missing hooks");
     }
 
     #[test]

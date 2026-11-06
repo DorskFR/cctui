@@ -100,9 +100,13 @@ async fn respawn_cold(
     local_id: String,
     reask: Option<ReplyJob>,
 ) -> LaneOutcome {
-    let mut result = restart(&launcher, &remover, &sock, &short, &local_id).await;
-    if let (Ok(()), Some(job)) = (&result, reask) {
-        result = Box::pin(job.deliver()).await.context("asking the model to re-ask its question");
+    let resumed = restart(&launcher, &remover, &sock, &short, &local_id).await;
+    let relaunched = resumed.as_ref().is_ok_and(|r| *r != spawn::Resumed::AlreadyAlive);
+    let mut result = verdict(resumed);
+    if let (true, Some(job)) = (relaunched, reask) {
+        let asked =
+            Box::pin(job.deliver()).await.context("asking the model to re-ask its question");
+        result = result.and(asked);
     }
     let text = match &result {
         Ok(()) => canary::RESPAWNED.to_owned(),
@@ -114,6 +118,23 @@ async fn respawn_cold(
     result.into()
 }
 
+/// Only a cold launch reads `--settings` for sure: a spare claim can drop it
+/// again, and Claude Code offers a dispatch no way to skip its spare.
+fn verdict(resumed: anyhow::Result<spawn::Resumed>) -> anyhow::Result<()> {
+    match resumed? {
+        spawn::Resumed::Cold => Ok(()),
+        spawn::Resumed::Spare => Err(anyhow::anyhow!(
+            "Claude Code served the restart from a pre-warmed spare again, not a cold launch, \
+             so its hooks may still be missing; cctui reads turn ends from the transcript instead"
+        )),
+        spawn::Resumed::Unreported => Err(anyhow::anyhow!(
+            "Claude Code did not report how it relaunched the worker, so a cold launch is not \
+             confirmed"
+        )),
+        spawn::Resumed::AlreadyAlive => Err(anyhow::anyhow!("the worker was still running")),
+    }
+}
+
 /// The launch pull is checked first: a worker stopped without one to relaunch
 /// on would lose its gateway routing.
 async fn restart(
@@ -122,7 +143,7 @@ async fn restart(
     sock: &Path,
     short: &str,
     local_id: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<spawn::Resumed> {
     let launch = launcher.resolve_launch_env(local_id, &BTreeMap::new()).await?;
     anyhow::ensure!(launch.pulled, "the server did not answer the launch pull");
     remover.stop_worker(sock, short).await;
@@ -130,12 +151,12 @@ async fn restart(
         removal::Remover::await_worker_exit(sock, short).await,
         "the worker did not exit"
     );
-    launcher.resume_worker(sock, short, local_id, None, None, &launch.env).await
+    launcher.resume_worker_via(sock, short, local_id, None, None, &launch.env).await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{LiveSnapshot, RespawnPoint, may_respawn};
+    use super::{LiveSnapshot, RespawnPoint, may_respawn, spawn, verdict};
 
     fn job(tempo: &str, needs: Option<&str>) -> LiveSnapshot {
         serde_json::from_value(serde_json::json!({
@@ -175,5 +196,24 @@ mod tests {
         let mut dying = job("idle", None);
         dying.dying = true;
         assert_eq!(RespawnPoint::of(&dying), None);
+    }
+
+    #[test]
+    fn only_a_cold_relaunch_counts_as_a_respawn() {
+        assert!(verdict(Ok(spawn::Resumed::Cold)).is_ok());
+        let spare = verdict(Ok(spawn::Resumed::Spare)).unwrap_err().to_string();
+        assert!(spare.contains("pre-warmed spare"), "{spare}");
+        assert!(verdict(Ok(spawn::Resumed::Unreported)).is_err(), "an unknown via is not cold");
+        assert!(verdict(Ok(spawn::Resumed::AlreadyAlive)).is_err(), "nothing was relaunched");
+        assert!(verdict(Err(anyhow::anyhow!("the worker did not exit"))).is_err());
+    }
+
+    #[test]
+    fn the_dispatch_reply_names_the_launch_path() {
+        let via = |v: serde_json::Value| spawn::Resumed::of(&v);
+        assert_eq!(via(serde_json::json!({"ok": true, "via": "cold"})), spawn::Resumed::Cold);
+        assert_eq!(via(serde_json::json!({"ok": true, "via": "spare"})), spawn::Resumed::Spare);
+        assert_eq!(via(serde_json::json!({"ok": true})), spawn::Resumed::Unreported);
+        assert_eq!(via(serde_json::json!({"via": "adopted"})), spawn::Resumed::Unreported);
     }
 }
