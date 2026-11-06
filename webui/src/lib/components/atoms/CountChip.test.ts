@@ -13,7 +13,7 @@ afterEach(() => {
 	target = null;
 });
 
-const render = (props: { count: number; tone?: 'neutral' | 'active'; label?: string }) => {
+const render = (props: { count: number; tone?: 'neutral' | 'unread'; label?: string }) => {
 	target = document.createElement('div');
 	document.body.appendChild(target);
 	app = mount(CountChip, { target, props });
@@ -24,7 +24,7 @@ describe('CountChip', () => {
 	it('shows the count in the neutral tone by default', () => {
 		const chip = render({ count: 5 }).querySelector('.count');
 		expect(chip?.textContent).toBe('5');
-		expect(chip?.classList.contains('active')).toBe(false);
+		expect(chip?.classList.contains('unread')).toBe(false);
 	});
 
 	it('caps the visible number at 99+', () => {
@@ -36,9 +36,9 @@ describe('CountChip', () => {
 	});
 
 	it('names the count for assistive tech when given a label', () => {
-		const chip = render({ count: 5, label: '5 unread', tone: 'active' }).querySelector('.count');
+		const chip = render({ count: 5, label: '5 unread', tone: 'unread' }).querySelector('.count');
 		expect(chip?.getAttribute('aria-label')).toBe('5 unread');
 		expect(chip?.getAttribute('role')).toBe('img');
-		expect(chip?.classList.contains('active')).toBe(true);
+		expect(chip?.classList.contains('unread')).toBe(true);
 	});
 });

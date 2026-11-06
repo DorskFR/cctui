@@ -70,21 +70,33 @@ impl TransparentListener {
         self
     }
 
+    #[cfg(test)]
     pub async fn serve(self) -> anyhow::Result<()> {
-        loop {
-            let (stream, _peer) = self.listener.accept().await?;
-            let policy = self.policy.clone();
-            let injection = self.injection.clone();
-            let private = self.private.clone();
-            let server = self.server.clone();
-            let gate = self.gate.clone();
-            tokio::spawn(async move {
-                let shared = Shared { policy, injection, private, server, gate };
+        self.serve_until(std::future::pending(), Duration::ZERO).await
+    }
+
+    pub async fn serve_until(
+        self,
+        shutdown: impl std::future::Future<Output = ()>,
+        drain: Duration,
+    ) -> anyhow::Result<()> {
+        let Self { listener, policy, injection, private, server, gate } = self;
+        crate::shutdown::serve_until(listener, shutdown, drain, move |stream| {
+            let shared = Shared {
+                policy: policy.clone(),
+                injection: injection.clone(),
+                private: private.clone(),
+                server: server.clone(),
+                gate: gate.clone(),
+            };
+            async move {
                 if let Err(e) = handle_connection(stream, shared).await {
                     tracing::debug!("transparent connection ended: {e}");
                 }
-            });
-        }
+            }
+        })
+        .await?;
+        Ok(())
     }
 }
 

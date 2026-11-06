@@ -49,7 +49,7 @@
 				<span class="cell" class:active>
 					<span class="ico"
 						><Icon name={it.iconName} size={20} />{#if it.href === '/sessions' && unread > 0}<span class="unread"
-								><CountChip count={unread} tone="active" label={m.shell_nav_unread({ count: unread })} /></span
+								><CountChip count={unread} tone="unread" label={m.shell_nav_unread({ count: unread })} /></span
 							>{/if}</span
 					>
 					<span class="lbl">{it.label}</span>

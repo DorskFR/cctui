@@ -46,6 +46,7 @@ describe('compact row badges', () => {
 		render({}, { unreadCount: 3 });
 		const chip = document.querySelector(`[aria-label="${m.sessions_unread_title({ count: 3 })}"]`);
 		expect(chip?.textContent?.trim()).toBe('3');
+		expect(chip?.classList.contains('unread')).toBe(true);
 		expect(document.querySelector('[data-tone="danger"]')).toBeNull();
 	});
 

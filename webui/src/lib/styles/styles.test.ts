@@ -51,9 +51,9 @@ describe('variables.css is a kit import, not a fork', () => {
 				'--c-brown',
 				'--content-wide',
 				'--count-bg',
-				'--count-bg-active',
+				'--count-bg-unread',
 				'--count-fg',
-				'--count-fg-active',
+				'--count-fg-unread',
 				'--divider',
 				'--hit-min',
 				'--role-context',
@@ -82,10 +82,25 @@ describe('variables.css is a kit import, not a fork', () => {
 		'%s resolves the status, count and selection tokens to colours',
 		(id) => {
 			const scopes = [block(variables, ':root'), ...(id === 'dark' ? [] : [block(themes, `[data-theme="${id}"]`)]), block(tokens, ':root')];
-			for (const t of ['--status-working', '--status-attention', '--status-failed', '--status-idle', '--count-bg', '--count-fg', '--count-bg-active', '--count-fg-active', '--row-selected-bg', '--divider'])
+			for (const t of ['--status-working', '--status-attention', '--status-failed', '--status-idle', '--count-bg', '--count-fg', '--count-bg-unread', '--count-fg-unread', '--row-selected-bg', '--divider'])
 				expect(resolve(t, scopes), `${id} ${t}`).not.toMatch(/var\(/);
 		}
 	);
+
+	it.each(['dark', ...THEMES.map((t) => t.id).filter((id) => id !== 'dark')])(
+		'%s keeps the unread count apart from the subagent info blue and danger',
+		(id) => {
+			const scopes = [block(variables, ':root'), ...(id === 'dark' ? [] : [block(themes, `[data-theme="${id}"]`)]), block(tokens, ':root')];
+			const unread = resolve('--count-bg-unread', scopes).toLowerCase();
+			expect(unread, id).not.toBe(resolve('--info', scopes).toLowerCase());
+			expect(unread, id).not.toBe(resolve('--danger', scopes).toLowerCase());
+		}
+	);
+
+	it('paints every unread count, nav and list row, in the unread tone', () => {
+		for (const p of ['src/lib/components/organisms/MainNav.svelte', 'src/lib/components/organisms/sessioncard/Badges.svelte'])
+			expect(read(p), p).toMatch(/<CountChip[^>]*tone="unread"/);
+	});
 
 	it('gets the box scale and touch target from the kit', () => {
 		const root = block(tokens, ':root');

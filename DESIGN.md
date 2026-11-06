@@ -104,8 +104,9 @@ can move upstream.
   `prompt()` are banned by Biome and a source test. The confirm label is a
   verb naming the act ("Delete bookmark"), and the message says what stops
   working.
-- **Unread counts are neutral.** `CountChip`; the active (accent) tone only on
-  the nav item.
+- **Unread counts are violet.** `CountChip tone="unread"` on the nav item and
+  every list row alike: never the accent, the info blue of the subagent count,
+  or danger red. Unread counts completed turns only (server-side).
 - **Role and kind labels** are `<Text variant="eyebrow" tone="muted">`, never a
   filled or outlined pill.
 - **Files stay under ~300 lines** (see File size); split before adding.

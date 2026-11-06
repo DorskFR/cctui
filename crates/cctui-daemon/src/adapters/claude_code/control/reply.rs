@@ -279,9 +279,9 @@ impl ReplyJob {
         // The `reply` op types into the live composer, which is not empty after
         // an ESC ESC draft restore. Only an idle worker with no form up is safe
         // to clear (mid-turn the composer is a queue, and a form eats the keys).
-        // The paced clear costs a spoken prompt over a second, so it is skipped
-        // when the last reply left the composer empty and no ESC came since, or
-        // when one screen probe reads the composer empty.
+        // The clear is skipped for a spoken prompt when the last reply left the
+        // composer empty and no ESC came since, or when one screen probe reads
+        // the composer empty.
         let may_clear = !had_pending_ask && !self.busy;
         if may_clear && spoken && socket::composer_known_empty(short) {
             tracing::debug!(%short, composer_clear = "skipped_known_empty", "pre-reply clear");
@@ -1065,7 +1065,7 @@ mod submit_tests {
     }
 
     /// An idle worker whose screen shows an empty composer gets the reply
-    /// typed straight in: one probe attach, no keystroke, no paced clear.
+    /// typed straight in: one probe attach, no keystroke.
     #[tokio::test]
     async fn an_empty_composer_on_screen_skips_the_clear() {
         for text in [SPOKEN, "one line"] {
@@ -1075,16 +1075,16 @@ mod submit_tests {
             assert!(typed.is_empty(), "no key may reach an empty composer: {typed:?}");
             assert!(
                 started.elapsed() < std::time::Duration::from_secs(1),
-                "the skip must beat the paced clear, took {:?}",
+                "the skip must stay fast, took {:?}",
                 started.elapsed()
             );
         }
     }
 
     /// A draft on screen, or a screen with no composer row, keeps the exact
-    /// paced clear before the reply.
+    /// clear before the reply.
     #[tokio::test]
-    async fn a_draft_or_unreadable_screen_keeps_the_paced_clear() {
+    async fn a_draft_or_unreadable_screen_keeps_the_clear() {
         for screen in [DRAFT_SCREEN, "  Read(foo.rs)\n", ""] {
             let (ops, typed) = deliver_onto(screen, "one line", false, Taken::UserLine).await;
             assert_eq!(ops, ["attach", "attach", "reply"], "screen {screen:?}");

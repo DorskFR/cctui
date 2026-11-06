@@ -1,5 +1,6 @@
 import { browser } from '$app/environment';
 import { apiFetch } from './api';
+import { backendHealth, isNetworkError, isOutageStatus } from './backendHealth.svelte';
 import { apiBase } from './config';
 import { clearCctuiStorage } from './drafts';
 import { getAssertion, passkeysSupported } from './passkeys';
@@ -24,14 +25,22 @@ class Auth {
 	/** Probe the cookie session on startup. */
 	async init(): Promise<void> {
 		if (!browser) return;
-		try {
-			const res = await apiFetch(`${apiBase()}/me`);
-			this.isAuthed = res.ok;
-		} catch {
-			this.isAuthed = false;
-		} finally {
-			this.checking = false;
+		for (;;) {
+			try {
+				const res = await apiFetch(`${apiBase()}/me`);
+				if (!isOutageStatus(res.status)) {
+					this.isAuthed = res.ok;
+					break;
+				}
+			} catch (e) {
+				if (!isNetworkError(e)) {
+					this.isAuthed = false;
+					break;
+				}
+			}
+			await backendHealth.waitUntilUp();
 		}
+		this.checking = false;
 	}
 
 	/** Exchange a token for the `HttpOnly` cookie. Returns true on success. */

@@ -6,13 +6,31 @@ use sqlx::PgConnection;
 pub const BOOTSTRAP: &str = include_str!("../schema/0001_workspace.sql");
 
 pub const MIGRATIONS: &[Migration] = &[
-    Migration { version: 1, sql: BOOTSTRAP },
-    Migration { version: 2, sql: include_str!("../schema/0002_dispatch_identities.sql") },
-    Migration { version: 3, sql: include_str!("../schema/0003_scheduled_message_sealed_body.sql") },
-    Migration { version: 4, sql: include_str!("../schema/0004_user_hidden_owners.sql") },
+    Migration { version: 1, name: "workspace", sql: BOOTSTRAP },
+    Migration {
+        version: 2,
+        name: "dispatch_identities",
+        sql: include_str!("../schema/0002_dispatch_identities.sql"),
+    },
+    Migration {
+        version: 3,
+        name: "scheduled_message_sealed_body",
+        sql: include_str!("../schema/0003_scheduled_message_sealed_body.sql"),
+    },
+    Migration {
+        version: 4,
+        name: "user_hidden_owners",
+        sql: include_str!("../schema/0004_user_hidden_owners.sql"),
+    },
     Migration {
         version: 5,
+        name: "search_chunks_gin_fastupdate_off",
         sql: include_str!("../schema/0005_search_chunks_gin_fastupdate_off.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "stream_events_search_text_on_insert",
+        sql: include_str!("../schema/0006_stream_events_search_text_on_insert.sql"),
     },
 ];
 
@@ -92,7 +110,8 @@ mod tests {
                     (2, "adopted".to_owned()),
                     (3, "bootstrap".to_owned()),
                     (4, "bootstrap".to_owned()),
-                    (5, "bootstrap".to_owned())
+                    (5, "bootstrap".to_owned()),
+                    (6, "bootstrap".to_owned())
                 ]
             );
 
@@ -116,6 +135,51 @@ mod tests {
             .await
             .unwrap();
             assert!(options.iter().any(|o| o == "fastupdate=off"), "{options:?}");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn search_text_keeps_the_former_generated_value_unless_given() {
+        with_isolated_database("search_text_on_insert", |pool| async move {
+            provisioned(&pool).await;
+            sqlx::raw_sql(
+                "INSERT INTO sessions (id, machine_id, working_dir) VALUES ('s', 'm', '/w')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let payloads = [
+                serde_json::json!({ "text": "hello" }),
+                serde_json::json!({ "content": "out", "tool": "Bash", "input": { "cmd": "ls" } }),
+                serde_json::json!({ "content": [{ "type": "text", "text": "x" }] }),
+                serde_json::json!({ "input": null, "text": null }),
+                serde_json::json!({}),
+            ];
+            for payload in &payloads {
+                let (stored, former): (String, String) = sqlx::query_as(
+                    "INSERT INTO stream_events (session_id, event_type, payload) \
+                     VALUES ('s', 'tool_use', $1) \
+                     RETURNING search_text, \
+                       COALESCE(payload ->> 'text', '') || ' ' \
+                       || COALESCE(payload ->> 'content', '') || ' ' \
+                       || COALESCE(payload ->> 'tool', '') || ' ' \
+                       || COALESCE((payload -> 'input')::text, '')",
+                )
+                .bind(payload)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                assert_eq!(stored, former, "{payload}");
+            }
+            let given: String = sqlx::query_scalar(
+                "INSERT INTO stream_events (session_id, event_type, payload, search_text) \
+                 VALUES ('s', 'message', '{\"text\": \"t\"}', '') RETURNING search_text",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(given, "");
         })
         .await;
     }
@@ -146,7 +210,8 @@ mod tests {
                     (2, "bootstrap".to_owned()),
                     (3, "bootstrap".to_owned()),
                     (4, "bootstrap".to_owned()),
-                    (5, "bootstrap".to_owned())
+                    (5, "bootstrap".to_owned()),
+                    (6, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =
