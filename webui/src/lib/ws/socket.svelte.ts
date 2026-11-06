@@ -1,6 +1,7 @@
 import { browser } from '$app/environment';
 import { wsBase } from '../config';
 import { auth } from '../auth.svelte';
+import { backendHealth } from '../backendHealth.svelte';
 import { net } from '../netstats.svelte';
 
 export type Status = 'connecting' | 'open' | 'closed';
@@ -119,7 +120,9 @@ export class LiveSocket {
 			this.clearWatchdog();
 			this.status = 'closed';
 			this.socket = null;
-			if (this.want) this.scheduleReconnect();
+			if (!this.want) return;
+			backendHealth.reportFailure();
+			this.scheduleReconnect();
 		};
 		sock.onerror = () => sock.close();
 	}
