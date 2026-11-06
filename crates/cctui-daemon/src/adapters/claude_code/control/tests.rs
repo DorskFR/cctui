@@ -567,3 +567,109 @@ async fn the_launch_pull_carries_the_servers_hook_policy_record() {
         .expect("no server degrades to the hint");
     assert_eq!(offline.hook_policy, None, "no pull, no record: the kept copy decides");
 }
+
+/// Answers `has` with a dead worker until a `dispatch` arrives, then alive,
+/// and keeps the dispatch request.
+fn resumable_worker_socket(
+    sock: &Path,
+) -> std::sync::Arc<std::sync::Mutex<Option<serde_json::Value>>> {
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::UnixListener::bind(sock).unwrap();
+    let dispatched = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let seen = dispatched.clone();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let (read_half, mut write_half) = stream.into_split();
+            let mut line = String::new();
+            let mut reader = tokio::io::BufReader::new(read_half);
+            if reader.read_line(&mut line).await.is_err() {
+                continue;
+            }
+            let req: serde_json::Value = serde_json::from_str(line.trim()).unwrap_or_default();
+            let reply = if req["op"] == "dispatch" {
+                *seen.lock().unwrap() = Some(req);
+                serde_json::json!({"ok": true, "via": "spare"})
+            } else {
+                serde_json::json!({"ok": true, "alive": seen.lock().unwrap().is_some()})
+            };
+            let _ = write_half.write_all(format!("{reply}\n").as_bytes()).await;
+        }
+    });
+    dispatched
+}
+
+fn serve_gateway_env(body: String) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        while let Ok((mut sock, _)) = listener.accept() {
+            let _ = sock.read(&mut [0u8; 4096]);
+            let _ = write!(
+                sock,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn a_resume_relaunches_with_the_agent_relay_keyed_by_the_cctui_session() {
+    let (d, _events) = driver();
+    let tmp = tempfile::tempdir().unwrap();
+    let _root = ConfigRootOverride::set(&tmp.path().join("cfg"));
+    let body = serde_json::to_string(&cctui_proto::api::GatewayEnvResponse {
+        account_bound: false,
+        spawn_capability: Some(cctui_proto::api::SpawnCapability {
+            adapters: vec!["claude-code".to_owned()],
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+    .unwrap();
+    let mut launcher = d.launcher();
+    launcher.server = Some(crate::client::ServerClient::new(serve_gateway_env(body)));
+    launcher.machine_key = Some("machine-key".to_owned());
+    let sock = tmp.path().join("claude.sock");
+    let dispatched = resumable_worker_socket(&sock);
+    let (short, local_id) = ("c01dfe11", "6c0a1e55-0000-4000-8000-000000000000");
+    let rotated = "c01dfe11-0000-4000-8000-000000000000";
+    let cwd = workdir_spec(&d).working_dir.unwrap();
+
+    launcher
+        .resume_worker(
+            &sock,
+            short,
+            local_id,
+            Some(rotated),
+            Some(&cwd),
+            &std::collections::BTreeMap::new(),
+        )
+        .await
+        .expect("the resume dispatches");
+
+    let req = dispatched.lock().unwrap().clone().expect("a dispatch reached claude");
+    let strings = |v: &serde_json::Value| -> Vec<String> {
+        v.as_array().unwrap().iter().map(|s| s.as_str().unwrap().to_owned()).collect()
+    };
+    let flag = |argv: &[String], name: &str| -> String {
+        let at = argv.iter().position(|a| a == name).unwrap_or_else(|| panic!("{name}: {argv:?}"));
+        argv[at + 1].clone()
+    };
+    let args = strings(&req["d"]["launch"]["args"]);
+    assert_eq!(flag(&args, "--resume"), rotated);
+    let mcp_path = flag(&args, "--mcp-config");
+    assert_eq!(flag(&strings(&req["d"]["respawnFlags"]), "--mcp-config"), mcp_path);
+    let mcp: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+    let relay_args = strings(&mcp["mcpServers"]["cctui"]["args"]);
+    assert_eq!(flag(&relay_args, "--session"), local_id, "not the rotated resume id");
+    let settings = std::fs::read_to_string(flag(&args, "--settings")).unwrap();
+    assert!(
+        settings.contains("mcp-wait") && settings.contains(local_id),
+        "SessionStart waits for the relay: {settings}"
+    );
+    std::fs::remove_dir_all(d.cfg.jobs_root.parent().unwrap()).unwrap();
+}
