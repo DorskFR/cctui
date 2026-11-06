@@ -2554,5 +2554,10 @@
 	"cctuiverse_disabled_invite": "The prompt contains a cctuiverse invite, but cctuiverse is disabled on this server. Remove the link before launching.",
 	"cctuiverse_label_required": "Give this session a name or a link label before joining.",
 	"cctuiverse_dispatch_unsupported": "The prompt contains a cctuiverse invite: joining needs a machine session. Launch on a machine, or remove the link.",
-	"cctuiverse_label_placeholder": "e.g. my agent"
+	"cctuiverse_label_placeholder": "e.g. my agent",
+	"maintenance_description": "The server is not answering yet. This page reconnects on its own and brings you back to where you were.",
+	"maintenance_next_retry": "Retrying in {seconds} s",
+	"maintenance_retry_now": "Retry now",
+	"maintenance_retrying": "Retrying…",
+	"maintenance_title": "cctui is starting up or under maintenance"
 }

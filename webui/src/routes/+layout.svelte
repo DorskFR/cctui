@@ -3,6 +3,8 @@
 	import { apiBase } from '$lib/config';
 	import { probeWorkspaceSupport } from '$lib/workspaceSupport';
 	import CoreServerNotice from '$lib/components/organisms/CoreServerNotice.svelte';
+	import MaintenanceScreen from '$lib/components/organisms/MaintenanceScreen.svelte';
+	import { backendHealth } from '$lib/backendHealth.svelte';
 	import '@dorsk/tsumikit/looks/depth.css';
 	import '@dorsk/tsumikit/looks/tactile.css';
 	import { QueryClient } from '@tanstack/svelte-query';
@@ -99,6 +101,13 @@
 	});
 	ws.bindQueryClient(queryClient);
 
+	$effect(() =>
+		backendHealth.onRecover(() => {
+			void queryClient.invalidateQueries();
+			ws.resumeCheck();
+		})
+	);
+
 	// Persist the heavyweight caches to IndexedDB so a reload paints from disk
 	// and revalidates as a delta/304 instead of re-downloading everything.
 	const persister = createAsyncStoragePersister({
@@ -176,7 +185,13 @@
 	<!-- Remount the tree on a language flip so labels captured in component-init
 	     `const`s (not just reactive template reads) re-localize live. -->
 	{#key locale.current}
-		{#if workspaceAvailable === false}
+		{#if backendHealth.state === 'down'}
+			<MaintenanceScreen
+				nextRetryAt={backendHealth.nextRetryAt}
+				probing={backendHealth.probing}
+				onretry={() => backendHealth.retryNow()}
+			/>
+		{:else if workspaceAvailable === false}
 			<CoreServerNotice />
 		{:else if workspaceAvailable === true && auth.isAuthed}
 			<div class="app" class:tiles={isTiles}>

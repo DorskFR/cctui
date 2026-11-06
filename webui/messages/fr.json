@@ -2554,5 +2554,10 @@
 	"cctuiverse_disabled_invite": "Le prompt contient une invitation cctuiverse, mais cctuiverse est désactivé sur ce serveur. Retirez le lien avant de lancer.",
 	"cctuiverse_label_required": "Donnez un nom à cette session ou un libellé de lien avant de rejoindre.",
 	"cctuiverse_dispatch_unsupported": "Le prompt contient une invitation cctuiverse : rejoindre nécessite une session sur une machine. Lancez sur une machine ou retirez le lien.",
-	"cctuiverse_label_placeholder": "ex. mon agent"
+	"cctuiverse_label_placeholder": "ex. mon agent",
+	"maintenance_description": "Le serveur ne répond pas encore. Cette page se reconnecte d'elle-même et vous ramène là où vous étiez.",
+	"maintenance_next_retry": "Nouvel essai dans {seconds} s",
+	"maintenance_retry_now": "Réessayer maintenant",
+	"maintenance_retrying": "Nouvel essai…",
+	"maintenance_title": "cctui démarre ou est en maintenance"
 }
