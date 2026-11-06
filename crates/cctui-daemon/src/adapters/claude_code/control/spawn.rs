@@ -114,27 +114,12 @@ impl Launcher {
         fallback_cwd: Option<&str>,
         env: &std::collections::BTreeMap<String, String>,
     ) -> anyhow::Result<()> {
-        self.resume_worker_via(sock, short, local_id, fallback_session_id, fallback_cwd, env)
-            .await
-            .map(|_| ())
-    }
-
-    /// [`Self::resume_worker`], reporting how the claude daemon served it.
-    pub(super) async fn resume_worker_via(
-        &self,
-        sock: &std::path::Path,
-        short: &str,
-        local_id: &str,
-        fallback_session_id: Option<&str>,
-        fallback_cwd: Option<&str>,
-        env: &std::collections::BTreeMap<String, String>,
-    ) -> anyhow::Result<Resumed> {
         let alive = |resp: &serde_json::Value| {
             resp.get("alive").and_then(serde_json::Value::as_bool).unwrap_or(false)
         };
         let has = socket::one_shot(sock, &json!({"proto":1,"op":"has","short":short})).await?;
         if alive(&has) {
-            return Ok(Resumed::AlreadyAlive);
+            return Ok(());
         }
 
         // Re-derive the gateway env + per-account settings from the server's
@@ -153,6 +138,10 @@ impl Launcher {
         let posture = HookPosture::recover(short, seal_key, launch.hook_policy.as_ref())
             .with_context(|| format!("refusing to resume {short} without its hook policy"))?;
         let st = StateJson::read(&self.jobs_root, short);
+        // The relay is keyed by the cctui session id the server bound the
+        // capability to, never a rotated `resumeSessionId`.
+        let mcp_config = agent_relay_config(short, local_id, launch.spawn_capability.as_ref());
+        let relay_session = mcp_config.is_some().then_some(local_id);
         // Carry the gateway env + the session's model/effort (from `state.json`)
         // into the managed `--settings` file so a spare-claimed resume
         // keeps its routing env and model/effort — the settings file survives the
@@ -166,7 +155,7 @@ impl Launcher {
             st.as_ref().and_then(|s| s.model.as_deref()),
             st.as_ref().and_then(|s| s.effort.as_deref()),
             launch.whip_phrases.as_ref(),
-            None,
+            relay_session,
             LaunchPolicy { policy: posture.policy.as_ref(), seal_key },
         )?
         .to_string_lossy()
@@ -199,6 +188,7 @@ impl Launcher {
         let launch = LaunchArgs {
             settings_path: Some(settings_arg),
             plugin_dirs: launch.plugin_dirs,
+            mcp_config,
             ..resume_launch(&session_id)
         };
         let ids = JobIds::existing(short, session_id);
@@ -208,13 +198,12 @@ impl Launcher {
             json!({ "intent": st.as_ref().and_then(|s| s.intent.clone()).unwrap_or_default() });
         let req = launch::dispatch_request(&ids, &cwd, &launch, None, &env, &seed);
         let session_id = ids.session_id;
-        super::super::canary::arm(local_id, short, &session_id, None);
+        super::super::canary::arm(local_id, short, &session_id, relay_session);
         let resp: serde_json::Value = socket::call(sock, &req)
             .await
             .with_context(|| format!("resume dispatch for hibernated session {short}"))?;
         tracing::info!(?resp, %short, %session_id, "resumed hibernated session via dispatch");
-        let resumed = Resumed::of(&resp);
-        if resumed == Resumed::Spare {
+        if served_by_spare(&resp) {
             super::super::canary::mark_spare(&session_id);
         }
 
@@ -229,31 +218,16 @@ impl Launcher {
                 && alive(&resp)
             {
                 tokio::time::sleep(Duration::from_millis(1500)).await;
-                return Ok(resumed);
+                return Ok(());
             }
         }
         anyhow::bail!("resumed session {short} did not come alive within 10s");
     }
 }
 
-/// How the claude daemon served a resume: `via` on its dispatch reply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Resumed {
-    AlreadyAlive,
-    Cold,
-    Spare,
-    /// A reply without a `via` this version of cctui knows.
-    Unreported,
-}
-
-impl Resumed {
-    pub(super) fn of(resp: &serde_json::Value) -> Self {
-        match resp.get("via").and_then(serde_json::Value::as_str) {
-            Some("cold") => Self::Cold,
-            Some("spare") => Self::Spare,
-            _ => Self::Unreported,
-        }
-    }
+/// Whether the claude daemon served a dispatch from a pre-warmed spare.
+fn served_by_spare(resp: &serde_json::Value) -> bool {
+    resp.get("via").and_then(serde_json::Value::as_str) == Some("spare")
 }
 
 impl Driver {
@@ -904,7 +878,7 @@ impl DeferredDispatch {
             .inspect_err(|_| crate::configsweep::remove_session_files(&self.short))
             .with_context(|| format!("dispatch {}", self.what))?;
         tracing::info!(?resp, session_id = %self.session_id, "{} dispatched via control socket", self.what);
-        if resp.get("via").and_then(serde_json::Value::as_str) == Some("spare") {
+        if served_by_spare(&resp) {
             super::super::canary::mark_spare(&self.session_id);
         }
         if let Some(watchdog) = &self.watchdog {

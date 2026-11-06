@@ -452,8 +452,7 @@ impl Driver {
             effort: effort.clone(),
             source: job.source.clone(),
             started_at: job.started_at,
-            asking: super::hook_respawn::RespawnPoint::of(job)
-                == Some(super::hook_respawn::RespawnPoint::Asking),
+            asking: super::reply::asking(job),
         };
         let resend = self.status_resend.remove(&job.short);
         if !resend && self.last_status.get(&job.short) == Some(&snap) {
