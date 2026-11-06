@@ -1101,6 +1101,7 @@ dependencies = [
  "toml",
  "tower",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
