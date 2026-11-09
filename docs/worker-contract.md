@@ -693,6 +693,14 @@ The `fetch-secret <ref>` subcommand resolves one ref (identity templating
 applied) and prints it to stdout — how the sidecar entrypoint obtains the GPG
 signing key.
 
+A pod's network may not work yet when its first container starts. Before its
+first upstream call the guard-proxy waits, for up to 30s, until that upstream
+accepts a TCP connection. For `fetch-secret` that upstream is the secret
+backend, or the cctui server when no backend is configured. For the proxy it is
+the cctui server it redeems the dispatch against. The wait is logged. After the
+wait, `fetch-secret` retries transient backend failures (no answer, 5xx, 429)
+with backoff, and stops at once on permanent ones (4xx, missing secret).
+
 ### TLS-terminating credential injection
 
 For an **injection allow-list** of hosts the sidecar TLS-terminates the agent's

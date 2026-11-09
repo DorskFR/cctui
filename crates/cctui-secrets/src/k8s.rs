@@ -72,15 +72,13 @@ impl K8sClient {
             .bearer_auth(token.trim())
             .send()
             .await
-            .map_err(|e| err("request", &e))?;
+            .map_err(|e| SecretError::unanswered("k8s secret read: request", &e))?;
         let status = resp.status();
         if status == reqwest::StatusCode::NOT_FOUND {
             return Err(SecretError::not_found(r));
         }
         if !status.is_success() {
-            return Err(SecretError::Backend(anyhow::anyhow!(
-                "k8s secret read failed: HTTP {status}"
-            )));
+            return Err(SecretError::http_status("k8s secret read failed", status));
         }
         let body: serde_json::Value = resp.json().await.map_err(|e| err("response", &e))?;
         let Some(b64) = body.pointer(&format!("/data/{key}")).and_then(serde_json::Value::as_str)
