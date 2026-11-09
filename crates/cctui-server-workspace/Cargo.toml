@@ -47,7 +47,7 @@ ts-rs = { workspace = true, optional = true }
 toml.workspace = true
 log = "0.4.33"
 webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
-webauthn-rs-proto = "0.5"
+webauthn-rs-proto = "0.6"
 flate2 = "1"
 tar = "0.4"
 tokio-tungstenite.workspace = true
