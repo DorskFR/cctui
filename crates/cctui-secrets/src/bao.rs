@@ -35,10 +35,10 @@ impl VaultClient {
             .json(&serde_json::json!({ "jwt": jwt.trim(), "role": self.role }))
             .send()
             .await
-            .map_err(|e| Self::backend_err("vault login request", e))?;
+            .map_err(|e| SecretError::unanswered("vault login request", &e))?;
         let status = resp.status();
         if !status.is_success() {
-            return Err(SecretError::Backend(anyhow::anyhow!("vault login failed: HTTP {status}")));
+            return Err(SecretError::http_status("vault login failed", status));
         }
         let body: serde_json::Value =
             resp.json().await.map_err(|e| Self::backend_err("vault login response", e))?;
@@ -67,13 +67,13 @@ impl VaultClient {
             .header("X-Vault-Token", &token)
             .send()
             .await
-            .map_err(|e| Self::backend_err("vault read request", e))?;
+            .map_err(|e| SecretError::unanswered("vault read request", &e))?;
         let status = resp.status();
         if status == reqwest::StatusCode::NOT_FOUND {
             return Err(SecretError::not_found(r));
         }
         if !status.is_success() {
-            return Err(SecretError::Backend(anyhow::anyhow!("vault read failed: HTTP {status}")));
+            return Err(SecretError::http_status("vault read failed", status));
         }
         let body: serde_json::Value =
             resp.json().await.map_err(|e| Self::backend_err("vault read response", e))?;
@@ -180,11 +180,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let engines = vault_engines(addr.clone(), write_token(&dir, "test-jwt"));
         let r = SecretRef::parse("vault:kvmount/data/boom#f").unwrap();
-        assert!(matches!(engines.resolve(&r).await, Err(SecretError::Backend(_))));
+        let err = engines.resolve(&r).await.unwrap_err();
+        assert!(matches!(err, SecretError::Backend(_)) && err.is_transient(), "{err}");
 
         let engines = vault_engines(addr, write_token(&dir, "wrong-jwt"));
         let r = SecretRef::parse("vault:kvmount/data/dev/cctui-worker#GITHUB_TOKEN_ACME").unwrap();
-        assert!(matches!(engines.resolve(&r).await, Err(SecretError::Backend(_))));
+        let err = engines.resolve(&r).await.unwrap_err();
+        assert!(matches!(err, SecretError::Backend(_)) && !err.is_transient(), "{err}");
+    }
+
+    #[tokio::test]
+    async fn vault_engine_unreachable_is_transient() {
+        let dir = tempfile::tempdir().unwrap();
+        let engines = vault_engines("http://127.0.0.1:9".to_owned(), write_token(&dir, "test-jwt"));
+        let r = SecretRef::parse("vault:kvmount/data/dev/cctui-worker#GITHUB_TOKEN_ACME").unwrap();
+        let err = engines.resolve(&r).await.unwrap_err();
+        assert!(err.is_transient(), "{err}");
+        assert!(err.to_string().contains("vault login request"), "{err}");
     }
 
     #[tokio::test]

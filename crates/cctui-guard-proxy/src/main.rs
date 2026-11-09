@@ -24,6 +24,7 @@ mod private_allow;
 mod secrets;
 mod server_inject;
 mod shutdown;
+mod startup;
 mod transparent;
 
 use std::path::PathBuf;
@@ -40,9 +41,7 @@ use crate::ghapp::{GhAppConfig, GhAppMinter};
 use crate::inject::{InjectionPolicy, InjectionRule, Injector, PerPodCa};
 use crate::policy::PolicyManager;
 use crate::private_allow::PrivateAllow;
-use crate::secrets::{
-    Engines, K8sClient, RefResolver as _, SecretRef, SecretSource, VaultClient, render_identity,
-};
+use crate::secrets::{Engines, K8sClient, SecretRef, SecretSource, VaultClient, render_identity};
 use crate::server_inject::ServerInjector;
 use crate::transparent::TransparentListener;
 
@@ -355,11 +354,47 @@ async fn fetch_secret(args: &Args, template: &str) -> anyhow::Result<()> {
 
     let rendered = render_identity(template, &args.identity)?;
     let r = SecretRef::parse(&rendered)?;
-    let cred = build_engines(args)?.resolve(&r).await?;
+    let engines = build_engines(args)?;
+    if let Some((what, target)) = fetch_upstream(args, &r) {
+        let (_, msg) = await_upstream(what, &target).await;
+        eprintln!("guard-proxy fetch-secret: {msg}");
+    }
+    let cred = startup::resolve_with_retry(&engines, &r, |attempt, e| {
+        eprintln!("guard-proxy fetch-secret: attempt {} failed, retrying: {e}", attempt + 1);
+    })
+    .await?;
     let mut out = std::io::stdout();
     out.write_all(cred.expose().as_bytes())?;
     out.flush()?;
     Ok(())
+}
+
+/// The upstream a `fetch-secret` of `r` needs first; `None` for refs that
+/// never touch the network.
+fn fetch_upstream(args: &Args, r: &SecretRef) -> Option<(&'static str, ServerTarget)> {
+    if matches!(r, SecretRef::Env { .. } | SecretRef::File { .. }) {
+        return None;
+    }
+    let vault = matches!(r, SecretRef::Vault { .. })
+        .then_some(args.vault_addr.as_deref())
+        .flatten()
+        .and_then(|addr| ServerTarget::parse(addr).ok());
+    vault.map(|t| ("secret backend", t)).or_else(|| {
+        ServerTarget::parse(&args.dispatch_server_url).ok().map(|t| ("cctui server", t))
+    })
+}
+
+async fn await_upstream(what: &str, target: &ServerTarget) -> (bool, String) {
+    let at = format!("{what} {}:{}", target.host, target.port);
+    match startup::wait_reachable(&target.host, target.port, startup::READY_DEADLINE).await {
+        startup::Readiness::Ready(waited) => {
+            (true, format!("{at} reachable after {}ms", waited.as_millis()))
+        }
+        startup::Readiness::TimedOut { waited, last } => (
+            false,
+            format!("{at} still unreachable after {}s ({last}); proceeding", waited.as_secs()),
+        ),
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -396,6 +431,10 @@ async fn run(args: Args) -> anyhow::Result<()> {
 
     let rules = build_rules(&args)?;
     let dispatch = if let Some(config) = dispatch_config(&args)? {
+        match await_upstream("cctui server", &config.server).await {
+            (true, msg) => tracing::info!("{msg}"),
+            (false, msg) => tracing::warn!("{msg}"),
+        }
         Some(Arc::new(DispatchIdentity::redeem(config).await))
     } else {
         None
@@ -546,6 +585,24 @@ mod tests {
             matches!(args.command, Some(Cmd::FetchSecret { ref secret_ref }) if secret_ref == "env:GPG_KEY")
         );
         assert!(parse(&[]).command.is_none());
+    }
+
+    #[test]
+    fn fetch_secret_waits_on_the_backend_then_the_server() {
+        let upstream = |argv: &[&str], r: &str| {
+            fetch_upstream(&parse(argv), &SecretRef::parse(r).unwrap())
+                .map(|(what, t)| format!("{what} {}:{}", t.host, t.port))
+        };
+        let vault = ["--vault-addr", "http://bao.bao:8200", "--vault-role", "w"];
+        let both = [&vault[..], &["--dispatch-server-url", "http://cctui.cctui:8700"]].concat();
+        assert_eq!(
+            upstream(&both, "bao:kv/data/w#GPG").as_deref(),
+            Some("secret backend bao.bao:8200")
+        );
+        assert_eq!(upstream(&both, "k8s:ns/s#k").as_deref(), Some("cctui server cctui.cctui:8700"));
+        assert_eq!(upstream(&vault, "k8s:ns/s#k"), None);
+        assert_eq!(upstream(&both, "env:GPG_KEY"), None);
+        assert_eq!(upstream(&both, "file:/run/k"), None);
     }
 
     #[test]

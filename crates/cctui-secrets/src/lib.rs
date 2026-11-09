@@ -92,9 +92,40 @@ pub enum SecretError {
     Backend(anyhow::Error),
 }
 
+/// Marks a [`SecretError::Backend`] a retry may clear.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct Transient(String);
+
 impl SecretError {
     pub(crate) fn not_found(r: &SecretRef) -> Self {
         Self::NotFound { what: r.to_string() }
+    }
+
+    /// A backend failure a retry may clear: no answer, a 5xx or a 429.
+    pub fn transient(msg: impl Into<String>) -> Self {
+        Self::Backend(anyhow::Error::new(Transient(msg.into())))
+    }
+
+    #[must_use]
+    pub fn is_transient(&self) -> bool {
+        matches!(self, Self::Backend(e) if e.is::<Transient>())
+    }
+
+    #[cfg(any(feature = "bao", feature = "k8s"))]
+    pub(crate) fn unanswered(context: &str, e: &reqwest::Error) -> Self {
+        let msg = format!("{context}: {e}");
+        if e.is_builder() { Self::Backend(anyhow::anyhow!(msg)) } else { Self::transient(msg) }
+    }
+
+    #[cfg(any(feature = "bao", feature = "k8s"))]
+    pub(crate) fn http_status(context: &str, status: reqwest::StatusCode) -> Self {
+        let msg = format!("{context}: HTTP {status}");
+        if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            Self::transient(msg)
+        } else {
+            Self::Backend(anyhow::anyhow!(msg))
+        }
     }
 
     #[cfg(any(not(feature = "bao"), not(feature = "k8s"), not(feature = "aws-sm")))]
