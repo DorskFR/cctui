@@ -46,7 +46,7 @@ ring = "0.17"
 ts-rs = { workspace = true, optional = true }
 toml.workspace = true
 log = "0.4.33"
-webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
+webauthn-rs = { version = "0.6", features = ["danger-allow-state-serialisation", "conditional-ui"] }
 webauthn-rs-proto = "0.5"
 flate2 = "1"
 tar = "0.4"
