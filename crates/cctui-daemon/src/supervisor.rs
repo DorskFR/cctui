@@ -113,7 +113,7 @@ fn send_refusal(
     frame_up_tx: &mpsc::Sender<DaemonFrameUp>,
 ) {
     match refusal {
-        crate::framegate::Refusal::Reply(up) => send_reply(frame_up_tx, up),
+        crate::framegate::Refusal::Reply(up) => send_reply(frame_up_tx, *up),
         crate::framegate::Refusal::Command { adapter_id, command_id, error } => {
             reject_command(adapter_id, command_id, error, event_tx, frame_up_tx);
         }

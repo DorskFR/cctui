@@ -1000,13 +1000,11 @@ mod tests {
         );
         crate::routes::context::ownership::test_support::assert_no_content(&pool, &sid).await;
 
-        for table in ["session_label_intents", "session_context"] {
-            sqlx::query(&format!("DELETE FROM {table} WHERE spawn_key = $1 OR spawn_key = $2"))
-                .bind(&sid)
-                .bind(&fork_key)
-                .execute(&pool)
-                .await
-                .ok();
+        for sql in [
+            "DELETE FROM session_label_intents WHERE spawn_key = $1 OR spawn_key = $2",
+            "DELETE FROM session_context WHERE spawn_key = $1 OR spawn_key = $2",
+        ] {
+            sqlx::query(sql).bind(&sid).bind(&fork_key).execute(&pool).await.ok();
         }
         crate::routes::daemon::test_support::drop_machines(&pool, &[sid], &[(uid, mid)]).await;
     }

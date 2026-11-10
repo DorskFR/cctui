@@ -17,9 +17,13 @@ const MAX_HELD: usize = 1024;
 
 #[derive(Debug)]
 pub enum Refusal {
-    Reply(DaemonFrameUp),
+    Reply(Box<DaemonFrameUp>),
     /// A failed `CommandResult` for the command's `command_id`.
-    Command { adapter_id: String, command_id: uuid::Uuid, error: String },
+    Command {
+        adapter_id: String,
+        command_id: uuid::Uuid,
+        error: String,
+    },
     Drop,
 }
 
@@ -45,51 +49,46 @@ pub fn refusal(frame: &DaemonFrameDown, features: FeatureSet) -> Option<Refusal>
 }
 
 fn answer(frame: &DaemonFrameDown, error: String) -> Refusal {
-    match frame {
-        DaemonFrameDown::ListDirs { request_id, .. } => {
-            Refusal::Reply(DaemonFrameUp::ListDirsResult {
-                request_id: *request_id,
-                ok: false,
-                dirs: Vec::new(),
-                error: Some(error),
-            })
-        }
-        DaemonFrameDown::GitInfo { request_id, .. } => Refusal::Reply(DaemonFrameUp::GitInfoResult {
+    let reply = match frame {
+        DaemonFrameDown::ListDirs { request_id, .. } => DaemonFrameUp::ListDirsResult {
+            request_id: *request_id,
+            ok: false,
+            dirs: Vec::new(),
+            error: Some(error),
+        },
+        DaemonFrameDown::GitInfo { request_id, .. } => DaemonFrameUp::GitInfoResult {
             request_id: *request_id,
             ok: false,
             info: None,
             error: Some(error),
-        }),
-        DaemonFrameDown::ReadFile { request_id, .. } => {
-            Refusal::Reply(DaemonFrameUp::ReadFileResult {
-                request_id: *request_id,
-                ok: false,
-                file: None,
-                error_kind: Some(ReadFileErrorKind::Denied),
-                error: Some(error),
-                allowed_folders: Vec::new(),
-            })
-        }
-        DaemonFrameDown::StageFiles { request_id, .. } => {
-            Refusal::Reply(DaemonFrameUp::StageFilesResult {
-                request_id: *request_id,
-                ok: false,
-                paths: Vec::new(),
-                error: Some(error),
-            })
-        }
+        },
+        DaemonFrameDown::ReadFile { request_id, .. } => DaemonFrameUp::ReadFileResult {
+            request_id: *request_id,
+            ok: false,
+            file: None,
+            error_kind: Some(ReadFileErrorKind::Denied),
+            error: Some(error),
+            allowed_folders: Vec::new(),
+        },
+        DaemonFrameDown::StageFiles { request_id, .. } => DaemonFrameUp::StageFilesResult {
+            request_id: *request_id,
+            ok: false,
+            paths: Vec::new(),
+            error: Some(error),
+        },
         DaemonFrameDown::PreviewRequest { stream_id, .. } => {
-            Refusal::Reply(DaemonFrameUp::PreviewError { stream_id: stream_id.clone(), error })
+            DaemonFrameUp::PreviewError { stream_id: stream_id.clone(), error }
         }
         DaemonFrameDown::Command { adapter_id, command, .. } => {
-            command.command_id().map_or(Refusal::Drop, |command_id| Refusal::Command {
+            return command.command_id().map_or(Refusal::Drop, |command_id| Refusal::Command {
                 adapter_id: adapter_id.clone(),
                 command_id,
                 error,
-            })
+            });
         }
-        _ => Refusal::Drop,
-    }
+        _ => return Refusal::Drop,
+    };
+    Refusal::Reply(Box::new(reply))
 }
 
 /// The frames of one connection until its `Features` frame lands. Once a
@@ -159,7 +158,7 @@ mod tests {
 
     const ID: &str = "00000000-0000-0000-0000-000000000007";
 
-    fn request_id() -> uuid::Uuid {
+    const fn request_id() -> uuid::Uuid {
         uuid::Uuid::from_u128(7)
     }
 
@@ -168,7 +167,9 @@ mod tests {
     }
 
     fn command(command: Value) -> DaemonFrameDown {
-        down(json!({ "type": "command", "adapter_id": "claude-code", "command": command }))
+        let mut frame = json!({ "type": "command", "adapter_id": "claude-code" });
+        frame["command"] = command;
+        down(frame)
     }
 
     fn spec() -> Value {
@@ -183,9 +184,14 @@ mod tests {
             (Feature::Files, down(json!({ "type": "git_info", "request_id": ID, "path": "/" }))),
             (
                 Feature::Files,
-                down(json!({ "type": "read_file", "request_id": ID, "path": "/a", "max_bytes": 1 })),
+                down(
+                    json!({ "type": "read_file", "request_id": ID, "path": "/a", "max_bytes": 1 }),
+                ),
             ),
-            (Feature::MachineSpawn, command(json!({ "kind": "spawn", "spec": spec(), "command_id": ID }))),
+            (
+                Feature::MachineSpawn,
+                command(json!({ "kind": "spawn", "spec": spec(), "command_id": ID })),
+            ),
             (
                 Feature::MachineSpawn,
                 command(json!({
@@ -193,8 +199,14 @@ mod tests {
                 })),
             ),
             (Feature::MachineSpawn, command(json!({ "kind": "resume", "local_id": "s" }))),
-            (Feature::ChildSessions, command(json!({ "kind": "spawn", "spec": child, "command_id": ID }))),
-            (Feature::Terminal, command(json!({ "kind": "watch_pty", "local_id": "s", "watch": true }))),
+            (
+                Feature::ChildSessions,
+                command(json!({ "kind": "spawn", "spec": child, "command_id": ID })),
+            ),
+            (
+                Feature::Terminal,
+                command(json!({ "kind": "watch_pty", "local_id": "s", "watch": true })),
+            ),
             (
                 Feature::SelfUpdate,
                 down(json!({
@@ -202,7 +214,10 @@ mod tests {
                 })),
             ),
             (Feature::SelfUpdate, down(json!({ "type": "harness_update_policy", "policy": {} }))),
-            (Feature::SelfUpdate, down(json!({ "type": "drain_restart", "harness": "claude-code" }))),
+            (
+                Feature::SelfUpdate,
+                down(json!({ "type": "drain_restart", "harness": "claude-code" })),
+            ),
             (
                 Feature::Previews,
                 down(json!({
@@ -210,8 +225,14 @@ mod tests {
                     "method": "GET", "path": "/"
                 })),
             ),
-            (Feature::Previews, down(json!({ "type": "preview_opened", "request_id": ID, "ok": true }))),
-            (Feature::Previews, down(json!({ "type": "preview_closed", "session_id": "s", "port": 5173 }))),
+            (
+                Feature::Previews,
+                down(json!({ "type": "preview_opened", "request_id": ID, "ok": true })),
+            ),
+            (
+                Feature::Previews,
+                down(json!({ "type": "preview_closed", "session_id": "s", "port": 5173 })),
+            ),
             (Feature::Previews, down(json!({ "type": "preview_chunk", "stream_id": "x" }))),
             (Feature::Previews, down(json!({ "type": "preview_abort", "stream_id": "x" }))),
         ]
@@ -248,7 +269,9 @@ mod tests {
             })),
             command(json!({ "kind": "rename", "local_id": "s", "name": "n" })),
             command(json!({ "kind": "remove", "local_id": "s", "command_id": ID })),
-            command(json!({ "kind": "set_model", "local_id": "s", "model": "m", "command_id": ID })),
+            command(
+                json!({ "kind": "set_model", "local_id": "s", "model": "m", "command_id": ID }),
+            ),
             command(json!({ "kind": "diagnose", "local_id": "s", "request_id": ID })),
             command(json!({ "kind": "watch_text", "local_id": "s", "watch": true })),
             command(json!({ "kind": "guard_transition", "local_id": "s", "step": "1" })),
@@ -257,19 +280,46 @@ mod tests {
         ]
     }
 
-    fn assert_refused_with_its_reply(frame: &DaemonFrameDown, reply: Refusal) {
-        match (frame, reply) {
+    fn assert_refused_with_its_reply(frame: &DaemonFrameDown, refusal: Refusal) {
+        match refusal {
+            Refusal::Reply(up) => assert_error_reply(frame, *up),
+            Refusal::Command { adapter_id, command_id, error } => {
+                let DaemonFrameDown::Command { adapter_id: sent, command, .. } = frame else {
+                    panic!("{frame:?} refused with a command result");
+                };
+                assert_eq!(&adapter_id, sent);
+                assert_eq!(Some(command_id), command.command_id(), "the reply is correlated");
+                assert!(error.contains("switched off"));
+            }
+            Refusal::Drop => match frame {
+                DaemonFrameDown::Command { command, .. } => {
+                    assert!(command.command_id().is_none(), "a command with an id gets a reply");
+                }
+                DaemonFrameDown::RunUpdateHook { .. }
+                | DaemonFrameDown::HarnessUpdatePolicy { .. }
+                | DaemonFrameDown::DrainRestart { .. }
+                | DaemonFrameDown::PreviewOpened { .. }
+                | DaemonFrameDown::PreviewClosed { .. }
+                | DaemonFrameDown::PreviewChunk(_)
+                | DaemonFrameDown::PreviewAbort { .. } => {}
+                _ => panic!("{frame:?} dropped without its reply"),
+            },
+        }
+    }
+
+    fn assert_error_reply(frame: &DaemonFrameDown, up: DaemonFrameUp) {
+        match (frame, up) {
             (
                 DaemonFrameDown::ListDirs { .. },
-                Refusal::Reply(DaemonFrameUp::ListDirsResult { request_id, ok, error, .. }),
+                DaemonFrameUp::ListDirsResult { request_id, ok, error, .. },
             )
             | (
                 DaemonFrameDown::GitInfo { .. },
-                Refusal::Reply(DaemonFrameUp::GitInfoResult { request_id, ok, error, .. }),
+                DaemonFrameUp::GitInfoResult { request_id, ok, error, .. },
             )
             | (
                 DaemonFrameDown::StageFiles { .. },
-                Refusal::Reply(DaemonFrameUp::StageFilesResult { request_id, ok, error, .. }),
+                DaemonFrameUp::StageFilesResult { request_id, ok, error, .. },
             ) => {
                 assert_eq!(request_id, self::request_id(), "the reply is correlated");
                 assert!(!ok);
@@ -277,9 +327,7 @@ mod tests {
             }
             (
                 DaemonFrameDown::ReadFile { .. },
-                Refusal::Reply(DaemonFrameUp::ReadFileResult {
-                    request_id, ok, error, error_kind, ..
-                }),
+                DaemonFrameUp::ReadFileResult { request_id, ok, error, error_kind, .. },
             ) => {
                 assert_eq!(request_id, self::request_id());
                 assert!(!ok);
@@ -288,33 +336,12 @@ mod tests {
             }
             (
                 DaemonFrameDown::PreviewRequest { .. },
-                Refusal::Reply(DaemonFrameUp::PreviewError { stream_id, error }),
+                DaemonFrameUp::PreviewError { stream_id, error },
             ) => {
                 assert_eq!(stream_id, "x");
                 assert!(error.contains("previews is switched off"));
             }
-            (
-                DaemonFrameDown::Command { adapter_id: sent, command: c, .. },
-                Refusal::Command { adapter_id, command_id, error },
-            ) => {
-                assert_eq!(&adapter_id, sent);
-                assert_eq!(Some(command_id), c.command_id(), "the reply is correlated");
-                assert!(error.contains("switched off"));
-            }
-            (DaemonFrameDown::Command { command, .. }, Refusal::Drop) => {
-                assert!(command.command_id().is_none(), "a command with an id gets a reply");
-            }
-            (
-                DaemonFrameDown::RunUpdateHook { .. }
-                | DaemonFrameDown::HarnessUpdatePolicy { .. }
-                | DaemonFrameDown::DrainRestart { .. }
-                | DaemonFrameDown::PreviewOpened { .. }
-                | DaemonFrameDown::PreviewClosed { .. }
-                | DaemonFrameDown::PreviewChunk(_)
-                | DaemonFrameDown::PreviewAbort { .. },
-                Refusal::Drop,
-            ) => {}
-            (frame, reply) => panic!("{frame:?} refused with {reply:?}"),
+            (frame, up) => panic!("{frame:?} refused with {up:?}"),
         }
     }
 
@@ -385,7 +412,7 @@ mod tests {
         tokio::time::Instant::now()
     }
 
-    fn is_features(frame: &DaemonFrameDown) -> bool {
+    const fn is_features(frame: &DaemonFrameDown) -> bool {
         matches!(frame, DaemonFrameDown::Features { .. })
     }
 

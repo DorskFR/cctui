@@ -575,7 +575,10 @@ mod owner_revocation_tests {
             .execute(&pool)
             .await
             .unwrap();
-        assert!(account_row(&pool, &hash, true).await.unwrap().is_none(), "revoked owner is refused");
+        assert!(
+            account_row(&pool, &hash, true).await.unwrap().is_none(),
+            "revoked owner is refused"
+        );
 
         sqlx::query("UPDATE users SET revoked_at = NULL WHERE id = $1")
             .bind(uid)
@@ -583,7 +586,10 @@ mod owner_revocation_tests {
             .await
             .unwrap();
         crate::store::tokens::revoke_by_user(&pool, uid).await.unwrap();
-        assert!(account_row(&pool, &hash, true).await.unwrap().is_none(), "revoked token is refused");
+        assert!(
+            account_row(&pool, &hash, true).await.unwrap().is_none(),
+            "revoked token is refused"
+        );
 
         sqlx::query("DELETE FROM session_tokens WHERE token_hash = $1")
             .bind(&hash)
@@ -644,7 +650,10 @@ mod owner_revocation_tests {
             .execute(&pool)
             .await
             .unwrap();
-        assert!(account_row(&pool, &hash, true).await.unwrap().is_none(), "disabled user is refused");
+        assert!(
+            account_row(&pool, &hash, true).await.unwrap().is_none(),
+            "disabled user is refused"
+        );
 
         sqlx::query("UPDATE users SET disabled_at = NULL WHERE id = $1")
             .bind(uid)
@@ -657,7 +666,10 @@ mod owner_revocation_tests {
         );
 
         assert!(crate::store::tokens::revoke_service(&pool, acct, row.id).await.unwrap());
-        assert!(account_row(&pool, &hash, true).await.unwrap().is_none(), "revoked token is refused");
+        assert!(
+            account_row(&pool, &hash, true).await.unwrap().is_none(),
+            "revoked token is refused"
+        );
 
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }

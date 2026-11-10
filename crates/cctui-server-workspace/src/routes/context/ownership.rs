@@ -49,11 +49,7 @@ pub async fn inherit(pool: &PgPool, to: &str, from: &str, user_id: Option<Uuid>)
             AND ($3::text IS NULL OR scope->>'user_id' = $3) \
          ON CONFLICT (spawn_key) DO UPDATE SET scope = EXCLUDED.scope",
         |sql| {
-            sqlx::query(sql)
-                .bind(to)
-                .bind(from)
-                .bind(user_id.map(|u| u.to_string()))
-                .execute(pool)
+            sqlx::query(sql).bind(to).bind(from).bind(user_id.map(|u| u.to_string())).execute(pool)
         },
     )
     .await;

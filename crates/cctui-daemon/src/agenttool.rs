@@ -1637,9 +1637,8 @@ async fn handle_connection(stream: UnixStream, server: ServerClient, machine_key
     let Ok(Some(line)) = lines.next_line().await else { return };
     let call = match parse_call(&line)
         .and_then(|call| verify_caller(&call.session_id, peer_pid).map(|()| call))
-        .and_then(|call| {
-            admit_call(&call.kind, crate::serverfeatures::current()).map(|()| call)
-        }) {
+        .and_then(|call| admit_call(&call.kind, crate::serverfeatures::current()).map(|()| call))
+    {
         Ok(call) => call,
         Err(err) => {
             let _ = write_line(&mut write_half, &json!({ "ok": false, "error": err })).await;
@@ -2222,7 +2221,8 @@ mod tests {
     fn preview_open_is_refused_with_previews_off() {
         let off = FeatureSet::all().without(Feature::Previews);
         for kind in ["preview_open", "preview_close"] {
-            let call = kind_of(&json!({ "kind": kind, "session_id": "s1", "args": { "port": 5173 } }));
+            let call =
+                kind_of(&json!({ "kind": kind, "session_id": "s1", "args": { "port": 5173 } }));
             let err = admit_call(&call, off).unwrap_err();
             assert!(err.contains("previews is switched off"), "{err}");
             for on in [FeatureSet::all(), crate::serverfeatures::from_off(&[])] {

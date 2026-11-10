@@ -365,9 +365,9 @@ pub const fn command_features(command: &AdapterCommand) -> &'static [Feature] {
         AdapterCommand::Spawn { spec, .. } if spec.parent_local_id.is_some() => {
             &[Feature::ChildSessions]
         }
-        AdapterCommand::Spawn { .. } | AdapterCommand::Fork { .. } | AdapterCommand::Resume { .. } => {
-            &[Feature::MachineSpawn]
-        }
+        AdapterCommand::Spawn { .. }
+        | AdapterCommand::Fork { .. }
+        | AdapterCommand::Resume { .. } => &[Feature::MachineSpawn],
         AdapterCommand::WatchPty { .. } => &[Feature::Terminal],
         AdapterCommand::ResumeMarks { .. }
         | AdapterCommand::AckMarks { .. }
@@ -1993,15 +1993,15 @@ mod tests {
     }
 
     fn command(command: serde_json::Value) -> DaemonFrameDown {
-        down(serde_json::json!({ "type": "command", "adapter_id": "claude-code", "command": command }))
+        let mut frame = serde_json::json!({ "type": "command", "adapter_id": "claude-code" });
+        frame["command"] = command;
+        down(frame)
     }
 
     #[test]
     fn every_daemon_frame_maps_to_the_features_that_own_it() {
         use serde_json::json;
         let id = "00000000-0000-0000-0000-000000000007";
-        let spec = json!({ "adapter_id": "claude-code" });
-        let child = json!({ "adapter_id": "claude-code", "parent_local_id": "parent" });
         let cases: Vec<(DaemonFrameDown, &[Feature])> = vec![
             (down(json!({ "type": "reconcile", "adapters": [] })), &[]),
             (down(json!({ "type": "ack", "seq": 1 })), &[]),
@@ -2021,10 +2021,15 @@ mod tests {
                 })),
                 &[Feature::Uploads, Feature::Context],
             ),
-            (down(json!({ "type": "list_dirs", "request_id": id, "path": "/" })), &[Feature::Files]),
+            (
+                down(json!({ "type": "list_dirs", "request_id": id, "path": "/" })),
+                &[Feature::Files],
+            ),
             (down(json!({ "type": "git_info", "request_id": id, "path": "/" })), &[Feature::Files]),
             (
-                down(json!({ "type": "read_file", "request_id": id, "path": "/a", "max_bytes": 1 })),
+                down(
+                    json!({ "type": "read_file", "request_id": id, "path": "/a", "max_bytes": 1 }),
+                ),
                 &[Feature::Files],
             ),
             (
@@ -2033,9 +2038,18 @@ mod tests {
                 })),
                 &[Feature::SelfUpdate],
             ),
-            (down(json!({ "type": "harness_update_policy", "policy": {} })), &[Feature::SelfUpdate]),
-            (down(json!({ "type": "drain_restart", "harness": "claude-code" })), &[Feature::SelfUpdate]),
-            (down(json!({ "type": "preview_opened", "request_id": id, "ok": true })), &[Feature::Previews]),
+            (
+                down(json!({ "type": "harness_update_policy", "policy": {} })),
+                &[Feature::SelfUpdate],
+            ),
+            (
+                down(json!({ "type": "drain_restart", "harness": "claude-code" })),
+                &[Feature::SelfUpdate],
+            ),
+            (
+                down(json!({ "type": "preview_opened", "request_id": id, "ok": true })),
+                &[Feature::Previews],
+            ),
             (
                 down(json!({ "type": "preview_closed", "session_id": "s", "port": 5173 })),
                 &[Feature::Previews],
@@ -2049,6 +2063,19 @@ mod tests {
             ),
             (down(json!({ "type": "preview_chunk", "stream_id": "x" })), &[Feature::Previews]),
             (down(json!({ "type": "preview_abort", "stream_id": "x" })), &[Feature::Previews]),
+        ];
+        for (frame, expected) in cases {
+            assert_eq!(frame.features(), expected, "{frame:?}");
+        }
+    }
+
+    #[test]
+    fn every_adapter_command_maps_to_the_features_that_own_it() {
+        use serde_json::json;
+        let id = "00000000-0000-0000-0000-000000000007";
+        let spec = json!({ "adapter_id": "claude-code" });
+        let child = json!({ "adapter_id": "claude-code", "parent_local_id": "parent" });
+        let cases: Vec<(DaemonFrameDown, &[Feature])> = vec![
             (command(json!({ "kind": "spawn", "spec": spec })), &[Feature::MachineSpawn]),
             (command(json!({ "kind": "spawn", "spec": child })), &[Feature::ChildSessions]),
             (
@@ -2056,7 +2083,10 @@ mod tests {
                 &[Feature::MachineSpawn],
             ),
             (command(json!({ "kind": "resume", "local_id": "s" })), &[Feature::MachineSpawn]),
-            (command(json!({ "kind": "watch_pty", "local_id": "s", "watch": true })), &[Feature::Terminal]),
+            (
+                command(json!({ "kind": "watch_pty", "local_id": "s", "watch": true })),
+                &[Feature::Terminal],
+            ),
             (command(json!({ "kind": "resume_marks", "marks": [] })), &[]),
             (command(json!({ "kind": "ack_marks", "marks": [] })), &[]),
             (command(json!({ "kind": "send_message", "local_id": "s", "text": "t" })), &[]),
