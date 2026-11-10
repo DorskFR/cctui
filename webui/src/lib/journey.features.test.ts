@@ -2,18 +2,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Feature } from '@bindings/Feature';
 import { setCapabilitiesForTest } from './features.svelte';
+import { ALL_FEATURES as SWITCHABLE } from './features.fixture';
 import { guideEntries } from './guides';
 import { GUIDE_FEATURES, offeredJourneys, publicJourneys, STEP_FEATURES } from './journey';
 
 vi.mock('$lib/queries/endpoints', () => ({ endpoints: {} }));
-
-const SWITCHABLE: Feature[] = [
-	'machine_spawn',
-	'transcript_search',
-	'account_sharing',
-	'automation',
-	'organising'
-];
 
 afterEach(() => setCapabilitiesForTest(null));
 

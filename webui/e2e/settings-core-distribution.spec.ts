@@ -1,12 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
 import { ROUTES } from '../src/lib/bindings/routes';
+import { ALL_FEATURES } from '../src/lib/features.fixture';
 import { session, stubApi, watch } from './tiles.fixture';
 import { waitForDrawerOpen } from './drawer.fixture';
 
 const langfuse = { available: false, host: null, public_host: null, project_id: null };
 
-/** Every feature that gates a route, plus `terminal`, which gates only a WebSocket message. */
-const SWITCHABLE = [...new Set([...ROUTES.flatMap((r) => (r.feature ? [r.feature] : [])), 'terminal'])];
+const SWITCHABLE = ALL_FEATURES;
 
 const MATCHERS = ROUTES.map((r) => ({
 	method: r.method as string,
