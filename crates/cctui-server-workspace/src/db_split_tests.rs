@@ -147,10 +147,19 @@ async fn legacy_full_adoption_preserves_data_checksums_and_the_older_migrator() 
         let media: (String,String,Vec<u8>)=sqlx::query_as("SELECT a.name,e.payload->>'text',i.bytes FROM session_attachments a JOIN stream_events e USING (session_id) JOIN session_images i USING (session_id)")
             .fetch_one(&pool).await.unwrap();
         assert_eq!(media,("fixture.txt".into(),"fixture transcript".into(),vec![1,2,3]));
-        let modes: Vec<String>=sqlx::query_scalar("SELECT installation FROM _cctui_schema_migrations WHERE version=1 ORDER BY package")
+        // The legacy schema already holds both baselines, so they are adopted;
+        // the search step owns no legacy object and runs, as a no-op.
+        let modes: Vec<(String,String)>=sqlx::query_as("SELECT package,installation FROM _cctui_schema_migrations WHERE version=1 ORDER BY package")
             .fetch_all(&pool).await.unwrap();
-        assert_eq!(modes,["adopted","adopted"]);
+        let expected=[("core","adopted"),("workspace","adopted"),("workspace_search","bootstrap")]
+            .map(|(p,i)| (p.to_owned(),i.to_owned()));
+        assert_eq!(modes,expected);
         assert_credentials(&pool).await;
+        // A release without the search stream reads only its own packages' rows.
+        let mut conn=schema::migration_connection(&pool).await.unwrap();
+        schema::provision(&mut conn).await.unwrap();
+        schema::install_package(&mut conn,"workspace",crate::schema::MIGRATIONS,true).await.unwrap();
+        drop(conn);
         MIGRATOR.run(&pool).await.unwrap();
         sqlx::query("INSERT INTO _sqlx_migrations (version,description,success,checksum,execution_time) VALUES (192,'unfinished fixture',false,'\\x00',0)")
             .execute(&pool).await.unwrap();
@@ -195,15 +204,19 @@ async fn core_expansion_preserves_execution_data_and_matches_the_full_schema() {
 }
 
 async fn search_objects(pool: &PgPool) -> Value {
-    sqlx::query_scalar("SELECT jsonb_build_object( \
+    sqlx::query_scalar(
+        "SELECT jsonb_build_object( \
         'extensions',(SELECT COALESCE(jsonb_agg(extname ORDER BY extname),'[]') FROM pg_extension \
             WHERE extname IN ('pg_trgm','btree_gin')), \
         'indexes',(SELECT COALESCE(jsonb_agg(c.relname ORDER BY c.relname),'[]') \
             FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid \
             WHERE pg_get_indexdef(i.indexrelid) LIKE '%trgm_ops%'), \
         'stream',(SELECT COALESCE(jsonb_agg(version ORDER BY version),'[]') \
-            FROM _cctui_schema_migrations WHERE package='workspace_search'))")
-        .fetch_one(pool).await.unwrap()
+            FROM _cctui_schema_migrations WHERE package='workspace_search'))",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
 }
 
 /// Relations with their storage, so a rewrite or an index rebuild shows.
@@ -220,25 +233,43 @@ async fn catalog(pool: &PgPool) -> Value {
 }
 
 async fn ledger(pool: &PgPool) -> Vec<(String, i64, Vec<u8>, String)> {
-    sqlx::query_as("SELECT package,version,checksum,installation FROM _cctui_schema_migrations \
-        ORDER BY package,version")
-        .fetch_all(pool).await.unwrap()
+    sqlx::query_as(
+        "SELECT package,version,checksum,installation FROM _cctui_schema_migrations \
+        ORDER BY package,version",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
 }
 
 /// A session and one transcript row as ingest stores it with search off.
 async fn ingest_transcript(pool: &PgPool, text: &str) -> (String, i64) {
     let (uid, machine) = (Uuid::new_v4(), Uuid::new_v4());
     sqlx::query("INSERT INTO users (id,name,key_hash) VALUES ($1,$2,$3)")
-        .bind(uid).bind(format!("searchless-{uid}")).bind(format!("h-{uid}"))
-        .execute(pool).await.unwrap();
+        .bind(uid)
+        .bind(format!("searchless-{uid}"))
+        .bind(format!("h-{uid}"))
+        .execute(pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO machines (id,user_id,name,key_hash) VALUES ($1,$2,'m',$3)")
-        .bind(machine).bind(uid).bind(format!("mk-{machine}"))
-        .execute(pool).await.unwrap();
+        .bind(machine)
+        .bind(uid)
+        .bind(format!("mk-{machine}"))
+        .execute(pool)
+        .await
+        .unwrap();
     let sid = format!("searchless-{uid}");
-    sqlx::query("INSERT INTO sessions (id,machine_id,machine_uuid,user_id,working_dir,status,adapter_id) \
-        VALUES ($1,$2,$2,$3,'/w','active','claude-code')")
-        .bind(&sid).bind(machine).bind(uid)
-        .execute(pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO sessions (id,machine_id,machine_uuid,user_id,working_dir,status,adapter_id) \
+        VALUES ($1,$2,$2,$3,'/w','active','claude-code')",
+    )
+    .bind(&sid)
+    .bind(machine)
+    .bind(uid)
+    .execute(pool)
+    .await
+    .unwrap();
     let id: i64 = sqlx::query_scalar("INSERT INTO stream_events (session_id,event_type,payload,search_text) \
         VALUES ($1,'message',jsonb_build_object('role','assistant','text',$2::text),'') RETURNING id")
         .bind(&sid).bind(text)
@@ -355,7 +386,9 @@ async fn the_search_step_changes_nothing_in_a_current_database() {
             migrate(&pool, false).await.unwrap();
             assert_eq!(catalog(&pool).await, before, "search off drops nothing, legacy={legacy}");
             let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM stream_events")
-                .fetch_one(&pool).await.unwrap();
+                .fetch_one(&pool)
+                .await
+                .unwrap();
             assert_eq!(rows, 1);
         })
         .await;
