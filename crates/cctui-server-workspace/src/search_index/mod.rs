@@ -296,6 +296,12 @@ impl Backfill {
         }
     }
 
+    #[cfg(test)]
+    #[must_use]
+    pub fn without_lag(name: &str, batch: i64) -> Self {
+        Self { horizon: Horizon::new(Duration::ZERO), ..Self::new(name, batch) }
+    }
+
     /// Index the next batch in one short transaction. Returns how many events
     /// it read; 0 when caught up or another replica holds the walk.
     pub async fn step(&mut self, pool: &PgPool) -> Result<usize, sqlx::Error> {

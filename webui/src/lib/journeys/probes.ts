@@ -21,6 +21,7 @@ export function createProbes(qc: QueryClient): Probes {
 			: Promise.resolve([]);
 	const sessions = () =>
 		qc.fetchQuery({ queryKey: qk.sessions(false), queryFn: () => endpoints.sessions(false) });
+	const dispatchers = () => qc.fetchQuery({ queryKey: qk.dispatchers, queryFn: endpoints.dispatchers });
 	const machines = async (): Promise<MachineRow[]> => {
 		if (!hasFeature('machine_spawn')) return [];
 		const who = await me();
@@ -38,6 +39,7 @@ export function createProbes(qc: QueryClient): Probes {
 		'machines.online': async () => (await machines()).some((m) => !m.revoked_at && m.liveness === 'online'),
 		'machines.enrolled': async () =>
 			(await machines()).filter((m) => m.kind !== 'ephemeral' && !m.revoked_at).length,
+		dispatchers: async () => (await dispatchers()).length > 0,
 		sessions: async () => (await sessions()).sessions.length > 0,
 		'sessions.drafts': async () => (await sessions()).sessions.filter((s) => s.status === 'draft').length,
 		'sessions.live': async () => (await sessions()).sessions.some(isLive)

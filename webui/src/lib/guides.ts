@@ -2,7 +2,7 @@ import type { Journey, Text } from '@dorsk/journey';
 import {
 	DONE_PROBES,
 	GUIDES_ROUTE,
-	publicJourneys,
+	offeredJourneys,
 	type StartGuideOptions,
 	type StartOutcome,
 	startGuide,
@@ -93,7 +93,7 @@ function currentLocale(): string {
 }
 
 /** The compiled book still carries journeys whose public step count is zero. */
-export function guideEntries(source: Journey[] = publicJourneys as Journey[]): GuideEntry[] {
+export function guideEntries(source: Journey[] = offeredJourneys() as Journey[]): GuideEntry[] {
 	return source.map((j) => ({
 		id: j.id,
 		version: j.version ?? 1,

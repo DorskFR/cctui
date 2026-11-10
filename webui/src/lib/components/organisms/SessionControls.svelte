@@ -198,7 +198,7 @@
 			</div>
 		</Popover>
 	</span>
-	{#if settings.macrosEnabled}
+	{#if settings.macrosEnabled && hasFeature('machine_spawn')}
 		<span class="new-wrap">
 			<MacrosMenu />
 		</span>

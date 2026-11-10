@@ -11,7 +11,7 @@ mod tests {
     use super::*;
     use crate::routes::daemon::connection::session_scope;
     use crate::routes::daemon::events::session::persist_session_end;
-    use crate::routes::daemon::ingest::insert_event;
+    use crate::routes::daemon::ingest::{NewEvent, insert_event};
     use crate::routes::daemon::registration::upsert_session;
     use crate::routes::daemon::test_support::{
         drop_machines, reply, seed_machine, seed_owned_session,
@@ -111,17 +111,9 @@ mod tests {
             assert!(!admit(&mut intruder, &pool, scope).await, "foreign frame must be dropped");
         }
 
-        let inserted = insert_event(
-            &pool,
-            mb,
-            ub,
-            &sid,
-            "message",
-            json!({ "type": "assistant", "text": "run this" }),
-            None,
-        )
-        .await
-        .expect("insert");
+        let payload = json!({ "type": "assistant", "text": "run this" });
+        let row = NewEvent::unchunked(&sid, "message", payload, None, true);
+        let inserted = insert_event(&pool, mb, ub, row).await.expect("insert");
         assert_eq!(inserted, None);
         persist_session_end(&pool, mb, ub, &sid, &EndReason::Killed).await.expect("end");
 

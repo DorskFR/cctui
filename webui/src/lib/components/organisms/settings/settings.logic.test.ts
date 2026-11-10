@@ -194,11 +194,10 @@ describe('settings pages by announced features', () => {
 		expect(availableSettingsPages(() => true)).toEqual([...SETTINGS_PAGES]);
 	});
 
-	it('drops the context, plugins, monitoring, security and uploads pages on a core server', () => {
+	it('drops the macros, context, plugins, monitoring, security and uploads pages on a core server', () => {
 		expect(availableSettingsPages(() => false)).toEqual([
 			'appearance',
 			'sessions',
-			'macros',
 			'execution',
 			'privacy',
 			'notifications',
@@ -223,6 +222,7 @@ describe('settings pages by announced features', () => {
 		expect(settingsPageFeature('context')).toBe('context');
 		expect(settingsPageFeature('uploads')).toBe('uploads');
 		expect(settingsPageFeature('monitoring')).toBe('machine_spawn');
+		expect(settingsPageFeature('macros')).toBe('machine_spawn');
 		expect(settingsPageFeature('dispatchers')).toBeNull();
 		expect(settingsPageFeature('nope')).toBeNull();
 	});

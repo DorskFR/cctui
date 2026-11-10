@@ -36,6 +36,9 @@ import {
 } from "$lib/searchSchema";
 import {
   DEFAULT_TILE_SECTIONS,
+  effectiveColorBy,
+  effectiveGroupBy,
+  effectiveSections,
   parseSections,
   parseHiddenSections,
   serializeHiddenSections,
@@ -322,7 +325,10 @@ export class SessionsPage {
   }
   // One filter bar drives whichever set the active mode owns.
   get sections(): Set<Section> {
-    return this.tiles ? this.tileSections : this.listSections;
+    return effectiveSections(
+      this.tiles ? this.tileSections : this.listSections,
+      hasFeature,
+    );
   }
   set sections(v: Set<Section>) {
     if (this.tiles) this.tileSections = v;
@@ -337,11 +343,17 @@ export class SessionsPage {
 
   // Color-by and group-by dimensions, read live from the server-persisted
   // settings blob and written back through settings.setSessionList.
-  colorBy = $derived.by(
-    () => this.#d.settings.state.sessionList.colorBy as Dimension,
+  colorBy = $derived.by(() =>
+    effectiveColorBy(
+      this.#d.settings.state.sessionList.colorBy as Dimension,
+      hasFeature,
+    ),
   );
-  groupBy = $derived.by(
-    () => this.#d.settings.state.sessionList.groupBy as Dimension,
+  groupBy = $derived.by(() =>
+    effectiveGroupBy(
+      this.#d.settings.state.sessionList.groupBy as Dimension,
+      hasFeature,
+    ),
   );
   showMachine = $derived(this.groupBy !== "machine");
   sortState = $derived.by(() => ({

@@ -131,6 +131,7 @@ export type SettingsPage = (typeof SETTINGS_PAGES)[number];
 
 const PAGE_FEATURE: Partial<Record<SettingsPage, Feature>> = {
 	context: 'context',
+	macros: 'machine_spawn',
 	monitoring: 'machine_spawn',
 	plugins: 'plugins',
 	security: 'passkeys',

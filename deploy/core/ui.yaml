@@ -1,0 +1,47 @@
+# The UI's CSP only allows its own origin: route /api/ and /gateway/ to
+# cctui-core:8700 on the same host, everything else here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cctui-core-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cctui-core-ui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cctui-core-ui
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ui
+          image: ghcr.io/dorskfr/cctui-ui
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cctui-core-ui
+spec:
+  selector:
+    app.kubernetes.io/name: cctui-core-ui
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

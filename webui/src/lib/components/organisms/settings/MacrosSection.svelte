@@ -10,13 +10,14 @@
 	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
 	import { useAccountPools, useMachineResources } from '$lib/queries';
 	import { settings, type MacroSpec } from '$lib/settings.svelte';
+	import { hasFeature } from '$lib/features.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { modes } from '../spawn/options';
 	import { harnessModelsFallback } from '$lib/domainTables';
 	import { effortsFor, macroProblems, newMacro } from '../macros.logic';
 
 	const machinesQ = useMachineResources(() => true);
-	const poolsQ = useAccountPools(() => true);
+	const poolsQ = useAccountPools(() => hasFeature('account_sharing'));
 	const machines = $derived(machinesQ.data ?? []);
 	const pools = $derived(poolsQ.data ?? []);
 	const enabled = $derived(settings.macrosEnabled);
@@ -171,14 +172,16 @@
 					{/each}
 				</Select>
 			</SettingRow>
-			<SettingRow label={m.settings_macros_field_pool()} help={m.settings_macros_field_pool_help()}>
-				<Select style="width:100%" value={draft.pool_id ?? ''} onchange={(e) => (draft!.pool_id = orNull(sel(e)))}>
-					<option value="">{m.spawn_account_auto()}</option>
-					{#each pools as p (p.id)}
-						<option value={p.id}>{p.name}</option>
-					{/each}
-				</Select>
-			</SettingRow>
+			{#if hasFeature('account_sharing')}
+				<SettingRow label={m.settings_macros_field_pool()} help={m.settings_macros_field_pool_help()}>
+					<Select style="width:100%" value={draft.pool_id ?? ''} onchange={(e) => (draft!.pool_id = orNull(sel(e)))}>
+						<option value="">{m.spawn_account_auto()}</option>
+						{#each pools as p (p.id)}
+							<option value={p.id}>{p.name}</option>
+						{/each}
+					</Select>
+				</SettingRow>
+			{/if}
 			<SettingRow label={m.settings_macros_field_mode()}>
 				<Select
 					style="width:100%"

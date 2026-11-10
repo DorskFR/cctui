@@ -102,6 +102,9 @@ pub async fn run() -> anyhow::Result<()> {
         return check_plugin_archive(rest);
     }
     install_crypto_provider();
+    if args.first().is_some_and(|cmd| cmd == "init-db") {
+        return init_db().await;
+    }
     let _telemetry = cctui_telemetry::init(
         "cctui-server",
         env!("CARGO_PKG_VERSION"),
@@ -135,6 +138,33 @@ fn check_plugin_archive(args: &[String]) -> anyhow::Result<()> {
     plugin_archive::check_catalog_archive(&bytes, id, version).map_err(anyhow::Error::msg)
 }
 
+/// `init-db`: provision or upgrade the schema, then exit. Needs only
+/// `DATABASE_URL`, which may be a secret ref, and the server's
+/// `CCTUI_FEATURES_FILE`, which decides whether search objects are built.
+async fn init_db() -> anyhow::Result<()> {
+    let features = init_db_features(std::env::var(config::FEATURES_FILE_ENV).ok().as_deref())?;
+    let secrets = cctui_secrets::SecretRegistry::from_env();
+    let raw =
+        std::env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL is required"))?;
+    let url = secrets.register("DATABASE_URL", &raw).await?.get();
+    let (pool, applied) = db::connect_reporting_for(&url, features).await?;
+    pool.close().await;
+    println!("schema ready; {} legacy migrations applied", applied.len());
+    Ok(())
+}
+
+fn init_db_features(path: Option<&str>) -> anyhow::Result<FeatureSet> {
+    let Some(path) = path.filter(|p| !p.trim().is_empty()) else {
+        return Ok(FeatureSet::all());
+    };
+    let env = config::FEATURES_FILE_ENV;
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("{env}: cannot read `{path}`: {e}"))?;
+    let resolution =
+        config::parse_features(&text).map_err(|e| anyhow::anyhow!("{env} `{path}`: {e}"))?;
+    Ok(resolution.set)
+}
+
 use cctui_server_core::client::{build_http_client, install_crypto_provider};
 use cctui_server_core::dispatch_identity;
 
@@ -148,7 +178,8 @@ async fn bootstrap(
     }
 
     let config = Config::from_env(secrets).await?;
-    let (pool, migrations) = db::connect_reporting(&config.database_url).await?;
+    let (pool, migrations) =
+        db::connect_reporting_for(&config.database_url, config.features).await?;
     install_vault_key(&pool).await?;
     // One-release back-compat shim: if the retired
     // CCTUI_CLAUDE_LITELLM_* env vars are set, synthesize a managed (read-only)
@@ -935,12 +966,13 @@ async fn shutdown_signal() {
 /// Readiness, unlike `/health` liveness: 503 while the database is unreachable.
 async fn readyz(
     axum::extract::State(state): axum::extract::State<AppState>,
-) -> (axum::http::StatusCode, &'static str) {
-    if db_ready(&state.pool).await {
+) -> (axum::http::StatusCode, String) {
+    let (status, verdict) = if db_ready(&state.pool).await {
         (axum::http::StatusCode::OK, "ok")
     } else {
         (axum::http::StatusCode::SERVICE_UNAVAILABLE, "database unavailable")
-    }
+    };
+    (status, format!("{verdict}\nfeatures: {}\n", state.config.features))
 }
 
 async fn db_ready(pool: &sqlx::PgPool) -> bool {
@@ -1216,6 +1248,18 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::{REAPER_PERIOD, db_ready, serve_until, spawn_periodic};
+
+    #[test]
+    fn init_db_resolves_the_feature_file_like_the_server() {
+        use cctui_proto::features::{Feature, FeatureSet};
+        assert_eq!(super::init_db_features(None).unwrap(), FeatureSet::all());
+        assert_eq!(super::init_db_features(Some(" ")).unwrap(), FeatureSet::all());
+        let core = concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/features/core.toml");
+        let features = super::init_db_features(Some(core)).unwrap();
+        assert!(!features.contains(Feature::TranscriptSearch));
+        let missing = super::init_db_features(Some("/nonexistent/cctui-features.toml"));
+        assert!(missing.unwrap_err().to_string().contains(crate::config::FEATURES_FILE_ENV));
+    }
 
     #[test]
     fn legacy_log_filter_enables_relocated_workspace_targets() {

@@ -1,4 +1,4 @@
-//! Check distribution support before opening the interactive terminal.
+//! Refuse a headless server before opening the interactive terminal.
 use anyhow::Result;
 use cctui_client::Client;
 use cctui_proto::api::capabilities::CapabilitiesResponse;
@@ -7,10 +7,9 @@ pub async fn require_workspace(client: &Client) -> Result<()> {
     match client.get_as::<CapabilitiesResponse>("get_capabilities", &[]).await {
         Ok(caps) => anyhow::ensure!(
             caps.workspace,
-            "this server runs the core distribution; interactive sessions and workspace views are unavailable. Use the execution API, or connect CCTUI_URL to a full cctui server"
+            "this headless server has no interactive sessions; connect CCTUI_URL to a cctui server"
         ),
-        // Older servers may not expose this endpoint. Keep the existing
-        // offline/authentication handling when the probe itself cannot finish.
+        // Offline and authentication failures surface later, with their own handling.
         Err(error) => tracing::debug!(%error, "server capability probe unavailable"),
     }
     Ok(())
@@ -50,15 +49,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn core_is_rejected_with_an_actionable_explanation() {
-        let body = serde_json::to_string(&CapabilitiesResponse::core()).unwrap();
-        let error = probe("200 OK", &body).await.unwrap_err().to_string();
-        assert!(error.contains("core distribution"));
-        assert!(error.contains("execution API"));
+    async fn a_headless_server_is_refused_with_one_message() {
+        let body = r#"{"langfuse":{"available":false,"host":null,"public_host":null,"project_id":null},"distribution":"core","workspace":false,"features":["dispatch"],"experimental":true}"#;
+        let error = probe("200 OK", body).await.unwrap_err().to_string();
+        assert!(error.contains("headless server"), "{error}");
+        assert!(error.contains("CCTUI_URL"), "{error}");
     }
 
     #[tokio::test]
-    async fn older_full_servers_remain_supported() {
+    async fn servers_without_a_workspace_flag_remain_supported() {
         probe(
             "200 OK",
             r#"{"langfuse":{"available":false,"host":null,"public_host":null,"project_id":null}}"#,
@@ -66,5 +65,15 @@ mod tests {
         .await
         .unwrap();
         probe("404 Not Found", "{}").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_server_with_every_feature_off_still_opens() {
+        let body = serde_json::to_string(&CapabilitiesResponse::full(
+            cctui_proto::api::capabilities::LangfuseCapability::default(),
+            cctui_proto::features::FeatureSet::none(),
+        ))
+        .unwrap();
+        probe("200 OK", &body).await.unwrap();
     }
 }

@@ -159,7 +159,7 @@
 		{:else if vis.empty}
 			<div class="placeholder">
 				<Text tone="muted">{m.sessions_empty_sections()}</Text>
-				<FirstRunChecklist />
+				<FirstRunChecklist onnew={() => sp.openSpawn(null)} />
 			</div>
 		{:else if sp.groupBy !== 'status'}
 			{#each sp.list.groupedSections.filter((g) => vis.groups.has(`dim:${g.key}`)) as g (g.key)}
