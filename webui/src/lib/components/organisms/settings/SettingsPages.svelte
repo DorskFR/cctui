@@ -34,9 +34,11 @@
 	<SessionsSection />
 	<HiddenOwnersSection {isAdmin} />
 </div>
-<div class="pg" class:on={current === 'macros'} data-settings-page="macros" data-journey="page" data-journey-key="macros">
-	<MacrosSection />
-</div>
+{#if hasFeature('machine_spawn')}
+	<div class="pg" class:on={current === 'macros'} data-settings-page="macros" data-journey="page" data-journey-key="macros">
+		<MacrosSection />
+	</div>
+{/if}
 {#if hasFeature('context')}
 	<div class="pg" class:on={current === 'context'} data-settings-page="context" data-journey="page" data-journey-key="context">
 		<ContextSection />

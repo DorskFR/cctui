@@ -8,15 +8,45 @@
 	import { buildCurriculum, guideEntries, guideOptions, replayGuide } from '$lib/guides';
 	import { GUIDES_ROUTE, startFailureMessage } from '$lib/journey';
 	import { createProbes } from '$lib/journeys/probes';
+	import { hasFeature } from '$lib/features.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
 
-	const ROWS = [
-		{ guide: 'accounts-pools', probe: 'accounts', label: () => m.onboarding_step_account() },
-		{ guide: 'enroll-machine', probe: 'machines.enrolled', label: () => m.onboarding_step_machine() },
-		{ guide: 'spawn-session', probe: 'sessions', label: () => m.onboarding_step_session() }
-	] as const;
+	/** Opens the launch form where the card sits; elsewhere the last step links to Sessions. */
+	let { onnew }: { onnew?: () => void } = $props();
+
+	type Row = {
+		key: string;
+		probe: string;
+		label: () => string;
+		guide?: string;
+		href?: string;
+		launch?: boolean;
+	};
+
+	const ACCOUNT: Row = {
+		key: 'accounts-pools',
+		guide: 'accounts-pools',
+		probe: 'accounts',
+		label: () => m.onboarding_step_account()
+	};
+	const MACHINE_ROWS: Row[] = [
+		ACCOUNT,
+		{ key: 'enroll-machine', guide: 'enroll-machine', probe: 'machines.enrolled', label: () => m.onboarding_step_machine() },
+		{ key: 'spawn-session', guide: 'spawn-session', probe: 'sessions', label: () => m.onboarding_step_session() }
+	];
+	const DISPATCH_ROWS: Row[] = [
+		ACCOUNT,
+		{
+			key: 'dispatcher',
+			href: '/settings/dispatchers',
+			probe: 'dispatchers',
+			label: () => m.onboarding_step_dispatcher()
+		},
+		{ key: 'dispatch', launch: true, probe: 'sessions', label: () => m.onboarding_step_dispatch() }
+	];
+	const ROWS = $derived(hasFeature('machine_spawn') ? MACHINE_ROWS : DISPATCH_ROWS);
 
 	const probes = createProbes(useQueryClient());
 
@@ -26,9 +56,10 @@
 
 	$effect(() => {
 		void settings.onboarding;
+		const rows = ROWS;
 		let alive = true;
 		void Promise.all(
-			ROWS.map(async (r) => {
+			rows.map(async (r) => {
 				try {
 					return [r.probe, Boolean(await probes[r.probe]())] as const;
 				} catch {
@@ -69,22 +100,40 @@
 	<div class="checklist" data-journey="first-run">
 		<Stack gap="sm">
 			<Text size="sm" weight="semibold">{m.onboarding_checklist_title()}</Text>
-			{#each ROWS as row, i (row.guide)}
-				<div class="row" class:ticked={ticks[row.probe]}>
+			{#each ROWS as row, i (row.key)}
+				<div class="row" class:ticked={ticks[row.probe]} data-journey="first-run-step" data-journey-key={row.key}>
 					<span class="mark" aria-hidden="true">{ticks[row.probe] ? '◆' : i + 1}</span>
 					<Text size="sm" tone={ticks[row.probe] ? 'faint' : 'default'}>{row.label()}</Text>
 					{#if !ticks[row.probe]}
 						<span class="act">
-							<Button
-								size="sm"
-								variant="ghost"
-								loading={busy === row.guide}
-								onclick={() => launch(row.guide)}
-								data-journey="first-run-start"
-								data-journey-key={row.guide}
-							>
-								{m.onboarding_checklist_show()}
-							</Button>
+							{#if row.guide}
+								{@const guide = row.guide}
+								<Button
+									size="sm"
+									variant="ghost"
+									loading={busy === guide}
+									onclick={() => launch(guide)}
+									data-journey="first-run-start"
+									data-journey-key={guide}
+								>
+									{m.onboarding_checklist_show()}
+								</Button>
+							{:else if row.launch && onnew}
+								<Button size="sm" variant="ghost" onclick={onnew} data-journey="first-run-start" data-journey-key={row.key}>
+									{m.onboarding_checklist_show()}
+								</Button>
+							{:else}
+								<Button
+									size="sm"
+									variant="ghost"
+									as="a"
+									href={row.href ?? '/sessions'}
+									data-journey="first-run-start"
+									data-journey-key={row.key}
+								>
+									{m.onboarding_checklist_show()}
+								</Button>
+							{/if}
 						</span>
 					{/if}
 				</div>

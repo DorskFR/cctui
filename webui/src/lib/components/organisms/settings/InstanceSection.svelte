@@ -158,7 +158,11 @@
 	{/if}
 
 	<SettingGroup title={m.settings_group_diagnostics()}>
-		<SettingRow label={m.settings_version_title()} help={m.settings_version_check_help()} selfLabelled>
+		<SettingRow
+			label={m.settings_version_title()}
+			help={selfUpdate ? m.settings_version_check_help() : undefined}
+			selfLabelled
+		>
 			<div class="ver">
 				{#if version.data}
 					<Text size="sm" variant="code">srv {version.data.version}</Text>

@@ -3,7 +3,7 @@
 	import { apiBase } from '$lib/config';
 	import { bootCapabilities, workspaceSupported } from '$lib/workspaceSupport';
 	import { hasFeature } from '$lib/features.svelte';
-	import CoreServerNotice from '$lib/components/organisms/CoreServerNotice.svelte';
+	import HeadlessServerNotice from '$lib/components/organisms/HeadlessServerNotice.svelte';
 	import MaintenanceScreen from '$lib/components/organisms/MaintenanceScreen.svelte';
 	import { backendHealth } from '$lib/backendHealth.svelte';
 	import '@dorsk/tsumikit/looks/depth.css';
@@ -194,7 +194,7 @@
 				onretry={() => backendHealth.retryNow()}
 			/>
 		{:else if workspaceAvailable === false}
-			<CoreServerNotice />
+			<HeadlessServerNotice />
 		{:else if workspaceAvailable === true && auth.isAuthed}
 			<div class="app" class:tiles={isTiles}>
 				<Header />
