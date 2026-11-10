@@ -756,11 +756,12 @@ enum Task {
     ScheduledSpawns,
     UpdateProbe,
     SearchBackfill,
+    LabelIntentSweep,
 }
 
 impl Task {
     #[cfg(test)]
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 13] = [
         Self::FederationOutbox,
         Self::Keepalive,
         Self::PreviewSweep,
@@ -773,6 +774,7 @@ impl Task {
         Self::ScheduledSpawns,
         Self::UpdateProbe,
         Self::SearchBackfill,
+        Self::LabelIntentSweep,
     ];
 
     const fn feature(self) -> Feature {
@@ -786,6 +788,7 @@ impl Task {
             Self::ScheduledMessages | Self::ScheduledSpawns => Feature::Scheduling,
             Self::UpdateProbe => Feature::SelfUpdate,
             Self::SearchBackfill => Feature::TranscriptSearch,
+            Self::LabelIntentSweep => Feature::Organising,
         }
     }
 
@@ -1136,7 +1139,9 @@ async fn keepalive_sweep(state: AppState) {
 fn spawn_reaper_sweeps(state: &AppState) {
     let features = state.config.features;
     spawn_sweep(state, |state| async move { reaper_sweep(&state).await });
-    spawn_sweep(state, |state| async move { spawn_labels::sweep(&state.pool).await });
+    if Task::LabelIntentSweep.enabled(features) {
+        spawn_sweep(state, |state| async move { spawn_labels::sweep(&state.pool).await });
+    }
     spawn_sweep(state, |state| async move { usage_history::sweep(&state) });
     if Task::FollowUp.enabled(features) {
         spawn_sweep(state, |state| async move { followup::sweep(&state.pool).await });
@@ -1664,11 +1669,113 @@ mod feature_gate_tests {
             .collect()
     }
 
+    const WORKER_API_ROUTES: &[&str] = &[
+        "GET /capabilities",
+        "GET /me",
+        "POST /dispatcher/enroll",
+        "GET /dispatchers",
+        "PATCH /dispatchers/{id}",
+        "DELETE /dispatchers/{id}",
+        "GET /sessions/dispatchers",
+        "POST /sessions/dispatch",
+        "GET /dispatch-records/failed",
+        "POST /dispatch-records/{id}/redispatch",
+        "GET /accounts",
+        "GET /accounts/{id}",
+        "GET /harnesses",
+        "GET /models/{harness}",
+        "GET /models/codex/catalog",
+        "POST /machines/{machine_id}/codex-models/refresh",
+        "GET /spawn-memory",
+        "PUT /spawn-memory",
+        "GET /sessions",
+        "GET /sessions/{id}",
+        "GET /sessions/{id}/conversation",
+        "GET /sessions/{id}/diagnose",
+        "POST /sessions/{id}/message",
+        "POST /sessions/{id}/interrupt",
+        "POST /sessions/{id}/set-model",
+        "POST /sessions/{id}/resume",
+        "POST /sessions/{id}/kill",
+        "POST /sessions/{id}/archive",
+        "GET /permissions/pending",
+    ];
+
+    const MACHINE_ONLY_API_ROUTES: &[&str] = &[
+        "POST /enroll",
+        "POST /deenroll",
+        "POST /sessions/spawn",
+        "POST /sessions/register",
+        "GET /sessions/recent-dirs",
+        "GET /machines/resources",
+        "GET /machines/{machine_id}/status",
+        "GET /machines/{machine_id}/adapters",
+        "PUT /machines/{machine_id}/adapters/{adapter}",
+        "GET /machines/{machine_id}/fs/dirs",
+        "GET /machines/{machine_id}/fs/file",
+        "GET /admin/users/{id}/machines",
+        "DELETE /admin/machines/{id}",
+        "POST /admin/machines/{id}/rotate",
+    ];
+
+    fn core_features() -> FeatureSet {
+        crate::config::parse_features(include_str!("../../../deploy/features/core.toml"))
+            .expect("core.toml resolves")
+            .set
+    }
+
+    fn core_api_routes() -> BTreeSet<String> {
+        crate::build_api_routes_with(core_features())
+            .into_parts()
+            .2
+            .into_iter()
+            .map(|d| format!("{} {}", d.method.as_str(), d.path))
+            .collect()
+    }
+
     #[test]
     fn a_core_server_keeps_every_route_a_dispatched_worker_needs() {
         let core = core_outer_paths();
         for path in WORKER_PATHS {
             assert!(core.contains(path), "{path} must stay mounted with every feature off");
+        }
+        let api = core_api_routes();
+        for route in WORKER_API_ROUTES {
+            assert!(api.contains(*route), "{route} must stay mounted on a core server");
+        }
+    }
+
+    #[test]
+    fn a_core_server_mounts_no_machine_only_route() {
+        let api = core_api_routes();
+        for route in MACHINE_ONLY_API_ROUTES {
+            assert!(!api.contains(*route), "{route} must not be mounted on a core server");
+        }
+    }
+
+    #[tokio::test]
+    async fn machine_spawn_off_answers_404_on_enrollment_spawn_and_files() {
+        let off = crate::config::parse_features("[features]\nmachine_spawn = false\n")
+            .expect("resolves")
+            .set;
+        let router = crate::build_api_routes_with(off).into_parts().0;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://u:p@127.0.0.1:1/none")
+            .unwrap();
+        let app = router.with_state(crate::state::AppState::for_test(pool));
+        for (method, uri, want) in [
+            ("POST", "/enroll", StatusCode::NOT_FOUND),
+            ("POST", "/deenroll", StatusCode::NOT_FOUND),
+            ("POST", "/sessions/spawn", StatusCode::NOT_FOUND),
+            ("GET", "/machines/resources", StatusCode::NOT_FOUND),
+            ("GET", "/machines/m1/fs/dirs", StatusCode::NOT_FOUND),
+            ("GET", "/machines/m1/adapters", StatusCode::NOT_FOUND),
+            ("POST", "/sessions/dispatch", StatusCode::UNAUTHORIZED),
+            ("POST", "/sessions/s1/kill", StatusCode::UNAUTHORIZED),
+        ] {
+            let request = Request::builder().method(method).uri(uri).body(Body::empty()).unwrap();
+            let got = app.clone().oneshot(request).await.unwrap().status();
+            assert_eq!(got, want, "{method} {uri}");
         }
     }
 

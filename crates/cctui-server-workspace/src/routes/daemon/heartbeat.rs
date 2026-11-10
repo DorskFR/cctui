@@ -45,7 +45,9 @@ pub(super) fn on_heartbeat(state: &AppState, machine_id: Uuid, frame: DaemonFram
         if let Some(bandwidth) = bandwidth {
             persist_bandwidth(&state, machine_id, &bandwidth).await;
         }
-        if let Some(resources) = resources {
+        if let Some(resources) = resources
+            && records_resources(state.config.features)
+        {
             crate::machine_resources::record_and_broadcast(&state, machine_id, resources).await;
         }
         // Only a daemon that reports its jobs can parse the reply.
@@ -56,6 +58,11 @@ pub(super) fn on_heartbeat(state: &AppState, machine_id: Uuid, frame: DaemonFram
             crate::routes::harness_update::on_heartbeat(&state, machine_id, &report).await;
         }
     });
+}
+
+/// Host snapshots feed the machine resource view, which is part of `machine_spawn`.
+const fn records_resources(features: cctui_proto::features::FeatureSet) -> bool {
+    features.contains(cctui_proto::features::Feature::MachineSpawn)
 }
 
 /// Track an explicitly advertised daemon capability. Silence withdraws support,
@@ -144,7 +151,15 @@ async fn reconcile_claude_jobs(state: &AppState, machine_id: Uuid, shorts: &[Str
 
 #[cfg(test)]
 mod tests {
-    use super::note_capability_support;
+    use super::{note_capability_support, records_resources};
+    use cctui_proto::features::{Feature, FeatureSet};
+
+    #[test]
+    fn host_snapshots_are_kept_only_with_machine_spawn_on() {
+        assert!(records_resources(FeatureSet::all()));
+        assert!(!records_resources(FeatureSet::all().without(Feature::MachineSpawn)));
+        assert!(!records_resources(FeatureSet::none()));
+    }
 
     #[test]
     fn only_an_explicit_advertisement_marks_a_daemon_capable() {

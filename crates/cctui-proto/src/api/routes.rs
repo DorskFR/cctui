@@ -625,7 +625,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List a user's machines (admin).",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "get_admin_users_by_id_tokens",
@@ -697,7 +697,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Revoke or rename a machine (admin).",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "patch_admin_machines_by_id",
@@ -706,7 +706,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Revoke or rename a machine (admin).",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "post_admin_machines_by_id_rotate",
@@ -715,7 +715,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Rotate a machine's key (admin).",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "delete_admin_machines_by_id_purge",
@@ -724,7 +724,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Hard-delete a machine (admin).",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "get_context",
@@ -796,7 +796,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Daemon update manifest (latest version + download URLs).",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::SelfUpdate),
     },
     Route {
         id: "get_daemon_binary_by_target",
@@ -805,7 +805,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Download a daemon binary for a target (self-update proxy).",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::SelfUpdate),
     },
     Route {
         id: "post_sessions_dispatch",
@@ -940,7 +940,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List label definitions, or create one.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "post_labels",
@@ -949,7 +949,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List label definitions, or create one.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "patch_labels_by_id",
@@ -958,7 +958,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Rename or delete a label definition.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "delete_labels_by_id",
@@ -967,7 +967,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Rename or delete a label definition.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "post_sessions_by_id_labels",
@@ -976,7 +976,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Attach a label to a session.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "delete_sessions_by_id_labels_by_label",
@@ -985,7 +985,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Detach a label from a session.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "get_machines_by_machine_commands_pending",
@@ -994,7 +994,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Poll a machine's pending spawn/control commands.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "get_machines_by_machine_events",
@@ -1003,7 +1003,7 @@ pub const ROUTES: &[Route] = &[
         summary: "One machine's lifecycle events, newest first.",
         request: None,
         response: Some("EventPage"),
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "get_machines_by_machine_fs_dirs",
@@ -1039,7 +1039,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Which harnesses a machine runs: table rows with the machine's enable/config pins.",
         request: None,
         response: Some("MachineAdapterInfo[]"),
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "put_machines_by_machine_adapters_by_adapter",
@@ -1048,7 +1048,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Enable, disable or configure one harness on a machine (admin).",
         request: Some("SetMachineAdapterRequest"),
         response: Some("MachineAdapterInfo[]"),
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "delete_machines_by_machine_adapters_by_adapter",
@@ -1057,7 +1057,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Drop a machine's pin for one harness, back to the table default (admin).",
         request: None,
         response: Some("MachineAdapterInfo[]"),
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "get_machines_by_machine_codex_models",
@@ -1246,7 +1246,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Enroll this machine and mint its machine key.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "get_machines_resources",
@@ -1255,7 +1255,7 @@ pub const ROUTES: &[Route] = &[
         summary: "The caller's daemon machines with their last host CPU/memory/disk snapshot.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "get_machines_by_machine_status",
@@ -1264,7 +1264,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Machine connectivity/liveness snapshot (remote-enroll verification).",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "post_deenroll",
@@ -1273,7 +1273,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Deenroll the current machine.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "get_version",
@@ -1615,7 +1615,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List your saved messages, or save one.",
         request: None,
         response: Some("Bookmark[]"),
-        feature: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "post_bookmarks",
@@ -1624,7 +1624,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List your saved messages, or save one.",
         request: Some("CreateBookmark"),
         response: Some("Bookmark"),
-        feature: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "patch_bookmarks_by_id",
@@ -1633,7 +1633,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Edit a bookmark's title/note, or delete it.",
         request: Some("UpdateBookmark"),
         response: Some("Bookmark"),
-        feature: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "delete_bookmarks_by_id",
@@ -1642,7 +1642,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Edit a bookmark's title/note, or delete it.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "get_prompts",
@@ -1651,7 +1651,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List your saved prompts, or create one.",
         request: None,
         response: Some("Prompt[]"),
-        feature: None,
+        feature: Some(Feature::Library),
     },
     Route {
         id: "post_prompts",
@@ -1660,7 +1660,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List your saved prompts, or create one.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Library),
     },
     Route {
         id: "get_prompts_resolve",
@@ -1669,7 +1669,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Resolve a prompt by name/reference.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Library),
     },
     Route {
         id: "get_prompts_by_id",
@@ -1678,7 +1678,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get or delete a saved prompt.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Library),
     },
     Route {
         id: "delete_prompts_by_id",
@@ -1687,7 +1687,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get or delete a saved prompt.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Library),
     },
     Route {
         id: "get_provider_status",
@@ -1876,7 +1876,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Pin a batch of sessions by id.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "post_sessions_unpin",
@@ -1885,7 +1885,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Unpin a batch of sessions by id.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "post_sessions_by_id_launch",
@@ -2011,7 +2011,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Register a session the daemon just launched.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "post_sessions_by_id_deregister",
@@ -2020,7 +2020,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Deregister a session (mark it gone).",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "post_sessions_spawn",
@@ -2110,7 +2110,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List recently used working directories.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "post_sessions_by_id_message",
@@ -2173,7 +2173,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List the caller's pinned messages in a session.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "post_sessions_by_id_pins",
@@ -2182,7 +2182,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Pin a message (by stream seq) in a session.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "delete_sessions_by_id_pins_by_seq",
@@ -2191,7 +2191,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Unpin a message in a session.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "post_sessions_by_id_seen",
@@ -2263,7 +2263,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Pin a single session.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "post_sessions_by_id_unpin",
@@ -2272,7 +2272,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Unpin a single session.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "post_sessions_by_id_keepalive",
@@ -2524,7 +2524,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List available skills.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Library),
     },
     Route {
         id: "put_skills_by_name",
@@ -2533,7 +2533,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Upload or fetch a skill bundle by name.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Library),
     },
     Route {
         id: "get_skills_by_name",
@@ -2542,7 +2542,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Upload or fetch a skill bundle by name.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::Library),
     },
     Route {
         id: "get_sessions_by_id_context",

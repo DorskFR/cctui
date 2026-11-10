@@ -27,11 +27,14 @@ switch of the same integration (`CCTUI_PREVIEW_HOST`, `CCTUI_PLUGINS_DIR`,
 
 `deploy/features/core.toml` is the core deployment: every feature off. What
 is left is token login and logout, users and keys, accounts and OAuth,
-provider settings and model aliases, usage and limit reset, dispatcher
-enrollment, dispatch, transcript ingest and read, the session list,
-conversation and live stream, message, interrupt, kill and archive, manual
-approval, the gateway, tool guard and hook policy, the completion webhook and
-transcript image blobs.
+provider settings, redirects and model aliases, usage and limit reset,
+dispatcher enrollment, dispatch, failed-dispatch records, the harness and
+model catalogs, spawn memory, transcript ingest and read, the session list,
+stats and events, conversation and live stream, message, interrupt,
+set-model, resume, fork, kill and archive, manual approval, the gateway, tool
+guard and hook policy, the completion webhook and transcript image blobs.
+Enrolled machines, machine spawn and daemon self-update are off: workers are
+the dispatched ones, running the binary their image ships.
 
 ## Capabilities
 
@@ -45,7 +48,7 @@ feature).
 
 | Feature | Requires | Covers |
 |---|---|---|
-| `machine_spawn` | | Spawning on a persistent machine (`POST /sessions/spawn`). |
+| `machine_spawn` | | User-enrolled machines and spawning on them: enroll and deenroll, `POST /sessions/spawn`, the spawn directory history, hook registration (`/sessions/register`, `/sessions/{id}/deregister`), machine status, events, resources and harness pins, and machine administration (`/admin/machines/**`, `/admin/users/{id}/machines`). Off, the server only runs dispatched workers and keeps no host resource snapshots. |
 | `files` | `machine_spawn` | Reading files, listing directories and git info on a machine (`/machines/{id}/fs/*`, `/sessions/{id}/linked-file*`). |
 | `uploads` | `machine_spawn` | Attaching files to a session, the session attachment list, upload caps. |
 | `drafts` | `machine_spawn` | Unsent composer drafts and draft sessions (launch, discard, cancel). |
@@ -64,9 +67,11 @@ feature).
 | `federation` | | Links to other cctui servers (cctuiverse): management routes, the server-to-server wire and the outbox task. |
 | `device_login` | | Logging a device in by approving a code. |
 | `passkeys` | | Passkey enrollment and passkey login. |
-| `self_update` | | Server self-update, harness auto-update, update hooks, the release probe and changelog. |
+| `self_update` | | Server self-update, daemon self-update (`/manifest/daemon`, `/daemon/binary/{target}`), harness auto-update, update hooks, the release probe and changelog. |
 | `account_sharing` | | Account pools and sharing accounts or resources with other users. |
 | `observability` | | Langfuse cost views and the browser OTLP relay. |
+| `library` | | Saved prompts and the skill registry. |
+| `organising` | | Labels, bookmarks, pinned sessions and pinned messages. Off, a spawn or draft ignores the labels it carries and the label-intent sweep does not run. |
 
 Every feature gates at least one route, task or message. A new feature that
 gates nothing must be listed as announcement-only in the gate test in
