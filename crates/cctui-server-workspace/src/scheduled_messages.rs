@@ -94,15 +94,7 @@ pub fn seal(
     content: &str,
     key: impl FnOnce() -> Vec<u8>,
 ) -> Result<(String, Option<String>), &'static str> {
-    if !cctui_crypto::redact::has_user_spans(content) {
-        return Ok((content.to_owned(), None));
-    }
-    let key = key();
-    if key.is_empty() {
-        return Err(SEAL_NEEDS_KEY);
-    }
-    let masked = cctui_crypto::redact::mask_user_spans(content).into_owned();
-    Ok((masked, Some(crate::crypto::encrypt(content, &key))))
+    crate::routes::spawn::seal_redacted(content, key).map_err(|_| SEAL_NEEDS_KEY)
 }
 
 /// The text to deliver: the sealed original when there is one.
@@ -673,6 +665,71 @@ mod reply_gate_tests {
 
         assert_eq!(reply(&state, caller(owner, READ_ONLY), &live).await, Ok(()));
         assert!(replied(&mut rx), "typing into a live session is unchanged");
+    }
+
+    fn lazy_state(features: cctui_proto::features::FeatureSet) -> AppState {
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+        let mut state = AppState::for_test(pool);
+        state.config.features = features;
+        state
+    }
+
+    async fn send_at(state: &AppState, sid: &str, at: &str) -> crate::error::AppError {
+        let body = serde_json::json!({ "content": "later", "deliver_at": at });
+        let sent = crate::routes::sessions::send_message(
+            State(state.clone()),
+            Extension(caller(Uuid::new_v4(), DISPATCH)),
+            Path(sid.to_owned()),
+            Json(serde_json::from_value(body).unwrap()),
+        )
+        .await;
+        let Err(err) = sent else { panic!("a scheduled send must be refused here") };
+        err
+    }
+
+    #[tokio::test]
+    async fn a_scheduled_send_is_rejected_when_scheduling_is_off() {
+        use cctui_proto::features::{Feature, FeatureSet};
+        let state = lazy_state(FeatureSet::all().without(Feature::Scheduling));
+        let at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        let err = send_at(&state, "s1", &at).await;
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(err.message(), crate::routes::sessions::SCHEDULING_OFF);
+    }
+
+    #[tokio::test]
+    async fn a_scheduled_send_takes_the_queue_path_when_scheduling_is_on() {
+        let state = lazy_state(cctui_proto::features::FeatureSet::all());
+        let err = send_at(&state, "s1", "tomorrow").await;
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+        assert_ne!(err.message(), crate::routes::sessions::SCHEDULING_OFF);
+    }
+
+    #[tokio::test]
+    async fn with_scheduling_off_a_send_goes_out_now_and_queues_nothing() {
+        use cctui_proto::features::{Feature, FeatureSet};
+        let name = "with_scheduling_off_a_send_goes_out_now_and_queues_nothing";
+        let Some(mut state) = state(name).await else { return };
+        state.config.features = FeatureSet::all().without(Feature::Scheduling);
+        let pool = state.pool.clone();
+        let (owner, machine) = seed_owner(&pool, DISPATCH).await;
+        let mut rx = daemon(&state, machine);
+        let live = seed_session(&pool, owner, machine, "idle").await;
+
+        assert_eq!(reply(&state, caller(owner, DISPATCH), &live).await, Ok(()));
+        assert!(replied(&mut rx), "a plain send is dispatched immediately");
+
+        let at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        let err = send_at(&state, &live, &at).await;
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+        assert!(rx.try_recv().is_err(), "a rejected schedule is not sent now either");
+        let queued: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM session_message_queue WHERE session_id = $1")
+                .bind(&live)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(queued, 0);
     }
 
     #[tokio::test]
