@@ -1,4 +1,5 @@
 use cctui_proto::adapter::AdapterEvent;
+use cctui_proto::features::Feature;
 use cctui_proto::ws::DaemonFrameUp;
 use uuid::Uuid;
 
@@ -62,6 +63,7 @@ pub(super) async fn ingest_run(
     }
     let mut events = Vec::with_capacity(run.len());
     let mut rows = Vec::with_capacity(run.len());
+    let search = state.config.features.contains(Feature::TranscriptSearch);
     let mut searchable = Vec::with_capacity(run.len());
     for Ingest { adapter_id, mut event, mut row } in run.drain(..) {
         if crate::image_blobs::externalize(
@@ -77,10 +79,14 @@ pub(super) async fn ingest_run(
         if row.event_type == "message" {
             crate::keepalive::observe_message(state, &row.local_id, &mut row.payload).await;
         }
-        let bodies =
-            crate::search_index::chunk_event(&adapter_id, row.event_type, row.payload.clone());
-        row.chunked = !bodies.is_empty();
-        searchable.push((row.local_id.clone(), bodies));
+        if search {
+            let bodies =
+                crate::search_index::chunk_event(&adapter_id, row.event_type, row.payload.clone());
+            row.chunked = !bodies.is_empty();
+            searchable.push((row.local_id.clone(), bodies));
+        } else {
+            row.chunked = true;
+        }
         events.push((adapter_id, event));
         rows.push(row);
     }
@@ -172,7 +178,8 @@ pub(super) struct NewEvent {
     event_type: &'static str,
     payload: serde_json::Value,
     turn_id: Option<Uuid>,
-    /// Searched through its chunks, so it stores an empty `search_text`.
+    /// Stores an empty `search_text`: its chunks carry its text, or search is
+    /// off and the backfill chunks it once search is back on.
     chunked: bool,
 }
 

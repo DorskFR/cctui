@@ -69,7 +69,7 @@ feature).
 | `drafts` | `machine_spawn` | Unsent composer drafts and draft sessions (launch, discard). |
 | `profiles` | `machine_spawn` | Spawn profiles. |
 | `terminal` | `machine_spawn` | The live terminal view (`watch_terminal` WebSocket message). |
-| `transcript_search` | | Search across sessions and find-in-conversation, and the search backfill task. |
+| `transcript_search` | | Search across sessions and find-in-conversation, the search backfill task, chunking transcripts on ingest, and the `pg_trgm` and `btree_gin` schema step (see [Postgres requirements](#postgres-requirements)). |
 | `child_sessions` | | Sessions spawning sessions (`CctuiAgent`): the daemon's spawn, message, archive and completion routes, and the instance spawn limits. |
 | `context` | | Rules and memories: the context library, a session's context, the agent context tool. The launch-time context pull stays mounted. |
 | `plugins` | | Runtime plugins: install, settings, backend proxy, static files, boot init and the sync task. |
@@ -91,6 +91,28 @@ feature).
 Every feature gates at least one route, task or message. A new feature that
 gates nothing must be listed as announcement-only in the gate test in
 `crates/cctui-server-workspace/src/lib.rs`, with the reason here.
+
+## Postgres requirements
+
+| Mode | Extensions |
+|---|---|
+| `transcript_search` on (the default) | `pgcrypto`, `pg_trgm`, `btree_gin` |
+| `transcript_search` off | `pgcrypto` |
+
+The search objects (the two extensions and the trigram indexes on
+`search_chunks` and `stream_events`) live in their own schema stream,
+`workspace_search`, applied at boot only while `transcript_search` is on.
+
+- A fresh database with search off is created without them: the server
+  provisions it through the package streams, never the legacy migrations.
+- Switching search on later applies the step at the next boot, and the
+  backfill chunks the history ingested while it was off. The step builds both
+  trigram indexes inside the boot transaction, holding a `SHARE` lock that
+  blocks writes to `stream_events` and `search_chunks` until they are built.
+- A database that already has the search objects is left as it is: the step
+  creates only what is missing, and switching search off drops nothing.
+- With search off, ingest writes no chunks and stores an empty `search_text`,
+  the backfill does not run and the search routes answer 404.
 
 ## Classifying a route
 
