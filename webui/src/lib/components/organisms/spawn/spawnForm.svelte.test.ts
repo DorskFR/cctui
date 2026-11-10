@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { flushSync } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { drafts, LAST_SPAWN_NAME, SPAWN_SLOT, spawnSlotKey } from '$lib/drafts';
+import { drafts, LAST_SPAWN_LABELS, LAST_SPAWN_NAME, SPAWN_SLOT, spawnSlotKey } from '$lib/drafts';
 import { FOLLOWUP_RELATION } from '$lib/followup';
 import { attachmentStore } from '$lib/attachmentStore';
 import { SpawnForm, type SpawnFormOptions } from './spawnForm.svelte';
@@ -586,5 +586,39 @@ describe('SpawnForm with features off', () => {
 		await spawnOnMachine(sf);
 		expect(spawn).toHaveBeenCalledTimes(1);
 		expect(spawn.mock.calls[0][1]).toEqual([]);
+	});
+});
+
+describe('SpawnForm without organising', () => {
+	const organising = (on: boolean) =>
+		setCapabilitiesForTest({ features: on ? ['organising'] : [], switchable: ['organising'] });
+	afterEach(() => setCapabilitiesForTest(null));
+
+	it('launches with no label ids and keeps the remembered labels', async () => {
+		organising(false);
+		drafts.set(LAST_SPAWN_LABELS, 'kept');
+		spawn.mockResolvedValue({ command_id: 'c-1', session_id: null });
+		const sf = open({ prefill: { machine_id: 'm-uuid-1', working_dir: '/w', prompt: 'p', label_ids: 'l1' } });
+		expect(sf.canLabel).toBe(false);
+		expect(sf.labelIds).toEqual([]);
+		expect(sf.buildSpawnBody()).not.toHaveProperty('label_ids');
+		await spawnOnMachine(sf);
+		expect(spawn).toHaveBeenCalledTimes(1);
+		expect(spawn.mock.calls[0][0]).not.toHaveProperty('label_ids');
+		expect(drafts.get(LAST_SPAWN_LABELS)).toBe('kept');
+	});
+
+	it('saves a draft with no label ids', async () => {
+		organising(false);
+		spawn.mockResolvedValue({ command_id: 'draft-1', status: 'draft' });
+		const sf = open({ prefill: { machine_id: 'm-uuid-1', working_dir: '/w', prompt: 'p', label_ids: 'l1' } });
+		await saveDraft(sf);
+		expect(spawn.mock.calls[0][0]).not.toHaveProperty('label_ids');
+	});
+
+	it('carries the labels with organising on', () => {
+		organising(true);
+		const sf = open({ prefill: { machine_id: 'm-uuid-1', working_dir: '/w', label_ids: 'l1' } });
+		expect(sf.buildSpawnBody().label_ids).toEqual(['l1']);
 	});
 });

@@ -88,6 +88,7 @@ export class SpawnForm {
 	canAttach = $derived(hasFeature('uploads'));
 	canUseProfiles = $derived(this.canSpawnOnMachine && hasFeature('profiles'));
 	canUseContext = $derived(hasFeature('context'));
+	canLabel = $derived(hasFeature('organising'));
 
 	private readonly machines = useMachineResources(() => this.canSpawnOnMachine);
 	private readonly dispatchers = useDispatchers(() => true);
@@ -180,6 +181,10 @@ export class SpawnForm {
 	allPools = $derived(this.pools.data ?? []);
 	allUsage = $derived(this.usageQuery.data ?? []);
 	allLabels = $derived(this.labelsQuery.data?.labels ?? []);
+	/** The labels a launch carries: none once organising is off. */
+	get labelIds(): string[] {
+		return this.canLabel ? this.form.labels : [];
+	}
 
 	// The selected profile's kit (or its one-off adjustment) is written over
 	// the form at submit time: profile → one-off → explicit prompt / where.
@@ -418,13 +423,15 @@ export class SpawnForm {
 
 	buildSpawnBody(): SpawnRequest {
 		const f = this.effectiveForm;
-		return buildSpawnBody(
+		const body = buildSpawnBody(
 			{ ...f, context_items: [...new Set([...f.context_items, ...this.contextPins])] },
 			this.spawnProvider,
 			envMap(this.envRows),
 			this.followupParent,
 			this.selectedProfileId
 		);
+		if (!this.canLabel) delete body.label_ids;
+		return body;
 	}
 	draftBody(): SpawnRequest {
 		const body = draftBody(this.buildSpawnBody(), this.envRows, this.uploadFiles);

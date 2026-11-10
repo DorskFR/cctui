@@ -119,7 +119,9 @@
 	</Icon>
 {/snippet}
 {#snippet foldControls(menu: boolean)}
-	<LabelFilter {menu} {labels} bind:selected={labelFilter} onUpdate={onUpdateLabel} onDelete={onDeleteLabel} />
+	{#if hasFeature('organising')}
+		<LabelFilter {menu} {labels} bind:selected={labelFilter} onUpdate={onUpdateLabel} onDelete={onDeleteLabel} />
+	{/if}
 	<ViewPicker {menu} {tiles} bind:view />
 	<!-- Stays mounted (disabled) while searching: unmounting it re-wraps the
 	     flex bar mid-type and makes the search field jump. -->

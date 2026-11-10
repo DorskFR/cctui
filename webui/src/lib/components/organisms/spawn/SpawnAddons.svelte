@@ -15,6 +15,7 @@
 		envRows = $bindable(),
 		att,
 		allLabels,
+		labelable,
 		envInvalid,
 		attachments,
 		machineId,
@@ -24,6 +25,7 @@
 		envRows: EnvRow[];
 		att: PromptAttachments;
 		allLabels: Label[];
+		labelable: boolean;
 		envInvalid: boolean;
 		attachments: boolean;
 		/** The target machine: a label created here joins its owner's labels. */
@@ -60,39 +62,41 @@
 	<AutoGrid min="8rem" gap="var(--sp-2)" maxCols={3} align="stretch">
 		<!-- The panel renders in the browser top layer, so it is neither clipped by
 		     the Spawn Modal's <dialog> nor by its scrolling body. -->
-		<Popover
-			label={m.spawn_labels_aria()}
-			placement="bottom-start"
-			role="menu"
-			haspopup="menu"
-			block
-			control
-			style="gap: var(--sp-2)"
-			panelStyle="max-height:calc(100dvh - 1rem);overflow-y:auto;overflow-x:hidden"
-			onopen={() => panel?.focusSearch()}
-		>
-			{#snippet trigger()}
-				<Icon name="tag" />{m.spawn_add_label()}
-			{/snippet}
-			<LabelMenu
-				bind:this={panel}
-				labels={allLabels}
-				selectedIds={attachedLabelIds}
-				cap={5}
-				autofocus
-				onToggle={toggleLabel}
-				onCreate={createAndAttach}
-				onUpdate={(labelId, patch) => labelActions.updateLabel(labelId, patch)}
-				onDelete={(labelId) => labelActions.deleteLabel(labelId)}
-			/>
-		</Popover>
+		{#if labelable}
+			<Popover
+				label={m.spawn_labels_aria()}
+				placement="bottom-start"
+				role="menu"
+				haspopup="menu"
+				block
+				control
+				style="gap: var(--sp-2)"
+				panelStyle="max-height:calc(100dvh - 1rem);overflow-y:auto;overflow-x:hidden"
+				onopen={() => panel?.focusSearch()}
+			>
+				{#snippet trigger()}
+					<Icon name="tag" />{m.spawn_add_label()}
+				{/snippet}
+				<LabelMenu
+					bind:this={panel}
+					labels={allLabels}
+					selectedIds={attachedLabelIds}
+					cap={5}
+					autofocus
+					onToggle={toggleLabel}
+					onCreate={createAndAttach}
+					onUpdate={(labelId, patch) => labelActions.updateLabel(labelId, patch)}
+					onDelete={(labelId) => labelActions.deleteLabel(labelId)}
+				/>
+			</Popover>
+		{/if}
 		{#if attachments}
 			<FileButton label={m.spawn_add_files()} icon="file-text" multiple onfiles={att.add} />
 		{/if}
 		<Button block onclick={addEnvRow}><Icon name="plus" />{m.spawn_add_env_vars()}</Button>
 	</AutoGrid>
 
-	{#if selectedLabels.length}
+	{#if labelable && selectedLabels.length}
 		<div class="addon-labels">
 			{#each selectedLabels as l (l.id)}
 				<Badge

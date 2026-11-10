@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import SessionControls from './SessionControls.svelte';
 import { buildSessionSearchSchema } from '$lib/searchSchema';
 import { setCapabilitiesForTest } from '$lib/features.svelte';
+import type { Label } from '@bindings/Label';
 import type { Section } from '../../../routes/sessions/sessions.logic';
 
 let component: ReturnType<typeof mount> | undefined;
@@ -15,7 +16,7 @@ afterEach(() => {
 	setCapabilitiesForTest(null);
 });
 
-function render(rawQuery = '') {
+function render(rawQuery = '', labels: Label[] = []) {
 	const values = vi.fn(async () => [] as string[]);
 	component = mount(SessionControls, {
 		target: document.body,
@@ -23,7 +24,7 @@ function render(rawQuery = '') {
 			rawQuery,
 			searchSchema: buildSessionSearchSchema(values),
 			sections: new Set<Section>(),
-			labels: [],
+			labels,
 			labelFilter: new Set<string>(),
 			view: 'list',
 			colorBy: 'none',
@@ -54,5 +55,21 @@ describe('SessionControls search box', () => {
 		expect(document.querySelector('.fi__input')).toBeNull();
 		expect(document.querySelector('.scope-row')).toBeNull();
 		expect(values).not.toHaveBeenCalled();
+	});
+});
+
+describe('SessionControls label filter', () => {
+	const ops = { id: 'l1', name: 'ops', color: '#888888' } as Label;
+
+	it('is there with organising on', () => {
+		setCapabilitiesForTest({ features: ['organising'], switchable: ['organising'] });
+		render('', [ops]);
+		expect(document.querySelector('.label-filter')).not.toBeNull();
+	});
+
+	it('is gone without organising', () => {
+		setCapabilitiesForTest({ features: [], switchable: ['organising'] });
+		render('', [ops]);
+		expect(document.querySelector('.label-filter')).toBeNull();
 	});
 });

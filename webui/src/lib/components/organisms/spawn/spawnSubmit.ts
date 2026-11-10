@@ -126,7 +126,7 @@ export async function spawnOnMachine(sf: SpawnForm) {
 		}
 		body.prompt = stripInvite(sf.form.prompt.trim(), invite, JOIN_PROMPT);
 	}
-	const labelIds = [...sf.form.labels];
+	const labelIds = [...sf.labelIds];
 	const memoryCwd = normalizeDir(sf.form.working_dir.trim());
 	const memoryMachine = sf.form.machine_id;
 	const profile = sf.selectedProfile;
@@ -134,7 +134,7 @@ export async function spawnOnMachine(sf: SpawnForm) {
 	if (res.account) toasts.info(m.spawn_toast_bound_account({ account: res.account }));
 	drafts.set(LAST_MACHINE, sf.form.machine_id);
 	drafts.set(LAST_SPAWN_NAME, sf.form.name.trim());
-	drafts.set(LAST_SPAWN_LABELS, labelIds.join(','));
+	if (sf.canLabel) drafts.set(LAST_SPAWN_LABELS, labelIds.join(','));
 	// Saved on submit (not on confirmed success) so a slow spawn still
 	// records the operator's intent.
 	settings.rememberSpawn(machineMemoryKey(memoryMachine, memoryCwd), {
@@ -196,12 +196,12 @@ export async function dispatchToK8s(sf: SpawnForm) {
 	}
 	sf.pendingDispatchId ??= crypto.randomUUID();
 	const body = buildDispatchBody(sf.form, envMap(sf.envRows), sf.dispatchProvider, sf.pendingDispatchId);
-	const labelIds = [...sf.form.labels];
+	const labelIds = [...sf.labelIds];
 	const dispatchedId = sf.pendingDispatchId;
 	const res = await sf.actions.dispatch(body);
 	drafts.set(LAST_SPAWN_NAME, sf.form.name.trim());
 	settings.rememberSpawn(dispatchMemoryKey(sf.form.dispatcher, sf.form.repo), entryFromForm(sf.form));
-	drafts.set(LAST_SPAWN_LABELS, labelIds.join(','));
+	if (sf.canLabel) drafts.set(LAST_SPAWN_LABELS, labelIds.join(','));
 	void attachLabelsTo(sf.labelApi, dispatchedId, labelIds);
 	toasts.ok(m.spawn_toast_dispatched({ dispatcher: res.dispatcher, handle: res.handle }));
 	sf.pendingDispatchId = null;

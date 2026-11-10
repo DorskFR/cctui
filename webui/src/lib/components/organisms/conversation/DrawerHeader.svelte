@@ -121,6 +121,7 @@
 
 	// Label picker is interactive only when an attach handler is wired in.
 	const labelEditable = $derived(!!onAttachLabel);
+	const showLabels = $derived(hasFeature('organising'));
 
 	const plainTitle = $derived(nameOf(session) || session.working_dir);
 	const headTitle = $derived(headerTitleOf(session));
@@ -315,7 +316,7 @@
 				/>
 			{:else}
 				<Text weight="semibold" size="md" truncate>{headTitle}</Text>
-				{#if session.labels.length === 0 && labelEditable}
+				{#if showLabels && session.labels.length === 0 && labelEditable}
 					<!-- No labels yet: the tag picker rides inline right after the title
 					     text rather than claiming an empty full-width row. Once labels
 					     exist the strip moves to its own row below (see .hlabels). -->
@@ -407,7 +408,7 @@
 		</Menu>
 	</Toolbar>
 	</div>
-	{#if session.labels.length > 0 && !compact}
+	{#if showLabels && session.labels.length > 0 && !compact}
 		<!-- Labels get their own full-width row in the header's column stack, so the
 		     strip can spread edge-to-edge and wrap freely instead of being boxed
 		     into the title row's leftover width (under the action buttons). The

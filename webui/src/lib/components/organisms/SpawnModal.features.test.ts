@@ -61,7 +61,14 @@ vi.mock("$lib/queries", () => {
     useResolvedContext: () => q({ rules: [], memories: [] }),
     useProfiles: (enabled: () => boolean = () => true) => {
       calls.profilesEnabled.push(enabled());
-      return q(enabled() ? [] : undefined);
+      return {
+        get data() {
+          calls.profilesEnabled.push(enabled());
+          return enabled() ? [] : undefined;
+        },
+        isLoading: false,
+        isError: false,
+      };
     },
     useProfileActions: () => ({
       create: async () => ({ id: "p-1", name: "Default" }),
@@ -112,6 +119,7 @@ const ALL: Feature[] = [
   "voice",
   "context",
   "federation",
+  "organising",
 ];
 
 function only(off: Feature[]) {
@@ -154,6 +162,18 @@ const buttons = () => [...document.querySelectorAll("button")];
 const button = (label: string) =>
   buttons().find((b) => b.textContent?.trim().startsWith(label));
 const tabs = () => document.querySelector('[role="radiogroup"]');
+const labelPicker = () => document.querySelector('[aria-label="Labels"]');
+
+async function pickDispatchTab() {
+  const tab = [
+    ...document.querySelectorAll<HTMLButtonElement>(
+      '[role="radiogroup"] button[role="radio"]',
+    ),
+  ].find((b) => b.textContent?.trim().startsWith("Dispatch"));
+  if (!tab) throw new Error("dispatch tab not found");
+  tab.click();
+  await new Promise((r) => setTimeout(r, 60));
+}
 
 describe("SpawnModal with machine_spawn off", () => {
   it("is the dispatch form alone, with no tab strip", async () => {
@@ -248,5 +268,45 @@ describe("SpawnModal machine tab with a feature off", () => {
     await open();
     await new Promise((r) => setTimeout(r, 400));
     expect(calls.gitInfo).toEqual([]);
+  });
+});
+
+describe("SpawnModal without organising", () => {
+  it("offers no label picker", async () => {
+    only(["organising"]);
+    await open();
+    expect(labelPicker()).toBeNull();
+  });
+
+  it("offers no label picker on the dispatch tab either", async () => {
+    only(["organising"]);
+    await open();
+    await pickDispatchTab();
+    expect(document.querySelector("#sp-dispatcher")).toBeTruthy();
+    expect(labelPicker()).toBeNull();
+  });
+
+  it("keeps the label picker with organising on", async () => {
+    only([]);
+    await open();
+    expect(labelPicker()).toBeTruthy();
+  });
+});
+
+describe("SpawnModal dispatch tab without profiles", () => {
+  it("asks for no profile after switching to dispatch", async () => {
+    only(["profiles"]);
+    await open();
+    await pickDispatchTab();
+    expect(document.querySelector("#sp-dispatcher")).toBeTruthy();
+    expect(calls.profilesEnabled.length).toBeGreaterThan(0);
+    expect(calls.profilesEnabled.every((e) => e === false)).toBe(true);
+  });
+
+  it("asks for profiles on the dispatch tab with profiles on", async () => {
+    only([]);
+    await open();
+    await pickDispatchTab();
+    expect(calls.profilesEnabled).toContain(true);
   });
 });

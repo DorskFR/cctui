@@ -113,7 +113,7 @@
 	const me = useMe();
 	const myMachines = useMachines(
 		() => me.data?.user_id ?? '',
-		() => me.data?.role === 'admin' && !!me.data?.user_id
+		() => me.data?.role === 'admin' && !!me.data?.user_id && hasFeature('machine_spawn')
 	);
 	const owned = $derived(ownsSession(me.data, myMachines.data, session.machine_id));
 	const ownerMenu = useOwnerHideMenu(
@@ -147,6 +147,7 @@
 
 	// Header labels/star share the session list's label set and mutations so
 	// both stay in sync.
+	const organising = $derived(hasFeature('organising'));
 	const labelsQuery = useLabels();
 	const allLabels = $derived(labelsQuery.data?.labels ?? []);
 
@@ -501,11 +502,11 @@
 				oninterrupt={sa.interrupt}
 				onarchive={sa.archive}
 				onstoparchive={sa.stopAndArchive}
-				onTogglePin={togglePin}
+				onTogglePin={organising ? togglePin : undefined}
 				onAccountClick={() => (acctModalOpen = true)}
 				{allLabels}
 				onCreateLabel={(name, color) => actions.createLabel(name, color, { session_id: id })}
-				onAttachLabel={actions.attachLabel}
+				onAttachLabel={organising ? actions.attachLabel : undefined}
 				onDetachLabel={actions.detachLabel}
 				onUpdateLabel={actions.updateLabel}
 				onDeleteLabel={actions.deleteLabel}
@@ -524,8 +525,8 @@
 					plugins={plugins.buttons}
 					pins={pins.pins}
 					{lines}
-					onjumpseq={(seq) => void pins.ensureSeqVisible(seq)}
-					onunpin={pins.unpinSeq}
+					onjumpseq={organising ? (seq) => void pins.ensureSeqVisible(seq) : undefined}
+					onunpin={organising ? pins.unpinSeq : undefined}
 					sessionId={session.id}
 					contextAttachable={!archived && owned}
 				/>
@@ -565,11 +566,11 @@
 				selected={forkSelect.selected}
 				ontoggleselect={forkSelect.toggle}
 				pinnedSeqs={pins.pinnedSeqs}
-				onpin={pins.toggleLine}
+				onpin={organising ? pins.toggleLine : undefined}
 				bind:jumper={pins.renderWindow}
 				{focusTs}
-				onbookmark={bookmarks.open}
-				isBookmarked={bookmarks.isBookmarked}
+				onbookmark={organising ? bookmarks.open : undefined}
+				isBookmarked={organising ? bookmarks.isBookmarked : undefined}
 				pluginActionsFor={(ln) => plugins.actionsFor(ln)}
 				onpluginaction={(a) => plugins.openWith(a.pluginId, a.params)}
 				onquote={quoteLine}
@@ -578,7 +579,7 @@
 			/>
 
 			<ActivityBanner {stream} {archived} />
-			<AutoArchiveNotice {session} onpin={() => togglePin(session)} />
+			<AutoArchiveNotice {session} onpin={organising ? () => togglePin(session) : undefined} />
 
 			{#if liveVoice.active}
 				<LiveVoiceBar

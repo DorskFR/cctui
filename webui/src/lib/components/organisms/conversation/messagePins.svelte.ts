@@ -1,5 +1,6 @@
 import type { AgentEvent } from "@bindings/AgentEvent";
 import { useMessagePinActions, useMessagePins } from "$lib/queries";
+import { hasFeature } from "$lib/features.svelte";
 import { createSeqJumper, type RenderWindow } from "./jump";
 import type { ScrollController } from "./scroll.svelte";
 import type { Line } from "./types";
@@ -23,7 +24,10 @@ export class MessagePins {
 
   constructor(o: MessagePinsOpts) {
     this.#o = o;
-    this.#query = useMessagePins(() => o.id());
+    this.#query = useMessagePins(
+      () => o.id(),
+      () => hasFeature("organising"),
+    );
     this.ensureSeqVisible = createSeqJumper({
       hasSeq: (seq) => o.events().some((e) => e.seq === seq),
       isRendered: (seq) => this.renderWindow?.isRendered(seq) ?? false,
@@ -36,11 +40,12 @@ export class MessagePins {
   }
 
   unpinSeq = (seq: number): void => {
+    if (!hasFeature("organising")) return;
     void this.actions.unpin(this.#o.id(), seq);
   };
 
   toggleLine = (ln: Line): void => {
-    if (ln.seq === undefined || ln.pending || ln.failed) return;
+    if (ln.seq === undefined || ln.pending || ln.failed || !hasFeature("organising")) return;
     void (this.pinnedSeqs.has(ln.seq)
       ? this.actions.unpin(this.#o.id(), ln.seq)
       : this.actions.pin(this.#o.id(), ln.seq, ln.messageId ?? null));

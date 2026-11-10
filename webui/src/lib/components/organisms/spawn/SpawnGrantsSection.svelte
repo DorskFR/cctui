@@ -13,6 +13,7 @@
 	bind:envRows={sf.envRows}
 	att={sf.att}
 	allLabels={sf.allLabels}
+	labelable={sf.canLabel}
 	envInvalid={sf.badEnvKeys.length > 0}
 	attachments={sf.target === 'machine' && sf.canAttach}
 	machineId={sf.target === 'machine' ? sf.form.machine_id : undefined}
@@ -24,7 +25,7 @@
 		bind:pins={sf.contextPins}
 		machineId={sf.form.machine_id}
 		workingDir={sf.form.working_dir}
-		labels={sf.form.labels}
+		labels={sf.labelIds}
 		adapter={sf.effectiveForm.adapter_id}
 		pinnedIds={sf.profileSpec?.context_items ?? []}
 	/>

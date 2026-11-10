@@ -364,6 +364,7 @@ export class SessionsPage {
   #split = $derived.by(() => splitQuery(this.query, this.searchSchema));
   /** Transcript search is a server feature; without it there is no query to send. */
   searchable = $derived(hasFeature("transcript_search"));
+  organising = $derived(hasFeature("organising"));
   serverQuery = $derived(this.searchable ? this.#split.serverQuery : "");
   #clientFilters = $derived(this.#split.clientFilters);
   searching = $derived(this.serverQuery.length > 0);
@@ -461,6 +462,7 @@ export class SessionsPage {
     ),
   );
   matchesLabelFilter = (s: SessionListItem): boolean =>
+    !this.organising ||
     this.labelFilter.size === 0 ||
     s.labels.some(
       (l) =>
@@ -669,6 +671,7 @@ export class SessionsPage {
   // Pinning floats a session to the top group and exempts it from auto-archive;
   // the list refetches so the move is immediate.
   togglePin = async (s: SessionListItem) => {
+    if (!this.organising) return;
     try {
       if (s.pinned) await this.#d.actions.unpin(s.id);
       else await this.#d.actions.pin(s.id);
@@ -749,6 +752,7 @@ export class SessionsPage {
     const slot = this.#d.spawnSlot.read(key);
     const body = slot && spawnRequestFromSlot(slot);
     if (!body) throw new Error(m.spawn_draft_incomplete());
+    if (!this.organising) delete body.label_ids;
     if (slot.draftId) {
       await this.#d.actions.updateDraft(slot.draftId, body);
       return;
