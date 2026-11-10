@@ -832,9 +832,18 @@ fn handle_request(
             let session_id = session_id.to_owned();
             let sock = sock.to_owned();
             let outbox = outbox.clone();
+            let reattach =
+                Reattach { window: REATTACH_WINDOW, peers: offered.contains(PEERS_TOOL_NAME) };
             std::thread::spawn(move || {
-                let (text, is_error) =
-                    call_daemon(&session_id, &sock, kind, &args, token.as_ref(), &outbox);
+                let (text, is_error) = call_daemon_with(
+                    &session_id,
+                    &sock,
+                    kind,
+                    &args,
+                    token.as_ref(),
+                    &outbox,
+                    reattach,
+                );
                 outbox.send(&tool_result(id.as_ref(), &text, is_error));
             });
             None
@@ -844,9 +853,8 @@ fn handle_request(
     }
 }
 
-/// Send the tool call to the daemon, forwarding interim progress frames, and
-/// block on the final result line. Every failure returns text: the model must
-/// see an error, never a hang.
+/// [`call_daemon_with`] on a relay that offers every tool.
+#[cfg(test)]
 fn call_daemon(
     session_id: &str,
     sock: &Path,
@@ -855,11 +863,22 @@ fn call_daemon(
     token: Option<&Value>,
     outbox: &Outbox,
 ) -> (String, bool) {
-    call_daemon_with(session_id, sock, kind, args, token, outbox, REATTACH_WINDOW)
+    let reattach = Reattach { window: REATTACH_WINDOW, peers: true };
+    call_daemon_with(session_id, sock, kind, args, token, outbox, reattach)
 }
 
-/// [`call_daemon`], reattaching a `CctuiAgent` follow the daemon dropped (a
-/// restart, a self-update re-exec) for up to `reattach_window` per drop.
+/// How a dropped `CctuiAgent` follow recovers: how long one reattach keeps
+/// trying, and whether `CctuiPeers` is offered to find the child's id.
+#[derive(Debug, Clone, Copy)]
+struct Reattach {
+    window: Duration,
+    peers: bool,
+}
+
+/// Send the tool call to the daemon, forwarding interim progress frames, and
+/// block on the final result line, reattaching a `CctuiAgent` follow the
+/// daemon dropped (a restart, a self-update re-exec). Every failure returns
+/// text: the model must see an error, never a hang.
 fn call_daemon_with(
     session_id: &str,
     sock: &Path,
@@ -867,7 +886,7 @@ fn call_daemon_with(
     args: &Value,
     token: Option<&Value>,
     outbox: &Outbox,
-    reattach_window: Duration,
+    reattach: Reattach,
 ) -> (String, bool) {
     let tool = tool_of_kind(kind);
     let timeout = match kind {
@@ -910,15 +929,15 @@ fn call_daemon_with(
             Exchange::Done(text, is_error) => return (text, is_error),
             Exchange::Malformed => return (format!("{tool} failed: malformed daemon reply"), true),
             Exchange::Lost { closed: false } => {
-                return (dropped_error(tool, kind, child.as_deref()), true);
+                return (dropped_error(tool, kind, child.as_deref(), reattach.peers), true);
             }
             Exchange::Lost { closed: true } => {}
         }
         let Some(target) = child.clone().filter(|_| reattaches < MAX_REATTACHES) else {
-            return (dropped_error(tool, kind, child.as_deref()), true);
+            return (dropped_error(tool, kind, child.as_deref(), reattach.peers), true);
         };
-        let Some(next) = reconnect(sock, reattach_window) else {
-            return (dropped_error(tool, kind, Some(&target)), true);
+        let Some(next) = reconnect(sock, reattach.window) else {
+            return (dropped_error(tool, kind, Some(&target), reattach.peers), true);
         };
         reattaches += 1;
         stream = next;
@@ -1017,19 +1036,27 @@ fn reconnect(sock: &Path, window: Duration) -> Option<UnixStream> {
 }
 
 /// What the model reads when a call ends without a result. A follow names how
-/// the child's answer still reaches it.
-fn dropped_error(tool: &str, kind: &str, child: Option<&str>) -> String {
+/// the child's answer still reaches it; `peers` is whether `CctuiPeers` is
+/// offered to look up a child whose id was never seen.
+fn dropped_error(tool: &str, kind: &str, child: Option<&str>, peers: bool) -> String {
     if kind != "spawn_agent" {
         return format!("{tool} failed: the daemon closed the connection without a result");
     }
     child.map_or_else(
         || {
+            let wait = if peers {
+                format!(
+                    " To wait for it here instead, find its id with {PEERS_TOOL_NAME} and call \
+                     {tool} with that session_id and no prompt."
+                )
+            } else {
+                String::new()
+            };
             format!(
                 "{tool} lost its connection to the cctui daemon (most likely a daemon restart or \
              self-update) before the child's session id was known. A child that was spawned keeps \
              running, and its final message is delivered to this session as a message when its \
-             turn ends. To wait for it here instead, find its id with CctuiPeers and call {tool} \
-             with that session_id and no prompt."
+             turn ends.{wait}"
             )
         },
         |child| {
@@ -1663,7 +1690,7 @@ mod tests {
             &json!({ "adapter": "codex", "prompt": "go", "model": "m", "timeout_secs": 30 }),
             None,
             &Outbox::new(),
-            Duration::from_secs(5),
+            Reattach { window: Duration::from_secs(5), peers: true },
         );
         let reattach = server.join().unwrap();
         assert!(!is_error, "{text}");
@@ -1698,7 +1725,7 @@ mod tests {
             &json!({ "session_id": "child-9", "prompt": "and the tests?", "timeout_secs": 30 }),
             None,
             &Outbox::new(),
-            Duration::from_millis(600),
+            Reattach { window: Duration::from_millis(600), peers: true },
         );
         server.join().unwrap();
         assert!(is_error);
@@ -1708,9 +1735,20 @@ mod tests {
     }
 
     #[test]
+    fn a_follow_lost_before_its_child_id_names_cctui_peers_only_when_offered() {
+        let with = dropped_error(TOOL_NAME, "spawn_agent", None, true);
+        assert!(with.contains("find its id with CctuiPeers and call CctuiAgent"), "{with}");
+        let without = dropped_error(TOOL_NAME, "spawn_agent", None, false);
+        assert!(!without.contains("CctuiPeers"), "{without}");
+        assert!(without.ends_with("when its turn ends."), "{without}");
+        let known = dropped_error(TOOL_NAME, "spawn_agent", Some("child-3"), false);
+        assert!(known.contains("session_id \"child-3\" and no prompt"), "{known}");
+    }
+
+    #[test]
     fn a_dropped_round_trip_tool_is_never_reattached() {
         assert_eq!(
-            dropped_error("CctuiUsage", "usage", None),
+            dropped_error("CctuiUsage", "usage", None, true),
             "CctuiUsage failed: the daemon closed the connection without a result"
         );
     }

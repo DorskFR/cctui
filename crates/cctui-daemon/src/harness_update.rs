@@ -99,16 +99,21 @@ pub fn in_worker_pod() -> bool {
         || set("KUBERNETES_SERVICE_HOST")
 }
 
-/// The policy this daemon acts on: env kill switch, then worker pod, then
-/// the server's (already machine-over-instance resolved) policy; off when
-/// nothing was received.
+/// The policy this daemon acts on: env kill switch, then worker pod, then a
+/// server running without `self_update` (which owns the policy), then the
+/// server's (already machine-over-instance resolved) policy; off when nothing
+/// was received.
 #[must_use]
 pub fn local_policy(
     server: Option<&HarnessUpdatePolicy>,
     kill_switch: bool,
     worker_pod: bool,
+    features: cctui_proto::features::FeatureSet,
 ) -> Option<HarnessUpdatePolicy> {
-    if kill_switch || worker_pod {
+    if kill_switch
+        || worker_pod
+        || !features.contains(cctui_proto::features::Feature::SelfUpdate)
+    {
         return None;
     }
     server.filter(|p| p.enabled).cloned()
@@ -419,7 +424,10 @@ pub fn spawn_loop(shutdown: CancellationToken) {
                 runner.refresh_all_versions().await;
             }
             let server = policy_rx.borrow_and_update().clone();
-            let Some(policy) = local_policy(server.as_ref(), kill_switch(), in_worker_pod()) else {
+            let features = crate::serverfeatures::current();
+            let Some(policy) =
+                local_policy(server.as_ref(), kill_switch(), in_worker_pod(), features)
+            else {
                 continue;
             };
             runner.tick(&policy).await;
@@ -502,19 +510,26 @@ Check permissions on /home/you/.local/share/claude
 
     #[test]
     fn policy_precedence() {
+        use cctui_proto::features::{Feature, FeatureSet};
+        let all = FeatureSet::all();
         let server = on(&["codex"]);
-        assert_eq!(local_policy(Some(&server), false, false), Some(server.clone()));
-        assert_eq!(local_policy(Some(&server), true, false), None, "env kill switch wins");
-        assert_eq!(local_policy(Some(&server), false, true), None, "worker pods never self-update");
-        assert_eq!(local_policy(None, false, false), None, "off when nothing was received");
+        assert_eq!(local_policy(Some(&server), false, false, all), Some(server.clone()));
+        assert_eq!(local_policy(Some(&server), true, false, all), None, "env kill switch wins");
+        assert_eq!(local_policy(Some(&server), false, true, all), None, "worker pods never self-update");
+        assert_eq!(local_policy(None, false, false, all), None, "off when nothing was received");
+        assert_eq!(
+            local_policy(Some(&server), false, false, all.without(Feature::SelfUpdate)),
+            None,
+            "a server without self_update drives no harness updates"
+        );
         let off = HarnessUpdatePolicy { enabled: false, ..server };
-        assert_eq!(local_policy(Some(&off), false, false), None);
+        assert_eq!(local_policy(Some(&off), false, false, all), None);
         let resolved = HarnessUpdatePolicy::resolve(
             Some(&on(&["codex"])),
             Some(&HarnessUpdatePolicy::default()),
         );
         assert_eq!(
-            local_policy(Some(&resolved), false, false),
+            local_policy(Some(&resolved), false, false, all),
             None,
             "machine override beats instance default"
         );

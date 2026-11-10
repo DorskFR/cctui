@@ -567,6 +567,13 @@ pub fn install_path() -> Option<PathBuf> {
     PATH.get_or_init(|| std::env::current_exe().ok()).clone()
 }
 
+/// Whether a cycle checks for an update: the manifest and binary routes are
+/// mounted only while the server runs with `self_update`.
+#[must_use]
+pub const fn checks_under(features: cctui_proto::features::FeatureSet) -> bool {
+    features.contains(cctui_proto::features::Feature::SelfUpdate)
+}
+
 /// Spawn the periodic auto-update loop. Cancellation-aware so the
 /// supervisor can wind it down cleanly. Applied updates trigger a
 /// re-exec via [`reexec`].
@@ -596,6 +603,10 @@ pub fn spawn_loop(
             tokio::select! {
                 () = shutdown.cancelled() => return,
                 _ = tick.tick() => {}
+            }
+            if !checks_under(crate::serverfeatures::current()) {
+                tracing::debug!("auto-update check skipped: the server runs without self_update");
+                continue;
             }
             match check_and_apply_with(
                 &client,
@@ -631,6 +642,17 @@ pub fn spawn_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_update_check_runs_only_while_self_update_is_on() {
+        use cctui_proto::features::{Feature, FeatureSet};
+        assert!(checks_under(FeatureSet::all()));
+        assert!(checks_under(crate::serverfeatures::from_off(&[])), "unannounced checks");
+        assert!(!checks_under(FeatureSet::all().without(Feature::SelfUpdate)));
+        let off = crate::serverfeatures::from_off(&["self_update".to_owned()]);
+        assert!(!checks_under(off), "announced off skips the cycle");
+        assert!(checks_under(crate::serverfeatures::from_off(&["rooms".to_owned()])));
+    }
 
     #[tokio::test(start_paused = true)]
     async fn the_reexec_waits_for_busy_turns_up_to_the_cap() {
