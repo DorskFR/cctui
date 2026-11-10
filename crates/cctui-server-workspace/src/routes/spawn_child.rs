@@ -139,8 +139,8 @@ async fn reserve_child(
 
 /// Children counting against the parent's spawn quota: every child except those
 /// that ended in failure or were archived. A child that emitted a terminal
-/// `session_ended` whose reason is anything but `Completed` (crashed, killed,
-/// adapter error) has freed its slot, so the parent can respawn a replacement.
+/// `session_ended` whose reason kind is anything but `completed` (crashed,
+/// killed, adapter error) has freed its slot, so the parent can respawn a replacement.
 /// A completed child that is not archived still counts: the parent can reattach
 /// to it by `session_id`.
 async fn live_child_count(exec: impl sqlx::PgExecutor<'_>, parent_id: &str) -> u32 {
@@ -152,7 +152,7 @@ async fn live_child_count(exec: impl sqlx::PgExecutor<'_>, parent_id: &str) -> u
          AND NOT EXISTS ( \
              SELECT 1 FROM stream_events e \
              WHERE e.session_id = s.id AND e.event_type = 'session_ended' \
-             AND e.payload->>'reason' <> 'Completed' \
+             AND e.payload->'reason'->>'kind' <> 'completed' \
          )",
     ))
     .bind(parent_id)
@@ -984,10 +984,10 @@ mod tests {
                 .expect("seed session_ended");
             }
         };
-        end(&completed, json!("Completed")).await;
-        end(&crashed, json!({ "Crashed": { "detail": "gateway rejected" } })).await;
-        end(&killed, json!("Killed")).await;
-        end(&archived_completed, json!("Completed")).await;
+        end(&completed, json!({ "kind": "completed" })).await;
+        end(&crashed, json!({ "kind": "crashed", "detail": "gateway rejected" })).await;
+        end(&killed, json!({ "kind": "killed" })).await;
+        end(&archived_completed, json!({ "kind": "completed" })).await;
         sqlx::query("UPDATE sessions SET status = 'archived' WHERE id = ANY($1)")
             .bind(vec![archived_running.clone(), archived_completed.clone()])
             .execute(&pool)

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 
+use cctui_proto::features::{Feature, FeatureFile, FeatureSet, Resolution};
 use cctui_secrets::{Secret, SecretRegistry};
 
 /// One external dispatcher registration, parsed from `CCTUI_HTTP_DISPATCHERS`
@@ -125,6 +126,8 @@ impl CctuiverseConfig {
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// Resolved from `CCTUI_FEATURES_FILE`; every feature when unset.
+    pub features: FeatureSet,
     /// Env seeds for the default `CctuiAgent` limits (`CCTUI_SPAWN_MAX_CHILDREN`,
     /// `CCTUI_SPAWN_MAX_DEPTH`, `CCTUI_SPAWN_MAX_TREE_BUDGET_USD`); `None` when
     /// unset. A value saved in Settings wins over these.
@@ -277,6 +280,61 @@ fn parse_allowed_origins(raw: Option<&str>, external_url: &str) -> Vec<String> {
     out
 }
 
+/// `CCTUI_SPAWN_MAX_CHILDREN`, `CCTUI_SPAWN_MAX_DEPTH` (whole numbers) and
+/// `CCTUI_SPAWN_MAX_TREE_BUDGET_USD`.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn spawn_limits(
+    set: &impl Fn(&str) -> Option<String>,
+    errors: &mut Vec<String>,
+) -> (Option<u32>, Option<u32>, Option<f64>) {
+    let mut num = |k: &str| -> Option<f64> {
+        set(k).and_then(|s| match s.trim().parse::<f64>() {
+            Ok(v) if v.is_finite() && v >= 0.0 => Some(v),
+            _ => {
+                errors.push(format!("{k} must be a non-negative number, got `{s}`"));
+                None
+            }
+        })
+    };
+    let children = num("CCTUI_SPAWN_MAX_CHILDREN");
+    let depth = num("CCTUI_SPAWN_MAX_DEPTH");
+    let budget = num("CCTUI_SPAWN_MAX_TREE_BUDGET_USD");
+    let mut whole = |k: &str, v: Option<f64>| {
+        if v.is_some_and(|v| v.fract() != 0.0 || v > f64::from(u32::MAX)) {
+            errors.push(format!("{k} must be a whole number"));
+        }
+        v.map(|v| v as u32)
+    };
+    let children = whole("CCTUI_SPAWN_MAX_CHILDREN", children);
+    let depth = whole("CCTUI_SPAWN_MAX_DEPTH", depth);
+    (children, depth, budget)
+}
+
+pub const FEATURES_FILE_ENV: &str = "CCTUI_FEATURES_FILE";
+
+/// Every feature on when no file is configured.
+fn load_features(path: Option<&str>) -> Result<FeatureSet, String> {
+    let Some(path) = path else { return Ok(FeatureSet::all()) };
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("{FEATURES_FILE_ENV}: cannot read `{path}`: {e}"))?;
+    let resolution =
+        parse_features(&text).map_err(|e| format!("{FEATURES_FILE_ENV} `{path}`: {e}"))?;
+    if !resolution.forced_off.is_empty() {
+        let forced: Vec<String> = resolution
+            .forced_off
+            .iter()
+            .map(|(feature, requires)| format!("{feature} (requires {requires})"))
+            .collect();
+        tracing::info!("features turned off because a requirement is off: {}", forced.join(", "));
+    }
+    Ok(resolution.set)
+}
+
+pub fn parse_features(text: &str) -> Result<Resolution, String> {
+    let file: FeatureFile = toml::from_str(text).map_err(|e| e.to_string())?;
+    file.resolve().map_err(|e| e.to_string())
+}
+
 impl Config {
     /// Whether `origin` (an `Origin` header value) is in the CORS/WS allowlist.
     #[must_use]
@@ -356,26 +414,12 @@ impl Config {
                 })
             })
             .unwrap_or_default();
-        let mut num = |k: &str| -> Option<f64> {
-            set(k).and_then(|s| match s.trim().parse::<f64>() {
-                Ok(v) if v.is_finite() && v >= 0.0 => Some(v),
-                _ => {
-                    errors.push(format!("{k} must be a non-negative number, got `{s}`"));
-                    None
-                }
-            })
-        };
-        let spawn_max_children = num("CCTUI_SPAWN_MAX_CHILDREN");
-        let spawn_max_depth = num("CCTUI_SPAWN_MAX_DEPTH");
-        let spawn_max_tree_budget_usd = num("CCTUI_SPAWN_MAX_TREE_BUDGET_USD");
-        for (k, v) in [
-            ("CCTUI_SPAWN_MAX_CHILDREN", spawn_max_children),
-            ("CCTUI_SPAWN_MAX_DEPTH", spawn_max_depth),
-        ] {
-            if v.is_some_and(|v| v.fract() != 0.0 || v > f64::from(u32::MAX)) {
-                errors.push(format!("{k} must be a whole number"));
-            }
-        }
+        let (spawn_max_children, spawn_max_depth, spawn_max_tree_budget_usd) =
+            spawn_limits(&set, &mut errors);
+        let features = load_features(set(FEATURES_FILE_ENV).as_deref()).unwrap_or_else(|e| {
+            errors.push(e);
+            FeatureSet::all()
+        });
         if !errors.is_empty() {
             anyhow::bail!("invalid configuration:\n  {}", errors.join("\n  "));
         }
@@ -389,10 +433,8 @@ impl Config {
             Some(pattern) => Some(crate::preview::PreviewHost::parse(&pattern)?),
             None => None,
         };
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let (spawn_max_children, spawn_max_depth) =
-            (spawn_max_children.map(|v| v as u32), spawn_max_depth.map(|v| v as u32));
         Ok(Self {
+            features,
             spawn_max_children,
             spawn_max_depth,
             spawn_max_tree_budget_usd,
@@ -431,7 +473,22 @@ impl Config {
             emoji_model: set("CCTUI_EMOJI_MODEL"),
             emoji_token: token("CCTUI_EMOJI_TOKEN"),
             claude_litellm_models,
-        })
+        }
+        .gated())
+    }
+
+    /// A feature that is off wins over the env switch of the same integration.
+    fn gated(mut self) -> Self {
+        if !self.features.contains(Feature::Previews) {
+            self.preview_host = None;
+        }
+        if !self.features.contains(Feature::Plugins) {
+            self.plugins_dir = None;
+        }
+        if !self.features.contains(Feature::Federation) {
+            self.cctuiverse.enabled = false;
+        }
+        self
     }
 
     pub fn bind_addr(&self) -> String {
@@ -499,6 +556,7 @@ impl Config {
     #[must_use]
     pub fn for_test(allowed_origins: Vec<String>) -> Self {
         Self {
+            features: FeatureSet::all(),
             spawn_max_children: None,
             spawn_max_depth: None,
             spawn_max_tree_budget_usd: None,
@@ -670,6 +728,7 @@ mod tests {
     #[test]
     fn claude_litellm_gating() {
         let base = Config {
+            features: FeatureSet::all(),
             spawn_max_children: None,
             spawn_max_depth: None,
             spawn_max_tree_budget_usd: None,
@@ -968,5 +1027,83 @@ mod tests {
         let msg = Config::from_lookup(bad).unwrap_err().to_string();
         assert!(msg.contains("CCTUI_SPAWN_MAX_CHILDREN"), "{msg}");
         assert!(msg.contains("CCTUI_SPAWN_MAX_TREE_BUDGET_USD"), "{msg}");
+    }
+
+    fn features_file(name: &str, text: &str) -> String {
+        let path =
+            std::env::temp_dir().join(format!("cctui-features-{}-{name}.toml", std::process::id()));
+        std::fs::write(&path, text).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    fn with_features(path: Option<String>, extra: &[(&str, &str)]) -> anyhow::Result<Config> {
+        let extra: Vec<(String, String)> =
+            extra.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
+        Config::from_lookup(move |k: &str| match k {
+            "DATABASE_URL" => Some("postgres://x".to_owned()),
+            FEATURES_FILE_ENV => path.clone(),
+            _ => extra.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()),
+        })
+    }
+
+    #[test]
+    fn no_features_file_turns_every_feature_on() {
+        assert_eq!(with_features(None, &[]).unwrap().features, FeatureSet::all());
+        assert_eq!(load_features(None).unwrap(), FeatureSet::all());
+    }
+
+    #[test]
+    fn an_unreadable_features_file_refuses_to_start_naming_it() {
+        let msg = with_features(Some("/nonexistent/cctui-features.toml".into()), &[])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains(FEATURES_FILE_ENV) && msg.contains("/nonexistent/cctui-features.toml"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn an_invalid_features_file_refuses_to_start() {
+        for (name, text, needle) in [
+            ("unknown", "[features]\nteleport = false\n", "teleport"),
+            ("type", "[features]\nvoice = 0\n", "invalid type"),
+            ("unmet", "[features]\nmachine_spawn = false\nfiles = true\n", "machine_spawn"),
+        ] {
+            let path = features_file(name, text);
+            let msg = with_features(Some(path.clone()), &[]).unwrap_err().to_string();
+            let _ = std::fs::remove_file(&path);
+            assert!(msg.contains(needle), "{name}: {msg}");
+        }
+    }
+
+    #[test]
+    fn an_off_feature_wins_over_its_env_switch() {
+        let path = features_file(
+            "gated",
+            "[features]\npreviews = false\nplugins = false\nfederation = false\n",
+        );
+        let env = [
+            ("CCTUI_PREVIEW_HOST", "cctui-pv-{id}.example.test"),
+            ("CCTUI_PLUGINS_DIR", "/plugins"),
+            ("CCTUI_CCTUIVERSE", "1"),
+        ];
+        let off = with_features(Some(path.clone()), &env).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(off.preview_host.is_none());
+        assert!(off.plugins_dir.is_none());
+        assert!(!off.cctuiverse.enabled);
+        assert!(!off.features.contains(Feature::Previews));
+
+        let on = with_features(None, &env).unwrap();
+        assert!(on.preview_host.is_some());
+        assert!(on.plugins_dir.is_some());
+        assert!(on.cctuiverse.enabled);
+    }
+
+    #[test]
+    fn the_shipped_core_file_loads() {
+        let set = parse_features(include_str!("../../../deploy/features/core.toml")).unwrap().set;
+        assert_eq!(set, FeatureSet::none());
     }
 }
