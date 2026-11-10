@@ -783,9 +783,7 @@ mod tests {
             whip_phrases,
             spawn_capability: spawn_capability_for(state, session_id).await,
             plugins,
-            context: launch_context(state, user_id, machine_id, session_id, true)
-                .await
-                .unwrap(),
+            context: launch_context(state, user_id, machine_id, session_id, true).await.unwrap(),
             hook_policy: Some(
                 cctui_server_core::hook_policy::for_session(&state.pool, session_id).await.unwrap(),
             ),
@@ -986,8 +984,11 @@ mod tests {
 
     #[tokio::test]
     async fn with_context_off_both_launch_pulls_are_empty_and_ownership_still_holds() {
-        use crate::routes::context::ownership::{self, test_support::assert_no_content};
-        use crate::routes::context::{ContextItemSpec, SpawnScope, StoredScope, clean_spec, insert};
+        use crate::routes::context::ownership::test_support::assert_no_content;
+        use crate::routes::context::ownership::{self};
+        use crate::routes::context::{
+            ContextItemSpec, SpawnScope, StoredScope, clean_spec, insert,
+        };
         use cctui_proto::features::{Feature, FeatureSet};
         let Some(url) = crate::routes::gateway::test_db_url("launch_context_off") else {
             return;

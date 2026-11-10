@@ -60,8 +60,7 @@ impl DispatchContext for AppState {
             if context_record_is_callers(&self.pool, session, uid).await {
                 let scope = dispatch_context_scope(uid, &req.payload);
                 if self.config.features.contains(cctui_proto::features::Feature::Context) {
-                    crate::routes::context::remember_intent(&self.pool, session, &[], &scope)
-                        .await;
+                    crate::routes::context::remember_intent(&self.pool, session, &[], &scope).await;
                 } else {
                     crate::routes::context::ownership::record(&self.pool, session, &scope).await;
                 }
@@ -458,7 +457,8 @@ mod tests {
 
     #[tokio::test]
     async fn with_context_off_a_dispatch_records_only_its_owner() {
-        use crate::routes::context::ownership::{self, test_support::assert_no_content};
+        use crate::routes::context::ownership::test_support::assert_no_content;
+        use crate::routes::context::ownership::{self};
         use cctui_proto::features::{Feature, FeatureSet};
         use cctui_server_core::dispatch::DispatchContext as _;
         let Some(url) = crate::routes::gateway::test_db_url("dispatch_context_off") else {

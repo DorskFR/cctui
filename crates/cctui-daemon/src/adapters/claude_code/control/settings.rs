@@ -2535,8 +2535,8 @@ mod tests {
 
     #[test]
     fn without_child_sessions_the_context_describes_only_the_core_tools() {
-        let features =
-            cctui_proto::features::FeatureSet::all().without(cctui_proto::features::Feature::ChildSessions);
+        let features = cctui_proto::features::FeatureSet::all()
+            .without(cctui_proto::features::Feature::ChildSessions);
         let text =
             agent_tool_context(&cctui_proto::api::SpawnCapability::machine_default(), features);
         assert!(text.starts_with("CctuiUsage: `mcp__cctui__CctuiUsage`"), "{text}");

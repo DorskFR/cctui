@@ -821,7 +821,8 @@ fn handle_request(
                 return Some(tool_result(id, &format!("unknown tool {name:?}"), true));
             };
             if !offered.contains(name) {
-                let text = format!("{name} is not offered: this server has its feature switched off");
+                let text =
+                    format!("{name} is not offered: this server has its feature switched off");
                 return Some(tool_result(id, &text, true));
             }
             let args =
@@ -1820,8 +1821,8 @@ mod tests {
 
     fn listed(offered: &Offered) -> Vec<String> {
         let req = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
-        let resp = handle_request("s1", Path::new("/tmp/x.sock"), offered, &req, &Outbox::new())
-            .unwrap();
+        let resp =
+            handle_request("s1", Path::new("/tmp/x.sock"), offered, &req, &Outbox::new()).unwrap();
         resp["result"]["tools"]
             .as_array()
             .unwrap()

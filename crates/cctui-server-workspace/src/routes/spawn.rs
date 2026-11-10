@@ -672,8 +672,13 @@ async fn save_draft(
             })?;
     }
     if state.config.features.contains(cctui_proto::features::Feature::Organising) {
-        crate::spawn_labels::sync_draft(&state.pool, &draft_key, &req.label_ids, ctx.owner_filter())
-            .await;
+        crate::spawn_labels::sync_draft(
+            &state.pool,
+            &draft_key,
+            &req.label_ids,
+            ctx.owner_filter(),
+        )
+        .await;
     }
     tracing::info!(machine = %req.machine_id, draft = %draft_id, files = uploads.len(), "draft session saved");
     Ok((

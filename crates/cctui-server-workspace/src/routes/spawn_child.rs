@@ -1682,7 +1682,8 @@ mod tests {
 
     #[tokio::test]
     async fn with_context_off_a_child_spawns_with_only_its_ownership_record() {
-        use crate::routes::context::ownership::{self, test_support::assert_no_content};
+        use crate::routes::context::ownership::test_support::assert_no_content;
+        use crate::routes::context::ownership::{self};
         use crate::routes::context::{SpawnScope, StoredScope};
         use cctui_proto::features::{Feature, FeatureSet};
         let name = "with_context_off_a_child_spawns_with_only_its_ownership_record";
@@ -1695,11 +1696,8 @@ mod tests {
             .await
             .expect("connect test db");
         let (uid, machine, parent) = seed_parent_on_machine(&pool).await;
-        let parent_scope = StoredScope {
-            user_id: uid,
-            coords: SpawnScope::default(),
-            dispatched: true,
-        };
+        let parent_scope =
+            StoredScope { user_id: uid, coords: SpawnScope::default(), dispatched: true };
         ownership::record(&pool, &parent, &parent_scope).await;
         let memory = seed_pinned_memory(&pool, uid).await;
 
@@ -1709,10 +1707,14 @@ mod tests {
         state.bus.register_daemon(machine, Uuid::new_v4(), tx);
         state.core.spawn_capabilities.insert(parent.clone(), cap(&["claude-code"], None, Some(5)));
 
-        let spawned =
-            cctui_server_core::child_exec::spawn_child(&state, uid, &parent, &req("claude-code", None))
-                .await
-                .expect("a child spawns with context off");
+        let spawned = cctui_server_core::child_exec::spawn_child(
+            &state,
+            uid,
+            &parent,
+            &req("claude-code", None),
+        )
+        .await
+        .expect("a child spawns with context off");
         assert!(rx.recv().await.is_some(), "the spawn reached the daemon");
         let child = spawned.session_id;
         assert_eq!(ownership::owner_of(&pool, &child).await.expect("lookup"), Some(uid));
