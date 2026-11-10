@@ -62,14 +62,15 @@ async fn core_journey() {
         let database: String =
             sqlx::query_scalar("SELECT current_database()").fetch_one(&pool).await.unwrap();
         let server = Server::start(&with_database(&url, &database)).await;
-        journey(&server).await;
+        journey(&server, &pool).await;
         server.stop().await;
     })
     .await;
 }
 
-async fn journey(server: &Server) {
+async fn journey(server: &Server, pool: &sqlx::PgPool) {
     the_server_reports_the_core_feature_set(server).await;
+    the_schema_has_no_search_objects(pool).await;
     let admin = token_login_sets_the_cookie(server, ADMIN_TOKEN).await;
     let operator = create_a_user_and_a_key(server, &admin).await;
     let (account, provider) = add_an_account(server, &operator).await;
@@ -79,6 +80,7 @@ async fn journey(server: &Server) {
     let mut worker = connect_the_worker(server, &machine_key).await;
     stream_a_transcript(&mut worker, &session).await;
     the_session_list_and_conversation_return_it(server, &operator, &session).await;
+    its_events_carry_no_search_text(pool, &session).await;
     kill_the_session(server, &operator, &mut worker, &session).await;
     logout_clears_the_cookie(server, &operator).await;
     every_route_outside_core_answers_404_or_405(server).await;
@@ -503,6 +505,37 @@ async fn the_session_list_and_conversation_return_it(
             .then_some(())
     })
     .await;
+}
+
+async fn the_schema_has_no_search_objects(pool: &sqlx::PgPool) {
+    let extensions: Vec<String> = sqlx::query_scalar(
+        "SELECT extname::text FROM pg_extension WHERE extname IN ('pg_trgm', 'btree_gin')",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert!(extensions.is_empty(), "search extensions in a core database: {extensions:?}");
+    let indexes: Vec<String> = sqlx::query_scalar(
+        "SELECT relname::text FROM pg_class WHERE relname IN \
+         ('idx_search_chunks_session_body_trgm', 'idx_stream_events_session_search_trgm')",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert!(indexes.is_empty(), "trigram indexes in a core database: {indexes:?}");
+}
+
+async fn its_events_carry_no_search_text(pool: &sqlx::PgPool, session: &str) {
+    let texts: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT search_text FROM stream_events \
+         WHERE session_id = $1 AND event_type IN ('message', 'tool_use')",
+    )
+    .bind(session)
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert!(!texts.is_empty(), "the transcript is stored");
+    assert!(texts.iter().all(|t| t.as_deref() == Some("")), "{texts:?}");
 }
 
 async fn kill_the_session(server: &Server, operator: &Operator, worker: &mut Ws, session: &str) {

@@ -135,11 +135,9 @@ pub(super) async fn insert_event(
     pool: &sqlx::PgPool,
     machine_id: Uuid,
     user_id: Uuid,
-    local_id: &str,
-    event_type: &str,
-    mut payload: serde_json::Value,
-    turn_id: Option<uuid::Uuid>,
+    row: NewEvent,
 ) -> anyhow::Result<Option<i64>> {
+    let NewEvent { local_id, event_type, mut payload, turn_id, chunked } = row;
     // Postgres jsonb/text cannot store the NUL code point (`\0`); a
     // payload carrying one (e.g. binary-ish tool output) fails the INSERT and
     // the event is silently lost. Strip NULs from every string so
@@ -152,22 +150,23 @@ pub(super) async fn insert_event(
     // Untargeted: two dedup indexes cover this table and either must suppress
     // the row; a targeted clause can only name one.
     let id: Option<i64> = sqlx::query_scalar(
-        "INSERT INTO stream_events (session_id, event_type, payload, turn_id) \
-         SELECT $1, $2, $3, $4 WHERE EXISTS ( \
+        "INSERT INTO stream_events (session_id, event_type, payload, turn_id, search_text) \
+         SELECT $1, $2, $3, $4, CASE WHEN $7 THEN '' END WHERE EXISTS ( \
              SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $5 AND user_id = $6) \
          ON CONFLICT DO NOTHING \
          RETURNING id",
     )
-    .bind(local_id)
+    .bind(&local_id)
     .bind(event_type)
     .bind(payload)
     .bind(turn_id)
     .bind(machine_id)
     .bind(user_id)
+    .bind(chunked)
     .fetch_optional(pool)
     .await?;
     if id.is_some() {
-        crate::routes::fs::record_links(pool, local_id, &links).await?;
+        crate::routes::fs::record_links(pool, &local_id, &links).await?;
     }
     Ok(id)
 }
@@ -181,6 +180,20 @@ pub(super) struct NewEvent {
     /// Stores an empty `search_text`: its chunks carry its text, or search is
     /// off and the backfill chunks it once search is back on.
     chunked: bool,
+}
+
+impl NewEvent {
+    /// An unchunked row: the trigger fills its `search_text` only while `search` is on.
+    #[must_use]
+    pub(super) fn unchunked(
+        local_id: &str,
+        event_type: &'static str,
+        payload: serde_json::Value,
+        turn_id: Option<Uuid>,
+        search: bool,
+    ) -> Self {
+        Self { local_id: local_id.to_owned(), event_type, payload, turn_id, chunked: !search }
+    }
 }
 
 /// Rows per `stream_events` statement: bounds one statement's bind size.
@@ -428,7 +441,9 @@ mod tests {
         assert_eq!(replay[0], None, "the turn-less replay of the same line is suppressed");
 
         let single =
-            insert_event(&pool, mid, uid, &sid, "message", payload.clone(), None).await.unwrap();
+            insert_event(&pool, mid, uid, NewEvent::unchunked(&sid, "message", payload.clone(), None, true))
+                .await
+                .unwrap();
         assert_eq!(single, None, "and so is the unbatched path");
 
         let count: i64 =
@@ -446,7 +461,9 @@ mod tests {
             "meta": false,
             "line_id": "0f2f3f4e-0000-4000-8000-000000000002",
         });
-        let fresh = insert_event(&pool, mid, uid, &sid, "message", other, None).await.unwrap();
+        let fresh = insert_event(&pool, mid, uid, NewEvent::unchunked(&sid, "message", other, None, true))
+            .await
+            .unwrap();
         assert!(fresh.is_some(), "a distinct transcript line still persists");
 
         sqlx::query("DELETE FROM stream_events WHERE session_id = $1")
@@ -605,7 +622,7 @@ mod tests {
         // The pre-batching path: one INSERT per event, awaited in turn.
         let started = std::time::Instant::now();
         for row in backfill(&per_row_sid, n) {
-            insert_event(&pool, mid, uid, &row.local_id, row.event_type, row.payload, row.turn_id)
+            insert_event(&pool, mid, uid, row)
                 .await
                 .expect("per-row insert");
         }
@@ -683,6 +700,37 @@ mod tests {
         .expect("update");
         assert_eq!(text(seqs[0]).await, "", "a chunked row stays out of the trigram index");
         assert_eq!(text(seqs[1]).await, "raw edited   ");
+
+        sqlx::query("DELETE FROM stream_events WHERE session_id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .ok();
+        drop_machines(&pool, &[sid], &[(uid, mid)]).await;
+    }
+
+    #[tokio::test]
+    async fn the_single_row_insert_leaves_search_text_empty_with_search_off() {
+        let Some(url) = crate::routes::gateway::test_db_url("search_text_single_row") else {
+            return;
+        };
+        let pool = crate::db::connect(&url).await.expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "search_text_single_row").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
+        let mut stored = Vec::new();
+        for (text, search) in [("searched", true), ("unsearched", false)] {
+            let payload = json!({ "role": "assistant", "text": text });
+            let row = NewEvent::unchunked(&sid, "message", payload, None, search);
+            let id = insert_event(&pool, mid, uid, row).await.expect("insert").expect("new row");
+            let search_text: String =
+                sqlx::query_scalar("SELECT search_text FROM stream_events WHERE id = $1")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("row");
+            stored.push(search_text);
+        }
+        assert_eq!(stored, ["searched   ", ""]);
 
         sqlx::query("DELETE FROM stream_events WHERE session_id = $1")
             .bind(&sid)

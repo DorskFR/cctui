@@ -54,15 +54,10 @@ fn pool_options(max_connections: u32, min_connections: u32, acquire_secs: u32) -
 
 #[cfg(test)]
 pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
-    connect_reporting(database_url).await.map(|(pool, _)| pool)
+    connect_reporting_for(database_url, FeatureSet::all()).await.map(|(pool, _)| pool)
 }
 
-/// [`connect_reporting_for`] with every feature on.
-pub async fn connect_reporting(database_url: &str) -> Result<(PgPool, Vec<i64>), sqlx::Error> {
-    connect_reporting_for(database_url, FeatureSet::all()).await
-}
-
-/// [`connect`], also returning the migration versions this call applied. With
+/// Connect and migrate, returning the legacy migration versions this call applied. With
 /// `transcript_search` off, a fresh database never needs the trigram extensions.
 pub async fn connect_reporting_for(
     database_url: &str,
