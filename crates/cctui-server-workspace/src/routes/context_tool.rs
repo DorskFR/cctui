@@ -16,7 +16,7 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::routes::context::{
     ContextItem, ContextItemSpec, KINDS, approval_title, attach_memories, clean_name, clean_spec,
-    count_for_user, db_err, insert, list_for_user, propose, spec_of, stored_scope, update,
+    count_for_user, db_err, insert, list_for_user, ownership, propose, spec_of, update,
 };
 use crate::state::AppState;
 
@@ -211,7 +211,8 @@ async fn save(
             ),
         ));
     }
-    let dispatched = stored_scope(&state.pool, session_id).await.is_some_and(|s| s.dispatched);
+    let dispatched =
+        ownership::launch_scope(&state.pool, session_id).await.is_some_and(|s| s.dispatched);
     let needs_approval = kind == "rule" || dispatched;
     let items = list_for_user(&state.pool, owner).await?;
     let existing = items.iter().find(|i| i.kind == kind && i.name == name);

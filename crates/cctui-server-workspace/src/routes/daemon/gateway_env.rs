@@ -5,6 +5,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::state::AppState;
+use cctui_proto::features::Feature;
 use cctui_server_core::launch_credentials::{gateway_env_allowed, spawn_capability_for};
 use cctui_telemetry::db::traced;
 use tracing::Instrument;
@@ -96,11 +97,16 @@ async fn gateway_env_for(
         });
     }
 
+    let with_plugins = state.config.features.contains(Feature::Plugins);
     let (user_settings, (), spawn_capability, context, bound, hook_policy) = tokio::join!(
         user_settings_of(state, user_id),
-        sync_plugins(state),
+        async {
+            if with_plugins {
+                sync_plugins(state).await;
+            }
+        },
         spawn_capability_for(state, session_id),
-        owned_launch_context(&state.pool, user_id, session_id, rules),
+        owned_launch_context(state, user_id, session_id, rules),
         bound_launch(state, session_id),
         recorded_hook_policy(&state.pool, session_id),
     );
@@ -111,7 +117,11 @@ async fn gateway_env_for(
     // the connectionless `whip-stop-hook`, bound or not.
     let whip_phrases =
         user_settings.as_ref().and_then(crate::routes::settings::whip_stop_phrases_of);
-    let plugins = session_plugins(&state.plugins, user_settings.as_ref());
+    let plugins = if with_plugins {
+        session_plugins(&state.plugins, user_settings.as_ref())
+    } else {
+        Vec::new()
+    };
     let (account_bound, env, settings) = bound.map_or_else(
         || (false, std::collections::BTreeMap::default(), None),
         |BoundLaunch { env, settings }| (true, env, settings),
@@ -230,25 +240,28 @@ pub async fn session_launch_context(
     let Some(machine_id) = ctx.machine_id else {
         return Err(StatusCode::FORBIDDEN);
     };
-    let context =
-        launch_context(&state.pool, ctx.user_id, machine_id, &session_id, query.rules).await?;
+    let context = launch_context(&state, ctx.user_id, machine_id, &session_id, query.rules).await?;
     Ok(Json(cctui_proto::api::LaunchContextResponse { context }))
 }
 
-/// [`session_context`] gated by [`context_allowed`]: both launch pulls serve
-/// the context only when the key is the caller's.
+/// [`session_context`] gated by [`owns_launch`]: both launch pulls serve the
+/// context only when the key is the caller's, and only with `context` on.
 async fn launch_context(
-    pool: &sqlx::PgPool,
+    state: &AppState,
     user_id: Uuid,
     machine_id: Uuid,
     session_id: &str,
     rules: bool,
 ) -> Result<Vec<cctui_proto::api::SessionContextItem>, StatusCode> {
-    let allowed = context_allowed(pool, user_id, machine_id, session_id).await.map_err(|e| {
-        tracing::error!(%session_id, "daemon context ownership lookup failed: {e}");
+    let allowed = owns_launch(&state.pool, user_id, machine_id, session_id).await.map_err(|e| {
+        tracing::error!(%session_id, "daemon launch ownership lookup failed: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    Ok(if allowed { session_context(pool, session_id, rules).await } else { Vec::new() })
+    Ok(if allowed && state.config.features.contains(Feature::Context) {
+        session_context(&state.pool, session_id, rules).await
+    } else {
+        Vec::new()
+    })
 }
 
 /// [`launch_context`] for a caller [`gateway_env_allowed`] already let through.
@@ -258,19 +271,23 @@ async fn launch_context(
     fields(code.function.name = "owned_launch_context", session_id = %session_id),
 )]
 async fn owned_launch_context(
-    pool: &sqlx::PgPool,
+    state: &AppState,
     user_id: Uuid,
     session_id: &str,
     rules: bool,
 ) -> Result<Vec<cctui_proto::api::SessionContextItem>, StatusCode> {
-    let readable = context_readable(pool, user_id, session_id).await.map_err(|e| {
-        tracing::error!(%session_id, "daemon context ownership lookup failed: {e}");
+    let owned = owns_launch_key(&state.pool, user_id, session_id).await.map_err(|e| {
+        tracing::error!(%session_id, "daemon launch ownership lookup failed: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    Ok(if readable { session_context(pool, session_id, rules).await } else { Vec::new() })
+    Ok(if owned && state.config.features.contains(Feature::Context) {
+        session_context(&state.pool, session_id, rules).await
+    } else {
+        Vec::new()
+    })
 }
 
-async fn context_allowed(
+async fn owns_launch(
     pool: &sqlx::PgPool,
     user_id: Uuid,
     machine_id: Uuid,
@@ -279,12 +296,12 @@ async fn context_allowed(
     if !gateway_env_allowed(pool, user_id, machine_id, session_id).await? {
         return Ok(false);
     }
-    context_readable(pool, user_id, session_id).await
+    owns_launch_key(pool, user_id, session_id).await
 }
 
-/// A key with no session row is readable only when the set recorded under it
-/// is the caller's.
-async fn context_readable(
+/// A key with no session row is the caller's only when its ownership record
+/// names the caller.
+async fn owns_launch_key(
     pool: &sqlx::PgPool,
     user_id: Uuid,
     session_id: &str,
@@ -296,12 +313,8 @@ async fn context_readable(
     if registered {
         return Ok(true);
     }
-    let owner: Option<Option<String>> =
-        traced("SELECT scope->>'user_id' FROM session_context WHERE spawn_key = $1", |sql| {
-            sqlx::query_scalar(sql).bind(session_id).fetch_optional(pool)
-        })
-        .await?;
-    Ok(owner.flatten().is_some_and(|o| o == user_id.to_string()))
+    let owner = crate::routes::context::ownership::owner_of(pool, session_id).await?;
+    Ok(owner == Some(user_id))
 }
 
 /// The context this launch carries, as the daemon needs it: the rules,
@@ -647,7 +660,7 @@ mod tests {
         crate::routes::context::remember_intent(&pool, &key, &[], &scope).await;
 
         let allowed = async |user, machine, sid: &str| {
-            super::context_allowed(&pool, user, machine, sid).await.expect("lookup")
+            super::owns_launch(&pool, user, machine, sid).await.expect("lookup")
         };
         assert!(allowed(ua, ma, &owned).await);
         assert!(!allowed(ub, mb, &owned).await);
@@ -699,10 +712,11 @@ mod tests {
         crate::routes::context::remember_intent(&pool, &key, std::slice::from_ref(&item), &scope)
             .await;
 
-        let mine = super::launch_context(&pool, ua, ma, &key, true).await.expect("lookup");
+        let state = AppState::for_test(pool.clone());
+        let mine = super::launch_context(&state, ua, ma, &key, true).await.expect("lookup");
         assert_eq!(mine.len(), 1);
         assert_eq!((mine[0].name.as_str(), mine[0].body.as_str()), ("deploy", "private runbook"));
-        let theirs = super::launch_context(&pool, ub, mb, &key, true).await.expect("lookup");
+        let theirs = super::launch_context(&state, ub, mb, &key, true).await.expect("lookup");
         assert!(theirs.is_empty(), "another user's machine key reads no context: {theirs:?}");
 
         sqlx::query("DELETE FROM session_context WHERE spawn_key = $1")
@@ -769,7 +783,7 @@ mod tests {
             whip_phrases,
             spawn_capability: spawn_capability_for(state, session_id).await,
             plugins,
-            context: launch_context(&state.pool, user_id, machine_id, session_id, true)
+            context: launch_context(state, user_id, machine_id, session_id, true)
                 .await
                 .unwrap(),
             hook_policy: Some(
@@ -968,6 +982,117 @@ mod tests {
             .await
             .ok();
         drop_machines(&pool, &[sid], &[(uid, mid), (ub, mb)]).await;
+    }
+
+    #[tokio::test]
+    async fn with_context_off_both_launch_pulls_are_empty_and_ownership_still_holds() {
+        use crate::routes::context::ownership::{self, test_support::assert_no_content};
+        use crate::routes::context::{ContextItemSpec, SpawnScope, StoredScope, clean_spec, insert};
+        use cctui_proto::features::{Feature, FeatureSet};
+        let Some(url) = crate::routes::gateway::test_db_url("launch_context_off") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (ua, ma) = seed_machine(&pool, "ctx-off-owner").await;
+        let (ub, mb) = seed_machine(&pool, "ctx-off-intruder").await;
+        let rule = clean_spec(ContextItemSpec {
+            kind: "rule".into(),
+            name: "always".into(),
+            title: "Always".into(),
+            body: "every launch".into(),
+            enabled: true,
+            ..ContextItemSpec::default()
+        })
+        .expect("valid rule");
+        let rule = insert(&pool, ua, &rule, None, None).await.expect("rule");
+        let key = format!("cmd-{}", Uuid::new_v4());
+        let scope = StoredScope { user_id: ua, coords: SpawnScope::default(), dispatched: false };
+        ownership::record(&pool, &key, &scope).await;
+        let mut state = AppState::for_test(pool.clone());
+        state.config.features = FeatureSet::all().without(Feature::Context);
+
+        assert!(super::owns_launch(&pool, ua, ma, &key).await.expect("lookup"));
+        assert!(!super::owns_launch(&pool, ub, mb, &key).await.expect("lookup"));
+        let pulled = super::launch_context(&state, ua, ma, &key, true).await.expect("pull");
+        assert!(pulled.is_empty(), "the context pull is empty: {pulled:?}");
+        let env = super::gateway_env_for(&state, ua, ma, &key, true).await.expect("pull");
+        assert!(env.context.is_empty(), "the gateway-env pull carries no context");
+        assert!(env.hook_policy.is_some(), "the owner's pull is served in full");
+        assert_no_content(&pool, &key).await;
+
+        state.config.features = FeatureSet::all();
+        let on = super::launch_context(&state, ua, ma, &key, true).await.expect("pull");
+        assert_eq!(on.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(), ["always"]);
+
+        sqlx::query("DELETE FROM session_context WHERE spawn_key = $1")
+            .bind(&key)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM session_spawn_capabilities WHERE session_id = $1")
+            .bind(&key)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM context_items WHERE id = $1")
+            .bind(rule.id)
+            .execute(&pool)
+            .await
+            .ok();
+        drop_machines(&pool, &[], &[(ua, ma), (ub, mb)]).await;
+    }
+
+    #[tokio::test]
+    async fn with_plugins_off_a_launch_carries_no_plugins_and_syncs_none() {
+        use crate::plugins::test_support::write_plugin;
+        use cctui_proto::features::{Feature, FeatureSet};
+        let Some(url) = crate::routes::gateway::test_db_url("gateway_env_plugins_off") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let root = tempfile::tempdir().unwrap();
+        write_plugin(root.path(), "kit", "");
+        let (uid, mid) = seed_machine(&pool, "genv-plugins-off").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
+        sqlx::query(
+            "INSERT INTO user_settings (user_id, version, data) VALUES ($1, 1, $2) \
+             ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data",
+        )
+        .bind(uid)
+        .bind(serde_json::json!({ "plugins": { "enabled": { "kit": true } } }))
+        .execute(&pool)
+        .await
+        .expect("enable the plugin");
+        let mut state = AppState::for_test(pool.clone());
+        state.plugins = std::sync::Arc::new(crate::plugins::PluginRegistry::from_dir(
+            root.path().to_path_buf(),
+        ));
+        state.config.features = FeatureSet::all().without(Feature::Plugins);
+
+        let off = super::gateway_env_for(&state, uid, mid, &sid, true).await.expect("pull");
+        assert!(off.plugins.is_empty(), "no plugin entries: {:?}", off.plugins);
+        assert_eq!(state.plugins.loaded_from(), None, "no plugin sync was attempted");
+
+        state.config.features = FeatureSet::all();
+        let on = super::gateway_env_for(&state, uid, mid, &sid, true).await.expect("pull");
+        assert_eq!(on.plugins.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["kit"]);
+        assert!(state.plugins.loaded_from().is_some(), "a launch with plugins on syncs");
+
+        sqlx::query("DELETE FROM user_settings WHERE user_id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM session_spawn_capabilities WHERE session_id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .ok();
+        drop_machines(&pool, &[sid], &[(uid, mid)]).await;
     }
 
     #[test]

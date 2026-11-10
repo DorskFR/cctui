@@ -59,7 +59,12 @@ impl DispatchContext for AppState {
         if let Some(uid) = real_user {
             if context_record_is_callers(&self.pool, session, uid).await {
                 let scope = dispatch_context_scope(uid, &req.payload);
-                crate::routes::context::remember_intent(&self.pool, session, &[], &scope).await;
+                if self.config.features.contains(cctui_proto::features::Feature::Context) {
+                    crate::routes::context::remember_intent(&self.pool, session, &[], &scope)
+                        .await;
+                } else {
+                    crate::routes::context::ownership::record(&self.pool, session, &scope).await;
+                }
             } else {
                 tracing::warn!(
                     %session,
@@ -449,6 +454,59 @@ mod tests {
         for uid in [owner, other] {
             sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
         }
+    }
+
+    #[tokio::test]
+    async fn with_context_off_a_dispatch_records_only_its_owner() {
+        use crate::routes::context::ownership::{self, test_support::assert_no_content};
+        use cctui_proto::features::{Feature, FeatureSet};
+        use cctui_server_core::dispatch::DispatchContext as _;
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_context_off") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let mut state = crate::state::AppState::for_test(pool.clone());
+        state.config.features = FeatureSet::all().without(Feature::Context);
+        let (owner, other) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let request = cctui_proto::api::DispatchRequest {
+            dispatcher: "worker".into(),
+            session_id: None,
+            timeout: None,
+            reply_url: None,
+            notify_url: None,
+            notify_secret: None,
+            payload: serde_json::json!({"adapter_id": "codex", "working_dir": "/w"}),
+            account: None,
+            provider: None,
+            accounts: Vec::new(),
+        };
+        let session = uuid::Uuid::new_v4().to_string();
+
+        state.remember_dispatch_context(Some(owner), &request, &session).await;
+        assert_eq!(ownership::owner_of(&pool, &session).await.expect("lookup"), Some(owner));
+        let scope = ownership::launch_scope(&pool, &session).await.expect("recorded");
+        assert!(scope.dispatched);
+        assert_eq!(scope.coords.adapter.as_deref(), Some("codex"));
+        assert_no_content(&pool, &session).await;
+        assert!(context_record_is_callers(&pool, &session, owner).await);
+        assert!(!context_record_is_callers(&pool, &session, other).await);
+
+        state.remember_dispatch_context(Some(other), &request, &session).await;
+        assert_eq!(
+            ownership::owner_of(&pool, &session).await.expect("lookup"),
+            Some(owner),
+            "another user's dispatch leaves the ownership record alone"
+        );
+
+        sqlx::query("DELETE FROM session_context WHERE spawn_key = $1")
+            .bind(&session)
+            .execute(&pool)
+            .await
+            .ok();
     }
 
     #[test]
