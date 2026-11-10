@@ -593,10 +593,12 @@ jobs:
 
       - name: Ignored advisories are still unreachable
         run: |
-          if cargo tree --workspace --all-features --target all -i rsa 2>/dev/null | grep -q '^rsa v'; then
-            echo "rsa is in the build graph; drop the RUSTSEC-2023-0071 ignore in .cargo/audit.toml" >&2
-            exit 1
-          fi
+          for crate in rsa libsqlite3-sys; do
+            if cargo tree --workspace --all-features --target all -i "$crate" 2>/dev/null | grep -q "^$crate v"; then
+              echo "$crate is in the build graph; drop its ignore in .cargo/audit.toml" >&2
+              exit 1
+            fi
+          done
 
       - name: cargo audit
         run: cargo audit
