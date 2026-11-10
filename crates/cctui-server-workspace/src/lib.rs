@@ -144,7 +144,8 @@ fn check_plugin_archive(args: &[String]) -> anyhow::Result<()> {
 async fn init_db() -> anyhow::Result<()> {
     let features = init_db_features(std::env::var(config::FEATURES_FILE_ENV).ok().as_deref())?;
     let secrets = cctui_secrets::SecretRegistry::from_env();
-    let raw = std::env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL is required"))?;
+    let raw =
+        std::env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL is required"))?;
     let url = secrets.register("DATABASE_URL", &raw).await?.get();
     let (pool, applied) = db::connect_reporting_for(&url, features).await?;
     pool.close().await;
@@ -159,7 +160,8 @@ fn init_db_features(path: Option<&str>) -> anyhow::Result<FeatureSet> {
     let env = config::FEATURES_FILE_ENV;
     let text = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("{env}: cannot read `{path}`: {e}"))?;
-    let resolution = config::parse_features(&text).map_err(|e| anyhow::anyhow!("{env} `{path}`: {e}"))?;
+    let resolution =
+        config::parse_features(&text).map_err(|e| anyhow::anyhow!("{env} `{path}`: {e}"))?;
     Ok(resolution.set)
 }
 
@@ -176,7 +178,8 @@ async fn bootstrap(
     }
 
     let config = Config::from_env(secrets).await?;
-    let (pool, migrations) = db::connect_reporting_for(&config.database_url, config.features).await?;
+    let (pool, migrations) =
+        db::connect_reporting_for(&config.database_url, config.features).await?;
     install_vault_key(&pool).await?;
     // One-release back-compat shim: if the retired
     // CCTUI_CLAUDE_LITELLM_* env vars are set, synthesize a managed (read-only)

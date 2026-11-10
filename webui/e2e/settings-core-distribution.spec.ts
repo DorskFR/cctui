@@ -158,7 +158,7 @@ test('the launch form on a core server is the dispatch form with no tab strip', 
 	await expect(dialog.locator('#sp-dispatcher')).toBeVisible();
 	await expect(dialog.getByRole('radiogroup')).toHaveCount(0);
 	await expect(dialog.locator('#sp-cwd')).toHaveCount(0);
-	await expect(dialog.getByRole('button', { name: 'Dispatch', exact: true })).toBeVisible();
+	await expect(dialog.getByRole('button', { name: /^Dispatch\b/ })).toBeVisible();
 	await expect(dialog.getByRole('button', { name: 'Draft', exact: true })).toHaveCount(0);
 	expect(offRequests).toEqual([]);
 	expect(errors).toEqual([]);

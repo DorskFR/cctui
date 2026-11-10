@@ -440,10 +440,14 @@ mod tests {
         let replay = insert_events(&pool, mid, uid, vec![user_line(None)]).await.expect("replay");
         assert_eq!(replay[0], None, "the turn-less replay of the same line is suppressed");
 
-        let single =
-            insert_event(&pool, mid, uid, NewEvent::unchunked(&sid, "message", payload.clone(), None, true))
-                .await
-                .unwrap();
+        let single = insert_event(
+            &pool,
+            mid,
+            uid,
+            NewEvent::unchunked(&sid, "message", payload.clone(), None, true),
+        )
+        .await
+        .unwrap();
         assert_eq!(single, None, "and so is the unbatched path");
 
         let count: i64 =
@@ -461,9 +465,10 @@ mod tests {
             "meta": false,
             "line_id": "0f2f3f4e-0000-4000-8000-000000000002",
         });
-        let fresh = insert_event(&pool, mid, uid, NewEvent::unchunked(&sid, "message", other, None, true))
-            .await
-            .unwrap();
+        let fresh =
+            insert_event(&pool, mid, uid, NewEvent::unchunked(&sid, "message", other, None, true))
+                .await
+                .unwrap();
         assert!(fresh.is_some(), "a distinct transcript line still persists");
 
         sqlx::query("DELETE FROM stream_events WHERE session_id = $1")
@@ -622,9 +627,7 @@ mod tests {
         // The pre-batching path: one INSERT per event, awaited in turn.
         let started = std::time::Instant::now();
         for row in backfill(&per_row_sid, n) {
-            insert_event(&pool, mid, uid, row)
-                .await
-                .expect("per-row insert");
+            insert_event(&pool, mid, uid, row).await.expect("per-row insert");
         }
         let per_row = started.elapsed();
 

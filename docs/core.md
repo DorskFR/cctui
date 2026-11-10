@@ -270,7 +270,9 @@ on the change. Check the second line of `/readyz` afterwards.
 ## Upgrading
 
 1. Back up the database. Schema changes only move forward: going back to an
-   older release means restoring that backup.
+   older release means restoring that backup. A database created with
+   `transcript_search` off cannot be opened by a release older than 0.30.0
+   at all.
 2. Change the image tags in your overlay (`images:`, `newTag`) for both
    `ghcr.io/dorskfr/cctui` and `ghcr.io/dorskfr/cctui-ui`, to the same
    release.

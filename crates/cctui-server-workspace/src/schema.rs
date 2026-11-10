@@ -151,7 +151,10 @@ mod tests {
             assert_eq!(full.lines().filter(|l| *l == header).count(), 1, "{header}");
             assert!(!searchless.contains(header), "{header}");
         }
-        assert_eq!(full.lines().count() - searchless.lines().count(), 3 * super::SEARCH_BLOCKS.len());
+        assert_eq!(
+            full.lines().count() - searchless.lines().count(),
+            3 * super::SEARCH_BLOCKS.len()
+        );
         assert_eq!(
             hex::encode(Sha256::digest(searchless.as_bytes())),
             "9f6fa27a551e92c65460576688321549f20fc41e480c2332284d51082a021488",
