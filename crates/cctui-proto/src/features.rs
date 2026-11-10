@@ -228,7 +228,10 @@ pub struct Resolution {
 pub enum FeatureFileError {
     Unknown(String),
     /// `feature` is explicitly on but `requires` resolved off.
-    Unmet { feature: Feature, requires: Feature },
+    Unmet {
+        feature: Feature,
+        requires: Feature,
+    },
 }
 
 impl fmt::Display for FeatureFileError {
@@ -351,8 +354,8 @@ mod tests {
 
     #[test]
     fn default_off_with_listed_exceptions() {
-        let r = resolve("default = false\n[features]\nmachine_spawn = true\nfiles = true\n")
-            .unwrap();
+        let r =
+            resolve("default = false\n[features]\nmachine_spawn = true\nfiles = true\n").unwrap();
         assert_eq!(r.set.enabled().collect::<Vec<_>>(), [Feature::MachineSpawn, Feature::Files]);
         assert!(r.forced_off.is_empty());
     }

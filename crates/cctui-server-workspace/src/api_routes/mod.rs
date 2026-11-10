@@ -178,11 +178,10 @@ mod route_table {
 
     #[test]
     fn the_core_feature_file_mounts_the_checked_in_core_routes() {
-        let core = crate::config::parse_features(include_str!(
-            "../../../../deploy/features/core.toml"
-        ))
-        .expect("core.toml resolves")
-        .set;
+        let core =
+            crate::config::parse_features(include_str!("../../../../deploy/features/core.toml"))
+                .expect("core.toml resolves")
+                .set;
         let actual: BTreeSet<String> =
             mounted(core).into_iter().map(|(m, p)| format!("{m} {p}")).collect();
         let expected: BTreeSet<String> =

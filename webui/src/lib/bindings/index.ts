@@ -112,6 +112,7 @@ export type * from './EventPage';
 export type * from './EventRecord';
 export type * from './FailedDispatch';
 export type * from './FailedDispatchReason';
+export type * from './Feature';
 export type * from './ForkExtract';
 export type * from './ForkMode';
 export type * from './ForkRequest';

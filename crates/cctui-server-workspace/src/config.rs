@@ -317,7 +317,8 @@ fn load_features(path: Option<&str>) -> Result<FeatureSet, String> {
     let Some(path) = path else { return Ok(FeatureSet::all()) };
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("{FEATURES_FILE_ENV}: cannot read `{path}`: {e}"))?;
-    let resolution = parse_features(&text).map_err(|e| format!("{FEATURES_FILE_ENV} `{path}`: {e}"))?;
+    let resolution =
+        parse_features(&text).map_err(|e| format!("{FEATURES_FILE_ENV} `{path}`: {e}"))?;
     if !resolution.forced_off.is_empty() {
         let forced: Vec<String> = resolution
             .forced_off
@@ -1029,7 +1030,8 @@ mod tests {
     }
 
     fn features_file(name: &str, text: &str) -> String {
-        let path = std::env::temp_dir().join(format!("cctui-features-{}-{name}.toml", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("cctui-features-{}-{name}.toml", std::process::id()));
         std::fs::write(&path, text).unwrap();
         path.to_string_lossy().into_owned()
     }
@@ -1055,7 +1057,10 @@ mod tests {
         let msg = with_features(Some("/nonexistent/cctui-features.toml".into()), &[])
             .unwrap_err()
             .to_string();
-        assert!(msg.contains(FEATURES_FILE_ENV) && msg.contains("/nonexistent/cctui-features.toml"), "{msg}");
+        assert!(
+            msg.contains(FEATURES_FILE_ENV) && msg.contains("/nonexistent/cctui-features.toml"),
+            "{msg}"
+        );
     }
 
     #[test]
@@ -1074,7 +1079,10 @@ mod tests {
 
     #[test]
     fn an_off_feature_wins_over_its_env_switch() {
-        let path = features_file("gated", "[features]\npreviews = false\nplugins = false\nfederation = false\n");
+        let path = features_file(
+            "gated",
+            "[features]\npreviews = false\nplugins = false\nfederation = false\n",
+        );
         let env = [
             ("CCTUI_PREVIEW_HOST", "cctui-pv-{id}.example.test"),
             ("CCTUI_PLUGINS_DIR", "/plugins"),

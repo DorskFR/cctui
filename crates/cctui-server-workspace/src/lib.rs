@@ -472,7 +472,12 @@ impl OuterRoutes {
         self.add(None, path, handler)
     }
 
-    fn feature(self, feature: Feature, path: &'static str, handler: MethodRouter<AppState>) -> Self {
+    fn feature(
+        self,
+        feature: Feature,
+        path: &'static str,
+        handler: MethodRouter<AppState>,
+    ) -> Self {
         self.add(Some(feature), path, handler)
     }
 
@@ -542,12 +547,24 @@ fn outer_routes(features: FeatureSet) -> OuterRoutes {
         // assertion IS the credential. `config` is the pre-auth probe the login
         // screen makes to decide whether to offer the passkey button at all.
         .route("/api/v1/auth/passkey/config", get(routes::passkeys::config))
-        .feature(Feature::Passkeys, "/api/v1/auth/passkey/login/start", post(routes::passkeys::login_start))
-        .feature(Feature::Passkeys, "/api/v1/auth/passkey/login/finish", post(routes::passkeys::login_finish))
+        .feature(
+            Feature::Passkeys,
+            "/api/v1/auth/passkey/login/start",
+            post(routes::passkeys::login_start),
+        )
+        .feature(
+            Feature::Passkeys,
+            "/api/v1/auth/passkey/login/finish",
+            post(routes::passkeys::login_finish),
+        )
         // Device-authorization login. Unauthenticated because the device has no
         // credential yet; a request is worthless until an authenticated user
         // approves it through `/auth/device/{user_code}/decision`.
-        .feature(Feature::DeviceLogin, "/api/v1/auth/device/start", post(routes::device_auth::start))
+        .feature(
+            Feature::DeviceLogin,
+            "/api/v1/auth/device/start",
+            post(routes::device_auth::start),
+        )
         .feature(Feature::DeviceLogin, "/api/v1/auth/device/poll", post(routes::device_auth::poll));
     infra_routes(daemon_routes(r))
 }
@@ -581,8 +598,16 @@ fn daemon_routes(r: OuterRoutes) -> OuterRoutes {
             "/api/v1/daemon/sessions/{id}/spawn-child",
             post(routes::spawn_child::spawn_child),
         )
-        .feature(Feature::Rooms, "/api/v1/daemon/sessions/{id}/room", post(routes::rooms::room_tool))
-        .feature(Feature::Rooms, "/api/v1/daemon/sessions/{id}/peers", get(routes::peer::list_peers))
+        .feature(
+            Feature::Rooms,
+            "/api/v1/daemon/sessions/{id}/room",
+            post(routes::rooms::room_tool),
+        )
+        .feature(
+            Feature::Rooms,
+            "/api/v1/daemon/sessions/{id}/peers",
+            get(routes::peer::list_peers),
+        )
         .feature(
             Feature::Rooms,
             "/api/v1/daemon/sessions/{id}/message-peer",
@@ -637,7 +662,11 @@ fn daemon_routes(r: OuterRoutes) -> OuterRoutes {
         // upload above, so they live outside the user-token `api_router`: a
         // daemon has no user token, and the health probe below is what tells
         // it whether the update it just ran actually took.
-        .feature(Feature::SelfUpdate, "/api/v1/daemon/version", get(routes::update_hook::daemon_version))
+        .feature(
+            Feature::SelfUpdate,
+            "/api/v1/daemon/version",
+            get(routes::update_hook::daemon_version),
+        )
         .feature(
             Feature::SelfUpdate,
             "/api/v1/daemon/update-hook/{run_id}",
@@ -687,8 +716,16 @@ fn infra_routes(r: OuterRoutes) -> OuterRoutes {
         .merge(Feature::Federation, "/cctuiverse/v1/*", cctuiverse_routes())
         // Preview leg for a browser that landed on a pod without the daemon
         // link. Same secret; serves locally only, so it cannot loop.
-        .feature(Feature::Previews, "/internal/preview/{id}/", any(routes::internal::preview_serve_root))
-        .feature(Feature::Previews, "/internal/preview/{id}/{*path}", any(routes::internal::preview_serve))
+        .feature(
+            Feature::Previews,
+            "/internal/preview/{id}/",
+            any(routes::internal::preview_serve_root),
+        )
+        .feature(
+            Feature::Previews,
+            "/internal/preview/{id}/{*path}",
+            any(routes::internal::preview_serve),
+        )
 }
 
 fn cctuiverse_routes() -> Router<AppState> {

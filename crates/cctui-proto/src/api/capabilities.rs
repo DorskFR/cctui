@@ -149,7 +149,8 @@ mod tests {
             "workspace",
         ];
         let switchable: Vec<&str> = Feature::ALL.into_iter().map(Feature::name).collect();
-        let expected: Vec<&str> = always.iter().copied().chain(switchable.iter().copied()).collect();
+        let expected: Vec<&str> =
+            always.iter().copied().chain(switchable.iter().copied()).collect();
         assert_eq!(names(&caps.features), expected);
         assert_eq!(names(&caps.switchable), switchable);
         assert!(caps.workspace);
@@ -176,10 +177,7 @@ mod tests {
         let caps: CapabilitiesResponse = serde_json::from_value(legacy).unwrap();
         assert!(caps.switchable.is_empty());
         assert!(caps.has(Feature::Voice));
-        let partial = CapabilitiesResponse {
-            switchable: vec!["voice".into()],
-            ..caps
-        };
+        let partial = CapabilitiesResponse { switchable: vec!["voice".into()], ..caps };
         assert!(!partial.has(Feature::Voice));
         assert!(partial.has(Feature::Rooms));
     }
