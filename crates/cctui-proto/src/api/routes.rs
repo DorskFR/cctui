@@ -1921,7 +1921,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Cancel a draft session's queued launch.",
         request: None,
         response: None,
-        feature: Some(Feature::Drafts),
+        feature: Some(Feature::Scheduling),
     },
     Route {
         id: "put_sessions_by_id_draft",

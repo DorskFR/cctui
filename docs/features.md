@@ -20,10 +20,25 @@ transcript_search = false
 - The resolved set is logged at boot on one line (`features: on=[..] off=[..]`).
 
 A feature that is off is not mounted. Its `/api/v1` routes and its routes
-outside the API table answer 404, its background tasks do not start, and its
-WebSocket messages are ignored. An off feature also wins over the environment
-switch of the same integration (`CCTUI_PREVIEW_HOST`, `CCTUI_PLUGINS_DIR`,
-`CCTUI_CCTUIVERSE`, `CCTUI_UPDATE_CHECK`, the Langfuse settings).
+outside the API table answer 404 (405 when the path also matches a kept route
+of another method, as `POST /sessions/spawn` matches `GET /sessions/{id}`),
+its background tasks do not start, and its WebSocket messages are ignored. An
+off feature also wins over the environment switch of the same integration
+(`CCTUI_PREVIEW_HOST`, `CCTUI_PLUGINS_DIR`, `CCTUI_CCTUIVERSE`,
+`CCTUI_UPDATE_CHECK`, the Langfuse settings); a `CCTUI_PLUGINS_DIR` set while
+`plugins` is off is logged once at boot as ignored.
+
+## Daemons
+
+When a daemon connects, the server sends it the features that are off. A
+server that announces nothing has every feature on. The daemon then:
+
+- offers a session only the agent tools whose feature is on: `child_sessions`
+  for agent spawn and archive, `rooms` for peers, send, history and room,
+  `voice` for speak, `context` for context. Usage and user actions are always
+  offered.
+- refuses directory listing, git info and file read frames when `files` is
+  off, even if the server sends them.
 
 `deploy/features/core.toml` is the core deployment: every feature off. What
 is left is token login and logout, users and keys, accounts and OAuth,
@@ -51,7 +66,7 @@ feature).
 | `machine_spawn` | | User-enrolled machines and spawning on them: enroll and deenroll, `POST /sessions/spawn`, the spawn directory history, hook registration (`/sessions/register`, `/sessions/{id}/deregister`), machine status, events, resources and harness pins, and machine administration (`/admin/machines/**`, `/admin/users/{id}/machines`). Off, the server only runs dispatched workers and keeps no host resource snapshots. |
 | `files` | `machine_spawn` | Reading files, listing directories and git info on a machine (`/machines/{id}/fs/*`, `/sessions/{id}/linked-file*`). |
 | `uploads` | `machine_spawn` | Attaching files to a session, the session attachment list, upload caps. |
-| `drafts` | `machine_spawn` | Unsent composer drafts and draft sessions (launch, discard, cancel). |
+| `drafts` | `machine_spawn` | Unsent composer drafts and draft sessions (launch, discard). |
 | `profiles` | `machine_spawn` | Spawn profiles. |
 | `terminal` | `machine_spawn` | The live terminal view (`watch_terminal` WebSocket message). |
 | `transcript_search` | | Search across sessions and find-in-conversation, and the search backfill task. |
@@ -59,7 +74,7 @@ feature).
 | `context` | | Rules and memories: the context library, a session's context, the agent context tool. The launch-time context pull stays mounted. |
 | `plugins` | | Runtime plugins: install, settings, backend proxy, static files, boot init and the sync task. |
 | `auto_approve` | | Per-session auto-approval of tool use. |
-| `scheduling` | | Scheduled messages and scheduled launches, and their tasks. |
+| `scheduling` | | Scheduled messages and scheduled launches (schedule and cancel), and their tasks. |
 | `automation` | | Keep-alive, auto-resume, auto-redeem and follow-ups, their tasks, the follow-up thread view, and the external trigger endpoint. |
 | `rooms` | | Rooms, peers and agent-to-agent messages. |
 | `voice` | | Speech synthesis and transcription, the voice WebSocket, agent voice notes, the speech settings. |
@@ -67,7 +82,7 @@ feature).
 | `federation` | | Links to other cctui servers (cctuiverse): management routes, the server-to-server wire and the outbox task. |
 | `device_login` | | Logging a device in by approving a code. |
 | `passkeys` | | Passkey enrollment and passkey login. |
-| `self_update` | | Server self-update, daemon self-update (`/manifest/daemon`, `/daemon/binary/{target}`), harness auto-update, update hooks, the release probe and changelog. |
+| `self_update` | | Server self-update, daemon self-update (`/manifest/daemon`, `/daemon/binary/{target}`), harness auto-update, update hooks, the release probe and changelog. Off, the harness report and update-hook flag a heartbeat carries are ignored and no harness policy is sent. |
 | `account_sharing` | | Account pools and sharing accounts or resources with other users. |
 | `observability` | | Langfuse cost views and the browser OTLP relay. |
 | `library` | | Saved prompts and the skill registry. |

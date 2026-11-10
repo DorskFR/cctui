@@ -1754,7 +1754,7 @@ mod feature_gate_tests {
     }
 
     #[tokio::test]
-    async fn machine_spawn_off_answers_404_on_enrollment_spawn_and_files() {
+    async fn machine_spawn_off_unmounts_enrollment_spawn_and_files() {
         let off = crate::config::parse_features("[features]\nmachine_spawn = false\n")
             .expect("resolves")
             .set;
@@ -1766,7 +1766,6 @@ mod feature_gate_tests {
         for (method, uri, want) in [
             ("POST", "/enroll", StatusCode::NOT_FOUND),
             ("POST", "/deenroll", StatusCode::NOT_FOUND),
-            ("POST", "/sessions/spawn", StatusCode::NOT_FOUND),
             ("GET", "/machines/resources", StatusCode::NOT_FOUND),
             ("GET", "/machines/m1/fs/dirs", StatusCode::NOT_FOUND),
             ("GET", "/machines/m1/adapters", StatusCode::NOT_FOUND),
@@ -1776,6 +1775,16 @@ mod feature_gate_tests {
             let request = Request::builder().method(method).uri(uri).body(Body::empty()).unwrap();
             let got = app.clone().oneshot(request).await.unwrap().status();
             assert_eq!(got, want, "{method} {uri}");
+        }
+        for uri in ["/sessions/spawn", "/sessions/register", "/sessions/recent-dirs"] {
+            let request = Request::builder().method("POST").uri(uri).body(Body::empty()).unwrap();
+            let got = app.clone().oneshot(request).await.unwrap().status();
+            assert_eq!(
+                got,
+                StatusCode::METHOD_NOT_ALLOWED,
+                "POST {uri} is unmounted, but the path still matches the kept GET/PATCH \
+                 /sessions/{{id}}, so the router answers 405 rather than 404"
+            );
         }
     }
 
