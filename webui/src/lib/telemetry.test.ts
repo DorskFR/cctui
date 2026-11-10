@@ -113,7 +113,7 @@ describe('initTelemetry against the server relay', () => {
 		const { initTelemetry } = await import('./telemetry');
 		await initTelemetry();
 		expect(fetcher).toHaveBeenCalledWith('https://api.test/api/v1/capabilities', expect.anything());
-		expect(h.loaded).toEqual([]);
+		expect(h.fetchConfig).toBeNull();
 	});
 
 	it('starts tracing when observability is on', async () => {
@@ -121,7 +121,7 @@ describe('initTelemetry against the server relay', () => {
 		setConfig({ apiBase: 'https://api.test', otel: { endpoint: 'https://api.test/api/v1/otlp' } });
 		const { initTelemetry } = await import('./telemetry');
 		await initTelemetry();
-		expect(h.loaded).toContain('./otelExporter');
+		expect(h.fetchConfig).not.toBeNull();
 	});
 
 	it('does not probe for an external collector', async () => {
@@ -130,7 +130,7 @@ describe('initTelemetry against the server relay', () => {
 		const { initTelemetry } = await import('./telemetry');
 		await initTelemetry();
 		expect(fetcher).not.toHaveBeenCalled();
-		expect(h.loaded).toContain('./otelExporter');
+		expect(h.fetchConfig).not.toBeNull();
 	});
 });
 

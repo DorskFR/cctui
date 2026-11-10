@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { flushSync } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { MeResponse } from '@bindings/MeResponse';

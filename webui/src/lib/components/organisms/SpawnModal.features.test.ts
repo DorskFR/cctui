@@ -12,7 +12,7 @@ const calls = vi.hoisted(() => ({
   gitInfo: [] as string[],
   machineDirs: [] as string[],
   voiceConfig: 0,
-  contextItems: 0,
+  contextItemsEnabled: [] as boolean[],
 }));
 
 let dispatchers: string[] = [];
@@ -54,8 +54,8 @@ vi.mock("$lib/queries", () => {
     useAccounts: () => q([]),
     useAccountPools: () => q([]),
     useLabels: () => q({ labels: [] }),
-    useContextItems: () => {
-      calls.contextItems++;
+    useContextItems: (enabled: () => boolean = () => true) => {
+      calls.contextItemsEnabled.push(enabled());
       return q([]);
     },
     useResolvedContext: () => q({ rules: [], memories: [] }),
@@ -141,7 +141,7 @@ beforeEach(() => {
   calls.gitInfo = [];
   calls.machineDirs = [];
   calls.voiceConfig = 0;
-  calls.contextItems = 0;
+  calls.contextItemsEnabled = [];
 });
 afterEach(async () => {
   if (component) await unmount(component);
@@ -251,7 +251,7 @@ describe("SpawnModal machine tab with a feature off", () => {
   it("mounts no context row without context", async () => {
     only(["context"]);
     await open();
-    expect(calls.contextItems).toBe(0);
+    expect(calls.contextItemsEnabled.every((e) => e === false)).toBe(true);
   });
 
   it("looks up the cwd branch with files on", async () => {
