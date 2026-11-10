@@ -875,10 +875,11 @@ struct Reattach {
     peers: bool,
 }
 
-/// Send the tool call to the daemon, forwarding interim progress frames, and
-/// block on the final result line, reattaching a `CctuiAgent` follow the
-/// daemon dropped (a restart, a self-update re-exec). Every failure returns
-/// text: the model must see an error, never a hang.
+/// Send the tool call to the daemon and block on its final result line.
+///
+/// Interim progress frames are forwarded, and a `CctuiAgent` follow the daemon
+/// dropped (a restart, a self-update re-exec) is reattached. Every failure
+/// returns text: the model must see an error, never a hang.
 fn call_daemon_with(
     session_id: &str,
     sock: &Path,
@@ -1035,9 +1036,10 @@ fn reconnect(sock: &Path, window: Duration) -> Option<UnixStream> {
     }
 }
 
-/// What the model reads when a call ends without a result. A follow names how
-/// the child's answer still reaches it; `peers` is whether `CctuiPeers` is
-/// offered to look up a child whose id was never seen.
+/// What the model reads when a call ends without a result.
+///
+/// A follow names how the child's answer still reaches it; `peers` is whether
+/// `CctuiPeers` is offered to look up a child whose id was never seen.
 fn dropped_error(tool: &str, kind: &str, child: Option<&str>, peers: bool) -> String {
     if kind != "spawn_agent" {
         return format!("{tool} failed: the daemon closed the connection without a result");

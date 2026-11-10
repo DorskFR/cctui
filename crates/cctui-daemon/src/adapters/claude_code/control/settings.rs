@@ -67,9 +67,10 @@ pub(super) fn build_session_context(
 
 const AGENT_TOOL_CONTEXT: &str = include_str!("agent_tool_context.md");
 
-/// The `CctuiAgent` paragraph of the session context: the tool exists, which
-/// adapters this session may spawn, and one worked call. Without
-/// `child_sessions` only the core tools are described.
+/// The `CctuiAgent` paragraph of the session context.
+///
+/// It says the tool exists, which adapters this session may spawn, and gives
+/// one worked call. Without `child_sessions` only the core tools are described.
 pub(super) fn agent_tool_context(
     cap: &cctui_proto::api::SpawnCapability,
     features: cctui_proto::features::FeatureSet,

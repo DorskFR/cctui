@@ -315,9 +315,10 @@ pub enum DaemonFrameDown {
     DrainRestart {
         harness: String,
     },
-    /// Switchable features that are off, sent on connect before
-    /// [`Self::Reconcile`]. Plain names so an unknown one cannot fail the frame;
-    /// no frame means every feature is on.
+    /// Switchable features that are off, sent on connect before [`Self::Reconcile`].
+    ///
+    /// Plain names so an unknown one cannot fail the frame; no frame means
+    /// every feature is on.
     Features {
         #[serde(default)]
         off: Vec<String>,
