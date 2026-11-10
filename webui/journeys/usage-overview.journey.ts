@@ -15,13 +15,12 @@ export default defineJourney({
 			route: HOME,
 			target: 'tiles',
 			say: {
-				title: { en: 'The fleet in four numbers', fr: 'La flotte en quatre chiffres' },
-				body: { en: 'Sessions running now, sessions waiting on you, machines online, and the all-time total. They read zero until your first run.', fr: 'Les sessions en cours, celles qui vous attendent, les machines en ligne et le total depuis toujours. Tout est à zéro jusqu’à votre premier run.' }
+				title: { en: 'The fleet at a glance', fr: 'La flotte d’un coup d’œil' },
+				body: { en: 'Sessions running now, sessions waiting on you, and the all-time total. They read zero until your first run.', fr: 'Les sessions en cours, celles qui vous attendent et le total depuis toujours. Tout est à zéro jusqu’à votre premier run.' }
 			},
 			expect: [
 				{ visible: 'tiles' },
-				{ visible: 'tile[needs_input]' },
-				{ visible: 'tile[machines]' }
+				{ visible: 'tile[needs_input]' }
 			],
 			capture: 'tiles'
 		},

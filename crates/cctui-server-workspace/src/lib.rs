@@ -48,7 +48,6 @@ mod plugin_proxy;
 mod plugin_settings;
 mod plugin_store;
 mod plugins;
-mod policy;
 mod pool_usage;
 mod presence;
 mod preview;
@@ -428,10 +427,12 @@ async fn start_background_tasks(state: &AppState) {
 
     // Off the startup path: every replica sweeps, and the scan is IO over a
     // shared volume.
-    tokio::spawn({
-        let (pool, skills) = (state.pool.clone(), state.skills.clone());
-        async move { skill_store::sweep_orphans_or_warn(&pool, &skills).await }
-    });
+    if Task::SkillStoreSweep.enabled(state.config.features) {
+        tokio::spawn({
+            let (pool, skills) = (state.pool.clone(), state.skills.clone());
+            async move { skill_store::sweep_orphans_or_warn(&pool, &skills).await }
+        });
+    }
 
     // Replica-aware WS presence: registered only when the pod knows
     // its routable IP; the heartbeat task keeps this pod's rows trusted and
@@ -577,7 +578,7 @@ fn outer_routes(features: FeatureSet) -> OuterRoutes {
         // Passkey login. Unauthenticated for the same reason `login` is: the
         // assertion IS the credential. `config` is the pre-auth probe the login
         // screen makes to decide whether to offer the passkey button at all.
-        .route("/api/v1/auth/passkey/config", get(routes::passkeys::config))
+        .feature(Feature::Passkeys, "/api/v1/auth/passkey/config", get(routes::passkeys::config))
         .feature(
             Feature::Passkeys,
             "/api/v1/auth/passkey/login/start",
@@ -788,11 +789,12 @@ enum Task {
     UpdateProbe,
     SearchBackfill,
     LabelIntentSweep,
+    SkillStoreSweep,
 }
 
 impl Task {
     #[cfg(test)]
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 14] = [
         Self::FederationOutbox,
         Self::Keepalive,
         Self::PreviewSweep,
@@ -806,6 +808,7 @@ impl Task {
         Self::UpdateProbe,
         Self::SearchBackfill,
         Self::LabelIntentSweep,
+        Self::SkillStoreSweep,
     ];
 
     const fn feature(self) -> Feature {
@@ -820,6 +823,7 @@ impl Task {
             Self::UpdateProbe => Feature::SelfUpdate,
             Self::SearchBackfill => Feature::TranscriptSearch,
             Self::LabelIntentSweep => Feature::Organising,
+            Self::SkillStoreSweep => Feature::Library,
         }
     }
 
@@ -1479,7 +1483,6 @@ mod tests {
             "GET /keys Bearer Authenticated",
             "POST /keys Bearer Authenticated",
             "DELETE /keys/{id} Bearer Authenticated",
-            "GET /keys/{id}/value Bearer Authenticated",
             "GET /labels Bearer Authenticated",
             "POST /labels Bearer Authenticated",
             "DELETE /labels/{id} Bearer Authenticated",
@@ -1600,7 +1603,6 @@ mod tests {
             r#"POST /sessions/{id}/pins Bearer Resource(Session, Write, Path("id"))"#,
             r#"DELETE /sessions/{id}/pins/{seq} Bearer Resource(Session, Write, Path("id"))"#,
             r#"PATCH /sessions/{id}/plugins/{plugin_id} Bearer Resource(Session, Write, Path("id"))"#,
-            r#"POST /sessions/{id}/policy Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/previews Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/previews/{pid}/ticket Bearer Resource(Session, Read, Path("id"))"#,
             r#"GET /sessions/{id}/rebinds Bearer Resource(Session, Read, Path("id"))"#,
@@ -1730,8 +1732,6 @@ mod feature_gate_tests {
         "GET /models/{harness}",
         "GET /models/codex/catalog",
         "POST /machines/{machine_id}/codex-models/refresh",
-        "GET /spawn-memory",
-        "PUT /spawn-memory",
         "GET /sessions",
         "GET /sessions/{id}",
         "GET /sessions/{id}/conversation",
@@ -1739,7 +1739,6 @@ mod feature_gate_tests {
         "POST /sessions/{id}/message",
         "POST /sessions/{id}/interrupt",
         "POST /sessions/{id}/set-model",
-        "POST /sessions/{id}/resume",
         "POST /sessions/{id}/kill",
         "POST /sessions/{id}/archive",
         "GET /permissions/pending",
@@ -1760,6 +1759,10 @@ mod feature_gate_tests {
         "GET /admin/users/{id}/machines",
         "DELETE /admin/machines/{id}",
         "POST /admin/machines/{id}/rotate",
+        "POST /sessions/{id}/fork",
+        "POST /sessions/{id}/resume",
+        "GET /spawn-memory",
+        "PUT /spawn-memory",
     ];
 
     fn core_features() -> FeatureSet {
@@ -1813,6 +1816,9 @@ mod feature_gate_tests {
             ("GET", "/machines/resources", StatusCode::NOT_FOUND),
             ("GET", "/machines/m1/fs/dirs", StatusCode::NOT_FOUND),
             ("GET", "/machines/m1/adapters", StatusCode::NOT_FOUND),
+            ("POST", "/sessions/s1/fork", StatusCode::NOT_FOUND),
+            ("POST", "/sessions/s1/resume", StatusCode::NOT_FOUND),
+            ("GET", "/spawn-memory", StatusCode::NOT_FOUND),
             ("POST", "/sessions/dispatch", StatusCode::UNAUTHORIZED),
             ("POST", "/sessions/s1/kill", StatusCode::UNAUTHORIZED),
         ] {
@@ -1829,6 +1835,28 @@ mod feature_gate_tests {
                 "POST {uri} is unmounted, but the path still matches the kept GET/PATCH \
                  /sessions/{{id}}, so the router answers 405 rather than 404"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn service_tokens_off_unmounts_the_service_token_routes_only() {
+        let off = crate::config::parse_features("[features]\nservice_tokens = false\n")
+            .expect("resolves")
+            .set;
+        let router = crate::build_api_routes_with(off).into_parts().0;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://u:p@127.0.0.1:1/none")
+            .unwrap();
+        let app = router.with_state(crate::state::AppState::for_test(pool));
+        for (method, uri, want) in [
+            ("GET", "/accounts/a1/service-tokens", StatusCode::NOT_FOUND),
+            ("POST", "/accounts/a1/service-tokens", StatusCode::NOT_FOUND),
+            ("DELETE", "/accounts/a1/service-tokens/t1", StatusCode::NOT_FOUND),
+            ("GET", "/accounts/a1", StatusCode::UNAUTHORIZED),
+        ] {
+            let request = Request::builder().method(method).uri(uri).body(Body::empty()).unwrap();
+            let got = app.clone().oneshot(request).await.unwrap().status();
+            assert_eq!(got, want, "{method} {uri}");
         }
     }
 
@@ -1876,6 +1904,7 @@ mod feature_gate_tests {
             ("POST", "/api/v1/auth/device/start"),
             ("POST", "/api/v1/auth/device/poll"),
             ("POST", "/api/v1/auth/passkey/login/start"),
+            ("GET", "/api/v1/auth/passkey/config"),
             ("GET", "/api/v1/ws/voice"),
             ("POST", "/api/v1/daemon/sessions/s1/spawn-child"),
             ("POST", "/api/v1/daemon/sessions/s1/room"),

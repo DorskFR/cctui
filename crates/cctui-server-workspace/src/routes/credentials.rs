@@ -92,30 +92,3 @@ pub async fn delete_api_key(
     }
     Ok(StatusCode::NO_CONTENT)
 }
-
-/// `GET /keys/{id}/value` — the decrypted key. Owner-or-admin only; a row the
-/// caller doesn't own is invisible (404), never 403, so existence isn't leaked.
-pub async fn get_api_key_value(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT encrypted_key FROM api_keys WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
-    )
-    .bind(id)
-    .bind(ctx.owner_filter())
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    let (encrypted,) = row.ok_or(StatusCode::NOT_FOUND)?;
-    let vault_key = crate::crypto::vault_key();
-    let decrypted =
-        crate::crypto::decrypt(&encrypted, &vault_key).ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    Ok(Json(serde_json::json!({ "key": decrypted })))
-}

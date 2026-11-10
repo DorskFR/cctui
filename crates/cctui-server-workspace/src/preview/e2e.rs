@@ -536,6 +536,51 @@ async fn a_browser_on_the_wrong_pod_is_forwarded_to_the_pod_holding_the_daemon()
     super::store::delete_session(&pool, &session.to_string()).await;
 }
 
+#[tokio::test]
+async fn a_worker_registration_is_ignored_with_previews_off() {
+    use cctui_proto::features::{Feature, FeatureSet};
+
+    let Some(pool) = test_pool("preview_off").await else { return };
+    let user = test_user(&pool).await;
+    let (session, machine, conn) = (Uuid::new_v4().to_string(), Uuid::new_v4(), Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO sessions (id, machine_id, working_dir, user_id, adapter_id) \
+         VALUES ($1, $2, '/w', $3, 'claude-code')",
+    )
+    .bind(&session)
+    .bind(machine.to_string())
+    .bind(user)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut state = pod_state(&pool, "pod-off");
+    state.config.features = FeatureSet::all().without(Feature::Previews);
+    let (tx, mut rx) = mpsc::channel(8);
+    state.bus.register_daemon(machine, conn, tx);
+    state.bus.bind_session_conn(&session, conn);
+
+    super::on_frame(
+        &state,
+        machine,
+        user,
+        DaemonFrameUp::PreviewOpen {
+            request_id: Uuid::new_v4(),
+            session_id: session.clone(),
+            port: 5173,
+            preview_id: None,
+        },
+    )
+    .await;
+
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM previews WHERE session_id = $1")
+        .bind(&session)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "no preview is recorded with previews off");
+    assert!(rx.try_recv().is_err(), "no preview frame goes back to the worker");
+}
+
 /// A rolling restart replaces both pods. The daemon comes back on a fresh pod
 /// and re-announces its preview by id; the row is re-bound there and the
 /// browser is served whichever new pod it lands on.

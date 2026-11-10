@@ -96,9 +96,10 @@
 		onescapeaction?: () => void;
 		/** Whether this header owns the window chords. One tile at a time does. */
 		shortcuts?: boolean;
-		onfork: () => void;
+		/** Omitted with `onforkselect` → no fork entry at all. */
+		onfork?: () => void;
 		onfollowup?: () => void;
-		// Toggle multi-select-to-fork mode; omitted → button hidden
+		// Toggle multi-select-to-fork mode; omitted → plain fork
 		// (codex sessions have no partial-fork primitive).
 		onforkselect?: () => void;
 		forkSelectActive?: boolean;
@@ -150,6 +151,8 @@
 		void loadCctuiverseConfig();
 	});
 
+
+	const forkAction = $derived(onforkselect ?? onfork);
 
 	const followupItem = $derived<MenuItem | null>(
 		onfollowup ? { label: m.drawer_followup_label(), icon: 'arrow-right', onselect: onfollowup } : null
@@ -216,13 +219,17 @@
 			onselect: onexport
 		},
 		...(followupItem && settings.preferFollowupOverFork ? [followupItem] : []),
-		{
-			label: m.drawer_fork_label(),
-			icon: 'fork' as const,
-			pressed: onforkselect ? forkSelectActive : undefined,
-			attrs: { title: onforkselect ? m.drawer_fork_select_title() : m.drawer_fork_title() },
-			onselect: onforkselect ?? onfork
-		},
+		...(forkAction
+			? [
+					{
+						label: m.drawer_fork_label(),
+						icon: 'fork' as const,
+						pressed: onforkselect ? forkSelectActive : undefined,
+						attrs: { title: onforkselect ? m.drawer_fork_select_title() : m.drawer_fork_title() },
+						onselect: forkAction
+					}
+				]
+			: []),
 		...(hasFeature('automation')
 			? [
 					{

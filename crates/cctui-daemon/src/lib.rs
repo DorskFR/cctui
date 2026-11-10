@@ -31,6 +31,7 @@ pub mod doctor;
 pub mod enroll;
 pub mod fatal;
 pub mod followledger;
+pub mod framegate;
 pub mod git;
 pub mod guardwatch;
 pub mod harden;

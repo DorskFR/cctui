@@ -19,7 +19,6 @@ pub mod test_support;
 
 pub mod bus;
 pub mod dispatchers;
-pub mod policy;
 pub mod registry;
 
 pub mod client;

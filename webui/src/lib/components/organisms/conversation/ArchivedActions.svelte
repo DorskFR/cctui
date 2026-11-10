@@ -10,8 +10,10 @@
 		onResume
 	}: {
 		onNewFromScript: () => void;
-		onFork: () => void;
-		onResume: () => void;
+		/** Omitted → no Fork button. */
+		onFork?: () => void;
+		/** Omitted → no Resume button. */
+		onResume?: () => void;
 	} = $props();
 </script>
 
@@ -19,8 +21,8 @@
 	<div class="hint"><Text tone="muted" size="sm">{m.composer_archived_readonly()}</Text></div>
 	<span class="archived-actions-btns">
 		<Button onclick={onNewFromScript}>{m.composer_new_from_script()}</Button>
-		<Button onclick={onFork}>{m.composer_fork()}</Button>
-		<Button variant="primary" onclick={onResume}>{m.composer_resume()}</Button>
+		{#if onFork}<Button onclick={onFork}>{m.composer_fork()}</Button>{/if}
+		{#if onResume}<Button variant="primary" onclick={onResume}>{m.composer_resume()}</Button>{/if}
 	</span>
 </div>
 

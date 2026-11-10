@@ -110,7 +110,7 @@ export const useServiceTokens = (accountId: () => string) =>
   createQuery(() => ({
     queryKey: qk.serviceTokens(accountId()),
     queryFn: () => endpoints.serviceTokens(accountId()),
-    enabled: !!accountId(),
+    enabled: !!accountId() && hasFeature("service_tokens"),
   }));
 
 export function useServiceTokenActions() {

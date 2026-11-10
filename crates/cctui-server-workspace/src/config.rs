@@ -490,6 +490,9 @@ impl Config {
         if !self.features.contains(Feature::Federation) {
             self.cctuiverse.enabled = false;
         }
+        if !self.features.contains(Feature::Organising) && self.emoji_endpoint.take().is_some() {
+            tracing::warn!("CCTUI_EMOJI_ENDPOINT is ignored: feature `organising` is off");
+        }
         self
     }
 
@@ -1083,24 +1086,28 @@ mod tests {
     fn an_off_feature_wins_over_its_env_switch() {
         let path = features_file(
             "gated",
-            "[features]\npreviews = false\nplugins = false\nfederation = false\n",
+            "[features]\npreviews = false\nplugins = false\nfederation = false\norganising = false\n",
         );
         let env = [
             ("CCTUI_PREVIEW_HOST", "cctui-pv-{id}.example.test"),
             ("CCTUI_PLUGINS_DIR", "/plugins"),
             ("CCTUI_CCTUIVERSE", "1"),
+            ("CCTUI_EMOJI_ENDPOINT", "http://emoji"),
+            ("CCTUI_EMOJI_MODEL", "small"),
         ];
         let off = with_features(Some(path.clone()), &env).unwrap();
         let _ = std::fs::remove_file(&path);
         assert!(off.preview_host.is_none());
         assert!(off.plugins_dir.is_none());
         assert!(!off.cctuiverse.enabled);
+        assert!(off.emoji_picker().is_none(), "no prompt-derived title leaves a core server");
         assert!(!off.features.contains(Feature::Previews));
 
         let on = with_features(None, &env).unwrap();
         assert!(on.preview_host.is_some());
         assert!(on.plugins_dir.is_some());
         assert!(on.cctuiverse.enabled);
+        assert!(on.emoji_picker().is_some());
     }
 
     #[test]

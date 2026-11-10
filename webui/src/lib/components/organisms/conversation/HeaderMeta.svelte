@@ -51,7 +51,8 @@
 		showStatusBadge: boolean;
 		box?: 'sm' | 'md';
 		onsetmodel: (model: string, effort: string) => void;
-		onfork: () => void;
+		/** Omitted → the model chip is a plain readout, not a fork trigger. */
+		onfork?: () => void;
 	} = $props();
 
 	const end = $derived(sessionEnd(session));
@@ -215,6 +216,10 @@
 				>
 			</span>
 		{/if}
+	{:else if (session.model || session.effort) && !onfork}
+		<span class="model">
+			<Badge mono style="min-width:0;max-width:100%">{@render modelText(session.model ?? '')}</Badge>
+		</span>
 	{:else if session.model || session.effort}
 		<span class="model">
 			<Badge

@@ -2,18 +2,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Feature } from '@bindings/Feature';
 import { setCapabilitiesForTest } from './features.svelte';
+import { ALL_FEATURES as SWITCHABLE } from './features.fixture';
 import { guideEntries } from './guides';
 import { GUIDE_FEATURES, offeredJourneys, publicJourneys, STEP_FEATURES } from './journey';
 
 vi.mock('$lib/queries/endpoints', () => ({ endpoints: {} }));
-
-const SWITCHABLE: Feature[] = [
-	'machine_spawn',
-	'transcript_search',
-	'account_sharing',
-	'automation',
-	'organising'
-];
 
 afterEach(() => setCapabilitiesForTest(null));
 
@@ -43,6 +36,20 @@ describe('offeredJourneys', () => {
 		expect(stepIds('usage-overview', off)).not.toContain('capacity');
 		expect(stepIds('settings-tour', off)).not.toContain('sessions');
 		expect(stepIds('settings-tour', off)?.[0]).toBe('theme');
+	});
+
+	it('skips the machines page of the welcome tour without machine spawn', () => {
+		const noMachines = (f: Feature) => f !== 'machine_spawn';
+		const steps = stepIds('welcome', noMachines);
+		for (const id of ['to-users', 'to-users-mobile', 'users']) expect(steps, id).not.toContain(id);
+		expect(steps).toEqual(expect.arrayContaining(['accounts', 'settings', 'guides']));
+		expect(stepIds('welcome', () => true)).toEqual(expect.arrayContaining(['to-users', 'users']));
+	});
+
+	it('points at the machines tile only from a step machine spawn owns', () => {
+		const offered = offeredJourneys((f) => f !== 'machine_spawn');
+		const usage = offered.find((j) => j.id === 'usage-overview');
+		expect(JSON.stringify(usage?.steps)).not.toContain('tile[machines]');
 	});
 
 	it('drops only the steps of the feature that is off', () => {

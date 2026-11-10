@@ -433,6 +433,10 @@ async fn session_owner_on_machine(
 
 /// Daemon-originated preview frames: registrations and relayed responses.
 pub async fn on_frame(state: &AppState, machine_id: Uuid, daemon_user: Uuid, frame: DaemonFrameUp) {
+    if !state.config.features.contains(cctui_proto::features::Feature::Previews) {
+        tracing::debug!(%machine_id, "previews are off: preview frame dropped");
+        return;
+    }
     let registry = &state.preview;
     match frame {
         DaemonFrameUp::PreviewOpen { request_id, session_id, port, preview_id } => {

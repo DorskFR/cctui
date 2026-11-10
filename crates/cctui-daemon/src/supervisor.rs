@@ -13,8 +13,7 @@ use cctui_crypto::redact::{self, CompiledPatterns};
 use cctui_proto::adapter::{AdapterCommand, AdapterEvent};
 use cctui_proto::api::DaemonAdapterConfig;
 use cctui_proto::backoff::Backoff;
-use cctui_proto::features::{Feature, FeatureSet};
-use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp, ReadFileErrorKind, SecretScrubConfig};
+use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp, SecretScrubConfig};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -108,37 +107,40 @@ async fn send_bounded(sink: &mut WsSink, msg: Message) -> anyhow::Result<()> {
     }
 }
 
-const FILES_OFF: &str = "file access is switched off on this server";
-
-/// The error reply to a directory listing, file read or git-info frame while
-/// the server runs without `files`; `None` serves the frame.
-fn files_refusal(frame: &DaemonFrameDown, features: FeatureSet) -> Option<DaemonFrameUp> {
-    if features.contains(Feature::Files) {
-        return None;
+fn send_refusal(
+    refusal: crate::framegate::Refusal,
+    event_tx: &mpsc::Sender<(String, AdapterEvent)>,
+    frame_up_tx: &mpsc::Sender<DaemonFrameUp>,
+) {
+    match refusal {
+        crate::framegate::Refusal::Reply(up) => send_reply(frame_up_tx, *up),
+        crate::framegate::Refusal::Command { adapter_id, command_id, error } => {
+            reject_command(adapter_id, command_id, error, event_tx, frame_up_tx);
+        }
+        crate::framegate::Refusal::Drop => {}
     }
-    let error = Some(FILES_OFF.to_owned());
-    match frame {
-        DaemonFrameDown::ListDirs { request_id, .. } => Some(DaemonFrameUp::ListDirsResult {
-            request_id: *request_id,
-            ok: false,
-            dirs: Vec::new(),
-            error,
-        }),
-        DaemonFrameDown::GitInfo { request_id, .. } => Some(DaemonFrameUp::GitInfoResult {
-            request_id: *request_id,
-            ok: false,
-            info: None,
-            error,
-        }),
-        DaemonFrameDown::ReadFile { request_id, .. } => Some(DaemonFrameUp::ReadFileResult {
-            request_id: *request_id,
-            ok: false,
-            file: None,
-            error_kind: Some(ReadFileErrorKind::Denied),
-            error,
-            allowed_folders: Vec::new(),
-        }),
-        _ => None,
+}
+
+/// A silent drop leaves the server-side waiter hanging, so a full event
+/// channel falls through to the WS lane rather than giving up. Neither path
+/// may block: this runs in the transport loop.
+fn reject_command(
+    adapter_id: String,
+    command_id: uuid::Uuid,
+    error: String,
+    event_tx: &mpsc::Sender<(String, AdapterEvent)>,
+    frame_up_tx: &mpsc::Sender<DaemonFrameUp>,
+) {
+    let event = AdapterEvent::CommandResult { command_id, ok: false, error: Some(error) };
+    if let Err(err) = event_tx.try_send((adapter_id, event)) {
+        let (mpsc::error::TrySendError::Full((adapter_id, event))
+        | mpsc::error::TrySendError::Closed((adapter_id, event))) = err;
+        if let Err(err) = frame_up_tx.try_send(DaemonFrameUp::Event { adapter_id, event }) {
+            tracing::error!(
+                %err,
+                "command rejection reached neither lane; the caller will time out"
+            );
+        }
     }
 }
 
@@ -407,7 +409,7 @@ impl Supervisor {
         event_rx: &mut mpsc::Receiver<(String, AdapterEvent)>,
     ) -> anyhow::Result<()> {
         let (mut sink, mut stream) = self.connect().await?.split();
-        crate::serverfeatures::reset();
+        let mut hold = self.begin_connection();
 
         // Out-of-band frames the supervisor itself produces (currently the
         // `StageFilesResult` reply to a mid-chat attachment request),
@@ -416,8 +418,6 @@ impl Supervisor {
         crate::preview::set_uplink(Some(frame_up_tx.clone()));
 
         let mut scrub = CompiledPatterns::disabled();
-
-        let mut announced = false;
 
         let mut ping = tokio::time::interval(self.ping_interval);
         ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -455,17 +455,13 @@ impl Supervisor {
                             if let DaemonFrameDown::ChunkAck { transfer_id, highest_contiguous_chunk } = &frame {
                                 self.record_chunk_ack(&mut active, transfer_id, *highest_contiguous_chunk);
                             } else {
-                                let reconciled =
-                                    matches!(frame, DaemonFrameDown::Reconcile { .. });
-                                self.handle_frame(frame, running, event_tx, &frame_up_tx, &mut scrub, &shutdown).await;
-                                // Announce the edge once the connection's first
-                                // reconcile has built (and subscribed) the adapters.
-                                if reconciled && !announced {
-                                    announced = true;
-                                    self.announce_connected();
-                                }
+                                let frames = hold.admit(frame, tokio::time::Instant::now());
+                                self.handle_frames(frames, running, event_tx, &frame_up_tx, &mut scrub, &shutdown).await;
                             }
                         }
+                    }
+                    () = wait_deadline(hold.deadline()) => {
+                        self.handle_frames(hold.release(), running, event_tx, &frame_up_tx, &mut scrub, &shutdown).await;
                     }
                     // Ahead of the chunk branch, or a server round-trip times out
                     // behind a whole transfer.
@@ -532,9 +528,34 @@ impl Supervisor {
         }
         .await;
 
+        self.serve_held(&mut hold, running, event_tx, &frame_up_tx, &mut scrub, &shutdown).await;
         crate::preview::set_uplink(None);
         self.park_connection(active, batch);
         outcome
+    }
+
+    /// Each connection signals its adapters once, on its first `Reconcile`.
+    fn begin_connection(&self) -> crate::framegate::Hold {
+        crate::serverfeatures::reset();
+        self.established.store(false, std::sync::atomic::Ordering::Relaxed);
+        crate::framegate::Hold::new(tokio::time::Instant::now())
+    }
+
+    /// A connection that ends before its announcement or grace serves what it
+    /// held, as it would have unheld; a shutting-down daemon launches nothing.
+    async fn serve_held(
+        &self,
+        hold: &mut crate::framegate::Hold,
+        running: &mut HashMap<String, AdapterRunning>,
+        event_tx: &mpsc::Sender<(String, AdapterEvent)>,
+        frame_up_tx: &mpsc::Sender<DaemonFrameUp>,
+        scrub: &mut CompiledPatterns,
+        shutdown: &CancellationToken,
+    ) {
+        if !shutdown.is_cancelled() {
+            self.handle_frames(hold.release(), running, event_tx, frame_up_tx, scrub, shutdown)
+                .await;
+        }
     }
 
     async fn connect(&self) -> anyhow::Result<WsStream> {
@@ -714,6 +735,27 @@ impl Supervisor {
         }
     }
 
+    async fn handle_frames(
+        &self,
+        frames: Vec<DaemonFrameDown>,
+        running: &mut HashMap<String, AdapterRunning>,
+        event_tx: &mpsc::Sender<(String, AdapterEvent)>,
+        frame_up_tx: &mpsc::Sender<DaemonFrameUp>,
+        scrub: &mut CompiledPatterns,
+        shutdown: &CancellationToken,
+    ) {
+        for frame in frames {
+            let reconciled = matches!(frame, DaemonFrameDown::Reconcile { .. });
+            self.handle_frame(frame, running, event_tx, frame_up_tx, scrub, shutdown).await;
+            // Announce the edge once the connection's first reconcile has built
+            // (and subscribed) the adapters; `begin_connection` clears
+            // `established`.
+            if reconciled && !self.established.load(std::sync::atomic::Ordering::Relaxed) {
+                self.announce_connected();
+            }
+        }
+    }
+
     // Dispatch over every `DaemonFrameDown` variant (reconcile / spawn / command /
     // …); complexity is the breadth of the match arms, not nesting. Per-arm helpers
     // would be churn and obscure the frame-handling overview.
@@ -727,8 +769,8 @@ impl Supervisor {
         scrub: &mut CompiledPatterns,
         shutdown: &CancellationToken,
     ) {
-        if let Some(up) = files_refusal(&frame, crate::serverfeatures::current()) {
-            send_reply(frame_up_tx, up);
+        if let Some(refusal) = crate::framegate::refusal(&frame, crate::serverfeatures::current()) {
+            send_refusal(refusal, event_tx, frame_up_tx);
             return;
         }
         match frame {
@@ -816,24 +858,8 @@ impl Supervisor {
                         command_id.map(|id| (id, refusal))
                     },
                 );
-                // A silent drop leaves the server-side waiter hanging, so a full
-                // event channel falls through to the WS lane rather than giving
-                // up. Neither path may block: this runs in the transport loop.
                 if let Some((command_id, error)) = error {
-                    let event =
-                        AdapterEvent::CommandResult { command_id, ok: false, error: Some(error) };
-                    if let Err(err) = event_tx.try_send((adapter_id, event)) {
-                        let (mpsc::error::TrySendError::Full((adapter_id, event))
-                        | mpsc::error::TrySendError::Closed((adapter_id, event))) = err;
-                        if let Err(err) =
-                            frame_up_tx.try_send(DaemonFrameUp::Event { adapter_id, event })
-                        {
-                            tracing::error!(
-                                %err,
-                                "command rejection reached neither lane; the caller will time out"
-                            );
-                        }
-                    }
+                    reject_command(adapter_id, command_id, error, event_tx, frame_up_tx);
                 }
             }
             DaemonFrameDown::ResumeMarks { session_marks, archived } => {
@@ -1887,62 +1913,8 @@ mod tests {
 
     use super::{
         AdapterRunning, Duration, LIVENESS_TIMEOUT, Lane, PING_INTERVAL, PendingTransfer,
-        Supervisor, compile_scrub, files_refusal, is_textless_thinking, lane, scrub_event,
+        Supervisor, compile_scrub, is_textless_thinking, lane, scrub_event,
     };
-
-    fn file_frames() -> [cctui_proto::ws::DaemonFrameDown; 3] {
-        use cctui_proto::ws::DaemonFrameDown;
-        let request_id = uuid::Uuid::from_u128(7);
-        [
-            DaemonFrameDown::ListDirs { request_id, path: "/home".to_owned() },
-            DaemonFrameDown::GitInfo { request_id, path: "/repo".to_owned(), include_dirty: true },
-            DaemonFrameDown::ReadFile {
-                request_id,
-                path: "/etc/hostname".to_owned(),
-                max_bytes: 10,
-                cwd: None,
-            },
-        ]
-    }
-
-    #[test]
-    fn a_file_frame_is_refused_with_an_error_reply_when_files_is_off() {
-        use cctui_proto::features::{Feature, FeatureSet};
-        let off = FeatureSet::all().without(Feature::Files);
-        for frame in file_frames() {
-            let reply = files_refusal(&frame, off).unwrap_or_else(|| panic!("served {frame:?}"));
-            let (request_id, ok, error) = match reply {
-                DaemonFrameUp::ListDirsResult { request_id, ok, error, .. }
-                | DaemonFrameUp::GitInfoResult { request_id, ok, error, .. } => {
-                    (request_id, ok, error)
-                }
-                DaemonFrameUp::ReadFileResult { request_id, ok, error, error_kind, .. } => {
-                    assert_eq!(error_kind, Some(cctui_proto::ws::ReadFileErrorKind::Denied));
-                    (request_id, ok, error)
-                }
-                other => panic!("unexpected reply {other:?}"),
-            };
-            assert_eq!(request_id, uuid::Uuid::from_u128(7), "the reply is correlated");
-            assert!(!ok);
-            assert!(error.is_some_and(|e| e.contains("switched off")));
-        }
-    }
-
-    #[test]
-    fn a_file_frame_is_served_when_files_is_on_or_never_announced() {
-        let unannounced = crate::serverfeatures::from_off(&[]);
-        for features in [cctui_proto::features::FeatureSet::all(), unannounced] {
-            for frame in file_frames() {
-                assert!(files_refusal(&frame, features).is_none(), "refused {frame:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn the_files_refusal_leaves_every_other_frame_alone() {
-        let ack = cctui_proto::ws::DaemonFrameDown::Ack { seq: 1 };
-        assert!(files_refusal(&ack, cctui_proto::features::FeatureSet::none()).is_none());
-    }
 
     #[test]
     fn the_features_frame_parses_with_extra_fields_and_an_unknown_frame_is_skipped() {
@@ -3432,6 +3404,7 @@ mod tests {
         sessions: Arc<Mutex<usize>>,
         builds: Arc<Mutex<usize>>,
         connects: Arc<Mutex<usize>>,
+        commands: Arc<Mutex<Vec<&'static str>>>,
     }
 
     impl LiveTracker {
@@ -3449,6 +3422,9 @@ mod tests {
         }
         fn connects(&self) -> usize {
             *self.connects.lock().unwrap()
+        }
+        fn commands(&self) -> Vec<&'static str> {
+            self.commands.lock().unwrap().clone()
         }
     }
 
@@ -3478,6 +3454,9 @@ mod tests {
                         if edge.is_ok() {
                             *self.tracker.connects.lock().unwrap() += 1;
                         }
+                    }
+                    Some(command) = ctx.commands.recv() => {
+                        self.tracker.commands.lock().unwrap().push(command.kind_name());
                     }
                 }
             }
@@ -3524,17 +3503,23 @@ mod tests {
     /// Accept one WS connection, send a `Reconcile` for the stub adapter, then
     /// close — the server-rollout shape of a disconnect.
     async fn serve_one_reconcile(listener: &tokio::net::TcpListener) {
+        serve_and_close(listener, &[]).await;
+    }
+
+    async fn serve_and_close(listener: &tokio::net::TcpListener, after: &[serde_json::Value]) {
         use futures_util::SinkExt;
         use tokio_tungstenite::tungstenite::Message;
 
         let (sock, _) = listener.accept().await.unwrap();
         let mut ws = tokio_tungstenite::accept_async(sock).await.unwrap();
-        let frame = serde_json::json!({
+        let reconcile = serde_json::json!({
             "type": "reconcile",
             "adapters": [{ "adapter_id": "stub", "config": { "mode": "bg" }, "enabled": true }],
             "secret_scrub": [],
         });
-        ws.send(Message::Text(frame.to_string().into())).await.unwrap();
+        for frame in std::iter::once(&reconcile).chain(after) {
+            ws.send(Message::Text(frame.to_string().into())).await.unwrap();
+        }
         ws.close(None).await.unwrap();
     }
 
@@ -3619,6 +3604,36 @@ mod tests {
         }
         assert_eq!(tracker.builds(), 1, "three connects, one adapter build");
         assert_eq!(tracker.connects(), 3, "one signal per connection, no more");
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_drops_during_the_hold_still_serves_what_it_held() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let tracker = LiveTracker::default();
+        let supervisor = Supervisor::new(
+            ServerClient::new(format!("http://{addr}")),
+            "machine-key".to_string(),
+            vec![Box::new(TrackedFactory { tracker: tracker.clone() })],
+        );
+        let shutdown = CancellationToken::new();
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let mut running: std::collections::HashMap<String, AdapterRunning> =
+            std::collections::HashMap::new();
+
+        let resume = serde_json::json!({
+            "type": "command", "adapter_id": "stub",
+            "command": { "kind": "resume", "local_id": "s" }
+        });
+        let server = tokio::spawn(async move { serve_and_close(&listener, &[resume]).await });
+        supervisor
+            .run_once(shutdown.clone(), &mut running, &event_tx, &mut event_rx)
+            .await
+            .unwrap();
+        server.await.unwrap();
+        wait_until(|| tracker.connects() == 1).await;
+        wait_until(|| tracker.commands() == ["resume"]).await;
+        super::stop_adapters(&mut running).await;
     }
 
     #[tokio::test]

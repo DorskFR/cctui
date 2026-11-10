@@ -89,6 +89,10 @@ Leave these unset:
 |---|---|
 | `CCTUI_POD_IP` | It joins the replica mesh. The example runs one replica, whose command bus stays in process. |
 | `CCTUI_PLUGINS_DIR`, `CCTUI_PREVIEW_HOST`, `CCTUI_CCTUIVERSE`, `CCTUI_LANGFUSE_*` | Their features are off, and an off feature wins over its variable. |
+| `CCTUI_EMOJI_ENDPOINT`, `CCTUI_EMOJI_MODEL`, `CCTUI_EMOJI_TOKEN` | The session emoji picker sends each session title, which is derived from the prompt, to that external model. It belongs to `organising`, which is off, so the server ignores the endpoint and logs it once at boot. |
+| `CCTUI_NTFY_URL`, `CCTUI_NTFY_TOKEN` | Together they post a notification to that ntfy topic on every dispatch received or failed (dispatcher, user and session id) and on a crashlooping daemon. Nothing switches them off but leaving them unset. |
+| `CCTUI_METRICS_PUBLIC` | `1`, `true`, `on` or `yes` serves `/metrics` without a token. Unset, a scrape authenticates like an API call. |
+| `CCTUI_PROVIDER_STATUS` | Unset, the server polls the providers' public status pages for `GET /provider-status`. Set it to `0` to keep a core server from making those calls; every provider then reads `unknown`. |
 | `CCTUI_DISPATCHERS`, `CCTUI_HTTP_DISPATCHERS` | Enroll dispatchers instead (below). |
 | `CCTUI_CLAUDE_LITELLM_*` | A retired compatibility path. Add an account with a compatible provider instead. |
 | `CCTUI_SPAWN_MAX_CHILDREN`, `CCTUI_SPAWN_MAX_DEPTH`, `CCTUI_SPAWN_MAX_TREE_BUDGET_USD` | Child sessions are off. |
@@ -116,6 +120,13 @@ features: on=[] off=[machine_spawn,files,uploads,...]
 
 A route of a feature that is off answers `404` (`405` when its path also
 matches a kept route of another method).
+
+`/health`, `/readyz`, `/llms.txt` and `/api/v1/openapi.json` answer without a
+token: `/readyz` prints the feature set, the other two describe the API's
+shape and never its data. `PUT /admin/instance/upstream-hosts` (admin only)
+widens the hosts a compatible provider may point at; leave the list empty
+unless an account uses a custom upstream. A stored provider API key
+(`/keys`) is write-only: no route returns its value.
 
 ## Postgres
 

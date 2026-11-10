@@ -75,11 +75,13 @@ async fn journey(server: &Server, pool: &sqlx::PgPool) {
     let operator = create_a_user_and_a_key(server, &admin).await;
     let (account, provider) = add_an_account(server, &operator).await;
     set_a_model_alias(server, &operator, &account, &provider).await;
+    a_stored_provider_key_cannot_be_read_back(server, &admin, &operator).await;
     let mut dispatcher = enroll_a_dispatcher(server, &operator).await;
     let (session, machine_key) = dispatch_a_session(server, &operator, &mut dispatcher).await;
     let mut worker = connect_the_worker(server, &machine_key).await;
     stream_a_transcript(&mut worker, &session).await;
     the_session_list_and_conversation_return_it(server, &operator, &session).await;
+    fork_resume_and_service_tokens_are_not_mounted(server, &operator, &session, &account).await;
     its_events_carry_no_search_text(pool, &session).await;
     kill_the_session(server, &operator, &mut worker, &session).await;
     logout_clears_the_cookie(server, &operator).await;
@@ -394,6 +396,72 @@ async fn set_a_model_alias(server: &Server, operator: &Operator, account: &str, 
     assert_eq!(updated["model_aliases"], aliases);
 }
 
+async fn a_stored_provider_key_cannot_be_read_back(
+    server: &Server,
+    admin_cookie: &str,
+    operator: &Operator,
+) {
+    const SECRET: &str = "journey-provider-secret";
+    let human = Auth::Cookie(&operator.cookie);
+    let stored = server
+        .post(
+            "/api/v1/keys",
+            &human,
+            json!({ "name": "journey-key", "provider": "anthropic", "key": SECRET }),
+        )
+        .await;
+    let id = stored["id"].as_str().unwrap().to_owned();
+    let listed = server.get("/api/v1/keys", &human).await;
+    assert!(!listed.to_string().contains(SECRET), "{listed}");
+    let minted = server
+        .post(
+            &format!("/api/v1/users/{}/keys", operator.id),
+            &Auth::Cookie(admin_cookie),
+            json!({ "label": "journey-dispatch-only", "scopes": ["dispatch"] }),
+        )
+        .await;
+    assert_eq!(sorted_strings(&minted["scopes"]), ["dispatch"]);
+    let dispatch_only = Auth::Bearer(minted["key"].as_str().unwrap());
+    for (who, auth) in [("a dispatch-scoped key", &dispatch_only), ("the human session", &human)] {
+        let response = server
+            .request(Method::GET, &format!("/api/v1/keys/{id}/value"), auth)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.text().await.unwrap();
+        assert_eq!(status, StatusCode::NOT_FOUND, "{who}: the reveal route is gone");
+        assert!(!body.contains(SECRET), "{who}: {body}");
+    }
+}
+
+async fn fork_resume_and_service_tokens_are_not_mounted(
+    server: &Server,
+    operator: &Operator,
+    session: &str,
+    account: &str,
+) {
+    let token = uuid::Uuid::new_v4();
+    let requests = [
+        (Method::POST, format!("/api/v1/sessions/{session}/fork")),
+        (Method::POST, format!("/api/v1/sessions/{session}/resume")),
+        (Method::GET, format!("/api/v1/accounts/{account}/service-tokens")),
+        (Method::POST, format!("/api/v1/accounts/{account}/service-tokens")),
+        (Method::DELETE, format!("/api/v1/accounts/{account}/service-tokens/{token}")),
+    ];
+    let cookie = Auth::Cookie(&operator.cookie);
+    let bearer = Auth::Bearer(&operator.key);
+    for (method, path) in requests {
+        for auth in [&cookie, &bearer] {
+            let status = server.request(method.clone(), &path, auth).send().await.unwrap().status();
+            assert!(
+                status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED,
+                "{method} {path} -> {status}"
+            );
+        }
+    }
+}
+
 async fn enroll_a_dispatcher(server: &Server, operator: &Operator) -> Ws {
     let cookie = &Auth::Cookie(&operator.cookie);
     let enrolled = server
@@ -596,6 +664,7 @@ const OFF_OUTER_ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/v1/ws/voice"),
     ("POST", "/api/v1/auth/passkey/login/start"),
     ("POST", "/api/v1/auth/passkey/login/finish"),
+    ("GET", "/api/v1/auth/passkey/config"),
     ("POST", "/api/v1/auth/device/start"),
     ("POST", "/api/v1/auth/device/poll"),
     ("POST", "/api/v1/daemon/sessions/s1/spawn-child"),

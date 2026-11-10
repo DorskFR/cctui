@@ -1,4 +1,5 @@
 use cctui_proto::adapter::{AdapterEvent, EndReason};
+use cctui_proto::features::Feature;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -14,7 +15,8 @@ async fn mark_session_ended(
     local_id: &str,
     reason: &EndReason,
 ) -> anyhow::Result<()> {
-    if persist_session_end(&state.pool, machine_id, user_id, local_id, reason).await? {
+    let search = state.config.features.contains(Feature::TranscriptSearch);
+    if persist_session_end(&state.pool, search, machine_id, user_id, local_id, reason).await? {
         record_session_ended(state, local_id, machine_id, user_id, reason);
     }
     // Session-scoped gateway tokens die with the session.
@@ -66,7 +68,12 @@ pub(super) fn publish_session_ended(state: &AppState, local_id: &str, reason: &E
     });
 }
 
-struct TranscriptJournal;
+/// `search` off stores the end row with an empty `search_text`, as
+/// `insert_event` does, so the trigger does not index it.
+struct TranscriptJournal {
+    search: bool,
+}
+
 impl cctui_server_core::lifecycle::SessionEndJournal for TranscriptJournal {
     async fn before_end(
         &self,
@@ -82,8 +89,8 @@ impl cctui_server_core::lifecycle::SessionEndJournal for TranscriptJournal {
         // session) — a bare INSERT trips `stream_events_session_id_fkey`. No-op
         // cleanly instead of erroring; the UPDATE below is already missing-safe.
         sqlx::query(
-            "INSERT INTO stream_events (session_id, event_type, payload) \
-         SELECT $1, 'session_ended', $2 WHERE EXISTS ( \
+            "INSERT INTO stream_events (session_id, event_type, payload, search_text) \
+         SELECT $1, 'session_ended', $2, CASE WHEN $5 THEN NULL ELSE '' END WHERE EXISTS ( \
              SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $3 AND user_id = $4) \
          ON CONFLICT (session_id, event_type, content_hash, \
                       COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
@@ -93,6 +100,7 @@ impl cctui_server_core::lifecycle::SessionEndJournal for TranscriptJournal {
         .bind(&payload)
         .bind(machine_id)
         .bind(user_id)
+        .bind(self.search)
         .execute(pool)
         .await?;
         Ok(())
@@ -101,15 +109,17 @@ impl cctui_server_core::lifecycle::SessionEndJournal for TranscriptJournal {
 
 pub(super) async fn persist_failed_spawn(
     pool: &sqlx::PgPool,
+    search: bool,
     row: &crate::state::FailedSpawnRow,
     reason: &EndReason,
 ) -> anyhow::Result<bool> {
-    Ok(cctui_server_core::lifecycle::persist_failed_spawn(pool, &TranscriptJournal, row, reason)
-        .await?)
+    let journal = TranscriptJournal { search };
+    Ok(cctui_server_core::lifecycle::persist_failed_spawn(pool, &journal, row, reason).await?)
 }
 
 pub(in crate::routes::daemon) async fn persist_session_end(
     pool: &sqlx::PgPool,
+    search: bool,
     machine_id: Uuid,
     user_id: Uuid,
     local_id: &str,
@@ -117,7 +127,7 @@ pub(in crate::routes::daemon) async fn persist_session_end(
 ) -> anyhow::Result<bool> {
     Ok(cctui_server_core::lifecycle::persist_session_end(
         pool,
-        &TranscriptJournal,
+        &TranscriptJournal { search },
         machine_id,
         user_id,
         local_id,
@@ -288,18 +298,43 @@ async fn on_session_started(
     )
     .await?;
     crate::auto_archive::claim_intent(state, &local_id, spawn_key_hint.as_deref()).await;
-    crate::spawn_labels::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
-    if state.config.features.contains(cctui_proto::features::Feature::Automation) {
+    let features = state.config.features;
+    if features.contains(Feature::Organising) {
+        crate::spawn_labels::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
+    }
+    if features.contains(Feature::Automation) {
         crate::followup::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
     }
-    crate::routes::context::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
+    claim_context(state, &local_id, spawn_key_hint.as_deref()).await;
     crate::routes::spawn::claim_spawner(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
     if let Some(context_key) = meta.extra.get("context_key").and_then(serde_json::Value::as_str) {
-        crate::routes::context::claim_fork_intent(&state.pool, &local_id, context_key, user_id)
-            .await;
+        claim_fork_context(state, &local_id, context_key, user_id).await;
         crate::routes::spawn::claim_spawner(&state.pool, &local_id, Some(context_key)).await;
     }
     Ok(())
+}
+
+async fn claim_context(state: &AppState, session_id: &str, spawn_key: Option<&str>) {
+    if state.config.features.contains(Feature::Context) {
+        crate::routes::context::claim_intent(&state.pool, session_id, spawn_key).await;
+    } else if let Some(spawn_key) = spawn_key {
+        crate::routes::context::ownership::inherit(&state.pool, session_id, spawn_key, None).await;
+    }
+}
+
+async fn claim_fork_context(state: &AppState, session_id: &str, context_key: &str, user_id: Uuid) {
+    if state.config.features.contains(Feature::Context) {
+        crate::routes::context::claim_fork_intent(&state.pool, session_id, context_key, user_id)
+            .await;
+    } else {
+        crate::routes::context::ownership::inherit(
+            &state.pool,
+            session_id,
+            context_key,
+            Some(user_id),
+        )
+        .await;
+    }
 }
 
 #[cfg(test)]
@@ -440,9 +475,9 @@ mod tests {
         let reason = EndReason::SpawnFailed {
             detail: "unknown model gpt-nope; available: gpt-5-codex".into(),
         };
-        assert!(super::persist_failed_spawn(&pool, &row, &reason).await.expect("persist"));
+        assert!(super::persist_failed_spawn(&pool, true, &row, &reason).await.expect("persist"));
         assert!(
-            !super::persist_failed_spawn(&pool, &row, &reason).await.expect("persist again"),
+            !super::persist_failed_spawn(&pool, true, &row, &reason).await.expect("persist again"),
             "an existing row is left alone"
         );
 
@@ -536,7 +571,7 @@ mod tests {
         let detail =
             format!("claude -p exited (exit status: 1); last stderr:\n{}", "x".repeat(3000));
         let reason = EndReason::Crashed { detail: detail.clone() };
-        super::persist_session_end(&pool, mid, uid, &sid, &reason).await.expect("persist");
+        super::persist_session_end(&pool, true, mid, uid, &sid, &reason).await.expect("persist");
 
         let (status, end_reason, end_detail, ended_at): (
             String,
@@ -566,7 +601,7 @@ mod tests {
         .expect("count events");
         assert_eq!(events, 1);
 
-        super::persist_session_end(&pool, mid, uid, &sid, &EndReason::Killed)
+        super::persist_session_end(&pool, true, mid, uid, &sid, &EndReason::Killed)
             .await
             .expect("persist");
         let (end_reason, end_detail): (Option<String>, Option<String>) =
@@ -577,6 +612,42 @@ mod tests {
                 .expect("read back");
         assert_eq!(end_reason.as_deref(), Some("killed"));
         assert_eq!(end_detail, None);
+    }
+
+    #[tokio::test]
+    async fn the_session_ended_row_carries_no_search_text_with_search_off() {
+        let Some(url) = crate::routes::gateway::test_db_url("session_end_search_off") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "end-search").await;
+        let mut sids = Vec::new();
+        for search in [false, true] {
+            let sid = seed_owned_session(&pool, uid, mid).await;
+            let reason = EndReason::Crashed { detail: "needle".into() };
+            super::persist_session_end(&pool, search, mid, uid, &sid, &reason)
+                .await
+                .expect("persist");
+            let text: Option<String> = sqlx::query_scalar(
+                "SELECT search_text FROM stream_events \
+                 WHERE session_id = $1 AND event_type = 'session_ended'",
+            )
+            .bind(&sid)
+            .fetch_one(&pool)
+            .await
+            .expect("read the end row");
+            if search {
+                assert_ne!(text.as_deref(), Some(""), "the trigger fills it with search on");
+            } else {
+                assert_eq!(text.as_deref(), Some(""), "empty with search off");
+            }
+            sids.push(sid);
+        }
+        crate::routes::daemon::test_support::drop_machines(&pool, &sids, &[(uid, mid)]).await;
     }
 
     /// An account named `Astra-<id>` with one openai provider row, for `uid`.
@@ -862,6 +933,80 @@ mod tests {
             .ok();
         let all = [unclaimed, claimed, parent];
         crate::routes::daemon::test_support::drop_machines(&pool, &all, &[owner]).await;
+    }
+
+    #[tokio::test]
+    async fn registration_writes_no_label_or_context_content_with_both_off() {
+        use cctui_proto::features::{Feature, FeatureSet};
+        let Some(url) = crate::routes::gateway::test_db_url("start_organising_context_off") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let mut off = AppState::for_test(pool.clone());
+        off.config.features =
+            FeatureSet::all().without(Feature::Organising).without(Feature::Context);
+        let (uid, mid) = seed_machine(&pool, "start-gated").await;
+        let sid = Uuid::new_v4().to_string();
+        let fork_key = format!("fork-{}", Uuid::new_v4());
+        sqlx::query(
+            "INSERT INTO session_label_intents (spawn_key, label_ids) VALUES ($1, ARRAY[$2]::uuid[])",
+        )
+        .bind(&sid)
+        .bind(Uuid::new_v4())
+        .execute(&pool)
+        .await
+        .expect("seed label intent");
+        sqlx::query(
+            "INSERT INTO session_context (spawn_key, item_ids, scope, rules, memories) \
+             VALUES ($1, ARRAY[$2]::uuid[], $3, '[{\"name\":\"r\"}]', '[{\"name\":\"m\"}]')",
+        )
+        .bind(&fork_key)
+        .bind(Uuid::new_v4())
+        .bind(sqlx::types::Json(json!({ "user_id": uid.to_string(), "dispatched": false })))
+        .execute(&pool)
+        .await
+        .expect("seed the parent's context set");
+
+        let meta = cctui_proto::adapter::SessionMeta {
+            working_dir: Some("/w".to_owned()),
+            parent_local_id: None,
+            extra: json!({ "short": "s", "context_key": fork_key }),
+        };
+        super::on_session_event(
+            &off,
+            mid,
+            uid,
+            "claude-code",
+            AdapterEvent::SessionStarted { local_id: sid.clone(), meta },
+        )
+        .await
+        .expect("session started");
+
+        let intents: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM session_label_intents WHERE spawn_key = $1")
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .expect("count label intents");
+        assert_eq!(intents, 1, "the label intent is not claimed with organising off");
+        assert_eq!(
+            crate::routes::context::ownership::owner_of(&pool, &sid).await.expect("owner"),
+            Some(uid),
+            "the launch owner follows the session"
+        );
+        crate::routes::context::ownership::test_support::assert_no_content(&pool, &sid).await;
+
+        for sql in [
+            "DELETE FROM session_label_intents WHERE spawn_key = $1 OR spawn_key = $2",
+            "DELETE FROM session_context WHERE spawn_key = $1 OR spawn_key = $2",
+        ] {
+            sqlx::query(sql).bind(&sid).bind(&fork_key).execute(&pool).await.ok();
+        }
+        crate::routes::daemon::test_support::drop_machines(&pool, &[sid], &[(uid, mid)]).await;
     }
 
     /// A daemon reconnecting mid-dispatch re-announces a session whose turn

@@ -1,15 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { Feature } from '@bindings/Feature';
 import { setCapabilitiesForTest } from './features.svelte';
+import { ALL_FEATURES as SWITCHABLE } from './features.fixture';
 import { isNavActive, navItems } from './navItems';
 
-const SWITCHABLE: Feature[] = [
-	'machine_spawn', 'files', 'uploads', 'drafts', 'profiles', 'terminal', 'transcript_search',
-	'child_sessions', 'context', 'plugins', 'auto_approve', 'scheduling', 'automation', 'rooms',
-	'voice', 'previews', 'federation', 'device_login', 'passkeys', 'self_update', 'account_sharing',
-	'observability', 'library', 'organising'
-];
 const PLUGIN_PAGE = [{ href: '/apps/ghreview', label: 'Review', iconName: 'pull-request' as const }];
 
 describe('navItems', () => {

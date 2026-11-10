@@ -1057,7 +1057,6 @@ mod tests {
             "/dispatch-records/{id}/dismiss",
             "/drafts/{*key}",
             "/keys/{id}",
-            "/keys/{id}/value",
             "/labels/{id}",
             "/passkeys/{id}",
             "/prompts/{id}",

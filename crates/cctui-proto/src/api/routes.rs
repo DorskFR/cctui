@@ -337,7 +337,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List or mint the account's service tokens.",
         request: None,
         response: Some("ServiceTokenRow[]"),
-        feature: None,
+        feature: Some(Feature::ServiceTokens),
     },
     Route {
         id: "post_accounts_by_id_service_tokens",
@@ -346,7 +346,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List or mint the account's service tokens.",
         request: Some("MintServiceTokenRequest"),
         response: Some("MintServiceTokenResponse"),
-        feature: None,
+        feature: Some(Feature::ServiceTokens),
     },
     Route {
         id: "delete_accounts_by_id_service_tokens_by_token",
@@ -355,7 +355,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Revoke a service token.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::ServiceTokens),
     },
     Route {
         id: "get_redirects",
@@ -920,15 +920,6 @@ pub const ROUTES: &[Route] = &[
         method: Method::Delete,
         path: "/keys/{id}",
         summary: "Delete a stored provider API key.",
-        request: None,
-        response: None,
-        feature: None,
-    },
-    Route {
-        id: "get_keys_by_id_value",
-        method: Method::Get,
-        path: "/keys/{id}/value",
-        summary: "Reveal a stored provider API key's value.",
         request: None,
         response: None,
         feature: None,
@@ -1975,7 +1966,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Resume an exited session.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "post_sessions_by_id_set_model",
@@ -2227,7 +2218,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Fork a session into a new one.",
         request: None,
         response: None,
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "post_sessions_by_id_auto_approve",
@@ -2308,15 +2299,6 @@ pub const ROUTES: &[Route] = &[
         summary: "Read or toggle the session's gateway tool-guard bypass.",
         request: Some("ToolGuardRequest"),
         response: Some("ToolGuardState"),
-        feature: None,
-    },
-    Route {
-        id: "post_sessions_by_id_policy",
-        method: Method::Post,
-        path: "/sessions/{id}/policy",
-        summary: "Set a session's permission policy.",
-        request: None,
-        response: None,
         feature: None,
     },
     Route {
@@ -2623,7 +2605,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get or replace your remembered spawn configuration per target.",
         request: None,
         response: Some("SpawnMemoryPayload"),
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "put_spawn_memory",
@@ -2632,7 +2614,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get or replace your remembered spawn configuration per target.",
         request: Some("SpawnMemoryPayload"),
         response: Some("SpawnMemoryPayload"),
-        feature: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "post_users_by_id_tokens",

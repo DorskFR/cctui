@@ -1,11 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
 import { ROUTES } from '../src/lib/bindings/routes';
+import { ALL_FEATURES } from '../src/lib/features.fixture';
 import { session, stubApi, watch } from './tiles.fixture';
+import { waitForDrawerOpen } from './drawer.fixture';
 
 const langfuse = { available: false, host: null, public_host: null, project_id: null };
 
-/** Every feature that gates a route, plus `terminal`, which gates only a WebSocket message. */
-const SWITCHABLE = [...new Set([...ROUTES.flatMap((r) => (r.feature ? [r.feature] : [])), 'terminal'])];
+const SWITCHABLE = ALL_FEATURES;
 
 const MATCHERS = ROUTES.map((r) => ({
 	method: r.method as string,
@@ -162,6 +163,18 @@ test('the launch form on a core server is the dispatch form with no tab strip', 
 	await expect(dialog.getByRole('button', { name: 'Draft', exact: true })).toHaveCount(0);
 	expect(offRequests).toEqual([]);
 	expect(errors).toEqual([]);
+});
+
+test('a conversation on a core server offers no fork', async ({ page }) => {
+	await page.setViewportSize({ width: 1280, height: 900 });
+	const offRequests = await coreServer(page);
+	await page.goto('/sessions');
+	await page.locator(`[data-journey="session"][data-session-id="${session(1).id}"] [data-journey="title"]`).click();
+	await waitForDrawerOpen(page);
+	await page.locator('[data-journey="header"] [data-journey="actions"]').click();
+	await expect(page.getByRole('menuitem', { name: 'Copy shareable link' })).toBeVisible();
+	await expect(page.getByRole('menuitem', { name: 'Fork conversation' })).toHaveCount(0);
+	expect(offRequests).toEqual([]);
 });
 
 test('Settings on a core server lists exactly the core pages', async ({ page }) => {
