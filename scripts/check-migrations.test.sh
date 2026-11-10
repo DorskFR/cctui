@@ -62,6 +62,22 @@ EOF
   } >"$core/src/schema.rs"
 }
 entry() { printf '    Migration { version: %s, sql: include_str!("../schema/%s") },' "$1" "$2"; }
+search_stream() {
+  local ws="$dir/crates/cctui-server-workspace"
+  mkdir -p "$ws/schema/search" "$ws/src/schema"
+  touch "$ws/schema/search/0001_transcript_search.sql"
+  search_entries "$(search_entry 1 0001_transcript_search.sql)" "$@"
+}
+search_entries() {
+  {
+    echo 'pub const SEARCH: &[Migration] = &['
+    printf '%s\n' "$@"
+    echo '];'
+  } >"$dir/crates/cctui-server-workspace/src/schema/search.rs"
+}
+search_entry() {
+  printf '    Migration { version: %s, sql: include_str!("../../schema/search/%s") },' "$1" "$2"
+}
 
 check "the real tree passes" "$guard"
 
@@ -131,6 +147,67 @@ fresh
 touch "$core/schema/0003_execution_stops.sql"
 core_entries "$(entry 3 0003_execution_stops.sql)"
 check "the next package version passes" passes
+
+ws="crates/cctui-server-workspace"
+
+fresh
+search_stream
+check "a second stream in its own directory numbers from one and passes" passes
+
+fresh
+search_stream
+touch "$dir/$ws/schema/search/0002_more.sql"
+check "an unregistered file in a second stream fails" fails
+check "the unregistered stream file is named with its registry" \
+  says "$ws/schema/search/0002_more.sql: not registered in $ws/src/schema/search.rs"
+
+fresh
+search_stream
+touch "$dir/$ws/schema/search/0002_more.sql"
+echo 'const MORE: &str = include_str!("../schema/search/0002_more.sql");' >>"$dir/$ws/src/schema.rs"
+check "a stream file registered in another stream's registry fails" fails
+
+fresh
+search_stream "$(search_entry 1 0001_other.sql)"
+touch "$dir/$ws/schema/search/0001_other.sql"
+check "two branches adding the same version to a second stream fails" fails
+check "the second stream's duplicate names both files" \
+  says "$ws/schema/search: version 1 is used by both 0001_other.sql and 0001_transcript_search.sql"
+
+fresh
+search_stream "$(search_entry 3 0003_later.sql)"
+touch "$dir/$ws/schema/search/0003_later.sql"
+check "a gap in a second stream fails" fails
+check "the second stream's gap names the missing version" says "$ws/schema/search: version 2 is missing"
+
+fresh
+search_stream
+rm "$dir/$ws/src/schema/search.rs"
+check "a second stream without its registry fails" fails
+check "the missing registry is named" says "no $ws/src/schema/search.rs registers these migrations"
+
+fresh
+search_stream
+cat >>"$dir/$ws/src/schema.rs" <<'EOF'
+fn derived() -> Migration { Migration { version: 1, sql: derived_sql() } }
+EOF
+check "a version registered without a file fails" fails
+
+fresh
+search_stream
+echo 'fn derived() -> Migration { Migration { sql: derived_sql(), ..MIGRATIONS[0] } }' \
+  >>"$dir/$ws/src/schema.rs"
+check "a baseline derived from a registered one passes" passes
+
+fresh
+mkdir -p "$dir/$ws/schema/search/deeper"
+search_stream
+check "a nested stream directory fails" fails
+
+fresh
+mkdir -p "$dir/$ws/schema/Search"
+touch "$dir/$ws/schema/Search/0001_x.sql"
+check "a malformed stream name fails" fails
 
 [ "$failures" -eq 0 ] || { echo "$failures check(s) failed"; exit 1; }
 echo "all checks passed"

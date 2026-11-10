@@ -26,7 +26,10 @@ that you are blocked.
   `pg_stat_statements` and index usage before adding or dropping an index.
   The legacy `migrations/` stream is frozen at 191; new schema changes go in the
   owning package's `crates/<package>/schema/NNNN_name.sql`, registered in its
-  `src/schema.rs`, and `scripts/check-migrations.sh` rejects collisions.
+  `src/schema.rs`. A package's separate stream lives in
+  `crates/<package>/schema/<stream>/NNNN_name.sql`, numbered from 0001 and
+  registered in `src/schema/<stream>.rs`. `scripts/check-migrations.sh` holds
+  each directory to its registry and rejects collisions and gaps.
 
 ## The TUI is a first-class client
 

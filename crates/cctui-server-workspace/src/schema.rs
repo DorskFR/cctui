@@ -13,13 +13,8 @@ use sqlx::PgConnection;
 /// The workspace baseline corresponding to legacy schema 191.
 pub const BOOTSTRAP: &str = include_str!("../schema/0001_workspace.sql");
 
-pub const SEARCH_PACKAGE: &str = "workspace_search";
-
-pub const SEARCH: &[Migration] = &[Migration {
-    version: 1,
-    name: "transcript_search",
-    sql: include_str!("../schema/0007_transcript_search.sql"),
-}];
+mod search;
+pub use search::{SEARCH, SEARCH_PACKAGE};
 
 const SEARCH_BLOCKS: [&str; 4] = [
     "-- EXTENSION: btree_gin",
@@ -107,7 +102,7 @@ async fn baseline(conn: &mut PgConnection, full: bool) -> Result<Migration, sqlx
         checksum == Sha256::digest(searchless_bootstrap().as_bytes()).to_vec()
     });
     Ok(if searchless {
-        Migration { version: 1, name: "workspace", sql: searchless_bootstrap() }
+        Migration { sql: searchless_bootstrap(), ..MIGRATIONS[0] }
     } else {
         MIGRATIONS[0]
     })
