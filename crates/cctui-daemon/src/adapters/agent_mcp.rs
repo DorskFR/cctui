@@ -320,7 +320,8 @@ mod tests {
         assert!(mcp.argv().ends_with(&tail), "{:?}", mcp.argv());
         assert_eq!(mcp.acp_server()["args"], serde_json::json!(mcp.argv()));
         let codex = mcp.codex_config_overrides();
-        assert!(codex.iter().any(|(k, v)| k.ends_with(".args") && v.contains("--tools")));
+        let args_key = format!("mcp_servers.{SERVER_NAME}.args");
+        assert!(codex.iter().any(|(k, v)| *k == args_key && v.contains("--tools")));
         let opencode = &mcp.opencode_config()[SERVER_NAME]["command"];
         assert_eq!(opencode.as_array().unwrap().len(), mcp.argv().len() + 1);
     }

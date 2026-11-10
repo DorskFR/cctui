@@ -8,8 +8,7 @@ use cctui_proto::features::{Feature, FeatureSet};
 static ANNOUNCED: RwLock<FeatureSet> = RwLock::new(FeatureSet::all());
 
 fn store(features: FeatureSet) {
-    let mut slot = ANNOUNCED.write().unwrap_or_else(std::sync::PoisonError::into_inner);
-    *slot = features;
+    *ANNOUNCED.write().unwrap_or_else(std::sync::PoisonError::into_inner) = features;
 }
 
 pub fn reset() {
@@ -31,7 +30,8 @@ pub fn current() -> FeatureSet {
 pub fn from_off(off: &[String]) -> FeatureSet {
     let set = off
         .iter()
-        .filter_map(|name| Feature::parse(name))
+        .map(String::as_str)
+        .filter_map(Feature::parse)
         .fold(FeatureSet::all(), FeatureSet::without);
     Feature::ALL
         .into_iter()
