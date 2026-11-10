@@ -79,6 +79,38 @@ describe('request gating', () => {
 		expect(sent).toHaveLength(1);
 	});
 
+	it('sends no fork or resume without machine spawn', async () => {
+		off('machine_spawn');
+		await expect(endpoints.fork('s1', {})).rejects.toMatchObject({ status: 404, feature: 'machine_spawn' });
+		await expect(endpoints.resume('s1')).rejects.toMatchObject({ status: 404, feature: 'machine_spawn' });
+		expect(sent).toEqual([]);
+	});
+
+	it('sends no service-token request without service tokens', async () => {
+		off('service_tokens');
+		await expect(endpoints.serviceTokens('a1')).rejects.toBeInstanceOf(FeatureOffError);
+		await expect(endpoints.mintServiceToken('a1', { label: 'x', provider_id: 'p1' })).rejects.toBeInstanceOf(
+			FeatureOffError
+		);
+		await expect(endpoints.revokeServiceToken('a1', 't1')).rejects.toBeInstanceOf(FeatureOffError);
+		expect(sent).toEqual([]);
+	});
+
+	it('forks, resumes and lists service tokens with both features on', async () => {
+		setCapabilitiesForTest({
+			features: ['machine_spawn', 'service_tokens'],
+			switchable: ['machine_spawn', 'service_tokens']
+		});
+		await endpoints.fork('s1', {});
+		await endpoints.resume('s1');
+		await endpoints.serviceTokens('a1');
+		expect(sent).toEqual([
+			'https://api.test/api/v1/sessions/s1/fork',
+			'https://api.test/api/v1/sessions/s1/resume',
+			'https://api.test/api/v1/accounts/a1/service-tokens'
+		]);
+	});
+
 	it('does not gate a foreign origin', async () => {
 		off('plugins');
 		await api.get('/accounts');

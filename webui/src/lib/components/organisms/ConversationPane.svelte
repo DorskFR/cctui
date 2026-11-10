@@ -345,8 +345,9 @@
 		}
 	});
 
+	const canFork = $derived(hasFeature('machine_spawn'));
 	// Subset fork from a conversation extract, only where the harness forks.
-	const forkable = $derived(harnessCaps.fork && !archived);
+	const forkable = $derived(canFork && harnessCaps.fork && !archived);
 	const forkSelect = new ForkSelection();
 	function forkSelection() {
 		const range = forkSelect.range(lines);
@@ -495,7 +496,7 @@
 				onescape={search.escape}
 				onescapeaction={chrome === 'tile' && stream.working ? sa.interrupt : undefined}
 				shortcuts={active}
-				onfork={fork.openDialog}
+				onfork={canFork ? fork.openDialog : undefined}
 				onfollowup={canFollowup ? () => followup() : undefined}
 				onforkselect={forkable ? forkSelect.toggleMode : undefined}
 				forkSelectActive={forkSelect.active}
@@ -601,15 +602,15 @@
 				onsend={(body) => stream.sendBody(body)}
 				stageFiles={(files) => actions.stageFiles(id, files)}
 				onNewFromScript={() => onNewFromScript?.(session)}
-				onFork={fork.openDialog}
+				onFork={canFork ? fork.openDialog : undefined}
 				onFollowup={canFollowup ? followup : undefined}
-				onResume={sa.resume}
+				onResume={canFork ? sa.resume : undefined}
 				compact={chrome === 'tile'}
 			/>
 			</Dropzone>
 		</div>
 
-		{#if forkSelect.active}
+		{#if forkSelect.active && canFork}
 			<ForkSelectBar
 				contained={chrome === 'tile'}
 				count={forkSelect.selected.size}
@@ -619,7 +620,7 @@
 			/>
 		{/if}
 
-		{#if fork.open}
+		{#if fork.open && canFork}
 			<ForkModal
 				{archived}
 				{isCodexSession}

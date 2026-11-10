@@ -39,8 +39,8 @@ export default defineJourney({
 			say: {
 				title: { en: 'Start here: is the fleet healthy?', fr: 'Commencez ici : la flotte est-elle en bonne santé ?' },
 				body: {
-					en: 'One control room for every coding agent you run. These tiles answer the first question before you touch anything — what is live, what is stuck, which machines are up.',
-					fr: 'Un poste de contrôle pour chaque agent de code que vous exécutez. Ces tuiles répondent à la première question avant toute action : ce qui tourne, ce qui est bloqué, quelles machines sont en ligne.'
+					en: 'One control room for every coding agent you run. These tiles answer the first question before you touch anything — what is live, what is stuck, how much has run.',
+					fr: 'Un poste de contrôle pour chaque agent de code que vous exécutez. Ces tuiles répondent à la première question avant toute action : ce qui tourne, ce qui est bloqué, combien a déjà tourné.'
 				}
 			},
 			expect: [{ visible: 'tiles' }],
@@ -92,8 +92,8 @@ export default defineJourney({
 			say: {
 				title: { en: 'Starting one', fr: 'En démarrer une' },
 				body: {
-					en: 'This turns a prompt into a running agent: pick the machine, the folder and the account, and it works in the background whether or not you keep the tab open.',
-					fr: 'Ceci transforme une instruction en agent actif : choisissez la machine, le dossier et le compte, et il travaille en arrière-plan, que vous gardiez l’onglet ouvert ou non.'
+					en: 'This turns a prompt into a running agent: pick where it runs and the account, and it works in the background whether or not you keep the tab open.',
+					fr: 'Ceci transforme une instruction en agent actif : choisissez où il tourne et le compte, et il travaille en arrière-plan, que vous gardiez l’onglet ouvert ou non.'
 				}
 			},
 			expect: [{ visible: { css: '[data-journey="new"], [data-journey="spawn"]' } }],
@@ -107,8 +107,8 @@ export default defineJourney({
 			say: {
 				title: { en: 'Where does the quota come from?', fr: 'D’où vient le quota ?' },
 				body: {
-					en: 'An agent spends somebody’s tokens, on somebody’s machine. Both are set up in Settings — open it.',
-					fr: 'Un agent dépense les jetons de quelqu’un, sur la machine de quelqu’un. Les deux se configurent dans Réglages — ouvrez-les.'
+					en: 'An agent spends somebody’s tokens, and they are set up in Settings — open it.',
+					fr: 'Un agent dépense les jetons de quelqu’un, et ils se configurent dans Réglages — ouvrez-les.'
 				}
 			}
 		},
@@ -213,8 +213,8 @@ export default defineJourney({
 			say: {
 				title: { en: 'Now walk it for real', fr: 'Maintenant, parcourez-la pour de vrai' },
 				body: {
-					en: 'That is every screen. The rest of the guides run inside the app and point at the real controls in order — read the fleet, connect an account, enrol a machine, start a session, follow it. Start with this one.',
-					fr: 'Voilà tous les écrans. Les autres guides se déroulent dans l’application et désignent les vrais contrôles, dans l’ordre : lire la flotte, connecter un compte, enrôler une machine, lancer une session, la suivre. Commencez par celui-ci.'
+					en: 'That is every screen. The rest of the guides run inside the app and point at the real controls in order. Start with this one.',
+					fr: 'Voilà tous les écrans. Les autres guides se déroulent dans l’application et désignent les vrais contrôles, dans l’ordre. Commencez par celui-ci.'
 				}
 			},
 			expect: [{ visible: 'guide[sessions-list]' }],

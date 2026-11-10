@@ -45,6 +45,20 @@ describe('offeredJourneys', () => {
 		expect(stepIds('settings-tour', off)?.[0]).toBe('theme');
 	});
 
+	it('skips the machines page of the welcome tour without machine spawn', () => {
+		const noMachines = (f: Feature) => f !== 'machine_spawn';
+		const steps = stepIds('welcome', noMachines);
+		for (const id of ['to-users', 'to-users-mobile', 'users']) expect(steps, id).not.toContain(id);
+		expect(steps).toEqual(expect.arrayContaining(['accounts', 'settings', 'guides']));
+		expect(stepIds('welcome', () => true)).toEqual(expect.arrayContaining(['to-users', 'users']));
+	});
+
+	it('points at the machines tile only from a step machine spawn owns', () => {
+		const offered = offeredJourneys((f) => f !== 'machine_spawn');
+		const usage = offered.find((j) => j.id === 'usage-overview');
+		expect(JSON.stringify(usage?.steps)).not.toContain('tile[machines]');
+	});
+
 	it('drops only the steps of the feature that is off', () => {
 		const noPools = (f: Feature) => f !== 'account_sharing';
 		expect(stepIds('accounts-pools', noPools)).not.toContain('pools');

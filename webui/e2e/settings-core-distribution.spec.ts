@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { ROUTES } from '../src/lib/bindings/routes';
 import { session, stubApi, watch } from './tiles.fixture';
+import { waitForDrawerOpen } from './drawer.fixture';
 
 const langfuse = { available: false, host: null, public_host: null, project_id: null };
 
@@ -162,6 +163,18 @@ test('the launch form on a core server is the dispatch form with no tab strip', 
 	await expect(dialog.getByRole('button', { name: 'Draft', exact: true })).toHaveCount(0);
 	expect(offRequests).toEqual([]);
 	expect(errors).toEqual([]);
+});
+
+test('a conversation on a core server offers no fork', async ({ page }) => {
+	await page.setViewportSize({ width: 1280, height: 900 });
+	const offRequests = await coreServer(page);
+	await page.goto('/sessions');
+	await page.locator(`[data-journey="session"][data-session-id="${session(1).id}"] [data-journey="title"]`).click();
+	await waitForDrawerOpen(page);
+	await page.locator('[data-journey="header"] [data-journey="actions"]').click();
+	await expect(page.getByRole('menuitem', { name: 'Copy shareable link' })).toBeVisible();
+	await expect(page.getByRole('menuitem', { name: 'Fork conversation' })).toHaveCount(0);
+	expect(offRequests).toEqual([]);
 });
 
 test('Settings on a core server lists exactly the core pages', async ({ page }) => {

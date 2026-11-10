@@ -181,10 +181,6 @@ export function useSessionActions() {
       await api.post<void>("/sessions/unarchive", { ids });
       inval();
     },
-    kill: async (id: string) => {
-      await api.post<void>(`/sessions/${id}/kill`);
-      inval();
-    },
     /** Stop the in-flight turn. Returns a `command_id` to await on
      *  the ws so the caller can tell whether the agent actually
      *  accepted the interrupt instead of firing-and-forgetting. */

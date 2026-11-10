@@ -162,6 +162,7 @@ export const GUIDE_FEATURES: Record<string, Feature> = {
 
 /** Steps that point at a surface a switchable feature owns, by guide and step id. */
 export const STEP_FEATURES: Record<string, Record<string, Feature>> = {
+	welcome: { 'to-users': 'machine_spawn', 'to-users-mobile': 'machine_spawn', users: 'machine_spawn' },
 	'sessions-list': { search: 'transcript_search', clear: 'transcript_search' },
 	'accounts-pools': { pools: 'account_sharing' },
 	'usage-overview': { capacity: 'machine_spawn' },

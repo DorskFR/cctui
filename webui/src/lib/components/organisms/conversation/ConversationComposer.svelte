@@ -71,8 +71,8 @@
 		// Upload staged attachments, returning their absolute paths.
 		stageFiles: (files: File[]) => Promise<{ paths: string[] }>;
 		onNewFromScript: () => void;
-		onFork: () => void;
-		onResume: () => void;
+		onFork?: () => void;
+		onResume?: () => void;
 		onFollowup?: (instruction?: string) => void;
 		/** Tile chrome: one line of input until it takes focus. */
 		compact?: boolean;
