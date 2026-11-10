@@ -40,7 +40,7 @@ server that announces nothing has every feature on. The daemon then:
 - refuses directory listing, git info and file read frames when `files` is
   off, even if the server sends them.
 
-`deploy/features/core.toml` is the core deployment: every feature off. What
+`deploy/features/core.toml` is the core deployment ([operator guide](./core.md)): every feature off. What
 is left is token login and logout, users and keys, accounts and OAuth,
 provider settings, redirects and model aliases, usage and limit reset,
 dispatcher enrollment, dispatch, failed-dispatch records, the harness and

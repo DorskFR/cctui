@@ -102,6 +102,9 @@ pub async fn run() -> anyhow::Result<()> {
         return check_plugin_archive(rest);
     }
     install_crypto_provider();
+    if args.first().is_some_and(|cmd| cmd == "init-db") {
+        return init_db().await;
+    }
     let _telemetry = cctui_telemetry::init(
         "cctui-server",
         env!("CARGO_PKG_VERSION"),
@@ -133,6 +136,18 @@ fn check_plugin_archive(args: &[String]) -> anyhow::Result<()> {
     };
     let bytes = std::fs::read(path)?;
     plugin_archive::check_catalog_archive(&bytes, id, version).map_err(anyhow::Error::msg)
+}
+
+/// `init-db`: provision or upgrade the schema, then exit. Needs only
+/// `DATABASE_URL`, which may be a secret ref.
+async fn init_db() -> anyhow::Result<()> {
+    let secrets = cctui_secrets::SecretRegistry::from_env();
+    let raw = std::env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL is required"))?;
+    let url = secrets.register("DATABASE_URL", &raw).await?.get();
+    let (pool, applied) = db::connect_reporting(&url).await?;
+    pool.close().await;
+    println!("schema ready; {} legacy migrations applied", applied.len());
+    Ok(())
 }
 
 use cctui_server_core::client::{build_http_client, install_crypto_provider};
@@ -935,12 +950,13 @@ async fn shutdown_signal() {
 /// Readiness, unlike `/health` liveness: 503 while the database is unreachable.
 async fn readyz(
     axum::extract::State(state): axum::extract::State<AppState>,
-) -> (axum::http::StatusCode, &'static str) {
-    if db_ready(&state.pool).await {
+) -> (axum::http::StatusCode, String) {
+    let (status, verdict) = if db_ready(&state.pool).await {
         (axum::http::StatusCode::OK, "ok")
     } else {
         (axum::http::StatusCode::SERVICE_UNAVAILABLE, "database unavailable")
-    }
+    };
+    (status, format!("{verdict}\nfeatures: {}\n", state.config.features))
 }
 
 async fn db_ready(pool: &sqlx::PgPool) -> bool {
