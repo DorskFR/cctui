@@ -488,12 +488,6 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
-id = "get_keys_by_id_value"
-# GET /keys/{id}/value — Reveal a stored provider API key's value.
-tui = "waived"
-reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
-
-[[route]]
 id = "get_labels"
 # GET /labels — List label definitions, or create one.
 tui = "handled"
@@ -1409,12 +1403,6 @@ id = "put_sessions_by_id_tool_guard"
 # PUT /sessions/{id}/tool-guard — Read or toggle the session's gateway tool-guard bypass.
 tui = "waived"
 reason = "the per-session tool-guard bypass is a webui drawer switch and block-banner action"
-
-[[route]]
-id = "post_sessions_by_id_policy"
-# POST /sessions/{id}/policy — Set a session's permission policy.
-tui = "waived"
-reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
 id = "patch_sessions_by_id_plugins_by_plugin"

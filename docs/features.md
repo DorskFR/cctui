@@ -37,9 +37,30 @@ server that announces nothing has every feature on. The daemon then:
 - offers a session only the agent tools whose feature is on: `child_sessions`
   for agent spawn and archive, `rooms` for peers, send, history and room,
   `voice` for speak, `context` for context. Usage and user actions are always
-  offered.
-- refuses directory listing, git info and file read frames when `files` is
-  off, even if the server sends them.
+  offered. A preview open or close call is answered with an error while
+  `previews` is off.
+- refuses, on its own, every frame of a feature that is off, even if the
+  server sends it:
+
+  | Frames | Refused when off |
+  |---|---|
+  | Directory listing, git info, file read | `files` |
+  | Staging files into a session | `uploads` and `context` both |
+  | Spawn, fork and resume of a session without a parent | `machine_spawn` |
+  | Spawn of a session with a parent | `child_sessions` |
+  | Terminal watch | `terminal` |
+  | Update hook, harness update policy, harness drain and restart | `self_update` |
+  | Preview requests, chunks, aborts and open or close replies | `previews` |
+
+  A refused request gets a failed reply naming the feature; a refused command
+  that carries a command id gets a failed command result; anything else is
+  dropped. Messages, interrupts, kills, approvals, model changes and the
+  other session commands belong to no feature and are always served.
+- holds every feature-owned frame that arrives before the announcement, and
+  every frame behind it so the order is kept, then judges them on the
+  announcement. A server that announces nothing within 3 seconds of the
+  connection (or once 1024 frames are waiting) has its held frames served as
+  every feature on.
 
 `deploy/features/core.toml` is the core deployment ([operator guide](./core.md)): every feature off. What
 is left is token login and logout, users and keys, accounts and OAuth,
