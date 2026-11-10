@@ -12,6 +12,7 @@ pub mod compress;
 pub mod diagnose;
 pub mod dispatch_identity;
 pub mod drafts;
+pub mod features;
 pub mod git;
 pub mod github;
 pub mod guard_step;

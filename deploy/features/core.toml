@@ -1,0 +1,5 @@
+# Every switchable feature off. Load with CCTUI_FEATURES_FILE; see docs/features.md.
+
+default = false
+
+[features]

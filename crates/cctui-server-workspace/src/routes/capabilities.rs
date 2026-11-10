@@ -1,5 +1,5 @@
-//! `GET /api/v1/capabilities` — which optional integrations this server has,
-//! and whether each is operational. GitHub review is served by the separate
+//! `GET /api/v1/capabilities` — which features and optional integrations this
+//! server has, and whether each is operational. GitHub review is served by the separate
 //! ghreview backend, which exposes its own `/v1/capabilities`.
 
 use axum::Json;
@@ -23,7 +23,7 @@ pub async fn capabilities(State(state): State<AppState>) -> Json<CapabilitiesRes
         }
     };
 
-    Json(CapabilitiesResponse::full(langfuse))
+    Json(CapabilitiesResponse::full(langfuse, state.config.features))
 }
 
 #[cfg(test)]
@@ -58,5 +58,40 @@ mod tests {
         assert_eq!(v["host"], "https://lf.example");
         assert_eq!(v["public_host"], "https://lf.public.example");
         assert_eq!(v["project_id"], "proj_123");
+    }
+
+    #[test]
+    fn a_core_server_announces_only_always_on_features() {
+        let core = crate::config::parse_features(include_str!(
+            "../../../../deploy/features/core.toml"
+        ))
+        .unwrap()
+        .set;
+        let caps = CapabilitiesResponse::full(LangfuseCapability::default(), core);
+        let v = serde_json::to_value(&caps).unwrap();
+        assert_eq!(v["workspace"], true);
+        assert_eq!(v["distribution"], "full");
+        let features: Vec<&str> =
+            v["features"].as_array().unwrap().iter().filter_map(|f| f.as_str()).collect();
+        assert!(features.contains(&"dispatch") && features.contains(&"workspace"));
+        for feature in cctui_proto::features::Feature::ALL {
+            assert!(!features.contains(&feature.name()), "{feature} announced on core");
+            assert!(!caps.has(feature), "{feature}");
+        }
+        assert_eq!(
+            v["switchable"].as_array().unwrap().len(),
+            cctui_proto::features::Feature::ALL.len()
+        );
+    }
+
+    #[test]
+    fn a_full_server_announces_every_switchable_feature() {
+        let caps = CapabilitiesResponse::full(
+            LangfuseCapability::default(),
+            cctui_proto::features::FeatureSet::all(),
+        );
+        for feature in cctui_proto::features::Feature::ALL {
+            assert!(caps.features.iter().any(|f| f == feature.name()), "{feature}");
+        }
     }
 }

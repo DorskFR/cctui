@@ -4,6 +4,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use std::sync::Arc;
 
+use cctui_proto::features::Feature;
 use cctui_proto::ws::{AgentEvent, ServerEvent, TuiCommand};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::broadcast::error::RecvError;
@@ -394,6 +395,13 @@ async fn run_tui_socket(
             }
         };
 
+        if let Some(feature) = command_feature(&cmd)
+            && !state.config.features.contains(feature)
+        {
+            tracing::debug!(%feature, user_id = %ctx.user_id, "tui_ws: command refused (feature off)");
+            continue;
+        }
+
         match cmd {
             TuiCommand::Subscribe { session_id } => {
                 // Only stream a session this principal owns (admin bypasses).
@@ -622,6 +630,14 @@ async fn permission_target(
     match decision {
         SessionDecision::Foreign => None,
         SessionDecision::Recorded | SessionDecision::Unknown => Some(session_id),
+    }
+}
+
+/// The switchable feature a browser command belongs to; `None` is core.
+pub const fn command_feature(cmd: &TuiCommand) -> Option<Feature> {
+    match cmd {
+        TuiCommand::WatchTerminal { .. } => Some(Feature::Terminal),
+        _ => None,
     }
 }
 
@@ -1096,6 +1112,14 @@ async fn handle_tui_ws(socket: WebSocket, state: AppState, ctx: AuthContext) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn terminal_watch_belongs_to_the_terminal_feature() {
+        let watch = super::TuiCommand::WatchTerminal { session_id: "s1".into(), watch: true };
+        assert_eq!(super::command_feature(&watch), Some(super::Feature::Terminal));
+        let unsubscribe = super::TuiCommand::Unsubscribe { session_id: "s1".into() };
+        assert_eq!(super::command_feature(&unsubscribe), None);
+    }
+
     use axum::http::{HeaderMap, HeaderValue, header};
 
     use cctui_proto::models::{Session, SessionStatus};
