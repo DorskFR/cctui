@@ -16,7 +16,6 @@ that you are blocked.
 - `crates/cctui-server-workspace` — the interactive HTTP/WebSocket handlers,
   application state, workspace storage and full-host assembly.
 - `crates/cctui-server-core` — shared execution services and persistence.
-- `crates/cctui-core-server` — the standalone execution host.
 - `crates/cctui-daemon` — long-lived per-machine daemon that spawns/observes sessions.
 - `crates/cctui-admin`, `crates/cctui-proto` — share the workspace version.
 - `crates/cctui-tui` — the terminal client (`cctui`). Maintained; see

@@ -75,18 +75,6 @@ impl CapabilitiesResponse {
         let name = feature.name();
         self.features.iter().any(|f| f == name) || !self.switchable.iter().any(|f| f == name)
     }
-
-    #[must_use]
-    pub fn core() -> Self {
-        Self {
-            langfuse: LangfuseCapability::default(),
-            distribution: "core".into(),
-            workspace: false,
-            features: EXECUTION_FEATURES.iter().map(|feature| (*feature).to_owned()).collect(),
-            switchable: Vec::new(),
-            experimental: true,
-        }
-    }
 }
 
 /// The Langfuse read integration's capability, as seen by the webui.
