@@ -23,7 +23,7 @@ const OPERATOR: &str = "journey-operator";
 const ACCOUNT: &str = "journey-claude";
 const DISPATCHER: &str = "journey-dispatcher";
 const ALIAS: (&str, &str) = ("fable", "claude-fable-5-2[1m]");
-const BOOT_TIMEOUT: Duration = Duration::from_secs(180);
+const BOOT_TIMEOUT: Duration = Duration::from_mins(3);
 const WAIT: Duration = Duration::from_secs(15);
 
 type Ws =
@@ -111,7 +111,8 @@ impl Server {
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let base = format!("http://127.0.0.1:{port}");
         let skills = tempfile::tempdir().unwrap();
-        let vault_key = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+        let vault_key =
+            format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
         let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "journey_server_process", "--nocapture", "--test-threads=1"])
             .env(SERVER_PROCESS_ENV, "1")
@@ -182,7 +183,13 @@ impl Server {
         }
     }
 
-    async fn json(&self, method: Method, path: &str, auth: &Auth<'_>, body: Option<Value>) -> Value {
+    async fn json(
+        &self,
+        method: Method,
+        path: &str,
+        auth: &Auth<'_>,
+        body: Option<Value>,
+    ) -> Value {
         let mut request = self.request(method.clone(), path, auth);
         if let Some(body) = body {
             request = request.json(&body);
@@ -256,7 +263,9 @@ async fn next_text<T: Send>(
             }
         }
     };
-    tokio::time::timeout(WAIT, read).await.unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+    tokio::time::timeout(WAIT, read)
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
 
 async fn connect(url: String, bearer: &str) -> Ws {
@@ -265,7 +274,7 @@ async fn connect(url: String, bearer: &str) -> Ws {
     tokio_tungstenite::connect_async(request).await.unwrap().0
 }
 
-async fn send_json(ws: &mut Ws, frame: &impl serde::Serialize) {
+async fn send_json(ws: &mut Ws, frame: &(impl serde::Serialize + Sync)) {
     ws.send(Message::Text(serde_json::to_string(frame).unwrap().into())).await.unwrap();
 }
 
@@ -388,7 +397,11 @@ async fn set_a_model_alias(server: &Server, operator: &Operator, account: &str, 
 async fn enroll_a_dispatcher(server: &Server, operator: &Operator) -> Ws {
     let cookie = &Auth::Cookie(&operator.cookie);
     let enrolled = server
-        .post("/api/v1/dispatcher/enroll", cookie, json!({ "name": DISPATCHER, "kind": "kubernetes" }))
+        .post(
+            "/api/v1/dispatcher/enroll",
+            cookie,
+            json!({ "name": DISPATCHER, "kind": "kubernetes" }),
+        )
         .await;
     let key = enrolled["dispatcher_key"].as_str().unwrap();
     let mut socket = connect(server.ws_url("/api/v1/dispatcher/ws"), key).await;
@@ -546,15 +559,18 @@ async fn kill_the_session(server: &Server, operator: &Operator, worker: &mut Ws,
         .await
         .unwrap();
     assert_eq!(killed.status(), StatusCode::NO_CONTENT);
-    next_text(worker, "the kill command", |text| match serde_json::from_str::<DaemonFrameDown>(text) {
-        Ok(DaemonFrameDown::Command { command, .. }) => {
-            matches!(*command, AdapterCommand::Kill { ref local_id, .. } if local_id == session)
-                .then_some(())
+    next_text(worker, "the kill command", |text| {
+        match serde_json::from_str::<DaemonFrameDown>(text) {
+            Ok(DaemonFrameDown::Command { command, .. }) => {
+                matches!(*command, AdapterCommand::Kill { ref local_id, .. } if local_id == session)
+                    .then_some(())
+            }
+            _ => None,
         }
-        _ => None,
     })
     .await;
-    let ended = AdapterEvent::SessionEnded { local_id: session.to_owned(), reason: EndReason::Killed };
+    let ended =
+        AdapterEvent::SessionEnded { local_id: session.to_owned(), reason: EndReason::Killed };
     send_json(worker, &DaemonFrameUp::Event { adapter_id: "claude-code".into(), event: ended })
         .await;
     eventually("the session to stop", || async move {
@@ -611,11 +627,9 @@ async fn every_route_outside_core_answers_404_or_405(server: &Server) {
             (Method::from_bytes(route.method.as_str().as_bytes()).unwrap(), route.url(&params))
         })
         .collect();
-    requests.extend(
-        OFF_OUTER_ROUTES
-            .iter()
-            .map(|(method, path)| (Method::from_bytes(method.as_bytes()).unwrap(), (*path).to_owned())),
-    );
+    requests.extend(OFF_OUTER_ROUTES.iter().map(|(method, path)| {
+        (Method::from_bytes(method.as_bytes()).unwrap(), (*path).to_owned())
+    }));
     let mut mounted = Vec::new();
     for (method, path) in requests {
         let status = server

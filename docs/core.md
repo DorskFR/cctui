@@ -177,15 +177,38 @@ once.
 
 The key goes in the dispatcher's configuration file, `dispatcher.toml`
 (`$XDG_CONFIG_HOME/cctui/dispatcher.toml` by default), as `dispatcher_key`.
-The value may be a [secret ref](./secret-refs.md). For Kubernetes, store that
-file as a Secret mounted into `cctui-dispatcher-kube`; the rest of its setup
+The value may be a [secret ref](./secret-refs.md). `--config` or
+`CCTUI_DISPATCHER_CONFIG` points the dispatcher at another path. For
+Kubernetes, store that file as a Secret mounted into `cctui-dispatcher-kube`; the rest of its setup
 (worker profiles, admission webhooks, network policy) is in
 [core on Kubernetes](./core-kubernetes.md). A connected dispatcher shows as
 connected in the same list.
 
-### 6. Dispatch a session and read it
+### 6. Dispatch a session, read it, stop it
 
-Dispatch with the user's key, or any of its keys holding the `dispatch` scope:
+**Sessions**, **New session**. On a core server this opens the dispatch form:
+
+| Field | What it sets |
+|---|---|
+| **Dispatcher** | The enrolled dispatcher to run on (listed once one is enrolled). |
+| **Harness** | The agent the worker runs, Claude or Codex. |
+| **Name (optional)** | The session's label. |
+| **Identity (optional)** | Which credential set the worker acts as; empty is the worker's default. |
+| **Repo** | A repository checked out under the worker's `/workspace` (optional). |
+| **Ticket (optional)** | An issue id handed to the flow's prompt. |
+| **Prompt** | The task. |
+| **Prompt file (optional)** | A file under the worker's `/prompts`; it overrides **Prompt**. |
+| **Account (optional)** | The account whose gateway the worker's model traffic goes through. **Default (no account)** leaves it to the dispatcher's default account. |
+| **Model**, **Timeout min** | The model to launch and the run's time limit. |
+| **Context pack (optional)** | **Context pack URL**, and under **Advanced** its ref, subdirectory and token. |
+
+Press **Dispatch**. The session appears under **Sessions** once its worker
+connects; open it to read the conversation live. **Archive**, in the session's
+header (under **More actions** on a narrow screen), stops it: the session's
+gateway credential is revoked and its worker is told to remove its job.
+
+The same dispatch through the API, with the user's key or any of its keys
+holding the `dispatch` scope:
 
 ```sh
 curl -sS https://cctui.example.org/api/v1/sessions/dispatch \
@@ -196,11 +219,10 @@ curl -sS https://cctui.example.org/api/v1/sessions/dispatch \
 
 The answer carries the `session_id`. The payload is handed to the worker as
 is; [the worker contract](./worker-contract.md) lists the fields it reads.
-
-The session appears under **Sessions** as soon as the worker connects; open it
-to read the conversation live. `GET /api/v1/sessions/{id}/conversation`
-returns the same transcript and `GET /api/v1/sessions/{id}/result` the outcome.
-`POST /api/v1/sessions/{id}/kill` stops the worker.
+`GET /api/v1/sessions/{id}/conversation` returns the transcript,
+`GET /api/v1/sessions/{id}/result` the outcome, and
+`POST /api/v1/sessions/{id}/kill` stops the worker without archiving the
+session.
 
 ### 7. Limits and resets
 
