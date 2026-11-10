@@ -18,4 +18,7 @@ impl CredentialContext for crate::state::AppState {
     fn vault_key(&self) -> Vec<u8> {
         crate::crypto::vault_key()
     }
+    fn service_tokens(&self) -> bool {
+        self.config.features.contains(cctui_proto::features::Feature::ServiceTokens)
+    }
 }

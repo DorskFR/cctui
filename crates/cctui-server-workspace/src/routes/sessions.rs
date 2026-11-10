@@ -3595,6 +3595,14 @@ fn fork_frame(
     }
 }
 
+async fn inherit_fork_context(state: &AppState, child_key: &str, parent_id: &str) {
+    if state.config.features.contains(cctui_proto::features::Feature::Context) {
+        crate::routes::context::inherit_intent(&state.pool, child_key, parent_id).await;
+    } else {
+        crate::routes::context::ownership::inherit(&state.pool, child_key, parent_id, None).await;
+    }
+}
+
 /// `POST /api/v1/sessions/{id}/fork` — fork an existing conversation into a
 /// brand-new session, optionally changing model/effort at fork time.
 ///
@@ -3692,7 +3700,7 @@ pub async fn fork_session(
         child_session_id.clone(),
         req.extract,
     );
-    crate::routes::context::inherit_intent(&state.pool, &child_key, &session_id).await;
+    inherit_fork_context(&state, &child_key, &session_id).await;
     crate::routes::spawn::remember_spawner(&state.pool, &child_key, ctx.user_id, None).await;
     if let Err(err) = state.bus.command_daemon_for_session(machine_uuid, &session_id, frame).await {
         let detail = cctui_server_core::launch::delivery_detail(&state.pool, machine_uuid, &err);
@@ -4136,18 +4144,6 @@ pub async fn unarchive_sessions(
     }
     tracing::info!(unarchived = ok, requested = req.ids.len(), "batch unarchive");
     StatusCode::NO_CONTENT
-}
-
-pub async fn set_session_policy(
-    State(state): State<AppState>,
-    Path(session_id): Path<String>,
-    Json(rules): Json<Vec<crate::policy::PolicyRule>>,
-) -> Result<StatusCode, AppError> {
-    {
-        let mut registry = state.registry.write().await;
-        registry.set_policy(&session_id, rules);
-    }
-    Ok(StatusCode::OK)
 }
 
 /// [`normalize_last_message`] over the prose of a SQL-truncated prefix, past

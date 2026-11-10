@@ -20,6 +20,11 @@ pub trait CredentialContext: Sync {
     fn account_reauth(&self) -> &DashMap<Uuid, ()>;
     fn vault_key(&self) -> Vec<u8>;
 
+    /// Off, an account service token resolves exactly like an unknown token.
+    fn service_tokens(&self) -> bool {
+        true
+    }
+
     fn anthropic_token_url(&self) -> String {
         anthropic_token_url()
     }
@@ -104,7 +109,7 @@ pub async fn resolve_account(
     session_token: &str,
 ) -> Result<Option<Account>, sqlx::Error> {
     let hash = crate::auth::sha256_hex(session_token);
-    let row = account_row(state.pool(), &hash).await?;
+    let row = account_row(state.pool(), &hash, state.service_tokens()).await?;
     let Some((
         id,
         provider,
@@ -144,7 +149,11 @@ pub async fn resolve_account(
 /// A live session token's account, unless the session's owner or the user the
 /// token was minted for is revoked or disabled, or that user may no longer use
 /// the account — a share revoked since the mint.
-async fn account_row(pool: &sqlx::PgPool, hash: &str) -> Result<Option<AccountRow>, sqlx::Error> {
+async fn account_row(
+    pool: &sqlx::PgPool,
+    hash: &str,
+    service_tokens: bool,
+) -> Result<Option<AccountRow>, sqlx::Error> {
     sqlx::query_as(
         "SELECT a.id, a.provider, a.encrypted_access_token, a.encrypted_refresh_token, \
                     a.expires_at, a.provider_account_id, a.base_url, a.auth_scheme, \
@@ -152,6 +161,7 @@ async fn account_row(pool: &sqlx::PgPool, hash: &str) -> Result<Option<AccountRo
                     a.usage_notices \
              FROM session_tokens t JOIN account_providers a ON a.id = t.account_id \
              WHERE t.token_hash = $1 AND t.revoked_at IS NULL \
+               AND ($2 OR t.kind <> 'service') \
                AND (t.expires_at IS NULL OR t.expires_at > now()) \
                AND NOT EXISTS ( \
                  SELECT 1 FROM sessions s \
@@ -171,6 +181,7 @@ async fn account_row(pool: &sqlx::PgPool, hash: &str) -> Result<Option<AccountRo
                            AND rs.grantee_id = t.user_id AND rs.revoked_at IS NULL))))",
     )
     .bind(hash)
+    .bind(service_tokens)
     .fetch_optional(pool)
     .await
 }
@@ -543,21 +554,28 @@ mod owner_revocation_tests {
         .await
         .expect("seed token");
 
-        assert!(account_row(&pool, &hash).await.unwrap().is_some(), "live owner resolves");
+        assert!(account_row(&pool, &hash, true).await.unwrap().is_some(), "live owner resolves");
+        assert!(
+            account_row(&pool, &hash, false).await.unwrap().is_some(),
+            "a session token resolves with service tokens off"
+        );
 
         sqlx::query("UPDATE users SET disabled_at = now() WHERE id = $1")
             .bind(uid)
             .execute(&pool)
             .await
             .unwrap();
-        assert!(account_row(&pool, &hash).await.unwrap().is_none(), "disabled owner is refused");
+        assert!(
+            account_row(&pool, &hash, true).await.unwrap().is_none(),
+            "disabled owner is refused"
+        );
 
         sqlx::query("UPDATE users SET disabled_at = NULL, revoked_at = now() WHERE id = $1")
             .bind(uid)
             .execute(&pool)
             .await
             .unwrap();
-        assert!(account_row(&pool, &hash).await.unwrap().is_none(), "revoked owner is refused");
+        assert!(account_row(&pool, &hash, true).await.unwrap().is_none(), "revoked owner is refused");
 
         sqlx::query("UPDATE users SET revoked_at = NULL WHERE id = $1")
             .bind(uid)
@@ -565,7 +583,7 @@ mod owner_revocation_tests {
             .await
             .unwrap();
         crate::store::tokens::revoke_by_user(&pool, uid).await.unwrap();
-        assert!(account_row(&pool, &hash).await.unwrap().is_none(), "revoked token is refused");
+        assert!(account_row(&pool, &hash, true).await.unwrap().is_none(), "revoked token is refused");
 
         sqlx::query("DELETE FROM session_tokens WHERE token_hash = $1")
             .bind(&hash)
@@ -616,24 +634,30 @@ mod owner_revocation_tests {
             crate::store::tokens::mint_service(&pool, uid, prov, "svc").await.unwrap();
         let hash = crate::auth::sha256_hex(&token);
 
-        assert!(account_row(&pool, &hash).await.unwrap().is_some(), "live service token resolves");
+        assert!(
+            account_row(&pool, &hash, true).await.unwrap().is_some(),
+            "live service token resolves"
+        );
 
         sqlx::query("UPDATE users SET disabled_at = now() WHERE id = $1")
             .bind(uid)
             .execute(&pool)
             .await
             .unwrap();
-        assert!(account_row(&pool, &hash).await.unwrap().is_none(), "disabled user is refused");
+        assert!(account_row(&pool, &hash, true).await.unwrap().is_none(), "disabled user is refused");
 
         sqlx::query("UPDATE users SET disabled_at = NULL WHERE id = $1")
             .bind(uid)
             .execute(&pool)
             .await
             .unwrap();
-        assert!(account_row(&pool, &hash).await.unwrap().is_some(), "re-enabled user resolves");
+        assert!(
+            account_row(&pool, &hash, true).await.unwrap().is_some(),
+            "re-enabled user resolves"
+        );
 
         assert!(crate::store::tokens::revoke_service(&pool, acct, row.id).await.unwrap());
-        assert!(account_row(&pool, &hash).await.unwrap().is_none(), "revoked token is refused");
+        assert!(account_row(&pool, &hash, true).await.unwrap().is_none(), "revoked token is refused");
 
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
@@ -651,6 +675,7 @@ mod host_boundary_tests {
         reauth: DashMap<Uuid, ()>,
         key_reads: AtomicUsize,
         token_url: String,
+        service_tokens: bool,
     }
 
     impl CredentialContext for Host {
@@ -673,6 +698,9 @@ mod host_boundary_tests {
         fn openai_token_url(&self) -> String {
             self.token_url.clone()
         }
+        fn service_tokens(&self) -> bool {
+            self.service_tokens
+        }
     }
 
     impl Host {
@@ -685,8 +713,54 @@ mod host_boundary_tests {
                 locks: DashMap::new(),
                 reauth: DashMap::new(),
                 key_reads: AtomicUsize::new(0),
+                service_tokens: true,
             }
         }
+    }
+
+    #[tokio::test]
+    async fn the_gateway_refuses_a_service_token_with_service_tokens_off() {
+        let Some(url) = crate::test_support::db_url("gateway_service_tokens_switch") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let (uid, acct, prov) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("svc-switch-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, 'svc-switch')")
+            .bind(acct)
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .expect("seed account");
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'anthropic', 'x', $3)",
+        )
+        .bind(prov)
+        .bind(uid)
+        .bind(acct)
+        .execute(&pool)
+        .await
+        .expect("seed provider");
+        let (token, _) = crate::store::tokens::mint_service(&pool, uid, prov, "svc").await.unwrap();
+
+        let mut host = Host::new(pool.clone(), "http://127.0.0.1:1/unused".into());
+        let on = resolve_account(&host, &token).await.unwrap();
+        assert_eq!(on.map(|a| a.id), Some(prov), "accepted with service_tokens on");
+        host.service_tokens = false;
+        assert!(
+            resolve_account(&host, &token).await.unwrap().is_none(),
+            "refused exactly like an unknown token with service_tokens off"
+        );
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 
     fn account(auth_scheme: &str) -> Account {

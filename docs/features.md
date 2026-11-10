@@ -25,8 +25,9 @@ of another method, as `POST /sessions/spawn` matches `GET /sessions/{id}`),
 its background tasks do not start, and its WebSocket messages are ignored. An
 off feature also wins over the environment switch of the same integration
 (`CCTUI_PREVIEW_HOST`, `CCTUI_PLUGINS_DIR`, `CCTUI_CCTUIVERSE`,
-`CCTUI_UPDATE_CHECK`, the Langfuse settings); a `CCTUI_PLUGINS_DIR` set while
-`plugins` is off is logged once at boot as ignored.
+`CCTUI_UPDATE_CHECK`, `CCTUI_EMOJI_ENDPOINT`, the Langfuse settings); a
+`CCTUI_PLUGINS_DIR` or `CCTUI_EMOJI_ENDPOINT` set while its feature is off is
+logged once at boot as ignored.
 
 ## Daemons
 
@@ -44,12 +45,14 @@ server that announces nothing has every feature on. The daemon then:
 is left is token login and logout, users and keys, accounts and OAuth,
 provider settings, redirects and model aliases, usage and limit reset,
 dispatcher enrollment, dispatch, failed-dispatch records, the harness and
-model catalogs, spawn memory, transcript ingest and read, the session list,
-stats and events, conversation and live stream, message, interrupt,
-set-model, resume, fork, kill and archive, manual approval, the gateway, tool
-guard and hook policy, the completion webhook and transcript image blobs.
-Enrolled machines, machine spawn and daemon self-update are off: workers are
-the dispatched ones, running the binary their image ships.
+model catalogs, transcript ingest and read, the session list, stats and
+events, conversation and live stream, message, interrupt, set-model, kill and
+archive, manual approval, the gateway for per-session credentials, tool guard
+and hook policy, the completion webhook and transcript image blobs. Enrolled
+machines, machine spawn, fork, resume, account service tokens and daemon
+self-update are off: workers are the dispatched ones, running the binary
+their image ships, and the only way to start an agent is
+`POST /sessions/dispatch`.
 
 ## Capabilities
 
@@ -63,7 +66,7 @@ feature).
 
 | Feature | Requires | Covers |
 |---|---|---|
-| `machine_spawn` | | User-enrolled machines and spawning on them: enroll and deenroll, `POST /sessions/spawn`, the spawn directory history, hook registration (`/sessions/register`, `/sessions/{id}/deregister`), machine status, events, resources and harness pins, and machine administration (`/admin/machines/**`, `/admin/users/{id}/machines`). Off, the server only runs dispatched workers and keeps no host resource snapshots. |
+| `machine_spawn` | | User-enrolled machines and starting agents outside dispatch: enroll and deenroll, `POST /sessions/spawn`, fork and resume (`/sessions/{id}/fork`, `/sessions/{id}/resume`), the spawn directory history and spawn memory, hook registration (`/sessions/register`, `/sessions/{id}/deregister`), machine status, events, resources and harness pins, and machine administration (`/admin/machines/**`, `/admin/users/{id}/machines`). Off, the server only runs dispatched workers and keeps no host resource snapshots. |
 | `files` | `machine_spawn` | Reading files, listing directories and git info on a machine (`/machines/{id}/fs/*`, `/sessions/{id}/linked-file*`). |
 | `uploads` | `machine_spawn` | Attaching files to a session, the session attachment list, upload caps. |
 | `drafts` | `machine_spawn` | Unsent composer drafts and draft sessions (launch, discard). |
@@ -71,22 +74,23 @@ feature).
 | `terminal` | `machine_spawn` | The live terminal view (`watch_terminal` WebSocket message). |
 | `transcript_search` | | Search across sessions and find-in-conversation, the search backfill task, chunking transcripts on ingest, and the `pg_trgm` and `btree_gin` schema step (see [Postgres requirements](#postgres-requirements)). |
 | `child_sessions` | | Sessions spawning sessions (`CctuiAgent`): the daemon's spawn, message, archive and completion routes, and the instance spawn limits. |
-| `context` | | Rules and memories: the context library, a session's context, the agent context tool. The launch-time context pull stays mounted. |
+| `context` | | Rules and memories: the context library, a session's context, the agent context tool. The launch-time context pull stays mounted. Off, dispatch, session start and fork record only who a launch belongs to, never context content. |
 | `plugins` | | Runtime plugins: install, settings, backend proxy, static files, boot init and the sync task. |
 | `auto_approve` | | Per-session auto-approval of tool use. |
 | `scheduling` | | Scheduled messages and scheduled launches (schedule and cancel), and their tasks. |
 | `automation` | | Keep-alive, auto-resume, auto-redeem and follow-ups, their tasks, the follow-up thread view, and the external trigger endpoint. |
 | `rooms` | | Rooms, peers and agent-to-agent messages. |
 | `voice` | | Speech synthesis and transcription, the voice WebSocket, agent voice notes, the speech settings. |
-| `previews` | | Dev-server previews: preview tickets, the internal preview leg and the preview sweep. |
+| `previews` | | Dev-server previews: preview tickets, the internal preview leg and the preview sweep. Off, the server drops every preview frame a worker sends: no registration is recorded and nothing is sent back. |
 | `federation` | | Links to other cctui servers (cctuiverse): management routes, the server-to-server wire and the outbox task. |
 | `device_login` | | Logging a device in by approving a code. |
-| `passkeys` | | Passkey enrollment and passkey login. |
+| `passkeys` | | Passkey enrollment and passkey login, including the login screen's unauthenticated `/api/v1/auth/passkey/config` probe. |
 | `self_update` | | Server self-update, daemon self-update (`/manifest/daemon`, `/daemon/binary/{target}`), harness auto-update, update hooks, the release probe and changelog. Off, the harness report and update-hook flag a heartbeat carries are ignored and no harness policy is sent. |
 | `account_sharing` | | Account pools and sharing accounts or resources with other users. |
 | `observability` | | Langfuse cost views and the browser OTLP relay. |
-| `library` | | Saved prompts and the skill registry. |
-| `organising` | | Labels, bookmarks, pinned sessions and pinned messages. Off, a spawn or draft ignores the labels it carries and the label-intent sweep does not run. |
+| `library` | | Saved prompts and the skill registry, and the boot sweep of orphaned skill files. |
+| `organising` | | Labels, bookmarks, pinned sessions and pinned messages, and the session emoji picker (`CCTUI_EMOJI_ENDPOINT`, which sends session titles to an external model). Off, a spawn or draft ignores the labels it carries, session start claims no label intent and the label-intent sweep does not run. |
+| `service_tokens` | | Account service tokens (`/accounts/{id}/service-tokens`): long-lived gateway credentials not tied to a session. Off, the gateway refuses a service token exactly as it refuses an unknown one, so tokens minted earlier stop working. |
 
 Every feature gates at least one route, task or message. A new feature that
 gates nothing must be listed as announcement-only in the gate test in
@@ -111,8 +115,9 @@ The search objects (the two extensions and the trigram indexes on
   blocks writes to `stream_events` and `search_chunks` until they are built.
 - A database that already has the search objects is left as it is: the step
   creates only what is missing, and switching search off drops nothing.
-- With search off, ingest writes no chunks and stores an empty `search_text`,
-  the backfill does not run and the search routes answer 404.
+- With search off, ingest writes no chunks, transcript rows and the
+  session-ended row store an empty `search_text`, the backfill does not run
+  and the search routes answer 404.
 
 ## Classifying a route
 

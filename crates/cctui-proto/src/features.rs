@@ -37,10 +37,11 @@ pub enum Feature {
     Observability,
     Library,
     Organising,
+    ServiceTokens,
 }
 
 impl Feature {
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::MachineSpawn,
         Self::Files,
         Self::Uploads,
@@ -65,6 +66,7 @@ impl Feature {
         Self::Observability,
         Self::Library,
         Self::Organising,
+        Self::ServiceTokens,
     ];
 
     #[must_use]
@@ -94,6 +96,7 @@ impl Feature {
             Self::Observability => "observability",
             Self::Library => "library",
             Self::Organising => "organising",
+            Self::ServiceTokens => "service_tokens",
         }
     }
 
@@ -342,9 +345,12 @@ mod tests {
     }
 
     #[test]
-    fn library_and_organising_are_switchable_on_their_own() {
-        for (feature, name) in [(Feature::Library, "library"), (Feature::Organising, "organising")]
-        {
+    fn library_organising_and_service_tokens_are_switchable_on_their_own() {
+        for (feature, name) in [
+            (Feature::Library, "library"),
+            (Feature::Organising, "organising"),
+            (Feature::ServiceTokens, "service_tokens"),
+        ] {
             assert_eq!(Feature::parse(name), Some(feature));
             assert!(feature.requires().is_empty());
             let r = resolve(&format!("[features]\n{name} = false\n")).unwrap();

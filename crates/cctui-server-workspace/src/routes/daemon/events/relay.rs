@@ -103,7 +103,9 @@ async fn on_command_result(
     if !ok && let Some(row) = failed {
         let detail = error.clone().unwrap_or_else(|| "spawn failed".to_owned());
         let reason = EndReason::SpawnFailed { detail };
-        match persist_failed_spawn(&state.pool, &row, &reason).await {
+        let search =
+            state.config.features.contains(cctui_proto::features::Feature::TranscriptSearch);
+        match persist_failed_spawn(&state.pool, search, &row, &reason).await {
             Ok(true) => {
                 session_id = Some(row.session_id.clone());
                 publish_session_ended(state, &row.session_id, &reason);

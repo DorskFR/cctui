@@ -9,9 +9,6 @@ DELETE /accounts/{id}/providers/{provider_id}
 PATCH /accounts/{id}/providers/{provider_id}
 POST /accounts/{id}/providers/{provider_id}/move
 PUT /accounts/{id}/redirect
-GET /accounts/{id}/service-tokens
-POST /accounts/{id}/service-tokens
-DELETE /accounts/{id}/service-tokens/{token_id}
 GET /accounts/{id}/tool-policy
 PUT /accounts/{id}/tool-policy
 GET /accounts/{id}/usage
@@ -53,7 +50,6 @@ GET /harnesses
 GET /keys
 POST /keys
 DELETE /keys/{id}
-GET /keys/{id}/value
 GET /machines/{machine_id}/codex-models
 POST /machines/{machine_id}/codex-models/refresh
 GET /me
@@ -81,7 +77,6 @@ GET /sessions/{id}/brief
 GET /sessions/{id}/conversation
 GET /sessions/{id}/diagnose
 GET /sessions/{id}/events
-POST /sessions/{id}/fork
 GET /sessions/{id}/guard
 POST /sessions/{id}/guard/transition
 GET /sessions/{id}/hook-policy
@@ -89,10 +84,8 @@ GET /sessions/{id}/images/{image_id}
 POST /sessions/{id}/interrupt
 POST /sessions/{id}/kill
 POST /sessions/{id}/message
-POST /sessions/{id}/policy
 GET /sessions/{id}/rebinds
 GET /sessions/{id}/result
-POST /sessions/{id}/resume
 POST /sessions/{id}/seen
 POST /sessions/{id}/set-model
 POST /sessions/{id}/switch-account
@@ -111,8 +104,6 @@ PUT /settings
 GET /settings/rescrub
 POST /settings/rescrub
 POST /settings/rescrub/cancel
-GET /spawn-memory
-PUT /spawn-memory
 GET /users/{id}/acls
 PATCH /users/{id}/acls
 GET /users/{id}/keys

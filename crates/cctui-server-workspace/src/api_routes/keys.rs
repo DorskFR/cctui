@@ -26,12 +26,4 @@ pub(super) fn register(r: Routes) -> Routes {
             Authn::Bearer,
             Authenticated,
         )
-        .add(
-            &[GET],
-            "/keys/{id}/value",
-            "Reveal a stored provider API key's value.",
-            get(routes::credentials::get_api_key_value),
-            Authn::Bearer,
-            Authenticated,
-        )
 }
