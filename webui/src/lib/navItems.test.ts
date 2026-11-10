@@ -8,7 +8,7 @@ const SWITCHABLE: Feature[] = [
 	'machine_spawn', 'files', 'uploads', 'drafts', 'profiles', 'terminal', 'transcript_search',
 	'child_sessions', 'context', 'plugins', 'auto_approve', 'scheduling', 'automation', 'rooms',
 	'voice', 'previews', 'federation', 'device_login', 'passkeys', 'self_update', 'account_sharing',
-	'observability'
+	'observability', 'library', 'organising'
 ];
 const PLUGIN_PAGE = [{ href: '/apps/ghreview', label: 'Review', iconName: 'pull-request' as const }];
 
@@ -54,10 +54,10 @@ describe('navItems', () => {
 describe('navItems by announced features', () => {
 	afterEach(() => setCapabilitiesForTest(null));
 
-	it('keeps the built-in tabs and drops plugin pages on a core server', () => {
+	it('drops bookmarks and plugin pages on a core server', () => {
 		setCapabilitiesForTest({ features: [], switchable: SWITCHABLE });
 		const hrefs = navItems({ pages: PLUGIN_PAGE }).map((i) => i.href);
-		expect(hrefs).toEqual(['/', '/sessions', '/bookmarks', '/accounts', '/settings']);
+		expect(hrefs).toEqual(['/', '/sessions', '/accounts', '/settings']);
 	});
 
 	it('lists plugin pages with every feature on', () => {

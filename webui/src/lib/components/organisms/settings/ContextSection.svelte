@@ -21,6 +21,7 @@
 	import { harnessTable } from '$lib/harnesses.svelte';
 	import { sessionHref } from '$lib/sessionFailureToast';
 	import { errMessage } from '$lib/api';
+	import { hasFeature } from '$lib/features.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import {
 		bodyBytes,
@@ -305,16 +306,18 @@
 				selfLabelled
 			>
 				<div class="match">
-					<Text size="xs" weight="medium">{m.settings_context_match_machines()}</Text>
-					<div class="toggles">
-						{#each machines as r (r.machine_id)}
-							<Toggle
-								pill
-								pressed={draft.match.machines.includes(r.machine_id)}
-								onclick={() => toggleMatch('machines', r.machine_id)}>{r.display_name ?? r.name}</Toggle
-							>
-						{/each}
-					</div>
+					{#if hasFeature('machine_spawn')}
+						<Text size="xs" weight="medium">{m.settings_context_match_machines()}</Text>
+						<div class="toggles">
+							{#each machines as r (r.machine_id)}
+								<Toggle
+									pill
+									pressed={draft.match.machines.includes(r.machine_id)}
+									onclick={() => toggleMatch('machines', r.machine_id)}>{r.display_name ?? r.name}</Toggle
+								>
+							{/each}
+						</div>
+					{/if}
 					<Text size="xs" weight="medium">{m.settings_context_match_paths()}</Text>
 					<Textarea
 						style="width:100%"
@@ -323,14 +326,16 @@
 						value={pathsText}
 						oninput={(e) => onPaths(inp(e))}
 					/>
-					<Text size="xs" weight="medium">{m.settings_context_match_labels()}</Text>
-					<div class="toggles">
-						{#each labels as l (l.id)}
-							<Toggle pill pressed={draft.match.labels.includes(l.id)} onclick={() => toggleMatch('labels', l.id)}
-								>{l.name}</Toggle
-							>
-						{/each}
-					</div>
+					{#if hasFeature('organising')}
+						<Text size="xs" weight="medium">{m.settings_context_match_labels()}</Text>
+						<div class="toggles">
+							{#each labels as l (l.id)}
+								<Toggle pill pressed={draft.match.labels.includes(l.id)} onclick={() => toggleMatch('labels', l.id)}
+									>{l.name}</Toggle
+								>
+							{/each}
+						</div>
+					{/if}
 					<Text size="xs" weight="medium">{m.settings_context_match_adapters()}</Text>
 					<div class="toggles">
 						{#each harnesses as h (h.id)}
@@ -371,51 +376,53 @@
 		</SettingGroup>
 	{/if}
 
-	<SettingGroup title={m.settings_context_preview_title()}>
-		<SettingRow label={m.spawn_machine_label()} help={m.settings_context_preview_help()}>
-			<Select style="width:100%" value={previewMachine} onchange={(e) => (previewMachine = sel(e))}>
-				<option value="">{m.settings_macros_pick_machine()}</option>
-				{#each machines as r (r.machine_id)}
-					<option value={r.machine_id}>{r.display_name ?? r.name}</option>
-				{/each}
-			</Select>
-		</SettingRow>
-		<SettingRow label={m.spawn_cwd_label()}>
-			<Input
-				style="width:100%"
-				mono
-				placeholder="/home/me/project"
-				value={previewDir}
-				oninput={(e) => (previewDir = inp(e))}
-			/>
-		</SettingRow>
-		<SettingRow label={m.spawn_field_harness()}>
-			<Select style="width:100%" value={previewAdapter} onchange={(e) => (previewAdapter = sel(e))}>
-				<option value="">{m.settings_context_preview_any_harness()}</option>
-				{#each harnesses as h (h.id)}
-					<option value={h.id}>{h.label}</option>
-				{/each}
-			</Select>
-		</SettingRow>
-		{#if previewMachine && preview.data}
-			<SettingRow label={m.settings_context_preview_result()} wide selfLabelled>
-				<div class="preview" data-preview>
-					<Text size="xs" weight="medium"
-						>{m.context_rules_apply({ count: preview.data.rules.length })}</Text
-					>
-					<div class="toggles">
-						{#each preview.data.rules as r (r.id)}<Badge size="sm">{r.title}</Badge>{/each}
-					</div>
-					<Text size="xs" weight="medium"
-						>{m.settings_context_preview_memories({ count: preview.data.memories.length })}</Text
-					>
-					<div class="toggles">
-						{#each preview.data.memories as r (r.id)}<Badge size="sm">{r.title}</Badge>{/each}
-					</div>
-				</div>
+	{#if hasFeature('machine_spawn')}
+		<SettingGroup title={m.settings_context_preview_title()}>
+			<SettingRow label={m.spawn_machine_label()} help={m.settings_context_preview_help()}>
+				<Select style="width:100%" value={previewMachine} onchange={(e) => (previewMachine = sel(e))}>
+					<option value="">{m.settings_macros_pick_machine()}</option>
+					{#each machines as r (r.machine_id)}
+						<option value={r.machine_id}>{r.display_name ?? r.name}</option>
+					{/each}
+				</Select>
 			</SettingRow>
-		{/if}
-	</SettingGroup>
+			<SettingRow label={m.spawn_cwd_label()}>
+				<Input
+					style="width:100%"
+					mono
+					placeholder="/home/me/project"
+					value={previewDir}
+					oninput={(e) => (previewDir = inp(e))}
+				/>
+			</SettingRow>
+			<SettingRow label={m.spawn_field_harness()}>
+				<Select style="width:100%" value={previewAdapter} onchange={(e) => (previewAdapter = sel(e))}>
+					<option value="">{m.settings_context_preview_any_harness()}</option>
+					{#each harnesses as h (h.id)}
+						<option value={h.id}>{h.label}</option>
+					{/each}
+				</Select>
+			</SettingRow>
+			{#if previewMachine && preview.data}
+				<SettingRow label={m.settings_context_preview_result()} wide selfLabelled>
+					<div class="preview" data-preview>
+						<Text size="xs" weight="medium"
+							>{m.context_rules_apply({ count: preview.data.rules.length })}</Text
+						>
+						<div class="toggles">
+							{#each preview.data.rules as r (r.id)}<Badge size="sm">{r.title}</Badge>{/each}
+						</div>
+						<Text size="xs" weight="medium"
+							>{m.settings_context_preview_memories({ count: preview.data.memories.length })}</Text
+						>
+						<div class="toggles">
+							{#each preview.data.memories as r (r.id)}<Badge size="sm">{r.title}</Badge>{/each}
+						</div>
+					</div>
+				</SettingRow>
+			{/if}
+		</SettingGroup>
+	{/if}
 </SettingSection>
 
 <style>

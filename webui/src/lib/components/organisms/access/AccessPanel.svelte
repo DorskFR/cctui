@@ -11,6 +11,7 @@
 	import SecretReveal from '$lib/components/molecules/SecretReveal.svelte';
 	import { useAccounts, useAllMachines, useHiddenOwners, useMe, useUserActions, useUsers } from '$lib/queries';
 	import { isHiddenOwner } from '$lib/hiddenOwners';
+	import { hasFeature } from '$lib/features.svelte';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
 	import { m } from '$lib/paraglide/messages';
@@ -48,7 +49,9 @@
 	const userMeta = (u: UserRow) =>
 		u.revoked_at
 			? m.access_revoked_meta()
-			: m.access_user_meta({ machines: machinesOf(u.id).length, accounts: accountsOf(u.id).length });
+			: hasFeature('machine_spawn')
+				? m.access_user_meta({ machines: machinesOf(u.id).length, accounts: accountsOf(u.id).length })
+				: m.access_user_meta_accounts({ accounts: accountsOf(u.id).length });
 	const online = (u: UserRow) => machinesOf(u.id).some((mc) => mc.liveness === 'online');
 
 	let secret = $state<{ title: string; value: string } | null>(null);

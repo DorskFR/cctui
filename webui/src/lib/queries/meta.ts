@@ -100,6 +100,6 @@ export const useMachineAdapters = (machineId: () => string) =>
   createQuery(() => ({
     queryKey: qk.machineAdapters(machineId()),
     queryFn: () => endpoints.machineAdapters(machineId()),
-    enabled: !!machineId(),
+    enabled: !!machineId() && hasFeature("machine_spawn"),
     staleTime: 60_000,
   }));

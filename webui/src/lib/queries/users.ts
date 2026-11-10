@@ -2,6 +2,7 @@ import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import { api } from "../api";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
+import { hasFeature } from "$lib/features.svelte";
 import type { CreateUserResponse } from "@bindings/CreateUserResponse";
 import type { MintTokenResponse } from "@bindings/MintTokenResponse";
 import type { MintKeyResponse } from "@bindings/MintKeyResponse";
@@ -43,14 +44,14 @@ export const useAllMachines = (enabled: () => boolean) =>
   createQuery(() => ({
     queryKey: qk.machinesAll,
     queryFn: endpoints.allMachines,
-    enabled: enabled(),
+    enabled: enabled() && hasFeature("machine_spawn"),
   }));
 
 export const useMachines = (userId: () => string, enabled: () => boolean) =>
   createQuery(() => ({
     queryKey: qk.machines(userId()),
     queryFn: () => endpoints.machines(userId()),
-    enabled: enabled(),
+    enabled: enabled() && hasFeature("machine_spawn"),
   }));
 
 export const useTokens = (userId: () => string, enabled: () => boolean) =>

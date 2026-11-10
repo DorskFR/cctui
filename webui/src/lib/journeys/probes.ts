@@ -22,6 +22,7 @@ export function createProbes(qc: QueryClient): Probes {
 	const sessions = () =>
 		qc.fetchQuery({ queryKey: qk.sessions(false), queryFn: () => endpoints.sessions(false) });
 	const machines = async (): Promise<MachineRow[]> => {
+		if (!hasFeature('machine_spawn')) return [];
 		const who = await me();
 		if (who.role === 'admin') {
 			return qc.fetchQuery({ queryKey: qk.machinesAll, queryFn: endpoints.allMachines });

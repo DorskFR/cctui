@@ -2,6 +2,7 @@ import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import type { GitInfo } from "@bindings/GitInfo";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
+import { hasFeature } from "$lib/features.svelte";
 
 /** Cached (machine, path) git lookup for the spawn dialog branch badge. */
 export const useGitInfo = () => {
@@ -21,7 +22,7 @@ export const useMachineResources = (enabled: () => boolean) =>
   createQuery(() => ({
     queryKey: qk.machineResources,
     queryFn: endpoints.machineResources,
-    enabled: enabled(),
+    enabled: enabled() && hasFeature("machine_spawn"),
     refetchInterval: 30_000,
     staleTime: 10_000,
   }));

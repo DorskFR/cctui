@@ -194,7 +194,7 @@ describe('settings pages by announced features', () => {
 		expect(availableSettingsPages(() => true)).toEqual([...SETTINGS_PAGES]);
 	});
 
-	it('drops the context, plugins, security and uploads pages on a core server', () => {
+	it('drops the context, plugins, monitoring, security and uploads pages on a core server', () => {
 		expect(availableSettingsPages(() => false)).toEqual([
 			'appearance',
 			'sessions',
@@ -202,7 +202,6 @@ describe('settings pages by announced features', () => {
 			'execution',
 			'privacy',
 			'notifications',
-			'monitoring',
 			'events',
 			'guides',
 			'users',
@@ -223,6 +222,7 @@ describe('settings pages by announced features', () => {
 		expect(settingsPageFeature('security')).toBe('passkeys');
 		expect(settingsPageFeature('context')).toBe('context');
 		expect(settingsPageFeature('uploads')).toBe('uploads');
+		expect(settingsPageFeature('monitoring')).toBe('machine_spawn');
 		expect(settingsPageFeature('dispatchers')).toBeNull();
 		expect(settingsPageFeature('nope')).toBeNull();
 	});

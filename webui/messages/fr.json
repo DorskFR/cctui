@@ -86,6 +86,7 @@
 	"access_tag_admin": "admin",
 	"access_title": "Accès",
 	"access_user_meta": "{machines} machines · {accounts} comptes",
+	"access_user_meta_accounts": "{accounts} comptes",
 	"account_delete_help": "Supprimer « {name} » retire l’identité et tous ses identifiants de fournisseur. Cette action est irréversible.",
 	"account_emoji_clear": "Effacer",
 	"account_emoji_hint": "Un seul émoji, affiché partout où ce compte apparaît. Laissez vide pour un carré coloré avec l'initiale.",

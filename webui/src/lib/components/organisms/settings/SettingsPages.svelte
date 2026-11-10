@@ -59,9 +59,11 @@
 		<VoiceSection />
 	{/if}
 </div>
-<div class="pg" class:on={current === 'monitoring'} data-settings-page="monitoring" data-journey="page" data-journey-key="monitoring">
-	<MonitoringSection />
-</div>
+{#if hasFeature('machine_spawn')}
+	<div class="pg" class:on={current === 'monitoring'} data-settings-page="monitoring" data-journey="page" data-journey-key="monitoring">
+		<MonitoringSection />
+	</div>
+{/if}
 {#if hasFeature('passkeys')}
 	<div class="pg" class:on={current === 'security'} data-settings-page="security" data-journey="page" data-journey-key="security">
 		<SecuritySection />

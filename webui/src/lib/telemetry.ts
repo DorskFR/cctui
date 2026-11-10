@@ -1,5 +1,7 @@
 import type { Attributes, Span, Tracer } from '@opentelemetry/api';
-import { apiOrigin, otelConfig, type OtelConfig } from './config';
+import { apiBase, apiOrigin, otelConfig, type OtelConfig } from './config';
+import { hasFeature } from './features.svelte';
+import { bootCapabilities } from './workspaceSupport';
 
 type Otel = typeof import('@opentelemetry/api');
 
@@ -37,8 +39,20 @@ export function redactSpanUrls(span: Span): void {
 export function initTelemetry(): Promise<void> {
 	const cfg = otelConfig();
 	if (!cfg) return Promise.resolve();
-	starting ??= start(cfg).catch((e) => console.warn('telemetry disabled:', e));
+	starting ??= relayAllowed(cfg)
+		.then((allowed) => (allowed ? start(cfg) : undefined))
+		.catch((e) => console.warn('telemetry disabled:', e));
 	return starting;
+}
+
+/** This server's own relay is unmounted with `observability` off; an external
+ *  collector is not ours to gate. */
+async function relayAllowed(cfg: OtelConfig): Promise<boolean> {
+	const target = new URL(tracesUrl(cfg.endpoint), window.location.href);
+	const relay = new URL(`${apiBase()}/otlp/v1/traces`, window.location.href);
+	if (target.origin !== relay.origin || target.pathname !== relay.pathname) return true;
+	await bootCapabilities();
+	return hasFeature('observability');
 }
 
 async function start(cfg: OtelConfig) {

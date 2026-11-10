@@ -26,6 +26,7 @@
 		useUserKeys
 	} from '$lib/queries';
 	import { isHiddenOwner } from '$lib/hiddenOwners';
+	import { hasFeature } from '$lib/features.svelte';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
 	import { m } from '$lib/paraglide/messages';
@@ -94,7 +95,9 @@
 		{ id: 'keys', label: m.access_tab_keys() },
 		...(isAdmin
 			? [
-					{ id: 'machines', label: m.access_tab_machines({ count: machineCount }) },
+					...(hasFeature('machine_spawn')
+						? [{ id: 'machines', label: m.access_tab_machines({ count: machineCount }) }]
+						: []),
 					{ id: 'tokens', label: m.access_tab_tokens({ count: tokenCount }) },
 					{ id: 'policy', label: m.access_tab_policy() }
 				]
@@ -213,7 +216,7 @@
 				<Text size="xs" tone="faint">
 					· {m.access_ceiling()}
 					{[...ALL_SCOPES].filter((s) => ceiling.has(s)).join(' · ') || m.access_ceiling_none()}
-					{#if isAdmin}
+					{#if isAdmin && hasFeature('machine_spawn')}
 						· {m.access_count_machines({ count: machineCount })}
 					{/if}
 					· {m.access_count_keys({ count: keyCount })}

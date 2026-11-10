@@ -39,6 +39,7 @@ export const useLabels = () =>
   createQuery(() => ({
     queryKey: qk.labels,
     queryFn: endpoints.labels,
+    enabled: hasFeature("organising"),
     refetchInterval: 60_000,
   }));
 
@@ -133,7 +134,7 @@ export const useMessagePins = (
   createQuery(() => ({
     queryKey: qk.messagePins(id()),
     queryFn: () => endpoints.messagePins(id()),
-    enabled: enabled() && !!id(),
+    enabled: enabled() && !!id() && hasFeature("organising"),
     staleTime: 30_000,
   }));
 
@@ -309,7 +310,7 @@ export const useRecentDirs = (machineId: () => string) =>
   createQuery(() => ({
     queryKey: qk.recentDirs(machineId()),
     queryFn: () => endpoints.recentDirs(machineId()),
-    enabled: !!machineId(),
+    enabled: !!machineId() && hasFeature("machine_spawn"),
     staleTime: 30_000,
   }));
 
