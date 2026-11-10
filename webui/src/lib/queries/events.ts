@@ -1,6 +1,7 @@
 import { createQuery } from "@tanstack/svelte-query";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
+import { hasFeature } from "$lib/features.svelte";
 
 export const EVENT_PAGE = 50;
 export const SESSION_EVENT_PAGE = 100;
@@ -32,6 +33,6 @@ export const useMachineEvents = (machineId: () => string, enabled: () => boolean
         kind: "machine.",
         limit: String(MACHINE_HISTORY_PAGE),
       }),
-    enabled: enabled() && !!machineId(),
+    enabled: enabled() && !!machineId() && hasFeature("machine_spawn"),
     staleTime: 30_000,
   }));

@@ -35,10 +35,12 @@ pub enum Feature {
     SelfUpdate,
     AccountSharing,
     Observability,
+    Library,
+    Organising,
 }
 
 impl Feature {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 24] = [
         Self::MachineSpawn,
         Self::Files,
         Self::Uploads,
@@ -61,6 +63,8 @@ impl Feature {
         Self::SelfUpdate,
         Self::AccountSharing,
         Self::Observability,
+        Self::Library,
+        Self::Organising,
     ];
 
     #[must_use]
@@ -88,6 +92,8 @@ impl Feature {
             Self::SelfUpdate => "self_update",
             Self::AccountSharing => "account_sharing",
             Self::Observability => "observability",
+            Self::Library => "library",
+            Self::Organising => "organising",
         }
     }
 
@@ -332,6 +338,17 @@ mod tests {
             Feature::Terminal,
         ] {
             assert_eq!(child.requires(), &[Feature::MachineSpawn]);
+        }
+    }
+
+    #[test]
+    fn library_and_organising_are_switchable_on_their_own() {
+        for (feature, name) in [(Feature::Library, "library"), (Feature::Organising, "organising")]
+        {
+            assert_eq!(Feature::parse(name), Some(feature));
+            assert!(feature.requires().is_empty());
+            let r = resolve(&format!("[features]\n{name} = false\n")).unwrap();
+            assert_eq!(r.set, FeatureSet::all().without(feature));
         }
     }
 

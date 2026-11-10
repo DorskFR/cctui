@@ -6,7 +6,7 @@
 	let { sf }: { sf: SpawnForm } = $props();
 </script>
 
-{#if sf.canDispatch}
+{#if sf.showTargetTabs}
 	<div class="switch-row">
 		<AutoGrid min="8rem" maxCols={2} gap="var(--sp-2)" role="radiogroup" aria-label={m.spawn_run_on_label()}>
 			{#each sf.targetOptions as o (o.value)}

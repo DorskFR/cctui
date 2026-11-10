@@ -289,7 +289,9 @@ async fn on_session_started(
     .await?;
     crate::auto_archive::claim_intent(state, &local_id, spawn_key_hint.as_deref()).await;
     crate::spawn_labels::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
-    crate::followup::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
+    if state.config.features.contains(cctui_proto::features::Feature::Automation) {
+        crate::followup::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
+    }
     crate::routes::context::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
     crate::routes::spawn::claim_spawner(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
     if let Some(context_key) = meta.extra.get("context_key").and_then(serde_json::Value::as_str) {
@@ -809,6 +811,56 @@ mod tests {
         assert_eq!(relation_of(&pool, &genuine).await, (None, Some("root".to_owned())));
 
         let all = [root_first, claim_first, fork, late_fork, child, genuine, parent];
+        crate::routes::daemon::test_support::drop_machines(&pool, &all, &[owner]).await;
+    }
+
+    async fn followup_intent_count(pool: &sqlx::PgPool, sid: &str) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM session_followup_intents WHERE spawn_key = $1")
+            .bind(sid)
+            .fetch_one(pool)
+            .await
+            .expect("count follow-up intents")
+    }
+
+    /// Registration claims a follow-up intent only with `automation` on.
+    #[tokio::test]
+    async fn registration_claims_followups_only_with_automation_on() {
+        use cctui_proto::features::{Feature, FeatureSet};
+        let Some(url) = crate::routes::gateway::test_db_url("followup_claim_gated") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let mut off = AppState::for_test(pool.clone());
+        off.config.features = FeatureSet::all().without(Feature::Automation);
+        let on = AppState::for_test(pool.clone());
+        let owner = seed_machine(&pool, "followup-gated").await;
+        let parent = seed_owned_session(&pool, owner.0, owner.1).await;
+
+        let unclaimed = Uuid::new_v4().to_string();
+        followup_intent(&pool, &unclaimed, &parent).await;
+        announce(&off, owner, &unclaimed, None, json!("root")).await;
+        assert_eq!(relation_of(&pool, &unclaimed).await, (None, Some("root".to_owned())));
+        assert_eq!(followup_intent_count(&pool, &unclaimed).await, 1, "the intent is not read");
+
+        let claimed = Uuid::new_v4().to_string();
+        followup_intent(&pool, &claimed, &parent).await;
+        announce(&on, owner, &claimed, None, json!("root")).await;
+        assert_eq!(
+            relation_of(&pool, &claimed).await,
+            (Some(parent.clone()), Some("followup".to_owned()))
+        );
+        assert_eq!(followup_intent_count(&pool, &claimed).await, 0);
+
+        sqlx::query("DELETE FROM session_followup_intents WHERE spawn_key = $1")
+            .bind(&unclaimed)
+            .execute(&pool)
+            .await
+            .ok();
+        let all = [unclaimed, claimed, parent];
         crate::routes::daemon::test_support::drop_machines(&pool, &all, &[owner]).await;
     }
 

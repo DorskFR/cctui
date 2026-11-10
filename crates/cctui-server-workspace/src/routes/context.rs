@@ -22,6 +22,9 @@ pub use cctui_proto::api::context::{
     ContextMatch, ResolvedContextResponse, SessionContextResponse, UpdateContextItemRequest,
 };
 
+pub mod ownership;
+pub use ownership::StoredScope;
+
 use crate::auth::AuthContext;
 use crate::error::AppError;
 use crate::state::AppState;
@@ -252,19 +255,6 @@ pub struct SpawnScope {
     pub label_ids: Vec<String>,
     #[serde(default)]
     pub adapter: Option<String>,
-}
-
-/// A launch's coordinates as recorded at spawn, so every later launch of the
-/// session re-resolves its rules against the owner's current set.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct StoredScope {
-    pub user_id: Uuid,
-    #[serde(flatten)]
-    pub coords: SpawnScope,
-    /// No human is watching a dispatched worker, so everything it saves waits
-    /// for approval.
-    #[serde(default)]
-    pub dispatched: bool,
 }
 
 /// Whether `dir` is at or under `prefix`, comparing whole path components so
@@ -713,11 +703,6 @@ async fn intent_of(pool: &PgPool, session_id: &str) -> Result<Option<Intent>, sq
         rules,
         memories,
     }))
-}
-
-/// The coordinates the session was spawned with, if cctui spawned it.
-pub async fn stored_scope(pool: &PgPool, session_id: &str) -> Option<StoredScope> {
-    intent_of(pool, session_id).await.ok().flatten().and_then(|i| i.scope)
 }
 
 /// Coordinates for a session with none stored (spawned before scopes were
@@ -1988,7 +1973,7 @@ mod tests {
         insert(&pool, uid, &rule_spec("claude", "b", claude), None, None).await.expect("rule");
 
         assert_eq!(names(&for_launch(&pool, &sid, true).await), ["here"]);
-        let stored = stored_scope(&pool, &sid).await.expect("adopted");
+        let stored = ownership::launch_scope(&pool, &sid).await.expect("adopted");
         assert_eq!(stored.user_id, uid);
         assert_eq!(stored.coords.working_dir.as_deref(), Some("/w/repo"));
         assert_eq!(stored.coords.label_ids, [label.to_string()]);

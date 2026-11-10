@@ -89,18 +89,25 @@ async fn remember_child_context(
             label_ids: Vec::new(),
             adapter: Some(adapter.to_owned()),
         },
-        dispatched: crate::routes::context::stored_scope(&state.pool, &parent.session_id)
-            .await
-            .is_some_and(|s| s.dispatched),
+        dispatched: crate::routes::context::ownership::launch_scope(
+            &state.pool,
+            &parent.session_id,
+        )
+        .await
+        .is_some_and(|s| s.dispatched),
     };
-    let context = crate::routes::context::resolve_for_child(
-        &state.pool,
-        parent.user_id,
-        profile,
-        &scope.coords,
-    )
-    .await;
-    crate::routes::context::remember_intent(&state.pool, child_key, &context, &scope).await;
+    if state.config.features.contains(cctui_proto::features::Feature::Context) {
+        let context = crate::routes::context::resolve_for_child(
+            &state.pool,
+            parent.user_id,
+            profile,
+            &scope.coords,
+        )
+        .await;
+        crate::routes::context::remember_intent(&state.pool, child_key, &context, &scope).await;
+    } else {
+        crate::routes::context::ownership::record(&state.pool, child_key, &scope).await;
+    }
     let spawner = child_spawner(&state.pool, parent).await;
     crate::routes::spawn::remember_spawner(&state.pool, child_key, spawner, None).await;
 }
@@ -1611,6 +1618,144 @@ mod tests {
         assert_eq!(err.into_parts().0, StatusCode::BAD_REQUEST);
         assert!(rx.try_recv().is_err(), "nothing reached the daemon");
 
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM machines WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    /// A user, a machine and a live parent session on it.
+    async fn seed_parent_on_machine(pool: &sqlx::PgPool) -> (Uuid, Uuid, String) {
+        let (uid, machine) = (Uuid::new_v4(), Uuid::new_v4());
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("ctx-off-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(machine)
+            .bind(uid)
+            .bind(machine.to_string())
+            .bind(format!("kh-{machine}"))
+            .execute(pool)
+            .await
+            .expect("seed machine");
+        let parent = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, working_dir, user_id, machine_uuid, adapter_id) \
+             VALUES ($1, $2, '/w', $3, $4, 'claude-code')",
+        )
+        .bind(&parent)
+        .bind(machine.to_string())
+        .bind(uid)
+        .bind(machine)
+        .execute(pool)
+        .await
+        .expect("seed parent");
+        (uid, machine, parent)
+    }
+
+    /// A memory of `uid` pinned by its profile `kit`.
+    async fn seed_pinned_memory(pool: &sqlx::PgPool, uid: Uuid) -> Uuid {
+        use crate::routes::context::{ContextItemSpec, clean_spec, insert};
+        let memory = clean_spec(ContextItemSpec {
+            kind: "memory".into(),
+            name: "kit-note".into(),
+            title: "Kit note".into(),
+            body: "pinned".into(),
+            enabled: true,
+            ..ContextItemSpec::default()
+        })
+        .expect("valid memory");
+        let memory = insert(pool, uid, &memory, None, None).await.expect("memory");
+        sqlx::query(
+            "INSERT INTO session_profiles (user_id, name, context_items) VALUES ($1, 'kit', $2)",
+        )
+        .bind(uid)
+        .bind(vec![memory.id])
+        .execute(pool)
+        .await
+        .expect("seed profile");
+        memory.id
+    }
+
+    #[tokio::test]
+    async fn with_context_off_a_child_spawns_with_only_its_ownership_record() {
+        use crate::routes::context::ownership::test_support::assert_no_content;
+        use crate::routes::context::ownership::{self};
+        use crate::routes::context::{SpawnScope, StoredScope};
+        use cctui_proto::features::{Feature, FeatureSet};
+        let name = "with_context_off_a_child_spawns_with_only_its_ownership_record";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, machine, parent) = seed_parent_on_machine(&pool).await;
+        let parent_scope =
+            StoredScope { user_id: uid, coords: SpawnScope::default(), dispatched: true };
+        ownership::record(&pool, &parent, &parent_scope).await;
+        let memory = seed_pinned_memory(&pool, uid).await;
+
+        let mut state = AppState::for_test(pool.clone());
+        state.config.features = FeatureSet::all().without(Feature::Context);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        state.bus.register_daemon(machine, Uuid::new_v4(), tx);
+        state.core.spawn_capabilities.insert(parent.clone(), cap(&["claude-code"], None, Some(5)));
+
+        let spawned = cctui_server_core::child_exec::spawn_child(
+            &state,
+            uid,
+            &parent,
+            &req("claude-code", None),
+        )
+        .await
+        .expect("a child spawns with context off");
+        assert!(rx.recv().await.is_some(), "the spawn reached the daemon");
+        let child = spawned.session_id;
+        assert_eq!(ownership::owner_of(&pool, &child).await.expect("lookup"), Some(uid));
+        assert!(
+            ownership::launch_scope(&pool, &child).await.is_some_and(|s| s.dispatched),
+            "the child inherits its parent's dispatched flag from the ownership record"
+        );
+        assert_no_content(&pool, &child).await;
+
+        let parent_of_tree = parent_of(&parent, uid);
+        let off_key = Uuid::new_v4().to_string();
+        remember_child_context(&state, &parent_of_tree, &off_key, "claude-code", None, Some("kit"))
+            .await;
+        assert_no_content(&pool, &off_key).await;
+        state.config.features = FeatureSet::all();
+        let on_key = Uuid::new_v4().to_string();
+        remember_child_context(&state, &parent_of_tree, &on_key, "claude-code", None, Some("kit"))
+            .await;
+        let pinned: Vec<Uuid> =
+            sqlx::query_scalar("SELECT item_ids FROM session_context WHERE spawn_key = $1")
+                .bind(&on_key)
+                .fetch_one(&pool)
+                .await
+                .expect("the context row");
+        assert_eq!(pinned, vec![memory], "with context on the profile's memory is recorded");
+
+        sqlx::query("DELETE FROM session_context WHERE spawn_key = ANY($1)")
+            .bind(vec![parent, child, off_key, on_key])
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM session_profiles WHERE user_id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM context_items WHERE user_id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .ok();
         sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
         sqlx::query("DELETE FROM machines WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();

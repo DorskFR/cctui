@@ -55,6 +55,7 @@ pub mod runtime;
 pub mod selfupdate;
 pub mod sendguard;
 pub mod servercaps;
+pub mod serverfeatures;
 pub mod service;
 pub mod supervisor;
 pub mod text_deltas;

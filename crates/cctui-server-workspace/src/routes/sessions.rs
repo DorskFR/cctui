@@ -12,6 +12,7 @@ use cctui_proto::api::{
     SessionListResponse, SessionParentStub, SessionResult, SpawnRequest, SpawnResponse,
 };
 use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, PrStatusCache, classify};
+use cctui_proto::features::Feature;
 use cctui_proto::models::{Attention, Liveness, Session, SessionEndReason, SessionStatus};
 use cctui_server_core::hook_policy;
 
@@ -748,17 +749,18 @@ impl EnrichContext {
         ctx.account_names = fetch_account_names(state, &session_ids).await?;
         ctx.with_credentials = fetch_token_holders(state, &session_ids).await?;
         ctx.traffic_observed = fetch_traffic_observed(state, &session_ids).await?;
-        ctx.auto_approve = {
+        if state.config.features.contains(Feature::AutoApprove) {
             let store = state.permission_store.read().await;
-            session_ids.iter().filter(|id| store.is_auto_approve(id)).cloned().collect()
-        };
+            ctx.auto_approve =
+                session_ids.iter().filter(|id| store.is_auto_approve(id)).cloned().collect();
+        }
         ctx.last_turns = fetch_last_turns(state, &session_ids).await?;
         let draft_ids: Vec<String> = with_ts
             .iter()
             .filter(|(_, s)| s.status == SessionStatus::Draft)
             .map(|(_, s)| s.id.clone())
             .collect();
-        if !draft_ids.is_empty() {
+        if !draft_ids.is_empty() && state.config.features.contains(Feature::Scheduling) {
             ctx.scheduled_launches =
                 crate::scheduled_spawns::pending_for(&state.pool, &draft_ids).await?;
         }
@@ -2057,11 +2059,7 @@ pub async fn get_session(
                 model: None,
                 effort: None,
                 permission_mode,
-                auto_approve: state
-                    .permission_store
-                    .read()
-                    .await
-                    .is_auto_approve(&handle.session.id),
+                auto_approve: auto_approve_shown(&state, &handle.session.id).await,
                 match_snippet: None,
                 match_seq: None,
                 last_activity_at: None,
@@ -2141,7 +2139,7 @@ pub async fn get_session(
         model: None,
         effort: None,
         permission_mode: None,
-        auto_approve: state.permission_store.read().await.is_auto_approve(&row.id),
+        auto_approve: auto_approve_shown(&state, &row.id).await,
         match_snippet: None,
         match_seq: None,
         last_activity_at: None,
@@ -2438,8 +2436,11 @@ pub async fn get_conversation(
         .map(str::to_owned)
         .collect();
     let usage_by_message = message_usage(&state, &session_id, &message_ids).await?;
-    let scheduled_turns =
-        crate::scheduled_messages::scheduled_turns(&state.pool, &session_id).await?;
+    let scheduled_turns = if state.config.features.contains(Feature::Scheduling) {
+        crate::scheduled_messages::scheduled_turns(&state.pool, &session_id).await?
+    } else {
+        HashMap::new()
+    };
 
     // Stamp each event with `ts` (unix millis, matching the live `AgentEvent`
     // shape) derived from `created_at`, so the client renders real timestamps
@@ -2947,6 +2948,9 @@ pub async fn send_message(
     Json(req): Json<MessageRequest>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), AppError> {
     if let Some(raw) = req.deliver_at.as_deref() {
+        if !state.config.features.contains(Feature::Scheduling) {
+            return Err(AppError::new(StatusCode::BAD_REQUEST, SCHEDULING_OFF));
+        }
         return crate::routes::scheduled_messages::schedule(
             &state,
             &ctx,
@@ -3001,6 +3005,9 @@ pub async fn send_message(
         }),
     ))
 }
+
+pub const SCHEDULING_OFF: &str =
+    "scheduled sending is turned off on this server: send without deliver_at";
 
 /// A draft has no worker to wake.
 pub fn reply_wakes_worker(status: &str, tempo: Option<&str>) -> bool {
@@ -3714,6 +3721,12 @@ pub async fn fork_session(
     ))
 }
 
+/// The session's auto-approve toggle as shown to clients; off with the feature off.
+async fn auto_approve_shown(state: &AppState, session_id: &str) -> bool {
+    state.config.features.contains(Feature::AutoApprove)
+        && state.permission_store.read().await.is_auto_approve(session_id)
+}
+
 /// `POST /api/v1/sessions/{id}/auto-approve` — toggle cctui-side auto-approve.
 /// When on, incoming permission requests for this session are
 /// answered `allow` immediately. In-memory; reset on server restart.
@@ -3722,6 +3735,9 @@ pub async fn set_auto_approve(
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::AutoApproveRequest>,
 ) -> Result<StatusCode, AppError> {
+    if !state.config.features.contains(Feature::AutoApprove) {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "auto-approve is turned off"));
+    }
     state.permission_store.write().await.set_auto_approve(&session_id, req.enabled);
     tracing::info!(session_id = %session_id, enabled = req.enabled, "auto-approve toggled");
     Ok(StatusCode::NO_CONTENT)

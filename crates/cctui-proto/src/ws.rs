@@ -315,6 +315,14 @@ pub enum DaemonFrameDown {
     DrainRestart {
         harness: String,
     },
+    /// Switchable features that are off, sent on connect before [`Self::Reconcile`].
+    ///
+    /// Plain names so an unknown one cannot fail the frame; no frame means
+    /// every feature is on.
+    Features {
+        #[serde(default)]
+        off: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1330,6 +1338,22 @@ mod tests {
         match serde_json::from_str::<DaemonFrameDown>(&json).unwrap() {
             DaemonFrameDown::DrainRestart { harness } => assert_eq!(harness, "claude-code"),
             _ => panic!("expected DrainRestart"),
+        }
+    }
+
+    #[test]
+    fn features_frame_roundtrips_and_tolerates_unknown_names_and_fields() {
+        let f = DaemonFrameDown::Features { off: vec!["rooms".to_owned()] };
+        let json = serde_json::to_string(&f).unwrap();
+        assert_eq!(json, r#"{"type":"features","off":["rooms"]}"#);
+        let newer = r#"{"type":"features","off":["rooms","from_the_future"],"extra":1}"#;
+        match serde_json::from_str::<DaemonFrameDown>(newer).unwrap() {
+            DaemonFrameDown::Features { off } => assert_eq!(off, ["rooms", "from_the_future"]),
+            other => panic!("expected Features, got {other:?}"),
+        }
+        match serde_json::from_str::<DaemonFrameDown>(r#"{"type":"features"}"#).unwrap() {
+            DaemonFrameDown::Features { off } => assert!(off.is_empty()),
+            other => panic!("expected Features, got {other:?}"),
         }
     }
 

@@ -6,6 +6,7 @@ import { type OwnerTarget, sessionOwnerTargets } from '$lib/hiddenOwners';
 import { m } from '$lib/paraglide/messages';
 import { useAllMachines, useHiddenOwnerActions, useHiddenOwners, useUsers } from '$lib/queries';
 import { toasts } from '$lib/toast.svelte';
+import { hasFeature } from '$lib/features.svelte';
 
 export function ownerTargetLabel(t: OwnerTarget): string {
 	if (t.kind === 'user')
@@ -35,7 +36,7 @@ export async function toggleOwnerTarget(
 export function useOwnerHideMenu(session: () => SessionListItem, me: () => MeResponse | undefined) {
 	const admin = () => me()?.role === 'admin';
 	const owners = useHiddenOwners(admin);
-	const machines = useAllMachines(admin);
+	const machines = useAllMachines(() => admin() && hasFeature('machine_spawn'));
 	const users = useUsers(admin);
 	const actions = useHiddenOwnerActions();
 	const items = $derived<MenuItem[]>(

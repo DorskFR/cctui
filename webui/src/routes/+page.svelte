@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { useAccounts, useMachineResources, useSessionStats, useTokenStats } from '$lib/queries';
 	import { getLocale } from '$lib/paraglide/runtime';
+	import { hasFeature } from '$lib/features.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import SessionPeriodSummary from '$lib/components/organisms/overview/SessionPeriodSummary.svelte';
 	import MetricTile from '$lib/components/molecules/MetricTile.svelte';
@@ -18,7 +19,11 @@
 	const machineRows = $derived(machines.data ?? []);
 
 	const num = (n: number) => n.toLocaleString(getLocale());
-	const tiles = $derived(buildMetricTiles(stats.data, machineRows));
+	const tiles = $derived(
+		buildMetricTiles(stats.data, machineRows).filter(
+			(t) => t.key !== 'machines' || hasFeature('machine_spawn')
+		)
+	);
 	const tileLabel = (key: MetricKey, sub: number | undefined) =>
 		key === 'live'
 			? m.home_stat_live()

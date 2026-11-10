@@ -1,13 +1,15 @@
 // @vitest-environment happy-dom
 import { flushSync } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { drafts, LAST_SPAWN_NAME, SPAWN_SLOT, spawnSlotKey } from '$lib/drafts';
+import { drafts, LAST_SPAWN_LABELS, LAST_SPAWN_NAME, SPAWN_SLOT, spawnSlotKey } from '$lib/drafts';
 import { FOLLOWUP_RELATION } from '$lib/followup';
 import { attachmentStore } from '$lib/attachmentStore';
 import { SpawnForm, type SpawnFormOptions } from './spawnForm.svelte';
 import { saveDraft, spawnOnMachine } from './spawnSubmit';
 import { dictateIntoPrompt } from './spawnDictation';
 import { NO_ACCOUNT } from './options';
+import { setCapabilitiesForTest } from '$lib/features.svelte';
+import type { Feature } from '@bindings/Feature';
 
 const machineList = [
 	{
@@ -515,5 +517,108 @@ describe('SpawnForm dictation', () => {
 		await dictateIntoPrompt(sf, 'Fix the login bug', true);
 		expect(spawn).toHaveBeenCalledTimes(1);
 		expect(spawn.mock.calls[0][0]).toMatchObject({ prompt: 'Fix the login bug', working_dir: '/w' });
+	});
+});
+
+describe('SpawnForm with features off', () => {
+	const SWITCHABLE: Feature[] = ['machine_spawn', 'drafts', 'scheduling', 'uploads', 'profiles'];
+	const off = (...names: Feature[]) =>
+		setCapabilitiesForTest({
+			features: SWITCHABLE.filter((f) => !names.includes(f)),
+			switchable: SWITCHABLE
+		});
+	afterEach(() => setCapabilitiesForTest(null));
+
+	it('is a dispatch form whatever is picked without machine_spawn', () => {
+		off('machine_spawn');
+		dispatcherList = ['k8s'];
+		const sf = open();
+		expect(sf.target).toBe('dispatch');
+		sf.setTarget('machine');
+		expect(sf.target).toBe('dispatch');
+		expect(sf.showTargetTabs).toBe(false);
+		expect(sf.canDraft).toBe(false);
+	});
+
+	it('shows both tabs with every feature on', () => {
+		off();
+		dispatcherList = ['k8s'];
+		const sf = open();
+		expect(sf.target).toBe('machine');
+		expect(sf.showTargetTabs).toBe(true);
+	});
+
+	it('neither autosaves nor discards a draft without drafts', async () => {
+		off('drafts');
+		const sf = open();
+		sf.form.working_dir = '/w';
+		sf.form.prompt = 'p';
+		sf.draftId = 'draft-1';
+		flushSync();
+		expect(sf.draftValid).toBe(false);
+		expect(await sf.flushDraft()).toBe(false);
+		sf.clearForm();
+		expect(spawn).not.toHaveBeenCalled();
+		expect(updateDraft).not.toHaveBeenCalled();
+		expect(discardDraft).not.toHaveBeenCalled();
+	});
+
+	it('refuses to schedule without scheduling', async () => {
+		off('scheduling');
+		const sf = open();
+		sf.form.working_dir = '/w';
+		sf.form.prompt = 'p';
+		flushSync();
+		expect(sf.canSchedule).toBe(false);
+		await sf.scheduleLaunch(new Date(Date.now() + 3_600_000));
+		expect(spawn).not.toHaveBeenCalled();
+	});
+
+	it('launches with no files and takes none in without uploads', async () => {
+		off('uploads');
+		spawn.mockResolvedValue({ command_id: 'c-1', session_id: null });
+		const sf = open();
+		sf.form.working_dir = '/w';
+		sf.form.prompt = 'p';
+		sf.att.add([new File(['png'], 'shot.png')]);
+		sf.files = [new File(['x'], 'restored.txt')];
+		flushSync();
+		await spawnOnMachine(sf);
+		expect(spawn).toHaveBeenCalledTimes(1);
+		expect(spawn.mock.calls[0][1]).toEqual([]);
+	});
+});
+
+describe('SpawnForm without organising', () => {
+	const organising = (on: boolean) =>
+		setCapabilitiesForTest({ features: on ? ['organising'] : [], switchable: ['organising'] });
+	afterEach(() => setCapabilitiesForTest(null));
+
+	it('launches with no label ids and keeps the remembered labels', async () => {
+		organising(false);
+		drafts.set(LAST_SPAWN_LABELS, 'kept');
+		spawn.mockResolvedValue({ command_id: 'c-1', session_id: null });
+		const sf = open({ prefill: { machine_id: 'm-uuid-1', working_dir: '/w', prompt: 'p', label_ids: 'l1' } });
+		expect(sf.canLabel).toBe(false);
+		expect(sf.labelIds).toEqual([]);
+		expect(sf.buildSpawnBody()).not.toHaveProperty('label_ids');
+		await spawnOnMachine(sf);
+		expect(spawn).toHaveBeenCalledTimes(1);
+		expect(spawn.mock.calls[0][0]).not.toHaveProperty('label_ids');
+		expect(drafts.get(LAST_SPAWN_LABELS)).toBe('kept');
+	});
+
+	it('saves a draft with no label ids', async () => {
+		organising(false);
+		spawn.mockResolvedValue({ command_id: 'draft-1', status: 'draft' });
+		const sf = open({ prefill: { machine_id: 'm-uuid-1', working_dir: '/w', prompt: 'p', label_ids: 'l1' } });
+		await saveDraft(sf);
+		expect(spawn.mock.calls[0][0]).not.toHaveProperty('label_ids');
+	});
+
+	it('carries the labels with organising on', () => {
+		organising(true);
+		const sf = open({ prefill: { machine_id: 'm-uuid-1', working_dir: '/w', label_ids: 'l1' } });
+		expect(sf.buildSpawnBody().label_ids).toEqual(['l1']);
 	});
 });

@@ -16,7 +16,8 @@
 			SessionListItem,
 			'status' | 'liveness' | 'bucket' | 'auto_archive_at' | 'archived_by'
 		>;
-		onpin: () => void;
+		/** Omit to drop the keep action. */
+		onpin?: () => void;
 	} = $props();
 
 	let now = $state(Date.now());
@@ -51,7 +52,9 @@
 {:else if dueIn !== null}
 	<div class="notice" role="note" data-testid="auto-archive-notice">
 		<Text as="span" tone="faint" size="xs">{m.auto_archive_due({ when: dueLabel })}</Text>
-		<Button size="sm" variant="ghost" onclick={onpin}>{m.auto_archive_keep()}</Button>
+		{#if onpin}
+			<Button size="sm" variant="ghost" onclick={onpin}>{m.auto_archive_keep()}</Button>
+		{/if}
 	</div>
 {/if}
 

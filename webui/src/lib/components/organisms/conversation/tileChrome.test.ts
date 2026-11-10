@@ -15,7 +15,7 @@ describe('a tile wears one row of header chrome', () => {
 
 	it('drops the meta row and the label strip', () => {
 		expect(markup).toMatch(/\{#if !compact\}\s*<HeaderMeta/);
-		expect(markup).toContain('{#if session.labels.length > 0 && !compact}');
+		expect(markup).toContain('{#if showLabels && session.labels.length > 0 && !compact}');
 	});
 
 	it('puts interrupt and archive behind the ⋯ menu instead of the bar', () => {

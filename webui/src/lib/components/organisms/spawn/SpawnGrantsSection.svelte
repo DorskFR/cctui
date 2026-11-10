@@ -13,18 +13,19 @@
 	bind:envRows={sf.envRows}
 	att={sf.att}
 	allLabels={sf.allLabels}
+	labelable={sf.canLabel}
 	envInvalid={sf.badEnvKeys.length > 0}
-	attachments={sf.target === 'machine'}
+	attachments={sf.target === 'machine' && sf.canAttach}
 	machineId={sf.target === 'machine' ? sf.form.machine_id : undefined}
 	labelActions={sf.actions}
 />
-{#if sf.target === 'machine' && sf.form.machine_id}
+{#if sf.target === 'machine' && sf.form.machine_id && sf.canUseContext}
 	<SpawnContextRow
 		bind:items={sf.form.context_items}
 		bind:pins={sf.contextPins}
 		machineId={sf.form.machine_id}
 		workingDir={sf.form.working_dir}
-		labels={sf.form.labels}
+		labels={sf.labelIds}
 		adapter={sf.effectiveForm.adapter_id}
 		pinnedIds={sf.profileSpec?.context_items ?? []}
 	/>

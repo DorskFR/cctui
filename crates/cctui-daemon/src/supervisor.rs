@@ -13,7 +13,8 @@ use cctui_crypto::redact::{self, CompiledPatterns};
 use cctui_proto::adapter::{AdapterCommand, AdapterEvent};
 use cctui_proto::api::DaemonAdapterConfig;
 use cctui_proto::backoff::Backoff;
-use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp, SecretScrubConfig};
+use cctui_proto::features::{Feature, FeatureSet};
+use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp, ReadFileErrorKind, SecretScrubConfig};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -104,6 +105,40 @@ async fn send_bounded(sink: &mut WsSink, msg: Message) -> anyhow::Result<()> {
             "WS send blocked for {}s — treating the connection as dead",
             SEND_TIMEOUT.as_secs()
         ),
+    }
+}
+
+const FILES_OFF: &str = "file access is switched off on this server";
+
+/// The error reply to a directory listing, file read or git-info frame while
+/// the server runs without `files`; `None` serves the frame.
+fn files_refusal(frame: &DaemonFrameDown, features: FeatureSet) -> Option<DaemonFrameUp> {
+    if features.contains(Feature::Files) {
+        return None;
+    }
+    let error = Some(FILES_OFF.to_owned());
+    match frame {
+        DaemonFrameDown::ListDirs { request_id, .. } => Some(DaemonFrameUp::ListDirsResult {
+            request_id: *request_id,
+            ok: false,
+            dirs: Vec::new(),
+            error,
+        }),
+        DaemonFrameDown::GitInfo { request_id, .. } => Some(DaemonFrameUp::GitInfoResult {
+            request_id: *request_id,
+            ok: false,
+            info: None,
+            error,
+        }),
+        DaemonFrameDown::ReadFile { request_id, .. } => Some(DaemonFrameUp::ReadFileResult {
+            request_id: *request_id,
+            ok: false,
+            file: None,
+            error_kind: Some(ReadFileErrorKind::Denied),
+            error,
+            allowed_folders: Vec::new(),
+        }),
+        _ => None,
     }
 }
 
@@ -372,6 +407,7 @@ impl Supervisor {
         event_rx: &mut mpsc::Receiver<(String, AdapterEvent)>,
     ) -> anyhow::Result<()> {
         let (mut sink, mut stream) = self.connect().await?.split();
+        crate::serverfeatures::reset();
 
         // Out-of-band frames the supervisor itself produces (currently the
         // `StageFilesResult` reply to a mid-chat attachment request),
@@ -691,7 +727,12 @@ impl Supervisor {
         scrub: &mut CompiledPatterns,
         shutdown: &CancellationToken,
     ) {
+        if let Some(up) = files_refusal(&frame, crate::serverfeatures::current()) {
+            send_reply(frame_up_tx, up);
+            return;
+        }
         match frame {
+            DaemonFrameDown::Features { off } => crate::serverfeatures::announce(&off),
             DaemonFrameDown::Reconcile { adapters, secret_scrub } => {
                 *scrub = compile_scrub(&secret_scrub);
                 self.reconcile(adapters, running, event_tx, shutdown);
@@ -1846,8 +1887,74 @@ mod tests {
 
     use super::{
         AdapterRunning, Duration, LIVENESS_TIMEOUT, Lane, PING_INTERVAL, PendingTransfer,
-        Supervisor, compile_scrub, is_textless_thinking, lane, scrub_event,
+        Supervisor, compile_scrub, files_refusal, is_textless_thinking, lane, scrub_event,
     };
+
+    fn file_frames() -> [cctui_proto::ws::DaemonFrameDown; 3] {
+        use cctui_proto::ws::DaemonFrameDown;
+        let request_id = uuid::Uuid::from_u128(7);
+        [
+            DaemonFrameDown::ListDirs { request_id, path: "/home".to_owned() },
+            DaemonFrameDown::GitInfo { request_id, path: "/repo".to_owned(), include_dirty: true },
+            DaemonFrameDown::ReadFile {
+                request_id,
+                path: "/etc/hostname".to_owned(),
+                max_bytes: 10,
+                cwd: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn a_file_frame_is_refused_with_an_error_reply_when_files_is_off() {
+        use cctui_proto::features::{Feature, FeatureSet};
+        let off = FeatureSet::all().without(Feature::Files);
+        for frame in file_frames() {
+            let reply = files_refusal(&frame, off).unwrap_or_else(|| panic!("served {frame:?}"));
+            let (request_id, ok, error) = match reply {
+                DaemonFrameUp::ListDirsResult { request_id, ok, error, .. }
+                | DaemonFrameUp::GitInfoResult { request_id, ok, error, .. } => {
+                    (request_id, ok, error)
+                }
+                DaemonFrameUp::ReadFileResult { request_id, ok, error, error_kind, .. } => {
+                    assert_eq!(error_kind, Some(cctui_proto::ws::ReadFileErrorKind::Denied));
+                    (request_id, ok, error)
+                }
+                other => panic!("unexpected reply {other:?}"),
+            };
+            assert_eq!(request_id, uuid::Uuid::from_u128(7), "the reply is correlated");
+            assert!(!ok);
+            assert!(error.is_some_and(|e| e.contains("switched off")));
+        }
+    }
+
+    #[test]
+    fn a_file_frame_is_served_when_files_is_on_or_never_announced() {
+        let unannounced = crate::serverfeatures::from_off(&[]);
+        for features in [cctui_proto::features::FeatureSet::all(), unannounced] {
+            for frame in file_frames() {
+                assert!(files_refusal(&frame, features).is_none(), "refused {frame:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_files_refusal_leaves_every_other_frame_alone() {
+        let ack = cctui_proto::ws::DaemonFrameDown::Ack { seq: 1 };
+        assert!(files_refusal(&ack, cctui_proto::features::FeatureSet::none()).is_none());
+    }
+
+    #[test]
+    fn the_features_frame_parses_with_extra_fields_and_an_unknown_frame_is_skipped() {
+        use tokio_tungstenite::tungstenite::Message;
+        let json = r#"{"type":"features","off":["files"],"from_the_future":true}"#;
+        match super::parse_frame(Message::Text(json.into())) {
+            Some(cctui_proto::ws::DaemonFrameDown::Features { off }) => assert_eq!(off, ["files"]),
+            other => panic!("expected Features, got {other:?}"),
+        }
+        let unknown = r#"{"type":"from_the_future","x":1}"#;
+        assert!(super::parse_frame(Message::Text(unknown.into())).is_none());
+    }
     use crate::adapter_runtime::{Adapter, AdapterCtx, AdapterFactory};
     use crate::client::ServerClient;
 

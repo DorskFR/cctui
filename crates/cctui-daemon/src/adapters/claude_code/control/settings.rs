@@ -59,7 +59,7 @@ pub(super) fn build_session_context(
     b.push_str(REPLY_LINE);
     b.push_str(crate::preamble::IMAGE_LINE);
     if let Some(cap) = capability.filter(|c| !c.is_empty()) {
-        b.push_str(&agent_tool_context(cap));
+        b.push_str(&agent_tool_context(cap, crate::serverfeatures::current()));
     }
     let _ = write!(b, "</{SESSION_CONTEXT}>");
     b
@@ -67,12 +67,26 @@ pub(super) fn build_session_context(
 
 const AGENT_TOOL_CONTEXT: &str = include_str!("agent_tool_context.md");
 
-/// The `CctuiAgent` paragraph of the session context: the tool exists, which
-/// adapters this session may spawn, and one worked call.
-pub(super) fn agent_tool_context(cap: &cctui_proto::api::SpawnCapability) -> String {
+/// The `CctuiAgent` paragraph of the session context.
+///
+/// It says the tool exists, which adapters this session may spawn, and gives
+/// one worked call. Without `child_sessions` only the core tools are described.
+pub(super) fn agent_tool_context(
+    cap: &cctui_proto::api::SpawnCapability,
+    features: cctui_proto::features::FeatureSet,
+) -> String {
     let (intro, usage) = AGENT_TOOL_CONTEXT
         .split_once("{capabilities}\n")
         .expect("agent_tool_context.md has a {capabilities} line");
+    if !features.contains(cctui_proto::features::Feature::ChildSessions) {
+        return usage.lines().filter(|l| !l.starts_with("CctuiAgentArchive:")).fold(
+            String::new(),
+            |mut b, line| {
+                let _ = writeln!(b, "{line}");
+                b
+            },
+        );
+    }
     let mut b = String::from(intro);
     let _ = writeln!(b, "  adapters you may spawn: {}", cap.adapters.join(", "));
     match cap.max_budget_usd {
@@ -1054,6 +1068,7 @@ fn ensure_agent_mcp_config_in(
         &exe.to_string_lossy(),
         session_id,
         crate::agenttool::socket_for_launch(),
+        crate::mcp::tools_arg(crate::serverfeatures::current()).as_deref(),
     );
     if let Some(Err(err)) = path.parent().map(std::fs::create_dir_all) {
         tracing::warn!(%err, "CctuiAgent: cannot create mcp config dir");
@@ -2520,6 +2535,18 @@ mod tests {
     }
 
     #[test]
+    fn without_child_sessions_the_context_describes_only_the_core_tools() {
+        let features = cctui_proto::features::FeatureSet::all()
+            .without(cctui_proto::features::Feature::ChildSessions);
+        let text =
+            agent_tool_context(&cctui_proto::api::SpawnCapability::machine_default(), features);
+        assert!(text.starts_with("CctuiUsage: `mcp__cctui__CctuiUsage`"), "{text}");
+        assert!(!text.contains("CctuiAgent:") && !text.contains("CctuiAgentArchive"), "{text}");
+        assert!(!text.contains("adapters you may spawn"), "{text}");
+        assert!(text.ends_with("before concluding the tool is missing.\n"), "{text}");
+    }
+
+    #[test]
     fn agent_tool_context_renders_byte_identical_text() {
         let full = cctui_proto::api::SpawnCapability {
             adapters: vec!["codex".to_owned(), "claude-code".to_owned()],
@@ -2529,7 +2556,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            agent_tool_context(&full),
+            agent_tool_context(&full, cctui_proto::features::FeatureSet::all()),
             "CctuiAgent: you can delegate work to cctui subagent sessions on this machine with \
              the MCP tool `mcp__cctui__CctuiAgent`. Each child is a real cctui session — nested \
              under this one in the UI, metered, killable. The call follows the child (progress \
@@ -2554,7 +2581,10 @@ mod tests {
              call once before concluding the tool is missing.\n"
         );
         assert_eq!(
-            agent_tool_context(&cctui_proto::api::SpawnCapability::default()),
+            agent_tool_context(
+                &cctui_proto::api::SpawnCapability::default(),
+                cctui_proto::features::FeatureSet::all()
+            ),
             "CctuiAgent: you can delegate work to cctui subagent sessions on this machine with \
              the MCP tool `mcp__cctui__CctuiAgent`. Each child is a real cctui session — nested \
              under this one in the UI, metered, killable. The call follows the child (progress \

@@ -1,7 +1,8 @@
 <script lang="ts">
 	import '$lib/styles/app.css';
 	import { apiBase } from '$lib/config';
-	import { probeWorkspaceSupport } from '$lib/workspaceSupport';
+	import { bootCapabilities, workspaceSupported } from '$lib/workspaceSupport';
+	import { hasFeature } from '$lib/features.svelte';
 	import CoreServerNotice from '$lib/components/organisms/CoreServerNotice.svelte';
 	import MaintenanceScreen from '$lib/components/organisms/MaintenanceScreen.svelte';
 	import { backendHealth } from '$lib/backendHealth.svelte';
@@ -142,10 +143,11 @@
 	// signed in — the token isn't readable from JS.
 	$effect(() => {
 		let cancelled = false;
-		void probeWorkspaceSupport(fetch, apiBase()).then((supported) => {
+		void bootCapabilities(fetch, apiBase()).then((caps) => {
 			if (cancelled) return;
-			workspaceAvailable = supported;
-			if (supported) void auth.init();
+			if (caps) queryClient.setQueryData(qk.capabilities, caps);
+			workspaceAvailable = workspaceSupported(caps);
+			if (workspaceAvailable) void auth.init();
 		});
 		return () => { cancelled = true; };
 	});
@@ -166,7 +168,7 @@
 	});
 
 	$effect(() => {
-		if (workspaceAvailable === true && auth.isAuthed) void serverDrafts.load();
+		if (workspaceAvailable === true && auth.isAuthed && hasFeature('drafts')) void serverDrafts.load();
 	});
 
 	// The guided tours spotlight elements behind the login, so they mount once

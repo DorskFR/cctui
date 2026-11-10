@@ -13,6 +13,7 @@
 	import MacrosMenu from './MacrosMenu.svelte';
 	import SearchScopeChips from '../molecules/SearchScopeChips.svelte';
 	import { settings } from '$lib/settings.svelte';
+	import { hasFeature } from '$lib/features.svelte';
 	import type { Dimension } from '../../../routes/sessions/sessions.logic';
 	import type { ViewMode } from '$lib/sessionsView.svelte';
 
@@ -79,6 +80,7 @@
 	} = $props();
 
 	const searchId = $props.id();
+	const searchable = $derived(hasFeature('transcript_search'));
 
 	// Overflow menu: the toolbar grew too many buttons and squeezed the
 	// search bar. A ⋯ Popover collapses the secondary controls — the native
@@ -117,7 +119,9 @@
 	</Icon>
 {/snippet}
 {#snippet foldControls(menu: boolean)}
-	<LabelFilter {menu} {labels} bind:selected={labelFilter} onUpdate={onUpdateLabel} onDelete={onDeleteLabel} />
+	{#if hasFeature('organising')}
+		<LabelFilter {menu} {labels} bind:selected={labelFilter} onUpdate={onUpdateLabel} onDelete={onDeleteLabel} />
+	{/if}
 	<ViewPicker {menu} {tiles} bind:view />
 	<!-- Stays mounted (disabled) while searching: unmounting it re-wraps the
 	     flex bar mid-type and makes the search field jump. -->
@@ -151,16 +155,18 @@
 	</span>
 	<!-- FilterSearchBar forwards no id/aria-label, so the name reaches its input
 	     through the Field context; the label itself is screen-reader only. -->
-	<div class="search-box" data-journey="search">
-		<label for={searchId} class="sr-only">{m.a11y_sessions_search()}</label>
-		<Field for={searchId}>
-			<FilterSearchBar
-				schema={searchSchema}
-				bind:value={rawQuery}
-				placeholder={sessionSearchPlaceholder()}
-			/>
-		</Field>
-	</div>
+	{#if searchable}
+		<div class="search-box" data-journey="search">
+			<label for={searchId} class="sr-only">{m.a11y_sessions_search()}</label>
+			<Field for={searchId}>
+				<FilterSearchBar
+					schema={searchSchema}
+					bind:value={rawQuery}
+					placeholder={sessionSearchPlaceholder()}
+				/>
+			</Field>
+		</div>
+	{/if}
 	<span class="ctl-item"><SectionFilter bind:sections /></span>
 	{#if trailing}<span class="ctl-item">{@render trailing()}</span>{/if}
 	<!-- Above the fold the foldable controls render inline as bar-level flex items
@@ -206,7 +212,7 @@
 	     tools) onto a fresh line below title+New. Hidden on desktop where everything
 	     sits on one row. -->
 	<span class="row-break break-tools" aria-hidden="true"></span>
-	{#if rawQuery.trim()}
+	{#if searchable && rawQuery.trim()}
 		<div class="scope-row">
 			<SearchScopeChips bind:rawQuery schema={searchSchema} machine={scopeMachine} dir={scopeDir} />
 		</div>

@@ -86,6 +86,7 @@
 	"access_tag_admin": "admin",
 	"access_title": "Access",
 	"access_user_meta": "{machines} machines · {accounts} accounts",
+	"access_user_meta_accounts": "{accounts} accounts",
 	"account_delete_help": "Deleting \"{name}\" removes the identity and every provider credential under it. This cannot be undone.",
 	"account_emoji_clear": "Clear",
 	"account_emoji_hint": "One emoji, shown wherever this account appears. Leave empty for a coloured letter square.",

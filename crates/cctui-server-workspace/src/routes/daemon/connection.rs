@@ -345,7 +345,10 @@ async fn send_initial_frames(
     machine_id: Uuid,
     tx: &mpsc::Sender<DaemonFrameDown>,
 ) {
-    // Send Reconcile immediately.
+    // Ahead of Reconcile: the daemon must know what is off before any launch.
+    if tx.send(features_frame(state.config.features)).await.is_err() {
+        tracing::warn!("daemon tx closed before features");
+    }
     match load_reconcile(state, machine_id).await {
         Ok(adapters) => {
             let secret_scrub = load_scrub_config(state, machine_id).await;
@@ -372,6 +375,10 @@ async fn send_initial_frames(
     }
 }
 
+fn features_frame(features: cctui_proto::features::FeatureSet) -> DaemonFrameDown {
+    DaemonFrameDown::Features { off: features.disabled().map(|f| f.name().to_owned()).collect() }
+}
+
 fn spawn_bump_flusher(bumps: &Arc<Bumps>, pool: &sqlx::PgPool) -> tokio::task::JoinHandle<()> {
     let (bumps, pool) = (Arc::clone(bumps), pool.clone());
     tokio::spawn(async move {
@@ -395,5 +402,28 @@ fn note_idle_eviction(state: &AppState, machine_id: Uuid) {
             "daemon WS eviction loop — machine evicted repeatedly; \
              suspected re-upload/re-connect loop",
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cctui_proto::features::{Feature, FeatureSet};
+    use cctui_proto::ws::DaemonFrameDown;
+
+    fn off_of(features: FeatureSet) -> Vec<String> {
+        match super::features_frame(features) {
+            DaemonFrameDown::Features { off } => off,
+            other => panic!("expected Features, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_features_frame_names_exactly_the_switched_off_features() {
+        assert!(off_of(FeatureSet::all()).is_empty());
+        let core = off_of(FeatureSet::none());
+        assert_eq!(core.len(), Feature::ALL.len());
+        assert!(core.iter().any(|f| f == "files"));
+        let set = FeatureSet::all().without(Feature::Rooms).without(Feature::Voice);
+        assert_eq!(off_of(set), ["rooms", "voice"]);
     }
 }

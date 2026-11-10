@@ -1,6 +1,7 @@
 import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import type { SpawnResponse } from "@bindings/SpawnResponse";
 import { api } from "../api";
+import { hasFeature } from "$lib/features.svelte";
 
 export type ScheduledState = "scheduled" | "sending" | "sent" | "cancelled" | "dead";
 
@@ -46,6 +47,7 @@ export const useScheduledMessages = (sessionId: () => string) =>
   createQuery(() => ({
     queryKey: scheduledKey(sessionId()),
     queryFn: () => scheduledEndpoints.list(sessionId()),
+    enabled: hasFeature("scheduling"),
     refetchInterval: 30_000,
   }));
 

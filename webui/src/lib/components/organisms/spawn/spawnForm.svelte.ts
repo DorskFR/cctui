@@ -48,6 +48,7 @@ import { SpawnRecall } from './spawnRecall';
 import { buildSpawnBody, draftBody, envMap } from './spawnBody';
 import { withoutInvite } from '$lib/cctuiverse';
 import { withUserSpan } from '$lib/telemetry';
+import { hasFeature } from '$lib/features.svelte';
 import {
 	autosave,
 	dispatchToK8s,
@@ -81,13 +82,21 @@ export class SpawnForm {
 	private readonly autosaveDelay: () => number;
 	private readonly docked: () => boolean;
 
-	private readonly machines = useMachineResources(() => true);
+	canSpawnOnMachine = $derived(hasFeature('machine_spawn'));
+	canDraft = $derived(this.canSpawnOnMachine && hasFeature('drafts'));
+	canSchedule = $derived(this.canDraft && hasFeature('scheduling'));
+	canAttach = $derived(hasFeature('uploads'));
+	canUseProfiles = $derived(this.canSpawnOnMachine && hasFeature('profiles'));
+	canUseContext = $derived(hasFeature('context'));
+	canLabel = $derived(hasFeature('organising'));
+
+	private readonly machines = useMachineResources(() => this.canSpawnOnMachine);
 	private readonly dispatchers = useDispatchers(() => true);
 	private readonly accounts = useAccounts(() => true);
 	private readonly pools = useAccountPools(() => true);
 	private readonly usageQuery = useAllAccountsUsage(() => true);
 	private readonly labelsQuery = useLabels();
-	private readonly profilesQuery = useProfiles();
+	private readonly profilesQuery = useProfiles(() => this.canUseProfiles);
 	readonly profileActions = useProfileActions();
 	readonly actions = useSessionActions();
 	readonly labelApi = {
@@ -96,9 +105,17 @@ export class SpawnForm {
 		listSessions: () => endpoints.sessions(false)
 	};
 
-	target = $state<Target>('machine');
+	private chosenTarget = $state<Target>('machine');
+	get target(): Target {
+		return this.canSpawnOnMachine ? this.chosenTarget : 'dispatch';
+	}
+	set target(value: Target) {
+		this.chosenTarget = value;
+	}
 	form = $state<Form>({ ...blank });
-	private readonly dirsQuery = useRecentDirs(() => this.form.machine_id);
+	private readonly dirsQuery = useRecentDirs(() =>
+		this.canSpawnOnMachine ? this.form.machine_id : ''
+	);
 	draftId = $state<string | null>(null);
 	// Kept out of `form` (persisted to localStorage drafts) so secret values
 	// never reach disk; only env keys go into the draft. Files live in
@@ -109,13 +126,17 @@ export class SpawnForm {
 		input: () => this.form.prompt,
 		setInput: (text) => (this.form.prompt = text),
 		el: () => this.promptEl,
-		enabled: () => !this.busy
+		enabled: () => !this.busy && this.canAttach
 	});
 	get files(): File[] {
 		return this.att.files;
 	}
 	set files(files: File[]) {
 		this.att.files = files;
+	}
+	/** What a launch or a draft ships: nothing once uploads are off. */
+	get uploadFiles(): File[] {
+		return this.canAttach ? this.att.files : [];
 	}
 	private filesRestored = $state(false);
 	/** `fileSetKey` of the files the draft row holds; '' = none. */
@@ -149,6 +170,8 @@ export class SpawnForm {
 	machineList = $derived(this.machines.data ?? []);
 	dispatcherIds = $derived(this.dispatchers.data ?? []);
 	canDispatch = $derived(this.dispatcherIds.length > 0);
+	/** Both tabs to pick from; with machine spawn off the form is dispatch alone. */
+	showTargetTabs = $derived(this.canDispatch && this.canSpawnOnMachine);
 	targetOptions = $derived([
 		{ value: 'machine', label: m.spawn_tab_machine() },
 		{ value: 'dispatch', label: m.spawn_tab_dispatch() }
@@ -158,6 +181,10 @@ export class SpawnForm {
 	allPools = $derived(this.pools.data ?? []);
 	allUsage = $derived(this.usageQuery.data ?? []);
 	allLabels = $derived(this.labelsQuery.data?.labels ?? []);
+	/** The labels a launch carries: none once organising is off. */
+	get labelIds(): string[] {
+		return this.canLabel ? this.form.labels : [];
+	}
 
 	// The selected profile's kit (or its one-off adjustment) is written over
 	// the form at submit time: profile → one-off → explicit prompt / where.
@@ -196,11 +223,16 @@ export class SpawnForm {
 	valid = $derived(
 		(this.target === 'machine' ? this.spawnValid : this.dispatchValid) && this.secretsValid
 	);
-	autosaveReady = $derived(this.target === 'machine' && this.spawnValid && !!this.form.prompt.trim());
+	autosaveReady = $derived(
+		this.canDraft && this.target === 'machine' && this.spawnValid && !!this.form.prompt.trim()
+	);
 	// Drafts are a machine-spawn concept: valid whenever the spawn form is;
 	// secrets needn't be valid yet (entered at launch).
 	draftValid = $derived(
-		this.target === 'machine' && this.spawnValid && this.att.images.pending.length === 0
+		this.canDraft &&
+			this.target === 'machine' &&
+			this.spawnValid &&
+			this.att.images.pending.length === 0
 	);
 	spawnLabel = $derived(
 		`${this.target !== 'machine' ? m.spawn_action_dispatch() : m.spawn_action_spawn()} (${submitChordLabel()})`
@@ -391,16 +423,18 @@ export class SpawnForm {
 
 	buildSpawnBody(): SpawnRequest {
 		const f = this.effectiveForm;
-		return buildSpawnBody(
+		const body = buildSpawnBody(
 			{ ...f, context_items: [...new Set([...f.context_items, ...this.contextPins])] },
 			this.spawnProvider,
 			envMap(this.envRows),
 			this.followupParent,
 			this.selectedProfileId
 		);
+		if (!this.canLabel) delete body.label_ids;
+		return body;
 	}
 	draftBody(): SpawnRequest {
-		const body = draftBody(this.buildSpawnBody(), this.envRows, this.files);
+		const body = draftBody(this.buildSpawnBody(), this.envRows, this.uploadFiles);
 		return { ...body, prompt: body.prompt ? withoutInvite(body.prompt) || null : null };
 	}
 
@@ -433,7 +467,7 @@ export class SpawnForm {
 		this.oneOff = null;
 	}
 	discardMirror() {
-		if (!this.draftId) return;
+		if (!this.draftId || !this.canDraft) return;
 		const id = this.draftId;
 		this.draftId = null;
 		this.actions.discardDraft(id).catch(() => {});
@@ -501,7 +535,7 @@ export class SpawnForm {
 	};
 
 	scheduleLaunch = async (at: Date) => {
-		if (!this.draftValid || this.busy) return;
+		if (!this.canSchedule || !this.draftValid || this.busy) return;
 		this.busy = true;
 		try {
 			await queueLaunch(this, at);

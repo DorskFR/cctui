@@ -187,7 +187,11 @@ async fn validate_spawn(
             }
         },
         remember_spawner(&state.pool, key, ctx.user_id, req.name.as_deref()),
-        crate::followup::remember_intent(&state.pool, key, req),
+        async {
+            if state.config.features.contains(cctui_proto::features::Feature::Automation) {
+                crate::followup::remember_intent(&state.pool, key, req).await;
+            }
+        },
     );
     // Accounts are user-owned. The admin token has no user identity, so it
     // resolves the account against the target machine's owner —
@@ -208,6 +212,13 @@ async fn validate_spawn(
     })
 }
 
+const fn requested_labels(
+    features: cctui_proto::features::FeatureSet,
+    ids: &[String],
+) -> &[String] {
+    if features.contains(cctui_proto::features::Feature::Organising) { ids } else { &[] }
+}
+
 /// The spawn's labels and context set, recorded under `spawn_key`.
 async fn remember_context(
     state: &AppState,
@@ -220,22 +231,52 @@ async fn remember_context(
 ) -> Vec<crate::routes::context::ContextItem> {
     // In the machine owner's vocabulary: an admin's picker holds labels of
     // every user, and the session belongs to the owner.
+    let requested = requested_labels(state.config.features, &req.label_ids);
     let label_ids =
-        crate::spawn_labels::for_spawn(&state.pool, &req.label_ids, ctx.owner_filter(), owner)
-            .await;
-    let ((), (context, scope)) = tokio::join!(
+        crate::spawn_labels::for_spawn(&state.pool, requested, ctx.owner_filter(), owner).await;
+    let scope = launch_owner_scope(ctx, req, &label_ids, owner, machine_uuid, adapter_id);
+    if !state.config.features.contains(cctui_proto::features::Feature::Context) {
+        tokio::join!(
+            crate::spawn_labels::remember_intent(&state.pool, spawn_key, &label_ids),
+            crate::routes::context::ownership::record(&state.pool, spawn_key, &scope),
+        );
+        return Vec::new();
+    }
+    let ((), context) = tokio::join!(
         crate::spawn_labels::remember_intent(&state.pool, spawn_key, &label_ids),
-        resolve_spawn_context(state, ctx, req, &label_ids, owner, machine_uuid, adapter_id),
+        resolve_spawn_context(state, req, &scope),
     );
     crate::routes::context::remember_intent(&state.pool, spawn_key, &context, &scope).await;
     context
 }
 
+/// The owner and coordinates a spawn is recorded under. The resolved machine
+/// uuid, not `req.machine_id`, which may be a name: a machine filter must
+/// resolve the same here and on the child path.
+fn launch_owner_scope(
+    ctx: &AuthContext,
+    req: &SpawnRequest,
+    label_ids: &[String],
+    owner: Uuid,
+    machine_uuid: Uuid,
+    adapter_id: &str,
+) -> crate::routes::context::StoredScope {
+    crate::routes::context::StoredScope {
+        user_id: ctx.owner_filter().unwrap_or(owner),
+        coords: crate::routes::context::SpawnScope {
+            machine_id: Some(machine_uuid.to_string()),
+            working_dir: Some(req.working_dir.clone()),
+            label_ids: label_ids.to_vec(),
+            adapter: Some(adapter_id.to_owned()),
+        },
+        dispatched: false,
+    }
+}
+
 /// Resolve the reusable context for this spawn: the matching rules, the
 /// request's explicit picks, the profile's pinned items and — when the request
 /// asks for `auto` — every enabled memory whose filter matches the spawn's
-/// machine, working dir, labels and adapter. Returns the coordinates too, so
-/// every later launch re-resolves the rules against them.
+/// machine, working dir, labels and adapter.
 ///
 /// Best-effort: a lookup failure launches the session without context rather
 /// than refusing it. Context is a convenience, never a precondition.
@@ -246,39 +287,21 @@ async fn remember_context(
 )]
 async fn resolve_spawn_context(
     state: &AppState,
-    ctx: &AuthContext,
     req: &SpawnRequest,
-    label_ids: &[String],
-    owner: Uuid,
-    machine_uuid: Uuid,
-    adapter_id: &str,
-) -> (Vec<crate::routes::context::ContextItem>, crate::routes::context::StoredScope) {
-    use crate::routes::context::{SpawnScope, StoredScope, resolve_for_spawn};
-
-    let uid = ctx.owner_filter().unwrap_or(owner);
-    // The resolved uuid, not `req.machine_id`, which may be a name: a
-    // machine filter must resolve the same here and on the child path.
-    let scope = StoredScope {
-        user_id: uid,
-        coords: SpawnScope {
-            machine_id: Some(machine_uuid.to_string()),
-            working_dir: Some(req.working_dir.clone()),
-            label_ids: label_ids.to_vec(),
-            adapter: Some(adapter_id.to_owned()),
-        },
-        dispatched: false,
-    };
+    scope: &crate::routes::context::StoredScope,
+) -> Vec<crate::routes::context::ContextItem> {
+    let uid = scope.user_id;
     let asked = req.context.clone().unwrap_or_default();
     let items = match crate::routes::context::list_for_user(&state.pool, uid).await {
         Ok(items) => items,
         Err(e) => {
             tracing::warn!(error = %e, "context lookup failed; spawning without it");
-            return (Vec::new(), scope);
+            return Vec::new();
         }
     };
     let mut picks = asked.items;
     picks.extend(profile_context_names(state, req, uid, &items).await);
-    (resolve_for_spawn(&items, &picks, &scope.coords), scope)
+    crate::routes::context::resolve_for_spawn(&items, &picks, &scope.coords)
 }
 
 /// The names of the items the request's profile pins. Empty when the request
@@ -648,8 +671,15 @@ async fn save_draft(
                 AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not store the attachments")
             })?;
     }
-    crate::spawn_labels::sync_draft(&state.pool, &draft_key, &req.label_ids, ctx.owner_filter())
+    if state.config.features.contains(cctui_proto::features::Feature::Organising) {
+        crate::spawn_labels::sync_draft(
+            &state.pool,
+            &draft_key,
+            &req.label_ids,
+            ctx.owner_filter(),
+        )
         .await;
+    }
     tracing::info!(machine = %req.machine_id, draft = %draft_id, files = uploads.len(), "draft session saved");
     Ok((
         StatusCode::CREATED,
@@ -660,6 +690,27 @@ async fn save_draft(
             session_id: None,
         }),
     ))
+}
+
+/// No vault key to seal `<redacted>` spans with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NeedsVaultKey;
+
+/// `content` with its `<redacted>` spans masked, plus the real text
+/// vault-encrypted when there is a span. `key` is read only then.
+pub fn seal_redacted(
+    content: &str,
+    key: impl FnOnce() -> Vec<u8>,
+) -> Result<(String, Option<String>), NeedsVaultKey> {
+    if !cctui_crypto::redact::has_user_spans(content) {
+        return Ok((content.to_owned(), None));
+    }
+    let key = key();
+    if key.is_empty() {
+        return Err(NeedsVaultKey);
+    }
+    let masked = cctui_crypto::redact::mask_user_spans(content).into_owned();
+    Ok((masked, Some(crate::crypto::encrypt(content, &key))))
 }
 
 /// Key of the vault-encrypted original prompt beside `metadata.draft`.
@@ -675,7 +726,7 @@ pub fn draft_metadata(
     key: impl FnOnce() -> Vec<u8>,
 ) -> Result<serde_json::Value, AppError> {
     let sealed = if let Some(prompt) = payload.prompt.as_deref() {
-        let (masked, sealed) = crate::scheduled_messages::seal(prompt, key)
+        let (masked, sealed) = seal_redacted(prompt, key)
             .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, DRAFT_SEAL_NEEDS_KEY))?;
         payload.prompt = Some(masked);
         sealed
@@ -938,7 +989,9 @@ pub async fn cancel_draft_launch(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    if !crate::scheduled_spawns::cancel(&state.pool, &state.bus, &session_id).await? {
+    let scheduling = state.config.features.contains(cctui_proto::features::Feature::Scheduling);
+    if !scheduling || !crate::scheduled_spawns::cancel(&state.pool, &state.bus, &session_id).await?
+    {
         return Err(AppError::new(StatusCode::NOT_FOUND, "draft is not scheduled"));
     }
     tracing::info!(draft = %session_id, "draft launch schedule cancelled");
@@ -1066,6 +1119,15 @@ pub async fn get_machine_commands(
 mod tests {
     use axum::http::StatusCode;
     use base64::Engine;
+
+    #[test]
+    fn spawn_labels_are_dropped_with_organising_off() {
+        use cctui_proto::features::{Feature, FeatureSet};
+        let ids = vec!["11111111-1111-4111-8111-111111111111".to_owned()];
+        assert_eq!(super::requested_labels(FeatureSet::all(), &ids), ids.as_slice());
+        let off = FeatureSet::all().without(Feature::Organising);
+        assert!(super::requested_labels(off, &ids).is_empty());
+    }
 
     /// An enabled adapter outside the harness table is not a family the server
     /// can launch, so the default capability must not advertise it to
@@ -2366,7 +2428,10 @@ mod draft_seal_tests {
     use cctui_proto::api::SpawnRequest;
 
     use super::spawn_share_tests::{SPAWNER, caller, seed_machine, seed_user};
-    use super::{DRAFT_SEALED_PROMPT, draft_metadata, unseal_draft_prompt};
+    use super::{
+        DRAFT_SEALED_PROMPT, DRAFT_UNSEALABLE, NeedsVaultKey, draft_metadata, seal_redacted,
+        unseal_draft_prompt,
+    };
 
     const TAGGED: &str = "log in with <redacted>hunter2-xyz</redacted> please";
     const MASKED: &str = "log in with [REDACTED:user] please";
@@ -2398,9 +2463,69 @@ mod draft_seal_tests {
     }
 
     #[test]
+    fn a_prompt_sealed_in_the_stored_format_still_opens() {
+        let key = vec![7u8; 32];
+        let mut meta = serde_json::json!({ "draft": request("m", MASKED) });
+        meta[DRAFT_SEALED_PROMPT] = serde_json::Value::String(crate::crypto::encrypt(TAGGED, &key));
+        let mut req: SpawnRequest = serde_json::from_value(meta["draft"].clone()).unwrap();
+        unseal_draft_prompt(&mut req, &meta, || key.clone()).unwrap();
+        assert_eq!(req.prompt.as_deref(), Some(TAGGED));
+    }
+
+    #[test]
+    fn launch_and_scheduled_sends_share_one_sealed_format() {
+        let key = vec![7u8; 32];
+        let (masked, sealed) = seal_redacted(TAGGED, || key.clone()).unwrap();
+        assert_eq!(masked, MASKED);
+        let sealed = sealed.expect("a span is sealed");
+        assert_eq!(crate::crypto::decrypt(&sealed, &key).as_deref(), Some(TAGGED));
+
+        let (queued, queued_sealed) =
+            crate::scheduled_messages::seal(TAGGED, || key.clone()).unwrap();
+        assert_eq!(queued, masked);
+        let queued_sealed = queued_sealed.expect("a span is sealed");
+        assert_eq!(crate::crypto::decrypt(&queued_sealed, &key).as_deref(), Some(TAGGED));
+
+        assert_eq!(seal_redacted(TAGGED, Vec::new), Err(NeedsVaultKey));
+        assert_eq!(
+            crate::scheduled_messages::seal(TAGGED, Vec::new),
+            Err(crate::scheduled_messages::SEAL_NEEDS_KEY)
+        );
+    }
+
+    #[test]
     fn a_tagged_draft_without_a_vault_key_is_refused() {
         let err = draft_metadata(request("m", TAGGED), Vec::new).unwrap_err();
         assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    /// Saving and launching a sealed draft never goes through the scheduling
+    /// module: the launch gets past unsealing with `scheduling` off.
+    #[tokio::test]
+    async fn a_sealed_draft_launches_with_scheduling_off() {
+        use cctui_proto::features::{Feature, FeatureSet};
+        let name = "a_sealed_draft_launches_with_scheduling_off";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        crate::crypto::install_vault_key(vec![7u8; 32]);
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let owner = seed_user(&pool).await;
+        let machine = seed_machine(&pool, owner).await.to_string();
+        let mut state = crate::state::AppState::for_test(pool.clone());
+        state.config.features = FeatureSet::all().without(Feature::Scheduling);
+        let ctx = caller(owner, SPAWNER);
+
+        let mut req = request(&machine, TAGGED);
+        req.save_draft = true;
+        let (_, Json(saved)) = super::save_draft(&state, &ctx, &req, &[]).await.unwrap();
+        let id = saved.command_id.to_string();
+        let meta = stored_metadata(&pool, &id).await;
+        assert!(meta.get(DRAFT_SEALED_PROMPT).is_some(), "{meta}");
+
+        let launched =
+            super::launch_stored_draft(&state, &ctx, &id, std::collections::BTreeMap::new()).await;
+        if let Err(err) = launched {
+            assert_ne!(err.message(), DRAFT_UNSEALABLE, "the sealed prompt must open");
+        }
     }
 
     async fn stored_metadata(pool: &sqlx::PgPool, id: &str) -> serde_json::Value {

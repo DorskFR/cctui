@@ -12,6 +12,7 @@
 		type AccountProvider
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
+	import { hasFeature } from '$lib/features.svelte';
 	import { providerLabel } from '$lib/providers';
 	import AccountCard from '$lib/components/organisms/AccountCard.svelte';
 	import AccountsBoard from './AccountsBoard.svelte';
@@ -35,6 +36,7 @@
 
 	const rows = $derived([...(accounts.data ?? [])]);
 	const poolList = $derived(pools.data ?? []);
+	const sharing = $derived(hasFeature('account_sharing'));
 
 	let drafting = $state(false);
 	let editor = $state<AccountEditorModal>();
@@ -88,7 +90,9 @@
 
 <div class="panel">
 	<PageHead title={m.accounts_title()}>
-		<Button data-journey="new-pool" onclick={() => (drafting = true)} disabled={drafting}>{m.accounts_add_pool()}</Button>
+		{#if sharing}
+			<Button data-journey="new-pool" onclick={() => (drafting = true)} disabled={drafting}>{m.accounts_add_pool()}</Button>
+		{/if}
 		<Button variant="primary" data-journey="new-account" onclick={() => editor?.openCreate()}>
 			{m.accounts_new_account()}
 		</Button>
@@ -110,14 +114,14 @@
 				enabled
 				managed={isManaged(a)}
 				canAddProvider={!isManaged(a) && availableKinds(a).length > 0}
-				canShare={!isManaged(a) && (isAdmin || a.user_id === me.data?.user_id)}
+				canShare={sharing && !isManaged(a) && (isAdmin || a.user_id === me.data?.user_id)}
 				showOwner={isAdmin}
 				redirects={redirectsFor(a.id)}
 				redirectTargets={redirectTargetsFor(a)}
 				onsetredirect={(targetId, untilHours, families) =>
 					setRedirect(a, targetId, untilHours, families)}
 				onclearredirect={clearRedirect}
-				{onmovepool}
+				onmovepool={sharing ? onmovepool : undefined}
 				onedit={() => goto(accountHref(a.id))}
 				onremove={() => removeAccount(a)}
 				onaddprovider={() => editor?.openAddProvider(a)}

@@ -3,4 +3,4 @@
 /**
  * The `snake_case` names are a contract: feature file, capabilities, clients.
  */
-export type Feature = "machine_spawn" | "files" | "uploads" | "drafts" | "profiles" | "terminal" | "transcript_search" | "child_sessions" | "context" | "plugins" | "auto_approve" | "scheduling" | "automation" | "rooms" | "voice" | "previews" | "federation" | "device_login" | "passkeys" | "self_update" | "account_sharing" | "observability";
+export type Feature = "machine_spawn" | "files" | "uploads" | "drafts" | "profiles" | "terminal" | "transcript_search" | "child_sessions" | "context" | "plugins" | "auto_approve" | "scheduling" | "automation" | "rooms" | "voice" | "previews" | "federation" | "device_login" | "passkeys" | "self_update" | "account_sharing" | "observability" | "library" | "organising";

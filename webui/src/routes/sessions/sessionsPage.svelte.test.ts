@@ -18,6 +18,7 @@ import {
 import type { SessionListSettings } from '$lib/settings.svelte';
 import { sessionsView } from '$lib/sessionsView.svelte';
 import { SessionsPage, type SessionsPageDeps, type SpawnForm } from './sessionsPage.svelte';
+import { setCapabilitiesForTest } from '$lib/features.svelte';
 
 function session(over: Partial<SessionListItem>): SessionListItem {
 	return {
@@ -761,5 +762,94 @@ describe('follow-up modal', () => {
 		await sp.followUp(session({ id: 'src' }));
 		expect(sp.spawnPrefill?.parent_session_id).toBe('src');
 		expect(sp.spawnPrefill).not.toHaveProperty('archive_source');
+	});
+});
+
+describe('SessionsPage — without transcript search', () => {
+	beforeEach(() => {
+		setCapabilitiesForTest({ features: [], switchable: ['transcript_search'] });
+	});
+	afterEach(() => setCapabilitiesForTest(null));
+
+	it('sends no search for a typed query', async () => {
+		const { sp, api } = make();
+		sp.rawQuery = 'needle';
+		await vi.advanceTimersByTimeAsync(200);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sp.searching).toBe(false);
+		expect(api.searchSessions).not.toHaveBeenCalled();
+	});
+
+	it('lists the archive from the full session list instead of the search pager', async () => {
+		const { sp, api, setAll } = make();
+		setAll([session({ id: 'live' }), session({ id: 'old', status: 'archived' })]);
+		sp.sections = new Set(['live', 'archived']);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sp.archiveFromList).toBe(true);
+		expect(api.searchSessions).not.toHaveBeenCalled();
+		expect(sp.pageRows.map((s) => s.id)).toEqual(['old']);
+		expect(sp.pageDone).toBe(true);
+		expect(sp.pageLoading).toBe(false);
+		expect(sp.pageError).toBe('');
+	});
+
+	it('still searches with the feature on', async () => {
+		setCapabilitiesForTest({ features: ['transcript_search'], switchable: ['transcript_search'] });
+		const { sp, api } = make();
+		sp.rawQuery = 'needle';
+		await vi.advanceTimersByTimeAsync(200);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sp.archiveFromList).toBe(false);
+		expect(api.searchSessions).toHaveBeenCalled();
+	});
+});
+
+describe('SessionsPage — without organising', () => {
+	const organising = (on: boolean) =>
+		setCapabilitiesForTest({ features: on ? ['organising'] : [], switchable: ['organising'] });
+	afterEach(() => setCapabilitiesForTest(null));
+
+	it('ignores a stored label filter', () => {
+		organising(false);
+		const { sp, setItems } = make({}, { [LIST_LABELS]: 'l1' });
+		setItems([session({ id: 'a', labels: [] })]);
+		expect(sp.matchesLabelFilter(session({ id: 'a' }))).toBe(true);
+		const working = sp.list.groups.find((g) => g.key === 'working')!;
+		expect(working.sessions.map((s) => s.id)).toEqual(['a']);
+	});
+
+	it('pins and unpins nothing', async () => {
+		organising(false);
+		const { sp, actions, toasts } = make();
+		await sp.togglePin(session({ id: 'a', pinned: false }));
+		await sp.togglePin(session({ id: 'b', pinned: true }));
+		expect(actions.pin).not.toHaveBeenCalled();
+		expect(actions.unpin).not.toHaveBeenCalled();
+		expect(toasts.ok).not.toHaveBeenCalled();
+	});
+
+	it('saves an unmounted slot as a draft without label ids', async () => {
+		organising(false);
+		const { sp, actions, setSlot } = make();
+		setSlot({ prompt: 'keep me', machine_id: 'm', working_dir: '/w', labels: ['l1'] });
+		sp.editDraft(session({ id: 'd', status: 'draft' }));
+		await sp.confirmDraftEdit(true);
+		expect(actions.spawn).toHaveBeenCalledTimes(1);
+		expect((actions.spawn.mock.calls[0] as unknown[])[0]).not.toHaveProperty('label_ids');
+	});
+
+	it('keeps the filter, pins and draft labels with organising on', async () => {
+		organising(true);
+		const { sp, actions, setSlot } = make({}, { [LIST_LABELS]: 'l1' });
+		expect(sp.matchesLabelFilter(session({ id: 'a' }))).toBe(false);
+		await sp.togglePin(session({ id: 'a', pinned: false }));
+		expect(actions.pin).toHaveBeenCalledWith('a');
+		setSlot({ prompt: 'keep me', machine_id: 'm', working_dir: '/w', labels: ['l1'] });
+		sp.editDraft(session({ id: 'd', status: 'draft' }));
+		await sp.confirmDraftEdit(true);
+		expect((actions.spawn.mock.calls[0] as unknown[])[0]).toMatchObject({ label_ids: ['l1'] });
 	});
 });

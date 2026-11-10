@@ -689,7 +689,7 @@ impl Launcher {
             launch_env.spawn_capability.as_ref().filter(|_| agent_tool),
             crate::preamble::merge(
                 crate::preamble::context_block(Some(session_id), &launch_env.context),
-                agent_tool.then(|| crate::preamble::CONTEXT_TOOL_LINE.to_owned()),
+                crate::preamble::context_tool_line(agent_tool, crate::serverfeatures::current()),
             )
             .as_deref(),
         );

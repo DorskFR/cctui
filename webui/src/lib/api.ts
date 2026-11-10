@@ -2,6 +2,9 @@ import { apiBase } from './config';
 import { auth } from './auth.svelte';
 import { backendHealth, isNetworkError, isOutageStatus } from './backendHealth.svelte';
 import { net } from './netstats.svelte';
+import { routeAvailable } from './features.svelte';
+import { ROUTES } from '@bindings/routes';
+import type { Feature } from '@bindings/Feature';
 
 export class ApiError extends Error {
 	status: number;
@@ -12,7 +15,63 @@ export class ApiError extends Error {
 	}
 }
 
+/** A request to a route of a feature the server turned off, refused before it is sent.
+ *  It carries the 404 the server would answer, so callers that treat a missing
+ *  route as absent keep doing so. */
+export class FeatureOffError extends ApiError {
+	feature: Feature;
+	constructor(feature: Feature) {
+		super(404, `feature off: ${feature}`);
+		this.feature = feature;
+		this.name = 'FeatureOffError';
+	}
+}
+
 type Method = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
+
+const ROUTE_MATCHERS = ROUTES.map((r) => ({
+	method: r.method as string,
+	feature: r.feature as Feature | null,
+	pattern: new RegExp(
+		`^${r.path
+			.replace(/[.+?^$()|[\]\\]/g, '\\$&')
+			.replace(/\{\*\w+\}/g, '.+')
+			.replace(/\{\w+\}/g, '[^/]+')}$`
+	),
+	literal: r.path.replace(/\{[^}]*\}/g, '').length
+}));
+
+/** The feature owning `method path` (a path under the api prefix), `null` for
+ *  core and for paths outside the route table. A literal segment wins over a
+ *  placeholder: `/sessions/search` is not `/sessions/{id}`. */
+export function routeFeature(method: string, path: string): Feature | null {
+	const bare = path.split(/[?#]/, 1)[0];
+	let best: (typeof ROUTE_MATCHERS)[number] | null = null;
+	for (const m of ROUTE_MATCHERS) {
+		if (m.method !== method || !m.pattern.test(bare)) continue;
+		if (!best || m.literal > best.literal) best = m;
+	}
+	return best?.feature ?? null;
+}
+
+function apiPathOf(url: string): string | null {
+	try {
+		const target = new URL(url, globalThis.location?.href);
+		const base = new URL(apiBase(), globalThis.location?.href);
+		if (target.origin !== base.origin) return null;
+		const prefix = base.pathname.replace(/\/$/, '');
+		return target.pathname.startsWith(`${prefix}/`) ? target.pathname.slice(prefix.length) : null;
+	} catch {
+		return null;
+	}
+}
+
+function refuseOffFeature(url: string, method: string): void {
+	const path = apiPathOf(url);
+	if (path === null) return;
+	const feature = routeFeature(method.toUpperCase(), path);
+	if (feature && !routeAvailable({ feature })) throw new FeatureOffError(feature);
+}
 
 export interface RequestOpts {
 	method?: Method;
@@ -58,6 +117,7 @@ function observe(res: Response) {
 }
 
 async function cctuiFetch(url: string, init: RequestInit): Promise<Response> {
+	refuseOffFeature(url, init.method ?? 'GET');
 	try {
 		const res = await fetch(url, init);
 		observe(res);

@@ -6,6 +6,7 @@
 	import { setSessionRoom, setSessionRoomByName } from '$lib/rooms';
 	import RoomMenu from '$lib/components/molecules/RoomMenu.svelte';
 	import { useInvalidateSessions } from '$lib/queries';
+	import { hasFeature } from '$lib/features.svelte';
 	import type { SessionsPage } from './sessionsPage.svelte';
 
 	let { sp }: { sp: SessionsPage } = $props();
@@ -38,12 +39,14 @@
 	<Button onclick={sp.list.selectAll}>{m.sessions_select_all()}</Button>
 	<Text size="xs" tone="muted">{m.sessions_select_range_hint()}</Text>
 	<div class="spacer"></div>
-	<Popover label={m.rooms_move_count({ count: sp.list.selected.size || '' })} placement="bottom-end">
-		{#snippet trigger()}
-			<span>{m.rooms_move_count({ count: sp.list.selected.size || '' })}</span>
-		{/snippet}
-		<RoomMenu busy={making} onpick={moveToRoom} />
-	</Popover>
+	{#if hasFeature('rooms')}
+		<Popover label={m.rooms_move_count({ count: sp.list.selected.size || '' })} placement="bottom-end">
+			{#snippet trigger()}
+				<span>{m.rooms_move_count({ count: sp.list.selected.size || '' })}</span>
+			{/snippet}
+			<RoomMenu busy={making} onpick={moveToRoom} />
+		</Popover>
+	{/if}
 	<Button
 		variant="danger"
 		loading={sp.archiving}

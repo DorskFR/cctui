@@ -1,5 +1,6 @@
 import type { IconName } from '@dorsk/tsumikit';
 import { m } from '$lib/paraglide/messages';
+import { hasFeature } from '$lib/features.svelte';
 
 export interface NavItemSpec {
 	href: string;
@@ -16,9 +17,11 @@ export function navItems(gates: NavGates = {}): NavItemSpec[] {
 	return [
 		{ href: '/', label: m.nav_overview(), iconName: 'layout-grid' },
 		{ href: '/sessions', label: m.nav_sessions(), iconName: 'list' },
-		{ href: '/bookmarks', label: m.nav_bookmarks(), iconName: 'bookmark' },
+		...(hasFeature('organising')
+			? [{ href: '/bookmarks', label: m.nav_bookmarks(), iconName: 'bookmark' as const }]
+			: []),
 		{ href: '/accounts', label: m.nav_accounts(), iconName: 'key-round' },
-		...(gates.pages ?? []),
+		...(hasFeature('plugins') ? (gates.pages ?? []) : []),
 		{ href: '/settings', label: m.nav_settings(), iconName: 'settings' }
 	];
 }

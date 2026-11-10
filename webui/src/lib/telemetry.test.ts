@@ -95,6 +95,45 @@ describe('initTelemetry', () => {
 	});
 });
 
+describe('initTelemetry against the server relay', () => {
+	const realFetch = globalThis.fetch;
+	afterEach(() => {
+		globalThis.fetch = realFetch;
+	});
+
+	const serve = (features: string[]) => {
+		const fetcher = vi.fn(async () => Response.json({ workspace: true, features, switchable: ['observability'] }));
+		globalThis.fetch = fetcher as unknown as typeof fetch;
+		return fetcher;
+	};
+
+	it('starts nothing when observability is off', async () => {
+		const fetcher = serve([]);
+		setConfig({ apiBase: 'https://api.test', otel: { endpoint: 'https://api.test/api/v1/otlp' } });
+		const { initTelemetry } = await import('./telemetry');
+		await initTelemetry();
+		expect(fetcher).toHaveBeenCalledWith('https://api.test/api/v1/capabilities', expect.anything());
+		expect(h.fetchConfig).toBeNull();
+	});
+
+	it('starts tracing when observability is on', async () => {
+		serve(['observability']);
+		setConfig({ apiBase: 'https://api.test', otel: { endpoint: 'https://api.test/api/v1/otlp' } });
+		const { initTelemetry } = await import('./telemetry');
+		await initTelemetry();
+		expect(h.fetchConfig).not.toBeNull();
+	});
+
+	it('does not probe for an external collector', async () => {
+		const fetcher = serve([]);
+		setConfig({ apiBase: 'https://api.test', otel: { endpoint: 'https://otel.test' } });
+		const { initTelemetry } = await import('./telemetry');
+		await initTelemetry();
+		expect(fetcher).not.toHaveBeenCalled();
+		expect(h.fetchConfig).not.toBeNull();
+	});
+});
+
 describe('fetch span URL redaction', () => {
 	it('strips the query and fragment from a URL', async () => {
 		const { redactUrl } = await import('./telemetry');

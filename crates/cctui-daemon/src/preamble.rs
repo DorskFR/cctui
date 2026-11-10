@@ -7,6 +7,7 @@
 //! agent" — and nothing else.
 
 use cctui_proto::api::SessionContextItem;
+use cctui_proto::features::{Feature, FeatureSet};
 use cctui_proto::injected::SESSION_CONTEXT;
 
 /// Filename the session's memory notes are staged under.
@@ -18,6 +19,13 @@ pub const CONTEXT_TOOL_LINE: &str = "CctuiContext: use `mcp__cctui__CctuiContext
     a durable note for future sessions (rules you save need the user's approval); `list` and \
     `show` read what is saved, `attach` stages saved memories into this session. Never store \
     secrets in it.\n";
+
+/// [`CONTEXT_TOOL_LINE`] for a session that has the relay (`tools`), unless
+/// the server runs without `context`.
+#[must_use]
+pub fn context_tool_line(tools: bool, features: FeatureSet) -> Option<String> {
+    (tools && features.contains(Feature::Context)).then(|| CONTEXT_TOOL_LINE.to_owned())
+}
 
 /// How to show the user an image; the limits are the ones [`crate::imagepost`]
 /// enforces.
@@ -126,8 +134,8 @@ pub fn for_launch(
     items: &[SessionContextItem],
     tools: bool,
 ) -> Option<String> {
-    let body =
-        merge(context_block(session_id, items), tools.then(|| CONTEXT_TOOL_LINE.to_owned()))?;
+    let line = context_tool_line(tools, crate::serverfeatures::current());
+    let body = merge(context_block(session_id, items), line)?;
     let body = format!("{}\n\n{IMAGE_LINE}", body.trim_end());
     Some(format!("<{SESSION_CONTEXT}>\n{}\n</{SESSION_CONTEXT}>", body.trim_end()))
 }
@@ -146,8 +154,16 @@ pub fn merge(base: Option<String>, extra: Option<String>) -> Option<String> {
 mod tests {
     use super::{
         CONTEXT_TOOL_LINE, IMAGE_LINE, SessionContextItem, context_block, context_notice,
-        for_launch, merge, render_context, render_rules, stage_context,
+        context_tool_line, for_launch, merge, render_context, render_rules, stage_context,
     };
+    use cctui_proto::features::{Feature, FeatureSet};
+
+    #[test]
+    fn the_context_tool_line_needs_the_relay_and_the_context_feature() {
+        assert_eq!(context_tool_line(true, FeatureSet::all()).as_deref(), Some(CONTEXT_TOOL_LINE));
+        assert_eq!(context_tool_line(false, FeatureSet::all()), None);
+        assert_eq!(context_tool_line(true, FeatureSet::all().without(Feature::Context)), None);
+    }
 
     fn item(kind: &str, title: &str, body: &str) -> SessionContextItem {
         SessionContextItem {

@@ -63,3 +63,30 @@ describe('SendButton', () => {
 		expect(main.disabled).toBe(true);
 	});
 });
+
+describe('SendButton without a menu', () => {
+	it('is a plain button with no caret, still sending on click', () => {
+		const onclick = vi.fn();
+		comp = mount(SendButton, {
+			target: document.body,
+			props: {
+				items: [],
+				menu: false,
+				disabled: false,
+				uploading: false,
+				cacheCold: false,
+				coldImminent: false,
+				coldCountdownSecs: null,
+				burstTokens: null,
+				onclick
+			}
+		});
+		flushSync();
+		expect(document.querySelector('[data-tsu="SplitButton"]')).toBeNull();
+		const button = document.querySelector<HTMLButtonElement>('button')!;
+		expect(button.textContent?.trim()).toBe('Send');
+		expect(document.querySelectorAll('button')).toHaveLength(1);
+		button.click();
+		expect(onclick).toHaveBeenCalledTimes(1);
+	});
+});

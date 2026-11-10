@@ -482,8 +482,10 @@ impl Config {
         if !self.features.contains(Feature::Previews) {
             self.preview_host = None;
         }
-        if !self.features.contains(Feature::Plugins) {
-            self.plugins_dir = None;
+        if !self.features.contains(Feature::Plugins)
+            && let Some(dir) = self.plugins_dir.take()
+        {
+            tracing::warn!(dir = %dir.display(), "CCTUI_PLUGINS_DIR is ignored: feature `plugins` is off");
         }
         if !self.features.contains(Feature::Federation) {
             self.cctuiverse.enabled = false;

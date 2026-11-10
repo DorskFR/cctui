@@ -220,6 +220,12 @@ mod route_table {
         };
         assert_eq!(status("POST", "/admin/plugins").await, StatusCode::NOT_FOUND);
         assert_eq!(status("GET", "/auth/device/ABCD").await, StatusCode::NOT_FOUND);
+        assert_eq!(status("GET", "/prompts").await, StatusCode::NOT_FOUND);
+        assert_eq!(status("GET", "/skills/index").await, StatusCode::NOT_FOUND);
+        assert_eq!(status("GET", "/labels").await, StatusCode::NOT_FOUND);
+        assert_eq!(status("POST", "/sessions/s1/pin").await, StatusCode::NOT_FOUND);
+        assert_eq!(status("POST", "/enroll").await, StatusCode::NOT_FOUND);
+        assert_eq!(status("GET", "/manifest/daemon").await, StatusCode::NOT_FOUND);
         assert_eq!(status("GET", "/sessions").await, StatusCode::UNAUTHORIZED);
         assert_eq!(status("GET", "/accounts").await, StatusCode::UNAUTHORIZED);
     }
