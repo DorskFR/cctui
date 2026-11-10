@@ -409,8 +409,7 @@ impl Supervisor {
         event_rx: &mut mpsc::Receiver<(String, AdapterEvent)>,
     ) -> anyhow::Result<()> {
         let (mut sink, mut stream) = self.connect().await?.split();
-        crate::serverfeatures::reset();
-        let mut hold = crate::framegate::Hold::new(tokio::time::Instant::now());
+        let mut hold = self.begin_connection();
 
         // Out-of-band frames the supervisor itself produces (currently the
         // `StageFilesResult` reply to a mid-chat attachment request),
@@ -529,9 +528,34 @@ impl Supervisor {
         }
         .await;
 
+        self.serve_held(&mut hold, running, event_tx, &frame_up_tx, &mut scrub, &shutdown).await;
         crate::preview::set_uplink(None);
         self.park_connection(active, batch);
         outcome
+    }
+
+    /// Each connection signals its adapters once, on its first `Reconcile`.
+    fn begin_connection(&self) -> crate::framegate::Hold {
+        crate::serverfeatures::reset();
+        self.established.store(false, std::sync::atomic::Ordering::Relaxed);
+        crate::framegate::Hold::new(tokio::time::Instant::now())
+    }
+
+    /// A connection that ends before its announcement or grace serves what it
+    /// held, as it would have unheld; a shutting-down daemon launches nothing.
+    async fn serve_held(
+        &self,
+        hold: &mut crate::framegate::Hold,
+        running: &mut HashMap<String, AdapterRunning>,
+        event_tx: &mpsc::Sender<(String, AdapterEvent)>,
+        frame_up_tx: &mpsc::Sender<DaemonFrameUp>,
+        scrub: &mut CompiledPatterns,
+        shutdown: &CancellationToken,
+    ) {
+        if !shutdown.is_cancelled() {
+            self.handle_frames(hold.release(), running, event_tx, frame_up_tx, scrub, shutdown)
+                .await;
+        }
     }
 
     async fn connect(&self) -> anyhow::Result<WsStream> {
@@ -724,8 +748,8 @@ impl Supervisor {
             let reconciled = matches!(frame, DaemonFrameDown::Reconcile { .. });
             self.handle_frame(frame, running, event_tx, frame_up_tx, scrub, shutdown).await;
             // Announce the edge once the connection's first reconcile has built
-            // (and subscribed) the adapters; `established` is cleared when a
-            // connection ends.
+            // (and subscribed) the adapters; `begin_connection` clears
+            // `established`.
             if reconciled && !self.established.load(std::sync::atomic::Ordering::Relaxed) {
                 self.announce_connected();
             }
@@ -3380,6 +3404,7 @@ mod tests {
         sessions: Arc<Mutex<usize>>,
         builds: Arc<Mutex<usize>>,
         connects: Arc<Mutex<usize>>,
+        commands: Arc<Mutex<Vec<&'static str>>>,
     }
 
     impl LiveTracker {
@@ -3397,6 +3422,9 @@ mod tests {
         }
         fn connects(&self) -> usize {
             *self.connects.lock().unwrap()
+        }
+        fn commands(&self) -> Vec<&'static str> {
+            self.commands.lock().unwrap().clone()
         }
     }
 
@@ -3426,6 +3454,9 @@ mod tests {
                         if edge.is_ok() {
                             *self.tracker.connects.lock().unwrap() += 1;
                         }
+                    }
+                    Some(command) = ctx.commands.recv() => {
+                        self.tracker.commands.lock().unwrap().push(command.kind_name());
                     }
                 }
             }
@@ -3472,17 +3503,23 @@ mod tests {
     /// Accept one WS connection, send a `Reconcile` for the stub adapter, then
     /// close — the server-rollout shape of a disconnect.
     async fn serve_one_reconcile(listener: &tokio::net::TcpListener) {
+        serve_and_close(listener, &[]).await;
+    }
+
+    async fn serve_and_close(listener: &tokio::net::TcpListener, after: &[serde_json::Value]) {
         use futures_util::SinkExt;
         use tokio_tungstenite::tungstenite::Message;
 
         let (sock, _) = listener.accept().await.unwrap();
         let mut ws = tokio_tungstenite::accept_async(sock).await.unwrap();
-        let frame = serde_json::json!({
+        let reconcile = serde_json::json!({
             "type": "reconcile",
             "adapters": [{ "adapter_id": "stub", "config": { "mode": "bg" }, "enabled": true }],
             "secret_scrub": [],
         });
-        ws.send(Message::Text(frame.to_string().into())).await.unwrap();
+        for frame in std::iter::once(&reconcile).chain(after) {
+            ws.send(Message::Text(frame.to_string().into())).await.unwrap();
+        }
         ws.close(None).await.unwrap();
     }
 
@@ -3567,6 +3604,36 @@ mod tests {
         }
         assert_eq!(tracker.builds(), 1, "three connects, one adapter build");
         assert_eq!(tracker.connects(), 3, "one signal per connection, no more");
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_drops_during_the_hold_still_serves_what_it_held() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let tracker = LiveTracker::default();
+        let supervisor = Supervisor::new(
+            ServerClient::new(format!("http://{addr}")),
+            "machine-key".to_string(),
+            vec![Box::new(TrackedFactory { tracker: tracker.clone() })],
+        );
+        let shutdown = CancellationToken::new();
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let mut running: std::collections::HashMap<String, AdapterRunning> =
+            std::collections::HashMap::new();
+
+        let resume = serde_json::json!({
+            "type": "command", "adapter_id": "stub",
+            "command": { "kind": "resume", "local_id": "s" }
+        });
+        let server = tokio::spawn(async move { serve_and_close(&listener, &[resume]).await });
+        supervisor
+            .run_once(shutdown.clone(), &mut running, &event_tx, &mut event_rx)
+            .await
+            .unwrap();
+        server.await.unwrap();
+        wait_until(|| tracker.connects() == 1).await;
+        wait_until(|| tracker.commands() == ["resume"]).await;
+        super::stop_adapters(&mut running).await;
     }
 
     #[tokio::test]

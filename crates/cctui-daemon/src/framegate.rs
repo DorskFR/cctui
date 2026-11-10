@@ -93,6 +93,8 @@ fn answer(frame: &DaemonFrameDown, error: String) -> Refusal {
 
 /// The frames of one connection until its `Features` frame lands. Once a
 /// frame is held every later one is held behind it, so the order survives.
+///
+/// `Reconcile` never waits: it builds the adapters every other frame needs.
 #[derive(Debug)]
 pub struct Hold {
     deadline: Instant,
@@ -121,7 +123,9 @@ impl Hold {
             frames.push(frame);
             return frames;
         }
-        if self.held.is_empty() && frame.features().is_empty() {
+        if frame.features().is_empty()
+            && (self.held.is_empty() || matches!(frame, DaemonFrameDown::Reconcile { .. }))
+        {
             return vec![frame];
         }
         self.held.push_back(frame);
@@ -448,6 +452,18 @@ mod tests {
         let off = crate::serverfeatures::from_off(&["terminal".to_owned()]);
         assert!(refusal(&released[1], off).is_some());
         assert!(hold.deadline().is_none());
+    }
+
+    #[test]
+    fn reconcile_is_never_held_even_behind_a_held_frame() {
+        let start = now();
+        let mut hold = Hold::new(start);
+        let spawn = command(json!({ "kind": "spawn", "spec": spec() }));
+        assert!(hold.admit(spawn, start).is_empty());
+        let reconcile = down(json!({ "type": "reconcile", "adapters": [] }));
+        let served = hold.admit(reconcile, start);
+        assert!(served.len() == 1 && matches!(served[0], DaemonFrameDown::Reconcile { .. }));
+        assert_eq!(hold.release().len(), 1, "the spawn stays held until the hold ends");
     }
 
     #[test]
