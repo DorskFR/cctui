@@ -14,11 +14,11 @@
 	att={sf.att}
 	allLabels={sf.allLabels}
 	envInvalid={sf.badEnvKeys.length > 0}
-	attachments={sf.target === 'machine'}
+	attachments={sf.target === 'machine' && sf.canAttach}
 	machineId={sf.target === 'machine' ? sf.form.machine_id : undefined}
 	labelActions={sf.actions}
 />
-{#if sf.target === 'machine' && sf.form.machine_id}
+{#if sf.target === 'machine' && sf.form.machine_id && sf.canUseContext}
 	<SpawnContextRow
 		bind:items={sf.form.context_items}
 		bind:pins={sf.contextPins}

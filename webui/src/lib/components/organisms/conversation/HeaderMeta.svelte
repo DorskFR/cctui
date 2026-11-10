@@ -34,6 +34,7 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
 	import { m } from '$lib/paraglide/messages';
+	import { hasFeature } from '$lib/features.svelte';
 
 	let {
 		session,
@@ -73,7 +74,7 @@
 	// figures are fetched on open rather than with the header.
 	let detailsOpen = $state(false);
 	const caps = useCapabilities();
-	const langfuseAvailable = $derived(!!caps.data?.langfuse?.available);
+	const langfuseAvailable = $derived(hasFeature('observability') && !!caps.data?.langfuse?.available);
 	const lf = useSessionLangfuse(
 		() => session.id,
 		() => detailsOpen && langfuseAvailable
@@ -231,7 +232,9 @@
 <div class="hmeta" class:editing={modelEditing} data-journey="head-meta">
 	{#if showStatusBadge}<Badge tone={statusBadgeTone(session.status)}>{session.status}</Badge>{/if}
 	{#if end}<Badge tone={end.tone} title={sessionEndTitle(end)} style={end.muted ? 'opacity:0.6' : undefined}>{end.label}</Badge>{/if}
-	<ThreadMenu {session} {box} />
+	{#if hasFeature('automation')}
+		<ThreadMenu {session} {box} />
+	{/if}
 	<span class="cwd">
 		<WorkingDir
 			path={session.working_dir}

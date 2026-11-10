@@ -4,6 +4,7 @@
 	import { hasLangfuseCost, langfuseCostLabel } from '$lib/spend';
 	import { Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
+	import { hasFeature } from '$lib/features.svelte';
 
 	// Per-session Langfuse cost/usage chip. Shows `$cost · N calls`
 	// with a deep link into Langfuse, gated on the server capability so it stays
@@ -21,7 +22,7 @@
 
 	const caps = useCapabilities();
 	const lf = $derived(caps.data?.langfuse);
-	const available = $derived(!!lf?.available);
+	const available = $derived(hasFeature('observability') && !!lf?.available);
 
 	const q = useSessionLangfuse(
 		() => id,

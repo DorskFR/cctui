@@ -19,6 +19,7 @@
 	import type { Line } from './types';
 	import type { PluginButton } from '$lib/plugins/types';
 	import { m } from '$lib/paraglide/messages';
+	import { hasFeature } from '$lib/features.svelte';
 
 	let {
 		view = $bindable(),
@@ -124,17 +125,19 @@
 		</Popover>
 	</div>
 	<div class="behbar row" role="group" aria-label={m.conversation_behavior_aria()}>
-		<Toggle
-			pressed={autoApprove}
-			style={`${CTL};--toggle-accent: var(--warn)`}
-			title={m.conversation_auto_approve_title()}
-			aria-label={m.conversation_auto_approve_aria()}
-			onclick={ontoggleAuto}
-			><span class="glyph" aria-hidden="true">⚡</span><span class="wide"
-				>{m.conversation_auto_approve_btn()}</span
-			></Toggle
-		>
-		{#if ontoggleTerminal}
+		{#if hasFeature('auto_approve')}
+			<Toggle
+				pressed={autoApprove}
+				style={`${CTL};--toggle-accent: var(--warn)`}
+				title={m.conversation_auto_approve_title()}
+				aria-label={m.conversation_auto_approve_aria()}
+				onclick={ontoggleAuto}
+				><span class="glyph" aria-hidden="true">⚡</span><span class="wide"
+					>{m.conversation_auto_approve_btn()}</span
+				></Toggle
+			>
+		{/if}
+		{#if ontoggleTerminal && hasFeature('terminal')}
 			<Toggle
 				pressed={terminalOpen}
 				style={CTL}
@@ -145,7 +148,7 @@
 				><Icon name="tv" size={12} /><span class="wide">{m.drawer_terminal_label()}</span></Toggle
 			>
 		{/if}
-		{#each plugins as p (p.id)}
+		{#each hasFeature('plugins') ? plugins : [] as p (p.id)}
 			<Toggle
 				pressed={p.open}
 				style={CTL}
@@ -157,7 +160,7 @@
 				><Icon name={p.icon} size={12} /><span class="wide">{p.label}</span></Toggle
 			>
 		{/each}
-		{#if sessionId}
+		{#if sessionId && hasFeature('context')}
 			<SessionContextChip {sessionId} canAttach={contextAttachable} style={CTL} />
 		{/if}
 		{#if onjumpseq && onunpin}

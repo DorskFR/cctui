@@ -16,6 +16,7 @@
 	import ThinkingBubble from './ThinkingBubble.svelte';
 	import TurnSummaryFooter from './TurnSummaryFooter.svelte';
 	import UserAttachments from './UserAttachments.svelte';
+	import { hasFeature } from '$lib/features.svelte';
 	import PluginMessageActions from '$lib/components/molecules/PluginMessageActions.svelte';
 	import type { PluginActionButton } from '$lib/plugins/types';
 	import type { Line } from './types';
@@ -225,7 +226,7 @@
 		<TaskNotificationCard note={ln.notification} />
 	{:else if ln.command}
 		<HarnessCommandCard command={ln.command} />
-	{:else if ln.voiceNoteId && sessionId}
+	{:else if ln.voiceNoteId && sessionId && hasFeature('voice')}
 		<VoiceNote {sessionId} noteId={ln.voiceNoteId} text={ln.text ?? ''} ts={ln.ts} />
 	{:else if ln.voice}
 		<VoiceMessage
@@ -254,10 +255,10 @@
 			<div class="result-images">{@html resultImages}</div>
 		{/if}
 	{/if}
-	{#if pluginActions.length && onpluginaction}
+	{#if pluginActions.length && onpluginaction && hasFeature('plugins')}
 		<PluginMessageActions actions={pluginActions} onopen={onpluginaction} />
 	{/if}
-	{#if uploadRefs && (uploadRefs.names.length || uploadRefs.unnamedImages)}
+	{#if uploadRefs && (uploadRefs.names.length || uploadRefs.unnamedImages) && hasFeature('uploads')}
 		<UserAttachments refs={uploadRefs} ts={ln.ts} {archived} />
 	{/if}
 	{#if ln.summary}

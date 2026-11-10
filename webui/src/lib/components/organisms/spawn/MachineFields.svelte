@@ -4,6 +4,7 @@
 	// effort / permission knobs come from the selected profile (ProfileList).
 	import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
 	import { useGitInfo } from '$lib/queries';
+	import { hasFeature } from '$lib/features.svelte';
 	import PromptField from '$lib/components/organisms/PromptField.svelte';
 	import type { PromptAttachments } from '$lib/promptAttachments.svelte';
 	import type { GitInfo } from '@bindings/GitInfo';
@@ -53,11 +54,12 @@
 		el: () => promptEl
 	});
 
+	const browsable = $derived(hasFeature('files'));
 	// The machine picker and the path share one control; `form.working_dir` is
 	// the source of truth and the field's bare value mirrors it both ways,
 	// `lastDir` tracking what the field holds so the two syncs never loop.
 	const cwdSchema = makeCwdSchema(
-		() => (liveness === 'offline' ? '' : form.machine_id),
+		() => (liveness === 'offline' || !browsable ? '' : form.machine_id),
 		() => recentDirs,
 		m.spawn_cwd_label()
 	);
@@ -87,7 +89,7 @@
 	const gitWatcher = makeGitInfoWatcher(fetchGitInfo, (info) => (cwdGit = info));
 	const liveness = $derived(fsLiveness(machines.find((mc) => mc.machine_id === form.machine_id)));
 	$effect(() => {
-		gitWatcher.update(form.machine_id, form.working_dir, liveness);
+		gitWatcher.update(browsable ? form.machine_id : '', form.working_dir, liveness);
 		return gitWatcher.cancel;
 	});
 	const cwdBadgeTitle = $derived.by(() => {

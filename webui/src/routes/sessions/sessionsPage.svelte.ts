@@ -24,6 +24,7 @@ import {
 import { ApiError, errMessage } from "$lib/api";
 import { m } from "$lib/paraglide/messages";
 import { awaitSessionRow } from "$lib/awaitSessionRow";
+import { hasFeature } from "$lib/features.svelte";
 import { queryTerms, straightenPhraseQuotes } from "$lib/search";
 import { BRIEF_FETCH_MAX_BYTES, followupPrefill } from "$lib/followup";
 import { parse, type Schema } from "@dorsk/tsumikit";
@@ -221,7 +222,7 @@ export class SessionsPage {
         },
         initialPageParam: FIRST_PAGE,
         getNextPageParam: nextSearchPage,
-        enabled: this.pagerActive,
+        enabled: this.#pagerOn,
       }),
       () => d.queryClient,
     );
@@ -361,12 +362,18 @@ export class SessionsPage {
   // Server-evaluable clauses + free text ride the raw string to the search
   // endpoint; `id`/`created` clauses are peeled off and narrowed client-side.
   #split = $derived.by(() => splitQuery(this.query, this.searchSchema));
-  serverQuery = $derived(this.#split.serverQuery);
+  /** Transcript search is a server feature; without it there is no query to send. */
+  searchable = $derived(hasFeature("transcript_search"));
+  serverQuery = $derived(this.searchable ? this.#split.serverQuery : "");
   #clientFilters = $derived(this.#split.clientFilters);
   searching = $derived(this.serverQuery.length > 0);
   // One pager feeds two views, never both at once: search results (scoped by
   // `showArchived`) or, with no query, the paged archive browse.
   pagerActive = $derived(this.searching || this.showArchived);
+  // The pager reads the search route; without it the archive comes from the
+  // full session list instead.
+  #pagerOn = $derived(this.pagerActive && this.searchable);
+  archiveFromList = $derived(this.showArchived && !this.searchable);
   // Highlight only the free-text portion of the query (field clauses excluded).
   searchTerms = $derived.by(() => {
     const input = straightenPhraseQuotes(this.query);
@@ -377,28 +384,29 @@ export class SessionsPage {
   // Refetched pages can shift by a row when sessions move in or out of scope
   // between page requests; keyed rows must not repeat.
   pageRows = $derived.by(() => {
-    if (!this.pagerActive) return [];
+    if (this.archiveFromList) return this.#archivedPool;
+    if (!this.#pagerOn) return [];
     const seen = new Set<string>();
     return (this.#pager.data?.pages ?? [])
       .flatMap((p) => p.sessions)
       .filter((s) => !seen.has(s.id) && !!seen.add(s.id));
   });
   pageParents = $derived.by(() =>
-    this.pagerActive ? mergeParentStubs(this.#pager.data?.pages ?? []) : [],
+    this.#pagerOn ? mergeParentStubs(this.#pager.data?.pages ?? []) : [],
   );
-  pageDone = $derived.by(() => !this.#pager.hasNextPage);
+  pageDone = $derived.by(() => !this.#pagerOn || !this.#pager.hasNextPage);
   // The last page stopped at the server's time budget: older chats are not
   // searched yet, so an empty or short result is not a "no match".
   pagePartial = $derived.by(
-    () => this.pagerActive && (this.#pager.data?.pages.at(-1)?.partial ?? false),
+    () => this.#pagerOn && (this.#pager.data?.pages.at(-1)?.partial ?? false),
   );
   pageLoading = $derived.by(
     () =>
-      this.pagerActive &&
+      this.#pagerOn &&
       (this.#pager.isLoading || this.#pager.isFetchingNextPage),
   );
   pageError = $derived.by(() =>
-    this.pagerActive && this.#pager.error ? errMessage(this.#pager.error) : "",
+    this.#pagerOn && this.#pager.error ? errMessage(this.#pager.error) : "",
   );
 
   archiving = $derived.by(() => this.archivingOne || this.archiveConfirm.busy);
@@ -580,7 +588,7 @@ export class SessionsPage {
   };
 
   loadMore = async () => {
-    if (this.pagerActive && !this.#pager.isFetchingNextPage)
+    if (this.#pagerOn && !this.#pager.isFetchingNextPage)
       await this.#pager.fetchNextPage();
   };
 

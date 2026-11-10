@@ -2,7 +2,7 @@
 	// The composer's Send split-button. Stays a plain primary button across all
 	// cost states: a `tone` on `primary` recolors the label over the accent fill
 	// (unreadable), so the cold/imminent state lives in the label and the title.
-	import { SplitButton, type MenuItem } from '@dorsk/tsumikit';
+	import { Button, SplitButton, type MenuItem } from '@dorsk/tsumikit';
 	import { compact } from '$lib/format';
 	import type { EnterRoute } from '$lib/followup';
 	import { m } from '$lib/paraglide/messages';
@@ -17,6 +17,7 @@
 		burstTokens,
 		route = 'send',
 		launching = false,
+		menu = true,
 		onclick
 	}: {
 		items: MenuItem[];
@@ -29,6 +30,8 @@
 		/** Where a click goes; anything but `send` labels the follow-up. */
 		route?: EnterRoute;
 		launching?: boolean;
+		/** False when nothing could go in the caret menu: a plain button then. */
+		menu?: boolean;
 		onclick: () => void;
 	} = $props();
 
@@ -52,22 +55,32 @@
 	const verb = $derived(followup ? m.composer_followup_send() : m.composer_send());
 </script>
 
-<SplitButton
-	variant="primary"
-	size="sm"
-	caret="half"
-	label={m.composer_schedule_menu()}
-	{items}
-	placement="top-end"
-	disabled={disabled || launching}
-	{onclick}
-	{title}
->
+{#snippet sendLabel()}
 	{#if uploading}{m.composer_uploading()}{:else if launching}{m.composer_followup_launching()}{:else if coldImminent}{m.composer_send()} (<span
 			class="countdown">{coldCountdownSecs}s</span
 		>){:else if cacheCold && burstTokens}{verb} ❄️ ~{compact(burstTokens)}{:else if cacheCold}{verb}
 		❄️{:else}{m.composer_send()}{/if}
-</SplitButton>
+{/snippet}
+
+{#if menu}
+	<SplitButton
+		variant="primary"
+		size="sm"
+		caret="half"
+		label={m.composer_schedule_menu()}
+		{items}
+		placement="top-end"
+		disabled={disabled || launching}
+		{onclick}
+		{title}
+	>
+		{@render sendLabel()}
+	</SplitButton>
+{:else}
+	<Button variant="primary" size="sm" disabled={disabled || launching} {onclick} {title}>
+		{@render sendLabel()}
+	</Button>
+{/if}
 
 <style>
 	/* Fixed-width, tabular digits so "59s"→"0s" doesn't jitter the button. */

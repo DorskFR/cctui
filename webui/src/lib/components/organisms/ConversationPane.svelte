@@ -40,6 +40,7 @@
 	import { useHarnesses, usePlugins } from '$lib/queries';
 	import { settings } from '$lib/settings.svelte';
 	import { scheduledTurns, useScheduledMessages } from '$lib/queries/scheduled';
+	import { hasFeature } from '$lib/features.svelte';
 	import BookmarkSaveModal from './bookmarks/BookmarkSaveModal.svelte';
 	import type { Line, MsgCategory, ViewOpts } from './conversation/types';
 	import { parseViewOpts } from './conversation/filters';
@@ -127,10 +128,11 @@
 	let terminalOpen = $state(false);
 	// Runtime plugins: a pane docked on the drawer's left edge plus the buttons
 	// they contribute to assistant lines.
+	const pluginsOn = $derived(hasFeature('plugins'));
 	const installedPlugins = usePlugins();
 	const plugins = new DrawerPlugins({
 		sessionId: () => id,
-		installed: () => installedPlugins.data ?? [],
+		installed: () => (pluginsOn ? (installedPlugins.data ?? []) : []),
 		enabled: () => settings.pluginsEnabled
 	});
 	$effect(() => plugins.ensureLoaded());
@@ -231,7 +233,7 @@
 	const scheduledTurnMap = $derived(scheduledTurns(scheduledQuery.data));
 	const renderer = new LineRenderer({
 		id: () => id,
-		machineId: () => session.machine_id,
+		machineId: () => (hasFeature('files') ? session.machine_id : ''),
 		view: () => view,
 		// The find bar owns the highlight once it is open, so the /sessions-search
 		// terms and a refined in-conversation query never fight over it.
@@ -281,6 +283,7 @@
 		fetchOlder: earlier.fetchEarlier,
 		scroll
 	});
+	const searchable = $derived(hasFeature('transcript_search'));
 	// Find-in-conversation. The hit list is the server's: the DOM only holds
 	// the paged tail, so a `mark.search-hit` count can never be the total.
 	const search = new ConversationSearch({
@@ -310,7 +313,7 @@
 	// Opened from the /sessions search: the bar starts filled with those terms
 	// so both flows run through one code path.
 	$effect(() => {
-		const seed = highlight.join(' ').trim();
+		const seed = searchable ? highlight.join(' ').trim() : '';
 		if (seed) untrack(() => search.openBar(seed));
 	});
 
@@ -350,7 +353,9 @@
 		fork.openExtract({ mode: 'selected', anchor_message_id: null, selected_message_ids: range });
 	}
 
-	const supportsAttachments = $derived(adapterSupportsAttachments(session.adapter_id));
+	const supportsAttachments = $derived(
+		hasFeature('uploads') && adapterSupportsAttachments(session.adapter_id)
+	);
 	let composer = $state<ConversationComposer>();
 	$effect(() =>
 		registerComposer(id, {
@@ -430,9 +435,13 @@
 		}
 	}
 
+	const canFollowup = $derived(
+		!!onFollowup && hasFeature('automation') && hasFeature('machine_spawn')
+	);
 	function followup(instruction?: string) {
-		onFollowup?.(session, instruction);
+		if (canFollowup) onFollowup?.(session, instruction);
 	}
+	const canTerminal = $derived(harnessCaps.live_view && hasFeature('terminal'));
 
 </script>
 
@@ -481,12 +490,12 @@
 				oncopylink={sa.copyLink}
 				oncopymarkdown={sa.copyMarkdown}
 				onexport={sa.export}
-				onsearch={() => search.openBar()}
+				onsearch={searchable ? () => search.openBar() : undefined}
 				onescape={search.escape}
 				onescapeaction={chrome === 'tile' && stream.working ? sa.interrupt : undefined}
 				shortcuts={active}
 				onfork={fork.openDialog}
-				onfollowup={onFollowup ? () => followup() : undefined}
+				onfollowup={canFollowup ? () => followup() : undefined}
 				onforkselect={forkable ? forkSelect.toggleMode : undefined}
 				forkSelectActive={forkSelect.active}
 				oninterrupt={sa.interrupt}
@@ -500,8 +509,8 @@
 				onDetachLabel={actions.detachLabel}
 				onUpdateLabel={actions.updateLabel}
 				onDeleteLabel={actions.deleteLabel}
-				onsetroom={setRoom}
-				onclearroom={clearRoom}
+				onsetroom={hasFeature('rooms') ? setRoom : undefined}
+				onclearroom={hasFeature('rooms') ? clearRoom : undefined}
 				ownerItems={ownerMenu.items}
 			/>
 
@@ -511,7 +520,7 @@
 					autoApprove={session.auto_approve}
 					ontoggleAuto={sa.toggleAutoApprove}
 					{terminalOpen}
-					ontoggleTerminal={harnessCaps.live_view ? () => (terminalOpen = !terminalOpen) : undefined}
+					ontoggleTerminal={canTerminal ? () => (terminalOpen = !terminalOpen) : undefined}
 					plugins={plugins.buttons}
 					pins={pins.pins}
 					{lines}
@@ -522,14 +531,14 @@
 				/>
 			{/if}
 
-			{#if search.open}
+			{#if search.open && searchable}
 				<ConversationSearchBar {search} />
 			{/if}
 
 			<TaskPanel sessionId={id} progress={stream.todoProgress} />
 			<SessionEventsPanel sessionId={id} />
 
-			{#if terminalOpen}
+			{#if terminalOpen && canTerminal}
 				<TerminalPane sessionId={id} onclose={() => (terminalOpen = false)} />
 			{/if}
 
@@ -592,7 +601,7 @@
 				stageFiles={(files) => actions.stageFiles(id, files)}
 				onNewFromScript={() => onNewFromScript?.(session)}
 				onFork={fork.openDialog}
-				onFollowup={onFollowup ? followup : undefined}
+				onFollowup={canFollowup ? followup : undefined}
 				onResume={sa.resume}
 				compact={chrome === 'tile'}
 			/>

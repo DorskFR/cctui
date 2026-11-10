@@ -23,6 +23,7 @@
 	import HeaderMeta from './HeaderMeta.svelte';
 	import { headerTitleOf, nameOf } from '$lib/sessionName';
 	import { m } from '$lib/paraglide/messages';
+	import { hasFeature } from '$lib/features.svelte';
 
 	let {
 		session,
@@ -221,13 +222,17 @@
 			attrs: { title: onforkselect ? m.drawer_fork_select_title() : m.drawer_fork_title() },
 			onselect: onforkselect ?? onfork
 		},
-		{
-			label: m.drawer_keepalive_label(),
-			icon: 'recycle' as const,
-			pressed: !!session.keepalive,
-			onselect: () => (keepaliveOpen = true)
-		},
-		...(onsetroom
+		...(hasFeature('automation')
+			? [
+					{
+						label: m.drawer_keepalive_label(),
+						icon: 'recycle' as const,
+						pressed: !!session.keepalive,
+						onselect: () => (keepaliveOpen = true)
+					}
+				]
+			: []),
+		...(onsetroom && hasFeature('rooms')
 			? [
 					{
 						label: m.rooms_menu_action(),

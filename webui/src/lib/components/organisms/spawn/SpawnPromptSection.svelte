@@ -10,13 +10,14 @@
 	import CctuiverseSpawnNotice from '$lib/components/molecules/CctuiverseSpawnNotice.svelte';
 	import { findInvite } from '$lib/cctuiverse';
 	import { cctuiverseConfig, loadCctuiverseConfig } from '$lib/cctuiverseConfig.svelte';
+	import { hasFeature } from '$lib/features.svelte';
 
 	let { sf }: { sf: SpawnForm } = $props();
 
 	$effect(() => {
 		void loadCctuiverseConfig();
 	});
-	const hasInvite = $derived(findInvite(sf.form.prompt) !== null);
+	const hasInvite = $derived(hasFeature('federation') && findInvite(sf.form.prompt) !== null);
 </script>
 
 {#if sf.target === 'dispatch'}
@@ -29,7 +30,9 @@
 		accounts={sf.allAccounts}
 		onsubmit={sf.submit}
 	/>
-	<SpawnDictation {sf} />
+	{#if hasFeature('voice')}
+		<SpawnDictation {sf} />
+	{/if}
 {:else}
 	<MachineFields
 		bind:form={sf.form}
@@ -39,23 +42,27 @@
 		att={sf.att}
 		bind:promptEl={sf.promptEl}
 	/>
-	<SpawnDictation {sf} />
+	{#if hasFeature('voice')}
+		<SpawnDictation {sf} />
+	{/if}
 	{#if hasInvite && !cctuiverseConfig.enabled}
 		<Callout tone="warn" style="flex-basis:100%">{m.cctuiverse_disabled_invite()}</Callout>
 	{:else if hasInvite}
 		<CctuiverseSpawnNotice bind:label={sf.joinLabel} placeholder={sf.form.name.trim()} />
 	{/if}
-	<ProfileList
-		profiles={sf.profiles}
-		bind:selectedId={sf.selectedProfileId}
-		bind:oneOff={sf.oneOff}
-		accounts={sf.allAccounts}
-		pools={sf.allPools}
-		usage={sf.allUsage}
-		machineId={sf.form.machine_id}
-		busy={sf.busy}
-		oncreate={(name, spec) => createProfile(sf, name, spec)}
-		onsave={(id, name, spec) => saveProfile(sf, id, name, spec)}
-		ondelete={(id) => deleteProfile(sf, id)}
-	/>
+	{#if sf.canUseProfiles}
+		<ProfileList
+			profiles={sf.profiles}
+			bind:selectedId={sf.selectedProfileId}
+			bind:oneOff={sf.oneOff}
+			accounts={sf.allAccounts}
+			pools={sf.allPools}
+			usage={sf.allUsage}
+			machineId={sf.form.machine_id}
+			busy={sf.busy}
+			oncreate={(name, spec) => createProfile(sf, name, spec)}
+			onsave={(id, name, spec) => saveProfile(sf, id, name, spec)}
+			ondelete={(id) => deleteProfile(sf, id)}
+		/>
+	{/if}
 {/if}

@@ -18,6 +18,7 @@ import {
 import type { SessionListSettings } from '$lib/settings.svelte';
 import { sessionsView } from '$lib/sessionsView.svelte';
 import { SessionsPage, type SessionsPageDeps, type SpawnForm } from './sessionsPage.svelte';
+import { setCapabilitiesForTest } from '$lib/features.svelte';
 
 function session(over: Partial<SessionListItem>): SessionListItem {
 	return {
@@ -761,5 +762,47 @@ describe('follow-up modal', () => {
 		await sp.followUp(session({ id: 'src' }));
 		expect(sp.spawnPrefill?.parent_session_id).toBe('src');
 		expect(sp.spawnPrefill).not.toHaveProperty('archive_source');
+	});
+});
+
+describe('SessionsPage — without transcript search', () => {
+	beforeEach(() => {
+		setCapabilitiesForTest({ features: [], switchable: ['transcript_search'] });
+	});
+	afterEach(() => setCapabilitiesForTest(null));
+
+	it('sends no search for a typed query', async () => {
+		const { sp, api } = make();
+		sp.rawQuery = 'needle';
+		await vi.advanceTimersByTimeAsync(200);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sp.searching).toBe(false);
+		expect(api.searchSessions).not.toHaveBeenCalled();
+	});
+
+	it('lists the archive from the full session list instead of the search pager', async () => {
+		const { sp, api, setAll } = make();
+		setAll([session({ id: 'live' }), session({ id: 'old', status: 'archived' })]);
+		sp.sections = new Set(['live', 'archived']);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sp.archiveFromList).toBe(true);
+		expect(api.searchSessions).not.toHaveBeenCalled();
+		expect(sp.pageRows.map((s) => s.id)).toEqual(['old']);
+		expect(sp.pageDone).toBe(true);
+		expect(sp.pageLoading).toBe(false);
+		expect(sp.pageError).toBe('');
+	});
+
+	it('still searches with the feature on', async () => {
+		setCapabilitiesForTest({ features: ['transcript_search'], switchable: ['transcript_search'] });
+		const { sp, api } = make();
+		sp.rawQuery = 'needle';
+		await vi.advanceTimersByTimeAsync(200);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sp.archiveFromList).toBe(false);
+		expect(api.searchSessions).toHaveBeenCalled();
 	});
 });
