@@ -4,6 +4,7 @@ use ts_rs::TS;
 
 use crate::adapter::{AdapterCommand, AdapterEvent, BootstrapFile};
 use crate::api::DaemonAdapterConfig;
+use crate::features::Feature;
 
 /// How a server with no `CCTUI_PREVIEW_HOST` refuses a preview. Matched
 /// verbatim by the daemon CLI and the webui, which explain the setup rather
@@ -323,6 +324,65 @@ pub enum DaemonFrameDown {
         #[serde(default)]
         off: Vec<String>,
     },
+}
+
+impl DaemonFrameDown {
+    /// The switchable features that own this frame: it is served while any of
+    /// them is on. Empty is core, never refused.
+    #[must_use]
+    pub fn features(&self) -> &'static [Feature] {
+        match self {
+            Self::Command { command, .. } => command_features(command.as_ref()),
+            // Uploaded attachments and attached context memories share this frame.
+            Self::StageFiles { .. } => &[Feature::Uploads, Feature::Context],
+            Self::ListDirs { .. } | Self::GitInfo { .. } | Self::ReadFile { .. } => {
+                &[Feature::Files]
+            }
+            Self::RunUpdateHook { .. }
+            | Self::HarnessUpdatePolicy { .. }
+            | Self::DrainRestart { .. } => &[Feature::SelfUpdate],
+            Self::PreviewOpened { .. }
+            | Self::PreviewClosed { .. }
+            | Self::PreviewRequest { .. }
+            | Self::PreviewChunk(_)
+            | Self::PreviewAbort { .. } => &[Feature::Previews],
+            Self::Reconcile { .. }
+            | Self::Ack { .. }
+            | Self::ChunkAck { .. }
+            | Self::ResumeMarks { .. }
+            | Self::TranscriptAck { .. }
+            | Self::ArchivedJobs { .. }
+            | Self::RefreshCodexModels {}
+            | Self::Features { .. } => &[],
+        }
+    }
+}
+
+/// [`DaemonFrameDown::features`] for one adapter command.
+#[must_use]
+pub const fn command_features(command: &AdapterCommand) -> &'static [Feature] {
+    match command {
+        AdapterCommand::Spawn { spec, .. } if spec.parent_local_id.is_some() => {
+            &[Feature::ChildSessions]
+        }
+        AdapterCommand::Spawn { .. } | AdapterCommand::Fork { .. } | AdapterCommand::Resume { .. } => {
+            &[Feature::MachineSpawn]
+        }
+        AdapterCommand::WatchPty { .. } => &[Feature::Terminal],
+        AdapterCommand::ResumeMarks { .. }
+        | AdapterCommand::AckMarks { .. }
+        | AdapterCommand::SendMessage { .. }
+        | AdapterCommand::Kill { .. }
+        | AdapterCommand::Reply { .. }
+        | AdapterCommand::Interrupt { .. }
+        | AdapterCommand::PermissionResponse { .. }
+        | AdapterCommand::Rename { .. }
+        | AdapterCommand::Remove { .. }
+        | AdapterCommand::SetModel { .. }
+        | AdapterCommand::Diagnose { .. }
+        | AdapterCommand::WatchText { .. }
+        | AdapterCommand::GuardTransition { .. } => &[],
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1926,5 +1986,98 @@ mod tests {
         let minimal: DaemonFrameUp =
             serde_json::from_str(r#"{"type":"preview_chunk","stream_id":"x","end":true}"#).unwrap();
         assert!(matches!(minimal, DaemonFrameUp::PreviewChunk(PreviewChunk { end: true, .. })));
+    }
+
+    fn down(value: serde_json::Value) -> DaemonFrameDown {
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn command(command: serde_json::Value) -> DaemonFrameDown {
+        down(serde_json::json!({ "type": "command", "adapter_id": "claude-code", "command": command }))
+    }
+
+    #[test]
+    fn every_daemon_frame_maps_to_the_features_that_own_it() {
+        use serde_json::json;
+        let id = "00000000-0000-0000-0000-000000000007";
+        let spec = json!({ "adapter_id": "claude-code" });
+        let child = json!({ "adapter_id": "claude-code", "parent_local_id": "parent" });
+        let cases: Vec<(DaemonFrameDown, &[Feature])> = vec![
+            (down(json!({ "type": "reconcile", "adapters": [] })), &[]),
+            (down(json!({ "type": "ack", "seq": 1 })), &[]),
+            (down(json!({ "type": "chunk_ack", "transfer_id": "t" })), &[]),
+            (down(json!({ "type": "resume_marks", "session_marks": [] })), &[]),
+            (
+                down(json!({ "type": "transcript_ack", "adapter_id": "a", "session_marks": [] })),
+                &[],
+            ),
+            (down(json!({ "type": "archived_jobs", "session_ids": [] })), &[]),
+            (down(json!({ "type": "refresh_codex_models" })), &[]),
+            (down(json!({ "type": "features", "off": [] })), &[]),
+            (
+                down(json!({
+                    "type": "stage_files", "request_id": id, "adapter_id": "a",
+                    "local_id": "s", "uploads": []
+                })),
+                &[Feature::Uploads, Feature::Context],
+            ),
+            (down(json!({ "type": "list_dirs", "request_id": id, "path": "/" })), &[Feature::Files]),
+            (down(json!({ "type": "git_info", "request_id": id, "path": "/" })), &[Feature::Files]),
+            (
+                down(json!({ "type": "read_file", "request_id": id, "path": "/a", "max_bytes": 1 })),
+                &[Feature::Files],
+            ),
+            (
+                down(json!({
+                    "type": "run_update_hook", "run_id": id, "version": "1", "release_url": "u"
+                })),
+                &[Feature::SelfUpdate],
+            ),
+            (down(json!({ "type": "harness_update_policy", "policy": {} })), &[Feature::SelfUpdate]),
+            (down(json!({ "type": "drain_restart", "harness": "claude-code" })), &[Feature::SelfUpdate]),
+            (down(json!({ "type": "preview_opened", "request_id": id, "ok": true })), &[Feature::Previews]),
+            (
+                down(json!({ "type": "preview_closed", "session_id": "s", "port": 5173 })),
+                &[Feature::Previews],
+            ),
+            (
+                down(json!({
+                    "type": "preview_request", "stream_id": "x", "port": 5173,
+                    "method": "GET", "path": "/"
+                })),
+                &[Feature::Previews],
+            ),
+            (down(json!({ "type": "preview_chunk", "stream_id": "x" })), &[Feature::Previews]),
+            (down(json!({ "type": "preview_abort", "stream_id": "x" })), &[Feature::Previews]),
+            (command(json!({ "kind": "spawn", "spec": spec })), &[Feature::MachineSpawn]),
+            (command(json!({ "kind": "spawn", "spec": child })), &[Feature::ChildSessions]),
+            (
+                command(json!({ "kind": "fork", "parent_local_id": "s", "spec": spec })),
+                &[Feature::MachineSpawn],
+            ),
+            (command(json!({ "kind": "resume", "local_id": "s" })), &[Feature::MachineSpawn]),
+            (command(json!({ "kind": "watch_pty", "local_id": "s", "watch": true })), &[Feature::Terminal]),
+            (command(json!({ "kind": "resume_marks", "marks": [] })), &[]),
+            (command(json!({ "kind": "ack_marks", "marks": [] })), &[]),
+            (command(json!({ "kind": "send_message", "local_id": "s", "text": "t" })), &[]),
+            (command(json!({ "kind": "kill", "local_id": "s" })), &[]),
+            (command(json!({ "kind": "reply", "local_id": "s", "text": "t" })), &[]),
+            (command(json!({ "kind": "interrupt", "local_id": "s" })), &[]),
+            (
+                command(json!({
+                    "kind": "permission_response", "local_id": "s", "request_id": "r", "allow": true
+                })),
+                &[],
+            ),
+            (command(json!({ "kind": "rename", "local_id": "s", "name": "n" })), &[]),
+            (command(json!({ "kind": "remove", "local_id": "s" })), &[]),
+            (command(json!({ "kind": "set_model", "local_id": "s", "model": "m" })), &[]),
+            (command(json!({ "kind": "diagnose", "local_id": "s", "request_id": id })), &[]),
+            (command(json!({ "kind": "watch_text", "local_id": "s", "watch": true })), &[]),
+            (command(json!({ "kind": "guard_transition", "local_id": "s", "step": "1" })), &[]),
+        ];
+        for (frame, expected) in cases {
+            assert_eq!(frame.features(), expected, "{frame:?}");
+        }
     }
 }
