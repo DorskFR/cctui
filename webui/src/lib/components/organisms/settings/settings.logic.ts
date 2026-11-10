@@ -1,3 +1,5 @@
+import type { Feature } from '@bindings/Feature';
+
 // Read-only lists shown under Settings › Execution / Privacy, plus the
 // text-normalizing helper the page filter uses.
 
@@ -126,6 +128,25 @@ export const SETTINGS_PAGES = [
 ] as const;
 
 export type SettingsPage = (typeof SETTINGS_PAGES)[number];
+
+const PAGE_FEATURE: Partial<Record<SettingsPage, Feature>> = {
+	context: 'context',
+	plugins: 'plugins',
+	security: 'passkeys',
+	uploads: 'uploads'
+};
+
+/** The feature a page belongs to, `null` for a page that is always there. */
+export function settingsPageFeature(page: string | null | undefined): Feature | null {
+	return isSettingsPage(page) ? (PAGE_FEATURE[page] ?? null) : null;
+}
+
+export function availableSettingsPages(has: (feature: Feature) => boolean): SettingsPage[] {
+	return SETTINGS_PAGES.filter((p) => {
+		const feature = PAGE_FEATURE[p];
+		return !feature || has(feature);
+	});
+}
 
 export const DEFAULT_SETTINGS_PAGE: SettingsPage = 'appearance';
 

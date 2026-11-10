@@ -25,9 +25,11 @@
 	import { releaseChannel } from '$lib/releaseChannel';
 	import type { SelfUpdateTargetInfo } from '@bindings/SelfUpdateTargetInfo';
 	import { toasts } from '$lib/toast.svelte';
+	import { hasFeature } from '$lib/features.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	let { isAdmin = false }: { isAdmin?: boolean } = $props();
+	const selfUpdate = $derived(hasFeature('self_update'));
 
 	const version = useVersion();
 	const qc = useQueryClient();
@@ -85,7 +87,7 @@
 	let suAdapter = $state('claude-code');
 	let suSaving = $state(false);
 	$effect(() => {
-		if (!isAdmin) return;
+		if (!isAdmin || !selfUpdate) return;
 		endpoints
 			.selfUpdateTarget()
 			.then((info) => {
@@ -166,15 +168,17 @@
 						</span>
 					{/if}
 					<Text size="sm" variant="code">ui {__CLIENT_VERSION__}</Text>
-					{#if version.data.latest_version}
+					{#if selfUpdate && version.data.latest_version}
 						<Button size="sm" variant="ghost" chip onclick={() => (updateOpen = true)}>
 							<Text size="sm" variant="code" tone="danger">↑ v{version.data.latest_version}</Text>
 						</Button>
 					{/if}
 				{/if}
-				<Button size="sm" disabled={updateChecking} onclick={checkForUpdate}>
-					{updateChecking ? m.settings_version_checking() : m.settings_version_check()}
-				</Button>
+				{#if selfUpdate}
+					<Button size="sm" disabled={updateChecking} onclick={checkForUpdate}>
+						{updateChecking ? m.settings_version_checking() : m.settings_version_check()}
+					</Button>
+				{/if}
 			</div>
 		</SettingRow>
 		<SettingRow label={m.net_stats_title()} help={m.settings_net_stats_help()} selfLabelled>
@@ -183,60 +187,72 @@
 	</SettingGroup>
 
 	{#if isAdmin}
-		<SettingGroup title={m.settings_self_update_label()}>
-			<SettingRow
-				label={m.settings_self_update_label()}
-				help={suTarget?.source === 'env'
-					? `${m.settings_self_update_help()} ${m.settings_self_update_from_env()}`
-					: m.settings_self_update_help()}
-				wide
-				selfLabelled
-			>
-				<div class="su">
-					{#if allMachines.data}
-						<MachinePicker
-							bind:value={suMachine}
-							machines={allMachines.data}
-							label={m.settings_self_update_machine()}
-						/>
-					{/if}
-					<Input
-						bind:value={suDir}
-						grow
-						placeholder={m.settings_self_update_dir_placeholder()}
-						aria-label={m.settings_self_update_dir()}
-					/>
-					<Select
-						value={suAdapter}
-						aria-label={m.settings_self_update_adapter()}
-						onchange={(e) => (suAdapter = (e.currentTarget as HTMLSelectElement).value)}
-					>
-						<option value="claude-code">claude-code</option>
-						<option value="codex">codex</option>
-					</Select>
-					<div class="su-actions">
-						<Button
-							disabled={!suDirty || !suValid || suSaving}
-							onclick={() => saveSelfUpdateTarget()}
-						>
-							{m.settings_admin_instance_save()}
-						</Button>
-						{#if suTarget?.source === 'settings'}
-							<Button variant="ghost" disabled={suSaving} onclick={() => saveSelfUpdateTarget(true)}>
-								{m.settings_self_update_clear()}
-							</Button>
+		{#if selfUpdate}
+			<SettingGroup title={m.settings_self_update_label()}>
+				<SettingRow
+					label={m.settings_self_update_label()}
+					help={suTarget?.source === 'env'
+						? `${m.settings_self_update_help()} ${m.settings_self_update_from_env()}`
+						: m.settings_self_update_help()}
+					wide
+					selfLabelled
+				>
+					<div class="su">
+						{#if allMachines.data}
+							<MachinePicker
+								bind:value={suMachine}
+								machines={allMachines.data}
+								label={m.settings_self_update_machine()}
+							/>
 						{/if}
+						<Input
+							bind:value={suDir}
+							grow
+							placeholder={m.settings_self_update_dir_placeholder()}
+							aria-label={m.settings_self_update_dir()}
+						/>
+						<Select
+							value={suAdapter}
+							aria-label={m.settings_self_update_adapter()}
+							onchange={(e) => (suAdapter = (e.currentTarget as HTMLSelectElement).value)}
+						>
+							<option value="claude-code">claude-code</option>
+							<option value="codex">codex</option>
+						</Select>
+						<div class="su-actions">
+							<Button
+								disabled={!suDirty || !suValid || suSaving}
+								onclick={() => saveSelfUpdateTarget()}
+							>
+								{m.settings_admin_instance_save()}
+							</Button>
+							{#if suTarget?.source === 'settings'}
+								<Button variant="ghost" disabled={suSaving} onclick={() => saveSelfUpdateTarget(true)}>
+									{m.settings_self_update_clear()}
+								</Button>
+							{/if}
+						</div>
 					</div>
-				</div>
-			</SettingRow>
-		</SettingGroup>
-		<PasskeySignInGroup />
-		<HarnessUpdateGroup />
-		<MachineAdaptersGroup isAdmin />
-		<SpawnLimitsGroup />
+				</SettingRow>
+			</SettingGroup>
+		{/if}
+		{#if hasFeature('passkeys')}
+			<PasskeySignInGroup />
+		{/if}
+		{#if selfUpdate}
+			<HarnessUpdateGroup />
+		{/if}
+		{#if hasFeature('machine_spawn')}
+			<MachineAdaptersGroup isAdmin />
+		{/if}
+		{#if hasFeature('child_sessions')}
+			<SpawnLimitsGroup />
+		{/if}
 		<UpstreamHostsGroup />
-		<SpeechGroup />
-	{:else}
+		{#if hasFeature('voice')}
+			<SpeechGroup />
+		{/if}
+	{:else if hasFeature('machine_spawn')}
 		<MachineAdaptersGroup />
 	{/if}
 </SettingSection>

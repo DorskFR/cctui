@@ -4,6 +4,7 @@
 	import { m } from '$lib/paraglide/messages';
 	import InlineCode, { SLOT } from '$lib/components/atoms/InlineCode.svelte';
 	import { Button, Card, Cluster, Stack, Text } from '@dorsk/tsumikit';
+	import { hasFeature } from '$lib/features.svelte';
 
 	let { dashed = false }: { dashed?: boolean } = $props();
 
@@ -16,28 +17,30 @@
 	}
 </script>
 
-<Card
-	padding={dashed ? 'sm' : 'md'}
-	style={dashed
-		? 'border-style: dashed; border-color: var(--border-strong); background: transparent'
-		: undefined}
->
-	<Stack data-journey="enroll">
-		<Text weight="bold">{m.home_enroll_title()}</Text>
-		<Text as="p" tone="muted" size="sm">
-			<InlineCode text={m.home_enroll_install({ daemon: SLOT })} code="cctui-daemon" />
-		</Text>
-		<Cluster wrap={false} align="center">
-			<!-- as="div": truncate needs a block element — text-overflow:ellipsis is
-			     ignored on an inline <span>, so the long command would spill. -->
-			<div class="cmd" data-journey="enroll-cmd"><Text as="div" variant="code" truncate>{enrollCmd}</Text></div>
-			<Button data-journey="enroll-copy" onclick={copyEnroll}>{m.common_copy()}</Button>
-		</Cluster>
-		<Text as="p" tone="muted" size="sm">
-			{m.home_enroll_run_as_service()} <Text variant="code">cctui-daemon service install</Text>
-		</Text>
-	</Stack>
-</Card>
+{#if hasFeature('machine_spawn')}
+	<Card
+		padding={dashed ? 'sm' : 'md'}
+		style={dashed
+			? 'border-style: dashed; border-color: var(--border-strong); background: transparent'
+			: undefined}
+	>
+		<Stack data-journey="enroll">
+			<Text weight="bold">{m.home_enroll_title()}</Text>
+			<Text as="p" tone="muted" size="sm">
+				<InlineCode text={m.home_enroll_install({ daemon: SLOT })} code="cctui-daemon" />
+			</Text>
+			<Cluster wrap={false} align="center">
+				<!-- as="div": truncate needs a block element — text-overflow:ellipsis is
+				     ignored on an inline <span>, so the long command would spill. -->
+				<div class="cmd" data-journey="enroll-cmd"><Text as="div" variant="code" truncate>{enrollCmd}</Text></div>
+				<Button data-journey="enroll-copy" onclick={copyEnroll}>{m.common_copy()}</Button>
+			</Cluster>
+			<Text as="p" tone="muted" size="sm">
+				{m.home_enroll_run_as_service()} <Text variant="code">cctui-daemon service install</Text>
+			</Text>
+		</Stack>
+	</Card>
+{/if}
 
 <style>
 	/* Owns the shrink (min-width:0 + flex:1) that lets the Text inside truncate. */

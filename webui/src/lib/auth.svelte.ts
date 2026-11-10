@@ -3,6 +3,7 @@ import { apiFetch } from './api';
 import { backendHealth, isNetworkError, isOutageStatus } from './backendHealth.svelte';
 import { apiBase } from './config';
 import { clearCctuiStorage } from './drafts';
+import { hasFeature } from './features.svelte';
 import { getAssertion, passkeysSupported } from './passkeys';
 import type { PasskeyChallenge } from '@bindings/PasskeyChallenge';
 import type { PasskeyConfig } from '@bindings/PasskeyConfig';
@@ -59,7 +60,7 @@ class Auth {
 	 *  and whether the read should start on its own. Any failure answers "no
 	 *  passkeys", so an older server simply shows the token box. */
 	async passkeyConfig(): Promise<PasskeyConfig | null> {
-		if (!browser || !passkeysSupported()) return null;
+		if (!browser || !passkeysSupported() || !hasFeature('passkeys')) return null;
 		try {
 			const res = await apiFetch(`${apiBase()}/auth/passkey/config`);
 			if (!res.ok) return null;

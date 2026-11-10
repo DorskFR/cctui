@@ -3,6 +3,7 @@ import { endpoints } from "./endpoints";
 import { qk } from "./keys";
 import { setUsageProbes } from "$lib/usageProbes.svelte";
 import { setHarnesses } from "$lib/harnesses.svelte";
+import { hasFeature, setCapabilities } from "$lib/features.svelte";
 
 export const useMe = () =>
   createQuery(() => ({
@@ -16,6 +17,7 @@ export const useVoiceConfig = () =>
   createQuery(() => ({
     queryKey: qk.voiceConfig,
     queryFn: endpoints.voiceConfig,
+    enabled: hasFeature("voice"),
     staleTime: 5 * 60_000,
   }));
 
@@ -24,7 +26,11 @@ export const useVoiceConfig = () =>
 export const useCapabilities = () =>
   createQuery(() => ({
     queryKey: qk.capabilities,
-    queryFn: endpoints.capabilities,
+    queryFn: async () => {
+      const caps = await endpoints.capabilities();
+      setCapabilities(caps);
+      return caps;
+    },
     staleTime: 5 * 60_000,
   }));
 
@@ -49,6 +55,7 @@ export const useChangelog = (version: () => string) =>
   createQuery(() => ({
     queryKey: qk.changelog(version()),
     queryFn: endpoints.changelog,
+    enabled: hasFeature("self_update"),
     staleTime: 60_000,
   }));
 
@@ -57,7 +64,7 @@ export const useSelfUpdateRun = (enabled: () => boolean) =>
   createQuery(() => ({
     queryKey: qk.selfUpdateRun,
     queryFn: endpoints.selfUpdateStatus,
-    enabled: enabled(),
+    enabled: enabled() && hasFeature("self_update"),
     refetchInterval: (query) => (query.state.data?.done ? false : 3_000),
   }));
 

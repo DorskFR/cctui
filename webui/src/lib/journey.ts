@@ -24,6 +24,7 @@ import { isLive } from './journeys/live';
 import { createProbes, type Probes } from './journeys/probes';
 import { m } from './paraglide/messages';
 import { endpoints } from './queries/endpoints';
+import { hasFeature } from './features.svelte';
 import { qk } from './queries/keys';
 import { settings } from './settings.svelte';
 import { type DeckCard, deckPresenter } from './welcomeDeck.svelte';
@@ -184,7 +185,9 @@ export async function guideParams(qc: QueryClient): Promise<GuideParams> {
 	if (me.user_name) out['fixture.me'] = me.user_name;
 	const [accounts, pools, sessions] = await Promise.all([
 		qc.fetchQuery({ queryKey: qk.accounts, queryFn: endpoints.accounts }),
-		qc.fetchQuery({ queryKey: qk.accountPools, queryFn: endpoints.accountPools }),
+		hasFeature('account_sharing')
+			? qc.fetchQuery({ queryKey: qk.accountPools, queryFn: endpoints.accountPools })
+			: [],
 		qc.fetchQuery({ queryKey: qk.sessions(false), queryFn: () => endpoints.sessions(false) })
 	]);
 	if (accounts[0]) out.account = accounts[0].name;

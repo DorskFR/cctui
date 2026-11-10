@@ -7,6 +7,7 @@ import type { SessionContextResponse } from "@bindings/SessionContextResponse";
 import type { AttachedContextRef } from "@bindings/AttachedContextRef";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
+import { hasFeature } from "$lib/features.svelte";
 
 const list = <T>(v: unknown): T[] => (Array.isArray(v) ? v : []);
 const field = (v: unknown, key: string): unknown =>
@@ -44,7 +45,7 @@ export const useContextItems = (enabled: () => boolean = () => true) =>
   createQuery(() => ({
     queryKey: qk.context,
     queryFn: async () => asItems(await endpoints.contextItems()),
-    enabled: enabled(),
+    enabled: enabled() && hasFeature("context"),
   }));
 
 export interface ContextCoords {
@@ -74,7 +75,7 @@ export const useResolvedContext = (
       queryKey: qk.contextResolve(params),
       queryFn: async () => asResolved(await endpoints.resolveContext(params)),
       retry: false,
-      enabled: enabled() && !!params.machine_id,
+      enabled: enabled() && !!params.machine_id && hasFeature("context"),
     };
   });
 
@@ -87,7 +88,7 @@ export const useSessionContext = (
     queryFn: async () =>
       asSessionContext(await endpoints.sessionContext(sessionId())),
     retry: false,
-    enabled: enabled() && !!sessionId(),
+    enabled: enabled() && !!sessionId() && hasFeature("context"),
   }));
 
 export function useContextActions() {

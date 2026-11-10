@@ -3,6 +3,7 @@ import type { CreateProfileRequest } from "@bindings/CreateProfileRequest";
 import type { SessionProfile } from "@bindings/SessionProfile";
 import type { UpdateProfileRequest } from "@bindings/UpdateProfileRequest";
 import { endpoints } from "./endpoints";
+import { hasFeature } from "$lib/features.svelte";
 
 export const PROFILES_KEY = ["profiles"] as const;
 
@@ -11,7 +12,7 @@ export const useProfiles = (enabled: () => boolean = () => true) =>
   createQuery(() => ({
     queryKey: PROFILES_KEY,
     queryFn: endpoints.profiles,
-    enabled: enabled(),
+    enabled: enabled() && hasFeature("profiles"),
   }));
 
 /** Create / adjust / delete / reorder profiles; each refreshes the list. */
