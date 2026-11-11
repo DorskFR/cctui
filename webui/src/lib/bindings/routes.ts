@@ -223,7 +223,7 @@ export const ROUTES = [
   { id: "get_sessions_stats_tokens", method: "GET", path: "/sessions/stats/tokens", summary: "Token-usage stats across sessions.", request: null, response: null, feature: null },
   { id: "get_sessions_stats_usage", method: "GET", path: "/sessions/stats/usage", summary: "Overview usage analytics: tokens over time, per-model, heatmap.", request: null, response: null, feature: null },
   { id: "get_sessions_stats_cache_busts", method: "GET", path: "/sessions/stats/cache-busts", summary: "Dollars lost to prompt-cache busts per day, by reason.", request: null, response: null, feature: null },
-  { id: "get_sessions_search", method: "GET", path: "/sessions/search", summary: "Full-text search across your sessions.", request: null, response: null, feature: "transcript_search" },
+  { id: "get_sessions_search", method: "GET", path: "/sessions/search", summary: "Full-text search across your sessions.", request: null, response: null, feature: null },
   { id: "get_sessions_search_values", method: "GET", path: "/sessions/search/values", summary: "Autocomplete values for a search field.", request: null, response: null, feature: "transcript_search" },
   { id: "get_sessions_recent_dirs", method: "GET", path: "/sessions/recent-dirs", summary: "List recently used working directories.", request: null, response: null, feature: "machine_spawn" },
   { id: "post_sessions_by_id_message", method: "POST", path: "/sessions/{id}/message", summary: "Send a message to a live session.", request: null, response: null, feature: null },
