@@ -34,7 +34,8 @@ describe('route feature lookup', () => {
 	});
 
 	it('prefers a literal segment over a placeholder', () => {
-		expect(routeFeature('GET', '/sessions/search?q=x')).toBe('transcript_search');
+		expect(routeFeature('GET', '/sessions/search/values?field=machine')).toBe('transcript_search');
+		expect(routeFeature('GET', '/sessions/search?q=x')).toBeNull();
 		expect(routeFeature('GET', '/sessions/abc')).toBeNull();
 	});
 
@@ -66,6 +67,13 @@ describe('request gating', () => {
 		await api.get('/accounts');
 		await apiFetch('https://api.test/api/v1/me');
 		expect(sent).toEqual(['https://api.test/api/v1/accounts', 'https://api.test/api/v1/me']);
+	});
+
+	it('browses the archive without transcript search, and asks no autocomplete', async () => {
+		off('transcript_search');
+		await api.get('/sessions/search', { include_archived: true, limit: 50, offset: 0 });
+		await expect(api.get('/sessions/search/values', { field: 'machine' })).rejects.toBeInstanceOf(FeatureOffError);
+		expect(sent).toEqual(['https://api.test/api/v1/sessions/search?include_archived=true&limit=50&offset=0']);
 	});
 
 	it('sends requests of an on feature', async () => {

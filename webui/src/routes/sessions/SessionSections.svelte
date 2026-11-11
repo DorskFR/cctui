@@ -28,6 +28,11 @@
 	const archTop = $derived(
 		archNest.topLevel.filter((s) => sp.keepRow(s) && !sp.pinnedArchivedKidIds.has(s.id))
 	);
+	const pageErrorText = $derived(
+		sp.searching
+			? m.sessions_search_failed({ error: sp.pageError })
+			: m.sessions_archive_load_failed({ error: sp.pageError })
+	);
 	const vis = $derived(
 		sectionVisibility({
 			groups: sp.list.liveSectionCounts,
@@ -60,7 +65,7 @@
 
 {#snippet loadMore()}
 	{#if sp.pageError}
-		<Callout tone="danger">{m.sessions_search_failed({ error: sp.pageError })}</Callout>
+		<Callout tone="danger">{pageErrorText}</Callout>
 	{:else if sp.pageLoading}
 		<div class="loadmore"><Spinner label={m.common_loading()} /></div>
 		{:else if !sp.pageDone && (sp.pageRows.length > 0 || sp.pagePartial)}

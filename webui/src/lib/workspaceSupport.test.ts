@@ -90,3 +90,74 @@ describe('boot capabilities', () => {
 		await expect(boot.requireFeature('plugins')).resolves.toBeUndefined();
 	});
 });
+
+describe('capabilities read again at sign-in', () => {
+	const realFetch = globalThis.fetch;
+	afterEach(() => {
+		globalThis.fetch = realFetch;
+		vi.resetModules();
+	});
+
+	const core = { workspace: true, features: [], switchable: ['organising', 'transcript_search'] };
+
+	async function signedOutBoot() {
+		vi.resetModules();
+		const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response('', { status: 401 }));
+		globalThis.fetch = fetcher;
+		const boot = await import('./workspaceSupport');
+		const features = await import('./features.svelte');
+		expect(await boot.bootCapabilities()).toBeNull();
+		return { fetcher, boot, features };
+	}
+
+	it('adopts the answer refused before login', async () => {
+		const { fetcher, boot, features } = await signedOutBoot();
+		expect(features.hasFeature('organising')).toBe(true);
+		fetcher.mockResolvedValueOnce(Response.json(core));
+		expect(await boot.refreshCapabilities()).toEqual(core);
+		expect(features.hasFeature('organising')).toBe(false);
+		expect(features.hasFeature('transcript_search')).toBe(false);
+		expect(fetcher).toHaveBeenCalledTimes(2);
+	});
+
+	it('hands the new answer to later boot callers and page loads', async () => {
+		const { fetcher, boot } = await signedOutBoot();
+		fetcher.mockResolvedValueOnce(Response.json(core));
+		await boot.refreshCapabilities();
+		expect(await boot.bootCapabilities()).toEqual(core);
+		await expect(boot.requireFeature('organising')).rejects.toMatchObject({ status: 404 });
+		expect(fetcher).toHaveBeenCalledTimes(2);
+	});
+
+	it('tells listeners about every adopted answer, and stops once unsubscribed', async () => {
+		const { fetcher, boot } = await signedOutBoot();
+		const seen = vi.fn();
+		const off = boot.onCapabilities(seen);
+		fetcher.mockResolvedValueOnce(Response.json(core));
+		await boot.refreshCapabilities();
+		expect(seen).toHaveBeenCalledExactlyOnceWith(core);
+		off();
+		fetcher.mockResolvedValueOnce(Response.json(core));
+		await boot.refreshCapabilities();
+		expect(seen).toHaveBeenCalledOnce();
+	});
+
+	it('keeps the last answer when a later probe fails', async () => {
+		const { fetcher, boot, features } = await signedOutBoot();
+		const seen = vi.fn();
+		boot.onCapabilities(seen);
+		fetcher.mockResolvedValueOnce(Response.json(core));
+		await boot.refreshCapabilities();
+		fetcher.mockRejectedValueOnce(new TypeError('offline'));
+		expect(await boot.refreshCapabilities()).toEqual(core);
+		expect(features.hasFeature('organising')).toBe(false);
+		expect(seen).toHaveBeenCalledOnce();
+	});
+
+	it('stays fail-open when no probe ever answered', async () => {
+		const { fetcher, boot, features } = await signedOutBoot();
+		fetcher.mockResolvedValueOnce(new Response('', { status: 404 }));
+		expect(await boot.refreshCapabilities()).toBeNull();
+		expect(features.hasFeature('organising')).toBe(true);
+	});
+});

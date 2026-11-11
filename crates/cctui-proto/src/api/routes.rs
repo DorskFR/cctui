@@ -2083,7 +2083,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Full-text search across your sessions.",
         request: None,
         response: None,
-        feature: Some(Feature::TranscriptSearch),
+        feature: None,
     },
     Route {
         id: "get_sessions_search_values",

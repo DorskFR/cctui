@@ -149,7 +149,7 @@
 	{/if}
 {/snippet}
 
-<div class="bar row" class:sticky class:flush bind:this={barEl}>
+<div class="bar row" class:sticky class:flush class:no-search={!searchable} bind:this={barEl}>
 	<span class="title-wrap">
 		<Heading level={1} size="xl">{m.sessions_title()}</Heading>
 	</span>
@@ -167,7 +167,7 @@
 			</Field>
 		</div>
 	{/if}
-	<span class="ctl-item"><SectionFilter bind:sections /></span>
+	<span class="ctl-item lead"><SectionFilter bind:sections /></span>
 	{#if trailing}<span class="ctl-item">{@render trailing()}</span>{/if}
 	<!-- Above the fold the foldable controls render inline as bar-level flex items
 	     (display:contents); below it they move into the ⋯ menu instead. -->
@@ -274,6 +274,10 @@
 	}
 	.scope-row {
 		flex-basis: 100%;
+	}
+	/* Without the search box nothing grows, so the controls hold the right edge. */
+	.bar.no-search .lead {
+		margin-inline-start: auto;
 	}
 	.title-wrap {
 		display: flex;

@@ -145,11 +145,10 @@
 	});
 
 	// The full (incl. archived) list, only fetched while a pinned parent may
-	// have archived subagents to splice back under it, or while it stands in
-	// for the archive browse.
+	// have archived subagents to splice back under it.
 	const allSessions = useSessions(
 		() => true,
-		() => sp.pinnedIds.size > 0 || sp.archiveFromList
+		() => sp.pinnedIds.size > 0
 	);
 
 	// Machine liveness for the group headers; falls back to "unknown" (no dot)

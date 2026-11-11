@@ -1610,6 +1610,9 @@ pub async fn search_sessions(
     // A plain keyword parses to a single free-text leaf, so back-compat holds.
     let root = cctui_query::parse(&straighten_phrase_quotes(params.q.trim()));
     let browse = root.is_empty();
+    if !browse && !state.config.features.contains(Feature::TranscriptSearch) {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, TRANSCRIPT_SEARCH_OFF));
+    }
     if browse && !params.include_archived {
         return Ok(Json(SessionListResponse::default()));
     }
@@ -3008,6 +3011,9 @@ pub async fn send_message(
 
 pub const SCHEDULING_OFF: &str =
     "scheduled sending is turned off on this server: send without deliver_at";
+
+pub const TRANSCRIPT_SEARCH_OFF: &str =
+    "transcript search is turned off on this server: list sessions with an empty query";
 
 /// A draft has no worker to wake.
 pub fn reply_wakes_worker(status: &str, tempo: Option<&str>) -> bool {
@@ -7185,5 +7191,52 @@ mod tests {
             .execute(&pool)
             .await
             .expect("cleanup");
+    }
+
+    async fn search_without_transcript_search(
+        q: &str,
+        include_archived: bool,
+    ) -> Result<axum::Json<cctui_proto::api::SessionListResponse>, crate::error::AppError> {
+        use cctui_proto::features::{Feature, FeatureSet};
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+        let mut state = crate::state::AppState::for_test(pool);
+        state.config.features = FeatureSet::all().without(Feature::TranscriptSearch);
+        let ctx = AuthContext {
+            user_id: uuid::Uuid::new_v4(),
+            key_id: uuid::Uuid::new_v4(),
+            machine_id: None,
+            scopes: std::collections::BTreeSet::new(),
+        };
+        super::search_sessions(
+            axum::extract::State(state),
+            axum::Extension(ctx),
+            axum::extract::Query(super::SearchParams {
+                q: q.to_owned(),
+                include_archived,
+                limit: None,
+                offset: None,
+                cursor: None,
+                show_hidden: false,
+            }),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_text_query_is_refused_when_transcript_search_is_off() {
+        for q in ["foo", "status:archived", "  \"fix bug\"  "] {
+            let Err(err) = search_without_transcript_search(q, true).await else {
+                panic!("{q:?} must be refused with transcript search off");
+            };
+            assert_eq!(err.status(), StatusCode::BAD_REQUEST, "{q:?}");
+            assert_eq!(err.message(), super::TRANSCRIPT_SEARCH_OFF, "{q:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_blank_query_is_not_refused_when_transcript_search_is_off() {
+        let axum::Json(found) =
+            search_without_transcript_search("   ", false).await.expect("blank query is a browse");
+        assert!(found.sessions.is_empty());
     }
 }
