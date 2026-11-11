@@ -1303,6 +1303,7 @@
 	"sessions_archive": "Archiver",
 	"sessions_archive_all": "Tout archiver",
 	"sessions_archive_count": "Archiver {count}",
+	"sessions_archive_load_failed": "Impossible de charger les sessions archivées : {error}",
 	"sessions_archive_section": "Tout archiver dans {section}",
 	"sessions_auto_approve_title": "Approbation automatique activée — approuve l'utilisation des outils sans demander (outils uniquement, les plans demandent toujours)",
 	"sessions_branch_label": "Branche",

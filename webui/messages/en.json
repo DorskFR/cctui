@@ -1303,6 +1303,7 @@
 	"sessions_archive": "Archive",
 	"sessions_archive_all": "Archive all",
 	"sessions_archive_count": "Archive {count}",
+	"sessions_archive_load_failed": "Could not load archived sessions: {error}",
 	"sessions_archive_section": "Archive all in {section}",
 	"sessions_auto_approve_title": "Auto-approve enabled — approves tool use without asking (tool use only, plans still ask)",
 	"sessions_branch_label": "Branch",

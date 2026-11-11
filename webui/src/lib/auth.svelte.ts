@@ -5,6 +5,7 @@ import { apiBase } from './config';
 import { clearCctuiStorage } from './drafts';
 import { hasFeature } from './features.svelte';
 import { getAssertion, passkeysSupported } from './passkeys';
+import { bootCapabilities, refreshCapabilities } from './workspaceSupport';
 import type { PasskeyChallenge } from '@bindings/PasskeyChallenge';
 import type { PasskeyConfig } from '@bindings/PasskeyConfig';
 
@@ -23,13 +24,16 @@ class Auth {
 	 *  screen before we know the cookie's state. */
 	checking = $state<boolean>(true);
 
-	/** Probe the cookie session on startup. */
+	/** Probe the cookie session on startup. The capabilities need a login, so
+	 *  every way of becoming signed in reads them before `isAuthed` flips: the
+	 *  shell and its feature-gated fetches only start once the list is known. */
 	async init(): Promise<void> {
 		if (!browser) return;
 		for (;;) {
 			try {
 				const res = await apiFetch(`${apiBase()}/me`);
 				if (!isOutageStatus(res.status)) {
+					if (res.ok && !(await bootCapabilities())) await refreshCapabilities();
 					this.isAuthed = res.ok;
 					break;
 				}
@@ -51,6 +55,7 @@ class Auth {
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ token })
 		});
+		if (res.ok) await refreshCapabilities();
 		this.isAuthed = res.ok;
 		return res.ok;
 	}
@@ -97,6 +102,7 @@ class Auth {
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ challenge_id: challenge.challenge_id, credential })
 		});
+		if (finishRes.ok) await refreshCapabilities();
 		this.isAuthed = finishRes.ok;
 		return finishRes.ok;
 	}

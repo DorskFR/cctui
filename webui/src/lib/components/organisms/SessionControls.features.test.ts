@@ -53,6 +53,7 @@ describe('SessionControls search box', () => {
 		setCapabilitiesForTest({ features: ['transcript_search'], switchable: ['transcript_search'] });
 		render();
 		expect(document.querySelector('[data-journey="search"]')).not.toBeNull();
+		expect(document.querySelector('.bar')?.classList.contains('no-search')).toBe(false);
 	});
 
 	it('is gone, scope chips included, without transcript search', () => {
@@ -62,6 +63,13 @@ describe('SessionControls search box', () => {
 		expect(document.querySelector('.fi__input')).toBeNull();
 		expect(document.querySelector('.scope-row')).toBeNull();
 		expect(values).not.toHaveBeenCalled();
+	});
+
+	it('keeps the section filter, held to the right edge', () => {
+		setCapabilitiesForTest({ features: [], switchable: ['transcript_search'] });
+		render();
+		expect(document.querySelector('.bar')?.classList.contains('no-search')).toBe(true);
+		expect(document.querySelector('.bar > .lead [data-journey="sections"]')).not.toBeNull();
 	});
 });
 

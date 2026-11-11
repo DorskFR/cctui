@@ -781,18 +781,29 @@ describe('SessionsPage — without transcript search', () => {
 		expect(api.searchSessions).not.toHaveBeenCalled();
 	});
 
-	it('lists the archive from the full session list instead of the search pager', async () => {
-		const { sp, api, setAll } = make();
-		setAll([session({ id: 'live' }), session({ id: 'old', status: 'archived' })]);
+	it('browses the archive through the paged listing with an empty query', async () => {
+		const { sp, api } = make();
+		api.searchSessions.mockResolvedValueOnce({
+			sessions: [session({ id: 'old', status: 'archived' })]
+		});
 		sp.sections = new Set(['live', 'archived']);
 		flushSync();
 		await vi.advanceTimersByTimeAsync(0);
-		expect(sp.archiveFromList).toBe(true);
-		expect(api.searchSessions).not.toHaveBeenCalled();
+		expect(api.searchSessions).toHaveBeenCalledExactlyOnceWith('', true, 50, 0, null, expect.any(AbortSignal));
 		expect(sp.pageRows.map((s) => s.id)).toEqual(['old']);
-		expect(sp.pageDone).toBe(true);
-		expect(sp.pageLoading).toBe(false);
 		expect(sp.pageError).toBe('');
+	});
+
+	it('keeps a typed query out of the archive browse', async () => {
+		const { sp, api } = make();
+		sp.sections = new Set(['archived']);
+		sp.rawQuery = 'needle';
+		await vi.advanceTimersByTimeAsync(200);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sp.searching).toBe(false);
+		expect(api.searchSessions).toHaveBeenCalled();
+		for (const call of api.searchSessions.mock.calls) expect(call[0]).toBe('');
 	});
 
 	it('still searches with the feature on', async () => {
@@ -802,8 +813,7 @@ describe('SessionsPage — without transcript search', () => {
 		await vi.advanceTimersByTimeAsync(200);
 		flushSync();
 		await vi.advanceTimersByTimeAsync(0);
-		expect(sp.archiveFromList).toBe(false);
-		expect(api.searchSessions).toHaveBeenCalled();
+		expect(api.searchSessions).toHaveBeenCalledWith('needle', false, 50, 0, null, expect.any(AbortSignal));
 	});
 });
 
