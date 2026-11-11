@@ -94,6 +94,7 @@ PUT /sessions/{id}/tool-guard
 POST /sessions/{id}/unarchive
 GET /sessions/{id}/user-actions
 POST /sessions/{id}/user-actions/{aid}/tick
+GET /sessions/search
 GET /sessions/stats
 GET /sessions/stats/cache-busts
 GET /sessions/stats/tokens

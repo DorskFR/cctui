@@ -84,6 +84,7 @@ async fn journey(server: &Server, pool: &sqlx::PgPool) {
     fork_resume_and_service_tokens_are_not_mounted(server, &operator, &session, &account).await;
     its_events_carry_no_search_text(pool, &session).await;
     kill_the_session(server, &operator, &mut worker, &session).await;
+    the_archive_lists_it_but_a_text_search_is_refused(server, &operator, &session).await;
     logout_clears_the_cookie(server, &operator).await;
     every_route_outside_core_answers_404_or_405(server).await;
 }
@@ -646,6 +647,33 @@ async fn kill_the_session(server: &Server, operator: &Operator, worker: &mut Ws,
         (row["status"] != "active").then_some(())
     })
     .await;
+}
+
+async fn the_archive_lists_it_but_a_text_search_is_refused(
+    server: &Server,
+    operator: &Operator,
+    session: &str,
+) {
+    let cookie = &Auth::Cookie(&operator.cookie);
+    let archived = server
+        .request(Method::POST, &format!("/api/v1/sessions/{session}/archive"), cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(archived.status(), StatusCode::NO_CONTENT);
+    eventually("the session in the archive listing", || async move {
+        let page = server.get("/api/v1/sessions/search?include_archived=true", cookie).await;
+        page["sessions"].as_array()?.iter().any(|s| s["id"] == session).then_some(())
+    })
+    .await;
+    let refused = server
+        .request(Method::GET, "/api/v1/sessions/search?include_archived=true&q=foo", cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let body = refused.text().await.unwrap();
+    assert!(body.contains("transcript search is turned off"), "{body}");
 }
 
 async fn logout_clears_the_cookie(server: &Server, operator: &Operator) {

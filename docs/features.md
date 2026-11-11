@@ -93,7 +93,7 @@ feature).
 | `drafts` | `machine_spawn` | Unsent composer drafts and draft sessions (launch, discard). |
 | `profiles` | `machine_spawn` | Spawn profiles. |
 | `terminal` | `machine_spawn` | The live terminal view (`watch_terminal` WebSocket message). |
-| `transcript_search` | | Search across sessions and find-in-conversation, the search backfill task, chunking transcripts on ingest, and the `pg_trgm` and `btree_gin` schema step (see [Postgres requirements](#postgres-requirements)). |
+| `transcript_search` | | Text search across sessions (a non-empty `q` on `GET /sessions/search`, refused with 400 when off; the archive listing with an empty `q` stays core), search autocomplete (`/sessions/search/values`), find-in-conversation, the search backfill task, chunking transcripts on ingest, and the `pg_trgm` and `btree_gin` schema step (see [Postgres requirements](#postgres-requirements)). |
 | `child_sessions` | | Sessions spawning sessions (`CctuiAgent`): the daemon's spawn, message, archive and completion routes, and the instance spawn limits. |
 | `context` | | Rules and memories: the context library, a session's context, the agent context tool. The launch-time context pull stays mounted. Off, dispatch, session start and fork record only who a launch belongs to, never context content. |
 | `plugins` | | Runtime plugins: install, settings, backend proxy, static files, boot init and the sync task. |
@@ -137,8 +137,10 @@ The search objects (the two extensions and the trigram indexes on
 - A database that already has the search objects is left as it is: the step
   creates only what is missing, and switching search off drops nothing.
 - With search off, ingest writes no chunks, transcript rows and the
-  session-ended row store an empty `search_text`, the backfill does not run
-  and the search routes answer 404.
+  session-ended row store an empty `search_text`, the backfill does not run,
+  `/sessions/search/values` and find-in-conversation answer 404, and
+  `GET /sessions/search` answers 400 to a non-empty `q`. With an empty `q` it
+  still pages the archive, touching no search object.
 
 ## Classifying a route
 

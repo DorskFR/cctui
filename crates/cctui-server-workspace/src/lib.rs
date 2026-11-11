@@ -1801,6 +1801,26 @@ mod feature_gate_tests {
     }
 
     #[tokio::test]
+    async fn a_core_server_mounts_the_archive_listing_but_not_search_autocomplete() {
+        let api = core_api_routes();
+        assert!(api.contains("GET /sessions/search"), "the archive listing is core");
+        assert!(!api.contains("GET /sessions/search/values"), "autocomplete needs search");
+        let router = crate::build_api_routes_with(core_features()).into_parts().0;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://u:p@127.0.0.1:1/none")
+            .unwrap();
+        let app = router.with_state(crate::state::AppState::for_test(pool));
+        for (uri, want) in [
+            ("/sessions/search?include_archived=true", StatusCode::UNAUTHORIZED),
+            ("/sessions/search/values?field=status", StatusCode::NOT_FOUND),
+        ] {
+            let request = Request::builder().method("GET").uri(uri).body(Body::empty()).unwrap();
+            let got = app.clone().oneshot(request).await.unwrap().status();
+            assert_eq!(got, want, "GET {uri}");
+        }
+    }
+
+    #[tokio::test]
     async fn machine_spawn_off_unmounts_enrollment_spawn_and_files() {
         let off = crate::config::parse_features("[features]\nmachine_spawn = false\n")
             .expect("resolves")
