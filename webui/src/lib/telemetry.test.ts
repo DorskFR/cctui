@@ -134,6 +134,63 @@ describe('initTelemetry against the server relay', () => {
 	});
 });
 
+describe('initTelemetry on a page loaded signed out', () => {
+	const realFetch = globalThis.fetch;
+	afterEach(() => {
+		globalThis.fetch = realFetch;
+	});
+
+	const signedOutThen = (features: string[]) => {
+		const fetcher = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(new Response(null, { status: 401 }))
+			.mockImplementation(async () => Response.json({ workspace: true, features, switchable: ['observability'] }));
+		globalThis.fetch = fetcher;
+		return fetcher;
+	};
+	const relayCalls = (fetcher: ReturnType<typeof signedOutThen>) =>
+		fetcher.mock.calls.filter(([input]) => String(input).includes('/otlp'));
+	const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+	it('never starts the relay exporter when sign-in reads observability off', async () => {
+		const fetcher = signedOutThen([]);
+		setConfig({ apiBase: 'https://api.test', otel: { endpoint: 'https://api.test/api/v1/otlp' } });
+		const { initTelemetry } = await import('./telemetry');
+		const { refreshCapabilities } = await import('./workspaceSupport');
+		const started = initTelemetry();
+		await settle();
+		expect(h.fetchConfig).toBeNull();
+		await refreshCapabilities();
+		await started;
+		expect(fetcher).toHaveBeenCalledTimes(2);
+		expect(h.fetchConfig).toBeNull();
+		expect(h.loaded).toEqual([]);
+		expect(relayCalls(fetcher)).toEqual([]);
+	});
+
+	it('starts the relay exporter once sign-in reads observability on', async () => {
+		signedOutThen(['observability']);
+		setConfig({ apiBase: 'https://api.test', otel: { endpoint: 'https://api.test/api/v1/otlp' } });
+		const { initTelemetry } = await import('./telemetry');
+		const { refreshCapabilities } = await import('./workspaceSupport');
+		const started = initTelemetry();
+		await settle();
+		expect(h.fetchConfig).toBeNull();
+		await refreshCapabilities();
+		await started;
+		expect(h.fetchConfig).not.toBeNull();
+	});
+
+	it('starts an external collector without waiting for sign-in', async () => {
+		const fetcher = signedOutThen([]);
+		setConfig({ apiBase: 'https://api.test', otel: { endpoint: 'https://otel.test' } });
+		const { initTelemetry } = await import('./telemetry');
+		await initTelemetry();
+		expect(fetcher).not.toHaveBeenCalled();
+		expect(h.fetchConfig).not.toBeNull();
+	});
+});
+
 describe('fetch span URL redaction', () => {
 	it('strips the query and fragment from a URL', async () => {
 		const { redactUrl } = await import('./telemetry');
