@@ -29,6 +29,8 @@
 	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
 	import { pluginSpawn } from '$lib/plugins/spawnRequest.svelte';
 	import Login from '$lib/components/organisms/Login.svelte';
+	import FeedbackPanel from '$lib/components/organisms/FeedbackPanel.svelte';
+	import type { VersionInfo } from '@bindings/VersionInfo';
 	import { installCodeCopy } from '$lib/codecopy';
 	import { installImageLightbox } from '$lib/imagelightbox';
 	import { Container, Toaster } from '@dorsk/tsumikit';
@@ -101,6 +103,7 @@
 		}
 	});
 	ws.bindQueryClient(queryClient);
+	const serverVersion = () => queryClient.getQueryData<VersionInfo>(qk.version)?.version;
 
 	$effect(() =>
 		backendHealth.onRecover(() => {
@@ -235,6 +238,7 @@
 					onspawned={() => void queryClient.invalidateQueries({ queryKey: qk.sessionsAll })}
 				/>
 			{/if}
+			<FeedbackPanel {serverVersion} route={() => page.route.id} />
 		{:else if workspaceAvailable === true && page.route.id === '/cctuiverse/join'}
 			<main class="content">{@render children?.()}</main>
 		{:else if workspaceAvailable === true && !auth.checking}

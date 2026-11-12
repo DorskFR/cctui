@@ -30,3 +30,17 @@ export function otelConfig(): OtelConfig | null {
 	const otel = (window.CCTUI_CONFIG as { otel?: Partial<OtelConfig> } | undefined)?.otel;
 	return otel?.endpoint ? { ...otel, endpoint: otel.endpoint } : null;
 }
+
+export interface FeedbackConfig {
+	/** Feedback server base; reports post to `${endpoint}/v1/reports`. */
+	endpoint: string;
+	projectKey: string;
+}
+
+export function feedbackConfig(): FeedbackConfig | null {
+	if (!browser) return null;
+	const feedback = window.CCTUI_CONFIG?.feedback;
+	const endpoint = feedback?.endpoint?.trim();
+	if (!endpoint) return null;
+	return { endpoint, projectKey: feedback?.projectKey?.trim() || 'cctui' };
+}
