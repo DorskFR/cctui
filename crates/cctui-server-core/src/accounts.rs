@@ -13,14 +13,12 @@
 //! user (the `Human` route policy + `owner_filter`).
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use axum::Json;
 use axum::http::StatusCode;
 use base64::Engine;
 use cctui_telemetry::db::traced;
 use chrono::{DateTime, Duration, Utc};
-use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 use tracing::field::Empty;
 use uuid::Uuid;
@@ -41,27 +39,23 @@ use crate::state::CoreState;
 
 pub trait AccountsContext: UsageContext + LimitContext {
     fn account_core(&self) -> &CoreState;
-    fn oauth_logins(&self) -> &PendingOAuthLogins;
 }
 
 /// How long a pending "Sign in with Claude" login stays valid.
 pub const PENDING_OAUTH_TTL: Duration = Duration::minutes(10);
 
-/// In-memory store of pending OAuth logins, keyed by nonce.
-pub type PendingOAuthLogins = Arc<DashMap<String, PendingOAuthLogin>>;
-
 /// A pending "Sign in with Claude" login: the PKCE verifier we generated and the user it
-/// belongs to, with a creation timestamp for TTL expiry.
+/// belongs to.
 ///
-/// Held only in memory and deleted on finish (single-use). `account_id` carries an optional
-/// attach target: when set, the finished credential lands as a provider under that existing
-/// account instead of creating a new identity.
-#[derive(Clone)]
+/// Stored in `oauth_pending_logins` so start and finish may reach different replicas, and
+/// deleted on finish (single-use). `account_id` carries an optional attach target: when set,
+/// the finished credential lands as a provider under that existing account instead of
+/// creating a new identity.
+#[derive(Clone, sqlx::FromRow)]
 pub struct PendingOAuthLogin {
     pub user_id: Uuid,
     pub provider: String,
     pub code_verifier: String,
-    pub created_at: DateTime<Utc>,
     pub account_id: Option<Uuid>,
 }
 
@@ -1676,10 +1670,60 @@ pub fn split_code_state(pasted: &str) -> (String, Option<String>) {
     }
 }
 
-/// Drop pending logins older than the TTL (lazy sweep on access).
-pub fn sweep_expired(store: &PendingOAuthLogins) {
-    let cutoff = Utc::now() - PENDING_OAUTH_TTL;
-    store.retain(|_, v| v.created_at > cutoff);
+/// Drop pending logins older than the TTL (lazy sweep on start).
+pub async fn sweep_expired_logins(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "DELETE FROM oauth_pending_logins \
+         WHERE created_at <= now() - $1::bigint * interval '1 second'",
+    )
+    .bind(PENDING_OAUTH_TTL.num_seconds())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Store a pending login under `nonce`; the database clock stamps it.
+pub async fn stash_pending_login(
+    pool: &sqlx::PgPool,
+    nonce: &str,
+    login: &PendingOAuthLogin,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO oauth_pending_logins (nonce, user_id, provider, account_id, code_verifier) \
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(nonce)
+    .bind(login.user_id)
+    .bind(&login.provider)
+    .bind(login.account_id)
+    .bind(&login.code_verifier)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Atomically consume an unexpired pending login.
+///
+/// `claimant` is the caller's user id, or `None` for the admin token, which may finish any
+/// login it started on behalf of an owner. `Ok(None)` covers unknown, expired, already
+/// consumed, and another user's nonce alike.
+pub async fn claim_pending_login(
+    pool: &sqlx::PgPool,
+    nonce: &str,
+    claimant: Option<Uuid>,
+) -> Result<Option<PendingOAuthLogin>, sqlx::Error> {
+    sqlx::query_as(
+        "DELETE FROM oauth_pending_logins \
+         WHERE nonce = $1 \
+           AND created_at > now() - $2::bigint * interval '1 second' \
+           AND ($3::uuid IS NULL OR user_id = $3) \
+         RETURNING user_id, provider, code_verifier, account_id",
+    )
+    .bind(nonce)
+    .bind(PENDING_OAUTH_TTL.num_seconds())
+    .bind(claimant)
+    .fetch_optional(pool)
+    .await
 }
 
 /// `POST /api/v1/accounts/oauth/start` — begin a "Sign in with Claude" login.
@@ -1707,7 +1751,8 @@ pub async fn oauth_start(
         return Err(AppError::new(StatusCode::BAD_REQUEST, "provider must be anthropic|openai"));
     }
 
-    sweep_expired(state.oauth_logins());
+    let pool = &state.account_core().pool;
+    sweep_expired_logins(pool).await?;
 
     // PKCE verifier (high-entropy, URL-safe) doubles as the OAuth `state`, same
     // as better-ccflare. nonce keys the pending record (distinct from state so
@@ -1745,16 +1790,13 @@ pub async fn oauth_start(
         )
     };
 
-    state.oauth_logins().insert(
-        nonce.clone(),
-        PendingOAuthLogin {
-            user_id: uid,
-            provider: req.provider,
-            code_verifier,
-            created_at: Utc::now(),
-            account_id: req.account_id,
-        },
-    );
+    let login = PendingOAuthLogin {
+        user_id: uid,
+        provider: req.provider,
+        code_verifier,
+        account_id: req.account_id,
+    };
+    stash_pending_login(pool, &nonce, &login).await?;
 
     Ok(Json(OAuthStartResponse { nonce, authorize_url }))
 }
@@ -1773,18 +1815,17 @@ pub async fn oauth_finish(
     ctx: &AuthContext,
     req: OAuthFinish,
 ) -> Result<(StatusCode, Json<AccountInfo>), AppError> {
-    sweep_expired(state.oauth_logins());
-
-    // Consume the pending record (single-use), but only if it belongs to the
-    // caller — never let one user finish another user's login. Admin started
-    // the flow on behalf of the owner stored in the record, so it may finish
-    // any pending login. The account lands on the stored owner.
-    let pending = match state.oauth_logins().get(&req.nonce) {
-        Some(p) if ctx.is_admin() || ctx.user_id == p.user_id => p.clone(),
-        _ => return Err(AppError::new(StatusCode::BAD_REQUEST, "unknown or expired login")),
+    // Never let one user finish another user's login. Admin started the flow on
+    // behalf of the owner stored in the record, so it may finish any pending
+    // login. The account lands on the stored owner.
+    let claimant = (!ctx.is_admin()).then_some(ctx.user_id);
+    let Some(pending) =
+        claim_pending_login(&state.account_core().pool, &req.nonce, claimant).await?
+    else {
+        tracing::warn!(admin = ctx.is_admin(), "oauth finish: unknown, expired or foreign login");
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "unknown or expired login"));
     };
     let uid = pending.user_id;
-    state.oauth_logins().remove(&req.nonce);
 
     // Resolve the target identity BEFORE the token exchange so a bad target
     // fails fast: an attach target must still exist and belong to the pending
@@ -2306,6 +2347,144 @@ mod usage_totals_tests {
                 assert_eq!(info.total_tokens, row.1, "{id}");
                 assert!(row.1 > 0 || id == seed.fireworks, "{id} lost its totals");
             }
+        })
+        .await;
+    }
+}
+
+#[cfg(test)]
+mod pending_login_tests {
+    use super::{
+        PENDING_OAUTH_TTL, PendingOAuthLogin, claim_pending_login, stash_pending_login,
+        sweep_expired_logins,
+    };
+    use crate::schema::bootstrap;
+    use crate::test_support::with_isolated_database;
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    /// A second pool on the same database: a replica that never saw the start.
+    async fn other_replica(pool: &PgPool) -> PgPool {
+        sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with((*pool.connect_options()).clone())
+            .await
+            .unwrap()
+    }
+
+    async fn user(pool: &PgPool) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(id)
+            .bind(format!("oauth-{id}"))
+            .bind(format!("kh-{id}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        id
+    }
+
+    fn login(user_id: Uuid, account_id: Option<Uuid>) -> PendingOAuthLogin {
+        PendingOAuthLogin {
+            user_id,
+            provider: "openai".into(),
+            code_verifier: format!("verifier-{user_id}"),
+            account_id,
+        }
+    }
+
+    async fn pending(pool: &PgPool) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM oauth_pending_logins")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_login_started_on_one_replica_finishes_on_another() {
+        with_isolated_database("oauth_pending_cross_replica", |a| async move {
+            bootstrap(&a).await.unwrap();
+            let b = other_replica(&a).await;
+            let owner = user(&a).await;
+            let account: Uuid = sqlx::query_scalar(
+                "INSERT INTO accounts (user_id, name) VALUES ($1, 'work') RETURNING id",
+            )
+            .bind(owner)
+            .fetch_one(&a)
+            .await
+            .unwrap();
+            stash_pending_login(&a, "n-cross", &login(owner, Some(account))).await.unwrap();
+
+            let got = claim_pending_login(&b, "n-cross", Some(owner)).await.unwrap();
+            let got = got.expect("the other replica resolves the pending login");
+            assert_eq!(got.user_id, owner);
+            assert_eq!(got.provider, "openai");
+            assert_eq!(got.code_verifier, format!("verifier-{owner}"));
+            assert_eq!(got.account_id, Some(account));
+            b.close().await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_pending_login_is_single_use_across_replicas() {
+        with_isolated_database("oauth_pending_single_use", |a| async move {
+            bootstrap(&a).await.unwrap();
+            let b = other_replica(&a).await;
+            let owner = user(&a).await;
+            stash_pending_login(&a, "n-once", &login(owner, None)).await.unwrap();
+
+            assert!(claim_pending_login(&b, "n-once", Some(owner)).await.unwrap().is_some());
+            assert!(claim_pending_login(&b, "n-once", Some(owner)).await.unwrap().is_none());
+            assert!(claim_pending_login(&a, "n-once", Some(owner)).await.unwrap().is_none());
+            assert!(claim_pending_login(&a, "n-unknown", None).await.unwrap().is_none());
+            b.close().await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn an_expired_pending_login_is_not_claimable_and_is_swept() {
+        with_isolated_database("oauth_pending_expired", |a| async move {
+            bootstrap(&a).await.unwrap();
+            let b = other_replica(&a).await;
+            let owner = user(&a).await;
+            stash_pending_login(&a, "n-stale", &login(owner, None)).await.unwrap();
+            stash_pending_login(&a, "n-fresh", &login(owner, None)).await.unwrap();
+            sqlx::query(
+                "UPDATE oauth_pending_logins \
+                 SET created_at = now() - $1::bigint * interval '1 second' - interval '1 minute' \
+                 WHERE nonce = 'n-stale'",
+            )
+            .bind(PENDING_OAUTH_TTL.num_seconds())
+            .execute(&a)
+            .await
+            .unwrap();
+
+            assert!(claim_pending_login(&b, "n-stale", Some(owner)).await.unwrap().is_none());
+            sweep_expired_logins(&b).await.unwrap();
+            assert_eq!(pending(&a).await, 1, "the sweep drops only the expired login");
+            assert!(claim_pending_login(&b, "n-fresh", Some(owner)).await.unwrap().is_some());
+            b.close().await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn another_users_pending_login_is_not_claimable() {
+        with_isolated_database("oauth_pending_foreign", |a| async move {
+            bootstrap(&a).await.unwrap();
+            let b = other_replica(&a).await;
+            let (owner, intruder) = (user(&a).await, user(&a).await);
+            stash_pending_login(&a, "n-owned", &login(owner, None)).await.unwrap();
+            stash_pending_login(&a, "n-admin", &login(owner, None)).await.unwrap();
+
+            assert!(claim_pending_login(&b, "n-owned", Some(intruder)).await.unwrap().is_none());
+            assert_eq!(pending(&a).await, 2, "a refused claim leaves the login in place");
+            assert!(claim_pending_login(&b, "n-owned", Some(owner)).await.unwrap().is_some());
+            let admin = claim_pending_login(&b, "n-admin", None).await.unwrap();
+            assert_eq!(admin.map(|l| l.user_id), Some(owner), "the admin token may finish it");
+            b.close().await;
         })
         .await;
     }

@@ -35,8 +35,6 @@ pub struct AppState {
     pub self_update: Arc<crate::routes::self_update::SelfUpdateGuard>,
     /// `None` unless `CCTUI_LANGFUSE_*` is configured.
     pub langfuse: Option<Arc<crate::langfuse::LangfuseClient>>,
-    /// Single-use, TTL-bounded, swept lazily on access.
-    pub pending_oauth_logins: crate::routes::accounts::PendingOAuthLogins,
     /// Has no feeder, so the `Review` bucket never surfaces.
     pub pr_status_cache: cctui_proto::classifier::PrStatusCache,
     /// Read-through cache over `codex_model_catalogs`, keyed by `machine_id`.
@@ -84,7 +82,6 @@ impl AppState {
             presence: Arc::new(crate::presence::PodIdentity::from_env()),
             internal_secret: None,
             langfuse: None,
-            pending_oauth_logins: Arc::new(DashMap::new()),
             pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
             codex_catalogs: Arc::new(DashMap::new()),
             codex_account_catalogs: Arc::new(DashMap::new()),

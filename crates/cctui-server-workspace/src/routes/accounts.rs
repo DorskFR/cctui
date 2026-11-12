@@ -34,9 +34,6 @@ impl cctui_server_core::accounts::AccountsContext for AppState {
     fn account_core(&self) -> &cctui_server_core::state::CoreState {
         &self.core
     }
-    fn oauth_logins(&self) -> &PendingOAuthLogins {
-        &self.pending_oauth_logins
-    }
 }
 /// Back-compat shim: if `CCTUI_CLAUDE_LITELLM_*` is set,
 /// synthesize a server-owned **managed** anthropic-compatible provider per user
@@ -624,8 +621,6 @@ mod tests {
     use super::*;
     use base64::Engine;
     use chrono::{DateTime, Duration};
-    use dashmap::DashMap;
-    use std::sync::Arc;
 
     #[test]
     fn provider_token_totals_stay_correlated_to_one_provider() {
@@ -1079,34 +1074,6 @@ mod tests {
         // RFC 7636 Appendix B test vector.
         let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
         assert_eq!(pkce_challenge(verifier), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
-    }
-
-    #[test]
-    fn sweep_drops_only_expired() {
-        let store: PendingOAuthLogins = Arc::new(DashMap::new());
-        store.insert(
-            "fresh".into(),
-            PendingOAuthLogin {
-                user_id: Uuid::new_v4(),
-                provider: "anthropic".into(),
-                code_verifier: "v".into(),
-                created_at: Utc::now(),
-                account_id: None,
-            },
-        );
-        store.insert(
-            "stale".into(),
-            PendingOAuthLogin {
-                user_id: Uuid::new_v4(),
-                provider: "anthropic".into(),
-                code_verifier: "v".into(),
-                created_at: Utc::now() - Duration::minutes(20),
-                account_id: None,
-            },
-        );
-        sweep_expired(&store);
-        assert!(store.contains_key("fresh"));
-        assert!(!store.contains_key("stale"));
     }
 
     #[test]

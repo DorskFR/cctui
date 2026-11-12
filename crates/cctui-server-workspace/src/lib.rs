@@ -340,7 +340,6 @@ async fn build_state(
         // Optional Langfuse tracing sink. `None` (dark) unless the
         // CCTUI_LANGFUSE_* env is fully set — zero overhead on the gateway path.
         langfuse,
-        pending_oauth_logins: Arc::new(dashmap::DashMap::new()),
         pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
         codex_catalogs: Arc::new(dashmap::DashMap::new()),
         codex_account_catalogs: Arc::new(dashmap::DashMap::new()),
