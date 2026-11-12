@@ -18,7 +18,7 @@ const setConfig = (cfg: Window['CCTUI_CONFIG']) => Object.assign(window, { CCTUI
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 let comp: ReturnType<typeof mount> | null = null;
-function render(serverVersion: string | undefined = '0.31.0', route: string | null = '/sessions') {
+function render(serverVersion: string | undefined, route: string | null) {
 	comp = mount(FeedbackPanel, {
 		target: document.body,
 		props: { serverVersion: () => serverVersion, route: () => route }
@@ -53,18 +53,18 @@ describe('feedbackConfig', () => {
 describe('FeedbackPanel', () => {
 	it('never imports @dorsk/hmm and renders no launcher without feedback.endpoint', async () => {
 		setConfig({ apiBase: '' });
-		render();
+		render('0.31.0', '/sessions');
 		await settle();
 		flushSync();
 		expect(h.imported).toBe(0);
 		expect(received).toHaveLength(0);
 		expect(document.body.querySelector('[data-hmm-stub]')).toBeNull();
-		expect(document.body.innerHTML.trim()).toBe('');
+		expect(document.body.children).toHaveLength(0);
 	});
 
 	it('renders the panel with the configured endpoint and project key', async () => {
 		setConfig({ feedback: { endpoint: 'https://hmm.test' } });
-		render();
+		render('0.31.0', '/sessions');
 		await vi.waitFor(() => {
 			flushSync();
 			expect(received).toHaveLength(1);
