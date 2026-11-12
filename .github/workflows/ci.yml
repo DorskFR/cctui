@@ -159,13 +159,13 @@ jobs:
 
       - name: Keep only the pinned toolchain
         run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         id: cached
         if: env.WARM_ONLY == 'true'
         with:
           lookup-only: true
           save-if: false
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         if: steps.cached.outputs.cache-hit != 'true'
         with:
           save-if: ${{ env.SAVE_RUST_CACHE }}
@@ -214,13 +214,13 @@ jobs:
 
       - name: Keep only the pinned toolchain
         run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         id: cached
         if: env.WARM_ONLY == 'true'
         with:
           lookup-only: true
           save-if: false
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         if: steps.cached.outputs.cache-hit != 'true'
         with:
           save-if: ${{ env.SAVE_RUST_CACHE }}
@@ -292,13 +292,13 @@ jobs:
 
       - name: Keep only the pinned toolchain
         run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         id: cached
         if: env.WARM_ONLY == 'true'
         with:
           lookup-only: true
           save-if: false
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         if: steps.cached.outputs.cache-hit != 'true'
         with:
           save-if: ${{ env.SAVE_RUST_CACHE }}
@@ -379,7 +379,7 @@ jobs:
 
       - name: Keep only the pinned toolchain
         run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         with:
           shared-key: release-${{ matrix.target }}
           save-if: ${{ env.SAVE_RUST_CACHE }}
@@ -426,7 +426,7 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - name: Keep only the pinned toolchain
         run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         with:
           shared-key: release-server
           save-if: ${{ env.SAVE_RUST_CACHE }}
@@ -571,7 +571,7 @@ jobs:
 
       - name: Keep only the pinned toolchain
         run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         with:
           save-if: ${{ env.SAVE_RUST_CACHE }}
 
