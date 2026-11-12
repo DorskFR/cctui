@@ -22,7 +22,7 @@ mkdir -p "target/$target/release"
 for package in "${packages[@]}"; do
   bin="$package"
   [ "$package" != cctui-tui ] || bin=cctui
-  [ "${OMIT_CORE:-false}" != true ] || [ "$bin" != cctui-core-server ] || continue
+  [ "${OMIT_DAEMON:-false}" != true ] || [ "$bin" != cctui-daemon ] || continue
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "%s $*" >> invocations\n' "$bin" > "target/$target/release/$bin"
   chmod +x "target/$target/release/$bin"
 done
@@ -36,19 +36,19 @@ for platform in linux-amd64 linux-arm64 darwin-arm64; do
     cd "$tmp/$platform"
     os="${platform%-*}" arch="${platform#*-}"
     bash "$here/release-build-bins.sh" "$os" "$arch" fixture-target
-    for binary in cctui cctui-daemon cctui-core-server; do
+    for binary in cctui cctui-daemon; do
       test -x "dist/$binary-$platform"
     done
     if [ "$platform" = linux-amd64 ]; then
-      cmp dist/cctui-core-server-linux-amd64 image-bins/cctui-core-server
+      cmp dist/cctui-daemon-linux-amd64 image-bins/cctui-daemon
       test -x image-bins/cctui-guard
-      grep -qx 'cctui-core-server --version' invocations
+      grep -qx 'cctui-daemon selfcheck' invocations
     else
       test ! -d image-bins
     fi
     if [ "$os" = darwin ]; then
       grep -q '^build ' cargo-args
-      grep -qx 'cctui-core-server --version' invocations
+      grep -qx 'cctui-daemon selfcheck' invocations
     else
       grep -q '^zigbuild ' cargo-args
     fi
@@ -56,11 +56,11 @@ for platform in linux-amd64 linux-arm64 darwin-arm64; do
       test ! -e invocations
     fi
   )
-  echo "ok — $platform stages core, daemon and TUI assets"
+  echo "ok — $platform stages daemon and TUI assets"
 done
 mkdir "$tmp/missing"
-if (cd "$tmp/missing" && OMIT_CORE=true bash "$here/release-build-bins.sh" linux amd64 fixture-target) > "$tmp/missing.log" 2>&1; then
-  echo 'FAIL — packaging accepted a missing core binary' >&2
+if (cd "$tmp/missing" && OMIT_DAEMON=true bash "$here/release-build-bins.sh" linux amd64 fixture-target) > "$tmp/missing.log" 2>&1; then
+  echo 'FAIL — packaging accepted a missing daemon binary' >&2
   exit 1
 fi
-echo 'ok — a missing core binary refuses the release'
+echo 'ok — a missing daemon binary refuses the release'

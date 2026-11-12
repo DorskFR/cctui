@@ -23,6 +23,7 @@ import { findInvite, JOIN_PROMPT, stripInvite } from '$lib/cctuiverse';
 import { joinAfterSpawn } from '$lib/cctuiverseJoin';
 import { cctuiverseConfig } from '$lib/cctuiverseConfig.svelte';
 import { pendingSpawns } from '$lib/pendingSpawns.svelte';
+import { hasFeature } from '$lib/features.svelte';
 
 /** Identity of the form's file set: what decides whether a save has to ship
  *  the bytes again. */
@@ -36,7 +37,7 @@ export function fileSetKey(files: File[]): string {
  *  them in the browser until the user saves, schedules or launches. */
 async function persistDraft(sf: SpawnForm, withFiles: boolean): Promise<string> {
 	const body = sf.draftBody();
-	const files = withFiles ? [...sf.files] : [];
+	const files = withFiles ? [...sf.uploadFiles] : [];
 	const key = fileSetKey(files);
 	if (sf.draftId) {
 		try {
@@ -112,7 +113,7 @@ export async function spawnOnMachine(sf: SpawnForm) {
 	sf.cancelAutosave();
 	sf.spawnFailure = null;
 	const body: SpawnRequest = sf.buildSpawnBody();
-	const invite = findInvite(sf.form.prompt);
+	const invite = hasFeature('federation') ? findInvite(sf.form.prompt) : null;
 	const joinLabel = (sf.joinLabel.trim() || sf.form.name.trim()).slice(0, 80);
 	if (invite) {
 		if (!cctuiverseConfig.enabled) {
@@ -125,15 +126,15 @@ export async function spawnOnMachine(sf: SpawnForm) {
 		}
 		body.prompt = stripInvite(sf.form.prompt.trim(), invite, JOIN_PROMPT);
 	}
-	const labelIds = [...sf.form.labels];
+	const labelIds = [...sf.labelIds];
 	const memoryCwd = normalizeDir(sf.form.working_dir.trim());
 	const memoryMachine = sf.form.machine_id;
 	const profile = sf.selectedProfile;
-	const res = await sf.actions.spawn(body, sf.files);
+	const res = await sf.actions.spawn(body, sf.uploadFiles);
 	if (res.account) toasts.info(m.spawn_toast_bound_account({ account: res.account }));
 	drafts.set(LAST_MACHINE, sf.form.machine_id);
 	drafts.set(LAST_SPAWN_NAME, sf.form.name.trim());
-	drafts.set(LAST_SPAWN_LABELS, labelIds.join(','));
+	if (sf.canLabel) drafts.set(LAST_SPAWN_LABELS, labelIds.join(','));
 	// Saved on submit (not on confirmed success) so a slow spawn still
 	// records the operator's intent.
 	settings.rememberSpawn(machineMemoryKey(memoryMachine, memoryCwd), {
@@ -189,18 +190,18 @@ export async function spawnOnMachine(sf: SpawnForm) {
 export async function dispatchToK8s(sf: SpawnForm) {
 	// Stable across retries so the server's idempotency dedup makes a
 	// re-submit a genuine retry, not a second pod. Cleared on success.
-	if (findInvite(sf.form.prompt)) {
+	if (hasFeature('federation') && findInvite(sf.form.prompt)) {
 		toasts.error(m.cctuiverse_dispatch_unsupported());
 		return;
 	}
 	sf.pendingDispatchId ??= crypto.randomUUID();
 	const body = buildDispatchBody(sf.form, envMap(sf.envRows), sf.dispatchProvider, sf.pendingDispatchId);
-	const labelIds = [...sf.form.labels];
+	const labelIds = [...sf.labelIds];
 	const dispatchedId = sf.pendingDispatchId;
 	const res = await sf.actions.dispatch(body);
 	drafts.set(LAST_SPAWN_NAME, sf.form.name.trim());
 	settings.rememberSpawn(dispatchMemoryKey(sf.form.dispatcher, sf.form.repo), entryFromForm(sf.form));
-	drafts.set(LAST_SPAWN_LABELS, labelIds.join(','));
+	if (sf.canLabel) drafts.set(LAST_SPAWN_LABELS, labelIds.join(','));
 	void attachLabelsTo(sf.labelApi, dispatchedId, labelIds);
 	toasts.ok(m.spawn_toast_dispatched({ dispatcher: res.dispatcher, handle: res.handle }));
 	sf.pendingDispatchId = null;

@@ -4,6 +4,7 @@ import type { DraftList } from '@bindings/DraftList';
 import type { PutDraftRequest } from '@bindings/PutDraftRequest';
 import { type DraftRemote, drafts, hydrateLocal, localRoamingKeys, setDraftRemote } from './drafts';
 import { redactStoredText } from './redactTag';
+import { hasFeature } from './features.svelte';
 
 /** Set once this browser's pre-existing drafts have been pushed up, so a later
  *  visit does not resurrect a draft the user deleted on another device. */
@@ -24,7 +25,7 @@ class ServerDrafts implements DraftRemote {
 
 	/** Push a roaming key, debounced per key so a keystroke is not a request. */
 	put(key: string, text: string) {
-		if (!browser) return;
+		if (!browser || !hasFeature('drafts')) return;
 		this.#pending.set(key, text);
 		const existing = this.#timers.get(key);
 		if (existing) clearTimeout(existing);
@@ -35,7 +36,7 @@ class ServerDrafts implements DraftRemote {
 	}
 
 	del(key: string) {
-		if (!browser) return;
+		if (!browser || !hasFeature('drafts')) return;
 		this.#cancel(key);
 		void api.del(draftPath(key)).catch(() => {
 			/* offline / already gone — the local mirror is already cleared */
@@ -72,7 +73,7 @@ class ServerDrafts implements DraftRemote {
 	/** Adopt the server's drafts into the local mirror, then push up whatever
 	 *  this browser had first. Safe to call repeatedly; runs once. */
 	load(): Promise<void> {
-		if (!browser) return Promise.resolve();
+		if (!browser || !hasFeature('drafts')) return Promise.resolve();
 		this.#loading ??= this.#pull();
 		return this.#loading;
 	}

@@ -9,6 +9,7 @@
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { fontScale } from '$lib/fontscale.svelte';
 	import { auth } from '$lib/auth.svelte';
+	import { hasFeature } from '$lib/features.svelte';
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { toasts } from '$lib/toast.svelte';
@@ -89,7 +90,7 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	const roleSuffix = $derived(
 		userRole && userRole.toLowerCase() !== userName.toLowerCase() ? userRole : ''
 	);
-	const latest = $derived(version.data?.latest_version ?? null);
+	const latest = $derived(hasFeature('self_update') ? (version.data?.latest_version ?? null) : null);
 	const notifyLabel = $derived(
 		notify.enabled ? m.nav_notify_on_label() : m.nav_notify_off_label()
 	);

@@ -9,6 +9,7 @@
 		type AccountProvider
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
+	import { hasFeature } from '$lib/features.svelte';
 	import { providerLabel } from '$lib/providers';
 	import { m } from '$lib/paraglide/messages';
 	import { tick } from 'svelte';
@@ -143,7 +144,9 @@
 			<EnvSection {account} />
 			{#if !managed}
 				<ToolPolicySection {account} />
-				<ServiceTokensSection {account} />
+				{#if hasFeature('service_tokens')}
+					<ServiceTokensSection {account} />
+				{/if}
 			{/if}
 			<DangerSection {account} disabled={managed} ondelete={removeAccount} />
 		</div>

@@ -8,6 +8,7 @@ const api = vi.hoisted(() => ({
 	accountPools: vi.fn(),
 	allMachines: vi.fn(),
 	machines: vi.fn(),
+	dispatchers: vi.fn(),
 	sessions: vi.fn()
 }));
 vi.mock('$lib/queries/endpoints', () => ({ endpoints: api }));
@@ -35,6 +36,7 @@ beforeEach(() => {
 	api.accountPools.mockResolvedValue([]);
 	api.allMachines.mockResolvedValue([]);
 	api.machines.mockResolvedValue([]);
+	api.dispatchers.mockResolvedValue([]);
 	api.sessions.mockResolvedValue({ sessions: [] });
 	probes = createProbes(new QueryClient({ defaultOptions: { queries: { retry: false } } }));
 });
@@ -94,6 +96,14 @@ describe('probes', () => {
 		api.accounts.mockResolvedValue([{ id: 'a', name: 'main' }]);
 		await qc.invalidateQueries({ queryKey: ['accounts'] });
 		expect(await probes.accounts()).toBe(true);
+	});
+});
+
+describe('the dispatchers probe', () => {
+	it('is false with no dispatch target and true once one exists', async () => {
+		expect(await probes.dispatchers()).toBe(false);
+		api.dispatchers.mockResolvedValue(['k8s']);
+		expect(await probes.dispatchers()).toBe(true);
 	});
 });
 

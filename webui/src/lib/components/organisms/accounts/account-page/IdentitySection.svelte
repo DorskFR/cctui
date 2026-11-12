@@ -3,6 +3,7 @@
 	import { errMessage } from '$lib/api';
 	import { useAccountActions, type OAuthAccount, type UpdateAccount } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
+	import { hasFeature } from '$lib/features.svelte';
 	import AccountAvatar from '$lib/components/molecules/AccountAvatar.svelte';
 	import { isValidAccountEmoji } from '$lib/components/molecules/avatar';
 	import { Button, Card, EmojiPicker, Field, Input, Text } from '@dorsk/tsumikit';
@@ -91,17 +92,19 @@
 			{/if}
 		</Field>
 
-		<Field label={m.accounts_field_pool_weight()} hint={m.accounts_field_pool_weight_help()}>
-			<Input
-				type="number"
-				min="0.1"
-				step="0.1"
-				mono
-				width="6rem"
-				bind:value={weight}
-				aria-label={m.accounts_field_pool_weight()}
-			/>
-		</Field>
+		{#if hasFeature('account_sharing')}
+			<Field label={m.accounts_field_pool_weight()} hint={m.accounts_field_pool_weight_help()}>
+				<Input
+					type="number"
+					min="0.1"
+					step="0.1"
+					mono
+					width="6rem"
+					bind:value={weight}
+					aria-label={m.accounts_field_pool_weight()}
+				/>
+			</Field>
+		{/if}
 
 		{#if owner}
 			<Field label={m.accounts_field_owner()}>

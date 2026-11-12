@@ -66,6 +66,7 @@ export interface SessionActions {
 	selected: boolean;
 	subagentToggles: SubagentToggle[];
 	onTogglePin?: (s: SessionListItem) => void;
+	showLabels: boolean;
 	labelEditable: boolean;
 	allLabels: Label[];
 	onCreateLabel?: (name: string, color: string) => Promise<Label>;

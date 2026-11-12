@@ -1,0 +1,97 @@
+# One replica: without CCTUI_POD_IP the command bus is in-process, so a second
+# replica could not reach the first one's workers.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cctui-core
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cctui-core
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cctui-core
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: server
+          image: ghcr.io/dorskfr/cctui
+          ports:
+            - name: http
+              containerPort: 8700
+          env:
+            - name: CCTUI_FEATURES_FILE
+              value: /etc/cctui/features/core.toml
+            - name: CCTUI_HOST
+              value: 0.0.0.0
+            - name: CCTUI_PORT
+              value: "8700"
+            - name: CCTUI_EXTERNAL_URL
+              value: https://cctui.example.com
+            - name: CCTUI_TRUSTED_PROXY_HOPS
+              value: "1"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: cctui-core
+                  key: database-url
+            - name: CCTUI_VAULT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cctui-core
+                  key: vault-key
+            - name: CCTUI_ADMIN_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: cctui-core
+                  key: admin-tokens
+          volumeMounts:
+            - name: features
+              mountPath: /etc/cctui/features
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: features
+          configMap:
+            name: cctui-core-features
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cctui-core
+spec:
+  selector:
+    app.kubernetes.io/name: cctui-core
+  ports:
+    - name: http
+      port: 8700
+      targetPort: http

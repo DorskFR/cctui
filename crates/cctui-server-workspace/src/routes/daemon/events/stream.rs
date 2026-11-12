@@ -2,7 +2,7 @@ use cctui_proto::adapter::AdapterEvent;
 use uuid::Uuid;
 
 use super::Inserted;
-use crate::routes::daemon::ingest::{Stored, insert_event, note_insert};
+use crate::routes::daemon::ingest::{NewEvent, Stored, insert_event, note_insert};
 use crate::state::AppState;
 
 pub(super) use cctui_server_core::daemon_usage::on_token_usage;
@@ -17,30 +17,23 @@ pub(super) async fn on_stream_event(
     event: AdapterEvent,
     stored: Stored,
 ) -> anyhow::Result<Inserted> {
+    let search = state.config.features.contains(cctui_proto::features::Feature::TranscriptSearch);
     let seq = match event {
         AdapterEvent::Message { local_id, mut payload, turn_id } => {
             if let Stored::Done(seq) = stored {
                 seq
             } else {
                 crate::keepalive::observe_message(state, &local_id, &mut payload).await;
-                insert_event(
-                    &state.pool,
-                    machine_id,
-                    user_id,
-                    &local_id,
-                    "message",
-                    payload,
-                    turn_id,
-                )
-                .await?
+                let row = NewEvent::unchunked(&local_id, "message", payload, turn_id, search);
+                insert_event(&state.pool, machine_id, user_id, row).await?
             }
         }
         AdapterEvent::ToolUse { local_id, payload } => {
             if let Stored::Done(seq) = stored {
                 seq
             } else {
-                insert_event(&state.pool, machine_id, user_id, &local_id, "tool_use", payload, None)
-                    .await?
+                let row = NewEvent::unchunked(&local_id, "tool_use", payload, None, search);
+                insert_event(&state.pool, machine_id, user_id, row).await?
             }
         }
         _ => return Ok(Inserted::UNSTORED),

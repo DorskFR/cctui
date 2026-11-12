@@ -2,6 +2,7 @@ import type { CreateBookmark } from '@bindings/CreateBookmark';
 import { errMessage } from '$lib/api';
 import { draftFromLine, isLineBookmarked } from '$lib/bookmarks';
 import { useBookmarkActions, useBookmarks } from '$lib/queries';
+import { hasFeature } from '$lib/features.svelte';
 import { toasts } from '$lib/toast.svelte';
 import { m } from '$lib/paraglide/messages';
 import type { Line } from './types';
@@ -25,6 +26,7 @@ export class BookmarkSaver {
 		isLineBookmarked(this.#saved.data ?? [], this.#o.id(), ln) !== null;
 
 	open = (ln: Line): void => {
+		if (!hasFeature('organising')) return;
 		this.draft = draftFromLine(ln, this.#o.id(), this.#o.sessionName());
 	};
 

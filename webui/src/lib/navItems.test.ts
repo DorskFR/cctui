@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
+import { setCapabilitiesForTest } from './features.svelte';
+import { ALL_FEATURES as SWITCHABLE } from './features.fixture';
 import { isNavActive, navItems } from './navItems';
+
+const PLUGIN_PAGE = [{ href: '/apps/ghreview', label: 'Review', iconName: 'pull-request' as const }];
 
 describe('navItems', () => {
 	it('lists the route tabs with sessions second and settings last', () => {
@@ -38,5 +42,21 @@ describe('navItems', () => {
 		expect(isNavActive('/', '/sessions')).toBe(false);
 		expect(isNavActive('/sessions', '/sessions/abc')).toBe(true);
 		expect(isNavActive('/settings', '/sessions')).toBe(false);
+	});
+});
+
+describe('navItems by announced features', () => {
+	afterEach(() => setCapabilitiesForTest(null));
+
+	it('drops bookmarks and plugin pages on a core server', () => {
+		setCapabilitiesForTest({ features: [], switchable: SWITCHABLE });
+		const hrefs = navItems({ pages: PLUGIN_PAGE }).map((i) => i.href);
+		expect(hrefs).toEqual(['/', '/sessions', '/accounts', '/settings']);
+	});
+
+	it('lists plugin pages with every feature on', () => {
+		setCapabilitiesForTest({ features: SWITCHABLE, switchable: SWITCHABLE });
+		const hrefs = navItems({ pages: PLUGIN_PAGE }).map((i) => i.href);
+		expect(hrefs).toEqual(['/', '/sessions', '/bookmarks', '/accounts', '/apps/ghreview', '/settings']);
 	});
 });

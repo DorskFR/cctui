@@ -83,6 +83,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "dispatcher_features",
         sql: include_str!("../schema/0014_dispatcher_features.sql"),
     },
+    Migration {
+        version: 15,
+        name: "oauth_pending_logins",
+        sql: include_str!("../schema/0015_oauth_pending_logins.sql"),
+    },
 ];
 
 const LEGACY_LAST: &str = include_str!("../../../migrations/191_file_blobs.up.sql");

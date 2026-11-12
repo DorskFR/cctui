@@ -2,6 +2,7 @@ import type { QueryClient } from '@tanstack/svelte-query';
 import type { MachineRow } from '@bindings/MachineRow';
 import { endpoints } from '$lib/queries/endpoints';
 import { qk } from '$lib/queries/keys';
+import { hasFeature } from '$lib/features.svelte';
 import { isLive } from './live';
 
 export { isLive };
@@ -14,10 +15,15 @@ export type Probes = Record<string, Probe>;
 export function createProbes(qc: QueryClient): Probes {
 	const me = () => qc.fetchQuery({ queryKey: qk.me, queryFn: endpoints.me, staleTime: 5 * 60_000 });
 	const accounts = () => qc.fetchQuery({ queryKey: qk.accounts, queryFn: endpoints.accounts });
-	const pools = () => qc.fetchQuery({ queryKey: qk.accountPools, queryFn: endpoints.accountPools });
+	const pools = () =>
+		hasFeature('account_sharing')
+			? qc.fetchQuery({ queryKey: qk.accountPools, queryFn: endpoints.accountPools })
+			: Promise.resolve([]);
 	const sessions = () =>
 		qc.fetchQuery({ queryKey: qk.sessions(false), queryFn: () => endpoints.sessions(false) });
+	const dispatchers = () => qc.fetchQuery({ queryKey: qk.dispatchers, queryFn: endpoints.dispatchers });
 	const machines = async (): Promise<MachineRow[]> => {
+		if (!hasFeature('machine_spawn')) return [];
 		const who = await me();
 		if (who.role === 'admin') {
 			return qc.fetchQuery({ queryKey: qk.machinesAll, queryFn: endpoints.allMachines });
@@ -33,6 +39,7 @@ export function createProbes(qc: QueryClient): Probes {
 		'machines.online': async () => (await machines()).some((m) => !m.revoked_at && m.liveness === 'online'),
 		'machines.enrolled': async () =>
 			(await machines()).filter((m) => m.kind !== 'ephemeral' && !m.revoked_at).length,
+		dispatchers: async () => (await dispatchers()).length > 0,
 		sessions: async () => (await sessions()).sessions.length > 0,
 		'sessions.drafts': async () => (await sessions()).sessions.filter((s) => s.status === 'draft').length,
 		'sessions.live': async () => (await sessions()).sessions.some(isLive)

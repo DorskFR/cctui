@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "ts")]
 use ts_rs::TS;
 
+pub use crate::features::Feature;
+
 /// Prefix every [`Route::path`] hangs under.
 pub const API_PREFIX: &str = "/api/v1";
 
@@ -68,6 +70,9 @@ pub struct Route {
     pub request: Option<&'static str>,
     /// Exported TS name of the JSON response body.
     pub response: Option<&'static str>,
+    /// The switchable feature this route belongs to; `None` is core, mounted
+    /// on every server. Unmounted (404) when its feature is off.
+    pub feature: Option<Feature>,
 }
 
 impl Route {
@@ -134,6 +139,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Attach a provider credential to an account.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "patch_accounts_by_id_providers_by_provider",
@@ -142,6 +148,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Edit or remove one of an account's provider credentials.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "delete_accounts_by_id_providers_by_provider",
@@ -150,6 +157,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Edit or remove one of an account's provider credentials.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_accounts_by_id_providers_by_provider_move",
@@ -158,6 +166,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Move a provider credential to another account of the same owner.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_accounts_usage",
@@ -166,6 +175,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Usage windows of every provider credential the caller owns, in one call.",
         request: None,
         response: Some("AccountUsageEntry[]"),
+        feature: None,
     },
     Route {
         id: "get_accounts_by_id_usage",
@@ -174,6 +184,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get an account's usage/limits.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_accounts_by_id_usage_history",
@@ -182,6 +193,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Sampled usage of one provider credential over time.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_accounts_by_id_usage_closes",
@@ -190,6 +202,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Closed usage windows of one provider credential, with unused share.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_accounts_usage_closes",
@@ -198,6 +211,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Closed usage windows of every owned credential, with unused share.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_accounts_usage_ledger",
@@ -206,6 +220,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Every reset of every visible credential's windows, with what went unused.",
         request: None,
         response: Some("AccountUsageLedger"),
+        feature: None,
     },
     Route {
         id: "post_accounts_by_id_limit_reset",
@@ -214,6 +229,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Claim a usage-limit reset on a provider credential.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_accounts_settings_catalog",
@@ -222,6 +238,7 @@ pub const ROUTES: &[Route] = &[
         summary: "The per-account settings catalog (exposable keys, env allowlist, preset).",
         request: None,
         response: Some("SettingsCatalogResponse"),
+        feature: None,
     },
     Route {
         id: "get_accounts",
@@ -230,6 +247,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List your accounts (identities + provider credentials), or create one.",
         request: None,
         response: Some("OAuthAccount[]"),
+        feature: None,
     },
     Route {
         id: "post_accounts",
@@ -238,6 +256,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List your accounts (identities + provider credentials), or create one.",
         request: Some("CreateAccount"),
         response: Some("OAuthAccount"),
+        feature: None,
     },
     Route {
         id: "post_accounts_oauth_start",
@@ -246,6 +265,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Begin an OAuth account authorization flow.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_accounts_oauth_finish",
@@ -254,6 +274,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Complete an OAuth account authorization flow.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_accounts_by_id",
@@ -262,6 +283,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get, rename/re-env, or delete an account identity.",
         request: None,
         response: Some("OAuthAccount"),
+        feature: None,
     },
     Route {
         id: "patch_accounts_by_id",
@@ -270,6 +292,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get, rename/re-env, or delete an account identity.",
         request: Some("UpdateAccount"),
         response: Some("OAuthAccount"),
+        feature: None,
     },
     Route {
         id: "delete_accounts_by_id",
@@ -278,6 +301,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get, rename/re-env, or delete an account identity.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "put_accounts_by_id_redirect",
@@ -286,6 +310,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Create/overwrite a launch-time redirect rule for this account.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_accounts_by_id_tool_policy",
@@ -294,6 +319,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get or replace the account's gateway tool-call policy.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "put_accounts_by_id_tool_policy",
@@ -302,6 +328,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get or replace the account's gateway tool-call policy.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_accounts_by_id_service_tokens",
@@ -310,6 +337,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List or mint the account's service tokens.",
         request: None,
         response: Some("ServiceTokenRow[]"),
+        feature: Some(Feature::ServiceTokens),
     },
     Route {
         id: "post_accounts_by_id_service_tokens",
@@ -318,6 +346,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List or mint the account's service tokens.",
         request: Some("MintServiceTokenRequest"),
         response: Some("MintServiceTokenResponse"),
+        feature: Some(Feature::ServiceTokens),
     },
     Route {
         id: "delete_accounts_by_id_service_tokens_by_token",
@@ -326,6 +355,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Revoke a service token.",
         request: None,
         response: None,
+        feature: Some(Feature::ServiceTokens),
     },
     Route {
         id: "get_redirects",
@@ -334,6 +364,7 @@ pub const ROUTES: &[Route] = &[
         summary: "The caller's live account/model redirect rules.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "delete_redirects_by_id",
@@ -342,6 +373,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Delete a redirect rule.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_admin_users",
@@ -350,6 +382,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List all users, or create a user (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_admin_users",
@@ -358,6 +391,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List all users, or create a user (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "put_admin_instance",
@@ -366,6 +400,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Set or clear the server-wide deployment name shown in the webui header (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_admin_instance_self_update",
@@ -374,6 +409,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read or set the machine + directory the self-update agent runs on (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::SelfUpdate),
     },
     Route {
         id: "put_admin_instance_self_update",
@@ -382,6 +418,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read or set the machine + directory the self-update agent runs on (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::SelfUpdate),
     },
     Route {
         id: "get_admin_instance_spawn_defaults",
@@ -390,6 +427,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read or set the default CctuiAgent limits for sessions that declare none (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::ChildSessions),
     },
     Route {
         id: "put_admin_instance_spawn_defaults",
@@ -398,6 +436,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read or set the default CctuiAgent limits for sessions that declare none (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::ChildSessions),
     },
     Route {
         id: "get_admin_instance_upstream_hosts",
@@ -406,6 +445,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read or set the hosts per-account upstreams may reach despite the SSRF guard (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "put_admin_instance_upstream_hosts",
@@ -414,6 +454,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read or set the hosts per-account upstreams may reach despite the SSRF guard (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_admin_instance_speech",
@@ -422,6 +463,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read or set the speech service (URL, encrypted API key, models, voice) (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::Voice),
     },
     Route {
         id: "put_admin_instance_speech",
@@ -430,6 +472,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read or set the speech service (URL, encrypted API key, models, voice) (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::Voice),
     },
     Route {
         id: "get_admin_instance_speech_catalog",
@@ -438,6 +481,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List the models and voices the configured speech service offers (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::Voice),
     },
     Route {
         id: "post_admin_instance_speech_test",
@@ -446,6 +490,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Check the speech service and return a short synthesized sample (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::Voice),
     },
     Route {
         id: "get_voice_config",
@@ -454,6 +499,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Whether speech is enabled and its effective models and voice.",
         request: None,
         response: None,
+        feature: Some(Feature::Voice),
     },
     Route {
         id: "get_voice_voices",
@@ -462,6 +508,7 @@ pub const ROUTES: &[Route] = &[
         summary: "The voices the instance speech service offers.",
         request: None,
         response: None,
+        feature: Some(Feature::Voice),
     },
     Route {
         id: "post_voice_transcribe",
@@ -470,6 +517,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Transcribe a multipart `file` audio part (size-capped) to text.",
         request: None,
         response: None,
+        feature: Some(Feature::Voice),
     },
     Route {
         id: "post_voice_speak",
@@ -478,6 +526,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Synthesize text to audio with the instance speech service.",
         request: None,
         response: None,
+        feature: Some(Feature::Voice),
     },
     Route {
         id: "get_admin_instance_upload_caps",
@@ -486,6 +535,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read or set the per-upload file count and size caps (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::Uploads),
     },
     Route {
         id: "put_admin_instance_upload_caps",
@@ -494,6 +544,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read or set the per-upload file count and size caps (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::Uploads),
     },
     Route {
         id: "get_admin_harness_autoupdate",
@@ -502,6 +553,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read the harness auto-update settings of every machine, or set the instance default (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::SelfUpdate),
     },
     Route {
         id: "put_admin_harness_autoupdate",
@@ -510,6 +562,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read the harness auto-update settings of every machine, or set the instance default (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::SelfUpdate),
     },
     Route {
         id: "put_admin_harness_autoupdate_by_machine",
@@ -518,6 +571,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Set or clear one machine's harness auto-update override (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::SelfUpdate),
     },
     Route {
         id: "post_admin_harness_autoupdate_by_machine_restart",
@@ -526,6 +580,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Restart one harness's long-lived process on a machine once it is idle (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::SelfUpdate),
     },
     Route {
         id: "delete_admin_users_by_id",
@@ -534,6 +589,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Revoke or update a user (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "patch_admin_users_by_id",
@@ -542,6 +598,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Revoke or update a user (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "delete_admin_users_by_id_purge",
@@ -550,6 +607,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Hard-delete a user and all their data (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_admin_users_by_id_rotate",
@@ -558,6 +616,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Rotate a user's tokens (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_admin_users_by_id_machines",
@@ -566,6 +625,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List a user's machines (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "get_admin_users_by_id_tokens",
@@ -574,6 +634,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List a user's tokens (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "patch_admin_users_by_id_tokens_by_token",
@@ -582,6 +643,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Relabel or revoke a user's token (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "delete_admin_users_by_id_tokens_by_token",
@@ -590,6 +652,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Relabel or revoke a user's token (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "delete_admin_users_by_id_tokens_by_token_purge",
@@ -598,6 +661,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Hard-delete a user's token (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_admin_users_by_id_dispatch_policy",
@@ -606,6 +670,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get, replace or remove a user's dispatch policy (admin).",
         request: None,
         response: Some("DispatchPolicy"),
+        feature: None,
     },
     Route {
         id: "put_admin_users_by_id_dispatch_policy",
@@ -614,6 +679,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get, replace or remove a user's dispatch policy (admin).",
         request: Some("DispatchPolicyRules"),
         response: Some("DispatchPolicy"),
+        feature: None,
     },
     Route {
         id: "delete_admin_users_by_id_dispatch_policy",
@@ -622,6 +688,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get, replace or remove a user's dispatch policy (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "delete_admin_machines_by_id",
@@ -630,6 +697,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Revoke or rename a machine (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "patch_admin_machines_by_id",
@@ -638,6 +706,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Revoke or rename a machine (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "post_admin_machines_by_id_rotate",
@@ -646,6 +715,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Rotate a machine's key (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "delete_admin_machines_by_id_purge",
@@ -654,6 +724,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Hard-delete a machine (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "get_context",
@@ -662,6 +733,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List the caller's context items, or create one.",
         request: None,
         response: Some("ContextItem[]"),
+        feature: Some(Feature::Context),
     },
     Route {
         id: "post_context",
@@ -670,6 +742,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List the caller's context items, or create one.",
         request: Some("ContextItemSpec"),
         response: Some("ContextItem"),
+        feature: Some(Feature::Context),
     },
     Route {
         id: "get_context_resolve",
@@ -678,6 +751,7 @@ pub const ROUTES: &[Route] = &[
         summary: "The rules and memories a spawn into these coordinates would carry.",
         request: None,
         response: Some("ResolvedContextResponse"),
+        feature: Some(Feature::Context),
     },
     Route {
         id: "patch_context_by_id",
@@ -686,6 +760,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Edit or delete a context item.",
         request: Some("UpdateContextItemRequest"),
         response: Some("ContextItem"),
+        feature: Some(Feature::Context),
     },
     Route {
         id: "delete_context_by_id",
@@ -694,6 +769,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Edit or delete a context item.",
         request: None,
         response: None,
+        feature: Some(Feature::Context),
     },
     Route {
         id: "post_context_by_id_pending_approve",
@@ -702,6 +778,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Make an agent's proposed change to a context item live.",
         request: None,
         response: Some("ContextItem"),
+        feature: Some(Feature::Context),
     },
     Route {
         id: "post_context_by_id_pending_reject",
@@ -710,6 +787,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Drop an agent's proposed change to a context item.",
         request: None,
         response: Some("ContextItem"),
+        feature: Some(Feature::Context),
     },
     Route {
         id: "get_manifest_daemon",
@@ -718,6 +796,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Daemon update manifest (latest version + download URLs).",
         request: None,
         response: None,
+        feature: Some(Feature::SelfUpdate),
     },
     Route {
         id: "get_daemon_binary_by_target",
@@ -726,6 +805,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Download a daemon binary for a target (self-update proxy).",
         request: None,
         response: None,
+        feature: Some(Feature::SelfUpdate),
     },
     Route {
         id: "post_sessions_dispatch",
@@ -734,6 +814,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Dispatch a session to an enrolled executor (remote runner).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_sessions_dispatchers",
@@ -742,6 +823,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List dispatch targets available for a spawn.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_dispatch_records_failed",
@@ -750,6 +832,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Dispatches the dispatcher refused or whose worker never ran to a session.",
         request: None,
         response: Some("FailedDispatch[]"),
+        feature: None,
     },
     Route {
         id: "post_dispatch_records_by_id_redispatch",
@@ -758,6 +841,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Send a recorded dispatch again as a new dispatch.",
         request: None,
         response: Some("DispatchResponse"),
+        feature: None,
     },
     Route {
         id: "post_dispatch_records_by_id_dismiss",
@@ -766,6 +850,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Hide a failed dispatch from the caller's list.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_dispatch_records_dismiss_all",
@@ -774,6 +859,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Hide every failed dispatch the caller's list shows.",
         request: None,
         response: Some("DismissedDispatches"),
+        feature: None,
     },
     Route {
         id: "get_dispatchers",
@@ -782,6 +868,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List enrolled dispatchers with liveness.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "patch_dispatchers_by_id",
@@ -790,6 +877,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Rename or remove an enrolled dispatcher.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "delete_dispatchers_by_id",
@@ -798,6 +886,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Rename or remove an enrolled dispatcher.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_dispatcher_enroll",
@@ -806,6 +895,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Enroll a new dispatcher (executor) and mint its key.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_keys",
@@ -814,6 +904,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List your provider API keys, or store a new one.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_keys",
@@ -822,6 +913,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List your provider API keys, or store a new one.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "delete_keys_by_id",
@@ -830,14 +922,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Delete a stored provider API key.",
         request: None,
         response: None,
-    },
-    Route {
-        id: "get_keys_by_id_value",
-        method: Method::Get,
-        path: "/keys/{id}/value",
-        summary: "Reveal a stored provider API key's value.",
-        request: None,
-        response: None,
+        feature: None,
     },
     Route {
         id: "get_labels",
@@ -846,6 +931,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List label definitions, or create one.",
         request: None,
         response: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "post_labels",
@@ -854,6 +940,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List label definitions, or create one.",
         request: None,
         response: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "patch_labels_by_id",
@@ -862,6 +949,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Rename or delete a label definition.",
         request: None,
         response: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "delete_labels_by_id",
@@ -870,6 +958,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Rename or delete a label definition.",
         request: None,
         response: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "post_sessions_by_id_labels",
@@ -878,6 +967,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Attach a label to a session.",
         request: None,
         response: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "delete_sessions_by_id_labels_by_label",
@@ -886,6 +976,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Detach a label from a session.",
         request: None,
         response: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "get_machines_by_machine_commands_pending",
@@ -894,6 +985,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Poll a machine's pending spawn/control commands.",
         request: None,
         response: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "get_machines_by_machine_events",
@@ -902,6 +994,7 @@ pub const ROUTES: &[Route] = &[
         summary: "One machine's lifecycle events, newest first.",
         request: None,
         response: Some("EventPage"),
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "get_machines_by_machine_fs_dirs",
@@ -910,6 +1003,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List directories on a machine (spawn dir picker).",
         request: None,
         response: None,
+        feature: Some(Feature::Files),
     },
     Route {
         id: "get_machines_by_machine_fs_gitinfo",
@@ -918,6 +1012,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Git branch / detached HEAD of a directory on a machine (spawn dir badge).",
         request: None,
         response: None,
+        feature: Some(Feature::Files),
     },
     Route {
         id: "get_machines_by_machine_fs_file",
@@ -926,6 +1021,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read one file on a machine (agent-linked path): inline or blob redirect.",
         request: None,
         response: None,
+        feature: Some(Feature::Files),
     },
     Route {
         id: "get_machines_by_machine_adapters",
@@ -934,6 +1030,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Which harnesses a machine runs: table rows with the machine's enable/config pins.",
         request: None,
         response: Some("MachineAdapterInfo[]"),
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "put_machines_by_machine_adapters_by_adapter",
@@ -942,6 +1039,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Enable, disable or configure one harness on a machine (admin).",
         request: Some("SetMachineAdapterRequest"),
         response: Some("MachineAdapterInfo[]"),
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "delete_machines_by_machine_adapters_by_adapter",
@@ -950,6 +1048,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Drop a machine's pin for one harness, back to the table default (admin).",
         request: None,
         response: Some("MachineAdapterInfo[]"),
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "get_machines_by_machine_codex_models",
@@ -958,6 +1057,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Machine/account-scoped codex model catalog.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_machines_by_machine_codex_models_refresh",
@@ -966,6 +1066,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Re-read every OpenAI account's codex model catalog from upstream.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_models_codex_catalog",
@@ -974,6 +1075,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Codex model catalog merged across every machine (newest report wins).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_events",
@@ -982,6 +1084,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Lifecycle event log (sessions, machines, system), keyset-paginated newest first.",
         request: None,
         response: Some("EventPage"),
+        feature: None,
     },
     Route {
         id: "get_harnesses",
@@ -990,6 +1093,7 @@ pub const ROUTES: &[Route] = &[
         summary: "The harness table: ids, families, capabilities and permission modes.",
         request: None,
         response: Some("HarnessDescriptor[]"),
+        feature: None,
     },
     Route {
         id: "get_models_by_harness",
@@ -998,6 +1102,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Model and effort options for a harness picker (optional machine_id).",
         request: None,
         response: Some("HarnessModels"),
+        feature: None,
     },
     Route {
         id: "get_meta_usage_probes",
@@ -1006,6 +1111,7 @@ pub const ROUTES: &[Route] = &[
         summary: "The quota-probe registry, for the account usage-probe picker.",
         request: None,
         response: Some("UsageProbeInfo[]"),
+        feature: None,
     },
     Route {
         id: "get_me",
@@ -1014,6 +1120,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get the current principal (user, scopes, machine).",
         request: None,
         response: Some("MeResponse"),
+        feature: None,
     },
     Route {
         id: "delete_me_key",
@@ -1022,6 +1129,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Revoke the credential this request authenticated with.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_me_hidden_owners",
@@ -1030,6 +1138,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Your hidden users and machines: their sessions stay out of your lists (admin).",
         request: None,
         response: Some("HiddenOwners"),
+        feature: None,
     },
     Route {
         id: "put_me_hidden_owners_by_kind_by_target",
@@ -1038,6 +1147,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Hide a user's or machine's sessions from your own lists (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "delete_me_hidden_owners_by_kind_by_target",
@@ -1046,6 +1156,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Show a hidden user's or machine's sessions in your lists again (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_auth_device_by_user_code",
@@ -1054,6 +1165,7 @@ pub const ROUTES: &[Route] = &[
         summary: "What a pending device login is asking for.",
         request: None,
         response: Some("DeviceAuthRequestInfo"),
+        feature: Some(Feature::DeviceLogin),
     },
     Route {
         id: "post_auth_device_by_user_code_decision",
@@ -1062,6 +1174,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Approve or deny a device login, granting it your scopes.",
         request: Some("DeviceAuthDecision"),
         response: None,
+        feature: Some(Feature::DeviceLogin),
     },
     Route {
         id: "get_settings",
@@ -1070,6 +1183,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get your user settings.",
         request: None,
         response: Some("SettingsPayload"),
+        feature: None,
     },
     Route {
         id: "put_settings",
@@ -1078,6 +1192,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Replace your user settings.",
         request: Some("SettingsPayload"),
         response: Some("SettingsPayload"),
+        feature: None,
     },
     Route {
         id: "post_settings_rescrub",
@@ -1086,6 +1201,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Start a privacy scan over your stored events; returns its job.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_settings_rescrub",
@@ -1094,6 +1210,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Your most recent privacy scan job, running or finished.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_settings_rescrub_cancel",
@@ -1102,6 +1219,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Cancel your running privacy scan.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_capabilities",
@@ -1110,6 +1228,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List server capabilities/feature flags.",
         request: None,
         response: Some("CapabilitiesResponse"),
+        feature: None,
     },
     Route {
         id: "post_enroll",
@@ -1118,6 +1237,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Enroll this machine and mint its machine key.",
         request: None,
         response: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "get_machines_resources",
@@ -1126,6 +1246,7 @@ pub const ROUTES: &[Route] = &[
         summary: "The caller's daemon machines with their last host CPU/memory/disk snapshot.",
         request: None,
         response: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "get_machines_by_machine_status",
@@ -1134,6 +1255,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Machine connectivity/liveness snapshot (remote-enroll verification).",
         request: None,
         response: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "post_deenroll",
@@ -1142,6 +1264,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Deenroll the current machine.",
         request: None,
         response: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "get_version",
@@ -1150,6 +1273,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Server version and build info. Public; deployment fields need a token.",
         request: None,
         response: Some("VersionInfo"),
+        feature: None,
     },
     Route {
         id: "get_passkeys",
@@ -1158,6 +1282,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List the passkeys enrolled on your account.",
         request: None,
         response: None,
+        feature: Some(Feature::Passkeys),
     },
     Route {
         id: "post_passkeys_register_start",
@@ -1166,6 +1291,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Begin enrolling a passkey on your account.",
         request: None,
         response: None,
+        feature: Some(Feature::Passkeys),
     },
     Route {
         id: "post_passkeys_register_finish",
@@ -1174,6 +1300,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Finish enrolling a passkey and store the credential.",
         request: None,
         response: None,
+        feature: Some(Feature::Passkeys),
     },
     Route {
         id: "post_passkeys_test_start",
@@ -1182,6 +1309,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Begin a test of an enrolled passkey without signing out.",
         request: None,
         response: None,
+        feature: Some(Feature::Passkeys),
     },
     Route {
         id: "post_passkeys_test_finish",
@@ -1190,6 +1318,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Finish a passkey test and report which key answered.",
         request: None,
         response: None,
+        feature: Some(Feature::Passkeys),
     },
     Route {
         id: "patch_passkeys_by_id",
@@ -1198,6 +1327,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Rename or revoke one of your passkeys.",
         request: None,
         response: None,
+        feature: Some(Feature::Passkeys),
     },
     Route {
         id: "delete_passkeys_by_id",
@@ -1206,6 +1336,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Rename or revoke one of your passkeys.",
         request: None,
         response: None,
+        feature: Some(Feature::Passkeys),
     },
     Route {
         id: "put_admin_passkeys_auto_prompt",
@@ -1214,6 +1345,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Server-wide: try the passkey as soon as the login screen opens (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::Passkeys),
     },
     Route {
         id: "get_plugins",
@@ -1222,6 +1354,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List installed plugins with the caller's enabled flags.",
         request: None,
         response: None,
+        feature: Some(Feature::Plugins),
     },
     Route {
         id: "get_plugins_by_id_backend_by_*path",
@@ -1230,6 +1363,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Proxy a request to the plugin's own backend, authenticated as the caller with signed identity headers; the plugin must be instance-enabled and enabled by the caller.",
         request: None,
         response: None,
+        feature: Some(Feature::Plugins),
     },
     Route {
         id: "post_plugins_by_id_backend_by_*path",
@@ -1238,6 +1372,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Proxy a request to the plugin's own backend, authenticated as the caller with signed identity headers; the plugin must be instance-enabled and enabled by the caller.",
         request: None,
         response: None,
+        feature: Some(Feature::Plugins),
     },
     Route {
         id: "put_plugins_by_id_backend_by_*path",
@@ -1246,6 +1381,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Proxy a request to the plugin's own backend, authenticated as the caller with signed identity headers; the plugin must be instance-enabled and enabled by the caller.",
         request: None,
         response: None,
+        feature: Some(Feature::Plugins),
     },
     Route {
         id: "patch_plugins_by_id_backend_by_*path",
@@ -1254,6 +1390,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Proxy a request to the plugin's own backend, authenticated as the caller with signed identity headers; the plugin must be instance-enabled and enabled by the caller.",
         request: None,
         response: None,
+        feature: Some(Feature::Plugins),
     },
     Route {
         id: "delete_plugins_by_id_backend_by_*path",
@@ -1262,6 +1399,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Proxy a request to the plugin's own backend, authenticated as the caller with signed identity headers; the plugin must be instance-enabled and enabled by the caller.",
         request: None,
         response: None,
+        feature: Some(Feature::Plugins),
     },
     Route {
         id: "post_plugins_rescan",
@@ -1270,6 +1408,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Re-read the plugins directory (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::Plugins),
     },
     Route {
         id: "get_admin_plugins",
@@ -1278,6 +1417,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List every plugin with its source and instance toggle, or install one from a published catalog id (JSON `{catalog}`), an https URL (JSON `{url}`) or a multipart `file` upload (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::Plugins),
     },
     Route {
         id: "post_admin_plugins",
@@ -1286,6 +1426,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List every plugin with its source and instance toggle, or install one from a published catalog id (JSON `{catalog}`), an https URL (JSON `{url}`) or a multipart `file` upload (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::Plugins),
     },
     Route {
         id: "get_admin_plugins_catalog",
@@ -1294,6 +1435,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List the published plugin catalog, annotated with what this instance has installed (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::Plugins),
     },
     Route {
         id: "patch_admin_plugins_by_id",
@@ -1302,6 +1444,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Enable or disable an installed plugin instance-wide, or uninstall it (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::Plugins),
     },
     Route {
         id: "delete_admin_plugins_by_id",
@@ -1310,6 +1453,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Enable or disable an installed plugin instance-wide, or uninstall it (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::Plugins),
     },
     Route {
         id: "get_admin_plugins_by_id_settings",
@@ -1318,6 +1462,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read or write a plugin's instance-level settings; secret values are never returned, only whether each is set (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::Plugins),
     },
     Route {
         id: "put_admin_plugins_by_id_settings",
@@ -1326,6 +1471,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read or write a plugin's instance-level settings; secret values are never returned, only whether each is set (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::Plugins),
     },
     Route {
         id: "post_admin_plugins_by_id_proxy_secret",
@@ -1334,6 +1480,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Rotate the plugin's backend-proxy signing secret and return the new value once (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::Plugins),
     },
     Route {
         id: "get_sessions_by_id_previews",
@@ -1342,6 +1489,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Dev-server previews open on a session (owner only).",
         request: None,
         response: None,
+        feature: Some(Feature::Previews),
     },
     Route {
         id: "post_sessions_by_id_previews_by_pid_ticket",
@@ -1350,6 +1498,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Mint a 60 s single-use ticket that signs the owner into a preview host.",
         request: None,
         response: None,
+        feature: Some(Feature::Previews),
     },
     Route {
         id: "get_profiles",
@@ -1358,6 +1507,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List the caller's spawn profiles, or create one.",
         request: None,
         response: Some("SessionProfile[]"),
+        feature: Some(Feature::Profiles),
     },
     Route {
         id: "post_profiles",
@@ -1366,6 +1516,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List the caller's spawn profiles, or create one.",
         request: Some("CreateProfileRequest"),
         response: Some("SessionProfile"),
+        feature: Some(Feature::Profiles),
     },
     Route {
         id: "put_profiles_order",
@@ -1374,6 +1525,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Persist the caller's profile order.",
         request: Some("ReorderProfilesRequest"),
         response: Some("SessionProfile[]"),
+        feature: Some(Feature::Profiles),
     },
     Route {
         id: "patch_profiles_by_id",
@@ -1382,6 +1534,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Rename, adjust or delete a spawn profile.",
         request: Some("UpdateProfileRequest"),
         response: Some("SessionProfile"),
+        feature: Some(Feature::Profiles),
     },
     Route {
         id: "delete_profiles_by_id",
@@ -1390,6 +1543,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Rename, adjust or delete a spawn profile.",
         request: None,
         response: None,
+        feature: Some(Feature::Profiles),
     },
     Route {
         id: "get_account_pools",
@@ -1398,6 +1552,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List the caller's account pools, or create one.",
         request: None,
         response: Some("AccountPoolView[]"),
+        feature: Some(Feature::AccountSharing),
     },
     Route {
         id: "post_account_pools",
@@ -1406,6 +1561,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List the caller's account pools, or create one.",
         request: Some("CreatePoolRequest"),
         response: Some("AccountPoolView"),
+        feature: Some(Feature::AccountSharing),
     },
     Route {
         id: "get_account_pools_usage",
@@ -1414,6 +1570,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Every pool's quota windows aggregated per provider family: level, pace, projection.",
         request: None,
         response: Some("PoolUsageView[]"),
+        feature: Some(Feature::AccountSharing),
     },
     Route {
         id: "patch_account_pools_by_id",
@@ -1422,6 +1579,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Edit a pool (name, strategy, failover, membership) or delete it.",
         request: Some("UpdatePoolRequest"),
         response: Some("AccountPoolView"),
+        feature: Some(Feature::AccountSharing),
     },
     Route {
         id: "delete_account_pools_by_id",
@@ -1430,6 +1588,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Edit a pool (name, strategy, failover, membership) or delete it.",
         request: None,
         response: None,
+        feature: Some(Feature::AccountSharing),
     },
     Route {
         id: "get_sessions_by_id_rebinds",
@@ -1438,6 +1597,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Every mid-run account move this session made, newest first.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_bookmarks",
@@ -1446,6 +1606,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List your saved messages, or save one.",
         request: None,
         response: Some("Bookmark[]"),
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "post_bookmarks",
@@ -1454,6 +1615,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List your saved messages, or save one.",
         request: Some("CreateBookmark"),
         response: Some("Bookmark"),
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "patch_bookmarks_by_id",
@@ -1462,6 +1624,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Edit a bookmark's title/note, or delete it.",
         request: Some("UpdateBookmark"),
         response: Some("Bookmark"),
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "delete_bookmarks_by_id",
@@ -1470,6 +1633,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Edit a bookmark's title/note, or delete it.",
         request: None,
         response: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "get_prompts",
@@ -1478,6 +1642,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List your saved prompts, or create one.",
         request: None,
         response: Some("Prompt[]"),
+        feature: Some(Feature::Library),
     },
     Route {
         id: "post_prompts",
@@ -1486,6 +1651,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List your saved prompts, or create one.",
         request: None,
         response: None,
+        feature: Some(Feature::Library),
     },
     Route {
         id: "get_prompts_resolve",
@@ -1494,6 +1660,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Resolve a prompt by name/reference.",
         request: None,
         response: None,
+        feature: Some(Feature::Library),
     },
     Route {
         id: "get_prompts_by_id",
@@ -1502,6 +1669,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get or delete a saved prompt.",
         request: None,
         response: None,
+        feature: Some(Feature::Library),
     },
     Route {
         id: "delete_prompts_by_id",
@@ -1510,6 +1678,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get or delete a saved prompt.",
         request: None,
         response: None,
+        feature: Some(Feature::Library),
     },
     Route {
         id: "get_provider_status",
@@ -1518,6 +1687,7 @@ pub const ROUTES: &[Route] = &[
         summary: "What each upstream provider family reports on its status page.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_rooms",
@@ -1526,6 +1696,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List rooms, for the picker.",
         request: None,
         response: None,
+        feature: Some(Feature::Rooms),
     },
     Route {
         id: "patch_rooms_by_id",
@@ -1534,6 +1705,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Rename/archive, or delete a room.",
         request: None,
         response: None,
+        feature: Some(Feature::Rooms),
     },
     Route {
         id: "delete_rooms_by_id",
@@ -1542,6 +1714,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Rename/archive, or delete a room.",
         request: None,
         response: None,
+        feature: Some(Feature::Rooms),
     },
     Route {
         id: "put_sessions_by_id_room",
@@ -1550,6 +1723,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Put this session in a room (by id or name), or take it out of one.",
         request: None,
         response: None,
+        feature: Some(Feature::Rooms),
     },
     Route {
         id: "delete_sessions_by_id_room",
@@ -1558,6 +1732,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Put this session in a room (by id or name), or take it out of one.",
         request: None,
         response: None,
+        feature: Some(Feature::Rooms),
     },
     Route {
         id: "get_cctuiverse_config",
@@ -1566,6 +1741,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Whether cctuiverse links are enabled on this server.",
         request: None,
         response: None,
+        feature: Some(Feature::Federation),
     },
     Route {
         id: "post_cctuiverse_join",
@@ -1574,6 +1750,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Join a cctuiverse invite with one of your sessions.",
         request: None,
         response: None,
+        feature: Some(Feature::Federation),
     },
     Route {
         id: "patch_cctuiverse_links_by_id",
@@ -1582,6 +1759,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Change a cctuiverse link's settings.",
         request: None,
         response: None,
+        feature: Some(Feature::Federation),
     },
     Route {
         id: "post_cctuiverse_links_by_id_close",
@@ -1590,6 +1768,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Close a cctuiverse link, or revoke a pending invite.",
         request: None,
         response: None,
+        feature: Some(Feature::Federation),
     },
     Route {
         id: "get_cctuiverse_links_by_id_messages",
@@ -1598,6 +1777,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Held inbound and review-pending outbound messages of a link.",
         request: None,
         response: None,
+        feature: Some(Feature::Federation),
     },
     Route {
         id: "post_cctuiverse_links_by_id_messages_by_msg_approve",
@@ -1606,6 +1786,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Send a review-pending outbound message.",
         request: None,
         response: None,
+        feature: Some(Feature::Federation),
     },
     Route {
         id: "post_cctuiverse_links_by_id_messages_by_msg_drop",
@@ -1614,6 +1795,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Discard a held or review-pending message.",
         request: None,
         response: None,
+        feature: Some(Feature::Federation),
     },
     Route {
         id: "post_cctuiverse_links_by_id_messages_by_msg_release",
@@ -1622,6 +1804,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Deliver a held inbound message now.",
         request: None,
         response: None,
+        feature: Some(Feature::Federation),
     },
     Route {
         id: "post_rooms_by_id_cctuiverse_invites",
@@ -1630,6 +1813,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Invite a session on another cctui into this room.",
         request: None,
         response: None,
+        feature: Some(Feature::Federation),
     },
     Route {
         id: "get_rooms_by_id_cctuiverse_links",
@@ -1638,6 +1822,7 @@ pub const ROUTES: &[Route] = &[
         summary: "This room's cctuiverse links, pending invites included.",
         request: None,
         response: None,
+        feature: Some(Feature::Federation),
     },
     Route {
         id: "post_sessions_by_id_cctuiverse_invites",
@@ -1646,6 +1831,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Invite a session on another cctui to link with this one.",
         request: None,
         response: None,
+        feature: Some(Feature::Federation),
     },
     Route {
         id: "get_sessions_by_id_cctuiverse_links",
@@ -1654,6 +1840,7 @@ pub const ROUTES: &[Route] = &[
         summary: "This session's cctuiverse links, pending invites included.",
         request: None,
         response: None,
+        feature: Some(Feature::Federation),
     },
     Route {
         id: "post_sessions_archive",
@@ -1662,6 +1849,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Archive a batch of sessions by id.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_sessions_unarchive",
@@ -1670,6 +1858,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Unarchive a batch of sessions by id.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_sessions_pin",
@@ -1678,6 +1867,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Pin a batch of sessions by id.",
         request: None,
         response: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "post_sessions_unpin",
@@ -1686,6 +1876,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Unpin a batch of sessions by id.",
         request: None,
         response: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "post_sessions_by_id_launch",
@@ -1694,6 +1885,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Launch a draft session into a live spawn.",
         request: None,
         response: None,
+        feature: Some(Feature::Drafts),
     },
     Route {
         id: "post_sessions_by_id_discard",
@@ -1702,6 +1894,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Discard a draft session.",
         request: None,
         response: None,
+        feature: Some(Feature::Drafts),
     },
     Route {
         id: "post_sessions_by_id_schedule_launch",
@@ -1710,6 +1903,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Queue a draft session to launch later.",
         request: None,
         response: None,
+        feature: Some(Feature::Scheduling),
     },
     Route {
         id: "post_sessions_by_id_cancel_launch",
@@ -1718,6 +1912,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Cancel a draft session's queued launch.",
         request: None,
         response: None,
+        feature: Some(Feature::Scheduling),
     },
     Route {
         id: "put_sessions_by_id_draft",
@@ -1726,6 +1921,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Replace a draft session's stored spawn payload in place.",
         request: None,
         response: None,
+        feature: Some(Feature::Drafts),
     },
     Route {
         id: "put_sessions_by_id_draft_attachments",
@@ -1734,6 +1930,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Replace a draft session's stored attachments.",
         request: None,
         response: None,
+        feature: Some(Feature::Drafts),
     },
     Route {
         id: "post_sessions_by_id_interrupt",
@@ -1742,6 +1939,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Interrupt a session's current turn.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_sessions_by_id_guard",
@@ -1750,6 +1948,7 @@ pub const ROUTES: &[Route] = &[
         summary: "The session's mirrored workflow-guard step, if the pod reported one.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_sessions_by_id_guard_transition",
@@ -1758,6 +1957,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Ask the session's workflow guard to move to a step.",
         request: Some("GuardTransitionRequest"),
         response: Some("SpawnResponse"),
+        feature: None,
     },
     Route {
         id: "post_sessions_by_id_resume",
@@ -1766,6 +1966,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Resume an exited session.",
         request: None,
         response: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "post_sessions_by_id_set_model",
@@ -1774,6 +1975,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Change a session's model.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_sessions_by_id_switch_account",
@@ -1782,6 +1984,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Switch the account backing a session.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_sessions_by_id_bindings",
@@ -1790,6 +1993,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List a session's per-family account bindings.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_sessions_register",
@@ -1798,6 +2002,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Register a session the daemon just launched.",
         request: None,
         response: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "post_sessions_by_id_deregister",
@@ -1806,6 +2011,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Deregister a session (mark it gone).",
         request: None,
         response: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "post_sessions_spawn",
@@ -1814,6 +2020,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Spawn a new session on a machine, with optional file uploads.",
         request: None,
         response: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "post_sessions_by_id_files",
@@ -1822,6 +2029,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Attach files to a live session mid-conversation.",
         request: None,
         response: None,
+        feature: Some(Feature::Uploads),
     },
     Route {
         id: "get_sessions",
@@ -1830,6 +2038,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List your sessions (admin: all).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_sessions_stats",
@@ -1838,6 +2047,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Aggregate session counts/status stats.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_sessions_stats_tokens",
@@ -1846,6 +2056,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Token-usage stats across sessions.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_sessions_stats_usage",
@@ -1854,6 +2065,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Overview usage analytics: tokens over time, per-model, heatmap.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_sessions_stats_cache_busts",
@@ -1862,6 +2074,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Dollars lost to prompt-cache busts per day, by reason.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_sessions_search",
@@ -1870,6 +2083,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Full-text search across your sessions.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_sessions_search_values",
@@ -1878,6 +2092,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Autocomplete values for a search field.",
         request: None,
         response: None,
+        feature: Some(Feature::TranscriptSearch),
     },
     Route {
         id: "get_sessions_recent_dirs",
@@ -1886,6 +2101,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List recently used working directories.",
         request: None,
         response: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "post_sessions_by_id_message",
@@ -1894,6 +2110,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Send a message to a live session.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_sessions_by_id_messages_scheduled",
@@ -1902,6 +2119,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List a session's scheduled messages.",
         request: None,
         response: None,
+        feature: Some(Feature::Scheduling),
     },
     Route {
         id: "patch_sessions_by_id_messages_scheduled_by_queue",
@@ -1910,6 +2128,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Edit/reschedule or cancel a scheduled message.",
         request: None,
         response: None,
+        feature: Some(Feature::Scheduling),
     },
     Route {
         id: "delete_sessions_by_id_messages_scheduled_by_queue",
@@ -1918,6 +2137,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Edit/reschedule or cancel a scheduled message.",
         request: None,
         response: None,
+        feature: Some(Feature::Scheduling),
     },
     Route {
         id: "post_sessions_by_id_messages_scheduled_by_queue_send_now",
@@ -1926,6 +2146,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Deliver a scheduled message immediately.",
         request: None,
         response: None,
+        feature: Some(Feature::Scheduling),
     },
     Route {
         id: "post_sessions_by_id_kill",
@@ -1934,6 +2155,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Kill a session's underlying process.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_sessions_by_id_pins",
@@ -1942,6 +2164,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List the caller's pinned messages in a session.",
         request: None,
         response: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "post_sessions_by_id_pins",
@@ -1950,6 +2173,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Pin a message (by stream seq) in a session.",
         request: None,
         response: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "delete_sessions_by_id_pins_by_seq",
@@ -1958,6 +2182,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Unpin a message in a session.",
         request: None,
         response: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "post_sessions_by_id_seen",
@@ -1966,6 +2191,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Mark this session's messages seen for the caller.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_sessions_by_id_brief",
@@ -1974,6 +2200,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Render a session's user/assistant transcript as a capped markdown brief.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_sessions_by_id_thread",
@@ -1982,6 +2209,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List the follow-up thread a session belongs to, oldest first.",
         request: None,
         response: Some("SessionThreadResponse"),
+        feature: Some(Feature::Automation),
     },
     Route {
         id: "post_sessions_by_id_fork",
@@ -1990,6 +2218,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Fork a session into a new one.",
         request: None,
         response: None,
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "post_sessions_by_id_auto_approve",
@@ -1998,6 +2227,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Toggle auto-approval of tool-use for a session.",
         request: None,
         response: None,
+        feature: Some(Feature::AutoApprove),
     },
     Route {
         id: "post_sessions_by_id_archive",
@@ -2006,6 +2236,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Archive a single session.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_sessions_by_id_unarchive",
@@ -2014,6 +2245,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Unarchive a single session.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_sessions_by_id_pin",
@@ -2022,6 +2254,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Pin a single session.",
         request: None,
         response: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "post_sessions_by_id_unpin",
@@ -2030,6 +2263,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Unpin a single session.",
         request: None,
         response: None,
+        feature: Some(Feature::Organising),
     },
     Route {
         id: "post_sessions_by_id_keepalive",
@@ -2038,6 +2272,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Set or clear the session's prompt-cache keep-alive schedule.",
         request: None,
         response: None,
+        feature: Some(Feature::Automation),
     },
     Route {
         id: "get_sessions_by_id_hook_policy",
@@ -2046,6 +2281,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read the hook rules the session was launched with.",
         request: None,
         response: Some("SessionHookPolicy"),
+        feature: None,
     },
     Route {
         id: "get_sessions_by_id_tool_guard",
@@ -2054,6 +2290,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read or toggle the session's gateway tool-guard bypass.",
         request: None,
         response: Some("ToolGuardState"),
+        feature: None,
     },
     Route {
         id: "put_sessions_by_id_tool_guard",
@@ -2062,14 +2299,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read or toggle the session's gateway tool-guard bypass.",
         request: Some("ToolGuardRequest"),
         response: Some("ToolGuardState"),
-    },
-    Route {
-        id: "post_sessions_by_id_policy",
-        method: Method::Post,
-        path: "/sessions/{id}/policy",
-        summary: "Set a session's permission policy.",
-        request: None,
-        response: None,
+        feature: None,
     },
     Route {
         id: "patch_sessions_by_id_plugins_by_plugin",
@@ -2078,6 +2308,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Set or clear a session's per-plugin data slot.",
         request: None,
         response: None,
+        feature: Some(Feature::Plugins),
     },
     Route {
         id: "get_sessions_by_id",
@@ -2086,6 +2317,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get one session's details.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "patch_sessions_by_id",
@@ -2094,6 +2326,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Rename a session.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_sessions_by_id_conversation",
@@ -2102,6 +2335,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Fetch a session's normalized conversation transcript.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_sessions_by_id_result",
@@ -2110,6 +2344,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Completion state and final assistant text of a session.",
         request: None,
         response: Some("SessionResult"),
+        feature: None,
     },
     Route {
         id: "get_sessions_by_id_search",
@@ -2118,6 +2353,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Find-in-conversation hit list for one session's transcript.",
         request: None,
         response: None,
+        feature: Some(Feature::TranscriptSearch),
     },
     Route {
         id: "get_sessions_by_id_images_by_image",
@@ -2126,6 +2362,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Fetch an agent-posted image blob.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_sessions_by_id_blobs_by_hash",
@@ -2134,6 +2371,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Resolve a content-addressed embedded-attachment blob.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_sessions_by_id_attachments",
@@ -2142,6 +2380,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List the files the user uploaded into a session (served via blobs).",
         request: None,
         response: None,
+        feature: Some(Feature::Uploads),
     },
     Route {
         id: "get_sessions_by_id_linked_file",
@@ -2150,6 +2389,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read a path linked in this session or the one that linked it, on its machine.",
         request: None,
         response: None,
+        feature: Some(Feature::Files),
     },
     Route {
         id: "get_sessions_by_id_linked_file_owner",
@@ -2158,6 +2398,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Which session and machine linked a path, when this session did not.",
         request: None,
         response: None,
+        feature: Some(Feature::Files),
     },
     Route {
         id: "get_sessions_by_id_diagnose",
@@ -2166,6 +2407,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Snapshot everything the daemon knows about a session, dated.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_sessions_by_id_langfuse",
@@ -2174,6 +2416,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Langfuse cost/usage rollup for a session.",
         request: None,
         response: None,
+        feature: Some(Feature::Observability),
     },
     Route {
         id: "get_sessions_by_id_events",
@@ -2182,6 +2425,7 @@ pub const ROUTES: &[Route] = &[
         summary: "One session's lifecycle events, newest first.",
         request: None,
         response: Some("EventPage"),
+        feature: None,
     },
     Route {
         id: "get_sessions_by_id_voice_notes_by_note",
@@ -2190,6 +2434,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Fetch an agent voice note's audio.",
         request: None,
         response: None,
+        feature: Some(Feature::Voice),
     },
     Route {
         id: "get_accounts_by_id_shares",
@@ -2198,6 +2443,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List or grant shares of an account to other users.",
         request: None,
         response: None,
+        feature: Some(Feature::AccountSharing),
     },
     Route {
         id: "post_accounts_by_id_shares",
@@ -2206,6 +2452,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List or grant shares of an account to other users.",
         request: None,
         response: None,
+        feature: Some(Feature::AccountSharing),
     },
     Route {
         id: "delete_accounts_by_id_shares_by_user",
@@ -2214,6 +2461,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Revoke a user's share of an account.",
         request: None,
         response: None,
+        feature: Some(Feature::AccountSharing),
     },
     Route {
         id: "get_by_resource_type_by_id_shares",
@@ -2222,6 +2470,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List or grant shares of a resource to other users.",
         request: None,
         response: None,
+        feature: Some(Feature::AccountSharing),
     },
     Route {
         id: "post_by_resource_type_by_id_shares",
@@ -2230,6 +2479,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List or grant shares of a resource to other users.",
         request: None,
         response: None,
+        feature: Some(Feature::AccountSharing),
     },
     Route {
         id: "delete_by_resource_type_by_id_shares_by_user",
@@ -2238,6 +2488,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Revoke a user's share of a resource.",
         request: None,
         response: None,
+        feature: Some(Feature::AccountSharing),
     },
     Route {
         id: "get_permissions_pending",
@@ -2246,6 +2497,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List pending tool-use permission requests.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_skills_index",
@@ -2254,6 +2506,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List available skills.",
         request: None,
         response: None,
+        feature: Some(Feature::Library),
     },
     Route {
         id: "put_skills_by_name",
@@ -2262,6 +2515,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Upload or fetch a skill bundle by name.",
         request: None,
         response: None,
+        feature: Some(Feature::Library),
     },
     Route {
         id: "get_skills_by_name",
@@ -2270,6 +2524,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Upload or fetch a skill bundle by name.",
         request: None,
         response: None,
+        feature: Some(Feature::Library),
     },
     Route {
         id: "get_sessions_by_id_context",
@@ -2278,6 +2533,7 @@ pub const ROUTES: &[Route] = &[
         summary: "The rules and memories a session was given.",
         request: None,
         response: Some("SessionContextResponse"),
+        feature: Some(Feature::Context),
     },
     Route {
         id: "post_sessions_by_id_context",
@@ -2286,6 +2542,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Attach memories to a live session (owner only).",
         request: Some("AttachContextRequest"),
         response: Some("AttachContextResponse"),
+        feature: Some(Feature::Context),
     },
     Route {
         id: "get_sessions_by_id_user_actions",
@@ -2294,6 +2551,7 @@ pub const ROUTES: &[Route] = &[
         summary: "What the agent is waiting on from the user.",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_sessions_by_id_user_actions_by_aid_tick",
@@ -2302,6 +2560,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Resolve one user action as the user (done or dropped).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_drafts",
@@ -2310,6 +2569,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List your unsent drafts.",
         request: None,
         response: Some("DraftList"),
+        feature: Some(Feature::Drafts),
     },
     Route {
         id: "get_drafts_by_*key",
@@ -2318,6 +2578,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read, save or discard one draft.",
         request: None,
         response: Some("Draft"),
+        feature: Some(Feature::Drafts),
     },
     Route {
         id: "put_drafts_by_*key",
@@ -2326,6 +2587,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read, save or discard one draft.",
         request: Some("PutDraftRequest"),
         response: None,
+        feature: Some(Feature::Drafts),
     },
     Route {
         id: "delete_drafts_by_*key",
@@ -2334,6 +2596,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Read, save or discard one draft.",
         request: None,
         response: None,
+        feature: Some(Feature::Drafts),
     },
     Route {
         id: "get_spawn_memory",
@@ -2342,6 +2605,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get or replace your remembered spawn configuration per target.",
         request: None,
         response: Some("SpawnMemoryPayload"),
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "put_spawn_memory",
@@ -2350,6 +2614,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get or replace your remembered spawn configuration per target.",
         request: Some("SpawnMemoryPayload"),
         response: Some("SpawnMemoryPayload"),
+        feature: Some(Feature::MachineSpawn),
     },
     Route {
         id: "post_users_by_id_tokens",
@@ -2358,6 +2623,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Mint a token for a user (self or admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_users_by_id_acls",
@@ -2366,6 +2632,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get or set a user's scope ceiling (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "patch_users_by_id_acls",
@@ -2374,6 +2641,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Get or set a user's scope ceiling (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "get_users_by_id_keys",
@@ -2382,6 +2650,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List or mint a user's API keys (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_users_by_id_keys",
@@ -2390,6 +2659,7 @@ pub const ROUTES: &[Route] = &[
         summary: "List or mint a user's API keys (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "delete_users_by_id_keys_by_kid",
@@ -2398,6 +2668,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Revoke a user's API key (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "patch_users_by_id_keys_by_kid_acls",
@@ -2406,6 +2677,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Set a key's scope grant (admin).",
         request: None,
         response: None,
+        feature: None,
     },
     Route {
         id: "post_version_refresh",
@@ -2414,6 +2686,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Probe upstream for a newer release now instead of waiting out the background interval.",
         request: None,
         response: None,
+        feature: Some(Feature::SelfUpdate),
     },
     Route {
         id: "get_version_changelog",
@@ -2422,6 +2695,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Release notes of every upstream release newer than this server.",
         request: None,
         response: Some("ChangelogResponse"),
+        feature: Some(Feature::SelfUpdate),
     },
     Route {
         id: "post_version_self_update",
@@ -2430,6 +2704,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Deploy the newer release: the machine's own update hook when it has one, a YOLO agent otherwise (admin).",
         request: None,
         response: None,
+        feature: Some(Feature::SelfUpdate),
     },
     Route {
         id: "get_version_self_update",
@@ -2438,6 +2713,7 @@ pub const ROUTES: &[Route] = &[
         summary: "The most recent update-hook run and where it got to.",
         request: None,
         response: None,
+        feature: Some(Feature::SelfUpdate),
     },
     Route {
         id: "post_otlp_v1_traces",
@@ -2446,6 +2722,7 @@ pub const ROUTES: &[Route] = &[
         summary: "Forward the webui's OTLP trace export to this server's collector.",
         request: None,
         response: None,
+        feature: Some(Feature::Observability),
     },
 ];
 
@@ -2503,6 +2780,27 @@ mod tests {
     }
 
     #[test]
+    fn every_method_of_a_path_shares_one_feature() {
+        for r in ROUTES {
+            for other in ROUTES.iter().filter(|o| o.path == r.path) {
+                assert_eq!(
+                    r.feature, other.feature,
+                    "{} and {} share a path but not a feature: the server mounts a path whole",
+                    r.id, other.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn route_feature_serializes_by_name() {
+        let r = find(Method::Post, "/voice/speak").expect("route");
+        assert_eq!(serde_json::to_value(r).unwrap()["feature"], "voice");
+        let core = find(Method::Get, "/me").expect("route");
+        assert!(serde_json::to_value(core).unwrap()["feature"].is_null());
+    }
+
+    #[test]
     fn lookup_by_id_round_trips() {
         for r in ROUTES {
             assert_eq!(by_id(r.id).map(|f| (f.method, f.path)), Some((r.method, r.path)));
@@ -2532,13 +2830,14 @@ pub fn typescript() -> String {
         let _ = writeln!(
             out,
             "  {{ id: \"{}\", method: \"{}\", path: \"{}\", summary: {}, request: {}, \
-             response: {} }},",
+             response: {}, feature: {} }},",
             r.id,
             r.method,
             r.path,
             serde_json::to_string(r.summary).unwrap_or_else(|_| "\"\"".to_owned()),
             quote(r.request),
             quote(r.response),
+            quote(r.feature.map(Feature::name)),
         );
     }
     out.push_str("] as const satisfies readonly ApiRoute[];\n\n");

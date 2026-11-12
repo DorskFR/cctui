@@ -6,4 +6,9 @@ import type { LangfuseCapability } from "./LangfuseCapability";
  * configured integrations and the caller's permissions. Missing flags from
  * older full servers preserve workspace support.
  */
-export type CapabilitiesResponse = { langfuse: LangfuseCapability, distribution: string, workspace: boolean, features: Array<string>, experimental: boolean, };
+export type CapabilitiesResponse = { langfuse: LangfuseCapability, distribution: string, workspace: boolean, features: Array<string>, 
+/**
+ * Every switchable feature this server knows, on or off. A feature absent
+ * from this list (an older server) is on.
+ */
+switchable: Array<string>, experimental: boolean, };

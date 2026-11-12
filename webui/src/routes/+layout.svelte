@@ -1,8 +1,9 @@
 <script lang="ts">
 	import '$lib/styles/app.css';
 	import { apiBase } from '$lib/config';
-	import { probeWorkspaceSupport } from '$lib/workspaceSupport';
-	import CoreServerNotice from '$lib/components/organisms/CoreServerNotice.svelte';
+	import { bootCapabilities, onCapabilities, workspaceSupported } from '$lib/workspaceSupport';
+	import { hasFeature } from '$lib/features.svelte';
+	import HeadlessServerNotice from '$lib/components/organisms/HeadlessServerNotice.svelte';
 	import MaintenanceScreen from '$lib/components/organisms/MaintenanceScreen.svelte';
 	import { backendHealth } from '$lib/backendHealth.svelte';
 	import '@dorsk/tsumikit/looks/depth.css';
@@ -21,7 +22,7 @@
 	import { settings, sessionListWidthSize } from '$lib/settings.svelte';
 	import { locale } from '$lib/locale.svelte';
 	import { ws } from '$lib/ws.svelte';
-	import { goto, beforeNavigate } from '$app/navigation';
+	import { goto, beforeNavigate, invalidateAll } from '$app/navigation';
 	import { sessionFailureToast } from '$lib/sessionFailureToast';
 	import Header from '$lib/components/organisms/Header.svelte';
 	import MainNav from '$lib/components/organisms/MainNav.svelte';
@@ -142,12 +143,24 @@
 	// signed in — the token isn't readable from JS.
 	$effect(() => {
 		let cancelled = false;
-		void probeWorkspaceSupport(fetch, apiBase()).then((supported) => {
+		let unsubscribe = () => {};
+		void bootCapabilities(fetch, apiBase()).then((caps) => {
 			if (cancelled) return;
-			workspaceAvailable = supported;
-			if (supported) void auth.init();
+			if (caps) queryClient.setQueryData(qk.capabilities, caps);
+			workspaceAvailable = workspaceSupported(caps);
+			// A later answer (read at sign-in) can switch off the page already
+			// loaded, so its `requireFeature` runs again.
+			unsubscribe = onCapabilities((next) => {
+				queryClient.setQueryData(qk.capabilities, next);
+				workspaceAvailable = workspaceSupported(next);
+				void invalidateAll();
+			});
+			if (workspaceAvailable) void auth.init();
 		});
-		return () => { cancelled = true; };
+		return () => {
+			cancelled = true;
+			unsubscribe();
+		};
 	});
 
 	// Keep the websocket alive whenever we hold a valid cookie session.
@@ -166,7 +179,7 @@
 	});
 
 	$effect(() => {
-		if (workspaceAvailable === true && auth.isAuthed) void serverDrafts.load();
+		if (workspaceAvailable === true && auth.isAuthed && hasFeature('drafts')) void serverDrafts.load();
 	});
 
 	// The guided tours spotlight elements behind the login, so they mount once
@@ -192,7 +205,7 @@
 				onretry={() => backendHealth.retryNow()}
 			/>
 		{:else if workspaceAvailable === false}
-			<CoreServerNotice />
+			<HeadlessServerNotice />
 		{:else if workspaceAvailable === true && auth.isAuthed}
 			<div class="app" class:tiles={isTiles}>
 				<Header />

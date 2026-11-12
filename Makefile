@@ -116,8 +116,8 @@ db/test/up:  ## Start test database
 db/test/down:  ## Stop test database
 	docker compose down -v --remove-orphans
 
-db/test/migrate/up:  ## Apply migrations to test database
-	DATABASE_URL=$(TEST_DATABASE_URL) sqlx migrate run --source migrations
+db/test/migrate/up:  ## Provision the test database schema
+	DATABASE_URL=$(TEST_DATABASE_URL) cargo run -p cctui-server -- init-db
 
 # ── Clean ──────────────────────────────────────────────────
 

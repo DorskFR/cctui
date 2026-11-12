@@ -16,9 +16,7 @@ pub struct MachineCommand {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Live-session metadata. Delivery concerns (the per-session stream broadcast
-/// channel) moved into [`crate::bus::Bus`]; the registry keeps only
-/// session bookkeeping.
+/// Live-session bookkeeping. Delivery is [`crate::bus::Bus`]'s.
 #[derive(Debug)]
 pub struct SessionHandle {
     pub session: Session,
@@ -26,7 +24,6 @@ pub struct SessionHandle {
     pub last_heartbeat: Instant,
     #[allow(dead_code)]
     pub token_usage: TokenUsage,
-    pub policy_rules: Vec<crate::policy::PolicyRule>,
 }
 
 pub type SharedRegistry = Arc<RwLock<Registry>>;
@@ -61,7 +58,6 @@ impl Registry {
                 session,
                 last_heartbeat: Instant::now(),
                 token_usage: TokenUsage::default(),
-                policy_rules: Vec::new(),
             },
         );
     }
@@ -148,12 +144,6 @@ impl Registry {
             }
         }
         demoted
-    }
-
-    pub fn set_policy(&mut self, session_id: &str, rules: Vec<crate::policy::PolicyRule>) {
-        if let Some(handle) = self.sessions.get_mut(session_id) {
-            handle.policy_rules = rules;
-        }
     }
 
     pub fn queue_machine_command(
@@ -296,25 +286,6 @@ mod tests {
         let handle = reg.get(id).unwrap();
         assert_eq!(handle.token_usage.tokens_in, 300);
         assert_eq!(handle.token_usage.tokens_out, 150);
-    }
-
-    #[test]
-    fn set_policy_stores_rules() {
-        let mut reg = Registry::new();
-        let id = "claude-session-abc";
-        reg.register(make_session(id, None));
-
-        let rules = vec![crate::policy::PolicyRule {
-            tool: "Bash".into(),
-            action: crate::policy::PolicyAction::Deny,
-            pattern: Some("rm -rf".into()),
-            reason: Some("dangerous".into()),
-        }];
-        reg.set_policy(id, rules);
-
-        let handle = reg.get(id).unwrap();
-        assert_eq!(handle.policy_rules.len(), 1);
-        assert_eq!(handle.policy_rules[0].tool, "Bash");
     }
 
     #[test]

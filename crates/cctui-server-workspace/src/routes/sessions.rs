@@ -12,6 +12,7 @@ use cctui_proto::api::{
     SessionListResponse, SessionParentStub, SessionResult, SpawnRequest, SpawnResponse,
 };
 use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, PrStatusCache, classify};
+use cctui_proto::features::Feature;
 use cctui_proto::models::{Attention, Liveness, Session, SessionEndReason, SessionStatus};
 use cctui_server_core::hook_policy;
 
@@ -748,17 +749,18 @@ impl EnrichContext {
         ctx.account_names = fetch_account_names(state, &session_ids).await?;
         ctx.with_credentials = fetch_token_holders(state, &session_ids).await?;
         ctx.traffic_observed = fetch_traffic_observed(state, &session_ids).await?;
-        ctx.auto_approve = {
+        if state.config.features.contains(Feature::AutoApprove) {
             let store = state.permission_store.read().await;
-            session_ids.iter().filter(|id| store.is_auto_approve(id)).cloned().collect()
-        };
+            ctx.auto_approve =
+                session_ids.iter().filter(|id| store.is_auto_approve(id)).cloned().collect();
+        }
         ctx.last_turns = fetch_last_turns(state, &session_ids).await?;
         let draft_ids: Vec<String> = with_ts
             .iter()
             .filter(|(_, s)| s.status == SessionStatus::Draft)
             .map(|(_, s)| s.id.clone())
             .collect();
-        if !draft_ids.is_empty() {
+        if !draft_ids.is_empty() && state.config.features.contains(Feature::Scheduling) {
             ctx.scheduled_launches =
                 crate::scheduled_spawns::pending_for(&state.pool, &draft_ids).await?;
         }
@@ -1608,6 +1610,9 @@ pub async fn search_sessions(
     // A plain keyword parses to a single free-text leaf, so back-compat holds.
     let root = cctui_query::parse(&straighten_phrase_quotes(params.q.trim()));
     let browse = root.is_empty();
+    if !browse && !state.config.features.contains(Feature::TranscriptSearch) {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, TRANSCRIPT_SEARCH_OFF));
+    }
     if browse && !params.include_archived {
         return Ok(Json(SessionListResponse::default()));
     }
@@ -2057,11 +2062,7 @@ pub async fn get_session(
                 model: None,
                 effort: None,
                 permission_mode,
-                auto_approve: state
-                    .permission_store
-                    .read()
-                    .await
-                    .is_auto_approve(&handle.session.id),
+                auto_approve: auto_approve_shown(&state, &handle.session.id).await,
                 match_snippet: None,
                 match_seq: None,
                 last_activity_at: None,
@@ -2141,7 +2142,7 @@ pub async fn get_session(
         model: None,
         effort: None,
         permission_mode: None,
-        auto_approve: state.permission_store.read().await.is_auto_approve(&row.id),
+        auto_approve: auto_approve_shown(&state, &row.id).await,
         match_snippet: None,
         match_seq: None,
         last_activity_at: None,
@@ -2438,8 +2439,11 @@ pub async fn get_conversation(
         .map(str::to_owned)
         .collect();
     let usage_by_message = message_usage(&state, &session_id, &message_ids).await?;
-    let scheduled_turns =
-        crate::scheduled_messages::scheduled_turns(&state.pool, &session_id).await?;
+    let scheduled_turns = if state.config.features.contains(Feature::Scheduling) {
+        crate::scheduled_messages::scheduled_turns(&state.pool, &session_id).await?
+    } else {
+        HashMap::new()
+    };
 
     // Stamp each event with `ts` (unix millis, matching the live `AgentEvent`
     // shape) derived from `created_at`, so the client renders real timestamps
@@ -2947,6 +2951,9 @@ pub async fn send_message(
     Json(req): Json<MessageRequest>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), AppError> {
     if let Some(raw) = req.deliver_at.as_deref() {
+        if !state.config.features.contains(Feature::Scheduling) {
+            return Err(AppError::new(StatusCode::BAD_REQUEST, SCHEDULING_OFF));
+        }
         return crate::routes::scheduled_messages::schedule(
             &state,
             &ctx,
@@ -3001,6 +3008,12 @@ pub async fn send_message(
         }),
     ))
 }
+
+pub const SCHEDULING_OFF: &str =
+    "scheduled sending is turned off on this server: send without deliver_at";
+
+pub const TRANSCRIPT_SEARCH_OFF: &str =
+    "transcript search is turned off on this server: list sessions with an empty query";
 
 /// A draft has no worker to wake.
 pub fn reply_wakes_worker(status: &str, tempo: Option<&str>) -> bool {
@@ -3588,6 +3601,14 @@ fn fork_frame(
     }
 }
 
+async fn inherit_fork_context(state: &AppState, child_key: &str, parent_id: &str) {
+    if state.config.features.contains(cctui_proto::features::Feature::Context) {
+        crate::routes::context::inherit_intent(&state.pool, child_key, parent_id).await;
+    } else {
+        crate::routes::context::ownership::inherit(&state.pool, child_key, parent_id, None).await;
+    }
+}
+
 /// `POST /api/v1/sessions/{id}/fork` — fork an existing conversation into a
 /// brand-new session, optionally changing model/effort at fork time.
 ///
@@ -3685,7 +3706,7 @@ pub async fn fork_session(
         child_session_id.clone(),
         req.extract,
     );
-    crate::routes::context::inherit_intent(&state.pool, &child_key, &session_id).await;
+    inherit_fork_context(&state, &child_key, &session_id).await;
     crate::routes::spawn::remember_spawner(&state.pool, &child_key, ctx.user_id, None).await;
     if let Err(err) = state.bus.command_daemon_for_session(machine_uuid, &session_id, frame).await {
         let detail = cctui_server_core::launch::delivery_detail(&state.pool, machine_uuid, &err);
@@ -3714,6 +3735,12 @@ pub async fn fork_session(
     ))
 }
 
+/// The session's auto-approve toggle as shown to clients; off with the feature off.
+async fn auto_approve_shown(state: &AppState, session_id: &str) -> bool {
+    state.config.features.contains(Feature::AutoApprove)
+        && state.permission_store.read().await.is_auto_approve(session_id)
+}
+
 /// `POST /api/v1/sessions/{id}/auto-approve` — toggle cctui-side auto-approve.
 /// When on, incoming permission requests for this session are
 /// answered `allow` immediately. In-memory; reset on server restart.
@@ -3722,6 +3749,9 @@ pub async fn set_auto_approve(
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::AutoApproveRequest>,
 ) -> Result<StatusCode, AppError> {
+    if !state.config.features.contains(Feature::AutoApprove) {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "auto-approve is turned off"));
+    }
     state.permission_store.write().await.set_auto_approve(&session_id, req.enabled);
     tracing::info!(session_id = %session_id, enabled = req.enabled, "auto-approve toggled");
     Ok(StatusCode::NO_CONTENT)
@@ -4120,18 +4150,6 @@ pub async fn unarchive_sessions(
     }
     tracing::info!(unarchived = ok, requested = req.ids.len(), "batch unarchive");
     StatusCode::NO_CONTENT
-}
-
-pub async fn set_session_policy(
-    State(state): State<AppState>,
-    Path(session_id): Path<String>,
-    Json(rules): Json<Vec<crate::policy::PolicyRule>>,
-) -> Result<StatusCode, AppError> {
-    {
-        let mut registry = state.registry.write().await;
-        registry.set_policy(&session_id, rules);
-    }
-    Ok(StatusCode::OK)
 }
 
 /// [`normalize_last_message`] over the prose of a SQL-truncated prefix, past
@@ -7173,5 +7191,52 @@ mod tests {
             .execute(&pool)
             .await
             .expect("cleanup");
+    }
+
+    async fn search_without_transcript_search(
+        q: &str,
+        include_archived: bool,
+    ) -> Result<axum::Json<cctui_proto::api::SessionListResponse>, crate::error::AppError> {
+        use cctui_proto::features::{Feature, FeatureSet};
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+        let mut state = crate::state::AppState::for_test(pool);
+        state.config.features = FeatureSet::all().without(Feature::TranscriptSearch);
+        let ctx = AuthContext {
+            user_id: uuid::Uuid::new_v4(),
+            key_id: uuid::Uuid::new_v4(),
+            machine_id: None,
+            scopes: std::collections::BTreeSet::new(),
+        };
+        super::search_sessions(
+            axum::extract::State(state),
+            axum::Extension(ctx),
+            axum::extract::Query(super::SearchParams {
+                q: q.to_owned(),
+                include_archived,
+                limit: None,
+                offset: None,
+                cursor: None,
+                show_hidden: false,
+            }),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_text_query_is_refused_when_transcript_search_is_off() {
+        for q in ["foo", "status:archived", "  \"fix bug\"  "] {
+            let Err(err) = search_without_transcript_search(q, true).await else {
+                panic!("{q:?} must be refused with transcript search off");
+            };
+            assert_eq!(err.status(), StatusCode::BAD_REQUEST, "{q:?}");
+            assert_eq!(err.message(), super::TRANSCRIPT_SEARCH_OFF, "{q:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_blank_query_is_not_refused_when_transcript_search_is_off() {
+        let axum::Json(found) =
+            search_without_transcript_search("   ", false).await.expect("blank query is a browse");
+        assert!(found.sessions.is_empty());
     }
 }

@@ -173,7 +173,7 @@
 		overlay
 		multiple
 		label={m.spawn_dropzone_label()}
-		disabled={sf.target !== 'machine'}
+		disabled={sf.target !== 'machine' || !sf.canAttach}
 		onfiles={sf.att.add}
 		onactive={sf.att.setDragActive}
 	>
@@ -201,7 +201,7 @@
 	{/if}
 	<div class="foot-row">
 		<Button style={FOOT_GROW} onclick={sf.clearForm}>{m.spawn_clear()}</Button>
-		{#if sf.target === 'machine'}
+		{#if sf.target === 'machine' && sf.canDraft}
 			<Button
 				data-journey="draft"
 				style={FOOT_GROW}
@@ -212,9 +212,9 @@
 				{m.spawn_draft()}
 			</Button>
 		{/if}
-		<!-- No machines: nothing to schedule either, and only a plain Button can
-		     carry the disabled reason as its own title. -->
-		{#if sf.target === 'machine' && !sf.noMachines}
+		<!-- No machines or no scheduling: nothing to schedule, and only a plain
+		     Button can carry the disabled reason as its own title. -->
+		{#if sf.target === 'machine' && !sf.noMachines && sf.canSchedule}
 			<SplitButton
 				data-journey="submit"
 				variant="primary"

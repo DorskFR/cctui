@@ -22,6 +22,9 @@ use axum::routing::MethodRouter;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use cctui_proto::api::routes;
+use cctui_proto::features::FeatureSet;
+
 use crate::auth::{AuthContext, Scope};
 use crate::state::AppState;
 
@@ -431,12 +434,33 @@ pub struct Routes {
     router: Router<AppState>,
     public_router: Router<AppState>,
     descriptors: Vec<RouteDescriptor>,
+    features: FeatureSet,
 }
 
 impl Routes {
     #[must_use]
     pub fn new() -> Self {
-        Self { router: Router::new(), public_router: Router::new(), descriptors: Vec::new() }
+        Self::with_features(FeatureSet::all())
+    }
+
+    /// [`Routes::add`] skips a path whose feature in the proto route table is
+    /// not in `features`: it is neither mounted nor described.
+    #[must_use]
+    pub fn with_features(features: FeatureSet) -> Self {
+        Self {
+            router: Router::new(),
+            public_router: Router::new(),
+            descriptors: Vec::new(),
+            features,
+        }
+    }
+
+    fn mounted(&self, methods: &[Method], path: &str) -> bool {
+        methods.iter().all(|method| {
+            routes::Method::parse(method.as_str())
+                .and_then(|m| routes::find(m, path))
+                .is_none_or(|route| self.features.allows(route.feature))
+        })
     }
 
     /// Register one route for every method in `methods`, attaching the
@@ -460,6 +484,9 @@ impl Routes {
             "{path}: a public route is exactly `Authn::None` + `Authz::Public` listed in \
              PUBLIC_PATHS; anything else must authenticate"
         );
+        if !self.mounted(methods, path) {
+            return self;
+        }
         if public {
             // Full path: this router is merged into the outer app, not nested.
             self.public_router = self.public_router.route(&format!("{API_PREFIX}{path}"), handler);
@@ -1030,7 +1057,6 @@ mod tests {
             "/dispatch-records/{id}/dismiss",
             "/drafts/{*key}",
             "/keys/{id}",
-            "/keys/{id}/value",
             "/labels/{id}",
             "/passkeys/{id}",
             "/prompts/{id}",

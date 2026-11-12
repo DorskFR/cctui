@@ -20,6 +20,7 @@ import type {
   UpdateAccount,
   UpdateProvider,
 } from "./types";
+import { hasFeature } from "$lib/features.svelte";
 
 export const useAccounts = (enabled: () => boolean = () => true) =>
   createQuery(() => ({
@@ -109,7 +110,7 @@ export const useServiceTokens = (accountId: () => string) =>
   createQuery(() => ({
     queryKey: qk.serviceTokens(accountId()),
     queryFn: () => endpoints.serviceTokens(accountId()),
-    enabled: !!accountId(),
+    enabled: !!accountId() && hasFeature("service_tokens"),
   }));
 
 export function useServiceTokenActions() {
@@ -136,7 +137,7 @@ export const useAccountPools = (enabled: () => boolean = () => true) =>
   createQuery(() => ({
     queryKey: qk.accountPools,
     queryFn: endpoints.accountPools,
-    enabled: enabled(),
+    enabled: enabled() && hasFeature("account_sharing"),
   }));
 
 /** Every pool's usage windows aggregated per provider family, for the pool
@@ -146,7 +147,7 @@ export const useAccountPoolsUsage = (enabled: () => boolean = () => true) =>
   createQuery(() => ({
     queryKey: qk.accountPoolsUsage,
     queryFn: endpoints.accountPoolsUsage,
-    enabled: enabled(),
+    enabled: enabled() && hasFeature("account_sharing"),
     staleTime: 180_000,
     refetchInterval: 180_000,
     refetchOnWindowFocus: false,
@@ -313,7 +314,7 @@ export const useAccountShares = (
   createQuery(() => ({
     queryKey: qk.accountShares(accountId()),
     queryFn: () => endpoints.accountShares(accountId()),
-    enabled: enabled(),
+    enabled: enabled() && hasFeature("account_sharing"),
     retry: false,
   }));
 
@@ -327,7 +328,7 @@ export const useResourceShares = (
   createQuery(() => ({
     queryKey: qk.resourceShares(resourceType(), id()),
     queryFn: () => endpoints.resourceShares(resourceType(), id()),
-    enabled: enabled(),
+    enabled: enabled() && hasFeature("account_sharing"),
     retry: false,
   }));
 

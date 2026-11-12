@@ -10,6 +10,7 @@
 	import { settings, type HarnessMode, type WhipMode } from '$lib/settings.svelte';
 	import { BUILTIN_STALL_PHRASES } from './settings.logic';
 	import { m } from '$lib/paraglide/messages';
+	import { hasFeature } from '$lib/features.svelte';
 
 	const harnessMode = $derived(settings.harnessMode);
 	const harnessOpts: { v: HarnessMode; label: string; help: string }[] = [
@@ -43,7 +44,7 @@
 	id="execution"
 	icon="▶"
 	title={m.settings_nav_execution()}
-	description={m.settings_execution_desc()}
+	description={hasFeature('machine_spawn') ? m.settings_execution_desc() : undefined}
 >
 	<SettingGroup>
 		<SettingRow label={m.settings_harness_execution_label()} server wide selfLabelled>

@@ -101,14 +101,6 @@ fn register_policies(r: Routes) -> Routes {
         sess_write(),
     )
     .add(
-        &[Method::POST],
-        "/sessions/{id}/policy",
-        "Set a session's permission policy.",
-        post(routes::sessions::set_session_policy),
-        Authn::Bearer,
-        sess_write(),
-    )
-    .add(
         &[Method::PATCH],
         "/sessions/{id}/plugins/{plugin_id}",
         "Set or clear a session's per-plugin data slot.",

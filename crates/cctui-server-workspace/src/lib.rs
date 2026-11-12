@@ -48,7 +48,6 @@ mod plugin_proxy;
 mod plugin_settings;
 mod plugin_store;
 mod plugins;
-mod policy;
 mod pool_usage;
 mod presence;
 mod preview;
@@ -86,8 +85,9 @@ use std::sync::Arc;
 use authz::Routes;
 use axum::extract::DefaultBodyLimit;
 use axum::http::Method;
-use axum::routing::{any, get, post, put};
+use axum::routing::{MethodRouter, any, get, post, put};
 use axum::{Extension, Router, middleware};
+use cctui_proto::features::{Feature, FeatureSet};
 use config::Config;
 use live_sessions::live_sessions_predicate;
 use state::AppState;
@@ -101,6 +101,9 @@ pub async fn run() -> anyhow::Result<()> {
         return check_plugin_archive(rest);
     }
     install_crypto_provider();
+    if args.first().is_some_and(|cmd| cmd == "init-db") {
+        return init_db().await;
+    }
     let _telemetry = cctui_telemetry::init(
         "cctui-server",
         env!("CARGO_PKG_VERSION"),
@@ -108,12 +111,16 @@ pub async fn run() -> anyhow::Result<()> {
     );
     let secrets = Arc::new(cctui_secrets::SecretRegistry::from_env());
     let (config, pool, auth_config, migrations) = bootstrap(&secrets).await?;
+    tracing::info!("features: {}", config.features);
     let state = build_state(&config, pool, auth_config.clone(), &secrets).await?;
     follow_database_url(&secrets, &state.pool);
     secrets.spawn_reloader();
     record_boot_events(&state, &migrations);
-    plugin_store::init(&state.pool, &state.plugins).await;
-    plugin_host_token::reconcile_installed(&state.pool, &state.auth_config, &state.plugins).await;
+    if Task::PluginInit.enabled(config.features) {
+        plugin_store::init(&state.pool, &state.plugins).await;
+        plugin_host_token::reconcile_installed(&state.pool, &state.auth_config, &state.plugins)
+            .await;
+    }
     start_background_tasks(&state).await;
     let app = build_app(&state, &config, &auth_config);
     spawn_sweeps(&state);
@@ -130,6 +137,33 @@ fn check_plugin_archive(args: &[String]) -> anyhow::Result<()> {
     plugin_archive::check_catalog_archive(&bytes, id, version).map_err(anyhow::Error::msg)
 }
 
+/// `init-db`: provision or upgrade the schema, then exit. Needs only
+/// `DATABASE_URL`, which may be a secret ref, and the server's
+/// `CCTUI_FEATURES_FILE`, which decides whether search objects are built.
+async fn init_db() -> anyhow::Result<()> {
+    let features = init_db_features(std::env::var(config::FEATURES_FILE_ENV).ok().as_deref())?;
+    let secrets = cctui_secrets::SecretRegistry::from_env();
+    let raw =
+        std::env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL is required"))?;
+    let url = secrets.register("DATABASE_URL", &raw).await?.get();
+    let (pool, applied) = db::connect_reporting_for(&url, features).await?;
+    pool.close().await;
+    println!("schema ready; {} legacy migrations applied", applied.len());
+    Ok(())
+}
+
+fn init_db_features(path: Option<&str>) -> anyhow::Result<FeatureSet> {
+    let Some(path) = path.filter(|p| !p.trim().is_empty()) else {
+        return Ok(FeatureSet::all());
+    };
+    let env = config::FEATURES_FILE_ENV;
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("{env}: cannot read `{path}`: {e}"))?;
+    let resolution =
+        config::parse_features(&text).map_err(|e| anyhow::anyhow!("{env} `{path}`: {e}"))?;
+    Ok(resolution.set)
+}
+
 use cctui_server_core::client::{build_http_client, install_crypto_provider};
 use cctui_server_core::dispatch_identity;
 
@@ -143,7 +177,8 @@ async fn bootstrap(
     }
 
     let config = Config::from_env(secrets).await?;
-    let (pool, migrations) = db::connect_reporting(&config.database_url).await?;
+    let (pool, migrations) =
+        db::connect_reporting_for(&config.database_url, config.features).await?;
     install_vault_key(&pool).await?;
     // One-release back-compat shim: if the retired
     // CCTUI_CLAUDE_LITELLM_* env vars are set, synthesize a managed (read-only)
@@ -250,6 +285,7 @@ async fn build_state(
     let skills = init_skill_store().await;
     let langfuse = langfuse::LangfuseConfig::from_env(secrets)
         .await?
+        .filter(|_| config.features.contains(Feature::Observability))
         .map(|c| Arc::new(langfuse::LangfuseClient::new(c, build_http_client())));
     let dispatchers = init_dispatchers(config);
 
@@ -289,7 +325,9 @@ async fn build_state(
         permission_store: routes::permissions::PermissionStore::shared(),
         // Passkeys ride the deployment's own public URL: a server already
         // configured with an https `CCTUI_EXTERNAL_URL` needs no new env.
-        webauthn: webauthn::build(&config.external_url, config.rp_id.as_deref()).map(Arc::new),
+        webauthn: webauthn::build(&config.external_url, config.rp_id.as_deref())
+            .filter(|_| config.features.contains(Feature::Passkeys))
+            .map(Arc::new),
         skills,
         plugins: Arc::new(init_plugins(config)),
         preview: Arc::new(preview::Registry::new(
@@ -302,7 +340,6 @@ async fn build_state(
         // Optional Langfuse tracing sink. `None` (dark) unless the
         // CCTUI_LANGFUSE_* env is fully set — zero overhead on the gateway path.
         langfuse,
-        pending_oauth_logins: Arc::new(dashmap::DashMap::new()),
         pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
         codex_catalogs: Arc::new(dashmap::DashMap::new()),
         codex_account_catalogs: Arc::new(dashmap::DashMap::new()),
@@ -350,7 +387,7 @@ async fn start_background_tasks(state: &AppState) {
 
     // Slow upstream release probe feeding `/version.latest_version`;
     // `CCTUI_UPDATE_CHECK=0` keeps air-gapped deployments quiet.
-    if update_check::enabled_from_env() {
+    if update_check::enabled_from_env() && Task::UpdateProbe.enabled(state.config.features) {
         tokio::spawn(update_check::task(state.update_check.clone(), state.http_client.clone()));
     }
 
@@ -378,7 +415,9 @@ async fn start_background_tasks(state: &AppState) {
 
     routes::codex_models::warm_cache(state).await;
 
-    if let Some(config) = search_index::BackfillConfig::from_env() {
+    if let Some(config) = search_index::BackfillConfig::from_env()
+        && Task::SearchBackfill.enabled(state.config.features)
+    {
         tokio::spawn(search_index::task(state.pool.clone(), config));
     }
     if let Some(config) = image_blobs::backfill::Config::from_env() {
@@ -387,10 +426,12 @@ async fn start_background_tasks(state: &AppState) {
 
     // Off the startup path: every replica sweeps, and the scan is IO over a
     // shared volume.
-    tokio::spawn({
-        let (pool, skills) = (state.pool.clone(), state.skills.clone());
-        async move { skill_store::sweep_orphans_or_warn(&pool, &skills).await }
-    });
+    if Task::SkillStoreSweep.enabled(state.config.features) {
+        tokio::spawn({
+            let (pool, skills) = (state.pool.clone(), state.skills.clone());
+            async move { skill_store::sweep_orphans_or_warn(&pool, &skills).await }
+        });
+    }
 
     // Replica-aware WS presence: registered only when the pod knows
     // its routable IP; the heartbeat task keeps this pod's rows trusted and
@@ -401,7 +442,16 @@ async fn start_background_tasks(state: &AppState) {
 }
 
 fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) -> Router {
-    let (api_router, public_api_router, api_descriptors) = build_api_routes().into_parts();
+    let (api_router, public_api_router, api_descriptors) =
+        build_api_routes_with(config.features).into_parts();
+    let outer = outer_routes(config.features);
+    let left_out: Vec<&str> = outer
+        .classified
+        .iter()
+        .filter(|(feature, _)| !config.features.allows(*feature))
+        .map(|(_, path)| *path)
+        .collect();
+    tracing::debug!(?left_out, "outer routes not mounted");
 
     // The descriptor list is the route table / source of truth, consumed by
     // the coverage test. At runtime it is informational only.
@@ -419,7 +469,8 @@ fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) 
             Arc::new(config.allowed_origins.clone()),
             preview::csrf::middleware,
         ));
-    outer_routes()
+    outer
+        .router
         .nest("/api/v1", api_router)
         // `authz::PUBLIC_PATHS`, already prefixed. Merged rather than nested —
         // a second nest at `/api/v1` collides on axum's nest catch-all — so
@@ -435,10 +486,74 @@ fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) 
         .with_state(state.clone())
 }
 
+/// The routes outside the authenticated `/api/v1` table. A route whose
+/// feature is off is left out; every route is recorded with its feature.
+struct OuterRoutes {
+    router: Router<AppState>,
+    features: FeatureSet,
+    classified: Vec<(Option<Feature>, &'static str)>,
+}
+
+impl OuterRoutes {
+    fn new(features: FeatureSet) -> Self {
+        Self { router: Router::new(), features, classified: Vec::new() }
+    }
+
+    fn route(self, path: &'static str, handler: MethodRouter<AppState>) -> Self {
+        self.add(None, path, handler)
+    }
+
+    fn feature(
+        self,
+        feature: Feature,
+        path: &'static str,
+        handler: MethodRouter<AppState>,
+    ) -> Self {
+        self.add(Some(feature), path, handler)
+    }
+
+    fn add(
+        mut self,
+        feature: Option<Feature>,
+        path: &'static str,
+        handler: MethodRouter<AppState>,
+    ) -> Self {
+        self.classified.push((feature, path));
+        if self.features.allows(feature) {
+            self.router = self.router.route(path, handler);
+        }
+        self
+    }
+
+    fn merge(mut self, feature: Feature, label: &'static str, router: Router<AppState>) -> Self {
+        self.classified.push((Some(feature), label));
+        if self.features.contains(feature) {
+            self.router = self.router.merge(router);
+        }
+        self
+    }
+
+    /// The launch-context pull runs on every launch; only the context tool's
+    /// POST belongs to `context`.
+    fn launch_context(mut self) -> Self {
+        const PATH: &str = "/api/v1/daemon/sessions/{id}/context";
+        self.classified.push((None, PATH));
+        self.classified.push((Some(Feature::Context), PATH));
+        let handler = get(routes::daemon::session_launch_context);
+        let handler = if self.features.contains(Feature::Context) {
+            handler.post(routes::context_tool::context_tool)
+        } else {
+            handler
+        };
+        self.router = self.router.route(PATH, handler);
+        self
+    }
+}
+
 // `{id}` etc. in route paths are axum path-param syntax, not format args.
 #[allow(clippy::literal_string_with_formatting_args)]
-fn outer_routes() -> Router<AppState> {
-    Router::new()
+fn outer_routes(features: FeatureSet) -> OuterRoutes {
+    let r = OuterRoutes::new(features)
         .route("/health", get(|| async { "ok" }))
         .route("/readyz", get(readyz))
         // Prometheus scrape. Self-authenticating (same token scheme as
@@ -453,7 +568,7 @@ fn outer_routes() -> Router<AppState> {
         .route("/llms.txt", get(openapi::llms_txt))
         .route("/api/v1/openapi.json", get(openapi::openapi_json))
         .route("/api/v1/ws", get(ws::tui_ws))
-        .route("/api/v1/ws/voice", get(voice_live::voice_ws))
+        .feature(Feature::Voice, "/api/v1/ws/voice", get(voice_live::voice_ws))
         // Browser auth-cookie endpoints. Self-authenticating: `login`
         // validates the presented token and sets the `HttpOnly` cookie, `logout`
         // clears it — both live outside the `auth_middleware` group.
@@ -462,14 +577,32 @@ fn outer_routes() -> Router<AppState> {
         // Passkey login. Unauthenticated for the same reason `login` is: the
         // assertion IS the credential. `config` is the pre-auth probe the login
         // screen makes to decide whether to offer the passkey button at all.
-        .route("/api/v1/auth/passkey/config", get(routes::passkeys::config))
-        .route("/api/v1/auth/passkey/login/start", post(routes::passkeys::login_start))
-        .route("/api/v1/auth/passkey/login/finish", post(routes::passkeys::login_finish))
+        .feature(Feature::Passkeys, "/api/v1/auth/passkey/config", get(routes::passkeys::config))
+        .feature(
+            Feature::Passkeys,
+            "/api/v1/auth/passkey/login/start",
+            post(routes::passkeys::login_start),
+        )
+        .feature(
+            Feature::Passkeys,
+            "/api/v1/auth/passkey/login/finish",
+            post(routes::passkeys::login_finish),
+        )
         // Device-authorization login. Unauthenticated because the device has no
         // credential yet; a request is worthless until an authenticated user
         // approves it through `/auth/device/{user_code}/decision`.
-        .route("/api/v1/auth/device/start", post(routes::device_auth::start))
-        .route("/api/v1/auth/device/poll", post(routes::device_auth::poll))
+        .feature(
+            Feature::DeviceLogin,
+            "/api/v1/auth/device/start",
+            post(routes::device_auth::start),
+        )
+        .feature(Feature::DeviceLogin, "/api/v1/auth/device/poll", post(routes::device_auth::poll));
+    infra_routes(daemon_routes(r))
+}
+
+#[allow(clippy::literal_string_with_formatting_args)]
+fn daemon_routes(r: OuterRoutes) -> OuterRoutes {
+    r
         // Daemon-facing endpoints. `auth` and `ws` carry their own auth
         // (machine-key Bearer) so they live outside the user-token-only
         // `api_router` group.
@@ -486,31 +619,48 @@ fn outer_routes() -> Router<AppState> {
         .route("/api/v1/daemon/sessions/{id}/token-valid", get(routes::daemon::session_token_valid))
         .route("/api/v1/daemon/sessions/{id}/limits", get(routes::session_limits::session_limits))
         .route("/api/v1/daemon/sessions/{id}/user-actions", post(routes::user_actions::daemon_add))
-        .route(
-            "/api/v1/daemon/sessions/{id}/context",
-            get(routes::daemon::session_launch_context).post(routes::context_tool::context_tool),
-        )
+        .launch_context()
         .route(
             "/api/v1/daemon/sessions/{id}/user-actions/tick",
             post(routes::user_actions::daemon_tick),
         )
-        .route("/api/v1/daemon/sessions/{id}/spawn-child", post(routes::spawn_child::spawn_child))
-        .route("/api/v1/daemon/sessions/{id}/room", post(routes::rooms::room_tool))
-        .route("/api/v1/daemon/sessions/{id}/peers", get(routes::peer::list_peers))
-        .route("/api/v1/daemon/sessions/{id}/message-peer", post(routes::peer::message_peer))
-        .route(
+        .feature(
+            Feature::ChildSessions,
+            "/api/v1/daemon/sessions/{id}/spawn-child",
+            post(routes::spawn_child::spawn_child),
+        )
+        .feature(
+            Feature::Rooms,
+            "/api/v1/daemon/sessions/{id}/room",
+            post(routes::rooms::room_tool),
+        )
+        .feature(
+            Feature::Rooms,
+            "/api/v1/daemon/sessions/{id}/peers",
+            get(routes::peer::list_peers),
+        )
+        .feature(
+            Feature::Rooms,
+            "/api/v1/daemon/sessions/{id}/message-peer",
+            post(routes::peer::message_peer),
+        )
+        .feature(
+            Feature::Rooms,
             "/api/v1/daemon/sessions/{id}/peer-conversation",
             get(routes::peer::peer_conversation),
         )
-        .route(
+        .feature(
+            Feature::ChildSessions,
             "/api/v1/daemon/sessions/{id}/message-child",
             post(routes::spawn_child::message_child),
         )
-        .route(
+        .feature(
+            Feature::ChildSessions,
             "/api/v1/daemon/sessions/{id}/archive-child",
             post(routes::spawn_child::archive_child),
         )
-        .route(
+        .feature(
+            Feature::ChildSessions,
             "/api/v1/daemon/sessions/{id}/child-completion",
             post(routes::spawn_child::child_completion),
         )
@@ -519,7 +669,8 @@ fn outer_routes() -> Router<AppState> {
         // machine-key Bearer like the sibling daemon endpoints, so it sits here
         // outside the user-token `api_router`. Cap the body a little over the
         // 5 MiB per-image limit so an over-cap upload 413s in-handler.
-        .route(
+        .feature(
+            Feature::Voice,
             "/api/v1/daemon/sessions/{id}/voice-notes",
             post(routes::voice_notes::create_voice_note),
         )
@@ -542,8 +693,21 @@ fn outer_routes() -> Router<AppState> {
         // upload above, so they live outside the user-token `api_router`: a
         // daemon has no user token, and the health probe below is what tells
         // it whether the update it just ran actually took.
-        .route("/api/v1/daemon/version", get(routes::update_hook::daemon_version))
-        .route("/api/v1/daemon/update-hook/{run_id}", post(routes::update_hook::report))
+        .feature(
+            Feature::SelfUpdate,
+            "/api/v1/daemon/version",
+            get(routes::update_hook::daemon_version),
+        )
+        .feature(
+            Feature::SelfUpdate,
+            "/api/v1/daemon/update-hook/{run_id}",
+            post(routes::update_hook::report),
+        )
+}
+
+#[allow(clippy::literal_string_with_formatting_args)]
+fn infra_routes(r: OuterRoutes) -> OuterRoutes {
+    r
         // Enrolled-dispatcher endpoints. Carry their own key auth
         // (dispatcher-key Bearer), so they live outside the user-token
         // `api_router` group, like the daemon endpoints.
@@ -555,13 +719,13 @@ fn outer_routes() -> Router<AppState> {
         .route("/api/v1/dispatch/redeem", post(dispatch_identity::redeem::<AppState>))
         .route("/api/v1/dispatch/{id}/env", get(dispatch_identity::env::<AppState>))
         .route("/api/v1/dispatch/{id}/hold", post(dispatch_identity::hold::<AppState>))
-        .route("/api/v1/triggers/{kind}", post(routes::triggers::ingest))
+        .feature(Feature::Automation, "/api/v1/triggers/{kind}", post(routes::triggers::ingest))
+        // Public like the SPA assets: the webui `import()`s plugin modules.
+        .feature(Feature::Plugins, "/plugins/{id}/{*path}", get(routes::plugins::static_file))
         // OAuth passthrough gateway. Auths via the session-scoped
         // token in the request's own Authorization header — NOT the user-token
         // `api_router` middleware — so it lives on the outer app. Matches any
         // method + sub-path under each provider prefix.
-        // Public like the SPA assets: the webui `import()`s plugin modules.
-        .route("/plugins/{id}/{*path}", get(routes::plugins::static_file))
         .route("/gateway/anthropic/{*path}", any(routes::gateway::anthropic))
         .route("/gateway/openai/{*path}", any(routes::gateway::openai))
         .route("/gateway/fireworks/{*path}", any(routes::gateway::fireworks))
@@ -580,11 +744,19 @@ fn outer_routes() -> Router<AppState> {
         .route("/internal/guard/forget", post(routes::internal::guard_forget))
         // Server-to-server cctuiverse calls, authenticated by each link's
         // Ed25519 signature rather than any cctui credential.
-        .merge(cctuiverse_routes())
+        .merge(Feature::Federation, "/cctuiverse/v1/*", cctuiverse_routes())
         // Preview leg for a browser that landed on a pod without the daemon
         // link. Same secret; serves locally only, so it cannot loop.
-        .route("/internal/preview/{id}/", any(routes::internal::preview_serve_root))
-        .route("/internal/preview/{id}/{*path}", any(routes::internal::preview_serve))
+        .feature(
+            Feature::Previews,
+            "/internal/preview/{id}/",
+            any(routes::internal::preview_serve_root),
+        )
+        .feature(
+            Feature::Previews,
+            "/internal/preview/{id}/{*path}",
+            any(routes::internal::preview_serve),
+        )
 }
 
 fn cctuiverse_routes() -> Router<AppState> {
@@ -599,22 +771,87 @@ fn cctuiverse_routes() -> Router<AppState> {
 
 const CCTUIVERSE_SWEEP_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 
-fn spawn_sweeps(state: &AppState) {
-    spawn_periodic(CCTUIVERSE_SWEEP_PERIOD, {
-        let state = state.clone();
-        move || {
-            let state = state.clone();
-            async move { cctuiverse::outbox::sweep(&state).await }
+/// Background and boot-time work owned by a switchable feature. Anything not
+/// listed here runs on every server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Task {
+    FederationOutbox,
+    Keepalive,
+    PreviewSweep,
+    PluginInit,
+    PluginSync,
+    FollowUp,
+    AutoResume,
+    AutoRedeem,
+    ScheduledMessages,
+    ScheduledSpawns,
+    UpdateProbe,
+    SearchBackfill,
+    LabelIntentSweep,
+    SkillStoreSweep,
+}
+
+impl Task {
+    #[cfg(test)]
+    const ALL: [Self; 14] = [
+        Self::FederationOutbox,
+        Self::Keepalive,
+        Self::PreviewSweep,
+        Self::PluginInit,
+        Self::PluginSync,
+        Self::FollowUp,
+        Self::AutoResume,
+        Self::AutoRedeem,
+        Self::ScheduledMessages,
+        Self::ScheduledSpawns,
+        Self::UpdateProbe,
+        Self::SearchBackfill,
+        Self::LabelIntentSweep,
+        Self::SkillStoreSweep,
+    ];
+
+    const fn feature(self) -> Feature {
+        match self {
+            Self::FederationOutbox => Feature::Federation,
+            Self::Keepalive | Self::FollowUp | Self::AutoResume | Self::AutoRedeem => {
+                Feature::Automation
+            }
+            Self::PreviewSweep => Feature::Previews,
+            Self::PluginInit | Self::PluginSync => Feature::Plugins,
+            Self::ScheduledMessages | Self::ScheduledSpawns => Feature::Scheduling,
+            Self::UpdateProbe => Feature::SelfUpdate,
+            Self::SearchBackfill => Feature::TranscriptSearch,
+            Self::LabelIntentSweep => Feature::Organising,
+            Self::SkillStoreSweep => Feature::Library,
         }
-    });
+    }
+
+    const fn enabled(self, features: FeatureSet) -> bool {
+        features.contains(self.feature())
+    }
+}
+
+fn spawn_sweeps(state: &AppState) {
+    let features = state.config.features;
+    if Task::FederationOutbox.enabled(features) {
+        spawn_periodic(CCTUIVERSE_SWEEP_PERIOD, {
+            let state = state.clone();
+            move || {
+                let state = state.clone();
+                async move { cctuiverse::outbox::sweep(&state).await }
+            }
+        });
+    }
     spawn_periodic(REAPER_PERIOD, {
         let state = state.clone();
         move || webhook_sweep(state.clone())
     });
-    spawn_periodic(REAPER_PERIOD, {
-        let state = state.clone();
-        move || keepalive_sweep(state.clone())
-    });
+    if Task::Keepalive.enabled(features) {
+        spawn_periodic(REAPER_PERIOD, {
+            let state = state.clone();
+            move || keepalive_sweep(state.clone())
+        });
+    }
     spawn_periodic(session_viewers::HEARTBEAT, {
         let state = state.clone();
         move || {
@@ -622,16 +859,18 @@ fn spawn_sweeps(state: &AppState) {
             async move { session_viewers::heartbeat(&state).await }
         }
     });
-    spawn_periodic(REAPER_PERIOD, {
-        let pool = state.pool.clone();
-        let tracked = state.presence.ip.is_some();
-        move || {
-            let pool = pool.clone();
-            async move {
-                preview::store::sweep(&pool, tracked).await;
+    if Task::PreviewSweep.enabled(features) {
+        spawn_periodic(REAPER_PERIOD, {
+            let pool = state.pool.clone();
+            let tracked = state.presence.ip.is_some();
+            move || {
+                let pool = pool.clone();
+                async move {
+                    preview::store::sweep(&pool, tracked).await;
+                }
             }
-        }
-    });
+        });
+    }
     spawn_periodic(REAPER_PERIOD, {
         let pool = state.pool.clone();
         move || {
@@ -639,13 +878,15 @@ fn spawn_sweeps(state: &AppState) {
             async move { turn_dedupe::sweep(&pool).await }
         }
     });
-    spawn_periodic(PLUGIN_SYNC_PERIOD, {
-        let state = state.clone();
-        move || {
+    if Task::PluginSync.enabled(features) {
+        spawn_periodic(PLUGIN_SYNC_PERIOD, {
             let state = state.clone();
-            async move { plugin_store::sync_or_warn(&state.pool, &state.plugins).await }
-        }
-    });
+            move || {
+                let state = state.clone();
+                async move { plugin_store::sync_or_warn(&state.pool, &state.plugins).await }
+            }
+        });
+    }
     spawn_reaper_sweeps(state);
 }
 
@@ -728,12 +969,13 @@ async fn shutdown_signal() {
 /// Readiness, unlike `/health` liveness: 503 while the database is unreachable.
 async fn readyz(
     axum::extract::State(state): axum::extract::State<AppState>,
-) -> (axum::http::StatusCode, &'static str) {
-    if db_ready(&state.pool).await {
+) -> (axum::http::StatusCode, String) {
+    let (status, verdict) = if db_ready(&state.pool).await {
         (axum::http::StatusCode::OK, "ok")
     } else {
         (axum::http::StatusCode::SERVICE_UNAVAILABLE, "database unavailable")
-    }
+    };
+    (status, format!("{verdict}\nfeatures: {}\n", state.config.features))
 }
 
 async fn db_ready(pool: &sqlx::PgPool) -> bool {
@@ -754,7 +996,12 @@ async fn db_ready(pool: &sqlx::PgPool) -> bool {
 /// `Scope`. The returned [`Routes`] is the single source of truth walked by the
 /// coverage test.
 fn build_api_routes() -> Routes {
-    api_routes::register(Routes::new())
+    build_api_routes_with(FeatureSet::all())
+}
+
+/// [`build_api_routes`] with the routes of every feature off in `features` left out.
+fn build_api_routes_with(features: FeatureSet) -> Routes {
+    api_routes::register(Routes::with_features(features))
 }
 
 /// Credentialed CORS layer restricted to `allowed_origins`. Credentials forbid
@@ -925,10 +1172,15 @@ async fn keepalive_sweep(state: AppState) {
 
 /// Each sweep runs on its own task so a slow pass delays only itself.
 fn spawn_reaper_sweeps(state: &AppState) {
+    let features = state.config.features;
     spawn_sweep(state, |state| async move { reaper_sweep(&state).await });
-    spawn_sweep(state, |state| async move { spawn_labels::sweep(&state.pool).await });
+    if Task::LabelIntentSweep.enabled(features) {
+        spawn_sweep(state, |state| async move { spawn_labels::sweep(&state.pool).await });
+    }
     spawn_sweep(state, |state| async move { usage_history::sweep(&state) });
-    spawn_sweep(state, |state| async move { followup::sweep(&state.pool).await });
+    if Task::FollowUp.enabled(features) {
+        spawn_sweep(state, |state| async move { followup::sweep(&state.pool).await });
+    }
     spawn_sweep(state, |state| async move {
         cctui_server_core::machine_policy::purge_spawner_intents(&state.pool).await;
     });
@@ -941,10 +1193,18 @@ fn spawn_reaper_sweeps(state: &AppState) {
         machine_liveness::sweep_dispatchers(&state).await;
     });
     spawn_sweep(state, |state| async move { dispatch_liveness::sweep(&state).await });
-    spawn_sweep(state, |state| async move { auto_resume::sweep(&state).await });
-    spawn_sweep(state, |state| async move { auto_redeem::sweep(&state).await });
-    spawn_sweep(state, |state| async move { scheduled_messages::sweep(&state).await });
-    spawn_sweep(state, |state| async move { scheduled_spawns::sweep(&state).await });
+    if Task::AutoResume.enabled(features) {
+        spawn_sweep(state, |state| async move { auto_resume::sweep(&state).await });
+    }
+    if Task::AutoRedeem.enabled(features) {
+        spawn_sweep(state, |state| async move { auto_redeem::sweep(&state).await });
+    }
+    if Task::ScheduledMessages.enabled(features) {
+        spawn_sweep(state, |state| async move { scheduled_messages::sweep(&state).await });
+    }
+    if Task::ScheduledSpawns.enabled(features) {
+        spawn_sweep(state, |state| async move { scheduled_spawns::sweep(&state).await });
+    }
     spawn_sweep(state, |state| async move {
         state.permission_store.write().await.reap_stale(300); // seconds
     });
@@ -991,6 +1251,18 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::{REAPER_PERIOD, db_ready, serve_until, spawn_periodic};
+
+    #[test]
+    fn init_db_resolves_the_feature_file_like_the_server() {
+        use cctui_proto::features::{Feature, FeatureSet};
+        assert_eq!(super::init_db_features(None).unwrap(), FeatureSet::all());
+        assert_eq!(super::init_db_features(Some(" ")).unwrap(), FeatureSet::all());
+        let core = concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/features/core.toml");
+        let features = super::init_db_features(Some(core)).unwrap();
+        assert!(!features.contains(Feature::TranscriptSearch));
+        let missing = super::init_db_features(Some("/nonexistent/cctui-features.toml"));
+        assert!(missing.unwrap_err().to_string().contains(crate::config::FEATURES_FILE_ENV));
+    }
 
     #[test]
     fn legacy_log_filter_enables_relocated_workspace_targets() {
@@ -1210,7 +1482,6 @@ mod tests {
             "GET /keys Bearer Authenticated",
             "POST /keys Bearer Authenticated",
             "DELETE /keys/{id} Bearer Authenticated",
-            "GET /keys/{id}/value Bearer Authenticated",
             "GET /labels Bearer Authenticated",
             "POST /labels Bearer Authenticated",
             "DELETE /labels/{id} Bearer Authenticated",
@@ -1331,7 +1602,6 @@ mod tests {
             r#"POST /sessions/{id}/pins Bearer Resource(Session, Write, Path("id"))"#,
             r#"DELETE /sessions/{id}/pins/{seq} Bearer Resource(Session, Write, Path("id"))"#,
             r#"PATCH /sessions/{id}/plugins/{plugin_id} Bearer Resource(Session, Write, Path("id"))"#,
-            r#"POST /sessions/{id}/policy Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/previews Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/previews/{pid}/ticket Bearer Resource(Session, Read, Path("id"))"#,
             r#"GET /sessions/{id}/rebinds Bearer Resource(Session, Read, Path("id"))"#,
@@ -1383,6 +1653,298 @@ mod tests {
             "DELETE /{resource_type}/{id}/shares/{user_id} Bearer Human",
         ];
         assert_eq!(actual, expected);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::literal_string_with_formatting_args)]
+mod feature_gate_tests {
+    use std::collections::BTreeSet;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use cctui_proto::api::routes::ROUTES;
+    use cctui_proto::features::{Feature, FeatureSet};
+    use cctui_proto::ws::TuiCommand;
+    use tower::ServiceExt;
+
+    use super::{Task, outer_routes};
+
+    /// Switchable features that gate nothing on the server; clients read them
+    /// from capabilities only.
+    const ANNOUNCEMENT_ONLY: &[Feature] = &[];
+
+    /// What a dispatched worker and its dispatcher reach outside `/api/v1`'s table.
+    const WORKER_PATHS: &[&str] = &[
+        "/api/v1/ws",
+        "/api/v1/auth/login",
+        "/api/v1/auth/logout",
+        "/api/v1/daemon/auth",
+        "/api/v1/daemon/ws",
+        "/api/v1/daemon/sessions/{id}/gateway-env",
+        "/api/v1/daemon/sessions/{id}/token-valid",
+        "/api/v1/daemon/sessions/{id}/limits",
+        "/api/v1/daemon/sessions/{id}/user-actions",
+        "/api/v1/daemon/sessions/{id}/user-actions/tick",
+        "/api/v1/daemon/sessions/{id}/context",
+        "/api/v1/daemon/sessions/{id}/images",
+        "/api/v1/daemon/blobs/{hash}",
+        "/api/v1/dispatcher/auth",
+        "/api/v1/dispatcher/ws",
+        "/api/v1/dispatch/register",
+        "/api/v1/dispatch/redeem",
+        "/api/v1/dispatch/{id}/env",
+        "/api/v1/dispatch/{id}/hold",
+        "/gateway/anthropic/{*path}",
+        "/gateway/openai/{*path}",
+        "/gateway/fireworks/{*path}",
+        "/gateway/google/{*path}",
+        "/internal/bus/route",
+        "/internal/bus/publish",
+        "/internal/auth/purge",
+        "/internal/guard/forget",
+    ];
+
+    fn core_outer_paths() -> BTreeSet<&'static str> {
+        outer_routes(FeatureSet::none())
+            .classified
+            .into_iter()
+            .filter(|(feature, _)| feature.is_none())
+            .map(|(_, path)| path)
+            .collect()
+    }
+
+    const WORKER_API_ROUTES: &[&str] = &[
+        "GET /capabilities",
+        "GET /me",
+        "POST /dispatcher/enroll",
+        "GET /dispatchers",
+        "PATCH /dispatchers/{id}",
+        "DELETE /dispatchers/{id}",
+        "GET /sessions/dispatchers",
+        "POST /sessions/dispatch",
+        "GET /dispatch-records/failed",
+        "POST /dispatch-records/{id}/redispatch",
+        "GET /accounts",
+        "GET /accounts/{id}",
+        "GET /harnesses",
+        "GET /models/{harness}",
+        "GET /models/codex/catalog",
+        "POST /machines/{machine_id}/codex-models/refresh",
+        "GET /sessions",
+        "GET /sessions/{id}",
+        "GET /sessions/{id}/conversation",
+        "GET /sessions/{id}/diagnose",
+        "POST /sessions/{id}/message",
+        "POST /sessions/{id}/interrupt",
+        "POST /sessions/{id}/set-model",
+        "POST /sessions/{id}/kill",
+        "POST /sessions/{id}/archive",
+        "GET /permissions/pending",
+    ];
+
+    const MACHINE_ONLY_API_ROUTES: &[&str] = &[
+        "POST /enroll",
+        "POST /deenroll",
+        "POST /sessions/spawn",
+        "POST /sessions/register",
+        "GET /sessions/recent-dirs",
+        "GET /machines/resources",
+        "GET /machines/{machine_id}/status",
+        "GET /machines/{machine_id}/adapters",
+        "PUT /machines/{machine_id}/adapters/{adapter}",
+        "GET /machines/{machine_id}/fs/dirs",
+        "GET /machines/{machine_id}/fs/file",
+        "GET /admin/users/{id}/machines",
+        "DELETE /admin/machines/{id}",
+        "POST /admin/machines/{id}/rotate",
+        "POST /sessions/{id}/fork",
+        "POST /sessions/{id}/resume",
+        "GET /spawn-memory",
+        "PUT /spawn-memory",
+    ];
+
+    fn core_features() -> FeatureSet {
+        crate::config::parse_features(include_str!("../../../deploy/features/core.toml"))
+            .expect("core.toml resolves")
+            .set
+    }
+
+    fn core_api_routes() -> BTreeSet<String> {
+        crate::build_api_routes_with(core_features())
+            .into_parts()
+            .2
+            .into_iter()
+            .map(|d| format!("{} {}", d.method.as_str(), d.path))
+            .collect()
+    }
+
+    #[test]
+    fn a_core_server_keeps_every_route_a_dispatched_worker_needs() {
+        let core = core_outer_paths();
+        for path in WORKER_PATHS {
+            assert!(core.contains(path), "{path} must stay mounted with every feature off");
+        }
+        let api = core_api_routes();
+        for route in WORKER_API_ROUTES {
+            assert!(api.contains(*route), "{route} must stay mounted on a core server");
+        }
+    }
+
+    #[test]
+    fn a_core_server_mounts_no_machine_only_route() {
+        let api = core_api_routes();
+        for route in MACHINE_ONLY_API_ROUTES {
+            assert!(!api.contains(*route), "{route} must not be mounted on a core server");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_core_server_mounts_the_archive_listing_but_not_search_autocomplete() {
+        let api = core_api_routes();
+        assert!(api.contains("GET /sessions/search"), "the archive listing is core");
+        assert!(!api.contains("GET /sessions/search/values"), "autocomplete needs search");
+        let router = crate::build_api_routes_with(core_features()).into_parts().0;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://u:p@127.0.0.1:1/none")
+            .unwrap();
+        let app = router.with_state(crate::state::AppState::for_test(pool));
+        for (uri, want) in [
+            ("/sessions/search?include_archived=true", StatusCode::UNAUTHORIZED),
+            ("/sessions/search/values?field=status", StatusCode::NOT_FOUND),
+        ] {
+            let request = Request::builder().method("GET").uri(uri).body(Body::empty()).unwrap();
+            let got = app.clone().oneshot(request).await.unwrap().status();
+            assert_eq!(got, want, "GET {uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn machine_spawn_off_unmounts_enrollment_spawn_and_files() {
+        let off = crate::config::parse_features("[features]\nmachine_spawn = false\n")
+            .expect("resolves")
+            .set;
+        let router = crate::build_api_routes_with(off).into_parts().0;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://u:p@127.0.0.1:1/none")
+            .unwrap();
+        let app = router.with_state(crate::state::AppState::for_test(pool));
+        for (method, uri, want) in [
+            ("POST", "/enroll", StatusCode::NOT_FOUND),
+            ("POST", "/deenroll", StatusCode::NOT_FOUND),
+            ("GET", "/machines/resources", StatusCode::NOT_FOUND),
+            ("GET", "/machines/m1/fs/dirs", StatusCode::NOT_FOUND),
+            ("GET", "/machines/m1/adapters", StatusCode::NOT_FOUND),
+            ("POST", "/sessions/s1/fork", StatusCode::NOT_FOUND),
+            ("POST", "/sessions/s1/resume", StatusCode::NOT_FOUND),
+            ("GET", "/spawn-memory", StatusCode::NOT_FOUND),
+            ("POST", "/sessions/dispatch", StatusCode::UNAUTHORIZED),
+            ("POST", "/sessions/s1/kill", StatusCode::UNAUTHORIZED),
+        ] {
+            let request = Request::builder().method(method).uri(uri).body(Body::empty()).unwrap();
+            let got = app.clone().oneshot(request).await.unwrap().status();
+            assert_eq!(got, want, "{method} {uri}");
+        }
+        for uri in ["/sessions/spawn", "/sessions/register", "/sessions/recent-dirs"] {
+            let request = Request::builder().method("POST").uri(uri).body(Body::empty()).unwrap();
+            let got = app.clone().oneshot(request).await.unwrap().status();
+            assert_eq!(
+                got,
+                StatusCode::METHOD_NOT_ALLOWED,
+                "POST {uri} is unmounted, but the path still matches the kept GET/PATCH \
+                 /sessions/{{id}}, so the router answers 405 rather than 404"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn service_tokens_off_unmounts_the_service_token_routes_only() {
+        let off = crate::config::parse_features("[features]\nservice_tokens = false\n")
+            .expect("resolves")
+            .set;
+        let router = crate::build_api_routes_with(off).into_parts().0;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://u:p@127.0.0.1:1/none")
+            .unwrap();
+        let app = router.with_state(crate::state::AppState::for_test(pool));
+        for (method, uri, want) in [
+            ("GET", "/accounts/a1/service-tokens", StatusCode::NOT_FOUND),
+            ("POST", "/accounts/a1/service-tokens", StatusCode::NOT_FOUND),
+            ("DELETE", "/accounts/a1/service-tokens/t1", StatusCode::NOT_FOUND),
+            ("GET", "/accounts/a1", StatusCode::UNAUTHORIZED),
+        ] {
+            let request = Request::builder().method(method).uri(uri).body(Body::empty()).unwrap();
+            let got = app.clone().oneshot(request).await.unwrap().status();
+            assert_eq!(got, want, "{method} {uri}");
+        }
+    }
+
+    #[test]
+    fn every_switchable_feature_gates_a_route_a_task_or_a_message() {
+        let mut gated: BTreeSet<Feature> = ROUTES.iter().filter_map(|r| r.feature).collect();
+        gated.extend(outer_routes(FeatureSet::all()).classified.into_iter().filter_map(|(f, _)| f));
+        gated.extend(Task::ALL.map(Task::feature));
+        let watch = TuiCommand::WatchTerminal { session_id: "s".into(), watch: true };
+        gated.extend(crate::ws::command_feature(&watch));
+        for feature in Feature::ALL {
+            assert!(
+                gated.contains(&feature) || ANNOUNCEMENT_ONLY.contains(&feature),
+                "{feature} gates nothing: classify a route, task or message under it, or list \
+                 it in ANNOUNCEMENT_ONLY and say why in docs/features.md"
+            );
+        }
+        for feature in ANNOUNCEMENT_ONLY {
+            assert!(!gated.contains(feature), "{feature} gates something; drop it from the list");
+        }
+    }
+
+    #[test]
+    fn tasks_follow_their_feature() {
+        for task in Task::ALL {
+            assert!(task.enabled(FeatureSet::all()), "{task:?}");
+            assert!(!task.enabled(FeatureSet::none()), "{task:?}");
+            assert!(!task.enabled(FeatureSet::all().without(task.feature())), "{task:?}");
+        }
+    }
+
+    async fn status(features: FeatureSet, method: &str, uri: &str) -> StatusCode {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://u:p@127.0.0.1:1/none")
+            .unwrap();
+        let app = outer_routes(features).router.with_state(crate::state::AppState::for_test(pool));
+        let request = Request::builder().method(method).uri(uri).body(Body::empty()).unwrap();
+        app.oneshot(request).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn outer_routes_of_an_off_feature_answer_404() {
+        let none = FeatureSet::none();
+        for (method, uri) in [
+            ("POST", "/api/v1/auth/device/start"),
+            ("POST", "/api/v1/auth/device/poll"),
+            ("POST", "/api/v1/auth/passkey/login/start"),
+            ("GET", "/api/v1/auth/passkey/config"),
+            ("GET", "/api/v1/ws/voice"),
+            ("POST", "/api/v1/daemon/sessions/s1/spawn-child"),
+            ("POST", "/api/v1/daemon/sessions/s1/room"),
+            ("GET", "/api/v1/daemon/sessions/s1/peers"),
+            ("POST", "/api/v1/daemon/sessions/s1/voice-notes"),
+            ("GET", "/api/v1/daemon/version"),
+            ("POST", "/api/v1/triggers/github"),
+            ("GET", "/plugins/p1/index.js"),
+            ("POST", "/cctuiverse/v1/join"),
+            ("GET", "/internal/preview/p1/"),
+        ] {
+            assert_eq!(status(none, method, uri).await, StatusCode::NOT_FOUND, "{method} {uri}");
+        }
+        assert_eq!(status(none, "GET", "/health").await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_launch_context_pull_survives_with_context_off() {
+        let off = FeatureSet::all().without(Feature::Context);
+        let uri = "/api/v1/daemon/sessions/s1/context";
+        assert_eq!(status(off, "POST", uri).await, StatusCode::METHOD_NOT_ALLOWED);
     }
 }
 

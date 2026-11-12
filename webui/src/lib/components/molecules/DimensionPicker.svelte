@@ -1,9 +1,11 @@
 <script lang="ts">
 	import { Button, Icon, Select } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
+	import { hasFeature } from '$lib/features.svelte';
 	import {
 		COLOR_DIMENSIONS,
 		GROUP_DIMENSIONS,
+		offeredDimensions,
 		type Dimension
 	} from '../../../routes/sessions/sessions.logic';
 	import { MENU_ROW, MENU_ROW_ICON } from './menuRow';
@@ -25,7 +27,12 @@
 	} = $props();
 
 	const noun = $derived(kind === 'color' ? m.misc_color_noun() : m.misc_group_noun());
-	const options = $derived(kind === 'color' ? COLOR_DIMENSIONS : GROUP_DIMENSIONS);
+	const options = $derived(
+		offeredDimensions<{ value: Dimension; label: string }>(
+			kind === 'color' ? COLOR_DIMENSIONS : GROUP_DIMENSIONS,
+			hasFeature
+		)
+	);
 	const current = $derived(options.find((d) => d.value === value)?.label ?? m.common_none());
 	const active = $derived(value !== 'none' && value !== 'status');
 	const title = $derived(

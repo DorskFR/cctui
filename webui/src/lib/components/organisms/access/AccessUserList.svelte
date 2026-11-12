@@ -5,6 +5,7 @@
 	import EnrollMachineCard from '$lib/components/organisms/EnrollMachineCard.svelte';
 	import { hashHue } from '$lib/format';
 	import { m } from '$lib/paraglide/messages';
+	import { hasFeature } from '$lib/features.svelte';
 	import { filterByName, splitRevoked } from './access.logic';
 
 	let {
@@ -53,7 +54,7 @@
 			{#if hidden(u)}
 				<Badge tone="muted" size="xs" style="flex:none" data-journey="hidden-chip">{m.hidden_owners_chip()}</Badge>
 			{/if}
-			{#if !revoked}
+			{#if !revoked && hasFeature('machine_spawn')}
 				<Dot status={online(u) ? 'active' : 'dead'} />
 			{/if}
 		</Button>

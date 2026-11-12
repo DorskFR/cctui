@@ -92,6 +92,9 @@ enum Cmd {
         /// Daemon socket serving the agent tool.
         #[arg(long)]
         sock: PathBuf,
+        /// Comma-separated tools to offer; absent offers every tool.
+        #[arg(long)]
+        tools: Option<String>,
     },
     /// Internal: the Claude Code `SessionStart` hook that holds the first turn
     /// until the session's MCP relay has connected, so a prompt calling
@@ -545,7 +548,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Cmd::Status => print_status(&path),
         Cmd::Preview { cmd } => run_preview(cmd),
         Cmd::AskHook { event, sock, deny } => cctui_daemon::askhook::run(&event, &sock, deny),
-        Cmd::McpAgent { session, sock } => cctui_daemon::mcp::run(&session, &sock),
+        Cmd::McpAgent { session, sock, tools } => {
+            cctui_daemon::mcp::run_offering(&session, &sock, tools.as_deref())
+        }
         Cmd::McpWait { session, sock, timeout } => {
             cctui_daemon::mcp::wait_ready(&session, &sock, std::time::Duration::from_secs(timeout));
             Ok(())

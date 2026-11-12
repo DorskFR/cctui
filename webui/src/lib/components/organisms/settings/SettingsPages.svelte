@@ -22,6 +22,7 @@
 	import InstanceSection from './InstanceSection.svelte';
 	import UploadsSection from './UploadsSection.svelte';
 	import type { SettingsPage } from './settings.logic';
+	import { hasFeature } from '$lib/features.svelte';
 
 	let { current, isAdmin }: { current: SettingsPage; isAdmin: boolean } = $props();
 </script>
@@ -33,15 +34,21 @@
 	<SessionsSection />
 	<HiddenOwnersSection {isAdmin} />
 </div>
-<div class="pg" class:on={current === 'macros'} data-settings-page="macros" data-journey="page" data-journey-key="macros">
-	<MacrosSection />
-</div>
-<div class="pg" class:on={current === 'context'} data-settings-page="context" data-journey="page" data-journey-key="context">
-	<ContextSection />
-</div>
-<div class="pg" class:on={current === 'plugins'} data-settings-page="plugins" data-journey="page" data-journey-key="plugins">
-	<PluginsSection {isAdmin} />
-</div>
+{#if hasFeature('machine_spawn')}
+	<div class="pg" class:on={current === 'macros'} data-settings-page="macros" data-journey="page" data-journey-key="macros">
+		<MacrosSection />
+	</div>
+{/if}
+{#if hasFeature('context')}
+	<div class="pg" class:on={current === 'context'} data-settings-page="context" data-journey="page" data-journey-key="context">
+		<ContextSection />
+	</div>
+{/if}
+{#if hasFeature('plugins')}
+	<div class="pg" class:on={current === 'plugins'} data-settings-page="plugins" data-journey="page" data-journey-key="plugins">
+		<PluginsSection {isAdmin} />
+	</div>
+{/if}
 <div class="pg" class:on={current === 'execution'} data-settings-page="execution" data-journey="page" data-journey-key="execution">
 	<ExecutionSection />
 </div>
@@ -50,14 +57,20 @@
 </div>
 <div class="pg" class:on={current === 'notifications'} data-settings-page="notifications" data-journey="page" data-journey-key="notifications">
 	<NotificationsSection />
-	<VoiceSection />
+	{#if hasFeature('voice')}
+		<VoiceSection />
+	{/if}
 </div>
-<div class="pg" class:on={current === 'monitoring'} data-settings-page="monitoring" data-journey="page" data-journey-key="monitoring">
-	<MonitoringSection />
-</div>
-<div class="pg" class:on={current === 'security'} data-settings-page="security" data-journey="page" data-journey-key="security">
-	<SecuritySection />
-</div>
+{#if hasFeature('machine_spawn')}
+	<div class="pg" class:on={current === 'monitoring'} data-settings-page="monitoring" data-journey="page" data-journey-key="monitoring">
+		<MonitoringSection />
+	</div>
+{/if}
+{#if hasFeature('passkeys')}
+	<div class="pg" class:on={current === 'security'} data-settings-page="security" data-journey="page" data-journey-key="security">
+		<SecuritySection />
+	</div>
+{/if}
 <div class="pg" class:on={current === 'guides'} data-settings-page="guides" data-journey="page" data-journey-key="guides">
 	<GuidesSection />
 </div>
@@ -83,9 +96,11 @@
 <div class="pg" class:on={current === 'instance'} data-settings-page="instance" data-journey="page" data-journey-key="instance">
 	<InstanceSection {isAdmin} />
 </div>
-<div class="pg" class:on={current === 'uploads'} data-settings-page="uploads" data-journey="page" data-journey-key="uploads">
-	<UploadsSection {isAdmin} />
-</div>
+{#if hasFeature('uploads')}
+	<div class="pg" class:on={current === 'uploads'} data-settings-page="uploads" data-journey="page" data-journey-key="uploads">
+		<UploadsSection {isAdmin} />
+	</div>
+{/if}
 
 <style>
 	.pg {

@@ -236,3 +236,33 @@ describe('redacted spans', () => {
 		expect(sent).not.toContain('tok-123');
 	});
 });
+
+describe('with drafts off', () => {
+	async function freshOff() {
+		const mods = await fresh();
+		const { setCapabilitiesForTest } = await import('./features.svelte');
+		setCapabilitiesForTest({ features: [], switchable: ['drafts'] });
+		return mods;
+	}
+
+	it('neither loads, writes nor deletes on the server', async () => {
+		const { drafts, composerKey, serverDrafts } = await freshOff();
+		await serverDrafts.load();
+		const key = composerKey('s1');
+		drafts.set(key, 'typed');
+		vi.runAllTimers();
+		drafts.set(key, '');
+		vi.runAllTimers();
+		expect(get).not.toHaveBeenCalled();
+		expect(put).not.toHaveBeenCalled();
+		expect(del).not.toHaveBeenCalled();
+		expect(drafts.get(key)).toBe('');
+	});
+
+	it('keeps the local mirror', async () => {
+		const { drafts, composerKey } = await freshOff();
+		const key = composerKey('s1');
+		drafts.set(key, 'typed');
+		expect(drafts.get(key)).toBe('typed');
+	});
+});

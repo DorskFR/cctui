@@ -2,6 +2,7 @@ import { browser } from '$app/environment';
 import { goto } from '$app/navigation';
 import type { QueryClient } from '@tanstack/svelte-query';
 import type { IR, Journey } from '@dorsk/journey';
+import type { Feature } from '@bindings/Feature';
 import {
 	docPresenter,
 	DONE_PREFIX,
@@ -24,6 +25,7 @@ import { isLive } from './journeys/live';
 import { createProbes, type Probes } from './journeys/probes';
 import { m } from './paraglide/messages';
 import { endpoints } from './queries/endpoints';
+import { hasFeature } from './features.svelte';
 import { qk } from './queries/keys';
 import { settings } from './settings.svelte';
 import { type DeckCard, deckPresenter } from './welcomeDeck.svelte';
@@ -151,6 +153,37 @@ export const MOBILE_QUERY = '(max-width: 959px)';
 
 export const publicJourneys: IR[] = (journeys as IR[]).filter((j) => PUBLIC_JOURNEYS.includes(j.id));
 
+/** A guide that teaches a switchable feature, offered only while it is on. */
+export const GUIDE_FEATURES: Record<string, Feature> = {
+	'enroll-machine': 'machine_spawn',
+	'spawn-session': 'machine_spawn',
+	'search-sessions': 'transcript_search'
+};
+
+/** Steps that point at a surface a switchable feature owns, by guide and step id. */
+export const STEP_FEATURES: Record<string, Record<string, Feature>> = {
+	welcome: { 'to-users': 'machine_spawn', 'to-users-mobile': 'machine_spawn', users: 'machine_spawn' },
+	'sessions-list': { search: 'transcript_search', clear: 'transcript_search' },
+	'accounts-pools': { pools: 'account_sharing' },
+	'usage-overview': { capacity: 'machine_spawn' },
+	'settings-tour': { sessions: 'automation' }
+};
+
+/** The public journeys this server can teach, without the steps whose surface is off. */
+export function offeredJourneys(has: (feature: Feature) => boolean = hasFeature): IR[] {
+	return publicJourneys.flatMap((ir) => {
+		const feature = GUIDE_FEATURES[ir.id];
+		if (feature && !has(feature)) return [];
+		const gated = STEP_FEATURES[ir.id];
+		if (!gated) return [ir];
+		const steps = ir.steps.filter((step) => {
+			const owner = gated[step.id];
+			return !owner || has(owner);
+		});
+		return [steps.length === ir.steps.length ? ir : { ...ir, steps }];
+	});
+}
+
 /** Every `{name}` a journey's targets read from `params`. */
 export function requiredParams(journey: Journey): string[] {
 	const out = new Set<string>();
@@ -184,7 +217,9 @@ export async function guideParams(qc: QueryClient): Promise<GuideParams> {
 	if (me.user_name) out['fixture.me'] = me.user_name;
 	const [accounts, pools, sessions] = await Promise.all([
 		qc.fetchQuery({ queryKey: qk.accounts, queryFn: endpoints.accounts }),
-		qc.fetchQuery({ queryKey: qk.accountPools, queryFn: endpoints.accountPools }),
+		hasFeature('account_sharing')
+			? qc.fetchQuery({ queryKey: qk.accountPools, queryFn: endpoints.accountPools })
+			: [],
 		qc.fetchQuery({ queryKey: qk.sessions(false), queryFn: () => endpoints.sessions(false) })
 	]);
 	if (accounts[0]) out.account = accounts[0].name;
@@ -348,7 +383,7 @@ export function mountJourneys(qc: QueryClient): Promise<void> {
 		// The driver hands the runtime its IR itself.
 		if (!driver) {
 			forgetProgress();
-			await api.register(publicJourneys.map(guided));
+			await api.register(offeredJourneys().map(guided));
 		}
 		watchLocale(api);
 		watchViewport(api);
@@ -372,7 +407,7 @@ export function entryRoute(ir: IR): string | undefined {
 
 export async function startGuide(id: string, opts: StartGuideOptions = {}): Promise<StartOutcome> {
 	if (!host) throw new Error('journeys are not mounted');
-	const ir = publicJourneys.find((j) => j.id === id);
+	const ir = offeredJourneys().find((j) => j.id === id);
 	if (!ir) return { ok: false, reason: 'unknown' };
 	if (opts.blockedBy?.length) return { ok: false, reason: 'locked', blockedBy: [...opts.blockedBy] };
 	if (!(await guideReady(id))) {
@@ -418,7 +453,7 @@ function clearProbeOptOut(id: string): void {
 }
 
 export async function guideDone(id: string): Promise<boolean> {
-	const ir = publicJourneys.find((j) => j.id === id);
+	const ir = offeredJourneys().find((j) => j.id === id);
 	if (!ir) return false;
 	if (settings.onboarding.seenVersion[id] === ir.version) return true;
 	if (settings.onboarding.probeOptOut.includes(id)) return false;

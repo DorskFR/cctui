@@ -12,9 +12,17 @@
 	import { settings } from '$lib/settings.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { clampFollowupWhenCold } from '$lib/followup';
-	import { GROUP_DIMENSIONS, nextSort } from '../../../../routes/sessions/sessions.logic';
+	import { hasFeature } from '$lib/features.svelte';
+	import {
+		effectiveGroupBy,
+		GROUP_DIMENSIONS,
+		nextSort,
+		offeredDimensions
+	} from '../../../../routes/sessions/sessions.logic';
 
 	const sl = $derived(settings.state.sessionList);
+	const groupDimensions = $derived(offeredDimensions(GROUP_DIMENSIONS, hasFeature));
+	const groupBy = $derived(effectiveGroupBy(sl.groupBy, hasFeature));
 	const spawnDock = $derived(settings.spawnDock);
 	const statsDock = $derived(settings.statsDock);
 	const conversationDock = $derived(settings.conversationDock);
@@ -88,14 +96,14 @@
 		</SettingRow>
 		<SettingRow label={m.settings_group_by_label()}>
 			<Select
-				value={sl.groupBy}
+				value={groupBy}
 				style="width:100%"
 				onchange={(e) =>
 					settings.setSessionList({
 						groupBy: (e.currentTarget as HTMLSelectElement).value as typeof sl.groupBy
 					})}
 			>
-				{#each GROUP_DIMENSIONS as d (d.value)}
+				{#each groupDimensions as d (d.value)}
 					<option value={d.value}>{d.label}</option>
 				{/each}
 			</Select>
@@ -196,17 +204,19 @@
 				}
 			/>
 		</SettingRow>
-		<SettingRow
-			label={m.settings_auto_resume_label()}
-			help={m.settings_auto_resume_help()}
-			journey="setting"
-			journeyKey="auto-resume"
-		>
-			<Switch
-				bind:checked={() => autoResume, (v) => settings.setAutoResumeOnConnectionLoss(v)}
+		{#if hasFeature('automation')}
+			<SettingRow
 				label={m.settings_auto_resume_label()}
-			/>
-		</SettingRow>
+				help={m.settings_auto_resume_help()}
+				journey="setting"
+				journeyKey="auto-resume"
+			>
+				<Switch
+					bind:checked={() => autoResume, (v) => settings.setAutoResumeOnConnectionLoss(v)}
+					label={m.settings_auto_resume_label()}
+				/>
+			</SettingRow>
+		{/if}
 		<SettingRow label={m.settings_archive_shortcut_label()} helpSlot={archiveHelp}>
 			<Switch
 				bind:checked={() => settings.state.display.archiveShortcut, () => settings.toggleArchiveShortcut()}
@@ -225,27 +235,29 @@
 				label={m.settings_pin_first_message_label()}
 			/>
 		</SettingRow>
-		<SettingRow
-			label={m.settings_followup_when_cold_label()}
-			help={m.settings_followup_when_cold_help()}
-			selfLabelled
-		>
-			<SegmentedControl
-				options={followupColdOptions}
+		{#if hasFeature('automation') && hasFeature('machine_spawn')}
+			<SettingRow
 				label={m.settings_followup_when_cold_label()}
-				control
-				bind:value={
-					() => settings.followupWhenCold,
-					(v) => settings.setFollowupWhenCold(clampFollowupWhenCold(v))
-				}
-			/>
-		</SettingRow>
-		<SettingRow label={m.settings_prefer_followup_label()} help={m.settings_prefer_followup_help()}>
-			<Switch
-				bind:checked={() => settings.preferFollowupOverFork, (v) => settings.setPreferFollowupOverFork(v)}
-				label={m.settings_prefer_followup_label()}
-			/>
-		</SettingRow>
+				help={m.settings_followup_when_cold_help()}
+				selfLabelled
+			>
+				<SegmentedControl
+					options={followupColdOptions}
+					label={m.settings_followup_when_cold_label()}
+					control
+					bind:value={
+						() => settings.followupWhenCold,
+						(v) => settings.setFollowupWhenCold(clampFollowupWhenCold(v))
+					}
+				/>
+			</SettingRow>
+			<SettingRow label={m.settings_prefer_followup_label()} help={m.settings_prefer_followup_help()}>
+				<Switch
+					bind:checked={() => settings.preferFollowupOverFork, (v) => settings.setPreferFollowupOverFork(v)}
+					label={m.settings_prefer_followup_label()}
+				/>
+			</SettingRow>
+		{/if}
 		<SettingRow label={m.settings_role_tinted_background_label()} help={m.settings_role_tinted_background_help()}>
 			<Switch
 				bind:checked={() => settings.roleTintedBackground, (v) => settings.setRoleTintedBackground(v)}
@@ -297,5 +309,7 @@
 			/>
 		</SettingRow>
 	</SettingGroup>
-	<StorageSection />
+	{#if hasFeature('uploads')}
+		<StorageSection />
+	{/if}
 </SettingSection>

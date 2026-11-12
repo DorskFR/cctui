@@ -8,6 +8,7 @@
 	import KitFields from './KitFields.svelte';
 	import ContextPicker from '$lib/components/molecules/ContextPicker.svelte';
 	import { useContextItems } from '$lib/queries';
+	import { hasFeature } from '$lib/features.svelte';
 	import { profileNameTaken, specChanges, specOf, type ProfileSpecForm } from './profiles';
 	import { m } from '$lib/paraglide/messages';
 
@@ -52,7 +53,8 @@
 	// svelte-ignore state_referenced_locally
 	let name = $state(mode === 'edit' ? (profile?.name ?? '') : '');
 
-	const contextQ = useContextItems();
+	const contextOn = $derived(hasFeature('context'));
+	const contextQ = useContextItems(() => contextOn);
 	const pinnable = $derived(
 		(contextQ.data ?? []).filter((i) => i.kind === 'memory' || i.kind === 'prompt')
 	);
@@ -86,15 +88,17 @@
 
 	<KitFields bind:draft {accounts} {pools} {usage} {machineId} {idSuffix} />
 
-	<Field label={m.spawn_profile_context_label()} for="sp-profile-context-{idSuffix}">
-		<ContextPicker
-			id="sp-profile-context-{idSuffix}"
-			items={pinnable}
-			by="id"
-			bind:value={() => draft.context_items ?? [], (v) => (draft.context_items = v)}
-			label={m.spawn_profile_context_label()}
-		/>
-	</Field>
+	{#if contextOn}
+		<Field label={m.spawn_profile_context_label()} for="sp-profile-context-{idSuffix}">
+			<ContextPicker
+				id="sp-profile-context-{idSuffix}"
+				items={pinnable}
+				by="id"
+				bind:value={() => draft.context_items ?? [], (v) => (draft.context_items = v)}
+				label={m.spawn_profile_context_label()}
+			/>
+		</Field>
+	{/if}
 
 	<div class="foot">
 		{#if editing}

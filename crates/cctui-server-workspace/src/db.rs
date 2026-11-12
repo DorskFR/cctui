@@ -1,6 +1,7 @@
 use std::str::FromStr;
 use std::time::Duration;
 
+use cctui_proto::features::{Feature, FeatureSet};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{ConnectOptions, PgPool};
 
@@ -53,11 +54,15 @@ fn pool_options(max_connections: u32, min_connections: u32, acquire_secs: u32) -
 
 #[cfg(test)]
 pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
-    connect_reporting(database_url).await.map(|(pool, _)| pool)
+    connect_reporting_for(database_url, FeatureSet::all()).await.map(|(pool, _)| pool)
 }
 
-/// [`connect`], also returning the migration versions this call applied.
-pub async fn connect_reporting(database_url: &str) -> Result<(PgPool, Vec<i64>), sqlx::Error> {
+/// Connect and migrate, returning the legacy migration versions this call applied. With
+/// `transcript_search` off, a fresh database never needs the trigram extensions.
+pub async fn connect_reporting_for(
+    database_url: &str,
+    features: FeatureSet,
+) -> Result<(PgPool, Vec<i64>), sqlx::Error> {
     // Pool sizing is env-tunable without a rebuild. The default keeps two
     // replicas plus a rolling-update surge (4 pods) under Postgres' default
     // max_connections of 100; acquire_timeout fails fast instead of hanging requests.
@@ -71,7 +76,7 @@ pub async fn connect_reporting(database_url: &str) -> Result<(PgPool, Vec<i64>),
         .connect_with(connect_options)
         .await?;
 
-    let applied = migrate(&pool).await?;
+    let applied = migrate(&pool, features.contains(Feature::TranscriptSearch)).await?;
 
     tracing::info!(
         max_connections,
@@ -87,13 +92,17 @@ pub async fn connect_reporting(database_url: &str) -> Result<(PgPool, Vec<i64>),
 /// Serializes migrations across replicas with a polled advisory lock. A
 /// blocking `pg_advisory_lock` waiter holds a snapshot that a concurrent
 /// `CREATE INDEX CONCURRENTLY` must wait out, which deadlocks the two.
-async fn migrate(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
+///
+/// The legacy stream creates the search extensions, so without `search` an
+/// empty database is provisioned through the package streams instead.
+async fn migrate(pool: &PgPool, search: bool) -> Result<Vec<i64>, sqlx::Error> {
     let mut conn = cctui_server_core::schema::migration_connection(pool).await?;
     if cctui_server_core::schema::origin(&mut conn).await?
         == Some(cctui_server_core::schema::Origin::Core)
+        || (!search && is_empty(&mut conn).await?)
     {
         cctui_server_core::schema::provision(&mut conn).await?;
-        crate::schema::provision(&mut conn).await?;
+        crate::schema::provision(&mut conn, search).await?;
         return Ok(Vec::new());
     }
     reconcile_migration_checksums(pool).await?;
@@ -101,8 +110,17 @@ async fn migrate(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
     MIGRATOR.run(&mut *conn).await?;
     let after = applied_versions(&mut conn).await?;
     cctui_server_core::schema::provision(&mut conn).await?;
-    crate::schema::provision(&mut conn).await?;
+    crate::schema::provision(&mut conn, search).await?;
     Ok(after.into_iter().filter(|v| !before.contains(v)).collect())
+}
+
+async fn is_empty(conn: &mut sqlx::PgConnection) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S'))",
+    )
+    .fetch_one(conn)
+    .await
 }
 
 async fn applied_versions(conn: &mut sqlx::PgConnection) -> Result<Vec<i64>, sqlx::Error> {
@@ -196,7 +214,7 @@ mod tests {
         .execute(&pool)
         .await
         .expect("insert future migration");
-        let result = migrate(&pool).await;
+        let result = migrate(&pool, true).await;
         sqlx::query("DELETE FROM _sqlx_migrations WHERE version = $1")
             .bind(version)
             .execute(&pool)

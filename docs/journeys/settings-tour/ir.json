@@ -144,8 +144,8 @@
 					"fr": "Le réglage le plus lourd de conséquences"
 				},
 				"body": {
-					"en": "How much rope an agent gets: whether it asks before each action, or edits and runs commands on its own. Loosen it and agents finish far more without you — and can do far more damage unattended. Decide it deliberately, per machine you trust.",
-					"fr": "La latitude laissée à un agent : demander avant chaque action, ou modifier et exécuter des commandes seul. En l’assouplissant, les agents terminent bien plus sans vous — et peuvent faire bien plus de dégâts sans surveillance. Décidez-en délibérément, machine par machine."
+					"en": "How much rope an agent gets: whether it asks before each action, or edits and runs commands on its own. Loosen it and agents finish far more without you — and can do far more damage unattended. Decide it deliberately.",
+					"fr": "La latitude laissée à un agent : demander avant chaque action, ou modifier et exécuter des commandes seul. En l’assouplissant, les agents terminent bien plus sans vous — et peuvent faire bien plus de dégâts sans surveillance. Décidez-en délibérément."
 				}
 			},
 			"expect": [

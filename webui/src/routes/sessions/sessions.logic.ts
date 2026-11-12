@@ -2,6 +2,7 @@
 // they live outside the component and are unit-testable on their own. Anything
 // that reads $state (e.g. the section toggles, the expand set) stays in the
 // component; only data-shape transforms and static config live here.
+import type { Feature } from '@bindings/Feature';
 import type { MachineLiveness } from '@bindings/MachineLiveness';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { SessionListResponse } from '@bindings/SessionListResponse';
@@ -51,6 +52,29 @@ export const matchesUnreadFilter = (s: SessionListItem, sections: Set<Section>):
 export const DEFAULT_SECTIONS: Section[] = ['starred', 'live', 'dispatched'];
 // Tiles put every match on screen at once, so the dispatched swarm starts off.
 export const DEFAULT_TILE_SECTIONS: Section[] = ['starred', 'live'];
+const SECTION_FEATURE: Partial<Record<Section, Feature>> = { starred: 'organising', drafts: 'drafts' };
+
+const sectionOffered = (v: Section, has: (f: Feature) => boolean): boolean => {
+	const f = SECTION_FEATURE[v];
+	return !f || has(f);
+};
+
+/** The section toggles the filter offers on this server. */
+export const offeredSections = (has: (f: Feature) => boolean): typeof SECTIONS =>
+	SECTIONS.filter((s) => sectionOffered(s.value, has));
+
+/** A section whose toggle is not offered takes its default state, whatever was stored:
+ *  pinned rows stay listed, and no draft section is asked for. */
+export function effectiveSections(sections: Set<Section>, has: (f: Feature) => boolean): Set<Section> {
+	const hidden = SECTIONS.filter((s) => !sectionOffered(s.value, has)).map((s) => s.value);
+	if (!hidden.length) return sections;
+	const out = new Set(sections);
+	for (const v of hidden) {
+		if (DEFAULT_SECTIONS.includes(v)) out.add(v);
+		else out.delete(v);
+	}
+	return out;
+}
 export const parseSections = (
 	raw: string | null,
 	fallback: Section[] = DEFAULT_SECTIONS
@@ -468,6 +492,25 @@ export const GROUP_DIMENSIONS: { value: GroupDimension; label: string }[] = [
 	{ value: 'status', get label() { return m.sessions_dim_status(); } },
 	...DIM_LABELS
 ];
+const DIMENSION_FEATURE: Partial<Record<Dimension, Feature>> = { label: 'organising', room: 'rooms' };
+
+const dimensionOffered = (v: Dimension, has: (f: Feature) => boolean): boolean => {
+	const f = DIMENSION_FEATURE[v];
+	return !f || has(f);
+};
+
+/** The color-by or group-by options this server can fill. */
+export const offeredDimensions = <T extends { value: Dimension }>(
+	options: readonly T[],
+	has: (f: Feature) => boolean
+): T[] => options.filter((d) => dimensionOffered(d.value, has));
+
+/** A stored dimension the server cannot fill falls back to the picker's default. */
+export const effectiveColorBy = (v: Dimension, has: (f: Feature) => boolean): Dimension =>
+	dimensionOffered(v, has) ? v : 'none';
+export const effectiveGroupBy = (v: Dimension, has: (f: Feature) => boolean): Dimension =>
+	dimensionOffered(v, has) ? v : 'status';
+
 export const isDimension = (v: string): v is Dimension =>
 	v === 'none' ||
 	v === 'status' ||

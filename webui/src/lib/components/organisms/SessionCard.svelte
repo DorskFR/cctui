@@ -8,6 +8,7 @@
 	import DetailedCard from './sessioncard/DetailedCard.svelte';
 	import { SwipeGesture } from './sessioncard/swipe.svelte';
 	import { type SessionActions, type SubagentToggle, buildView } from './sessioncard/view';
+	import { hasFeature } from '$lib/features.svelte';
 
 	// Two layouts only: the compact list row and the detailed card. The wrapper
 	// is the `sess-card` size container every readout degrades against.
@@ -106,12 +107,14 @@
 			draftLaunching
 		})
 	);
+	const organising = $derived(hasFeature('organising'));
 	const actions = $derived<SessionActions>({
 		selectable,
 		selected,
 		subagentToggles,
-		onTogglePin,
-		labelEditable: !!onAttachLabel && !child,
+		onTogglePin: organising ? onTogglePin : undefined,
+		showLabels: organising,
+		labelEditable: organising && !!onAttachLabel && !child,
 		allLabels,
 		onCreateLabel,
 		onAttachLabel,

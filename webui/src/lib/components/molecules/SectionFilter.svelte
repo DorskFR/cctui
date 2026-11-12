@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { Badge, Icon, Menu, type MenuItem } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
-	import { SECTIONS, type Section } from '../../../routes/sessions/sessions.logic';
+	import { hasFeature } from '$lib/features.svelte';
+	import { offeredSections, type Section } from '../../../routes/sessions/sessions.logic';
 
 	// One square toolbar button that opens a menu of INDEPENDENT on/off section
 	// toggles — any combination can be shown at once, so every item is `keepOpen`.
@@ -9,19 +10,20 @@
 	// here (never to empty).
 	let { sections = $bindable() }: { sections: Set<Section> } = $props();
 
-	const count = $derived(sections.size);
-	const filtering = $derived(count < SECTIONS.length);
+	const options = $derived(offeredSections(hasFeature));
+	const count = $derived(options.filter((o) => sections.has(o.value)).length);
+	const filtering = $derived(count < options.length);
 
 	function toggle(v: Section) {
 		const next = new Set(sections);
 		if (next.has(v)) next.delete(v);
 		else next.add(v);
-		if (next.size === 0) return; // keep at least one on
+		if (!options.some((o) => next.has(o.value))) return; // keep at least one on
 		sections = next;
 	}
 
 	const items = $derived<MenuItem[]>(
-		SECTIONS.map((sec) => ({
+		options.map((sec) => ({
 			label: sec.label,
 			icon: sec.icon,
 			pressed: sections.has(sec.value),
@@ -37,7 +39,7 @@
 		label={m.sessions_filter_sections()}
 		{items}
 		placement="bottom-end"
-		title={m.sessions_filter_sections_count({ count, total: SECTIONS.length })}
+		title={m.sessions_filter_sections_count({ count, total: options.length })}
 		style="--pop-box: var(--control-height)"
 	>
 		{#snippet trigger()}

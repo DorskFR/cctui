@@ -28,7 +28,7 @@
 	import { CacheColdClock } from './cacheCold.svelte';
 	import { PromptAttachments } from '$lib/promptAttachments.svelte';
 	import { scheduleBody } from './scheduleBody';
-	import { scheduleMenuItems } from './scheduleMenu';
+	import { coldSendItems, scheduleMenuItems } from './scheduleMenu';
 	import { parseCustom, toLocalInput } from './scheduleTimes';
 	import { drafts, composerKey, history as msgHistory } from '$lib/drafts';
 	import { serverDrafts } from '$lib/serverDrafts';
@@ -41,6 +41,7 @@
 	import { ws } from '$lib/ws.svelte';
 	import { pendingSpawns } from '$lib/pendingSpawns.svelte';
 	import { findSpawnedSession } from '$lib/components/organisms/spawn/spawnMatch';
+	import { hasFeature } from '$lib/features.svelte';
 
 	let {
 		session,
@@ -70,8 +71,8 @@
 		// Upload staged attachments, returning their absolute paths.
 		stageFiles: (files: File[]) => Promise<{ paths: string[] }>;
 		onNewFromScript: () => void;
-		onFork: () => void;
-		onResume: () => void;
+		onFork?: () => void;
+		onResume?: () => void;
 		onFollowup?: (instruction?: string) => void;
 		/** Tile chrome: one line of input until it takes focus. */
 		compact?: boolean;
@@ -135,6 +136,7 @@
 	const burstTokens = $derived(session.estimated_burst_tokens ?? null);
 
 	// ── Scheduled send ───────────────────────────────────────────
+	const schedulingOn = $derived(hasFeature('scheduling'));
 	const scheduled = useScheduledMessages(() => session.id);
 	const scheduledActions = useScheduledActions(() => session.id);
 	const scheduledCount = $derived(pendingScheduled(scheduled.data).length);
@@ -151,8 +153,14 @@
 	const route = $derived(
 		onFollowup ? routeEnter(settings.followupWhenCold, cache.cold) : 'send'
 	);
-	const scheduleItems = $derived(
-		scheduleMenuItems({
+	const coldItems = $derived(
+		route === 'send'
+			? null
+			: { burstTokens, canSend: canSchedule && !launching, onsendhere: send, onoptions: followup }
+	);
+	const scheduleItems = $derived.by(() => {
+		if (!schedulingOn) return coldItems ? coldSendItems(coldItems) : [];
+		return scheduleMenuItems({
 			now: cache.now,
 			canSchedule,
 			scheduledCount,
@@ -162,16 +170,13 @@
 				customOpen = true;
 			},
 			onlist: () => scheduledEl?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }),
-			cold:
-				route === 'send'
-					? null
-					: { burstTokens, canSend: canSchedule && !launching, onsendhere: send, onoptions: followup }
-		})
-	);
+			cold: coldItems
+		});
+	});
 
 	async function scheduleAt(at: Date) {
 		const text = input.trim();
-		if ((!text && !att.files.length) || archived || att.uploading) return;
+		if (!schedulingOn || (!text && !att.files.length) || archived || att.uploading) return;
 		if (att.error) {
 			toasts.error(att.error);
 			return;
@@ -432,7 +437,9 @@
 	{:else}
 		<!-- Failed sends surface inline on the message bubble itself (red +
 		     Retry), so there's no separate composer banner. -->
-		<div class="scheduled" class:hidden={folded} bind:this={scheduledEl}><ScheduledMessages sessionId={session.id} {archived} /></div>
+		{#if schedulingOn}
+			<div class="scheduled" class:hidden={folded} bind:this={scheduledEl}><ScheduledMessages sessionId={session.id} {archived} /></div>
+		{/if}
 		{#if supportsAttachments && (att.files.length || att.images.pending.length)}
 			<div class="attachments">
 				<AttachmentList {att} />
@@ -515,6 +522,7 @@
 					{burstTokens}
 					{route}
 					{launching}
+					menu={schedulingOn || coldItems !== null}
 					onclick={submit}
 				/>
 			{/snippet}

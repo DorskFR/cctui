@@ -30,9 +30,12 @@ pub(super) fn on_heartbeat(state: &AppState, machine_id: Uuid, frame: DaemonFram
     }
     let state = state.clone();
     tokio::spawn(async move {
+        let updates = handles_updates(state.config.features);
         // A daemon too old to advertise omits the field; leave the stored
         // flag alone rather than reading silence as "no hook".
-        if let Some(has_hook) = update_hook {
+        if let Some(has_hook) = update_hook
+            && updates
+        {
             crate::routes::update_hook::record_hook_flag(&state.pool, machine_id, has_hook).await;
         }
         if let Err(err) = sqlx::query("UPDATE machines SET last_seen_at = now() WHERE id = $1")
@@ -45,17 +48,30 @@ pub(super) fn on_heartbeat(state: &AppState, machine_id: Uuid, frame: DaemonFram
         if let Some(bandwidth) = bandwidth {
             persist_bandwidth(&state, machine_id, &bandwidth).await;
         }
-        if let Some(resources) = resources {
+        if let Some(resources) = resources
+            && records_resources(state.config.features)
+        {
             crate::machine_resources::record_and_broadcast(&state, machine_id, resources).await;
         }
         // Only a daemon that reports its jobs can parse the reply.
         if let Some(shorts) = claude_jobs {
             reconcile_claude_jobs(&state, machine_id, &shorts).await;
         }
-        if let Some(report) = harness {
+        if let Some(report) = harness
+            && updates
+        {
             crate::routes::harness_update::on_heartbeat(&state, machine_id, &report).await;
         }
     });
+}
+
+const fn handles_updates(features: cctui_proto::features::FeatureSet) -> bool {
+    features.contains(cctui_proto::features::Feature::SelfUpdate)
+}
+
+/// Host snapshots feed the machine resource view, which is part of `machine_spawn`.
+const fn records_resources(features: cctui_proto::features::FeatureSet) -> bool {
+    features.contains(cctui_proto::features::Feature::MachineSpawn)
 }
 
 /// Track an explicitly advertised daemon capability. Silence withdraws support,
@@ -144,7 +160,22 @@ async fn reconcile_claude_jobs(state: &AppState, machine_id: Uuid, shorts: &[Str
 
 #[cfg(test)]
 mod tests {
-    use super::note_capability_support;
+    use super::{handles_updates, note_capability_support, records_resources};
+    use cctui_proto::features::{Feature, FeatureSet};
+
+    #[test]
+    fn harness_reports_and_hook_flags_are_handled_only_with_self_update_on() {
+        assert!(handles_updates(FeatureSet::all()));
+        assert!(!handles_updates(FeatureSet::all().without(Feature::SelfUpdate)));
+        assert!(!handles_updates(FeatureSet::none()));
+    }
+
+    #[test]
+    fn host_snapshots_are_kept_only_with_machine_spawn_on() {
+        assert!(records_resources(FeatureSet::all()));
+        assert!(!records_resources(FeatureSet::all().without(Feature::MachineSpawn)));
+        assert!(!records_resources(FeatureSet::none()));
+    }
 
     #[test]
     fn only_an_explicit_advertisement_marks_a_daemon_capable() {

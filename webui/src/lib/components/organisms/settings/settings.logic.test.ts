@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
 	applySettingsFilter,
+	availableSettingsPages,
 	DEFAULT_SETTINGS_PAGE,
 	firstMatchingPage,
 	firstMatchingRow,
@@ -16,6 +17,7 @@ import {
 	SETTINGS_PAGES,
 	SETTINGS_SCOPES,
 	settingsHref,
+	settingsPageFeature,
 	settingsScope
 } from './settings.logic';
 
@@ -184,5 +186,44 @@ describe('the admin screens moved out of the main nav', () => {
 		expect(settingsScope('events')).toBe('you');
 		expect(isSettingsPage('accounts')).toBe(false);
 		expect(MOVED_OUT.accounts).toBe('/accounts');
+	});
+});
+
+describe('settings pages by announced features', () => {
+	it('lists every page with every feature on', () => {
+		expect(availableSettingsPages(() => true)).toEqual([...SETTINGS_PAGES]);
+	});
+
+	it('drops the macros, context, plugins, monitoring, security and uploads pages on a core server', () => {
+		expect(availableSettingsPages(() => false)).toEqual([
+			'appearance',
+			'sessions',
+			'execution',
+			'privacy',
+			'notifications',
+			'events',
+			'guides',
+			'users',
+			'dispatchers',
+			'instance'
+		]);
+	});
+
+	it('keeps the core pages a core server is tested on', () => {
+		const core = availableSettingsPages(() => false);
+		for (const page of ['dispatchers', 'users', 'instance', 'appearance'] as const) {
+			expect(core).toContain(page);
+		}
+	});
+
+	it('names the feature behind each gated page', () => {
+		expect(settingsPageFeature('plugins')).toBe('plugins');
+		expect(settingsPageFeature('security')).toBe('passkeys');
+		expect(settingsPageFeature('context')).toBe('context');
+		expect(settingsPageFeature('uploads')).toBe('uploads');
+		expect(settingsPageFeature('monitoring')).toBe('machine_spawn');
+		expect(settingsPageFeature('macros')).toBe('machine_spawn');
+		expect(settingsPageFeature('dispatchers')).toBeNull();
+		expect(settingsPageFeature('nope')).toBeNull();
 	});
 });

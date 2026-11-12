@@ -13,6 +13,7 @@
 	import SettingsPages from '$lib/components/organisms/settings/SettingsPages.svelte';
 	import {
 		applySettingsFilter,
+		availableSettingsPages,
 		DEFAULT_SETTINGS_PAGE,
 		firstMatchingPage,
 		firstMatchingRow,
@@ -23,6 +24,7 @@
 	} from '$lib/components/organisms/settings/settings.logic';
 	import { settings } from '$lib/settings.svelte';
 	import { useMe } from '$lib/queries';
+	import { hasFeature } from '$lib/features.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	const me = useMe();
@@ -37,7 +39,8 @@
 			void goto(MOVED_OUT[slug] ?? settingsHref(DEFAULT_SETTINGS_PAGE), { replaceState: true });
 	});
 
-	const entries = $derived<TocEntry[]>([
+	const available = $derived(new Set(availableSettingsPages(hasFeature)));
+	const allEntries = $derived<TocEntry[]>([
 		{ page: 'appearance', icon: 'palette', label: m.settings_nav_appearance() },
 		{ page: 'sessions', icon: 'list', label: m.settings_nav_sessions() },
 		{ page: 'macros', icon: 'zap', label: m.settings_nav_macros() },
@@ -55,6 +58,7 @@
 		{ page: 'instance', icon: 'settings', label: m.settings_nav_instance(), admin: true },
 		{ page: 'uploads', icon: 'upload', label: m.settings_nav_uploads(), admin: true }
 	]);
+	const entries = $derived(allEntries.filter((e) => available.has(e.page)));
 
 	// The filter reads the rendered rows back instead of keeping a parallel
 	// catalogue of localized copy. Every page is in the DOM, so a query that

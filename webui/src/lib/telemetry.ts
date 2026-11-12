@@ -1,5 +1,7 @@
 import type { Attributes, Span, Tracer } from '@opentelemetry/api';
-import { apiOrigin, otelConfig, type OtelConfig } from './config';
+import { apiBase, apiOrigin, otelConfig, type OtelConfig } from './config';
+import { hasFeature } from './features.svelte';
+import { bootCapabilities, onCapabilities } from './workspaceSupport';
 
 type Otel = typeof import('@opentelemetry/api');
 
@@ -37,8 +39,29 @@ export function redactSpanUrls(span: Span): void {
 export function initTelemetry(): Promise<void> {
 	const cfg = otelConfig();
 	if (!cfg) return Promise.resolve();
-	starting ??= start(cfg).catch((e) => console.warn('telemetry disabled:', e));
+	starting ??= relayAllowed(cfg)
+		.then((allowed) => (allowed ? start(cfg) : undefined))
+		.catch((e) => console.warn('telemetry disabled:', e));
 	return starting;
+}
+
+/** This server's own relay is unmounted with `observability` off; an external
+ *  collector is not ours to gate. Signed out the feature list is unreadable, so
+ *  the decision waits for the list sign-in reads. */
+async function relayAllowed(cfg: OtelConfig): Promise<boolean> {
+	const target = new URL(tracesUrl(cfg.endpoint), window.location.href);
+	const relay = new URL(`${apiBase()}/otlp/v1/traces`, window.location.href);
+	if (target.origin !== relay.origin || target.pathname !== relay.pathname) return true;
+	let unsubscribe = () => {};
+	const answered = new Promise<unknown>((resolve) => {
+		unsubscribe = onCapabilities(resolve);
+	});
+	try {
+		if (!(await bootCapabilities())) await answered;
+	} finally {
+		unsubscribe();
+	}
+	return hasFeature('observability');
 }
 
 async function start(cfg: OtelConfig) {

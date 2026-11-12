@@ -24,6 +24,7 @@ import {
 import { ApiError, errMessage } from "$lib/api";
 import { m } from "$lib/paraglide/messages";
 import { awaitSessionRow } from "$lib/awaitSessionRow";
+import { hasFeature } from "$lib/features.svelte";
 import { queryTerms, straightenPhraseQuotes } from "$lib/search";
 import { BRIEF_FETCH_MAX_BYTES, followupPrefill } from "$lib/followup";
 import { parse, type Schema } from "@dorsk/tsumikit";
@@ -35,6 +36,9 @@ import {
 } from "$lib/searchSchema";
 import {
   DEFAULT_TILE_SECTIONS,
+  effectiveColorBy,
+  effectiveGroupBy,
+  effectiveSections,
   parseSections,
   parseHiddenSections,
   serializeHiddenSections,
@@ -321,7 +325,10 @@ export class SessionsPage {
   }
   // One filter bar drives whichever set the active mode owns.
   get sections(): Set<Section> {
-    return this.tiles ? this.tileSections : this.listSections;
+    return effectiveSections(
+      this.tiles ? this.tileSections : this.listSections,
+      hasFeature,
+    );
   }
   set sections(v: Set<Section>) {
     if (this.tiles) this.tileSections = v;
@@ -336,11 +343,17 @@ export class SessionsPage {
 
   // Color-by and group-by dimensions, read live from the server-persisted
   // settings blob and written back through settings.setSessionList.
-  colorBy = $derived.by(
-    () => this.#d.settings.state.sessionList.colorBy as Dimension,
+  colorBy = $derived.by(() =>
+    effectiveColorBy(
+      this.#d.settings.state.sessionList.colorBy as Dimension,
+      hasFeature,
+    ),
   );
-  groupBy = $derived.by(
-    () => this.#d.settings.state.sessionList.groupBy as Dimension,
+  groupBy = $derived.by(() =>
+    effectiveGroupBy(
+      this.#d.settings.state.sessionList.groupBy as Dimension,
+      hasFeature,
+    ),
   );
   showMachine = $derived(this.groupBy !== "machine");
   sortState = $derived.by(() => ({
@@ -361,11 +374,15 @@ export class SessionsPage {
   // Server-evaluable clauses + free text ride the raw string to the search
   // endpoint; `id`/`created` clauses are peeled off and narrowed client-side.
   #split = $derived.by(() => splitQuery(this.query, this.searchSchema));
-  serverQuery = $derived(this.#split.serverQuery);
+  /** Transcript search is a server feature; without it there is no query to send. */
+  searchable = $derived(hasFeature("transcript_search"));
+  organising = $derived(hasFeature("organising"));
+  serverQuery = $derived(this.searchable ? this.#split.serverQuery : "");
   #clientFilters = $derived(this.#split.clientFilters);
   searching = $derived(this.serverQuery.length > 0);
   // One pager feeds two views, never both at once: search results (scoped by
-  // `showArchived`) or, with no query, the paged archive browse.
+  // `showArchived`) or, with no query, the paged archive browse. The browse
+  // is core; only a non-empty query needs `transcript_search`.
   pagerActive = $derived(this.searching || this.showArchived);
   // Highlight only the free-text portion of the query (field clauses excluded).
   searchTerms = $derived.by(() => {
@@ -386,7 +403,7 @@ export class SessionsPage {
   pageParents = $derived.by(() =>
     this.pagerActive ? mergeParentStubs(this.#pager.data?.pages ?? []) : [],
   );
-  pageDone = $derived.by(() => !this.#pager.hasNextPage);
+  pageDone = $derived.by(() => !this.pagerActive || !this.#pager.hasNextPage);
   // The last page stopped at the server's time budget: older chats are not
   // searched yet, so an empty or short result is not a "no match".
   pagePartial = $derived.by(
@@ -453,6 +470,7 @@ export class SessionsPage {
     ),
   );
   matchesLabelFilter = (s: SessionListItem): boolean =>
+    !this.organising ||
     this.labelFilter.size === 0 ||
     s.labels.some(
       (l) =>
@@ -661,6 +679,7 @@ export class SessionsPage {
   // Pinning floats a session to the top group and exempts it from auto-archive;
   // the list refetches so the move is immediate.
   togglePin = async (s: SessionListItem) => {
+    if (!this.organising) return;
     try {
       if (s.pinned) await this.#d.actions.unpin(s.id);
       else await this.#d.actions.pin(s.id);
@@ -741,6 +760,7 @@ export class SessionsPage {
     const slot = this.#d.spawnSlot.read(key);
     const body = slot && spawnRequestFromSlot(slot);
     if (!body) throw new Error(m.spawn_draft_incomplete());
+    if (!this.organising) delete body.label_ids;
     if (slot.draftId) {
       await this.#d.actions.updateDraft(slot.draftId, body);
       return;

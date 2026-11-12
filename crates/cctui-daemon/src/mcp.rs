@@ -22,6 +22,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use cctui_proto::features::{Feature, FeatureSet};
 use serde_json::{Value, json};
 
 pub const TOOL_NAME: &str = "CctuiAgent";
@@ -618,7 +619,75 @@ pub fn context_tool_schema() -> Value {
     })
 }
 
-/// Every tool this relay advertises, in a stable order.
+/// Every tool name, in [`tool_schemas`] order.
+pub const TOOL_NAMES: [&str; 11] = [
+    TOOL_NAME,
+    USAGE_TOOL_NAME,
+    ARCHIVE_TOOL_NAME,
+    PEERS_TOOL_NAME,
+    SEND_TOOL_NAME,
+    HISTORY_TOOL_NAME,
+    ROOM_TOOL_NAME,
+    USER_ACTION_ADD_TOOL_NAME,
+    USER_ACTION_TICK_TOOL_NAME,
+    SPEAK_TOOL_NAME,
+    CONTEXT_TOOL_NAME,
+];
+
+/// The feature whose server routes a tool calls; `None` is core.
+#[must_use]
+pub fn tool_feature(name: &str) -> Option<Feature> {
+    match name {
+        TOOL_NAME | ARCHIVE_TOOL_NAME => Some(Feature::ChildSessions),
+        PEERS_TOOL_NAME | SEND_TOOL_NAME | HISTORY_TOOL_NAME | ROOM_TOOL_NAME => {
+            Some(Feature::Rooms)
+        }
+        SPEAK_TOOL_NAME => Some(Feature::Voice),
+        CONTEXT_TOOL_NAME => Some(Feature::Context),
+        _ => None,
+    }
+}
+
+/// The tools a session holding a spawn grant is offered under `features`.
+#[must_use]
+pub fn offered_tools(features: FeatureSet) -> Vec<&'static str> {
+    TOOL_NAMES.into_iter().filter(|t| features.allows(tool_feature(t))).collect()
+}
+
+/// The relay's `--tools` value under `features`; `None` when every tool is
+/// offered, so the argv stays what a relay without the flag understands.
+#[must_use]
+pub fn tools_arg(features: FeatureSet) -> Option<String> {
+    let offered = offered_tools(features);
+    (offered.len() < TOOL_NAMES.len()).then(|| offered.join(","))
+}
+
+/// What one relay process offers: everything, or the `--tools` list.
+#[derive(Debug, Clone, Default)]
+pub struct Offered(Option<Vec<String>>);
+
+impl Offered {
+    #[must_use]
+    pub fn parse(tools: Option<&str>) -> Self {
+        Self(tools.map(|raw| {
+            raw.split(',').map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned).collect()
+        }))
+    }
+
+    #[must_use]
+    pub fn contains(&self, name: &str) -> bool {
+        self.0.as_ref().is_none_or(|list| list.iter().any(|t| t == name))
+    }
+
+    fn schemas(&self) -> Vec<Value> {
+        tool_schemas()
+            .into_iter()
+            .filter(|s| s.get("name").and_then(Value::as_str).is_some_and(|n| self.contains(n)))
+            .collect()
+    }
+}
+
+/// Every tool this relay can advertise, in a stable order.
 ///
 /// One list, one relay: registering it for codex or opencode
 /// (`adapters::agent_mcp`) offers exactly the same surface as `claude_code`'s
@@ -651,20 +720,32 @@ pub fn resolve_timeout(requested: Option<u64>) -> Duration {
 /// `exe` is the daemon binary; the session id and socket are baked into argv so
 /// the tool call carries no session identity of its own.
 #[must_use]
-pub fn mcp_config(exe: &str, session_id: &str, sock: &Path) -> Value {
+pub fn mcp_config(exe: &str, session_id: &str, sock: &Path, tools: Option<&str>) -> Value {
     json!({
         "mcpServers": {
             "cctui": {
                 "type": "stdio",
                 "command": exe,
-                "args": [
-                    "mcp-agent",
-                    "--session", session_id,
-                    "--sock", sock.to_string_lossy(),
-                ],
+                "args": relay_argv(session_id, sock, tools),
             }
         }
     })
+}
+
+/// The `mcp-agent` argv every harness launches the relay with.
+#[must_use]
+pub fn relay_argv(session_id: &str, sock: &Path, tools: Option<&str>) -> Vec<String> {
+    let mut argv = vec![
+        "mcp-agent".to_owned(),
+        "--session".to_owned(),
+        session_id.to_owned(),
+        "--sock".to_owned(),
+        sock.to_string_lossy().into_owned(),
+    ];
+    if let Some(tools) = tools {
+        argv.extend(["--tools".to_owned(), tools.to_owned()]);
+    }
+    argv
 }
 
 /// Serialize one JSON-RPC frame to stdout. The lock is per-line so concurrent
@@ -711,7 +792,13 @@ fn progress_token(req: &Value) -> Option<Value> {
 /// Handle one decoded JSON-RPC request inline; `None` for notifications (no
 /// reply) AND for `tools/call`, which replies asynchronously from its own
 /// thread via the outbox.
-fn handle_request(session_id: &str, sock: &Path, req: &Value, outbox: &Outbox) -> Option<Value> {
+fn handle_request(
+    session_id: &str,
+    sock: &Path,
+    offered: &Offered,
+    req: &Value,
+    outbox: &Outbox,
+) -> Option<Value> {
     let method = req.get("method").and_then(Value::as_str)?;
     let id = req.get("id");
     match method {
@@ -726,13 +813,18 @@ fn handle_request(session_id: &str, sock: &Path, req: &Value, outbox: &Outbox) -
                 }),
             ))
         }
-        "tools/list" => Some(reply(id, &json!({ "tools": tool_schemas() }))),
+        "tools/list" => Some(reply(id, &json!({ "tools": offered.schemas() }))),
         "tools/call" => {
             let params = req.get("params");
             let name = params.and_then(|p| p.get("name")).and_then(Value::as_str).unwrap_or("");
             let Some(kind) = tool_kind(name) else {
                 return Some(tool_result(id, &format!("unknown tool {name:?}"), true));
             };
+            if !offered.contains(name) {
+                let text =
+                    format!("{name} is not offered: this server has its feature switched off");
+                return Some(tool_result(id, &text, true));
+            }
             let args =
                 params.and_then(|p| p.get("arguments")).cloned().unwrap_or_else(|| json!({}));
             let id = id.cloned();
@@ -740,9 +832,18 @@ fn handle_request(session_id: &str, sock: &Path, req: &Value, outbox: &Outbox) -
             let session_id = session_id.to_owned();
             let sock = sock.to_owned();
             let outbox = outbox.clone();
+            let reattach =
+                Reattach { window: REATTACH_WINDOW, peers: offered.contains(PEERS_TOOL_NAME) };
             std::thread::spawn(move || {
-                let (text, is_error) =
-                    call_daemon(&session_id, &sock, kind, &args, token.as_ref(), &outbox);
+                let (text, is_error) = call_daemon_with(
+                    &session_id,
+                    &sock,
+                    kind,
+                    &args,
+                    token.as_ref(),
+                    &outbox,
+                    reattach,
+                );
                 outbox.send(&tool_result(id.as_ref(), &text, is_error));
             });
             None
@@ -752,9 +853,8 @@ fn handle_request(session_id: &str, sock: &Path, req: &Value, outbox: &Outbox) -
     }
 }
 
-/// Send the tool call to the daemon, forwarding interim progress frames, and
-/// block on the final result line. Every failure returns text: the model must
-/// see an error, never a hang.
+/// [`call_daemon_with`] on a relay that offers every tool.
+#[cfg(test)]
 fn call_daemon(
     session_id: &str,
     sock: &Path,
@@ -763,11 +863,23 @@ fn call_daemon(
     token: Option<&Value>,
     outbox: &Outbox,
 ) -> (String, bool) {
-    call_daemon_with(session_id, sock, kind, args, token, outbox, REATTACH_WINDOW)
+    let reattach = Reattach { window: REATTACH_WINDOW, peers: true };
+    call_daemon_with(session_id, sock, kind, args, token, outbox, reattach)
 }
 
-/// [`call_daemon`], reattaching a `CctuiAgent` follow the daemon dropped (a
-/// restart, a self-update re-exec) for up to `reattach_window` per drop.
+/// How a dropped `CctuiAgent` follow recovers: how long one reattach keeps
+/// trying, and whether `CctuiPeers` is offered to find the child's id.
+#[derive(Debug, Clone, Copy)]
+struct Reattach {
+    window: Duration,
+    peers: bool,
+}
+
+/// Send the tool call to the daemon and block on its final result line.
+///
+/// Interim progress frames are forwarded, and a `CctuiAgent` follow the daemon
+/// dropped (a restart, a self-update re-exec) is reattached. Every failure
+/// returns text: the model must see an error, never a hang.
 fn call_daemon_with(
     session_id: &str,
     sock: &Path,
@@ -775,7 +887,7 @@ fn call_daemon_with(
     args: &Value,
     token: Option<&Value>,
     outbox: &Outbox,
-    reattach_window: Duration,
+    reattach: Reattach,
 ) -> (String, bool) {
     let tool = tool_of_kind(kind);
     let timeout = match kind {
@@ -818,15 +930,15 @@ fn call_daemon_with(
             Exchange::Done(text, is_error) => return (text, is_error),
             Exchange::Malformed => return (format!("{tool} failed: malformed daemon reply"), true),
             Exchange::Lost { closed: false } => {
-                return (dropped_error(tool, kind, child.as_deref()), true);
+                return (dropped_error(tool, kind, child.as_deref(), reattach.peers), true);
             }
             Exchange::Lost { closed: true } => {}
         }
         let Some(target) = child.clone().filter(|_| reattaches < MAX_REATTACHES) else {
-            return (dropped_error(tool, kind, child.as_deref()), true);
+            return (dropped_error(tool, kind, child.as_deref(), reattach.peers), true);
         };
-        let Some(next) = reconnect(sock, reattach_window) else {
-            return (dropped_error(tool, kind, Some(&target)), true);
+        let Some(next) = reconnect(sock, reattach.window) else {
+            return (dropped_error(tool, kind, Some(&target), reattach.peers), true);
         };
         reattaches += 1;
         stream = next;
@@ -924,20 +1036,29 @@ fn reconnect(sock: &Path, window: Duration) -> Option<UnixStream> {
     }
 }
 
-/// What the model reads when a call ends without a result. A follow names how
-/// the child's answer still reaches it.
-fn dropped_error(tool: &str, kind: &str, child: Option<&str>) -> String {
+/// What the model reads when a call ends without a result.
+///
+/// A follow names how the child's answer still reaches it; `peers` is whether
+/// `CctuiPeers` is offered to look up a child whose id was never seen.
+fn dropped_error(tool: &str, kind: &str, child: Option<&str>, peers: bool) -> String {
     if kind != "spawn_agent" {
         return format!("{tool} failed: the daemon closed the connection without a result");
     }
     child.map_or_else(
         || {
+            let wait = if peers {
+                format!(
+                    " To wait for it here instead, find its id with {PEERS_TOOL_NAME} and call \
+                     {tool} with that session_id and no prompt."
+                )
+            } else {
+                String::new()
+            };
             format!(
                 "{tool} lost its connection to the cctui daemon (most likely a daemon restart or \
              self-update) before the child's session id was known. A child that was spawned keeps \
              running, and its final message is delivered to this session as a message when its \
-             turn ends. To wait for it here instead, find its id with CctuiPeers and call {tool} \
-             with that session_id and no prompt."
+             turn ends.{wait}"
             )
         },
         |child| {
@@ -991,10 +1112,16 @@ pub fn wait_ready(session_id: &str, sock: &Path, timeout: Duration) {
     let _ = BufReader::new(&stream).read_line(&mut line);
 }
 
-/// Serve MCP on stdio until the client closes it.
+/// Serve MCP on stdio, offering every tool, until the client closes it.
 pub fn run(session_id: &str, sock: &Path) -> anyhow::Result<()> {
+    run_offering(session_id, sock, None)
+}
+
+/// [`run`] offering only the `--tools` list; `None` offers every tool.
+pub fn run_offering(session_id: &str, sock: &Path, tools: Option<&str>) -> anyhow::Result<()> {
     let stdin = std::io::stdin();
     let outbox = Outbox::new();
+    let offered = Offered::parse(tools);
     for line in stdin.lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -1003,7 +1130,7 @@ pub fn run(session_id: &str, sock: &Path) -> anyhow::Result<()> {
         let Ok(req) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
-        if let Some(resp) = handle_request(session_id, sock, &req, &outbox) {
+        if let Some(resp) = handle_request(session_id, sock, &offered, &req, &outbox) {
             outbox.send(&resp);
         }
     }
@@ -1015,7 +1142,7 @@ mod tests {
     use super::*;
 
     fn handle(session_id: &str, sock: &Path, req: &Value) -> Option<Value> {
-        handle_request(session_id, sock, req, &Outbox::new())
+        handle_request(session_id, sock, &Offered::default(), req, &Outbox::new())
     }
 
     #[test]
@@ -1565,7 +1692,7 @@ mod tests {
             &json!({ "adapter": "codex", "prompt": "go", "model": "m", "timeout_secs": 30 }),
             None,
             &Outbox::new(),
-            Duration::from_secs(5),
+            Reattach { window: Duration::from_secs(5), peers: true },
         );
         let reattach = server.join().unwrap();
         assert!(!is_error, "{text}");
@@ -1600,7 +1727,7 @@ mod tests {
             &json!({ "session_id": "child-9", "prompt": "and the tests?", "timeout_secs": 30 }),
             None,
             &Outbox::new(),
-            Duration::from_millis(600),
+            Reattach { window: Duration::from_millis(600), peers: true },
         );
         server.join().unwrap();
         assert!(is_error);
@@ -1610,9 +1737,20 @@ mod tests {
     }
 
     #[test]
+    fn a_follow_lost_before_its_child_id_names_cctui_peers_only_when_offered() {
+        let with = dropped_error(TOOL_NAME, "spawn_agent", None, true);
+        assert!(with.contains("find its id with CctuiPeers and call CctuiAgent"), "{with}");
+        let without = dropped_error(TOOL_NAME, "spawn_agent", None, false);
+        assert!(!without.contains("CctuiPeers"), "{without}");
+        assert!(without.ends_with("when its turn ends."), "{without}");
+        let known = dropped_error(TOOL_NAME, "spawn_agent", Some("child-3"), false);
+        assert!(known.contains("session_id \"child-3\" and no prompt"), "{known}");
+    }
+
+    #[test]
     fn a_dropped_round_trip_tool_is_never_reattached() {
         assert_eq!(
-            dropped_error("CctuiUsage", "usage", None),
+            dropped_error("CctuiUsage", "usage", None, true),
             "CctuiUsage failed: the daemon closed the connection without a result"
         );
     }
@@ -1693,7 +1831,8 @@ mod tests {
 
     #[test]
     fn mcp_config_bakes_the_session_and_socket_into_argv() {
-        let cfg = mcp_config("/usr/bin/cctui-daemon", "sess-1", Path::new("/run/cctui/agent.sock"));
+        let sock = Path::new("/run/cctui/agent.sock");
+        let cfg = mcp_config("/usr/bin/cctui-daemon", "sess-1", sock, None);
         let server = &cfg["mcpServers"]["cctui"];
         assert_eq!(server["command"], "/usr/bin/cctui-daemon");
         assert_eq!(server["type"], "stdio");
@@ -1701,5 +1840,89 @@ mod tests {
             server["args"],
             json!(["mcp-agent", "--session", "sess-1", "--sock", "/run/cctui/agent.sock"])
         );
+        let cfg = mcp_config("/usr/bin/cctui-daemon", "sess-1", sock, Some("CctuiUsage"));
+        assert_eq!(
+            cfg["mcpServers"]["cctui"]["args"],
+            json!([
+                "mcp-agent",
+                "--session",
+                "sess-1",
+                "--sock",
+                "/run/cctui/agent.sock",
+                "--tools",
+                "CctuiUsage"
+            ])
+        );
+    }
+
+    fn core_tools() -> Vec<&'static str> {
+        vec![USAGE_TOOL_NAME, USER_ACTION_ADD_TOOL_NAME, USER_ACTION_TICK_TOOL_NAME]
+    }
+
+    fn listed(offered: &Offered) -> Vec<String> {
+        let req = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
+        let resp =
+            handle_request("s1", Path::new("/tmp/x.sock"), offered, &req, &Outbox::new()).unwrap();
+        resp["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn every_feature_on_offers_all_eleven_tools_and_needs_no_tools_flag() {
+        assert_eq!(offered_tools(FeatureSet::all()), TOOL_NAMES);
+        assert_eq!(tools_arg(FeatureSet::all()), None);
+        let names: Vec<String> =
+            tool_schemas().iter().map(|t| t["name"].as_str().unwrap().to_owned()).collect();
+        assert_eq!(names, TOOL_NAMES);
+    }
+
+    #[test]
+    fn every_switchable_feature_off_offers_only_usage_and_the_user_action_tools() {
+        assert_eq!(offered_tools(FeatureSet::none()), core_tools());
+        let arg = tools_arg(FeatureSet::none()).expect("a restricted set names its tools");
+        assert_eq!(arg, "CctuiUsage,CctuiUserActionAdd,CctuiUserActionTick");
+        assert_eq!(listed(&Offered::parse(Some(arg.as_str()))), core_tools());
+    }
+
+    #[test]
+    fn each_tool_follows_the_feature_of_the_server_route_it_calls() {
+        let without = |f: Feature| offered_tools(FeatureSet::all().without(f));
+        let child = without(Feature::ChildSessions);
+        assert!(!child.contains(&TOOL_NAME) && !child.contains(&ARCHIVE_TOOL_NAME));
+        assert_eq!(child.len(), 9);
+        let rooms = without(Feature::Rooms);
+        for tool in [PEERS_TOOL_NAME, SEND_TOOL_NAME, HISTORY_TOOL_NAME, ROOM_TOOL_NAME] {
+            assert!(!rooms.contains(&tool), "{tool} needs rooms");
+        }
+        assert_eq!(rooms.len(), 7);
+        assert_eq!(without(Feature::Voice).len(), 10);
+        assert!(!without(Feature::Voice).contains(&SPEAK_TOOL_NAME));
+        assert!(!without(Feature::Context).contains(&CONTEXT_TOOL_NAME));
+        assert_eq!(without(Feature::Files), TOOL_NAMES, "no tool reads files");
+    }
+
+    #[test]
+    fn a_relay_launched_without_a_tools_flag_offers_every_tool() {
+        assert_eq!(listed(&Offered::parse(None)), TOOL_NAMES);
+    }
+
+    #[test]
+    fn a_call_to_a_tool_not_offered_is_refused_without_reaching_the_daemon() {
+        let offered = Offered::parse(Some("CctuiUsage,CctuiUserActionAdd,CctuiUserActionTick"));
+        let req = json!({
+            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": { "name": PEERS_TOOL_NAME, "arguments": {} },
+        });
+        let dead = Path::new("/nonexistent/cctui-refusal.sock");
+        let resp = handle_request("s1", dead, &offered, &req, &Outbox::new())
+            .expect("a refusal is answered inline, not from a daemon thread");
+        assert_eq!(resp["id"], json!(4));
+        assert_eq!(resp["result"]["isError"], json!(true));
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("CctuiPeers is not offered"), "{text}");
     }
 }

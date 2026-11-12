@@ -61,7 +61,7 @@
 	>
 </span>
 {#if row}<span class="row-break" aria-hidden="true"></span>{/if}
-{#if s.labels.length > 0 || actions.labelEditable}
+{#if actions.showLabels && (s.labels.length > 0 || actions.labelEditable)}
 	<span class="labels" class:empty={s.labels.length === 0}><LabelBadge
 		labels={s.labels}
 		editable={actions.labelEditable}

@@ -27,6 +27,7 @@ use cctui_proto::api::{
     ArchiveChildRequest, ArchiveChildResponse, MessageChildRequest, PeerMessageRequest,
     RoomToolRequest, SpawnChildRequest,
 };
+use cctui_proto::features::{Feature, FeatureSet};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines};
 use tokio::net::UnixStream;
@@ -120,6 +121,35 @@ enum CallKind {
     PreviewClose {
         port: u16,
     },
+}
+
+/// The switchable feature a call reaches; `None` is core. Agrees with
+/// [`crate::mcp::tool_feature`] on the calls behind an MCP tool.
+const fn call_feature(kind: &CallKind) -> Option<Feature> {
+    match kind {
+        CallKind::Spawn(_)
+        | CallKind::Message(_)
+        | CallKind::Attach { .. }
+        | CallKind::ArchiveChild(_) => Some(Feature::ChildSessions),
+        CallKind::Peers
+        | CallKind::SendPeer(_)
+        | CallKind::Room(_)
+        | CallKind::PeerHistory { .. } => Some(Feature::Rooms),
+        CallKind::Context(_) => Some(Feature::Context),
+        CallKind::Speak { .. } => Some(Feature::Voice),
+        CallKind::PreviewOpen { .. } | CallKind::PreviewClose { .. } => Some(Feature::Previews),
+        CallKind::Usage { .. }
+        | CallKind::UserActionAdd(_)
+        | CallKind::UserActionTick(_)
+        | CallKind::RelayReady
+        | CallKind::RelayWait => None,
+    }
+}
+
+fn admit_call(kind: &CallKind, features: FeatureSet) -> Result<(), String> {
+    call_feature(kind)
+        .filter(|feature| !features.contains(*feature))
+        .map_or(Ok(()), |feature| Err(format!("{feature} is switched off on this server")))
 }
 
 #[derive(Debug)]
@@ -1607,6 +1637,7 @@ async fn handle_connection(stream: UnixStream, server: ServerClient, machine_key
     let Ok(Some(line)) = lines.next_line().await else { return };
     let call = match parse_call(&line)
         .and_then(|call| verify_caller(&call.session_id, peer_pid).map(|()| call))
+        .and_then(|call| admit_call(&call.kind, crate::serverfeatures::current()).map(|()| call))
     {
         Ok(call) => call,
         Err(err) => {
@@ -2180,6 +2211,55 @@ mod tests {
             ..ContextToolResponse::default()
         };
         assert_eq!(render_context_result("attach", &none), "nothing attached\nunknown: ghost");
+    }
+
+    fn kind_of(value: &Value) -> CallKind {
+        parse_call(&value.to_string()).unwrap().kind
+    }
+
+    #[test]
+    fn preview_open_is_refused_with_previews_off() {
+        let off = FeatureSet::all().without(Feature::Previews);
+        for kind in ["preview_open", "preview_close"] {
+            let call =
+                kind_of(&json!({ "kind": kind, "session_id": "s1", "args": { "port": 5173 } }));
+            let err = admit_call(&call, off).unwrap_err();
+            assert!(err.contains("previews is switched off"), "{err}");
+            for on in [FeatureSet::all(), crate::serverfeatures::from_off(&[])] {
+                assert!(admit_call(&call, on).is_ok(), "{kind} served with previews on");
+            }
+        }
+    }
+
+    #[test]
+    fn an_agent_call_is_refused_when_its_feature_is_off_and_core_calls_never_are() {
+        let gated = [
+            (json!({ "kind": "peers", "session_id": "s1" }), Feature::Rooms),
+            (
+                json!({ "kind": "speak", "session_id": "s1", "args": { "text": "hi" } }),
+                Feature::Voice,
+            ),
+            (
+                json!({
+                    "kind": "archive_child", "session_id": "s1", "args": { "session_id": "c1" }
+                }),
+                Feature::ChildSessions,
+            ),
+        ];
+        for (line, feature) in gated {
+            let call = kind_of(&line);
+            assert_eq!(call_feature(&call), Some(feature));
+            assert!(admit_call(&call, FeatureSet::all().without(feature)).is_err(), "{line}");
+            assert!(admit_call(&call, FeatureSet::none().with(feature)).is_ok(), "{line}");
+        }
+        let core = [
+            json!({ "kind": "usage", "session_id": "s1", "args": {} }),
+            json!({ "kind": "relay_ready", "session_id": "s1" }),
+            json!({ "kind": "relay_wait", "session_id": "s1" }),
+        ];
+        for line in core {
+            assert!(admit_call(&kind_of(&line), FeatureSet::none()).is_ok(), "{line}");
+        }
     }
 
     #[test]

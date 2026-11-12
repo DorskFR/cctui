@@ -26,6 +26,7 @@ pub struct AgentMcp {
     exe: String,
     session_key: String,
     sock: PathBuf,
+    tools: Option<String>,
 }
 
 impl AgentMcp {
@@ -52,16 +53,27 @@ impl AgentMcp {
         let exe = std::env::current_exe()
             .map_err(|err| tracing::warn!(%err, "CctuiAgent: cannot resolve current_exe"))
             .ok()?;
-        Some(Self::new(
-            exe.to_string_lossy().into_owned(),
-            session_key.to_owned(),
-            crate::agenttool::socket_for_launch().to_path_buf(),
-        ))
+        let tools = crate::mcp::tools_arg(crate::serverfeatures::current());
+        Some(
+            Self::new(
+                exe.to_string_lossy().into_owned(),
+                session_key.to_owned(),
+                crate::agenttool::socket_for_launch().to_path_buf(),
+            )
+            .with_tools(tools),
+        )
     }
 
     #[must_use]
     pub const fn new(exe: String, session_key: String, sock: PathBuf) -> Self {
-        Self { exe, session_key, sock }
+        Self { exe, session_key, sock, tools: None }
+    }
+
+    /// Restrict the relay to the `--tools` list; `None` offers every tool.
+    #[must_use]
+    pub fn with_tools(mut self, tools: Option<String>) -> Self {
+        self.tools = tools;
+        self
     }
 
     #[must_use]
@@ -70,13 +82,7 @@ impl AgentMcp {
     }
 
     fn argv(&self) -> Vec<String> {
-        vec![
-            "mcp-agent".to_owned(),
-            "--session".to_owned(),
-            self.session_key.clone(),
-            "--sock".to_owned(),
-            self.sock.to_string_lossy().into_owned(),
-        ]
+        crate::mcp::relay_argv(&self.session_key, &self.sock, self.tools.as_deref())
     }
 
     /// `codex app-server -c key=value` overrides declaring the relay. The values
@@ -269,7 +275,8 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap().to_owned())
             .collect();
-        let claude = crate::mcp::mcp_config(&mcp.exe, mcp.session_key(), &mcp.sock);
+        let claude =
+            crate::mcp::mcp_config(&mcp.exe, mcp.session_key(), &mcp.sock, mcp.tools.as_deref());
         let claude_args: Vec<String> = claude["mcpServers"][SERVER_NAME]["args"]
             .as_array()
             .unwrap()
@@ -304,6 +311,19 @@ mod tests {
                 "{tool} is not advertised by the shared relay"
             );
         }
+    }
+
+    #[test]
+    fn a_restricted_relay_carries_its_tool_list_to_every_harness() {
+        let mcp = fixture().with_tools(Some("CctuiUsage,CctuiUserActionAdd".to_owned()));
+        let tail = ["--tools".to_owned(), "CctuiUsage,CctuiUserActionAdd".to_owned()];
+        assert!(mcp.argv().ends_with(&tail), "{:?}", mcp.argv());
+        assert_eq!(mcp.acp_server()["args"], serde_json::json!(mcp.argv()));
+        let codex = mcp.codex_config_overrides();
+        let args_key = format!("mcp_servers.{SERVER_NAME}.args");
+        assert!(codex.iter().any(|(k, v)| *k == args_key && v.contains("--tools")));
+        let opencode = &mcp.opencode_config()[SERVER_NAME]["command"];
+        assert_eq!(opencode.as_array().unwrap().len(), mcp.argv().len() + 1);
     }
 
     #[test]

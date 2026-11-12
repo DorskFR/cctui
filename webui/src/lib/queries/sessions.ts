@@ -9,6 +9,7 @@ import { api } from "../api";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
 import type { DailyCacheLoss } from "./types";
+import { hasFeature } from "$lib/features.svelte";
 
 export const useSessions = (
   archived: () => boolean,
@@ -38,6 +39,7 @@ export const useLabels = () =>
   createQuery(() => ({
     queryKey: qk.labels,
     queryFn: endpoints.labels,
+    enabled: hasFeature("organising"),
     refetchInterval: 60_000,
   }));
 
@@ -132,7 +134,7 @@ export const useMessagePins = (
   createQuery(() => ({
     queryKey: qk.messagePins(id()),
     queryFn: () => endpoints.messagePins(id()),
-    enabled: enabled() && !!id(),
+    enabled: enabled() && !!id() && hasFeature("organising"),
     staleTime: 30_000,
   }));
 
@@ -209,7 +211,7 @@ export const useSessionLangfuse = (
   createQuery(() => ({
     queryKey: qk.sessionLangfuse(id()),
     queryFn: () => endpoints.sessionLangfuse(id()),
-    enabled: enabled() && !!id(),
+    enabled: enabled() && !!id() && hasFeature("observability"),
     staleTime: 60_000,
     retry: false,
   }));
@@ -285,7 +287,7 @@ export const useSessionThread = (
         threadForks(id(), followups.data ?? [], known),
       ),
       queryFn: () => endpoints.sessionThread(id()),
-      enabled: enabled() && !!id(),
+      enabled: enabled() && !!id() && hasFeature("automation"),
     };
   });
 };
@@ -299,7 +301,7 @@ export const useSessionAttachments = (
   createQuery(() => ({
     queryKey: qk.sessionAttachments(id()),
     queryFn: () => endpoints.sessionAttachments(id()),
-    enabled: enabled() && !!id(),
+    enabled: enabled() && !!id() && hasFeature("uploads"),
     staleTime: 5 * 60_000,
     retry: false,
   }));
@@ -308,7 +310,7 @@ export const useRecentDirs = (machineId: () => string) =>
   createQuery(() => ({
     queryKey: qk.recentDirs(machineId()),
     queryFn: () => endpoints.recentDirs(machineId()),
-    enabled: !!machineId(),
+    enabled: !!machineId() && hasFeature("machine_spawn"),
     staleTime: 30_000,
   }));
 
@@ -316,7 +318,7 @@ export const useMachineDirs = (machineId: () => string, path: () => string) =>
   createQuery(() => ({
     queryKey: qk.machineDirs(machineId(), path()),
     queryFn: () => endpoints.machineDirs(machineId(), path()),
-    enabled: !!machineId() && !!path(),
+    enabled: !!machineId() && !!path() && hasFeature("files"),
     staleTime: 10_000,
     retry: false,
   }));
