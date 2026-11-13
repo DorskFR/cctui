@@ -74,8 +74,9 @@ describe('FeedbackPanel', () => {
 		const props = received[0];
 		expect(props.endpoint).toBe('https://hmm.test');
 		expect(props.projectKey).toBe('cctui');
-		expect(props.position).toBe('bottom-left');
-		expect((props.labels as { launcher: string }).launcher).toBe('Feedback');
+		expect(props.launcher).toEqual({ form: 'edge', side: 'right', align: 'end' });
+		expect(props.position).toBeUndefined();
+		expect((props.labels as { launcher: string }).launcher).toBe('hmm?');
 	});
 
 	it('reports only the versions and the route as context', async () => {

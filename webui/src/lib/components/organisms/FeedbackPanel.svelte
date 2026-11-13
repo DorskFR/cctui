@@ -20,13 +20,22 @@
 {#if config && hmm}
 	{#await hmm then mod}
 		{#if mod}
-			<mod.Hmm
-				endpoint={config.endpoint}
-				projectKey={config.projectKey}
-				position="bottom-left"
-				{labels}
-				context={() => feedbackContext(serverVersion(), route())}
-			/>
+			<div class="feedback">
+				<mod.Hmm
+					endpoint={config.endpoint}
+					projectKey={config.projectKey}
+					launcher={{ form: 'edge', side: 'right', align: 'end' }}
+					{labels}
+					context={() => feedbackContext(serverVersion(), route())}
+				/>
+			</div>
 		{/if}
 	{/await}
 {/if}
+
+<style>
+	.feedback {
+		display: contents;
+		--hmm-offset-y: var(--bottom-chrome);
+	}
+</style>
