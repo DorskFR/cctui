@@ -707,7 +707,6 @@ const OFF_OUTER_ROUTES: &[(&str, &str)] = &[
     ("POST", "/api/v1/daemon/sessions/s1/context"),
     ("GET", "/api/v1/daemon/version"),
     ("POST", "/api/v1/daemon/update-hook/r1"),
-    ("POST", "/api/v1/triggers/github"),
     ("GET", "/plugins/p1/index.js"),
     ("POST", "/cctuiverse/v1/join"),
     ("POST", "/cctuiverse/v1/links/l1/messages"),

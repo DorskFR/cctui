@@ -1,30 +1,18 @@
 //! A claim is a lease: a row left in `sending` by a crashed replica becomes
 //! claimable again once its `next_attempt_at` passes.
 
-use std::time::Duration as StdDuration;
-
 use axum::http::StatusCode;
-use cctui_proto::backoff::Backoff;
 use chrono::{DateTime, Duration, Utc};
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
+#[cfg(test)]
+use crate::outbox::MAX_ATTEMPTS;
+use crate::outbox::{CLAIM_BATCH, CLAIM_LEASE_SECS, Retry, retry_after_failure};
 use crate::state::AppState;
 use crate::store::sessions::SessionRowStatus;
 
 pub const MAX_HORIZON_DAYS: i64 = 30;
-/// Sized so the doubling schedule below still spans over two hours: a session
-/// unreachable for an hour must recover, not dead-letter.
-const MAX_ATTEMPTS: i32 = 11;
-
-/// Redelivery schedule: 10 s doubling to a 1 h cap, jittered so a batch that
-/// failed together does not retry in lockstep. The first retry stays seconds
-/// away for a transient failure; [`MAX_ATTEMPTS`] carries the total reach.
-const fn retry_schedule() -> Backoff {
-    Backoff::new(StdDuration::from_secs(10), StdDuration::from_hours(1))
-}
-const CLAIM_LEASE_SECS: i64 = 300;
-const CLAIM_BATCH: i64 = 50;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum DeliverAtError {
@@ -54,21 +42,6 @@ pub fn parse_deliver_at(raw: &str, now: DateTime<Utc>) -> Result<DateTime<Utc>, 
         return Err(DeliverAtError::TooFar);
     }
     Ok(at)
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum Retry {
-    After { attempts: i32, secs: i64 },
-    Dead { attempts: i32 },
-}
-
-pub fn retry_after_failure(attempts: i32) -> Retry {
-    let next = attempts + 1;
-    if next >= MAX_ATTEMPTS {
-        return Retry::Dead { attempts: next };
-    }
-    let secs = retry_schedule().delay_secs_for(u32::try_from(attempts).unwrap_or(u32::MAX));
-    Retry::After { attempts: next, secs }
 }
 
 /// Reason a message can never be delivered to a session in this status.

@@ -29,6 +29,7 @@ mod followup;
 mod guard_step;
 mod http_cache;
 mod image_blobs;
+mod inbox;
 mod keepalive;
 mod langfuse;
 mod live_sessions;
@@ -36,9 +37,11 @@ mod machine_liveness;
 mod machine_resources;
 mod metrics;
 mod normalize;
+mod notify;
 mod ntfy;
 mod openapi;
 mod outbound;
+mod outbox;
 mod pace;
 mod peer_policy;
 mod plugin_archive;
@@ -719,7 +722,6 @@ fn infra_routes(r: OuterRoutes) -> OuterRoutes {
         .route("/api/v1/dispatch/redeem", post(dispatch_identity::redeem::<AppState>))
         .route("/api/v1/dispatch/{id}/env", get(dispatch_identity::env::<AppState>))
         .route("/api/v1/dispatch/{id}/hold", post(dispatch_identity::hold::<AppState>))
-        .feature(Feature::Automation, "/api/v1/triggers/{kind}", post(routes::triggers::ingest))
         // Public like the SPA assets: the webui `import()`s plugin modules.
         .feature(Feature::Plugins, "/plugins/{id}/{*path}", get(routes::plugins::static_file))
         // OAuth passthrough gateway. Auths via the session-scoped
@@ -1208,6 +1210,12 @@ fn spawn_reaper_sweeps(state: &AppState) {
     spawn_sweep(state, |state| async move {
         state.permission_store.write().await.reap_stale(300); // seconds
     });
+    notify::install(&state.pool);
+    spawn_sweep(state, |state| async move {
+        notify::dispatcher::sweep(&state.pool, &state.config).await;
+    });
+    spawn_sweep(state, |state| async move { notify::retention::sweep(&state.pool).await });
+    spawn_sweep(state, |state| async move { inbox::store::sweep(&state.pool).await });
 }
 
 fn spawn_sweep<F, Fut>(state: &AppState, job: F)
@@ -1479,6 +1487,10 @@ mod tests {
             "POST /enroll Bearer Scope(Enroll)",
             "GET /events Bearer Authenticated",
             "GET /harnesses Bearer Authenticated",
+            "GET /inbox/events Bearer Authenticated",
+            "POST /inbox/events Bearer Scope(Dispatch)",
+            "DELETE /inbox/events/{id} Bearer Authenticated",
+            "GET /inbox/events/{id} Bearer Authenticated",
             "GET /keys Bearer Authenticated",
             "POST /keys Bearer Authenticated",
             "DELETE /keys/{id} Bearer Authenticated",
@@ -1930,7 +1942,6 @@ mod feature_gate_tests {
             ("GET", "/api/v1/daemon/sessions/s1/peers"),
             ("POST", "/api/v1/daemon/sessions/s1/voice-notes"),
             ("GET", "/api/v1/daemon/version"),
-            ("POST", "/api/v1/triggers/github"),
             ("GET", "/plugins/p1/index.js"),
             ("POST", "/cctuiverse/v1/join"),
             ("GET", "/internal/preview/p1/"),

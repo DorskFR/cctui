@@ -73,6 +73,12 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "stream_events_search_text_on_insert",
         sql: include_str!("../schema/0006_stream_events_search_text_on_insert.sql"),
     },
+    Migration {
+        version: 7,
+        name: "notifications",
+        sql: include_str!("../schema/0007_notifications.sql"),
+    },
+    Migration { version: 8, name: "inbox", sql: include_str!("../schema/0008_inbox.sql") },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -208,7 +214,9 @@ mod tests {
                     (3, "bootstrap".to_owned()),
                     (4, "bootstrap".to_owned()),
                     (5, "bootstrap".to_owned()),
-                    (6, "bootstrap".to_owned())
+                    (6, "bootstrap".to_owned()),
+                    (7, "bootstrap".to_owned()),
+                    (8, "bootstrap".to_owned())
                 ]
             );
 
@@ -308,7 +316,9 @@ mod tests {
                     (3, "bootstrap".to_owned()),
                     (4, "bootstrap".to_owned()),
                     (5, "bootstrap".to_owned()),
-                    (6, "bootstrap".to_owned())
+                    (6, "bootstrap".to_owned()),
+                    (7, "bootstrap".to_owned()),
+                    (8, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =

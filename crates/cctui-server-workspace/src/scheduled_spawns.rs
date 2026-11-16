@@ -2,20 +2,18 @@
 //! [`crate::scheduled_messages`]: a row left in `launching` by a crashed
 //! replica becomes claimable again once its `next_attempt_at` passes.
 //!
-//! The horizon, the RFC3339 validation and the retry schedule are the
-//! scheduled-message ones — the two outboxes must not drift apart.
+//! The horizon and the RFC3339 validation are the scheduled-message ones and
+//! the lease and retry rules are [`crate::outbox`]'s: the outboxes must not
+//! drift apart.
 
 use cctui_proto::ws::{ScheduledLaunchState, ServerEvent};
 use chrono::{DateTime, Utc};
 
 use crate::auth::{AuthContext, Scope};
 use crate::bus::Bus;
-use crate::scheduled_messages::{Retry, retry_after_failure};
+use crate::outbox::{CLAIM_BATCH, CLAIM_LEASE_SECS, Retry, retry_after_failure};
 use crate::state::AppState;
 use crate::store::sessions::SessionRowStatus;
-
-const CLAIM_LEASE_SECS: i64 = 300;
-const CLAIM_BATCH: i64 = 50;
 
 /// Reason a draft can never be launched.
 pub fn unlaunchable_reason(draft_status: Option<&str>) -> Option<&'static str> {
