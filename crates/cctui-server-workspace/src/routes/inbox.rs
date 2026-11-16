@@ -14,6 +14,7 @@ use crate::scheduled_messages::MAX_HORIZON_DAYS;
 use crate::state::AppState;
 
 type ApiResult<T> = Result<T, AppError>;
+type Window = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 
 const MAX_BODY_BYTES: usize = 64 * 1024;
 const MAX_PAYLOAD_BYTES: usize = 8 * 1024;
@@ -140,10 +141,7 @@ fn timestamp(field: &str, raw: Option<&str>) -> Result<Option<DateTime<Utc>>, St
     .transpose()
 }
 
-fn schedule(
-    req: &CreateEvent,
-    now: DateTime<Utc>,
-) -> Result<(Option<DateTime<Utc>>, Option<DateTime<Utc>>), String> {
+fn schedule(req: &CreateEvent, now: DateTime<Utc>) -> Result<Window, String> {
     let not_before = timestamp("not_before", req.not_before.as_deref())?;
     let expires_at = timestamp("expires_at", req.expires_at.as_deref())?;
     if not_before.is_some_and(|at| at > now + Duration::days(MAX_HORIZON_DAYS)) {
@@ -242,8 +240,9 @@ pub async fn cancel(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    ctx.requires(Scope::Dispatch)
-        .map_err(|code| AppError::new(code, "cancelling an inbox event needs the dispatch scope"))?;
+    ctx.requires(Scope::Dispatch).map_err(|code| {
+        AppError::new(code, "cancelling an inbox event needs the dispatch scope")
+    })?;
     match store::cancel(&state.pool, ctx.owner_filter(), id).await? {
         Cancel::Cancelled => Ok(StatusCode::NO_CONTENT),
         Cancel::NotFound => Err(not_found()),
