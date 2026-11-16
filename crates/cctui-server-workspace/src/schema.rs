@@ -242,8 +242,7 @@ mod tests {
                     (10, "bootstrap".to_owned()),
                     (11, "bootstrap".to_owned()),
                     (12, "bootstrap".to_owned()),
-                    (13, "bootstrap".to_owned()),
-                    (14, "bootstrap".to_owned())
+                    (13, "bootstrap".to_owned())
                 ]
             );
 
@@ -350,8 +349,7 @@ mod tests {
                     (10, "bootstrap".to_owned()),
                     (11, "bootstrap".to_owned()),
                     (12, "bootstrap".to_owned()),
-                    (13, "bootstrap".to_owned()),
-                    (14, "bootstrap".to_owned())
+                    (13, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =
