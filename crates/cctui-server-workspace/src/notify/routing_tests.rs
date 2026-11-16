@@ -129,8 +129,8 @@ async fn after_ten_gives_a_stage_one_row_ten_minutes_out_and_read_cancels_it() {
     let record = emit(&pool, ON, alert(u, "a")).await.unwrap();
     let rows = deliveries(&pool, record.id).await;
     assert_eq!(rows.len(), 1);
-    let (channel, state, stage, due_in) = &rows[0];
-    assert_eq!((channel.as_str(), state.as_str(), *stage), ("ntfy", "scheduled", 1));
+    let (channel, state, escalation, due_in) = &rows[0];
+    assert_eq!((channel.as_str(), state.as_str(), *escalation), ("ntfy", "scheduled", 1));
     assert!((570.0..=600.0).contains(due_in), "due in {due_in}s");
 
     transition(&pool, record.id, Edge::Read).await.unwrap().unwrap();
@@ -282,14 +282,14 @@ async fn quiet_hours_hold_a_push_until_the_window_ends_but_not_a_critical_one() 
     let u = user(&pool, Some(json!({ "notifications": { "quiet_hours": window } }))).await;
 
     let held = emit(&pool, ON, alert(u, "quiet please")).await.unwrap();
-    let (_, state, stage, due_in) = deliveries(&pool, held.id).await.remove(0);
-    assert_eq!((state.as_str(), stage), ("scheduled", 1));
+    let (_, state, escalation, due_in) = deliveries(&pool, held.id).await.remove(0);
+    assert_eq!((state.as_str(), escalation), ("scheduled", 1));
     assert!((85.0 * 60.0..=90.0 * 60.0).contains(&due_in), "held to the window end ({due_in}s)");
 
     let critical = NewNotification { severity: "critical", ..alert(u, "fire") };
     let loud = emit(&pool, ON, critical).await.unwrap();
-    let (_, _, stage, due_in) = deliveries(&pool, loud.id).await.remove(0);
-    assert_eq!(stage, 0);
+    let (_, _, escalation, due_in) = deliveries(&pool, loud.id).await.remove(0);
+    assert_eq!(escalation, 0);
     assert!(due_in <= 1.0, "critical goes out now ({due_in}s)");
     drop_user(&pool, u).await;
 }

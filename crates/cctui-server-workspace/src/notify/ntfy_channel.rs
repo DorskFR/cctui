@@ -76,6 +76,7 @@ impl NtfyChannel {
         Self { env }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn new(topic_url: &str, token: cctui_secrets::Secret) -> Self {
         Self { env: Some((topic_url.trim_end_matches('/').to_owned(), token)) }
@@ -650,9 +651,21 @@ mod tests {
 
         #[tokio::test]
         async fn an_approval_push_waits_for_its_escalation_delay() {
-            let Some((pool, u)) = db_user("ntfy_approval_delay").await else { return };
+            let Some(url) = crate::routes::gateway::test_db_url("ntfy_approval_delay") else {
+                return;
+            };
+            let pool = PgPool::connect(&url).await.expect("connect test db");
+            let (u, sid) = crate::inbox::store_tests::seed_session(&pool, "ntfy-delay").await;
+            sqlx::query("INSERT INTO session_viewers (session_id, pod) VALUES ($1, 'ntfy-test')")
+                .bind(&sid)
+                .execute(&pool)
+                .await
+                .unwrap();
             let (base, seen) = stub(200).await;
-            let n = NewNotification::new(u, kind::APPROVAL, "Approve release?".into());
+            let n = NewNotification {
+                session_id: Some(sid.clone()),
+                ..NewNotification::new(u, kind::APPROVAL, "Approve release?".into())
+            };
             emit_now(&pool, ON, &ntfy(&base), n).await;
             let (id, _, _) = notice_id(&pool, u).await;
             let (op, state, delayed, escalation) = delivery(&pool, id).await;
@@ -661,6 +674,16 @@ mod tests {
                 (Some("send"), "scheduled", true, 1)
             );
             assert!(seen.lock().unwrap().is_empty());
+            sqlx::query("DELETE FROM session_viewers WHERE session_id = $1")
+                .bind(&sid)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM sessions WHERE id = $1")
+                .bind(&sid)
+                .execute(&pool)
+                .await
+                .unwrap();
             drop_user(&pool, u).await;
         }
 
