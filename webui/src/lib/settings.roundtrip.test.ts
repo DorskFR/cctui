@@ -75,15 +75,15 @@ describe("Settings save → load round-trip through the blob", () => {
       theme: "sepia",
       fontScale: 1.25,
       notifyEnabled: true,
-      notifySound: false,
     });
+    settings.setNotifications({ sound: false });
     settings.setLocale("fr");
 
     const loaded = loadFromCache();
     expect(loaded.display.theme).toBe("sepia");
     expect(loaded.display.fontScale).toBe(1.25);
     expect(loaded.display.notifyEnabled).toBe(true);
-    expect(loaded.display.notifySound).toBe(false);
+    expect(loaded.notifications.sound).toBe(false);
     expect(loaded.locale).toBe("fr");
   });
 
@@ -345,7 +345,7 @@ describe("Settings save → load round-trip through the blob", () => {
     >);
     expect(loaded.display.theme).toBe("light");
     expect(loaded.display.fontScale).toBe(1);
-    expect(loaded.display.notifySound).toBe(true);
+    expect(loaded.notifications.sound).toBe(true);
     expect(loaded.locale).toBeNull();
     expect(loaded.harnessMode).toBe("bg");
   });

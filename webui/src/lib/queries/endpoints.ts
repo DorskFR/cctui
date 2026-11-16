@@ -30,6 +30,10 @@ import type { NotificationList } from "@bindings/NotificationList";
 import type { NotificationTransition } from "@bindings/NotificationTransition";
 import type { NotificationReadAll } from "@bindings/NotificationReadAll";
 import type { NotificationActRequest } from "@bindings/NotificationActRequest";
+import type { NotificationSettings } from "@bindings/NotificationSettings";
+import type { NotificationEndpoint } from "@bindings/NotificationEndpoint";
+import type { CreateNotificationEndpoint } from "@bindings/CreateNotificationEndpoint";
+import type { NotificationTestSent } from "@bindings/NotificationTestSent";
 import type { ConversationSearchResponse } from "@bindings/ConversationSearchResponse";
 import type { SpawnRequest } from "@bindings/SpawnRequest";
 import type { ContextItem } from "@bindings/ContextItem";
@@ -481,6 +485,16 @@ export const endpoints = {
     api.post<NotificationTransition>(path("post_notifications_by_id_dismiss", { id })),
   readAllNotifications: () =>
     api.post<NotificationReadAll>(path("post_notifications_read_all")),
+  notificationSettings: () =>
+    api.get<NotificationSettings>(path("get_notifications_settings")),
+  notificationEndpoints: () =>
+    api.get<NotificationEndpoint[]>(path("get_notifications_endpoints")),
+  createNotificationEndpoint: (body: CreateNotificationEndpoint) =>
+    api.post<NotificationEndpoint>(path("post_notifications_endpoints"), body),
+  deleteNotificationEndpoint: (id: string) =>
+    api.del<void>(path("delete_notifications_endpoints_by_id", { id })),
+  testNotificationEndpoint: (id: string) =>
+    api.post<NotificationTestSent>(path("post_notifications_endpoints_by_id_test", { id })),
   /** One-call session diagnose: everything the daemon knows about
    *  the session — each fact dated + sourced, plus the arbitration verdict —
    *  merged with the server-side gateway/account binding facts. */

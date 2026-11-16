@@ -11,6 +11,13 @@ import { preferenceFrom, type ThemeChoice } from "@dorsk/tsumikit";
 import { fontScale, nearestLevel } from "./fontscale.svelte";
 import { notify } from "./notify.svelte";
 import type { SettingsPayload } from "@bindings/SettingsPayload";
+import type { NotificationSettings } from "@bindings/NotificationSettings";
+import type { NotificationStage } from "@bindings/NotificationStage";
+import {
+  mergeNotifications,
+  withChannel,
+  withStage,
+} from "./notificationPrefs";
 import { clampDockWidth } from "./dock";
 import { saveErrorMessage } from "./saveError";
 import {
@@ -257,7 +264,8 @@ export interface DisplaySettings {
   // the flow by colour block rather than by badge. Off by default.
   roleTintedBackground: boolean;
   notifyEnabled: boolean;
-  notifySound: boolean;
+  // Read once into `notifications.sound`.
+  notifySound?: boolean;
   // Where the route navigation lives on a wide screen: tabs inline in the
   // header, or the bottom bar. Below 48rem the bottom bar is always used.
   nav: NavPosition;
@@ -618,6 +626,7 @@ export interface SettingsState {
   locale: Locale | null;
   onboarding: OnboardingSettings;
   voice: VoiceSettings;
+  notifications: NotificationSettings;
 }
 
 const DEFAULTS: SettingsState = {
@@ -641,7 +650,6 @@ const DEFAULTS: SettingsState = {
     pinFirstMessage: true,
     roleTintedBackground: false,
     notifyEnabled: false,
-    notifySound: true,
     nav: DEFAULT_NAV_POSITION,
   },
   spawnDock: { enabled: false, side: DEFAULT_SPAWN_DOCK_SIDE },
@@ -671,6 +679,7 @@ const DEFAULTS: SettingsState = {
     probeOptOut: [],
   },
   voice: DEFAULT_VOICE,
+  notifications: mergeNotifications(null),
 };
 
 // Deep-merge a partial saved blob over DEFAULTS so a value missing from an older
@@ -707,6 +716,7 @@ export function mergeDefaults(
       preferFollowupOverFork: p.display?.preferFollowupOverFork === true,
       roleTintedBackground: p.display?.roleTintedBackground === true,
       nav: clampNavPosition(p.display?.nav),
+      notifySound: undefined,
     },
     spawnDock: {
       enabled: p.spawnDock?.enabled === true,
@@ -753,6 +763,7 @@ export function mergeDefaults(
     locale: clampLocale(p.locale),
     onboarding: mergeOnboarding(p.onboarding),
     voice: mergeVoice(p.voice),
+    notifications: mergeNotifications(p.notifications, p.display?.notifySound),
   };
 }
 
@@ -1113,7 +1124,24 @@ class Settings {
 
   setNotifySound(on: boolean) {
     notify.setSound(on);
-    this.setDisplay({ notifySound: notify.sound });
+    this.setNotifications({ sound: notify.sound });
+  }
+
+  setNotifications(patch: Partial<NotificationSettings>) {
+    this.state.notifications = mergeNotifications({ ...this.state.notifications, ...patch });
+    this.persist();
+  }
+
+  setNotificationChannel(channel: string, enabled: boolean) {
+    this.state.notifications = withChannel(this.state.notifications, channel, enabled);
+    this.persist();
+  }
+
+  setNotificationStage(kind: string, channel: string, stage: NotificationStage) {
+    this.state.notifications = mergeNotifications(
+      withStage(this.state.notifications, kind, channel, stage),
+    );
+    this.persist();
   }
 
   /** Record the notifier's current enabled state after a header/panel toggle
@@ -1126,7 +1154,7 @@ class Settings {
     const d = this.state.display;
     theme.hydrate(preferenceFrom(d, theme.slotOf));
     fontScale.set(nearestLevel(d.fontScale));
-    notify.applyPersisted(d.notifyEnabled, d.notifySound);
+    notify.applyPersisted(d.notifyEnabled, this.state.notifications.sound);
   }
 
   // Claude harness mode. Persisted top-level so it serializes as

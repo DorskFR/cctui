@@ -47,6 +47,8 @@ export const qk = {
   conversationAll: ["conversation"] as const,
   me: ["me"] as const,
   hiddenOwners: ["hidden-owners"] as const,
+  notificationSettings: ["notification-settings"] as const,
+  notificationEndpoints: ["notification-endpoints"] as const,
   voiceConfig: ["voice-config"] as const,
   accounts: ["accounts"] as const,
   providerStatus: ["provider-status"] as const,
