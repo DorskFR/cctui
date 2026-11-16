@@ -19,12 +19,14 @@ fn req(value: serde_json::Value) -> CreateEvent {
     serde_json::from_value(value).expect("valid request shape")
 }
 
+/// Due in an hour, so the inline wake after insert cannot claim it mid-test.
 fn n8n(session_id: &str, source_id: &str) -> CreateEvent {
     req(json!({
         "session_id": session_id,
         "source": "n8n",
         "source_id": source_id,
         "body": "ticket updated",
+        "not_before": (Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
     }))
 }
 
@@ -154,12 +156,7 @@ async fn a_repeated_source_id_is_accepted_then_deduplicated() {
     assert_eq!(err.status(), StatusCode::BAD_REQUEST);
 
     let Json(event) = get_one(State(state), Extension(caller(uid)), Path(first.id)).await.unwrap();
-    assert_eq!(event.lane_key, format!("session:{sid}"));
-    assert!(
-        ["pending", "claimed", "delivered"].contains(&event.status.as_str()),
-        "an accepted event is queued or already being delivered inline: {}",
-        event.status
-    );
+    assert_eq!((event.status.as_str(), event.lane_key), ("pending", format!("session:{sid}")));
 }
 
 #[tokio::test]
