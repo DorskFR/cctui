@@ -151,8 +151,8 @@ export function effectiveStage(
   channel: string,
 ): NotificationStage {
   return (
-    stored.routes[kind]?.[channel] ??
-    resolved?.routes[kind]?.[channel] ??
+    stored.routes?.[kind]?.[channel] ??
+    resolved?.routes?.[kind]?.[channel] ??
     fallbackStage(kind, channel)
   );
 }
@@ -163,8 +163,8 @@ export function effectiveChannelEnabled(
   channel: string,
 ): boolean {
   return (
-    stored.channels[channel]?.enabled ??
-    resolved?.channels[channel]?.enabled ??
+    stored.channels?.[channel]?.enabled ??
+    resolved?.channels?.[channel]?.enabled ??
     fallbackChannelEnabled(channel)
   );
 }

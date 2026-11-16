@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mergeDefaults, settings } from "./settings.svelte";
 import { auth } from "./auth.svelte";
+import { api } from "./api";
 import {
   DEFAULT_NOTIFICATIONS,
   effectiveChannelEnabled,
@@ -107,5 +108,34 @@ describe("notifications settings mapping", () => {
     expect(effectiveChannelEnabled(stored, resolved, "email")).toBe(true);
     expect(effectiveChannelEnabled(stored, undefined, "email")).toBe(false);
     expect(effectiveChannelEnabled(stored, undefined, "ntfy")).toBe(true);
+  });
+
+  it("a server payload without a notifications key loads the defaults", async () => {
+    const get = vi.spyOn(api, "get").mockResolvedValue({ version: 1, data: { display: { theme: "dark" } } });
+    auth.isAuthed = true;
+    try {
+      await settings.load();
+      expect(get).toHaveBeenCalledWith("/settings");
+      expect(settings.state.notifications).toEqual(DEFAULT_NOTIFICATIONS);
+    } finally {
+      get.mockRestore();
+      auth.isAuthed = false;
+    }
+  });
+
+  it("a partial notifications block fills the missing fields", () => {
+    const loaded = mergeDefaults({ notifications: { channels: {} } } as Record<string, unknown>);
+    expect(loaded.notifications).toEqual(DEFAULT_NOTIFICATIONS);
+    expect(effectiveChannelEnabled(loaded.notifications, undefined, "in_app")).toBe(true);
+    expect(effectiveStage(loaded.notifications, undefined, "approval", "in_app")).toEqual({ mode: "now" });
+  });
+
+  it("a malformed resolved view falls back instead of throwing", () => {
+    const stored = mergeNotifications({ channels: {} });
+    for (const resolved of [[], {}, { channels: {} }] as unknown as NotificationSettings[]) {
+      expect(effectiveChannelEnabled(stored, resolved, "in_app")).toBe(true);
+      expect(effectiveStage(stored, resolved, "needs_input", "ntfy")).toEqual({ mode: "after", minutes: 10 });
+    }
+    expect(mergeNotifications([])).toEqual(DEFAULT_NOTIFICATIONS);
   });
 });

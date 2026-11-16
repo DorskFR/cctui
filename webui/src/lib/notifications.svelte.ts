@@ -31,6 +31,15 @@ const http: NotificationApi = {
 	readAll: () => endpoints.readAllNotifications()
 };
 
+function pageOf(raw: unknown): NotificationList {
+	const p = (raw && typeof raw === 'object' ? raw : {}) as Partial<NotificationList>;
+	return {
+		notifications: Array.isArray(p.notifications) ? p.notifications : [],
+		has_more: p.has_more === true,
+		unread: typeof p.unread === 'number' ? p.unread : 0
+	};
+}
+
 export interface NotificationSource {
 	onNotification(cb: (n: Notice) => void): () => void;
 	onNotificationsUnread(cb: (count: number) => void): () => void;
@@ -125,7 +134,7 @@ export class NotificationStore {
 	async load() {
 		this.loading = true;
 		try {
-			const page = await this.#api.list({ state: 'open', limit: PAGE });
+			const page = pageOf(await this.#api.list({ state: 'open', limit: PAGE }));
 			this.items = page.notifications.filter((n) => !isTerminal(n)).sort(newestFirst);
 			this.hasMore = page.has_more;
 			this.setUnread(page.unread);
@@ -139,7 +148,7 @@ export class NotificationStore {
 		if (!last || this.loading) return;
 		this.loading = true;
 		try {
-			const page = await this.#api.list({ state: 'open', limit: PAGE, before: last.created_at });
+			const page = pageOf(await this.#api.list({ state: 'open', limit: PAGE, before: last.created_at }));
 			for (const n of page.notifications) if (!this.items.some((x) => x.id === n.id)) this.upsert(n);
 			this.hasMore = page.has_more;
 			this.setUnread(page.unread);

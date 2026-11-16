@@ -98,4 +98,11 @@ describe('notification route matrix', () => {
 		flushSync();
 		expect(stageSelect('approval', 'ntfy').disabled).toBe(true);
 	});
+
+	it.each([[[]], [{}], [{ channels: {} }]])('renders the defaults when the resolved view is %j', (resolved) => {
+		render(resolved as unknown as NotificationSettings);
+		expect(document.querySelectorAll('[data-stage-cell]')).toHaveLength(7 * 4);
+		expect(stageSelect('approval', 'in_app').value).toBe('now');
+		expect(stageSelect('approval', 'web_push').value).toBe('after');
+	});
 });
