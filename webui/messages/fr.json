@@ -2713,5 +2713,10 @@
 	],
 	"inbox_cancel": "Annuler",
 	"inbox_retry": "Réessayer",
-	"inbox_not_before": "Pas avant {at}"
+	"inbox_not_before": "Pas avant {at}",
+	"push_toggle_label": "Notifications push sur ce navigateur",
+	"push_enabled": "Ce navigateur reçoit désormais les notifications push",
+	"push_disabled": "Ce navigateur ne reçoit plus les notifications push",
+	"push_denied": "Les notifications sont bloquées pour ce site : autorisez-les dans les réglages du site du navigateur",
+	"push_unsupported": "Ce navigateur ne peut pas recevoir de notifications push. Sur iPhone ou iPad, ajoutez d'abord cctui à l'écran d'accueil"
 }

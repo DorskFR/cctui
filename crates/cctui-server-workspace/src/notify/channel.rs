@@ -77,6 +77,7 @@ impl Channels {
     pub fn from_config(config: &Config) -> Self {
         let mut channels = Self { config: Some(Arc::new(config.clone())), ..Self::default() };
         channels.add(Arc::new(super::in_app::InApp));
+        channels.add(Arc::new(super::web_push::WebPush::from_config(config)));
         channels.add(Arc::new(super::ntfy_channel::NtfyChannel::from_config(config)));
         if let Some(email) = super::email::EmailChannel::from_config(config) {
             channels.add(Arc::new(email));

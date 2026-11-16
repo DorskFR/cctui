@@ -44,6 +44,7 @@ reqwest.workspace = true
 lettre.workspace = true
 rustls.workspace = true
 ring = "0.17"
+aws-lc-rs = "1.18.1"
 ts-rs = { workspace = true, optional = true }
 toml.workspace = true
 log = "0.4.33"

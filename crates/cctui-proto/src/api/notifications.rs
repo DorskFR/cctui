@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "ts")]
@@ -70,4 +72,97 @@ pub struct NotificationActRequest {
 pub struct NotificationReadAll {
     pub read: i64,
     pub unread: i64,
+}
+
+/// Per-user settings under `user_settings.data.notifications`. Stored sparse: a channel or
+/// a `routes` cell left out takes the server default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(default)]
+pub struct NotificationSettings {
+    pub enabled: bool,
+    pub sound: bool,
+    /// Keyed by channel: `in_app`, `web_push`, `ntfy`, `email`.
+    pub channels: BTreeMap<String, NotificationChannelPref>,
+    /// Kind, then channel.
+    pub routes: BTreeMap<String, BTreeMap<String, NotificationStage>>,
+    pub quiet_hours: Option<QuietHours>,
+    pub max_push_per_hour: u32,
+}
+
+pub const DEFAULT_MAX_PUSH_PER_HOUR: u32 = 20;
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            sound: true,
+            channels: BTreeMap::new(),
+            routes: BTreeMap::new(),
+            quiet_hours: None,
+            max_push_per_hour: DEFAULT_MAX_PUSH_PER_HOUR,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct NotificationChannelPref {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum NotificationStage {
+    Off,
+    Now,
+    After { minutes: u32 },
+}
+
+/// `start` and `end` are `HH:MM` local to `tz` (IANA); a window may cross midnight.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct QuietHours {
+    pub start: String,
+    pub end: String,
+    pub tz: String,
+}
+
+/// Secrets in `config` are never returned: an ntfy token shows as `has_token`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct NotificationEndpoint {
+    pub id: Uuid,
+    pub channel: String,
+    pub label: Option<String>,
+    pub config: serde_json::Value,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+    pub last_ok_at: Option<DateTime<Utc>>,
+}
+
+/// `config` per channel: ntfy `{url, topic, token?}`, `web_push` the browser's
+/// `PushSubscription` (or `{subscription}`), email `{address}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct CreateNotificationEndpoint {
+    pub channel: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    pub config: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct NotificationTestSent {
+    pub delivery_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct VapidKey {
+    /// Uncompressed P-256 point, base64url: `pushManager.subscribe`'s `applicationServerKey`.
+    pub public_key: String,
 }

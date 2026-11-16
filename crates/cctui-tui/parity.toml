@@ -1651,6 +1651,42 @@ tui = "handled"
 module = "app/notifications.rs"
 
 [[route]]
+id = "get_notifications_endpoints"
+# GET /notifications/endpoints — List where your notifications reach you, or add a place.
+tui = "waived"
+reason = "notification endpoints and settings are edited on the webui settings page; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_notifications_endpoints"
+# POST /notifications/endpoints — List where your notifications reach you, or add a place.
+tui = "waived"
+reason = "notification endpoints and settings are edited on the webui settings page; the TUI keeps the operator loop"
+
+[[route]]
+id = "delete_notifications_endpoints_by_id"
+# DELETE /notifications/endpoints/{id} — Remove one of your notification endpoints.
+tui = "waived"
+reason = "notification endpoints and settings are edited on the webui settings page; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_notifications_endpoints_by_id_test"
+# POST /notifications/endpoints/{id}/test — Send a test notification to one endpoint only.
+tui = "waived"
+reason = "notification endpoints and settings are edited on the webui settings page; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_notifications_settings"
+# GET /notifications/settings — Your notification settings with every default filled in.
+tui = "waived"
+reason = "notification endpoints and settings are edited on the webui settings page; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_notifications_vapid_key"
+# GET /notifications/vapid-key — The public VAPID key a browser subscribes to Web Push with.
+tui = "waived"
+reason = "Web Push subscribes a browser through its service worker; a terminal has none"
+
+[[route]]
 id = "post_notifications_read_all"
 # POST /notifications/read-all — Mark every unread notification without actions read.
 tui = "handled"

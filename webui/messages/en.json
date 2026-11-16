@@ -2713,5 +2713,10 @@
 	],
 	"inbox_cancel": "Cancel",
 	"inbox_retry": "Retry",
-	"inbox_not_before": "Not before {at}"
+	"inbox_not_before": "Not before {at}",
+	"push_toggle_label": "Push to this browser",
+	"push_enabled": "This browser now receives push notifications",
+	"push_disabled": "This browser no longer receives push notifications",
+	"push_denied": "Notifications are blocked for this site: allow them in the browser's site settings",
+	"push_unsupported": "This browser cannot receive push notifications. On iPhone or iPad, add cctui to the Home Screen first"
 }

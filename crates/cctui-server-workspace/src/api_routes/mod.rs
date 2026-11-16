@@ -39,6 +39,7 @@ mod user_actions;
 mod users;
 mod version;
 mod voice;
+mod web_push;
 
 use axum::http::Method;
 
@@ -96,6 +97,7 @@ pub fn register(r: Routes) -> Routes {
     let r = inbox::register(r);
     let r = presets::register(r);
     let r = notifications::register(r);
+    let r = web_push::register(r);
     let r = drafts::register(r);
     let r = voice::register(r);
     let r = otlp::register(r);

@@ -11,10 +11,13 @@ pub mod email;
 pub mod expiry;
 pub mod in_app;
 pub mod ntfy_channel;
+pub mod prefs;
 pub mod producers;
+pub mod quiet;
 pub mod retention;
 pub mod store;
 pub mod tokens;
+pub mod web_push;
 
 pub use channel::Channels;
 pub use store::{NewNotification, Routing, emit};
@@ -27,6 +30,8 @@ pub mod kind {
     pub const SYSTEM_ALERT: &str = "system_alert";
     pub const INBOX_STUCK: &str = "inbox_stuck";
     pub const DISPATCH_INFO: &str = "dispatch_info";
+    pub const TEST: &str = "test";
+    pub const THROTTLED: &str = "notify_throttled";
 }
 
 /// When a kind reaches a push channel.
@@ -47,15 +52,6 @@ impl Push {
             kind::NEEDS_INPUT => Self::AfterMinutes(10),
             kind::USER_ACTION if blocking => Self::AfterMinutes(10),
             _ => Self::Off,
-        }
-    }
-
-    #[must_use]
-    pub const fn delay_secs(self) -> Option<i32> {
-        match self {
-            Self::Off => None,
-            Self::Now => Some(0),
-            Self::AfterMinutes(m) => Some(m.saturating_mul(60)),
         }
     }
 }
