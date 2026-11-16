@@ -5,8 +5,11 @@ use futures_util::StreamExt;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::channel::{Channels, Endpoint, ProviderRef, Rendered, SendError};
-use super::store::{Edge, priority_for_severity, transition};
+use super::channel::{
+    Button, Capabilities, Channels, Endpoint, Press, ProviderRef, Rendered, SendError,
+};
+use super::store::{Edge, UPDATE_THROTTLE_SECS, priority_for_severity, transition};
+use super::tokens;
 use crate::config::Config;
 
 const CLAIM_LEASE_SECS: i64 = 300;
@@ -33,7 +36,8 @@ const CLAIM_SQL: &str = "\
         RETURNING d.id, d.notification_id, d.channel, d.endpoint_id, d.op, d.state, \
                   d.attempts, d.provider_ref) \
     SELECT c.id, c.notification_id, c.channel, c.endpoint_id, c.op, c.state, c.attempts, \
-           c.provider_ref, n.title, n.body, n.severity, n.tags, \
+           c.provider_ref, n.title, n.body, n.severity, n.tags, n.actions, n.session_id, \
+           n.repeat_count, \
            e.config AS endpoint_config, e.enabled AS endpoint_enabled \
     FROM claimed c \
     JOIN notifications n ON n.id = c.notification_id \
@@ -53,6 +57,9 @@ struct Due {
     body: Option<String>,
     severity: String,
     tags: Option<String>,
+    actions: serde_json::Value,
+    session_id: Option<String>,
+    repeat_count: i32,
     endpoint_config: Option<serde_json::Value>,
     endpoint_enabled: Option<bool>,
 }
@@ -65,6 +72,8 @@ impl Due {
             body: self.body.clone(),
             priority: priority_for_severity(&self.severity),
             tags: self.tags.clone(),
+            link: None,
+            buttons: Vec::new(),
         }
     }
 
@@ -80,7 +89,7 @@ impl Due {
 #[derive(Debug)]
 enum Outcome {
     Sent(ProviderRef),
-    Idle,
+    Updated,
     Retracted,
     Cancelled,
     Failed(SendError),
@@ -113,13 +122,66 @@ pub async fn run(pool: &PgPool, channels: &Channels, scope: Option<Uuid>) {
 }
 
 async fn process(pool: &PgPool, channels: &Channels, row: Due) {
-    let outcome = attempt(channels, &row).await;
+    let outcome = attempt(pool, channels, &row).await;
     if let Err(e) = settle(pool, &row, outcome).await {
         tracing::warn!(delivery_id = %row.id, "notification delivery update failed: {e}");
     }
 }
 
-async fn attempt(channels: &Channels, row: &Due) -> Outcome {
+#[must_use]
+pub fn deep_link(config: &Config, session_id: Option<&str>) -> Option<String> {
+    let base = config.external_url.trim_end_matches('/');
+    if base.is_empty() {
+        return None;
+    }
+    Some(session_id.map_or_else(|| format!("{base}/"), |id| format!("{base}/sessions/{id}")))
+}
+
+fn requires_login(action: &serde_json::Value) -> bool {
+    action.get("requires_login").and_then(serde_json::Value::as_bool) == Some(true)
+}
+
+/// An `Open` button to the deep link, then one `Post` button per action that may be
+/// answered without logging in, each bound to its own single-use token.
+async fn render(pool: &PgPool, config: &Config, caps: Capabilities, row: &Due) -> Rendered {
+    let mut n = row.rendered();
+    let Some(link) = deep_link(config, row.session_id.as_deref()) else { return n };
+    n.link = Some(link.clone());
+    let max = usize::from(caps.buttons);
+    if max == 0 {
+        return n;
+    }
+    n.buttons.push(Button { label: "Open".into(), url: link, press: Press::Open });
+    if !caps.needs_token {
+        return n;
+    }
+    let lifetime = chrono::Duration::hours(tokens::MAX_LIFETIME_HOURS.into());
+    let expires_at = chrono::Utc::now() + lifetime;
+    for action in row.actions.as_array().into_iter().flatten() {
+        if n.buttons.len() >= max {
+            break;
+        }
+        let Some(id) = action.get("id").and_then(serde_json::Value::as_str) else { continue };
+        if requires_login(action) {
+            continue;
+        }
+        let label = action.get("label").and_then(serde_json::Value::as_str).unwrap_or(id);
+        match tokens::mint(pool, row.notification_id, Some(row.id), id, &row.channel, expires_at)
+            .await
+        {
+            Ok(Some(token)) => n.buttons.push(Button {
+                label: label.to_owned(),
+                url: tokens::action_url(config, &token),
+                press: Press::Post,
+            }),
+            Ok(None) => {}
+            Err(e) => tracing::warn!(delivery_id = %row.id, "action token mint failed: {e}"),
+        }
+    }
+    n
+}
+
+async fn attempt(pool: &PgPool, channels: &Channels, row: &Due) -> Outcome {
     if row.op == "retract" && row.state != "sent" {
         return Outcome::Cancelled;
     }
@@ -127,7 +189,7 @@ async fn attempt(channels: &Channels, row: &Due) -> Outcome {
         return match row.op.as_str() {
             "retract" => Outcome::Retracted,
             "send" => Outcome::Cancelled,
-            _ => Outcome::Idle,
+            _ => Outcome::Updated,
         };
     }
     let Some(channel) = channels.get(&row.channel) else {
@@ -135,14 +197,18 @@ async fn attempt(channels: &Channels, row: &Due) -> Outcome {
         return Outcome::Failed(SendError::Permanent(reason));
     };
     let caps = channel.capabilities();
-    let (n, to, sent) = (row.rendered(), row.endpoint(), row.provider_ref());
+    let n = match channels.config() {
+        Some(config) if row.op != "retract" => render(pool, config, caps, row).await,
+        _ => row.rendered(),
+    };
+    let (to, sent) = (row.endpoint(), row.provider_ref());
     let call = async {
         match (row.op.as_str(), sent) {
             ("send", _) => channel.send(&n, &to).await.map(Outcome::Sent),
             ("update", Some(r)) if caps.update => {
-                channel.update(&n, &to, &r).await.map(|()| Outcome::Idle)
+                channel.update(&n, &to, &r).await.map(|()| Outcome::Updated)
             }
-            ("update", _) => Ok(Outcome::Idle),
+            ("update", _) => Ok(Outcome::Updated),
             ("retract", Some(r)) if caps.retract => {
                 channel.retract(&to, &r).await.map(|()| Outcome::Retracted)
             }
@@ -160,9 +226,9 @@ async fn attempt(channels: &Channels, row: &Due) -> Outcome {
 async fn settle(pool: &PgPool, row: &Due, outcome: Outcome) -> sqlx::Result<()> {
     match outcome {
         Outcome::Sent(r) => sent(pool, row, r).await,
-        Outcome::Idle => finish(pool, row, None).await,
-        Outcome::Retracted => finish(pool, row, Some("retracted")).await,
-        Outcome::Cancelled => finish(pool, row, Some("cancelled")).await,
+        Outcome::Updated => updated(pool, row).await,
+        Outcome::Retracted => finish(pool, row, "retracted").await,
+        Outcome::Cancelled => finish(pool, row, "cancelled").await,
         Outcome::Failed(SendError::Retry(e)) => retry(pool, row, &e).await,
         Outcome::Failed(SendError::Permanent(e)) => dead(pool, row, &e).await,
         Outcome::Failed(SendError::Gone) => {
@@ -171,7 +237,7 @@ async fn settle(pool: &PgPool, row: &Due, outcome: Outcome) -> sqlx::Result<()> 
                 .execute(pool)
                 .await?;
             if row.op == "retract" {
-                finish(pool, row, Some("retracted")).await
+                finish(pool, row, "retracted").await
             } else {
                 dead(pool, row, "endpoint gone").await
             }
@@ -179,20 +245,37 @@ async fn settle(pool: &PgPool, row: &Due, outcome: Outcome) -> sqlx::Result<()> 
     }
 }
 
-/// A notice closed while the send was in flight gets its retraction queued.
+/// A notice closed while the send was in flight gets its retraction queued; one that
+/// collapsed meanwhile gets a throttled update carrying the newer text.
+const SENT_SQL: &str = "\
+    UPDATE notification_deliveries d SET \
+        op = CASE WHEN d.state = 'cancelled' THEN 'retract' \
+                  WHEN d.op = 'send' AND n.repeat_count > $3 THEN 'update' \
+                  WHEN d.op = 'send' THEN NULL ELSE d.op END, \
+        next_attempt_at = CASE \
+            WHEN d.state <> 'cancelled' AND d.op = 'send' AND n.repeat_count > $3 \
+            THEN now() + make_interval(secs => $4) ELSE now() END, \
+        state = 'sent', provider_ref = $2, sent_at = now(), attempts = 0, last_error = NULL \
+    FROM notifications n \
+    WHERE d.id = $1 AND n.id = d.notification_id";
+
+/// `sent_at` tracks the last push, which the collapse throttle counts from.
+const UPDATED_SQL: &str = "\
+    UPDATE notification_deliveries d SET \
+        op = CASE WHEN n.repeat_count > $2 THEN 'update' END, \
+        next_attempt_at = now() + make_interval(secs => $3), \
+        sent_at = now(), attempts = 0, last_error = NULL \
+    FROM notifications n \
+    WHERE d.id = $1 AND d.op = 'update' AND n.id = d.notification_id";
+
 async fn sent(pool: &PgPool, row: &Due, r: ProviderRef) -> sqlx::Result<()> {
-    sqlx::query(
-        "UPDATE notification_deliveries SET \
-           op = CASE WHEN state = 'cancelled' THEN 'retract' \
-                     WHEN op = 'send' THEN NULL ELSE op END, \
-           state = 'sent', provider_ref = $2, sent_at = now(), attempts = 0, last_error = NULL, \
-           next_attempt_at = now() \
-         WHERE id = $1",
-    )
-    .bind(row.id)
-    .bind(r.0)
-    .execute(pool)
-    .await?;
+    sqlx::query(SENT_SQL)
+        .bind(row.id)
+        .bind(r.0)
+        .bind(row.repeat_count)
+        .bind(UPDATE_THROTTLE_SECS)
+        .execute(pool)
+        .await?;
     if let Some(endpoint) = row.endpoint_id {
         sqlx::query("UPDATE notification_endpoints SET last_ok_at = now() WHERE id = $1")
             .bind(endpoint)
@@ -203,9 +286,19 @@ async fn sent(pool: &PgPool, row: &Due, r: ProviderRef) -> sqlx::Result<()> {
     Ok(())
 }
 
-async fn finish(pool: &PgPool, row: &Due, state: Option<&str>) -> sqlx::Result<()> {
+async fn updated(pool: &PgPool, row: &Due) -> sqlx::Result<()> {
+    sqlx::query(UPDATED_SQL)
+        .bind(row.id)
+        .bind(row.repeat_count)
+        .bind(UPDATE_THROTTLE_SECS)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn finish(pool: &PgPool, row: &Due, state: &str) -> sqlx::Result<()> {
     sqlx::query(
-        "UPDATE notification_deliveries SET op = NULL, state = COALESCE($3, state), \
+        "UPDATE notification_deliveries SET op = NULL, state = $3, \
            attempts = 0, last_error = NULL \
          WHERE id = $1 AND op = $2",
     )

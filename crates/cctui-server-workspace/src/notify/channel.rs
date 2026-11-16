@@ -5,7 +5,6 @@ use uuid::Uuid;
 
 use crate::config::Config;
 
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capabilities {
     pub update: bool,
@@ -31,6 +30,23 @@ pub struct Rendered {
     pub body: Option<String>,
     pub priority: u8,
     pub tags: Option<String>,
+    pub link: Option<String>,
+    pub buttons: Vec<Button>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Button {
+    pub label: String,
+    pub url: String,
+    pub press: Press,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Press {
+    /// Opens the URL; the human logs in there.
+    Open,
+    /// POSTs to the URL, which carries a single-use action token.
+    Post,
 }
 
 #[derive(Debug, Clone)]
@@ -53,12 +69,13 @@ pub trait Channel: Send + Sync {
 #[derive(Clone, Default)]
 pub struct Channels {
     by_id: HashMap<&'static str, Arc<dyn Channel>>,
+    config: Option<Arc<Config>>,
 }
 
 impl Channels {
     #[must_use]
     pub fn from_config(config: &Config) -> Self {
-        let mut channels = Self::default();
+        let mut channels = Self { config: Some(Arc::new(config.clone())), ..Self::default() };
         channels.add(Arc::new(super::in_app::InApp));
         if let Some(ntfy) = super::ntfy_channel::NtfyChannel::from_config(config) {
             channels.add(Arc::new(ntfy));
@@ -73,5 +90,17 @@ impl Channels {
     #[must_use]
     pub fn get(&self, id: &str) -> Option<&Arc<dyn Channel>> {
         self.by_id.get(id)
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_config(mut self, config: &Config) -> Self {
+        self.config = Some(Arc::new(config.clone()));
+        self
+    }
+
+    #[must_use]
+    pub fn config(&self) -> Option<&Config> {
+        self.config.as_deref()
     }
 }

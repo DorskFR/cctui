@@ -54,7 +54,6 @@ const MINT_SQL: &str = "\
 /// The token expires at the earliest of `expires_at`, the notice's own expiry and
 /// [`MAX_LIFETIME_HOURS`]. `None` when the notice is closed or unknown, does not offer
 /// `action`, or the action `requires_login`.
-#[cfg_attr(not(test), allow(dead_code))]
 pub async fn mint<'e>(
     conn: impl sqlx::PgExecutor<'e>,
     notification_id: Uuid,
@@ -77,13 +76,11 @@ pub async fn mint<'e>(
     Ok((minted.rows_affected() == 1).then(|| URL_SAFE_NO_PAD.encode(raw)))
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn base(config: &Config) -> &str {
     config.external_url.trim_end_matches('/')
 }
 
 /// Where a POST runs the action: ntfy `http` buttons.
-#[cfg_attr(not(test), allow(dead_code))]
 #[must_use]
 pub fn action_url(config: &Config, token: &str) -> String {
     format!("{}/api/v1/notifications/actions/{token}", base(config))

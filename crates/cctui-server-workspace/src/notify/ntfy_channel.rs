@@ -1,8 +1,12 @@
 use std::sync::OnceLock;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 
-use super::channel::{Capabilities, Channel, Endpoint, ProviderRef, Rendered, SendError};
+use super::channel::{
+    Button, Capabilities, Channel, Endpoint, Press, ProviderRef, Rendered, SendError,
+};
 use crate::config::Config;
 
 pub const ID: &str = "ntfy";
@@ -41,13 +45,38 @@ impl NtfyChannel {
             .post(topic)
             .bearer_auth(self.token.get())
             .header("X-Sequence-ID", sequence_id)
-            .header("Title", &n.title)
+            .header("Title", encode_header(&n.title))
             .header("Priority", n.priority.to_string());
         if let Some(tags) = &n.tags {
-            req = req.header("Tags", tags);
+            req = req.header("Tags", encode_header(tags));
+        }
+        if let Some(link) = &n.link {
+            req = req.header("Click", encode_header(link));
+        }
+        if !n.buttons.is_empty() {
+            req = req.header("Actions", encode_header(&actions(&n.buttons).to_string()));
         }
         classify(req.body(n.body.clone().unwrap_or_default()).send().await).await
     }
+}
+
+/// ntfy decodes RFC 2047 words; a raw non-ASCII header would fail the request builder.
+fn encode_header(value: &str) -> String {
+    if value.bytes().all(|b| b == b' ' || b.is_ascii_graphic()) {
+        return value.to_owned();
+    }
+    format!("=?UTF-8?B?{}?=", STANDARD.encode(value))
+}
+
+/// The JSON form of ntfy's `Actions` header; a POST also clears the phone notification.
+fn actions(buttons: &[Button]) -> Value {
+    let all = buttons.iter().map(|b| match b.press {
+        Press::Open => json!({ "action": "view", "label": b.label, "url": b.url }),
+        Press::Post => json!({
+            "action": "http", "label": b.label, "url": b.url, "method": "POST", "clear": true,
+        }),
+    });
+    Value::Array(all.collect())
 }
 
 fn sequence_id(r: &ProviderRef) -> Result<&str, SendError> {
@@ -109,8 +138,10 @@ mod tests {
 
     use serde_json::json;
 
-    use super::NtfyChannel;
-    use crate::notify::channel::{Channel, Endpoint, ProviderRef, Rendered, SendError};
+    use super::{NtfyChannel, encode_header};
+    use crate::notify::channel::{
+        Button, Channel, Endpoint, Press, ProviderRef, Rendered, SendError,
+    };
 
     type Seen = Arc<Mutex<Vec<(String, String, http::HeaderMap)>>>;
 
@@ -150,6 +181,8 @@ mod tests {
             body: Some("worker exploded".into()),
             priority: 5,
             tags: Some("rotating_light".into()),
+            link: None,
+            buttons: Vec::new(),
         }
     }
 
@@ -171,6 +204,61 @@ mod tests {
         assert_eq!(header(&headers, "title"), "Dispatch FAILED");
         assert_eq!(header(&headers, "tags"), "rotating_light");
         assert_eq!(header(&headers, "priority"), "5");
+    }
+
+    #[tokio::test]
+    async fn buttons_go_out_as_view_and_http_actions_that_clear() {
+        let (base, seen) = stub(200).await;
+        let n = Rendered {
+            link: Some("https://cctui.example/sessions/s1".into()),
+            buttons: vec![
+                Button {
+                    label: "Open".into(),
+                    url: "https://cctui.example/sessions/s1".into(),
+                    press: Press::Open,
+                },
+                Button {
+                    label: "Approve".into(),
+                    url: "https://cctui.example/api/v1/notifications/actions/tok".into(),
+                    press: Press::Post,
+                },
+            ],
+            ..rendered()
+        };
+        channel(&base).send(&n, &env()).await.unwrap();
+
+        let (_, _, headers) = seen.lock().unwrap().pop().unwrap();
+        assert_eq!(header(&headers, "click"), "https://cctui.example/sessions/s1");
+        let actions: serde_json::Value = serde_json::from_str(header(&headers, "actions")).unwrap();
+        assert_eq!(
+            actions,
+            json!([
+                { "action": "view", "label": "Open", "url": "https://cctui.example/sessions/s1" },
+                {
+                    "action": "http",
+                    "label": "Approve",
+                    "url": "https://cctui.example/api/v1/notifications/actions/tok",
+                    "method": "POST",
+                    "clear": true,
+                },
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bare_notice_sends_no_click_or_actions() {
+        let (base, seen) = stub(200).await;
+        channel(&base).send(&rendered(), &env()).await.unwrap();
+        let (_, _, headers) = seen.lock().unwrap().pop().unwrap();
+        assert!(headers.get("click").is_none());
+        assert!(headers.get("actions").is_none());
+    }
+
+    #[test]
+    fn non_ascii_headers_are_rfc2047_encoded() {
+        assert_eq!(encode_header("Dispatch FAILED: x"), "Dispatch FAILED: x");
+        assert_eq!(encode_header("é"), "=?UTF-8?B?w6k=?=");
+        assert_eq!(encode_header("a\nb"), "=?UTF-8?B?YQpi?=");
     }
 
     #[tokio::test]
@@ -240,13 +328,20 @@ mod tests {
         let routing = Routing { ntfy: true };
         let notice = |title: &str| NewNotification {
             collapse_key: Some(format!("crashloop:{u}")),
-            ..NewNotification::new(u, kind::LEGACY, title.into())
+            ..NewNotification::new(u, kind::SYSTEM_ALERT, title.into())
         };
 
         let first = emit(&pool, routing, notice("crashloop x1")).await.unwrap();
         dispatcher::run(&pool, &channels, Some(first.id)).await;
         let second = emit(&pool, routing, notice("crashloop x2")).await.unwrap();
         assert_eq!(second.id, first.id);
+        sqlx::query(
+            "UPDATE notification_deliveries SET next_attempt_at = now() WHERE notification_id = $1",
+        )
+        .bind(first.id)
+        .execute(&pool)
+        .await
+        .unwrap();
         dispatcher::run(&pool, &channels, Some(first.id)).await;
         transition(&pool, first.id, Edge::Resolve { reason: "subject_gone" }).await.unwrap();
         dispatcher::run(&pool, &channels, Some(first.id)).await;
@@ -271,5 +366,275 @@ mod tests {
         assert_eq!(header(&calls[1].2, "x-sequence-id"), seq, "the update replaces in place");
 
         sqlx::query("DELETE FROM users WHERE id = $1").bind(u).execute(&pool).await.unwrap();
+    }
+
+    mod pushes {
+        use std::sync::Arc;
+
+        use serde_json::{Value, json};
+        use sqlx::PgPool;
+        use uuid::Uuid;
+
+        use super::{channel, db_user, header, stub};
+        use crate::notify::channel::{Channel, Endpoint, ProviderRef, Rendered, SendError};
+        use crate::notify::store::{NewNotification, Routing, emit};
+        use crate::notify::{Channels, Push, dispatcher, emit_now, is_recorded, kind, tokens};
+
+        const ON: Routing = Routing { ntfy: true };
+
+        fn ntfy(base: &str) -> Channels {
+            let mut channels = Channels::default();
+            channels.add(Arc::new(channel(base)));
+            channels
+        }
+
+        fn crashloop(u: Uuid, title: &str) -> NewNotification {
+            NewNotification {
+                collapse_key: Some(format!("crashloop:{u}")),
+                severity: "high",
+                ..NewNotification::new(u, kind::SYSTEM_ALERT, title.into())
+            }
+        }
+
+        async fn force_due(pool: &PgPool, id: Uuid) {
+            sqlx::query(
+                "UPDATE notification_deliveries SET next_attempt_at = now() \
+                 WHERE notification_id = $1",
+            )
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        /// `(op, state, throttled, stage)`; throttled means due no sooner than ~a minute out.
+        async fn delivery(pool: &PgPool, id: Uuid) -> (Option<String>, String, bool, i32) {
+            sqlx::query_as(
+                "SELECT op, state, next_attempt_at > now() + interval '50 seconds', stage \
+                 FROM notification_deliveries WHERE notification_id = $1",
+            )
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+        }
+
+        async fn notice_id(pool: &PgPool, u: Uuid) -> (Uuid, i32, String) {
+            sqlx::query_as("SELECT id, repeat_count, title FROM notifications WHERE user_id = $1")
+                .bind(u)
+                .fetch_one(pool)
+                .await
+                .unwrap()
+        }
+
+        async fn drop_user(pool: &PgPool, u: Uuid) {
+            sqlx::query("DELETE FROM users WHERE id = $1").bind(u).execute(pool).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn two_crashloop_flaps_collapse_into_one_row_and_one_push() {
+            let Some((pool, u)) = db_user("ntfy_crashloop_collapse").await else { return };
+            let (base, seen) = stub(200).await;
+            let channels = ntfy(&base);
+            emit_now(&pool, ON, &channels, crashloop(u, "crashloop x1")).await;
+            emit_now(&pool, ON, &channels, crashloop(u, "crashloop x2")).await;
+
+            let (id, repeats, title) = notice_id(&pool, u).await;
+            assert_eq!((repeats, title.as_str()), (2, "crashloop x2"));
+            assert_eq!(seen.lock().unwrap().len(), 1, "the second flap does not ping again");
+            let (op, state, throttled, _) = delivery(&pool, id).await;
+            assert_eq!((op.as_deref(), state.as_str(), throttled), (Some("update"), "sent", true));
+            drop_user(&pool, u).await;
+        }
+
+        #[tokio::test]
+        async fn collapse_updates_wait_out_the_sixty_second_throttle() {
+            let Some((pool, u)) = db_user("ntfy_update_throttle").await else { return };
+            let (base, seen) = stub(200).await;
+            let channels = ntfy(&base);
+            emit_now(&pool, ON, &channels, crashloop(u, "x1")).await;
+            emit_now(&pool, ON, &channels, crashloop(u, "x2")).await;
+            let (id, _, _) = notice_id(&pool, u).await;
+            dispatcher::run(&pool, &channels, Some(id)).await;
+            assert_eq!(seen.lock().unwrap().len(), 1, "the update is held back");
+
+            force_due(&pool, id).await;
+            dispatcher::run(&pool, &channels, Some(id)).await;
+            emit_now(&pool, ON, &channels, crashloop(u, "x3")).await;
+
+            let calls = seen.lock().unwrap().clone();
+            let titles: Vec<&str> = calls.iter().map(|(_, _, h)| header(h, "title")).collect();
+            assert_eq!(titles, ["x1", "x2"], "x3 waits a minute after the x2 update");
+            let (op, _, throttled, _) = delivery(&pool, id).await;
+            assert_eq!((op.as_deref(), throttled), (Some("update"), true));
+            drop_user(&pool, u).await;
+        }
+
+        /// Collapses the notice while its send is on the wire.
+        struct CollapseMidSend {
+            inner: super::NtfyChannel,
+            pool: PgPool,
+            notice: NewNotification,
+        }
+
+        #[async_trait::async_trait]
+        impl Channel for CollapseMidSend {
+            fn id(&self) -> &'static str {
+                self.inner.id()
+            }
+
+            fn capabilities(&self) -> crate::notify::channel::Capabilities {
+                self.inner.capabilities()
+            }
+
+            async fn send(&self, n: &Rendered, to: &Endpoint) -> Result<ProviderRef, SendError> {
+                emit(&self.pool, Routing::default(), self.notice.clone()).await.unwrap();
+                self.inner.send(n, to).await
+            }
+
+            async fn update(
+                &self,
+                n: &Rendered,
+                to: &Endpoint,
+                r: &ProviderRef,
+            ) -> Result<(), SendError> {
+                self.inner.update(n, to, r).await
+            }
+
+            async fn retract(&self, to: &Endpoint, r: &ProviderRef) -> Result<(), SendError> {
+                self.inner.retract(to, r).await
+            }
+        }
+
+        #[tokio::test]
+        async fn a_collapse_during_an_in_flight_send_still_reaches_the_phone() {
+            let Some((pool, u)) = db_user("ntfy_inflight_collapse").await else { return };
+            let (base, seen) = stub(200).await;
+            let mut racing = Channels::default();
+            racing.add(Arc::new(CollapseMidSend {
+                inner: channel(&base),
+                pool: pool.clone(),
+                notice: crashloop(u, "x2"),
+            }));
+            let first = emit(&pool, ON, crashloop(u, "x1")).await.unwrap();
+            dispatcher::run(&pool, &racing, Some(first.id)).await;
+
+            let (op, state, throttled, _) = delivery(&pool, first.id).await;
+            assert_eq!((op.as_deref(), state.as_str(), throttled), (Some("update"), "sent", true));
+
+            force_due(&pool, first.id).await;
+            dispatcher::run(&pool, &ntfy(&base), Some(first.id)).await;
+            let calls = seen.lock().unwrap().clone();
+            let titles: Vec<&str> = calls.iter().map(|(_, _, h)| header(h, "title")).collect();
+            assert_eq!(titles, ["x1", "x2"]);
+            let seqs: Vec<&str> =
+                calls.iter().map(|(_, _, h)| header(h, "x-sequence-id")).collect();
+            assert_eq!(seqs[0], seqs[1], "the newer text replaces the sent message");
+            assert_eq!(delivery(&pool, first.id).await.0, None, "nothing left to push");
+            drop_user(&pool, u).await;
+        }
+
+        #[tokio::test]
+        async fn dispatch_info_leaves_no_delivery_by_default() {
+            assert!(!is_recorded(kind::DISPATCH_INFO));
+            assert_eq!(Push::for_kind(kind::DISPATCH_INFO, false), Push::Off);
+            let Some((pool, u)) = db_user("ntfy_dispatch_info_off").await else { return };
+            let n = NewNotification::new(u, kind::DISPATCH_INFO, "Dispatch received".into());
+            let record = emit(&pool, ON, n).await.unwrap();
+            let deliveries: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM notification_deliveries WHERE notification_id = $1",
+            )
+            .bind(record.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(deliveries, 0);
+            drop_user(&pool, u).await;
+        }
+
+        #[tokio::test]
+        async fn an_approval_push_waits_for_its_escalation_delay() {
+            let Some((pool, u)) = db_user("ntfy_approval_delay").await else { return };
+            let (base, seen) = stub(200).await;
+            let n = NewNotification::new(u, kind::APPROVAL, "Approve release?".into());
+            emit_now(&pool, ON, &ntfy(&base), n).await;
+            let (id, _, _) = notice_id(&pool, u).await;
+            let (op, state, later, stage) = delivery(&pool, id).await;
+            assert_eq!(
+                (op.as_deref(), state.as_str(), later, stage),
+                (Some("send"), "scheduled", true, 1)
+            );
+            assert!(seen.lock().unwrap().is_empty());
+            drop_user(&pool, u).await;
+        }
+
+        #[tokio::test]
+        async fn requires_login_actions_get_an_open_button_and_no_token() {
+            let Some((pool, u)) = db_user("ntfy_action_buttons").await else { return };
+            let (base, seen) = stub(200).await;
+            let mut config = crate::config::Config::for_test(vec![]);
+            config.external_url = "https://cctui.example/".into();
+            let n = NewNotification {
+                actions: json!([
+                    { "id": "approve", "label": "Approve" },
+                    { "id": "release", "label": "Release", "requires_login": true },
+                ]),
+                ..NewNotification::new(u, kind::SYSTEM_ALERT, "Release?".into())
+            };
+            emit_now(&pool, ON, &ntfy(&base).with_config(&config), n).await;
+            let (id, _, _) = notice_id(&pool, u).await;
+
+            let (_, _, headers) = seen.lock().unwrap().pop().unwrap();
+            assert_eq!(header(&headers, "click"), "https://cctui.example/");
+            let actions: Value = serde_json::from_str(header(&headers, "actions")).unwrap();
+            let actions = actions.as_array().unwrap();
+            assert_eq!(actions.len(), 2, "{actions:?}");
+            assert_eq!(
+                actions[0],
+                json!({ "action": "view", "label": "Open", "url": "https://cctui.example/" })
+            );
+            let post = &actions[1];
+            assert_eq!(
+                (post["action"].as_str(), post["label"].as_str(), post["method"].as_str()),
+                (Some("http"), Some("Approve"), Some("POST"))
+            );
+            assert_eq!(post["clear"], json!(true));
+            let url = post["url"].as_str().unwrap();
+            let token = url
+                .strip_prefix("https://cctui.example/api/v1/notifications/actions/")
+                .expect("the button posts to the token route");
+
+            let row = tokens::peek(&pool, &tokens::hash(token).unwrap()).await.unwrap().unwrap();
+            assert_eq!(
+                (row.notification_id, row.action.as_str(), row.usable),
+                (id, "approve", true)
+            );
+            assert_eq!(row.channel, "ntfy");
+            let minted: Vec<(String, bool)> = sqlx::query_as(
+                "SELECT action, delivery_id IS NOT NULL FROM notification_action_tokens \
+                 WHERE notification_id = $1",
+            )
+            .bind(id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(minted, [("approve".to_owned(), true)], "no token for a login-only action");
+            drop_user(&pool, u).await;
+        }
+
+        #[test]
+        fn deep_links_point_at_the_session_or_the_app() {
+            let mut config = crate::config::Config::for_test(vec![]);
+            assert_eq!(dispatcher::deep_link(&config, Some("s1")), None, "no public URL");
+            config.external_url = "https://cctui.example/".into();
+            assert_eq!(
+                dispatcher::deep_link(&config, Some("s1")).as_deref(),
+                Some("https://cctui.example/sessions/s1")
+            );
+            assert_eq!(
+                dispatcher::deep_link(&config, None).as_deref(),
+                Some("https://cctui.example/")
+            );
+        }
     }
 }

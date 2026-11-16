@@ -201,9 +201,8 @@ pub struct Config {
     /// `CCTUI_EPHEMERAL_MACHINE_TTL_HOURS`; stored as seconds. `0` disables the
     /// sweep. Persistent machines are never reaped.
     pub ephemeral_machine_ttl_secs: u64,
-    /// ntfy access token (`CCTUI_NTFY_TOKEN`, provisioned from vault). Its
-    /// presence is the on/off switch for dispatch push notifications: when
-    /// unset, `ntfy::notify` is a no-op.
+    /// ntfy access token (`CCTUI_NTFY_TOKEN`, provisioned from vault). With
+    /// [`Self::ntfy_url`] it is the on/off switch for ntfy pushes.
     pub ntfy_token: Option<Secret>,
     /// ntfy topic URL to POST notifications to (`CCTUI_NTFY_URL`, a full topic
     /// URL, e.g. `https://ntfy.example.com/cctui-dispatch`). No default: when

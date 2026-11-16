@@ -9,12 +9,20 @@ use axum::http::StatusCode;
 use cctui_proto::api::{ApiError, DispatchRequest, DispatchResponse};
 use tracing::Instrument;
 
+/// What a dispatch notice reports; the host routes each event its own way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchEvent {
+    Received,
+    Forwarded,
+    Failed,
+}
+
 /// Optional host notification; the full host retains its configured delivery.
 pub struct DispatchNotification {
+    pub event: DispatchEvent,
+    pub session_id: String,
     pub title: String,
     pub message: String,
-    pub tags: String,
-    pub priority: u8,
 }
 
 /// Execution resources and explicit host side effects for dispatch preparation.
@@ -81,35 +89,6 @@ fn summarize(payload: &serde_json::Value) -> String {
         parts.push(format!("project={proj}"));
     }
     if parts.is_empty() { "(no recognized fields)".into() } else { parts.join("  ") }
-}
-
-/// Render the payload for a notification with secrets redacted — the injected
-/// machine key (a bearer secret) and any `env` map (user-supplied environment
-/// secrets) — and truncated so a huge payload doesn't blow up the push
-/// body.
-fn payload_for_notify(payload: &serde_json::Value) -> String {
-    const MAX: usize = 1500;
-    let mut p = payload.clone();
-    if let Some(obj) = p.as_object_mut() {
-        if obj.contains_key("cctui_machine_key") {
-            obj.insert("cctui_machine_key".into(), serde_json::Value::String("<redacted>".into()));
-        }
-        // `payload.env` carries worker environment secrets (the kube
-        // dispatcher stores them in a per-Job Secret). Redact the values.
-        if let Some(env) = obj.get("env").and_then(serde_json::Value::as_object) {
-            let redacted: serde_json::Map<String, serde_json::Value> = env
-                .keys()
-                .map(|k| (k.clone(), serde_json::Value::String("<redacted>".into())))
-                .collect();
-            obj.insert("env".into(), serde_json::Value::Object(redacted));
-        }
-    }
-    let mut s = serde_json::to_string_pretty(&p).unwrap_or_else(|_| p.to_string());
-    if s.len() > MAX {
-        s.truncate(MAX);
-        s.push_str("\n… (truncated)");
-    }
-    s
 }
 
 /// Lazily fetch (or create) the caller's single persistent "dispatch" machine
@@ -559,14 +538,10 @@ async fn validate_dispatch(
     let caller = caller_label(state, ctx.owner_filter()).await;
     let summary = summarize(&req.payload);
     state.notify(DispatchNotification {
+        event: DispatchEvent::Received,
+        session_id: session_id.clone(),
         title: format!("Dispatch received → {}", req.dispatcher),
-        message: format!(
-            "user: {caller}\nsession: {session_id}\ndispatcher: {}\n\n{summary}\n\npayload:\n{}",
-            req.dispatcher,
-            payload_for_notify(&req.payload),
-        ),
-        tags: "inbox_tray".into(),
-        priority: 3,
+        message: format!("user: {caller}\nsession: {session_id}\n{summary}"),
     });
 
     // We do NOT pre-create a session row: the worker's cctui-daemon
@@ -1115,10 +1090,10 @@ async fn forward_dispatch(
                  caller took (tag/assignee) is now stale"
             );
             state.notify(DispatchNotification {
+                event: DispatchEvent::Failed,
+                session_id: session_id.clone(),
                 title: format!("Dispatch FAILED → {}", req.dispatcher),
                 message: format!("user: {caller}\nsession: {session_id}\nerror: {e}"),
-                tags: "rotating_light".into(),
-                priority: 5,
             });
             let (code, msg) = match &e {
                 DispatchError::InvalidIntent(_) => (StatusCode::BAD_REQUEST, e.to_string()),
@@ -1140,6 +1115,8 @@ fn notify_forwarded(
     h: &crate::dispatchers::DispatchHandle,
 ) {
     state.notify(DispatchNotification {
+        event: DispatchEvent::Forwarded,
+        session_id: v.session_id.clone(),
         title: format!("Dispatch forwarded → {}", req.dispatcher),
         message: format!(
             "user: {}\nsession: {}\nhandle: {}\nnamespace: {}\nstatus: {}",
@@ -1149,8 +1126,6 @@ fn notify_forwarded(
             h.namespace.as_deref().unwrap_or("-"),
             h.status.as_deref().unwrap_or("dispatched"),
         ),
-        tags: "white_check_mark".into(),
-        priority: 3,
     });
 }
 

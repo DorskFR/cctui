@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use sqlx::{PgConnection, PgPool};
+use sqlx::{PgConnection, PgExecutor, PgPool};
 use uuid::Uuid;
 
 use crate::config::Config;
@@ -89,6 +89,7 @@ pub struct NewNotification {
     pub body: Option<String>,
     pub tags: Option<String>,
     pub actions: serde_json::Value,
+    pub blocking: bool,
 }
 
 impl NewNotification {
@@ -107,6 +108,7 @@ impl NewNotification {
             body: None,
             tags: None,
             actions: serde_json::Value::Array(Vec::new()),
+            blocking: false,
         }
     }
 }
@@ -143,9 +145,19 @@ pub fn clip(body: &str) -> String {
     format!("{}…", &body[..cut])
 }
 
+/// A collapse re-sends to a channel at most this often.
+pub const UPDATE_THROTTLE_SECS: i32 = 60;
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Routing {
     pub ntfy: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Route {
+    channel: &'static str,
+    endpoint_id: Option<Uuid>,
+    delay_secs: i32,
 }
 
 impl Routing {
@@ -154,17 +166,17 @@ impl Routing {
         Self { ntfy: config.ntfy_url.is_some() && config.ntfy_token.is_some() }
     }
 
-    async fn plan(
-        self,
-        conn: &mut PgConnection,
-        n: &NewNotification,
-    ) -> sqlx::Result<Vec<(&'static str, Option<Uuid>)>> {
+    async fn plan(self, conn: &mut PgConnection, n: &NewNotification) -> sqlx::Result<Vec<Route>> {
         let mut routes = Vec::new();
         if self.ntfy
-            && n.kind == super::kind::LEGACY
+            && let Some(delay_secs) = super::Push::for_kind(n.kind, n.blocking).delay_secs()
             && let Some(endpoint) = env_endpoint(conn, n.user_id, super::ntfy_channel::ID).await?
         {
-            routes.push((super::ntfy_channel::ID, Some(endpoint)));
+            routes.push(Route {
+                channel: super::ntfy_channel::ID,
+                endpoint_id: Some(endpoint),
+                delay_secs,
+            });
         }
         Ok(routes)
     }
@@ -218,24 +230,33 @@ async fn upsert(conn: &mut PgConnection, n: NewNotification) -> sqlx::Result<Not
         .await
 }
 
+/// A collapse queues an update on an idle sent delivery, throttled from its last push.
+/// Pending ops render the latest text when claimed, and an op already in flight is
+/// re-issued by the dispatcher, so neither needs touching here.
+const UPSERT_DELIVERY_SQL: &str = "\
+    INSERT INTO notification_deliveries \
+        (notification_id, channel, endpoint_id, op, stage, next_attempt_at) \
+    VALUES ($1, $2, $3, 'send', CASE WHEN $4 > 0 THEN 1 ELSE 0 END, \
+            now() + make_interval(secs => $4)) \
+    ON CONFLICT (notification_id, channel, endpoint_id) DO UPDATE \
+    SET op = 'update', \
+        next_attempt_at = GREATEST(now(), \
+            notification_deliveries.sent_at + make_interval(secs => $5)) \
+    WHERE notification_deliveries.state = 'sent' AND notification_deliveries.op IS NULL";
+
 async fn upsert_delivery(
     conn: &mut PgConnection,
     notification_id: Uuid,
-    channel: &str,
-    endpoint_id: Option<Uuid>,
+    route: Route,
 ) -> sqlx::Result<()> {
-    sqlx::query(
-        "INSERT INTO notification_deliveries (notification_id, channel, endpoint_id, op) \
-         VALUES ($1, $2, $3, 'send') \
-         ON CONFLICT (notification_id, channel, endpoint_id) DO UPDATE \
-         SET op = 'update', next_attempt_at = now() \
-         WHERE notification_deliveries.state = 'sent' AND notification_deliveries.op IS NULL",
-    )
-    .bind(notification_id)
-    .bind(channel)
-    .bind(endpoint_id)
-    .execute(conn)
-    .await?;
+    sqlx::query(UPSERT_DELIVERY_SQL)
+        .bind(notification_id)
+        .bind(route.channel)
+        .bind(route.endpoint_id)
+        .bind(route.delay_secs)
+        .bind(UPDATE_THROTTLE_SECS)
+        .execute(conn)
+        .await?;
     Ok(())
 }
 
@@ -247,8 +268,8 @@ pub async fn emit(
     let mut tx = pool.begin().await?;
     let routes = routing.plan(&mut tx, &n).await?;
     let record = upsert(&mut tx, n).await?;
-    for (channel, endpoint_id) in routes {
-        upsert_delivery(&mut tx, record.id, channel, endpoint_id).await?;
+    for route in routes {
+        upsert_delivery(&mut tx, record.id, route).await?;
     }
     tx.commit().await?;
     super::in_app::changed(pool, &record).await;
@@ -341,7 +362,7 @@ pub async fn transition(
     Ok(Some(Transitioned { notification, applied: true }))
 }
 
-pub(super) async fn transition_in(
+async fn transition_in(
     conn: &mut PgConnection,
     id: Uuid,
     edge: Edge<'_>,
@@ -351,6 +372,82 @@ pub(super) async fn transition_in(
         close_deliveries(conn, id).await?;
     }
     Ok(applied)
+}
+
+pub(super) async fn close_in(
+    conn: &mut PgConnection,
+    id: Uuid,
+    edge: Edge<'_>,
+) -> sqlx::Result<Option<(NotificationRecord, Option<Uuid>)>> {
+    let Some(n) = transition_in(&mut *conn, id, edge).await? else { return Ok(None) };
+    let lane = super::expiry::record_decision(conn, &n).await?;
+    Ok(Some((n, lane)))
+}
+
+#[derive(Debug, Clone)]
+pub struct Acted {
+    pub transition: Transitioned,
+    pub ticked_session: Option<String>,
+    pub decision_lane: Option<Uuid>,
+}
+
+impl Acted {
+    const fn lost(notification: NotificationRecord) -> Self {
+        Self {
+            transition: Transitioned { notification, applied: false },
+            ticked_session: None,
+            decision_lane: None,
+        }
+    }
+}
+
+const LOCK_SUBJECT_SQL: &str = "\
+    SELECT ua.id FROM notifications n \
+    JOIN session_user_actions ua \
+      ON n.subject_kind = 'user_action' AND ua.id::text = n.subject_id \
+    WHERE n.id = $1 FOR UPDATE OF ua";
+
+async fn tick_subject(
+    conn: &mut PgConnection,
+    action_id: Uuid,
+    action: &str,
+    note: Option<&str>,
+) -> sqlx::Result<Option<String>> {
+    let status = if matches!(action, "dropped" | "reject") { "dropped" } else { "done" };
+    sqlx::query_scalar(
+        "UPDATE session_user_actions SET status = $2, note = COALESCE($3, note), \
+           resolved_at = now(), resolved_by = 'user' \
+         WHERE id = $1 AND status = 'open' RETURNING session_id",
+    )
+    .bind(action_id)
+    .bind(status)
+    .bind(note)
+    .fetch_optional(conn)
+    .await
+}
+
+/// Locks the user-action row before the notice: the order a tick takes, so the two never
+/// deadlock.
+pub async fn act(pool: &PgPool, id: Uuid, edge: Edge<'_>) -> sqlx::Result<Option<Acted>> {
+    let mut tx = pool.begin().await?;
+    let subject: Option<Uuid> =
+        sqlx::query_scalar(LOCK_SUBJECT_SQL).bind(id).fetch_optional(&mut *tx).await?;
+    let Some((notification, decision_lane)) = close_in(&mut tx, id, edge).await? else {
+        return Ok(current(&mut tx, id).await?.map(Acted::lost));
+    };
+    let ticked_session = match (edge, subject) {
+        (Edge::Act { action, note, .. }, Some(action_id)) => {
+            tick_subject(&mut tx, action_id, action, note).await?
+        }
+        _ => None,
+    };
+    tx.commit().await?;
+    super::in_app::changed(pool, &notification).await;
+    Ok(Some(Acted {
+        transition: Transitioned { notification, applied: true },
+        ticked_session,
+        decision_lane,
+    }))
 }
 
 const LISTED_OPEN_STATES: &[&str] = &["pending", "delivered", "read", "acted"];
@@ -466,18 +563,21 @@ pub fn action_ids(n: &NotificationRecord) -> Vec<&str> {
 }
 
 /// An approval, or a notice about a blocking user action, holds a run until answered.
-pub async fn is_blocking(pool: &PgPool, n: &NotificationRecord) -> sqlx::Result<bool> {
-    if n.kind == "approval" {
+pub async fn awaits_decision<'e>(
+    conn: impl PgExecutor<'e>,
+    n: &NotificationRecord,
+) -> sqlx::Result<bool> {
+    if n.kind == super::kind::APPROVAL {
         return Ok(true);
     }
-    if n.subject_kind.as_deref() != Some("user_action") {
+    if n.subject_kind.as_deref() != Some(super::kind::USER_ACTION) {
         return Ok(false);
     }
     let Some(action_id) = n.subject_id.as_deref() else { return Ok(false) };
     let blocking: Option<bool> =
         sqlx::query_scalar("SELECT blocking FROM session_user_actions WHERE id::text = $1")
             .bind(action_id)
-            .fetch_optional(pool)
+            .fetch_optional(conn)
             .await?;
     Ok(blocking.unwrap_or(false))
 }

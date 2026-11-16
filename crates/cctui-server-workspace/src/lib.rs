@@ -38,7 +38,6 @@ mod machine_resources;
 mod metrics;
 mod normalize;
 mod notify;
-mod ntfy;
 mod openapi;
 mod outbound;
 mod outbox;

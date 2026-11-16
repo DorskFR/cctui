@@ -168,7 +168,7 @@ impl Conn {
         // peer replica can forward daemon-targeted requests here.
         crate::presence::register_conn(state, crate::presence::Kind::Daemon, machine_id, self.id)
             .await;
-        report_connect_flap(state, machine_id).await;
+        report_connect_flap(state, machine_id, self.user_id).await;
         crate::events::record(
             state,
             crate::events::Event::new(
@@ -307,40 +307,45 @@ impl Conn {
     }
 }
 
-async fn report_connect_flap(state: &AppState, machine_id: Uuid) {
+/// Every flapping connect re-emits under one collapse key: flaps from all replicas land
+/// on one notice, and repeats update it instead of pinging again.
+async fn report_connect_flap(state: &AppState, machine_id: Uuid, user_id: Uuid) {
     let Some(flap) = state.connect_tracker.record(machine_id) else {
         return;
     };
+    let window_mins = crate::bandwidth_watch::CONNECT_FLAP_WINDOW.as_secs() / 60;
     tracing::error!(
         %machine_id,
         connects = flap.connects,
-        window_mins = crate::bandwidth_watch::CONNECT_FLAP_WINDOW.as_secs() / 60,
+        window_mins,
         "daemon WS crashloop suspected — machine reconnecting rapidly",
     );
-    if flap.notify {
-        let name: String =
-            sqlx::query_scalar("SELECT COALESCE(display_name, name) FROM machines WHERE id = $1")
-                .bind(machine_id)
-                .fetch_optional(&state.pool)
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| machine_id.to_string());
-        crate::ntfy::notify(
-            &state.config,
-            crate::ntfy::Notification {
-                title: format!("Daemon crashloop: {name}"),
-                message: format!(
-                    "machine {name} ({machine_id}) opened {} daemon WS connections \
-                     in the last {} minutes — its daemon is likely crashlooping",
-                    flap.connects,
-                    crate::bandwidth_watch::CONNECT_FLAP_WINDOW.as_secs() / 60,
-                ),
-                tags: "rotating_light".into(),
-                priority: 4,
-            },
-        );
-    }
+    let name: String =
+        sqlx::query_scalar("SELECT COALESCE(display_name, name) FROM machines WHERE id = $1")
+            .bind(machine_id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| machine_id.to_string());
+    let connects = flap.connects;
+    crate::notify::emit_detached(&state.config, Some(user_id), move |owner| {
+        crate::notify::NewNotification {
+            severity: "high",
+            tags: Some("rotating_light".to_owned()),
+            machine_id: Some(machine_id),
+            collapse_key: Some(format!("crashloop:{machine_id}")),
+            body: Some(format!(
+                "machine {name} ({machine_id}) opened {connects} daemon WS connections \
+                 in the last {window_mins} minutes — its daemon is likely crashlooping",
+            )),
+            ..crate::notify::NewNotification::new(
+                owner,
+                crate::notify::kind::SYSTEM_ALERT,
+                format!("Daemon crashloop: {name}"),
+            )
+        }
+    });
 }
 
 async fn send_initial_frames(
