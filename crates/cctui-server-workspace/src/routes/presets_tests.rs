@@ -77,7 +77,7 @@ async fn preset_routes_are_owner_scoped_and_need_dispatch_to_write() {
     let err =
         delete(State(state.clone()), Extension(read_only), Path(preset.id)).await.unwrap_err();
     assert_eq!(err.status(), StatusCode::FORBIDDEN);
-    let code = delete(State(state.clone()), Extension(writer(&a)), Path(preset.id)).await.unwrap();
+    let code = delete(State(state), Extension(writer(&a)), Path(preset.id)).await.unwrap();
     assert_eq!(code, StatusCode::NO_CONTENT);
 }
 

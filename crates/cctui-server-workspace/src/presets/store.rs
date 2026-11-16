@@ -7,9 +7,13 @@ use cctui_proto::api::presets::{LaunchPreset, OnStale};
 
 use super::{Target, ValidPreset};
 
-const COLUMNS: &str = "id, user_id, name, prompt, machine_id, working_dir, adapter_id, model, \
-     permission_mode, dispatcher_id, profile, external_sources, fresh_secs, on_stale, max_batch, \
-     cron, next_fire_at, then_preset_id, created_at, updated_at";
+macro_rules! columns {
+    () => {
+        "id, user_id, name, prompt, machine_id, working_dir, adapter_id, model, \
+         permission_mode, dispatcher_id, profile, external_sources, fresh_secs, on_stale, \
+         max_batch, cron, next_fire_at, then_preset_id, created_at, updated_at"
+    };
+}
 
 #[derive(Debug)]
 pub enum WriteError {
@@ -177,9 +181,11 @@ async fn check_refs(
 
 /// `owner` is [`crate::auth::AuthContext::owner_filter`].
 pub async fn list(pool: &PgPool, owner: Option<Uuid>) -> sqlx::Result<Vec<LaunchPreset>> {
-    let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT {COLUMNS} FROM presets WHERE $1::uuid IS NULL OR user_id = $1 ORDER BY name, id"
-    )))
+    let rows: Vec<Row> = sqlx::query_as(concat!(
+        "SELECT ",
+        columns!(),
+        " FROM presets WHERE $1::uuid IS NULL OR user_id = $1 ORDER BY name, id"
+    ))
     .bind(owner)
     .fetch_all(pool)
     .await?;
@@ -191,9 +197,11 @@ pub async fn get(
     owner: Option<Uuid>,
     id: Uuid,
 ) -> sqlx::Result<Option<LaunchPreset>> {
-    let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT {COLUMNS} FROM presets WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)"
-    )))
+    let row: Option<Row> = sqlx::query_as(concat!(
+        "SELECT ",
+        columns!(),
+        " FROM presets WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)"
+    ))
     .bind(id)
     .bind(owner)
     .fetch_optional(pool)
@@ -208,13 +216,14 @@ pub async fn create(
 ) -> Result<LaunchPreset, WriteError> {
     check_refs(pool, user_id, None, preset).await?;
     let t = columns(&preset.target);
-    let row: Row = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    let row: Row = sqlx::query_as(concat!(
         "INSERT INTO presets (user_id, name, prompt, machine_id, working_dir, adapter_id, model, \
            permission_mode, dispatcher_id, profile, external_sources, fresh_secs, on_stale, \
            max_batch, cron, then_preset_id) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
-         RETURNING {COLUMNS}"
-    )))
+         RETURNING ",
+        columns!()
+    ))
     .bind(user_id)
     .bind(&preset.name)
     .bind(&preset.prompt)
@@ -256,7 +265,7 @@ pub async fn update(
     };
     check_refs(pool, user_id, Some(id), preset).await?;
     let t = columns(&preset.target);
-    let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    let row: Option<Row> = sqlx::query_as(concat!(
         "UPDATE presets SET name = $3, prompt = $4, machine_id = $5, working_dir = $6, \
            adapter_id = $7, model = $8, permission_mode = $9, dispatcher_id = $10, \
            profile = $11, external_sources = $12, fresh_secs = $13, on_stale = $14, \
@@ -264,8 +273,9 @@ pub async fn update(
            next_fire_at = CASE WHEN cron IS NOT DISTINCT FROM $16 THEN next_fire_at END, \
            cron = $16, then_preset_id = $17, updated_at = now() \
          WHERE id = $1 AND user_id = $2 \
-         RETURNING {COLUMNS}"
-    )))
+         RETURNING ",
+        columns!()
+    ))
     .bind(id)
     .bind(user_id)
     .bind(&preset.name)

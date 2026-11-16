@@ -3,6 +3,8 @@ import type { OnStale } from "./OnStale";
 import type { PermissionMode } from "./PermissionMode";
 
 /**
+ * Body of `POST /presets` and `PUT /presets/{id}`.
+ *
  * Target is `machine_id` + `working_dir` + `adapter_id` (with optional
  * `model` and `permission_mode`), or `dispatcher_id` + `profile`.
  * `external_sources` lets n8n and webhook events reach the preset's lanes;
