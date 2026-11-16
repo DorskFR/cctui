@@ -602,6 +602,9 @@ export const endpoints = {
   /** Discard (delete) a draft session row. */
   discardDraft: (sessionId: string) =>
     api.post<void>(`/sessions/${sessionId}/discard`, {}),
+  /** Cancel a spawn queued for an offline machine. */
+  cancelQueuedSpawn: (sessionId: string) =>
+    api.post<void>(`/sessions/${sessionId}/discard`, {}),
   /** Replace a draft's stored spawn payload in place (edit / autosave). */
   updateDraft: (sessionId: string, body: SpawnRequest) =>
     api.put<SpawnResponse>(`/sessions/${sessionId}/draft`, body),

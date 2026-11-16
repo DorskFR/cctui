@@ -209,6 +209,9 @@ pub async fn create(
         },
     )
     .await?;
+    if !inserted.deduplicated {
+        crate::inbox::deliver::wake_lane(&state, lane_id);
+    }
     let status = if inserted.deduplicated { "deduplicated" } else { "accepted" };
     Ok((StatusCode::ACCEPTED, Json(CreateEventResponse { id: inserted.id, status: status.into() })))
 }

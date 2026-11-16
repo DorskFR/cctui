@@ -146,9 +146,15 @@ export function statusLabel(st: string): string {
 			return m.sessions_status_dead();
 		case 'draft':
 			return m.sessions_status_draft();
+		case 'queued':
+			return m.sessions_status_queued();
 		default:
 			return st;
 	}
+}
+
+export function queuedMachineOf(s: SessionListItem): string | null {
+	return s.status === 'queued' ? s.machine_name || s.machine_id : null;
 }
 
 export function buildView(

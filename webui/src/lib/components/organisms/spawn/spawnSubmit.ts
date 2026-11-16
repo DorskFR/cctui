@@ -142,6 +142,12 @@ export async function spawnOnMachine(sf: SpawnForm) {
 		profile_id: profile?.id
 	});
 	sf.rememberProfileUse(profile);
+	if (res.status === 'queued') {
+		toasts.ok(m.spawn_toast_queued());
+		sf.discardMirror();
+		sf.onclose();
+		return;
+	}
 	toasts.info(m.spawn_toast_spawning());
 	let sessionId = res.session_id ?? null;
 	const result = await ws.awaitSpawn(res.command_id, sessionId, {

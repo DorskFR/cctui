@@ -1224,7 +1224,7 @@ fn spawn_reaper_sweeps(state: &AppState) {
     notify::in_app::install(&state.bus);
     spawn_sweep(state, |state| async move { notify::retention::sweep(&state.pool).await });
     spawn_sweep(state, |state| async move { notify::expiry::sweep(&state.pool).await });
-    spawn_sweep(state, |state| async move { inbox::store::sweep(&state.pool).await });
+    spawn_sweep(state, |state| async move { inbox::deliver::sweep(&state).await });
 }
 
 fn spawn_sweep<F, Fut>(state: &AppState, job: F)

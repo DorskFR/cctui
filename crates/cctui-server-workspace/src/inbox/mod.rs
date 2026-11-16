@@ -1,3 +1,8 @@
+pub mod claim;
+#[cfg(test)]
+mod claim_tests;
+pub mod deliver;
+pub mod queued;
 pub mod store;
 #[cfg(test)]
 pub mod store_tests;

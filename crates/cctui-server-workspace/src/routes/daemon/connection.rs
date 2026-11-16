@@ -91,6 +91,9 @@ async fn handle(
     let mut conn = Conn::new(state, machine_id, user_id, shared);
     conn.register(&tx, priority_tx).await;
     send_initial_frames(&conn.state, machine_id, &tx).await;
+    if !shared {
+        crate::inbox::deliver::wake_machine(&conn.state, machine_id);
+    }
     let outbound = tokio::spawn(outbound_pump(sink, rx, priority_rx));
     let flusher = spawn_bump_flusher(&conn.bumps, &conn.state.pool);
     tokio::select! {

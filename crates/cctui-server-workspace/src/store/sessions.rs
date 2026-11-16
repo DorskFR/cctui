@@ -36,11 +36,12 @@ mod tests {
     #[test]
     fn check_constraint_lists_exactly_the_enum() {
         let migration = include_str!("../../../../migrations/139_sessions_status_check.up.sql");
+        let latest = include_str!("../../schema/0010_queued_sessions.sql");
         let quoted: Vec<String> =
             SessionRowStatus::ALL.iter().map(|s| format!("'{}'", s.as_str())).collect();
         assert!(
-            migration.contains(&format!("CHECK (status IN ({}))", quoted.join(", "))),
-            "migration 139's CHECK drifted from SessionRowStatus::ALL"
+            latest.contains(&format!("CHECK (status IN ({}))", quoted.join(", "))),
+            "the newest sessions_status_check drifted from SessionRowStatus::ALL"
         );
         let default = format!("SET DEFAULT '{}'", SessionRowStatus::New.as_str());
         assert!(migration.contains(&default), "sessions.status default must satisfy the CHECK");
@@ -54,6 +55,8 @@ mod tests {
         assert!(matches!(SessionRowStatus::Draft.to_wire(), SessionStatus::Draft));
         assert!(!SessionRowStatus::Active.is_sticky());
         assert!(SessionRowStatus::Draft.is_sticky() && !SessionRowStatus::Draft.is_terminal());
+        assert!(matches!(SessionRowStatus::Queued.to_wire(), SessionStatus::Queued));
+        assert!(SessionRowStatus::Queued.is_sticky() && !SessionRowStatus::Queued.is_terminal());
     }
 
     fn child(id: &str, observe_only: bool) -> Child {
