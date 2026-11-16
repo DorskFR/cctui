@@ -20,13 +20,14 @@ pub struct HttpDispatcherConfig {
 
 /// Env vars that may hold a secret ref instead of the value; every one
 /// follows a rotation.
-pub const SECRET_ENV: [&str; 6] = [
+pub const SECRET_ENV: [&str; 7] = [
     "DATABASE_URL",
     "CCTUI_GITHUB_TOKEN",
     "GH_TOKEN",
     "CCTUI_NTFY_TOKEN",
     "CCTUI_CLAUDE_LITELLM_TOKEN",
     "CCTUI_EMOJI_TOKEN",
+    "CCTUI_SMTP_URL",
 ];
 
 pub const DEFAULT_UPLOAD_BODY_LIMIT: u64 = 24 * 1024 * 1024;
@@ -208,6 +209,12 @@ pub struct Config {
     /// URL, e.g. `https://ntfy.example.com/cctui-dispatch`). No default: when
     /// unset, push notifications stay off.
     pub ntfy_url: Option<String>,
+    /// SMTP relay for the email channel (`CCTUI_SMTP_URL`, e.g.
+    /// `smtps://user:pass@host:465` or `smtp://host:587?tls=required`). With
+    /// [`Self::smtp_from`] it is the on/off switch for email.
+    pub smtp_url: Option<Secret>,
+    /// Sender mailbox for the email channel (`CCTUI_SMTP_FROM`).
+    pub smtp_from: Option<String>,
     /// Base URL of a self-hosted, Anthropic-compatible endpoint (e.g. a `LiteLLM`
     /// proxy in front of Ollama) dedicated to Claude Code. When set together
     /// with `claude_litellm_models`, the listed models become selectable in the
@@ -369,6 +376,7 @@ impl Config {
         for slot in [
             &mut self.github_token,
             &mut self.ntfy_token,
+            &mut self.smtp_url,
             &mut self.claude_litellm_token,
             &mut self.emoji_token,
         ] {
@@ -464,6 +472,8 @@ impl Config {
             ),
             ntfy_token: token("CCTUI_NTFY_TOKEN"),
             ntfy_url: set("CCTUI_NTFY_URL"),
+            smtp_url: token("CCTUI_SMTP_URL"),
+            smtp_from: set("CCTUI_SMTP_FROM"),
             claude_litellm_endpoint: set("CCTUI_CLAUDE_LITELLM_ENDPOINT"),
             claude_litellm_token: token("CCTUI_CLAUDE_LITELLM_TOKEN"),
             emoji_endpoint: get("CCTUI_EMOJI_ENDPOINT")
@@ -583,6 +593,8 @@ impl Config {
             ephemeral_machine_ttl_secs: 0,
             ntfy_token: None,
             ntfy_url: None,
+            smtp_url: None,
+            smtp_from: None,
             claude_litellm_endpoint: None,
             claude_litellm_token: None,
             claude_litellm_models: vec![],
@@ -755,6 +767,8 @@ mod tests {
             ephemeral_machine_ttl_secs: 0,
             ntfy_token: None,
             ntfy_url: None,
+            smtp_url: None,
+            smtp_from: None,
             claude_litellm_endpoint: None,
             claude_litellm_token: None,
             claude_litellm_models: vec![LiteLlmModel {
@@ -885,6 +899,7 @@ mod tests {
             "DATABASE_URL" => Some("postgres://x".to_owned()),
             "CCTUI_GITHUB_TOKEN"
             | "CCTUI_NTFY_TOKEN"
+            | "CCTUI_SMTP_URL"
             | "CCTUI_CLAUDE_LITELLM_TOKEN"
             | "CCTUI_EMOJI_TOKEN" => Some(REF.to_owned()),
             "CCTUI_EMOJI_ENDPOINT" => Some("http://emoji".to_owned()),
@@ -903,6 +918,7 @@ mod tests {
         for (name, token) in [
             ("github", &cfg.github_token),
             ("ntfy", &cfg.ntfy_token),
+            ("smtp", &cfg.smtp_url),
             ("litellm", &cfg.claude_litellm_token),
             ("emoji", &cfg.emoji_token),
         ] {

@@ -87,7 +87,6 @@ pub fn action_url(config: &Config, token: &str) -> String {
 }
 
 /// The confirm page: for channels whose links get prefetched (messengers, mail).
-#[cfg_attr(not(test), allow(dead_code))]
 #[must_use]
 pub fn confirm_url(config: &Config, token: &str) -> String {
     format!("{}/n/{token}", base(config))

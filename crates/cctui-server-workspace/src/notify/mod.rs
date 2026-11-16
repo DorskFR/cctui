@@ -7,6 +7,7 @@ use crate::config::Config;
 
 pub mod channel;
 pub mod dispatcher;
+pub mod email;
 pub mod expiry;
 pub mod in_app;
 pub mod ntfy_channel;

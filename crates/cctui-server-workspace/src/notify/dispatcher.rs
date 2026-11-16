@@ -147,11 +147,14 @@ async fn render(pool: &PgPool, config: &Config, caps: Capabilities, row: &Due) -
     let mut n = row.rendered();
     let Some(link) = deep_link(config, row.session_id.as_deref()) else { return n };
     n.link = Some(link.clone());
-    let max = usize::from(caps.buttons);
+    let links_only = caps.buttons == 0 && caps.needs_token;
+    let max = if links_only { usize::MAX } else { usize::from(caps.buttons) };
     if max == 0 {
         return n;
     }
-    n.buttons.push(Button { label: "Open".into(), url: link, press: Press::Open });
+    if !links_only {
+        n.buttons.push(Button { label: "Open".into(), url: link, press: Press::Open });
+    }
     if !caps.needs_token {
         return n;
     }
@@ -169,6 +172,11 @@ async fn render(pool: &PgPool, config: &Config, caps: Capabilities, row: &Due) -
         match tokens::mint(pool, row.notification_id, Some(row.id), id, &row.channel, expires_at)
             .await
         {
+            Ok(Some(token)) if links_only => n.buttons.push(Button {
+                label: label.to_owned(),
+                url: tokens::confirm_url(config, &token),
+                press: Press::Open,
+            }),
             Ok(Some(token)) => n.buttons.push(Button {
                 label: label.to_owned(),
                 url: tokens::action_url(config, &token),
