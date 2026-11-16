@@ -101,9 +101,9 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../schema/0013_timers_and_hops.sql"),
     },
     Migration {
-        version: 16,
+        version: 14,
         name: "fold_outboxes",
-        sql: include_str!("../schema/0016_fold_outboxes.sql"),
+        sql: include_str!("../schema/0014_fold_outboxes.sql"),
     },
 ];
 
@@ -248,9 +248,7 @@ mod tests {
                     (11, "bootstrap".to_owned()),
                     (12, "bootstrap".to_owned()),
                     (13, "bootstrap".to_owned()),
-                    (14, "bootstrap".to_owned()),
-                    (15, "bootstrap".to_owned()),
-                    (16, "bootstrap".to_owned())
+                    (14, "bootstrap".to_owned())
                 ]
             );
 
@@ -358,9 +356,7 @@ mod tests {
                     (11, "bootstrap".to_owned()),
                     (12, "bootstrap".to_owned()),
                     (13, "bootstrap".to_owned()),
-                    (14, "bootstrap".to_owned()),
-                    (15, "bootstrap".to_owned()),
-                    (16, "bootstrap".to_owned())
+                    (14, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =
