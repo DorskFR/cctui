@@ -31,8 +31,36 @@ struct Row {
     created_at: chrono::DateTime<chrono::Utc>,
 }
 
-const COLUMNS: &str =
-    "id, session_id, dispatch_id, turn_seq, status, headline, body, evidence, source, created_at";
+macro_rules! columns {
+    () => {
+        "id, session_id, dispatch_id, turn_seq, status, headline, body, evidence, source, created_at"
+    };
+}
+
+const INSERT_SQL: &str = concat!(
+    "INSERT INTO session_outcomes \
+       (session_id, dispatch_id, turn_seq, status, headline, body, evidence, source) \
+     VALUES ($1, \
+       (SELECT dispatch_id FROM dispatch_identities WHERE session_id = $1 LIMIT 1), \
+       (SELECT max(id) FROM stream_events WHERE session_id = $1), \
+       $2, $3, $4, $5, $6) \
+     RETURNING ",
+    columns!()
+);
+
+const LATEST_RESULT_FILE_SQL: &str = concat!(
+    "SELECT ",
+    columns!(),
+    " FROM session_outcomes WHERE session_id = $1 AND source = 'result_file' \
+     ORDER BY created_at DESC, id DESC LIMIT 1"
+);
+
+const LATEST_OF_SQL: &str = concat!(
+    "SELECT DISTINCT ON (session_id) ",
+    columns!(),
+    " FROM session_outcomes WHERE session_id = ANY($1) \
+     ORDER BY session_id, created_at DESC, id DESC"
+);
 
 fn to_outcome(row: Row) -> SessionOutcome {
     SessionOutcome {
@@ -63,15 +91,7 @@ async fn insert(
     session_id: &str,
     req: &DeclareOutcomeRequest,
 ) -> sqlx::Result<SessionOutcome> {
-    let row: Row = sqlx::query_as(&format!(
-        "INSERT INTO session_outcomes \
-           (session_id, dispatch_id, turn_seq, status, headline, body, evidence, source) \
-         VALUES ($1, \
-           (SELECT dispatch_id FROM dispatch_identities WHERE session_id = $1 LIMIT 1), \
-           (SELECT max(id) FROM stream_events WHERE session_id = $1), \
-           $2, $3, $4, $5, $6) \
-         RETURNING {COLUMNS}"
-    ))
+    let row: Row = sqlx::query_as(INSERT_SQL)
     .bind(session_id)
     .bind(req.status.as_str())
     .bind(&req.headline)
@@ -87,10 +107,7 @@ async fn latest_result_file(
     conn: &mut sqlx::PgConnection,
     session_id: &str,
 ) -> sqlx::Result<Option<SessionOutcome>> {
-    let row: Option<Row> = sqlx::query_as(&format!(
-        "SELECT {COLUMNS} FROM session_outcomes WHERE session_id = $1 AND source = 'result_file' \
-         ORDER BY created_at DESC, id DESC LIMIT 1"
-    ))
+    let row: Option<Row> = sqlx::query_as(LATEST_RESULT_FILE_SQL)
     .bind(session_id)
     .fetch_optional(conn)
     .await?;
@@ -153,10 +170,7 @@ pub async fn latest_of(
     if session_ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let rows: Vec<Row> = sqlx::query_as(&format!(
-        "SELECT DISTINCT ON (session_id) {COLUMNS} FROM session_outcomes \
-         WHERE session_id = ANY($1) ORDER BY session_id, created_at DESC, id DESC"
-    ))
+    let rows: Vec<Row> = sqlx::query_as(LATEST_OF_SQL)
     .bind(session_ids)
     .fetch_all(pool)
     .await?;

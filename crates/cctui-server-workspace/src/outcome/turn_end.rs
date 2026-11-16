@@ -85,7 +85,7 @@ pub fn turn_ended(state: &AppState, session_id: &str) {
     tokio::spawn(async move {
         tokio::time::sleep(SETTLE).await;
         if let Err(e) = evaluate(&state, &session_id).await {
-            tracing::warn!(%session_id, "turn-end outcome not evaluated: {}", e.message());
+            tracing::warn!(%session_id, "turn-end outcome not evaluated: {e}");
         }
     });
 }
