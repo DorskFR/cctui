@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use cctui_proto::adapter::{AdapterEvent, EndReason};
-use cctui_proto::api::outcome::DeclareOutcomeRequest;
+use cctui_proto::api::outcome::{DeclareOutcomeRequest, DeclareOutcomeResult};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -473,20 +473,13 @@ impl ResultRelay {
             }
         };
         match server.outcome_call(key, session_id, &req).await {
-            Ok(result) => {
-                match result.error {
-                    Some(err) => {
-                        tracing::warn!(%err, "dispatch: the server refused the RESULT_FILE");
-                    }
-                    None => {
-                        let status = req.status.as_str();
-                        tracing::info!(
-                            session_id,
-                            status,
-                            "dispatch: relayed RESULT_FILE as the outcome"
-                        );
-                    }
-                }
+            Ok(DeclareOutcomeResult { error: Some(err), .. }) => {
+                tracing::warn!(%err, "dispatch: the server refused the RESULT_FILE");
+                self.settled(verdict);
+            }
+            Ok(_) => {
+                let status = req.status.as_str();
+                tracing::info!(session_id, status, "dispatch: relayed RESULT_FILE as the outcome");
                 self.settled(verdict);
             }
             Err(err) => {

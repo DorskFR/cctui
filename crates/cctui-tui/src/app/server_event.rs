@@ -142,9 +142,8 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
         ServerEvent::SessionOutcome { .. } => {
             waived("the list refresh carries the newest outcome on the row")
         }
-        ServerEvent::Notification { .. } | ServerEvent::NotificationsUnread { .. } => {
-            waived("the TUI has no notification inbox yet")
-        }
+        ServerEvent::Notification { .. } => waived("the TUI has no notification list yet"),
+        ServerEvent::NotificationsUnread { .. } => waived("the TUI shows no unread badge yet"),
         ServerEvent::Event { .. } => {
             waived("the TUI has no event log view; the list refresh carries status")
         }

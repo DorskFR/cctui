@@ -2016,13 +2016,13 @@ mod tests {
         assert_eq!(req.name.as_deref(), Some("reviewer"));
     }
 
-    fn outcome_call(args: Value) -> Result<Call, String> {
+    fn outcome_call(args: &Value) -> Result<Call, String> {
         parse_call(&json!({ "kind": "outcome", "session_id": "s1", "args": args }).to_string())
     }
 
     #[test]
     fn an_outcome_call_becomes_a_normalized_tool_declaration() {
-        let call = outcome_call(json!({
+        let call = outcome_call(&json!({
             "status": "needs_input",
             "headline": "  Which branch?\nsecond line",
             "body": "  ",
@@ -2040,12 +2040,12 @@ mod tests {
 
     #[test]
     fn an_outcome_call_needs_a_declared_status_and_a_headline() {
-        let err = outcome_call(json!({ "headline": "x" })).unwrap_err();
+        let err = outcome_call(&json!({ "headline": "x" })).unwrap_err();
         assert!(err.contains("status must be"), "{err}");
-        let err = outcome_call(json!({ "status": "ended_without_outcome", "headline": "x" }))
+        let err = outcome_call(&json!({ "status": "ended_without_outcome", "headline": "x" }))
             .unwrap_err();
         assert!(err.contains("status must be"), "{err}");
-        let err = outcome_call(json!({ "status": "result", "headline": " " })).unwrap_err();
+        let err = outcome_call(&json!({ "status": "result", "headline": " " })).unwrap_err();
         assert!(err.contains("headline"), "{err}");
     }
 

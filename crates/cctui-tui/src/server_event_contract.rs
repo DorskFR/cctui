@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::app::Action;
 use crate::app::server_event::to_actions;
 
-const VARIANT_COUNT: usize = 37;
+const VARIANT_COUNT: usize = 38;
 
 fn uuid() -> Uuid {
     Uuid::nil()
@@ -91,7 +91,30 @@ fn user_action() -> UserAction {
 fn samples() -> Vec<ServerEvent> {
     let mut all = session_samples();
     all.extend(fleet_samples());
+    all.extend(outcome_samples());
     all
+}
+
+fn outcome_samples() -> Vec<ServerEvent> {
+    vec![
+        ServerEvent::SessionOutcome {
+            session_id: "s-1".to_owned(),
+            outcome: cctui_proto::api::outcome::SessionOutcome {
+                id: uuid(),
+                session_id: "s-1".to_owned(),
+                dispatch_id: None,
+                turn_seq: Some(7),
+                status: cctui_proto::api::outcome::OutcomeStatus::Result,
+                headline: "Opened PR 12".to_owned(),
+                body: None,
+                evidence: Vec::new(),
+                source: cctui_proto::api::outcome::OutcomeSource::Tool,
+                created_at: now(),
+            },
+        },
+        ServerEvent::Notification { notification: Box::new(notification()) },
+        ServerEvent::NotificationsUnread { user_id: uuid(), count: 2 },
+    ]
 }
 
 fn session_samples() -> Vec<ServerEvent> {
@@ -229,23 +252,6 @@ fn fleet_samples() -> Vec<ServerEvent> {
         },
         ServerEvent::HiddenOwnersChanged { user_id: uuid() },
         ServerEvent::UserActions { session_id: "s-1".to_owned(), actions: vec![user_action()] },
-        ServerEvent::SessionOutcome {
-            session_id: "s-1".to_owned(),
-            outcome: cctui_proto::api::outcome::SessionOutcome {
-                id: uuid(),
-                session_id: "s-1".to_owned(),
-                dispatch_id: None,
-                turn_seq: Some(7),
-                status: cctui_proto::api::outcome::OutcomeStatus::Result,
-                headline: "Opened PR 12".to_owned(),
-                body: None,
-                evidence: Vec::new(),
-                source: cctui_proto::api::outcome::OutcomeSource::Tool,
-                created_at: now(),
-            },
-        },
-        ServerEvent::Notification { notification: Box::new(notification()) },
-        ServerEvent::NotificationsUnread { user_id: uuid(), count: 2 },
         ServerEvent::Event {
             event: cctui_proto::api::events::EventRecord {
                 id: 1,

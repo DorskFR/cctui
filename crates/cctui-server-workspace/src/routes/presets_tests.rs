@@ -92,6 +92,7 @@ async fn preset_route_errors_map_to_status_codes() {
     let foreign = LaunchPresetRequest { machine_id: Some(b.machine_id), ..body(&a, "foreign") };
     assert_eq!(post(foreign).await.unwrap_err().status(), StatusCode::BAD_REQUEST);
 
-    post(body(&a, "twice")).await.unwrap();
+    let (code, _) = post(body(&a, "twice")).await.unwrap();
+    assert_eq!(code, StatusCode::CREATED);
     assert_eq!(post(body(&a, "twice")).await.unwrap_err().status(), StatusCode::CONFLICT);
 }

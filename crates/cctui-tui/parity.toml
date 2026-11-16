@@ -1627,6 +1627,36 @@ tui = "waived"
 reason = "the inbox is an automation ingress for n8n and webhooks; the TUI keeps the operator loop"
 
 [[route]]
+id = "get_notifications"
+# GET /notifications — List your notifications, open or all, with the unread count.
+tui = "waived"
+reason = "the TUI has no notification list yet; the webui bell answers notifications"
+
+[[route]]
+id = "post_notifications_read_all"
+# POST /notifications/read-all — Mark every unread notification without actions read.
+tui = "waived"
+reason = "the TUI has no notification list yet; the webui bell answers notifications"
+
+[[route]]
+id = "post_notifications_by_id_read"
+# POST /notifications/{id}/read — Mark one notification read.
+tui = "waived"
+reason = "the TUI has no notification list yet; the webui bell answers notifications"
+
+[[route]]
+id = "post_notifications_by_id_act"
+# POST /notifications/{id}/act — Answer a notification with one of its actions; the first answer wins.
+tui = "waived"
+reason = "the TUI has no notification list yet; the webui bell answers notifications"
+
+[[route]]
+id = "post_notifications_by_id_dismiss"
+# POST /notifications/{id}/dismiss — Dismiss a notification; refused for a blocking approval.
+tui = "waived"
+reason = "the TUI has no notification list yet; the webui bell answers notifications"
+
+[[route]]
 id = "get_drafts"
 # GET /drafts — List your unsent drafts.
 tui = "handled"
@@ -1898,6 +1928,16 @@ reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in
 name = "session_outcome"
 tui = "waived"
 reason = "the list refresh carries the newest outcome on the row"
+
+[[ws_event]]
+name = "notification"
+tui = "waived"
+reason = "the TUI has no notification list yet; the webui bell answers notifications"
+
+[[ws_event]]
+name = "notifications_unread"
+tui = "waived"
+reason = "the TUI has no notification list yet; the webui bell answers notifications"
 
 [[ws_event]]
 name = "event"
