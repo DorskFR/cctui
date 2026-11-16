@@ -6,6 +6,7 @@ import type { GithubEventPayload } from "./GithubEventPayload";
 import type { GuardStepState } from "./GuardStepState";
 import type { MachineLiveness } from "./MachineLiveness";
 import type { MachineResources } from "./MachineResources";
+import type { Notification } from "./Notification";
 import type { PermissionChoice } from "./PermissionChoice";
 import type { ScheduledLaunchState } from "./ScheduledLaunchState";
 import type { Session } from "./Session";
@@ -38,4 +39,4 @@ user_id: string, } | { "type": "cctuiverse_changed", session_id?: string | null,
 /**
  * The link's owner; scopes delivery.
  */
-user_id: string, } | { "type": "hidden_owners_changed", user_id: string, } | { "type": "user_actions", session_id: string, actions: Array<UserAction>, } | { "type": "event", event: EventRecord, } | { "type": "heartbeat", } | { "type": "resync", session_id?: string | null, };
+user_id: string, } | { "type": "hidden_owners_changed", user_id: string, } | { "type": "user_actions", session_id: string, actions: Array<UserAction>, } | { "type": "notification", notification: Notification, } | { "type": "notifications_unread", user_id: string, count: number, } | { "type": "event", event: EventRecord, } | { "type": "heartbeat", } | { "type": "resync", session_id?: string | null, };

@@ -71,41 +71,9 @@ impl Edge<'_> {
     }
 }
 
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct NotificationRecord {
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub kind: String,
-    pub severity: String,
-    pub session_id: Option<String>,
-    pub machine_id: Option<Uuid>,
-    pub subject_kind: Option<String>,
-    pub subject_id: Option<String>,
-    pub collapse_key: Option<String>,
-    pub title: String,
-    pub body: Option<String>,
-    pub tags: Option<String>,
-    pub actions: serde_json::Value,
-    pub state: String,
-    pub repeat_count: i32,
-    pub decision: Option<String>,
-    pub decision_note: Option<String>,
-    pub acted_channel: Option<String>,
-    pub acted_by: Option<Uuid>,
-    pub resolved_reason: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub read_at: Option<DateTime<Utc>>,
-    pub acted_at: Option<DateTime<Utc>>,
-    pub resolved_at: Option<DateTime<Utc>>,
-    pub expires_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct Transitioned {
-    pub notification: NotificationRecord,
-    pub applied: bool,
-}
+pub use cctui_proto::api::notifications::{
+    Notification as NotificationRecord, NotificationTransition as Transitioned,
+};
 
 #[derive(Debug, Clone)]
 pub struct NewNotification {
@@ -283,6 +251,7 @@ pub async fn emit(
         upsert_delivery(&mut tx, record.id, channel, endpoint_id).await?;
     }
     tx.commit().await?;
+    super::in_app::changed(pool, &record).await;
     Ok(record)
 }
 
@@ -364,7 +333,151 @@ pub async fn transition(
     };
     if edge.target().closes() {
         close_deliveries(&mut tx, id).await?;
+    } else if matches!(edge, Edge::Read) {
+        cancel_escalations(&mut tx, &[id]).await?;
     }
     tx.commit().await?;
+    super::in_app::changed(pool, &notification).await;
     Ok(Some(Transitioned { notification, applied: true }))
+}
+
+pub(super) async fn transition_in(
+    conn: &mut PgConnection,
+    id: Uuid,
+    edge: Edge<'_>,
+) -> sqlx::Result<Option<NotificationRecord>> {
+    let applied = guarded_update(&mut *conn, id, edge).await?;
+    if applied.is_some() && edge.target().closes() {
+        close_deliveries(conn, id).await?;
+    }
+    Ok(applied)
+}
+
+const LISTED_OPEN_STATES: &[&str] = &["pending", "delivered", "read", "acted"];
+
+#[must_use]
+pub fn is_open(n: &NotificationRecord) -> bool {
+    OPEN.iter().any(|s| s.as_str() == n.state)
+}
+
+async fn cancel_escalations(conn: &mut PgConnection, ids: &[Uuid]) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE notification_deliveries SET state = 'cancelled', op = NULL \
+         WHERE notification_id = ANY($1) AND state = 'scheduled' AND stage > 0",
+    )
+    .bind(ids)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+pub async fn unread_count(pool: &PgPool, user_id: Uuid) -> sqlx::Result<i64> {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM notifications \
+         WHERE user_id = $1 AND state IN ('pending', 'delivered')",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+}
+
+pub async fn get(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<NotificationRecord>> {
+    let mut conn = pool.acquire().await?;
+    current(&mut conn, id).await
+}
+
+pub async fn owned(
+    pool: &PgPool,
+    user_id: Uuid,
+    id: Uuid,
+) -> sqlx::Result<Option<NotificationRecord>> {
+    sqlx::query_as("SELECT * FROM notifications WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Page {
+    pub open_only: bool,
+    pub limit: i64,
+    pub before: Option<DateTime<Utc>>,
+}
+
+/// One row past `limit` comes back when there is a next page.
+pub async fn list(
+    pool: &PgPool,
+    user_id: Uuid,
+    page: Page,
+) -> sqlx::Result<Vec<NotificationRecord>> {
+    let states = page.open_only.then(|| LISTED_OPEN_STATES.to_vec());
+    sqlx::query_as(
+        "SELECT * FROM notifications \
+         WHERE user_id = $1 AND ($2::text[] IS NULL OR state = ANY($2)) \
+           AND ($3::timestamptz IS NULL OR created_at < $3) \
+         ORDER BY created_at DESC, id DESC LIMIT $4",
+    )
+    .bind(user_id)
+    .bind(states)
+    .bind(page.before)
+    .bind(page.limit + 1)
+    .fetch_all(pool)
+    .await
+}
+
+/// Notices with actions stay unread until answered.
+pub async fn read_all(pool: &PgPool, user_id: Uuid) -> sqlx::Result<Vec<NotificationRecord>> {
+    let mut tx = pool.begin().await?;
+    let read: Vec<NotificationRecord> = sqlx::query_as(
+        "UPDATE notifications SET state = 'read', updated_at = now(), \
+           read_at = COALESCE(read_at, now()) \
+         WHERE user_id = $1 AND state IN ('pending', 'delivered') \
+           AND COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(actions) = 'array' \
+                                              THEN actions END), 0) = 0 \
+         RETURNING *",
+    )
+    .bind(user_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let ids: Vec<Uuid> = read.iter().map(|n| n.id).collect();
+    cancel_escalations(&mut tx, &ids).await?;
+    tx.commit().await?;
+    if !read.is_empty() {
+        super::in_app::changed_many(pool, user_id, &read).await;
+    }
+    Ok(read)
+}
+
+#[must_use]
+pub fn action<'a>(n: &'a NotificationRecord, id: &str) -> Option<&'a serde_json::Value> {
+    n.actions
+        .as_array()?
+        .iter()
+        .find(|a| a.get("id").and_then(serde_json::Value::as_str) == Some(id))
+}
+
+#[must_use]
+pub fn action_ids(n: &NotificationRecord) -> Vec<&str> {
+    n.actions
+        .as_array()
+        .map(|all| all.iter().filter_map(|a| a.get("id")?.as_str()).collect())
+        .unwrap_or_default()
+}
+
+/// An approval, or a notice about a blocking user action, holds a run until answered.
+pub async fn is_blocking(pool: &PgPool, n: &NotificationRecord) -> sqlx::Result<bool> {
+    if n.kind == "approval" {
+        return Ok(true);
+    }
+    if n.subject_kind.as_deref() != Some("user_action") {
+        return Ok(false);
+    }
+    let Some(action_id) = n.subject_id.as_deref() else { return Ok(false) };
+    let blocking: Option<bool> =
+        sqlx::query_scalar("SELECT blocking FROM session_user_actions WHERE id::text = $1")
+            .bind(action_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(blocking.unwrap_or(false))
 }

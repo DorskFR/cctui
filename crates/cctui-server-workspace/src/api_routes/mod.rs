@@ -16,6 +16,7 @@ mod keys;
 mod labels;
 mod machines;
 mod me;
+mod notifications;
 mod otlp;
 mod passkeys;
 mod plugins;
@@ -93,6 +94,8 @@ pub fn register(r: Routes) -> Routes {
     let r = user_actions::register(r);
     let r = inbox::register(r);
     let r = drafts::register(r);
+    let r = presets::register(r);
+    let r = notifications::register(r);
     let r = voice::register(r);
     let r = otlp::register(r);
     users::register(r)

@@ -165,7 +165,39 @@ const fixtures = {
 	heartbeat: { type: 'heartbeat' },
 	resync: { type: 'resync', session_id: SID },
 	cctuiverse_changed: { type: 'cctuiverse_changed', user_id: USER, session_id: SID, room_id: null },
-	hidden_owners_changed: { type: 'hidden_owners_changed', user_id: USER }
+	hidden_owners_changed: { type: 'hidden_owners_changed', user_id: USER },
+	notification: {
+		type: 'notification',
+		notification: {
+			id: '00000000-0000-0000-0000-0000000000a1',
+			user_id: USER,
+			kind: 'approval',
+			severity: 'high',
+			session_id: SID,
+			machine_id: null,
+			subject_kind: 'outcome',
+			subject_id: 'o-1',
+			collapse_key: `approval:${SID}`,
+			title: 'Release 1.2?',
+			body: null,
+			tags: null,
+			actions: [{ id: 'approve', label: 'Approve' }],
+			state: 'delivered',
+			repeat_count: 1,
+			decision: null,
+			decision_note: null,
+			acted_channel: null,
+			acted_by: null,
+			resolved_reason: null,
+			created_at: '2026-11-16T10:00:00Z',
+			updated_at: '2026-11-16T10:00:00Z',
+			read_at: null,
+			acted_at: null,
+			resolved_at: null,
+			expires_at: '2026-11-23T10:00:00Z'
+		}
+	},
+	notifications_unread: { type: 'notifications_unread', user_id: USER, count: 2 }
 } satisfies { [K in ServerEvent['type']]: Extract<ServerEvent, { type: K }> };
 
 class FakeSocket {

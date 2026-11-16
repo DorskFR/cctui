@@ -59,6 +59,7 @@ impl Channels {
     #[must_use]
     pub fn from_config(config: &Config) -> Self {
         let mut channels = Self::default();
+        channels.add(Arc::new(super::in_app::InApp));
         if let Some(ntfy) = super::ntfy_channel::NtfyChannel::from_config(config) {
             channels.add(Arc::new(ntfy));
         }

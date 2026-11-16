@@ -21,6 +21,8 @@ pub mod limit_reset;
 pub mod machine_adapters;
 pub mod machine_resources;
 pub mod me;
+pub mod notifications;
+pub mod outcome;
 pub mod pace;
 pub mod passkeys;
 pub mod plugins;

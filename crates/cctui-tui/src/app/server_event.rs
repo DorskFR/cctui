@@ -139,6 +139,12 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
             waived("the next session-list refresh applies the new hidden set")
         }
         ServerEvent::UserActions { .. } => waived("no needs-you list; the counts ride on the rows"),
+        ServerEvent::SessionOutcome { .. } => {
+            waived("the list refresh carries the newest outcome on the row")
+        }
+        ServerEvent::Notification { .. } | ServerEvent::NotificationsUnread { .. } => {
+            waived("the TUI has no notification inbox yet")
+        }
         ServerEvent::Event { .. } => {
             waived("the TUI has no event log view; the list refresh carries status")
         }

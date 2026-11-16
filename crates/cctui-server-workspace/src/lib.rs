@@ -599,7 +599,13 @@ fn outer_routes(features: FeatureSet) -> OuterRoutes {
             "/api/v1/auth/device/start",
             post(routes::device_auth::start),
         )
-        .feature(Feature::DeviceLogin, "/api/v1/auth/device/poll", post(routes::device_auth::poll));
+        .feature(Feature::DeviceLogin, "/api/v1/auth/device/poll", post(routes::device_auth::poll))
+        // The token in the path is the credential; `GET` only renders the confirm page.
+        .route("/n/{token}", get(routes::notifications::confirm_page))
+        .route(
+            "/api/v1/notifications/actions/{token}",
+            post(routes::notifications::act_with_token),
+        );
     infra_routes(daemon_routes(r))
 }
 
@@ -1214,6 +1220,7 @@ fn spawn_reaper_sweeps(state: &AppState) {
     spawn_sweep(state, |state| async move {
         notify::dispatcher::sweep(&state.pool, &state.config).await;
     });
+    notify::in_app::install(&state.bus);
     spawn_sweep(state, |state| async move { notify::retention::sweep(&state.pool).await });
     spawn_sweep(state, |state| async move { notify::expiry::sweep(&state.pool).await });
     spawn_sweep(state, |state| async move { inbox::store::sweep(&state.pool).await });
@@ -1523,6 +1530,11 @@ mod tests {
             "POST /otlp/v1/traces Bearer Human",
             "GET /passkeys Bearer Authenticated",
             "POST /passkeys/register/finish Bearer Authenticated",
+            "GET /notifications Bearer Human",
+            "POST /notifications/read-all Bearer Human",
+            "POST /notifications/{id}/act Bearer Human",
+            "POST /notifications/{id}/dismiss Bearer Human",
+            "POST /notifications/{id}/read Bearer Human",
             "POST /passkeys/register/start Bearer Authenticated",
             "POST /passkeys/test/finish Bearer Authenticated",
             "POST /passkeys/test/start Bearer Authenticated",

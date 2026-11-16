@@ -60,6 +60,11 @@ DELETE /me/key
 GET /meta/usage-probes
 GET /models/codex/catalog
 GET /models/{harness}
+GET /notifications
+POST /notifications/read-all
+POST /notifications/{id}/act
+POST /notifications/{id}/dismiss
+POST /notifications/{id}/read
 GET /permissions/pending
 GET /provider-status
 GET /redirects

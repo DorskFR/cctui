@@ -42,6 +42,7 @@ pub mod manifest;
 pub mod me;
 pub mod message_pins;
 pub mod metrics;
+pub mod notifications;
 pub mod passkeys;
 pub mod peer;
 pub mod permissions;
