@@ -5,7 +5,9 @@ use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use uuid::Uuid;
 
-use super::{EmailChannel, ID, Mailer, SEND_BUDGET, SMTP_COMMAND_TIMEOUT, address, render, verdict};
+use super::{
+    EmailChannel, ID, Mailer, SEND_BUDGET, SMTP_COMMAND_TIMEOUT, address, render, verdict,
+};
 use crate::config::Config;
 use crate::notify::channel::{
     Button, Capabilities, Channel, Channels, Endpoint, Press, ProviderRef, Rendered, SendError,
