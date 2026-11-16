@@ -1215,6 +1215,7 @@ fn spawn_reaper_sweeps(state: &AppState) {
         notify::dispatcher::sweep(&state.pool, &state.config).await;
     });
     spawn_sweep(state, |state| async move { notify::retention::sweep(&state.pool).await });
+    spawn_sweep(state, |state| async move { notify::expiry::sweep(&state.pool).await });
     spawn_sweep(state, |state| async move { inbox::store::sweep(&state.pool).await });
 }
 

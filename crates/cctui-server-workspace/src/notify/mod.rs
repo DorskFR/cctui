@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 pub mod channel;
 pub mod dispatcher;
+pub mod expiry;
 pub mod ntfy_channel;
 pub mod retention;
 pub mod store;

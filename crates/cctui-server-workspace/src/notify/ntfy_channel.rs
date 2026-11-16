@@ -209,4 +209,67 @@ mod tests {
         assert!(matches!(err, SendError::Permanent(_)), "{err:?}");
         assert!(seen.lock().unwrap().is_empty());
     }
+
+    async fn db_user(name: &str) -> Option<(sqlx::PgPool, uuid::Uuid)> {
+        let url = crate::routes::gateway::test_db_url(name)?;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(id)
+            .bind(format!("ntfy-{id}"))
+            .bind(format!("ntfy-key-{id}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        Some((pool, id))
+    }
+
+    #[tokio::test]
+    async fn a_collapse_republishes_the_sequence_and_resolving_clears_it() {
+        use crate::notify::store::{Edge, NewNotification, Routing, emit, transition};
+        use crate::notify::{Channels, dispatcher, kind};
+
+        let Some((pool, u)) = db_user("ntfy_update_clear").await else { return };
+        let (base, seen) = stub(200).await;
+        let mut channels = Channels::default();
+        channels.add(Arc::new(channel(&base)));
+        let routing = Routing { ntfy: true };
+        let notice = |title: &str| NewNotification {
+            collapse_key: Some(format!("crashloop:{u}")),
+            ..NewNotification::new(u, kind::LEGACY, title.into())
+        };
+
+        let first = emit(&pool, routing, notice("crashloop x1")).await.unwrap();
+        dispatcher::run(&pool, &channels, Some(first.id)).await;
+        let second = emit(&pool, routing, notice("crashloop x2")).await.unwrap();
+        assert_eq!(second.id, first.id);
+        dispatcher::run(&pool, &channels, Some(first.id)).await;
+        transition(&pool, first.id, Edge::Resolve { reason: "subject_gone" }).await.unwrap();
+        dispatcher::run(&pool, &channels, Some(first.id)).await;
+
+        let (delivery, state): (uuid::Uuid, String) = sqlx::query_as(
+            "SELECT id, state FROM notification_deliveries WHERE notification_id = $1",
+        )
+        .bind(first.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state, "retracted");
+        let seq = delivery.to_string();
+        let calls = seen.lock().unwrap().clone();
+        let routes: Vec<(&str, &str)> =
+            calls.iter().map(|(m, p, _)| (m.as_str(), p.as_str())).collect();
+        let clear = format!("/cctui/{seq}/clear");
+        assert_eq!(routes, [("POST", "/cctui"), ("POST", "/cctui"), ("PUT", clear.as_str())]);
+        let titles: Vec<&str> = calls[..2].iter().map(|(_, _, h)| header(h, "title")).collect();
+        assert_eq!(titles, ["crashloop x1", "crashloop x2"]);
+        assert_eq!(header(&calls[0].2, "x-sequence-id"), seq);
+        assert_eq!(header(&calls[1].2, "x-sequence-id"), seq, "the update replaces in place");
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(u).execute(&pool).await.unwrap();
+    }
 }
