@@ -226,11 +226,13 @@ pub async fn observe_message(state: &AppState, session_id: &str, payload: &mut s
     .execute(&state.pool)
     .await
     .map_err(|e| tracing::warn!(%session_id, "keep-alive reset failed: {e}"));
-    let _ = sqlx::query("UPDATE sessions SET timer_ticks = 0 WHERE id = $1 AND timer_ticks > 0")
-        .bind(session_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| tracing::warn!(%session_id, "timer budget reset failed: {e}"));
+    let _ = sqlx::query(
+        "UPDATE session_timers SET timer_ticks = 0 WHERE session_id = $1 AND timer_ticks > 0",
+    )
+    .bind(session_id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| tracing::warn!(%session_id, "timer budget reset failed: {e}"));
 }
 
 /// Persist (or clear) a session's schedule. `Ok(None)` when the session does
@@ -409,8 +411,12 @@ pub async fn arm_timer(
     prompt: &str,
 ) -> sqlx::Result<bool> {
     let armed: Option<String> = sqlx::query_scalar(
-        "UPDATE sessions SET timer_at = $2, timer_prompt = $3 \
-         WHERE id = $1 AND timer_ticks < $4 RETURNING id",
+        "INSERT INTO session_timers (session_id, timer_at, timer_prompt) \
+         SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1) \
+         ON CONFLICT (session_id) DO UPDATE \
+         SET timer_at = EXCLUDED.timer_at, timer_prompt = EXCLUDED.timer_prompt \
+         WHERE session_timers.timer_ticks < $4 \
+         RETURNING session_id",
     )
     .bind(session_id)
     .bind(at)
@@ -422,24 +428,25 @@ pub async fn arm_timer(
 }
 
 const TIMER_CLAIM_SQL: &str = "WITH due AS ( \
-        SELECT id, timer_prompt FROM sessions \
-        WHERE timer_at <= now() AND timer_prompt IS NOT NULL \
-          AND status = ANY($2) \
-          AND ended_at IS NULL \
-          AND soft_limit_reason IS NULL \
-          AND COALESCE(tempo, '') NOT IN ('blocked', 'active') \
-          AND COALESCE(agent_state, '') NOT IN ('working', 'running') \
-          AND timer_ticks < $3 \
-        ORDER BY timer_at \
+        SELECT t.session_id, t.timer_prompt FROM session_timers t \
+        JOIN sessions s ON s.id = t.session_id \
+        WHERE t.timer_at <= now() AND t.timer_prompt IS NOT NULL \
+          AND s.status = ANY($2) \
+          AND s.ended_at IS NULL \
+          AND s.soft_limit_reason IS NULL \
+          AND COALESCE(s.tempo, '') NOT IN ('blocked', 'active') \
+          AND COALESCE(s.agent_state, '') NOT IN ('working', 'running') \
+          AND t.timer_ticks < $3 \
+        ORDER BY t.timer_at \
         LIMIT $1 \
-        FOR UPDATE SKIP LOCKED \
+        FOR UPDATE OF t SKIP LOCKED \
      ) \
-     UPDATE sessions s \
-     SET timer_at = NULL, timer_prompt = NULL, timer_ticks = s.timer_ticks + 1 \
-     FROM due \
-     WHERE s.id = due.id AND s.timer_at <= now() \
-     RETURNING s.id, s.status, s.tempo, s.agent_state, s.soft_limit_reason, s.ended_at, \
-               due.timer_prompt AS prompt, s.timer_ticks";
+     UPDATE session_timers t \
+     SET timer_at = NULL, timer_prompt = NULL, timer_ticks = t.timer_ticks + 1 \
+     FROM due, sessions s \
+     WHERE t.session_id = due.session_id AND s.id = t.session_id AND t.timer_at <= now() \
+     RETURNING t.session_id AS id, s.status, s.tempo, s.agent_state, s.soft_limit_reason, \
+               s.ended_at, due.timer_prompt AS prompt, t.timer_ticks";
 
 const TIMER_USAGE_RETRY_SECS: i32 = 300;
 
@@ -466,9 +473,10 @@ pub async fn claim_timers(pool: &sqlx::PgPool) -> sqlx::Result<Vec<ClaimedTimer>
 
 async fn rearm_later(pool: &sqlx::PgPool, timer: &ClaimedTimer) -> sqlx::Result<()> {
     sqlx::query(
-        "UPDATE sessions SET timer_at = now() + make_interval(secs => $3), timer_prompt = $2, \
+        "UPDATE session_timers \
+         SET timer_at = now() + make_interval(secs => $3), timer_prompt = $2, \
            timer_ticks = GREATEST(timer_ticks - 1, 0) \
-         WHERE id = $1 AND timer_at IS NULL",
+         WHERE session_id = $1 AND timer_at IS NULL",
     )
     .bind(&timer.id)
     .bind(&timer.prompt)
@@ -725,13 +733,13 @@ mod tests {
     fn the_timer_claim_shares_the_skip_rules_and_guards_the_update() {
         for guard in [
             "FOR UPDATE SKIP LOCKED",
-            "status = ANY($2)",
-            "ended_at IS NULL",
-            "soft_limit_reason IS NULL",
-            "COALESCE(tempo, '') NOT IN ('blocked', 'active')",
-            "COALESCE(agent_state, '') NOT IN ('working', 'running')",
-            "timer_ticks < $3",
-            "WHERE s.id = due.id AND s.timer_at <= now()",
+            "s.status = ANY($2)",
+            "s.ended_at IS NULL",
+            "s.soft_limit_reason IS NULL",
+            "COALESCE(s.tempo, '') NOT IN ('blocked', 'active')",
+            "COALESCE(s.agent_state, '') NOT IN ('working', 'running')",
+            "t.timer_ticks < $3",
+            "WHERE t.session_id = due.session_id AND s.id = t.session_id AND t.timer_at <= now()",
         ] {
             assert!(TIMER_CLAIM_SQL.contains(guard), "timer claim lost the `{guard}` guard");
         }

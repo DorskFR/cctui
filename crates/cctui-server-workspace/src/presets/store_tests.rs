@@ -251,8 +251,10 @@ async fn preset_references_must_belong_to_the_owner() {
 }
 
 #[tokio::test]
-async fn changing_a_preset_cron_clears_its_next_fire() {
-    let Some(pool) = pool("changing_a_preset_cron_clears_its_next_fire").await else { return };
+async fn changing_a_preset_cron_recomputes_its_next_fire() {
+    let Some(pool) = pool("changing_a_preset_cron_recomputes_its_next_fire").await else {
+        return;
+    };
     let a = seed_owner(&pool, "cr").await;
     let daily = machine_request(&a, "daily");
     let daily = LaunchPresetRequest { cron: Some("0 9 * * *".into()), ..daily };
@@ -266,6 +268,12 @@ async fn changing_a_preset_cron_clears_its_next_fire() {
     assert!(same.next_fire_at.is_some(), "an unchanged cron keeps its next fire");
     let moved = LaunchPresetRequest { cron: Some("0 10 * * *".into()), ..daily };
     let moved = update(&pool, None, preset.id, &validate(&moved).unwrap()).await.unwrap().unwrap();
-    assert_eq!(moved.next_fire_at, None);
     assert_eq!(moved.cron.as_deref(), Some("0 10 * * *"));
+    let next = moved.next_fire_at.expect("a changed cron gets a fresh next fire");
+    let day_before = next - chrono::Duration::days(1);
+    assert_eq!(Some(next), super::cron::next_fire("0 10 * * *", day_before));
+    assert_eq!((chrono::Timelike::hour(&next), chrono::Timelike::minute(&next)), (10, 0));
+    let off = machine_request(&a, "daily");
+    let off = update(&pool, None, preset.id, &validate(&off).unwrap()).await.unwrap().unwrap();
+    assert_eq!(off.next_fire_at, None, "dropping the cron drops the next fire");
 }

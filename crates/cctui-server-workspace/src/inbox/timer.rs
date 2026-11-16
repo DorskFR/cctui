@@ -285,11 +285,14 @@ mod tests {
         assert_eq!(accepted, Accepted::Tick { fires_at: now + Duration::seconds(600) });
         assert_eq!(timer_events(pool, &sid).await, 0, "a tick writes no inbox event");
 
-        sqlx::query("UPDATE sessions SET timer_at = now() - interval '1 second' WHERE id = $1")
-            .bind(&sid)
-            .execute(pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE session_timers SET timer_at = now() - interval '1 second' \
+             WHERE session_id = $1",
+        )
+        .bind(&sid)
+        .execute(pool)
+        .await
+        .unwrap();
         let claimed = crate::keepalive::claim_timers(pool).await.unwrap();
         let mine: Vec<_> = claimed.iter().filter(|t| t.id == sid).collect();
         assert_eq!(mine.len(), 1);
@@ -302,7 +305,7 @@ mod tests {
     async fn the_timer_budget_refuses_a_wake_past_the_tick_budget() {
         let Some(state) = state("the_timer_budget_refuses_a_wake").await else { return };
         let (_, sid) = seed_session(&state.pool, "timer-budget").await;
-        sqlx::query("UPDATE sessions SET timer_ticks = 6 WHERE id = $1")
+        sqlx::query("INSERT INTO session_timers (session_id, timer_ticks) VALUES ($1, 6)")
             .bind(&sid)
             .execute(&state.pool)
             .await
