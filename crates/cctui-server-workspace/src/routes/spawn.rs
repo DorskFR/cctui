@@ -75,9 +75,97 @@ pub async fn spawn_session(
         return save_draft(&state, &ctx, &req, &parsed.raw).await;
     }
 
-    dispatch_spawn(&state, &ctx, req, uploads, parsed.raw)
-        .await
-        .map_err(|(code, Json(e))| AppError::new(code, e.error))
+    let queueable = req.env.is_empty().then(|| (req.clone(), copy_uploads(&parsed.raw)));
+    let failure = match try_dispatch_spawn(&state, &ctx, req, uploads, parsed.raw).await {
+        Ok(launched) => return Ok(launched),
+        Err(failure) => failure,
+    };
+    let (code, Json(ApiError { error })) = failure.response;
+    let (Some(target), Some((req, raw))) = (failure.queue, queueable) else {
+        return Err(AppError::new(code, error));
+    };
+    queue_spawn(&state, &ctx, target, &req, &raw).await.map_err(|e| {
+        tracing::warn!(machine = %req.machine_id, "queueing the undelivered spawn: {e}");
+        AppError::new(code, error)
+    })
+}
+
+fn copy_uploads(raw: &[crate::uploads::RawUpload]) -> Vec<crate::uploads::RawUpload> {
+    raw.iter()
+        .map(|u| crate::uploads::RawUpload {
+            name: u.name.clone(),
+            bytes: u.bytes.clone(),
+            content_type: u.content_type.clone(),
+        })
+        .collect()
+}
+
+/// Where an undelivered spawn may be queued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueTarget {
+    pub machine_uuid: Uuid,
+    pub owner: Uuid,
+}
+
+/// A failed spawn. `queue` is set only when nothing reached the daemon, the
+/// one failure that is safe to retry.
+pub struct SpawnFailure {
+    pub response: (StatusCode, Json<ApiError>),
+    pub queue: Option<QueueTarget>,
+}
+
+impl SpawnFailure {
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.response.1.error
+    }
+}
+
+impl From<(StatusCode, Json<ApiError>)> for SpawnFailure {
+    fn from(response: (StatusCode, Json<ApiError>)) -> Self {
+        Self { response, queue: None }
+    }
+}
+
+impl From<AppError> for SpawnFailure {
+    fn from(e: AppError) -> Self {
+        e.into_parts().into()
+    }
+}
+
+/// Whether `error` proves the spawn never reached a daemon.
+#[must_use]
+pub const fn queues_on(error: &cctui_server_core::launch::LaunchError) -> bool {
+    use crate::bus::BusError;
+    matches!(
+        error,
+        cctui_server_core::launch::LaunchError::Delivery(BusError::NoDaemon(_) | BusError::Closed)
+    )
+}
+
+/// Store an undelivered spawn as a `queued` session and put it in its inbox
+/// lane, which launches it once the machine's daemon is back.
+async fn queue_spawn(
+    state: &AppState,
+    ctx: &AuthContext,
+    target: QueueTarget,
+    req: &SpawnRequest,
+    uploads: &[crate::uploads::RawUpload],
+) -> Result<(StatusCode, Json<SpawnResponse>), AppError> {
+    let queued_id =
+        store_spawn_row(state, req, target.machine_uuid, uploads, SessionRowStatus::Queued).await?;
+    let key = queued_id.to_string();
+    crate::inbox::queued::enqueue(&state.pool, target.owner, ctx.user_id, &key).await?;
+    tracing::info!(machine = %req.machine_id, queued = %key, "spawn queued until the daemon is back");
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(SpawnResponse {
+            command_id: queued_id,
+            status: SessionRowStatus::Queued.as_str().into(),
+            account: None,
+            session_id: None,
+        }),
+    ))
 }
 
 /// Dispatch a spawn to the targeted daemon. Shared by the immediate spawn path
@@ -93,8 +181,32 @@ pub async fn dispatch_spawn(
     uploads: Vec<cctui_proto::adapter::BootstrapFile>,
     raw_uploads: Vec<crate::uploads::RawUpload>,
 ) -> Result<(StatusCode, Json<SpawnResponse>), (StatusCode, Json<ApiError>)> {
+    try_dispatch_spawn(state, ctx, req, uploads, raw_uploads).await.map_err(|f| f.response)
+}
+
+/// [`dispatch_spawn`], telling an undelivered spawn apart from every other failure.
+pub async fn try_dispatch_spawn(
+    state: &AppState,
+    ctx: &AuthContext,
+    req: SpawnRequest,
+    uploads: Vec<cctui_proto::adapter::BootstrapFile>,
+    raw_uploads: Vec<crate::uploads::RawUpload>,
+) -> Result<(StatusCode, Json<SpawnResponse>), SpawnFailure> {
+    try_dispatch_spawn_as(state, ctx, req, uploads, raw_uploads, Uuid::new_v4()).await
+}
+
+/// [`try_dispatch_spawn`] under a caller-chosen `command_id`, the key its
+/// `machine_launches` row is recorded under.
+pub async fn try_dispatch_spawn_as(
+    state: &AppState,
+    ctx: &AuthContext,
+    req: SpawnRequest,
+    uploads: Vec<cctui_proto::adapter::BootstrapFile>,
+    raw_uploads: Vec<crate::uploads::RawUpload>,
+    command_id: Uuid,
+) -> Result<(StatusCode, Json<SpawnResponse>), SpawnFailure> {
     require_dispatch(ctx)?;
-    let target = validate_spawn(state, ctx, &req).await?;
+    let target = validate_spawn(state, ctx, &req, command_id).await?;
     let bound = resolve_spawn_account(state, &target, &req).await?;
     execute_spawn(state, target, bound, &req, uploads, raw_uploads).await
 }
@@ -167,6 +279,7 @@ async fn validate_spawn(
     state: &AppState,
     ctx: &AuthContext,
     req: &SpawnRequest,
+    command_id: Uuid,
 ) -> Result<SpawnTarget, (StatusCode, Json<ApiError>)> {
     cctui_server_core::machine_policy::validate_env(req)?;
 
@@ -174,7 +287,6 @@ async fn validate_spawn(
     refuse_missing_cwd(state, machine_uuid, &req.working_dir).await?;
 
     let adapter_id = spawn_adapter_on(state, machine_uuid, req.adapter_id.as_deref()).await?;
-    let command_id = Uuid::new_v4();
     let (pre_session_id, token_key) = spawn_ids(&adapter_id, command_id);
     let token_session_id = token_key.to_string();
     // Every intent is written before this returns: a fast daemon's
@@ -443,7 +555,7 @@ async fn execute_spawn(
     req: &SpawnRequest,
     uploads: Vec<cctui_proto::adapter::BootstrapFile>,
     raw_uploads: Vec<crate::uploads::RawUpload>,
-) -> Result<(StatusCode, Json<SpawnResponse>), (StatusCode, Json<ApiError>)> {
+) -> Result<(StatusCode, Json<SpawnResponse>), SpawnFailure> {
     let SpawnTarget {
         acting_user_id,
         machine_uuid,
@@ -516,8 +628,9 @@ async fn execute_spawn(
             tracing::warn!(session = %token_session_id, "undoing bootstrap attachments: {e}");
         }
         tracing::warn!(machine = %req.machine_id, %command_id, %adapter_id, %error, "spawn not launched");
+        let queue = queues_on(&error).then_some(QueueTarget { machine_uuid, owner });
         let no_daemon = no_daemon_wording(state, machine_uuid, &error).await;
-        return Err(launch_failure(error, no_daemon));
+        return Err(SpawnFailure { response: launch_failure(error, no_daemon), queue });
     }
 
     tracing::info!(machine = %req.machine_id, %command_id, %adapter_id, "spawn dispatched");
@@ -644,49 +757,9 @@ async fn save_draft(
     let (machine_uuid, _) = resolve_owned_machine(state, ctx, &req.machine_id)
         .await
         .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
-    let adapter_id = req.adapter_id.clone().unwrap_or_else(|| "claude-code".to_owned());
-
-    // Store the spawn config (NOT env — secrets never persisted) under
-    // `metadata.draft` so Launch/Edit can reconstruct the SpawnRequest.
-    let mut payload = req.clone();
-    payload.env.clear();
-    payload.save_draft = false;
-    let metadata = draft_metadata(payload, crate::crypto::vault_key)?;
-
-    let draft_id = Uuid::new_v4();
-    let name = req.name.as_deref().filter(|n| !n.trim().is_empty());
-    let model = req.model.as_deref().filter(|m| !m.trim().is_empty());
-    let effort = req.effort.as_deref().filter(|e| !e.trim().is_empty());
-    traced(
-        r"INSERT INTO sessions
-            (id, machine_id, machine_uuid, working_dir, status, registered_at, last_heartbeat,
-             metadata, adapter_id, session_name, model, effort)
-          VALUES ($1, $2, $3, $4, 'draft', now(), now(), $5, $6, $7, $8, $9)",
-        |sql| {
-            sqlx::query(sql)
-                .bind(draft_id)
-                .bind(&req.machine_id)
-                .bind(machine_uuid)
-                .bind(&req.working_dir)
-                .bind(&metadata)
-                .bind(&adapter_id)
-                .bind(name)
-                .bind(model)
-                .bind(effort)
-                .execute(&state.pool)
-        },
-    )
-    .await?;
-
+    let draft_id =
+        store_spawn_row(state, req, machine_uuid, uploads, SessionRowStatus::Draft).await?;
     let draft_key = draft_id.to_string();
-    if !uploads.is_empty() {
-        crate::routes::attachments::record_uploads(&state.pool, &draft_key, uploads, &[])
-            .await
-            .map_err(|e| {
-                tracing::error!(draft = %draft_key, "recording draft attachments: {e}");
-                AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not store the attachments")
-            })?;
-    }
     if state.config.features.contains(cctui_proto::features::Feature::Organising) {
         crate::spawn_labels::sync_draft(
             &state.pool,
@@ -706,6 +779,59 @@ async fn save_draft(
             session_id: None,
         }),
     ))
+}
+
+/// Insert a session row holding `req` (never its env) under `metadata.draft`,
+/// with its files in the blob store, for a later launch to rebuild the spawn.
+async fn store_spawn_row(
+    state: &AppState,
+    req: &SpawnRequest,
+    machine_uuid: Uuid,
+    uploads: &[crate::uploads::RawUpload],
+    status: SessionRowStatus,
+) -> Result<Uuid, AppError> {
+    let adapter_id = req.adapter_id.clone().unwrap_or_else(|| "claude-code".to_owned());
+    let mut payload = req.clone();
+    payload.env.clear();
+    payload.save_draft = false;
+    let metadata = draft_metadata(payload, crate::crypto::vault_key)?;
+
+    let id = Uuid::new_v4();
+    let name = req.name.as_deref().filter(|n| !n.trim().is_empty());
+    let model = req.model.as_deref().filter(|m| !m.trim().is_empty());
+    let effort = req.effort.as_deref().filter(|e| !e.trim().is_empty());
+    traced(
+        r"INSERT INTO sessions
+            (id, machine_id, machine_uuid, working_dir, status, registered_at, last_heartbeat,
+             metadata, adapter_id, session_name, model, effort)
+          VALUES ($1, $2, $3, $4, $10, now(), now(), $5, $6, $7, $8, $9)",
+        |sql| {
+            sqlx::query(sql)
+                .bind(id)
+                .bind(&req.machine_id)
+                .bind(machine_uuid)
+                .bind(&req.working_dir)
+                .bind(&metadata)
+                .bind(&adapter_id)
+                .bind(name)
+                .bind(model)
+                .bind(effort)
+                .bind(status.as_str())
+                .execute(&state.pool)
+        },
+    )
+    .await?;
+
+    let key = id.to_string();
+    if !uploads.is_empty() {
+        crate::routes::attachments::record_uploads(&state.pool, &key, uploads, &[]).await.map_err(
+            |e| {
+                tracing::error!(session = %key, "recording stored spawn attachments: {e}");
+                AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not store the attachments")
+            },
+        )?;
+    }
+    Ok(id)
 }
 
 /// No vault key to seal `<redacted>` spans with.
@@ -801,27 +927,8 @@ pub async fn launch_stored_draft(
     session_id: &str,
     env: std::collections::BTreeMap<String, String>,
 ) -> Result<(StatusCode, Json<SpawnResponse>), AppError> {
-    let row: Option<(String, serde_json::Value)> =
-        traced("SELECT status, metadata FROM sessions WHERE id = $1", |sql| {
-            sqlx::query_as(sql).bind(session_id).fetch_optional(&state.pool)
-        })
-        .await?;
-    let Some((status, metadata)) = row else {
-        return Err(AppError::new(StatusCode::NOT_FOUND, "draft not found"));
-    };
-    if SessionRowStatus::parse(&status) != Some(SessionRowStatus::Draft) {
-        return Err(AppError::new(StatusCode::BAD_REQUEST, "session is not a draft"));
-    }
-    let mut req: SpawnRequest = metadata
-        .get("draft")
-        .cloned()
-        .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "draft row missing payload"))
-        .and_then(|v| {
-            serde_json::from_value(v).map_err(|e| {
-                AppError::new(StatusCode::BAD_REQUEST, format!("corrupt draft payload: {e}"))
-            })
-        })?;
-    unseal_draft_prompt(&mut req, &metadata, crate::crypto::vault_key)?;
+    let (mut req, uploads, raw_uploads) =
+        stored_spawn(state, session_id, SessionRowStatus::Draft).await?;
     // Env is entered fresh at launch; account gateway env is minted in dispatch.
     req.env = env;
     req.save_draft = false;
@@ -831,10 +938,6 @@ pub async fn launch_stored_draft(
             req.label_ids.push(id);
         }
     }
-
-    let (uploads, raw_uploads) =
-        load_draft_uploads(&state.pool, session_id, &req.attachment_names).await?;
-    req.attachment_names.clear();
 
     let outcome = dispatch_spawn(state, ctx, req, uploads, raw_uploads)
         .await
@@ -865,6 +968,67 @@ pub async fn launch_stored_draft(
         })),
     );
     Ok(outcome)
+}
+
+type StoredSpawn =
+    (SpawnRequest, Vec<cctui_proto::adapter::BootstrapFile>, Vec<crate::uploads::RawUpload>);
+
+/// The spawn a `draft` or `queued` row stores, with its prompt unsealed and its
+/// files read back from the blob store.
+async fn stored_spawn(
+    state: &AppState,
+    session_id: &str,
+    expect: SessionRowStatus,
+) -> Result<StoredSpawn, AppError> {
+    let noun = if expect == SessionRowStatus::Draft { "draft" } else { "queued spawn" };
+    let row: Option<(String, serde_json::Value)> =
+        traced("SELECT status, metadata FROM sessions WHERE id = $1", |sql| {
+            sqlx::query_as(sql).bind(session_id).fetch_optional(&state.pool)
+        })
+        .await?;
+    let Some((status, metadata)) = row else {
+        return Err(AppError::new(StatusCode::NOT_FOUND, format!("{noun} not found")));
+    };
+    if SessionRowStatus::parse(&status) != Some(expect) {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, format!("session is not a {noun}")));
+    }
+    let mut req: SpawnRequest = metadata
+        .get("draft")
+        .cloned()
+        .ok_or_else(|| {
+            AppError::new(StatusCode::BAD_REQUEST, format!("{noun} row missing payload"))
+        })
+        .and_then(|v| {
+            serde_json::from_value(v).map_err(|e| {
+                AppError::new(StatusCode::BAD_REQUEST, format!("corrupt {noun} payload: {e}"))
+            })
+        })?;
+    unseal_draft_prompt(&mut req, &metadata, crate::crypto::vault_key)?;
+    let (uploads, raw_uploads) =
+        load_draft_uploads(&state.pool, session_id, &req.attachment_names).await?;
+    req.attachment_names.clear();
+    Ok((req, uploads, raw_uploads))
+}
+
+/// Launch a `queued` spawn as `ctx`, then drop its row: the live session is
+/// born from the daemon's registration, as for a draft.
+pub async fn launch_queued(
+    state: &AppState,
+    ctx: &AuthContext,
+    session_id: &str,
+) -> Result<SpawnResponse, SpawnFailure> {
+    let (req, uploads, raw_uploads) =
+        stored_spawn(state, session_id, SessionRowStatus::Queued).await?;
+    let (_, Json(launched)) = try_dispatch_spawn(state, ctx, req, uploads, raw_uploads).await?;
+    let deleted = traced("DELETE FROM sessions WHERE id = $1 AND status = 'queued'", |sql| {
+        sqlx::query(sql).bind(session_id).execute(&state.pool)
+    })
+    .await;
+    if let Err(e) = deleted {
+        tracing::warn!(%session_id, "queued spawn launched but row delete failed: {e}");
+    }
+    tracing::info!(queued = %session_id, command_id = %launched.command_id, "queued spawn launched");
+    Ok(launched)
 }
 
 /// The draft's stored files, re-read from the blob store in the shape
@@ -1014,16 +1178,17 @@ pub async fn cancel_draft_launch(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /api/v1/sessions/{id}/discard`. Delete a draft session row.
-/// Only acts on `draft` rows so it can never delete a real session.
+const DISCARD_SQL: &str = "DELETE FROM sessions WHERE id = $1 AND status IN ('draft', 'queued')";
+
+/// `POST /api/v1/sessions/{id}/discard`. Delete a draft, or cancel a queued
+/// spawn. Only acts on those rows so it can never delete a real session.
 pub async fn discard_draft(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    let res = traced("DELETE FROM sessions WHERE id = $1 AND status = 'draft'", |sql| {
-        sqlx::query(sql).bind(&session_id).execute(&state.pool)
-    })
-    .await?;
+    crate::inbox::queued::cancel(&state.pool, &session_id).await?;
+    let res =
+        traced(DISCARD_SQL, |sql| sqlx::query(sql).bind(&session_id).execute(&state.pool)).await?;
     if res.rows_affected() == 0 {
         return Err(AppError::new(StatusCode::NOT_FOUND, "draft not found"));
     }
@@ -1865,7 +2030,7 @@ mod spawn_share_tests {
         }))
         .unwrap();
 
-        let target = super::validate_spawn(&state, &caller(owner, SPAWNER), &req)
+        let target = super::validate_spawn(&state, &caller(owner, SPAWNER), &req, Uuid::new_v4())
             .await
             .map_err(|(code, _)| code)
             .expect("a valid spawn");
@@ -2700,3 +2865,7 @@ mod missing_cwd_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "spawn_queue_tests.rs"]
+mod queue_tests;

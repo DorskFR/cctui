@@ -1,6 +1,20 @@
+pub mod chain;
+pub mod claim;
+#[cfg(test)]
+mod claim_tests;
+pub mod deliver;
+pub mod guards;
+#[cfg(test)]
+mod guards_tests;
+pub mod preset;
+#[cfg(test)]
+mod preset_tests;
+pub mod queued;
+pub mod schedule;
 pub mod store;
 #[cfg(test)]
 pub mod store_tests;
+pub mod timer;
 
 use serde::{Deserialize, Serialize};
 
@@ -92,6 +106,11 @@ pub fn session_lane_key(session_id: &str) -> String {
     format!("session:{session_id}")
 }
 
+#[must_use]
+pub fn preset_lane_key(preset_id: uuid::Uuid, topic: &str) -> String {
+    format!("preset:{preset_id}:{topic}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +151,11 @@ mod tests {
     #[test]
     fn session_lanes_are_keyed_by_session_id() {
         assert_eq!(session_lane_key("s-1"), "session:s-1");
+    }
+
+    #[test]
+    fn preset_lanes_are_keyed_by_preset_and_topic() {
+        let id = uuid::Uuid::nil();
+        assert_eq!(preset_lane_key(id, "ci"), format!("preset:{id}:ci"));
     }
 }

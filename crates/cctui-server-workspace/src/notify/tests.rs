@@ -256,13 +256,13 @@ async fn closing_retracts_sent_cancels_unsent_and_burns_tokens() {
 }
 
 #[tokio::test]
-async fn legacy_pings_route_to_the_env_ntfy_endpoint_only_when_configured() {
+async fn system_alerts_route_to_the_env_ntfy_endpoint_only_when_configured() {
     let Some(pool) = db("notify_legacy_routing").await else { return };
     let u = user(&pool).await;
     let ping = |title: &str| NewNotification {
-        collapse_key: Some("legacy-test".into()),
+        collapse_key: Some("alert-test".into()),
         body: Some("x".repeat(400)),
-        ..NewNotification::new(u, kind::LEGACY, title.into())
+        ..NewNotification::new(u, kind::SYSTEM_ALERT, title.into())
     };
     let on = Routing { ntfy: true };
     let record = emit(&pool, on, ping("a")).await.unwrap();
@@ -304,7 +304,7 @@ async fn legacy_pings_route_to_the_env_ntfy_endpoint_only_when_configured() {
             .unwrap();
     assert_eq!(endpoints, 1);
 
-    let off = NewNotification::new(u, kind::LEGACY, "quiet".into());
+    let off = NewNotification::new(u, kind::SYSTEM_ALERT, "quiet".into());
     let quiet = emit(&pool, Routing::default(), off).await.unwrap();
     let none: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM notification_deliveries WHERE notification_id = $1",

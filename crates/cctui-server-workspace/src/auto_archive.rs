@@ -184,7 +184,10 @@ pub fn stale_archive_due(
     last_heartbeat: Option<DateTime<Utc>>,
     ttl_secs: u64,
 ) -> Option<DateTime<Utc>> {
-    if ttl_secs == 0 || pinned || matches!(status, SessionStatus::Archived | SessionStatus::Draft) {
+    if ttl_secs == 0
+        || pinned
+        || matches!(status, SessionStatus::Archived | SessionStatus::Draft | SessionStatus::Queued)
+    {
         return None;
     }
     last_heartbeat?.checked_add_signed(chrono::Duration::seconds(i64::try_from(ttl_secs).ok()?))

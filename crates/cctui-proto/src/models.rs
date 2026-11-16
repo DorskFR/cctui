@@ -17,6 +17,9 @@ use ts_rs::TS;
 ///   payload in `metadata.draft` but has no `command_id`, no daemon dispatch,
 ///   and no heartbeat — excluded from liveness/reaping. An explicit Launch
 ///   mints env fresh, dispatches a normal spawn, and removes the draft.
+/// - `Queued`: a spawn whose daemon was unreachable. Stored like a draft and
+///   launched by the inbox when the machine's daemon reconnects; `failed`
+///   after a day.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
@@ -26,6 +29,7 @@ pub enum SessionStatus {
     Inactive,
     Archived,
     Draft,
+    Queued,
 }
 
 /// Coarse liveness tier for the sessions-list status dot.
@@ -229,6 +233,8 @@ mod tests {
         assert_eq!(json, r#""new""#);
         let json = serde_json::to_string(&SessionStatus::Draft).unwrap();
         assert_eq!(json, r#""draft""#);
+        let json = serde_json::to_string(&SessionStatus::Queued).unwrap();
+        assert_eq!(json, r#""queued""#);
     }
 
     #[test]

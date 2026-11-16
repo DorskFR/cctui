@@ -526,6 +526,7 @@ fn skeleton_list_item(
         tool_use_count: 0,
         todos: Vec::new(),
         user_actions: None,
+        latest_outcome: None,
         context_counts: None,
         has_token_credentials: false,
         account_traffic_observed: false,
@@ -698,6 +699,7 @@ struct EnrichContext {
     unread: Option<HashMap<String, u32>>,
     todos: HashMap<String, serde_json::Value>,
     user_actions: HashMap<String, cctui_proto::api::UserActionCounts>,
+    latest_outcomes: HashMap<String, cctui_proto::api::outcome::SessionOutcome>,
     context_counts: HashMap<String, cctui_proto::api::ContextCounts>,
     signals: HashMap<String, SignalRow>,
     pr_snapshot: HashMap<String, cctui_proto::classifier::OwnedPrStatus>,
@@ -742,6 +744,7 @@ impl EnrichContext {
         }
         ctx.todos = fetch_todos(state, &session_ids).await?;
         ctx.user_actions = fetch_user_actions(state, &session_ids).await?;
+        ctx.latest_outcomes = crate::outcome::latest_of(&state.pool, &session_ids).await?;
         ctx.context_counts = fetch_context_counts(&state.pool, &session_ids).await?;
         ctx.signals = fetch_signals(state, &session_ids).await?;
         ctx.pr_snapshot = state.pr_status_cache.snapshot();
@@ -1071,6 +1074,7 @@ fn enrich(
             s.todos = serde_json::from_value(v).unwrap_or_default();
         }
         s.user_actions = ctx.user_actions.remove(&s.id);
+        s.latest_outcome = ctx.latest_outcomes.remove(&s.id);
         s.context_counts = ctx.context_counts.remove(&s.id);
         if let Some(row) = ctx.signals.remove(&s.id) {
             apply_signals(s, row, &pr_cache, ctx.archive_after_secs);
@@ -2082,6 +2086,7 @@ pub async fn get_session(
                 tool_use_count: 0,
                 todos: Vec::new(),
                 user_actions: None,
+                latest_outcome: None,
                 context_counts: None,
                 has_token_credentials: false,
                 account_traffic_observed: false,
@@ -2102,6 +2107,7 @@ pub async fn get_session(
             };
             item.user_actions =
                 fetch_user_actions(&state, std::slice::from_ref(&item.id)).await?.remove(&item.id);
+            item.latest_outcome = crate::outcome::latest(&state.pool, &item.id).await?;
             (item.next_session_id, item.followup_count) =
                 crate::followup::followups_of(&state.pool, &item.id).await?;
             return Ok(Json(item));
@@ -2162,6 +2168,7 @@ pub async fn get_session(
         tool_use_count: 0,
         todos: Vec::new(),
         user_actions: None,
+        latest_outcome: None,
         context_counts: None,
         has_token_credentials: false,
         account_traffic_observed: false,
@@ -2210,6 +2217,7 @@ pub async fn get_session(
     }
     item.user_actions =
         fetch_user_actions(&state, std::slice::from_ref(&item.id)).await?.remove(&item.id);
+    item.latest_outcome = crate::outcome::latest(&state.pool, &item.id).await?;
     (item.next_session_id, item.followup_count) =
         crate::followup::followups_of(&state.pool, &item.id).await?;
     Ok(Json(item))

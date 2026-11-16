@@ -16,3 +16,4 @@ export * from "./plugins";
 export * from "./scheduled";
 export * from "./events";
 export * from "./hiddenOwners";
+export * from "./notificationSettings";

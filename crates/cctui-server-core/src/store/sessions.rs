@@ -11,6 +11,7 @@ pub enum SessionRowStatus {
     Draft,
     Ended,
     Failed,
+    Queued,
 }
 
 impl SessionRowStatus {
@@ -22,16 +23,17 @@ impl SessionRowStatus {
         Self::Draft,
         Self::Ended,
         Self::Failed,
+        Self::Queued,
     ];
     /// Rows a daemon may still be running.
     pub const RUNNING: &'static [Self] = &[Self::New, Self::Active, Self::Inactive];
     /// Rows a keep-alive tick may be sent to.
     pub const KEEPALIVE: &'static [Self] = &[Self::Active, Self::Inactive];
     /// Rows auto-archive must never touch.
-    pub const NOT_ARCHIVABLE: &'static [Self] = &[Self::Archived, Self::Draft];
+    pub const NOT_ARCHIVABLE: &'static [Self] = &[Self::Archived, Self::Draft, Self::Queued];
     /// Rows auto-resume must never touch.
     pub const NOT_RESUMABLE: &'static [Self] =
-        &[Self::Archived, Self::Ended, Self::Failed, Self::Draft];
+        &[Self::Archived, Self::Ended, Self::Failed, Self::Draft, Self::Queued];
 
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -43,6 +45,7 @@ impl SessionRowStatus {
             Self::Draft => "draft",
             Self::Ended => "ended",
             Self::Failed => "failed",
+            Self::Queued => "queued",
         }
     }
 
@@ -66,7 +69,7 @@ impl SessionRowStatus {
     /// heartbeat age.
     #[must_use]
     pub const fn is_sticky(self) -> bool {
-        self.is_terminal() || matches!(self, Self::Draft)
+        self.is_terminal() || matches!(self, Self::Draft | Self::Queued)
     }
 
     #[must_use]
@@ -77,6 +80,7 @@ impl SessionRowStatus {
             Self::Inactive | Self::Ended | Self::Failed => SessionStatus::Inactive,
             Self::Archived => SessionStatus::Archived,
             Self::Draft => SessionStatus::Draft,
+            Self::Queued => SessionStatus::Queued,
         }
     }
 }

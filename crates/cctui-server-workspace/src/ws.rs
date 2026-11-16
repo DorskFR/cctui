@@ -742,7 +742,8 @@ fn audience(event: &ServerEvent) -> Audience {
         | ServerEvent::MessageAck { session_id, .. }
         | ServerEvent::SoftLimitReached { session_id, .. }
         | ServerEvent::SoftLimitCleared { session_id }
-        | ServerEvent::UserActions { session_id, .. } => session(session_id),
+        | ServerEvent::UserActions { session_id, .. }
+        | ServerEvent::SessionOutcome { session_id, .. } => session(session_id),
         ServerEvent::SessionRegistered { session: s } => session(&s.id),
         ServerEvent::CommandResult { session_id, .. } => {
             session_id.as_deref().map_or(AdminsOnly, session)
@@ -762,7 +763,9 @@ fn audience(event: &ServerEvent) -> Audience {
         }
         ServerEvent::RoomMembers { user_id, .. }
         | ServerEvent::CctuiverseChanged { user_id, .. }
-        | ServerEvent::HiddenOwnersChanged { user_id } => OwnerOf(Owned::User(*user_id)),
+        | ServerEvent::HiddenOwnersChanged { user_id }
+        | ServerEvent::NotificationsUnread { user_id, .. } => OwnerOf(Owned::User(*user_id)),
+        ServerEvent::Notification { notification } => OwnerOf(Owned::User(notification.user_id)),
         ServerEvent::GithubEvent { .. } => AdminsOnly,
         ServerEvent::ScheduledLaunch { user_id, .. } => {
             user_id.map_or(AdminsOnly, |u| OwnerOf(Owned::User(u)))
@@ -915,8 +918,20 @@ struct OwnerFilter<L> {
     cache: OwnerCache,
 }
 
+/// Notifications are personal: not even an admin sees another user's.
+fn recipient(event: &ServerEvent) -> Option<uuid::Uuid> {
+    match event {
+        ServerEvent::Notification { notification } => Some(notification.user_id),
+        ServerEvent::NotificationsUnread { user_id, .. } => Some(*user_id),
+        _ => None,
+    }
+}
+
 impl<L: OwnerLookup + Send> EventFilter for OwnerFilter<L> {
     async fn allows(&mut self, event: &ServerEvent) -> bool {
+        if let Some(user_id) = recipient(event) {
+            return user_id == self.user_id;
+        }
         if self.is_admin {
             return true;
         }
@@ -1715,5 +1730,44 @@ mod tests {
         assert_eq!(lookup.forgotten.load(Ordering::SeqCst), 1);
         assert!(!dave.allows(&changed(ALICE)).await, "another admin's change is not news");
         assert_eq!(lookup.forgotten.load(Ordering::SeqCst), 1);
+    }
+
+    fn notice_for(user_id: Uuid) -> ServerEvent {
+        ServerEvent::Notification {
+            notification: serde_json::from_value(serde_json::json!({
+                "id": Uuid::nil(),
+                "user_id": user_id,
+                "kind": "approval",
+                "severity": "info",
+                "title": "Release?",
+                "actions": [],
+                "state": "pending",
+                "repeat_count": 1,
+                "created_at": "2026-11-16T10:00:00Z",
+                "updated_at": "2026-11-16T10:00:00Z",
+            }))
+            .unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn notification_events_reach_only_their_user_even_an_admin() {
+        let unread = |user_id| ServerEvent::NotificationsUnread { user_id, count: 1 };
+        assert_eq!(audience(&notice_for(BOB)), Audience::OwnerOf(Owned::User(BOB)));
+        assert_eq!(audience(&unread(BOB)), Audience::OwnerOf(Owned::User(BOB)));
+        let mut bob = filter_for(BOB, FakeOwners::default());
+        assert!(bob.allows(&notice_for(BOB)).await);
+        assert!(bob.allows(&unread(BOB)).await);
+        assert!(!bob.allows(&notice_for(ALICE)).await);
+        assert!(!bob.allows(&unread(ALICE)).await);
+        let mut admin = OwnerFilter {
+            is_admin: true,
+            user_id: DAVE,
+            lookup: FakeOwners::default(),
+            cache: OwnerCache::default(),
+        };
+        assert!(admin.allows(&notice_for(DAVE)).await);
+        assert!(!admin.allows(&notice_for(BOB)).await, "notifications are personal");
+        assert!(!admin.allows(&unread(BOB)).await);
     }
 }

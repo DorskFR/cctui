@@ -1,14 +1,15 @@
-//! A claim is a lease: a row left in `sending` by a crashed replica becomes
-//! claimable again once its `next_attempt_at` passes.
+//! Messages scheduled into a session, stored as inbox events on its
+//! `session:<id>` lane. Each one is its own batch under its turn id.
 
-use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
+use crate::inbox::claim;
+use crate::inbox::deliver::Outcome;
+use crate::outbox::{CLAIM_LEASE_SECS, Retry};
 #[cfg(test)]
-use crate::outbox::MAX_ATTEMPTS;
-use crate::outbox::{CLAIM_BATCH, CLAIM_LEASE_SECS, Retry, retry_after_failure};
+use crate::outbox::{MAX_ATTEMPTS, retry_after_failure};
 use crate::state::AppState;
 use crate::store::sessions::SessionRowStatus;
 
@@ -83,6 +84,8 @@ pub fn delivery_text(
     crate::crypto::decrypt(sealed, &key).ok_or(UNSEALABLE)
 }
 
+pub const KIND: &str = "scheduled_message";
+
 #[derive(sqlx::FromRow)]
 pub struct ClaimedRow {
     pub id: uuid::Uuid,
@@ -92,42 +95,43 @@ pub struct ClaimedRow {
     pub ask_picks: Option<serde_json::Value>,
     pub attempts: i32,
     pub turn_id: uuid::Uuid,
-    pub user_id: Option<uuid::Uuid>,
+    pub user_id: uuid::Uuid,
+    pub deliver_at: DateTime<Utc>,
     pub session_status: Option<String>,
     pub session_tempo: Option<String>,
 }
 
-const CLAIM_SQL: &str = "\
-    WITH claimed AS ( \
-        UPDATE session_message_queue q \
-        SET state = 'sending', next_attempt_at = now() + ($1 || ' seconds')::interval \
-        WHERE q.id IN ( \
-            SELECT id FROM session_message_queue \
-            WHERE (state = 'scheduled' AND deliver_at <= now() AND next_attempt_at <= now()) \
-               OR (state = 'sending' AND next_attempt_at <= now()) \
-            ORDER BY deliver_at \
-            LIMIT $2 \
-            FOR UPDATE SKIP LOCKED) \
-        RETURNING q.id, q.session_id, q.body, q.sealed_body, q.ask_picks, q.attempts, q.turn_id, \
-                  q.user_id) \
-    SELECT c.*, s.status AS session_status, s.tempo AS session_tempo \
-    FROM claimed c LEFT JOIN sessions s ON s.id = c.session_id";
+const CLAIMED_SQL: &str = "\
+    SELECT e.id, substr(l.key, 9) AS session_id, e.body, e.sealed_body, \
+           e.payload->'ask_picks' AS ask_picks, e.attempts, e.batch_id AS turn_id, e.user_id, \
+           e.not_before AS deliver_at, s.status AS session_status, s.tempo AS session_tempo \
+    FROM inbox_events e \
+    JOIN inbox_lanes l ON l.id = e.lane_id \
+    LEFT JOIN sessions s ON s.id = l.session_id \
+    WHERE e.batch_id = $1 AND e.status = 'claimed' AND e.payload->>'kind' = 'scheduled_message'";
 
 const CLAIM_ONE_SQL: &str = "\
     WITH claimed AS ( \
-        UPDATE session_message_queue \
-        SET state = 'sending', next_attempt_at = now() + ($3 || ' seconds')::interval \
-        WHERE id = $1 AND session_id = $2 AND state = 'scheduled' \
-        RETURNING id, session_id, body, sealed_body, ask_picks, attempts, turn_id, user_id) \
-    SELECT c.*, s.status AS session_status, s.tempo AS session_tempo \
-    FROM claimed c LEFT JOIN sessions s ON s.id = c.session_id";
+        UPDATE inbox_events e \
+        SET status = 'claimed', batch_id = COALESCE(e.batch_id, gen_random_uuid()), \
+            next_attempt_at = now() + $3::bigint * interval '1 second' \
+        FROM inbox_lanes l \
+        WHERE l.id = e.lane_id AND e.id = $1 AND l.key = 'session:' || $2::text \
+          AND e.status = 'pending' AND e.payload->>'kind' = 'scheduled_message' \
+        RETURNING e.id, l.session_id AS lane_session, e.body, e.sealed_body, e.payload, \
+                  e.attempts, e.batch_id, e.user_id, e.not_before) \
+    SELECT c.id, $2::text AS session_id, c.body, c.sealed_body, \
+           c.payload->'ask_picks' AS ask_picks, c.attempts, c.batch_id AS turn_id, c.user_id, \
+           c.not_before AS deliver_at, s.status AS session_status, s.tempo AS session_tempo \
+    FROM claimed c LEFT JOIN sessions s ON s.id = c.lane_session";
 
-pub async fn claim_due(pool: &sqlx::PgPool) -> sqlx::Result<Vec<ClaimedRow>> {
-    sqlx::query_as(CLAIM_SQL)
-        .bind(CLAIM_LEASE_SECS.to_string())
-        .bind(CLAIM_BATCH)
-        .fetch_all(pool)
-        .await
+/// The scheduled message a lane worker just claimed, when it is the whole batch.
+pub async fn claimed(
+    pool: &sqlx::PgPool,
+    events: &[crate::inbox::claim::BatchEvent],
+) -> sqlx::Result<Option<ClaimedRow>> {
+    let [event] = events else { return Ok(None) };
+    sqlx::query_as(CLAIMED_SQL).bind(event.batch_id).fetch_optional(pool).await
 }
 
 pub async fn claim_one(
@@ -138,7 +142,7 @@ pub async fn claim_one(
     sqlx::query_as(CLAIM_ONE_SQL)
         .bind(id)
         .bind(session_id)
-        .bind(CLAIM_LEASE_SECS.to_string())
+        .bind(CLAIM_LEASE_SECS)
         .fetch_optional(pool)
         .await
 }
@@ -147,48 +151,31 @@ pub async fn scheduled_turns(
     pool: &sqlx::PgPool,
     session_id: &str,
 ) -> sqlx::Result<std::collections::HashMap<uuid::Uuid, DateTime<Utc>>> {
-    let rows: Vec<(uuid::Uuid, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT turn_id, deliver_at FROM session_message_queue \
-         WHERE session_id = $1 AND state = 'sent'",
-    )
-    .bind(session_id)
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<(uuid::Uuid, DateTime<Utc>)> =
+        sqlx::query_as("SELECT turn_id, scheduled_at FROM scheduled_turns WHERE session_id = $1")
+            .bind(session_id)
+            .fetch_all(pool)
+            .await?;
     Ok(rows.into_iter().collect())
 }
 
-pub async fn sweep(state: &AppState) {
-    let rows = match claim_due(&state.pool).await {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::warn!("scheduled message claim failed: {e}");
-            return;
-        }
-    };
-    for row in rows {
-        deliver_due(state, row).await;
-    }
-}
-
-async fn deliver_due(state: &AppState, row: ClaimedRow) {
+/// The lane worker's delivery: the wake is checked against the scheduler's
+/// scopes at delivery time.
+pub async fn deliver_due(state: &AppState, row: ClaimedRow) -> Outcome {
     match authorize_wake(state, &row).await {
-        Ok(()) => {
-            let _ = deliver(state, row).await;
-        }
+        Ok(()) => deliver(state, row).await,
         Err(e) => {
             let (code, axum::Json(e)) = e.into_parts();
             if code.is_server_error() {
-                record_failure(&state.pool, row.id, row.attempts, &e.error).await;
+                Outcome::RetryKept(e.error)
             } else {
-                tracing::warn!(queue_id = %row.id, "scheduled message refused: {}", e.error);
-                mark_dead(&state.pool, row.id, row.attempts + 1, &e.error).await;
+                tracing::warn!(event_id = %row.id, "scheduled message refused: {}", e.error);
+                Outcome::Dead(e.error)
             }
         }
     }
 }
 
-/// A due message that wakes its worker is sent for whoever scheduled it, with
-/// the scopes they hold at delivery time.
 async fn authorize_wake(state: &AppState, row: &ClaimedRow) -> Result<(), AppError> {
     let Some(status) = row.session_status.as_deref() else { return Ok(()) };
     if undeliverable_reason(Some(status)).is_some()
@@ -196,29 +183,23 @@ async fn authorize_wake(state: &AppState, row: &ClaimedRow) -> Result<(), AppErr
     {
         return Ok(());
     }
-    let Some(user_id) = row.user_id else {
-        return Err(AppError::new(StatusCode::FORBIDDEN, "scheduled by an unknown user"));
-    };
     let ctx = AuthContext {
-        user_id,
+        user_id: row.user_id,
         key_id: uuid::Uuid::nil(),
         machine_id: None,
-        scopes: crate::store::acls::user_ceiling(&state.pool, user_id).await?,
+        scopes: crate::store::acls::user_ceiling(&state.pool, row.user_id).await?,
     };
     crate::routes::spawn::authorize_session_launch(state, &ctx, &row.session_id).await
 }
 
-pub async fn deliver(state: &AppState, row: ClaimedRow) -> Result<(), String> {
+/// Failures keep the batch, so a retry still carries the scheduled turn id.
+pub async fn deliver(state: &AppState, mut row: ClaimedRow) -> Outcome {
     if let Some(reason) = undeliverable_reason(row.session_status.as_deref()) {
-        mark_dead(&state.pool, row.id, row.attempts + 1, reason).await;
-        return Err(reason.to_owned());
+        return Outcome::Dead(reason.to_owned());
     }
     let text = match delivery_text(&row, crate::crypto::vault_key) {
         Ok(text) => text,
-        Err(reason) => {
-            mark_dead(&state.pool, row.id, row.attempts + 1, reason).await;
-            return Err(reason.to_owned());
-        }
+        Err(reason) => return Outcome::Dead(reason.to_owned()),
     };
     let env = crate::routes::gateway::resume_env_for_session(state, &row.session_id).await;
     let command_id = uuid::Uuid::new_v4();
@@ -228,7 +209,7 @@ pub async fn deliver(state: &AppState, row: ClaimedRow) -> Result<(), String> {
         Some(row.session_id.clone()),
         None,
     );
-    let ask_picks = row.ask_picks.and_then(|v| serde_json::from_value(v).ok());
+    let ask_picks = row.ask_picks.take().and_then(|v| serde_json::from_value(v).ok());
     let dispatch = crate::bus::dispatch(
         state,
         &row.session_id,
@@ -245,57 +226,70 @@ pub async fn deliver(state: &AppState, row: ClaimedRow) -> Result<(), String> {
     .await;
     match dispatch {
         Ok(()) => {
-            let _ = sqlx::query(
-                "UPDATE session_message_queue \
-                 SET state = 'sent', sent_at = now(), last_error = NULL WHERE id = $1",
-            )
-            .bind(row.id)
-            .execute(&state.pool)
-            .await;
+            if let Err(e) = record_turn(&state.pool, &row).await {
+                tracing::warn!(event_id = %row.id, "scheduled turn not recorded: {e}");
+            }
+            Outcome::Delivered { session_id: row.session_id, delivered_as: "reply" }
+        }
+        Err(err) => Outcome::RetryKept(err.to_string()),
+    }
+}
+
+async fn record_turn(pool: &sqlx::PgPool, row: &ClaimedRow) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO scheduled_turns (turn_id, session_id, event_id, scheduled_at) \
+         VALUES ($1, $2, $3, $4) ON CONFLICT (turn_id) DO NOTHING",
+    )
+    .bind(row.turn_id)
+    .bind(&row.session_id)
+    .bind(row.id)
+    .bind(row.deliver_at)
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
+pub const FOLD_SQL: &str = include_str!("../schema/0014_fold_outboxes.sql");
+/// The lock [`FOLD_SQL`] takes first; a test locking the folded tables takes it first too.
+#[cfg(test)]
+pub const FOLD_LOCK: &str = "SELECT pg_advisory_xact_lock(hashtext('cctui.fold_outboxes'))";
+
+/// Rows a replica still on the previous release writes during a rolling deploy.
+pub async fn fold_stragglers(pool: &sqlx::PgPool) {
+    if let Err(e) = sqlx::raw_sql(FOLD_SQL).execute(pool).await {
+        tracing::warn!("folding legacy scheduled rows into the inbox failed: {e}");
+    }
+}
+
+/// Settle a send-now claim, which no lane worker holds.
+pub async fn settle(
+    pool: &sqlx::PgPool,
+    turn_id: uuid::Uuid,
+    attempts: i32,
+    outcome: Outcome,
+) -> sqlx::Result<Result<(), String>> {
+    Ok(match outcome {
+        Outcome::Delivered { session_id, delivered_as } => {
+            claim::mark_delivered(pool, turn_id, &session_id, delivered_as).await?;
             Ok(())
         }
-        Err(err) => {
-            let err = err.to_string();
-            record_failure(&state.pool, row.id, row.attempts, &err).await;
+        Outcome::Skip => {
+            claim::defer(pool, turn_id).await?;
+            Ok(())
+        }
+        Outcome::Dead(reason) => {
+            claim::mark_dead(pool, turn_id, attempts + 1, &reason).await?;
+            Err(reason)
+        }
+        Outcome::Retry(err) | Outcome::RetryKept(err) => {
+            if let Retry::Dead { attempts } =
+                claim::record_ambiguous_failure(pool, turn_id, attempts, &err).await?
+            {
+                tracing::error!(%turn_id, attempts, "scheduled message dead-lettered: {err}");
+            }
             Err(err)
         }
-    }
-}
-
-pub async fn record_failure(pool: &sqlx::PgPool, id: uuid::Uuid, attempts: i32, err: &str) {
-    match retry_after_failure(attempts) {
-        Retry::Dead { attempts } => {
-            mark_dead(pool, id, attempts, err).await;
-            tracing::error!(queue_id = %id, attempts, "scheduled message dead-lettered: {err}");
-        }
-        Retry::After { attempts, secs } => {
-            let _ = sqlx::query(
-                "UPDATE session_message_queue \
-                 SET state = 'scheduled', attempts = $2, last_error = $3, \
-                     next_attempt_at = now() + ($4 || ' seconds')::interval \
-                 WHERE id = $1",
-            )
-            .bind(id)
-            .bind(attempts)
-            .bind(err)
-            .bind(secs.to_string())
-            .execute(pool)
-            .await;
-            tracing::warn!(queue_id = %id, attempt = attempts, retry_in_secs = secs, "scheduled message delivery failed: {err}");
-        }
-    }
-}
-
-async fn mark_dead(pool: &sqlx::PgPool, id: uuid::Uuid, attempts: i32, reason: &str) {
-    let _ = sqlx::query(
-        "UPDATE session_message_queue SET state = 'dead', attempts = $2, last_error = $3 \
-         WHERE id = $1",
-    )
-    .bind(id)
-    .bind(attempts)
-    .bind(reason)
-    .execute(pool)
-    .await;
+    })
 }
 
 #[cfg(test)]
@@ -372,103 +366,11 @@ mod tests {
         assert_eq!(undeliverable_reason(Some("active")), None);
         assert_eq!(undeliverable_reason(Some("inactive")), None);
     }
-
-    async fn seed(pool: &sqlx::PgPool, name: &str) -> String {
-        let uid = uuid::Uuid::new_v4();
-        let machine = uuid::Uuid::new_v4();
-        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
-            .bind(uid)
-            .bind(format!("{name}-{uid}"))
-            .bind(format!("h-{uid}"))
-            .execute(pool)
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)")
-            .bind(machine)
-            .bind(uid)
-            .bind(format!("mk-{machine}"))
-            .execute(pool)
-            .await
-            .unwrap();
-        let sid = format!("{name}-{uid}");
-        sqlx::query(
-            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status, \
-             adapter_id) VALUES ($1, $2, $2, $3, '/w', 'active', 'claude-code')",
-        )
-        .bind(&sid)
-        .bind(machine)
-        .bind(uid)
-        .execute(pool)
-        .await
-        .unwrap();
-        sid
-    }
-
-    async fn insert(pool: &sqlx::PgPool, sid: &str, due: bool) -> uuid::Uuid {
-        let offset = if due { "-1 minute" } else { "1 hour" };
-        sqlx::query_scalar(
-            "INSERT INTO session_message_queue (session_id, body, deliver_at, next_attempt_at) \
-             VALUES ($1, 'hi', now() + $2::interval, now() + $2::interval) RETURNING id",
-        )
-        .bind(sid)
-        .bind(offset)
-        .fetch_one(pool)
-        .await
-        .unwrap()
-    }
-
-    #[tokio::test]
-    async fn due_rows_are_claimed_exactly_once_and_backoff_releases_them() {
-        let name = "scheduled_claim_exactly_once";
-        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(4)
-            .connect(&url)
-            .await
-            .expect("connect test db");
-        let sid = seed(&pool, name).await;
-        let due = insert(&pool, &sid, true).await;
-        let later = insert(&pool, &sid, false).await;
-
-        let (a, b) = tokio::join!(claim_due(&pool), claim_due(&pool));
-        let mine: Vec<uuid::Uuid> = a
-            .unwrap()
-            .into_iter()
-            .chain(b.unwrap())
-            .filter(|r| r.session_id == sid)
-            .map(|r| r.id)
-            .collect();
-        assert_eq!(mine, vec![due], "the due row is claimed once, the future row not at all");
-        assert!(claim_due(&pool).await.unwrap().iter().all(|r| r.id != due), "leased");
-        assert!(
-            claim_one(&pool, &sid, due).await.unwrap().is_none(),
-            "send-now skips a claimed row"
-        );
-
-        record_failure(&pool, due, 0, "no daemon").await;
-        let (st, attempts, err): (String, i32, Option<String>) = sqlx::query_as(
-            "SELECT state, attempts, last_error FROM session_message_queue WHERE id = $1",
-        )
-        .bind(due)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!((st.as_str(), attempts, err.as_deref()), ("scheduled", 1, Some("no daemon")));
-        assert!(claim_due(&pool).await.unwrap().iter().all(|r| r.id != due), "backing off");
-
-        record_failure(&pool, due, MAX_ATTEMPTS - 1, "still offline").await;
-        let st: String =
-            sqlx::query_scalar("SELECT state FROM session_message_queue WHERE id = $1")
-                .bind(due)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(st, "dead");
-
-        let one = claim_one(&pool, &sid, later).await.unwrap().expect("send-now claims early");
-        assert_eq!(one.session_status.as_deref(), Some("active"));
-    }
 }
+
+#[cfg(test)]
+#[path = "scheduled_fold_tests.rs"]
+mod fold_tests;
 
 #[cfg(test)]
 mod reply_gate_tests {
@@ -480,7 +382,7 @@ mod reply_gate_tests {
     use tokio::sync::mpsc::Receiver;
     use uuid::Uuid;
 
-    use super::{claim_one, deliver_due};
+    use super::{ClaimedRow, claim_one, deliver_due, settle};
     use crate::auth::{AuthContext, Scope};
     use crate::routes::sessions::reply_wakes_worker;
     use crate::state::AppState;
@@ -572,26 +474,36 @@ mod reply_gate_tests {
         .map_err(|e| e.into_parts().0)
     }
 
-    async fn queue(pool: &sqlx::PgPool, sid: &str, user: Uuid) -> Uuid {
-        sqlx::query_scalar(
-            "INSERT INTO session_message_queue \
-               (session_id, user_id, body, deliver_at, next_attempt_at) \
-             VALUES ($1, $2, 'later', now() + interval '1 hour', now() + interval '1 hour') \
-             RETURNING id",
+    async fn queue(state: &AppState, sid: &str, user: Uuid) -> Uuid {
+        let at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        let (_, Json(resp)) = crate::routes::scheduled_messages::schedule(
+            state,
+            &caller(user, DISPATCH),
+            sid,
+            "later",
+            &at,
         )
-        .bind(sid)
-        .bind(user)
+        .await
+        .unwrap();
+        resp.command_id
+    }
+
+    pub(super) async fn queue_state(pool: &sqlx::PgPool, id: Uuid) -> (String, Option<String>) {
+        sqlx::query_as(
+            "SELECT CASE status WHEN 'pending' THEN 'scheduled' WHEN 'claimed' THEN 'sending' \
+                    WHEN 'delivered' THEN 'sent' ELSE status END, last_error \
+             FROM inbox_events WHERE id = $1",
+        )
+        .bind(id)
         .fetch_one(pool)
         .await
         .unwrap()
     }
 
-    async fn queue_state(pool: &sqlx::PgPool, id: Uuid) -> (String, Option<String>) {
-        sqlx::query_as("SELECT state, last_error FROM session_message_queue WHERE id = $1")
-            .bind(id)
-            .fetch_one(pool)
-            .await
-            .unwrap()
+    async fn due(state: &AppState, row: ClaimedRow) {
+        let (turn_id, attempts) = (row.turn_id, row.attempts);
+        let outcome = deliver_due(state, row).await;
+        let _ = settle(&state.pool, turn_id, attempts, outcome).await.unwrap();
     }
 
     #[test]
@@ -621,7 +533,7 @@ mod reply_gate_tests {
         assert_eq!(refused, Err(StatusCode::FORBIDDEN));
         assert!(rx.try_recv().is_err(), "a refused reply never reaches the daemon");
 
-        let scheduled = queue(&pool, &asleep, owner).await;
+        let scheduled = queue(&state, &asleep, owner).await;
         let send_now = crate::routes::scheduled_messages::send_now(
             State(state.clone()),
             Extension(caller(owner, READ_ONLY)),
@@ -696,12 +608,14 @@ mod reply_gate_tests {
         let err = send_at(&state, &live, &at).await;
         assert_eq!(err.status(), StatusCode::BAD_REQUEST);
         assert!(rx.try_recv().is_err(), "a rejected schedule is not sent now either");
-        let queued: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM session_message_queue WHERE session_id = $1")
-                .bind(&live)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let queued: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM inbox_events e JOIN inbox_lanes l ON l.id = e.lane_id \
+             WHERE l.key = 'session:' || $1::text",
+        )
+        .bind(&live)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(queued, 0);
     }
 
@@ -727,15 +641,21 @@ mod reply_gate_tests {
         .await
         .unwrap();
         let id = resp.command_id;
-        let row: String = sqlx::query_scalar(
-            "SELECT row_to_json(q)::text FROM session_message_queue q WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let row: String =
+            sqlx::query_scalar("SELECT row_to_json(e)::text FROM inbox_events e WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert!(!row.contains("hunter2-xyz"), "plaintext stored: {row}");
         assert!(row.contains("log in with [REDACTED:user] please"), "{row}");
+        let legacy: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM session_message_queue WHERE session_id = $1")
+                .bind(&live)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(legacy, 0, "the old queue is no longer written");
 
         let Json(listed) =
             crate::routes::scheduled_messages::list(State(state.clone()), Path(live.clone()))
@@ -745,7 +665,7 @@ mod reply_gate_tests {
         assert_eq!(shown.body, "log in with [REDACTED:user] please");
 
         let row = claim_one(&pool, &live, id).await.unwrap().expect("claimed");
-        deliver_due(&state, row).await;
+        due(&state, row).await;
         assert_eq!(queue_state(&pool, id).await.0, "sent");
         match rx.try_recv() {
             Ok(DaemonFrameDown::Command { command, .. }) => match *command {
@@ -765,26 +685,26 @@ mod reply_gate_tests {
         let mut rx = daemon(&state, machine);
         let asleep = seed_session(&pool, owner, machine, "hibernated").await;
         let live = seed_session(&pool, owner, machine, "idle").await;
-        let to_asleep = queue(&pool, &asleep, owner).await;
-        let to_live = queue(&pool, &live, owner).await;
+        let to_asleep = queue(&state, &asleep, owner).await;
+        let to_live = queue(&state, &live, owner).await;
         set_ceiling(&pool, owner, READ_ONLY).await;
 
         let row = claim_one(&pool, &asleep, to_asleep).await.unwrap().expect("claimed");
-        deliver_due(&state, row).await;
+        due(&state, row).await;
         let (st, err) = queue_state(&pool, to_asleep).await;
         assert_eq!(st, "dead");
         assert!(err.is_some_and(|e| e.contains("dispatch")), "the refusal is recorded");
         assert!(rx.try_recv().is_err(), "the worker is not woken");
 
         let row = claim_one(&pool, &live, to_live).await.unwrap().expect("claimed");
-        deliver_due(&state, row).await;
+        due(&state, row).await;
         assert_eq!(queue_state(&pool, to_live).await.0, "sent", "a live worker still gets it");
         assert!(replied(&mut rx));
 
         set_ceiling(&pool, owner, DISPATCH).await;
-        let again = queue(&pool, &asleep, owner).await;
+        let again = queue(&state, &asleep, owner).await;
         let row = claim_one(&pool, &asleep, again).await.unwrap().expect("claimed");
-        deliver_due(&state, row).await;
+        due(&state, row).await;
         assert_eq!(queue_state(&pool, again).await.0, "sent");
         assert!(replied(&mut rx), "with dispatch the due message wakes the worker");
     }

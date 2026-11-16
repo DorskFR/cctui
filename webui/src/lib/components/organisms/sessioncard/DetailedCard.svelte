@@ -5,6 +5,7 @@
 	import Badges from './Badges.svelte';
 	import Footer from './Footer.svelte';
 	import Lead from './Lead.svelte';
+	import QueuedSpawn from './QueuedSpawn.svelte';
 	import { type SessionActions, type SessionView, statusLabel } from './view';
 
 	// Header band (lead group + trailing status · perm · unread · time), a
@@ -22,6 +23,7 @@
 					><Badge tone={view.end.tone} size="xs">{view.end.badge}</Badge></span
 				>{/if}
 			<Badges {view} />
+			{#if s.status === 'queued'}<QueuedSpawn session={s} />{/if}
 			{#if s.last_message_at}<span class="time"
 					><Timestamp value={s.last_message_at} mode="relative" tone="faint" size="xs" /></span
 				>{/if}

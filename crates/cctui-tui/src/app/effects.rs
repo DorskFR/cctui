@@ -519,6 +519,7 @@ async fn run(server: &Client, ws: &WsClient, drafts: &DraftSaver, effect: Effect
             }
         },
         Effect::Context(effect) => super::context_items::run(server, effect).await,
+        Effect::Notifications(effect) => super::notifications::run(server, effect).await,
         // The accounts, usage and spend arms live in their own runner: one
         // function holding every arm builds a future too large for the stack.
         rest @ (Effect::FetchMachines

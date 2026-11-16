@@ -91,6 +91,7 @@ Leave these unset:
 | `CCTUI_PLUGINS_DIR`, `CCTUI_PREVIEW_HOST`, `CCTUI_CCTUIVERSE`, `CCTUI_LANGFUSE_*` | Their features are off, and an off feature wins over its variable. |
 | `CCTUI_EMOJI_ENDPOINT`, `CCTUI_EMOJI_MODEL`, `CCTUI_EMOJI_TOKEN` | The session emoji picker sends each session title, which is derived from the prompt, to that external model. It belongs to `organising`, which is off, so the server ignores the endpoint and logs it once at boot. |
 | `CCTUI_NTFY_URL`, `CCTUI_NTFY_TOKEN` | Together they post a notification to that ntfy topic on every dispatch received or failed (dispatcher, user and session id) and on a crashlooping daemon. Nothing switches them off but leaving them unset. |
+| `CCTUI_SMTP_URL`, `CCTUI_SMTP_FROM` | Together they turn on the email channel, which mails a notification's title, its one-line body and its action links to each user's email endpoint through that relay. |
 | `CCTUI_METRICS_PUBLIC` | `1`, `true`, `on` or `yes` serves `/metrics` without a token. Unset, a scrape authenticates like an API call. |
 | `CCTUI_PROVIDER_STATUS` | Unset, the server polls the providers' public status pages for `GET /provider-status`. Set it to `0` to keep a core server from making those calls; every provider then reads `unknown`. |
 | `CCTUI_DISPATCHERS`, `CCTUI_HTTP_DISPATCHERS` | Enroll dispatchers instead (below). |

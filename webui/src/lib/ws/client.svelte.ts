@@ -1,6 +1,7 @@
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { ServerEvent } from '@bindings/ServerEvent';
 import type { UserAction } from '@bindings/UserAction';
+import type { Notification as Notice } from '@bindings/Notification';
 import type { GuardStepState } from '@bindings/GuardStepState';
 import type { AccountUsage } from '../queries/types';
 import { qk } from '../queries/keys';
@@ -214,6 +215,16 @@ export class WsClient {
 			case 'session_deregistered':
 				this.markListDirty();
 				break;
+			case 'session_outcome':
+				this.emitListPatch({ session_id: msg.session_id, latest_outcome: msg.outcome });
+				this.markListDirty();
+				break;
+			case 'notification':
+				for (const cb of this.notificationCbs) cb(msg.notification);
+				break;
+			case 'notifications_unread':
+				for (const cb of this.unreadCbs) cb(msg.count);
+				break;
 			case 'scheduled_launch': {
 				const { type: _, ...ev } = msg;
 				const patch = scheduledLaunchPatch(ev);
@@ -283,6 +294,18 @@ export class WsClient {
 	onCctuiverseChanged(cb: (ev: CctuiverseChangedEvent) => void): () => void {
 		this.cctuiverseCbs.add(cb);
 		return () => this.cctuiverseCbs.delete(cb);
+	}
+
+	private notificationCbs = new Set<(n: Notice) => void>();
+	onNotification(cb: (n: Notice) => void): () => void {
+		this.notificationCbs.add(cb);
+		return () => this.notificationCbs.delete(cb);
+	}
+
+	private unreadCbs = new Set<(count: number) => void>();
+	onNotificationsUnread(cb: (count: number) => void): () => void {
+		this.unreadCbs.add(cb);
+		return () => this.unreadCbs.delete(cb);
 	}
 
 	private accountUsageCbs = new Set<(ev: AccountUsageEvent) => void>();

@@ -19,6 +19,7 @@ use crate::app::list_search::ListSearchAction;
 use crate::app::list_shape_reduce::ListShapeAction;
 use crate::app::machines::MachineAction;
 use crate::app::macros::MacroAction;
+use crate::app::notifications::NotificationAction;
 use crate::app::pins::PinAction;
 use crate::app::prompt::PromptAction;
 use crate::app::row_actions::RowAction;
@@ -115,6 +116,7 @@ pub const fn context_for(
         View::HarnessMode => Context::HarnessMode,
         View::AccountSwitch => Context::AccountSwitch,
         View::ContextItems => Context::Catalogue,
+        View::Notifications => Context::Notifications,
     }
 }
 
@@ -131,6 +133,7 @@ const fn modal_context(view: View) -> Option<Context> {
         View::LabelPicker => Some(Context::LabelPicker),
         View::LabelFilter => Some(Context::LabelFilter),
         View::ModelPicker => Some(Context::ModelPicker),
+        View::Notifications => Some(Context::Notifications),
         _ => None,
     }
 }
@@ -200,6 +203,7 @@ pub fn map_input(
             | View::HarnessMode
             | View::AccountSwitch
             | View::ContextItems
+            | View::Notifications
             | View::Help
             | View::HistoryPicker
             | View::Pins
@@ -222,6 +226,7 @@ pub fn map_input(
             | View::HarnessMode
             | View::AccountSwitch
             | View::ContextItems
+            | View::Notifications
             | View::Help
             | View::HistoryPicker
             | View::Pins
@@ -478,6 +483,15 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::ContextReject => Action::ContextItems(ContextAction::Reject),
         ActionId::ContextDelete => Action::ContextItems(ContextAction::Delete),
         ActionId::ContextAttach => Action::ContextItems(ContextAction::Attach),
+        ActionId::NotificationsOpen => Action::Notifications(NotificationAction::Open),
+        ActionId::NotificationsClose => Action::Notifications(NotificationAction::Close),
+        ActionId::NotificationsNext => Action::Notifications(NotificationAction::SelectNext),
+        ActionId::NotificationsPrev => Action::Notifications(NotificationAction::SelectPrev),
+        ActionId::NotificationsAct => {
+            Action::Notifications(NotificationAction::Act(chord.digit()?))
+        }
+        ActionId::NotificationsDismiss => Action::Notifications(NotificationAction::Dismiss),
+        ActionId::NotificationsReadAll => Action::Notifications(NotificationAction::ReadAll),
 
         ActionId::OverviewScrollDown => Action::Slice(SliceAction::OverviewScroll(1)),
         ActionId::OverviewScrollUp => Action::Slice(SliceAction::OverviewScroll(-1)),

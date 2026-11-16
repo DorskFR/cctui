@@ -60,7 +60,19 @@ describe('SessionsListController — buckets', () => {
 		const { ctl, setItems } = make();
 		setItems([
 			session({ id: 'w', bucket: 'working' }),
-			session({ id: 'd', bucket: 'done' }),
+			session({
+				id: 'd',
+				bucket: 'done',
+				latest_outcome: {
+					id: 'o-d',
+					session_id: 'd',
+					status: 'result',
+					headline: 'done',
+					source: 'tool',
+					created_at: '2026-11-16T10:00:00Z'
+				}
+			}),
+			session({ id: 'i', bucket: 'done' }),
 			session({ id: 'p', pinned: true, bucket: 'working' })
 		]);
 		const groups = ctl.groups;
@@ -68,6 +80,7 @@ describe('SessionsListController — buckets', () => {
 		expect(byKey.pinned).toEqual(['p']);
 		expect(byKey.working).toEqual(['w']);
 		expect(byKey.done).toEqual(['d']);
+		expect(byKey.review).toEqual(['i']);
 		expect(byKey.blocked).toEqual([]);
 	});
 

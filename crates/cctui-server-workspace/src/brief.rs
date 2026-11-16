@@ -7,7 +7,8 @@
 //!
 //! The cctui wrappers leading a user turn describe the old session, and a
 //! follow-up wraps this brief in its own: session context is dropped and a
-//! previous conversation shrinks to one line, so chains never nest.
+//! previous conversation shrinks to one line, so chains never nest. An inbox
+//! batch keeps its numbered event lines and loses its header.
 
 use std::fmt::Write as _;
 
@@ -16,6 +17,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::Value;
+use sqlx::PgPool;
 
 use cctui_proto::api::{ApiError, BriefResponse};
 use cctui_proto::injected::{InjectedKind, split_injected};
@@ -75,7 +77,9 @@ fn classify(adapter_id: &str, event_type: &str, payload: Value) -> Option<(Role,
     let content = v.get("content").and_then(Value::as_str).unwrap_or_default();
     let kind = v.get("kind").and_then(Value::as_str);
     if let Some(text) = content.strip_prefix(USER_PREFIX) {
-        return without_injected(text).map(|text| (Role::User, text));
+        return without_injected(text)
+            .and_then(without_inbox_marker)
+            .map(|text| (Role::User, text));
     }
     if v.get("role").and_then(Value::as_str) == Some("Assistant")
         && matches!(kind, None | Some("attachment"))
@@ -107,6 +111,18 @@ fn without_injected(text: &str) -> Option<String> {
     }
     out.push_str(prose);
     Some(out)
+}
+
+fn without_inbox_marker(text: String) -> Option<String> {
+    let Some(rest) = text.trim_start().strip_prefix(crate::inbox::deliver::MARKER) else {
+        return Some(text);
+    };
+    let (head, events) = rest.split_once('\n').unwrap_or((rest, ""));
+    if !head.trim_end().ends_with(']') {
+        return Some(text);
+    }
+    let events = events.trim();
+    (!events.is_empty()).then(|| events.to_owned())
 }
 
 /// Fold stored rows (oldest first) into speaker turns.
@@ -211,35 +227,48 @@ impl BriefQuery {
     }
 }
 
-pub async fn session_brief(
-    State(state): State<AppState>,
-    Path(session_id): Path<String>,
-    Query(q): Query<BriefQuery>,
-) -> Result<Json<BriefResponse>, (StatusCode, Json<ApiError>)> {
-    let db_err = |e: sqlx::Error| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    };
-    let adapter_id: Option<Option<String>> =
-        sqlx::query_scalar("SELECT adapter_id FROM sessions WHERE id = $1")
-            .bind(&session_id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(db_err)?;
-    let Some(adapter_id) = adapter_id else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() })));
-    };
+/// `adapter_id, session_name, working_dir`.
+type SessionRow = (Option<String>, Option<String>, String);
+
+pub struct Transcript {
+    pub name: String,
+    pub turns: Vec<Turn>,
+}
+
+/// `None` when the session does not exist. `name` falls back to the working dir.
+pub async fn load(pool: &PgPool, session_id: &str) -> sqlx::Result<Option<Transcript>> {
+    let session: Option<SessionRow> =
+        sqlx::query_as("SELECT adapter_id, session_name, working_dir FROM sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await?;
+    let Some((adapter_id, name, working_dir)) = session else { return Ok(None) };
     let adapter_id = adapter_id.unwrap_or_else(|| "claude-code".to_owned());
     let rows: Vec<(String, Value)> = sqlx::query_as(
         "SELECT event_type, payload FROM stream_events \
          WHERE session_id = $1 AND event_type IN ('message', 'tool_use') ORDER BY id ASC",
     )
-    .bind(&session_id)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(db_err)?;
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?;
     let turns = collect_turns(&adapter_id, rows.iter().map(|(t, p)| (t.as_str(), p.clone())));
-    Ok(Json(render(&turns, q.caps())))
+    let name = name.filter(|n| !n.trim().is_empty()).unwrap_or(working_dir);
+    Ok(Some(Transcript { name, turns }))
+}
+
+pub async fn session_brief(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    Query(q): Query<BriefQuery>,
+) -> Result<Json<BriefResponse>, (StatusCode, Json<ApiError>)> {
+    let transcript = load(&state.pool, &session_id).await.map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+    let Some(transcript) = transcript else {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() })));
+    };
+    Ok(Json(render(&transcript.turns, q.caps())))
 }
 
 #[cfg(test)]
@@ -297,6 +326,28 @@ mod tests {
                 Turn { role: Role::User, text: "next".into() },
             ]
         );
+    }
+
+    #[test]
+    fn an_inbox_batch_keeps_its_event_lines_without_the_wrapper() {
+        let events = "1. (n8n, 2026-11-16T09:02Z) ticket moved\n\
+                      2. (approval, 2026-11-16T09:07Z) approved: ship it\nsecond line";
+        let batch = format!("[cctui inbox: 2 events]\n{events}");
+        let turns = collect_turns(
+            "claude-code",
+            vec![user(&batch), assistant("on it"), user("[cctui inbox: 0 events]")],
+        );
+        assert_eq!(
+            turns,
+            vec![
+                Turn { role: Role::User, text: events.into() },
+                Turn { role: Role::Assistant, text: "on it".into() },
+            ]
+        );
+        let md = render(&turns, Caps::default()).markdown;
+        assert!(!md.contains("[cctui inbox"), "{md}");
+        let typed = collect_turns("claude-code", vec![user("[cctui inbox: what is this")]);
+        assert_eq!(typed[0].text, "[cctui inbox: what is this");
     }
 
     #[test]

@@ -23,6 +23,9 @@ use std::time::{Duration, Instant};
 use cctui_proto::api::context::{
     ContextMatch, ContextToolEntry, ContextToolRequest, ContextToolResponse,
 };
+use cctui_proto::api::outcome::{
+    DeclareOutcomeRequest, DeclareOutcomeResult, OutcomeSource, OutcomeStatus,
+};
 use cctui_proto::api::{
     ArchiveChildRequest, ArchiveChildResponse, MessageChildRequest, PeerMessageRequest,
     RoomToolRequest, SpawnChildRequest,
@@ -103,6 +106,9 @@ enum CallKind {
     /// server, which owns the list and answers with all of it.
     UserActionAdd(Value),
     UserActionTick(Value),
+    Outcome(DeclareOutcomeRequest),
+    /// `CctuiTimer`: `{delay_secs, prompt, tool_use_id}`, the id minted once per call.
+    Timer(Value),
     Context(ContextToolRequest),
     /// `CctuiSpeak`: synthesize `text` into a voice note posted in the caller's
     /// own conversation.
@@ -138,9 +144,11 @@ const fn call_feature(kind: &CallKind) -> Option<Feature> {
         CallKind::Context(_) => Some(Feature::Context),
         CallKind::Speak { .. } => Some(Feature::Voice),
         CallKind::PreviewOpen { .. } | CallKind::PreviewClose { .. } => Some(Feature::Previews),
+        CallKind::Timer(_) => Some(Feature::Automation),
         CallKind::Usage { .. }
         | CallKind::UserActionAdd(_)
         | CallKind::UserActionTick(_)
+        | CallKind::Outcome(_)
         | CallKind::RelayReady
         | CallKind::RelayWait => None,
     }
@@ -201,6 +209,8 @@ fn parse_call(line: &str) -> Result<Call, String> {
         Some("peer_history") => parse_peer_history(&args)?,
         Some("user_action_add") => parse_user_action_add(&args),
         Some("user_action_tick") => parse_user_action_tick(&args)?,
+        Some("outcome") => parse_outcome(&args)?,
+        Some("timer") => parse_timer(&args)?,
         Some("context") => parse_context(&args)?,
         Some("relay_ready") => CallKind::RelayReady,
         Some("relay_wait") => CallKind::RelayWait,
@@ -296,6 +306,48 @@ fn parse_user_action_tick(args: &Value) -> Result<CallKind, String> {
         "id": id,
         "status": status,
         "note": string_arg(args, "note"),
+    })))
+}
+
+fn parse_outcome(args: &Value) -> Result<CallKind, String> {
+    let status = match string_arg(args, "status").as_deref() {
+        Some("result") => OutcomeStatus::Result,
+        Some("needs_input") => OutcomeStatus::NeedsInput,
+        Some("failed") => OutcomeStatus::Failed,
+        other => {
+            return Err(format!(
+                "status must be \"result\", \"needs_input\" or \"failed\", got {}",
+                other.unwrap_or("nothing"),
+            ));
+        }
+    };
+    let evidence = args
+        .get("evidence")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+        .unwrap_or_default();
+    DeclareOutcomeRequest {
+        status,
+        headline: args.get("headline").and_then(Value::as_str).unwrap_or("").to_owned(),
+        body: string_arg(args, "body"),
+        evidence,
+        source: OutcomeSource::Tool,
+    }
+    .normalized()
+    .map(CallKind::Outcome)
+}
+
+fn parse_timer(args: &Value) -> Result<CallKind, String> {
+    let delay_secs = args
+        .get("delay_secs")
+        .and_then(Value::as_u64)
+        .and_then(|d| u32::try_from(d).ok())
+        .ok_or("delay_secs is required: whole seconds until the wake")?;
+    let prompt = string_arg(args, "prompt").ok_or("prompt is required: what to wake up to")?;
+    Ok(CallKind::Timer(json!({
+        "delay_secs": delay_secs,
+        "prompt": prompt,
+        "tool_use_id": uuid::Uuid::new_v4().to_string(),
     })))
 }
 
@@ -492,6 +544,8 @@ fn dispatch_note(kind: &CallKind, timeout: Duration) -> String {
         | CallKind::PeerHistory { .. }
         | CallKind::UserActionAdd(_)
         | CallKind::UserActionTick(_)
+        | CallKind::Outcome(_)
+        | CallKind::Timer(_)
         | CallKind::Context(_)
         | CallKind::Speak { .. }
         | CallKind::RelayReady
@@ -1065,6 +1119,57 @@ async fn run_user_action(
     }
 }
 
+async fn run_outcome(
+    server: &ServerClient,
+    machine_key: &str,
+    session_id: &str,
+    req: &DeclareOutcomeRequest,
+) -> Value {
+    match server.outcome_call(machine_key, session_id, req).await {
+        Ok(result) => render_outcome_result(&result),
+        Err(err) => json!({ "ok": false, "error": err.to_string() }),
+    }
+}
+
+fn render_outcome_result(result: &DeclareOutcomeResult) -> Value {
+    if let Some(err) = &result.error {
+        return json!({ "ok": false, "error": format!("rejected: {err}") });
+    }
+    let Some(outcome) = &result.outcome else {
+        return json!({ "ok": false, "error": "the server stored no outcome" });
+    };
+    let mut text = format!("outcome recorded: {} — {}", outcome.status.as_str(), outcome.headline);
+    if result.callback_queued {
+        text.push_str("\nthe dispatch callback will deliver it to notify_url");
+    }
+    json!({ "ok": true, "result": text })
+}
+
+fn render_timer_result(v: &Value) -> Value {
+    if let Some(err) = v.get("error").and_then(Value::as_str) {
+        return json!({ "ok": false, "error": format!("rejected: {err}") });
+    }
+    let timer = v.get("timer").unwrap_or(&Value::Null);
+    let at = timer.get("fires_at").and_then(Value::as_str).unwrap_or("?");
+    let flag = |key: &str| timer.get(key).and_then(Value::as_bool).unwrap_or(false);
+    let text = match timer.get("mode").and_then(Value::as_str) {
+        Some("tick") => format!(
+            "timer set: this session wakes at {at} with your prompt while its cache is warm. \
+             End your turn now."
+        ),
+        Some("event") if flag("deduplicated") => format!("timer already queued for {at}."),
+        Some("event") if flag("archives") => format!(
+            "timer queued for {at}: past the cache TTL, so this session will be archived \
+             shortly and a follow-up session picks up your prompt then. End your turn now."
+        ),
+        Some("event") => format!(
+            "timer queued for {at}: the session is pinned, so it stays and gets the prompt then."
+        ),
+        _ => return json!({ "ok": false, "error": "the server set no timer" }),
+    };
+    json!({ "ok": true, "result": text })
+}
+
 /// `CctuiSend`.
 ///
 /// Image markers in the body are posted to the sender's session first; a remote
@@ -1135,6 +1240,11 @@ async fn run_unfollowed_call(
         CallKind::UserActionTick(body) => {
             run_user_action(server, machine_key, me, "/tick", body).await
         }
+        CallKind::Outcome(req) => run_outcome(server, machine_key, me, req).await,
+        CallKind::Timer(body) => match server.timer_call(machine_key, me, body).await {
+            Ok(v) => render_timer_result(&v),
+            Err(err) => json!({ "ok": false, "error": err.to_string() }),
+        },
         CallKind::Context(req) => match server.context_call(machine_key, me, req).await {
             Ok(r) => json!({ "ok": true, "result": render_context_result(&req.action, &r) }),
             Err(err) => json!({ "ok": false, "error": err.to_string() }),
@@ -1442,6 +1552,8 @@ async fn start_or_join(
         | CallKind::PeerHistory { .. }
         | CallKind::UserActionAdd(_)
         | CallKind::UserActionTick(_)
+        | CallKind::Outcome(_)
+        | CallKind::Timer(_)
         | CallKind::Context(_)
         | CallKind::Speak { .. }
         | CallKind::RelayReady
@@ -1951,6 +2063,108 @@ mod tests {
         assert_eq!(req.cwd.as_deref(), Some("/workspace"));
         assert_eq!(req.permission_mode, Some(cctui_proto::adapter::PermissionMode::Auto));
         assert_eq!(req.name.as_deref(), Some("reviewer"));
+    }
+
+    fn outcome_call(args: &Value) -> Result<Call, String> {
+        parse_call(&json!({ "kind": "outcome", "session_id": "s1", "args": args }).to_string())
+    }
+
+    #[test]
+    fn an_outcome_call_becomes_a_normalized_tool_declaration() {
+        let call = outcome_call(&json!({
+            "status": "needs_input",
+            "headline": "  Which branch?\nsecond line",
+            "body": "  ",
+            "evidence": ["https://example.test/a", "https://example.test/a", 7],
+        }))
+        .unwrap();
+        let CallKind::Outcome(req) = call.kind else { panic!("expected an outcome") };
+        assert_eq!(req.status, OutcomeStatus::NeedsInput);
+        assert_eq!(req.headline, "Which branch?");
+        assert!(req.body.is_none());
+        assert_eq!(req.evidence, ["https://example.test/a"]);
+        assert_eq!(req.source, OutcomeSource::Tool);
+        assert!(call_feature(&CallKind::Outcome(req)).is_none(), "outcomes are core");
+    }
+
+    #[test]
+    fn an_outcome_call_needs_a_declared_status_and_a_headline() {
+        let err = outcome_call(&json!({ "headline": "x" })).unwrap_err();
+        assert!(err.contains("status must be"), "{err}");
+        let err = outcome_call(&json!({ "status": "ended_without_outcome", "headline": "x" }))
+            .unwrap_err();
+        assert!(err.contains("status must be"), "{err}");
+        let err = outcome_call(&json!({ "status": "result", "headline": " " })).unwrap_err();
+        assert!(err.contains("headline"), "{err}");
+    }
+
+    #[test]
+    fn a_timer_call_carries_the_delay_the_prompt_and_a_fresh_tool_use_id() {
+        let call = |args: Value| {
+            parse_call(&json!({ "kind": "timer", "session_id": "s1", "args": args }).to_string())
+        };
+        let first = call(json!({ "delay_secs": 600, "prompt": " check CI " })).unwrap();
+        let CallKind::Timer(body) = &first.kind else { panic!("expected a timer") };
+        assert_eq!(body["delay_secs"], json!(600));
+        assert_eq!(body["prompt"], "check CI");
+        let second = call(json!({ "delay_secs": 600, "prompt": "check CI" })).unwrap();
+        let CallKind::Timer(other) = &second.kind else { panic!("expected a timer") };
+        assert_ne!(body["tool_use_id"], other["tool_use_id"], "each call is its own timer");
+        assert_eq!(call_feature(&first.kind), Some(Feature::Automation));
+        assert!(call(json!({ "prompt": "x" })).unwrap_err().contains("delay_secs"));
+        let negative = call(json!({ "delay_secs": -5, "prompt": "x" })).unwrap_err();
+        assert!(negative.contains("delay_secs"));
+        assert!(call(json!({ "delay_secs": 60, "prompt": " " })).unwrap_err().contains("prompt"));
+    }
+
+    #[test]
+    fn a_timer_result_says_whether_the_session_stays_or_is_archived() {
+        let refused = render_timer_result(&json!({ "error": "timer budget spent", "timer": null }));
+        assert_eq!(refused["error"], "rejected: timer budget spent");
+        let at = "2026-11-16T10:00:00Z";
+        let text = |timer: Value| {
+            let frame = render_timer_result(&json!({ "error": null, "timer": timer }));
+            assert_eq!(frame["ok"], json!(true), "{frame}");
+            frame["result"].as_str().unwrap().to_owned()
+        };
+        assert!(text(json!({ "mode": "tick", "fires_at": at })).contains("this session wakes at"));
+        let archived = json!({ "mode": "event", "fires_at": at, "archives": true });
+        assert!(text(archived).contains("will be archived"));
+        let pinned = json!({ "mode": "event", "fires_at": at, "archives": false });
+        assert!(text(pinned).contains("pinned"));
+        let again = json!({ "mode": "event", "fires_at": at, "deduplicated": true });
+        assert!(text(again).contains("already queued"));
+        assert_eq!(render_timer_result(&json!({}))["ok"], json!(false));
+    }
+
+    #[test]
+    fn an_outcome_result_names_the_rejection_or_the_recorded_headline() {
+        let refused = render_outcome_result(&DeclareOutcomeResult {
+            error: Some("headline is required".to_owned()),
+            outcome: None,
+            callback_queued: false,
+        });
+        assert_eq!(refused["ok"], json!(false));
+        assert!(refused["error"].as_str().unwrap().starts_with("rejected: "));
+        let stored = render_outcome_result(&DeclareOutcomeResult {
+            error: None,
+            outcome: Some(cctui_proto::api::outcome::SessionOutcome {
+                id: uuid::Uuid::nil(),
+                session_id: "s1".to_owned(),
+                dispatch_id: None,
+                turn_seq: None,
+                status: OutcomeStatus::Result,
+                headline: "Opened PR 12".to_owned(),
+                body: None,
+                evidence: Vec::new(),
+                source: OutcomeSource::Tool,
+                created_at: chrono::Utc::now(),
+            }),
+            callback_queued: true,
+        });
+        let text = stored["result"].as_str().unwrap();
+        assert!(text.contains("result — Opened PR 12"), "{text}");
+        assert!(text.contains("notify_url"), "{text}");
     }
 
     #[test]

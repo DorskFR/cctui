@@ -15,8 +15,35 @@ use cctui_server_core::dispatch::{
     resolve_dispatch_session_id, rewrite_model_if_aliased, shown_queued,
 };
 use cctui_server_core::dispatch::{
-    DispatchContext, DispatchNotification, DispatchResult, Forwarded,
+    DispatchContext, DispatchEvent, DispatchNotification, DispatchResult, Forwarded,
 };
+
+use crate::notify::{NewNotification, kind};
+
+/// Received and forwarded are `dispatch_info`, off by default; a failure is a system alert.
+const fn notice_kind(event: DispatchEvent) -> &'static str {
+    match event {
+        DispatchEvent::Received | DispatchEvent::Forwarded => kind::DISPATCH_INFO,
+        DispatchEvent::Failed => kind::SYSTEM_ALERT,
+    }
+}
+
+fn dispatch_notice(owner: uuid::Uuid, notice: DispatchNotification) -> NewNotification {
+    let (severity, tags, collapse) = match notice.event {
+        DispatchEvent::Received => ("info", "inbox_tray", true),
+        DispatchEvent::Forwarded => ("info", "white_check_mark", true),
+        DispatchEvent::Failed => ("critical", "rotating_light", false),
+    };
+    NewNotification {
+        severity,
+        tags: Some(tags.to_owned()),
+        collapse_key: collapse.then(|| format!("dispatch:{}", notice.session_id)),
+        subject_kind: Some("dispatch".to_owned()),
+        subject_id: Some(notice.session_id),
+        body: Some(notice.message),
+        ..NewNotification::new(owner, notice_kind(notice.event), notice.title)
+    }
+}
 
 impl DispatchContext for AppState {
     fn dispatch_bus(&self) -> &crate::bus::Bus {
@@ -26,15 +53,12 @@ impl DispatchContext for AppState {
         &self.dispatchers
     }
     fn notify(&self, notice: DispatchNotification) {
-        crate::ntfy::notify(
-            &self.config,
-            crate::ntfy::Notification {
-                title: notice.title,
-                message: notice.message,
-                tags: notice.tags,
-                priority: notice.priority,
-            },
-        );
+        if !crate::notify::is_recorded(notice_kind(notice.event)) {
+            return;
+        }
+        crate::notify::emit_detached(&self.config, None, move |owner| {
+            dispatch_notice(owner, notice)
+        });
     }
     fn cache_spawn_capability(&self, session: &str, cap: cctui_proto::api::SpawnCapability) {
         self.spawn_capabilities.insert(session.to_owned(), cap);
@@ -390,6 +414,30 @@ mod tests {
     };
     use crate::routes::gateway::Family;
     use cctui_proto::adapter::PermissionMode;
+
+    #[test]
+    fn dispatch_notices_map_to_typed_kinds() {
+        use cctui_server_core::dispatch::{DispatchEvent, DispatchNotification};
+        let owner = uuid::Uuid::new_v4();
+        let notice = |event| DispatchNotification {
+            event,
+            session_id: "s1".into(),
+            title: "t".into(),
+            message: "m".into(),
+        };
+        let received = super::dispatch_notice(owner, notice(DispatchEvent::Received));
+        assert_eq!((received.kind, received.user_id), ("dispatch_info", owner));
+        assert_eq!(received.collapse_key.as_deref(), Some("dispatch:s1"));
+        assert_eq!(received.subject_id.as_deref(), Some("s1"));
+        assert_eq!(received.session_id, None, "the worker session is not registered yet");
+        assert!(!crate::notify::is_recorded(received.kind));
+
+        let failed = super::dispatch_notice(owner, notice(DispatchEvent::Failed));
+        assert_eq!((failed.kind, failed.severity), ("system_alert", "critical"));
+        assert_eq!(failed.collapse_key, None);
+        assert_eq!(failed.tags.as_deref(), Some("rotating_light"));
+        assert!(crate::notify::is_recorded(failed.kind));
+    }
 
     /// A dispatch naming an existing session id must not re-scope that
     /// session's context set to the dispatcher: only the user who recorded the

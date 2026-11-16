@@ -14,9 +14,9 @@ describe('navItems', () => {
 		expect(hrefs.at(-1)).toBe('/settings');
 	});
 
-	it('ends the built-in run at accounts: the rest lives under Settings', () => {
+	it('ends the built-in run at accounts and the inbox: the rest lives under Settings', () => {
 		const hrefs = navItems().map((i) => i.href);
-		expect(hrefs).toEqual(['/', '/sessions', '/bookmarks', '/accounts', '/settings']);
+		expect(hrefs).toEqual(['/', '/sessions', '/bookmarks', '/accounts', '/inbox', '/settings']);
 	});
 
 	it('keeps access, dispatchers and events out of the nav', () => {
@@ -57,6 +57,14 @@ describe('navItems by announced features', () => {
 	it('lists plugin pages with every feature on', () => {
 		setCapabilitiesForTest({ features: SWITCHABLE, switchable: SWITCHABLE });
 		const hrefs = navItems({ pages: PLUGIN_PAGE }).map((i) => i.href);
-		expect(hrefs).toEqual(['/', '/sessions', '/bookmarks', '/accounts', '/apps/ghreview', '/settings']);
+		expect(hrefs).toEqual([
+			'/',
+			'/sessions',
+			'/bookmarks',
+			'/accounts',
+			'/inbox',
+			'/apps/ghreview',
+			'/settings'
+		]);
 	});
 });

@@ -38,10 +38,10 @@ mod machine_resources;
 mod metrics;
 mod normalize;
 mod notify;
-mod ntfy;
 mod openapi;
 mod outbound;
 mod outbox;
+mod outcome;
 mod pace;
 mod peer_policy;
 mod plugin_archive;
@@ -53,6 +53,7 @@ mod plugin_store;
 mod plugins;
 mod pool_usage;
 mod presence;
+mod presets;
 mod preview;
 mod provider_status;
 mod registry;
@@ -599,7 +600,13 @@ fn outer_routes(features: FeatureSet) -> OuterRoutes {
             "/api/v1/auth/device/start",
             post(routes::device_auth::start),
         )
-        .feature(Feature::DeviceLogin, "/api/v1/auth/device/poll", post(routes::device_auth::poll));
+        .feature(Feature::DeviceLogin, "/api/v1/auth/device/poll", post(routes::device_auth::poll))
+        // The token in the path is the credential; `GET` only renders the confirm page.
+        .route("/n/{token}", get(routes::notifications::confirm_page))
+        .route(
+            "/api/v1/notifications/actions/{token}",
+            post(routes::notifications::act_with_token),
+        );
     infra_routes(daemon_routes(r))
 }
 
@@ -622,6 +629,12 @@ fn daemon_routes(r: OuterRoutes) -> OuterRoutes {
         .route("/api/v1/daemon/sessions/{id}/token-valid", get(routes::daemon::session_token_valid))
         .route("/api/v1/daemon/sessions/{id}/limits", get(routes::session_limits::session_limits))
         .route("/api/v1/daemon/sessions/{id}/user-actions", post(routes::user_actions::daemon_add))
+        .route("/api/v1/daemon/sessions/{id}/outcome", post(outcome::daemon_declare))
+        .feature(
+            Feature::Automation,
+            "/api/v1/daemon/sessions/{id}/timer",
+            post(inbox::timer::daemon_timer),
+        )
         .launch_context()
         .route(
             "/api/v1/daemon/sessions/{id}/user-actions/tick",
@@ -785,8 +798,7 @@ enum Task {
     FollowUp,
     AutoResume,
     AutoRedeem,
-    ScheduledMessages,
-    ScheduledSpawns,
+    ScheduledFold,
     UpdateProbe,
     SearchBackfill,
     LabelIntentSweep,
@@ -795,7 +807,7 @@ enum Task {
 
 impl Task {
     #[cfg(test)]
-    const ALL: [Self; 14] = [
+    const ALL: [Self; 13] = [
         Self::FederationOutbox,
         Self::Keepalive,
         Self::PreviewSweep,
@@ -804,8 +816,7 @@ impl Task {
         Self::FollowUp,
         Self::AutoResume,
         Self::AutoRedeem,
-        Self::ScheduledMessages,
-        Self::ScheduledSpawns,
+        Self::ScheduledFold,
         Self::UpdateProbe,
         Self::SearchBackfill,
         Self::LabelIntentSweep,
@@ -820,7 +831,7 @@ impl Task {
             }
             Self::PreviewSweep => Feature::Previews,
             Self::PluginInit | Self::PluginSync => Feature::Plugins,
-            Self::ScheduledMessages | Self::ScheduledSpawns => Feature::Scheduling,
+            Self::ScheduledFold => Feature::Scheduling,
             Self::UpdateProbe => Feature::SelfUpdate,
             Self::SearchBackfill => Feature::TranscriptSearch,
             Self::LabelIntentSweep => Feature::Organising,
@@ -1201,21 +1212,23 @@ fn spawn_reaper_sweeps(state: &AppState) {
     if Task::AutoRedeem.enabled(features) {
         spawn_sweep(state, |state| async move { auto_redeem::sweep(&state).await });
     }
-    if Task::ScheduledMessages.enabled(features) {
-        spawn_sweep(state, |state| async move { scheduled_messages::sweep(&state).await });
-    }
-    if Task::ScheduledSpawns.enabled(features) {
-        spawn_sweep(state, |state| async move { scheduled_spawns::sweep(&state).await });
+    if Task::ScheduledFold.enabled(features) {
+        spawn_sweep(state, |state| async move {
+            scheduled_messages::fold_stragglers(&state.pool).await;
+        });
     }
     spawn_sweep(state, |state| async move {
         state.permission_store.write().await.reap_stale(300); // seconds
     });
     notify::install(&state.pool);
+    notify::in_app::install(&state.bus);
     spawn_sweep(state, |state| async move {
         notify::dispatcher::sweep(&state.pool, &state.config).await;
     });
     spawn_sweep(state, |state| async move { notify::retention::sweep(&state.pool).await });
-    spawn_sweep(state, |state| async move { inbox::store::sweep(&state.pool).await });
+    spawn_sweep(state, |state| async move { notify::expiry::sweep(&state.pool).await });
+    spawn_sweep(state, |state| async move { inbox::deliver::sweep(&state).await });
+    spawn_sweep(state, |state| async move { inbox::schedule::sweep(&state).await });
 }
 
 fn spawn_sweep<F, Fut>(state: &AppState, job: F)
@@ -1491,6 +1504,9 @@ mod tests {
             "POST /inbox/events Bearer Scope(Dispatch)",
             "DELETE /inbox/events/{id} Bearer Authenticated",
             "GET /inbox/events/{id} Bearer Authenticated",
+            "POST /inbox/events/{id}/retry Bearer Scope(Dispatch)",
+            "POST /inbox/lanes/{id}/pause Bearer Scope(Dispatch)",
+            "POST /inbox/lanes/{id}/resume Bearer Scope(Dispatch)",
             "GET /keys Bearer Authenticated",
             "POST /keys Bearer Authenticated",
             "DELETE /keys/{id} Bearer Authenticated",
@@ -1519,6 +1535,17 @@ mod tests {
             "GET /meta/usage-probes Bearer Authenticated",
             "GET /models/codex/catalog Bearer Authenticated",
             "GET /models/{harness} Bearer Authenticated",
+            "GET /notifications Bearer Human",
+            "GET /notifications/endpoints Bearer Human",
+            "POST /notifications/endpoints Bearer Human",
+            "DELETE /notifications/endpoints/{id} Bearer Human",
+            "POST /notifications/endpoints/{id}/test Bearer Human",
+            "POST /notifications/read-all Bearer Human",
+            "GET /notifications/settings Bearer Human",
+            "GET /notifications/vapid-key Bearer Human",
+            "POST /notifications/{id}/act Bearer Human",
+            "POST /notifications/{id}/dismiss Bearer Human",
+            "POST /notifications/{id}/read Bearer Human",
             "POST /otlp/v1/traces Bearer Human",
             "GET /passkeys Bearer Authenticated",
             "POST /passkeys/register/finish Bearer Authenticated",
@@ -1535,6 +1562,11 @@ mod tests {
             "PATCH /plugins/{id}/backend/{*path} Bearer Authenticated",
             "POST /plugins/{id}/backend/{*path} Bearer Authenticated",
             "PUT /plugins/{id}/backend/{*path} Bearer Authenticated",
+            "GET /presets Bearer Authenticated",
+            "POST /presets Bearer Authenticated",
+            "DELETE /presets/{id} Bearer Authenticated",
+            "GET /presets/{id} Bearer Authenticated",
+            "PUT /presets/{id} Bearer Authenticated",
             "GET /profiles Bearer Human",
             "POST /profiles Bearer Human",
             "PUT /profiles/order Bearer Human",
@@ -1698,6 +1730,7 @@ mod feature_gate_tests {
         "/api/v1/daemon/sessions/{id}/limits",
         "/api/v1/daemon/sessions/{id}/user-actions",
         "/api/v1/daemon/sessions/{id}/user-actions/tick",
+        "/api/v1/daemon/sessions/{id}/outcome",
         "/api/v1/daemon/sessions/{id}/context",
         "/api/v1/daemon/sessions/{id}/images",
         "/api/v1/daemon/blobs/{hash}",

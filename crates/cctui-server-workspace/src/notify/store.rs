@@ -1,7 +1,9 @@
 use chrono::{DateTime, Utc};
-use sqlx::{PgConnection, PgPool};
+use sqlx::{PgConnection, PgExecutor, PgPool};
 use uuid::Uuid;
 
+use super::prefs::{self, NotificationSettings, NotificationStage};
+use super::quiet;
 use crate::config::Config;
 
 pub const BODY_MAX_CHARS: usize = 280;
@@ -71,41 +73,9 @@ impl Edge<'_> {
     }
 }
 
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct NotificationRecord {
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub kind: String,
-    pub severity: String,
-    pub session_id: Option<String>,
-    pub machine_id: Option<Uuid>,
-    pub subject_kind: Option<String>,
-    pub subject_id: Option<String>,
-    pub collapse_key: Option<String>,
-    pub title: String,
-    pub body: Option<String>,
-    pub tags: Option<String>,
-    pub actions: serde_json::Value,
-    pub state: String,
-    pub repeat_count: i32,
-    pub decision: Option<String>,
-    pub decision_note: Option<String>,
-    pub acted_channel: Option<String>,
-    pub acted_by: Option<Uuid>,
-    pub resolved_reason: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub read_at: Option<DateTime<Utc>>,
-    pub acted_at: Option<DateTime<Utc>>,
-    pub resolved_at: Option<DateTime<Utc>>,
-    pub expires_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct Transitioned {
-    pub notification: NotificationRecord,
-    pub applied: bool,
-}
+pub use cctui_proto::api::notifications::{
+    Notification as NotificationRecord, NotificationTransition as Transitioned,
+};
 
 #[derive(Debug, Clone)]
 pub struct NewNotification {
@@ -121,6 +91,7 @@ pub struct NewNotification {
     pub body: Option<String>,
     pub tags: Option<String>,
     pub actions: serde_json::Value,
+    pub blocking: bool,
 }
 
 impl NewNotification {
@@ -139,19 +110,8 @@ impl NewNotification {
             body: None,
             tags: None,
             actions: serde_json::Value::Array(Vec::new()),
+            blocking: false,
         }
-    }
-}
-
-/// ntfy's 1..=5 priority scale.
-#[must_use]
-pub const fn severity_for_priority(priority: u8) -> &'static str {
-    match priority {
-        0 | 1 => "min",
-        2 => "low",
-        3 => "info",
-        4 => "high",
-        _ => "critical",
     }
 }
 
@@ -175,10 +135,27 @@ pub fn clip(body: &str) -> String {
     format!("{}…", &body[..cut])
 }
 
+/// A collapse re-sends to a channel at most this often.
+pub const UPDATE_THROTTLE_SECS: i32 = 60;
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Routing {
     pub ntfy: bool,
 }
+
+#[derive(Debug, Clone, Copy)]
+struct Route {
+    channel: &'static str,
+    endpoint_id: Option<Uuid>,
+    delay_secs: i32,
+    stage: i32,
+}
+
+const USER_ENDPOINTS_SQL: &str = "\
+    SELECT id FROM notification_endpoints \
+    WHERE user_id = $1 AND channel = $2 AND enabled \
+      AND config ->> 'source' IS DISTINCT FROM 'env' \
+    ORDER BY created_at, id";
 
 impl Routing {
     #[must_use]
@@ -190,15 +167,127 @@ impl Routing {
         self,
         conn: &mut PgConnection,
         n: &NewNotification,
-    ) -> sqlx::Result<Vec<(&'static str, Option<Uuid>)>> {
+        settings: &NotificationSettings,
+    ) -> sqlx::Result<Vec<Route>> {
+        let key = prefs::route_key(n.kind, n.blocking);
         let mut routes = Vec::new();
-        if self.ntfy
-            && n.kind == super::kind::LEGACY
-            && let Some(endpoint) = env_endpoint(conn, n.user_id, super::ntfy_channel::ID).await?
-        {
-            routes.push((super::ntfy_channel::ID, Some(endpoint)));
+        for &channel in prefs::PUSH_CHANNELS {
+            let Some(delay_secs) = prefs::delay_secs(prefs::stage(settings, key, channel)) else {
+                continue;
+            };
+            let stage = i32::from(delay_secs > 0);
+            for endpoint in self.endpoints(conn, n.user_id, channel).await? {
+                routes.push(Route { channel, endpoint_id: Some(endpoint), delay_secs, stage });
+            }
         }
         Ok(routes)
+    }
+
+    async fn endpoints(
+        self,
+        conn: &mut PgConnection,
+        user_id: Uuid,
+        channel: &str,
+    ) -> sqlx::Result<Vec<Uuid>> {
+        let mut ids: Vec<Uuid> = sqlx::query_scalar(USER_ENDPOINTS_SQL)
+            .bind(user_id)
+            .bind(channel)
+            .fetch_all(&mut *conn)
+            .await?;
+        if self.ntfy
+            && channel == super::ntfy_channel::ID
+            && let Some(env) = env_endpoint(conn, user_id, channel).await?
+        {
+            ids.insert(0, env);
+        }
+        Ok(ids)
+    }
+}
+
+/// Without a live socket anywhere the human cannot be looking, so the wait is pointless.
+fn presence_shortcut(notice_kind: &str) -> bool {
+    [super::kind::APPROVAL, super::kind::SESSION_STUCK].contains(&notice_kind)
+}
+
+const WATCHED_SQL: &str = "\
+    SELECT EXISTS (SELECT 1 FROM session_viewers \
+                   WHERE session_id = $2 AND seen_at > now() - make_interval(secs => $3)) \
+        OR EXISTS (SELECT 1 FROM session_viewers v JOIN sessions s ON s.id = v.session_id \
+                   WHERE s.user_id = $1 AND v.seen_at > now() - make_interval(secs => $3))";
+
+async fn watched(conn: &mut PgConnection, n: &NewNotification) -> sqlx::Result<bool> {
+    sqlx::query_scalar(WATCHED_SQL)
+        .bind(n.user_id)
+        .bind(n.session_id.as_deref())
+        .bind(crate::session_viewers::LIVE_WITHIN_SECS)
+        .fetch_one(conn)
+        .await
+}
+
+/// Pushes are counted per notice over the last hour; a notice that already pushes keeps
+/// its rows, so a collapse is never throttled.
+const CAP_SQL: &str = "\
+    SELECT EXISTS (SELECT 1 FROM notification_deliveries \
+                   WHERE notification_id = $2 AND channel <> 'in_app'), \
+           (SELECT count(DISTINCT d.notification_id) FROM notification_deliveries d \
+            JOIN notifications n ON n.id = d.notification_id \
+            WHERE n.user_id = $1 AND d.notification_id <> $2 AND d.channel <> 'in_app' \
+              AND d.state IN ('scheduled', 'sent', 'retracted') \
+              AND n.created_at > now() - interval '1 hour')";
+
+async fn over_cap(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    notification_id: Uuid,
+    cap: u32,
+) -> sqlx::Result<bool> {
+    let (pushing, recent): (bool, i64) =
+        sqlx::query_as(CAP_SQL).bind(user_id).bind(notification_id).fetch_one(conn).await?;
+    Ok(!pushing && recent >= i64::from(cap))
+}
+
+async fn shape(
+    conn: &mut PgConnection,
+    n: &NewNotification,
+    settings: &NotificationSettings,
+    notification_id: Uuid,
+    mut routes: Vec<Route>,
+) -> sqlx::Result<(Vec<Route>, bool)> {
+    if routes.is_empty() {
+        return Ok((routes, false));
+    }
+    if presence_shortcut(n.kind)
+        && routes.iter().any(|r| r.stage > 0)
+        && !watched(&mut *conn, n).await?
+    {
+        for r in routes.iter_mut().filter(|r| r.stage > 0) {
+            r.delay_secs = 0;
+        }
+    }
+    if let Some(window) = &settings.quiet_hours
+        && quiet::holds(n.severity)
+    {
+        for r in &mut routes {
+            let held = quiet::hold(&mut *conn, window, r.delay_secs).await?;
+            if held > r.delay_secs {
+                r.delay_secs = held;
+                r.stage = r.stage.max(1);
+            }
+        }
+    }
+    if over_cap(conn, n.user_id, notification_id, settings.max_push_per_hour).await? {
+        return Ok((Vec::new(), true));
+    }
+    Ok((routes, false))
+}
+
+fn throttled_notice(user_id: Uuid, cap: u32) -> NewNotification {
+    NewNotification {
+        collapse_key: Some(super::kind::THROTTLED.to_owned()),
+        body: Some(format!(
+            "More than {cap} pushes in the last hour: new notices stay in the app for now."
+        )),
+        ..NewNotification::new(user_id, super::kind::THROTTLED, "Notifications throttled".into())
     }
 }
 
@@ -207,7 +296,16 @@ async fn env_endpoint(
     user_id: Uuid,
     channel: &str,
 ) -> sqlx::Result<Option<Uuid>> {
-    let (id, enabled): (Uuid, bool) = sqlx::query_as(
+    let (id, enabled) = seed_env_endpoint(conn, user_id, channel).await?;
+    Ok(enabled.then_some(id))
+}
+
+pub async fn seed_env_endpoint(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    channel: &str,
+) -> sqlx::Result<(Uuid, bool)> {
+    sqlx::query_as(
         "INSERT INTO notification_endpoints (user_id, channel, label, config) \
          VALUES ($1, $2, 'server', '{\"source\": \"env\"}') \
          ON CONFLICT (user_id, channel) WHERE config ->> 'source' = 'env' \
@@ -217,14 +315,14 @@ async fn env_endpoint(
     .bind(user_id)
     .bind(channel)
     .fetch_one(conn)
-    .await?;
-    Ok(enabled.then_some(id))
+    .await
 }
 
 const UPSERT_SQL: &str = "\
     INSERT INTO notifications (user_id, kind, severity, session_id, machine_id, subject_kind, \
-        subject_id, collapse_key, title, body, tags, actions, expires_at) \
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now() + interval '7 days') \
+        subject_id, collapse_key, title, body, tags, actions, expires_at, state, read_at) \
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now() + interval '7 days', \
+            $13, CASE WHEN $13 = 'read' THEN now() END) \
     ON CONFLICT (user_id, collapse_key) \
         WHERE collapse_key IS NOT NULL AND state IN ('pending', 'delivered', 'read') \
     DO UPDATE SET repeat_count = notifications.repeat_count + 1, \
@@ -232,42 +330,58 @@ const UPSERT_SQL: &str = "\
         tags = EXCLUDED.tags, actions = EXCLUDED.actions, updated_at = now() \
     RETURNING *";
 
-async fn upsert(conn: &mut PgConnection, n: NewNotification) -> sqlx::Result<NotificationRecord> {
+/// A notice the user keeps out of the app is written already read.
+async fn upsert(
+    conn: &mut PgConnection,
+    n: &NewNotification,
+    in_app: bool,
+) -> sqlx::Result<NotificationRecord> {
+    let state = if in_app { State::Pending } else { State::Read };
     sqlx::query_as(UPSERT_SQL)
         .bind(n.user_id)
         .bind(n.kind)
         .bind(n.severity)
-        .bind(n.session_id)
+        .bind(n.session_id.as_deref())
         .bind(n.machine_id)
-        .bind(n.subject_kind)
-        .bind(n.subject_id)
-        .bind(n.collapse_key)
-        .bind(n.title)
+        .bind(n.subject_kind.as_deref())
+        .bind(n.subject_id.as_deref())
+        .bind(n.collapse_key.as_deref())
+        .bind(n.title.as_str())
         .bind(n.body.as_deref().map(clip))
-        .bind(n.tags)
-        .bind(n.actions)
+        .bind(n.tags.as_deref())
+        .bind(&n.actions)
+        .bind(state.as_str())
         .fetch_one(conn)
         .await
 }
 
+/// A collapse queues an update on an idle sent delivery, throttled from its last push.
+/// Pending ops render the latest text when claimed, and an op already in flight is
+/// re-issued by the dispatcher, so neither needs touching here.
+const UPSERT_DELIVERY_SQL: &str = "\
+    INSERT INTO notification_deliveries \
+        (notification_id, channel, endpoint_id, op, stage, next_attempt_at) \
+    VALUES ($1, $2, $3, 'send', $6, now() + make_interval(secs => $4)) \
+    ON CONFLICT (notification_id, channel, endpoint_id) DO UPDATE \
+    SET op = 'update', \
+        next_attempt_at = GREATEST(now(), \
+            notification_deliveries.sent_at + make_interval(secs => $5)) \
+    WHERE notification_deliveries.state = 'sent' AND notification_deliveries.op IS NULL";
+
 async fn upsert_delivery(
     conn: &mut PgConnection,
     notification_id: Uuid,
-    channel: &str,
-    endpoint_id: Option<Uuid>,
+    route: Route,
 ) -> sqlx::Result<()> {
-    sqlx::query(
-        "INSERT INTO notification_deliveries (notification_id, channel, endpoint_id, op) \
-         VALUES ($1, $2, $3, 'send') \
-         ON CONFLICT (notification_id, channel, endpoint_id) DO UPDATE \
-         SET op = 'update', next_attempt_at = now() \
-         WHERE notification_deliveries.state = 'sent' AND notification_deliveries.op IS NULL",
-    )
-    .bind(notification_id)
-    .bind(channel)
-    .bind(endpoint_id)
-    .execute(conn)
-    .await?;
+    sqlx::query(UPSERT_DELIVERY_SQL)
+        .bind(notification_id)
+        .bind(route.channel)
+        .bind(route.endpoint_id)
+        .bind(route.delay_secs)
+        .bind(UPDATE_THROTTLE_SECS)
+        .bind(route.stage)
+        .execute(conn)
+        .await?;
     Ok(())
 }
 
@@ -277,13 +391,54 @@ pub async fn emit(
     n: NewNotification,
 ) -> sqlx::Result<NotificationRecord> {
     let mut tx = pool.begin().await?;
-    let routes = routing.plan(&mut tx, &n).await?;
-    let record = upsert(&mut tx, n).await?;
-    for (channel, endpoint_id) in routes {
-        upsert_delivery(&mut tx, record.id, channel, endpoint_id).await?;
+    let settings = prefs::load(&mut tx, n.user_id).await?;
+    let key = prefs::route_key(n.kind, n.blocking);
+    let in_app = prefs::stage(&settings, key, prefs::channel::IN_APP) != NotificationStage::Off;
+    let record = upsert(&mut tx, &n, in_app).await?;
+    let planned = routing.plan(&mut tx, &n, &settings).await?;
+    let (routes, throttled) = shape(&mut tx, &n, &settings, record.id, planned).await?;
+    for route in routes {
+        upsert_delivery(&mut tx, record.id, route).await?;
     }
+    let notice = if throttled {
+        let notice = throttled_notice(n.user_id, settings.max_push_per_hour);
+        Some(upsert(&mut tx, &notice, true).await?)
+    } else {
+        None
+    };
     tx.commit().await?;
+    super::in_app::changed(pool, &record).await;
+    if let Some(notice) = &notice {
+        super::in_app::changed(pool, notice).await;
+    }
     Ok(record)
+}
+
+/// One send to one endpoint, past the user's routing, quiet hours and cap.
+pub async fn emit_test(
+    pool: &PgPool,
+    user_id: Uuid,
+    channel: &str,
+    endpoint_id: Uuid,
+) -> sqlx::Result<(NotificationRecord, Uuid)> {
+    let n = NewNotification {
+        body: Some("If this reached you, the endpoint works.".into()),
+        ..NewNotification::new(user_id, super::kind::TEST, "cctui test notification".into())
+    };
+    let mut tx = pool.begin().await?;
+    let record = upsert(&mut tx, &n, true).await?;
+    let delivery: Uuid = sqlx::query_scalar(
+        "INSERT INTO notification_deliveries (notification_id, channel, endpoint_id, op) \
+         VALUES ($1, $2, $3, 'send') RETURNING id",
+    )
+    .bind(record.id)
+    .bind(channel)
+    .bind(endpoint_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    super::in_app::changed(pool, &record).await;
+    Ok((record, delivery))
 }
 
 const TRANSITION_SQL: &str = "\
@@ -364,7 +519,234 @@ pub async fn transition(
     };
     if edge.target().closes() {
         close_deliveries(&mut tx, id).await?;
+    } else if matches!(edge, Edge::Read) {
+        cancel_escalations(&mut tx, &[id]).await?;
     }
     tx.commit().await?;
+    super::in_app::changed(pool, &notification).await;
     Ok(Some(Transitioned { notification, applied: true }))
 }
+
+async fn transition_in(
+    conn: &mut PgConnection,
+    id: Uuid,
+    edge: Edge<'_>,
+) -> sqlx::Result<Option<NotificationRecord>> {
+    let applied = guarded_update(&mut *conn, id, edge).await?;
+    if applied.is_some() && edge.target().closes() {
+        close_deliveries(conn, id).await?;
+    }
+    Ok(applied)
+}
+
+pub(super) async fn close_in(
+    conn: &mut PgConnection,
+    id: Uuid,
+    edge: Edge<'_>,
+) -> sqlx::Result<Option<(NotificationRecord, Option<Uuid>)>> {
+    let Some(n) = transition_in(&mut *conn, id, edge).await? else { return Ok(None) };
+    let lane = super::expiry::record_decision(conn, &n).await?;
+    Ok(Some((n, lane)))
+}
+
+#[derive(Debug, Clone)]
+pub struct Acted {
+    pub transition: Transitioned,
+    pub ticked_session: Option<String>,
+    pub decision_lane: Option<Uuid>,
+}
+
+impl Acted {
+    const fn lost(notification: NotificationRecord) -> Self {
+        Self {
+            transition: Transitioned { notification, applied: false },
+            ticked_session: None,
+            decision_lane: None,
+        }
+    }
+}
+
+const LOCK_SUBJECT_SQL: &str = "\
+    SELECT ua.id FROM notifications n \
+    JOIN session_user_actions ua \
+      ON n.subject_kind = 'user_action' AND ua.id::text = n.subject_id \
+    WHERE n.id = $1 FOR UPDATE OF ua";
+
+async fn tick_subject(
+    conn: &mut PgConnection,
+    action_id: Uuid,
+    action: &str,
+    note: Option<&str>,
+) -> sqlx::Result<Option<String>> {
+    let status = if matches!(action, "dropped" | "reject") { "dropped" } else { "done" };
+    sqlx::query_scalar(
+        "UPDATE session_user_actions SET status = $2, note = COALESCE($3, note), \
+           resolved_at = now(), resolved_by = 'user' \
+         WHERE id = $1 AND status = 'open' RETURNING session_id",
+    )
+    .bind(action_id)
+    .bind(status)
+    .bind(note)
+    .fetch_optional(conn)
+    .await
+}
+
+/// Locks the user-action row before the notice: the order a tick takes, so the two never
+/// deadlock.
+pub async fn act(pool: &PgPool, id: Uuid, edge: Edge<'_>) -> sqlx::Result<Option<Acted>> {
+    let mut tx = pool.begin().await?;
+    let subject: Option<Uuid> =
+        sqlx::query_scalar(LOCK_SUBJECT_SQL).bind(id).fetch_optional(&mut *tx).await?;
+    let Some((notification, decision_lane)) = close_in(&mut tx, id, edge).await? else {
+        return Ok(current(&mut tx, id).await?.map(Acted::lost));
+    };
+    let ticked_session = match (edge, subject) {
+        (Edge::Act { action, note, .. }, Some(action_id)) => {
+            tick_subject(&mut tx, action_id, action, note).await?
+        }
+        _ => None,
+    };
+    tx.commit().await?;
+    super::in_app::changed(pool, &notification).await;
+    Ok(Some(Acted {
+        transition: Transitioned { notification, applied: true },
+        ticked_session,
+        decision_lane,
+    }))
+}
+
+const LISTED_OPEN_STATES: &[&str] = &["pending", "delivered", "read", "acted"];
+
+#[must_use]
+pub fn is_open(n: &NotificationRecord) -> bool {
+    OPEN.iter().any(|s| s.as_str() == n.state)
+}
+
+async fn cancel_escalations(conn: &mut PgConnection, ids: &[Uuid]) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE notification_deliveries SET state = 'cancelled', op = NULL \
+         WHERE notification_id = ANY($1) AND state = 'scheduled' AND stage > 0",
+    )
+    .bind(ids)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+pub async fn unread_count(pool: &PgPool, user_id: Uuid) -> sqlx::Result<i64> {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM notifications \
+         WHERE user_id = $1 AND state IN ('pending', 'delivered')",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+}
+
+pub async fn get(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<NotificationRecord>> {
+    let mut conn = pool.acquire().await?;
+    current(&mut conn, id).await
+}
+
+pub async fn owned(
+    pool: &PgPool,
+    user_id: Uuid,
+    id: Uuid,
+) -> sqlx::Result<Option<NotificationRecord>> {
+    sqlx::query_as("SELECT * FROM notifications WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Page {
+    pub open_only: bool,
+    pub limit: i64,
+    pub before: Option<DateTime<Utc>>,
+}
+
+/// One row past `limit` comes back when there is a next page.
+pub async fn list(
+    pool: &PgPool,
+    user_id: Uuid,
+    page: Page,
+) -> sqlx::Result<Vec<NotificationRecord>> {
+    let states = page.open_only.then(|| LISTED_OPEN_STATES.to_vec());
+    sqlx::query_as(
+        "SELECT * FROM notifications \
+         WHERE user_id = $1 AND ($2::text[] IS NULL OR state = ANY($2)) \
+           AND ($3::timestamptz IS NULL OR created_at < $3) \
+         ORDER BY created_at DESC, id DESC LIMIT $4",
+    )
+    .bind(user_id)
+    .bind(states)
+    .bind(page.before)
+    .bind(page.limit + 1)
+    .fetch_all(pool)
+    .await
+}
+
+/// Notices with actions stay unread until answered.
+pub async fn read_all(pool: &PgPool, user_id: Uuid) -> sqlx::Result<Vec<NotificationRecord>> {
+    let mut tx = pool.begin().await?;
+    let read: Vec<NotificationRecord> = sqlx::query_as(
+        "UPDATE notifications SET state = 'read', updated_at = now(), \
+           read_at = COALESCE(read_at, now()) \
+         WHERE user_id = $1 AND state IN ('pending', 'delivered') \
+           AND COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(actions) = 'array' \
+                                              THEN actions END), 0) = 0 \
+         RETURNING *",
+    )
+    .bind(user_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let ids: Vec<Uuid> = read.iter().map(|n| n.id).collect();
+    cancel_escalations(&mut tx, &ids).await?;
+    tx.commit().await?;
+    if !read.is_empty() {
+        super::in_app::changed_many(pool, user_id, &read).await;
+    }
+    Ok(read)
+}
+
+#[must_use]
+pub fn action<'a>(n: &'a NotificationRecord, id: &str) -> Option<&'a serde_json::Value> {
+    n.actions
+        .as_array()?
+        .iter()
+        .find(|a| a.get("id").and_then(serde_json::Value::as_str) == Some(id))
+}
+
+#[must_use]
+pub fn action_ids(n: &NotificationRecord) -> Vec<&str> {
+    n.actions
+        .as_array()
+        .map(|all| all.iter().filter_map(|a| a.get("id")?.as_str()).collect())
+        .unwrap_or_default()
+}
+
+/// An approval, or a notice about a blocking user action, holds a run until answered.
+pub async fn awaits_decision<'e>(
+    conn: impl PgExecutor<'e>,
+    n: &NotificationRecord,
+) -> sqlx::Result<bool> {
+    if n.kind == super::kind::APPROVAL {
+        return Ok(true);
+    }
+    if n.subject_kind.as_deref() != Some(super::kind::USER_ACTION) {
+        return Ok(false);
+    }
+    let Some(action_id) = n.subject_id.as_deref() else { return Ok(false) };
+    let blocking: Option<bool> =
+        sqlx::query_scalar("SELECT blocking FROM session_user_actions WHERE id::text = $1")
+            .bind(action_id)
+            .fetch_optional(conn)
+            .await?;
+    Ok(blocking.unwrap_or(false))
+}
+
+#[cfg(test)]
+#[path = "routing_tests.rs"]
+mod routing_tests;

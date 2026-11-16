@@ -9,6 +9,7 @@ import type { Liveness } from "./Liveness";
 import type { RemoveInitiator } from "./RemoveInitiator";
 import type { SessionEndReason } from "./SessionEndReason";
 import type { SessionOrigin } from "./SessionOrigin";
+import type { SessionOutcome } from "./SessionOutcome";
 import type { SessionStatus } from "./SessionStatus";
 import type { TodoEntry } from "./TodoEntry";
 import type { TokenUsage } from "./TokenUsage";
@@ -39,7 +40,7 @@ todos: Array<TodoEntry>,
 /**
  * Absent when this session has no open user action and no child with one.
  */
-user_actions?: UserActionCounts | null, 
+user_actions?: UserActionCounts | null, latest_outcome?: SessionOutcome | null, 
 /**
  * Absent when the session was delivered no rules and holds no memories.
  */

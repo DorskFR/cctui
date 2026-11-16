@@ -16,6 +16,7 @@ pub mod machines;
 pub mod macros;
 pub mod mentions;
 pub mod model_picker;
+pub mod notifications;
 pub mod overview;
 pub mod pins;
 pub mod prompt;
@@ -60,6 +61,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             if let Some(browser) = app.context_items.as_ref() {
                 context_items::draw(frame, browser);
             }
+        }
+        View::Notifications => {
+            draw_below(frame, app);
+            notifications::draw(frame, &app.notifications);
         }
         View::Overview => overview::draw(frame, app),
         // The sidebar is focus only: the conversation draws the panel itself,

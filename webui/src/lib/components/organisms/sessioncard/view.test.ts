@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@bindings/SessionListItem';
-import { contextCountsOf, needsYouOf, scheduledLaunchOf, titleOf } from './view';
+import { contextCountsOf, needsYouOf, queuedMachineOf, scheduledLaunchOf, statusLabel, titleOf } from './view';
 
 const session = (over: Partial<SessionListItem>): SessionListItem =>
 	({ id: 'a1e5bd0f2c3d4e5f6', labels: [], working_dir: '/home/me/cctui', ...over }) as SessionListItem;
@@ -96,5 +96,20 @@ describe('contextCountsOf', () => {
 			rules: 0,
 			memories: 3
 		});
+	});
+});
+
+describe('queuedMachineOf', () => {
+	it('names the machine a queued spawn waits for', () => {
+		expect(queuedMachineOf(session({ status: 'queued', machine_id: 'm-1', machine_name: 'laptop' }))).toBe('laptop');
+		expect(queuedMachineOf(session({ status: 'queued', machine_id: 'm-1', machine_name: null }))).toBe('m-1');
+	});
+
+	it('is null for any other session', () => {
+		expect(queuedMachineOf(session({ status: 'active', machine_id: 'm-1', machine_name: 'laptop' }))).toBeNull();
+	});
+
+	it('labels the queued state', () => {
+		expect(statusLabel('queued')).toBe('queued');
 	});
 });

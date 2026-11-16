@@ -49,7 +49,7 @@ describe('DispatchersPanel renders a kit DataTable', () => {
 		comp = mount(DispatchersPanel, { target: document.body });
 		const table = document.querySelector('[data-tsu="DataTable"]');
 		expect(table?.getAttribute('aria-busy')).toBe('true');
-		expect(document.querySelector('tr[data-part="loading"]')).not.toBeNull();
+		expect(document.querySelector('tr[data-part="skeleton"]')).not.toBeNull();
 		expect(document.querySelector('table.disp, .placeholder')).toBeNull();
 	});
 

@@ -30,6 +30,7 @@ pub(super) async fn handle_event(
     let tail = Tail::of(adapter_id, &event);
     if let AdapterEvent::TurnEnd { local_id, .. } = &event {
         crate::cctuiverse::turn_ended(state, local_id);
+        crate::outcome::turn_ended(state, local_id);
     }
     let inserted = match event {
         e @ (AdapterEvent::Message { .. } | AdapterEvent::ToolUse { .. }) => {
