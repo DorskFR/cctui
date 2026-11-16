@@ -1056,6 +1056,7 @@ mod tests {
             "/bookmarks/{id}",
             "/dispatch-records/{id}/dismiss",
             "/drafts/{*key}",
+            "/inbox/events/{id}",
             "/keys/{id}",
             "/labels/{id}",
             "/passkeys/{id}",
