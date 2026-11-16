@@ -48,6 +48,7 @@ pub mod peer;
 pub mod permissions;
 pub mod plugins;
 pub mod plugins_admin;
+pub mod presets;
 pub mod privacy_scan;
 pub mod profiles;
 pub mod prompts;

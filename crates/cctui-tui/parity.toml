@@ -1573,6 +1573,36 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "get_presets"
+# GET /presets — List your launch presets, or save one.
+tui = "waived"
+reason = "launch presets are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_presets"
+# POST /presets — List your launch presets, or save one.
+tui = "waived"
+reason = "launch presets are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_presets_by_id"
+# GET /presets/{id} — Read, replace or delete one launch preset.
+tui = "waived"
+reason = "launch presets are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
+id = "put_presets_by_id"
+# PUT /presets/{id} — Read, replace or delete one launch preset.
+tui = "waived"
+reason = "launch presets are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
+id = "delete_presets_by_id"
+# DELETE /presets/{id} — Read, replace or delete one launch preset.
+tui = "waived"
+reason = "launch presets are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
 id = "post_inbox_events"
 # POST /inbox/events — Queue an event into a session's inbox lane, deduplicated by source id.
 tui = "waived"

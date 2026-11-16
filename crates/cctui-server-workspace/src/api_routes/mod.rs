@@ -20,6 +20,7 @@ mod notifications;
 mod otlp;
 mod passkeys;
 mod plugins;
+mod presets;
 mod previews;
 mod profiles;
 mod prompts;

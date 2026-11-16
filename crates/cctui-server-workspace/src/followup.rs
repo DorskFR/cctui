@@ -10,6 +10,7 @@ use sqlx::PgPool;
 
 use cctui_proto::api::{SessionThreadResponse, SpawnRequest, ThreadSession};
 
+use crate::brief::{self, Caps, Turn};
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -200,6 +201,50 @@ pub async fn sweep(pool: &PgPool) {
     }
 }
 
+pub const DEFAULT_INSTRUCTION: &str = "Continue from this.";
+const MAX_ATTR_CHARS: usize = 200;
+/// Room for the brief's own elision line and cut marker.
+const ELISION_SLACK: usize = 64;
+
+fn attr(raw: &str) -> String {
+    let clipped: String = raw.chars().take(MAX_ATTR_CHARS).collect();
+    clipped.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;")
+}
+
+/// The first prompt of a follow-up of `parent_id`: the parent's brief in the
+/// previous-conversation wrapper, then `instruction`. The wrapper and brief
+/// together stay within [`brief::DEFAULT_MAX_BYTES`], so the prompt goes
+/// inline without the attachment the webui uses for a larger brief.
+#[must_use]
+pub fn followup_prompt(parent_id: &str, name: &str, turns: &[Turn], instruction: &str) -> String {
+    let tag = cctui_proto::injected::PREVIOUS_CONVERSATION;
+    let open = format!("<{tag} session=\"{}\" id=\"{}\">", attr(name), attr(parent_id));
+    let close = format!("</{tag}>");
+    let overhead = open.len() + close.len() + 2 + ELISION_SLACK;
+    let caps = Caps {
+        max_turns: brief::DEFAULT_MAX_TURNS,
+        max_bytes: brief::DEFAULT_MAX_BYTES.saturating_sub(overhead),
+    };
+    let markdown = brief::render(turns, caps).markdown;
+    let ask = match instruction.trim() {
+        "" => DEFAULT_INSTRUCTION,
+        ask => ask,
+    };
+    format!("{open}\n{markdown}\n{close}\n\n{ask}")
+}
+
+/// [`followup_prompt`] from the stored transcript, for a follow-up spawned
+/// without a client. `None` when the parent does not exist.
+#[cfg_attr(not(test), allow(dead_code))]
+pub async fn render_followup_prompt(
+    pool: &PgPool,
+    parent_session_id: &str,
+    instruction: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let Some(parent) = brief::load(pool, parent_session_id).await? else { return Ok(None) };
+    Ok(Some(followup_prompt(parent_session_id, &parent.name, &parent.turns, instruction)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{followups_of, next_of, parent_of, thread_of};
@@ -388,3 +433,7 @@ mod tests {
         cleanup(&pool, uid, mid, &[r, a, a2, b]).await;
     }
 }
+
+#[cfg(test)]
+#[path = "followup_prompt_tests.rs"]
+mod prompt_tests;

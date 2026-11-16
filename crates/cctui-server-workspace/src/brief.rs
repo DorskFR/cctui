@@ -16,6 +16,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::Value;
+use sqlx::PgPool;
 
 use cctui_proto::api::{ApiError, BriefResponse};
 use cctui_proto::injected::{InjectedKind, split_injected};
@@ -211,35 +212,46 @@ impl BriefQuery {
     }
 }
 
-pub async fn session_brief(
-    State(state): State<AppState>,
-    Path(session_id): Path<String>,
-    Query(q): Query<BriefQuery>,
-) -> Result<Json<BriefResponse>, (StatusCode, Json<ApiError>)> {
-    let db_err = |e: sqlx::Error| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    };
-    let adapter_id: Option<Option<String>> =
-        sqlx::query_scalar("SELECT adapter_id FROM sessions WHERE id = $1")
-            .bind(&session_id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(db_err)?;
-    let Some(adapter_id) = adapter_id else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() })));
-    };
+pub struct Transcript {
+    pub name: String,
+    pub turns: Vec<Turn>,
+}
+
+/// `None` when the session does not exist. `name` falls back to the working dir.
+pub async fn load(pool: &PgPool, session_id: &str) -> sqlx::Result<Option<Transcript>> {
+    let session: Option<(Option<String>, Option<String>, String)> = sqlx::query_as(
+        "SELECT adapter_id, session_name, working_dir FROM sessions WHERE id = $1",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((adapter_id, name, working_dir)) = session else { return Ok(None) };
     let adapter_id = adapter_id.unwrap_or_else(|| "claude-code".to_owned());
     let rows: Vec<(String, Value)> = sqlx::query_as(
         "SELECT event_type, payload FROM stream_events \
          WHERE session_id = $1 AND event_type IN ('message', 'tool_use') ORDER BY id ASC",
     )
-    .bind(&session_id)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(db_err)?;
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?;
     let turns = collect_turns(&adapter_id, rows.iter().map(|(t, p)| (t.as_str(), p.clone())));
-    Ok(Json(render(&turns, q.caps())))
+    let name = name.filter(|n| !n.trim().is_empty()).unwrap_or(working_dir);
+    Ok(Some(Transcript { name, turns }))
+}
+
+pub async fn session_brief(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    Query(q): Query<BriefQuery>,
+) -> Result<Json<BriefResponse>, (StatusCode, Json<ApiError>)> {
+    let transcript = load(&state.pool, &session_id).await.map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+    let Some(transcript) = transcript else {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() })));
+    };
+    Ok(Json(render(&transcript.turns, q.caps())))
 }
 
 #[cfg(test)]

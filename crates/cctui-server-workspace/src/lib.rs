@@ -54,6 +54,7 @@ mod plugins;
 mod pool_usage;
 mod presence;
 mod preview;
+mod presets;
 mod provider_status;
 mod registry;
 mod rooms;
@@ -1550,6 +1551,11 @@ mod tests {
             "PUT /plugins/{id}/backend/{*path} Bearer Authenticated",
             "GET /profiles Bearer Human",
             "POST /profiles Bearer Human",
+            "GET /presets Bearer Authenticated",
+            "POST /presets Bearer Authenticated",
+            "DELETE /presets/{id} Bearer Authenticated",
+            "GET /presets/{id} Bearer Authenticated",
+            "PUT /presets/{id} Bearer Authenticated",
             "PUT /profiles/order Bearer Human",
             "DELETE /profiles/{id} Bearer Human",
             "PATCH /profiles/{id} Bearer Human",

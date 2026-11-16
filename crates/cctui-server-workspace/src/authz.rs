@@ -1060,6 +1060,7 @@ mod tests {
             "/keys/{id}",
             "/labels/{id}",
             "/passkeys/{id}",
+            "/presets/{id}",
             "/prompts/{id}",
             "/rooms/{id}",
             "/plugins/{id}/backend/{*path}",

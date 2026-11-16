@@ -27,6 +27,7 @@ pub mod pace;
 pub mod passkeys;
 pub mod plugins;
 pub mod pool_usage;
+pub mod presets;
 pub mod previews;
 pub mod privacy_scan;
 pub mod profiles;
