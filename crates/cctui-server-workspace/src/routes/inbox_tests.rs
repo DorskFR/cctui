@@ -226,7 +226,7 @@ async fn a_delivered_event_cannot_be_cancelled() {
         cancel(State(state.clone()), Extension(caller(uid)), Path(pending.id)).await.unwrap();
     assert_eq!(code, StatusCode::NO_CONTENT);
 
-    let read_only = AuthContext { scopes: [Scope::Read].into_iter().collect(), ..caller(uid) };
+    let read_only = AuthContext { scopes: std::iter::once(Scope::Read).collect(), ..caller(uid) };
     let err = cancel(State(state), Extension(read_only), Path(pending.id)).await.unwrap_err();
     assert_eq!(err.status(), StatusCode::FORBIDDEN);
 }
