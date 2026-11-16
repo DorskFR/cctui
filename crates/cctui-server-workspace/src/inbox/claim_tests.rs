@@ -56,7 +56,7 @@ async fn claimable(pool: &PgPool, lane: Uuid) -> bool {
     true
 }
 
-async fn exec(pool: &PgPool, sql: &str, id: &str) {
+async fn exec(pool: &PgPool, sql: &'static str, id: &str) {
     sqlx::query(sql).bind(id).execute(pool).await.unwrap();
 }
 

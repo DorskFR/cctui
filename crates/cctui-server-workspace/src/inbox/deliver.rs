@@ -59,17 +59,17 @@ pub fn batch_text(
     let noun = if events.len() == 1 { "event" } else { "events" };
     let mut text = format!("{MARKER} {} {noun}]", events.len());
     for (n, event) in events.iter().enumerate() {
-        let body = match &event.sealed_body {
-            None => event.body.clone(),
-            Some(sealed) => {
+        let body = event.sealed_body.as_deref().map_or_else(
+            || Ok(event.body.clone()),
+            |sealed| {
                 let vault =
                     vault.get_or_insert_with(|| key.take().map(|k| k()).unwrap_or_default());
                 if vault.is_empty() {
                     return Err(UNSEALABLE);
                 }
-                crate::crypto::decrypt(sealed, vault).ok_or(UNSEALABLE)?
-            }
-        };
+                crate::crypto::decrypt(sealed, vault).ok_or(UNSEALABLE)
+            },
+        )?;
         let at = event.created_at.format("%Y-%m-%dT%H:%MZ");
         let _ = write!(text, "\n{}. ({}, {at}) {body}", n + 1, event.source);
     }
