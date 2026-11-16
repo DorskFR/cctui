@@ -398,12 +398,10 @@ async fn send_now_claims_a_message_once_and_a_failed_send_keeps_its_turn_id() {
     );
     assert_eq!(shown.body, "ping");
 
-    let cancelled = crate::routes::scheduled_messages::cancel(
-        State(state.clone()),
-        Path((sid.clone(), id)),
-    )
-    .await
-    .unwrap();
+    let cancelled =
+        crate::routes::scheduled_messages::cancel(State(state.clone()), Path((sid.clone(), id)))
+            .await
+            .unwrap();
     assert_eq!(cancelled, StatusCode::NO_CONTENT);
     let Json(listed) =
         crate::routes::scheduled_messages::list(State(state), Path(sid)).await.unwrap();

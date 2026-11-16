@@ -137,11 +137,7 @@ fn email_config(config: &Value) -> Result<Value, String> {
     Ok(json!({ "address": address }))
 }
 
-pub async fn validate(
-    state: &AppState,
-    channel_id: &str,
-    config: &Value,
-) -> Result<Value, String> {
+pub async fn validate(state: &AppState, channel_id: &str, config: &Value) -> Result<Value, String> {
     if !config.is_object() {
         return Err("config must be an object".into());
     }

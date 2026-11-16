@@ -48,9 +48,7 @@ impl Push {
         match self {
             Self::Off => NotificationStage::Off,
             Self::Now => NotificationStage::Now,
-            Self::AfterMinutes(m) => {
-                NotificationStage::After { minutes: m.unsigned_abs() }
-            }
+            Self::AfterMinutes(m) => NotificationStage::After { minutes: m.unsigned_abs() },
         }
     }
 }
@@ -141,9 +139,7 @@ fn legacy_sound(data: &Value) -> Option<bool> {
 #[must_use]
 pub fn parse(data: &Value) -> NotificationSettings {
     let block = data.get("notifications");
-    let mut s = block
-        .and_then(|v| NotificationSettings::deserialize(v).ok())
-        .unwrap_or_default();
+    let mut s = block.and_then(|v| NotificationSettings::deserialize(v).ok()).unwrap_or_default();
     if block.and_then(|b| b.get("sound")).is_none()
         && let Some(sound) = legacy_sound(data)
     {

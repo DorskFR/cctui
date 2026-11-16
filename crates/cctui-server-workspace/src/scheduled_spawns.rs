@@ -210,11 +210,7 @@ async fn drop_batch(pool: &sqlx::PgPool, batch_id: Uuid) -> sqlx::Result<()> {
 }
 
 /// Announce where a lane worker's attempt left the draft's schedule.
-pub async fn announce_settled(
-    state: &AppState,
-    lane_id: Uuid,
-    draft_id: &str,
-) -> sqlx::Result<()> {
+pub async fn announce_settled(state: &AppState, lane_id: Uuid, draft_id: &str) -> sqlx::Result<()> {
     let settled: Option<(String, Uuid, Option<String>)> = sqlx::query_as(
         "SELECT status, user_id, last_error FROM inbox_events \
          WHERE lane_id = $1 AND source = 'timer' AND source_id = $2",
@@ -422,13 +418,12 @@ mod tests {
         assert!(cancel(&pool, &bus, &later).await.unwrap());
         assert!(!cancel(&pool, &bus, &later).await.unwrap());
         assert!(pending_for(&pool, &[later.clone()]).await.unwrap().is_empty());
-        let legacy: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM draft_launch_queue WHERE draft_id = ANY($1)",
-        )
-        .bind(vec![due, later])
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let legacy: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM draft_launch_queue WHERE draft_id = ANY($1)")
+                .bind(vec![due, later])
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(legacy, 0, "the old queue is no longer written");
     }
 

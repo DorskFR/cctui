@@ -258,8 +258,7 @@ async fn the_dispatcher_mails_confirm_links_bound_to_email_tokens() {
     let Some(url) = crate::routes::gateway::test_db_url("email_dispatch_confirm_links") else {
         return;
     };
-    let pool =
-        sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap();
+    let pool = sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap();
     let u = Uuid::new_v4();
     sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
         .bind(u)

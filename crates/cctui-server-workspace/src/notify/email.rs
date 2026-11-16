@@ -25,10 +25,8 @@ pub struct EmailChannel {
 }
 
 pub fn address(config: &Value) -> Result<Address, String> {
-    let raw = config
-        .get("address")
-        .and_then(Value::as_str)
-        .ok_or("email endpoint has no address")?;
+    let raw =
+        config.get("address").and_then(Value::as_str).ok_or("email endpoint has no address")?;
     raw.trim().parse::<Address>().map_err(|e| format!("invalid email address: {e}"))
 }
 

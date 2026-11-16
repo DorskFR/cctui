@@ -73,8 +73,11 @@ fn alert(u: Uuid, title: &str) -> NewNotification {
 #[tokio::test]
 async fn a_user_with_ntfy_off_gets_no_ntfy_row() {
     let Some(pool) = db("notify_routing_ntfy_off").await else { return };
-    let off = user(&pool, Some(json!({ "notifications": {
-        "channels": { "ntfy": { "enabled": false } } } })))
+    let off = user(
+        &pool,
+        Some(json!({ "notifications": {
+        "channels": { "ntfy": { "enabled": false } } } })),
+    )
     .await;
     let plain = user(&pool, None).await;
 
@@ -102,8 +105,11 @@ async fn the_master_switch_off_plans_nothing_and_writes_the_notice_read() {
 #[tokio::test]
 async fn in_app_off_for_a_kind_writes_it_read_but_still_pushes() {
     let Some(pool) = db("notify_routing_in_app_off").await else { return };
-    let u = user(&pool, Some(json!({ "notifications": { "routes": {
-        "system_alert": { "in_app": { "mode": "off" } } } } })))
+    let u = user(
+        &pool,
+        Some(json!({ "notifications": { "routes": {
+        "system_alert": { "in_app": { "mode": "off" } } } } })),
+    )
     .await;
     let record = emit(&pool, ON, alert(u, "a")).await.unwrap();
     assert_eq!(record.state, "read");
@@ -114,8 +120,11 @@ async fn in_app_off_for_a_kind_writes_it_read_but_still_pushes() {
 #[tokio::test]
 async fn after_ten_gives_a_stage_one_row_ten_minutes_out_and_read_cancels_it() {
     let Some(pool) = db("notify_routing_after_ten").await else { return };
-    let u = user(&pool, Some(json!({ "notifications": { "routes": {
-        "system_alert": { "ntfy": { "mode": "after", "minutes": 10 } } } } })))
+    let u = user(
+        &pool,
+        Some(json!({ "notifications": { "routes": {
+        "system_alert": { "ntfy": { "mode": "after", "minutes": 10 } } } } })),
+    )
     .await;
     let record = emit(&pool, ON, alert(u, "a")).await.unwrap();
     let rows = deliveries(&pool, record.id).await;
@@ -187,8 +196,12 @@ async fn a_watched_session_keeps_the_approval_delay() {
 async fn no_live_socket_drops_stage_one_to_zero_for_approval_and_session_stuck() {
     let Some(pool) = db("notify_routing_presence_absent").await else { return };
     let (u, sid) = crate::inbox::store_tests::seed_session(&pool, "routing-absent").await;
-    set_settings(&pool, u, json!({ "notifications": { "routes": {
-        "session_stuck": { "ntfy": { "mode": "after", "minutes": 10 } } } } }))
+    set_settings(
+        &pool,
+        u,
+        json!({ "notifications": { "routes": {
+        "session_stuck": { "ntfy": { "mode": "after", "minutes": 10 } } } } }),
+    )
     .await;
     for notice_kind in [kind::APPROVAL, kind::SESSION_STUCK] {
         let record = emit(&pool, ON, on_session(u, &sid, notice_kind)).await.unwrap();

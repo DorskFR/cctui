@@ -86,10 +86,9 @@ impl NtfyChannel {
         if to.config.get("source").and_then(Value::as_str) != Some("env") {
             return user_target(&to.config);
         }
-        let (url, token) = self
-            .env
-            .as_ref()
-            .ok_or_else(|| SendError::Permanent("the server ntfy topic is not configured".into()))?;
+        let (url, token) = self.env.as_ref().ok_or_else(|| {
+            SendError::Permanent("the server ntfy topic is not configured".into())
+        })?;
         Ok(Target { url: url.clone(), token: Some(token.get()), client: client() })
     }
 }

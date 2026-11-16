@@ -1,9 +1,9 @@
 use serde_json::json;
 
 use super::{
-    CHANNELS, NotificationSettings, NotificationStage, ROUTE_KINDS, USER_ACTION_BLOCKING,
-    cell, channel, default_stage, delay_secs, migrate_sound, normalize, parse, resolved,
-    route_key, stage,
+    CHANNELS, NotificationSettings, NotificationStage, ROUTE_KINDS, USER_ACTION_BLOCKING, cell,
+    channel, default_stage, delay_secs, migrate_sound, normalize, parse, resolved, route_key,
+    stage,
 };
 use crate::notify::{Push, kind};
 

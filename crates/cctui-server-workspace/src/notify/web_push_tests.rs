@@ -53,8 +53,8 @@ fn open(body: &[u8]) -> Value {
     let (salt, rest) = body.split_at(16);
     assert_eq!(rest[..4], 4096u32.to_be_bytes());
     let (sender_pub, record) = rest[5..].split_at(usize::from(rest[4]));
-    let ua = agreement::PrivateKey::from_private_key(&agreement::ECDH_P256, &b64(UA_PRIVATE))
-        .unwrap();
+    let ua =
+        agreement::PrivateKey::from_private_key(&agreement::ECDH_P256, &b64(UA_PRIVATE)).unwrap();
     let to = rfc_subscription();
     let peer = agreement::UnparsedPublicKey::new(&agreement::ECDH_P256, sender_pub);
     let keys = |secret: &[u8]| derive(secret, &to, sender_pub, salt);
@@ -312,8 +312,7 @@ async fn an_endpoint_outside_the_allowlist_is_never_called() {
 async fn the_instance_vapid_key_is_generated_once_and_stored_sealed() {
     let Some(url) = crate::routes::gateway::test_db_url("web_push_vapid_key") else { return };
     crate::crypto::install_vault_key(vec![0x5a; 32]);
-    let pool =
-        sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap();
+    let pool = sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap();
     sqlx::query("DELETE FROM instance_settings WHERE key = $1")
         .bind(SETTINGS_KEY)
         .execute(&pool)

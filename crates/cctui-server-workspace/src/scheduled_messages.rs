@@ -7,9 +7,9 @@ use crate::auth::AuthContext;
 use crate::error::AppError;
 use crate::inbox::claim;
 use crate::inbox::deliver::Outcome;
+use crate::outbox::{CLAIM_LEASE_SECS, Retry};
 #[cfg(test)]
 use crate::outbox::{MAX_ATTEMPTS, retry_after_failure};
-use crate::outbox::{CLAIM_LEASE_SECS, Retry};
 use crate::state::AppState;
 use crate::store::sessions::SessionRowStatus;
 
@@ -151,12 +151,11 @@ pub async fn scheduled_turns(
     pool: &sqlx::PgPool,
     session_id: &str,
 ) -> sqlx::Result<std::collections::HashMap<uuid::Uuid, DateTime<Utc>>> {
-    let rows: Vec<(uuid::Uuid, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT turn_id, scheduled_at FROM scheduled_turns WHERE session_id = $1",
-    )
-    .bind(session_id)
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<(uuid::Uuid, DateTime<Utc>)> =
+        sqlx::query_as("SELECT turn_id, scheduled_at FROM scheduled_turns WHERE session_id = $1")
+            .bind(session_id)
+            .fetch_all(pool)
+            .await?;
     Ok(rows.into_iter().collect())
 }
 
@@ -250,7 +249,7 @@ async fn record_turn(pool: &sqlx::PgPool, row: &ClaimedRow) -> sqlx::Result<()> 
     .map(|_| ())
 }
 
-pub const FOLD_SQL: &str = include_str!("../schema/0016_fold_outboxes.sql");
+pub const FOLD_SQL: &str = include_str!("../schema/0014_fold_outboxes.sql");
 
 /// Rows a replica still on the previous release writes during a rolling deploy.
 pub async fn fold_stragglers(pool: &sqlx::PgPool) {

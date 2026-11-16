@@ -213,7 +213,8 @@ impl Vapid {
     }
 
     fn authorization(&self, endpoint: &str, subject: &str, now: i64) -> Result<String, String> {
-        let url = reqwest::Url::parse(endpoint).map_err(|_| "malformed push endpoint".to_owned())?;
+        let url =
+            reqwest::Url::parse(endpoint).map_err(|_| "malformed push endpoint".to_owned())?;
         let audience = url.origin().ascii_serialization();
         Ok(format!("vapid t={}, k={}", self.jwt(&audience, subject, now)?, self.public_key()))
     }
@@ -262,11 +263,7 @@ pub async fn vapid(pool: &PgPool) -> Result<&'static Vapid, String> {
 
 fn subject(external_url: &str) -> String {
     let url = external_url.trim_end_matches('/');
-    if url.starts_with("https://") {
-        url.to_owned()
-    } else {
-        FALLBACK_SUBJECT.to_owned()
-    }
+    if url.starts_with("https://") { url.to_owned() } else { FALLBACK_SUBJECT.to_owned() }
 }
 
 fn truncate(s: &str, max: usize) -> String {

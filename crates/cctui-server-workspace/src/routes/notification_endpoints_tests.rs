@@ -84,9 +84,8 @@ fn push_subscription(endpoint: &str) -> Value {
 async fn endpoints_crud_is_owner_scoped() {
     let Some(state) = state("notif_endpoints_owner_scope").await else { return };
     let (alice, bob) = (user(&state).await, user(&state).await);
-    let mine = add(&state, alice, "web_push", push_subscription("https://1.1.1.1/push/a"))
-        .await
-        .unwrap();
+    let mine =
+        add(&state, alice, "web_push", push_subscription("https://1.1.1.1/push/a")).await.unwrap();
     assert_eq!(mine.channel, "web_push");
     assert_eq!(listed(&state, alice).await.iter().map(|e| e.id).collect::<Vec<_>>(), [mine.id]);
     assert!(listed(&state, bob).await.is_empty(), "bob sees none of alice's endpoints");
@@ -109,9 +108,8 @@ async fn a_browser_subscribing_twice_keeps_one_row() {
     let u = user(&state).await;
     let wrapped = json!({ "subscription": push_subscription("https://1.1.1.1/push/same") });
     add(&state, u, "web_push", wrapped).await.unwrap();
-    let again = add(&state, u, "web_push", push_subscription("https://1.1.1.1/push/same"))
-        .await
-        .unwrap();
+    let again =
+        add(&state, u, "web_push", push_subscription("https://1.1.1.1/push/same")).await.unwrap();
     let all = listed(&state, u).await;
     assert_eq!(all.iter().map(|e| e.id).collect::<Vec<_>>(), [again.id]);
     drop_users(&state, &[u]).await;
@@ -222,13 +220,12 @@ async fn send_test_creates_one_delivery_to_that_endpoint_only() {
     .await
     .unwrap();
     assert_eq!(rows, [(sent.delivery_id, Some(target), "test".to_owned())]);
-    let others: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM notification_deliveries WHERE endpoint_id = $1",
-    )
-    .bind(other)
-    .fetch_one(&state.pool)
-    .await
-    .unwrap();
+    let others: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM notification_deliveries WHERE endpoint_id = $1")
+            .bind(other)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
     assert_eq!(others, 0);
     drop_users(&state, &[u]).await;
 }
@@ -237,8 +234,8 @@ async fn send_test_creates_one_delivery_to_that_endpoint_only() {
 async fn a_disabled_endpoint_is_not_tested() {
     let Some(state) = state("notif_endpoints_test_disabled").await else { return };
     let u = user(&state).await;
-    let id = raw_endpoint(&state, u, "ntfy", json!({ "url": "http://127.0.0.1:9", "topic": "t" }))
-        .await;
+    let id =
+        raw_endpoint(&state, u, "ntfy", json!({ "url": "http://127.0.0.1:9", "topic": "t" })).await;
     sqlx::query("UPDATE notification_endpoints SET enabled = FALSE WHERE id = $1")
         .bind(id)
         .execute(&state.pool)
