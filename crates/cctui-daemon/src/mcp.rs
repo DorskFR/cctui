@@ -1,7 +1,7 @@
 //! `cctui-daemon mcp-agent` — the stdio MCP server a session is launched with.
 //!
 //! It exposes the `CctuiAgent`, `CctuiAgentArchive`, `CctuiUsage`, peer, room,
-//! user-action, `CctuiOutcome`, `CctuiSpeak` and `CctuiContext` tools.
+//! user-action, `CctuiOutcome`, `CctuiTimer`, `CctuiSpeak` and `CctuiContext` tools.
 //!
 //! The subcommand is a thin relay, mirroring `ask-hook`: it speaks MCP on
 //! stdio and forwards each `tools/call` to the long-lived daemon over its local
@@ -35,6 +35,7 @@ pub const ROOM_TOOL_NAME: &str = "CctuiRoom";
 pub const USER_ACTION_ADD_TOOL_NAME: &str = "CctuiUserActionAdd";
 pub const USER_ACTION_TICK_TOOL_NAME: &str = "CctuiUserActionTick";
 pub const OUTCOME_TOOL_NAME: &str = "CctuiOutcome";
+pub const TIMER_TOOL_NAME: &str = "CctuiTimer";
 pub const SPEAK_TOOL_NAME: &str = "CctuiSpeak";
 pub const CONTEXT_TOOL_NAME: &str = "CctuiContext";
 
@@ -59,6 +60,7 @@ const ROUND_TRIP_KINDS: &[(&str, &str)] = &[
     (USER_ACTION_ADD_TOOL_NAME, "user_action_add"),
     (USER_ACTION_TICK_TOOL_NAME, "user_action_tick"),
     (OUTCOME_TOOL_NAME, "outcome"),
+    (TIMER_TOOL_NAME, "timer"),
     (SPEAK_TOOL_NAME, "speak"),
     (CONTEXT_TOOL_NAME, "context"),
 ];
@@ -663,8 +665,40 @@ pub fn outcome_tool_schema() -> Value {
     })
 }
 
+/// The `CctuiTimer` input schema.
+#[must_use]
+pub fn timer_tool_schema() -> Value {
+    json!({
+        "name": TIMER_TOOL_NAME,
+        "description": "Wake up later with a prompt, then end your turn. Under the provider's \
+    prompt-cache TTL (about an hour for Claude, 30 minutes for GPT-5.6+, 5 minutes otherwise) \
+    this same session receives the prompt as its next turn. Past it, the prompt is queued \
+    and this session is archived; a follow-up session that inherits a brief of this one \
+    receives it at the due time. One pending wake per session: a new timer under the TTL \
+    replaces the previous one. Six wakes in a row without a human message are the limit.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "delay_secs": {
+                    "type": "integer",
+                    "minimum": 60,
+                    "description": "Seconds from now until the wake, at least 60, at most 30 \
+    days.",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "What you wake up to: the task to resume and what to check \
+    first, written for a reader who may not have this session's context.",
+                },
+            },
+            "required": ["delay_secs", "prompt"],
+            "additionalProperties": false,
+        },
+    })
+}
+
 /// Every tool name, in [`tool_schemas`] order.
-pub const TOOL_NAMES: [&str; 12] = [
+pub const TOOL_NAMES: [&str; 13] = [
     TOOL_NAME,
     USAGE_TOOL_NAME,
     ARCHIVE_TOOL_NAME,
@@ -675,6 +709,7 @@ pub const TOOL_NAMES: [&str; 12] = [
     USER_ACTION_ADD_TOOL_NAME,
     USER_ACTION_TICK_TOOL_NAME,
     OUTCOME_TOOL_NAME,
+    TIMER_TOOL_NAME,
     SPEAK_TOOL_NAME,
     CONTEXT_TOOL_NAME,
 ];
@@ -689,6 +724,7 @@ pub fn tool_feature(name: &str) -> Option<Feature> {
         }
         SPEAK_TOOL_NAME => Some(Feature::Voice),
         CONTEXT_TOOL_NAME => Some(Feature::Context),
+        TIMER_TOOL_NAME => Some(Feature::Automation),
         _ => None,
     }
 }
@@ -750,6 +786,7 @@ pub fn tool_schemas() -> Vec<Value> {
         user_action_add_schema(),
         user_action_tick_schema(),
         outcome_tool_schema(),
+        timer_tool_schema(),
         speak_tool_schema(),
         context_tool_schema(),
     ]
@@ -1285,6 +1322,7 @@ mod tests {
                 USER_ACTION_ADD_TOOL_NAME,
                 USER_ACTION_TICK_TOOL_NAME,
                 OUTCOME_TOOL_NAME,
+                TIMER_TOOL_NAME,
                 SPEAK_TOOL_NAME,
                 CONTEXT_TOOL_NAME,
             ]
@@ -1603,6 +1641,17 @@ mod tests {
         assert!(tool_feature(OUTCOME_TOOL_NAME).is_none(), "every session can declare one");
         let raw = serde_json::to_string(&schema).unwrap();
         assert_eq!(serde_json::from_str::<Value>(&raw).unwrap(), schema);
+    }
+
+    #[test]
+    fn the_timer_schema_requires_a_delay_and_a_prompt_and_follows_automation() {
+        let schema = timer_tool_schema();
+        assert_eq!(schema["name"], TIMER_TOOL_NAME);
+        assert_eq!(schema["inputSchema"]["required"], json!(["delay_secs", "prompt"]));
+        assert_eq!(schema["inputSchema"]["properties"]["delay_secs"]["minimum"], json!(60));
+        assert_eq!(tool_kind(TIMER_TOOL_NAME), Some("timer"));
+        assert_eq!(tool_feature(TIMER_TOOL_NAME), Some(Feature::Automation));
+        assert!(schema["description"].as_str().unwrap().contains("archived"));
     }
 
     #[test]
@@ -1939,7 +1988,7 @@ mod tests {
     }
 
     #[test]
-    fn every_feature_on_offers_all_twelve_tools_and_needs_no_tools_flag() {
+    fn every_feature_on_offers_all_thirteen_tools_and_needs_no_tools_flag() {
         assert_eq!(offered_tools(FeatureSet::all()), TOOL_NAMES);
         assert_eq!(tools_arg(FeatureSet::all()), None);
         let names: Vec<String> =
@@ -1960,13 +2009,15 @@ mod tests {
         let without = |f: Feature| offered_tools(FeatureSet::all().without(f));
         let child = without(Feature::ChildSessions);
         assert!(!child.contains(&TOOL_NAME) && !child.contains(&ARCHIVE_TOOL_NAME));
-        assert_eq!(child.len(), 10);
+        assert_eq!(child.len(), 11);
         let rooms = without(Feature::Rooms);
         for tool in [PEERS_TOOL_NAME, SEND_TOOL_NAME, HISTORY_TOOL_NAME, ROOM_TOOL_NAME] {
             assert!(!rooms.contains(&tool), "{tool} needs rooms");
         }
-        assert_eq!(rooms.len(), 8);
-        assert_eq!(without(Feature::Voice).len(), 11);
+        assert_eq!(rooms.len(), 9);
+        assert_eq!(without(Feature::Voice).len(), 12);
+        assert_eq!(without(Feature::Automation).len(), 12);
+        assert!(!without(Feature::Automation).contains(&TIMER_TOOL_NAME));
         assert!(!without(Feature::Voice).contains(&SPEAK_TOOL_NAME));
         assert!(!without(Feature::Context).contains(&CONTEXT_TOOL_NAME));
         assert_eq!(without(Feature::Files), TOOL_NAMES, "no tool reads files");

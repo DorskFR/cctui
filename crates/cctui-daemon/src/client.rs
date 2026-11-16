@@ -496,6 +496,31 @@ impl ServerClient {
         Ok(resp.json().await?)
     }
 
+    /// A refused timer is the reply's `error`, not an HTTP failure.
+    pub async fn timer_call(
+        &self,
+        machine_key: &str,
+        session_id: &str,
+        body: &serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        let url = format!(
+            "{}/api/v1/daemon/sessions/{}/timer",
+            self.base_url.trim_end_matches('/'),
+            session_id,
+        );
+        let resp = self.http.post(&url).bearer_auth(machine_key).json(body).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            let reason = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
+                .unwrap_or(text);
+            anyhow::bail!("timer not set ({status}): {reason}");
+        }
+        Ok(resp.json().await?)
+    }
+
     /// A refused declaration is `DeclareOutcomeResult::error`, not an HTTP failure.
     pub async fn outcome_call(
         &self,

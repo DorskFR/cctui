@@ -77,6 +77,12 @@ pub fn tick_prompt(now: DateTime<Utc>) -> String {
     )
 }
 
+/// A timer wake carries the tick marker so it never counts as a human turn.
+#[must_use]
+pub fn timer_prompt(now: DateTime<Utc>, prompt: &str) -> String {
+    format!("{TICK_MARKER} timer {}] {prompt}", now.format("%Y-%m-%dT%H:%M:%SZ"))
+}
+
 /// Whether a user-role message text is one of our ticks.
 #[must_use]
 pub fn is_tick(text: &str) -> bool {
@@ -220,6 +226,11 @@ pub async fn observe_message(state: &AppState, session_id: &str, payload: &mut s
     .execute(&state.pool)
     .await
     .map_err(|e| tracing::warn!(%session_id, "keep-alive reset failed: {e}"));
+    let _ = sqlx::query("UPDATE sessions SET timer_ticks = 0 WHERE id = $1 AND timer_ticks > 0")
+        .bind(session_id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| tracing::warn!(%session_id, "timer budget reset failed: {e}"));
 }
 
 /// Persist (or clear) a session's schedule. `Ok(None)` when the session does
@@ -296,10 +307,15 @@ struct ClaimedRow {
     keepalive_json: serde_json::Value,
 }
 
-/// One reaper-cadence sweep: claim the due ticks and send each through the
-/// same path as a human reply. A claimed tick that turns out unsendable is
-/// simply deferred to the next interval.
+/// One reaper-cadence sweep: claim the due ticks and timers and send each
+/// through the same path as a human reply. A claimed tick that turns out
+/// unsendable is simply deferred to the next interval.
 pub async fn sweep(state: &AppState) {
+    sweep_ticks(state).await;
+    sweep_timers(state).await;
+}
+
+async fn sweep_ticks(state: &AppState) {
     let rows: Vec<ClaimedRow> = match sqlx::query_as(CLAIM_SQL)
         .bind(BATCH)
         .bind(SessionRowStatus::names(SessionRowStatus::KEEPALIVE))
@@ -353,7 +369,8 @@ pub async fn sweep(state: &AppState) {
             tracing::info!(session_id = %row.id, ?reason, "keep-alive tick skipped");
             continue;
         }
-        fire(state, &row.id, schedule.ticks_sent, schedule.max_ticks).await;
+        fire(state, &row.id, tick_prompt(Utc::now())).await;
+        tracing::info!(session_id = %row.id, tick = schedule.ticks_sent, "keep-alive tick");
     }
 }
 
@@ -362,7 +379,7 @@ fn unique_accounts(per_row: &[Vec<uuid::Uuid>]) -> Vec<uuid::Uuid> {
     per_row.iter().flatten().copied().filter(|id| seen.insert(*id)).collect()
 }
 
-async fn fire(state: &AppState, session_id: &str, tick: u32, max_ticks: u32) {
+async fn fire(state: &AppState, session_id: &str, text: String) {
     let env = crate::routes::gateway::resume_env_for_session(state, session_id).await;
     let dispatch = crate::bus::dispatch(
         state,
@@ -370,7 +387,7 @@ async fn fire(state: &AppState, session_id: &str, tick: u32, max_ticks: u32) {
         cctui_proto::adapter::AdapterCommand::Reply {
             local_id: session_id.to_owned(),
             recover_auth: false,
-            text: tick_prompt(Utc::now()),
+            text,
             ask_picks: None,
             env,
             command_id: None,
@@ -378,10 +395,127 @@ async fn fire(state: &AppState, session_id: &str, tick: u32, max_ticks: u32) {
         },
     )
     .await;
-    match dispatch {
-        Ok(()) => tracing::info!(%session_id, tick, max_ticks, "keep-alive tick sent"),
-        Err(err) => {
-            tracing::warn!(%session_id, tick, %err, "keep-alive tick could not be dispatched");
+    if let Err(err) = dispatch {
+        tracing::warn!(%session_id, %err, "keep-alive tick could not be dispatched");
+    }
+}
+
+/// Arms the session's one pending timer, replacing an earlier one. `false`
+/// when the timer budget is spent or the session does not exist.
+pub async fn arm_timer(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    at: DateTime<Utc>,
+    prompt: &str,
+) -> sqlx::Result<bool> {
+    let armed: Option<String> = sqlx::query_scalar(
+        "UPDATE sessions SET timer_at = $2, timer_prompt = $3 \
+         WHERE id = $1 AND timer_ticks < $4 RETURNING id",
+    )
+    .bind(session_id)
+    .bind(at)
+    .bind(prompt)
+    .bind(i32::try_from(DEFAULT_MAX_TICKS).unwrap_or(i32::MAX))
+    .fetch_optional(pool)
+    .await?;
+    Ok(armed.is_some())
+}
+
+const TIMER_CLAIM_SQL: &str = "WITH due AS ( \
+        SELECT id, timer_prompt FROM sessions \
+        WHERE timer_at <= now() AND timer_prompt IS NOT NULL \
+          AND status = ANY($2) \
+          AND ended_at IS NULL \
+          AND soft_limit_reason IS NULL \
+          AND COALESCE(tempo, '') NOT IN ('blocked', 'active') \
+          AND COALESCE(agent_state, '') NOT IN ('working', 'running') \
+          AND timer_ticks < $3 \
+        ORDER BY timer_at \
+        LIMIT $1 \
+        FOR UPDATE SKIP LOCKED \
+     ) \
+     UPDATE sessions s \
+     SET timer_at = NULL, timer_prompt = NULL, timer_ticks = s.timer_ticks + 1 \
+     FROM due \
+     WHERE s.id = due.id AND s.timer_at <= now() \
+     RETURNING s.id, s.status, s.tempo, s.agent_state, s.soft_limit_reason, s.ended_at, \
+               due.timer_prompt AS prompt, s.timer_ticks";
+
+const TIMER_USAGE_RETRY_SECS: i32 = 300;
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct ClaimedTimer {
+    pub id: String,
+    status: String,
+    tempo: Option<String>,
+    agent_state: Option<String>,
+    soft_limit_reason: Option<String>,
+    ended_at: Option<DateTime<Utc>>,
+    pub prompt: String,
+    pub timer_ticks: i32,
+}
+
+pub async fn claim_timers(pool: &sqlx::PgPool) -> sqlx::Result<Vec<ClaimedTimer>> {
+    sqlx::query_as(TIMER_CLAIM_SQL)
+        .bind(BATCH)
+        .bind(SessionRowStatus::names(SessionRowStatus::KEEPALIVE))
+        .bind(i32::try_from(DEFAULT_MAX_TICKS).unwrap_or(i32::MAX))
+        .fetch_all(pool)
+        .await
+}
+
+async fn rearm_later(pool: &sqlx::PgPool, timer: &ClaimedTimer) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE sessions SET timer_at = now() + make_interval(secs => $3), timer_prompt = $2, \
+           timer_ticks = GREATEST(timer_ticks - 1, 0) \
+         WHERE id = $1 AND timer_at IS NULL",
+    )
+    .bind(&timer.id)
+    .bind(&timer.prompt)
+    .bind(TIMER_USAGE_RETRY_SECS)
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
+async fn usage_of(state: &AppState, session_id: &str) -> Vec<Vec<UsageWindow>> {
+    let accounts = crate::routes::gateway::resolve_session_accounts(state, session_id).await;
+    futures_util::future::join_all(accounts.into_iter().map(|account_id| async move {
+        crate::routes::gateway::usage_for_soft_limit(state, account_id)
+            .await
+            .as_ref()
+            .map(crate::soft_limit::normalize_usage_windows)
+            .unwrap_or_default()
+    }))
+    .await
+}
+
+async fn sweep_timers(state: &AppState) {
+    let timers = match claim_timers(&state.pool).await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!("timer claim query failed: {e}");
+            return;
+        }
+    };
+    for timer in timers {
+        let snap = Snapshot {
+            status: &timer.status,
+            tempo: timer.tempo.as_deref(),
+            agent_state: timer.agent_state.as_deref(),
+            soft_limit_reason: timer.soft_limit_reason.as_deref(),
+            ended: timer.ended_at.is_some(),
+            ticks_sent: u32::try_from(timer.timer_ticks - 1).unwrap_or(0),
+            max_ticks: DEFAULT_MAX_TICKS,
+        };
+        match decide(&snap, &usage_of(state, &timer.id).await) {
+            None => fire(state, &timer.id, timer_prompt(Utc::now(), &timer.prompt)).await,
+            Some(Skip::UsageHigh) => {
+                if let Err(e) = rearm_later(&state.pool, &timer).await {
+                    tracing::warn!(session_id = %timer.id, "timer re-arm failed: {e}");
+                }
+            }
+            Some(reason) => tracing::info!(session_id = %timer.id, ?reason, "timer dropped"),
         }
     }
 }
@@ -392,9 +526,10 @@ mod tests {
     use chrono::{TimeZone, Utc};
 
     use super::{
-        CLAIM_SQL, DEFAULT_MAX_TICKS, MIN_INTERVAL_SECS, Skip, Snapshot, cache_ttl_secs, decide,
-        default_interval_secs, is_human_message, is_tick, schedule_from_request, skip_reason,
-        stamp_tick, tick_prompt, unique_accounts, usage_too_high,
+        CLAIM_SQL, DEFAULT_MAX_TICKS, MIN_INTERVAL_SECS, Skip, Snapshot, TIMER_CLAIM_SQL,
+        cache_ttl_secs, decide, default_interval_secs, is_human_message, is_tick,
+        schedule_from_request, skip_reason, stamp_tick, tick_prompt, timer_prompt,
+        unique_accounts, usage_too_high,
     };
     use crate::soft_limit::UsageWindow;
 
@@ -574,6 +709,32 @@ mod tests {
         let mut assistant = serde_json::json!({"role": "assistant", "text": text});
         assert!(!stamp_tick(&mut assistant));
         assert!(!is_human_message(&assistant));
+    }
+
+    #[test]
+    fn a_timer_wake_is_a_stamped_tick_that_never_resets_the_budget() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 16, 9, 0, 0).unwrap();
+        let text = timer_prompt(now, "check the CI run");
+        assert_eq!(text, "[cctui keep-alive timer 2026-11-16T09:00:00Z] check the CI run");
+        let mut payload = serde_json::json!({ "role": "user", "text": text });
+        assert!(stamp_tick(&mut payload));
+        assert!(!is_human_message(&payload));
+    }
+
+    #[test]
+    fn the_timer_claim_shares_the_skip_rules_and_guards_the_update() {
+        for guard in [
+            "FOR UPDATE SKIP LOCKED",
+            "status = ANY($2)",
+            "ended_at IS NULL",
+            "soft_limit_reason IS NULL",
+            "COALESCE(tempo, '') NOT IN ('blocked', 'active')",
+            "COALESCE(agent_state, '') NOT IN ('working', 'running')",
+            "timer_ticks < $3",
+            "WHERE s.id = due.id AND s.timer_at <= now()",
+        ] {
+            assert!(TIMER_CLAIM_SQL.contains(guard), "timer claim lost the `{guard}` guard");
+        }
     }
 
     #[test]
