@@ -171,6 +171,7 @@ async fn validate_spawn(
     cctui_server_core::machine_policy::validate_env(req)?;
 
     let (machine_uuid, owner) = resolve_spawn_machine(state, ctx, &req.machine_id).await?;
+    refuse_missing_cwd(state, machine_uuid, &req.working_dir).await?;
 
     let adapter_id = spawn_adapter_on(state, machine_uuid, req.adapter_id.as_deref()).await?;
     let command_id = Uuid::new_v4();
@@ -210,6 +211,21 @@ async fn validate_spawn(
         token_session_id,
         context,
     })
+}
+
+/// A working directory the machine's daemon says is absent fails here, before
+/// any intent or session row exists. An unreachable daemon is not a refusal.
+async fn refuse_missing_cwd(
+    state: &AppState,
+    machine_uuid: Uuid,
+    working_dir: &str,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    let cwd = working_dir.trim();
+    if cwd.is_empty() || !crate::routes::fs::dir_missing(state, machine_uuid, cwd).await {
+        return Ok(());
+    }
+    let error = format!("working directory {cwd} does not exist on that machine");
+    Err((StatusCode::BAD_REQUEST, Json(ApiError { error })))
 }
 
 const fn requested_labels(
@@ -2584,5 +2600,105 @@ mod draft_seal_tests {
         assert_eq!(edit("rewritten").await.unwrap().0.status, "draft");
         let meta = stored_metadata(&pool, &id).await;
         assert!(meta.get(DRAFT_SEALED_PROMPT).is_none(), "a rewritten prompt drops the old seal");
+    }
+}
+
+#[cfg(test)]
+mod missing_cwd_tests {
+    use axum::http::StatusCode;
+    use uuid::Uuid;
+
+    use super::spawn_share_tests::{SPAWNER, caller, seed_machine, seed_user};
+    use crate::routes::fs::answer_list_dirs;
+    use crate::state::AppState;
+
+    const ENOENT: &str = "cannot resolve /nope: No such file or directory (os error 2)";
+
+    fn request(machine: Uuid, cwd: &str) -> cctui_proto::api::SpawnRequest {
+        serde_json::from_value(serde_json::json!({
+            "machine_id": machine.to_string(),
+            "working_dir": cwd,
+            "permission_mode": "yolo",
+        }))
+        .unwrap()
+    }
+
+    fn lazy_state() -> AppState {
+        AppState::for_test(sqlx::PgPool::connect_lazy("postgres://invalid").unwrap())
+    }
+
+    #[tokio::test]
+    async fn only_a_dir_the_daemon_reports_absent_is_refused() {
+        let state = lazy_state();
+        let machine = Uuid::new_v4();
+        assert!(super::refuse_missing_cwd(&state, machine, "/w").await.is_ok(), "offline");
+        assert!(super::refuse_missing_cwd(&state, machine, "  ").await.is_ok(), "no cwd");
+
+        let daemon = answer_list_dirs(&state, machine, Ok(Vec::new()));
+        assert!(super::refuse_missing_cwd(&state, machine, "/w").await.is_ok(), "exists");
+        daemon.await.unwrap();
+
+        let daemon = answer_list_dirs(&state, machine, Err(ENOENT.into()));
+        let (code, body) = super::refuse_missing_cwd(&state, machine, " /nope ").await.unwrap_err();
+        daemon.await.unwrap();
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert_eq!(body.0.error, "working directory /nope does not exist on that machine");
+    }
+
+    async fn rows_on(pool: &sqlx::PgPool, table: &str, machine: Uuid) -> i64 {
+        let column = if table == "sessions" { "machine_uuid" } else { "machine_id" };
+        sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE {column} = $1"))
+            .bind(machine)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_spawn_into_a_missing_dir_is_refused_before_any_row_exists() {
+        let name = "a_spawn_into_a_missing_dir_is_refused_before_any_row_exists";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let owner = seed_user(&pool).await;
+        let machine = seed_machine(&pool, owner).await;
+        let state = AppState::for_test(pool.clone());
+        let daemon = answer_list_dirs(&state, machine, Err(ENOENT.into()));
+
+        let refused = super::dispatch_spawn(
+            &state,
+            &caller(owner, SPAWNER),
+            request(machine, "/nope"),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+        let mut rx = daemon.await.unwrap();
+        let (code, body) = refused.err().expect("refused");
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert!(body.0.error.contains("/nope"), "{}", body.0.error);
+        assert!(rx.try_recv().is_err(), "nothing but the listing reached the daemon");
+        assert_eq!(rows_on(&pool, "sessions", machine).await, 0);
+        assert_eq!(rows_on(&pool, "machine_launches", machine).await, 0);
+    }
+
+    #[tokio::test]
+    async fn an_offline_machine_is_not_refused_for_its_cwd() {
+        let name = "an_offline_machine_is_not_refused_for_its_cwd";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let owner = seed_user(&pool).await;
+        let machine = seed_machine(&pool, owner).await;
+        let state = AppState::for_test(pool);
+        let outcome = super::dispatch_spawn(
+            &state,
+            &caller(owner, SPAWNER),
+            request(machine, "/nope"),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+        if let Err((_, body)) = outcome {
+            assert!(!body.0.error.contains("does not exist"), "{}", body.0.error);
+        }
     }
 }

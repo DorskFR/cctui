@@ -1981,6 +1981,8 @@
 	"spawn_cwd_branch_title": "Branche {branch}",
 	"spawn_cwd_detached_title": "HEAD détaché sur {sha}",
 	"spawn_cwd_label": "Répertoire de travail",
+	"spawn_cwd_missing": "Répertoire introuvable sur {machine}",
+	"spawn_cwd_offline": "Impossible de vérifier le répertoire : {machine} est hors ligne",
 	"spawn_cwd_recent_aria": "Répertoires récents",
 	"spawn_cwd_recent_placeholder": "Répertoires récents…",
 	"spawn_cwd_suggestions_aria": "Suggestions de répertoires",

@@ -743,7 +743,8 @@ async fn run_accounts(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Act
                 })],
                 Err(e) => {
                     tracing::warn!(%e, "the spawn request failed");
-                    vec![Action::Spawn(super::spawn::SpawnAction::Failed(e.to_string()))]
+                    let reason = super::spawn::failure_message(&e);
+                    vec![Action::Spawn(super::spawn::SpawnAction::Failed(reason))]
                 }
             }
         }
