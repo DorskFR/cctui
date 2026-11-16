@@ -13,7 +13,7 @@ pub const ID: &str = "email";
 
 const SMTP_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const SEND_BUDGET: Duration = Duration::from_secs(50);
-const CALL_TIMEOUT: Duration = Duration::from_secs(60);
+const CALL_TIMEOUT: Duration = Duration::from_mins(1);
 
 enum Mailer {
     Smtp(cctui_secrets::Secret),
@@ -132,10 +132,10 @@ impl EmailChannel {
                     .map_err(|_| SendError::Permanent("CCTUI_SMTP_URL is invalid".into()))?
                     .timeout(Some(SMTP_COMMAND_TIMEOUT))
                     .build();
-                match tokio::time::timeout(SEND_BUDGET, transport.send(message)).await {
-                    Ok(sent) => sent.map(|_| ()).map_err(|e| classify(&e)),
-                    Err(_) => Err(SendError::Retry("smtp send timed out".into())),
-                }
+                tokio::time::timeout(SEND_BUDGET, transport.send(message)).await.map_or_else(
+                    |_| Err(SendError::Retry("smtp send timed out".into())),
+                    |sent| sent.map(|_| ()).map_err(|e| classify(&e)),
+                )
             }
             #[cfg(test)]
             Mailer::Stub(stub) => {

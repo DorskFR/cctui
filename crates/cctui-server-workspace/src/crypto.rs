@@ -46,6 +46,7 @@ mod tests {
 
     async fn clear_vault_rows(tx: &mut sqlx::PgConnection) {
         for sql in [
+            crate::scheduled_messages::FOLD_LOCK,
             "LOCK TABLE session_message_queue IN SHARE MODE",
             "LOCK TABLE inbox_events IN SHARE MODE",
             "DELETE FROM api_keys",

@@ -4,6 +4,10 @@
 -- idempotent; a delivered message, recorded in scheduled_turns, is never folded again once
 -- the inbox prunes its event.
 
+-- One fold at a time: the DDL below holds SHARE locks that two concurrent
+-- folds would each need to pass to insert.
+SELECT pg_advisory_xact_lock(hashtext('cctui.fold_outboxes'));
+
 CREATE TABLE IF NOT EXISTS scheduled_turns (
     turn_id      UUID PRIMARY KEY,
     session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

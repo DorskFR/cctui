@@ -250,6 +250,9 @@ async fn record_turn(pool: &sqlx::PgPool, row: &ClaimedRow) -> sqlx::Result<()> 
 }
 
 pub const FOLD_SQL: &str = include_str!("../schema/0014_fold_outboxes.sql");
+/// The lock [`FOLD_SQL`] takes first; a test locking the folded tables takes it first too.
+#[cfg(test)]
+pub const FOLD_LOCK: &str = "SELECT pg_advisory_xact_lock(hashtext('cctui.fold_outboxes'))";
 
 /// Rows a replica still on the previous release writes during a rolling deploy.
 pub async fn fold_stragglers(pool: &sqlx::PgPool) {

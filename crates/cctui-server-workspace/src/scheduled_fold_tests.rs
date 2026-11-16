@@ -6,7 +6,7 @@ use cctui_proto::ws::DaemonFrameDown;
 use uuid::Uuid;
 
 use super::reply_gate_tests::queue_state;
-use super::{FOLD_SQL as FOLD, claim_one, scheduled_turns, settle};
+use super::{FOLD_LOCK, FOLD_SQL as FOLD, claim_one, scheduled_turns, settle};
 use crate::auth::{AuthContext, Scope};
 use crate::inbox::claim::LaneFilter;
 use crate::inbox::deliver::Outcome;
@@ -167,6 +167,14 @@ async fn footprint(conn: &mut sqlx::PgConnection, keys: &[String], sid: &str) ->
     .unwrap()
 }
 
+#[test]
+fn the_fold_takes_its_lock_before_any_other_statement() {
+    let lock = FOLD.find(FOLD_LOCK).expect("the fold takes the fold lock");
+    let first = FOLD.find("CREATE ").expect("the fold creates scheduled_turns");
+    assert!(lock < first);
+    assert!(FOLD[..lock].lines().all(|l| l.trim().is_empty() || l.starts_with("--")));
+}
+
 #[tokio::test]
 async fn the_fold_backfills_every_live_state_once_and_a_second_run_adds_nothing() {
     let name = "the_fold_backfills_every_live_state_once_and_a_second_run_adds_nothing";
@@ -178,6 +186,7 @@ async fn the_fold_backfills_every_live_state_once_and_a_second_run_adds_nothing(
         drafts.push(seed_session(&pool, owner, machine, "draft").await);
     }
     let mut tx = pool.begin().await.unwrap();
+    sqlx::query(FOLD_LOCK).execute(&mut *tx).await.unwrap();
 
     let mut messages = Vec::new();
     for (state, ago) in [
