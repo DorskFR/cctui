@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -16,48 +16,100 @@ fn client() -> &'static reqwest::Client {
     CLIENT.get_or_init(crate::build_http_client)
 }
 
+pub const SEALED_TOKEN: &str = "token_sealed";
+const MAX_TOPIC_CHARS: usize = 64;
+
 pub struct NtfyChannel {
-    topic_url: String,
-    token: cctui_secrets::Secret,
+    env: Option<(String, cctui_secrets::Secret)>,
+}
+
+struct Target {
+    url: String,
+    token: Option<Arc<str>>,
+    client: &'static reqwest::Client,
+}
+
+impl Target {
+    fn request(&self, method: reqwest::Method, url: &str) -> reqwest::RequestBuilder {
+        let req = self.client.request(method, url);
+        let Some(token) = &self.token else { return req };
+        req.bearer_auth(token)
+    }
+}
+
+#[must_use]
+pub fn valid_topic(topic: &str) -> bool {
+    !topic.is_empty()
+        && topic.chars().count() <= MAX_TOPIC_CHARS
+        && topic.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// `{url}/{topic}` of a user endpoint's `{url, topic}` config.
+#[must_use]
+pub fn user_topic_url(config: &Value) -> Option<String> {
+    let url = config.get("url")?.as_str()?.trim_end_matches('/');
+    let topic = config.get("topic")?.as_str()?;
+    (!url.is_empty() && valid_topic(topic)).then(|| format!("{url}/{topic}"))
+}
+
+fn unseal(sealed: &str) -> Result<Arc<str>, SendError> {
+    crate::crypto::decrypt(sealed, &crate::crypto::vault_key())
+        .map(Arc::from)
+        .ok_or_else(|| SendError::Permanent("the ntfy token could not be unsealed".into()))
+}
+
+fn user_target(config: &Value) -> Result<Target, SendError> {
+    let url = user_topic_url(config)
+        .ok_or_else(|| SendError::Permanent("unsupported ntfy endpoint".into()))?;
+    let token = config.get(SEALED_TOKEN).and_then(Value::as_str).map(unseal).transpose()?;
+    Ok(Target { url, token, client: crate::outbound::upstream_client() })
 }
 
 impl NtfyChannel {
     #[must_use]
-    pub fn from_config(config: &Config) -> Option<Self> {
-        Some(Self::new(config.ntfy_url.as_deref()?, config.ntfy_token.clone()?))
+    pub fn from_config(config: &Config) -> Self {
+        let env = config
+            .ntfy_url
+            .as_deref()
+            .zip(config.ntfy_token.clone())
+            .map(|(url, token)| (url.trim_end_matches('/').to_owned(), token));
+        Self { env }
     }
 
     #[must_use]
     pub fn new(topic_url: &str, token: cctui_secrets::Secret) -> Self {
-        Self { topic_url: topic_url.trim_end_matches('/').to_owned(), token }
+        Self { env: Some((topic_url.trim_end_matches('/').to_owned(), token)) }
     }
 
     /// The server token only ever goes to the server's own topic.
-    fn topic(&self, to: &Endpoint) -> Result<&str, SendError> {
-        match to.config.get("source").and_then(Value::as_str) {
-            Some("env") => Ok(&self.topic_url),
-            _ => Err(SendError::Permanent("unsupported ntfy endpoint".into())),
+    fn target(&self, to: &Endpoint) -> Result<Target, SendError> {
+        if to.config.get("source").and_then(Value::as_str) != Some("env") {
+            return user_target(&to.config);
         }
+        let (url, token) = self
+            .env
+            .as_ref()
+            .ok_or_else(|| SendError::Permanent("the server ntfy topic is not configured".into()))?;
+        Ok(Target { url: url.clone(), token: Some(token.get()), client: client() })
     }
+}
 
-    async fn publish(&self, n: &Rendered, topic: &str, sequence_id: &str) -> Result<(), SendError> {
-        let mut req = client()
-            .post(topic)
-            .bearer_auth(self.token.get())
-            .header("X-Sequence-ID", sequence_id)
-            .header("Title", encode_header(&n.title))
-            .header("Priority", n.priority.to_string());
-        if let Some(tags) = &n.tags {
-            req = req.header("Tags", encode_header(tags));
-        }
-        if let Some(link) = &n.link {
-            req = req.header("Click", encode_header(link));
-        }
-        if !n.buttons.is_empty() {
-            req = req.header("Actions", encode_header(&actions(&n.buttons).to_string()));
-        }
-        classify(req.body(n.body.clone().unwrap_or_default()).send().await).await
+async fn publish(n: &Rendered, to: &Target, sequence_id: &str) -> Result<(), SendError> {
+    let mut req = to
+        .request(reqwest::Method::POST, &to.url)
+        .header("X-Sequence-ID", sequence_id)
+        .header("Title", encode_header(&n.title))
+        .header("Priority", n.priority.to_string());
+    if let Some(tags) = &n.tags {
+        req = req.header("Tags", encode_header(tags));
     }
+    if let Some(link) = &n.link {
+        req = req.header("Click", encode_header(link));
+    }
+    if !n.buttons.is_empty() {
+        req = req.header("Actions", encode_header(&actions(&n.buttons).to_string()));
+    }
+    classify(req.body(n.body.clone().unwrap_or_default()).send().await).await
 }
 
 /// ntfy decodes RFC 2047 words; a raw non-ASCII header would fail the request builder.
@@ -118,17 +170,18 @@ impl Channel for NtfyChannel {
 
     async fn send(&self, n: &Rendered, to: &Endpoint) -> Result<ProviderRef, SendError> {
         let sequence_id = n.delivery_id.to_string();
-        self.publish(n, self.topic(to)?, &sequence_id).await?;
+        publish(n, &self.target(to)?, &sequence_id).await?;
         Ok(ProviderRef(json!({ "sequence_id": sequence_id })))
     }
 
     async fn update(&self, n: &Rendered, to: &Endpoint, r: &ProviderRef) -> Result<(), SendError> {
-        self.publish(n, self.topic(to)?, sequence_id(r)?).await
+        publish(n, &self.target(to)?, sequence_id(r)?).await
     }
 
     async fn retract(&self, to: &Endpoint, r: &ProviderRef) -> Result<(), SendError> {
-        let url = format!("{}/{}/clear", self.topic(to)?, sequence_id(r)?);
-        classify(client().put(url).bearer_auth(self.token.get()).send().await).await
+        let target = self.target(to)?;
+        let url = format!("{}/{}/clear", target.url, sequence_id(r)?);
+        classify(target.request(reqwest::Method::PUT, &url).send().await).await
     }
 }
 
@@ -296,6 +349,50 @@ mod tests {
         let err = channel(&base).send(&rendered(), &foreign).await.unwrap_err();
         assert!(matches!(err, SendError::Permanent(_)), "{err:?}");
         assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_user_endpoint_gets_its_own_topic_and_no_server_token() {
+        let (base, seen) = stub(200).await;
+        let mine = Endpoint { config: json!({ "url": format!("{base}/"), "topic": "mine" }) };
+        NtfyChannel { env: None }.send(&rendered(), &mine).await.unwrap();
+        let (method, path, headers) = seen.lock().unwrap().pop().unwrap();
+        assert_eq!((method.as_str(), path.as_str()), ("POST", "/mine"));
+        assert!(headers.get("authorization").is_none(), "the server token stays home");
+    }
+
+    #[tokio::test]
+    async fn a_user_endpoint_token_is_unsealed_at_send_time() {
+        crate::crypto::install_vault_key(vec![0x5a; 32]);
+        let (base, seen) = stub(200).await;
+        let sealed = crate::crypto::encrypt("utok", &crate::crypto::vault_key());
+        let mine = Endpoint {
+            config: json!({ "url": base, "topic": "mine", super::SEALED_TOKEN: sealed }),
+        };
+        let r = channel(&base).send(&rendered(), &mine).await.unwrap();
+        channel(&base).retract(&mine, &r).await.unwrap();
+        let calls = seen.lock().unwrap().clone();
+        assert_eq!(header(&calls[0].2, "authorization"), "Bearer utok");
+        assert_eq!(calls[1].0, "PUT");
+        assert!(calls[1].1.starts_with("/mine/"), "{}", calls[1].1);
+        assert_eq!(header(&calls[1].2, "authorization"), "Bearer utok");
+    }
+
+    #[test]
+    fn user_topic_urls_need_a_url_and_a_plain_topic() {
+        use super::user_topic_url;
+        assert_eq!(
+            user_topic_url(&json!({ "url": "https://ntfy.example/", "topic": "a_b-1" })).as_deref(),
+            Some("https://ntfy.example/a_b-1")
+        );
+        for bad in [
+            json!({ "url": "https://ntfy.example" }),
+            json!({ "topic": "t" }),
+            json!({ "url": "https://ntfy.example", "topic": "../admin" }),
+            json!({ "url": "https://ntfy.example", "topic": "" }),
+        ] {
+            assert_eq!(user_topic_url(&bad), None, "{bad}");
+        }
     }
 
     async fn db_user(name: &str) -> Option<(sqlx::PgPool, uuid::Uuid)> {

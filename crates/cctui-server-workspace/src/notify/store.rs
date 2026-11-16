@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, PgExecutor, PgPool};
 use uuid::Uuid;
 
+use super::prefs::{self, NotificationSettings, NotificationStage};
+use super::quiet;
 use crate::config::Config;
 
 pub const BODY_MAX_CHARS: usize = 280;
@@ -146,7 +148,14 @@ struct Route {
     channel: &'static str,
     endpoint_id: Option<Uuid>,
     delay_secs: i32,
+    stage: i32,
 }
+
+const USER_ENDPOINTS_SQL: &str = "\
+    SELECT id FROM notification_endpoints \
+    WHERE user_id = $1 AND channel = $2 AND enabled \
+      AND config ->> 'source' IS DISTINCT FROM 'env' \
+    ORDER BY created_at, id";
 
 impl Routing {
     #[must_use]
@@ -154,19 +163,131 @@ impl Routing {
         Self { ntfy: config.ntfy_url.is_some() && config.ntfy_token.is_some() }
     }
 
-    async fn plan(self, conn: &mut PgConnection, n: &NewNotification) -> sqlx::Result<Vec<Route>> {
+    async fn plan(
+        self,
+        conn: &mut PgConnection,
+        n: &NewNotification,
+        settings: &NotificationSettings,
+    ) -> sqlx::Result<Vec<Route>> {
+        let key = prefs::route_key(n.kind, n.blocking);
         let mut routes = Vec::new();
-        if self.ntfy
-            && let Some(delay_secs) = super::Push::for_kind(n.kind, n.blocking).delay_secs()
-            && let Some(endpoint) = env_endpoint(conn, n.user_id, super::ntfy_channel::ID).await?
-        {
-            routes.push(Route {
-                channel: super::ntfy_channel::ID,
-                endpoint_id: Some(endpoint),
-                delay_secs,
-            });
+        for &channel in prefs::PUSH_CHANNELS {
+            let Some(delay_secs) = prefs::delay_secs(prefs::stage(settings, key, channel)) else {
+                continue;
+            };
+            let stage = i32::from(delay_secs > 0);
+            for endpoint in self.endpoints(conn, n.user_id, channel).await? {
+                routes.push(Route { channel, endpoint_id: Some(endpoint), delay_secs, stage });
+            }
         }
         Ok(routes)
+    }
+
+    async fn endpoints(
+        self,
+        conn: &mut PgConnection,
+        user_id: Uuid,
+        channel: &str,
+    ) -> sqlx::Result<Vec<Uuid>> {
+        let mut ids: Vec<Uuid> = sqlx::query_scalar(USER_ENDPOINTS_SQL)
+            .bind(user_id)
+            .bind(channel)
+            .fetch_all(&mut *conn)
+            .await?;
+        if self.ntfy
+            && channel == super::ntfy_channel::ID
+            && let Some(env) = env_endpoint(conn, user_id, channel).await?
+        {
+            ids.insert(0, env);
+        }
+        Ok(ids)
+    }
+}
+
+/// Without a live socket anywhere the human cannot be looking, so the wait is pointless.
+fn presence_shortcut(notice_kind: &str) -> bool {
+    [super::kind::APPROVAL, super::kind::SESSION_STUCK].contains(&notice_kind)
+}
+
+const WATCHED_SQL: &str = "\
+    SELECT EXISTS (SELECT 1 FROM session_viewers \
+                   WHERE session_id = $2 AND seen_at > now() - make_interval(secs => $3)) \
+        OR EXISTS (SELECT 1 FROM session_viewers v JOIN sessions s ON s.id = v.session_id \
+                   WHERE s.user_id = $1 AND v.seen_at > now() - make_interval(secs => $3))";
+
+async fn watched(conn: &mut PgConnection, n: &NewNotification) -> sqlx::Result<bool> {
+    sqlx::query_scalar(WATCHED_SQL)
+        .bind(n.user_id)
+        .bind(n.session_id.as_deref())
+        .bind(crate::session_viewers::LIVE_WITHIN_SECS)
+        .fetch_one(conn)
+        .await
+}
+
+/// Pushes are counted per notice over the last hour; a notice that already pushes keeps
+/// its rows, so a collapse is never throttled.
+const CAP_SQL: &str = "\
+    SELECT EXISTS (SELECT 1 FROM notification_deliveries \
+                   WHERE notification_id = $2 AND channel <> 'in_app'), \
+           (SELECT count(DISTINCT d.notification_id) FROM notification_deliveries d \
+            JOIN notifications n ON n.id = d.notification_id \
+            WHERE n.user_id = $1 AND d.notification_id <> $2 AND d.channel <> 'in_app' \
+              AND d.state IN ('scheduled', 'sent', 'retracted') \
+              AND n.created_at > now() - interval '1 hour')";
+
+async fn over_cap(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    notification_id: Uuid,
+    cap: u32,
+) -> sqlx::Result<bool> {
+    let (pushing, recent): (bool, i64) =
+        sqlx::query_as(CAP_SQL).bind(user_id).bind(notification_id).fetch_one(conn).await?;
+    Ok(!pushing && recent >= i64::from(cap))
+}
+
+async fn shape(
+    conn: &mut PgConnection,
+    n: &NewNotification,
+    settings: &NotificationSettings,
+    notification_id: Uuid,
+    mut routes: Vec<Route>,
+) -> sqlx::Result<(Vec<Route>, bool)> {
+    if routes.is_empty() {
+        return Ok((routes, false));
+    }
+    if presence_shortcut(n.kind)
+        && routes.iter().any(|r| r.stage > 0)
+        && !watched(&mut *conn, n).await?
+    {
+        for r in routes.iter_mut().filter(|r| r.stage > 0) {
+            r.delay_secs = 0;
+        }
+    }
+    if let Some(window) = &settings.quiet_hours
+        && quiet::holds(n.severity)
+    {
+        for r in &mut routes {
+            let held = quiet::hold(&mut *conn, window, r.delay_secs).await?;
+            if held > r.delay_secs {
+                r.delay_secs = held;
+                r.stage = r.stage.max(1);
+            }
+        }
+    }
+    if over_cap(conn, n.user_id, notification_id, settings.max_push_per_hour).await? {
+        return Ok((Vec::new(), true));
+    }
+    Ok((routes, false))
+}
+
+fn throttled_notice(user_id: Uuid, cap: u32) -> NewNotification {
+    NewNotification {
+        collapse_key: Some(super::kind::THROTTLED.to_owned()),
+        body: Some(format!(
+            "More than {cap} pushes in the last hour: new notices stay in the app for now."
+        )),
+        ..NewNotification::new(user_id, super::kind::THROTTLED, "Notifications throttled".into())
     }
 }
 
@@ -175,7 +296,16 @@ async fn env_endpoint(
     user_id: Uuid,
     channel: &str,
 ) -> sqlx::Result<Option<Uuid>> {
-    let (id, enabled): (Uuid, bool) = sqlx::query_as(
+    let (id, enabled) = seed_env_endpoint(conn, user_id, channel).await?;
+    Ok(enabled.then_some(id))
+}
+
+pub async fn seed_env_endpoint(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    channel: &str,
+) -> sqlx::Result<(Uuid, bool)> {
+    sqlx::query_as(
         "INSERT INTO notification_endpoints (user_id, channel, label, config) \
          VALUES ($1, $2, 'server', '{\"source\": \"env\"}') \
          ON CONFLICT (user_id, channel) WHERE config ->> 'source' = 'env' \
@@ -185,14 +315,14 @@ async fn env_endpoint(
     .bind(user_id)
     .bind(channel)
     .fetch_one(conn)
-    .await?;
-    Ok(enabled.then_some(id))
+    .await
 }
 
 const UPSERT_SQL: &str = "\
     INSERT INTO notifications (user_id, kind, severity, session_id, machine_id, subject_kind, \
-        subject_id, collapse_key, title, body, tags, actions, expires_at) \
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now() + interval '7 days') \
+        subject_id, collapse_key, title, body, tags, actions, expires_at, state, read_at) \
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now() + interval '7 days', \
+            $13, CASE WHEN $13 = 'read' THEN now() END) \
     ON CONFLICT (user_id, collapse_key) \
         WHERE collapse_key IS NOT NULL AND state IN ('pending', 'delivered', 'read') \
     DO UPDATE SET repeat_count = notifications.repeat_count + 1, \
@@ -200,20 +330,27 @@ const UPSERT_SQL: &str = "\
         tags = EXCLUDED.tags, actions = EXCLUDED.actions, updated_at = now() \
     RETURNING *";
 
-async fn upsert(conn: &mut PgConnection, n: NewNotification) -> sqlx::Result<NotificationRecord> {
+/// A notice the user keeps out of the app is written already read.
+async fn upsert(
+    conn: &mut PgConnection,
+    n: &NewNotification,
+    in_app: bool,
+) -> sqlx::Result<NotificationRecord> {
+    let state = if in_app { State::Pending } else { State::Read };
     sqlx::query_as(UPSERT_SQL)
         .bind(n.user_id)
         .bind(n.kind)
         .bind(n.severity)
-        .bind(n.session_id)
+        .bind(n.session_id.as_deref())
         .bind(n.machine_id)
-        .bind(n.subject_kind)
-        .bind(n.subject_id)
-        .bind(n.collapse_key)
-        .bind(n.title)
+        .bind(n.subject_kind.as_deref())
+        .bind(n.subject_id.as_deref())
+        .bind(n.collapse_key.as_deref())
+        .bind(n.title.as_str())
         .bind(n.body.as_deref().map(clip))
-        .bind(n.tags)
-        .bind(n.actions)
+        .bind(n.tags.as_deref())
+        .bind(&n.actions)
+        .bind(state.as_str())
         .fetch_one(conn)
         .await
 }
@@ -224,8 +361,7 @@ async fn upsert(conn: &mut PgConnection, n: NewNotification) -> sqlx::Result<Not
 const UPSERT_DELIVERY_SQL: &str = "\
     INSERT INTO notification_deliveries \
         (notification_id, channel, endpoint_id, op, stage, next_attempt_at) \
-    VALUES ($1, $2, $3, 'send', CASE WHEN $4 > 0 THEN 1 ELSE 0 END, \
-            now() + make_interval(secs => $4)) \
+    VALUES ($1, $2, $3, 'send', $6, now() + make_interval(secs => $4)) \
     ON CONFLICT (notification_id, channel, endpoint_id) DO UPDATE \
     SET op = 'update', \
         next_attempt_at = GREATEST(now(), \
@@ -243,6 +379,7 @@ async fn upsert_delivery(
         .bind(route.endpoint_id)
         .bind(route.delay_secs)
         .bind(UPDATE_THROTTLE_SECS)
+        .bind(route.stage)
         .execute(conn)
         .await?;
     Ok(())
@@ -254,14 +391,54 @@ pub async fn emit(
     n: NewNotification,
 ) -> sqlx::Result<NotificationRecord> {
     let mut tx = pool.begin().await?;
-    let routes = routing.plan(&mut tx, &n).await?;
-    let record = upsert(&mut tx, n).await?;
+    let settings = prefs::load(&mut tx, n.user_id).await?;
+    let key = prefs::route_key(n.kind, n.blocking);
+    let in_app = prefs::stage(&settings, key, prefs::channel::IN_APP) != NotificationStage::Off;
+    let record = upsert(&mut tx, &n, in_app).await?;
+    let planned = routing.plan(&mut tx, &n, &settings).await?;
+    let (routes, throttled) = shape(&mut tx, &n, &settings, record.id, planned).await?;
     for route in routes {
         upsert_delivery(&mut tx, record.id, route).await?;
     }
+    let notice = if throttled {
+        let notice = throttled_notice(n.user_id, settings.max_push_per_hour);
+        Some(upsert(&mut tx, &notice, true).await?)
+    } else {
+        None
+    };
     tx.commit().await?;
     super::in_app::changed(pool, &record).await;
+    if let Some(notice) = &notice {
+        super::in_app::changed(pool, notice).await;
+    }
     Ok(record)
+}
+
+/// One send to one endpoint, past the user's routing, quiet hours and cap.
+pub async fn emit_test(
+    pool: &PgPool,
+    user_id: Uuid,
+    channel: &str,
+    endpoint_id: Uuid,
+) -> sqlx::Result<(NotificationRecord, Uuid)> {
+    let n = NewNotification {
+        body: Some("If this reached you, the endpoint works.".into()),
+        ..NewNotification::new(user_id, super::kind::TEST, "cctui test notification".into())
+    };
+    let mut tx = pool.begin().await?;
+    let record = upsert(&mut tx, &n, true).await?;
+    let delivery: Uuid = sqlx::query_scalar(
+        "INSERT INTO notification_deliveries (notification_id, channel, endpoint_id, op) \
+         VALUES ($1, $2, $3, 'send') RETURNING id",
+    )
+    .bind(record.id)
+    .bind(channel)
+    .bind(endpoint_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    super::in_app::changed(pool, &record).await;
+    Ok((record, delivery))
 }
 
 const TRANSITION_SQL: &str = "\
@@ -569,3 +746,7 @@ pub async fn awaits_decision<'e>(
             .await?;
     Ok(blocking.unwrap_or(false))
 }
+
+#[cfg(test)]
+#[path = "routing_tests.rs"]
+mod routing_tests;
