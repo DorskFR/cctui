@@ -117,7 +117,9 @@ export class NotificationStore {
 			source.onNotification((n) => this.upsert(n)),
 			source.onNotificationsUnread((c) => this.setUnread(c))
 		];
-		return () => offs.forEach((off) => off());
+		return () => {
+			for (const off of offs) off();
+		};
 	}
 
 	async load() {

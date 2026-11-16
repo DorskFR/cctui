@@ -64,8 +64,12 @@ function fakeSource() {
 			unreadCbs.add(cb);
 			return () => unreadCbs.delete(cb);
 		},
-		frame: (n: Notice) => noticeCbs.forEach((cb) => cb(n)),
-		unread: (c: number) => unreadCbs.forEach((cb) => cb(c)),
+		frame: (n: Notice) => {
+			for (const cb of noticeCbs) cb(n);
+		},
+		unread: (c: number) => {
+			for (const cb of unreadCbs) cb(c);
+		},
 		listeners: () => noticeCbs.size + unreadCbs.size
 	};
 }

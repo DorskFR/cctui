@@ -19,15 +19,17 @@
 		onchange: (stage: NotificationStage) => void;
 	} = $props();
 
+	const AFTER_DEFAULT = 10;
+	const minutes = $derived(stage.mode === 'after' ? stage.minutes : AFTER_DEFAULT);
 	const names = $derived({ kind: kindLabel(kind), channel: channelLabel(channel) });
 	const options = $derived([
 		{ value: 'off', label: m.notif_stage_off() },
 		{ value: 'now', label: m.notif_stage_now() },
-		{ value: 'after', label: m.notif_stage_after() }
+		{ value: 'after', label: m.notif_stage_delayed({ minutes }) }
 	]);
 
 	function setMode(mode: string) {
-		if (mode === 'after') onchange({ mode: 'after', minutes: stage.mode === 'after' ? stage.minutes : 10 });
+		if (mode === 'after') onchange({ mode: 'after', minutes });
 		else if (mode === 'off' || mode === 'now') onchange({ mode });
 	}
 </script>

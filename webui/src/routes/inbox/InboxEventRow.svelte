@@ -39,7 +39,7 @@
 		<Badge size="xs" uppercase>{event.source}</Badge>
 		<Timestamp value={Date.parse(event.created_at)} mode="relative" tone="faint" size="xs" />
 		{#if waiting}
-			<Text size="xs" tone="faint">{m.inbox_not_before({ at: new Date(waiting).toLocaleString() })}</Text>
+			<Text size="xs" tone="faint">{m.inbox_waiting_until({ at: new Date(waiting).toLocaleString() })}</Text>
 		{/if}
 		{#if event.attempts > 0}
 			<Text size="xs" tone="faint">{m.inbox_attempts({ count: event.attempts })}</Text>
