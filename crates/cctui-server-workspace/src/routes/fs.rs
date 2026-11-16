@@ -67,9 +67,26 @@ pub async fn list_dirs(
         Err(bus::BusError::Timeout) => {
             Err(AppError::new(StatusCode::GATEWAY_TIMEOUT, "timed out waiting for the daemon"))
         }
+        Err(bus::BusError::ListDirs(msg)) if is_missing_dir(&msg) => {
+            Err(AppError::new(StatusCode::NOT_FOUND, msg))
+        }
         Err(bus::BusError::ListDirs(msg)) => Err(AppError::new(StatusCode::BAD_REQUEST, msg)),
         Err(e) => Err(AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
+}
+
+/// Whether the daemon on `machine_uuid` reports `path` as absent. A daemon it
+/// cannot reach, a timeout, or a refusal unrelated to existence is not a miss.
+pub async fn dir_missing(state: &AppState, machine_uuid: Uuid, path: &str) -> bool {
+    matches!(
+        bus::list_dirs(state, machine_uuid, path.to_owned()).await,
+        Err(bus::BusError::ListDirs(msg)) if is_missing_dir(&msg)
+    )
+}
+
+/// The daemon's listing error ends with the OS error: ENOENT (2) or ENOTDIR (20).
+fn is_missing_dir(msg: &str) -> bool {
+    msg.ends_with("(os error 2)") || msg.ends_with("(os error 20)")
 }
 
 #[derive(Debug, Deserialize)]
@@ -577,6 +594,28 @@ fn file_response(
     Ok(resp)
 }
 
+/// Connects a fake daemon for `machine` that answers one `ListDirs` with
+/// `outcome`, and fails if anything else reaches it first.
+#[cfg(test)]
+#[must_use]
+pub fn answer_list_dirs(
+    state: &AppState,
+    machine: Uuid,
+    outcome: Result<Vec<String>, String>,
+) -> tokio::task::JoinHandle<tokio::sync::mpsc::Receiver<cctui_proto::ws::DaemonFrameDown>> {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    state.bus.register_daemon(machine, Uuid::new_v4(), tx);
+    let bus = state.bus.clone();
+    tokio::spawn(async move {
+        let Some(cctui_proto::ws::DaemonFrameDown::ListDirs { request_id, .. }) = rx.recv().await
+        else {
+            panic!("expected a ListDirs request");
+        };
+        assert!(bus.resolve_list_dirs(request_id, outcome));
+        rx
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1048,5 +1087,65 @@ mod tests {
         assert_eq!(read_error_status(ReadFileErrorKind::TooLarge), StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(read_error_status(ReadFileErrorKind::NotFound), StatusCode::NOT_FOUND);
         assert_eq!(read_error_status(ReadFileErrorKind::Io), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    const ENOENT: &str = "cannot resolve /nope: No such file or directory (os error 2)";
+
+    #[test]
+    fn only_a_missing_path_or_a_file_counts_as_missing() {
+        assert!(is_missing_dir(ENOENT));
+        assert!(is_missing_dir("cannot read /etc/hosts: Not a directory (os error 20)"));
+        assert!(!is_missing_dir("/etc is outside the allowed roots"));
+        assert!(!is_missing_dir("cannot read /root: Permission denied (os error 13)"));
+        assert!(!is_missing_dir("cannot read /x: some error (os error 21)"));
+    }
+
+    fn lazy_state() -> AppState {
+        AppState::for_test(sqlx::PgPool::connect_lazy("postgres://invalid").unwrap())
+    }
+
+    #[tokio::test]
+    async fn dir_missing_reads_the_daemons_listing() {
+        let state = lazy_state();
+        let machine = Uuid::new_v4();
+        assert!(!dir_missing(&state, machine, "/w").await, "an offline machine is not a miss");
+
+        let daemon = answer_list_dirs(&state, machine, Err(ENOENT.into()));
+        assert!(dir_missing(&state, machine, "/nope").await);
+        daemon.await.unwrap();
+
+        let daemon = answer_list_dirs(&state, machine, Ok(vec!["src".into()]));
+        assert!(!dir_missing(&state, machine, "/w").await);
+        daemon.await.unwrap();
+
+        let outside = "/etc is outside the allowed roots";
+        let daemon = answer_list_dirs(&state, machine, Err(outside.into()));
+        assert!(!dir_missing(&state, machine, "/etc").await);
+        daemon.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn listing_a_missing_dir_answers_404() {
+        let state = lazy_state();
+        let machine = Uuid::new_v4();
+        let daemon = answer_list_dirs(&state, machine, Err(ENOENT.into()));
+        let err = list_dirs(
+            State(state.clone()),
+            Path(machine.to_string()),
+            Query(ListDirsParams { path: "/nope".into() }),
+        )
+        .await
+        .unwrap_err();
+        daemon.await.unwrap();
+        assert_eq!(status_of(&err), StatusCode::NOT_FOUND);
+
+        let offline = list_dirs(
+            State(state),
+            Path(Uuid::new_v4().to_string()),
+            Query(ListDirsParams { path: "/w".into() }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status_of(&offline), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

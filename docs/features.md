@@ -99,7 +99,7 @@ feature).
 | `plugins` | | Runtime plugins: install, settings, backend proxy, static files, boot init and the sync task. |
 | `auto_approve` | | Per-session auto-approval of tool use. |
 | `scheduling` | | Scheduled messages and scheduled launches (schedule and cancel), and their tasks. |
-| `automation` | | Keep-alive, auto-resume, auto-redeem and follow-ups, their tasks, the follow-up thread view, and the external trigger endpoint. |
+| `automation` | | Keep-alive, auto-resume, auto-redeem and follow-ups, their tasks, the follow-up thread view, and the event inbox ingress (`/inbox/events`). |
 | `rooms` | | Rooms, peers and agent-to-agent messages. |
 | `voice` | | Speech synthesis and transcription, the voice WebSocket, agent voice notes, the speech settings. |
 | `previews` | | Dev-server previews: preview tickets, the internal preview leg and the preview sweep. Off, the server drops every preview frame a worker sends: no registration is recorded and nothing is sent back. |

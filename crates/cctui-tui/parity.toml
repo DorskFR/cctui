@@ -1573,6 +1573,30 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "post_inbox_events"
+# POST /inbox/events — Queue an event into a session's inbox lane, deduplicated by source id.
+tui = "waived"
+reason = "the inbox is an automation ingress for n8n and webhooks; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_inbox_events"
+# GET /inbox/events — List your inbox events, by lane and status.
+tui = "waived"
+reason = "the inbox is an automation ingress for n8n and webhooks; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_inbox_events_by_id"
+# GET /inbox/events/{id} — Read one inbox event, or cancel it while pending.
+tui = "waived"
+reason = "the inbox is an automation ingress for n8n and webhooks; the TUI keeps the operator loop"
+
+[[route]]
+id = "delete_inbox_events_by_id"
+# DELETE /inbox/events/{id} — Read one inbox event, or cancel it while pending.
+tui = "waived"
+reason = "the inbox is an automation ingress for n8n and webhooks; the TUI keeps the operator loop"
+
+[[route]]
 id = "get_drafts"
 # GET /drafts — List your unsent drafts.
 tui = "handled"

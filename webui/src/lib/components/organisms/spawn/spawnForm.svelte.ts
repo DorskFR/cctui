@@ -45,6 +45,8 @@ import {
 } from './profiles';
 import { blank, seedForm } from './spawnSeed';
 import { SpawnRecall } from './spawnRecall';
+import { makeCwdCheckWatcher, type CwdCheck } from './cwdCheck';
+import { fsLiveness } from './cwdGitInfo';
 import { buildSpawnBody, draftBody, envMap } from './spawnBody';
 import { withoutInvite } from '$lib/cctuiverse';
 import { withUserSpan } from '$lib/telemetry';
@@ -220,8 +222,18 @@ export class SpawnForm {
 	dispatchValid = $derived(
 		!!this.form.dispatcher && (!!this.form.prompt.trim() || !!this.form.prompt_file.trim())
 	);
+	machineRow = $derived(this.machineList.find((r) => r.machine_id === this.form.machine_id));
+	machineName = $derived(this.machineRow ? this.machineRow.display_name || this.machineRow.name : '');
+	cwdCheck = $state<CwdCheck>('unknown');
+	private readonly cwdWatcher = makeCwdCheckWatcher(
+		(machineId, path) => endpoints.machineDirs(machineId, path),
+		(check) => (this.cwdCheck = check)
+	);
+	// Drafts stay allowed: the directory may exist by the time one launches.
+	cwdMissing = $derived(this.target === 'machine' && this.cwdCheck === 'missing');
 	valid = $derived(
-		(this.target === 'machine' ? this.spawnValid : this.dispatchValid) && this.secretsValid
+		(this.target === 'machine' ? this.spawnValid && !this.cwdMissing : this.dispatchValid) &&
+			this.secretsValid
 	);
 	autosaveReady = $derived(
 		this.canDraft && this.target === 'machine' && this.spawnValid && !!this.form.prompt.trim()
@@ -238,7 +250,13 @@ export class SpawnForm {
 		`${this.target !== 'machine' ? m.spawn_action_dispatch() : m.spawn_action_spawn()} (${submitChordLabel()})`
 	);
 	noMachines = $derived(this.target === 'machine' && this.machineList.length === 0);
-	disabledReason = $derived(this.noMachines ? m.spawn_no_machines_hint() : undefined);
+	disabledReason = $derived(
+		this.noMachines
+			? m.spawn_no_machines_hint()
+			: this.cwdMissing
+				? m.spawn_cwd_missing({ machine: this.machineName })
+				: undefined
+	);
 
 	constructor(opts: SpawnFormOptions) {
 		const prefill = opts.prefill ?? null;
@@ -269,6 +287,15 @@ export class SpawnForm {
 	}
 
 	private effects() {
+		$effect(() => {
+			const on = this.target === 'machine' && hasFeature('files');
+			this.cwdWatcher.update(
+				on ? this.form.machine_id : '',
+				this.form.working_dir,
+				fsLiveness(this.machineRow)
+			);
+			return this.cwdWatcher.cancel;
+		});
 		$effect(() => {
 			const list = this.machineList;
 			if (this.form.machine_id || !list.length) return;
