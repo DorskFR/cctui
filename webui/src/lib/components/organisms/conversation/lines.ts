@@ -1,6 +1,7 @@
 import type { AgentEvent } from "@bindings/AgentEvent";
 import { USER_PREFIX } from "$lib/ws.svelte";
 import { looksKeepaliveTick } from "./keepalive";
+import { inboxBatchMarkdown, parseInboxBatch } from "./inboxBatch";
 import { m } from "$lib/paraglide/messages";
 import {
   assignLineKeys,
@@ -193,6 +194,18 @@ function userOrSystem(
     if (!ctx.visible("marker")) return null;
     const label = m.rooms_joined_marker();
     return { role: "marker", ts, text: label, markerTexts: [label] };
+  }
+  const inbox = parseInboxBatch(content);
+  if (inbox) {
+    if (!ctx.visible("system")) return null;
+    const prose = inboxBatchMarkdown(inbox);
+    return {
+      role: "system",
+      ts,
+      html: ctx.renderMarkdown(prose),
+      text: prose,
+      inbox: inbox.count,
+    };
   }
   if (looksKeepaliveTick(content)) {
     if (!ctx.visible("marker")) return null;

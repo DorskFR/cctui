@@ -30,4 +30,28 @@ pub(super) fn register(r: Routes) -> Routes {
         Authn::Bearer,
         Authenticated,
     )
+    .add(
+        &[Method::POST],
+        "/inbox/lanes/{id}/pause",
+        "Pause an inbox lane: its events wait until it is resumed.",
+        post(routes::inbox::pause_lane),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Dispatch),
+    )
+    .add(
+        &[Method::POST],
+        "/inbox/lanes/{id}/resume",
+        "Resume a paused inbox lane and deliver what waited.",
+        post(routes::inbox::resume_lane),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Dispatch),
+    )
+    .add(
+        &[Method::POST],
+        "/inbox/events/{id}/retry",
+        "Return a dead inbox event to pending with its attempts reset.",
+        post(routes::inbox::retry),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Dispatch),
+    )
 }

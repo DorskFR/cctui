@@ -7,7 +7,8 @@
 //!
 //! The cctui wrappers leading a user turn describe the old session, and a
 //! follow-up wraps this brief in its own: session context is dropped and a
-//! previous conversation shrinks to one line, so chains never nest.
+//! previous conversation shrinks to one line, so chains never nest. An inbox
+//! batch keeps its numbered event lines and loses its header.
 
 use std::fmt::Write as _;
 
@@ -76,7 +77,7 @@ fn classify(adapter_id: &str, event_type: &str, payload: Value) -> Option<(Role,
     let content = v.get("content").and_then(Value::as_str).unwrap_or_default();
     let kind = v.get("kind").and_then(Value::as_str);
     if let Some(text) = content.strip_prefix(USER_PREFIX) {
-        return without_injected(text).map(|text| (Role::User, text));
+        return without_injected(text).and_then(without_inbox_marker).map(|text| (Role::User, text));
     }
     if v.get("role").and_then(Value::as_str) == Some("Assistant")
         && matches!(kind, None | Some("attachment"))
@@ -108,6 +109,18 @@ fn without_injected(text: &str) -> Option<String> {
     }
     out.push_str(prose);
     Some(out)
+}
+
+fn without_inbox_marker(text: String) -> Option<String> {
+    let Some(rest) = text.trim_start().strip_prefix(crate::inbox::deliver::MARKER) else {
+        return Some(text);
+    };
+    let (head, events) = rest.split_once('\n').unwrap_or((rest, ""));
+    if !head.trim_end().ends_with(']') {
+        return Some(text);
+    }
+    let events = events.trim();
+    (!events.is_empty()).then(|| events.to_owned())
 }
 
 /// Fold stored rows (oldest first) into speaker turns.
@@ -311,6 +324,28 @@ mod tests {
                 Turn { role: Role::User, text: "next".into() },
             ]
         );
+    }
+
+    #[test]
+    fn an_inbox_batch_keeps_its_event_lines_without_the_wrapper() {
+        let events = "1. (n8n, 2026-11-16T09:02Z) ticket moved\n\
+                      2. (approval, 2026-11-16T09:07Z) approved: ship it\nsecond line";
+        let batch = format!("[cctui inbox: 2 events]\n{events}");
+        let turns = collect_turns(
+            "claude-code",
+            vec![user(&batch), assistant("on it"), user("[cctui inbox: 0 events]")],
+        );
+        assert_eq!(
+            turns,
+            vec![
+                Turn { role: Role::User, text: events.into() },
+                Turn { role: Role::Assistant, text: "on it".into() },
+            ]
+        );
+        let md = render(&turns, Caps::default()).markdown;
+        assert!(!md.contains("[cctui inbox"), "{md}");
+        let typed = collect_turns("claude-code", vec![user("[cctui inbox: what is this")]);
+        assert_eq!(typed[0].text, "[cctui inbox: what is this");
     }
 
     #[test]

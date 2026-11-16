@@ -163,6 +163,9 @@
 			<Badge size="xs" uppercase color="var(--bc)">{contextLabel}</Badge>
 		{:else if ln.voice}
 			<Badge size="xs" uppercase color="var(--bc)">{m.voice_live_toggle()}</Badge>
+		{:else if ln.inbox !== undefined}
+			<Badge size="xs" uppercase color="var(--bc)">{m.conversation_inbox_batch_badge()}</Badge>
+			<span class="who">· {m.conversation_inbox_batch_count({ count: ln.inbox })}</span>
 		{:else}
 			<Badge size="xs" uppercase color="var(--bc)"
 				>{ln.mcp ? 'mcp' : ln.role === 'result' ? 'result' : ln.role}</Badge

@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use super::Source;
 use super::store::{
-    Cancel, NewEvent, cancel, get, insert_event, list, prune_delivered, session_lane,
+    Cancel, NewEvent, Retry, cancel, get, insert_event, list, prune_delivered, retry, session_lane,
 };
 
 async fn pool(name: &str) -> Option<PgPool> {
@@ -191,4 +191,42 @@ async fn prune_takes_only_delivered_events_past_retention() {
         kept.push(exists(&pool, id).await);
     }
     assert_eq!(kept, [false, true, true, true, true]);
+}
+
+#[tokio::test]
+async fn only_a_dead_event_can_be_retried_by_its_owner() {
+    let name = "inbox_retry";
+    let Some(pool) = pool(name).await else { return };
+    let (uid, sid) = seed_session(&pool, name).await;
+    let (stranger, _) = seed_session(&pool, name).await;
+    let lane = session_lane(&pool, uid, &sid).await.unwrap();
+    let dead = insert_event(&pool, &event(lane, uid, Some("x"))).await.unwrap().id;
+    let delivered = insert_event(&pool, &event(lane, uid, Some("d"))).await.unwrap().id;
+    set_status(&pool, delivered, "delivered", Some(0)).await;
+    sqlx::query(
+        "UPDATE inbox_events SET status = 'dead', attempts = 11, last_error = 'offline', \
+         batch_id = gen_random_uuid(), next_attempt_at = now() + interval '1 day' WHERE id = $1",
+    )
+    .bind(dead)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(retry(&pool, Some(stranger), dead).await.unwrap(), Retry::NotFound);
+    assert_eq!(retry(&pool, Some(uid), dead).await.unwrap(), Retry::Retried { lane_id: lane });
+    let row: (String, i32, Option<String>, Option<Uuid>, bool) = sqlx::query_as(
+        "SELECT status, attempts, last_error, batch_id, next_attempt_at <= now() \
+         FROM inbox_events WHERE id = $1",
+    )
+    .bind(dead)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row, ("pending".to_owned(), 0, None, None, true));
+    assert_eq!(retry(&pool, Some(uid), dead).await.unwrap(), Retry::NotDead("pending".to_owned()));
+    assert_eq!(
+        retry(&pool, Some(uid), delivered).await.unwrap(),
+        Retry::NotDead("delivered".to_owned())
+    );
+    assert_eq!(retry(&pool, Some(uid), Uuid::new_v4()).await.unwrap(), Retry::NotFound);
 }
