@@ -312,6 +312,9 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::AccountSwitch(action) => super::account_switch::reduce_account_switch(app, action),
         Action::ContextItems(action) => super::context_items::reduce_context_items(app, action),
         Action::DeepLink(action) => super::deeplink::reduce_deeplink(app, action),
+        Action::Notifications(action) => {
+            super::notifications::reduce_notifications(app, action)
+        }
 
         Action::StreamLine { session_id, seq, line, usage } => {
             if let Some(usage) = usage {
@@ -349,6 +352,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             effects.extend(super::session_live::refresh(app));
             app.permissions.fetch_started();
             effects.push(Effect::FetchPendingPermissions);
+            effects.push(super::notifications::startup());
             effects
         }
         Action::Toast(level, text) => {
@@ -853,15 +857,15 @@ mod tests {
         assert!(!app.conversations.contains_key("s-b"));
     }
 
-    /// A reconnect always resyncs the whole-state pieces — the session list and
-    /// the server's pending permissions — and the transcript gap only when a
-    /// conversation is open.
+    /// A reconnect always resyncs the whole-state pieces — the session list, the
+    /// server's pending permissions and the notifications — and the transcript
+    /// gap only when a conversation is open.
     #[test]
     fn reconnecting_resubscribes_and_refetches_only_from_the_conversation() {
         let mut app = app();
         assert!(matches!(
             reduce(&mut app, Action::Reconnected).as_slice(),
-            [Effect::RefreshSessions, Effect::FetchPendingPermissions]
+            [Effect::RefreshSessions, Effect::FetchPendingPermissions, Effect::Notifications(_)]
         ));
 
         reduce(&mut app, Action::OpenSelectedConversation);
@@ -872,7 +876,8 @@ mod tests {
                 Effect::Subscribe { .. },
                 Effect::LoadConversationPage { .. },
                 Effect::RefreshSessions,
-                Effect::FetchPendingPermissions
+                Effect::FetchPendingPermissions,
+                Effect::Notifications(_)
             ]
         ));
     }

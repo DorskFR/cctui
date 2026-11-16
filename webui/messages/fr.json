@@ -1105,6 +1105,18 @@
 	"net_stats_title": "Données chargées depuis l'ouverture",
 	"net_stats_wire": "Réseau (compressé → décompressé)",
 	"net_stats_ws": "WebSocket",
+	"notif_act_failed": "Réponse impossible : {error}",
+	"notif_answered_elsewhere": "Déjà traitée : {state}",
+	"notif_center_close": "Fermer les notifications",
+	"notif_center_empty_description": "Vous êtes à jour.",
+	"notif_center_empty_title": "Aucune notification",
+	"notif_center_mark_all": "Tout marquer comme lu",
+	"notif_center_title": "Notifications",
+	"notif_dismiss_blocking": "Cette approbation attend votre réponse : répondez-y au lieu de l'ignorer",
+	"notif_dismiss_failed": "Impossible d'ignorer la notification",
+	"notif_load_failed": "Impossible de charger les notifications : {error}",
+	"notif_state": "{decision}",
+	"notif_state_on": "{decision} via {channel}",
 	"notify_completed_title": "cctui — terminé",
 	"notify_needs_input_title": "cctui — saisie requise",
 	"outcome_label": "Résultat déclaré",
@@ -2609,5 +2621,49 @@
 	"maintenance_next_retry": "Nouvel essai dans {seconds} s",
 	"maintenance_retry_now": "Réessayer maintenant",
 	"maintenance_retrying": "Nouvel essai…",
-	"maintenance_title": "cctui démarre ou est en maintenance"
+	"maintenance_title": "cctui démarre ou est en maintenance",
+	"conversation_inbox_batch_badge": "boîte",
+	"conversation_inbox_batch_count": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "{count} événement",
+				"countPlural=other": "{count} événements"
+			}
+		}
+	],
+	"nav_inbox": "Boîte de réception",
+	"inbox_title": "Boîte de réception",
+	"inbox_subtitle": "Les événements en file pour vos sessions, par voie. Un événement en attente patiente jusqu'à ce que la session de sa voie soit libre ; un événement mort a abandonné après ses tentatives.",
+	"inbox_empty": "Aucun événement dans la boîte de réception.",
+	"inbox_status_pending": "En attente",
+	"inbox_status_delivered": "Livrés",
+	"inbox_status_dead": "Morts",
+	"inbox_status_cancelled": "Annulés",
+	"inbox_landed_in": "Arrivé dans",
+	"inbox_delivered_as": "en {mode}",
+	"inbox_attempts": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "{count} tentative",
+				"countPlural=other": "{count} tentatives"
+			}
+		}
+	],
+	"inbox_cancel": "Annuler",
+	"inbox_retry": "Réessayer",
+	"inbox_not_before": "Pas avant {at}"
 }

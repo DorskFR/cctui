@@ -1105,6 +1105,18 @@
 	"net_stats_title": "Data loaded since page load",
 	"net_stats_wire": "Wire (compressed → decompressed)",
 	"net_stats_ws": "WebSocket",
+	"notif_act_failed": "Could not answer: {error}",
+	"notif_answered_elsewhere": "Already answered: {state}",
+	"notif_center_close": "Close notifications",
+	"notif_center_empty_description": "You are all caught up.",
+	"notif_center_empty_title": "No notifications",
+	"notif_center_mark_all": "Mark all read",
+	"notif_center_title": "Notifications",
+	"notif_dismiss_blocking": "This approval is waiting on you: answer it instead of dismissing it",
+	"notif_dismiss_failed": "Could not dismiss the notification",
+	"notif_load_failed": "Could not load notifications: {error}",
+	"notif_state": "{decision}",
+	"notif_state_on": "{decision} via {channel}",
 	"notify_completed_title": "cctui — completed",
 	"notify_needs_input_title": "cctui — needs input",
 	"outcome_label": "Outcome",
@@ -2609,5 +2621,49 @@
 	"maintenance_next_retry": "Retrying in {seconds} s",
 	"maintenance_retry_now": "Retry now",
 	"maintenance_retrying": "Retrying…",
-	"maintenance_title": "cctui is starting up or under maintenance"
+	"maintenance_title": "cctui is starting up or under maintenance",
+	"conversation_inbox_batch_badge": "inbox",
+	"conversation_inbox_batch_count": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "{count} event",
+				"countPlural=other": "{count} events"
+			}
+		}
+	],
+	"nav_inbox": "Inbox",
+	"inbox_title": "Inbox",
+	"inbox_subtitle": "Events queued for your sessions, by lane. Pending events wait for the lane's session to be idle; dead events gave up after their retries.",
+	"inbox_empty": "No inbox events.",
+	"inbox_status_pending": "Pending",
+	"inbox_status_delivered": "Delivered",
+	"inbox_status_dead": "Dead",
+	"inbox_status_cancelled": "Cancelled",
+	"inbox_landed_in": "Landed in",
+	"inbox_delivered_as": "as {mode}",
+	"inbox_attempts": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "{count} attempt",
+				"countPlural=other": "{count} attempts"
+			}
+		}
+	],
+	"inbox_cancel": "Cancel",
+	"inbox_retry": "Retry",
+	"inbox_not_before": "Not before {at}"
 }

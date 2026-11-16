@@ -25,6 +25,7 @@ pub mod list_view;
 pub mod machines;
 pub mod macros;
 pub mod mentions;
+pub mod notifications;
 pub mod pins;
 pub mod prompt;
 pub mod reduce;

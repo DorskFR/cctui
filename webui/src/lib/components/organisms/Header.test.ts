@@ -38,7 +38,9 @@ vi.mock('$lib/ws.svelte', () => ({
 		changeTick: 0,
 		onListPatch: () => () => {},
 		onMachineResources: () => () => {},
-		onAccountUsage: () => () => {}
+		onAccountUsage: () => () => {},
+		onNotification: () => () => {},
+		onNotificationsUnread: () => () => {}
 	}
 }));
 vi.mock('$lib/toast.svelte', () => ({
@@ -83,7 +85,7 @@ const menuRows = () =>
 const rowByText = (text: string) =>
 	menuRows().find((r) => r.textContent?.includes(text)) ?? null;
 
-describe('the system bar carries neither the ? nor the bell', () => {
+describe('the system bar carries no ? button', () => {
 	it('has no standalone guides button in the tail', () => {
 		render();
 		const tail = document.querySelector('.tail') as HTMLElement;

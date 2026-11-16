@@ -2,6 +2,8 @@ import { browser } from "$app/environment";
 import { goto } from "$app/navigation";
 import { m } from "$lib/paraglide/messages";
 import type { SessionListItem } from "@bindings/SessionListItem";
+import type { Notification as Notice } from "@bindings/Notification";
+import { isUnread } from "./notifications.svelte";
 import { freshResults } from "./outcome";
 
 const KEY_ENABLED = "cctui_notify_enabled";
@@ -9,14 +11,10 @@ const KEY_SOUND = "cctui_notify_sound";
 const BRAND = "cctui";
 
 /**
- * Browser-notification + sound for sessions that need the user's input.
- * List-driven: `reconcile()` is fed the set of sessions with
- * `attention === 'needs_input'` and fires one notification per session per
- * episode (dedupe by id; re-arms once the session stops needing input).
- *
- * The title badge (`(N) cctui`) updates regardless of notification
- * permission, so it degrades gracefully when notifications are denied or the
- * page isn't a secure context.
+ * The page-local renderer of the notification service: `announce()` turns each
+ * live notification into a browser alert and closes it once the notice is read
+ * or answered anywhere. The title badge (`(N) cctui`) is the server's unread
+ * count and updates whatever the notification permission.
  */
 class Notifier {
   permission = $state<NotificationPermission>("default");
@@ -32,6 +30,9 @@ class Notifier {
   pendingOpen = $state<string | null>(null);
 
   private notified = new Set<string>();
+  /** Notice id -> repeat count already alerted. */
+  private alerted = new Map<string, number>();
+  private shown = new Map<string, Notification>();
   /** Result outcome ids already seen; the first list load only seeds it. */
   private announced: Set<string> | null = null;
   /** Last badge count, replayed when the base title changes. */
@@ -95,27 +96,47 @@ class Notifier {
   }
 
   /**
-   * Diff the set of sessions needing input against what we've already
-   * notified, fire for newly-blocked sessions, and keep the title badge in
-   * sync. Cheap to call on every list change.
+   * One alert per needs-input episode for sessions no notification speaks
+   * for: prompts the server does not turn into notifications yet.
    */
-  reconcile(needing: SessionListItem[]) {
+  reconcile(needing: SessionListItem[], covered: ReadonlySet<string> = new Set()) {
     if (!browser) return;
     const ids = new Set(needing.map((s) => s.id));
     // Re-arm sessions that stopped needing input, so the next episode notifies.
     for (const id of [...this.notified])
       if (!ids.has(id)) this.notified.delete(id);
 
-    this.updateBadge(needing.length);
-
     if (!this.enabled || this.permission !== "granted") return;
     for (const s of needing) {
       if (this.notified.has(s.id)) continue;
       this.notified.add(s.id);
+      if (covered.has(s.id)) continue;
       // Don't notify for a session you're already staring at.
       if (document.visibilityState === "visible" && this.#open.has(s.id)) continue;
       this.fire(s, m.notify_needs_input_title(), s.last_message_text);
     }
+  }
+
+  /** A live notification frame: alert on first sight and on each collapse
+   *  repeat; close the banner once it is no longer unread. */
+  announce(n: Notice) {
+    if (!browser) return;
+    if (!isUnread(n)) {
+      this.alerted.delete(n.id);
+      this.shown.get(n.id)?.close();
+      this.shown.delete(n.id);
+      return;
+    }
+    if ((this.alerted.get(n.id) ?? 0) >= n.repeat_count) return;
+    this.alerted.set(n.id, n.repeat_count);
+    if (!this.enabled || this.permission !== "granted") return;
+    if (document.visibilityState === "visible" && n.session_id && this.#open.has(n.session_id)) return;
+    const shown = this.show(n.title, n.body ?? undefined, n.collapse_key ?? n.id, n.session_id);
+    if (shown) this.shown.set(n.id, shown);
+  }
+
+  setUnread(count: number) {
+    this.updateBadge(count);
   }
 
   /** Fire once per `result` outcome that lands while the page is open. */
@@ -185,21 +206,32 @@ class Notifier {
   }
 
   private fire(s: SessionListItem, title: string, detail: string | null | undefined) {
+    this.show(title, detail ? `${this.label(s)}\n${detail}` : this.label(s), s.id, s.id);
+  }
+
+  private show(
+    title: string,
+    body: string | undefined,
+    tag: string,
+    sessionId: string | null,
+  ): Notification | null {
+    let n: Notification | null = null;
     try {
-      const n = new Notification(title, {
-        body: detail ? `${this.label(s)}\n${detail}` : this.label(s),
-        tag: s.id,
-      });
-      n.onclick = () => {
+      const shown = new Notification(title, { body, tag });
+      shown.onclick = () => {
         window.focus();
-        this.pendingOpen = s.id;
-        if (!/^\/sessions(\/|$)/.test(location.pathname)) void goto("/sessions");
-        n.close();
+        if (sessionId) {
+          this.pendingOpen = sessionId;
+          if (!/^\/sessions(\/|$)/.test(location.pathname)) void goto("/sessions");
+        }
+        shown.close();
       };
+      n = shown;
     } catch {
       /* construction can throw on some platforms; ignore */
     }
     if (this.sound) this.playSound();
+    return n;
   }
 
   /** Short WebAudio "ping" — no bundled asset, gated behind the user opt-in. */

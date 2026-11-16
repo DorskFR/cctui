@@ -42,6 +42,7 @@ pub enum Context {
     HarnessMode,
     AccountSwitch,
     Catalogue,
+    Notifications,
     Ask,
     AskText,
     Plan,
@@ -77,6 +78,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::HarnessMode,
     Context::AccountSwitch,
     Context::Catalogue,
+    Context::Notifications,
     Context::Ask,
     Context::AskText,
     Context::Plan,
@@ -114,6 +116,7 @@ impl Context {
             Self::HarnessMode => "harness-mode",
             Self::AccountSwitch => "account-switch",
             Self::Catalogue => "context",
+            Self::Notifications => "notifications",
             Self::Ask => "ask",
             Self::AskText => "ask-text",
             Self::Plan => "plan",
@@ -151,6 +154,7 @@ impl Context {
             Self::HarnessMode => "Harness mode",
             Self::AccountSwitch => "Switch account",
             Self::Catalogue => "Context browser",
+            Self::Notifications => "Notifications",
             Self::Ask => "Question card",
             Self::AskText => "Question card — free text",
             Self::Plan => "Plan card",
@@ -385,6 +389,13 @@ actions! {
     ContextReject => "context-reject", "Reject the agent's pending proposal";
     ContextDelete => "context-delete", "Delete the item (press twice)";
     ContextAttach => "context-attach", "Attach the memory to the session";
+    NotificationsOpen => "notifications-open", "Notifications";
+    NotificationsClose => "notifications-close", "Close the notifications";
+    NotificationsNext => "notifications-next", "Next notification";
+    NotificationsPrev => "notifications-prev", "Previous notification";
+    NotificationsAct => "notifications-act", "Answer with the numbered action";
+    NotificationsDismiss => "notifications-dismiss", "Dismiss the notification";
+    NotificationsReadAll => "notifications-read-all", "Mark every notification read";
 
     OverviewScrollDown => "overview-scroll-down", "Scroll the overview down";
     OverviewScrollUp => "overview-scroll-up", "Scroll the overview up";
@@ -719,6 +730,16 @@ const CONTEXT_ITEMS: &[BindingSpec] = &[
     spec(Context::Catalogue, "enter", ActionId::ContextAttach),
 ];
 
+const NOTIFICATIONS: &[BindingSpec] = &[
+    spec(Context::Global, "B", ActionId::NotificationsOpen),
+    spec(Context::Notifications, "esc, q, B", ActionId::NotificationsClose),
+    spec(Context::Notifications, "down, ctrl+n, j", ActionId::NotificationsNext),
+    spec(Context::Notifications, "up, ctrl+p, k", ActionId::NotificationsPrev),
+    spec(Context::Notifications, "1-9", ActionId::NotificationsAct),
+    spec(Context::Notifications, "d", ActionId::NotificationsDismiss),
+    spec(Context::Notifications, "R", ActionId::NotificationsReadAll),
+];
+
 const HARNESS_MODE: &[BindingSpec] = &[
     spec(Context::HarnessMode, "esc, q", ActionId::HarnessModeClose),
     spec(Context::HarnessMode, "down, ctrl+n, j", ActionId::HarnessModeNext),
@@ -849,6 +870,7 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     HARNESS_MODE,
     ACCOUNT_SWITCH,
     CONTEXT_ITEMS,
+    NOTIFICATIONS,
     ASK,
     ASK_TEXT,
     PLAN,

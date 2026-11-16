@@ -11,6 +11,8 @@
 	import { auth } from '$lib/auth.svelte';
 	import { hasFeature } from '$lib/features.svelte';
 	import { notify } from '$lib/notify.svelte';
+	import { notifications } from '$lib/notifications.svelte';
+	import { untrack } from 'svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { toasts } from '$lib/toast.svelte';
 	import { Avatar, Dot, FontScalePicker, Menu, Text, ThemePicker } from '@dorsk/tsumikit';
@@ -21,6 +23,7 @@
 import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	import ProviderStatusDot from '$lib/components/molecules/ProviderStatusDot.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
+	import NotificationBell from '$lib/components/organisms/NotificationBell.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	const version = useVersion();
@@ -64,9 +67,19 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	const needsInput = $derived(
 		(sessions.data?.sessions ?? []).filter((s) => s.attention === 'needs_input')
 	);
+	const covered = $derived(
+		new Set(notifications.items.flatMap((n) => (n.session_id ? [n.session_id] : [])))
+	);
 
-	// Drive notifications + title badge off the list's attention flags.
-	$effect(() => notify.reconcile(needsInput));
+	$effect(() => notifications.connect(ws));
+	$effect(() => ws.onNotification((n) => notify.announce(n)));
+	$effect(() => notify.setUnread(notifications.unread));
+	// A socket that was down missed frames: every (re)open reloads the list.
+	$effect(() => {
+		if (ws.status !== 'open') return;
+		untrack(() => void notifications.load().catch(() => {}));
+	});
+	$effect(() => notify.reconcile(needsInput, covered));
 	$effect(() => notify.reconcileCompleted(sessions.data?.sessions));
 
 	async function toggleNotify() {
@@ -208,6 +221,7 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 				/>
 				<FontScalePicker />
 			</span>
+			<NotificationBell />
 			<Menu label={m.nav_user_menu()} items={userMenu} bare placement="bottom-end">
 				{#snippet trigger()}
 					<span class="pill">

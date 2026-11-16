@@ -46,6 +46,7 @@ pub enum View {
     HarnessMode,
     AccountSwitch,
     ContextItems,
+    Notifications,
 }
 
 /// A pending permission request from Claude Code that needs TUI approval.
@@ -385,6 +386,7 @@ pub struct App {
     pub account_switch: Option<AccountSwitchPicker>,
     /// The context browser, `None` when closed.
     pub context_items: Option<ContextBrowser>,
+    pub notifications: super::notifications::NotificationState,
     /// Interrupt/fork confirmations and the model picker.
     pub controls: super::controls::Controls,
     /// Cursor state of the todo/subagent sidebar.
@@ -522,6 +524,7 @@ impl App {
             harness_picker: None,
             account_switch: None,
             context_items: None,
+            notifications: super::notifications::NotificationState::default(),
             controls: super::controls::Controls::default(),
             sidebar: super::sidebar::Sidebar::default(),
             unread: super::unread::Unread::default(),
