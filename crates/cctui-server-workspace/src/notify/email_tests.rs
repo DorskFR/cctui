@@ -5,7 +5,7 @@ use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use uuid::Uuid;
 
-use super::{EmailChannel, ID, Mailer, address, render, verdict};
+use super::{EmailChannel, ID, Mailer, SEND_BUDGET, SMTP_COMMAND_TIMEOUT, address, render, verdict};
 use crate::config::Config;
 use crate::notify::channel::{
     Button, Capabilities, Channel, Channels, Endpoint, Press, ProviderRef, Rendered, SendError,
@@ -137,6 +137,8 @@ async fn email_is_send_only() {
         ch.capabilities(),
         Capabilities { update: false, retract: false, buttons: 0, needs_token: true }
     );
+    assert!(SMTP_COMMAND_TIMEOUT < SEND_BUDGET && SEND_BUDGET < ch.call_timeout());
+    assert!(ch.call_timeout() > crate::notify::channel::DEFAULT_CALL_TIMEOUT);
     let r = ProviderRef(json!({ "message_id": "<x@y>" }));
     ch.update(&rendered(), &to("me@example.com"), &r).await.unwrap();
     ch.retract(&to("me@example.com"), &r).await.unwrap();

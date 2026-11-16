@@ -11,7 +11,9 @@ use crate::config::Config;
 
 pub const ID: &str = "email";
 
-const SMTP_TIMEOUT: Duration = Duration::from_secs(8);
+const SMTP_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+const SEND_BUDGET: Duration = Duration::from_secs(50);
+const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 enum Mailer {
     Smtp(cctui_secrets::Secret),
@@ -90,7 +92,7 @@ fn classify(e: &lettre::transport::smtp::Error) -> SendError {
     verdict(e.is_permanent() || e.is_client(), e.to_string())
 }
 
-fn verdict(permanent: bool, detail: String) -> SendError {
+const fn verdict(permanent: bool, detail: String) -> SendError {
     if permanent { SendError::Permanent(detail) } else { SendError::Retry(detail) }
 }
 
@@ -128,9 +130,12 @@ impl EmailChannel {
             Mailer::Smtp(url) => {
                 let transport = AsyncSmtpTransport::<Tokio1Executor>::from_url(&url.get())
                     .map_err(|_| SendError::Permanent("CCTUI_SMTP_URL is invalid".into()))?
-                    .timeout(Some(SMTP_TIMEOUT))
+                    .timeout(Some(SMTP_COMMAND_TIMEOUT))
                     .build();
-                transport.send(message).await.map(|_| ()).map_err(|e| classify(&e))
+                match tokio::time::timeout(SEND_BUDGET, transport.send(message)).await {
+                    Ok(sent) => sent.map(|_| ()).map_err(|e| classify(&e)),
+                    Err(_) => Err(SendError::Retry("smtp send timed out".into())),
+                }
             }
             #[cfg(test)]
             Mailer::Stub(stub) => {
@@ -148,6 +153,10 @@ impl Channel for EmailChannel {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities { update: false, retract: false, buttons: 0, needs_token: true }
+    }
+
+    fn call_timeout(&self) -> Duration {
+        CALL_TIMEOUT
     }
 
     async fn send(&self, n: &Rendered, to: &Endpoint) -> Result<ProviderRef, SendError> {

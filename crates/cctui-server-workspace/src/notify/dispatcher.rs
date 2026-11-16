@@ -15,7 +15,6 @@ use crate::config::Config;
 const CLAIM_LEASE_SECS: i64 = 300;
 const SWEEP_LIMIT: i64 = 50;
 const CONCURRENCY: usize = 8;
-const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 pub const MAX_ATTEMPTS: i32 = 11;
 
 const fn retry_schedule() -> Backoff {
@@ -224,7 +223,7 @@ async fn attempt(pool: &PgPool, channels: &Channels, row: &Due) -> Outcome {
             (op, _) => Err(SendError::Permanent(format!("unknown op {op}"))),
         }
     };
-    match tokio::time::timeout(CALL_TIMEOUT, call).await {
+    match tokio::time::timeout(channel.call_timeout(), call).await {
         Ok(Ok(outcome)) => outcome,
         Ok(Err(e)) => Outcome::Failed(e),
         Err(_) => Outcome::Failed(SendError::Retry("timed out".into())),

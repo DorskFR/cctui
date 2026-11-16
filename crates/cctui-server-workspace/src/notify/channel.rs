@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use uuid::Uuid;
 
 use crate::config::Config;
+
+pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capabilities {
@@ -61,6 +64,9 @@ pub struct ProviderRef(pub serde_json::Value);
 pub trait Channel: Send + Sync {
     fn id(&self) -> &'static str;
     fn capabilities(&self) -> Capabilities;
+    fn call_timeout(&self) -> Duration {
+        DEFAULT_CALL_TIMEOUT
+    }
     async fn send(&self, n: &Rendered, to: &Endpoint) -> Result<ProviderRef, SendError>;
     async fn update(&self, n: &Rendered, to: &Endpoint, r: &ProviderRef) -> Result<(), SendError>;
     async fn retract(&self, to: &Endpoint, r: &ProviderRef) -> Result<(), SendError>;
