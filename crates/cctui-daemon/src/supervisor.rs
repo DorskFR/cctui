@@ -357,6 +357,11 @@ impl Supervisor {
             self.machine_key.clone(),
             shutdown.clone(),
         );
+        crate::dispatch::start_result_relay(
+            self.client.clone(),
+            self.machine_key.clone(),
+            shutdown.clone(),
+        );
 
         // Adapters live for the life of the process, not of a connection: their
         // tokens own live session subprocesses (`opencode serve`, `codex

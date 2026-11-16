@@ -23,6 +23,9 @@ use std::time::{Duration, Instant};
 use cctui_proto::api::context::{
     ContextMatch, ContextToolEntry, ContextToolRequest, ContextToolResponse,
 };
+use cctui_proto::api::outcome::{
+    DeclareOutcomeRequest, DeclareOutcomeResult, OutcomeSource, OutcomeStatus,
+};
 use cctui_proto::api::{
     ArchiveChildRequest, ArchiveChildResponse, MessageChildRequest, PeerMessageRequest,
     RoomToolRequest, SpawnChildRequest,
@@ -103,6 +106,7 @@ enum CallKind {
     /// server, which owns the list and answers with all of it.
     UserActionAdd(Value),
     UserActionTick(Value),
+    Outcome(DeclareOutcomeRequest),
     Context(ContextToolRequest),
     /// `CctuiSpeak`: synthesize `text` into a voice note posted in the caller's
     /// own conversation.
@@ -141,6 +145,7 @@ const fn call_feature(kind: &CallKind) -> Option<Feature> {
         CallKind::Usage { .. }
         | CallKind::UserActionAdd(_)
         | CallKind::UserActionTick(_)
+        | CallKind::Outcome(_)
         | CallKind::RelayReady
         | CallKind::RelayWait => None,
     }
@@ -201,6 +206,7 @@ fn parse_call(line: &str) -> Result<Call, String> {
         Some("peer_history") => parse_peer_history(&args)?,
         Some("user_action_add") => parse_user_action_add(&args),
         Some("user_action_tick") => parse_user_action_tick(&args)?,
+        Some("outcome") => parse_outcome(&args)?,
         Some("context") => parse_context(&args)?,
         Some("relay_ready") => CallKind::RelayReady,
         Some("relay_wait") => CallKind::RelayWait,
@@ -297,6 +303,34 @@ fn parse_user_action_tick(args: &Value) -> Result<CallKind, String> {
         "status": status,
         "note": string_arg(args, "note"),
     })))
+}
+
+fn parse_outcome(args: &Value) -> Result<CallKind, String> {
+    let status = match string_arg(args, "status").as_deref() {
+        Some("result") => OutcomeStatus::Result,
+        Some("needs_input") => OutcomeStatus::NeedsInput,
+        Some("failed") => OutcomeStatus::Failed,
+        other => {
+            return Err(format!(
+                "status must be \"result\", \"needs_input\" or \"failed\", got {}",
+                other.unwrap_or("nothing"),
+            ));
+        }
+    };
+    let evidence = args
+        .get("evidence")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+        .unwrap_or_default();
+    DeclareOutcomeRequest {
+        status,
+        headline: args.get("headline").and_then(Value::as_str).unwrap_or("").to_owned(),
+        body: string_arg(args, "body"),
+        evidence,
+        source: OutcomeSource::Tool,
+    }
+    .normalized()
+    .map(CallKind::Outcome)
 }
 
 fn parse_spawn_agent(args: &Value) -> Result<CallKind, String> {
@@ -492,6 +526,7 @@ fn dispatch_note(kind: &CallKind, timeout: Duration) -> String {
         | CallKind::PeerHistory { .. }
         | CallKind::UserActionAdd(_)
         | CallKind::UserActionTick(_)
+        | CallKind::Outcome(_)
         | CallKind::Context(_)
         | CallKind::Speak { .. }
         | CallKind::RelayReady
@@ -1065,6 +1100,32 @@ async fn run_user_action(
     }
 }
 
+async fn run_outcome(
+    server: &ServerClient,
+    machine_key: &str,
+    session_id: &str,
+    req: &DeclareOutcomeRequest,
+) -> Value {
+    match server.outcome_call(machine_key, session_id, req).await {
+        Ok(result) => render_outcome_result(&result),
+        Err(err) => json!({ "ok": false, "error": err.to_string() }),
+    }
+}
+
+fn render_outcome_result(result: &DeclareOutcomeResult) -> Value {
+    if let Some(err) = &result.error {
+        return json!({ "ok": false, "error": format!("rejected: {err}") });
+    }
+    let Some(outcome) = &result.outcome else {
+        return json!({ "ok": false, "error": "the server stored no outcome" });
+    };
+    let mut text = format!("outcome recorded: {} — {}", outcome.status.as_str(), outcome.headline);
+    if result.callback_queued {
+        text.push_str("\nthe dispatch callback will deliver it to notify_url");
+    }
+    json!({ "ok": true, "result": text })
+}
+
 /// `CctuiSend`.
 ///
 /// Image markers in the body are posted to the sender's session first; a remote
@@ -1135,6 +1196,7 @@ async fn run_unfollowed_call(
         CallKind::UserActionTick(body) => {
             run_user_action(server, machine_key, me, "/tick", body).await
         }
+        CallKind::Outcome(req) => run_outcome(server, machine_key, me, req).await,
         CallKind::Context(req) => match server.context_call(machine_key, me, req).await {
             Ok(r) => json!({ "ok": true, "result": render_context_result(&req.action, &r) }),
             Err(err) => json!({ "ok": false, "error": err.to_string() }),
@@ -1442,6 +1504,7 @@ async fn start_or_join(
         | CallKind::PeerHistory { .. }
         | CallKind::UserActionAdd(_)
         | CallKind::UserActionTick(_)
+        | CallKind::Outcome(_)
         | CallKind::Context(_)
         | CallKind::Speak { .. }
         | CallKind::RelayReady
@@ -1951,6 +2014,69 @@ mod tests {
         assert_eq!(req.cwd.as_deref(), Some("/workspace"));
         assert_eq!(req.permission_mode, Some(cctui_proto::adapter::PermissionMode::Auto));
         assert_eq!(req.name.as_deref(), Some("reviewer"));
+    }
+
+    fn outcome_call(args: Value) -> Result<Call, String> {
+        parse_call(&json!({ "kind": "outcome", "session_id": "s1", "args": args }).to_string())
+    }
+
+    #[test]
+    fn an_outcome_call_becomes_a_normalized_tool_declaration() {
+        let call = outcome_call(json!({
+            "status": "needs_input",
+            "headline": "  Which branch?\nsecond line",
+            "body": "  ",
+            "evidence": ["https://example.test/a", "https://example.test/a", 7],
+        }))
+        .unwrap();
+        let CallKind::Outcome(req) = call.kind else { panic!("expected an outcome") };
+        assert_eq!(req.status, OutcomeStatus::NeedsInput);
+        assert_eq!(req.headline, "Which branch?");
+        assert!(req.body.is_none());
+        assert_eq!(req.evidence, ["https://example.test/a"]);
+        assert_eq!(req.source, OutcomeSource::Tool);
+        assert!(call_feature(&CallKind::Outcome(req)).is_none(), "outcomes are core");
+    }
+
+    #[test]
+    fn an_outcome_call_needs_a_declared_status_and_a_headline() {
+        let err = outcome_call(json!({ "headline": "x" })).unwrap_err();
+        assert!(err.contains("status must be"), "{err}");
+        let err = outcome_call(json!({ "status": "ended_without_outcome", "headline": "x" }))
+            .unwrap_err();
+        assert!(err.contains("status must be"), "{err}");
+        let err = outcome_call(json!({ "status": "result", "headline": " " })).unwrap_err();
+        assert!(err.contains("headline"), "{err}");
+    }
+
+    #[test]
+    fn an_outcome_result_names_the_rejection_or_the_recorded_headline() {
+        let refused = render_outcome_result(&DeclareOutcomeResult {
+            error: Some("headline is required".to_owned()),
+            outcome: None,
+            callback_queued: false,
+        });
+        assert_eq!(refused["ok"], json!(false));
+        assert!(refused["error"].as_str().unwrap().starts_with("rejected: "));
+        let stored = render_outcome_result(&DeclareOutcomeResult {
+            error: None,
+            outcome: Some(cctui_proto::api::outcome::SessionOutcome {
+                id: uuid::Uuid::nil(),
+                session_id: "s1".to_owned(),
+                dispatch_id: None,
+                turn_seq: None,
+                status: OutcomeStatus::Result,
+                headline: "Opened PR 12".to_owned(),
+                body: None,
+                evidence: Vec::new(),
+                source: OutcomeSource::Tool,
+                created_at: chrono::Utc::now(),
+            }),
+            callback_queued: true,
+        });
+        let text = stored["result"].as_str().unwrap();
+        assert!(text.contains("result — Opened PR 12"), "{text}");
+        assert!(text.contains("notify_url"), "{text}");
     }
 
     #[test]

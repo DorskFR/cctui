@@ -10,12 +10,17 @@
 //! through its dispatcher, and only `Failed`/`Gone` (plus the never-launched and
 //! archive backstops) fire, with backoff and dead-lettering after `MAX_ATTEMPTS`.
 //!
-//! Wire shape: `{ task_id, status:"failed", error }`. With a per-target
-//! `secret` the body is signed HMAC-SHA256 in `X-CCTUI-Signature: sha256=<hex>`.
+//! A declared session outcome is delivered through the same row: [`queue_outcome`]
+//! freezes its body before any death verdict, and the sweep posts it.
+//!
+//! Wire shape: `{ task_id, status:"failed", error }`, or [`outcome_payload`]. With
+//! a per-target `secret` the body is signed HMAC-SHA256 in
+//! `X-CCTUI-Signature: sha256=<hex>`.
 
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use cctui_proto::api::outcome::DeclareOutcomeRequest;
 use cctui_proto::backoff::Backoff;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -178,6 +183,63 @@ fn build_payload(task_id: &str, reason: &str) -> serde_json::Value {
     serde_json::Value::Object(obj)
 }
 
+/// The callback body of a declared outcome: the same for every harness and
+/// every source, and a superset of the legacy `{ task_id, status, error,
+/// message }` verdict.
+#[must_use]
+pub fn outcome_payload(
+    task_id: &str,
+    session_id: &str,
+    outcome: &DeclareOutcomeRequest,
+) -> serde_json::Value {
+    let message = outcome
+        .body
+        .as_deref()
+        .map_or_else(|| outcome.headline.clone(), |body| format!("{}\n\n{body}", outcome.headline));
+    let error = (outcome.status.callback_status() == "failed").then(|| outcome.headline.clone());
+    serde_json::json!({
+        "kind": "outcome",
+        "task_id": task_id,
+        "session_id": session_id,
+        "status": outcome.status.callback_status(),
+        "error": error,
+        "message": message,
+        "outcome": {
+            "status": outcome.status.as_str(),
+            "headline": outcome.headline,
+            "body": outcome.body,
+            "evidence": outcome.evidence,
+        },
+    })
+}
+
+/// Freeze a declared outcome as the session's completion callback, due now.
+///
+/// The first declaration wins, and a death verdict already frozen stands. A
+/// row the sweep superseded is revived: an outcome is always delivered.
+/// `false` when the session has no webhook or its callback is already taken.
+///
+/// # Errors
+/// The update failed.
+pub async fn queue_outcome(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    outcome: &DeclareOutcomeRequest,
+) -> sqlx::Result<bool> {
+    let payload = outcome_payload("", session_id, outcome);
+    let res = sqlx::query(
+        "UPDATE session_webhooks \
+         SET payload = jsonb_set($2::jsonb, '{task_id}', to_jsonb(task_id)), \
+             state = 'pending', attempts = 0, last_error = NULL, next_attempt_at = now() \
+         WHERE session_id = $1 AND payload IS NULL AND state IN ('pending', 'superseded')",
+    )
+    .bind(session_id)
+    .bind(&payload)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() == 1)
+}
+
 /// Hex HMAC-SHA256 of `body` under `secret`, for the `X-CCTUI-Signature` header.
 fn sign(secret: &str, body: &[u8]) -> String {
     let mut mac =
@@ -304,19 +366,28 @@ async fn process(state: &impl DispatchContext, row: PendingRow) {
             let payload = build_payload(&row.task_id, &reason);
             // Freeze the payload so a later state change can't rewrite the
             // body mid-retry and a server restart re-uses the same bytes.
-            let _ = sqlx::query("UPDATE session_webhooks SET payload = $2 WHERE id = $1")
-                .bind(row.id)
-                .bind(&payload)
-                .execute(state.dispatch_pool())
-                .await;
+            let frozen = sqlx::query(
+                "UPDATE session_webhooks SET payload = $2 WHERE id = $1 AND payload IS NULL",
+            )
+            .bind(row.id)
+            .bind(&payload)
+            .execute(state.dispatch_pool())
+            .await
+            .is_ok_and(|r| r.rows_affected() == 1);
+            if !frozen {
+                return;
+            }
             deliver(state, row.id, &row.notify_url, row.secret.as_deref(), &payload, row.attempts)
                 .await;
         }
         Outcome::Supersede => {
-            let _ = sqlx::query("UPDATE session_webhooks SET state = 'superseded' WHERE id = $1")
-                .bind(row.id)
-                .execute(state.dispatch_pool())
-                .await;
+            let _ = sqlx::query(
+                "UPDATE session_webhooks SET state = 'superseded' \
+                 WHERE id = $1 AND payload IS NULL",
+            )
+            .bind(row.id)
+            .execute(state.dispatch_pool())
+            .await;
             tracing::debug!(session_id = %row.session_id, "webhook superseded by worker callback");
         }
         Outcome::Wait => {

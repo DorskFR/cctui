@@ -1,7 +1,7 @@
 //! `cctui-daemon mcp-agent` — the stdio MCP server a session is launched with.
 //!
 //! It exposes the `CctuiAgent`, `CctuiAgentArchive`, `CctuiUsage`, peer, room,
-//! user-action, `CctuiSpeak` and `CctuiContext` tools.
+//! user-action, `CctuiOutcome`, `CctuiSpeak` and `CctuiContext` tools.
 //!
 //! The subcommand is a thin relay, mirroring `ask-hook`: it speaks MCP on
 //! stdio and forwards each `tools/call` to the long-lived daemon over its local
@@ -34,6 +34,7 @@ pub const HISTORY_TOOL_NAME: &str = "CctuiHistory";
 pub const ROOM_TOOL_NAME: &str = "CctuiRoom";
 pub const USER_ACTION_ADD_TOOL_NAME: &str = "CctuiUserActionAdd";
 pub const USER_ACTION_TICK_TOOL_NAME: &str = "CctuiUserActionTick";
+pub const OUTCOME_TOOL_NAME: &str = "CctuiOutcome";
 pub const SPEAK_TOOL_NAME: &str = "CctuiSpeak";
 pub const CONTEXT_TOOL_NAME: &str = "CctuiContext";
 
@@ -57,6 +58,7 @@ const ROUND_TRIP_KINDS: &[(&str, &str)] = &[
     (ROOM_TOOL_NAME, "room"),
     (USER_ACTION_ADD_TOOL_NAME, "user_action_add"),
     (USER_ACTION_TICK_TOOL_NAME, "user_action_tick"),
+    (OUTCOME_TOOL_NAME, "outcome"),
     (SPEAK_TOOL_NAME, "speak"),
     (CONTEXT_TOOL_NAME, "context"),
 ];
@@ -619,8 +621,50 @@ pub fn context_tool_schema() -> Value {
     })
 }
 
+/// The `CctuiOutcome` input schema.
+#[must_use]
+pub fn outcome_tool_schema() -> Value {
+    json!({
+        "name": OUTCOME_TOOL_NAME,
+        "description": "Declare how this session's work ended, once you are done or blocked: \
+    the result, that you need the user's input, or that you failed. Call it as the last step \
+    of a task, before your final message. The headline shows on the session row and in its \
+    drawer, only a `result` lands the session in Completed, and on a dispatched worker the \
+    outcome is what the dispatch callback delivers. A worker that declares here needs no \
+    RESULT_FILE. Declaring again replaces what the session row shows, not a callback already \
+    queued.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["result", "needs_input", "failed"],
+                    "description": "result = the task is done; needs_input = you cannot go on \
+    without the user; failed = you stopped without achieving it.",
+                },
+                "headline": {
+                    "type": "string",
+                    "description": "One line a reader acts on, e.g. \"Opened PR 12: fix the \
+    login redirect\". Only the first line is kept, trimmed to 200 characters.",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Markdown detail: what changed, what is left, how to verify.",
+                },
+                "evidence": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Paths or links that prove it: PRs, test logs, artifacts.",
+                },
+            },
+            "required": ["status", "headline"],
+            "additionalProperties": false,
+        },
+    })
+}
+
 /// Every tool name, in [`tool_schemas`] order.
-pub const TOOL_NAMES: [&str; 11] = [
+pub const TOOL_NAMES: [&str; 12] = [
     TOOL_NAME,
     USAGE_TOOL_NAME,
     ARCHIVE_TOOL_NAME,
@@ -630,6 +674,7 @@ pub const TOOL_NAMES: [&str; 11] = [
     ROOM_TOOL_NAME,
     USER_ACTION_ADD_TOOL_NAME,
     USER_ACTION_TICK_TOOL_NAME,
+    OUTCOME_TOOL_NAME,
     SPEAK_TOOL_NAME,
     CONTEXT_TOOL_NAME,
 ];
@@ -704,6 +749,7 @@ pub fn tool_schemas() -> Vec<Value> {
         room_tool_schema(),
         user_action_add_schema(),
         user_action_tick_schema(),
+        outcome_tool_schema(),
         speak_tool_schema(),
         context_tool_schema(),
     ]
@@ -1238,6 +1284,7 @@ mod tests {
                 ROOM_TOOL_NAME,
                 USER_ACTION_ADD_TOOL_NAME,
                 USER_ACTION_TICK_TOOL_NAME,
+                OUTCOME_TOOL_NAME,
                 SPEAK_TOOL_NAME,
                 CONTEXT_TOOL_NAME,
             ]
@@ -1541,6 +1588,21 @@ mod tests {
         assert!(desc.contains("TaskCreate / TaskUpdate"), "{desc}");
         assert!(desc.contains("waiting on from the USER"), "{desc}");
         assert_eq!(tool_kind(USER_ACTION_ADD_TOOL_NAME), Some("user_action_add"));
+    }
+
+    #[test]
+    fn the_outcome_schema_requires_a_declared_status_and_a_headline() {
+        let schema = outcome_tool_schema();
+        assert_eq!(schema["name"], OUTCOME_TOOL_NAME);
+        assert_eq!(schema["inputSchema"]["required"], json!(["status", "headline"]));
+        let props = schema["inputSchema"]["properties"].as_object().unwrap();
+        assert_eq!(props["status"]["enum"], json!(["result", "needs_input", "failed"]));
+        assert_eq!(props["evidence"]["type"], "array");
+        assert!(props.contains_key("body"));
+        assert_eq!(tool_kind(OUTCOME_TOOL_NAME), Some("outcome"));
+        assert!(tool_feature(OUTCOME_TOOL_NAME).is_none(), "every session can declare one");
+        let raw = serde_json::to_string(&schema).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&raw).unwrap(), schema);
     }
 
     #[test]
@@ -1856,7 +1918,12 @@ mod tests {
     }
 
     fn core_tools() -> Vec<&'static str> {
-        vec![USAGE_TOOL_NAME, USER_ACTION_ADD_TOOL_NAME, USER_ACTION_TICK_TOOL_NAME]
+        vec![
+            USAGE_TOOL_NAME,
+            USER_ACTION_ADD_TOOL_NAME,
+            USER_ACTION_TICK_TOOL_NAME,
+            OUTCOME_TOOL_NAME,
+        ]
     }
 
     fn listed(offered: &Offered) -> Vec<String> {
@@ -1872,7 +1939,7 @@ mod tests {
     }
 
     #[test]
-    fn every_feature_on_offers_all_eleven_tools_and_needs_no_tools_flag() {
+    fn every_feature_on_offers_all_twelve_tools_and_needs_no_tools_flag() {
         assert_eq!(offered_tools(FeatureSet::all()), TOOL_NAMES);
         assert_eq!(tools_arg(FeatureSet::all()), None);
         let names: Vec<String> =
@@ -1881,10 +1948,10 @@ mod tests {
     }
 
     #[test]
-    fn every_switchable_feature_off_offers_only_usage_and_the_user_action_tools() {
+    fn every_switchable_feature_off_offers_only_usage_outcome_and_the_user_action_tools() {
         assert_eq!(offered_tools(FeatureSet::none()), core_tools());
         let arg = tools_arg(FeatureSet::none()).expect("a restricted set names its tools");
-        assert_eq!(arg, "CctuiUsage,CctuiUserActionAdd,CctuiUserActionTick");
+        assert_eq!(arg, "CctuiUsage,CctuiUserActionAdd,CctuiUserActionTick,CctuiOutcome");
         assert_eq!(listed(&Offered::parse(Some(arg.as_str()))), core_tools());
     }
 
@@ -1893,13 +1960,13 @@ mod tests {
         let without = |f: Feature| offered_tools(FeatureSet::all().without(f));
         let child = without(Feature::ChildSessions);
         assert!(!child.contains(&TOOL_NAME) && !child.contains(&ARCHIVE_TOOL_NAME));
-        assert_eq!(child.len(), 9);
+        assert_eq!(child.len(), 10);
         let rooms = without(Feature::Rooms);
         for tool in [PEERS_TOOL_NAME, SEND_TOOL_NAME, HISTORY_TOOL_NAME, ROOM_TOOL_NAME] {
             assert!(!rooms.contains(&tool), "{tool} needs rooms");
         }
-        assert_eq!(rooms.len(), 7);
-        assert_eq!(without(Feature::Voice).len(), 10);
+        assert_eq!(rooms.len(), 8);
+        assert_eq!(without(Feature::Voice).len(), 11);
         assert!(!without(Feature::Voice).contains(&SPEAK_TOOL_NAME));
         assert!(!without(Feature::Context).contains(&CONTEXT_TOOL_NAME));
         assert_eq!(without(Feature::Files), TOOL_NAMES, "no tool reads files");

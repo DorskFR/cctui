@@ -956,6 +956,65 @@ blocked. The array is consumed by the PR renderer (one section per surface) and,
 longer-term, by `cctui-github` (diff viewer + review-draft store + evidence
 attachments) — the not-yet-built crate is the natural home for richer rendering.
 
+## Session outcome (`CctuiOutcome`)
+
+Every session, dispatched or not, ends its work by declaring an **outcome**. A
+dispatched session's outcome is also what the server POSTs to the dispatch
+`notify_url` (signed with `notify_secret` as `X-CCTUI-Signature: sha256=<hex>`,
+retried with backoff like the failure webhook). The `REPLY_URL` trap above is
+unchanged.
+
+How a session declares it, strongest first:
+
+| Source | How | Notes |
+|---|---|---|
+| `tool` | the `CctuiOutcome` MCP tool | claude-code, codex, opencode: every harness the cctui MCP relay is registered for |
+| `result_file` | the agent writes `RESULT_FILE` | the daemon relays each new valid verdict; existing packs need no change |
+| `text` | a `result:` / `needs input:` / `failed:` line in the turn's final message | for harnesses without MCP; last such line outside a code fence wins |
+| `inferred` | none of the above, no open user action, no live child | stored as `ended_without_outcome`; never sent to `notify_url` |
+
+`CctuiOutcome` arguments:
+
+```jsonc
+{
+  "status":   "result",          // result | needs_input | failed
+  "headline": "Opened PR 12",    // one line; first line kept, 200 chars max
+  "body":     "All checks pass.",// optional markdown
+  "evidence": ["https://…/pull/12", "/tmp/test.log"]  // optional paths or links
+}
+```
+
+A `RESULT_FILE` verdict converts as: `status: success` is `result`,
+`needs_input` / `needs_human` is `needs_input`, anything else is `failed`; the
+first line of `message` is the headline and the rest the body (a failure's
+`error` is its headline and `message` its body); `evidence[]` keeps string
+entries and a structured entry's `summary`.
+
+`notify_url` body (identical for every harness and every source):
+
+```jsonc
+{
+  "kind":       "outcome",
+  "task_id":    "<payload.task_id, else the session id>",
+  "session_id": "…",
+  "status":     "success",       // success | needs_input | failed (legacy vocabulary)
+  "error":      null,            // the headline when status is failed
+  "message":    "Opened PR 12\n\nAll checks pass.",  // headline, blank line, body
+  "outcome": {
+    "status":   "result",        // result | needs_input | failed
+    "headline": "Opened PR 12",
+    "body":     "All checks pass.",
+    "evidence": ["https://…/pull/12"]
+  }
+}
+```
+
+The first declared outcome of a dispatch is the one delivered; later
+declarations still update the session row. A worker lost before declaring one
+still gets the failure body `{ task_id, status: "failed", error }` from the
+death detector. In the UI, only a session whose newest outcome is `result`
+sits in Completed, and the headline shows on its row and in its drawer.
+
 ## Dispatch response
 
 `POST /api/v1/sessions/dispatch` answers `202`:

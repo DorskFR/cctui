@@ -2,6 +2,7 @@ import { browser } from "$app/environment";
 import { goto } from "$app/navigation";
 import { m } from "$lib/paraglide/messages";
 import type { SessionListItem } from "@bindings/SessionListItem";
+import { freshResults } from "./outcome";
 
 const KEY_ENABLED = "cctui_notify_enabled";
 const KEY_SOUND = "cctui_notify_sound";
@@ -31,6 +32,8 @@ class Notifier {
   pendingOpen = $state<string | null>(null);
 
   private notified = new Set<string>();
+  /** Result outcome ids already seen; the first list load only seeds it. */
+  private announced: Set<string> | null = null;
   /** Last badge count, replayed when the base title changes. */
   private badgeCount = 0;
   /** Server-wide instance name (`/version.instance_name`); part of the tab title. */
@@ -111,7 +114,23 @@ class Notifier {
       this.notified.add(s.id);
       // Don't notify for a session you're already staring at.
       if (document.visibilityState === "visible" && this.#open.has(s.id)) continue;
-      this.fire(s);
+      this.fire(s, m.notify_needs_input_title(), s.last_message_text);
+    }
+  }
+
+  /** Fire once per `result` outcome that lands while the page is open. */
+  reconcileCompleted(sessions: SessionListItem[] | undefined) {
+    if (!browser || !sessions) return;
+    if (!this.announced) {
+      this.announced = new Set();
+      freshResults(this.announced, sessions);
+      return;
+    }
+    const fresh = freshResults(this.announced, sessions);
+    if (!this.enabled || this.permission !== "granted") return;
+    for (const s of fresh) {
+      if (document.visibilityState === "visible" && this.#open.has(s.id)) continue;
+      this.fire(s, m.notify_completed_title(), s.latest_outcome?.headline);
     }
   }
 
@@ -165,12 +184,10 @@ class Notifier {
     );
   }
 
-  private fire(s: SessionListItem) {
+  private fire(s: SessionListItem, title: string, detail: string | null | undefined) {
     try {
-      const n = new Notification(m.notify_needs_input_title(), {
-        body: s.last_message_text
-          ? `${this.label(s)}\n${s.last_message_text}`
-          : this.label(s),
+      const n = new Notification(title, {
+        body: detail ? `${this.label(s)}\n${detail}` : this.label(s),
         tag: s.id,
       });
       n.onclick = () => {

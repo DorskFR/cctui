@@ -536,6 +536,8 @@ pub struct SessionListItem {
     /// Absent when this session has no open user action and no child with one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_actions: Option<UserActionCounts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_outcome: Option<outcome::SessionOutcome>,
     /// Absent when the session was delivered no rules and holds no memories.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_counts: Option<ContextCounts>,

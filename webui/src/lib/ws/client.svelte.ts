@@ -214,6 +214,10 @@ export class WsClient {
 			case 'session_deregistered':
 				this.markListDirty();
 				break;
+			case 'session_outcome':
+				this.emitListPatch({ session_id: msg.session_id, latest_outcome: msg.outcome });
+				this.markListDirty();
+				break;
 			case 'scheduled_launch': {
 				const { type: _, ...ev } = msg;
 				const patch = scheduledLaunchPatch(ev);

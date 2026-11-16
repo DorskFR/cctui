@@ -1895,6 +1895,11 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[ws_event]]
+name = "session_outcome"
+tui = "waived"
+reason = "the list refresh carries the newest outcome on the row"
+
+[[ws_event]]
 name = "event"
 tui = "waived"
 reason = "the TUI has no event log view; the list refresh carries status"

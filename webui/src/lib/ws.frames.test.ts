@@ -166,6 +166,18 @@ const fixtures = {
 	resync: { type: 'resync', session_id: SID },
 	cctuiverse_changed: { type: 'cctuiverse_changed', user_id: USER, session_id: SID, room_id: null },
 	hidden_owners_changed: { type: 'hidden_owners_changed', user_id: USER },
+	session_outcome: {
+		type: 'session_outcome',
+		session_id: SID,
+		outcome: {
+			id: 'o-1',
+			session_id: SID,
+			status: 'result',
+			headline: 'Opened PR 12',
+			source: 'tool',
+			created_at: '2026-10-02T07:30:00Z'
+		}
+	},
 	notification: {
 		type: 'notification',
 		notification: {

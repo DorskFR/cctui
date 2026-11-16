@@ -37,6 +37,7 @@ const TEMP_TABLES: &[&str] = &[
     "CREATE TEMP TABLE session_hook_policies (LIKE public.session_hook_policies INCLUDING ALL)",
     "CREATE TEMP TABLE machine_launches (LIKE public.machine_launches INCLUDING ALL)",
     "CREATE TEMP TABLE resource_shares (LIKE public.resource_shares INCLUDING ALL)",
+    "CREATE TEMP TABLE session_webhooks (LIKE public.session_webhooks INCLUDING ALL)",
 ];
 
 struct Host {
@@ -688,4 +689,106 @@ async fn a_terminal_unanswered_or_unannounced_check_takes_the_full_dispatch_path
                 .unwrap();
         assert_eq!(outcome, "forwarded", "{probe:?}");
     }
+}
+
+async fn queued_callback(pool: &PgPool, session_id: &str) -> Value {
+    sqlx::query_scalar(
+        "SELECT payload FROM session_webhooks WHERE session_id = $1 AND state = 'pending' \
+         AND next_attempt_at <= now()",
+    )
+    .bind(session_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn tool_declared_and_result_file_outcomes_reach_notify_url_with_one_body() {
+    use cctui_proto::api::outcome::{DeclareOutcomeRequest, OutcomeSource, OutcomeStatus};
+    use cctui_server_core::webhook::{outcome_payload, queue_outcome};
+
+    let Some(f) = Fixture::new(StatusCode::OK, json!({})).await else { return };
+    let pool = &f.host.pool;
+    let workers = ["claude-tool", "codex-tool", "codex-result-file"];
+    for sid in workers {
+        sqlx::query(
+            "INSERT INTO session_webhooks (session_id, notify_url, secret, task_id, \
+             next_attempt_at) VALUES ($1, 'https://n8n.example.test/hook', 'k', 'T-42', \
+             now() + interval '1 hour')",
+        )
+        .bind(sid)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+    let tool = DeclareOutcomeRequest {
+        status: OutcomeStatus::Result,
+        headline: "Opened PR 12".into(),
+        body: Some("All checks pass.".into()),
+        evidence: vec!["https://example.test/pr/12".into()],
+        source: OutcomeSource::Tool,
+    }
+    .normalized()
+    .unwrap();
+    let result_file = DeclareOutcomeRequest::from_result_file(&json!({
+        "task_id": "T-42", "flow": "codex-dispatch", "status": "success", "error": null,
+        "message": "Opened PR 12\n\nAll checks pass.",
+        "evidence": ["https://example.test/pr/12"],
+    }))
+    .normalized()
+    .unwrap();
+    assert!(queue_outcome(pool, "claude-tool", &tool).await.unwrap());
+    assert!(queue_outcome(pool, "codex-tool", &tool).await.unwrap());
+    assert!(queue_outcome(pool, "codex-result-file", &result_file).await.unwrap());
+
+    let expected = |sid: &str| {
+        json!({
+            "kind": "outcome",
+            "task_id": "T-42",
+            "session_id": sid,
+            "status": "success",
+            "error": null,
+            "message": "Opened PR 12\n\nAll checks pass.",
+            "outcome": {
+                "status": "result",
+                "headline": "Opened PR 12",
+                "body": "All checks pass.",
+                "evidence": ["https://example.test/pr/12"],
+            },
+        })
+    };
+    for sid in workers {
+        assert_eq!(queued_callback(pool, sid).await, expected(sid), "{sid}");
+    }
+
+    let late = DeclareOutcomeRequest { status: OutcomeStatus::Failed, ..tool };
+    assert!(!queue_outcome(pool, "claude-tool", &late).await.unwrap(), "first outcome wins");
+    assert_eq!(queued_callback(pool, "claude-tool").await, expected("claude-tool"));
+    let failed = outcome_payload("T-42", "s", &late);
+    assert_eq!(failed["status"], "failed");
+    assert_eq!(failed["error"], "Opened PR 12");
+}
+
+#[tokio::test]
+async fn an_outcome_revives_a_superseded_callback_but_never_replaces_a_death_verdict() {
+    use cctui_proto::api::outcome::DeclareOutcomeRequest;
+    use cctui_server_core::webhook::queue_outcome;
+
+    let Some(f) = Fixture::new(StatusCode::OK, json!({})).await else { return };
+    let pool = &f.host.pool;
+    sqlx::query(
+        "INSERT INTO session_webhooks (session_id, notify_url, task_id, state, payload) VALUES \
+         ('superseded', 'https://n8n.example.test/hook', 'T-1', 'superseded', NULL), \
+         ('dead-worker', 'https://n8n.example.test/hook', 'T-2', 'pending', \
+          '{\"task_id\":\"T-2\",\"status\":\"failed\",\"error\":\"OOMKilled\"}')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    let outcome =
+        DeclareOutcomeRequest::from_result_file(&json!({ "status": "success", "message": "ok" }));
+    assert!(queue_outcome(pool, "superseded", &outcome).await.unwrap());
+    assert_eq!(queued_callback(pool, "superseded").await["outcome"]["headline"], "ok");
+    assert!(!queue_outcome(pool, "dead-worker", &outcome).await.unwrap());
+    assert!(!queue_outcome(pool, "never-dispatched", &outcome).await.unwrap());
 }

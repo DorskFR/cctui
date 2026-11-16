@@ -42,6 +42,7 @@ mod ntfy;
 mod openapi;
 mod outbound;
 mod outbox;
+mod outcome;
 mod pace;
 mod peer_policy;
 mod plugin_archive;
@@ -53,8 +54,8 @@ mod plugin_store;
 mod plugins;
 mod pool_usage;
 mod presence;
-mod preview;
 mod presets;
+mod preview;
 mod provider_status;
 mod registry;
 mod rooms;
@@ -629,6 +630,7 @@ fn daemon_routes(r: OuterRoutes) -> OuterRoutes {
         .route("/api/v1/daemon/sessions/{id}/token-valid", get(routes::daemon::session_token_valid))
         .route("/api/v1/daemon/sessions/{id}/limits", get(routes::session_limits::session_limits))
         .route("/api/v1/daemon/sessions/{id}/user-actions", post(routes::user_actions::daemon_add))
+        .route("/api/v1/daemon/sessions/{id}/outcome", post(outcome::daemon_declare))
         .launch_context()
         .route(
             "/api/v1/daemon/sessions/{id}/user-actions/tick",
@@ -1218,10 +1220,10 @@ fn spawn_reaper_sweeps(state: &AppState) {
         state.permission_store.write().await.reap_stale(300); // seconds
     });
     notify::install(&state.pool);
+    notify::in_app::install(&state.bus);
     spawn_sweep(state, |state| async move {
         notify::dispatcher::sweep(&state.pool, &state.config).await;
     });
-    notify::in_app::install(&state.bus);
     spawn_sweep(state, |state| async move { notify::retention::sweep(&state.pool).await });
     spawn_sweep(state, |state| async move { notify::expiry::sweep(&state.pool).await });
     spawn_sweep(state, |state| async move { inbox::deliver::sweep(&state).await });
@@ -1528,14 +1530,14 @@ mod tests {
             "GET /meta/usage-probes Bearer Authenticated",
             "GET /models/codex/catalog Bearer Authenticated",
             "GET /models/{harness} Bearer Authenticated",
-            "POST /otlp/v1/traces Bearer Human",
-            "GET /passkeys Bearer Authenticated",
-            "POST /passkeys/register/finish Bearer Authenticated",
             "GET /notifications Bearer Human",
             "POST /notifications/read-all Bearer Human",
             "POST /notifications/{id}/act Bearer Human",
             "POST /notifications/{id}/dismiss Bearer Human",
             "POST /notifications/{id}/read Bearer Human",
+            "POST /otlp/v1/traces Bearer Human",
+            "GET /passkeys Bearer Authenticated",
+            "POST /passkeys/register/finish Bearer Authenticated",
             "POST /passkeys/register/start Bearer Authenticated",
             "POST /passkeys/test/finish Bearer Authenticated",
             "POST /passkeys/test/start Bearer Authenticated",
@@ -1549,13 +1551,13 @@ mod tests {
             "PATCH /plugins/{id}/backend/{*path} Bearer Authenticated",
             "POST /plugins/{id}/backend/{*path} Bearer Authenticated",
             "PUT /plugins/{id}/backend/{*path} Bearer Authenticated",
-            "GET /profiles Bearer Human",
-            "POST /profiles Bearer Human",
             "GET /presets Bearer Authenticated",
             "POST /presets Bearer Authenticated",
             "DELETE /presets/{id} Bearer Authenticated",
             "GET /presets/{id} Bearer Authenticated",
             "PUT /presets/{id} Bearer Authenticated",
+            "GET /profiles Bearer Human",
+            "POST /profiles Bearer Human",
             "PUT /profiles/order Bearer Human",
             "DELETE /profiles/{id} Bearer Human",
             "PATCH /profiles/{id} Bearer Human",
@@ -1717,6 +1719,7 @@ mod feature_gate_tests {
         "/api/v1/daemon/sessions/{id}/limits",
         "/api/v1/daemon/sessions/{id}/user-actions",
         "/api/v1/daemon/sessions/{id}/user-actions/tick",
+        "/api/v1/daemon/sessions/{id}/outcome",
         "/api/v1/daemon/sessions/{id}/context",
         "/api/v1/daemon/sessions/{id}/images",
         "/api/v1/daemon/blobs/{hash}",

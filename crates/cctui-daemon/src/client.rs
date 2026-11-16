@@ -496,6 +496,31 @@ impl ServerClient {
         Ok(resp.json().await?)
     }
 
+    /// A refused declaration is `DeclareOutcomeResult::error`, not an HTTP failure.
+    pub async fn outcome_call(
+        &self,
+        machine_key: &str,
+        session_id: &str,
+        req: &cctui_proto::api::outcome::DeclareOutcomeRequest,
+    ) -> anyhow::Result<cctui_proto::api::outcome::DeclareOutcomeResult> {
+        let url = format!(
+            "{}/api/v1/daemon/sessions/{}/outcome",
+            self.base_url.trim_end_matches('/'),
+            session_id,
+        );
+        let resp = self.http.post(&url).bearer_auth(machine_key).json(req).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            let reason = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
+                .unwrap_or(text);
+            anyhow::bail!("outcome not recorded ({status}): {reason}");
+        }
+        Ok(resp.json().await?)
+    }
+
     /// Relay one `CctuiContext` call; the server acts as the session's owner.
     pub async fn context_call(
         &self,

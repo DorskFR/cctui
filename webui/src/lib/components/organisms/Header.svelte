@@ -67,6 +67,7 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 
 	// Drive notifications + title badge off the list's attention flags.
 	$effect(() => notify.reconcile(needsInput));
+	$effect(() => notify.reconcileCompleted(sessions.data?.sessions));
 
 	async function toggleNotify() {
 		if (notify.enabled) {

@@ -6,13 +6,18 @@
 //! to `RESULT_FILE`, the envelope the entrypoint's callback trap posts. An
 //! adapter the table does not know is an error, never a claude fallback.
 
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::Context as _;
 use cctui_proto::adapter::{AdapterEvent, EndReason};
+use cctui_proto::api::outcome::DeclareOutcomeRequest;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+
+use crate::client::ServerClient;
 
 use crate::adapters::acp::rows::{self, AgentRow};
 
@@ -424,9 +429,147 @@ pub async fn run_one_shot(adapter: DispatchAdapter, payload: &Value) -> anyhow::
     write_result(&result_file(), &task_id(payload), &flow, &outcome)
 }
 
+const RESULT_POLL: Duration = Duration::from_secs(2);
+
+/// A verdict the server keeps refusing is given up after this many posts.
+const RESULT_RELAY_ATTEMPTS: u32 = 30;
+
+fn read_verdict(path: &Path) -> Option<Value> {
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice::<Value>(&bytes).ok().filter(Value::is_object)
+}
+
+#[derive(Debug, Default)]
+struct ResultRelay {
+    last: Option<Value>,
+    attempts: u32,
+}
+
+impl ResultRelay {
+    fn due(&self, verdict: &Value) -> bool {
+        self.last.as_ref() != Some(verdict) && self.attempts < RESULT_RELAY_ATTEMPTS
+    }
+
+    fn settled(&mut self, verdict: Value) {
+        self.last = Some(verdict);
+        self.attempts = 0;
+    }
+
+    const fn failed(&mut self) {
+        self.attempts += 1;
+    }
+
+    async fn relay(&mut self, server: &ServerClient, key: &str, session_id: &str, path: &Path) {
+        let Some(verdict) = read_verdict(path) else { return };
+        if !self.due(&verdict) {
+            return;
+        }
+        let req = match DeclareOutcomeRequest::from_result_file(&verdict).normalized() {
+            Ok(req) => req,
+            Err(err) => {
+                tracing::warn!(%err, "dispatch: RESULT_FILE verdict is not an outcome");
+                self.settled(verdict);
+                return;
+            }
+        };
+        match server.outcome_call(key, session_id, &req).await {
+            Ok(result) => {
+                match result.error {
+                    Some(err) => {
+                        tracing::warn!(%err, "dispatch: the server refused the RESULT_FILE");
+                    }
+                    None => {
+                        let status = req.status.as_str();
+                        tracing::info!(
+                            session_id,
+                            status,
+                            "dispatch: relayed RESULT_FILE as the outcome"
+                        );
+                    }
+                }
+                self.settled(verdict);
+            }
+            Err(err) => {
+                tracing::debug!(%err, "dispatch: RESULT_FILE outcome not relayed yet");
+                self.failed();
+            }
+        }
+    }
+}
+
+/// No-op off a dispatched worker.
+pub fn start_result_relay(server: ServerClient, machine_key: String, shutdown: CancellationToken) {
+    let Some(session_id) = std::env::var("SESSION_ID").ok().filter(|s| !s.is_empty()) else {
+        return;
+    };
+    if !std::env::var("TASK_PAYLOAD_JSON").is_ok_and(|p| !p.is_empty()) {
+        return;
+    }
+    let path = PathBuf::from(result_file());
+    tokio::spawn(async move {
+        let mut relay = ResultRelay::default();
+        let mut tick = tokio::time::interval(RESULT_POLL);
+        loop {
+            let stopping = tokio::select! {
+                () = shutdown.cancelled() => true,
+                _ = tick.tick() => false,
+            };
+            relay.relay(&server, &machine_key, &session_id, &path).await;
+            if stopping {
+                return;
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_valid_json_object_is_a_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("result.json");
+        assert!(read_verdict(&path).is_none(), "no file yet");
+        std::fs::write(&path, "{\"status\":").unwrap();
+        assert!(read_verdict(&path).is_none(), "a half-written file");
+        std::fs::write(&path, "[1]").unwrap();
+        assert!(read_verdict(&path).is_none());
+        std::fs::write(&path, r#"{"status":"success","message":"done"}"#).unwrap();
+        assert_eq!(read_verdict(&path).unwrap()["message"], "done");
+    }
+
+    #[test]
+    fn the_relay_posts_each_new_verdict_once_and_gives_up_on_a_dead_end() {
+        let first = json!({ "status": "success", "message": "done" });
+        let rewritten = json!({ "status": "failed", "error": "tests broke" });
+        let mut relay = ResultRelay::default();
+        assert!(relay.due(&first));
+        relay.settled(first.clone());
+        assert!(!relay.due(&first), "an unchanged file is not relayed again");
+        assert!(relay.due(&rewritten), "a rewritten file is");
+        for _ in 0..RESULT_RELAY_ATTEMPTS {
+            relay.failed();
+        }
+        assert!(!relay.due(&rewritten), "retries are bounded");
+        relay.settled(rewritten);
+        assert_eq!(relay.attempts, 0);
+    }
+
+    #[test]
+    fn a_written_verdict_converts_to_the_outcome_the_callback_carries() {
+        let mut outcome = Outcome::success("Opened PR 12\n\nAll checks pass.".to_owned());
+        outcome.stop_reason = Some("end_turn".to_owned());
+        let verdict = result_json("T-1", "codex-dispatch", &outcome);
+        let req = DeclareOutcomeRequest::from_result_file(&verdict);
+        assert_eq!(req.status, cctui_proto::api::outcome::OutcomeStatus::Result);
+        assert_eq!(req.headline, "Opened PR 12");
+        assert_eq!(req.body.as_deref(), Some("All checks pass."));
+        let refused = launch_refused_json("T-1", "d", "no hooks");
+        let failed = DeclareOutcomeRequest::from_result_file(&refused);
+        assert_eq!(failed.status, cctui_proto::api::outcome::OutcomeStatus::Failed);
+        assert_eq!(failed.headline, "no hooks");
+    }
 
     #[test]
     fn adapter_selection_covers_every_harness_and_rejects_the_rest() {

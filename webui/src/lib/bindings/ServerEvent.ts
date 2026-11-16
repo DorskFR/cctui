@@ -11,6 +11,7 @@ import type { PermissionChoice } from "./PermissionChoice";
 import type { ScheduledLaunchState } from "./ScheduledLaunchState";
 import type { Session } from "./Session";
 import type { SessionEndReason } from "./SessionEndReason";
+import type { SessionOutcome } from "./SessionOutcome";
 import type { SessionStatus } from "./SessionStatus";
 import type { UserAction } from "./UserAction";
 import type { JsonValue } from "./serde_json/JsonValue";
@@ -39,4 +40,4 @@ user_id: string, } | { "type": "cctuiverse_changed", session_id?: string | null,
 /**
  * The link's owner; scopes delivery.
  */
-user_id: string, } | { "type": "hidden_owners_changed", user_id: string, } | { "type": "user_actions", session_id: string, actions: Array<UserAction>, } | { "type": "notification", notification: Notification, } | { "type": "notifications_unread", user_id: string, count: number, } | { "type": "event", event: EventRecord, } | { "type": "heartbeat", } | { "type": "resync", session_id?: string | null, };
+user_id: string, } | { "type": "hidden_owners_changed", user_id: string, } | { "type": "user_actions", session_id: string, actions: Array<UserAction>, } | { "type": "session_outcome", session_id: string, outcome: SessionOutcome, } | { "type": "notification", notification: Notification, } | { "type": "notifications_unread", user_id: string, count: number, } | { "type": "event", event: EventRecord, } | { "type": "heartbeat", } | { "type": "resync", session_id?: string | null, };

@@ -742,7 +742,8 @@ fn audience(event: &ServerEvent) -> Audience {
         | ServerEvent::MessageAck { session_id, .. }
         | ServerEvent::SoftLimitReached { session_id, .. }
         | ServerEvent::SoftLimitCleared { session_id }
-        | ServerEvent::UserActions { session_id, .. } => session(session_id),
+        | ServerEvent::UserActions { session_id, .. }
+        | ServerEvent::SessionOutcome { session_id, .. } => session(session_id),
         ServerEvent::SessionRegistered { session: s } => session(&s.id),
         ServerEvent::CommandResult { session_id, .. } => {
             session_id.as_deref().map_or(AdminsOnly, session)
@@ -917,7 +918,6 @@ struct OwnerFilter<L> {
     cache: OwnerCache,
 }
 
-impl<L: OwnerLookup + Send> EventFilter for OwnerFilter<L> {
 /// Notifications are personal: not even an admin sees another user's.
 const fn recipient(event: &ServerEvent) -> Option<uuid::Uuid> {
     match event {
@@ -927,11 +927,12 @@ const fn recipient(event: &ServerEvent) -> Option<uuid::Uuid> {
     }
 }
 
+impl<L: OwnerLookup + Send> EventFilter for OwnerFilter<L> {
     async fn allows(&mut self, event: &ServerEvent) -> bool {
-        if self.is_admin {
         if let Some(user_id) = recipient(event) {
             return user_id == self.user_id;
         }
+        if self.is_admin {
             return true;
         }
         match audience(event) {
@@ -1730,7 +1731,6 @@ mod tests {
         assert!(!dave.allows(&changed(ALICE)).await, "another admin's change is not news");
         assert_eq!(lookup.forgotten.load(Ordering::SeqCst), 1);
     }
-}
 
     fn notice_for(user_id: Uuid) -> ServerEvent {
         ServerEvent::Notification {
@@ -1770,3 +1770,4 @@ mod tests {
         assert!(!admin.allows(&notice_for(BOB)).await, "notifications are personal");
         assert!(!admin.allows(&unread(BOB)).await);
     }
+}

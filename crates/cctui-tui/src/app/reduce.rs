@@ -479,6 +479,7 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
         tool_use_count: 0,
         todos: Vec::new(),
         user_actions: None,
+        latest_outcome: None,
         context_counts: None,
         has_token_credentials: false,
         account_traffic_observed: false,
