@@ -98,7 +98,8 @@ export function toItem(n: Notice): NotificationData {
 	};
 }
 
-const newestFirst = (a: Notice, b: Notice) => b.created_at.localeCompare(a.created_at);
+const newestFirst = (a: Notice, b: Notice) =>
+	b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id);
 
 export class NotificationStore {
 	items = $state<Notice[]>([]);

@@ -13,6 +13,8 @@ vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
 
 import NotificationBell from './NotificationBell.svelte';
 
+const NOW = new Date().toISOString();
+
 function notice(id: string, over: Partial<Notice> = {}): Notice {
 	return {
 		id,
@@ -35,8 +37,8 @@ function notice(id: string, over: Partial<Notice> = {}): Notice {
 		acted_channel: null,
 		acted_by: null,
 		resolved_reason: null,
-		created_at: new Date().toISOString(),
-		updated_at: new Date().toISOString(),
+		created_at: NOW,
+		updated_at: NOW,
 		read_at: null,
 		acted_at: null,
 		resolved_at: null,
@@ -105,7 +107,7 @@ describe('NotificationBell', () => {
 		const act = vi.fn(async () => ({ notification: won, applied: false }));
 		setup({ act });
 		await openPanel();
-		const button = document.querySelector('[data-action="approve"]') as HTMLElement;
+		const button = document.querySelector('[data-id="a"] [data-action="approve"]') as HTMLElement;
 		button.click();
 		await vi.waitFor(() => expect(toasts.info).toHaveBeenCalled());
 		expect(act).toHaveBeenCalledWith('a', { action: 'approve', note: null, channel: 'web' });

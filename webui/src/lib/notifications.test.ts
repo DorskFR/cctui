@@ -91,6 +91,15 @@ describe('notification store', () => {
 		expect(ws.listeners()).toBe(0);
 	});
 
+	it('orders notices with the same timestamp by id, whatever the arrival order', () => {
+		const at = '2026-11-16T10:00:00Z';
+		const store = new NotificationStore(fakeApi());
+		store.upsert(notice('b', { created_at: at }));
+		store.upsert(notice('c', { created_at: at }));
+		store.upsert(notice('a', { created_at: at }));
+		expect(ids(store)).toEqual(['a', 'b', 'c']);
+	});
+
 	it('drops the card on a terminal state but keeps an acted one', () => {
 		const store = new NotificationStore(fakeApi());
 		const ws = fakeSource();
