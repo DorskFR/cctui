@@ -2,6 +2,7 @@
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Notification as Notice } from '@bindings/Notification';
+import type { NotificationList } from '@bindings/NotificationList';
 import { NotificationStore, type NotificationApi } from '$lib/notifications.svelte';
 
 const { toasts } = vi.hoisted(() => ({
@@ -53,8 +54,8 @@ afterEach(async () => {
 });
 
 function setup(api: Partial<NotificationApi>) {
-	const store = new NotificationStore({
-		list: vi.fn(async () => ({
+	const store: NotificationStore = new NotificationStore({
+		list: vi.fn(async (): Promise<NotificationList> => ({
 			notifications: store.items,
 			unread: store.unread,
 			has_more: false

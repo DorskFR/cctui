@@ -206,7 +206,7 @@ fn close(app: &mut App) {
     }
 }
 
-fn settle(app: &mut App) {
+const fn settle(app: &mut App) {
     if let Some(panel) = app.notifications.panel.as_mut() {
         panel.busy = false;
     }
@@ -229,7 +229,7 @@ fn mark_focused_read(app: &mut App) -> Vec<Effect> {
     if !is_unread(n) {
         return Vec::new();
     }
-    n.state = "read".to_owned();
+    "read".clone_into(&mut n.state);
     vec![Effect::Notifications(NotificationEffect::Read { id: n.id.to_string() })]
 }
 
