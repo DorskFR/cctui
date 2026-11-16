@@ -525,12 +525,11 @@ async fn retention_deletes_only_terminal_rows_past_seven_days() {
 
     retention::purge(&pool, Some(u)).await.unwrap();
 
-    let mut left: Vec<Uuid> =
-        sqlx::query_scalar("SELECT id FROM notifications WHERE user_id = $1")
-            .bind(u)
-            .fetch_all(&pool)
-            .await
-            .unwrap();
+    let mut left: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM notifications WHERE user_id = $1")
+        .bind(u)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
     left.sort();
     let mut kept = vec![fresh_resolved, old_open];
     kept.sort();

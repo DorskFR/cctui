@@ -125,7 +125,7 @@ pub struct NewNotification {
 
 impl NewNotification {
     #[must_use]
-    pub fn new(user_id: Uuid, kind: &'static str, title: String) -> Self {
+    pub const fn new(user_id: Uuid, kind: &'static str, title: String) -> Self {
         Self {
             user_id,
             kind,
@@ -138,7 +138,7 @@ impl NewNotification {
             title,
             body: None,
             tags: None,
-            actions: serde_json::Value::Array(vec![]),
+            actions: serde_json::Value::Array(Vec::new()),
         }
     }
 }

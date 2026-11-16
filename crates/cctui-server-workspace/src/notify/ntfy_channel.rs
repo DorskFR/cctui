@@ -20,11 +20,11 @@ pub struct NtfyChannel {
 impl NtfyChannel {
     #[must_use]
     pub fn from_config(config: &Config) -> Option<Self> {
-        Some(Self::new(config.ntfy_url.clone()?, config.ntfy_token.clone()?))
+        Some(Self::new(config.ntfy_url.as_deref()?, config.ntfy_token.clone()?))
     }
 
     #[must_use]
-    pub fn new(topic_url: String, token: cctui_secrets::Secret) -> Self {
+    pub fn new(topic_url: &str, token: cctui_secrets::Secret) -> Self {
         Self { topic_url: topic_url.trim_end_matches('/').to_owned(), token }
     }
 
@@ -135,10 +135,8 @@ mod tests {
     }
 
     fn channel(base: &str) -> NtfyChannel {
-        NtfyChannel::new(
-            format!("{base}/cctui/"),
-            cctui_secrets::Secret::fixed("ntfy", "tok"),
-        )
+        let url = format!("{base}/cctui/");
+        NtfyChannel::new(&url, cctui_secrets::Secret::fixed("ntfy", "tok"))
     }
 
     fn env() -> Endpoint {
