@@ -173,12 +173,14 @@ async fn a_failing_batch_backs_off_then_dead_letters() {
     assert_eq!(event_rows(&pool, lane).await, [("pending".to_owned(), 1, None)]);
     assert!(claim_batch(&pool, lane).await.unwrap().is_empty(), "backing off");
 
-    sqlx::query("UPDATE inbox_events SET next_attempt_at = now(), attempts = $2 WHERE lane_id = $1")
-        .bind(lane)
-        .bind(MAX_ATTEMPTS - 1)
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE inbox_events SET next_attempt_at = now(), attempts = $2 WHERE lane_id = $1",
+    )
+    .bind(lane)
+    .bind(MAX_ATTEMPTS - 1)
+    .execute(&pool)
+    .await
+    .unwrap();
     let events = claim_batch(&pool, lane).await.unwrap();
     let retry =
         record_failure(&pool, events[0].batch_id, events[0].attempts, "daemon offline").await;

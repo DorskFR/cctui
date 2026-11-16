@@ -59,14 +59,10 @@ async fn preset_routes_are_owner_scoped_and_need_dispatch_to_write() {
     let err =
         get_one(State(state.clone()), Extension(writer(&b)), Path(preset.id)).await.unwrap_err();
     assert_eq!(err.status(), StatusCode::NOT_FOUND);
-    let err = update(
-        State(state.clone()),
-        Extension(writer(&b)),
-        Path(preset.id),
-        Json(body(&b, "y")),
-    )
-    .await
-    .unwrap_err();
+    let err =
+        update(State(state.clone()), Extension(writer(&b)), Path(preset.id), Json(body(&b, "y")))
+            .await
+            .unwrap_err();
     assert_eq!(err.status(), StatusCode::NOT_FOUND);
     let err =
         delete(State(state.clone()), Extension(writer(&b)), Path(preset.id)).await.unwrap_err();
@@ -85,9 +81,8 @@ async fn preset_routes_are_owner_scoped_and_need_dispatch_to_write() {
 async fn preset_route_errors_map_to_status_codes() {
     let Some(state) = state("preset_route_errors_map_to_status_codes").await else { return };
     let (a, b) = (seed_owner(&state.pool, "ea").await, seed_owner(&state.pool, "eb").await);
-    let post = |req: LaunchPresetRequest| {
-        create(State(state.clone()), Extension(writer(&a)), Json(req))
-    };
+    let post =
+        |req: LaunchPresetRequest| create(State(state.clone()), Extension(writer(&a)), Json(req));
 
     let unguarded = LaunchPresetRequest { external_sources: true, ..body(&a, "external") };
     let err = post(unguarded).await.unwrap_err();

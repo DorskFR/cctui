@@ -811,12 +811,12 @@ async fn store_spawn_row(
 
     let key = id.to_string();
     if !uploads.is_empty() {
-        crate::routes::attachments::record_uploads(&state.pool, &key, uploads, &[])
-            .await
-            .map_err(|e| {
+        crate::routes::attachments::record_uploads(&state.pool, &key, uploads, &[]).await.map_err(
+            |e| {
                 tracing::error!(session = %key, "recording stored spawn attachments: {e}");
                 AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not store the attachments")
-            })?;
+            },
+        )?;
     }
     Ok(id)
 }
@@ -1174,8 +1174,8 @@ pub async fn discard_draft(
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
     crate::inbox::queued::cancel(&state.pool, &session_id).await?;
-    let res = traced(DISCARD_SQL, |sql| sqlx::query(sql).bind(&session_id).execute(&state.pool))
-        .await?;
+    let res =
+        traced(DISCARD_SQL, |sql| sqlx::query(sql).bind(&session_id).execute(&state.pool)).await?;
     if res.rows_affected() == 0 {
         return Err(AppError::new(StatusCode::NOT_FOUND, "draft not found"));
     }

@@ -300,12 +300,11 @@ pub async fn update(
 
 /// Deleting a preset deletes its lanes and their events.
 pub async fn delete(pool: &PgPool, owner: Option<Uuid>, id: Uuid) -> sqlx::Result<bool> {
-    let done = sqlx::query(
-        "DELETE FROM presets WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
-    )
-    .bind(id)
-    .bind(owner)
-    .execute(pool)
-    .await?;
+    let done =
+        sqlx::query("DELETE FROM presets WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)")
+            .bind(id)
+            .bind(owner)
+            .execute(pool)
+            .await?;
     Ok(done.rows_affected() > 0)
 }

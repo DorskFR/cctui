@@ -200,10 +200,7 @@ fn split_message(message: &str) -> (Option<String>, Option<String>) {
     let (head, rest) = message.split_once('\n').unwrap_or((message, ""));
     let head = head.trim();
     let rest = rest.trim();
-    (
-        (!head.is_empty()).then(|| head.to_owned()),
-        (!rest.is_empty()).then(|| rest.to_owned()),
-    )
+    ((!head.is_empty()).then(|| head.to_owned()), (!rest.is_empty()).then(|| rest.to_owned()))
 }
 
 /// The outcome a `result:` / `needs input:` / `failed:` line in a turn's final

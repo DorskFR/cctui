@@ -40,7 +40,10 @@ pub fn route(lane: &ClaimedLane) -> Route {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    Delivered { session_id: String, delivered_as: &'static str },
+    Delivered {
+        session_id: String,
+        delivered_as: &'static str,
+    },
     /// Not attempted: the events go back to pending with no attempt counted.
     Skip,
     Retry(String),
@@ -115,8 +118,8 @@ async fn reply(state: &AppState, session_id: &str, events: &[BatchEvent]) -> Out
     match dispatch {
         Ok(()) => {
             if claimed {
-                let _ =
-                    crate::turn_dedupe::confirm(&state.pool, session_id, batch_id, command_id).await;
+                let _ = crate::turn_dedupe::confirm(&state.pool, session_id, batch_id, command_id)
+                    .await;
             }
             delivered()
         }

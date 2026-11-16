@@ -210,10 +210,8 @@ async fn deleting_a_preset_cascades_its_lanes() {
 async fn preset_references_must_belong_to_the_owner() {
     let Some(pool) = pool("preset_references_must_belong_to_the_owner").await else { return };
     let (a, b) = (seed_owner(&pool, "ra").await, seed_owner(&pool, "rb").await);
-    let foreign_machine = LaunchPresetRequest {
-        machine_id: Some(b.machine_id),
-        ..machine_request(&a, "theirs")
-    };
+    let foreign_machine =
+        LaunchPresetRequest { machine_id: Some(b.machine_id), ..machine_request(&a, "theirs") };
     let refused = create(&pool, a.user_id, &validate(&foreign_machine).unwrap()).await;
     assert!(matches!(refused, Err(WriteError::Invalid(_))), "{refused:?}");
 

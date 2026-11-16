@@ -66,8 +66,7 @@ fn machine_target(req: &LaunchPresetRequest, machine_id: Uuid) -> Result<Target,
     if !working_dir.starts_with('/') && !working_dir.starts_with('~') {
         return Err("working_dir must be an absolute path".into());
     }
-    let adapter_id =
-        trimmed(req.adapter_id.as_deref()).unwrap_or_else(|| "claude-code".to_owned());
+    let adapter_id = trimmed(req.adapter_id.as_deref()).unwrap_or_else(|| "claude-code".to_owned());
     Ok(Target::Machine {
         machine_id,
         working_dir,
@@ -84,8 +83,7 @@ fn container_target(req: &LaunchPresetRequest) -> Result<Target, String> {
     let profile =
         trimmed(req.profile.as_deref()).ok_or("profile is required for a dispatcher target")?;
     let machine_only = [&req.working_dir, &req.adapter_id, &req.model];
-    if machine_only.iter().any(|f| trimmed(f.as_deref()).is_some())
-        || req.permission_mode.is_some()
+    if machine_only.iter().any(|f| trimmed(f.as_deref()).is_some()) || req.permission_mode.is_some()
     {
         return Err(
             "working_dir, adapter_id, model and permission_mode apply to machine targets only"

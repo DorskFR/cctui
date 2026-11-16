@@ -222,12 +222,11 @@ pub struct Transcript {
 
 /// `None` when the session does not exist. `name` falls back to the working dir.
 pub async fn load(pool: &PgPool, session_id: &str) -> sqlx::Result<Option<Transcript>> {
-    let session: Option<SessionRow> = sqlx::query_as(
-        "SELECT adapter_id, session_name, working_dir FROM sessions WHERE id = $1",
-    )
-    .bind(session_id)
-    .fetch_optional(pool)
-    .await?;
+    let session: Option<SessionRow> =
+        sqlx::query_as("SELECT adapter_id, session_name, working_dir FROM sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await?;
     let Some((adapter_id, name, working_dir)) = session else { return Ok(None) };
     let adapter_id = adapter_id.unwrap_or_else(|| "claude-code".to_owned());
     let rows: Vec<(String, Value)> = sqlx::query_as(

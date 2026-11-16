@@ -1,6 +1,6 @@
-mod turn_end;
 #[cfg(test)]
 mod tests;
+mod turn_end;
 
 use std::collections::HashMap;
 
@@ -92,14 +92,14 @@ async fn insert(
     req: &DeclareOutcomeRequest,
 ) -> sqlx::Result<SessionOutcome> {
     let row: Row = sqlx::query_as(INSERT_SQL)
-    .bind(session_id)
-    .bind(req.status.as_str())
-    .bind(&req.headline)
-    .bind(&req.body)
-    .bind(&req.evidence)
-    .bind(req.source.as_str())
-    .fetch_one(conn)
-    .await?;
+        .bind(session_id)
+        .bind(req.status.as_str())
+        .bind(&req.headline)
+        .bind(&req.body)
+        .bind(&req.evidence)
+        .bind(req.source.as_str())
+        .fetch_one(conn)
+        .await?;
     Ok(to_outcome(row))
 }
 
@@ -107,10 +107,8 @@ async fn latest_result_file(
     conn: &mut sqlx::PgConnection,
     session_id: &str,
 ) -> sqlx::Result<Option<SessionOutcome>> {
-    let row: Option<Row> = sqlx::query_as(LATEST_RESULT_FILE_SQL)
-    .bind(session_id)
-    .fetch_optional(conn)
-    .await?;
+    let row: Option<Row> =
+        sqlx::query_as(LATEST_RESULT_FILE_SQL).bind(session_id).fetch_optional(conn).await?;
     Ok(row.map(to_outcome))
 }
 
@@ -148,8 +146,7 @@ pub async fn on_declared(state: &AppState, outcome: &SessionOutcome) -> bool {
         return false;
     }
     let req = DeclareOutcomeRequest::from(outcome);
-    match cctui_server_core::webhook::queue_outcome(&state.pool, &outcome.session_id, &req).await
-    {
+    match cctui_server_core::webhook::queue_outcome(&state.pool, &outcome.session_id, &req).await {
         Ok(queued) => queued,
         Err(e) => {
             tracing::warn!(session_id = %outcome.session_id, "outcome callback not queued: {e}");
@@ -170,10 +167,7 @@ pub async fn latest_of(
     if session_ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let rows: Vec<Row> = sqlx::query_as(LATEST_OF_SQL)
-    .bind(session_ids)
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<Row> = sqlx::query_as(LATEST_OF_SQL).bind(session_ids).fetch_all(pool).await?;
     Ok(rows.into_iter().map(to_outcome).map(|o| (o.session_id.clone(), o)).collect())
 }
 
