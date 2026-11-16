@@ -30,6 +30,9 @@ pub async fn has_vault_data<'e, E: sqlx::PgExecutor<'e>>(db: E) -> Result<bool, 
                         WHERE key = 'speech' AND value ? 'encrypted_key') \
              OR EXISTS (SELECT 1 FROM session_message_queue WHERE sealed_body IS NOT NULL) \
              OR EXISTS (SELECT 1 FROM inbox_events WHERE sealed_body IS NOT NULL) \
+             OR EXISTS (SELECT 1 FROM instance_settings \
+                        WHERE key = 'web_push_vapid' AND value ? 'encrypted_key') \
+             OR EXISTS (SELECT 1 FROM notification_endpoints WHERE config ? 'token_sealed') \
              OR EXISTS (SELECT 1 FROM sessions \
                         WHERE status = 'draft' AND metadata ? 'draft_sealed_prompt')",
     )
@@ -50,7 +53,8 @@ mod tests {
             "DELETE FROM cctuiverse_links",
             "DELETE FROM account_providers",
             "DELETE FROM accounts",
-            "DELETE FROM instance_settings WHERE key = 'speech'",
+            "DELETE FROM instance_settings WHERE key IN ('speech', 'web_push_vapid')",
+            "DELETE FROM notification_endpoints WHERE config ? 'token_sealed'",
             "DELETE FROM session_message_queue WHERE sealed_body IS NOT NULL",
             "DELETE FROM inbox_events WHERE sealed_body IS NOT NULL",
             "UPDATE sessions SET metadata = metadata - 'draft_sealed_prompt' \
@@ -136,6 +140,70 @@ mod tests {
             .execute(&mut *tx)
             .await
             .unwrap();
+        assert!(has_vault_data(&mut *tx).await.unwrap());
+        tx.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn has_vault_data_sees_a_sealed_vapid_key_alone() {
+        let name = "has_vault_data_sees_a_sealed_vapid_key_alone";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else {
+            return;
+        };
+        let pool = crate::db::connect(&url).await.expect("connect test db");
+        let mut tx = pool.begin().await.unwrap();
+        clear_vault_rows(&mut tx).await;
+        sqlx::query("INSERT INTO instance_settings (key, value) VALUES ('web_push_vapid', '{}')")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        assert!(!has_vault_data(&mut *tx).await.unwrap(), "an empty setting is not vault data");
+        sqlx::query(
+            "UPDATE instance_settings SET value = '{\"encrypted_key\": \"v1:00\"}' \
+             WHERE key = 'web_push_vapid'",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        assert!(has_vault_data(&mut *tx).await.unwrap());
+        tx.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn has_vault_data_sees_a_sealed_ntfy_token_alone() {
+        let name = "has_vault_data_sees_a_sealed_ntfy_token_alone";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else {
+            return;
+        };
+        let pool = crate::db::connect(&url).await.expect("connect test db");
+        let mut tx = pool.begin().await.unwrap();
+        clear_vault_rows(&mut tx).await;
+        let uid = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("{name}-{uid}"))
+            .bind(format!("h-{uid}"))
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let endpoint: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO notification_endpoints (user_id, channel, config) \
+             VALUES ($1, 'ntfy', '{\"url\": \"https://ntfy.example\", \"topic\": \"t\"}') \
+             RETURNING id",
+        )
+        .bind(uid)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        assert!(!has_vault_data(&mut *tx).await.unwrap(), "an unsealed token is not vault data");
+        sqlx::query(
+            "UPDATE notification_endpoints \
+             SET config = config || '{\"token_sealed\": \"v1:00\"}' WHERE id = $1",
+        )
+        .bind(endpoint)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
         assert!(has_vault_data(&mut *tx).await.unwrap());
         tx.rollback().await.unwrap();
     }
