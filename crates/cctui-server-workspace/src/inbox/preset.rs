@@ -162,6 +162,53 @@ pub async fn lane(
     .await
 }
 
+pub async fn from_session(
+    pool: &PgPool,
+    owner: Uuid,
+    session_id: &str,
+) -> sqlx::Result<Option<Preset>> {
+    let found: Option<Preset> = sqlx::query_as(
+        "SELECT $2::uuid AS user_id, COALESCE(s.session_name, '') AS name, '' AS prompt, \
+                s.machine_uuid AS machine_id, s.working_dir, s.adapter_id, s.model, \
+                s.permission_mode, NULL::text AS profile, 0 AS fresh_secs, \
+                'followup' AS on_stale, NULL::text AS notify_url, \
+                m.id IS NOT NULL AS machine_live, NULL::text AS dispatcher_name \
+         FROM sessions s \
+         LEFT JOIN machines m ON m.id = s.machine_uuid \
+              AND m.revoked_at IS NULL AND m.deleted_at IS NULL \
+         WHERE s.id = $1",
+    )
+    .bind(session_id)
+    .bind(owner)
+    .fetch_optional(pool)
+    .await?;
+    Ok(found.map(|mut target| {
+        target.permission_mode = target
+            .permission_mode
+            .as_deref()
+            .and_then(cctui_proto::adapter::PermissionMode::from_session_label)
+            .and_then(|mode| serde_json::to_value(mode).ok())
+            .and_then(|v| v.as_str().map(ToOwned::to_owned));
+        target
+    }))
+}
+
+/// A session lane whose session is gone follows up from the parent its events
+/// name; `None` when they name none, or it no longer exists.
+pub async fn follow_up_orphan(
+    state: &AppState,
+    lane: &ClaimedLane,
+    events: &[BatchEvent],
+) -> sqlx::Result<Option<Outcome>> {
+    let Some(batch_id) = events.first().map(|e| e.batch_id) else { return Ok(None) };
+    let Some(parent) = parent_override(events) else { return Ok(None) };
+    let Some(target) = from_session(&state.pool, lane.user_id, parent).await? else {
+        return Ok(None);
+    };
+    let plan = Plan::Followup { parent: parent.to_owned() };
+    spawn(state, lane, &target, &plan, events, batch_id).await.map(Some)
+}
+
 pub async fn load(pool: &PgPool, preset_id: Uuid) -> sqlx::Result<Option<Preset>> {
     sqlx::query_as(
         "SELECT p.user_id, p.name, p.prompt, p.machine_id, p.working_dir, p.adapter_id, \
@@ -255,7 +302,10 @@ fn parent_override(events: &[BatchEvent]) -> Option<&str> {
 
 #[must_use]
 pub fn instruction(preset: &Preset, text: &str) -> String {
-    format!("{}\n\n{text}", preset.prompt.trim_end())
+    match preset.prompt.trim_end() {
+        "" => text.to_owned(),
+        prompt => format!("{prompt}\n\n{text}"),
+    }
 }
 
 #[must_use]

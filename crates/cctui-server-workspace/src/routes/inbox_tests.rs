@@ -315,7 +315,9 @@ async fn a_preset_event_lands_in_its_topic_lane_and_external_sources_need_consen
     let err =
         post(&state, owner, to_preset(&closed.to_string(), "webhook", None)).await.unwrap_err();
     assert_eq!(err.status(), StatusCode::FORBIDDEN);
-    post(&state, owner, to_preset(&closed.to_string(), "timer", None)).await.unwrap();
+    let (code, Json(internal)) =
+        post(&state, owner, to_preset(&closed.to_string(), "timer", None)).await.unwrap();
+    assert_eq!((code, internal.status.as_str()), (StatusCode::ACCEPTED, "accepted"));
     let err = post(&state, stranger, to_preset(&open.to_string(), "n8n", None)).await.unwrap_err();
     assert_eq!(err.status(), StatusCode::NOT_FOUND);
 }

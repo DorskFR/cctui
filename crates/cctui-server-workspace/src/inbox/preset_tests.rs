@@ -461,3 +461,113 @@ async fn a_followup_prompt_embeds_the_parents_brief_then_the_batch() {
     assert_eq!(spawn_prompt(&pool, &orphan, ask.clone()).await.unwrap(), ask);
     assert_eq!(spawn_prompt(&pool, &Plan::Spawn, ask.clone()).await.unwrap(), ask);
 }
+
+async fn archived_session_lane(pool: &PgPool, name: &str) -> (Owner, String, Uuid) {
+    let (user, sid) = super::store_tests::seed_session(pool, name).await;
+    let machine: Uuid = sqlx::query_scalar(
+        "UPDATE sessions SET status = 'archived', session_name = 'worker' WHERE id = $1 \
+         RETURNING machine_uuid",
+    )
+    .bind(&sid)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    grant_dispatch(pool, user).await;
+    let lane_id = super::store::session_lane(pool, user, &sid).await.unwrap();
+    (Owner { user, machine, dispatcher: Uuid::nil() }, sid, lane_id)
+}
+
+async fn timer_event(pool: &PgPool, lane_id: Uuid, user: Uuid, parent: Option<&str>) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO inbox_events (lane_id, user_id, source, body, parent_session_id) \
+         VALUES ($1, $2, 'timer', 'check the CI run', $3) RETURNING id",
+    )
+    .bind(lane_id)
+    .bind(user)
+    .bind(parent)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn lane_follow(pool: &PgPool, lane_id: Uuid) -> (Option<String>, Option<Uuid>) {
+    sqlx::query_as("SELECT session_id, spawn_command_id FROM inbox_lanes WHERE id = $1")
+        .bind(lane_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_timer_for_an_archived_session_follows_it_up_under_the_batch_key() {
+    let Some(pool) = pool("inbox_session_followup_spawn").await else { return };
+    let (owner, sid, lane_id) = archived_session_lane(&pool, "timer-followup").await;
+    let event = timer_event(&pool, lane_id, owner.user, Some(&sid)).await;
+    let batch = Uuid::new_v4();
+    strand(&pool, event, batch).await;
+
+    deliver_due(&AppState::for_test(pool.clone()), 1, only(lane_id)).await;
+
+    assert_eq!(
+        launches(&pool, owner.machine).await,
+        [(batch, "delivery_failed".to_owned())],
+        "a follow-up spawn was attempted under the batch id"
+    );
+    let (status, attempts, batch_after, error, ..) = event_row(&pool, event).await;
+    assert_eq!((status.as_str(), attempts, batch_after), ("pending", 1, None), "retried, not dead");
+    assert!(error.is_some());
+    assert_eq!(lane_follow(&pool, lane_id).await, (Some(sid), None), "nothing launched yet");
+}
+
+#[tokio::test]
+async fn a_launched_session_follow_up_is_delivered_and_the_lane_follows_it() {
+    let Some(pool) = pool("inbox_session_followup_follow").await else { return };
+    let (owner, sid, lane_id) = archived_session_lane(&pool, "timer-follow").await;
+    let event = timer_event(&pool, lane_id, owner.user, Some(&sid)).await;
+    let batch = Uuid::new_v4();
+    strand(&pool, event, batch).await;
+    let new_session = record_launch(&pool, &owner, batch, "delivered").await;
+
+    deliver_due(&AppState::for_test(pool.clone()), 1, only(lane_id)).await;
+
+    assert_eq!(launches(&pool, owner.machine).await.len(), 1, "not sent again");
+    let (status, _, _, _, delivered_as, delivered_to) = event_row(&pool, event).await;
+    assert_eq!(status, "delivered");
+    assert_eq!(delivered_as.as_deref(), Some("followup"));
+    assert_eq!(delivered_to, Some(new_session.clone()));
+    assert_eq!(lane_follow(&pool, lane_id).await, (None, Some(batch)));
+
+    let claimed = claim_lanes(&pool, 10, only(lane_id)).await.unwrap();
+    assert!(claimed.is_empty(), "no due events left");
+    sqlx::query(
+        "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status, \
+         adapter_id) VALUES ($1, $2, $2, $3, '/w', 'active', 'claude-code')",
+    )
+    .bind(&new_session)
+    .bind(owner.machine)
+    .bind(owner.user)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let following = spawning_lane(lane_id, owner.user, batch);
+    let following = ClaimedLane { preset_id: None, ..following };
+    assert_eq!(super::deliver::route(&following), super::deliver::Route::Following);
+    assert_eq!(resolve(&pool, &following).await.unwrap(), Resolved::Wait);
+    assert_eq!(lane_follow(&pool, lane_id).await, (Some(new_session), None), "adopted");
+}
+
+#[tokio::test]
+async fn an_archived_session_lane_without_a_parent_still_dead_letters() {
+    let Some(pool) = pool("inbox_session_no_parent_dead").await else { return };
+    let (owner, _, lane_id) = archived_session_lane(&pool, "timer-orphan").await;
+    let event = timer_event(&pool, lane_id, owner.user, None).await;
+
+    deliver_due(&AppState::for_test(pool.clone()), 1, only(lane_id)).await;
+
+    let (status, _, _, error, ..) = event_row(&pool, event).await;
+    assert_eq!(
+        (status.as_str(), error.as_deref()),
+        ("dead", Some("session archived before delivery"))
+    );
+    assert!(launches(&pool, owner.machine).await.is_empty());
+}

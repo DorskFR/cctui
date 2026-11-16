@@ -15,6 +15,8 @@ pub enum Route {
     Reply(String),
     QueuedSpawn(String),
     Preset(Uuid),
+    /// The lane launched a follow-up that has not been adopted yet.
+    Following,
     Undeliverable(&'static str),
 }
 
@@ -22,6 +24,9 @@ pub enum Route {
 pub fn route(lane: &ClaimedLane) -> Route {
     if let Some(preset_id) = lane.preset_id {
         return Route::Preset(preset_id);
+    }
+    if lane.session_id.is_none() && lane.spawn_command_id.is_some() {
+        return Route::Following;
     }
     let status = lane.session_status.as_deref();
     if let Some(reason) = crate::scheduled_messages::undeliverable_reason(status) {
@@ -184,6 +189,16 @@ async fn settle(
     Ok(())
 }
 
+async fn orphaned(
+    state: &AppState,
+    lane: &ClaimedLane,
+    events: &[BatchEvent],
+    reason: &str,
+) -> sqlx::Result<Outcome> {
+    let followed = super::preset::follow_up_orphan(state, lane, events).await?;
+    Ok(followed.unwrap_or_else(|| Outcome::Dead(reason.to_owned())))
+}
+
 async fn deliver_claimed(state: &AppState, lane: &ClaimedLane) -> sqlx::Result<()> {
     if let Some(notice) = super::guards::trip_ceiling(&state.pool, lane.id).await? {
         super::guards::alert(state, notice);
@@ -199,7 +214,13 @@ async fn deliver_claimed(state: &AppState, lane: &ClaimedLane) -> sqlx::Result<(
         Route::Preset(preset_id) => {
             super::preset::deliver(state, lane, *preset_id, &events).await?
         }
-        Route::Undeliverable(reason) => Outcome::Dead((*reason).to_owned()),
+        Route::Following => match super::preset::resolve(&state.pool, lane).await? {
+            super::preset::Resolved::Wait => Outcome::Skip,
+            super::preset::Resolved::Session(_) => {
+                orphaned(state, lane, &events, "session no longer exists").await?
+            }
+        },
+        Route::Undeliverable(reason) => orphaned(state, lane, &events, reason).await?,
     };
     settle(state, lane, &route, (batch_id, attempts), outcome).await
 }
@@ -305,6 +326,8 @@ mod tests {
             Route::Undeliverable("session archived before delivery")
         );
         assert_eq!(route(&lane(None, false)), Route::Undeliverable("session no longer exists"));
+        let following = ClaimedLane { spawn_command_id: Some(Uuid::nil()), ..lane(None, false) };
+        assert_eq!(route(&following), Route::Following);
     }
 
     #[test]
