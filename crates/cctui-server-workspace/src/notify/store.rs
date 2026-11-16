@@ -113,18 +113,6 @@ impl NewNotification {
     }
 }
 
-/// ntfy's 1..=5 priority scale.
-#[must_use]
-pub const fn severity_for_priority(priority: u8) -> &'static str {
-    match priority {
-        0 | 1 => "min",
-        2 => "low",
-        3 => "info",
-        4 => "high",
-        _ => "critical",
-    }
-}
-
 #[must_use]
 pub fn priority_for_severity(severity: &str) -> u8 {
     match severity {
