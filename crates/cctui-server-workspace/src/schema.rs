@@ -91,14 +91,14 @@ pub const MIGRATIONS: &[Migration] = &[
     },
     Migration { version: 11, name: "presets", sql: include_str!("../schema/0011_presets.sql") },
     Migration {
-        version: 13,
+        version: 12,
         name: "inbox_preset_lanes",
-        sql: include_str!("../schema/0013_inbox_preset_lanes.sql"),
+        sql: include_str!("../schema/0012_inbox_preset_lanes.sql"),
     },
     Migration {
-        version: 14,
+        version: 13,
         name: "timers_and_hops",
-        sql: include_str!("../schema/0014_timers_and_hops.sql"),
+        sql: include_str!("../schema/0013_timers_and_hops.sql"),
     },
 ];
 
