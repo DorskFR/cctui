@@ -15,6 +15,7 @@ pub enum Route {
     Reply(String),
     QueuedSpawn(String),
     Preset(Uuid),
+    Draft(String),
     /// The lane launched a follow-up that has not been adopted yet.
     Following,
     Undeliverable(&'static str),
@@ -24,6 +25,9 @@ pub enum Route {
 pub fn route(lane: &ClaimedLane) -> Route {
     if let Some(preset_id) = lane.preset_id {
         return Route::Preset(preset_id);
+    }
+    if let Some(draft_id) = lane.key.strip_prefix(crate::scheduled_spawns::LANE_PREFIX) {
+        return Route::Draft(draft_id.to_owned());
     }
     if lane.session_id.is_none() && lane.spawn_command_id.is_some() {
         return Route::Following;
@@ -209,7 +213,13 @@ async fn deliver_claimed(state: &AppState, lane: &ClaimedLane) -> sqlx::Result<(
     let Some(batch_id) = events.first().map(|e| e.batch_id) else { return Ok(()) };
     let attempts = events.iter().map(|e| e.attempts).max().unwrap_or_default();
     let outcome = match &route {
-        Route::Reply(session_id) => reply(state, session_id, &events).await,
+        Route::Reply(session_id) => {
+            match crate::scheduled_messages::claimed(&state.pool, &events).await? {
+                Some(message) => crate::scheduled_messages::deliver_due(state, message).await,
+                None => reply(state, session_id, &events).await,
+            }
+        }
+        Route::Draft(draft_id) => crate::scheduled_spawns::launch(state, draft_id, &events).await,
         Route::QueuedSpawn(session_id) => super::queued::launch(state, session_id, &events).await,
         Route::Preset(preset_id) => {
             super::preset::deliver(state, lane, *preset_id, &events).await?
@@ -222,7 +232,11 @@ async fn deliver_claimed(state: &AppState, lane: &ClaimedLane) -> sqlx::Result<(
         },
         Route::Undeliverable(reason) => orphaned(state, lane, &events, reason).await?,
     };
-    settle(state, lane, &route, (batch_id, attempts), outcome).await
+    settle(state, lane, &route, (batch_id, attempts), outcome).await?;
+    if let Route::Draft(draft_id) = &route {
+        crate::scheduled_spawns::announce_settled(state, lane.id, draft_id).await?;
+    }
+    Ok(())
 }
 
 pub async fn deliver_lane(state: &AppState, lane: &ClaimedLane) {
@@ -328,6 +342,12 @@ mod tests {
         assert_eq!(route(&lane(None, false)), Route::Undeliverable("session no longer exists"));
         let following = ClaimedLane { spawn_command_id: Some(Uuid::nil()), ..lane(None, false) };
         assert_eq!(route(&following), Route::Following);
+    }
+
+    #[test]
+    fn a_draft_lane_routes_to_its_draft_launch() {
+        let draft = ClaimedLane { key: "draft:d-1".into(), ..lane(None, false) };
+        assert_eq!(route(&draft), Route::Draft("d-1".into()));
     }
 
     #[test]

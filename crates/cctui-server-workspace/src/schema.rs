@@ -100,6 +100,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "timers_and_hops",
         sql: include_str!("../schema/0013_timers_and_hops.sql"),
     },
+    Migration {
+        version: 16,
+        name: "fold_outboxes",
+        sql: include_str!("../schema/0016_fold_outboxes.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -242,7 +247,10 @@ mod tests {
                     (10, "bootstrap".to_owned()),
                     (11, "bootstrap".to_owned()),
                     (12, "bootstrap".to_owned()),
-                    (13, "bootstrap".to_owned())
+                    (13, "bootstrap".to_owned()),
+                    (14, "bootstrap".to_owned()),
+                    (15, "bootstrap".to_owned()),
+                    (16, "bootstrap".to_owned())
                 ]
             );
 
@@ -349,7 +357,10 @@ mod tests {
                     (10, "bootstrap".to_owned()),
                     (11, "bootstrap".to_owned()),
                     (12, "bootstrap".to_owned()),
-                    (13, "bootstrap".to_owned())
+                    (13, "bootstrap".to_owned()),
+                    (14, "bootstrap".to_owned()),
+                    (15, "bootstrap".to_owned()),
+                    (16, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =

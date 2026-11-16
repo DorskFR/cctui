@@ -798,8 +798,7 @@ enum Task {
     FollowUp,
     AutoResume,
     AutoRedeem,
-    ScheduledMessages,
-    ScheduledSpawns,
+    ScheduledFold,
     UpdateProbe,
     SearchBackfill,
     LabelIntentSweep,
@@ -808,7 +807,7 @@ enum Task {
 
 impl Task {
     #[cfg(test)]
-    const ALL: [Self; 14] = [
+    const ALL: [Self; 13] = [
         Self::FederationOutbox,
         Self::Keepalive,
         Self::PreviewSweep,
@@ -817,8 +816,7 @@ impl Task {
         Self::FollowUp,
         Self::AutoResume,
         Self::AutoRedeem,
-        Self::ScheduledMessages,
-        Self::ScheduledSpawns,
+        Self::ScheduledFold,
         Self::UpdateProbe,
         Self::SearchBackfill,
         Self::LabelIntentSweep,
@@ -833,7 +831,7 @@ impl Task {
             }
             Self::PreviewSweep => Feature::Previews,
             Self::PluginInit | Self::PluginSync => Feature::Plugins,
-            Self::ScheduledMessages | Self::ScheduledSpawns => Feature::Scheduling,
+            Self::ScheduledFold => Feature::Scheduling,
             Self::UpdateProbe => Feature::SelfUpdate,
             Self::SearchBackfill => Feature::TranscriptSearch,
             Self::LabelIntentSweep => Feature::Organising,
@@ -1214,11 +1212,10 @@ fn spawn_reaper_sweeps(state: &AppState) {
     if Task::AutoRedeem.enabled(features) {
         spawn_sweep(state, |state| async move { auto_redeem::sweep(&state).await });
     }
-    if Task::ScheduledMessages.enabled(features) {
-        spawn_sweep(state, |state| async move { scheduled_messages::sweep(&state).await });
-    }
-    if Task::ScheduledSpawns.enabled(features) {
-        spawn_sweep(state, |state| async move { scheduled_spawns::sweep(&state).await });
+    if Task::ScheduledFold.enabled(features) {
+        spawn_sweep(state, |state| async move {
+            scheduled_messages::fold_stragglers(&state.pool).await;
+        });
     }
     spawn_sweep(state, |state| async move {
         state.permission_store.write().await.reap_stale(300); // seconds
@@ -1536,16 +1533,16 @@ mod tests {
             "PUT /me/hidden-owners/{kind}/{target_id} Bearer Scope(Admin)",
             "DELETE /me/key Bearer Authenticated",
             "GET /meta/usage-probes Bearer Authenticated",
+            "GET /models/codex/catalog Bearer Authenticated",
+            "GET /models/{harness} Bearer Authenticated",
+            "GET /notifications Bearer Human",
             "GET /notifications/endpoints Bearer Human",
             "POST /notifications/endpoints Bearer Human",
             "DELETE /notifications/endpoints/{id} Bearer Human",
             "POST /notifications/endpoints/{id}/test Bearer Human",
-            "GET /models/codex/catalog Bearer Authenticated",
+            "POST /notifications/read-all Bearer Human",
             "GET /notifications/settings Bearer Human",
             "GET /notifications/vapid-key Bearer Human",
-            "GET /models/{harness} Bearer Authenticated",
-            "GET /notifications Bearer Human",
-            "POST /notifications/read-all Bearer Human",
             "POST /notifications/{id}/act Bearer Human",
             "POST /notifications/{id}/dismiss Bearer Human",
             "POST /notifications/{id}/read Bearer Human",
