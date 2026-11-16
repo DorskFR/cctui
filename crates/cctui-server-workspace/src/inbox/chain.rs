@@ -29,7 +29,7 @@ const ORIGIN_SQL: &str = "\
     ORDER BY (l.session_id = $1) DESC NULLS LAST, l.created_at DESC \
     LIMIT 1";
 
-fn topic<'a>(key: &'a str, preset_id: Uuid) -> &'a str {
+fn topic(key: &str, preset_id: Uuid) -> &str {
     key.strip_prefix(&super::preset_lane_key(preset_id, "")).unwrap_or(DEFAULT_TOPIC)
 }
 

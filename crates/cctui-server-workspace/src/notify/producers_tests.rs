@@ -107,7 +107,7 @@ async fn approval_for(pool: &PgPool, sid: &str) -> NotificationRecord {
     outcome_declared(pool, Routing::default(), &needs_input(sid)).await.unwrap().unwrap()
 }
 
-fn approve<'a>(note: Option<&'a str>, by: Uuid) -> Edge<'a> {
+fn approve(note: Option<&str>, by: Uuid) -> Edge<'_> {
     Edge::Act { action: "approve", note, channel: "web", by: Some(by) }
 }
 

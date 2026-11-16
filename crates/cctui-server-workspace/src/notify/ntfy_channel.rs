@@ -559,9 +559,9 @@ mod tests {
             let n = NewNotification::new(u, kind::APPROVAL, "Approve release?".into());
             emit_now(&pool, ON, &ntfy(&base), n).await;
             let (id, _, _) = notice_id(&pool, u).await;
-            let (op, state, later, stage) = delivery(&pool, id).await;
+            let (op, state, delayed, escalation) = delivery(&pool, id).await;
             assert_eq!(
-                (op.as_deref(), state.as_str(), later, stage),
+                (op.as_deref(), state.as_str(), delayed, escalation),
                 (Some("send"), "scheduled", true, 1)
             );
             assert!(seen.lock().unwrap().is_empty());

@@ -344,7 +344,7 @@ async fn pause_and_resume_are_owner_scoped_and_need_the_dispatch_scope() {
     assert_eq!(err.status(), StatusCode::NOT_FOUND);
     assert_eq!(lane_paused(&state.pool, lane).await, (false, None));
 
-    let read_only = AuthContext { scopes: [Scope::Read].into_iter().collect(), ..caller(owner) };
+    let read_only = AuthContext { scopes: std::iter::once(Scope::Read).collect(), ..caller(owner) };
     let err = pause_lane(State(state.clone()), Extension(read_only), Path(lane)).await.unwrap_err();
     assert_eq!(err.status(), StatusCode::FORBIDDEN);
 

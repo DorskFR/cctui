@@ -255,6 +255,8 @@ mod tests {
         .unwrap()
     }
 
+    type EventRow = (String, String, String, chrono::DateTime<Utc>, String);
+
     #[test]
     fn a_timer_needs_a_delay_in_range_a_prompt_and_a_tool_use_id() {
         assert_eq!(validate(&request(600)), Ok(()));
@@ -327,8 +329,7 @@ mod tests {
         };
         assert!(!deduplicated && archives);
         assert_eq!(fires_at, now + Duration::seconds(7200));
-        type Row = (String, String, String, chrono::DateTime<Utc>, String);
-        let (source_id, body, status, not_before, lane_key): Row = sqlx::query_as(
+        let (source_id, body, status, not_before, lane_key): EventRow = sqlx::query_as(
             "SELECT e.source_id, e.body, e.status, e.not_before, l.key \
                  FROM inbox_events e JOIN inbox_lanes l ON l.id = e.lane_id WHERE e.id = $1",
         )

@@ -309,7 +309,7 @@ pub fn instruction(preset: &Preset, text: &str) -> String {
 }
 
 #[must_use]
-pub fn spawn_request(preset: &Preset, plan: &Plan, prompt: String) -> Option<SpawnRequest> {
+pub fn spawn_request(preset: &Preset, plan: &Plan, prompt: &str) -> Option<SpawnRequest> {
     let parent = match plan {
         Plan::Followup { parent } => Some(parent.as_str()),
         Plan::Spawn | Plan::Reply(_) => None,
@@ -334,7 +334,7 @@ pub fn dispatch_request(
     preset: &Preset,
     dispatcher: String,
     batch_id: Uuid,
-    prompt: String,
+    prompt: &str,
 ) -> DispatchRequest {
     DispatchRequest {
         dispatcher,
@@ -394,7 +394,7 @@ async fn spawn(
         Err(reason) => return Ok(Outcome::Dead(reason.to_owned())),
     };
     let prompt = spawn_prompt(&state.pool, plan, instruction(preset, &text)).await?;
-    let Some(req) = spawn_request(preset, plan, prompt) else {
+    let Some(req) = spawn_request(preset, plan, &prompt) else {
         return Ok(Outcome::Dead(MACHINE_GONE.to_owned()));
     };
     let ctx = match super::queued::acting_as(&state.pool, preset.user_id).await {
@@ -450,7 +450,7 @@ async fn dispatch(
         Ok(ctx) => ctx,
         Err(e) => return Outcome::Retry(e.to_string()),
     };
-    let req = dispatch_request(preset, dispatcher, batch_id, instruction(preset, &text));
+    let req = dispatch_request(preset, dispatcher, batch_id, &instruction(preset, &text));
     match cctui_server_core::dispatch::execute_dispatch(state, &ctx, req).await {
         Ok((_, Json(done))) => {
             Outcome::Delivered { session_id: done.session_id, delivered_as: "dispatch" }

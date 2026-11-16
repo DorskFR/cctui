@@ -732,7 +732,7 @@ mod tests {
     #[test]
     fn the_timer_claim_shares_the_skip_rules_and_guards_the_update() {
         for guard in [
-            "FOR UPDATE SKIP LOCKED",
+            "FOR UPDATE OF t SKIP LOCKED",
             "s.status = ANY($2)",
             "s.ended_at IS NULL",
             "s.soft_limit_reason IS NULL",

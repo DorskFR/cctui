@@ -117,7 +117,8 @@ fn only_a_launch_that_never_reached_the_daemon_is_sent_again() {
 fn a_container_batch_dispatches_under_its_batch_id_with_no_secret() {
     let batch = Uuid::new_v4();
     let p = preset(false);
-    let req = dispatch_request(&p, "kube".into(), batch, instruction(&p, "[cctui inbox: 1 event]"));
+    let prompt = instruction(&p, "[cctui inbox: 1 event]");
+    let req = dispatch_request(&p, "kube".into(), batch, &prompt);
     assert_eq!(req.dispatcher, "kube");
     assert_eq!(req.session_id, Some(batch.to_string()));
     assert_eq!(req.notify_url.as_deref(), Some("https://n8n.example/hook"));
@@ -136,7 +137,7 @@ fn a_container_batch_dispatches_under_its_batch_id_with_no_secret() {
 #[test]
 fn a_machine_spawn_carries_the_preset_target_and_a_followup_names_its_parent() {
     let p = preset(true);
-    let plain = spawn_request(&p, &Plan::Spawn, "go".into()).unwrap();
+    let plain = spawn_request(&p, &Plan::Spawn, "go").unwrap();
     assert_eq!(plain.machine_id, Uuid::nil().to_string());
     assert_eq!(plain.working_dir, "/w");
     assert_eq!(plain.adapter_id.as_deref(), Some("claude-code"));
@@ -144,11 +145,10 @@ fn a_machine_spawn_carries_the_preset_target_and_a_followup_names_its_parent() {
     assert_eq!(plain.name.as_deref(), Some("triage"));
     assert!(plain.relation.is_none() && plain.parent_session_id.is_none());
     assert!(plain.env.is_empty());
-    let followup =
-        spawn_request(&p, &Plan::Followup { parent: "s-1".into() }, "go".into()).unwrap();
+    let followup = spawn_request(&p, &Plan::Followup { parent: "s-1".into() }, "go").unwrap();
     assert_eq!(followup.relation.as_deref(), Some(crate::followup::RELATION));
     assert_eq!(followup.parent_session_id.as_deref(), Some("s-1"));
-    assert!(spawn_request(&preset(false), &Plan::Spawn, "go".into()).is_none());
+    assert!(spawn_request(&preset(false), &Plan::Spawn, "go").is_none());
 }
 
 async fn pool(name: &str) -> Option<PgPool> {
