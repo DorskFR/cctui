@@ -95,7 +95,7 @@ async fn a_delivery_error_queues_while_a_refusal_returns_the_error() {
         super::try_dispatch_spawn(&state, &ctx, request(machine, "/nope"), Vec::new(), Vec::new())
             .await;
     daemon.await.unwrap();
-    let failure = refused.err().expect("a missing cwd is refused");
+    let failure = refused.expect_err("a missing cwd is refused");
     assert_eq!(failure.response.0, StatusCode::BAD_REQUEST);
     assert!(failure.queue.is_none(), "a refusal never queues");
 }

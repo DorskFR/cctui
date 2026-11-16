@@ -23,7 +23,7 @@ fn caller(user_id: Uuid) -> AuthContext {
         user_id,
         key_id: Uuid::new_v4(),
         machine_id: None,
-        scopes: [Scope::Read].into_iter().collect(),
+        scopes: std::iter::once(Scope::Read).collect(),
     }
 }
 

@@ -19,7 +19,7 @@ fn caller(user_id: Uuid, scopes: &[Scope]) -> AuthContext {
 }
 
 fn writer(owner: &Owner) -> AuthContext {
-    caller(owner.user_id, &[Scope::Read, Scope::Dispatch])
+    caller(owner.user, &[Scope::Read, Scope::Dispatch])
 }
 
 async fn state(name: &str) -> Option<AppState> {
@@ -32,7 +32,7 @@ fn body(owner: &Owner, name: &str) -> LaunchPresetRequest {
     LaunchPresetRequest {
         name: name.into(),
         prompt: "triage".into(),
-        machine_id: Some(owner.machine_id),
+        machine_id: Some(owner.machine),
         working_dir: Some("/w".into()),
         ..LaunchPresetRequest::default()
     }
@@ -43,7 +43,7 @@ async fn preset_routes_are_owner_scoped_and_need_dispatch_to_write() {
     let Some(state) = state("preset_routes_are_owner_scoped").await else { return };
     let (a, b) = (seed_owner(&state.pool, "ha").await, seed_owner(&state.pool, "hb").await);
 
-    let read_only = caller(a.user_id, &[Scope::Read]);
+    let read_only = caller(a.user, &[Scope::Read]);
     let err = create(State(state.clone()), Extension(read_only.clone()), Json(body(&a, "x")))
         .await
         .unwrap_err();
@@ -89,7 +89,7 @@ async fn preset_route_errors_map_to_status_codes() {
     assert_eq!(err.status(), StatusCode::BAD_REQUEST);
     assert!(err.message().contains("guarded"), "{}", err.message());
 
-    let foreign = LaunchPresetRequest { machine_id: Some(b.machine_id), ..body(&a, "foreign") };
+    let foreign = LaunchPresetRequest { machine_id: Some(b.machine), ..body(&a, "foreign") };
     assert_eq!(post(foreign).await.unwrap_err().status(), StatusCode::BAD_REQUEST);
 
     let (code, _) = post(body(&a, "twice")).await.unwrap();

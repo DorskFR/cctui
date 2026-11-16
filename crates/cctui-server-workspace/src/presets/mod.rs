@@ -94,10 +94,8 @@ fn container_target(req: &LaunchPresetRequest) -> Result<Target, String> {
 }
 
 fn target(req: &LaunchPresetRequest) -> Result<Target, String> {
-    match req.machine_id {
-        Some(machine_id) => machine_target(req, machine_id),
-        None => container_target(req),
-    }
+    req.machine_id
+        .map_or_else(|| container_target(req), |machine_id| machine_target(req, machine_id))
 }
 
 /// External text reaching a machine session is prompt injection with a warm

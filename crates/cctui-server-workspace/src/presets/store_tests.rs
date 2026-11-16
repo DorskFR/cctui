@@ -18,9 +18,9 @@ async fn pool(name: &str) -> Option<PgPool> {
 }
 
 pub struct Owner {
-    pub user_id: Uuid,
-    pub machine_id: Uuid,
-    pub dispatcher_id: Uuid,
+    pub user: Uuid,
+    pub machine: Uuid,
+    pub dispatcher: Uuid,
 }
 
 pub async fn seed_owner(pool: &PgPool, name: &str) -> Owner {
@@ -48,14 +48,14 @@ pub async fn seed_owner(pool: &PgPool, name: &str) -> Owner {
         .execute(pool)
         .await
         .unwrap();
-    Owner { user_id, machine_id, dispatcher_id }
+    Owner { user: user_id, machine: machine_id, dispatcher: dispatcher_id }
 }
 
 fn machine_request(owner: &Owner, name: &str) -> LaunchPresetRequest {
     LaunchPresetRequest {
         name: name.into(),
         prompt: "triage".into(),
-        machine_id: Some(owner.machine_id),
+        machine_id: Some(owner.machine),
         working_dir: Some("/w".into()),
         ..LaunchPresetRequest::default()
     }
@@ -77,23 +77,23 @@ async fn lane_count(pool: &PgPool, preset_id: Uuid) -> i64 {
 async fn preset_crud_is_owner_scoped() {
     let Some(pool) = pool("preset_crud_is_owner_scoped").await else { return };
     let (a, b) = (seed_owner(&pool, "pa").await, seed_owner(&pool, "pb").await);
-    let preset = create(&pool, a.user_id, &machine(&a, "nightly")).await.unwrap();
-    assert_eq!(preset.user_id, a.user_id);
+    let preset = create(&pool, a.user, &machine(&a, "nightly")).await.unwrap();
+    assert_eq!(preset.user_id, a.user);
     assert_eq!(preset.working_dir.as_deref(), Some("/w"));
 
-    assert!(list(&pool, Some(b.user_id)).await.unwrap().iter().all(|p| p.id != preset.id));
-    assert_eq!(get(&pool, Some(b.user_id), preset.id).await.unwrap(), None);
+    assert!(list(&pool, Some(b.user)).await.unwrap().iter().all(|p| p.id != preset.id));
+    assert_eq!(get(&pool, Some(b.user), preset.id).await.unwrap(), None);
     let edit = machine(&a, "renamed");
-    assert!(matches!(update(&pool, Some(b.user_id), preset.id, &edit).await, Ok(None)));
-    assert!(!delete(&pool, Some(b.user_id), preset.id).await.unwrap());
+    assert!(matches!(update(&pool, Some(b.user), preset.id, &edit).await, Ok(None)));
+    assert!(!delete(&pool, Some(b.user), preset.id).await.unwrap());
 
-    let mine = list(&pool, Some(a.user_id)).await.unwrap();
+    let mine = list(&pool, Some(a.user)).await.unwrap();
     assert_eq!(mine.iter().map(|p| p.id).collect::<Vec<_>>(), [preset.id]);
     assert!(list(&pool, None).await.unwrap().iter().any(|p| p.id == preset.id), "admin view");
-    let renamed = update(&pool, Some(a.user_id), preset.id, &edit).await.unwrap().unwrap();
+    let renamed = update(&pool, Some(a.user), preset.id, &edit).await.unwrap().unwrap();
     assert_eq!(renamed.name, "renamed");
     assert!(renamed.updated_at >= preset.updated_at);
-    assert!(delete(&pool, Some(a.user_id), preset.id).await.unwrap());
+    assert!(delete(&pool, Some(a.user), preset.id).await.unwrap());
     assert_eq!(get(&pool, None, preset.id).await.unwrap(), None);
 }
 
@@ -101,10 +101,10 @@ async fn preset_crud_is_owner_scoped() {
 async fn preset_names_are_unique_per_owner() {
     let Some(pool) = pool("preset_names_are_unique_per_owner").await else { return };
     let (a, b) = (seed_owner(&pool, "na").await, seed_owner(&pool, "nb").await);
-    create(&pool, a.user_id, &machine(&a, "same")).await.unwrap();
-    let again = create(&pool, a.user_id, &machine(&a, "same")).await;
+    create(&pool, a.user, &machine(&a, "same")).await.unwrap();
+    let again = create(&pool, a.user, &machine(&a, "same")).await;
     assert!(matches!(again, Err(WriteError::NameTaken)), "{again:?}");
-    create(&pool, b.user_id, &machine(&b, "same")).await.unwrap();
+    create(&pool, b.user, &machine(&b, "same")).await.unwrap();
 }
 
 #[tokio::test]
@@ -114,15 +114,15 @@ async fn preset_fresh_secs_is_clamped_on_write() {
     for (raw, want) in [(Some(5), 60), (None, 900), (Some(10_000), 2700)] {
         let name = format!("f{want}");
         let req = LaunchPresetRequest { fresh_secs: raw, ..machine_request(&a, &name) };
-        let preset = create(&pool, a.user_id, &validate(&req).unwrap()).await.unwrap();
+        let preset = create(&pool, a.user, &validate(&req).unwrap()).await.unwrap();
         assert_eq!(preset.fresh_secs, want, "{raw:?}");
     }
     let raw = sqlx::query(
         "INSERT INTO presets (user_id, name, prompt, machine_id, working_dir, adapter_id, \
          fresh_secs) VALUES ($1, 'raw', 'p', $2, '/w', 'claude-code', 30)",
     )
-    .bind(a.user_id)
-    .bind(a.machine_id)
+    .bind(a.user)
+    .bind(a.machine)
     .execute(&pool)
     .await;
     assert!(raw.is_err(), "the table refuses an unclamped fresh_secs");
@@ -134,8 +134,8 @@ async fn insert_external(pool: &PgPool, owner: &Owner, mode: &str) -> sqlx::Resu
          permission_mode, external_sources) VALUES ($1, $3, 'p', $2, '/w', 'claude-code', \
          NULLIF($3, 'none'), true)",
     )
-    .bind(owner.user_id)
-    .bind(owner.machine_id)
+    .bind(owner.user)
+    .bind(owner.machine)
     .bind(mode)
     .execute(pool)
     .await
@@ -159,7 +159,7 @@ async fn an_external_machine_preset_must_be_guarded_in_the_table() {
         permission_mode: Some(PermissionMode::Ask),
         ..machine_request(&a, "guarded")
     };
-    let preset = create(&pool, a.user_id, &validate(&req).unwrap()).await.unwrap();
+    let preset = create(&pool, a.user, &validate(&req).unwrap()).await.unwrap();
     assert_eq!(preset.permission_mode, Some(PermissionMode::Ask));
     assert!(preset.external_sources);
 }
@@ -168,11 +168,11 @@ async fn an_external_machine_preset_must_be_guarded_in_the_table() {
 async fn deleting_a_preset_cascades_its_lanes() {
     let Some(pool) = pool("deleting_a_preset_cascades_its_lanes").await else { return };
     let a = seed_owner(&pool, "ca").await;
-    let preset = create(&pool, a.user_id, &machine(&a, "laned")).await.unwrap();
+    let preset = create(&pool, a.user, &machine(&a, "laned")).await.unwrap();
     let lane: Uuid = sqlx::query_scalar(
         "INSERT INTO inbox_lanes (user_id, key, preset_id) VALUES ($1, $2, $3) RETURNING id",
     )
-    .bind(a.user_id)
+    .bind(a.user)
     .bind(format!("preset:{}:ops", preset.id))
     .bind(preset.id)
     .fetch_one(&pool)
@@ -182,13 +182,13 @@ async fn deleting_a_preset_cascades_its_lanes() {
         "INSERT INTO inbox_events (lane_id, user_id, source, body) VALUES ($1, $2, 'timer', 'x')",
     )
     .bind(lane)
-    .bind(a.user_id)
+    .bind(a.user)
     .execute(&pool)
     .await
     .unwrap();
     assert_eq!(lane_count(&pool, preset.id).await, 1);
 
-    assert!(delete(&pool, Some(a.user_id), preset.id).await.unwrap());
+    assert!(delete(&pool, Some(a.user), preset.id).await.unwrap());
     assert_eq!(lane_count(&pool, preset.id).await, 0);
     let events: i64 = sqlx::query_scalar("SELECT count(*) FROM inbox_events WHERE lane_id = $1")
         .bind(lane)
@@ -199,7 +199,7 @@ async fn deleting_a_preset_cascades_its_lanes() {
 
     let dangling =
         sqlx::query("INSERT INTO inbox_lanes (user_id, key, preset_id) VALUES ($1, 'k', $2)")
-            .bind(a.user_id)
+            .bind(a.user)
             .bind(Uuid::new_v4())
             .execute(&pool)
             .await;
@@ -211,41 +211,41 @@ async fn preset_references_must_belong_to_the_owner() {
     let Some(pool) = pool("preset_references_must_belong_to_the_owner").await else { return };
     let (a, b) = (seed_owner(&pool, "ra").await, seed_owner(&pool, "rb").await);
     let foreign_machine =
-        LaunchPresetRequest { machine_id: Some(b.machine_id), ..machine_request(&a, "theirs") };
-    let refused = create(&pool, a.user_id, &validate(&foreign_machine).unwrap()).await;
+        LaunchPresetRequest { machine_id: Some(b.machine), ..machine_request(&a, "theirs") };
+    let refused = create(&pool, a.user, &validate(&foreign_machine).unwrap()).await;
     assert!(matches!(refused, Err(WriteError::Invalid(_))), "{refused:?}");
 
     let foreign_dispatcher = LaunchPresetRequest {
         name: "container".into(),
         prompt: "p".into(),
-        dispatcher_id: Some(b.dispatcher_id),
+        dispatcher_id: Some(b.dispatcher),
         profile: Some("default".into()),
         ..LaunchPresetRequest::default()
     };
-    let refused = create(&pool, a.user_id, &validate(&foreign_dispatcher).unwrap()).await;
+    let refused = create(&pool, a.user, &validate(&foreign_dispatcher).unwrap()).await;
     assert!(matches!(refused, Err(WriteError::Invalid(_))), "{refused:?}");
     let own_dispatcher =
-        LaunchPresetRequest { dispatcher_id: Some(a.dispatcher_id), ..foreign_dispatcher };
-    let container = create(&pool, a.user_id, &validate(&own_dispatcher).unwrap()).await.unwrap();
+        LaunchPresetRequest { dispatcher_id: Some(a.dispatcher), ..foreign_dispatcher };
+    let container = create(&pool, a.user, &validate(&own_dispatcher).unwrap()).await.unwrap();
     assert_eq!(container.profile.as_deref(), Some("default"));
 
-    let theirs = create(&pool, b.user_id, &machine(&b, "b-next")).await.unwrap();
+    let theirs = create(&pool, b.user, &machine(&b, "b-next")).await.unwrap();
     let chain_foreign =
         LaunchPresetRequest { then_preset_id: Some(theirs.id), ..machine_request(&a, "chain") };
-    let refused = create(&pool, a.user_id, &validate(&chain_foreign).unwrap()).await;
+    let refused = create(&pool, a.user, &validate(&chain_foreign).unwrap()).await;
     assert!(matches!(refused, Err(WriteError::Invalid(_))), "{refused:?}");
 
-    let first = create(&pool, a.user_id, &machine(&a, "first")).await.unwrap();
+    let first = create(&pool, a.user, &machine(&a, "first")).await.unwrap();
     let chain = machine_request(&a, "first");
     let chain = LaunchPresetRequest { then_preset_id: Some(container.id), ..chain };
-    let chained = update(&pool, Some(a.user_id), first.id, &validate(&chain).unwrap()).await;
+    let chained = update(&pool, Some(a.user), first.id, &validate(&chain).unwrap()).await;
     assert_eq!(chained.unwrap().unwrap().then_preset_id, Some(container.id));
     let to_self = machine_request(&a, "first");
     let to_self = LaunchPresetRequest { then_preset_id: Some(first.id), ..to_self };
-    let refused = update(&pool, Some(a.user_id), first.id, &validate(&to_self).unwrap()).await;
+    let refused = update(&pool, Some(a.user), first.id, &validate(&to_self).unwrap()).await;
     assert!(matches!(refused, Err(WriteError::Invalid(_))), "{refused:?}");
 
-    assert!(delete(&pool, Some(a.user_id), container.id).await.unwrap());
+    assert!(delete(&pool, Some(a.user), container.id).await.unwrap());
     let unchained = get(&pool, None, first.id).await.unwrap().unwrap();
     assert_eq!(unchained.then_preset_id, None, "deleting the next preset unlinks the chain");
 }
@@ -256,7 +256,7 @@ async fn changing_a_preset_cron_clears_its_next_fire() {
     let a = seed_owner(&pool, "cr").await;
     let daily = machine_request(&a, "daily");
     let daily = LaunchPresetRequest { cron: Some("0 9 * * *".into()), ..daily };
-    let preset = create(&pool, a.user_id, &validate(&daily).unwrap()).await.unwrap();
+    let preset = create(&pool, a.user, &validate(&daily).unwrap()).await.unwrap();
     sqlx::query("UPDATE presets SET next_fire_at = now() + interval '1 hour' WHERE id = $1")
         .bind(preset.id)
         .execute(&pool)
