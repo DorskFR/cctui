@@ -1149,4 +1149,3 @@ mod tests {
         assert_eq!(status_of(&offline), StatusCode::SERVICE_UNAVAILABLE);
     }
 }
-

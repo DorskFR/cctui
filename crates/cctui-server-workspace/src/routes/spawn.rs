@@ -2645,14 +2645,12 @@ mod missing_cwd_tests {
         assert_eq!(body.0.error, "working directory /nope does not exist on that machine");
     }
 
-    async fn rows_on(pool: &sqlx::PgPool, table: &str, machine: Uuid) -> i64 {
-        let column = if table == "sessions" { "machine_uuid" } else { "machine_id" };
-        sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE {column} = $1"))
-            .bind(machine)
-            .fetch_one(pool)
-            .await
-            .unwrap()
+    async fn rows_on(pool: &sqlx::PgPool, sql: &'static str, machine: Uuid) -> i64 {
+        sqlx::query_scalar(sql).bind(machine).fetch_one(pool).await.unwrap()
     }
+
+    const SESSIONS_ON: &str = "SELECT count(*) FROM sessions WHERE machine_uuid = $1";
+    const LAUNCHES_ON: &str = "SELECT count(*) FROM machine_launches WHERE machine_id = $1";
 
     #[tokio::test]
     async fn a_spawn_into_a_missing_dir_is_refused_before_any_row_exists() {
@@ -2677,8 +2675,8 @@ mod missing_cwd_tests {
         assert_eq!(code, StatusCode::BAD_REQUEST);
         assert!(body.0.error.contains("/nope"), "{}", body.0.error);
         assert!(rx.try_recv().is_err(), "nothing but the listing reached the daemon");
-        assert_eq!(rows_on(&pool, "sessions", machine).await, 0);
-        assert_eq!(rows_on(&pool, "machine_launches", machine).await, 0);
+        assert_eq!(rows_on(&pool, SESSIONS_ON, machine).await, 0);
+        assert_eq!(rows_on(&pool, LAUNCHES_ON, machine).await, 0);
     }
 
     #[tokio::test]
