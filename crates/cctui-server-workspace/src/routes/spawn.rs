@@ -2671,7 +2671,7 @@ mod missing_cwd_tests {
         )
         .await;
         let mut rx = daemon.await.unwrap();
-        let (code, body) = refused.err().expect("refused");
+        let (code, body) = refused.expect_err("refused");
         assert_eq!(code, StatusCode::BAD_REQUEST);
         assert!(body.0.error.contains("/nope"), "{}", body.0.error);
         assert!(rx.try_recv().is_err(), "nothing but the listing reached the daemon");
