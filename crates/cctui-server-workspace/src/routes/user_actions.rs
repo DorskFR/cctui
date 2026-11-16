@@ -7,7 +7,8 @@
 //! `sessions.todos` is.
 //!
 //! Every mutation broadcasts the whole list on the session WS, so a second tab
-//! updates live without refetching.
+//! updates live without refetching. Each item also files a notification; a tick
+//! closes it in the same transaction.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -20,6 +21,8 @@ use cctui_proto::api::{
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::notify::producers::{self, AddedAction};
+use crate::notify::{self, Routing};
 use crate::state::AppState;
 
 type Row = (
@@ -132,13 +135,14 @@ pub async fn add(
         ));
         return Ok(result);
     }
+    let detail = clean_optional(req.detail.as_deref());
     let id: Uuid = sqlx::query_scalar(
         "INSERT INTO session_user_actions (session_id, title, detail, kind, blocking) \
          VALUES ($1, $2, $3, $4, $5) RETURNING id",
     )
     .bind(session_id)
     .bind(&title)
-    .bind(clean_optional(req.detail.as_deref()))
+    .bind(&detail)
     .bind(req.kind.as_str())
     .bind(req.blocking)
     .fetch_one(&state.pool)
@@ -146,7 +150,28 @@ pub async fn add(
     result.added = Some(id);
     result.list = list_of(state, session_id).await?;
     broadcast(state, &result.list);
+    let added = AddedAction {
+        session_id,
+        id,
+        title: &title,
+        detail: detail.as_deref(),
+        blocking: req.blocking,
+    };
+    if let Err(e) = producers::user_action_added(&state.pool, routing(state), &added).await {
+        tracing::warn!(%session_id, "user action notification failed: {e}");
+    }
     Ok(result)
+}
+
+const fn routing(state: &AppState) -> Routing {
+    Routing::from_config(&state.config)
+}
+
+pub async fn republish(state: &AppState, session_id: &str) {
+    match list_of(state, session_id).await {
+        Ok(list) => broadcast(state, &list),
+        Err(e) => tracing::warn!(%session_id, "user action list not republished: {e}"),
+    }
 }
 
 /// How a tick landed.
@@ -169,6 +194,8 @@ pub async fn tick(
     note: Option<&str>,
     by: UserActionResolver,
 ) -> Result<Ticked, AppError> {
+    let note = clean_optional(note);
+    let mut tx = state.pool.begin().await?;
     let done = sqlx::query(
         "UPDATE session_user_actions SET status = $3, note = COALESCE($4::text, note), \
          resolved_at = now(), resolved_by = $5 WHERE id = $1 AND session_id = $2 AND status = \
@@ -177,11 +204,23 @@ pub async fn tick(
     .bind(id)
     .bind(session_id)
     .bind(status.as_str())
-    .bind(clean_optional(note))
+    .bind(&note)
     .bind(by.as_str())
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?
     .rows_affected();
+    let closed = if done > 0 {
+        producers::user_action_ticked(&mut tx, id, status, note.as_deref(), by).await?
+    } else {
+        None
+    };
+    tx.commit().await?;
+    if let Some((n, lane)) = closed {
+        notify::in_app::changed(&state.pool, &n).await;
+        if let Some(lane) = lane {
+            crate::inbox::deliver::wake_lane(state, lane);
+        }
+    }
     let list = list_of(state, session_id).await?;
     if done > 0 {
         broadcast(state, &list);

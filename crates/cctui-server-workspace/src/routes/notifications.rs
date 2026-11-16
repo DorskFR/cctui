@@ -54,6 +54,25 @@ async fn apply(
     store::transition(&state.pool, id, edge).await?.map(Json).ok_or_else(not_found)
 }
 
+async fn settle(state: &AppState, acted: store::Acted) -> NotificationTransition {
+    if let Some(session_id) = &acted.ticked_session {
+        crate::routes::user_actions::republish(state, session_id).await;
+    }
+    if let Some(lane) = acted.decision_lane {
+        crate::inbox::deliver::wake_lane(state, lane);
+    }
+    acted.transition
+}
+
+async fn decide(
+    state: &AppState,
+    id: Uuid,
+    edge: Edge<'_>,
+) -> ApiResult<Option<NotificationTransition>> {
+    let Some(acted) = store::act(&state.pool, id, edge).await? else { return Ok(None) };
+    Ok(Some(settle(state, acted).await))
+}
+
 pub fn page(query: &ListQuery) -> Result<Page, String> {
     let open_only = match query.state.as_deref().unwrap_or("open") {
         "open" => true,
@@ -126,7 +145,8 @@ pub async fn act(
 ) -> ApiResult<Json<NotificationTransition>> {
     let n = owned(&state, &ctx, id).await?;
     let (action, note, channel) = validate_act(&n, &req).map_err(bad_request)?;
-    apply(&state, id, Edge::Act { action, note, channel, by: Some(ctx.user_id) }).await
+    let edge = Edge::Act { action, note, channel, by: Some(ctx.user_id) };
+    decide(&state, id, edge).await?.map(Json).ok_or_else(not_found)
 }
 
 pub async fn dismiss(
@@ -135,7 +155,7 @@ pub async fn dismiss(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<NotificationTransition>> {
     let n = owned(&state, &ctx, id).await?;
-    if store::is_open(&n) && store::is_blocking(&state.pool, &n).await? {
+    if store::is_open(&n) && store::awaits_decision(&state.pool, &n).await? {
         return Err(AppError::new(
             StatusCode::CONFLICT,
             "a blocking approval cannot be dismissed: answer it instead",
@@ -158,7 +178,7 @@ async fn token_transition(
 ) -> ApiResult<Option<NotificationTransition>> {
     if let Some(t) = tokens::burn(&state.pool, hash).await? {
         let edge = Edge::Act { action: &t.action, note: None, channel: &t.channel, by: None };
-        return Ok(store::transition(&state.pool, t.notification_id, edge).await?);
+        return decide(state, t.notification_id, edge).await;
     }
     let Some(t) = tokens::peek(&state.pool, hash).await? else { return Ok(None) };
     let current = store::get(&state.pool, t.notification_id).await?;

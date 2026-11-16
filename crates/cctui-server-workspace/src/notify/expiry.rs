@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
-use super::store::{Edge, NotificationRecord, transition_in};
+use super::store::{Edge, NotificationRecord, awaits_decision, close_in};
 use crate::inbox::{Source, session_lane_key};
 
 pub const DECISION_EVENT: &str = "notification.decision";
@@ -40,19 +40,26 @@ pub async fn expire_due(pool: &PgPool, user: Option<Uuid>) -> sqlx::Result<usize
 
 async fn expire(pool: &PgPool, id: Uuid) -> sqlx::Result<bool> {
     let mut tx = pool.begin().await?;
-    let Some(n) = transition_in(&mut tx, id, Edge::Expire).await? else {
+    let Some((n, _)) = close_in(&mut tx, id, Edge::Expire).await? else {
         return Ok(false);
     };
-    if let Some(session_id) = n.session_id.as_deref().filter(|_| awaits_decision(&n)) {
-        insert_decision(&mut tx, &n, session_id).await?;
-    }
     tx.commit().await?;
+    super::in_app::changed(pool, &n).await;
     Ok(true)
 }
 
-#[must_use]
-pub fn awaits_decision(n: &NotificationRecord) -> bool {
-    n.actions.as_array().is_some_and(|actions| !actions.is_empty())
+/// The lane written to, when an answered or expired notice holds a run of a session.
+pub(super) async fn record_decision(
+    conn: &mut PgConnection,
+    n: &NotificationRecord,
+) -> sqlx::Result<Option<Uuid>> {
+    let Some(session_id) = n.session_id.as_deref() else { return Ok(None) };
+    if !matches!(n.state.as_str(), "acted" | "expired")
+        || !awaits_decision(&mut *conn, n).await?
+    {
+        return Ok(None);
+    }
+    insert_decision(conn, n, session_id).await.map(Some)
 }
 
 #[must_use]
@@ -83,7 +90,7 @@ async fn insert_decision(
     conn: &mut PgConnection,
     n: &NotificationRecord,
     session_id: &str,
-) -> sqlx::Result<()> {
+) -> sqlx::Result<Uuid> {
     let lane: Uuid = sqlx::query_scalar(
         "INSERT INTO inbox_lanes (user_id, key, session_id) VALUES ($1, $2, $3) \
          ON CONFLICT (user_id, key) DO UPDATE \
@@ -110,7 +117,7 @@ async fn insert_decision(
     .bind(session_id)
     .execute(conn)
     .await?;
-    Ok(())
+    Ok(lane)
 }
 
 #[cfg(test)]
@@ -136,6 +143,7 @@ mod tests {
         pool: &PgPool,
         user: Uuid,
         session: &str,
+        kind: &str,
         state: &str,
         actions: Value,
         expires_in_secs: i32,
@@ -143,7 +151,7 @@ mod tests {
         sqlx::query_scalar(
             "INSERT INTO notifications (user_id, kind, session_id, subject_kind, subject_id, \
                title, actions, state, expires_at) \
-             VALUES ($1, 'approval', $2, 'outcome', 'o-1', 'Ship it?', $3, $4, \
+             VALUES ($1, $6, $2, 'outcome', 'o-1', 'Ship it?', $3, $4, \
                now() + make_interval(secs => $5)) \
              RETURNING id",
         )
@@ -152,6 +160,7 @@ mod tests {
         .bind(actions)
         .bind(state)
         .bind(f64::from(expires_in_secs))
+        .bind(kind)
         .fetch_one(pool)
         .await
         .unwrap()
@@ -184,7 +193,7 @@ mod tests {
     async fn an_expired_approval_moves_and_writes_exactly_one_decision_event() {
         let Some(pool) = db("notify_expiry_approval").await else { return };
         let (u, sid) = seed_session(&pool, "expiry-approval").await;
-        let id = notice(&pool, u, &sid, "delivered", approve_reject(), -60).await;
+        let id = notice(&pool, u, &sid, "approval", "delivered", approve_reject(), -60).await;
         let delivery: Uuid = sqlx::query_scalar(
             "INSERT INTO notification_deliveries (notification_id, channel, state, provider_ref) \
              VALUES ($1, 'ntfy', 'sent', '{\"sequence_id\": \"s\"}') RETURNING id",
@@ -230,9 +239,9 @@ mod tests {
     async fn only_open_past_due_notices_expire_and_info_ones_write_no_event() {
         let Some(pool) = db("notify_expiry_info").await else { return };
         let (u, sid) = seed_session(&pool, "expiry-info").await;
-        let info = notice(&pool, u, &sid, "pending", json!([]), -60).await;
-        let fresh = notice(&pool, u, &sid, "pending", approve_reject(), 3600).await;
-        let acted = notice(&pool, u, &sid, "acted", approve_reject(), -60).await;
+        let info = notice(&pool, u, &sid, "outcome_result", "pending", json!([]), -60).await;
+        let fresh = notice(&pool, u, &sid, "approval", "pending", approve_reject(), 3600).await;
+        let acted = notice(&pool, u, &sid, "approval", "acted", approve_reject(), -60).await;
 
         assert_eq!(expire_due(&pool, Some(u)).await.unwrap(), 1);
         assert_eq!(state(&pool, info).await.0, "expired");
@@ -240,5 +249,35 @@ mod tests {
         assert_eq!(state(&pool, fresh).await.0, "pending");
         assert_eq!(state(&pool, acted).await.0, "acted");
         assert!(decision_events(&pool, acted).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_expired_approval_is_published_and_writes_one_event() {
+        use cctui_proto::ws::ServerEvent;
+        let Some(pool) = db("notify_expiry_publish").await else { return };
+        let mut rx = crate::notify::in_app::test_bus().subscribe_server();
+        let (u, sid) = seed_session(&pool, "expiry-publish").await;
+        let id = notice(&pool, u, &sid, "approval", "pending", approve_reject(), -60).await;
+
+        assert_eq!(expire_due(&pool, Some(u)).await.unwrap(), 1);
+        let mut published = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            if let ServerEvent::Notification { notification } = &*frame.event
+                && notification.id == id
+            {
+                published.push(notification.state.clone());
+            }
+        }
+        assert_eq!(published, ["expired"]);
+        assert_eq!(decision_events(&pool, id).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_expired_info_notice_with_actions_writes_no_event() {
+        let Some(pool) = db("notify_expiry_info_actions").await else { return };
+        let (u, sid) = seed_session(&pool, "expiry-info-actions").await;
+        let id = notice(&pool, u, &sid, "outcome_result", "pending", approve_reject(), -60).await;
+        assert_eq!(expire_due(&pool, Some(u)).await.unwrap(), 1);
+        assert!(decision_events(&pool, id).await.is_empty(), "only notices that hold a run");
     }
 }

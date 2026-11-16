@@ -142,6 +142,7 @@ pub async fn on_declared(state: &AppState, outcome: &SessionOutcome) -> bool {
         session_id: outcome.session_id.clone(),
         outcome: outcome.clone(),
     });
+    crate::notify::producers::on_outcome(state, outcome).await;
     if !outcome.source.is_declared() {
         return false;
     }
