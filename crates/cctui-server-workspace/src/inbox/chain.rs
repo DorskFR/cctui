@@ -34,10 +34,10 @@ fn topic<'a>(key: &'a str, preset_id: Uuid) -> &'a str {
 }
 
 fn body(outcome: &SessionOutcome) -> String {
-    outcome.body.as_deref().map_or_else(
-        || outcome.headline.clone(),
-        |body| format!("{}\n\n{body}", outcome.headline),
-    )
+    outcome
+        .body
+        .as_deref()
+        .map_or_else(|| outcome.headline.clone(), |body| format!("{}\n\n{body}", outcome.headline))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

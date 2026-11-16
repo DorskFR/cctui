@@ -325,15 +325,14 @@ mod tests {
         assert!(!deduplicated && archives);
         assert_eq!(fires_at, now + Duration::seconds(7200));
         type Row = (String, String, String, chrono::DateTime<Utc>, String);
-        let (source_id, body, status, not_before, lane_key): Row =
-            sqlx::query_as(
-                "SELECT e.source_id, e.body, e.status, e.not_before, l.key \
+        let (source_id, body, status, not_before, lane_key): Row = sqlx::query_as(
+            "SELECT e.source_id, e.body, e.status, e.not_before, l.key \
                  FROM inbox_events e JOIN inbox_lanes l ON l.id = e.lane_id WHERE e.id = $1",
-            )
-            .bind(event_id)
-            .fetch_one(pool)
-            .await
-            .unwrap();
+        )
+        .bind(event_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
         assert_eq!(source_id, format!("{sid}:toolu_1"));
         assert_eq!((body.as_str(), status.as_str()), ("check the CI run", "pending"));
         assert_eq!(lane_key, format!("session:{sid}"));

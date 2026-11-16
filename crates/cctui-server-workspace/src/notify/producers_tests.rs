@@ -2,7 +2,9 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::{Extension, Json};
 use cctui_proto::api::outcome::{OutcomeSource, OutcomeStatus, SessionOutcome};
-use cctui_proto::api::{AddUserActionRequest, UserActionKind, UserActionResolver, UserActionStatus};
+use cctui_proto::api::{
+    AddUserActionRequest, UserActionKind, UserActionResolver, UserActionStatus,
+};
 use chrono::Utc;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -243,8 +245,7 @@ async fn a_needs_input_outcome_creates_an_approval_notification() {
 
     let mut result = needs_input(&sid);
     result.status = OutcomeStatus::Result;
-    let closed =
-        outcome_declared(&state.pool, Routing::default(), &result).await.unwrap().unwrap();
+    let closed = outcome_declared(&state.pool, Routing::default(), &result).await.unwrap().unwrap();
     assert_eq!((closed.id, closed.state.as_str()), (n.id, "resolved"));
     assert_eq!(closed.resolved_reason.as_deref(), Some("superseded"));
     assert!(decision_events(&state.pool, n.id).await.is_empty());

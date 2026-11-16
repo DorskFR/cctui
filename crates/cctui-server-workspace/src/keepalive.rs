@@ -528,8 +528,8 @@ mod tests {
     use super::{
         CLAIM_SQL, DEFAULT_MAX_TICKS, MIN_INTERVAL_SECS, Skip, Snapshot, TIMER_CLAIM_SQL,
         cache_ttl_secs, decide, default_interval_secs, is_human_message, is_tick,
-        schedule_from_request, skip_reason, stamp_tick, tick_prompt, timer_prompt,
-        unique_accounts, usage_too_high,
+        schedule_from_request, skip_reason, stamp_tick, tick_prompt, timer_prompt, unique_accounts,
+        usage_too_high,
     };
     use crate::soft_limit::UsageWindow;
 

@@ -355,12 +355,10 @@ async fn a_preset_whose_machine_or_dispatcher_is_gone_dead_letters() {
     let Some(pool) = pool("inbox_preset_target_gone").await else { return };
     let owner = seed_owner(&pool, "preset-gone").await;
     grant_dispatch(&pool, owner.user).await;
-    let machine_lane = lane(&pool, owner.user, machine_preset(&pool, &owner).await, "a")
-        .await
-        .unwrap();
-    let container_lane = lane(&pool, owner.user, container_preset(&pool, &owner).await, "b")
-        .await
-        .unwrap();
+    let machine_lane =
+        lane(&pool, owner.user, machine_preset(&pool, &owner).await, "a").await.unwrap();
+    let container_lane =
+        lane(&pool, owner.user, container_preset(&pool, &owner).await, "b").await.unwrap();
     let on_machine = add_event(&pool, machine_lane, owner.user).await;
     let on_container = add_event(&pool, container_lane, owner.user).await;
     sqlx::query("UPDATE machines SET revoked_at = now() WHERE id = $1")
@@ -432,11 +430,8 @@ async fn an_in_flight_spawn_holds_the_lane_until_it_registers_then_is_adopted() 
             .await
             .unwrap();
     assert_eq!(adopted, (Some(session_id.clone()), None));
-    let reread = ClaimedLane {
-        session_id: Some(session_id.clone()),
-        spawn_command_id: None,
-        ..spawning
-    };
+    let reread =
+        ClaimedLane { session_id: Some(session_id.clone()), spawn_command_id: None, ..spawning };
     let Resolved::Session(Some(current)) = resolve(&pool, &reread).await.unwrap() else {
         panic!("the adopted session is the lane's current one");
     };

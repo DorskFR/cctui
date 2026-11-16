@@ -54,7 +54,10 @@ pub struct CreateEvent {
 pub enum Target {
     Session(String),
     /// `preset` is the preset's id or name.
-    Preset { preset: String, topic: String },
+    Preset {
+        preset: String,
+        topic: String,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]

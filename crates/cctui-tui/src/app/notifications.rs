@@ -46,10 +46,11 @@ pub fn actions(n: &Notification) -> Vec<NoticeAction> {
 #[must_use]
 pub fn outcome(n: &Notification) -> Option<String> {
     let decision = n.decision.as_deref()?;
-    Some(n.acted_channel.as_deref().map_or_else(
-        || decision.to_owned(),
-        |channel| format!("{decision} via {channel}"),
-    ))
+    Some(
+        n.acted_channel
+            .as_deref()
+            .map_or_else(|| decision.to_owned(), |channel| format!("{decision} via {channel}")),
+    )
 }
 
 #[derive(Debug, Default)]

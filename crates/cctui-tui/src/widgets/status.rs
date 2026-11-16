@@ -39,10 +39,7 @@ fn unread_chip(app: &App) -> Option<String> {
         .first()
         .copied()
         .map(Chord::label);
-    Some(key.map_or_else(
-        || format!("✉ {count} unread"),
-        |key| format!("✉ {count} unread — {key}"),
-    ))
+    Some(key.map_or_else(|| format!("✉ {count} unread"), |key| format!("✉ {count} unread — {key}")))
 }
 
 fn level_style(level: Level) -> ratatui::style::Style {

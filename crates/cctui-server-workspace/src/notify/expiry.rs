@@ -54,9 +54,7 @@ pub(super) async fn record_decision(
     n: &NotificationRecord,
 ) -> sqlx::Result<Option<Uuid>> {
     let Some(session_id) = n.session_id.as_deref() else { return Ok(None) };
-    if !matches!(n.state.as_str(), "acted" | "expired")
-        || !awaits_decision(&mut *conn, n).await?
-    {
+    if !matches!(n.state.as_str(), "acted" | "expired") || !awaits_decision(&mut *conn, n).await? {
         return Ok(None);
     }
     insert_decision(conn, n, session_id).await.map(Some)

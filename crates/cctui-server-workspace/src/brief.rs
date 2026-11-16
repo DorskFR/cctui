@@ -77,7 +77,9 @@ fn classify(adapter_id: &str, event_type: &str, payload: Value) -> Option<(Role,
     let content = v.get("content").and_then(Value::as_str).unwrap_or_default();
     let kind = v.get("kind").and_then(Value::as_str);
     if let Some(text) = content.strip_prefix(USER_PREFIX) {
-        return without_injected(text).and_then(without_inbox_marker).map(|text| (Role::User, text));
+        return without_injected(text)
+            .and_then(without_inbox_marker)
+            .map(|text| (Role::User, text));
     }
     if v.get("role").and_then(Value::as_str) == Some("Assistant")
         && matches!(kind, None | Some("attachment"))

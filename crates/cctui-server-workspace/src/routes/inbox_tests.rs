@@ -343,8 +343,7 @@ async fn pause_and_resume_are_owner_scoped_and_need_the_dispatch_scope() {
     assert_eq!(lane_paused(&state.pool, lane).await, (false, None));
 
     let read_only = AuthContext { scopes: [Scope::Read].into_iter().collect(), ..caller(owner) };
-    let err =
-        pause_lane(State(state.clone()), Extension(read_only), Path(lane)).await.unwrap_err();
+    let err = pause_lane(State(state.clone()), Extension(read_only), Path(lane)).await.unwrap_err();
     assert_eq!(err.status(), StatusCode::FORBIDDEN);
 
     let Json(paused) =
@@ -369,8 +368,7 @@ async fn pause_and_resume_are_owner_scoped_and_need_the_dispatch_scope() {
     .await
     .unwrap();
     assert!(restarted, "resuming restarts the ceiling window");
-    let err = pause_lane(State(state), Extension(caller(owner)), Path(Uuid::new_v4()))
-        .await
-        .unwrap_err();
+    let err =
+        pause_lane(State(state), Extension(caller(owner)), Path(Uuid::new_v4())).await.unwrap_err();
     assert_eq!(err.status(), StatusCode::NOT_FOUND);
 }
