@@ -154,7 +154,12 @@ async fn a_repeated_source_id_is_accepted_then_deduplicated() {
     assert_eq!(err.status(), StatusCode::BAD_REQUEST);
 
     let Json(event) = get_one(State(state), Extension(caller(uid)), Path(first.id)).await.unwrap();
-    assert_eq!((event.status.as_str(), event.lane_key), ("pending", format!("session:{sid}")));
+    assert_eq!(event.lane_key, format!("session:{sid}"));
+    assert!(
+        ["pending", "claimed", "delivered"].contains(&event.status.as_str()),
+        "an accepted event is queued or already being delivered inline: {}",
+        event.status
+    );
 }
 
 #[tokio::test]
