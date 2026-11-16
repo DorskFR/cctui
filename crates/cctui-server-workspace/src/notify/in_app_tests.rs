@@ -28,7 +28,7 @@ fn the_record_event_carries_the_whole_record() {
     let ServerEvent::Notification { notification } = record_event(&n) else {
         panic!("not a notification event")
     };
-    assert_eq!(notification, n);
+    assert_eq!(*notification, n);
     let wire = serde_json::to_value(record_event(&n)).unwrap();
     assert_eq!(wire["type"], "notification");
     assert_eq!(wire["notification"]["state"], "read");

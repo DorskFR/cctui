@@ -244,7 +244,7 @@ fn fleet_samples() -> Vec<ServerEvent> {
                 created_at: now(),
             },
         },
-        ServerEvent::Notification { notification: notification() },
+        ServerEvent::Notification { notification: Box::new(notification()) },
         ServerEvent::NotificationsUnread { user_id: uuid(), count: 2 },
         ServerEvent::Event {
             event: cctui_proto::api::events::EventRecord {

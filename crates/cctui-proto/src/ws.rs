@@ -969,7 +969,7 @@ pub enum ServerEvent {
     },
     /// The whole record on every change; a terminal `state` drops the card.
     Notification {
-        notification: crate::api::notifications::Notification,
+        notification: Box<crate::api::notifications::Notification>,
     },
     NotificationsUnread {
         user_id: uuid::Uuid,

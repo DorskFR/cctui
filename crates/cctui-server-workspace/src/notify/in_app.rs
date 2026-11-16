@@ -50,7 +50,7 @@ impl Channel for InApp {
 
 #[must_use]
 pub fn record_event(record: &NotificationRecord) -> ServerEvent {
-    ServerEvent::Notification { notification: record.clone() }
+    ServerEvent::Notification { notification: Box::new(record.clone()) }
 }
 
 #[must_use]

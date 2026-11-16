@@ -919,7 +919,7 @@ struct OwnerFilter<L> {
 }
 
 /// Notifications are personal: not even an admin sees another user's.
-const fn recipient(event: &ServerEvent) -> Option<uuid::Uuid> {
+fn recipient(event: &ServerEvent) -> Option<uuid::Uuid> {
     match event {
         ServerEvent::Notification { notification } => Some(notification.user_id),
         ServerEvent::NotificationsUnread { user_id, .. } => Some(*user_id),

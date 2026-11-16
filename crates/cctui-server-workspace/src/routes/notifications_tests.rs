@@ -371,6 +371,6 @@ async fn an_unknown_token_is_404() {
     assert_eq!(junk.status(), StatusCode::NOT_FOUND);
     let unminted = URL_SAFE_NO_PAD.encode([7u8; 32]);
     assert_eq!(post_token(&state, &unminted, html()).await.status(), StatusCode::NOT_FOUND);
-    let page = confirm_page(State(state.clone()), Path(unminted)).await;
+    let page = confirm_page(State(state), Path(unminted)).await;
     assert_eq!(page.status(), StatusCode::NOT_FOUND);
 }
