@@ -1,19 +1,7 @@
-//! Best-effort ntfy push notifications.
-//!
-//! Active only when `CCTUI_NTFY_TOKEN` is set in the env (provisioned from
-//! vault). When unset every call here is a no-op, so the feature stays off in
-//! environments that don't configure it. Notifications are fire-and-forget:
-//! we spawn the POST on a detached task and never block (or fail) the request
-//! path on a flaky ntfy server.
-//!
-//! Target topic is `CCTUI_NTFY_URL` (a full topic URL, e.g.
-//! `https://ntfy.example.com/cctui-dispatch`); the token is sent as a bearer.
-//! With no default, notifications stay off unless both env vars are set.
-
 use crate::config::Config;
+use crate::notify::{self, Channels, NewNotification, Routing};
 
-/// A single notification to push. `tags` map to ntfy emoji/labels and
-/// `priority` is the ntfy 1..=5 scale (3 = default).
+/// `priority` is ntfy's 1..=5 scale.
 pub struct Notification {
     pub title: String,
     pub message: String,
@@ -21,35 +9,65 @@ pub struct Notification {
     pub priority: u8,
 }
 
-/// Fire-and-forget: push `n` to ntfy if a token is configured, otherwise a
-/// no-op. Never blocks the caller and never propagates errors — at most it
-/// logs a warning if the POST fails.
+/// Never blocks the caller; a no-op unless ntfy is configured.
 pub fn notify(config: &Config, n: Notification) {
-    let Some(token) = config.ntfy_token.as_ref().map(cctui_secrets::Secret::get) else {
+    let routing = Routing::from_config(config);
+    if !routing.ntfy {
+        return;
+    }
+    let Some(pool) = notify::installed_pool() else {
+        tracing::warn!("ntfy ping dropped: notification outbox not started");
         return;
     };
-    let Some(url) = config.ntfy_url.clone() else {
-        return;
-    };
+    let channels = Channels::from_config(config);
     tokio::spawn(async move {
-        let client = crate::build_http_client();
-        let resp = client
-            .post(&url)
-            .bearer_auth(token)
-            .header("Title", &n.title)
-            .header("Tags", &n.tags)
-            .header("Priority", n.priority.to_string())
-            .body(n.message)
-            .send()
-            .await;
-        match resp {
-            Ok(r) if !r.status().is_success() => {
-                let status = r.status();
-                let body = r.text().await.unwrap_or_default();
-                tracing::warn!(%status, %body, "ntfy push returned non-success");
-            }
-            Err(e) => tracing::warn!("ntfy push failed: {e}"),
-            _ => {}
-        }
+        let Some(owner) = notify::instance_owner(&pool).await else { return };
+        notify::emit_now(&pool, routing, &channels, legacy(owner, n)).await;
     });
+}
+
+fn legacy(owner: uuid::Uuid, n: Notification) -> NewNotification {
+    NewNotification {
+        severity: notify::store::severity_for_priority(n.priority),
+        body: Some(n.message),
+        tags: Some(n.tags),
+        ..NewNotification::new(owner, notify::kind::LEGACY, n.title)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Notification, legacy};
+
+    #[test]
+    fn a_legacy_ping_keeps_its_title_tags_and_priority() {
+        let owner = uuid::Uuid::new_v4();
+        let n = legacy(
+            owner,
+            Notification {
+                title: "Daemon crashloop: m1".into(),
+                message: "x".repeat(400),
+                tags: "rotating_light".into(),
+                priority: 4,
+            },
+        );
+        assert_eq!((n.user_id, n.kind), (owner, "legacy"));
+        assert_eq!(n.title, "Daemon crashloop: m1");
+        assert_eq!(n.tags.as_deref(), Some("rotating_light"));
+        assert_eq!(crate::notify::store::priority_for_severity(n.severity), 4);
+        assert_eq!(n.collapse_key, None);
+    }
+
+    #[test]
+    fn without_ntfy_config_nothing_is_stored_or_sent() {
+        let config = crate::config::Config::for_test(vec![]);
+        assert!(!crate::notify::Routing::from_config(&config).ntfy);
+        let n = Notification {
+            title: "t".into(),
+            message: "m".into(),
+            tags: String::new(),
+            priority: 3,
+        };
+        super::notify(&config, n);
+    }
 }
