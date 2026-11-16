@@ -10,4 +10,8 @@ import type { PermissionMode } from "./PermissionMode";
  * `external_sources` lets n8n and webhook events reach the preset's lanes;
  * a machine target then needs `permission_mode` `ask` or `auto`.
  */
-export type LaunchPresetRequest = { name: string, prompt: string, machine_id: string | null, working_dir: string | null, adapter_id: string | null, model: string | null, permission_mode: PermissionMode | null, dispatcher_id: string | null, profile: string | null, external_sources: boolean, fresh_secs: number | null, on_stale: OnStale | null, max_batch: number | null, cron: string | null, then_preset_id: string | null, };
+export type LaunchPresetRequest = { name: string, prompt: string, machine_id: string | null, working_dir: string | null, adapter_id: string | null, model: string | null, permission_mode: PermissionMode | null, dispatcher_id: string | null, profile: string | null, external_sources: boolean, fresh_secs: number | null, on_stale: OnStale | null, max_batch: number | null, cron: string | null, then_preset_id: string | null, 
+/**
+ * Container targets only: the completion webhook of every dispatch.
+ */
+notify_url: string | null, };

@@ -8,7 +8,8 @@ use uuid::Uuid;
 
 use crate::auth::{AuthContext, Scope};
 use crate::error::AppError;
-use crate::inbox::store::{self, Cancel, Event, NewEvent};
+use crate::inbox::guards::{self, Lane};
+use crate::inbox::store::{self, Cancel, Event, NewEvent, Retry};
 use crate::inbox::{Source, Status};
 use crate::scheduled_messages::MAX_HORIZON_DAYS;
 use crate::state::AppState;
@@ -19,6 +20,8 @@ type Window = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 const MAX_BODY_BYTES: usize = 64 * 1024;
 const MAX_PAYLOAD_BYTES: usize = 8 * 1024;
 const MAX_SOURCE_ID_CHARS: usize = 256;
+const MAX_TOPIC_CHARS: usize = 120;
+pub const DEFAULT_TOPIC: &str = "default";
 const SECRET_KEYS: &[&str] = &[
     "env",
     "secret",
@@ -48,8 +51,15 @@ pub struct CreateEvent {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub enum Target {
+    Session(String),
+    /// `preset` is the preset's id or name.
+    Preset { preset: String, topic: String },
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub struct ValidEvent {
-    pub session_id: String,
+    pub target: Target,
     pub source: Source,
     pub source_id: Option<String>,
     pub body: String,
@@ -78,16 +88,25 @@ fn not_found() -> AppError {
     AppError::new(StatusCode::NOT_FOUND, "no inbox event with that id")
 }
 
-fn target(req: &CreateEvent) -> Result<String, String> {
-    if req.preset.is_some() {
-        return Err("preset targets are not supported yet: pass session_id".into());
-    }
-    if req.topic.is_some() {
-        return Err("topic applies to preset targets only".into());
-    }
-    match req.session_id.as_deref().map(str::trim) {
-        Some(id) if !id.is_empty() => Ok(id.to_owned()),
-        _ => Err("session_id is required".into()),
+fn non_blank(raw: Option<&str>) -> Option<&str> {
+    raw.map(str::trim).filter(|s| !s.is_empty())
+}
+
+fn target(req: &CreateEvent) -> Result<Target, String> {
+    match (non_blank(req.session_id.as_deref()), non_blank(req.preset.as_deref())) {
+        (Some(_), Some(_)) => Err("pass session_id or preset, not both".into()),
+        (Some(_), None) if req.topic.is_some() => {
+            Err("topic applies to preset targets only".into())
+        }
+        (Some(id), None) => Ok(Target::Session(id.to_owned())),
+        (None, Some(preset)) => {
+            let topic = non_blank(req.topic.as_deref()).unwrap_or(DEFAULT_TOPIC);
+            if topic.chars().count() > MAX_TOPIC_CHARS {
+                return Err(format!("topic must be at most {MAX_TOPIC_CHARS} characters"));
+            }
+            Ok(Target::Preset { preset: preset.to_owned(), topic: topic.to_owned() })
+        }
+        (None, None) => Err("session_id or preset is required".into()),
     }
 }
 
@@ -155,7 +174,7 @@ fn schedule(req: &CreateEvent, now: DateTime<Utc>) -> Result<Window, String> {
 }
 
 pub fn validate(req: CreateEvent, now: DateTime<Utc>) -> Result<ValidEvent, String> {
-    let session_id = target(&req)?;
+    let target = target(&req)?;
     let source = Source::parse(req.source.trim()).ok_or_else(|| {
         format!(
             "unknown source '{}': one of n8n, webhook, schedule, timer, outcome, approval, human",
@@ -171,7 +190,7 @@ pub fn validate(req: CreateEvent, now: DateTime<Utc>) -> Result<ValidEvent, Stri
     }
     let (not_before, expires_at) = schedule(&req, now)?;
     Ok(ValidEvent {
-        session_id,
+        target,
         source,
         source_id,
         body: req.body,
@@ -187,14 +206,12 @@ pub async fn create(
     Json(req): Json<CreateEvent>,
 ) -> ApiResult<(StatusCode, Json<CreateEventResponse>)> {
     let event = validate(req, Utc::now()).map_err(bad_request)?;
-    crate::authz::authorize_session_write(&ctx, &event.session_id, &state.pool)
-        .await
-        .map_err(|code| AppError::new(code, "no session you can write to with that id"))?;
-    let owner = store::session_lane_owner(&state.pool, &event.session_id)
-        .await?
-        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no session with that id"))?
-        .unwrap_or(ctx.user_id);
-    let lane_id = store::session_lane(&state.pool, owner, &event.session_id).await?;
+    let lane_id = match &event.target {
+        Target::Session(session_id) => session_target(&state, &ctx, session_id).await?,
+        Target::Preset { preset, topic } => {
+            preset_target(&state, &ctx, preset, topic, event.source).await?
+        }
+    };
     let inserted = store::insert_event(
         &state.pool,
         &NewEvent {
@@ -214,6 +231,37 @@ pub async fn create(
     }
     let status = if inserted.deduplicated { "deduplicated" } else { "accepted" };
     Ok((StatusCode::ACCEPTED, Json(CreateEventResponse { id: inserted.id, status: status.into() })))
+}
+
+async fn session_target(state: &AppState, ctx: &AuthContext, session_id: &str) -> ApiResult<Uuid> {
+    crate::authz::authorize_session_write(ctx, session_id, &state.pool)
+        .await
+        .map_err(|code| AppError::new(code, "no session you can write to with that id"))?;
+    let owner = store::session_lane_owner(&state.pool, session_id)
+        .await?
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no session with that id"))?
+        .unwrap_or(ctx.user_id);
+    Ok(store::session_lane(&state.pool, owner, session_id).await?)
+}
+
+async fn preset_target(
+    state: &AppState,
+    ctx: &AuthContext,
+    preset: &str,
+    topic: &str,
+    source: Source,
+) -> ApiResult<Uuid> {
+    let missing = || AppError::new(StatusCode::NOT_FOUND, "no preset of yours by that id or name");
+    let found = crate::inbox::preset::find(&state.pool, ctx.owner_filter(), preset)
+        .await?
+        .ok_or_else(missing)?;
+    if source.requires_source_id() && !found.external_sources {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "this preset does not accept external sources: set external_sources on it",
+        ));
+    }
+    Ok(crate::inbox::preset::lane(&state.pool, found.user_id, found.id, topic).await?)
 }
 
 pub async fn list(
@@ -238,6 +286,39 @@ pub async fn get_one(
     store::get(&state.pool, ctx.owner_filter(), id).await?.map(Json).ok_or_else(not_found)
 }
 
+async fn set_lane_paused(
+    state: &AppState,
+    ctx: &AuthContext,
+    lane_id: Uuid,
+    paused: bool,
+) -> ApiResult<Json<Lane>> {
+    ctx.requires(Scope::Dispatch)
+        .map_err(|code| AppError::new(code, "pausing an inbox lane needs the dispatch scope"))?;
+    let lane = guards::set_paused(&state.pool, ctx.owner_filter(), lane_id, paused)
+        .await?
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no inbox lane with that id"))?;
+    if !paused {
+        crate::inbox::deliver::wake_lane(state, lane_id);
+    }
+    Ok(Json(lane))
+}
+
+pub async fn pause_lane(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Lane>> {
+    set_lane_paused(&state, &ctx, id, true).await
+}
+
+pub async fn resume_lane(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Lane>> {
+    set_lane_paused(&state, &ctx, id, false).await
+}
+
 pub async fn cancel(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -252,6 +333,24 @@ pub async fn cancel(
         Cancel::NotPending(status) => Err(AppError::new(
             StatusCode::CONFLICT,
             format!("the event is {status}: only a pending event can be cancelled"),
+        )),
+    }
+}
+
+pub async fn retry(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    match store::retry(&state.pool, ctx.owner_filter(), id).await? {
+        Retry::Retried { lane_id } => {
+            crate::inbox::deliver::wake_lane(&state, lane_id);
+            Ok(StatusCode::NO_CONTENT)
+        }
+        Retry::NotFound => Err(not_found()),
+        Retry::NotDead(status) => Err(AppError::new(
+            StatusCode::CONFLICT,
+            format!("the event is {status}: only a dead event can be retried"),
         )),
     }
 }

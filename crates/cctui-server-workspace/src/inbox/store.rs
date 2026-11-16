@@ -123,6 +123,57 @@ pub async fn insert_event(pool: &PgPool, event: &NewEvent<'_>) -> sqlx::Result<I
     Ok(Inserted { id, deduplicated: true })
 }
 
+pub const MAX_HOPS: i16 = 8;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Lineage<'a> {
+    pub hops: i16,
+    pub parent_session_id: Option<&'a str>,
+}
+
+/// `Ok(None)`: refused, the event is past [`MAX_HOPS`].
+pub async fn insert_traced(
+    pool: &PgPool,
+    event: &NewEvent<'_>,
+    lineage: Lineage<'_>,
+) -> sqlx::Result<Option<Inserted>> {
+    if !(0..=MAX_HOPS).contains(&lineage.hops) {
+        return Ok(None);
+    }
+    let inserted: Option<Uuid> = sqlx::query_scalar(
+        "INSERT INTO inbox_events \
+           (lane_id, user_id, source, source_id, body, payload, not_before, next_attempt_at, \
+            expires_at, hops, parent_session_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, now()), COALESCE($7, now()), $8, $9, $10) \
+         ON CONFLICT (lane_id, source, source_id) DO NOTHING \
+         RETURNING id",
+    )
+    .bind(event.lane_id)
+    .bind(event.user_id)
+    .bind(event.source.as_str())
+    .bind(event.source_id)
+    .bind(event.body)
+    .bind(event.payload)
+    .bind(event.not_before)
+    .bind(event.expires_at)
+    .bind(lineage.hops)
+    .bind(lineage.parent_session_id)
+    .fetch_optional(pool)
+    .await?;
+    if let Some(id) = inserted {
+        return Ok(Some(Inserted { id, deduplicated: false }));
+    }
+    let id = sqlx::query_scalar(
+        "SELECT id FROM inbox_events WHERE lane_id = $1 AND source = $2 AND source_id = $3",
+    )
+    .bind(event.lane_id)
+    .bind(event.source.as_str())
+    .bind(event.source_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(Some(Inserted { id, deduplicated: true }))
+}
+
 /// `owner` is [`crate::auth::AuthContext::owner_filter`]; `lane` is a lane id or key.
 pub async fn list(
     pool: &PgPool,
@@ -177,6 +228,38 @@ pub async fn cancel(pool: &PgPool, owner: Option<Uuid>, id: Uuid) -> sqlx::Resul
     .fetch_optional(pool)
     .await?;
     Ok(status.map_or(Cancel::NotFound, Cancel::NotPending))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Retry {
+    Retried { lane_id: Uuid },
+    NotDead(String),
+    NotFound,
+}
+
+pub async fn retry(pool: &PgPool, owner: Option<Uuid>, id: Uuid) -> sqlx::Result<Retry> {
+    let lane_id: Option<Uuid> = sqlx::query_scalar(
+        "UPDATE inbox_events \
+         SET status = 'pending', attempts = 0, next_attempt_at = now(), last_error = NULL, \
+             batch_id = NULL \
+         WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) AND status = 'dead' \
+         RETURNING lane_id",
+    )
+    .bind(id)
+    .bind(owner)
+    .fetch_optional(pool)
+    .await?;
+    if let Some(lane_id) = lane_id {
+        return Ok(Retry::Retried { lane_id });
+    }
+    let status: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM inbox_events WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
+    )
+    .bind(id)
+    .bind(owner)
+    .fetch_optional(pool)
+    .await?;
+    Ok(status.map_or(Retry::NotFound, Retry::NotDead))
 }
 
 /// Retention doubles as the source-id dedup window.

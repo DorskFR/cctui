@@ -630,6 +630,11 @@ fn daemon_routes(r: OuterRoutes) -> OuterRoutes {
         .route("/api/v1/daemon/sessions/{id}/limits", get(routes::session_limits::session_limits))
         .route("/api/v1/daemon/sessions/{id}/user-actions", post(routes::user_actions::daemon_add))
         .route("/api/v1/daemon/sessions/{id}/outcome", post(outcome::daemon_declare))
+        .feature(
+            Feature::Automation,
+            "/api/v1/daemon/sessions/{id}/timer",
+            post(inbox::timer::daemon_timer),
+        )
         .launch_context()
         .route(
             "/api/v1/daemon/sessions/{id}/user-actions/tick",
@@ -1226,6 +1231,7 @@ fn spawn_reaper_sweeps(state: &AppState) {
     spawn_sweep(state, |state| async move { notify::retention::sweep(&state.pool).await });
     spawn_sweep(state, |state| async move { notify::expiry::sweep(&state.pool).await });
     spawn_sweep(state, |state| async move { inbox::deliver::sweep(&state).await });
+    spawn_sweep(state, |state| async move { inbox::schedule::sweep(&state).await });
 }
 
 fn spawn_sweep<F, Fut>(state: &AppState, job: F)
@@ -1501,6 +1507,9 @@ mod tests {
             "POST /inbox/events Bearer Scope(Dispatch)",
             "DELETE /inbox/events/{id} Bearer Authenticated",
             "GET /inbox/events/{id} Bearer Authenticated",
+            "POST /inbox/lanes/{id}/pause Bearer Scope(Dispatch)",
+            "POST /inbox/lanes/{id}/resume Bearer Scope(Dispatch)",
+            "POST /inbox/events/{id}/retry Bearer Scope(Dispatch)",
             "GET /keys Bearer Authenticated",
             "POST /keys Bearer Authenticated",
             "DELETE /keys/{id} Bearer Authenticated",

@@ -55,6 +55,7 @@ pub struct LaunchPreset {
     pub cron: Option<String>,
     pub next_fire_at: Option<DateTime<Utc>>,
     pub then_preset_id: Option<Uuid>,
+    pub notify_url: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -97,6 +98,9 @@ pub struct LaunchPresetRequest {
     pub cron: Option<String>,
     #[serde(default)]
     pub then_preset_id: Option<Uuid>,
+    /// Container targets only: the completion webhook of every dispatch.
+    #[serde(default)]
+    pub notify_url: Option<String>,
 }
 
 #[cfg(test)]

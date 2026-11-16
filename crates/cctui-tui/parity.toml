@@ -1627,34 +1627,52 @@ tui = "waived"
 reason = "the inbox is an automation ingress for n8n and webhooks; the TUI keeps the operator loop"
 
 [[route]]
+id = "post_inbox_lanes_by_id_pause"
+# POST /inbox/lanes/{id}/pause — Pause an inbox lane: its events wait until it is resumed.
+tui = "waived"
+reason = "the inbox is an automation ingress for n8n and webhooks; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_inbox_lanes_by_id_resume"
+# POST /inbox/lanes/{id}/resume — Resume a paused inbox lane and deliver what waited.
+tui = "waived"
+reason = "the inbox is an automation ingress for n8n and webhooks; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_inbox_events_by_id_retry"
+# POST /inbox/events/{id}/retry — Return a dead inbox event to pending with its attempts reset.
+tui = "waived"
+reason = "the inbox is an automation ingress for n8n and webhooks; the TUI keeps the operator loop"
+
+[[route]]
 id = "get_notifications"
 # GET /notifications — List your notifications, open or all, with the unread count.
-tui = "waived"
-reason = "the TUI has no notification list yet; the webui bell answers notifications"
+tui = "handled"
+module = "app/notifications.rs"
 
 [[route]]
 id = "post_notifications_read_all"
 # POST /notifications/read-all — Mark every unread notification without actions read.
-tui = "waived"
-reason = "the TUI has no notification list yet; the webui bell answers notifications"
+tui = "handled"
+module = "app/notifications.rs"
 
 [[route]]
 id = "post_notifications_by_id_read"
 # POST /notifications/{id}/read — Mark one notification read.
-tui = "waived"
-reason = "the TUI has no notification list yet; the webui bell answers notifications"
+tui = "handled"
+module = "app/notifications.rs"
 
 [[route]]
 id = "post_notifications_by_id_act"
 # POST /notifications/{id}/act — Answer a notification with one of its actions; the first answer wins.
-tui = "waived"
-reason = "the TUI has no notification list yet; the webui bell answers notifications"
+tui = "handled"
+module = "app/notifications.rs"
 
 [[route]]
 id = "post_notifications_by_id_dismiss"
 # POST /notifications/{id}/dismiss — Dismiss a notification; refused for a blocking approval.
-tui = "waived"
-reason = "the TUI has no notification list yet; the webui bell answers notifications"
+tui = "handled"
+module = "app/notifications.rs"
 
 [[route]]
 id = "get_drafts"
@@ -1931,13 +1949,13 @@ reason = "the list refresh carries the newest outcome on the row"
 
 [[ws_event]]
 name = "notification"
-tui = "waived"
-reason = "the TUI has no notification list yet; the webui bell answers notifications"
+tui = "handled"
+module = "app/notifications.rs"
 
 [[ws_event]]
 name = "notifications_unread"
-tui = "waived"
-reason = "the TUI has no notification list yet; the webui bell answers notifications"
+tui = "handled"
+module = "app/notifications.rs"
 
 [[ws_event]]
 name = "event"

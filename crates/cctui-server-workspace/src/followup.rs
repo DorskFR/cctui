@@ -235,7 +235,6 @@ pub fn followup_prompt(parent_id: &str, name: &str, turns: &[Turn], instruction:
 
 /// [`followup_prompt`] from the stored transcript, for a follow-up spawned
 /// without a client. `None` when the parent does not exist.
-#[cfg_attr(not(test), allow(dead_code))]
 pub async fn render_followup_prompt(
     pool: &PgPool,
     parent_session_id: &str,

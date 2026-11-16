@@ -90,6 +90,16 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../schema/0010_queued_sessions.sql"),
     },
     Migration { version: 11, name: "presets", sql: include_str!("../schema/0011_presets.sql") },
+    Migration {
+        version: 13,
+        name: "inbox_preset_lanes",
+        sql: include_str!("../schema/0013_inbox_preset_lanes.sql"),
+    },
+    Migration {
+        version: 14,
+        name: "timers_and_hops",
+        sql: include_str!("../schema/0014_timers_and_hops.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -230,7 +240,10 @@ mod tests {
                     (8, "bootstrap".to_owned()),
                     (9, "bootstrap".to_owned()),
                     (10, "bootstrap".to_owned()),
-                    (11, "bootstrap".to_owned())
+                    (11, "bootstrap".to_owned()),
+                    (12, "bootstrap".to_owned()),
+                    (13, "bootstrap".to_owned()),
+                    (14, "bootstrap".to_owned())
                 ]
             );
 
@@ -335,7 +348,10 @@ mod tests {
                     (8, "bootstrap".to_owned()),
                     (9, "bootstrap".to_owned()),
                     (10, "bootstrap".to_owned()),
-                    (11, "bootstrap".to_owned())
+                    (11, "bootstrap".to_owned()),
+                    (12, "bootstrap".to_owned()),
+                    (13, "bootstrap".to_owned()),
+                    (14, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =

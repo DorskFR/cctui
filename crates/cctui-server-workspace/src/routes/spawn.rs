@@ -192,8 +192,21 @@ pub async fn try_dispatch_spawn(
     uploads: Vec<cctui_proto::adapter::BootstrapFile>,
     raw_uploads: Vec<crate::uploads::RawUpload>,
 ) -> Result<(StatusCode, Json<SpawnResponse>), SpawnFailure> {
+    try_dispatch_spawn_as(state, ctx, req, uploads, raw_uploads, Uuid::new_v4()).await
+}
+
+/// [`try_dispatch_spawn`] under a caller-chosen `command_id`, the key its
+/// `machine_launches` row is recorded under.
+pub async fn try_dispatch_spawn_as(
+    state: &AppState,
+    ctx: &AuthContext,
+    req: SpawnRequest,
+    uploads: Vec<cctui_proto::adapter::BootstrapFile>,
+    raw_uploads: Vec<crate::uploads::RawUpload>,
+    command_id: Uuid,
+) -> Result<(StatusCode, Json<SpawnResponse>), SpawnFailure> {
     require_dispatch(ctx)?;
-    let target = validate_spawn(state, ctx, &req).await?;
+    let target = validate_spawn(state, ctx, &req, command_id).await?;
     let bound = resolve_spawn_account(state, &target, &req).await?;
     execute_spawn(state, target, bound, &req, uploads, raw_uploads).await
 }
@@ -266,6 +279,7 @@ async fn validate_spawn(
     state: &AppState,
     ctx: &AuthContext,
     req: &SpawnRequest,
+    command_id: Uuid,
 ) -> Result<SpawnTarget, (StatusCode, Json<ApiError>)> {
     cctui_server_core::machine_policy::validate_env(req)?;
 
@@ -273,7 +287,6 @@ async fn validate_spawn(
     refuse_missing_cwd(state, machine_uuid, &req.working_dir).await?;
 
     let adapter_id = spawn_adapter_on(state, machine_uuid, req.adapter_id.as_deref()).await?;
-    let command_id = Uuid::new_v4();
     let (pre_session_id, token_key) = spawn_ids(&adapter_id, command_id);
     let token_session_id = token_key.to_string();
     // Every intent is written before this returns: a fast daemon's
@@ -2017,7 +2030,7 @@ mod spawn_share_tests {
         }))
         .unwrap();
 
-        let target = super::validate_spawn(&state, &caller(owner, SPAWNER), &req)
+        let target = super::validate_spawn(&state, &caller(owner, SPAWNER), &req, Uuid::new_v4())
             .await
             .map_err(|(code, _)| code)
             .expect("a valid spawn");

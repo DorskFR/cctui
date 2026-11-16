@@ -2,4 +2,4 @@
 import type { OnStale } from "./OnStale";
 import type { PermissionMode } from "./PermissionMode";
 
-export type LaunchPreset = { id: string, user_id: string, name: string, prompt: string, machine_id: string | null, working_dir: string | null, adapter_id: string | null, model: string | null, permission_mode: PermissionMode | null, dispatcher_id: string | null, profile: string | null, external_sources: boolean, fresh_secs: number, on_stale: OnStale, max_batch: number, cron: string | null, next_fire_at: string | null, then_preset_id: string | null, created_at: string, updated_at: string, };
+export type LaunchPreset = { id: string, user_id: string, name: string, prompt: string, machine_id: string | null, working_dir: string | null, adapter_id: string | null, model: string | null, permission_mode: PermissionMode | null, dispatcher_id: string | null, profile: string | null, external_sources: boolean, fresh_secs: number, on_stale: OnStale, max_batch: number, cron: string | null, next_fire_at: string | null, then_preset_id: string | null, notify_url: string | null, created_at: string, updated_at: string, };

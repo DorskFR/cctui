@@ -9,10 +9,12 @@ pub const MAX_BATCH: i64 = 20;
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct ClaimedLane {
     pub id: Uuid,
+    pub user_id: Uuid,
     pub key: String,
     pub preset_id: Option<Uuid>,
     pub session_id: Option<String>,
     pub session_status: Option<String>,
+    pub spawn_command_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -22,6 +24,7 @@ pub struct BatchEvent {
     pub source: String,
     pub body: String,
     pub sealed_body: Option<String>,
+    pub parent_session_id: Option<String>,
     pub attempts: i32,
     pub batch_id: Uuid,
     pub created_at: DateTime<Utc>,
@@ -42,7 +45,6 @@ const CLAIM_LANES_SQL: &str = "\
         LEFT JOIN sessions s ON s.id = l.session_id \
         LEFT JOIN machines m ON m.id = s.machine_uuid \
         WHERE NOT l.paused \
-          AND l.preset_id IS NULL \
           AND ($2::uuid IS NULL OR l.id = $2) \
           AND ($3::uuid IS NULL OR s.machine_uuid = $3) \
           AND (l.claimed_until IS NULL OR l.claimed_until < now()) \
@@ -60,8 +62,9 @@ const CLAIM_LANES_SQL: &str = "\
     UPDATE inbox_lanes l SET claimed_until = now() + $5::bigint * interval '1 second' \
     FROM due \
     WHERE l.id = due.id AND (l.claimed_until IS NULL OR l.claimed_until < now()) \
-    RETURNING l.id, l.key, l.preset_id, l.session_id, \
-              (SELECT status FROM sessions WHERE id = l.session_id) AS session_status";
+    RETURNING l.id, l.user_id, l.key, l.preset_id, l.session_id, \
+              (SELECT status FROM sessions WHERE id = l.session_id) AS session_status, \
+              l.spawn_command_id";
 
 pub async fn claim_lanes(
     pool: &PgPool,
@@ -99,8 +102,8 @@ const CLAIM_BATCH_SQL: &str = "\
     SET status = 'claimed', batch_id = COALESCE(e.batch_id, $3), \
         next_attempt_at = now() + $4::bigint * interval '1 second' \
     FROM pick WHERE e.id = pick.id \
-    RETURNING e.seq, e.user_id, e.source, e.body, e.sealed_body, e.attempts, \
-              e.batch_id, e.created_at";
+    RETURNING e.seq, e.user_id, e.source, e.body, e.sealed_body, e.parent_session_id, \
+              e.attempts, e.batch_id, e.created_at";
 
 pub async fn claim_batch(pool: &PgPool, lane_id: Uuid) -> sqlx::Result<Vec<BatchEvent>> {
     let mut events: Vec<BatchEvent> = sqlx::query_as(CLAIM_BATCH_SQL)
@@ -178,13 +181,35 @@ pub async fn record_failure(
     attempts: i32,
     err: &str,
 ) -> sqlx::Result<Retry> {
+    retry_batch(pool, batch_id, attempts, err, false).await
+}
+
+/// A batch whose delivery may have landed keeps its `batch_id`, so the next
+/// attempt can look the earlier one up before sending again.
+pub async fn record_ambiguous_failure(
+    pool: &PgPool,
+    batch_id: Uuid,
+    attempts: i32,
+    err: &str,
+) -> sqlx::Result<Retry> {
+    retry_batch(pool, batch_id, attempts, err, true).await
+}
+
+async fn retry_batch(
+    pool: &PgPool,
+    batch_id: Uuid,
+    attempts: i32,
+    err: &str,
+    keep_batch: bool,
+) -> sqlx::Result<Retry> {
     let retry = retry_after_failure(attempts);
     match retry {
         Retry::Dead { attempts } => mark_dead(pool, batch_id, attempts, err).await?,
         Retry::After { attempts, secs } => {
             sqlx::query(
                 "UPDATE inbox_events \
-                 SET status = 'pending', batch_id = NULL, attempts = $2, last_error = $3, \
+                 SET status = 'pending', batch_id = CASE WHEN $5 THEN batch_id END, \
+                     attempts = $2, last_error = $3, \
                      next_attempt_at = now() + $4::bigint * interval '1 second' \
                  WHERE batch_id = $1 AND status = 'claimed'",
             )
@@ -192,6 +217,7 @@ pub async fn record_failure(
             .bind(attempts)
             .bind(err)
             .bind(secs)
+            .bind(keep_batch)
             .execute(pool)
             .await?;
         }

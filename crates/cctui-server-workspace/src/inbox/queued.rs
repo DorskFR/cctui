@@ -38,14 +38,19 @@ pub async fn enqueue(
     .await
 }
 
-/// Launch as whoever queued the spawn, with the scopes they hold now.
+/// Acts with the scopes `user` holds now, not those of the key that queued the work.
+pub async fn acting_as(pool: &PgPool, user: Uuid) -> sqlx::Result<AuthContext> {
+    let scopes = crate::store::acls::user_ceiling(pool, user).await?;
+    Ok(AuthContext { user_id: user, key_id: Uuid::nil(), machine_id: None, scopes })
+}
+
+/// Launch as whoever queued the spawn.
 pub async fn launch(state: &AppState, session_id: &str, events: &[BatchEvent]) -> Outcome {
     let Some(actor) = events.first().map(|e| e.user_id) else { return Outcome::Skip };
-    let scopes = match crate::store::acls::user_ceiling(&state.pool, actor).await {
-        Ok(scopes) => scopes,
+    let ctx = match acting_as(&state.pool, actor).await {
+        Ok(ctx) => ctx,
         Err(e) => return Outcome::Retry(e.to_string()),
     };
-    let ctx = AuthContext { user_id: actor, key_id: Uuid::nil(), machine_id: None, scopes };
     match crate::routes::spawn::launch_queued(state, &ctx, session_id).await {
         Ok(launched) => Outcome::Delivered {
             session_id: launched

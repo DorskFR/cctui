@@ -11,7 +11,7 @@ macro_rules! columns {
     () => {
         "id, user_id, name, prompt, machine_id, working_dir, adapter_id, model, \
          permission_mode, dispatcher_id, profile, external_sources, fresh_secs, on_stale, \
-         max_batch, cron, next_fire_at, then_preset_id, created_at, updated_at"
+         max_batch, cron, next_fire_at, then_preset_id, created_at, updated_at, notify_url"
     };
 }
 
@@ -54,6 +54,7 @@ struct Row {
     then_preset_id: Option<Uuid>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    notify_url: Option<String>,
 }
 
 impl From<Row> for LaunchPreset {
@@ -79,6 +80,7 @@ impl From<Row> for LaunchPreset {
             cron: r.cron,
             next_fire_at: r.next_fire_at,
             then_preset_id: r.then_preset_id,
+            notify_url: r.notify_url,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
@@ -123,6 +125,10 @@ fn columns(target: &Target) -> TargetColumns<'_> {
             ..TargetColumns::default()
         },
     }
+}
+
+fn next_fire(preset: &ValidPreset) -> Option<DateTime<Utc>> {
+    preset.cron.as_deref().and_then(|expr| super::cron::next_fire(expr, Utc::now()))
 }
 
 async fn exists(pool: &PgPool, sql: &'static str, id: Uuid, owner: Uuid) -> sqlx::Result<bool> {
@@ -219,8 +225,9 @@ pub async fn create(
     let row: Row = sqlx::query_as(concat!(
         "INSERT INTO presets (user_id, name, prompt, machine_id, working_dir, adapter_id, model, \
            permission_mode, dispatcher_id, profile, external_sources, fresh_secs, on_stale, \
-           max_batch, cron, then_preset_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
+           max_batch, cron, then_preset_id, notify_url, next_fire_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, \
+           $18) \
          RETURNING ",
         columns!()
     ))
@@ -240,13 +247,15 @@ pub async fn create(
     .bind(preset.max_batch)
     .bind(preset.cron.as_deref())
     .bind(preset.then_preset_id)
+    .bind(preset.notify_url.as_deref())
+    .bind(next_fire(preset))
     .fetch_one(pool)
     .await?;
     Ok(row.into())
 }
 
-/// `Ok(None)` when no preset the caller can see has that id. A changed cron
-/// clears `next_fire_at` so the schedule sweep recomputes it.
+/// `Ok(None)` when no preset the caller can see has that id. An unchanged cron
+/// keeps its pending fire time.
 pub async fn update(
     pool: &PgPool,
     owner: Option<Uuid>,
@@ -270,8 +279,9 @@ pub async fn update(
            adapter_id = $7, model = $8, permission_mode = $9, dispatcher_id = $10, \
            profile = $11, external_sources = $12, fresh_secs = $13, on_stale = $14, \
            max_batch = $15, \
-           next_fire_at = CASE WHEN cron IS NOT DISTINCT FROM $16 THEN next_fire_at END, \
-           cron = $16, then_preset_id = $17, updated_at = now() \
+           next_fire_at = CASE WHEN cron IS NOT DISTINCT FROM $16 AND next_fire_at IS NOT NULL \
+                               THEN next_fire_at ELSE $19 END, \
+           cron = $16, then_preset_id = $17, notify_url = $18, updated_at = now() \
          WHERE id = $1 AND user_id = $2 \
          RETURNING ",
         columns!()
@@ -293,6 +303,8 @@ pub async fn update(
     .bind(preset.max_batch)
     .bind(preset.cron.as_deref())
     .bind(preset.then_preset_id)
+    .bind(preset.notify_url.as_deref())
+    .bind(next_fire(preset))
     .fetch_optional(pool)
     .await?;
     Ok(row.map(Into::into))

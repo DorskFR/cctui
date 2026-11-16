@@ -14,15 +14,14 @@ pub const MARKER: &str = "[cctui inbox:";
 pub enum Route {
     Reply(String),
     QueuedSpawn(String),
-    /// Preset lanes are not routed yet: their events stay pending.
-    Preset,
+    Preset(Uuid),
     Undeliverable(&'static str),
 }
 
 #[must_use]
 pub fn route(lane: &ClaimedLane) -> Route {
-    if lane.preset_id.is_some() {
-        return Route::Preset;
+    if let Some(preset_id) = lane.preset_id {
+        return Route::Preset(preset_id);
     }
     let status = lane.session_status.as_deref();
     if let Some(reason) = crate::scheduled_messages::undeliverable_reason(status) {
@@ -47,6 +46,8 @@ pub enum Outcome {
     /// Not attempted: the events go back to pending with no attempt counted.
     Skip,
     Retry(String),
+    /// The attempt may have landed: retried under the same `batch_id`.
+    RetryKept(String),
     Dead(String),
 }
 
@@ -93,7 +94,7 @@ async fn usage_too_high(state: &AppState, session_id: &str) -> bool {
     false
 }
 
-async fn reply(state: &AppState, session_id: &str, events: &[BatchEvent]) -> Outcome {
+pub(super) async fn reply(state: &AppState, session_id: &str, events: &[BatchEvent]) -> Outcome {
     let Some(batch_id) = events.first().map(|e| e.batch_id) else { return Outcome::Skip };
     if usage_too_high(state, session_id).await {
         return Outcome::Skip;
@@ -132,13 +133,24 @@ async fn reply(state: &AppState, session_id: &str, events: &[BatchEvent]) -> Out
     }
 }
 
+fn retried(retry: &Retry, batch_id: Uuid, err: String) -> Option<String> {
+    match retry {
+        Retry::Dead { .. } => Some(err),
+        Retry::After { secs, .. } => {
+            tracing::warn!(%batch_id, retry_in_secs = *secs, "inbox delivery failed: {err}");
+            None
+        }
+    }
+}
+
 async fn settle(
     state: &AppState,
+    lane: &ClaimedLane,
     route: &Route,
-    batch_id: Uuid,
-    attempts: i32,
+    batch: (Uuid, i32),
     outcome: Outcome,
 ) -> sqlx::Result<()> {
+    let (batch_id, attempts) = batch;
     let pool = &state.pool;
     let dead = match outcome {
         Outcome::Delivered { session_id, delivered_as } => {
@@ -153,38 +165,43 @@ async fn settle(
             claim::mark_dead(pool, batch_id, attempts + 1, &reason).await?;
             Some(reason)
         }
-        Outcome::Retry(err) => match claim::record_failure(pool, batch_id, attempts, &err).await? {
-            Retry::Dead { .. } => Some(err),
-            Retry::After { secs, .. } => {
-                tracing::warn!(%batch_id, retry_in_secs = secs, "inbox delivery failed: {err}");
-                None
-            }
-        },
+        Outcome::Retry(err) => {
+            let retry = claim::record_failure(pool, batch_id, attempts, &err).await?;
+            retried(&retry, batch_id, err)
+        }
+        Outcome::RetryKept(err) => {
+            let retry = claim::record_ambiguous_failure(pool, batch_id, attempts, &err).await?;
+            retried(&retry, batch_id, err)
+        }
     };
     if let Some(reason) = dead {
         tracing::error!(%batch_id, "inbox batch dead-lettered: {reason}");
         if let Route::QueuedSpawn(session_id) = route {
             super::queued::fail(pool, session_id, &reason).await?;
         }
+        super::guards::alert(state, super::guards::dead_lettered(lane, batch_id, &reason));
     }
     Ok(())
 }
 
 async fn deliver_claimed(state: &AppState, lane: &ClaimedLane) -> sqlx::Result<()> {
-    let route = route(lane);
-    if route == Route::Preset {
+    if let Some(notice) = super::guards::trip_ceiling(&state.pool, lane.id).await? {
+        super::guards::alert(state, notice);
         return Ok(());
     }
+    let route = route(lane);
     let events = claim::claim_batch(&state.pool, lane.id).await?;
     let Some(batch_id) = events.first().map(|e| e.batch_id) else { return Ok(()) };
     let attempts = events.iter().map(|e| e.attempts).max().unwrap_or_default();
     let outcome = match &route {
         Route::Reply(session_id) => reply(state, session_id, &events).await,
         Route::QueuedSpawn(session_id) => super::queued::launch(state, session_id, &events).await,
+        Route::Preset(preset_id) => {
+            super::preset::deliver(state, lane, *preset_id, &events).await?
+        }
         Route::Undeliverable(reason) => Outcome::Dead((*reason).to_owned()),
-        Route::Preset => Outcome::Skip,
     };
-    settle(state, &route, batch_id, attempts, outcome).await
+    settle(state, lane, &route, (batch_id, attempts), outcome).await
 }
 
 pub async fn deliver_lane(state: &AppState, lane: &ClaimedLane) {
@@ -240,6 +257,7 @@ pub async fn sweep(state: &AppState) {
             .map(|ids| u64::try_from(ids.len()).unwrap_or(u64::MAX)),
     );
     log_step("cancelled expired events", claim::cancel_expired(&state.pool).await);
+    super::guards::sweep(state).await;
     deliver_due(state, CLAIM_BATCH, LaneFilter::default()).await;
 }
 
@@ -252,10 +270,12 @@ mod tests {
     fn lane(session_status: Option<&str>, preset: bool) -> ClaimedLane {
         ClaimedLane {
             id: Uuid::nil(),
+            user_id: Uuid::nil(),
             key: "session:s-1".into(),
             preset_id: preset.then(Uuid::nil),
             session_id: session_status.map(|_| "s-1".to_owned()),
             session_status: session_status.map(ToOwned::to_owned),
+            spawn_command_id: None,
         }
     }
 
@@ -266,6 +286,7 @@ mod tests {
             source: source.into(),
             body: body.into(),
             sealed_body: None,
+            parent_session_id: None,
             attempts: 0,
             batch_id: Uuid::nil(),
             created_at: chrono::Utc.with_ymd_and_hms(2026, 11, 16, 9, 2, 30).unwrap(),
@@ -273,11 +294,12 @@ mod tests {
     }
 
     #[test]
-    fn session_lanes_reply_launch_or_dead_letter_and_preset_lanes_wait() {
+    fn session_lanes_reply_launch_or_dead_letter_and_preset_lanes_route_by_preset() {
         assert_eq!(route(&lane(Some("active"), false)), Route::Reply("s-1".into()));
         assert_eq!(route(&lane(Some("inactive"), false)), Route::Reply("s-1".into()));
         assert_eq!(route(&lane(Some("queued"), false)), Route::QueuedSpawn("s-1".into()));
-        assert_eq!(route(&lane(Some("active"), true)), Route::Preset);
+        assert_eq!(route(&lane(Some("active"), true)), Route::Preset(Uuid::nil()));
+        assert_eq!(route(&lane(None, true)), Route::Preset(Uuid::nil()));
         assert_eq!(
             route(&lane(Some("archived"), false)),
             Route::Undeliverable("session archived before delivery")

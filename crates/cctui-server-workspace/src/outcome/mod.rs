@@ -143,6 +143,7 @@ pub async fn on_declared(state: &AppState, outcome: &SessionOutcome) -> bool {
         outcome: outcome.clone(),
     });
     crate::notify::producers::on_outcome(state, outcome).await;
+    crate::inbox::chain::on_outcome(state, outcome).await;
     if !outcome.source.is_declared() {
         return false;
     }
@@ -181,7 +182,7 @@ pub async fn latest(
     Ok(latest_of(pool, &[session_id.to_owned()]).await?.remove(session_id))
 }
 
-async fn daemon_session(
+pub async fn daemon_session(
     state: &AppState,
     headers: &HeaderMap,
     session_id: &str,

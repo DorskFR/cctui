@@ -14,6 +14,7 @@ pub const MAX_BATCH_DEFAULT: i32 = 20;
 pub const MAX_BATCH_MAX: i32 = 100;
 const MAX_NAME_CHARS: usize = 120;
 const MAX_PROMPT_BYTES: usize = 64 * 1024;
+const MAX_NOTIFY_URL_CHARS: usize = 2048;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
@@ -41,6 +42,7 @@ pub struct ValidPreset {
     pub max_batch: i32,
     pub cron: Option<String>,
     pub then_preset_id: Option<Uuid>,
+    pub notify_url: Option<String>,
 }
 
 fn trimmed(raw: Option<&str>) -> Option<String> {
@@ -115,6 +117,21 @@ fn guard_external(target: &Target, external_sources: bool) -> Result<(), String>
     Ok(())
 }
 
+/// The address is vetted again, with DNS, when a dispatch registers it.
+fn notify_url(target: &Target, raw: Option<&str>) -> Result<Option<String>, String> {
+    let Some(url) = trimmed(raw) else { return Ok(None) };
+    if matches!(target, Target::Machine { .. }) {
+        return Err("notify_url applies to dispatcher targets only".into());
+    }
+    if !url.starts_with("https://") {
+        return Err("notify_url must be an https URL".into());
+    }
+    if url.chars().count() > MAX_NOTIFY_URL_CHARS {
+        return Err(format!("notify_url must be at most {MAX_NOTIFY_URL_CHARS} characters"));
+    }
+    Ok(Some(url))
+}
+
 pub fn validate(req: &LaunchPresetRequest) -> Result<ValidPreset, String> {
     let name = req.name.trim().to_owned();
     if name.is_empty() {
@@ -131,6 +148,7 @@ pub fn validate(req: &LaunchPresetRequest) -> Result<ValidPreset, String> {
     }
     let target = target(req)?;
     guard_external(&target, req.external_sources)?;
+    let notify_url = notify_url(&target, req.notify_url.as_deref())?;
     let cron = trimmed(req.cron.as_deref());
     if let Some(expr) = &cron {
         cron::validate(expr)?;
@@ -145,6 +163,7 @@ pub fn validate(req: &LaunchPresetRequest) -> Result<ValidPreset, String> {
         max_batch: clamp_max_batch(req.max_batch),
         cron,
         then_preset_id: req.then_preset_id,
+        notify_url,
     })
 }
 
@@ -235,6 +254,22 @@ mod tests {
         assert!(validate(&unguarded_internal).is_ok());
         let external_container = LaunchPresetRequest { external_sources: true, ..container() };
         assert!(validate(&external_container).is_ok());
+    }
+
+    #[test]
+    fn notify_url_is_an_https_url_on_a_dispatcher_target() {
+        let url = Some(" https://n8n.example/hook ".to_owned());
+        let container_url = LaunchPresetRequest { notify_url: url.clone(), ..container() };
+        assert_eq!(
+            validate(&container_url).unwrap().notify_url.as_deref(),
+            Some("https://n8n.example/hook")
+        );
+        let machine_url = LaunchPresetRequest { notify_url: url, ..machine() };
+        assert!(validate(&machine_url).unwrap_err().contains("dispatcher targets only"));
+        let plain = LaunchPresetRequest { notify_url: Some("http://x/h".into()), ..container() };
+        assert!(validate(&plain).unwrap_err().contains("https"));
+        let blank = LaunchPresetRequest { notify_url: Some(" ".into()), ..container() };
+        assert_eq!(validate(&blank).unwrap().notify_url, None);
     }
 
     #[test]
