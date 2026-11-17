@@ -3,7 +3,8 @@
 # the shared pod network namespace before the worker starts. The rules cover
 # every container of the pod; only PROXY_UID egresses directly.
 # WORKER_DNS_RESOLVER: IPv4 or pod-search-relative name of the restricted
-# resolver; unresolvable is fatal when set, a warning for the default.
+# resolver; unresolvable is fatal when set, a warning for the default unless
+# WORKER_DNS_RESOLVER_REQUIRED=1.
 # WORKER_NET_INIT_DRY_RUN=1 prints the rules instead of applying them.
 set -eu
 
@@ -54,6 +55,10 @@ if [ -n "$_dns" ]; then
     if [ -z "$_rdns" ]; then
         if [ -n "${WORKER_DNS_RESOLVER:-}" ]; then
             echo "cctui-worker-net-init: cannot resolve WORKER_DNS_RESOLVER $WORKER_DNS_RESOLVER" >&2
+            exit 1
+        fi
+        if [ "${WORKER_DNS_RESOLVER_REQUIRED:-}" = 1 ]; then
+            echo "cctui-worker-net-init: cannot resolve $DEFAULT_DNS_RESOLVER and WORKER_DNS_RESOLVER_REQUIRED=1" >&2
             exit 1
         fi
         log "WARNING: no restricted resolver ($DEFAULT_DNS_RESOLVER does not resolve) — DNS goes to $_dns, which may recurse public names"
