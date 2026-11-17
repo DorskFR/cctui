@@ -1,17 +1,18 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use cctui_proto::adapter::AdapterCommand;
-use cctui_proto::ws::DaemonFrameDown;
 use uuid::Uuid;
 
 use super::reply_gate_tests::queue_state;
-use super::{FOLD_LOCK, FOLD_SQL as FOLD, claim_one, scheduled_turns, settle};
+use super::{claim_one, settle};
 use crate::auth::{AuthContext, Scope};
-use crate::inbox::claim::LaneFilter;
 use crate::inbox::deliver::Outcome;
 use crate::outbox::MAX_ATTEMPTS;
+use crate::schema::BOOTSTRAP;
 use crate::state::AppState;
+
+const FOLD: &str = include_str!("../schema/0014_fold_outboxes.sql");
+const DROP: &str = include_str!("../schema/0016_drop_outboxes.sql");
 
 async fn pool(name: &str) -> Option<sqlx::PgPool> {
     let url = crate::routes::gateway::test_db_url(name)?;
@@ -63,6 +64,34 @@ async fn seed_session(pool: &sqlx::PgPool, owner: Uuid, machine: Uuid, status: &
     .await
     .unwrap();
     sid
+}
+
+fn baseline_table(name: &str) -> &'static str {
+    let header = format!("-- TABLE: {name}\n");
+    let (_, block) = BOOTSTRAP.split_at(BOOTSTRAP.find(&header).expect("a baseline table"));
+    block.split_at(block.find("\n\n").expect("the block ends")).0
+}
+
+/// The outboxes as they stood before the drop, which every test database has run.
+async fn legacy_outboxes(conn: &mut sqlx::PgConnection) {
+    for sql in [
+        "DROP TABLE IF EXISTS session_message_queue, draft_launch_queue",
+        baseline_table("session_message_queue"),
+        baseline_table("draft_launch_queue"),
+        include_str!("../schema/0003_scheduled_message_sealed_body.sql"),
+    ] {
+        sqlx::raw_sql(sql).execute(&mut *conn).await.unwrap();
+    }
+}
+
+async fn outboxes_exist(conn: &mut sqlx::PgConnection) -> (bool, bool) {
+    sqlx::query_as(
+        "SELECT to_regclass('public.session_message_queue') IS NOT NULL, \
+                to_regclass('public.draft_launch_queue') IS NOT NULL",
+    )
+    .fetch_one(conn)
+    .await
+    .unwrap()
 }
 
 async fn old_message(
@@ -167,14 +196,6 @@ async fn footprint(conn: &mut sqlx::PgConnection, keys: &[String], sid: &str) ->
     .unwrap()
 }
 
-#[test]
-fn the_fold_takes_its_lock_before_any_other_statement() {
-    let lock = FOLD.find(FOLD_LOCK).expect("the fold takes the fold lock");
-    let first = FOLD.find("CREATE ").expect("the fold creates scheduled_turns");
-    assert!(lock < first);
-    assert!(FOLD[..lock].lines().all(|l| l.trim().is_empty() || l.starts_with("--")));
-}
-
 #[tokio::test]
 async fn the_fold_backfills_every_live_state_once_and_a_second_run_adds_nothing() {
     let name = "the_fold_backfills_every_live_state_once_and_a_second_run_adds_nothing";
@@ -186,7 +207,7 @@ async fn the_fold_backfills_every_live_state_once_and_a_second_run_adds_nothing(
         drafts.push(seed_session(&pool, owner, machine, "draft").await);
     }
     let mut tx = pool.begin().await.unwrap();
-    sqlx::query(FOLD_LOCK).execute(&mut *tx).await.unwrap();
+    legacy_outboxes(&mut tx).await;
 
     let mut messages = Vec::new();
     for (state, ago) in [
@@ -284,70 +305,64 @@ async fn the_fold_backfills_every_live_state_once_and_a_second_run_adds_nothing(
 }
 
 #[tokio::test]
-async fn a_backfilled_scheduled_message_is_delivered_by_the_inbox_sweep_under_its_turn_id() {
-    let name = "a_backfilled_scheduled_message_is_delivered_by_the_inbox_sweep_under_its_turn_id";
+async fn the_drop_removes_both_outboxes_once_every_live_row_is_in_the_inbox() {
+    let name = "the_drop_removes_both_outboxes_once_every_live_row_is_in_the_inbox";
     let Some(pool) = pool(name).await else { return };
-    let state = AppState::for_test(pool.clone());
     let (owner, machine) = seed_owner(&pool).await;
-    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-    state.bus.register_daemon(machine, Uuid::new_v4(), tx);
     let sid = seed_session(&pool, owner, machine, "active").await;
-    let (id, turn_id): (Uuid, Uuid) = sqlx::query_as(
-        "INSERT INTO session_message_queue \
-           (session_id, user_id, body, deliver_at, next_attempt_at) \
-         VALUES ($1, $2, 'wake up and check CI', now() - interval '1 minute', \
-                 now() - interval '1 minute') \
-         RETURNING id, turn_id",
+    let draft = seed_session(&pool, owner, machine, "draft").await;
+    let mut tx = pool.begin().await.unwrap();
+    legacy_outboxes(&mut tx).await;
+    let (delivered, turn) = old_message(&mut tx, &sid, owner, "scheduled", "0").await;
+    for (state, ago) in [("dead", "0"), ("sent", "2 days"), ("cancelled", "0")] {
+        old_message(&mut tx, &sid, owner, state, ago).await;
+    }
+    old_draft(&mut tx, &draft, owner, "scheduled").await;
+    sqlx::raw_sql(FOLD).execute(&mut *tx).await.unwrap();
+
+    sqlx::query(
+        "INSERT INTO scheduled_turns (turn_id, session_id, event_id, scheduled_at) \
+         VALUES ($1, $2, $3, now())",
     )
+    .bind(turn)
     .bind(&sid)
-    .bind(owner)
-    .fetch_one(&pool)
+    .bind(delivered)
+    .execute(&mut *tx)
     .await
     .unwrap();
-
-    sqlx::raw_sql(FOLD).execute(&pool).await.unwrap();
-    let lane: Uuid = sqlx::query_scalar("SELECT id FROM inbox_lanes WHERE key = $1")
-        .bind(format!("session:{sid}"))
-        .fetch_one(&pool)
+    sqlx::query("DELETE FROM inbox_events WHERE id = $1")
+        .bind(delivered)
+        .execute(&mut *tx)
         .await
         .unwrap();
-    crate::inbox::deliver::deliver_due(&state, 1, LaneFilter { lane: Some(lane), machine: None })
-        .await;
 
-    match rx.try_recv() {
-        Ok(DaemonFrameDown::Command { command, .. }) => match *command {
-            AdapterCommand::Reply { text, turn_id: sent_turn, .. } => {
-                assert_eq!(text, "wake up and check CI", "delivered as typed, not as a batch");
-                assert_eq!(sent_turn, Some(turn_id));
-            }
-            other => panic!("expected a reply, got {other:?}"),
-        },
-        other => panic!("nothing delivered: {other:?}"),
-    }
-    assert_eq!(queue_state(&pool, id).await.0, "sent");
-    let (batch_id, delivered_as): (Option<Uuid>, Option<String>) =
-        sqlx::query_as("SELECT batch_id, delivered_as FROM inbox_events WHERE id = $1")
-            .bind(id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!((batch_id, delivered_as.as_deref()), (Some(turn_id), Some("reply")));
-    assert!(scheduled_turns(&pool, &sid).await.unwrap().contains_key(&turn_id));
+    sqlx::raw_sql(DROP).execute(&mut *tx).await.unwrap();
+    assert_eq!(outboxes_exist(&mut tx).await, (false, false));
+    tx.rollback().await.unwrap();
+}
 
-    let Json(listed) =
-        crate::routes::scheduled_messages::list(State(state), Path(sid)).await.unwrap();
-    let shown = listed.iter().find(|m| m.id == id).expect("listed for a day after sending");
-    assert_eq!((shown.state.as_str(), shown.turn_id), ("sent", turn_id));
-    assert!(shown.sent_at.is_some());
+#[tokio::test]
+async fn the_drop_refuses_and_keeps_both_outboxes_while_a_live_row_is_unfolded() {
+    let name = "the_drop_refuses_and_keeps_both_outboxes_while_a_live_row_is_unfolded";
+    let Some(pool) = pool(name).await else { return };
+    let (owner, machine) = seed_owner(&pool).await;
+    let sid = seed_session(&pool, owner, machine, "active").await;
+    let folded = seed_session(&pool, owner, machine, "draft").await;
+    let late = seed_session(&pool, owner, machine, "draft").await;
+    let mut tx = pool.begin().await.unwrap();
+    legacy_outboxes(&mut tx).await;
+    old_message(&mut tx, &sid, owner, "scheduled", "0").await;
+    old_draft(&mut tx, &folded, owner, "scheduled").await;
+    sqlx::raw_sql(FOLD).execute(&mut *tx).await.unwrap();
+    old_message(&mut tx, &sid, owner, "sending", "0").await;
+    old_draft(&mut tx, &late, owner, "dead").await;
 
-    sqlx::query("DELETE FROM inbox_events WHERE id = $1").bind(id).execute(&pool).await.unwrap();
-    sqlx::raw_sql(FOLD).execute(&pool).await.unwrap();
-    let refolded: i64 = sqlx::query_scalar("SELECT count(*) FROM inbox_events WHERE id = $1")
-        .bind(id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(refolded, 0, "a delivered message is not folded again once its event is pruned");
+    sqlx::raw_sql("SAVEPOINT guard").execute(&mut *tx).await.unwrap();
+    let err = sqlx::raw_sql(DROP).execute(&mut *tx).await.unwrap_err().to_string();
+    assert!(err.contains("1 scheduled messages and 1 draft launches"), "{err}");
+    sqlx::raw_sql("ROLLBACK TO SAVEPOINT guard").execute(&mut *tx).await.unwrap();
+    assert_eq!(outboxes_exist(&mut tx).await, (true, true));
+    tx.rollback().await.unwrap();
 }
 
 #[tokio::test]

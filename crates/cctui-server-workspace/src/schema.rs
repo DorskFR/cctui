@@ -110,6 +110,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "env_endpoint_owner_only",
         sql: include_str!("../schema/0015_env_endpoint_owner_only.sql"),
     },
+    Migration {
+        version: 16,
+        name: "drop_outboxes",
+        sql: include_str!("../schema/0016_drop_outboxes.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -254,7 +259,8 @@ mod tests {
                     (12, "bootstrap".to_owned()),
                     (13, "bootstrap".to_owned()),
                     (14, "bootstrap".to_owned()),
-                    (15, "bootstrap".to_owned())
+                    (15, "bootstrap".to_owned()),
+                    (16, "bootstrap".to_owned())
                 ]
             );
 
@@ -363,7 +369,8 @@ mod tests {
                     (12, "bootstrap".to_owned()),
                     (13, "bootstrap".to_owned()),
                     (14, "bootstrap".to_owned()),
-                    (15, "bootstrap".to_owned())
+                    (15, "bootstrap".to_owned()),
+                    (16, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =
