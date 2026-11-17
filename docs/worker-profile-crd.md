@@ -42,6 +42,8 @@ and is left untouched.
 | `guard` | operator | guard-proxy sidecar `envFrom`/`env` layered over `guard-proxy-env`; widening needs `allowPrivateEgress`; `cloudIdentity` confines a cloud identity webhook's token to the guard-proxy (see worker-contract.md) |
 | `posture` | operator | `root` or `nonroot`: the worker container's security posture (see [Posture](#posture)); unset is `root` |
 | `preflight` | operator | `mode` (`enforce`/`warn`/`off`) and extra `deny` targets for the worker's pre-flight isolation check, rendered as `CCTUI_PREFLIGHT_*` worker env after the per-run env, so neither the profile's own `env` nor a dispatch can override them (see worker-contract.md) |
+| `dnsResolver` | operator | restricted DNS resolver (IPv4 or pod-search-relative name) rendered as `WORKER_DNS_RESOLVER` on the injected `net-init`; unset uses the orchestrator's `CCTUI_ORCH_DNS_RESOLVER`, else `cctui-worker-dns`. A resolver that does not resolve fails the pod; neither the profile's `env` nor a dispatch can override it (see worker-contract.md) |
+| `sidecarResources` | operator | `netInit` / `guardProxy` container `resources` blocks merged key by key over the injected sidecars' defaults (net-init 10m/16Mi/4Mi request, 100m/64Mi/16Mi limit; guard-proxy 25m/32Mi/32Mi request, 500m/256Mi/128Mi limit, as cpu/memory/ephemeral-storage), so a namespace `LimitRange` default never sizes them |
 | per-run env (session id, reply URL, task payload, ...) | dispatcher | layered onto the worker `env` at Job creation |
 | secretless credential envelope, gpg-agent socket | webhook | injected into **only** the worker container at pod admission |
 
