@@ -80,19 +80,19 @@ if [ "$rc" != 0 ]; then ok "an unresolvable restricted resolver is fatal"; else 
 unset WORKER_DNS_RESOLVER
 
 echo "== 2b. WORKER_DNS_RESOLVER_REQUIRED=1 with no resolver set: cctui-worker-dns or nothing =="
-WORKER_DNS_RESOLVER_REQUIRED=1
-OUT=$(install_transparent_rules "$TMP/resolv.conf")
+OUT=$(WORKER_DNS_RESOLVER_REQUIRED=1 install_transparent_rules "$TMP/resolv.conf")
 has "the default resolver is DNATed to" \
     "iptables -t nat -A OUTPUT -p udp -d 192.168.65.7 --dport 53 -j DNAT --to-destination 203.0.113.7:53"
 not "the pod resolver is not kept" "iptables -A OUTPUT -p udp -d 192.168.65.7 --dport 53 -j ACCEPT"
-OUT=$( (getent() { :; }; install_transparent_rules "$TMP/resolv.conf") )
+OUT=$( (getent() { :; }; WORKER_DNS_RESOLVER_REQUIRED=1 install_transparent_rules "$TMP/resolv.conf") )
 rc=$?
 if [ "$rc" != 0 ]; then ok "an unresolvable default is fatal"; else bad "unresolvable default accepted"; fi
 if grep -qE '^ip6?tables' <<<"$OUT"; then bad "rules installed before the failure"; else ok "no rule installed"; fi
-WORKER_DNS_RESOLVER_REQUIRED=0
-OUT=$(install_transparent_rules "$TMP/resolv.conf")
+OUT=$( (getent() { :; }; install_transparent_rules "$TMP/resolv.conf") )
+rc=$?
+if [ "$rc" = 0 ]; then ok "control: without REQUIRED the same lookup failure is not fatal"; else bad "control exited $rc"; fi
+OUT=$(WORKER_DNS_RESOLVER_REQUIRED=0 install_transparent_rules "$TMP/resolv.conf")
 has "other values keep the resolver as is" "iptables -t nat -A OUTPUT -p udp -d 192.168.65.7 --dport 53 -j RETURN"
-unset WORKER_DNS_RESOLVER_REQUIRED
 
 echo "== 3. IPv6 resolver first: only the IPv4 one is used =="
 printf 'nameserver fd00::53\nnameserver 10.0.0.53\n' > "$TMP/resolv.conf"
