@@ -1,15 +1,15 @@
 <script lang="ts">
 	import { Badge, Button, Callout, EmptyState, FileButton, Input, Switch, Text } from '@dorsk/tsumikit';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import PluginInstanceSettingsForm from '$lib/components/molecules/PluginInstanceSettingsForm.svelte';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import { endpoints, qk, useAdminPluginCatalog, useAdminPlugins } from '$lib/queries';
+	import PluginInstanceSettingsForm from '#lib/components/molecules/PluginInstanceSettingsForm.svelte';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import { endpoints, qk, useAdminPluginCatalog, useAdminPlugins } from '#lib/queries/index.ts';
 	import type { AdminPluginInfo } from '@bindings/AdminPluginInfo';
 	import type { CatalogPluginInfo } from '@bindings/CatalogPluginInfo';
-	import { copyText } from '$lib/clipboard';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { copyText } from '#lib/clipboard.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { isAdmin = false }: { isAdmin?: boolean } = $props();
 

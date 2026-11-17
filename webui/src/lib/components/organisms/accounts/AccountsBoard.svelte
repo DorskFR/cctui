@@ -1,12 +1,12 @@
 <script lang="ts">
-	import FirstRunChecklist from '$lib/components/molecules/FirstRunChecklist.svelte';
+	import FirstRunChecklist from '#lib/components/molecules/FirstRunChecklist.svelte';
 	import type { Snippet } from 'svelte';
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
-	import { errMessage } from '$lib/api';
-	import { useAccountPoolActions, useAccountPoolsUsage, type OAuthAccount } from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
+	import { errMessage } from '#lib/api.ts';
+	import { useAccountPoolActions, useAccountPoolsUsage, type OAuthAccount } from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
 	import { EmptyState } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import NewPoolZone from './NewPoolZone.svelte';
 	import PoolEditorModal from './PoolEditorModal.svelte';
 	import PoolZone from './PoolZone.svelte';

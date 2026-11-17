@@ -1,15 +1,15 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { Button, Field, Modal, Select, Switch, Text } from '@dorsk/tsumikit';
-	import { useSessionActions } from '$lib/queries';
+	import { useSessionActions } from '#lib/queries/index.ts';
 	import {
 		DEFAULT_MAX_TICKS,
 		defaultIntervalSecs,
 		formatIntervalSecs,
 		intervalOptionsSecs,
 		MAX_TICKS_OPTIONS
-	} from '$lib/components/organisms/conversation/keepalive';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/components/organisms/conversation/keepalive.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { session, onclose }: { session: SessionListItem; onclose: () => void } = $props();
 

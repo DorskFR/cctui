@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { Badge, Cluster, Icon, Text, Timestamp, WorkingDir } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import { statusBadgeTone } from '$lib/format';
-	import { sessionEndTitle } from '$lib/sessionEnd';
+	import { m } from '#lib/paraglide/messages.js';
+	import { statusBadgeTone } from '#lib/format.ts';
+	import { sessionEndTitle } from '#lib/sessionEnd.ts';
 	import Badges from './Badges.svelte';
 	import DraftActions from './DraftActions.svelte';
 	import Lead from './Lead.svelte';

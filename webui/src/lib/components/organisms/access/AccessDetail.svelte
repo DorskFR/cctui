@@ -13,8 +13,8 @@
 		Text,
 		Timestamp
 	} from '@dorsk/tsumikit';
-	import EditEntityModal from '$lib/components/molecules/EditEntityModal.svelte';
-	import { hashHue } from '$lib/format';
+	import EditEntityModal from '#lib/components/molecules/EditEntityModal.svelte';
+	import { hashHue } from '#lib/format.ts';
 	import {
 		type OAuthAccount,
 		useHiddenOwnerActions,
@@ -24,12 +24,12 @@
 		useUserAcls,
 		useUserActions,
 		useUserKeys
-	} from '$lib/queries';
-	import { isHiddenOwner } from '$lib/hiddenOwners';
-	import { hasFeature } from '$lib/features.svelte';
-	import { toasts } from '$lib/toast.svelte';
-	import { errMessage } from '$lib/api';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/queries/index.ts';
+	import { isHiddenOwner } from '#lib/hiddenOwners.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { errMessage } from '#lib/api.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import AccessAccountsTab from './AccessAccountsTab.svelte';
 	import AccessKeysTab from './AccessKeysTab.svelte';
 	import AccessMachinesTab from './AccessMachinesTab.svelte';

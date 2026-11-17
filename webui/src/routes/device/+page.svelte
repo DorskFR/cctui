@@ -2,20 +2,20 @@
 	import type { DeviceAuthRequestInfo } from '@bindings/DeviceAuthRequestInfo';
 	import { page } from '$app/state';
 	import { Button, Callout, Cluster, Input, Spinner, Stack, Text } from '@dorsk/tsumikit';
-	import PageHead from '$lib/components/molecules/PageHead.svelte';
+	import PageHead from '#lib/components/molecules/PageHead.svelte';
 	import {
 		codeFromSearch,
 		isCompleteUserCode,
 		isDecidable,
 		normalizeUserCode,
 		requesterFacts
-	} from '$lib/deviceAuth';
-	import { endpoints } from '$lib/queries/endpoints';
-	import { errMessage } from '$lib/api';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/deviceAuth.ts';
+	import { endpoints } from '#lib/queries/endpoints.ts';
+	import { errMessage } from '#lib/api.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
-	let code = $state(codeFromSearch(page.url.searchParams));
+	let code = $state(codeFromSearch(page.url.search));
 	let info = $state<DeviceAuthRequestInfo | null>(null);
 	let error = $state('');
 	let busy = $state(false);

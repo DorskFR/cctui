@@ -10,7 +10,7 @@ const usage = (granularity: 'hour' | 'day') => ({
 	models: [],
 	heatmap: []
 });
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	useUsageAnalytics: (days: () => number) => ({
 		get isLoading() {
 			return false;

@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { error } from '@sveltejs/kit';
 import type { CapabilitiesResponse } from '@bindings/CapabilitiesResponse';
 import type { Feature } from '@bindings/Feature';
@@ -20,7 +20,7 @@ export async function probeCapabilities(
 			signal: AbortSignal.timeout(3_000)
 		});
 		if (!response.ok) return null;
-		const caps = (await response.json()) as ProbedCapabilities | null;
+		const caps = await response.json() as ProbedCapabilities | null;
 		return caps && typeof caps === 'object' ? caps : null;
 	} catch {
 		return null;

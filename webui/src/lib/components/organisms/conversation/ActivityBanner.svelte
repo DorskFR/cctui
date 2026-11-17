@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { now as clockNow } from '$lib/clock.svelte';
+	import { now as clockNow } from '#lib/clock.svelte.ts';
 	import type { ConversationStream } from './stream.svelte';
 	import { formatElapsed } from './activity';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { stream, archived = false }: { stream: ConversationStream; archived?: boolean } = $props();
 

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Input, Switch, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import type { AutoLimitReset } from '$lib/components/organisms/accounts/provider-drawer/auto-limit-reset.logic';
+	import { m } from '#lib/paraglide/messages.js';
+	import type { AutoLimitReset } from '#lib/components/organisms/accounts/provider-drawer/auto-limit-reset.logic.ts';
 
 	let {
 		value = $bindable(),

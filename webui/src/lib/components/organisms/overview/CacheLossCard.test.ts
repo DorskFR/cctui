@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
-import type { DailyCacheLoss } from '$lib/queries';
+import type { DailyCacheLoss } from '#lib/queries/index.ts';
 
 const requested: number[] = [];
 const query = { isLoading: false, data: [] as DailyCacheLoss[] };
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	useCacheLoss: (days: () => number) => {
 		requested.push(days());
 		return query;

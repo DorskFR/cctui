@@ -2,12 +2,12 @@
 	import { goto } from '$app/navigation';
 	import { page as appPage } from '$app/state';
 	import { Button, EmptyState } from '@dorsk/tsumikit';
-	import PluginPageHost from '$lib/components/organisms/PluginPageHost.svelte';
-	import { hostHref, pageBasePath, pluginPath, resolvePageState } from '$lib/plugins/pageRoute';
-	import { pluginLoader } from '$lib/plugins/loader.svelte';
-	import { usePlugins } from '$lib/queries';
-	import { settings } from '$lib/settings.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import PluginPageHost from '#lib/components/organisms/PluginPageHost.svelte';
+	import { hostHref, pageBasePath, pluginPath, resolvePageState } from '#lib/plugins/pageRoute.ts';
+	import { pluginLoader } from '#lib/plugins/loader.svelte.ts';
+	import { usePlugins } from '#lib/queries/index.ts';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	const plugins = usePlugins();
 	const id = $derived(appPage.params.id ?? '');
@@ -32,7 +32,7 @@
 	});
 
 	function navigate(to: string) {
-		void goto(hostHref(basePath, to), { noScroll: true, keepFocus: true });
+		void goto(hostHref(basePath, to), { reset: false });
 	}
 </script>
 

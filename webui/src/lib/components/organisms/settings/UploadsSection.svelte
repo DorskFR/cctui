@@ -4,14 +4,14 @@
 	// ceiling (env + restart) and the daemon's own compiled-in limits.
 	import { Badge, Button, Input, Text } from '@dorsk/tsumikit';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
-	import { endpoints, qk, useVersion } from '$lib/queries';
-	import { fmtSize, DEFAULT_UPLOAD_CAPS } from '$lib/attachments';
-	import { toasts } from '$lib/toast.svelte';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
+	import { endpoints, qk, useVersion } from '#lib/queries/index.ts';
+	import { fmtSize, DEFAULT_UPLOAD_CAPS } from '#lib/attachments.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
 	import type { UploadCapsInfo } from '@bindings/UploadCapsInfo';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import { sourceLabel } from './serverSettings.logic';
 
 	let { isAdmin = false }: { isAdmin?: boolean } = $props();

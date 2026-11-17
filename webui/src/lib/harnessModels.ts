@@ -3,7 +3,7 @@
 // allowlist either, and every picker also accepts a free-text id.
 import type { ModelHint } from '@bindings/ModelHint';
 import type { ModelOption } from '@bindings/ModelOption';
-import { m as msg } from '$lib/paraglide/messages';
+import { m as msg } from '#lib/paraglide/messages.js';
 
 export type { ModelOption };
 

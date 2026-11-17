@@ -2,14 +2,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import VoiceControls from './VoiceControls.svelte';
-import { HOLD_MS, MIN_CLIP_MS } from '$lib/voice/tapHold';
+import { HOLD_MS, MIN_CLIP_MS } from '#lib/voice/tapHold.ts';
 
 const { postForm, toast } = vi.hoisted(() => ({
 	postForm: vi.fn(async () => ({ text: 'hello there' })),
 	toast: { error: vi.fn(), info: vi.fn() }
 }));
-vi.mock('$lib/api', () => ({ api: { postForm }, errMessage: (e: unknown) => String(e) }));
-vi.mock('$lib/toast.svelte', () => ({ toasts: toast }));
+vi.mock('#lib/api.ts', () => ({ api: { postForm }, errMessage: (e: unknown) => String(e) }));
+vi.mock('#lib/toast.svelte.ts', () => ({ toasts: toast }));
 
 class FakeRecorder {
 	state = 'inactive';

@@ -1,6 +1,6 @@
 import type { MessagePin } from '@bindings/MessagePin';
 import type { Line } from './types';
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 
 const EXCERPT_MAX = 90;
 

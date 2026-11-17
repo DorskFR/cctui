@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { Badge, Button, Text } from '@dorsk/tsumikit';
-	import { copyText } from '$lib/clipboard';
+	import { copyText } from '#lib/clipboard.ts';
 	import { taskTone, type TaskNotification } from './format';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { note }: { note: TaskNotification } = $props();
 

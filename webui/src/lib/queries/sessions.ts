@@ -9,7 +9,7 @@ import { api } from "../api";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
 import type { DailyCacheLoss } from "./types";
-import { hasFeature } from "$lib/features.svelte";
+import { hasFeature } from "#lib/features.svelte.ts";
 
 export const useSessions = (
   archived: () => boolean,

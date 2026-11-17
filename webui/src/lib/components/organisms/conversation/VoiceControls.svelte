@@ -4,12 +4,12 @@
 	// `ontogglelive`, talks with the session hands-free. While recording, a
 	// large stop target sits above the composer.
 	import { Button, IconButton, Toggle } from '@dorsk/tsumikit';
-	import { errMessage } from '$lib/api';
-	import { toasts } from '$lib/toast.svelte';
-	import { Dictation } from '$lib/voice/dictation';
-	import { settings } from '$lib/settings.svelte';
-	import { TapHold, type TapHoldAction } from '$lib/voice/tapHold';
-	import { m } from '$lib/paraglide/messages';
+	import { errMessage } from '#lib/api.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { Dictation } from '#lib/voice/dictation.ts';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { TapHold, type TapHoldAction } from '#lib/voice/tapHold.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		live = false,

@@ -1,10 +1,10 @@
 <script lang="ts">
-	import { apiOrigin } from '$lib/config';
-	import { copyText } from '$lib/clipboard';
-	import { m } from '$lib/paraglide/messages';
-	import InlineCode, { SLOT } from '$lib/components/atoms/InlineCode.svelte';
+	import { apiOrigin } from '#lib/config.ts';
+	import { copyText } from '#lib/clipboard.ts';
+	import { m } from '#lib/paraglide/messages.js';
+	import InlineCode, { SLOT } from '#lib/components/atoms/InlineCode.svelte';
 	import { Button, Card, Cluster, Stack, Text } from '@dorsk/tsumikit';
-	import { hasFeature } from '$lib/features.svelte';
+	import { hasFeature } from '#lib/features.svelte.ts';
 
 	let { dashed = false }: { dashed?: boolean } = $props();
 

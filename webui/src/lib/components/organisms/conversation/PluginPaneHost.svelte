@@ -3,35 +3,31 @@
 	// drawer: a fixed column on wide screens, the whole drawer below the mobile
 	// breakpoint. The resize grip sits on the pane's free (left) edge; the
 	// drawer's own grip owns the shared edge on the right.
-	import { browser } from '$app/environment';
+	import { browser } from '$app/env';
 	import { setContext } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
 	import { resizeHandle, Text } from '@dorsk/tsumikit';
-	import { clampDockWidth, DOCK_MIN_PX, maxDockWidth, storedDockWidth } from '$lib/dock';
-	import { composerFor } from '$lib/plugins/composerBridge.svelte';
-	import { hostContext, hostUser } from '$lib/plugins/hostContext';
-	import { useMe } from '$lib/queries';
+	import { clampDockWidth, DOCK_MIN_PX, maxDockWidth, storedDockWidth } from '#lib/dock.ts';
+	import { composerFor } from '#lib/plugins/composerBridge.svelte.ts';
+	import { hostContext, hostUser } from '#lib/plugins/hostContext.ts';
+	import { useMe } from '#lib/queries/index.ts';
 	import {
 		HOST_CONTEXT_KEY,
 		type CctuiPluginModule,
 		type HostContext,
 		type PluginInfo,
 		type PluginSession
-	} from '$lib/plugins/types';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/plugins/types.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
-	let {
-		plugin,
-		module,
-		session,
-		params = {},
-		onclose
-	}: {
+	let { plugin, module, session, params = {}, onclose
+
+	/** Validated bundle; its `sessionPane` is what gets mounted. */
+	/** From the message action that opened the pane; empty from the header. */
+	 }: { 
 		plugin: PluginInfo;
-		/** Validated bundle; its `sessionPane` is what gets mounted. */
 		module: CctuiPluginModule;
 		session: PluginSession;
-		/** From the message action that opened the pane; empty from the header. */
 		params?: Record<string, string>;
 		onclose: () => void;
 	} = $props();
@@ -49,7 +45,7 @@
 		}
 	});
 
-	let width = $derived((browser && storedDockWidth(localStorage.getItem(widthKey))) || DEFAULT_PX);
+	let width = $derived(browser && storedDockWidth(localStorage.getItem(widthKey)) || DEFAULT_PX);
 	function setWidth(px: number | undefined) {
 		width = clampDockWidth(px) ?? DEFAULT_PX;
 		if (px === undefined) localStorage.removeItem(widthKey);
@@ -65,7 +61,7 @@
 	const narrow = $derived(narrowQuery.current);
 </script>
 
-<svelte:window bind:innerWidth={viewportWidth} />
+<svelte:window bind:innerWidth={viewportWidth}></svelte:window>
 
 <aside
 	class="host"
@@ -76,7 +72,12 @@
 	data-plugin={plugin.id}
 >
 	{#if Pane}
-		<Pane {session} {composer} {params} {onclose} />
+		<Pane
+			session={session}
+			composer={composer}
+			params={params}
+			onclose={onclose}
+		/>
 	{:else}
 		<div class="pad"><Text size="sm" tone="danger">{m.plugins_pane_failed()}</Text></div>
 	{/if}
@@ -99,7 +100,7 @@
 				max: maxPx,
 				onwidth: setWidth,
 				onreset: () => setWidth(undefined),
-				onactive: (a) => (dragging = a)
+				onactive: (a) => dragging = a
 			}}
 		></div>
 	{/if}

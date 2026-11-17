@@ -4,9 +4,9 @@ import type {
 	RateLimits,
 	SoftLimitConfig,
 	UsageNotices
-} from '$lib/queries';
-import { isUsdKey } from '$lib/components/molecules/usage-windows';
-import { providerFamily, providerKindOptions, type ProviderKind } from '$lib/providers';
+} from '#lib/queries/index.ts';
+import { isUsdKey } from '#lib/components/molecules/usage-windows.ts';
+import { providerFamily, providerKindOptions, type ProviderKind } from '#lib/providers.ts';
 
 export type SoftEdit = {
 	cap: number | null;

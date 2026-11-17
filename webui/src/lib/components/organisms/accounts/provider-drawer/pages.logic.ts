@@ -1,5 +1,5 @@
 import type { SoftEdit } from '../account-editor.logic';
-import { providerFamily } from '$lib/providers';
+import { providerFamily } from '#lib/providers.ts';
 
 export const PAGE_IDS = [
 	'aliases',

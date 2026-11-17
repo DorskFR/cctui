@@ -1,7 +1,7 @@
 import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import type { SpawnResponse } from "@bindings/SpawnResponse";
 import { api } from "../api";
-import { hasFeature } from "$lib/features.svelte";
+import { hasFeature } from "#lib/features.svelte.ts";
 
 export type ScheduledState = "scheduled" | "sending" | "sent" | "cancelled" | "dead";
 

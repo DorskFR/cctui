@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import type { Label } from '@bindings/Label';
 	import { Input } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import LabelList from './LabelList.svelte';
 	import LabelEditModal from './LabelEditModal.svelte';
 

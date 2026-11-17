@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { renderMarkdown } from '$lib/markdown';
+	import { renderMarkdown } from '#lib/markdown.ts';
 	import { Button, Card, Heading, Text, Textarea } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		plan,

@@ -2,13 +2,13 @@
 	import { tick, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { sessionHref } from '$lib/sessionFailureToast';
+	import { sessionHref } from '#lib/sessionFailureToast.ts';
 	import { insertBlock } from './insertText';
 	import { insertAtCaret, quoteMarkdown } from './format';
-	import { errMessage } from '$lib/api';
+	import { errMessage } from '#lib/api.ts';
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
-	import PromptField from '$lib/components/organisms/PromptField.svelte';
+	import AttachmentList from '#lib/components/molecules/AttachmentList.svelte';
+	import PromptField from '#lib/components/organisms/PromptField.svelte';
 	import {
 		endpoints,
 		pendingScheduled,
@@ -16,32 +16,32 @@
 		useScheduledMessages,
 		useSessionActions,
 		useSessionAttachments
-	} from '$lib/queries';
+	} from '#lib/queries/index.ts';
 	import { Button, FileButton, IconButton, InputGroup, Text, formatTimestamp } from '@dorsk/tsumikit';
 	import ArchivedActions from './ArchivedActions.svelte';
 	import ScheduleCustomModal from './ScheduleCustomModal.svelte';
 	import ScheduledMessages from './ScheduledMessages.svelte';
 	import RedactedChips from './RedactedChips.svelte';
-	import { wrapRedacted } from '$lib/redactTag';
+	import { wrapRedacted } from '#lib/redactTag.ts';
 	import SendButton from './SendButton.svelte';
 	import VoiceControls from './VoiceControls.svelte';
 	import { CacheColdClock } from './cacheCold.svelte';
-	import { PromptAttachments } from '$lib/promptAttachments.svelte';
+	import { PromptAttachments } from '#lib/promptAttachments.svelte.ts';
 	import { scheduleBody } from './scheduleBody';
 	import { coldSendItems, scheduleMenuItems } from './scheduleMenu';
 	import { parseCustom, toLocalInput } from './scheduleTimes';
-	import { drafts, composerKey, history as msgHistory } from '$lib/drafts';
-	import { serverDrafts } from '$lib/serverDrafts';
-	import { HistoryNav } from '$lib/historyNav';
-	import { toasts } from '$lib/toast.svelte';
+	import { drafts, composerKey, history as msgHistory } from '#lib/drafts.ts';
+	import { serverDrafts } from '#lib/serverDrafts.ts';
+	import { HistoryNav } from '#lib/historyNav.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
 	import type { ScrollController } from './scroll.svelte';
-	import { m } from '$lib/paraglide/messages';
-	import { settings } from '$lib/settings.svelte';
-	import { BRIEF_FETCH_MAX_BYTES, launchFollowup, routeEnter, showColdOffer } from '$lib/followup';
-	import { ws } from '$lib/ws.svelte';
-	import { pendingSpawns } from '$lib/pendingSpawns.svelte';
-	import { findSpawnedSession } from '$lib/components/organisms/spawn/spawnMatch';
-	import { hasFeature } from '$lib/features.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { BRIEF_FETCH_MAX_BYTES, launchFollowup, routeEnter, showColdOffer } from '#lib/followup.ts';
+	import { ws } from '#lib/ws.svelte.ts';
+	import { pendingSpawns } from '#lib/pendingSpawns.svelte.ts';
+	import { findSpawnedSession } from '#lib/components/organisms/spawn/spawnMatch.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
 
 	let {
 		session,
@@ -288,7 +288,7 @@
 			}
 			if (out.sessionId)
 				void goto(sessionHref(out.sessionId), {
-					replaceState: true,
+					replace: true,
 					state: { ...page.state, spawned: out.sessionId } as App.PageState
 				});
 		} finally {

@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { errMessage } from '$lib/api';
-	import { useToolPolicy, useToolPolicyActions, type OAuthAccount } from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
+	import { errMessage } from '#lib/api.ts';
+	import { useToolPolicy, useToolPolicyActions, type OAuthAccount } from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
 	import {
 		Badge,
 		Button,
@@ -16,7 +16,7 @@
 	} from '@dorsk/tsumikit';
 	import type { HookPolicyEvent as HookEvent } from '@bindings/HookPolicyEvent';
 	import type { ToolClass } from '@bindings/ToolClass';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import {
 		HOOK_EVENTS,
 		TOOL_CLASSES,

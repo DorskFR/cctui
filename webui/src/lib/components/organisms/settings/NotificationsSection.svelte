@@ -3,12 +3,12 @@
 	// input, and its sound. Both go through the `notify` singleton so the header
 	// bell and this section stay in step.
 	import { Switch } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
-	import { settings } from '$lib/settings.svelte';
-	import { notify } from '$lib/notify.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { notify } from '#lib/notify.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	async function toggleNotify() {
 		if (notify.enabled) notify.disable();

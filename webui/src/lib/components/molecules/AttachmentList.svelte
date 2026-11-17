@@ -1,12 +1,12 @@
 <script lang="ts">
-	import { fileCapError } from '$lib/attachments';
-	import { previewFile } from '$lib/fileviewer';
-	import { uploadCaps } from '$lib/uploadCaps.svelte';
-	import type { PromptAttachments } from '$lib/promptAttachments.svelte';
+	import { fileCapError } from '#lib/attachments.ts';
+	import { previewFile } from '#lib/fileviewer.ts';
+	import { uploadCaps } from '#lib/uploadCaps.svelte.ts';
+	import type { PromptAttachments } from '#lib/promptAttachments.svelte.ts';
 	import { AttachmentList } from '@dorsk/tsumikit';
-	import Error from '$lib/components/atoms/Error.svelte';
+	import Error from '#lib/components/atoms/Error.svelte';
 	import ImageCompressionStatus from './ImageCompressionStatus.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { att }: { att: Pick<PromptAttachments, 'files' | 'images' | 'remove'> } = $props();
 

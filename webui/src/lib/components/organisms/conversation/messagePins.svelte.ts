@@ -1,6 +1,6 @@
 import type { AgentEvent } from "@bindings/AgentEvent";
-import { useMessagePinActions, useMessagePins } from "$lib/queries";
-import { hasFeature } from "$lib/features.svelte";
+import { useMessagePinActions, useMessagePins } from "#lib/queries/index.ts";
+import { hasFeature } from "#lib/features.svelte.ts";
 import { createSeqJumper, type RenderWindow } from "./jump";
 import type { ScrollController } from "./scroll.svelte";
 import type { Line } from "./types";

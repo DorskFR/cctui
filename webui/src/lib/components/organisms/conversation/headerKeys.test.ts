@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isMac } from '$lib/platform';
+import { isMac } from '#lib/platform.ts';
 import { headerKeyAction, type HeaderKeyState } from './headerKeys';
 
 const key = (init: Partial<KeyboardEvent>) => init as KeyboardEvent;

@@ -3,9 +3,9 @@
 	// cost states: a `tone` on `primary` recolors the label over the accent fill
 	// (unreadable), so the cold/imminent state lives in the label and the title.
 	import { Button, SplitButton, type MenuItem } from '@dorsk/tsumikit';
-	import { compact } from '$lib/format';
-	import type { EnterRoute } from '$lib/followup';
-	import { m } from '$lib/paraglide/messages';
+	import { compact } from '#lib/format.ts';
+	import type { EnterRoute } from '#lib/followup.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		items,

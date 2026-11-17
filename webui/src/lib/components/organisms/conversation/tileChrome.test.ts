@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MIN_PANE_CHROME, MIN_PANE_HEIGHT } from '$lib/tiles';
+import { MIN_PANE_CHROME, MIN_PANE_HEIGHT } from '#lib/tiles.ts';
 import header from './DrawerHeader.svelte?raw';
 import composer from './ConversationComposer.svelte?raw';
 import pane from '../ConversationPane.svelte?raw';

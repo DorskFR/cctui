@@ -2,9 +2,9 @@
 	import { untrack } from 'svelte';
 	import type { Label } from '@bindings/Label';
 	import { Badge, Button, Field, Input, Modal } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import Swatch from '$lib/components/atoms/Swatch.svelte';
-	import { LABEL_HUES, labelTint, storedHue, hueToColor } from '$lib/labels';
+	import { m } from '#lib/paraglide/messages.js';
+	import Swatch from '#lib/components/atoms/Swatch.svelte';
+	import { LABEL_HUES, labelTint, storedHue, hueToColor } from '#lib/labels.ts';
 
 	// Rename + recolor (+ delete) a single label. The propagation guard keeps a
 	// backdrop/close click from bubbling to a clickable ancestor (e.g. the session

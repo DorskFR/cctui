@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { Badge, Disclosure, Input, SectionHeader, Text } from '@dorsk/tsumikit';
-	import { BUILTIN_SCRUB_DETECTORS, type ScrubFamily } from '$lib/scrubDetectors.generated';
-	import { normalizeForFilter } from '$lib/components/organisms/settings/settings.logic';
-	import { m } from '$lib/paraglide/messages';
+	import { BUILTIN_SCRUB_DETECTORS, type ScrubFamily } from '#lib/scrubDetectors.generated.ts';
+	import { normalizeForFilter } from '#lib/components/organisms/settings/settings.logic.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	const FAMILY_ORDER: ScrubFamily[] = ['ai', 'forge', 'cloud', 'registry', 'saas', 'generic'];
 

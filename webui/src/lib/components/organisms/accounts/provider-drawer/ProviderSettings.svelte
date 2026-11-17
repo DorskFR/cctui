@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { errMessage } from '$lib/api';
+	import { errMessage } from '#lib/api.ts';
 	import {
 		useAccountActions,
 		useAccountUsage,
@@ -9,14 +9,14 @@
 		type AccountProvider,
 		type LimitResetEntry,
 		type OAuthAccount
-	} from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { Button, MasterDetail, NavItem, Text } from '@dorsk/tsumikit';
-	import UsageNoticesEditor from '$lib/components/molecules/UsageNoticesEditor.svelte';
-	import AutoLimitResetEditor from '$lib/components/molecules/AutoLimitResetEditor.svelte';
-	import FireworksProviderEditor from '$lib/components/organisms/FireworksProviderEditor.svelte';
-	import { editorWindowKeys } from '$lib/components/molecules/usage-windows';
+	import UsageNoticesEditor from '#lib/components/molecules/UsageNoticesEditor.svelte';
+	import AutoLimitResetEditor from '#lib/components/molecules/AutoLimitResetEditor.svelte';
+	import FireworksProviderEditor from '#lib/components/organisms/FireworksProviderEditor.svelte';
+	import { editorWindowKeys } from '#lib/components/molecules/usage-windows.ts';
 	import { pagesFor, type PageId } from './pages.logic';
 	import { knobGroups, knobKeyNames } from './knobs.logic';
 	import { ProviderEdit } from './editor.svelte';

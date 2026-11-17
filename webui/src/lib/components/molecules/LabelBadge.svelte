@@ -1,9 +1,9 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
 	import { Badge, Dot, Icon, Popover } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import LabelMenu from './LabelMenu.svelte';
-	import { labelHue, labelTint, hueToColor } from '$lib/labels';
+	import { labelHue, labelTint, hueToColor } from '#lib/labels.ts';
 
 	// Session-label strip + picker. Attached labels render as hue-tinted,
 	// removable Badges. When `editable`, a shared LabelMenu (the same molecule the

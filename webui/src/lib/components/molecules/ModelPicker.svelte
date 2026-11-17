@@ -10,8 +10,8 @@
 		modelHintText,
 		withCurrentModel,
 		type ModelOption
-	} from '$lib/harnessModels';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/harnessModels.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		id,

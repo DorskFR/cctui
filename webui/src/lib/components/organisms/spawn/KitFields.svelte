@@ -3,18 +3,18 @@
 	// One organism, so the no-profile spawn form and the profile editor are the
 	// same fields — the editor only adds a name row and its save actions.
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
-	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
-	import { useHarnessModels, useHarnesses, useMachineAdapters } from '$lib/queries';
-	import { harnessTable } from '$lib/harnesses.svelte';
-	import { familyAccent, pickableHarnesses } from '$lib/harnesses';
+	import type { AccountUsageEntry, OAuthAccount } from '#lib/queries/index.ts';
+	import { useHarnessModels, useHarnesses, useMachineAdapters } from '#lib/queries/index.ts';
+	import { harnessTable } from '#lib/harnesses.svelte.ts';
+	import { familyAccent, pickableHarnesses } from '#lib/harnesses.ts';
 	import { AutoGrid, Field, OptionButton, Select, Switch, Text } from '@dorsk/tsumikit';
 	import type { SelectOption } from '@dorsk/tsumikit';
-	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
-	import CodexModelsRefresh from '$lib/components/molecules/CodexModelsRefresh.svelte';
+	import BrandLogo from '#lib/components/atoms/BrandLogo.svelte';
+	import CodexModelsRefresh from '#lib/components/molecules/CodexModelsRefresh.svelte';
 	import EffortSlider from './EffortSlider.svelte';
 	import PermissionModes from './PermissionModes.svelte';
-	import { declaredModelOptions, modelHintText, withDeclaredModels } from '$lib/harnessModels';
-	import { harnessModelsFallback } from '$lib/domainTables';
+	import { declaredModelOptions, modelHintText, withDeclaredModels } from '#lib/harnessModels.ts';
+	import { harnessModelsFallback } from '#lib/domainTables.ts';
 	import {
 		accountBacksAdapter,
 		accountPickOptions,
@@ -26,7 +26,7 @@
 		withAliasTargets
 	} from './options';
 	import { accountById, accountUsedPct, type ProfileSpecForm } from './profiles';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		draft = $bindable(),

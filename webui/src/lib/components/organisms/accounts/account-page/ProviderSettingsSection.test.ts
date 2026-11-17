@@ -1,20 +1,20 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AccountProvider, OAuthAccount } from '$lib/queries';
+import type { AccountProvider, OAuthAccount } from '#lib/queries/index.ts';
 
 const actions = vi.hoisted(() => ({
 	updateProvider: vi.fn(async (_a: string, id: string) => ({ id }) as unknown),
 	moveProvider: vi.fn(async () => ({}))
 }));
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	useAccountActions: () => actions,
 	useAccountUsage: () => ({ data: undefined }),
 	useLimitReset: () => vi.fn(),
 	useSettingsCatalog: () => ({ data: undefined, error: null }),
 	useUsageProbes: () => ({})
 }));
-vi.mock('$lib/paraglide/messages', async (importOriginal) => {
+vi.mock('#lib/paraglide/messages.js', async (importOriginal) => {
 	const real = (await importOriginal<{ m: Record<string, unknown> }>()).m;
 	return { m: new Proxy(real, { get: (t, k: string) => t[k] ?? (() => k) }) };
 });

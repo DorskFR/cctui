@@ -4,7 +4,7 @@ import {
 	switchOptions,
 	type SwitchBinding,
 	type SwitchCredential
-} from '$lib/accountSwitch';
+} from '#lib/accountSwitch.ts';
 import { parityFixture } from './fixtures';
 
 type Row = {

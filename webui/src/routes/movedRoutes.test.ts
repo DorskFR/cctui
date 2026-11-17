@@ -4,7 +4,7 @@ import { load as loadAccess } from './access/+page';
 import { load as loadDispatchers } from './dispatchers/+page';
 import { load as loadEvents } from './events/+page';
 import { MOVED_ROUTES } from './movedRoutes';
-import { isSettingsPage } from '$lib/components/organisms/settings/settings.logic';
+import { isSettingsPage } from '#lib/components/organisms/settings/settings.logic.ts';
 
 function target(load: () => void): { status: number; location: string } {
 	try {

@@ -4,7 +4,7 @@ import type { CreateBookmark } from "@bindings/CreateBookmark";
 import type { UpdateBookmark } from "@bindings/UpdateBookmark";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
-import { hasFeature } from "$lib/features.svelte";
+import { hasFeature } from "#lib/features.svelte.ts";
 
 /** Saved messages, newest first; `q` is applied server-side. */
 export const useBookmarks = (q: () => string = () => "") =>

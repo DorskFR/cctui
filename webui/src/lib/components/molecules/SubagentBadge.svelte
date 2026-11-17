@@ -4,7 +4,7 @@
 	// >= 3 agents; smaller groups render inline, always expanded. Composes the
 	// base Badge as an interactive (info-toned) button.
 	import { Badge } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		count,

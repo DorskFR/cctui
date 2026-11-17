@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleError, isBenignNotice } from './hooks.client';
-import { toasts } from '$lib/toast.svelte';
-import { STALE_CHUNK_KEY } from '$lib/staleChunk';
+import { toasts } from '#lib/toast.svelte.ts';
+import { STALE_CHUNK_KEY } from '#lib/staleChunk.ts';
 
 describe('isBenignNotice', () => {
 	it('swallows the ResizeObserver loop notice the browser raises as an error', () => {
@@ -21,8 +21,8 @@ describe('isBenignNotice', () => {
 });
 
 describe('handleError', () => {
-	function call(error: unknown) {
-		return handleError({ error } as unknown as Parameters<typeof handleError>[0]);
+	function call(error: unknown, kind = 'unknown') {
+		return handleError({ error, kind } as unknown as Parameters<typeof handleError>[0]);
 	}
 
 	beforeEach(() => {
@@ -54,5 +54,10 @@ describe('handleError', () => {
 		expect(toasts.items).toHaveLength(1);
 		expect(toasts.items[0].message).toContain('boom');
 		reload.mockRestore();
+	});
+
+	it('leaves an expected error(...) to the error page without a toast', () => {
+		expect(call({ status: 404, body: { message: 'Not Found' } }, 'app')).toBeUndefined();
+		expect(toasts.items).toHaveLength(0);
 	});
 });

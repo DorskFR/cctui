@@ -2,9 +2,9 @@ import type { AgentEvent } from '@bindings/AgentEvent';
 import type { ConversationHit } from '@bindings/ConversationHit';
 import type { ConversationSearchResponse } from '@bindings/ConversationSearchResponse';
 import { filters, parse, type Schema } from '@dorsk/tsumikit';
-import { queryTerms, straightenPhraseQuotes } from '$lib/search';
-import { foldSearchText, markdownToSearchText } from '$lib/searchText';
-import { USER_PREFIX } from '$lib/ws/frames';
+import { queryTerms, straightenPhraseQuotes } from '#lib/search.ts';
+import { foldSearchText, markdownToSearchText } from '#lib/searchText.ts';
+import { USER_PREFIX } from '#lib/ws/frames.ts';
 import { buildConversationSearchSchema } from './searchSchema';
 
 export interface ConversationSearchDeps {

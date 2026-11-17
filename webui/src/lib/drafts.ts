@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { attachmentStore } from './attachmentStore';
 import { redactUserSpans } from './redactTag';
 
@@ -35,7 +35,7 @@ export function isRoamingKey(key: string): boolean {
  *  mirrored here *and* pushed to the server. */
 export const drafts = {
 	get(key: string): string {
-		return browser ? (localStorage.getItem(key) ?? '') : '';
+		return browser ? localStorage.getItem(key) ?? '' : '';
 	},
 	set(key: string, value: string) {
 		hydrateLocal(key, value);
@@ -215,7 +215,7 @@ export function readSpawnSlot(key: string): SpawnSlotPayload | null {
 	if (!raw) return null;
 	try {
 		const v = JSON.parse(raw);
-		return v && typeof v === 'object' ? (v as SpawnSlotPayload) : null;
+		return v && typeof v === 'object' ? v as SpawnSlotPayload : null;
 	} catch {
 		return null;
 	}
@@ -225,12 +225,8 @@ export function readSpawnSlot(key: string): SpawnSlotPayload | null {
  * env key or an attachment. Config alone (machine, cwd, model) is not dirt. */
 export function spawnSlotDirty(p: SpawnSlotPayload | null): boolean {
 	if (!p) return false;
-	return (
-		!!p.prompt?.trim() ||
-		!!p.name?.trim() ||
-		(p.envRows ?? []).some((r) => r.key?.trim()) ||
-		(p.attachmentNames ?? []).length > 0
-	);
+
+	return !!p.prompt?.trim() || !!p.name?.trim() || (p.envRows ?? []).some((r) => r.key?.trim()) || (p.attachmentNames ?? []).length > 0;
 }
 export const LAST_MACHINE = 'cctui_last_machine';
 

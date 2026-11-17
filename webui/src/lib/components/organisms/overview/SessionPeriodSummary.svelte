@@ -1,8 +1,8 @@
 <script lang="ts">
 	import type { SessionStats } from '@bindings/SessionStats';
 	import { Card, Stack, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import { getLocale } from '$lib/paraglide/runtime';
+	import { m } from '#lib/paraglide/messages.js';
+	import { getLocale } from '#lib/paraglide/runtime.js';
 
 	let { stats }: { stats?: SessionStats } = $props();
 	const periods = $derived([

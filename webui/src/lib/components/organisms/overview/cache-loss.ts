@@ -1,4 +1,4 @@
-import type { DailyCacheLoss } from '$lib/queries';
+import type { DailyCacheLoss } from '#lib/queries/index.ts';
 
 export const CACHE_LOSS_DAYS = 7;
 

@@ -7,7 +7,7 @@ import {
 	mentionToken,
 	mentionableSessions,
 	moveSelection
-} from '$lib/mention/mention';
+} from '#lib/mention/mention.ts';
 import { parityFixture } from './fixtures';
 
 type RawSession = {

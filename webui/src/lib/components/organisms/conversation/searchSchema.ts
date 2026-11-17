@@ -1,5 +1,5 @@
 import type { Schema, ValueOption } from '@dorsk/tsumikit';
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 import { MSG_GROUPS } from './filters';
 import { msgCategoryLabel, msgGroupLabel } from './types';
 

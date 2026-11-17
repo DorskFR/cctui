@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import ForkModal from './ForkModal.svelte';
-	import type { ModelOption } from '$lib/harnessModels';
+	import type { ModelOption } from '#lib/harnessModels.ts';
 
 	let {
 		models,

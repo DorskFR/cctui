@@ -2,11 +2,11 @@
 	// Prompts awaiting the user at the tail of the transcript: the live
 	// AskUserQuestion, the live ExitPlanMode plan, the current task list and any
 	// pending permission requests.
-	import PermissionCard from '$lib/components/organisms/PermissionCard.svelte';
-	import AskQuestionCard from '$lib/components/organisms/AskQuestionCard.svelte';
-	import PlanCard from '$lib/components/organisms/PlanCard.svelte';
-	import TodoCard from '$lib/components/organisms/TodoCard.svelte';
-	import UserActionsCard from '$lib/components/organisms/UserActionsCard.svelte';
+	import PermissionCard from '#lib/components/organisms/PermissionCard.svelte';
+	import AskQuestionCard from '#lib/components/organisms/AskQuestionCard.svelte';
+	import PlanCard from '#lib/components/organisms/PlanCard.svelte';
+	import TodoCard from '#lib/components/organisms/TodoCard.svelte';
+	import UserActionsCard from '#lib/components/organisms/UserActionsCard.svelte';
 	import type { ConversationStream } from './stream.svelte';
 	import type { Line } from './types';
 

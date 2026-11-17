@@ -1,7 +1,7 @@
-import type { SessionEndedEvent } from '$lib/ws.svelte';
-import { endReasonLabel, isFailedStart } from '$lib/sessionEnd';
-import { toasts } from '$lib/toast.svelte';
-import { m } from '$lib/paraglide/messages';
+import type { SessionEndedEvent } from '#lib/ws.svelte.ts';
+import { endReasonLabel, isFailedStart } from '#lib/sessionEnd.ts';
+import { toasts } from '#lib/toast.svelte.ts';
+import { m } from '#lib/paraglide/messages.js';
 
 const TOAST_DETAIL_MAX = 240;
 

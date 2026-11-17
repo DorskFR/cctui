@@ -1,9 +1,9 @@
 import { createQuery } from "@tanstack/svelte-query";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
-import { setUsageProbes } from "$lib/usageProbes.svelte";
-import { setHarnesses } from "$lib/harnesses.svelte";
-import { hasFeature, setCapabilities } from "$lib/features.svelte";
+import { setUsageProbes } from "#lib/usageProbes.svelte.ts";
+import { setHarnesses } from "#lib/harnesses.svelte.ts";
+import { hasFeature, setCapabilities } from "#lib/features.svelte.ts";
 
 export const useMe = () =>
   createQuery(() => ({
@@ -69,7 +69,7 @@ export const useSelfUpdateRun = (enabled: () => boolean) =>
   }));
 
 /** The quota-probe registry. Constant per server version, so cache it for the
- *  whole session. The closed tables are `$lib/domainTables`, not this. */
+ *  whole session. The closed tables are `#lib/domainTables.ts`, not this. */
 export const useUsageProbes = () =>
   createQuery(() => ({
     queryKey: qk.usageProbes,

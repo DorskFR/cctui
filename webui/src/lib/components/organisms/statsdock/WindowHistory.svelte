@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { useAllAccountsUsage, useUsageCloses, useUsageHistory } from '$lib/queries';
+	import { useAllAccountsUsage, useUsageCloses, useUsageHistory } from '#lib/queries/index.ts';
 	import { Field, Select, Text, Timestamp } from '@dorsk/tsumikit';
-	import SegmentedControl from '$lib/components/molecules/SegmentedControl.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import SegmentedControl from '#lib/components/molecules/SegmentedControl.svelte';
+	import { m } from '#lib/paraglide/messages.js';
 	import { LOOKBACK_MS, polyline, windowLines } from './window-history';
 
 	// Utilization across each past instance of one quota window, one line per

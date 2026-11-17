@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Button, ConfirmModal, Input, KeyValue, SegmentedControl, Switch, Text } from '@dorsk/tsumikit';
-	import { errMessage } from '$lib/api';
+	import { errMessage } from '#lib/api.ts';
 	import {
 		actOnMessage,
 		closeLink,
@@ -12,10 +12,10 @@
 		type LinkSettings,
 		type LinkView,
 		type MessageAction
-	} from '$lib/cctuiverse';
-	import { toasts } from '$lib/toast.svelte';
+	} from '#lib/cctuiverse.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
 	import CctuiverseQueuedMessage from './CctuiverseQueuedMessage.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { link, onchange }: { link: LinkView; onchange: (link: LinkView) => void } = $props();
 

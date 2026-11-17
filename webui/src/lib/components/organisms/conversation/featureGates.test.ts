@@ -3,7 +3,7 @@ import header from './DrawerHeader.svelte?raw';
 import meta from './HeaderMeta.svelte?raw';
 import composer from './ConversationComposer.svelte?raw';
 import pane from '../ConversationPane.svelte?raw';
-import langfuseChip from '$lib/components/molecules/LangfuseChip.svelte?raw';
+import langfuseChip from '#lib/components/molecules/LangfuseChip.svelte?raw';
 import profileForm from '../spawn/ProfileForm.svelte?raw';
 
 const items = header.slice(

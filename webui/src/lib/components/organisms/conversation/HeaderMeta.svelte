@@ -4,37 +4,37 @@
 	// chip, and the adapter logo, which is the trigger of the popover holding
 	// what a narrow row dropped.
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { compact, modelShort, statusBadgeTone, usd } from '$lib/format';
-	import { tokenUsageLayout, bustReasonKey } from '$lib/components/molecules/TokenUsage.logic';
-	import { sessionEnd, sessionEndTitle } from '$lib/sessionEnd';
+	import { compact, modelShort, statusBadgeTone, usd } from '#lib/format.ts';
+	import { tokenUsageLayout, bustReasonKey } from '#lib/components/molecules/TokenUsage.logic.ts';
+	import { sessionEnd, sessionEndTitle } from '#lib/sessionEnd.ts';
 	import { branchOf } from '../../../../routes/sessions/sessions.logic';
-	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
+	import AdapterIcon from '#lib/components/atoms/AdapterIcon.svelte';
 	import ThreadMenu from './ThreadMenu.svelte';
-	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
-	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
+	import TokenUsage from '#lib/components/molecules/TokenUsage.svelte';
+	import LangfuseChip from '#lib/components/molecules/LangfuseChip.svelte';
 	import { Badge, Icon, IconButton, Popover, Select, Switch, Text, WorkingDir } from '@dorsk/tsumikit';
-	import { harnessModelsFallback } from '$lib/domainTables';
-	import { harnessCapabilities } from '$lib/harnesses';
-	import { harnessTable } from '$lib/harnesses.svelte';
+	import { harnessModelsFallback } from '#lib/domainTables.ts';
+	import { harnessCapabilities } from '#lib/harnesses.ts';
+	import { harnessTable } from '#lib/harnesses.svelte.ts';
 	import {
 		useCapabilities,
 		useHarnessModels,
 		useSessionActions,
 		useSessionLangfuse
-	} from '$lib/queries';
-	import { useToolGuard, useToolGuardActions } from '$lib/queries/toolGuard';
-	import { useSessionHookPolicy } from '$lib/queries/hookPolicy';
+	} from '#lib/queries/index.ts';
+	import { useToolGuard, useToolGuardActions } from '#lib/queries/toolGuard.ts';
+	import { useSessionHookPolicy } from '#lib/queries/hookPolicy.ts';
 	import { describeRule, hookChip } from './hook-policy.logic';
-	import { canOfferBypass, guardOff } from '$lib/tool-guard-bypass.logic';
-	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
-	import CodexModelsRefresh from '$lib/components/molecules/CodexModelsRefresh.svelte';
-	import GuardStepChip from '$lib/components/molecules/GuardStepChip.svelte';
+	import { canOfferBypass, guardOff } from '#lib/tool-guard-bypass.logic.ts';
+	import ModelPicker from '#lib/components/molecules/ModelPicker.svelte';
+	import CodexModelsRefresh from '#lib/components/molecules/CodexModelsRefresh.svelte';
+	import GuardStepChip from '#lib/components/molecules/GuardStepChip.svelte';
 	import type { GuardStepState } from '@bindings/GuardStepState';
-	import { ws } from '$lib/ws.svelte';
-	import { toasts } from '$lib/toast.svelte';
-	import { errMessage } from '$lib/api';
-	import { m } from '$lib/paraglide/messages';
-	import { hasFeature } from '$lib/features.svelte';
+	import { ws } from '#lib/ws.svelte.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { errMessage } from '#lib/api.ts';
+	import { m } from '#lib/paraglide/messages.js';
+	import { hasFeature } from '#lib/features.svelte.ts';
 
 	let {
 		session,

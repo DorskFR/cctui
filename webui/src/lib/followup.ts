@@ -2,8 +2,8 @@ import type { PermissionMode } from '@bindings/PermissionMode';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
 import type { SpawnResponse } from '@bindings/SpawnResponse';
-import { CCTUI_TAGS } from '$lib/components/organisms/conversation/format';
-import { PERMISSION_MODES } from '$lib/domainTables';
+import { CCTUI_TAGS } from '#lib/components/organisms/conversation/format.ts';
+import { PERMISSION_MODES } from '#lib/domainTables.ts';
 
 /** On a cold cache, Send: launches a follow-up and archives this session
  *  (`auto`), opens the prefilled spawn modal (`modal`), or sends in place with

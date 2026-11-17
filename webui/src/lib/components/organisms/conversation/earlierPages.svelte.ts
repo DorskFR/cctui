@@ -2,7 +2,7 @@
 // further back when a stored row has nothing to show, so a page shorter than
 // the limit is the head of the transcript.
 import type { AgentEvent } from "@bindings/AgentEvent";
-import { CONVERSATION_FETCH_LIMIT, endpoints } from "$lib/queries";
+import { CONVERSATION_FETCH_LIMIT, endpoints } from "#lib/queries/index.ts";
 
 export const FOCUS_CONTEXT = 40;
 

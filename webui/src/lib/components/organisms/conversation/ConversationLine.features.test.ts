@@ -2,14 +2,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
 import type { Feature } from '@bindings/Feature';
-import { setCapabilitiesForTest } from '$lib/features.svelte';
+import { setCapabilitiesForTest } from '#lib/features.svelte.ts';
 import ConversationLine from './ConversationLine.svelte';
 import type { Line } from './types';
 
 const attachments = vi.hoisted(() => vi.fn());
 
-vi.mock('$lib/queries', async (orig) => ({
-	...(await orig<typeof import('$lib/queries')>()),
+vi.mock('#lib/queries/index.ts', async (orig) => ({
+	...(await orig<typeof import('#lib/queries/index.ts')>()),
 	useSessionAttachments: (id: () => string) => {
 		attachments(id());
 		return { data: [], isLoading: false };

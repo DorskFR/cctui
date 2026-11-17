@@ -1,4 +1,4 @@
-import { drafts } from '$lib/drafts';
+import { drafts } from '#lib/drafts.ts';
 
 export const taskPanelKey = (sessionId: string) => `cctui_tasks_open_${sessionId}`;
 

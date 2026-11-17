@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from "vitest";
 import type { AgentEvent } from "@bindings/AgentEvent";
-import { CONVERSATION_FETCH_LIMIT } from "$lib/queries";
+import { CONVERSATION_FETCH_LIMIT } from "#lib/queries/index.ts";
 import { EarlierPages, FOCUS_CONTEXT } from "./earlierPages.svelte";
 
 const ev = (seq: number) =>

@@ -1,8 +1,8 @@
-import { browser } from '$app/environment';
-import { apiBlob } from '$lib/api';
-import { m } from '$lib/paraglide/messages';
-import { renderMarkdown } from '$lib/markdown';
-import { toasts } from '$lib/toast.svelte';
+import { browser } from '$app/env';
+import { apiBlob } from '#lib/api.ts';
+import { m } from '#lib/paraglide/messages.js';
+import { renderMarkdown } from '#lib/markdown.ts';
+import { toasts } from '#lib/toast.svelte.ts';
 
 // Delegated opener for agent-linked local files (`a.md-file`, injected via
 // {@html} by the markdown renderer, so — like the image lightbox — one
@@ -64,11 +64,8 @@ export function deniedRoots(detail: string, allowedFolders: string[] = []): stri
 	if (allowedFolders.length) return allowedFolders;
 	const at = detail.indexOf('allowed roots:');
 	if (at < 0) return [];
-	return detail
-		.slice(at + 'allowed roots:'.length)
-		.split(',')
-		.map((r) => r.trim())
-		.filter(Boolean);
+
+	return detail.slice(at + ('allowed roots:').length).split(',').map((r) => r.trim()).filter(Boolean);
 }
 
 /** The same read through the server's linked-file route, which serves the
@@ -76,7 +73,7 @@ export function deniedRoots(detail: string, allowedFolders: string[] = []): stri
  *  `href` is not a machine file href, so a blob href is never rewritten. */
 export function linkedFileHref(href: string): string | null {
 	const url = new URL(href, 'http://cctui.invalid');
-	if (!/\/machines\/[^/]+\/fs\/file$/.test(url.pathname)) return null;
+	if (!(/\/machines\/[^/]+\/fs\/file$/).test(url.pathname)) return null;
 	const path = url.searchParams.get('path');
 	const sessionId = url.searchParams.get('session_id');
 	if (!path || !sessionId) return null;
@@ -182,14 +179,14 @@ async function readOnce(href: string, name: string): Promise<Refusal | null> {
 	} catch {
 		return { status: 0, detail: '' };
 	}
-	if (!res.ok) return { status: res.status, ...(await errorDetail(res)) };
+	if (!res.ok) return { status: res.status, ...await errorDetail(res) };
 	await present(res, name);
 	return null;
 }
 
 async function errorDetail(res: Response): Promise<{ detail: string; allowedFolders: string[] }> {
 	try {
-		const body = (await res.json()) as { error?: unknown; allowed_folders?: unknown };
+		const body = await res.json() as { error?: unknown; allowed_folders?: unknown };
 		const folders = Array.isArray(body.allowed_folders)
 			? body.allowed_folders.filter((f): f is string => typeof f === 'string')
 			: [];

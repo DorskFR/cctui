@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GitInfo } from '@bindings/GitInfo';
-import { gitBadge } from '$lib/components/organisms/spawn/cwdGitInfo';
+import { gitBadge } from '#lib/components/organisms/spawn/cwdGitInfo.ts';
 import { parityFixture } from './fixtures';
 
 type Case = {

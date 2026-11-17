@@ -3,7 +3,7 @@
 	// to move. The pod's guard decides; this only shows the mirror and asks.
 	import type { GuardStepState } from '@bindings/GuardStepState';
 	import { Badge, IconButton, Select } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		step,

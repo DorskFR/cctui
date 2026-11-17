@@ -4,7 +4,7 @@ import { mount, unmount, type ComponentProps } from 'svelte';
 import AttachmentList from './AttachmentList.svelte';
 
 const previewFile = vi.fn();
-vi.mock('$lib/fileviewer', () => ({ previewFile: (f: File) => previewFile(f) }));
+vi.mock('#lib/fileviewer.ts', () => ({ previewFile: (f: File) => previewFile(f) }));
 
 let comp: ReturnType<typeof mount> | null = null;
 afterEach(() => {

@@ -2,14 +2,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
 import type { Feature } from '@bindings/Feature';
-import { setCapabilitiesForTest } from '$lib/features.svelte';
+import { setCapabilitiesForTest } from '#lib/features.svelte.ts';
 import DrawerToolbar from './DrawerToolbar.svelte';
 import { allFilter } from './filters';
 import type { ViewOpts } from './types';
 
 const sessionContext = vi.hoisted(() => vi.fn());
 
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	useSessionContext: (id: () => string) => {
 		sessionContext(id());
 		return { data: { rules: [], memories: [] }, isError: false };

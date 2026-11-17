@@ -1,18 +1,18 @@
 <script lang="ts">
 	import { Button, Link, Text } from '@dorsk/tsumikit';
-	import FailedDispatchCard from '$lib/components/molecules/FailedDispatchCard.svelte';
-	import PendingSpawnCard from '$lib/components/molecules/PendingSpawnCard.svelte';
-	import { errMessage } from '$lib/api';
-	import { pendingSpawns } from '$lib/pendingSpawns.svelte';
+	import FailedDispatchCard from '#lib/components/molecules/FailedDispatchCard.svelte';
+	import PendingSpawnCard from '#lib/components/molecules/PendingSpawnCard.svelte';
+	import { errMessage } from '#lib/api.ts';
+	import { pendingSpawns } from '#lib/pendingSpawns.svelte.ts';
 	import {
 		groupFailures,
 		useDismissAllFailedDispatches,
 		useDismissFailedDispatch,
 		useFailedDispatches,
 		useRedispatch
-	} from '$lib/queries/failedDispatches';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/queries/failedDispatches.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import type { SessionsPage } from './sessionsPage.svelte';
 
 	let { sp }: { sp: SessionsPage } = $props();

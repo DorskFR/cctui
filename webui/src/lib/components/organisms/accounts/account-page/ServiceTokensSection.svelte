@@ -11,13 +11,13 @@
 		Text,
 		Timestamp
 	} from '@dorsk/tsumikit';
-	import EditEntityModal from '$lib/components/molecules/EditEntityModal.svelte';
-	import SecretReveal from '$lib/components/molecules/SecretReveal.svelte';
-	import { useServiceTokens, useServiceTokenActions, type OAuthAccount } from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { errMessage } from '$lib/api';
-	import { providerLabel } from '$lib/providers';
-	import { m } from '$lib/paraglide/messages';
+	import EditEntityModal from '#lib/components/molecules/EditEntityModal.svelte';
+	import SecretReveal from '#lib/components/molecules/SecretReveal.svelte';
+	import { useServiceTokens, useServiceTokenActions, type OAuthAccount } from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { errMessage } from '#lib/api.ts';
+	import { providerLabel } from '#lib/providers.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { account }: { account: OAuthAccount } = $props();
 

@@ -3,7 +3,7 @@
 	import type { MessagePin } from '@bindings/MessagePin';
 	import type { Line } from './types';
 	import { pinExcerpt, pinRole } from './pins';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		pins,

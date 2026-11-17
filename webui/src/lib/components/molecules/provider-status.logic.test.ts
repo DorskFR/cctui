@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ProviderStatus } from "$lib/queries";
+import type { ProviderStatus } from "#lib/queries/index.ts";
 import {
   componentNames,
   degraded,

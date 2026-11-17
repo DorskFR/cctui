@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { Button, IconButton, Input, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import type { AccountModel } from '$lib/queries';
-	import FireworksProviderEditor from '$lib/components/organisms/FireworksProviderEditor.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import type { AccountModel } from '#lib/queries/index.ts';
+	import FireworksProviderEditor from '#lib/components/organisms/FireworksProviderEditor.svelte';
 
 	let {
 		fireworks = false,

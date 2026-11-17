@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import LiveVoiceBar from './LiveVoiceBar.svelte';
-import type { LiveVoice, LiveStatus } from '$lib/voice/liveVoice.svelte';
+import type { LiveVoice, LiveStatus } from '#lib/voice/liveVoice.svelte.ts';
 
 let comp: ReturnType<typeof mount> | null = null;
 afterEach(() => {

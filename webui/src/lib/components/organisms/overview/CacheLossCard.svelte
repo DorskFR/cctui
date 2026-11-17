@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { useCacheLoss } from '$lib/queries';
-	import { compact, usd } from '$lib/format';
-	import { m } from '$lib/paraglide/messages';
+	import { useCacheLoss } from '#lib/queries/index.ts';
+	import { compact, usd } from '#lib/format.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { Card, Cluster, Stack, Text } from '@dorsk/tsumikit';
 	import {
 		CACHE_LOSS_DAYS,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LABEL_HUES, hueToColor, labelHue, labelTint, storedHue } from '$lib/labels';
+import { LABEL_HUES, hueToColor, labelHue, labelTint, storedHue } from '#lib/labels.ts';
 import { parityFixture } from './fixtures';
 
 type Fixture = {

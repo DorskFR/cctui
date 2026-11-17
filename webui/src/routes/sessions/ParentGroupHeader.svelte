@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { SessionParentStub } from '@bindings/SessionParentStub';
 	import { Button, Dot, Icon, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import { parentStubTitle } from './sessions.logic';
 
 	let {

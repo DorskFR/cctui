@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { Button, Field, Input, Modal, Switch, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import { ALL_SCOPES, type ScopeName } from './access.logic';
 
 	let {

@@ -1,7 +1,7 @@
-import { HARNESSES } from '$lib/domainTables';
+import { HARNESSES } from '#lib/domainTables.ts';
 import { filters, parse, type FilterNode, type Schema, type ValueOption } from '@dorsk/tsumikit';
 import type { SessionListItem } from '@bindings/SessionListItem';
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 
 export const SERVER_FIELDS = new Set([
 	'machine',

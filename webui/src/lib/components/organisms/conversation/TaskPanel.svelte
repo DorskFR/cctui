@@ -2,7 +2,7 @@
 	import { Disclosure, Text } from '@dorsk/tsumikit';
 	import type { TodoItem, TodoProgress, TodoStatus } from './types';
 	import { taskPanelOpen, setTaskPanelOpen } from './taskPanel';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { sessionId, progress }: { sessionId: string; progress: TodoProgress | null } = $props();
 

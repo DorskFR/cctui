@@ -9,24 +9,24 @@
 	// next refetch.
 	import { Button, Input, Select, Text } from '@dorsk/tsumikit';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
-	import MachinePicker from '$lib/components/molecules/MachinePicker.svelte';
-	import NetStatsChip from '$lib/components/molecules/NetStatsChip.svelte';
-	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
+	import MachinePicker from '#lib/components/molecules/MachinePicker.svelte';
+	import NetStatsChip from '#lib/components/molecules/NetStatsChip.svelte';
+	import UpdateModal from '#lib/components/organisms/UpdateModal.svelte';
 	import HarnessUpdateGroup from './HarnessUpdateGroup.svelte';
 	import MachineAdaptersGroup from './MachineAdaptersGroup.svelte';
 	import PasskeySignInGroup from './PasskeySignInGroup.svelte';
 	import SpawnLimitsGroup from './SpawnLimitsGroup.svelte';
 	import SpeechGroup from './SpeechGroup.svelte';
 	import UpstreamHostsGroup from './UpstreamHostsGroup.svelte';
-	import { useVersion, useAllMachines, endpoints, qk } from '$lib/queries';
-	import { releaseChannel } from '$lib/releaseChannel';
+	import { useVersion, useAllMachines, endpoints, qk } from '#lib/queries/index.ts';
+	import { releaseChannel } from '#lib/releaseChannel.ts';
 	import type { SelfUpdateTargetInfo } from '@bindings/SelfUpdateTargetInfo';
-	import { toasts } from '$lib/toast.svelte';
-	import { hasFeature } from '$lib/features.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { isAdmin = false }: { isAdmin?: boolean } = $props();
 	const selfUpdate = $derived(hasFeature('self_update'));

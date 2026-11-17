@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentEvent } from '@bindings/AgentEvent';
-import { allFilter } from '$lib/components/organisms/conversation/filters';
-import { toLines, type LineBuildCtx } from '$lib/components/organisms/conversation/lines';
+import { allFilter } from '#lib/components/organisms/conversation/filters.ts';
+import { toLines, type LineBuildCtx } from '#lib/components/organisms/conversation/lines.ts';
 import {
 	parseResultImages,
 	renderResultImages,

@@ -3,9 +3,9 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { Badge, Icon, Menu, Text, relativeTime, type MenuItem } from '@dorsk/tsumikit';
-	import { sessionHref } from '$lib/sessionFailureToast';
-	import { useSessionThread } from '$lib/queries';
-	import { m } from '$lib/paraglide/messages';
+	import { sessionHref } from '#lib/sessionFailureToast.ts';
+	import { useSessionThread } from '#lib/queries/index.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { threadEntries, type ThreadEntry } from './thread';
 
 	let { session, box = 'md' }: { session: SessionListItem; box?: 'sm' | 'md' } = $props();
@@ -27,7 +27,7 @@
 			content: row,
 			attrs: e.current ? { 'aria-current': 'page' } : {},
 			onselect: () => {
-				if (!e.current) void goto(sessionHref(e.id), { replaceState: true, state: page.state });
+				if (!e.current) void goto(sessionHref(e.id), { replace: true, state: page.state });
 			}
 		}))
 	);

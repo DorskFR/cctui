@@ -3,7 +3,7 @@
 // sparkline draws. No endpoint reports dollars per window, so per-model dollars
 // are attributed as the Overview's cost tile does: a session's lifetime cost,
 // booked to the window it was registered in. Times are unix milliseconds.
-import { modelFamily } from '$lib/format';
+import { modelFamily } from '#lib/format.ts';
 
 export interface SessionSpend {
 	/** `null` when the harness never reported one; grouped as `unknown`. */

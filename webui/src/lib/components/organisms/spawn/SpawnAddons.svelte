@@ -1,14 +1,14 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
-	import type { LabelOwner } from '$lib/labels';
+	import type { LabelOwner } from '#lib/labels.ts';
 	import { AutoGrid, Badge, Button, FileButton, Icon, Popover } from '@dorsk/tsumikit';
-	import { labelTint, hueToColor } from '$lib/labels';
-	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
-	import type { PromptAttachments } from '$lib/promptAttachments.svelte';
-	import LabelMenu from '$lib/components/molecules/LabelMenu.svelte';
+	import { labelTint, hueToColor } from '#lib/labels.ts';
+	import AttachmentList from '#lib/components/molecules/AttachmentList.svelte';
+	import type { PromptAttachments } from '#lib/promptAttachments.svelte.ts';
+	import LabelMenu from '#lib/components/molecules/LabelMenu.svelte';
 	import EnvSecretsField from './EnvSecretsField.svelte';
 	import type { EnvRow } from './types';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		labelIds = $bindable(),

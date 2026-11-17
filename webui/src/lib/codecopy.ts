@@ -1,5 +1,5 @@
 import { copyToClipboard } from '@dorsk/tsumikit';
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 
 // Single delegated click handler for the per-code-block copy buttons. Code
 // blocks are injected as raw HTML via {@html} (markdown bodies,

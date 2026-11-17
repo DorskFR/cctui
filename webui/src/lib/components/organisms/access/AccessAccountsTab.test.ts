@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it } from 'vitest';
 import { mount, unmount } from 'svelte';
-import type { OAuthAccount } from '$lib/queries';
+import type { OAuthAccount } from '#lib/queries/index.ts';
 import AccessAccountsTab from './AccessAccountsTab.svelte';
 
 let comp: ReturnType<typeof mount> | null = null;

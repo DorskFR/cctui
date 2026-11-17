@@ -3,8 +3,8 @@
 	// request, and the account-owned model catalog (ids + display names +
 	// per-Mtok pricing) that spawn resolves the model from.
 	import { Button, Field, Input, Switch, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import type { AccountModel } from '$lib/queries';
+	import { m } from '#lib/paraglide/messages.js';
+	import type { AccountModel } from '#lib/queries/index.ts';
 
 	let {
 		settings = $bindable({}),

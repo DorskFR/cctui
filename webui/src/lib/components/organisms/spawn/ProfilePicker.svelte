@@ -9,7 +9,7 @@
 	import type { BadgeLook } from './accountBadge';
 	import { pickerKeyAction, typeaheadIndex } from './profilePickerKeys';
 	import type { ProfileSpecForm } from './profiles';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		profiles,

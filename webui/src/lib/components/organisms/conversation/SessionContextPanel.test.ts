@@ -5,12 +5,12 @@ import type { ContextItem } from '@bindings/ContextItem';
 import type { SessionContextResponse } from '@bindings/SessionContextResponse';
 
 const items = { data: undefined as ContextItem[] | undefined };
-vi.mock('$lib/queries', async () => {
+vi.mock('#lib/queries/index.ts', async () => {
 	const { newerVersion } =
-		await vi.importActual<typeof import('$lib/queries/context')>('$lib/queries/context');
+		await vi.importActual<typeof import('#lib/queries/context.ts')>('#lib/queries/context.ts');
 	return { newerVersion, useContextItems: () => items, useAttachContext: () => vi.fn() };
 });
-vi.mock('$lib/toast.svelte', () => ({ toasts: { ok: vi.fn(), error: vi.fn() } }));
+vi.mock('#lib/toast.svelte.ts', () => ({ toasts: { ok: vi.fn(), error: vi.fn() } }));
 
 import SessionContextPanel from './SessionContextPanel.svelte';
 

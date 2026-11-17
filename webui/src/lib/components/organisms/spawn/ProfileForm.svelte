@@ -3,14 +3,14 @@
 	// the shared kit plus what only a profile has, a name and pinned context.
 	import type { SessionProfile } from '@bindings/SessionProfile';
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
-	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
+	import type { AccountUsageEntry, OAuthAccount } from '#lib/queries/index.ts';
 	import { Button, Field, Input, Text } from '@dorsk/tsumikit';
 	import KitFields from './KitFields.svelte';
-	import ContextPicker from '$lib/components/molecules/ContextPicker.svelte';
-	import { useContextItems } from '$lib/queries';
-	import { hasFeature } from '$lib/features.svelte';
+	import ContextPicker from '#lib/components/molecules/ContextPicker.svelte';
+	import { useContextItems } from '#lib/queries/index.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
 	import { profileNameTaken, specChanges, specOf, type ProfileSpecForm } from './profiles';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		mode,

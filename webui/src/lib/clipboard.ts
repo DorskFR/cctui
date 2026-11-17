@@ -1,6 +1,6 @@
 import { copyToClipboard } from '@dorsk/tsumikit';
-import { toasts } from '$lib/toast.svelte';
-import { m } from '$lib/paraglide/messages';
+import { toasts } from '#lib/toast.svelte.ts';
+import { m } from '#lib/paraglide/messages.js';
 
 // App-wide copy helper: tsumikit's clipboard write + our toast feedback. Use this
 // instead of re-implementing navigator.clipboard everywhere.

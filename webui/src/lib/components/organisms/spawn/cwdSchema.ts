@@ -1,6 +1,6 @@
 import type { Query, Schema, ValueOption } from '@dorsk/tsumikit';
 import { filters } from '@dorsk/tsumikit';
-import { endpoints } from '$lib/queries';
+import { endpoints } from '#lib/queries/index.ts';
 
 export function dirFromQuery(q: Query): string {
 	return filters(q).find((f) => f.field === 'cwd')?.values[0] ?? '';

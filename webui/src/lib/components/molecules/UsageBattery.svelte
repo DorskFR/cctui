@@ -1,15 +1,15 @@
 <script lang="ts">
-	import { now as clockNow } from '$lib/clock.svelte';
+	import { now as clockNow } from '#lib/clock.svelte.ts';
 	import { Popover, Text } from '@dorsk/tsumikit';
-	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
-	import AccountCard from '$lib/components/organisms/AccountCard.svelte';
+	import AdapterIcon from '#lib/components/atoms/AdapterIcon.svelte';
+	import AccountCard from '#lib/components/organisms/AccountCard.svelte';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import { ws } from '$lib/ws.svelte';
-	import { useAccounts, useAllAccountsUsage, useRedirectChips, usageKeys } from '$lib/queries';
-	import type { AccountUsageEntry } from '$lib/queries';
-	import type { UsageWindow } from '$lib/queries';
-	import { providerLabel } from '$lib/providers';
-	import { m } from '$lib/paraglide/messages';
+	import { ws } from '#lib/ws.svelte.ts';
+	import { useAccounts, useAllAccountsUsage, useRedirectChips, usageKeys } from '#lib/queries/index.ts';
+	import type { AccountUsageEntry } from '#lib/queries/index.ts';
+	import type { UsageWindow } from '#lib/queries/index.ts';
+	import { providerLabel } from '#lib/providers.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import {
 		aggregateBars,
 		barPct,
@@ -22,7 +22,7 @@
 		worstPace,
 		type BatteryBars,
 		type BatteryEntry
-	} from '$lib/components/molecules/usage-battery.logic';
+	} from '#lib/components/molecules/usage-battery.logic.ts';
 
 	const q = useAllAccountsUsage(() => true);
 	// Live: the server pushes each usage refresh it already made, so the bars

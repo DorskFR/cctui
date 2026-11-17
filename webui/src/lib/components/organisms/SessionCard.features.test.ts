@@ -1,14 +1,14 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$lib/queries', async (importOriginal) => ({
-	...(await importOriginal<typeof import('$lib/queries')>()),
+vi.mock('#lib/queries/index.ts', async (importOriginal) => ({
+	...(await importOriginal<typeof import('#lib/queries/index.ts')>()),
 	useAccounts: () => ({ data: undefined })
 }));
 import type { Label } from '@bindings/Label';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import { mount, unmount } from 'svelte';
-import { setCapabilitiesForTest } from '$lib/features.svelte';
+import { setCapabilitiesForTest } from '#lib/features.svelte.ts';
 import SessionCard from './SessionCard.svelte';
 
 let comp: ReturnType<typeof mount> | null = null;

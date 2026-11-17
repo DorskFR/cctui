@@ -6,7 +6,7 @@ import {
 	PERMISSION_MODES,
 	PROVIDERS,
 	harnessModelsFallback
-} from '$lib/domainTables';
+} from '#lib/domainTables.ts';
 import { parityFixture } from './fixtures';
 
 type Fixture = {

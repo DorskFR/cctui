@@ -1,13 +1,13 @@
 <script lang="ts">
-	import type { SoftLimitConfig } from '$lib/queries';
-	import { useAccountActions, useAccountUsage } from '$lib/queries';
+	import type { SoftLimitConfig } from '#lib/queries/index.ts';
+	import { useAccountActions, useAccountUsage } from '#lib/queries/index.ts';
 	import { Spinner, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import { toasts } from '$lib/toast.svelte';
-	import { errMessage } from '$lib/api';
-	import SoftLimit from '$lib/components/molecules/SoftLimit.svelte';
-	import { mergeUsageWindows } from '$lib/components/molecules/usage-windows';
-	import { isDenseWidth, withCap } from '$lib/components/molecules/cap-bar.logic';
+	import { m } from '#lib/paraglide/messages.js';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { errMessage } from '#lib/api.ts';
+	import SoftLimit from '#lib/components/molecules/SoftLimit.svelte';
+	import { mergeUsageWindows } from '#lib/components/molecules/usage-windows.ts';
+	import { isDenseWidth, withCap } from '#lib/components/molecules/cap-bar.logic.ts';
 
 	// Per-provider subscription usage as cap bars: one SoftLimit row per
 	// normalized usage window, plus a section for caps configured on windows the

@@ -10,18 +10,18 @@
 		useUsers,
 		type OAuthAccount,
 		type AccountProvider
-	} from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { hasFeature } from '$lib/features.svelte';
-	import { providerLabel } from '$lib/providers';
-	import AccountCard from '$lib/components/organisms/AccountCard.svelte';
+	} from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
+	import { providerLabel } from '#lib/providers.ts';
+	import AccountCard from '#lib/components/organisms/AccountCard.svelte';
 	import AccountsBoard from './AccountsBoard.svelte';
 	import AccountEditorModal from './AccountEditorModal.svelte';
 	import { availableKinds } from './account-editor.logic';
 	import { accountHref } from './account-page/account-nav.logic';
 	import { Button } from '@dorsk/tsumikit';
-	import PageHead from '$lib/components/molecules/PageHead.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import PageHead from '#lib/components/molecules/PageHead.svelte';
+	import { m } from '#lib/paraglide/messages.js';
 
 	const accounts = useAccounts();
 	const pools = useAccountPools();

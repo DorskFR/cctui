@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { MeResponse } from '$lib/bindings/MeResponse';
+import type { MeResponse } from '#lib/bindings/MeResponse.ts';
 
 const fetched = vi.hoisted(() => vi.fn(async () => new Response('{}')));
 const goto = vi.hoisted(() => vi.fn(async () => undefined));
@@ -7,9 +7,9 @@ const toasted = vi.hoisted(() => ({ ok: vi.fn(), info: vi.fn(), error: vi.fn() }
 
 vi.mock('$app/environment', () => ({ browser: false }));
 vi.mock('$app/navigation', () => ({ goto }));
-vi.mock('$lib/api', () => ({ apiFetch: fetched }));
-vi.mock('$lib/config', () => ({ apiBase: () => '/api/v1' }));
-vi.mock('$lib/toast.svelte', () => ({ toasts: toasted }));
+vi.mock('#lib/api.ts', () => ({ apiFetch: fetched }));
+vi.mock('#lib/config', () => ({ apiBase: () => '/api/v1' }));
+vi.mock('#lib/toast.svelte.ts', () => ({ toasts: toasted }));
 
 import { hostContext, hostUser } from './hostContext';
 import { pluginSpawn } from './spawnRequest.svelte';

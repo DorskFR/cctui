@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
 import ForkModal from './ForkModal.svelte';
 import Host from './ForkModal.host.test.svelte';
-import { OTHER_MODEL } from '$lib/harnessModels';
+import { OTHER_MODEL } from '#lib/harnessModels.ts';
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 

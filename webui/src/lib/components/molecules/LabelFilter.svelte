@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
 	import { Badge, Icon, Popover } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import LabelMenu from './LabelMenu.svelte';
 	import { MENU_ROW, MENU_ROW_ICON } from './menuRow';
 

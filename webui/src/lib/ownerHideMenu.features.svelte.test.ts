@@ -3,12 +3,12 @@ import { flushSync } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { MeResponse } from '@bindings/MeResponse';
 import type { SessionListItem } from '@bindings/SessionListItem';
-import { setCapabilitiesForTest } from '$lib/features.svelte';
+import { setCapabilitiesForTest } from '#lib/features.svelte.ts';
 import { useOwnerHideMenu } from './ownerHideMenu.svelte';
 
 const machinesEnabled = vi.hoisted(() => [] as boolean[]);
 
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	useHiddenOwners: () => ({ data: { owners: [] } }),
 	useAllMachines: (enabled: () => boolean) => {
 		machinesEnabled.push(enabled());

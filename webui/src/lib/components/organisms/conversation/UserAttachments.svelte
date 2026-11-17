@@ -3,22 +3,22 @@
 	// `paste-N.txt` mask expands inline, an image shows as a thumbnail, anything
 	// else opens through the remote-file viewer (overlay or download).
 	import { IconButton } from '@dorsk/tsumikit';
-	import FileChip from '$lib/components/molecules/FileChip.svelte';
-	import { apiBlob } from '$lib/api';
-	import { attachmentStore } from '$lib/attachmentStore';
-	import { copyText } from '$lib/clipboard';
-	import { shortFileName } from '$lib/filename';
-	import { refusalMessage, tryOpenLocalFile } from '$lib/fileviewer';
-	import { localFileHref } from '$lib/markdown';
-	import { m } from '$lib/paraglide/messages';
-	import { useSessionAttachments } from '$lib/queries';
+	import FileChip from '#lib/components/molecules/FileChip.svelte';
+	import { apiBlob } from '#lib/api.ts';
+	import { attachmentStore } from '#lib/attachmentStore.ts';
+	import { copyText } from '#lib/clipboard.ts';
+	import { shortFileName } from '#lib/filename.ts';
+	import { refusalMessage, tryOpenLocalFile } from '#lib/fileviewer.ts';
+	import { localFileHref } from '#lib/markdown.ts';
+	import { m } from '#lib/paraglide/messages.js';
+	import { useSessionAttachments } from '#lib/queries/index.ts';
 	import {
 		attachmentBlobUrl,
 		pickAttachment,
 		pickUnnamedImages,
 		type SessionAttachment
-	} from '$lib/queries/types';
-	import { toasts } from '$lib/toast.svelte';
+	} from '#lib/queries/types.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
 	import { isPasteName, type UserUploadRefs } from './lines';
 
 	let {

@@ -4,7 +4,7 @@
 	// links to and what the scroll spy reports.
 	import type { Snippet } from 'svelte';
 	import { Badge, Heading, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		id,

@@ -5,15 +5,15 @@
 	// permission mode) and whether it asks before running. Persisted in the
 	// settings blob; the server clamps shape and size and never runs one.
 	import { Button, Input, Select, Switch, Text, Textarea } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
-	import { useAccountPools, useMachineResources } from '$lib/queries';
-	import { settings, type MacroSpec } from '$lib/settings.svelte';
-	import { hasFeature } from '$lib/features.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
+	import { useAccountPools, useMachineResources } from '#lib/queries/index.ts';
+	import { settings, type MacroSpec } from '#lib/settings.svelte.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { modes } from '../spawn/options';
-	import { harnessModelsFallback } from '$lib/domainTables';
+	import { harnessModelsFallback } from '#lib/domainTables.ts';
 	import { effortsFor, macroProblems, newMacro } from '../macros.logic';
 
 	const machinesQ = useMachineResources(() => true);

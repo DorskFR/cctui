@@ -6,8 +6,8 @@
 	// (machines), leave it off for plain name/label edits.
 	import { untrack } from 'svelte';
 	import { Button, Field, Input, Modal } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import Swatch from '$lib/components/atoms/Swatch.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import Swatch from '#lib/components/atoms/Swatch.svelte';
 
 	let {
 		title,

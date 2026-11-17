@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { promptHistory } from '$lib/drafts';
+import { promptHistory } from '#lib/drafts.ts';
 import PromptHistoryMenu from './PromptHistoryMenu.svelte';
 
 let component: ReturnType<typeof mount>;

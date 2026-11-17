@@ -1,5 +1,5 @@
-import type { AccountModel, AccountProvider, UpdateProvider, UsageNotices } from '$lib/queries';
-import { isStaticCredential } from '$lib/providers';
+import type { AccountModel, AccountProvider, UpdateProvider, UsageNotices } from '#lib/queries/index.ts';
+import { isStaticCredential } from '#lib/providers.ts';
 import {
 	aliasObject,
 	buildRateLimits,

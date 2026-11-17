@@ -1,6 +1,6 @@
-import { browser } from "$app/environment";
+import { browser } from "$app/env";
 import { goto } from "$app/navigation";
-import { m } from "$lib/paraglide/messages";
+import { m } from "#lib/paraglide/messages.js";
 import type { SessionListItem } from "@bindings/SessionListItem";
 
 const KEY_ENABLED = "cctui_notify_enabled";
@@ -158,11 +158,7 @@ class Notifier {
   }
 
   private label(s: SessionListItem): string {
-    return (
-      s.name ||
-      s.working_dir?.split("/").filter(Boolean).pop() ||
-      s.id.slice(0, 8)
-    );
+    return s.name || s.working_dir?.split("/").filter(Boolean).pop() || s.id.slice(0, 8);
   }
 
   private fire(s: SessionListItem) {
@@ -176,7 +172,7 @@ class Notifier {
       n.onclick = () => {
         window.focus();
         this.pendingOpen = s.id;
-        if (!/^\/sessions(\/|$)/.test(location.pathname)) void goto("/sessions");
+        if (!(/^\/sessions(\/|$)/).test(location.pathname)) void goto("/sessions");
         n.close();
       };
     } catch {

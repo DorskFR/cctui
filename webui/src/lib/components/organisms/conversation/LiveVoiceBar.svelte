@@ -2,8 +2,8 @@
 	// The live voice strip above the composer: what the loop is doing, the
 	// mic level, the last thing it heard, mute and leave.
 	import { Badge, IconButton, Meter, Text } from '@dorsk/tsumikit';
-	import type { LiveVoice } from '$lib/voice/liveVoice.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import type { LiveVoice } from '#lib/voice/liveVoice.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		voice,

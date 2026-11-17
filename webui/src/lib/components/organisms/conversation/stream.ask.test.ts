@@ -2,8 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
 import type { AgentEvent } from '@bindings/AgentEvent';
-import { ws } from '$lib/ws.svelte';
-import { endpoints } from '$lib/queries';
+import { ws } from '#lib/ws.svelte.ts';
+import { endpoints } from '#lib/queries/index.ts';
 import Host from './Conversation.host.test.svelte';
 import { ConversationStream } from './stream.svelte';
 import { buildLines, type LineBuildCtx } from './lines';

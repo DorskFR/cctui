@@ -2,7 +2,7 @@
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HiddenOwner } from '@bindings/HiddenOwner';
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 
 const query = vi.hoisted(() => ({
 	data: undefined as { owners: HiddenOwner[] } | undefined,
@@ -13,7 +13,7 @@ const actions = vi.hoisted(() => ({
 	unhide: vi.fn(async () => undefined)
 }));
 const enabledArg = vi.hoisted(() => ({ fn: null as (() => boolean) | null }));
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	useHiddenOwners: (enabled: () => boolean) => {
 		enabledArg.fn = enabled;
 		return query;

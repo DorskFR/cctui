@@ -3,8 +3,8 @@
 	// parent keeps owning persistence. In the overflow ⋯ menu it is a plain
 	// full-width row like the dimension pickers; tapping it advances the view.
 	import { Button, Icon, SegmentedControl, type IconName } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import type { ViewMode } from '$lib/sessionsView.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import type { ViewMode } from '#lib/sessionsView.svelte.ts';
 	import { MENU_ROW, MENU_ROW_ICON } from './menuRow';
 
 	let {

@@ -1,11 +1,11 @@
 <script lang="ts">
 	import type { ComponentProps } from 'svelte';
 	import { Textarea } from '@dorsk/tsumikit';
-	import SessionMention from '$lib/components/molecules/SessionMention.svelte';
-	import { useSessions } from '$lib/queries';
-	import type { PromptAttachments } from '$lib/promptAttachments.svelte';
-	import { m } from '$lib/paraglide/messages';
-	import { redactedSegments, redactedSpans } from '$lib/redactTag';
+	import SessionMention from '#lib/components/molecules/SessionMention.svelte';
+	import { useSessions } from '#lib/queries/index.ts';
+	import type { PromptAttachments } from '#lib/promptAttachments.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
+	import { redactedSegments, redactedSpans } from '#lib/redactTag.ts';
 
 	let {
 		value = $bindable(''),

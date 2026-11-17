@@ -2,14 +2,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
 import UserAttachments from './UserAttachments.svelte';
-import type { SessionAttachment } from '$lib/queries/types';
+import type { SessionAttachment } from '#lib/queries/types.ts';
 
 const sid = '0a1b2c3d-1111-2222-3333-444455556666';
 const hash = 'f'.repeat(64);
 
 let data: SessionAttachment[] = [];
 
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	useSessionAttachments: () => ({
 		get data() {
 			return data;
@@ -17,7 +17,7 @@ vi.mock('$lib/queries', () => ({
 	})
 }));
 
-vi.mock('$lib/attachmentStore', () => ({
+vi.mock('#lib/attachmentStore.ts', () => ({
 	attachmentStore: { cachedText: async () => null, cacheText: async () => {} }
 }));
 

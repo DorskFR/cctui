@@ -1,4 +1,4 @@
-import type { AccountProvider, OAuthAccount } from '$lib/queries';
+import type { AccountProvider, OAuthAccount } from '#lib/queries/index.ts';
 import { isPageId, type PageId } from '../provider-drawer/pages.logic';
 
 export const ACCOUNTS_HREF = '/accounts';

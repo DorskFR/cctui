@@ -8,11 +8,11 @@ import {
 import type { SessionListItem } from "@bindings/SessionListItem";
 import type { SessionListResponse } from "@bindings/SessionListResponse";
 import type { Label } from "@bindings/Label";
-import type { LabelOwner } from "$lib/labels";
-import { qk, type endpoints, type useSessionActions } from "$lib/queries";
-import type { toasts, ToastAction } from "$lib/toast.svelte";
-import type { DockLayout } from "$lib/dock";
-import type { SessionListSettings } from "$lib/settings.svelte";
+import type { LabelOwner } from "#lib/labels.ts";
+import { qk, type endpoints, type useSessionActions } from "#lib/queries/index.ts";
+import type { toasts, ToastAction } from "#lib/toast.svelte.ts";
+import type { DockLayout } from "#lib/dock.ts";
+import type { SessionListSettings } from "#lib/settings.svelte.ts";
 import {
   FOLLOWUP_ARCHIVE_SOURCE,
   LIST_HIDDEN,
@@ -20,20 +20,20 @@ import {
   LIST_SECTION,
   LIST_TILE_SECTION,
   type SpawnSlotPayload,
-} from "$lib/drafts";
-import { ApiError, errMessage } from "$lib/api";
-import { m } from "$lib/paraglide/messages";
-import { awaitSessionRow } from "$lib/awaitSessionRow";
-import { hasFeature } from "$lib/features.svelte";
-import { queryTerms, straightenPhraseQuotes } from "$lib/search";
-import { BRIEF_FETCH_MAX_BYTES, followupPrefill } from "$lib/followup";
+} from "#lib/drafts.ts";
+import { ApiError, errMessage } from "#lib/api.ts";
+import { m } from "#lib/paraglide/messages.js";
+import { awaitSessionRow } from "#lib/awaitSessionRow.ts";
+import { hasFeature } from "#lib/features.svelte.ts";
+import { queryTerms, straightenPhraseQuotes } from "#lib/search.ts";
+import { BRIEF_FETCH_MAX_BYTES, followupPrefill } from "#lib/followup.ts";
 import { parse, type Schema } from "@dorsk/tsumikit";
 import {
   buildSessionSearchSchema,
   contextForField,
   matchesClientFilters,
   splitQuery,
-} from "$lib/searchSchema";
+} from "#lib/searchSchema.ts";
 import {
   DEFAULT_TILE_SECTIONS,
   effectiveColorBy,
@@ -63,8 +63,8 @@ import {
   type SessionSort,
   type Dimension,
 } from "./sessions.logic";
-import { stableTileOrder } from "$lib/tiles";
-import { sessionsView, type ViewMode } from "$lib/sessionsView.svelte";
+import { stableTileOrder } from "#lib/tiles.ts";
+import { sessionsView, type ViewMode } from "#lib/sessionsView.svelte.ts";
 import { SessionsListController } from "./SessionsListController.svelte";
 import { ArchiveConfirm } from "./archiveConfirm.svelte";
 
@@ -128,7 +128,7 @@ export interface SessionsPageDeps {
   showHidden?: () => boolean;
 }
 
-export type { ViewMode } from "$lib/sessionsView.svelte";
+export type { ViewMode } from "#lib/sessionsView.svelte.ts";
 
 export class SessionsPage {
   #d: SessionsPageDeps;

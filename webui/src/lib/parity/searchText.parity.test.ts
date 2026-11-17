@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { foldSearchText, markdownToSearchText } from '$lib/searchText';
+import { foldSearchText, markdownToSearchText } from '#lib/searchText.ts';
 import { parityFixture } from './fixtures';
 
 type Fixture = {

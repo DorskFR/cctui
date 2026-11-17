@@ -3,12 +3,12 @@
 	// unsent drafts. The readout is recomputed after a clear so the figure
 	// never lies.
 	import { Button, Text } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import { attachmentStore } from '$lib/attachmentStore';
-	import { fmtSize } from '$lib/attachments';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import { attachmentStore } from '#lib/attachmentStore.ts';
+	import { fmtSize } from '#lib/attachments.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let bytes = $state(0);
 	let busy = $state(false);

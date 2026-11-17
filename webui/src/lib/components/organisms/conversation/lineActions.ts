@@ -1,11 +1,11 @@
 // Per-message line actions (copy-as-Markdown, save-as-PNG) for the conversation
 // drawer.
-import { errMessage } from '$lib/api';
-import { toasts } from '$lib/toast.svelte';
-import { copyText } from '$lib/clipboard';
+import { errMessage } from '#lib/api.ts';
+import { toasts } from '#lib/toast.svelte.ts';
+import { copyText } from '#lib/clipboard.ts';
 import { lineMarkdown } from './format';
 import type { Line } from './types';
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 
 export async function copyLineMarkdown(ln: Line) {
 	await copyText(lineMarkdown(ln), m.conversation_copied_markdown());

@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { Dot } from '@dorsk/tsumikit';
-	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
-	import SessionSectionHeader from '$lib/components/molecules/SessionSectionHeader.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import MachineBadge from '#lib/components/molecules/MachineBadge.svelte';
+	import SessionSectionHeader from '#lib/components/molecules/SessionSectionHeader.svelte';
+	import { m } from '#lib/paraglide/messages.js';
 	import type { SessionsPage } from './sessionsPage.svelte';
 
 	// One header for every section: label, live count, sort menu, an eye toggle

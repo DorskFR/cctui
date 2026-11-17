@@ -5,13 +5,13 @@
 	// withheld from the save; the server stays authoritative (Rust regex syntax).
 	import { Button, Callout, Switch, Text, Textarea } from '@dorsk/tsumikit';
 	import { parseScrubPatterns } from './scrub-patterns';
-	import DetectorList from '$lib/components/molecules/DetectorList.svelte';
-	import RescrubPanel from '$lib/components/molecules/RescrubPanel.svelte';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
-	import { settings } from '$lib/settings.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import DetectorList from '#lib/components/molecules/DetectorList.svelte';
+	import RescrubPanel from '#lib/components/molecules/RescrubPanel.svelte';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	const scrubEnabled = $derived(settings.secretScrubEnabled);
 	// The draft holds what was typed, including a line that doesn't compile: only

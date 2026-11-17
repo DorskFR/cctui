@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { Select, Toggle } from '@dorsk/tsumikit';
-	import { useMachineResources } from '$lib/queries';
-	import { DEFAULT_FILTERS, type EventFilters, type EventFamily, type EventSeverity } from '$lib/events';
-	import { m } from '$lib/paraglide/messages';
+	import { useMachineResources } from '#lib/queries/index.ts';
+	import { DEFAULT_FILTERS, type EventFilters, type EventFamily, type EventSeverity } from '#lib/events.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { filters = $bindable(), admin = false }: { filters: EventFilters; admin?: boolean } = $props();
 

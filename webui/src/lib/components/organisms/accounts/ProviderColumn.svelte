@@ -1,15 +1,15 @@
 <script lang="ts">
-	import type { AccountProvider } from '$lib/queries';
-	import { compact } from '$lib/format';
-	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
-	import LimitResetButton from '$lib/components/molecules/LimitResetButton.svelte';
-	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
+	import type { AccountProvider } from '#lib/queries/index.ts';
+	import { compact } from '#lib/format.ts';
+	import UsageBars from '#lib/components/molecules/UsageBars.svelte';
+	import LimitResetButton from '#lib/components/molecules/LimitResetButton.svelte';
+	import AdapterIcon from '#lib/components/atoms/AdapterIcon.svelte';
 	import { Button, IconButton, Text, Timestamp } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import { providerLabel } from '$lib/providers';
-	import { useAccountActions } from '$lib/queries';
-	import { errMessage } from '$lib/api';
-	import { toasts } from '$lib/toast.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import { providerLabel } from '#lib/providers.ts';
+	import { useAccountActions } from '#lib/queries/index.ts';
+	import { errMessage } from '#lib/api.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
 
 	let {
 		provider,

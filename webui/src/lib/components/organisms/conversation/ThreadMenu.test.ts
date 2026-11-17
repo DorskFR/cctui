@@ -7,10 +7,10 @@ import { threadEntries } from './thread';
 
 const query = vi.hoisted(() => ({ data: undefined as { sessions: ThreadSession[] } | undefined }));
 const goto = vi.hoisted(() => vi.fn());
-vi.mock('$lib/queries', () => ({ useSessionThread: () => query }));
+vi.mock('#lib/queries/index.ts', () => ({ useSessionThread: () => query }));
 vi.mock('$app/navigation', () => ({ goto }));
 vi.mock('$app/state', () => ({ page: { state: { fromList: true } } }));
-vi.mock('$lib/paraglide/messages', () => ({
+vi.mock('#lib/paraglide/messages.js', () => ({
 	m: {
 		drawer_thread_menu: () => 'Sessions in this thread',
 		drawer_thread_previous: () => 'Previous',
@@ -173,7 +173,7 @@ describe('ThreadMenu', () => {
 		rows[2].click();
 		flushSync();
 		expect(goto).toHaveBeenCalledWith('/sessions/c', {
-			replaceState: true,
+			replace: true,
 			state: { fromList: true }
 		});
 	});
@@ -195,7 +195,7 @@ describe('ThreadMenu', () => {
 		rows[3].click();
 		flushSync();
 		expect(goto).toHaveBeenCalledWith('/sessions/b', {
-			replaceState: true,
+			replace: true,
 			state: { fromList: true }
 		});
 	});

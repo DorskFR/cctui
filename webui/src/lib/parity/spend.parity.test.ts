@@ -9,9 +9,9 @@ import {
 	type ModelSpendRow,
 	type SessionSpend,
 	type Windows
-} from '$lib/spend';
-import { cacheLossTotals } from '$lib/components/organisms/overview/cache-loss';
-import type { DailyCacheLoss } from '$lib/queries';
+} from '#lib/spend.ts';
+import { cacheLossTotals } from '#lib/components/organisms/overview/cache-loss.ts';
+import type { DailyCacheLoss } from '#lib/queries/index.ts';
 import { parityFixture } from './fixtures';
 
 type Fixture = {

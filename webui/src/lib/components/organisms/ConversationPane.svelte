@@ -2,7 +2,7 @@
 	import { untrack } from 'svelte';
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { AgentEvent } from '@bindings/AgentEvent';
-	import { ws } from '$lib/ws.svelte';
+	import { ws } from '#lib/ws.svelte.ts';
 	import {
 		endpoints,
 		useConversation,
@@ -12,15 +12,15 @@
 		useMe,
 		useVoiceConfig,
 		qk
-	} from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { errMessage } from '$lib/api';
-	import { clearSessionRoom, setSessionRoom, setSessionRoomByName } from '$lib/rooms';
+	} from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { errMessage } from '#lib/api.ts';
+	import { clearSessionRoom, setSessionRoom, setSessionRoomByName } from '#lib/rooms.ts';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import { drafts, VIEW_OPTS } from '$lib/drafts';
-	import { supportsAttachments as adapterSupportsAttachments } from '$lib/attachments';
-	import { harnessCapabilities } from '$lib/harnesses';
-	import { harnessTable } from '$lib/harnesses.svelte';
+	import { drafts, VIEW_OPTS } from '#lib/drafts.ts';
+	import { supportsAttachments as adapterSupportsAttachments } from '#lib/attachments.ts';
+	import { harnessCapabilities } from '#lib/harnesses.ts';
+	import { harnessTable } from '#lib/harnesses.svelte.ts';
 	import { Dropzone } from '@dorsk/tsumikit';
 	import ForkModal from './conversation/ForkModal.svelte';
 	import DrawerHeader from './conversation/DrawerHeader.svelte';
@@ -35,12 +35,12 @@
 	import Conversation from './conversation/Conversation.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
 	import PluginPaneHost from './conversation/PluginPaneHost.svelte';
-	import { registerComposer } from '$lib/plugins/composerBridge.svelte';
-	import { DrawerPlugins } from '$lib/plugins/drawerPlugins.svelte';
-	import { useHarnesses, usePlugins } from '$lib/queries';
-	import { settings } from '$lib/settings.svelte';
-	import { scheduledTurns, useScheduledMessages } from '$lib/queries/scheduled';
-	import { hasFeature } from '$lib/features.svelte';
+	import { registerComposer } from '#lib/plugins/composerBridge.svelte.ts';
+	import { DrawerPlugins } from '#lib/plugins/drawerPlugins.svelte.ts';
+	import { useHarnesses, usePlugins } from '#lib/queries/index.ts';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { scheduledTurns, useScheduledMessages } from '#lib/queries/scheduled.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
 	import BookmarkSaveModal from './bookmarks/BookmarkSaveModal.svelte';
 	import type { Line, MsgCategory, ViewOpts } from './conversation/types';
 	import { parseViewOpts } from './conversation/filters';
@@ -59,18 +59,18 @@
 	import { guardEscape } from './conversation/escapeGuard';
 	import { livenessClass } from './conversation/liveness';
 	import { ownsSession } from './conversation/ownership';
-	import { useOwnerHideMenu } from '$lib/ownerHideMenu.svelte';
-	import { notify } from '$lib/notify.svelte';
+	import { useOwnerHideMenu } from '#lib/ownerHideMenu.svelte.ts';
+	import { notify } from '#lib/notify.svelte.ts';
 	import type { ConversationChrome } from './conversation/chrome';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import LiveVoiceBar from './conversation/LiveVoiceBar.svelte';
 	import { voiceTranscriptLanded } from './conversation/voiceMessage';
-	import { LiveVoice } from '$lib/voice/liveVoice.svelte';
-	import { SpeechPlayer } from '$lib/voice/player';
-	import { speakText } from '$lib/voice/speakLine';
-	import { voiceCaps } from '$lib/voice/capabilities';
-	import { acquireWakeLock } from '$lib/voice/wakeLock';
-	import { ttsMime } from '$lib/voice/mime';
+	import { LiveVoice } from '#lib/voice/liveVoice.svelte.ts';
+	import { SpeechPlayer } from '#lib/voice/player.ts';
+	import { speakText } from '#lib/voice/speakLine.ts';
+	import { voiceCaps } from '#lib/voice/capabilities.ts';
+	import { acquireWakeLock } from '#lib/voice/wakeLock.ts';
+	import { ttsMime } from '#lib/voice/mime.ts';
 
 	let {
 		session,
@@ -389,7 +389,7 @@
 	const voiceEnabled = $derived(caps.stt && !archived);
 	const liveVoice = new LiveVoice({
 		connect: (url) => new WebSocket(url),
-		vad: (cb) => import('$lib/voice/vad').then((mod) => mod.createVad(cb, settings.voice.micId)),
+		vad: (cb) => import('#lib/voice/vad.ts').then((mod) => mod.createVad(cb, settings.voice.micId)),
 		player: new SpeechPlayer({
 			mime: () => ttsMime(voiceConfig.data?.tts_format ?? 'opus'),
 			speed: () => settings.voice.speed,
