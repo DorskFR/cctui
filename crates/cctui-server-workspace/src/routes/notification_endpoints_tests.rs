@@ -218,7 +218,7 @@ async fn the_server_endpoint_is_offered_to_the_instance_owner_only() {
         let owner = env_owner_tests::user(&state.pool, 3).await;
         let other = env_owner_tests::user(&state.pool, 2).await;
         let newcomer = env_owner_tests::user(&state.pool, 1).await;
-        let stale = env_owner_tests::endpoint(&state.pool, other, json!({ "source": "env" })).await;
+        let env = env_owner_tests::endpoint(&state.pool, other, json!({ "source": "env" })).await;
 
         let mine = listed(&state, owner).await;
         assert_eq!(mine.len(), 1);
@@ -228,10 +228,10 @@ async fn the_server_endpoint_is_offered_to_the_instance_owner_only() {
 
         assert!(listed(&state, newcomer).await.is_empty());
         assert_eq!(env_rows(&state, newcomer).await, 0, "never seeded for a non-owner");
-        assert!(listed(&state, other).await.is_empty(), "a stale one stays hidden");
-        let hidden = send_test(State(state.clone()), Extension(caller(other)), Path(stale)).await;
+        assert!(listed(&state, other).await.is_empty(), "a leftover one stays hidden");
+        let hidden = send_test(State(state.clone()), Extension(caller(other)), Path(env)).await;
         assert_eq!(status(hidden), StatusCode::NOT_FOUND);
-        let hidden = delete(State(state.clone()), Extension(caller(other)), Path(stale)).await;
+        let hidden = delete(State(state.clone()), Extension(caller(other)), Path(env)).await;
         assert_eq!(status(hidden), StatusCode::NOT_FOUND);
     })
     .await;
