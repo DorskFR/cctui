@@ -2,14 +2,14 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import SessionControls from './SessionControls.svelte';
-import { buildSessionSearchSchema } from '$lib/searchSchema';
-import { setCapabilitiesForTest } from '$lib/features.svelte';
-import { settings } from '$lib/settings.svelte';
+import { buildSessionSearchSchema } from '#lib/searchSchema.ts';
+import { setCapabilitiesForTest } from '#lib/features.svelte.ts';
+import { settings } from '#lib/settings.svelte.ts';
 import type { Label } from '@bindings/Label';
 import type { Section } from '../../../routes/sessions/sessions.logic';
 
-vi.mock('$lib/queries', async (original) => ({
-	...(await original<typeof import('$lib/queries')>()),
+vi.mock('#lib/queries/index.ts', async (original) => ({
+	...(await original<typeof import('#lib/queries/index.ts')>()),
 	useSessionActions: () => ({})
 }));
 

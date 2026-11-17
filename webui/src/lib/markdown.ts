@@ -5,8 +5,8 @@
  * `--md-*` / `--syn-*` in variables.css) so themes adapt.
  */
 
-import { escapeHtml, highlightCode, stripAnsi } from "$lib/highlight";
-import { m } from "$lib/paraglide/messages";
+import { escapeHtml, highlightCode, stripAnsi } from "#lib/highlight.ts";
+import { m } from "#lib/paraglide/messages.js";
 
 export { escapeHtml, stripAnsi };
 

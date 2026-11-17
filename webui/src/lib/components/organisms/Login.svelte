@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { auth } from '$lib/auth.svelte';
-	import { PasskeyAborted, conditionalUiSupported } from '$lib/passkeys';
+	import { auth } from '#lib/auth.svelte.ts';
+	import { PasskeyAborted, conditionalUiSupported } from '#lib/passkeys.ts';
 	import { Button, Card, Field, Input, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import type { PasskeyConfig } from '@bindings/PasskeyConfig';
 
 	let token = $state('');

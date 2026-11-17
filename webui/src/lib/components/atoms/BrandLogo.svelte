@@ -4,8 +4,8 @@
 	// OpenAI blossom, Fireworks chevrons; anything the table does not know wears
 	// a neutral prompt glyph. Pass `provider` (account-side) or `adapter`
 	// (session-side) — either resolves the mark.
-	import { brandMark } from '$lib/harnesses';
-	import { harnessTable } from '$lib/harnesses.svelte';
+	import { brandMark } from '#lib/harnesses.ts';
+	import { harnessTable } from '#lib/harnesses.svelte.ts';
 
 	let {
 		adapter,

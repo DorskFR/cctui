@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { Button, Text } from '@dorsk/tsumikit';
-	import ContextPicker from '$lib/components/molecules/ContextPicker.svelte';
-	import { newerVersion, useAttachContext, useContextItems } from '$lib/queries';
+	import ContextPicker from '#lib/components/molecules/ContextPicker.svelte';
+	import { newerVersion, useAttachContext, useContextItems } from '#lib/queries/index.ts';
 	import type { SessionContextResponse } from '@bindings/SessionContextResponse';
-	import { errMessage } from '$lib/api';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { errMessage } from '#lib/api.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		sessionId,

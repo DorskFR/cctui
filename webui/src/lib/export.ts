@@ -21,7 +21,7 @@ import type { SessionListItem } from "@bindings/SessionListItem";
 import type {
   MsgCategory,
   MsgFilter,
-} from "$lib/components/organisms/conversation/types";
+} from "#lib/components/organisms/conversation/types.ts";
 import {
   breaksPollRun,
   looksPoll,
@@ -29,21 +29,21 @@ import {
   pollDuplicate,
   resultCategory,
   type PollSeen,
-} from "$lib/components/organisms/conversation/lines";
+} from "#lib/components/organisms/conversation/lines.ts";
 import {
   looksMeta,
   splitInjected,
   type InjectedBlock,
-} from "$lib/components/organisms/conversation/format";
-import { resultDisplayText } from "$lib/resultImages";
+} from "#lib/components/organisms/conversation/format.ts";
+import { resultDisplayText } from "#lib/resultImages.ts";
 import {
   renderMarkdown,
   highlightBlock,
   prettyJson,
   escapeHtml,
-} from "$lib/markdown";
-import { USER_PREFIX } from "$lib/ws.svelte";
-import { parsePeerMessage } from "$lib/components/organisms/conversation/format";
+} from "#lib/markdown.ts";
+import { USER_PREFIX } from "#lib/ws.svelte.ts";
+import { parsePeerMessage } from "#lib/components/organisms/conversation/format.ts";
 
 /** The subset of the drawer's ViewOpts the export honors. Typed from the
  * drawer's own categories so a new filter cannot silently skip the export. */

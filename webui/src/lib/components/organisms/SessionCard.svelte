@@ -1,14 +1,14 @@
 <script lang="ts">
-	import { now as clockNow } from '$lib/clock.svelte';
+	import { now as clockNow } from '#lib/clock.svelte.ts';
 	import type { Label } from '@bindings/Label';
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import { Card } from '@dorsk/tsumikit';
 	import CompactRow from './sessioncard/CompactRow.svelte';
 	import DetailedCard from './sessioncard/DetailedCard.svelte';
 	import { SwipeGesture } from './sessioncard/swipe.svelte';
 	import { type SessionActions, type SubagentToggle, buildView } from './sessioncard/view';
-	import { hasFeature } from '$lib/features.svelte';
+	import { hasFeature } from '#lib/features.svelte.ts';
 
 	// Two layouts only: the compact list row and the detailed card. The wrapper
 	// is the `sess-card` size container every readout degrades against.

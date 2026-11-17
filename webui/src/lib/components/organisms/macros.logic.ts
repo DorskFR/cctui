@@ -1,5 +1,5 @@
 import type { SpawnRequest } from '@bindings/SpawnRequest';
-import type { MacroSpec } from '$lib/settings.svelte';
+import type { MacroSpec } from '#lib/settings.svelte.ts';
 
 export const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export const CODEX_EFFORTS = ['minimal', 'low', 'medium', 'high'] as const;

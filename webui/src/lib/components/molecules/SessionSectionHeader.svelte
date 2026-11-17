@@ -2,7 +2,7 @@
 	import type { Snippet } from 'svelte';
 	import { Icon, IconButton, Menu, SectionHeader, Text, type IconName } from '@dorsk/tsumikit';
 	import type { MenuItem } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	type SortField = 'activity' | 'created' | 'name';
 	type SortDir = 'asc' | 'desc';

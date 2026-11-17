@@ -8,9 +8,9 @@
 	import { goto } from '$app/navigation';
 	import { page as route } from '$app/state';
 	import { Icon, Input, Text } from '@dorsk/tsumikit';
-	import PageHead from '$lib/components/molecules/PageHead.svelte';
-	import SettingsToc, { type TocEntry } from '$lib/components/organisms/settings/SettingsToc.svelte';
-	import SettingsPages from '$lib/components/organisms/settings/SettingsPages.svelte';
+	import PageHead from '#lib/components/molecules/PageHead.svelte';
+	import SettingsToc, { type TocEntry } from '#lib/components/organisms/settings/SettingsToc.svelte';
+	import SettingsPages from '#lib/components/organisms/settings/SettingsPages.svelte';
 	import {
 		applySettingsFilter,
 		availableSettingsPages,
@@ -21,11 +21,11 @@
 		MOVED_OUT,
 		settingsHref,
 		type SettingsPage
-	} from '$lib/components/organisms/settings/settings.logic';
-	import { settings } from '$lib/settings.svelte';
-	import { useMe } from '$lib/queries';
-	import { hasFeature } from '$lib/features.svelte';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/components/organisms/settings/settings.logic.ts';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { useMe } from '#lib/queries/index.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	const me = useMe();
 	const isAdmin = $derived(me.data?.role === 'admin');
@@ -36,7 +36,7 @@
 	$effect(() => {
 		const slug = route.params.page ?? '';
 		if (!isSettingsPage(slug))
-			void goto(MOVED_OUT[slug] ?? settingsHref(DEFAULT_SETTINGS_PAGE), { replaceState: true });
+			void goto(MOVED_OUT[slug] ?? settingsHref(DEFAULT_SETTINGS_PAGE), { replace: true });
 	});
 
 	const available = $derived(new Set(availableSettingsPages(hasFeature)));
@@ -83,7 +83,7 @@
 				if (!q.trim()) return;
 				const target = firstMatchingPage(root);
 				if (target && target !== here) {
-					void goto(settingsHref(target), { replaceState: true, noScroll: true, keepFocus: true });
+					void goto(settingsHref(target), { replace: true, reset: false });
 					return;
 				}
 				firstMatchingRow(root, here)?.scrollIntoView({ block: 'nearest' });

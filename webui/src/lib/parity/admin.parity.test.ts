@@ -5,7 +5,7 @@ import {
 	keyIcon,
 	scopeCells,
 	visibleRows
-} from '$lib/components/organisms/access/access.logic';
+} from '#lib/components/organisms/access/access.logic.ts';
 import { parityFixture } from './fixtures';
 
 type Fixture = {

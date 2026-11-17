@@ -1,19 +1,19 @@
 <script lang="ts">
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
-	import type { AccountProvider, OAuthAccount } from '$lib/queries';
-	import { useAllAccountsUsage, useResourceShares } from '$lib/queries';
-	import AccountAvatar from '$lib/components/molecules/AccountAvatar.svelte';
-	import ResourceShares from '$lib/components/molecules/ResourceShares.svelte';
-	import ProviderColumn from '$lib/components/organisms/accounts/ProviderColumn.svelte';
-	import { exhaustedWindow } from '$lib/components/organisms/accounts/pools.logic';
-	import { accountHandleDrag } from '$lib/components/organisms/accounts/handleDrag.svelte';
-	import { providerLabel } from '$lib/providers';
+	import type { AccountProvider, OAuthAccount } from '#lib/queries/index.ts';
+	import { useAllAccountsUsage, useResourceShares } from '#lib/queries/index.ts';
+	import AccountAvatar from '#lib/components/molecules/AccountAvatar.svelte';
+	import ResourceShares from '#lib/components/molecules/ResourceShares.svelte';
+	import ProviderColumn from '#lib/components/organisms/accounts/ProviderColumn.svelte';
+	import { exhaustedWindow } from '#lib/components/organisms/accounts/pools.logic.ts';
+	import { accountHandleDrag } from '#lib/components/organisms/accounts/handleDrag.svelte.ts';
+	import { providerLabel } from '#lib/providers.ts';
 	import {
 		componentNames,
 		indicatorTone
-	} from '$lib/components/molecules/provider-status.logic';
+	} from '#lib/components/molecules/provider-status.logic.ts';
 	import { Badge, Button, Checkbox, Icon, Menu, Select, Text, Timestamp, type MenuItem } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		account,

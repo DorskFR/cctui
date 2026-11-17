@@ -7,30 +7,30 @@
 		useMe,
 		useUsers,
 		type AccountProvider
-	} from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { hasFeature } from '$lib/features.svelte';
-	import { providerLabel } from '$lib/providers';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
+	import { providerLabel } from '#lib/providers.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { tick } from 'svelte';
 	import { Breadcrumb, Button, Text } from '@dorsk/tsumikit';
-	import PageHead from '$lib/components/molecules/PageHead.svelte';
-	import AccountEditorModal from '$lib/components/organisms/accounts/AccountEditorModal.svelte';
-	import { availableKinds } from '$lib/components/organisms/accounts/account-editor.logic';
+	import PageHead from '#lib/components/molecules/PageHead.svelte';
+	import AccountEditorModal from '#lib/components/organisms/accounts/AccountEditorModal.svelte';
+	import { availableKinds } from '#lib/components/organisms/accounts/account-editor.logic.ts';
 	import {
 		ACCOUNTS_HREF,
 		accountHref,
 		editableProviders,
 		pageParam,
 		pickProvider
-	} from '$lib/components/organisms/accounts/account-page/account-nav.logic';
-	import IdentitySection from '$lib/components/organisms/accounts/account-page/IdentitySection.svelte';
-	import EnvSection from '$lib/components/organisms/accounts/account-page/EnvSection.svelte';
-	import ProvidersSection from '$lib/components/organisms/accounts/account-page/ProvidersSection.svelte';
-	import ToolPolicySection from '$lib/components/organisms/accounts/account-page/ToolPolicySection.svelte';
-	import ServiceTokensSection from '$lib/components/organisms/accounts/account-page/ServiceTokensSection.svelte';
-	import DangerSection from '$lib/components/organisms/accounts/account-page/DangerSection.svelte';
-	import ProviderSettingsSection from '$lib/components/organisms/accounts/account-page/ProviderSettingsSection.svelte';
+	} from '#lib/components/organisms/accounts/account-page/account-nav.logic.ts';
+	import IdentitySection from '#lib/components/organisms/accounts/account-page/IdentitySection.svelte';
+	import EnvSection from '#lib/components/organisms/accounts/account-page/EnvSection.svelte';
+	import ProvidersSection from '#lib/components/organisms/accounts/account-page/ProvidersSection.svelte';
+	import ToolPolicySection from '#lib/components/organisms/accounts/account-page/ToolPolicySection.svelte';
+	import ServiceTokensSection from '#lib/components/organisms/accounts/account-page/ServiceTokensSection.svelte';
+	import DangerSection from '#lib/components/organisms/accounts/account-page/DangerSection.svelte';
+	import ProviderSettingsSection from '#lib/components/organisms/accounts/account-page/ProviderSettingsSection.svelte';
 
 	const accounts = useAccounts();
 	const actions = useAccountActions();
@@ -63,12 +63,12 @@
 
 	function selectProvider(p: AccountProvider, reveal = false) {
 		if (!account) return;
-		goto(accountHref(account.id, p.id), { replaceState: true, noScroll: true, keepFocus: true });
+		goto(accountHref(account.id, p.id), { replace: true, reset: false });
 		if (reveal) revealSettings();
 	}
 
 	function dropSelection() {
-		if (account) goto(accountHref(account.id), { replaceState: true, noScroll: true, keepFocus: true });
+		if (account) goto(accountHref(account.id), { replace: true, reset: false });
 	}
 
 	let revealed = false;

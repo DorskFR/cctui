@@ -2,8 +2,8 @@
 	// The settings a plugin declares in its manifest, one text field each,
 	// written to the user's `plugins.config[<id>]` on blur / Enter.
 	import { Field, Input, Text } from '@dorsk/tsumikit';
-	import type { PluginSettingDecl } from '$lib/plugins/types';
-	import { m } from '$lib/paraglide/messages';
+	import type { PluginSettingDecl } from '#lib/plugins/types.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		pluginId,

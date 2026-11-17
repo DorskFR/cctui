@@ -10,8 +10,8 @@ const api = vi.hoisted(() => ({
 	testSpeech: vi.fn()
 }));
 const toast = vi.hoisted(() => ({ ok: vi.fn(), error: vi.fn() }));
-vi.mock('$lib/queries', () => ({ endpoints: api }));
-vi.mock('$lib/toast.svelte', () => ({ toasts: toast }));
+vi.mock('#lib/queries/index.ts', () => ({ endpoints: api }));
+vi.mock('#lib/toast.svelte.ts', () => ({ toasts: toast }));
 
 import SpeechGroup from './SpeechGroup.svelte';
 

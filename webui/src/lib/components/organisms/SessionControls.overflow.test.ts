@@ -2,7 +2,7 @@
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, expect, it } from 'vitest';
 import SessionControls from './SessionControls.svelte';
-import { buildSessionSearchSchema } from '$lib/searchSchema';
+import { buildSessionSearchSchema } from '#lib/searchSchema.ts';
 import type { Section } from '../../../routes/sessions/sessions.logic';
 
 let component: ReturnType<typeof mount> | undefined;

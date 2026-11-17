@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { AccountProvider, OAuthAccount } from '$lib/queries';
+import type { AccountProvider, OAuthAccount } from '#lib/queries/index.ts';
 import {
 	ACCOUNTS_HREF,
 	accountHref,

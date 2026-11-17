@@ -4,8 +4,8 @@ import type { UserAction } from '@bindings/UserAction';
 import type { GuardStepState } from '@bindings/GuardStepState';
 import type { AccountUsage } from '../queries/types';
 import { qk } from '../queries/keys';
-import { toasts } from '$lib/toast.svelte';
-import { m } from '$lib/paraglide/messages';
+import { toasts } from '#lib/toast.svelte.ts';
+import { m } from '#lib/paraglide/messages.js';
 import type { QueryClient } from '@tanstack/svelte-query';
 import {
 	KeyedListeners,

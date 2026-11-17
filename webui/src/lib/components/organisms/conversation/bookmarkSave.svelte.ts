@@ -1,10 +1,10 @@
 import type { CreateBookmark } from '@bindings/CreateBookmark';
-import { errMessage } from '$lib/api';
-import { draftFromLine, isLineBookmarked } from '$lib/bookmarks';
-import { useBookmarkActions, useBookmarks } from '$lib/queries';
-import { hasFeature } from '$lib/features.svelte';
-import { toasts } from '$lib/toast.svelte';
-import { m } from '$lib/paraglide/messages';
+import { errMessage } from '#lib/api.ts';
+import { draftFromLine, isLineBookmarked } from '#lib/bookmarks.ts';
+import { useBookmarkActions, useBookmarks } from '#lib/queries/index.ts';
+import { hasFeature } from '#lib/features.svelte.ts';
+import { toasts } from '#lib/toast.svelte.ts';
+import { m } from '#lib/paraglide/messages.js';
 import type { Line } from './types';
 
 export interface BookmarkSaverOpts {

@@ -1,7 +1,7 @@
 import type { PoolUsageMember } from '@bindings/PoolUsageMember';
 import type { PoolUsageWindow } from '@bindings/PoolUsageWindow';
-import type { UsagePace } from '$lib/queries';
-import { windowLabelFromKey } from '$lib/components/molecules/usage-windows';
+import type { UsagePace } from '#lib/queries/index.ts';
+import { windowLabelFromKey } from '#lib/components/molecules/usage-windows.ts';
 
 // Pure helpers behind the pool gauges: the server aggregates, this file only
 // shapes its answer for the same bars and glyphs the account cards use.

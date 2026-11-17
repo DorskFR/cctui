@@ -1,8 +1,8 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
 	import { Badge, Button, EmptyState, IconButton } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import { labelTint } from '$lib/labels';
+	import { m } from '#lib/paraglide/messages.js';
+	import { labelTint } from '#lib/labels.ts';
 
 	// The label rows of LabelMenu: the create row, one checkbox + hue-tinted chip
 	// per label with an optional edit pencil, the empty state and the clear footer.

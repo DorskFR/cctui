@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Callout, Field, Input } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { label = $bindable(''), placeholder }: { label?: string; placeholder: string } = $props();
 </script>

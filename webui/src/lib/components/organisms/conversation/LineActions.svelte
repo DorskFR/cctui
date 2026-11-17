@@ -4,7 +4,7 @@
 	import { Button, Icon, IconButton } from '@dorsk/tsumikit';
 	import { bubbleSelection } from './lineActions';
 	import type { Line } from './types';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		ln,

@@ -1,11 +1,11 @@
 <script lang="ts">
 	import type { UserTokenRow } from '@bindings/UserTokenRow';
 	import { Button, type Column, ConfirmModal, DataTable, IconButton, Text, Timestamp } from '@dorsk/tsumikit';
-	import EditEntityModal from '$lib/components/molecules/EditEntityModal.svelte';
-	import { useTokens, useUserActions } from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { errMessage } from '$lib/api';
-	import { m } from '$lib/paraglide/messages';
+	import EditEntityModal from '#lib/components/molecules/EditEntityModal.svelte';
+	import { useTokens, useUserActions } from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { errMessage } from '#lib/api.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { splitRevoked, visibleRows } from './access.logic';
 
 	let {

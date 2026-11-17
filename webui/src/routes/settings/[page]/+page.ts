@@ -1,8 +1,8 @@
 import {
 	SETTINGS_PAGES,
 	settingsPageFeature
-} from '$lib/components/organisms/settings/settings.logic';
-import { requireFeature } from '$lib/workspaceSupport';
+} from '#lib/components/organisms/settings/settings.logic.ts';
+import { requireFeature } from '#lib/workspaceSupport.ts';
 
 export const entries = () => SETTINGS_PAGES.map((page) => ({ page }));
 

@@ -4,7 +4,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import SessionGlyphs from './SessionGlyphs.svelte';
 
-vi.mock('$lib/queries', () => ({ useAccounts: () => ({ data: [] }) }));
+vi.mock('#lib/queries/index.ts', () => ({ useAccounts: () => ({ data: [] }) }));
 
 let comp: ReturnType<typeof mount> | null = null;
 afterEach(() => {

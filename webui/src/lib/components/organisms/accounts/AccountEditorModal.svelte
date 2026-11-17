@@ -1,20 +1,20 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { errMessage } from '$lib/api';
+	import { errMessage } from '#lib/api.ts';
 	import {
 		useAccountActions,
 		type OAuthAccount,
 		type AccountProvider,
 		type CreateAccount,
 		type CreateProvider
-	} from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { safeHref } from '$lib/safeHref';
-	import { isStaticCredential, providerKindOptions, type ProviderKind } from '$lib/providers';
-	import AccountAvatar from '$lib/components/molecules/AccountAvatar.svelte';
-	import { isValidAccountEmoji } from '$lib/components/molecules/avatar';
+	} from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { safeHref } from '#lib/safeHref.ts';
+	import { isStaticCredential, providerKindOptions, type ProviderKind } from '#lib/providers.ts';
+	import AccountAvatar from '#lib/components/molecules/AccountAvatar.svelte';
+	import { isValidAccountEmoji } from '#lib/components/molecules/avatar.ts';
 	import { Button, Disclosure, EmojiPicker, Field, Input, Link, Modal, Select, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import { availableKinds } from './account-editor.logic';
 
 	let {

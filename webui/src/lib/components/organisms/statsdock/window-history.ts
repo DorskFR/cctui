@@ -1,4 +1,4 @@
-import type { UsageHistorySample, WastedSummary } from '$lib/queries';
+import type { UsageHistorySample, WastedSummary } from '#lib/queries/index.ts';
 
 export const WINDOW_MS: Record<string, number> = {
 	session: 5 * 3600_000,

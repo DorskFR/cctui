@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Button, type Schema } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import { TIME_SCOPES, dirLabel, isScoped, toggleScope, type Scope, type TimeScope } from '$lib/searchScope';
+	import { m } from '#lib/paraglide/messages.js';
+	import { TIME_SCOPES, dirLabel, isScoped, toggleScope, type Scope, type TimeScope } from '#lib/searchScope.ts';
 
 	interface Props {
 		rawQuery: string;

@@ -2,7 +2,7 @@
 	// A file as a chip: glyph · name (truncating) · size. Uses the kit's Badge in
 	// button form — the same shape WorkingDir builds its path chip from.
 	import { Badge, Text } from '@dorsk/tsumikit';
-	import { fmtSize } from '$lib/attachments';
+	import { fmtSize } from '#lib/attachments.ts';
 
 	let {
 		name,

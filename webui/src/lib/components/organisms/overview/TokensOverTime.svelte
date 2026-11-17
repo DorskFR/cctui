@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { UsageBucket } from '@bindings/UsageBucket';
-	import { compact, usd } from '$lib/format';
-	import { m } from '$lib/paraglide/messages';
+	import { compact, usd } from '#lib/format.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { Text, Timestamp, formatTimestamp } from '@dorsk/tsumikit';
 	import {
 		bucketTotal,

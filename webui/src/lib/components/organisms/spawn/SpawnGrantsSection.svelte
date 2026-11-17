@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Checkbox } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import SpawnAddons from './SpawnAddons.svelte';
 	import SpawnContextRow from './SpawnContextRow.svelte';
 	import type { SpawnForm } from './spawnForm.svelte';

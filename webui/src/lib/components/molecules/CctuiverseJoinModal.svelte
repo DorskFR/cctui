@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { Button, Callout, Field, Input, Modal, Text, Textarea } from '@dorsk/tsumikit';
-	import { errMessage } from '$lib/api';
-	import { findInvite, joinInvite, type LinkView } from '$lib/cctuiverse';
-	import { m } from '$lib/paraglide/messages';
+	import { errMessage } from '#lib/api.ts';
+	import { findInvite, joinInvite, type LinkView } from '#lib/cctuiverse.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		sessionId,

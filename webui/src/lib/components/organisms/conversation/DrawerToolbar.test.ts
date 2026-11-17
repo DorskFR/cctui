@@ -280,7 +280,7 @@ describe('plugin pane toggles', () => {
 		expect(btn.classList.contains('on')).toBe(true);
 	});
 
-	// The header does import `$lib/plugins/*` for the per-session issue slot, so
+	// The header does import `#lib/plugins/*` for the per-session issue slot, so
 	// this guards the pane list and the toggle specifically, not the substring.
 	it('render nowhere else: the header lost its copy', () => {
 		expect(headerSource).not.toContain('data-journey="plugin"');

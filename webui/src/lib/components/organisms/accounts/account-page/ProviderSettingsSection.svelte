@@ -1,8 +1,8 @@
 <script lang="ts">
-	import type { AccountProvider, OAuthAccount } from '$lib/queries';
-	import { providerLabel } from '$lib/providers';
+	import type { AccountProvider, OAuthAccount } from '#lib/queries/index.ts';
+	import { providerLabel } from '#lib/providers.ts';
 	import { Card, Tabs } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import ProviderSettings from '../provider-drawer/ProviderSettings.svelte';
 	import type { PageId } from '../provider-drawer/pages.logic';
 

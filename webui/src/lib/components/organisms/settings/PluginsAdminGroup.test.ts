@@ -24,7 +24,7 @@ const endpoints = vi.hoisted(() => ({
 	uninstallPlugin: vi.fn(async () => undefined)
 }));
 const invalidateQueries = vi.hoisted(() => vi.fn(async () => undefined));
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	useAdminPlugins: () => query,
 	useAdminPluginCatalog: () => catalogQuery,
 	usePluginInstanceSettings: () => ({ data: undefined, isPending: true, isError: false }),
@@ -36,7 +36,7 @@ vi.mock('$lib/queries', () => ({
 		adminPluginSettings: (id: string) => ['admin', 'plugins', id, 'settings']
 	}
 }));
-vi.mock('$lib/clipboard', () => ({ copyText: vi.fn(async () => undefined) }));
+vi.mock('#lib/clipboard.ts', () => ({ copyText: vi.fn(async () => undefined) }));
 vi.mock('@tanstack/svelte-query', () => ({ useQueryClient: () => ({ invalidateQueries }) }));
 
 import PluginsAdminGroup from './PluginsAdminGroup.svelte';

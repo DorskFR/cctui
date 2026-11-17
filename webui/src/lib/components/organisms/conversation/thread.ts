@@ -1,6 +1,6 @@
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { ThreadSession } from '@bindings/ThreadSession';
-import { previousSessionId } from '$lib/followup';
+import { previousSessionId } from '#lib/followup.ts';
 
 export interface ThreadEntry {
 	id: string;

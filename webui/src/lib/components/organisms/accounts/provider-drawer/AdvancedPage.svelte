@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { Badge, Button, Field, IconButton, Input, Kbd, Select, Text, Textarea } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import Error from '$lib/components/atoms/Error.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import Error from '#lib/components/atoms/Error.svelte';
 	import { looseSettings } from './pages.logic';
-	import { usageProbeOptions } from '$lib/providers';
-	import { useUsageProbes } from '$lib/queries';
+	import { usageProbeOptions } from '#lib/providers.ts';
+	import { useUsageProbes } from '#lib/queries/index.ts';
 
 	let {
 		endpoint = false,

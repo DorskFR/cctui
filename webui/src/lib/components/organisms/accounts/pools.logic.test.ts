@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import type { AccountPoolView } from '@bindings/AccountPoolView';
-import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
+import type { AccountUsageEntry, OAuthAccount } from '#lib/queries/index.ts';
 import {
 	acceptsDrop,
 	exhaustedWindow,

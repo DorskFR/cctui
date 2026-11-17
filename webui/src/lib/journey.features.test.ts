@@ -6,7 +6,7 @@ import { ALL_FEATURES as SWITCHABLE } from './features.fixture';
 import { guideEntries } from './guides';
 import { GUIDE_FEATURES, offeredJourneys, publicJourneys, STEP_FEATURES } from './journey';
 
-vi.mock('$lib/queries/endpoints', () => ({ endpoints: {} }));
+vi.mock('#lib/queries/endpoints.ts', () => ({ endpoints: {} }));
 
 afterEach(() => setCapabilitiesForTest(null));
 

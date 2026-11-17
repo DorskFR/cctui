@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionEndReason } from '@bindings/SessionEndReason';
-import { endBadgeText } from '$lib/sessionEnd';
-import { sessionHref, shouldToast, toastDetail } from '$lib/sessionFailureToast';
+import { endBadgeText } from '#lib/sessionEnd.ts';
+import { sessionHref, shouldToast, toastDetail } from '#lib/sessionFailureToast.ts';
 import { parityFixture } from './fixtures';
 
 type Fixture = {

@@ -17,7 +17,7 @@ const machineList = [
 ];
 const dispatch = vi.fn();
 
-vi.mock("$lib/queries", () => {
+vi.mock("#lib/queries/index.ts", () => {
   const q = <T>(data: T) => ({ data, isLoading: false, isError: false });
   return {
     useSessions: () => ({ data: { sessions: [] } }),
@@ -49,7 +49,7 @@ vi.mock("$lib/queries", () => {
   };
 });
 
-vi.mock("$lib/settings.svelte", () => ({
+vi.mock("#lib/settings.svelte.ts", () => ({
   settings: {
     state: { display: { archiveShortcut: true } },
     lastDirFor: () => null,
@@ -59,7 +59,7 @@ vi.mock("$lib/settings.svelte", () => ({
   },
 }));
 
-vi.mock("$lib/ws.svelte", () => ({ ws: { sessions: [] } }));
+vi.mock("#lib/ws.svelte.ts", () => ({ ws: { sessions: [] } }));
 
 let component: ReturnType<typeof mount> | undefined;
 

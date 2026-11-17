@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ModelOption } from '@bindings/ModelOption';
-import { harnessModelsFallback } from '$lib/domainTables';
+import { harnessModelsFallback } from '#lib/domainTables.ts';
 import {
 	OTHER_MODEL,
 	customModelValue,

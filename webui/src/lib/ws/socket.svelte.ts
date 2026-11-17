@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { wsBase } from '../config';
 import { auth } from '../auth.svelte';
 import { backendHealth } from '../backendHealth.svelte';

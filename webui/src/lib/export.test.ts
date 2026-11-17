@@ -4,9 +4,9 @@ import type { SessionListItem } from "@bindings/SessionListItem";
 import {
   allFilter,
   defaultFilter,
-} from "$lib/components/organisms/conversation/filters";
-import type { MsgCategory } from "$lib/components/organisms/conversation/types";
-import { parityFixture } from "$lib/parity/fixtures";
+} from "#lib/components/organisms/conversation/filters.ts";
+import type { MsgCategory } from "#lib/components/organisms/conversation/types.ts";
+import { parityFixture } from "#lib/parity/fixtures.ts";
 import {
   buildConversationHtml,
   conversationToMarkdown,

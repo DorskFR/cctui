@@ -1,7 +1,7 @@
 <script lang="ts">
-	import AskQuestionCard from '$lib/components/organisms/AskQuestionCard.svelte';
-	import PlanCard from '$lib/components/organisms/PlanCard.svelte';
-	import TodoCard from '$lib/components/organisms/TodoCard.svelte';
+	import AskQuestionCard from '#lib/components/organisms/AskQuestionCard.svelte';
+	import PlanCard from '#lib/components/organisms/PlanCard.svelte';
+	import TodoCard from '#lib/components/organisms/TodoCard.svelte';
 	import { Button, EmptyState, Text } from '@dorsk/tsumikit';
 	import BoundaryLine from './BoundaryLine.svelte';
 	import ConversationLine from './ConversationLine.svelte';
@@ -14,8 +14,8 @@
 	import type { ConversationStream } from './stream.svelte';
 	import type { RenderWindow } from './jump';
 	import type { Line } from './types';
-	import type { PluginActionButton } from '$lib/plugins/types';
-	import { m } from '$lib/paraglide/messages';
+	import type { PluginActionButton } from '#lib/plugins/types.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { untrack } from 'svelte';
 
 	let {

@@ -1,8 +1,8 @@
 import type { QueryClient } from '@tanstack/svelte-query';
 import type { MachineRow } from '@bindings/MachineRow';
-import { endpoints } from '$lib/queries/endpoints';
-import { qk } from '$lib/queries/keys';
-import { hasFeature } from '$lib/features.svelte';
+import { endpoints } from '#lib/queries/endpoints.ts';
+import { qk } from '#lib/queries/keys.ts';
+import { hasFeature } from '#lib/features.svelte.ts';
 import { isLive } from './live';
 
 export { isLive };

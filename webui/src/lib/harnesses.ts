@@ -1,12 +1,12 @@
 // Pure derivations over the harness table: which harnesses a picker offers,
 // what a session's harness can do, which brand mark it wears and which
 // permission modes it can express. The table defaults to the shipped
-// `HARNESSES`; the store in `$lib/harnesses.svelte` hands in the served one.
+// `HARNESSES`; the store in `#lib/harnesses.svelte.ts` hands in the served one.
 import type { HarnessCapabilities } from '@bindings/HarnessCapabilities';
 import type { HarnessDescriptor } from '@bindings/HarnessDescriptor';
 import type { PermissionMode } from '@bindings/PermissionMode';
 import type { ProviderFamily } from '@bindings/ProviderFamily';
-import { HARNESSES, PERMISSION_MODES, providerInfo } from '$lib/domainTables';
+import { HARNESSES, PERMISSION_MODES, providerInfo } from '#lib/domainTables.ts';
 
 export type HarnessTable = readonly HarnessDescriptor[];
 

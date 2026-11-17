@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { Text } from '@dorsk/tsumikit';
-	import PageHead from '$lib/components/molecules/PageHead.svelte';
+	import PageHead from '#lib/components/molecules/PageHead.svelte';
 	import EventFeed from './EventFeed.svelte';
 	import EventFilterBar from './EventFilterBar.svelte';
-	import { DEFAULT_FILTERS, type EventFilters } from '$lib/events';
-	import { useMe } from '$lib/queries';
-	import { m } from '$lib/paraglide/messages';
+	import { DEFAULT_FILTERS, type EventFilters } from '#lib/events.ts';
+	import { useMe } from '#lib/queries/index.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let filters = $state<EventFilters>({ ...DEFAULT_FILTERS });
 	const me = useMe();

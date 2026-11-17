@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Button, Cluster, Modal, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import type { SessionsPage } from './sessionsPage.svelte';
 
 	// Asks what to do with the spawn form's current content before it is

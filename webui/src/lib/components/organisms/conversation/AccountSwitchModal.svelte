@@ -6,16 +6,16 @@
 	// soft-limit block (the limited binding is highlighted and preselected).
 	// Switching is a pure server-side rebind: the worker keeps running.
 	import { Button, Field, Modal, Select, Spinner, Text } from '@dorsk/tsumikit';
-	import type { SoftLimitBlock } from '$lib/ws.svelte';
+	import type { SoftLimitBlock } from '#lib/ws.svelte.ts';
 	import {
 		useSessionBindings,
 		type AccountProvider,
 		type OAuthAccount,
 		type SessionBinding
-	} from '$lib/queries';
-	import { providerFamily, providerLabel } from '$lib/providers';
-	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/queries/index.ts';
+	import { providerFamily, providerLabel } from '#lib/providers.ts';
+	import UsageBars from '#lib/components/molecules/UsageBars.svelte';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		sessionId,

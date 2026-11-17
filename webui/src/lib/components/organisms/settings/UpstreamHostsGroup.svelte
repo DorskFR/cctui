@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { Badge, Button, Input, Text } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import { endpoints } from '$lib/queries';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import { endpoints } from '#lib/queries/index.ts';
 	import type { UpstreamHostsInfo } from '@bindings/UpstreamHostsInfo';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { sourceLabel } from './serverSettings.logic';
 
 	let info = $state<UpstreamHostsInfo | null>(null);

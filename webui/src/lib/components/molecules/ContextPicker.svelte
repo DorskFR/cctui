@@ -2,7 +2,7 @@
 	// Fuzzy multi-select over context items. The kit's Combobox is single-pick,
 	// so a pick toggles the item and reopens the listbox.
 	import { Badge, Combobox, Input } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import {
 		chipsOf,
 		dropLast,

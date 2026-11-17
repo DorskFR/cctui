@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Dictation } from './dictation';
 
-vi.mock('$lib/api', () => ({ api: {} }));
+vi.mock('#lib/api.ts', () => ({ api: {} }));
 
 function stubMic() {
 	const track = { stop: vi.fn() };

@@ -11,12 +11,12 @@ const api = vi.hoisted(() => ({
 	setMachineHarnessAutoupdate: vi.fn(),
 	restartHarness: vi.fn()
 }));
-vi.mock('$lib/queries', () => ({ endpoints: api }));
-vi.mock('$lib/toast.svelte', () => ({ toasts: { ok: vi.fn(), error: vi.fn() } }));
-vi.mock('$lib/harnesses.svelte', () => ({ harnessTable: () => [] }));
+vi.mock('#lib/queries/index.ts', () => ({ endpoints: api }));
+vi.mock('#lib/toast.svelte.ts', () => ({ toasts: { ok: vi.fn(), error: vi.fn() } }));
+vi.mock('#lib/harnesses.svelte.ts', () => ({ harnessTable: () => [] }));
 
-import { ApiError } from '$lib/api';
-import { toasts } from '$lib/toast.svelte';
+import { ApiError } from '#lib/api.ts';
+import { toasts } from '#lib/toast.svelte.ts';
 import HarnessUpdateGroup from './HarnessUpdateGroup.svelte';
 
 let comp: ReturnType<typeof mount> | null = null;

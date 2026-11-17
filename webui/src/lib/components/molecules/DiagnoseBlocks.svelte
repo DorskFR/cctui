@@ -5,8 +5,8 @@
 		trimDetail,
 		type DiagnoseBlockSummary,
 		type DiagnoseOwnership
-	} from '$lib/diagnoseRows';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/diagnoseRows.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		blocks,

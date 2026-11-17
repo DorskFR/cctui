@@ -1,7 +1,7 @@
 <script lang="ts">
 	// `#` session-mention popover. Wraps a textarea (passed as children) and
 	// watches its caret: typing `#` opens a list of non-archived sessions (see
-	// $lib/mention), filtered by what follows the `#`. Up/Down move
+	// #lib/mention), filtered by what follows the `#`. Up/Down move
 	// the highlight, Enter/Tab or a tap picks, Escape closes. Picking replaces
 	// the `#query` with `#<id> (<name>) ` so the user can hand the id to their
 	// agent. The panel spans the wrapper's width: `placement="up"` pins it above
@@ -11,8 +11,8 @@
 	import type { Snippet } from 'svelte';
 	import { tick, untrack } from 'svelte';
 	import { Text } from '@dorsk/tsumikit';
-	import { clickOutside } from '$lib/clickOutside';
-	import { m } from '$lib/paraglide/messages';
+	import { clickOutside } from '#lib/clickOutside.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import {
 		applyMention,
 		filterMentions,
@@ -20,7 +20,7 @@
 		mentionableSessions,
 		moveSelection,
 		type MentionTrigger
-	} from '$lib/mention/mention';
+	} from '#lib/mention/mention.ts';
 
 	let {
 		value = $bindable(''),

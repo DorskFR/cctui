@@ -1,7 +1,7 @@
 <script lang="ts">
 	// A user turn spoken in live voice: the mic, then what was heard.
 	import MessageBubble from './MessageBubble.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		html,

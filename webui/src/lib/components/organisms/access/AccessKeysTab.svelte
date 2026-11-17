@@ -10,11 +10,11 @@
 		Text,
 		Timestamp
 	} from '@dorsk/tsumikit';
-	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
-	import { useUserActions, useUserKeys } from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { errMessage } from '$lib/api';
-	import { m } from '$lib/paraglide/messages';
+	import MachineBadge from '#lib/components/molecules/MachineBadge.svelte';
+	import { useUserActions, useUserKeys } from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { errMessage } from '#lib/api.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import KeyScopesModal from './KeyScopesModal.svelte';
 	import { keyIcon, scopeCells, splitRevoked, visibleRows } from './access.logic';
 

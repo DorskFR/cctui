@@ -2,9 +2,9 @@
 	import type { Snippet } from 'svelte';
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import type { PoolUsageView } from '@bindings/PoolUsageView';
-	import type { OAuthAccount } from '$lib/queries';
+	import type { OAuthAccount } from '#lib/queries/index.ts';
 	import { Fieldset, IconButton, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import { ACCOUNT_DRAG_MIME, acceptsDrop } from './pools.logic';
 	import { accountDrag } from './drag.svelte';
 	import PoolUsageGauges from './PoolUsageGauges.svelte';

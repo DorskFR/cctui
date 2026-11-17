@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import {
 	baseLocale,
 	getLocale,
@@ -20,7 +20,7 @@ export const LOCALE_LABELS: Record<Locale, string> = {
 };
 
 export function clampLocale(v: unknown): Locale | null {
-	return typeof v === 'string' && isLocale(v) ? (v as Locale) : null;
+	return typeof v === 'string' && isLocale(v) ? v as Locale : null;
 }
 
 // Runtime driver for the active UI language, mirroring theme.svelte.ts.

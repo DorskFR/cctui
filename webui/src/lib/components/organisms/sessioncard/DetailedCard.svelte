@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { statusBadgeTone } from '$lib/format';
-	import { sessionEndTitle } from '$lib/sessionEnd';
+	import { statusBadgeTone } from '#lib/format.ts';
+	import { sessionEndTitle } from '#lib/sessionEnd.ts';
 	import { Badge, Cluster, Stack, Timestamp } from '@dorsk/tsumikit';
 	import Badges from './Badges.svelte';
 	import Footer from './Footer.svelte';

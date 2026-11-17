@@ -20,7 +20,7 @@ import {
 	type LivePlan,
 	type SoftLimitBlock,
 	type ToolBlock
-} from '$lib/ws.svelte';
+} from '#lib/ws.svelte.ts';
 import { eventDedup, markLive, parseAsk, parseTodos, todoProgress as deriveTodoProgress } from './format';
 import { resultAnswers } from './lines';
 import {
@@ -32,8 +32,8 @@ import {
 } from './activity';
 import type { AskQuestion, TodoItem, TodoProgress } from './types';
 import { drawerTodos, isTaskEvent } from './taskList';
-import { endpoints } from '$lib/queries';
-import { newTurnId } from '$lib/turnid';
+import { endpoints } from '#lib/queries/index.ts';
+import { newTurnId } from '#lib/turnid.ts';
 
 // Fold a live ws event into the cached conversation tail. Returns `prev` by
 // identity when nothing changes, so a known event doesn't re-render the drawer.

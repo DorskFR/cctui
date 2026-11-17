@@ -4,11 +4,11 @@
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { Button, EmptyState, Spinner, Text } from '@dorsk/tsumikit';
 	import EventRow from './EventRow.svelte';
-	import { EVENT_PAGE, endpoints, qk, useEvents } from '$lib/queries';
-	import { appendPage, filterQuery, matchesFilters, mergeLive, nextCursor, type EventFilters } from '$lib/events';
-	import { ws } from '$lib/ws.svelte';
-	import { errMessage } from '$lib/api';
-	import { m } from '$lib/paraglide/messages';
+	import { EVENT_PAGE, endpoints, qk, useEvents } from '#lib/queries/index.ts';
+	import { appendPage, filterQuery, matchesFilters, mergeLive, nextCursor, type EventFilters } from '#lib/events.ts';
+	import { ws } from '#lib/ws.svelte.ts';
+	import { errMessage } from '#lib/api.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { filters }: { filters: EventFilters } = $props();
 

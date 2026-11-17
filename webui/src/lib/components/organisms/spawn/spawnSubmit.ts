@@ -1,8 +1,8 @@
 import { formatTimestamp } from '@dorsk/tsumikit';
-import { ApiError, errMessage } from '$lib/api';
+import { ApiError, errMessage } from '#lib/api.ts';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
-import { ws, type SpawnProbeHit } from '$lib/ws.svelte';
-import { toasts } from '$lib/toast.svelte';
+import { ws, type SpawnProbeHit } from '#lib/ws.svelte.ts';
+import { toasts } from '#lib/toast.svelte.ts';
 import {
 	drafts,
 	LAST_MACHINE,
@@ -10,20 +10,20 @@ import {
 	LAST_SPAWN_LABELS,
 	FOLLOWUP_ARCHIVE_SOURCE,
 	normalizeDir
-} from '$lib/drafts';
-import { machineMemoryKey, dispatchMemoryKey, entryFromForm } from '$lib/spawnMemory';
-import { settings } from '$lib/settings.svelte';
-import { m } from '$lib/paraglide/messages';
+} from '#lib/drafts.ts';
+import { machineMemoryKey, dispatchMemoryKey, entryFromForm } from '#lib/spawnMemory.ts';
+import { settings } from '#lib/settings.svelte.ts';
+import { m } from '#lib/paraglide/messages.js';
 import { buildDispatchBody } from './dispatchBody';
 import { attachLabelsTo } from './labelAttach';
 import { findSpawnedSession } from './spawnMatch';
 import { envMap } from './spawnBody';
 import type { SpawnForm } from './spawnForm.svelte';
-import { findInvite, JOIN_PROMPT, stripInvite } from '$lib/cctuiverse';
-import { joinAfterSpawn } from '$lib/cctuiverseJoin';
-import { cctuiverseConfig } from '$lib/cctuiverseConfig.svelte';
-import { pendingSpawns } from '$lib/pendingSpawns.svelte';
-import { hasFeature } from '$lib/features.svelte';
+import { findInvite, JOIN_PROMPT, stripInvite } from '#lib/cctuiverse.ts';
+import { joinAfterSpawn } from '#lib/cctuiverseJoin.ts';
+import { cctuiverseConfig } from '#lib/cctuiverseConfig.svelte.ts';
+import { pendingSpawns } from '#lib/pendingSpawns.svelte.ts';
+import { hasFeature } from '#lib/features.svelte.ts';
 
 /** Identity of the form's file set: what decides whether a save has to ship
  *  the bytes again. */

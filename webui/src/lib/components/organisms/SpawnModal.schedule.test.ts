@@ -2,8 +2,8 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SpawnModal from "./SpawnModal.svelte";
-import { spawnSlotKey } from "$lib/drafts";
-import { attachmentStore } from "$lib/attachmentStore";
+import { spawnSlotKey } from "#lib/drafts.ts";
+import { attachmentStore } from "#lib/attachmentStore.ts";
 import { schedulePresets } from "./conversation/scheduleTimes";
 
 let machineList: Array<Record<string, unknown>> = [
@@ -22,7 +22,7 @@ const spawn = vi.fn();
 const updateDraft = vi.fn();
 const scheduleDraftLaunch = vi.fn();
 
-vi.mock("$lib/queries", () => {
+vi.mock("#lib/queries/index.ts", () => {
   const q = <T>(data: T) => ({ data, isLoading: false, isError: false });
   return {
     useMachineResources: () => q(machineList),
@@ -59,7 +59,7 @@ vi.mock("$lib/queries", () => {
   };
 });
 
-vi.mock("$lib/settings.svelte", () => ({
+vi.mock("#lib/settings.svelte.ts", () => ({
   settings: {
     state: { display: { archiveShortcut: true } },
     lastDirFor: () => null,
@@ -69,7 +69,7 @@ vi.mock("$lib/settings.svelte", () => ({
   },
 }));
 
-vi.mock("$lib/ws.svelte", () => ({ ws: { sessions: [] } }));
+vi.mock("#lib/ws.svelte.ts", () => ({ ws: { sessions: [] } }));
 
 const SLOT = spawnSlotKey("m-uuid-1", "/w");
 let component: ReturnType<typeof mount> | undefined;

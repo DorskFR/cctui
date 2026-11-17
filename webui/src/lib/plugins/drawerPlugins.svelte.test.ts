@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { DrawerPlugins } from './drawerPlugins.svelte';
 import { PluginLoader } from './loader.svelte';
 import type { CctuiPluginModule, PluginInfo } from './types';
-import type { Line } from '$lib/components/organisms/conversation/types';
+import type { Line } from '#lib/components/organisms/conversation/types.ts';
 
 const info = (id: string, web: string | null = `/plugins/${id}/web/index.js`): PluginInfo => ({
 	id,

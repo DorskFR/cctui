@@ -2,14 +2,14 @@
 import { mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Feature } from '@bindings/Feature';
-import { setCapabilitiesForTest } from '$lib/features.svelte';
+import { setCapabilitiesForTest } from '#lib/features.svelte.ts';
 import FirstRunChecklist from './FirstRunChecklist.svelte';
 
 const asked = vi.hoisted(() => ({ probes: [] as string[], replayed: [] as string[] }));
 
 vi.mock('@tanstack/svelte-query', () => ({ useQueryClient: () => ({}) }));
 
-vi.mock('$lib/journeys/probes', () => ({
+vi.mock('#lib/journeys/probes.ts', () => ({
 	createProbes: () =>
 		new Proxy(
 			{},
@@ -22,7 +22,7 @@ vi.mock('$lib/journeys/probes', () => ({
 		)
 }));
 
-vi.mock('$lib/guides', () => ({
+vi.mock('#lib/guides.ts', () => ({
 	buildCurriculum: () => ({ sections: [] }),
 	guideEntries: () => [],
 	guideOptions: () => ({}),
@@ -32,12 +32,12 @@ vi.mock('$lib/guides', () => ({
 	}
 }));
 
-vi.mock('$lib/journey', () => ({
+vi.mock('#lib/journey.ts', () => ({
 	GUIDES_ROUTE: '/settings/guides',
 	startFailureMessage: () => undefined
 }));
 
-vi.mock('$lib/settings.svelte', () => ({
+vi.mock('#lib/settings.svelte.ts', () => ({
 	settings: { onboarding: { checklistDismissed: false }, setOnboarding: () => {} }
 }));
 

@@ -1,4 +1,4 @@
-import type { AccountUsageEntry, UsagePace, UsageWindow } from '$lib/queries';
+import type { AccountUsageEntry, UsagePace, UsageWindow } from '#lib/queries/index.ts';
 
 /** Fill colour of a battery bar, by headroom left in the window. */
 export type HeadroomTone = 'ok' | 'warn' | 'danger' | 'unknown';

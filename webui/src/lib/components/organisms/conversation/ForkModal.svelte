@@ -3,11 +3,11 @@
 	// session, optionally changing model/effort — also the "reopen as a new
 	// conversation" path for archived sessions and the supported "switch
 	// model" substitute for claude (no in-place switch).
-	import { compact } from '$lib/format';
+	import { compact } from '#lib/format.ts';
 	import { Button, Field, Modal, Select, Text, Textarea } from '@dorsk/tsumikit';
-	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
-	import type { ModelOption } from '$lib/harnessModels';
-	import { m } from '$lib/paraglide/messages';
+	import ModelPicker from '#lib/components/molecules/ModelPicker.svelte';
+	import type { ModelOption } from '#lib/harnessModels.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		archived,

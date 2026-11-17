@@ -1,8 +1,8 @@
 <script lang="ts">
 	import type { AdapterId } from '@bindings/AdapterId';
-	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
-	import { brandMark, familyAccent } from '$lib/harnesses';
-	import { harnessTable } from '$lib/harnesses.svelte';
+	import BrandLogo from '#lib/components/atoms/BrandLogo.svelte';
+	import { brandMark, familyAccent } from '#lib/harnesses.ts';
+	import { harnessTable } from '#lib/harnesses.svelte.ts';
 
 	// Brand logo wrapped in a span tinted by the harness family (Anthropic =
 	// amber, OpenAI = blue, Fireworks = violet, unknown = neutral). Shared by the

@@ -1,4 +1,4 @@
-import type { ProviderIndicator, ProviderStatus } from "$lib/queries";
+import type { ProviderIndicator, ProviderStatus } from "#lib/queries/index.ts";
 
 /** Severity order, worst last. `unknown` is not a severity — it never ranks. */
 const ORDER: ProviderIndicator[] = ["none", "minor", "major", "critical"];

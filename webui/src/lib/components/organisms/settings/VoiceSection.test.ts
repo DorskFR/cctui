@@ -4,8 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const query = vi.hoisted(() => ({ data: undefined as Record<string, unknown> | undefined }));
 const voiceVoices = vi.hoisted(() => vi.fn(async () => ({ voices: ['af_heart'] })));
-vi.mock('$lib/queries', () => ({ useVoiceConfig: () => query, endpoints: { voiceVoices } }));
-vi.mock('$lib/voice/devices', () => ({ canPickSpeaker: () => true, listDevices: async () => [] }));
+vi.mock('#lib/queries/index.ts', () => ({ useVoiceConfig: () => query, endpoints: { voiceVoices } }));
+vi.mock('#lib/voice/devices.ts', () => ({ canPickSpeaker: () => true, listDevices: async () => [] }));
 
 import VoiceSection from './VoiceSection.svelte';
 

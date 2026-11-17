@@ -2,7 +2,7 @@
 import { mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Feature } from "@bindings/Feature";
-import { setCapabilitiesForTest } from "$lib/features.svelte";
+import { setCapabilitiesForTest } from "#lib/features.svelte.ts";
 import SpawnModal from "./SpawnModal.svelte";
 
 const calls = vi.hoisted(() => ({
@@ -18,7 +18,7 @@ const calls = vi.hoisted(() => ({
 let dispatchers: string[] = [];
 let recentDirs: string[] = [];
 
-vi.mock("$lib/queries", () => {
+vi.mock("#lib/queries/index.ts", () => {
   const q = <T>(data: T) => ({ data, isLoading: false, isError: false });
   return {
     useMachineResources: (enabled: () => boolean) => {
@@ -96,7 +96,7 @@ vi.mock("$lib/queries", () => {
   };
 });
 
-vi.mock("$lib/settings.svelte", () => ({
+vi.mock("#lib/settings.svelte.ts", () => ({
   settings: {
     state: { display: { archiveShortcut: true } },
     voice: { autoSend: false },
@@ -107,7 +107,7 @@ vi.mock("$lib/settings.svelte", () => ({
   },
 }));
 
-vi.mock("$lib/ws.svelte", () => ({ ws: { sessions: [] } }));
+vi.mock("#lib/ws.svelte.ts", () => ({ ws: { sessions: [] } }));
 
 const ALL: Feature[] = [
   "machine_spawn",

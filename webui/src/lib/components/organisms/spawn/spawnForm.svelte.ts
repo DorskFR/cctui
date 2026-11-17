@@ -1,4 +1,4 @@
-import { errMessage } from '$lib/api';
+import { errMessage } from '#lib/api.ts';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
 import type { SessionProfile } from '@bindings/SessionProfile';
 import {
@@ -13,9 +13,9 @@ import {
 	useProfiles,
 	useProfileActions,
 	endpoints
-} from '$lib/queries';
-import { toasts } from '$lib/toast.svelte';
-import { submitChordLabel } from '$lib/platform';
+} from '#lib/queries/index.ts';
+import { toasts } from '#lib/toast.svelte.ts';
+import { submitChordLabel } from '#lib/platform.ts';
 import {
 	drafts,
 	promptHistory,
@@ -26,13 +26,13 @@ import {
 	LAST_MACHINE,
 	FOLLOWUP_ARCHIVE_SOURCE,
 	normalizeDir
-} from '$lib/drafts';
-import { recordProfileUse, PROFILE_USES } from '$lib/spawnMemory';
-import { attachmentStore } from '$lib/attachmentStore';
-import { PromptAttachments } from '$lib/promptAttachments.svelte';
-import { BRIEF_FILE_NAME, FOLLOWUP_RELATION } from '$lib/followup';
-import { settings } from '$lib/settings.svelte';
-import { m } from '$lib/paraglide/messages';
+} from '#lib/drafts.ts';
+import { recordProfileUse, PROFILE_USES } from '#lib/spawnMemory.ts';
+import { attachmentStore } from '#lib/attachmentStore.ts';
+import { PromptAttachments } from '#lib/promptAttachments.svelte.ts';
+import { BRIEF_FILE_NAME, FOLLOWUP_RELATION } from '#lib/followup.ts';
+import { settings } from '#lib/settings.svelte.ts';
+import { m } from '#lib/paraglide/messages.js';
 import type { EnvRow, Form, SpawnPrefill, Target } from './types';
 import { accountBacksAdapter, providerForAdapter, NO_ACCOUNT, poolName } from './options';
 import {
@@ -46,9 +46,9 @@ import {
 import { blank, seedForm } from './spawnSeed';
 import { SpawnRecall } from './spawnRecall';
 import { buildSpawnBody, draftBody, envMap } from './spawnBody';
-import { withoutInvite } from '$lib/cctuiverse';
-import { withUserSpan } from '$lib/telemetry';
-import { hasFeature } from '$lib/features.svelte';
+import { withoutInvite } from '#lib/cctuiverse.ts';
+import { withUserSpan } from '#lib/telemetry.ts';
+import { hasFeature } from '#lib/features.svelte.ts';
 import {
 	autosave,
 	dispatchToK8s,

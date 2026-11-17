@@ -3,7 +3,7 @@
 // "burst"). The window runs from the newest agent activity: the server's last
 // billed turn, or a later agent event this pane saw stream in. Send routes off
 // the same state the button shows.
-import { now as clockNow } from "$lib/clock.svelte";
+import { now as clockNow } from "#lib/clock.svelte.ts";
 import { cacheTtlMs } from "./cacheTtl";
 
 // Final-minute countdown window.

@@ -2,7 +2,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 import header from './DrawerHeader.svelte?raw';
-import RoomBadge from '$lib/components/molecules/RoomBadge.svelte';
+import RoomBadge from '#lib/components/molecules/RoomBadge.svelte';
 
 const markup = header.slice(header.indexOf('</script>'));
 const title = markup.slice(markup.indexOf('<div class="dtitle">'), markup.indexOf('<FontScalePicker'));

@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { Tooltip } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import AccountAvatar from './AccountAvatar.svelte';
-	import { useAccounts } from '$lib/queries';
+	import { useAccounts } from '#lib/queries/index.ts';
 
 	// Which OAuth account a session runs under: the account's identity mark
 	// (owner emoji, else its colour square) next to the machine/session name.

@@ -5,14 +5,14 @@
 	// so the description only points there.
 	import { Input, Link, SegmentedControl, Select, Switch } from '@dorsk/tsumikit';
 	import type { SegmentOption } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
 	import StorageSection from './StorageSection.svelte';
-	import { settings } from '$lib/settings.svelte';
-	import { m } from '$lib/paraglide/messages';
-	import { clampFollowupWhenCold } from '$lib/followup';
-	import { hasFeature } from '$lib/features.svelte';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
+	import { clampFollowupWhenCold } from '#lib/followup.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
 	import {
 		effectiveGroupBy,
 		GROUP_DIMENSIONS,

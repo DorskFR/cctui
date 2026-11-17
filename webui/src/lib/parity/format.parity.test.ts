@@ -10,7 +10,7 @@ import {
 	statusBadgeTone,
 	uptime,
 	usd
-} from '$lib/format';
+} from '#lib/format.ts';
 import { parityFixture } from './fixtures';
 
 type Fixture = {

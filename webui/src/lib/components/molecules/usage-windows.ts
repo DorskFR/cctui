@@ -1,4 +1,4 @@
-import type { SoftLimitConfig, UsagePace, UsageWindow } from '$lib/queries';
+import type { SoftLimitConfig, UsagePace, UsageWindow } from '#lib/queries/index.ts';
 
 /** One merged row for the usage view: an observed window (or a configured-but-
  *  unobserved key with `utilization === null`) plus its soft-limit config. */

@@ -2,7 +2,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { THEMES } from '$lib/theme.svelte';
+import { THEMES } from '#lib/theme.svelte.ts';
 
 const KIT = 'node_modules/@dorsk/tsumikit/dist/styles';
 const read = (p: string) => readFileSync(p, 'utf8');

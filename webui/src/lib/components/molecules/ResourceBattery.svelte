@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { now as clockNow } from '$lib/clock.svelte';
+	import { now as clockNow } from '#lib/clock.svelte.ts';
 	// Header resource strip: one cell per machine ticked in Settings › Resource
 	// monitoring, three battery-style bars (CPU, memory, disk) toned green /
 	// orange / red at a glance. On a narrow screen each machine collapses to a
@@ -7,12 +7,12 @@
 	// old, non-Linux) shows hatched bars and "?", never a misleading 0 %.
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { Popover, Text } from '@dorsk/tsumikit';
-	import { qk, useMachineResources } from '$lib/queries';
+	import { qk, useMachineResources } from '#lib/queries/index.ts';
 	import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
-	import { settings } from '$lib/settings.svelte';
-	import { ws } from '$lib/ws.svelte';
-	import { hashHue } from '$lib/format';
-	import { m } from '$lib/paraglide/messages';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { ws } from '#lib/ws.svelte.ts';
+	import { hashHue } from '#lib/format.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import {
 		fmtBytes,
 		isStale,

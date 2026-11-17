@@ -7,7 +7,7 @@ import type { EventRecord } from '@bindings/EventRecord';
 type Updater = (old: EventPage | undefined) => EventPage | undefined;
 const handlers = vi.hoisted(() => [] as Array<(ev: EventRecord) => void>);
 const setQueryData = vi.hoisted(() => vi.fn());
-vi.mock('$lib/ws.svelte', () => ({
+vi.mock('#lib/ws.svelte.ts', () => ({
 	ws: {
 		onEvent: (fn: (ev: EventRecord) => void) => {
 			handlers.push(fn);
@@ -15,7 +15,7 @@ vi.mock('$lib/ws.svelte', () => ({
 		}
 	}
 }));
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	qk: { sessionEvents: (id: string) => ['events', 'session', id] },
 	useSessionEvents: () => ({ data: undefined, isPending: true, isError: false })
 }));

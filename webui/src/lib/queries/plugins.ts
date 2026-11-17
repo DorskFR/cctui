@@ -1,7 +1,7 @@
 import { createQuery } from "@tanstack/svelte-query";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
-import { hasFeature } from "$lib/features.svelte";
+import { hasFeature } from "#lib/features.svelte.ts";
 
 /** Installed runtime plugins; empty when the server has no plugins dir. */
 export const usePlugins = () =>

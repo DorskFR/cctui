@@ -6,8 +6,8 @@
 	// upstream — strictly a video feed.
 	import { onMount } from 'svelte';
 	import { IconButton } from '@dorsk/tsumikit';
-	import { ws } from '$lib/ws.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { ws } from '#lib/ws.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { resolveTerminalFont, resolveTerminalBg, BUNDLED_TERMINAL_FONT } from './terminalFont';
 	import { fitScale, PHONE_QUERY } from './terminalFit';
 	import { PtyStream, loadTerminalFont } from './terminalStream.svelte';
@@ -53,7 +53,7 @@
 				Promise.all([
 					import('@xterm/xterm'),
 					import('@xterm/xterm/css/xterm.css'),
-					import('$lib/styles/terminal-font.css')
+					import('#lib/styles/terminal-font.css')
 				]),
 				// Measure glyph width only after the bundled font is loaded, else
 				// xterm sizes cells from a fallback font and glyphs come out

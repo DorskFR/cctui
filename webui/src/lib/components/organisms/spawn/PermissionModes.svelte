@@ -1,8 +1,8 @@
 <script lang="ts">
 	import type { PermissionMode } from '@bindings/PermissionMode';
 	import { AutoGrid, OptionButton, Text } from '@dorsk/tsumikit';
-	import { modesFor } from '$lib/components/organisms/spawn/options';
-	import { m } from '$lib/paraglide/messages';
+	import { modesFor } from '#lib/components/organisms/spawn/options.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		value,

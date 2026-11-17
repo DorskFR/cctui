@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { goto } from '$app/navigation';
 import type { QueryClient } from '@tanstack/svelte-query';
 import type { IR, Journey } from '@dorsk/journey';
@@ -35,7 +35,7 @@ import { type DeckCard, deckPresenter } from './welcomeDeck.svelte';
  *  better than a blank card. */
 export function translate(id: string): string | undefined {
 	const message = (m as Record<string, unknown>)[id];
-	return typeof message === 'function' ? (message() as string) : undefined;
+	return typeof message === 'function' ? message() as string : undefined;
 }
 
 /** The runtime interpolates `{i}`/`{n}`/`{route}` itself, so paraglide has to
@@ -237,14 +237,14 @@ export function viewportVariant(
 
 /** `ok` means the run reached its last step. A run the user exited is `aborted`
  *  and says nothing; a run that died on an expectation is `failed` and must. */
-export type StartOutcome =
-	| { ok: true; result: RunResult }
-	| { ok: false; reason: 'unknown' }
-	| { ok: false; reason: 'locked'; blockedBy: string[] }
-	| { ok: false; reason: 'not-ready'; hint: string }
-	| { ok: false; reason: 'missing'; params: string[] }
-	| { ok: false; reason: 'aborted'; result: RunResult }
-	| { ok: false; reason: 'failed'; result: RunResult };
+export type StartOutcome = 
+	{ ok: true; result: RunResult } |
+	{ ok: false; reason: 'unknown' } |
+	{ ok: false; reason: 'locked'; blockedBy: string[] } |
+	{ ok: false; reason: 'not-ready'; hint: string } |
+	{ ok: false; reason: 'missing'; params: string[] } |
+	{ ok: false; reason: 'aborted'; result: RunResult } |
+	{ ok: false; reason: 'failed'; result: RunResult };
 
 export interface StartGuideOptions {
 	/** Titles of the curriculum prerequisites that are not done yet. A non-empty
@@ -351,10 +351,9 @@ export function mountJourneys(qc: QueryClient): Promise<void> {
 			if (!api) throw new Error('journey runtime is not mounted yet');
 			return api;
 		};
-		const fallback = () =>
-			(overlay ??= withFieldEnter(
-				withActionHint(guidePresenter(self().overlay, translator(() => self().strings())), self().overlay)
-			));
+
+		const fallback = () => overlay ??= withFieldEnter(withActionHint(guidePresenter(self().overlay, translator(() => self().strings())), self().overlay));
+
 		const deck = deckPresenter({
 			cards: () => deckCards(self()),
 			markSeen: () => markSeen(self()),
@@ -410,8 +409,13 @@ export async function startGuide(id: string, opts: StartGuideOptions = {}): Prom
 	const ir = offeredJourneys().find((j) => j.id === id);
 	if (!ir) return { ok: false, reason: 'unknown' };
 	if (opts.blockedBy?.length) return { ok: false, reason: 'locked', blockedBy: [...opts.blockedBy] };
-	if (!(await guideReady(id))) {
-		return { ok: false, reason: 'not-ready', hint: readinessHint(id) ?? m.journey_unavailable() };
+
+	if (!await guideReady(id)) {
+		return {
+			ok: false,
+			reason: 'not-ready',
+			hint: readinessHint(id) ?? m.journey_unavailable()
+		};
 	}
 	const params = await guideParams(host.qc);
 	const missing = requiredParams(ir).filter((p) => !(p in params));

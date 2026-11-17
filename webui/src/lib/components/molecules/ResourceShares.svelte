@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { errMessage } from '$lib/api';
-	import { useResourceShares, useResourceShareActions } from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
+	import { errMessage } from '#lib/api.ts';
+	import { useResourceShares, useResourceShareActions } from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
 	import { Button, Input, Select, Text, Timestamp } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	// "Shared with" section for any shareable resource: lists live
 	// grants, a user-picker (login or UUID) to grant `use` — or one of `actions`

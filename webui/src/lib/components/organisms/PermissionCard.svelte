@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { renderMarkdown } from '$lib/markdown';
-	import type { PermReq } from '$lib/ws.svelte';
+	import { renderMarkdown } from '#lib/markdown.ts';
+	import type { PermReq } from '#lib/ws.svelte.ts';
 	import { Badge, Button, Card, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		req,

@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { Input, Text } from '@dorsk/tsumikit';
-	import SoftLimit from '$lib/components/molecules/SoftLimit.svelte';
-	import { m } from '$lib/paraglide/messages';
-	import type { UsageWindow } from '$lib/queries';
+	import SoftLimit from '#lib/components/molecules/SoftLimit.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import type { UsageWindow } from '#lib/queries/index.ts';
 	import type { SoftEdit } from '../account-editor.logic';
-	import { isUsdKey } from '$lib/components/molecules/usage-windows';
+	import { isUsdKey } from '#lib/components/molecules/usage-windows.ts';
 
 	let {
 		rows,

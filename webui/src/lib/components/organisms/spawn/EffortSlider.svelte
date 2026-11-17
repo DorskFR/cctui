@@ -3,7 +3,7 @@
 	// default); the kit Slider snaps to each named level and its marks are the
 	// tick labels, clickable.
 	import { Field, Slider } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		id,

@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { mount, unmount } from 'svelte';
 import type { SessionListItem } from '@bindings/SessionListItem';
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 import Badges from './Badges.svelte';
 import type { SessionView } from './view';
 

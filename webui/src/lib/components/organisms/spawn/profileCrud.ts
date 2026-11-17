@@ -1,6 +1,6 @@
-import { errMessage } from '$lib/api';
-import { toasts } from '$lib/toast.svelte';
-import { m } from '$lib/paraglide/messages';
+import { errMessage } from '#lib/api.ts';
+import { toasts } from '#lib/toast.svelte.ts';
+import { m } from '#lib/paraglide/messages.js';
 import type { ProfileSpecForm } from './profiles';
 import type { SpawnForm } from './spawnForm.svelte';
 

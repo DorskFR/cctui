@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	let { pending }: { pending: { file: File }[] } = $props();
 </script>
 

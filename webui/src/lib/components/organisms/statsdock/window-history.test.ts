@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect } from 'vitest';
-import type { UsageHistorySample } from '$lib/queries';
+import type { UsageHistorySample } from '#lib/queries/index.ts';
 import { polyline, wastedPct, windowLines } from './window-history';
 
 const sample = (sampledAt: string, resetsAt: string, utilization: number): UsageHistorySample => ({

@@ -1,14 +1,14 @@
 <script lang="ts">
 	import type { HiddenOwner } from '@bindings/HiddenOwner';
 	import { Button, EmptyState } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
-	import { errMessage } from '$lib/api';
-	import { ownerLabel, sortedOwners } from '$lib/hiddenOwners';
-	import { useHiddenOwnerActions, useHiddenOwners } from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
+	import { errMessage } from '#lib/api.ts';
+	import { ownerLabel, sortedOwners } from '#lib/hiddenOwners.ts';
+	import { useHiddenOwnerActions, useHiddenOwners } from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { isAdmin = false }: { isAdmin?: boolean } = $props();
 

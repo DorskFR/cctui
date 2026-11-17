@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { OAuthAccount } from '$lib/queries';
+import type { OAuthAccount } from '#lib/queries/index.ts';
 import {
 	accountAdapters,
 	accountBacksAdapter,
@@ -9,8 +9,8 @@ import {
 	effectiveAdapterFor,
 	providerForAdapter,
 	staleAccountPick
-} from '$lib/components/organisms/spawn/options';
-import { headlinePct } from '$lib/components/molecules/usage-battery.logic';
+} from '#lib/components/organisms/spawn/options.ts';
+import { headlinePct } from '#lib/components/molecules/usage-battery.logic.ts';
 import { parityFixture } from './fixtures';
 
 type Providers = string[] | null;

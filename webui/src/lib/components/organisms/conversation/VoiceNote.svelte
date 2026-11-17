@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { settings } from '$lib/settings.svelte';
-	import { notify } from '$lib/notify.svelte';
-	import { m } from '$lib/paraglide/messages';
-	import { routeToSpeaker } from '$lib/voice/devices';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { notify } from '#lib/notify.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
+	import { routeToSpeaker } from '#lib/voice/devices.ts';
 	import { claimAnnounce, formatClock, voiceNoteUrl } from './voiceNote';
 
 	let {

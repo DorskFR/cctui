@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Button, Modal, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import { copyText } from '$lib/clipboard';
+	import { m } from '#lib/paraglide/messages.js';
+	import { copyText } from '#lib/clipboard.ts';
 
 	let { title, secret, onclose }: { title: string; secret: string; onclose: () => void } =
 		$props();

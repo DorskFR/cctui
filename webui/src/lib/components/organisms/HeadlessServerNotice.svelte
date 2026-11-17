@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Card, Container, Heading, Stack, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 </script>
 
 <main class="headless-notice">

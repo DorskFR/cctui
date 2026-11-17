@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { Spinner, Text } from '@dorsk/tsumikit';
-	import PageHead from '$lib/components/molecules/PageHead.svelte';
-	import FailedDispatchCard from '$lib/components/molecules/FailedDispatchCard.svelte';
-	import { errMessage } from '$lib/api';
-	import { useFailedDispatchHistory, useRedispatch } from '$lib/queries/failedDispatches';
-	import { m } from '$lib/paraglide/messages';
+	import PageHead from '#lib/components/molecules/PageHead.svelte';
+	import FailedDispatchCard from '#lib/components/molecules/FailedDispatchCard.svelte';
+	import { errMessage } from '#lib/api.ts';
+	import { useFailedDispatchHistory, useRedispatch } from '#lib/queries/failedDispatches.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	const history = useFailedDispatchHistory();
 	const redispatch = useRedispatch();

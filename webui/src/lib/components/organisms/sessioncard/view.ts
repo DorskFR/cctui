@@ -1,11 +1,11 @@
 import type { ContextCounts } from '@bindings/ContextCounts';
 import type { Label } from '@bindings/Label';
 import type { SessionListItem } from '@bindings/SessionListItem';
-import { escapeHtml } from '$lib/markdown';
-import { m } from '$lib/paraglide/messages';
-import { highlightTerms } from '$lib/search';
-import { type SessionEnd, sessionEnd } from '$lib/sessionEnd';
-import { displayNameOf } from '$lib/sessionName';
+import { escapeHtml } from '#lib/markdown.ts';
+import { m } from '#lib/paraglide/messages.js';
+import { highlightTerms } from '#lib/search.ts';
+import { type SessionEnd, sessionEnd } from '#lib/sessionEnd.ts';
+import { displayNameOf } from '#lib/sessionName.ts';
 import {
 	type ToolActivity,
 	branchOf,

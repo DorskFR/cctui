@@ -119,6 +119,10 @@ export async function stubApi(page: Page, sessions: unknown[], opts: StubOptions
 		// `null`, not the generic `[]`: a truthy body renders the guard step chip.
 		if (/^\/sessions\/[^/]+\/guard$/.test(path)) return json(null);
 		if (/^\/sessions\/[^/]+\/hook-policy$/.test(path)) return json({ rules: [], status: null });
+		// Fixed `/sessions/<name>` endpoints, ahead of the `/sessions/:id` match.
+		if (['/sessions/recent-dirs', '/sessions/dispatchers', '/sessions/search/values'].includes(path))
+			return json([]);
+		if (path === '/sessions/stats/usage') return json({ granularity: 'day', buckets: [], models: [], heatmap: [] });
 		if (path === '/sessions' || path.startsWith('/sessions/search'))
 			return json({ sessions, total: sessions.length });
 		if (/^\/sessions\/[^/]+\/conversation/.test(path)) {

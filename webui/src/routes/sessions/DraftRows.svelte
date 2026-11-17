@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import SessionCard from '$lib/components/organisms/SessionCard.svelte';
+	import SessionCard from '#lib/components/organisms/SessionCard.svelte';
 	import { draftPreview } from './sessions.logic';
 	import type { SessionsPage } from './sessionsPage.svelte';
 

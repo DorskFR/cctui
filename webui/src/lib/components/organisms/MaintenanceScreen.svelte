@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Button, Container, EmptyState, Stack, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import { now } from '$lib/clock.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import { now } from '#lib/clock.svelte.ts';
 
 	let {
 		nextRetryAt,

@@ -16,15 +16,15 @@
 	import ThinkingBubble from './ThinkingBubble.svelte';
 	import TurnSummaryFooter from './TurnSummaryFooter.svelte';
 	import UserAttachments from './UserAttachments.svelte';
-	import { hasFeature } from '$lib/features.svelte';
-	import PluginMessageActions from '$lib/components/molecules/PluginMessageActions.svelte';
-	import type { PluginActionButton } from '$lib/plugins/types';
+	import { hasFeature } from '#lib/features.svelte.ts';
+	import PluginMessageActions from '#lib/components/molecules/PluginMessageActions.svelte';
+	import type { PluginActionButton } from '#lib/plugins/types.ts';
 	import type { Line } from './types';
-	import { m } from '$lib/paraglide/messages';
-	import { settings } from '$lib/settings.svelte';
-	import { sessionHref } from '$lib/sessionFailureToast';
-	import { renderImageMarkers } from '$lib/markdown';
-	import { renderResultImages } from '$lib/resultImages';
+	import { m } from '#lib/paraglide/messages.js';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { sessionHref } from '#lib/sessionFailureToast.ts';
+	import { renderImageMarkers } from '#lib/markdown.ts';
+	import { renderResultImages } from '#lib/resultImages.ts';
 
 	let {
 		ln,

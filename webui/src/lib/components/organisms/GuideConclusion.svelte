@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Badge, Button, Heading, Modal, Stack, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		title,

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { HeatmapCell } from '@bindings/HeatmapCell';
-	import { getLocale } from '$lib/paraglide/runtime';
-	import { m } from '$lib/paraglide/messages';
+	import { getLocale } from '#lib/paraglide/runtime.js';
+	import { m } from '#lib/paraglide/messages.js';
 	import { Text } from '@dorsk/tsumikit';
 	import { buildHeatGrid } from './usage-analytics';
 

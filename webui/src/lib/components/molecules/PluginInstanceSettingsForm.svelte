@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { Badge, Button, Callout, EmptyState, Field, Input, Text } from '@dorsk/tsumikit';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import { copyText } from '$lib/clipboard';
-	import { endpoints, qk, usePluginInstanceSettings } from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { copyText } from '#lib/clipboard.ts';
+	import { endpoints, qk, usePluginInstanceSettings } from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { pluginId }: { pluginId: string } = $props();
 

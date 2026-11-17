@@ -1,9 +1,9 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { EmptyState } from '@dorsk/tsumikit';
-	import ConversationPane from '$lib/components/organisms/ConversationPane.svelte';
-	import { fittingPaneCount, tileLayout } from '$lib/tiles';
-	import { m } from '$lib/paraglide/messages';
+	import ConversationPane from '#lib/components/organisms/ConversationPane.svelte';
+	import { fittingPaneCount, tileLayout } from '#lib/tiles.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		sessions,

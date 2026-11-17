@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { useAccounts, useRedirectChips } from '$lib/queries';
-	import AccountCard from '$lib/components/organisms/AccountCard.svelte';
+	import { useAccounts, useRedirectChips } from '#lib/queries/index.ts';
+	import AccountCard from '#lib/components/organisms/AccountCard.svelte';
 	import { Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	// Every account the viewer can see, as the same organism the Accounts
 	// screen shows, in its read-only gauge form.

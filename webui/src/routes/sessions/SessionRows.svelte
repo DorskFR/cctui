@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import SessionCard from '$lib/components/organisms/SessionCard.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import SessionCard from '#lib/components/organisms/SessionCard.svelte';
+	import { m } from '#lib/paraglide/messages.js';
 	import { INLINE_THRESHOLD, costRollup, groupId, type SubGroup } from './sessions.logic';
 	import type { SessionsPage } from './sessionsPage.svelte';
 

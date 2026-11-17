@@ -1,6 +1,6 @@
 import { formatTimestamp } from '@dorsk/tsumikit';
-import type { LimitResetEntry, LimitResetStatus } from '$lib/queries';
-import { m } from '$lib/paraglide/messages';
+import type { LimitResetEntry, LimitResetStatus } from '#lib/queries/index.ts';
+import { m } from '#lib/paraglide/messages.js';
 
 /** Button label: the Codex credit's title or the Claude grant's label when there
  *  is one, else the generic verb. */
