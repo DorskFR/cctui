@@ -499,6 +499,7 @@ fn sa_token_volume() -> Volume {
                 path: "token".to_owned(),
                 expiration_seconds: Some(SA_TOKEN_EXPIRATION_SECONDS),
                 audience: None,
+                user: None,
             }),
             ..VolumeProjection::default()
         },
@@ -507,6 +508,7 @@ fn sa_token_volume() -> Volume {
                 path: CCTUI_TOKEN_FILE.to_owned(),
                 expiration_seconds: Some(CCTUI_TOKEN_EXPIRATION_SECONDS),
                 audience: Some(CCTUI_TOKEN_AUDIENCE.to_owned()),
+                user: None,
             }),
             ..VolumeProjection::default()
         },
@@ -517,6 +519,7 @@ fn sa_token_volume() -> Volume {
                     key: "ca.crt".to_owned(),
                     path: "ca.crt".to_owned(),
                     mode: None,
+                    user: None,
                 }]),
                 optional: None,
             }),
@@ -532,6 +535,7 @@ fn sa_token_volume() -> Volume {
                     }),
                     mode: None,
                     resource_field_ref: None,
+                    user: None,
                 }]),
             }),
             ..VolumeProjection::default()
@@ -539,7 +543,11 @@ fn sa_token_volume() -> Volume {
     ];
     Volume {
         name: VOL_GUARD_PROXY_SA_TOKEN.to_owned(),
-        projected: Some(ProjectedVolumeSource { sources: Some(sources), default_mode: None }),
+        projected: Some(ProjectedVolumeSource {
+            sources: Some(sources),
+            default_mode: None,
+            default_user: None,
+        }),
         ..Volume::default()
     }
 }
