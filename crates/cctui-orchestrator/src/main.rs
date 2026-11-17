@@ -1,14 +1,14 @@
 //! Admission webhook server: the mutating endpoint injects the secretless-worker
-//! envelope into profiled pods (reading only the profile's `spec.guard` and its
-//! exec-interception opt-in), the
-//! validating endpoint checks them against their `WorkerProfile`.
+//! envelope into profiled pods (reading only the profile's [`ProfileFlags`] and
+//! `spec.guard`), the validating endpoint checks them against their
+//! `WorkerProfile`.
 
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use cctui_orchestrator::envelope::{
-    MutationOutcome, ProfileFlags, default_sidecar_image, is_eligible, is_injected, mutate_pod,
-    profile_name,
+    DEFAULT_DNS_RESOLVER, MutationOutcome, ProfileFlags, default_sidecar_image, is_eligible,
+    is_injected, mutate_pod, profile_name,
 };
 use cctui_orchestrator::validate::{Decision, ProfileSource, Verdict};
 use cctui_orchestrator::{GuardSpec, WorkerProfile, WorkerProfileSpec};
@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 struct AppState {
     sidecar_image: String,
+    dns_resolver: String,
     profile_source: Arc<dyn ProfileSource>,
 }
 
@@ -71,8 +72,12 @@ async fn profile_guard(
     Ok(profile.map_or_else(
         || (None, ProfileFlags::default()),
         |p| {
-            let flags =
-                ProfileFlags { exec_interception: p.exec_interception(), human_gate: p.human_gate };
+            let flags = ProfileFlags {
+                exec_interception: p.exec_interception(),
+                human_gate: p.human_gate,
+                dns_resolver: p.dns_resolver().map(ToOwned::to_owned),
+                sidecar_resources: p.sidecar_resources,
+            };
             (p.guard, flags)
         },
     ))
@@ -93,9 +98,12 @@ async fn mutate(
     let mut resp = AdmissionResponse::from(&req);
     if let Some(pod) = &req.object {
         let image = &state.sidecar_image;
-        let outcome = profile_guard(&state, &req, pod)
-            .await
-            .and_then(|(guard, flags)| mutate_pod(pod, image, guard.as_ref(), flags));
+        let outcome = profile_guard(&state, &req, pod).await.and_then(|(guard, mut flags)| {
+            if flags.dns_resolver.is_none() {
+                flags.dns_resolver = Some(state.dns_resolver.clone());
+            }
+            mutate_pod(pod, image, guard.as_ref(), flags)
+        });
         match outcome {
             Ok(MutationOutcome::Patch(patch)) => {
                 tracing::info!(
@@ -201,9 +209,14 @@ async fn main() -> anyhow::Result<()> {
 
     let sidecar_image =
         std::env::var("CCTUI_ORCH_SIDECAR_IMAGE").unwrap_or_else(|_| default_sidecar_image());
+    let dns_resolver = std::env::var("CCTUI_ORCH_DNS_RESOLVER")
+        .ok()
+        .map(|r| r.trim().to_owned())
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| DEFAULT_DNS_RESOLVER.to_owned());
     let client = Client::try_default().await?;
     let profile_source: Arc<dyn ProfileSource> = Arc::new(KubeProfileSource { client });
-    let state = Arc::new(AppState { sidecar_image, profile_source });
+    let state = Arc::new(AppState { sidecar_image, dns_resolver, profile_source });
     let router = app(state);
 
     let addr: SocketAddr =
@@ -246,10 +259,7 @@ mod tests {
     }
 
     fn test_state() -> Arc<AppState> {
-        Arc::new(AppState {
-            sidecar_image: "registry.example.com/w:test".to_owned(),
-            profile_source: Arc::new(EmptyProfiles),
-        })
+        state_with(Arc::new(EmptyProfiles))
     }
     #[allow(clippy::needless_pass_by_value)]
     fn review_json(labels: serde_json::Value) -> serde_json::Value {
@@ -308,18 +318,75 @@ mod tests {
     fn state_with(profile_source: Arc<dyn ProfileSource>) -> Arc<AppState> {
         Arc::new(AppState {
             sidecar_image: "registry.example.com/w:test".to_owned(),
+            dns_resolver: DEFAULT_DNS_RESOLVER.to_owned(),
             profile_source,
         })
     }
 
-    fn decode_patch(response: &serde_json::Value) -> String {
+    fn patch_value(response: &serde_json::Value) -> serde_json::Value {
         let raw: Vec<u8> = response["patch"]
             .as_array()
             .expect("patch present")
             .iter()
             .map(|b| u8::try_from(b.as_u64().unwrap()).unwrap())
             .collect();
-        serde_json::from_slice::<serde_json::Value>(&raw).unwrap().to_string()
+        serde_json::from_slice(&raw).unwrap()
+    }
+
+    fn decode_patch(response: &serde_json::Value) -> String {
+        patch_value(response).to_string()
+    }
+
+    struct ResolverProfiles;
+
+    #[async_trait::async_trait]
+    impl ProfileSource for ResolverProfiles {
+        async fn get(
+            &self,
+            _namespace: &str,
+            _name: &str,
+        ) -> anyhow::Result<Option<WorkerProfileSpec>> {
+            Ok(Some(serde_json::from_value(serde_json::json!({
+                "image": "registry.example.com/worker:latest",
+                "dnsResolver": "10.43.0.53",
+                "env": [{ "name": "WORKER_DNS_RESOLVER", "value": "9.9.9.9" }]
+            }))?))
+        }
+    }
+
+    fn net_init_env(review: &serde_json::Value, out: &serde_json::Value) -> serde_json::Value {
+        let patch = patch_value(&out["response"]);
+        let patch: json_patch::Patch = serde_json::from_value(patch).unwrap();
+        let mut pod = review["request"]["object"].clone();
+        json_patch::patch(&mut pod, &patch.0).unwrap();
+        let inits = pod["spec"]["initContainers"].as_array().unwrap();
+        inits.iter().find(|c| c["name"] == "net-init").unwrap()["env"].clone()
+    }
+
+    fn resolver_env(value: &str) -> serde_json::Value {
+        serde_json::json!([{ "name": "WORKER_DNS_RESOLVER", "value": value }])
+    }
+
+    #[tokio::test]
+    async fn net_init_resolver_comes_from_the_profile_else_the_orchestrator_config() {
+        let mut review = review_json(serde_json::json!({ LABEL_WORKER_PROFILE: "lean" }));
+        review["request"]["object"]["spec"]["containers"][0]["env"] = resolver_env("8.8.8.8");
+
+        let configured = Arc::new(AppState {
+            sidecar_image: "registry.example.com/w:test".to_owned(),
+            dns_resolver: "resolver.config".to_owned(),
+            profile_source: Arc::new(EmptyProfiles),
+        });
+        let out = post_review_to(configured, review.clone()).await;
+        assert_eq!(out["response"]["allowed"], true);
+        assert_eq!(net_init_env(&review, &out), resolver_env("resolver.config"));
+
+        let out = post_review_to(state_with(Arc::new(ResolverProfiles)), review.clone()).await;
+        assert_eq!(out["response"]["allowed"], true);
+        assert_eq!(net_init_env(&review, &out), resolver_env("10.43.0.53"));
+
+        let out = post_review(review.clone()).await;
+        assert_eq!(net_init_env(&review, &out), resolver_env(DEFAULT_DNS_RESOLVER));
     }
 
     async fn post_review(body: serde_json::Value) -> serde_json::Value {

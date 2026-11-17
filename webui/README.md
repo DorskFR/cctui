@@ -37,6 +37,27 @@ The API origin is runtime config: `static/config.js` sets
 with `no-store`) to retarget the API without rebuilding. Auth is a Bearer token
 held in `localStorage`; the server allows the cross-origin calls via CORS.
 
+The same file can turn on the feedback panel ([`@dorsk/hmm`](https://www.npmjs.com/package/@dorsk/hmm)):
+
+```js
+window.CCTUI_CONFIG = {
+	apiBase: '',
+	feedback: { endpoint: 'https://hmm.example.com', projectKey: 'cctui' }
+};
+```
+
+- `endpoint`: base URL of the feedback server; reports `POST` to
+  `${endpoint}/v1/reports` with an `x-hmm-key: <projectKey>` header. Unset or
+  empty keeps the feature off: no launcher, no extra chunk loaded, no request.
+- `projectKey`: defaults to `cctui`.
+
+The launcher appears once signed in. Besides what the user selects and the page
+details the panel records itself (URL, title, viewport, user agent), a report
+carries the web UI version, the server version and the current route.
+The server must answer the CORS preflight for the web UI origin and allow
+`content-type` and `x-hmm-key`. The image's CSP (`nginx.conf`) already allows
+an `https:` endpoint in `connect-src` and `data:` in `img-src`.
+
 ### Review center
 
 The GitHub review center is no longer built in: it ships as the **ghreview**

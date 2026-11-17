@@ -6,6 +6,7 @@ import { m } from '#lib/paraglide/messages.js';
 import { highlightTerms } from '#lib/search.ts';
 import { type SessionEnd, sessionEnd } from '#lib/sessionEnd.ts';
 import { displayNameOf } from '#lib/sessionName.ts';
+import { outcomeBucket, outcomeHeadline } from '#lib/outcome.ts';
 import {
 	type ToolActivity,
 	branchOf,
@@ -146,9 +147,15 @@ export function statusLabel(st: string): string {
 			return m.sessions_status_dead();
 		case 'draft':
 			return m.sessions_status_draft();
+		case 'queued':
+			return m.sessions_status_queued();
 		default:
 			return st;
 	}
+}
+
+export function queuedMachineOf(s: SessionListItem): string | null {
+	return s.status === 'queued' ? s.machine_name || s.machine_id : null;
 }
 
 export function buildView(
@@ -172,7 +179,11 @@ export function buildView(
 		child: opts.child,
 		showMachine: opts.showMachine,
 		title: titleOf(s, opts.child),
-		lastMsg: opts.preview ?? s.last_message_text ?? null,
+		lastMsg:
+			opts.preview ??
+			(outcomeBucket(s) === 'working' ? null : outcomeHeadline(s.latest_outcome)) ??
+			s.last_message_text ??
+			null,
 		snippetHtml:
 			s.match_snippet && opts.highlight.length
 				? highlightTerms(escapeHtml(s.match_snippet), opts.highlight)

@@ -27,6 +27,21 @@ fn attention_chip(app: &App) -> Option<String> {
     ))
 }
 
+fn unread_chip(app: &App) -> Option<String> {
+    let count = app.notifications.unread;
+    if count <= 0 {
+        return None;
+    }
+    let key = app
+        .config
+        .keys
+        .chords_for(Context::Global, ActionId::NotificationsOpen)
+        .first()
+        .copied()
+        .map(Chord::label);
+    Some(key.map_or_else(|| format!("✉ {count} unread"), |key| format!("✉ {count} unread — {key}")))
+}
+
 fn level_style(level: Level) -> ratatui::style::Style {
     match level {
         Level::Info => theme::dim(),
@@ -46,6 +61,10 @@ pub fn status_spans(app: &App) -> Vec<Span<'static>> {
     if let Some(chip) = attention_chip(app) {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(chip, theme::cost()));
+    }
+    if let Some(chip) = unread_chip(app) {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(chip, theme::unread()));
     }
     if let Some(chip) = app.auth.chip() {
         spans.push(Span::raw("  "));

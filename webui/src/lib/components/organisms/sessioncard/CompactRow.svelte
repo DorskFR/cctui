@@ -6,6 +6,7 @@
 	import Badges from './Badges.svelte';
 	import DraftActions from './DraftActions.svelte';
 	import Lead from './Lead.svelte';
+	import QueuedSpawn from './QueuedSpawn.svelte';
 	import Readout from './Readout.svelte';
 	import { type SessionActions, type SessionView, statusLabel } from './view';
 
@@ -54,6 +55,8 @@
 	<Badges {view} />
 	{#if view.draft}
 		<DraftActions {view} {actions} />
+	{:else if s.status === 'queued'}
+		<QueuedSpawn session={s} />
 	{:else}
 		<Readout {view} compact />
 	{/if}

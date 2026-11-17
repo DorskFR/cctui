@@ -13,7 +13,7 @@ use crate::{
     ANNOTATION_DISPATCH_ID, ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_GPG_SIGNING,
     ANNOTATION_GUARD_IDENTITY, ANNOTATION_POSTURE, ANNOTATION_SERVER_URL,
     ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, EXEC_INTERCEPTION_CAP, GuardSpec,
-    HumanGate, LABEL_WORKER_PROFILE, Posture,
+    HumanGate, LABEL_WORKER_PROFILE, Posture, SidecarResources,
 };
 use k8s_openapi::api::core::v1::{
     AppArmorProfile, Capabilities, ConfigMapEnvSource, ConfigMapProjection, ConfigMapVolumeSource,
@@ -31,6 +31,16 @@ pub const GUARD_PROXY_CONTAINER: &str = "guard-proxy";
 const CONFIGMAP_GUARD_PROXY_ENV: &str = "guard-proxy-env";
 const CONFIGMAP_GUARD_PROXY_INJECT: &str = "guard-proxy-inject";
 pub const GUARD_ENV_HUMAN_GATE: &str = "GUARD_PROXY_HUMAN_GATE";
+pub const NET_INIT_ENV_DNS_RESOLVER: &str = "WORKER_DNS_RESOLVER";
+/// Overridable at runtime via `CCTUI_ORCH_DNS_RESOLVER`, per profile via
+/// `spec.dnsResolver`.
+pub const DEFAULT_DNS_RESOLVER: &str = "cctui-worker-dns";
+
+/// `(resource, request, limit)` defaults, overridable via `spec.sidecarResources`.
+pub const NET_INIT_RESOURCES: [(&str, &str, &str); 3] =
+    [("cpu", "10m", "100m"), ("memory", "16Mi", "64Mi"), ("ephemeral-storage", "4Mi", "16Mi")];
+pub const GUARD_PROXY_RESOURCES: [(&str, &str, &str); 3] =
+    [("cpu", "25m", "500m"), ("memory", "32Mi", "256Mi"), ("ephemeral-storage", "32Mi", "128Mi")];
 
 pub const VOL_HOME: &str = "home";
 pub const VOL_OVERLAY: &str = "overlay";
@@ -177,15 +187,20 @@ pub struct EnvelopeConfig {
     pub exec_interception: bool,
     /// See [`crate::WorkerProfileSpec::human_gate`].
     pub human_gate: Option<HumanGate>,
+    pub dns_resolver: String,
+    pub sidecar_resources: Option<SidecarResources>,
 }
 
 /// What the source profile contributes to the envelope besides `spec.guard`.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ProfileFlags {
     /// See [`crate::WorkerProfileSpec::exec_interception`].
     pub exec_interception: bool,
     /// See [`crate::WorkerProfileSpec::human_gate`].
     pub human_gate: Option<HumanGate>,
+    /// Unset or blank renders [`DEFAULT_DNS_RESOLVER`].
+    pub dns_resolver: Option<String>,
+    pub sidecar_resources: Option<SidecarResources>,
 }
 
 impl EnvelopeConfig {
@@ -204,6 +219,7 @@ impl EnvelopeConfig {
                 get(ANNOTATION_POSTURE).unwrap_or_default()
             )
         })?;
+        let dns_resolver = flags.dns_resolver.as_deref().map(str::trim).filter(|r| !r.is_empty());
         Ok(Self {
             sidecar_image: sidecar_image.to_owned(),
             worker_container: get(ANNOTATION_WORKER_CONTAINER)
@@ -216,6 +232,8 @@ impl EnvelopeConfig {
             dispatched: get(ANNOTATION_DISPATCH_ID).is_some(),
             exec_interception: flags.exec_interception,
             human_gate: flags.human_gate,
+            dns_resolver: dns_resolver.unwrap_or(DEFAULT_DNS_RESOLVER).to_owned(),
+            sidecar_resources: flags.sidecar_resources,
         })
     }
 }
@@ -365,7 +383,15 @@ fn net_init_container(cfg: &EnvelopeConfig) -> Container {
             }),
             ..SecurityContext::default()
         }),
-        resources: Some(resources("10m", "16Mi", "100m", "64Mi")),
+        env: Some(vec![EnvVar {
+            name: NET_INIT_ENV_DNS_RESOLVER.to_owned(),
+            value: Some(cfg.dns_resolver.clone()),
+            value_from: None,
+        }]),
+        resources: Some(resources(
+            &NET_INIT_RESOURCES,
+            cfg.sidecar_resources.as_ref().and_then(|s| s.net_init.as_ref()),
+        )),
         ..Container::default()
     }
 }
@@ -447,7 +473,10 @@ fn guard_proxy_container(cfg: &EnvelopeConfig) -> Container {
             failure_threshold: Some(30),
             ..Probe::default()
         }),
-        resources: Some(resources("25m", "32Mi", "500m", "256Mi")),
+        resources: Some(resources(
+            &GUARD_PROXY_RESOURCES,
+            cfg.sidecar_resources.as_ref().and_then(|s| s.guard_proxy.as_ref()),
+        )),
         ..Container::default()
     }
 }
@@ -578,18 +607,27 @@ fn upsert_env(env: &mut Vec<EnvVar>, name: &str, value: &str) {
     }
 }
 
-fn resources(cpu_req: &str, mem_req: &str, cpu_lim: &str, mem_lim: &str) -> ResourceRequirements {
-    let mut requests = BTreeMap::new();
-    requests.insert("cpu".to_owned(), Quantity(cpu_req.to_owned()));
-    requests.insert("memory".to_owned(), Quantity(mem_req.to_owned()));
-    let mut limits = BTreeMap::new();
-    limits.insert("cpu".to_owned(), Quantity(cpu_lim.to_owned()));
-    limits.insert("memory".to_owned(), Quantity(mem_lim.to_owned()));
+fn resources(
+    defaults: &[(&str, &str, &str)],
+    overrides: Option<&ResourceRequirements>,
+) -> ResourceRequirements {
+    let requests = defaults.iter().map(|(name, request, _)| (*name, *request));
+    let limits = defaults.iter().map(|(name, _, limit)| (*name, *limit));
     ResourceRequirements {
-        requests: Some(requests),
-        limits: Some(limits),
-        ..ResourceRequirements::default()
+        requests: Some(merged(requests, overrides.and_then(|o| o.requests.as_ref()))),
+        limits: Some(merged(limits, overrides.and_then(|o| o.limits.as_ref()))),
+        claims: overrides.and_then(|o| o.claims.clone()),
     }
+}
+
+fn merged<'a>(
+    defaults: impl Iterator<Item = (&'a str, &'a str)>,
+    overrides: Option<&BTreeMap<String, Quantity>>,
+) -> BTreeMap<String, Quantity> {
+    let mut map: BTreeMap<String, Quantity> =
+        defaults.map(|(name, value)| (name.to_owned(), Quantity(value.to_owned()))).collect();
+    map.extend(overrides.into_iter().flatten().map(|(k, v)| (k.clone(), v.clone())));
+    map
 }
 
 #[cfg(test)]
@@ -647,9 +685,11 @@ mod tests {
     }
 
     fn apply_with(pod: &Pod, guard: Option<&GuardSpec>) -> Pod {
-        let patch = match mutate_pod(pod, IMG, guard, ProfileFlags::default())
-            .expect("mutate_pod must not error")
-        {
+        apply_flags(pod, guard, ProfileFlags::default())
+    }
+
+    fn apply_flags(pod: &Pod, guard: Option<&GuardSpec>, flags: ProfileFlags) -> Pod {
+        let patch = match mutate_pod(pod, IMG, guard, flags).expect("mutate_pod must not error") {
             MutationOutcome::Patch(p) => p,
             other => panic!("eligible pod must yield a patch, got {other:?}"),
         };
@@ -721,10 +761,31 @@ mod tests {
         serde_json::json!({ "name": name, "mountPath": path, "readOnly": true })
     }
 
-    fn golden_resources(cr: &str, mr: &str, cl: &str, ml: &str) -> serde_json::Value {
+    fn golden_net_init_resources() -> serde_json::Value {
         serde_json::json!({
-            "requests": { "cpu": cr, "memory": mr },
-            "limits": { "cpu": cl, "memory": ml }
+            "requests": { "cpu": "10m", "memory": "16Mi", "ephemeral-storage": "4Mi" },
+            "limits": { "cpu": "100m", "memory": "64Mi", "ephemeral-storage": "16Mi" }
+        })
+    }
+
+    fn golden_guard_proxy_resources() -> serde_json::Value {
+        serde_json::json!({
+            "requests": { "cpu": "25m", "memory": "32Mi", "ephemeral-storage": "32Mi" },
+            "limits": { "cpu": "500m", "memory": "256Mi", "ephemeral-storage": "128Mi" }
+        })
+    }
+
+    fn golden_net_init() -> serde_json::Value {
+        serde_json::json!({
+            "name": "net-init",
+            "image": IMG,
+            "command": ["cctui-worker-net-init"],
+            "securityContext": {
+                "runAsUser": 0,
+                "capabilities": { "drop": ["ALL"], "add": ["NET_ADMIN"] }
+            },
+            "env": [{ "name": "WORKER_DNS_RESOLVER", "value": "cctui-worker-dns" }],
+            "resources": golden_net_init_resources()
         })
     }
 
@@ -774,7 +835,7 @@ mod tests {
                 "periodSeconds": 2,
                 "failureThreshold": 30
             },
-            "resources": golden_resources("25m", "32Mi", "500m", "256Mi")
+            "resources": golden_guard_proxy_resources()
         })
     }
 
@@ -872,16 +933,7 @@ mod tests {
             },
             "spec": {
                 "initContainers": [
-                    {
-                        "name": "net-init",
-                        "image": IMG,
-                        "command": ["cctui-worker-net-init"],
-                        "securityContext": {
-                            "runAsUser": 0,
-                            "capabilities": { "drop": ["ALL"], "add": ["NET_ADMIN"] }
-                        },
-                        "resources": golden_resources("10m", "16Mi", "100m", "64Mi")
-                    },
+                    golden_net_init(),
                     golden_guard_proxy(&golden_root_guard_proxy_sc())
                 ],
                 "containers": [golden_worker()],
@@ -920,16 +972,7 @@ mod tests {
             },
             "spec": {
                 "initContainers": [
-                    {
-                        "name": "net-init",
-                        "image": IMG,
-                        "command": ["cctui-worker-net-init"],
-                        "securityContext": {
-                            "runAsUser": 0,
-                            "capabilities": { "drop": ["ALL"], "add": ["NET_ADMIN"] }
-                        },
-                        "resources": golden_resources("10m", "16Mi", "100m", "64Mi")
-                    },
+                    golden_net_init(),
                     golden_guard_proxy(&golden_restricted(1337))
                 ],
                 "containers": [golden_nonroot_worker()],
@@ -1366,6 +1409,97 @@ mod tests {
             mutate_pod(&pod, IMG, None, ProfileFlags::default()).unwrap(),
             MutationOutcome::NotEligible
         ));
+    }
+
+    fn init<'a>(pod: &'a Pod, name: &str) -> &'a Container {
+        let inits = pod.spec.as_ref().unwrap().init_containers.as_ref().unwrap();
+        inits.iter().find(|c| c.name == name).unwrap()
+    }
+
+    fn env_pairs(c: &Container) -> Vec<(&str, Option<&str>)> {
+        c.env.iter().flatten().map(|e| (e.name.as_str(), e.value.as_deref())).collect()
+    }
+
+    #[test]
+    fn net_init_renders_the_profile_resolver_and_payload_env_cannot_override_it() {
+        let mut pod = lean_pod();
+        pod.spec.as_mut().unwrap().containers[0].env = Some(vec![EnvVar {
+            name: NET_INIT_ENV_DNS_RESOLVER.to_owned(),
+            value: Some("8.8.8.8".to_owned()),
+            value_from: None,
+        }]);
+        let guard: GuardSpec = serde_json::from_value(serde_json::json!({
+            "env": [{ "name": "WORKER_DNS_RESOLVER", "value": "1.1.1.1" }],
+            "envFrom": [{ "configMapRef": { "name": "attacker-env" } }]
+        }))
+        .unwrap();
+        let dns_resolver = Some(" 10.43.0.53 ".to_owned());
+        let flags = ProfileFlags { dns_resolver, ..ProfileFlags::default() };
+        let out = apply_flags(&pod, Some(&guard), flags);
+        let net_init = init(&out, NET_INIT_CONTAINER);
+        assert_eq!(env_pairs(net_init), [(NET_INIT_ENV_DNS_RESOLVER, Some("10.43.0.53"))]);
+        assert!(net_init.env_from.is_none(), "no env source can shadow the resolver");
+        assert_eq!(
+            env_pairs(worker(&out, "worker"))[0],
+            (NET_INIT_ENV_DNS_RESOLVER, Some("8.8.8.8")),
+            "the worker's own env stays the worker's"
+        );
+    }
+
+    #[test]
+    fn unset_or_blank_resolver_renders_the_default() {
+        for dns_resolver in [None, Some(String::new()), Some("   ".to_owned())] {
+            let flags = ProfileFlags { dns_resolver, ..ProfileFlags::default() };
+            let out = apply_flags(&lean_pod(), None, flags);
+            assert_eq!(
+                env_pairs(init(&out, NET_INIT_CONTAINER)),
+                [(NET_INIT_ENV_DNS_RESOLVER, Some(DEFAULT_DNS_RESOLVER))]
+            );
+        }
+    }
+
+    #[test]
+    fn sidecars_carry_ephemeral_storage_requests_and_limits() {
+        let out = apply(&lean_pod());
+        for (name, want) in [
+            (NET_INIT_CONTAINER, golden_net_init_resources()),
+            (GUARD_PROXY_CONTAINER, golden_guard_proxy_resources()),
+        ] {
+            let have = serde_json::to_value(init(&out, name).resources.as_ref().unwrap()).unwrap();
+            assert_eq!(have, want, "{name}");
+        }
+    }
+
+    #[test]
+    fn profile_sidecar_resources_override_the_defaults_key_by_key() {
+        let overrides: SidecarResources = serde_json::from_value(serde_json::json!({
+            "guardProxy": {
+                "requests": { "ephemeral-storage": "64Mi" },
+                "limits": { "ephemeral-storage": "1Gi", "memory": "512Mi" }
+            },
+            "netInit": { "limits": { "cpu": "200m" } }
+        }))
+        .unwrap();
+        let flags = ProfileFlags { sidecar_resources: Some(overrides), ..ProfileFlags::default() };
+        let out = apply_flags(&lean_pod(), None, flags);
+        let rendered =
+            |name: &str| serde_json::to_value(init(&out, name).resources.as_ref()).unwrap();
+        assert_eq!(
+            rendered(GUARD_PROXY_CONTAINER),
+            serde_json::json!({
+                "requests": { "cpu": "25m", "memory": "32Mi", "ephemeral-storage": "64Mi" },
+                "limits": { "cpu": "500m", "memory": "512Mi", "ephemeral-storage": "1Gi" }
+            })
+        );
+        assert_eq!(
+            rendered(NET_INIT_CONTAINER),
+            serde_json::json!({
+                "requests": { "cpu": "10m", "memory": "16Mi", "ephemeral-storage": "4Mi" },
+                "limits": { "cpu": "200m", "memory": "64Mi", "ephemeral-storage": "16Mi" }
+            })
+        );
+        let w = worker(&out, "worker");
+        assert!(w.resources.is_none(), "sidecar overrides never reach the worker");
     }
 
     #[test]

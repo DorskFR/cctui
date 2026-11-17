@@ -7,7 +7,8 @@
 //! `sessions.todos` is.
 //!
 //! Every mutation broadcasts the whole list on the session WS, so a second tab
-//! updates live without refetching.
+//! updates live without refetching. Each item also files a notification; a tick
+//! closes it in the same transaction.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -20,6 +21,8 @@ use cctui_proto::api::{
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::notify::producers::{self, AddedAction};
+use crate::notify::{self, Routing};
 use crate::state::AppState;
 
 type Row = (
@@ -132,13 +135,14 @@ pub async fn add(
         ));
         return Ok(result);
     }
+    let detail = clean_optional(req.detail.as_deref());
     let id: Uuid = sqlx::query_scalar(
         "INSERT INTO session_user_actions (session_id, title, detail, kind, blocking) \
          VALUES ($1, $2, $3, $4, $5) RETURNING id",
     )
     .bind(session_id)
     .bind(&title)
-    .bind(clean_optional(req.detail.as_deref()))
+    .bind(&detail)
     .bind(req.kind.as_str())
     .bind(req.blocking)
     .fetch_one(&state.pool)
@@ -146,13 +150,41 @@ pub async fn add(
     result.added = Some(id);
     result.list = list_of(state, session_id).await?;
     broadcast(state, &result.list);
+    let added = AddedAction {
+        session_id,
+        id,
+        title: &title,
+        detail: detail.as_deref(),
+        blocking: req.blocking,
+    };
+    if let Err(e) = producers::user_action_added(&state.pool, routing(state), &added).await {
+        tracing::warn!(%session_id, "user action notification failed: {e}");
+    }
     Ok(result)
 }
 
-/// Resolve one item. `None` for an unknown id.
+const fn routing(state: &AppState) -> Routing {
+    Routing::from_config(&state.config)
+}
+
+pub async fn republish(state: &AppState, session_id: &str) {
+    match list_of(state, session_id).await {
+        Ok(list) => broadcast(state, &list),
+        Err(e) => tracing::warn!(%session_id, "user action list not republished: {e}"),
+    }
+}
+
+/// How a tick landed.
+pub enum Ticked {
+    Applied(UserActionList),
+    AlreadyResolved(UserActionList, UserAction),
+    Missing,
+}
+
+/// Resolve one open item. A tick on an item someone already resolved changes
+/// nothing and broadcasts nothing, so a racing user and agent resolve it once.
 ///
-/// The caller answers an unknown id with the list and a reason rather than a
-/// failure, and gates on [`writable`] first, so a rejected tick can say *why*
+/// The caller gates on [`writable`] first, so a rejected tick can say *why*
 /// instead of pretending the item is gone.
 pub async fn tick(
     state: &AppState,
@@ -161,25 +193,46 @@ pub async fn tick(
     status: UserActionStatus,
     note: Option<&str>,
     by: UserActionResolver,
-) -> Result<Option<UserActionList>, AppError> {
+) -> Result<Ticked, AppError> {
+    let note = clean_optional(note);
+    let mut tx = state.pool.begin().await?;
     let done = sqlx::query(
         "UPDATE session_user_actions SET status = $3, note = COALESCE($4::text, note), \
-         resolved_at = now(), resolved_by = $5 WHERE id = $1 AND session_id = $2",
+         resolved_at = now(), resolved_by = $5 WHERE id = $1 AND session_id = $2 AND status = \
+         'open'",
     )
     .bind(id)
     .bind(session_id)
     .bind(status.as_str())
-    .bind(clean_optional(note))
+    .bind(&note)
     .bind(by.as_str())
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?
     .rows_affected();
-    if done == 0 {
-        return Ok(None);
+    let closed = if done > 0 {
+        producers::user_action_ticked(&mut tx, id, status, note.as_deref(), by).await?
+    } else {
+        None
+    };
+    tx.commit().await?;
+    if let Some((n, lane)) = closed {
+        notify::in_app::changed(&state.pool, &n).await;
+        if let Some(lane) = lane {
+            crate::inbox::deliver::wake_lane(state, lane);
+        }
     }
     let list = list_of(state, session_id).await?;
-    broadcast(state, &list);
-    Ok(Some(list))
+    if done > 0 {
+        broadcast(state, &list);
+        return Ok(Ticked::Applied(list));
+    }
+    let current = list.items.iter().find(|i| i.id == id).cloned();
+    Ok(current.map_or(Ticked::Missing, |item| Ticked::AlreadyResolved(list, item)))
+}
+
+fn already_resolved(item: &UserAction) -> String {
+    let by = item.resolved_by.map_or_else(String::new, |r| format!(" by the {}", r.as_str()));
+    format!("this item was already {}{by}; left unchanged", item.status.as_str())
 }
 
 // ---- daemon-facing (machine-key bearer) ----
@@ -242,11 +295,14 @@ pub async fn daemon_tick(
             )
             .await?
         }
-        Err(_) => None,
+        Err(_) => Ticked::Missing,
     };
     Ok(Json(match ticked {
-        Some(list) => UserActionResult { error: None, added: None, list },
-        None => UserActionResult {
+        Ticked::Applied(list) => UserActionResult { error: None, added: None, list },
+        Ticked::AlreadyResolved(list, item) => {
+            UserActionResult { error: Some(already_resolved(&item)), added: None, list }
+        }
+        Ticked::Missing => UserActionResult {
             error: Some(format!("no user action {} on this session", req.id)),
             added: None,
             list: list_of(&state, &session_id).await?,
@@ -271,12 +327,21 @@ pub struct UiTick {
     pub note: Option<String>,
 }
 
+/// The list after a UI tick. `applied` is false when the item was already
+/// resolved, in which case nothing changed.
+#[derive(Debug, serde::Serialize)]
+pub struct UiTickResult {
+    #[serde(flatten)]
+    pub list: UserActionList,
+    pub applied: bool,
+}
+
 /// `POST /api/v1/sessions/{id}/user-actions/{aid}/tick`.
 pub async fn ui_tick(
     State(state): State<AppState>,
     Path((session_id, action_id)): Path<(String, Uuid)>,
     Json(req): Json<UiTick>,
-) -> Result<Json<UserActionList>, AppError> {
+) -> Result<Json<UiTickResult>, AppError> {
     if !writable(&state.pool, &session_id).await? {
         return Err(AppError::new(
             StatusCode::CONFLICT,
@@ -292,9 +357,13 @@ pub async fn ui_tick(
         UserActionResolver::User,
     )
     .await?;
-    ticked
-        .map(Json)
-        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such user action on this session"))
+    match ticked {
+        Ticked::Applied(list) => Ok(Json(UiTickResult { list, applied: true })),
+        Ticked::AlreadyResolved(list, _) => Ok(Json(UiTickResult { list, applied: false })),
+        Ticked::Missing => {
+            Err(AppError::new(StatusCode::NOT_FOUND, "no such user action on this session"))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -442,6 +511,132 @@ mod tests {
         assert_eq!(item.status, UserActionStatus::Done);
         assert_eq!(item.resolved_by, Some(UserActionResolver::User));
         assert!(item.resolved_at.is_some());
+    }
+
+    #[test]
+    fn the_ui_tick_answer_is_the_list_plus_an_applied_flag() {
+        let out = UiTickResult {
+            list: UserActionList { session_id: "s".to_owned(), items: Vec::new() },
+            applied: false,
+        };
+        let v = serde_json::to_value(&out).unwrap();
+        assert_eq!(v, serde_json::json!({ "session_id": "s", "items": [], "applied": false }));
+    }
+
+    async fn open_item(pool: &sqlx::PgPool, sid: &str) -> Uuid {
+        sqlx::query_scalar(
+            "INSERT INTO session_user_actions (session_id, title) VALUES ($1, 'Plug the yubikey') \
+             RETURNING id",
+        )
+        .bind(sid)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_agent_tick_after_the_users_leaves_the_users_resolution() {
+        let Some(pool) =
+            test_pool("an_agent_tick_after_the_users_leaves_the_users_resolution").await
+        else {
+            return;
+        };
+        let sid = seed(&pool, "ua-guard").await;
+        let id = open_item(&pool, &sid).await;
+        let state = AppState::for_test(pool.clone());
+        let mut rx = state.bus.subscribe_server();
+
+        let Json(first) = ui_tick(
+            State(state.clone()),
+            Path((sid.clone(), id)),
+            Json(UiTick { status: UserActionStatus::Done, note: Some("plugged".to_owned()) }),
+        )
+        .await
+        .unwrap();
+        assert!(first.applied);
+        assert!(matches!(
+            &*rx.try_recv().unwrap().event,
+            cctui_proto::ws::ServerEvent::UserActions { .. }
+        ));
+        let before = list(&pool, &sid).await.unwrap().remove(0);
+
+        let second = tick(
+            &state,
+            &sid,
+            id,
+            UserActionStatus::Dropped,
+            Some("gave up"),
+            UserActionResolver::Agent,
+        )
+        .await
+        .unwrap();
+        let Ticked::AlreadyResolved(_, current) = second else {
+            panic!("a second tick must not apply");
+        };
+        assert_eq!(
+            already_resolved(&current),
+            "this item was already done by the user; left unchanged"
+        );
+        assert!(rx.try_recv().is_err(), "a tick that changed nothing must not broadcast");
+
+        let after = list(&pool, &sid).await.unwrap().remove(0);
+        assert_eq!(after.resolved_by, Some(UserActionResolver::User));
+        assert_eq!(after.status, UserActionStatus::Done);
+        assert_eq!(after.note.as_deref(), Some("plugged"));
+        assert_eq!(after.resolved_at, before.resolved_at);
+
+        let Json(again) = ui_tick(
+            State(state),
+            Path((sid, id)),
+            Json(UiTick { status: UserActionStatus::Done, note: None }),
+        )
+        .await
+        .unwrap();
+        assert!(!again.applied);
+        assert_eq!(again.list.items[0].resolved_by, Some(UserActionResolver::User));
+    }
+
+    #[tokio::test]
+    async fn two_concurrent_ticks_resolve_the_item_once() {
+        let Some(pool) = test_pool("two_concurrent_ticks_resolve_the_item_once").await else {
+            return;
+        };
+        let sid = seed(&pool, "ua-race").await;
+        let id = open_item(&pool, &sid).await;
+        let state = AppState::for_test(pool.clone());
+        let (a, b) = tokio::join!(
+            tick(&state, &sid, id, UserActionStatus::Done, None, UserActionResolver::User),
+            tick(&state, &sid, id, UserActionStatus::Dropped, None, UserActionResolver::Agent),
+        );
+        let outcomes = [a.unwrap(), b.unwrap()];
+        let applied = outcomes.iter().filter(|t| matches!(t, Ticked::Applied(_))).count();
+        let refused = outcomes.iter().filter(|t| matches!(t, Ticked::AlreadyResolved(..))).count();
+        assert_eq!((applied, refused), (1, 1));
+        let item = list(&pool, &sid).await.unwrap().remove(0);
+        let winner = if matches!(outcomes[0], Ticked::Applied(_)) {
+            (UserActionStatus::Done, UserActionResolver::User)
+        } else {
+            (UserActionStatus::Dropped, UserActionResolver::Agent)
+        };
+        assert_eq!((item.status, item.resolved_by), (winner.0, Some(winner.1)));
+    }
+
+    #[tokio::test]
+    async fn a_tick_on_an_unknown_id_is_missing() {
+        let Some(pool) = test_pool("a_tick_on_an_unknown_id_is_missing").await else { return };
+        let sid = seed(&pool, "ua-missing").await;
+        let state = AppState::for_test(pool);
+        let got = tick(
+            &state,
+            &sid,
+            Uuid::new_v4(),
+            UserActionStatus::Done,
+            None,
+            UserActionResolver::Agent,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(got, Ticked::Missing));
     }
 
     #[tokio::test]

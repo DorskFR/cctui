@@ -349,6 +349,7 @@ pub async fn get_settings(
         // upgraded shape is written on the next PUT).
         Some((version, data, revision)) => {
             let mut data = migrate(data, version);
+            crate::notify::prefs::migrate_sound(&mut data);
             crate::plugin_host_token::strip(&mut data);
             SettingsPayload { version: CURRENT_VERSION, data, revision: Some(revision) }
         }
@@ -356,6 +357,13 @@ pub async fn get_settings(
     };
 
     Ok(Json(payload))
+}
+
+async fn clamp_notifications(state: &AppState, data: &mut Value) -> Result<(), AppError> {
+    let mut conn = state.pool.acquire().await?;
+    crate::notify::prefs::clamp_settings(&mut conn, data)
+        .await
+        .map_err(|msg| AppError::new(StatusCode::BAD_REQUEST, msg))
 }
 
 pub async fn put_settings(
@@ -375,6 +383,7 @@ pub async fn put_settings(
         tracing::info!("rejecting settings PUT: {msg}");
         return Err(AppError::new(StatusCode::BAD_REQUEST, msg));
     }
+    clamp_notifications(&state, &mut data).await?;
     clamp_locale(&mut data);
     clamp_session_emoji_prefix(&mut data);
     clamp_auto_resume(&mut data);

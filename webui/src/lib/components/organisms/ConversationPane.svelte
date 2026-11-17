@@ -27,6 +27,7 @@
 	import DrawerToolbar from './conversation/DrawerToolbar.svelte';
 	import ActivityBanner from './conversation/ActivityBanner.svelte';
 	import DrawerBanners from './conversation/DrawerBanners.svelte';
+	import OutcomeCard from './OutcomeCard.svelte';
 	import ForkSelectBar from './conversation/ForkSelectBar.svelte';
 	import AutoArchiveNotice from './conversation/AutoArchiveNotice.svelte';
 	import TaskPanel from './conversation/TaskPanel.svelte';
@@ -545,6 +546,7 @@
 			{/if}
 
 			<DrawerBanners sessionId={id} {needsInput} {stream} bind:acctModalOpen />
+			<OutcomeCard outcome={session.latest_outcome} />
 
 			<Conversation
 				{stream}

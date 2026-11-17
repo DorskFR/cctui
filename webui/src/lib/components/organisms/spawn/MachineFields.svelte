@@ -22,6 +22,7 @@
 	} from '@dorsk/tsumikit';
 	import { makeCwdSchema, dirFromQuery } from './cwdSchema';
 	import { fsLiveness, gitBadge, makeGitInfoWatcher } from './cwdGitInfo';
+	import type { CwdCheck } from './cwdCheck';
 	import type { Form } from './types';
 	import { m } from '#lib/paraglide/messages.js';
 	import { promptHistory } from '#lib/drafts.ts';
@@ -35,7 +36,9 @@
 		recentDirs,
 		onsubmit,
 		att,
-		promptEl = $bindable(null)
+		promptEl = $bindable(null),
+		cwdCheck = 'unknown',
+		machineName = ''
 	}: {
 		form: Form;
 		machines: MachineResourcesRow[];
@@ -43,6 +46,8 @@
 		onsubmit?: () => void;
 		att?: PromptAttachments;
 		promptEl?: HTMLTextAreaElement | null;
+		cwdCheck?: CwdCheck;
+		machineName?: string;
 	} = $props();
 
 	let revealed = $state<ReadonlySet<string>>(new Set());
@@ -108,7 +113,12 @@
 {/if}
 
 <div class="where" data-journey="where">
-	<Field label={m.spawn_cwd_label()} for="sp-cwd">
+	<Field
+		label={m.spawn_cwd_label()}
+		for="sp-cwd"
+		error={cwdCheck === 'missing' ? m.spawn_cwd_missing({ machine: machineName }) : undefined}
+		hint={cwdCheck === 'offline' ? m.spawn_cwd_offline({ machine: machineName }) : undefined}
+	>
 		<FilterInput
 			id="sp-cwd"
 			key="cwd"

@@ -1218,6 +1218,23 @@ describe("scheduled turns", () => {
   });
 });
 
+describe("inbox batches", () => {
+  const batch =
+    "▷ User: [cctui inbox: 2 events]\n1. (n8n, 2026-11-16T09:02Z) ticket moved\n2. (timer, 2026-11-16T09:05Z) wake up";
+
+  it("renders the batch as one system line carrying its event count", () => {
+    const lines = buildLines([text(batch, 1), text("on it", 2)], ctx());
+    expect(lines.map((l) => l.role)).toEqual(["system", "assistant"]);
+    expect(lines[0].inbox).toBe(2);
+    expect(lines[0].text).toContain("**1. n8n** · 2026-11-16T09:02Z\n\nticket moved");
+    expect(lines[0].text).not.toContain("[cctui inbox");
+  });
+
+  it("follows the system filter", () => {
+    expect(buildLines([text(batch, 1)], ctx({ system: false }))).toEqual([]);
+  });
+});
+
 describe("keep-alive ticks", () => {
   const tick =
     "▷ User: [cctui keep-alive 2026-09-24T12:00:00Z] Cache keep-alive tick. Reply with a single word.";

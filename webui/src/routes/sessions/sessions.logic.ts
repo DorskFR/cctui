@@ -16,6 +16,7 @@ import { hashHue } from '#lib/format.ts';
 import { labelHue } from '#lib/labels.ts';
 import { m } from '#lib/paraglide/messages.js';
 import { nestsUnderParent } from '#lib/followup.ts';
+import { outcomeBucket } from '#lib/outcome.ts';
 
 // ── View picker ───────────────────────────────────────────────────
 export type ViewMode = 'list' | 'card';
@@ -456,7 +457,7 @@ export function accountTrafficWarning(s: SessionListItem): boolean {
 
 export const groupOf = (s: SessionListItem): GroupKey => {
 	if (s.pinned) return 'pinned';
-	const bucket = s.bucket ?? 'working';
+	const bucket = outcomeBucket(s);
 	if (bucket === 'blocked') return 'blocked';
 	return isDispatched(s) ? 'dispatched' : bucket;
 };

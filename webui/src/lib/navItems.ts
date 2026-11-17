@@ -21,6 +21,9 @@ export function navItems(gates: NavGates = {}): NavItemSpec[] {
 			? [{ href: '/bookmarks', label: m.nav_bookmarks(), iconName: 'bookmark' as const }]
 			: []),
 		{ href: '/accounts', label: m.nav_accounts(), iconName: 'key-round' },
+		...(hasFeature('automation')
+			? [{ href: '/inbox', label: m.nav_inbox(), iconName: 'mail' as const }]
+			: []),
 		...(hasFeature('plugins') ? (gates.pages ?? []) : []),
 		{ href: '/settings', label: m.nav_settings(), iconName: 'settings' }
 	];

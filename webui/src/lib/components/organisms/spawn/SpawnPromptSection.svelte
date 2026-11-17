@@ -41,6 +41,8 @@
 		onsubmit={sf.submit}
 		att={sf.att}
 		bind:promptEl={sf.promptEl}
+		cwdCheck={sf.cwdCheck}
+		machineName={sf.machineName}
 	/>
 	{#if hasFeature('voice')}
 		<SpawnDictation {sf} />

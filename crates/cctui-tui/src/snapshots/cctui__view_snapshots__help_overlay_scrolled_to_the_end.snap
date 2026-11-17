@@ -5,25 +5,25 @@ expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
  1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Search and commands                              ●           working                          │
-▸ │  Enter       Run it                             ◐           stale or asleep                  │
-  │  Esc         Abandon it                         ○           idle                             │
-  │  Tab         Complete the path                  ☾           hibernated                       │
-  │Filter menu                                      ↳           subagent                         │
-  │  F / q / Esc Choose which lines to show         ▸ / ▾       folded / open group              │
-  │  a           Show every category                [name]      a label, tinted by its hue       │
-  │  r           Back to the default filter         +N          more labels than fit             │
-  │  Space / En… Show or hide this category         !           permission waiting on you        │
-  │  j / ↓       Next category                      ?           question waiting on you          │
-  │  k / ↑       Previous category                  P           plan waiting for approval        │
-  │Prompt history                                   ●N          unread messages                  │
-  │  Esc         Close the prompt list              ⚡           auto-approve on                  │
-  │  Ctrl+n / ↓  Next prompt                        ⏸           account soft-limited             │
-  │  Ctrl+p / ↑  Previous prompt                    ⚠           account traffic never seen       │
-  │  Enter       Put this prompt in the composer    ❄           cache cold, next turn re-reads   │
-  │File viewer                                      ⌂           a job cctui did not start        │
-  │  j / ↓       Scroll down                        ✕reason     how it ended                     │
-  │  k / ↑       Scroll up                          ⚙N age      tool calls, age of the last      │
-  │  PgDn        Page down                                                                       │
+  │  Tab         Complete the path                  ●           working                          │
+▸ │Filter menu                                      ◐           stale or asleep                  │
+  │  F / q / Esc Choose which lines to show         ○           idle                             │
+  │  a           Show every category                ☾           hibernated                       │
+  │  r           Back to the default filter         ↳           subagent                         │
+  │  Space / En… Show or hide this category         ▸ / ▾       folded / open group              │
+  │  j / ↓       Next category                      [name]      a label, tinted by its hue       │
+  │  k / ↑       Previous category                  +N          more labels than fit             │
+  │Prompt history                                   !           permission waiting on you        │
+  │  Esc         Close the prompt list              ?           question waiting on you          │
+  │  Ctrl+n / ↓  Next prompt                        P           plan waiting for approval        │
+  │  Ctrl+p / ↑  Previous prompt                    ●N          unread messages                  │
+  │  Enter       Put this prompt in the composer    ⚡           auto-approve on                  │
+  │File viewer                                      ⏸           account soft-limited             │
+  │  j / ↓       Scroll down                        ⚠           account traffic never seen       │
+  │  k / ↑       Scroll up                          ❄           cache cold, next turn re-reads   │
+  │  PgDn        Page down                          ⌂           a job cctui did not start        │
+  │  PgUp        Page up                            ✕reason     how it ended                     │
+  │  g           Jump to the top                    ⚙N age      tool calls, age of the last      │
+  │  i           Draw images inline, or describe…                                                │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

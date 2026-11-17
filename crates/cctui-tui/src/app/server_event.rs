@@ -4,6 +4,7 @@ use super::action::{Action, HeartbeatUsage};
 use super::attention::AttentionAction;
 use super::diagnose::DiagnoseAction;
 use super::line::agent_event_to_line;
+use super::notifications::NotificationAction;
 use super::prompt::PromptAction;
 use super::send::SendAction;
 use super::session_live::SessionLiveAction;
@@ -139,6 +140,15 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
             waived("the next session-list refresh applies the new hidden set")
         }
         ServerEvent::UserActions { .. } => waived("no needs-you list; the counts ride on the rows"),
+        ServerEvent::SessionOutcome { .. } => {
+            waived("the list refresh carries the newest outcome on the row")
+        }
+        ServerEvent::Notification { notification } => {
+            vec![Action::Notifications(NotificationAction::Upsert(notification))]
+        }
+        ServerEvent::NotificationsUnread { count, .. } => {
+            vec![Action::Notifications(NotificationAction::Unread(count))]
+        }
         ServerEvent::Event { .. } => {
             waived("the TUI has no event log view; the list refresh carries status")
         }

@@ -23,6 +23,7 @@
 		placeholder = m.context_picker_placeholder(),
 		disabled = false,
 		id,
+		placement = 'bottom-start',
 		onchange
 	}: {
 		/** Pickable items: memories and prompt templates, never rules. */
@@ -37,6 +38,8 @@
 		placeholder?: string;
 		disabled?: boolean;
 		id?: string;
+		/** Where the listbox opens; it still flips and clamps to stay on screen. */
+		placement?: 'bottom-start' | 'top-start';
 		onchange?: (value: string[]) => void;
 	} = $props();
 
@@ -47,6 +50,7 @@
 	const options = $derived(fuzzyRank(query, items));
 	const shown = $derived([...locked.filter((k) => !value.includes(k)), ...value]);
 	const chips = $derived(chipsOf(shown, items, by));
+	const mixedKinds = $derived(new Set(items.map((i) => i.kind)).size > 1);
 
 	function set(next: string[]) {
 		value = next;
@@ -93,6 +97,8 @@
 		bind:open
 		bind:index
 		{label}
+		{placement}
+		panelStyle="display:block"
 		selectOn={['Enter']}
 		getKey={(o) => o.id}
 		onselect={pick}
@@ -121,7 +127,11 @@
 			{@const key = keyOf(o, by)}
 			<span class="row" data-option={key}>
 				<span class="check" aria-hidden="true">{value.includes(key) || locked.includes(key) ? '✓' : ''}</span>
-				<Badge size="xs" tone={o.kind === 'prompt' ? 'accent' : 'info'}>{kindLabel(o.kind)}</Badge>
+				{#if mixedKinds}
+					<Badge size="xs" tone={o.kind === 'prompt' ? 'accent' : 'info'} data-kind={o.kind}
+						>{kindLabel(o.kind)}</Badge
+					>
+				{/if}
 				<span class="title">{o.title}</span>
 				<span class="slug">{o.name}</span>
 				{#if matched.includes(key)}
@@ -158,13 +168,18 @@
 		width: 1em;
 		color: var(--ok);
 	}
-	.title {
+	.title,
+	.slug {
+		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
+	.title {
+		flex: 0 1 auto;
+	}
 	.slug {
-		flex: none;
+		flex: 1 1 0;
 		font-family: var(--font-mono);
 		font-size: var(--fs-xs);
 		color: var(--text-faint);

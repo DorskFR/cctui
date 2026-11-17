@@ -298,6 +298,7 @@ async fn run(
     effects.dispatch(app::action::Effect::FetchIdentity);
     app.permissions.fetch_started();
     effects.dispatch(app::action::Effect::FetchPendingPermissions);
+    effects.dispatch(app::notifications::startup());
     effects.dispatch(app::action::Effect::LoadDraftIndex);
     // The status line counts machines, so it cannot wait for the slice's visit.
     effects.dispatch(app::action::Effect::FetchMachines);

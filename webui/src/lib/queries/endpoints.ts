@@ -26,6 +26,14 @@ import type { AgentEvent } from "@bindings/AgentEvent";
 import type { MessagePin } from "@bindings/MessagePin";
 import type { UserActionList } from "@bindings/UserActionList";
 import type { UserActionStatus } from "@bindings/UserActionStatus";
+import type { NotificationList } from "@bindings/NotificationList";
+import type { NotificationTransition } from "@bindings/NotificationTransition";
+import type { NotificationReadAll } from "@bindings/NotificationReadAll";
+import type { NotificationActRequest } from "@bindings/NotificationActRequest";
+import type { NotificationSettings } from "@bindings/NotificationSettings";
+import type { NotificationEndpoint } from "@bindings/NotificationEndpoint";
+import type { CreateNotificationEndpoint } from "@bindings/CreateNotificationEndpoint";
+import type { NotificationTestSent } from "@bindings/NotificationTestSent";
 import type { ConversationSearchResponse } from "@bindings/ConversationSearchResponse";
 import type { SpawnRequest } from "@bindings/SpawnRequest";
 import type { ContextItem } from "@bindings/ContextItem";
@@ -114,6 +122,7 @@ import type { Bookmark } from "@bindings/Bookmark";
 import type { CreateBookmark } from "@bindings/CreateBookmark";
 import type { UpdateBookmark } from "@bindings/UpdateBookmark";
 import { SYSTEM_MACHINE_KINDS } from "./keys";
+import type { InboxEvent } from "./inbox";
 import type {
   AccountProvider,
   AccountUsage,
@@ -287,6 +296,11 @@ export const endpoints = {
     api.patch<Bookmark>(path("patch_bookmarks_by_id", { id }), body),
   deleteBookmark: (id: string) =>
     api.del<void>(path("delete_bookmarks_by_id", { id })),
+  inboxEvents: () => api.get<InboxEvent[]>(path("get_inbox_events")),
+  cancelInboxEvent: (id: string) =>
+    api.del<void>(path("delete_inbox_events_by_id", { id })),
+  retryInboxEvent: (id: string) =>
+    api.post<void>(path("post_inbox_events_by_id_retry", { id }), {}),
   /** Runtime plugins found in the server's plugins dir, with the caller's
    * enabled flag. */
   plugins: () => api.get<PluginInfo[]>("/plugins"),
@@ -461,6 +475,26 @@ export const endpoints = {
     api.post<UserActionList>(`/sessions/${id}/user-actions/${actionId}/tick`, {
       status,
     }),
+  notifications: (q: { state?: "open" | "all"; limit?: number; before?: string } = {}) =>
+    api.get<NotificationList>(path("get_notifications"), q),
+  readNotification: (id: string) =>
+    api.post<NotificationTransition>(path("post_notifications_by_id_read", { id })),
+  actNotification: (id: string, body: NotificationActRequest) =>
+    api.post<NotificationTransition>(path("post_notifications_by_id_act", { id }), body),
+  dismissNotification: (id: string) =>
+    api.post<NotificationTransition>(path("post_notifications_by_id_dismiss", { id })),
+  readAllNotifications: () =>
+    api.post<NotificationReadAll>(path("post_notifications_read_all")),
+  notificationSettings: () =>
+    api.get<NotificationSettings>(path("get_notifications_settings")),
+  notificationEndpoints: () =>
+    api.get<NotificationEndpoint[]>(path("get_notifications_endpoints")),
+  createNotificationEndpoint: (body: CreateNotificationEndpoint) =>
+    api.post<NotificationEndpoint>(path("post_notifications_endpoints"), body),
+  deleteNotificationEndpoint: (id: string) =>
+    api.del<void>(path("delete_notifications_endpoints_by_id", { id })),
+  testNotificationEndpoint: (id: string) =>
+    api.post<NotificationTestSent>(path("post_notifications_endpoints_by_id_test", { id })),
   /** One-call session diagnose: everything the daemon knows about
    *  the session — each fact dated + sourced, plus the arbitration verdict —
    *  merged with the server-side gateway/account binding facts. */
@@ -601,6 +635,9 @@ export const endpoints = {
     api.post<void>(`/sessions/${sessionId}/cancel-launch`, {}),
   /** Discard (delete) a draft session row. */
   discardDraft: (sessionId: string) =>
+    api.post<void>(`/sessions/${sessionId}/discard`, {}),
+  /** Cancel a spawn queued for an offline machine. */
+  cancelQueuedSpawn: (sessionId: string) =>
     api.post<void>(`/sessions/${sessionId}/discard`, {}),
   /** Replace a draft's stored spawn payload in place (edit / autosave). */
   updateDraft: (sessionId: string, body: SpawnRequest) =>

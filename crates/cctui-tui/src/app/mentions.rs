@@ -73,6 +73,7 @@ const fn status_str(status: cctui_proto::models::SessionStatus) -> &'static str 
         S::Inactive => "inactive",
         S::Archived => "archived",
         S::Draft => "draft",
+        S::Queued => "queued",
     }
 }
 
@@ -171,6 +172,11 @@ mod tests {
             .as_ref()
             .map(|p| p.matches.iter().map(|m| m.id.clone()).collect())
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_queued_session_reads_as_queued() {
+        assert_eq!(super::status_str(cctui_proto::models::SessionStatus::Queued), "queued");
     }
 
     #[test]

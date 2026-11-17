@@ -447,19 +447,35 @@ async fn exhaust(state: &AppState, row: &StuckRow) {
         .session(session_id)
         .detail(serde_json::json!({ "exhausted": true, "attempts": MAX_ATTEMPTS })),
     );
-    crate::ntfy::notify(
-        &state.config,
-        crate::ntfy::Notification {
-            title: format!("Auto-resume gave up: {name}"),
-            message: format!(
-                "Session {session_id} is still stuck on \"{}\" after {MAX_ATTEMPTS} automatic \
-                 nudges. It needs a look.",
-                row.text.as_deref().unwrap_or("API Error").trim()
-            ),
-            tags: "warning".into(),
-            priority: 4,
-        },
+    let owner: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT user_id FROM sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
+    crate::notify::emit_detached(&state.config, owner, stuck_notice(row, &name));
+}
+
+fn stuck_notice(
+    row: &StuckRow,
+    name: &str,
+) -> impl FnOnce(uuid::Uuid) -> crate::notify::NewNotification + Send + 'static {
+    let session_id = row.session_id.clone();
+    let title = format!("Auto-resume gave up: {name}");
+    let body = format!(
+        "Session {session_id} is still stuck on \"{}\" after {MAX_ATTEMPTS} automatic nudges. \
+         It needs a look.",
+        row.text.as_deref().unwrap_or("API Error").trim()
     );
+    move |owner| crate::notify::NewNotification {
+        severity: "high",
+        tags: Some("warning".to_owned()),
+        collapse_key: Some(format!("stuck:{session_id}")),
+        session_id: Some(session_id),
+        body: Some(body),
+        ..crate::notify::NewNotification::new(owner, crate::notify::kind::SESSION_STUCK, title)
+    }
 }
 
 #[cfg(test)]

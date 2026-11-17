@@ -11,13 +11,16 @@ mod daemon;
 mod device_auth;
 mod dispatch;
 mod drafts;
+mod inbox;
 mod keys;
 mod labels;
 mod machines;
 mod me;
+mod notifications;
 mod otlp;
 mod passkeys;
 mod plugins;
+mod presets;
 mod previews;
 mod profiles;
 mod prompts;
@@ -36,6 +39,7 @@ mod user_actions;
 mod users;
 mod version;
 mod voice;
+mod web_push;
 
 use axum::http::Method;
 
@@ -90,6 +94,10 @@ pub fn register(r: Routes) -> Routes {
     let r = admin_users::register(r);
     let r = skills::register(r);
     let r = user_actions::register(r);
+    let r = inbox::register(r);
+    let r = presets::register(r);
+    let r = notifications::register(r);
+    let r = web_push::register(r);
     let r = drafts::register(r);
     let r = voice::register(r);
     let r = otlp::register(r);

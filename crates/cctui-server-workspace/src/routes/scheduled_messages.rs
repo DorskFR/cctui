@@ -8,10 +8,18 @@ use cctui_proto::api::SpawnResponse;
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
-use crate::scheduled_messages::{claim_one, deliver, parse_deliver_at, seal};
+use crate::scheduled_messages::{KIND, claim_one, deliver, parse_deliver_at, seal, settle};
 use crate::state::AppState;
 
 type ApiResult<T> = Result<T, AppError>;
+
+/// The queue's state names over the inbox's.
+macro_rules! legacy_state {
+    () => {
+        "CASE e.status WHEN 'pending' THEN 'scheduled' WHEN 'claimed' THEN 'sending' \
+              WHEN 'delivered' THEN 'sent' ELSE e.status END"
+    };
+}
 
 fn not_pending() -> AppError {
     AppError::new(StatusCode::NOT_FOUND, "no pending scheduled message with that id")
@@ -77,15 +85,22 @@ pub async fn schedule(
         .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e.to_string()))?;
     let (body, sealed_body) = seal(content, crate::crypto::vault_key)
         .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e))?;
+    let owner = crate::inbox::store::session_lane_owner(&state.pool, session_id)
+        .await?
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no session with that id"))?
+        .unwrap_or(ctx.user_id);
+    let lane_id = crate::inbox::store::session_lane(&state.pool, owner, session_id).await?;
     let id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO session_message_queue \
-           (session_id, user_id, body, sealed_body, deliver_at, next_attempt_at, origin) \
-         VALUES ($1, $2, $3, $4, $5, $5, 'human') RETURNING id",
+        "INSERT INTO inbox_events \
+           (lane_id, user_id, source, body, sealed_body, payload, not_before, next_attempt_at, \
+            batch_id) \
+         VALUES ($1, $2, 'human', $3, $4, $5, $6, $6, gen_random_uuid()) RETURNING id",
     )
-    .bind(session_id)
+    .bind(lane_id)
     .bind(ctx.user_id)
     .bind(body)
     .bind(sealed_body)
+    .bind(serde_json::json!({ "kind": KIND, "origin": "human" }))
     .bind(deliver_at)
     .fetch_one(&state.pool)
     .await?;
@@ -100,21 +115,24 @@ pub async fn schedule(
     ))
 }
 
-/// Pending, dead-lettered, and the last day of delivered messages; the
-/// delivered ones let the client mark live scheduled turns.
+/// Pending, dead-lettered, and the last day of delivered messages.
 pub async fn list(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> ApiResult<Json<Vec<ScheduledMessage>>> {
-    let rows = sqlx::query_as(
-        "SELECT id, body, state, deliver_at, attempts, last_error, turn_id, origin, \
-                created_at, sent_at \
-         FROM session_message_queue \
-         WHERE session_id = $1 \
-           AND (state IN ('scheduled', 'sending', 'dead') \
-                OR (state = 'sent' AND sent_at > now() - interval '1 day')) \
-         ORDER BY deliver_at",
-    )
+    let rows = sqlx::query_as(concat!(
+        "SELECT e.id, e.body, ",
+        legacy_state!(),
+        " AS state, e.not_before AS deliver_at, e.attempts, e.last_error, \
+                COALESCE(e.batch_id, e.id) AS turn_id, \
+                COALESCE(e.payload->>'origin', 'human') AS origin, e.created_at, \
+                e.delivered_at AS sent_at \
+         FROM inbox_events e JOIN inbox_lanes l ON l.id = e.lane_id \
+         WHERE l.key = 'session:' || $1::text AND e.payload->>'kind' = 'scheduled_message' \
+           AND (e.status IN ('pending', 'claimed', 'dead') \
+                OR (e.status = 'delivered' AND e.delivered_at > now() - interval '1 day')) \
+         ORDER BY e.not_before"
+    ))
     .bind(&session_id)
     .fetch_all(&state.pool)
     .await?;
@@ -137,13 +155,15 @@ pub async fn update(
         }
     };
     let res = sqlx::query(
-        "UPDATE session_message_queue SET \
-           body = COALESCE($3, body), \
-           sealed_body = CASE WHEN $3::text IS NULL THEN sealed_body ELSE $5 END, \
-           deliver_at = COALESCE($4, deliver_at), \
-           next_attempt_at = COALESCE($4, next_attempt_at), \
-           attempts = CASE WHEN $4 IS NULL THEN attempts ELSE 0 END \
-         WHERE id = $1 AND session_id = $2 AND state = 'scheduled'",
+        "UPDATE inbox_events e SET \
+           body = COALESCE($3, e.body), \
+           sealed_body = CASE WHEN $3::text IS NULL THEN e.sealed_body ELSE $5 END, \
+           not_before = COALESCE($4, e.not_before), \
+           next_attempt_at = COALESCE($4, e.next_attempt_at), \
+           attempts = CASE WHEN $4 IS NULL THEN e.attempts ELSE 0 END \
+         FROM inbox_lanes l \
+         WHERE l.id = e.lane_id AND e.id = $1 AND l.key = 'session:' || $2::text \
+           AND e.status = 'pending' AND e.payload->>'kind' = 'scheduled_message'",
     )
     .bind(queue_id)
     .bind(&session_id)
@@ -163,8 +183,10 @@ pub async fn cancel(
     Path((session_id, queue_id)): Path<(String, uuid::Uuid)>,
 ) -> ApiResult<StatusCode> {
     let res = sqlx::query(
-        "UPDATE session_message_queue SET state = 'cancelled' \
-         WHERE id = $1 AND session_id = $2 AND state IN ('scheduled', 'dead')",
+        "UPDATE inbox_events e SET status = 'cancelled' \
+         FROM inbox_lanes l \
+         WHERE l.id = e.lane_id AND e.id = $1 AND l.key = 'session:' || $2::text \
+           AND e.status IN ('pending', 'dead') AND e.payload->>'kind' = 'scheduled_message'",
     )
     .bind(queue_id)
     .bind(&session_id)
@@ -183,7 +205,11 @@ pub async fn send_now(
 ) -> ApiResult<StatusCode> {
     crate::routes::sessions::authorize_reply(&state, &ctx, &session_id).await?;
     let row = claim_one(&state.pool, &session_id, queue_id).await?.ok_or_else(not_pending)?;
-    deliver(&state, row).await.map_err(|e| AppError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
+    let (turn_id, attempts) = (row.turn_id, row.attempts);
+    let outcome = deliver(&state, row).await;
+    settle(&state.pool, turn_id, attempts, outcome)
+        .await?
+        .map_err(|e| AppError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
     Ok(StatusCode::ACCEPTED)
 }
 

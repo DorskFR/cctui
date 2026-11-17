@@ -962,6 +962,19 @@ pub enum ServerEvent {
         session_id: String,
         actions: Vec<crate::api::UserAction>,
     },
+    /// The session stored an outcome; the newest one is what the list shows.
+    SessionOutcome {
+        session_id: String,
+        outcome: crate::api::outcome::SessionOutcome,
+    },
+    /// The whole record on every change; a terminal `state` drops the card.
+    Notification {
+        notification: Box<crate::api::notifications::Notification>,
+    },
+    NotificationsUnread {
+        user_id: uuid::Uuid,
+        count: i64,
+    },
     /// A lifecycle event was recorded; scoped like the `/events` list.
     Event {
         event: crate::api::events::EventRecord,

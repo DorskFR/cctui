@@ -41,7 +41,9 @@ The sidecar/init image defaults to `ghcr.io/dorskfr/cctui-worker:<version>`
 
 1. **initContainer `net-init`** — `cctui-worker-net-init`, `runAsUser 0`, caps
    drop `ALL` add `NET_ADMIN` (iptables REDIRECT of worker egress into the
-   proxy; proxy uid `1337` RETURNs).
+   proxy; proxy uid `1337` RETURNs). Its only env is `WORKER_DNS_RESOLVER`:
+   the profile's `spec.dnsResolver`, else `CCTUI_ORCH_DNS_RESOLVER`, else
+   `cctui-worker-dns`. A resolver that does not resolve fails the pod.
 2. **initContainer `guard-proxy`** (native sidecar, `restartPolicy: Always`) —
    `cctui-guard-proxy-entrypoint --mode=transparent --listen=0.0.0.0:15001
    --health-listen=0.0.0.0:15002 --policy=/var/run/guard-proxy/policy.json`;
@@ -87,6 +89,7 @@ The webhook process reads these env vars:
 | `CCTUI_ORCH_TLS_CERT` / `CCTUI_ORCH_TLS_KEY` | PEM cert/key paths for HTTPS. If unset, serves plain HTTP (tests/local only) | — (plain HTTP) |
 | `CCTUI_ORCH_LISTEN` | listen address | `0.0.0.0:8443` |
 | `CCTUI_ORCH_SIDECAR_IMAGE` | override the injected sidecar/init image | `ghcr.io/dorskfr/cctui-worker:<version>` |
+| `CCTUI_ORCH_DNS_RESOLVER` | restricted DNS resolver rendered as `WORKER_DNS_RESOLVER` on `net-init` when the profile sets no `spec.dnsResolver` (IPv4 or pod-search-relative name; blank is unset) | `cctui-worker-dns` |
 
 Per-namespace, operator/Argo-managed resources the injected envelope references
 (`optional: false` — the pod fails to start if absent):

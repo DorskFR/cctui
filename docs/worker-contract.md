@@ -70,6 +70,8 @@ case, never a *no-`SESSION_ID`* case.
 | --- | --- | --- |
 | `WORKER_NET_MODE` | auto | `transparent`, `transparent-external`, or `forward`. Auto = `transparent` when iptables is usable (CAP_NET_ADMIN), else `forward`, which then faces an enforcing pre-flight it cannot pass. An explicit `transparent` with unusable iptables refuses to start. `forward` is an explicit opt-in only. `transparent-external` is never auto-selected — set it only when the pod runs the guard-proxy sidecar + net-init init container (see below). |
 | `WORKER_NET_EXEMPT` | — | Comma-separated `host:port` that **bypass** the proxy (resolved to a single IP at boot, iptables `RETURN`'d). Transparent mode only. IP-pinned — use only for **IP-stable** hosts; CDN/multi-IP hosts will rotate off the exempted IP. |
+| `WORKER_DNS_RESOLVER` | — (net-init: `cctui-worker-dns`) | Restricted resolver DNS is DNATed to: an IPv4 address or a pod-search-relative name. Set and unresolvable is fatal. Unset: net-init tries `cctui-worker-dns` and on failure warns and keeps the pod resolver; `transparent` keeps the first IPv4 nameserver. On kube the orchestrator always sets it on net-init (see "Sidecar mode"), so a missing resolver fails the pod. |
+| `WORKER_DNS_RESOLVER_REQUIRED` | off | `1` (exactly) makes an unset `WORKER_DNS_RESOLVER` mean `cctui-worker-dns`, fatal when it does not resolve: net-init and `transparent` exit non-zero before installing any rule instead of falling back to a resolver that may recurse public names. Any other value or unset: unchanged. |
 | `WORKER_NET_ALLOW` | — | Comma-separated `host:port` allowed **through** the proxy by **SNI** (IP-independent). Folded into the seeded `policy.json` and re-applied as `cctui-guard --always-allow` so it survives per-step rewrites. The right tool for CDN/multi-IP SaaS APIs (e.g. a YouTrack host). |
 | `WORKER_REPO_REGISTRIES` | on | After the repo lands in `/workspace/<repo>`, its manifests (up to three levels deep; `.git`, `node_modules`, `target`, `vendor`, `.venv` skipped) add their package registry to the seeded `policy.json` as plain egress (no credential injection): `package.json`/`package-lock.json`/`npm-shrinkwrap.json` → `registry.npmjs.org:443`; `pyproject.toml`/`uv.lock`/`requirements*.txt` → `pypi.org:443`, `files.pythonhosted.org:443`; `Cargo.toml` → `index.crates.io:443`, `static.crates.io:443`, `crates.io:443`; `go.mod` → `proxy.golang.org:443`, `sum.golang.org:443`. Not `--always-allow`'d: under a guarded workflow the per-step `[network]` policy replaces them. `0`/`false`/`off`/`no` disables it per profile. |
 | `WARM_REPO_DIR` | — | Mounted warm-repo dir; becomes the overlayfs lowerdir for `/workspace` (rsync-copy fallback). `posture: root` only: a `posture: nonroot` profile is denied for setting it, and the envelope strips it from a nonroot worker. |
@@ -334,7 +336,7 @@ prompt step blocks; the default is the safe fallback, not a recommendation.
 
 | Mode | Capability at start | Mechanism |
 | --- | --- | --- |
-| `transparent` (default w/ NET_ADMIN) | **CAP_NET_ADMIN** | The same rules as net-init: only the proxy uid and loopback egress directly. Every other uid, root included, has its TCP REDIRECTed to `:15001` (except DNS to the resolver and `WORKER_NET_EXEMPT`); the filter table REJECTs `169.254.0.0/16` and all non-TCP egress for every uid but the proxy, DNS (UDP/TCP 53) to the resolver excepted. The resolver is `WORKER_DNS_RESOLVER` when set (DNAT, fatal when unresolvable), else the first IPv4 nameserver as is. IPv6 egress denied (proxy is IPv4-only — forces IPv4 fallback). Unusable iptables or a missing `setpriv` (the proxy must run as its own uid) is fatal, never a fallback to `forward`. |
+| `transparent` (default w/ NET_ADMIN) | **CAP_NET_ADMIN** | The same rules as net-init: only the proxy uid and loopback egress directly. Every other uid, root included, has its TCP REDIRECTed to `:15001` (except DNS to the resolver and `WORKER_NET_EXEMPT`); the filter table REJECTs `169.254.0.0/16` and all non-TCP egress for every uid but the proxy, DNS (UDP/TCP 53) to the resolver excepted. The resolver is `WORKER_DNS_RESOLVER` when set (DNAT, fatal when unresolvable), else `cctui-worker-dns` under `WORKER_DNS_RESOLVER_REQUIRED=1` (fatal too), else the first IPv4 nameserver as is. IPv6 egress denied (proxy is IPv4-only — forces IPv4 fallback). Unusable iptables or a missing `setpriv` (the proxy must run as its own uid) is fatal, never a fallback to `forward`. |
 | `transparent-external` (explicit only) | **none** (in this container) | Same wire behaviour as `transparent`, but the proxy runs in a **separate sidecar container** and the iptables rules are installed by a **NET_ADMIN init container**. The entrypoint only seeds `policy.json` and waits for the sidecar's `:15002/ready`. |
 | `forward` (no NET_ADMIN) | **none** | No iptables. `HTTP_PROXY`/`HTTPS_PROXY=http://127.0.0.1:15001` exported for the worker tree; `NO_PROXY=127.0.0.1,localhost`. Honor-system: an agent that ignores the env egresses directly. Explicit opt-in only (`WORKER_NET_MODE=forward`, pre-flight `warn`); for rootless Docker / gVisor / Apple container. |
 
@@ -460,7 +462,14 @@ base `ghcr.io/dorskfr/cctui-worker` image — no extra image needed):
    privileged). The pod network namespace is shared, so the REDIRECT it installs
    (uid-1000 TCP → `:15001`, exemptions for uid 0 / uid 1337 / loopback / DNS /
    `WORKER_NET_EXEMPT`, IPv6 deny) governs every container. Honors
-   `WORKER_UID`/`PROXY_UID`/`PROXY_PORT`/`WORKER_NET_EXEMPT` env.
+   `WORKER_UID`/`PROXY_UID`/`PROXY_PORT`/`WORKER_NET_EXEMPT` env. The
+   orchestrator always renders `WORKER_DNS_RESOLVER` on it: the profile's
+   `spec.dnsResolver`, else the orchestrator's `CCTUI_ORCH_DNS_RESOLVER`, else
+   `cctui-worker-dns`. net-init's env comes only from the envelope, so neither
+   the dispatch payload nor the profile's `env`/`spec.guard` can change it, and
+   a resolver that does not resolve (e.g. the `cctui-worker-dns` Service, or an
+   ExternalName's target, was deleted) fails the pod instead of letting DNS
+   recurse through kube-dns.
 2. **`guard-proxy` sidecar** — a native sidecar (initContainer with
    `restartPolicy: Always`) running
    `cctui-guard-proxy --mode transparent --listen 0.0.0.0:15001
@@ -486,6 +495,27 @@ root), `SETUID`/`SETGID` (cctui-supervisor's setresuid/setresgid drop to uid
 dispatched-worker wait kills the uid-1000 daemon tree from root). The container
 mounts need an unconfined AppArmor profile where the runtime's default profile
 denies `mount(2)` (previously masked by `privileged: true`).
+
+Injected sidecar resources, so a namespace `LimitRange` default never sizes
+them (guard-proxy log growth counts toward `ephemeral-storage`):
+
+| Container | cpu | memory | ephemeral-storage |
+| --- | --- | --- | --- |
+| `net-init` | 10m / 100m | 16Mi / 64Mi | 4Mi / 16Mi |
+| `guard-proxy` | 25m / 500m | 32Mi / 256Mi | 32Mi / 128Mi |
+
+(request / limit). `spec.sidecarResources.netInit` / `.guardProxy` take a
+container `resources` block merged key by key over these: a profile that sets
+only `limits.ephemeral-storage` keeps every other default.
+
+```yaml
+spec:
+  dnsResolver: cctui-worker-dns
+  sidecarResources:
+    guardProxy:
+      limits:
+        ephemeral-storage: 512Mi
+```
 
 ### Per-profile guard settings (`spec.guard`)
 
@@ -955,6 +985,206 @@ is a contract violation; the gate must instead report `needs_human` with what is
 blocked. The array is consumed by the PR renderer (one section per surface) and,
 longer-term, by `cctui-github` (diff viewer + review-draft store + evidence
 attachments) — the not-yet-built crate is the natural home for richer rendering.
+
+## Session outcome (`CctuiOutcome`)
+
+Every session, dispatched or not, ends its work by declaring an **outcome**. A
+dispatched session's outcome is also what the server POSTs to the dispatch
+`notify_url` (signed with `notify_secret` as `X-CCTUI-Signature: sha256=<hex>`,
+retried with backoff like the failure webhook). The `REPLY_URL` trap above is
+unchanged.
+
+How a session declares it, strongest first:
+
+| Source | How | Notes |
+|---|---|---|
+| `tool` | the `CctuiOutcome` MCP tool | claude-code, codex, opencode: every harness the cctui MCP relay is registered for |
+| `result_file` | the agent writes `RESULT_FILE` | the daemon relays each new valid verdict; existing packs need no change |
+| `text` | a `result:` / `needs input:` / `failed:` line in the turn's final message | for harnesses without MCP; last such line outside a code fence wins |
+| `inferred` | none of the above, no open user action, no live child | stored as `ended_without_outcome`; never sent to `notify_url` |
+
+`CctuiOutcome` arguments:
+
+```jsonc
+{
+  "status":   "result",          // result | needs_input | failed
+  "headline": "Opened PR 12",    // one line; first line kept, 200 chars max
+  "body":     "All checks pass.",// optional markdown
+  "evidence": ["https://…/pull/12", "/tmp/test.log"]  // optional paths or links
+}
+```
+
+A `RESULT_FILE` verdict converts as: `status: success` is `result`,
+`needs_input` / `needs_human` is `needs_input`, anything else is `failed`; the
+first line of `message` is the headline and the rest the body (a failure's
+`error` is its headline and `message` its body); `evidence[]` keeps string
+entries and a structured entry's `summary`.
+
+`notify_url` body (identical for every harness and every source):
+
+```jsonc
+{
+  "kind":       "outcome",
+  "task_id":    "<payload.task_id, else the session id>",
+  "session_id": "…",
+  "status":     "success",       // success | needs_input | failed (legacy vocabulary)
+  "error":      null,            // the headline when status is failed
+  "message":    "Opened PR 12\n\nAll checks pass.",  // headline, blank line, body
+  "outcome": {
+    "status":   "result",        // result | needs_input | failed
+    "headline": "Opened PR 12",
+    "body":     "All checks pass.",
+    "evidence": ["https://…/pull/12"]
+  }
+}
+```
+
+The first declared outcome of a dispatch is the one delivered; later
+declarations still update the session row. A worker lost before declaring one
+still gets the failure body `{ task_id, status: "failed", error }` from the
+death detector. In the UI, only a session whose newest outcome is `result`
+sits in Completed, and the headline shows on its row and in its drawer.
+
+## Session timer (`CctuiTimer`)
+
+A session asks to be woken later with a prompt, then ends its turn. The tool
+belongs to the `automation` feature; with it off, the tool is not listed.
+
+```jsonc
+{
+  "delay_secs": 7200,                 // 60 s to 30 days
+  "prompt":     "Check the CI run of PR 12 and merge it if green."
+}
+```
+
+The daemon adds a fresh `tool_use_id` per call, so a retried call is one
+timer, not two. Where the wake lands depends on the session's prompt-cache
+TTL (about an hour for Claude, 30 minutes for GPT-5.6+, 5 minutes for other
+models; each minus a two-minute margin):
+
+| Delay | Mode | What happens |
+|---|---|---|
+| under the TTL | `tick` | the same session gets `[cctui keep-alive timer <at>] <prompt>` as its next turn at the due time. One pending tick per session: a new one replaces it. |
+| past the TTL | `event` | the prompt is queued as an inbox event (`source: timer`, `not_before` the due time) on the session's lane, or on its preset lane when a preset launched it, and the session is archived ten seconds later unless pinned. At the due time the lane delivers it like any inbox event: an archived session gets a follow-up session that inherits a brief of it. |
+
+Six ticks in a row without a human message are the limit; the seventh is
+refused. The agent reads one of:
+
+- `timer set: this session wakes at <at> …` (tick)
+- `timer queued for <at>: past the cache TTL, so this session will be archived …` (event)
+- `timer queued for <at>: the session is pinned, so it stays …` (event, pinned)
+- `timer already queued for <at>.` (the same call again)
+- `rejected: <reason>` (out of range, empty prompt, budget spent)
+
+## Inbox events
+
+`POST /api/v1/inbox/events` (Bearer, `dispatch` scope, `automation` feature)
+queues one event on a **lane**. A lane is the unit of ordering and batching:
+events are delivered in arrival order, every due event of a lane goes out as
+one turn (at most 20), and a lane never has two deliveries in flight. This is
+the ingress for external triggers (n8n, webhooks) that would otherwise build a
+full dispatch body: the target, dispatcher, profile and prompt live on a
+launch preset, the caller sends only what happened.
+
+```jsonc
+{
+  "preset":     "triage",          // a preset id or name; or "session_id", not both
+  "topic":      "ticket-42",       // preset targets only; default "default", 120 chars max
+  "source":     "n8n",             // n8n | webhook | schedule | timer | outcome | approval | human
+  "source_id":  "delivery-8f1c",   // the upstream delivery id; 256 chars max
+  "body":       "Ticket 42 moved to In Review.",   // required, 64 KiB max
+  "payload":    { "ticket": 42 },  // optional JSON object, 8 KiB max, no secrets
+  "not_before": "2026-11-17T09:00:00Z",  // optional, RFC3339, at most 30 days ahead
+  "expires_at": "2026-11-17T12:00:00Z"   // optional, after now and after not_before
+}
+```
+
+Unknown fields are refused. `202` answers:
+
+```jsonc
+{ "id": "…", "status": "accepted" }   // accepted | deduplicated
+```
+
+**`source_id`.** Required for `n8n` and `webhook`: pass the upstream delivery
+id, so a re-sent delivery is one event. The same `(lane, source, source_id)`
+within the 30-day retention answers `deduplicated` with the first event's id
+and queues nothing. Other sources may omit it. The server mints its own for
+the events it writes: `<session>:<tool_use_id>` for timers, `<session>:outcome`
+for chains, the notification id for approvals.
+
+**`payload`.** Stored with the event and returned by `GET`, not shown to the
+agent: the agent reads `body`. A key named `env`, `secret(s)`, `token`,
+`password`, `api_key`, `authorization`, `cookie`, `reply_url`,
+`notify_secret`, or ending in `_secret` / `_token` / `_password`, at any
+depth, is refused with `400`. Credentials come from the preset's dispatch,
+never from the event.
+
+**Lanes.** `session_id` targets that session's lane. `preset` + `topic`
+targets the lane `preset:<id>:<topic>`: one topic per subject (a ticket, a PR)
+keeps its events together and apart from other subjects. A preset only takes
+`n8n` / `webhook` events when `external_sources` is on (`403` otherwise), and
+a machine preset with it on must run `ask` or `auto`.
+
+**Scheduling.** An event waits until `not_before`; an event still pending at
+`expires_at` is cancelled instead of delivered. A lane is not claimed while its
+session is working or blocked, so events arriving mid-turn join the next batch.
+More than 60 events in an hour pauses the lane and notifies its owner;
+`POST /inbox/lanes/{id}/resume` releases it.
+
+**Delivery.** One turn carries every event of the batch:
+
+```text
+[cctui inbox: 2 events]
+1. (n8n, 2026-11-16T09:02Z) Ticket 42 moved to In Review.
+2. (timer, 2026-11-16T09:30Z) Check the CI run.
+```
+
+How it lands, by lane target (`delivered_as` on the event):
+
+| Lane | Delivered as |
+|---|---|
+| a session, live or idle | `reply`: the batch is the session's next turn |
+| a session queued for an offline machine | the queued spawn launches with it once the daemon is back (24 h at most) |
+| a session archived or gone | `followup` from the parent the events name (an approval answers its asker), else dead |
+| a machine preset, its current session idle less than `fresh_secs` (60–2700, default 900, capped by the cache TTL) | `reply` to that session |
+| a machine preset otherwise | `followup` of its last session (`on_stale: followup`, the default), else a fresh `spawn` (`on_stale: new`, or no session yet); prompt = preset prompt, blank line, batch |
+| a container preset (dispatcher) | `dispatch`: one worker per batch, `session_id` = the batch id so a redelivery is deduplicated, `payload: {profile, prompt, name}` from the preset, `notify_url` from the preset |
+
+A preset's `notify_url` (https, dispatcher presets only) is the dispatch
+`notify_url`: the worker's outcome is POSTed there as in
+[Session outcome](#session-outcome-cctuioutcome). A preset with a next preset
+chains: a `result` outcome of a session it launched becomes an `outcome`
+event (`body` = headline, blank line, body) on the next preset's lane, same
+topic, at most 8 hops.
+
+A failed delivery is retried with backoff; after 11 attempts, or a refusal
+that cannot succeed, the event is `dead` and its owner is notified.
+`POST /inbox/events/{id}/retry` requeues a dead event,
+`DELETE /inbox/events/{id}` cancels a pending one, and
+`GET /inbox/events?lane=<id or key>&status=<status>` lists them (newest 200).
+
+### Approval decision (`notification.decision`)
+
+When a notification that holds a session's run is answered or expires (an
+`approval` notice, or a blocking user action), the decision is written to that
+session's lane as an `approval` event: `source_id` is the notification id,
+`body` is `<decision>: <note or title>` (`expired: …` when nobody answered),
+and the session gets it as its next turn, or a follow-up when it is gone.
+The event's `payload`:
+
+```jsonc
+{
+  "kind":            "notification.decision",
+  "notification_id": "…",
+  "session_id":      "…",
+  "subject":         { "kind": "outcome", "id": "…" },  // null when the notice has none
+  "decision":        "approve",     // the action id; null when it expired
+  "note":            "ship it",     // null without one
+  "actor":           { "channel": "ntfy", "user_id": "…" },  // channel "system" on expiry
+  "decided_at":      "2026-11-16T09:05:00Z",
+  "idempotency_key": "…"            // the notification id
+}
+```
 
 ## Dispatch response
 

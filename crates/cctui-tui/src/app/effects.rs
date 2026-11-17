@@ -519,6 +519,7 @@ async fn run(server: &Client, ws: &WsClient, drafts: &DraftSaver, effect: Effect
             }
         },
         Effect::Context(effect) => super::context_items::run(server, effect).await,
+        Effect::Notifications(effect) => super::notifications::run(server, effect).await,
         // The accounts, usage and spend arms live in their own runner: one
         // function holding every arm builds a future too large for the stack.
         rest @ (Effect::FetchMachines
@@ -743,7 +744,8 @@ async fn run_accounts(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Act
                 })],
                 Err(e) => {
                     tracing::warn!(%e, "the spawn request failed");
-                    vec![Action::Spawn(super::spawn::SpawnAction::Failed(e.to_string()))]
+                    let reason = super::spawn::failure_message(&e);
+                    vec![Action::Spawn(super::spawn::SpawnAction::Failed(reason))]
                 }
             }
         }

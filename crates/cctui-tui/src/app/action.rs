@@ -19,6 +19,7 @@ use super::images::ImagesAction;
 use super::labels::LabelAction;
 use super::machines::MachineAction;
 use super::macros::MacroAction;
+use super::notifications::{NotificationAction, NotificationEffect};
 use super::pins::PinAction;
 use super::prompt::PromptAction;
 use super::row_actions::RowAction;
@@ -118,6 +119,7 @@ pub enum Action {
     AccountSwitch(AccountSwitchAction),
     ContextItems(ContextAction),
     DeepLink(DeepLinkAction),
+    Notifications(NotificationAction),
 
     StreamLine {
         session_id: String,
@@ -382,6 +384,7 @@ pub enum Effect {
     },
     /// The context browser's reads and writes.
     Context(ContextEffect),
+    Notifications(NotificationEffect),
     /// `GET /labels`: the whole catalogue.
     FetchLabels,
     CreateLabel {

@@ -1573,6 +1573,144 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "get_presets"
+# GET /presets — List your launch presets, or save one.
+tui = "waived"
+reason = "launch presets are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_presets"
+# POST /presets — List your launch presets, or save one.
+tui = "waived"
+reason = "launch presets are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_presets_by_id"
+# GET /presets/{id} — Read, replace or delete one launch preset.
+tui = "waived"
+reason = "launch presets are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
+id = "put_presets_by_id"
+# PUT /presets/{id} — Read, replace or delete one launch preset.
+tui = "waived"
+reason = "launch presets are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
+id = "delete_presets_by_id"
+# DELETE /presets/{id} — Read, replace or delete one launch preset.
+tui = "waived"
+reason = "launch presets are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_inbox_events"
+# POST /inbox/events — Queue an event into a session's inbox lane, deduplicated by source id.
+tui = "waived"
+reason = "the inbox is an automation ingress for n8n and webhooks; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_inbox_events"
+# GET /inbox/events — List your inbox events, by lane and status.
+tui = "waived"
+reason = "the inbox is an automation ingress for n8n and webhooks; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_inbox_events_by_id"
+# GET /inbox/events/{id} — Read one inbox event, or cancel it while pending.
+tui = "waived"
+reason = "the inbox is an automation ingress for n8n and webhooks; the TUI keeps the operator loop"
+
+[[route]]
+id = "delete_inbox_events_by_id"
+# DELETE /inbox/events/{id} — Read one inbox event, or cancel it while pending.
+tui = "waived"
+reason = "the inbox is an automation ingress for n8n and webhooks; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_inbox_lanes_by_id_pause"
+# POST /inbox/lanes/{id}/pause — Pause an inbox lane: its events wait until it is resumed.
+tui = "waived"
+reason = "the inbox is an automation ingress for n8n and webhooks; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_inbox_lanes_by_id_resume"
+# POST /inbox/lanes/{id}/resume — Resume a paused inbox lane and deliver what waited.
+tui = "waived"
+reason = "the inbox is an automation ingress for n8n and webhooks; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_inbox_events_by_id_retry"
+# POST /inbox/events/{id}/retry — Return a dead inbox event to pending with its attempts reset.
+tui = "waived"
+reason = "the inbox is an automation ingress for n8n and webhooks; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_notifications"
+# GET /notifications — List your notifications, open or all, with the unread count.
+tui = "handled"
+module = "app/notifications.rs"
+
+[[route]]
+id = "get_notifications_endpoints"
+# GET /notifications/endpoints — List where your notifications reach you, or add a place.
+tui = "waived"
+reason = "notification endpoints and settings are edited on the webui settings page; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_notifications_endpoints"
+# POST /notifications/endpoints — List where your notifications reach you, or add a place.
+tui = "waived"
+reason = "notification endpoints and settings are edited on the webui settings page; the TUI keeps the operator loop"
+
+[[route]]
+id = "delete_notifications_endpoints_by_id"
+# DELETE /notifications/endpoints/{id} — Remove one of your notification endpoints.
+tui = "waived"
+reason = "notification endpoints and settings are edited on the webui settings page; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_notifications_endpoints_by_id_test"
+# POST /notifications/endpoints/{id}/test — Send a test notification to one endpoint only.
+tui = "waived"
+reason = "notification endpoints and settings are edited on the webui settings page; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_notifications_settings"
+# GET /notifications/settings — Your notification settings with every default filled in.
+tui = "waived"
+reason = "notification endpoints and settings are edited on the webui settings page; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_notifications_vapid_key"
+# GET /notifications/vapid-key — The public VAPID key a browser subscribes to Web Push with.
+tui = "waived"
+reason = "Web Push subscribes a browser through its service worker; a terminal has none"
+
+[[route]]
+id = "post_notifications_read_all"
+# POST /notifications/read-all — Mark every unread notification without actions read.
+tui = "handled"
+module = "app/notifications.rs"
+
+[[route]]
+id = "post_notifications_by_id_read"
+# POST /notifications/{id}/read — Mark one notification read.
+tui = "handled"
+module = "app/notifications.rs"
+
+[[route]]
+id = "post_notifications_by_id_act"
+# POST /notifications/{id}/act — Answer a notification with one of its actions; the first answer wins.
+tui = "handled"
+module = "app/notifications.rs"
+
+[[route]]
+id = "post_notifications_by_id_dismiss"
+# POST /notifications/{id}/dismiss — Dismiss a notification; refused for a blocking approval.
+tui = "handled"
+module = "app/notifications.rs"
+
+[[route]]
 id = "get_drafts"
 # GET /drafts — List your unsent drafts.
 tui = "handled"
@@ -1839,6 +1977,21 @@ reason = "the next session-list refresh applies the new hidden set"
 name = "user_actions"
 tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[ws_event]]
+name = "session_outcome"
+tui = "waived"
+reason = "the list refresh carries the newest outcome on the row"
+
+[[ws_event]]
+name = "notification"
+tui = "handled"
+module = "app/notifications.rs"
+
+[[ws_event]]
+name = "notifications_unread"
+tui = "handled"
+module = "app/notifications.rs"
 
 [[ws_event]]
 name = "event"

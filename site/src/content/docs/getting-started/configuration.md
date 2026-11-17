@@ -19,6 +19,7 @@ description: Server environment variables, the daemon config file, per-machine a
 | `CCTUI_TRUSTED_PROXY_HOPS` | How many reverse proxies sit in front, for client IPs. |
 | `CCTUI_PLUGINS_DIR` | Optional read-only plugin directory (dev and the local stack). |
 | `CCTUI_NTFY_URL`, `CCTUI_NTFY_TOKEN` | ntfy endpoint for phone push. ntfy is the only push transport today. |
+| `CCTUI_SMTP_URL`, `CCTUI_SMTP_FROM` | SMTP relay (`smtps://user:pass@host:465` or `smtp://host:587?tls=required`) and sender for the email channel. Both unset, email is off. |
 | `CCTUI_UPSTREAM_ALLOWED_HOSTS` | Internal or plain-`http` hosts a compatible-endpoint account may use (also editable in Settings › Instance). |
 | `CCTUI_SPAWN_MAX_CHILDREN`, `CCTUI_SPAWN_MAX_DEPTH`, `CCTUI_SPAWN_MAX_TREE_BUDGET_USD` | Instance-wide subagent limits. Unset means no limit. |
 | `CCTUI_DISPATCHERS` | JSON array of HTTP dispatcher registrations. Kube dispatchers enroll instead. |

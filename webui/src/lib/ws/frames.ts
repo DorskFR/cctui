@@ -1,5 +1,6 @@
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { SessionEndReason } from '@bindings/SessionEndReason';
+import type { SessionOutcome } from '@bindings/SessionOutcome';
 import type { ServerEvent } from '@bindings/ServerEvent';
 import type { AccountUsage } from '../queries/types';
 import { redactUserSpans } from '../redactTag';
@@ -147,6 +148,7 @@ export interface SessionListPatch {
 	bucket?: 'blocked';
 	launch_at?: string | null;
 	launch_error?: string | null;
+	latest_outcome?: SessionOutcome;
 }
 
 /** The list patch a scheduled-draft transition implies, or `null` when the

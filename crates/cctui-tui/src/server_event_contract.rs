@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::app::Action;
 use crate::app::server_event::to_actions;
 
-const VARIANT_COUNT: usize = 35;
+const VARIANT_COUNT: usize = 38;
 
 fn uuid() -> Uuid {
     Uuid::nil()
@@ -25,6 +25,37 @@ fn uuid() -> Uuid {
 
 fn now() -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::from_timestamp(0, 0).expect("epoch")
+}
+
+fn notification() -> cctui_proto::api::notifications::Notification {
+    cctui_proto::api::notifications::Notification {
+        id: uuid(),
+        user_id: uuid(),
+        kind: "approval".to_owned(),
+        severity: "high".to_owned(),
+        session_id: Some("s-1".to_owned()),
+        machine_id: None,
+        subject_kind: Some("outcome".to_owned()),
+        subject_id: Some("o-1".to_owned()),
+        collapse_key: Some("approval:s-1".to_owned()),
+        title: "Release 1.2?".to_owned(),
+        body: None,
+        tags: None,
+        actions: serde_json::json!([{ "id": "approve", "label": "Approve" }]),
+        state: "delivered".to_owned(),
+        repeat_count: 1,
+        decision: None,
+        decision_note: None,
+        acted_channel: None,
+        acted_by: None,
+        resolved_reason: None,
+        created_at: now(),
+        updated_at: now(),
+        read_at: None,
+        acted_at: None,
+        resolved_at: None,
+        expires_at: Some(now()),
+    }
 }
 
 fn session() -> cctui_proto::models::Session {
@@ -60,7 +91,30 @@ fn user_action() -> UserAction {
 fn samples() -> Vec<ServerEvent> {
     let mut all = session_samples();
     all.extend(fleet_samples());
+    all.extend(outcome_samples());
     all
+}
+
+fn outcome_samples() -> Vec<ServerEvent> {
+    vec![
+        ServerEvent::SessionOutcome {
+            session_id: "s-1".to_owned(),
+            outcome: cctui_proto::api::outcome::SessionOutcome {
+                id: uuid(),
+                session_id: "s-1".to_owned(),
+                dispatch_id: None,
+                turn_seq: Some(7),
+                status: cctui_proto::api::outcome::OutcomeStatus::Result,
+                headline: "Opened PR 12".to_owned(),
+                body: None,
+                evidence: Vec::new(),
+                source: cctui_proto::api::outcome::OutcomeSource::Tool,
+                created_at: now(),
+            },
+        },
+        ServerEvent::Notification { notification: Box::new(notification()) },
+        ServerEvent::NotificationsUnread { user_id: uuid(), count: 2 },
+    ]
 }
 
 fn session_samples() -> Vec<ServerEvent> {
@@ -251,6 +305,9 @@ fn variant_name(event: &ServerEvent) -> &'static str {
         ServerEvent::CctuiverseChanged { .. } => "cctuiverse_changed",
         ServerEvent::HiddenOwnersChanged { .. } => "hidden_owners_changed",
         ServerEvent::UserActions { .. } => "user_actions",
+        ServerEvent::SessionOutcome { .. } => "session_outcome",
+        ServerEvent::Notification { .. } => "notification",
+        ServerEvent::NotificationsUnread { .. } => "notifications_unread",
         ServerEvent::Event { .. } => "event",
         ServerEvent::Heartbeat { .. } => "heartbeat",
         ServerEvent::Resync { .. } => "resync",

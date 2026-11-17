@@ -948,6 +948,18 @@ fn submit(app: &mut super::state::App) -> Vec<Effect> {
     effects
 }
 
+/// What the form shows for a refused spawn: the server's own `error` when it
+/// sent one, else the client failure.
+#[must_use]
+pub fn failure_message(err: &cctui_client::ClientError) -> String {
+    if let cctui_client::ClientError::Status { body, .. } = err
+        && let Ok(api) = serde_json::from_str::<cctui_proto::api::ApiError>(body)
+    {
+        return api.error;
+    }
+    err.to_string()
+}
+
 #[cfg(test)]
 mod reduce_tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -990,6 +1002,35 @@ mod reduce_tests {
         reduce(&mut app, SpawnAction::Close);
         assert!(app.spawn.is_none());
         assert_eq!(app.view(), View::SessionList);
+    }
+
+    #[test]
+    fn a_refused_spawn_keeps_the_form_open_with_the_servers_reason() {
+        let mut app = app();
+        reduce(&mut app, SpawnAction::Open);
+        assert!(!reduce(&mut app, SpawnAction::Submit).is_empty());
+        let refusal = cctui_client::ClientError::Status {
+            route: "post_sessions_spawn",
+            status: 400,
+            body: r#"{"error":"working directory /nope does not exist on that machine"}"#.into(),
+        };
+        reduce(&mut app, SpawnAction::Failed(super::failure_message(&refusal)));
+        assert_eq!(app.view(), View::Spawn);
+        let form = app.spawn.as_ref().expect("the form stays open");
+        assert!(!form.submitting);
+        assert_eq!(form.errors, vec!["working directory /nope does not exist on that machine"]);
+    }
+
+    #[test]
+    fn a_failure_without_a_server_reason_reads_as_the_client_error() {
+        let raw = cctui_client::ClientError::Status {
+            route: "post_sessions_spawn",
+            status: 502,
+            body: "bad gateway".into(),
+        };
+        assert_eq!(super::failure_message(&raw), raw.to_string());
+        let forbidden = cctui_client::ClientError::Forbidden { route: "post_sessions_spawn" };
+        assert_eq!(super::failure_message(&forbidden), "forbidden: post_sessions_spawn");
     }
 
     #[test]

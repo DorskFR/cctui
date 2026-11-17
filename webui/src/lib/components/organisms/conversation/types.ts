@@ -233,6 +233,8 @@ export interface Line {
 	markerTexts?: string[];
 	/** A cache keep-alive tick and its reply, folded into one marker row. */
 	keepalive?: boolean;
+	/** Event count of a cctui inbox batch turn. */
+	inbox?: number;
 	// `system/stop_hook_summary` for the turn this assistant line closes.
 	stopHook?: string;
 	// `file-history-snapshot|delta` provenance for this tool call.

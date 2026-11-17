@@ -73,6 +73,43 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "stream_events_search_text_on_insert",
         sql: include_str!("../schema/0006_stream_events_search_text_on_insert.sql"),
     },
+    Migration {
+        version: 7,
+        name: "notifications",
+        sql: include_str!("../schema/0007_notifications.sql"),
+    },
+    Migration { version: 8, name: "inbox", sql: include_str!("../schema/0008_inbox.sql") },
+    Migration {
+        version: 9,
+        name: "session_outcomes",
+        sql: include_str!("../schema/0009_session_outcomes.sql"),
+    },
+    Migration {
+        version: 10,
+        name: "queued_sessions",
+        sql: include_str!("../schema/0010_queued_sessions.sql"),
+    },
+    Migration { version: 11, name: "presets", sql: include_str!("../schema/0011_presets.sql") },
+    Migration {
+        version: 12,
+        name: "inbox_preset_lanes",
+        sql: include_str!("../schema/0012_inbox_preset_lanes.sql"),
+    },
+    Migration {
+        version: 13,
+        name: "timers_and_hops",
+        sql: include_str!("../schema/0013_timers_and_hops.sql"),
+    },
+    Migration {
+        version: 14,
+        name: "fold_outboxes",
+        sql: include_str!("../schema/0014_fold_outboxes.sql"),
+    },
+    Migration {
+        version: 15,
+        name: "env_endpoint_owner_only",
+        sql: include_str!("../schema/0015_env_endpoint_owner_only.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -208,7 +245,16 @@ mod tests {
                     (3, "bootstrap".to_owned()),
                     (4, "bootstrap".to_owned()),
                     (5, "bootstrap".to_owned()),
-                    (6, "bootstrap".to_owned())
+                    (6, "bootstrap".to_owned()),
+                    (7, "bootstrap".to_owned()),
+                    (8, "bootstrap".to_owned()),
+                    (9, "bootstrap".to_owned()),
+                    (10, "bootstrap".to_owned()),
+                    (11, "bootstrap".to_owned()),
+                    (12, "bootstrap".to_owned()),
+                    (13, "bootstrap".to_owned()),
+                    (14, "bootstrap".to_owned()),
+                    (15, "bootstrap".to_owned())
                 ]
             );
 
@@ -308,7 +354,16 @@ mod tests {
                     (3, "bootstrap".to_owned()),
                     (4, "bootstrap".to_owned()),
                     (5, "bootstrap".to_owned()),
-                    (6, "bootstrap".to_owned())
+                    (6, "bootstrap".to_owned()),
+                    (7, "bootstrap".to_owned()),
+                    (8, "bootstrap".to_owned()),
+                    (9, "bootstrap".to_owned()),
+                    (10, "bootstrap".to_owned()),
+                    (11, "bootstrap".to_owned()),
+                    (12, "bootstrap".to_owned()),
+                    (13, "bootstrap".to_owned()),
+                    (14, "bootstrap".to_owned()),
+                    (15, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =

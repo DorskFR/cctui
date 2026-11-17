@@ -232,6 +232,10 @@ export function useSessionActions() {
       await endpoints.discardDraft(id);
       inval();
     },
+    cancelQueuedSpawn: async (id: string) => {
+      await endpoints.cancelQueuedSpawn(id);
+      inval();
+    },
     updateDraft: async (id: string, body: SpawnRequest) => {
       const res = await endpoints.updateDraft(id, body);
       inval();

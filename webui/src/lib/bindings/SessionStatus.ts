@@ -15,5 +15,8 @@
  *   payload in `metadata.draft` but has no `command_id`, no daemon dispatch,
  *   and no heartbeat — excluded from liveness/reaping. An explicit Launch
  *   mints env fresh, dispatches a normal spawn, and removes the draft.
+ * - `Queued`: a spawn whose daemon was unreachable. Stored like a draft and
+ *   launched by the inbox when the machine's daemon reconnects; `failed`
+ *   after a day.
  */
-export type SessionStatus = "new" | "active" | "inactive" | "archived" | "draft";
+export type SessionStatus = "new" | "active" | "inactive" | "archived" | "draft" | "queued";
