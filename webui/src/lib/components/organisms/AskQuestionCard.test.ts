@@ -162,3 +162,95 @@ describe('two single-select questions with descriptions', () => {
 		}
 	});
 });
+
+describe('Cmd/Ctrl+Enter submit chord', () => {
+	const chord = (target: Element, mod: 'metaKey' | 'ctrlKey' = 'metaKey') => {
+		const e = new KeyboardEvent('keydown', { key: 'Enter', [mod]: true, bubbles: true, cancelable: true });
+		target.dispatchEvent(e);
+		return e;
+	};
+	const otherInput = (i = 0) =>
+		document.querySelectorAll<HTMLInputElement>('input[aria-label="Other…"]')[i];
+	const typeOther = async (i: number, text: string) => {
+		const input = otherInput(i);
+		input.value = text;
+		input.dispatchEvent(new Event('input', { bubbles: true }));
+		await flush();
+	};
+
+	it('submits from a focused option', async () => {
+		const onsubmit = await render([single]);
+		const radios = document.querySelectorAll<HTMLInputElement>('input[type="radio"]');
+		radios[0].click();
+		await flush();
+		const e = chord(radios[0]);
+		await flush();
+		expect(e.defaultPrevented).toBe(true);
+		expect(onsubmit).toHaveBeenCalledTimes(1);
+		expect(onsubmit).toHaveBeenCalledWith(expect.stringContaining('Red'), [[0]]);
+	});
+
+	it('submits with Ctrl+Enter from a multi-select option', async () => {
+		const onsubmit = await render([multi]);
+		const opt = [...document.querySelectorAll('button')].find((b) => b.hasAttribute('aria-pressed'))!;
+		opt.click();
+		await flush();
+		chord(opt, 'ctrlKey');
+		await flush();
+		expect(onsubmit).toHaveBeenCalledWith(expect.any(String), [[0]]);
+	});
+
+	it('submits from the Other… input', async () => {
+		const onsubmit = await render([single]);
+		await typeOther(0, 'Green');
+		chord(otherInput(0));
+		await flush();
+		expect(onsubmit).toHaveBeenCalledWith(expect.stringContaining('Green'), null);
+	});
+
+	it('does nothing until every question is answered', async () => {
+		const onsubmit = await render([single, multi]);
+		const radios = document.querySelectorAll<HTMLInputElement>('input[type="radio"]');
+		radios[1].click();
+		await flush();
+		const e = chord(radios[1]);
+		await flush();
+		chord(otherInput(1), 'ctrlKey');
+		await flush();
+		expect(e.defaultPrevented).toBe(false);
+		expect(onsubmit).not.toHaveBeenCalled();
+	});
+
+	it('ignores plain Enter', async () => {
+		const onsubmit = await render([single]);
+		await typeOther(0, 'Green');
+		otherInput(0).dispatchEvent(
+			new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+		);
+		await flush();
+		expect(onsubmit).not.toHaveBeenCalled();
+	});
+
+	it('ignores the chord from outside the card', async () => {
+		const onsubmit = await render([single]);
+		document.querySelector<HTMLInputElement>('input[type="radio"]')!.click();
+		await flush();
+		const outside = document.createElement('textarea');
+		document.body.appendChild(outside);
+		chord(outside);
+		await flush();
+		expect(onsubmit).not.toHaveBeenCalled();
+	});
+
+	it('submits only once', async () => {
+		const onsubmit = await render([single]);
+		const radio = document.querySelector<HTMLInputElement>('input[type="radio"]')!;
+		radio.click();
+		await flush();
+		chord(radio);
+		await flush();
+		chord(document.querySelector('.ask')!);
+		await flush();
+		expect(onsubmit).toHaveBeenCalledTimes(1);
+	});
+});
