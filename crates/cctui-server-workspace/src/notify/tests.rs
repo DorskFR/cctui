@@ -264,7 +264,7 @@ async fn system_alerts_route_to_the_env_ntfy_endpoint_only_when_configured() {
         body: Some("x".repeat(400)),
         ..NewNotification::new(u, kind::SYSTEM_ALERT, title.into())
     };
-    let on = Routing { ntfy: true };
+    let on = Routing { ntfy: true, env_owner: Some(u) };
     let record = emit(&pool, on, ping("a")).await.unwrap();
     assert_eq!(record.body.as_deref().map(|b| b.chars().count()), Some(BODY_MAX_CHARS));
     let (channel, op, state, config): (String, Option<String>, String, Value) = sqlx::query_as(

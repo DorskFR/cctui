@@ -83,6 +83,15 @@ describe('notification endpoints list', () => {
 		expect(button('[data-endpoint-test="env"]')).not.toBeNull();
 	});
 
+	it('offers no server endpoint once it is switched off for this user', () => {
+		render([
+			endpoint({ id: 'env', label: 'server', config: { source: 'env' }, enabled: false }),
+			endpoint({ id: 'off', enabled: false })
+		]);
+		expect(rows().map((r) => r.dataset.journeyKey)).toEqual(['off']);
+		expect(button('[data-endpoint-test="env"]')).toBeNull();
+	});
+
 	it('adds an ntfy topic with its token and clears the form', async () => {
 		render([]);
 		const add = button('[data-endpoint-add="ntfy"]');

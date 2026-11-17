@@ -134,8 +134,8 @@ async fn adding_a_blocking_user_action_creates_one_notification() {
 #[tokio::test]
 async fn a_blocking_user_action_schedules_a_delayed_push_and_a_plain_one_never_pushes() {
     let Some(state) = state("producer_user_action_push").await else { return };
-    let (_, sid) = seed_session(&state.pool, "producer-ua-push").await;
-    let routing = Routing { ntfy: true };
+    let (owner, sid) = seed_session(&state.pool, "producer-ua-push").await;
+    let routing = Routing { ntfy: true, env_owner: Some(owner) };
     let mut pushes = Vec::new();
     for blocking in [true, false] {
         let added = AddedAction {

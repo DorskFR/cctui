@@ -160,26 +160,38 @@ fn label(raw: Option<&str>) -> Result<Option<String>, String> {
     Ok(label.map(str::to_owned))
 }
 
-async fn seed_env(state: &AppState, user_id: Uuid) -> ApiResult<()> {
-    if !Routing::from_config(&state.config).ntfy {
-        return Ok(());
-    }
+async fn owns_env(state: &AppState, user_id: Uuid) -> ApiResult<bool> {
+    let routing = Routing::from_config(&state.config);
     let mut conn = state.pool.acquire().await?;
-    store::seed_env_endpoint(&mut conn, user_id, ntfy_channel::ID).await?;
-    Ok(())
+    Ok(routing.owns_env(&mut conn, user_id).await?)
+}
+
+/// Seeds the server's ntfy endpoint for its owner; `false` for everyone else.
+async fn seed_env(state: &AppState, user_id: Uuid) -> ApiResult<bool> {
+    let routing = Routing::from_config(&state.config);
+    let mut conn = state.pool.acquire().await?;
+    if !routing.owns_env(&mut conn, user_id).await? {
+        return Ok(false);
+    }
+    if routing.ntfy {
+        store::seed_env_endpoint(&mut conn, user_id, ntfy_channel::ID).await?;
+    }
+    Ok(true)
 }
 
 pub async fn list(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> ApiResult<Json<Vec<NotificationEndpoint>>> {
-    seed_env(&state, ctx.user_id).await?;
+    let owner = seed_env(&state, ctx.user_id).await?;
     let rows: Vec<Row> = sqlx::query_as(concat!(
         "SELECT ",
         columns!(),
-        " FROM notification_endpoints WHERE user_id = $1 ORDER BY created_at, id"
+        " FROM notification_endpoints WHERE user_id = $1 \
+          AND ($2 OR config ->> 'source' IS DISTINCT FROM 'env') ORDER BY created_at, id"
     ))
     .bind(ctx.user_id)
+    .bind(owner)
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(rows.into_iter().map(NotificationEndpoint::from).collect()))
@@ -222,7 +234,7 @@ pub async fn create(
 }
 
 async fn owned(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult<Row> {
-    sqlx::query_as(concat!(
+    let row: Row = sqlx::query_as(concat!(
         "SELECT ",
         columns!(),
         " FROM notification_endpoints WHERE id = $1 AND user_id = $2"
@@ -231,7 +243,11 @@ async fn owned(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult<Row> {
     .bind(user_id)
     .fetch_optional(&state.pool)
     .await?
-    .ok_or_else(not_found)
+    .ok_or_else(not_found)?;
+    if is_env(&row.config) && !owns_env(state, user_id).await? {
+        return Err(not_found());
+    }
+    Ok(row)
 }
 
 pub async fn delete(

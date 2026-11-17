@@ -1,6 +1,7 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
+use cctui_server_core::test_support::with_isolated_database;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -10,6 +11,7 @@ use super::{
 };
 use crate::auth::{AuthContext, Scope};
 use crate::error::AppError;
+use crate::notify::env_owner_tests;
 use crate::notify::ntfy_channel::SEALED_TOKEN;
 use crate::notify::prefs::NotificationStage;
 use crate::routes::settings::{SettingsPayload, put_settings};
@@ -190,14 +192,49 @@ async fn raw_endpoint(state: &AppState, who: Uuid, channel: &str, config: Value)
     .unwrap()
 }
 
+async fn server_ntfy(pool: sqlx::PgPool) -> AppState {
+    env_owner_tests::provisioned(&pool).await;
+    let mut state = AppState::for_test(pool);
+    state.config.ntfy_url = Some("https://ntfy.example/server".into());
+    state.config.ntfy_token = Some(cctui_secrets::Secret::fixed("CCTUI_NTFY_TOKEN", "tok"));
+    state
+}
+
+async fn env_rows(state: &AppState, who: Uuid) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM notification_endpoints \
+         WHERE user_id = $1 AND config ->> 'source' = 'env'",
+    )
+    .bind(who)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap()
+}
+
 #[tokio::test]
-async fn the_server_endpoint_cannot_be_deleted() {
-    let Some(state) = state("notif_endpoints_env_kept").await else { return };
-    let u = user(&state).await;
-    let env = raw_endpoint(&state, u, "ntfy", json!({ "source": "env" })).await;
-    let refused = delete(State(state.clone()), Extension(caller(u)), Path(env)).await;
-    assert_eq!(status(refused), StatusCode::CONFLICT);
-    drop_users(&state, &[u]).await;
+async fn the_server_endpoint_is_offered_to_the_instance_owner_only() {
+    with_isolated_database("notif_endpoints_env_owner", |pool| async move {
+        let state = server_ntfy(pool).await;
+        let owner = env_owner_tests::user(&state.pool, 3).await;
+        let other = env_owner_tests::user(&state.pool, 2).await;
+        let newcomer = env_owner_tests::user(&state.pool, 1).await;
+        let stale = env_owner_tests::endpoint(&state.pool, other, json!({ "source": "env" })).await;
+
+        let mine = listed(&state, owner).await;
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].config, json!({ "source": "env" }));
+        let kept = delete(State(state.clone()), Extension(caller(owner)), Path(mine[0].id)).await;
+        assert_eq!(status(kept), StatusCode::CONFLICT);
+
+        assert!(listed(&state, newcomer).await.is_empty());
+        assert_eq!(env_rows(&state, newcomer).await, 0, "never seeded for a non-owner");
+        assert!(listed(&state, other).await.is_empty(), "a stale one stays hidden");
+        let hidden = send_test(State(state.clone()), Extension(caller(other)), Path(stale)).await;
+        assert_eq!(status(hidden), StatusCode::NOT_FOUND);
+        let hidden = delete(State(state.clone()), Extension(caller(other)), Path(stale)).await;
+        assert_eq!(status(hidden), StatusCode::NOT_FOUND);
+    })
+    .await;
 }
 
 #[tokio::test]
