@@ -418,13 +418,6 @@ mod tests {
         assert!(cancel(&pool, &bus, &later).await.unwrap());
         assert!(!cancel(&pool, &bus, &later).await.unwrap());
         assert!(pending_for(&pool, std::slice::from_ref(&later)).await.unwrap().is_empty());
-        let legacy: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM draft_launch_queue WHERE draft_id = ANY($1)")
-                .bind(vec![due, later])
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(legacy, 0, "the old queue is no longer written");
     }
 
     #[tokio::test]

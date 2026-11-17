@@ -249,18 +249,6 @@ async fn record_turn(pool: &sqlx::PgPool, row: &ClaimedRow) -> sqlx::Result<()> 
     .map(|_| ())
 }
 
-pub const FOLD_SQL: &str = include_str!("../schema/0014_fold_outboxes.sql");
-/// The lock [`FOLD_SQL`] takes first; a test locking the folded tables takes it first too.
-#[cfg(test)]
-pub const FOLD_LOCK: &str = "SELECT pg_advisory_xact_lock(hashtext('cctui.fold_outboxes'))";
-
-/// Rows a replica still on the previous release writes during a rolling deploy.
-pub async fn fold_stragglers(pool: &sqlx::PgPool) {
-    if let Err(e) = sqlx::raw_sql(FOLD_SQL).execute(pool).await {
-        tracing::warn!("folding legacy scheduled rows into the inbox failed: {e}");
-    }
-}
-
 /// Settle a send-now claim, which no lane worker holds.
 pub async fn settle(
     pool: &sqlx::PgPool,
@@ -649,13 +637,6 @@ mod reply_gate_tests {
                 .unwrap();
         assert!(!row.contains("hunter2-xyz"), "plaintext stored: {row}");
         assert!(row.contains("log in with [REDACTED:user] please"), "{row}");
-        let legacy: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM session_message_queue WHERE session_id = $1")
-                .bind(&live)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(legacy, 0, "the old queue is no longer written");
 
         let Json(listed) =
             crate::routes::scheduled_messages::list(State(state.clone()), Path(live.clone()))

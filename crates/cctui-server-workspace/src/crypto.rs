@@ -28,7 +28,6 @@ pub async fn has_vault_data<'e, E: sqlx::PgExecutor<'e>>(db: E) -> Result<bool, 
              OR EXISTS (SELECT 1 FROM cctuiverse_links WHERE encrypted_private_key IS NOT NULL) \
              OR EXISTS (SELECT 1 FROM instance_settings \
                         WHERE key = 'speech' AND value ? 'encrypted_key') \
-             OR EXISTS (SELECT 1 FROM session_message_queue WHERE sealed_body IS NOT NULL) \
              OR EXISTS (SELECT 1 FROM inbox_events WHERE sealed_body IS NOT NULL) \
              OR EXISTS (SELECT 1 FROM instance_settings \
                         WHERE key = 'web_push_vapid' AND value ? 'encrypted_key') \
@@ -46,8 +45,6 @@ mod tests {
 
     async fn clear_vault_rows(tx: &mut sqlx::PgConnection) {
         for sql in [
-            crate::scheduled_messages::FOLD_LOCK,
-            "LOCK TABLE session_message_queue IN SHARE MODE",
             "LOCK TABLE inbox_events IN SHARE MODE",
             "DELETE FROM api_keys",
             "DELETE FROM session_tokens",
@@ -56,49 +53,12 @@ mod tests {
             "DELETE FROM accounts",
             "DELETE FROM instance_settings WHERE key IN ('speech', 'web_push_vapid')",
             "DELETE FROM notification_endpoints WHERE config ? 'token_sealed'",
-            "DELETE FROM session_message_queue WHERE sealed_body IS NOT NULL",
             "DELETE FROM inbox_events WHERE sealed_body IS NOT NULL",
             "UPDATE sessions SET metadata = metadata - 'draft_sealed_prompt' \
              WHERE metadata ? 'draft_sealed_prompt'",
         ] {
             sqlx::query(sql).execute(&mut *tx).await.unwrap();
         }
-    }
-
-    #[tokio::test]
-    async fn has_vault_data_sees_a_sealed_queued_message_alone() {
-        let name = "has_vault_data_sees_a_sealed_queued_message_alone";
-        let Some(url) = crate::routes::gateway::test_db_url(name) else {
-            return;
-        };
-        let pool = crate::db::connect(&url).await.expect("connect test db");
-        let mut tx = pool.begin().await.unwrap();
-        clear_vault_rows(&mut tx).await;
-        let sid = format!("{name}-{}", uuid::Uuid::new_v4());
-        sqlx::query(
-            "INSERT INTO sessions (id, machine_id, working_dir, status) \
-             VALUES ($1, 'm', '/w', 'active')",
-        )
-        .bind(&sid)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO session_message_queue (session_id, body, deliver_at, next_attempt_at) \
-             VALUES ($1, 'pw [REDACTED:user]', now(), now())",
-        )
-        .bind(&sid)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-        assert!(!has_vault_data(&mut *tx).await.unwrap(), "an unsealed body is not vault data");
-        sqlx::query("UPDATE session_message_queue SET sealed_body = 'v1:00' WHERE session_id = $1")
-            .bind(&sid)
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-        assert!(has_vault_data(&mut *tx).await.unwrap());
-        tx.rollback().await.unwrap();
     }
 
     #[tokio::test]
