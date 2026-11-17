@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { Button, IconButton, Input, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import type { AccountModel } from '$lib/queries';
-	import type { ModelOption } from '$lib/harnessModels';
-	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import type { AccountModel } from '#lib/queries/index.ts';
+	import type { ModelOption } from '#lib/harnessModels.ts';
+	import ModelPicker from '#lib/components/molecules/ModelPicker.svelte';
 
 	let {
 		rows = $bindable([]),

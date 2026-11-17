@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionProfile } from '@bindings/SessionProfile';
 import type { AccountPoolView } from '@bindings/AccountPoolView';
-import type { OAuthAccount } from '$lib/queries';
+import type { OAuthAccount } from '#lib/queries/index.ts';
 import {
 	accountPick,
 	applySpec,

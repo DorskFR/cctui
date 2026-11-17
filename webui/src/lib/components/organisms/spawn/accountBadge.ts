@@ -1,6 +1,6 @@
 import type { AccountPoolView } from '@bindings/AccountPoolView';
-import type { OAuthAccount } from '$lib/queries';
-import { hashHue } from '$lib/format';
+import type { OAuthAccount } from '#lib/queries/index.ts';
+import { hashHue } from '#lib/format.ts';
 import type { ProfileSpecForm } from './profiles';
 
 export interface BadgeLook {

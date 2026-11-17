@@ -1,5 +1,5 @@
 import type { AccountPoolView } from '@bindings/AccountPoolView';
-import type { AccountUsageEntry, OAuthAccount, UsageWindow } from '$lib/queries';
+import type { AccountUsageEntry, OAuthAccount, UsageWindow } from '#lib/queries/index.ts';
 
 export const ACCOUNT_DRAG_MIME = 'application/x-cctui-account';
 

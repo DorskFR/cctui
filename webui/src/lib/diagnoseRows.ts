@@ -2,9 +2,9 @@ import type { SessionListItem } from '@bindings/SessionListItem';
 import type { SessionDiagnoseResponse } from '@bindings/SessionDiagnoseResponse';
 import type { CodexDiagnose } from '@bindings/CodexDiagnose';
 import type { OpenCodeDiagnose } from '@bindings/OpenCodeDiagnose';
-import { sessionEnd } from '$lib/sessionEnd';
-import { fmtAgo, silenceMessages } from '$lib/diagnoseSilence';
-import { m } from '$lib/paraglide/messages';
+import { sessionEnd } from '#lib/sessionEnd.ts';
+import { fmtAgo, silenceMessages } from '#lib/diagnoseSilence.ts';
+import { m } from '#lib/paraglide/messages.js';
 
 export type DiagnoseStatus = 'ok' | 'warn' | 'error';
 export type DiagnoseBlock = 'process' | 'transport' | 'account';

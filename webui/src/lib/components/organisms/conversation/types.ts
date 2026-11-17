@@ -1,6 +1,6 @@
-import type { ResultImage } from '$lib/resultImages';
+import type { ResultImage } from '#lib/resultImages.ts';
 import type { TokenUsage as TokenUsageT } from '@bindings/TokenUsage';
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 import type { UserUploadRefs } from './lines';
 import type { HarnessCommand, InjectedKind, TaskNotification } from './format';
 

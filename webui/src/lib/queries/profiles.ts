@@ -3,7 +3,7 @@ import type { CreateProfileRequest } from "@bindings/CreateProfileRequest";
 import type { SessionProfile } from "@bindings/SessionProfile";
 import type { UpdateProfileRequest } from "@bindings/UpdateProfileRequest";
 import { endpoints } from "./endpoints";
-import { hasFeature } from "$lib/features.svelte";
+import { hasFeature } from "#lib/features.svelte.ts";
 
 export const PROFILES_KEY = ["profiles"] as const;
 

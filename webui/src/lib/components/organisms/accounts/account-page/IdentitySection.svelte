@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { errMessage } from '$lib/api';
-	import { useAccountActions, type OAuthAccount, type UpdateAccount } from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { hasFeature } from '$lib/features.svelte';
-	import AccountAvatar from '$lib/components/molecules/AccountAvatar.svelte';
-	import { isValidAccountEmoji } from '$lib/components/molecules/avatar';
+	import { errMessage } from '#lib/api.ts';
+	import { useAccountActions, type OAuthAccount, type UpdateAccount } from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
+	import AccountAvatar from '#lib/components/molecules/AccountAvatar.svelte';
+	import { isValidAccountEmoji } from '#lib/components/molecules/avatar.ts';
 	import { Button, Card, EmojiPicker, Field, Input, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { account, owner = null }: { account: OAuthAccount; owner?: string | null } = $props();
 

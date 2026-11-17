@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { Button, Callout, ConfirmModal, Field, IconButton, Input, Text, Timestamp } from '@dorsk/tsumikit';
-	import { useUserActions, useUserDispatchPolicy } from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { errMessage } from '$lib/api';
-	import { m } from '$lib/paraglide/messages';
+	import { useUserActions, useUserDispatchPolicy } from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { errMessage } from '#lib/api.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import {
 		blankPack,
 		formFromRules,

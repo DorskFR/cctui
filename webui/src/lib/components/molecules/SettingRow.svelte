@@ -8,7 +8,7 @@
 	// of webui/DESIGN.md), so this row never reaches into Tsumikit internals.
 	import { untrack, type Snippet } from 'svelte';
 	import { Badge, setFieldContext, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		label,

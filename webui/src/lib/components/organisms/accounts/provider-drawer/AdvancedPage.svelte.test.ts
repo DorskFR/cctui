@@ -3,7 +3,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import AdvancedPage from './AdvancedPage.svelte';
 
-vi.mock('$lib/queries', () => ({ useUsageProbes: () => ({}) }));
+vi.mock('#lib/queries/index.ts', () => ({ useUsageProbes: () => ({}) }));
 
 let host: HTMLElement | null = null;
 let comp: ReturnType<typeof mount> | null = null;

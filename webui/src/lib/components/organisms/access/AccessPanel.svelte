@@ -6,15 +6,15 @@
 	import { MasterDetail, Text } from '@dorsk/tsumikit';
 	import AccessDetail from './AccessDetail.svelte';
 	import AccessUserList from './AccessUserList.svelte';
-	import EnrollMachineCard from '$lib/components/organisms/EnrollMachineCard.svelte';
-	import EditEntityModal from '$lib/components/molecules/EditEntityModal.svelte';
-	import SecretReveal from '$lib/components/molecules/SecretReveal.svelte';
-	import { useAccounts, useAllMachines, useHiddenOwners, useMe, useUserActions, useUsers } from '$lib/queries';
-	import { isHiddenOwner } from '$lib/hiddenOwners';
-	import { hasFeature } from '$lib/features.svelte';
-	import { toasts } from '$lib/toast.svelte';
-	import { errMessage } from '$lib/api';
-	import { m } from '$lib/paraglide/messages';
+	import EnrollMachineCard from '#lib/components/organisms/EnrollMachineCard.svelte';
+	import EditEntityModal from '#lib/components/molecules/EditEntityModal.svelte';
+	import SecretReveal from '#lib/components/molecules/SecretReveal.svelte';
+	import { useAccounts, useAllMachines, useHiddenOwners, useMe, useUserActions, useUsers } from '#lib/queries/index.ts';
+	import { isHiddenOwner } from '#lib/hiddenOwners.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { errMessage } from '#lib/api.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	const me = useMe();
 	const isAdmin = $derived(me.data?.role === 'admin');

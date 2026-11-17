@@ -1,5 +1,5 @@
 import type { SilenceReason } from '@bindings/SilenceReason';
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 
 /** The age alone, with no preposition: a sentence that already says "last …
  *  ago" or "no frame for …" supplies its own, and a second one reads "ago ago". */

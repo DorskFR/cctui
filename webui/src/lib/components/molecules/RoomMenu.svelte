@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { Badge, Button, ConfirmModal, EmptyState, IconButton, Input, Text } from '@dorsk/tsumikit';
-	import { errMessage } from '$lib/api';
-	import { m } from '$lib/paraglide/messages';
-	import { toasts } from '$lib/toast.svelte';
-	import { cctuiverseConfig, loadCctuiverseConfig } from '$lib/cctuiverseConfig.svelte';
+	import { errMessage } from '#lib/api.ts';
+	import { m } from '#lib/paraglide/messages.js';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { cctuiverseConfig, loadCctuiverseConfig } from '#lib/cctuiverseConfig.svelte.ts';
 	import CctuiverseInviteModal from './CctuiverseInviteModal.svelte';
 	import CctuiverseLinkChips from './CctuiverseLinkChips.svelte';
 	import {
@@ -17,7 +17,7 @@
 		renameRoom,
 		setRoomArchived,
 		type Room
-	} from '$lib/rooms';
+	} from '#lib/rooms.ts';
 
 	// The one room picker: which room these sessions go in, plus the minimal
 	// housekeeping (rename / archive / delete) that would otherwise need a page.

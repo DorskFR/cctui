@@ -1,12 +1,12 @@
 import type { MenuItem } from '@dorsk/tsumikit';
 import type { MeResponse } from '@bindings/MeResponse';
 import type { SessionListItem } from '@bindings/SessionListItem';
-import { errMessage } from '$lib/api';
-import { type OwnerTarget, sessionOwnerTargets } from '$lib/hiddenOwners';
-import { m } from '$lib/paraglide/messages';
-import { useAllMachines, useHiddenOwnerActions, useHiddenOwners, useUsers } from '$lib/queries';
-import { toasts } from '$lib/toast.svelte';
-import { hasFeature } from '$lib/features.svelte';
+import { errMessage } from '#lib/api.ts';
+import { type OwnerTarget, sessionOwnerTargets } from '#lib/hiddenOwners.ts';
+import { m } from '#lib/paraglide/messages.js';
+import { useAllMachines, useHiddenOwnerActions, useHiddenOwners, useUsers } from '#lib/queries/index.ts';
+import { toasts } from '#lib/toast.svelte.ts';
+import { hasFeature } from '#lib/features.svelte.ts';
 
 export function ownerTargetLabel(t: OwnerTarget): string {
 	if (t.kind === 'user')

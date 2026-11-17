@@ -1,4 +1,4 @@
-import { renderMarkdown } from '$lib/markdown';
+import { renderMarkdown } from '#lib/markdown.ts';
 
 /**
  * Twin of `fold` in `crates/cctui-server/src/search_index/text.rs`: the server

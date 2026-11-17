@@ -1,6 +1,6 @@
-import { browser } from "$app/environment";
+import { browser } from "$app/env";
 import { goto } from "$app/navigation";
-import { m } from "$lib/paraglide/messages";
+import { m } from "#lib/paraglide/messages.js";
 import type { SessionListItem } from "@bindings/SessionListItem";
 import type { Notification as Notice } from "@bindings/Notification";
 import { isUnread } from "./notifications.svelte";
@@ -198,11 +198,7 @@ class Notifier {
   }
 
   private label(s: SessionListItem): string {
-    return (
-      s.name ||
-      s.working_dir?.split("/").filter(Boolean).pop() ||
-      s.id.slice(0, 8)
-    );
+    return s.name || s.working_dir?.split("/").filter(Boolean).pop() || s.id.slice(0, 8);
   }
 
   private fire(s: SessionListItem, title: string, detail: string | null | undefined) {

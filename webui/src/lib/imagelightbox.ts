@@ -1,5 +1,5 @@
-import { browser } from '$app/environment';
-import { installFileViewer } from '$lib/fileviewer';
+import { browser } from '$app/env';
+import { installFileViewer } from '#lib/fileviewer.ts';
 
 // Delegated click-to-open-full for agent-posted images. Inline images
 // are injected as raw HTML via {@html} in markdown bodies, so — like the

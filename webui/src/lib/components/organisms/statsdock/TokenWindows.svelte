@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { useTokenStats } from '$lib/queries';
-	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
+	import { useTokenStats } from '#lib/queries/index.ts';
+	import TokenUsage from '#lib/components/molecules/TokenUsage.svelte';
 	import { Text } from '@dorsk/tsumikit';
 	import { asUsage } from '../../../../routes/home.logic';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	// The Overview's rolling token windows as one compact row each:
 	// label on the left, the ↑in ↓out ⚡cache readout on the right.

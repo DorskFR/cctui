@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { Button, Input, Text } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import { endpoints } from '$lib/queries';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import { endpoints } from '#lib/queries/index.ts';
 	import type { SettingSource } from '@bindings/SettingSource';
 	import type { SpawnDefaults } from '@bindings/SpawnDefaults';
 	import type { SpawnDefaultsInfo } from '@bindings/SpawnDefaultsInfo';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { limitLabel, parseSpawnDraft, sourceLabel } from './serverSettings.logic';
 
 	type Field = keyof SpawnDefaults;

@@ -1,5 +1,5 @@
 import type { MachineLiveness } from '@bindings/MachineLiveness';
-import { ApiError, FeatureOffError } from '$lib/api';
+import { ApiError, FeatureOffError } from '#lib/api.ts';
 import { GIT_INFO_DEBOUNCE_MS } from './cwdGitInfo';
 
 /** What the machine's daemon says about the spawn dialog's working directory. */

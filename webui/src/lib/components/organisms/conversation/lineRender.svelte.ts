@@ -1,6 +1,6 @@
 import type { AgentEvent } from '@bindings/AgentEvent';
-import { highlightBlock, renderMarkdown } from '$lib/markdown';
-import { highlightTerms } from '$lib/search';
+import { highlightBlock, renderMarkdown } from '#lib/markdown.ts';
+import { highlightTerms } from '#lib/search.ts';
 import { headHiddenByFilter } from './headHidden';
 import { createLineBuilder, type DeliveryState, type LineBuildCtx } from './lines';
 import type { Line, MsgCategory, ViewOpts } from './types';

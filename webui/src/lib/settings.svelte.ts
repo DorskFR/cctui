@@ -1,4 +1,4 @@
-import { browser } from "$app/environment";
+import { browser } from "$app/env";
 import { api, ApiError } from "./api";
 import { auth } from "./auth.svelte";
 import {
@@ -76,9 +76,7 @@ export const SORT_DIRS = ["asc", "desc"] as const;
 export type SortDir = (typeof SORT_DIRS)[number];
 export const DEFAULT_SORT_DIR: SortDir = "desc";
 export function clampSortDir(v: unknown): SortDir {
-  return (SORT_DIRS as readonly unknown[]).includes(v)
-    ? (v as SortDir)
-    : DEFAULT_SORT_DIR;
+  return (SORT_DIRS as readonly unknown[]).includes(v) ? v as SortDir : DEFAULT_SORT_DIR;
 }
 
 // Session-list column widths, as the `size` handed to the layout Container.
@@ -96,16 +94,12 @@ const GROUP_BY_VALUES = ["status", "label", "working_dir", "machine", "room"] as
 const COLOR_BY_VALUES = ["none", "label", "working_dir", "machine", "room"] as const;
 
 export function clampColorBy(v: unknown): SessionListSettings["colorBy"] {
-  return (COLOR_BY_VALUES as readonly unknown[]).includes(v)
-    ? (v as SessionListSettings["colorBy"])
-    : "none";
+  return (COLOR_BY_VALUES as readonly unknown[]).includes(v) ? v as SessionListSettings["colorBy"] : "none";
 }
 
 /** Blobs written before grouping had a status mode stored 'none' for it. */
 export function clampGroupBy(v: unknown): SessionListSettings["groupBy"] {
-  return (GROUP_BY_VALUES as readonly unknown[]).includes(v)
-    ? (v as SessionListSettings["groupBy"])
-    : "status";
+  return (GROUP_BY_VALUES as readonly unknown[]).includes(v) ? v as SessionListSettings["groupBy"] : "status";
 }
 
 /** The CSS length for a width choice, or `undefined` to keep --content-wide. */
@@ -125,9 +119,7 @@ export function sessionListWidthSize(w: SessionListWidth): string | undefined {
 /** Clamp an arbitrary stored value to a known width (an older/corrupt blob must
  *  not leak an invalid length into the Container's inline style). */
 export function clampSessionListWidth(v: unknown): SessionListWidth {
-  return SESSION_LIST_WIDTHS.includes(v as SessionListWidth)
-    ? (v as SessionListWidth)
-    : DEFAULT_SESSION_LIST_WIDTH;
+  return SESSION_LIST_WIDTHS.includes(v as SessionListWidth) ? v as SessionListWidth : DEFAULT_SESSION_LIST_WIDTH;
 }
 
 // Docked spawn panel: instead of the "+ New" button opening a modal, the whole
@@ -188,9 +180,7 @@ export function clampMonitoredMachines(v: unknown): string[] {
 /** Clamp a stored side to a known one (an older/corrupt blob must not pin the
  *  panel nowhere). */
 export function clampSpawnDockSide(v: unknown): SpawnDockSide {
-  return SPAWN_DOCK_SIDES.includes(v as SpawnDockSide)
-    ? (v as SpawnDockSide)
-    : DEFAULT_SPAWN_DOCK_SIDE;
+  return SPAWN_DOCK_SIDES.includes(v as SpawnDockSide) ? v as SpawnDockSide : DEFAULT_SPAWN_DOCK_SIDE;
 }
 
 // Horizontal placement of the toast stack (the "Archived" confirmation and
@@ -226,9 +216,7 @@ export const DEFAULT_TOAST_POSITION: ToastPosition = "center";
 /** Clamp a stored position to a known one, so an older/corrupt blob leaves the
  *  toast centered rather than unplaced. */
 export function clampToastPosition(v: unknown): ToastPosition {
-  return TOAST_POSITIONS.includes(v as ToastPosition)
-    ? (v as ToastPosition)
-    : DEFAULT_TOAST_POSITION;
+  return TOAST_POSITIONS.includes(v as ToastPosition) ? v as ToastPosition : DEFAULT_TOAST_POSITION;
 }
 
 export interface DisplaySettings {
@@ -276,9 +264,7 @@ export type NavPosition = (typeof NAV_POSITIONS)[number];
 export const DEFAULT_NAV_POSITION: NavPosition = "top";
 
 export function clampNavPosition(v: unknown): NavPosition {
-  return (NAV_POSITIONS as readonly unknown[]).includes(v)
-    ? (v as NavPosition)
-    : DEFAULT_NAV_POSITION;
+  return (NAV_POSITIONS as readonly unknown[]).includes(v) ? v as NavPosition : DEFAULT_NAV_POSITION;
 }
 
 // The claude-code execution harness modes. Stored top-level in the settings
@@ -292,9 +278,7 @@ export const DEFAULT_HARNESS_MODE: HarnessMode = "bg";
 /** Clamp an arbitrary stored value to a known harness mode (mirrors the server's
  *  clamp so an unknown/missing value renders as `bg`). */
 export function clampHarnessMode(v: unknown): HarnessMode {
-  return HARNESS_MODES.includes(v as HarnessMode)
-    ? (v as HarnessMode)
-    : DEFAULT_HARNESS_MODE;
+  return HARNESS_MODES.includes(v as HarnessMode) ? v as HarnessMode : DEFAULT_HARNESS_MODE;
 }
 
 // Whip-mode stall-phrase override. Stored top-level as
@@ -337,9 +321,7 @@ export interface MacrosSettings {
 
 /** Clamp a stored value to a known whip mode (mirrors the server's clamp). */
 export function clampWhipMode(v: unknown): WhipMode {
-  return WHIP_MODES.includes(v as WhipMode)
-    ? (v as WhipMode)
-    : DEFAULT_WHIP_MODE;
+  return WHIP_MODES.includes(v as WhipMode) ? v as WhipMode : DEFAULT_WHIP_MODE;
 }
 
 // Daemon-side secret redaction. `secretScrubEnabled` toggles live
@@ -442,11 +424,11 @@ export function ratchetStepProgress(
   } catch {
     return prev;
   }
-  const rec = parsed as
-    | {
-        id?: unknown;
-        index?: unknown;
-        version?: unknown;
+  const rec = parsed as 
+    { 
+      id?: unknown;
+      index?: unknown;
+      version?: unknown;
         ir?: { steps?: unknown };
       }
     | null
@@ -544,14 +526,14 @@ export const DEFAULT_VOICE: VoiceSettings = {
 export function mergeVoice(v: Partial<VoiceSettings> | undefined): VoiceSettings {
   const raw = v ?? {};
   const speed = Number(raw.speed);
-  const id = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+  const id = (v: unknown) => typeof v === "string" ? v.trim() : "";
   const voice = id(raw.voice);
   const micId = id(raw.micId);
   const speakerId = id(raw.speakerId);
   return {
-    ...(voice ? { voice } : {}),
-    ...(micId ? { micId } : {}),
-    ...(speakerId ? { speakerId } : {}),
+    ...voice ? { voice } : {},
+    ...micId ? { micId } : {},
+    ...speakerId ? { speakerId } : {},
     language: raw.language === "en" || raw.language === "fr" ? raw.language : "auto",
     speed:
       Number.isFinite(speed) && speed >= 0.25 && speed <= 4
@@ -694,7 +676,7 @@ export function mergeDefaults(
   return {
     sessionList: {
       ...DEFAULTS.sessionList,
-      ...(p.sessionList ?? {}),
+      ...p.sessionList ?? {},
       // Clamp so a stale/unknown stored value renders as the default column
       // width rather than an invalid CSS length.
       width: clampSessionListWidth(p.sessionList?.width),
@@ -705,7 +687,7 @@ export function mergeDefaults(
     },
     display: {
       ...DEFAULTS.display,
-      ...(p.display ?? {}),
+      ...p.display ?? {},
       archiveDoneButton: p.display?.archiveDoneButton !== false,
       pinFirstMessage: p.display?.pinFirstMessage !== false,
       coldFollowup: resolveFollowupWhenCold(

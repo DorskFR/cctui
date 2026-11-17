@@ -95,7 +95,6 @@ export function runtimeManifest(): PluginRuntimeManifest {
 }
 
 export function pluginRuntime(): Plugin {
-	let outDir = '';
 	let client = false;
 	return {
 		name: 'cctui:plugin-runtime',
@@ -108,12 +107,9 @@ export function pluginRuntime(): Plugin {
 			}
 			return { build: { rollupOptions: { input } } };
 		},
-		configResolved(config) {
-			outDir = config.build.outDir;
-		},
 		writeBundle(_options, bundle) {
-			if (!client) return;
-			const dir = join(outDir, 'plugin-runtime');
+			if (!client || this.environment.config.consumer !== 'client') return;
+			const dir = join(this.environment.config.build.outDir, 'plugin-runtime');
 			mkdirSync(dir, { recursive: true });
 			for (const chunk of Object.values(bundle)) {
 				if (chunk.type !== 'chunk' || !chunk.isEntry || !chunk.name.startsWith(ENTRY_PREFIX)) continue;

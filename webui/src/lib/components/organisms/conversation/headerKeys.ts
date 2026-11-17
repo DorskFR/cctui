@@ -1,4 +1,4 @@
-import { isArchiveChord, isFindChord } from '$lib/platform';
+import { isArchiveChord, isFindChord } from '#lib/platform.ts';
 
 export type HeaderKeyAction = 'search' | 'archive' | 'escape';
 

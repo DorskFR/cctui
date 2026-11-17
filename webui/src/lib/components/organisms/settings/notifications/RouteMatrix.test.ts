@@ -2,10 +2,10 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NotificationSettings } from '@bindings/NotificationSettings';
-import { api } from '$lib/api';
-import { auth } from '$lib/auth.svelte';
-import { DEFAULT_NOTIFICATIONS } from '$lib/notificationPrefs';
-import { settings } from '$lib/settings.svelte';
+import { api } from '#lib/api.ts';
+import { auth } from '#lib/auth.svelte.ts';
+import { DEFAULT_NOTIFICATIONS } from '#lib/notificationPrefs.ts';
+import { settings } from '#lib/settings.svelte.ts';
 import RouteMatrix from './RouteMatrix.svelte';
 
 type PutBody = { data: { notifications: NotificationSettings } };

@@ -3,8 +3,8 @@
 	import type { Label } from '@bindings/Label';
 	import type { Section } from '../../../routes/sessions/sessions.logic';
 	import { Button, Field, FilterSearchBar, Heading, Icon, Popover, type Schema } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import { sessionSearchPlaceholder } from '$lib/searchSchema';
+	import { m } from '#lib/paraglide/messages.js';
+	import { sessionSearchPlaceholder } from '#lib/searchSchema.ts';
 	import SectionFilter from '../molecules/SectionFilter.svelte';
 	import LabelFilter from '../molecules/LabelFilter.svelte';
 	import ViewPicker from '../molecules/ViewPicker.svelte';
@@ -12,10 +12,10 @@
 	import { MENU_ROW, MENU_ROW_ICON } from '../molecules/menuRow';
 	import MacrosMenu from './MacrosMenu.svelte';
 	import SearchScopeChips from '../molecules/SearchScopeChips.svelte';
-	import { settings } from '$lib/settings.svelte';
-	import { hasFeature } from '$lib/features.svelte';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
 	import type { Dimension } from '../../../routes/sessions/sessions.logic';
-	import type { ViewMode } from '$lib/sessionsView.svelte';
+	import type { ViewMode } from '#lib/sessionsView.svelte.ts';
 
 	// The sessions list toolbar: title + search + section/label filters +
 	// view picker + multi-select toggle + New. A uniform, self-contained block —

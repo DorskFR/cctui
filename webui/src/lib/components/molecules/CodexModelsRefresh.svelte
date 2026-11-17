@@ -4,10 +4,10 @@
 	// after a short grace period rather than on the POST's reply.
 	import { IconButton } from '@dorsk/tsumikit';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import { endpoints, qk } from '$lib/queries';
-	import { errMessage } from '$lib/api';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { endpoints, qk } from '#lib/queries/index.ts';
+	import { errMessage } from '#lib/api.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { machineId, size = 18 }: { machineId: string; size?: number } = $props();
 

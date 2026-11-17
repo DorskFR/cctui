@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$lib/queries', async (importOriginal) => ({
-	...(await importOriginal<typeof import('$lib/queries')>()),
+vi.mock('#lib/queries/index.ts', async (importOriginal) => ({
+	...(await importOriginal<typeof import('#lib/queries/index.ts')>()),
 	useAccounts: () => ({ data: undefined })
 }));
 import type { SessionListItem } from '@bindings/SessionListItem';

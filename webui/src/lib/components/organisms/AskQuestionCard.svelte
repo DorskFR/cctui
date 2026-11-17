@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { renderMarkdown } from '$lib/markdown';
+	import { renderMarkdown } from '#lib/markdown.ts';
 	import { Badge, Button, Heading, Input, Kbd, OptionButton, RadioGroup, Text } from '@dorsk/tsumikit';
 	import type { RadioOption } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import { submitChord } from '$lib/platform';
+	import { m } from '#lib/paraglide/messages.js';
+	import { submitChord } from '#lib/platform.ts';
 
 	interface Opt {
 		label: string;

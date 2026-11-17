@@ -10,9 +10,9 @@
 		Text
 	} from '@dorsk/tsumikit';
 	import SettingRow from './SettingRow.svelte';
-	import { useRescrub } from '$lib/queries/settings';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { useRescrub } from '#lib/queries/settings.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import type { PrivacyScanJob } from '@bindings/PrivacyScanJob';
 	import {
 		rescrubCategoryRows,

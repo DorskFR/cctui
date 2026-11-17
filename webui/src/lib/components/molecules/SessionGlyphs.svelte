@@ -1,8 +1,8 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { machineInitial, machineTint } from '$lib/format';
+	import { machineInitial, machineTint } from '#lib/format.ts';
 	import { GlyphStack, type GlyphStackItem } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import AccountBadge from './AccountBadge.svelte';
 	import MachineBadge from './MachineBadge.svelte';
 	import SessionDot from './SessionDot.svelte';

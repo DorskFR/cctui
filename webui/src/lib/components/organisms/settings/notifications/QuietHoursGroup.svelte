@@ -1,15 +1,15 @@
 <script lang="ts">
 	import { Cluster, Input, Switch } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
 	import {
 		MAX_PUSH_PER_HOUR_LIMIT,
 		browserTimeZone,
 		clampMaxPushPerHour,
 		clampQuietHours
-	} from '$lib/notificationPrefs';
-	import { settings } from '$lib/settings.svelte';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/notificationPrefs.ts';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	const prefs = $derived(settings.state.notifications);
 	const quiet = $derived(prefs.quiet_hours);

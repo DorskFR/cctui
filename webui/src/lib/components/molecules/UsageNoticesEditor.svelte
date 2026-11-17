@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Input, Switch, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import type { UsageNotices } from '$lib/queries';
+	import { m } from '#lib/paraglide/messages.js';
+	import type { UsageNotices } from '#lib/queries/index.ts';
 
 	let { value = $bindable({ enabled: false, step_pct: 10 }) }: { value: UsageNotices } = $props();
 	const stepId = 'usage-notices-step';

@@ -11,7 +11,7 @@ const api = vi.hoisted(() => ({
 	dispatchers: vi.fn(),
 	sessions: vi.fn()
 }));
-vi.mock('$lib/queries/endpoints', () => ({ endpoints: api }));
+vi.mock('#lib/queries/endpoints.ts', () => ({ endpoints: api }));
 
 const machine = (over: Record<string, unknown> = {}) => ({
 	id: 'm1',

@@ -15,7 +15,7 @@ const versionData = {
 };
 const sessionsData = { sessions: [] as SessionListItem[] };
 
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	qk: { sessions: (a: boolean) => ['sessions', a], sessionsAll: ['sessions'] },
 	useMe: () => ({ data: { user_name: 'dorsk', role: 'admin' } }),
 	useVersion: () => ({ data: versionData }),
@@ -32,7 +32,7 @@ vi.mock('@tanstack/svelte-query', () => ({
 }));
 const { goto } = vi.hoisted(() => ({ goto: vi.fn() }));
 vi.mock('$app/navigation', () => ({ goto }));
-vi.mock('$lib/ws.svelte', () => ({
+vi.mock('#lib/ws.svelte.ts', () => ({
 	ws: {
 		status: 'open',
 		changeTick: 0,
@@ -43,13 +43,13 @@ vi.mock('$lib/ws.svelte', () => ({
 		onNotificationsUnread: () => () => {}
 	}
 }));
-vi.mock('$lib/toast.svelte', () => ({
+vi.mock('#lib/toast.svelte.ts', () => ({
 	toasts: { ok: vi.fn(), info: vi.fn(), error: vi.fn() }
 }));
 
 vi.stubGlobal('__CLIENT_VERSION__', '0.11.0');
 
-import { notify } from '$lib/notify.svelte';
+import { notify } from '#lib/notify.svelte.ts';
 import Header from './Header.svelte';
 
 let comp: ReturnType<typeof mount> | null = null;

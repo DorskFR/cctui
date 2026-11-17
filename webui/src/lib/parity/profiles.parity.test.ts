@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AccountPoolView } from '@bindings/AccountPoolView';
 import type { SessionProfile } from '@bindings/SessionProfile';
-import type { OAuthAccount } from '$lib/queries';
+import type { OAuthAccount } from '#lib/queries/index.ts';
 import {
 	accountPick,
 	applySpec,
@@ -14,7 +14,7 @@ import {
 	specFromForm,
 	uniqueProfileName,
 	type ProfileSpecForm
-} from '$lib/components/organisms/spawn/profiles';
+} from '#lib/components/organisms/spawn/profiles.ts';
 import { parityFixture } from './fixtures';
 
 type SpecForm = ProfileSpecForm;

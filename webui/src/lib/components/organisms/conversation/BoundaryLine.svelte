@@ -3,7 +3,7 @@
 	// divider, or the summary block a `/compact` produced.
 	import type { Line } from './types';
 	import { Badge } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { ln }: { ln: Line } = $props();
 </script>

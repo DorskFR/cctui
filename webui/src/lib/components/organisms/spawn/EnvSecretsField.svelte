@@ -7,8 +7,8 @@
 	// shared action row, so this component only renders existing rows + the error.
 	import { IconButton, Input, Text } from '@dorsk/tsumikit';
 	import type { EnvRow } from './types';
-	import Error from '$lib/components/atoms/Error.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import Error from '#lib/components/atoms/Error.svelte';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		envRows = $bindable(),

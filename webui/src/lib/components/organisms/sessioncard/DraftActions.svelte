@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import { Button, Timestamp } from '@dorsk/tsumikit';
 	import type { SessionActions, SessionView } from './view';
 

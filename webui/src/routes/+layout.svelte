@@ -1,49 +1,50 @@
 <script lang="ts">
-	import '$lib/styles/app.css';
-	import { apiBase } from '$lib/config';
-	import { bootCapabilities, onCapabilities, workspaceSupported } from '$lib/workspaceSupport';
-	import { hasFeature } from '$lib/features.svelte';
-	import HeadlessServerNotice from '$lib/components/organisms/HeadlessServerNotice.svelte';
-	import MaintenanceScreen from '$lib/components/organisms/MaintenanceScreen.svelte';
-	import { backendHealth } from '$lib/backendHealth.svelte';
+	import '#lib/styles/app.css';
+	import { apiBase } from '#lib/config.ts';
+	import { bootCapabilities, onCapabilities, workspaceSupported } from '#lib/workspaceSupport.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
+	import HeadlessServerNotice from '#lib/components/organisms/HeadlessServerNotice.svelte';
+	import MaintenanceScreen from '#lib/components/organisms/MaintenanceScreen.svelte';
+	import { backendHealth } from '#lib/backendHealth.svelte.ts';
 	import '@dorsk/tsumikit/looks/depth.css';
 	import '@dorsk/tsumikit/looks/tactile.css';
 	import { QueryClient } from '@tanstack/svelte-query';
 	import { PersistQueryClientProvider } from '@tanstack/svelte-query-persist-client';
 	import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
 	import { get as idbGet, set as idbSet, del as idbDel } from 'idb-keyval';
-	import { qk } from '$lib/queries';
-	import { shouldPersistQuery } from '$lib/queries/persist';
-	import { attachmentStore } from '$lib/attachmentStore';
+	import { qk } from '#lib/queries/index.ts';
+	import { shouldPersistQuery } from '#lib/queries/persist.ts';
+	import { attachmentStore } from '#lib/attachmentStore.ts';
 	import type { SessionListResponse } from '@bindings/SessionListResponse';
 	import { page, updated } from '$app/state';
-	import { auth } from '$lib/auth.svelte';
-	import { serverDrafts } from '$lib/serverDrafts';
-	import { settings, sessionListWidthSize } from '$lib/settings.svelte';
-	import { locale } from '$lib/locale.svelte';
-	import { ws } from '$lib/ws.svelte';
-	import { goto, beforeNavigate, invalidateAll } from '$app/navigation';
-	import { sessionFailureToast } from '$lib/sessionFailureToast';
-	import Header from '$lib/components/organisms/Header.svelte';
-	import MainNav from '$lib/components/organisms/MainNav.svelte';
-	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
-	import { pluginSpawn } from '$lib/plugins/spawnRequest.svelte';
-	import Login from '$lib/components/organisms/Login.svelte';
-	import FeedbackPanel from '$lib/components/organisms/FeedbackPanel.svelte';
+	import { auth } from '#lib/auth.svelte.ts';
+	import { serverDrafts } from '#lib/serverDrafts.ts';
+	import { settings, sessionListWidthSize } from '#lib/settings.svelte.ts';
+	import { locale } from '#lib/locale.svelte.ts';
+	import { ws } from '#lib/ws.svelte.ts';
+	import { goto, beforeNavigate, refreshAll } from '$app/navigation';
+	import { sessionFailureToast } from '#lib/sessionFailureToast.ts';
+	import Header from '#lib/components/organisms/Header.svelte';
+	import MainNav from '#lib/components/organisms/MainNav.svelte';
+	import SpawnModal from '#lib/components/organisms/SpawnModal.svelte';
+	import { pluginSpawn } from '#lib/plugins/spawnRequest.svelte.ts';
+	import Login from '#lib/components/organisms/Login.svelte';
+	import FeedbackPanel from '#lib/components/organisms/FeedbackPanel.svelte';
 	import type { VersionInfo } from '@bindings/VersionInfo';
-	import { installCodeCopy } from '$lib/codecopy';
-	import { installImageLightbox } from '$lib/imagelightbox';
+	import { installCodeCopy } from '#lib/codecopy.ts';
+	import { installImageLightbox } from '#lib/imagelightbox.ts';
 	import { Container, Toaster } from '@dorsk/tsumikit';
-	import { dockLayout } from '$lib/spawnDock.svelte';
-	import { sessionsView } from '$lib/sessionsView.svelte';
-	import { mountJourneys } from '$lib/journey';
+	import { dockLayout } from '#lib/spawnDock.svelte.ts';
+	import { sessionsView } from '#lib/sessionsView.svelte.ts';
+	import { mountJourneys } from '#lib/journey.ts';
 
 	let { children } = $props();
 	let workspaceAvailable = $state<boolean | null>(null);
 
 	// A deploy replaced the content-hashed chunks this tab knows, so the next
 	// navigation goes through the server instead of importing a 404.
-	beforeNavigate(({ willUnload, to }) => {
+	beforeNavigate(({ willUnload, to, shallow, type }) => {
+		if (shallow && type === 'goto') return;
 		if (updated.current && !willUnload && to?.url) location.href = to.url.href;
 	});
 
@@ -156,7 +157,7 @@
 			unsubscribe = onCapabilities((next) => {
 				queryClient.setQueryData(qk.capabilities, next);
 				workspaceAvailable = workspaceSupported(next);
-				void invalidateAll();
+				void refreshAll();
 			});
 			if (workspaceAvailable) void auth.init();
 		});
@@ -195,7 +196,7 @@
 
 <PersistQueryClientProvider
 	client={queryClient}
-	{persistOptions}
+	persistOptions={persistOptions}
 	onSuccess={purgeStaleConversations}
 >
 	<!-- Remount the tree on a language flip so labels captured in component-init

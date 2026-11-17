@@ -1,14 +1,14 @@
 // @vitest-environment happy-dom
 import { flushSync } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { drafts, LAST_SPAWN_LABELS, LAST_SPAWN_NAME, SPAWN_SLOT, spawnSlotKey } from '$lib/drafts';
-import { FOLLOWUP_RELATION } from '$lib/followup';
-import { attachmentStore } from '$lib/attachmentStore';
+import { drafts, LAST_SPAWN_LABELS, LAST_SPAWN_NAME, SPAWN_SLOT, spawnSlotKey } from '#lib/drafts.ts';
+import { FOLLOWUP_RELATION } from '#lib/followup.ts';
+import { attachmentStore } from '#lib/attachmentStore.ts';
 import { SpawnForm, type SpawnFormOptions } from './spawnForm.svelte';
 import { saveDraft, spawnOnMachine } from './spawnSubmit';
 import { dictateIntoPrompt } from './spawnDictation';
 import { NO_ACCOUNT } from './options';
-import { setCapabilitiesForTest } from '$lib/features.svelte';
+import { setCapabilitiesForTest } from '#lib/features.svelte.ts';
 import type { Feature } from '@bindings/Feature';
 
 const machineList = [
@@ -30,7 +30,7 @@ const setDraftAttachments = vi.fn();
 const listSessions = vi.fn();
 const discardDraft = vi.fn();
 
-vi.mock('$lib/queries', () => {
+vi.mock('#lib/queries/index.ts', () => {
 	const q = <T>(data: T) => ({ data, isLoading: false, isError: false });
 	return {
 		useMachineResources: () => q(machineList),
@@ -57,7 +57,7 @@ vi.mock('$lib/queries', () => {
 	};
 });
 
-vi.mock('$lib/settings.svelte', () => ({
+vi.mock('#lib/settings.svelte.ts', () => ({
 	settings: {
 		state: { display: { archiveShortcut: true } },
 		lastDirFor: () => null,
@@ -67,8 +67,8 @@ vi.mock('$lib/settings.svelte', () => ({
 	}
 }));
 
-vi.mock('$lib/ws.svelte', async () => {
-	const { CommandWaiters } = await import('$lib/ws/commands');
+vi.mock('#lib/ws.svelte.ts', async () => {
+	const { CommandWaiters } = await import('#lib/ws/commands.ts');
 	return { ws: {
 		sessions: [],
 		onCommandResult: () => () => {},

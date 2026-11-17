@@ -1,7 +1,7 @@
 import type { Bookmark } from '@bindings/Bookmark';
 import type { CreateBookmark } from '@bindings/CreateBookmark';
-import { lineMarkdown } from '$lib/components/organisms/conversation/format';
-import type { Line } from '$lib/components/organisms/conversation/types';
+import { lineMarkdown } from '#lib/components/organisms/conversation/format.ts';
+import type { Line } from '#lib/components/organisms/conversation/types.ts';
 
 const TITLE_MAX = 120;
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildSpawnBody } from '$lib/components/organisms/spawn/spawnBody';
-import type { Form } from '$lib/components/organisms/spawn/types';
+import { buildSpawnBody } from '#lib/components/organisms/spawn/spawnBody.ts';
+import type { Form } from '#lib/components/organisms/spawn/types.ts';
 import { parityFixture } from './fixtures';
 
 type Case = {

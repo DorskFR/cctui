@@ -4,16 +4,16 @@
 	// is loaded on demand rather than through the query cache: it changes only
 	// from this screen.
 	import { Button, Icon, Input, Text, Timestamp } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-		import SettingSection from '$lib/components/molecules/SettingSection.svelte';
-	import { endpoints } from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { auth } from '$lib/auth.svelte';
-	import { PasskeyAborted, createPasskey, getAssertion, passkeysSupported } from '$lib/passkeys';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+		import SettingSection from '#lib/components/molecules/SettingSection.svelte';
+	import { endpoints } from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { auth } from '#lib/auth.svelte.ts';
+	import { PasskeyAborted, createPasskey, getAssertion, passkeysSupported } from '#lib/passkeys.ts';
 	import type { PasskeyConfig } from '@bindings/PasskeyConfig';
 	import type { PasskeyRow } from '@bindings/PasskeyRow';
 	import type { JsonValue } from '@bindings/serde_json/JsonValue';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let passkeyCfg = $state<PasskeyConfig | null>(null);
 	let passkeyList = $state<PasskeyRow[]>([]);

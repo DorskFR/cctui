@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { drafts, LIST_VIEW } from './drafts';
 
 export type ViewMode = 'list' | 'grid' | 'tiles';
@@ -16,7 +16,7 @@ export function parseViewMode(raw: string | null | undefined): ViewMode {
 	if (raw === 'card') return 'grid';
 	return raw && isViewMode(raw) ? raw : 'list';
 }
-export const serializeViewMode = (v: ViewMode): string => (v === 'grid' ? 'card' : v);
+export const serializeViewMode = (v: ViewMode): string => v === 'grid' ? 'card' : v;
 
 /**
  * The Sessions view mode, owned by a module rather than by the Sessions page.
@@ -37,7 +37,7 @@ class SessionsView {
 		this.#mode = parseViewMode(drafts.get(LIST_VIEW));
 		const mq = window.matchMedia(`(min-width: ${TILES_MIN_WIDTH}px)`);
 		this.wide = mq.matches;
-		mq.addEventListener('change', (e) => (this.wide = e.matches));
+		mq.addEventListener('change', (e) => this.wide = e.matches);
 	}
 
 	// Sole owner of the value AND of persisting it: a second owner that re-seeds

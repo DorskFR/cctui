@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fmtAge, fmtAgo } from '$lib/diagnoseSilence';
+import { fmtAge, fmtAgo } from '#lib/diagnoseSilence.ts';
 import { parityFixture } from './fixtures';
 
 type Case = { ms: number; unit: string; value: number; bare: string; ago: string };

@@ -6,11 +6,11 @@
 	import type { SpawnForm } from './spawnForm.svelte';
 	import { createProfile, deleteProfile, saveProfile } from './profileCrud';
 	import { Callout } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import CctuiverseSpawnNotice from '$lib/components/molecules/CctuiverseSpawnNotice.svelte';
-	import { findInvite } from '$lib/cctuiverse';
-	import { cctuiverseConfig, loadCctuiverseConfig } from '$lib/cctuiverseConfig.svelte';
-	import { hasFeature } from '$lib/features.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import CctuiverseSpawnNotice from '#lib/components/molecules/CctuiverseSpawnNotice.svelte';
+	import { findInvite } from '#lib/cctuiverse.ts';
+	import { cctuiverseConfig, loadCctuiverseConfig } from '#lib/cctuiverseConfig.svelte.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
 
 	let { sf }: { sf: SpawnForm } = $props();
 

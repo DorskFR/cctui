@@ -2,7 +2,7 @@
 	import { Button, Checkbox, Text } from '@dorsk/tsumikit';
 	import { MSG_GROUPS } from './filters';
 	import { msgCategoryLabel, msgGroupLabel, type MsgCategory, type MsgFilter } from './types';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		filter,

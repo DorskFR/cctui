@@ -1,14 +1,14 @@
 <script lang="ts">
 	import { Button, Cluster, Input, Text, Textarea, Timestamp } from '@dorsk/tsumikit';
-	import { errMessage } from '$lib/api';
+	import { errMessage } from '#lib/api.ts';
 	import {
 		pendingScheduled,
 		useScheduledActions,
 		useScheduledMessages,
 		type ScheduledMessage
-	} from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { customBounds, parseCustom, toLocalInput } from './scheduleTimes';
 
 	let { sessionId, archived }: { sessionId: string; archived: boolean } = $props();

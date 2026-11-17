@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Bookmark } from '@bindings/Bookmark';
-import { bookmarkMarkdown, defaultTitle, isDeadLink, queryTerms, sourceHref } from '$lib/bookmarks';
+import { bookmarkMarkdown, defaultTitle, isDeadLink, queryTerms, sourceHref } from '#lib/bookmarks.ts';
 import { parityFixture } from './fixtures';
 
 type Fixture = {

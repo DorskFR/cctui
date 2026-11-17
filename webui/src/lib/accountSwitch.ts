@@ -1,4 +1,4 @@
-import { providerFamily } from '$lib/providers';
+import { providerFamily } from '#lib/providers.ts';
 
 /** A credential at or above this utilization is spent: listed, never recommended. */
 export const LIMITED_PCT = 95;

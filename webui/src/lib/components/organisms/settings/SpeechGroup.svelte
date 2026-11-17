@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { Badge, Button, Input, Select, Switch } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import { endpoints } from '$lib/queries';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import { endpoints } from '#lib/queries/index.ts';
 	import type { SpeechCatalog } from '@bindings/SpeechCatalog';
 	import type { SpeechConfig } from '@bindings/SpeechConfig';
 	import type { SpeechSettingsInfo } from '@bindings/SpeechSettingsInfo';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	const FORMATS = ['opus', 'mp3', 'aac', 'flac', 'wav', 'pcm'];
 

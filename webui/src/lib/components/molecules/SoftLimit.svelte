@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { CapBar, Input, Text, Timestamp } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import type { UsagePace } from '$lib/queries';
-	import { countdown, paceState, wallInMs } from '$lib/components/molecules/usage-battery.logic';
+	import { m } from '#lib/paraglide/messages.js';
+	import type { UsagePace } from '#lib/queries/index.ts';
+	import { countdown, paceState, wallInMs } from '#lib/components/molecules/usage-battery.logic.ts';
 	import {
 		capFromBar,
 		capToBar,

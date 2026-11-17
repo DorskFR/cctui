@@ -4,9 +4,9 @@
 	// it lives on the Plugins page.
 	import { onMount } from 'svelte';
 	import { Badge, Button, Input, Link, Select, Switch, Text, Textarea, Toggle } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
 	import type { ContextItem } from '@bindings/ContextItem';
 	import type { ContextItemSpec } from '@bindings/ContextItemSpec';
 	import type { ContextMatch } from '@bindings/ContextMatch';
@@ -17,12 +17,12 @@
 		useHarnesses,
 		useLabels,
 		useResolvedContext
-	} from '$lib/queries';
-	import { harnessTable } from '$lib/harnesses.svelte';
-	import { sessionHref } from '$lib/sessionFailureToast';
-	import { errMessage } from '$lib/api';
-	import { hasFeature } from '$lib/features.svelte';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/queries/index.ts';
+	import { harnessTable } from '#lib/harnesses.svelte.ts';
+	import { sessionHref } from '#lib/sessionFailureToast.ts';
+	import { errMessage } from '#lib/api.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import {
 		bodyBytes,
 		bodyMax,

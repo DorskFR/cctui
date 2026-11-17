@@ -14,15 +14,15 @@
 		Text
 	} from '@dorsk/tsumikit';
 	import type { SegmentOption } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
-	import { settings, type NavPosition, type ToastPosition } from '$lib/settings.svelte';
-	import { LOCALE_LABELS, LOCALES, type Locale } from '$lib/locale.svelte';
-	import { theme } from '$lib/theme.svelte';
-	import { themePickerGroups } from '$lib/components/molecules/themePicker.logic';
-	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
+	import { settings, type NavPosition, type ToastPosition } from '#lib/settings.svelte.ts';
+	import { LOCALE_LABELS, LOCALES, type Locale } from '#lib/locale.svelte.ts';
+	import { theme } from '#lib/theme.svelte.ts';
+	import { themePickerGroups } from '#lib/components/molecules/themePicker.logic.ts';
+	import { fontScale, SCALE_LEVELS } from '#lib/fontscale.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	const LOOKS = ['default', 'depth', 'tactile'] as const;
 

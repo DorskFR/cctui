@@ -1,4 +1,4 @@
-import { drafts, LAST_SPAWN_NAME } from '$lib/drafts';
+import { drafts, LAST_SPAWN_NAME } from '#lib/drafts.ts';
 import {
 	machineMemoryKey,
 	dispatchMemoryKey,
@@ -11,8 +11,8 @@ import {
 	type MemoryField,
 	type MemoryPatch,
 	type SpawnMemoryEntry
-} from '$lib/spawnMemory';
-import { settings } from '$lib/settings.svelte';
+} from '#lib/spawnMemory.ts';
+import { settings } from '#lib/settings.svelte.ts';
 import type { Form } from './types';
 
 /**

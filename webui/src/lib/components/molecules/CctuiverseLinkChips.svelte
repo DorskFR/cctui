@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { Dot, Popover, Text } from '@dorsk/tsumikit';
-	import { listLinks, openLinks, type InviteTarget, type LinkView } from '$lib/cctuiverse';
-	import { cctuiverseConfig } from '$lib/cctuiverseConfig.svelte';
-	import { ws } from '$lib/ws.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { listLinks, openLinks, type InviteTarget, type LinkView } from '#lib/cctuiverse.ts';
+	import { cctuiverseConfig } from '#lib/cctuiverseConfig.svelte.ts';
+	import { ws } from '#lib/ws.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import CctuiverseLinkPanel from './CctuiverseLinkPanel.svelte';
 
 	let { target }: { target: InviteTarget } = $props();

@@ -1,15 +1,15 @@
 <script lang="ts">
 	import { DataTable, type Column } from '@dorsk/tsumikit';
 	import type { NotificationSettings } from '@bindings/NotificationSettings';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
 	import {
 		NOTIFICATION_KINDS,
 		effectiveChannelEnabled,
 		effectiveStage
-	} from '$lib/notificationPrefs';
-	import { settings } from '$lib/settings.svelte';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/notificationPrefs.ts';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { channelLabel, kindLabel } from './labels';
 	import StageCell from './StageCell.svelte';
 

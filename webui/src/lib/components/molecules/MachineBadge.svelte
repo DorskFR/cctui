@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { machineInitial, machineTint } from '$lib/format';
+	import { machineInitial, machineTint } from '#lib/format.ts';
 	import { Badge } from '@dorsk/tsumikit';
 
 	// Deterministic-color machine badge, shared by the session list and the

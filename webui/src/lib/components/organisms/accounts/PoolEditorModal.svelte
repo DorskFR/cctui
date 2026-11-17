@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { errMessage } from '$lib/api';
-	import { useAccountPoolActions, type OAuthAccount } from '$lib/queries';
+	import { errMessage } from '#lib/api.ts';
+	import { useAccountPoolActions, type OAuthAccount } from '#lib/queries/index.ts';
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
-	import { toasts } from '$lib/toast.svelte';
+	import { toasts } from '#lib/toast.svelte.ts';
 	import { Button, Cluster, Field, IconButton, Input, Modal, Select, Switch, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	// `pool` null creates a fresh one. Member order IS the ladder under the
 	// `ordered` strategy, so it is edited explicitly rather than inferred.

@@ -4,18 +4,18 @@
 // here; the header/composer stay presentational and call these via callbacks.
 // Follows the ForkController / ScrollController pattern used elsewhere in this
 // drawer.
-import { errMessage } from '$lib/api';
+import { errMessage } from '#lib/api.ts';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { ViewOpts } from './types';
-import { toasts } from '$lib/toast.svelte';
-import { copyText } from '$lib/clipboard';
-import { ws } from '$lib/ws.svelte';
-import { clearSessionStorage } from '$lib/drafts';
-import { downloadConversationHtml, conversationToMarkdown } from '$lib/export';
-import { endpoints } from '$lib/queries';
+import { toasts } from '#lib/toast.svelte.ts';
+import { copyText } from '#lib/clipboard.ts';
+import { ws } from '#lib/ws.svelte.ts';
+import { clearSessionStorage } from '#lib/drafts.ts';
+import { downloadConversationHtml, conversationToMarkdown } from '#lib/export.ts';
+import { endpoints } from '#lib/queries/index.ts';
 import { loadWholeConversation, type ConversationPageFetch } from './wholeConversation';
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 
 // The slice of useSessionActions() this hook drives. Kept structural so the
 // drawer can pass the query mutations straight through.

@@ -1,9 +1,9 @@
 <script lang="ts">
-	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
-	import SessionDot from '$lib/components/molecules/SessionDot.svelte';
-	import SessionGlyphs from '$lib/components/molecules/SessionGlyphs.svelte';
-	import { m } from '$lib/paraglide/messages';
-	import { settings } from '$lib/settings.svelte';
+	import LabelBadge from '#lib/components/molecules/LabelBadge.svelte';
+	import SessionDot from '#lib/components/molecules/SessionDot.svelte';
+	import SessionGlyphs from '#lib/components/molecules/SessionGlyphs.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import { settings } from '#lib/settings.svelte.ts';
 	import { Badge, Text, Timestamp } from '@dorsk/tsumikit';
 	import { accountTrafficWarning } from '../../../../routes/sessions/sessions.logic';
 	import Gutter from './Gutter.svelte';

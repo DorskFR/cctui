@@ -1,8 +1,8 @@
 import type { PermissionMode } from '@bindings/PermissionMode';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
-import { normalizeDir } from '$lib/drafts';
-import { PERMISSION_MODES } from '$lib/domainTables';
-import { FOLLOWUP_RELATION } from '$lib/followup';
+import { normalizeDir } from '#lib/drafts.ts';
+import { PERMISSION_MODES } from '#lib/domainTables.ts';
+import { FOLLOWUP_RELATION } from '#lib/followup.ts';
 import { isCompatibleProvider, NO_ACCOUNT, poolName } from './options';
 import type { EnvRow, Form } from './types';
 

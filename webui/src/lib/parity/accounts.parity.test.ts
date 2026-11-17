@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { AccountPoolView } from '@bindings/AccountPoolView';
 import type { AccountRedirect } from '@bindings/AccountRedirect';
-import type { OAuthAccount } from '$lib/queries';
-import { redirectChipsFor } from '$lib/queries/accounts';
+import type { OAuthAccount } from '#lib/queries/index.ts';
+import { redirectChipsFor } from '#lib/queries/accounts.ts';
 import {
 	acceptsDrop,
 	membershipAfterMove,
 	poolOf
-} from '$lib/components/organisms/accounts/pools.logic';
+} from '#lib/components/organisms/accounts/pools.logic.ts';
 import { parityFixture } from './fixtures';
 
 type Fixture = {

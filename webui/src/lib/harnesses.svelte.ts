@@ -1,7 +1,7 @@
 // The harness table in effect: the rows `GET /harnesses` served, else the
 // shipped `HARNESSES`, so pickers and gates answer before the query lands.
 import type { HarnessDescriptor } from '@bindings/HarnessDescriptor';
-import { HARNESSES } from '$lib/domainTables';
+import { HARNESSES } from '#lib/domainTables.ts';
 
 let served = $state<HarnessDescriptor[] | null>(null);
 

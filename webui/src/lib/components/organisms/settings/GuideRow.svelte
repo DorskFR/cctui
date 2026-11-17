@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { Badge, Button, Progress, Text } from '@dorsk/tsumikit';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import type { GuideStatus, GuideView } from '$lib/guides';
-	import { m } from '$lib/paraglide/messages';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import type { GuideStatus, GuideView } from '#lib/guides.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		guide,

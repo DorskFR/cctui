@@ -5,7 +5,7 @@
 	import { Field, FilterSearchBar, IconButton, Toggle } from '@dorsk/tsumikit';
 	import type { ConversationSearch } from './convSearch.svelte';
 	import { conversationSearchPlaceholder } from './searchSchema';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { search }: { search: ConversationSearch } = $props();
 

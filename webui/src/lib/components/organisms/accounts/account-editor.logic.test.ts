@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { OAuthAccount } from '$lib/queries';
+import type { OAuthAccount } from '#lib/queries/index.ts';
 import {
 	aliasObject,
 	availableKinds,

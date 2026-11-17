@@ -2,17 +2,17 @@
 	import { onMount } from 'svelte';
 	import { Stack, Switch, Text } from '@dorsk/tsumikit';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import { errMessage } from '$lib/api';
-	import { qk } from '$lib/queries/keys';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { errMessage } from '#lib/api.ts';
+	import { qk } from '#lib/queries/keys.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import {
 		PushPermissionError,
 		pushState,
 		subscribe,
 		unsubscribe,
 		type PushState
-	} from '$lib/push';
+	} from '#lib/push.ts';
 
 	const qc = useQueryClient();
 	let status = $state<PushState | 'loading'>('loading');

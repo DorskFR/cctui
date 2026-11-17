@@ -5,7 +5,7 @@
 	// search box moves to the page head there).
 	import { Icon, Input, Badge, Tabs, Text, type IconName, type TabItem } from '@dorsk/tsumikit';
 	import { goto } from '$app/navigation';
-	import NavLink from '$lib/components/atoms/NavLink.svelte';
+	import NavLink from '#lib/components/atoms/NavLink.svelte';
 	import {
 		SETTINGS_SCOPES,
 		settingsHref,
@@ -13,7 +13,7 @@
 		type SettingsPage,
 		type SettingsScope
 	} from './settings.logic';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	export interface TocEntry {
 		page: SettingsPage;
@@ -51,7 +51,7 @@
 	);
 	let tab = $derived(active as string);
 	$effect(() => {
-		if (tab !== active) void goto(settingsHref(tab as SettingsPage), { noScroll: true });
+		if (tab !== active) void goto(settingsHref(tab as SettingsPage), { reset: false });
 	});
 </script>
 

@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { Cluster, Input, Select } from '@dorsk/tsumikit';
 	import type { NotificationStage } from '@bindings/NotificationStage';
-	import { AFTER_MINUTES_MAX, clampAfterMinutes } from '$lib/notificationPrefs';
-	import { m } from '$lib/paraglide/messages';
+	import { AFTER_MINUTES_MAX, clampAfterMinutes } from '#lib/notificationPrefs.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { channelLabel, kindLabel } from './labels';
 
 	let {

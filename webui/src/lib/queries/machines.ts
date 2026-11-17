@@ -2,7 +2,7 @@ import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import type { GitInfo } from "@bindings/GitInfo";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
-import { hasFeature } from "$lib/features.svelte";
+import { hasFeature } from "#lib/features.svelte.ts";
 
 /** Cached (machine, path) git lookup for the spawn dialog branch badge. */
 export const useGitInfo = () => {

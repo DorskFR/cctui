@@ -7,9 +7,9 @@
 	import {
 		pageForHash,
 		settingsHref
-	} from '$lib/components/organisms/settings/settings.logic';
+	} from '#lib/components/organisms/settings/settings.logic.ts';
 
 	onMount(() => {
-		void goto(settingsHref(pageForHash(location.hash)), { replaceState: true });
+		void goto(settingsHref(pageForHash(location.hash)), { replace: true });
 	});
 </script>

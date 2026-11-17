@@ -7,10 +7,10 @@ const { postForm, query, voice } = vi.hoisted(() => ({
 	query: { data: undefined as { stt: boolean; tts: boolean } | undefined },
 	voice: { micId: null, language: 'auto', autoSend: false }
 }));
-vi.mock('$lib/api', () => ({ api: { postForm }, errMessage: (e: unknown) => String(e) }));
-vi.mock('$lib/toast.svelte', () => ({ toasts: { error: vi.fn(), info: vi.fn() } }));
-vi.mock('$lib/queries', () => ({ useVoiceConfig: () => query }));
-vi.mock('$lib/settings.svelte', () => ({ settings: { voice } }));
+vi.mock('#lib/api.ts', () => ({ api: { postForm }, errMessage: (e: unknown) => String(e) }));
+vi.mock('#lib/toast.svelte.ts', () => ({ toasts: { error: vi.fn(), info: vi.fn() } }));
+vi.mock('#lib/queries/index.ts', () => ({ useVoiceConfig: () => query }));
+vi.mock('#lib/settings.svelte.ts', () => ({ settings: { voice } }));
 
 import SpawnDictation from './SpawnDictation.svelte';
 

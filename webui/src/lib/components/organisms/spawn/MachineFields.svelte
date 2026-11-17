@@ -3,12 +3,12 @@
 	// branch), the session name, and the prompt. The harness / account / model /
 	// effort / permission knobs come from the selected profile (ProfileList).
 	import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
-	import { useGitInfo } from '$lib/queries';
-	import { hasFeature } from '$lib/features.svelte';
-	import PromptField from '$lib/components/organisms/PromptField.svelte';
-	import type { PromptAttachments } from '$lib/promptAttachments.svelte';
+	import { useGitInfo } from '#lib/queries/index.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
+	import PromptField from '#lib/components/organisms/PromptField.svelte';
+	import type { PromptAttachments } from '#lib/promptAttachments.svelte.ts';
 	import type { GitInfo } from '@bindings/GitInfo';
-	import MachinePicker from '$lib/components/molecules/MachinePicker.svelte';
+	import MachinePicker from '#lib/components/molecules/MachinePicker.svelte';
 	import {
 		Callout,
 		Field,
@@ -24,11 +24,11 @@
 	import { fsLiveness, gitBadge, makeGitInfoWatcher } from './cwdGitInfo';
 	import type { CwdCheck } from './cwdCheck';
 	import type { Form } from './types';
-	import { m } from '$lib/paraglide/messages';
-	import { promptHistory } from '$lib/drafts';
-	import { HistoryNav } from '$lib/historyNav';
-	import PromptHistoryMenu from '$lib/components/molecules/PromptHistoryMenu.svelte';
-	import RedactedChips from '$lib/components/organisms/conversation/RedactedChips.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import { promptHistory } from '#lib/drafts.ts';
+	import { HistoryNav } from '#lib/historyNav.ts';
+	import PromptHistoryMenu from '#lib/components/molecules/PromptHistoryMenu.svelte';
+	import RedactedChips from '#lib/components/organisms/conversation/RedactedChips.svelte';
 
 	let {
 		form = $bindable(),

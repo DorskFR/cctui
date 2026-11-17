@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { OAuthAccount } from '$lib/queries';
+import type { OAuthAccount } from '#lib/queries/index.ts';
 import KitFields from './KitFields.svelte';
 import { EMPTY_SPEC, type ProfileSpecForm } from './profiles';
 
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	useHarnessModels: () => ({ data: null, isLoading: false, isError: false }),
 	useHarnesses: () => ({ data: null, isLoading: false, isError: false }),
 	useMachineAdapters: () => ({ data: null, isLoading: false, isError: false })

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import { eventKeys, eventSig, mergeEventSources } from './format';
-import { newTurnId } from '$lib/turnid';
+import { newTurnId } from '#lib/turnid.ts';
 
 const userEv = (seq: number, content: string, turnId?: string): AgentEvent =>
 	({

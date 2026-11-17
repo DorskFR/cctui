@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { flushSync } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { setCapabilitiesForTest } from '$lib/features.svelte';
+import { setCapabilitiesForTest } from '#lib/features.svelte.ts';
 import { MessagePins } from './messagePins.svelte';
 import { BookmarkSaver } from './bookmarkSave.svelte';
 import type { ScrollController } from './scroll.svelte';
@@ -16,7 +16,7 @@ const calls = vi.hoisted(() => ({
 	unpin: vi.fn(async () => {})
 }));
 
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	useMessagePins: (_id: () => string, enabled: () => boolean = () => true) => {
 		calls.pinsEnabled.push(enabled());
 		return { data: undefined };

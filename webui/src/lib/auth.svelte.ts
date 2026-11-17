@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { apiFetch } from './api';
 import { backendHealth, isNetworkError, isOutageStatus } from './backendHealth.svelte';
 import { apiBase } from './config';
@@ -33,7 +33,7 @@ class Auth {
 			try {
 				const res = await apiFetch(`${apiBase()}/me`);
 				if (!isOutageStatus(res.status)) {
-					if (res.ok && !(await bootCapabilities())) await refreshCapabilities();
+					if (res.ok && !await bootCapabilities()) await refreshCapabilities();
 					this.isAuthed = res.ok;
 					break;
 				}
@@ -69,7 +69,7 @@ class Auth {
 		try {
 			const res = await apiFetch(`${apiBase()}/auth/passkey/config`);
 			if (!res.ok) return null;
-			return (await res.json()) as PasskeyConfig;
+			return await res.json() as PasskeyConfig;
 		} catch {
 			return null;
 		}
@@ -91,12 +91,10 @@ class Auth {
 			method: 'POST'
 		});
 		if (!startRes.ok) return false;
-		const challenge = (await startRes.json()) as PasskeyChallenge;
-		const credential = await getAssertion(
-			challenge.options as Record<string, unknown>,
-			mediation,
-			signal
-		);
+
+		const challenge = await startRes.json() as PasskeyChallenge;
+		const credential = await getAssertion(challenge.options as Record<string, unknown>, mediation, signal);
+
 		const finishRes = await apiFetch(`${apiBase()}/auth/passkey/login/finish`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },

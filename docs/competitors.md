@@ -1,6 +1,7 @@
 # Competitors
 
-Landscape of tools that monitor, drive or orchestrate coding agents, as of 2026-10-14, personal agents as of 2026-11-02.
+Landscape of tools that monitor, drive or orchestrate coding agents, as of 2026-10-14, personal agents as of 2026-11-02,
+Claude Managed Agents as of 2026-11-16.
 `✅` yes, `❌` no, `~` partial, `?` unknown or not stated publicly. Stars are GitHub
 stars on that date. Harnesses: CC Claude Code, Cx Codex, oc opencode, Gm Gemini /
 Antigravity.
@@ -16,6 +17,8 @@ When a new one shows up: add a row to its category table, and a column to the
 - **First party is the biggest threat**: Anthropic Remote Control + Projects
   (device cards, spawn from phone, permission prompts, cross-session messaging) and
   Codex remote cover most of cctui for a single vendor, hosted, not self-hostable.
+  [Claude Managed Agents](#claude-managed-agents) is the same idea as an API product:
+  sessions, steering, approvals, sandboxes and cron runs, billed per token.
 - **Nobody else combines**: MIT + fully self-hosted, one UI over CC/Cx/oc/ACP with
   real permission-prompt answering, ephemeral k8s/Docker workers, nested subagents
   and rooms across harnesses, and per-account rate-limit tracking with dollar caps.
@@ -97,6 +100,32 @@ Single-vendor, hosted, not self-hostable. They are absorbing cctui's single-harn
 | Cursor 3 Agents Window / cloud agents   | Cursor     | Local, worktree, cloud VM or SSH; self-hosted workers via Helm (Teams+)                    |
 | Google Antigravity 2.0 / Jules          | Gm         | Multi-agent desktop with walkthrough evidence; Jules async cloud tasks                     |
 | Warp Agent Management / Oz              | Warp CC Cx Gm oc | Agent panel, remote control, Oz cloud agents that spawn CC/Cx subagents             |
+| [Claude Managed Agents](https://platform.claude.com/docs/en/managed-agents/overview) | Claude API | Beta. Hosted harness as an API: agents, environments, sessions, events; API tokens + $0.08/session-hour, no subscription |
+
+### Claude Managed Agents
+
+Anthropic's agent harness sold as an API, not an app. It is a backend to build on, not a
+UI, so it competes with cctui's server and workers rather than with its web UI.
+
+- **Resources**: an *agent* (model, prompt, tools, MCP servers, skills, subagents) is
+  versioned, with optimistic-concurrency updates; an *environment* is an Anthropic cloud
+  sandbox or a self-hosted one; a *session* is a stateful run with a persistent
+  filesystem; *deployments* pin an agent version, start sessions on a cron schedule and
+  keep a run record per trigger, including failed ones.
+- **Events**: one SSE stream per session with `user.*` events in (message, interrupt,
+  tool confirmation, custom tool result, system message) and `agent.*` / `session.*` out.
+  Idle carries a `stop_reason`: `end_turn`, `requires_action` with the blocking event ids,
+  or `budget_reached`. Events have ids for reconnect without gaps.
+- **Approvals**: per tool or per toolset, `always_allow`, `always_ask` or `auto`, where
+  the server judges each call and only asks when unsure. MCP tools default to ask.
+- **Budgets**: a hard per-session dollar cap at list price; the session pauses, keeps its
+  sandbox, and resumes when the cap is raised. One cap is shared by all subagent threads.
+- **Self-hosted sandboxes**: the environment is a work queue; a worker with outbound HTTPS
+  only claims sessions and runs tool calls locally while the model loop stays at
+  Anthropic. Fully self-hosted service is sales-only.
+- **Declarative config**: `ant apply agent.md` with YAML frontmatter, IDs kept in a
+  committed `claude-lock.json`.
+- **Limits**: API key only, not eligible for ZDR, Claude models only, beta.
 
 ## Remote and mobile control
 

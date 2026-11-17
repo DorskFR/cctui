@@ -1,5 +1,5 @@
 import type { IconName } from '@dorsk/tsumikit';
-import type { Line } from '$lib/components/organisms/conversation/types';
+import type { Line } from '#lib/components/organisms/conversation/types.ts';
 import { DEFAULT_PLUGIN_ICON, enabledWebPlugins } from './discovery';
 import { type PluginLoader, pluginLoader } from './loader.svelte';
 import { type ActionSource, AutoOpenOnce, collectMessageActions } from './messageActions';

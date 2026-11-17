@@ -1,4 +1,4 @@
-import type { Handle } from '@sveltejs/kit';
+import type { Handle } from '@sveltejs/kit/hooks';
 import { FX_PREPAINT, THEME_PREPAINT } from '@dorsk/tsumikit';
 
 // Runs at prerender, so the static shell paints the saved theme, look and

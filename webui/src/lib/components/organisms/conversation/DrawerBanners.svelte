@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { Button, Text } from '@dorsk/tsumikit';
-	import { useAccounts } from '$lib/queries';
-	import { useToolGuard, useToolGuardActions } from '$lib/queries/toolGuard';
-	import { canOfferBypass, nextBypassStep, type BypassStep } from '$lib/tool-guard-bypass.logic';
-	import { toasts } from '$lib/toast.svelte';
-	import { errMessage } from '$lib/api';
+	import { useAccounts } from '#lib/queries/index.ts';
+	import { useToolGuard, useToolGuardActions } from '#lib/queries/toolGuard.ts';
+	import { canOfferBypass, nextBypassStep, type BypassStep } from '#lib/tool-guard-bypass.logic.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { errMessage } from '#lib/api.ts';
 	import AccountSwitchModal from './AccountSwitchModal.svelte';
 	import type { ConversationStream } from './stream.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		sessionId,

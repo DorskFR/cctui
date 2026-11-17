@@ -4,12 +4,12 @@
 	// `payload` (name, identity, repo, ticket, prompt, prompt file, model, timeout,
 	// effort). The adapter picker chooses the claude or codex worker; the
 	// model/effort sets follow it.
-	import { harnessModelsFallback } from '$lib/domainTables';
+	import { harnessModelsFallback } from '#lib/domainTables.ts';
 	import EffortSlider from './EffortSlider.svelte';
-	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
+	import ModelPicker from '#lib/components/molecules/ModelPicker.svelte';
 	import { Button, Field, Input, Kbd, Select, Text, Textarea } from '@dorsk/tsumikit';
-	import { useHarnessModels, useSessions } from '$lib/queries';
-	import SessionMention from '$lib/components/molecules/SessionMention.svelte';
+	import { useHarnessModels, useSessions } from '#lib/queries/index.ts';
+	import SessionMention from '#lib/components/molecules/SessionMention.svelte';
 	import {
 		accountAdapters,
 		providerForAdapter,
@@ -21,13 +21,13 @@
 		adapterLabel,
 		type Adapter
 	} from './options';
-	import type { OAuthAccount } from '$lib/queries';
+	import type { OAuthAccount } from '#lib/queries/index.ts';
 	import type { Form } from './types';
-	import InlineCode, { SLOT } from '$lib/components/atoms/InlineCode.svelte';
-	import { m } from '$lib/paraglide/messages';
-	import { promptHistory } from '$lib/drafts';
-	import { HistoryNav } from '$lib/historyNav';
-	import PromptHistoryMenu from '$lib/components/molecules/PromptHistoryMenu.svelte';
+	import InlineCode, { SLOT } from '#lib/components/atoms/InlineCode.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import { promptHistory } from '#lib/drafts.ts';
+	import { HistoryNav } from '#lib/historyNav.ts';
+	import PromptHistoryMenu from '#lib/components/molecules/PromptHistoryMenu.svelte';
 
 	let {
 		form = $bindable(),

@@ -11,7 +11,7 @@ import {
 	mergeFilesRenamed,
 	nextPasteIndex,
 	rewriteFileTokens
-} from '$lib/attachments';
+} from '#lib/attachments.ts';
 import { parityFixture } from './fixtures';
 
 type Fixture = {

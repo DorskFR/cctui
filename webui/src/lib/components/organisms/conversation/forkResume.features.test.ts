@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 import ArchivedActions from './ArchivedActions.svelte';
 import pane from '../ConversationPane.svelte?raw';
 import header from './DrawerHeader.svelte?raw';

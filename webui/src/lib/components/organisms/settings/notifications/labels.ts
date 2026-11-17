@@ -1,4 +1,4 @@
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 
 const CHANNELS: Record<string, () => string> = {
 	in_app: m.notif_channel_in_app,

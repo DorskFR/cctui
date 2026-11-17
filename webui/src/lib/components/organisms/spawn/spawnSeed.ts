@@ -5,7 +5,7 @@ import {
 	LAST_SPAWN_NAME,
 	LAST_SPAWN_LABELS,
 	nextSessionName
-} from '$lib/drafts';
+} from '#lib/drafts.ts';
 import type { EnvRow, Form, SpawnPrefill } from './types';
 
 export const blank: Form = {

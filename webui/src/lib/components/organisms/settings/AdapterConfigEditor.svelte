@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Button, Text, Textarea } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import { formatAdapterConfig, parseAdapterConfig } from './machineAdapters.logic';
 
 	let {

@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Trailing rows under a bubble: reply duration + per-reply token breakdown
 	// (no Σ; that's the conversation-wide aggregate), stop hook, file edits.
-	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
+	import TokenUsage from '#lib/components/molecules/TokenUsage.svelte';
 	import { Text } from '@dorsk/tsumikit';
 	import type { Line } from './types';
 

@@ -4,7 +4,7 @@ import { QueryClient } from '@tanstack/svelte-query';
 import { afterEach, expect, it, vi } from 'vitest';
 import Host from './SpawnContextRow.host.test.svelte';
 
-vi.mock('$lib/queries', async () => {
+vi.mock('#lib/queries/index.ts', async () => {
 	const { createQuery } = await import('@tanstack/svelte-query');
 	const item = (id: string, name: string) => ({
 		id,

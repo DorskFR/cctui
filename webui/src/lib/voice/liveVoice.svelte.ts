@@ -3,8 +3,8 @@
  *  player are injectable so the state machine runs under test. */
 import type { VoiceClientMsg } from '@bindings/VoiceClientMsg';
 import type { VoiceServerMsg } from '@bindings/VoiceServerMsg';
-import { wsBase } from '$lib/config';
-import type { VoiceSettings } from '$lib/settings.svelte';
+import { wsBase } from '#lib/config.ts';
+import type { VoiceSettings } from '#lib/settings.svelte.ts';
 import { type ChunkerOptions, UtteranceChunker } from './chunker';
 import { floatToPcm16, frameLevel } from './pcm';
 import type { SpeechPlayer } from './player';

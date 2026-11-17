@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { buildDispatchBody } from '$lib/components/organisms/spawn/dispatchBody';
-import { contextPackEnv } from '$lib/components/organisms/spawn/options';
-import type { Form } from '$lib/components/organisms/spawn/types';
+import { buildDispatchBody } from '#lib/components/organisms/spawn/dispatchBody.ts';
+import { contextPackEnv } from '#lib/components/organisms/spawn/options.ts';
+import type { Form } from '#lib/components/organisms/spawn/types.ts';
 import { parityFixture } from './fixtures';
 
 type Pack = Partial<{ url: string; ref: string; subdir: string; token: string }>;

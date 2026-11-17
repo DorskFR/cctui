@@ -1,6 +1,6 @@
 <script lang="ts">
-	import SubagentBadge from '$lib/components/molecules/SubagentBadge.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import SubagentBadge from '#lib/components/molecules/SubagentBadge.svelte';
+	import { m } from '#lib/paraglide/messages.js';
 	import type { SubagentToggle } from './view';
 
 	// Leading slot shared by the checkbox, the subagent toggles and the ↳ child

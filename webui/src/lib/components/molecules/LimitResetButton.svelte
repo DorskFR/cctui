@@ -2,11 +2,11 @@
 	// The provider's limit-reset credit as one head-row action: a retry glyph
 	// that asks before spending the credit, greyed with the reason when none
 	// is available. Reads the same cached usage query as the bars below it.
-	import { useAccountUsage, useLimitReset } from '$lib/queries';
+	import { useAccountUsage, useLimitReset } from '#lib/queries/index.ts';
 	import { Button, IconButton, Modal, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import { toasts } from '$lib/toast.svelte';
-	import { errMessage } from '$lib/api';
+	import { m } from '#lib/paraglide/messages.js';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { errMessage } from '#lib/api.ts';
 	import { limitResetClears, limitResetLabel, limitResetTooltip } from './limit-reset';
 
 	let { providerId, enabled = true }: { providerId: string; enabled?: boolean } = $props();

@@ -4,7 +4,7 @@
 // parses it); an unset/unparseable value falls back to a deterministic name
 // hash, exactly like an "Auto" machine color.
 
-import { hashHue } from '$lib/format';
+import { hashHue } from '#lib/format.ts';
 
 /** Who a new label is for (see `createLabel`): the session, else the machine,
  *  whose owner's vocabulary it joins when an admin creates it. */

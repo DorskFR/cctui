@@ -4,10 +4,10 @@
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { Button, ResizablePanel, Text } from '@dorsk/tsumikit';
 	import ConversationPane from './ConversationPane.svelte';
-	import { drafts, VIEW_OPTS } from '$lib/drafts';
+	import { drafts, VIEW_OPTS } from '#lib/drafts.ts';
 	import { parseViewOpts } from './conversation/filters';
 	import { lockDocumentScroll } from './conversation/scrollLock';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		session,

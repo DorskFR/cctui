@@ -1,10 +1,10 @@
 <script lang="ts">
 	import type { EventRecord } from '@bindings/EventRecord';
 	import { Badge, Dot, Text, Timestamp } from '@dorsk/tsumikit';
-	import NavLink from '$lib/components/atoms/NavLink.svelte';
-	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
-	import { formatRow, type ActorKind, type EventFamily } from '$lib/events';
-	import { m } from '$lib/paraglide/messages';
+	import NavLink from '#lib/components/atoms/NavLink.svelte';
+	import MachineBadge from '#lib/components/molecules/MachineBadge.svelte';
+	import { formatRow, type ActorKind, type EventFamily } from '#lib/events.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		event,

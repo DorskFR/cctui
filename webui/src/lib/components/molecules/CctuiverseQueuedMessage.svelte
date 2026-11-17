@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Button, Text, Timestamp } from '@dorsk/tsumikit';
-	import type { LinkMessage, MessageAction } from '$lib/cctuiverse';
+	import type { LinkMessage, MessageAction } from '#lib/cctuiverse.ts';
 
 	let {
 		msg,

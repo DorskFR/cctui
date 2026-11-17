@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { ModelUsage } from '@bindings/ModelUsage';
-	import { compact } from '$lib/format';
-	import { m } from '$lib/paraglide/messages';
+	import { compact } from '#lib/format.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { Text } from '@dorsk/tsumikit';
 	import { rankModels } from './usage-analytics';
 

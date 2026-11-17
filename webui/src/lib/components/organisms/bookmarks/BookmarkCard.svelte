@@ -1,15 +1,15 @@
 <script lang="ts">
 	import type { Bookmark } from '@bindings/Bookmark';
 	import { Badge, Button, IconButton, Text, Timestamp, Tooltip } from '@dorsk/tsumikit';
-	import { highlightBlock, renderMarkdown } from '$lib/markdown';
-	import { highlightTerms } from '$lib/search';
-	import { bookmarkLine, isDeadLink, sourceHref } from '$lib/bookmarks';
-	import { settings } from '$lib/settings.svelte';
+	import { highlightBlock, renderMarkdown } from '#lib/markdown.ts';
+	import { highlightTerms } from '#lib/search.ts';
+	import { bookmarkLine, isDeadLink, sourceHref } from '#lib/bookmarks.ts';
+	import { settings } from '#lib/settings.svelte.ts';
 	import MessageBubble, {
 		roleColor
-	} from '$lib/components/organisms/conversation/MessageBubble.svelte';
-	import { isMachineUuid } from '$lib/components/organisms/conversation/lineRender.svelte';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/components/organisms/conversation/MessageBubble.svelte';
+	import { isMachineUuid } from '#lib/components/organisms/conversation/lineRender.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		bookmark,

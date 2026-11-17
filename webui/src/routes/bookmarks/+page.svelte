@@ -2,15 +2,15 @@
 	import type { Bookmark } from '@bindings/Bookmark';
 	import { goto } from '$app/navigation';
 	import { ConfirmModal, Input, Spinner, Text } from '@dorsk/tsumikit';
-	import PageHead from '$lib/components/molecules/PageHead.svelte';
-	import BookmarkCard from '$lib/components/organisms/bookmarks/BookmarkCard.svelte';
-	import BookmarkSaveModal from '$lib/components/organisms/bookmarks/BookmarkSaveModal.svelte';
-	import { bookmarkMarkdown, queryTerms, sourceHref } from '$lib/bookmarks';
-	import { copyText } from '$lib/clipboard';
-	import { errMessage } from '$lib/api';
-	import { useBookmarkActions, useBookmarks, useSessions } from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import PageHead from '#lib/components/molecules/PageHead.svelte';
+	import BookmarkCard from '#lib/components/organisms/bookmarks/BookmarkCard.svelte';
+	import BookmarkSaveModal from '#lib/components/organisms/bookmarks/BookmarkSaveModal.svelte';
+	import { bookmarkMarkdown, queryTerms, sourceHref } from '#lib/bookmarks.ts';
+	import { copyText } from '#lib/clipboard.ts';
+	import { errMessage } from '#lib/api.ts';
+	import { useBookmarkActions, useBookmarks, useSessions } from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let query = $state('');
 	// Debounced so each keystroke doesn't fire a request; `q` filters server-side.

@@ -2,7 +2,7 @@
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Feature } from '@bindings/Feature';
-import { setCapabilitiesForTest } from '$lib/features.svelte';
+import { setCapabilitiesForTest } from '#lib/features.svelte.ts';
 import type { Dimension, Section } from '../../../routes/sessions/sessions.logic';
 import SectionFilter from './SectionFilter.svelte';
 import DimensionPicker from './DimensionPicker.svelte';

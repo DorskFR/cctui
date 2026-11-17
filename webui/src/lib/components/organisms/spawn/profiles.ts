@@ -1,7 +1,7 @@
 import type { SessionProfile } from '@bindings/SessionProfile';
 import type { AccountPoolView } from '@bindings/AccountPoolView';
-import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
-import { headlinePct } from '$lib/components/molecules/usage-battery.logic';
+import type { AccountUsageEntry, OAuthAccount } from '#lib/queries/index.ts';
+import { headlinePct } from '#lib/components/molecules/usage-battery.logic.ts';
 import {
 	adapterLabel,
 	isCompatibleProvider,

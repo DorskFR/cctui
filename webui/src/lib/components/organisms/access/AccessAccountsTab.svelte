@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { Button, type Column, DataTable, Text, Timestamp } from '@dorsk/tsumikit';
-	import AccountAvatar from '$lib/components/molecules/AccountAvatar.svelte';
-	import RowActions from '$lib/components/molecules/RowActions.svelte';
-	import type { OAuthAccount } from '$lib/queries';
-	import { m } from '$lib/paraglide/messages';
+	import AccountAvatar from '#lib/components/molecules/AccountAvatar.svelte';
+	import RowActions from '#lib/components/molecules/RowActions.svelte';
+	import type { OAuthAccount } from '#lib/queries/index.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		accounts,

@@ -1,18 +1,18 @@
 <script lang="ts">
 	import { Button, Select, Switch } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
 	import {
 		settings,
 		type VoiceInputMode,
 		type VoiceLanguage,
 		type VoiceSpokenStyle
-	} from '$lib/settings.svelte';
-	import { type AudioDevice, canPickSpeaker, listDevices } from '$lib/voice/devices';
-	import { m } from '$lib/paraglide/messages';
-	import { endpoints, useVoiceConfig } from '$lib/queries';
-	import { voiceCaps } from '$lib/voice/capabilities';
+	} from '#lib/settings.svelte.ts';
+	import { type AudioDevice, canPickSpeaker, listDevices } from '#lib/voice/devices.ts';
+	import { m } from '#lib/paraglide/messages.js';
+	import { endpoints, useVoiceConfig } from '#lib/queries/index.ts';
+	import { voiceCaps } from '#lib/voice/capabilities.ts';
 
 	const SPEEDS = [0.75, 1, 1.25, 1.5, 2];
 

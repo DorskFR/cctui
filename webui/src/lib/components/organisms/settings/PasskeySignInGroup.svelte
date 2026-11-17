@@ -1,12 +1,12 @@
 <script lang="ts">
 	import { Switch } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import { auth } from '$lib/auth.svelte';
-	import { endpoints } from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import { auth } from '#lib/auth.svelte.ts';
+	import { endpoints } from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
 	import type { PasskeyConfig } from '@bindings/PasskeyConfig';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let cfg = $state<PasskeyConfig | null>(null);
 	$effect(() => {

@@ -1,6 +1,6 @@
 import type { IconName } from '@dorsk/tsumikit';
-import { m } from '$lib/paraglide/messages';
-import { hasFeature } from '$lib/features.svelte';
+import { m } from '#lib/paraglide/messages.js';
+import { hasFeature } from '#lib/features.svelte.ts';
 
 export interface NavItemSpec {
 	href: string;

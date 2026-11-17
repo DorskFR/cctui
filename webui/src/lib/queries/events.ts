@@ -1,7 +1,7 @@
 import { createQuery } from "@tanstack/svelte-query";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
-import { hasFeature } from "$lib/features.svelte";
+import { hasFeature } from "#lib/features.svelte.ts";
 
 export const EVENT_PAGE = 50;
 export const SESSION_EVENT_PAGE = 100;

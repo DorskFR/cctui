@@ -5,13 +5,13 @@
 	// whether a step is done — and nothing about the ticks is stored.
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { Button, Stack, Text } from '@dorsk/tsumikit';
-	import { buildCurriculum, guideEntries, guideOptions, replayGuide } from '$lib/guides';
-	import { GUIDES_ROUTE, startFailureMessage } from '$lib/journey';
-	import { createProbes } from '$lib/journeys/probes';
-	import { hasFeature } from '$lib/features.svelte';
-	import { settings } from '$lib/settings.svelte';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { buildCurriculum, guideEntries, guideOptions, replayGuide } from '#lib/guides.ts';
+	import { GUIDES_ROUTE, startFailureMessage } from '#lib/journey.ts';
+	import { createProbes } from '#lib/journeys/probes.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	/** Opens the launch form where the card sits; elsewhere the last step links to Sessions. */
 	let { onnew }: { onnew?: () => void } = $props();

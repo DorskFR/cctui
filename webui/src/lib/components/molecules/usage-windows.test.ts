@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
-import type { UsageWindow } from '$lib/queries';
+import type { UsageWindow } from '#lib/queries/index.ts';
 import { editorWindowKeys, isUsdKey, mergeUsageWindows, windowLabelFromKey } from './usage-windows';
 
 const win = (key: string, label: string, utilization: number, extra: Partial<UsageWindow> = {}): UsageWindow => ({

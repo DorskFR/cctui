@@ -8,8 +8,9 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::{
-    FALLBACK_SUBJECT, SELECT_KEY_SQL, SETTINGS_KEY, Subscription, Vapid, WebPush, close_payload,
-    derive, encrypt, encrypt_with, show_payload, stored_or_generated, subject,
+    ACTION_TITLE, FALLBACK_SUBJECT, NOTICE_TITLE, SELECT_KEY_SQL, SETTINGS_KEY, Subscription,
+    URGENT_TITLE, Vapid, WebPush, close_payload, derive, encrypt, encrypt_with, show_payload,
+    stored_or_generated, subject,
 };
 use crate::notify::channel::{Button, Channel, Endpoint, Press, ProviderRef, Rendered, SendError};
 
@@ -250,8 +251,54 @@ async fn send_posts_an_encrypted_notice_tagged_with_the_delivery() {
     assert!(header(&headers, "authorization").starts_with("vapid t="));
     let shown = open(&body);
     assert_eq!(shown["type"], "show");
-    assert_eq!(shown["title"], "Approve deploy");
+    assert_eq!(shown["title"], ACTION_TITLE);
     assert_eq!(shown["tag"], tag.as_str());
+}
+
+const TRANSCRIPT: &str = "XYLOPHONE-TRANSCRIPT-";
+const MAX_PAYLOAD_BYTES: usize = 1024;
+
+fn with_transcript(repeat: usize) -> Rendered {
+    Rendered {
+        title: format!("Agent says {}", TRANSCRIPT.repeat(repeat)),
+        body: Some(TRANSCRIPT.repeat(repeat)),
+        ..rendered()
+    }
+}
+
+#[tokio::test]
+async fn a_long_body_never_reaches_the_decrypted_push() {
+    let (base, seen) = stub(201).await;
+    channel(&base).send(&with_transcript(500), &endpoint(&base)).await.unwrap();
+    let (_, _, body) = seen.lock().unwrap().pop().unwrap();
+    assert!(body.len() < MAX_PAYLOAD_BYTES, "{} bytes on the wire", body.len());
+    let shown = open(&body);
+    assert!(shown.get("body").is_none(), "{shown}");
+    let plain = shown.to_string();
+    let chars: Vec<char> = TRANSCRIPT.repeat(2).chars().collect();
+    for window in chars.windows(5) {
+        let piece: String = window.iter().collect();
+        assert!(!plain.contains(&piece), "{piece:?} leaked into {plain}");
+    }
+}
+
+#[test]
+fn the_payload_size_does_not_grow_with_the_body_or_title() {
+    let sizes: Vec<usize> = [0, 1, 50, 5_000]
+        .into_iter()
+        .map(|repeat| show_payload(&with_transcript(repeat), "t1", true).to_string().len())
+        .collect();
+    assert!(sizes.iter().all(|&len| len == sizes[0]), "{sizes:?}");
+    assert!(sizes[0] < MAX_PAYLOAD_BYTES, "{sizes:?}");
+}
+
+#[test]
+fn the_title_is_generic_and_never_the_producer_title() {
+    let urgent = Rendered { buttons: Vec::new(), ..with_transcript(3) };
+    let quiet = Rendered { priority: 2, ..urgent.clone() };
+    assert_eq!(show_payload(&with_transcript(3), "t1", true)["title"], ACTION_TITLE);
+    assert_eq!(show_payload(&urgent, "t1", true)["title"], URGENT_TITLE);
+    assert_eq!(show_payload(&quiet, "t1", true)["title"], NOTICE_TITLE);
 }
 
 #[tokio::test]

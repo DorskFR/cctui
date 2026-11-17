@@ -1,5 +1,5 @@
 import type { Labels } from '@dorsk/hmm';
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 
 /** Never add a user identifier, token or session content: reports leave this deployment. */
 export function feedbackContext(serverVersion: string | undefined, route: string | null): Record<string, string> {

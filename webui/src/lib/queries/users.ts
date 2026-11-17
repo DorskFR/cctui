@@ -2,7 +2,7 @@ import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import { api } from "../api";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
-import { hasFeature } from "$lib/features.svelte";
+import { hasFeature } from "#lib/features.svelte.ts";
 import type { CreateUserResponse } from "@bindings/CreateUserResponse";
 import type { MintTokenResponse } from "@bindings/MintTokenResponse";
 import type { MintKeyResponse } from "@bindings/MintKeyResponse";

@@ -3,10 +3,10 @@
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { Disclosure, Text } from '@dorsk/tsumikit';
 	import EventRow from '../events/EventRow.svelte';
-	import { qk, useSessionEvents } from '$lib/queries';
-	import { mergeLive, sessionIdOf } from '$lib/events';
-	import { ws } from '$lib/ws.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { qk, useSessionEvents } from '#lib/queries/index.ts';
+	import { mergeLive, sessionIdOf } from '#lib/events.ts';
+	import { ws } from '#lib/ws.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { sessionId }: { sessionId: string } = $props();
 

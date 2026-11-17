@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 const slots = new Map<string, object>();
-vi.mock('$lib/drafts', () => ({
+vi.mock('#lib/drafts.ts', () => ({
 	drafts: { get: () => '' },
 	readSpawnSlot: (key: string) => slots.get(key) ?? null,
 	LAST_SPAWN_NAME: 'name',

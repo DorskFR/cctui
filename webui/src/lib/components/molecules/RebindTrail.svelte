@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Tooltip } from '@dorsk/tsumikit';
-	import { useSessionRebinds } from '$lib/queries';
-	import { m } from '$lib/paraglide/messages';
+	import { useSessionRebinds } from '#lib/queries/index.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	// A session that changed accounts mid-run says so, here, next to the account
 	// badge — a small arrow whose tooltip lists every move with its cause.

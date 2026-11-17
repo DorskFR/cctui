@@ -2,9 +2,9 @@
 // selectors and permission-mode picker.
 import type { PermissionMode } from '@bindings/PermissionMode';
 import type { AccountPoolView } from '@bindings/AccountPoolView';
-import type { AccountProvider, OAuthAccount } from '$lib/queries';
+import type { AccountProvider, OAuthAccount } from '#lib/queries/index.ts';
 import type { SelectOption } from '@dorsk/tsumikit';
-import type { ModelOption } from '$lib/harnessModels';
+import type { ModelOption } from '#lib/harnessModels.ts';
 import {
 	harnessForAdapter,
 	harnessForProvider,
@@ -12,9 +12,9 @@ import {
 	harnessPermissionModes,
 	harnessesForProviders,
 	pickableHarnesses
-} from '$lib/harnesses';
-import { HARNESSES, providerInfo } from '$lib/domainTables';
-import { m } from '$lib/paraglide/messages';
+} from '#lib/harnesses.ts';
+import { HARNESSES, providerInfo } from '#lib/domainTables.ts';
+import { m } from '#lib/paraglide/messages.js';
 
 export const modes: { v: PermissionMode; label: string; hint: string }[] = [
 	{
@@ -61,7 +61,7 @@ export const modesFor = (harness: string | null | undefined): typeof modes => {
 	return modes.filter((md) => allowed.includes(md.v));
 };
 
-export { declaredModelOptions, withDeclaredModels } from '$lib/harnessModels';
+export { declaredModelOptions, withDeclaredModels } from '#lib/harnessModels.ts';
 
 // Annotate native-family options with the per-account alias target
 // so the picker reads e.g. "Opus (claude-opus-4-8[1m])" instead of a bare

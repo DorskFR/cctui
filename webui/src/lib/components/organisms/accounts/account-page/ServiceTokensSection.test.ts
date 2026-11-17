@@ -2,7 +2,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ServiceTokenRow } from '@bindings/ServiceTokenRow';
-import type { OAuthAccount } from '$lib/queries';
+import type { OAuthAccount } from '#lib/queries/index.ts';
 
 const state = vi.hoisted(() => ({
 	rows: [] as ServiceTokenRow[],
@@ -19,7 +19,7 @@ const state = vi.hoisted(() => ({
 	})),
 	revoke: vi.fn(async () => {})
 }));
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	useServiceTokens: () => ({
 		get data() {
 			return state.rows;
@@ -28,13 +28,13 @@ vi.mock('$lib/queries', () => ({
 	}),
 	useServiceTokenActions: () => ({ mint: state.mint, revoke: state.revoke })
 }));
-vi.mock('$lib/paraglide/messages', async (importOriginal) => {
+vi.mock('#lib/paraglide/messages.js', async (importOriginal) => {
 	const real = (await importOriginal<{ m: Record<string, unknown> }>()).m;
 	return { m: new Proxy(real, { get: (t, k: string) => t[k] ?? (() => k) }) };
 });
 
 import ServiceTokensSection from './ServiceTokensSection.svelte';
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 
 const account = {
 	id: 'a1',

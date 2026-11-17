@@ -1,9 +1,9 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { CopyButton, Timestamp, Tooltip } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import { sessionDebugRows } from '../../../routes/sessions/sessions.logic';
-	import { sessionEnd } from '$lib/sessionEnd';
+	import { sessionEnd } from '#lib/sessionEnd.ts';
 	import SessionDotFacts from './SessionDotFacts.svelte';
 
 	// Activity dot: the liveness dot carries a rich debug tooltip —

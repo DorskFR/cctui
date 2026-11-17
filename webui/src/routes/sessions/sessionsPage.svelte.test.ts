@@ -5,20 +5,20 @@ import { QueryClient } from '@tanstack/svelte-query';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { SessionListResponse } from '@bindings/SessionListResponse';
 import type { Label } from '@bindings/Label';
-import { ApiError } from '$lib/api';
-import { m } from '$lib/paraglide/messages';
-import { qk } from '$lib/queries';
+import { ApiError } from '#lib/api.ts';
+import { m } from '#lib/paraglide/messages.js';
+import { qk } from '#lib/queries/index.ts';
 import {
 	LIST_HIDDEN,
 	LIST_LABELS,
 	LIST_SECTION,
 	LIST_TILE_SECTION,
 	type SpawnSlotPayload
-} from '$lib/drafts';
-import type { SessionListSettings } from '$lib/settings.svelte';
-import { sessionsView } from '$lib/sessionsView.svelte';
+} from '#lib/drafts.ts';
+import type { SessionListSettings } from '#lib/settings.svelte.ts';
+import { sessionsView } from '#lib/sessionsView.svelte.ts';
 import { SessionsPage, type SessionsPageDeps, type SpawnForm } from './sessionsPage.svelte';
-import { setCapabilitiesForTest } from '$lib/features.svelte';
+import { setCapabilitiesForTest } from '#lib/features.svelte.ts';
 
 function session(over: Partial<SessionListItem>): SessionListItem {
 	return {

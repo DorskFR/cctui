@@ -8,15 +8,15 @@ import type { SessionListItem } from '@bindings/SessionListItem';
 import type { SessionListResponse } from '@bindings/SessionListResponse';
 import type { SessionParentStub } from '@bindings/SessionParentStub';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
-import { normalizeDir, spawnSlotDirty, type SpawnSlotPayload } from '$lib/drafts';
-import { NO_ACCOUNT } from '$lib/components/organisms/spawn/options';
-import { SYSTEM_MACHINE_KINDS } from '$lib/queries';
+import { normalizeDir, spawnSlotDirty, type SpawnSlotPayload } from '#lib/drafts.ts';
+import { NO_ACCOUNT } from '#lib/components/organisms/spawn/options.ts';
+import { SYSTEM_MACHINE_KINDS } from '#lib/queries/index.ts';
 import { relativeTime } from '@dorsk/tsumikit';
-import { hashHue } from '$lib/format';
-import { labelHue } from '$lib/labels';
-import { m } from '$lib/paraglide/messages';
-import { nestsUnderParent } from '$lib/followup';
-import { outcomeBucket } from '$lib/outcome';
+import { hashHue } from '#lib/format.ts';
+import { labelHue } from '#lib/labels.ts';
+import { m } from '#lib/paraglide/messages.js';
+import { nestsUnderParent } from '#lib/followup.ts';
+import { outcomeBucket } from '#lib/outcome.ts';
 
 // ── View picker ───────────────────────────────────────────────────
 export type ViewMode = 'list' | 'card';

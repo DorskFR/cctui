@@ -40,7 +40,7 @@ const api = vi.hoisted(() => ({
 	accountPools: vi.fn(),
 	sessions: vi.fn()
 }));
-vi.mock('$lib/queries/endpoints', () => ({ endpoints: api }));
+vi.mock('#lib/queries/endpoints.ts', () => ({ endpoints: api }));
 
 const KEY = 'cctui_settings';
 

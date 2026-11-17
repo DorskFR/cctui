@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Button, Callout, CopyButton, Field, Input, Modal, Spinner, Text } from '@dorsk/tsumikit';
-	import { errMessage } from '$lib/api';
-	import { now } from '$lib/clock.svelte';
+	import { errMessage } from '#lib/api.ts';
+	import { now } from '#lib/clock.svelte.ts';
 	import {
 		createInvite,
 		formatCountdown,
@@ -9,9 +9,9 @@
 		remainingMs,
 		type InviteTarget,
 		type LinkView
-	} from '$lib/cctuiverse';
-	import { ws } from '$lib/ws.svelte';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/cctuiverse.ts';
+	import { ws } from '#lib/ws.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		target,

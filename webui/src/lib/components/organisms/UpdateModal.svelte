@@ -14,11 +14,11 @@
 	import { goto } from '$app/navigation';
 	import { Button, Modal, Text } from '@dorsk/tsumikit';
 	import type { UpdateHookPhase } from '@bindings/UpdateHookPhase';
-	import { endpoints, useChangelog, useMe, useSelfUpdateRun } from '$lib/queries';
-	import { renderMarkdown } from '$lib/markdown';
-	import { toasts } from '$lib/toast.svelte';
-	import { ws } from '$lib/ws.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { endpoints, useChangelog, useMe, useSelfUpdateRun } from '#lib/queries/index.ts';
+	import { renderMarkdown } from '#lib/markdown.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { ws } from '#lib/ws.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		latestVersion,

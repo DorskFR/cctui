@@ -1,14 +1,14 @@
 <script lang="ts">
-	import { useAccounts, useMachineResources, useSessionStats, useTokenStats } from '$lib/queries';
-	import { getLocale } from '$lib/paraglide/runtime';
-	import { hasFeature } from '$lib/features.svelte';
-	import { m } from '$lib/paraglide/messages';
-	import SessionPeriodSummary from '$lib/components/organisms/overview/SessionPeriodSummary.svelte';
-	import MetricTile from '$lib/components/molecules/MetricTile.svelte';
-	import WindowsTable from '$lib/components/molecules/WindowsTable.svelte';
-	import UsageAnalyticsSection from '$lib/components/organisms/overview/UsageAnalyticsSection.svelte';
+	import { useAccounts, useMachineResources, useSessionStats, useTokenStats } from '#lib/queries/index.ts';
+	import { getLocale } from '#lib/paraglide/runtime.js';
+	import { hasFeature } from '#lib/features.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
+	import SessionPeriodSummary from '#lib/components/organisms/overview/SessionPeriodSummary.svelte';
+	import MetricTile from '#lib/components/molecules/MetricTile.svelte';
+	import WindowsTable from '#lib/components/molecules/WindowsTable.svelte';
+	import UsageAnalyticsSection from '#lib/components/organisms/overview/UsageAnalyticsSection.svelte';
 	import { Card, Stack } from '@dorsk/tsumikit';
-	import PageHead from '$lib/components/molecules/PageHead.svelte';
+	import PageHead from '#lib/components/molecules/PageHead.svelte';
 	import { buildMetricTiles, machinesOnline, type MetricKey } from './home.logic';
 
 	const stats = useSessionStats();

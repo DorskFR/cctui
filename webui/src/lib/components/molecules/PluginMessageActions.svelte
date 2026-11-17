@@ -2,7 +2,7 @@
 	// Buttons a runtime plugin contributes to one assistant message; each opens
 	// the plugin's session pane with the action's params.
 	import { Button, Icon } from '@dorsk/tsumikit';
-	import type { PluginActionButton } from '$lib/plugins/types';
+	import type { PluginActionButton } from '#lib/plugins/types.ts';
 
 	let { actions, onopen }: { actions: PluginActionButton[]; onopen: (a: PluginActionButton) => void } = $props();
 </script>

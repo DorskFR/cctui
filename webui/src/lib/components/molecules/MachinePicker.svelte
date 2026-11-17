@@ -4,9 +4,9 @@
 	// laid over it, so the platform popup, keyboard and focus stay native.
 	import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
 	import type { MachineRow } from '@bindings/MachineRow';
-	import { hashHue } from '$lib/format';
+	import { hashHue } from '#lib/format.ts';
 	import { Dot, Icon, Select, type SelectOption } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		value = $bindable(),

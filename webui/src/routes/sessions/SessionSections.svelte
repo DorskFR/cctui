@@ -1,8 +1,8 @@
 <script lang="ts">
-	import FirstRunChecklist from '$lib/components/molecules/FirstRunChecklist.svelte';
+	import FirstRunChecklist from '#lib/components/molecules/FirstRunChecklist.svelte';
 	import type { Snippet } from 'svelte';
 	import { Button, Callout, Container, Spinner, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { nest, idsForSection, machineGroupLiveness, sectionVisibility } from './sessions.logic';
 	import type { SessionsPage } from './sessionsPage.svelte';

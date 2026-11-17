@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { feedbackConfig } from '$lib/config';
-	import { feedbackContext, feedbackLabels } from '$lib/feedback';
+	import { feedbackConfig } from '#lib/config.ts';
+	import { feedbackContext, feedbackLabels } from '#lib/feedback.ts';
 
 	let {
 		serverVersion,

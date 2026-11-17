@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { isPasteName, parseUserUploadRefs } from './lines';
-import { pickAttachment, pickUnnamedImages, type SessionAttachment } from '$lib/queries/types';
+import { pickAttachment, pickUnnamedImages, type SessionAttachment } from '#lib/queries/types.ts';
 
 const sid = '0a1b2c3d-1111-2222-3333-444455556666';
 
