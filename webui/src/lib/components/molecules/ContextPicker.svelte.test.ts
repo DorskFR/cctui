@@ -20,12 +20,12 @@ afterEach(async () => {
 	document.body.replaceChildren();
 });
 
-function render(initial: string[] = [], locked: string[] = []) {
+function render(initial: string[] = [], locked: string[] = [], list: Pickable[] = items) {
 	const state = $state({ value: initial });
 	component = mount(ContextPicker, {
 		target: document.body,
 		props: {
-			items,
+			items: list,
 			locked,
 			label: 'Context',
 			get value() {
@@ -89,5 +89,36 @@ describe('ContextPicker keyboard multi-pick', () => {
 		key('Backspace');
 		expect(state.value).toEqual([]);
 		expect(chips()).toBe(1);
+	});
+});
+
+describe('ContextPicker kind badge', () => {
+	const open = () => {
+		input().dispatchEvent(new FocusEvent('focus'));
+		flushSync();
+	};
+	const badges = () =>
+		[...document.querySelectorAll('[role="option"] [data-kind]')].map((b) => b.getAttribute('data-kind'));
+
+	it('hides the kind when every item is the same kind', () => {
+		render();
+		open();
+		expect(document.querySelectorAll('[role="option"]').length).toBe(3);
+		expect(badges()).toEqual([]);
+	});
+
+	it('shows the kind on every row when memories and prompts mix', () => {
+		render([], [], [item('alpha', 'Alpha'), item('review', 'Review', 'prompt')]);
+		open();
+		expect(badges().sort()).toEqual(['memory', 'prompt']);
+	});
+
+	it('keeps the badges while a filter narrows a mixed list to one kind', () => {
+		render([], [], [item('alpha', 'Alpha'), item('review', 'Review', 'prompt')]);
+		open();
+		input().value = 'review';
+		input().dispatchEvent(new Event('input', { bubbles: true }));
+		flushSync();
+		expect(badges()).toEqual(['prompt']);
 	});
 });
