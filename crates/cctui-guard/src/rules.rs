@@ -206,7 +206,6 @@ fn redirect_target(chars: &[char], mut i: usize) -> (String, bool, usize) {
     while let Some(&c) = chars.get(i) {
         match quote {
             Some(q) if c == q => quote = None,
-            Some(_) => target.push(c),
             None if c == '\'' || c == '"' => quote = Some(c),
             None if c.is_whitespace() || REDIRECT_TARGET_END.contains(&c) => break,
             None if c == '\\' => {
@@ -215,7 +214,7 @@ fn redirect_target(chars: &[char], mut i: usize) -> (String, bool, usize) {
                 }
                 i += 1;
             }
-            None => target.push(c),
+            Some(_) | None => target.push(c),
         }
         i += 1;
     }
