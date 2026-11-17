@@ -70,6 +70,8 @@ case, never a *no-`SESSION_ID`* case.
 | --- | --- | --- |
 | `WORKER_NET_MODE` | auto | `transparent`, `transparent-external`, or `forward`. Auto = `transparent` when iptables is usable (CAP_NET_ADMIN), else `forward`, which then faces an enforcing pre-flight it cannot pass. An explicit `transparent` with unusable iptables refuses to start. `forward` is an explicit opt-in only. `transparent-external` is never auto-selected — set it only when the pod runs the guard-proxy sidecar + net-init init container (see below). |
 | `WORKER_NET_EXEMPT` | — | Comma-separated `host:port` that **bypass** the proxy (resolved to a single IP at boot, iptables `RETURN`'d). Transparent mode only. IP-pinned — use only for **IP-stable** hosts; CDN/multi-IP hosts will rotate off the exempted IP. |
+| `WORKER_DNS_RESOLVER` | — (net-init: `cctui-worker-dns`) | Restricted resolver DNS is DNATed to: an IPv4 address or a pod-search-relative name. Set and unresolvable is fatal. Unset: net-init tries `cctui-worker-dns` and on failure warns and keeps the pod resolver; `transparent` keeps the first IPv4 nameserver. On kube the orchestrator always sets it on net-init (see "Sidecar mode"), so a missing resolver fails the pod. |
+| `WORKER_DNS_RESOLVER_REQUIRED` | off | `1` (exactly) makes an unset `WORKER_DNS_RESOLVER` mean `cctui-worker-dns`, fatal when it does not resolve: net-init and `transparent` exit non-zero before installing any rule instead of falling back to a resolver that may recurse public names. Any other value or unset: unchanged. |
 | `WORKER_NET_ALLOW` | — | Comma-separated `host:port` allowed **through** the proxy by **SNI** (IP-independent). Folded into the seeded `policy.json` and re-applied as `cctui-guard --always-allow` so it survives per-step rewrites. The right tool for CDN/multi-IP SaaS APIs (e.g. a YouTrack host). |
 | `WORKER_REPO_REGISTRIES` | on | After the repo lands in `/workspace/<repo>`, its manifests (up to three levels deep; `.git`, `node_modules`, `target`, `vendor`, `.venv` skipped) add their package registry to the seeded `policy.json` as plain egress (no credential injection): `package.json`/`package-lock.json`/`npm-shrinkwrap.json` → `registry.npmjs.org:443`; `pyproject.toml`/`uv.lock`/`requirements*.txt` → `pypi.org:443`, `files.pythonhosted.org:443`; `Cargo.toml` → `index.crates.io:443`, `static.crates.io:443`, `crates.io:443`; `go.mod` → `proxy.golang.org:443`, `sum.golang.org:443`. Not `--always-allow`'d: under a guarded workflow the per-step `[network]` policy replaces them. `0`/`false`/`off`/`no` disables it per profile. |
 | `WARM_REPO_DIR` | — | Mounted warm-repo dir; becomes the overlayfs lowerdir for `/workspace` (rsync-copy fallback). `posture: root` only: a `posture: nonroot` profile is denied for setting it, and the envelope strips it from a nonroot worker. |
@@ -334,7 +336,7 @@ prompt step blocks; the default is the safe fallback, not a recommendation.
 
 | Mode | Capability at start | Mechanism |
 | --- | --- | --- |
-| `transparent` (default w/ NET_ADMIN) | **CAP_NET_ADMIN** | The same rules as net-init: only the proxy uid and loopback egress directly. Every other uid, root included, has its TCP REDIRECTed to `:15001` (except DNS to the resolver and `WORKER_NET_EXEMPT`); the filter table REJECTs `169.254.0.0/16` and all non-TCP egress for every uid but the proxy, DNS (UDP/TCP 53) to the resolver excepted. The resolver is `WORKER_DNS_RESOLVER` when set (DNAT, fatal when unresolvable), else the first IPv4 nameserver as is. IPv6 egress denied (proxy is IPv4-only — forces IPv4 fallback). Unusable iptables or a missing `setpriv` (the proxy must run as its own uid) is fatal, never a fallback to `forward`. |
+| `transparent` (default w/ NET_ADMIN) | **CAP_NET_ADMIN** | The same rules as net-init: only the proxy uid and loopback egress directly. Every other uid, root included, has its TCP REDIRECTed to `:15001` (except DNS to the resolver and `WORKER_NET_EXEMPT`); the filter table REJECTs `169.254.0.0/16` and all non-TCP egress for every uid but the proxy, DNS (UDP/TCP 53) to the resolver excepted. The resolver is `WORKER_DNS_RESOLVER` when set (DNAT, fatal when unresolvable), else `cctui-worker-dns` under `WORKER_DNS_RESOLVER_REQUIRED=1` (fatal too), else the first IPv4 nameserver as is. IPv6 egress denied (proxy is IPv4-only — forces IPv4 fallback). Unusable iptables or a missing `setpriv` (the proxy must run as its own uid) is fatal, never a fallback to `forward`. |
 | `transparent-external` (explicit only) | **none** (in this container) | Same wire behaviour as `transparent`, but the proxy runs in a **separate sidecar container** and the iptables rules are installed by a **NET_ADMIN init container**. The entrypoint only seeds `policy.json` and waits for the sidecar's `:15002/ready`. |
 | `forward` (no NET_ADMIN) | **none** | No iptables. `HTTP_PROXY`/`HTTPS_PROXY=http://127.0.0.1:15001` exported for the worker tree; `NO_PROXY=127.0.0.1,localhost`. Honor-system: an agent that ignores the env egresses directly. Explicit opt-in only (`WORKER_NET_MODE=forward`, pre-flight `warn`); for rootless Docker / gVisor / Apple container. |
 
@@ -460,7 +462,14 @@ base `ghcr.io/dorskfr/cctui-worker` image — no extra image needed):
    privileged). The pod network namespace is shared, so the REDIRECT it installs
    (uid-1000 TCP → `:15001`, exemptions for uid 0 / uid 1337 / loopback / DNS /
    `WORKER_NET_EXEMPT`, IPv6 deny) governs every container. Honors
-   `WORKER_UID`/`PROXY_UID`/`PROXY_PORT`/`WORKER_NET_EXEMPT` env.
+   `WORKER_UID`/`PROXY_UID`/`PROXY_PORT`/`WORKER_NET_EXEMPT` env. The
+   orchestrator always renders `WORKER_DNS_RESOLVER` on it: the profile's
+   `spec.dnsResolver`, else the orchestrator's `CCTUI_ORCH_DNS_RESOLVER`, else
+   `cctui-worker-dns`. net-init's env comes only from the envelope, so neither
+   the dispatch payload nor the profile's `env`/`spec.guard` can change it, and
+   a resolver that does not resolve (e.g. the `cctui-worker-dns` Service, or an
+   ExternalName's target, was deleted) fails the pod instead of letting DNS
+   recurse through kube-dns.
 2. **`guard-proxy` sidecar** — a native sidecar (initContainer with
    `restartPolicy: Always`) running
    `cctui-guard-proxy --mode transparent --listen 0.0.0.0:15001
@@ -486,6 +495,27 @@ root), `SETUID`/`SETGID` (cctui-supervisor's setresuid/setresgid drop to uid
 dispatched-worker wait kills the uid-1000 daemon tree from root). The container
 mounts need an unconfined AppArmor profile where the runtime's default profile
 denies `mount(2)` (previously masked by `privileged: true`).
+
+Injected sidecar resources, so a namespace `LimitRange` default never sizes
+them (guard-proxy log growth counts toward `ephemeral-storage`):
+
+| Container | cpu | memory | ephemeral-storage |
+| --- | --- | --- | --- |
+| `net-init` | 10m / 100m | 16Mi / 64Mi | 4Mi / 16Mi |
+| `guard-proxy` | 25m / 500m | 32Mi / 256Mi | 32Mi / 128Mi |
+
+(request / limit). `spec.sidecarResources.netInit` / `.guardProxy` take a
+container `resources` block merged key by key over these: a profile that sets
+only `limits.ephemeral-storage` keeps every other default.
+
+```yaml
+spec:
+  dnsResolver: cctui-worker-dns
+  sidecarResources:
+    guardProxy:
+      limits:
+        ephemeral-storage: 512Mi
+```
 
 ### Per-profile guard settings (`spec.guard`)
 

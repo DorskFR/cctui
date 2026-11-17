@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { renderMarkdown } from '$lib/markdown';
-	import { Badge, Button, Heading, Input, OptionButton, RadioGroup, Text } from '@dorsk/tsumikit';
+	import { Badge, Button, Heading, Input, Kbd, OptionButton, RadioGroup, Text } from '@dorsk/tsumikit';
 	import type { RadioOption } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
+	import { submitChord } from '$lib/platform';
 
 	interface Opt {
 		label: string;
@@ -131,14 +132,15 @@
 		return questions.map((_, qi) => [...chosen[qi]].sort((a, b) => a - b));
 	}
 
-	function submit() {
-		if (!live || !answeredAll) return;
+	function submit(): boolean {
+		if (!live || !answeredAll) return false;
 		submitted = true; // optimistic flip — show "Answering…" immediately
 		onsubmit(buildAnswer(), buildPicks());
+		return true;
 	}
 </script>
 
-<div class="ask" class:done={!live}>
+<div class="ask" class:done={!live} use:submitChord={submit}>
 	<Heading level={3} size="sm">{questions.length > 1 ? m.ask_questions_heading() : m.ask_question_heading()}</Heading>
 	{#each questions as q, qi (qi)}
 		{@const hasPreview = q.options.some((o) => o.preview)}
@@ -199,7 +201,16 @@
 		</div>
 	{/each}
 	{#if live}
-		<Button variant="primary" shrink={false} disabled={!answeredAll} onclick={submit}>{m.ask_send_answer()}</Button>
+		<div class="send">
+			<Button
+				variant="primary"
+				shrink={false}
+				disabled={!answeredAll}
+				aria-keyshortcuts="Control+Enter Meta+Enter"
+				onclick={submit}>{m.ask_send_answer()}</Button
+			>
+			<Kbd keys="mod+enter" />
+		</div>
 	{:else if submitted && interactive}
 		<Text as="div" tone="muted" size="xs" italic>{m.ask_answering()}</Text>
 	{:else}
@@ -245,6 +256,11 @@
 		flex-direction: column;
 		gap: var(--sp-1);
 		--opt-accent: var(--c-violet);
+	}
+	.send {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
 	}
 	.mark {
 		flex: 0 0 auto;

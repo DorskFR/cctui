@@ -68,7 +68,12 @@
 	{#if canAttach}
 		<div class="group">
 			<Text size="xs" weight="medium">{m.conversation_context_attach()}</Text>
-			<ContextPicker items={memories} bind:value={picks} label={m.conversation_context_attach()} />
+			<ContextPicker
+				items={memories}
+				bind:value={picks}
+				label={m.conversation_context_attach()}
+				placement="top-start"
+			/>
 			<Button size="sm" variant="primary" disabled={busy || !picks.length} onclick={submit}
 				>{m.conversation_context_attach_btn({ count: picks.length })}</Button
 			>

@@ -5,7 +5,9 @@ use uuid::Uuid;
 use super::{Edge, NewNotification, Routing, emit, transition};
 use crate::notify::kind;
 
-const ON: Routing = Routing { ntfy: true };
+const fn on(owner: Uuid) -> Routing {
+    Routing { ntfy: true, env_owner: Some(owner) }
+}
 
 async fn db(name: &str) -> Option<PgPool> {
     let url = crate::routes::gateway::test_db_url(name)?;
@@ -81,9 +83,9 @@ async fn a_user_with_ntfy_off_gets_no_ntfy_row() {
     .await;
     let plain = user(&pool, None).await;
 
-    let muted = emit(&pool, ON, alert(off, "a")).await.unwrap();
+    let muted = emit(&pool, on(off), alert(off, "a")).await.unwrap();
     assert!(deliveries(&pool, muted.id).await.is_empty());
-    let routed = emit(&pool, ON, alert(plain, "a")).await.unwrap();
+    let routed = emit(&pool, on(plain), alert(plain, "a")).await.unwrap();
     let rows = deliveries(&pool, routed.id).await;
     assert_eq!(rows.len(), 1, "no settings keeps today's routing");
     assert_eq!((rows[0].0.as_str(), rows[0].2), ("ntfy", 0));
@@ -95,7 +97,7 @@ async fn a_user_with_ntfy_off_gets_no_ntfy_row() {
 async fn the_master_switch_off_plans_nothing_and_writes_the_notice_read() {
     let Some(pool) = db("notify_routing_master_off").await else { return };
     let u = user(&pool, Some(json!({ "notifications": { "enabled": false } }))).await;
-    let record = emit(&pool, ON, alert(u, "a")).await.unwrap();
+    let record = emit(&pool, on(u), alert(u, "a")).await.unwrap();
     assert!(deliveries(&pool, record.id).await.is_empty());
     assert_eq!(record.state, "read");
     assert!(record.read_at.is_some());
@@ -111,7 +113,7 @@ async fn in_app_off_for_a_kind_writes_it_read_but_still_pushes() {
         "system_alert": { "in_app": { "mode": "off" } } } } })),
     )
     .await;
-    let record = emit(&pool, ON, alert(u, "a")).await.unwrap();
+    let record = emit(&pool, on(u), alert(u, "a")).await.unwrap();
     assert_eq!(record.state, "read");
     assert_eq!(deliveries(&pool, record.id).await.len(), 1);
     drop_user(&pool, u).await;
@@ -126,7 +128,7 @@ async fn after_ten_gives_a_stage_one_row_ten_minutes_out_and_read_cancels_it() {
         "system_alert": { "ntfy": { "mode": "after", "minutes": 10 } } } } })),
     )
     .await;
-    let record = emit(&pool, ON, alert(u, "a")).await.unwrap();
+    let record = emit(&pool, on(u), alert(u, "a")).await.unwrap();
     let rows = deliveries(&pool, record.id).await;
     assert_eq!(rows.len(), 1);
     let (channel, state, escalation, due_in) = &rows[0];
@@ -144,7 +146,7 @@ async fn acting_or_resolving_cancels_a_pending_escalation() {
     let Some(pool) = db("notify_routing_resolve_cancels").await else { return };
     let u = user(&pool, None).await;
     let n = NewNotification::new(u, kind::APPROVAL, "Approve?".into());
-    let record = emit(&pool, ON, n).await.unwrap();
+    let record = emit(&pool, on(u), n).await.unwrap();
     assert_eq!(deliveries(&pool, record.id).await[0].1, "scheduled");
     transition(&pool, record.id, Edge::Resolve { reason: "subject_gone" }).await.unwrap();
     assert_eq!(deliveries(&pool, record.id).await[0].1, "cancelled");
@@ -184,7 +186,7 @@ async fn a_watched_session_keeps_the_approval_delay() {
     let Some(pool) = db("notify_routing_presence_kept").await else { return };
     let (u, sid) = crate::inbox::store_tests::seed_session(&pool, "routing-watched").await;
     view(&pool, &sid).await;
-    let record = emit(&pool, ON, on_session(u, &sid, kind::APPROVAL)).await.unwrap();
+    let record = emit(&pool, on(u), on_session(u, &sid, kind::APPROVAL)).await.unwrap();
     let (_, _, stage, due_in) = deliveries(&pool, record.id).await.remove(0);
     assert_eq!(stage, 1);
     assert!(due_in > 270.0, "the human is looking: wait the 5 minutes ({due_in}s)");
@@ -204,12 +206,12 @@ async fn no_live_socket_drops_stage_one_to_zero_for_approval_and_session_stuck()
     )
     .await;
     for notice_kind in [kind::APPROVAL, kind::SESSION_STUCK] {
-        let record = emit(&pool, ON, on_session(u, &sid, notice_kind)).await.unwrap();
+        let record = emit(&pool, on(u), on_session(u, &sid, notice_kind)).await.unwrap();
         let (_, _, stage, due_in) = deliveries(&pool, record.id).await.remove(0);
         assert_eq!(stage, 1, "{notice_kind}");
         assert!(due_in <= 1.0, "{notice_kind}: nobody is looking, push now ({due_in}s)");
     }
-    let record = emit(&pool, ON, on_session(u, &sid, kind::NEEDS_INPUT)).await.unwrap();
+    let record = emit(&pool, on(u), on_session(u, &sid, kind::NEEDS_INPUT)).await.unwrap();
     let (_, _, _, due_in) = deliveries(&pool, record.id).await.remove(0);
     assert!(due_in > 570.0, "needs_input keeps its wait ({due_in}s)");
     drop_seeded(&pool, u, &sid).await;
@@ -229,18 +231,18 @@ async fn the_twenty_first_push_in_an_hour_stays_in_app_with_one_throttled_entry(
     let Some(pool) = db("notify_routing_push_cap").await else { return };
     let u = user(&pool, None).await;
     for i in 0..20 {
-        let record = emit(&pool, ON, alert(u, &format!("alert {i}"))).await.unwrap();
+        let record = emit(&pool, on(u), alert(u, &format!("alert {i}"))).await.unwrap();
         assert_eq!(deliveries(&pool, record.id).await.len(), 1, "push {i}");
     }
     assert!(throttled_rows(&pool, u).await.is_empty());
 
-    let over = emit(&pool, ON, alert(u, "alert 20")).await.unwrap();
+    let over = emit(&pool, on(u), alert(u, "alert 20")).await.unwrap();
     assert!(deliveries(&pool, over.id).await.is_empty(), "the 21st stays in the app");
     let throttled = throttled_rows(&pool, u).await;
     assert_eq!(throttled.len(), 1);
     assert!(deliveries(&pool, throttled[0].0).await.is_empty(), "the warning never pushes");
 
-    let again = emit(&pool, ON, alert(u, "alert 21")).await.unwrap();
+    let again = emit(&pool, on(u), alert(u, "alert 21")).await.unwrap();
     assert!(deliveries(&pool, again.id).await.is_empty());
     let throttled = throttled_rows(&pool, u).await;
     assert_eq!(throttled.len(), 1, "still one throttled entry");
@@ -256,9 +258,9 @@ async fn a_collapse_onto_a_pushing_notice_is_never_throttled() {
         collapse_key: Some(format!("crashloop:{u}")),
         ..alert(u, title)
     };
-    let first = emit(&pool, ON, crashloop("x1")).await.unwrap();
-    emit(&pool, ON, alert(u, "other")).await.unwrap();
-    let second = emit(&pool, ON, crashloop("x2")).await.unwrap();
+    let first = emit(&pool, on(u), crashloop("x1")).await.unwrap();
+    emit(&pool, on(u), alert(u, "other")).await.unwrap();
+    let second = emit(&pool, on(u), crashloop("x2")).await.unwrap();
     assert_eq!(second.id, first.id);
     assert_eq!(deliveries(&pool, first.id).await.len(), 1);
     drop_user(&pool, u).await;
@@ -281,13 +283,13 @@ async fn quiet_hours_hold_a_push_until_the_window_ends_but_not_a_critical_one() 
     });
     let u = user(&pool, Some(json!({ "notifications": { "quiet_hours": window } }))).await;
 
-    let held = emit(&pool, ON, alert(u, "quiet please")).await.unwrap();
+    let held = emit(&pool, on(u), alert(u, "quiet please")).await.unwrap();
     let (_, state, escalation, due_in) = deliveries(&pool, held.id).await.remove(0);
     assert_eq!((state.as_str(), escalation), ("scheduled", 1));
     assert!((85.0 * 60.0..=90.0 * 60.0).contains(&due_in), "held to the window end ({due_in}s)");
 
     let critical = NewNotification { severity: "critical", ..alert(u, "fire") };
-    let loud = emit(&pool, ON, critical).await.unwrap();
+    let loud = emit(&pool, on(u), critical).await.unwrap();
     let (_, _, escalation, due_in) = deliveries(&pool, loud.id).await.remove(0);
     assert_eq!(escalation, 0);
     assert!(due_in <= 1.0, "critical goes out now ({due_in}s)");

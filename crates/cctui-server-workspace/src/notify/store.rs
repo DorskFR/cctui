@@ -141,6 +141,8 @@ pub const UPDATE_THROTTLE_SECS: i32 = 60;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Routing {
     pub ntfy: bool,
+    /// `None` is the instance owner.
+    pub env_owner: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -160,7 +162,16 @@ const USER_ENDPOINTS_SQL: &str = "\
 impl Routing {
     #[must_use]
     pub const fn from_config(config: &Config) -> Self {
-        Self { ntfy: config.ntfy_url.is_some() && config.ntfy_token.is_some() }
+        Self { ntfy: config.ntfy_url.is_some() && config.ntfy_token.is_some(), env_owner: None }
+    }
+
+    /// The server's ntfy endpoint belongs to one user only.
+    pub async fn owns_env(self, conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result<bool> {
+        if let Some(owner) = self.env_owner {
+            return Ok(owner == user_id);
+        }
+        let owner: Option<Uuid> = sqlx::query_scalar(super::OWNER_SQL).fetch_optional(conn).await?;
+        Ok(owner == Some(user_id))
     }
 
     async fn plan(
@@ -196,6 +207,7 @@ impl Routing {
             .await?;
         if self.ntfy
             && channel == super::ntfy_channel::ID
+            && self.owns_env(&mut *conn, user_id).await?
             && let Some(env) = env_endpoint(conn, user_id, channel).await?
         {
             ids.insert(0, env);

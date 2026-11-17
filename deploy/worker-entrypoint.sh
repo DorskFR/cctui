@@ -496,19 +496,24 @@ phase_repo_registries() {
 # REJECTed; link-local is REJECTed for all, IPv6 denied wholesale. There is no
 # negated owner match: a uid the rules do not name is confined, not exempt.
 # DNS goes to WORKER_DNS_RESOLVER (IPv4 or name, fatal when unresolvable) when
-# set, else to the first IPv4 nameserver as is. $1: the resolv.conf to read.
+# set, else to cctui-worker-dns under WORKER_DNS_RESOLVER_REQUIRED=1 (fatal
+# too), else to the first IPv4 nameserver as is. $1: the resolv.conf to read.
 install_transparent_rules() {
     _dns=$(awk '/^nameserver/ && $2 ~ /^[0-9.]+$/ {print $2; exit}' "$1" 2>/dev/null || true)
+    _want=${WORKER_DNS_RESOLVER:-}
+    if [ -z "$_want" ] && [ "${WORKER_DNS_RESOLVER_REQUIRED:-}" = 1 ]; then
+        _want=cctui-worker-dns
+    fi
     # Resolved before any rule exists, so the lookup still uses the resolver.
     _rdns=$_dns
-    if [ -n "$_dns" ] && [ -n "${WORKER_DNS_RESOLVER:-}" ]; then
-        case "$WORKER_DNS_RESOLVER" in
-            *[!0-9.]*) _rdns=$(getent ahostsv4 "$WORKER_DNS_RESOLVER" 2>/dev/null \
+    if [ -n "$_dns" ] && [ -n "$_want" ]; then
+        case "$_want" in
+            *[!0-9.]*) _rdns=$(getent ahostsv4 "$_want" 2>/dev/null \
                 | awk '{print $1; exit}' || true) ;;
-            *) _rdns=$WORKER_DNS_RESOLVER ;;
+            *) _rdns=$_want ;;
         esac
         if [ -z "$_rdns" ]; then
-            log "FATAL: cannot resolve WORKER_DNS_RESOLVER $WORKER_DNS_RESOLVER; refusing to start"
+            log "FATAL: cannot resolve the restricted DNS resolver $_want; refusing to start"
             exit 1
         fi
     fi

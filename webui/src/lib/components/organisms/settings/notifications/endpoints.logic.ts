@@ -52,9 +52,11 @@ export function emailBody(address: string): CreateNotificationEndpoint | null {
 }
 
 export const listedEndpoints = (list: NotificationEndpoint[] | undefined): NotificationEndpoint[] =>
-	[...(Array.isArray(list) ? list : [])].sort(
-		(a, b) =>
-			Number(isServerEndpoint(b)) - Number(isServerEndpoint(a)) ||
-			a.channel.localeCompare(b.channel) ||
-			a.created_at.localeCompare(b.created_at)
-	);
+	(Array.isArray(list) ? list : [])
+		.filter((e) => e.enabled || !isServerEndpoint(e))
+		.sort(
+			(a, b) =>
+				Number(isServerEndpoint(b)) - Number(isServerEndpoint(a)) ||
+				a.channel.localeCompare(b.channel) ||
+				a.created_at.localeCompare(b.created_at)
+		);

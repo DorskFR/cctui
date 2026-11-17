@@ -105,6 +105,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "fold_outboxes",
         sql: include_str!("../schema/0014_fold_outboxes.sql"),
     },
+    Migration {
+        version: 15,
+        name: "env_endpoint_owner_only",
+        sql: include_str!("../schema/0015_env_endpoint_owner_only.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -248,7 +253,8 @@ mod tests {
                     (11, "bootstrap".to_owned()),
                     (12, "bootstrap".to_owned()),
                     (13, "bootstrap".to_owned()),
-                    (14, "bootstrap".to_owned())
+                    (14, "bootstrap".to_owned()),
+                    (15, "bootstrap".to_owned())
                 ]
             );
 
@@ -356,7 +362,8 @@ mod tests {
                     (11, "bootstrap".to_owned()),
                     (12, "bootstrap".to_owned()),
                     (13, "bootstrap".to_owned()),
-                    (14, "bootstrap".to_owned())
+                    (14, "bootstrap".to_owned()),
+                    (15, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =

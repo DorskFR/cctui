@@ -253,6 +253,29 @@ pub struct WorkerProfileSpec {
     /// approval).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub human_gate: Option<HumanGate>,
+
+    /// Restricted DNS resolver the injected `net-init` points the pod's DNS at:
+    /// an IPv4 address or a pod-search-relative name. Unset uses the
+    /// orchestrator default. A resolver that does not resolve fails the pod.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns_resolver: Option<String>,
+
+    /// Resource requests/limits of the injected `net-init` and `guard-proxy`,
+    /// merged key by key over the built-in defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidecar_resources: Option<SidecarResources>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SidecarResources {
+    /// Overrides for the `net-init` init container.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub net_init: Option<ResourceRequirements>,
+
+    /// Overrides for the `guard-proxy` sidecar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard_proxy: Option<ResourceRequirements>,
 }
 
 /// What the agent is exposed to, each declared explicitly.
@@ -461,6 +484,11 @@ impl WorkerProfileSpec {
     #[must_use]
     pub fn priority_class_name(&self) -> Option<&str> {
         self.pod.as_ref()?.priority_class_name.as_deref()
+    }
+
+    #[must_use]
+    pub fn dns_resolver(&self) -> Option<&str> {
+        self.dns_resolver.as_deref().map(str::trim).filter(|r| !r.is_empty())
     }
 }
 
@@ -832,6 +860,43 @@ preflight:
             assert_eq!(Posture::from_annotation(Some(p.as_str())), Some(p));
         }
         assert_eq!(Posture::from_annotation(Some("restricted")), None);
+    }
+
+    #[test]
+    fn dns_resolver_and_sidecar_resources_deserialize_and_are_in_the_crd_schema() {
+        let spec: WorkerProfileSpec = serde_norway::from_str(
+            "image: registry.example.com/worker:latest\n\
+             dnsResolver: \" cctui-worker-dns-canary \"\n\
+             sidecarResources:\n  guardProxy:\n    limits:\n      ephemeral-storage: 1Gi\n",
+        )
+        .unwrap();
+        assert_eq!(spec.dns_resolver(), Some("cctui-worker-dns-canary"));
+        let sidecars = spec.sidecar_resources.as_ref().unwrap();
+        assert!(sidecars.net_init.is_none());
+        let limits = sidecars.guard_proxy.as_ref().unwrap().limits.as_ref().unwrap();
+        assert_eq!(limits["ephemeral-storage"].0, "1Gi");
+
+        let blank: WorkerProfileSpec = serde_norway::from_str(
+            "image: registry.example.com/worker:latest\ndnsResolver: \"  \"\n",
+        )
+        .unwrap();
+        assert_eq!(blank.dns_resolver(), None);
+        let lean: WorkerProfileSpec =
+            serde_norway::from_str("image: registry.example.com/worker:latest\n").unwrap();
+        assert!(lean.dns_resolver().is_none() && lean.sidecar_resources.is_none());
+        let lean_json = serde_json::to_value(&lean).unwrap();
+        assert!(lean_json.get("dnsResolver").is_none());
+        assert!(lean_json.get("sidecarResources").is_none());
+
+        let crd = serde_json::to_value(WorkerProfile::crd()).unwrap();
+        let props = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+            ["properties"];
+        assert_eq!(props["dnsResolver"]["type"], "string");
+        let sidecars = &props["sidecarResources"]["properties"];
+        for key in ["netInit", "guardProxy"] {
+            assert_eq!(sidecars[key]["properties"]["limits"]["type"], "object", "{key}");
+            assert_eq!(sidecars[key]["properties"]["requests"]["type"], "object", "{key}");
+        }
     }
 
     #[test]

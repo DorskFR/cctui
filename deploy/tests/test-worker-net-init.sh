@@ -34,8 +34,8 @@ printf 'nameserver fd00::53\n' >"$TMP/resolv6.conf"
 
 run() {
   local conf=$1; shift
-  OUT=$(env -u WORKER_DNS_RESOLVER -u WORKER_NET_EXEMPT PATH="$TMP/bin:$PATH" \
-    WORKER_NET_INIT_DRY_RUN=1 RESOLV_CONF="$conf" "$@" sh "$SCRIPT" 2>&1)
+  OUT=$(env -u WORKER_DNS_RESOLVER -u WORKER_DNS_RESOLVER_REQUIRED -u WORKER_NET_EXEMPT \
+    PATH="$TMP/bin:$PATH" WORKER_NET_INIT_DRY_RUN=1 RESOLV_CONF="$conf" "$@" sh "$SCRIPT" 2>&1)
   RC=$?
 }
 run_ok() { run "$@"; [ "$RC" -eq 0 ] || bad "script exited $RC: $OUT"; }
@@ -145,5 +145,25 @@ echo "== 9. dry run never invokes iptables =="
 OUT=$(PATH="$TMP/nobin" WORKER_NET_INIT_DRY_RUN=1 RESOLV_CONF="$TMP/resolv.conf" WORKER_DNS_RESOLVER="$R" /bin/sh "$SCRIPT" 2>&1)
 rc=$?
 if [ "$rc" -eq 0 ] && grep -q '^cctui-worker-net-init: done$' <<<"$OUT"; then ok "completes without iptables on PATH"; else bad "rc=$rc"; fi
+
+echo "== 10. WORKER_DNS_RESOLVER_REQUIRED=1: unresolvable default is fatal, no rule installed =="
+run "$TMP/resolv.conf" WORKER_DNS_RESOLVER_REQUIRED=1
+if [ "$RC" -ne 0 ] && grep -q 'cannot resolve cctui-worker-dns and WORKER_DNS_RESOLVER_REQUIRED=1' <<<"$OUT"; then
+  ok "exits non-zero with the reason"
+else
+  bad "rc=$RC out=$OUT"
+fi
+if grep -qE '^ip6?tables' <<<"$OUT"; then bad "rules emitted before the failure"; else ok "no rule emitted"; fi
+if grep -q 'WARNING: no restricted resolver' <<<"$OUT"; then bad "fell back to the pod resolver"; else ok "no fallback"; fi
+
+echo "== 11. WORKER_DNS_RESOLVER_REQUIRED=1: a resolvable default still works =="
+run_ok "$TMP/resolv.conf" WORKER_DNS_RESOLVER_REQUIRED=1 FAKE_HOSTS="cctui-worker-dns=10.43.88.1"
+has "DNATed to the resolved default resolver" \
+    "iptables -t nat -A OUTPUT -p udp -d 10.43.0.10 --dport 53 -j DNAT --to-destination 10.43.88.1:53"
+
+echo "== 12. WORKER_DNS_RESOLVER_REQUIRED other than 1: default fallback unchanged =="
+run_ok "$TMP/resolv.conf" WORKER_DNS_RESOLVER_REQUIRED=0
+has "UDP DNS RETURNed to the pod resolver" "iptables -t nat -A OUTPUT -p udp -d 10.43.0.10 --dport 53 -j RETURN"
+if grep -q 'WARNING: no restricted resolver' <<<"$OUT"; then ok "warning logged"; else bad "no warning"; fi
 
 exit $fail

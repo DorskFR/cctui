@@ -422,7 +422,7 @@ mod tests {
         let (base, seen) = stub(200).await;
         let mut channels = Channels::default();
         channels.add(Arc::new(channel(&base)));
-        let routing = Routing { ntfy: true };
+        let routing = Routing { ntfy: true, env_owner: Some(u) };
         let notice = |title: &str| NewNotification {
             collapse_key: Some(format!("crashloop:{u}")),
             ..NewNotification::new(u, kind::SYSTEM_ALERT, title.into())
@@ -477,7 +477,9 @@ mod tests {
         use crate::notify::store::{NewNotification, Routing, emit};
         use crate::notify::{Channels, Push, dispatcher, emit_now, is_recorded, kind, tokens};
 
-        const ON: Routing = Routing { ntfy: true };
+        const fn on(owner: Uuid) -> Routing {
+            Routing { ntfy: true, env_owner: Some(owner) }
+        }
 
         fn ntfy(base: &str) -> Channels {
             let mut channels = Channels::default();
@@ -533,8 +535,8 @@ mod tests {
             let Some((pool, u)) = db_user("ntfy_crashloop_collapse").await else { return };
             let (base, seen) = stub(200).await;
             let channels = ntfy(&base);
-            emit_now(&pool, ON, &channels, crashloop(u, "crashloop x1")).await;
-            emit_now(&pool, ON, &channels, crashloop(u, "crashloop x2")).await;
+            emit_now(&pool, on(u), &channels, crashloop(u, "crashloop x1")).await;
+            emit_now(&pool, on(u), &channels, crashloop(u, "crashloop x2")).await;
 
             let (id, repeats, title) = notice_id(&pool, u).await;
             assert_eq!((repeats, title.as_str()), (2, "crashloop x2"));
@@ -549,15 +551,15 @@ mod tests {
             let Some((pool, u)) = db_user("ntfy_update_throttle").await else { return };
             let (base, seen) = stub(200).await;
             let channels = ntfy(&base);
-            emit_now(&pool, ON, &channels, crashloop(u, "x1")).await;
-            emit_now(&pool, ON, &channels, crashloop(u, "x2")).await;
+            emit_now(&pool, on(u), &channels, crashloop(u, "x1")).await;
+            emit_now(&pool, on(u), &channels, crashloop(u, "x2")).await;
             let (id, _, _) = notice_id(&pool, u).await;
             dispatcher::run(&pool, &channels, Some(id)).await;
             assert_eq!(seen.lock().unwrap().len(), 1, "the update is held back");
 
             force_due(&pool, id).await;
             dispatcher::run(&pool, &channels, Some(id)).await;
-            emit_now(&pool, ON, &channels, crashloop(u, "x3")).await;
+            emit_now(&pool, on(u), &channels, crashloop(u, "x3")).await;
 
             let calls = seen.lock().unwrap().clone();
             let titles: Vec<&str> = calls.iter().map(|(_, _, h)| header(h, "title")).collect();
@@ -613,7 +615,7 @@ mod tests {
                 pool: pool.clone(),
                 notice: crashloop(u, "x2"),
             }));
-            let first = emit(&pool, ON, crashloop(u, "x1")).await.unwrap();
+            let first = emit(&pool, on(u), crashloop(u, "x1")).await.unwrap();
             dispatcher::run(&pool, &racing, Some(first.id)).await;
 
             let (op, state, throttled, _) = delivery(&pool, first.id).await;
@@ -637,7 +639,7 @@ mod tests {
             assert_eq!(Push::for_kind(kind::DISPATCH_INFO, false), Push::Off);
             let Some((pool, u)) = db_user("ntfy_dispatch_info_off").await else { return };
             let n = NewNotification::new(u, kind::DISPATCH_INFO, "Dispatch received".into());
-            let record = emit(&pool, ON, n).await.unwrap();
+            let record = emit(&pool, on(u), n).await.unwrap();
             let deliveries: i64 = sqlx::query_scalar(
                 "SELECT count(*) FROM notification_deliveries WHERE notification_id = $1",
             )
@@ -666,7 +668,7 @@ mod tests {
                 session_id: Some(sid.clone()),
                 ..NewNotification::new(u, kind::APPROVAL, "Approve release?".into())
             };
-            emit_now(&pool, ON, &ntfy(&base), n).await;
+            emit_now(&pool, on(u), &ntfy(&base), n).await;
             let (id, _, _) = notice_id(&pool, u).await;
             let (op, state, delayed, escalation) = delivery(&pool, id).await;
             assert_eq!(
@@ -700,7 +702,7 @@ mod tests {
                 ]),
                 ..NewNotification::new(u, kind::SYSTEM_ALERT, "Release?".into())
             };
-            emit_now(&pool, ON, &ntfy(&base).with_config(&config), n).await;
+            emit_now(&pool, on(u), &ntfy(&base).with_config(&config), n).await;
             let (id, _, _) = notice_id(&pool, u).await;
 
             let (_, _, headers) = seen.lock().unwrap().pop().unwrap();

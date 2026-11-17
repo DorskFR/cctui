@@ -1164,6 +1164,8 @@ mod tests {
             dispatched: false,
             exec_interception: profile.exec_interception(),
             human_gate: profile.human_gate,
+            dns_resolver: envelope::DEFAULT_DNS_RESOLVER.to_owned(),
+            sidecar_resources: profile.sidecar_resources.clone(),
         };
         envelope::inject(&pod, &cfg)
     }
@@ -1826,6 +1828,8 @@ mod tests {
             dispatched: false,
             exec_interception: false,
             human_gate: None,
+            dns_resolver: envelope::DEFAULT_DNS_RESOLVER.to_owned(),
+            sidecar_resources: None,
         };
         pod.metadata.annotations.as_mut().unwrap().remove(ANNOTATION_ENVELOPE_INJECTED);
         let pod = envelope::inject(&pod, &cfg);

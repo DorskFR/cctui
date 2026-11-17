@@ -73,13 +73,12 @@ pub fn installed_pool() -> Option<PgPool> {
     POOL.get().cloned()
 }
 
+pub const OWNER_SQL: &str = "\
+    SELECT id FROM users WHERE revoked_at IS NULL AND disabled_at IS NULL \
+    ORDER BY created_at, id LIMIT 1";
+
 pub async fn instance_owner(pool: &PgPool) -> Option<Uuid> {
-    let owner = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM users WHERE revoked_at IS NULL AND disabled_at IS NULL \
-         ORDER BY created_at, id LIMIT 1",
-    )
-    .fetch_optional(pool)
-    .await;
+    let owner = sqlx::query_scalar::<_, Uuid>(OWNER_SQL).fetch_optional(pool).await;
     let reason = match owner {
         Ok(Some(id)) => return Some(id),
         Ok(None) => "no active user to own it".to_owned(),
@@ -114,5 +113,7 @@ where
     });
 }
 
+#[cfg(test)]
+pub mod env_owner_tests;
 #[cfg(test)]
 mod tests;
