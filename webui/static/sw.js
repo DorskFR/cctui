@@ -30,7 +30,7 @@ function show(msg) {
 	const links = {};
 	for (const a of actions) links[a.action] = a.url;
 	return self.registration.showNotification(msg.title || FALLBACK_TITLE, {
-		body: msg.body || undefined,
+		body: msg.session || undefined,
 		tag: msg.tag || undefined,
 		renotify: Boolean(msg.renotify && msg.tag),
 		data: { url: msg.data && msg.data.url, actions: links },

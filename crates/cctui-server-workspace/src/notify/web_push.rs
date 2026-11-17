@@ -18,12 +18,14 @@ pub const ENV_KEY: &str = "CCTUI_VAPID_PRIVATE_KEY";
 const SETTINGS_KEY: &str = "web_push_vapid";
 const FALLBACK_SUBJECT: &str = "mailto:cctui@localhost";
 const RESOLVED_TITLE: &str = "Resolved";
+const ACTION_TITLE: &str = "Action needed";
+const URGENT_TITLE: &str = "Needs your attention";
+const NOTICE_TITLE: &str = "New activity";
 
 const RECORD_SIZE: u32 = 4096;
 const TTL_SECS: u32 = 86_400;
 const JWT_LIFETIME_SECS: i64 = 12 * 3600;
-const MAX_TITLE_CHARS: usize = 200;
-const MAX_BODY_CHARS: usize = 1000;
+const MAX_LABEL_CHARS: usize = 40;
 const MAX_ACTIONS: usize = 2;
 const P256_POINT_LEN: usize = 65;
 const AUTH_SECRET_LEN: usize = 16;
@@ -294,6 +296,17 @@ const fn urgency(priority: u8) -> &'static str {
     }
 }
 
+/// Producers fill `title` and `body` with agent text, which must not reach a lock screen.
+fn notice_title(n: &Rendered) -> &'static str {
+    if n.buttons.iter().any(|b| b.press == Press::Post) {
+        ACTION_TITLE
+    } else if n.priority >= 4 {
+        URGENT_TITLE
+    } else {
+        NOTICE_TITLE
+    }
+}
+
 fn show_payload(n: &Rendered, tag: &str, renotify: bool) -> Value {
     let actions: Vec<Value> = n
         .buttons
@@ -302,13 +315,13 @@ fn show_payload(n: &Rendered, tag: &str, renotify: bool) -> Value {
         .take(MAX_ACTIONS)
         .enumerate()
         .map(|(i, b)| {
-            json!({ "action": format!("a{i}"), "title": b.label, "url": confirm_link(&b.url) })
+            let title = truncate(&b.label, MAX_LABEL_CHARS);
+            json!({ "action": format!("a{i}"), "title": title, "url": confirm_link(&b.url) })
         })
         .collect();
     json!({
         "type": "show",
-        "title": truncate(&n.title, MAX_TITLE_CHARS),
-        "body": n.body.as_deref().map(|b| truncate(b, MAX_BODY_CHARS)),
+        "title": notice_title(n),
         "tag": tag,
         "renotify": renotify,
         "data": { "url": n.link },

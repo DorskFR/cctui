@@ -55,15 +55,14 @@ describe("service worker", () => {
     const sw = load(CHROME);
     await sw.push({
       type: "show",
-      title: "Approve deploy",
-      body: "prod",
+      title: "Action needed",
       tag: "t-9",
       renotify: true,
       data: { url: "https://cctui.example/sessions/s1" },
       actions: [{ action: "a0", title: "Approve", url: "https://cctui.example/n/tokA" }],
     });
-    expect(sw.self.registration.showNotification).toHaveBeenCalledWith("Approve deploy", {
-      body: "prod",
+    expect(sw.self.registration.showNotification).toHaveBeenCalledWith("Action needed", {
+      body: undefined,
       tag: "t-9",
       renotify: true,
       data: {
@@ -72,6 +71,20 @@ describe("service worker", () => {
       },
       actions: [{ action: "a0", title: "Approve" }],
     });
+  });
+
+  it("shows the session name and never a pushed body", async () => {
+    const sw = load(CHROME);
+    await sw.push({
+      type: "show",
+      title: "New activity",
+      body: "transcript text",
+      session: "deploy-bot",
+    });
+    const [title, opts] = sw.self.registration.showNotification.mock.calls[0];
+    expect(title).toBe("New activity");
+    expect(opts.body).toBe("deploy-bot");
+    expect(JSON.stringify(opts)).not.toContain("transcript");
   });
 
   it("a close push closes only the notices with that tag", async () => {
