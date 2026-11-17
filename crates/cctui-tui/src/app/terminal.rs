@@ -3,6 +3,7 @@
 //! Read-only by construction — nothing here sends input back to the agent.
 
 use std::fmt::Write as _;
+use std::num::NonZeroU16;
 
 use base64::Engine as _;
 
@@ -17,6 +18,12 @@ pub const REMOTE_ROWS: u16 = 40;
 
 /// Rows of history the emulator keeps behind the live screen.
 const SCROLLBACK: usize = 1_000;
+
+fn remote_parser() -> vt100::Parser {
+    const ROWS: NonZeroU16 = NonZeroU16::new(REMOTE_ROWS).unwrap();
+    const COLS: NonZeroU16 = NonZeroU16::new(REMOTE_COLS).unwrap();
+    vt100::Parser::new(ROWS, COLS, SCROLLBACK)
+}
 
 /// One watched session's emulated screen.
 pub struct TerminalPane {
@@ -38,7 +45,7 @@ impl TerminalPane {
     pub fn new(session_id: String) -> Self {
         Self {
             session_id,
-            parser: vt100::Parser::new(REMOTE_ROWS, REMOTE_COLS, SCROLLBACK),
+            parser: remote_parser(),
             chunks: 0,
             undecodable: 0,
             scrollback: 0,
@@ -66,7 +73,7 @@ impl TerminalPane {
     /// Drops the emulated screen. A fresh socket makes the daemon repaint from
     /// scratch, and the held screen is from a stream that no longer applies.
     pub fn reset(&mut self) {
-        self.parser = vt100::Parser::new(REMOTE_ROWS, REMOTE_COLS, SCROLLBACK);
+        self.parser = remote_parser();
         self.scrollback = 0;
     }
 
