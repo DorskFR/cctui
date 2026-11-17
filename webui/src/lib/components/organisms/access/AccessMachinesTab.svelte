@@ -12,15 +12,15 @@
 		Text,
 		Timestamp
 	} from '@dorsk/tsumikit';
-	import EditEntityModal from '$lib/components/molecules/EditEntityModal.svelte';
-	import ResourceShares from '$lib/components/molecules/ResourceShares.svelte';
+	import EditEntityModal from '#lib/components/molecules/EditEntityModal.svelte';
+	import ResourceShares from '#lib/components/molecules/ResourceShares.svelte';
 	import MachineHistoryModal from './MachineHistoryModal.svelte';
-	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
-	import { useHiddenOwnerActions, useHiddenOwners, useMachines, useUserActions } from '$lib/queries';
-	import { isHiddenOwner } from '$lib/hiddenOwners';
-	import { toasts } from '$lib/toast.svelte';
-	import { errMessage } from '$lib/api';
-	import { m } from '$lib/paraglide/messages';
+	import MachineBadge from '#lib/components/molecules/MachineBadge.svelte';
+	import { useHiddenOwnerActions, useHiddenOwners, useMachines, useUserActions } from '#lib/queries/index.ts';
+	import { isHiddenOwner } from '#lib/hiddenOwners.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { errMessage } from '#lib/api.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { splitRevoked, visibleRows } from './access.logic';
 
 	let {

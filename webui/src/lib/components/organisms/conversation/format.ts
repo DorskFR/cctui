@@ -3,9 +3,9 @@
 // here is side-effect free — view-dependent formatting takes its toggles as
 // explicit args so these stay testable and decoupled from component state.
 import type { AgentEvent } from '@bindings/AgentEvent';
-import { userMsgKey } from '$lib/ws.svelte';
-import { prettyJson } from '$lib/markdown';
-import { m } from '$lib/paraglide/messages';
+import { userMsgKey } from '#lib/ws.svelte.ts';
+import { prettyJson } from '#lib/markdown.ts';
+import { m } from '#lib/paraglide/messages.js';
 import type { AskQuestion, Line, TodoItem, TodoProgress, TodoStatus } from './types';
 
 // Some "user" turns are really harness/system messages directed at the agent

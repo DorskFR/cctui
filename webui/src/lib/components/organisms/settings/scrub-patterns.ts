@@ -1,4 +1,4 @@
-import type { SecretScrubPattern } from "$lib/settings.svelte";
+import type { SecretScrubPattern } from "#lib/settings.svelte.ts";
 
 export interface ScrubPatternIssue {
   /** 1-based. */

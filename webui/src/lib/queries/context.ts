@@ -7,7 +7,7 @@ import type { SessionContextResponse } from "@bindings/SessionContextResponse";
 import type { AttachedContextRef } from "@bindings/AttachedContextRef";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
-import { hasFeature } from "$lib/features.svelte";
+import { hasFeature } from "#lib/features.svelte.ts";
 
 const list = <T>(v: unknown): T[] => (Array.isArray(v) ? v : []);
 const field = (v: unknown, key: string): unknown =>

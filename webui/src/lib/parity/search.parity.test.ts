@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { highlightTerms, tokenizeQuery } from '$lib/search';
+import { highlightTerms, tokenizeQuery } from '#lib/search.ts';
 import { parityFixture } from './fixtures';
 
 type Fixture = {

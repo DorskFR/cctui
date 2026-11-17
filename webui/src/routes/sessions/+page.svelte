@@ -10,20 +10,20 @@
 		useMe,
 		endpoints,
 		qk
-	} from '$lib/queries';
+	} from '#lib/queries/index.ts';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { page } from '$app/state';
-	import { pushState, replaceState } from '$app/navigation';
-	import { toasts } from '$lib/toast.svelte';
-	import { ws } from '$lib/ws.svelte';
-	import ConversationDrawer from '$lib/components/organisms/ConversationDrawer.svelte';
-	import ConversationDock from '$lib/components/organisms/ConversationDock.svelte';
-	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
-	import { dockLayout } from '$lib/spawnDock.svelte';
-	import StatsDock from '$lib/components/organisms/statsdock/StatsDock.svelte';
-	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
+	import { goto } from '$app/navigation';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { ws } from '#lib/ws.svelte.ts';
+	import ConversationDrawer from '#lib/components/organisms/ConversationDrawer.svelte';
+	import ConversationDock from '#lib/components/organisms/ConversationDock.svelte';
+	import SpawnModal from '#lib/components/organisms/SpawnModal.svelte';
+	import { dockLayout } from '#lib/spawnDock.svelte.ts';
+	import StatsDock from '#lib/components/organisms/statsdock/StatsDock.svelte';
+	import SessionControls from '#lib/components/organisms/SessionControls.svelte';
 	import { Callout, ConfirmModal, Icon, Toggle } from '@dorsk/tsumikit';
-	import { visibleSessions } from '$lib/hiddenOwners';
+	import { visibleSessions } from '#lib/hiddenOwners.ts';
 	import SessionSections from './SessionSections.svelte';
 	import SessionTiles from './SessionTiles.svelte';
 	import TilesOverflowChip from './TilesOverflowChip.svelte';
@@ -35,13 +35,13 @@
 		currentSpawnSlot,
 		readSpawnSlot,
 		LAST_DOCKED_SESSION
-	} from '$lib/drafts';
-	import { notify } from '$lib/notify.svelte';
-	import { displayNameOf } from '$lib/sessionName';
-	import { isViewMode, parseViewMode } from '$lib/sessionsView.svelte';
+	} from '#lib/drafts.ts';
+	import { notify } from '#lib/notify.svelte.ts';
+	import { displayNameOf } from '#lib/sessionName.ts';
+	import { isViewMode, parseViewMode } from '#lib/sessionsView.svelte.ts';
 	import { TILES_BOOT_KEY } from './tilesBoot';
-	import { settings } from '$lib/settings.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import {
 		sessionIdFromLocation,
 		sessionHrefFor,
@@ -119,7 +119,7 @@
 		untrack(() => {
 			sp.viewMode = parseViewMode(want);
 			const href = withoutViewParam(location.href);
-			if (href) replaceState(href, page.state);
+			if (href) goto(href, { shallow: true, replace: true, state: page.state });
 		});
 	});
 
@@ -187,7 +187,7 @@
 
 	function replaceUrlSession(id: string | null) {
 		const href = sessionHrefFor(location.href, id);
-		if (href !== null) replaceState(href, {});
+		if (href !== null) goto(href, { shallow: true, replace: true });
 	}
 
 	function syncUrlSession(id: string | null, quiet: boolean) {
@@ -197,8 +197,12 @@
 		if (how === 'back') return history.back();
 		const href = how && sessionHrefFor(location.href, id);
 		if (!href) return;
-		if (how === 'push') pushState(href, { fromList: true } as App.PageState);
-		else replaceState(href, (id && fromList ? { fromList } : {}) as App.PageState);
+
+		if (how === 'push') goto(href, { shallow: true, state: { fromList: true } as App.PageState }); else goto(href, {
+			shallow: true,
+			replace: true,
+			state: (id && fromList ? { fromList } : {}) as App.PageState
+		});
 	}
 
 	// URL → drawer: react to the `session` param (initial load, back/forward,
@@ -308,14 +312,17 @@
 			pressed={showHidden}
 			title={m.hidden_owners_show_hidden_title()}
 			data-journey="show-hidden"
-			onclick={() => (showHidden = !showHidden)}
+			onclick={() => showHidden = !showHidden}
 		>
 			<Icon name={showHidden ? 'eye' : 'eye-off'} size={14} />
 			{m.hidden_owners_show_hidden()}
 		</Toggle>
 	{/if}
 	{#if sp.tiles && tilesOverflow.length}
-		<TilesOverflowChip items={tilesOverflow} onOpen={(s) => (sp.openSession = s)} />
+		<TilesOverflowChip
+			items={tilesOverflow}
+			onOpen={(s) => sp.openSession = s}
+		/>
 	{/if}
 {/snippet}
 
@@ -335,18 +342,20 @@
 	onGroupBy={(v) => settings.setSessionList({ groupBy: toGroupDimension(v) })}
 	selecting={sp.list.selecting}
 	searching={sp.searching}
-	onStartSelect={() => (sp.list.selecting = true)}
+	onStartSelect={() => sp.list.selecting = true}
 	onCancelSelect={sp.list.exitSelect}
-	onNew={sp.dockSide ? undefined : () => (sp.showSpawn = true)}
-	trailing={isAdmin || (sp.tiles && tilesOverflow.length) ? trailingControls : undefined}
+	onNew={sp.dockSide ? undefined : () => sp.showSpawn = true}
+	trailing={isAdmin || sp.tiles && tilesOverflow.length ? trailingControls : undefined}
 	onUpdateLabel={sp.updateLabel}
 	onDeleteLabel={sp.deleteLabel}
-	scopeMachine={sp.openSession ? (sp.openSession.machine_name ?? sp.openSession.machine_id) : null}
+	scopeMachine={sp.openSession
+		? sp.openSession.machine_name ?? sp.openSession.machine_id
+		: null}
 	scopeDir={sp.openSession?.working_dir || null}
 />
 
 {#if sp.list.selecting}
-	<SessionsBulkBar {sp} />
+	<SessionsBulkBar sp={sp} />
 {/if}
 
 {#if sp.tiles}
@@ -355,14 +364,18 @@
 			sessions={sp.tileSessions}
 			onNavigate={(sid) => void sp.navigateToForked(sid)}
 			onFollowup={sp.followUp}
-			onoverflow={(items) => (tilesOverflow = items)}
+			onoverflow={(items) => tilesOverflow = items}
 		/>
 		{#snippet failed()}
 			<Callout tone="danger">{m.tiles_failed()}</Callout>
 		{/snippet}
 	</svelte:boundary>
 {:else}
-	<SessionSections {sp} {pending} {machineLiveness} />
+	<SessionSections
+		sp={sp}
+		pending={pending}
+		machineLiveness={machineLiveness}
+	/>
 {/if}
 
 {#if sp.docks.conversation}
@@ -380,7 +393,7 @@
 {:else if sp.liveOpen}
 	<ConversationDrawer
 		session={sp.liveOpen}
-		onclose={() => (sp.openSession = null)}
+		onclose={() => sp.openSession = null}
 		highlight={sp.searchTerms}
 		focusSeq={sp.focusSeq}
 		onNewFromScript={sp.newFromScript}
@@ -417,7 +430,7 @@
 {/if}
 
 {#if sp.pendingDraftEdit}
-	<EditDraftModal {sp} />
+	<EditDraftModal sp={sp} />
 {/if}
 
 {#if sp.archiveConfirm.pending}

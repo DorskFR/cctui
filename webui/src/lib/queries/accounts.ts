@@ -20,7 +20,7 @@ import type {
   UpdateAccount,
   UpdateProvider,
 } from "./types";
-import { hasFeature } from "$lib/features.svelte";
+import { hasFeature } from "#lib/features.svelte.ts";
 
 export const useAccounts = (enabled: () => boolean = () => true) =>
   createQuery(() => ({

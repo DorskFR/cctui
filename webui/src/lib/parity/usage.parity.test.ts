@@ -1,19 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import type { UsagePace, UsageWindow } from '$lib/queries';
+import type { UsagePace, UsageWindow } from '#lib/queries/index.ts';
 import {
 	barPct,
 	countdown,
 	headroomTone,
 	paceState,
 	wallInMs
-} from '$lib/components/molecules/usage-battery.logic';
+} from '#lib/components/molecules/usage-battery.logic.ts';
 import {
 	money,
 	resetIn,
 	resetInShort,
 	usdPct,
 	usdReadout
-} from '$lib/components/molecules/cap-bar.logic';
+} from '#lib/components/molecules/cap-bar.logic.ts';
 import { parityFixture } from './fixtures';
 
 type Fixture = {

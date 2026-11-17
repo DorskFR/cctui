@@ -1,5 +1,5 @@
 import type { UploadCaps } from '@bindings/UploadCaps';
-import { harnessCapabilities } from '$lib/harnesses';
+import { harnessCapabilities } from '#lib/harnesses.ts';
 
 // Shared file-attachment helpers for the spawn modal and the mid-chat
 // composer: one source of truth for caps, unique-name merging, error

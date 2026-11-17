@@ -11,10 +11,10 @@ import {
 	harnessPermissionModes,
 	harnessesForProviders,
 	pickableHarnesses
-} from '$lib/harnesses';
-import { harnessModelsFallback } from '$lib/domainTables';
-import { adapterLabel, allAdapters, modesFor } from '$lib/components/organisms/spawn/options';
-import { parityFixture } from '$lib/parity/fixtures';
+} from '#lib/harnesses.ts';
+import { harnessModelsFallback } from '#lib/domainTables.ts';
+import { adapterLabel, allAdapters, modesFor } from '#lib/components/organisms/spawn/options.ts';
+import { parityFixture } from '#lib/parity/fixtures.ts';
 
 const table = parityFixture<{ harnesses: HarnessDescriptor[] }>('domainTables').harnesses;
 

@@ -19,9 +19,9 @@ export {
 	type HostUser
 } from '../../../plugin-sdk/types';
 
-export type { PluginInfo } from '$lib/bindings/PluginInfo';
-export type { PluginPage } from '$lib/bindings/PluginPage';
-export type { PluginSetting as PluginSettingDecl } from '$lib/bindings/PluginSetting';
+export type { PluginInfo } from '#lib/bindings/PluginInfo.ts';
+export type { PluginPage } from '#lib/bindings/PluginPage.ts';
+export type { PluginSetting as PluginSettingDecl } from '#lib/bindings/PluginSetting.ts';
 
 /** One toolbar toggle per enabled pane plugin. */
 export interface PluginButton {

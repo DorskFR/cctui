@@ -1,11 +1,11 @@
 <script lang="ts">
-	import { errMessage } from '$lib/api';
-	import { useAccountActions, type OAuthAccount, type UpdateAccount } from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import FreeFormEnvEditor from '$lib/components/organisms/FreeFormEnvEditor.svelte';
+	import { errMessage } from '#lib/api.ts';
+	import { useAccountActions, type OAuthAccount, type UpdateAccount } from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import FreeFormEnvEditor from '#lib/components/organisms/FreeFormEnvEditor.svelte';
 	import { envObject } from '../account-editor.logic';
 	import { Button, Card } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { account }: { account: OAuthAccount } = $props();
 

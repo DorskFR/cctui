@@ -2,7 +2,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import PluginMessageActions from './PluginMessageActions.svelte';
-import type { PluginActionButton } from '$lib/plugins/types';
+import type { PluginActionButton } from '#lib/plugins/types.ts';
 
 let comp: ReturnType<typeof mount> | null = null;
 afterEach(() => {

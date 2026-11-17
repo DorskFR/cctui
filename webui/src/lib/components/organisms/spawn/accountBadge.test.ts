@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AccountPoolView } from '@bindings/AccountPoolView';
-import type { OAuthAccount } from '$lib/queries';
-import { hashHue } from '$lib/format';
+import type { OAuthAccount } from '#lib/queries/index.ts';
+import { hashHue } from '#lib/format.ts';
 import { badgeLook } from './accountBadge';
 
 const accounts = [

@@ -63,7 +63,7 @@ const remove = vi.fn();
 // Profiles the server holds after a delete; the derived profile list tracks it.
 const live = new SvelteMap<"list", SessionProfile[]>();
 
-vi.mock("$lib/queries", () => {
+vi.mock("#lib/queries/index.ts", () => {
   const q = <T>(data: T) => ({ data, isLoading: false, isError: false });
   return {
     useMachineResources: () => q(machineList),
@@ -104,7 +104,7 @@ vi.mock("$lib/queries", () => {
   };
 });
 
-vi.mock("$lib/settings.svelte", () => ({
+vi.mock("#lib/settings.svelte.ts", () => ({
   settings: {
     state: { display: { archiveShortcut: true } },
     lastDirFor: () => null,
@@ -114,7 +114,7 @@ vi.mock("$lib/settings.svelte", () => ({
   },
 }));
 
-vi.mock("$lib/ws.svelte", () => ({
+vi.mock("#lib/ws.svelte.ts", () => ({
   ws: { sessions: [], awaitSpawn: async () => ({ ok: true }) },
 }));
 

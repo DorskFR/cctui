@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Button, Input, Modal, Text } from '@dorsk/tsumikit';
 	import { customBounds } from './scheduleTimes';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		now,

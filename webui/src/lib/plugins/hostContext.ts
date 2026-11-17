@@ -1,9 +1,9 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { goto } from '$app/navigation';
-import { apiFetch } from '$lib/api';
-import { apiBase } from '$lib/config';
-import { toasts } from '$lib/toast.svelte';
-import type { MeResponse } from '$lib/bindings/MeResponse';
+import { apiFetch } from '#lib/api.ts';
+import { apiBase } from '#lib/config.ts';
+import { toasts } from '#lib/toast.svelte.ts';
+import type { MeResponse } from '#lib/bindings/MeResponse.ts';
 import { pluginSpawn } from './spawnRequest.svelte';
 import {
 	CCTUI_PLUGIN_API,

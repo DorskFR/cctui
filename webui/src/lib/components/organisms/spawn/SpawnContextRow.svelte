@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { Badge, Field, Text, Toggle } from '@dorsk/tsumikit';
-	import ContextPicker from '$lib/components/molecules/ContextPicker.svelte';
-	import { sameList } from '$lib/components/molecules/context.logic';
-	import { useContextItems, useResolvedContext } from '$lib/queries';
-	import { m } from '$lib/paraglide/messages';
+	import ContextPicker from '#lib/components/molecules/ContextPicker.svelte';
+	import { sameList } from '#lib/components/molecules/context.logic.ts';
+	import { useContextItems, useResolvedContext } from '#lib/queries/index.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		items = $bindable(),

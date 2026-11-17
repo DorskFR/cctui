@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { MacroSpec } from '$lib/settings.svelte';
-import { macroProblems, spawnBodyFor } from '$lib/components/organisms/macros.logic';
+import type { MacroSpec } from '#lib/settings.svelte.ts';
+import { macroProblems, spawnBodyFor } from '#lib/components/organisms/macros.logic.ts';
 import { parityFixture } from './fixtures';
 
 type Fixture = {

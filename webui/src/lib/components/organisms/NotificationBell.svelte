@@ -1,16 +1,16 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { NotificationCenter } from '@dorsk/tsumikit';
-	import { errMessage } from '$lib/api';
+	import { errMessage } from '#lib/api.ts';
 	import {
 		notifications,
 		stateLabel,
 		toItem,
 		type NotificationStore
-	} from '$lib/notifications.svelte';
-	import { notify } from '$lib/notify.svelte';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/notifications.svelte.ts';
+	import { notify } from '#lib/notify.svelte.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		store = notifications,

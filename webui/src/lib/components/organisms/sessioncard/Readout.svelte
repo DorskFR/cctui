@@ -1,7 +1,7 @@
 <script lang="ts">
-	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
-	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
-	import { modelAbbrev, modelFamily, modelShort } from '$lib/format';
+	import AdapterIcon from '#lib/components/atoms/AdapterIcon.svelte';
+	import TokenUsage from '#lib/components/molecules/TokenUsage.svelte';
+	import { modelAbbrev, modelFamily, modelShort } from '#lib/format.ts';
 	import { Text } from '@dorsk/tsumikit';
 	import type { SessionView } from './view';
 

@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { Icon, Popover } from '@dorsk/tsumikit';
-	import { useSessionContext } from '$lib/queries';
+	import { useSessionContext } from '#lib/queries/index.ts';
 	import SessionContextPanel from './SessionContextPanel.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		sessionId,

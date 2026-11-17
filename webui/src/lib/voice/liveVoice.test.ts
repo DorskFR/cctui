@@ -1,6 +1,6 @@
 import { flushSync } from 'svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_VOICE } from '$lib/settings.svelte';
+import { DEFAULT_VOICE } from '#lib/settings.svelte.ts';
 import {
 	ECHO_TAIL_MS,
 	LiveVoice,
@@ -11,7 +11,7 @@ import {
 import { type AudioLike, SpeechPlayer } from './player';
 import type { VadCallbacks, VadHandle } from './vad';
 
-vi.mock('$lib/config', () => ({ wsBase: () => 'ws://x/api/v1' }));
+vi.mock('#lib/config', () => ({ wsBase: () => 'ws://x/api/v1' }));
 
 class FakeSocket implements SocketLike {
 	binaryType: BinaryType = 'blob';

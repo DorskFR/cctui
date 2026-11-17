@@ -17,7 +17,7 @@ import {
 	type FollowupLaunchDeps,
 	type FollowupWhenCold
 } from './followup';
-import { splitInjected } from '$lib/components/organisms/conversation/format';
+import { splitInjected } from '#lib/components/organisms/conversation/format.ts';
 
 const src = { id: 's1', name: 'my "run"', working_dir: '/w' };
 

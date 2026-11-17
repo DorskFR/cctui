@@ -2,9 +2,9 @@
 	import { Badge, Card, Text } from '@dorsk/tsumikit';
 	import type { OutcomeStatus } from '@bindings/OutcomeStatus';
 	import type { SessionOutcome } from '@bindings/SessionOutcome';
-	import { renderMarkdown } from '$lib/markdown';
-	import { outcomeTone } from '$lib/outcome';
-	import { m } from '$lib/paraglide/messages';
+	import { renderMarkdown } from '#lib/markdown.ts';
+	import { outcomeTone } from '#lib/outcome.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { outcome }: { outcome: SessionOutcome | null | undefined } = $props();
 

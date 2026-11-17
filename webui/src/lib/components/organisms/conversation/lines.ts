@@ -1,8 +1,8 @@
 import type { AgentEvent } from "@bindings/AgentEvent";
-import { USER_PREFIX } from "$lib/ws.svelte";
+import { USER_PREFIX } from "#lib/ws.svelte.ts";
 import { looksKeepaliveTick } from "./keepalive";
 import { inboxBatchMarkdown, parseInboxBatch } from "./inboxBatch";
-import { m } from "$lib/paraglide/messages";
+import { m } from "#lib/paraglide/messages.js";
 import {
   assignLineKeys,
   formatToolInput,
@@ -27,9 +27,9 @@ import {
   stripAttachmentDecorations,
 } from "./format";
 import type { Line, MsgCategory } from "./types";
-import { parseResultImages } from "$lib/resultImages";
+import { parseResultImages } from "#lib/resultImages.ts";
 import { VOICE_TOOL } from "./voiceNote";
-import { redactUserSpans } from "$lib/redactTag";
+import { redactUserSpans } from "#lib/redactTag.ts";
 
 export interface LineBuildCtx {
   visible: (c: MsgCategory) => boolean;
@@ -555,7 +555,7 @@ function attachAnnotation(out: Line[], content: string): void {
 // in the prose plus an "Attached file(s)" block listing the daemon's staged
 // paths (`/tmp/cctui-uploads/<session>/<name>`). The session id is taken from
 // those paths so the line can resolve its blobs without the drawer threading
-// it through. Mirrors the composer's naming in `$lib/attachments`.
+// it through. Mirrors the composer's naming in `#lib/attachments.ts`.
 export const PASTE_NAME_RE = /^paste-\d+\.txt$/;
 const STAGED_PATH_RE = /^- \/tmp\/cctui-uploads\/([^/\s]+)\/(\S.*?)\s*$/;
 const BRACKET_TOKEN_RE = /\[([^[\]\n]+\.[A-Za-z0-9]{1,8})\]/g;

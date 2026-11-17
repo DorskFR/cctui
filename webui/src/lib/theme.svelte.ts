@@ -1,6 +1,6 @@
 // The kit owns the theme registry, the store and the picker; the app only
 // re-exports them so every consumer reads one instance.
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { preferenceFrom, theme, type ThemePreference } from '@dorsk/tsumikit';
 
 export { theme, THEMES } from '@dorsk/tsumikit';

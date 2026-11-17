@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 
 const voice = vi.hoisted(() => ({ speed: 1.5, autoPlayVoiceNotes: false }));
-vi.mock('$lib/settings.svelte', () => ({ settings: { voice } }));
-vi.mock('$lib/notify.svelte', () => ({ notify: { supported: false } }));
+vi.mock('#lib/settings.svelte.ts', () => ({ settings: { voice } }));
+vi.mock('#lib/notify.svelte.ts', () => ({ notify: { supported: false } }));
 
 import VoiceNote from './VoiceNote.svelte';
 

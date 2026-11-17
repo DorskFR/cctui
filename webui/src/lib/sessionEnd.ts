@@ -1,9 +1,9 @@
 import { formatTimestamp } from '@dorsk/tsumikit';
 import type { EndTone } from '@bindings/EndTone';
 import type { SessionEndReason } from '@bindings/SessionEndReason';
-import { endReasonInfo } from '$lib/domainTables';
+import { endReasonInfo } from '#lib/domainTables.ts';
 import type { SessionListItem } from '@bindings/SessionListItem';
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 
 export type SessionEnd = {
 	reason: SessionEndReason;

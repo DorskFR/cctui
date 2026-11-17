@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { m } from '$lib/paraglide/messages';
-import { toasts } from '$lib/toast.svelte';
+import { m } from '#lib/paraglide/messages.js';
+import { toasts } from '#lib/toast.svelte.ts';
 import type { OwnerTarget } from './hiddenOwners';
 import { ownerTargetLabel, toggleOwnerTarget } from './ownerHideMenu.svelte';
 import header from './components/organisms/conversation/DrawerHeader.svelte?raw';

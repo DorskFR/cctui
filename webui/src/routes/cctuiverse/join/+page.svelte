@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { Callout, CopyButton, Input, Stack, Text } from '@dorsk/tsumikit';
-	import PageHead from '$lib/components/molecules/PageHead.svelte';
-	import { findInvite } from '$lib/cctuiverse';
-	import { m } from '$lib/paraglide/messages';
+	import PageHead from '#lib/components/molecules/PageHead.svelte';
+	import { findInvite } from '#lib/cctuiverse.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	const invite = findInvite(window.location.href);
 </script>

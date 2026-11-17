@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { errMessage } from '$lib/api';
+	import { errMessage } from '#lib/api.ts';
 	import {
 		useUserDispatchers,
 		useDispatcherActions,
@@ -7,14 +7,14 @@
 		useAccountPools,
 		primaryProvider,
 		type UserDispatcher,
-	} from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { copyText } from '$lib/clipboard';
+	} from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { copyText } from '#lib/clipboard.ts';
 	import { Badge, Button, DataTable, Field, Heading, Input, Modal, Select, Text, Timestamp } from '@dorsk/tsumikit';
 	import type { Column } from '@dorsk/tsumikit';
-	import { livenessLabel, livenessTone } from '$lib/dispatchers.logic';
-	import InlineCode, { SLOT } from '$lib/components/atoms/InlineCode.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { livenessLabel, livenessTone } from '#lib/dispatchers.logic.ts';
+	import InlineCode, { SLOT } from '#lib/components/atoms/InlineCode.svelte';
+	import { m } from '#lib/paraglide/messages.js';
 
 	// Embedded under a page that already shows an <h1>, the panel's own heading
 	// drops a level; standalone it stays an <h1>.

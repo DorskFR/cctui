@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Button, Icon, Popover } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import { promptHistory } from '$lib/drafts';
+	import { m } from '#lib/paraglide/messages.js';
+	import { promptHistory } from '#lib/drafts.ts';
 
 	// The discoverable half of spawn prompt recall: ArrowUp in the textarea is
 	// invisible, so both spawn branches also get this trigger + list of recent

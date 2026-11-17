@@ -2,7 +2,7 @@
 	import { Card, Heading, Text } from '@dorsk/tsumikit';
 	import { todoProgress } from './conversation/format';
 	import type { TodoItem } from './conversation/types';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { todos }: { todos: TodoItem[] } = $props();
 

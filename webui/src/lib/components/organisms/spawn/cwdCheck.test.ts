@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, FeatureOffError } from '$lib/api';
+import { ApiError, FeatureOffError } from '#lib/api.ts';
 import { cwdCheckOf, makeCwdCheckWatcher, type CwdCheck } from './cwdCheck';
 
 describe('cwdCheckOf', () => {

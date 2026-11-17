@@ -2,9 +2,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
 import PendingSpawnCard from './PendingSpawnCard.svelte';
-import { pendingSpawns } from '$lib/pendingSpawns.svelte';
+import { pendingSpawns } from '#lib/pendingSpawns.svelte.ts';
 
-vi.mock('$lib/ws.svelte', () => ({
+vi.mock('#lib/ws.svelte.ts', () => ({
 	ws: { onCommandResult: () => () => {}, onSessionEnded: () => () => {} }
 }));
 

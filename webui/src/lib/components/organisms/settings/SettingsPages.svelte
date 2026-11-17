@@ -16,13 +16,13 @@
 	import MonitoringSection from './MonitoringSection.svelte';
 	import SecuritySection from './SecuritySection.svelte';
 	import GuidesSection from './GuidesSection.svelte';
-	import AccessPanel from '$lib/components/organisms/access/AccessPanel.svelte';
-	import EventsPanel from '$lib/components/organisms/events/EventsPanel.svelte';
-	import DispatchersPanel from '$lib/components/organisms/DispatchersPanel.svelte';
+	import AccessPanel from '#lib/components/organisms/access/AccessPanel.svelte';
+	import EventsPanel from '#lib/components/organisms/events/EventsPanel.svelte';
+	import DispatchersPanel from '#lib/components/organisms/DispatchersPanel.svelte';
 	import InstanceSection from './InstanceSection.svelte';
 	import UploadsSection from './UploadsSection.svelte';
 	import type { SettingsPage } from './settings.logic';
-	import { hasFeature } from '$lib/features.svelte';
+	import { hasFeature } from '#lib/features.svelte.ts';
 
 	let { current, isAdmin }: { current: SettingsPage; isAdmin: boolean } = $props();
 </script>

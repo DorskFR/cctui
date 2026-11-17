@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Button, Icon, Select } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import { hasFeature } from '$lib/features.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import { hasFeature } from '#lib/features.svelte.ts';
 	import {
 		COLOR_DIMENSIONS,
 		GROUP_DIMENSIONS,

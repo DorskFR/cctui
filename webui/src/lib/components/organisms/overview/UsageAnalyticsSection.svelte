@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { useUsageAnalytics } from '$lib/queries';
-	import { m } from '$lib/paraglide/messages';
+	import { useUsageAnalytics } from '#lib/queries/index.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { Card, Cluster, SegmentedControl, Stack, Text } from '@dorsk/tsumikit';
 	import TokensOverTime from './TokensOverTime.svelte';
 	import ModelBreakdown from './ModelBreakdown.svelte';

@@ -1,12 +1,12 @@
 <script lang="ts">
 	import { Switch } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
-	import { useNotificationSettings } from '$lib/queries';
-	import { settings } from '$lib/settings.svelte';
-	import { notify } from '$lib/notify.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
+	import { useNotificationSettings } from '#lib/queries/index.ts';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { notify } from '#lib/notify.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import ChannelSwitches from './notifications/ChannelSwitches.svelte';
 	import EndpointsGroup from './notifications/EndpointsGroup.svelte';
 	import QuietHoursGroup from './notifications/QuietHoursGroup.svelte';

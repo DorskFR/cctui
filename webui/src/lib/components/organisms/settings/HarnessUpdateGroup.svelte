@@ -1,19 +1,19 @@
 <script lang="ts">
 	import { Badge, Button, Checkbox, Input, Select, Switch, Text } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import { endpoints } from '$lib/queries';
-	import { harnessLabel } from '$lib/harnesses';
-	import { harnessTable } from '$lib/harnesses.svelte';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import { endpoints } from '#lib/queries/index.ts';
+	import { harnessLabel } from '#lib/harnesses.ts';
+	import { harnessTable } from '#lib/harnesses.svelte.ts';
 	import type { CodexSandbox } from '@bindings/CodexSandbox';
 	import type { HarnessAutoupdateInfo } from '@bindings/HarnessAutoupdateInfo';
 	import type { HarnessUpdatePolicy } from '@bindings/HarnessUpdatePolicy';
 	import type { HarnessVersion } from '@bindings/HarnessVersion';
 	import type { HarnessVersions } from '@bindings/HarnessVersions';
 	import type { MachineHarnessInfo } from '@bindings/MachineHarnessInfo';
-	import { DRAIN_RESTARTABLE, deniedHealth, versionSkew } from '$lib/harnessHealth';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { DRAIN_RESTARTABLE, deniedHealth, versionSkew } from '#lib/harnessHealth.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	const DEFAULT_HARNESSES = ['claude-code', 'codex'];
 	const CODEX_SANDBOX_DOCS =

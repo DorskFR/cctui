@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, afterEach } from 'vitest';
 import { mount, unmount } from 'svelte';
-import type { LimitResetEntry } from '$lib/queries';
+import type { LimitResetEntry } from '#lib/queries/index.ts';
 import LimitResetsPage from './LimitResetsPage.svelte';
 
 let host: HTMLElement | null = null;

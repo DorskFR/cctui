@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { TokenUsageWindows } from '@bindings/TokenUsageWindows';
-	import { compact } from '$lib/format';
-	import { m } from '$lib/paraglide/messages';
+	import { compact } from '#lib/format.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { Text } from '@dorsk/tsumikit';
 	import { buildWindowRows, type WindowKey } from './WindowsTable.logic';
 

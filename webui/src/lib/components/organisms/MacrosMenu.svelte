@@ -7,11 +7,11 @@
 	import { goto } from '$app/navigation';
 	import { Button, Cluster, Menu, Modal, Text } from '@dorsk/tsumikit';
 	import type { MenuItem } from '@dorsk/tsumikit';
-	import { useSessionActions } from '$lib/queries';
-	import { settings, type MacroSpec } from '$lib/settings.svelte';
-	import { toasts } from '$lib/toast.svelte';
-	import { ws } from '$lib/ws.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { useSessionActions } from '#lib/queries/index.ts';
+	import { settings, type MacroSpec } from '#lib/settings.svelte.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { ws } from '#lib/ws.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import { macroProblems, spawnBodyFor } from './macros.logic';
 
 	const actions = useSessionActions();

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { AutoGrid, OptionButton, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import type { SpawnForm } from './spawnForm.svelte';
 
 	let { sf }: { sf: SpawnForm } = $props();

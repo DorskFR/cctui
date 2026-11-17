@@ -197,7 +197,7 @@ platform over a new package; no CDNs).
 ## Localization (i18n, CCT-599)
 
 Every user-visible string goes through a **Paraglide** message function, never a
-raw literal: `import { m } from '$lib/paraglide/messages'` then `m.key()` (params
+raw literal: `import { m } from '#lib/paraglide/messages'` then `m.key()` (params
 as `m.key({ count })`). Catalogs are `messages/en.json` (base) + `messages/fr.json`;
 `src/lib/paraglide/` is generated (gitignored) and compiled by the vite plugin and
 the `paraglide` npm script (run ahead of `check`/`test`). Keys are grouped by

@@ -3,12 +3,12 @@ import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Notification as Notice } from '@bindings/Notification';
 import type { NotificationList } from '@bindings/NotificationList';
-import { NotificationStore, type NotificationApi } from '$lib/notifications.svelte';
+import { NotificationStore, type NotificationApi } from '#lib/notifications.svelte.ts';
 
 const { toasts } = vi.hoisted(() => ({
 	toasts: { ok: vi.fn(), info: vi.fn(), error: vi.fn() }
 }));
-vi.mock('$lib/toast.svelte', () => ({ toasts }));
+vi.mock('#lib/toast.svelte.ts', () => ({ toasts }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
 
 import NotificationBell from './NotificationBell.svelte';

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from 'svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PluginInfo } from '$lib/plugins/types';
+import type { PluginInfo } from '#lib/plugins/types.ts';
 
 const state = vi.hoisted(() => ({
 	url: new URL('https://app.test/apps/demo'),
@@ -15,25 +15,25 @@ const loaded = vi.hoisted(() => ({ page: undefined as unknown, mounted: [] as un
 vi.mock('$app/state', () => ({ page: state }));
 vi.mock('$app/navigation', () => ({ goto }));
 vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	usePlugins: () => query,
 	useMe: () => ({ data: { role: 'admin', user_id: 'u1', user_name: 'dorsk' } })
 }));
-vi.mock('$lib/toast.svelte', () => ({ toasts: { ok: vi.fn(), info: vi.fn(), error: vi.fn() } }));
-vi.mock('$lib/settings.svelte', () => ({
+vi.mock('#lib/toast.svelte.ts', () => ({ toasts: { ok: vi.fn(), info: vi.fn(), error: vi.fn() } }));
+vi.mock('#lib/settings.svelte.ts', () => ({
 	settings: {
 		get pluginsEnabled() {
 			return enabled.value;
 		}
 	}
 }));
-vi.mock('$lib/plugins/discovery', async (orig) => {
+vi.mock('#lib/plugins/discovery.ts', async (orig) => {
 	const real = (await orig()) as Record<string, unknown>;
 	return { ...real, loadPluginModule: vi.fn(async () => ({ cctuiApi: 1, page: loaded.page })) };
 });
 
 import Route from './[id]/[...path]/+page.svelte';
-import { pluginLoader } from '$lib/plugins/loader.svelte';
+import { pluginLoader } from '#lib/plugins/loader.svelte.ts';
 
 const info = (over: Partial<PluginInfo> = {}): PluginInfo => ({
 	id: 'demo',
@@ -150,7 +150,7 @@ describe('/apps/<id> route', () => {
 		render();
 		expect(journey('plugin-page')).not.toBeNull();
 		expect(loaded.mounted).toEqual([{ basePath: '/apps/demo', path: '/pr/7/files' }]);
-		expect(goto).toHaveBeenCalledWith('/apps/demo/pr/12', { noScroll: true, keepFocus: true });
+		expect(goto).toHaveBeenCalledWith('/apps/demo/pr/12', { reset: false });
 		unmount(component);
 	});
 });

@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { net, formatBytes, wireTotals, type WireTotals } from '$lib/netstats.svelte';
+	import { net, formatBytes, wireTotals, type WireTotals } from '#lib/netstats.svelte.ts';
 	import { Popover, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let open = $state(false);
 	let wire = $state<WireTotals | null>(null);

@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { useMachineResources, useSessionStats, useUsageCloses } from '$lib/queries';
-	import { m } from '$lib/paraglide/messages';
-	import { getLocale } from '$lib/paraglide/runtime';
-	import MetricTile from '$lib/components/molecules/MetricTile.svelte';
+	import { useMachineResources, useSessionStats, useUsageCloses } from '#lib/queries/index.ts';
+	import { m } from '#lib/paraglide/messages.js';
+	import { getLocale } from '#lib/paraglide/runtime.js';
+	import MetricTile from '#lib/components/molecules/MetricTile.svelte';
 	import { buildMetricTiles, type MetricKey } from '../../../../routes/home.logic';
 	import { wastedPct } from './window-history';
 

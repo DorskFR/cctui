@@ -17,9 +17,9 @@
 	import SessionContextChip from './SessionContextChip.svelte';
 	import type { MessagePin } from '@bindings/MessagePin';
 	import type { Line } from './types';
-	import type { PluginButton } from '$lib/plugins/types';
-	import { m } from '$lib/paraglide/messages';
-	import { hasFeature } from '$lib/features.svelte';
+	import type { PluginButton } from '#lib/plugins/types.ts';
+	import { m } from '#lib/paraglide/messages.js';
+	import { hasFeature } from '#lib/features.svelte.ts';
 
 	let {
 		view = $bindable(),

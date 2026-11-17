@@ -4,7 +4,7 @@ import {
 	isOnlyImages,
 	scanImageMarkers,
 	substituteImageMarkers
-} from '$lib/images';
+} from '#lib/images.ts';
 import { parityFixture } from './fixtures';
 
 type Fixture = {

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Badge } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	// A room is a field on the session, so the badge is just its name.
 	let { name }: { name: string | null | undefined } = $props();

@@ -2,13 +2,13 @@
 	import { Button, Cluster, EmptyState, Input } from '@dorsk/tsumikit';
 	import type { CreateNotificationEndpoint } from '@bindings/CreateNotificationEndpoint';
 	import type { NotificationEndpoint } from '@bindings/NotificationEndpoint';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import PushSubscriptionToggle from '$lib/components/molecules/PushSubscriptionToggle.svelte';
-	import { errMessage } from '$lib/api';
-	import { useNotificationEndpointActions, useNotificationEndpoints } from '$lib/queries';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import PushSubscriptionToggle from '#lib/components/molecules/PushSubscriptionToggle.svelte';
+	import { errMessage } from '#lib/api.ts';
+	import { useNotificationEndpointActions, useNotificationEndpoints } from '#lib/queries/index.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import EndpointRow from './EndpointRow.svelte';
 	import { emailBody, listedEndpoints, ntfyBody } from './endpoints.logic';
 

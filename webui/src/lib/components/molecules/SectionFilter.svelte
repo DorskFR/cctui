@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Badge, Icon, Menu, type MenuItem } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import { hasFeature } from '$lib/features.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import { hasFeature } from '#lib/features.svelte.ts';
 	import { offeredSections, type Section } from '../../../routes/sessions/sessions.logic';
 
 	// One square toolbar button that opens a menu of INDEPENDENT on/off section

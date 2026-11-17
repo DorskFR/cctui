@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 
 /** Server origin (no trailing slash). Overridable at runtime via static/config.js. */
 export function apiOrigin(): string {

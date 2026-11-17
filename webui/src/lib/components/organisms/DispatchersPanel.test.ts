@@ -1,19 +1,19 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
-import type { UserDispatcher } from '$lib/queries';
+import type { UserDispatcher } from '#lib/queries/index.ts';
 
 const list = { isLoading: true, data: undefined as UserDispatcher[] | undefined };
 const pools = { data: [] as { id: string; name: string }[] };
 const rename = vi.fn();
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	useUserDispatchers: () => list,
 	useDispatcherActions: () => ({ enroll: vi.fn(), rename, remove: vi.fn() }),
 	useAccounts: () => ({ data: [] }),
 	useAccountPools: () => pools,
 	primaryProvider: () => null
 }));
-vi.mock('$lib/toast.svelte', () => ({ toasts: { ok: vi.fn(), error: vi.fn() } }));
+vi.mock('#lib/toast.svelte.ts', () => ({ toasts: { ok: vi.fn(), error: vi.fn() } }));
 
 import DispatchersPanel from './DispatchersPanel.svelte';
 

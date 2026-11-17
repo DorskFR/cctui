@@ -20,7 +20,7 @@ const endpoints = vi.hoisted(() => ({
 	setMachineAdapter: vi.fn(),
 	resetMachineAdapter: vi.fn()
 }));
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	endpoints,
 	useAllMachines: (on: () => boolean) => {
 		enabled.all = on();
@@ -35,8 +35,8 @@ vi.mock('$lib/queries', () => ({
 vi.mock('@tanstack/svelte-query', () => ({
 	useQueryClient: () => ({ invalidateQueries: vi.fn(async () => undefined) })
 }));
-vi.mock('$lib/toast.svelte', () => ({ toasts: { ok: vi.fn(), error: vi.fn() } }));
-vi.mock('$lib/harnesses.svelte', () => ({ harnessTable: () => [] }));
+vi.mock('#lib/toast.svelte.ts', () => ({ toasts: { ok: vi.fn(), error: vi.fn() } }));
+vi.mock('#lib/harnesses.svelte.ts', () => ({ harnessTable: () => [] }));
 
 import MachineAdaptersGroup from './MachineAdaptersGroup.svelte';
 

@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { Popover, Text } from '@dorsk/tsumikit';
-	import { useProviderStatus } from '$lib/queries';
+	import { useProviderStatus } from '#lib/queries/index.ts';
 	import {
 		degraded,
 		familyLabel,
 		indicatorTone,
 		worstIndicator
-	} from '$lib/components/molecules/provider-status.logic';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/components/molecules/provider-status.logic.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	const q = useProviderStatus();
 	const bad = $derived(degraded(q.data));

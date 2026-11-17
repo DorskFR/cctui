@@ -1,14 +1,14 @@
 <script lang="ts">
 	import type { SessionProfile } from '@bindings/SessionProfile';
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
-	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
+	import type { AccountUsageEntry, OAuthAccount } from '#lib/queries/index.ts';
 	import ProfileRow from './ProfileRow.svelte';
 	import ProfileForm from './ProfileForm.svelte';
 	import ProfilePicker from './ProfilePicker.svelte';
-	import { harnessModelsFallback } from '$lib/domainTables';
+	import { harnessModelsFallback } from '#lib/domainTables.ts';
 	import { EMPTY_SPEC, sortProfiles, specChain, specOf, type ProfileSpecForm } from './profiles';
 	import { badgeLook } from './accountBadge';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		profiles,

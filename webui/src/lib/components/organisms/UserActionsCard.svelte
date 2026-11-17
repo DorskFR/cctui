@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Badge, Button, Card, Checkbox, Disclosure, Heading, Icon, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import { renderMarkdown } from '$lib/markdown';
+	import { m } from '#lib/paraglide/messages.js';
+	import { renderMarkdown } from '#lib/markdown.ts';
 	import type { UserAction } from '@bindings/UserAction';
 	import type { UserActionStatus } from '@bindings/UserActionStatus';
 	import { groupUserActions } from './conversation/userActions';

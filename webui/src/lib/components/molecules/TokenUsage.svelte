@@ -1,8 +1,8 @@
 <script lang="ts">
 	import type { TokenUsage } from '@bindings/TokenUsage';
-	import { compact as compactNum, usd } from '$lib/format';
+	import { compact as compactNum, usd } from '#lib/format.ts';
 	import { Cluster, Text, Tooltip } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import { bustReasonKey, tokenUsageLayout, tokenUsageTitle } from './TokenUsage.logic';
 
 	// Canonical token-usage readout — the SINGLE token block, shared by the session

@@ -1,8 +1,8 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { diagnoseBlocks, diagnoseOwnership, diagnoseRows } from '$lib/diagnoseRows';
+	import { diagnoseBlocks, diagnoseOwnership, diagnoseRows } from '#lib/diagnoseRows.ts';
 	import DiagnoseBlocks from './DiagnoseBlocks.svelte';
-	import { useSessionDiagnose } from '$lib/queries';
+	import { useSessionDiagnose } from '#lib/queries/index.ts';
 
 	// Mounted only once the dot's tooltip is armed: the query observer — and the
 	// query client context it needs — must not exist for every dot in a list.

@@ -4,13 +4,13 @@
 	// in the header strip (ResourceBattery). The list is the same query the
 	// strip reads, so the figures shown here are the live ones.
 	import { Checkbox, Text } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
-	import { useMachineResources } from '$lib/queries';
-	import { settings } from '$lib/settings.svelte';
-	import { m } from '$lib/paraglide/messages';
-	import { machineLabel, pctOf } from '$lib/components/molecules/resource-gauge.logic';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
+	import { useMachineResources } from '#lib/queries/index.ts';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
+	import { machineLabel, pctOf } from '#lib/components/molecules/resource-gauge.logic.ts';
 
 	const q = useMachineResources(() => true);
 	const rows = $derived(q.data ?? []);

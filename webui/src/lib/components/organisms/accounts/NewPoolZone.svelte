@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { OAuthAccount } from '$lib/queries';
+	import type { OAuthAccount } from '#lib/queries/index.ts';
 	import { Fieldset, IconButton, Input, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import { ACCOUNT_DRAG_MIME } from './pools.logic';
 	import { accountDrag } from './drag.svelte';
 

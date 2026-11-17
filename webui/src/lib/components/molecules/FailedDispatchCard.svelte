@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { Badge, Button, Card, Disclosure, IconButton, Link, Text } from '@dorsk/tsumikit';
 	import type { FailedDispatch } from '@bindings/FailedDispatch';
-	import { errMessage } from '$lib/api';
-	import { exposureView } from '$lib/dispatchExposure';
-	import { sessionHref } from '$lib/sessionFailureToast';
-	import { m } from '$lib/paraglide/messages';
-	import { getLocale } from '$lib/paraglide/runtime';
+	import { errMessage } from '#lib/api.ts';
+	import { exposureView } from '#lib/dispatchExposure.ts';
+	import { sessionHref } from '#lib/sessionFailureToast.ts';
+	import { m } from '#lib/paraglide/messages.js';
+	import { getLocale } from '#lib/paraglide/runtime.js';
 
 	let {
 		dispatch,

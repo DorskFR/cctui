@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { PluginInfo } from '$lib/plugins/types';
+import type { PluginInfo } from '#lib/plugins/types.ts';
 
 const query = vi.hoisted(() => ({ data: undefined as PluginInfo[] | undefined, isPending: true, isError: false }));
 const adminQuery = vi.hoisted(() => ({ data: [] as unknown[], isPending: false, isError: false }));
 const adminGate = vi.hoisted(() => vi.fn<(enabled: () => boolean) => typeof adminQuery>());
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	usePlugins: () => query,
 	useAdminPlugins: (enabled: () => boolean) => adminGate(enabled),
 	useAdminPluginCatalog: (enabled: () => boolean) => adminGate(enabled),
@@ -27,13 +27,13 @@ vi.mock('$lib/queries', () => ({
 		adminPluginSettings: (id: string) => ['admin', 'plugins', id, 'settings']
 	}
 }));
-vi.mock('$lib/clipboard', () => ({ copyText: vi.fn(async () => undefined) }));
+vi.mock('#lib/clipboard.ts', () => ({ copyText: vi.fn(async () => undefined) }));
 vi.mock('@tanstack/svelte-query', () => ({
 	useQueryClient: () => ({ invalidateQueries: vi.fn(async () => undefined) })
 }));
 
 import PluginsSection from './PluginsSection.svelte';
-import { settings } from '$lib/settings.svelte';
+import { settings } from '#lib/settings.svelte.ts';
 
 let comp: ReturnType<typeof mount> | null = null;
 afterEach(() => {

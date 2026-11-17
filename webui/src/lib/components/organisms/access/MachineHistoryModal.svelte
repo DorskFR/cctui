@@ -2,9 +2,9 @@
 	import type { MachineRow } from '@bindings/MachineRow';
 	import { Modal, Text } from '@dorsk/tsumikit';
 	import EventRow from '../events/EventRow.svelte';
-	import { useMachineEvents } from '$lib/queries';
-	import { machineHistory } from '$lib/events';
-	import { m } from '$lib/paraglide/messages';
+	import { useMachineEvents } from '#lib/queries/index.ts';
+	import { machineHistory } from '#lib/events.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { machine, onclose }: { machine: MachineRow; onclose: () => void } = $props();
 

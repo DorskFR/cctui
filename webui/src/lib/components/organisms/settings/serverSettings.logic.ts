@@ -1,6 +1,6 @@
 import type { SettingSource } from '@bindings/SettingSource';
 import type { SpawnDefaults } from '@bindings/SpawnDefaults';
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 
 export function sourceLabel(source: SettingSource): string {
 	if (source === 'settings') return m.settings_source_settings();

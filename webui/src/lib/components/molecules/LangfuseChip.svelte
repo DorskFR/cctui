@@ -1,10 +1,10 @@
 <script lang="ts">
-	import { useCapabilities, useSessionLangfuse } from '$lib/queries';
-	import { compact } from '$lib/format';
-	import { hasLangfuseCost, langfuseCostLabel } from '$lib/spend';
+	import { useCapabilities, useSessionLangfuse } from '#lib/queries/index.ts';
+	import { compact } from '#lib/format.ts';
+	import { hasLangfuseCost, langfuseCostLabel } from '#lib/spend.ts';
 	import { Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import { hasFeature } from '$lib/features.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import { hasFeature } from '#lib/features.svelte.ts';
 
 	// Per-session Langfuse cost/usage chip. Shows `$cost · N calls`
 	// with a deep link into Langfuse, gated on the server capability so it stays

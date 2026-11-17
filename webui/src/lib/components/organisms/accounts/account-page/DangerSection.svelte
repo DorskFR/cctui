@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { OAuthAccount } from '$lib/queries';
+	import type { OAuthAccount } from '#lib/queries/index.ts';
 	import { Button, Card, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		account,

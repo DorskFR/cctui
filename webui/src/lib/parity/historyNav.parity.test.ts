@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { HistoryNav } from '$lib/historyNav';
+import { HistoryNav } from '#lib/historyNav.ts';
 import { parityFixture } from './fixtures';
 
 type Step =

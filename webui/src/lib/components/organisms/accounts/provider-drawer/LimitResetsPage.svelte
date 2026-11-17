@@ -1,12 +1,12 @@
 <script lang="ts">
 	import { Button, Modal, Text, Timestamp } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import type { LimitResetEntry } from '$lib/queries';
+	import { m } from '#lib/paraglide/messages.js';
+	import type { LimitResetEntry } from '#lib/queries/index.ts';
 	import {
 		resetReason,
 		resetRestores,
 		resetTitle
-	} from '$lib/components/molecules/limit-reset';
+	} from '#lib/components/molecules/limit-reset.ts';
 
 	let {
 		entries = [],

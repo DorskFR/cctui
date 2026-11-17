@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { m } from '$lib/paraglide/messages';
-	import { safeHref } from '$lib/safeHref';
+	import { m } from '#lib/paraglide/messages.js';
+	import { safeHref } from '#lib/safeHref.ts';
 	import { Badge, Cluster, Icon, Stack, WorkingDir } from '@dorsk/tsumikit';
-	import PrIcon from '$lib/components/atoms/PrIcon.svelte';
+	import PrIcon from '#lib/components/atoms/PrIcon.svelte';
 	import DraftActions from './DraftActions.svelte';
 	import Readout from './Readout.svelte';
 	import type { SessionActions, SessionView } from './view';

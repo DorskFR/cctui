@@ -1,15 +1,15 @@
 <script lang="ts">
 	import { Badge, Button, Switch, Text } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
-	import { endpoints, qk, useAllMachines, useMachineResources } from '$lib/queries';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import BrandLogo from '#lib/components/atoms/BrandLogo.svelte';
+	import { endpoints, qk, useAllMachines, useMachineResources } from '#lib/queries/index.ts';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import type { MachineAdapterInfo } from '@bindings/MachineAdapterInfo';
-	import { harnessLabel } from '$lib/harnesses';
-	import { harnessTable } from '$lib/harnesses.svelte';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { harnessLabel } from '#lib/harnesses.ts';
+	import { harnessTable } from '#lib/harnesses.svelte.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import AdapterConfigEditor from './AdapterConfigEditor.svelte';
 	import { adapterMachines, binaryStatus, type AdapterMachine } from './machineAdapters.logic';
 

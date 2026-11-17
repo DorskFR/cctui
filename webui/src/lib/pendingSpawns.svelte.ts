@@ -1,6 +1,6 @@
 import type { SessionListItem } from '@bindings/SessionListItem';
-import { findSpawnedSession } from '$lib/components/organisms/spawn/spawnMatch';
-import { ws } from '$lib/ws.svelte';
+import { findSpawnedSession } from '#lib/components/organisms/spawn/spawnMatch.ts';
+import { ws } from '#lib/ws.svelte.ts';
 
 /** A spawn the daemon acknowledged but that had not registered a session when
  *  the form stopped waiting. It stays on the list as a card until the session

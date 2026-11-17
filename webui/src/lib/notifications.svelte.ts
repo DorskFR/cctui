@@ -6,7 +6,7 @@ import type { NotificationActRequest } from '@bindings/NotificationActRequest';
 import type { NotificationAction, NotificationData, NotificationTone } from '@dorsk/tsumikit';
 import { ApiError } from './api';
 import { endpoints } from './queries/endpoints';
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 
 const PAGE = 50;
 const UNREAD = new Set(['pending', 'delivered']);

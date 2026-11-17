@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { Badge, Button, Link, Text, Timestamp } from '@dorsk/tsumikit';
-	import { errMessage } from '$lib/api';
-	import type { InboxEvent } from '$lib/queries/inbox';
-	import { sessionHref } from '$lib/sessionFailureToast';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { errMessage } from '#lib/api.ts';
+	import type { InboxEvent } from '#lib/queries/inbox.ts';
+	import { sessionHref } from '#lib/sessionFailureToast.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		event,

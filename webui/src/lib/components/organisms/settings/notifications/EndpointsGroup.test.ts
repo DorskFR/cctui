@@ -13,11 +13,11 @@ const actions = vi.hoisted(() => ({
 	remove: vi.fn(async (_id: string) => undefined),
 	test: vi.fn(async (_id: string) => ({ delivery_id: 'd1' }))
 }));
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	useNotificationEndpoints: () => query,
 	useNotificationEndpointActions: () => actions
 }));
-vi.mock('$lib/components/molecules/PushSubscriptionToggle.svelte', async () => ({
+vi.mock('#lib/components/molecules/PushSubscriptionToggle.svelte', async () => ({
 	default: (await import('./PushSubscriptionToggle.stub.svelte')).default
 }));
 

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Button, Carousel, Heading, Modal, Stack, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import type { DeckCard } from '$lib/welcomeDeck.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import type { DeckCard } from '#lib/welcomeDeck.svelte.ts';
 
 	let {
 		cards,

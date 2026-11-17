@@ -2,7 +2,7 @@
 	// Composer stand-in for an archived session: read-only hint plus the
 	// New from same script · Fork · Resume actions.
 	import { Button, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		onNewFromScript,

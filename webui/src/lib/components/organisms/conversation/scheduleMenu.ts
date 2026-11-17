@@ -1,7 +1,7 @@
 import { formatTimestamp, type MenuItem } from '@dorsk/tsumikit';
 import { schedulePresets } from './scheduleTimes';
-import { compact } from '$lib/format';
-import { m } from '$lib/paraglide/messages';
+import { compact } from '#lib/format.ts';
+import { m } from '#lib/paraglide/messages.js';
 
 /** The cold-cache entries, shown while Send starts a follow-up. */
 export interface ColdSendOpts {

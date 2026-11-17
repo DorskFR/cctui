@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { Button, ConfirmModal, Progress, Text } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
 	import GuideRow from './GuideRow.svelte';
 	import {
 		buildCurriculum,
@@ -10,18 +10,18 @@
 		guideOptions,
 		replayGuide,
 		resetGuides
-	} from '$lib/guides';
-	import type { GuideSectionId, GuideView } from '$lib/guides';
+	} from '#lib/guides.ts';
+	import type { GuideSectionId, GuideView } from '#lib/guides.ts';
 	import {
 		guideReady,
 		guidesDone,
 		READINESS,
 		readinessHint,
 		startFailureMessage
-	} from '$lib/journey';
-	import { settings } from '$lib/settings.svelte';
-	import { toasts } from '$lib/toast.svelte';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/journey.ts';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let busy = $state<string | null>(null);
 	let confirming = $state(false);

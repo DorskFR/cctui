@@ -1,4 +1,4 @@
-import type { SpawnPrefill } from '$lib/components/organisms/spawn/types';
+import type { SpawnPrefill } from '#lib/components/organisms/spawn/types.ts';
 import type { HostSpawnRequest } from './types';
 
 /** A plugin's `openSpawn`: the host layout mounts its SpawnModal while a request

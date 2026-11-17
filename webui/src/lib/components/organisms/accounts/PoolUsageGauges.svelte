@@ -2,10 +2,10 @@
 	import type { PoolUsageView } from '@bindings/PoolUsageView';
 	import type { PoolUsageWindow } from '@bindings/PoolUsageWindow';
 	import { Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import SoftLimit from '$lib/components/molecules/SoftLimit.svelte';
-	import { countdown } from '$lib/components/molecules/usage-battery.logic';
-	import { isDenseWidth } from '$lib/components/molecules/cap-bar.logic';
+	import { m } from '#lib/paraglide/messages.js';
+	import SoftLimit from '#lib/components/molecules/SoftLimit.svelte';
+	import { countdown } from '#lib/components/molecules/usage-battery.logic.ts';
+	import { isDenseWidth } from '#lib/components/molecules/cap-bar.logic.ts';
 	import {
 		familyLabel,
 		fmtDemand,

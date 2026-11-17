@@ -1,12 +1,12 @@
 <script lang="ts">
 	import { Button, Popover, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import { toasts } from '$lib/toast.svelte';
-	import { errMessage } from '$lib/api';
-	import { setSessionRoom, setSessionRoomByName } from '$lib/rooms';
-	import RoomMenu from '$lib/components/molecules/RoomMenu.svelte';
-	import { useInvalidateSessions } from '$lib/queries';
-	import { hasFeature } from '$lib/features.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { errMessage } from '#lib/api.ts';
+	import { setSessionRoom, setSessionRoomByName } from '#lib/rooms.ts';
+	import RoomMenu from '#lib/components/molecules/RoomMenu.svelte';
+	import { useInvalidateSessions } from '#lib/queries/index.ts';
+	import { hasFeature } from '#lib/features.svelte.ts';
 	import type { SessionsPage } from './sessionsPage.svelte';
 
 	let { sp }: { sp: SessionsPage } = $props();

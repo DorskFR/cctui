@@ -15,7 +15,7 @@ const endpoints = vi.hoisted(() => ({
 const copyText = vi.hoisted(() => vi.fn(async () => undefined));
 const toasts = vi.hoisted(() => ({ ok: vi.fn(), error: vi.fn(), info: vi.fn() }));
 
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	usePluginInstanceSettings: () => query,
 	endpoints,
 	qk: {
@@ -27,8 +27,8 @@ vi.mock('$lib/queries', () => ({
 vi.mock('@tanstack/svelte-query', () => ({
 	useQueryClient: () => ({ invalidateQueries: vi.fn(async () => undefined) })
 }));
-vi.mock('$lib/clipboard', () => ({ copyText }));
-vi.mock('$lib/toast.svelte', () => ({ toasts }));
+vi.mock('#lib/clipboard.ts', () => ({ copyText }));
+vi.mock('#lib/toast.svelte.ts', () => ({ toasts }));
 
 import Form from './PluginInstanceSettingsForm.svelte';
 

@@ -1,6 +1,6 @@
 // Construct during component init: it opens effects.
 import { tick } from 'svelte';
-import { errMessage } from '$lib/api';
+import { errMessage } from '#lib/api.ts';
 import {
 	attachFiles,
 	fileCapError,
@@ -11,12 +11,12 @@ import {
 	removeFileToken,
 	rewriteFileTokens,
 	type FileTokenMode
-} from '$lib/attachments';
-import { attachmentDraftSync, restoreDraftTokens } from '$lib/attachmentStore';
-import { uploadCaps } from '$lib/uploadCaps.svelte';
-import { imageAttachments } from '$lib/imageAttachments.svelte';
-import { toasts } from '$lib/toast.svelte';
-import { m } from '$lib/paraglide/messages';
+} from '#lib/attachments.ts';
+import { attachmentDraftSync, restoreDraftTokens } from '#lib/attachmentStore.ts';
+import { uploadCaps } from '#lib/uploadCaps.svelte.ts';
+import { imageAttachments } from '#lib/imageAttachments.svelte.ts';
+import { toasts } from '#lib/toast.svelte.ts';
+import { m } from '#lib/paraglide/messages.js';
 
 export interface PromptAttachmentsOpts {
 	input: () => string;

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Text } from '@dorsk/tsumikit';
 	import { harnessCommandHead, type HarnessCommand } from './format';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { command }: { command: HarnessCommand } = $props();
 

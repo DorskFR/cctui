@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import { Badge } from '@dorsk/tsumikit';
-	import ContextCountsBadge from '$lib/components/molecules/ContextCountsBadge.svelte';
-	import RoomBadge from '$lib/components/molecules/RoomBadge.svelte';
+	import ContextCountsBadge from '#lib/components/molecules/ContextCountsBadge.svelte';
+	import RoomBadge from '#lib/components/molecules/RoomBadge.svelte';
 	import { contextCountsOf, type SessionView } from './view';
 
 	// "N perm" (warn fill) · unread counter (danger fill) · ⚡ auto-approve · ◎ rooms · context.

@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { useAccountPoolsUsage } from '$lib/queries';
-	import PoolUsageGauges from '$lib/components/organisms/accounts/PoolUsageGauges.svelte';
+	import { useAccountPoolsUsage } from '#lib/queries/index.ts';
+	import PoolUsageGauges from '#lib/components/organisms/accounts/PoolUsageGauges.svelte';
 	import { Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	// Every pool the viewer can see, as its aggregate gauges: the level the
 	// pool is at, its pace, and whether it holds until the members reset.

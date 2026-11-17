@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Button, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import { hasUnclosedTag, redactedSpans } from '$lib/redactTag';
+	import { m } from '#lib/paraglide/messages.js';
+	import { hasUnclosedTag, redactedSpans } from '#lib/redactTag.ts';
 
 	let {
 		text,

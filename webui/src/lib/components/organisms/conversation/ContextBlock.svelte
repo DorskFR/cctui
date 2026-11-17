@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Disclosure } from '@dorsk/tsumikit';
 	import { injectedSummary } from './format';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 	import './bubble.css';
 
 	let { html, text }: { html: string | undefined; text: string | undefined } = $props();

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Badge, Card, Link, Spinner, Text } from '@dorsk/tsumikit';
-	import PageHead from '$lib/components/molecules/PageHead.svelte';
-	import { errMessage } from '$lib/api';
+	import PageHead from '#lib/components/molecules/PageHead.svelte';
+	import { errMessage } from '#lib/api.ts';
 	import {
 		INBOX_BUCKETS,
 		groupInboxByLane,
@@ -9,9 +9,9 @@
 		useInboxEvents,
 		useRetryInboxEvent,
 		type InboxBucket
-	} from '$lib/queries/inbox';
-	import { sessionHref } from '$lib/sessionFailureToast';
-	import { m } from '$lib/paraglide/messages';
+	} from '#lib/queries/inbox.ts';
+	import { sessionHref } from '#lib/sessionFailureToast.ts';
+	import { m } from '#lib/paraglide/messages.js';
 	import InboxEventRow from './InboxEventRow.svelte';
 
 	const events = useInboxEvents();

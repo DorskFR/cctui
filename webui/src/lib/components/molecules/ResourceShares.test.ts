@@ -13,11 +13,11 @@ const share = (user_id: string, action: string) => ({
 	granted_at: '2026-01-01T00:00:00Z'
 });
 
-vi.mock('$lib/paraglide/messages', () => ({
+vi.mock('#lib/paraglide/messages.js', () => ({
 	m: new Proxy({}, { get: (_, key) => () => String(key) })
 }));
 
-vi.mock('$lib/queries', () => ({
+vi.mock('#lib/queries/index.ts', () => ({
 	useResourceShares: () => ({ data: [share('a', 'use'), share('b', 'use'), share('b', 'spawn')] }),
 	useResourceShareActions: () => ({ grant, revoke: vi.fn() })
 }));

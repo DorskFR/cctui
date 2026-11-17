@@ -1,12 +1,12 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { loadPluginModule } from './discovery';
 import { ensurePluginStyles } from './styles';
 import type { CctuiPluginModule, PluginInfo } from './types';
 
-export type LoadedPlugin =
-	| { info: PluginInfo; status: 'loading' }
-	| { info: PluginInfo; status: 'ready'; module: CctuiPluginModule }
-	| { info: PluginInfo; status: 'failed'; error: string };
+export type LoadedPlugin = 
+	{ info: PluginInfo; status: 'loading' } |
+	{ info: PluginInfo; status: 'ready'; module: CctuiPluginModule } |
+	{ info: PluginInfo; status: 'failed'; error: string };
 
 /** Reactive view over the plugin bundles the page has imported, keyed by
  *  the bundle URL. Components read `entries`; `ensure` kicks off a load. */

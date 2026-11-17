@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { ContextCounts } from '@bindings/ContextCounts';
 	import { Badge } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { counts }: { counts: ContextCounts } = $props();
 	const label = $derived(m.conversation_context_chip(counts));

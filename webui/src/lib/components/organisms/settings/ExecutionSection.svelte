@@ -4,13 +4,13 @@
 	// connected daemon within ~1 s, the phrases apply at the next spawn.
 	import { Badge, Disclosure, OptionButton, SegmentedControl, Text, Textarea } from '@dorsk/tsumikit';
 	import type { SegmentOption } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
-	import { settings, type HarnessMode, type WhipMode } from '$lib/settings.svelte';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
+	import { settings, type HarnessMode, type WhipMode } from '#lib/settings.svelte.ts';
 	import { BUILTIN_STALL_PHRASES } from './settings.logic';
-	import { m } from '$lib/paraglide/messages';
-	import { hasFeature } from '$lib/features.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import { hasFeature } from '#lib/features.svelte.ts';
 
 	const harnessMode = $derived(settings.harnessMode);
 	const harnessOpts: { v: HarnessMode; label: string; help: string }[] = [

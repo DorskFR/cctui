@@ -3,7 +3,7 @@
 	// sending, removed from queue, queued, or scheduled.
 	import { Button, Icon, IconButton, Text, formatTimestamp } from '@dorsk/tsumikit';
 	import type { Line } from './types';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		ln,

@@ -1,6 +1,6 @@
 /** Read one message aloud through `/voice/speak`; a second call with the
  *  same key while it plays stops it instead. */
-import { api } from '$lib/api';
+import { api } from '#lib/api.ts';
 import type { VoiceSpeakRequest } from '@bindings/VoiceSpeakRequest';
 import { routeToSpeaker } from './devices';
 import { releaseAudio } from './player';

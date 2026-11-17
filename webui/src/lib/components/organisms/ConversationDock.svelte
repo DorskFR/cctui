@@ -9,9 +9,9 @@
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { Button, Text, resizeHandle } from '@dorsk/tsumikit';
 	import ConversationPane from './ConversationPane.svelte';
-	import { DOCK_MIN_PX, maxDockWidth, type DockSide } from '$lib/dock';
-	import { settings } from '$lib/settings.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { DOCK_MIN_PX, maxDockWidth, type DockSide } from '#lib/dock.ts';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		side,

@@ -1,7 +1,7 @@
 // Pure helpers for the dispatchers page — no Svelte/reactive state, so they live
 // outside the component and are unit-testable on their own.
-import type { UserDispatcher } from '$lib/queries';
-import { m } from '$lib/paraglide/messages';
+import type { UserDispatcher } from '#lib/queries/index.ts';
+import { m } from '#lib/paraglide/messages.js';
 
 /** Human-readable liveness label, factoring in whether a WS is connected. */
 export function livenessLabel(d: UserDispatcher): string {

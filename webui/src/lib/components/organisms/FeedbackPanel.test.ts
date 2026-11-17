@@ -10,7 +10,7 @@ vi.mock('@dorsk/hmm', async () => {
 });
 vi.stubGlobal('__CLIENT_VERSION__', '0.31.0-test');
 
-import { feedbackConfig } from '$lib/config';
+import { feedbackConfig } from '#lib/config.ts';
 import FeedbackPanel from './FeedbackPanel.svelte';
 import { received } from './FeedbackPanel.stub.svelte';
 

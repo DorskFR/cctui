@@ -3,16 +3,16 @@
 // the supported "switch model" substitute (no in-place switch); for archived
 // sessions it is the "reopen as a new conversation" path. Defaults inherit
 // the parent's model/effort so a plain fork preserves them.
-import { errMessage } from '$lib/api';
+import { errMessage } from '#lib/api.ts';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { ForkExtract } from '@bindings/ForkExtract';
 import type { HarnessModels } from '@bindings/HarnessModels';
 import type { ForkRequest } from '@bindings/ForkRequest';
-import { toasts } from '$lib/toast.svelte';
-import { m } from '$lib/paraglide/messages';
-import { withCurrentModel, type ModelOption } from '$lib/harnessModels';
-import { harnessModelsFallback } from '$lib/domainTables';
-import { useHarnessModels } from '$lib/queries';
+import { toasts } from '#lib/toast.svelte.ts';
+import { m } from '#lib/paraglide/messages.js';
+import { withCurrentModel, type ModelOption } from '#lib/harnessModels.ts';
+import { harnessModelsFallback } from '#lib/domainTables.ts';
+import { useHarnessModels } from '#lib/queries/index.ts';
 
 export type { ModelOption };
 

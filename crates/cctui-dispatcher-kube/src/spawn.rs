@@ -2601,7 +2601,7 @@ mod tests {
 
     #[test]
     fn queue_position_ranks_only_among_the_jobs_own_profile() {
-        let jobs = [
+        let jobs = vec![
             profiled_job("a1", "alpha", "2026-10-21T10:00:01Z", true, false),
             profiled_job("b1", "beta", "2026-10-21T10:00:02Z", true, false),
             profiled_job("a2", "alpha", "2026-10-21T10:00:03Z", true, false),

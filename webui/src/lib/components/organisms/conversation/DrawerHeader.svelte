@@ -6,24 +6,24 @@
 	// delegated to callbacks; the editing UI state lives here.
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { Label } from '@bindings/Label';
-	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
-	import { settings } from '$lib/settings.svelte';
+	import { fontScale, SCALE_LEVELS } from '#lib/fontscale.svelte.ts';
+	import { settings } from '#lib/settings.svelte.ts';
 	import { headerKeyAction } from './headerKeys';
-	import RebindTrail from '$lib/components/molecules/RebindTrail.svelte';
-	import SessionGlyphs from '$lib/components/molecules/SessionGlyphs.svelte';
-	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
-	import RoomMenu from '$lib/components/molecules/RoomMenu.svelte';
-	import RoomBadge from '$lib/components/molecules/RoomBadge.svelte';
-	import KeepaliveModal from '$lib/components/molecules/KeepaliveModal.svelte';
-	import CctuiverseInviteModal from '$lib/components/molecules/CctuiverseInviteModal.svelte';
-	import CctuiverseJoinModal from '$lib/components/molecules/CctuiverseJoinModal.svelte';
-	import CctuiverseLinkChips from '$lib/components/molecules/CctuiverseLinkChips.svelte';
-	import { cctuiverseConfig, loadCctuiverseConfig } from '$lib/cctuiverseConfig.svelte';
+	import RebindTrail from '#lib/components/molecules/RebindTrail.svelte';
+	import SessionGlyphs from '#lib/components/molecules/SessionGlyphs.svelte';
+	import LabelBadge from '#lib/components/molecules/LabelBadge.svelte';
+	import RoomMenu from '#lib/components/molecules/RoomMenu.svelte';
+	import RoomBadge from '#lib/components/molecules/RoomBadge.svelte';
+	import KeepaliveModal from '#lib/components/molecules/KeepaliveModal.svelte';
+	import CctuiverseInviteModal from '#lib/components/molecules/CctuiverseInviteModal.svelte';
+	import CctuiverseJoinModal from '#lib/components/molecules/CctuiverseJoinModal.svelte';
+	import CctuiverseLinkChips from '#lib/components/molecules/CctuiverseLinkChips.svelte';
+	import { cctuiverseConfig, loadCctuiverseConfig } from '#lib/cctuiverseConfig.svelte.ts';
 	import { Button, Icon, IconButton, Input, Menu, Modal, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
-	import { headerTitleOf, nameOf } from '$lib/sessionName';
-	import { m } from '$lib/paraglide/messages';
-	import { hasFeature } from '$lib/features.svelte';
+	import { headerTitleOf, nameOf } from '#lib/sessionName.ts';
+	import { m } from '#lib/paraglide/messages.js';
+	import { hasFeature } from '#lib/features.svelte.ts';
 
 	let {
 		session,

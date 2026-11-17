@@ -5,13 +5,13 @@ import type { ToolGuardState } from '@bindings/ToolGuardState';
 
 const guard = { data: undefined as ToolGuardState | undefined };
 const set = vi.fn();
-vi.mock('$lib/queries', () => ({ useAccounts: () => ({ data: [] }) }));
-vi.mock('$lib/queries/toolGuard', () => ({
+vi.mock('#lib/queries/index.ts', () => ({ useAccounts: () => ({ data: [] }) }));
+vi.mock('#lib/queries/toolGuard.ts', () => ({
 	useToolGuard: () => guard,
 	useToolGuardActions: () => ({ set })
 }));
 const toasts = vi.hoisted(() => ({ ok: vi.fn(), error: vi.fn() }));
-vi.mock('$lib/toast.svelte', () => ({ toasts }));
+vi.mock('#lib/toast.svelte.ts', () => ({ toasts }));
 
 import DrawerBanners from './DrawerBanners.svelte';
 

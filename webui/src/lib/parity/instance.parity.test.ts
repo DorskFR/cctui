@@ -8,7 +8,7 @@ import {
 	phaseMessage,
 	phaseTone,
 	updateAvailable
-} from '$lib/instance';
+} from '#lib/instance.ts';
 import { parityFixture } from './fixtures';
 
 type Fixture = {

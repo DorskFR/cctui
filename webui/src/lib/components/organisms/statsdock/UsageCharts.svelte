@@ -1,12 +1,12 @@
 <script lang="ts">
-	import { useUsageAnalytics } from '$lib/queries';
+	import { useUsageAnalytics } from '#lib/queries/index.ts';
 	import { Text } from '@dorsk/tsumikit';
-	import SegmentedControl from '$lib/components/molecules/SegmentedControl.svelte';
+	import SegmentedControl from '#lib/components/molecules/SegmentedControl.svelte';
 	import TokensOverTime from '../overview/TokensOverTime.svelte';
 	import ModelBreakdown from '../overview/ModelBreakdown.svelte';
 	import ActivityHeatmap from '../overview/ActivityHeatmap.svelte';
 	import { RANGES, hasUsage, type Granularity } from '../overview/usage-analytics';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	// The Overview's usage analytics (tokens over time, models, activity
 	// heatmap) stacked for a narrow column. Defaults to the 7-day range so the

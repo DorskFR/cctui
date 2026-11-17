@@ -4,13 +4,13 @@
 	// out the same way. Which one shows is the nav position setting.
 	import { page } from '$app/state';
 	import { Badge, Icon } from '@dorsk/tsumikit';
-	import NavLink from '$lib/components/atoms/NavLink.svelte';
-	import { usePlugins, useSessions } from '$lib/queries';
-	import { pageNavItems } from '$lib/plugins/pageRoute';
-	import { settings } from '$lib/settings.svelte';
-	import { isNavActive, navItems, navKey } from '$lib/navItems';
-	import { m } from '$lib/paraglide/messages';
-	import { nestsUnderParent } from '$lib/followup';
+	import NavLink from '#lib/components/atoms/NavLink.svelte';
+	import { usePlugins, useSessions } from '#lib/queries/index.ts';
+	import { pageNavItems } from '#lib/plugins/pageRoute.ts';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { isNavActive, navItems, navKey } from '#lib/navItems.ts';
+	import { m } from '#lib/paraglide/messages.js';
+	import { nestsUnderParent } from '#lib/followup.ts';
 
 	let { placement = 'bottom' }: { placement?: 'bottom' | 'top' } = $props();
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { DailyCacheLoss } from '$lib/queries';
+import type { DailyCacheLoss } from '#lib/queries/index.ts';
 import { cacheLossRows, cacheLossTotals } from './cache-loss';
 
 const day = (d: string, ttl: number, pm: number, unk: number, usd = 0): DailyCacheLoss => ({

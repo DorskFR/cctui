@@ -10,8 +10,8 @@ const api = vi.hoisted(() => ({
 	upstreamHosts: vi.fn(),
 	setUpstreamHosts: vi.fn()
 }));
-vi.mock('$lib/queries', () => ({ endpoints: api }));
-vi.mock('$lib/toast.svelte', () => ({ toasts: { ok: vi.fn(), error: vi.fn() } }));
+vi.mock('#lib/queries/index.ts', () => ({ endpoints: api }));
+vi.mock('#lib/toast.svelte.ts', () => ({ toasts: { ok: vi.fn(), error: vi.fn() } }));
 
 import SpawnLimitsGroup from './SpawnLimitsGroup.svelte';
 import UpstreamHostsGroup from './UpstreamHostsGroup.svelte';

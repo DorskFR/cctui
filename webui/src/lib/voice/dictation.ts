@@ -1,6 +1,6 @@
 /** Push-to-talk dictation: record the microphone while held, transcribe
  *  the clip through `/voice/transcribe`. */
-import { api } from '$lib/api';
+import { api } from '#lib/api.ts';
 import type { VoiceTranscript } from '@bindings/VoiceTranscript';
 import { micConstraints } from './devices';
 

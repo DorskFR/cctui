@@ -1,9 +1,9 @@
 // Provider-id helpers shared by the accounts surfaces. The metadata is the
-// parity table in `$lib/domainTables`; only the quota-probe registry, which is
+// parity table in `#lib/domainTables.ts`; only the quota-probe registry, which is
 // the server's alone, comes off the wire.
 import type { ProviderFamily } from '@bindings/ProviderFamily';
-import { PROVIDERS, providerInfo } from '$lib/domainTables';
-import { usageProbes } from '$lib/usageProbes.svelte';
+import { PROVIDERS, providerInfo } from '#lib/domainTables.ts';
+import { usageProbes } from '#lib/usageProbes.svelte.ts';
 
 export type { ProviderFamily };
 export type ProviderKind = string;

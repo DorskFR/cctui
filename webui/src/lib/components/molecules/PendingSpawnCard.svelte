@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Badge, Button, Card, Spinner, Text } from '@dorsk/tsumikit';
-	import type { PendingSpawn } from '$lib/pendingSpawns.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import type { PendingSpawn } from '#lib/pendingSpawns.svelte.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		spawn,

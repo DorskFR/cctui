@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { Badge, Button, Cluster, Timestamp } from '@dorsk/tsumikit';
 	import type { NotificationEndpoint } from '@bindings/NotificationEndpoint';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import { m } from '#lib/paraglide/messages.js';
 	import { channelLabel } from './labels';
 	import { endpointSummary, hasToken, isServerEndpoint } from './endpoints.logic';
 

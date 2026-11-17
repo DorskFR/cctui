@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "$lib/api";
+import { ApiError } from "#lib/api.ts";
 import SpawnModal from "./SpawnModal.svelte";
 
 let machineList: unknown[] = [];
@@ -11,7 +11,7 @@ const machineDirs = vi.fn(
   }),
 );
 
-vi.mock("$lib/queries", () => {
+vi.mock("#lib/queries/index.ts", () => {
   const q = <T>(data: T) => ({ data, isLoading: false, isError: false });
   return {
     useMachineResources: () => q(machineList),
@@ -45,7 +45,7 @@ vi.mock("$lib/queries", () => {
   };
 });
 
-vi.mock("$lib/settings.svelte", () => ({
+vi.mock("#lib/settings.svelte.ts", () => ({
   settings: {
     state: { display: { archiveShortcut: true } },
     lastDirFor: () => null,
@@ -55,7 +55,7 @@ vi.mock("$lib/settings.svelte", () => ({
   },
 }));
 
-vi.mock("$lib/ws.svelte", () => ({ ws: { sessions: [] } }));
+vi.mock("#lib/ws.svelte.ts", () => ({ ws: { sessions: [] } }));
 
 const machine = (connected: boolean) => ({
   machine_id: "m-uuid-1",

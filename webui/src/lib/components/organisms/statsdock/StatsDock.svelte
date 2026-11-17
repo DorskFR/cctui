@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { DOCK_MIN_PX, maxDockWidth, type DockSide } from '$lib/dock';
-	import { settings } from '$lib/settings.svelte';
-	import { useVersion } from '$lib/queries';
-	import NavLink from '$lib/components/atoms/NavLink.svelte';
-	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
+	import { DOCK_MIN_PX, maxDockWidth, type DockSide } from '#lib/dock.ts';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { useVersion } from '#lib/queries/index.ts';
+	import NavLink from '#lib/components/atoms/NavLink.svelte';
+	import UpdateModal from '#lib/components/organisms/UpdateModal.svelte';
 	import { Button, Disclosure, Text } from '@dorsk/tsumikit';
 	import { resizeHandle } from '@dorsk/tsumikit';
 	import AccountUsageList from './AccountUsageList.svelte';
@@ -12,7 +12,7 @@
 	import OverviewTiles from './OverviewTiles.svelte';
 	import UsageCharts from './UsageCharts.svelte';
 	import WindowHistory from './WindowHistory.svelte';
-	import { m } from '$lib/paraglide/messages';
+	import { m } from '#lib/paraglide/messages.js';
 
 	// The stats panel pinned to one edge of the Sessions screen (Settings ›
 	// Stats panel): account usage gauges, rolling token windows, the Overview

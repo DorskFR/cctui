@@ -3,14 +3,14 @@
 	// default; an enabled plugin adds its pane button to the conversation
 	// drawer and its actions to assistant messages.
 	import { Badge, EmptyState, Switch, Text } from '@dorsk/tsumikit';
-	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
-	import PluginSettingsForm from '$lib/components/molecules/PluginSettingsForm.svelte';
+	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
+	import PluginSettingsForm from '#lib/components/molecules/PluginSettingsForm.svelte';
 	import PluginsAdminGroup from './PluginsAdminGroup.svelte';
-	import { settings } from '$lib/settings.svelte';
-	import { usePlugins } from '$lib/queries';
-	import { m } from '$lib/paraglide/messages';
+	import { settings } from '#lib/settings.svelte.ts';
+	import { usePlugins } from '#lib/queries/index.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let { isAdmin = false }: { isAdmin?: boolean } = $props();
 

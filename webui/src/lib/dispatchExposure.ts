@@ -1,6 +1,6 @@
 import type { DispatchExposure } from '@bindings/DispatchExposure';
 import type { HumanGate } from '@bindings/HumanGate';
-import { m } from '$lib/paraglide/messages';
+import { m } from '#lib/paraglide/messages.js';
 
 export type ExposureFlag = {
 	key: 'untrusted_input' | 'sensitive_data' | 'outward';

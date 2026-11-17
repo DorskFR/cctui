@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { setContext } from 'svelte';
 	import { EmptyState } from '@dorsk/tsumikit';
-	import { hostContext, hostUser } from '$lib/plugins/hostContext';
-	import { useMe } from '$lib/queries';
-	import { HOST_CONTEXT_KEY, type CctuiPluginModule, type HostContext, type PluginInfo } from '$lib/plugins/types';
-	import { m } from '$lib/paraglide/messages';
+	import { hostContext, hostUser } from '#lib/plugins/hostContext.ts';
+	import { useMe } from '#lib/queries/index.ts';
+	import { HOST_CONTEXT_KEY, type CctuiPluginModule, type HostContext, type PluginInfo } from '#lib/plugins/types.ts';
+	import { m } from '#lib/paraglide/messages.js';
 
 	let {
 		plugin,

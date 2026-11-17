@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { api } from './api';
 import type { DraftList } from '@bindings/DraftList';
 import type { PutDraftRequest } from '@bindings/PutDraftRequest';

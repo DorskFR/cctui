@@ -1,10 +1,10 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { Button } from '@dorsk/tsumikit';
-	import { errMessage } from '$lib/api';
-	import { m } from '$lib/paraglide/messages';
-	import { useSessionActions } from '$lib/queries/sessionActions';
-	import { toasts } from '$lib/toast.svelte';
+	import { errMessage } from '#lib/api.ts';
+	import { m } from '#lib/paraglide/messages.js';
+	import { useSessionActions } from '#lib/queries/sessionActions.ts';
+	import { toasts } from '#lib/toast.svelte.ts';
 	import { queuedMachineOf } from './view';
 
 	let { session }: { session: SessionListItem } = $props();

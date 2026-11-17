@@ -8,8 +8,8 @@
 	// stored names can also be deleted individually via `env_remove` (the server
 	// drops them from the decrypted blob without the other values round-tripping).
 	import { Badge, Button, IconButton, Input, Text } from '@dorsk/tsumikit';
-	import { m } from '$lib/paraglide/messages';
-	import Error from '$lib/components/atoms/Error.svelte';
+	import { m } from '#lib/paraglide/messages.js';
+	import Error from '#lib/components/atoms/Error.svelte';
 
 	interface EnvRow {
 		name: string;

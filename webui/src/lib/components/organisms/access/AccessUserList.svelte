@@ -1,11 +1,11 @@
 <script lang="ts">
 	import type { UserRow } from '@bindings/UserRow';
 	import { Avatar, Badge, Input, Button, Disclosure, Dot, Spinner, Text } from '@dorsk/tsumikit';
-	import PageHead from '$lib/components/molecules/PageHead.svelte';
-	import EnrollMachineCard from '$lib/components/organisms/EnrollMachineCard.svelte';
-	import { hashHue } from '$lib/format';
-	import { m } from '$lib/paraglide/messages';
-	import { hasFeature } from '$lib/features.svelte';
+	import PageHead from '#lib/components/molecules/PageHead.svelte';
+	import EnrollMachineCard from '#lib/components/organisms/EnrollMachineCard.svelte';
+	import { hashHue } from '#lib/format.ts';
+	import { m } from '#lib/paraglide/messages.js';
+	import { hasFeature } from '#lib/features.svelte.ts';
 	import { filterByName, splitRevoked } from './access.logic';
 
 	let {
