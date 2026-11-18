@@ -567,6 +567,11 @@ mod tests {
             .expect("connect test db");
         let (uid, mid) = seed_machine(&pool, "end").await;
         let sid = seed_owned_session(&pool, uid, mid).await;
+        sqlx::query("UPDATE sessions SET tempo = 'active', agent_state = 'working' WHERE id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .expect("mid-turn signals");
 
         let detail =
             format!("claude -p exited (exit status: 1); last stderr:\n{}", "x".repeat(3000));
@@ -591,6 +596,13 @@ mod tests {
         assert!(detail.starts_with(&end_detail));
         assert_eq!(end_detail.len(), 2048);
         assert!(ended_at.is_some());
+        let signals: (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT tempo, agent_state FROM sessions WHERE id = $1")
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .expect("read signals");
+        assert_eq!(signals, (None, Some("stopped".to_owned())), "an ended row is not busy");
 
         let events: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM stream_events WHERE session_id = $1 AND event_type = 'session_ended'",

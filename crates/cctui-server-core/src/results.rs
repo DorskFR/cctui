@@ -1,16 +1,11 @@
 //! Shared completion classification for result polling.
 use crate::store::sessions::SessionRowStatus;
 use cctui_proto::adapter::SessionChild;
-use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, classify};
+use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, classify, reports_finished};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
-/// Classify a session from its persisted signals.
-///
-/// `children`
-/// are the session's linked-PR references (`sessions.children`); the `Review`
-/// bucket arises when one of them has an OPEN PR awaiting attention per the
-/// `pr_cache` the GitHub connector maintains (empty cache degrades to no Review).
+/// Classify a live session from its persisted signals.
 fn bucket_from_signals(
     tempo: Option<&str>,
     agent_state: Option<&str>,
@@ -26,6 +21,7 @@ fn bucket_from_signals(
         children,
         q: None,
         soft_limit_blocked,
+        ended: false,
     };
     classify(&input, pr_cache)
 }
@@ -63,7 +59,9 @@ impl ResultRow {
             &[],
             &HashMap::new(),
         );
-        bucket == Bucket::Done && !busy
+        bucket == Bucket::Done
+            && !busy
+            && reports_finished(self.agent_state.as_deref(), self.activity.as_deref())
     }
 
     /// codex keeps `tempo` at its last busy value after the turn goes idle,

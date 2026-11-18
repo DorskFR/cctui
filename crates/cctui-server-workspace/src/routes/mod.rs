@@ -30,6 +30,7 @@ pub mod harness_models;
 pub mod harness_update;
 pub mod harnesses;
 pub mod hidden_owners;
+pub mod hooks;
 pub mod images;
 pub mod inbox;
 pub mod instance;

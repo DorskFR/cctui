@@ -1415,7 +1415,6 @@
 	"sessions_bucket_blocked": "Action requise",
 	"sessions_bucket_done": "Terminées",
 	"sessions_bucket_pinned": "Épinglées",
-	"sessions_bucket_review": "Prêtes pour revue",
 	"sessions_bucket_working": "En cours",
 	"sessions_cancel_selection": "Annuler la sélection",
 	"sessions_clear_filter": "Effacer le filtre",
@@ -2821,6 +2820,187 @@
 	"inbox_cancel": "Annuler",
 	"inbox_retry": "Réessayer",
 	"inbox_waiting_until": "Pas avant {at}",
+	"nav_schedules": "Planifications",
+	"schedules_title": "Planifications",
+	"schedules_subtitle": "Des prompts qui démarrent une session à intervalles réguliers. Une planification en pause garde ses réglages et peut toujours être lancée à la main.",
+	"schedules_empty": "Aucune planification pour l'instant.",
+	"schedules_new": "Nouvelle planification",
+	"schedules_new_title": "Nouvelle planification",
+	"schedules_edit_title": "Modifier la planification",
+	"schedules_name_label": "Nom",
+	"schedules_name_placeholder": "Rapport du matin",
+	"schedules_repeat_label": "Répéter",
+	"schedules_repeat_hourly": "Toutes les heures",
+	"schedules_repeat_daily": "Tous les jours",
+	"schedules_repeat_weekdays": "En semaine",
+	"schedules_repeat_weekly": "Chaque semaine",
+	"schedules_repeat_custom": "Personnalisé",
+	"schedules_time_label": "Heure",
+	"schedules_time_invalid": "Choisissez une heure",
+	"schedules_weekdays_label": "Jours",
+	"schedules_weekdays_required": "Choisissez au moins un jour",
+	"schedules_cron_label": "Expression cron",
+	"schedules_cron_hint": "Cinq champs : minute, heure, jour du mois, mois, jour de la semaine. Chacun accepte *, des listes (1,3), des plages (1-5) et des pas (*/15).",
+	"schedules_cron_error_empty": "Saisissez une expression cron",
+	"schedules_cron_error_fields": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "Une expression cron a cinq champs (minute heure jour-du-mois mois jour-de-la-semaine) ; celle-ci en a {count}",
+				"countPlural=other": "Une expression cron a cinq champs (minute heure jour-du-mois mois jour-de-la-semaine) ; celle-ci en a {count}"
+			}
+		}
+	],
+	"schedules_cron_error_field": "Le champ {field} « {value} » n'est pas valide : utilisez *, des nombres de {min} à {max}, des listes, des plages ou des pas",
+	"schedules_cron_field_minute": "minute",
+	"schedules_cron_field_hour": "heure",
+	"schedules_cron_field_day_of_month": "jour-du-mois",
+	"schedules_cron_field_month": "mois",
+	"schedules_cron_field_day_of_week": "jour-de-la-semaine",
+	"schedules_timezone_label": "Fuseau horaire",
+	"schedules_timezone_hint": "Les heures de la planification sont lues dans ce fuseau horaire.",
+	"schedules_overlap_label": "Si l'exécution précédente travaille encore",
+	"schedules_overlap_hint": "Les exécutions ignorées apparaissent dans les exécutions récentes de la planification.",
+	"schedules_overlap_skip": "Ignorer cette exécution",
+	"schedules_overlap_allow": "Lancer quand même une autre exécution",
+	"schedules_enabled_label": "Activée",
+	"schedules_enabled_aria": "{name} activée",
+	"schedules_edit_aria": "Modifier {name}",
+	"schedules_delete_aria": "Supprimer {name}",
+	"schedules_delete_title": "Supprimer cette planification ?",
+	"schedules_delete_message": "« {name} » ne s'exécutera plus. Les sessions déjà démarrées sont conservées.",
+	"schedules_paused": "En pause",
+	"schedules_next_fire": "Prochaine exécution",
+	"schedules_last_fire": "Dernière exécution",
+	"schedules_run_now": "Lancer maintenant",
+	"schedules_run_queued_toast": "« {name} » est en file pour s'exécuter maintenant",
+	"schedules_runs_title": "Exécutions récentes",
+	"schedules_runs_empty": "Aucune exécution pour l'instant.",
+	"schedules_run_queued": "En file",
+	"schedules_run_running": "Démarrage",
+	"schedules_run_delivered": "Démarrée",
+	"schedules_run_skipped": "Ignorée",
+	"schedules_run_cancelled": "Annulée",
+	"schedules_run_failed": "Échouée",
+	"schedules_run_manual": "manuelle",
+	"schedules_run_session": "Session {id}",
+	"schedules_dispatcher_target": "Ce préréglage s'exécute sur un dispatcher (profil « {profile} ») ; sa cible est conservée telle quelle.",
+	"schedules_error_name": "Donnez un nom à la planification",
+	"schedules_error_prompt": "Écrivez le prompt par lequel chaque exécution commence",
+	"schedules_error_machine": "Choisissez une machine",
+	"schedules_error_working_dir": "Saisissez un répertoire de travail",
+	"schedules_error_working_dir_absolute": "Le répertoire de travail doit être un chemin absolu ou commencer par ~",
+	"schedules_error_adapter": "Choisissez un harnais",
+	"schedules_words_every_minute": "Toutes les minutes",
+	"schedules_words_every_minutes": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "Toutes les minutes",
+				"countPlural=other": "Toutes les {count} minutes"
+			}
+		}
+	],
+	"schedules_words_hourly": "Toutes les heures",
+	"schedules_words_hourly_at": "Toutes les heures à :{minute}",
+	"schedules_words_every_hours": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "Toutes les heures",
+				"countPlural=other": "Toutes les {count} heures"
+			}
+		}
+	],
+	"schedules_words_daily": "Tous les jours à {time}",
+	"schedules_words_weekdays": "En semaine à {time}",
+	"schedules_words_weekly": "Chaque {days} à {time}",
+	"schedules_words_monthly": "Le {day} de chaque mois à {time}",
+	"nav_webhooks": "Webhooks",
+	"webhooks_title": "Webhooks",
+	"webhooks_subtitle": "Des URL signées que d'autres services appellent pour mettre un prompt en file sur l'un de vos préréglages. Chaque appel est vérifié avec le secret du webhook avant toute exécution.",
+	"webhooks_empty": "Aucun webhook pour l'instant.",
+	"webhooks_new": "Nouveau webhook",
+	"webhooks_new_title": "Nouveau webhook",
+	"webhooks_edit_title": "Modifier le webhook",
+	"webhooks_name_label": "Nom",
+	"webhooks_name_placeholder": "Suivi des tickets",
+	"webhooks_preset_label": "Préréglage",
+	"webhooks_preset_hint": "Seuls les préréglages qui acceptent les sources externes sont listés.",
+	"webhooks_preset_pick": "Choisir un préréglage",
+	"webhooks_preset_new": "Nouveau préréglage",
+	"webhooks_preset_new_title": "Nouveau préréglage pour webhooks",
+	"webhooks_preset_deleted": "Préréglage supprimé",
+	"webhooks_template_label": "Modèle de prompt",
+	"webhooks_template_hint": "Rempli à chaque appel : {payloadExpr} lit le corps JSON (les nombres indexent les listes), {eventExpr} est l'en-tête d'événement et {deliveryExpr} l'identifiant de livraison. Un champ absent donne un texte vide.",
+	"webhooks_template_recognised": "Rempli à chaque appel : {list}",
+	"webhooks_template_unrecognised": "Laissé tel quel, non rempli : {list}",
+	"webhooks_rate_label": "Appels par minute",
+	"webhooks_rate_hint": "Les appels au-delà de ce rythme sont refusés. De {min} à {max}.",
+	"webhooks_enabled_label": "Activé",
+	"webhooks_enabled_aria": "{name} activé",
+	"webhooks_edit_aria": "Modifier {name}",
+	"webhooks_delete_aria": "Supprimer {name}",
+	"webhooks_row_preset": "Lance le préréglage « {name} »",
+	"webhooks_row_rate": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "{count} appel par minute",
+				"countPlural=other": "{count} appels par minute"
+			}
+		}
+	],
+	"webhooks_url_label": "URL de livraison",
+	"webhooks_url_copy": "Copier l'URL de livraison",
+	"webhooks_rotate": "Renouveler le secret",
+	"webhooks_rotate_title": "Renouveler le secret de ce webhook ?",
+	"webhooks_rotate_message": "« {name} » reçoit un nouveau secret et l'actuel cesse aussitôt de fonctionner. Chaque service qui l'appelle a besoin du nouveau secret.",
+	"webhooks_delete_title": "Supprimer ce webhook ?",
+	"webhooks_delete_message": "« {name} » n'acceptera plus d'appels. Son préréglage est conservé.",
+	"webhooks_secret_title": "Secret de « {name} »",
+	"webhooks_secret_once": "Copiez ce secret maintenant. Il ne sera plus affiché ; renouveler le secret est le seul moyen d'en obtenir un autre.",
+	"webhooks_secret_label": "Secret",
+	"webhooks_secret_copy": "Copier le secret",
+	"webhooks_secret_done": "Je l'ai copié",
+	"webhooks_sign_hint": "Signez chaque appel : envoyez l'en-tête {header} avec la valeur sha256= suivie du HMAC-SHA256 hexadécimal du corps brut de la requête, avec ce secret pour clé.",
+	"webhooks_deliveries_title": "Livraisons récentes",
+	"webhooks_deliveries_empty": "Aucune livraison pour l'instant.",
+	"webhooks_delivery_session": "Session {id}",
+	"webhooks_outcome_dispatched": "Transmise",
+	"webhooks_outcome_duplicate": "Doublon",
+	"webhooks_outcome_rejected": "Rejetée",
+	"webhooks_outcome_rate_limited": "Limitée",
+	"webhooks_error_name": "Donnez un nom au webhook",
+	"webhooks_error_preset": "Choisissez le préréglage que ce webhook lance",
+	"webhooks_error_template": "Écrivez le modèle de prompt",
+	"webhooks_error_rate": "Saisissez un nombre entier de {min} à {max}",
+	"presets_error_name": "Donnez un nom au préréglage",
+	"presets_error_permission_guarded": "Un préréglage qui accepte les sources externes doit s'exécuter sous contrôle sur une machine : choisissez Ask ou Auto.",
 	"push_toggle_label": "Notifications push sur ce navigateur",
 	"push_enabled": "Ce navigateur reçoit désormais les notifications push",
 	"push_disabled": "Ce navigateur ne reçoit plus les notifications push",

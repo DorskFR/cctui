@@ -38,7 +38,6 @@ impl Group {
             Self::Pinned => "pinned",
             Self::Bucket(Bucket::Working) => "working",
             Self::Bucket(Bucket::Blocked) => "blocked",
-            Self::Bucket(Bucket::Review) => "review",
             Self::Bucket(Bucket::Done) => "done",
             Self::Dispatched => "dispatched",
         }
@@ -49,10 +48,9 @@ impl Group {
         match self {
             Self::Pinned => 0,
             Self::Bucket(Bucket::Blocked) => 1,
-            Self::Bucket(Bucket::Review) => 2,
-            Self::Bucket(Bucket::Working) => 3,
-            Self::Bucket(Bucket::Done) => 4,
-            Self::Dispatched => 5,
+            Self::Bucket(Bucket::Working) => 2,
+            Self::Bucket(Bucket::Done) => 3,
+            Self::Dispatched => 4,
         }
     }
 }
@@ -545,11 +543,10 @@ mod tests {
             session("s-working", "cctui", "active", "working"),
             pinned_session("s-pin", "pinned"),
             session("s-blocked", "infra", "active", "blocked"),
-            session("s-review", "review", "active", "review"),
         ];
         assert_eq!(
             ids(&flat(&sessions, &UiState::default())),
-            ["s-pin", "s-blocked", "s-review", "s-working", "s-done", "s-disp"]
+            ["s-pin", "s-blocked", "s-working", "s-done", "s-disp"]
         );
     }
 

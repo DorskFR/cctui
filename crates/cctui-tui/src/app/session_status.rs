@@ -377,7 +377,7 @@ mod tests {
     fn only_the_working_group_can_be_stale() {
         let now = 10 * STALE_WORKING_AFTER_MS;
         let old = Some(at(now - 10 * STALE_WORKING_AFTER_MS + 1));
-        for bucket in ["blocked", "review", "done"] {
+        for bucket in ["blocked", "done"] {
             let mut s = session("s", "p", "active", bucket);
             s.last_heartbeat = old;
             assert!(!is_stale_working(&s, now), "{bucket} carries its own signal");

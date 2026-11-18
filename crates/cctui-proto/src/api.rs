@@ -48,6 +48,7 @@ pub mod update_hook;
 pub mod uploads;
 pub mod usage_history;
 pub mod version;
+pub mod webhooks;
 
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "ts")]

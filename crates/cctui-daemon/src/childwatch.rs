@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use cctui_proto::adapter::{AdapterEvent, EndReason};
-use cctui_proto::classifier::{Bucket, ClassifyInput, classify};
+use cctui_proto::classifier::{Bucket, ClassifyInput, classify, reports_finished};
 use tokio::sync::Notify;
 
 use crate::adapters::claude_code::stuck_turn::{
@@ -604,7 +604,13 @@ fn apply_status(
     activity: Option<&str>,
 ) {
     let input = ClassifyInput { tempo, state, activity, ..ClassifyInput::default() };
-    match classify(&input, &HashMap::new()) {
+    let bucket = match classify(&input, &HashMap::new()) {
+        // An idle reading without a verdict is also what a child shows before
+        // its first prompt lands.
+        Bucket::Done if !reports_finished(state, activity) => Bucket::Working,
+        bucket => bucket,
+    };
+    match bucket {
         // A `working` reading is self-reported and can stand long after the
         // turn's last word, so it must not reopen a turn the text already
         // closed; only tool traffic and new messages do that.
@@ -616,7 +622,7 @@ fn apply_status(
         Bucket::Blocked => {
             set_blocked(w, BlockKind::Status, detail.unwrap_or("waiting for input").to_owned());
         }
-        Bucket::Done | Bucket::Review => {
+        Bucket::Done => {
             clear_blocked(w, BlockKind::Status);
             if w.state.done_since.is_none() {
                 w.state.done_since = Some(Instant::now());

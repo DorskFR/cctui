@@ -3,7 +3,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use cctui_proto::adapter::PermissionMode;
-use cctui_proto::api::presets::{LaunchPreset, OnStale};
+use cctui_proto::api::presets::{LaunchPreset, OnStale, Overlap};
 
 use super::{Target, ValidPreset};
 
@@ -11,7 +11,8 @@ macro_rules! columns {
     () => {
         "id, user_id, name, prompt, machine_id, working_dir, adapter_id, model, \
          permission_mode, dispatcher_id, profile, external_sources, fresh_secs, on_stale, \
-         max_batch, cron, next_fire_at, then_preset_id, created_at, updated_at, notify_url"
+         max_batch, cron, next_fire_at, then_preset_id, created_at, updated_at, notify_url, \
+         timezone, enabled, overlap, last_fire_at"
     };
 }
 
@@ -55,6 +56,10 @@ struct Row {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     notify_url: Option<String>,
+    timezone: String,
+    enabled: bool,
+    overlap: String,
+    last_fire_at: Option<DateTime<Utc>>,
 }
 
 impl From<Row> for LaunchPreset {
@@ -78,7 +83,11 @@ impl From<Row> for LaunchPreset {
             on_stale: OnStale::parse(&r.on_stale).unwrap_or_default(),
             max_batch: r.max_batch,
             cron: r.cron,
+            timezone: r.timezone,
+            enabled: r.enabled,
+            overlap: Overlap::parse(&r.overlap).unwrap_or_default(),
             next_fire_at: r.next_fire_at,
+            last_fire_at: r.last_fire_at,
             then_preset_id: r.then_preset_id,
             notify_url: r.notify_url,
             created_at: r.created_at,
@@ -127,21 +136,33 @@ fn columns(target: &Target) -> TargetColumns<'_> {
     }
 }
 
-fn next_fire(preset: &ValidPreset) -> Option<DateTime<Utc>> {
-    preset.cron.as_deref().and_then(|expr| super::cron::next_fire(expr, Utc::now()))
+async fn next_fire(pool: &PgPool, preset: &ValidPreset) -> sqlx::Result<Option<DateTime<Utc>>> {
+    match preset.cron.as_deref() {
+        Some(expr) if preset.enabled => {
+            super::tz::next_fire_in(pool, expr, &preset.timezone, Utc::now()).await
+        }
+        _ => Ok(None),
+    }
 }
 
 async fn exists(pool: &PgPool, sql: &'static str, id: Uuid, owner: Uuid) -> sqlx::Result<bool> {
     sqlx::query_scalar(sql).bind(id).bind(owner).fetch_one(pool).await
 }
 
-/// The target and the chained preset must belong to the preset's owner.
+/// The target and the chained preset must belong to the preset's owner, and
+/// the timezone must be one Postgres knows.
 async fn check_refs(
     pool: &PgPool,
     owner: Uuid,
     preset_id: Option<Uuid>,
     preset: &ValidPreset,
 ) -> Result<(), WriteError> {
+    if preset.timezone != super::tz::UTC && !super::tz::exists(pool, &preset.timezone).await? {
+        return Err(WriteError::Invalid(format!(
+            "unknown timezone '{}': use an IANA name such as Asia/Tokyo",
+            preset.timezone
+        )));
+    }
     let target_owned = match &preset.target {
         Target::Machine { machine_id, .. } => {
             exists(
@@ -225,9 +246,10 @@ pub async fn create(
     let row: Row = sqlx::query_as(concat!(
         "INSERT INTO presets (user_id, name, prompt, machine_id, working_dir, adapter_id, model, \
            permission_mode, dispatcher_id, profile, external_sources, fresh_secs, on_stale, \
-           max_batch, cron, then_preset_id, notify_url, next_fire_at) \
+           max_batch, cron, then_preset_id, notify_url, next_fire_at, timezone, enabled, \
+           overlap) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, \
-           $18) \
+           $18, $19, $20, $21) \
          RETURNING ",
         columns!()
     ))
@@ -248,14 +270,17 @@ pub async fn create(
     .bind(preset.cron.as_deref())
     .bind(preset.then_preset_id)
     .bind(preset.notify_url.as_deref())
-    .bind(next_fire(preset))
+    .bind(next_fire(pool, preset).await?)
+    .bind(&preset.timezone)
+    .bind(preset.enabled)
+    .bind(preset.overlap.as_str())
     .fetch_one(pool)
     .await?;
     Ok(row.into())
 }
 
-/// `Ok(None)` when no preset the caller can see has that id. An unchanged cron
-/// keeps its pending fire time.
+/// `Ok(None)` when no preset the caller can see has that id. An unchanged,
+/// enabled schedule keeps its pending fire time; a paused one has none.
 pub async fn update(
     pool: &PgPool,
     owner: Option<Uuid>,
@@ -279,9 +304,11 @@ pub async fn update(
            adapter_id = $7, model = $8, permission_mode = $9, dispatcher_id = $10, \
            profile = $11, external_sources = $12, fresh_secs = $13, on_stale = $14, \
            max_batch = $15, \
-           next_fire_at = CASE WHEN cron IS NOT DISTINCT FROM $16 AND next_fire_at IS NOT NULL \
+           next_fire_at = CASE WHEN cron IS NOT DISTINCT FROM $16 AND timezone = $20 \
+                                    AND $21 AND next_fire_at IS NOT NULL \
                                THEN next_fire_at ELSE $19 END, \
-           cron = $16, then_preset_id = $17, notify_url = $18, updated_at = now() \
+           cron = $16, then_preset_id = $17, notify_url = $18, timezone = $20, enabled = $21, \
+           overlap = $22, updated_at = now() \
          WHERE id = $1 AND user_id = $2 \
          RETURNING ",
         columns!()
@@ -304,7 +331,10 @@ pub async fn update(
     .bind(preset.cron.as_deref())
     .bind(preset.then_preset_id)
     .bind(preset.notify_url.as_deref())
-    .bind(next_fire(preset))
+    .bind(next_fire(pool, preset).await?)
+    .bind(&preset.timezone)
+    .bind(preset.enabled)
+    .bind(preset.overlap.as_str())
     .fetch_optional(pool)
     .await?;
     Ok(row.map(Into::into))

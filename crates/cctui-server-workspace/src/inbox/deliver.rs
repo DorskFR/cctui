@@ -284,6 +284,7 @@ fn log_step(step: &str, done: sqlx::Result<u64>) {
 
 pub async fn sweep(state: &AppState) {
     super::store::sweep(&state.pool).await;
+    log_step("pruned webhook deliveries", crate::hooks::store::prune(&state.pool).await);
     log_step("reclaimed stranded events", claim::reclaim_stranded(&state.pool).await);
     log_step(
         "expired queued spawns",

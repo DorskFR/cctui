@@ -61,7 +61,7 @@ export default defineConfig({
 			name: 'hermetic',
 			// Anchored to the filename: testMatch sees the absolute path, so a bare
 			// `tiles-` also matches every spec under a directory whose name starts with it.
-			testMatch: /(^|[\\/])(tiles-|fontscale-|voice-|settings-|redacted-|sessions-)[^\\/]*\.spec\.ts$/,
+			testMatch: /(^|[\\/])(tiles-|fontscale-|voice-|settings-|redacted-|sessions-|schedules-|webhooks-)[^\\/]*\.spec\.ts$/,
 			use: { baseURL: headerUrl }
 		},
 		{

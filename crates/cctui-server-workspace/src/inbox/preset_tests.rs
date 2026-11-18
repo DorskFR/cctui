@@ -5,11 +5,11 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::Source;
-use super::claim::{ClaimedLane, LaneFilter, claim_lanes, release_lane};
+use super::claim::{BatchEvent, ClaimedLane, LaneFilter, claim_lanes, release_lane};
 use super::deliver::deliver_due;
 use super::preset::{
     Current, DISPATCHER_GONE, MACHINE_GONE, Plan, Preset, Prior, Resolved, UNDELIVERED,
-    dispatch_request, instruction, lane, plan, prior_from, resolve, reuse_window_secs,
+    dispatch_request, instruction, lane, plan, prior_from, resolve, reuse_window_secs, run_labels,
     spawn_prompt, spawn_request,
 };
 use super::store::{NewEvent, insert_event};
@@ -570,4 +570,44 @@ async fn an_archived_session_lane_without_a_parent_still_dead_letters() {
         ("dead", Some("session archived before delivery"))
     );
     assert!(launches(&pool, owner.machine).await.is_empty());
+}
+
+fn batch_event(user: Uuid, source: &str) -> BatchEvent {
+    BatchEvent {
+        seq: 1,
+        user_id: user,
+        source: source.into(),
+        body: "run".into(),
+        sealed_body: None,
+        parent_session_id: None,
+        attempts: 0,
+        batch_id: Uuid::new_v4(),
+        created_at: chrono::Utc::now(),
+    }
+}
+
+#[tokio::test]
+async fn a_scheduled_or_webhook_run_is_labelled_with_its_preset_name() {
+    let Some(pool) = pool("inbox_preset_run_label").await else { return };
+    let owner = seed_owner(&pool, "preset-label").await;
+    let state = AppState::for_test(pool.clone());
+    let named = Preset { user_id: owner.user, name: "Nightly Triage".into(), ..preset(true) };
+
+    let first = run_labels(&state, &named, &[batch_event(owner.user, "schedule")]).await;
+    assert_eq!(first.len(), 1);
+    let renamed = Preset { name: "nightly triage".into(), ..named.clone() };
+    let again = run_labels(&state, &renamed, &[batch_event(owner.user, "webhook")]).await;
+    assert_eq!(again, first, "one label per preset name, whatever its case");
+    let labels: Vec<(String, Uuid)> =
+        sqlx::query_as("SELECT name, user_id FROM labels WHERE id::text = $1")
+            .bind(&first[0])
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(labels, [("Nightly Triage".to_owned(), owner.user)]);
+
+    for source in ["n8n", "human", "timer"] {
+        let none = run_labels(&state, &named, &[batch_event(owner.user, source)]).await;
+        assert!(none.is_empty(), "{source}");
+    }
 }

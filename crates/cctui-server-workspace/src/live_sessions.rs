@@ -1,4 +1,4 @@
-pub(crate) use cctui_server_core::live_sessions_predicate;
+pub(crate) use cctui_server_core::{ended_signals, live_sessions_predicate};
 
 #[cfg(test)]
 mod tests {

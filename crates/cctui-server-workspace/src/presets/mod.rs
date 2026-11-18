@@ -2,9 +2,10 @@ pub mod cron;
 pub mod store;
 #[cfg(test)]
 pub mod store_tests;
+pub mod tz;
 
 use cctui_proto::adapter::PermissionMode;
-use cctui_proto::api::presets::{LaunchPresetRequest, OnStale};
+use cctui_proto::api::presets::{LaunchPresetRequest, OnStale, Overlap};
 use uuid::Uuid;
 
 pub const FRESH_SECS_DEFAULT: i32 = 900;
@@ -15,6 +16,7 @@ pub const MAX_BATCH_MAX: i32 = 100;
 const MAX_NAME_CHARS: usize = 120;
 const MAX_PROMPT_BYTES: usize = 64 * 1024;
 const MAX_NOTIFY_URL_CHARS: usize = 2048;
+const MAX_TIMEZONE_CHARS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
@@ -41,6 +43,9 @@ pub struct ValidPreset {
     pub on_stale: OnStale,
     pub max_batch: i32,
     pub cron: Option<String>,
+    pub timezone: String,
+    pub enabled: bool,
+    pub overlap: Overlap,
     pub then_preset_id: Option<Uuid>,
     pub notify_url: Option<String>,
 }
@@ -153,6 +158,10 @@ pub fn validate(req: &LaunchPresetRequest) -> Result<ValidPreset, String> {
     if let Some(expr) = &cron {
         cron::validate(expr)?;
     }
+    let timezone = trimmed(req.timezone.as_deref()).unwrap_or_else(|| tz::UTC.to_owned());
+    if timezone.chars().count() > MAX_TIMEZONE_CHARS {
+        return Err(format!("timezone must be at most {MAX_TIMEZONE_CHARS} characters"));
+    }
     Ok(ValidPreset {
         name,
         prompt: req.prompt.clone(),
@@ -162,6 +171,9 @@ pub fn validate(req: &LaunchPresetRequest) -> Result<ValidPreset, String> {
         on_stale: req.on_stale.unwrap_or_default(),
         max_batch: clamp_max_batch(req.max_batch),
         cron,
+        timezone,
+        enabled: req.enabled.unwrap_or(true),
+        overlap: req.overlap.unwrap_or_default(),
         then_preset_id: req.then_preset_id,
         notify_url,
     })
@@ -170,7 +182,7 @@ pub fn validate(req: &LaunchPresetRequest) -> Result<ValidPreset, String> {
 #[cfg(test)]
 mod tests {
     use cctui_proto::adapter::PermissionMode;
-    use cctui_proto::api::presets::{LaunchPresetRequest, OnStale};
+    use cctui_proto::api::presets::{LaunchPresetRequest, OnStale, Overlap};
     use uuid::Uuid;
 
     use super::{Target, validate};
@@ -282,5 +294,27 @@ mod tests {
         assert_eq!(validate(&cron).unwrap().cron.as_deref(), Some("0 9 * * 1-5"));
         let blank = LaunchPresetRequest { cron: Some(String::new()), ..machine() };
         assert_eq!(validate(&blank).unwrap().cron, None);
+    }
+
+    #[test]
+    fn a_schedule_defaults_to_utc_enabled_and_overlapping() {
+        let valid = validate(&machine()).unwrap();
+        assert_eq!(
+            (valid.timezone.as_str(), valid.enabled, valid.overlap),
+            ("UTC", true, Overlap::Allow)
+        );
+        let set = LaunchPresetRequest {
+            timezone: Some(" Asia/Tokyo ".into()),
+            enabled: Some(false),
+            overlap: Some(Overlap::Skip),
+            ..machine()
+        };
+        let valid = validate(&set).unwrap();
+        assert_eq!(
+            (valid.timezone.as_str(), valid.enabled, valid.overlap),
+            ("Asia/Tokyo", false, Overlap::Skip)
+        );
+        let long = LaunchPresetRequest { timezone: Some("x".repeat(65)), ..machine() };
+        assert!(validate(&long).unwrap_err().contains("timezone"));
     }
 }

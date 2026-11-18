@@ -14,9 +14,9 @@ describe('navItems', () => {
 		expect(hrefs.at(-1)).toBe('/settings');
 	});
 
-	it('ends the built-in run at accounts and the inbox: the rest lives under Settings', () => {
+	it('ends the built-in run at accounts, the inbox, schedules and webhooks: the rest lives under Settings', () => {
 		const hrefs = navItems().map((i) => i.href);
-		expect(hrefs).toEqual(['/', '/sessions', '/bookmarks', '/accounts', '/inbox', '/settings']);
+		expect(hrefs).toEqual(['/', '/sessions', '/bookmarks', '/accounts', '/inbox', '/schedules', '/webhooks', '/settings']);
 	});
 
 	it('keeps access, dispatchers and events out of the nav', () => {
@@ -63,6 +63,8 @@ describe('navItems by announced features', () => {
 			'/bookmarks',
 			'/accounts',
 			'/inbox',
+			'/schedules',
+			'/webhooks',
 			'/apps/ghreview',
 			'/settings'
 		]);

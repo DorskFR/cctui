@@ -34,6 +34,35 @@ impl OnStale {
     }
 }
 
+/// What a cron fire does while the preset's previous run is still working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum Overlap {
+    #[default]
+    Allow,
+    Skip,
+}
+
+impl Overlap {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Skip => "skip",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "allow" => Some(Self::Allow),
+            "skip" => Some(Self::Skip),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct LaunchPreset {
@@ -53,7 +82,11 @@ pub struct LaunchPreset {
     pub on_stale: OnStale,
     pub max_batch: i32,
     pub cron: Option<String>,
+    pub timezone: String,
+    pub enabled: bool,
+    pub overlap: Overlap,
     pub next_fire_at: Option<DateTime<Utc>>,
+    pub last_fire_at: Option<DateTime<Utc>>,
     pub then_preset_id: Option<Uuid>,
     pub notify_url: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -96,6 +129,14 @@ pub struct LaunchPresetRequest {
     pub max_batch: Option<i32>,
     #[serde(default)]
     pub cron: Option<String>,
+    /// IANA name the cron is read in; UTC when absent.
+    #[serde(default)]
+    pub timezone: Option<String>,
+    /// `false` pauses the preset's cron and its webhooks; absent means enabled.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub overlap: Option<Overlap>,
     #[serde(default)]
     pub then_preset_id: Option<Uuid>,
     /// Container targets only: the completion webhook of every dispatch.
@@ -103,9 +144,17 @@ pub struct LaunchPresetRequest {
     pub notify_url: Option<String>,
 }
 
+/// Reply of `POST /presets/{id}/run`: the inbox event the run was queued as.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct PresetRun {
+    pub event_id: Uuid,
+    pub lane_id: Uuid,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::OnStale;
+    use super::{OnStale, Overlap};
 
     #[test]
     fn on_stale_round_trips_its_wire_name() {
@@ -115,5 +164,15 @@ mod tests {
         }
         assert_eq!(OnStale::default(), OnStale::Followup);
         assert_eq!(OnStale::parse("reuse"), None);
+    }
+
+    #[test]
+    fn overlap_round_trips_its_wire_name() {
+        for v in [Overlap::Allow, Overlap::Skip] {
+            assert_eq!(Overlap::parse(v.as_str()), Some(v));
+            assert_eq!(serde_json::to_value(v).unwrap(), v.as_str());
+        }
+        assert_eq!(Overlap::default(), Overlap::Allow);
+        assert_eq!(Overlap::parse("queue"), None);
     }
 }

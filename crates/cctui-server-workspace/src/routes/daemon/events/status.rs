@@ -1,4 +1,5 @@
 use cctui_proto::adapter::{AdapterEvent, TitleSource};
+use cctui_proto::classifier::Bucket;
 
 use crate::state::AppState;
 
@@ -33,9 +34,13 @@ async fn update_status_signals(
     let decorated = s.name.and_then(crate::session_emoji::decorate);
     let row = write_status_signals(&state.pool, local_id, &s, decorated.as_deref()).await?;
 
+    if row.as_ref().is_some_and(|written| written.turn_went_idle(&s)) {
+        crate::outcome::turn_ended(state, local_id);
+    }
+
     // Only a genuinely new decorated name goes to the picker model, so a title
     // re-reported on every Status costs no second call.
-    if let Some((old_name, true, true)) = row
+    if let Some(Written { old_name, emoji_on: true, renamed: true, .. }) = row
         && let (Some(name), Some(decorated)) = (s.name, decorated.as_deref())
         && state.config.emoji_picker().is_some()
     {
@@ -47,12 +52,48 @@ async fn update_status_signals(
     Ok(())
 }
 
+/// The row as a Status write found it.
+#[derive(sqlx::FromRow)]
+struct Written {
+    old_name: Option<String>,
+    emoji_on: bool,
+    renamed: bool,
+    old_tempo: Option<String>,
+    old_state: Option<String>,
+    old_activity: Option<String>,
+}
+
+impl Written {
+    /// The write took the session from Working to Completed: its turn is over
+    /// even if no turn end was signalled.
+    fn turn_went_idle(&self, s: &StatusSignals<'_>) -> bool {
+        let bucket = |tempo, state, activity| {
+            crate::routes::sessions::bucket_from_signals(
+                tempo,
+                state,
+                activity,
+                None,
+                &[],
+                &std::collections::HashMap::new(),
+            )
+        };
+        let was =
+            (self.old_tempo.as_deref(), self.old_state.as_deref(), self.old_activity.as_deref());
+        if (was.0.is_none() && was.1.is_none() && was.2.is_none())
+            || bucket(was.0, was.1, was.2) != Bucket::Working
+        {
+            return false;
+        }
+        bucket(s.tempo.or(was.0), s.agent_state.or(was.1), s.activity.or(was.2)) == Bucket::Done
+    }
+}
+
 async fn write_status_signals(
     pool: &sqlx::PgPool,
     local_id: &str,
     s: &StatusSignals<'_>,
     decorated: Option<&str>,
-) -> anyhow::Result<Option<(Option<String>, bool, bool)>> {
+) -> anyhow::Result<Option<Written>> {
     let children = serde_json::to_value(s.children).unwrap_or_else(|_| serde_json::json!([]));
     // `metadata.agent_title` is the exact name cctui last wrote from an agent
     // title: a stored name still equal to it is agent-owned and claimable, any
@@ -66,9 +107,11 @@ async fn write_status_signals(
     // incoming one behind an emoji prefix is left alone, or every Status would
     // paste the table's emoji back over the model's. The whole prefix is
     // matched, so a new title that merely ends the stored name still lands.
-    let row: Option<(Option<String>, bool, bool)> = sqlx::query_as(
+    let row: Option<Written> = sqlx::query_as(
         "WITH claim AS ( \
             SELECT s.id, \
+                   s.tempo AS old_tempo, s.agent_state AS old_state, \
+                   s.activity AS old_activity, \
                    s.session_name AS old_name, \
                    s.metadata->>'agent_title' AS agent_title, \
                    COALESCE((SELECT us.data->'sessionEmojiPrefix' = 'true'::jsonb \
@@ -85,6 +128,7 @@ async fn write_status_signals(
          ), \
          prev AS ( \
             SELECT c.id, c.old_name, c.emoji_on, c.pinned_title, \
+                   c.old_tempo, c.old_state, c.old_activity, \
                    CASE WHEN $12 AND $5::text IS NOT NULL AND NOT c.claimable \
                              AND c.agent_title IS DISTINCT FROM $5::text \
                         THEN $5::text END AS kept_title, \
@@ -131,7 +175,8 @@ async fn write_status_signals(
                     COALESCE(sessions.model, $7), COALESCE($8, sessions.effort), \
                     COALESCE($11, sessions.permission_mode), \
                     CASE WHEN jsonb_array_length($9) > 0 THEN $9 ELSE sessions.children END)) \
-         RETURNING prev.old_name, prev.emoji_on, prev.new_name IS NOT NULL",
+         RETURNING prev.old_name, prev.emoji_on, prev.new_name IS NOT NULL AS renamed, \
+                   prev.old_tempo, prev.old_state, prev.old_activity",
     )
     .bind(local_id)
     .bind(s.tempo)
@@ -324,6 +369,37 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+
+    fn written(tempo: Option<&str>, state: Option<&str>) -> Written {
+        Written {
+            old_name: None,
+            emoji_on: false,
+            renamed: false,
+            old_tempo: tempo.map(str::to_owned),
+            old_state: state.map(str::to_owned),
+            old_activity: None,
+        }
+    }
+
+    fn signals<'a>(tempo: Option<&'a str>, state: Option<&'a str>) -> StatusSignals<'a> {
+        StatusSignals { tempo, agent_state: state, ..agent_title_signals("") }
+    }
+
+    #[test]
+    fn a_turn_went_idle_only_when_a_working_session_settles() {
+        let working = written(Some("active"), Some("working"));
+        assert!(working.turn_went_idle(&signals(Some("idle"), Some("done"))));
+        assert!(working.turn_went_idle(&signals(Some("hibernated"), Some("stopped"))));
+        assert!(!working.turn_went_idle(&signals(Some("blocked"), None)), "a question is open");
+        assert!(!working.turn_went_idle(&signals(None, None)), "a title update");
+        assert!(!working.turn_went_idle(&signals(None, Some("done"))), "tempo is still active");
+
+        let idle = written(Some("idle"), Some("done"));
+        assert!(!idle.turn_went_idle(&signals(Some("idle"), Some("done"))));
+        assert!(!written(None, None).turn_went_idle(&signals(Some("idle"), Some("idle"))));
+        let blocked = written(Some("blocked"), Some("working"));
+        assert!(!blocked.turn_went_idle(&signals(Some("idle"), Some("done"))));
+    }
     use crate::routes::daemon::test_support::{
         drop_machines, row_version, seed_machine, seed_owned_session,
     };
@@ -353,11 +429,18 @@ mod tests {
             children: &[],
         };
         let first = write_status_signals(&pool, &sid, &signals, None).await.expect("first");
-        assert!(first.is_some());
+        assert!(first.is_some_and(|w| !w.turn_went_idle(&signals)), "a first report ends no turn");
         let before = row_version(&pool, &sid).await;
         let again = write_status_signals(&pool, &sid, &signals, None).await.expect("again");
         assert!(again.is_none());
         assert_eq!(row_version(&pool, &sid).await, before);
+
+        let idle = StatusSignals { tempo: Some("idle"), agent_state: Some("done"), ..signals };
+        let settled = write_status_signals(&pool, &sid, &idle, None).await.expect("idle");
+        assert!(
+            settled.is_some_and(|w| w.turn_went_idle(&idle)),
+            "going idle ends the turn without a turn end"
+        );
 
         drop_machines(&pool, &[sid], &[(uid, mid)]).await;
     }

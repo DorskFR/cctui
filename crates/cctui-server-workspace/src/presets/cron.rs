@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
 
 const FIELDS: [(&str, u32, u32); 5] = [
     ("minute", 0, 59),
@@ -125,9 +125,9 @@ impl Schedule {
 
     /// `None` when nothing fires within the horizon, e.g. Feb 30.
     #[must_use]
-    pub fn next_after(&self, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    pub fn next_after_naive(&self, after: NaiveDateTime) -> Option<NaiveDateTime> {
         let start = after.with_second(0)?.with_nanosecond(0)? + Duration::minutes(1);
-        let first = start.date_naive();
+        let first = start.date();
         (0..HORIZON_DAYS).find_map(|offset| {
             let date = first + Duration::days(offset);
             if !self.day_matches(date) {
@@ -136,11 +136,24 @@ impl Schedule {
             let (from_hour, from_minute) =
                 if offset == 0 { (start.hour(), start.minute()) } else { (0, 0) };
             let (h, m) = self.first_time(from_hour, from_minute)?;
-            Some(Utc.from_utc_datetime(&date.and_hms_opt(h, m, 0)?))
+            date.and_hms_opt(h, m, 0)
         })
+    }
+
+    #[must_use]
+    pub fn next_after(&self, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        self.next_after_naive(after.naive_utc()).map(|at| Utc.from_utc_datetime(&at))
+    }
+
+    /// An every-hour schedule runs by elapsed time across a clock change; one
+    /// pinned to hours runs once per wall-clock time.
+    #[must_use]
+    pub const fn any_hour(&self) -> bool {
+        self.hours == (1 << 24) - 1
     }
 }
 
+#[cfg(test)]
 #[must_use]
 pub fn next_fire(expr: &str, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
     parse(expr).ok()?.next_after(after)

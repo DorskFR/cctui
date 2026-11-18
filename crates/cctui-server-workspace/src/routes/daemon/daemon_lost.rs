@@ -5,6 +5,7 @@ use std::time::Duration;
 use chrono::Utc;
 use uuid::Uuid;
 
+use crate::live_sessions::ended_signals;
 use crate::state::AppState;
 
 /// How long a closed daemon WS may stay closed before its sessions are ended as
@@ -99,15 +100,16 @@ async fn mark_guard_exited(
     sessions: &[String],
     exited_here: &[String],
 ) -> Vec<String> {
-    match sqlx::query_scalar::<_, String>(
+    match sqlx::query_scalar::<_, String>(concat!(
         "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = 'completed', \
-             end_detail = NULL \
-         WHERE machine_uuid = $1 AND id = ANY($2) AND status IN ('new', 'active', 'inactive') \
+             end_detail = NULL, ",
+        ended_signals!(),
+        " WHERE machine_uuid = $1 AND id = ANY($2) AND status IN ('new', 'active', 'inactive') \
            AND end_reason IS NULL \
            AND (id = ANY($3) OR EXISTS (SELECT 1 FROM guard_steps g \
                 WHERE g.session_id = sessions.id AND (g.state->>'step')::bigint < 0)) \
          RETURNING id",
-    )
+    ))
     .bind(machine_id)
     .bind(sessions)
     .bind(exited_here)
@@ -197,13 +199,14 @@ async fn mark_finished_dispatches(
     if finished.is_empty() {
         return finished;
     }
-    match sqlx::query_scalar::<_, String>(
+    match sqlx::query_scalar::<_, String>(concat!(
         "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = 'completed', \
-             end_detail = $3 \
-         WHERE machine_uuid = $1 AND id = ANY($2) AND status IN ('new', 'active', 'inactive') \
+             end_detail = $3, ",
+        ended_signals!(),
+        " WHERE machine_uuid = $1 AND id = ANY($2) AND status IN ('new', 'active', 'inactive') \
            AND end_reason IS NULL \
          RETURNING id",
-    )
+    ))
     .bind(machine_id)
     .bind(&finished)
     .bind(FINISHED_BEFORE_END)
