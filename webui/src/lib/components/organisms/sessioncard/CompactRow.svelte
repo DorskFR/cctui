@@ -429,5 +429,15 @@
 		.m-initial {
 			display: inline;
 		}
+		.one .l1 {
+			flex: 1 1 auto;
+			max-width: none;
+		}
+		.one .title {
+			max-width: none;
+		}
+		.one .l2 {
+			flex: none;
+		}
 	}
 </style>

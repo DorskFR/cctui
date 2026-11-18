@@ -144,15 +144,14 @@
 	const RAILS = {
 		attention: 'var(--attention-bar)',
 		working: 'var(--ok)',
-		failed: 'var(--danger)',
-		warn: 'var(--warn)'
+		failed: 'var(--danger)'
 	} as const;
 	const rail = $derived(view.rail ? RAILS[view.rail] : null);
 	// Rows are list items: hairline divider, 3px left bar, flat surface.
 	const rowBar = $derived(
 		view.child
 			? 'color-mix(in srgb, var(--info) 55%, transparent)'
-			: view.rail === 'attention' || view.rail === 'failed' || view.rail === 'warn'
+			: view.rail === 'attention' || view.rail === 'failed'
 				? RAILS[view.rail]
 				: 'transparent'
 	);

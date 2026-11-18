@@ -26,7 +26,7 @@ export type SubagentToggle = {
 
 export type PrLink = { href: string; label: string };
 
-export type Rail = 'attention' | 'working' | 'failed' | 'warn' | null;
+export type Rail = 'attention' | 'working' | 'failed' | null;
 
 export interface SessionView {
 	s: SessionListItem;
@@ -125,8 +125,7 @@ export function railOf(
 	end: SessionEnd | null = null
 ): Rail {
 	if (needsInput) return 'attention';
-	if (end?.tone === 'danger' && !end.muted) return 'failed';
-	if (end?.tone === 'warn' && !end.muted) return 'warn';
+	if ((end?.tone === 'danger' || end?.tone === 'warn') && !end.muted) return 'failed';
 	if (s.status === 'archived' || s.status === 'draft' || stale) return null;
 	return s.bucket === 'working' ? 'working' : null;
 }

@@ -118,12 +118,12 @@ describe('SessionCard modes', () => {
 		expect(crashed.querySelector<HTMLElement>('[data-journey="session"]')?.style.borderLeft).toContain('var(--danger)');
 	});
 
-	it('marks a lost daemon with the warning bar instead of a badge', () => {
+	it('marks a lost daemon with the danger bar instead of a badge', () => {
 		const lost = render({
 			variant: 'row',
 			session: session({ status: 'inactive', end_reason: 'daemon_lost', liveness: 'dead', bucket: 'done' })
 		});
-		expect(lost.querySelector<HTMLElement>('[data-journey="session"]')?.style.borderLeft).toContain('var(--warn)');
+		expect(lost.querySelector<HTMLElement>('[data-journey="session"]')?.style.borderLeft).toContain('var(--danger)');
 		expect(lost.querySelector('.end-badge')).toBeNull();
 		expect(lost.querySelector('.l1 .title')?.parentElement?.querySelector('[data-tsu="Badge"]')).toBeNull();
 	});
