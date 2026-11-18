@@ -45,6 +45,7 @@ mod tests {
 
     async fn clear_vault_rows(tx: &mut sqlx::PgConnection) {
         for sql in [
+            "SELECT pg_advisory_xact_lock(hashtext('crypto::tests::clear_vault_rows'))",
             "LOCK TABLE inbox_events IN SHARE MODE",
             "DELETE FROM api_keys",
             "DELETE FROM session_tokens",
