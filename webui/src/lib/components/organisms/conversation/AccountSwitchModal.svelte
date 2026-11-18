@@ -7,13 +7,9 @@
 	// Switching is a pure server-side rebind: the worker keeps running.
 	import { Button, Field, Modal, Select, Spinner, Text } from '@dorsk/tsumikit';
 	import type { SoftLimitBlock } from '#lib/ws.svelte.ts';
-	import {
-		useSessionBindings,
-		type AccountProvider,
-		type OAuthAccount,
-		type SessionBinding
-	} from '#lib/queries/index.ts';
-	import { providerFamily, providerLabel } from '#lib/providers.ts';
+	import { useSessionBindings, type OAuthAccount } from '#lib/queries/index.ts';
+	import { KEEP, pendingSwitches, switchRows, type SwitchRow } from './accountSwitch.logic.ts';
+	import { providerLabel } from '#lib/providers.ts';
 	import UsageBars from '#lib/components/molecules/UsageBars.svelte';
 	import { m } from '#lib/paraglide/messages.js';
 
@@ -25,7 +21,7 @@
 		onclose
 	}: {
 		sessionId: string;
-		/** The owner's accounts (already scoped server-side to allowed ones). */
+		/** The viewer's accounts, for the current credential's usage. */
 		accounts: OAuthAccount[];
 		/** Set when a soft limit triggered the open — names the limited credential. */
 		softLimit: SoftLimitBlock | null;
@@ -37,29 +33,11 @@
 
 	const bindings = useSessionBindings(() => sessionId);
 
-	interface Row {
-		binding: SessionBinding;
-		limited: boolean;
-		current: AccountProvider | null;
-		options: { name: string; credId: string; provider: string }[];
-	}
-	const rows: Row[] = $derived(
-		(bindings.data ?? []).map((b) => {
-			const owner = accounts.find((a) => a.id === b.account_id);
-			const current = owner?.providers.find((p) => p.id === b.credential_id) ?? null;
-			const options = accounts.flatMap((a) => {
-				const cred = a.providers.find((p) => providerFamily(p.provider) === b.family);
-				return cred && cred.id !== b.credential_id
-					? [{ name: a.name, credId: cred.id, provider: cred.provider }]
-					: [];
-			});
-			return { binding: b, limited: softLimit?.account_id === b.credential_id, current, options };
-		})
+	const rows: SwitchRow[] = $derived(
+		switchRows(bindings.data ?? [], accounts, softLimit?.account_id ?? null)
 	);
 
-	// Per-family selection; '' = keep the current binding.
 	let chosen = $state<Record<string, string>>({});
-	const KEEP = '';
 
 	// A soft-limit open preselects the limited binding's first alternative so
 	// the switch is one click.
@@ -72,12 +50,7 @@
 		}
 	});
 
-	const pending = $derived(
-		rows.flatMap((r) => {
-			const c = chosen[r.binding.family];
-			return c && c !== KEEP ? [c] : [];
-		})
-	);
+	const pending = $derived(pendingSwitches(rows, chosen));
 
 	let switching = $state(false);
 	let error = $state<string | null>(null);
@@ -86,16 +59,23 @@
 		if (switching || !pending.length) return;
 		switching = true;
 		error = null;
-		try {
-			for (const credId of pending) await onswitch(credId);
-			onclose();
-		} catch (e) {
-			error = e instanceof Error ? e.message : m.conversation_acct_switch_failed();
-			switching = false;
+		for (const p of pending) {
+			try {
+				await onswitch(p.credId);
+			} catch (e) {
+				error = m.conversation_acct_switch_failed_named({
+					family: providerLabel(p.family),
+					account: p.name,
+					error: e instanceof Error ? e.message : m.conversation_acct_switch_failed()
+				});
+				switching = false;
+				return;
+			}
 		}
+		onclose();
 	}
 
-	const shownCred = (r: Row) => {
+	const shownCred = (r: SwitchRow) => {
 		const c = chosen[r.binding.family];
 		if (c && c !== KEEP) {
 			const o = r.options.find((o) => o.credId === c);
@@ -141,7 +121,9 @@
 								<Select bind:value={chosen[r.binding.family]} disabled={switching}>
 									<option value={KEEP}>{m.conversation_acct_keep({ account: r.binding.account_name })}</option>
 									{#each r.options as o (o.credId)}
-										<option value={o.credId}>{o.name}</option>
+										<option value={o.credId}>
+											{o.takeover ? m.conversation_acct_takeover_option({ account: o.name }) : o.name}
+										</option>
 									{/each}
 								</Select>
 							</Field>

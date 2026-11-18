@@ -34,6 +34,7 @@ pub mod kind {
     pub const SESSION_MODEL_CHANGED: &str = "session.model_changed";
     pub const SESSION_ACCOUNT_SWITCHED: &str = "session.account_switched";
     pub const SESSION_DELETED: &str = "session.deleted";
+    pub const SETTINGS_UPDATED: &str = "settings.updated";
     pub const MACHINE_ENROLLED: &str = "machine.enrolled";
     pub const MACHINE_ONLINE: &str = "machine.online";
     pub const MACHINE_STALE: &str = "machine.stale";
@@ -281,6 +282,18 @@ pub fn render_summary(kind_name: &str, event: &Event) -> String {
             format!("{} switched {} account", session(), str_of(d, "family").unwrap_or("its"))
         }
         kind::SESSION_DELETED => format!("{} deleted", session()),
+        kind::SETTINGS_UPDATED => {
+            let changed: Vec<&str> = d
+                .get("changed")
+                .and_then(Value::as_array)
+                .map(|v| v.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            format!(
+                "{} settings changed: {}",
+                str_of(d, "setting").unwrap_or("server"),
+                changed.join(", ")
+            )
+        }
         kind::MACHINE_ENROLLED => format!(
             "{} enrolled ({})",
             machine(),
