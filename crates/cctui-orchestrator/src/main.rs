@@ -10,7 +10,7 @@ use cctui_orchestrator::envelope::{
     DEFAULT_DNS_RESOLVER, MutationOutcome, ProfileFlags, default_sidecar_image, is_eligible,
     is_injected, mutate_pod, profile_name,
 };
-use cctui_orchestrator::validate::{Decision, ProfileSource, Verdict};
+use cctui_orchestrator::validate::{Decision, GateAdmission, ProfileSource, Verdict};
 use cctui_orchestrator::{GuardSpec, WorkerProfile, WorkerProfileSpec};
 use k8s_openapi::api::core::v1::Pod;
 use kube::core::admission::{AdmissionRequest, AdmissionResponse, AdmissionReview};
@@ -22,6 +22,7 @@ struct AppState {
     sidecar_image: String,
     dns_resolver: String,
     profile_source: Arc<dyn ProfileSource>,
+    gates: GateAdmission,
 }
 
 /// Resolves `WorkerProfile`s from the cluster for the validating webhook.
@@ -142,9 +143,9 @@ async fn validate_handler(
     let resp = AdmissionResponse::from(&req);
     let resp = if let Some(pod) = &req.object {
         let namespace = request_namespace(&req, pod);
+        let source = state.profile_source.as_ref();
         let verdict =
-            cctui_orchestrator::validate::review(pod, &namespace, state.profile_source.as_ref())
-                .await;
+            cctui_orchestrator::validate::review_gated(pod, &namespace, source, &state.gates).await;
         respond(resp, verdict)
     } else {
         resp
@@ -198,6 +199,21 @@ fn app(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
+/// `require` is `CCTUI_ORCH_REQUIRE_HUMAN_GATE`, `rules` the path of the
+/// guard-proxy gate rules file in `CCTUI_ORCH_GATE_RULES`.
+fn gate_admission(require: Option<&str>, rules: Option<&str>) -> anyhow::Result<GateAdmission> {
+    let require_gate = match require.map(str::trim) {
+        None | Some("" | "false") => false,
+        Some("true") => true,
+        Some(other) => anyhow::bail!("CCTUI_ORCH_REQUIRE_HUMAN_GATE={other:?}: want true or false"),
+    };
+    let gates = GateAdmission { require_gate, ..GateAdmission::default() };
+    let Some(path) = rules.map(str::trim).filter(|p| !p.is_empty()) else { return Ok(gates) };
+    let json = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("reading gate rules {path}: {e}"))?;
+    gates.with_rules(&json).map_err(|e| anyhow::anyhow!("{path}: {e}"))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     rustls::crypto::ring::default_provider()
@@ -214,9 +230,13 @@ async fn main() -> anyhow::Result<()> {
         .map(|r| r.trim().to_owned())
         .filter(|r| !r.is_empty())
         .unwrap_or_else(|| DEFAULT_DNS_RESOLVER.to_owned());
+    let gates = gate_admission(
+        std::env::var("CCTUI_ORCH_REQUIRE_HUMAN_GATE").ok().as_deref(),
+        std::env::var("CCTUI_ORCH_GATE_RULES").ok().as_deref(),
+    )?;
     let client = Client::try_default().await?;
     let profile_source: Arc<dyn ProfileSource> = Arc::new(KubeProfileSource { client });
-    let state = Arc::new(AppState { sidecar_image, dns_resolver, profile_source });
+    let state = Arc::new(AppState { sidecar_image, dns_resolver, profile_source, gates });
     let router = app(state);
 
     let addr: SocketAddr =
@@ -320,7 +340,27 @@ mod tests {
             sidecar_image: "registry.example.com/w:test".to_owned(),
             dns_resolver: DEFAULT_DNS_RESOLVER.to_owned(),
             profile_source,
+            gates: GateAdmission::default(),
         })
+    }
+
+    #[test]
+    fn gate_admission_is_off_unless_required_and_reads_the_rules_file() {
+        let off = gate_admission(None, None).unwrap();
+        assert!(!off.require_gate && off.rule_sets.is_empty());
+        assert!(!gate_admission(Some("false"), Some(" ")).unwrap().require_gate);
+        assert!(gate_admission(Some(" true "), None).unwrap().require_gate);
+        assert!(gate_admission(Some("yes"), None).is_err());
+        let name = format!("cctui-orch-gates-{}.json", std::process::id());
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, r#"{"gates": {"reviewer": {"extends": "draftPrOnly"}}}"#).unwrap();
+        let gates = gate_admission(None, path.to_str());
+        std::fs::write(&path, "{").unwrap();
+        let broken = gate_admission(None, path.to_str());
+        std::fs::remove_file(&path).unwrap();
+        assert!(gates.unwrap().rule_sets.contains("reviewer"));
+        assert!(broken.is_err());
+        assert!(gate_admission(None, path.to_str()).is_err(), "a missing file is refused");
     }
 
     fn patch_value(response: &serde_json::Value) -> serde_json::Value {
@@ -376,6 +416,7 @@ mod tests {
             sidecar_image: "registry.example.com/w:test".to_owned(),
             dns_resolver: "resolver.config".to_owned(),
             profile_source: Arc::new(EmptyProfiles),
+            gates: GateAdmission::default(),
         });
         let out = post_review_to(configured, review.clone()).await;
         assert_eq!(out["response"]["allowed"], true);

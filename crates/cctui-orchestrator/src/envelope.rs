@@ -11,18 +11,22 @@
 
 use crate::{
     ANNOTATION_DISPATCH_ID, ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_GPG_SIGNING,
-    ANNOTATION_GUARD_IDENTITY, ANNOTATION_POSTURE, ANNOTATION_SERVER_URL,
-    ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, EXEC_INTERCEPTION_CAP, GuardSpec,
-    HumanGate, LABEL_WORKER_PROFILE, Posture, SidecarResources,
+    ANNOTATION_GUARD_CONTROL_TOKEN, ANNOTATION_GUARD_IDENTITY, ANNOTATION_GUARD_PROXY_TOKEN,
+    ANNOTATION_GUARD_SERVICE, ANNOTATION_POSTURE, ANNOTATION_SERVER_URL,
+    ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, EXEC_INTERCEPTION_CAP, GuardPlacement,
+    GuardSpec, HumanGate, LABEL_GUARD_FOR, LABEL_ROLE, LABEL_WORKER_PROFILE, Posture,
+    ROLE_GUARD_PROXY, SidecarResources, WorkerProfileSpec,
 };
 use k8s_openapi::api::core::v1::{
     AppArmorProfile, Capabilities, ConfigMapEnvSource, ConfigMapProjection, ConfigMapVolumeSource,
-    Container, DownwardAPIProjection, DownwardAPIVolumeFile, EmptyDirVolumeSource, EnvFromSource,
-    EnvVar, EnvVarSource, HTTPGetAction, KeyToPath, ObjectFieldSelector, Pod, PodSecurityContext,
-    Probe, ProjectedVolumeSource, ResourceRequirements, SeccompProfile, SecurityContext,
-    ServiceAccountTokenProjection, Volume, VolumeMount, VolumeProjection,
+    Container, ContainerPort, DownwardAPIProjection, DownwardAPIVolumeFile, DownwardAPIVolumeSource,
+    EmptyDirVolumeSource, EnvFromSource, EnvVar, EnvVarSource, HTTPGetAction, KeyToPath,
+    ObjectFieldSelector, Pod, PodSecurityContext, PodSpec, Probe, ProjectedVolumeSource,
+    ResourceRequirements, SeccompProfile, SecurityContext, Service, ServiceAccountTokenProjection,
+    ServicePort, ServiceSpec, Volume, VolumeMount, VolumeProjection,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use std::collections::BTreeMap;
 
@@ -50,6 +54,18 @@ pub const VOL_GUARD_PROXY_INJECT: &str = "guard-proxy-inject";
 pub const VOL_GUARD_PROXY_CA: &str = "guard-proxy-ca";
 pub const VOL_GUARD_PROXY_SA_TOKEN: &str = "guard-proxy-sa-token";
 pub const VOL_GPG_AGENT: &str = "gpg-agent";
+pub const VOL_GUARD_AUTH: &str = "guard-auth";
+
+/// Volumes, and worker mounts, of a worker whose guard runs as its own pod.
+pub const EXTERNAL_GUARD_WORKER_VOLUMES: [&str; 5] =
+    [VOL_HOME, VOL_GUARD_STATE, VOL_PROXY_POLICY, VOL_GUARD_PROXY_CA, VOL_GUARD_AUTH];
+const GUARD_AUTH_DIR: &str = "/var/run/guard-auth";
+pub const GUARD_PROXY_TOKEN_FILE: &str = "proxy-token";
+pub const GUARD_CONTROL_TOKEN_FILE: &str = "control-token";
+pub const WORKER_NET_MODE_EXTERNAL_POD: &str = "external-pod";
+pub const GUARD_PORT_PROXY: i32 = 15001;
+pub const GUARD_PORT_CONTROL: i32 = 15002;
+pub const GUARD_PORT_GATEWAY: i32 = 15003;
 
 /// Where the kubelet would mount the pod's service-account token. Pods set
 /// `automountServiceAccountToken: false`; only the guard-proxy (Vault
@@ -204,6 +220,10 @@ pub struct ProfileFlags {
 }
 
 impl EnvelopeConfig {
+    fn guard_pod(&self) -> bool {
+        self.guard.as_ref().and_then(|g| g.placement) == Some(GuardPlacement::Pod)
+    }
+
     fn from_pod(
         pod: &Pod,
         sidecar_image: &str,
@@ -309,6 +329,9 @@ pub fn mutate_pod(
 /// container is mutated; all other containers/initContainers are untouched.
 #[must_use]
 pub fn inject(pod: &Pod, cfg: &EnvelopeConfig) -> Pod {
+    if cfg.guard_pod() {
+        return inject_external_guard(pod, cfg);
+    }
     let mut pod = pod.clone();
     let spec = pod.spec.get_or_insert_with(Default::default);
 
@@ -367,6 +390,233 @@ fn sandbox_worker(worker: &mut Container, cfg: &EnvelopeConfig) {
         if !mounts.iter().any(|x| x.name == m.name) {
             mounts.push(m);
         }
+    }
+}
+
+/// The worker half of a `pod`-placed guard: no `net-init`, no sidecar, the
+/// restricted worker, and the guard reached through its Service.
+fn inject_external_guard(pod: &Pod, cfg: &EnvelopeConfig) -> Pod {
+    let mut pod = pod.clone();
+    let spec = pod.spec.get_or_insert_with(Default::default);
+    let pod_sec = spec.security_context.get_or_insert_with(PodSecurityContext::default);
+    if pod_sec.fs_group.is_none() {
+        pod_sec.fs_group = Some(FS_GROUP);
+    }
+    let volumes = spec.volumes.get_or_insert_with(Vec::new);
+    let wanted = [
+        empty_dir(VOL_HOME),
+        empty_dir(VOL_GUARD_STATE),
+        empty_dir(VOL_PROXY_POLICY),
+        empty_dir(VOL_GUARD_PROXY_CA),
+        guard_auth_volume(),
+    ];
+    for vol in wanted {
+        if !volumes.iter().any(|v| v.name == vol.name) {
+            volumes.push(vol);
+        }
+    }
+    if let Some(worker) = spec.containers.iter_mut().find(|c| c.name == cfg.worker_container) {
+        worker.security_context = Some(restricted(WORKER_UID));
+        let env = worker.env.get_or_insert_with(Vec::new);
+        env.retain(|e| e.name != WARM_REPO_DIR_ENV && e.name != "GUARD_PROXY_HOST");
+        upsert_env(env, "WORKER_NET_MODE", WORKER_NET_MODE_EXTERNAL_POD);
+        upsert_env(env, "NODE_EXTRA_CA_CERTS", "/var/run/guard-proxy-ca/ca.pem");
+        env.push(annotation_env("GUARD_PROXY_HOST", ANNOTATION_GUARD_SERVICE));
+        let mounts = worker.volume_mounts.get_or_insert_with(Vec::new);
+        for m in [
+            mount(VOL_HOME, "/home/worker", false),
+            mount(VOL_GUARD_STATE, "/var/run/workflow-guard", false),
+            mount(VOL_PROXY_POLICY, "/var/run/guard-proxy", false),
+            mount(VOL_GUARD_PROXY_CA, "/var/run/guard-proxy-ca", false),
+            mount(VOL_GUARD_AUTH, GUARD_AUTH_DIR, true),
+        ] {
+            if !mounts.iter().any(|x| x.name == m.name) {
+                mounts.push(m);
+            }
+        }
+    }
+    pod.metadata
+        .annotations
+        .get_or_insert_with(BTreeMap::new)
+        .insert(ANNOTATION_ENVELOPE_INJECTED.to_owned(), "true".to_owned());
+    pod
+}
+
+/// Both tokens from the pod's own annotations, readable by its `fsGroup`.
+fn guard_auth_volume() -> Volume {
+    let item = |path: &str, annotation: &str| DownwardAPIVolumeFile {
+        path: path.to_owned(),
+        field_ref: Some(ObjectFieldSelector {
+            field_path: format!("metadata.annotations['{annotation}']"),
+            api_version: None,
+        }),
+        mode: None,
+        resource_field_ref: None,
+        user: None,
+    };
+    Volume {
+        name: VOL_GUARD_AUTH.to_owned(),
+        downward_api: Some(DownwardAPIVolumeSource {
+            default_mode: Some(0o440),
+            items: Some(vec![
+                item(GUARD_PROXY_TOKEN_FILE, ANNOTATION_GUARD_PROXY_TOKEN),
+                item(GUARD_CONTROL_TOKEN_FILE, ANNOTATION_GUARD_CONTROL_TOKEN),
+            ]),
+            ..DownwardAPIVolumeSource::default()
+        }),
+        ..Volume::default()
+    }
+}
+
+/// What the dispatcher knows about one dispatch's guard pod.
+pub struct GuardPod<'a> {
+    pub name: &'a str,
+    pub job: &'a str,
+    pub sidecar_image: &'a str,
+    pub profile: &'a WorkerProfileSpec,
+    /// The dispatch id, server URL, guard identity and both tokens.
+    pub annotations: BTreeMap<String, String>,
+    pub owner: Option<OwnerReference>,
+    pub active_deadline_seconds: Option<i64>,
+}
+
+fn guard_pod_labels(job: &str) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (LABEL_ROLE.to_owned(), ROLE_GUARD_PROXY.to_owned()),
+        (LABEL_GUARD_FOR.to_owned(), job.to_owned()),
+    ])
+}
+
+/// The guard-proxy of a `pod`-placed profile: the sidecar container, in
+/// forward mode behind the proxy token, as its own restricted pod. It carries
+/// neither the worker-profile label nor `job-name`, so neither the webhook
+/// nor the worker's policies and status select it.
+#[must_use]
+pub fn guard_pod(g: &GuardPod<'_>) -> Pod {
+    let cfg = EnvelopeConfig {
+        sidecar_image: g.sidecar_image.to_owned(),
+        worker_container: String::new(),
+        guard_identity: g.annotations.get(ANNOTATION_GUARD_IDENTITY).cloned(),
+        gpg: false,
+        guard: g.profile.guard.clone(),
+        posture: Posture::Nonroot,
+        dispatched: g.annotations.contains_key(ANNOTATION_DISPATCH_ID),
+        exec_interception: false,
+        human_gate: g.profile.human_gate,
+        dns_resolver: DEFAULT_DNS_RESOLVER.to_owned(),
+        sidecar_resources: g.profile.sidecar_resources.clone(),
+    };
+    let container = guard_pod_container(&cfg);
+    let mounted: Vec<String> =
+        container.volume_mounts.iter().flatten().map(|m| m.name.clone()).collect();
+    let mut volumes: Vec<Volume> =
+        envelope_volumes(&cfg).into_iter().filter(|v| mounted.contains(&v.name)).collect();
+    volumes.push(guard_auth_volume());
+
+    let p = g.profile;
+    Pod {
+        metadata: ObjectMeta {
+            name: Some(g.name.to_owned()),
+            labels: Some(guard_pod_labels(g.job)),
+            annotations: Some(g.annotations.clone()),
+            owner_references: g.owner.clone().map(|o| vec![o]),
+            ..ObjectMeta::default()
+        },
+        spec: Some(PodSpec {
+            restart_policy: Some("Never".to_owned()),
+            automount_service_account_token: Some(false),
+            enable_service_links: Some(false),
+            service_account_name: p.service_account_name.clone(),
+            active_deadline_seconds: g.active_deadline_seconds,
+            security_context: Some(PodSecurityContext {
+                run_as_non_root: Some(true),
+                fs_group: Some(PROXY_UID),
+                seccomp_profile: Some(SeccompProfile {
+                    type_: "RuntimeDefault".to_owned(),
+                    localhost_profile: None,
+                }),
+                ..PodSecurityContext::default()
+            }),
+            containers: vec![container],
+            volumes: Some(volumes),
+            image_pull_secrets: p.image_pull_secrets.clone(),
+            node_selector: p.node_selector.clone(),
+            tolerations: p.tolerations.clone(),
+            priority_class_name: p.priority_class_name().map(ToOwned::to_owned),
+            ..PodSpec::default()
+        }),
+        status: None,
+    }
+}
+
+fn guard_pod_container(cfg: &EnvelopeConfig) -> Container {
+    let mut container = guard_proxy_container(cfg);
+    container.restart_policy = None;
+    container.command = Some(
+        [
+            "cctui-guard-proxy-entrypoint",
+            "--mode=forward",
+            "--listen=0.0.0.0:15001",
+            "--health-listen=0.0.0.0:15002",
+            "--server-gateway-listen=0.0.0.0:15003",
+            "--policy=/var/run/guard-proxy/policy.json",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect(),
+    );
+    let env = container.env.get_or_insert_with(Vec::new);
+    let proxy_token = format!("{GUARD_AUTH_DIR}/{GUARD_PROXY_TOKEN_FILE}");
+    let control_token = format!("{GUARD_AUTH_DIR}/{GUARD_CONTROL_TOKEN_FILE}");
+    upsert_env(env, "GUARD_PROXY_AUTH_TOKEN_FILE", &proxy_token);
+    upsert_env(env, "GUARD_PROXY_CONTROL_TOKEN_FILE", &control_token);
+    let mounts = container.volume_mounts.get_or_insert_with(Vec::new);
+    mounts.push(mount(VOL_GUARD_AUTH, GUARD_AUTH_DIR, true));
+    let ports = [
+        ("proxy", GUARD_PORT_PROXY),
+        ("control", GUARD_PORT_CONTROL),
+        ("gateway", GUARD_PORT_GATEWAY),
+    ];
+    container.ports = Some(
+        ports
+            .into_iter()
+            .map(|(name, port)| ContainerPort {
+                name: Some(name.to_owned()),
+                container_port: port,
+                ..ContainerPort::default()
+            })
+            .collect(),
+    );
+    container
+}
+
+/// The Service a `pod`-placed worker dials its guard by, named like the pod.
+#[must_use]
+pub fn guard_service(name: &str, job: &str, owner: Option<OwnerReference>) -> Service {
+    let port = |name: &str, port: i32| ServicePort {
+        name: Some(name.to_owned()),
+        port,
+        target_port: Some(IntOrString::Int(port)),
+        protocol: Some("TCP".to_owned()),
+        ..ServicePort::default()
+    };
+    Service {
+        metadata: ObjectMeta {
+            name: Some(name.to_owned()),
+            labels: Some(guard_pod_labels(job)),
+            owner_references: owner.map(|o| vec![o]),
+            ..ObjectMeta::default()
+        },
+        spec: Some(ServiceSpec {
+            selector: Some(guard_pod_labels(job)),
+            ports: Some(vec![
+                port("proxy", GUARD_PORT_PROXY),
+                port("control", GUARD_PORT_CONTROL),
+                port("gateway", GUARD_PORT_GATEWAY),
+            ]),
+            ..ServiceSpec::default()
+        }),
+        status: None,
     }
 }
 
@@ -1123,6 +1373,180 @@ mod tests {
         assert_eq!(out, golden, "an empty spec.guard renders like no spec.guard");
     }
 
+    fn pod_guard() -> GuardSpec {
+        GuardSpec { placement: Some(GuardPlacement::Pod), ..GuardSpec::default() }
+    }
+
+    #[test]
+    fn an_explicit_sidecar_placement_renders_the_golden_pod() {
+        let sidecar =
+            GuardSpec { placement: Some(GuardPlacement::Sidecar), ..GuardSpec::default() };
+        let out = serde_json::to_value(apply_with(&lean_pod(), Some(&sidecar))).unwrap();
+        assert_eq!(out, lean_pod_injected_golden());
+        let out = serde_json::to_value(apply_with(&nonroot_pod(), Some(&sidecar))).unwrap();
+        assert_eq!(out, nonroot_pod_injected_golden());
+    }
+
+    fn caps_added(c: &Container) -> Vec<String> {
+        c.security_context
+            .as_ref()
+            .and_then(|sc| sc.capabilities.as_ref())
+            .and_then(|caps| caps.add.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn pod_placement_renders_a_restricted_worker_with_no_net_init_and_no_sidecar() {
+        let pod = with_annotation(nonroot_pod(), ANNOTATION_DISPATCH_ID, "d-1");
+        let out = apply_with(&pod, Some(&pod_guard()));
+        let spec = out.spec.as_ref().unwrap();
+        assert!(spec.init_containers.as_ref().is_none_or(Vec::is_empty), "no net-init/sidecar");
+        assert_eq!(spec.security_context.as_ref().unwrap().fs_group, Some(1000));
+        let vols: Vec<&str> =
+            spec.volumes.as_ref().unwrap().iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(vols, EXTERNAL_GUARD_WORKER_VOLUMES);
+
+        let w = worker(&out, "worker");
+        assert_eq!(
+            serde_json::to_value(w.security_context.as_ref().unwrap()).unwrap(),
+            golden_restricted(1000)
+        );
+        assert!(caps_added(w).is_empty(), "no NET_ADMIN, no capability at all");
+        let env = |name: &str| w.env.iter().flatten().find(|e| e.name == name).cloned();
+        assert_eq!(env("WORKER_NET_MODE").unwrap().value.as_deref(), Some("external-pod"));
+        let host = env("GUARD_PROXY_HOST").unwrap().value_from.unwrap().field_ref.unwrap();
+        assert_eq!(host.field_path, "metadata.annotations['cctui.dev/guard-service']");
+        assert!(env("CCTUI_DISPATCH_ID").is_none());
+
+        let mounts: Vec<(&str, &str, Option<bool>)> = w
+            .volume_mounts
+            .iter()
+            .flatten()
+            .map(|m| (m.name.as_str(), m.mount_path.as_str(), m.read_only))
+            .collect();
+        assert!(mounts.contains(&("guard-auth", "/var/run/guard-auth", Some(true))), "{mounts:?}");
+        assert!(!mounts.iter().any(|m| m.0 == VOL_GUARD_PROXY_SA_TOKEN || m.0 == VOL_OVERLAY));
+        let auth = spec.volumes.as_ref().unwrap().iter().find(|v| v.name == "guard-auth").unwrap();
+        let items = auth.downward_api.as_ref().unwrap().items.as_ref().unwrap();
+        let paths: Vec<(&str, &str)> = items
+            .iter()
+            .map(|i| (i.path.as_str(), i.field_ref.as_ref().unwrap().field_path.as_str()))
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                ("proxy-token", "metadata.annotations['cctui.dev/guard-proxy-token']"),
+                ("control-token", "metadata.annotations['cctui.dev/guard-control-token']"),
+            ]
+        );
+        let again = mutate_pod(&out, IMG, Some(&pod_guard()), ProfileFlags::default()).unwrap();
+        assert!(matches!(again, MutationOutcome::AlreadyInjected));
+    }
+
+    fn guard_pod_profile() -> WorkerProfileSpec {
+        serde_json::from_value(serde_json::json!({
+            "image": "registry.example.com/worker:latest",
+            "posture": "nonroot",
+            "serviceAccountName": "cctui-worker",
+            "humanGate": "draftPrOnly",
+            "tolerations": [{ "key": "dedicated", "operator": "Equal", "value": "cctui-worker" }],
+            "guard": { "placement": "pod" },
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_guard_pod_is_a_restricted_forward_proxy_behind_both_tokens() {
+        let profile = guard_pod_profile();
+        let annotations = BTreeMap::from([
+            (ANNOTATION_DISPATCH_ID.to_owned(), "d-1".to_owned()),
+            (ANNOTATION_SERVER_URL.to_owned(), "http://cctui.test:8700".to_owned()),
+            (ANNOTATION_GUARD_IDENTITY.to_owned(), "acme".to_owned()),
+            (ANNOTATION_GUARD_PROXY_TOKEN.to_owned(), "p".repeat(43)),
+            (ANNOTATION_GUARD_CONTROL_TOKEN.to_owned(), "c".repeat(43)),
+        ]);
+        let owner = OwnerReference {
+            api_version: "batch/v1".to_owned(),
+            kind: "Job".to_owned(),
+            name: "cctui-worker-abc".to_owned(),
+            uid: "u-1".to_owned(),
+            ..OwnerReference::default()
+        };
+        let pod = guard_pod(&GuardPod {
+            name: "cctui-worker-abc-guard",
+            job: "cctui-worker-abc",
+            sidecar_image: IMG,
+            profile: &profile,
+            annotations,
+            owner: Some(owner),
+            active_deadline_seconds: Some(3900),
+        });
+        let labels = pod.metadata.labels.as_ref().unwrap();
+        assert_eq!(labels.get(LABEL_ROLE).map(String::as_str), Some("guard-proxy"));
+        assert_eq!(labels.get(LABEL_GUARD_FOR).map(String::as_str), Some("cctui-worker-abc"));
+        assert!(!labels.contains_key(LABEL_WORKER_PROFILE) && !labels.contains_key("job-name"));
+        assert_eq!(pod.metadata.owner_references.as_ref().unwrap()[0].uid, "u-1");
+
+        let spec = pod.spec.as_ref().unwrap();
+        assert_eq!(spec.restart_policy.as_deref(), Some("Never"));
+        assert_eq!(spec.automount_service_account_token, Some(false));
+        assert_eq!(spec.service_account_name.as_deref(), Some("cctui-worker"));
+        assert_eq!(spec.active_deadline_seconds, Some(3900));
+        assert_eq!(spec.tolerations.as_ref().unwrap().len(), 1);
+        assert!(spec.init_containers.is_none());
+        let [gp] = spec.containers.as_slice() else { panic!("one container") };
+        assert_eq!(gp.name, GUARD_PROXY_CONTAINER);
+        assert!(gp.restart_policy.is_none());
+        assert_eq!(
+            serde_json::to_value(gp.security_context.as_ref().unwrap()).unwrap(),
+            golden_restricted(PROXY_UID)
+        );
+        assert!(caps_added(gp).is_empty());
+        let command = gp.command.as_ref().unwrap();
+        assert!(command.contains(&"--mode=forward".to_owned()), "{command:?}");
+        assert!(command.contains(&"--server-gateway-listen=0.0.0.0:15003".to_owned()));
+        let env = |name: &str| gp.env.iter().flatten().find(|e| e.name == name).cloned();
+        assert_eq!(
+            env("GUARD_PROXY_AUTH_TOKEN_FILE").unwrap().value.as_deref(),
+            Some("/var/run/guard-auth/proxy-token")
+        );
+        assert_eq!(
+            env("GUARD_PROXY_CONTROL_TOKEN_FILE").unwrap().value.as_deref(),
+            Some("/var/run/guard-auth/control-token")
+        );
+        assert_eq!(env("GUARD_PROXY_IDENTITY").unwrap().value.as_deref(), Some("acme"));
+        assert_eq!(env(GUARD_ENV_HUMAN_GATE).unwrap().value.as_deref(), Some("draftPrOnly"));
+        assert!(env("CCTUI_DISPATCH_ID").unwrap().value_from.is_some());
+        let rendered = serde_json::to_string(gp).unwrap();
+        assert!(!rendered.contains(&"p".repeat(43)), "tokens arrive by file, never by env");
+
+        let vols: Vec<&str> =
+            spec.volumes.as_ref().unwrap().iter().map(|v| v.name.as_str()).collect();
+        for want in [
+            "guard-auth",
+            "guard-proxy-ca",
+            "guard-proxy-inject",
+            "guard-proxy-sa-token",
+            "proxy-policy",
+        ] {
+            assert!(vols.contains(&want), "missing {want} in {vols:?}");
+        }
+        for worker_only in [VOL_HOME, VOL_OVERLAY, VOL_GUARD_STATE, VOL_GPG_AGENT] {
+            assert!(!vols.contains(&worker_only), "{worker_only} in {vols:?}");
+        }
+    }
+
+    #[test]
+    fn the_guard_service_selects_only_its_guard_pod() {
+        let svc = guard_service("cctui-worker-abc-guard", "cctui-worker-abc", None);
+        let spec = svc.spec.unwrap();
+        let selector = spec.selector.unwrap();
+        assert_eq!(selector.get(LABEL_GUARD_FOR).map(String::as_str), Some("cctui-worker-abc"));
+        assert_eq!(selector.get(LABEL_ROLE).map(String::as_str), Some("guard-proxy"));
+        let ports: Vec<i32> = spec.ports.unwrap().iter().map(|p| p.port).collect();
+        assert_eq!(ports, [15001, 15002, 15003]);
+    }
+
     #[test]
     fn cloud_identity_reaches_only_the_guard_proxy() {
         let guard: GuardSpec = serde_json::from_value(serde_json::json!({
@@ -1350,12 +1774,14 @@ mod tests {
             "env": [{ "name": GUARD_ENV_HUMAN_GATE, "value": "bogus" }]
         }))
         .unwrap();
-        assert_eq!(rendered_gate(Some(HumanGate::DraftPrOnly), Some(&guard)), ["draftPrOnly"]);
-        assert_eq!(rendered_gate(Some(HumanGate::NoPush), None), ["noPush"]);
+        assert_eq!(rendered_gate(Some(HumanGate::DRAFT_PR_ONLY), Some(&guard)), ["draftPrOnly"]);
+        assert_eq!(rendered_gate(Some(HumanGate::NO_PUSH), None), ["noPush"]);
         assert_eq!(
-            rendered_gate(Some(HumanGate::OutwardHeldForApproval), None),
+            rendered_gate(Some(HumanGate::OUTWARD_HELD_FOR_APPROVAL), None),
             ["outwardHeldForApproval"]
         );
+        let custom = HumanGate::new("reviewWithScreenshots");
+        assert_eq!(rendered_gate(custom, Some(&guard)), ["reviewWithScreenshots"]);
         assert!(rendered_gate(None, None).is_empty(), "no gate renders nothing");
     }
 

@@ -98,6 +98,23 @@ pub const GUARD_EXEC_ENV: &str = "CCTUI_GUARD_EXEC";
 /// profile's worker may hold it.
 pub const EXEC_INTERCEPTION_CAP: &str = "SYS_PTRACE";
 
+/// Annotations a `pod`-placed guard's worker pod carries: the guard Service it
+/// dials, the proxy token every request presents, and the control token that
+/// steers the guard's policy (mounted where the agent cannot read it).
+pub const ANNOTATION_GUARD_SERVICE: &str = "cctui.dev/guard-service";
+pub const ANNOTATION_GUARD_PROXY_TOKEN: &str = "cctui.dev/guard-proxy-token";
+pub const ANNOTATION_GUARD_CONTROL_TOKEN: &str = "cctui.dev/guard-control-token";
+
+/// Pod label (`pod`) on a worker whose guard runs as its own pod, so a static
+/// `NetworkPolicy` can select those workers.
+pub const LABEL_GUARD_PLACEMENT: &str = "cctui.dev/guard-placement";
+
+/// Labels of a guard pod: [`LABEL_ROLE`] is [`ROLE_GUARD_PROXY`], and
+/// [`LABEL_GUARD_FOR`] names the Job it guards.
+pub const LABEL_ROLE: &str = "cctui.dev/role";
+pub const ROLE_GUARD_PROXY: &str = "guard-proxy";
+pub const LABEL_GUARD_FOR: &str = "cctui.dev/guard-for";
+
 /// Pod annotation the webhook stamps (`"true"`) after injecting the envelope.
 /// Its presence makes re-invocation a no-op.
 pub const ANNOTATION_ENVELOPE_INJECTED: &str = "cctui.dev/envelope-injected";
@@ -249,9 +266,10 @@ pub struct WorkerProfileSpec {
 
     /// The human step that bounds this profile's outward actions: `noPush`
     /// (the worker cannot push), `draftPrOnly` (it only opens draft PRs a human
-    /// promotes) or `outwardHeldForApproval` (outward writes wait for a human
-    /// approval).
+    /// promotes), `outwardHeldForApproval` (outward writes wait for a human
+    /// approval) or a gate the operator's guard rules define.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
     pub human_gate: Option<HumanGate>,
 
     /// Restricted DNS resolver the injected `net-init` points the pod's DNS at:
@@ -299,24 +317,82 @@ impl Exposure {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum HumanGate {
-    NoPush,
-    DraftPrOnly,
-    OutwardHeldForApproval,
+const GATE_NAME_MAX: usize = 63;
+
+/// A gate name, stored inline so profiles stay `Copy`-friendly.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct HumanGate {
+    len: usize,
+    name: [u8; GATE_NAME_MAX],
 }
 
 impl HumanGate {
+    pub const NO_PUSH: Self = Self::literal("noPush");
+    pub const DRAFT_PR_ONLY: Self = Self::literal("draftPrOnly");
+    pub const OUTWARD_HELD_FOR_APPROVAL: Self = Self::literal("outwardHeldForApproval");
+    /// The gates every guard-proxy knows without a rules file.
+    pub const BUILT_IN: [Self; 3] =
+        [Self::NO_PUSH, Self::DRAFT_PR_ONLY, Self::OUTWARD_HELD_FOR_APPROVAL];
+
+    const fn literal(name: &str) -> Self {
+        match Self::new(name) {
+            Some(gate) => gate,
+            None => panic!("built-in gate name does not hold"),
+        }
+    }
+
+    /// `None` unless `name` is 1 to 63 ASCII letters, digits, `-`, `_` or `.`.
+    #[must_use]
+    pub const fn new(name: &str) -> Option<Self> {
+        let bytes = name.as_bytes();
+        if bytes.is_empty() || bytes.len() > GATE_NAME_MAX {
+            return None;
+        }
+        let mut out = [0u8; GATE_NAME_MAX];
+        let mut i = 0;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if !(b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')) {
+                return None;
+            }
+            out[i] = b;
+            i += 1;
+        }
+        Some(Self { len: bytes.len(), name: out })
+    }
+
     /// The profile spelling, which the guard-proxy reads from
     /// `GUARD_PROXY_HUMAN_GATE`.
     #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::NoPush => "noPush",
-            Self::DraftPrOnly => "draftPrOnly",
-            Self::OutwardHeldForApproval => "outwardHeldForApproval",
+    pub const fn as_str(&self) -> &str {
+        match std::str::from_utf8(self.name.split_at(self.len).0) {
+            Ok(name) => name,
+            Err(_) => "",
         }
+    }
+}
+
+impl std::fmt::Debug for HumanGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("HumanGate").field(&self.as_str()).finish()
+    }
+}
+
+impl Serialize for HumanGate {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for HumanGate {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Self::new(&name).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "humanGate `{name}`: want 1 to {GATE_NAME_MAX} ASCII letters, digits, `-`, `_` \
+                 or `.`"
+            ))
+        })
     }
 }
 
@@ -391,6 +467,21 @@ pub struct GuardSpec {
     /// mounts one of these volumes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_identity: Option<CloudIdentitySpec>,
+
+    /// `sidecar` (unset) runs the guard-proxy beside the worker behind
+    /// `net-init`; `pod` runs it as a per-dispatch pod the worker reaches
+    /// through a Service, with no `net-init` and no `NET_ADMIN`. `pod` needs
+    /// `posture: nonroot`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<GuardPlacement>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum GuardPlacement {
+    #[default]
+    Sidecar,
+    Pod,
 }
 
 /// The guard-proxy's share of a cloud identity webhook's injection.
@@ -458,6 +549,11 @@ impl WorkerProfileSpec {
     #[must_use]
     pub fn posture(&self) -> Posture {
         self.posture.unwrap_or(Posture::Root)
+    }
+
+    #[must_use]
+    pub fn guard_placement(&self) -> GuardPlacement {
+        self.guard.as_ref().and_then(|g| g.placement).unwrap_or_default()
     }
 
     /// Whether the profile opts into exec interception.
@@ -655,6 +751,27 @@ guard:
     }
 
     #[test]
+    fn guard_placement_defaults_to_the_sidecar_and_parses_pod() {
+        let lean: WorkerProfileSpec =
+            serde_norway::from_str("image: registry.example.com/worker:latest\n").unwrap();
+        assert_eq!(lean.guard_placement(), GuardPlacement::Sidecar);
+        let pod: WorkerProfileSpec = serde_norway::from_str(
+            "image: registry.example.com/worker:latest\nguard:\n  placement: pod\n",
+        )
+        .unwrap();
+        assert_eq!(pod.guard_placement(), GuardPlacement::Pod);
+        assert_eq!(serde_json::to_value(&pod).unwrap()["guard"]["placement"], "pod");
+        let unset = serde_json::to_value(&GuardSpec::default()).unwrap();
+        assert!(unset.get("placement").is_none());
+        assert!(
+            serde_norway::from_str::<WorkerProfileSpec>(
+                "image: registry.example.com/worker:latest\nguard:\n  placement: node\n"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn guard_cloud_identity_deserializes() {
         let yaml = r"
 image: registry.example.com/worker:latest
@@ -804,7 +921,7 @@ preflight:
         let exposure = spec.exposure.unwrap();
         assert!(exposure.untrusted_input && exposure.sensitive_data && !exposure.outward);
         assert!(!exposure.is_full());
-        assert_eq!(spec.human_gate, Some(HumanGate::DraftPrOnly));
+        assert_eq!(spec.human_gate, Some(HumanGate::DRAFT_PR_ONLY));
         let json = serde_json::to_value(&spec).unwrap();
         assert_eq!(json["exposure"]["untrustedInput"], true);
         assert_eq!(json["humanGate"], "draftPrOnly");
@@ -822,16 +939,23 @@ preflight:
             .is_err(),
             "a declared exposure names all three"
         );
-        assert!(
-            serde_norway::from_str::<WorkerProfileSpec>(
-                "image: registry.example.com/worker:latest\nhumanGate: trustMe\n"
-            )
-            .is_err()
-        );
+        let gate = |raw: &str| {
+            serde_norway::from_str::<WorkerProfileSpec>(&format!(
+                "image: registry.example.com/worker:latest\nhumanGate: {raw}\n"
+            ))
+            .map(|spec| spec.human_gate)
+        };
+        let custom = gate("reviewWithScreenshots").unwrap();
+        assert_eq!(custom.as_ref().map(HumanGate::as_str), Some("reviewWithScreenshots"));
+        assert_eq!(serde_json::to_value(custom).unwrap(), "reviewWithScreenshots");
+        for bad in ["\"\"".to_owned(), "\"two words\"".to_owned(), "x".repeat(64)] {
+            assert!(gate(&bad).is_err(), "{bad}");
+        }
+        assert!(gate(&"x".repeat(63)).is_ok());
     }
 
     #[test]
-    fn crd_exposure_requires_all_three_and_enumerates_the_gates() {
+    fn crd_exposure_requires_all_three_and_names_any_gate() {
         let crd = serde_json::to_value(WorkerProfile::crd()).unwrap();
         let props = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
             ["properties"];
@@ -844,10 +968,8 @@ preflight:
         for key in ["untrustedInput", "sensitiveData", "outward"] {
             assert_eq!(exposure["properties"][key]["type"], "boolean", "{key}");
         }
-        let gates = props["humanGate"]["enum"].as_array().expect("humanGate is an enum");
-        for want in ["noPush", "draftPrOnly", "outwardHeldForApproval"] {
-            assert!(gates.contains(&serde_json::json!(want)), "{want} missing from {gates:?}");
-        }
+        assert_eq!(props["humanGate"]["type"], "string");
+        assert!(props["humanGate"].get("enum").is_none(), "rule sets name the gates");
         assert!(props["humanGate"].get("default").is_none());
     }
 

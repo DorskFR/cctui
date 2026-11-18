@@ -12,20 +12,21 @@
 //! 3. profile conformance — the pod is exactly what the dispatcher + mutating
 //!    webhook would legitimately produce from the named profile, the
 //!    profile's `spec.guard` only tunes the guard-proxy within its rules,
-//!    nothing in the profile contradicts its `spec.posture`, and a profile
-//!    exposed to all three Rule of Two legs names a `spec.humanGate`.
+//!    nothing in the profile contradicts its `spec.posture`, a `spec.humanGate`
+//!    names a gate with a rule set, and, when the operator requires it, a
+//!    profile exposed to all three Rule of Two legs names one.
 
 use crate::envelope::{
-    GUARD_ENV_HUMAN_GATE, GUARD_PROXY_CONTAINER, NET_INIT_CONTAINER, PROXY_UID, VOL_GPG_AGENT,
-    VOL_GUARD_PROXY_CA, VOL_GUARD_PROXY_INJECT, VOL_GUARD_PROXY_SA_TOKEN, VOL_GUARD_STATE,
-    VOL_HOME, VOL_OVERLAY, VOL_PROXY_POLICY, WARM_REPO_DIR_ENV, WORKER_UID, has_overlay,
-    worker_added_caps, worker_envelope_mounts,
+    EXTERNAL_GUARD_WORKER_VOLUMES, GUARD_ENV_HUMAN_GATE, GUARD_PROXY_CONTAINER, NET_INIT_CONTAINER,
+    PROXY_UID, VOL_GPG_AGENT, VOL_GUARD_PROXY_CA, VOL_GUARD_PROXY_INJECT, VOL_GUARD_PROXY_SA_TOKEN,
+    VOL_GUARD_STATE, VOL_HOME, VOL_OVERLAY, VOL_PROXY_POLICY, WARM_REPO_DIR_ENV, WORKER_UID,
+    has_overlay, worker_added_caps, worker_envelope_mounts,
 };
 use crate::{
-    ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_POSTURE, ANNOTATION_WORKER_CONTAINER,
-    DEFAULT_WORKER_CONTAINER, EXEC_INTERCEPTION_CAP, GUARD_EXEC_ENV, GuardSpec, HumanGate,
-    LABEL_WORKER_PROFILE, Posture, RESERVED_POD_KEY_PREFIXES, RESERVED_POD_LABELS, WorkerPodSpec,
-    WorkerProfileSpec,
+    ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_GUARD_SERVICE, ANNOTATION_POSTURE,
+    ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, EXEC_INTERCEPTION_CAP, GUARD_EXEC_ENV,
+    GuardPlacement, GuardSpec, HumanGate, LABEL_WORKER_PROFILE, Posture, RESERVED_POD_KEY_PREFIXES,
+    RESERVED_POD_LABELS, WorkerPodSpec, WorkerProfileSpec,
 };
 use k8s_openapi::api::core::v1::{
     Affinity, Container, NodeSelectorTerm, Pod, PodSpec, PodTemplateSpec, SecurityContext,
@@ -97,6 +98,33 @@ impl Verdict {
 /// Admission warning for a pod whose profile sets no `spec.exposure`.
 pub const EXPOSURE_UNDECLARED: &str = "exposure undeclared";
 
+/// The operator's human gate settings for admission.
+#[derive(Debug, Clone, Default)]
+pub struct GateAdmission {
+    /// Refuse a profile declaring all three exposures without a gate.
+    pub require_gate: bool,
+    /// Gates the guard rules define on top of [`HumanGate::BUILT_IN`].
+    pub rule_sets: BTreeSet<String>,
+}
+
+impl GateAdmission {
+    /// Takes the gate names from the guard-proxy gate rules file.
+    pub fn with_rules(mut self, json: &str) -> Result<Self, String> {
+        let rules: serde_json::Value =
+            serde_json::from_str(json).map_err(|e| format!("gate rules: {e}"))?;
+        let gates = rules
+            .get("gates")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| "gate rules: no `gates` object".to_owned())?;
+        self.rule_sets = gates.keys().cloned().collect();
+        Ok(self)
+    }
+
+    fn knows(&self, gate: HumanGate) -> bool {
+        HumanGate::BUILT_IN.contains(&gate) || self.rule_sets.contains(gate.as_str())
+    }
+}
+
 /// Validate a pod against the guardrails, resolving its profile via `source`.
 pub async fn validate(pod: &Pod, namespace: &str, source: &dyn ProfileSource) -> Decision {
     review(pod, namespace, source).await.decision
@@ -104,10 +132,20 @@ pub async fn validate(pod: &Pod, namespace: &str, source: &dyn ProfileSource) ->
 
 /// [`validate`], keeping the warnings an admitted pod carries.
 pub async fn review(pod: &Pod, namespace: &str, source: &dyn ProfileSource) -> Verdict {
+    review_gated(pod, namespace, source, &GateAdmission::default()).await
+}
+
+/// [`review`] under the operator's gate settings.
+pub async fn review_gated(
+    pod: &Pod,
+    namespace: &str,
+    source: &dyn ProfileSource,
+    gates: &GateAdmission,
+) -> Verdict {
     if !is_eligible(pod) {
         return Verdict::decided(Decision::Allow);
     }
-    match validate_inner(pod, namespace, source).await {
+    match validate_inner(pod, namespace, source, gates).await {
         Ok(false) => Verdict::decided(Decision::Allow),
         Ok(true) => Verdict {
             decision: Decision::Allow,
@@ -126,6 +164,7 @@ async fn validate_inner(
     pod: &Pod,
     namespace: &str,
     source: &dyn ProfileSource,
+    gates: &GateAdmission,
 ) -> Result<bool, String> {
     let worker_name = worker_container_name(pod).to_owned();
     let spec = pod.spec.as_ref().ok_or_else(|| "profiled pod has no spec".to_owned())?;
@@ -154,28 +193,47 @@ async fn validate_inner(
             .map_err(|e| format!("WorkerProfile `{name}` spec.pod: {e}"))?;
     }
     check_posture(&profile).map_err(|e| format!("WorkerProfile `{name}` spec.posture: {e}"))?;
+    check_placement(&profile)
+        .map_err(|e| format!("WorkerProfile `{name}` spec.guard.placement: {e}"))?;
     check_exec_capability(worker, &worker_name, &profile)
         .map_err(|e| format!("WorkerProfile `{name}`: {e}"))?;
-    let undeclared = check_exposure(&profile)
+    check_human_gate(&profile, gates)
+        .map_err(|e| format!("WorkerProfile `{name}` spec.humanGate: {e}"))?;
+    let undeclared = check_exposure(&profile, gates)
         .map_err(|e| format!("WorkerProfile `{name}` spec.exposure: {e}"))?;
     check_posture_annotation(annotations, &profile)?;
     check_conformance(spec, worker, &worker_name, &profile)?;
     Ok(undeclared)
 }
 
+/// Refuse a gate the guard-proxy has no rule set for.
+pub fn check_human_gate(profile: &WorkerProfileSpec, gates: &GateAdmission) -> Result<(), String> {
+    match profile.human_gate {
+        Some(gate) if !gates.knows(gate) => Err(format!(
+            "gate `{}` has no rule set: define it in the guard gate rules or use noPush or \
+             draftPrOnly",
+            gate.as_str()
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Refuse a profile whose agent holds untrusted input, sensitive data and
-/// outward action at once without an enforced human gate. `Ok(true)` means the
-/// profile declares no exposure.
-pub fn check_exposure(profile: &WorkerProfileSpec) -> Result<bool, String> {
+/// outward action at once behind `outwardHeldForApproval`, or, when the
+/// operator requires a gate, behind none. `Ok(true)` means the profile
+/// declares no exposure.
+pub fn check_exposure(profile: &WorkerProfileSpec, gates: &GateAdmission) -> Result<bool, String> {
     match (profile.exposure, profile.human_gate) {
         (None, _) => Ok(true),
-        (Some(exposure), None) if exposure.is_full() => {
+        (Some(exposure), None) if exposure.is_full() && gates.require_gate => {
             Err("untrustedInput, sensitiveData and outward are all true with no spec.humanGate; \
              an unattended agent may hold at most two of the three: set humanGate \
-             (noPush or draftPrOnly) or drop one exposure"
+             (noPush, draftPrOnly or a gate the guard rules define) or drop one exposure"
                 .to_owned())
         }
-        (Some(exposure), Some(HumanGate::OutwardHeldForApproval)) if exposure.is_full() => {
+        (Some(exposure), Some(gate))
+            if exposure.is_full() && gate == HumanGate::OUTWARD_HELD_FOR_APPROVAL =>
+        {
             Err("humanGate outwardHeldForApproval is not enforced yet, so it cannot bound \
              untrustedInput, sensitiveData and outward together: use noPush or draftPrOnly, \
              or drop one exposure"
@@ -230,6 +288,15 @@ pub fn check_posture(profile: &WorkerProfileSpec) -> Result<(), String> {
     check_no_overlay(profile)?;
     for c in profile.init_containers.iter().flatten().chain(profile.containers.iter().flatten()) {
         check_unprivileged(c)?;
+    }
+    Ok(())
+}
+
+/// A guard pod leaves the worker no root to drop from, so only a nonroot
+/// worker may use one.
+pub fn check_placement(profile: &WorkerProfileSpec) -> Result<(), String> {
+    if profile.guard_placement() == GuardPlacement::Pod && profile.posture() != Posture::Nonroot {
+        return Err("`pod` needs `spec.posture: nonroot`".to_owned());
     }
     Ok(())
 }
@@ -776,14 +843,25 @@ pub fn template_drift(template: &PodTemplateSpec, profile: &WorkerProfileSpec) -
         .and_then(|a| a.get(ANNOTATION_WORKER_CONTAINER))
         .map_or(DEFAULT_WORKER_CONTAINER, String::as_str);
     let worker = spec.containers.iter().find(|c| c.name == worker_name)?;
+    let annotations = template.metadata.as_ref().and_then(|m| m.annotations.as_ref());
     check_template_conformance(spec, worker, profile)
-        .and_then(|()| {
-            check_posture_annotation(
-                template.metadata.as_ref().and_then(|m| m.annotations.as_ref()),
-                profile,
-            )
-        })
+        .and_then(|()| check_posture_annotation(annotations, profile))
+        .and_then(|()| check_placement_template(annotations, profile))
         .err()
+}
+
+/// A template names its guard Service exactly when the profile places the
+/// guard in a pod.
+fn check_placement_template(
+    annotations: Option<&BTreeMap<String, String>>,
+    profile: &WorkerProfileSpec,
+) -> Result<(), String> {
+    let stamped = annotations.is_some_and(|a| a.contains_key(ANNOTATION_GUARD_SERVICE));
+    match (profile.guard_placement() == GuardPlacement::Pod, stamped) {
+        (true, false) => Err("the profile now places the guard in a pod".to_owned()),
+        (false, true) => Err("the profile no longer places the guard in a pod".to_owned()),
+        _ => Ok(()),
+    }
 }
 
 /// Worker `envFrom` must be exactly the profile's — the envelope never adds
@@ -810,8 +888,12 @@ fn check_worker_mounts(
     worker_name: &str,
     profile: &WorkerProfileSpec,
 ) -> Result<(), String> {
-    let mut want: BTreeSet<&str> = worker_envelope_mounts(profile.posture()).into_iter().collect();
-    if profile.gpg_signing {
+    let mut want: BTreeSet<&str> = if profile.guard_placement() == GuardPlacement::Pod {
+        EXTERNAL_GUARD_WORKER_VOLUMES.into_iter().collect()
+    } else {
+        worker_envelope_mounts(profile.posture()).into_iter().collect()
+    };
+    if profile.gpg_signing && profile.guard_placement() == GuardPlacement::Sidecar {
         want.insert(VOL_GPG_AGENT);
     }
     for m in profile.volume_mounts.iter().flatten() {
@@ -852,8 +934,10 @@ fn check_name_sets(
     diff_names("container", &want_containers, &have_containers)?;
 
     let mut want_inits: BTreeSet<&str> = BTreeSet::new();
-    want_inits.insert(NET_INIT_CONTAINER);
-    want_inits.insert(GUARD_PROXY_CONTAINER);
+    if profile.guard_placement() == GuardPlacement::Sidecar {
+        want_inits.insert(NET_INIT_CONTAINER);
+        want_inits.insert(GUARD_PROXY_CONTAINER);
+    }
     for c in profile.init_containers.iter().flatten() {
         want_inits.insert(c.name.as_str());
     }
@@ -874,14 +958,19 @@ const ENVELOPE_VOLUMES: [&str; 8] = [
 ];
 
 fn check_volumes(spec: &PodSpec, profile: &WorkerProfileSpec) -> Result<(), String> {
-    let mut want: BTreeSet<&str> =
-        ENVELOPE_VOLUMES.into_iter().filter(|v| *v != VOL_GPG_AGENT).collect();
-    if !has_overlay(profile.posture()) {
-        want.remove(VOL_OVERLAY);
-    }
-    if profile.gpg_signing {
-        want.insert(VOL_GPG_AGENT);
-    }
+    let mut want: BTreeSet<&str> = if profile.guard_placement() == GuardPlacement::Pod {
+        EXTERNAL_GUARD_WORKER_VOLUMES.into_iter().collect()
+    } else {
+        let mut sidecar: BTreeSet<&str> =
+            ENVELOPE_VOLUMES.into_iter().filter(|v| *v != VOL_GPG_AGENT).collect();
+        if !has_overlay(profile.posture()) {
+            sidecar.remove(VOL_OVERLAY);
+        }
+        if profile.gpg_signing {
+            sidecar.insert(VOL_GPG_AGENT);
+        }
+        sidecar
+    };
     for v in profile.volumes.iter().flatten() {
         want.insert(v.name.as_str());
     }
@@ -1191,6 +1280,54 @@ mod tests {
         let pod = dispatched_pod("lean", &lean_profile());
         let src = source("lean", lean_profile());
         assert!(matches!(decide(&pod, &src).await, Decision::Allow));
+    }
+
+    fn guard_pod_profile(posture: &str) -> WorkerProfileSpec {
+        let mut profile = lean_profile();
+        profile.posture = serde_json::from_value(serde_json::json!(posture)).unwrap();
+        profile.guard =
+            Some(GuardSpec { placement: Some(GuardPlacement::Pod), ..GuardSpec::default() });
+        profile
+    }
+
+    #[tokio::test]
+    async fn a_pod_placed_guard_worker_is_allowed_without_net_init_or_sidecar() {
+        let profile = guard_pod_profile("nonroot");
+        let pod = dispatched_pod("canary", &profile);
+        assert!(matches!(decide(&pod, &source("canary", profile)).await, Decision::Allow));
+    }
+
+    #[test]
+    fn the_guard_pod_example_profile_is_admissible() {
+        let profile: crate::WorkerProfile = serde_norway::from_str(include_str!(
+            "../../../deploy/examples/guard-pod/workerprofile.yaml"
+        ))
+        .unwrap();
+        assert_eq!(profile.spec.guard_placement(), GuardPlacement::Pod);
+        assert_eq!(check_placement(&profile.spec), Ok(()));
+        assert_eq!(check_posture(&profile.spec), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn a_pod_placed_guard_needs_a_nonroot_worker() {
+        let profile = guard_pod_profile("root");
+        assert!(check_placement(&profile).is_err());
+        let pod = dispatched_pod("canary", &profile);
+        let msg = deny_msg(decide(&pod, &source("canary", profile)).await);
+        assert!(msg.contains("spec.guard.placement"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn a_sidecar_pod_does_not_pass_for_a_pod_placed_profile_or_back() {
+        let pod_profile = guard_pod_profile("nonroot");
+        let mut sidecar_profile = pod_profile.clone();
+        sidecar_profile.guard = None;
+        let sidecar_pod = dispatched_pod("canary", &sidecar_profile);
+        let msg = deny_msg(decide(&sidecar_pod, &source("canary", pod_profile.clone())).await);
+        assert!(msg.contains("unexpected"), "{msg}");
+        let external_pod = dispatched_pod("canary", &pod_profile);
+        let msg = deny_msg(decide(&external_pod, &source("canary", sidecar_profile)).await);
+        assert!(msg.contains("absent") || msg.contains("unexpected"), "{msg}");
     }
 
     #[tokio::test]
@@ -2452,17 +2589,69 @@ mod tests {
     }
 
     async fn review_exposed(profile: WorkerProfileSpec) -> Verdict {
+        review_exposed_under(profile, &GateAdmission::default()).await
+    }
+
+    async fn review_exposed_under(profile: WorkerProfileSpec, gates: &GateAdmission) -> Verdict {
         let pod = dispatched_pod("exposed", &profile);
-        review(&pod, "workers", &source("exposed", profile)).await
+        review_gated(&pod, "workers", &source("exposed", profile), gates).await
+    }
+
+    fn gate_required() -> GateAdmission {
+        GateAdmission { require_gate: true, ..GateAdmission::default() }
     }
 
     #[tokio::test]
     async fn all_three_exposures_without_a_human_gate_are_refused() {
-        let verdict = review_exposed(exposed_profile(all_three(), None)).await;
+        let profile = exposed_profile(all_three(), None);
+        let verdict = review_exposed_under(profile, &gate_required()).await;
         let msg = deny_msg(verdict.decision);
         assert!(msg.contains("WorkerProfile `exposed` spec.exposure"), "{msg}");
         assert!(msg.contains("humanGate"), "{msg}");
         assert!(verdict.warnings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn all_three_exposures_without_a_human_gate_are_admitted_unless_required() {
+        let verdict = review_exposed(exposed_profile(all_three(), None)).await;
+        assert!(matches!(verdict.decision, Decision::Allow));
+        assert!(verdict.warnings.is_empty() && !verdict.exposure_undeclared);
+    }
+
+    #[tokio::test]
+    async fn a_gate_with_a_rule_set_is_admitted_and_one_without_is_refused() {
+        let rules = include_str!("../../../deploy/examples/guard-gates/gates.json");
+        let reviewer = r#"{"gates": {"reviewWithScreenshots": {"extends": "draftPrOnly"}}}"#;
+        for gates in [GateAdmission::default(), gate_required()] {
+            for gate in ["noPush", "draftPrOnly"] {
+                let profile = exposed_profile(all_three(), Some(gate));
+                let verdict = review_exposed_under(profile, &gates).await;
+                assert!(matches!(verdict.decision, Decision::Allow), "{gate}");
+            }
+            let custom = || exposed_profile(all_three(), Some("reviewWithScreenshots"));
+            let msg = deny_msg(review_exposed_under(custom(), &gates).await.decision);
+            assert!(msg.contains("WorkerProfile `exposed` spec.humanGate"), "{msg}");
+            assert!(msg.contains("`reviewWithScreenshots` has no rule set"), "{msg}");
+            let known = gates.clone().with_rules(reviewer).unwrap();
+            let verdict = review_exposed_under(custom(), &known).await;
+            assert!(matches!(verdict.decision, Decision::Allow), "{:?}", known.rule_sets);
+            let example = gates.clone().with_rules(rules).unwrap();
+            let verdict = review_exposed_under(custom(), &example).await;
+            assert!(matches!(verdict.decision, Decision::Deny(_)), "the example names none");
+        }
+        let lean = exposed_profile(serde_json::Value::Null, Some("unknownGate"));
+        let msg = deny_msg(review_exposed(lean).await.decision);
+        assert!(msg.contains("spec.humanGate"), "an unknown gate is refused at any exposure");
+    }
+
+    #[test]
+    fn gate_admission_takes_gate_names_from_the_rules_file() {
+        let rules = include_str!("../../../deploy/examples/guard-gates/gates.json");
+        let gates = GateAdmission::default().with_rules(rules).unwrap();
+        assert_eq!(gates.rule_sets, BTreeSet::from(["draftPrOnly".to_owned()]));
+        for bad in ["not json", "[]", r#"{"gate": {}}"#, r#"{"gates": []}"#] {
+            assert!(GateAdmission::default().with_rules(bad).is_err(), "{bad}");
+        }
     }
 
     #[tokio::test]
@@ -2533,11 +2722,15 @@ mod tests {
 
     #[test]
     fn check_exposure_reports_undeclared_and_refuses_only_the_ungated_triple() {
-        assert_eq!(check_exposure(&lean_profile()), Ok(true));
-        assert!(check_exposure(&exposed_profile(all_three(), None)).is_err());
-        assert_eq!(check_exposure(&exposed_profile(all_three(), Some("noPush"))), Ok(false));
+        let (off, on) = (GateAdmission::default(), gate_required());
+        assert_eq!(check_exposure(&lean_profile(), &on), Ok(true));
+        assert!(check_exposure(&exposed_profile(all_three(), None), &on).is_err());
+        assert_eq!(check_exposure(&exposed_profile(all_three(), None), &off), Ok(false));
+        let gated = exposed_profile(all_three(), Some("noPush"));
+        assert_eq!(check_exposure(&gated, &on), Ok(false));
         let held = exposed_profile(all_three(), Some("outwardHeldForApproval"));
-        assert!(check_exposure(&held).is_err());
+        assert!(check_exposure(&held, &on).is_err());
+        assert!(check_exposure(&held, &off).is_err());
     }
 
     #[tokio::test]

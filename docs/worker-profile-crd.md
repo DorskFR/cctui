@@ -160,10 +160,16 @@ start).
 `untrustedInput` (it reads text others wrote: tickets, PR comments, web
 pages), `sensitiveData` (private repos, usable credentials, internal
 services) and `outward` (push, comments, chat posts, any shared write). An
-unattended agent may hold at most two. A profile that declares all three needs
-an enforced `spec.humanGate` (`noPush` or `draftPrOnly`), or the validating
-webhook denies its pods. A profile with no
-`exposure` is admitted with an "exposure undeclared" warning.
+unattended agent may hold at most two. When the orchestrator runs with
+`CCTUI_ORCH_REQUIRE_HUMAN_GATE=true`, a profile that declares all three needs a
+`spec.humanGate`, or the validating webhook denies its pods; the setting is off
+by default. `outwardHeldForApproval` on a profile that declares all three is
+denied either way. A profile with no `exposure` is admitted with an "exposure
+undeclared" warning.
+
+`spec.humanGate` names a gate rule set: the built-in `noPush` or
+`draftPrOnly`, `outwardHeldForApproval`, or a gate the operator's gate rules
+define (see [Gate rules](#gate-rules)). A name with no rule set is denied.
 
 ```yaml
 spec:
@@ -173,9 +179,9 @@ spec:
 
 The mutating webhook renders the gate onto the guard-proxy sidecar as
 `GUARD_PROXY_HUMAN_GATE` (container env, so it wins over every `envFrom`
-source; `spec.guard.env` may not set it). The guard-proxy enforces it on
-GitHub egress (`github.com`, `www.github.com`, `gist.github.com`,
-`api.github.com`, `uploads.github.com`):
+source; `spec.guard.env` may not set it). The guard-proxy enforces the gate's
+rule set. The built-in sets police GitHub egress (`github.com`,
+`www.github.com`, `gist.github.com`, `api.github.com`, `uploads.github.com`):
 
 | gate | refused |
 |---|---|
@@ -183,8 +189,9 @@ GitHub egress (`github.com`, `www.github.com`, `gist.github.com`,
 | `draftPrOnly` | a push or API write to a protected branch, or to a ref that is not a branch (tags included); a pull request created without `draft: true` (REST body, or GraphQL `createPullRequest(input: $v)` whose `$v.draft` is `true`; an inline input is refused); `markPullRequestReadyForReview`; every merge; branch renames, releases, repository settings writes; the same ref-moving GraphQL mutations as `noPush` except `updatePullRequestBranch`; every API write and mutation outside the allow-list below |
 | `outwardHeldForApproval` | nothing yet: there is no approval flow to hold an outward write for. Admission denies it on a profile that declares all three exposures; on any other profile it is a no-op. |
 
-Under `noPush` and `draftPrOnly`, reads pass and an `api.github.com` write
-(any method but `GET`, `HEAD`, `OPTIONS`) is refused unless it is one of:
+Under `noPush` and `draftPrOnly`, reads pass, an `uploads.github.com` write is
+refused, and an `api.github.com` write (any method but `GET`, `HEAD`,
+`OPTIONS`) is refused unless it is one of:
 
 | allowed write | REST (under `repos/{o}/{r}` or `repositories/{id}`) | GraphQL mutation |
 |---|---|---|
@@ -207,12 +214,13 @@ exist.
 
 Protected branches are `main`, `master` and `trunk` (the guard cannot see a
 repository's real default branch); add more with
-`GUARD_PROXY_PROTECTED_BRANCHES` (comma-separated) in `spec.guard.env`.
+`GUARD_PROXY_PROTECTED_BRANCHES` (comma-separated) in `spec.guard.env`, or with
+`protectedBranches` in a rule set.
 
-The guard reviews a request only on a host it intercepts, so under `noPush` or
-`draftPrOnly` every GitHub host above that the agent uses must be in the
-inject config; one that is not is refused at connect time. Under either gate
-every intercepted request must carry exactly one `Host` header naming the host
+The guard reviews a request only on a host it intercepts, so under an enforced
+gate every host its rule set polices that the agent uses must be in the inject
+config; one that is not is refused at connect time. Under every gate, whatever
+its rules, every intercepted request must carry exactly one `Host` header naming the host
 it connected to (TLS SNI or `CONNECT` authority; port and case ignored), so a
 request cannot be reviewed as one GitHub host and routed to another. Plain HTTP to those
 hosts is refused too. A refused request gets `403` with a JSON `message` naming
@@ -221,11 +229,97 @@ the decision needs (large `contents` writes), an encoded body, a
 method-override header, bad percent-encoding or dot segments in the path, a
 push command list it cannot parse (push certificates included).
 
-A gate value the guard cannot parse refuses every outbound connection except
-the pod's own cctui server channel.
+A gate that names no rule set, or a gate rules file that does not parse,
+refuses every outbound connection except the pod's own cctui server channel.
+
+### Gate rules
+
+Rule sets are operator config, read by the guard-proxy from
+`/etc/guard-proxy/gates.json` (`GUARD_PROXY_GATE_RULES`): add a `gates.json`
+key to the `guard-proxy-inject` ConfigMap next to `inject.json`. Without the
+file the guard knows only the built-in sets. Mount the same file into the
+orchestrator and point `CCTUI_ORCH_GATE_RULES` at it, so admission knows which
+gate names exist.
+
+```json
+{
+  "gates": {
+    "draftPrOnly": {
+      "extends": "draftPrOnly",
+      "hosts": {
+        "uploads.github.com": {
+          "rest": [{ "method": "POST", "path": "/user-attachments/assets" }]
+        }
+      }
+    }
+  }
+}
+```
+
+This is `deploy/examples/guard-gates/gates.json`: `draftPrOnly` plus image
+attachments (the endpoint GitHub's comment editor uploads screenshots to),
+with release-asset uploads still refused. Rolling it out is a ConfigMap change.
+
+A rule set without `extends` replaces any set of that name; `extends` starts
+from another set and adds to it (naming the set's own name starts from the
+built-in one). A set holds:
+
+| field | meaning |
+|---|---|
+| `protectedBranches` | branch names every branch check refuses, added to the base's |
+| `hosts.<host>.kind` | `api` (REST rules plus GraphQL at `/graphql`), `rest` (REST rules only) or `git` (smart HTTP: only pushes are reviewed); required for a host the base does not police |
+| `hosts.<host>.push` | `git` hosts: `refuse` (default) or `unprotectedBranches` |
+| `hosts.<host>.rest` | allowed writes: `method` (one, a list, or `*`), `path` and an optional `check` |
+| `hosts.<host>.mutations` | allowed GraphQL mutations: a name, or `{ "name", "check" }` |
+
+A `path` is matched segment by segment, case-insensitively, after
+percent-decoding: `*` is one segment, a trailing `**` any number, a leading
+`{repo}` is `repos/{owner}/{repo}` or `repositories/{id}`. A `check` is
+`{"onlyKeys": [...]}` (the JSON body, or a mutation's `input` variable, sets no
+other key), `{"isTrue": "draft"}`, `{"branchField": "branch"}` (that field names
+an unprotected branch; absent is the default branch, refused),
+`{"refField": "ref"}` (`refs/heads/` of an unprotected branch) or
+`"branchInPath"` (the trailing `**` names an unprotected branch). A write is
+allowed when any rule matching it allows it; reads always pass. Hosts outside
+every rule set are not reviewed. Rules cannot lift the request invariants
+above.
 
 Not covered: SSH remotes (no name to match; they stay off the allow-list),
 GitHub Enterprise hosts, and git hosts other than GitHub.
+
+## Guard placement
+
+`spec.guard.placement` picks where the guard-proxy runs. Unset is `sidecar`,
+and renders every pod exactly as before the field existed.
+
+| | `sidecar` (default) | `pod` |
+| --- | --- | --- |
+| guard-proxy | native sidecar in the worker pod, `transparent` mode | its own pod `<job>-g<4 hex>` + Service, `forward` mode behind a per-dispatch proxy token |
+| `net-init` (root, `NET_ADMIN`) | yes | no |
+| worker `securityContext` | per `spec.posture` | restricted uid 1000 (`posture: nonroot` required) |
+| egress enforcement | iptables REDIRECT in the pod's netns | static NetworkPolicies + the proxy env (`WORKER_NET_MODE=external-pod`) |
+| gpg signing | forwarded agent socket | not forwarded: commits are unsigned |
+| extra dispatcher RBAC | none | `pods` create/delete, `services` create/delete |
+
+```yaml
+spec:
+  posture: nonroot
+  guard:
+    placement: pod
+```
+
+A `pod` placement with `posture: root` (or unset) is refused at dispatch and at
+admission. The guard pod is built from the same container the sidecar gets
+(`guard-proxy-env`, `spec.guard.env`/`envFrom`/`cloudIdentity`,
+`spec.humanGate`, `spec.sidecarResources.guardProxy`), runs as the profile's
+`serviceAccountName`, and takes its scheduling from the profile's
+`nodeSelector`, `tolerations`, `imagePullSecrets` and priority class. Its image
+is the dispatcher's `CCTUI_ORCH_SIDECAR_IMAGE`, else
+`ghcr.io/dorskfr/cctui-worker:<dispatcher version>`. A queued Job gets its
+guard when it resumes; editing the placement of a profile with queued Jobs
+rebuilds them for the new placement. The NetworkPolicies, the RBAC Role and a
+canary profile are under `deploy/examples/guard-pod/`; see
+[Guard pod mode](./worker-contract.md#guard-pod-mode-external-pod).
 
 ## Regenerating the CRD YAML
 

@@ -1963,18 +1963,25 @@ spec:
                       type: object
                     nullable: true
                     type: array
+                  placement:
+                    description: |-
+                      `sidecar` (unset) runs the guard-proxy beside the worker behind
+                      `net-init`; `pod` runs it as a per-dispatch pod the worker reaches
+                      through a Service, with no `net-init` and no `NET_ADMIN`. `pod` needs
+                      `posture: nonroot`.
+                    enum:
+                    - sidecar
+                    - pod
+                    - null
+                    nullable: true
+                    type: string
                 type: object
               humanGate:
                 description: |-
                   The human step that bounds this profile's outward actions: `noPush`
                   (the worker cannot push), `draftPrOnly` (it only opens draft PRs a human
-                  promotes) or `outwardHeldForApproval` (outward writes wait for a human
-                  approval).
-                enum:
-                - noPush
-                - draftPrOnly
-                - outwardHeldForApproval
-                - null
+                  promotes), `outwardHeldForApproval` (outward writes wait for a human
+                  approval) or a gate the operator's guard rules define.
                 nullable: true
                 type: string
               image:
