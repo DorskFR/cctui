@@ -295,7 +295,7 @@ async fn a_fresh_searchless_database_needs_no_search_extension_and_keeps_transcr
         let versions: Vec<i64> = sqlx::query_scalar(
             "SELECT version FROM _cctui_schema_migrations WHERE package='workspace' ORDER BY version")
             .fetch_all(&pool).await.unwrap();
-        assert_eq!(versions, (1..=18).collect::<Vec<i64>>());
+        assert_eq!(versions, (1..=19).collect::<Vec<i64>>());
 
         let (sid, id) = ingest_transcript(&pool, "a searchless transcript").await;
         let read: (i64, String) = sqlx::query_as(
