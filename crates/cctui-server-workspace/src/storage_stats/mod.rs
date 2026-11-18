@@ -25,12 +25,12 @@ const SLOTS: [&str; 3] =
 /// Must count like [`lifecycle::text_len`].
 fn slot_len(slot: &str) -> String {
     format!(
-        "COALESCE(CASE jsonb_typeof({slot}) \
-           WHEN 'string' THEN octet_length({slot} #>> '{{}}') \
+        "COALESCE(CASE jsonb_typeof(({slot})) \
+           WHEN 'string' THEN octet_length(({slot}) #>> '{{}}') \
            WHEN 'array' THEN \
-             (SELECT sum(octet_length(b->>'text')) FROM jsonb_array_elements({slot}) b) \
+             (SELECT sum(octet_length(b->>'text')) FROM jsonb_array_elements(({slot})) b) \
            WHEN 'null' THEN 0 \
-           ELSE octet_length({slot}::text) END, 0)"
+           ELSE octet_length(({slot})::text) END, 0)"
     )
 }
 

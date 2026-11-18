@@ -181,7 +181,7 @@ mod chain {
             "INSERT INTO sessions (id, machine_id, machine_uuid, working_dir, status, user_id, \
              adapter_id, session_name, parent_id, metadata) \
              VALUES ($1, $2, $3, '/w', 'active', $4, 'claude-code', $5, $6, \
-             CASE WHEN $6::text IS NULL THEN NULL \
+             CASE WHEN $6::text IS NULL THEN '{}'::jsonb \
              ELSE jsonb_build_object('relation', 'followup') END)",
         )
         .bind(&sid)

@@ -3,6 +3,11 @@ import type { SpeechConfig } from "./SpeechConfig";
 
 export type SpeechSettingsRequest = { config: SpeechConfig, 
 /**
+ * The `revision` the form was loaded from. The save is refused with `409`
+ * once another write has landed since; `null` overwrites unconditionally.
+ */
+revision?: string, 
+/**
  * A new key to store; `null` keeps the current one.
  */
 api_key?: string, 

@@ -1517,8 +1517,7 @@ fn text_leaf(
 }
 
 /// The residual free-text path: id / name / dir / the session's search chunks,
-/// and with `fallback` its unchunked events' capped `search_text`. The id is a
-/// plain substring match whatever the term's anchor.
+/// and with `fallback` its unchunked events' capped `search_text`.
 ///
 /// `(SELECT s.id)` must not be simplified to `s.id`: the wrapper keeps the
 /// correlation as a Param, and a plain `s.id` lets the planner hoist the
@@ -1534,10 +1533,10 @@ fn free_text_predicate(t: TermBinds, fallback: Option<(TermBinds, Unchunked)>) -
         )
     });
     format!(
-        "(s.id ILIKE ${} OR ({}) OR ({}) \
+        "(({}) OR ({}) OR ({}) \
           OR EXISTS (SELECT 1 FROM search_chunks c \
                      WHERE c.session_id = (SELECT s.id) AND {}){unchunked})",
-        t.like,
+        t.test("s.id"),
         t.test("COALESCE(s.session_name, '')"),
         t.test("s.working_dir"),
         t.test("c.body"),
@@ -7257,7 +7256,7 @@ mod tests {
     #[test]
     fn compile_plain_keyword_matches_from_a_word_start() {
         let (sql, params) = compile("hello");
-        assert!(sql.contains("s.id ILIKE $1 OR"), "{sql}");
+        assert!(sql.contains("((s.id ILIKE $1 AND s.id ~* $2) OR"), "{sql}");
         assert!(sql.contains("(s.working_dir ILIKE $1 AND s.working_dir ~* $2)"), "{sql}");
         assert!(sql.contains("c.body ILIKE $1 AND c.body ~* $2"), "{sql}");
         assert_eq!(params, ["%hello%", "\\mhello"]);

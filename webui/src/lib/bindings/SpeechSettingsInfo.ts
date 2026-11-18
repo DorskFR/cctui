@@ -10,4 +10,9 @@ has_key: boolean,
 /**
  * `settings` once an admin saved a value, else `default`.
  */
-source: SettingSource, };
+source: SettingSource, 
+/**
+ * Opaque marker of the stored row this copy was read from, empty when
+ * nothing is saved.
+ */
+revision: string, };

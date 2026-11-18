@@ -291,9 +291,14 @@ describe('launchFollowup', () => {
 			omitted: 0,
 			truncated: false
 		}));
-		const d = deps({ brief: vi.fn(async () => ({ markdown: 'whole', sessions })) });
+		const spawn = vi.fn<FollowupLaunchDeps['spawn']>(async () => ({
+			command_id: 'c1',
+			status: 'dispatched',
+			session_id: 'new'
+		}));
+		const d = deps({ brief: vi.fn(async () => ({ markdown: 'whole', sessions })), spawn });
 		await launchFollowup(source, 'next step', d);
-		const prompt = (d.spawn.mock.calls[0] as unknown as [{ prompt: string }])[0].prompt;
+		const prompt = spawn.mock.calls[0][0].prompt ?? '';
 		expect(prompt.startsWith('<cctui-previous-sessions>\n')).toBe(true);
 		expect(prompt).toContain('body of s-a');
 		expect(prompt).toContain('body of src');

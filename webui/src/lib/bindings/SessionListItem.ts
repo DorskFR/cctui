@@ -68,6 +68,6 @@ followup_count?: number,
  */
 tool_guard_bypass?: boolean, 
 /**
- * The viewer hides this session's user or machine; only listed with `show_hidden`.
+ * Always false: a hidden owner's sessions are left out. Kept on the wire for one release.
  */
 hidden?: boolean, };
