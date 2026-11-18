@@ -52,6 +52,10 @@
 		{ value: 'right', label: m.settings_spawn_dock_side_right() }
 	];
 	const sideOff = sideOptions.map((o) => ({ ...o, disabled: true }));
+	const densityOptions: SegmentOption[] = [
+		{ value: 'normal', label: m.settings_row_density_normal() },
+		{ value: 'compact', label: m.settings_row_density_compact() }
+	];
 </script>
 
 <SettingSection id="layout" icon="▦" title={m.settings_sec_layout()}>
@@ -85,6 +89,12 @@
 			<Switch
 				bind:checked={() => sl.accountNames, (v) => settings.setSessionList({ accountNames: v })}
 				label={m.settings_account_names_label()}
+			/>
+		</SettingRow>
+		<SettingRow label={m.settings_row_density_label()} help={m.settings_row_density_help()}>
+			<SegmentedControl
+				options={densityOptions}
+				bind:value={() => sl.density, (v) => settings.setSessionList({ density: v as typeof sl.density })}
 			/>
 		</SettingRow>
 	</SettingGroup>
