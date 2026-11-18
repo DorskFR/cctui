@@ -1527,8 +1527,8 @@
 				"nPlural"
 			],
 			"match": {
-				"nPlural=one": "{n} archived subagent",
-				"nPlural=other": "{n} archived subagents"
+				"nPlural=one": "{n} subagent",
+				"nPlural=other": "{n} subagents"
 			}
 		}
 	],

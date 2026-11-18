@@ -36,7 +36,7 @@ describe('ParentGroupHeader', () => {
 		const text = document.body.textContent ?? '';
 		expect(text).toContain('orch-x');
 		expect(text).toContain('live');
-		expect(text).toContain('12 archived subagents');
+		expect(text).toContain('12 subagents');
 		const buttons = [...document.querySelectorAll('button')];
 		const toggle = buttons.find((b) => b.hasAttribute('aria-expanded'));
 		expect(toggle?.getAttribute('aria-expanded')).toBe('false');
@@ -50,7 +50,7 @@ describe('ParentGroupHeader', () => {
 		render({ parent: parent({ status: 'archived' }), count: 1, open: true });
 		const text = document.body.textContent ?? '';
 		expect(text).toContain('archived');
-		expect(text).toContain('1 archived subagent');
+		expect(text).toMatch(/\b1 subagent\b/);
 		expect(text).not.toContain('live');
 		expect(document.querySelector('[aria-expanded]')?.getAttribute('aria-expanded')).toBe('true');
 	});
