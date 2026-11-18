@@ -418,8 +418,9 @@
 	.m-initial {
 		display: none;
 	}
+	/* Narrow: the preview only fills room left after the title; too little room
+	   wraps it onto a clipped second line instead of leaving a lone ellipsis. */
 	@container sess-row (max-width: 36.25em) {
-		.preview,
 		.model,
 		.branch,
 		.sub-word,
@@ -429,15 +430,25 @@
 		.m-initial {
 			display: inline;
 		}
+		.l2 {
+			flex-wrap: wrap;
+			height: 18px;
+			overflow: hidden;
+			row-gap: 0;
+		}
+		.preview {
+			width: 0;
+			min-width: 4em;
+		}
 		.one .l1 {
-			flex: 1 1 auto;
 			max-width: none;
 		}
 		.one .title {
 			max-width: none;
 		}
 		.one .l2 {
-			flex: none;
+			flex: 1 1 0;
+			min-width: min-content;
 		}
 	}
 </style>
