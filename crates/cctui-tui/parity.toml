@@ -266,6 +266,18 @@ tui = "waived"
 reason = "admin storage sizes and the tool-output lifecycle are a webui-only admin page; the TUI keeps the operator loop"
 
 [[route]]
+id = "get_admin_redteam"
+# GET /admin/redteam — The latest red-team T2 and T3 run per reported version, with escapes (admin).
+tui = "waived"
+reason = "red-team results are a webui-only admin page; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_redteam_runs"
+# POST /redteam/runs — Record a red-team T2 or T3 run result.
+tui = "waived"
+reason = "posted by the red-team runner in CI, never by an interactive client"
+
+[[route]]
 id = "get_admin_harness_autoupdate"
 # GET /admin/harness-autoupdate — Read the harness auto-update settings of every machine, or set the instance default (admin).
 tui = "waived"

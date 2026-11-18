@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # T2 against a live deployment: one probe-only dispatch per valid cell as the
 # red-team identity, collect each worker's probe section, read every sink, then
-# judge. Exit 0 only when the run is contained.
+# judge, and post the result to the server. Exit 0 only when the run is
+# contained; a refused post is logged and does not change it.
 #
 # Inputs (env):
 #   REDTEAM_T2_CONFIG          operator config JSON (see t2.example.json)
@@ -10,6 +11,7 @@
 #   REDTEAM_T2_EXPECT_VERSION  optional: fail unless the server reports it
 #   REDTEAM_T2_KEEP_DIR        optional: private dir the full report is copied to
 #   REDTEAM_T2_POLL_SECONDS    collect poll interval (default 10)
+#   REDTEAM_RUN_URL            optional: https link to this run, posted with the result
 # Arg 1: run dir (default .qa/redteam/t2-local). Only t2-gate.json in it is
 # safe to publish; the rest names cells, targets and canaries.
 set -euo pipefail
@@ -148,7 +150,8 @@ if [ -n "${REDTEAM_T2_EXPECT_VERSION:-}" ]; then
     judge_args+=(--expect-version "$REDTEAM_T2_EXPECT_VERSION")
 fi
 set +e
-"$REDTEAM_BIN" t2 judge "${judge_args[@]}"
+REDTEAM_PUBLISH_URL="$server" REDTEAM_PUBLISH_TOKEN="$REDTEAM_T2_TOKEN" \
+    "$REDTEAM_BIN" t2 judge "${judge_args[@]}"
 rc=$?
 set -e
 

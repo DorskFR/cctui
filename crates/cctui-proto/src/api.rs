@@ -33,6 +33,7 @@ pub mod privacy_scan;
 pub mod profiles;
 pub mod prompts;
 pub mod provider_status;
+pub mod redteam;
 pub mod routes;
 pub mod self_update;
 pub mod service_tokens;

@@ -32,6 +32,7 @@
 	import SpeechGroup from './SpeechGroup.svelte';
 	import PluginsAdminGroup from './PluginsAdminGroup.svelte';
 	import ServerStorageSection from './ServerStorageSection.svelte';
+	import RedteamSection from './RedteamSection.svelte';
 	import type { SettingsPage } from './settings.logic';
 	import { hasFeature } from '#lib/features.svelte.ts';
 	import { m } from '#lib/paraglide/messages.js';
@@ -117,6 +118,9 @@
 			</SettingSection>
 		{/if}
 		<ServerStorageSection />
+		{#if hasFeature('observability')}
+			<RedteamSection />
+		{/if}
 	</div>
 {/if}
 

@@ -12,6 +12,7 @@ use crate::attack::{AgentJob, Target, plan};
 use crate::budget::{Admission, CutOff, Ledger};
 use crate::judge::{Event, EventKind, Evidence, Expectation, judge};
 use crate::oracle::Verdict;
+use crate::publish::{self, Target};
 use crate::scenario::Mode;
 
 /// Runs one job end to end and returns what the oracles observed.
@@ -289,7 +290,7 @@ fn run(
     caps: (f64, f64),
     canaries: Option<&Path>,
     out: &Path,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Vec<AgentReport>> {
     let jobs: Vec<AgentJob> = serde_json::from_str(&std::fs::read_to_string(plan_path)?)?;
     let canaries = read_canaries(canaries)?;
     let mut ledger = Ledger::new(caps.0, caps.1);
@@ -304,7 +305,31 @@ fn run(
     let md = to_markdown(&reports);
     std::fs::write(out.join("report.md"), &md)?;
     println!("{md}\nspent {:.2} of {:.2} USD", ledger.spent(), caps.0);
-    Ok(passed(&reports))
+    Ok(reports)
+}
+
+async fn publish_run(reports: &[AgentReport], started_at: i64) {
+    if reports.is_empty() {
+        eprintln!("redteam: t3 ran no job; nothing to post");
+        return;
+    }
+    let target = Target::from_env(
+        &[publish::ENV_URL, crate::dispatch::ENV_SERVER],
+        &[publish::ENV_TOKEN, crate::dispatch::ENV_TOKEN],
+    );
+    let version = match &target {
+        Some(t) => publish::server_version(t).await,
+        None => "unknown".to_owned(),
+    };
+    let report = publish::from_t3(publish::T3Run {
+        reports,
+        run_id: &crate::canary::new_run_id(),
+        version: &version,
+        started_at,
+        finished_at: publish::now_secs(),
+        run_url: target.as_ref().and_then(|t| t.run_url.clone()),
+    });
+    publish::publish(target.as_ref(), &report).await;
 }
 
 /// Run a `t3` subcommand; `Ok(false)` means the run did not pass.
@@ -327,14 +352,19 @@ pub async fn cli(cmd: Command) -> anyhow::Result<bool> {
             max_usd_per_scenario,
             canaries,
             out,
-        } => run(
-            &plan_path,
-            dispatch_cmd,
-            dispatch_args,
-            (max_usd_total, max_usd_per_scenario),
-            canaries.as_deref(),
-            &out,
-        ),
+        } => {
+            let started_at = publish::now_secs();
+            let reports = run(
+                &plan_path,
+                dispatch_cmd,
+                dispatch_args,
+                (max_usd_total, max_usd_per_scenario),
+                canaries.as_deref(),
+                &out,
+            )?;
+            publish_run(&reports, started_at).await;
+            Ok(passed(&reports))
+        }
         Command::Dispatch => crate::dispatch::cli_main().await,
         Command::Judge { job, evidence, canaries } => {
             let job: AgentJob = serde_json::from_str(&std::fs::read_to_string(job)?)?;

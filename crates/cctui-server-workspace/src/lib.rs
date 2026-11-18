@@ -56,6 +56,7 @@ mod presence;
 mod presets;
 mod preview;
 mod provider_status;
+mod redteam_runs;
 mod registry;
 mod rooms;
 mod routes;

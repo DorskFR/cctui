@@ -25,6 +25,7 @@ mod previews;
 mod profiles;
 mod prompts;
 mod provider_status;
+mod redteam;
 mod rooms;
 mod session_bulk;
 mod session_control;
@@ -92,6 +93,7 @@ pub fn register(r: Routes) -> Routes {
     let r = device_auth::register(r);
     let r = admin_instance::register(r);
     let r = admin_users::register(r);
+    let r = redteam::register(r);
     let r = skills::register(r);
     let r = user_actions::register(r);
     let r = inbox::register(r);
