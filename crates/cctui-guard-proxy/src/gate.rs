@@ -1268,7 +1268,7 @@ mod tests {
         let rules = r#"{"gates": {"commentOnly": {"hosts": {
             "api.github.com": {
                 "kind": "api",
-                "rest": [{"method": "POST", "path": "{repo}/issues/*/comments"}],
+                "rest": [{"method": "POST", "path": "/repos/*/*/issues/*/comments"}],
                 "mutations": ["addComment"]
             },
             "github.com": {"kind": "git"}

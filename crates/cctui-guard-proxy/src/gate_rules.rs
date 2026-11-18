@@ -8,6 +8,7 @@ use anyhow::{Context as _, bail};
 use serde::Deserialize;
 
 const BUILTIN: &str = include_str!("gate_builtin.json");
+const REPO_SEGMENT: &str = concat!("{", "repo", "}");
 
 pub const UNENFORCED: &str = "outwardHeldForApproval";
 
@@ -349,7 +350,7 @@ impl PathPattern {
     /// one segment.
     fn parse(raw: &str) -> anyhow::Result<Self> {
         let mut parts: Vec<&str> = raw.split('/').filter(|s| !s.is_empty()).collect();
-        let repo = parts.first() == Some(&"{repo}");
+        let repo = parts.first() == Some(&REPO_SEGMENT);
         if repo {
             parts.remove(0);
         }
@@ -409,14 +410,14 @@ mod tests {
 
     #[test]
     fn path_patterns_match_repo_prefix_wildcards_and_tail() {
-        let p = PathPattern::parse("{repo}/git/refs/heads/**").unwrap();
+        let p = PathPattern::parse(&format!("{REPO_SEGMENT}/git/refs/heads/**")).unwrap();
         assert_eq!(p.matches(&lower("repos/o/r/git/refs/heads/a/b")), Some(6));
         assert_eq!(p.matches(&lower("repositories/42/git/refs/heads")), Some(5));
         assert_eq!(p.matches(&lower("repos/o/git/refs/heads/a")), None);
         let p = PathPattern::parse("/user-attachments/assets").unwrap();
         assert!(p.matches(&lower("user-attachments/assets")).is_some());
         assert!(p.matches(&lower("user-attachments/assets/1")).is_none());
-        let p = PathPattern::parse("{repo}/issues/*/comments").unwrap();
+        let p = PathPattern::parse(&format!("{REPO_SEGMENT}/issues/*/comments")).unwrap();
         assert!(p.matches(&lower("repos/o/r/issues/3/comments")).is_some());
         assert!(p.matches(&lower("repos/o/r/issues/comments")).is_none());
     }
