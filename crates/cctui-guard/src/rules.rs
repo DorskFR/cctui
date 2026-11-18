@@ -638,7 +638,7 @@ mod tests {
 
     #[test]
     fn output_redirect_to_file_needs_bash_grant() {
-        let read_only = ["cat", "git log", "grep"];
+        let read_only = ["cat", "git log", "rg"];
         for cmd in [
             "cat x.ts>y.ts",
             "cat x.ts > y.ts",
@@ -655,7 +655,7 @@ mod tests {
             "git log>/workspace/f",
             "cat x >/dev/null >y",
             "cat x 2>&1 >y",
-            "grep '>' f >out",
+            "rg '>' f >out",
         ] {
             assert!(!bash(cmd, &read_only, &[]).0, "{cmd} must be refused");
             assert!(bash(cmd, &["Bash"], &[]).0, "{cmd} must pass with Bash");
@@ -664,7 +664,7 @@ mod tests {
 
     #[test]
     fn harmless_or_quoted_redirects_stay_allowed() {
-        let read_only = ["cat", "git log", "grep", "make"];
+        let read_only = ["cat", "git log", "rg", "make"];
         for cmd in [
             "cat x >/dev/null",
             "cat x > /dev/null",
@@ -674,9 +674,9 @@ mod tests {
             "make 2>&1",
             "make >&2",
             "make 2>&-",
-            "grep '>' file",
-            "grep \">\" file",
-            "grep \\> file",
+            "rg '>' file",
+            "rg \">\" file",
+            "rg \\> file",
             "git log --format='a>b'",
             "git log --format=\"%h>%s\"",
         ] {
