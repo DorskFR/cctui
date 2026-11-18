@@ -69,6 +69,7 @@ pub mod spawn;
 pub mod spawn_child;
 pub mod spawn_memory;
 pub mod stats;
+pub mod storage_admin;
 pub mod tool_guard;
 pub mod tool_policy;
 pub mod update_hook;

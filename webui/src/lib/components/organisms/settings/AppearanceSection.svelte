@@ -1,23 +1,22 @@
 <script lang="ts">
-	// Settings › Appearance: theme, look, motion, sound, text size, interface
-	// language, toast position. Look, motion and sound live in the kit's own
-	// browser storage; the other blob-backed wrappers on `settings` drive the runtime
-	// theme/fontScale singletons AND persist, so this section and the header
-	// pickers share one round-tripping surface.
+	// Settings › Interface › Theme & look. Look, motion and sound live in the
+	// kit's own browser storage (this device only); the other blob-backed
+	// wrappers on `settings` drive the runtime theme/fontScale singletons AND
+	// persist, so this section and the header pickers share one surface.
 	import {
+		Badge,
 		LookPicker,
 		MotionSettings,
 		SegmentedControl,
 		Select,
 		SoundSettings,
-		Switch,
 		Text
 	} from '@dorsk/tsumikit';
 	import type { SegmentOption } from '@dorsk/tsumikit';
 	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
-	import { settings, type NavPosition, type ToastPosition } from '#lib/settings.svelte.ts';
+	import { settings, type ToastPosition } from '#lib/settings.svelte.ts';
 	import { LOCALE_LABELS, LOCALES, type Locale } from '#lib/locale.svelte.ts';
 	import { theme } from '#lib/theme.svelte.ts';
 	import { themePickerGroups } from '#lib/components/molecules/themePicker.logic.ts';
@@ -45,12 +44,17 @@
 	<Text style="font-size: {Math.min(scaleOf(o.value), 1.5)}em; line-height: 1" aria-hidden="true">A</Text>
 {/snippet}
 
-<SettingSection
-	id="appearance"
-	icon="◐"
-	title={m.settings_nav_appearance()}
-	description={m.settings_appearance_desc()}
->
+{#snippet lookHelp()}
+	{m.settings_look_help()} <Badge size="xs" border>{m.settings_this_device()}</Badge>
+{/snippet}
+{#snippet motionHelp()}
+	{m.settings_motion_help()} <Badge size="xs" border>{m.settings_this_device()}</Badge>
+{/snippet}
+{#snippet soundHelp()}
+	{m.settings_sound_help()} <Badge size="xs" border>{m.settings_this_device()}</Badge>
+{/snippet}
+
+<SettingSection id="theme" icon="◐" title={m.settings_sec_theme()} description={m.settings_appearance_desc()}>
 	<SettingGroup>
 		<SettingRow label={m.settings_theme_label()} help={m.settings_theme_help()}>
 			<Select
@@ -68,12 +72,12 @@
 				{/each}
 			</Select>
 		</SettingRow>
-		<SettingRow label={m.settings_look_label()} help={m.settings_look_help()} selfLabelled>
+		<SettingRow label={m.settings_look_label()} helpSlot={lookHelp} selfLabelled>
 			<div data-testid="appearance-look">
 				<LookPicker looks={LOOKS} experimental={false} size="sm" control label={m.settings_look_label()} />
 			</div>
 		</SettingRow>
-		<SettingRow label={m.settings_motion_label()} help={m.settings_motion_help()} selfLabelled>
+		<SettingRow label={m.settings_motion_label()} helpSlot={motionHelp} selfLabelled>
 			<div data-testid="appearance-motion">
 				<MotionSettings
 					size="sm"
@@ -84,7 +88,7 @@
 				/>
 			</div>
 		</SettingRow>
-		<SettingRow label={m.settings_sound_label()} help={m.settings_sound_help()} selfLabelled>
+		<SettingRow label={m.settings_sound_label()} helpSlot={soundHelp} selfLabelled>
 			<div data-testid="appearance-sound">
 				<SoundSettings
 					size="sm"
@@ -136,16 +140,6 @@
 				<option value="center">{m.settings_toast_position_center()}</option>
 				<option value="left">{m.settings_toast_position_left()}</option>
 				<option value="right">{m.settings_toast_position_right()}</option>
-			</Select>
-		</SettingRow>
-		<SettingRow label={m.settings_nav_position_label()} help={m.settings_nav_position_help()}>
-			<Select
-				value={settings.nav}
-				style="width:100%"
-				onchange={(e) => settings.setNav((e.currentTarget as HTMLSelectElement).value as NavPosition)}
-			>
-				<option value="top">{m.settings_nav_position_top()}</option>
-				<option value="bottom">{m.settings_nav_position_bottom()}</option>
 			</Select>
 		</SettingRow>
 	</SettingGroup>

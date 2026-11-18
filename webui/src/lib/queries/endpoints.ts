@@ -404,6 +404,7 @@ export const endpoints = {
     cursor: string | null,
     signal?: AbortSignal,
     showHidden?: boolean,
+    excludeDispatched?: boolean,
   ) =>
     api.get<SessionListResponse>(
       "/sessions/search",
@@ -411,6 +412,7 @@ export const endpoints = {
         q: q || undefined,
         include_archived: includeArchived || undefined,
         show_hidden: showHidden || undefined,
+        exclude_dispatched: excludeDispatched || undefined,
         limit,
         offset: cursor ? undefined : offset,
         cursor: cursor ?? undefined,
@@ -606,10 +608,13 @@ export const endpoints = {
     api.post<ForkResponse>(`/sessions/${sessionId}/fork`, body),
   sessionThread: (sessionId: string) =>
     api.get<SessionThreadResponse>(path("get_sessions_by_id_thread", { id: sessionId })),
-  brief: (sessionId: string, maxBytes?: number) =>
-    api.get<BriefResponse>(
-      `/sessions/${sessionId}/brief${maxBytes ? `?max_bytes=${maxBytes}` : ""}`,
-    ),
+  brief: (sessionId: string, maxBytes?: number, opts: { chain?: boolean } = {}) => {
+    const q = new URLSearchParams();
+    if (maxBytes) q.set("max_bytes", String(maxBytes));
+    if (opts.chain) q.set("chain", "1");
+    const qs = q.toString();
+    return api.get<BriefResponse>(`/sessions/${sessionId}/brief${qs ? `?${qs}` : ""}`);
+  },
   resume: (sessionId: string) =>
     api.post<void>(`/sessions/${sessionId}/resume`, {}),
   /** Rebind one of a session's per-family gateway bindings.

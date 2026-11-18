@@ -21,8 +21,13 @@ GET /accounts/usage
 GET /accounts/usage/closes
 GET /accounts/usage/ledger
 PUT /admin/instance
+GET /admin/instance/event-retention
+PUT /admin/instance/event-retention
 GET /admin/instance/upstream-hosts
 PUT /admin/instance/upstream-hosts
+GET /admin/storage
+PUT /admin/storage/lifecycle
+POST /admin/storage/lifecycle/preview
 GET /admin/users
 POST /admin/users
 DELETE /admin/users/{id}

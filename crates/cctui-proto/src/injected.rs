@@ -6,6 +6,8 @@
 
 pub const SESSION_CONTEXT: &str = "cctui-session-context";
 pub const PREVIOUS_CONVERSATION: &str = "cctui-previous-conversation";
+/// A follow-up chain: one previous-conversation block per earlier session.
+pub const PREVIOUS_SESSIONS: &str = "cctui-previous-sessions";
 pub const PEER_MESSAGE: &str = "cctui-peer-message";
 pub const ROOM: &str = "cctui-room";
 pub const ROOM_JOINED: &str = "cctui-room-joined";
@@ -27,7 +29,7 @@ impl InjectedKind {
     pub fn from_tag(tag: &str) -> Option<Self> {
         match tag {
             SESSION_CONTEXT | LEGACY_SESSION_CONTEXT => Some(Self::SessionContext),
-            PREVIOUS_CONVERSATION | LEGACY_PREVIOUS_CONVERSATION => {
+            PREVIOUS_CONVERSATION | LEGACY_PREVIOUS_CONVERSATION | PREVIOUS_SESSIONS => {
                 Some(Self::PreviousConversation)
             }
             _ => None,
@@ -269,6 +271,32 @@ mod tests {
         assert!(blocks[0].body.ends_with("more"), "{}", blocks[0].body);
         assert_eq!(blocks[0].attr("id").as_deref(), Some("s2"));
         assert_eq!(prose, "ask");
+    }
+
+    #[test]
+    fn a_chain_container_is_one_previous_conversation_block_holding_each_session() {
+        let content = "<cctui-session-context>\nx\n</cctui-session-context>\n\n\
+                       <cctui-previous-sessions>\n\
+                       <cctui-previous-conversation n=\"1\" session=\"a\" id=\"s1\">\nold\n\
+                       </cctui-previous-conversation>\n\
+                       <cctui-previous-conversation n=\"2\" session=\"b\" id=\"s2\">\nnewer\n\
+                       </cctui-previous-conversation>\n\
+                       </cctui-previous-sessions>\n\nContinue from this.";
+        let (blocks, prose) = kinds(content);
+        assert_eq!(
+            blocks,
+            [
+                (InjectedKind::SessionContext, SESSION_CONTEXT),
+                (InjectedKind::PreviousConversation, PREVIOUS_SESSIONS)
+            ]
+        );
+        assert_eq!(prose, "Continue from this.");
+        let (outer, _) = split_injected(content);
+        let (inner, rest) = split_injected(outer[1].body);
+        let ids: Vec<_> = inner.iter().map(|b| b.attr("id")).collect();
+        assert_eq!(ids, [Some("s1".to_owned()), Some("s2".to_owned())]);
+        assert_eq!(rest, "");
+        assert!(kinds("see <cctui-previous-sessions>\nx\n</cctui-previous-sessions>").0.is_empty());
     }
 
     #[test]

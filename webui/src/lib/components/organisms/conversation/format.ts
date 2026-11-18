@@ -65,6 +65,7 @@ export const PEER_PREAMBLES = [
 export const CCTUI_TAGS = {
 	sessionContext: 'cctui-session-context',
 	previousConversation: 'cctui-previous-conversation',
+	previousSessions: 'cctui-previous-sessions',
 	peerMessage: 'cctui-peer-message',
 	room: 'cctui-room',
 	roomJoined: 'cctui-room-joined'
@@ -161,6 +162,7 @@ const INJECTED_KINDS = new Map<string, InjectedKind>([
 	[CCTUI_TAGS.sessionContext, 'session-context'],
 	[LEGACY_TAGS.sessionContext, 'session-context'],
 	[CCTUI_TAGS.previousConversation, 'previous-conversation'],
+	[CCTUI_TAGS.previousSessions, 'previous-conversation'],
 	[LEGACY_TAGS.previousConversation, 'previous-conversation']
 ]);
 const INJECTED_ATTR_RE = /(?:^|\s)([a-z-]+)="([^"]*)"/g;

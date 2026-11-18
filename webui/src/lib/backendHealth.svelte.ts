@@ -16,9 +16,27 @@ export const DEBOUNCE_MS = 1_500;
 export const QUIET_MS = 5_000;
 export const RETRY_BASE_MS = 1_000;
 export const RETRY_MAX_MS = 30_000;
+/** Once connected, an outage shows a banner over the live UI; past this it
+ *  gives way to the full-page screen. */
+export const RECONNECT_SCREEN_AFTER_MS = 3 * 60_000;
 
 export function retryDelay(attempt: number): number {
 	return Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** attempt);
+}
+
+/** `reconnecting`: banner, UI stays mounted. `offline`: full-page screen. */
+export type Outage = 'none' | 'reconnecting' | 'offline';
+
+export function outageView(state: BackendState, connected: boolean, escalated: boolean): Outage {
+	if (state !== 'down') return 'none';
+	return connected && !escalated ? 'reconnecting' : 'offline';
+}
+
+/** Whole seconds until the next probe, or `null` while one is due or running. */
+export function retryCountdown(nextRetryAt: number | null, probing: boolean, at: number): number | null {
+	if (probing || nextRetryAt === null) return null;
+	const seconds = Math.max(0, Math.ceil((nextRetryAt - at) / 1000));
+	return seconds === 0 ? null : seconds;
 }
 
 /** True when the server answered, whatever it said: only no answer or a
@@ -43,9 +61,13 @@ export class BackendHealth {
 	state = $state<BackendState>('up');
 	nextRetryAt = $state<number | null>(null);
 	probing = $state(false);
+	/** The server answered at least once since the page loaded. */
+	connected = $state(false);
+	escalated = $state(false);
 
 	private attempt = 0;
 	private timer: ReturnType<typeof setTimeout> | null = null;
+	private escalateTimer: ReturnType<typeof setTimeout> | null = null;
 	private lastOkAt = Number.NEGATIVE_INFINITY;
 	private waiters: Array<() => void> = [];
 	private recoverHooks = new Set<() => void>();
@@ -59,7 +81,12 @@ export class BackendHealth {
 	}
 
 	reportOk() {
+		this.connected = true;
 		if (this.state !== 'up') this.markUp();
+	}
+
+	get outage(): Outage {
+		return outageView(this.state, this.connected, this.escalated);
 	}
 
 	waitUntilUp(): Promise<void> {
@@ -107,6 +134,9 @@ export class BackendHealth {
 		if (this.state !== 'down') {
 			this.state = 'down';
 			this.attempt = 0;
+			this.escalateTimer = setTimeout(() => {
+				this.escalated = true;
+			}, RECONNECT_SCREEN_AFTER_MS);
 		}
 		this.schedule(retryDelay(this.attempt++));
 	}
@@ -114,7 +144,11 @@ export class BackendHealth {
 	private markUp() {
 		const wasDown = this.state === 'down';
 		if (this.timer) clearTimeout(this.timer);
+		if (this.escalateTimer) clearTimeout(this.escalateTimer);
 		this.timer = null;
+		this.escalateTimer = null;
+		this.escalated = false;
+		this.connected = true;
 		this.state = 'up';
 		this.attempt = 0;
 		this.nextRetryAt = null;

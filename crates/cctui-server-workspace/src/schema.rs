@@ -115,6 +115,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "drop_outboxes",
         sql: include_str!("../schema/0016_drop_outboxes.sql"),
     },
+    Migration {
+        version: 17,
+        name: "search_text_without_base64",
+        sql: include_str!("../schema/0017_search_text_without_base64.sql"),
+    },
+    Migration {
+        version: 18,
+        name: "storage_lifecycle",
+        sql: include_str!("../schema/0018_storage_lifecycle.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -260,7 +270,9 @@ mod tests {
                     (13, "bootstrap".to_owned()),
                     (14, "bootstrap".to_owned()),
                     (15, "bootstrap".to_owned()),
-                    (16, "bootstrap".to_owned())
+                    (16, "bootstrap".to_owned()),
+                    (17, "bootstrap".to_owned()),
+                    (18, "bootstrap".to_owned())
                 ]
             );
 
@@ -334,6 +346,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn search_text_drops_base64_attachments_and_keeps_every_other_row() {
+        with_isolated_database("search_text_without_base64", |pool| async move {
+            provisioned(&pool).await;
+            sqlx::raw_sql(
+                "INSERT INTO sessions (id, machine_id, working_dir) VALUES ('s', 'm', '/w')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let insert = |payload: serde_json::Value| {
+                let pool = pool.clone();
+                async move {
+                    sqlx::query_as::<_, (String, String)>(
+                        "INSERT INTO stream_events (session_id, event_type, payload) \
+                         VALUES ('s', 'tool_use', $1) \
+                         RETURNING search_text, \
+                           COALESCE(payload ->> 'text', '') || ' ' \
+                           || COALESCE(payload ->> 'content', '') || ' ' \
+                           || COALESCE(payload ->> 'tool', '') || ' ' \
+                           || COALESCE((payload -> 'input')::text, '')",
+                    )
+                    .bind(payload)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+                }
+            };
+            let data = "iVBORw0KGgoAAAANSUhEUgAA+/".repeat(40);
+            let image = serde_json::json!({ "kind": "tool_result", "content": [
+                { "type": "text", "text": "Screenshot saved" },
+                { "type": "image", "source": {
+                    "type": "base64", "media_type": "image/png", "data": data } },
+            ]});
+            let (stored, _) = insert(image).await;
+            assert!(!stored.contains(&data[..200]), "{stored}");
+            assert!(stored.contains("Screenshot saved") && stored.contains("\"data\": \"\""));
+            let text = format!("see data:image/png;base64,{data}= ok");
+            let url = serde_json::json!({ "text": text });
+            let (stored, _) = insert(url).await;
+            assert!(stored.starts_with("see data:image/png;base64, ok"), "{stored}");
+
+            let plain = [
+                serde_json::json!({ "text": "decode the base64 output" }),
+                serde_json::json!({ "tool": "Bash", "input": { "command": "base64 -d f" } }),
+                serde_json::json!({ "content": format!("base64 {}", "ab".repeat(300)) }),
+                serde_json::json!({
+                    "text": "base64", "input": { "data": "hello world ".repeat(30) } }),
+                serde_json::json!({ "content": [{ "type": "image", "source": {
+                    "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo=" } }] }),
+            ];
+            for payload in plain {
+                let shown = payload.to_string();
+                let (stored, former) = insert(payload).await;
+                assert_eq!(stored, former, "{shown}");
+            }
+
+            let legacy: i64 = sqlx::query_scalar(
+                "INSERT INTO stream_events (session_id, event_type, payload, search_text) \
+                 VALUES ('s', 'tool_use', $1, $2) RETURNING id",
+            )
+            .bind(serde_json::json!({ "content": [{ "type": "image", "source": {
+                "type": "base64", "media_type": "image/png", "data": format!("{data}x") } }] }))
+            .bind(format!("legacy {data}"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let recomputed: String = sqlx::query_scalar(
+                "UPDATE stream_events SET payload = payload WHERE id = $1 RETURNING search_text",
+            )
+            .bind(legacy)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(!recomputed.contains(&data[..200]), "{recomputed}");
+            assert!(!recomputed.starts_with("legacy"));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn storage_lifecycle_starts_with_no_rule_and_refuses_a_trim_without_a_size() {
+        with_isolated_database("storage_lifecycle_rules", |pool| async move {
+            provisioned(&pool).await;
+            let rules: i64 = sqlx::query_scalar("SELECT count(*) FROM storage_lifecycle_rules")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(rules, 0, "the default keeps everything");
+            for bad in [
+                "INSERT INTO storage_lifecycle_rules (action, after_days) VALUES ('trim', 7)",
+                "INSERT INTO storage_lifecycle_rules (action, after_days, above_bytes) \
+                 VALUES ('drop', 7, 4096)",
+                "INSERT INTO storage_lifecycle_rules (action, after_days, above_bytes) \
+                 VALUES ('trim', 0, 4096)",
+                "INSERT INTO storage_lifecycle_rules (action, after_days) VALUES ('purge', 7)",
+            ] {
+                assert!(sqlx::raw_sql(bad).execute(&pool).await.is_err(), "{bad}");
+            }
+            sqlx::raw_sql(
+                "INSERT INTO storage_lifecycle_rules (action, after_days, above_bytes) \
+                 VALUES ('trim', 7, 4096); \
+                 INSERT INTO storage_lifecycle_rules (action, after_days) VALUES ('drop', 90)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn a_database_with_workspace_two_installed_takes_core_five_cleanly() {
         with_isolated_database("dispatch_identity_preexisting", |pool| async move {
             provisioned(&pool).await;
@@ -370,7 +493,9 @@ mod tests {
                     (13, "bootstrap".to_owned()),
                     (14, "bootstrap".to_owned()),
                     (15, "bootstrap".to_owned()),
-                    (16, "bootstrap".to_owned())
+                    (16, "bootstrap".to_owned()),
+                    (17, "bootstrap".to_owned()),
+                    (18, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =

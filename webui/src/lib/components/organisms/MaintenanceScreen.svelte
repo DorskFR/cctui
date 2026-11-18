@@ -2,6 +2,7 @@
 	import { Button, Container, EmptyState, Stack, Text } from '@dorsk/tsumikit';
 	import { m } from '#lib/paraglide/messages.js';
 	import { now } from '#lib/clock.svelte.ts';
+	import { retryCountdown } from '#lib/backendHealth.svelte.ts';
 
 	let {
 		nextRetryAt,
@@ -9,13 +10,9 @@
 		onretry
 	}: { nextRetryAt: number | null; probing: boolean; onretry: () => void } = $props();
 
-	const seconds = $derived(
-		nextRetryAt === null ? null : Math.max(0, Math.ceil((nextRetryAt - now()) / 1000))
-	);
+	const seconds = $derived(retryCountdown(nextRetryAt, probing, now()));
 	const status = $derived(
-		probing || seconds === null || seconds === 0
-			? m.maintenance_retrying()
-			: m.maintenance_next_retry({ seconds })
+		seconds === null ? m.maintenance_retrying() : m.maintenance_next_retry({ seconds })
 	);
 </script>
 

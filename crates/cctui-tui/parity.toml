@@ -224,6 +224,18 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "get_admin_instance_event_retention"
+# GET /admin/instance/event-retention — Read or set how many days of events are kept (admin).
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "put_admin_instance_event_retention"
+# PUT /admin/instance/event-retention — Read or set how many days of events are kept (admin).
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "get_admin_instance_upload_caps"
 # GET /admin/instance/upload-caps — Read or set the per-upload file count and size caps (admin).
 tui = "waived"
@@ -234,6 +246,24 @@ id = "put_admin_instance_upload_caps"
 # PUT /admin/instance/upload-caps — Read or set the per-upload file count and size caps (admin).
 tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_admin_storage"
+# GET /admin/storage — Database, per-session and tool-output sizes, and the tool-output lifecycle (admin).
+tui = "waived"
+reason = "admin storage sizes and the tool-output lifecycle are a webui-only admin page; the TUI keeps the operator loop"
+
+[[route]]
+id = "put_admin_storage_lifecycle"
+# PUT /admin/storage/lifecycle — Set the tool-output lifecycle rules; none keeps everything (admin).
+tui = "waived"
+reason = "admin storage sizes and the tool-output lifecycle are a webui-only admin page; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_admin_storage_lifecycle_preview"
+# POST /admin/storage/lifecycle/preview — Estimate the rows and bytes a tool-output lifecycle rule set would free (admin).
+tui = "waived"
+reason = "admin storage sizes and the tool-output lifecycle are a webui-only admin page; the TUI keeps the operator loop"
 
 [[route]]
 id = "get_admin_harness_autoupdate"

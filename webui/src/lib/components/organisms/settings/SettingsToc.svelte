@@ -1,17 +1,16 @@
 <script lang="ts">
-	// Navigation of the Settings screen: a search box that reaches every page and
-	// one link per page — each entry is a route, the current one marked with an
-	// accent bar. On narrow screens the list gives way to a row of tabs (the
-	// search box moves to the page head there).
-	import { Icon, Input, Badge, Tabs, Text, type IconName, type TabItem } from '@dorsk/tsumikit';
+	// Navigation of the Settings screen: a search box that reaches every page,
+	// one link per page, and the current page's sub-areas as anchors. On narrow
+	// screens the list gives way to a row of tabs (the search box moves to the
+	// page head there).
+	import { Icon, Input, Tabs, Text, type IconName, type TabItem } from '@dorsk/tsumikit';
 	import { goto } from '$app/navigation';
 	import NavLink from '#lib/components/atoms/NavLink.svelte';
 	import {
 		SETTINGS_SCOPES,
 		settingsHref,
 		settingsScope,
-		type SettingsPage,
-		type SettingsScope
+		type SettingsPage
 	} from './settings.logic';
 	import { m } from '#lib/paraglide/messages.js';
 
@@ -19,7 +18,7 @@
 		page: SettingsPage;
 		icon: IconName;
 		label: string;
-		admin?: boolean;
+		sections?: { id: string; label: string }[];
 	}
 
 	let {
@@ -32,8 +31,6 @@
 		query?: string;
 	} = $props();
 
-	const scopeLabel = (s: SettingsScope) =>
-		s === 'you' ? m.settings_scope_you() : m.settings_scope_instance();
 	const groups = $derived(
 		SETTINGS_SCOPES.map((scope) => ({
 			scope,
@@ -74,9 +71,11 @@
 		/>
 	</div>
 	{#each groups as g (g.scope)}
-		<div class="scope">
-			<Text size="xs" tone="faint" weight="semibold">{scopeLabel(g.scope)}</Text>
-		</div>
+		{#if g.scope === 'instance'}
+			<div class="scope">
+				<Text size="xs" tone="faint" weight="semibold">{m.settings_scope_admin_only()}</Text>
+			</div>
+		{/if}
 		{#each g.entries as e (e.page)}
 			<NavLink
 				href={settingsHref(e.page)}
@@ -88,11 +87,20 @@
 				<span class="toc-item" class:active={active === e.page}>
 					<span class="ico" class:on={active === e.page}><Icon name={e.icon} size={16} /></span>
 					<Text size="sm" tone={active === e.page ? 'default' : 'muted'}>{e.label}</Text>
-					{#if e.admin}
-						<span class="tag"><Badge tone="warn" size="sm" border>{m.settings_scope_admin()}</Badge></span>
-					{/if}
 				</span>
 			</NavLink>
+			{#if active === e.page && e.sections && e.sections.length > 1}
+				{#each e.sections as sec (sec.id)}
+					<NavLink
+						href={settingsHref(e.page, sec.id)}
+						class="toc-link"
+						data-journey="settings-section"
+						data-journey-key={sec.id}
+					>
+						<span class="toc-sub"><Text size="xs" tone="muted">{sec.label}</Text></span>
+					</NavLink>
+				{/each}
+			{/if}
 		{/each}
 	{/each}
 </nav>
@@ -113,9 +121,6 @@
 		padding: var(--sp-3) var(--sp-3) var(--sp-1);
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
-	}
-	.scope:first-of-type {
-		padding-top: 0;
 	}
 	.toc-item {
 		display: flex;
@@ -142,8 +147,13 @@
 	.ico.on {
 		color: var(--accent);
 	}
-	.tag {
-		margin-left: auto;
+	.toc-sub {
+		display: block;
+		padding: var(--sp-1) var(--sp-3) var(--sp-1) calc(var(--sp-3) + 1.25rem + var(--sp-2));
+		border-radius: var(--r-sm);
+	}
+	.toc-sub:hover {
+		background: var(--bg-elevated);
 	}
 	.tabs {
 		display: none;
@@ -167,9 +177,6 @@
 		}
 		.toc-item.active {
 			border-color: var(--accent-dim, var(--accent));
-		}
-		.tag {
-			display: none;
 		}
 	}
 </style>

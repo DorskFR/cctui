@@ -291,6 +291,19 @@ impl Seeded {
         .unwrap()
     }
 
+    /// A row stored before `search_text` dropped base64: it holds the copy.
+    async fn insert_legacy(&self, session: usize, payload: &Value) -> i64 {
+        sqlx::query_scalar(
+            "INSERT INTO stream_events (session_id, event_type, payload, search_text) \
+             VALUES ($1, 'tool_use', $2, ($2::jsonb) ->> 'content') RETURNING id",
+        )
+        .bind(&self.sessions[session])
+        .bind(payload)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap()
+    }
+
     async fn payload(&self, id: i64) -> Value {
         sqlx::query_scalar("SELECT payload FROM stream_events WHERE id = $1")
             .bind(id)
@@ -452,14 +465,15 @@ async fn backfill_rewrites_prod_shaped_rows_resumably_and_idempotently() {
     let jpg = photo(seed.wrapping_add(1), 250_000);
     let tiny = screenshot(seed.wrapping_add(2), 200);
 
-    let read = db.insert(0, &read_result("toolu_read", &png)).await;
-    let captioned = db.insert(0, &captioned_result("toolu_shot", &jpg)).await;
+    let read = db.insert_legacy(0, &read_result("toolu_read", &png)).await;
+    let captioned = db.insert_legacy(0, &captioned_result("toolu_shot", &jpg)).await;
     let bash = json!({"kind": "tool_result", "tool_use_id": "toolu_bash", "is_error": false,
         "content": "drwxr-xr-x 2 user user 4096 a\n".repeat(2000)});
     let bash_id = db.insert(0, &bash).await;
     let small = read_result("toolu_small", &tiny);
     let small_id = db.insert(0, &small).await;
-    let again = db.insert(1, &read_result("toolu_again", &png)).await;
+    let again = db.insert_legacy(1, &read_result("toolu_again", &png)).await;
+    assert!(db.search_text_has(again, &b64(&png)[..64]).await, "a legacy row");
     let lost = photo(seed.wrapping_add(3), 60_000);
     let (redacted_payload, redacted) = redacted_result("toolu_redacted", &lost);
     let redacted_id = db.insert(0, &redacted_payload).await;
@@ -570,6 +584,32 @@ async fn a_rewrite_that_duplicates_a_stored_row_is_left_inline() {
     drop(conn);
     assert_eq!(db.payload(id).await, inline);
     db.cleanup(&[sha(&png)], None).await;
+}
+
+#[tokio::test]
+async fn backfill_scrubs_the_search_text_of_a_row_it_leaves_inline() {
+    let Some(db) = seeded("image_backfill_scrub", 1).await else { return };
+    let walk_name = format!("test-{}", db.uid);
+    let png = screenshot(Uuid::new_v4().as_u128(), 30_000);
+    let inline = read_result("toolu_scrub", &png);
+    let (moved, _) = extract(&inline).unwrap();
+    let kept = db.insert(0, &moved).await;
+    let id = db.insert_legacy(0, &inline).await;
+    let needle = &b64(&png)[..64];
+    assert!(db.search_text_has(id, needle).await, "a legacy row");
+
+    let w = walk(&walk_name, 20, &db.sessions);
+    set_cursor(&db.pool, &walk_name, kept).await;
+    let first = w.step(&db.pool).await.unwrap();
+    assert_eq!((first.rewritten, first.left_inline, first.scrubbed), (0, 1, 1));
+    assert_eq!(db.payload(id).await, inline, "a duplicate keeps its inline payload");
+    assert!(!db.search_text_has(id, needle).await, "search_text drops the base64");
+    assert!(db.search_text_has(id, "\"image/png\"").await, "and keeps the rest");
+
+    set_cursor(&db.pool, &walk_name, kept).await;
+    let again = w.step(&db.pool).await.unwrap();
+    assert_eq!((again.left_inline, again.scrubbed), (1, 0), "a re-run writes nothing");
+    db.cleanup(&[sha(&png)], Some(&walk_name)).await;
 }
 
 #[tokio::test]

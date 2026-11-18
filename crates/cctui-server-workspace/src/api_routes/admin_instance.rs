@@ -8,6 +8,10 @@ use axum::http::Method;
 use axum::routing::{get, post, put};
 
 pub(super) fn register(r: Routes) -> Routes {
+    storage_and_harness(instance(r))
+}
+
+fn instance(r: Routes) -> Routes {
     r
         // Admin surface: every route is `forbid_or` (Scope::Admin).
         .add(
@@ -30,7 +34,8 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET, Method::PUT],
             "/admin/instance/self-update",
             "Read or set the machine + directory the self-update agent runs on (admin).",
-            get(routes::instance::get_self_update_target).put(routes::instance::update_self_update_target),
+            get(routes::instance::get_self_update_target)
+                .put(routes::instance::update_self_update_target),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
         )
@@ -38,7 +43,8 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET, Method::PUT],
             "/admin/instance/spawn-defaults",
             "Read or set the default CctuiAgent limits for sessions that declare none (admin).",
-            get(routes::server_settings::get_spawn_defaults).put(routes::server_settings::update_spawn_defaults),
+            get(routes::server_settings::get_spawn_defaults)
+                .put(routes::server_settings::update_spawn_defaults),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
         )
@@ -46,7 +52,8 @@ pub(super) fn register(r: Routes) -> Routes {
             &[GET, Method::PUT],
             "/admin/instance/upstream-hosts",
             "Read or set the hosts per-account upstreams may reach despite the SSRF guard (admin).",
-            get(routes::server_settings::get_upstream_hosts).put(routes::server_settings::update_upstream_hosts),
+            get(routes::server_settings::get_upstream_hosts)
+                .put(routes::server_settings::update_upstream_hosts),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
         )
@@ -76,34 +83,71 @@ pub(super) fn register(r: Routes) -> Routes {
         )
         .add(
             &[GET, Method::PUT],
-            "/admin/instance/upload-caps",
-            "Read or set the per-upload file count and size caps (admin).",
-            get(routes::server_settings::get_upload_caps).put(routes::server_settings::update_upload_caps),
+            "/admin/instance/event-retention",
+            "Read or set how many days of events are kept (admin).",
+            get(routes::server_settings::get_event_retention)
+                .put(routes::server_settings::update_event_retention),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
         )
         .add(
             &[GET, Method::PUT],
-            "/admin/harness-autoupdate",
-            "Read the harness auto-update settings of every machine, or set the instance default (admin).",
-            get(routes::harness_update::read).put(routes::harness_update::set_instance),
+            "/admin/instance/upload-caps",
+            "Read or set the per-upload file count and size caps (admin).",
+            get(routes::server_settings::get_upload_caps)
+                .put(routes::server_settings::update_upload_caps),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
         )
-        .add(
-            &[Method::PUT],
-            "/admin/harness-autoupdate/{machine_id}",
-            "Set or clear one machine's harness auto-update override (admin).",
-            put(routes::harness_update::set_machine),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[Method::POST],
-            "/admin/harness-autoupdate/{machine_id}/restart",
-            "Restart one harness's long-lived process on a machine once it is idle (admin).",
-            post(routes::harness_update::restart_harness),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
+}
+
+fn storage_and_harness(r: Routes) -> Routes {
+    r.add(
+        &[GET],
+        "/admin/storage",
+        "Database, per-session and tool-output sizes, and the tool-output lifecycle (admin).",
+        get(routes::storage_admin::overview),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[Method::PUT],
+        "/admin/storage/lifecycle",
+        "Set the tool-output lifecycle rules; none keeps everything (admin).",
+        put(routes::storage_admin::update_lifecycle),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[Method::POST],
+        "/admin/storage/lifecycle/preview",
+        "Estimate the rows and bytes a tool-output lifecycle rule set would free (admin).",
+        post(routes::storage_admin::preview_lifecycle),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[GET, Method::PUT],
+        "/admin/harness-autoupdate",
+        "Read the harness auto-update settings of every machine, or set the instance default (admin).",
+        get(routes::harness_update::read).put(routes::harness_update::set_instance),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[Method::PUT],
+        "/admin/harness-autoupdate/{machine_id}",
+        "Set or clear one machine's harness auto-update override (admin).",
+        put(routes::harness_update::set_machine),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[Method::POST],
+        "/admin/harness-autoupdate/{machine_id}/restart",
+        "Restart one harness's long-lived process on a machine once it is idle (admin).",
+        post(routes::harness_update::restart_harness),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
 }

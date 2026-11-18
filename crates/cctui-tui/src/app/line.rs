@@ -476,6 +476,25 @@ mod tests {
     }
 
     #[test]
+    fn a_chain_follow_up_carries_its_previous_sessions_as_one_block() {
+        let ln = line(&text(
+            "▷ User: <cctui-session-context>\nx\n</cctui-session-context>\n\n\
+             <cctui-previous-sessions>\n\
+             <cctui-previous-conversation n=\"1\" session=\"a\" id=\"s-1\">\nold\n\
+             </cctui-previous-conversation>\n\
+             <cctui-previous-conversation n=\"2\" session=\"b\" id=\"s-2\">\nnewer\n\
+             </cctui-previous-conversation>\n\
+             </cctui-previous-sessions>\n\nContinue from this.",
+            None,
+        ));
+        assert_eq!(ln.kind, LineKind::User);
+        assert_eq!(ln.text, "Continue from this.");
+        let labels: Vec<&str> = ln.context.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, ["session context", "previous conversation"]);
+        assert!(ln.context[1].body.contains("newer"), "{}", ln.context[1].body);
+    }
+
+    #[test]
     fn a_turn_of_only_injected_blocks_is_a_context_line() {
         let ln = line(&text("▷ User: <cctui-session-context>\nx\n</cctui-session-context>", None));
         assert_eq!(ln.kind, LineKind::Context);

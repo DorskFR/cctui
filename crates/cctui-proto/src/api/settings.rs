@@ -105,6 +105,24 @@ pub struct UploadCapsRequest {
     pub caps: Option<UploadCaps>,
 }
 
+/// How long the event log is kept, `GET /admin/instance/event-retention`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct EventRetentionInfo {
+    /// Days of events kept; `0` keeps them forever.
+    pub days: u32,
+    pub default_days: u32,
+    /// `settings` once an admin saved a value, else `default`.
+    pub source: SettingSource,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct EventRetentionRequest {
+    /// `null` clears the saved value, restoring the default.
+    pub days: Option<u32>,
+}
+
 /// Non-secret part of the `speech` instance setting.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
@@ -150,12 +168,20 @@ pub struct SpeechSettingsInfo {
     pub has_key: bool,
     /// `settings` once an admin saved a value, else `default`.
     pub source: SettingSource,
+    /// Opaque marker of the stored row this copy was read from, empty when
+    /// nothing is saved.
+    pub revision: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SpeechSettingsRequest {
     pub config: SpeechConfig,
+    /// The `revision` the form was loaded from. The save is refused with `409`
+    /// once another write has landed since; `null` overwrites unconditionally.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub revision: Option<String>,
     /// A new key to store; `null` keeps the current one.
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]

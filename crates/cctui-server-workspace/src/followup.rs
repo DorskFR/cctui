@@ -3,12 +3,15 @@
 //! labels and auto-archive) and claimed when the worker registers; a daemon
 //! announcing it as a root never takes the relation back.
 
+use std::fmt::Write as _;
+
 use axum::Json;
 use axum::extract::{Path, State};
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
 use cctui_proto::api::{SessionThreadResponse, SpawnRequest, ThreadSession};
+use cctui_proto::injected::{PREVIOUS_CONVERSATION, PREVIOUS_SESSIONS};
 
 use crate::brief::{self, Caps, Turn};
 use crate::error::AppError;
@@ -66,18 +69,29 @@ pub async fn followups_of(pool: &PgPool, id: &str) -> Result<(Option<String>, u3
     Ok(row.map_or((None, 0), |(next, count)| (next, u32::try_from(count).unwrap_or(0))))
 }
 
+/// SQL: `$1` and its ancestors through follow-up links; `seen` breaks link
+/// cycles, the longest `seen` is the root.
+macro_rules! up_cte_sql {
+    () => {
+        "up AS ( \
+            SELECT id, metadata->>'relation' AS relation, parent_id, ARRAY[id] AS seen \
+              FROM sessions WHERE id = $1 \
+            UNION ALL \
+            SELECT p.id, p.metadata->>'relation', p.parent_id, up.seen || p.id \
+              FROM up JOIN sessions p ON p.id = up.parent_id \
+             WHERE up.relation = 'followup' AND NOT p.id = ANY(up.seen) \
+               AND cardinality(up.seen) < 500 \
+        )"
+    };
+}
+
 /// Up to the thread's root through follow-up links, then every follow-up
-/// below it: depth first, siblings oldest first. `seen` breaks link cycles.
+/// below it: depth first, siblings oldest first.
 /// No status filter: archived sessions stay in the thread.
-const THREAD_SQL: &str = "WITH RECURSIVE up AS ( \
-        SELECT id, metadata->>'relation' AS relation, parent_id, ARRAY[id] AS seen \
-          FROM sessions WHERE id = $1 \
-        UNION ALL \
-        SELECT p.id, p.metadata->>'relation', p.parent_id, up.seen || p.id \
-          FROM up JOIN sessions p ON p.id = up.parent_id \
-         WHERE up.relation = 'followup' AND NOT p.id = ANY(up.seen) \
-           AND cardinality(up.seen) < 500 \
-    ), root AS ( \
+const THREAD_SQL: &str = concat!(
+    "WITH RECURSIVE ",
+    up_cte_sql!(),
+    ", root AS ( \
         SELECT id FROM up ORDER BY cardinality(seen) DESC LIMIT 1 \
     ), tree AS ( \
         SELECT s.id, NULL::text AS parent_id, \
@@ -96,7 +110,13 @@ const THREAD_SQL: &str = "WITH RECURSIVE up AS ( \
     ) \
     SELECT s.id, s.session_name, s.working_dir, s.registered_at, t.parent_id \
       FROM tree t JOIN sessions s ON s.id = t.id \
-     ORDER BY t.path";
+     ORDER BY t.path"
+);
+
+/// The follow-up line that leads to `$1`, root first. Sibling branches and
+/// descendants are not on it.
+const CHAIN_SQL: &str =
+    concat!("WITH RECURSIVE ", up_cte_sql!(), " SELECT id FROM up ORDER BY cardinality(seen) DESC");
 
 /// `id, session_name, working_dir, registered_at, parent_id` of a thread entry.
 type ThreadRow = (String, Option<String>, String, DateTime<Utc>, Option<String>);
@@ -114,6 +134,11 @@ pub async fn thread_of(pool: &PgPool, id: &str) -> Result<Vec<ThreadSession>, sq
             parent_id,
         })
         .collect())
+}
+
+/// The session ids from the chain's root down to `id`; empty when `id` is unknown.
+pub async fn chain_of(pool: &PgPool, id: &str) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(CHAIN_SQL).bind(id).fetch_all(pool).await
 }
 
 /// `GET /sessions/{id}/thread`.
@@ -217,7 +242,7 @@ fn attr(raw: &str) -> String {
 /// inline without the attachment the webui uses for a larger brief.
 #[must_use]
 pub fn followup_prompt(parent_id: &str, name: &str, turns: &[Turn], instruction: &str) -> String {
-    let tag = cctui_proto::injected::PREVIOUS_CONVERSATION;
+    let tag = PREVIOUS_CONVERSATION;
     let open = format!("<{tag} session=\"{}\" id=\"{}\">", attr(name), attr(parent_id));
     let close = format!("</{tag}>");
     let overhead = open.len() + close.len() + 2 + ELISION_SLACK;
@@ -226,22 +251,69 @@ pub fn followup_prompt(parent_id: &str, name: &str, turns: &[Turn], instruction:
         max_bytes: brief::DEFAULT_MAX_BYTES.saturating_sub(overhead),
     };
     let markdown = brief::render(turns, caps).markdown;
-    let ask = match instruction.trim() {
-        "" => DEFAULT_INSTRUCTION,
-        ask => ask,
-    };
-    format!("{open}\n{markdown}\n{close}\n\n{ask}")
+    format!("{open}\n{markdown}\n{close}\n\n{}", ask(instruction))
 }
 
-/// [`followup_prompt`] from the stored transcript, for a follow-up spawned
-/// without a client. `None` when the parent does not exist.
+fn ask(instruction: &str) -> &str {
+    match instruction.trim() {
+        "" => DEFAULT_INSTRUCTION,
+        ask => ask,
+    }
+}
+
+/// The first prompt of a follow-up of the chain `links` (root first): every
+/// session in its own numbered block inside the previous-sessions container,
+/// the same shape the webui builds, within [`brief::DEFAULT_MAX_BYTES`].
+#[must_use]
+pub fn chain_prompt(links: &[brief::Link], instruction: &str) -> String {
+    let opens: Vec<String> = links
+        .iter()
+        .enumerate()
+        .map(|(i, link)| {
+            let session = link
+                .transcript
+                .as_ref()
+                .map_or_else(String::new, |t| format!(" session=\"{}\"", attr(&t.name)));
+            format!("<{PREVIOUS_CONVERSATION} n=\"{}\"{session} id=\"{}\">", i + 1, attr(&link.id))
+        })
+        .collect();
+    let close = format!("</{PREVIOUS_CONVERSATION}>");
+    let overhead = 2 * PREVIOUS_SESSIONS.len()
+        + 8
+        + opens.iter().map(|open| open.len() + close.len() + 3).sum::<usize>()
+        + ELISION_SLACK;
+    let caps = Caps {
+        max_turns: brief::DEFAULT_MAX_TURNS,
+        max_bytes: brief::DEFAULT_MAX_BYTES.saturating_sub(overhead),
+    };
+    let sessions = brief::assemble(links, caps).sessions.unwrap_or_default();
+    let mut prompt = format!("<{PREVIOUS_SESSIONS}>\n");
+    for (open, session) in opens.iter().zip(&sessions) {
+        let _ = writeln!(prompt, "{open}\n{}\n{close}", session.markdown);
+    }
+    let _ = write!(prompt, "</{PREVIOUS_SESSIONS}>\n\n{}", ask(instruction));
+    prompt
+}
+
+/// The first prompt of a follow-up spawned without a client, from the stored
+/// chain ending at the parent: [`followup_prompt`] for a lone parent, else
+/// [`chain_prompt`]. Ancestors the parent's owner cannot read are one line.
+/// `None` when the parent does not exist.
 pub async fn render_followup_prompt(
     pool: &PgPool,
     parent_session_id: &str,
     instruction: &str,
 ) -> Result<Option<String>, sqlx::Error> {
-    let Some(parent) = brief::load(pool, parent_session_id).await? else { return Ok(None) };
-    Ok(Some(followup_prompt(parent_session_id, &parent.name, &parent.turns, instruction)))
+    let owner = crate::authz::session_owner(parent_session_id, pool).await?;
+    let links = brief::load_chain(pool, brief::Reader::Owner(owner), parent_session_id).await?;
+    Ok(match links.as_slice() {
+        [] => None,
+        [only] => only
+            .transcript
+            .as_ref()
+            .map(|t| followup_prompt(&only.id, &t.name, &t.turns, instruction)),
+        _ => Some(chain_prompt(&links, instruction)),
+    })
 }
 
 #[cfg(test)]

@@ -13,12 +13,6 @@
 	import RouteMatrix from './notifications/RouteMatrix.svelte';
 
 	const resolved = useNotificationSettings();
-
-	async function toggleNotify() {
-		if (notify.enabled) notify.disable();
-		else await notify.enable();
-		settings.recordNotifyEnabled();
-	}
 </script>
 
 <SettingSection id="notifications" icon="🔔" title={m.settings_notifications_title()}>
@@ -35,12 +29,12 @@
 		</SettingRow>
 		<SettingRow label={m.settings_notify_input_label()} help={m.settings_notify_input_help()}>
 			<Switch
-				bind:checked={() => notify.enabled, () => void toggleNotify()}
-				label={m.settings_notifications_title()}
+				bind:checked={() => settings.notifyEnabled, (v) => void settings.setNotifyEnabled(v)}
+				label={m.settings_notify_input_label()}
 				disabled={!notify.supported}
 			/>
 		</SettingRow>
-		<SettingRow label={m.settings_sound_label()}>
+		<SettingRow label={m.settings_notification_sound_label()} help={m.settings_notification_sound_help()}>
 			<Switch
 				bind:checked={() => notify.sound, (v) => settings.setNotifySound(v)}
 				label={m.settings_notification_sound_label()}

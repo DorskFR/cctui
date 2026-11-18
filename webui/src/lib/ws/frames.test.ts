@@ -14,6 +14,12 @@ describe('lastMessageExcerpt', () => {
 		expect(lastMessageExcerpt(only)).toBe('<cctui-session-context> ctx </cctui-session-context>');
 		expect(lastMessageExcerpt('▷ User: line one\n\n line two')).toBe('line one line two');
 	});
+
+	it('previews a follow-up chain as the prompt after its previous sessions', () => {
+		const chain =
+			'▷ User: <cctui-previous-sessions>\n<cctui-previous-conversation n="1" session="a" id="1">\nfirst\n</cctui-previous-conversation>\n<cctui-previous-conversation n="2" session="b" id="2">\nsecond\n</cctui-previous-conversation>\n</cctui-previous-sessions>\n\nContinue from this.';
+		expect(lastMessageExcerpt(chain)).toBe('Continue from this.');
+	});
 });
 
 describe('streamListPatch', () => {

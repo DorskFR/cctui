@@ -26,7 +26,7 @@ use crate::search_index::Unchunked;
 use crate::state::AppState;
 use crate::store::sessions::SessionRowStatus;
 
-pub use cctui_proto::api::session_bindings::SessionBinding;
+pub use cctui_proto::api::session_bindings::{SessionBinding, SwitchOption};
 
 pub async fn register(
     State(state): State<AppState>,
@@ -142,13 +142,11 @@ pub use cctui_server_core::account_resolve::LIVENESS_ACTIVE_SECS;
 pub const LIVENESS_DEAD_SECS: i64 = 60 * 60;
 
 /// Query params for `GET /sessions`. Archived sessions are hidden unless
-/// `?include_archived=true`.
+/// `?include_archived=true`. An older client's `show_hidden` is ignored.
 #[derive(Debug, Default, Deserialize)]
 pub struct ListParams {
     #[serde(default)]
     pub include_archived: bool,
-    #[serde(default)]
-    pub show_hidden: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -363,7 +361,7 @@ pub async fn list_sessions(
             .filter(|row| !live_ids.contains(&row.id))
             .map(|row| (row.registered_at, db_list_item(row))),
     );
-    screen_hidden(&state, &ctx, params.show_hidden, &mut with_ts).await?;
+    screen_hidden(&state, &ctx, &mut with_ts).await?;
     if let Some(Extension(crate::auth::BoundSession(own))) = &worker {
         with_ts.retain(|(_, s)| s.id == *own);
     }
@@ -375,11 +373,10 @@ pub async fn list_sessions(
     ))
 }
 
-/// Drops the sessions an admin hides, or flags them when `show` is set.
+/// Drops the sessions of the users and machines the admin hides.
 async fn screen_hidden(
     state: &AppState,
     ctx: &AuthContext,
-    show: bool,
     with_ts: &mut Vec<(DateTime<Utc>, SessionListItem)>,
 ) -> Result<(), AppError> {
     let Some(set) = crate::routes::hidden_owners::applying_to(&state.pool, ctx).await? else {
@@ -387,13 +384,7 @@ async fn screen_hidden(
     };
     let ids: Vec<String> = with_ts.iter().map(|(_, s)| s.id.clone()).collect();
     let hidden = crate::routes::hidden_owners::hidden_session_ids(&state.pool, &set, &ids).await?;
-    if show {
-        for (_, item) in with_ts {
-            item.hidden = hidden.contains(&item.id);
-        }
-    } else {
-        with_ts.retain(|(_, item)| !hidden.contains(&item.id));
-    }
+    with_ts.retain(|(_, item)| !hidden.contains(&item.id));
     Ok(())
 }
 
@@ -1230,7 +1221,8 @@ fn sort_sessions(mut with_ts: Vec<(DateTime<Utc>, SessionListItem)>) -> Vec<Sess
 /// live (non-archived) sessions only, `true` searches all. With an empty `q`
 /// and `include_archived=true` this becomes "browse the archive" — archived
 /// sessions, newest first. Pages follow the response's `next_cursor`; `offset`
-/// is honoured only without one.
+/// is honoured only without one. `exclude_dispatched` drops unpinned sessions
+/// of dispatch/ephemeral machines and the subagents nested under them.
 #[derive(Debug, Default, Deserialize)]
 pub struct SearchParams {
     #[serde(default)]
@@ -1241,7 +1233,7 @@ pub struct SearchParams {
     pub offset: Option<i64>,
     pub cursor: Option<String>,
     #[serde(default)]
-    pub show_hidden: bool,
+    pub exclude_dispatched: bool,
 }
 
 /// Shared SELECT + machine-name and room joins: the full `DbSession`
@@ -1290,9 +1282,64 @@ fn straighten_phrase_quotes(q: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(q.replace(SMART_DOUBLE_QUOTES, "\""))
 }
 
-/// [`ilike_contains`] over a free-text term folded like the indexed chunks.
-fn text_pattern(term: &str) -> String {
-    ilike_contains(&crate::search_index::text::fold(term))
+/// Where a free-text term may start matching: at a word start by default,
+/// anywhere when quoted or written `*term`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Anchor {
+    Word,
+    Anywhere,
+}
+
+/// A trailing `*` is dropped: a word-start match already covers its prefix use.
+fn search_term(value: &str, phrase: bool) -> (&str, Anchor) {
+    if phrase {
+        return (value, Anchor::Anywhere);
+    }
+    let bare = value.strip_suffix('*').unwrap_or(value);
+    match bare.strip_prefix('*') {
+        Some(rest) if !rest.is_empty() => (rest, Anchor::Anywhere),
+        _ if bare.is_empty() => (value, Anchor::Anywhere),
+        _ => (bare, Anchor::Word),
+    }
+}
+
+/// `None` when `term`'s first character cannot start a word.
+fn word_start_regex(term: &str) -> Option<String> {
+    if !term.chars().next().is_some_and(is_word_char) {
+        return None;
+    }
+    let mut out = String::from("\\m");
+    for c in term.chars() {
+        if c.is_ascii_punctuation() {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    Some(out)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TermBinds {
+    like: usize,
+    word: Option<usize>,
+}
+
+impl TermBinds {
+    fn bind(params: &mut Vec<SqlParam>, term: &str, anchor: Anchor) -> Self {
+        let like = ph_text(params, ilike_contains(term));
+        let word = match anchor {
+            Anchor::Word => word_start_regex(term).map(|re| ph_text(params, re)),
+            Anchor::Anywhere => None,
+        };
+        Self { like, word }
+    }
+
+    fn test(self, col: &str) -> String {
+        self.word.map_or_else(
+            || format!("{col} ILIKE ${}", self.like),
+            |w| format!("{col} ILIKE ${} AND {col} ~* ${w}", self.like),
+        )
+    }
 }
 
 /// Free-text terms folded like the indexed chunks, and as typed for the
@@ -1301,16 +1348,43 @@ fn text_pattern(term: &str) -> String {
 struct Terms {
     folded: Vec<String>,
     raw: Vec<String>,
+    anchors: Vec<Anchor>,
 }
 
 impl Terms {
+    /// Substring terms, as the in-conversation search matches them.
     fn of(terms: &[String]) -> Self {
-        let (folded, raw) = terms
+        Self::collect(terms.iter().map(|t| (t.as_str(), Anchor::Anywhere)))
+    }
+
+    fn of_query(root: &cctui_query::Node) -> Self {
+        Self::collect(root.free_text_leaves().into_iter().map(|(v, phrase)| search_term(v, phrase)))
+    }
+
+    fn collect<'a>(terms: impl Iterator<Item = (&'a str, Anchor)>) -> Self {
+        let mut out = Self { folded: Vec::new(), raw: Vec::new(), anchors: Vec::new() };
+        for (term, anchor) in terms {
+            let folded = crate::search_index::text::fold(term);
+            if folded.is_empty() {
+                continue;
+            }
+            out.folded.push(folded);
+            out.raw.push(term.to_owned());
+            out.anchors.push(anchor);
+        }
+        out
+    }
+
+    /// The `~*` recheck of each term, `''` (matching anything) where none applies.
+    fn regexes(&self, terms: &[String]) -> Vec<String> {
+        terms
             .iter()
-            .map(|t| (crate::search_index::text::fold(t), t.clone()))
-            .filter(|(f, _)| !f.is_empty())
-            .unzip();
-        Self { folded, raw }
+            .zip(&self.anchors)
+            .map(|(t, a)| match a {
+                Anchor::Word => word_start_regex(t).unwrap_or_default(),
+                Anchor::Anywhere => String::new(),
+            })
+            .collect()
     }
 
     const fn is_empty(&self) -> bool {
@@ -1323,9 +1397,13 @@ impl Terms {
 
     /// What a snippet centres on: chunk text is folded, `search_text` is not.
     fn needles(&self) -> Vec<String> {
-        let mut out = self.folded.clone();
-        out.extend(self.raw.iter().filter(|r| !self.folded.contains(r)).cloned());
-        out
+        self.anchored_needles().into_iter().map(|(n, _)| n).collect()
+    }
+
+    fn anchored_needles(&self) -> Vec<(String, Anchor)> {
+        let folded = self.folded.iter().zip(&self.anchors);
+        let raw = self.raw.iter().zip(&self.anchors).filter(|(r, _)| !self.folded.contains(r));
+        folded.chain(raw).map(|(t, a)| (t.clone(), *a)).collect()
     }
 }
 
@@ -1410,8 +1488,10 @@ fn leaf_predicate(
         // Transcript-scoped fields, meaningful only to `/sessions/{id}/search`.
         // Across sessions they stay the literal free text they were before the
         // query registry learned them.
-        "role" | "tool" | "after" | "before" => text_leaf(&format!("{field}:{value}"), params, gap),
-        _ => text_leaf(value, params, gap),
+        "role" | "tool" | "after" | "before" => {
+            text_leaf(&format!("{field}:{value}"), Anchor::Anywhere, params, gap)
+        }
+        _ => text_leaf(value, Anchor::Anywhere, params, gap),
     }
 }
 
@@ -1425,33 +1505,41 @@ fn unchunked_ids(alias: &str, g: Unchunked) -> String {
     )
 }
 
-fn text_leaf(term: &str, params: &mut Vec<SqlParam>, gap: Option<Unchunked>) -> String {
-    let p = ph_text(params, text_pattern(term));
-    let fallback = gap.map(|g| (ph_text(params, ilike_contains(term)), g));
-    free_text_predicate(p, fallback)
+fn text_leaf(
+    term: &str,
+    anchor: Anchor,
+    params: &mut Vec<SqlParam>,
+    gap: Option<Unchunked>,
+) -> String {
+    let folded = TermBinds::bind(params, &crate::search_index::text::fold(term), anchor);
+    let fallback = gap.map(|g| (TermBinds::bind(params, term, anchor), g));
+    free_text_predicate(folded, fallback)
 }
 
 /// The residual free-text path: id / name / dir / the session's search chunks,
-/// and with `fallback` its unchunked events' capped `search_text` (bind `$r`).
+/// and with `fallback` its unchunked events' capped `search_text`.
 ///
 /// `(SELECT s.id)` must not be simplified to `s.id`: the wrapper keeps the
 /// correlation as a Param, and a plain `s.id` lets the planner hoist the
 /// sublink into a hashed subplan that rechecks every matching event in the
 /// table rather than probing one session (13 s vs 0.35 s on 600k events).
-fn free_text_predicate(p: usize, fallback: Option<(usize, Unchunked)>) -> String {
+fn free_text_predicate(t: TermBinds, fallback: Option<(TermBinds, Unchunked)>) -> String {
     let unchunked = fallback.map_or_else(String::new, |(r, g)| {
         format!(
             " OR EXISTS (SELECT 1 FROM stream_events e \
-                        WHERE e.session_id = (SELECT s.id) AND {} \
-                        AND left(e.search_text, {SEARCH_TEXT_CAP}) ILIKE ${r})",
-            unchunked_ids("e", g)
+                        WHERE e.session_id = (SELECT s.id) AND {} AND {})",
+            unchunked_ids("e", g),
+            r.test(&format!("left(e.search_text, {SEARCH_TEXT_CAP})"))
         )
     });
     format!(
-        "(s.id ILIKE ${p} OR COALESCE(s.session_name, '') ILIKE ${p} \
-          OR s.working_dir ILIKE ${p} \
+        "(({}) OR ({}) OR ({}) \
           OR EXISTS (SELECT 1 FROM search_chunks c \
-                     WHERE c.session_id = (SELECT s.id) AND c.body ILIKE ${p}){unchunked})"
+                     WHERE c.session_id = (SELECT s.id) AND {}){unchunked})",
+        t.test("s.id"),
+        t.test("COALESCE(s.session_name, '')"),
+        t.test("s.working_dir"),
+        t.test("c.body"),
     )
 }
 
@@ -1502,7 +1590,10 @@ fn compile_node_at(
     }
     match node {
         Node::Empty => "TRUE".to_string(),
-        Node::Text { value } => text_leaf(value, params, gap),
+        Node::Text { value, phrase } => {
+            let (term, anchor) = search_term(value, *phrase);
+            text_leaf(term, anchor, params, gap)
+        }
         Node::Filter { filter } => compile_filter(filter, params, gap),
         Node::Not { child } => format!("(NOT {})", compile_node_at(child, params, gap, depth + 1)),
         Node::And { children } => join_children(children, "AND", params, gap, depth),
@@ -1537,25 +1628,41 @@ fn check_query_len(q: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// The best-ranked of a session's newest chunks matching any term, at most
-/// one row per session. `$1` is the session-id array, `$2…$n+1` the ILIKE
-/// patterns, `$n+2` the terms the rank weighs; with a `gap`, `$n+3…$2n+2` the
-/// unfolded patterns its newest matching unchunked event is tested with.
+/// The best of a session's newest chunks matching any term, at most one row
+/// per session, ranked by how many distinct terms it holds, then `ts_rank`.
+/// `$1` is the session-id array, `$2…$n+1` the ILIKE patterns, `$n+2` the
+/// terms the rank weighs; with a `gap`, `$n+3…$2n+2` the unfolded patterns its
+/// newest matching unchunked event is tested with. The `~*` word-start
+/// rechecks follow, one per pattern in the same order.
 fn snippet_sql(n_patterns: usize, gap: Option<Unchunked>) -> String {
-    let or =
-        (2..=n_patterns + 1).map(|i| format!("c.body ILIKE ${i}")).collect::<Vec<_>>().join(" OR ");
     let rank = n_patterns + 2;
-    let unchunked = gap.map_or_else(String::new, |g| {
-        let raw = (rank + 1..=rank + n_patterns)
-            .map(|i| format!("left(e.search_text, {SEARCH_TEXT_CAP}) ILIKE ${i}"))
-            .collect::<Vec<_>>()
-            .join(" OR ");
+    let re = if gap.is_some() { 2 * n_patterns + 3 } else { n_patterns + 3 };
+    let hit = |col: &str, like: usize, r: usize| format!("({col} ILIKE ${like} AND {col} ~* ${r})");
+    let each = |col: &str, like: usize, r: usize| {
+        (0..n_patterns).map(|k| hit(col, like + k, r + k)).collect::<Vec<_>>()
+    };
+    let any = each("c.body", 2, re).join(" OR ");
+    let held = each("m.body", 2, re).iter().map(|h| format!("{h}::int")).collect::<Vec<_>>();
+    let every = if n_patterns > 1 {
         format!(
             " UNION ALL ( \
-               SELECT left(e.search_text, {SEARCH_TEXT_CAP}), e.id FROM stream_events e \
-               WHERE e.session_id = sid AND {} AND ({raw}) \
+               SELECT c.body, c.event_id FROM search_chunks c \
+               WHERE c.session_id = sid AND {} \
+               ORDER BY c.event_id DESC LIMIT 1)",
+            each("c.body", 2, re).join(" AND ")
+        )
+    } else {
+        String::new()
+    };
+    let unchunked = gap.map_or_else(String::new, |g| {
+        let col = format!("left(e.search_text, {SEARCH_TEXT_CAP})");
+        format!(
+            " UNION ALL ( \
+               SELECT {col}, e.id FROM stream_events e \
+               WHERE e.session_id = sid AND {} AND ({}) \
                ORDER BY e.id DESC LIMIT 1)",
-            unchunked_ids("e", g)
+            unchunked_ids("e", g),
+            each(&col, rank + 1, re + n_patterns).join(" OR ")
         )
     });
     format!(
@@ -1563,25 +1670,77 @@ fn snippet_sql(n_patterns: usize, gap: Option<Unchunked>) -> String {
          CROSS JOIN LATERAL ( \
            SELECT m.body, m.event_id FROM ( \
              (SELECT c.body, c.event_id FROM search_chunks c \
-              WHERE c.session_id = sid AND ({or}) \
-              ORDER BY c.event_id DESC LIMIT {SNIPPET_CANDIDATES}){unchunked} \
+              WHERE c.session_id = sid AND ({any}) \
+              ORDER BY c.event_id DESC LIMIT {SNIPPET_CANDIDATES}){every}{unchunked} \
            ) m \
-           ORDER BY ts_rank(to_tsvector('simple', m.body), plainto_tsquery('simple', ${rank})) DESC, \
+           ORDER BY ({}) DESC, \
+                    ts_rank(to_tsvector('simple', m.body), plainto_tsquery('simple', ${rank})) DESC, \
                     m.event_id DESC \
            LIMIT 1 \
-         ) hit"
+         ) hit",
+        held.join(" + ")
     )
+}
+
+/// One `(session id, chunk text, event id)` per session of `ids` with a hit.
+async fn fetch_snippets(
+    pool: &sqlx::PgPool,
+    ids: &[String],
+    terms: &Terms,
+    gap: Option<Unchunked>,
+) -> Result<Vec<(String, String, i64)>, sqlx::Error> {
+    let sql = snippet_sql(terms.len(), gap);
+    let mut query = sqlx::query_as::<_, (String, String, i64)>(sqlx::AssertSqlSafe(sql)).bind(ids);
+    for t in &terms.folded {
+        query = query.bind(ilike_contains(t));
+    }
+    query = query.bind(terms.folded.join(" "));
+    let raw: &[String] = if gap.is_some() { &terms.raw } else { &[] };
+    for t in raw {
+        query = query.bind(ilike_contains(t));
+    }
+    for re in terms.regexes(&terms.folded).into_iter().chain(terms.regexes(raw)) {
+        query = query.bind(re);
+    }
+    query.fetch_all(pool).await
 }
 
 /// Build a ~200-char snippet of `text` centered on the earliest case-insensitive
 /// occurrence of any `needle`, so the UI can show why a session matched.
 fn make_snippet(text: &str, needles: &[String]) -> String {
+    let anywhere: Vec<(String, Anchor)> =
+        needles.iter().map(|n| (n.clone(), Anchor::Anywhere)).collect();
+    anchored_snippet(text, &anywhere)
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Byte offset of the first `needle` in `hay` that honours `anchor`, as the
+/// `~*` recheck does: a word-start term only counts where no word character
+/// precedes it, unless its own first character cannot start a word.
+fn find_term(hay: &str, needle: &str, anchor: Anchor) -> Option<usize> {
+    let anchored = anchor == Anchor::Word && needle.chars().next().is_some_and(is_word_char);
+    if !anchored {
+        return hay.find(needle);
+    }
+    hay.match_indices(needle)
+        .map(|(i, _)| i)
+        .find(|&i| !hay[..i].chars().next_back().is_some_and(is_word_char))
+}
+
+/// [`make_snippet`] centred on the earliest hit each needle's [`Anchor`] allows.
+fn anchored_snippet(text: &str, needles: &[(String, Anchor)]) -> String {
     const WINDOW: usize = 200;
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let hay = collapsed.to_lowercase();
-    // Earliest byte hit among all needles → char offset to center on.
-    let match_byte = needles.iter().filter_map(|n| hay.find(&n.to_lowercase())).min().unwrap_or(0);
-    let match_char = collapsed[..match_byte].chars().count();
+    let match_byte = needles
+        .iter()
+        .filter_map(|(n, a)| find_term(&hay, &n.to_lowercase(), *a))
+        .min()
+        .unwrap_or(0);
+    let match_char = hay[..match_byte].chars().count();
     let start = match_char.saturating_sub(WINDOW / 2);
 
     let mut offsets = collapsed.char_indices().map(|(i, _)| i).skip(start);
@@ -1625,6 +1784,7 @@ pub async fn search_sessions(
         offset: params.offset.unwrap_or(0).max(0),
         cursor: params.cursor.as_deref().and_then(parse_search_cursor),
         uid,
+        exclude_dispatched: params.exclude_dispatched,
     };
     let gap = if browse { None } else { crate::search_index::unchunked(&state.pool).await? };
     let found = if browse {
@@ -1646,29 +1806,17 @@ pub async fn search_sessions(
 
     let mut with_ts: Vec<(DateTime<Utc>, SessionListItem)> =
         found.rows.into_iter().map(|row| (row.registered_at, db_list_item(row))).collect();
-    screen_hidden(&state, &ctx, params.show_hidden, &mut with_ts).await?;
+    screen_hidden(&state, &ctx, &mut with_ts).await?;
     let mut sessions = enrich_and_sort(&state, Some(ctx.user_id), with_ts).await?;
 
     // Attach a transcript snippet per session, windowed around the keyword.
     // Sessions matched only by id/name/dir have no transcript hit and keep
     // `match_snippet = None`.
-    let terms = Terms::of(&root.free_text_terms());
+    let terms = Terms::of_query(&root);
     let ids: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
     if !browse && !ids.is_empty() && !terms.is_empty() {
-        let sql = snippet_sql(terms.len(), gap);
-        let mut query =
-            sqlx::query_as::<_, (String, String, i64)>(sqlx::AssertSqlSafe(sql)).bind(&ids);
-        for t in &terms.folded {
-            query = query.bind(ilike_contains(t));
-        }
-        query = query.bind(terms.folded.join(" "));
-        if gap.is_some() {
-            for t in &terms.raw {
-                query = query.bind(ilike_contains(t));
-            }
-        }
-        let snippet_rows = query.fetch_all(&state.pool).await?;
-        attach_transcript_hits(&mut sessions, snippet_rows, &terms.needles());
+        let snippet_rows = fetch_snippets(&state.pool, &ids, &terms, gap).await?;
+        attach_transcript_hits(&mut sessions, snippet_rows, &terms.anchored_needles());
     }
 
     let parents = fetch_parent_stubs(&state.pool, &missing_parent_ids(&sessions), uid).await?;
@@ -1677,21 +1825,59 @@ pub async fn search_sessions(
         parents,
         next_cursor: found.next_cursor,
         partial: found.partial,
+        total: found.total,
     }))
 }
 
-/// One requested page: size, legacy offset, keyset cursor and owner scope.
+use cctui_proto::api::SearchTotal;
+
+/// One requested page: size, legacy offset, keyset cursor, owner scope and
+/// the dispatched-session exclusion.
 struct SearchPage {
     limit: i64,
     offset: i64,
     cursor: Option<(DateTime<Utc>, String)>,
     uid: Option<uuid::Uuid>,
+    exclude_dispatched: bool,
+}
+
+impl SearchPage {
+    const fn first(&self) -> bool {
+        self.cursor.is_none() && self.offset == 0
+    }
+
+    fn total(&self, count: usize, at_least: bool) -> Option<SearchTotal> {
+        self.first().then(|| search_total(count, at_least))
+    }
 }
 
 struct FoundPage {
     rows: Vec<DbSession>,
     next_cursor: Option<String>,
     partial: bool,
+    total: Option<SearchTotal>,
+}
+
+/// Matches counted past a full first page before the count reads "N+".
+const SEARCH_COUNT_CAP: usize = 500;
+/// Extra time the count may take once the page is full, within [`SEARCH_BUDGET`].
+const SEARCH_COUNT_BUDGET: std::time::Duration = std::time::Duration::from_secs(1);
+
+fn search_total(count: usize, at_least: bool) -> SearchTotal {
+    SearchTotal { count: u32::try_from(count).unwrap_or(u32::MAX), at_least }
+}
+
+/// `s` (joined to its machine as `m`) runs on a dispatch/ephemeral machine and
+/// is not pinned, or nests under such a parent. Forks and follow-ups list as
+/// their own rows, so their parent does not decide.
+const DISPATCHED_SQL: &str = "((NOT s.pinned AND COALESCE(m.kind, '') IN ('dispatch', 'ephemeral')) \
+     OR (COALESCE(s.metadata->>'relation', '') NOT IN ('fork', 'followup') \
+         AND EXISTS (SELECT 1 FROM sessions p JOIN machines pm ON pm.id = p.machine_uuid \
+                     WHERE p.id = s.parent_id AND NOT p.pinned \
+                       AND pm.kind IN ('dispatch', 'ephemeral'))))";
+
+fn dispatched_filter(exclude: bool) -> String {
+    if exclude { format!(" AND NOT {DISPATCHED_SQL}") } else { String::new() }
 }
 
 /// `<registered_at µs>:<session id>`, the keyset position of a row in the
@@ -1711,8 +1897,9 @@ async fn browse_archive(pool: &sqlx::PgPool, page: &SearchPage) -> Result<FoundP
     let sql = format!(
         "{DB_SESSION_SELECT} WHERE s.status = 'archived' \
          AND ($3::uuid IS NULL OR m.user_id = $3) \
-         AND ($4::timestamptz IS NULL OR (s.registered_at, s.id) < ($4, $5)) \
-         ORDER BY s.registered_at DESC, s.id DESC LIMIT $1 OFFSET $2"
+         AND ($4::timestamptz IS NULL OR (s.registered_at, s.id) < ($4, $5)){} \
+         ORDER BY s.registered_at DESC, s.id DESC LIMIT $1 OFFSET $2",
+        dispatched_filter(page.exclude_dispatched)
     );
     let offset = if page.cursor.is_some() { 0 } else { page.offset };
     let rows: Vec<DbSession> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
@@ -1725,12 +1912,12 @@ async fn browse_archive(pool: &sqlx::PgPool, page: &SearchPage) -> Result<FoundP
         .await?;
     let full = usize::try_from(page.limit).is_ok_and(|l| rows.len() >= l);
     let next_cursor = rows.last().filter(|_| full).map(|r| search_cursor(r.registered_at, &r.id));
-    Ok(FoundPage { rows, next_cursor, partial: false })
+    Ok(FoundPage { rows, next_cursor, partial: false, total: None })
 }
 
 /// The next [`SEARCH_WINDOW`] in-scope sessions after `$2/$3`, newest first.
 /// `$1` owner, `$4` window size, `$5` live registry ids when live-only.
-fn search_window_sql(live_only: bool) -> String {
+fn search_window_sql(live_only: bool, exclude_dispatched: bool) -> String {
     let scope = if live_only {
         format!("({} OR s.id = ANY($5))", live_sessions_predicate!("s"))
     } else {
@@ -1740,15 +1927,150 @@ fn search_window_sql(live_only: bool) -> String {
         "SELECT s.id, s.registered_at FROM sessions s \
          LEFT JOIN machines m ON m.id = s.machine_uuid \
          WHERE ({scope}) AND ($1::uuid IS NULL OR m.user_id = $1) \
-           AND ($2::timestamptz IS NULL OR (s.registered_at, s.id) < ($2, $3)) \
-         ORDER BY s.registered_at DESC, s.id DESC LIMIT $4"
+           AND ($2::timestamptz IS NULL OR (s.registered_at, s.id) < ($2, $3)){} \
+         ORDER BY s.registered_at DESC, s.id DESC LIMIT $4",
+        dispatched_filter(exclude_dispatched)
     )
+}
+
+/// The statements one search scan runs per window, and their AST binds; the
+/// window's ids bind last.
+struct Scan<'a> {
+    window_sql: String,
+    match_sql: String,
+    count_sql: String,
+    params: Vec<SqlParam>,
+    live_ids: Option<&'a [String]>,
+    uid: Option<uuid::Uuid>,
+}
+
+type Window = Vec<(String, DateTime<Utc>)>;
+
+impl<'a> Scan<'a> {
+    fn compile(
+        root: &cctui_query::Node,
+        live_ids: Option<&'a [String]>,
+        page: &SearchPage,
+        gap: Option<Unchunked>,
+    ) -> Self {
+        let mut params: Vec<SqlParam> = Vec::new();
+        let where_sql = compile_search(root, &mut params, gap);
+        let ids = params.len() + 1;
+        Self {
+            window_sql: search_window_sql(live_ids.is_some(), page.exclude_dispatched),
+            match_sql: format!(
+                "{DB_SESSION_SELECT} WHERE s.id = ANY(${ids}) AND ({where_sql}) \
+                 ORDER BY s.registered_at DESC, s.id DESC"
+            ),
+            count_sql: format!(
+                "SELECT count(*) FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
+                 WHERE s.id = ANY(${ids}) AND ({where_sql})"
+            ),
+            params,
+            live_ids,
+            uid: page.uid,
+        }
+    }
+
+    async fn window(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        after: Option<&(DateTime<Utc>, String)>,
+    ) -> Result<Window, sqlx::Error> {
+        let sql = sqlx::AssertSqlSafe(self.window_sql.clone());
+        let mut q = sqlx::query_as::<_, (String, DateTime<Utc>)>(sql)
+            .bind(self.uid)
+            .bind(after.map(|c| c.0))
+            .bind(after.map(|c| c.1.clone()))
+            .bind(SEARCH_WINDOW);
+        if let Some(live) = self.live_ids {
+            q = q.bind(live);
+        }
+        q.fetch_all(conn).await
+    }
+
+    async fn matches(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        ids: &[String],
+    ) -> Result<Vec<DbSession>, sqlx::Error> {
+        let mut q = sqlx::query_as::<_, DbSession>(sqlx::AssertSqlSafe(self.match_sql.clone()));
+        for p in &self.params {
+            q = match p {
+                SqlParam::Text(s) => q.bind(s.clone()),
+                SqlParam::Bool(b) => q.bind(*b),
+            };
+        }
+        q.bind(ids).fetch_all(conn).await
+    }
+
+    async fn count(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        ids: &[String],
+    ) -> Result<i64, sqlx::Error> {
+        let mut q = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(self.count_sql.clone()));
+        for p in &self.params {
+            q = match p {
+                SqlParam::Text(s) => q.bind(s.clone()),
+                SqlParam::Bool(b) => q.bind(*b),
+            };
+        }
+        q.bind(ids).fetch_one(conn).await
+    }
+}
+
+/// The last position of a window and whether it was the last window.
+fn window_end(window: &[(String, DateTime<Utc>)]) -> Option<((DateTime<Utc>, String), bool)> {
+    let exhausted = usize::try_from(SEARCH_WINDOW).is_ok_and(|w| window.len() < w);
+    window.last().map(|(id, at)| ((*at, id.clone()), exhausted))
+}
+
+/// Count `found` plus the matches of the windows from `resume` on, up to
+/// [`SEARCH_COUNT_CAP`] and within [`SEARCH_COUNT_BUDGET`] (never past
+/// `deadline`); either limit makes the total `at_least`.
+async fn count_rest(
+    conn: &mut sqlx::PgConnection,
+    scan: &Scan<'_>,
+    found: usize,
+    mut resume: Option<(DateTime<Utc>, String)>,
+    deadline: std::time::Instant,
+) -> Result<SearchTotal, sqlx::Error> {
+    let stop = deadline.min(std::time::Instant::now() + SEARCH_COUNT_BUDGET);
+    let mut count = found;
+    loop {
+        if count >= SEARCH_COUNT_CAP {
+            return Ok(search_total(SEARCH_COUNT_CAP, true));
+        }
+        let Some(after) = resume.take() else {
+            return Ok(search_total(count, false));
+        };
+        if std::time::Instant::now() >= stop {
+            return Ok(search_total(count, true));
+        }
+        let window = match scan.window(conn, Some(&after)).await {
+            Ok(w) => w,
+            Err(e) if is_statement_timeout(&e) => return Ok(search_total(count, true)),
+            Err(e) => return Err(e),
+        };
+        let Some((last, exhausted)) = window_end(&window) else {
+            return Ok(search_total(count, false));
+        };
+        let ids: Vec<String> = window.into_iter().map(|(id, _)| id).collect();
+        match scan.count(conn, &ids).await {
+            Ok(n) => count += usize::try_from(n).unwrap_or(0),
+            Err(e) if is_statement_timeout(&e) => return Ok(search_total(count, true)),
+            Err(e) => return Err(e),
+        }
+        resume = (!exhausted).then_some(last);
+    }
 }
 
 /// Walk in-scope sessions newest first, one window per statement, testing the
 /// compiled query against each window until the page is full, the sessions
 /// run out, or [`SEARCH_BUDGET`] is spent; the last returns what was found
-/// with `partial` set and a cursor to resume from.
+/// with `partial` set and a cursor to resume from. A first page that fills
+/// goes on counting the matches past it with [`count_rest`].
 async fn scan_matches(
     pool: &sqlx::PgPool,
     root: &cctui_query::Node,
@@ -1756,14 +2078,7 @@ async fn scan_matches(
     page: &SearchPage,
     gap: Option<Unchunked>,
 ) -> Result<FoundPage, AppError> {
-    let mut ast_params: Vec<SqlParam> = Vec::new();
-    let where_sql = compile_search(root, &mut ast_params, gap);
-    let match_sql = format!(
-        "{DB_SESSION_SELECT} WHERE s.id = ANY(${}) AND ({where_sql}) \
-         ORDER BY s.registered_at DESC, s.id DESC",
-        ast_params.len() + 1
-    );
-    let window_sql = search_window_sql(live_ids.is_some());
+    let scan = Scan::compile(root, live_ids, page, gap);
     let want = usize::try_from(page.limit).unwrap_or(1);
     let mut skip =
         if page.cursor.is_some() { 0 } else { usize::try_from(page.offset).unwrap_or(0) };
@@ -1772,56 +2087,55 @@ async fn scan_matches(
     let mut rows: Vec<DbSession> = Vec::new();
     let mut tx = pool.begin().await?;
     sqlx::query(SEARCH_STATEMENT_TIMEOUT).execute(&mut *tx).await?;
-    let partial = |rows, cursor: Option<(DateTime<Utc>, String)>| FoundPage {
+    let partial = |rows: Vec<DbSession>, cursor: Option<(DateTime<Utc>, String)>| FoundPage {
+        total: page.total(rows.len(), true),
         rows,
         next_cursor: cursor.map(|(at, id)| search_cursor(at, &id)),
         partial: true,
     };
+    let done = |rows: Vec<DbSession>| FoundPage {
+        total: page.total(rows.len(), false),
+        rows,
+        next_cursor: None,
+        partial: false,
+    };
     loop {
-        let mut wq =
-            sqlx::query_as::<_, (String, DateTime<Utc>)>(sqlx::AssertSqlSafe(window_sql.clone()))
-                .bind(page.uid)
-                .bind(cursor.as_ref().map(|c| c.0))
-                .bind(cursor.as_ref().map(|c| c.1.clone()))
-                .bind(SEARCH_WINDOW);
-        if let Some(live) = live_ids {
-            wq = wq.bind(live);
-        }
-        let window = match wq.fetch_all(&mut *tx).await {
+        let window = match scan.window(&mut tx, cursor.as_ref()).await {
             Ok(w) => w,
             Err(e) if is_statement_timeout(&e) => return Ok(partial(rows, cursor)),
             Err(e) => return Err(e.into()),
         };
-        let Some(last) = window.last().map(|(id, at)| (*at, id.clone())) else {
-            return Ok(FoundPage { rows, next_cursor: None, partial: false });
+        let Some((last, exhausted)) = window_end(&window) else {
+            return Ok(done(rows));
         };
-        let exhausted = usize::try_from(SEARCH_WINDOW).is_ok_and(|w| window.len() < w);
         let ids: Vec<String> = window.into_iter().map(|(id, _)| id).collect();
-        let mut mq = sqlx::query_as::<_, DbSession>(sqlx::AssertSqlSafe(match_sql.clone()));
-        for p in &ast_params {
-            mq = match p {
-                SqlParam::Text(s) => mq.bind(s.clone()),
-                SqlParam::Bool(b) => mq.bind(*b),
-            };
-        }
-        let found = match mq.bind(&ids).fetch_all(&mut *tx).await {
-            Ok(f) => f,
+        let mut found = match scan.matches(&mut tx, &ids).await {
+            Ok(f) => f.into_iter(),
             Err(e) if is_statement_timeout(&e) => return Ok(partial(rows, cursor)),
             Err(e) => return Err(e.into()),
         };
-        for row in found {
+        for row in found.by_ref() {
             if skip > 0 {
                 skip -= 1;
                 continue;
             }
             rows.push(row);
             if rows.len() >= want {
-                let next_cursor = rows.last().map(|r| search_cursor(r.registered_at, &r.id));
-                return Ok(FoundPage { rows, next_cursor, partial: false });
+                break;
             }
         }
+        if rows.len() >= want {
+            let next_cursor = rows.last().map(|r| search_cursor(r.registered_at, &r.id));
+            let total = if page.first() {
+                let (seen, resume) = (rows.len() + found.len(), (!exhausted).then_some(last));
+                Some(count_rest(&mut tx, &scan, seen, resume, deadline).await?)
+            } else {
+                None
+            };
+            return Ok(FoundPage { rows, next_cursor, partial: false, total });
+        }
         if exhausted {
-            return Ok(FoundPage { rows, next_cursor: None, partial: false });
+            return Ok(done(rows));
         }
         cursor = Some(last);
         if std::time::Instant::now() >= deadline {
@@ -1892,10 +2206,12 @@ async fn fetch_parent_stubs(
 fn attach_transcript_hits(
     sessions: &mut [SessionListItem],
     rows: Vec<(String, String, i64)>,
-    terms: &[String],
+    terms: &[(String, Anchor)],
 ) {
-    let mut by_session: std::collections::HashMap<String, (String, i64)> =
-        rows.into_iter().map(|(id, text, seq)| (id, (make_snippet(&text, terms), seq))).collect();
+    let mut by_session: std::collections::HashMap<String, (String, i64)> = rows
+        .into_iter()
+        .map(|(id, text, seq)| (id, (anchored_snippet(&text, terms), seq)))
+        .collect();
     for s in sessions {
         if let Some((snippet, seq)) = by_session.remove(&s.id) {
             s.match_snippet = Some(snippet);
@@ -2619,7 +2935,7 @@ fn flatten_conv_query(
     use cctui_query::Node;
     match node {
         Node::Empty => {}
-        Node::Text { value } => terms.push(value.clone()),
+        Node::Text { value, .. } => terms.push(value.clone()),
         Node::Filter { filter } => out.push((negated, filter.clone())),
         Node::Not { child } => flatten_conv_query(child, !negated, terms, out),
         Node::And { children } | Node::Or { children } => {
@@ -3261,7 +3577,8 @@ pub struct SwitchAccountRequest {
 }
 
 /// `POST /api/v1/sessions/{id}/switch-account` — rebind one of a session's
-/// per-family credential bindings to another account of the same owner.
+/// per-family credential bindings to another account, picked as
+/// [`switch_account_pools`] allows.
 ///
 /// A worker carries one opaque gateway token per provider family
 /// (`ANTHROPIC_AUTH_TOKEN` / `OPENAI_API_KEY`); the gateway resolves each per
@@ -3303,10 +3620,6 @@ pub async fn switch_account(
     let runs_for = crate::routes::gateway::acting_user(&state, &session_id, None)
         .await
         .unwrap_or(bound_account_owner);
-    // The machine owner of a session a spawn grantee runs moves it onto their
-    // own accounts and takes the binding over, never onto the grantee's others.
-    let takeover = (!ctx.is_admin() && ctx.user_id != runs_for).then_some(ctx.user_id);
-    let acting_user = takeover.unwrap_or(runs_for);
     let default_family = match req.family.as_deref().map(str::trim) {
         None | Some("") => {
             let adapter = adapter_id.as_deref().unwrap_or("claude-code");
@@ -3328,61 +3641,23 @@ pub async fn switch_account(
         },
     };
 
-    // A UUID may be either level: a credential id — which names its
-    // own family — or an identity id, resolved in `default_family` like a name.
-    let target: Option<(uuid::Uuid, String)> =
-        if let Ok(tid) = uuid::Uuid::parse_str(req.account.trim()) {
-            let direct: Option<(uuid::Uuid, String)> = sqlx::query_as(
-                "SELECT ap.id, ap.family \
-                 FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
-                 WHERE ap.id = $1 AND (a.user_id = $2 OR EXISTS ( \
-                     SELECT 1 FROM resource_shares rs \
-                      WHERE rs.resource_type = 'account' AND rs.resource_id = a.id \
-                        AND rs.grantee_id = $2 AND rs.revoked_at IS NULL))",
-            )
-            .bind(tid)
-            .bind(acting_user)
-            .fetch_optional(&state.pool)
-            .await?;
-            if direct.is_some() {
-                direct
-            } else {
-                sqlx::query_as(
-                    "SELECT ap.id, ap.family \
-                 FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
-                 WHERE a.id = $1 AND ap.family = $3 AND (a.user_id = $2 OR EXISTS ( \
-                     SELECT 1 FROM resource_shares rs \
-                      WHERE rs.resource_type = 'account' AND rs.resource_id = a.id \
-                        AND rs.grantee_id = $2 AND rs.revoked_at IS NULL)) \
-                 LIMIT 1",
-                )
-                .bind(tid)
-                .bind(acting_user)
-                .bind(default_family.label())
-                .fetch_optional(&state.pool)
-                .await?
-            }
-        } else {
-            sqlx::query_as(
-                "SELECT ap.id, ap.family \
-             FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
-             WHERE a.name = $1 AND ap.family = $3 AND (a.user_id = $2 OR EXISTS ( \
-                     SELECT 1 FROM resource_shares rs \
-                      WHERE rs.resource_type = 'account' AND rs.resource_id = a.id \
-                        AND rs.grantee_id = $2 AND rs.revoked_at IS NULL)) \
-             ORDER BY (a.user_id = $2) DESC, a.created_at \
-             LIMIT 1",
-            )
-            .bind(req.account.trim())
-            .bind(acting_user)
-            .bind(default_family.label())
-            .fetch_optional(&state.pool)
-            .await?
-        };
-    let Some((target_id, target_family)) = target else {
+    let mut target = None;
+    for (user, takes_over) in switch_account_pools(&ctx, runs_for) {
+        if let Some(found) =
+            resolve_switch_target(&state.pool, req.account.trim(), user, default_family).await?
+        {
+            target = Some((found, user, takes_over));
+            break;
+        }
+    }
+    let Some(((target_id, target_family), bind_to, takeover)) = target else {
         return Err(AppError::new(
             StatusCode::NOT_FOUND,
-            "no such account available to this session's user",
+            format!(
+                "{} account {} is not available to this session",
+                default_family.label(),
+                req.account.trim()
+            ),
         ));
     };
 
@@ -3399,24 +3674,30 @@ pub async fn switch_account(
     let Some((current_account_id,)) = current else {
         return Err(AppError::new(
             StatusCode::CONFLICT,
-            "session has no binding in the target's provider family; cross-provider switching is not supported",
+            format!(
+                "session has no {target_family} binding; cross-provider switching is not supported"
+            ),
         ));
     };
 
     if target_id == current_account_id {
-        return Err(AppError::new(StatusCode::CONFLICT, "session is already on that account"));
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            format!("the {target_family} binding is already on that account"),
+        ));
     }
 
     // Repoint only this family's row: touching the other family's would hand
-    // e.g. the worker's OPENAI_API_KEY an anthropic credential.
+    // e.g. the worker's OPENAI_API_KEY an anthropic credential. The row acts for
+    // the user the target was found through, so the gateway accepts it.
     let updated = sqlx::query(
-        "UPDATE session_tokens SET account_id = $3, user_id = COALESCE($4, user_id) \
+        "UPDATE session_tokens SET account_id = $3, user_id = $4 \
          WHERE session_id = $1 AND revoked_at IS NULL AND account_id = $2",
     )
     .bind(&session_id)
     .bind(current_account_id)
     .bind(target_id)
-    .bind(takeover)
+    .bind(bind_to)
     .execute(&state.pool)
     .await?;
     if updated.rows_affected() == 0 {
@@ -3445,15 +3726,129 @@ pub async fn switch_account(
                 "from_account_id": current_account_id,
                 "to_account_id": target_id,
                 "family": target_family,
+                "takeover": takeover,
             })),
     );
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Whose accounts a switch may target, in preference order, and whether a
+/// target found through each takes the binding over to that user. The runner's
+/// own accounts come first; an admin can also move the session onto theirs,
+/// and anyone else who is not the runner (a machine owner over a grantee's run)
+/// only onto theirs.
+fn switch_account_pools(ctx: &AuthContext, runs_for: uuid::Uuid) -> Vec<(uuid::Uuid, bool)> {
+    if ctx.user_id == runs_for {
+        vec![(runs_for, false)]
+    } else if ctx.is_admin() {
+        vec![(runs_for, false), (ctx.user_id, true)]
+    } else {
+        vec![(ctx.user_id, true)]
+    }
+}
+
+/// `account` as a credential id (naming its own family), an identity id or an
+/// account name in `family`, among the accounts `user` owns or holds a live
+/// share of.
+async fn resolve_switch_target(
+    pool: &sqlx::PgPool,
+    account: &str,
+    user: uuid::Uuid,
+    family: crate::routes::gateway::Family,
+) -> Result<Option<(uuid::Uuid, String)>, sqlx::Error> {
+    let Ok(id) = uuid::Uuid::parse_str(account) else {
+        return sqlx::query_as(
+            "SELECT ap.id, ap.family \
+             FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
+             WHERE a.name = $1 AND ap.family = $3 AND (a.user_id = $2 OR EXISTS ( \
+                 SELECT 1 FROM resource_shares rs \
+                  WHERE rs.resource_type = 'account' AND rs.resource_id = a.id \
+                    AND rs.grantee_id = $2 AND rs.revoked_at IS NULL)) \
+             ORDER BY (a.user_id = $2) DESC, a.created_at \
+             LIMIT 1",
+        )
+        .bind(account)
+        .bind(user)
+        .bind(family.label())
+        .fetch_optional(pool)
+        .await;
+    };
+    let direct: Option<(uuid::Uuid, String)> = sqlx::query_as(
+        "SELECT ap.id, ap.family \
+         FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
+         WHERE ap.id = $1 AND (a.user_id = $2 OR EXISTS ( \
+             SELECT 1 FROM resource_shares rs \
+              WHERE rs.resource_type = 'account' AND rs.resource_id = a.id \
+                AND rs.grantee_id = $2 AND rs.revoked_at IS NULL))",
+    )
+    .bind(id)
+    .bind(user)
+    .fetch_optional(pool)
+    .await?;
+    if direct.is_some() {
+        return Ok(direct);
+    }
+    sqlx::query_as(
+        "SELECT ap.id, ap.family \
+         FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
+         WHERE a.id = $1 AND ap.family = $3 AND (a.user_id = $2 OR EXISTS ( \
+             SELECT 1 FROM resource_shares rs \
+              WHERE rs.resource_type = 'account' AND rs.resource_id = a.id \
+                AND rs.grantee_id = $2 AND rs.revoked_at IS NULL)) \
+         LIMIT 1",
+    )
+    .bind(id)
+    .bind(user)
+    .bind(family.label())
+    .fetch_optional(pool)
+    .await
+}
+
+/// The credentials in `family` a switch of this binding accepts, in the order
+/// [`switch_account_pools`] tries them.
+async fn switch_options(
+    pool: &sqlx::PgPool,
+    family: &str,
+    current: uuid::Uuid,
+    pools: &[(uuid::Uuid, bool)],
+) -> Result<Vec<SwitchOption>, sqlx::Error> {
+    let mut out: Vec<SwitchOption> = Vec::new();
+    for &(user, takeover) in pools {
+        let rows: Vec<(uuid::Uuid, uuid::Uuid, String, String)> = sqlx::query_as(
+            "SELECT ap.id, a.id, a.name, ap.provider \
+             FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
+             WHERE ap.family = $1 AND ap.id <> $3 AND (a.user_id = $2 OR EXISTS ( \
+                 SELECT 1 FROM resource_shares rs \
+                  WHERE rs.resource_type = 'account' AND rs.resource_id = a.id \
+                    AND rs.grantee_id = $2 AND rs.revoked_at IS NULL)) \
+             ORDER BY (a.user_id = $2) DESC, a.name",
+        )
+        .bind(family)
+        .bind(user)
+        .bind(current)
+        .fetch_all(pool)
+        .await?;
+        for (credential_id, account_id, account_name, provider) in rows {
+            if !out.iter().any(|o| o.credential_id == credential_id) {
+                out.push(SwitchOption {
+                    credential_id,
+                    account_id,
+                    account_name,
+                    provider,
+                    takeover,
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// `GET /api/v1/sessions/{id}/bindings` — the session's active per-family
-/// credential bindings, one entry per family it carries.
+/// credential bindings, one entry per family it carries, each with the
+/// accounts the caller may switch it to.
 pub async fn session_bindings(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<Json<Vec<SessionBinding>>, AppError> {
     let rows: Vec<(String, uuid::Uuid, uuid::Uuid, String)> = sqlx::query_as(
@@ -3467,16 +3862,15 @@ pub async fn session_bindings(
     .bind(&session_id)
     .fetch_all(&state.pool)
     .await?;
-    Ok(Json(
-        rows.into_iter()
-            .map(|(family, credential_id, account_id, account_name)| SessionBinding {
-                family,
-                credential_id,
-                account_id,
-                account_name,
-            })
-            .collect(),
-    ))
+    let pools = crate::routes::gateway::acting_user(&state, &session_id, None)
+        .await
+        .map_or_else(Vec::new, |runs_for| switch_account_pools(&ctx, runs_for));
+    let mut bindings = Vec::with_capacity(rows.len());
+    for (family, credential_id, account_id, account_name) in rows {
+        let options = switch_options(&state.pool, &family, credential_id, &pools).await?;
+        bindings.push(SessionBinding { family, credential_id, account_id, account_name, options });
+    }
+    Ok(Json(bindings))
 }
 
 /// `POST /api/v1/sessions/{id}/resume` — explicitly revive an exited durable
@@ -4280,6 +4674,10 @@ impl<'a> DraftRowFields<'a> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "sessions_switch_account_tests.rs"]
+mod switch_account_tests;
 
 #[cfg(test)]
 mod tests {
@@ -5248,7 +5646,8 @@ mod tests {
         let rows =
             vec![("s-transcript".to_owned(), "the quick brown fox jumps".to_owned(), 4242_i64)];
 
-        super::attach_transcript_hits(&mut sessions, rows, &["brown".to_owned()]);
+        let terms = [("brown".to_owned(), super::Anchor::Word)];
+        super::attach_transcript_hits(&mut sessions, rows, &terms);
 
         assert_eq!(sessions[0].match_seq, Some(4242));
         assert!(sessions[0].match_snippet.as_deref().unwrap().contains("brown"));
@@ -5895,12 +6294,255 @@ mod tests {
         assert_eq!(hits("gate dots").await, 1, "unquoted words must all appear");
         assert_eq!(hits("gate absentword").await, 0);
 
-        let page = super::SearchPage { limit: 10, offset: 0, cursor: None, uid: None };
+        let page = search_page(10, None);
         let root = cctui_query::parse("\"master...HEAD (three dots)\"");
         let found = super::scan_matches(&pool, &root, None, &page, None).await.unwrap();
         assert!(found.rows.iter().any(|r| r.id == sid), "the session list finds it too");
 
         sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
+    }
+
+    const fn search_page(limit: i64, uid: Option<uuid::Uuid>) -> super::SearchPage {
+        super::SearchPage { limit, offset: 0, cursor: None, uid, exclude_dispatched: false }
+    }
+
+    #[derive(Clone, Copy)]
+    struct Seed<'a> {
+        id: &'a str,
+        machine: uuid::Uuid,
+        parent: Option<&'a str>,
+        pinned: bool,
+        relation: Option<&'a str>,
+        minutes_ago: i64,
+    }
+
+    impl<'a> Seed<'a> {
+        const fn on(id: &'a str, machine: uuid::Uuid, minutes_ago: i64) -> Self {
+            Self { id, machine, parent: None, pinned: false, relation: None, minutes_ago }
+        }
+    }
+
+    async fn search_owner(test_name: &str) -> Option<(sqlx::PgPool, uuid::Uuid)> {
+        let url = crate::routes::gateway::test_db_url(test_name)?;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("u-{uid}"))
+            .bind(format!("k-{uid}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        Some((pool, uid))
+    }
+
+    async fn add_machine(pool: &sqlx::PgPool, uid: uuid::Uuid, kind: &str) -> uuid::Uuid {
+        let machine = uuid::Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO machines (id, user_id, name, key_hash, kind) VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(machine)
+        .bind(uid)
+        .bind(format!("m-{machine}"))
+        .bind(format!("mk-{machine}"))
+        .bind(kind)
+        .execute(pool)
+        .await
+        .unwrap();
+        machine
+    }
+
+    async fn add_session(pool: &sqlx::PgPool, uid: uuid::Uuid, dir: &str, seed: Seed<'_>) {
+        let metadata = seed
+            .relation
+            .map_or_else(|| serde_json::json!({}), |r| serde_json::json!({"relation": r}));
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status, \
+             parent_id, pinned, metadata, registered_at) \
+             VALUES ($1, $2, $2, $3, $4, 'active', $5, $6, $7, \
+                     now() - make_interval(mins => $8::int))",
+        )
+        .bind(seed.id)
+        .bind(seed.machine)
+        .bind(uid)
+        .bind(dir)
+        .bind(seed.parent)
+        .bind(seed.pinned)
+        .bind(metadata)
+        .bind(i32::try_from(seed.minutes_ago).unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn drop_owner(pool: &sqlx::PgPool, uid: uuid::Uuid) {
+        for sql in [
+            "DELETE FROM sessions WHERE user_id = $1",
+            "DELETE FROM machines WHERE user_id = $1",
+            "DELETE FROM users WHERE id = $1",
+        ] {
+            sqlx::query(sql).bind(uid).execute(pool).await.unwrap();
+        }
+    }
+
+    async fn search_pages(
+        pool: &sqlx::PgPool,
+        q: &str,
+        mut page: super::SearchPage,
+    ) -> (Vec<Vec<String>>, Option<cctui_proto::api::SearchTotal>) {
+        let root = cctui_query::parse(q);
+        let mut pages = Vec::new();
+        let mut total = None;
+        loop {
+            let found = super::scan_matches(pool, &root, None, &page, None).await.unwrap();
+            assert!(!found.partial, "{q}: no timeout");
+            if pages.is_empty() {
+                total = found.total;
+            } else {
+                assert_eq!(found.total, None, "{q}: only the first page counts");
+            }
+            pages.push(found.rows.into_iter().map(|r| r.id).collect::<Vec<_>>());
+            let Some(next) = found.next_cursor else { break };
+            page.cursor = super::parse_search_cursor(&next);
+        }
+        (pages, total)
+    }
+
+    fn sorted(pages: &[Vec<String>]) -> Vec<String> {
+        let mut ids: Vec<String> = pages.concat();
+        ids.sort();
+        ids
+    }
+
+    #[tokio::test]
+    async fn excluding_dispatched_sessions_keeps_pages_full_and_pinned_rows() {
+        let Some((pool, uid)) = search_owner("search_exclude_dispatched").await else {
+            return;
+        };
+        let own = add_machine(&pool, uid, "persistent").await;
+        let dispatch = add_machine(&pool, uid, "dispatch").await;
+        let ephemeral = add_machine(&pool, uid, "ephemeral").await;
+        let token = format!("zq{}", uuid::Uuid::new_v4().simple());
+        let dir = format!("/w/{token}");
+        let id = |n: &str| format!("{token}-{n}");
+        let (p1, p2, p3, d1, d2, e1, kid, fup) =
+            (id("p1"), id("p2"), id("p3"), id("d1"), id("d2"), id("e1"), id("kid"), id("fup"));
+        let seeds = [
+            Seed::on(&d1, dispatch, 1),
+            Seed::on(&p1, own, 2),
+            Seed { pinned: true, ..Seed::on(&d2, dispatch, 3) },
+            Seed::on(&e1, ephemeral, 4),
+            Seed { parent: Some(&d1), ..Seed::on(&kid, own, 5) },
+            Seed::on(&p2, own, 6),
+            Seed { parent: Some(&d1), relation: Some("followup"), ..Seed::on(&fup, own, 7) },
+            Seed::on(&p3, own, 8),
+        ];
+        for seed in seeds {
+            add_session(&pool, uid, &dir, seed).await;
+        }
+
+        let all = SearchPageOpts { limit: 2, uid, exclude: false };
+        let (pages, total) = search_pages(&pool, &token, all.page()).await;
+        assert_eq!(pages.concat().len(), 8, "{pages:?}");
+        assert_eq!(total, Some(cctui_proto::api::SearchTotal { count: 8, at_least: false }));
+
+        let kept = SearchPageOpts { exclude: true, ..all };
+        let (pages, total) = search_pages(&pool, &token, kept.page()).await;
+        let mut want = vec![p1, p2, p3, d2, fup];
+        want.sort();
+        assert_eq!(sorted(&pages), want, "{pages:?}");
+        assert!(pages[..pages.len() - 1].iter().all(|p| p.len() == 2), "full pages: {pages:?}");
+        assert_eq!(total, Some(cctui_proto::api::SearchTotal { count: 5, at_least: false }));
+
+        sqlx::query("UPDATE sessions SET status = 'archived' WHERE user_id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut browsed = Vec::new();
+        let mut page = kept.page();
+        loop {
+            let found = super::browse_archive(&pool, &page).await.unwrap();
+            assert!(found.rows.len() == 2 || found.next_cursor.is_none(), "full browse pages");
+            browsed.extend(found.rows.into_iter().map(|r| r.id));
+            let Some(next) = found.next_cursor else { break };
+            page.cursor = super::parse_search_cursor(&next);
+        }
+        browsed.sort();
+        assert_eq!(browsed, want, "the archive browse drops the same rows");
+
+        drop_owner(&pool, uid).await;
+    }
+
+    #[derive(Clone, Copy)]
+    struct SearchPageOpts {
+        limit: i64,
+        uid: uuid::Uuid,
+        exclude: bool,
+    }
+
+    impl SearchPageOpts {
+        fn page(self) -> super::SearchPage {
+            super::SearchPage {
+                exclude_dispatched: self.exclude,
+                ..search_page(self.limit, Some(self.uid))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_bare_term_matches_from_a_word_start_and_each_term_narrows() {
+        let Some((pool, uid)) = search_owner("search_word_start").await else {
+            return;
+        };
+        let own = add_machine(&pool, uid, "persistent").await;
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        let texts = [
+            ("both", "kanade hook render"),
+            ("kanade", "kanade only"),
+            ("lefthook", "lefthook config kanade"),
+            ("usehook", "useHook here"),
+            ("hooks", "the hooks are loaded"),
+        ];
+        for (i, (name, text)) in (0_i64..).zip(texts) {
+            let sid = format!("{token}-{name}");
+            add_session(&pool, uid, "/w", Seed::on(&sid, own, i)).await;
+            let say = serde_json::json!({"role": "assistant", "text": text});
+            insert_payload(&pool, &sid, "message", say).await;
+            index_session(&pool, &sid).await;
+        }
+        let opts = SearchPageOpts { limit: 50, uid, exclude: false };
+        let hits = |q: &'static str| {
+            let pool = pool.clone();
+            async move {
+                let (pages, total) = search_pages(&pool, q, opts.page()).await;
+                let ids = sorted(&pages);
+                let count = u32::try_from(ids.len()).unwrap();
+                assert_eq!(total, Some(cctui_proto::api::SearchTotal { count, at_least: false }));
+                ids.iter().map(|id| id.rsplit('-').next().unwrap().to_owned()).collect::<Vec<_>>()
+            }
+        };
+        assert_eq!(hits("hook").await, ["both", "hooks"], "not lefthook nor useHook");
+        assert_eq!(hits("kanade").await, ["both", "kanade", "lefthook"]);
+        assert_eq!(hits("kanade hook").await, ["both"], "a b is a subset of a");
+        assert_eq!(hits("*hook").await, ["both", "hooks", "lefthook", "usehook"]);
+        assert_eq!(hits("\"hook\"").await, ["both", "hooks", "lefthook", "usehook"]);
+
+        let one = SearchPageOpts { limit: 1, ..opts };
+        let root = cctui_query::parse("*hook");
+        let found = super::scan_matches(&pool, &root, None, &one.page(), None).await.unwrap();
+        assert_eq!(found.rows.len(), 1);
+        assert_eq!(
+            found.total,
+            Some(cctui_proto::api::SearchTotal { count: 4, at_least: false }),
+            "the count goes on past a full page"
+        );
+
+        drop_owner(&pool, uid).await;
     }
 
     async fn conv_scan(
@@ -5969,7 +6611,8 @@ mod tests {
         assert!(sql.contains("e.session_id = (SELECT s.id)"), "{sql}");
         assert!(sql.contains("e.id > 10 AND (e.id < 500 OR NOT EXISTS"), "{sql}");
         assert!(sql.contains("WHERE k.event_id = e.id"), "a primary-key probe: {sql}");
-        assert!(sql.contains("left(e.search_text, 8192) ILIKE $2"), "{sql}");
+        assert!(sql.contains("left(e.search_text, 8192) ILIKE $3"), "{sql}");
+        assert!(sql.contains("left(e.search_text, 8192) ~* $4"), "{sql}");
         let texts: Vec<String> = params
             .into_iter()
             .map(|p| match p {
@@ -5977,7 +6620,11 @@ mod tests {
                 SqlParam::Bool(b) => b.to_string(),
             })
             .collect();
-        assert_eq!(texts, ["%fix%", "%\u{FB01}x%"], "search_text is matched unfolded");
+        assert_eq!(
+            texts,
+            ["%fix%", "\\mfix", "%\u{FB01}x%", "\\m\u{FB01}x"],
+            "search_text is matched unfolded"
+        );
 
         let conv = super::conv_search_sql(2, gap);
         assert!(conv.contains(" OR (e.id > 10 AND (e.id < 500 OR NOT EXISTS"), "{conv}");
@@ -5988,8 +6635,9 @@ mod tests {
         assert!(conv.ends_with("ORDER BY e.id ASC LIMIT $6"), "{conv}");
 
         let snip = snippet_sql(2, gap);
-        for i in [5, 6] {
-            assert!(snip.contains(&format!("left(e.search_text, 8192) ILIKE ${i}")), "{snip}");
+        for (like, re) in [(5, 9), (6, 10)] {
+            let col = "left(e.search_text, 8192)";
+            assert!(snip.contains(&format!("({col} ILIKE ${like} AND {col} ~* ${re})")), "{snip}");
         }
         assert!(snip.contains("plainto_tsquery('simple', $4)"), "{snip}");
 
@@ -6063,7 +6711,7 @@ mod tests {
             let pool = pool.clone();
             async move {
                 let root = cctui_query::parse(q);
-                let page = super::SearchPage { limit: 10, offset: 0, cursor: None, uid: None };
+                let page = search_page(10, None);
                 super::scan_matches(&pool, &root, None, &page, gap).await.unwrap().rows
             }
         };
@@ -6074,20 +6722,9 @@ mod tests {
         let once = listed("\"chunked phrase\"", gap).await;
         assert_eq!(once.iter().filter(|r| r.id == sid).count(), 1, "one row per session");
 
-        let terms = super::Terms::of(&cctui_query::parse("ancient").free_text_terms());
-        let mut q = sqlx::query_as::<_, (String, String, i64)>(sqlx::AssertSqlSafe(snippet_sql(
-            terms.len(),
-            gap,
-        )))
-        .bind(std::slice::from_ref(&sid));
-        for t in &terms.folded {
-            q = q.bind(super::ilike_contains(t));
-        }
-        q = q.bind(terms.folded.join(" "));
-        for t in &terms.raw {
-            q = q.bind(super::ilike_contains(t));
-        }
-        let snippets = q.fetch_all(&pool).await.unwrap();
+        let terms = super::Terms::of_query(&cctui_query::parse("ancient"));
+        let snippets =
+            super::fetch_snippets(&pool, std::slice::from_ref(&sid), &terms, gap).await.unwrap();
         assert_eq!(snippets.len(), 1, "{snippets:?}");
         assert!(snippets[0].1.contains("ancient unchunked phrase"), "{snippets:?}");
         assert_eq!(snippets[0].2, old);
@@ -6245,7 +6882,7 @@ mod tests {
 
     #[test]
     fn compile_node_is_depth_bounded() {
-        let mut node = cctui_query::Node::Text { value: "x".into() };
+        let mut node = cctui_query::Node::Text { value: "x".into(), phrase: false };
         for _ in 0..100_000 {
             node = cctui_query::Node::Not { child: Box::new(node) };
         }
@@ -6617,12 +7254,34 @@ mod tests {
     }
 
     #[test]
-    fn compile_plain_keyword_matches_legacy_shape() {
+    fn compile_plain_keyword_matches_from_a_word_start() {
         let (sql, params) = compile("hello");
-        assert!(sql.contains("s.id ILIKE $1"));
-        assert!(sql.contains("s.working_dir ILIKE $1"));
-        assert!(sql.contains("c.body ILIKE $1"));
-        assert_eq!(params, vec!["%hello%".to_string()]);
+        assert!(sql.contains("((s.id ILIKE $1 AND s.id ~* $2) OR"), "{sql}");
+        assert!(sql.contains("(s.working_dir ILIKE $1 AND s.working_dir ~* $2)"), "{sql}");
+        assert!(sql.contains("c.body ILIKE $1 AND c.body ~* $2"), "{sql}");
+        assert_eq!(params, ["%hello%", "\\mhello"]);
+    }
+
+    #[test]
+    fn quoted_and_star_terms_match_anywhere() {
+        for q in ["\"hook\"", "*hook", "*hook*"] {
+            let (sql, params) = compile(q);
+            assert!(!sql.contains("~*"), "{q}: {sql}");
+            assert_eq!(params, ["%hook%"], "{q}");
+        }
+        let (_, params) = compile("hook*");
+        assert_eq!(params, ["%hook%", "\\mhook"], "a trailing star is the default prefix match");
+        let (_, params) = compile("*");
+        assert_eq!(params, ["%*%"], "a lone star stays literal");
+    }
+
+    #[test]
+    fn word_start_regex_escapes_punctuation_and_skips_non_word_starts() {
+        assert_eq!(super::word_start_regex("a.b(c)").as_deref(), Some("\\ma\\.b\\(c\\)"));
+        assert_eq!(super::word_start_regex("caf\u{e9}").as_deref(), Some("\\mcaf\u{e9}"));
+        assert_eq!(super::word_start_regex(".env"), None);
+        assert_eq!(super::word_start_regex("--flag"), None);
+        assert_eq!(super::word_start_regex(""), None);
     }
 
     #[test]
@@ -6648,9 +7307,9 @@ mod tests {
     #[test]
     fn compile_multi_keywords_and() {
         let (sql, params) = compile("foo bar");
-        assert!(sql.contains(" AND "));
-        assert_eq!(params, vec!["%foo%".to_string(), "%bar%".to_string()]);
-        assert!(sql.contains("$1") && sql.contains("$2"));
+        assert!(sql.contains(") AND ("), "{sql}");
+        assert_eq!(params, ["%foo%", "\\mfoo", "%bar%", "\\mbar"]);
+        assert!(sql.contains("c.body ILIKE $3 AND c.body ~* $4"), "{sql}");
     }
 
     #[test]
@@ -6710,7 +7369,7 @@ mod tests {
         let (sql, params) = compile("( machine:m2pro OR machine:dev1 ) AND keyword");
         assert!(sql.contains(" OR "));
         assert!(sql.contains(" AND "));
-        assert_eq!(params.len(), 3);
+        assert_eq!(params.len(), 4);
         assert_eq!(params[2], "%keyword%");
     }
 
@@ -6971,6 +7630,43 @@ mod tests {
     }
 
     #[test]
+    fn a_word_start_needle_centres_past_an_infix_hit() {
+        use super::Anchor::{Anywhere, Word};
+        let text = format!("lefthook {} the hooks", "x ".repeat(300));
+        let word = super::anchored_snippet(&text, &[("hook".to_owned(), Word)]);
+        assert!(word.contains("the hooks") && !word.contains("lefthook"), "{word}");
+        let infix = super::anchored_snippet(&text, &[("hook".to_owned(), Anywhere)]);
+        assert!(infix.starts_with("lefthook"), "{infix}");
+        assert_eq!(infix, make_snippet(&text, &["hook".to_owned()]));
+    }
+
+    #[test]
+    fn find_term_follows_the_word_start_rule() {
+        use super::Anchor::{Anywhere, Word};
+        assert_eq!(super::find_term("lefthook hook", "hook", Word), Some(9));
+        assert_eq!(super::find_term("usehook_hook", "hook", Word), None, "_ is a word char");
+        assert_eq!(super::find_term("(hook", "hook", Word), Some(1));
+        assert_eq!(super::find_term("caf\u{e9}hook", "hook", Word), None);
+        assert_eq!(super::find_term("lefthook", "hook", Anywhere), Some(4));
+        assert_eq!(super::find_term("a.env", ".env", Word), Some(1), "no word start to anchor");
+    }
+
+    #[test]
+    fn session_search_needles_keep_each_term_anchor() {
+        let terms = super::Terms::of_query(&cctui_query::parse("\u{FB01}x \"a b\" *c"));
+        assert_eq!(
+            terms.anchored_needles(),
+            [
+                ("fix".to_owned(), super::Anchor::Word),
+                ("a b".to_owned(), super::Anchor::Anywhere),
+                ("c".to_owned(), super::Anchor::Anywhere),
+                ("\u{FB01}x".to_owned(), super::Anchor::Word),
+            ]
+        );
+        assert_eq!(terms.needles(), ["fix", "a b", "c", "\u{FB01}x"]);
+    }
+
+    #[test]
     fn snippet_never_exceeds_the_window() {
         let long = "abcdefghij ".repeat(200);
         let out = make_snippet(&long, &["abcdefghij".to_string()]);
@@ -6997,7 +7693,25 @@ mod tests {
             assert!(sql.contains(&format!("c.body ILIKE ${i}")), "{sql}");
         }
         assert!(sql.contains("plainto_tsquery('simple', $5)"), "{sql}");
-        assert!(!sql.contains("$6"), "{sql}");
+        for i in 6..=8 {
+            assert!(sql.contains(&format!("c.body ~* ${i}")), "{sql}");
+        }
+        assert!(!sql.contains("$9"), "{sql}");
+    }
+
+    #[test]
+    fn snippet_sql_ranks_by_distinct_terms_before_ts_rank() {
+        let sql = snippet_sql(2, None);
+        let order = sql.find("ORDER BY ((m.body ILIKE $2 AND m.body ~* $5)::int").expect(&sql);
+        assert!(sql[order..].contains("+ (m.body ILIKE $3 AND m.body ~* $6)::int) DESC"), "{sql}");
+        assert!(order < sql.find("ts_rank(").unwrap(), "{sql}");
+        assert!(
+            sql.contains(
+                "(c.body ILIKE $2 AND c.body ~* $5) AND (c.body ILIKE $3 AND c.body ~* $6)"
+            ),
+            "a chunk holding every term is always a candidate: {sql}"
+        );
+        assert!(!snippet_sql(1, None).contains("LIMIT 1) UNION"), "one term needs no extra branch");
     }
 
     #[test]
@@ -7224,7 +7938,7 @@ mod tests {
                 limit: None,
                 offset: None,
                 cursor: None,
-                show_hidden: false,
+                exclude_dispatched: false,
             }),
         )
         .await

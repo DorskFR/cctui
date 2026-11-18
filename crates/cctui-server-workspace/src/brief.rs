@@ -9,24 +9,37 @@
 //! follow-up wraps this brief in its own: session context is dropped and a
 //! previous conversation shrinks to one line, so chains never nest. An inbox
 //! batch keeps its numbered event lines and loses its header.
+//!
+//! `?chain=1` renders every session of the follow-up line ending at `id`, root
+//! first, under one byte cap: the root's first ask always stays, the newest
+//! sessions are filled first, and an older one that no longer fits shrinks to
+//! its first ask and last answer, then to one line.
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 
-use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::Value;
 use sqlx::PgPool;
 
-use cctui_proto::api::{ApiError, BriefResponse};
-use cctui_proto::injected::{InjectedKind, split_injected};
+use cctui_proto::api::{ApiError, BriefResponse, BriefSession};
+use cctui_proto::injected::{InjectedBlock, InjectedKind, PREVIOUS_SESSIONS, split_injected};
 
+use crate::auth::AuthContext;
 use crate::state::AppState;
 
 pub const DEFAULT_MAX_TURNS: usize = 60;
 pub const DEFAULT_MAX_BYTES: usize = 48 * 1024;
 const USER_PREFIX: &str = "▷ User: ";
+const CONTINUED_PREFIX: &str = "(continued from session \"";
+const ROOT_ASK_MAX_BYTES: usize = 8 * 1024;
+const MIN_TAIL_BYTES: usize = 4 * 1024;
+const MIN_SKETCH_BYTES: usize = 512;
+const MIN_SKETCH_SHARE: usize = 64;
+const ELISION_SLACK: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -89,6 +102,24 @@ fn classify(adapter_id: &str, event_type: &str, payload: Value) -> Option<(Role,
     None
 }
 
+fn is_previous(block: &InjectedBlock<'_>) -> bool {
+    block.kind == InjectedKind::PreviousConversation
+}
+
+/// The previous sessions `blocks` name, a chain container expanded into the
+/// sessions it holds.
+fn previous_sessions<'a>(blocks: &[InjectedBlock<'a>]) -> Vec<InjectedBlock<'a>> {
+    let mut out = Vec::new();
+    for block in blocks.iter().filter(|b| is_previous(b)) {
+        if block.tag == PREVIOUS_SESSIONS {
+            out.extend(split_injected(block.body).0.into_iter().filter(|b| is_previous(b)));
+        } else {
+            out.push(*block);
+        }
+    }
+    out
+}
+
 /// A user turn without its leading cctui wrappers, or `None` when nothing but
 /// wrappers was left.
 fn without_injected(text: &str) -> Option<String> {
@@ -101,16 +132,42 @@ fn without_injected(text: &str) -> Option<String> {
         return None;
     }
     let mut out = String::new();
-    for block in blocks.iter().filter(|b| b.kind == InjectedKind::PreviousConversation) {
+    for block in previous_sessions(&blocks) {
         let name = block.attr("session").unwrap_or_default();
         let id = block.attr("id").unwrap_or_default();
-        let _ = writeln!(out, "(continued from session \"{name}\" {id})");
+        let _ = writeln!(out, "{CONTINUED_PREFIX}{name}\" {id})");
     }
     if !out.is_empty() {
         out.push('\n');
     }
     out.push_str(prose);
     Some(out)
+}
+
+fn continued_id(line: &str) -> Option<&str> {
+    let inner = line.trim_end().strip_prefix(CONTINUED_PREFIX)?.strip_suffix(')')?;
+    inner.rsplit_once(' ').map(|(_, id)| id)
+}
+
+/// `text` without its leading `(continued from …)` lines naming a session in
+/// `included`.
+fn without_continued(text: &str, included: &HashSet<&str>) -> String {
+    let mut kept = String::new();
+    let mut rest = text;
+    loop {
+        let (line, after) = rest.split_once('\n').unwrap_or((rest, ""));
+        let Some(id) = continued_id(line) else { break };
+        if !included.contains(id) {
+            kept.push_str(line);
+            kept.push('\n');
+        }
+        rest = after;
+    }
+    if kept.is_empty() {
+        return rest.trim_start().to_owned();
+    }
+    kept.push_str(rest);
+    kept.trim_end().to_owned()
 }
 
 fn without_inbox_marker(text: String) -> Option<String> {
@@ -161,6 +218,17 @@ const fn turn_len(turn: &Turn) -> usize {
     turn.role.heading().len() + 2 + turn.text.len() + 2
 }
 
+fn cut_tail(text: &str, keep: usize) -> String {
+    if text.len() <= keep {
+        return text.to_owned();
+    }
+    let mut end = keep;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
+}
+
 fn cut_head(text: &str, keep: usize) -> String {
     if text.len() <= keep {
         return text.to_owned();
@@ -208,6 +276,180 @@ pub fn render(turns: &[Turn], caps: Caps) -> BriefResponse {
         turns: u32::try_from(kept.len()).unwrap_or(u32::MAX),
         omitted: u32::try_from(omitted).unwrap_or(u32::MAX),
         truncated,
+        sessions: None,
+    }
+}
+
+fn count(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
+
+/// The first ask and the last answer of `turns`, clipped to share `budget`.
+fn sketch(turns: &[Turn], budget: usize) -> Option<BriefResponse> {
+    let first_user = turns.iter().position(|t| t.role == Role::User);
+    let last_assistant = turns.iter().rposition(|t| t.role == Role::Assistant);
+    let mut picked: Vec<usize> = [first_user, last_assistant].into_iter().flatten().collect();
+    picked.sort_unstable();
+    picked.dedup();
+    let omitted = turns.len() - picked.len();
+    let note = if omitted > 0 { format!("… {omitted} turns omitted\n\n") } else { String::new() };
+    let fixed = note.len()
+        + picked.iter().map(|&i| turns[i].role.heading().len() + 4 + "…".len()).sum::<usize>();
+    let share = budget.saturating_sub(fixed) / picked.len().max(1);
+    if picked.is_empty() || share < MIN_SKETCH_SHARE {
+        return None;
+    }
+    let mut markdown = String::new();
+    for (n, &i) in picked.iter().enumerate() {
+        if n == 1 {
+            markdown.push_str(&note);
+        }
+        let turn = &turns[i];
+        let text = match turn.role {
+            Role::User => cut_tail(&turn.text, share),
+            Role::Assistant => cut_head(&turn.text, share),
+        };
+        markdown.push_str(turn.role.heading());
+        markdown.push_str("\n\n");
+        markdown.push_str(&text);
+        markdown.push_str("\n\n");
+    }
+    if picked.len() == 1 {
+        markdown.push_str(&note);
+    }
+    Some(BriefResponse {
+        markdown: markdown.trim_end().to_owned(),
+        turns: count(picked.len()),
+        omitted: count(omitted),
+        truncated: true,
+        sessions: None,
+    })
+}
+
+/// `turns` within `budget` bytes: the newest turns, else a sketch, else one line.
+fn fit(turns: &[Turn], budget: usize, max_turns: usize) -> BriefResponse {
+    if turns.is_empty() || budget >= MIN_TAIL_BYTES {
+        let max_bytes = budget.saturating_sub(ELISION_SLACK);
+        return render(turns, Caps { max_turns, max_bytes });
+    }
+    if budget >= MIN_SKETCH_BYTES
+        && let Some(sketched) = sketch(turns, budget)
+    {
+        return sketched;
+    }
+    BriefResponse {
+        markdown: format!("… {} turns omitted", turns.len()),
+        turns: 0,
+        omitted: count(turns.len()),
+        truncated: true,
+        sessions: None,
+    }
+}
+
+/// One session of a follow-up chain; `transcript` is `None` when the caller
+/// cannot read it.
+pub struct Link {
+    pub id: String,
+    pub transcript: Option<Transcript>,
+}
+
+fn unavailable(id: &str) -> String {
+    format!("(session {id} could not be included)")
+}
+
+fn heading(n: usize, link: &Link) -> String {
+    link.transcript.as_ref().map_or_else(
+        || format!("### Session {n} ({})", link.id),
+        |t| format!("### Session {n} \"{}\" ({})", t.name, link.id),
+    )
+}
+
+/// The first user turn of `turns`, taken out and clipped.
+fn take_ask(turns: &mut Vec<Turn>) -> Option<Turn> {
+    let at = turns.iter().position(|t| t.role == Role::User)?;
+    let mut ask = turns.remove(at);
+    ask.text = cut_tail(&ask.text, ROOT_ASK_MAX_BYTES);
+    Some(ask)
+}
+
+fn with_ask(ask: &Turn, part: &mut BriefSession) {
+    let mut markdown = format!("{}\n\n{}", ask.role.heading(), ask.text);
+    if !part.markdown.is_empty() {
+        markdown.push_str("\n\n");
+        markdown.push_str(&part.markdown);
+    }
+    part.markdown = markdown;
+    part.turns = part.turns.saturating_add(1);
+}
+
+/// The chain `links` (root first) as one brief within `caps.max_bytes`.
+pub fn assemble(links: &[Link], caps: Caps) -> BriefResponse {
+    let included: HashSet<&str> =
+        links.iter().filter(|l| l.transcript.is_some()).map(|l| l.id.as_str()).collect();
+    let mut turns: Vec<Option<Vec<Turn>>> = links
+        .iter()
+        .map(|l| {
+            l.transcript.as_ref().map(|t| {
+                t.turns
+                    .iter()
+                    .filter_map(|turn| {
+                        let text = without_continued(&turn.text, &included);
+                        (!text.is_empty()).then_some(Turn { role: turn.role, text })
+                    })
+                    .collect()
+            })
+        })
+        .collect();
+    let ask = turns.first_mut().and_then(Option::as_mut).and_then(take_ask);
+    let headings: Vec<String> =
+        links.iter().enumerate().map(|(i, link)| heading(i + 1, link)).collect();
+    let reserved = headings.iter().map(|h| h.len() + 4).sum::<usize>()
+        + links.iter().map(|l| unavailable(&l.id).len()).sum::<usize>()
+        + ask.as_ref().map_or(0, turn_len);
+    let mut remaining = caps.max_bytes.saturating_sub(reserved);
+    let mut parts: Vec<BriefSession> = Vec::with_capacity(links.len());
+    for (link, kept) in links.iter().zip(&turns).rev() {
+        let budget = remaining + unavailable(&link.id).len();
+        let part = match (&link.transcript, kept) {
+            (Some(t), Some(kept)) => {
+                let out = fit(kept, budget, caps.max_turns);
+                BriefSession {
+                    id: link.id.clone(),
+                    name: Some(t.name.clone()),
+                    markdown: out.markdown,
+                    turns: out.turns,
+                    omitted: out.omitted,
+                    truncated: out.truncated,
+                }
+            }
+            _ => BriefSession {
+                id: link.id.clone(),
+                name: None,
+                markdown: unavailable(&link.id),
+                turns: 0,
+                omitted: 0,
+                truncated: false,
+            },
+        };
+        remaining = budget.saturating_sub(part.markdown.len());
+        parts.push(part);
+    }
+    parts.reverse();
+    if let (Some(ask), Some(root)) = (&ask, parts.first_mut()) {
+        with_ask(ask, root);
+    }
+    let markdown = parts
+        .iter()
+        .zip(&headings)
+        .map(|(part, heading)| format!("{heading}\n\n{}", part.markdown))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    BriefResponse {
+        markdown,
+        turns: parts.iter().fold(0, |n, p| n.saturating_add(p.turns)),
+        omitted: parts.iter().fold(0, |n, p| n.saturating_add(p.omitted)),
+        truncated: parts.iter().any(|p| p.truncated),
+        sessions: Some(parts),
     }
 }
 
@@ -215,9 +457,14 @@ pub fn render(turns: &[Turn], caps: Caps) -> BriefResponse {
 pub struct BriefQuery {
     pub max_turns: Option<usize>,
     pub max_bytes: Option<usize>,
+    pub chain: Option<String>,
 }
 
 impl BriefQuery {
+    fn chain(&self) -> bool {
+        matches!(self.chain.as_deref(), Some("1" | "true"))
+    }
+
     fn caps(&self) -> Caps {
         let d = Caps::default();
         Caps {
@@ -256,17 +503,71 @@ pub async fn load(pool: &PgPool, session_id: &str) -> sqlx::Result<Option<Transc
     Ok(Some(Transcript { name, turns }))
 }
 
+type Failure = (StatusCode, Json<ApiError>);
+
+fn failure(status: StatusCode, error: &str) -> Failure {
+    (status, Json(ApiError { error: error.into() }))
+}
+
+fn db_failure(e: &sqlx::Error) -> Failure {
+    tracing::error!("db error: {e}");
+    failure(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+}
+
+/// Whose read access decides which ancestors a chain brief may include.
+#[derive(Clone, Copy)]
+pub enum Reader<'a> {
+    Caller(&'a AuthContext),
+    /// A server-side spawn: the owner of the session it continues.
+    Owner(Option<uuid::Uuid>),
+}
+
+async fn readable(reader: Reader<'_>, id: &str, pool: &PgPool) -> sqlx::Result<bool> {
+    match reader {
+        Reader::Caller(ctx) => match crate::authz::authorize_session_read(ctx, id, pool).await {
+            Ok(()) => Ok(true),
+            Err(StatusCode::FORBIDDEN | StatusCode::NOT_FOUND) => Ok(false),
+            Err(status) => Err(sqlx::Error::Protocol(format!("session authz failed: {status}"))),
+        },
+        Reader::Owner(None) => Ok(false),
+        Reader::Owner(owner) => Ok(crate::authz::session_owner(id, pool).await? == owner),
+    }
+}
+
+/// The follow-up chain ending at `id`, root first; empty when `id` is unknown.
+/// `id` itself is not checked: the caller already may read it.
+pub async fn load_chain(pool: &PgPool, reader: Reader<'_>, id: &str) -> sqlx::Result<Vec<Link>> {
+    let ids = crate::followup::chain_of(pool, id).await?;
+    let mut links = Vec::with_capacity(ids.len());
+    for sid in ids {
+        let transcript = if sid == id || readable(reader, &sid, pool).await? {
+            load(pool, &sid).await?
+        } else {
+            None
+        };
+        links.push(Link { id: sid, transcript });
+    }
+    Ok(links)
+}
+
 pub async fn session_brief(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Query(q): Query<BriefQuery>,
-) -> Result<Json<BriefResponse>, (StatusCode, Json<ApiError>)> {
-    let transcript = load(&state.pool, &session_id).await.map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+) -> Result<Json<BriefResponse>, Failure> {
+    if q.chain() {
+        let links = load_chain(&state.pool, Reader::Caller(&ctx), &session_id)
+            .await
+            .map_err(|e| db_failure(&e))?;
+        if links.is_empty() {
+            return Err(failure(StatusCode::NOT_FOUND, "session not found"));
+        }
+        return Ok(Json(assemble(&links, q.caps())));
+    }
+    let transcript = load(&state.pool, &session_id).await.map_err(|e| db_failure(&e))?;
     let Some(transcript) = transcript else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() })));
+        return Err(failure(StatusCode::NOT_FOUND, "session not found"));
     };
     Ok(Json(render(&transcript.turns, q.caps())))
 }
@@ -275,7 +576,7 @@ pub async fn session_brief(
 mod tests {
     use serde_json::json;
 
-    use super::{Caps, Role, Turn, collect_turns, render};
+    use super::{Caps, Link, Role, Transcript, Turn, assemble, collect_turns, render};
 
     fn user(text: &str) -> (&'static str, serde_json::Value) {
         ("message", json!({"role": "user", "text": text}))
@@ -493,5 +794,126 @@ mod tests {
         assert!(out.markdown.len() <= 128 + "…".len());
         assert!(out.markdown.ends_with(&"y".repeat(100)));
         assert!(out.markdown.contains("**Assistant:**\n\n…"));
+    }
+
+    fn link(id: &str, turns: &[(Role, &str)]) -> Link {
+        let turns = turns.iter().map(|&(role, text)| Turn { role, text: text.into() }).collect();
+        Link { id: id.into(), transcript: Some(Transcript { name: format!("n-{id}"), turns }) }
+    }
+
+    fn hidden(id: &str) -> Link {
+        Link { id: id.into(), transcript: None }
+    }
+
+    #[test]
+    fn a_chain_container_collapses_to_one_line_per_session() {
+        let first = "<cctui-session-context>\nx\n</cctui-session-context>\n\n\
+                     <cctui-previous-sessions>\n\
+                     <cctui-previous-conversation n=\"1\" session=\"a\" id=\"s-a\">\nold\n\
+                     </cctui-previous-conversation>\n\
+                     <cctui-previous-conversation n=\"2\" id=\"s-b\">\nhidden\n\
+                     </cctui-previous-conversation>\n\
+                     </cctui-previous-sessions>\n\nContinue from this.";
+        let turns = collect_turns("claude-code", vec![user(first)]);
+        assert_eq!(
+            turns[0].text,
+            "(continued from session \"a\" s-a)\n(continued from session \"\" s-b)\n\n\
+             Continue from this."
+        );
+        let quoted = "see <cctui-previous-sessions>\nx\n</cctui-previous-sessions>";
+        assert_eq!(collect_turns("claude-code", vec![user(quoted)])[0].text, quoted);
+    }
+
+    #[test]
+    fn a_chain_of_three_carries_each_transcript_once_root_first() {
+        let links = [
+            link("s-a", &[(Role::User, "ask A"), (Role::Assistant, "answer A")]),
+            link(
+                "s-b",
+                &[
+                    (Role::User, "(continued from session \"n-s-a\" s-a)\n\nask B"),
+                    (Role::Assistant, "answer B"),
+                ],
+            ),
+            link(
+                "s-c",
+                &[
+                    (
+                        Role::User,
+                        "(continued from session \"n-s-a\" s-a)\n\
+                         (continued from session \"n-s-b\" s-b)\n\nask C",
+                    ),
+                    (Role::Assistant, "answer C"),
+                ],
+            ),
+        ];
+        let out = assemble(&links, Caps::default());
+        let sessions = out.sessions.as_deref().expect("sessions");
+        let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["s-a", "s-b", "s-c"]);
+        assert_eq!(sessions[0].markdown, "**User:**\n\nask A\n\n**Assistant:**\n\nanswer A");
+        assert_eq!(sessions[1].markdown, "**User:**\n\nask B\n\n**Assistant:**\n\nanswer B");
+        assert_eq!(sessions[2].name.as_deref(), Some("n-s-c"));
+        assert!(!out.markdown.contains("(continued from"), "{}", out.markdown);
+        for needle in ["ask A", "answer A", "ask B", "answer B", "ask C", "answer C"] {
+            assert_eq!(out.markdown.matches(needle).count(), 1, "{needle}: {}", out.markdown);
+        }
+        let a = out.markdown.find("ask A").unwrap();
+        let b = out.markdown.find("ask B").unwrap();
+        assert!(a < b && b < out.markdown.find("ask C").unwrap());
+        assert!(out.markdown.starts_with("### Session 1 \"n-s-a\" (s-a)\n\n**User:**"));
+        assert_eq!((out.turns, out.omitted, out.truncated), (6, 0, false));
+    }
+
+    #[test]
+    fn an_unreadable_ancestor_is_one_line_and_its_mention_stays() {
+        let links = [
+            hidden("s-x"),
+            link("s-y", &[(Role::User, "(continued from session \"x\" s-x)\n\nask Y")]),
+        ];
+        let out = assemble(&links, Caps::default());
+        let sessions = out.sessions.as_deref().expect("sessions");
+        assert_eq!(sessions[0].name, None);
+        assert_eq!(sessions[0].markdown, "(session s-x could not be included)");
+        assert_eq!(
+            sessions[1].markdown,
+            "**User:**\n\n(continued from session \"x\" s-x)\n\nask Y"
+        );
+        assert!(out.markdown.starts_with("### Session 1 (s-x)\n\n(session s-x could not"));
+    }
+
+    #[test]
+    fn a_long_chain_over_the_cap_keeps_the_root_ask_and_the_parent_tail() {
+        let body = "x".repeat(2048);
+        let links: Vec<Link> = (0..20)
+            .map(|i| {
+                let id = format!("s-{i:02}");
+                let mut turns: Vec<(Role, String)> = vec![(Role::User, format!("ask {i}"))];
+                for t in 0..10 {
+                    turns.push((Role::Assistant, format!("{body} s{i} t{t}")));
+                    turns.push((Role::User, format!("{body} s{i} u{t}")));
+                }
+                turns.push((Role::Assistant, format!("last of {i}")));
+                let turns = turns.into_iter().map(|(role, text)| Turn { role, text }).collect();
+                Link { id, transcript: Some(Transcript { name: format!("n{i}"), turns }) }
+            })
+            .collect();
+        let cap = 32 * 1024;
+        let out = assemble(&links, Caps { max_turns: 60, max_bytes: cap });
+        assert!(out.markdown.len() <= cap, "{} > {cap}", out.markdown.len());
+        assert!(out.truncated);
+        let sessions = out.sessions.as_deref().expect("sessions");
+        assert_eq!(sessions.len(), 20);
+        assert!(sessions[0].markdown.starts_with("**User:**\n\nask 0"), "{}", sessions[0].markdown);
+        assert!(sessions[19].markdown.ends_with("last of 19"), "{}", sessions[19].markdown);
+        assert!(sessions[19].markdown.contains("s19 u9"));
+        assert!(sessions.iter().any(|s| s.markdown.contains("turns omitted")));
+        assert!(sessions[1..19].iter().all(|s| s.omitted > 0));
+    }
+
+    #[test]
+    fn an_old_style_brief_carries_no_sessions() {
+        let turns = collect_turns("claude-code", vec![user("q"), assistant("a")]);
+        assert!(render(&turns, Caps::default()).sessions.is_none());
     }
 }

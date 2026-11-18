@@ -25,18 +25,8 @@ function isGated(method: string, path: string): boolean {
 	return best?.gated ?? false;
 }
 
-const CORE_SETTINGS_PAGES = [
-	'appearance',
-	'sessions',
-	'execution',
-	'privacy',
-	'notifications',
-	'events',
-	'guides',
-	'users',
-	'dispatchers',
-	'instance'
-];
+// The stubbed `/me` carries no role, so this is a non-admin: no Instance page.
+const CORE_SETTINGS_PAGES = ['interface', 'accounts', 'sessions', 'notifications'];
 
 async function coreServer(page: Page, sessions: unknown[] = [session(1)], dispatchers: string[] = []) {
 	await stubApi(page, sessions);
@@ -101,15 +91,17 @@ test('a server with every switchable feature off renders the app without the not
 	await expect(nav.getByRole('link', { name: 'Accounts' })).toBeVisible();
 	await expect(page.getByRole('heading', { name: 'Unsupported server' })).toHaveCount(0);
 	await expect(nav.getByRole('link', { name: 'Bookmarks' })).toHaveCount(0);
-	await page.goto('/settings/dispatchers');
-	await expect(page.locator('[data-settings-page="dispatchers"]')).toBeVisible();
+	await expect(page).toHaveURL(/\/settings\/accounts#provider-accounts$/);
+	await page.goto('/settings/sessions');
+	await expect(page.locator('[data-settings-page="sessions"]')).toBeVisible();
 	await expect(page.locator('[data-settings-page="plugins"]')).toHaveCount(0);
-	await expect(page.locator('[data-settings-page="monitoring"]')).toHaveCount(0);
+	await expect(page.locator('[data-settings-page="instance"]')).toHaveCount(0);
+	await expect(page.locator('#machines')).toHaveCount(0);
 	expect(offRequests).toEqual([]);
 	expect(errors).toEqual([]);
 });
 
-for (const hidden of ['/bookmarks', '/settings/plugins', '/settings/security', '/settings/macros', '/device']) {
+for (const hidden of ['/bookmarks', '/settings/plugins', '/device']) {
 	test(`a direct URL to ${hidden} is not found on a core-features server`, async ({ page }) => {
 		const offRequests = await coreServer(page);
 		await page.goto(hidden);
@@ -142,7 +134,8 @@ test('the onboarding card on a core server asks for a dispatcher, then a dispatc
 test('the guides page on a core server offers no machine or search guide', async ({ page }) => {
 	const offRequests = await coreServer(page);
 	await page.goto('/settings/guides');
-	const guides = page.locator('[data-settings-page="guides"]');
+	await expect(page).toHaveURL(/\/settings\/interface#help$/);
+	const guides = page.locator('[data-settings-page="interface"]');
 	await expect(guides.locator('[data-journey="guide"][data-journey-key="welcome"]')).toBeVisible();
 	for (const id of ['enroll-machine', 'spawn-session', 'search-sessions']) {
 		await expect(guides.locator(`[data-journey="guide"][data-journey-key="${id}"]`)).toHaveCount(0);
@@ -179,7 +172,7 @@ test('a conversation on a core server offers no fork', async ({ page }) => {
 
 test('Settings on a core server lists exactly the core pages', async ({ page }) => {
 	const offRequests = await coreServer(page);
-	await page.goto('/settings/appearance');
+	await page.goto('/settings/interface');
 	const toc = page.locator('nav.toc [data-journey="settings-nav"]');
 	await expect(toc.first()).toBeVisible();
 	const pages = await toc.evaluateAll((els) => els.map((el) => el.getAttribute('data-journey-key')));

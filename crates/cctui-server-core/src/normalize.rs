@@ -930,6 +930,11 @@ mod tests {
                  </previous-conversation>\n\n===\n\n"),
             "context"
         );
+        let chain = "▷ User: <cctui-previous-sessions>\n\
+                     <cctui-previous-conversation n=\"1\" session=\"a\" id=\"s1\">\nb\n\
+                     </cctui-previous-conversation>\n</cctui-previous-sessions>";
+        assert_eq!(cat(chain), "context");
+        assert_eq!(cat(&format!("{chain}\n\nContinue from this.")), "user");
         assert_eq!(
             cat("▷ User: look:\n<cctui-session-context>\nx\n</cctui-session-context>"),
             "user",

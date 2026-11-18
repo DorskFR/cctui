@@ -4,7 +4,11 @@ import { load as loadAccess } from './access/+page';
 import { load as loadDispatchers } from './dispatchers/+page';
 import { load as loadEvents } from './events/+page';
 import { MOVED_ROUTES } from './movedRoutes';
-import { isSettingsPage } from '#lib/components/organisms/settings/settings.logic.ts';
+import {
+	isSettingsPage,
+	SETTINGS_SECTIONS,
+	settingsRedirect
+} from '#lib/components/organisms/settings/settings.logic.ts';
 
 function target(load: () => void): { status: number; location: string } {
 	try {
@@ -28,7 +32,12 @@ describe('the screens that moved under Settings', () => {
 	it('points every old path at a settings page that exists', () => {
 		for (const to of Object.values(MOVED_ROUTES)) {
 			expect(to.startsWith('/settings/')).toBe(true);
-			expect(isSettingsPage(to.slice('/settings/'.length))).toBe(true);
+			const [slug, section] = to.slice('/settings/'.length).split('#');
+			expect(settingsRedirect(slug), to).toBeNull();
+			if (section) {
+				expect(isSettingsPage(slug), to).toBe(true);
+				if (isSettingsPage(slug)) expect(SETTINGS_SECTIONS[slug], to).toContain(section);
+			}
 		}
 	});
 });

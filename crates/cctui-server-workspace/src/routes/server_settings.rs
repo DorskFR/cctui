@@ -8,10 +8,11 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json};
 
 pub use cctui_proto::api::settings::{
-    SettingSource, SpawnDefaults, SpawnDefaultsInfo, SpeechCatalog, SpeechConfig,
-    SpeechSettingsInfo, SpeechSettingsRequest, UploadCapsInfo, UploadCapsRequest,
-    UpstreamHostsInfo, UpstreamHostsRequest,
+    EventRetentionInfo, EventRetentionRequest, SettingSource, SpawnDefaults, SpawnDefaultsInfo,
+    SpeechCatalog, SpeechConfig, SpeechSettingsInfo, SpeechSettingsRequest, UploadCapsInfo,
+    UploadCapsRequest, UpstreamHostsInfo, UpstreamHostsRequest,
 };
+use cctui_server_core::events::{DEFAULT_RETENTION_DAYS, RETENTION_KEY};
 
 use crate::auth::{AuthContext, Scope};
 use crate::error::AppError;
@@ -284,6 +285,60 @@ pub async fn update_upload_caps(
     Ok(Json(read_upload_caps(&state.pool).await))
 }
 
+const MAX_RETENTION_DAYS: u32 = 36_500;
+
+/// Reads the saved value the way the pruner does: a number or a numeric
+/// string; anything else falls back to the default.
+fn event_retention_info(saved: Option<&serde_json::Value>) -> EventRetentionInfo {
+    let parsed = saved
+        .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
+        .and_then(|d| u32::try_from(d).ok());
+    let default_days = u32::try_from(DEFAULT_RETENTION_DAYS).unwrap_or(u32::MAX);
+    EventRetentionInfo {
+        days: parsed.unwrap_or(default_days),
+        default_days,
+        source: if parsed.is_some() { SettingSource::Settings } else { SettingSource::Default },
+    }
+}
+
+fn validate_event_retention(days: u32) -> Result<u32, AppError> {
+    if days > MAX_RETENTION_DAYS {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            format!("days must be between 0 (keep forever) and {MAX_RETENTION_DAYS}"),
+        ));
+    }
+    Ok(days)
+}
+
+async fn read_event_retention(pool: &sqlx::PgPool) -> Result<EventRetentionInfo, sqlx::Error> {
+    let saved: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT value FROM instance_settings WHERE key = $1")
+            .bind(RETENTION_KEY)
+            .fetch_optional(pool)
+            .await?;
+    Ok(event_retention_info(saved.as_ref()))
+}
+
+pub async fn get_event_retention(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<EventRetentionInfo>, AppError> {
+    admin(&ctx)?;
+    Ok(Json(read_event_retention(&state.pool).await?))
+}
+
+pub async fn update_event_retention(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Json(req): Json<EventRetentionRequest>,
+) -> Result<Json<EventRetentionInfo>, AppError> {
+    admin(&ctx)?;
+    let value = req.days.map(validate_event_retention).transpose()?.map(serde_json::Value::from);
+    store(&state.pool, RETENTION_KEY, value).await?;
+    Ok(Json(read_event_retention(&state.pool).await?))
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct StoredSpeech {
     #[serde(flatten)]
@@ -292,21 +347,139 @@ struct StoredSpeech {
     encrypted_key: Option<String>,
 }
 
-async fn stored_speech(pool: &sqlx::PgPool) -> Result<Option<StoredSpeech>, sqlx::Error> {
-    let raw = sqlx::query_scalar::<_, serde_json::Value>(
-        "SELECT value FROM instance_settings WHERE key = $1",
-    )
-    .bind(SPEECH_KEY)
-    .fetch_optional(pool)
-    .await?;
-    Ok(raw.and_then(|v| serde_json::from_value(v).ok()))
+/// The saved row, `None` inside when it does not parse, and its revision.
+type SpeechRow = (Option<StoredSpeech>, String);
+
+async fn speech_row(pool: &sqlx::PgPool) -> Result<Option<SpeechRow>, sqlx::Error> {
+    let row: Option<(serde_json::Value, String)> =
+        sqlx::query_as("SELECT value, updated_at::text FROM instance_settings WHERE key = $1")
+            .bind(SPEECH_KEY)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(value, revision)| (parse_speech(value), revision)))
 }
 
-fn speech_info(stored: Option<&StoredSpeech>) -> SpeechSettingsInfo {
+fn parse_speech(value: serde_json::Value) -> Option<StoredSpeech> {
+    serde_json::from_value(value)
+        .inspect_err(|e| {
+            tracing::warn!(
+                error = %e,
+                "saved speech setting does not parse; voice features stay off until it is saved again"
+            );
+        })
+        .ok()
+}
+
+async fn stored_speech(pool: &sqlx::PgPool) -> Result<Option<StoredSpeech>, sqlx::Error> {
+    Ok(speech_row(pool).await?.and_then(|(stored, _)| stored))
+}
+
+fn speech_info(row: Option<&SpeechRow>) -> SpeechSettingsInfo {
+    let stored = row.and_then(|(stored, _)| stored.as_ref());
     SpeechSettingsInfo {
         config: stored.map(|s| s.config.clone()).unwrap_or_default(),
         has_key: stored.is_some_and(|s| s.encrypted_key.is_some()),
         source: if stored.is_some() { SettingSource::Settings } else { SettingSource::Default },
+        revision: row.map(|(_, revision)| revision.clone()).unwrap_or_default(),
+    }
+}
+
+fn stale_speech() -> AppError {
+    AppError::new(
+        StatusCode::CONFLICT,
+        "speech settings were changed elsewhere since this form loaded; reload and try again",
+    )
+}
+
+/// Writes `value` only while the row is still at `expected` (`""`: no row).
+/// `None` writes unconditionally. `false` when the row moved on.
+async fn store_speech(
+    pool: &sqlx::PgPool,
+    value: Option<serde_json::Value>,
+    expected: Option<&str>,
+) -> Result<bool, AppError> {
+    let Some(expected) = expected else {
+        store(pool, SPEECH_KEY, value).await?;
+        return Ok(true);
+    };
+    let written: Option<String> =
+        match (value, expected) {
+            (Some(v), "") => {
+                sqlx::query_scalar(
+                    "INSERT INTO instance_settings (key, value, updated_at) VALUES ($1, $2, now()) \
+                 ON CONFLICT (key) DO NOTHING RETURNING key",
+                )
+                .bind(SPEECH_KEY)
+                .bind(v)
+                .fetch_optional(pool)
+                .await?
+            }
+            (Some(v), revision) => {
+                sqlx::query_scalar(
+                    "UPDATE instance_settings SET value = $2, updated_at = now() \
+                 WHERE key = $1 AND updated_at::text = $3 RETURNING key",
+                )
+                .bind(SPEECH_KEY)
+                .bind(v)
+                .bind(revision.to_owned())
+                .fetch_optional(pool)
+                .await?
+            }
+            (None, "") => sqlx::query_scalar(
+                "SELECT $1::text WHERE NOT EXISTS (SELECT 1 FROM instance_settings WHERE key = $1)",
+            )
+            .bind(SPEECH_KEY)
+            .fetch_optional(pool)
+            .await?,
+            (None, revision) => {
+                sqlx::query_scalar(
+                    "DELETE FROM instance_settings WHERE key = $1 AND updated_at::text = $2 \
+                 RETURNING key",
+                )
+                .bind(SPEECH_KEY)
+                .bind(revision.to_owned())
+                .fetch_optional(pool)
+                .await?
+            }
+        };
+    Ok(written.is_some())
+}
+
+/// The audit payload of a save: changed field names with their before and
+/// after values, the key only by name. `None` when nothing changed.
+fn speech_change_detail(
+    prev: Option<&StoredSpeech>,
+    next: &StoredSpeech,
+) -> Option<serde_json::Value> {
+    use serde_json::{Map, Value};
+    let fields = |c: &SpeechConfig| match serde_json::to_value(c) {
+        Ok(Value::Object(m)) => m,
+        _ => Map::new(),
+    };
+    let before = fields(&prev.map(|p| p.config.clone()).unwrap_or_default());
+    let after = fields(&next.config);
+    let (mut changed, mut from, mut to) = (Vec::new(), Map::new(), Map::new());
+    for (field, value) in after {
+        let old = before.get(&field).cloned().unwrap_or(Value::Null);
+        if old != value {
+            changed.push(Value::String(field.clone()));
+            from.insert(field.clone(), old);
+            to.insert(field, value);
+        }
+    }
+    if prev.and_then(|p| p.encrypted_key.as_ref()) != next.encrypted_key.as_ref() {
+        changed.push(Value::String("api_key".into()));
+    }
+    (!changed.is_empty()).then(
+        || serde_json::json!({ "setting": SPEECH_KEY, "changed": changed, "from": from, "to": to }),
+    )
+}
+
+async fn audit_setting(state: &AppState, ctx: &AuthContext, detail: serde_json::Value) {
+    use crate::events::{Actor, Event, kind};
+    let event = Event::new(kind::SETTINGS_UPDATED, Actor::User(ctx.user_id)).detail(detail);
+    if let Err(err) = crate::events::record_now(state, event).await {
+        tracing::warn!(%err, "settings audit event insert failed");
     }
 }
 
@@ -402,7 +575,7 @@ pub async fn get_speech(
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<SpeechSettingsInfo>, AppError> {
     admin(&ctx)?;
-    Ok(Json(speech_info(stored_speech(&state.pool).await?.as_ref())))
+    Ok(Json(speech_info(speech_row(&state.pool).await?.as_ref())))
 }
 
 pub async fn update_speech(
@@ -413,18 +586,28 @@ pub async fn update_speech(
     admin(&ctx)?;
     let config = validate_speech(req.config)?;
     let new_key = req.api_key.as_deref().map(validate_speech_key).transpose()?;
-    let current = stored_speech(&state.pool).await?;
+    let row = speech_row(&state.pool).await?;
+    let current_revision = row.as_ref().map_or("", |(_, revision)| revision.as_str());
+    if req.revision.as_deref().is_some_and(|r| r != current_revision) {
+        return Err(stale_speech());
+    }
+    let current = row.and_then(|(stored, _)| stored);
     let encrypted_key = match (new_key, req.clear_key.unwrap_or(false)) {
         (Some(k), _) => Some(crate::crypto::encrypt(&k, &crate::crypto::vault_key())),
         (None, true) => None,
-        (None, false) => current.and_then(|c| c.encrypted_key),
+        (None, false) => current.as_ref().and_then(|c| c.encrypted_key.clone()),
     };
     let next = StoredSpeech { config, encrypted_key };
     let value = (next != StoredSpeech::default())
         .then(|| serde_json::to_value(&next).expect("serializable"));
-    store(&state.pool, SPEECH_KEY, value).await?;
+    if !store_speech(&state.pool, value, req.revision.as_deref()).await? {
+        return Err(stale_speech());
+    }
     refresh_upstream_allowlist(&state.pool).await;
-    Ok(Json(speech_info(stored_speech(&state.pool).await?.as_ref())))
+    if let Some(detail) = speech_change_detail(current.as_ref(), &next) {
+        audit_setting(&state, &ctx, detail).await;
+    }
+    Ok(Json(speech_info(speech_row(&state.pool).await?.as_ref())))
 }
 
 pub fn speech_error(e: &crate::speech::SpeechError) -> AppError {
@@ -502,6 +685,30 @@ mod tests {
             machine_id: None,
             scopes: scopes.iter().copied().collect::<BTreeSet<_>>(),
         }
+    }
+
+    #[test]
+    fn event_retention_reads_a_number_or_a_numeric_string_and_falls_back_to_the_default() {
+        let default_days = u32::try_from(DEFAULT_RETENTION_DAYS).unwrap();
+        let unset = event_retention_info(None);
+        assert_eq!((unset.days, unset.source), (default_days, SettingSource::Default));
+        assert_eq!(unset.default_days, default_days);
+        let forever = event_retention_info(Some(&serde_json::json!(0)));
+        assert_eq!((forever.days, forever.source), (0, SettingSource::Settings));
+        let text = event_retention_info(Some(&serde_json::json!("30")));
+        assert_eq!((text.days, text.source), (30, SettingSource::Settings));
+        for junk in [serde_json::json!(-1), serde_json::json!("soon"), serde_json::json!(null)] {
+            let info = event_retention_info(Some(&junk));
+            assert_eq!((info.days, info.source), (default_days, SettingSource::Default), "{junk}");
+        }
+    }
+
+    #[test]
+    fn event_retention_refuses_more_than_a_century() {
+        assert_eq!(validate_event_retention(0).unwrap(), 0);
+        assert_eq!(validate_event_retention(MAX_RETENTION_DAYS).unwrap(), MAX_RETENTION_DAYS);
+        let err = validate_event_retention(MAX_RETENTION_DAYS + 1).unwrap_err();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]
@@ -766,7 +973,12 @@ mod tests {
             update_speech(
                 State(state.clone()),
                 Extension(ctx(&[Scope::Admin])),
-                Json(SpeechSettingsRequest { config, api_key: api_key.map(Into::into), clear_key }),
+                Json(SpeechSettingsRequest {
+                    config,
+                    revision: None,
+                    api_key: api_key.map(Into::into),
+                    clear_key,
+                }),
             )
         };
         let denied = get_speech(State(state.clone()), Extension(ctx(&[]))).await;
@@ -807,6 +1019,161 @@ mod tests {
         let Json(info) = put(SpeechConfig::default(), None, Some(true)).await.unwrap();
         assert_eq!(info.source, SettingSource::Default);
         assert!(crate::outbound::upstream_url_permitted(url).is_err());
+    }
+
+    fn speech_put(
+        state: &AppState,
+        ctx: AuthContext,
+        config: SpeechConfig,
+        revision: Option<String>,
+        api_key: Option<&str>,
+    ) -> impl Future<Output = Result<Json<SpeechSettingsInfo>, AppError>> {
+        update_speech(
+            State(state.clone()),
+            Extension(ctx),
+            Json(SpeechSettingsRequest {
+                config,
+                revision,
+                api_key: api_key.map(Into::into),
+                clear_key: None,
+            }),
+        )
+    }
+
+    fn enabled_speech() -> SpeechConfig {
+        SpeechConfig {
+            enabled: true,
+            base_url: "http://speech-router.stale-probe.svc:8000/v1".into(),
+            ..SpeechConfig::default()
+        }
+    }
+
+    async fn clear_speech(pool: &sqlx::PgPool) {
+        sqlx::query("DELETE FROM instance_settings WHERE key = $1")
+            .bind(SPEECH_KEY)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_speech_save_from_a_stale_tab_is_refused_and_overwrites_nothing() {
+        let _serial = UPSTREAM_TESTS.lock().await;
+        let Some(state) =
+            state("a_speech_save_from_a_stale_tab_is_refused_and_overwrites_nothing").await
+        else {
+            return;
+        };
+        crate::crypto::install_vault_key(vec![7u8; 32]);
+        clear_speech(&state.pool).await;
+        let admin_ctx = || ctx(&[Scope::Admin]);
+        let load = || get_speech(State(state.clone()), Extension(admin_ctx()));
+        let put = |config: SpeechConfig, revision: &str| {
+            speech_put(&state, admin_ctx(), config, Some(revision.to_owned()), None)
+        };
+
+        let Json(empty) = load().await.unwrap();
+        assert_eq!(empty.revision, "");
+        let Json(first) = put(enabled_speech(), "").await.unwrap();
+        assert_ne!(first.revision, "");
+        let again = put(enabled_speech(), "").await;
+        assert_eq!(again.unwrap_err().status(), StatusCode::CONFLICT, "a row appeared since");
+
+        let Json(first_tab) = load().await.unwrap();
+        let Json(second_tab) = load().await.unwrap();
+        assert_eq!(first_tab.revision, second_tab.revision);
+        let newer = SpeechConfig { tts_voice: "bf_emma".into(), ..enabled_speech() };
+        let Json(saved) = put(newer, &first_tab.revision).await.unwrap();
+        assert_ne!(saved.revision, second_tab.revision);
+
+        let blank = SpeechConfig { stt_model: String::new(), ..second_tab.config.clone() };
+        let refused = put(blank, &second_tab.revision).await;
+        assert_eq!(refused.unwrap_err().status(), StatusCode::CONFLICT);
+        let Json(kept) = load().await.unwrap();
+        assert_eq!(kept.config.stt_model, "parakeet");
+        assert_eq!(kept.config.tts_voice, "bf_emma");
+        assert_eq!(kept.revision, saved.revision);
+
+        let Json(reset) = put(SpeechConfig::default(), &kept.revision).await.unwrap();
+        assert_eq!((reset.source, reset.revision.as_str()), (SettingSource::Default, ""));
+        let stale_delete = put(SpeechConfig::default(), &saved.revision).await;
+        assert_eq!(stale_delete.unwrap_err().status(), StatusCode::CONFLICT);
+
+        clear_speech(&state.pool).await;
+        refresh_upstream_allowlist(&state.pool).await;
+    }
+
+    #[tokio::test]
+    async fn a_speech_save_records_who_changed_which_fields_without_key_material() {
+        let _serial = UPSTREAM_TESTS.lock().await;
+        let Some(state) =
+            state("a_speech_save_records_who_changed_which_fields_without_key_material").await
+        else {
+            return;
+        };
+        crate::crypto::install_vault_key(vec![7u8; 32]);
+        clear_speech(&state.pool).await;
+        let who = ctx(&[Scope::Admin]);
+        let actor = format!("user:{}", who.user_id);
+        let audit = || {
+            sqlx::query_as::<_, (Option<Uuid>, String, serde_json::Value)>(
+                "SELECT user_id, summary, detail FROM events \
+                 WHERE kind = 'settings.updated' AND actor = $1 ORDER BY id",
+            )
+            .bind(actor.clone())
+            .fetch_all(&state.pool)
+        };
+
+        let Json(_) =
+            speech_put(&state, who.clone(), enabled_speech(), None, Some("sk-audit-secret"))
+                .await
+                .unwrap();
+        let blank = SpeechConfig { stt_model: String::new(), ..enabled_speech() };
+        let Json(_) = speech_put(&state, who.clone(), blank.clone(), None, None).await.unwrap();
+        let Json(_) = speech_put(&state, who.clone(), blank, None, None).await.unwrap();
+
+        let rows = audit().await.unwrap();
+        assert_eq!(rows.len(), 2, "an unchanged save records nothing: {rows:?}");
+        let (user_id, summary, detail) = &rows[1];
+        assert_eq!(*user_id, None, "no user: only admins read it");
+        assert_eq!(detail["setting"], "speech");
+        assert_eq!(detail["changed"], serde_json::json!(["stt_model"]));
+        assert_eq!(detail["from"]["stt_model"], "parakeet");
+        assert_eq!(detail["to"]["stt_model"], "");
+        assert_eq!(summary, "speech settings changed: stt_model");
+        let first = &rows[0].2;
+        let changed = first["changed"].as_array().unwrap();
+        assert!(changed.contains(&serde_json::json!("api_key")), "{first}");
+        assert!(changed.contains(&serde_json::json!("base_url")), "{first}");
+        let raw = format!("{rows:?}");
+        assert!(!raw.contains("sk-audit-secret") && !raw.contains("encrypted_key"), "{raw}");
+
+        clear_speech(&state.pool).await;
+        refresh_upstream_allowlist(&state.pool).await;
+    }
+
+    #[test]
+    fn a_speech_row_that_does_not_parse_reads_as_unset() {
+        assert_eq!(parse_speech(serde_json::json!({ "enabled": "yes" })), None);
+        assert_eq!(parse_speech(serde_json::json!([1])), None);
+        let ok = parse_speech(serde_json::json!({ "enabled": true })).unwrap();
+        assert!(ok.config.enabled);
+        let info = speech_info(Some(&(None, "rev".to_owned())));
+        assert_eq!((info.source, info.revision.as_str()), (SettingSource::Default, "rev"));
+        assert_eq!(info.config, SpeechConfig::default());
+    }
+
+    #[test]
+    fn the_speech_audit_names_the_key_but_never_carries_it() {
+        let prev = StoredSpeech { config: enabled_speech(), encrypted_key: Some("enc-a".into()) };
+        let next = StoredSpeech {
+            config: SpeechConfig { tts_model: String::new(), ..enabled_speech() },
+            encrypted_key: Some("enc-b".into()),
+        };
+        let detail = speech_change_detail(Some(&prev), &next).unwrap();
+        assert_eq!(detail["changed"], serde_json::json!(["tts_model", "api_key"]));
+        assert!(!detail.to_string().contains("enc-"), "{detail}");
+        assert_eq!(speech_change_detail(Some(&prev), &prev), None);
     }
 
     static UPSTREAM_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -881,6 +1248,34 @@ mod tests {
             .await
             .expect("connect test db");
         Some(AppState::for_test(pool))
+    }
+
+    #[tokio::test]
+    async fn event_retention_is_admin_only_and_bounded() {
+        let Some(state) = state("event_retention_is_admin_only_and_bounded").await else {
+            return;
+        };
+        let denied =
+            get_event_retention(State(state.clone()), Extension(ctx(&[Scope::Read]))).await;
+        assert_eq!(denied.unwrap_err().status(), StatusCode::FORBIDDEN);
+        let denied = update_event_retention(
+            State(state.clone()),
+            Extension(ctx(&[Scope::Read])),
+            Json(EventRetentionRequest { days: Some(1) }),
+        )
+        .await;
+        assert_eq!(denied.unwrap_err().status(), StatusCode::FORBIDDEN);
+        let bad = update_event_retention(
+            State(state.clone()),
+            Extension(ctx(&[Scope::Admin])),
+            Json(EventRetentionRequest { days: Some(MAX_RETENTION_DAYS + 1) }),
+        )
+        .await;
+        assert_eq!(bad.unwrap_err().status(), StatusCode::BAD_REQUEST);
+        let Json(info) = get_event_retention(State(state.clone()), Extension(ctx(&[Scope::Admin])))
+            .await
+            .unwrap();
+        assert_eq!(info.default_days, u32::try_from(DEFAULT_RETENTION_DAYS).unwrap());
     }
 
     #[tokio::test]

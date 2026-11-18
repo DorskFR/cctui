@@ -7,7 +7,9 @@
 	import type { SpeechConfig } from '@bindings/SpeechConfig';
 	import type { SpeechSettingsInfo } from '@bindings/SpeechSettingsInfo';
 	import { toasts } from '#lib/toast.svelte.ts';
+	import { ApiError } from '#lib/api.ts';
 	import { m } from '#lib/paraglide/messages.js';
+	import { lostControls, missingHalves, type SpeechControl } from './speech.logic.ts';
 
 	const FORMATS = ['opus', 'mp3', 'aac', 'flac', 'wav', 'pcm'];
 
@@ -22,11 +24,21 @@
 		voices: []
 	});
 	let busy = $state(false);
+	let confirming = $state<SpeechControl[]>([]);
+
+	const CONTROL_LABEL: Record<SpeechControl, () => string> = {
+		mic: m.settings_speech_control_mic,
+		voice_spawn: m.settings_speech_control_voice_spawn,
+		voice_mode: m.settings_speech_control_voice_mode,
+		read_aloud: m.settings_speech_control_read_aloud
+	};
+	const missing = $derived(info ? missingHalves(info.config) : []);
 
 	function apply(next: SpeechSettingsInfo) {
 		info = next;
 		draft = { ...next.config };
 		keyDraft = '';
+		confirming = [];
 	}
 
 	$effect(() => {
@@ -73,19 +85,40 @@
 		}
 	}
 
-	const save = (clearKey = false) =>
+	const save = (clearKey = false, confirmed = false) =>
 		run(async () => {
-			if (!draft) return;
+			if (!draft || !info) return;
+			const lost = confirmed ? [] : lostControls(info.config, draft);
+			if (lost.length) {
+				confirming = lost;
+				return;
+			}
 			const key = keyDraft.trim();
-			apply(
-				await endpoints.setSpeechSettings({
-					config: { ...draft, stt_language: draft.stt_language?.trim() || null },
-					...(key ? { api_key: key } : {}),
-					...(clearKey ? { clear_key: true } : {})
-				})
-			);
+			try {
+				apply(
+					await endpoints.setSpeechSettings({
+						config: { ...draft, stt_language: draft.stt_language?.trim() || null },
+						revision: info.revision,
+						...(key ? { api_key: key } : {}),
+						...(clearKey ? { clear_key: true } : {})
+					})
+				);
+			} catch (e) {
+				if (!(e instanceof ApiError && e.status === 409)) throw e;
+				apply(await endpoints.speechSettings());
+				toasts.error(m.settings_speech_stale());
+				return;
+			}
 			toasts.ok(m.settings_speech_saved());
 		});
+
+	function keepCurrent() {
+		if (info && draft) {
+			const { enabled, base_url, stt_model, tts_model } = info.config;
+			draft = { ...draft, enabled, base_url, stt_model, tts_model };
+		}
+		confirming = [];
+	}
 
 	const loadCatalog = () =>
 		run(async () => {
@@ -113,6 +146,11 @@
 <div id="speech">
 	<SettingGroup title={m.settings_speech_label()}>
 		{#if info && draft}
+			{#each missing as half (half)}
+				<p class="hint" data-testid="speech-hint-{half}">
+					{half === 'stt' ? m.settings_speech_hint_stt() : m.settings_speech_hint_tts()}
+				</p>
+			{/each}
 			<SettingRow label={m.settings_speech_enabled()} help={m.settings_speech_help()} server admin>
 				<Switch
 					checked={draft.enabled}
@@ -155,8 +193,10 @@
 						style="width:100%"
 						onchange={(e: Event) => draft && (draft[field] = selectValue(e))}
 					>
-						{#if field !== 'tts_voice'}
-							<option value="">{m.settings_speech_summary_off()}</option>
+						{#if field === 'stt_model'}
+							<option value="">{m.settings_speech_stt_off()}</option>
+						{:else if field === 'tts_model'}
+							<option value="">{m.settings_speech_tts_off()}</option>
 						{/if}
 						{#each options as id (id)}
 							<option value={id}>{id}</option>
@@ -213,8 +253,25 @@
 					{/each}
 				</Select>
 			</SettingRow>
+			{#if confirming.length}
+				<div class="confirm" role="alertdialog" aria-label={m.settings_speech_confirm_save()}>
+					<p>
+						{m.settings_speech_confirm({
+							controls: confirming.map((c) => CONTROL_LABEL[c]()).join(', ')
+						})}
+					</p>
+					<div class="line">
+						<Button variant="danger" disabled={busy} onclick={() => save(false, true)}>
+							{m.settings_speech_confirm_save()}
+						</Button>
+						<Button variant="ghost" disabled={busy} onclick={keepCurrent}>{m.common_cancel()}</Button>
+					</div>
+				</div>
+			{/if}
 			<div class="line actions">
-				<Button disabled={!dirty || busy} onclick={() => save()}>{m.settings_speech_save()}</Button>
+				<Button disabled={!dirty || busy || confirming.length > 0} onclick={() => save()}>
+					{m.settings_speech_save()}
+				</Button>
 				<Button variant="ghost" disabled={busy || dirty || !info.config.enabled} onclick={loadCatalog}>
 					{m.settings_speech_load()}
 				</Button>
@@ -237,5 +294,21 @@
 	.actions {
 		justify-content: flex-end;
 		padding-top: var(--sp-2);
+	}
+	.hint {
+		margin: 0;
+		color: var(--warn);
+		font-size: var(--fs-sm);
+	}
+	.confirm {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-2);
+		padding: var(--sp-3);
+		border: 1px solid var(--danger);
+		border-radius: var(--r-md);
+	}
+	.confirm p {
+		margin: 0;
 	}
 </style>

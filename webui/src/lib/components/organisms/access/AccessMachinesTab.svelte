@@ -9,6 +9,7 @@
 		Dot,
 		IconButton,
 		Modal,
+		Switch,
 		Text,
 		Timestamp
 	} from '@dorsk/tsumikit';
@@ -133,14 +134,14 @@
 			onclick={() => (historyTarget = mc)}
 		/>
 		{#if canManage && !mc.revoked_at}
-			<IconButton
-				inline
-				icon={machineHidden(mc) ? 'eye' : 'eye-off'}
-				size={14}
-				label={machineHidden(mc) ? m.hidden_owners_unhide() : m.hidden_owners_hide()}
-				title={machineHidden(mc) ? m.hidden_owners_unhide() : m.hidden_owners_hide()}
+			<Switch
+				size="sm"
+				bind:checked={() => !machineHidden(mc), () => toggleHidden(mc)}
+				label={m.settings_visibility_switch_named({ name: mc.display_name || mc.name })}
+				title={m.settings_visibility_title()}
 				data-journey="hide-machine"
-				onclick={() => toggleHidden(mc)}
+				data-visibility="machine"
+				data-target={mc.id}
 			/>
 		{/if}
 		{#if mayShare && mc.kind !== 'dispatch' && !mc.revoked_at}

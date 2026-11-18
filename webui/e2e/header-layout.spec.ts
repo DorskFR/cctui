@@ -72,11 +72,11 @@ test('mobile: the version block yields instead of overlapping', async ({ page },
 	});
 });
 
-test('mobile: the versions hidden from the bar stay readable in Settings › Instance', async ({
+test('mobile: the versions hidden from the bar stay readable in Settings › Interface', async ({
 	page
 }) => {
 	await page.setViewportSize(MOBILE);
-	await page.goto('/settings/instance');
+	await page.goto('/settings/interface');
 	const body = page.locator('body');
 	await expect(body).toContainText(/srv \d+\.\d+\.\d+/);
 	await expect(body).toContainText(/\bui (dev|\d+\.\d+\.\d+)/);

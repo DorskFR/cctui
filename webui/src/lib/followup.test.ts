@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { BriefSession } from '@bindings/BriefSession';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import {
 	BRIEF_FILE_NAME,
@@ -58,6 +59,69 @@ describe('followupPrompt', () => {
 		expect(file).toContain(brief);
 		expect(file?.startsWith('<cctui-previous-conversation session="my &quot;run&quot;" id="s1">')).toBe(true);
 		expect(file?.endsWith('</cctui-previous-conversation>\n')).toBe(true);
+	});
+});
+
+describe('followupPrompt for a follow-up chain', () => {
+	const part = (id: string, name: string | null, markdown: string): BriefSession => ({
+		id,
+		name,
+		markdown,
+		turns: 2,
+		omitted: 0,
+		truncated: false
+	});
+	const chain = [
+		part('s-a', 'first "run"', '**User:**\n\nask A'),
+		part('s-x', null, '(session s-x could not be included)'),
+		part('s-c', 'c', '**User:**\n\nask C')
+	];
+
+	it('wraps every session once, oldest first, in the previous-sessions block', () => {
+		const { prompt, file } = followupPrompt(src, { markdown: 'whole', sessions: chain }, 'Go on.');
+		expect(file).toBeNull();
+		expect(prompt).toBe(
+			[
+				'<cctui-previous-sessions>',
+				'<cctui-previous-conversation n="1" session="first &quot;run&quot;" id="s-a">',
+				'**User:**\n\nask A',
+				'</cctui-previous-conversation>',
+				'<cctui-previous-conversation n="2" id="s-x">',
+				'(session s-x could not be included)',
+				'</cctui-previous-conversation>',
+				'<cctui-previous-conversation n="3" session="c" id="s-c">',
+				'**User:**\n\nask C',
+				'</cctui-previous-conversation>',
+				'</cctui-previous-sessions>',
+				'',
+				'Go on.'
+			].join('\n')
+		);
+		expect(prompt).not.toContain('whole');
+		expect(prompt.match(/ask A/g)).toHaveLength(1);
+		const { blocks, prose } = splitInjected(prompt);
+		expect(blocks.map((b) => [b.kind, b.tag])).toEqual([['previous-conversation', 'cctui-previous-sessions']]);
+		expect(splitInjected(blocks[0].body).blocks.map((b) => b.attrs.id)).toEqual(['s-a', 's-x', 's-c']);
+		expect(prose).toBe('Go on.');
+	});
+
+	it('keeps the single-block shape when the chain is just the parent', () => {
+		const lone = followupPrompt(src, { markdown: 'whole', sessions: [part('s1', 'n', 'only')] });
+		expect(lone.prompt).toBe(followupPrompt(src, 'only').prompt);
+		expect(followupPrompt(src, { markdown: 'legacy' }).prompt).toBe(followupPrompt(src, 'legacy').prompt);
+	});
+
+	it('moves an oversized chain into the bootstrap file and leaves pointers inline', () => {
+		const big = 'x'.repeat(INLINE_BRIEF_MAX_BYTES);
+		const sessions = [part('s-a', 'a', big), part('s-b', 'b', 'tail')];
+		const { prompt, file } = followupPrompt(src, { markdown: '', sessions });
+		expect(prompt).not.toContain(big);
+		expect(prompt.startsWith('<cctui-previous-sessions>\n<cctui-previous-conversation n="1" session="a" id="s-a">\n')).toBe(true);
+		expect(prompt).toContain(`The transcripts are in the attached file ${BRIEF_FILE_NAME}. Read it first.`);
+		expect(prompt.endsWith('</cctui-previous-sessions>\n\nContinue from this.')).toBe(true);
+		expect(file).toContain(big);
+		expect(file).toContain('<cctui-previous-conversation n="2" session="b" id="s-b">\ntail\n');
+		expect(file?.endsWith('</cctui-previous-sessions>\n')).toBe(true);
 	});
 });
 
@@ -216,6 +280,29 @@ describe('launchFollowup', () => {
 		);
 		expect(d.awaitSpawn).toHaveBeenCalledWith('c1', 'new');
 		expect(d.archive).toHaveBeenCalledWith('src');
+	});
+
+	it('embeds the whole chain the brief returns', async () => {
+		const sessions = ['s-a', 'src'].map((id) => ({
+			id,
+			name: id,
+			markdown: `body of ${id}`,
+			turns: 1,
+			omitted: 0,
+			truncated: false
+		}));
+		const spawn = vi.fn<FollowupLaunchDeps['spawn']>(async () => ({
+			command_id: 'c1',
+			status: 'dispatched',
+			session_id: 'new'
+		}));
+		const d = deps({ brief: vi.fn(async () => ({ markdown: 'whole', sessions })), spawn });
+		await launchFollowup(source, 'next step', d);
+		const prompt = spawn.mock.calls[0][0].prompt ?? '';
+		expect(prompt.startsWith('<cctui-previous-sessions>\n')).toBe(true);
+		expect(prompt).toContain('body of s-a');
+		expect(prompt).toContain('body of src');
+		expect(prompt.endsWith('</cctui-previous-sessions>\n\nnext step')).toBe(true);
 	});
 
 	it('does not archive when the spawn fails', async () => {

@@ -7,6 +7,7 @@ import type { MachineLiveness } from '@bindings/MachineLiveness';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { SessionListResponse } from '@bindings/SessionListResponse';
 import type { SessionParentStub } from '@bindings/SessionParentStub';
+import type { SearchTotal } from '@bindings/SearchTotal';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
 import { normalizeDir, spawnSlotDirty, type SpawnSlotPayload } from '#lib/drafts.ts';
 import { NO_ACCOUNT } from '#lib/components/organisms/spawn/options.ts';
@@ -106,6 +107,14 @@ export const PAGE = 50;
 // The server pages by `next_cursor`; `offset` only serves a server that sends none.
 export type SearchPageParam = { offset: number; cursor: string | null };
 export const FIRST_PAGE: SearchPageParam = { offset: 0, cursor: null };
+
+/** The search header's "N matches" / "N+ matches", or null with no server count. */
+export function matchCountLabel(total: SearchTotal | null | undefined): string | null {
+	if (!total) return null;
+	if (total.at_least) return m.sessions_search_match_count_more({ count: total.count });
+	if (total.count === 1) return m.sessions_search_match_one();
+	return m.sessions_search_match_count({ count: total.count });
+}
 
 export function nextSearchPage(
 	last: SessionListResponse,
