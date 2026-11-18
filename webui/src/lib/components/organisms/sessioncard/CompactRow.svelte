@@ -93,7 +93,12 @@
 
 	<div class="l1">
 		{#if view.child}<span class="arrow" aria-hidden="true">↳</span>{/if}
-		<span class="slot"><SessionDot session={s} livenessClass={view.livenessClass} now={view.now} /></span>
+		<span
+			class="slot"
+			class:unread={view.unreadCount > 0}
+			title={view.unreadCount > 0 ? m.sessions_unread_title({ count: view.unreadCount }) : undefined}
+			><SessionDot session={s} livenessClass={view.livenessClass} now={view.now} /></span
+		>
 		<span class="title" data-journey="title">{view.title}</span>
 		{#if view.end}<span class="end-badge" class:end-muted={view.end.muted} title={sessionEndTitle(view.end)}
 				><Badge tone={view.end.tone} size="xs">{view.end.badge}</Badge></span
@@ -229,9 +234,12 @@
 		border: 1px solid color-mix(in srgb, var(--info) 60%, transparent);
 		color: var(--info);
 	}
-	.sub:hover,
-	.sub[aria-expanded='true'] {
+	.sub:hover {
 		background: color-mix(in srgb, var(--info) 16%, transparent);
+	}
+	.sub[aria-expanded='true'] {
+		background: color-mix(in srgb, var(--info) 30%, transparent);
+		color: var(--text);
 	}
 	.labels {
 		display: inline-flex;
@@ -373,6 +381,21 @@
 	}
 	.stale {
 		opacity: 0.6;
+	}
+	.slot.unread {
+		position: relative;
+	}
+	.slot.unread::before {
+		content: '';
+		position: absolute;
+		top: 50%;
+		left: 50%;
+		width: 15px;
+		height: 15px;
+		transform: translate(-50%, -50%);
+		border-radius: var(--r-pill);
+		border: 1.5px solid var(--accent);
+		pointer-events: none;
 	}
 	.child .l1 {
 		padding-left: min(calc((var(--agent-depth, 1) - 1) * var(--sp-3)), 2.5rem);

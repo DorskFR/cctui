@@ -88,6 +88,13 @@ describe('SessionCard modes', () => {
 		expect(el.querySelector('.m1 .model')?.textContent).toContain('opus-4-8');
 	});
 
+	it('marks unread messages with a ring on the status dot, not a count', () => {
+		const el = render({ variant: 'row', unreadCount: 4 });
+		const slot = el.querySelector('.l1 .slot.unread');
+		expect(slot?.getAttribute('title')).toContain('4');
+		expect(el.querySelector('.m1')?.textContent).not.toContain('4');
+	});
+
 	it('hides the machine when the section header already names it', () => {
 		const el = render({ variant: 'row', showMachine: false });
 		expect(el.querySelector('.l2 .machine')).toBeNull();
