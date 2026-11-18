@@ -123,7 +123,7 @@ kind: WorkerProfile
 metadata:
   name: example
 spec:
-  image: ghcr.io/dorskfr/cctui-worker:latest
+  image: registry.example.com/acme/cctui-worker-agents:latest  # built FROM cctui-worker
   posture: nonroot
 ```
 

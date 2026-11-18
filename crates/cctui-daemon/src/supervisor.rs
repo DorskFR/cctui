@@ -565,7 +565,7 @@ impl Supervisor {
 
     async fn connect(&self) -> anyhow::Result<WsStream> {
         let url = self.client.daemon_ws_url();
-        tracing::info!(%url, "connecting to daemon WS");
+        tracing::info!(origin = crate::client::url_origin(&url), "connecting to daemon WS");
         let request = crate::client::daemon_ws_request(&url, &self.machine_key)?;
         let connect = tokio_tungstenite::connect_async(request);
         match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {

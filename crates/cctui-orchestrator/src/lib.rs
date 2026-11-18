@@ -258,9 +258,10 @@ pub struct WorkerProfileSpec {
     pub posture: Option<Posture>,
 
     /// Rule of Two exposure of the agent this profile runs. An unattended agent
-    /// holding all three needs a [`human_gate`](Self::human_gate); admission
-    /// refuses the profile's pods otherwise. Unset admits with an "exposure
-    /// undeclared" warning.
+    /// holding all three needs a [`human_gate`](Self::human_gate) when the
+    /// orchestrator requires one (`CCTUI_ORCH_REQUIRE_HUMAN_GATE`); admission
+    /// then refuses the profile's pods otherwise. Unset admits with an
+    /// "exposure undeclared" warning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exposure: Option<Exposure>,
 

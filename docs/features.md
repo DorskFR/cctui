@@ -108,7 +108,7 @@ feature).
 | `passkeys` | | Passkey enrollment and passkey login, including the login screen's unauthenticated `/api/v1/auth/passkey/config` probe. |
 | `self_update` | | Server self-update, daemon self-update (`/manifest/daemon`, `/daemon/binary/{target}`), harness auto-update, update hooks, the release probe and changelog. Off, the harness report and update-hook flag a heartbeat carries are ignored and no harness policy is sent. |
 | `account_sharing` | | Account pools and sharing accounts or resources with other users. |
-| `observability` | | Langfuse cost views and the browser OTLP relay. |
+| `observability` | | Langfuse cost views, the browser OTLP relay, and red-team run results (`POST /redteam/runs`, `GET /admin/redteam`). |
 | `library` | | Saved prompts and the skill registry, and the boot sweep of orphaned skill files. |
 | `organising` | | Labels, bookmarks, pinned sessions and pinned messages, and the session emoji picker (`CCTUI_EMOJI_ENDPOINT`, which sends session titles to an external model). Off, a spawn or draft ignores the labels it carries, session start claims no label intent and the label-intent sweep does not run. |
 | `service_tokens` | | Account service tokens (`/accounts/{id}/service-tokens`): long-lived gateway credentials not tied to a session. Off, the gateway refuses a service token exactly as it refuses an unknown one, so tokens minted earlier stop working. |

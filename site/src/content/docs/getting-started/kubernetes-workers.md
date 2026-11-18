@@ -16,7 +16,7 @@ The Kubernetes dispatcher is the one that ships today. Docker and Apple-containe
 | `cctui-dispatcher-kube` | `ghcr.io/dorskfr/cctui-dispatcher-kube` | Enrolled dispatcher: connects out to the server, creates Jobs, reports status and exit diagnosis |
 | `WorkerProfile` | CRD `cctui.dev/v1alpha1`, `deploy/workerprofile-crd.yaml` | Operator-authored pod shape: image, command, resources, env, mounts, guard settings |
 | `cctui-orchestrator` | `ghcr.io/dorskfr/cctui-orchestrator` | Mutating webhook that injects the sandbox envelope, and a validating webhook that rejects unsafe pods and requests |
-| worker image | `ghcr.io/dorskfr/cctui-worker` (`deploy/worker.Dockerfile`) | Implements the worker contract v1; derive your own image `FROM` it |
+| worker image | `ghcr.io/dorskfr/cctui-worker` (`deploy/worker.Dockerfile`) | Barebone base implementing the worker contract v1, with no agent installed; build your worker `FROM` it with the agents you run (sample: `deploy/examples/worker-agents`) |
 | `cctui-guard-proxy` | sidecar | Egress policy and phantom-token credential injection |
 
 ## Steps
@@ -32,7 +32,7 @@ The Kubernetes dispatcher is the one that ships today. Docker and Apple-containe
      name: acme-default
      namespace: cctui-workers
    spec:
-     image: ghcr.io/dorskfr/cctui-worker:latest
+     image: registry.example.com/acme/cctui-worker-agents:latest  # built FROM cctui-worker
      resources:
        limits: { cpu: "2", memory: 4Gi }
      env:
