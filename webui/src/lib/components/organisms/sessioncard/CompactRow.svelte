@@ -49,7 +49,7 @@
 {#snippet tokens()}
 	{#if !view.draft && usage.total > 0}
 		<span class="tokens" title="Σ {usage.total.toLocaleString()}"
-			>{compact(usage.total)}<span class="prov"><AdapterIcon adapter={s.adapter_id} size={12} /></span></span
+			>{compact(usage.total)}<span class="prov"><AdapterIcon adapter={s.adapter_id} size={14} /></span></span
 		>
 	{/if}
 {/snippet}
@@ -97,7 +97,7 @@
 					filled={s.pinned}
 					variant="ghost"
 					inline
-					size={12}
+					size={14}
 					label={s.pinned ? m.sessions_unpin_aria() : m.sessions_pin_aria()}
 					title={s.pinned ? m.sessions_unpin_title() : m.sessions_pin_title()}
 					pressed={s.pinned}
@@ -358,7 +358,7 @@
 	}
 	.prov {
 		display: inline-flex;
-		width: 12px;
+		width: 14px;
 		justify-content: center;
 	}
 

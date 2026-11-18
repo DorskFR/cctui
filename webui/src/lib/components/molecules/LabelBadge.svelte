@@ -121,7 +121,7 @@
 					}}
 					onclose={() => onOpenChange?.(false)}
 				>
-					{#snippet trigger()}<Icon name="tag" />{/snippet}
+					{#snippet trigger()}<Icon name="tag" size={14} />{/snippet}
 					<LabelMenu
 						bind:this={menu}
 						labels={allLabels}
