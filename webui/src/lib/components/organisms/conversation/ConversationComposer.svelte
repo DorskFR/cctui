@@ -22,6 +22,7 @@
 	import ScheduleCustomModal from './ScheduleCustomModal.svelte';
 	import ScheduledMessages from './ScheduledMessages.svelte';
 	import RedactedChips from './RedactedChips.svelte';
+	import SpeechCapsHint from './SpeechCapsHint.svelte';
 	import { wrapRedacted } from '#lib/redactTag.ts';
 	import SendButton from './SendButton.svelte';
 	import VoiceControls from './VoiceControls.svelte';
@@ -245,7 +246,7 @@
 		const source = session;
 		try {
 			const out = await launchFollowup(source, text, {
-				brief: (id) => endpoints.brief(id, BRIEF_FETCH_MAX_BYTES),
+				brief: (id) => endpoints.brief(id, BRIEF_FETCH_MAX_BYTES, { chain: true }),
 				spawn: (body, files) => actions.spawn(body, files),
 				awaitSpawn: async (commandId, sessionId) => {
 					let found = sessionId;
@@ -469,6 +470,7 @@
 		{/if}
 		{#if !folded}
 			<RedactedChips text={input} bind:revealed />
+			<SpeechCapsHint />
 		{/if}
 		{#snippet leadingTools()}
 			{#if supportsAttachments}

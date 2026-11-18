@@ -76,9 +76,42 @@ pub(super) fn register(r: Routes) -> Routes {
         )
         .add(
             &[GET, Method::PUT],
+            "/admin/instance/event-retention",
+            "Read or set how many days of events are kept (admin).",
+            get(routes::server_settings::get_event_retention)
+                .put(routes::server_settings::update_event_retention),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[GET, Method::PUT],
             "/admin/instance/upload-caps",
             "Read or set the per-upload file count and size caps (admin).",
             get(routes::server_settings::get_upload_caps).put(routes::server_settings::update_upload_caps),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[GET],
+            "/admin/storage",
+            "Database, per-session and tool-output sizes, and the tool-output lifecycle (admin).",
+            get(routes::storage_admin::overview),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[Method::PUT],
+            "/admin/storage/lifecycle",
+            "Set the tool-output lifecycle rules; none keeps everything (admin).",
+            put(routes::storage_admin::update_lifecycle),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[Method::POST],
+            "/admin/storage/lifecycle/preview",
+            "Estimate the rows and bytes a tool-output lifecycle rule set would free (admin).",
+            post(routes::storage_admin::preview_lifecycle),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
         )

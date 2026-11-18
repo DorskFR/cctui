@@ -578,7 +578,7 @@ pub struct SessionListItem {
     /// The gateway tool guard is lifted for this session.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tool_guard_bypass: bool,
-    /// The viewer hides this session's user or machine; only listed with `show_hidden`.
+    /// Always false: a hidden owner's sessions are left out. Kept on the wire for one release.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
 }
@@ -899,6 +899,18 @@ pub struct SessionListResponse {
     /// lie past `next_cursor`.
     #[serde(default)]
     pub partial: bool,
+    /// `/sessions/search` first page only: how many sessions match in all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub total: Option<SearchTotal>,
+}
+
+/// `at_least` when counting stopped at its cap or time budget, so more may match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SearchTotal {
+    pub count: u32,
+    pub at_least: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1269,6 +1281,23 @@ pub struct BriefResponse {
     pub turns: u32,
     pub omitted: u32,
     pub truncated: bool,
+    /// `?chain=1` only: the follow-up chain root first, ending with this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub sessions: Option<Vec<BriefSession>>,
+}
+
+/// One session of a follow-up chain brief. An ancestor the caller cannot read
+/// has no `name` and a one-line placeholder for `markdown`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct BriefSession {
+    pub id: String,
+    pub name: Option<String>,
+    pub markdown: String,
+    pub turns: u32,
+    pub omitted: u32,
+    pub truncated: bool,
 }
 
 /// Absolute paths on the session's machine, in upload order.
@@ -1475,6 +1504,163 @@ pub struct SkillIndexEntry {
     pub uploaded_by_machine: Option<Uuid>,
     pub uploaded_at: chrono::DateTime<chrono::Utc>,
     pub content_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct StorageOverview {
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub database_bytes: u64,
+    pub tables: Vec<StorageTableSize>,
+    pub images: StorageImages,
+    pub sample: Option<StorageSample>,
+    pub sample_error: Option<String>,
+    pub lifecycle: StorageLifecycleInfo,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct StorageTableSize {
+    pub name: String,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub total_bytes: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub table_bytes: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub index_bytes: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub toast_bytes: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub row_estimate: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct StorageImages {
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub blobs: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub image_bytes: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub table_bytes: u64,
+}
+
+/// Counts and bytes are already scaled by `100 / percent` of a block sample.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct StorageSample {
+    pub percent: f64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub rows_sampled: u64,
+    pub sessions: Vec<StorageSessionSize>,
+    pub tools: Vec<StorageToolSize>,
+    pub by_size: Vec<StorageBucket>,
+    pub by_age: Vec<StorageBucket>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct StorageSessionSize {
+    pub session_id: String,
+    pub name: Option<String>,
+    pub harness: Option<String>,
+    pub machine: Option<String>,
+    pub machine_kind: Option<String>,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub events: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub bytes: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub tool_output_bytes: u64,
+}
+
+/// `tool` is empty when the result's call was not found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct StorageToolSize {
+    pub tool: String,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub results: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub bytes: u64,
+}
+
+/// `key` is a stable band id such as `lt_1k` or `d1_7`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct StorageBucket {
+    pub key: String,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub results: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct StorageTrimRule {
+    pub enabled: bool,
+    pub after_days: u32,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub above_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct StorageDropRule {
+    pub enabled: bool,
+    pub after_days: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct StorageLifecycleRules {
+    #[serde(default)]
+    pub trim: Option<StorageTrimRule>,
+    #[serde(default)]
+    pub drop: Option<StorageDropRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct StorageLifecycleRun {
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub rows_scanned: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub rows_trimmed: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub rows_dropped: u64,
+    /// A row with the rewritten content already existed.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub rows_skipped: u64,
+    /// Stored payload bytes; the disk gets them back only after vacuum.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub bytes_freed: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct StorageLifecycleInfo {
+    pub rules: StorageLifecycleRules,
+    pub last_run: Option<StorageLifecycleRun>,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub bytes_freed_total: u64,
+}
+
+/// Rows are exact only at `percent` 100; bytes are always estimated from stored sizes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct StorageLifecyclePreview {
+    pub percent: f64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub rows_trimmed: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub rows_dropped: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub bytes_freed: u64,
 }
 
 #[cfg(test)]

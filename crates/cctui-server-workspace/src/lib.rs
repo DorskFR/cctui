@@ -71,6 +71,7 @@ mod soft_limit;
 mod spawn_labels;
 mod speech;
 mod state;
+mod storage_stats;
 mod store;
 mod transcript_md;
 mod turn_dedupe;
@@ -427,6 +428,7 @@ async fn start_background_tasks(state: &AppState) {
     if let Some(config) = image_blobs::backfill::Config::from_env() {
         tokio::spawn(image_blobs::backfill::task(state.pool.clone(), config));
     }
+    tokio::spawn(storage_stats::task(state.pool.clone()));
 
     // Off the startup path: every replica sweeps, and the scan is IO over a
     // shared volume.
@@ -1414,6 +1416,8 @@ mod tests {
             "PUT /admin/harness-autoupdate/{machine_id} Bearer Scope(Admin)",
             "POST /admin/harness-autoupdate/{machine_id}/restart Bearer Scope(Admin)",
             "PUT /admin/instance Bearer Scope(Admin)",
+            "GET /admin/instance/event-retention Bearer Scope(Admin)",
+            "PUT /admin/instance/event-retention Bearer Scope(Admin)",
             "GET /admin/instance/self-update Bearer Scope(Admin)",
             "PUT /admin/instance/self-update Bearer Scope(Admin)",
             "GET /admin/instance/spawn-defaults Bearer Scope(Admin)",
@@ -1439,6 +1443,9 @@ mod tests {
             "POST /admin/plugins/{id}/proxy-secret Bearer Scope(Admin)",
             "GET /admin/plugins/{id}/settings Bearer Scope(Admin)",
             "PUT /admin/plugins/{id}/settings Bearer Scope(Admin)",
+            "GET /admin/storage Bearer Scope(Admin)",
+            "PUT /admin/storage/lifecycle Bearer Scope(Admin)",
+            "POST /admin/storage/lifecycle/preview Bearer Scope(Admin)",
             "GET /admin/users Bearer Scope(Admin)",
             "POST /admin/users Bearer Scope(Admin)",
             "DELETE /admin/users/{id} Bearer Scope(Admin)",
