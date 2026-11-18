@@ -1,17 +1,23 @@
 <script lang="ts">
 	import type { SessionParentStub } from '@bindings/SessionParentStub';
+	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { Dot } from '@dorsk/tsumikit';
+	import SessionDot from '#lib/components/molecules/SessionDot.svelte';
+	import { livenessClassOf } from '#lib/components/organisms/sessioncard/view.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import { parentStubTitle } from './sessions.logic';
 
 	let {
 		parent,
+		session,
 		count,
 		open,
 		ontoggle,
 		onopenparent
 	}: {
 		parent: SessionParentStub;
+		/** The parent's full row when it is loaded: its dot gets the live tooltip. */
+		session?: SessionListItem;
 		count: number;
 		open: boolean;
 		ontoggle: () => void;
@@ -23,9 +29,15 @@
 </script>
 
 <div class="parent-group-header" data-parent-id={parent.id}>
-	<span class="slot" title={live ? m.sessions_parent_live() : m.sessions_status_archived()}
-		><Dot status={live ? 'active' : 'dead'} /></span
-	>
+	<span class="slot">
+		{#if session}
+			<SessionDot {session} livenessClass={livenessClassOf(session, false)} />
+		{:else}
+			<span title={live ? m.sessions_parent_live() : m.sessions_status_archived()}
+				><Dot status={live ? 'active' : 'dead'} /></span
+			>
+		{/if}
+	</span>
 	<button
 		type="button"
 		class="name"

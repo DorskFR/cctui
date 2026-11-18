@@ -35,6 +35,7 @@
 			{@const open = parentGroupOpen(sp.list.expanded, seg.parent.id, sp.searching)}
 			<ParentGroupHeader
 				parent={seg.parent}
+				session={sp.loadedById(seg.parent.id)}
 				count={seg.rows.length}
 				{open}
 				ontoggle={() => sp.list.toggleGroup(seg.parent.id, parentGroupKey(sp.searching))}

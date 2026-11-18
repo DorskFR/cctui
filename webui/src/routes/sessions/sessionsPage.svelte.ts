@@ -544,6 +544,8 @@ export class SessionsPage {
   // live view, on another page, etc.), fetched directly so a pasted link still
   // resolves. `spawned` marks an id handed over by a spawn that just finished,
   // whose row may not exist yet.
+  loadedById = (id: string): SessionListItem | undefined =>
+    this.#loaded.find((s) => s.id === id);
   openById = async (id: string, opts: { spawned?: boolean } = {}) => {
     const req = ++this.#openReq;
     const found = this.#loaded.find((s) => s.id === id);
