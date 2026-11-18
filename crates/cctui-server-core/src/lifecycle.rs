@@ -1,7 +1,7 @@
 //! Essential session registration and terminal-state persistence.
 use crate::bus::Bus;
 use crate::commands::FailedSpawnRow;
-use crate::live_sessions_predicate;
+use crate::{ended_signals, live_sessions_predicate};
 use cctui_proto::adapter::EndReason;
 use uuid::Uuid;
 
@@ -263,8 +263,9 @@ pub async fn persist_session_end(
     // still-recent heartbeat. Resume can revive the row.
     let flipped = sqlx::query(concat!(
         "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = $2, \
-                 end_detail = $3 \
-             WHERE id = $1 AND machine_uuid = $4 AND user_id = $5 AND ",
+                 end_detail = $3, ",
+        ended_signals!(),
+        " WHERE id = $1 AND machine_uuid = $4 AND user_id = $5 AND ",
         live_sessions_predicate!()
     ))
     .bind(local_id)

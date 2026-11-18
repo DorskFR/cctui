@@ -77,7 +77,7 @@ state*. Adding it is easy; removing it leaves **no stale rows**.
 
 - **`SessionChild { id, href, kind: "pr" }`** (`cctui-proto/src/adapter.rs`) +
   the **classifier** PR status cache (`cctui-proto/src/classifier.rs`): sessions
-  already link PRs and bucket into *Ready for review*. The connector can enrich
+  already link PRs, and an idle one whose PR needs attention lands in *Needs input*. The connector can enrich
   that cache; if GitHub is uninstalled the link is just opaque core metadata —
   harmless.
 - **Trigger stub** `POST /api/v1/triggers/{kind}` (501 today; migration
@@ -163,7 +163,7 @@ an MVP spike. The webui and agents never see the credential.
 
 **Classifier tie-in (free win):** the connector publishes check/review state into
 the PR status cache the classifier already reads, so an agent session that opened
-PR #N flips to *Ready for review* / *CI red* in the **Sessions** view with no
+PR #N lands in *Needs input* in the **Sessions** view once it goes idle, with no
 extra UI.
 
 ### 6.2 Component B — fast diff viewer ("review efficiently") — superseded

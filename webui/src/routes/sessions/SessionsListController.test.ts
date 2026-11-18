@@ -79,8 +79,7 @@ describe('SessionsListController — buckets', () => {
 		const byKey = Object.fromEntries(groups.map((g) => [g.key, g.sessions.map((s) => s.id)]));
 		expect(byKey.pinned).toEqual(['p']);
 		expect(byKey.working).toEqual(['w']);
-		expect(byKey.done).toEqual(['d']);
-		expect(byKey.review).toEqual(['i']);
+		expect([...byKey.done].sort()).toEqual(['d', 'i']);
 		expect(byKey.blocked).toEqual([]);
 	});
 
@@ -88,7 +87,7 @@ describe('SessionsListController — buckets', () => {
 		const { ctl, setItems, setSections } = make();
 		setItems([session({ id: 'p', pinned: true }), session({ id: 'w', bucket: 'working' })]);
 		setSections(new Set<Section>(['live']));
-		expect(ctl.groups.map((g) => g.key)).toEqual(['blocked', 'review', 'working', 'done']);
+		expect(ctl.groups.map((g) => g.key)).toEqual(['blocked', 'working', 'done']);
 		expect(ctl.groups.flatMap((g) => g.sessions.map((x) => x.id))).toEqual(['w']);
 	});
 

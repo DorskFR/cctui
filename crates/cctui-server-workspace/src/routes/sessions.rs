@@ -211,10 +211,10 @@ pub fn resolve_status_liveness(
     )
 }
 
-/// Classify a session into its bucket from the persisted signals. `children`
-/// are the session's linked-PR references (`sessions.children`); the `Review`
-/// bucket arises when one of them has an OPEN PR awaiting attention per the
-/// `pr_cache` the GitHub connector maintains (empty cache degrades to no Review).
+/// Classify a live session into its bucket from the persisted signals.
+/// `children` are the session's linked-PR references (`sessions.children`): an
+/// idle session is blocked while one of them is an OPEN PR awaiting attention
+/// per the `pr_cache` the GitHub connector maintains.
 pub fn bucket_from_signals(
     tempo: Option<&str>,
     agent_state: Option<&str>,
@@ -230,6 +230,34 @@ pub fn bucket_from_signals(
         children,
         q: None,
         soft_limit_blocked,
+        ended: false,
+        stalled: false,
+    };
+    classify(&input, pr_cache)
+}
+
+/// The bucket a listed row shows under: an ended row is Completed, and one
+/// that reads as Working without a recent heartbeat is stalled.
+fn listed_bucket(
+    row: &SignalRow,
+    last_heartbeat: Option<DateTime<Utc>>,
+    children: &[SessionChild],
+    pr_cache: &HashMap<String, PrStatus<'_>>,
+) -> Bucket {
+    let running = SessionRowStatus::parse(&row.status)
+        .is_some_and(|status| SessionRowStatus::RUNNING.contains(&status));
+    let quiet = last_heartbeat.is_some_and(|at| {
+        (Utc::now() - at).num_seconds() > cctui_proto::classifier::STALE_WORKING_AFTER_SECS
+    });
+    let input = ClassifyInput {
+        tempo: row.tempo.as_deref(),
+        state: row.agent_state.as_deref(),
+        activity: row.activity.as_deref(),
+        children,
+        q: None,
+        soft_limit_blocked: row.soft_limit_reason.as_deref(),
+        ended: row.ended_at.is_some() || matches!(row.status.as_str(), "ended" | "failed"),
+        stalled: running && quiet,
     };
     classify(&input, pr_cache)
 }
@@ -641,6 +669,7 @@ type TokenTotalsRow = (String, Option<String>, Option<i64>, Option<i64>, Option<
 #[derive(Debug, Default, sqlx::FromRow)]
 struct SignalRow {
     id: String,
+    status: String,
     tempo: Option<String>,
     agent_state: Option<String>,
     activity: Option<String>,
@@ -666,7 +695,7 @@ struct SignalRow {
 }
 
 const SIGNAL_SQL: &str = concat!(
-    "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
+    "SELECT id, status, tempo, agent_state, activity, session_name, model, effort, pinned, \
             soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, \
             children, end_reason, end_detail, ended_at, permission_mode, archived_by, \
             keepalive_json, last_keepalive_at, \
@@ -1101,18 +1130,12 @@ fn apply_signals(
     pr_cache: &HashMap<String, PrStatus<'_>>,
     archive_after_secs: u64,
 ) {
+    let children: Vec<SessionChild> =
+        serde_json::from_value(row.children.clone()).unwrap_or_default();
+    let bucket = listed_bucket(&row, s.last_heartbeat, &children, pr_cache);
     s.end_reason = row.end_reason.as_deref().map(SessionEndReason::parse);
     s.end_detail = row.end_detail;
     s.ended_at = row.ended_at;
-    let children: Vec<SessionChild> = serde_json::from_value(row.children).unwrap_or_default();
-    let bucket = bucket_from_signals(
-        row.tempo.as_deref(),
-        row.agent_state.as_deref(),
-        row.activity.as_deref(),
-        row.soft_limit_reason.as_deref(),
-        &children,
-        pr_cache,
-    );
     s.pr_links = children.iter().filter(|c| c.kind == "pr").map(|c| c.href.clone()).collect();
     s.bucket = bucket;
     s.attention = attention_from_bucket(bucket);
@@ -7502,8 +7525,44 @@ mod tests {
         );
     }
 
+    fn listed(status: &str, tempo: &str, state: &str, heartbeat_age_secs: i64) -> Bucket {
+        let mut item = bare_session("s");
+        item.last_heartbeat = Some(Utc::now() - chrono::Duration::seconds(heartbeat_age_secs));
+        let mut ctx = super::EnrichContext::default();
+        ctx.signals.insert(
+            "s".into(),
+            super::SignalRow {
+                id: "s".into(),
+                status: status.into(),
+                tempo: Some(tempo.into()),
+                agent_state: Some(state.into()),
+                children: serde_json::json!([]),
+                ..Default::default()
+            },
+        );
+        super::enrich(vec![(ts(0), item)], ctx)[0].1.bucket
+    }
+
     #[test]
-    fn pr_children_open_review_lands_in_review_bucket() {
+    fn an_ended_row_is_listed_as_done_whatever_tempo_it_kept() {
+        assert_eq!(listed("ended", "active", "running", 5), Bucket::Done);
+        assert_eq!(listed("failed", "active", "adopted", 5), Bucket::Done);
+        assert_eq!(listed("active", "active", "running", 5), Bucket::Working);
+    }
+
+    #[test]
+    fn a_working_row_without_a_recent_heartbeat_is_listed_as_blocked() {
+        use cctui_proto::classifier::STALE_WORKING_AFTER_SECS;
+        let stale = STALE_WORKING_AFTER_SECS + 60;
+        assert_eq!(listed("active", "active", "adopted", stale), Bucket::Blocked);
+        assert_eq!(listed("inactive", "active", "working", stale), Bucket::Blocked);
+        assert_eq!(listed("active", "idle", "done", stale), Bucket::Done);
+        assert_eq!(listed("draft", "active", "working", stale), Bucket::Working);
+        assert_eq!(listed("ended", "active", "working", stale), Bucket::Done);
+    }
+
+    #[test]
+    fn an_idle_session_with_an_open_failing_pr_is_blocked() {
         use cctui_proto::classifier::{OwnedPrStatus, PrStatusCache};
         let children = [SessionChild {
             id: "1".into(),
@@ -7524,15 +7583,15 @@ mod tests {
         let snap = cache.snapshot();
         let map = PrStatusCache::borrow_map(&snap);
         assert_eq!(
-            bucket_from_signals(None, Some("working"), None, None, &children, &map),
-            Bucket::Review
+            bucket_from_signals(None, Some("idle"), None, None, &children, &map),
+            Bucket::Blocked
         );
         cache.remove("https://github.com/o/r/pull/1");
         let snap2 = cache.snapshot();
         let map2 = PrStatusCache::borrow_map(&snap2);
         assert_eq!(
-            bucket_from_signals(None, Some("working"), None, None, &children, &map2),
-            Bucket::Working
+            bucket_from_signals(None, Some("idle"), None, None, &children, &map2),
+            Bucket::Done
         );
     }
 

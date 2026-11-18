@@ -23,7 +23,7 @@ afterEach(() => {
 type Props = {
 	status: 'active' | 'inactive' | 'archived';
 	liveness: 'active' | 'stale' | 'dead';
-	bucket: 'working' | 'blocked' | 'review' | 'done';
+	bucket: 'working' | 'blocked' | 'done';
 	auto_archive_at?: string | null;
 	archived_by?: 'user' | 'automatic' | null;
 };
@@ -58,8 +58,8 @@ describe('AutoArchiveNotice', () => {
 		expect(onpin).toHaveBeenCalledOnce();
 	});
 
-	it('shows for review sessions too', () => {
-		expect(notice(render(idle({ bucket: 'review' })))).not.toBeNull();
+	it('stays silent for a session that needs input', () => {
+		expect(notice(render(idle({ bucket: 'blocked' })))).toBeNull();
 	});
 
 	it('stays silent while the session is working, even with a stale heartbeat', () => {

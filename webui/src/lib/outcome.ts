@@ -3,18 +3,17 @@ import type { OutcomeStatus } from '@bindings/OutcomeStatus';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { SessionOutcome } from '@bindings/SessionOutcome';
 
-/** A turn ending is not completion: an idle session lands in Completed only
- *  once its newest outcome is a `result`. */
+/** An idle session is Completed unless its newest outcome asks for the user:
+ *  a declared need for input, or a failure. */
 export function outcomeBucket(s: SessionListItem): Bucket {
 	const bucket = s.bucket ?? 'working';
 	if (bucket !== 'done') return bucket;
 	switch (s.latest_outcome?.status) {
-		case 'result':
-			return 'done';
 		case 'needs_input':
+		case 'failed':
 			return 'blocked';
 		default:
-			return 'review';
+			return 'done';
 	}
 }
 

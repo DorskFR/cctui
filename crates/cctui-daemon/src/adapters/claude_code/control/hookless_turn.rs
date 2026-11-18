@@ -1,5 +1,6 @@
-//! Turn ends of a worker without cctui's hooks: no `Stop` hook fires and the
-//! roster can stay busy after the turn, so the transcript decides.
+//! Turn ends the roster does not report: a worker without cctui's hooks fires
+//! no `Stop` hook, and a worker adopted by a restarted supervisor is listed as
+//! active whatever it does, so the transcript decides.
 
 use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::Path;
@@ -44,17 +45,32 @@ fn ended_turn_in(tail: &str) -> Option<String> {
     duration.flatten()
 }
 
-fn ended_turn(path: &Path, now: SystemTime) -> Option<String> {
-    let mut file = std::fs::File::open(path).ok()?;
-    let meta = file.metadata().ok()?;
-    let quiet = meta.modified().ok().and_then(|m| now.duration_since(m).ok());
-    if quiet.is_none_or(|q| q < QUIET) {
+/// The transcript as last read, so an unchanged file is not read again.
+pub(super) struct TranscriptRead {
+    modified: SystemTime,
+    len: u64,
+    turn: Option<String>,
+}
+
+fn ended_turn(path: &Path, now: SystemTime, last: &mut Option<TranscriptRead>) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?;
+    if now.duration_since(modified).ok().is_none_or(|q| q < QUIET) {
         return None;
     }
+    if let Some(read) = last
+        && read.modified == modified
+        && read.len == meta.len()
+    {
+        return read.turn.clone();
+    }
+    let mut file = std::fs::File::open(path).ok()?;
     file.seek(SeekFrom::Start(meta.len().saturating_sub(TAIL_BYTES))).ok()?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).ok()?;
-    ended_turn_in(&String::from_utf8_lossy(&bytes))
+    let turn = ended_turn_in(&String::from_utf8_lossy(&bytes));
+    *last = Some(TranscriptRead { modified, len: meta.len(), turn: turn.clone() });
+    turn
 }
 
 /// What the classifier would bucket as Working.
@@ -65,25 +81,29 @@ fn reads_busy(job: &LiveSnapshot) -> bool {
 }
 
 impl Driver {
-    /// Whether `job` reads busy only because its hooks never loaded: its
-    /// transcript shows the turn ended. Signals each such turn end once.
-    pub(super) async fn hookless_turn_ended(&mut self, job: &LiveSnapshot, local_id: &str) -> bool {
-        if !reads_busy(job)
-            || self.lanes.is_busy(local_id)
-            || !super::super::canary::hooks_missing(local_id)
-        {
+    /// Whether `job` reads busy though its transcript shows the turn ended.
+    /// Signals each turn end of a hookless worker once, busy or not.
+    pub(super) async fn transcript_turn_ended(
+        &mut self,
+        job: &LiveSnapshot,
+        local_id: &str,
+    ) -> bool {
+        let hookless = super::super::canary::hooks_missing(local_id);
+        let adopted = job.state.as_deref() == Some("adopted") && reads_busy(job);
+        if !(hookless || adopted) || self.lanes.is_busy(local_id) {
             return false;
         }
         let Some(path) = self.transcript_locations.get(&job.short).map(|l| l.path.clone()) else {
             return false;
         };
-        let Some(turn) = ended_turn(&path, SystemTime::now()) else { return false };
-        if self.hookless_turn_ends.get(local_id) != Some(&turn) {
+        let last = self.transcript_reads.entry(local_id.to_owned()).or_default();
+        let Some(turn) = ended_turn(&path, SystemTime::now(), last) else { return false };
+        if hookless && self.hookless_turn_ends.get(local_id) != Some(&turn) {
             tracing::info!(%local_id, short = %job.short, %turn, "turn end of a hookless worker read from its transcript");
             self.hookless_turn_ends.insert(local_id.to_owned(), turn);
             crate::adapters::turn_end::emit(&self.events, local_id).await;
         }
-        true
+        reads_busy(job)
     }
 }
 
@@ -144,9 +164,27 @@ mod tests {
         let path = dir.path().join("t.jsonl");
         std::fs::write(&path, tail(&[USER, END])).unwrap();
         let written = std::fs::metadata(&path).unwrap().modified().unwrap();
-        assert_eq!(ended_turn(&path, written), None);
-        assert_eq!(ended_turn(&path, written + QUIET).as_deref(), Some("a2"));
-        assert_eq!(ended_turn(&dir.path().join("missing.jsonl"), written + QUIET), None);
+        let mut last = None;
+        assert_eq!(ended_turn(&path, written, &mut last), None);
+        assert!(last.is_none(), "a transcript still settling is read again");
+        assert_eq!(ended_turn(&path, written + QUIET, &mut last).as_deref(), Some("a2"));
+        assert_eq!(ended_turn(&dir.path().join("missing.jsonl"), written + QUIET, &mut None), None);
+    }
+
+    #[test]
+    fn an_unchanged_transcript_is_not_read_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        std::fs::write(&path, tail(&[USER, END])).unwrap();
+        let written = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let mut last = None;
+        assert_eq!(ended_turn(&path, written + QUIET, &mut last).as_deref(), Some("a2"));
+        last.as_mut().unwrap().turn = Some("cached".to_owned());
+        assert_eq!(ended_turn(&path, written + QUIET, &mut last).as_deref(), Some("cached"));
+
+        std::fs::write(&path, tail(&[USER, END, USER])).unwrap();
+        let rewritten = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(ended_turn(&path, rewritten + QUIET, &mut last), None, "a grown file is read");
     }
 
     fn job(tempo: &str, state: &str) -> LiveSnapshot {
@@ -200,5 +238,54 @@ mod tests {
 
         d.apply_snapshot(vec![snap("f00d0001", "working", None)]).await;
         assert!(statuses(&mut rx).is_empty(), "the recovered turn end is reported once");
+    }
+
+    fn settled_transcript(d: &Driver, short: &str, lines: &[&str]) -> (String, std::path::PathBuf) {
+        use super::super::test_support::write_main_transcript;
+        let local_id = write_main_transcript(d, short, lines);
+        let path =
+            super::super::transcript::transcript_path(&d.cfg.projects_root, "/tmp", &local_id);
+        let quiet = SystemTime::now() - QUIET * 2;
+        std::fs::File::options().append(true).open(&path).unwrap().set_modified(quiet).unwrap();
+        (local_id, path)
+    }
+
+    #[tokio::test]
+    async fn a_hookless_worker_the_roster_reads_idle_still_signals_its_turn_end() {
+        use super::super::test_support::{driver, snap};
+        let (mut d, _rx) = driver();
+        let result = r#"{"type":"assistant","uuid":"a9","isSidechain":false,"message":{"stop_reason":"end_turn","content":[{"type":"text","text":"result: x"}]}}"#;
+        let (local_id, _) = settled_transcript(&d, "f00d0002", &[USER, result]);
+        super::super::super::canary::flag_hooks_missing(&local_id);
+
+        let mut idle = snap("f00d0002", "done", None);
+        idle.tempo = Some("idle".to_owned());
+        d.apply_snapshot(vec![idle]).await;
+        assert_eq!(
+            d.hookless_turn_ends.get(&local_id).map(String::as_str),
+            Some("a9"),
+            "one snapshot is enough"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_adopted_worker_whose_turn_ended_leaves_working() {
+        use super::super::test_support::{driver, snap};
+        let (mut d, mut rx) = driver();
+        let (_, path) = settled_transcript(&d, "f00d0003", &[USER, END, DURATION]);
+
+        d.apply_snapshot(vec![snap("f00d0003", "adopted", None)]).await;
+        assert_eq!(statuses(&mut rx), [(Some("idle".to_owned()), Some("done".to_owned()))]);
+        assert!(d.hookless_turn_ends.is_empty(), "its Stop hook signals the turn end");
+
+        std::fs::write(&path, tail(&[USER, END, DURATION, USER, TOOL])).unwrap();
+        let quiet = SystemTime::now() - QUIET * 2;
+        std::fs::File::options().append(true).open(&path).unwrap().set_modified(quiet).unwrap();
+        d.apply_snapshot(vec![snap("f00d0003", "adopted", None)]).await;
+        assert_eq!(
+            statuses(&mut rx),
+            [(Some("active".to_owned()), Some("adopted".to_owned()))],
+            "a turn in flight is working"
+        );
     }
 }

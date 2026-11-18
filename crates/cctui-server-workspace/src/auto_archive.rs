@@ -95,7 +95,7 @@ fn should_archive(
         &[],
         &HashMap::new(),
     );
-    bucket == Bucket::Done
+    bucket == Bucket::Done && cctui_proto::classifier::reports_finished(agent_state, activity)
 }
 
 type SignalRow = (String, Option<String>, Option<String>, Option<String>, Option<String>);
@@ -228,6 +228,7 @@ mod tests {
     #[test]
     fn keeps_working_blocked_and_failed_sessions() {
         assert!(!should_archive(None, None, None, None));
+        assert!(!should_archive(Some("idle"), Some("idle"), None, None));
         assert!(!should_archive(Some("active"), Some("working"), None, None));
         assert!(!should_archive(Some("blocked"), None, None, None));
         assert!(!should_archive(None, Some("stopped"), None, Some("locked")));

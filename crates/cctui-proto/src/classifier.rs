@@ -1,11 +1,10 @@
 //! Port of the `claude agents` TUI's session classifier.
 //!
-//! Groups sessions into four buckets matching the upstream TUI:
-//! Working / Needs input / Ready for review / Completed.
+//! Groups sessions into three buckets: Working / Needs input / Completed.
 //!
 //! Two callers: the cctui TUI and the web UI. Both consume the same
 //! [`AdapterEvent::Status`] fields; this module is the single source of
-//! truth for how they map onto the four buckets.
+//! truth for how they map onto the buckets.
 
 use crate::adapter::SessionChild;
 use serde::{Deserialize, Serialize};
@@ -14,16 +13,18 @@ use std::sync::{Arc, RwLock};
 #[cfg(feature = "ts")]
 use ts_rs::TS;
 
-/// The four session buckets clients group on. Serialized `snake_case`
-/// (`working` / `blocked` / `review` / `done`) and shared verbatim by the
-/// TUI and web UI as the on-wire grouping signal.
+/// The session buckets clients group on.
+///
+/// Serialized `snake_case` (`working` / `blocked` / `done`) and shared verbatim
+/// by the TUI and web UI as the on-wire grouping signal. `review` is what older
+/// servers sent for a session whose PR needs attention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Bucket {
     Working,
+    #[serde(alias = "review")]
     Blocked,
-    Review,
     Done,
 }
 
@@ -34,7 +35,6 @@ impl Bucket {
         match self {
             Self::Working => "Working",
             Self::Blocked => "Needs input",
-            Self::Review => "Ready for review",
             Self::Done => "Completed",
         }
     }
@@ -60,7 +60,15 @@ pub struct ClassifyInput<'a> {
     /// When set the session is unconditionally [`Bucket::Blocked`] (needs the
     /// human to continue on another account); `None` means no soft-limit block.
     pub soft_limit_blocked: Option<&'a str>,
+    /// The row is `ended` or `failed`: Completed whatever signal it kept.
+    pub ended: bool,
+    /// No heartbeat for [`STALE_WORKING_AFTER_SECS`]: a session that would
+    /// read as Working is stuck instead.
+    pub stalled: bool,
 }
+
+/// Heartbeat age past which a Working session counts as stalled.
+pub const STALE_WORKING_AFTER_SECS: i64 = 30 * 60;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PrStatus<'a> {
@@ -105,7 +113,7 @@ impl OwnedPrStatus {
 ///
 /// The GitHub connector pushes check/review state in; the classifier reads it.
 /// Core never depends on `cctui-github`. Without GitHub the cache stays empty
-/// and the `Review` bucket never arises.
+/// and no session is blocked on its PR.
 #[derive(Debug, Clone, Default)]
 pub struct PrStatusCache {
     inner: Arc<RwLock<HashMap<String, OwnedPrStatus>>>,
@@ -168,29 +176,38 @@ fn is_terminal(state: Option<&str>) -> bool {
     matches!(state, Some("done" | "stopped" | "killed" | "failed"))
 }
 
-/// Apply the classifier. Equivalent (with `q: None`) to:
+/// Whether the agent itself reported the turn over: a terminal state or an
+/// activity verdict. A row that merely stopped reporting does not count.
+#[must_use]
+pub fn reports_finished(state: Option<&str>, activity: Option<&str>) -> bool {
+    is_terminal(state) || matches!(activity, Some("failure" | "stopped" | "success"))
+}
+
+/// Apply the classifier. First match wins:
 ///
 /// ```text
-/// def classify(snap, pr_cache):
-///     if snap.tempo == "active":              return Working
-///     if snap.tempo == "blocked":             return Blocked
-///     if snap.state in {"stopped","killed"}:  return Done
-///     if snap.state in {"working","running"}: return Working
-///     if has_pr_attention(snap, pr_cache):    return Review
-///     return Done
+/// ended row                                → Done
+/// soft-limit block                         → Blocked
+/// q == busy                                → Working
+/// activity in {failure, stopped}           → Done
+/// q == waiting                             → Blocked
+/// idle with a PR needing attention         → Blocked
+/// activity == success                      → Done
+/// tempo == blocked                         → Blocked
+/// tempo == active, state working/running,
+///   or no signal at all                    → Working (Blocked when stalled)
+/// otherwise                                → Done
 /// ```
-///
-/// — but the full binary algorithm honours `q` (transient user activity)
-/// and `activity` (persisted user-stop / failure) too.
 #[must_use]
 pub fn classify(
     input: &ClassifyInput<'_>,
     pr_cache: &HashMap<String, PrStatus<'_>, impl std::hash::BuildHasher>,
 ) -> Bucket {
-    // A gateway soft-limit block is a hard, durable "needs input"
-    // signal: the worker is locked out of the account until a human switches
-    // it. It must win over every transient liveness reading (a worker still
-    // hammering Retry-After looks `busy`/`active`), so it is checked first.
+    if input.ended {
+        return Bucket::Done;
+    }
+    // A worker still hammering Retry-After behind a soft-limit 429 looks
+    // `busy`/`active`, so the block is checked before any liveness reading.
     if input.soft_limit_blocked.is_some() {
         return Bucket::Blocked;
     }
@@ -203,8 +220,11 @@ pub fn classify(
     if input.q == Some("waiting") {
         return Bucket::Blocked;
     }
-    if !is_terminal(input.state) && has_pr_attention(input.children, pr_cache) {
-        return Bucket::Review;
+    let working = input.tempo == Some("active")
+        || (matches!(input.state, Some("working" | "running"))
+            && input.tempo != Some("hibernated"));
+    if !working && !is_terminal(input.state) && has_pr_attention(input.children, pr_cache) {
+        return Bucket::Blocked;
     }
     if input.activity == Some("success") {
         return Bucket::Done;
@@ -212,13 +232,11 @@ pub fn classify(
     if input.tempo == Some("blocked") {
         return Bucket::Blocked;
     }
-    if input.tempo == Some("active") || matches!(input.state, Some("working" | "running")) {
-        return Bucket::Working;
+    let unreported = input.tempo.is_none() && input.state.is_none() && input.activity.is_none();
+    if working || unreported {
+        return if input.stalled { Bucket::Blocked } else { Bucket::Working };
     }
-    if is_terminal(input.state) {
-        return Bucket::Done;
-    }
-    Bucket::Working
+    Bucket::Done
 }
 
 fn has_pr_attention(
@@ -307,7 +325,75 @@ mod tests {
     }
 
     #[test]
-    fn pr_with_failed_check_is_review() {
+    fn an_ended_row_is_done_whatever_signal_it_kept() {
+        let mut s = snap();
+        s.ended = true;
+        s.tempo = Some("active");
+        s.state = Some("running");
+        assert_eq!(classify(&s, &HashMap::new()), Bucket::Done);
+        s.q = Some("busy");
+        s.soft_limit_blocked = Some("switch account");
+        assert_eq!(classify(&s, &HashMap::new()), Bucket::Done);
+        s.tempo = Some("blocked");
+        assert_eq!(classify(&s, &HashMap::new()), Bucket::Done);
+    }
+
+    #[test]
+    fn an_idle_row_without_a_terminal_state_is_done() {
+        let mut s = snap();
+        s.tempo = Some("idle");
+        s.state = Some("idle");
+        assert_eq!(classify(&s, &HashMap::new()), Bucket::Done);
+        s.state = Some("adopted");
+        assert_eq!(classify(&s, &HashMap::new()), Bucket::Done);
+    }
+
+    #[test]
+    fn a_row_that_never_reported_is_working_until_it_stalls() {
+        let mut s = snap();
+        assert_eq!(classify(&s, &HashMap::new()), Bucket::Working);
+        s.stalled = true;
+        assert_eq!(classify(&s, &HashMap::new()), Bucket::Blocked);
+    }
+
+    #[test]
+    fn a_stalled_working_row_is_blocked() {
+        let mut s = snap();
+        s.tempo = Some("active");
+        s.state = Some("adopted");
+        s.stalled = true;
+        assert_eq!(classify(&s, &HashMap::new()), Bucket::Blocked);
+        s.tempo = Some("idle");
+        s.state = Some("done");
+        assert_eq!(classify(&s, &HashMap::new()), Bucket::Done, "only Working stalls");
+    }
+
+    #[test]
+    fn a_hibernated_worker_that_died_mid_turn_is_not_working() {
+        let mut s = snap();
+        s.tempo = Some("hibernated");
+        s.state = Some("working");
+        assert_eq!(classify(&s, &HashMap::new()), Bucket::Done);
+        s.state = Some("stopped");
+        assert_eq!(classify(&s, &HashMap::new()), Bucket::Done);
+    }
+
+    #[test]
+    fn reports_finished_needs_a_terminal_state_or_a_verdict() {
+        assert!(reports_finished(Some("done"), None));
+        assert!(reports_finished(None, Some("success")));
+        assert!(!reports_finished(Some("idle"), None));
+        assert!(!reports_finished(None, None));
+    }
+
+    #[test]
+    fn the_retired_review_key_reads_as_blocked() {
+        assert_eq!(serde_json::from_str::<Bucket>("\"review\"").unwrap(), Bucket::Blocked);
+        assert_eq!(serde_json::to_string(&Bucket::Blocked).unwrap(), "\"blocked\"");
+    }
+
+    #[test]
+    fn an_idle_session_with_a_failed_pr_check_is_blocked() {
         let children = [SessionChild {
             id: "1".into(),
             href: "https://github.com/o/r/pull/1".into(),
@@ -325,13 +411,16 @@ mod tests {
             },
         );
         let mut s = snap();
-        s.state = Some("working");
+        s.tempo = Some("idle");
+        s.state = Some("idle");
         s.children = &children;
-        assert_eq!(classify(&s, &cache), Bucket::Review);
+        assert_eq!(classify(&s, &cache), Bucket::Blocked);
+        s.state = Some("working");
+        assert_eq!(classify(&s, &cache), Bucket::Working, "a running turn is not waiting");
     }
 
     #[test]
-    fn pr_approved_with_pending_is_not_review() {
+    fn pr_approved_with_pending_does_not_block() {
         let children = [SessionChild {
             id: "1".into(),
             href: "https://github.com/o/r/pull/1".into(),
@@ -351,12 +440,11 @@ mod tests {
         let mut s = snap();
         s.state = Some("done");
         s.children = &children;
-        // Not Review (warning + APPROVED), state=done → falls through to Done.
         assert_eq!(classify(&s, &cache), Bucket::Done);
     }
 
     #[test]
-    fn merged_pr_does_not_trigger_review() {
+    fn merged_pr_does_not_block() {
         let children = [SessionChild {
             id: "1".into(),
             href: "https://github.com/o/r/pull/1".into(),
@@ -388,16 +476,15 @@ mod tests {
             kind: "pr".into(),
         }];
         let mut s = snap();
-        s.state = Some("working");
+        s.state = Some("idle");
         s.children = &children;
 
         let cache = PrStatusCache::new();
 
-        // Degradation: GitHub absent / nothing published yet → empty snapshot,
-        // no Review bucket, behaviour identical to the feature-off baseline.
+        // GitHub absent or nothing published yet: an empty snapshot blocks nothing.
         let snap0 = cache.snapshot();
         assert!(snap0.is_empty());
-        assert_eq!(classify(&s, &PrStatusCache::borrow_map(&snap0)), Bucket::Working);
+        assert_eq!(classify(&s, &PrStatusCache::borrow_map(&snap0)), Bucket::Done);
 
         // Connector publishes a CI-red status for the PR this session opened.
         cache.upsert(
@@ -411,19 +498,18 @@ mod tests {
             },
         );
         let snap1 = cache.snapshot();
-        assert_eq!(classify(&s, &PrStatusCache::borrow_map(&snap1)), Bucket::Review);
+        assert_eq!(classify(&s, &PrStatusCache::borrow_map(&snap1)), Bucket::Blocked);
 
         // Connector drops the entry (e.g. PR merged & pruned) → back to baseline.
         cache.remove("https://github.com/o/r/pull/7");
         let snap2 = cache.snapshot();
-        assert_eq!(classify(&s, &PrStatusCache::borrow_map(&snap2)), Bucket::Working);
+        assert_eq!(classify(&s, &PrStatusCache::borrow_map(&snap2)), Bucket::Done);
     }
 
     #[test]
     fn bucket_labels() {
         assert_eq!(Bucket::Working.label(), "Working");
         assert_eq!(Bucket::Blocked.label(), "Needs input");
-        assert_eq!(Bucket::Review.label(), "Ready for review");
         assert_eq!(Bucket::Done.label(), "Completed");
     }
 }

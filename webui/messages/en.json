@@ -1415,7 +1415,6 @@
 	"sessions_bucket_blocked": "Needs input",
 	"sessions_bucket_done": "Completed",
 	"sessions_bucket_pinned": "Pinned",
-	"sessions_bucket_review": "Ready for review",
 	"sessions_bucket_working": "Working",
 	"sessions_cancel_selection": "Cancel selection",
 	"sessions_clear_filter": "Clear filter",

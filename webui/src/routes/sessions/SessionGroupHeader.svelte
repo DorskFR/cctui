@@ -34,8 +34,6 @@
 		switch (key) {
 			case 'blocked':
 				return 'var(--warn)';
-			case 'review':
-				return 'var(--accent)';
 			case 'working':
 				return 'var(--ok)';
 			case 'dispatched':

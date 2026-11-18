@@ -20,18 +20,23 @@ function session(over: Partial<SessionListItem>): SessionListItem {
 	return { id: 's-1', bucket: 'done', status: 'active', ...over } as SessionListItem;
 }
 
-describe('the Completed bucket keys on a result outcome', () => {
+describe('the bucket of an idle session follows its newest outcome', () => {
 	it('lands an idle session with a result in Completed', () => {
 		const s = session({ latest_outcome: outcome() });
 		expect(outcomeBucket(s)).toBe('done');
 		expect(groupOf(s)).toBe('done');
 	});
 
-	it('keeps an idle session that ended without an outcome out of Completed', () => {
-		expect(outcomeBucket(session({}))).toBe('review');
+	it('lands an idle session that ended without an outcome in Completed', () => {
+		expect(outcomeBucket(session({}))).toBe('done');
 		const inferred = outcome({ status: 'ended_without_outcome', source: 'inferred' });
-		expect(groupOf(session({ latest_outcome: inferred }))).toBe('review');
-		expect(groupOf(session({ latest_outcome: outcome({ status: 'failed' }) }))).toBe('review');
+		expect(groupOf(session({ latest_outcome: inferred }))).toBe('done');
+	});
+
+	it('files a failed outcome under Needs input', () => {
+		expect(groupOf(session({ latest_outcome: outcome({ status: 'failed' }) }))).toBe(
+			'blocked'
+		);
 	});
 
 	it('files a declared needs-input outcome under Needs input', () => {

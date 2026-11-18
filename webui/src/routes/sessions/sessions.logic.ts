@@ -330,7 +330,6 @@ export const BUCKETS: { key: GroupKey; label: string }[] = [
 	// Pinned/starred sessions float above every bucket.
 	{ key: 'pinned', get label() { return m.sessions_bucket_pinned(); } },
 	{ key: 'blocked', get label() { return m.sessions_bucket_blocked(); } },
-	{ key: 'review', get label() { return m.sessions_bucket_review(); } },
 	{ key: 'working', get label() { return m.sessions_bucket_working(); } },
 	{ key: 'done', get label() { return m.sessions_bucket_done(); } },
 	{ key: 'dispatched', get label() { return m.sessions_dispatched(); } }
@@ -354,7 +353,7 @@ export const STALE_WORKING_AFTER_MS = 30 * 60 * 1000; // 30 minutes
 // Whether a session should be signalled stale: a Working-bucket session whose
 // last heartbeat is older than the threshold. `now` is passed in so callers can
 // drive re-evaluation off a clock tick. Non-Working buckets are never stale
-// (blocked/review/done already carry their own signal), and a session with no
+// (blocked/done already carry their own signal), and a session with no
 // heartbeat timestamp (stub rows) is treated as not-stale.
 export function isStaleWorking(s: SessionListItem, now: number): boolean {
 	if (groupOf(s) !== 'working') return false;
