@@ -14,6 +14,7 @@ use cctui_proto::api::{AddUserActionRequest, UserActionKind};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::routes::context::targets::{self, Targets};
 use crate::routes::context::{
     ContextItem, ContextItemSpec, KINDS, approval_title, attach_memories, clean_name, clean_spec,
     count_for_user, db_err, insert, list_for_user, ownership, propose, spec_of, update,
@@ -48,12 +49,13 @@ async fn calling_owner(
 }
 
 #[must_use]
-pub fn entry(item: &ContextItem) -> ContextToolEntry {
+pub fn entry(item: &ContextItem, targets: &Targets) -> ContextToolEntry {
     ContextToolEntry {
         kind: item.kind.clone(),
         name: item.name.clone(),
         title: item.title.clone(),
         match_: item.match_.clone(),
+        match_summary: Some(targets.render(&item.match_)),
         enabled: item.enabled,
         version: item.version,
         pending: item.pending.is_some(),
@@ -137,8 +139,13 @@ async fn list(
         known_kind(kind)?;
     }
     let items = list_for_user(&state.pool, owner).await?;
+    let targets = Targets::load(&state.pool, owner).await?;
     Ok(ContextToolResponse {
-        items: items.iter().filter(|i| kind.is_none_or(|k| i.kind == k)).map(entry).collect(),
+        items: items
+            .iter()
+            .filter(|i| kind.is_none_or(|k| i.kind == k))
+            .map(|i| entry(i, &targets))
+            .collect(),
         ..ContextToolResponse::default()
     })
 }
@@ -156,8 +163,9 @@ async fn show(
         .iter()
         .find(|i| i.kind == kind && i.name == name)
         .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, format!("no {kind} named `{name}`")))?;
+    let targets = Targets::load(&state.pool, owner).await?;
     Ok(ContextToolResponse {
-        item: Some(entry(item)),
+        item: Some(entry(item, &targets)),
         body: Some(item.body.clone()),
         ..ContextToolResponse::default()
     })
@@ -216,6 +224,7 @@ async fn save(
     let needs_approval = kind == "rule" || dispatched;
     let items = list_for_user(&state.pool, owner).await?;
     let existing = items.iter().find(|i| i.kind == kind && i.name == name);
+    let targets = Targets::load(&state.pool, owner).await?;
     let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
 
     let item = match (mode, existing) {
@@ -245,6 +254,7 @@ async fn save(
                 enabled: true,
                 ..ContextItemSpec::default()
             })?;
+            let spec = targets.spec(spec, &[])?;
             let created = if needs_approval {
                 let live = ContextItemSpec { body: String::new(), enabled: false, ..spec.clone() };
                 insert(&state.pool, owner, &live, Some(&spec), Some(session_id)).await
@@ -261,6 +271,7 @@ async fn save(
         }
         (mode, Some(existing)) => {
             let next = clean_spec(edited_spec(existing, mode, req, &date, needs_approval))?;
+            let next = targets.spec(next, &targets::kept(existing))?;
             let saved = if needs_approval {
                 propose(&state.pool, owner, existing.id, &next, session_id).await
             } else {
@@ -276,7 +287,7 @@ async fn save(
         file_approval_card(state, session_id, &item).await;
     }
     Ok(ContextToolResponse {
-        item: Some(entry(&item)),
+        item: Some(entry(&item, &targets)),
         pending: needs_approval,
         ..ContextToolResponse::default()
     })
@@ -402,12 +413,31 @@ mod tests {
     fn a_list_entry_carries_provenance_and_the_pending_flag_but_no_body() {
         let mut item = memory("secret-ish body");
         item.pending = Some(spec_of(&item));
-        let e = entry(&item);
+        let e = entry(&item, &Targets::default());
         assert!(e.pending);
         assert_eq!(e.created_by_session.as_deref(), Some("s-0"));
         assert_eq!(e.version, 3);
         let wire = serde_json::to_string(&e).expect("encodes");
         assert!(!wire.contains("secret-ish"), "{wire}");
+    }
+
+    #[test]
+    fn a_list_entry_renders_its_filter_with_machine_names() {
+        let mid = "3d3d04a3-0000-4000-8000-000000000001";
+        let targets = Targets {
+            machines: vec![targets::Target { id: mid.into(), names: vec!["dev1".into()] }],
+            labels: Vec::new(),
+        };
+        let mut item = memory("");
+        item.match_ = ContextMatch {
+            machines: vec![mid.into()],
+            paths: vec!["/w/repo".into()],
+            ..ContextMatch::default()
+        };
+        let e = entry(&item, &targets);
+        assert_eq!(e.match_summary.as_deref(), Some("machines=dev1 (3d3d04a3…), paths=/w/repo"));
+        item.match_ = ContextMatch::default();
+        assert_eq!(entry(&item, &targets).match_summary.as_deref(), Some("everywhere"));
     }
 
     /// The tool reuses the human API's validation, so an agent sees the same

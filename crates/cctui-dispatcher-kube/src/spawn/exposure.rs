@@ -13,11 +13,12 @@ pub fn wire_exposure(exposure: Exposure, gate: Option<HumanGate>) -> DispatchExp
     }
 }
 
-const fn wire_gate(gate: HumanGate) -> api::HumanGate {
-    match gate {
-        HumanGate::NoPush => api::HumanGate::NoPush,
-        HumanGate::DraftPrOnly => api::HumanGate::DraftPrOnly,
-        HumanGate::OutwardHeldForApproval => api::HumanGate::OutwardHeldForApproval,
+fn wire_gate(gate: HumanGate) -> api::HumanGate {
+    match gate.as_str() {
+        "noPush" => api::HumanGate::NoPush,
+        "draftPrOnly" => api::HumanGate::DraftPrOnly,
+        "outwardHeldForApproval" => api::HumanGate::OutwardHeldForApproval,
+        _ => api::HumanGate::Custom,
     }
 }
 
@@ -30,7 +31,7 @@ mod tests {
     #[test]
     fn a_declared_exposure_carries_its_human_gate() {
         assert_eq!(
-            wire_exposure(FULL, Some(HumanGate::DraftPrOnly)),
+            wire_exposure(FULL, Some(HumanGate::DRAFT_PR_ONLY)),
             DispatchExposure {
                 untrusted_input: true,
                 sensitive_data: true,
@@ -47,11 +48,20 @@ mod tests {
     #[test]
     fn every_gate_maps_to_its_wire_name() {
         for (gate, wire) in [
-            (HumanGate::NoPush, "no_push"),
-            (HumanGate::DraftPrOnly, "draft_pr_only"),
-            (HumanGate::OutwardHeldForApproval, "outward_held_for_approval"),
+            (HumanGate::NO_PUSH, "no_push"),
+            (HumanGate::DRAFT_PR_ONLY, "draft_pr_only"),
+            (HumanGate::OUTWARD_HELD_FOR_APPROVAL, "outward_held_for_approval"),
+            (HumanGate::new("reviewWithScreenshots").unwrap(), "custom"),
         ] {
             assert_eq!(serde_json::to_value(wire_gate(gate)).unwrap(), wire);
+        }
+    }
+
+    #[test]
+    fn a_recorded_gate_this_build_does_not_know_reads_back_as_custom() {
+        for wire in ["custom", "some_future_gate"] {
+            let gate: api::HumanGate = serde_json::from_value(serde_json::json!(wire)).unwrap();
+            assert_eq!(gate, api::HumanGate::Custom, "{wire}");
         }
     }
 }

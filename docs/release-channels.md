@@ -46,6 +46,13 @@ fresh or stable target cannot be enrolled against a beta server.
 
 ## Worker images
 
+`ghcr.io/dorskfr/cctui-worker` is a barebone base with no agent CLI and no
+general tooling (docs/worker-contract.md, Bundled tools and derived images).
+A deployment runs an image built `FROM` it that installs its agents, from
+`deploy/examples/worker-agents` or its own Dockerfile; the release checks the
+agent version floors on that sample built with every switch on, and publishes
+only the base.
+
 The harbor worker bake is keyed by the full version: `make release
 VERSION=X.Y.Z-beta.N` builds on `cctui-worker:X.Y.Z-beta.N` and pushes the same
 tag, which can never collide with a stable `X.Y.Z`. Never pass a `TAG=` override

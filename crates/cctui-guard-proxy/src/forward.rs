@@ -14,6 +14,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::auth::{GuardAuth, strip_proxy_authorization};
 use crate::denylist::host_is_denied;
 use crate::gate::GatePolicy;
 use crate::inject::Injector;
@@ -26,6 +27,7 @@ pub struct ForwardListener {
     injection: Option<Arc<Injector>>,
     private: Arc<PrivateAllow>,
     gate: Arc<GatePolicy>,
+    auth: Arc<GuardAuth>,
 }
 
 impl ForwardListener {
@@ -36,7 +38,20 @@ impl ForwardListener {
         private: Arc<PrivateAllow>,
     ) -> anyhow::Result<Self> {
         let listener = TcpListener::bind(addr).await?;
-        Ok(Self { listener, policy, injection, private, gate: Arc::new(GatePolicy::default()) })
+        Ok(Self {
+            listener,
+            policy,
+            injection,
+            private,
+            gate: Arc::new(GatePolicy::default()),
+            auth: Arc::new(GuardAuth::default()),
+        })
+    }
+
+    #[must_use]
+    pub fn with_auth(mut self, auth: Arc<GuardAuth>) -> Self {
+        self.auth = auth;
+        self
     }
 
     #[must_use]
@@ -55,12 +70,17 @@ impl ForwardListener {
         shutdown: impl std::future::Future<Output = ()>,
         drain: Duration,
     ) -> anyhow::Result<()> {
-        let Self { listener, policy, injection, private, gate } = self;
+        let Self { listener, policy, injection, private, gate, auth } = self;
         crate::shutdown::serve_until(listener, shutdown, drain, move |stream| {
-            let (policy, injection, private, gate) =
-                (policy.clone(), injection.clone(), private.clone(), gate.clone());
+            let shared = Shared {
+                policy: policy.clone(),
+                injection: injection.clone(),
+                private: private.clone(),
+                gate: gate.clone(),
+                auth: auth.clone(),
+            };
             async move {
-                if let Err(e) = handle_connection(stream, policy, injection, private, gate).await {
+                if let Err(e) = handle_connection(stream, shared).await {
                     tracing::debug!("forward connection ended: {e}");
                 }
             }
@@ -115,16 +135,30 @@ fn find_header_end(data: &[u8]) -> Option<usize> {
     data.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
-async fn handle_connection(
-    mut conn: TcpStream,
+struct Shared {
     policy: Arc<PolicyManager>,
     injection: Option<Arc<Injector>>,
     private: Arc<PrivateAllow>,
     gate: Arc<GatePolicy>,
-) -> anyhow::Result<()> {
-    let Some(req) = read_request(&mut conn).await? else {
+    auth: Arc<GuardAuth>,
+}
+
+async fn handle_connection(mut conn: TcpStream, shared: Shared) -> anyhow::Result<()> {
+    let Shared { policy, injection, private, gate, auth } = shared;
+    let Some(mut req) = read_request(&mut conn).await? else {
         return Ok(());
     };
+    if !auth.proxy_ok(&req.raw) {
+        tracing::warn!("DENY {} {}: no valid proxy token", req.method, req.target);
+        conn.write_all(
+            b"HTTP/1.1 407 Proxy Authentication Required\r\n\
+              Proxy-Authenticate: Basic realm=\"cctui-guard\"\r\n\
+              Content-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .await?;
+        return Ok(());
+    }
+    req.raw = strip_proxy_authorization(&req.raw);
 
     if req.method.eq_ignore_ascii_case("CONNECT") {
         handle_connect(conn, &req.target, &policy, injection.as_deref(), &private, &gate).await
@@ -388,6 +422,64 @@ mod tests {
             }
         });
         addr
+    }
+
+    const PROXY_TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
+    async fn start_forward_with_token(policy_json: &str) -> std::net::SocketAddr {
+        let (dir, path) = write_policy(policy_json);
+        std::mem::forget(dir);
+        let policy = Arc::new(PolicyManager::new(&path));
+        policy.load().unwrap();
+        let private = Arc::new(PrivateAllow::for_tests(true, ""));
+        let listener = ForwardListener::bind("127.0.0.1:0", policy, None, private)
+            .await
+            .unwrap()
+            .with_auth(Arc::new(GuardAuth::with_tokens(Some(PROXY_TOKEN), None)));
+        let addr = listener.listener.local_addr().unwrap();
+        tokio::spawn(async move { listener.serve().await });
+        addr
+    }
+
+    fn proxy_basic(token: &str) -> String {
+        use base64::Engine as _;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(format!("cctui:{token}"));
+        format!("Proxy-Authorization: Basic {encoded}\r\n")
+    }
+
+    #[tokio::test]
+    async fn a_guard_pod_requires_the_dispatch_proxy_token() {
+        let echo = start_echo().await;
+        let policy_json = format!(r#"{{"allowed_hosts": ["{echo}"], "default": "deny"}}"#);
+        let proxy = start_forward_with_token(&policy_json).await;
+        let wrong = "0123456789abcdef0123456789abcdee";
+        for auth in [String::new(), proxy_basic(wrong)] {
+            let request = format!("CONNECT {echo} HTTP/1.1\r\nHost: {echo}\r\n{auth}\r\n");
+            let resp = first_response(proxy, &request).await;
+            assert!(resp.starts_with("HTTP/1.1 407"), "got: {resp}");
+        }
+        let request =
+            format!("CONNECT {echo} HTTP/1.1\r\nHost: {echo}\r\n{}\r\n", proxy_basic(PROXY_TOKEN));
+        let resp = first_response(proxy, &request).await;
+        assert!(resp.starts_with("HTTP/1.1 200"), "got: {resp}");
+    }
+
+    #[tokio::test]
+    async fn the_proxy_token_is_not_relayed_upstream() {
+        let echo = start_echo().await;
+        let policy_json = format!(r#"{{"allowed_hosts": ["{echo}"], "default": "deny"}}"#);
+        let proxy = start_forward_with_token(&policy_json).await;
+        let mut conn = TcpStream::connect(proxy).await.unwrap();
+        let request = format!(
+            "GET http://{echo}/ HTTP/1.1\r\nHost: {echo}\r\n{}\r\n",
+            proxy_basic(PROXY_TOKEN)
+        );
+        conn.write_all(request.as_bytes()).await.unwrap();
+        let mut buf = [0u8; 512];
+        let n = conn.read(&mut buf).await.unwrap();
+        let echoed = String::from_utf8_lossy(&buf[..n]);
+        assert!(echoed.starts_with("GET http://"), "got: {echoed}");
+        assert!(!echoed.to_ascii_lowercase().contains("proxy-authorization"), "got: {echoed}");
     }
 
     #[test]

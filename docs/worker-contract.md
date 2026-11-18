@@ -11,6 +11,51 @@ this document.
 
 Images that honor this contract carry the OCI label `dev.cctui.contract=1`.
 
+## Bundled tools and derived images
+
+`cctui-worker` is a barebone base. It ships what cctui's own scripts call and
+nothing else:
+
+- `cctui-daemon`, `cctui-guard-proxy`, `cctui-supervisor`, `cctui-guard` (and
+  its `guard` alias), the guard shims;
+- the entrypoints `cctui-worker-entrypoint`, `cctui-worker-net-init`,
+  `cctui-guard-proxy-entrypoint`;
+- from Debian: `bash`, `setpriv`, `ca-certificates`, `curl`, `jq`, `git`,
+  `iptables`, `rsync`, `gnupg`;
+- the `worker` user (uid/gid 1000), `/workspace` and `/opt/context` owned by
+  it, the root-owned `/var/run/guard-proxy` and `/var/run/workflow-guard`, the
+  `dev.cctui.contract=1` label and the entrypoint.
+
+It ships **no agent CLI** and no general tooling (no Node, `gh`, `ripgrep`,
+`git-lfs` or `ssh`). The guard-proxy sidecar runs from it as is. A worker
+needs an image built `FROM` it with the agents the deployment runs:
+`deploy/examples/worker-agents` is a sample with one build-arg switch per
+agent and per tool group, and its README lists the rules a derived image
+keeps (start as root, the entrypoint, the label). The agent version floors
+and pins live in that sample; `scripts/check-worker-image-harness.sh` checks a
+built image against them.
+
+### No agent installed
+
+Before anything else the entrypoint looks for the adapters' default binaries
+(`claude`, `codex`, `opencode`, `gemini`, `qwen`, `goose`) on `PATH`, then in
+`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and `/bin`,
+the dirs the daemon searches, and logs `agents: <found>`. With none found it
+prints `no agent CLI installed in this image; build FROM cctui-worker with one
+(see deploy/examples/worker-agents)` and:
+
+| Start | Behavior |
+| --- | --- |
+| dispatch (`TASK_PAYLOAD_JSON` or `CCTUI_DISPATCH_ID` set) | fails once the callback trap is set: a `failed` verdict with that message is posted to `REPLY_URL` and written to the termination log, exit 1 |
+| interactive (stdin and stdout are a TTY, no dispatch) | `exec bash`, so `docker run -it` lands in a shell |
+| anything else (a thin worker) | exit 1 |
+
+A dispatch whose `adapter` resolves to a binary the image lacks fails the same
+way, before any harness runs: ``adapter codex needs `codex`, which this image
+does not install (installed: claude)``. An agent installed under another name
+or outside those dirs is not found: install it, or a symlink, under its
+adapter's default name.
+
 ## Plane ownership
 
 Every variable belongs to one plane. The boundary is a security boundary, not a
@@ -37,9 +82,10 @@ CCTUI_URL  CCTUI_MACHINE_KEY  SESSION_ID
 — every entrypoint phase is skipped on absent input and the worker behaves
 exactly like the pre-v1 thin image: it falls straight through to
 `exec cctui-supervisor … -- cctui-daemon run --no-auto-update`. No phase
-hard-fails on missing input. The **one** exception: if `CONTEXT_PACK_URL` is
-set, the context-pack fetch must succeed or the boot fails closed (the pack
-defines the guard rules; proceeding without it would weaken the sandbox).
+hard-fails on missing input. The exceptions: if `CONTEXT_PACK_URL` is set,
+the context-pack fetch must succeed or the boot fails closed (the pack
+defines the guard rules; proceeding without it would weaken the sandbox), and
+an image with no agent CLI refuses to start (see No agent installed).
 
 All **three** platform vars are themselves a hard precondition, checked before
 any phase runs: a worker missing `CCTUI_URL`/`CCTUI_SERVER_URL`,
@@ -68,7 +114,7 @@ case, never a *no-`SESSION_ID`* case.
 
 | Var | Default | Meaning |
 | --- | --- | --- |
-| `WORKER_NET_MODE` | auto | `transparent`, `transparent-external`, or `forward`. Auto = `transparent` when iptables is usable (CAP_NET_ADMIN), else `forward`, which then faces an enforcing pre-flight it cannot pass. An explicit `transparent` with unusable iptables refuses to start. `forward` is an explicit opt-in only. `transparent-external` is never auto-selected — set it only when the pod runs the guard-proxy sidecar + net-init init container (see below). |
+| `WORKER_NET_MODE` | auto | `transparent`, `transparent-external`, `external-pod`, or `forward`. Auto = `transparent` when iptables is usable (CAP_NET_ADMIN), else `forward`, which then faces an enforcing pre-flight it cannot pass. An explicit `transparent` with unusable iptables refuses to start. `forward` is an explicit opt-in only. `transparent-external` is never auto-selected — set it only when the pod runs the guard-proxy sidecar + net-init init container (see below). Neither is `external-pod`, which the envelope sets for a guard that runs as its own pod (see "Guard pod mode"). |
 | `WORKER_NET_EXEMPT` | — | Comma-separated `host:port` that **bypass** the proxy (resolved to a single IP at boot, iptables `RETURN`'d). Transparent mode only. IP-pinned — use only for **IP-stable** hosts; CDN/multi-IP hosts will rotate off the exempted IP. |
 | `WORKER_DNS_RESOLVER` | — (net-init: `cctui-worker-dns`) | Restricted resolver DNS is DNATed to: an IPv4 address or a pod-search-relative name. Set and unresolvable is fatal. Unset: net-init tries `cctui-worker-dns` and on failure warns and keeps the pod resolver; `transparent` keeps the first IPv4 nameserver. On kube the orchestrator always sets it on net-init (see "Sidecar mode"), so a missing resolver fails the pod. |
 | `WORKER_DNS_RESOLVER_REQUIRED` | off | `1` (exactly) makes an unset `WORKER_DNS_RESOLVER` mean `cctui-worker-dns`, fatal when it does not resolve: net-init and `transparent` exit non-zero before installing any rule instead of falling back to a resolver that may recurse public names. Any other value or unset: unchanged. |
@@ -88,6 +134,8 @@ case, never a *no-`SESSION_ID`* case.
 | `CCTUI_LANDLOCK_STRICT` | strict | `0` (exactly) lets the supervisor start when the kernel does not enforce Landlock, logging a `WARNING` from both the entrypoint and the supervisor; the agent then runs with seccomp + capability drop but **no filesystem confinement**. Any other value or unset: a kernel without Landlock refuses to start. Per profile or per docker dispatcher (`landlock_strict = false`). Reserved: a dispatch env cannot set it. |
 | `CCTUI_PREFLIGHT_MODE` | `enforce`, except `warn` under an explicit `WORKER_NET_MODE=forward` | Pre-flight isolation check mode: `enforce`, `warn` or `off` (see below). An unknown value enforces. Set by the kube dispatcher from `spec.preflight.mode`. |
 | `CCTUI_PREFLIGHT_DENY` | — | Comma-separated extra pre-flight deny targets: `host:port` or a CIDR. Set from `spec.preflight.deny`. |
+| `CCTUI_PREFLIGHT_RECHECK_SECS` | `60` | Seconds between re-runs of the pre-flight deny probes while a dispatched session runs (see "Pre-flight isolation check"). `0` turns the re-check off. |
+| `WORKER_GUARD_WAIT_SECS` | `60` | `external-pod` only: how long the entrypoint waits for its guard pod's `/health` before failing the pod. |
 | `NODE_OPTIONS` | `--use-openssl-ca` appended | Every node reads the system trust store (see "Node trust store" below). A value already naming `--use-openssl-ca`, `--use-bundled-ca` or `--use-system-ca` is left as is. |
 | `CCTUI_DISPATCH_WORKDIR` | `/workspace/$TASK_REPO` if that dir exists (else `/workspace`) | Session working directory. Defaulted to the checked-out repo after `phase_workspace` so the CLI grants edit-in-place (a cwd inside the repo) instead of blocking background edits with "call `EnterWorktree` first"; an explicit operator/dispatcher value always wins. |
 
@@ -517,6 +565,61 @@ spec:
         ephemeral-storage: 512Mi
 ```
 
+### Guard pod mode (`external-pod`)
+
+A profile with `spec.guard.placement: pod` (and `posture: nonroot`) runs the
+guard-proxy as a separate pod per dispatch. No container of the worker pod is
+privileged, adds a capability or runs as root: there is no `net-init` and no
+`NET_ADMIN`. The worker is uid 1000 and the guard uid 1337, both restricted.
+Egress isolation moves from iptables to static, label-selected NetworkPolicies
+(`deploy/examples/guard-pod/networkpolicies.yaml`): workers labelled
+`cctui.dev/guard-placement: pod` may only reach pods labelled
+`cctui.dev/role: guard-proxy` on `15001`-`15003`, and DNS.
+
+**Per dispatch** the kube dispatcher mints two tokens and stamps them, with the
+guard's Service name, as pod-template annotations
+(`cctui.dev/guard-proxy-token`, `cctui.dev/guard-control-token`,
+`cctui.dev/guard-service`). Once the Job runs it creates the guard Pod and a
+Service, both named `<job>-g<first 4 hex of the dispatch id>`, owned by the Job,
+and deletes them when the Job ends. The name is new per dispatch, so a
+redispatch never reaches the previous run's guard, and it is one the server's
+redeem accepts as a pod of the Job, so the guard pod redeems the dispatch
+identity as the sidecar does. Both pods get the tokens as files from the downward API
+(`/var/run/guard-auth/{proxy-token,control-token}`), never as env, and the
+tokens are neither logged nor part of `TASK_PAYLOAD_JSON`.
+
+| Guard pod listener | Port | Auth |
+| --- | --- | --- |
+| forward proxy (`CONNECT`, absolute URI) | `15001` | `Proxy-Authorization` with the proxy token (`Basic` with any user, or `Bearer`); `407` otherwise. The header is stripped before relaying. |
+| health and control | `15002` | `/health`, `/ready` and `/ca.pem` open; `/dispatch/env` needs `Authorization: Bearer <proxy token>` off-loopback; `PUT /policy` and `PUT /private-allow` need `Authorization: Bearer <control token>` |
+| cctui server gateway | `15003` | plaintext; every request path starts with `/<proxy token>/`, which is stripped, `Host` is set to the server's and the machine key is injected as on the transparent path. The daemon's WebSocket client ignores proxy env, so it reaches the server this way. |
+
+**Entrypoint.** With `WORKER_NET_MODE=external-pod` the entrypoint:
+
+1. waits (≤ `WORKER_GUARD_WAIT_SECS`) for `http://$GUARD_PROXY_HOST:15002/health`,
+   then fetches `/dispatch/env` with the proxy token;
+2. seeds `policy.json` and `private-allow` as in every mode and `PUT`s both to
+   the guard pod with the control token, then mirrors every later rewrite
+   (`cctui-guard`'s per-step policy, the repo registries) within a second;
+3. downloads `/ca.pem` into `/var/run/guard-proxy-ca/ca.pem` and trusts it as in
+   the sidecar mode (no CA: injection is off, passthrough only);
+4. exports `HTTP(S)_PROXY=http://cctui:<proxy token>@$GUARD_PROXY_HOST:15001`,
+   `NO_PROXY=127.0.0.1,localhost,$GUARD_PROXY_HOST`, and points `CCTUI_URL` at
+   the gateway, `http://$GUARD_PROXY_HOST:15003/<proxy token>`.
+
+Every token is passed to curl as config on stdin, never in argv, and log lines
+mask the gateway path. The control token file is outside the agent's Landlock
+domain, so the agent can use its own guard (it holds the proxy token, as its
+tools must) but not rewrite the guard's policy. A tool that ignores proxy env
+cannot get out at all: the NetworkPolicy drops it, and the pre-flight and its
+re-check prove that.
+
+**Not carried over:** gpg signing. The agent socket is not forwarded over TCP,
+so commits in this mode are unsigned and the entrypoint says so. DNS goes to the
+pod's resolver: no `net-init` DNATs it to `cctui-worker-dns`, so a cluster DNS
+that recurses public names stays reachable until the NetworkPolicy or the pod's
+DNS config points the worker at a restricted resolver.
+
 ### Per-profile guard settings (`spec.guard`)
 
 The injected `guard-proxy` gets its settings from the global `guard-proxy-env`
@@ -632,7 +735,7 @@ Probes run in parallel with 300 ms timeouts; the public-DNS probes wait up to
 | --- | --- | --- |
 | Kubernetes API | `https://kubernetes.default.svc:443`, `$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT` | `k8s API reachable` |
 | Service-account token | any `/var/run/secrets/*/serviceaccount/*token*` readable | `service-account token readable` |
-| Public DNS | a UDP query to `1.1.1.1` and `8.8.8.8` (`dig` if present, else node's resolver) | `public DNS answers` |
+| Public DNS | a UDP query to `1.1.1.1` and `8.8.8.8` (`dig` if present, else node's resolver; skipped when the image has neither) | `public DNS answers` |
 | Cloud metadata | `169.254.169.254` (EC2/GCE/Azure IMDS, GKE Workload Identity), `169.254.170.23` (EKS Pod Identity), `169.254.170.2` (ECS, `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`), `[fd00:ec2::254]` on port 80 | `cloud metadata reachable` |
 | Ambient cloud identity | the file named by `AWS_WEB_IDENTITY_TOKEN_FILE` (IRSA), `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE` (Pod Identity) or `AZURE_FEDERATED_TOKEN_FILE` readable; the host of `AWS_CONTAINER_CREDENTIALS_FULL_URI` reachable | `ambient cloud identity via <VAR>` |
 | Private ranges | `10.0.0.1`, `172.16.0.1`, `192.168.0.1`, `100.64.0.1`, `[fd00::1]` on port 80 | `private range reachable` |
@@ -656,6 +759,16 @@ check. The verdict is also recorded as `preflight` in the hardening report. An
 unset mode enforces, except under an explicit `WORKER_NET_MODE=forward`:
 forward filters none of the agent's non-proxied egress, so its probes fail by
 design and opting into it is opting into the warning.
+
+**Re-check during the run.** While a dispatched session runs, the entrypoint
+re-runs the deny probes every `CCTUI_PREFLIGHT_RECHECK_SECS` (60 by default),
+in every network mode. Under `enforce`, a probe that reaches its target ends the
+dispatch: the daemon is stopped, `egress re-check: <probe> (<target>)` becomes
+the termination message and the callback's `error`, and the pod exits 1. This
+catches isolation that stops holding mid-run, such as a CNI that loses
+NetworkPolicy enforcement. `warn` logs each new breach and continues; `off`
+skips the re-check too. In the transparent modes each re-check leaves a
+handful of `DENY` lines in the guard's log.
 
 **Not probed:**
 - Credentials the operator configured explicitly: `AWS_ACCESS_KEY_ID` /
@@ -1297,6 +1410,8 @@ entrypoint's `adapter_kind`):
 - **Any other value is an error.** The daemon writes a `failed` verdict naming
   the adapter and the entrypoint fails the pod the same way before any harness
   runs; nothing ever falls back to claude.
+- **A known adapter whose binary the image lacks** fails the same way at boot
+  (see No agent installed).
 
 Every one-shot runs inside the daemon and never goes through the claude control
 socket, so the entrypoint pre-seeds its liveness as seen-alive: the done-signal
@@ -1382,8 +1497,10 @@ Two parts, surfaced for the daemon to attach as session metadata:
 
 ## Entrypoint phases
 
-The container starts as root, runs these phases (each skippable on absent
-input), then drops to uid 1000 (see Non-root start for a uid 1000 start):
+The container starts as root, probes for an agent CLI (see No agent
+installed), checks the platform vars, runs these phases (each skippable on
+absent input), then drops to uid 1000 (see Non-root start for a uid 1000
+start):
 
 1. **Network** — choose mode, seed the deny-default policy, install iptables
    (transparent) or export proxy env (forward), start `cctui-guard-proxy` — or,
@@ -1417,7 +1534,8 @@ input), then drops to uid 1000 (see Non-root start for a uid 1000 start):
    (`~/.gemini`, `~/.qwen`, `~/.config/goose`) with sandbox, telemetry and
    usage statistics off and the API-key / `openai` auth type selected.
 7. **Callback** — install the `REPLY_URL` exit trap, then refuse an unknown
-   `adapter` with a `failed` verdict (see Dispatch by adapter).
+   `adapter`, an agent-less image or a missing adapter binary with a `failed`
+   verdict (see Dispatch by adapter, No agent installed).
    **Pre-flight** — run the isolation probes as the agent uid; fail the
    dispatch on any reachable target under `enforce` (see Pre-flight isolation
    check).

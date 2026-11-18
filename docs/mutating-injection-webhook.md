@@ -76,6 +76,19 @@ The sidecar/init image defaults to `ghcr.io/dorskfr/cctui-worker:<version>`
    privileged); env `WORKER_NET_MODE=transparent-external` upserted; envelope
    volume mounts added.
 
+**Guard placement `pod`.** For a profile with `spec.guard.placement: pod` the
+webhook injects neither `net-init` nor the sidecar. The worker gets the
+restricted uid-1000 `securityContext`, `WORKER_NET_MODE=external-pod`,
+`GUARD_PROXY_HOST` from the `cctui.dev/guard-service` annotation, the `home`,
+`guard-state`, `proxy-policy` and `guard-proxy-ca` emptyDirs, and a `guard-auth`
+downward-API volume (read-only at `/var/run/guard-auth`) holding the
+`cctui.dev/guard-proxy-token` and `cctui.dev/guard-control-token` annotations.
+No service-account token, inject ConfigMap or gpg volume reaches the worker pod.
+The guard pod itself is not admitted through the webhook: the dispatcher builds
+it with `envelope::guard_pod` from the same guard-proxy container, so the two
+placements share one definition. See
+[Guard pod mode](./worker-contract.md#guard-pod-mode-external-pod).
+
 The envelope **template** is baked into the release binary. Environment-specific
 guard-proxy settings (vault addr/role, gpg secret ref, default identity) are
 **not** baked in — they arrive at runtime via the `guard-proxy-env` ConfigMap.
@@ -90,6 +103,8 @@ The webhook process reads these env vars:
 | `CCTUI_ORCH_LISTEN` | listen address | `0.0.0.0:8443` |
 | `CCTUI_ORCH_SIDECAR_IMAGE` | override the injected sidecar/init image | `ghcr.io/dorskfr/cctui-worker:<version>` |
 | `CCTUI_ORCH_DNS_RESOLVER` | restricted DNS resolver rendered as `WORKER_DNS_RESOLVER` on `net-init` when the profile sets no `spec.dnsResolver` (IPv4 or pod-search-relative name; blank is unset) | `cctui-worker-dns` |
+| `CCTUI_ORCH_REQUIRE_HUMAN_GATE` | `true` denies a profile declaring all three exposures without a `spec.humanGate` | `false` |
+| `CCTUI_ORCH_GATE_RULES` | path of the guard-proxy gate rules file; its gate names are admitted as `spec.humanGate` besides the built-ins. Unreadable or unparseable fails startup | — (built-ins only) |
 
 Per-namespace, operator/Argo-managed resources the injected envelope references
 (`optional: false` — the pod fails to start if absent):
@@ -97,7 +112,8 @@ Per-namespace, operator/Argo-managed resources the injected envelope references
 - ConfigMap **`guard-proxy-env`** — guard-proxy runtime env (`envFrom`): vault
   addr/role, gpg secret ref, default `GUARD_PROXY_IDENTITY`.
 - ConfigMap **`guard-proxy-inject`** — mounted read-only at `/etc/guard-proxy`
-  (the worker must not define inject rules).
+  (the worker must not define inject rules). An optional `gates.json` key holds
+  the gate rules (see worker-profile-crd.md, Gate rules).
 
 Routes: `POST /mutate` (AdmissionReview v1), `POST /validate` (the validating
 guardrails — see [`validating-webhook.md`](./validating-webhook.md)),

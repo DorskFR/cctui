@@ -42,6 +42,7 @@ jobs:
       webui: ${{ steps.scope.outputs.webui }}
       deps: ${{ steps.scope.outputs.deps }}
       deploy: ${{ steps.scope.outputs.deploy }}
+      worker: ${{ steps.scope.outputs.worker }}
       # false when a green run already tested this exact tree, e.g. the push
       # of a squash merge whose pull request run passed.
       check: ${{ steps.tested.outputs.check != 'false' }}
@@ -795,6 +796,74 @@ jobs:
             exit 1
           fi
 
+  # The base is built on stub cctui binaries: the sample only adds agents. The
+  # default docker driver (no setup-buildx) lets the sample's FROM resolve the
+  # local base image.
+  worker-agents:
+    name: worker agents sample (${{ matrix.name }})
+    needs: changes
+    if: needs.changes.outputs.check == 'true' && needs.changes.outputs.worker == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: all
+            args: WITH_CLAUDE=1 WITH_CODEX=1 WITH_OPENCODE=1 WITH_ACP_AGENTS=1 WITH_GOOSE=1 WITH_TOOLS=1
+          - name: defaults
+            args: ""
+          - name: none
+            args: WITH_CLAUDE=0 WITH_CODEX=0 WITH_OPENCODE=0 WITH_ACP_AGENTS=0 WITH_GOOSE=0 WITH_TOOLS=0
+          - name: claude
+            args: WITH_CLAUDE=1 WITH_CODEX=0 WITH_TOOLS=0
+          - name: codex
+            args: WITH_CLAUDE=0 WITH_CODEX=1 WITH_TOOLS=0
+          - name: opencode
+            args: WITH_CLAUDE=0 WITH_CODEX=0 WITH_OPENCODE=1 WITH_TOOLS=0
+          - name: acp-agents
+            args: WITH_CLAUDE=0 WITH_CODEX=0 WITH_ACP_AGENTS=1 WITH_TOOLS=0
+          - name: goose
+            args: WITH_CLAUDE=0 WITH_CODEX=0 WITH_GOOSE=1 WITH_TOOLS=0
+          - name: tools
+            args: WITH_CLAUDE=0 WITH_CODEX=0 WITH_TOOLS=1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build the barebone worker on stub binaries
+        run: |
+          bins="$RUNNER_TEMP/stub-bins"
+          mkdir -p "$bins"
+          for b in cctui-daemon cctui-guard-proxy cctui-supervisor cctui-guard; do
+            printf '#!/bin/sh\nexit 0\n' > "$bins/$b"
+            chmod 0755 "$bins/$b"
+          done
+          docker build -f deploy/worker.Dockerfile --build-context "bins=$bins" -t cctui-worker:ci .
+
+      - name: Build the sample
+        env:
+          ARGS: ${{ matrix.args }}
+        run: |
+          flags=(--build-arg BASE_IMAGE=cctui-worker:ci)
+          for a in $ARGS; do flags+=(--build-arg "$a"); done
+          docker build "${flags[@]}" -t cctui-worker-agents:ci deploy/examples/worker-agents
+
+      - name: Verify harness version floors
+        if: matrix.name == 'all'
+        run: bash scripts/check-worker-image-harness.sh cctui-worker-agents:ci
+
+      - name: An agent-less worker refuses to boot
+        if: matrix.name == 'none'
+        run: |
+          set +e
+          out="$(timeout 60 docker run --rm -e CCTUI_URL=http://cctui.invalid -e CCTUI_MACHINE_KEY=k \
+            -e SESSION_ID=00000000-0000-4000-8000-000000000000 cctui-worker-agents:ci 2>&1)"
+          code=$?
+          set -e
+          echo "$out"
+          [ "$code" -ne 0 ] || { echo "::error::exit 0 without an agent"; exit 1; }
+          grep -qF 'no agent CLI installed in this image' <<<"$out" \
+            || { echo "::error::no warning printed"; exit 1; }
+
   actionlint:
     name: actionlint
     needs: changes
@@ -838,6 +907,7 @@ jobs:
       - release-channel
       - local-seed
       - deploy-tests
+      - worker-agents
       - actionlint
     runs-on: ubuntu-latest
     steps:

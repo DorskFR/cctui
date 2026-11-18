@@ -56,6 +56,7 @@ mod presence;
 mod presets;
 mod preview;
 mod provider_status;
+mod redteam_runs;
 mod registry;
 mod rooms;
 mod routes;
@@ -1443,6 +1444,7 @@ mod tests {
             "POST /admin/plugins/{id}/proxy-secret Bearer Scope(Admin)",
             "GET /admin/plugins/{id}/settings Bearer Scope(Admin)",
             "PUT /admin/plugins/{id}/settings Bearer Scope(Admin)",
+            "GET /admin/redteam Bearer Scope(Admin)",
             "GET /admin/storage Bearer Scope(Admin)",
             "PUT /admin/storage/lifecycle Bearer Scope(Admin)",
             "POST /admin/storage/lifecycle/preview Bearer Scope(Admin)",
@@ -1579,6 +1581,7 @@ mod tests {
             "GET /provider-status Bearer Authenticated",
             "GET /redirects Bearer Human",
             "DELETE /redirects/{id} Bearer Human",
+            "POST /redteam/runs Bearer Scope(Dispatch)",
             "GET /rooms Bearer Authenticated",
             "DELETE /rooms/{id} Bearer Authenticated",
             "PATCH /rooms/{id} Bearer Authenticated",

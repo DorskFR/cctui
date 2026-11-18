@@ -26,7 +26,9 @@ describe('exposureView', () => {
 		expect(exposureView({ ...all, human_gate: 'outward_held_for_approval' })?.gate).toBe(
 			'outward held for approval'
 		);
+		expect(exposureView({ ...all, human_gate: 'custom' })?.gate).toBe('custom gate');
 		expect(exposureView({ ...all, human_gate: 'draft_pr_only' })?.ungated).toBe(false);
+		expect(exposureView({ ...all, human_gate: 'custom' })?.ungated).toBe(false);
 	});
 
 	it('flags all three legs held with no gate', () => {

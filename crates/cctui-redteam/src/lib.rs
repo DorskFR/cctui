@@ -2,6 +2,7 @@ pub mod canary;
 pub mod dns;
 pub mod oracle;
 pub mod probe;
+pub mod publish;
 pub mod report;
 pub mod sink;
 pub mod t2;

@@ -114,11 +114,14 @@ deploy_file() { write deploy/Dockerfile 'FROM scratch'; }
 crd() { write deploy/workerprofile-crd.yaml 'kind: CustomResourceDefinition'; }
 deploy_test() { write deploy/tests/test-a.sh 'exit 0'; }
 ui_nginx() { write webui/nginx.conf 'server {}'; }
+worker_base() { write deploy/worker.Dockerfile 'FROM scratch'; }
+worker_sample() { write deploy/examples/worker-agents/Dockerfile 'FROM scratch'; }
+harness_check() { write scripts/check-worker-image-harness.sh 'exit 0'; }
 
 change "a version-only bump with a webui change is webui-only" \
   rust=false webui=true deps=false -- bump_and_ui
 change "a version-only bump alone touches nothing" \
-  ci=false rust=false webui=false deps=false schema=false deploy=false -- bump
+  ci=false rust=false webui=false deps=false schema=false deploy=false worker=false -- bump
 change "a version-only webui lockfile bump is not a deps change" deps=false rust=false -- npm_bump
 change "a dependency bump in Cargo.toml is a Rust change" rust=true -- dep_manifest
 change "a dependency bump in Cargo.lock is a Rust and deps change" rust=true deps=true -- dep_lock
@@ -145,9 +148,14 @@ change "a deploy suite change runs the deploy suites" deploy=true -- deploy_test
 change "a deploy example change runs the deploy suites too" deploy=true rust=true -- deploy_example
 change "the webui nginx config runs the deploy suites" deploy=true webui=true -- ui_nginx
 change "a webui source change skips the deploy suites" deploy=false -- ui_src
+change "the worker base builds the agents sample" worker=true deploy=true -- worker_base
+change "the agents sample builds itself" worker=true deploy=true -- worker_sample
+change "the harness check builds the agents sample" worker=true deploy=false -- harness_check
+change "another Dockerfile skips the agents sample" worker=false -- deploy_file
+change "a crate change skips the agents sample" worker=false -- rust_src
 
 out="$(bash "$script" --all)"
-if [ "$(grep -c '=true$' <<<"$out")" -eq 6 ]; then
+if [ "$(grep -c '=true$' <<<"$out")" -eq 7 ]; then
   echo "ok   — --all turns every area on"
 else
   echo "FAIL — --all turns every area on"

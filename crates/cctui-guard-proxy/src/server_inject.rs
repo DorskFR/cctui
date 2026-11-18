@@ -12,6 +12,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::dispatch::ServerTarget;
+use crate::gateway::GatewayRewrite;
 use crate::inject::{
     AuthShape, Dialer, Framing, HttpBuf, Idle, Injector, PerPodCa, PrefixedStream, Redial,
     ReplayTee, Sent, SniResolver, Step, TcpDialer, UpstreamConn, bad_gateway, body_framing,
@@ -26,6 +27,8 @@ pub const PLACEHOLDER_MACHINE_KEY: &str = "cctui-dispatch-placeholder-key";
 /// server echoes it back as the session token.
 const DAEMON_AUTH_PATH: &str = "/api/v1/daemon/auth";
 const MAX_SWAP_BODY: usize = 64 * 1024;
+const FORBIDDEN: &[u8] =
+    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 
 enum Exchange<S> {
     Done(Step<S>),
@@ -37,6 +40,7 @@ pub struct ServerInjector {
     machine_key: String,
     acceptor: Option<TlsAcceptor>,
     connector: TlsConnector,
+    gateway: Option<GatewayRewrite>,
 }
 
 impl ServerInjector {
@@ -57,7 +61,31 @@ impl ServerInjector {
             None
         };
         let connector = Injector::build_connector(Vec::new())?;
-        Ok(Self { target, machine_key, acceptor, connector })
+        Ok(Self { target, machine_key, acceptor, connector, gateway: None })
+    }
+
+    /// The same injection behind [`crate::gateway`]: plaintext from the worker,
+    /// every request path prefixed with `token`.
+    pub fn gateway(target: ServerTarget, machine_key: String, token: &str) -> anyhow::Result<Self> {
+        let gateway = Some(GatewayRewrite::new(token, &target));
+        let connector = Injector::build_connector(Vec::new())?;
+        Ok(Self { target, machine_key, acceptor: None, connector, gateway })
+    }
+
+    pub async fn handle_gateway(&self, conn: TcpStream) -> anyhow::Result<()> {
+        let addrs = self.resolve().await?;
+        let host = self.target.host.as_str();
+        let client = PrefixedStream::new(conn, Vec::new());
+        if !self.target.https {
+            return Box::pin(self.pump(client, &TcpDialer { host, addrs: &addrs })).await;
+        }
+        let dialer = Dialer {
+            connector: &self.connector,
+            server_name: ServerName::try_from(self.target.host.clone())?,
+            host,
+            addrs: &addrs,
+        };
+        Box::pin(self.pump(client, &dialer)).await
     }
 
     pub fn matches(&self, host: &str, port: u16) -> bool {
@@ -153,6 +181,17 @@ impl ServerInjector {
         C: AsyncRead + AsyncWrite + Unpin,
         D: Redial,
     {
+        let rewritten = self.gateway.as_ref().map(|g| g.rewrite(head));
+        let head = match &rewritten {
+            None => head,
+            Some(Some(rewritten)) => rewritten.as_slice(),
+            Some(None) => {
+                tracing::warn!("gateway request without this dispatch's token refused");
+                client.write_all(FORBIDDEN).await?;
+                client.flush().await?;
+                return Ok(Exchange::Done(Step::Close));
+            }
+        };
         let upstream = if upstream.is_some() { upstream } else { dialer.dial().await };
         let Some(mut conn) = upstream else {
             bad_gateway(client).await?;
@@ -412,6 +451,49 @@ mod tests {
         let (resp, body) = read_message(&mut worker, true).await;
         assert!(resp.starts_with("HTTP/1.1 200"));
         assert_eq!(body, b"{}");
+    }
+
+    const GATEWAY_TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
+    fn wired_gateway() -> (DuplexStream, DuplexStream) {
+        let (worker, proxy_client) = duplex(64 * 1024);
+        let (proxy_upstream, server) = duplex(64 * 1024);
+        let dialer = Arc::new(Duplexes {
+            host: "cctui.cctui.svc",
+            ends: Mutex::new(VecDeque::from([proxy_upstream])),
+            dials: AtomicUsize::new(0),
+        });
+        let target = ServerTarget::parse("http://cctui.cctui.svc:8700").unwrap();
+        let inj = Arc::new(ServerInjector::gateway(target, KEY.to_owned(), GATEWAY_TOKEN).unwrap());
+        tokio::spawn(async move { Box::pin(inj.pump(proxy_client, &*dialer)).await });
+        (worker, server)
+    }
+
+    #[tokio::test]
+    async fn the_gateway_strips_the_token_and_injects_the_key() {
+        let (mut worker, mut server) = wired_gateway();
+        let request = format!(
+            "GET /{GATEWAY_TOKEN}/api/v1/sessions HTTP/1.1\r\nHost: guard:15003\r\n\
+             Authorization: Bearer {PLACEHOLDER_MACHINE_KEY}\r\n\r\n"
+        );
+        worker.write_all(request.as_bytes()).await.unwrap();
+        let (head, _) = read_message(&mut server, false).await;
+        assert!(head.starts_with("GET /api/v1/sessions HTTP/1.1\r\n"), "{head}");
+        assert!(head.contains("Host: cctui.cctui.svc:8700\r\n"), "{head}");
+        assert!(head.contains(&format!("Authorization: Bearer {KEY}")), "{head}");
+        assert!(!head.contains(GATEWAY_TOKEN), "{head}");
+    }
+
+    #[tokio::test]
+    async fn the_gateway_refuses_a_request_without_the_token() {
+        let (mut worker, _server) = wired_gateway();
+        let request = format!(
+            "GET /api/v1/sessions HTTP/1.1\r\nHost: guard:15003\r\n\
+             Authorization: Bearer {PLACEHOLDER_MACHINE_KEY}\r\n\r\n"
+        );
+        worker.write_all(request.as_bytes()).await.unwrap();
+        let (resp, _) = read_message(&mut worker, true).await;
+        assert!(resp.starts_with("HTTP/1.1 403"), "{resp}");
     }
 
     #[test]

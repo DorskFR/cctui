@@ -596,9 +596,27 @@ jobs:
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
 
       # Still untagged, so a harness below the floor fails the release here.
-      - name: Verify harness version floors in the worker image
+      - name: Build the agents sample on the worker image
         if: matrix.image == 'cctui-worker' && env.MODE != 'retag'
-        run: bash scripts/check-worker-image-harness.sh "$IMAGE@${{ steps.build.outputs.digest }}"
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: deploy/examples/worker-agents
+          platforms: linux/amd64
+          build-args: |
+            BASE_IMAGE=${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+            WITH_CLAUDE=1
+            WITH_CODEX=1
+            WITH_OPENCODE=1
+            WITH_ACP_AGENTS=1
+            WITH_GOOSE=1
+            WITH_TOOLS=1
+          tags: cctui-worker-agents:release-check
+          load: true
+          push: false
+
+      - name: Verify harness version floors in the agents sample
+        if: matrix.image == 'cctui-worker' && env.MODE != 'retag'
+        run: bash scripts/check-worker-image-harness.sh cctui-worker-agents:release-check
 
       - name: Record digest
         if: env.MODE != 'retag'

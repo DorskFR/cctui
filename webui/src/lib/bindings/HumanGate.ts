@@ -3,4 +3,4 @@
 /**
  * The human step bounding a worker's outward actions.
  */
-export type HumanGate = "no_push" | "draft_pr_only" | "outward_held_for_approval";
+export type HumanGate = "no_push" | "draft_pr_only" | "outward_held_for_approval" | "custom";

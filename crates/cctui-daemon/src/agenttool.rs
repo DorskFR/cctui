@@ -1056,6 +1056,9 @@ fn render_user_action_result(v: &Value) -> String {
 fn render_context_entry(e: &ContextToolEntry) -> String {
     let state = if e.enabled { "enabled" } else { "disabled" };
     let mut line = format!("{} ({}) — {} · v{} · {state}", e.name, e.kind, e.title, e.version);
+    if let Some(summary) = e.match_summary.as_deref() {
+        let _ = write!(line, " · match: {summary}");
+    }
     if e.pending {
         line.push_str(" · pending approval");
     }
@@ -2388,6 +2391,20 @@ mod tests {
         assert_eq!(
             render_context_result("show", &r),
             "ops (memory) — ops title · v2 · enabled\n\nno prod"
+        );
+    }
+
+    #[test]
+    fn a_context_entry_renders_the_filter_the_server_summarized() {
+        let mut scoped = entry("wt", "rule");
+        scoped.match_summary = Some("machines=dev1 (3d3d04a3…), paths=/w/repo".to_owned());
+        let mut any = entry("ops", "memory");
+        any.match_summary = Some("everywhere".to_owned());
+        let r = ContextToolResponse { items: vec![scoped, any], ..ContextToolResponse::default() };
+        assert_eq!(
+            render_context_result("list", &r),
+            "wt (rule) — wt title · v2 · enabled · match: machines=dev1 (3d3d04a3…), paths=/w/repo\n\
+             ops (memory) — ops title · v2 · enabled · match: everywhere"
         );
     }
 

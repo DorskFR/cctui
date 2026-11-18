@@ -125,6 +125,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "storage_lifecycle",
         sql: include_str!("../schema/0018_storage_lifecycle.sql"),
     },
+    Migration {
+        version: 19,
+        name: "redteam_runs",
+        sql: include_str!("../schema/0019_redteam_runs.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -272,7 +277,8 @@ mod tests {
                     (15, "bootstrap".to_owned()),
                     (16, "bootstrap".to_owned()),
                     (17, "bootstrap".to_owned()),
-                    (18, "bootstrap".to_owned())
+                    (18, "bootstrap".to_owned()),
+                    (19, "bootstrap".to_owned())
                 ]
             );
 
@@ -495,7 +501,8 @@ mod tests {
                     (15, "bootstrap".to_owned()),
                     (16, "bootstrap".to_owned()),
                     (17, "bootstrap".to_owned()),
-                    (18, "bootstrap".to_owned())
+                    (18, "bootstrap".to_owned()),
+                    (19, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =

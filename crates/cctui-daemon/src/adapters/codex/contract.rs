@@ -2,7 +2,7 @@
 //! for [`CODEX_MIN_VERSION`].
 //!
 //! The floor feeds the [`super::app_server`] handshake, `ARG CODEX_VERSION` in
-//! `deploy/worker.Dockerfile` (kept equal by
+//! `deploy/examples/worker-agents/Dockerfile` (kept equal by
 //! `scripts/check-codex-version-drift.sh`), and the retained schema under
 //! `schema/`, generated with `codex app-server generate-json-schema`.
 //!

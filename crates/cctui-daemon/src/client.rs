@@ -674,6 +674,13 @@ impl ServerClient {
     }
 }
 
+/// `scheme://host[:port]` of `url`, safe to log when the path carries a token.
+#[must_use]
+pub fn url_origin(url: &str) -> &str {
+    let host_start = url.find("://").map_or(0, |i| i + 3);
+    url[host_start..].find('/').map_or(url, |i| &url[..host_start + i])
+}
+
 /// WS client request carrying the machine key in the `Authorization` header.
 pub fn daemon_ws_request(
     url: &str,
@@ -710,6 +717,13 @@ mod tests {
         let url = client.daemon_ws_url();
         assert_eq!(url, "wss://cctui.example.com/api/v1/daemon/ws");
         assert!(!url.contains("token"));
+    }
+
+    #[test]
+    fn url_origin_drops_the_path() {
+        assert_eq!(url_origin("wss://guard:15003/tok3n/api/v1/daemon/ws"), "wss://guard:15003");
+        assert_eq!(url_origin("https://cctui.example.com"), "https://cctui.example.com");
+        assert_eq!(url_origin("guard:15003/tok3n"), "guard:15003");
     }
 
     #[test]

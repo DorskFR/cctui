@@ -106,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
             cctui_redteam::dns::run(&listen, &http, &zone, answer).await
         }
         Command::T2(cmd) => {
-            if cctui_redteam::t2::cli(cmd)? {
+            if cctui_redteam::t2::cli(cmd).await? {
                 Ok(())
             } else {
                 std::process::exit(1);

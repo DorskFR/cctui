@@ -21,18 +21,19 @@ use std::time::Duration;
 use cctui_dispatcher_core::{
     Dispatcher, HandleState, SpawnOutcome, dedup_source, label_safe, worker_name,
 };
-use cctui_orchestrator::validate::{check_pod_settings, template_drift};
+use cctui_orchestrator::validate::{check_placement, check_pod_settings, template_drift};
 use cctui_orchestrator::{
     ANNOTATION_DISPATCH_ID, ANNOTATION_GPG_SIGNING, ANNOTATION_GUARD_IDENTITY, ANNOTATION_POSTURE,
-    ANNOTATION_SERVER_URL, ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER,
-    LABEL_WORKER_PROFILE, WorkerProfile, WorkerProfileSpec,
+    ANNOTATION_SERVER_URL, ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, LABEL_GUARD_FOR,
+    LABEL_GUARD_PLACEMENT, LABEL_ROLE, LABEL_WORKER_PROFILE, ROLE_GUARD_PROXY, WorkerProfile,
+    WorkerProfileSpec,
 };
 use cctui_proto::api::WorkerExit;
 use cctui_proto::dispatch_identity::{PLACEHOLDER_MACHINE_KEY, RegisterRequest};
 use cctui_proto::worker_env::check_payload_env;
 use cctui_proto::ws::WireDispatchSpec;
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::api::core::v1::{Pod, Service};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::api::{
     Api, DeleteParams, ListParams, Patch, PatchParams, PostParams, Preconditions, PropagationPolicy,
@@ -41,6 +42,7 @@ use kube::{Client, Error as KubeError};
 use tokio_util::sync::CancellationToken;
 
 mod exposure;
+mod guard_pod;
 mod handle;
 mod queue_hold;
 mod registry;
@@ -111,6 +113,7 @@ pub struct Spawner {
     max_inflight: usize,
     /// `activeDeadlineSeconds` applied when a dispatch has no `timeout_minutes`.
     default_deadline_secs: i64,
+    guard_image: String,
 }
 
 impl Spawner {
@@ -142,6 +145,7 @@ impl Spawner {
             registry,
             max_inflight,
             default_deadline_secs,
+            guard_image: guard_pod::sidecar_image(),
         })
     }
 
@@ -287,6 +291,7 @@ impl Spawner {
         default_deadline_secs: i64,
         suspend: bool,
     ) -> anyhow::Result<Job> {
+        check_placement(profile).map_err(|e| anyhow::anyhow!("spec.guard.placement: {e}"))?;
         let RunEnv { literal: mut overrides, identity, .. } =
             Self::run_env(cctui_url, profile, spec)?;
         let dispatch_id = job.dispatch_id.to_string();
@@ -299,6 +304,14 @@ impl Spawner {
         managed_labels.insert(LABEL_ORIGIN.into(), json!("cctui-kube-dispatcher"));
         managed_labels.insert(LABEL_SESSION_ID.into(), json!(label_safe(&spec.session_id)));
         managed_labels.insert(LABEL_WORKER_PROFILE.into(), json!(label_safe(profile_name)));
+        let mut guard_annotations = serde_json::Map::new();
+        guard_pod::stamp(
+            &mut guard_annotations,
+            &mut managed_labels,
+            profile,
+            job.name,
+            &dispatch_id,
+        );
         let labels = with_profile_metadata(profile.pod_labels(), managed_labels);
         let mut job_annotations = serde_json::Map::new();
         job_annotations.insert(ANNOTATION_SESSION_ID.into(), json!(spec.session_id));
@@ -312,6 +325,7 @@ impl Spawner {
         {
             annotations.insert(k.clone(), json!(v));
         }
+        annotations.extend(guard_annotations);
         annotations.insert(ANNOTATION_SESSION_ID.into(), json!(spec.session_id));
         annotations.insert(ANNOTATION_WORKER_CONTAINER.into(), json!(worker_name));
         if let Some(identity) = identity {
@@ -524,7 +538,88 @@ impl Spawner {
             Self::registration(&self.cctui_url, &profile, spec, &self.namespace, identity)?;
         self.registry.register(&registration).await?;
         let placed = self.place_job(&job, suspend, &name).await?;
+        if guard_pod::is_pod(&profile) && !suspend {
+            match self.jobs().get(&name).await {
+                Ok(job) => self.ensure_guard(&job, &profile).await,
+                Err(e) => tracing::warn!(job = %name, error = %e, "reading the Job for its guard"),
+            }
+        }
         Ok(SpawnOutcome { exposure, ..placed })
+    }
+
+    fn services(&self) -> Api<Service> {
+        Api::namespaced(self.client.clone(), &self.namespace)
+    }
+
+    /// Creates a running `pod`-placed Job's guard Pod and Service; existing
+    /// ones are left as they are.
+    async fn ensure_guard(&self, job: &Job, profile: &WorkerProfileSpec) {
+        if !guard_pod::is_pod(profile) || Self::job_suspended(job) {
+            return;
+        }
+        let job_name = job.metadata.name.as_deref().unwrap_or_default();
+        let Some((pod, service)) = guard_pod::manifests(job, profile, &self.guard_image) else {
+            tracing::debug!(job = %job_name, "worker Job carries no guard tokens: no guard pod");
+            return;
+        };
+        let pp = PostParams::default();
+        let created = [
+            ("Pod", self.pods().create(&pp, &pod).await.map(drop)),
+            ("Service", self.services().create(&pp, &service).await.map(drop)),
+        ];
+        for (kind, result) in created {
+            match result {
+                Ok(()) => tracing::info!(job = %job_name, kind, "guard created"),
+                Err(KubeError::Api(e)) if e.code == 409 => {}
+                Err(e) => tracing::warn!(job = %job_name, kind, error = %e, "creating the guard"),
+            }
+        }
+    }
+
+    /// `(guard pod, Job it guards)` for every guard pod; `None` when the list
+    /// failed.
+    async fn guard_pods(&self) -> Option<Vec<(String, String)>> {
+        let lp = ListParams::default().labels(&format!("{LABEL_ROLE}={ROLE_GUARD_PROXY}"));
+        match self.pods().list(&lp).await {
+            Ok(list) => Some(
+                list.items
+                    .iter()
+                    .filter_map(|p| {
+                        let job = p.metadata.labels.as_ref()?.get(LABEL_GUARD_FOR)?;
+                        Some((p.metadata.name.clone()?, job.clone()))
+                    })
+                    .collect(),
+            ),
+            Err(e) => {
+                tracing::warn!(error = %e, "listing guard pods failed");
+                None
+            }
+        }
+    }
+
+    /// Deletes the guards of Jobs that ended or are gone. `guards` must be
+    /// listed before `jobs`: a Job always exists before its guard, so a fresh
+    /// guard's Job is then always in `jobs`.
+    async fn reap_guards(&self, guards: &[(String, String)], jobs: &[Job]) {
+        let live: std::collections::BTreeSet<&str> = jobs
+            .iter()
+            .filter(|j| Self::job_terminal_state(j).is_none())
+            .filter_map(|j| j.metadata.name.as_deref())
+            .collect();
+        for (guard, job) in guards.iter().filter(|(_, job)| !live.contains(job.as_str())) {
+            let dp = DeleteParams::default();
+            let deleted = [
+                ("Pod", self.pods().delete(guard, &dp).await.map(drop)),
+                ("Service", self.services().delete(guard, &dp).await.map(drop)),
+            ];
+            for (kind, result) in deleted {
+                match result {
+                    Ok(()) => tracing::info!(job = %job, kind, "guard of an ended Job deleted"),
+                    Err(KubeError::Api(e)) if e.code == 404 => {}
+                    Err(e) => tracing::warn!(job = %job, kind, error = %e, "deleting the guard"),
+                }
+            }
+        }
     }
 
     /// Resolve a dispatch up to its dedup decision, registering nothing.
@@ -718,8 +813,15 @@ impl Spawner {
     }
 
     async fn reconcile_queues(&self, holds: &mut queue_hold::QueueHolds) -> anyhow::Result<()> {
+        let guards = self.guard_pods().await;
         let lp = ListParams::default().labels(&format!("{LABEL_ORIGIN}=cctui-kube-dispatcher"));
         let jobs = self.jobs().list(&lp).await?;
+        if let Some(guards) = &guards {
+            self.reap_guards(guards, &jobs.items).await;
+        }
+        let guarded = |job: &Job| {
+            guards.iter().flatten().any(|(_, j)| Some(j.as_str()) == job.metadata.name.as_deref())
+        };
 
         let mut by_profile: std::collections::BTreeMap<String, (Vec<&Job>, Vec<&Job>)> =
             std::collections::BTreeMap::new();
@@ -751,17 +853,23 @@ impl Spawner {
                 for job in running.iter().chain(queued.iter()) {
                     self.reconcile_drift(job, &profile_name, profile).await;
                 }
+                for job in running.iter().copied().filter(|j| !guarded(j)) {
+                    self.ensure_guard(job, profile).await;
+                }
             }
             if queued.is_empty() {
                 continue;
             }
-            let cap = profile.and_then(|p| p.max_inflight);
+            let cap = profile.as_ref().and_then(|p| p.max_inflight);
             for job in jobs_to_resume(queued, running.len(), cap) {
                 let Some(name) = job.metadata.name.as_deref() else { continue };
                 let patch = Patch::Merge(json!({ "spec": { "suspend": false } }));
                 match self.jobs().patch(name, &PatchParams::default(), &patch).await {
-                    Ok(_) => {
+                    Ok(resumed) => {
                         tracing::info!(job = %name, profile = %profile_name, "resumed queued worker");
+                        if let Some(profile) = &profile {
+                            self.ensure_guard(&resumed, profile).await;
+                        }
                     }
                     Err(e) => {
                         tracing::warn!(job = %name, error = %e, "resuming queued worker failed");
@@ -892,24 +1000,9 @@ impl Spawner {
         let worker_name = profile.worker_container_name().to_owned();
         let pod_spec = Self::pod_spec(profile, &worker_name, &overrides)?;
 
-        let mut annotations = serde_json::Map::new();
-        for (k, v) in
-            profile.pod_annotations.iter().chain(profile.pod_metadata_annotations()).flatten()
-        {
-            annotations.insert(k.clone(), json!(v));
-        }
-        for (k, v) in old_meta.and_then(|m| m.annotations.as_ref()).into_iter().flatten() {
-            if k.starts_with("cctui.dev/") {
-                annotations.insert(k.clone(), json!(v));
-            }
-        }
+        let mut annotations =
+            rebuilt_annotations(old_meta.and_then(|m| m.annotations.as_ref()), profile);
         annotations.insert(ANNOTATION_WORKER_CONTAINER.into(), json!(worker_name));
-        if profile.gpg_signing {
-            annotations.insert(ANNOTATION_GPG_SIGNING.into(), json!("true"));
-        } else {
-            annotations.remove(ANNOTATION_GPG_SIGNING);
-        }
-        stamp_posture(&mut annotations, profile);
 
         let ours = |m: Option<&std::collections::BTreeMap<String, String>>| {
             m.into_iter()
@@ -918,16 +1011,25 @@ impl Spawner {
                 .map(|(k, v)| (k.clone(), json!(v)))
                 .collect::<serde_json::Map<String, Value>>()
         };
+        let mut template_labels = ours(old_meta.and_then(|m| m.labels.as_ref()));
+        let dispatch_id = annotations
+            .get(ANNOTATION_DISPATCH_ID)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        guard_pod::stamp(&mut annotations, &mut template_labels, profile, &name, &dispatch_id);
+        let mut job_labels = ours(old.metadata.labels.as_ref());
+        job_labels.remove(LABEL_GUARD_PLACEMENT);
+        if let Some(placement) = template_labels.get(LABEL_GUARD_PLACEMENT) {
+            job_labels.insert(LABEL_GUARD_PLACEMENT.into(), placement.clone());
+        }
 
         let mut job_json = json!({
             "apiVersion": "batch/v1",
             "kind": "Job",
             "metadata": {
                 "name": name,
-                "labels": with_profile_metadata(
-                    profile.pod_labels(),
-                    ours(old.metadata.labels.as_ref()),
-                ),
+                "labels": with_profile_metadata(profile.pod_labels(), job_labels),
                 "annotations": with_profile_metadata(
                     profile.pod_metadata_annotations(),
                     ours(old.metadata.annotations.as_ref()),
@@ -940,10 +1042,7 @@ impl Spawner {
                     .unwrap_or_else(|| i32::try_from(JOB_TTL_SECONDS).unwrap_or(i32::MAX)),
                 "template": {
                     "metadata": {
-                        "labels": with_profile_metadata(
-                            profile.pod_labels(),
-                            ours(old_meta.and_then(|m| m.labels.as_ref())),
-                        ),
+                        "labels": with_profile_metadata(profile.pod_labels(), template_labels),
                         "annotations": annotations,
                     },
                     "spec": pod_spec,
@@ -1157,6 +1256,31 @@ fn with_profile_metadata(
 }
 
 /// Removing it for root also drops a copy smuggled in through `podAnnotations`.
+/// A rebuilt template's annotations: the profile's, then every `cctui.dev/*`
+/// one the dispatch carried, with gpg and posture re-read from the profile.
+fn rebuilt_annotations(
+    old: Option<&std::collections::BTreeMap<String, String>>,
+    profile: &WorkerProfileSpec,
+) -> serde_json::Map<String, Value> {
+    let mut annotations = serde_json::Map::new();
+    for (k, v) in profile.pod_annotations.iter().chain(profile.pod_metadata_annotations()).flatten()
+    {
+        annotations.insert(k.clone(), json!(v));
+    }
+    for (k, v) in old.into_iter().flatten() {
+        if k.starts_with("cctui.dev/") {
+            annotations.insert(k.clone(), json!(v));
+        }
+    }
+    if profile.gpg_signing {
+        annotations.insert(ANNOTATION_GPG_SIGNING.into(), json!("true"));
+    } else {
+        annotations.remove(ANNOTATION_GPG_SIGNING);
+    }
+    stamp_posture(&mut annotations, profile);
+    annotations
+}
+
 fn stamp_posture(annotations: &mut serde_json::Map<String, Value>, profile: &WorkerProfileSpec) {
     annotations.remove(ANNOTATION_POSTURE);
     if let Some(posture) = profile.posture().annotation() {
@@ -1318,7 +1442,10 @@ const fn drift_disposition(never_ran: bool, has_pods: bool, suspended: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cctui_orchestrator::{Posture, WorkerPodSpec};
+    use cctui_orchestrator::{
+        ANNOTATION_GUARD_CONTROL_TOKEN, ANNOTATION_GUARD_PROXY_TOKEN, ANNOTATION_GUARD_SERVICE,
+        GuardPlacement, GuardSpec, Posture, WorkerPodSpec,
+    };
     use k8s_openapi::api::core::v1::Affinity;
 
     type Mutation = (&'static str, fn(&mut WorkerProfileSpec));
@@ -2454,6 +2581,137 @@ mod tests {
         }
     }
 
+    fn guard_pod_profile() -> WorkerProfileSpec {
+        let mut profile = lean_profile();
+        profile.posture = Some(Posture::Nonroot);
+        profile.guard =
+            Some(GuardSpec { placement: Some(GuardPlacement::Pod), ..Default::default() });
+        profile
+    }
+
+    fn template_annotation(v: &Value, key: &str) -> Option<String> {
+        v.pointer("/spec/template/metadata/annotations")?.get(key)?.as_str().map(ToOwned::to_owned)
+    }
+
+    #[test]
+    fn a_sidecar_placement_renders_the_job_unchanged() {
+        let s = spec("sess-placement", json!({ "flow": "review" }));
+        for base in [lean_profile(), full_profile()] {
+            let mut sidecar = base.clone();
+            sidecar.guard =
+                Some(GuardSpec { placement: Some(GuardPlacement::Sidecar), ..Default::default() });
+            assert_eq!(build("p", &sidecar, &s), build("p", &base, &s));
+        }
+    }
+
+    #[test]
+    fn a_pod_placement_stamps_its_guard_and_keeps_the_tokens_out_of_env_and_payload() {
+        let s = spec(
+            "sess-guard-pod",
+            json!({ "flow": "review", "cctui_machine_key": "mk-1", "env": { "K": "v" } }),
+        );
+        let v = build("p", &guard_pod_profile(), &s);
+        let name = worker_name("sess-guard-pod");
+        assert_eq!(
+            template_annotation(&v, ANNOTATION_GUARD_SERVICE),
+            Some(format!("{name}-g0d15")),
+            "named from the dispatch id"
+        );
+        let proxy = template_annotation(&v, ANNOTATION_GUARD_PROXY_TOKEN).unwrap();
+        let control = template_annotation(&v, ANNOTATION_GUARD_CONTROL_TOKEN).unwrap();
+        assert!(proxy.len() == 64 && control.len() == 64 && proxy != control);
+        let placement = "/spec/template/metadata/labels/cctui.dev~1guard-placement";
+        assert_eq!(v.pointer(placement), Some(&json!("pod")));
+
+        let env = serde_json::to_string(&worker_env(&v)).unwrap();
+        assert!(!env.contains(&proxy) && !env.contains(&control), "tokens never ride in env");
+        let payload = env_value(&v, "TASK_PAYLOAD_JSON").unwrap();
+        assert!(!payload.contains(&proxy) && !payload.contains(&control));
+        let registered = serde_json::to_string(&registration(&s).unwrap().env).unwrap();
+        assert!(!registered.contains(&proxy) && !registered.contains(&control));
+
+        let again = build("p", &guard_pod_profile(), &s);
+        assert_ne!(
+            template_annotation(&again, ANNOTATION_GUARD_PROXY_TOKEN),
+            Some(proxy),
+            "every dispatch mints its own tokens"
+        );
+    }
+
+    #[test]
+    fn a_pod_placement_needs_a_nonroot_profile() {
+        let mut root = guard_pod_profile();
+        root.posture = None;
+        let err = build_err(&root, json!({ "flow": "review" }));
+        assert!(err.contains("spec.guard.placement"), "{err}");
+    }
+
+    #[test]
+    fn the_guard_pod_and_service_carry_the_jobs_tokens_and_its_owner() {
+        let s = spec("sess-guard-manifest", json!({ "flow": "review" }));
+        let profile = guard_pod_profile();
+        let mut v = build("p", &profile, &s);
+        v["metadata"]["uid"] = json!("job-uid-1");
+        let job: Job = serde_json::from_value(v.clone()).unwrap();
+        let (pod, service) = guard_pod::manifests(&job, &profile, "example.com/guard:1").unwrap();
+        let name = worker_name("sess-guard-manifest");
+        assert_eq!(pod.metadata.name.as_deref(), Some(format!("{name}-g0d15").as_str()));
+        assert_eq!(service.metadata.name, pod.metadata.name);
+        assert_eq!(pod.metadata.owner_references.as_ref().unwrap()[0].uid, "job-uid-1");
+        assert_eq!(service.metadata.owner_references.as_ref().unwrap()[0].kind, "Job");
+        let annotations = pod.metadata.annotations.as_ref().unwrap();
+        for key in [
+            ANNOTATION_GUARD_PROXY_TOKEN,
+            ANNOTATION_GUARD_CONTROL_TOKEN,
+            ANNOTATION_DISPATCH_ID,
+            ANNOTATION_SERVER_URL,
+        ] {
+            assert_eq!(annotations.get(key).cloned(), template_annotation(&v, key), "{key}");
+        }
+        let spec = pod.spec.as_ref().unwrap();
+        assert_eq!(spec.active_deadline_seconds, Some(30 * 60 + 300));
+        assert!(spec.init_containers.is_none());
+        let rendered = serde_json::to_string(&pod).unwrap();
+        assert!(!rendered.contains("NET_ADMIN") && !rendered.contains("net-init"));
+        assert_eq!(spec.containers[0].image.as_deref(), Some("example.com/guard:1"));
+        let labels = pod.metadata.labels.as_ref().unwrap();
+        assert!(!labels.contains_key(LABEL_WORKER_PROFILE) && !labels.contains_key("job-name"));
+
+        let suspended = queued_job("p", &profile, &s);
+        assert!(guard_pod::manifests(&suspended, &profile, "img").is_none(), "no uid yet");
+    }
+
+    #[test]
+    fn a_rebuild_keeps_the_guard_tokens_and_a_placement_flip_is_drift() {
+        let s = spec("sess-guard-rebuild", json!({ "flow": "review" }));
+        let profile = guard_pod_profile();
+        let job = queued_job("p", &profile, &s);
+        assert_eq!(drift_of(&job, &profile), None);
+        let rebuilt = Spawner::rebuild_job(&job, &profile).unwrap();
+        let before = serde_json::to_value(&job).unwrap();
+        let after = serde_json::to_value(&rebuilt).unwrap();
+        for key in
+            [ANNOTATION_GUARD_PROXY_TOKEN, ANNOTATION_GUARD_CONTROL_TOKEN, ANNOTATION_GUARD_SERVICE]
+        {
+            assert_eq!(template_annotation(&after, key), template_annotation(&before, key));
+        }
+
+        let mut sidecar = profile.clone();
+        sidecar.guard = None;
+        assert!(drift_of(&job, &sidecar).is_some());
+        let flipped = serde_json::to_value(Spawner::rebuild_job(&job, &sidecar).unwrap()).unwrap();
+        assert!(template_annotation(&flipped, ANNOTATION_GUARD_PROXY_TOKEN).is_none());
+        let placement = "labels/cctui.dev~1guard-placement";
+        assert!(flipped.pointer(&format!("/spec/template/metadata/{placement}")).is_none());
+        assert!(flipped.pointer(&format!("/metadata/{placement}")).is_none());
+
+        let sidecar_job = queued_job("p", &sidecar, &s);
+        assert!(drift_of(&sidecar_job, &profile).is_some());
+        let to_pod = Spawner::rebuild_job(&sidecar_job, &profile).unwrap();
+        let to_pod = serde_json::to_value(to_pod).unwrap();
+        assert!(template_annotation(&to_pod, ANNOTATION_GUARD_PROXY_TOKEN).is_some());
+    }
+
     #[test]
     fn a_root_profile_cannot_smuggle_the_posture_annotation() {
         let s = spec("sess-posture-smuggle", json!({}));
@@ -2771,6 +3029,7 @@ mod tests {
             ),
             max_inflight: 0,
             default_deadline_secs: 3600,
+            guard_image: "example.com/cctui-worker:test".into(),
         }
     }
 

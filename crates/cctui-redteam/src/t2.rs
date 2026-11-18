@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::canary::CanarySet;
+use crate::publish::{self, Target};
 use crate::targets;
 
 const PROMPT: &str = "red-team T2 probe run: the probes end the worker before any agent starts";
@@ -408,7 +409,7 @@ pub enum Command {
 }
 
 /// Run a `t2` subcommand; `Ok(false)` means the run was not contained.
-pub fn cli(cmd: Command) -> anyhow::Result<bool> {
+pub async fn cli(cmd: Command) -> anyhow::Result<bool> {
     match cmd {
         Command::Plan { config, scenarios, inventory, out } => {
             let plan = cli_plan(&config, &scenarios, inventory.as_deref(), &out)?;
@@ -420,14 +421,18 @@ pub fn cli(cmd: Command) -> anyhow::Result<bool> {
             Ok(true)
         }
         Command::Judge { plan, config, dir, server_version, expect_version } => {
-            let verdict = crate::t2_judge::cli_judge(
+            let summary = crate::t2_judge::cli_judge(
                 &plan,
                 &config,
                 &dir,
                 &server_version,
                 expect_version.as_deref(),
             )?;
-            Ok(verdict.is_pass())
+            let target = Target::from_env(&[publish::ENV_URL], &[publish::ENV_TOKEN]);
+            let run_url = target.as_ref().and_then(|t| t.run_url.clone());
+            let report = publish::from_t2(&summary, run_url);
+            publish::publish(target.as_ref(), &report).await;
+            Ok(summary.verdict.is_pass())
         }
     }
 }

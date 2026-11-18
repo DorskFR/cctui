@@ -33,6 +33,7 @@ pub mod privacy_scan;
 pub mod profiles;
 pub mod prompts;
 pub mod provider_status;
+pub mod redteam;
 pub mod routes;
 pub mod self_update;
 pub mod service_tokens;
@@ -1388,6 +1389,9 @@ pub enum HumanGate {
     NoPush,
     DraftPrOnly,
     OutwardHeldForApproval,
+    /// An operator-defined gate, or any value this build does not know.
+    #[serde(other)]
+    Custom,
 }
 
 /// Why a dispatched worker never ran to completion as a session.

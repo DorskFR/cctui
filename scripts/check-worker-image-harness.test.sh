@@ -3,7 +3,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 script="$here/check-worker-image-harness.sh"
-dockerfile="$here/../deploy/worker.Dockerfile"
+dockerfile="$here/../deploy/examples/worker-agents/Dockerfile"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
