@@ -137,9 +137,9 @@
 	// component's root. The transform is only set mid-swipe — at rest it would
 	// trap the stacked pseudo-elements' z-index inside the card.
 	const RAILS = {
-		attention: 'var(--status-attention)',
-		working: 'var(--status-working)',
-		failed: 'var(--status-failed)'
+		attention: 'var(--attention-bar)',
+		working: 'var(--ok)',
+		failed: 'var(--danger)'
 	} as const;
 	const rail = $derived(view.rail ? RAILS[view.rail] : null);
 	// Rows are list items: hairline divider, 3px left bar, flat surface.
@@ -166,9 +166,9 @@
 			row ? rowStyle : '',
 			swipe.x !== 0 ? `transform: translateX(${swipe.x}px)` : '',
 			`transition: ${swipe.active ? 'none' : 'transform 0.2s var(--ease)'}`,
-			!row && rail ? `border-left: var(--status-rail-w) solid ${rail}` : '',
+			!row && rail ? `border-left: 3px solid ${rail}` : '',
 			selected
-				? 'background-image: linear-gradient(var(--row-selected-bg), var(--row-selected-bg)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent)'
+				? 'background-image: linear-gradient(var(--row-selected-bg), var(--row-selected-bg)); --row-selected-bg: color-mix(in srgb, var(--accent) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent)'
 				: ''
 		]
 			.filter(Boolean)

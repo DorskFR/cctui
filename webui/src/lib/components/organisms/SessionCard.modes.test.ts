@@ -106,6 +106,18 @@ describe('SessionCard modes', () => {
 		}
 	});
 
+	it('paints a needs-input row with the attention bar and a crashed one with the danger bar', () => {
+		const waiting = render({ variant: 'row', session: session({ attention: 'needs_input' }) });
+		expect(waiting.querySelector<HTMLElement>('[data-journey="session"]')?.style.borderLeft).toContain('var(--attention-bar)');
+		unmount(comp!);
+		comp = null;
+		const crashed = render({
+			variant: 'row',
+			session: session({ status: 'inactive', end_reason: 'crashed', liveness: 'dead', bucket: 'done' })
+		});
+		expect(crashed.querySelector<HTMLElement>('[data-journey="session"]')?.style.borderLeft).toContain('var(--danger)');
+	});
+
 	it('hides the machine when the section header already names it', () => {
 		const el = render({ variant: 'row', showMachine: false });
 		expect(el.querySelector('.l2 .machine')).toBeNull();
