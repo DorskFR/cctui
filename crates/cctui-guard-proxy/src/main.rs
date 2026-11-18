@@ -40,7 +40,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use crate::auth::GuardAuth;
 use crate::dispatch::{DispatchConfig, DispatchIdentity, ServerTarget};
 use crate::forward::ForwardListener;
-use crate::gate::{GatePolicy, Mode};
+use crate::gate::{GatePolicy, Mode as GateMode};
 use crate::gate_rules::RuleBook;
 use crate::ghapp::{GhAppConfig, GhAppMinter};
 use crate::inject::{InjectionPolicy, InjectionRule, Injector, PerPodCa};
@@ -297,16 +297,16 @@ fn build_gate(args: &Args) -> Arc<GatePolicy> {
     let name = args.human_gate.as_deref();
     let policy = GatePolicy::from_rules(name, book.as_ref(), &args.protected_branches);
     match policy.mode() {
-        Mode::Unparseable if book.is_some() => tracing::error!(
+        GateMode::Unparseable if book.is_some() => tracing::error!(
             "human gate {:?} names no rule set: every outbound connection is refused",
             name.unwrap_or_default()
         ),
-        Mode::Open | Mode::Unparseable => {}
-        Mode::Unenforced => tracing::warn!(
+        GateMode::Open | GateMode::Unparseable => {}
+        GateMode::Unenforced => tracing::warn!(
             "human gate outwardHeldForApproval is declared but the guard has no approval flow \
              to hold outward writes for: not enforced here"
         ),
-        Mode::Enforced => {
+        GateMode::Enforced => {
             tracing::info!("human gate {} enforced", policy.name().unwrap_or_default());
         }
     }
@@ -723,11 +723,11 @@ mod tests {
     fn human_gate_flags_parse_and_default_open() {
         let args = parse(&[]);
         assert_eq!(args.gate_rules, PathBuf::from("/etc/guard-proxy/gates.json"));
-        assert_eq!(build_gate(&args).mode(), Mode::Open);
+        assert_eq!(build_gate(&args).mode(), GateMode::Open);
         let args = parse(&["--human-gate", "draftPrOnly", "--protected-branches", "release,dev"]);
         assert_eq!(build_gate(&args).name(), Some("draftPrOnly"));
         assert_eq!(args.protected_branches, vec!["release", "dev"]);
-        assert_eq!(build_gate(&parse(&["--human-gate", "bogus"])).mode(), Mode::Unparseable);
+        assert_eq!(build_gate(&parse(&["--human-gate", "bogus"])).mode(), GateMode::Unparseable);
     }
 
     #[test]
@@ -737,12 +737,12 @@ mod tests {
         std::fs::write(&path, r#"{"gates": {"reviewer": {"extends": "draftPrOnly"}}}"#).unwrap();
         let file = path.to_str().unwrap();
         let gate = build_gate(&parse(&["--gate-rules", file, "--human-gate", "reviewer"]));
-        assert_eq!((gate.mode(), gate.name()), (Mode::Enforced, Some("reviewer")));
+        assert_eq!((gate.mode(), gate.name()), (GateMode::Enforced, Some("reviewer")));
         std::fs::write(&path, "{").unwrap();
         let gated = ["--gate-rules", file, "--human-gate", "noPush"];
         for argv in [&gated[..2], &gated[..]] {
             let gate = build_gate(&parse(argv));
-            assert_eq!(gate.mode(), Mode::Unparseable, "{argv:?}");
+            assert_eq!(gate.mode(), GateMode::Unparseable, "{argv:?}");
             assert!(gate.refuse_connection("registry.npmjs.org", false).is_some(), "{argv:?}");
         }
     }
