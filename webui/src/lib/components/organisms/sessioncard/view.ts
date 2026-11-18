@@ -130,6 +130,19 @@ export function railOf(
 	return s.bucket === 'working' ? 'working' : null;
 }
 
+export const RAILS = {
+	attention: 'var(--attention-bar)',
+	working: 'var(--ok)',
+	failed: 'var(--danger)'
+} as const;
+
+/** A list row's left bar: subagent, then status, then the color-by hue. */
+export function rowBarOf(rail: Rail, child: boolean, accentHue: number | null): string {
+	if (child) return 'color-mix(in srgb, var(--info) 55%, transparent)';
+	if (rail === 'attention' || rail === 'failed') return RAILS[rail];
+	return accentHue != null ? `hsl(${accentHue} var(--mach-border-sl))` : 'transparent';
+}
+
 export function projectOf(workingDir: string): string {
 	return workingDir.split('/').filter(Boolean).pop() ?? '';
 }

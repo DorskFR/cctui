@@ -8,7 +8,7 @@
 	import CompactRow from './sessioncard/CompactRow.svelte';
 	import DetailedCard from './sessioncard/DetailedCard.svelte';
 	import { SwipeGesture } from './sessioncard/swipe.svelte';
-	import { type SessionActions, type SubagentToggle, buildView } from './sessioncard/view';
+	import { RAILS, type SessionActions, type SubagentToggle, buildView, rowBarOf } from './sessioncard/view';
 	import { hasFeature } from '#lib/features.svelte.ts';
 
 	// Two layouts only: the compact list row and the detailed card. The wrapper
@@ -141,26 +141,17 @@
 	// Surface state lives inline on the Card: scoped CSS can't reach a child
 	// component's root. The transform is only set mid-swipe — at rest it would
 	// trap the stacked pseudo-elements' z-index inside the card.
-	const RAILS = {
-		attention: 'var(--attention-bar)',
-		working: 'var(--ok)',
-		failed: 'var(--danger)'
-	} as const;
 	const rail = $derived(view.rail ? RAILS[view.rail] : null);
 	// Rows are list items: hairline divider, 3px left bar, flat surface.
-	const rowBar = $derived(
-		view.child
-			? 'color-mix(in srgb, var(--info) 55%, transparent)'
-			: view.rail === 'attention' || view.rail === 'failed'
-				? RAILS[view.rail]
-				: 'transparent'
-	);
+	const rowBar = $derived(rowBarOf(view.rail, view.child, accentHue));
 	const rowBg = $derived(
 		view.child
 			? 'color-mix(in srgb, var(--bg) 45%, var(--bg-elevated))'
 			: view.rail === 'attention'
 				? 'color-mix(in srgb, var(--warn) 9%, var(--bg-elevated))'
-				: 'transparent'
+				: accentHue != null
+					? `color-mix(in srgb, hsl(${accentHue} 65% 50%) 8%, var(--bg-elevated))`
+					: 'transparent'
 	);
 	const rowPad = $derived(view.child ? '4px' : settings.state.sessionList.density === 'compact' ? '5px' : '7px');
 	const rowStyle = $derived(

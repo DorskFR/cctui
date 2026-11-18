@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@bindings/SessionListItem';
-import { metaParts, needsYouOf, projectOf, queuedMachineOf, railOf, scheduledLaunchOf, statusLabel, titleOf } from './view';
+import { metaParts, needsYouOf, projectOf, queuedMachineOf, railOf, rowBarOf, scheduledLaunchOf, statusLabel, titleOf } from './view';
 
 const session = (over: Partial<SessionListItem>): SessionListItem =>
 	({ id: 'a1e5bd0f2c3d4e5f6', labels: [], working_dir: '/home/me/cctui', ...over }) as SessionListItem;
@@ -124,5 +124,15 @@ describe('queuedMachineOf', () => {
 
 	it('labels the queued state', () => {
 		expect(statusLabel('queued')).toBe('queued');
+	});
+});
+
+describe('rowBarOf', () => {
+	it('paints the color-by hue unless a subagent or status bar takes the edge', () => {
+		expect(rowBarOf(null, false, 200)).toBe('hsl(200 var(--mach-border-sl))');
+		expect(rowBarOf('attention', false, 200)).toBe('var(--attention-bar)');
+		expect(rowBarOf('failed', false, null)).toBe('var(--danger)');
+		expect(rowBarOf(null, true, 200)).toContain('var(--info)');
+		expect(rowBarOf('working', false, null)).toBe('transparent');
 	});
 });
