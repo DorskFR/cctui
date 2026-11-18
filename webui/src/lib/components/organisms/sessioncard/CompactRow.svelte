@@ -1,3 +1,9 @@
+<script lang="ts" module>
+	import { MediaQuery } from 'svelte/reactivity';
+
+	const fineHover = new MediaQuery('(hover: hover) and (pointer: fine)');
+</script>
+
 <script lang="ts">
 	import { Badge, IconButton, Timestamp } from '@dorsk/tsumikit';
 	import AdapterIcon from '#lib/components/atoms/AdapterIcon.svelte';
@@ -30,6 +36,8 @@
 		s.model ? `${modelShort(s.model)}${s.effort && s.effort !== 'medium' ? ` · ${s.effort}` : ''}` : null
 	);
 	let labelsOpen = $state(false);
+	let hovered = $state(false);
+	const showAddLabel = $derived(!fineHover.current || hovered || labelsOpen);
 	const usage = $derived(tokenUsageLayout(s.token_usage, { sum: view.rollup ? view.rollup.tokens : null }));
 
 	function pin(e: Event) {
@@ -69,7 +77,16 @@
 	{/each}
 {/snippet}
 
-<div class="sr" class:one={oneLine} class:child={view.child} class:idle={!live} class:stale={view.stale}>
+<div
+	class="sr"
+	role="presentation"
+	onpointerenter={() => (hovered = true)}
+	onpointerleave={() => (hovered = false)}
+	onfocusin={() => (hovered = true)}
+	onfocusout={(e) => {
+		if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node | null)) hovered = false;
+	}}
+	class:one={oneLine} class:child={view.child} class:idle={!live} class:stale={view.stale}>
 	<span class="gut">
 		{#if actions.selectable}
 			<Gutter child={false} selectable selected={actions.selected} subagentToggles={[]} />
@@ -105,11 +122,12 @@
 			>{/if}
 		{#if !view.child}
 			{@render subToggles()}
-			{#if actions.showLabels && (s.labels.length > 0 || actions.labelEditable)}
-				<span class="labels" class:hover-act={s.labels.length === 0 && !labelsOpen}
+			{#if actions.showLabels && (s.labels.length > 0 || (actions.labelEditable && showAddLabel))}
+				<span class="labels"
 					><LabelBadge
 						labels={s.labels}
 						editable={actions.labelEditable}
+						addHidden={!showAddLabel}
 						allLabels={actions.allLabels}
 						onCreate={actions.onCreateLabel}
 						onAttach={(lid) => actions.onAttachLabel?.(s.id, lid)}
@@ -406,12 +424,9 @@
 	}
 
 	@media (hover: hover) and (pointer: fine) {
-		.hover-act,
 		.star:not(.on) {
 			visibility: hidden;
 		}
-		.sr:hover .hover-act,
-		.sr:focus-within .hover-act,
 		.sr:hover .star,
 		.sr:focus-within .star {
 			visibility: visible;

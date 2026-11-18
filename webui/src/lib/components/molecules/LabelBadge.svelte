@@ -24,7 +24,8 @@
 		onDetach,
 		onUpdate,
 		onDelete,
-		onOpenChange
+		onOpenChange,
+		addHidden = false
 	}: {
 		labels: Label[];
 		editable?: boolean;
@@ -36,6 +37,8 @@
 		onDelete?: (labelId: string) => void | Promise<void>;
 		/** The picker popover opened or closed. */
 		onOpenChange?: (open: boolean) => void;
+		/** Keep the picker trigger out of the layout until the host reveals it. */
+		addHidden?: boolean;
 	} = $props();
 
 	let busy = $state(false);
@@ -104,7 +107,7 @@
 			</span>
 		{/if}
 
-		{#if editable}
+		{#if editable && !addHidden}
 			<span class="add">
 				<Popover
 					label={m.sessions_edit_labels()}
