@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { JsonValue } from '@bindings/serde_json/JsonValue';
+import { m } from '#lib/paraglide/messages.js';
 import {
 	accountTrafficWarning,
+	matchCountLabel,
 	sectionVisibility,
 	sessionNavState,
 	urlSyncFor,
@@ -1205,5 +1207,17 @@ describe('withoutViewParam', () => {
 	});
 	it('leaves a pushed session URL alone once the override is gone', () => {
 		expect(withoutViewParam('http://h/sessions/abc')).toBeNull();
+	});
+});
+
+describe('matchCountLabel', () => {
+	it('reads the server total, with a + once counting stopped early', () => {
+		expect(matchCountLabel(null)).toBeNull();
+		expect(matchCountLabel(undefined)).toBeNull();
+		expect(matchCountLabel({ count: 1, at_least: false })).toBe(m.sessions_search_match_one());
+		expect(matchCountLabel({ count: 47, at_least: false })).toBe(m.sessions_search_match_count({ count: 47 }));
+		expect(matchCountLabel({ count: 500, at_least: true })).toBe(
+			m.sessions_search_match_count_more({ count: 500 })
+		);
 	});
 });

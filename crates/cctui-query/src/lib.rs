@@ -15,7 +15,11 @@ mod tests {
     use super::parse;
 
     fn text(v: &str) -> Node {
-        Node::Text { value: v.to_string() }
+        Node::Text { value: v.to_string(), phrase: false }
+    }
+
+    fn phrase(v: &str) -> Node {
+        Node::Text { value: v.to_string(), phrase: true }
     }
 
     fn filter(field: &str, op: FilterOp, values: &[&str]) -> Node {
@@ -135,8 +139,27 @@ mod tests {
 
     #[test]
     fn quoted_phrase_is_text() {
-        assert_eq!(parse("\"hello world\""), text("hello world"));
-        assert_eq!(parse("\"machine:dev1\""), text("machine:dev1"));
+        assert_eq!(parse("\"hello world\""), phrase("hello world"));
+        assert_eq!(parse("\"machine:dev1\""), phrase("machine:dev1"));
+    }
+
+    #[test]
+    fn only_quoted_text_is_a_phrase() {
+        assert_eq!(parse("hook"), text("hook"));
+        assert_eq!(parse("\"hook\""), phrase("hook"));
+        assert_eq!(parse("pre\"fix\""), phrase("prefix"));
+        assert_eq!(parse("*hook"), text("*hook"));
+        assert_eq!(
+            parse("kanade \"use hook\""),
+            Node::And { children: vec![text("kanade"), phrase("use hook")] }
+        );
+    }
+
+    #[test]
+    fn free_text_leaves_carry_the_phrase_flag() {
+        let parsed = parse("machine:dev1 hook \"a b\" -c");
+        assert_eq!(parsed.free_text_leaves(), vec![("hook", false), ("a b", true), ("c", false)]);
+        assert_eq!(parsed.free_text_terms(), vec!["hook", "a b", "c"]);
     }
 
     #[test]

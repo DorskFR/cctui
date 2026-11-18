@@ -108,6 +108,9 @@
 	{@const scoped = ns.topLevel.filter(sp.keepRow)}
 	{@const liveTop = scoped.filter((s) => s.status !== 'archived')}
 	{@const archTop = scoped.filter((s) => s.status === 'archived')}
+	{#if sp.matchCount}
+		<div data-testid="search-match-count"><Text size="sm" tone="muted">{sp.matchCount}</Text></div>
+	{/if}
 	<div class="section">
 		{@render groupHeader('live', m.sessions_section_live(), liveTop.length, {
 			archiveIds: idsForSection(liveTop, ns.childGroups)

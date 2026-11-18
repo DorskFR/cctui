@@ -6,6 +6,7 @@ import type { SessionListItem } from '@bindings/SessionListItem';
 import type { SessionListResponse } from '@bindings/SessionListResponse';
 import type { Label } from '@bindings/Label';
 import { ApiError } from '#lib/api.ts';
+import { wordStart } from '#lib/search.ts';
 import { m } from '#lib/paraglide/messages.js';
 import { qk } from '#lib/queries/index.ts';
 import {
@@ -345,7 +346,7 @@ describe('SessionsPage — search and archive pager', () => {
 		sp.sections = new Set(['live', 'archived']);
 		flushSync();
 		await vi.advanceTimersByTimeAsync(0);
-		expect(api.searchSessions).toHaveBeenCalledWith('', true, 50, 0, null, expect.any(AbortSignal));
+		expect(api.searchSessions).toHaveBeenCalledWith('', true, 50, 0, null, expect.any(AbortSignal), false, true);
 		expect(sp.pageRows.map((s) => s.id)).toEqual(['old']);
 		expect(sp.pageDone).toBe(true);
 		expect(sp.pageLoading).toBe(false);
@@ -358,7 +359,7 @@ describe('SessionsPage — search and archive pager', () => {
 		flushSync();
 		await vi.advanceTimersByTimeAsync(0);
 		expect(sp.searching).toBe(true);
-		expect(sp.searchTerms).toEqual(['needle']);
+		expect(sp.searchTerms).toEqual([wordStart('needle')]);
 		expect(api.searchSessions).toHaveBeenLastCalledWith('needle', false, 50, 0, null, expect.any(AbortSignal));
 		sp.rawQuery = 'other';
 		await vi.advanceTimersByTimeAsync(200);
@@ -379,7 +380,7 @@ describe('SessionsPage — search and archive pager', () => {
 		api.searchSessions.mockResolvedValueOnce({ sessions: [session({ id: 'tail', status: 'archived' })] });
 		await sp.loadMore();
 		await vi.advanceTimersByTimeAsync(0);
-		expect(api.searchSessions).toHaveBeenLastCalledWith('', true, 50, 50, null, expect.any(AbortSignal));
+		expect(api.searchSessions).toHaveBeenLastCalledWith('', true, 50, 50, null, expect.any(AbortSignal), false, true);
 		expect(sp.pageRows).toHaveLength(51);
 		expect(sp.pageDone).toBe(true);
 	});
@@ -432,7 +433,7 @@ describe('SessionsPage — search and archive pager', () => {
 		api.searchSessions.mockResolvedValue({ sessions: [session({ id: 'hit', status: 'archived' })] });
 		await queryClient.invalidateQueries({ queryKey: qk.sessionsAll });
 		await vi.advanceTimersByTimeAsync(0);
-		expect(api.searchSessions).toHaveBeenLastCalledWith('needle', true, 50, 0, null, expect.any(AbortSignal));
+		expect(api.searchSessions).toHaveBeenLastCalledWith('needle', true, 50, 0, null, expect.any(AbortSignal), false, true);
 		expect(sp.pageRows.map((s) => [s.id, s.status])).toEqual([['hit', 'archived']]);
 	});
 
@@ -507,6 +508,94 @@ describe('SessionsPage — search and archive pager', () => {
 
 	it('keys the pager under the sessions prefix so list invalidations cover it', () => {
 		expect(qk.sessionSearch('', true).slice(0, 1)).toEqual([...qk.sessionsAll]);
+	});
+
+	it('keys the dispatched exclusion only when it is on', () => {
+		expect(qk.sessionSearch('q', true)).toEqual(['sessions', 'search', { q: 'q', archived: true }]);
+		expect(qk.sessionSearch('q', true, false, true)).toEqual([
+			'sessions',
+			'search',
+			{ q: 'q', archived: true, excludeDispatched: true }
+		]);
+		expect(qk.sessionSearch('q', true, true, true)).toEqual([
+			'sessions',
+			'search',
+			{ q: 'q', archived: true, showHidden: true, excludeDispatched: true }
+		]);
+	});
+
+	it('asks the server to drop dispatched rows exactly when the Dispatched section is off', async () => {
+		const { sp, api } = make();
+		sp.rawQuery = 'needle';
+		await vi.advanceTimersByTimeAsync(200);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(api.searchSessions).toHaveBeenLastCalledWith('needle', false, 50, 0, null, expect.any(AbortSignal));
+
+		sp.sections = new Set(['starred', 'live']);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(api.searchSessions).toHaveBeenLastCalledWith(
+			'needle',
+			false,
+			50,
+			0,
+			null,
+			expect.any(AbortSignal),
+			false,
+			true
+		);
+
+		sp.sections = new Set(['starred', 'live', 'dispatched']);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(api.searchSessions).toHaveBeenCalledTimes(3);
+		expect(api.searchSessions).toHaveBeenLastCalledWith('needle', false, 50, 0, null, expect.any(AbortSignal));
+	});
+
+	it('sends the exclusion alongside show-hidden', async () => {
+		const { sp, api } = make({ showHidden: () => true });
+		sp.sections = new Set(['live', 'archived']);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(api.searchSessions).toHaveBeenLastCalledWith('', true, 50, 0, null, expect.any(AbortSignal), true, true);
+	});
+
+	it('shows the server match count, and adding a term lowers it', async () => {
+		const { sp, api } = make();
+		api.searchSessions.mockImplementation(async (...args: unknown[]) => ({
+			sessions: [session({ id: 'a' })],
+			total: String(args[0]).includes('hook')
+				? { count: 47, at_least: false }
+				: { count: 50, at_least: true }
+		}));
+		expect(sp.matchCount).toBeNull();
+		sp.rawQuery = 'kanade';
+		await vi.advanceTimersByTimeAsync(200);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sp.searchTotal).toEqual({ count: 50, at_least: true });
+		expect(sp.matchCount).toBe(m.sessions_search_match_count_more({ count: 50 }));
+
+		sp.rawQuery = 'kanade hook';
+		await vi.advanceTimersByTimeAsync(200);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sp.searchTotal?.count).toBe(47);
+		expect(sp.matchCount).toBe(m.sessions_search_match_count({ count: 47 }));
+	});
+
+	it('has no match count while browsing the archive', async () => {
+		const { sp, api } = make();
+		api.searchSessions.mockResolvedValue({
+			sessions: [session({ id: 'old', status: 'archived' })],
+			total: { count: 9, at_least: false }
+		});
+		sp.sections = new Set(['live', 'archived']);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sp.pageRows.map((s) => s.id)).toEqual(['old']);
+		expect(sp.matchCount).toBeNull();
 	});
 });
 
@@ -789,7 +878,7 @@ describe('SessionsPage — without transcript search', () => {
 		sp.sections = new Set(['live', 'archived']);
 		flushSync();
 		await vi.advanceTimersByTimeAsync(0);
-		expect(api.searchSessions).toHaveBeenCalledExactlyOnceWith('', true, 50, 0, null, expect.any(AbortSignal));
+		expect(api.searchSessions).toHaveBeenCalledExactlyOnceWith('', true, 50, 0, null, expect.any(AbortSignal), false, true);
 		expect(sp.pageRows.map((s) => s.id)).toEqual(['old']);
 		expect(sp.pageError).toBe('');
 	});
