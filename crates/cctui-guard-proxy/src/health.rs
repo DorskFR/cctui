@@ -83,7 +83,8 @@ async fn read_head(conn: &mut TcpStream) -> anyhow::Result<Option<(Vec<u8>, Vec<
 }
 
 async fn read_body(conn: &mut TcpStream, head: &[u8], mut body: Vec<u8>) -> Option<Vec<u8>> {
-    let len: usize = std::str::from_utf8(header_value(head, "content-length")?).ok()?.parse().ok()?;
+    let len: usize =
+        std::str::from_utf8(header_value(head, "content-length")?).ok()?.parse().ok()?;
     if len > MAX_BODY || body.len() > len {
         return None;
     }
@@ -170,7 +171,9 @@ async fn handle(mut conn: TcpStream, peer: IpAddr, health: &Health) -> anyhow::R
         ("PUT", "/policy" | "/private-allow") => {
             return Box::pin(put(&mut conn, health, path, &head, body)).await;
         }
-        (_, "/dispatch/env") => return Box::pin(dispatch_env(&mut conn, peer, health, &head)).await,
+        (_, "/dispatch/env") => {
+            return Box::pin(dispatch_env(&mut conn, peer, health, &head)).await;
+        }
         (_, "/ca.pem") => {
             let resp = health.ca_pem.as_deref().map_or_else(
                 || json_response(404, r#"{"error":"no per-pod CA: injection is off"}"#),

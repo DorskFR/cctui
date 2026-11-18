@@ -2584,10 +2584,8 @@ mod tests {
     fn guard_pod_profile() -> WorkerProfileSpec {
         let mut profile = lean_profile();
         profile.posture = Some(Posture::Nonroot);
-        profile.guard = Some(GuardSpec {
-            placement: Some(GuardPlacement::Pod),
-            ..Default::default()
-        });
+        profile.guard =
+            Some(GuardSpec { placement: Some(GuardPlacement::Pod), ..Default::default() });
         profile
     }
 
@@ -2600,10 +2598,8 @@ mod tests {
         let s = spec("sess-placement", json!({ "flow": "review" }));
         for base in [lean_profile(), full_profile()] {
             let mut sidecar = base.clone();
-            sidecar.guard = Some(GuardSpec {
-                placement: Some(GuardPlacement::Sidecar),
-                ..Default::default()
-            });
+            sidecar.guard =
+                Some(GuardSpec { placement: Some(GuardPlacement::Sidecar), ..Default::default() });
             assert_eq!(build("p", &sidecar, &s), build("p", &base, &s));
         }
     }
@@ -2691,11 +2687,9 @@ mod tests {
         let rebuilt = Spawner::rebuild_job(&job, &profile).unwrap();
         let before = serde_json::to_value(&job).unwrap();
         let after = serde_json::to_value(&rebuilt).unwrap();
-        for key in [
-            ANNOTATION_GUARD_PROXY_TOKEN,
-            ANNOTATION_GUARD_CONTROL_TOKEN,
-            ANNOTATION_GUARD_SERVICE,
-        ] {
+        for key in
+            [ANNOTATION_GUARD_PROXY_TOKEN, ANNOTATION_GUARD_CONTROL_TOKEN, ANNOTATION_GUARD_SERVICE]
+        {
             assert_eq!(template_annotation(&after, key), template_annotation(&before, key));
         }
 

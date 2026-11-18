@@ -61,9 +61,7 @@ pub fn stamp(
         labels.remove(LABEL_GUARD_PLACEMENT);
         return;
     }
-    annotations
-        .entry(ANNOTATION_GUARD_SERVICE)
-        .or_insert_with(|| json!(name(job, dispatch_id)));
+    annotations.entry(ANNOTATION_GUARD_SERVICE).or_insert_with(|| json!(name(job, dispatch_id)));
     for key in [ANNOTATION_GUARD_PROXY_TOKEN, ANNOTATION_GUARD_CONTROL_TOKEN] {
         annotations.entry(key).or_insert_with(|| json!(token()));
     }

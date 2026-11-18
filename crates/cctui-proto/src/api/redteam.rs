@@ -125,10 +125,12 @@ impl RedteamRunReport {
                     out.push(RedteamEscape { cell: cell.cell.clone(), probe: None });
                 }
             } else {
-                out.extend(probes.into_iter().map(|p| RedteamEscape {
-                    cell: cell.cell.clone(),
-                    probe: Some(p.id.clone()),
-                }));
+                out.extend(
+                    probes.into_iter().map(|p| RedteamEscape {
+                        cell: cell.cell.clone(),
+                        probe: Some(p.id.clone()),
+                    }),
+                );
             }
         }
         if out.is_empty() && self.verdict == RedteamOutcome::Escaped {

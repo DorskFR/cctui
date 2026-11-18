@@ -198,8 +198,8 @@ impl Target {
         };
         let server = first(url_vars)?.trim_end_matches('/').to_owned();
         let token = first(token_vars)?;
-        let run_url = first(&[ENV_RUN_URL])
-            .filter(|u| u.starts_with("https://") && u.len() <= MAX_TEXT);
+        let run_url =
+            first(&[ENV_RUN_URL]).filter(|u| u.starts_with("https://") && u.len() <= MAX_TEXT);
         Some(Self { server, token, run_url })
     }
 
@@ -419,11 +419,8 @@ mod tests {
             &tokens,
         )
         .unwrap();
-        let want = Target {
-            server: "https://s.example".to_owned(),
-            token: "k".to_owned(),
-            run_url: None,
-        };
+        let want =
+            Target { server: "https://s.example".to_owned(), token: "k".to_owned(), run_url: None };
         assert_eq!(t, want);
     }
 
