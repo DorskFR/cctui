@@ -56,6 +56,7 @@ async function stubServer(page: Page, role: 'admin' | 'user'): Promise<Stub> {
 			url.pathname === '/api/v1/admin/storage' ||
 			url.pathname === '/api/v1/admin/instance/upstream-hosts' ||
 			url.pathname === '/api/v1/admin/instance/event-retention' ||
+			url.pathname === '/api/v1/admin/redteam' ||
 			url.pathname.startsWith('/api/v1/me/hidden-owners') ||
 			url.pathname.startsWith('/api/v1/admin/users'),
 		async (route) => {
@@ -88,6 +89,7 @@ async function stubServer(page: Page, role: 'admin' | 'user'): Promise<Stub> {
 				return route.fulfill({ json: { hosts: [], source: 'default', env: [], managed: [] } });
 			if (path === '/admin/instance/event-retention')
 				return route.fulfill({ json: { days: 90, default_days: 90, source: 'default' } });
+			if (path === '/admin/redteam') return route.fulfill({ json: { current_version: '0.32.0', versions: [] } });
 			if (path === '/admin/users')
 				return route.fulfill({ json: [userRow('u-me', 'admin'), userRow('u-bob', 'bob')] });
 			const machines = path.match(/^\/admin\/users\/([^/]+)\/machines$/);
