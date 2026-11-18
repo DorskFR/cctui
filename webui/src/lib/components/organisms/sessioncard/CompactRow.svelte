@@ -389,14 +389,6 @@
 	.one .l2 {
 		order: 1;
 	}
-	.one .tokens {
-		width: 66px;
-		justify-content: flex-end;
-		flex: none;
-	}
-	.one .time {
-		text-align: left;
-	}
 	.one .m1 {
 		order: 2;
 	}
