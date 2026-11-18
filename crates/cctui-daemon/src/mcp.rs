@@ -595,7 +595,8 @@ pub fn context_tool_schema() -> Value {
                 "match": {
                     "type": "object",
                     "description": "When the item applies: keys are AND-ed, values within a key \
-    OR-ed, an empty or missing key matches anything.",
+    OR-ed, an empty or missing key matches anything. `machines` and `labels` take ids or \
+    unambiguous names, stored as ids.",
                     "properties": {
                         "machines": strings,
                         "paths": strings,

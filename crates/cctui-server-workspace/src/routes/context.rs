@@ -23,6 +23,7 @@ pub use cctui_proto::api::context::{
 };
 
 pub mod ownership;
+pub mod targets;
 pub use ownership::StoredScope;
 
 use crate::auth::AuthContext;
@@ -1038,7 +1039,7 @@ pub async fn create_item(
     Extension(ctx): Extension<AuthContext>,
     Json(spec): Json<ContextItemSpec>,
 ) -> Result<(StatusCode, Json<ContextItem>), AppError> {
-    let spec = clean_spec(spec)?;
+    let spec = targets::resolve_spec(&state.pool, ctx.user_id, clean_spec(spec)?, &[]).await?;
     let row = insert(&state.pool, ctx.user_id, &spec, None, None).await.map_err(db_err)?;
     Ok((StatusCode::CREATED, Json(row)))
 }
@@ -1054,6 +1055,9 @@ pub async fn update_item(
         .spec
         .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "spec is required"))
         .and_then(clean_spec)?;
+    let before = get_one(&state.pool, ctx.user_id, id).await?;
+    let keep = before.as_ref().map(targets::kept).unwrap_or_default();
+    let spec = targets::resolve_spec(&state.pool, ctx.user_id, spec, &keep).await?;
     let row = update(&state.pool, ctx.user_id, id, &spec, None).await.map_err(db_err)?;
     row.map(Json).ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "context item not found"))
 }

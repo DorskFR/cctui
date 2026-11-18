@@ -191,6 +191,8 @@ pub struct ContextToolEntry {
     pub title: String,
     #[serde(rename = "match", default)]
     pub match_: ContextMatch,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_summary: Option<String>,
     pub enabled: bool,
     pub version: i32,
     #[serde(default)]
