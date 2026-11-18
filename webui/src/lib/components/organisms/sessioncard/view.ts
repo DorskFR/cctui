@@ -224,7 +224,7 @@ export function buildView(
 		needsInput,
 		rail: railOf(s, needsInput, stale, end),
 		end,
-		showStatusBadge: s.status === 'new' || s.status === 'archived',
+		showStatusBadge: s.status === 'new',
 		branch: branchOf(s),
 		remote: remoteOf(s),
 		prLinks: prLinksOf(s),

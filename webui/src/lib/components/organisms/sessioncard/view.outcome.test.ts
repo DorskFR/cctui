@@ -56,3 +56,10 @@ describe('the session row unread count', () => {
 		expect(buildView(row({ bucket: 'review' }), { ...OPTS, unreadCount: 3 }).unreadCount).toBe(3);
 	});
 });
+
+describe('the session row status tag', () => {
+	it('tags a new session but not an archived one', () => {
+		expect(buildView(row({ status: 'new' }), OPTS).showStatusBadge).toBe(true);
+		expect(buildView(row({ status: 'archived' }), OPTS).showStatusBadge).toBe(false);
+	});
+});
