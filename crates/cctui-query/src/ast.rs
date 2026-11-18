@@ -31,10 +31,18 @@ pub enum Node {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         phrase: bool,
     },
-    Filter { filter: Filter },
-    Not { child: Box<Self> },
-    And { children: Vec<Self> },
-    Or { children: Vec<Self> },
+    Filter {
+        filter: Filter,
+    },
+    Not {
+        child: Box<Self>,
+    },
+    And {
+        children: Vec<Self>,
+    },
+    Or {
+        children: Vec<Self>,
+    },
 }
 
 impl Node {

@@ -253,25 +253,27 @@ mod chain {
         let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
         let me = owner(&pool).await;
         let other = owner(&pool).await;
-        let a = session(&pool, me, "a", None, &[user("ask A"), assistant("answer A")]).await;
-        let b_ask = format!("{}\nask B", previous(1, "a", &a));
-        let b = session(&pool, me, "b", Some(&a), &[user(b_ask), assistant("answer B")]).await;
-        let sibling = session(&pool, me, "b2", Some(&a), &[user("ask B2")]).await;
+        let root = session(&pool, me, "a", None, &[user("ask A"), assistant("answer A")]).await;
+        let b_ask = format!("{}\nask B", previous(1, "a", &root));
+        let middle_turns = [user(b_ask), assistant("answer B")];
+        let middle = session(&pool, me, "b", Some(&root), &middle_turns).await;
+        let sibling = session(&pool, me, "b2", Some(&root), &[user("ask B2")]).await;
         let c_ask = format!(
             "<cctui-previous-sessions>\n{}{}</cctui-previous-sessions>\n\nask C",
-            previous(1, "a", &a),
-            previous(2, "b", &b)
+            previous(1, "a", &root),
+            previous(2, "b", &middle)
         );
-        let c = session(&pool, me, "c", Some(&b), &[user(c_ask), assistant("answer C")]).await;
-        let x = session(&pool, other, "x", None, &[user("secret ask")]).await;
-        let y_ask = format!("{}\nask Y", previous(1, "x", &x));
-        let y = session(&pool, me, "y", Some(&x), &[user(y_ask)]).await;
+        let parent_turns = [user(c_ask), assistant("answer C")];
+        let parent = session(&pool, me, "c", Some(&middle), &parent_turns).await;
+        let hidden = session(&pool, other, "x", None, &[user("secret ask")]).await;
+        let y_ask = format!("{}\nask Y", previous(1, "x", &hidden));
+        let heir = session(&pool, me, "y", Some(&hidden), &[user(y_ask)]).await;
         let state = AppState::for_test(pool.clone());
 
-        let out = brief(&state, me.0, &c, true).await.expect("chain brief");
+        let out = brief(&state, me.0, &parent, true).await.expect("chain brief");
         let sessions = out.sessions.expect("sessions");
         let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, [a.as_str(), b.as_str(), c.as_str()]);
+        assert_eq!(ids, [root.as_str(), middle.as_str(), parent.as_str()]);
         assert!(sessions[0].markdown.starts_with("**User:**\n\nask A"), "{}", sessions[0].markdown);
         for needle in ["ask A", "answer A", "ask B", "answer B", "ask C", "answer C"] {
             assert_eq!(out.markdown.matches(needle).count(), 1, "{needle}: {}", out.markdown);
@@ -280,35 +282,35 @@ mod chain {
         assert!(!out.markdown.contains("previous-conversation"), "{}", out.markdown);
         assert!(!out.markdown.contains("(continued from"), "{}", out.markdown);
 
-        let legacy = brief(&state, me.0, &c, false).await.expect("plain brief");
+        let legacy = brief(&state, me.0, &parent, false).await.expect("plain brief");
         assert!(legacy.sessions.is_none());
         assert!(legacy.markdown.contains("ask C") && !legacy.markdown.contains("answer A"));
         assert_eq!(legacy.markdown.matches("(continued from session").count(), 2);
 
-        let out = brief(&state, me.0, &y, true).await.expect("unreadable ancestor is still 200");
+        let out = brief(&state, me.0, &heir, true).await.expect("unreadable ancestor is still 200");
         let sessions = out.sessions.expect("sessions");
         assert_eq!(sessions.len(), 2);
         assert_eq!(sessions[0].name, None);
-        assert_eq!(sessions[0].markdown, format!("(session {x} could not be included)"));
+        assert_eq!(sessions[0].markdown, format!("(session {hidden} could not be included)"));
         assert!(!out.markdown.contains("secret ask"), "{}", out.markdown);
         assert!(
-            sessions[1].markdown.contains(&format!("(continued from session \"x\" {x})")),
+            sessions[1].markdown.contains(&format!("(continued from session \"x\" {hidden})")),
             "{}",
             sessions[1].markdown
         );
 
         assert_eq!(brief(&state, me.0, "no-such-session", true).await.err(), Some(404));
 
-        let prompt = super::render_followup_prompt(&pool, &c, "next").await.unwrap().unwrap();
+        let prompt = super::render_followup_prompt(&pool, &parent, "next").await.unwrap().unwrap();
         assert!(prompt.starts_with("<cctui-previous-sessions>\n"), "{prompt}");
         assert!(prompt.ends_with("</cctui-previous-sessions>\n\nnext"), "{prompt}");
         assert_eq!(prompt.matches("ask A").count(), 1, "{prompt}");
         assert!(prompt.contains("answer C") && !prompt.contains("ask B2"), "{prompt}");
-        let prompt = super::render_followup_prompt(&pool, &y, "next").await.unwrap().unwrap();
-        assert!(prompt.contains(&format!("(session {x} could not be included)")), "{prompt}");
+        let prompt = super::render_followup_prompt(&pool, &heir, "next").await.unwrap().unwrap();
+        assert!(prompt.contains(&format!("(session {hidden} could not be included)")), "{prompt}");
         assert!(!prompt.contains("secret ask"), "{prompt}");
 
-        let all = [y, x, c, sibling, b, a];
+        let all = [heir, hidden, parent, sibling, middle, root];
         sqlx::query("DELETE FROM stream_events WHERE session_id = ANY($1)")
             .bind(&all[..])
             .execute(&pool)

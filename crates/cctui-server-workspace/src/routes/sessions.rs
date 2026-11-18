@@ -1638,8 +1638,7 @@ fn check_query_len(q: &str) -> Result<(), AppError> {
 fn snippet_sql(n_patterns: usize, gap: Option<Unchunked>) -> String {
     let rank = n_patterns + 2;
     let re = if gap.is_some() { 2 * n_patterns + 3 } else { n_patterns + 3 };
-    let hit =
-        |col: &str, like: usize, r: usize| format!("({col} ILIKE ${like} AND {col} ~* ${r})");
+    let hit = |col: &str, like: usize, r: usize| format!("({col} ILIKE ${like} AND {col} ~* ${r})");
     let each = |col: &str, like: usize, r: usize| {
         (0..n_patterns).map(|k| hit(col, like + k, r + k)).collect::<Vec<_>>()
     };
@@ -6488,7 +6487,7 @@ mod tests {
     }
 
     impl SearchPageOpts {
-        const fn page(self) -> super::SearchPage {
+        fn page(self) -> super::SearchPage {
             super::SearchPage {
                 exclude_dispatched: self.exclude,
                 ..search_page(self.limit, Some(self.uid))
@@ -6725,9 +6724,8 @@ mod tests {
         assert_eq!(once.iter().filter(|r| r.id == sid).count(), 1, "one row per session");
 
         let terms = super::Terms::of_query(&cctui_query::parse("ancient"));
-        let snippets = super::fetch_snippets(&pool, std::slice::from_ref(&sid), &terms, gap)
-            .await
-            .unwrap();
+        let snippets =
+            super::fetch_snippets(&pool, std::slice::from_ref(&sid), &terms, gap).await.unwrap();
         assert_eq!(snippets.len(), 1, "{snippets:?}");
         assert!(snippets[0].1.contains("ancient unchunked phrase"), "{snippets:?}");
         assert_eq!(snippets[0].2, old);
@@ -7709,7 +7707,9 @@ mod tests {
         assert!(sql[order..].contains("+ (m.body ILIKE $3 AND m.body ~* $6)::int) DESC"), "{sql}");
         assert!(order < sql.find("ts_rank(").unwrap(), "{sql}");
         assert!(
-            sql.contains("(c.body ILIKE $2 AND c.body ~* $5) AND (c.body ILIKE $3 AND c.body ~* $6)"),
+            sql.contains(
+                "(c.body ILIKE $2 AND c.body ~* $5) AND (c.body ILIKE $3 AND c.body ~* $6)"
+            ),
             "a chunk holding every term is always a candidate: {sql}"
         );
         assert!(!snippet_sql(1, None).contains("LIMIT 1) UNION"), "one term needs no extra branch");

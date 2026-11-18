@@ -24,13 +24,13 @@ fn noise(bytes: usize) -> String {
     out
 }
 
-fn result(id: &str, content: Value) -> Value {
+fn result(id: &str, content: &Value) -> Value {
     json!({ "kind": "tool_result", "tool_use_id": id, "content": content, "is_error": false })
 }
 
 #[test]
 fn trimming_twice_is_trimming_once_and_leaves_a_marker() {
-    let payload = result("t1", json!(noise(50_000)));
+    let payload = result("t1", &json!(noise(50_000)));
     let once = apply(TRIM, "tool_use", &payload).expect("over the limit");
     let content = once["content"].as_str().unwrap();
     assert!(content.len() <= 4096, "{}", content.len());
@@ -39,12 +39,12 @@ fn trimming_twice_is_trimming_once_and_leaves_a_marker() {
     assert_eq!(once[MARK], json!({ "action": "trim", "original_bytes": 50_000 }));
     assert_eq!(once["tool_use_id"], "t1");
     assert_eq!(apply(TRIM, "tool_use", &once), None, "a second pass changes nothing");
-    assert_eq!(apply(TRIM, "tool_use", &result("t2", json!("ok"))), None);
+    assert_eq!(apply(TRIM, "tool_use", &result("t2", &json!("ok"))), None);
 }
 
 #[test]
 fn trimming_cuts_on_a_char_boundary() {
-    let payload = result("t1", json!("é".repeat(10_000)));
+    let payload = result("t1", &json!("é".repeat(10_000)));
     let once = apply(TRIM, "tool_use", &payload).expect("over the limit");
     let content = once["content"].as_str().unwrap();
     assert!(content.len() <= 4096);
@@ -55,7 +55,7 @@ fn trimming_cuts_on_a_char_boundary() {
 fn trimming_block_content_keeps_image_references() {
     let image = json!({ "type": "image", "source": { "type": "cctui-blob", "blob_id": "abc" } });
     let text = json!({ "type": "text", "text": noise(3000) });
-    let payload = result("t1", json!([text, image, text]));
+    let payload = result("t1", &json!([text, image, text]));
     let once = apply(TRIM, "tool_use", &payload).expect("over the limit");
     let blocks = once["content"].as_array().unwrap();
     assert!(blocks.contains(&image));
@@ -85,10 +85,13 @@ fn conversation_text_and_tool_calls_have_nothing_to_trim_or_drop() {
     let rows = [
         ("message", json!({ "role": "user", "text": &long })),
         ("message", json!({ "role": "assistant", "text": &long })),
-        ("message", json!({ "type": "response_item", "payload": { "type": "message",
-            "content": [{ "type": "output_text", "text": &long }] } })),
+        (
+            "message",
+            json!({ "type": "response_item", "payload": { "type": "message",
+            "content": [{ "type": "output_text", "text": &long }] } }),
+        ),
         ("tool_use", json!({ "tool": "Write", "input": { "content": &long }, "id": "t1" })),
-        ("message", result("t1", json!(&long))),
+        ("message", result("t1", &json!(&long))),
     ];
     for (event_type, payload) in &rows {
         for rule in [TRIM, DROP] {
@@ -99,7 +102,7 @@ fn conversation_text_and_tool_calls_have_nothing_to_trim_or_drop() {
 
 #[test]
 fn dropping_replaces_only_the_output_and_keeps_the_trimmed_size() {
-    let payload = result("t1", json!(noise(50_000)));
+    let payload = result("t1", &json!(noise(50_000)));
     let trimmed = apply(TRIM, "tool_use", &payload).unwrap();
     let dropped = apply(DROP, "tool_use", &trimmed).unwrap();
     assert_eq!(dropped["content"], dropped_text(50_000));
@@ -287,7 +290,7 @@ async fn conversation(s: &Seeded) {
         ("message", json!({ "role": "user", "text": &long })),
         ("message", json!({ "role": "assistant", "text": &long })),
         ("tool_use", json!({ "tool": "Bash", "input": { "command": &long }, "id": "t1" })),
-        ("tool_use", result("t2", json!("ok"))),
+        ("tool_use", result("t2", &json!("ok"))),
     ] {
         s.event(event_type, &payload, 30).await;
     }
@@ -297,8 +300,8 @@ async fn conversation(s: &Seeded) {
 async fn a_trim_run_twice_gives_the_same_rows_and_spares_the_conversation() {
     let Some(s) = Seeded::new("storage_trim_twice").await else { return };
     conversation(&s).await;
-    let old = s.event("tool_use", &result("t1", json!(noise(60_000))), 30).await;
-    s.event("tool_use", &result("t3", json!(noise(60_000))), 1).await;
+    let old = s.event("tool_use", &result("t1", &json!(noise(60_000))), 30).await;
+    s.event("tool_use", &result("t3", &json!(noise(60_000))), 1).await;
     let before = s.payloads().await;
 
     assert_eq!(s.run(vec![TRIM]).await, (1, 0));
@@ -330,7 +333,7 @@ async fn a_trim_run_twice_gives_the_same_rows_and_spares_the_conversation() {
 async fn a_drop_run_removes_only_tool_output() {
     let Some(s) = Seeded::new("storage_drop_only_output").await else { return };
     conversation(&s).await;
-    s.event("tool_use", &result("t1", json!(noise(20_000))), 30).await;
+    s.event("tool_use", &result("t1", &json!(noise(20_000))), 30).await;
     let before = s.payloads().await;
 
     assert_eq!(s.run(vec![DROP]).await, (0, 2), "the big and the small result");
@@ -356,7 +359,7 @@ async fn a_drop_run_removes_only_tool_output() {
 async fn without_an_enabled_rule_the_job_touches_nothing() {
     let Some(s) = Seeded::new("storage_default_off").await else { return };
     conversation(&s).await;
-    s.event("tool_use", &result("t1", json!(noise(60_000))), 30).await;
+    s.event("tool_use", &result("t1", &json!(noise(60_000))), 30).await;
     let before = s.payloads().await;
     let rules = active(&StorageLifecycleRules {
         trim: trim_rules().trim.map(|t| StorageTrimRule { enabled: false, ..t }),
@@ -374,9 +377,9 @@ async fn the_preview_counts_what_the_job_then_changes() {
     let Some(s) = Seeded::new("storage_preview_matches").await else { return };
     conversation(&s).await;
     for (i, size) in [60_000, 120_000, 9_000].into_iter().enumerate() {
-        s.event("tool_use", &result(&format!("r{i}"), json!(noise(size))), 30).await;
+        s.event("tool_use", &result(&format!("r{i}"), &json!(noise(size))), 30).await;
     }
-    s.event("tool_use", &result("young", json!(noise(60_000))), 1).await;
+    s.event("tool_use", &result("young", &json!(noise(60_000))), 1).await;
     let scope = [s.sid.clone()];
     let preview = super::preview(&s.pool, trim_rules(), Some(scope.as_slice())).await.unwrap();
     assert!((preview.percent - 100.0).abs() < f64::EPSILON);

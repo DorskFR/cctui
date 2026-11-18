@@ -45,10 +45,10 @@ impl Rule {
 /// Drop runs first, so trim does not spend a pass on rows about to be dropped.
 pub fn active(rules: &StorageLifecycleRules) -> Vec<Rule> {
     let drop = rules.drop.filter(|d| d.enabled).map(|d| Rule::Drop { after_days: d.after_days });
-    let trim = rules.trim.filter(|t| t.enabled).map(|t| Rule::Trim {
-        after_days: t.after_days,
-        above_bytes: t.above_bytes,
-    });
+    let trim = rules
+        .trim
+        .filter(|t| t.enabled)
+        .map(|t| Rule::Trim { after_days: t.after_days, above_bytes: t.above_bytes });
     drop.into_iter().chain(trim).collect()
 }
 

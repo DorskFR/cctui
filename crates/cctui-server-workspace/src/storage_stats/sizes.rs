@@ -214,9 +214,8 @@ async fn sample(pool: &PgPool) -> Result<StorageSample, sqlx::Error> {
 }
 
 pub async fn overview(pool: &PgPool) -> Result<StorageOverview, sqlx::Error> {
-    let database: i64 = sqlx::query_scalar("SELECT pg_database_size(current_database())")
-        .fetch_one(pool)
-        .await?;
+    let database: i64 =
+        sqlx::query_scalar("SELECT pg_database_size(current_database())").fetch_one(pool).await?;
     let tables = tables(pool).await?;
     let images = images(pool).await?;
     let (sample, sample_error) = match sample(pool).await {

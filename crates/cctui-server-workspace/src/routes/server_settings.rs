@@ -402,47 +402,46 @@ async fn store_speech(
         store(pool, SPEECH_KEY, value).await?;
         return Ok(true);
     };
-    let written: Option<String> = match (value, expected) {
-        (Some(v), "") => {
-            sqlx::query_scalar(
-                "INSERT INTO instance_settings (key, value, updated_at) VALUES ($1, $2, now()) \
+    let written: Option<String> =
+        match (value, expected) {
+            (Some(v), "") => {
+                sqlx::query_scalar(
+                    "INSERT INTO instance_settings (key, value, updated_at) VALUES ($1, $2, now()) \
                  ON CONFLICT (key) DO NOTHING RETURNING key",
-            )
-            .bind(SPEECH_KEY)
-            .bind(v)
-            .fetch_optional(pool)
-            .await?
-        }
-        (Some(v), revision) => {
-            sqlx::query_scalar(
-                "UPDATE instance_settings SET value = $2, updated_at = now() \
+                )
+                .bind(SPEECH_KEY)
+                .bind(v)
+                .fetch_optional(pool)
+                .await?
+            }
+            (Some(v), revision) => {
+                sqlx::query_scalar(
+                    "UPDATE instance_settings SET value = $2, updated_at = now() \
                  WHERE key = $1 AND updated_at::text = $3 RETURNING key",
-            )
-            .bind(SPEECH_KEY)
-            .bind(v)
-            .bind(revision.to_owned())
-            .fetch_optional(pool)
-            .await?
-        }
-        (None, "") => {
-            sqlx::query_scalar(
+                )
+                .bind(SPEECH_KEY)
+                .bind(v)
+                .bind(revision.to_owned())
+                .fetch_optional(pool)
+                .await?
+            }
+            (None, "") => sqlx::query_scalar(
                 "SELECT $1::text WHERE NOT EXISTS (SELECT 1 FROM instance_settings WHERE key = $1)",
             )
             .bind(SPEECH_KEY)
             .fetch_optional(pool)
-            .await?
-        }
-        (None, revision) => {
-            sqlx::query_scalar(
-                "DELETE FROM instance_settings WHERE key = $1 AND updated_at::text = $2 \
+            .await?,
+            (None, revision) => {
+                sqlx::query_scalar(
+                    "DELETE FROM instance_settings WHERE key = $1 AND updated_at::text = $2 \
                  RETURNING key",
-            )
-            .bind(SPEECH_KEY)
-            .bind(revision.to_owned())
-            .fetch_optional(pool)
-            .await?
-        }
-    };
+                )
+                .bind(SPEECH_KEY)
+                .bind(revision.to_owned())
+                .fetch_optional(pool)
+                .await?
+            }
+        };
     Ok(written.is_some())
 }
 
@@ -471,9 +470,9 @@ fn speech_change_detail(
     if prev.and_then(|p| p.encrypted_key.as_ref()) != next.encrypted_key.as_ref() {
         changed.push(Value::String("api_key".into()));
     }
-    (!changed.is_empty()).then(|| {
-        serde_json::json!({ "setting": SPEECH_KEY, "changed": changed, "from": from, "to": to })
-    })
+    (!changed.is_empty()).then(
+        || serde_json::json!({ "setting": SPEECH_KEY, "changed": changed, "from": from, "to": to }),
+    )
 }
 
 async fn audit_setting(state: &AppState, ctx: &AuthContext, detail: serde_json::Value) {
@@ -1080,16 +1079,16 @@ mod tests {
         let again = put(enabled_speech(), "").await;
         assert_eq!(again.unwrap_err().status(), StatusCode::CONFLICT, "a row appeared since");
 
-        let Json(tab_a) = load().await.unwrap();
-        let Json(tab_b) = load().await.unwrap();
-        assert_eq!(tab_a.revision, tab_b.revision);
+        let Json(first_tab) = load().await.unwrap();
+        let Json(second_tab) = load().await.unwrap();
+        assert_eq!(first_tab.revision, second_tab.revision);
         let newer = SpeechConfig { tts_voice: "bf_emma".into(), ..enabled_speech() };
-        let Json(saved) = put(newer, &tab_a.revision).await.unwrap();
-        assert_ne!(saved.revision, tab_b.revision);
+        let Json(saved) = put(newer, &first_tab.revision).await.unwrap();
+        assert_ne!(saved.revision, second_tab.revision);
 
-        let blank = SpeechConfig { stt_model: String::new(), ..tab_b.config.clone() };
-        let stale = put(blank, &tab_b.revision).await;
-        assert_eq!(stale.unwrap_err().status(), StatusCode::CONFLICT);
+        let blank = SpeechConfig { stt_model: String::new(), ..second_tab.config.clone() };
+        let refused = put(blank, &second_tab.revision).await;
+        assert_eq!(refused.unwrap_err().status(), StatusCode::CONFLICT);
         let Json(kept) = load().await.unwrap();
         assert_eq!(kept.config.stt_model, "parakeet");
         assert_eq!(kept.config.tts_voice, "bf_emma");
@@ -1125,12 +1124,13 @@ mod tests {
             .fetch_all(&state.pool)
         };
 
-        speech_put(&state, who.clone(), enabled_speech(), None, Some("sk-audit-secret"))
-            .await
-            .unwrap();
+        let Json(_) =
+            speech_put(&state, who.clone(), enabled_speech(), None, Some("sk-audit-secret"))
+                .await
+                .unwrap();
         let blank = SpeechConfig { stt_model: String::new(), ..enabled_speech() };
-        speech_put(&state, who.clone(), blank.clone(), None, None).await.unwrap();
-        speech_put(&state, who.clone(), blank, None, None).await.unwrap();
+        let Json(_) = speech_put(&state, who.clone(), blank.clone(), None, None).await.unwrap();
+        let Json(_) = speech_put(&state, who.clone(), blank, None, None).await.unwrap();
 
         let rows = audit().await.unwrap();
         assert_eq!(rows.len(), 2, "an unchanged save records nothing: {rows:?}");
