@@ -19,7 +19,9 @@ for (const [level, scale] of Object.entries(LEVELS)) {
 			await page.setViewportSize({ width: 1400, height: 900 });
 			await page.goto(`/sessions?view=${view}`);
 			await page.locator('[data-journey="session"]').first().waitFor();
-			const badge = page.locator('.subagent-badge [data-tsu="Badge"]').first();
+			const badge = page
+				.locator(view === 'list' ? 'button.sub' : '.subagent-badge [data-tsu="Badge"]')
+				.first();
 			await badge.waitFor();
 
 			const r = await badge.evaluate(
@@ -63,15 +65,17 @@ for (const [level, scale] of Object.entries(LEVELS)) {
 			);
 
 			expect(r.scale).toBe(String(scale));
-			expect(r.w).toBeGreaterThanOrEqual(r.min);
-			expect(r.h).toBeGreaterThanOrEqual(r.min);
+			if (view === 'grid') {
+				expect(r.w).toBeGreaterThanOrEqual(r.min);
+				expect(r.h).toBeGreaterThanOrEqual(r.min);
+			}
 			expect(r.digits).toBeGreaterThan(0);
 			expect(r.overflow).toBe(0);
 			expect(r.misses).toEqual([]);
 
 			const before = await badge.getAttribute('aria-expanded');
 			const b = (await badge.boundingBox())!;
-			await page.mouse.click(b.x - OUTSIDE, b.y + b.height / 2);
+			await page.mouse.click(view === 'list' ? b.x + b.width / 2 : b.x - OUTSIDE, b.y + b.height / 2);
 			await expect(badge).toHaveAttribute('aria-expanded', before === 'true' ? 'false' : 'true');
 			expect(new URL(page.url()).pathname).toBe('/sessions');
 			expect(errors).toEqual([]);

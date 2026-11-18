@@ -238,10 +238,11 @@
 		font: inherit;
 		font-size: var(--fs-xs);
 		font-weight: var(--fw-medium);
-		line-height: 18px;
+		line-height: max(18px, 1.5em);
 		white-space: nowrap;
 		cursor: pointer;
 		flex: none;
+		position: relative;
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;
@@ -249,6 +250,11 @@
 		border-radius: 999px;
 		border: 1px solid color-mix(in srgb, var(--info) 60%, transparent);
 		color: var(--info);
+	}
+	.sub::before {
+		content: '';
+		position: absolute;
+		inset: -4px;
 	}
 	.sub:hover {
 		background: color-mix(in srgb, var(--info) 16%, transparent);
