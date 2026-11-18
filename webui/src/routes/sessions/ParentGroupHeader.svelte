@@ -23,14 +23,15 @@
 </script>
 
 <div class="parent-group-header" data-parent-id={parent.id}>
-	<span class="slot"><Dot status={live ? 'active' : 'dead'} /></span>
+	<span class="slot" title={live ? m.sessions_parent_live() : m.sessions_status_archived()}
+		><Dot status={live ? 'active' : 'dead'} /></span
+	>
 	<button
 		type="button"
 		class="name"
 		title={m.sessions_parent_open({ name: title })}
 		onclick={() => onopenparent(parent.id)}>{title}</button
 	>
-	<span class="state">{live ? m.sessions_parent_live() : m.sessions_status_archived()}</span>
 	<button type="button" class="sub" aria-expanded={open} onclick={ontoggle}
 		>{m.sessions_parent_children({ n: count })}</button
 	>
@@ -72,10 +73,6 @@
 	.name:focus-visible {
 		color: var(--text);
 		text-decoration: underline;
-	}
-	.state {
-		color: var(--text-faint);
-		white-space: nowrap;
 	}
 	.sub {
 		appearance: none;
