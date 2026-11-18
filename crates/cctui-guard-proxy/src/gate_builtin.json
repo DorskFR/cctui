@@ -11,7 +11,11 @@
           "kind": "api",
           "rest": [
             { "method": "POST", "path": "{repo}/pulls" },
-            { "method": "PATCH", "path": "{repo}/pulls/*", "check": { "onlyKeys": ["title", "body"] } },
+            {
+              "method": "PATCH",
+              "path": "{repo}/pulls/*",
+              "check": { "onlyKeys": ["title", "body"] }
+            },
             { "method": "POST", "path": "{repo}/issues" },
             { "method": "POST", "path": "{repo}/issues/*/comments" },
             { "method": "POST", "path": "{repo}/pulls/*/comments" },
@@ -27,23 +31,51 @@
             { "method": "POST", "path": "{repo}/git/commits" },
             { "method": "POST", "path": "{repo}/git/tags" },
             { "method": "PATCH", "path": "{repo}/issues/*" },
-            { "method": ["PATCH", "DELETE"], "path": "{repo}/issues/comments/*" },
-            { "method": ["PATCH", "DELETE"], "path": "{repo}/pulls/comments/*" },
-            { "method": ["POST", "PUT", "DELETE"], "path": "{repo}/issues/*/labels" },
+            {
+              "method": ["PATCH", "DELETE"],
+              "path": "{repo}/issues/comments/*"
+            },
+            {
+              "method": ["PATCH", "DELETE"],
+              "path": "{repo}/pulls/comments/*"
+            },
+            {
+              "method": ["POST", "PUT", "DELETE"],
+              "path": "{repo}/issues/*/labels"
+            },
             { "method": "DELETE", "path": "{repo}/issues/*/labels/*" },
             { "method": "DELETE", "path": "{repo}/issues/*/reactions/*" },
             { "method": "DELETE", "path": "{repo}/comments/*/reactions/*" },
-            { "method": "DELETE", "path": "{repo}/issues/comments/*/reactions/*" },
-            { "method": "DELETE", "path": "{repo}/pulls/comments/*/reactions/*" },
-            { "method": ["POST", "DELETE"], "path": "{repo}/issues/*/assignees" },
-            { "method": ["POST", "DELETE"], "path": "{repo}/pulls/*/requested_reviewers" },
+            {
+              "method": "DELETE",
+              "path": "{repo}/issues/comments/*/reactions/*"
+            },
+            {
+              "method": "DELETE",
+              "path": "{repo}/pulls/comments/*/reactions/*"
+            },
+            {
+              "method": ["POST", "DELETE"],
+              "path": "{repo}/issues/*/assignees"
+            },
+            {
+              "method": ["POST", "DELETE"],
+              "path": "{repo}/pulls/*/requested_reviewers"
+            },
             { "method": ["PUT", "DELETE"], "path": "{repo}/pulls/*/reviews/*" }
           ],
           "mutations": [
             "createPullRequest",
             {
               "name": "updatePullRequest",
-              "check": { "onlyKeys": ["pullRequestId", "title", "body", "clientMutationId"] }
+              "check": {
+                "onlyKeys": [
+                  "pullRequestId",
+                  "title",
+                  "body",
+                  "clientMutationId"
+                ]
+              }
             },
             "markPullRequestReadyForReview",
             "convertPullRequestToDraft",
@@ -86,14 +118,42 @@
         "api.github.com": {
           "kind": "api",
           "rest": [
-            { "method": "POST", "path": "{repo}/pulls", "check": { "isTrue": "draft" } },
-            { "method": "PATCH", "path": "{repo}/pulls/*", "check": { "onlyKeys": ["title", "body"] } },
+            {
+              "method": "POST",
+              "path": "{repo}/pulls",
+              "check": { "isTrue": "draft" }
+            },
+            {
+              "method": "PATCH",
+              "path": "{repo}/pulls/*",
+              "check": { "onlyKeys": ["title", "body"] }
+            },
             { "method": "PUT", "path": "{repo}/pulls/*/update-branch" },
-            { "method": "POST", "path": "{repo}/git/refs", "check": { "refField": "ref" } },
-            { "method": "*", "path": "{repo}/git/refs/heads/**", "check": "branchInPath" },
-            { "method": "*", "path": "{repo}/contents/**", "check": { "branchField": "branch" } },
-            { "method": "*", "path": "{repo}/merges", "check": { "branchField": "base" } },
-            { "method": "*", "path": "{repo}/merge-upstream", "check": { "branchField": "branch" } },
+            {
+              "method": "POST",
+              "path": "{repo}/git/refs",
+              "check": { "refField": "ref" }
+            },
+            {
+              "method": "*",
+              "path": "{repo}/git/refs/heads/**",
+              "check": "branchInPath"
+            },
+            {
+              "method": "*",
+              "path": "{repo}/contents/**",
+              "check": { "branchField": "branch" }
+            },
+            {
+              "method": "*",
+              "path": "{repo}/merges",
+              "check": { "branchField": "base" }
+            },
+            {
+              "method": "*",
+              "path": "{repo}/merge-upstream",
+              "check": { "branchField": "branch" }
+            },
             { "method": "POST", "path": "{repo}/issues" },
             { "method": "POST", "path": "{repo}/issues/*/comments" },
             { "method": "POST", "path": "{repo}/pulls/*/comments" },
@@ -109,23 +169,51 @@
             { "method": "POST", "path": "{repo}/git/commits" },
             { "method": "POST", "path": "{repo}/git/tags" },
             { "method": "PATCH", "path": "{repo}/issues/*" },
-            { "method": ["PATCH", "DELETE"], "path": "{repo}/issues/comments/*" },
-            { "method": ["PATCH", "DELETE"], "path": "{repo}/pulls/comments/*" },
-            { "method": ["POST", "PUT", "DELETE"], "path": "{repo}/issues/*/labels" },
+            {
+              "method": ["PATCH", "DELETE"],
+              "path": "{repo}/issues/comments/*"
+            },
+            {
+              "method": ["PATCH", "DELETE"],
+              "path": "{repo}/pulls/comments/*"
+            },
+            {
+              "method": ["POST", "PUT", "DELETE"],
+              "path": "{repo}/issues/*/labels"
+            },
             { "method": "DELETE", "path": "{repo}/issues/*/labels/*" },
             { "method": "DELETE", "path": "{repo}/issues/*/reactions/*" },
             { "method": "DELETE", "path": "{repo}/comments/*/reactions/*" },
-            { "method": "DELETE", "path": "{repo}/issues/comments/*/reactions/*" },
-            { "method": "DELETE", "path": "{repo}/pulls/comments/*/reactions/*" },
-            { "method": ["POST", "DELETE"], "path": "{repo}/issues/*/assignees" },
-            { "method": ["POST", "DELETE"], "path": "{repo}/pulls/*/requested_reviewers" },
+            {
+              "method": "DELETE",
+              "path": "{repo}/issues/comments/*/reactions/*"
+            },
+            {
+              "method": "DELETE",
+              "path": "{repo}/pulls/comments/*/reactions/*"
+            },
+            {
+              "method": ["POST", "DELETE"],
+              "path": "{repo}/issues/*/assignees"
+            },
+            {
+              "method": ["POST", "DELETE"],
+              "path": "{repo}/pulls/*/requested_reviewers"
+            },
             { "method": ["PUT", "DELETE"], "path": "{repo}/pulls/*/reviews/*" }
           ],
           "mutations": [
             { "name": "createPullRequest", "check": { "isTrue": "draft" } },
             {
               "name": "updatePullRequest",
-              "check": { "onlyKeys": ["pullRequestId", "title", "body", "clientMutationId"] }
+              "check": {
+                "onlyKeys": [
+                  "pullRequestId",
+                  "title",
+                  "body",
+                  "clientMutationId"
+                ]
+              }
             },
             "updatePullRequestBranch",
             "convertPullRequestToDraft",
