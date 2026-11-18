@@ -2606,7 +2606,10 @@ mod tests {
 
     #[test]
     fn a_pod_placement_stamps_its_guard_and_keeps_the_tokens_out_of_env_and_payload() {
-        let s = spec("sess-guard-pod", json!({ "flow": "review", "env": { "K": "v" } }));
+        let s = spec(
+            "sess-guard-pod",
+            json!({ "flow": "review", "cctui_machine_key": "mk-1", "env": { "K": "v" } }),
+        );
         let v = build("p", &guard_pod_profile(), &s);
         let name = worker_name("sess-guard-pod");
         assert_eq!(

@@ -764,7 +764,7 @@ guard:
         .unwrap();
         assert_eq!(pod.guard_placement(), GuardPlacement::Pod);
         assert_eq!(serde_json::to_value(&pod).unwrap()["guard"]["placement"], "pod");
-        let unset = serde_json::to_value(&GuardSpec::default()).unwrap();
+        let unset = serde_json::to_value(GuardSpec::default()).unwrap();
         assert!(unset.get("placement").is_none());
         assert!(
             serde_norway::from_str::<WorkerProfileSpec>(
