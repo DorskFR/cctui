@@ -13,6 +13,9 @@ pub const PRESET_GONE: &str = "the lane's preset no longer exists";
 pub const MACHINE_GONE: &str = "the preset's machine no longer exists or was revoked";
 pub const DISPATCHER_GONE: &str = "the preset's dispatcher no longer exists or was revoked";
 pub const UNDELIVERED: &str = "an earlier attempt of this batch never reached the daemon";
+const LABELLED_SOURCES: &[&str] = &["schedule", "webhook"];
+const RUN_LABEL_COLOR: &str = "210";
+const MAX_BATCH_FILE_BYTES: usize = 1024 * 1024;
 const NOT_REUSABLE: &[&str] = &["ended", "archived", "failed", "queued", "draft"];
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -94,6 +97,16 @@ pub fn plan(
     match (on_stale, parent) {
         (OnStale::Followup, Some(parent)) => Plan::Followup { parent: parent.to_owned() },
         _ => Plan::Spawn,
+    }
+}
+
+/// A reply carries text only, so a batch with files starts a session instead.
+#[must_use]
+pub fn with_files(plan: Plan, on_stale: OnStale, has_files: bool) -> Plan {
+    match (plan, on_stale) {
+        (Plan::Reply(parent), OnStale::Followup) if has_files => Plan::Followup { parent },
+        (Plan::Reply(_), OnStale::New) if has_files => Plan::Spawn,
+        (plan, _) => plan,
     }
 }
 
@@ -200,13 +213,12 @@ pub async fn follow_up_orphan(
     lane: &ClaimedLane,
     events: &[BatchEvent],
 ) -> sqlx::Result<Option<Outcome>> {
-    let Some(batch_id) = events.first().map(|e| e.batch_id) else { return Ok(None) };
     let Some(parent) = parent_override(events) else { return Ok(None) };
     let Some(target) = from_session(&state.pool, lane.user_id, parent).await? else {
         return Ok(None);
     };
     let plan = Plan::Followup { parent: parent.to_owned() };
-    spawn(state, lane, &target, &plan, events, batch_id).await.map(Some)
+    spawn(state, lane, &target, &plan, events, Vec::new()).await.map(Some)
 }
 
 pub async fn load(pool: &PgPool, preset_id: Uuid) -> sqlx::Result<Option<Preset>> {
@@ -361,6 +373,98 @@ pub async fn spawn_prompt(pool: &PgPool, plan: &Plan, instruction: String) -> sq
     Ok(rendered.unwrap_or(instruction))
 }
 
+/// A webhook delivery's raw payload, attached to the spawn as a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PayloadFile {
+    pub name: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Files are attached in order while they fit `budget` bytes in total; a file
+/// that does not fit is left out, and so is a second one of the same name.
+#[must_use]
+pub fn within_budget(files: Vec<PayloadFile>, budget: usize) -> Vec<PayloadFile> {
+    let mut kept: Vec<PayloadFile> = Vec::with_capacity(files.len());
+    let mut used = 0usize;
+    for file in files {
+        let fits = used + file.bytes.len() <= budget;
+        if fits && kept.iter().all(|k| k.name != file.name) {
+            used += file.bytes.len();
+            kept.push(file);
+        }
+    }
+    kept
+}
+
+pub async fn payload_files(pool: &PgPool, batch_id: Uuid) -> sqlx::Result<Vec<PayloadFile>> {
+    let rows: Vec<(Option<String>, serde_json::Value)> = sqlx::query_as(
+        "SELECT payload->>'delivery_id', payload->'raw' FROM inbox_events \
+         WHERE batch_id = $1 AND source = 'webhook' AND payload ? 'raw' ORDER BY seq",
+    )
+    .bind(batch_id)
+    .fetch_all(pool)
+    .await?;
+    let files = rows
+        .into_iter()
+        .map(|(delivery, raw)| PayloadFile {
+            name: crate::hooks::payload_file_name(delivery.as_deref().unwrap_or_default()),
+            bytes: serde_json::to_vec_pretty(&raw).unwrap_or_default(),
+        })
+        .collect();
+    Ok(within_budget(files, MAX_BATCH_FILE_BYTES))
+}
+
+fn uploads(
+    files: Vec<PayloadFile>,
+) -> (Vec<cctui_proto::adapter::BootstrapFile>, Vec<crate::uploads::RawUpload>) {
+    use base64::Engine;
+    files
+        .into_iter()
+        .map(|file| {
+            let encoded = cctui_proto::adapter::BootstrapFile {
+                name: file.name.clone(),
+                content_b64: base64::engine::general_purpose::STANDARD.encode(&file.bytes),
+            };
+            let raw = crate::uploads::RawUpload {
+                name: file.name,
+                bytes: file.bytes.into(),
+                content_type: Some("application/json".to_owned()),
+            };
+            (encoded, raw)
+        })
+        .unzip()
+}
+
+/// A scheduled or webhook run carries its preset's name as a label, so
+/// `label:` search lists the preset's history. Best-effort, like every label path.
+pub(super) async fn run_labels(
+    state: &AppState,
+    preset: &Preset,
+    events: &[BatchEvent],
+) -> Vec<String> {
+    let organising = state.config.features.contains(cctui_proto::features::Feature::Organising);
+    if !organising || !events.iter().any(|e| LABELLED_SOURCES.contains(&e.source.as_str())) {
+        return Vec::new();
+    }
+    let label: sqlx::Result<Uuid> = sqlx::query_scalar(
+        "INSERT INTO labels (name, color, user_id) VALUES ($1, $2, $3) \
+         ON CONFLICT (user_id, lower(name)) DO UPDATE SET name = labels.name \
+         RETURNING id",
+    )
+    .bind(&preset.name)
+    .bind(RUN_LABEL_COLOR)
+    .bind(preset.user_id)
+    .fetch_one(&state.pool)
+    .await;
+    match label {
+        Ok(id) => vec![id.to_string()],
+        Err(e) => {
+            tracing::warn!(error = %e, "could not label the scheduled run");
+            Vec::new()
+        }
+    }
+}
+
 /// Retried only when nothing reached the daemon; any other failure is checked
 /// against `machine_launches` first.
 async fn spawn(
@@ -369,8 +473,9 @@ async fn spawn(
     preset: &Preset,
     plan: &Plan,
     events: &[BatchEvent],
-    batch_id: Uuid,
+    files: Vec<PayloadFile>,
 ) -> sqlx::Result<Outcome> {
+    let Some(batch_id) = events.first().map(|e| e.batch_id) else { return Ok(Outcome::Skip) };
     let delivered = |session_id: String, plan: &Plan| Outcome::Delivered {
         session_id,
         delivered_as: plan.delivered_as(),
@@ -394,22 +499,18 @@ async fn spawn(
         Err(reason) => return Ok(Outcome::Dead(reason.to_owned())),
     };
     let prompt = spawn_prompt(&state.pool, plan, instruction(preset, &text)).await?;
-    let Some(req) = spawn_request(preset, plan, &prompt) else {
+    let Some(mut req) = spawn_request(preset, plan, &prompt) else {
         return Ok(Outcome::Dead(MACHINE_GONE.to_owned()));
     };
+    req.label_ids = run_labels(state, preset, events).await;
+    let (files, raw_files) = uploads(files);
     let ctx = match super::queued::acting_as(&state.pool, preset.user_id).await {
         Ok(ctx) => ctx,
         Err(e) => return Ok(Outcome::Retry(e.to_string())),
     };
-    let sent = crate::routes::spawn::try_dispatch_spawn_as(
-        state,
-        &ctx,
-        req,
-        Vec::new(),
-        Vec::new(),
-        batch_id,
-    )
-    .await;
+    let sent =
+        crate::routes::spawn::try_dispatch_spawn_as(state, &ctx, req, files, raw_files, batch_id)
+            .await;
     let failure = match sent {
         Ok((_, Json(launched))) => {
             set_spawn(&state.pool, lane.id, Some(batch_id)).await?;
@@ -478,8 +579,10 @@ pub async fn deliver(
         Resolved::Session(current) => current,
     };
     let on_stale = OnStale::parse(&preset.on_stale).unwrap_or_default();
-    match plan(preset.fresh_secs, on_stale, current.as_ref(), parent_override(events)) {
+    let files = payload_files(&state.pool, batch_id).await?;
+    let planned = plan(preset.fresh_secs, on_stale, current.as_ref(), parent_override(events));
+    match with_files(planned, on_stale, !files.is_empty()) {
         Plan::Reply(session_id) => Ok(super::deliver::reply(state, &session_id, events).await),
-        plan => spawn(state, lane, &preset, &plan, events, batch_id).await,
+        plan => spawn(state, lane, &preset, &plan, events, files).await,
     }
 }

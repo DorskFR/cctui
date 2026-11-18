@@ -55,7 +55,8 @@ pub struct Event {
 
 macro_rules! select_events {
     () => {
-        "SELECT e.id, e.lane_id, l.key AS lane_key, e.source, e.source_id, e.body, e.payload, \
+        "SELECT e.id, e.lane_id, l.key AS lane_key, e.source, e.source_id, e.body, \
+                e.payload - 'raw' AS payload, \
                 e.status, e.not_before, e.expires_at, e.attempts, e.last_error, e.batch_id, \
                 e.delivered_session_id, e.delivered_as, e.created_at, e.delivered_at \
          FROM inbox_events e JOIN inbox_lanes l ON l.id = e.lane_id "

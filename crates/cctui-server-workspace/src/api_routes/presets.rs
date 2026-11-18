@@ -1,5 +1,5 @@
 use axum::http::Method;
-use axum::routing::get;
+use axum::routing::{get, post};
 
 use crate::authz::Authz::Authenticated;
 use crate::authz::{Authn, Routes};
@@ -19,6 +19,14 @@ pub(super) fn register(r: Routes) -> Routes {
         "/presets/{id}",
         "Read, replace or delete one launch preset.",
         get(routes::presets::get_one).put(routes::presets::update).delete(routes::presets::delete),
+        Authn::Bearer,
+        Authenticated,
+    )
+    .add(
+        &[Method::POST],
+        "/presets/{id}/run",
+        "Run a launch preset now, whatever its schedule.",
+        post(routes::presets::run),
         Authn::Bearer,
         Authenticated,
     )

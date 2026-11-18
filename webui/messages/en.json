@@ -2820,6 +2820,187 @@
 	"inbox_cancel": "Cancel",
 	"inbox_retry": "Retry",
 	"inbox_waiting_until": "Not before {at}",
+	"nav_schedules": "Schedules",
+	"schedules_title": "Schedules",
+	"schedules_subtitle": "Prompts that start a session on a recurring schedule. A paused schedule keeps its settings and can still be run by hand.",
+	"schedules_empty": "No schedules yet.",
+	"schedules_new": "New schedule",
+	"schedules_new_title": "New schedule",
+	"schedules_edit_title": "Edit schedule",
+	"schedules_name_label": "Name",
+	"schedules_name_placeholder": "Morning report",
+	"schedules_repeat_label": "Repeat",
+	"schedules_repeat_hourly": "Hourly",
+	"schedules_repeat_daily": "Daily",
+	"schedules_repeat_weekdays": "Weekdays",
+	"schedules_repeat_weekly": "Weekly",
+	"schedules_repeat_custom": "Custom",
+	"schedules_time_label": "Time of day",
+	"schedules_time_invalid": "Pick a time of day",
+	"schedules_weekdays_label": "Days",
+	"schedules_weekdays_required": "Pick at least one day",
+	"schedules_cron_label": "Cron expression",
+	"schedules_cron_hint": "Five fields: minute, hour, day of month, month, day of week. Each takes *, lists (1,3), ranges (1-5) and steps (*/15).",
+	"schedules_cron_error_empty": "Enter a cron expression",
+	"schedules_cron_error_fields": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "A cron expression has five fields (minute hour day-of-month month day-of-week); this one has {count}",
+				"countPlural=other": "A cron expression has five fields (minute hour day-of-month month day-of-week); this one has {count}"
+			}
+		}
+	],
+	"schedules_cron_error_field": "The {field} field \"{value}\" is not valid: use *, numbers from {min} to {max}, lists, ranges or steps",
+	"schedules_cron_field_minute": "minute",
+	"schedules_cron_field_hour": "hour",
+	"schedules_cron_field_day_of_month": "day-of-month",
+	"schedules_cron_field_month": "month",
+	"schedules_cron_field_day_of_week": "day-of-week",
+	"schedules_timezone_label": "Timezone",
+	"schedules_timezone_hint": "The schedule's times are read in this timezone.",
+	"schedules_overlap_label": "If the previous run is still working",
+	"schedules_overlap_hint": "Skipped runs are listed in the schedule's recent runs.",
+	"schedules_overlap_skip": "Skip this run",
+	"schedules_overlap_allow": "Start another run anyway",
+	"schedules_enabled_label": "Enabled",
+	"schedules_enabled_aria": "{name} enabled",
+	"schedules_edit_aria": "Edit {name}",
+	"schedules_delete_aria": "Delete {name}",
+	"schedules_delete_title": "Delete this schedule?",
+	"schedules_delete_message": "\"{name}\" stops running. The sessions it already started are kept.",
+	"schedules_paused": "Paused",
+	"schedules_next_fire": "Next run",
+	"schedules_last_fire": "Last run",
+	"schedules_run_now": "Run now",
+	"schedules_run_queued_toast": "\"{name}\" is queued to run now",
+	"schedules_runs_title": "Recent runs",
+	"schedules_runs_empty": "No runs yet.",
+	"schedules_run_queued": "Queued",
+	"schedules_run_running": "Starting",
+	"schedules_run_delivered": "Started",
+	"schedules_run_skipped": "Skipped",
+	"schedules_run_cancelled": "Cancelled",
+	"schedules_run_failed": "Failed",
+	"schedules_run_manual": "manual",
+	"schedules_run_session": "Session {id}",
+	"schedules_dispatcher_target": "This preset runs on a dispatcher (profile \"{profile}\"); its target is kept as it is.",
+	"schedules_error_name": "Give the schedule a name",
+	"schedules_error_prompt": "Write the prompt each run starts with",
+	"schedules_error_machine": "Pick a machine",
+	"schedules_error_working_dir": "Enter a working directory",
+	"schedules_error_working_dir_absolute": "The working directory must be an absolute path or start with ~",
+	"schedules_error_adapter": "Pick a harness",
+	"schedules_words_every_minute": "Every minute",
+	"schedules_words_every_minutes": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "Every minute",
+				"countPlural=other": "Every {count} minutes"
+			}
+		}
+	],
+	"schedules_words_hourly": "Every hour",
+	"schedules_words_hourly_at": "Every hour at :{minute}",
+	"schedules_words_every_hours": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "Every hour",
+				"countPlural=other": "Every {count} hours"
+			}
+		}
+	],
+	"schedules_words_daily": "Every day at {time}",
+	"schedules_words_weekdays": "Weekdays at {time}",
+	"schedules_words_weekly": "Every {days} at {time}",
+	"schedules_words_monthly": "Day {day} of every month at {time}",
+	"nav_webhooks": "Webhooks",
+	"webhooks_title": "Webhooks",
+	"webhooks_subtitle": "Signed URLs other services call to queue a prompt on one of your presets. Each call is checked against the webhook's secret before anything runs.",
+	"webhooks_empty": "No webhooks yet.",
+	"webhooks_new": "New webhook",
+	"webhooks_new_title": "New webhook",
+	"webhooks_edit_title": "Edit webhook",
+	"webhooks_name_label": "Name",
+	"webhooks_name_placeholder": "Issue tracker",
+	"webhooks_preset_label": "Preset",
+	"webhooks_preset_hint": "Only presets that accept external sources are listed.",
+	"webhooks_preset_pick": "Pick a preset",
+	"webhooks_preset_new": "New preset",
+	"webhooks_preset_new_title": "New preset for webhooks",
+	"webhooks_preset_deleted": "Preset deleted",
+	"webhooks_template_label": "Prompt template",
+	"webhooks_template_hint": "Filled from each call: {payloadExpr} reads the JSON body (numbers index lists), {eventExpr} is the event header and {deliveryExpr} the delivery id. A missing field renders empty.",
+	"webhooks_template_recognised": "Filled in on each call: {list}",
+	"webhooks_template_unrecognised": "Left as written, not filled in: {list}",
+	"webhooks_rate_label": "Calls per minute",
+	"webhooks_rate_hint": "Calls above this rate are turned away. From {min} to {max}.",
+	"webhooks_enabled_label": "Enabled",
+	"webhooks_enabled_aria": "{name} enabled",
+	"webhooks_edit_aria": "Edit {name}",
+	"webhooks_delete_aria": "Delete {name}",
+	"webhooks_row_preset": "Runs preset \"{name}\"",
+	"webhooks_row_rate": [
+		{
+			"declarations": [
+				"input count",
+				"local countPlural = count: plural"
+			],
+			"selectors": [
+				"countPlural"
+			],
+			"match": {
+				"countPlural=one": "{count} call per minute",
+				"countPlural=other": "{count} calls per minute"
+			}
+		}
+	],
+	"webhooks_url_label": "Delivery URL",
+	"webhooks_url_copy": "Copy the delivery URL",
+	"webhooks_rotate": "Rotate secret",
+	"webhooks_rotate_title": "Rotate this webhook's secret?",
+	"webhooks_rotate_message": "\"{name}\" gets a new secret and the current one stops working at once. Every service that calls it needs the new secret.",
+	"webhooks_delete_title": "Delete this webhook?",
+	"webhooks_delete_message": "\"{name}\" stops accepting calls. Its preset is kept.",
+	"webhooks_secret_title": "Secret of \"{name}\"",
+	"webhooks_secret_once": "Copy this secret now. It will not be shown again; rotating the secret is the only way to get a new one.",
+	"webhooks_secret_label": "Secret",
+	"webhooks_secret_copy": "Copy the secret",
+	"webhooks_secret_done": "I have copied it",
+	"webhooks_sign_hint": "Sign every call: send the header {header} with the value sha256= followed by the hex HMAC-SHA256 of the raw request body, keyed with this secret.",
+	"webhooks_deliveries_title": "Recent deliveries",
+	"webhooks_deliveries_empty": "No deliveries yet.",
+	"webhooks_delivery_session": "Session {id}",
+	"webhooks_outcome_dispatched": "Dispatched",
+	"webhooks_outcome_duplicate": "Duplicate",
+	"webhooks_outcome_rejected": "Rejected",
+	"webhooks_outcome_rate_limited": "Rate limited",
+	"webhooks_error_name": "Give the webhook a name",
+	"webhooks_error_preset": "Pick the preset this webhook runs",
+	"webhooks_error_template": "Write the prompt template",
+	"webhooks_error_rate": "Enter a whole number from {min} to {max}",
+	"presets_error_name": "Give the preset a name",
+	"presets_error_permission_guarded": "A preset that accepts external sources must run guarded on a machine: pick Ask or Auto.",
 	"push_toggle_label": "Push to this browser",
 	"push_enabled": "This browser now receives push notifications",
 	"push_disabled": "This browser no longer receives push notifications",

@@ -27,6 +27,7 @@ mod error;
 mod events;
 mod followup;
 mod guard_step;
+mod hooks;
 mod http_cache;
 mod image_blobs;
 mod inbox;
@@ -1501,6 +1502,7 @@ mod tests {
             "POST /enroll Bearer Scope(Enroll)",
             "GET /events Bearer Authenticated",
             "GET /harnesses Bearer Authenticated",
+            "POST /hooks/{id} None Public",
             "GET /inbox/events Bearer Authenticated",
             "POST /inbox/events Bearer Scope(Dispatch)",
             "DELETE /inbox/events/{id} Bearer Authenticated",
@@ -1568,6 +1570,7 @@ mod tests {
             "DELETE /presets/{id} Bearer Authenticated",
             "GET /presets/{id} Bearer Authenticated",
             "PUT /presets/{id} Bearer Authenticated",
+            "POST /presets/{id}/run Bearer Authenticated",
             "GET /profiles Bearer Human",
             "POST /profiles Bearer Human",
             "PUT /profiles/order Bearer Human",
@@ -1694,6 +1697,13 @@ mod tests {
             "POST /voice/speak Bearer Human",
             "POST /voice/transcribe Bearer Human",
             "GET /voice/voices Bearer Human",
+            "GET /webhooks Bearer Authenticated",
+            "POST /webhooks Bearer Authenticated",
+            "DELETE /webhooks/{id} Bearer Authenticated",
+            "GET /webhooks/{id} Bearer Authenticated",
+            "PUT /webhooks/{id} Bearer Authenticated",
+            "GET /webhooks/{id}/deliveries Bearer Authenticated",
+            "POST /webhooks/{id}/secret Bearer Authenticated",
             "GET /{resource_type}/{id}/shares Bearer Human",
             "POST /{resource_type}/{id}/shares Bearer Human",
             "DELETE /{resource_type}/{id}/shares/{user_id} Bearer Human",

@@ -3,7 +3,7 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use uuid::Uuid;
 
-use cctui_proto::api::presets::{LaunchPreset, LaunchPresetRequest};
+use cctui_proto::api::presets::{LaunchPreset, LaunchPresetRequest, PresetRun};
 
 use crate::auth::{AuthContext, Scope};
 use crate::error::AppError;
@@ -84,6 +84,20 @@ pub async fn delete(
     } else {
         Err(not_found())
     }
+}
+
+pub async fn run(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<(StatusCode, Json<PresetRun>)> {
+    ctx.requires(Scope::Dispatch)
+        .map_err(|code| AppError::new(code, "running a preset needs the dispatch scope"))?;
+    let (lane_id, event) = crate::inbox::schedule::run_now(&state.pool, ctx.owner_filter(), id)
+        .await?
+        .ok_or_else(not_found)?;
+    crate::inbox::deliver::wake_lane(&state, lane_id);
+    Ok((StatusCode::ACCEPTED, Json(PresetRun { event_id: event.id, lane_id })))
 }
 
 #[cfg(test)]

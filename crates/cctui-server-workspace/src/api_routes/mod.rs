@@ -11,6 +11,7 @@ mod daemon;
 mod device_auth;
 mod dispatch;
 mod drafts;
+mod hooks;
 mod inbox;
 mod keys;
 mod labels;
@@ -98,6 +99,7 @@ pub fn register(r: Routes) -> Routes {
     let r = user_actions::register(r);
     let r = inbox::register(r);
     let r = presets::register(r);
+    let r = hooks::register(r);
     let r = notifications::register(r);
     let r = web_push::register(r);
     let r = drafts::register(r);

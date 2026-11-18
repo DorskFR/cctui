@@ -130,6 +130,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "redteam_runs",
         sql: include_str!("../schema/0019_redteam_runs.sql"),
     },
+    Migration {
+        version: 20,
+        name: "preset_schedules",
+        sql: include_str!("../schema/0020_preset_schedules.sql"),
+    },
+    Migration {
+        version: 21,
+        name: "preset_hooks",
+        sql: include_str!("../schema/0021_preset_hooks.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -278,7 +288,9 @@ mod tests {
                     (16, "bootstrap".to_owned()),
                     (17, "bootstrap".to_owned()),
                     (18, "bootstrap".to_owned()),
-                    (19, "bootstrap".to_owned())
+                    (19, "bootstrap".to_owned()),
+                    (20, "bootstrap".to_owned()),
+                    (21, "bootstrap".to_owned())
                 ]
             );
 
@@ -502,7 +514,9 @@ mod tests {
                     (16, "bootstrap".to_owned()),
                     (17, "bootstrap".to_owned()),
                     (18, "bootstrap".to_owned()),
-                    (19, "bootstrap".to_owned())
+                    (19, "bootstrap".to_owned()),
+                    (20, "bootstrap".to_owned()),
+                    (21, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =

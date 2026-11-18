@@ -1276,6 +1276,89 @@ that cannot succeed, the event is `dead` and its owner is notified.
 `DELETE /inbox/events/{id}` cancels a pending one, and
 `GET /inbox/events?lane=<id or key>&status=<status>` lists them (newest 200).
 
+### Preset schedules
+
+A preset with a `cron` is a recurring schedule. The expression has five fields
+(minute, hour, day of month, month, day of week) and is read in the preset's
+`timezone`, an IANA name (default `UTC`), so `0 7 * * 1-5` in `Asia/Tokyo`
+fires at 07:00 Tokyo time on weekdays. Across a clock change a wall-clock time
+that is skipped fires once, shifted forward by the skipped span; one that
+repeats fires on its first pass only, unless the schedule runs every hour, which
+keeps running by elapsed time.
+
+Each fire is a `schedule` event on the preset's `default` lane with
+`source_id` `<preset id>@<fire minute>`, so two server replicas sweeping the
+same tick write one event, and a restart never fires a tick twice. A window
+missed while the server was down fires once, then the schedule resumes.
+
+| Preset field | Effect |
+|---|---|
+| `enabled: false` | paused: no fire, no `next_fire_at`, and the preset's webhooks answer `404`. Resuming schedules the next fire from now, with no catch-up. |
+| `overlap: "skip"` | a fire is dropped while the previous run is live (its event still waits, its spawn has not registered, or its session is mid-turn). The drop is recorded as a `cancelled` event whose `last_error` starts `skipped:`. |
+| `overlap: "allow"` (default) | the fire queues behind the live run, like any inbox event. |
+
+`POST /presets/{id}/run` (`dispatch` scope) queues a run now, paused or not,
+and replies `202 {event_id, lane_id}`. `next_fire_at` and `last_fire_at` are
+on the preset. A session spawned by a schedule or a webhook carries a label
+named after its preset, so `label:<preset name>` lists the preset's history;
+`GET /inbox/events?lane=preset:<id>:default` lists its runs. Deleting a preset
+deletes its lanes and events and leaves the sessions it launched alone.
+
+### Signed webhooks
+
+`POST /api/v1/hooks/{id}` takes a delivery from a third party (GitHub, n8n, a
+cron job). It carries no cctui token: the body's HMAC is the only credential,
+so the URL and the secret can be pasted into another product's webhook form.
+
+A webhook is bound to a preset that has `external_sources` on, and is managed
+with `GET|POST /webhooks`, `GET|PUT|DELETE /webhooks/{id}` (`dispatch` scope
+to write). `POST /webhooks` and `POST /webhooks/{id}/secret` reply with the
+signing secret, once; it is stored sealed with the vault key.
+
+```jsonc
+// POST /webhooks
+{
+  "preset_id":       "…",
+  "name":            "issues labelled",
+  "prompt_template": "{{event}} {{payload.action}}: {{payload.issue.title}}",
+  "rate_per_minute": 30,     // 1–600, default 30
+  "enabled":         true
+}
+```
+
+A delivery is accepted when:
+
+- `X-Hub-Signature-256: sha256=<hex>` is the HMAC-SHA256 of the raw body under
+  the secret (compared in constant time), as GitHub signs its webhooks;
+- the body is a JSON object of at most 256 KiB;
+- neither its delivery id (`X-GitHub-Delivery`, `X-Delivery-Id` or
+  `Idempotency-Key`) nor its body (by SHA-256) was dispatched by this webhook
+  in the last 30 days: a replay answers `200 {"status": "duplicate"}` and
+  queues nothing. The signature covers the body only, so a byte-identical
+  body is a replay whatever id it carries: a sender must vary its body (a
+  timestamp, a sequence number) to be dispatched again;
+- the webhook is enabled and its preset is enabled, still has
+  `external_sources` on and, on a machine, still runs `ask` or `auto`;
+  otherwise the URL answers `404` like an unknown one;
+- fewer than `rate_per_minute` deliveries were dispatched in the last minute,
+  else `429`.
+
+An accepted delivery answers `202 {"status": "dispatched", "event_id": …}` and
+becomes a `webhook` event on the preset's `default` lane. Its `body` is the
+template with `{{payload.<path>}}` (dots walk objects, numbers index arrays),
+`{{event}}` (`X-GitHub-Event` or `X-Event`) and `{{delivery}}` replaced
+(both unsigned headers, reduced to `A-Za-z0-9._-` and 64 characters); a
+missing field renders empty and a value is cut at 2000 characters. On a machine
+preset the raw payload is attached to the launched session as
+`webhook-<delivery id>.json` (1 MiB a batch at most), never inlined, and the delivery always starts a
+session (a follow-up of the lane's last one, or a fresh one) instead of
+replying into a live one. A container preset gets the rendered prompt only.
+
+`GET /webhooks/{id}/deliveries` is the log, newest 100: `dispatched` (with the
+session once it launched), `duplicate`, `rejected` (bad signature, bad body)
+and `rate_limited`. Refusals are logged up to 60 a minute and kept a day; a
+body over the size limit is refused with `413` and not logged.
+
 ### Approval decision (`notification.decision`)
 
 When a notification that holds a session's run is answered or expires (an

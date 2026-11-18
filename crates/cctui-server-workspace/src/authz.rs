@@ -428,7 +428,7 @@ pub const API_PREFIX: &str = "/api/v1";
 /// `/api/v1` paths that answer without a credential. Declared here so the
 /// descriptor table stays the whole API surface, but mounted outside
 /// `auth_middleware`, which 401s a tokenless request before any route layer runs.
-pub const PUBLIC_PATHS: &[&str] = &["/version"];
+pub const PUBLIC_PATHS: &[&str] = &["/hooks/{id}", "/version"];
 
 pub struct Routes {
     router: Router<AppState>,
@@ -597,6 +597,7 @@ mod tests {
     /// that would build its principal.
     #[test]
     fn public_routes_are_exactly_the_allowlist() {
+        const SIGNED: &[&str] = &["/hooks/{id}"];
         let public: Vec<_> =
             descriptors().into_iter().filter(|d| matches!(d.authz, Authz::Public)).collect();
         let mut paths: Vec<_> = public.iter().map(|d| d.path).collect();
@@ -605,7 +606,9 @@ mod tests {
         assert_eq!(paths, PUBLIC_PATHS, "the Authz::Public set must equal PUBLIC_PATHS");
         for d in &public {
             assert_eq!(d.authn, Authn::None, "{} must also be Authn::None", d.path);
-            assert_eq!(d.method, Method::GET, "{} must be read-only", d.path);
+            let signed = SIGNED.contains(&d.path);
+            let expected = if signed { Method::POST } else { Method::GET };
+            assert_eq!(d.method, expected, "{} must be read-only, or a signed POST", d.path);
         }
     }
 
@@ -1061,6 +1064,10 @@ mod tests {
             "/labels/{id}",
             "/passkeys/{id}",
             "/presets/{id}",
+            "/presets/{id}/run",
+            "/webhooks/{id}",
+            "/webhooks/{id}/deliveries",
+            "/webhooks/{id}/secret",
             "/prompts/{id}",
             "/rooms/{id}",
             "/plugins/{id}/backend/{*path}",

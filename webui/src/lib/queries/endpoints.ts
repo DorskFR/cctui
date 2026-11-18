@@ -123,6 +123,13 @@ import type { CreateBookmark } from "@bindings/CreateBookmark";
 import type { UpdateBookmark } from "@bindings/UpdateBookmark";
 import { SYSTEM_MACHINE_KINDS } from "./keys";
 import type { InboxEvent } from "./inbox";
+import type { LaunchPreset } from "@bindings/LaunchPreset";
+import type { LaunchPresetRequest } from "@bindings/LaunchPresetRequest";
+import type { PresetRun } from "@bindings/PresetRun";
+import type { Webhook } from "@bindings/Webhook";
+import type { WebhookRequest } from "@bindings/WebhookRequest";
+import type { WebhookSecret } from "@bindings/WebhookSecret";
+import type { WebhookDelivery } from "@bindings/WebhookDelivery";
 import type {
   AccountProvider,
   AccountUsage,
@@ -297,6 +304,28 @@ export const endpoints = {
   deleteBookmark: (id: string) =>
     api.del<void>(path("delete_bookmarks_by_id", { id })),
   inboxEvents: () => api.get<InboxEvent[]>(path("get_inbox_events")),
+  inboxLaneEvents: (lane: string) =>
+    api.get<InboxEvent[]>(path("get_inbox_events"), { lane }),
+  presets: () => api.get<LaunchPreset[]>(path("get_presets")),
+  createPreset: (body: LaunchPresetRequest) =>
+    api.post<LaunchPreset>(path("post_presets"), body),
+  updatePreset: (id: string, body: LaunchPresetRequest) =>
+    api.put<LaunchPreset>(path("put_presets_by_id", { id }), body),
+  deletePreset: (id: string) =>
+    api.del<void>(path("delete_presets_by_id", { id })),
+  runPreset: (id: string) =>
+    api.post<PresetRun>(path("post_presets_by_id_run", { id }), {}),
+  webhooks: () => api.get<Webhook[]>(path("get_webhooks")),
+  createWebhook: (body: WebhookRequest) =>
+    api.post<WebhookSecret>(path("post_webhooks"), body),
+  updateWebhook: (id: string, body: WebhookRequest) =>
+    api.put<Webhook>(path("put_webhooks_by_id", { id }), body),
+  deleteWebhook: (id: string) =>
+    api.del<void>(path("delete_webhooks_by_id", { id })),
+  rotateWebhookSecret: (id: string) =>
+    api.post<WebhookSecret>(path("post_webhooks_by_id_secret", { id }), {}),
+  webhookDeliveries: (id: string) =>
+    api.get<WebhookDelivery[]>(path("get_webhooks_by_id_deliveries", { id })),
   cancelInboxEvent: (id: string) =>
     api.del<void>(path("delete_inbox_events_by_id", { id })),
   retryInboxEvent: (id: string) =>
