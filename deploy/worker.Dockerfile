@@ -1,35 +1,17 @@
 # syntax=docker/dockerfile:1
-# cctui worker image (contract v1) — the execution environment dispatchers
-# (the docker / kubernetes dispatchers) spawn per session. Bundles:
-#   - the claude code CLI
-#   - the codex CLI
-#   - opencode
-#   - the ACP agents: gemini-cli, qwen-code, goose
-#   - the cctui-daemon binary (session observability)
-#   - the cctui sandbox toolchain: cctui-guard-proxy (egress allow-list),
-#     cctui-supervisor (landlock + seccomp + cap-drop exec wrapper), and
-#     cctui-guard (markdown-driven workflow guard daemon)
+# cctui worker image (contract v1): the barebone base dispatchers spawn per
+# session and the guard-proxy sidecar runs from. It ships only what cctui's own
+# scripts call: cctui-daemon, the sandbox toolchain (cctui-guard-proxy,
+# cctui-supervisor, cctui-guard), the entrypoints, and their system tools.
 #
-# It is **non-enrolled**: NO credentials and NO machine identity are baked in.
-# Identity arrives at spawn time as env injected by the dispatcher:
-#   CCTUI_URL           — the cctui-server base URL the daemon dials out to
-#   CCTUI_MACHINE_KEY   — the shared machine key (the daemon runs without enroll)
-#   SESSION_ID          — the pre-minted session to register
-#   TASK_PAYLOAD_JSON   — the dispatch payload
-#   REPLY_URL, TASK_NAME (optional)
+# It ships NO agent CLI. A worker needs one: build FROM this image with the
+# agents and tooling the deployment uses (deploy/examples/worker-agents). With
+# no agent the entrypoint refuses to start a session.
 #
-# The daemon resolves CCTUI_MACHINE_KEY + CCTUI_URL from the environment
-# (Config::from_env) and runs in ephemeral, --no-auto-update mode: the worker
-# is short-lived and re-fetched on spawn, so there is nothing to self-update.
+# It is non-enrolled: no credentials and no machine identity are baked in; they
+# arrive at spawn time as env (docs/worker-contract.md).
 #
-# This is a LEAN base. Heavy toolchains (Rust, Go, pnpm stores, dockerd) belong
-# in **derived org images** (`FROM ghcr.io/<org>/cctui-worker`), never here —
-# the base only ships what every worker needs to boot, sandbox, and talk git.
-#
-# See docs/worker-contract.md for the full env / mount / capability contract.
-#
-# ⚠️ This repo is PUBLIC. Keep it free of any private/homelab registries,
-# hosts, or namespaces — neutral placeholders only.
+# This repo is PUBLIC: neutral placeholders only, no private registries or hosts.
 
 # ── Builder: compile the worker binaries ────────────────────────────────────
 # Match the runtime's glibc (trixie-slim ships glibc 2.41) by building on the
@@ -56,246 +38,27 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM scratch AS bins
 COPY --from=builder /out/ /
 
-# ── Runtime: claude code + codex + cctui binaries ───────────────────────────
-# Every bundled CLI is a native binary; node is here only so context packs can
-# run npx-based MCP servers. Heavier JS tooling (pnpm stores, a managed
-# toolchain) still belongs in derived org images, e.g. under /opt/mise.
 FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
 ARG CA_CERTS_REFRESH=2026-10-22
 
-# Base tooling kept deliberately lean:
-#   ca-certificates          — TLS trust roots for the daemon's rustls stack.
-#   git, git-lfs            — repo work and large-file fetches.
-#   ripgrep                 — what claude code shells out to for search.
-#   gnupg                   — sidecar gpg-agent (holds the signing key) + the
-#                             worker-side gpg client that signs over the
-#                             forwarded extra socket.
-#   jq                      — payload unpack + result-callback synthesis.
-#   curl                    — context-pack token auth, result callback, health.
-#   rsync                   — warm-repo workspace fallback when overlayfs is off.
-#   iptables                — transparent-mode egress REDIRECT to the proxy.
-#   openssh-client          — git over SSH for credentialed clones.
-#   gh                      — GitHub CLI for token auth + PR work.
-#   xz-utils                — unpacks the node tarball below.
-#   procps                  — `ps`, which `codex app-server daemon start` needs.
-#   libstdc++6              — the goose binary links it dynamically.
-#   libatomic1              — the Node 26 runtime links it dynamically.
+#   curl, jq        — payload unpack, context-pack auth, result callback, health.
+#   git             — workspace and context-pack clones.
+#   iptables        — transparent-mode egress REDIRECT (entrypoint, net-init).
+#   rsync           — warm-repo workspace fallback when overlayfs is off.
+#   gnupg           — sidecar gpg-agent and the worker-side signing client.
 RUN echo "ca-certificates refresh ${CA_CERTS_REFRESH}" && apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         git \
-        git-lfs \
         gnupg \
         iptables \
         jq \
-        libatomic1 \
-        libstdc++6 \
-        openssh-client \
-        procps \
-        ripgrep \
         rsync \
-        xz-utils \
-    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-        -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
-    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-        > /etc/apt/sources.list.d/github-cli.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 RUN sed -i 's#^mozilla/emSign#!mozilla/emSign#' /etc/ca-certificates.conf \
     && update-ca-certificates --fresh >/dev/null \
     && ! ls /etc/ssl/certs | grep -qi emsign
-
-# Node — the runtime only, from the official nodejs.org tarball, checksum-verified
-# against the release's SHASUMS256.txt. Present so context packs can configure
-# npx-based MCP servers (docs/context-packs.md) and so derived images inherit a
-# node on PATH; none of the bundled CLIs depend on it. Pinning the tarball rather
-# than tracking a `node:` base image tag keeps the major explicit.
-ARG NODE_VERSION=26.12.1
-RUN arch="$(dpkg --print-architecture)" \
-    && case "$arch" in \
-         amd64) target=linux-x64 ;; \
-         arm64) target=linux-arm64 ;; \
-         *) echo "node: unsupported arch '$arch'" >&2; exit 1 ;; \
-       esac \
-    && base="https://nodejs.org/dist/v${NODE_VERSION}" \
-    && tarball="node-v${NODE_VERSION}-${target}.tar.xz" \
-    && curl -fsSL "${base}/${tarball}" -o /tmp/node.tar.xz \
-    && curl -fsSL "${base}/SHASUMS256.txt" -o /tmp/node.sums \
-    && sha="$(awk -v f="$tarball" '$2==f{print $1}' /tmp/node.sums)" \
-    && [ -n "$sha" ] || { echo "node: no checksum for ${tarball}" >&2; exit 1; } \
-    && echo "${sha}  /tmp/node.tar.xz" | sha256sum -c - \
-    && mkdir -p /usr/local/node \
-    && tar -xJf /tmp/node.tar.xz -C /usr/local/node --strip-components=1 \
-    && rm /tmp/node.tar.xz /tmp/node.sums \
-    # include/ is node-gyp's C++ headers for building native addons, which needs a
-    # compiler this image does not ship; share/ is man pages and docs.
-    && rm -rf /usr/local/node/include /usr/local/node/share \
-    && ln -s /usr/local/node/bin/node /usr/local/bin/node \
-    && ln -s /usr/local/node/bin/npm  /usr/local/bin/npm \
-    && ln -s /usr/local/node/bin/npx  /usr/local/bin/npx \
-    && node --version && npx --version
-
-# Claude Code — the per-platform *native* binary pulled straight from Anthropic's
-# release CDN (what claude.ai/install.sh fetches), NOT the npm package: the
-# native binary never invokes node, so it stays independent of whatever node a
-# derived image puts on PATH. Checksum-verified against the release manifest,
-# mirroring codex below.
-# A concrete x.y.z MINIMUM, not an exact pin: derived images (the harbor worker
-# bake) refetch the harness, so the guarantee is only "never older than this".
-# scripts/check-claude-version-drift.sh enforces the floor against the installed
-# binary and reports when it falls behind upstream; the release workflow runs it
-# via scripts/check-worker-image-harness.sh against this image before pushing,
-# which is the only place a real binary exists. `latest`/`stable` still resolve
-# if passed explicitly as a build arg.
-ARG CLAUDE_CODE_VERSION=2.1.304
-RUN base="https://downloads.claude.ai/claude-code-releases" \
-    && case "$(dpkg --print-architecture)" in \
-         amd64) platform=linux-x64 ;; \
-         arm64) platform=linux-arm64 ;; \
-         *) echo "claude: unsupported arch" >&2; exit 1 ;; \
-       esac \
-    && case "${CLAUDE_CODE_VERSION}" in \
-         latest|stable) version="$(curl -fsSL "${base}/${CLAUDE_CODE_VERSION}")" ;; \
-         *) version="${CLAUDE_CODE_VERSION}" ;; \
-       esac \
-    && echo "${version}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+' \
-    && sha="$(curl -fsSL "${base}/${version}/manifest.json" \
-        | jq -er --arg p "$platform" '.platforms[$p].checksum')" \
-    && curl -fsSL "${base}/${version}/${platform}/claude" -o /usr/local/bin/claude \
-    && echo "${sha}  /usr/local/bin/claude" | sha256sum -c - \
-    && chmod 0755 /usr/local/bin/claude \
-    && claude --version
-
-# Codex — the standalone package from the GitHub release, NOT the npm package.
-# The npm codex is a node entrypoint, so in derived images that put a node shim
-# on PATH (e.g. mise managing the toolchain) launching it resolves `node`
-# through the shim and can fail before codex starts (the
-# "mise ERROR Permission denied (os error 13)" seen in the acme fat image).
-# The package, not the bare binary: `codex app-server daemon` only runs from a
-# complete standalone install at $CODEX_HOME/packages/standalone/current, which
-# the entrypoint links to CODEX_PACKAGE_DIR. It lives under /usr so the
-# supervisor's landlock ruleset can read it. Checksum-verified.
-#
-# Model provider: codex IGNORES OPENAI_API_KEY / OPENAI_BASE_URL env and reads
-# its provider only from ~/.codex/config.toml. Do NOT bake a static config here —
-# it would clobber codex's own runtime writes (trust_level) and pin a stale
-# base_url. The entrypoint's phase_codex_config MERGES the cctui gateway provider
-# in at runtime from the injected OPENAI_* env.
-# A concrete x.y.z MINIMUM, not an exact pin: derived images (the harbor worker
-# bake) refetch the harness, so the guarantee is only "never older than this".
-# Must equal contract::CODEX_MIN_VERSION
-# (crates/cctui-daemon/src/adapters/codex/contract.rs), the build the retained
-# JSON Schema was generated from; scripts/check-codex-version-drift.sh enforces
-# both that and the floor against any installed binary.
-ARG CODEX_VERSION=0.163.0
-ENV CODEX_PACKAGE_DIR=/usr/local/lib/codex
-RUN arch="$(dpkg --print-architecture)" \
-    && case "$arch" in \
-         amd64) target=x86_64-unknown-linux-musl;  sha=582646c6bf0561eb0de540f7fc85b9121b0091a826bc6e96830b7f1722122182 ;; \
-         arm64) target=aarch64-unknown-linux-musl; sha=9d8ecf2d19d3e184877983902d6c85de48b3888dcb72c382a8a0c975845927fb ;; \
-         *) echo "codex: unsupported arch '$arch'" >&2; exit 1 ;; \
-       esac \
-    && curl -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-package-${target}.tar.gz" \
-        -o /tmp/codex.tar.gz \
-    && echo "${sha}  /tmp/codex.tar.gz" | sha256sum -c - \
-    && mkdir -p "$CODEX_PACKAGE_DIR" \
-    && tar -xzf /tmp/codex.tar.gz -C "$CODEX_PACKAGE_DIR" \
-    && ln -s bin/codex "$CODEX_PACKAGE_DIR/codex" \
-    && ln -sf "$CODEX_PACKAGE_DIR/bin/codex" /usr/local/bin/codex \
-    && rm /tmp/codex.tar.gz \
-    && codex --version
-
-# opencode — third harness (https://github.com/anomalyco/opencode), driven by the
-# daemon's opencode adapter over `opencode serve`. Pinned + checksum-verified:
-# the release carries no SHA256SUMS asset, so the digests are recorded per arch
-# alongside the version and must be refreshed together with it.
-#
-# NO model id and NO opencode config belong in this image: the adapter writes a
-# per-session opencode.json into the session's ephemeral HOME from the dispatch
-# payload + gateway-minted FIREWORKS_* env.
-# Keep OPENCODE_VERSION in lockstep with client::OPENCODE_PINNED_VERSION
-# (crates/cctui-daemon/src/adapters/opencode/client.rs).
-ARG OPENCODE_VERSION=1.19.3
-RUN arch="$(dpkg --print-architecture)" \
-    && case "$arch" in \
-         amd64) target=x64;   sha=13a8fb2978302071b86f9d7e00da9c8895f9cd846978379c3bdc6a5333536c9b ;; \
-         arm64) target=arm64; sha=7900818a6a98881edbbadab4b7525940eff3b9750040c200481f9f56cacee405 ;; \
-         *) echo "opencode: unsupported arch '$arch'" >&2; exit 1 ;; \
-       esac \
-    && curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${target}.tar.gz" \
-        -o /tmp/opencode.tar.gz \
-    && echo "${sha}  /tmp/opencode.tar.gz" | sha256sum -c - \
-    && tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode \
-    && chmod 0755 /usr/local/bin/opencode \
-    && rm /tmp/opencode.tar.gz \
-    && opencode --version
-
-# ACP agents (crates/cctui-daemon/src/adapters/acp/rows.rs), driven over stdio
-# by the daemon's ACP adapter. Exact pins, not floors:
-# scripts/check-worker-image-harness.sh compares each baked `--version` to its
-# ARG, so bump the ARG with the agent.
-#
-# gemini-cli and qwen-code are node packages. They live in their own npm
-# prefix, and the `gemini` / `qwen` commands on PATH are wrappers that exec the
-# baked /usr/local/node/bin/node by absolute path: an npm bin stub resolves
-# `node` through PATH, and in a derived image that puts a node shim there (mise)
-# the agent dies before it starts, the same failure the codex comment above
-# describes.
-ARG GEMINI_CLI_VERSION=0.64.0
-ARG QWEN_CODE_VERSION=0.25.3
-ENV ACP_AGENTS_PREFIX=/usr/local/lib/acp-agents
-RUN npm install -g --prefix "$ACP_AGENTS_PREFIX" --no-fund --no-audit --loglevel=error \
-        "@google/gemini-cli@${GEMINI_CLI_VERSION}" \
-        "@qwen-code/qwen-code@${QWEN_CODE_VERSION}" \
-    && npm cache clean --force \
-    && rm -rf /root/.npm \
-    && for agent in gemini qwen; do \
-         entry="$(readlink -f "$ACP_AGENTS_PREFIX/bin/$agent")"; \
-         [ -f "$entry" ] || { echo "$agent: no bin entry under $ACP_AGENTS_PREFIX" >&2; exit 1; }; \
-         printf '#!/bin/sh\nexec /usr/local/node/bin/node "%s" "$@"\n' "$entry" > "/usr/local/bin/$agent"; \
-         chmod 0755 "/usr/local/bin/$agent"; \
-       done \
-    && gemini --version \
-    && qwen --version
-
-# goose — a single binary from the GitHub release, checksum-verified per arch.
-# The release carries no SHA256SUMS asset, so the digests are recorded here
-# and must be refreshed together with the version.
-ARG GOOSE_VERSION=1.55.0
-RUN arch="$(dpkg --print-architecture)" \
-    && case "$arch" in \
-         amd64) target=x86_64-unknown-linux-gnu;  sha=fd3932908328fac850ca7ad2a8289c744e0c2ddaf4c5a2338709fb17a00b3a4c ;; \
-         arm64) target=aarch64-unknown-linux-gnu; sha=ea83f59bb165a3d999dd00edf69a58028747f31e404b96f0153452c6b1651188 ;; \
-         *) echo "goose: unsupported arch '$arch'" >&2; exit 1 ;; \
-       esac \
-    && curl -fsSL "https://github.com/aaif-goose/goose/releases/download/v${GOOSE_VERSION}/goose-${target}.tar.gz" \
-        -o /tmp/goose.tar.gz \
-    && echo "${sha}  /tmp/goose.tar.gz" | sha256sum -c - \
-    && mkdir -p /tmp/goose \
-    && tar -xzf /tmp/goose.tar.gz -C /tmp/goose \
-    && install -m 0755 /tmp/goose/goose /usr/local/bin/goose \
-    && rm -rf /tmp/goose /tmp/goose.tar.gz \
-    && goose --version
-
-# Each agent's own sandbox and telemetry stay off: the pod is sandboxed by
-# landlock + seccomp + the guard-proxy, and its egress is deny-by-default, so
-# an agent sandbox fails every command and a telemetry exporter only hangs.
-# gemini and qwen also must not re-exec themselves through a different node.
-# goose keeps secrets in its config file: a pod has no secret service.
-# The entrypoint's phase_acp_config mirrors the gemini/qwen settings into the
-# per-agent settings.json and creates the state dirs.
-ENV GEMINI_SANDBOX=false \
-    GEMINI_TELEMETRY_ENABLED=false \
-    GEMINI_CLI_NO_RELAUNCH=1 \
-    QWEN_SANDBOX=false \
-    QWEN_TELEMETRY_ENABLED=false \
-    QWEN_USAGE_STATISTICS_ENABLED=false \
-    QWEN_CODE_NO_RELAUNCH=1 \
-    GOOSE_DISABLE_KEYRING=1 \
-    GOOSE_TELEMETRY_ENABLED=false
 
 # Worker user (uid 1000). The container starts as root only to bootstrap the
 # sandbox (iptables, overlayfs, context pack), then cctui-supervisor setuids to

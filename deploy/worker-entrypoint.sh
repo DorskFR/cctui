@@ -76,6 +76,44 @@ landlock_strict_flags() {
     printf '%s\n' --strict
 }
 
+# Must match the adapters' default binaries (deploy/tests/test-agent-probe.sh)
+# and the daemon's lookup dirs (childenv::child_path).
+AGENT_BINS="claude codex opencode gemini qwen goose"
+AGENT_DIRS="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+NO_AGENT_MSG="no agent CLI installed in this image; build FROM cctui-worker with one (see deploy/examples/worker-agents)"
+
+agent_installed() {
+    _ai_dirs="${PATH:-}:${WORKER_HOME:-/home/worker}/.local/bin:${AGENT_DIRS}"
+    _OLDIFS=$IFS; IFS=:
+    for _ai_d in $_ai_dirs; do
+        if [ -n "$_ai_d" ] && [ -f "$_ai_d/$1" ] && [ -x "$_ai_d/$1" ]; then
+            IFS=$_OLDIFS
+            return 0
+        fi
+    done
+    IFS=$_OLDIFS
+    return 1
+}
+
+is_dispatch() { [ -n "${TASK_PAYLOAD_JSON:-}" ] || [ -n "${CCTUI_DISPATCH_ID:-}" ]; }
+
+# Before the identity checks, so `docker run -it` reaches a shell; a dispatch
+# fails in require_agent instead, once the callback trap is set.
+phase_agent_probe() {
+    AGENTS_FOUND=""
+    for _ap_b in $AGENT_BINS; do
+        if agent_installed "$_ap_b"; then AGENTS_FOUND="${AGENTS_FOUND:+$AGENTS_FOUND }$_ap_b"; fi
+    done
+    if [ -n "$AGENTS_FOUND" ]; then
+        log "agents: $AGENTS_FOUND"
+        return 0
+    fi
+    if is_dispatch; then return 0; fi
+    log "WARNING: $NO_AGENT_MSG" >&2
+    if [ -t 0 ] && [ -t 1 ]; then exec bash; fi
+    exit 1
+}
+phase_agent_probe
 
 # ── Required platform identity ──────────────────────────────────────────────
 if [ -z "${CCTUI_MACHINE_KEY:-}" ]; then
@@ -176,6 +214,19 @@ fail_dispatch() {
     jq -nc --arg id "${TASK_ID:-}" --arg e "$1" '{task_id:$id, status:"failed", error:$e}' \
         > "$RESULT_FILE"
     exit 1
+}
+
+require_agent() {
+    is_dispatch || return 0
+    [ -n "$AGENTS_FOUND" ] || fail_dispatch "$NO_AGENT_MSG"
+    case "$(adapter_kind)" in
+        claude) _ra_bin=claude ;;
+        codex) _ra_bin=codex ;;
+        opencode) _ra_bin=opencode ;;
+        *) _ra_bin=$TASK_ADAPTER ;;
+    esac
+    agent_installed "$_ra_bin" \
+        || fail_dispatch "adapter ${TASK_ADAPTER:-claude-code} needs \`$_ra_bin\`, which this image does not install (installed: $AGENTS_FOUND)"
 }
 
 # A kube dispatch holds only a placeholder machine key: the guard-proxy redeemed
@@ -1819,6 +1870,7 @@ phase_codex_pack
 phase_acp_config
 phase_callback
 require_known_adapter
+require_agent
 phase_preflight
 phase_guard
 phase_guard_exec

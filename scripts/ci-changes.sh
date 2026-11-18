@@ -4,7 +4,7 @@
 # webui/package-lock.json diff that only moves the workspace version is ignored.
 set -euo pipefail
 
-keys=(ci rust webui deps schema deploy)
+keys=(ci rust webui deps schema deploy worker)
 
 if [ "${1:-}" = "--all" ]; then
   for k in "${keys[@]}"; do echo "$k=true"; done
@@ -45,7 +45,7 @@ version_only() {
 
 files="$(git diff --name-only --no-renames "$base" "$head")"
 
-ci=false rust=false webui=false deps=false schema=false deploy=false
+ci=false rust=false webui=false deps=false schema=false deploy=false worker=false
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   case "$f" in
@@ -79,6 +79,10 @@ while IFS= read -r f; do
   case "$f" in
     deploy/* | webui/Dockerfile | webui/nginx.conf | scripts/check-vad-assets.sh) deploy=true ;;
   esac
+  case "$f" in
+    deploy/worker.Dockerfile | deploy/examples/worker-agents/* | scripts/check-worker-image-harness.sh \
+      | scripts/check-claude-version-drift.sh | scripts/check-codex-version-drift.sh) worker=true ;;
+  esac
 done <<<"$files"
 
 echo "ci=$ci"
@@ -87,3 +91,4 @@ echo "webui=$webui"
 echo "deps=$deps"
 echo "schema=$schema"
 echo "deploy=$deploy"
+echo "worker=$worker"

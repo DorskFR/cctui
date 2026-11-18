@@ -3,7 +3,7 @@ name: claude-version-drift
 on:
   pull_request:
     paths:
-      - "deploy/worker.Dockerfile"
+      - "deploy/examples/worker-agents/Dockerfile"
       - "scripts/check-claude-version-drift.sh"
       - "scripts/check-claude-version-drift.test.sh"
       - "scripts/check-worker-image-harness.sh"
