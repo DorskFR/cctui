@@ -231,24 +231,16 @@ pub fn bucket_from_signals(
         q: None,
         soft_limit_blocked,
         ended: false,
-        stalled: false,
     };
     classify(&input, pr_cache)
 }
 
-/// The bucket a listed row shows under: an ended row is Completed, and one
-/// that reads as Working without a recent heartbeat is stalled.
+/// The bucket a listed row shows under: an ended row is Completed.
 fn listed_bucket(
     row: &SignalRow,
-    last_heartbeat: Option<DateTime<Utc>>,
     children: &[SessionChild],
     pr_cache: &HashMap<String, PrStatus<'_>>,
 ) -> Bucket {
-    let running = SessionRowStatus::parse(&row.status)
-        .is_some_and(|status| SessionRowStatus::RUNNING.contains(&status));
-    let quiet = last_heartbeat.is_some_and(|at| {
-        (Utc::now() - at).num_seconds() > cctui_proto::classifier::STALE_WORKING_AFTER_SECS
-    });
     let input = ClassifyInput {
         tempo: row.tempo.as_deref(),
         state: row.agent_state.as_deref(),
@@ -257,7 +249,6 @@ fn listed_bucket(
         q: None,
         soft_limit_blocked: row.soft_limit_reason.as_deref(),
         ended: row.ended_at.is_some() || matches!(row.status.as_str(), "ended" | "failed"),
-        stalled: running && quiet,
     };
     classify(&input, pr_cache)
 }
@@ -1132,7 +1123,7 @@ fn apply_signals(
 ) {
     let children: Vec<SessionChild> =
         serde_json::from_value(row.children.clone()).unwrap_or_default();
-    let bucket = listed_bucket(&row, s.last_heartbeat, &children, pr_cache);
+    let bucket = listed_bucket(&row, &children, pr_cache);
     s.end_reason = row.end_reason.as_deref().map(SessionEndReason::parse);
     s.end_detail = row.end_detail;
     s.ended_at = row.ended_at;
@@ -7551,13 +7542,11 @@ mod tests {
     }
 
     #[test]
-    fn a_working_row_without_a_recent_heartbeat_is_listed_as_blocked() {
-        use cctui_proto::classifier::STALE_WORKING_AFTER_SECS;
-        let stale = STALE_WORKING_AFTER_SECS + 60;
-        assert_eq!(listed("active", "active", "adopted", stale), Bucket::Blocked);
-        assert_eq!(listed("inactive", "active", "working", stale), Bucket::Blocked);
+    fn a_working_row_without_a_recent_heartbeat_stays_working() {
+        let stale = 24 * 60 * 60;
+        assert_eq!(listed("active", "active", "adopted", stale), Bucket::Working);
+        assert_eq!(listed("inactive", "active", "working", stale), Bucket::Working);
         assert_eq!(listed("active", "idle", "done", stale), Bucket::Done);
-        assert_eq!(listed("draft", "active", "working", stale), Bucket::Working);
         assert_eq!(listed("ended", "active", "working", stale), Bucket::Done);
     }
 

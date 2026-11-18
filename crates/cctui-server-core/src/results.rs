@@ -22,7 +22,6 @@ fn bucket_from_signals(
         q: None,
         soft_limit_blocked,
         ended: false,
-        stalled: false,
     };
     classify(&input, pr_cache)
 }

@@ -62,13 +62,7 @@ pub struct ClassifyInput<'a> {
     pub soft_limit_blocked: Option<&'a str>,
     /// The row is `ended` or `failed`: Completed whatever signal it kept.
     pub ended: bool,
-    /// No heartbeat for [`STALE_WORKING_AFTER_SECS`]: a session that would
-    /// read as Working is stuck instead.
-    pub stalled: bool,
 }
-
-/// Heartbeat age past which a Working session counts as stalled.
-pub const STALE_WORKING_AFTER_SECS: i64 = 30 * 60;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PrStatus<'a> {
@@ -195,7 +189,7 @@ pub fn reports_finished(state: Option<&str>, activity: Option<&str>) -> bool {
 /// activity == success                      → Done
 /// tempo == blocked                         → Blocked
 /// tempo == active, state working/running,
-///   or no signal at all                    → Working (Blocked when stalled)
+///   or no signal at all                    → Working
 /// otherwise                                → Done
 /// ```
 #[must_use]
@@ -234,7 +228,7 @@ pub fn classify(
     }
     let unreported = input.tempo.is_none() && input.state.is_none() && input.activity.is_none();
     if working || unreported {
-        return if input.stalled { Bucket::Blocked } else { Bucket::Working };
+        return Bucket::Working;
     }
     Bucket::Done
 }
@@ -349,23 +343,8 @@ mod tests {
     }
 
     #[test]
-    fn a_row_that_never_reported_is_working_until_it_stalls() {
-        let mut s = snap();
-        assert_eq!(classify(&s, &HashMap::new()), Bucket::Working);
-        s.stalled = true;
-        assert_eq!(classify(&s, &HashMap::new()), Bucket::Blocked);
-    }
-
-    #[test]
-    fn a_stalled_working_row_is_blocked() {
-        let mut s = snap();
-        s.tempo = Some("active");
-        s.state = Some("adopted");
-        s.stalled = true;
-        assert_eq!(classify(&s, &HashMap::new()), Bucket::Blocked);
-        s.tempo = Some("idle");
-        s.state = Some("done");
-        assert_eq!(classify(&s, &HashMap::new()), Bucket::Done, "only Working stalls");
+    fn a_row_that_never_reported_is_working() {
+        assert_eq!(classify(&snap(), &HashMap::new()), Bucket::Working);
     }
 
     #[test]
