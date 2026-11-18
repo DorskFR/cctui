@@ -171,8 +171,8 @@
 					"fr": "Les jetons de qui ?"
 				},
 				"body": {
-					"en": "Open AI accounts to see whose.",
-					"fr": "Ouvrez Comptes IA pour voir ceux de qui."
+					"en": "Open Accounts to see whose.",
+					"fr": "Ouvrez Comptes pour voir ceux de qui."
 				}
 			},
 			"when": {
@@ -193,8 +193,8 @@
 					"fr": "Les jetons de qui ?"
 				},
 				"body": {
-					"en": "Open AI accounts to see whose.",
-					"fr": "Ouvrez Comptes IA pour voir ceux de qui."
+					"en": "Open Accounts to see whose.",
+					"fr": "Ouvrez Comptes pour voir ceux de qui."
 				}
 			},
 			"when": {
@@ -235,15 +235,15 @@
 			},
 			"guide": "next",
 			"timeout": 10000,
-			"target": "settings-nav[users]",
+			"target": "settings-nav[instance]",
 			"say": {
 				"title": {
 					"en": "And where does it run?",
 					"fr": "Et où cela s’exécute-t-il ?"
 				},
 				"body": {
-					"en": "Not here — cctui runs nothing itself. Open Users & keys to meet the machines that do.",
-					"fr": "Pas ici — cctui n’exécute rien lui-même. Ouvrez Utilisateurs et clés pour rencontrer les machines qui le font."
+					"en": "Not here — cctui runs nothing itself. Open Instance to meet the users and machines that do.",
+					"fr": "Pas ici — cctui n’exécute rien lui-même. Ouvrez Instance pour rencontrer les utilisateurs et les machines qui le font."
 				}
 			},
 			"when": {
@@ -257,15 +257,15 @@
 			},
 			"guide": "next",
 			"timeout": 10000,
-			"target": "settings-tab[users]",
+			"target": "settings-tab[instance]",
 			"say": {
 				"title": {
 					"en": "And where does it run?",
 					"fr": "Et où cela s’exécute-t-il ?"
 				},
 				"body": {
-					"en": "Not here — cctui runs nothing itself. Open Users & keys to meet the machines that do.",
-					"fr": "Pas ici — cctui n’exécute rien lui-même. Ouvrez Utilisateurs et clés pour rencontrer les machines qui le font."
+					"en": "Not here — cctui runs nothing itself. Open Instance to meet the users and machines that do.",
+					"fr": "Pas ici — cctui n’exécute rien lui-même. Ouvrez Instance pour rencontrer les utilisateurs et les machines qui le font."
 				}
 			},
 			"when": {
@@ -282,8 +282,8 @@
 			"target": "page[users]",
 			"say": {
 				"title": {
-					"en": "Users & keys — who may run work",
-					"fr": "Utilisateurs et clés — qui peut exécuter le travail"
+					"en": "Users & access — who may run work",
+					"fr": "Utilisateurs et accès — qui peut exécuter le travail"
 				},
 				"body": {
 					"en": "Machines supply the compute, and they join the fleet from here with a single enrolment command. If a session cannot find anywhere to run, this is the page to open.",
@@ -330,7 +330,7 @@
 			},
 			"guide": "next",
 			"timeout": 10000,
-			"route": "/settings/guides",
+			"route": "/settings/interface",
 			"target": "guide[sessions-list]",
 			"say": {
 				"title": {
