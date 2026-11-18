@@ -17,12 +17,14 @@
 </script>
 
 <div class="reconnect" data-testid="reconnect-banner">
-	<Callout tone="warn" busy={probing} title={m.reconnect_banner_title()}>
-		<span class="num">{status}</span>
-		{#snippet actions()}
-			<Button size="sm" onclick={onretry} disabled={probing}>{m.maintenance_retry_now()}</Button>
-		{/snippet}
-	</Callout>
+	<div class="strip">
+		<Callout tone="warn" busy={probing} title={m.reconnect_banner_title()}>
+			<span class="num">{status}</span>
+			{#snippet actions()}
+				<Button size="sm" onclick={onretry} disabled={probing}>{m.maintenance_retry_now()}</Button>
+			{/snippet}
+		</Callout>
+	</div>
 </div>
 
 <style>
@@ -36,7 +38,7 @@
 		padding-inline: var(--sp-2);
 		pointer-events: none;
 	}
-	.reconnect > :global(*) {
+	.strip {
 		pointer-events: auto;
 		max-inline-size: 40rem;
 	}
