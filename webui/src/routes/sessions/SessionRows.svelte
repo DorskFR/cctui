@@ -28,8 +28,8 @@
 
 {#if sp.cardView}
 	<div class="card-grid">{@render cardItems(rows, hl)}</div>
-{:else}
-	{@render nestedRows(rows, hl)}
+{:else if rows.length > 0}
+	<div class="sl"><div class="sl-in">{@render nestedRows(rows, hl)}</div></div>
 {/if}
 
 <!-- Card (grid) view: top-level sessions laid out as detailed cards in a
@@ -144,16 +144,20 @@
 	.parent-row {
 		position: relative;
 	}
-	.agent-children {
-		margin-left: min(calc(var(--agent-depth) * var(--sp-2)), 2.5rem);
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-1);
+	/* One bordered list; rows draw their own bottom hairline and the last one is
+	   clipped under the frame. */
+	.sl {
+		border: 1px solid var(--border);
+		border-radius: var(--r-md);
+		overflow: hidden;
+		background: var(--bg-elevated);
 	}
-	@media (max-width: 639px) {
-		.agent-children {
-			margin-left: min(calc(var(--agent-depth) * var(--sp-1)), 1.25rem);
-		}
+	.sl-in {
+		margin-bottom: -1px;
+	}
+	.agent-children {
+		padding-left: min(calc((var(--agent-depth) - 1) * var(--sp-3)), 2.5rem);
+		background: color-mix(in srgb, var(--bg) 45%, var(--bg-elevated));
 	}
 	/* Detailed cards auto-fill the strip: never narrower than a compact card,
 	   capped so a wide window packs more columns instead of stretching them,

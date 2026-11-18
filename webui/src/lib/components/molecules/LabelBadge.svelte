@@ -23,7 +23,8 @@
 		onAttach,
 		onDetach,
 		onUpdate,
-		onDelete
+		onDelete,
+		onOpenChange
 	}: {
 		labels: Label[];
 		editable?: boolean;
@@ -33,6 +34,8 @@
 		onDetach?: (labelId: string) => void | Promise<void>;
 		onUpdate?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
 		onDelete?: (labelId: string) => void | Promise<void>;
+		/** The picker popover opened or closed. */
+		onOpenChange?: (open: boolean) => void;
 	} = $props();
 
 	let busy = $state(false);
@@ -109,7 +112,11 @@
 					variant="ghost"
 					box="xs"
 					hitArea="compact"
-					onopen={() => menu?.focusSearch()}
+					onopen={() => {
+						menu?.focusSearch();
+						onOpenChange?.(true);
+					}}
+					onclose={() => onOpenChange?.(false)}
 				>
 					{#snippet trigger()}<Icon name="tag" />{/snippet}
 					<LabelMenu

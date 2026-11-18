@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { settings } from '#lib/settings.svelte.ts';
 	import { now as clockNow } from '#lib/clock.svelte.ts';
 	import type { Label } from '@bindings/Label';
 	import type { SessionListItem } from '@bindings/SessionListItem';
@@ -83,7 +84,7 @@
 		onEdit?: (s: SessionListItem) => void;
 		onDiscard?: (s: SessionListItem) => void;
 		onCancelSchedule?: (s: SessionListItem) => void;
-		/** Color-by hue for the left strip; null = none. */
+		/** Color-by hue, shown as a swatch on the row; null = none. */
 		accentHue?: number | null;
 	} = $props();
 
@@ -134,23 +135,40 @@
 
 	// Surface state lives inline on the Card: scoped CSS can't reach a child
 	// component's root. The transform is only set mid-swipe — at rest it would
-	// trap the stacked pseudo-elements' z-index inside the card. The attention
-	// fill is opaque so a stacked back-card never bleeds through.
+	// trap the stacked pseudo-elements' z-index inside the card.
+	const RAILS = {
+		attention: 'var(--status-attention)',
+		working: 'var(--status-working)',
+		failed: 'var(--status-failed)'
+	} as const;
+	const rail = $derived(view.rail ? RAILS[view.rail] : null);
+	// Rows are list items: hairline divider, 3px left bar, flat surface.
+	const rowBar = $derived(
+		view.child
+			? 'color-mix(in srgb, var(--info) 55%, transparent)'
+			: view.rail === 'attention' || view.rail === 'failed'
+				? RAILS[view.rail]
+				: 'transparent'
+	);
+	const rowBg = $derived(
+		view.child
+			? 'color-mix(in srgb, var(--bg) 45%, var(--bg-elevated))'
+			: view.rail === 'attention'
+				? 'color-mix(in srgb, var(--warn) 9%, var(--bg-elevated))'
+				: 'transparent'
+	);
+	const rowPad = $derived(view.child ? '4px' : settings.state.sessionList.density === 'compact' ? '5px' : '7px');
+	const rowStyle = $derived(
+		`border-radius:0; border:0; border-bottom:1px solid var(--border); border-left:3px solid ${rowBar}; background:${rowBg}; padding:${rowPad} 14px ${rowPad} 5px`
+	);
 	const cardStyle = $derived(
 		[
+			row ? rowStyle : '',
 			swipe.x !== 0 ? `transform: translateX(${swipe.x}px)` : '',
 			`transition: ${swipe.active ? 'none' : 'transform 0.2s var(--ease)'}`,
-			view.needsInput
-				? 'background: var(--attention-bg-solid); border-left: 3px solid var(--attention-bar)'
-				: '',
-			child && !view.needsInput
-				? 'border-color: color-mix(in srgb, var(--info) 45%, var(--border))'
-				: '',
-			accentHue != null && !view.needsInput
-				? `--mh:${accentHue}; background: color-mix(in srgb, hsl(var(--mh) 65% 50%) 8%, var(--bg-elevated)); border-left: 3px solid hsl(var(--mh) var(--mach-border-sl))`
-				: '',
+			!row && rail ? `border-left: var(--status-rail-w) solid ${rail}` : '',
 			selected
-				? 'background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent)'
+				? 'background-image: linear-gradient(var(--row-selected-bg), var(--row-selected-bg)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent)'
 				: ''
 		]
 			.filter(Boolean)
@@ -198,7 +216,8 @@
 		interactive
 		{stacked}
 		stackTone="info"
-		padding={row ? 'sm' : 'md'}
+		padding={row ? 'none' : 'md'}
+		border={row ? 'none' : 'solid'}
 		style={cardStyle}
 		data-session-id={session.id}
 		data-journey="session"
@@ -230,7 +249,7 @@
 		margin-left: var(--sp-4);
 	}
 	.sc-wrap.compact.child {
-		margin-left: 14px;
+		margin-left: 0;
 	}
 	.sc-wrap.stale {
 		opacity: 0.6;

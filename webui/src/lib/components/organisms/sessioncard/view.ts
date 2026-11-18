@@ -1,4 +1,3 @@
-import type { ContextCounts } from '@bindings/ContextCounts';
 import type { Label } from '@bindings/Label';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import { escapeHtml } from '#lib/markdown.ts';
@@ -7,6 +6,7 @@ import { highlightTerms } from '#lib/search.ts';
 import { type SessionEnd, sessionEnd } from '#lib/sessionEnd.ts';
 import { displayNameOf } from '#lib/sessionName.ts';
 import { outcomeBucket, outcomeHeadline } from '#lib/outcome.ts';
+import { modelShort } from '#lib/format.ts';
 import {
 	type ToolActivity,
 	branchOf,
@@ -26,6 +26,8 @@ export type SubagentToggle = {
 
 export type PrLink = { href: string; label: string };
 
+export type Rail = 'attention' | 'working' | 'failed' | null;
+
 export interface SessionView {
 	s: SessionListItem;
 	child: boolean;
@@ -38,6 +40,7 @@ export interface SessionView {
 	act: ToolActivity;
 	livenessClass: string;
 	needsInput: boolean;
+	rail: Rail;
 	end: SessionEnd | null;
 	showStatusBadge: boolean;
 	branch: string | null;
@@ -105,11 +108,6 @@ export function needsYouOf(s: SessionListItem): NeedsYou | null {
 }
 
 /** The card's context chip counts, `null` when the session carries none. */
-export function contextCountsOf(s: SessionListItem): ContextCounts | null {
-	const c = s.context_counts;
-	return c && c.rules + c.memories > 0 ? c : null;
-}
-
 export function prLinksOf(s: SessionListItem): PrLink[] {
 	return (s.pr_links ?? []).map((href) => {
 		const parts = href.replace(/\/+$/, '').split('/');
@@ -118,6 +116,35 @@ export function prLinksOf(s: SessionListItem): PrLink[] {
 			i >= 2 && parts[i + 1] ? `${parts[i - 2]}/${parts[i - 1]}#${parts[i + 1]}` : href;
 		return { href, label };
 	});
+}
+
+export function railOf(
+	s: SessionListItem,
+	needsInput: boolean,
+	stale: boolean,
+	end: SessionEnd | null = null
+): Rail {
+	if (needsInput) return 'attention';
+	if (end?.tone === 'danger' && !end.muted) return 'failed';
+	if (s.status === 'archived' || s.status === 'draft' || stale) return null;
+	return s.bucket === 'working' ? 'working' : null;
+}
+
+export function projectOf(workingDir: string): string {
+	return workingDir.split('/').filter(Boolean).pop() ?? '';
+}
+
+export function metaParts(
+	s: SessionListItem,
+	opts: { showMachine: boolean; branch: string | null }
+): string[] {
+	const machine = opts.showMachine ? s.machine_name || s.machine_id.slice(0, 8) : null;
+	return [
+		machine,
+		projectOf(s.working_dir),
+		opts.branch,
+		s.model ? modelShort(s.model) : null
+	].filter((p): p is string => !!p);
 }
 
 export function livenessClassOf(s: SessionListItem, stale: boolean): string {
@@ -174,6 +201,8 @@ export function buildView(
 	}
 ): SessionView {
 	const stale = isStaleWorking(s, opts.now);
+	const needsInput = s.attention === 'needs_input' && s.status !== 'archived';
+	const end = sessionEnd(s);
 	return {
 		s,
 		child: opts.child,
@@ -192,8 +221,9 @@ export function buildView(
 		stale,
 		act: toolActivity(s, opts.now),
 		livenessClass: livenessClassOf(s, stale),
-		needsInput: s.attention === 'needs_input' && s.status !== 'archived',
-		end: sessionEnd(s),
+		needsInput,
+		rail: railOf(s, needsInput, stale, end),
+		end,
 		showStatusBadge: s.status === 'new' || s.status === 'archived',
 		branch: branchOf(s),
 		remote: remoteOf(s),

@@ -55,44 +55,49 @@ function render(props: Record<string, unknown>): HTMLElement {
 }
 
 describe('SessionCard modes', () => {
-	it('the compact row has no preview clamp and carries the machine badge, cwd and branch inline', () => {
+	it('the row puts identity on line 1 and machine · cwd · branch · preview, then model · tokens, on line 2', () => {
 		const el = render({ variant: 'row', pendingCount: 2 });
 		expect(el.querySelector('.sc-wrap.compact')).not.toBeNull();
-		expect(el.querySelector('.preview')).toBeNull();
-		expect(el.querySelector('[data-tsu="WorkingDir"]')).not.toBeNull();
-		expect(el.querySelector('.branch')?.getAttribute('title')).toContain('cct-925-sessions-modes');
-		const machine = el.querySelector('.badge[style*="--mh"]');
-		expect(machine?.querySelector('.full')?.textContent).toBe('dev1');
-		expect(machine?.querySelector('.initial')?.textContent).toBe('D1');
-		expect(machine?.getAttribute('title')).toBe('dev1');
+		expect(el.querySelector('.l1 .title')).not.toBeNull();
+		expect(el.querySelector('.l2 .machine')?.textContent).toBe('dev1');
+		expect(el.querySelector('.l2 .cwd')?.textContent).toBe('cctui');
+		expect(el.querySelector('.l2 .cwd')?.getAttribute('title')).toContain('/home/dorsk/Documents/cctui');
+		expect(el.querySelector('.l2 .branch')?.textContent).toContain('cct-925-sessions-modes');
+		expect(el.querySelector('.l2 .preview')?.textContent).toBe('hello');
+		expect(el.querySelector('.m2 .model')?.textContent).toBe('opus-4-8 · high');
 		expect(el.textContent).toContain('2 perm');
 	});
 
-	// jsdom does not evaluate the container queries that pick between these, so
-	// the assertion is that every step exists for the stylesheet to choose from.
-	it('carries every degradation step of the model chip, and a capped title', () => {
-		const el = render({ variant: 'row' });
-		const model = el.querySelector('.model');
-		expect(model?.querySelector('.full')?.textContent).toBe('opus-4-8');
-		expect(model?.querySelector('.fam')?.textContent).toBe('opus');
-		expect(model?.querySelector('.abbr')?.textContent).toBe('Op.');
-		expect(model?.getAttribute('title')).toBe('opus-4-8 · high');
-		expect(el.querySelector('.title.capped')).not.toBeNull();
+	it('spells the subagent toggle out as a count and the group name', () => {
+		const ontoggle = vi.fn();
+		const el = render({
+			variant: 'row',
+			subagentToggles: [{ key: 'plain', count: 3, running: 1, open: false, label: 'subagents', ontoggle }]
+		});
+		const sub = el.querySelector<HTMLButtonElement>('.l1 .sub');
+		expect(sub?.textContent?.replace(/\s+/g, ' ').trim()).toBe('3 subagents ▸');
+		expect(sub?.getAttribute('aria-expanded')).toBe('false');
+		sub?.click();
+		expect(ontoggle).toHaveBeenCalledOnce();
 	});
 
-	it('hides the machine badge when the section header already names it', () => {
+	it('hides the machine when the section header already names it', () => {
 		const el = render({ variant: 'row', showMachine: false });
-		expect(el.querySelector('.badge[style*="--mh"]')).toBeNull();
+		expect(el.querySelector('.l2 .machine')).toBeNull();
+		expect(el.querySelector('.l2 .cwd')?.textContent).toBe('cctui');
 	});
 
-	it('the detailed card pins a footer with cwd, branch and the PR link', () => {
+	it('the detailed card footer reads project · branch in sans, with the PR link', () => {
 		const el = render({ variant: 'card' });
 		expect(el.querySelector('.preview')?.textContent).toBe('hello');
-		expect(el.querySelector('.branch')?.getAttribute('title')).toContain('cct-925-sessions-modes');
+		const where = el.querySelector('.where');
+		expect(where?.textContent?.trim()).toBe('cctui · cct-925-sessions-modes');
+		expect(where?.getAttribute('title')).toContain('/home/dorsk/Documents/cctui');
+		expect(el.querySelector('[data-tsu="WorkingDir"]')).toBeNull();
 		const pr = el.querySelector('a.pr-link');
 		expect(pr?.textContent?.trim()).toBe('DorskFR/cctui#311');
 		expect(pr?.getAttribute('href')).toBe('https://github.com/DorskFR/cctui/pull/311');
-		expect(el.textContent).toContain('opus-4-8');
+		expect(el.querySelector('.model .full')?.textContent).toBe('opus-4-8');
 	});
 
 	it('is the sess-card size container every readout degrades against', () => {
