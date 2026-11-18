@@ -1527,8 +1527,8 @@
 				"nPlural"
 			],
 			"match": {
-				"nPlural=one": "{n} sous-agent archivé",
-				"nPlural=other": "{n} sous-agents archivés"
+				"nPlural=one": "{n} sous-agent",
+				"nPlural=other": "{n} sous-agents"
 			}
 		}
 	],
@@ -1642,6 +1642,10 @@
 	"sessions_workflow_named": "Flux de travail : {name}",
 	"settings_account_names_help": "Affiche le nom du compte sur chaque ligne de session à la place de l'icône de clé. Utile quand plusieurs comptes partagent un même fournisseur.",
 	"settings_account_names_label": "Noms des comptes",
+	"settings_row_density_help": "Les lignes confortables tiennent sur deux lignes ; les lignes compactes tiennent chaque session sur une seule.",
+	"settings_row_density_label": "Densité des lignes",
+	"settings_row_density_normal": "Confortable",
+	"settings_row_density_compact": "Compacte",
 	"settings_admin_instance_cleared": "Nom de l'instance effacé",
 	"settings_admin_instance_name_help": "Libellé commun à tout le serveur, affiché « cctui (NOM) » dans le bandeau et dans l'onglet du navigateur, pour distinguer plusieurs déploiements. Vide (par défaut) : la marque seule.",
 	"settings_admin_instance_name_label": "Nom de l'instance",
@@ -2904,5 +2908,73 @@
 	"redteam_outcome_refused": "refusé",
 	"redteam_outcome_inconclusive": "non concluant",
 	"redteam_outcome_blocked": "bloqué",
-	"redteam_outcome_skipped": "ignoré"
+	"redteam_outcome_skipped": "ignoré",
+	"ds_stat_cache": "{v} en cache",
+	"ds_stat_files": [
+		{
+			"declarations": [
+				"input n",
+				"input v",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
+			"match": {
+				"nPlural=one": "{v} fichier",
+				"nPlural=other": "{v} fichiers"
+			}
+		}
+	],
+	"ds_stat_input": "{v} en entrée",
+	"ds_stat_messages": [
+		{
+			"declarations": [
+				"input n",
+				"input v",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
+			"match": {
+				"nPlural=one": "{v} message",
+				"nPlural=other": "{v} messages"
+			}
+		}
+	],
+	"ds_stat_output": "{v} en sortie",
+	"ds_stat_tokens": [
+		{
+			"declarations": [
+				"input n",
+				"input v",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
+			"match": {
+				"nPlural=one": "{v} jeton",
+				"nPlural=other": "{v} jetons"
+			}
+		}
+	],
+	"ds_stat_tools": [
+		{
+			"declarations": [
+				"input n",
+				"input v",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
+			"match": {
+				"nPlural=one": "{v} outil",
+				"nPlural=other": "{v} outils"
+			}
+		}
+	],
+	"list_auto_approve": "approbation auto"
 }

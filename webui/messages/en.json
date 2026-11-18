@@ -1527,8 +1527,8 @@
 				"nPlural"
 			],
 			"match": {
-				"nPlural=one": "{n} archived subagent",
-				"nPlural=other": "{n} archived subagents"
+				"nPlural=one": "{n} subagent",
+				"nPlural=other": "{n} subagents"
 			}
 		}
 	],
@@ -1642,6 +1642,10 @@
 	"sessions_workflow_named": "Workflow: {name}",
 	"settings_account_names_help": "Show the account name on each session row instead of the key icon. Useful when several accounts share one provider.",
 	"settings_account_names_label": "Account names",
+	"settings_row_density_help": "Comfortable rows take two lines; compact rows fit each session on one.",
+	"settings_row_density_label": "Row density",
+	"settings_row_density_normal": "Comfortable",
+	"settings_row_density_compact": "Compact",
 	"settings_admin_instance_cleared": "Instance name cleared",
 	"settings_admin_instance_name_help": "Server-wide label shown as “cctui (NAME)” in the header and the browser tab, so several deployments stay telling apart. Empty (the default) shows the bare brand.",
 	"settings_admin_instance_name_label": "Instance name",
@@ -2904,5 +2908,73 @@
 	"redteam_outcome_refused": "refused",
 	"redteam_outcome_inconclusive": "inconclusive",
 	"redteam_outcome_blocked": "blocked",
-	"redteam_outcome_skipped": "skipped"
+	"redteam_outcome_skipped": "skipped",
+	"ds_stat_cache": "{v} cached",
+	"ds_stat_files": [
+		{
+			"declarations": [
+				"input n",
+				"input v",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
+			"match": {
+				"nPlural=one": "{v} file",
+				"nPlural=other": "{v} files"
+			}
+		}
+	],
+	"ds_stat_input": "{v} input",
+	"ds_stat_messages": [
+		{
+			"declarations": [
+				"input n",
+				"input v",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
+			"match": {
+				"nPlural=one": "{v} message",
+				"nPlural=other": "{v} messages"
+			}
+		}
+	],
+	"ds_stat_output": "{v} output",
+	"ds_stat_tokens": [
+		{
+			"declarations": [
+				"input n",
+				"input v",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
+			"match": {
+				"nPlural=one": "{v} token",
+				"nPlural=other": "{v} tokens"
+			}
+		}
+	],
+	"ds_stat_tools": [
+		{
+			"declarations": [
+				"input n",
+				"input v",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
+			"match": {
+				"nPlural=one": "{v} tool",
+				"nPlural=other": "{v} tools"
+			}
+		}
+	],
+	"list_auto_approve": "auto-approve"
 }

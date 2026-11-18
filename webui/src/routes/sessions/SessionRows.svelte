@@ -15,7 +15,9 @@
 		childGroups,
 		allowSelect,
 		hl,
-		pending
+		pending,
+		framed = true,
+		baseDepth = 0
 	}: {
 		sp: SessionsPage;
 		rows: SessionListItem[];
@@ -23,13 +25,19 @@
 		allowSelect: boolean;
 		hl: string[];
 		pending: (id: string) => number;
+		/** Unframed rows sit inside a frame the caller draws. */
+		framed?: boolean;
+		/** Render the rows as subagents of a parent shown elsewhere. */
+		baseDepth?: number;
 	} = $props();
 </script>
 
 {#if sp.cardView}
 	<div class="card-grid">{@render cardItems(rows, hl)}</div>
-{:else}
-	{@render nestedRows(rows, hl)}
+{:else if rows.length > 0 && framed}
+	<div class="sl"><div class="sl-in">{@render nestedRows(rows, hl)}</div></div>
+{:else if rows.length > 0}
+	{@render nestedRows(rows, hl, baseDepth)}
 {/if}
 
 <!-- Card (grid) view: top-level sessions laid out as detailed cards in a
@@ -85,15 +93,20 @@
 
 <!-- Nested list of top-level rows with subagent count badges + inline children. -->
 {#snippet nestedRows(rows: SessionListItem[], hl: string[], depth = 0)}
-	{#each rows as s (s.id)}
+	{#each rows as s, i (s.id)}
 		{@const subGroups = childGroups.get(s.id) ?? []}
 		{@const collapsibleGroups = subGroups.filter((g) => g.agents.length >= INLINE_THRESHOLD)}
+		{@const showsChildren =
+			depth < 5 &&
+			subGroups.some((g) => g.agents.length < INLINE_THRESHOLD || sp.list.expanded.has(groupId(s.id, g.key)))}
 		<!-- Collapsible (>=3) groups surface as count badges outside the parent
 		     row layout; smaller groups render inline below. -->
 		<div class="parent-row">
 			<SessionCard
 				session={s}
 				variant="row"
+				listTop={framed && depth === 0 && i === 0}
+				listBottom={framed && depth === 0 && i === rows.length - 1 && !showsChildren}
 				child={depth > 0}
 				showMachine={sp.showMachine}
 				accentHue={sp.accentOf(s)}
@@ -144,16 +157,19 @@
 	.parent-row {
 		position: relative;
 	}
-	.agent-children {
-		margin-left: min(calc(var(--agent-depth) * var(--sp-2)), 2.5rem);
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-1);
+	/* One bordered list; rows draw their own bottom hairline and the last one is
+	   clipped under the frame. */
+	.sl {
+		border: 1px solid var(--border);
+		border-radius: var(--r-md);
+		overflow: hidden;
+		background: var(--bg-elevated);
 	}
-	@media (max-width: 639px) {
-		.agent-children {
-			margin-left: min(calc(var(--agent-depth) * var(--sp-1)), 1.25rem);
-		}
+	.sl-in {
+		margin-bottom: -1px;
+	}
+	.agent-children {
+		background: color-mix(in srgb, var(--bg) 45%, var(--bg-elevated));
 	}
 	/* Detailed cards auto-fill the strip: never narrower than a compact card,
 	   capped so a wide window packs more columns instead of stretching them,

@@ -112,3 +112,19 @@ it('focuses the session picker on first opening and reopening', async () => {
 		if (state === 'open') expect(document.activeElement).toBe(document.querySelector('input'));
 	}
 });
+
+it('reports the picker opening and closing so the row can keep its trigger visible', async () => {
+	const onOpenChange = vi.fn();
+	component = mount(LabelBadge, {
+		target: document.body,
+		props: { labels: [], allLabels: [], editable: true, onOpenChange }
+	});
+	flushSync();
+	const panel = element<HTMLElement>('[popover]');
+	for (const state of ['open', 'closed']) {
+		panel.dispatchEvent(Object.assign(new Event('toggle'), { newState: state }));
+		flushSync();
+		await new Promise((r) => setTimeout(r, 0));
+	}
+	expect(onOpenChange.mock.calls).toEqual([[true], [false]]);
+});
