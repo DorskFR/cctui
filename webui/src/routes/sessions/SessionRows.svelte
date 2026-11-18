@@ -15,7 +15,9 @@
 		childGroups,
 		allowSelect,
 		hl,
-		pending
+		pending,
+		framed = true,
+		baseDepth = 0
 	}: {
 		sp: SessionsPage;
 		rows: SessionListItem[];
@@ -23,13 +25,19 @@
 		allowSelect: boolean;
 		hl: string[];
 		pending: (id: string) => number;
+		/** Unframed rows sit inside a frame the caller draws. */
+		framed?: boolean;
+		/** Render the rows as subagents of a parent shown elsewhere. */
+		baseDepth?: number;
 	} = $props();
 </script>
 
 {#if sp.cardView}
 	<div class="card-grid">{@render cardItems(rows, hl)}</div>
-{:else if rows.length > 0}
+{:else if rows.length > 0 && framed}
 	<div class="sl"><div class="sl-in">{@render nestedRows(rows, hl)}</div></div>
+{:else if rows.length > 0}
+	{@render nestedRows(rows, hl, baseDepth)}
 {/if}
 
 <!-- Card (grid) view: top-level sessions laid out as detailed cards in a
@@ -97,8 +105,8 @@
 			<SessionCard
 				session={s}
 				variant="row"
-				listTop={depth === 0 && i === 0}
-				listBottom={depth === 0 && i === rows.length - 1 && !showsChildren}
+				listTop={framed && depth === 0 && i === 0}
+				listBottom={framed && depth === 0 && i === rows.length - 1 && !showsChildren}
 				child={depth > 0}
 				showMachine={sp.showMachine}
 				accentHue={sp.accentOf(s)}
