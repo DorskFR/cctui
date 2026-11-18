@@ -403,7 +403,7 @@ fn inject_external_guard(pod: &Pod, cfg: &EnvelopeConfig) -> Pod {
         pod_sec.fs_group = Some(FS_GROUP);
     }
     let volumes = spec.volumes.get_or_insert_with(Vec::new);
-    let wanted = [
+    let wanted = vec![
         empty_dir(VOL_HOME),
         empty_dir(VOL_GUARD_STATE),
         empty_dir(VOL_PROXY_POLICY),
@@ -487,10 +487,11 @@ fn guard_pod_labels(job: &str) -> BTreeMap<String, String> {
     ])
 }
 
-/// The guard-proxy of a `pod`-placed profile: the sidecar container, in
-/// forward mode behind the proxy token, as its own restricted pod. It carries
-/// neither the worker-profile label nor `job-name`, so neither the webhook
-/// nor the worker's policies and status select it.
+/// The guard-proxy of a `pod`-placed profile, as its own restricted pod.
+///
+/// It is the sidecar container in forward mode behind the proxy token. It
+/// carries neither the worker-profile label nor `job-name`, so neither the
+/// webhook nor the worker's policies and status select it.
 #[must_use]
 pub fn guard_pod(g: &GuardPod<'_>) -> Pod {
     let cfg = EnvelopeConfig {

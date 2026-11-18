@@ -731,11 +731,6 @@ phase_external_guard() {
     log "external guard pod ${GUARD_PROXY_HOST} (sync pid $GUARD_SYNC_PID): proxy env + cctui server gateway set; gpg signing is not forwarded, commits are UNSIGNED"
 }
 
-# A URL fit for the log: the gateway's token path segment masked.
-redact_url() {
-    printf '%s' "$1" | sed 's,/[0-9a-f]\{64\}\(/\|$\),/<token>\1,'
-}
-
 NET_MODE=""
 phase_network() {
     # Decide the mode. Explicit WORKER_NET_MODE wins; else transparent iff we
@@ -1772,7 +1767,7 @@ phase_preflight() {
             esac
         done
         [ -f "$_dir/control" ] \
-            || _failed="${_failed:+$_failed; }proxy path to the cctui server failed ($(redact_url "${CCTUI_BASE_URL%/}/health"))"
+            || _failed="${_failed:+$_failed; }proxy path to the cctui server failed ($(printf '%s' "${CCTUI_BASE_URL%/}/health" | sed 's,/[0-9a-f]\{64\}\(/\|$\),/<token>\1,'))"
         rm -rf "$_dir"
         _ms=$(( ($(date +%s%N) - _start) / 1000000 ))
         log "preflight: ${_n} deny probes + proxy control in ${_ms}ms (mode=$_mode)"
@@ -2156,7 +2151,7 @@ probe_session() {
         # Surface a persistent auth/URL fault ONCE rather than failing blind —
         # the first fix died silently on a 403 from the wrong endpoint.
         if [ "$_PROBE_LOGGED_CODE" != "$_code" ]; then
-            log "wait: liveness probe HTTP $_code from $(redact_url "$_SESSIONS_URL") (treating as unknown)"
+            log "wait: liveness probe HTTP $_code from $(printf '%s' "$_SESSIONS_URL" | sed 's,/[0-9a-f]\{64\}\(/\|$\),/<token>\1,') (treating as unknown)"
             _PROBE_LOGGED_CODE="$_code"
         fi
         echo unknown

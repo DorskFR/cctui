@@ -98,9 +98,11 @@ pub const GUARD_EXEC_ENV: &str = "CCTUI_GUARD_EXEC";
 /// profile's worker may hold it.
 pub const EXEC_INTERCEPTION_CAP: &str = "SYS_PTRACE";
 
-/// Annotations a `pod`-placed guard's worker pod carries: the guard Service it
-/// dials, the proxy token every request presents, and the control token that
-/// steers the guard's policy (mounted where the agent cannot read it).
+/// Annotations on the worker pod of a `pod`-placed guard.
+///
+/// The guard Service it dials, the proxy token every request presents, and the
+/// control token that steers the guard's policy (mounted where the agent cannot
+/// read it).
 pub const ANNOTATION_GUARD_SERVICE: &str = "cctui.dev/guard-service";
 pub const ANNOTATION_GUARD_PROXY_TOKEN: &str = "cctui.dev/guard-proxy-token";
 pub const ANNOTATION_GUARD_CONTROL_TOKEN: &str = "cctui.dev/guard-control-token";

@@ -15,9 +15,9 @@ FNS=$(awk '
     /^external_guard_failed\(\)/,/^}/; /^guard_curl\(\)/,/^}/; /^external_guard_wait\(\)/,/^}/;
     /^dispatch_identity_failed\(\)/,/^}/; /^phase_dispatch_env\(\)/,/^}/;
     /^guard_put\(\)/,/^}/; /^guard_policy_sync\(\)/,/^}/; /^phase_external_guard\(\)/,/^}/;
-    /^redact_url\(\)/,/^}/; /^egress_breaches\(\)/,/^}/; /^egress_recheck\(\)/,/^}/
+    /^egress_breaches\(\)/,/^}/; /^egress_recheck\(\)/,/^}/
 ' "$ENTRY")
-for fn in phase_external_guard guard_policy_sync egress_recheck redact_url; do
+for fn in phase_external_guard guard_policy_sync egress_recheck; do
     case "$FNS" in *"$fn()"*) ;; *) echo "$fn not found in $ENTRY"; exit 1 ;; esac
 done
 
@@ -165,12 +165,15 @@ kill "$sync_pid" 2>/dev/null; wait "$sync_pid" 2>/dev/null
 has "rewrite pushed" "http://g:15002/policy" "$(cat "$TMP/puts" 2>/dev/null)"
 
 echo "== 8. the gateway token never reaches a log line =="
-out=$(run "redact_url 'http://g:15003/${PROXY_TOKEN}/api/v1/sessions'")
-check "masked mid-path" "http://g:15003/<token>/api/v1/sessions" "$out"
-out=$(run "redact_url 'http://g:15003/${PROXY_TOKEN}'")
-check "masked at the end" "http://g:15003/<token>" "$out"
-out=$(run "redact_url 'http://cctui.cctui.svc:8700/health'")
-check "a plain URL is unchanged" "http://cctui.cctui.svc:8700/health" "$out"
+MASK=$(grep -o "sed 's,/\[0-9a-f\]\\\\{64\\\\}[^']*'" "$ENTRY" | sort -u)
+check "one mask, used by both URL log lines" 1 "$(printf '%s\n' "$MASK" | grep -c .)"
+check "both URL log lines mask" 2 "$(grep -c "sed 's,/\[0-9a-f\]\\\\{64\\\\}" "$ENTRY")"
+mask() { printf '%s' "$1" | eval "$MASK"; }
+check "masked mid-path" "http://g:15003/<token>/api/v1/sessions" \
+    "$(mask "http://g:15003/${PROXY_TOKEN}/api/v1/sessions")"
+check "masked at the end" "http://g:15003/<token>" "$(mask "http://g:15003/${PROXY_TOKEN}")"
+check "a plain URL is unchanged" "http://cctui.cctui.svc:8700/health" \
+    "$(mask "http://cctui.cctui.svc:8700/health")"
 
 echo "== 9. the egress re-check ends an enforcing dispatch on a breach =="
 recheck() {
