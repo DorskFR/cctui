@@ -1,3 +1,4 @@
+import type { BriefSession } from '@bindings/BriefSession';
 import type { PermissionMode } from '@bindings/PermissionMode';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
@@ -17,6 +18,10 @@ export const BRIEF_FILE_NAME = 'previous-conversation.md';
 export const INLINE_BRIEF_MAX_BYTES = 48 * 1024;
 export const BRIEF_FETCH_MAX_BYTES = 512 * 1024;
 export const DEFAULT_INSTRUCTION = 'Continue from this.';
+export const PREVIOUS_SESSIONS_TAG = CCTUI_TAGS.previousSessions;
+
+/** A brief as `GET /sessions/{id}/brief` returns it; `sessions` with `?chain=1`. */
+export type Brief = string | { markdown: string; sessions?: BriefSession[] | null };
 
 const LINKED_RELATIONS = new Set(['fork', FOLLOWUP_RELATION]);
 
@@ -63,16 +68,43 @@ export interface FollowupPrompt {
 	file: string | null;
 }
 
+function chainPrompt(sessions: BriefSession[], ask: string): FollowupPrompt {
+	const tag = CCTUI_TAGS.previousConversation;
+	const envelope = (body: (s: BriefSession, last: boolean) => string) => {
+		const blocks = sessions.map((s, i) => {
+			const name = s.name === null ? '' : ` session="${attr(s.name)}"`;
+			const open = `<${tag} n="${i + 1}"${name} id="${attr(s.id)}">`;
+			return `${open}\n${body(s, i === sessions.length - 1)}\n</${tag}>`;
+		});
+		return `<${PREVIOUS_SESSIONS_TAG}>\n${blocks.join('\n')}\n</${PREVIOUS_SESSIONS_TAG}>`;
+	};
+	const total = sessions.reduce((n, s) => n + byteLength(s.markdown), 0);
+	if (total > INLINE_BRIEF_MAX_BYTES) {
+		const pointer = envelope((_, last) =>
+			last
+				? `The transcripts are in the attached file ${BRIEF_FILE_NAME}. Read it first.`
+				: `In the attached file ${BRIEF_FILE_NAME}.`
+		);
+		return { prompt: `${pointer}\n\n${ask}`, file: `${envelope((s) => s.markdown)}\n` };
+	}
+	return { prompt: `${envelope((s) => s.markdown)}\n\n${ask}`, file: null };
+}
+
+/** The follow-up's first prompt: one previous-conversation block for a lone
+ *  parent, every session of a longer chain inside a previous-sessions block. */
 export function followupPrompt(
 	session: Pick<SessionListItem, 'id' | 'name' | 'working_dir'>,
-	brief: string,
+	full: Brief,
 	instruction: string = DEFAULT_INSTRUCTION
 ): FollowupPrompt {
+	const ask = instruction.trim() || DEFAULT_INSTRUCTION;
+	const chain = typeof full === 'string' ? null : (full.sessions ?? null);
+	if (chain && chain.length > 1) return chainPrompt(chain, ask);
+	const brief = typeof full === 'string' ? full : (chain?.[0]?.markdown ?? full.markdown);
 	const name = attr(session.name || session.working_dir);
 	const tag = CCTUI_TAGS.previousConversation;
 	const open = `<${tag} session="${name}" id="${attr(session.id)}">`;
 	const close = `</${tag}>`;
-	const ask = instruction.trim() || DEFAULT_INSTRUCTION;
 	if (byteLength(brief) > INLINE_BRIEF_MAX_BYTES) {
 		return {
 			prompt: `${open}\nThe transcript is in the attached file ${BRIEF_FILE_NAME}. Read it first.\n${close}\n\n${ask}`,
@@ -84,7 +116,7 @@ export function followupPrompt(
 
 export function followupPrefill(
 	session: SessionListItem,
-	brief: string,
+	brief: Brief,
 	opts: { instruction?: string; archiveSource?: boolean } = {}
 ): Record<string, string> {
 	const adapter = session.adapter_id ?? 'claude-code';
@@ -151,7 +183,7 @@ export function followupSpawnRequest(p: Record<string, string>): { body: SpawnRe
 }
 
 export interface FollowupLaunchDeps {
-	brief: (sessionId: string) => Promise<{ markdown: string }>;
+	brief: (sessionId: string) => Promise<Exclude<Brief, string>>;
 	spawn: (body: SpawnRequest, files: File[]) => Promise<SpawnResponse>;
 	awaitSpawn: (
 		commandId: string,
@@ -175,7 +207,7 @@ export async function launchFollowup(
 	let res: SpawnResponse;
 	try {
 		const brief = await deps.brief(session.id);
-		const prefill = followupPrefill(session, brief.markdown, { instruction, archiveSource: true });
+		const prefill = followupPrefill(session, brief, { instruction, archiveSource: true });
 		const req = followupSpawnRequest(prefill);
 		res = await deps.spawn(req.body, req.files);
 	} catch (error) {

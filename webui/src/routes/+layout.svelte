@@ -5,6 +5,7 @@
 	import { hasFeature } from '#lib/features.svelte.ts';
 	import HeadlessServerNotice from '#lib/components/organisms/HeadlessServerNotice.svelte';
 	import MaintenanceScreen from '#lib/components/organisms/MaintenanceScreen.svelte';
+	import ReconnectBanner from '#lib/components/organisms/ReconnectBanner.svelte';
 	import { backendHealth } from '#lib/backendHealth.svelte.ts';
 	import '@dorsk/tsumikit/looks/depth.css';
 	import '@dorsk/tsumikit/looks/tactile.css';
@@ -202,7 +203,14 @@
 	<!-- Remount the tree on a language flip so labels captured in component-init
 	     `const`s (not just reactive template reads) re-localize live. -->
 	{#key locale.current}
-		{#if backendHealth.state === 'down'}
+		{#if backendHealth.outage === 'reconnecting'}
+			<ReconnectBanner
+				nextRetryAt={backendHealth.nextRetryAt}
+				probing={backendHealth.probing}
+				onretry={() => backendHealth.retryNow()}
+			/>
+		{/if}
+		{#if backendHealth.outage === 'offline'}
 			<MaintenanceScreen
 				nextRetryAt={backendHealth.nextRetryAt}
 				probing={backendHealth.probing}

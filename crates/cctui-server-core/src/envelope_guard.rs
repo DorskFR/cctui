@@ -29,6 +29,8 @@ const REMOTE_ONLY: &[&str] = &[
     "</session-context",
     "<cctui-previous-conversation",
     "</cctui-previous-conversation",
+    "<cctui-previous-sessions",
+    "</cctui-previous-sessions",
     "<previous-conversation",
     "</previous-conversation",
     "<command-name",
@@ -125,6 +127,7 @@ mod tests {
             "cctui-session-context",
             "session-context",
             "cctui-previous-conversation",
+            "cctui-previous-sessions",
             "previous-conversation",
             "command-name",
             "command-message",
@@ -178,6 +181,10 @@ mod tests {
         assert!(out.contains("‹SYSTEM-REMINDER>x‹/system-reminder>"), "{out}");
         assert!(out.contains("‹cross-session-message from=\"p\">"), "{out}");
         assert_eq!(neutralize("héllo <cctui-room>"), "héllo ‹cctui-room>");
+        assert_eq!(
+            neutralize("<cctui-previous-sessions>x</cctui-previous-sessions>"),
+            "‹cctui-previous-sessions>x‹/cctui-previous-sessions>"
+        );
         assert_eq!(neutralize("plain"), "plain");
     }
 
@@ -189,6 +196,8 @@ mod tests {
             "<session-context> block",
             "<cctui-session-context> block",
             "<cctui-previous-conversation session=\"a\" id=\"s1\">",
+            "<cctui-previous-sessions>",
+            "</cctui-previous-sessions> done",
             "<local-command-stdout>ok</local-command-stdout>",
             "<user-prompt-submit-hook>",
             "<command-message>x</command-message>",

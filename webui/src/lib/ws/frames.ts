@@ -31,7 +31,7 @@ export type PermReq = EventOf<'permission_request'>;
 export const USER_PREFIX = '▷ User:';
 
 const INJECTED_HEAD =
-	/^\s*<(cctui-session-context|session-context|cctui-previous-conversation|previous-conversation)(?:\s[^>]*)?>[\s\S]*?<\/\1>/;
+	/^\s*<(cctui-session-context|session-context|cctui-previous-sessions|cctui-previous-conversation|previous-conversation)(?:\s[^>]*)?>[\s\S]*?<\/\1>/;
 
 /** The prose after the wrappers cctui puts ahead of a prompt, or the whole
  *  body when nothing follows them. */
