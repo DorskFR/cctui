@@ -436,19 +436,19 @@ mod tests {
                 assert!(n > 0, "the client hung up mid-request");
                 buf.extend_from_slice(&chunk[..n]);
                 let text = String::from_utf8_lossy(&buf).into_owned();
-                let Some((head, rest)) = text.split_once("\r\n\r\n") else { continue };
+                let Some((head, received)) = text.split_once("\r\n\r\n") else { continue };
                 let len = head
                     .to_ascii_lowercase()
                     .lines()
                     .find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().to_owned()))
                     .and_then(|v| v.parse::<usize>().ok())
                     .unwrap_or(0);
-                if rest.len() >= len {
-                    let resp = format!(
+                if received.len() >= len {
+                    let answer = format!(
                         "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
                     );
-                    conn.write_all(resp.as_bytes()).await.unwrap();
+                    conn.write_all(answer.as_bytes()).await.unwrap();
                     return text;
                 }
             }

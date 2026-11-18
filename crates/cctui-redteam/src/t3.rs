@@ -12,7 +12,7 @@ use crate::attack::{AgentJob, Target, plan};
 use crate::budget::{Admission, CutOff, Ledger};
 use crate::judge::{Event, EventKind, Evidence, Expectation, judge};
 use crate::oracle::Verdict;
-use crate::publish::{self, Target};
+use crate::publish::{self, Target as PublishTarget};
 use crate::scenario::Mode;
 
 /// Runs one job end to end and returns what the oracles observed.
@@ -313,7 +313,7 @@ async fn publish_run(reports: &[AgentReport], started_at: i64) {
         eprintln!("redteam: t3 ran no job; nothing to post");
         return;
     }
-    let target = Target::from_env(
+    let target = PublishTarget::from_env(
         &[publish::ENV_URL, crate::dispatch::ENV_SERVER],
         &[publish::ENV_TOKEN, crate::dispatch::ENV_TOKEN],
     );
