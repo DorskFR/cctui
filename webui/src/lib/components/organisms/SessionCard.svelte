@@ -45,7 +45,9 @@
 		onEdit,
 		onDiscard,
 		onCancelSchedule,
-		accentHue = null
+		accentHue = null,
+		listTop = false,
+		listBottom = false
 	}: {
 		session: SessionListItem;
 		variant?: 'row' | 'card';
@@ -86,6 +88,9 @@
 		onCancelSchedule?: (s: SessionListItem) => void;
 		/** Color-by hue, shown as a swatch on the row; null = none. */
 		accentHue?: number | null;
+		/** First / last row of a rounded list: its corners follow the frame. */
+		listTop?: boolean;
+		listBottom?: boolean;
 	} = $props();
 
 	const row = $derived(variant === 'row');
@@ -159,7 +164,7 @@
 	);
 	const rowPad = $derived(view.child ? '4px' : settings.state.sessionList.density === 'compact' ? '5px' : '7px');
 	const rowStyle = $derived(
-		`border-radius:0; border:0; border-bottom:1px solid var(--border); border-left:3px solid ${rowBar}; background:${rowBg}; padding:${rowPad} 14px ${rowPad} 5px`
+		`border-radius:${listTop ? 'var(--row-r)' : '0'} ${listTop ? 'var(--row-r)' : '0'} ${listBottom ? 'var(--row-r)' : '0'} ${listBottom ? 'var(--row-r)' : '0'}; --row-r: calc(var(--r-md) - 1px); border:0; border-bottom:1px solid var(--border); border-left:3px solid ${rowBar}; background:${rowBg}; padding:${rowPad} 14px ${rowPad} 5px`
 	);
 	const cardStyle = $derived(
 		[

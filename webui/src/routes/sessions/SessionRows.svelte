@@ -85,15 +85,20 @@
 
 <!-- Nested list of top-level rows with subagent count badges + inline children. -->
 {#snippet nestedRows(rows: SessionListItem[], hl: string[], depth = 0)}
-	{#each rows as s (s.id)}
+	{#each rows as s, i (s.id)}
 		{@const subGroups = childGroups.get(s.id) ?? []}
 		{@const collapsibleGroups = subGroups.filter((g) => g.agents.length >= INLINE_THRESHOLD)}
+		{@const showsChildren =
+			depth < 5 &&
+			subGroups.some((g) => g.agents.length < INLINE_THRESHOLD || sp.list.expanded.has(groupId(s.id, g.key)))}
 		<!-- Collapsible (>=3) groups surface as count badges outside the parent
 		     row layout; smaller groups render inline below. -->
 		<div class="parent-row">
 			<SessionCard
 				session={s}
 				variant="row"
+				listTop={depth === 0 && i === 0}
+				listBottom={depth === 0 && i === rows.length - 1 && !showsChildren}
 				child={depth > 0}
 				showMachine={sp.showMachine}
 				accentHue={sp.accentOf(s)}

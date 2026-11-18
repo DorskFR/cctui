@@ -118,6 +118,12 @@ describe('SessionCard modes', () => {
 		expect(crashed.querySelector<HTMLElement>('[data-journey="session"]')?.style.borderLeft).toContain('var(--danger)');
 	});
 
+	it('rounds only the corners a row shares with its list frame', () => {
+		const top = render({ variant: 'row', listTop: true });
+		const style = top.querySelector<HTMLElement>('[data-journey="session"]')?.getAttribute('style') ?? '';
+		expect(style).toMatch(/border-radius: ?var\(--row-r\) var\(--row-r\) 0(px)? 0(px)?;/);
+	});
+
 	it('hides the machine when the section header already names it', () => {
 		const el = render({ variant: 'row', showMachine: false });
 		expect(el.querySelector('.l2 .machine')).toBeNull();
