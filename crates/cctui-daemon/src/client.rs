@@ -675,6 +675,7 @@ impl ServerClient {
 }
 
 /// `scheme://host[:port]` of `url`, safe to log when the path carries a token.
+#[must_use]
 pub fn url_origin(url: &str) -> &str {
     let host_start = url.find("://").map_or(0, |i| i + 3);
     url[host_start..].find('/').map_or(url, |i| &url[..host_start + i])
