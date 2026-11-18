@@ -137,7 +137,7 @@ export async function guideReady(id: string): Promise<boolean> {
 	return Boolean(await host.probes[probe]());
 }
 
-export const GUIDES_ROUTE = '/settings/guides';
+export const GUIDES_ROUTE = '/settings/interface';
 
 /** The guides whose lesson leaves something observable behind: a user who
  *  already has the result counts as done without taking the tour. */

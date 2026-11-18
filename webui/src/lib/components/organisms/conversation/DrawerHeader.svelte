@@ -65,8 +65,7 @@
 		onDeleteLabel,
 		// Room = a field on the session: pick one (by id or by name) or clear it.
 		onsetroom,
-		onclearroom,
-		ownerItems = []
+		onclearroom
 	}: {
 		session: SessionListItem;
 		archived: boolean;
@@ -117,7 +116,6 @@
 		onDeleteLabel?: (labelId: string) => void | Promise<void>;
 		onsetroom?: (sessionId: string, pick: { id: string } | { name: string }) => void;
 		onclearroom?: (sessionId: string) => void;
-		ownerItems?: MenuItem[];
 	} = $props();
 
 	// Label picker is interactive only when an attach handler is wired in.
@@ -264,8 +262,7 @@
 					}
 				]
 			: []),
-		...(followupItem && !settings.preferFollowupOverFork ? [followupItem] : []),
-		...ownerItems
+		...(followupItem && !settings.preferFollowupOverFork ? [followupItem] : [])
 	]);
 
 	// Window-level so the chords work wherever focus sits, including the

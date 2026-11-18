@@ -3,6 +3,7 @@ import {
 	adapterMachines,
 	binaryStatus,
 	formatAdapterConfig,
+	ownMachines,
 	parseAdapterConfig
 } from './machineAdapters.logic';
 import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
@@ -85,5 +86,36 @@ describe('adapterMachines', () => {
 	it('is empty while the source query has no data', () => {
 		expect(adapterMachines(true, undefined, own)).toEqual([]);
 		expect(adapterMachines(false, all, undefined)).toEqual([]);
+	});
+});
+
+describe('ownMachines', () => {
+	const row = (id: string, userId: string, over: Record<string, unknown> = {}) =>
+		({
+			id,
+			user_id: userId,
+			name: id,
+			display_name: null,
+			last_seen_at: '2026-01-01T00:00:00Z',
+			revoked_at: null,
+			liveness: 'online',
+			...over
+		}) as unknown as MachineRow;
+
+	it('keeps an admin to their own live machines out of every machine', () => {
+		const all = [row('m-me', 'u-me', { display_name: 'Desk' }), row('m-bob', 'u-bob'), row('m-old', 'u-me', { revoked_at: 'x' })];
+		expect(ownMachines('u-me', true, all, undefined)).toEqual([
+			{ id: 'm-me', name: 'Desk', liveness: 'online', lastSeen: '2026-01-01T00:00:00Z' }
+		]);
+		expect(ownMachines(null, true, all, undefined)).toEqual([]);
+	});
+
+	it('takes a non-admin machine list as is', () => {
+		const own = [
+			{ machine_id: 'm-1', name: 'box', display_name: null, liveness: 'stale', last_seen_at: 't' }
+		] as unknown as MachineResourcesRow[];
+		expect(ownMachines('u-me', false, undefined, own)).toEqual([
+			{ id: 'm-1', name: 'box', liveness: 'stale', lastSeen: 't' }
+		]);
 	});
 });

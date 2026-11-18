@@ -60,7 +60,6 @@
 	import { guardEscape } from './conversation/escapeGuard';
 	import { livenessClass } from './conversation/liveness';
 	import { ownsSession } from './conversation/ownership';
-	import { useOwnerHideMenu } from '#lib/ownerHideMenu.svelte.ts';
 	import { notify } from '#lib/notify.svelte.ts';
 	import type { ConversationChrome } from './conversation/chrome';
 	import { m } from '#lib/paraglide/messages.js';
@@ -117,10 +116,6 @@
 		() => me.data?.role === 'admin' && !!me.data?.user_id && hasFeature('machine_spawn')
 	);
 	const owned = $derived(ownsSession(me.data, myMachines.data, session.machine_id));
-	const ownerMenu = useOwnerHideMenu(
-		() => session,
-		() => me.data
-	);
 	const needsInput = $derived(session.attention === 'needs_input' && !archived);
 	const showStatusBadge = $derived(session.status === 'new' || session.status === 'archived');
 	const qc = useQueryClient();
@@ -514,7 +509,6 @@
 				onDeleteLabel={actions.deleteLabel}
 				onsetroom={hasFeature('rooms') ? setRoom : undefined}
 				onclearroom={hasFeature('rooms') ? clearRoom : undefined}
-				ownerItems={ownerMenu.items}
 			/>
 
 			{#if chrome !== 'tile'}

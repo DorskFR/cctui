@@ -4,18 +4,18 @@ import { stubDrawer } from './drawer.fixture';
 test.beforeEach(({ page }) => stubDrawer(page));
 
 test('a picked look is painted again after a reload', async ({ page }) => {
-	await page.goto('/settings/appearance');
+	await page.goto('/settings/interface');
 	await page.getByTestId('appearance-look').getByText('Depth', { exact: true }).click();
 	await expect(page.locator('html')).toHaveAttribute('data-look', 'depth');
 
 	await page.reload();
 	await expect(page.locator('html')).toHaveAttribute('data-look', 'depth');
-	const shell = await (await page.request.get('/settings/appearance')).text();
+	const shell = await (await page.request.get('/settings/interface')).text();
 	expect(shell).toContain('data-look');
 });
 
 test('the sound toggle survives a reload', async ({ page }) => {
-	await page.goto('/settings/appearance');
+	await page.goto('/settings/interface');
 	const sound = page.getByTestId('appearance-sound');
 	await sound.getByRole('button').click();
 	const toggle = page.getByRole('switch', { name: 'Sound effects' });

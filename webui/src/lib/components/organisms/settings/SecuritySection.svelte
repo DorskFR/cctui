@@ -1,11 +1,13 @@
 <script lang="ts">
-	// Settings › Security: the caller's own WebAuthn credentials (list, enrol,
-	// test, revoke). The server-wide sign-in knob lives under Instance. The list
-	// is loaded on demand rather than through the query cache: it changes only
-	// from this screen.
+	// Settings › Accounts › Sign-in & security: the caller's own WebAuthn
+	// credentials (list, enrol, test, revoke) and device approvals. The
+	// server-wide sign-in knob lives under Instance. The list is loaded on
+	// demand rather than through the query cache: it changes only from here.
 	import { Button, Icon, Input, Text, Timestamp } from '@dorsk/tsumikit';
 	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
-		import SettingSection from '#lib/components/molecules/SettingSection.svelte';
+	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
+	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
+	import { hasFeature } from '#lib/features.svelte.ts';
 	import { endpoints } from '#lib/queries/index.ts';
 	import { toasts } from '#lib/toast.svelte.ts';
 	import { auth } from '#lib/auth.svelte.ts';
@@ -88,7 +90,7 @@
 	}
 
 	$effect(() => {
-		void loadPasskeys();
+		if (hasFeature('passkeys')) void loadPasskeys();
 	});
 
 </script>
@@ -96,7 +98,7 @@
 <SettingSection
 	id="security"
 	icon="⚿"
-	title={m.settings_nav_security()}
+	title={m.settings_sec_security()}
 	description={passkeysUsable ? m.settings_passkeys_help() : m.settings_passkeys_unavailable()}
 >
 	{#if passkeysUsable}
@@ -151,6 +153,11 @@
 			</div>
 		</SettingGroup>
 	{/if}
+	<SettingGroup>
+		<SettingRow label={m.settings_device_approvals_label()} help={m.settings_device_approvals_help()} selfLabelled>
+			<Button size="sm" variant="ghost" as="a" href="/device">{m.settings_device_approvals_open()}</Button>
+		</SettingRow>
+	</SettingGroup>
 </SettingSection>
 
 <style>

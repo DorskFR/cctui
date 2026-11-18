@@ -56,15 +56,11 @@ export default defineConfig({
 	pages: [
 		'/',
 		'/sessions',
-		'/settings/appearance',
-		'/settings/sessions',
-		'/settings/execution',
-		'/settings/privacy',
-		'/settings/notifications',
-		'/settings/security',
-		'/settings/instance',
-		'/settings/users',
+		'/settings/interface',
 		'/settings/accounts',
-		'/settings/dispatchers'
+		'/settings/sessions',
+		'/settings/notifications',
+		'/settings/plugins',
+		'/settings/instance'
 	]
 });

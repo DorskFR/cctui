@@ -1,9 +1,7 @@
 <script lang="ts">
-	// User settings, one page per topic. The blob behind them is server-persisted
-	// (GET/PUT /api/v1/settings, localStorage-mirrored); this shell only owns the
-	// navigation: the page nav, the cross-page search, the save indicator and the
-	// pager. Every page stays mounted (SettingsPages) so the search can filter
-	// across all of them and jump to the one that still matches.
+	// The shell only owns the navigation: the page nav, the cross-page search
+	// and the save indicator. Every page stays mounted (SettingsPages) so the
+	// search can filter across all of them and jump to the one that matches.
 	import { tick } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page as route } from '$app/state';
@@ -11,17 +9,21 @@
 	import PageHead from '#lib/components/molecules/PageHead.svelte';
 	import SettingsToc, { type TocEntry } from '#lib/components/organisms/settings/SettingsToc.svelte';
 	import SettingsPages from '#lib/components/organisms/settings/SettingsPages.svelte';
+	import EventsPanel from '#lib/components/organisms/events/EventsPanel.svelte';
 	import {
 		applySettingsFilter,
 		availableSettingsPages,
 		DEFAULT_SETTINGS_PAGE,
+		EVENTS_PAGE,
 		firstMatchingPage,
 		firstMatchingRow,
 		isSettingsPage,
-		MOVED_OUT,
+		NON_ADMIN_INSTANCE_FALLBACK,
+		SETTINGS_SECTIONS,
 		settingsHref,
 		type SettingsPage
 	} from '#lib/components/organisms/settings/settings.logic.ts';
+	import { sectionTitle } from '#lib/components/organisms/settings/sectionTitles.ts';
 	import { settings } from '#lib/settings.svelte.ts';
 	import { useMe } from '#lib/queries/index.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
@@ -30,41 +32,33 @@
 	const me = useMe();
 	const isAdmin = $derived(me.data?.role === 'admin');
 
-	const current = $derived<SettingsPage>(
-		isSettingsPage(route.params.page) ? route.params.page : DEFAULT_SETTINGS_PAGE
-	);
+	const slug = $derived(route.params.page ?? '');
+	const isEvents = $derived(slug === EVENTS_PAGE);
+	const current = $derived<SettingsPage>(isSettingsPage(slug) ? slug : DEFAULT_SETTINGS_PAGE);
 	$effect(() => {
-		const slug = route.params.page ?? '';
-		if (!isSettingsPage(slug))
-			void goto(MOVED_OUT[slug] ?? settingsHref(DEFAULT_SETTINGS_PAGE), { replace: true });
+		if (current === 'instance' && me.data && !isAdmin)
+			void goto(NON_ADMIN_INSTANCE_FALLBACK, { replace: true });
 	});
 
-	const available = $derived(new Set(availableSettingsPages(hasFeature)));
-	const allEntries = $derived<TocEntry[]>([
-		{ page: 'appearance', icon: 'palette', label: m.settings_nav_appearance() },
-		{ page: 'sessions', icon: 'list', label: m.settings_nav_sessions() },
-		{ page: 'macros', icon: 'zap', label: m.settings_nav_macros() },
-		{ page: 'context', icon: 'book', label: m.settings_nav_context() },
-		{ page: 'plugins', icon: 'grid', label: m.settings_nav_plugins() },
-		{ page: 'execution', icon: 'play', label: m.settings_nav_execution() },
-		{ page: 'privacy', icon: 'eye-off', label: m.settings_nav_privacy() },
-		{ page: 'notifications', icon: 'bell', label: m.settings_notifications_title() },
-		{ page: 'monitoring', icon: 'live', label: m.settings_nav_monitoring() },
-		{ page: 'events', icon: 'clock', label: m.settings_nav_events() },
-		{ page: 'security', icon: 'lock', label: m.settings_nav_security() },
-		{ page: 'guides', icon: 'life-buoy', label: m.settings_nav_guides() },
-		{ page: 'users', icon: 'users', label: m.settings_nav_users() },
-		{ page: 'dispatchers', icon: 'send', label: m.settings_nav_dispatchers() },
-		{ page: 'instance', icon: 'settings', label: m.settings_nav_instance(), admin: true },
-		{ page: 'uploads', icon: 'upload', label: m.settings_nav_uploads(), admin: true }
-	]);
-	const entries = $derived(allEntries.filter((e) => available.has(e.page)));
+	const PAGE_NAV: Record<SettingsPage, { icon: TocEntry['icon']; label: () => string }> = {
+		interface: { icon: 'palette', label: () => m.settings_nav_interface() },
+		accounts: { icon: 'key-round', label: () => m.settings_nav_accounts() },
+		sessions: { icon: 'list', label: () => m.settings_nav_sessions() },
+		notifications: { icon: 'bell', label: () => m.settings_nav_notifications_voice() },
+		plugins: { icon: 'grid', label: () => m.settings_nav_plugins() },
+		instance: { icon: 'settings', label: () => m.settings_nav_instance() }
+	};
+	const entries = $derived<TocEntry[]>(
+		availableSettingsPages(hasFeature, isAdmin).map((page) => ({
+			page,
+			icon: PAGE_NAV[page].icon,
+			label: PAGE_NAV[page].label(),
+			sections: SETTINGS_SECTIONS[page].map((id) => ({ id, label: sectionTitle(id) }))
+		}))
+	);
 
 	// The filter reads the rendered rows back instead of keeping a parallel
-	// catalogue of localized copy. Every page is in the DOM, so a query that
-	// matches nothing here but something elsewhere navigates to that page and
-	// brings its first match into view. The walk covers every row of every
-	// page, so it runs once per typing pause rather than per keystroke; the
+	// catalogue of localized copy. It runs once per typing pause; the
 	// navigation keeps focus in the search box (SvelteKit resets it to the
 	// body otherwise, and the next keystrokes would land nowhere).
 	const FILTER_DEBOUNCE_MS = 120;
@@ -115,6 +109,9 @@
 	});
 </script>
 
+{#if isEvents}
+	<EventsPanel />
+{:else}
 <div class="page">
 	<div class="layout">
 		<aside class="side">
@@ -158,6 +155,7 @@
 		</main>
 	</div>
 </div>
+{/if}
 
 <style>
 	.page {

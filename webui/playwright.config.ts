@@ -50,8 +50,7 @@ export default defineConfig({
 				'drawer-scrollbars.spec.ts',
 				'composer-inset.spec.ts',
 				'mobile-hscroll.spec.ts',
-				'cold-followup.spec.ts',
-				'drawer-hidden-owners.spec.ts'
+				'cold-followup.spec.ts'
 			],
 			use: { baseURL: headerUrl }
 		},

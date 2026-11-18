@@ -54,7 +54,6 @@ const SAVE_DEBOUNCE_MS = 400;
 export interface SessionListSettings {
   sort: "activity" | "created" | "name";
   sortDir: SortDir;
-  view: "list" | "card";
   density: "compact" | "normal";
   section: string;
   labelFilter: string[];
@@ -615,7 +614,6 @@ const DEFAULTS: SettingsState = {
   sessionList: {
     sort: "activity",
     sortDir: DEFAULT_SORT_DIR,
-    view: "list",
     density: "normal",
     section: "",
     labelFilter: [],
@@ -669,6 +667,15 @@ const DEFAULTS: SettingsState = {
 // than becoming undefined. One level of nesting covers the catalogue shape.
 // Stale keys in an older blob (e.g. a retired setting) are simply not copied
 // over, and get pruned on the next save.
+// The list view is the toolbar's own (`cctui_list_view`); a stored copy was never read.
+function withoutRetiredListKeys(
+  sl: Partial<SessionListSettings> | undefined,
+): Partial<SessionListSettings> {
+  if (!sl) return {};
+  const { view: _view, ...rest } = sl as Partial<SessionListSettings> & { view?: unknown };
+  return rest;
+}
+
 export function mergeDefaults(
   partial: Partial<SettingsState> | null | undefined,
 ): SettingsState {
@@ -676,7 +683,7 @@ export function mergeDefaults(
   return {
     sessionList: {
       ...DEFAULTS.sessionList,
-      ...p.sessionList ?? {},
+      ...withoutRetiredListKeys(p.sessionList),
       // Clamp so a stale/unknown stored value renders as the default column
       // width rather than an invalid CSS length.
       width: clampSessionListWidth(p.sessionList?.width),
@@ -854,6 +861,7 @@ class Settings {
       } catch {
         this.state = mergeDefaults(null);
       }
+      notify.applyPersisted(this.state.display.notifyEnabled, this.state.notifications.sound);
       const flush = () => this.flush();
       window.addEventListener("pagehide", flush);
       window.addEventListener("focus", () => this.resync());
@@ -1126,10 +1134,21 @@ class Settings {
     this.persist();
   }
 
-  /** Record the notifier's current enabled state after a header/panel toggle
-   *  (whose async permission prompt the caller owns). */
-  recordNotifyEnabled() {
-    this.setDisplay({ notifyEnabled: notify.enabled });
+  /** `display.notifyEnabled` is the one stored value: every toggle goes
+   *  through here, and only a granted permission stores `true`. */
+  async setNotifyEnabled(on: boolean): Promise<boolean> {
+    if (on) {
+      const ok = await notify.enable();
+      this.setDisplay({ notifyEnabled: ok });
+      return ok;
+    }
+    notify.disable();
+    this.setDisplay({ notifyEnabled: false });
+    return true;
+  }
+
+  get notifyEnabled(): boolean {
+    return this.state.display.notifyEnabled && notify.enabled;
   }
 
   private applyDisplay() {

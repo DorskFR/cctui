@@ -1,5 +1,6 @@
 import type { MachineAdapterInfo } from '@bindings/MachineAdapterInfo';
 import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
+import type { MachineLiveness } from '@bindings/MachineLiveness';
 import type { MachineRow } from '@bindings/MachineRow';
 
 export type BinaryStatus = 'found' | 'missing' | 'unknown';
@@ -43,4 +44,34 @@ export function adapterMachines(
 ): AdapterMachine[] {
 	if (isAdmin) return (all ?? []).map((r) => ({ id: r.id, name: r.display_name ?? r.name }));
 	return (own ?? []).map((r) => ({ id: r.machine_id, name: r.display_name ?? r.name }));
+}
+
+export interface OwnMachine {
+	id: string;
+	name: string;
+	liveness: MachineLiveness;
+	lastSeen: string | null;
+}
+
+export function ownMachines(
+	meId: string | null | undefined,
+	isAdmin: boolean,
+	all: readonly MachineRow[] | undefined,
+	own: readonly MachineResourcesRow[] | undefined
+): OwnMachine[] {
+	if (isAdmin)
+		return (all ?? [])
+			.filter((r) => !!meId && r.user_id === meId && !r.revoked_at)
+			.map((r) => ({
+				id: r.id,
+				name: r.display_name ?? r.name,
+				liveness: r.liveness,
+				lastSeen: r.last_seen_at
+			}));
+	return (own ?? []).map((r) => ({
+		id: r.machine_id,
+		name: r.display_name ?? r.name,
+		liveness: r.liveness,
+		lastSeen: r.last_seen_at
+	}));
 }

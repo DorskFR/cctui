@@ -83,9 +83,8 @@ import ResourceBattery from '#lib/components/molecules/ResourceBattery.svelte';
 	$effect(() => notify.reconcileCompleted(sessions.data?.sessions));
 
 	async function toggleNotify() {
-		if (notify.enabled) {
-			notify.disable();
-			settings.recordNotifyEnabled();
+		if (settings.notifyEnabled) {
+			await settings.setNotifyEnabled(false);
 			toasts.info(m.nav_notify_off());
 			return;
 		}
@@ -93,8 +92,7 @@ import ResourceBattery from '#lib/components/molecules/ResourceBattery.svelte';
 			toasts.error(m.nav_notify_unsupported());
 			return;
 		}
-		const ok = await notify.enable();
-		settings.recordNotifyEnabled();
+		const ok = await settings.setNotifyEnabled(true);
 		if (ok) toasts.ok(m.nav_notify_on());
 		else toasts.error(m.nav_notify_blocked());
 	}
@@ -106,7 +104,7 @@ import ResourceBattery from '#lib/components/molecules/ResourceBattery.svelte';
 	);
 	const latest = $derived(hasFeature('self_update') ? (version.data?.latest_version ?? null) : null);
 	const notifyLabel = $derived(
-		notify.enabled ? m.nav_notify_on_label() : m.nav_notify_off_label()
+		settings.notifyEnabled ? m.nav_notify_on_label() : m.nav_notify_off_label()
 	);
 
 	// The kit font picker writes the kit store; the blob follows so the choice
@@ -149,7 +147,7 @@ import ResourceBattery from '#lib/components/molecules/ResourceBattery.svelte';
 		{
 			label: notifyLabel,
 			icon: 'bell' as const,
-			pressed: notify.enabled,
+			pressed: settings.notifyEnabled,
 			onselect: () => void toggleNotify()
 		},
 		{ label: m.nav_log_out(), icon: 'log-out' as const, danger: true, onselect: () => void auth.logout() }
