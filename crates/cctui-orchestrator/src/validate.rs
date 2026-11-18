@@ -218,10 +218,12 @@ pub fn check_human_gate(profile: &WorkerProfileSpec, gates: &GateAdmission) -> R
     }
 }
 
-/// Refuse a profile whose agent holds untrusted input, sensitive data and
-/// outward action at once behind `outwardHeldForApproval`, or, when the
-/// operator requires a gate, behind none. `Ok(true)` means the profile
-/// declares no exposure.
+/// Refuse a fully exposed profile its gate cannot bound.
+///
+/// Full exposure is untrusted input, sensitive data and outward action at
+/// once; it is refused behind `outwardHeldForApproval`, or, when the operator
+/// requires a gate, behind none. `Ok(true)` means the profile declares no
+/// exposure.
 pub fn check_exposure(profile: &WorkerProfileSpec, gates: &GateAdmission) -> Result<bool, String> {
     match (profile.exposure, profile.human_gate) {
         (None, _) => Ok(true),
