@@ -59,7 +59,7 @@ describe('SessionCard modes', () => {
 		const el = render({ variant: 'row', pendingCount: 2 });
 		expect(el.querySelector('.sc-wrap.compact')).not.toBeNull();
 		expect(el.querySelector('.l1 .title')).not.toBeNull();
-		expect(el.querySelector('.l2 .machine')?.textContent).toBe('dev1');
+		expect(el.querySelector('.l2 .machine .m-full')?.textContent).toBe('dev1');
 		expect(el.querySelector('.l2 .cwd')?.textContent).toBe('cctui');
 		expect(el.querySelector('.l2 .cwd')?.getAttribute('title')).toContain('/home/dorsk/Documents/cctui');
 		expect(el.querySelector('.l2 .branch')?.textContent).toContain('cct-925-sessions-modes');
@@ -116,6 +116,16 @@ describe('SessionCard modes', () => {
 			session: session({ status: 'inactive', end_reason: 'crashed', liveness: 'dead', bucket: 'done' })
 		});
 		expect(crashed.querySelector<HTMLElement>('[data-journey="session"]')?.style.borderLeft).toContain('var(--danger)');
+	});
+
+	it('marks a lost daemon with the warning bar instead of a badge', () => {
+		const lost = render({
+			variant: 'row',
+			session: session({ status: 'inactive', end_reason: 'daemon_lost', liveness: 'dead', bucket: 'done' })
+		});
+		expect(lost.querySelector<HTMLElement>('[data-journey="session"]')?.style.borderLeft).toContain('var(--warn)');
+		expect(lost.querySelector('.end-badge')).toBeNull();
+		expect(lost.querySelector('.l1 .title')?.parentElement?.querySelector('[data-tsu="Badge"]')).toBeNull();
 	});
 
 	it('rounds only the corners a row shares with its list frame', () => {

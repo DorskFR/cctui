@@ -28,7 +28,7 @@
 		if (!end) return base;
 		return [
 			...base,
-			{ label: m.sessions_dot_ended(), value: end.endedAt ? '' : '—', at: end.endedAt ?? undefined }
+			{ label: m.sessions_dot_ended(), value: end.badge, at: end.endedAt ?? undefined }
 		];
 	});
 </script>

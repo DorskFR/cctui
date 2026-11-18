@@ -12,8 +12,7 @@
 	import SessionDot from '#lib/components/molecules/SessionDot.svelte';
 	import { tokenUsageLayout } from '#lib/components/molecules/TokenUsage.logic.ts';
 	import { m } from '#lib/paraglide/messages.js';
-	import { compact, hashHue, modelShort, statusBadgeTone } from '#lib/format.ts';
-	import { sessionEndTitle } from '#lib/sessionEnd.ts';
+	import { compact, hashHue, machineInitial, modelShort, statusBadgeTone } from '#lib/format.ts';
 	import { settings } from '#lib/settings.svelte.ts';
 	import { accountTrafficWarning } from '../../../../routes/sessions/sessions.logic';
 	import Badges from './Badges.svelte';
@@ -117,9 +116,6 @@
 			><SessionDot session={s} livenessClass={view.livenessClass} now={view.now} /></span
 		>
 		<span class="title" data-journey="title">{view.title}</span>
-		{#if view.end}<span class="end-badge" class:end-muted={view.end.muted} title={sessionEndTitle(view.end)}
-				><Badge tone={view.end.tone} size="xs">{view.end.badge}</Badge></span
-			>{/if}
 		{#if !view.child}
 			{@render subToggles()}
 			{#if actions.showLabels && (s.labels.length > 0 || (actions.labelEditable && showAddLabel))}
@@ -158,7 +154,9 @@
 				<span class="slot" class:named={settings.accountNames}
 					><AccountBadge name={s.account_name} warn={accountTrafficWarning(s)} showName={settings.accountNames} /></span
 				>
-				{#if view.showMachine}<span class="machine" style:--mh={hashHue(machine)}>{machine}</span>{/if}
+				{#if view.showMachine}<span class="machine" style:--mh={hashHue(machine)} title={machine}
+						><span class="m-full">{machine}</span><span class="m-initial">{machineInitial(machine)}</span></span
+					>{/if}
 			</span>
 			<span class="cwd" title={s.working_dir}>{projectOf(s.working_dir)}</span>
 			{#if branch}<span class="branch" title={m.sessions_branch_title({ branch })}>⑂ {branch}</span>{/if}
@@ -277,19 +275,9 @@
 		line-height: 1;
 	}
 
-	.end-badge {
-		display: inline-flex;
-		flex: 0 50 auto;
-		min-width: 0;
-		max-width: 22ch;
-		overflow: hidden;
-	}
-	.end-muted {
-		opacity: 0.6;
-	}
 	.time {
 		flex: none;
-		width: 30px;
+		min-width: 3ch;
 		text-align: right;
 		white-space: nowrap;
 	}
@@ -427,12 +415,19 @@
 			visibility: visible;
 		}
 	}
+	.m-initial {
+		display: none;
+	}
 	@container sess-row (max-width: 36.25em) {
 		.preview,
 		.model,
 		.branch,
-		.sub-word {
+		.sub-word,
+		.m-full {
 			display: none;
+		}
+		.m-initial {
+			display: inline;
 		}
 	}
 </style>
