@@ -760,6 +760,7 @@
 	"exposure_gate_draft_pr_only": "PR brouillon uniquement",
 	"exposure_gate_no_push": "pas de push",
 	"exposure_gate_outward_held_for_approval": "sortant soumis à approbation",
+	"gate_custom": "contrôle humain personnalisé",
 	"exposure_label": "Exposition",
 	"exposure_no_gate": "aucun contrôle humain",
 	"exposure_outward": "sortant",

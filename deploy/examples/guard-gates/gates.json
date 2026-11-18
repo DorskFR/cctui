@@ -1,0 +1,12 @@
+{
+  "gates": {
+    "draftPrOnly": {
+      "extends": "draftPrOnly",
+      "hosts": {
+        "uploads.github.com": {
+          "rest": [{ "method": "POST", "path": "/user-attachments/assets" }]
+        }
+      }
+    }
+  }
+}

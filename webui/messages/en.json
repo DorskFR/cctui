@@ -760,6 +760,7 @@
 	"exposure_gate_draft_pr_only": "draft PR only",
 	"exposure_gate_no_push": "no push",
 	"exposure_gate_outward_held_for_approval": "outward held for approval",
+	"gate_custom": "custom gate",
 	"exposure_label": "Exposure",
 	"exposure_no_gate": "no human gate",
 	"exposure_outward": "outward",

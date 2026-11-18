@@ -17,7 +17,8 @@ export type ExposureView = {
 const GATE_LABEL: Record<HumanGate, () => string> = {
 	no_push: m.exposure_gate_no_push,
 	draft_pr_only: m.exposure_gate_draft_pr_only,
-	outward_held_for_approval: m.exposure_gate_outward_held_for_approval
+	outward_held_for_approval: m.exposure_gate_outward_held_for_approval,
+	custom: m.gate_custom
 };
 
 export function exposureView(exposure: DispatchExposure | null | undefined): ExposureView | null {

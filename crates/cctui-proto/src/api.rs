@@ -1389,6 +1389,9 @@ pub enum HumanGate {
     NoPush,
     DraftPrOnly,
     OutwardHeldForApproval,
+    /// An operator-defined gate, or any value this build does not know.
+    #[serde(other)]
+    Custom,
 }
 
 /// Why a dispatched worker never ran to completion as a session.
