@@ -75,10 +75,17 @@ describe('SessionCard modes', () => {
 			subagentToggles: [{ key: 'plain', count: 3, running: 1, open: false, label: 'subagents', ontoggle }]
 		});
 		const sub = el.querySelector<HTMLButtonElement>('.l1 .sub');
-		expect(sub?.textContent?.replace(/\s+/g, ' ').trim()).toBe('3 subagents ▸');
+		expect(sub?.textContent?.replace(/\s+/g, ' ').trim()).toBe('3 subagents');
 		expect(sub?.getAttribute('aria-expanded')).toBe('false');
 		sub?.click();
 		expect(ontoggle).toHaveBeenCalledOnce();
+	});
+
+	it('indents a subagent row past the gutter and names its model', () => {
+		const el = render({ variant: 'row', child: true, session: session({ parent_id: 'p-1' }) });
+		expect(el.querySelector('.gut')?.textContent?.trim()).toBe('');
+		expect(el.querySelector('.l1 .arrow')?.textContent).toBe('↳');
+		expect(el.querySelector('.m1 .model')?.textContent).toContain('opus-4-8');
 	});
 
 	it('hides the machine when the section header already names it', () => {

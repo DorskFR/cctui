@@ -49,3 +49,10 @@ describe('the session row headline', () => {
 		expect(buildView(row({}), OPTS).lastMsg).toBe('last words');
 	});
 });
+
+describe('the session row unread count', () => {
+	it('drops the unread count once the session is done', () => {
+		expect(buildView(row({ bucket: 'done' }), { ...OPTS, unreadCount: 3 }).unreadCount).toBe(0);
+		expect(buildView(row({ bucket: 'review' }), { ...OPTS, unreadCount: 3 }).unreadCount).toBe(3);
+	});
+});

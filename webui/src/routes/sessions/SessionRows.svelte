@@ -156,7 +156,6 @@
 		margin-bottom: -1px;
 	}
 	.agent-children {
-		padding-left: min(calc((var(--agent-depth) - 1) * var(--sp-3)), 2.5rem);
 		background: color-mix(in srgb, var(--bg) 45%, var(--bg-elevated));
 	}
 	/* Detailed cards auto-fill the strip: never narrower than a compact card,

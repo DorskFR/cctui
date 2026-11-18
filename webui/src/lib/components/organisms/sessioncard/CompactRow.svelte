@@ -64,18 +64,16 @@
 			onclick={(e) => {
 				e.stopPropagation();
 				t.ontoggle();
-			}}>{t.count} {t.label} <span class="chev">▸</span></button
+			}}>{t.count}<span class="sub-word">&nbsp;{t.label}</span></button
 		>
 	{/each}
 {/snippet}
 
-<div class="sr" class:one={oneLine} class:child={view.child} class:idle={!live}>
+<div class="sr" class:one={oneLine} class:child={view.child} class:idle={!live} class:stale={view.stale}>
 	<span class="gut">
 		{#if actions.selectable}
 			<Gutter child={false} selectable selected={actions.selected} subagentToggles={[]} />
-		{:else if view.child}
-			<span class="arrow" aria-hidden="true">↳</span>
-		{:else if pinnable}
+		{:else if pinnable && !view.child}
 			<span class="star" class:on={s.pinned}>
 				<IconButton
 					icon="star"
@@ -94,8 +92,12 @@
 	</span>
 
 	<div class="l1">
+		{#if view.child}<span class="arrow" aria-hidden="true">↳</span>{/if}
 		<span class="slot"><SessionDot session={s} livenessClass={view.livenessClass} now={view.now} /></span>
 		<span class="title" data-journey="title">{view.title}</span>
+		{#if view.end}<span class="end-badge" class:end-muted={view.end.muted} title={sessionEndTitle(view.end)}
+				><Badge tone={view.end.tone} size="xs">{view.end.badge}</Badge></span
+			>{/if}
 		{#if !view.child}
 			{@render subToggles()}
 			{#if actions.showLabels && (s.labels.length > 0 || actions.labelEditable)}
@@ -120,11 +122,9 @@
 		{#if view.showStatusBadge}<Badge tone={statusBadgeTone(s.status)} size="xs" style="flex:none"
 				>{statusLabel(s.status)}</Badge
 			>{/if}
-		{#if view.end}<span class="end-badge" class:end-muted={view.end.muted} title={sessionEndTitle(view.end)}
-				><Badge tone={view.end.tone} size="xs">{view.end.badge}</Badge></span
-			>{/if}
 		<Badges {view} compact />
 		{#if view.draft}<DraftActions {view} {actions} />{/if}
+		{#if view.child && model}<span class="model" title={s.model}>{model}</span>{/if}
 		{#if oneLine}{@render tokens()}{/if}
 		{@render time()}
 	</div>
@@ -195,7 +195,7 @@
 		display: flex;
 		align-items: center;
 		justify-content: flex-end;
-		gap: var(--sp-3);
+		gap: var(--sp-2);
 		white-space: nowrap;
 	}
 
@@ -232,14 +232,6 @@
 	.sub:hover,
 	.sub[aria-expanded='true'] {
 		background: color-mix(in srgb, var(--info) 16%, transparent);
-	}
-	.chev {
-		font-size: 10px;
-		opacity: 0.8;
-		transition: transform 0.15s;
-	}
-	.sub[aria-expanded='true'] .chev {
-		transform: rotate(90deg);
 	}
 	.labels {
 		display: inline-flex;
@@ -289,7 +281,7 @@
 	.who {
 		display: inline-flex;
 		align-items: center;
-		gap: 4px;
+		gap: var(--sp-2);
 		flex: none;
 	}
 	.machine {
@@ -371,13 +363,19 @@
 	.one .l2 {
 		order: 1;
 	}
-	.one .m1 {
-		order: 2;
-	}
 	.one .tokens {
 		width: 66px;
 		justify-content: flex-end;
 		flex: none;
+	}
+	.one .m1 {
+		order: 2;
+	}
+	.stale {
+		opacity: 0.6;
+	}
+	.child .l1 {
+		padding-left: min(calc((var(--agent-depth, 1) - 1) * var(--sp-3)), 2.5rem);
 	}
 	.child .title {
 		font-size: var(--fs-sm);
@@ -399,7 +397,8 @@
 	@container sess-row (max-width: 36.25em) {
 		.preview,
 		.model,
-		.branch {
+		.branch,
+		.sub-word {
 			display: none;
 		}
 	}

@@ -251,7 +251,7 @@
 	.sc-wrap.compact.child {
 		margin-left: 0;
 	}
-	.sc-wrap.stale {
+	.sc-wrap.stale:not(.compact) {
 		opacity: 0.6;
 	}
 	.swipe-reveal {

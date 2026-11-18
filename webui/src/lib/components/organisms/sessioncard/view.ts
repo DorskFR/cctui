@@ -230,7 +230,7 @@ export function buildView(
 		prLinks: prLinksOf(s),
 		rollup: opts.subagentCost && opts.subagentCost.count > 0 ? opts.subagentCost : null,
 		pendingCount: opts.pendingCount,
-		unreadCount: opts.unreadCount,
+		unreadCount: s.bucket === 'done' ? 0 : opts.unreadCount,
 		draft: opts.draft,
 		draftLaunching: opts.draftLaunching,
 		scheduled: scheduledLaunchOf(s)
