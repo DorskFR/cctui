@@ -95,6 +95,17 @@ describe('SessionCard modes', () => {
 		expect(el.querySelector('.m1')?.textContent).not.toContain('4');
 	});
 
+	it('keeps the model in a compact row', async () => {
+		const { settings } = await import('#lib/settings.svelte.ts');
+		settings.setSessionList({ density: 'compact' });
+		try {
+			const el = render({ variant: 'row' });
+			expect(el.querySelector('.sr.one .m1 .model')?.textContent).toContain('opus-4-8');
+		} finally {
+			settings.setSessionList({ density: 'normal' });
+		}
+	});
+
 	it('hides the machine when the section header already names it', () => {
 		const el = render({ variant: 'row', showMachine: false });
 		expect(el.querySelector('.l2 .machine')).toBeNull();

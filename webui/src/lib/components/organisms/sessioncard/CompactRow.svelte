@@ -147,7 +147,7 @@
 			>{/if}
 		<Badges {view} compact />
 		{#if view.draft}<DraftActions {view} {actions} />{/if}
-		{#if view.child && model}<span class="model" title={s.model}>{model}</span>{/if}
+		{#if oneLine && model}<span class="model" title={s.model}>{model}</span>{/if}
 		{#if oneLine}{@render tokens()}{/if}
 		{@render time()}
 	</div>
@@ -393,6 +393,9 @@
 		width: 66px;
 		justify-content: flex-end;
 		flex: none;
+	}
+	.one .time {
+		text-align: left;
 	}
 	.one .m1 {
 		order: 2;
