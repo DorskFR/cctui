@@ -4607,7 +4607,8 @@ fn normalize_last_message(s: &str) -> String {
 
 /// `PUT /api/v1/sessions/{id}/draft`. Replace a draft's stored spawn payload
 /// in place, so an edit or autosave never has to discard and recreate the
-/// row. Only `draft` rows are touched; env values are never stored.
+/// row. Only `draft` rows are touched. A name in `env_keys` sent without a
+/// value keeps its sealed value; a sealed name in neither is dropped.
 pub async fn update_draft(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -4619,7 +4620,22 @@ pub async fn update_draft(
     let (machine_uuid, _) = resolve_owned_machine(&state, &ctx, &req.machine_id)
         .await
         .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
-    let fields = DraftRowFields::from_request(&req);
+    let mut fields = DraftRowFields::from_request(&req);
+    let stored_env: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT metadata->>'draft_sealed_env' FROM sessions WHERE id = $1 AND status = 'draft'",
+    )
+    .bind(&session_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(stored_env) = stored_env else {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "draft not found"));
+    };
+    fields.payload.env = crate::routes::spawn::edited_draft_env(
+        stored_env.as_deref(),
+        &req.env_keys,
+        &req.env,
+        crate::crypto::vault_key,
+    )?;
     let mut metadata =
         crate::routes::spawn::draft_metadata(fields.payload, crate::crypto::vault_key)?;
     metadata["draft_saved_at"] = serde_json::Value::String(Utc::now().to_rfc3339());

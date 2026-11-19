@@ -20,6 +20,7 @@ const NOT_REUSABLE: &[&str] = &["ended", "archived", "failed", "queued", "draft"
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct Preset {
+    pub id: Option<Uuid>,
     pub user_id: Uuid,
     pub name: String,
     pub prompt: String,
@@ -37,6 +38,9 @@ pub struct Preset {
     pub notify_url: Option<String>,
     pub machine_live: bool,
     pub dispatcher_name: Option<String>,
+    pub sealed_env: Option<String>,
+    pub sealed_prompt: Option<String>,
+    pub template: sqlx::types::Json<cctui_proto::api::presets::SpawnTemplate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -184,7 +188,8 @@ pub async fn from_session(
     session_id: &str,
 ) -> sqlx::Result<Option<Preset>> {
     let found: Option<Preset> = sqlx::query_as(
-        "SELECT $2::uuid AS user_id, COALESCE(s.session_name, '') AS name, '' AS prompt, \
+        "SELECT NULL::uuid AS id, $2::uuid AS user_id, \
+                COALESCE(s.session_name, '') AS name, '' AS prompt, \
                 s.machine_uuid AS machine_id, s.working_dir, s.adapter_id, s.model, \
                 s.permission_mode, \
                 (SELECT a.name FROM session_tokens st \
@@ -194,7 +199,8 @@ pub async fn from_session(
                 NULL::text AS pool_name, false AS no_account, \
                 NULL::text AS profile, 0 AS fresh_secs, \
                 'followup' AS on_stale, NULL::text AS notify_url, \
-                m.id IS NOT NULL AS machine_live, NULL::text AS dispatcher_name \
+                m.id IS NOT NULL AS machine_live, NULL::text AS dispatcher_name, \
+                NULL::text AS sealed_env, NULL::text AS sealed_prompt, '{}'::jsonb AS template \
          FROM sessions s \
          LEFT JOIN machines m ON m.id = s.machine_uuid \
               AND m.revoked_at IS NULL AND m.deleted_at IS NULL \
@@ -232,10 +238,12 @@ pub async fn follow_up_orphan(
 
 pub async fn load(pool: &PgPool, preset_id: Uuid) -> sqlx::Result<Option<Preset>> {
     sqlx::query_as(
-        "SELECT p.user_id, p.name, p.prompt, p.machine_id, p.working_dir, p.adapter_id, \
+        "SELECT p.id, p.user_id, p.name, p.prompt, p.machine_id, p.working_dir, \
+                p.adapter_id, \
                 p.model, p.permission_mode, a.name AS account_name, ap.name AS pool_name, \
                 p.no_account, p.profile, p.fresh_secs, p.on_stale, p.notify_url, \
-                m.id IS NOT NULL AS machine_live, d.name AS dispatcher_name \
+                m.id IS NOT NULL AS machine_live, d.name AS dispatcher_name, p.sealed_env, \
+                p.sealed_prompt, p.template \
          FROM presets p \
          LEFT JOIN accounts a ON a.id = p.account_id \
          LEFT JOIN account_pools ap ON ap.id = p.pool_id \
@@ -338,6 +346,7 @@ pub fn spawn_request(preset: &Preset, plan: &Plan, prompt: &str) -> Option<Spawn
         Plan::Followup { parent } => Some(parent.as_str()),
         Plan::Spawn | Plan::Reply(_) => None,
     };
+    let template = &preset.template.0;
     serde_json::from_value(serde_json::json!({
         "machine_id": preset.machine_id?.to_string(),
         "working_dir": preset.working_dir.as_deref()?,
@@ -352,18 +361,65 @@ pub fn spawn_request(preset: &Preset, plan: &Plan, prompt: &str) -> Option<Spawn
         "prompt": prompt,
         "relation": parent.map(|_| crate::followup::RELATION),
         "parent_session_id": parent,
+        "effort": template.effort,
+        "service_tier": template.service_tier,
+        "label_ids": template.label_ids,
+        "context": template.context,
+        "profile_id": template.profile_id,
+        "auto_archive": template.auto_archive,
     }))
     .ok()
 }
 
-/// No secret is stored: credentials are minted by the dispatch itself.
+/// The preset with its real prompt: a stored one has its `<redacted>` spans masked.
+pub fn opened(mut preset: Preset, key: impl FnOnce() -> Vec<u8>) -> Result<Preset, &'static str> {
+    const UNSEALABLE: &str = "the preset's sealed prompt does not decrypt with the vault key";
+    let Some(sealed) = preset.sealed_prompt.take() else { return Ok(preset) };
+    let key = key();
+    if key.is_empty() {
+        return Err(UNSEALABLE);
+    }
+    preset.prompt = crate::crypto::decrypt(&sealed, &key).ok_or(UNSEALABLE)?;
+    Ok(preset)
+}
+
+type Files = (Vec<cctui_proto::adapter::BootstrapFile>, Vec<crate::uploads::RawUpload>);
+
+/// The files stored with the preset, ahead of the batch's own.
+async fn template_files(state: &AppState, preset: &Preset) -> Result<Files, String> {
+    let Some(id) = preset.id else { return Ok((Vec::new(), Vec::new())) };
+    let key = crate::presets::store::files_key(id);
+    crate::routes::spawn::load_draft_uploads(&state.pool, &key, &[])
+        .await
+        .map_err(|e| e.into_parts().1.0.error)
+}
+
+/// The preset's sealed env, opened for one run.
+pub fn run_env(
+    preset: &Preset,
+    key: impl FnOnce() -> Vec<u8>,
+) -> Result<crate::sealed_env::EnvMap, &'static str> {
+    crate::sealed_env::unseal(preset.sealed_env.as_deref(), key)
+        .map_err(crate::sealed_env::SealError::message)
+}
+
+/// Account credentials are minted by the dispatch itself.
 #[must_use]
 pub fn dispatch_request(
     preset: &Preset,
     dispatcher: String,
     batch_id: Uuid,
     prompt: &str,
+    env: &crate::sealed_env::EnvMap,
 ) -> DispatchRequest {
+    let mut payload = serde_json::json!({
+        "profile": preset.profile,
+        "prompt": prompt,
+        "name": preset.name,
+    });
+    if !env.is_empty() {
+        payload["env"] = serde_json::json!(env);
+    }
     DispatchRequest {
         dispatcher,
         session_id: Some(batch_id.to_string()),
@@ -371,11 +427,7 @@ pub fn dispatch_request(
         reply_url: None,
         notify_url: preset.notify_url.clone(),
         notify_secret: None,
-        payload: serde_json::json!({
-            "profile": preset.profile,
-            "prompt": prompt,
-            "name": preset.name,
-        }),
+        payload,
         account: None,
         provider: None,
         accounts: Vec::new(),
@@ -430,9 +482,7 @@ pub async fn payload_files(pool: &PgPool, batch_id: Uuid) -> sqlx::Result<Vec<Pa
     Ok(within_budget(files, MAX_BATCH_FILE_BYTES))
 }
 
-fn uploads(
-    files: Vec<PayloadFile>,
-) -> (Vec<cctui_proto::adapter::BootstrapFile>, Vec<crate::uploads::RawUpload>) {
+fn uploads(files: Vec<PayloadFile>) -> Files {
     use base64::Engine;
     files
         .into_iter()
@@ -489,7 +539,7 @@ async fn spawn(
     preset: &Preset,
     plan: &Plan,
     events: &[BatchEvent],
-    files: Vec<PayloadFile>,
+    files_in: Vec<PayloadFile>,
 ) -> sqlx::Result<Outcome> {
     let Some(batch_id) = events.first().map(|e| e.batch_id) else { return Ok(Outcome::Skip) };
     let delivered = |session_id: String, plan: &Plan| Outcome::Delivered {
@@ -518,8 +568,22 @@ async fn spawn(
     let Some(mut req) = spawn_request(preset, plan, &prompt) else {
         return Ok(Outcome::Dead(MACHINE_GONE.to_owned()));
     };
-    req.label_ids = run_labels(state, preset, events).await;
-    let (files, raw_files) = uploads(files);
+    req.env = match run_env(preset, crate::crypto::vault_key) {
+        Ok(env) => env,
+        Err(reason) => return Ok(Outcome::Dead(reason.to_owned())),
+    };
+    for label in run_labels(state, preset, events).await {
+        if !req.label_ids.contains(&label) {
+            req.label_ids.push(label);
+        }
+    }
+    let (mut files, mut raw_files) = match template_files(state, preset).await {
+        Ok(stored) => stored,
+        Err(reason) => return Ok(Outcome::Dead(reason)),
+    };
+    let (batch_files, batch_raw) = uploads(files_in);
+    files.extend(batch_files);
+    raw_files.extend(batch_raw);
     let ctx = match super::queued::acting_as(&state.pool, preset.user_id).await {
         Ok(ctx) => ctx,
         Err(e) => return Ok(Outcome::Retry(e.to_string())),
@@ -567,7 +631,11 @@ async fn dispatch(
         Ok(ctx) => ctx,
         Err(e) => return Outcome::Retry(e.to_string()),
     };
-    let req = dispatch_request(preset, dispatcher, batch_id, &instruction(preset, &text));
+    let env = match run_env(preset, crate::crypto::vault_key) {
+        Ok(env) => env,
+        Err(reason) => return Outcome::Dead(reason.to_owned()),
+    };
+    let req = dispatch_request(preset, dispatcher, batch_id, &instruction(preset, &text), &env);
     match cctui_server_core::dispatch::execute_dispatch(state, &ctx, req).await {
         Ok((_, Json(done))) => {
             Outcome::Delivered { session_id: done.session_id, delivered_as: "dispatch" }
@@ -586,6 +654,10 @@ pub async fn deliver(
     let Some(batch_id) = events.first().map(|e| e.batch_id) else { return Ok(Outcome::Skip) };
     let Some(preset) = load(&state.pool, preset_id).await? else {
         return Ok(Outcome::Dead(PRESET_GONE.to_owned()));
+    };
+    let preset = match opened(preset, crate::crypto::vault_key) {
+        Ok(preset) => preset,
+        Err(reason) => return Ok(Outcome::Dead(reason.to_owned())),
     };
     if preset.machine_id.is_none() {
         return Ok(dispatch(state, &preset, events, batch_id).await);

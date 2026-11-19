@@ -198,6 +198,88 @@ mod tests {
             ("active".into(), None, None),
             "a session without a dispatch handle is never probed"
         );
+        let crashed = await_notices(&pool, &oom, 1).await;
+        assert_eq!(
+            crashed,
+            [("dispatch_failed".to_owned(), uid, Some(oom.clone()), Some(oom))],
+            "a registered session's crash opens the session"
+        );
+        assert!(dispatch_notices(&pool, &done).await.is_empty(), "a clean end raises nothing");
+    }
+
+    type Notice = (String, Uuid, Option<String>, Option<String>);
+
+    async fn dispatch_notices(pool: &sqlx::PgPool, sid: &str) -> Vec<Notice> {
+        sqlx::query_as(
+            "SELECT kind, user_id, session_id, subject_id FROM notifications \
+             WHERE subject_kind = 'dispatch' AND subject_id = $1",
+        )
+        .bind(sid)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    /// The host emits off the sweep's task.
+    async fn await_notices(pool: &sqlx::PgPool, sid: &str, want: usize) -> Vec<Notice> {
+        for _ in 0..100 {
+            let found = dispatch_notices(pool, sid).await;
+            if found.len() >= want {
+                return found;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        dispatch_notices(pool, sid).await
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_dies_before_registering_notifies_once_with_its_record() {
+        let Some(url) =
+            crate::routes::gateway::test_db_url("dispatch_liveness_unregistered_notice")
+        else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let (uid, _machine) = crate::events::tests::seed_user_machine(&pool, "dl-unreg-n").await;
+        let name = format!("k8s-{uid}");
+        let dispatcher = seed_dispatcher(&pool, uid, &name).await;
+        let sid = Uuid::new_v4().to_string();
+        let req: cctui_proto::api::DispatchRequest = serde_json::from_value(
+            serde_json::json!({"dispatcher": name, "payload": {"prompt": "go"}}),
+        )
+        .unwrap();
+        let record = dispatch_records::NewRecord::from_request(&sid, Some(uid), &req, None, None);
+        dispatch_records::insert(&pool, &record).await.unwrap();
+        dispatch_records::set_outcome(&pool, &sid, "forwarded", None).await.unwrap();
+        seed_handle(&pool, &sid, &name, "jobs/cctui-worker-unreg-notice").await;
+
+        let fake = fake_dispatcher(&state, dispatcher, (Some("failed"), Some("ImagePullBackOff")));
+        sweep_unlocked(&state).await;
+        let notices = await_notices(&pool, &sid, 1).await;
+        assert_eq!(
+            notices,
+            [("dispatch_failed".to_owned(), uid, None, Some(sid.clone()))],
+            "one notice to the dispatch's owner, aimed at its failure record"
+        );
+        let title: String =
+            sqlx::query_scalar("SELECT title FROM notifications WHERE subject_id = $1")
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(title, format!("{} failed", &sid[..8]));
+
+        sweep_unlocked(&state).await;
+        fake.abort();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(dispatch_notices(&pool, &sid).await.len(), 1, "a re-sweep raises no second");
+        sqlx::query("DELETE FROM dispatch_handles WHERE session_id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .ok();
+        forget_user(&pool, uid).await;
     }
 
     /// A Job that ran out of backoff after its worker was OOM killed reports

@@ -6,7 +6,11 @@ use uuid::Uuid;
 
 /// A signed inbound webhook bound to a launch preset. Deliveries are sent to
 /// `POST /hooks/{id}` and queued on the preset's inbox lane.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `url` is where senders post, built by the server from its external URL.
+/// With `max_usd` set, deliveries are refused while the sessions the hook
+/// reached in the last `budget_window_hours` cost that much or more.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct Webhook {
     pub id: Uuid,
@@ -15,8 +19,11 @@ pub struct Webhook {
     pub name: String,
     pub prompt_template: String,
     pub rate_per_minute: i32,
+    pub max_usd: Option<f64>,
+    pub budget_window_hours: i32,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
+    pub url: String,
 }
 
 /// Body of `POST /webhooks` and `PUT /webhooks/{id}`.
@@ -33,12 +40,16 @@ pub struct WebhookRequest {
     #[serde(default)]
     pub rate_per_minute: Option<i32>,
     #[serde(default)]
+    pub max_usd: Option<f64>,
+    #[serde(default)]
+    pub budget_window_hours: Option<i32>,
+    #[serde(default)]
     pub enabled: Option<bool>,
 }
 
 /// Reply of `POST /webhooks` and `POST /webhooks/{id}/secret`: the only time
 /// the signing secret is shown.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct WebhookSecret {
     pub webhook: Webhook,
@@ -53,6 +64,7 @@ pub enum WebhookOutcome {
     Duplicate,
     Rejected,
     RateLimited,
+    OverBudget,
 }
 
 impl WebhookOutcome {
@@ -63,6 +75,7 @@ impl WebhookOutcome {
             Self::Duplicate => "duplicate",
             Self::Rejected => "rejected",
             Self::RateLimited => "rate_limited",
+            Self::OverBudget => "over_budget",
         }
     }
 
@@ -73,6 +86,7 @@ impl WebhookOutcome {
             "duplicate" => Self::Duplicate,
             "rejected" => Self::Rejected,
             "rate_limited" => Self::RateLimited,
+            "over_budget" => Self::OverBudget,
             _ => return None,
         })
     }
@@ -112,6 +126,7 @@ mod tests {
             WebhookOutcome::Duplicate,
             WebhookOutcome::Rejected,
             WebhookOutcome::RateLimited,
+            WebhookOutcome::OverBudget,
         ] {
             assert_eq!(WebhookOutcome::parse(v.as_str()), Some(v));
             assert_eq!(serde_json::to_value(v).unwrap(), v.as_str());

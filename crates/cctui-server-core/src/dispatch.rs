@@ -23,6 +23,10 @@ pub struct DispatchNotification {
     pub session_id: String,
     pub title: String,
     pub message: String,
+    /// `None` is the instance owner.
+    pub owner: Option<uuid::Uuid>,
+    /// A session row exists to open.
+    pub registered: bool,
 }
 
 /// Execution resources and explicit host side effects for dispatch preparation.
@@ -542,6 +546,8 @@ async fn validate_dispatch(
         session_id: session_id.clone(),
         title: format!("Dispatch received → {}", req.dispatcher),
         message: format!("user: {caller}\nsession: {session_id}\n{summary}"),
+        owner: None,
+        registered: false,
     });
 
     // We do NOT pre-create a session row: the worker's cctui-daemon
@@ -1094,6 +1100,8 @@ async fn forward_dispatch(
                 session_id: session_id.clone(),
                 title: format!("Dispatch FAILED → {}", req.dispatcher),
                 message: format!("user: {caller}\nsession: {session_id}\nerror: {e}"),
+                owner: None,
+                registered: false,
             });
             let (code, msg) = match &e {
                 DispatchError::InvalidIntent(_) => (StatusCode::BAD_REQUEST, e.to_string()),
@@ -1126,6 +1134,8 @@ fn notify_forwarded(
             h.namespace.as_deref().unwrap_or("-"),
             h.status.as_deref().unwrap_or("dispatched"),
         ),
+        owner: None,
+        registered: false,
     });
 }
 

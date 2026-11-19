@@ -62,7 +62,7 @@ describe('notification route matrix', () => {
 			...DEFAULT_NOTIFICATIONS,
 			routes: { approval: { ntfy: { mode: 'now' } } }
 		});
-		expect(document.querySelectorAll('[data-stage-cell]')).toHaveLength(7 * 4);
+		expect(document.querySelectorAll('[data-stage-cell]')).toHaveLength(8 * 4);
 		expect(stageSelect('approval', 'ntfy').value).toBe('now');
 		expect(stageSelect('approval', 'web_push').value).toBe('after');
 		expect(minutesInput('approval', 'web_push')?.value).toBe('5');
@@ -101,7 +101,7 @@ describe('notification route matrix', () => {
 
 	it.each([[[]], [{}], [{ channels: {} }]])('renders the defaults when the resolved view is %j', (resolved) => {
 		render(resolved as unknown as NotificationSettings);
-		expect(document.querySelectorAll('[data-stage-cell]')).toHaveLength(7 * 4);
+		expect(document.querySelectorAll('[data-stage-cell]')).toHaveLength(8 * 4);
 		expect(stageSelect('approval', 'in_app').value).toBe('now');
 		expect(stageSelect('approval', 'web_push').value).toBe('after');
 	});

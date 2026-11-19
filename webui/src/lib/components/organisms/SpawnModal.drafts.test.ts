@@ -148,10 +148,11 @@ describe("SpawnModal draft editing", () => {
     expect(field("sp-name").value).toBe("keep-me");
     expect(field("sp-prompt").value).toBe("draft prompt");
     expect(
-      document.querySelector<HTMLInputElement>(
-        'input[aria-label="Secret name"]',
-      )?.value,
+      document.querySelector('[data-testid="env-stored-name"]')?.textContent,
     ).toBe("TOKEN");
+    expect(
+      document.querySelector('input[aria-label="Secret value"]'),
+    ).toBeNull();
     expect(slot().draftId).toBe("draft-9");
   });
 });

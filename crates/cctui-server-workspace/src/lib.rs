@@ -63,6 +63,7 @@ mod rooms;
 mod routes;
 mod scheduled_messages;
 mod scheduled_spawns;
+mod sealed_env;
 mod search_index;
 mod session_emoji;
 mod session_plugins;
@@ -1570,6 +1571,7 @@ mod tests {
             "DELETE /presets/{id} Bearer Authenticated",
             "GET /presets/{id} Bearer Authenticated",
             "PUT /presets/{id} Bearer Authenticated",
+            "PUT /presets/{id}/attachments Bearer Authenticated",
             "POST /presets/{id}/run Bearer Authenticated",
             "GET /profiles Bearer Human",
             "POST /profiles Bearer Human",
@@ -1659,6 +1661,7 @@ mod tests {
             r#"DELETE /sessions/{id}/room Bearer Resource(Session, Write, Path("id"))"#,
             r#"PUT /sessions/{id}/room Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/schedule-launch Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/schedule-repeat Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/search Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/seen Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/set-model Bearer Resource(Session, Write, Path("id"))"#,

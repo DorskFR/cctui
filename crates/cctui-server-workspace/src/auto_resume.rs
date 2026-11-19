@@ -462,6 +462,7 @@ fn stuck_notice(
     name: &str,
 ) -> impl FnOnce(uuid::Uuid) -> crate::notify::NewNotification + Send + 'static {
     let session_id = row.session_id.clone();
+    let anchor_seq = Some(row.event_id);
     let title = format!("Auto-resume gave up: {name}");
     let body = format!(
         "Session {session_id} is still stuck on \"{}\" after {MAX_ATTEMPTS} automatic nudges. \
@@ -474,6 +475,7 @@ fn stuck_notice(
         collapse_key: Some(format!("stuck:{session_id}")),
         session_id: Some(session_id),
         body: Some(body),
+        anchor_seq,
         ..crate::notify::NewNotification::new(owner, crate::notify::kind::SESSION_STUCK, title)
     }
 }

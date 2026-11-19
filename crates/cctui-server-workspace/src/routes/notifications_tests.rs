@@ -374,3 +374,71 @@ async fn an_unknown_token_is_404() {
     let page = confirm_page(State(state), Path(unminted)).await;
     assert_eq!(page.status(), StatusCode::NOT_FOUND);
 }
+
+async fn failed_dispatch(state: &AppState, owner: Uuid) -> (String, Uuid) {
+    let sid = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO dispatch_records (session_id, user_id, dispatcher_name, outcome) \
+         VALUES ($1, $2, 'k8s', 'refused')",
+    )
+    .bind(&sid)
+    .bind(owner)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let kind = crate::notify::kind::DISPATCH_FAILED;
+    let mut n = NewNotification::new(owner, kind, "x failed".into());
+    n.subject_kind = Some(crate::notify::producers::DISPATCH_SUBJECT.into());
+    n.subject_id = Some(sid.clone());
+    n.collapse_key = Some(format!("dispatch_failed:{sid}"));
+    (sid, emit(&state.pool, Routing::default(), n).await.unwrap().id)
+}
+
+async fn shown_failures(state: &AppState, who: Uuid) -> Vec<String> {
+    use crate::store::dispatch_records::{Listing, list};
+    let listing = Listing { owner: Some(who), viewer: Some(who), include_dismissed: false };
+    list(&state.pool, listing).await.unwrap().into_iter().map(|f| f.session_id).collect()
+}
+
+#[tokio::test]
+async fn dismissing_a_dispatch_notice_dismisses_its_failure_record() {
+    let Some(state) = state("notif_routes_dispatch_notice_dismiss").await else { return };
+    let alice = user(&state).await;
+    let (sid, id) = failed_dispatch(&state, alice).await;
+    assert_eq!(shown_failures(&state, alice).await, [sid]);
+
+    let Json(done) =
+        dismiss(State(state.clone()), Extension(caller(alice)), Path(id)).await.unwrap();
+    assert!(done.applied);
+    assert!(shown_failures(&state, alice).await.is_empty(), "the record goes with its notice");
+    drop_users(&state, &[alice]).await;
+}
+
+#[tokio::test]
+async fn dismissing_failure_records_resolves_their_notices() {
+    use crate::routes::dispatch::{dismiss_all_failed_dispatches, dismiss_failed_dispatch};
+    let Some(state) = state("notif_routes_dispatch_record_dismiss").await else { return };
+    let alice = user(&state).await;
+    let (one, one_notice) = failed_dispatch(&state, alice).await;
+    let (_two, two_notice) = failed_dispatch(&state, alice).await;
+    let other = notice(&state, alice, "system_alert", json!([])).await;
+
+    let status = dismiss_failed_dispatch(State(state.clone()), Extension(caller(alice)), Path(one))
+        .await
+        .unwrap();
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let closed = row(&state, one_notice).await;
+    assert_eq!(
+        (closed.state.as_str(), closed.resolved_reason.as_deref()),
+        ("resolved", Some("subject_closed"))
+    );
+    assert_eq!(row(&state, two_notice).await.state, "pending", "only the dismissed record's");
+
+    let Json(all) = dismiss_all_failed_dispatches(State(state.clone()), Extension(caller(alice)))
+        .await
+        .unwrap();
+    assert_eq!(all.dismissed, 1);
+    assert_eq!(row(&state, two_notice).await.state, "resolved");
+    assert_eq!(row(&state, other).await.state, "pending", "other notices stay open");
+    drop_users(&state, &[alice]).await;
+}

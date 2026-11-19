@@ -1,11 +1,8 @@
 <script lang="ts">
-	// Environment-secrets rows. Rows are
-	// injected as env vars in the worker process — never shown in the conversation,
-	// logs, or transcript, and fixed for the session's lifetime. Values live on the
-	// parent's modal-scoped state (kept out of the persisted draft); this component
-	// just renders + edits the rows. The "add" affordance lives in the parent's
-	// shared action row, so this component only renders existing rows + the error.
-	import { IconButton, Input, Text } from '@dorsk/tsumikit';
+	// Env rows injected into the worker process, never shown in the conversation,
+	// logs or transcript. A stored row's value lives sealed on the server and is
+	// never sent back: it shows as set, and can be replaced or removed.
+	import { Badge, Button, IconButton, Input, Text } from '@dorsk/tsumikit';
 	import type { EnvRow } from './types';
 	import Error from '#lib/components/atoms/Error.svelte';
 	import { m } from '#lib/paraglide/messages.js';
@@ -19,28 +16,52 @@
 		invalid: boolean;
 	} = $props();
 
+	let replacing = $state<string[]>([]);
+
 	const removeEnvRow = (i: number) => (envRows = envRows.filter((_, idx) => idx !== i));
+	const replace = (key: string) => (replacing = [...replacing, key]);
 </script>
 
 {#if envRows.length}
 	<div class="rows">
 		{#each envRows as row, i (i)}
 			<div class="row gap">
-				<Input
-					mono
-					style="flex:1;min-width:0"
-					placeholder="API_KEY"
-					aria-label={m.spawn_secret_name_aria()}
-					bind:value={row.key}
-				/>
-				<Input
-					mono
-					style="flex:1;min-width:0"
-					type="password"
-					placeholder={m.spawn_secret_value_placeholder()}
-					aria-label={m.spawn_secret_value_aria()}
-					bind:value={row.value}
-				/>
+				{#if row.stored}
+					<span class="name" data-testid="env-stored-name"><Text variant="code">{row.key}</Text></span>
+					{#if row.value || replacing.includes(row.key)}
+						<Input
+							mono
+							style="flex:1;min-width:0"
+							type="password"
+							placeholder={m.spawn_secret_replace_placeholder()}
+							aria-label={m.spawn_secret_value_aria()}
+							bind:value={row.value}
+						/>
+					{:else}
+						<Badge tone="muted" aria-label={m.spawn_secret_stored_aria({ name: row.key })}>
+							{m.spawn_secret_stored()}
+						</Badge>
+						<Button size="sm" variant="ghost" onclick={() => replace(row.key)}>
+							{m.spawn_secret_replace()}
+						</Button>
+					{/if}
+				{:else}
+					<Input
+						mono
+						style="flex:1;min-width:0"
+						placeholder="API_KEY"
+						aria-label={m.spawn_secret_name_aria()}
+						bind:value={row.key}
+					/>
+					<Input
+						mono
+						style="flex:1;min-width:0"
+						type="password"
+						placeholder={m.spawn_secret_value_placeholder()}
+						aria-label={m.spawn_secret_value_aria()}
+						bind:value={row.value}
+					/>
+				{/if}
 				<IconButton icon="trash" label={m.spawn_remove_secret()} hoverDanger onclick={() => removeEnvRow(i)} />
 			</div>
 		{/each}
@@ -58,6 +79,13 @@
 	}
 	.row.gap {
 		display: flex;
+		align-items: center;
 		gap: var(--sp-2);
+	}
+	.name {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 </style>

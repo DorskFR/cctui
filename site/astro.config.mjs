@@ -49,6 +49,7 @@ export default defineConfig({
           ],
         },
         { label: 'Architecture', slug: 'architecture' },
+        { label: 'Integrate', slug: 'integrate' },
         { label: 'Comparison', slug: 'comparison' },
         {
           label: 'Reference',

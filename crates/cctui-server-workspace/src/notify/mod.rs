@@ -30,6 +30,7 @@ pub mod kind {
     pub const SYSTEM_ALERT: &str = "system_alert";
     pub const INBOX_STUCK: &str = "inbox_stuck";
     pub const DISPATCH_INFO: &str = "dispatch_info";
+    pub const DISPATCH_FAILED: &str = "dispatch_failed";
     pub const TEST: &str = "test";
     pub const THROTTLED: &str = "notify_throttled";
 }
@@ -47,7 +48,10 @@ impl Push {
     #[must_use]
     pub fn for_kind(kind: &str, blocking: bool) -> Self {
         match kind {
-            kind::SESSION_STUCK | kind::SYSTEM_ALERT | kind::INBOX_STUCK => Self::Now,
+            kind::SESSION_STUCK
+            | kind::SYSTEM_ALERT
+            | kind::INBOX_STUCK
+            | kind::DISPATCH_FAILED => Self::Now,
             kind::APPROVAL => Self::AfterMinutes(5),
             kind::NEEDS_INPUT => Self::AfterMinutes(10),
             kind::USER_ACTION if blocking => Self::AfterMinutes(10),
@@ -104,6 +108,14 @@ where
         tracing::warn!("notification dropped: notification outbox not started");
         return;
     };
+    emit_detached_on(pool, config, owner, build);
+}
+
+/// [`emit_detached`] on `pool`.
+pub fn emit_detached_on<F>(pool: PgPool, config: &Config, owner: Option<Uuid>, build: F)
+where
+    F: FnOnce(Uuid) -> NewNotification + Send + 'static,
+{
     let routing = Routing::from_config(config);
     let channels = Channels::from_config(config);
     tokio::spawn(async move {

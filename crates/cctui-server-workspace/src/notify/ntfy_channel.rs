@@ -745,17 +745,49 @@ mod tests {
 
         #[test]
         fn deep_links_point_at_the_session_or_the_app() {
+            use dispatcher::Target;
             let mut config = crate::config::Config::for_test(vec![]);
-            assert_eq!(dispatcher::deep_link(&config, Some("s1")), None, "no public URL");
+            let session = Target { session_id: Some("s1"), ..Target::default() };
+            assert_eq!(dispatcher::deep_link(&config, session), None, "no public URL");
             config.external_url = "https://cctui.example/".into();
             assert_eq!(
-                dispatcher::deep_link(&config, Some("s1")).as_deref(),
+                dispatcher::deep_link(&config, session).as_deref(),
                 Some("https://cctui.example/sessions/s1")
             );
             assert_eq!(
-                dispatcher::deep_link(&config, None).as_deref(),
+                dispatcher::deep_link(&config, Target::default()).as_deref(),
                 Some("https://cctui.example/")
             );
+        }
+
+        #[test]
+        fn deep_links_carry_the_message_anchor_or_the_failure_record() {
+            use dispatcher::Target;
+            let mut config = crate::config::Config::for_test(vec![]);
+            config.external_url = "https://cctui.example".into();
+            let anchored =
+                Target { session_id: Some("s1"), anchor_seq: Some(42), ..Target::default() };
+            assert_eq!(
+                dispatcher::deep_link(&config, anchored).as_deref(),
+                Some("https://cctui.example/sessions/s1?seq=42")
+            );
+            let record = Target {
+                subject_kind: Some("dispatch"),
+                subject_id: Some("d1"),
+                ..Target::default()
+            };
+            assert_eq!(
+                dispatcher::deep_link(&config, record).as_deref(),
+                Some("https://cctui.example/dispatch-failures?record=d1")
+            );
+            let registered = Target { session_id: Some("d1"), ..record };
+            assert_eq!(
+                dispatcher::deep_link(&config, registered).as_deref(),
+                Some("https://cctui.example/sessions/d1"),
+                "a registered session opens itself"
+            );
+            let other = Target { subject_kind: Some("user_action"), ..record };
+            assert_eq!(other.path(), None, "no target, no path");
         }
     }
 }

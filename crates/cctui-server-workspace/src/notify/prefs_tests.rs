@@ -21,6 +21,7 @@ fn defaults_reproduce_the_static_push_table() {
         (kind::SESSION_STUCK, false),
         (kind::SYSTEM_ALERT, false),
         (kind::INBOX_STUCK, false),
+        (kind::DISPATCH_FAILED, false),
         (kind::DISPATCH_INFO, false),
     ];
     for (k, blocking) in cases {

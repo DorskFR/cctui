@@ -12,6 +12,9 @@ pub const EVENT_HEADERS: [&str; 2] = ["x-github-event", "x-event"];
 pub const MAX_BODY_BYTES: usize = 256 * 1024;
 pub const RATE_DEFAULT: i32 = 30;
 pub const RATE_MAX: i32 = 600;
+pub const BUDGET_WINDOW_DEFAULT: i32 = 24;
+pub const BUDGET_WINDOW_MAX: i32 = 720;
+pub const MAX_USD_LIMIT: f64 = 100_000.0;
 const SIGNATURE_PREFIX: &str = "sha256=";
 const SECRET_PREFIX: &str = "whsec_";
 const MAX_NAME_CHARS: usize = 120;
@@ -20,13 +23,29 @@ const MAX_VALUE_CHARS: usize = 2000;
 const MAX_RENDERED_BYTES: usize = 32 * 1024;
 const MAX_TOKEN_CHARS: usize = 64;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ValidHook {
     pub preset_id: Uuid,
     pub name: String,
     pub prompt_template: String,
     pub rate_per_minute: i32,
+    pub max_usd: Option<f64>,
+    pub budget_window_hours: i32,
     pub enabled: bool,
+}
+
+fn budget(req: &WebhookRequest) -> Result<(Option<f64>, i32), String> {
+    if let Some(usd) = req.max_usd {
+        let sane = usd.is_finite() && usd > 0.0 && usd <= MAX_USD_LIMIT;
+        if !sane {
+            return Err(format!("max_usd must be above 0 and at most {MAX_USD_LIMIT}"));
+        }
+    }
+    let hours = req.budget_window_hours.unwrap_or(BUDGET_WINDOW_DEFAULT);
+    if !(1..=BUDGET_WINDOW_MAX).contains(&hours) {
+        return Err(format!("budget_window_hours must be between 1 and {BUDGET_WINDOW_MAX}"));
+    }
+    Ok((req.max_usd, hours))
 }
 
 pub fn validate(req: &WebhookRequest) -> Result<ValidHook, String> {
@@ -47,13 +66,23 @@ pub fn validate(req: &WebhookRequest) -> Result<ValidHook, String> {
     if !(1..=RATE_MAX).contains(&rate_per_minute) {
         return Err(format!("rate_per_minute must be between 1 and {RATE_MAX}"));
     }
+    let (max_usd, budget_window_hours) = budget(req)?;
     Ok(ValidHook {
         preset_id: req.preset_id,
         name,
         prompt_template: req.prompt_template.clone(),
         rate_per_minute,
+        max_usd,
+        budget_window_hours,
         enabled: req.enabled.unwrap_or(true),
     })
+}
+
+/// Where senders post to a hook, under the server's external URL; a bare path
+/// when none is configured.
+#[must_use]
+pub fn url(external_url: &str, id: Uuid) -> String {
+    format!("{}/hooks/{id}", external_url.trim().trim_end_matches('/'))
 }
 
 #[must_use]
@@ -186,8 +215,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        body_digest, delivery_id, new_secret, payload_file_name, render, sign, token, validate,
-        verify,
+        body_digest, delivery_id, new_secret, payload_file_name, render, sign, token, url,
+        validate, verify,
     };
 
     #[test]
@@ -310,5 +339,38 @@ mod tests {
         let set = WebhookRequest { rate_per_minute: Some(600), enabled: Some(false), ..req };
         let valid = validate(&set).unwrap();
         assert_eq!((valid.rate_per_minute, valid.enabled), (600, false));
+    }
+
+    #[test]
+    fn a_dollar_cap_is_optional_positive_and_windowed() {
+        let req = WebhookRequest {
+            preset_id: Uuid::nil(),
+            name: "issues".into(),
+            prompt_template: "x".into(),
+            ..WebhookRequest::default()
+        };
+        let open = validate(&req).unwrap();
+        assert_eq!((open.max_usd, open.budget_window_hours), (None, 24));
+        let capped =
+            WebhookRequest { max_usd: Some(2.5), budget_window_hours: Some(720), ..req.clone() };
+        let capped = validate(&capped).unwrap();
+        assert_eq!((capped.max_usd, capped.budget_window_hours), (Some(2.5), 720));
+        for usd in [0.0, -1.0, f64::NAN, f64::INFINITY, 100_001.0] {
+            let bad = WebhookRequest { max_usd: Some(usd), ..req.clone() };
+            assert!(validate(&bad).unwrap_err().contains("max_usd"), "{usd}");
+        }
+        for hours in [0, -1, 721] {
+            let bad = WebhookRequest { budget_window_hours: Some(hours), ..req.clone() };
+            assert!(validate(&bad).unwrap_err().contains("budget_window_hours"), "{hours}");
+        }
+    }
+
+    #[test]
+    fn the_hook_url_hangs_off_the_external_url() {
+        let id = Uuid::nil();
+        let path = "/hooks/00000000-0000-0000-0000-000000000000";
+        assert_eq!(url("https://cctui.example/", id), format!("https://cctui.example{path}"));
+        assert_eq!(url("https://x.example/base//", id), format!("https://x.example/base{path}"));
+        assert_eq!(url("", id), path);
     }
 }

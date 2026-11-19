@@ -188,8 +188,9 @@ describe("SpawnModal schedule split-button", () => {
     await open();
     await typeInto(field("sp-prompt"), "do the thing");
     await openMenu();
-    // One entry per preset plus the custom time; no pending-message list here.
-    expect(items()).toHaveLength(schedulePresets(new Date()).length + 1);
+    // One entry per preset, the custom time and Repeat…; no pending-message list here.
+    expect(items()).toHaveLength(schedulePresets(new Date()).length + 2);
+    expect(menuItem("Repeat")).toBeDefined();
   });
 
   it("saves the draft and queues it at the picked preset", async () => {

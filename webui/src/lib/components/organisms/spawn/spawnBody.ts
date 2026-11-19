@@ -4,17 +4,10 @@ import { normalizeDir } from '#lib/drafts.ts';
 import { PERMISSION_MODES } from '#lib/domainTables.ts';
 import { FOLLOWUP_RELATION } from '#lib/followup.ts';
 import { isCompatibleProvider, NO_ACCOUNT, poolName } from './options';
+import { envEdit } from './envRows';
 import type { EnvRow, Form } from './types';
 
-/** Complete rows only (both key and value set). */
-export function envMap(rows: EnvRow[]): Record<string, string> {
-	const out: Record<string, string> = {};
-	for (const r of rows) {
-		const k = r.key.trim();
-		if (k && r.value) out[k] = r.value;
-	}
-	return out;
-}
+export { envMap } from './envRows';
 
 export function buildSpawnBody(
 	f: Form,
@@ -70,12 +63,11 @@ export function buildSpawnBody(
 	};
 }
 
-/** A draft carries env keys and attachment names, never values or bytes. */
+/** A draft carries attachment names, never bytes; the server seals its env. */
 export function draftBody(spawn: SpawnRequest, rows: EnvRow[], files: File[]): SpawnRequest {
 	return {
 		...spawn,
-		env: {},
-		env_keys: rows.map((r) => r.key.trim()).filter(Boolean),
+		...envEdit(rows),
 		attachment_names: files.map((f) => f.name)
 	};
 }

@@ -8,15 +8,20 @@
 	import PresetEditorModal from '#lib/components/organisms/presets/PresetEditorModal.svelte';
 	import { useWebhookActions } from '#lib/queries/webhooks.ts';
 	import { m } from '#lib/paraglide/messages.js';
+	import { toasts } from '#lib/toast.svelte.ts';
+	import { externalSourcesOffer } from '#lib/webhooks/externalSources.ts';
 	import { templateExpressions } from '#lib/webhooks/template.ts';
 	import {
 		RATE_MAX,
 		RATE_MIN,
-		eligiblePresets,
+		USD_MAX,
+		WINDOW_MAX,
+		WINDOW_MIN,
 		emptyForm,
 		formFromWebhook,
 		formProblems,
 		hasProblems,
+		presetChoices,
 		requestFromForm,
 		type WebhookForm
 	} from '#lib/webhooks/webhookForm.ts';
@@ -43,24 +48,42 @@
 	let tried = $state(false);
 	let busy = $state(false);
 	let failure = $state('');
+	let opening = $state(false);
 
 	const problems = $derived(formProblems(form));
 	const expressions = $derived(templateExpressions(form.prompt_template));
+	const known = $derived(new Map([...presets, ...added].map((p) => [p.id, p])));
+	const chosen = $derived(known.get(form.preset_id) ?? null);
+	const offer = $derived(chosen ? externalSourcesOffer(chosen) : null);
 	const presetOptions = $derived.by<SelectOption[]>(() => {
-		const known = new Map([...presets, ...added].map((p) => [p.id, p]));
-		const out: SelectOption[] = eligiblePresets([...known.values()]).map((p) => ({
+		const out: SelectOption[] = presetChoices([...known.values()]).map((p) => ({
 			value: p.id,
-			label: p.name
+			label: p.external_sources ? p.name : m.webhooks_preset_option_closed({ name: p.name })
 		}));
 		if (!form.preset_id) out.unshift({ value: '', label: m.webhooks_preset_pick() });
 		else if (!out.some((o) => o.value === form.preset_id)) {
 			out.unshift({
 				value: form.preset_id,
-				label: known.get(form.preset_id)?.name ?? m.webhooks_preset_deleted()
+				label: m.webhooks_preset_deleted()
 			});
 		}
 		return out;
 	});
+
+	async function acceptExternal() {
+		const preset = chosen;
+		if (!preset || opening) return;
+		opening = true;
+		try {
+			const saved = await actions.acceptExternalSources(preset.id);
+			added = [...added.filter((p) => p.id !== saved.id), saved];
+			toasts.ok(m.webhooks_external_enabled({ name: saved.name }));
+		} catch (e) {
+			toasts.error(errMessage(e));
+		} finally {
+			opening = false;
+		}
+	}
 
 	async function save() {
 		tried = true;
@@ -104,6 +127,25 @@
 					<Button size="sm" onclick={() => (newPreset = true)}>{m.webhooks_preset_new()}</Button>
 				</div>
 			</Field>
+			{#if offer && offer.kind !== 'open'}
+				<Callout tone="warn" icon="warning">
+					<div class="offer" data-testid="webhook-external-off">
+						<Text size="sm">{m.webhooks_external_off()}</Text>
+						{#if offer.kind === 'unguarded' || offer.machine}
+							<Text size="xs" tone="muted">{m.presets_error_permission_guarded()}</Text>
+						{/if}
+						{#if offer.kind === 'unguarded'}
+							<Text size="xs" tone="muted">{m.webhooks_external_unguarded()}</Text>
+						{:else}
+							<div>
+								<Button size="sm" disabled={opening} onclick={acceptExternal}>
+									{m.webhooks_external_enable()}
+								</Button>
+							</div>
+						{/if}
+					</div>
+				</Callout>
+			{/if}
 
 			<Field
 				label={m.webhooks_template_label()}
@@ -143,6 +185,40 @@
 					bind:value={() => form.rate_per_minute, (v) => (form.rate_per_minute = String(v ?? ''))}
 				/>
 			</Field>
+
+			<div class="budget">
+				<Field
+					label={m.webhooks_budget_label()}
+					for="{uid}-budget"
+					hint={m.webhooks_budget_hint()}
+					error={tried && problems.budget ? m.webhooks_error_budget({ max: USD_MAX }) : undefined}
+				>
+					<Input
+						id="{uid}-budget"
+						inputmode="decimal"
+						width="9rem"
+						placeholder={m.webhooks_budget_placeholder()}
+						bind:value={form.max_usd}
+					/>
+				</Field>
+				<Field
+					label={m.webhooks_window_label()}
+					for="{uid}-window"
+					error={tried && problems.window
+						? m.webhooks_error_window({ min: WINDOW_MIN, max: WINDOW_MAX })
+						: undefined}
+				>
+					<Input
+						id="{uid}-window"
+						type="number"
+						min={WINDOW_MIN}
+						max={WINDOW_MAX}
+						step={1}
+						width="9rem"
+						bind:value={() => form.budget_window_hours, (v) => (form.budget_window_hours = String(v ?? ''))}
+					/>
+				</Field>
+			</div>
 
 			<Switch
 				id="{uid}-enabled"
@@ -189,5 +265,15 @@
 	.grow {
 		flex: 1;
 		min-width: 0;
+	}
+	.offer {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-1);
+	}
+	.budget {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--sp-3);
 	}
 </style>

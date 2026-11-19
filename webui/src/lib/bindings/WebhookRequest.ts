@@ -6,4 +6,4 @@
  * `prompt_template` interpolates `{{payload.<path>}}` from the delivery's
  * JSON body, plus `{{event}}` and `{{delivery}}` from its headers.
  */
-export type WebhookRequest = { preset_id: string, name: string, prompt_template: string, rate_per_minute: number | null, enabled: boolean | null, };
+export type WebhookRequest = { preset_id: string, name: string, prompt_template: string, rate_per_minute: number | null, max_usd: number | null, budget_window_hours: number | null, enabled: boolean | null, };

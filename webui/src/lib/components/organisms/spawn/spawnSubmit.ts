@@ -18,12 +18,15 @@ import { buildDispatchBody } from './dispatchBody';
 import { attachLabelsTo } from './labelAttach';
 import { findSpawnedSession } from './spawnMatch';
 import { envMap } from './spawnBody';
+import { keepsStoredValue } from './envRows';
 import type { SpawnForm } from './spawnForm.svelte';
 import { findInvite, JOIN_PROMPT, stripInvite } from '#lib/cctuiverse.ts';
 import { joinAfterSpawn } from '#lib/cctuiverseJoin.ts';
 import { cctuiverseConfig } from '#lib/cctuiverseConfig.svelte.ts';
 import { pendingSpawns } from '#lib/pendingSpawns.svelte.ts';
 import { hasFeature } from '#lib/features.svelte.ts';
+import { endpoints } from '#lib/queries/index.ts';
+import type { RepeatDraftRequest } from '@bindings/RepeatDraftRequest';
 
 /** Identity of the form's file set: what decides whether a save has to ship
  *  the bytes again. */
@@ -104,9 +107,33 @@ export async function scheduleLaunch(sf: SpawnForm, at: Date) {
 	sf.finish();
 }
 
+/** Save the form as a draft and turn it into a repeating schedule: the
+ *  server moves the payload, sealed env and files to the schedule and drops
+ *  the draft, so nothing secret passes through the browser. */
+export async function scheduleRepeat(sf: SpawnForm, body: RepeatDraftRequest) {
+	sf.cancelAutosave();
+	const draftId = await persistDraft(sf, true);
+	const preset = await endpoints.scheduleDraftRepeat(draftId, body);
+	toasts.ok(m.spawn_toast_repeat_scheduled({ name: preset.name }));
+	sf.draftId = null;
+	sf.finish();
+}
+
 async function spawnProbe(sf: SpawnForm, sessionId: string): Promise<SpawnProbeHit | null> {
 	const { sessions } = await sf.labelApi.listSessions();
 	return sessions.find((s) => s.id === sessionId) ?? null;
+}
+
+/** Stored env values never come back to the browser: a form relying on one
+ *  launches through its draft, whose launch opens the sealed env server-side. */
+async function launch(sf: SpawnForm, body: SpawnRequest, rewritten: boolean) {
+	if (!sf.draftId || rewritten || !keepsStoredValue(sf.envRows)) {
+		return sf.actions.spawn(body, sf.uploadFiles);
+	}
+	const draftId = await persistDraft(sf, true);
+	const res = await sf.actions.launchDraft(draftId, envMap(sf.envRows));
+	sf.draftId = null;
+	return res;
 }
 
 export async function spawnOnMachine(sf: SpawnForm) {
@@ -130,7 +157,7 @@ export async function spawnOnMachine(sf: SpawnForm) {
 	const memoryCwd = normalizeDir(sf.form.working_dir.trim());
 	const memoryMachine = sf.form.machine_id;
 	const profile = sf.selectedProfile;
-	const res = await sf.actions.spawn(body, sf.uploadFiles);
+	const res = await launch(sf, body, !!invite);
 	if (res.account) toasts.info(m.spawn_toast_bound_account({ account: res.account }));
 	drafts.set(LAST_MACHINE, sf.form.machine_id);
 	drafts.set(LAST_SPAWN_NAME, sf.form.name.trim());

@@ -1,11 +1,12 @@
 pub mod cron;
+pub mod from_draft;
 pub mod store;
 #[cfg(test)]
 pub mod store_tests;
 pub mod tz;
 
 use cctui_proto::adapter::PermissionMode;
-use cctui_proto::api::presets::{LaunchPresetRequest, OnStale, Overlap};
+use cctui_proto::api::presets::{LaunchPresetRequest, OnStale, Overlap, SpawnTemplate};
 use uuid::Uuid;
 
 pub const FRESH_SECS_DEFAULT: i32 = 900;
@@ -17,6 +18,7 @@ const MAX_NAME_CHARS: usize = 120;
 const MAX_PROMPT_BYTES: usize = 64 * 1024;
 const MAX_NOTIFY_URL_CHARS: usize = 2048;
 const MAX_TIMEZONE_CHARS: usize = 64;
+const MAX_TEMPLATE_LIST: usize = 64;
 
 /// `Auto` binds the matching account with the most allocation left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +45,26 @@ pub enum Target {
     },
 }
 
+/// What a write does to the preset's sealed env.
+#[derive(Clone, PartialEq, Eq)]
+pub enum EnvEdit {
+    Unchanged,
+    Edit { keep: Vec<String>, set: crate::sealed_env::EnvMap },
+}
+
+impl std::fmt::Debug for EnvEdit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unchanged => f.write_str("Unchanged"),
+            Self::Edit { keep, set } => f
+                .debug_struct("Edit")
+                .field("keep", keep)
+                .field("set", &set.keys().collect::<Vec<_>>())
+                .finish(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidPreset {
     pub name: String,
@@ -58,6 +80,9 @@ pub struct ValidPreset {
     pub overlap: Overlap,
     pub then_preset_id: Option<Uuid>,
     pub notify_url: Option<String>,
+    pub env: EnvEdit,
+    /// `None` keeps the stored template.
+    pub template: Option<SpawnTemplate>,
 }
 
 fn trimmed(raw: Option<&str>) -> Option<String> {
@@ -160,6 +185,57 @@ fn notify_url(target: &Target, raw: Option<&str>) -> Result<Option<String>, Stri
     Ok(Some(url))
 }
 
+/// A dispatcher refuses caller env that redirects egress; say so at save time.
+fn env_edit(target: &Target, req: &LaunchPresetRequest) -> Result<EnvEdit, String> {
+    if req.env_keys.is_none() && req.env.is_none() {
+        return Ok(EnvEdit::Unchanged);
+    }
+    let keep = req.env_keys.clone().unwrap_or_default();
+    let set = req.env.as_ref().map_or_else(crate::sealed_env::EnvMap::new, |e| e.0.clone());
+    crate::sealed_env::check(keep.iter().map(String::as_str), &set)?;
+    if matches!(target, Target::Container { .. })
+        && let Some(name) = keep
+            .iter()
+            .chain(set.keys())
+            .find(|n| n.ends_with("_BASE_URL") || n.starts_with("WORKER_NET_"))
+    {
+        return Err(format!("env {name} is reserved on a dispatcher target"));
+    }
+    Ok(EnvEdit::Edit { keep, set })
+}
+
+/// Blank strings mean the harness default; stored files are never set here.
+fn template(target: &Target, raw: Option<&SpawnTemplate>) -> Result<Option<SpawnTemplate>, String> {
+    let Some(raw) = raw else { return Ok(None) };
+    let mut label_ids: Vec<String> = Vec::with_capacity(raw.label_ids.len());
+    for id in raw.label_ids.iter().map(|l| l.trim()).filter(|l| !l.is_empty()) {
+        if !label_ids.iter().any(|kept| kept == id) {
+            label_ids.push(id.to_owned());
+        }
+    }
+    let context = raw.context.clone().filter(|c| !c.items.is_empty() || c.auto);
+    if label_ids.len() > MAX_TEMPLATE_LIST
+        || context.as_ref().is_some_and(|c| c.items.len() > MAX_TEMPLATE_LIST)
+    {
+        return Err(format!("at most {MAX_TEMPLATE_LIST} labels and context items"));
+    }
+    let template = SpawnTemplate {
+        effort: trimmed(raw.effort.as_deref()),
+        service_tier: trimmed(raw.service_tier.as_deref()),
+        label_ids,
+        context,
+        profile_id: raw.profile_id,
+        auto_archive: raw.auto_archive,
+        attachment_names: Vec::new(),
+    };
+    if matches!(target, Target::Container { .. }) && !template.is_blank() {
+        return Err("effort, service tier, labels, context, profile and auto-archive apply to \
+                    machine targets only"
+            .into());
+    }
+    Ok(Some(template))
+}
+
 pub fn validate(req: &LaunchPresetRequest) -> Result<ValidPreset, String> {
     let name = req.name.trim().to_owned();
     if name.is_empty() {
@@ -177,6 +253,8 @@ pub fn validate(req: &LaunchPresetRequest) -> Result<ValidPreset, String> {
     let target = target(req)?;
     guard_external(&target, req.external_sources)?;
     let notify_url = notify_url(&target, req.notify_url.as_deref())?;
+    let env = env_edit(&target, req)?;
+    let template = template(&target, req.template.as_ref())?;
     let cron = trimmed(req.cron.as_deref());
     if let Some(expr) = &cron {
         cron::validate(expr)?;
@@ -199,16 +277,18 @@ pub fn validate(req: &LaunchPresetRequest) -> Result<ValidPreset, String> {
         overlap: req.overlap.unwrap_or_default(),
         then_preset_id: req.then_preset_id,
         notify_url,
+        env,
+        template,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use cctui_proto::adapter::PermissionMode;
-    use cctui_proto::api::presets::{LaunchPresetRequest, OnStale, Overlap};
+    use cctui_proto::api::presets::{LaunchPresetRequest, OnStale, Overlap, SpawnTemplate};
     use uuid::Uuid;
 
-    use super::{AccountPick, Target, validate};
+    use super::{AccountPick, EnvEdit, Target, validate};
 
     fn machine() -> LaunchPresetRequest {
         LaunchPresetRequest {
@@ -344,6 +424,90 @@ mod tests {
         assert_eq!(validate(&cron).unwrap().cron.as_deref(), Some("0 9 * * 1-5"));
         let blank = LaunchPresetRequest { cron: Some(String::new()), ..machine() };
         assert_eq!(validate(&blank).unwrap().cron, None);
+    }
+
+    fn env(pairs: &[(&str, &str)]) -> cctui_proto::api::presets::EnvValues {
+        cctui_proto::api::presets::EnvValues(
+            pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect(),
+        )
+    }
+
+    #[test]
+    fn env_is_left_alone_unless_the_request_names_it() {
+        assert_eq!(validate(&machine()).unwrap().env, EnvEdit::Unchanged);
+        let keys_only = LaunchPresetRequest { env_keys: Some(vec!["A".into()]), ..machine() };
+        assert_eq!(
+            validate(&keys_only).unwrap().env,
+            EnvEdit::Edit { keep: vec!["A".into()], set: crate::sealed_env::EnvMap::new() }
+        );
+        let values_only = LaunchPresetRequest { env: Some(env(&[("B", "v")])), ..machine() };
+        let EnvEdit::Edit { keep, set } = validate(&values_only).unwrap().env else {
+            panic!("an edit")
+        };
+        assert!(keep.is_empty());
+        assert_eq!(set.get("B").map(String::as_str), Some("v"));
+        let cleared = LaunchPresetRequest { env_keys: Some(Vec::new()), ..machine() };
+        assert!(matches!(validate(&cleared).unwrap().env, EnvEdit::Edit { .. }));
+    }
+
+    #[test]
+    fn env_names_are_checked_and_values_stay_out_of_debug() {
+        let bad = LaunchPresetRequest { env_keys: Some(vec!["lower".into()]), ..machine() };
+        assert!(validate(&bad).unwrap_err().contains("invalid env key"));
+        let bad_value_key = LaunchPresetRequest { env: Some(env(&[("1X", "v")])), ..machine() };
+        assert!(validate(&bad_value_key).is_err());
+        let ok = LaunchPresetRequest { env: Some(env(&[("TOKEN", "s3cr3t-v4lue")])), ..machine() };
+        let valid = validate(&ok).unwrap();
+        assert!(!format!("{valid:?}").contains("s3cr3t-v4lue"), "{valid:?}");
+        assert!(format!("{valid:?}").contains("TOKEN"));
+    }
+
+    #[test]
+    fn a_dispatcher_target_carries_env_but_not_a_reserved_name() {
+        let carried = LaunchPresetRequest { env: Some(env(&[("FEED_TOKEN", "t")])), ..container() };
+        assert!(matches!(validate(&carried).unwrap().env, EnvEdit::Edit { .. }));
+        for name in ["ANTHROPIC_BASE_URL", "WORKER_NET_PROXY"] {
+            let reserved = LaunchPresetRequest { env: Some(env(&[(name, "x")])), ..container() };
+            assert!(validate(&reserved).unwrap_err().contains("reserved"), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_template_is_kept_unless_sent_and_normalised_when_it_is() {
+        assert_eq!(validate(&machine()).unwrap().template, None);
+        let sent = LaunchPresetRequest {
+            template: Some(SpawnTemplate {
+                effort: Some(" high ".into()),
+                service_tier: Some(" ".into()),
+                label_ids: vec!["l1".into(), " l1 ".into(), String::new(), "l2".into()],
+                context: Some(cctui_proto::api::SpawnContext { items: Vec::new(), auto: false }),
+                auto_archive: true,
+                attachment_names: vec!["forged.md".into()],
+                ..SpawnTemplate::default()
+            }),
+            ..machine()
+        };
+        let t = validate(&sent).unwrap().template.expect("sent");
+        assert_eq!(t.effort.as_deref(), Some("high"));
+        assert_eq!(t.service_tier, None);
+        assert_eq!(t.label_ids, ["l1", "l2"]);
+        assert_eq!(t.context, None, "an empty pick is no context");
+        assert!(t.auto_archive);
+        assert!(t.attachment_names.is_empty(), "files are set by their own route");
+    }
+
+    #[test]
+    fn a_dispatcher_target_takes_a_blank_template_only() {
+        let blank = LaunchPresetRequest { template: Some(SpawnTemplate::default()), ..container() };
+        assert!(validate(&blank).is_ok(), "a GET of a dispatcher preset round-trips");
+        let effort = LaunchPresetRequest {
+            template: Some(SpawnTemplate {
+                effort: Some("high".into()),
+                ..SpawnTemplate::default()
+            }),
+            ..container()
+        };
+        assert!(validate(&effort).unwrap_err().contains("machine targets only"));
     }
 
     #[test]

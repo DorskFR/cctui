@@ -36,7 +36,7 @@ const CLAIM_SQL: &str = "\
                   d.attempts, d.provider_ref) \
     SELECT c.id, c.notification_id, c.channel, c.endpoint_id, c.op, c.state, c.attempts, \
            c.provider_ref, n.title, n.body, n.severity, n.tags, n.actions, n.session_id, \
-           n.repeat_count, \
+           n.repeat_count, n.subject_kind, n.subject_id, n.anchor_seq, \
            e.config AS endpoint_config, e.enabled AS endpoint_enabled \
     FROM claimed c \
     JOIN notifications n ON n.id = c.notification_id \
@@ -59,6 +59,9 @@ struct Due {
     actions: serde_json::Value,
     session_id: Option<String>,
     repeat_count: i32,
+    subject_kind: Option<String>,
+    subject_id: Option<String>,
+    anchor_seq: Option<i64>,
     endpoint_config: Option<serde_json::Value>,
     endpoint_enabled: Option<bool>,
 }
@@ -73,6 +76,15 @@ impl Due {
             tags: self.tags.clone(),
             link: None,
             buttons: Vec::new(),
+        }
+    }
+
+    fn target(&self) -> Target<'_> {
+        Target {
+            session_id: self.session_id.as_deref(),
+            anchor_seq: self.anchor_seq,
+            subject_kind: self.subject_kind.as_deref(),
+            subject_id: self.subject_id.as_deref(),
         }
     }
 
@@ -127,13 +139,42 @@ async fn process(pool: &PgPool, channels: &Channels, row: Due) {
     }
 }
 
+/// What a notice opens: its session at the message that raised it, else the
+/// failure record of a dispatch that never registered.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Target<'a> {
+    pub session_id: Option<&'a str>,
+    pub anchor_seq: Option<i64>,
+    pub subject_kind: Option<&'a str>,
+    pub subject_id: Option<&'a str>,
+}
+
+impl Target<'_> {
+    /// The app path, `None` when the notice has no target.
+    #[must_use]
+    pub fn path(self) -> Option<String> {
+        if let Some(id) = self.session_id {
+            return Some(self.anchor_seq.map_or_else(
+                || format!("/sessions/{id}"),
+                |seq| format!("/sessions/{id}?seq={seq}"),
+            ));
+        }
+        match (self.subject_kind, self.subject_id) {
+            (Some(super::producers::DISPATCH_SUBJECT), Some(id)) => {
+                Some(format!("/dispatch-failures?record={id}"))
+            }
+            _ => None,
+        }
+    }
+}
+
 #[must_use]
-pub fn deep_link(config: &Config, session_id: Option<&str>) -> Option<String> {
+pub fn deep_link(config: &Config, target: Target<'_>) -> Option<String> {
     let base = config.external_url.trim_end_matches('/');
     if base.is_empty() {
         return None;
     }
-    Some(session_id.map_or_else(|| format!("{base}/"), |id| format!("{base}/sessions/{id}")))
+    Some(target.path().map_or_else(|| format!("{base}/"), |path| format!("{base}{path}")))
 }
 
 fn requires_login(action: &serde_json::Value) -> bool {
@@ -144,7 +185,7 @@ fn requires_login(action: &serde_json::Value) -> bool {
 /// answered without logging in, each bound to its own single-use token.
 async fn render(pool: &PgPool, config: &Config, caps: Capabilities, row: &Due) -> Rendered {
     let mut n = row.rendered();
-    let Some(link) = deep_link(config, row.session_id.as_deref()) else { return n };
+    let Some(link) = deep_link(config, row.target()) else { return n };
     n.link = Some(link.clone());
     let links_only = caps.buttons == 0 && caps.needs_token;
     let max = if links_only { usize::MAX } else { usize::from(caps.buttons) };

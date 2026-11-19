@@ -44,7 +44,8 @@ export interface Seed {
 	draftId: string | null;
 	/** A restored slot or an "Edit draft" prefill: memory recall must not overwrite it. */
 	loadedDraft: boolean;
-	/** Values never come back from disk: only the keys are re-proposed. */
+	/** Values never come back from disk: only the keys are re-proposed, a
+	 * draft's as stored on the server. */
 	envRows: EnvRow[];
 }
 
@@ -69,9 +70,11 @@ export function seedForm(prefill: SpawnPrefill | null, slotKey: string): Seed {
 		const saved: SpawnSlotPayload = readSpawnSlot(slotKey) ?? {};
 		const raw = Object.keys(saved).length > 0;
 		const { draft_id, env_keys, label_ids, form: prefillForm } = stripPrefill(prefill);
-		const keys = new Set<string>();
-		for (const r of saved.envRows ?? []) if (r?.key) keys.add(String(r.key));
-		for (const k of env_keys?.split(',') ?? []) if (k) keys.add(k);
+		const keys = new Map<string, boolean>();
+		for (const r of saved.envRows ?? []) {
+			if (r?.key) keys.set(String(r.key), (r as { stored?: unknown }).stored === true);
+		}
+		for (const k of env_keys?.split(',') ?? []) if (k) keys.set(k, true);
 		// Context picks follow the filters of this open, never an old draft's.
 		const {
 			envRows: _envRows,
@@ -99,7 +102,7 @@ export function seedForm(prefill: SpawnPrefill | null, slotKey: string): Seed {
 			form,
 			draftId: draft_id ?? saved.draftId ?? null,
 			loadedDraft: (raw || !!draft_id) && !(prefill && !draft_id),
-			envRows: [...keys].map((key) => ({ key, value: '' }))
+			envRows: [...keys].map(([key, stored]) => (stored ? { key, value: '', stored } : { key, value: '' }))
 		};
 	} catch {
 		return {

@@ -1398,8 +1398,11 @@ impl Driver {
     }
 
     async fn check_canaries(&self, roster: &[super::canary::Observed]) {
-        for (local_id, text) in super::canary::observe(roster) {
-            tracing::warn!(%local_id, %text, "hook canary");
+        for super::canary::Notice { local_id, text, post } in super::canary::observe(roster) {
+            tracing::warn!(%local_id, %text, post, "hook canary");
+            if !post {
+                continue;
+            }
             self.emit(AdapterEvent::Message {
                 local_id,
                 payload: super::canary::marker_payload(&text),

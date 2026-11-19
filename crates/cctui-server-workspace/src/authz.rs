@@ -1064,6 +1064,7 @@ mod tests {
             "/labels/{id}",
             "/passkeys/{id}",
             "/presets/{id}",
+            "/presets/{id}/attachments",
             "/presets/{id}/run",
             "/webhooks/{id}",
             "/webhooks/{id}/deliveries",

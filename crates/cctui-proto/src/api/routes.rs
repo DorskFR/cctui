@@ -1969,6 +1969,15 @@ pub const ROUTES: &[Route] = &[
         feature: Some(Feature::Scheduling),
     },
     Route {
+        id: "post_sessions_by_id_schedule_repeat",
+        method: Method::Post,
+        path: "/sessions/{id}/schedule-repeat",
+        summary: "Turn a draft session into a repeating schedule.",
+        request: Some("RepeatDraftRequest"),
+        response: Some("LaunchPreset"),
+        feature: Some(Feature::Automation),
+    },
+    Route {
         id: "post_sessions_by_id_cancel_launch",
         method: Method::Post,
         path: "/sessions/{id}/cancel-launch",
@@ -2668,6 +2677,15 @@ pub const ROUTES: &[Route] = &[
         summary: "Read, replace or delete one launch preset.",
         request: None,
         response: None,
+        feature: Some(Feature::Automation),
+    },
+    Route {
+        id: "put_presets_by_id_attachments",
+        method: Method::Put,
+        path: "/presets/{id}/attachments",
+        summary: "Replace the files every run of a launch preset gets.",
+        request: None,
+        response: Some("LaunchPreset"),
         feature: Some(Feature::Automation),
     },
     Route {
