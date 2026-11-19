@@ -214,6 +214,10 @@ impl Driver {
         // Revived: claude reports this short alive again after we marked it
         // dead — clear the sticky flag so live status flows again.
         self.dead_shorts.remove(&job.short);
+        let resumed = on_disk.as_ref().and_then(|s| s.resume_session_id.as_deref());
+        let ids: Vec<&str> =
+            [Some(local_id.as_str()), job.session_id(), resumed].into_iter().flatten().collect();
+        crate::childwatch::global().note_alive(&ids);
 
         // The native daemon can overwrite dispatch respawnFlags while claiming
         // a spare. Its autonomous respawn prefers state.json and drops

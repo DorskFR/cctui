@@ -818,7 +818,10 @@ const fn showed_activity(snap: &crate::childwatch::ChildSnapshot) -> bool {
         || snap.last_tool.is_some()
         || snap.status_line.is_some()
         || snap.blocked.is_some()
+        || snap.saw_events()
 }
+
+const QUIET_BUT_ALIVE: &str = "no observable activity, process alive";
 
 async fn follow_child_with(
     handle: &WatchHandle,
@@ -840,14 +843,16 @@ async fn follow_child_with(
         match snap.assess(now) {
             Assessment::Finished(outcome) => return FollowResult::Finished(outcome),
             Assessment::Running(line) => {
-                if now.duration_since(started) >= silent_grace && !showed_activity(&snap) {
+                let silent = now.duration_since(started) >= silent_grace && !showed_activity(&snap);
+                if silent && !snap.process_alive(now) {
                     return FollowResult::Error(json!({
                         "ok": false,
                         "error": format!(
                             "child agent {} produced no activity within {}s of being prompted — \
-                             no model call, no output and no error, so it almost certainly died \
-                             at startup (auth, budget or rate-limit rejection). Not waiting out \
-                             the {}s timeout; check the child session in cctui.",
+                             no model call, no output, no error and no live process listed, so \
+                             it almost certainly died at startup (auth, budget or rate-limit \
+                             rejection). Not waiting out the {}s timeout; check the child \
+                             session in cctui.",
                             snap.local_id.as_deref().unwrap_or(child_id),
                             silent_grace.as_secs(),
                             timeout.as_secs(),
@@ -863,6 +868,7 @@ async fn follow_child_with(
                 if proto >= 2 && !relay_gone && now.duration_since(last_progress) >= PROGRESS_EVERY
                 {
                     last_progress = now;
+                    let line = if silent { format!("{QUIET_BUT_ALIVE} · {line}") } else { line };
                     let frame = json!({
                         "progress": format!(
                             "[{}s] {} · child session {}",
@@ -2987,6 +2993,63 @@ mod tests {
         let text = frame["error"].as_str().unwrap();
         assert!(text.contains("no activity"), "{text}");
         assert!(text.contains("died at startup"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_live_hookless_child_with_no_events_is_followed_not_declared_dead() {
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let handle = watch.register_follow_up("child-1", "run the release");
+        let roster = watch.clone();
+        let poller = tokio::spawn(async move {
+            loop {
+                roster.note_alive(&["child-1"]);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        });
+        let mut out: Vec<u8> = Vec::new();
+        let frame = follow_result_to_frame(
+            follow_child_with(
+                &handle,
+                "child-1",
+                Duration::from_millis(500),
+                Duration::from_millis(10),
+                2,
+                &mut out,
+            )
+            .await,
+        );
+        poller.abort();
+        assert_eq!(frame["ok"], json!(false));
+        let text = frame["error"].as_str().unwrap();
+        assert!(!text.contains("died"), "a live process is never reported dead: {text}");
+        assert!(text.contains("NOT A CRASH"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn transcript_growth_behind_a_pending_follow_up_keeps_the_follow_alive() {
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let handle = watch.register_follow_up("child-1", "run the release");
+        watch.observe(&cctui_proto::adapter::AdapterEvent::Message {
+            local_id: "child-1".into(),
+            payload: json!({ "role": "assistant", "text": "baking the image" }),
+            turn_id: None,
+        });
+        let mut out: Vec<u8> = Vec::new();
+        let frame = follow_result_to_frame(
+            follow_child_with(
+                &handle,
+                "child-1",
+                Duration::from_millis(500),
+                Duration::from_millis(10),
+                2,
+                &mut out,
+            )
+            .await,
+        );
+        assert_eq!(frame["ok"], json!(false));
+        let text = frame["error"].as_str().unwrap();
+        assert!(!text.contains("died"), "{text}");
+        assert!(text.contains("NOT A CRASH"), "{text}");
     }
 
     #[tokio::test]
