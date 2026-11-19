@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LaunchPreset } from '@bindings/LaunchPreset';
+import { NO_ACCOUNT, POOL_PREFIX } from '#lib/components/organisms/spawn/options.ts';
 import {
 	emptyForm,
 	formFromPreset,
@@ -22,6 +23,9 @@ const preset = (over: Partial<LaunchPreset> = {}): LaunchPreset => ({
 	adapter_id: 'claude',
 	model: 'opus',
 	permission_mode: 'auto',
+	account_id: 'a1',
+	pool_id: null,
+	no_account: false,
 	dispatcher_id: null,
 	profile: null,
 	external_sources: true,
@@ -48,6 +52,7 @@ const dispatcherPreset = () =>
 		adapter_id: null,
 		model: null,
 		permission_mode: null,
+		account_id: null,
 		dispatcher_id: 'd1',
 		profile: 'review',
 		notify_url: 'https://hooks.example/done'
@@ -103,6 +108,9 @@ describe('requestFromForm', () => {
 			adapter_id: 'claude',
 			model: null,
 			permission_mode: null,
+			account_id: null,
+			pool_id: null,
+			no_account: false,
 			dispatcher_id: null,
 			profile: null,
 			external_sources: false,
@@ -155,6 +163,46 @@ describe('requestFromForm', () => {
 			...requestFromPreset(p),
 			prompt: 'Changed'
 		});
+	});
+});
+
+describe('the account pick', () => {
+	it('round-trips an account, a pool and no account, and defaults to Auto', () => {
+		const pick = (over: Partial<LaunchPreset>) => {
+			const p = preset({ account_id: null, pool_id: null, no_account: false, ...over });
+			const form = formFromPreset(p, 'UTC');
+			return { pick: form.account, body: requestFromForm(form, { schedule: true, base: p }) };
+		};
+		expect(pick({ account_id: 'a1' })).toMatchObject({
+			pick: 'a1',
+			body: { account_id: 'a1', pool_id: null, no_account: false }
+		});
+		expect(pick({ pool_id: 'pl1' })).toMatchObject({
+			pick: `${POOL_PREFIX}pl1`,
+			body: { account_id: null, pool_id: 'pl1', no_account: false }
+		});
+		expect(pick({ no_account: true })).toMatchObject({
+			pick: NO_ACCOUNT,
+			body: { account_id: null, pool_id: null, no_account: true }
+		});
+		expect(pick({})).toMatchObject({ pick: '', body: { account_id: null, pool_id: null, no_account: false } });
+	});
+
+	it('replaces the stored pick with the one chosen in the form', () => {
+		const p = preset({ account_id: 'a1' });
+		const form = formFromPreset(p, 'UTC');
+		form.account = `${POOL_PREFIX}pl1`;
+		expect(requestFromForm(form, { schedule: true, base: p })).toMatchObject({
+			account_id: null,
+			pool_id: 'pl1',
+			no_account: false
+		});
+	});
+
+	it('is never sent for a dispatcher target', () => {
+		const p = dispatcherPreset();
+		const body = requestFromForm(formFromPreset(p, 'UTC'), { schedule: true, base: p });
+		expect(body).toMatchObject({ account_id: null, pool_id: null, no_account: false });
 	});
 });
 

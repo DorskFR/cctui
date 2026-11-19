@@ -18,6 +18,15 @@ const MAX_PROMPT_BYTES: usize = 64 * 1024;
 const MAX_NOTIFY_URL_CHARS: usize = 2048;
 const MAX_TIMEZONE_CHARS: usize = 64;
 
+/// `Auto` binds the matching account with the most allocation left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountPick {
+    Auto,
+    Account(Uuid),
+    Pool(Uuid),
+    Unbound,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     Machine {
@@ -26,6 +35,7 @@ pub enum Target {
         adapter_id: String,
         model: Option<String>,
         permission_mode: Option<PermissionMode>,
+        account: AccountPick,
     },
     Container {
         dispatcher_id: Uuid,
@@ -64,6 +74,16 @@ pub fn clamp_max_batch(raw: Option<i32>) -> i32 {
     raw.unwrap_or(MAX_BATCH_DEFAULT).clamp(1, MAX_BATCH_MAX)
 }
 
+fn account_pick(req: &LaunchPresetRequest) -> Result<AccountPick, String> {
+    match (req.account_id, req.pool_id, req.no_account) {
+        (None, None, false) => Ok(AccountPick::Auto),
+        (Some(id), None, false) => Ok(AccountPick::Account(id)),
+        (None, Some(id), false) => Ok(AccountPick::Pool(id)),
+        (None, None, true) => Ok(AccountPick::Unbound),
+        _ => Err("pick at most one of account_id, pool_id and no_account".into()),
+    }
+}
+
 fn machine_target(req: &LaunchPresetRequest, machine_id: Uuid) -> Result<Target, String> {
     if req.dispatcher_id.is_some() || trimmed(req.profile.as_deref()).is_some() {
         return Err("a preset targets a machine or a dispatcher, not both".into());
@@ -80,6 +100,7 @@ fn machine_target(req: &LaunchPresetRequest, machine_id: Uuid) -> Result<Target,
         adapter_id,
         model: trimmed(req.model.as_deref()),
         permission_mode: req.permission_mode,
+        account: account_pick(req)?,
     })
 }
 
@@ -90,12 +111,14 @@ fn container_target(req: &LaunchPresetRequest) -> Result<Target, String> {
     let profile =
         trimmed(req.profile.as_deref()).ok_or("profile is required for a dispatcher target")?;
     let machine_only = [&req.working_dir, &req.adapter_id, &req.model];
-    if machine_only.iter().any(|f| trimmed(f.as_deref()).is_some()) || req.permission_mode.is_some()
+    let account = req.account_id.is_some() || req.pool_id.is_some() || req.no_account;
+    if machine_only.iter().any(|f| trimmed(f.as_deref()).is_some())
+        || req.permission_mode.is_some()
+        || account
     {
-        return Err(
-            "working_dir, adapter_id, model and permission_mode apply to machine targets only"
-                .into(),
-        );
+        return Err("working_dir, adapter_id, model, permission_mode and the account pick apply \
+                    to machine targets only"
+            .into());
     }
     Ok(Target::Container { dispatcher_id, profile })
 }
@@ -185,7 +208,7 @@ mod tests {
     use cctui_proto::api::presets::{LaunchPresetRequest, OnStale, Overlap};
     use uuid::Uuid;
 
-    use super::{Target, validate};
+    use super::{AccountPick, Target, validate};
 
     fn machine() -> LaunchPresetRequest {
         LaunchPresetRequest {
@@ -244,6 +267,33 @@ mod tests {
         assert!(validate(&no_profile).unwrap_err().contains("profile"));
         let model = LaunchPresetRequest { model: Some("opus".into()), ..container() };
         assert!(validate(&model).unwrap_err().contains("machine targets only"));
+    }
+
+    #[test]
+    fn a_machine_preset_picks_at_most_one_account_and_defaults_to_auto() {
+        let pick = |req: LaunchPresetRequest| match validate(&req).map(|v| v.target) {
+            Ok(Target::Machine { account, .. }) => Ok(account),
+            Ok(Target::Container { .. }) => panic!("machine target"),
+            Err(e) => Err(e),
+        };
+        let id = Uuid::from_u128(7);
+        assert_eq!(pick(machine()), Ok(AccountPick::Auto));
+        assert_eq!(
+            pick(LaunchPresetRequest { account_id: Some(id), ..machine() }),
+            Ok(AccountPick::Account(id))
+        );
+        assert_eq!(
+            pick(LaunchPresetRequest { pool_id: Some(id), ..machine() }),
+            Ok(AccountPick::Pool(id))
+        );
+        assert_eq!(
+            pick(LaunchPresetRequest { no_account: true, ..machine() }),
+            Ok(AccountPick::Unbound)
+        );
+        let two = LaunchPresetRequest { account_id: Some(id), no_account: true, ..machine() };
+        assert!(pick(two).unwrap_err().contains("at most one"));
+        let on_container = LaunchPresetRequest { pool_id: Some(id), ..container() };
+        assert!(validate(&on_container).unwrap_err().contains("machine targets only"));
     }
 
     #[test]

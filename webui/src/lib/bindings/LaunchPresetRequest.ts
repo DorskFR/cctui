@@ -7,11 +7,13 @@ import type { PermissionMode } from "./PermissionMode";
  * Body of `POST /presets` and `PUT /presets/{id}`.
  *
  * Target is `machine_id` + `working_dir` + `adapter_id` (with optional
- * `model` and `permission_mode`), or `dispatcher_id` + `profile`.
+ * `model`, `permission_mode` and account pick), or `dispatcher_id` + `profile`.
+ * The account pick is at most one of `account_id` / `pool_id` / `no_account`;
+ * none of them lets the server elect the account with the most room.
  * `external_sources` lets n8n and webhook events reach the preset's lanes;
  * a machine target then needs `permission_mode` `ask` or `auto`.
  */
-export type LaunchPresetRequest = { name: string, prompt: string, machine_id: string | null, working_dir: string | null, adapter_id: string | null, model: string | null, permission_mode: PermissionMode | null, dispatcher_id: string | null, profile: string | null, external_sources: boolean, fresh_secs: number | null, on_stale: OnStale | null, max_batch: number | null, cron: string | null, 
+export type LaunchPresetRequest = { name: string, prompt: string, machine_id: string | null, working_dir: string | null, adapter_id: string | null, model: string | null, permission_mode: PermissionMode | null, account_id: string | null, pool_id: string | null, no_account: boolean, dispatcher_id: string | null, profile: string | null, external_sources: boolean, fresh_secs: number | null, on_stale: OnStale | null, max_batch: number | null, cron: string | null, 
 /**
  * IANA name the cron is read in; UTC when absent.
  */

@@ -75,6 +75,9 @@ pub struct LaunchPreset {
     pub adapter_id: Option<String>,
     pub model: Option<String>,
     pub permission_mode: Option<PermissionMode>,
+    pub account_id: Option<Uuid>,
+    pub pool_id: Option<Uuid>,
+    pub no_account: bool,
     pub dispatcher_id: Option<Uuid>,
     pub profile: Option<String>,
     pub external_sources: bool,
@@ -96,7 +99,9 @@ pub struct LaunchPreset {
 /// Body of `POST /presets` and `PUT /presets/{id}`.
 ///
 /// Target is `machine_id` + `working_dir` + `adapter_id` (with optional
-/// `model` and `permission_mode`), or `dispatcher_id` + `profile`.
+/// `model`, `permission_mode` and account pick), or `dispatcher_id` + `profile`.
+/// The account pick is at most one of `account_id` / `pool_id` / `no_account`;
+/// none of them lets the server elect the account with the most room.
 /// `external_sources` lets n8n and webhook events reach the preset's lanes;
 /// a machine target then needs `permission_mode` `ask` or `auto`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -115,6 +120,12 @@ pub struct LaunchPresetRequest {
     pub model: Option<String>,
     #[serde(default)]
     pub permission_mode: Option<PermissionMode>,
+    #[serde(default)]
+    pub account_id: Option<Uuid>,
+    #[serde(default)]
+    pub pool_id: Option<Uuid>,
+    #[serde(default)]
+    pub no_account: bool,
     #[serde(default)]
     pub dispatcher_id: Option<Uuid>,
     #[serde(default)]

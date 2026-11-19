@@ -277,3 +277,51 @@ async fn changing_a_preset_cron_recomputes_its_next_fire() {
     let off = update(&pool, None, preset.id, &validate(&off).unwrap()).await.unwrap().unwrap();
     assert_eq!(off.next_fire_at, None, "dropping the cron drops the next fire");
 }
+
+async fn seed_account(pool: &PgPool, user: Uuid, name: &str) -> Uuid {
+    sqlx::query_scalar("INSERT INTO accounts (user_id, name) VALUES ($1, $2) RETURNING id")
+        .bind(user)
+        .bind(name)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_preset_account_pick_is_the_owners_and_reaches_the_spawn() {
+    let Some(pool) = pool("a_preset_account_pick_is_the_owners").await else { return };
+    let (a, b) = (seed_owner(&pool, "aa").await, seed_owner(&pool, "ab").await);
+    let mine = seed_account(&pool, a.user, "personal").await;
+    let theirs = seed_account(&pool, b.user, "other").await;
+    let bots: Uuid = sqlx::query_scalar(
+        "INSERT INTO account_pools (user_id, name) VALUES ($1, 'bots') RETURNING id",
+    )
+    .bind(a.user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let named = LaunchPresetRequest { account_id: Some(mine), ..machine_request(&a, "named") };
+    let named = create(&pool, a.user, &validate(&named).unwrap()).await.unwrap();
+    assert_eq!((named.account_id, named.pool_id, named.no_account), (Some(mine), None, false));
+    let loaded = crate::inbox::preset::load(&pool, named.id).await.unwrap().unwrap();
+    assert_eq!(loaded.account_name.as_deref(), Some("personal"));
+
+    let pooled = LaunchPresetRequest { pool_id: Some(bots), ..machine_request(&a, "named") };
+    let pooled =
+        update(&pool, Some(a.user), named.id, &validate(&pooled).unwrap()).await.unwrap().unwrap();
+    assert_eq!((pooled.account_id, pooled.pool_id), (None, Some(bots)));
+    let loaded = crate::inbox::preset::load(&pool, named.id).await.unwrap().unwrap();
+    assert_eq!((loaded.account_name, loaded.pool_name.as_deref()), (None, Some("bots")));
+
+    let foreign = LaunchPresetRequest { account_id: Some(theirs), ..machine_request(&a, "x") };
+    let foreign = create(&pool, a.user, &validate(&foreign).unwrap()).await;
+    assert!(matches!(&foreign, Err(WriteError::Invalid(e)) if e.contains("account_id")));
+    let foreign_pool = LaunchPresetRequest { pool_id: Some(bots), ..machine_request(&b, "y") };
+    let foreign_pool = create(&pool, b.user, &validate(&foreign_pool).unwrap()).await;
+    assert!(matches!(&foreign_pool, Err(WriteError::Invalid(e)) if e.contains("pool_id")));
+
+    sqlx::query("DELETE FROM account_pools WHERE id = $1").bind(bots).execute(&pool).await.unwrap();
+    let auto = get(&pool, Some(a.user), named.id).await.unwrap().unwrap();
+    assert_eq!((auto.account_id, auto.pool_id, auto.no_account), (None, None, false));
+}

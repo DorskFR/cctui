@@ -36,6 +36,9 @@ fn preset(machine: bool) -> Preset {
         adapter_id: machine.then(|| "claude-code".to_owned()),
         model: None,
         permission_mode: machine.then(|| "ask".to_owned()),
+        account_name: None,
+        pool_name: None,
+        no_account: false,
         profile: (!machine).then(|| "tonbo".to_owned()),
         fresh_secs: 900,
         on_stale: "followup".into(),
@@ -149,6 +152,24 @@ fn a_machine_spawn_carries_the_preset_target_and_a_followup_names_its_parent() {
     assert_eq!(followup.relation.as_deref(), Some(crate::followup::RELATION));
     assert_eq!(followup.parent_session_id.as_deref(), Some("s-1"));
     assert!(spawn_request(&preset(false), &Plan::Spawn, "go").is_none());
+}
+
+#[test]
+fn a_machine_spawn_carries_the_account_pick_and_elects_one_when_none_is_set() {
+    let auto = spawn_request(&preset(true), &Plan::Spawn, "go").unwrap();
+    assert!(auto.auto_account && !auto.no_account);
+    assert!(auto.account.is_none() && auto.pool.is_none());
+    let named = Preset { account_name: Some("personal".into()), ..preset(true) };
+    let named = spawn_request(&named, &Plan::Spawn, "go").unwrap();
+    assert_eq!(named.account.as_deref(), Some("personal"));
+    assert!(!named.auto_account);
+    let pooled = Preset { pool_name: Some("bots".into()), ..preset(true) };
+    let pooled = spawn_request(&pooled, &Plan::Spawn, "go").unwrap();
+    assert_eq!(pooled.pool.as_deref(), Some("bots"));
+    assert!(!pooled.auto_account);
+    let unbound = Preset { no_account: true, ..preset(true) };
+    let unbound = spawn_request(&unbound, &Plan::Spawn, "go").unwrap();
+    assert!(unbound.no_account);
 }
 
 async fn pool(name: &str) -> Option<PgPool> {
@@ -475,6 +496,44 @@ async fn archived_session_lane(pool: &PgPool, name: &str) -> (Owner, String, Uui
     grant_dispatch(pool, user).await;
     let lane_id = super::store::session_lane(pool, user, &sid).await.unwrap();
     (Owner { user, machine, dispatcher: Uuid::nil() }, sid, lane_id)
+}
+
+#[tokio::test]
+async fn a_session_follow_up_keeps_the_account_its_parent_ran_on() {
+    let Some(pool) = pool("a_session_follow_up_keeps_the_account").await else { return };
+    let (owner, sid, _) = archived_session_lane(&pool, "follow-account").await;
+    let unbound = super::preset::from_session(&pool, owner.user, &sid).await.unwrap().unwrap();
+    assert_eq!((unbound.account_name, unbound.pool_name, unbound.no_account), (None, None, false));
+
+    let account: Uuid = sqlx::query_scalar(
+        "INSERT INTO accounts (user_id, name) VALUES ($1, 'personal') RETURNING id",
+    )
+    .bind(owner.user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let credential: Uuid = sqlx::query_scalar(
+        "INSERT INTO account_providers (user_id, provider, account_id) \
+         VALUES ($1, 'anthropic', $2) RETURNING id",
+    )
+    .bind(owner.user)
+    .bind(account)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+    )
+    .bind(format!("t-{sid}"))
+    .bind(&sid)
+    .bind(credential)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let bound = super::preset::from_session(&pool, owner.user, &sid).await.unwrap().unwrap();
+    assert_eq!(bound.account_name.as_deref(), Some("personal"));
+    let req = spawn_request(&bound, &Plan::Followup { parent: sid.clone() }, "go").unwrap();
+    assert_eq!((req.account.as_deref(), req.auto_account), (Some("personal"), false));
 }
 
 async fn timer_event(pool: &PgPool, lane_id: Uuid, user: Uuid, parent: Option<&str>) -> Uuid {

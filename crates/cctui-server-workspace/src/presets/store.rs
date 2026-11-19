@@ -5,14 +5,14 @@ use uuid::Uuid;
 use cctui_proto::adapter::PermissionMode;
 use cctui_proto::api::presets::{LaunchPreset, OnStale, Overlap};
 
-use super::{Target, ValidPreset};
+use super::{AccountPick, Target, ValidPreset};
 
 macro_rules! columns {
     () => {
         "id, user_id, name, prompt, machine_id, working_dir, adapter_id, model, \
          permission_mode, dispatcher_id, profile, external_sources, fresh_secs, on_stale, \
          max_batch, cron, next_fire_at, then_preset_id, created_at, updated_at, notify_url, \
-         timezone, enabled, overlap, last_fire_at"
+         timezone, enabled, overlap, last_fire_at, account_id, pool_id, no_account"
     };
 }
 
@@ -60,6 +60,9 @@ struct Row {
     enabled: bool,
     overlap: String,
     last_fire_at: Option<DateTime<Utc>>,
+    account_id: Option<Uuid>,
+    pool_id: Option<Uuid>,
+    no_account: bool,
 }
 
 impl From<Row> for LaunchPreset {
@@ -76,6 +79,9 @@ impl From<Row> for LaunchPreset {
             adapter_id: r.adapter_id,
             model: r.model,
             permission_mode,
+            account_id: r.account_id,
+            pool_id: r.pool_id,
+            no_account: r.no_account,
             dispatcher_id: r.dispatcher_id,
             profile: r.profile,
             external_sources: r.external_sources,
@@ -112,22 +118,39 @@ struct TargetColumns<'a> {
     adapter_id: Option<&'a str>,
     model: Option<&'a str>,
     permission_mode: Option<&'static str>,
+    account_id: Option<Uuid>,
+    pool_id: Option<Uuid>,
+    no_account: bool,
     dispatcher_id: Option<Uuid>,
     profile: Option<&'a str>,
 }
 
 fn columns(target: &Target) -> TargetColumns<'_> {
     match target {
-        Target::Machine { machine_id, working_dir, adapter_id, model, permission_mode } => {
-            TargetColumns {
-                machine_id: Some(*machine_id),
-                working_dir: Some(working_dir.as_str()),
-                adapter_id: Some(adapter_id.as_str()),
-                model: model.as_deref(),
-                permission_mode: permission_mode.map(mode_name),
-                ..TargetColumns::default()
-            }
-        }
+        Target::Machine {
+            machine_id,
+            working_dir,
+            adapter_id,
+            model,
+            permission_mode,
+            account,
+        } => TargetColumns {
+            machine_id: Some(*machine_id),
+            working_dir: Some(working_dir.as_str()),
+            adapter_id: Some(adapter_id.as_str()),
+            model: model.as_deref(),
+            permission_mode: permission_mode.map(mode_name),
+            account_id: match account {
+                AccountPick::Account(id) => Some(*id),
+                _ => None,
+            },
+            pool_id: match account {
+                AccountPick::Pool(id) => Some(*id),
+                _ => None,
+            },
+            no_account: matches!(account, AccountPick::Unbound),
+            ..TargetColumns::default()
+        },
         Target::Container { dispatcher_id, profile } => TargetColumns {
             dispatcher_id: Some(*dispatcher_id),
             profile: Some(profile.as_str()),
@@ -188,6 +211,7 @@ async fn check_refs(
     if !target_owned {
         return Err(WriteError::Invalid("no machine or dispatcher of yours with that id".into()));
     }
+    check_account(pool, owner, &preset.target).await?;
     let Some(then) = preset.then_preset_id else { return Ok(()) };
     if Some(then) == preset_id {
         return Err(WriteError::Invalid("a preset cannot chain to itself".into()));
@@ -204,6 +228,28 @@ async fn check_refs(
     } else {
         Err(WriteError::Invalid("then_preset_id names no preset of yours".into()))
     }
+}
+
+async fn check_account(pool: &PgPool, owner: Uuid, target: &Target) -> Result<(), WriteError> {
+    let Target::Machine { account, .. } = target else { return Ok(()) };
+    let (sql, id, what) = match *account {
+        AccountPick::Account(id) => (
+            "SELECT EXISTS (SELECT 1 FROM accounts a WHERE a.id = $1 \
+               AND (a.user_id = $2 OR EXISTS ( \
+                   SELECT 1 FROM resource_shares s \
+                    WHERE s.resource_type = 'account' AND s.resource_id = a.id \
+                      AND s.grantee_id = $2 AND s.revoked_at IS NULL)))",
+            id,
+            "account_id names no account you can use",
+        ),
+        AccountPick::Pool(id) => (
+            "SELECT EXISTS (SELECT 1 FROM account_pools WHERE id = $1 AND user_id = $2)",
+            id,
+            "pool_id names no account pool of yours",
+        ),
+        AccountPick::Auto | AccountPick::Unbound => return Ok(()),
+    };
+    if exists(pool, sql, id, owner).await? { Ok(()) } else { Err(WriteError::Invalid(what.into())) }
 }
 
 /// `owner` is [`crate::auth::AuthContext::owner_filter`].
@@ -247,9 +293,9 @@ pub async fn create(
         "INSERT INTO presets (user_id, name, prompt, machine_id, working_dir, adapter_id, model, \
            permission_mode, dispatcher_id, profile, external_sources, fresh_secs, on_stale, \
            max_batch, cron, then_preset_id, notify_url, next_fire_at, timezone, enabled, \
-           overlap) \
+           overlap, account_id, pool_id, no_account) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, \
-           $18, $19, $20, $21) \
+           $18, $19, $20, $21, $22, $23, $24) \
          RETURNING ",
         columns!()
     ))
@@ -274,6 +320,9 @@ pub async fn create(
     .bind(&preset.timezone)
     .bind(preset.enabled)
     .bind(preset.overlap.as_str())
+    .bind(t.account_id)
+    .bind(t.pool_id)
+    .bind(t.no_account)
     .fetch_one(pool)
     .await?;
     Ok(row.into())
@@ -308,7 +357,8 @@ pub async fn update(
                                     AND $21 AND next_fire_at IS NOT NULL \
                                THEN next_fire_at ELSE $19 END, \
            cron = $16, then_preset_id = $17, notify_url = $18, timezone = $20, enabled = $21, \
-           overlap = $22, updated_at = now() \
+           overlap = $22, account_id = $23, pool_id = $24, no_account = $25, \
+           updated_at = now() \
          WHERE id = $1 AND user_id = $2 \
          RETURNING ",
         columns!()
@@ -335,6 +385,9 @@ pub async fn update(
     .bind(&preset.timezone)
     .bind(preset.enabled)
     .bind(preset.overlap.as_str())
+    .bind(t.account_id)
+    .bind(t.pool_id)
+    .bind(t.no_account)
     .fetch_optional(pool)
     .await?;
     Ok(row.map(Into::into))
