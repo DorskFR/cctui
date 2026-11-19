@@ -161,7 +161,26 @@ pub async fn dismiss(
             "a blocking approval cannot be dismissed: answer it instead",
         ));
     }
-    apply(&state, id, Edge::Dismiss).await
+    let out = apply(&state, id, Edge::Dismiss).await?;
+    if out.applied {
+        dismiss_failed_dispatch(&state, &ctx, &out.notification).await;
+    }
+    Ok(out)
+}
+
+/// A dismissed dispatch notice dismisses its failure record too.
+async fn dismiss_failed_dispatch(state: &AppState, ctx: &AuthContext, n: &NotificationRecord) {
+    let Some(session_id) = crate::notify::producers::failed_dispatch(n) else { return };
+    let dismissed = crate::store::dispatch_records::dismiss(
+        &state.pool,
+        ctx.user_id,
+        ctx.owner_filter(),
+        session_id,
+    )
+    .await;
+    if let Err(e) = dismissed {
+        tracing::warn!(%session_id, "failed dispatch not dismissed with its notice: {e}");
+    }
 }
 
 fn throttle(caller: &str) -> ApiResult<()> {

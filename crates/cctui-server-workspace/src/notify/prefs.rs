@@ -31,6 +31,7 @@ pub const ROUTE_KINDS: &[&str] = &[
     kind::SESSION_STUCK,
     kind::SYSTEM_ALERT,
     kind::INBOX_STUCK,
+    kind::DISPATCH_FAILED,
 ];
 
 pub const MAX_AFTER_MINUTES: u32 = 24 * 60;

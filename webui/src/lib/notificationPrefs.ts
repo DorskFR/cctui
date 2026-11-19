@@ -14,6 +14,7 @@ export const NOTIFICATION_KINDS = [
   "session_stuck",
   "system_alert",
   "inbox_stuck",
+  "dispatch_failed",
 ] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
 
@@ -134,6 +135,7 @@ const PUSH_DEFAULTS: Record<NotificationKind, NotificationStage> = {
   session_stuck: { mode: "now" },
   system_alert: { mode: "now" },
   inbox_stuck: { mode: "now" },
+  dispatch_failed: { mode: "now" },
 };
 
 /** Must match the server defaults: shown until `GET /notifications/settings` answers. */

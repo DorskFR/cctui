@@ -92,6 +92,8 @@ pub struct NewNotification {
     pub tags: Option<String>,
     pub actions: serde_json::Value,
     pub blocking: bool,
+    /// The `stream_events` id of the message that raised it.
+    pub anchor_seq: Option<i64>,
 }
 
 impl NewNotification {
@@ -111,6 +113,7 @@ impl NewNotification {
             tags: None,
             actions: serde_json::Value::Array(Vec::new()),
             blocking: false,
+            anchor_seq: None,
         }
     }
 }
@@ -332,14 +335,16 @@ pub async fn seed_env_endpoint(
 
 const UPSERT_SQL: &str = "\
     INSERT INTO notifications (user_id, kind, severity, session_id, machine_id, subject_kind, \
-        subject_id, collapse_key, title, body, tags, actions, expires_at, state, read_at) \
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now() + interval '7 days', \
-            $13, CASE WHEN $13 = 'read' THEN now() END) \
+        subject_id, collapse_key, title, body, tags, actions, expires_at, state, read_at, \
+        anchor_seq) \
+    VALUES ($1, $2, $3, (SELECT id FROM sessions WHERE id = $4), $5, $6, $7, $8, $9, $10, $11, \
+            $12, now() + interval '7 days', $13, CASE WHEN $13 = 'read' THEN now() END, $14) \
     ON CONFLICT (user_id, collapse_key) \
         WHERE collapse_key IS NOT NULL AND state IN ('pending', 'delivered', 'read') \
     DO UPDATE SET repeat_count = notifications.repeat_count + 1, \
         title = EXCLUDED.title, body = EXCLUDED.body, severity = EXCLUDED.severity, \
-        tags = EXCLUDED.tags, actions = EXCLUDED.actions, updated_at = now() \
+        tags = EXCLUDED.tags, actions = EXCLUDED.actions, updated_at = now(), \
+        anchor_seq = COALESCE(EXCLUDED.anchor_seq, notifications.anchor_seq) \
     RETURNING *";
 
 /// A notice the user keeps out of the app is written already read.
@@ -363,6 +368,7 @@ async fn upsert(
         .bind(n.tags.as_deref())
         .bind(&n.actions)
         .bind(state.as_str())
+        .bind(n.anchor_seq)
         .fetch_one(conn)
         .await
 }

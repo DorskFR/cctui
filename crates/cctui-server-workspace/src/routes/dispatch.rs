@@ -20,25 +20,27 @@ use cctui_server_core::dispatch::{
 
 use crate::notify::{NewNotification, kind};
 
-/// Received and forwarded are `dispatch_info`, off by default; a failure is a system alert.
+/// Received and forwarded are `dispatch_info`, off by default.
 const fn notice_kind(event: DispatchEvent) -> &'static str {
     match event {
         DispatchEvent::Received | DispatchEvent::Forwarded => kind::DISPATCH_INFO,
-        DispatchEvent::Failed => kind::SYSTEM_ALERT,
+        DispatchEvent::Failed => kind::DISPATCH_FAILED,
     }
 }
 
+/// A registered session opens itself; otherwise the subject names the failure record.
 fn dispatch_notice(owner: uuid::Uuid, notice: DispatchNotification) -> NewNotification {
     let (severity, tags, collapse) = match notice.event {
-        DispatchEvent::Received => ("info", "inbox_tray", true),
-        DispatchEvent::Forwarded => ("info", "white_check_mark", true),
-        DispatchEvent::Failed => ("critical", "rotating_light", false),
+        DispatchEvent::Received => ("info", "inbox_tray", "dispatch"),
+        DispatchEvent::Forwarded => ("info", "white_check_mark", "dispatch"),
+        DispatchEvent::Failed => ("critical", "rotating_light", kind::DISPATCH_FAILED),
     };
     NewNotification {
         severity,
         tags: Some(tags.to_owned()),
-        collapse_key: collapse.then(|| format!("dispatch:{}", notice.session_id)),
-        subject_kind: Some("dispatch".to_owned()),
+        collapse_key: Some(format!("{collapse}:{}", notice.session_id)),
+        session_id: notice.registered.then(|| notice.session_id.clone()),
+        subject_kind: Some(crate::notify::producers::DISPATCH_SUBJECT.to_owned()),
         subject_id: Some(notice.session_id),
         body: Some(notice.message),
         ..NewNotification::new(owner, notice_kind(notice.event), notice.title)
@@ -56,7 +58,8 @@ impl DispatchContext for AppState {
         if !crate::notify::is_recorded(notice_kind(notice.event)) {
             return;
         }
-        crate::notify::emit_detached(&self.config, None, move |owner| {
+        let owner = notice.owner;
+        crate::notify::emit_detached_on(self.pool.clone(), &self.config, owner, move |owner| {
             dispatch_notice(owner, notice)
         });
     }
@@ -204,6 +207,7 @@ pub async fn dismiss_failed_dispatch(
     )
     .await?;
     if found {
+        resolve_notices(&state, ctx.user_id, &[session_id]).await;
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(crate::error::AppError::new(StatusCode::NOT_FOUND, "no such dispatch record"))
@@ -216,10 +220,23 @@ pub async fn dismiss_all_failed_dispatches(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<cctui_proto::api::DismissedDispatches>, crate::error::AppError> {
-    let dismissed =
-        crate::store::dispatch_records::dismiss_all(&state.pool, ctx.user_id, ctx.owner_filter())
-            .await?;
+    use crate::store::dispatch_records::{Listing, dismiss_many, list};
+    let listing =
+        Listing { owner: ctx.owner_filter(), viewer: Some(ctx.user_id), include_dismissed: false };
+    let ids: Vec<String> =
+        list(&state.pool, listing).await?.into_iter().map(|f| f.session_id).collect();
+    let dismissed = dismiss_many(&state.pool, ctx.user_id, &ids).await?;
+    resolve_notices(&state, ctx.user_id, &ids).await;
     Ok(Json(cctui_proto::api::DismissedDispatches { dismissed }))
+}
+
+/// A dismissed or re-run failure leaves no open notice behind.
+async fn resolve_notices(state: &AppState, user_id: uuid::Uuid, session_ids: &[String]) {
+    let closed =
+        crate::notify::producers::dispatch_dismissed(&state.pool, user_id, session_ids).await;
+    if let Err(e) = closed {
+        tracing::warn!(?session_ids, "failed dispatch notices not resolved: {e}");
+    }
 }
 
 const fn conflict(error: String) -> (StatusCode, Json<ApiError>) {
@@ -286,10 +303,14 @@ pub async fn redispatch(
     if !records::claim_redispatch(&state.pool, &session_id).await.map_err(db_err)? {
         return Err(already());
     }
+    let caller = ctx.user_id;
     let out = dispatch(State(state.clone()), Extension(ctx), Json(req)).await;
     let new_id = out.as_ref().ok().map(|(_, r)| r.session_id.as_str());
     if let Err(e) = records::finish_redispatch(&state.pool, &session_id, new_id).await {
         tracing::warn!(session = %session_id, error = %e, "re-dispatch not recorded");
+    }
+    if out.is_ok() {
+        resolve_notices(&state, caller, std::slice::from_ref(&session_id)).await;
     }
     out
 }
@@ -424,6 +445,8 @@ mod tests {
             session_id: "s1".into(),
             title: "t".into(),
             message: "m".into(),
+            owner: None,
+            registered: false,
         };
         let received = super::dispatch_notice(owner, notice(DispatchEvent::Received));
         assert_eq!((received.kind, received.user_id), ("dispatch_info", owner));
@@ -433,10 +456,21 @@ mod tests {
         assert!(!crate::notify::is_recorded(received.kind));
 
         let failed = super::dispatch_notice(owner, notice(DispatchEvent::Failed));
-        assert_eq!((failed.kind, failed.severity), ("system_alert", "critical"));
-        assert_eq!(failed.collapse_key, None);
+        assert_eq!((failed.kind, failed.severity), ("dispatch_failed", "critical"));
+        assert_eq!(failed.collapse_key.as_deref(), Some("dispatch_failed:s1"), "one per dispatch");
         assert_eq!(failed.tags.as_deref(), Some("rotating_light"));
+        assert_eq!(failed.session_id, None, "an unregistered worker opens its failure record");
+        assert_eq!(
+            (failed.subject_kind.as_deref(), failed.subject_id.as_deref()),
+            (Some("dispatch"), Some("s1"))
+        );
         assert!(crate::notify::is_recorded(failed.kind));
+
+        let crashed = super::dispatch_notice(
+            owner,
+            DispatchNotification { registered: true, ..notice(DispatchEvent::Failed) },
+        );
+        assert_eq!(crashed.session_id.as_deref(), Some("s1"), "a registered session opens itself");
     }
 
     /// A dispatch naming an existing session id must not re-scope that

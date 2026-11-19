@@ -14,7 +14,7 @@ use cctui_proto::api::WorkerExit;
 use cctui_proto::models::SessionEndReason;
 use uuid::Uuid;
 
-use crate::dispatch::DispatchContext;
+use crate::dispatch::{DispatchContext, DispatchEvent, DispatchNotification};
 use crate::dispatchers::{Dispatcher, HandleStatus};
 use crate::events::{self, Actor, Event, kind};
 use crate::store::dispatch_records;
@@ -266,7 +266,60 @@ async fn probe(state: &impl DispatchLivenessContext, row: LiveHandle) {
     if !end_session(state.dispatch_pool(), &row.session_id, end_reason, &detail).await {
         return;
     }
+    if is_failure(end_reason) {
+        let label = dispatch_label(state.dispatch_pool(), &row.session_id).await;
+        let notice = Failure { session_id: &row.session_id, owner: row.user_id, label: &label };
+        state.notify(notice.notification(end_reason, &detail, true));
+    }
     record_end(state, row, end_reason, &detail);
+}
+
+const fn is_failure(end_reason: SessionEndReason) -> bool {
+    matches!(
+        end_reason,
+        SessionEndReason::OomKilled | SessionEndReason::Crashed | SessionEndReason::SpawnFailed
+    )
+}
+
+/// The dispatch's name, else its session's, else the short session id.
+async fn dispatch_label(pool: &sqlx::PgPool, session_id: &str) -> String {
+    let name: Option<String> = sqlx::query_scalar(
+        "SELECT COALESCE((SELECT name FROM dispatch_records WHERE session_id = $1), \
+                         (SELECT session_name FROM sessions WHERE id = $1))",
+    )
+    .bind(session_id)
+    .fetch_one(pool)
+    .await
+    .unwrap_or_else(|err| {
+        tracing::debug!(%err, %session_id, "dispatch label lookup failed");
+        None
+    });
+    name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| session_id.chars().take(8).collect())
+}
+
+struct Failure<'a> {
+    session_id: &'a str,
+    owner: Option<Uuid>,
+    label: &'a str,
+}
+
+impl Failure<'_> {
+    fn notification(
+        &self,
+        end_reason: SessionEndReason,
+        detail: &str,
+        registered: bool,
+    ) -> DispatchNotification {
+        let verb = if end_reason == SessionEndReason::SpawnFailed { "failed" } else { "crashed" };
+        DispatchNotification {
+            event: DispatchEvent::Failed,
+            session_id: self.session_id.to_owned(),
+            title: format!("{} {verb}", self.label),
+            message: detail.to_owned(),
+            owner: self.owner,
+            registered,
+        }
+    }
 }
 
 /// A vanished workload never answers again: its handle leaves the sweep, and
@@ -346,7 +399,13 @@ async fn probe_unregistered(
     let queued = match status {
         HandleStatus::Failed(reason) => {
             let detail = failure_text(reason, exit.as_ref());
-            mark_failed(state, &session_id, &dispatcher_name, &handle, &detail).await;
+            let dead = Unregistered {
+                session_id: &session_id,
+                user_id,
+                dispatcher_name: &dispatcher_name,
+                handle: &handle,
+            };
+            mark_failed(state, &dead, &detail).await;
             return;
         }
         HandleStatus::Queued => true,
@@ -359,13 +418,16 @@ async fn probe_unregistered(
     }
 }
 
-async fn mark_failed(
-    state: &impl DispatchLivenessContext,
-    session_id: &str,
-    dispatcher_name: &str,
-    handle: &str,
-    detail: &str,
-) {
+struct Unregistered<'a> {
+    session_id: &'a str,
+    user_id: Option<Uuid>,
+    dispatcher_name: &'a str,
+    handle: &'a str,
+}
+
+/// One notice per record: only the transition out of `forwarded` raises it.
+async fn mark_failed(state: &impl DispatchLivenessContext, dead: &Unregistered<'_>, detail: &str) {
+    let Unregistered { session_id, user_id, dispatcher_name, handle } = *dead;
     let end_reason = end_reason_for(detail);
     let marked = dispatch_records::mark_failed(
         state.dispatch_pool(),
@@ -375,13 +437,18 @@ async fn mark_failed(
     )
     .await;
     match marked {
-        Ok(true) => tracing::warn!(
-            %session_id,
-            dispatcher = %dispatcher_name,
-            %handle,
-            end_reason = end_reason.as_str(),
-            "dispatched worker died before registering: {detail}"
-        ),
+        Ok(true) => {
+            tracing::warn!(
+                %session_id,
+                dispatcher = %dispatcher_name,
+                %handle,
+                end_reason = end_reason.as_str(),
+                "dispatched worker died before registering: {detail}"
+            );
+            let label = dispatch_label(state.dispatch_pool(), session_id).await;
+            let notice = Failure { session_id, owner: user_id, label: &label };
+            state.notify(notice.notification(end_reason, detail, false));
+        }
         Ok(false) => {}
         Err(err) => tracing::warn!(%err, %session_id, "dispatch record update failed"),
     }
@@ -450,6 +517,23 @@ mod tests {
         ] {
             assert_eq!(end_reason_for(reason), want, "{reason:?}");
         }
+    }
+
+    #[test]
+    fn a_failure_notice_names_the_dispatch_and_its_target() {
+        let owner = Uuid::new_v4();
+        let failure = Failure { session_id: "s1", owner: Some(owner), label: "triage" };
+        let spawn = failure.notification(SessionEndReason::SpawnFailed, "ImagePullBackOff", false);
+        assert_eq!(spawn.title, "triage failed");
+        assert_eq!(spawn.message, "ImagePullBackOff");
+        assert_eq!((spawn.owner, spawn.registered), (Some(owner), false));
+        assert_eq!(spawn.event, DispatchEvent::Failed);
+        let crash = failure.notification(SessionEndReason::OomKilled, "OOMKilled", true);
+        assert_eq!(crash.title, "triage crashed");
+        assert!(crash.registered);
+        assert!(is_failure(SessionEndReason::Crashed));
+        assert!(!is_failure(SessionEndReason::Completed));
+        assert!(!is_failure(SessionEndReason::DaemonLost));
     }
 
     #[test]

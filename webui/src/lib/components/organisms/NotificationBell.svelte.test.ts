@@ -9,7 +9,8 @@ const { toasts } = vi.hoisted(() => ({
 	toasts: { ok: vi.fn(), info: vi.fn(), error: vi.fn() }
 }));
 vi.mock('#lib/toast.svelte.ts', () => ({ toasts }));
-vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
+const { goto } = vi.hoisted(() => ({ goto: vi.fn(async () => {}) }));
+vi.mock('$app/navigation', () => ({ goto }));
 
 import NotificationBell from './NotificationBell.svelte';
 
@@ -55,7 +56,11 @@ afterEach(async () => {
 	vi.clearAllMocks();
 });
 
-function setup(api: Partial<NotificationApi>) {
+function setup(
+	api: Partial<NotificationApi>,
+	extra: Notice[] = [],
+	redispatch: (record: string) => Promise<unknown> = vi.fn(async () => ({}))
+) {
 	const store: NotificationStore = new NotificationStore({
 		list: vi.fn(async (): Promise<NotificationList> => ({
 			notifications: store.items,
@@ -70,8 +75,9 @@ function setup(api: Partial<NotificationApi>) {
 	});
 	store.upsert(notice('a'));
 	store.upsert(notice('b', { state: 'read' }));
+	for (const n of extra) store.upsert(n);
 	store.setUnread(1);
-	comp = mount(NotificationBell, { target: document.body, props: { store } });
+	comp = mount(NotificationBell, { target: document.body, props: { store, redispatch } });
 	flushSync();
 	return store;
 }
@@ -113,5 +119,44 @@ describe('NotificationBell', () => {
 		expect(act).toHaveBeenCalledWith('a', { action: 'approve', note: null, channel: 'web' });
 		expect(toasts.info.mock.calls[0][0]).toContain('approve via ntfy');
 		expect(toasts.error).not.toHaveBeenCalled();
+	});
+
+	it('shows an open link only on a notice with a target, anchored to its message', async () => {
+		const anchored = notice('t', { session_id: 's-7', anchor_seq: 42, actions: [] });
+		setup({}, [anchored]);
+		await openPanel();
+		const link = document.querySelector('[data-id="t"] a.notif-title') as HTMLAnchorElement;
+		expect(link.getAttribute('href')).toBe('/sessions?session=s-7&seq=42');
+		expect(document.querySelector('[data-id="a"] a.notif-title'), 'no target, no link').toBeNull();
+	});
+
+	it('re-dispatches a failed dispatch from its notice, not through the notice API', async () => {
+		const failed = notice('f', {
+			kind: 'dispatch_failed',
+			severity: 'critical',
+			subject_kind: 'dispatch',
+			subject_id: 'd-1',
+			actions: []
+		});
+		const act = vi.fn();
+		const redispatch = vi.fn(async () => ({}));
+		setup({ act }, [failed], redispatch);
+		await openPanel();
+		const link = document.querySelector('[data-id="f"] a.notif-title') as HTMLAnchorElement;
+		expect(link.getAttribute('href')).toBe('/dispatch-failures?record=d-1');
+		(document.querySelector('[data-id="f"] [data-action="redispatch"]') as HTMLElement).click();
+		await vi.waitFor(() => expect(toasts.ok).toHaveBeenCalled());
+		expect(redispatch).toHaveBeenCalledWith('d-1');
+		expect(act).not.toHaveBeenCalled();
+
+		const details = () =>
+			document.querySelector('[data-id="f"] [data-action="details"]') as HTMLButtonElement;
+		await vi.waitFor(() => {
+			flushSync();
+			expect(details().disabled).toBe(false);
+		});
+		details().click();
+		await vi.waitFor(() => expect(goto).toHaveBeenCalledWith('/dispatch-failures?record=d-1'));
+		expect(act).not.toHaveBeenCalled();
 	});
 });

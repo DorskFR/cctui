@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Notification as Notice } from '@bindings/Notification';
 import { ApiError } from './api';
-import { NotificationStore, toItem, type NotificationApi } from './notifications.svelte';
+import {
+	NotificationStore,
+	noticeHref,
+	toItem,
+	type NotificationApi
+} from './notifications.svelte';
 
 function notice(id: string, over: Partial<Notice> = {}): Notice {
 	return {
@@ -218,5 +223,47 @@ describe('notification store', () => {
 			['reject', 'danger', true]
 		]);
 		expect(toItem(notice('n2', { state: 'read', actions: 'junk' })).actions).toEqual([]);
+	});
+});
+
+describe('notice targets', () => {
+	const failure = (over: Partial<Notice> = {}) =>
+		notice('n1', {
+			kind: 'dispatch_failed',
+			session_id: null,
+			subject_kind: 'dispatch',
+			subject_id: 'd-1',
+			actions: [],
+			...over
+		});
+
+	it('opens the session at the message that raised the notice', () => {
+		expect(noticeHref(notice('n1', { anchor_seq: 42 }))).toBe('/sessions?session=s-1&seq=42');
+		expect(toItem(notice('n1', { anchor_seq: 42 })).href).toBe('/sessions?session=s-1&seq=42');
+	});
+
+	it('opens the session alone when no message is anchored', () => {
+		expect(noticeHref(notice('n1'))).toBe('/sessions?session=s-1');
+		expect(noticeHref(notice('n1', { anchor_seq: null }))).toBe('/sessions?session=s-1');
+	});
+
+	it('opens the failure record of a dispatch that never registered', () => {
+		expect(noticeHref(failure())).toBe('/dispatch-failures?record=d-1');
+		expect(noticeHref(failure({ session_id: 'd-1' })), 'a registered one opens itself').toBe(
+			'/sessions?session=d-1'
+		);
+	});
+
+	it('offers no target, so no open affordance, when the notice has none', () => {
+		const bare = notice('n1', { session_id: null, kind: 'system_alert' });
+		expect(noticeHref(bare)).toBeUndefined();
+		expect(toItem(bare).href).toBeUndefined();
+		expect(noticeHref(failure({ subject_kind: 'user_action' }))).toBeUndefined();
+	});
+
+	it('a failed dispatch offers re-dispatch and details until it is closed', () => {
+		expect(toItem(failure()).actions?.map((a) => a.id)).toEqual(['redispatch', 'details']);
+		expect(toItem(notice('n2', { kind: 'system_alert', actions: [] })).actions).toEqual([]);
+		expect(toItem(failure({ state: 'resolved', decision: 'dismissed' })).actions).toEqual([]);
 	});
 });

@@ -84,6 +84,40 @@ export function stateLabel(n: Notice): string | undefined {
 		: m.notif_state({ decision });
 }
 
+export const DISPATCH_FAILED = 'dispatch_failed';
+export const REDISPATCH = 'redispatch';
+export const DETAILS = 'details';
+
+/** The failure record a dispatch notice stands for. */
+export function failedDispatchOf(n: Notice): string | null {
+	return n.kind === DISPATCH_FAILED && n.subject_kind === 'dispatch' && n.subject_id
+		? n.subject_id
+		: null;
+}
+
+export const failureHref = (record: string) =>
+	`/dispatch-failures?record=${encodeURIComponent(record)}`;
+
+/** Where a notice opens: its session at the message that raised it, else its failure record. */
+export function noticeHref(n: Notice): string | undefined {
+	if (n.session_id) {
+		const q = new URLSearchParams({ session: n.session_id });
+		if (n.anchor_seq != null) q.set('seq', String(n.anchor_seq));
+		return `/sessions?${q}`;
+	}
+	const record = failedDispatchOf(n);
+	return record ? failureHref(record) : undefined;
+}
+
+/** Answered here, not by the server: re-run the dispatch, or read its failure record. */
+function dispatchActions(n: Notice): NotificationAction[] {
+	if (!failedDispatchOf(n)) return [];
+	return [
+		{ id: REDISPATCH, label: m.dispatch_failed_rerun(), variant: 'primary' },
+		{ id: DETAILS, label: m.notif_action_details() }
+	];
+}
+
 export function toItem(n: Notice): NotificationData {
 	const state = stateLabel(n);
 	return {
@@ -94,7 +128,8 @@ export function toItem(n: Notice): NotificationData {
 		tone: tone(n.severity),
 		unread: isUnread(n),
 		state,
-		actions: state ? [] : noticeActions(n)
+		actions: state ? [] : [...noticeActions(n), ...dispatchActions(n)],
+		href: noticeHref(n)
 	};
 }
 

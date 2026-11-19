@@ -4,12 +4,15 @@ use serde_json::{Value, json};
 use sqlx::{PgConnection, PgExecutor, PgPool};
 use uuid::Uuid;
 
-use super::kind::{APPROVAL, USER_ACTION};
+use super::kind::{APPROVAL, DISPATCH_FAILED, USER_ACTION};
 use super::store::{self, Edge, NewNotification, NotificationRecord, Routing};
 use crate::state::AppState;
 
 const SUBJECT_CLOSED: &str = "subject_closed";
 const SUPERSEDED: &str = "superseded";
+
+/// The subject a dispatch notice and its failure record share.
+pub const DISPATCH_SUBJECT: &str = "dispatch";
 
 pub type Closed = (NotificationRecord, Option<Uuid>);
 
@@ -61,6 +64,7 @@ pub async fn user_action_added(
     n.subject_id = Some(added.id.to_string());
     n.collapse_key = Some(format!("{USER_ACTION}:{}", added.id));
     n.body = added.detail.map(str::to_owned);
+    n.anchor_seq = latest_seq(pool, added.session_id).await?;
     n.actions = user_action_buttons();
     store::emit(pool, routing, n).await.map(Some)
 }
@@ -108,6 +112,7 @@ async fn approval(
     n.subject_id = Some(outcome.id.to_string());
     n.collapse_key = Some(format!("{APPROVAL}:{}", outcome.session_id));
     n.body.clone_from(&outcome.body);
+    n.anchor_seq = outcome.turn_seq;
     n.actions = approval_buttons();
     store::emit(pool, routing, n).await.map(Some)
 }
@@ -147,6 +152,62 @@ pub async fn outcome_declared(
         super::in_app::changed(pool, n).await;
     }
     Ok(closed)
+}
+
+/// The failure record a dispatch notice stands for.
+#[must_use]
+pub fn failed_dispatch(n: &NotificationRecord) -> Option<&str> {
+    if n.kind != DISPATCH_FAILED || n.subject_kind.as_deref() != Some(DISPATCH_SUBJECT) {
+        return None;
+    }
+    n.subject_id.as_deref()
+}
+
+/// Close `user_id`'s open notices about these failed dispatches.
+pub async fn dispatch_dismissed(
+    pool: &PgPool,
+    user_id: Uuid,
+    session_ids: &[String],
+) -> sqlx::Result<Vec<NotificationRecord>> {
+    if session_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut tx = pool.begin().await?;
+    let open: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM notifications \
+         WHERE user_id = $1 AND kind = $2 AND subject_kind = $3 AND subject_id = ANY($4) \
+           AND state IN ('pending', 'delivered', 'read') \
+         ORDER BY id FOR UPDATE",
+    )
+    .bind(user_id)
+    .bind(DISPATCH_FAILED)
+    .bind(DISPATCH_SUBJECT)
+    .bind(session_ids)
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut closed = Vec::with_capacity(open.len());
+    for id in open {
+        let edge = Edge::Resolve { reason: SUBJECT_CLOSED };
+        if let Some((n, _)) = store::close_in(&mut tx, id, edge).await? {
+            closed.push(n);
+        }
+    }
+    tx.commit().await?;
+    if !closed.is_empty() {
+        super::in_app::changed_many(pool, user_id, &closed).await;
+    }
+    Ok(closed)
+}
+
+/// The `stream_events` id a notice raised now anchors to.
+pub async fn latest_seq<'e>(
+    conn: impl PgExecutor<'e>,
+    session_id: &str,
+) -> sqlx::Result<Option<i64>> {
+    sqlx::query_scalar("SELECT max(id) FROM stream_events WHERE session_id = $1")
+        .bind(session_id)
+        .fetch_one(conn)
+        .await
 }
 
 pub async fn on_outcome(state: &AppState, outcome: &SessionOutcome) {

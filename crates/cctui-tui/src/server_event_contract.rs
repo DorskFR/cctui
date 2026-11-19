@@ -55,6 +55,7 @@ fn notification() -> cctui_proto::api::notifications::Notification {
         acted_at: None,
         resolved_at: None,
         expires_at: Some(now()),
+        anchor_seq: None,
     }
 }
 

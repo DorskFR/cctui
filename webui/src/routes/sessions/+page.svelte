@@ -218,6 +218,20 @@
 		void sp.openById(id, { spawned });
 	});
 
+	// `?seq=` (a notification, a bookmark): land on that message, then drop the
+	// param so a later session the address bar shows never inherits it.
+	$effect(() => {
+		const url = liveUrl();
+		if (!url.searchParams.has('seq')) return;
+		const id = sessionIdFromLocation(url.pathname, url.searchParams);
+		const seq = Number(url.searchParams.get('seq'));
+		untrack(() => {
+			if (id && Number.isSafeInteger(seq) && seq > 0) sp.focusHit = { id, seq };
+			url.searchParams.delete('seq');
+			goto(url.href, { shallow: true, replace: true, state: page.state });
+		});
+	});
+
 	// drawer → URL: reflect the open session into the address bar so it's always
 	// a shareable link. Skip while we're resolving a URL-driven open (no echo).
 	$effect(() => {

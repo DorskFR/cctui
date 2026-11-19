@@ -38,6 +38,9 @@ pub struct Notification {
     pub acted_at: Option<DateTime<Utc>>,
     pub resolved_at: Option<DateTime<Utc>>,
     pub expires_at: Option<DateTime<Utc>>,
+    /// The `stream_events` id of the message that raised it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_seq: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

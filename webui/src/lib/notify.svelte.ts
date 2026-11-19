@@ -3,7 +3,7 @@ import { goto } from "$app/navigation";
 import { m } from "#lib/paraglide/messages.js";
 import type { SessionListItem } from "@bindings/SessionListItem";
 import type { Notification as Notice } from "@bindings/Notification";
-import { isUnread } from "./notifications.svelte";
+import { isUnread, noticeHref } from "./notifications.svelte";
 import { freshResults } from "./outcome";
 
 const RETIRED_KEYS = ["cctui_notify_enabled", "cctui_notify_sound"];
@@ -126,7 +126,8 @@ class Notifier {
     this.alerted.set(n.id, n.repeat_count);
     if (!this.enabled || this.permission !== "granted") return;
     if (document.visibilityState === "visible" && n.session_id && this.#open.has(n.session_id)) return;
-    const shown = this.show(n.title, n.body ?? undefined, n.collapse_key ?? n.id, n.session_id);
+    const tag = n.collapse_key ?? n.id;
+    const shown = this.show(n.title, n.body ?? undefined, tag, n.session_id, noticeHref(n));
     if (shown) this.shown.set(n.id, shown);
   }
 
@@ -205,13 +206,16 @@ class Notifier {
     body: string | undefined,
     tag: string,
     sessionId: string | null,
+    href?: string,
   ): Notification | null {
     let n: Notification | null = null;
     try {
       const shown = new Notification(title, { body, tag });
       shown.onclick = () => {
         window.focus();
-        if (sessionId) {
+        if (href) {
+          void goto(href);
+        } else if (sessionId) {
           this.pendingOpen = sessionId;
           if (!/^\/sessions(\/|$)/.test(location.pathname)) void goto("/sessions");
         }
