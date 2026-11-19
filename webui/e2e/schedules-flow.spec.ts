@@ -68,13 +68,13 @@ test('a weekday schedule is created, paused and run by hand', async ({ page }) =
 
 	await page.getByRole('button', { name: 'New schedule' }).click();
 	const dialog = page.locator('dialog[open]').first();
-	await dialog.getByLabel('Name').fill('Standup notes');
-	await dialog.getByLabel('Prompt').fill('Prepare the standup notes');
-	await dialog.getByRole('radio', { name: 'Weekdays' }).click();
+	await dialog.getByRole('textbox', { name: 'Session name' }).fill('Standup notes');
+	await dialog.getByRole('textbox', { name: /^Prompt/ }).fill('Prepare the standup notes');
+	await dialog.getByRole('radio', { name: 'Weekdays', exact: true }).click();
 	await dialog.getByLabel('Time of day').fill('07:00');
 	await dialog.getByLabel('Timezone').selectOption('Asia/Tokyo');
 	await expect(dialog.getByTestId('schedule-words')).toContainText('Weekdays at 07:00');
-	await dialog.getByRole('button', { name: 'Save' }).click();
+	await dialog.getByRole('button', { name: 'Save', exact: true }).click();
 
 	await expect.poll(() => calls.length).toBe(1);
 	expect(calls[0]).toMatchObject({ method: 'POST', path: '/presets' });
@@ -125,15 +125,15 @@ test('a schedule runs on the account picked in the editor', async ({ page }) => 
 	await page.goto('/schedules');
 	await page.getByRole('button', { name: 'New schedule' }).click();
 	const dialog = page.locator('dialog[open]').first();
-	await dialog.getByLabel('Name').fill('Morning news');
-	await dialog.getByLabel('Prompt').fill('Collect the news');
-	const picker = dialog.getByLabel('Account');
+	await dialog.getByRole('textbox', { name: 'Session name' }).fill('Morning news');
+	await dialog.getByRole('textbox', { name: /^Prompt/ }).fill('Collect the news');
+	const picker = dialog.getByLabel('Account', { exact: true });
 	await expect(picker.locator('option')).toHaveText(['personal', 'bot', 'Auto', /^No account/], {
 		useInnerText: true
 	});
 	await picker.selectOption({ label: 'bot' });
 	await dialog.screenshot({ path: '../tmp/preset-acct/schedule-account.png' });
-	await dialog.getByRole('button', { name: 'Save' }).click();
+	await dialog.getByRole('button', { name: 'Save', exact: true }).click();
 
 	await expect.poll(() => calls.length).toBe(1);
 	expect(calls[0].body).toMatchObject({ account_id: 'a2', pool_id: null, no_account: false });

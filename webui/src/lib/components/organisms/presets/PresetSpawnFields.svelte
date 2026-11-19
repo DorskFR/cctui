@@ -49,6 +49,10 @@
 	const dirsQ = useRecentDirs(() => form.spawn.machine_id);
 	const recentDirs = $derived([...new Set((dirsQ.data ?? []).map(normalizeDir))]);
 	let promptEl = $state<HTMLTextAreaElement | null>(null);
+	$effect(() => {
+		const list = machinesQ.data ?? [];
+		if (!form.spawn.machine_id && list.length) form.spawn.machine_id = list[0].machine_id;
+	});
 
 	const errors = $derived(
 		showErrors
