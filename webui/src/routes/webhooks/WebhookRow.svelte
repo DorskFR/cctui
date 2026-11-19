@@ -3,7 +3,7 @@
 	import { Button, Card, CopyButton, Disclosure, IconButton, Switch, Text } from '@dorsk/tsumikit';
 	import { apiBase } from '#lib/config.ts';
 	import { m } from '#lib/paraglide/messages.js';
-	import { deliveryUrl } from '#lib/webhooks/webhookForm.ts';
+	import { hookUrl } from '#lib/webhooks/webhookForm.ts';
 	import WebhookDeliveries from './WebhookDeliveries.svelte';
 
 	let {
@@ -25,7 +25,7 @@
 	} = $props();
 
 	let logOpen = $state(false);
-	const url = $derived(deliveryUrl(apiBase(), hook.id));
+	const url = $derived(hookUrl(hook, apiBase()));
 </script>
 
 <Card padding="sm" data-testid="webhook-row" data-enabled={hook.enabled}>
@@ -39,6 +39,11 @@
 					<Text as="span" size="sm" tone="faint">{m.webhooks_preset_deleted()}</Text>
 				{/if}
 				<Text as="span" size="xs" tone="faint">· {m.webhooks_row_rate({ count: hook.rate_per_minute })}</Text>
+				{#if hook.max_usd !== null}
+					<Text as="span" size="xs" tone="faint" data-testid="webhook-budget">
+						· {m.webhooks_row_budget({ amount: hook.max_usd.toFixed(2), hours: hook.budget_window_hours })}
+					</Text>
+				{/if}
 			</Text>
 		</div>
 		<div class="actions">

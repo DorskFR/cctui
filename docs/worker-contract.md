@@ -1322,9 +1322,14 @@ signing secret, once; it is stored sealed with the vault key.
   "name":            "issues labelled",
   "prompt_template": "{{event}} {{payload.action}}: {{payload.issue.title}}",
   "rate_per_minute": 30,     // 1–600, default 30
+  "max_usd":         5.0,    // optional dollar cap, null for none
+  "budget_window_hours": 24, // 1–720, default 24
   "enabled":         true
 }
 ```
+
+Every webhook reply carries `url`, the address senders post to, built from
+`CCTUI_EXTERNAL_URL` (a bare `/hooks/{id}` path when that is empty).
 
 A delivery is accepted when:
 
@@ -1341,7 +1346,12 @@ A delivery is accepted when:
   `external_sources` on and, on a machine, still runs `ask` or `auto`;
   otherwise the URL answers `404` like an unknown one;
 - fewer than `rate_per_minute` deliveries were dispatched in the last minute,
-  else `429`.
+  else `429`;
+- with `max_usd` set, the sessions this webhook's dispatched deliveries
+  reached in the last `budget_window_hours` cost less than `max_usd`, priced
+  as the session list prices them, else `429` logged as `over_budget` with the
+  spend in its detail. Spend accrues as sessions run, so a run in flight can
+  carry the total past the cap.
 
 An accepted delivery answers `202 {"status": "dispatched", "event_id": …}` and
 becomes a `webhook` event on the preset's `default` lane. Its `body` is the
@@ -1355,8 +1365,8 @@ session (a follow-up of the lane's last one, or a fresh one) instead of
 replying into a live one. A container preset gets the rendered prompt only.
 
 `GET /webhooks/{id}/deliveries` is the log, newest 100: `dispatched` (with the
-session once it launched), `duplicate`, `rejected` (bad signature, bad body)
-and `rate_limited`. Refusals are logged up to 60 a minute and kept a day; a
+session once it launched), `duplicate`, `rejected` (bad signature, bad body),
+`rate_limited` and `over_budget`. Refusals are logged up to 60 a minute and kept a day; a
 body over the size limit is refused with `413` and not logged.
 
 ### Approval decision (`notification.decision`)

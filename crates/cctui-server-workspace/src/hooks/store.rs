@@ -15,7 +15,8 @@ const REFUSAL_RETENTION_HOURS: i32 = 24;
 
 macro_rules! columns {
     () => {
-        "id, user_id, preset_id, name, prompt_template, rate_per_minute, enabled, created_at"
+        "id, user_id, preset_id, name, prompt_template, rate_per_minute, max_usd, \
+         budget_window_hours, enabled, created_at"
     };
 }
 
@@ -44,6 +45,8 @@ struct Row {
     name: String,
     prompt_template: String,
     rate_per_minute: i32,
+    max_usd: Option<f64>,
+    budget_window_hours: i32,
     enabled: bool,
     created_at: DateTime<Utc>,
 }
@@ -57,14 +60,17 @@ impl From<Row> for Webhook {
             name: r.name,
             prompt_template: r.prompt_template,
             rate_per_minute: r.rate_per_minute,
+            max_usd: r.max_usd,
+            budget_window_hours: r.budget_window_hours,
             enabled: r.enabled,
             created_at: r.created_at,
+            url: String::new(),
         }
     }
 }
 
 /// What `POST /hooks/{id}` needs to judge a delivery.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq)]
 pub struct Receiver {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -72,6 +78,8 @@ pub struct Receiver {
     pub secret: String,
     pub prompt_template: String,
     pub rate_per_minute: i32,
+    pub max_usd: Option<f64>,
+    pub budget_window_hours: i32,
 }
 
 impl std::fmt::Debug for Receiver {
@@ -82,6 +90,7 @@ impl std::fmt::Debug for Receiver {
             .field("preset_id", &self.preset_id)
             .field("secret", &"<redacted>")
             .field("rate_per_minute", &self.rate_per_minute)
+            .field("max_usd", &self.max_usd)
             .finish_non_exhaustive()
     }
 }
@@ -152,8 +161,9 @@ pub async fn create(
     let secret = super::new_secret();
     let row: Row = sqlx::query_as(concat!(
         "INSERT INTO preset_hooks \
-           (user_id, preset_id, name, sealed_secret, prompt_template, rate_per_minute, enabled) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING ",
+           (user_id, preset_id, name, sealed_secret, prompt_template, rate_per_minute, max_usd, \
+            budget_window_hours, enabled) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING ",
         columns!()
     ))
     .bind(user_id)
@@ -162,6 +172,8 @@ pub async fn create(
     .bind(seal(&secret))
     .bind(&hook.prompt_template)
     .bind(hook.rate_per_minute)
+    .bind(hook.max_usd)
+    .bind(hook.budget_window_hours)
     .bind(hook.enabled)
     .fetch_one(pool)
     .await?;
@@ -188,7 +200,7 @@ pub async fn update(
     check_preset(pool, user_id, hook.preset_id).await?;
     let row: Option<Row> = sqlx::query_as(concat!(
         "UPDATE preset_hooks SET preset_id = $2, name = $3, prompt_template = $4, \
-           rate_per_minute = $5, enabled = $6 \
+           rate_per_minute = $5, max_usd = $6, budget_window_hours = $7, enabled = $8 \
          WHERE id = $1 RETURNING ",
         columns!()
     ))
@@ -197,6 +209,8 @@ pub async fn update(
     .bind(&hook.name)
     .bind(&hook.prompt_template)
     .bind(hook.rate_per_minute)
+    .bind(hook.max_usd)
+    .bind(hook.budget_window_hours)
     .bind(hook.enabled)
     .fetch_optional(pool)
     .await?;
@@ -237,8 +251,9 @@ pub async fn delete(pool: &PgPool, owner: Option<Uuid>, id: Uuid) -> sqlx::Resul
 /// `None` for an unknown or disabled hook, one whose secret no longer opens,
 /// or one whose preset is paused or no longer takes external text guarded.
 pub async fn receiver(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<Receiver>> {
-    let row: Option<(Uuid, Uuid, String, String, i32)> = sqlx::query_as(
-        "SELECT h.user_id, h.preset_id, h.sealed_secret, h.prompt_template, h.rate_per_minute \
+    let row: Option<ReceiverRow> = sqlx::query_as(
+        "SELECT h.user_id, h.preset_id, h.sealed_secret, h.prompt_template, h.rate_per_minute, \
+                h.max_usd, h.budget_window_hours \
          FROM preset_hooks h JOIN presets p ON p.id = h.preset_id AND p.user_id = h.user_id \
          WHERE h.id = $1 AND h.enabled AND p.enabled AND p.external_sources \
            AND (p.machine_id IS NULL OR COALESCE(p.permission_mode IN ('ask', 'auto'), false))",
@@ -246,10 +261,46 @@ pub async fn receiver(pool: &PgPool, id: Uuid) -> sqlx::Result<Option<Receiver>>
     .bind(id)
     .fetch_optional(pool)
     .await?;
-    Ok(row.and_then(|(user_id, preset_id, sealed, prompt_template, rate_per_minute)| {
-        let secret = crate::crypto::decrypt(&sealed, &crate::crypto::vault_key())?;
-        Some(Receiver { id, user_id, preset_id, secret, prompt_template, rate_per_minute })
+    Ok(row.and_then(|r| {
+        let secret = crate::crypto::decrypt(&r.sealed_secret, &crate::crypto::vault_key())?;
+        Some(Receiver {
+            id,
+            user_id: r.user_id,
+            preset_id: r.preset_id,
+            secret,
+            prompt_template: r.prompt_template,
+            rate_per_minute: r.rate_per_minute,
+            max_usd: r.max_usd,
+            budget_window_hours: r.budget_window_hours,
+        })
     }))
+}
+
+/// The sessions this hook's dispatched deliveries reached within its budget
+/// window.
+pub async fn budget_sessions(pool: &PgPool, hook: &Receiver) -> sqlx::Result<Vec<String>> {
+    sqlx::query_scalar(
+        "SELECT DISTINCT e.delivered_session_id FROM preset_hook_deliveries d \
+         JOIN inbox_events e ON e.id = d.event_id \
+         WHERE d.hook_id = $1 AND d.outcome = 'dispatched' \
+           AND d.received_at > now() - make_interval(hours => $2) \
+           AND e.delivered_session_id IS NOT NULL",
+    )
+    .bind(hook.id)
+    .bind(hook.budget_window_hours)
+    .fetch_all(pool)
+    .await
+}
+
+#[derive(sqlx::FromRow)]
+struct ReceiverRow {
+    user_id: Uuid,
+    preset_id: Uuid,
+    sealed_secret: String,
+    prompt_template: String,
+    rate_per_minute: i32,
+    max_usd: Option<f64>,
+    budget_window_hours: i32,
 }
 
 async fn lock(tx: &mut sqlx::PgConnection, hook_id: Uuid) -> sqlx::Result<()> {

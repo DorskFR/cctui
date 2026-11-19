@@ -55,6 +55,8 @@ fn request(preset_id: Uuid, rate: Option<i32>) -> WebhookRequest {
         name: format!("issues-{}", Uuid::new_v4()),
         prompt_template: "{{event}} {{payload.action}}: {{payload.issue.title}}".into(),
         rate_per_minute: rate,
+        max_usd: None,
+        budget_window_hours: None,
         enabled: None,
     }
 }
@@ -567,4 +569,144 @@ fn attached_payloads_stop_at_the_batch_budget() {
     let names: Vec<&str> = kept.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["a", "c"], "b and d overflow, the second a repeats a name");
     assert!(within_budget(vec![file("a", 101)], 100).is_empty());
+}
+
+async fn priced_session(state: &AppState, owner: &Owner) -> String {
+    let session_id = format!("hook-run-{}", Uuid::new_v4());
+    let account: Uuid =
+        sqlx::query_scalar("INSERT INTO accounts (user_id, name) VALUES ($1, $2) RETURNING id")
+            .bind(owner.user)
+            .bind(format!("hook-account-{session_id}"))
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    let catalog = json!([{
+        "model": "claude-x",
+        "price_input_per_mtok": 3.0,
+        "price_cached_input_per_mtok": 0.0,
+        "price_output_per_mtok": 0.0
+    }]);
+    let provider: Uuid = sqlx::query_scalar(
+        "INSERT INTO account_providers (user_id, account_id, provider, models) \
+         VALUES ($1, $2, 'anthropic', $3) RETURNING id",
+    )
+    .bind(owner.user)
+    .bind(account)
+    .bind(catalog)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status, model) \
+         VALUES ($1, $2, $2, $3, '/w', 'archived', 'claude-x')",
+    )
+    .bind(&session_id)
+    .bind(owner.machine)
+    .bind(owner.user)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO session_token_usage (session_id, message_id, model, input_tokens, \
+         output_tokens, cache_read_tokens, cache_creation_tokens) \
+         VALUES ($1, $2, 'claude-x', 1000000, 0, 0, 0)",
+    )
+    .bind(&session_id)
+    .bind(format!("{session_id}-m1"))
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+    )
+    .bind(format!("hash-{}", Uuid::new_v4()))
+    .bind(&session_id)
+    .bind(provider)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    session_id
+}
+
+async fn reached(state: &AppState, event_id: Uuid, session_id: &str) {
+    sqlx::query("UPDATE inbox_events SET delivered_session_id = $2 WHERE id = $1")
+        .bind(event_id)
+        .bind(session_id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_hook_over_its_dollar_cap_refuses_the_next_delivery_and_logs_why() {
+    let Some(state) = state("a_hook_over_its_dollar_cap_refuses").await else { return };
+    let owner = seed_owner(&state.pool, "hookbudget").await;
+    let preset_id = preset(&state, &owner, true).await;
+    let capped = |usd: f64| WebhookRequest {
+        max_usd: Some(usd),
+        budget_window_hours: Some(6),
+        ..request(preset_id, None)
+    };
+    let made = create(State(state.clone()), Extension(writer(&owner)), Json(capped(5.0)));
+    let (_, Json(made)) = made.await.unwrap();
+    let id = made.webhook.id;
+    assert_eq!((made.webhook.max_usd, made.webhook.budget_window_hours), (Some(5.0), 6));
+
+    let first = send(&state, id, &made.secret, Some("d-1"), issue("one")).await.unwrap();
+    assert_eq!(first.1, WebhookOutcome::Dispatched);
+    reached(&state, first.2.unwrap(), &priced_session(&state, &owner).await).await;
+
+    let under = send(&state, id, &made.secret, Some("d-2"), issue("two")).await;
+    assert_eq!(under.unwrap().1, WebhookOutcome::Dispatched, "$3 spent of a $5 cap");
+
+    let lowered =
+        update(State(state.clone()), Extension(writer(&owner)), Path(id), Json(capped(3.0)));
+    let Json(lowered) = lowered.await.unwrap();
+    assert_eq!(lowered.max_usd, Some(3.0));
+    let over = send(&state, id, &made.secret, Some("d-3"), issue("three")).await;
+    assert_eq!(over, Err(StatusCode::TOO_MANY_REQUESTS));
+    assert_eq!(events(&state, preset_id).await.len(), 2, "the refused delivery queued nothing");
+    let (outcome, detail) = log(&state, &owner, id).await.pop().unwrap();
+    assert_eq!(outcome, WebhookOutcome::OverBudget);
+    let detail = detail.unwrap();
+    assert!(detail.contains("over budget") && detail.contains("$3.00"), "{detail}");
+
+    let retried = send(&state, id, &made.secret, Some("d-3"), issue("three")).await;
+    assert_eq!(retried, Err(StatusCode::TOO_MANY_REQUESTS), "the refusal freed its delivery id");
+
+    sqlx::query(
+        "UPDATE preset_hook_deliveries SET received_at = now() - interval '7 hours' \
+         WHERE hook_id = $1",
+    )
+    .bind(id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let later = send(&state, id, &made.secret, Some("d-3"), issue("three")).await;
+    assert_eq!(later.unwrap().1, WebhookOutcome::Dispatched, "spend left the window");
+}
+
+#[tokio::test]
+async fn the_webhook_response_carries_the_url_the_server_builds() {
+    let Some(mut state) = state("the_webhook_response_carries_the_url").await else { return };
+    state.config.external_url = "https://hooks.example/cctui/".into();
+    let owner = seed_owner(&state.pool, "hookurl").await;
+    let (made, preset_id) = hook(&state, &owner, None).await;
+    let id = made.webhook.id;
+    let want = format!("https://hooks.example/cctui/hooks/{id}");
+    assert_eq!(made.webhook.url, want, "create");
+
+    let Json(one) =
+        get_one(State(state.clone()), Extension(writer(&owner)), Path(id)).await.unwrap();
+    assert_eq!(one.url, want, "get");
+    let Json(all) = list(State(state.clone()), Extension(writer(&owner))).await.unwrap();
+    assert_eq!(all.iter().find(|h| h.id == id).unwrap().url, want, "list");
+    let edit = Json(request(preset_id, Some(5)));
+    let Json(edited) =
+        update(State(state.clone()), Extension(writer(&owner)), Path(id), edit).await.unwrap();
+    assert_eq!(edited.url, want, "update");
+    let Json(rotated) =
+        rotate_secret(State(state.clone()), Extension(writer(&owner)), Path(id)).await.unwrap();
+    assert_eq!(rotated.webhook.url, want, "rotate");
+    assert_eq!(serde_json::to_value(&one).unwrap()["url"], json!(want));
 }

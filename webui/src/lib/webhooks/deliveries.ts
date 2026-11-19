@@ -6,7 +6,8 @@ export type DeliveryLabelKey =
 	| 'webhooks_outcome_dispatched'
 	| 'webhooks_outcome_duplicate'
 	| 'webhooks_outcome_rejected'
-	| 'webhooks_outcome_rate_limited';
+	| 'webhooks_outcome_rate_limited'
+	| 'webhooks_outcome_over_budget';
 
 export interface DeliveryRow {
 	id: number;
@@ -23,7 +24,8 @@ const TONE: Record<WebhookOutcome, DeliveryTone> = {
 	dispatched: 'ok',
 	duplicate: 'muted',
 	rejected: 'danger',
-	rate_limited: 'warn'
+	rate_limited: 'warn',
+	over_budget: 'warn'
 };
 
 export function deliveryRow(delivery: WebhookDelivery): DeliveryRow {

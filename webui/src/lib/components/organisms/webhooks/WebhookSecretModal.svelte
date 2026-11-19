@@ -3,12 +3,12 @@
 	import { Button, Callout, CopyButton, Field, Input, Modal, Text } from '@dorsk/tsumikit';
 	import { apiBase } from '#lib/config.ts';
 	import { m } from '#lib/paraglide/messages.js';
-	import { SIGNATURE_HEADER, deliveryUrl } from '#lib/webhooks/webhookForm.ts';
+	import { SIGNATURE_HEADER, hookUrl } from '#lib/webhooks/webhookForm.ts';
 
 	let { issued, onclose }: { issued: WebhookSecret; onclose: () => void } = $props();
 
 	const uid = $props.id();
-	const url = $derived(deliveryUrl(apiBase(), issued.webhook.id));
+	const url = $derived(hookUrl(issued.webhook, apiBase()));
 </script>
 
 <Modal open title={m.webhooks_secret_title({ name: issued.webhook.name })} {onclose} size="md">
