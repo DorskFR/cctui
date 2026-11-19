@@ -2871,10 +2871,10 @@ mod draft_seal_tests {
         assert!(!meta.to_string().contains("alpha-secret"), "{meta}");
         assert_eq!(meta["draft"]["env_keys"], serde_json::json!(["A", "B", "C"]));
 
-        edit(with_env(&machine, &["A"], &[])).await.unwrap();
+        let _ = edit(with_env(&machine, &["A"], &[])).await.unwrap();
         assert_eq!(stored(state.clone(), id.clone()).await, env_of(&[("A", "alpha-secret")]));
 
-        edit(with_env(&machine, &[], &[])).await.unwrap();
+        let _ = edit(with_env(&machine, &[], &[])).await.unwrap();
         let meta = stored_metadata(&pool, &id).await;
         assert!(meta.get(DRAFT_SEALED_ENV).is_none(), "no names left, no seal: {meta}");
         assert!(stored(state, id).await.is_empty());

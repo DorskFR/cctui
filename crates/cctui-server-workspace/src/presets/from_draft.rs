@@ -190,6 +190,40 @@ mod tests {
     use crate::auth::{AuthContext, Scope};
     use crate::state::AppState;
 
+    async fn seed_draft(state: &AppState, machine: uuid::Uuid) -> (String, Option<String>) {
+        let req: cctui_proto::api::SpawnRequest = serde_json::from_value(serde_json::json!({
+            "machine_id": machine.to_string(), "working_dir": "/w/widgets",
+            "prompt": "digest with <redacted>hunter2-xyz</redacted>", "name": "nightly digest",
+            "adapter_id": "claude-code", "model": "opus", "permission_mode": "auto",
+            "effort": "high", "account": "personal", "auto_archive": true,
+            "context": {"items": ["notes"], "auto": false},
+            "env": {"FEED_TOKEN": "feed-secret-value"}, "save_draft": true,
+        }))
+        .unwrap();
+        let brief = crate::uploads::RawUpload {
+            name: "brief.md".into(),
+            bytes: b"# brief".to_vec().into(),
+            content_type: Some("text/markdown".into()),
+        };
+        let draft = crate::routes::spawn::store_spawn_row(
+            state,
+            &req,
+            machine,
+            &[brief],
+            crate::store::sessions::SessionRowStatus::Draft,
+        )
+        .await
+        .unwrap()
+        .to_string();
+        let draft_env: Option<String> =
+            sqlx::query_scalar("SELECT metadata->>'draft_sealed_env' FROM sessions WHERE id = $1")
+                .bind(&draft)
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        (draft, draft_env)
+    }
+
     #[tokio::test]
     async fn a_repeat_schedule_carries_the_drafts_whole_payload_and_sealed_env() {
         let name = "a_repeat_schedule_carries_the_drafts_whole_payload_and_sealed_env";
@@ -216,36 +250,7 @@ mod tests {
             machine_id: None,
             scopes: [Scope::Read, Scope::Dispatch].into_iter().collect(),
         };
-        let req: cctui_proto::api::SpawnRequest = serde_json::from_value(serde_json::json!({
-            "machine_id": owner.machine.to_string(), "working_dir": "/w/widgets",
-            "prompt": "digest with <redacted>hunter2-xyz</redacted>", "name": "nightly digest",
-            "adapter_id": "claude-code", "model": "opus", "permission_mode": "auto",
-            "effort": "high", "account": "personal", "auto_archive": true,
-            "context": {"items": ["notes"], "auto": false},
-            "env": {"FEED_TOKEN": "feed-secret-value"}, "save_draft": true,
-        }))
-        .unwrap();
-        let brief = crate::uploads::RawUpload {
-            name: "brief.md".into(),
-            bytes: b"# brief".to_vec().into(),
-            content_type: Some("text/markdown".into()),
-        };
-        let draft = crate::routes::spawn::store_spawn_row(
-            &state,
-            &req,
-            owner.machine,
-            &[brief],
-            crate::store::sessions::SessionRowStatus::Draft,
-        )
-        .await
-        .unwrap()
-        .to_string();
-        let draft_env: Option<String> =
-            sqlx::query_scalar("SELECT metadata->>'draft_sealed_env' FROM sessions WHERE id = $1")
-                .bind(&draft)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let (draft, draft_env) = seed_draft(&state, owner.machine).await;
 
         let body = RepeatDraftRequest {
             cron: "0 7 * * *".into(),

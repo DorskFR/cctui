@@ -426,10 +426,10 @@ mod tests {
         assert_eq!(validate(&blank).unwrap().cron, None);
     }
 
-    fn env(pairs: &[(&str, &str)]) -> Option<cctui_proto::api::presets::EnvValues> {
-        Some(cctui_proto::api::presets::EnvValues(
+    fn env(pairs: &[(&str, &str)]) -> cctui_proto::api::presets::EnvValues {
+        cctui_proto::api::presets::EnvValues(
             pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect(),
-        ))
+        )
     }
 
     #[test]
@@ -440,7 +440,7 @@ mod tests {
             validate(&keys_only).unwrap().env,
             EnvEdit::Edit { keep: vec!["A".into()], set: crate::sealed_env::EnvMap::new() }
         );
-        let values_only = LaunchPresetRequest { env: env(&[("B", "v")]), ..machine() };
+        let values_only = LaunchPresetRequest { env: Some(env(&[("B", "v")])), ..machine() };
         let EnvEdit::Edit { keep, set } = validate(&values_only).unwrap().env else {
             panic!("an edit")
         };
@@ -454,9 +454,11 @@ mod tests {
     fn env_names_are_checked_and_values_stay_out_of_debug() {
         let bad = LaunchPresetRequest { env_keys: Some(vec!["lower".into()]), ..machine() };
         assert!(validate(&bad).unwrap_err().contains("invalid env key"));
-        let bad_value_key = LaunchPresetRequest { env: env(&[("1X", "v")]), ..machine() };
+        let bad_value_key =
+            LaunchPresetRequest { env: Some(env(&[("1X", "v")])), ..machine() };
         assert!(validate(&bad_value_key).is_err());
-        let ok = LaunchPresetRequest { env: env(&[("TOKEN", "s3cr3t-v4lue")]), ..machine() };
+        let ok =
+            LaunchPresetRequest { env: Some(env(&[("TOKEN", "s3cr3t-v4lue")])), ..machine() };
         let valid = validate(&ok).unwrap();
         assert!(!format!("{valid:?}").contains("s3cr3t-v4lue"), "{valid:?}");
         assert!(format!("{valid:?}").contains("TOKEN"));
@@ -464,10 +466,12 @@ mod tests {
 
     #[test]
     fn a_dispatcher_target_carries_env_but_not_a_reserved_name() {
-        let carried = LaunchPresetRequest { env: env(&[("FEED_TOKEN", "t")]), ..container() };
+        let carried =
+            LaunchPresetRequest { env: Some(env(&[("FEED_TOKEN", "t")])), ..container() };
         assert!(matches!(validate(&carried).unwrap().env, EnvEdit::Edit { .. }));
         for name in ["ANTHROPIC_BASE_URL", "WORKER_NET_PROXY"] {
-            let reserved = LaunchPresetRequest { env: env(&[(name, "x")]), ..container() };
+            let reserved =
+                LaunchPresetRequest { env: Some(env(&[(name, "x")])), ..container() };
             assert!(validate(&reserved).unwrap_err().contains("reserved"), "{name}");
         }
     }

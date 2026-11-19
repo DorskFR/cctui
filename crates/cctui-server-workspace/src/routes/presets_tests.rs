@@ -97,10 +97,10 @@ async fn preset_route_errors_map_to_status_codes() {
     assert_eq!(post(body(&a, "twice")).await.unwrap_err().status(), StatusCode::CONFLICT);
 }
 
-fn env(pairs: &[(&str, &str)]) -> Option<cctui_proto::api::presets::EnvValues> {
-    Some(cctui_proto::api::presets::EnvValues(
+fn env(pairs: &[(&str, &str)]) -> cctui_proto::api::presets::EnvValues {
+    cctui_proto::api::presets::EnvValues(
         pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect(),
-    ))
+    )
 }
 
 async fn stored_env(state: &AppState, id: Uuid) -> (Option<String>, crate::sealed_env::EnvMap) {
@@ -122,7 +122,11 @@ async fn preset_env_is_write_only_and_edited_per_key() {
         update(State(state.clone()), Extension(writer(&a)), Path(id), Json(req))
     };
     let first = LaunchPresetRequest {
-        env: env(&[("KEEP", "keep-secret"), ("SWAP", "swap-secret"), ("GONE", "gone-secret")]),
+        env: Some(env(&[
+            ("KEEP", "keep-secret"),
+            ("SWAP", "swap-secret"),
+            ("GONE", "gone-secret"),
+        ])),
         ..body(&a, "digest")
     };
     let (_, Json(created)) =
@@ -147,12 +151,12 @@ async fn preset_env_is_write_only_and_edited_per_key() {
     assert_eq!(stored_env(&state, created.id).await.0, sealed, "the seal is not even rewritten");
 
     let round_trip = LaunchPresetRequest { env_keys: Some(seen.env_keys), ..body(&a, "digest") };
-    put(created.id, round_trip).await.unwrap();
+    let _ = put(created.id, round_trip).await.unwrap();
     assert_eq!(stored_env(&state, created.id).await.1, open, "GET names back: every value kept");
 
     let edit = LaunchPresetRequest {
         env_keys: Some(vec!["KEEP".into(), "SWAP".into()]),
-        env: env(&[("SWAP", "swap-new"), ("ADDED", "added-new")]),
+        env: Some(env(&[("SWAP", "swap-new"), ("ADDED", "added-new")])),
         ..body(&a, "digest")
     };
     let Json(edited) = put(created.id, edit).await.unwrap();
@@ -169,7 +173,7 @@ async fn preset_env_is_write_only_and_edited_per_key() {
     assert!(cleared.env_keys.is_empty());
     assert_eq!(stored_env(&state, created.id).await.0, None);
 
-    let bad = LaunchPresetRequest { env: env(&[("lower", "x")]), ..body(&a, "bad") };
+    let bad = LaunchPresetRequest { env: Some(env(&[("lower", "x")])), ..body(&a, "bad") };
     let err = create(State(state), Extension(writer(&a)), Json(bad)).await.unwrap_err();
     assert_eq!(err.status(), StatusCode::BAD_REQUEST);
 }
@@ -192,7 +196,7 @@ async fn a_get_put_round_trip_keeps_the_template_prompt_seal_env_and_files() {
     let first = LaunchPresetRequest {
         prompt: "digest with <redacted>hunter2-xyz</redacted>".into(),
         permission_mode: Some(PermissionMode::Auto),
-        env: env(&[("FEED_TOKEN", "feed-secret")]),
+        env: Some(env(&[("FEED_TOKEN", "feed-secret")])),
         template: Some(SpawnTemplate {
             effort: Some("high".into()),
             label_ids: vec!["l1".into()],

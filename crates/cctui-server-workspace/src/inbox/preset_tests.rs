@@ -28,7 +28,7 @@ fn session(status: &str, adapter: &str, idle_secs: i64) -> Current {
 
 fn preset(machine: bool) -> Preset {
     Preset {
-        preset_id: None,
+        id: None,
         user_id: Uuid::nil(),
         name: "triage".into(),
         prompt: "triage the queue\n".into(),

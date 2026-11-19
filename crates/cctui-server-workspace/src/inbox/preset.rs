@@ -20,7 +20,7 @@ const NOT_REUSABLE: &[&str] = &["ended", "archived", "failed", "queued", "draft"
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct Preset {
-    pub preset_id: Option<Uuid>,
+    pub id: Option<Uuid>,
     pub user_id: Uuid,
     pub name: String,
     pub prompt: String,
@@ -188,7 +188,7 @@ pub async fn from_session(
     session_id: &str,
 ) -> sqlx::Result<Option<Preset>> {
     let found: Option<Preset> = sqlx::query_as(
-        "SELECT NULL::uuid AS preset_id, $2::uuid AS user_id, \
+        "SELECT NULL::uuid AS id, $2::uuid AS user_id, \
                 COALESCE(s.session_name, '') AS name, '' AS prompt, \
                 s.machine_uuid AS machine_id, s.working_dir, s.adapter_id, s.model, \
                 s.permission_mode, \
@@ -238,7 +238,7 @@ pub async fn follow_up_orphan(
 
 pub async fn load(pool: &PgPool, preset_id: Uuid) -> sqlx::Result<Option<Preset>> {
     sqlx::query_as(
-        "SELECT p.id AS preset_id, p.user_id, p.name, p.prompt, p.machine_id, p.working_dir, \
+        "SELECT p.id, p.user_id, p.name, p.prompt, p.machine_id, p.working_dir, \
                 p.adapter_id, \
                 p.model, p.permission_mode, a.name AS account_name, ap.name AS pool_name, \
                 p.no_account, p.profile, p.fresh_secs, p.on_stale, p.notify_url, \
@@ -387,11 +387,11 @@ type Files = (Vec<cctui_proto::adapter::BootstrapFile>, Vec<crate::uploads::RawU
 
 /// The files stored with the preset, ahead of the batch's own.
 async fn template_files(state: &AppState, preset: &Preset) -> Result<Files, String> {
-    let Some(id) = preset.preset_id else { return Ok((Vec::new(), Vec::new())) };
+    let Some(id) = preset.id else { return Ok((Vec::new(), Vec::new())) };
     let key = crate::presets::store::files_key(id);
     crate::routes::spawn::load_draft_uploads(&state.pool, &key, &[])
         .await
-        .map_err(|e| e.message().to_owned())
+        .map_err(|e| e.into_parts().1.0.error)
 }
 
 /// The preset's sealed env, opened for one run.
