@@ -171,8 +171,18 @@ struct SealedEnv {
 }
 
 /// `None` leaves the stored env as it is.
-fn sealed_env(edit: &EnvEdit, stored: Option<&str>) -> Result<Option<SealedEnv>, WriteError> {
+/// An edit that sets nothing and keeps every stored name keeps the stored
+/// ciphertext as is: sealing is randomised, and a GET→PUT must not touch it.
+fn sealed_env(
+    edit: &EnvEdit,
+    stored: Option<&str>,
+    stored_keys: &[String],
+) -> Result<Option<SealedEnv>, WriteError> {
     let EnvEdit::Edit { keep, set } = edit else { return Ok(None) };
+    if set.is_empty() && stored_keys.iter().all(|k| keep.contains(k)) {
+        let sealed = stored.map(str::to_owned);
+        return Ok(Some(SealedEnv { keys: stored_keys.to_vec(), sealed }));
+    }
     let invalid = |e: crate::sealed_env::SealError| WriteError::Invalid(e.message().to_owned());
     let env = crate::sealed_env::apply_edit(stored, keep, set, crate::crypto::vault_key)
         .map_err(invalid)?;
@@ -333,7 +343,7 @@ pub async fn create(
     preset: &ValidPreset,
 ) -> Result<LaunchPreset, WriteError> {
     check_refs(pool, user_id, None, preset).await?;
-    let env = sealed_env(&preset.env, None)?.unwrap_or_default();
+    let env = sealed_env(&preset.env, None, &[])?.unwrap_or_default();
     let (prompt, prompt_seal) = sealed_prompt(&preset.prompt, None)?;
     let template = sqlx::types::Json(preset.template.clone().unwrap_or_default());
     let t = columns(&preset.target);
@@ -385,6 +395,7 @@ pub async fn create(
 struct Stored {
     user_id: Uuid,
     sealed_env: Option<String>,
+    env_keys: Vec<String>,
     prompt: String,
     sealed_prompt: Option<String>,
 }
@@ -398,7 +409,7 @@ pub async fn update(
     preset: &ValidPreset,
 ) -> Result<Option<LaunchPreset>, WriteError> {
     let Some(stored): Option<Stored> = sqlx::query_as(
-        "SELECT user_id, sealed_env, prompt, sealed_prompt FROM presets \
+        "SELECT user_id, sealed_env, env_keys, prompt, sealed_prompt FROM presets \
          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
     )
     .bind(id)
@@ -410,8 +421,9 @@ pub async fn update(
     };
     let user_id = stored.user_id;
     check_refs(pool, user_id, Some(id), preset).await?;
-    let (env_set, env_keys, env_sealed) = sealed_env(&preset.env, stored.sealed_env.as_deref())?
-        .map_or((false, Vec::new(), None), |e| (true, e.keys, e.sealed));
+    let (env_set, env_keys, env_sealed) =
+        sealed_env(&preset.env, stored.sealed_env.as_deref(), &stored.env_keys)?
+            .map_or((false, Vec::new(), None), |e| (true, e.keys, e.sealed));
     let (prompt, prompt_seal) = sealed_prompt(
         &preset.prompt,
         Some((stored.prompt.as_str(), stored.sealed_prompt.as_deref())),
