@@ -24,6 +24,7 @@ vi.mock('#lib/queries/index.ts', () => {
 	return {
 		useMachineResources: () => q(machineList),
 		useVoiceConfig: () => q(undefined),
+		useSessions: () => q({ sessions: [] }),
 		useRecentDirs: () => q([]),
 		useAccounts: () => q([]),
 		useAccountPools: () => q([]),
