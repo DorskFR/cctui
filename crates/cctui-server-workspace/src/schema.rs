@@ -160,6 +160,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "notification_anchor",
         sql: include_str!("../schema/0025_notification_anchor.sql"),
     },
+    Migration {
+        version: 26,
+        name: "preset_template",
+        sql: include_str!("../schema/0026_preset_template.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -314,7 +319,8 @@ mod tests {
                     (22, "bootstrap".to_owned()),
                     (23, "bootstrap".to_owned()),
                     (24, "bootstrap".to_owned()),
-                    (25, "bootstrap".to_owned())
+                    (25, "bootstrap".to_owned()),
+                    (26, "bootstrap".to_owned())
                 ]
             );
 
@@ -467,6 +473,119 @@ mod tests {
         .await;
     }
 
+    /// Rows as 0025 left them: machine + cron + account, machine + pool, dispatcher.
+    async fn seed_legacy_presets(
+        pool: &sqlx::PgPool,
+    ) -> (crate::presets::store_tests::Owner, uuid::Uuid, uuid::Uuid) {
+        let owner = crate::presets::store_tests::seed_owner(pool, "tpl-mig").await;
+        let account: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name) VALUES ($1, 'personal') RETURNING id",
+        )
+        .bind(owner.user)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let bots: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO account_pools (user_id, name) VALUES ($1, 'bots') RETURNING id",
+        )
+        .bind(owner.user)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO presets (user_id, name, prompt, machine_id, working_dir, adapter_id, \
+               model, permission_mode, cron, timezone, overlap, enabled, account_id, \
+               external_sources, env_keys, sealed_env) \
+             VALUES ($1, 'nightly', 'triage', $2, '/w', 'claude-code', 'opus', 'auto', \
+               '0 7 * * 1-5', 'Asia/Tokyo', 'skip', false, $3, true, '{TOKEN}', 'v1:00')",
+        )
+        .bind(owner.user)
+        .bind(owner.machine)
+        .bind(account)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO presets (user_id, name, prompt, machine_id, working_dir, adapter_id, \
+               pool_id, fresh_secs, on_stale, max_batch) \
+             VALUES ($1, 'pooled', 'p', $2, '~', 'codex', $3, 600, 'new', 5)",
+        )
+        .bind(owner.user)
+        .bind(owner.machine)
+        .bind(bots)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO presets (user_id, name, prompt, dispatcher_id, profile, notify_url, \
+               cron) VALUES ($1, 'worker', 'review', $2, 'tonbo', 'https://n8n.example/h', \
+               '0 * * * *')",
+        )
+        .bind(owner.user)
+        .bind(owner.dispatcher)
+        .execute(pool)
+        .await
+        .unwrap();
+        (owner, account, bots)
+    }
+
+    #[tokio::test]
+    async fn the_preset_template_migration_keeps_every_existing_preset_field() {
+        with_isolated_database("preset_template_migration", |pool| async move {
+            provisioned(&pool).await;
+            sqlx::raw_sql("ALTER TABLE presets DROP COLUMN template, DROP COLUMN sealed_prompt")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let (owner, account, bots) = seed_legacy_presets(&pool).await;
+            let rows = "SELECT jsonb_agg(to_jsonb(p) - 'template' - 'sealed_prompt' \
+                        ORDER BY name)::text FROM presets p";
+            let before: String = sqlx::query_scalar(rows).fetch_one(&pool).await.unwrap();
+
+            let migration = super::MIGRATIONS.iter().find(|m| m.version == 26).unwrap();
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+
+            let after: String = sqlx::query_scalar(rows).fetch_one(&pool).await.unwrap();
+            assert_eq!(after, before, "every existing column is kept as it was");
+            let added: Vec<(serde_json::Value, Option<String>)> =
+                sqlx::query_as("SELECT template, sealed_prompt FROM presets ORDER BY name")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(added.len(), 3);
+            assert!(added.iter().all(|(t, s)| *t == serde_json::json!({}) && s.is_none()));
+
+            let listed = crate::presets::store::list(&pool, Some(owner.user)).await.unwrap();
+            let by = |name: &str| listed.iter().find(|p| p.name == name).unwrap();
+            let nightly = by("nightly");
+            assert_eq!(
+                (nightly.cron.as_deref(), nightly.timezone.as_str(), nightly.account_id),
+                (Some("0 7 * * 1-5"), "Asia/Tokyo", Some(account))
+            );
+            assert_eq!(nightly.model.as_deref(), Some("opus"));
+            assert_eq!(nightly.env_keys, ["TOKEN"]);
+            assert!(!nightly.enabled && nightly.external_sources);
+            assert_eq!(nightly.template, cctui_proto::api::presets::SpawnTemplate::default());
+            let pooled = by("pooled");
+            assert_eq!((pooled.pool_id, pooled.fresh_secs, pooled.max_batch), (Some(bots), 600, 5));
+            let worker = by("worker");
+            assert_eq!(worker.profile.as_deref(), Some("tonbo"));
+            assert_eq!(worker.notify_url.as_deref(), Some("https://n8n.example/h"));
+
+            let id = nightly.id;
+            let loaded = crate::inbox::preset::load(&pool, id).await.unwrap().unwrap();
+            let req = crate::inbox::preset::spawn_request(
+                &loaded,
+                &crate::inbox::preset::Plan::Spawn,
+                "go",
+            )
+            .unwrap();
+            assert_eq!((req.model.as_deref(), req.effort.as_deref()), (Some("opus"), None));
+            assert!(req.label_ids.is_empty() && !req.auto_archive);
+        })
+        .await;
+    }
+
     #[tokio::test]
     async fn storage_lifecycle_starts_with_no_rule_and_refuses_a_trim_without_a_size() {
         with_isolated_database("storage_lifecycle_rules", |pool| async move {
@@ -544,7 +663,8 @@ mod tests {
                     (22, "bootstrap".to_owned()),
                     (23, "bootstrap".to_owned()),
                     (24, "bootstrap".to_owned()),
-                    (25, "bootstrap".to_owned())
+                    (25, "bootstrap".to_owned()),
+                    (26, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =

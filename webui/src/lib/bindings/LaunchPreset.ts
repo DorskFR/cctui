@@ -2,9 +2,10 @@
 import type { OnStale } from "./OnStale";
 import type { Overlap } from "./Overlap";
 import type { PermissionMode } from "./PermissionMode";
+import type { SpawnTemplate } from "./SpawnTemplate";
 
 export type LaunchPreset = { id: string, user_id: string, name: string, prompt: string, machine_id: string | null, working_dir: string | null, adapter_id: string | null, model: string | null, permission_mode: PermissionMode | null, account_id: string | null, pool_id: string | null, no_account: boolean, dispatcher_id: string | null, profile: string | null, external_sources: boolean, fresh_secs: number, on_stale: OnStale, max_batch: number, cron: string | null, timezone: string, enabled: boolean, overlap: Overlap, next_fire_at: string | null, last_fire_at: string | null, then_preset_id: string | null, notify_url: string | null, 
 /**
  * Names of the sealed env every run gets; values are never returned.
  */
-env_keys: Array<string>, created_at: string, updated_at: string, };
+env_keys: Array<string>, template: SpawnTemplate, created_at: string, updated_at: string, };

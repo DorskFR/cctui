@@ -2,26 +2,26 @@ import type { LaunchPreset } from '@bindings/LaunchPreset';
 import type { LaunchPresetRequest } from '@bindings/LaunchPresetRequest';
 import type { Overlap } from '@bindings/Overlap';
 import type { PermissionMode } from '@bindings/PermissionMode';
-import { NO_ACCOUNT, POOL_PREFIX } from '#lib/components/organisms/spawn/options.ts';
+import type { SpawnTemplate } from '@bindings/SpawnTemplate';
+import { PERMISSION_MODES } from '#lib/domainTables.ts';
 import { badEnvKeys, envEdit, storedEnvRows } from '#lib/components/organisms/spawn/envRows.ts';
-import type { EnvRow } from '#lib/components/organisms/spawn/types.ts';
+import { EMPTY_SPEC, type ProfileSpecForm } from '#lib/components/organisms/spawn/profiles.ts';
+import { blank } from '#lib/components/organisms/spawn/spawnSeed.ts';
+import type { EnvRow, Form } from '#lib/components/organisms/spawn/types.ts';
 import { cronFromRepeat, cronProblem, parseTime, repeatFromCron, type CronProblem, type Repeat } from './cron';
 
+/** A schedule is a spawn template plus its repeat: `spawn` and `kit` are the
+ * spawn form's own state, so the editor reuses the spawn form's fields. */
 export interface PresetForm {
-	name: string;
-	prompt: string;
-	machine_id: string;
-	working_dir: string;
-	adapter_id: string;
-	model: string;
-	permission_mode: PermissionMode | null;
-	/** '' Auto · NO_ACCOUNT · POOL_PREFIX + pool id · account id */
-	account: string;
+	/** Where, the name every run carries, the prompt, labels and context. */
+	spawn: Form;
+	/** Harness · account · model · effort · permission mode · service tier. */
+	kit: ProfileSpecForm;
+	env: EnvRow[];
 	repeat: Repeat;
 	timezone: string;
 	overlap: Overlap;
 	enabled: boolean;
-	env: EnvRow[];
 }
 
 export interface PresetFormProblems {
@@ -35,18 +35,6 @@ export interface PresetFormProblems {
 	weekdays?: 'required';
 	cron?: CronProblem;
 	env?: 'invalid';
-}
-
-export function accountPickOf(p: Pick<LaunchPreset, 'account_id' | 'pool_id' | 'no_account'>): string {
-	if (p.no_account) return NO_ACCOUNT;
-	if (p.pool_id) return `${POOL_PREFIX}${p.pool_id}`;
-	return p.account_id ?? '';
-}
-
-export function accountFields(pick: string): Pick<LaunchPresetRequest, 'account_id' | 'pool_id' | 'no_account'> {
-	if (pick === NO_ACCOUNT) return { account_id: null, pool_id: null, no_account: true };
-	if (pick.startsWith(POOL_PREFIX)) return { account_id: null, pool_id: pick.slice(POOL_PREFIX.length), no_account: false };
-	return { account_id: pick || null, pool_id: null, no_account: false };
 }
 
 export const isSchedule = (preset: Pick<LaunchPreset, 'cron'>): boolean => preset.cron !== null;
@@ -79,7 +67,8 @@ export function requestFromPreset(preset: LaunchPreset): LaunchPresetRequest {
 		then_preset_id: preset.then_preset_id,
 		notify_url: preset.notify_url,
 		env_keys: null,
-		env: null
+		env: null,
+		template: preset.template ?? null
 	};
 }
 
@@ -89,60 +78,70 @@ export const withEnabled = (preset: LaunchPreset, enabled: boolean): LaunchPrese
 });
 
 export function emptyForm(defaults: { machine_id?: string; adapter_id?: string; timezone: string }): PresetForm {
+	const harness = defaults.adapter_id || 'claude-code';
 	return {
-		name: '',
-		prompt: '',
-		machine_id: defaults.machine_id ?? '',
-		working_dir: '~',
-		adapter_id: defaults.adapter_id ?? '',
-		model: '',
-		permission_mode: null,
-		account: '',
+		spawn: { ...blank, machine_id: defaults.machine_id ?? '', working_dir: '~', adapter_id: harness, labels: [], context_items: [] },
+		kit: { ...EMPTY_SPEC, harness },
+		env: [],
 		repeat: repeatFromCron(null),
 		timezone: defaults.timezone,
 		overlap: 'skip',
-		enabled: true,
-		env: []
+		enabled: true
 	};
 }
 
 export function formFromPreset(preset: LaunchPreset, fallbackTimezone: string): PresetForm {
+	const t: SpawnTemplate = preset.template ?? {};
+	const harness = preset.adapter_id || 'claude-code';
 	return {
-		name: preset.name,
-		prompt: preset.prompt,
-		machine_id: preset.machine_id ?? '',
-		working_dir: preset.working_dir ?? '',
-		adapter_id: preset.adapter_id ?? '',
-		model: preset.model ?? '',
-		permission_mode: preset.permission_mode,
-		account: accountPickOf(preset),
+		spawn: {
+			...blank,
+			machine_id: preset.machine_id ?? '',
+			working_dir: preset.working_dir ?? '',
+			adapter_id: harness,
+			name: preset.name,
+			prompt: preset.prompt,
+			labels: [...(t.label_ids ?? [])],
+			context_items: [...(t.context?.items ?? [])],
+			context_auto: t.context?.auto ?? false
+		},
+		kit: {
+			harness,
+			account_id: preset.account_id,
+			pool_id: preset.pool_id,
+			no_account: preset.no_account,
+			model_alias: preset.model,
+			effort: t.effort ?? null,
+			permission_mode: preset.permission_mode,
+			service_tier: t.service_tier ?? null
+		},
+		env: storedEnvRows(preset.env_keys ?? []),
 		repeat: repeatFromCron(preset.cron),
 		timezone: preset.cron === null ? fallbackTimezone : preset.timezone || 'UTC',
 		overlap: preset.overlap,
-		enabled: preset.enabled,
-		env: storedEnvRows(preset.env_keys ?? [])
+		enabled: preset.enabled
 	};
 }
 
 const isAbsolute = (dir: string): boolean => dir.startsWith('/') || dir === '~' || dir.startsWith('~/');
 
-export const isGuarded = (mode: PermissionMode | null): boolean => mode === 'ask' || mode === 'auto';
+export const isGuarded = (mode: string | null): boolean => mode === 'ask' || mode === 'auto';
 
 export function formProblems(
 	form: PresetForm,
 	opts: { schedule: boolean; dispatcher?: boolean; external?: boolean }
 ): PresetFormProblems {
 	const out: PresetFormProblems = {};
-	if (!form.name.trim()) out.name = 'required';
-	if (!form.prompt.trim()) out.prompt = 'required';
+	if (!form.spawn.name.trim()) out.name = 'required';
+	if (!form.spawn.prompt.trim()) out.prompt = 'required';
 	if (badEnvKeys(form.env).length) out.env = 'invalid';
 	if (!opts.dispatcher) {
-		if (!form.machine_id) out.machine = 'required';
-		const dir = form.working_dir.trim();
+		if (!form.spawn.machine_id) out.machine = 'required';
+		const dir = form.spawn.working_dir.trim();
 		if (!dir) out.working_dir = 'required';
 		else if (!isAbsolute(dir)) out.working_dir = 'absolute';
-		if (!form.adapter_id) out.adapter = 'required';
-		if (opts.external && !isGuarded(form.permission_mode)) out.permission_mode = 'guarded';
+		if (!form.kit.harness) out.adapter = 'required';
+		if (opts.external && !isGuarded(form.kit.permission_mode)) out.permission_mode = 'guarded';
 	}
 	if (opts.schedule) {
 		const { kind } = form.repeat;
@@ -173,23 +172,46 @@ const DEFAULTS = {
 	then_preset_id: null,
 	notify_url: null,
 	env_keys: null,
-	env: null
+	env: null,
+	template: null
 } satisfies Partial<LaunchPresetRequest>;
+
+const known = (mode: string | null): PermissionMode | null =>
+	PERMISSION_MODES.includes(mode as PermissionMode) ? (mode as PermissionMode) : null;
+
+/** What the spawn form's fields set on every run; profile, auto-archive and
+ * the stored files are kept from the preset. */
+export function templateFromForm(form: PresetForm, base?: LaunchPreset | null): SpawnTemplate {
+	const kept: SpawnTemplate = base?.template ?? {};
+	const { context_items: items, context_auto: auto } = form.spawn;
+	return {
+		...kept,
+		effort: form.kit.effort?.trim() || null,
+		service_tier: form.kit.service_tier?.trim() || null,
+		label_ids: [...form.spawn.labels],
+		context: items.length || auto ? { items: [...items], auto } : null,
+		attachment_names: kept.attachment_names ?? []
+	};
+}
 
 export function requestFromForm(
 	form: PresetForm,
 	opts: { schedule: boolean; base?: LaunchPreset | null; external?: boolean }
 ): LaunchPresetRequest {
 	const kept = opts.base ? requestFromPreset(opts.base) : null;
+	const { kit } = form;
 	const target = isDispatcherTarget(opts.base)
 		? {}
 		: {
-				machine_id: form.machine_id || null,
-				working_dir: form.working_dir.trim() || null,
-				adapter_id: form.adapter_id || null,
-				model: form.model.trim() || null,
-				permission_mode: form.permission_mode,
-				...accountFields(form.account)
+				machine_id: form.spawn.machine_id || null,
+				working_dir: form.spawn.working_dir.trim() || null,
+				adapter_id: kit.harness || null,
+				model: kit.model_alias?.trim() || null,
+				permission_mode: known(kit.permission_mode),
+				account_id: kit.no_account || kit.pool_id ? null : kit.account_id,
+				pool_id: kit.no_account ? null : kit.pool_id,
+				no_account: kit.no_account,
+				template: templateFromForm(form, opts.base)
 			};
 	const schedule = opts.schedule
 		? {
@@ -210,8 +232,8 @@ export function requestFromForm(
 		no_account: false,
 		...DEFAULTS,
 		...kept,
-		name: form.name.trim(),
-		prompt: form.prompt,
+		name: form.spawn.name.trim(),
+		prompt: form.spawn.prompt,
 		...envEdit(form.env),
 		...target,
 		...schedule,

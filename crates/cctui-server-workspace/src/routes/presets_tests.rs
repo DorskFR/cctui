@@ -174,3 +174,91 @@ async fn preset_env_is_write_only_and_edited_per_key() {
     let err = create(State(state), Extension(writer(&a)), Json(bad)).await.unwrap_err();
     assert_eq!(err.status(), StatusCode::BAD_REQUEST);
 }
+
+async fn seals(pool: &sqlx::PgPool, id: Uuid) -> (Option<String>, Option<String>) {
+    sqlx::query_as("SELECT sealed_env, sealed_prompt FROM presets WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_get_put_round_trip_keeps_the_template_prompt_seal_env_and_files() {
+    use cctui_proto::adapter::PermissionMode;
+    use cctui_proto::api::presets::SpawnTemplate;
+    let Some(state) = state("a_get_put_round_trip_keeps_the_template").await else { return };
+    crate::crypto::install_vault_key(vec![7u8; 32]);
+    let a = seed_owner(&state.pool, "hrt").await;
+    let first = LaunchPresetRequest {
+        prompt: "digest with <redacted>hunter2-xyz</redacted>".into(),
+        permission_mode: Some(PermissionMode::Auto),
+        env: env(&[("FEED_TOKEN", "feed-secret")]),
+        template: Some(SpawnTemplate {
+            effort: Some("high".into()),
+            label_ids: vec!["l1".into()],
+            auto_archive: true,
+            ..SpawnTemplate::default()
+        }),
+        ..body(&a, "round-trip")
+    };
+    let (_, Json(created)) =
+        create(State(state.clone()), Extension(writer(&a)), Json(first)).await.unwrap();
+    assert_eq!(created.prompt, "digest with [REDACTED:user]", "a read shows the masked prompt");
+    let brief = crate::uploads::RawUpload {
+        name: "brief.md".into(),
+        bytes: b"# brief".to_vec().into(),
+        content_type: Some("text/markdown".into()),
+    };
+    crate::presets::store::set_files(&state.pool, Some(a.user), created.id, &[brief])
+        .await
+        .unwrap();
+    let before_seals = seals(&state.pool, created.id).await;
+    assert!(before_seals.0.is_some() && before_seals.1.is_some());
+
+    let Json(seen) =
+        get_one(State(state.clone()), Extension(writer(&a)), Path(created.id)).await.unwrap();
+    let mut sent = serde_json::to_value(&seen).unwrap();
+    for key in ["id", "user_id", "next_fire_at", "last_fire_at", "created_at", "updated_at"] {
+        sent.as_object_mut().unwrap().remove(key);
+    }
+    sent["external_sources"] = serde_json::Value::Bool(true);
+    let round: LaunchPresetRequest =
+        serde_json::from_value(sent).expect("every GET field is accepted by PUT");
+    let Json(back) =
+        update(State(state.clone()), Extension(writer(&a)), Path(created.id), Json(round))
+            .await
+            .unwrap();
+
+    assert!(back.external_sources);
+    assert_eq!(back.template, seen.template, "template kept, stored file names included");
+    assert_eq!(back.template.attachment_names, ["brief.md"]);
+    assert_eq!(back.template.effort.as_deref(), Some("high"));
+    assert_eq!(back.prompt, seen.prompt);
+    assert_eq!(back.env_keys, ["FEED_TOKEN"]);
+    assert_eq!(seals(&state.pool, created.id).await, before_seals, "seals untouched");
+    let key = crate::presets::store::files_key(created.id);
+    let (files, _) =
+        crate::routes::spawn::load_draft_uploads(&state.pool, &key, &[]).await.unwrap();
+    assert_eq!(files.len(), 1);
+
+    let legacy = LaunchPresetRequest {
+        permission_mode: Some(PermissionMode::Auto),
+        prompt: seen.prompt,
+        ..body(&a, "round-trip")
+    };
+    let Json(untouched) =
+        update(State(state.clone()), Extension(writer(&a)), Path(created.id), Json(legacy))
+            .await
+            .unwrap();
+    assert_eq!(untouched.template, seen.template, "a client that sends no template keeps it");
+
+    assert!(delete(State(state.clone()), Extension(writer(&a)), Path(created.id)).await.is_ok());
+    let left: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM session_attachments WHERE session_id = $1")
+            .bind(&key)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(left, 0, "deleting the preset drops its files");
+}

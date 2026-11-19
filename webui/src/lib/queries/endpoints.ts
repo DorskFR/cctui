@@ -126,6 +126,7 @@ import type { InboxEvent } from "./inbox";
 import type { LaunchPreset } from "@bindings/LaunchPreset";
 import type { LaunchPresetRequest } from "@bindings/LaunchPresetRequest";
 import type { PresetRun } from "@bindings/PresetRun";
+import type { RepeatDraftRequest } from "@bindings/RepeatDraftRequest";
 import type { Webhook } from "@bindings/Webhook";
 import type { WebhookRequest } from "@bindings/WebhookRequest";
 import type { WebhookSecret } from "@bindings/WebhookSecret";
@@ -313,6 +314,15 @@ export const endpoints = {
     api.put<LaunchPreset>(path("put_presets_by_id", { id }), body),
   deletePreset: (id: string) =>
     api.del<void>(path("delete_presets_by_id", { id })),
+  /** Replace the files every run of the preset gets; none clears them. */
+  setPresetFiles: (id: string, files: File[]) => {
+    const form = new FormData();
+    for (const f of files) form.append("files", f, f.name);
+    return api.putForm<LaunchPreset>(path("put_presets_by_id_attachments", { id }), form);
+  },
+  /** Turn a draft into a repeating schedule; the draft row is removed. */
+  scheduleDraftRepeat: (sessionId: string, body: RepeatDraftRequest) =>
+    api.post<LaunchPreset>(path("post_sessions_by_id_schedule_repeat", { id: sessionId }), body),
   runPreset: (id: string) =>
     api.post<PresetRun>(path("post_presets_by_id_run", { id }), {}),
   webhooks: () => api.get<Webhook[]>(path("get_webhooks")),

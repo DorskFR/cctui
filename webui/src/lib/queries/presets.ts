@@ -35,6 +35,7 @@ export function usePresetActions() {
   return {
     save: (id: string | null, body: LaunchPresetRequest): Promise<LaunchPreset> =>
       settle(id ? endpoints.updatePreset(id, body) : endpoints.createPreset(body)),
+    setFiles: (id: string, files: File[]) => settle(endpoints.setPresetFiles(id, files)),
     remove: (id: string) => settle(endpoints.deletePreset(id)),
     run: (id: string) => settle(endpoints.runPreset(id)),
   };

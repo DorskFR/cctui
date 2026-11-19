@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { AutoGrid, Button, Callout, Dropzone, Modal, SplitButton, resizeHandle } from '@dorsk/tsumikit';
+	import { AutoGrid, Button, Callout, Dropzone, Modal, SplitButton, resizeHandle, type MenuItem } from '@dorsk/tsumikit';
 	import ScheduleCustomModal from './conversation/ScheduleCustomModal.svelte';
 	import { scheduleMenuItems } from './conversation/scheduleMenu';
 	import { parseCustom, toLocalInput } from './conversation/scheduleTimes';
@@ -15,6 +15,7 @@
 	import SpawnTargetSection from './spawn/SpawnTargetSection.svelte';
 	import SpawnPromptSection from './spawn/SpawnPromptSection.svelte';
 	import SpawnGrantsSection from './spawn/SpawnGrantsSection.svelte';
+	import RepeatDraftModal from './presets/RepeatDraftModal.svelte';
 
 	// The kit's Button/SplitButton take no flex prop whose basis is the content
 	// (`grow` is `1 1 0`, i.e. equal columns), so the footer buttons carry theirs
@@ -78,8 +79,9 @@
 		const t = setInterval(() => (now = Date.now()), 60_000);
 		return () => clearInterval(t);
 	});
-	const scheduleItems = $derived(
-		scheduleMenuItems({
+	let repeatOpen = $state(false);
+	const scheduleItems = $derived<MenuItem[]>([
+		...scheduleMenuItems({
 			now,
 			canSchedule: sf.draftValid && !sf.busy,
 			onpreset: (at) => void sf.scheduleLaunch(at),
@@ -87,8 +89,19 @@
 				customValue = toLocalInput(new Date(Date.now() + 3_600_000));
 				customOpen = true;
 			}
-		})
-	);
+		}),
+		...(sf.canRepeat
+			? [
+					{
+						id: 'repeat',
+						label: m.spawn_schedule_repeat(),
+						icon: 'calendar',
+						disabled: !sf.draftValid || sf.busy,
+						onselect: () => (repeatOpen = true)
+					}
+				]
+			: [])
+	]);
 
 	function scheduleCustom() {
 		const at = parseCustom(customValue, new Date());
@@ -246,6 +259,10 @@
 		{/if}
 	</div>
 {/snippet}
+
+{#if repeatOpen}
+	<RepeatDraftModal {sf} onclose={() => (repeatOpen = false)} />
+{/if}
 
 {#if customOpen}
 	<ScheduleCustomModal

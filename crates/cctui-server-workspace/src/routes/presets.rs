@@ -1,9 +1,9 @@
-use axum::extract::{Path, State};
+use axum::extract::{Multipart, Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use uuid::Uuid;
 
-use cctui_proto::api::presets::{LaunchPreset, LaunchPresetRequest, PresetRun};
+use cctui_proto::api::presets::{LaunchPreset, LaunchPresetRequest, PresetRun, RepeatDraftRequest};
 
 use crate::auth::{AuthContext, Scope};
 use crate::error::AppError;
@@ -17,7 +17,7 @@ fn not_found() -> AppError {
     AppError::new(StatusCode::NOT_FOUND, "no preset with that id")
 }
 
-fn write_error(e: WriteError) -> AppError {
+pub fn write_error(e: WriteError) -> AppError {
     match e {
         WriteError::Invalid(msg) => AppError::new(StatusCode::BAD_REQUEST, msg),
         WriteError::NameTaken => {
@@ -84,6 +84,40 @@ pub async fn delete(
     } else {
         Err(not_found())
     }
+}
+
+/// `PUT /presets/{id}/attachments` — `multipart/form-data`. Replace the files
+/// every run of the preset gets, the way a draft keeps its own.
+pub async fn put_attachments(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<Uuid>,
+    multipart: Multipart,
+) -> ApiResult<Json<LaunchPreset>> {
+    ctx.requires(Scope::Dispatch)
+        .map_err(|code| AppError::new(code, "changing a preset needs the dispatch scope"))?;
+    let caps = crate::routes::server_settings::cached_upload_caps(&state);
+    let parsed = crate::uploads::parse_upload_multipart(multipart, caps)
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
+    store::set_files(&state.pool, ctx.owner_filter(), id, &parsed.raw)
+        .await
+        .map_err(write_error)?
+        .map(Json)
+        .ok_or_else(not_found)
+}
+
+/// `POST /sessions/{id}/schedule-repeat`: the draft becomes a repeating schedule.
+pub async fn repeat_draft(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(draft_id): Path<String>,
+    Json(body): Json<RepeatDraftRequest>,
+) -> ApiResult<(StatusCode, Json<LaunchPreset>)> {
+    ctx.requires(Scope::Dispatch)
+        .map_err(|code| AppError::new(code, "scheduling a draft needs the dispatch scope"))?;
+    let preset = crate::presets::from_draft::repeat(&state, &ctx, &draft_id, &body).await?;
+    Ok((StatusCode::CREATED, Json(preset)))
 }
 
 pub async fn run(

@@ -5,6 +5,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::adapter::PermissionMode;
+use crate::api::SpawnContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
@@ -95,8 +96,65 @@ pub struct LaunchPreset {
     /// Names of the sealed env every run gets; values are never returned.
     #[serde(default)]
     pub env_keys: Vec<String>,
+    #[serde(default)]
+    pub template: SpawnTemplate,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// The spawn knobs a preset carries beyond its target, account and prompt:
+/// the rest of a draft's `SpawnRequest`, applied to every run it spawns.
+/// `attachment_names` lists the files stored with `PUT /presets/{id}/attachments`
+/// and is ignored on a preset write.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SpawnTemplate {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub label_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<SpawnContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
+    pub profile_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_archive: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachment_names: Vec<String>,
+}
+
+impl SpawnTemplate {
+    /// Whether it sets anything a run would notice, stored files aside.
+    #[must_use]
+    pub fn is_blank(&self) -> bool {
+        self.effort.is_none()
+            && self.service_tier.is_none()
+            && self.label_ids.is_empty()
+            && self.context.as_ref().is_none_or(|c| c.items.is_empty() && !c.auto)
+            && self.profile_id.is_none()
+            && !self.auto_archive
+    }
+}
+
+/// Body of `POST /sessions/{id}/schedule-repeat`: the draft becomes a
+/// schedule with its whole payload, env and files included, and is removed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(deny_unknown_fields)]
+pub struct RepeatDraftRequest {
+    /// The draft's session name when absent.
+    #[serde(default)]
+    pub name: Option<String>,
+    pub cron: String,
+    #[serde(default)]
+    pub timezone: Option<String>,
+    #[serde(default)]
+    pub overlap: Option<Overlap>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
 }
 
 /// Body of `POST /presets` and `PUT /presets/{id}`.
@@ -110,7 +168,8 @@ pub struct LaunchPreset {
 ///
 /// Env is write-only: a name in `env_keys` without a value in `env` keeps its
 /// stored value, a name in `env` is set, any other stored name is dropped.
-/// With both absent the stored env is left as it is.
+/// With both absent the stored env is left as it is; an absent `template`
+/// keeps the stored one.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(deny_unknown_fields)]
@@ -165,6 +224,8 @@ pub struct LaunchPresetRequest {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(type = "{ [key in string]: string } | null"))]
     pub env: Option<EnvValues>,
+    #[serde(default)]
+    pub template: Option<SpawnTemplate>,
 }
 
 /// Env values on their way in; `Debug` never prints them.
@@ -188,7 +249,24 @@ pub struct PresetRun {
 
 #[cfg(test)]
 mod tests {
-    use super::{EnvValues, LaunchPresetRequest, OnStale, Overlap};
+    use super::{EnvValues, LaunchPresetRequest, OnStale, Overlap, SpawnTemplate};
+
+    #[test]
+    fn a_blank_template_serializes_to_nothing_and_ignores_stored_files() {
+        assert_eq!(serde_json::to_value(SpawnTemplate::default()).unwrap(), serde_json::json!({}));
+        let files =
+            SpawnTemplate { attachment_names: vec!["a.md".into()], ..SpawnTemplate::default() };
+        assert!(files.is_blank());
+        let effort = SpawnTemplate { effort: Some("high".into()), ..SpawnTemplate::default() };
+        assert!(!effort.is_blank());
+        let back: SpawnTemplate = serde_json::from_value(serde_json::json!({
+            "effort": "high", "label_ids": ["l1"], "context": {"items": ["notes"]},
+            "auto_archive": true,
+        }))
+        .unwrap();
+        assert_eq!(back.label_ids, ["l1"]);
+        assert!(back.auto_archive && !back.is_blank());
+    }
 
     #[test]
     fn env_values_never_reach_debug_output() {

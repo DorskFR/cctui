@@ -1,4 +1,4 @@
-use cctui_proto::api::presets::OnStale;
+use cctui_proto::api::presets::{OnStale, SpawnTemplate};
 use cctui_proto::injected::PREVIOUS_CONVERSATION;
 use serde_json::json;
 use sqlx::PgPool;
@@ -9,8 +9,8 @@ use super::claim::{BatchEvent, ClaimedLane, LaneFilter, claim_lanes, release_lan
 use super::deliver::deliver_due;
 use super::preset::{
     Current, DISPATCHER_GONE, MACHINE_GONE, Plan, Preset, Prior, Resolved, UNDELIVERED,
-    dispatch_request, instruction, lane, plan, prior_from, resolve, reuse_window_secs, run_env,
-    run_labels, spawn_prompt, spawn_request,
+    dispatch_request, instruction, lane, opened, plan, prior_from, resolve, reuse_window_secs,
+    run_env, run_labels, spawn_prompt, spawn_request,
 };
 use super::store::{NewEvent, insert_event};
 use crate::presets::store_tests::{Owner, seed_owner};
@@ -28,6 +28,7 @@ fn session(status: &str, adapter: &str, idle_secs: i64) -> Current {
 
 fn preset(machine: bool) -> Preset {
     Preset {
+        preset_id: None,
         user_id: Uuid::nil(),
         name: "triage".into(),
         prompt: "triage the queue\n".into(),
@@ -46,6 +47,8 @@ fn preset(machine: bool) -> Preset {
         machine_live: machine,
         dispatcher_name: (!machine).then(|| "kube".to_owned()),
         sealed_env: None,
+        sealed_prompt: None,
+        template: sqlx::types::Json(SpawnTemplate::default()),
     }
 }
 
@@ -172,6 +175,48 @@ fn a_machine_spawn_carries_the_account_pick_and_elects_one_when_none_is_set() {
     let unbound = Preset { no_account: true, ..preset(true) };
     let unbound = spawn_request(&unbound, &Plan::Spawn, "go").unwrap();
     assert!(unbound.no_account);
+}
+
+#[test]
+fn a_machine_spawn_carries_the_presets_template() {
+    let profile = Uuid::from_u128(5);
+    let template = SpawnTemplate {
+        effort: Some("high".into()),
+        service_tier: Some("fast".into()),
+        label_ids: vec!["l1".into()],
+        context: Some(cctui_proto::api::SpawnContext { items: vec!["notes".into()], auto: true }),
+        profile_id: Some(profile),
+        auto_archive: true,
+        attachment_names: vec!["brief.md".into()],
+    };
+    let p = Preset { template: sqlx::types::Json(template), ..preset(true) };
+    let req = spawn_request(&p, &Plan::Spawn, "go").unwrap();
+    assert_eq!(req.effort.as_deref(), Some("high"));
+    assert_eq!(req.service_tier.as_deref(), Some("fast"));
+    assert_eq!(req.label_ids, ["l1"]);
+    let context = req.context.as_ref().map(|c| (c.items.as_slice(), c.auto));
+    assert_eq!(context, Some((&["notes".to_owned()][..], true)));
+    assert_eq!(req.profile_id, Some(profile));
+    assert!(req.auto_archive);
+    assert!(req.attachment_names.is_empty(), "files ride as uploads, not names");
+    let blank = spawn_request(&preset(true), &Plan::Spawn, "go").unwrap();
+    assert!(blank.effort.is_none() && blank.label_ids.is_empty() && !blank.auto_archive);
+}
+
+#[test]
+fn a_run_opens_the_presets_sealed_prompt() {
+    let key = [3u8; 32];
+    let real = "log in with <redacted>hunter2-xyz</redacted>";
+    let stored = Preset {
+        prompt: "log in with [REDACTED:user]".into(),
+        sealed_prompt: Some(crate::crypto::encrypt(real, &key)),
+        ..preset(true)
+    };
+    let open = opened(stored.clone(), || key.to_vec()).unwrap();
+    assert_eq!(open.prompt, real);
+    assert!(opened(stored, || vec![4u8; 32]).unwrap_err().contains("vault key"));
+    let plain = opened(preset(true), || panic!("nothing sealed")).unwrap();
+    assert_eq!(plain.prompt, "triage the queue\n");
 }
 
 fn sealed(pairs: &[(&str, &str)], key: &[u8]) -> Option<String> {
@@ -735,4 +780,72 @@ async fn a_machine_preset_with_env_fires_a_spawn_carrying_it() {
         panic!("expected a spawn")
     };
     assert_eq!(spec.env.get("MINIFLUX_TOKEN").map(String::as_str), Some("feed-t0ken"));
+}
+
+#[tokio::test]
+async fn a_schedule_fires_a_spawn_with_its_effort_labels_and_files() {
+    use cctui_proto::api::presets::LaunchPresetRequest;
+    let Some(pool) = pool("inbox_preset_template_fire").await else { return };
+    crate::crypto::install_vault_key(vec![7u8; 32]);
+    let owner = seed_owner(&pool, "preset-template").await;
+    grant_dispatch(&pool, owner.user).await;
+    let label: Uuid = sqlx::query_scalar(
+        "INSERT INTO labels (name, color, user_id) VALUES ('digest', '120', $1) RETURNING id",
+    )
+    .bind(owner.user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let req = LaunchPresetRequest {
+        name: format!("tpl-{}", Uuid::new_v4()),
+        prompt: "summarise the attached brief".into(),
+        machine_id: Some(owner.machine),
+        working_dir: Some("/w".into()),
+        no_account: true,
+        template: Some(SpawnTemplate {
+            effort: Some("high".into()),
+            label_ids: vec![label.to_string()],
+            ..SpawnTemplate::default()
+        }),
+        ..LaunchPresetRequest::default()
+    };
+    let valid = crate::presets::validate(&req).unwrap();
+    let preset = crate::presets::store::create(&pool, owner.user, &valid).await.unwrap();
+    let brief = crate::uploads::RawUpload {
+        name: "brief.md".into(),
+        bytes: b"# the brief".to_vec().into(),
+        content_type: Some("text/markdown".into()),
+    };
+    let stored = crate::presets::store::set_files(&pool, Some(owner.user), preset.id, &[brief])
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.template.attachment_names, ["brief.md"]);
+    assert_eq!(stored.template.effort.as_deref(), Some("high"));
+    let lane_id = lane(&pool, owner.user, preset.id, "ci").await.unwrap();
+    let event = add_event(&pool, lane_id, owner.user).await;
+    let state = AppState::for_test(pool.clone());
+    let daemon = crate::routes::fs::answer_list_dirs(&state, owner.machine, Ok(Vec::new()));
+
+    deliver_due(&state, 1, only(lane_id)).await;
+
+    let (status, _, _, error, _, _) = event_row(&pool, event).await;
+    assert_eq!(status, "delivered", "{error:?}");
+    let mut rx = daemon.await.unwrap();
+    let Some(cctui_proto::ws::DaemonFrameDown::Command { command, .. }) = rx.recv().await else {
+        panic!("expected a command frame")
+    };
+    let cctui_proto::adapter::AdapterCommand::Spawn { spec, session_id, .. } = *command else {
+        panic!("expected a spawn")
+    };
+    assert_eq!(spec.effort.as_deref(), Some("high"));
+    assert!(spec.bootstrap.to_string().contains("brief.md"), "{}", spec.bootstrap);
+    let key = session_id.expect("a spawn key").to_string();
+    let intents: Vec<Uuid> =
+        sqlx::query_scalar("SELECT label_ids FROM session_label_intents WHERE spawn_key = $1")
+            .bind(&key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(intents.contains(&label), "{intents:?}");
 }

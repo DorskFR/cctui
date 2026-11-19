@@ -1183,6 +1183,12 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "post_sessions_by_id_schedule_repeat"
+# POST /sessions/{id}/schedule-repeat — Turn a draft session into a repeating schedule.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "post_sessions_by_id_cancel_launch"
 # POST /sessions/{id}/cancel-launch — Cancel a draft session's queued launch.
 tui = "waived"
@@ -1641,6 +1647,12 @@ reason = "launch presets are automation configuration for the inbox; the TUI kee
 [[route]]
 id = "delete_presets_by_id"
 # DELETE /presets/{id} — Read, replace or delete one launch preset.
+tui = "waived"
+reason = "launch presets are automation configuration for the inbox; the TUI keeps the operator loop"
+
+[[route]]
+id = "put_presets_by_id_attachments"
+# PUT /presets/{id}/attachments — Replace the files every run of a launch preset gets.
 tui = "waived"
 reason = "launch presets are automation configuration for the inbox; the TUI keeps the operator loop"
 

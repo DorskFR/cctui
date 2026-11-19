@@ -57,8 +57,10 @@ import {
 	dispatchToK8s,
 	saveDraft,
 	scheduleLaunch as queueLaunch,
+	scheduleRepeat as queueRepeat,
 	spawnOnMachine
 } from './spawnSubmit';
+import type { RepeatDraftRequest } from '@bindings/RepeatDraftRequest';
 
 const PERSIST_DELAY_MS = 300;
 const SPAWN_SPAN = 'ui.spawn_session.launch';
@@ -87,6 +89,7 @@ export class SpawnForm {
 	canSpawnOnMachine = $derived(hasFeature('machine_spawn'));
 	canDraft = $derived(this.canSpawnOnMachine && hasFeature('drafts'));
 	canSchedule = $derived(this.canDraft && hasFeature('scheduling'));
+	canRepeat = $derived(this.canDraft && hasFeature('automation'));
 	canAttach = $derived(hasFeature('uploads'));
 	canUseProfiles = $derived(this.canSpawnOnMachine && hasFeature('profiles'));
 	canUseContext = $derived(hasFeature('context'));
@@ -569,6 +572,21 @@ export class SpawnForm {
 			await queueLaunch(this, at);
 		} catch (e) {
 			toasts.error(m.spawn_toast_schedule_failed({ error: errMessage(e) }));
+		} finally {
+			this.busy = false;
+		}
+	};
+
+	/** True once the draft became a schedule; a failure is toasted. */
+	scheduleRepeat = async (body: RepeatDraftRequest): Promise<boolean> => {
+		if (!this.canRepeat || !this.draftValid || this.busy) return false;
+		this.busy = true;
+		try {
+			await queueRepeat(this, body);
+			return true;
+		} catch (e) {
+			toasts.error(m.spawn_toast_schedule_failed({ error: errMessage(e) }));
+			return false;
 		} finally {
 			this.busy = false;
 		}

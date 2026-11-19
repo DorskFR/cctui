@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LaunchPreset } from '@bindings/LaunchPreset';
-import { NO_ACCOUNT, POOL_PREFIX } from '#lib/components/organisms/spawn/options.ts';
+import { withExternalSources } from '#lib/webhooks/externalSources.ts';
 import {
 	emptyForm,
 	formFromPreset,
@@ -13,6 +13,16 @@ import {
 	withEnabled
 } from './presetForm';
 
+const template = {
+	effort: 'high',
+	service_tier: null,
+	label_ids: ['l1'],
+	context: { items: ['notes'], auto: false },
+	profile_id: 'prof-1',
+	auto_archive: true,
+	attachment_names: ['brief.md']
+};
+
 const preset = (over: Partial<LaunchPreset> = {}): LaunchPreset => ({
 	id: 'p1',
 	user_id: 'u1',
@@ -20,7 +30,7 @@ const preset = (over: Partial<LaunchPreset> = {}): LaunchPreset => ({
 	prompt: 'Summarise the night',
 	machine_id: 'm1',
 	working_dir: '/home/alice/widgets',
-	adapter_id: 'claude',
+	adapter_id: 'claude-code',
 	model: 'opus',
 	permission_mode: 'auto',
 	account_id: 'a1',
@@ -41,6 +51,7 @@ const preset = (over: Partial<LaunchPreset> = {}): LaunchPreset => ({
 	then_preset_id: 'p2',
 	notify_url: null,
 	env_keys: ['FEED_TOKEN'],
+	template,
 	created_at: '2026-11-01T00:00:00Z',
 	updated_at: '2026-11-01T00:00:00Z',
 	...over
@@ -56,25 +67,20 @@ const dispatcherPreset = () =>
 		account_id: null,
 		dispatcher_id: 'd1',
 		profile: 'review',
-		notify_url: 'https://hooks.example/done'
+		notify_url: 'https://hooks.example/done',
+		template: {}
 	});
 
+const kept = { env_keys: ['FEED_TOKEN'], env: {} };
+
 describe('the enabled toggle', () => {
-	it('re-sends every field of the preset with enabled flipped', () => {
+	it('re-sends every field of the preset with enabled flipped, template included', () => {
 		const p = preset();
 		const body = withEnabled(p, false);
 		expect(body).toEqual({ ...requestFromPreset(p), enabled: false });
-		expect(body).toMatchObject({
-			name: 'Morning report',
-			cron: '0 7 * * 1-5',
-			timezone: 'Asia/Tokyo',
-			external_sources: true,
-			fresh_secs: 900,
-			on_stale: 'new',
-			max_batch: 4,
-			then_preset_id: 'p2',
-			overlap: 'skip'
-		});
+		expect(body).toMatchObject({ name: 'Morning report', cron: '0 7 * * 1-5', then_preset_id: 'p2', template });
+		expect(body.env_keys).toBeNull();
+		expect(body.env).toBeNull();
 	});
 
 	it('carries no response-only field', () => {
@@ -83,250 +89,109 @@ describe('the enabled toggle', () => {
 			expect(body).not.toHaveProperty(key);
 		}
 	});
+});
 
-	it('keeps a dispatcher target', () => {
-		expect(withEnabled(dispatcherPreset(), false)).toMatchObject({
-			dispatcher_id: 'd1',
-			profile: 'review',
-			machine_id: null,
-			notify_url: 'https://hooks.example/done',
-			enabled: false
-		});
+describe('the external-sources round trip', () => {
+	it('sends the GET object back with only external_sources flipped, template and env names kept', () => {
+		const p = preset({ external_sources: false });
+		const body = withExternalSources(p) as Record<string, unknown>;
+		expect(body.external_sources).toBe(true);
+		expect(body.template).toEqual(template);
+		expect(body.env_keys).toEqual(['FEED_TOKEN']);
+		expect(body).not.toHaveProperty('env');
+		const { external_sources: _a, ...rest } = body;
+		const { external_sources: _b, env_keys: _c, env: _d, ...fromForm } = requestFromPreset(p);
+		expect(rest).toMatchObject(fromForm);
 	});
 });
 
-describe('requestFromForm', () => {
-	it('builds a new weekday schedule', () => {
-		const form = emptyForm({ machine_id: 'm1', adapter_id: 'claude', timezone: 'Asia/Tokyo' });
-		form.name = ' Standup ';
-		form.prompt = 'Prepare the standup';
-		form.repeat = { kind: 'weekdays', time: '07:00', weekdays: [1], custom: '' };
-		expect(requestFromForm(form, { schedule: true })).toEqual({
-			name: 'Standup',
-			prompt: 'Prepare the standup',
+describe('the spawn template', () => {
+	it('opens a schedule as the spawn form state: where, prompt, kit, labels and context', () => {
+		const form = formFromPreset(preset(), 'UTC');
+		expect(form.spawn).toMatchObject({
 			machine_id: 'm1',
-			working_dir: '~',
-			adapter_id: 'claude',
-			model: null,
-			permission_mode: null,
-			account_id: null,
+			working_dir: '/home/alice/widgets',
+			name: 'Morning report',
+			prompt: 'Summarise the night',
+			labels: ['l1'],
+			context_items: ['notes'],
+			context_auto: false
+		});
+		expect(form.kit).toEqual({
+			harness: 'claude-code',
+			account_id: 'a1',
 			pool_id: null,
 			no_account: false,
-			dispatcher_id: null,
-			profile: null,
-			external_sources: false,
-			fresh_secs: null,
-			on_stale: null,
-			max_batch: null,
-			cron: '0 7 * * 1-5',
-			timezone: 'Asia/Tokyo',
-			enabled: true,
-			overlap: 'skip',
-			then_preset_id: null,
-			notify_url: null,
-			env_keys: [],
-			env: {}
+			model_alias: 'opus',
+			effort: 'high',
+			permission_mode: 'auto',
+			service_tier: null
 		});
 	});
 
-	it('leaves the cron out of a preset edited without the schedule section', () => {
-		const form = emptyForm({ machine_id: 'm1', adapter_id: 'claude', timezone: 'Asia/Tokyo' });
-		form.name = 'Hook';
-		form.prompt = 'Handle it';
-		expect(requestFromForm(form, { schedule: false })).toMatchObject({
-			cron: null,
-			timezone: null,
-			enabled: null,
-			overlap: null
-		});
-	});
-
-	it('round-trips an unedited preset, keeping every stored env value by name', () => {
+	it('round-trips an unedited preset, every stored env value kept by name', () => {
 		const p = preset();
 		expect(requestFromForm(formFromPreset(p, 'UTC'), { schedule: true, base: p })).toEqual({
 			...requestFromPreset(p),
-			env_keys: ['FEED_TOKEN'],
-			env: {}
+			...kept
 		});
 	});
 
-	it('round-trips a dispatcher preset and never invents a machine target', () => {
+	it('writes the edited kit, labels and context into the request', () => {
+		const p = preset();
+		const form = formFromPreset(p, 'UTC');
+		form.kit = { ...form.kit, harness: 'codex', model_alias: 'gpt-5', effort: 'low', service_tier: 'fast', account_id: null, pool_id: 'pl1' };
+		form.spawn.labels = ['l2'];
+		form.spawn.context_items = [];
+		const body = requestFromForm(form, { schedule: true, base: p });
+		expect(body).toMatchObject({ adapter_id: 'codex', model: 'gpt-5', account_id: null, pool_id: 'pl1', no_account: false });
+		expect(body.template).toEqual({
+			...template,
+			effort: 'low',
+			service_tier: 'fast',
+			label_ids: ['l2'],
+			context: null
+		});
+	});
+
+	it('builds a new schedule from the form', () => {
+		const form = emptyForm({ machine_id: 'm1', timezone: 'Asia/Tokyo' });
+		form.spawn.name = ' Standup ';
+		form.spawn.prompt = 'Prepare the standup';
+		form.kit.effort = 'high';
+		form.repeat = { kind: 'weekdays', time: '07:00', weekdays: [1], custom: '' };
+		const body = requestFromForm(form, { schedule: true });
+		expect(body).toMatchObject({
+			name: 'Standup',
+			machine_id: 'm1',
+			working_dir: '~',
+			adapter_id: 'claude-code',
+			cron: '0 7 * * 1-5',
+			timezone: 'Asia/Tokyo',
+			env_keys: [],
+			env: {}
+		});
+		expect(body.template).toMatchObject({ effort: 'high', label_ids: [], context: null, attachment_names: [] });
+	});
+
+	it('never invents a machine target or a template for a dispatcher preset', () => {
 		const p = dispatcherPreset();
 		const form = formFromPreset(p, 'UTC');
-		form.machine_id = 'm9';
-		form.adapter_id = 'codex';
+		form.spawn.machine_id = 'm9';
+		form.kit.effort = 'high';
 		form.enabled = false;
 		expect(requestFromForm(form, { schedule: true, base: p })).toEqual({
 			...requestFromPreset(p),
 			enabled: false,
-			env_keys: ['FEED_TOKEN'],
-			env: {}
+			...kept
 		});
 	});
 
-	it('keeps the schedule of a preset edited without the schedule section', () => {
-		const p = preset();
-		const form = formFromPreset(p, 'UTC');
-		form.prompt = 'Changed';
-		expect(requestFromForm(form, { schedule: false, base: p })).toEqual({
-			...requestFromPreset(p),
-			prompt: 'Changed',
-			env_keys: ['FEED_TOKEN'],
-			env: {}
-		});
-	});
-});
-
-describe('the account pick', () => {
-	it('round-trips an account, a pool and no account, and defaults to Auto', () => {
-		const pick = (over: Partial<LaunchPreset>) => {
-			const p = preset({ account_id: null, pool_id: null, no_account: false, ...over });
-			const form = formFromPreset(p, 'UTC');
-			return { pick: form.account, body: requestFromForm(form, { schedule: true, base: p }) };
-		};
-		expect(pick({ account_id: 'a1' })).toMatchObject({
-			pick: 'a1',
-			body: { account_id: 'a1', pool_id: null, no_account: false }
-		});
-		expect(pick({ pool_id: 'pl1' })).toMatchObject({
-			pick: `${POOL_PREFIX}pl1`,
-			body: { account_id: null, pool_id: 'pl1', no_account: false }
-		});
-		expect(pick({ no_account: true })).toMatchObject({
-			pick: NO_ACCOUNT,
-			body: { account_id: null, pool_id: null, no_account: true }
-		});
-		expect(pick({})).toMatchObject({ pick: '', body: { account_id: null, pool_id: null, no_account: false } });
-	});
-
-	it('replaces the stored pick with the one chosen in the form', () => {
-		const p = preset({ account_id: 'a1' });
-		const form = formFromPreset(p, 'UTC');
-		form.account = `${POOL_PREFIX}pl1`;
-		expect(requestFromForm(form, { schedule: true, base: p })).toMatchObject({
-			account_id: null,
-			pool_id: 'pl1',
-			no_account: false
-		});
-	});
-
-	it('is never sent for a dispatcher target', () => {
-		const p = dispatcherPreset();
-		const body = requestFromForm(formFromPreset(p, 'UTC'), { schedule: true, base: p });
-		expect(body).toMatchObject({ account_id: null, pool_id: null, no_account: false });
-	});
-});
-
-describe('formProblems', () => {
-	const valid = () => {
-		const form = emptyForm({ machine_id: 'm1', adapter_id: 'claude', timezone: 'UTC' });
-		form.name = 'n';
-		form.prompt = 'p';
-		return form;
-	};
-
-	it('passes a complete form', () => {
-		expect(hasProblems(formProblems(valid(), { schedule: true }))).toBe(false);
-	});
-
-	it('names every missing field', () => {
-		const form = emptyForm({ timezone: 'UTC' });
-		form.working_dir = 'relative/dir';
-		expect(formProblems(form, { schedule: true })).toEqual({
-			name: 'required',
-			prompt: 'required',
-			machine: 'required',
-			working_dir: 'absolute',
-			adapter: 'required'
-		});
-	});
-
-	it('asks nothing about the machine of a dispatcher preset', () => {
-		const form = formFromPreset(dispatcherPreset(), 'UTC');
-		expect(formProblems(form, { schedule: true, dispatcher: true })).toEqual({});
-	});
-
-	it('checks a custom cron only with the schedule section', () => {
-		const form = valid();
-		form.repeat = { kind: 'custom', time: '09:00', weekdays: [1], custom: '0 9 * *' };
-		expect(formProblems(form, { schedule: true }).cron).toEqual({ kind: 'fields', count: 4 });
-		expect(formProblems(form, { schedule: false })).toEqual({});
-	});
-
-	it('wants a day for a weekly repeat and a time for a timed one', () => {
-		const form = valid();
-		form.repeat = { kind: 'weekly', time: '', weekdays: [], custom: '' };
-		expect(formProblems(form, { schedule: true })).toEqual({ time: 'invalid', weekdays: 'required' });
-	});
-});
-
-describe('a preset that accepts external sources', () => {
-	const form = () => {
-		const f = emptyForm({ machine_id: 'm1', adapter_id: 'claude', timezone: 'UTC' });
-		f.name = 'Issue triage';
-		f.prompt = 'Triage it';
-		return f;
-	};
-
-	it('is sent with external_sources on and no cron', () => {
-		const f = form();
-		f.permission_mode = 'auto';
-		expect(requestFromForm(f, { schedule: false, external: true })).toMatchObject({
-			external_sources: true,
-			permission_mode: 'auto',
-			cron: null
-		});
-		expect(requestFromForm(f, { schedule: false }).external_sources).toBe(false);
-	});
-
-	it('requires a machine target to run guarded', () => {
-		const f = form();
-		for (const mode of [null, 'yolo', 'whip'] as const) {
-			f.permission_mode = mode;
-			expect(formProblems(f, { schedule: false, external: true })).toEqual({ permission_mode: 'guarded' });
-		}
-		for (const mode of ['ask', 'auto'] as const) {
-			f.permission_mode = mode;
-			expect(formProblems(f, { schedule: false, external: true })).toEqual({});
-		}
-		f.permission_mode = 'yolo';
-		expect(formProblems(f, { schedule: false })).toEqual({});
-	});
-
-	it('asks nothing about the permission mode of a dispatcher target', () => {
-		const f = formFromPreset(dispatcherPreset(), 'UTC');
-		expect(formProblems(f, { schedule: false, dispatcher: true, external: true })).toEqual({});
-	});
-});
-
-describe('formFromPreset', () => {
-	it('recognises the cron and keeps the timezone', () => {
-		expect(formFromPreset(preset(), 'Europe/Paris')).toMatchObject({
-			repeat: { kind: 'weekdays', time: '07:00' },
-			timezone: 'Asia/Tokyo',
-			enabled: true,
-			overlap: 'skip'
-		});
-	});
-
-	it('offers the browser timezone to a preset that has no cron yet', () => {
-		expect(formFromPreset(preset({ cron: null, timezone: 'UTC' }), 'Europe/Paris').timezone).toBe('Europe/Paris');
-	});
-});
-
-describe('lists', () => {
-	it('counts a preset as a schedule when it has a cron', () => {
-		expect(isSchedule(preset())).toBe(true);
-		expect(isSchedule(preset({ cron: null }))).toBe(false);
-	});
-
-	it('leads the timezones with UTC and keeps an unlisted current one', () => {
-		expect(timezoneOptions(['Europe/Paris', 'Asia/Tokyo'], 'Mars/Olympus')).toEqual([
-			'UTC',
-			'Asia/Tokyo',
-			'Europe/Paris',
-			'Mars/Olympus'
-		]);
+	it('leaves the cron out of a preset edited without the schedule section', () => {
+		const form = emptyForm({ machine_id: 'm1', timezone: 'Asia/Tokyo' });
+		form.spawn.name = 'Hook';
+		form.spawn.prompt = 'Handle it';
+		expect(requestFromForm(form, { schedule: false })).toMatchObject({ cron: null, timezone: null, enabled: null, overlap: null });
 	});
 });
 
@@ -346,23 +211,74 @@ describe('the schedule env', () => {
 		form.env = form.env
 			.filter((r) => r.key !== 'GONE')
 			.map((r) => (r.key === 'SWAP' ? { ...r, value: 'new-swap' } : r));
-		form.env.push({ key: 'ADDED', value: 'new-added' }, { key: 'HALF', value: '' });
+		form.env.push({ key: 'ADDED', value: 'new-added' });
 		const body = requestFromForm(form, { schedule: true, base: p });
-		expect(body.env_keys).toEqual(['KEEP', 'SWAP', 'ADDED', 'HALF']);
+		expect(body.env_keys).toEqual(['KEEP', 'SWAP', 'ADDED']);
 		expect(body.env).toEqual({ SWAP: 'new-swap', ADDED: 'new-added' });
 	});
+});
 
-	it('leaves the stored env alone on the enabled toggle', () => {
-		const body = withEnabled(preset(), false);
-		expect(body.env_keys).toBeNull();
-		expect(body.env).toBeNull();
+describe('formProblems', () => {
+	const valid = () => {
+		const form = emptyForm({ machine_id: 'm1', timezone: 'UTC' });
+		form.spawn.name = 'n';
+		form.spawn.prompt = 'p';
+		return form;
+	};
+
+	it('passes a complete form', () => {
+		expect(hasProblems(formProblems(valid(), { schedule: true }))).toBe(false);
 	});
 
-	it('flags a name that is not a shell variable', () => {
-		const form = emptyForm({ machine_id: 'm1', adapter_id: 'claude', timezone: 'UTC' });
-		form.name = 'n';
-		form.prompt = 'p';
+	it('names every missing field', () => {
+		const form = emptyForm({ timezone: 'UTC' });
+		form.spawn.working_dir = 'relative/dir';
+		form.kit.harness = '';
+		expect(formProblems(form, { schedule: true })).toEqual({
+			name: 'required',
+			prompt: 'required',
+			machine: 'required',
+			working_dir: 'absolute',
+			adapter: 'required'
+		});
+	});
+
+	it('asks nothing about the machine of a dispatcher preset', () => {
+		expect(formProblems(formFromPreset(dispatcherPreset(), 'UTC'), { schedule: true, dispatcher: true })).toEqual({});
+	});
+
+	it('requires a machine target that accepts external sources to run guarded', () => {
+		const form = valid();
+		for (const mode of [null, 'yolo', 'whip']) {
+			form.kit.permission_mode = mode;
+			expect(formProblems(form, { schedule: false, external: true })).toEqual({ permission_mode: 'guarded' });
+		}
+		form.kit.permission_mode = 'ask';
+		expect(formProblems(form, { schedule: false, external: true })).toEqual({});
+	});
+
+	it('checks a custom cron only with the schedule section, and env names always', () => {
+		const form = valid();
+		form.repeat = { kind: 'custom', time: '09:00', weekdays: [1], custom: '0 9 * *' };
+		expect(formProblems(form, { schedule: true }).cron).toEqual({ kind: 'fields', count: 4 });
+		expect(formProblems(form, { schedule: false })).toEqual({});
 		form.env = [{ key: 'lower-case', value: 'x' }];
-		expect(formProblems(form, { schedule: true })).toEqual({ env: 'invalid' });
+		expect(formProblems(form, { schedule: false })).toEqual({ env: 'invalid' });
+	});
+});
+
+describe('lists', () => {
+	it('counts a preset as a schedule when it has a cron', () => {
+		expect(isSchedule(preset())).toBe(true);
+		expect(isSchedule(preset({ cron: null }))).toBe(false);
+	});
+
+	it('leads the timezones with UTC and keeps an unlisted current one', () => {
+		expect(timezoneOptions(['Europe/Paris', 'Asia/Tokyo'], 'Mars/Olympus')).toEqual([
+			'UTC',
+			'Asia/Tokyo',
+			'Europe/Paris',
+			'Mars/Olympus'
+		]);
 	});
 });

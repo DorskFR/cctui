@@ -37,6 +37,14 @@ pub(super) fn register(r: Routes) -> Routes {
         )
         .add(
             &[Method::POST],
+            "/sessions/{id}/schedule-repeat",
+            "Turn a draft session into a repeating schedule.",
+            post(routes::presets::repeat_draft),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[Method::POST],
             "/sessions/{id}/cancel-launch",
             "Cancel a draft session's queued launch.",
             post(routes::spawn::cancel_draft_launch),

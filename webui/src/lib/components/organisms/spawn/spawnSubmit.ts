@@ -25,6 +25,8 @@ import { joinAfterSpawn } from '#lib/cctuiverseJoin.ts';
 import { cctuiverseConfig } from '#lib/cctuiverseConfig.svelte.ts';
 import { pendingSpawns } from '#lib/pendingSpawns.svelte.ts';
 import { hasFeature } from '#lib/features.svelte.ts';
+import { endpoints } from '#lib/queries/index.ts';
+import type { RepeatDraftRequest } from '@bindings/RepeatDraftRequest';
 
 /** Identity of the form's file set: what decides whether a save has to ship
  *  the bytes again. */
@@ -101,6 +103,18 @@ export async function scheduleLaunch(sf: SpawnForm, at: Date) {
 	);
 	// The draft row now owns the payload; dropping the local slot keeps a later
 	// form for the same cwd from restoring a schedule the user already placed.
+	sf.draftId = null;
+	sf.finish();
+}
+
+/** Save the form as a draft and turn it into a repeating schedule: the
+ *  server moves the payload, sealed env and files to the schedule and drops
+ *  the draft, so nothing secret passes through the browser. */
+export async function scheduleRepeat(sf: SpawnForm, body: RepeatDraftRequest) {
+	sf.cancelAutosave();
+	const draftId = await persistDraft(sf, true);
+	const preset = await endpoints.scheduleDraftRepeat(draftId, body);
+	toasts.ok(m.spawn_toast_repeat_scheduled({ name: preset.name }));
 	sf.draftId = null;
 	sf.finish();
 }
