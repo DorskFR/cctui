@@ -2,7 +2,7 @@
 	// The spawn form's "Repeat…" schedule action: the draft becomes a schedule
 	// with its whole payload; only the name and the repeat are asked here.
 	import { Button, Field, Input, Modal } from '@dorsk/tsumikit';
-	import type { SpawnForm } from '#lib/components/organisms/spawn/spawnForm.svelte';
+	import type { SpawnForm } from '../spawn/spawnForm.svelte';
 	import { m } from '#lib/paraglide/messages.js';
 	import { cronFromRepeat } from '#lib/schedules/cron.ts';
 	import { browserTimezone, emptyForm, formProblems, hasProblems, type PresetForm } from '#lib/schedules/presetForm.ts';

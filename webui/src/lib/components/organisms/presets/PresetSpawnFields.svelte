@@ -60,7 +60,7 @@
 					problems.working_dir === 'absolute' && m.schedules_error_working_dir_absolute(),
 					problems.adapter && m.schedules_error_adapter(),
 					problems.permission_mode && m.presets_error_permission_guarded()
-				].filter((e): e is string => !!e)
+				].flatMap((e) => (e ? [e] : []))
 			: []
 	);
 </script>

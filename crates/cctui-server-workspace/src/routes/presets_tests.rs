@@ -146,8 +146,7 @@ async fn preset_env_is_write_only_and_edited_per_key() {
     assert_eq!(paused.env_keys, created.env_keys, "no env fields: env unchanged");
     assert_eq!(stored_env(&state, created.id).await.0, sealed, "the seal is not even rewritten");
 
-    let round_trip =
-        LaunchPresetRequest { env_keys: Some(seen.env_keys), ..body(&a, "digest") };
+    let round_trip = LaunchPresetRequest { env_keys: Some(seen.env_keys), ..body(&a, "digest") };
     put(created.id, round_trip).await.unwrap();
     assert_eq!(stored_env(&state, created.id).await.1, open, "GET names back: every value kept");
 

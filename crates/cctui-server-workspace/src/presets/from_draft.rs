@@ -46,16 +46,19 @@ async fn read(pool: &PgPool, draft_id: &str) -> Result<Draft, AppError> {
     })
 }
 
+fn named(v: Option<&str>) -> Option<&str> {
+    v.map(str::trim).filter(|n| !n.is_empty())
+}
+
 async fn account_pick(
     pool: &PgPool,
     owner: Uuid,
     payload: &SpawnRequest,
 ) -> Result<(Option<Uuid>, Option<Uuid>, bool), AppError> {
-    let named = |v: &Option<String>| v.as_deref().map(str::trim).filter(|n| !n.is_empty());
     if payload.no_account {
         return Ok((None, None, true));
     }
-    if let Some(name) = named(&payload.account) {
+    if let Some(name) = named(payload.account.as_deref()) {
         let id: Option<Uuid> = sqlx::query_scalar(
             "SELECT a.id FROM accounts a WHERE a.name = $1 \
                AND (a.user_id = $2 OR EXISTS ( \
@@ -75,7 +78,7 @@ async fn account_pick(
             )
         });
     }
-    if let Some(name) = named(&payload.pool) {
+    if let Some(name) = named(payload.pool.as_deref()) {
         let id: Option<Uuid> =
             sqlx::query_scalar("SELECT id FROM account_pools WHERE name = $1 AND user_id = $2")
                 .bind(name)
@@ -147,13 +150,10 @@ pub async fn repeat(
     body: &RepeatDraftRequest,
 ) -> Result<LaunchPreset, AppError> {
     let draft = read(&state.pool, draft_id).await?;
-    let (machine, owner) = crate::routes::spawn::resolve_owned_machine(
-        state,
-        ctx,
-        &draft.payload.machine_id,
-    )
-    .await
-    .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
+    let (machine, owner) =
+        crate::routes::spawn::resolve_owned_machine(state, ctx, &draft.payload.machine_id)
+            .await
+            .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     let account = account_pick(&state.pool, owner, &draft.payload).await?;
     let card_labels = crate::spawn_labels::draft_label_ids(&state.pool, draft_id).await;
     let req = request_of(&draft, machine, account, card_labels, body);
@@ -287,8 +287,7 @@ mod tests {
         let open = crate::inbox::preset::opened(loaded, crate::crypto::vault_key).unwrap();
         assert_eq!(open.prompt, "digest with <redacted>hunter2-xyz</redacted>");
         let key = crate::presets::store::files_key(preset.id);
-        let (files, _) =
-            crate::routes::spawn::load_draft_uploads(&pool, &key, &[]).await.unwrap();
+        let (files, _) = crate::routes::spawn::load_draft_uploads(&pool, &key, &[]).await.unwrap();
         assert_eq!(files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["brief.md"]);
         let gone: i64 = sqlx::query_scalar("SELECT count(*) FROM sessions WHERE id = $1")
             .bind(&draft)

@@ -2,8 +2,8 @@
 import type { SpawnContext } from "./SpawnContext";
 
 /**
- * The spawn knobs a preset carries beyond its target, account and prompt:
- * the rest of a draft's `SpawnRequest`, applied to every run it spawns.
+ * The rest of a draft's `SpawnRequest`, applied to every run a preset spawns.
+ *
  * `attachment_names` lists the files stored with `PUT /presets/{id}/attachments`
  * and is ignored on a preset write.
  */

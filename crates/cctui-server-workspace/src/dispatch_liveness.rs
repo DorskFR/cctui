@@ -234,7 +234,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_worker_that_dies_before_registering_notifies_once_with_its_record() {
-        let Some(url) = crate::routes::gateway::test_db_url("dispatch_liveness_unregistered_notice")
+        let Some(url) =
+            crate::routes::gateway::test_db_url("dispatch_liveness_unregistered_notice")
         else {
             return;
         };

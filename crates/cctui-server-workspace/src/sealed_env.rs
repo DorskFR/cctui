@@ -31,7 +31,7 @@ pub fn valid_name(name: &str) -> bool {
         && name.bytes().all(|b| b == b'_' || b.is_ascii_uppercase() || b.is_ascii_digit())
 }
 
-pub fn check<'a>(names: impl IntoIterator<Item = &'a str>, set: &EnvMap) -> Result<(), String> {
+pub fn check<'a>(names: impl IntoIterator<Item = &'a str>, set: &'a EnvMap) -> Result<(), String> {
     let mut all = std::collections::BTreeSet::new();
     for name in names.into_iter().chain(set.keys().map(String::as_str)) {
         if !valid_name(name) {
@@ -163,13 +163,11 @@ mod tests {
         let sealed = seal(&env(&[("A", "1"), ("B", "2")]), key).unwrap();
         let kept = apply_edit(sealed.as_deref(), &["A".to_owned()], &EnvMap::new(), key).unwrap();
         assert_eq!(kept, env(&[("A", "1")]));
-        let replaced = apply_edit(
-            Some("v1:not-a-seal"),
-            &["A".to_owned()],
-            &env(&[("A", "9")]),
-            || panic!("every kept name has a new value"),
-        )
-        .unwrap();
+        let replaced =
+            apply_edit(Some("v1:not-a-seal"), &["A".to_owned()], &env(&[("A", "9")]), || {
+                panic!("every kept name has a new value")
+            })
+            .unwrap();
         assert_eq!(replaced, env(&[("A", "9")]));
         let cleared =
             apply_edit(Some("v1:not-a-seal"), &[], &EnvMap::new(), || panic!("nothing kept"));

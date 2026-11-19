@@ -351,11 +351,8 @@ mod tests {
         };
         let open = validate(&req).unwrap();
         assert_eq!((open.max_usd, open.budget_window_hours), (None, 24));
-        let capped = WebhookRequest {
-            max_usd: Some(2.5),
-            budget_window_hours: Some(720),
-            ..req.clone()
-        };
+        let capped =
+            WebhookRequest { max_usd: Some(2.5), budget_window_hours: Some(720), ..req.clone() };
         let capped = validate(&capped).unwrap();
         assert_eq!((capped.max_usd, capped.budget_window_hours), (Some(2.5), 720));
         for usd in [0.0, -1.0, f64::NAN, f64::INFINITY, 100_001.0] {

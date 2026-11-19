@@ -80,6 +80,15 @@
 		return () => clearInterval(t);
 	});
 	let repeatOpen = $state(false);
+	const repeatItem = (): MenuItem => ({
+		id: 'repeat',
+		label: m.spawn_schedule_repeat(),
+		icon: 'calendar',
+		disabled: !sf.draftValid || sf.busy,
+		onselect: () => {
+			repeatOpen = true;
+		}
+	});
 	const scheduleItems = $derived<MenuItem[]>([
 		...scheduleMenuItems({
 			now,
@@ -90,17 +99,7 @@
 				customOpen = true;
 			}
 		}),
-		...(sf.canRepeat
-			? [
-					{
-						id: 'repeat',
-						label: m.spawn_schedule_repeat(),
-						icon: 'calendar',
-						disabled: !sf.draftValid || sf.busy,
-						onselect: () => (repeatOpen = true)
-					}
-				]
-			: [])
+		...(sf.canRepeat ? [repeatItem()] : [])
 	]);
 
 	function scheduleCustom() {
