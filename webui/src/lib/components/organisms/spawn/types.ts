@@ -82,8 +82,10 @@ export type SpawnPrefill = Partial<Form> & {
 	followup_file?: string;
 };
 
-/** One env-secret row of the spawn form. Values never reach a draft. */
+/** One env-secret row. `stored`: the server holds a sealed value for `key`,
+ * kept unless `value` replaces it. Values never reach local storage. */
 export interface EnvRow {
 	key: string;
 	value: string;
+	stored?: boolean;
 }

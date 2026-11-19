@@ -145,6 +145,21 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "preset_accounts",
         sql: include_str!("../schema/0022_preset_accounts.sql"),
     },
+    Migration {
+        version: 23,
+        name: "preset_env",
+        sql: include_str!("../schema/0023_preset_env.sql"),
+    },
+    Migration {
+        version: 24,
+        name: "preset_hook_budget",
+        sql: include_str!("../schema/0024_preset_hook_budget.sql"),
+    },
+    Migration {
+        version: 25,
+        name: "notification_anchor",
+        sql: include_str!("../schema/0025_notification_anchor.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -296,7 +311,10 @@ mod tests {
                     (19, "bootstrap".to_owned()),
                     (20, "bootstrap".to_owned()),
                     (21, "bootstrap".to_owned()),
-                    (22, "bootstrap".to_owned())
+                    (22, "bootstrap".to_owned()),
+                    (23, "bootstrap".to_owned()),
+                    (24, "bootstrap".to_owned()),
+                    (25, "bootstrap".to_owned())
                 ]
             );
 
@@ -523,7 +541,10 @@ mod tests {
                     (19, "bootstrap".to_owned()),
                     (20, "bootstrap".to_owned()),
                     (21, "bootstrap".to_owned()),
-                    (22, "bootstrap".to_owned())
+                    (22, "bootstrap".to_owned()),
+                    (23, "bootstrap".to_owned()),
+                    (24, "bootstrap".to_owned()),
+                    (25, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =

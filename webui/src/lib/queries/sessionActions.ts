@@ -213,8 +213,8 @@ export function useSessionActions() {
     },
     spawn: (body: SpawnRequest, files: File[] = []) =>
       endpoints.spawn(body, files),
-    // Draft sessions: launch promotes a draft to a live spawn (env
-    // entered fresh), discard deletes it. Both refetch the roster.
+    // Draft sessions: launch promotes a draft to a live spawn, discard
+    // deletes it. Both refetch the roster.
     launchDraft: async (id: string, env: Record<string, string> = {}) => {
       const res = await endpoints.launchDraft(id, env);
       inval();

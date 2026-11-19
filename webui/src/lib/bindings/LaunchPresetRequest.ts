@@ -12,6 +12,10 @@ import type { PermissionMode } from "./PermissionMode";
  * none of them lets the server elect the account with the most room.
  * `external_sources` lets n8n and webhook events reach the preset's lanes;
  * a machine target then needs `permission_mode` `ask` or `auto`.
+ *
+ * Env is write-only: a name in `env_keys` without a value in `env` keeps its
+ * stored value, a name in `env` is set, any other stored name is dropped.
+ * With both absent the stored env is left as it is.
  */
 export type LaunchPresetRequest = { name: string, prompt: string, machine_id: string | null, working_dir: string | null, adapter_id: string | null, model: string | null, permission_mode: PermissionMode | null, account_id: string | null, pool_id: string | null, no_account: boolean, dispatcher_id: string | null, profile: string | null, external_sources: boolean, fresh_secs: number | null, on_stale: OnStale | null, max_batch: number | null, cron: string | null, 
 /**
@@ -25,4 +29,4 @@ enabled: boolean | null, overlap: Overlap | null, then_preset_id: string | null,
 /**
  * Container targets only: the completion webhook of every dispatch.
  */
-notify_url: string | null, };
+notify_url: string | null, env_keys: Array<string> | null, env: { [key in string]: string } | null, };

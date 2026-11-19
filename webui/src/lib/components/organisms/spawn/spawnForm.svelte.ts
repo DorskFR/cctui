@@ -48,6 +48,7 @@ import { SpawnRecall } from './spawnRecall';
 import { makeCwdCheckWatcher, type CwdCheck } from './cwdCheck';
 import { fsLiveness } from './cwdGitInfo';
 import { buildSpawnBody, draftBody, envMap } from './spawnBody';
+import { badEnvKeys as invalidEnvRows } from './envRows';
 import { withoutInvite } from '#lib/cctuiverse.ts';
 import { withUserSpan } from '#lib/telemetry.ts';
 import { hasFeature } from '#lib/features.svelte.ts';
@@ -59,7 +60,6 @@ import {
 	spawnOnMachine
 } from './spawnSubmit';
 
-const ENV_KEY_RE = /^[A-Z_][A-Z0-9_]*$/;
 const PERSIST_DELAY_MS = 300;
 const SPAWN_SPAN = 'ui.spawn_session.launch';
 
@@ -120,8 +120,8 @@ export class SpawnForm {
 	);
 	draftId = $state<string | null>(null);
 	// Kept out of `form` (persisted to localStorage drafts) so secret values
-	// never reach disk; only env keys go into the draft. Files live in
-	// IndexedDB (attachmentStore), keyed like the draft.
+	// never reach disk; the server draft seals them. Files live in IndexedDB
+	// (attachmentStore), keyed like the draft.
 	envRows = $state<EnvRow[]>([]);
 	promptEl = $state<HTMLTextAreaElement | null>(null);
 	readonly att = new PromptAttachments({
@@ -214,7 +214,7 @@ export class SpawnForm {
 		providerForAdapter(this.selectedAccount, this.form.dispatch_adapter || 'claude-code')?.provider
 	);
 
-	badEnvKeys = $derived(this.envRows.filter((r) => r.key.trim() && !ENV_KEY_RE.test(r.key.trim())));
+	badEnvKeys = $derived(invalidEnvRows(this.envRows));
 	secretsValid = $derived(
 		this.badEnvKeys.length === 0 && !this.att.error && this.att.images.pending.length === 0
 	);
@@ -388,6 +388,7 @@ export class SpawnForm {
 		return {
 			form: $state.snapshot(this.form),
 			keys: this.envRows.map((r) => r.key),
+			filled: this.envRows.map((r) => r.value.length),
 			names: this.files.map((f) => f.name)
 		};
 	}
@@ -407,7 +408,7 @@ export class SpawnForm {
 			if (this.filesRestored) void attachmentStore.clear(this.slotKey);
 			this.slotKey = key;
 		}
-		const envKeys = this.envRows.map((r) => ({ key: r.key, value: '' }));
+		const envKeys = this.envRows.map((r) => (r.stored ? { key: r.key, value: '', stored: true } : { key: r.key, value: '' }));
 		const {
 			context_pack_token: _packToken,
 			context_items: _items,

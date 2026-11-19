@@ -15,6 +15,7 @@
 		requestFromForm,
 		type PresetForm
 	} from '#lib/schedules/presetForm.ts';
+	import PresetEnvFields from './PresetEnvFields.svelte';
 	import PresetTargetFields from './PresetTargetFields.svelte';
 	import ScheduleFields from './ScheduleFields.svelte';
 
@@ -92,6 +93,8 @@
 			{:else}
 				<PresetTargetFields bind:form {machines} {problems} showErrors={tried} />
 			{/if}
+
+			<PresetEnvFields bind:form {problems} />
 
 			{#if schedule}
 				<ScheduleFields bind:form {problems} showErrors={tried} />

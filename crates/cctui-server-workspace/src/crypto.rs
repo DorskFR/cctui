@@ -33,7 +33,9 @@ pub async fn has_vault_data<'e, E: sqlx::PgExecutor<'e>>(db: E) -> Result<bool, 
                         WHERE key = 'web_push_vapid' AND value ? 'encrypted_key') \
              OR EXISTS (SELECT 1 FROM notification_endpoints WHERE config ? 'token_sealed') \
              OR EXISTS (SELECT 1 FROM sessions \
-                        WHERE status = 'draft' AND metadata ? 'draft_sealed_prompt')",
+                        WHERE status = 'draft' AND metadata ? 'draft_sealed_prompt') \
+             OR EXISTS (SELECT 1 FROM sessions WHERE metadata ? 'draft_sealed_env') \
+             OR EXISTS (SELECT 1 FROM presets WHERE sealed_env IS NOT NULL)",
     )
     .fetch_one(db)
     .await
@@ -57,6 +59,9 @@ mod tests {
             "DELETE FROM inbox_events WHERE sealed_body IS NOT NULL",
             "UPDATE sessions SET metadata = metadata - 'draft_sealed_prompt' \
              WHERE metadata ? 'draft_sealed_prompt'",
+            "UPDATE sessions SET metadata = metadata - 'draft_sealed_env' \
+             WHERE metadata ? 'draft_sealed_env'",
+            "UPDATE presets SET sealed_env = NULL WHERE sealed_env IS NOT NULL",
         ] {
             sqlx::query(sql).execute(&mut *tx).await.unwrap();
         }
@@ -182,6 +187,28 @@ mod tests {
         sqlx::query(
             "INSERT INTO sessions (id, machine_id, working_dir, status, metadata) \
              VALUES ($1, 'm', '/w', 'draft', '{\"draft_sealed_prompt\": \"v1:00\"}')",
+        )
+        .bind(format!("{name}-{}", uuid::Uuid::new_v4()))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        assert!(has_vault_data(&mut *tx).await.unwrap());
+        tx.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn has_vault_data_sees_a_sealed_draft_env_alone() {
+        let name = "has_vault_data_sees_a_sealed_draft_env_alone";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else {
+            return;
+        };
+        let pool = crate::db::connect(&url).await.expect("connect test db");
+        let mut tx = pool.begin().await.unwrap();
+        clear_vault_rows(&mut tx).await;
+        assert!(!has_vault_data(&mut *tx).await.unwrap());
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, working_dir, status, metadata) \
+             VALUES ($1, 'm', '/w', 'queued', '{\"draft_sealed_env\": \"v1:00\"}')",
         )
         .bind(format!("{name}-{}", uuid::Uuid::new_v4()))
         .execute(&mut *tx)

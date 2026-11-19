@@ -43,6 +43,26 @@ pub enum Target {
     },
 }
 
+/// What a write does to the preset's sealed env.
+#[derive(Clone, PartialEq, Eq)]
+pub enum EnvEdit {
+    Unchanged,
+    Edit { keep: Vec<String>, set: crate::sealed_env::EnvMap },
+}
+
+impl std::fmt::Debug for EnvEdit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unchanged => f.write_str("Unchanged"),
+            Self::Edit { keep, set } => f
+                .debug_struct("Edit")
+                .field("keep", keep)
+                .field("set", &set.keys().collect::<Vec<_>>())
+                .finish(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidPreset {
     pub name: String,
@@ -58,6 +78,7 @@ pub struct ValidPreset {
     pub overlap: Overlap,
     pub then_preset_id: Option<Uuid>,
     pub notify_url: Option<String>,
+    pub env: EnvEdit,
 }
 
 fn trimmed(raw: Option<&str>) -> Option<String> {
@@ -160,6 +181,25 @@ fn notify_url(target: &Target, raw: Option<&str>) -> Result<Option<String>, Stri
     Ok(Some(url))
 }
 
+/// A dispatcher refuses caller env that redirects egress; say so at save time.
+fn env_edit(target: &Target, req: &LaunchPresetRequest) -> Result<EnvEdit, String> {
+    if req.env_keys.is_none() && req.env.is_none() {
+        return Ok(EnvEdit::Unchanged);
+    }
+    let keep = req.env_keys.clone().unwrap_or_default();
+    let set = req.env.as_ref().map_or_else(crate::sealed_env::EnvMap::new, |e| e.0.clone());
+    crate::sealed_env::check(keep.iter().map(String::as_str), &set)?;
+    if matches!(target, Target::Container { .. })
+        && let Some(name) = keep
+            .iter()
+            .chain(set.keys())
+            .find(|n| n.ends_with("_BASE_URL") || n.starts_with("WORKER_NET_"))
+    {
+        return Err(format!("env {name} is reserved on a dispatcher target"));
+    }
+    Ok(EnvEdit::Edit { keep, set })
+}
+
 pub fn validate(req: &LaunchPresetRequest) -> Result<ValidPreset, String> {
     let name = req.name.trim().to_owned();
     if name.is_empty() {
@@ -177,6 +217,7 @@ pub fn validate(req: &LaunchPresetRequest) -> Result<ValidPreset, String> {
     let target = target(req)?;
     guard_external(&target, req.external_sources)?;
     let notify_url = notify_url(&target, req.notify_url.as_deref())?;
+    let env = env_edit(&target, req)?;
     let cron = trimmed(req.cron.as_deref());
     if let Some(expr) = &cron {
         cron::validate(expr)?;
@@ -199,6 +240,7 @@ pub fn validate(req: &LaunchPresetRequest) -> Result<ValidPreset, String> {
         overlap: req.overlap.unwrap_or_default(),
         then_preset_id: req.then_preset_id,
         notify_url,
+        env,
     })
 }
 
@@ -208,7 +250,7 @@ mod tests {
     use cctui_proto::api::presets::{LaunchPresetRequest, OnStale, Overlap};
     use uuid::Uuid;
 
-    use super::{AccountPick, Target, validate};
+    use super::{AccountPick, EnvEdit, Target, validate};
 
     fn machine() -> LaunchPresetRequest {
         LaunchPresetRequest {
@@ -344,6 +386,52 @@ mod tests {
         assert_eq!(validate(&cron).unwrap().cron.as_deref(), Some("0 9 * * 1-5"));
         let blank = LaunchPresetRequest { cron: Some(String::new()), ..machine() };
         assert_eq!(validate(&blank).unwrap().cron, None);
+    }
+
+    fn env(pairs: &[(&str, &str)]) -> Option<cctui_proto::api::presets::EnvValues> {
+        Some(cctui_proto::api::presets::EnvValues(
+            pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect(),
+        ))
+    }
+
+    #[test]
+    fn env_is_left_alone_unless_the_request_names_it() {
+        assert_eq!(validate(&machine()).unwrap().env, EnvEdit::Unchanged);
+        let keys_only = LaunchPresetRequest { env_keys: Some(vec!["A".into()]), ..machine() };
+        assert_eq!(
+            validate(&keys_only).unwrap().env,
+            EnvEdit::Edit { keep: vec!["A".into()], set: crate::sealed_env::EnvMap::new() }
+        );
+        let values_only = LaunchPresetRequest { env: env(&[("B", "v")]), ..machine() };
+        let EnvEdit::Edit { keep, set } = validate(&values_only).unwrap().env else {
+            panic!("an edit")
+        };
+        assert!(keep.is_empty());
+        assert_eq!(set.get("B").map(String::as_str), Some("v"));
+        let cleared = LaunchPresetRequest { env_keys: Some(Vec::new()), ..machine() };
+        assert!(matches!(validate(&cleared).unwrap().env, EnvEdit::Edit { .. }));
+    }
+
+    #[test]
+    fn env_names_are_checked_and_values_stay_out_of_debug() {
+        let bad = LaunchPresetRequest { env_keys: Some(vec!["lower".into()]), ..machine() };
+        assert!(validate(&bad).unwrap_err().contains("invalid env key"));
+        let bad_value_key = LaunchPresetRequest { env: env(&[("1X", "v")]), ..machine() };
+        assert!(validate(&bad_value_key).is_err());
+        let ok = LaunchPresetRequest { env: env(&[("TOKEN", "s3cr3t-v4lue")]), ..machine() };
+        let valid = validate(&ok).unwrap();
+        assert!(!format!("{valid:?}").contains("s3cr3t-v4lue"), "{valid:?}");
+        assert!(format!("{valid:?}").contains("TOKEN"));
+    }
+
+    #[test]
+    fn a_dispatcher_target_carries_env_but_not_a_reserved_name() {
+        let carried = LaunchPresetRequest { env: env(&[("FEED_TOKEN", "t")]), ..container() };
+        assert!(matches!(validate(&carried).unwrap().env, EnvEdit::Edit { .. }));
+        for name in ["ANTHROPIC_BASE_URL", "WORKER_NET_PROXY"] {
+            let reserved = LaunchPresetRequest { env: env(&[(name, "x")]), ..container() };
+            assert!(validate(&reserved).unwrap_err().contains("reserved"), "{name}");
+        }
     }
 
     #[test]

@@ -168,8 +168,6 @@ pub async fn launch(state: &AppState, draft_id: &str, events: &[BatchEvent]) -> 
     let Some(owner) = owner else {
         return Outcome::Dead("draft's machine no longer exists".to_owned());
     };
-    // No env: a draft never stores secrets, and nobody is at the keyboard to
-    // re-enter them. Account gateway env is still minted inside the dispatch.
     let ctx = AuthContext {
         user_id: owner,
         key_id: Uuid::nil(),
@@ -418,6 +416,65 @@ mod tests {
         assert!(cancel(&pool, &bus, &later).await.unwrap());
         assert!(!cancel(&pool, &bus, &later).await.unwrap());
         assert!(pending_for(&pool, std::slice::from_ref(&later)).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_timed_draft_launches_with_its_sealed_env() {
+        let name = "scheduled_spawn_sealed_env";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        crate::crypto::install_vault_key(vec![7u8; 32]);
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(4)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (_, owner) = seed_owned_draft(&pool, name).await;
+        let machine: Uuid = sqlx::query_scalar("SELECT id FROM machines WHERE user_id = $1")
+            .bind(owner)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let state = AppState::for_test(pool.clone());
+        let req: cctui_proto::api::SpawnRequest = serde_json::from_value(serde_json::json!({
+            "machine_id": machine.to_string(), "working_dir": "/w", "prompt": "digest",
+            "permission_mode": "yolo", "no_account": true, "save_draft": true,
+            "env": {"FOO": "bar-sealed-value"},
+        }))
+        .unwrap();
+        let draft = crate::routes::spawn::store_spawn_row(
+            &state,
+            &req,
+            machine,
+            &[],
+            SessionRowStatus::Draft,
+        )
+        .await
+        .unwrap()
+        .to_string();
+        let metadata: serde_json::Value =
+            sqlx::query_scalar("SELECT metadata FROM sessions WHERE id = $1")
+                .bind(&draft)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(!metadata.to_string().contains("bar-sealed-value"), "{metadata}");
+        assert_eq!(metadata["draft"]["env_keys"], serde_json::json!(["FOO"]));
+
+        schedule(&pool, &state.bus, &draft, Some(owner), now()).await.unwrap();
+        let events = claim(&pool, &draft).await;
+        assert_eq!(events.len(), 1);
+        let daemon = crate::routes::fs::answer_list_dirs(&state, machine, Ok(Vec::new()));
+        let outcome = launch(&state, &draft, &events).await;
+        let mut rx = daemon.await.unwrap();
+        assert!(matches!(outcome, Outcome::Delivered { .. }), "{outcome:?}");
+        let Some(cctui_proto::ws::DaemonFrameDown::Command { command, .. }) = rx.recv().await
+        else {
+            panic!("expected a command frame")
+        };
+        let cctui_proto::adapter::AdapterCommand::Spawn { spec, .. } = *command else {
+            panic!("expected a spawn")
+        };
+        assert_eq!(spec.env.get("FOO").map(String::as_str), Some("bar-sealed-value"));
     }
 
     #[tokio::test]

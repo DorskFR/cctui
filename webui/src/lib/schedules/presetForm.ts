@@ -3,6 +3,8 @@ import type { LaunchPresetRequest } from '@bindings/LaunchPresetRequest';
 import type { Overlap } from '@bindings/Overlap';
 import type { PermissionMode } from '@bindings/PermissionMode';
 import { NO_ACCOUNT, POOL_PREFIX } from '#lib/components/organisms/spawn/options.ts';
+import { badEnvKeys, envEdit, storedEnvRows } from '#lib/components/organisms/spawn/envRows.ts';
+import type { EnvRow } from '#lib/components/organisms/spawn/types.ts';
 import { cronFromRepeat, cronProblem, parseTime, repeatFromCron, type CronProblem, type Repeat } from './cron';
 
 export interface PresetForm {
@@ -19,6 +21,7 @@ export interface PresetForm {
 	timezone: string;
 	overlap: Overlap;
 	enabled: boolean;
+	env: EnvRow[];
 }
 
 export interface PresetFormProblems {
@@ -31,6 +34,7 @@ export interface PresetFormProblems {
 	time?: 'invalid';
 	weekdays?: 'required';
 	cron?: CronProblem;
+	env?: 'invalid';
 }
 
 export function accountPickOf(p: Pick<LaunchPreset, 'account_id' | 'pool_id' | 'no_account'>): string {
@@ -73,7 +77,9 @@ export function requestFromPreset(preset: LaunchPreset): LaunchPresetRequest {
 		enabled: preset.enabled,
 		overlap: preset.overlap,
 		then_preset_id: preset.then_preset_id,
-		notify_url: preset.notify_url
+		notify_url: preset.notify_url,
+		env_keys: null,
+		env: null
 	};
 }
 
@@ -95,7 +101,8 @@ export function emptyForm(defaults: { machine_id?: string; adapter_id?: string; 
 		repeat: repeatFromCron(null),
 		timezone: defaults.timezone,
 		overlap: 'skip',
-		enabled: true
+		enabled: true,
+		env: []
 	};
 }
 
@@ -112,7 +119,8 @@ export function formFromPreset(preset: LaunchPreset, fallbackTimezone: string): 
 		repeat: repeatFromCron(preset.cron),
 		timezone: preset.cron === null ? fallbackTimezone : preset.timezone || 'UTC',
 		overlap: preset.overlap,
-		enabled: preset.enabled
+		enabled: preset.enabled,
+		env: storedEnvRows(preset.env_keys ?? [])
 	};
 }
 
@@ -127,6 +135,7 @@ export function formProblems(
 	const out: PresetFormProblems = {};
 	if (!form.name.trim()) out.name = 'required';
 	if (!form.prompt.trim()) out.prompt = 'required';
+	if (badEnvKeys(form.env).length) out.env = 'invalid';
 	if (!opts.dispatcher) {
 		if (!form.machine_id) out.machine = 'required';
 		const dir = form.working_dir.trim();
@@ -162,7 +171,9 @@ const DEFAULTS = {
 	enabled: null,
 	overlap: null,
 	then_preset_id: null,
-	notify_url: null
+	notify_url: null,
+	env_keys: null,
+	env: null
 } satisfies Partial<LaunchPresetRequest>;
 
 export function requestFromForm(
@@ -201,6 +212,7 @@ export function requestFromForm(
 		...kept,
 		name: form.name.trim(),
 		prompt: form.prompt,
+		...envEdit(form.env),
 		...target,
 		...schedule,
 		...(opts.external ? { external_sources: true } : {})

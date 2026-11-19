@@ -655,9 +655,9 @@ export const endpoints = {
     api.post<void>(`/sessions/${sessionId}/switch-account`, { account }),
   sessionBindings: (sessionId: string) =>
     api.get<SessionBinding[]>(`/sessions/${sessionId}/bindings`),
-  /** Launch a draft session: env is entered fresh here (never stored
-   *  in the draft), account gateway tokens minted server-side at dispatch. The
-   *  draft row is removed and a live session is born from the daemon. */
+  /** Launch a draft session: `env` wins over the draft's sealed env per name,
+   *  account gateway tokens minted server-side at dispatch. The draft row is
+   *  removed and a live session is born from the daemon. */
   launchDraft: (sessionId: string, env: Record<string, string> = {}) =>
     api.post<SpawnResponse>(`/sessions/${sessionId}/launch`, { env }),
   /** Queue a draft to launch at `launchAt` (RFC3339, at most 30 days out),

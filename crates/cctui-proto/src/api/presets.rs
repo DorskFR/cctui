@@ -92,6 +92,9 @@ pub struct LaunchPreset {
     pub last_fire_at: Option<DateTime<Utc>>,
     pub then_preset_id: Option<Uuid>,
     pub notify_url: Option<String>,
+    /// Names of the sealed env every run gets; values are never returned.
+    #[serde(default)]
+    pub env_keys: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -104,6 +107,10 @@ pub struct LaunchPreset {
 /// none of them lets the server elect the account with the most room.
 /// `external_sources` lets n8n and webhook events reach the preset's lanes;
 /// a machine target then needs `permission_mode` `ask` or `auto`.
+///
+/// Env is write-only: a name in `env_keys` without a value in `env` keeps its
+/// stored value, a name in `env` is set, any other stored name is dropped.
+/// With both absent the stored env is left as it is.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(deny_unknown_fields)]
@@ -153,6 +160,22 @@ pub struct LaunchPresetRequest {
     /// Container targets only: the completion webhook of every dispatch.
     #[serde(default)]
     pub notify_url: Option<String>,
+    #[serde(default)]
+    pub env_keys: Option<Vec<String>>,
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(type = "{ [key in string]: string } | null"))]
+    pub env: Option<EnvValues>,
+}
+
+/// Env values on their way in; `Debug` never prints them.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EnvValues(pub std::collections::BTreeMap<String, String>);
+
+impl std::fmt::Debug for EnvValues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<{} secret(s) redacted>", self.0.len())
+    }
 }
 
 /// Reply of `POST /presets/{id}/run`: the inbox event the run was queued as.
@@ -165,7 +188,21 @@ pub struct PresetRun {
 
 #[cfg(test)]
 mod tests {
-    use super::{OnStale, Overlap};
+    use super::{EnvValues, LaunchPresetRequest, OnStale, Overlap};
+
+    #[test]
+    fn env_values_never_reach_debug_output() {
+        let req: LaunchPresetRequest = serde_json::from_value(serde_json::json!({
+            "name": "n", "prompt": "p", "env_keys": ["TOKEN"], "env": {"TOKEN": "s3cr3t-v4lue"},
+        }))
+        .unwrap();
+        assert_eq!(req.env.as_ref().map(|e| e.0.len()), Some(1));
+        assert!(!format!("{req:?}").contains("s3cr3t-v4lue"));
+        let absent: LaunchPresetRequest =
+            serde_json::from_value(serde_json::json!({"name": "n", "prompt": "p"})).unwrap();
+        assert!(absent.env.is_none() && absent.env_keys.is_none());
+        assert_eq!(serde_json::to_value(EnvValues::default()).unwrap(), serde_json::json!({}));
+    }
 
     #[test]
     fn on_stale_round_trips_its_wire_name() {

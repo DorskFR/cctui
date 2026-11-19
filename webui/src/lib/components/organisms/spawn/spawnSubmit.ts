@@ -18,6 +18,7 @@ import { buildDispatchBody } from './dispatchBody';
 import { attachLabelsTo } from './labelAttach';
 import { findSpawnedSession } from './spawnMatch';
 import { envMap } from './spawnBody';
+import { keepsStoredValue } from './envRows';
 import type { SpawnForm } from './spawnForm.svelte';
 import { findInvite, JOIN_PROMPT, stripInvite } from '#lib/cctuiverse.ts';
 import { joinAfterSpawn } from '#lib/cctuiverseJoin.ts';
@@ -109,6 +110,18 @@ async function spawnProbe(sf: SpawnForm, sessionId: string): Promise<SpawnProbeH
 	return sessions.find((s) => s.id === sessionId) ?? null;
 }
 
+/** Stored env values never come back to the browser: a form relying on one
+ *  launches through its draft, whose launch opens the sealed env server-side. */
+async function launch(sf: SpawnForm, body: SpawnRequest, rewritten: boolean) {
+	if (!sf.draftId || rewritten || !keepsStoredValue(sf.envRows)) {
+		return sf.actions.spawn(body, sf.uploadFiles);
+	}
+	const draftId = await persistDraft(sf, true);
+	const res = await sf.actions.launchDraft(draftId, envMap(sf.envRows));
+	sf.draftId = null;
+	return res;
+}
+
 export async function spawnOnMachine(sf: SpawnForm) {
 	sf.cancelAutosave();
 	sf.spawnFailure = null;
@@ -130,7 +143,7 @@ export async function spawnOnMachine(sf: SpawnForm) {
 	const memoryCwd = normalizeDir(sf.form.working_dir.trim());
 	const memoryMachine = sf.form.machine_id;
 	const profile = sf.selectedProfile;
-	const res = await sf.actions.spawn(body, sf.uploadFiles);
+	const res = await launch(sf, body, !!invite);
 	if (res.account) toasts.info(m.spawn_toast_bound_account({ account: res.account }));
 	drafts.set(LAST_MACHINE, sf.form.machine_id);
 	drafts.set(LAST_SPAWN_NAME, sf.form.name.trim());

@@ -1136,7 +1136,8 @@ pub struct SpawnRequest {
     /// Codex only: `fast` or `default`. `None` = the account's setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
-    /// Keys match `^[A-Z_][A-Z0-9_]*$`. Never persisted or logged.
+    /// Keys match `^[A-Z_][A-Z0-9_]*$`. Never logged or returned; a draft
+    /// keeps the values vault-encrypted.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub env: std::collections::BTreeMap<String, String>,
     /// Account from the caller's vault to route through the gateway.
@@ -1155,13 +1156,14 @@ pub struct SpawnRequest {
     /// Pick among this pool's members only. Ignored when `account` or `no_account` is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<String>,
-    /// Persist as a draft without dispatching; `env` is not stored.
+    /// Persist as a draft without dispatching.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub save_draft: bool,
     /// Archive once the first turn ends cleanly.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_archive: bool,
-    /// Draft only: env var names, values are never stored.
+    /// Draft only: the names of its sealed env. On a draft edit a listed name
+    /// sent without a value in `env` keeps its stored value; an unlisted one is dropped.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env_keys: Vec<String>,
     /// Draft only.
@@ -1236,7 +1238,8 @@ pub struct SpawnResponse {
     pub session_id: Option<Uuid>,
 }
 
-/// Body for `POST /api/v1/sessions/{id}/launch`; env is entered fresh, never stored.
+/// Body for `POST /api/v1/sessions/{id}/launch`; `env` wins over the draft's
+/// stored env per name and is not stored.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct LaunchRequest {

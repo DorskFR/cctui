@@ -48,7 +48,8 @@ use crate::uploads::parse_upload_multipart;
 /// Files are base64-encoded into `SessionSpec.bootstrap` (the WS leg is JSON);
 /// the daemon decodes + writes them to `/tmp/cctui-uploads/<session-id>/` and
 /// references their paths in the prompt. `env` secrets ride on `SessionSpec.env`
-/// (never persisted/logged) and the daemon injects them into the worker process.
+/// (never logged; a draft or queued row keeps them sealed) and the daemon
+/// injects them into the worker process.
 #[tracing::instrument(skip_all, fields(user_id = %ctx.user_id))]
 pub async fn spawn_session(
     State(state): State<AppState>,
@@ -75,15 +76,16 @@ pub async fn spawn_session(
         return save_draft(&state, &ctx, &req, &parsed.raw).await;
     }
 
-    let queueable = req.env.is_empty().then(|| (req.clone(), copy_uploads(&parsed.raw)));
+    let queueable = (req.clone(), copy_uploads(&parsed.raw));
     let failure = match try_dispatch_spawn(&state, &ctx, req, uploads, parsed.raw).await {
         Ok(launched) => return Ok(launched),
         Err(failure) => failure,
     };
     let (code, Json(ApiError { error })) = failure.response;
-    let (Some(target), Some((req, raw))) = (failure.queue, queueable) else {
+    let Some(target) = failure.queue else {
         return Err(AppError::new(code, error));
     };
+    let (req, raw) = queueable;
     queue_spawn(&state, &ctx, target, &req, &raw).await.map_err(|e| {
         tracing::warn!(machine = %req.machine_id, "queueing the undelivered spawn: {e}");
         AppError::new(code, error)
@@ -743,9 +745,9 @@ pub async fn refuse_foreign_account(
 /// (resume) fill the gap but never rewrite who first started the session.
 pub use cctui_server_core::machine_policy::{claim_spawner, fill_spawner, remember_spawner};
 
-/// Persist a spawn payload as a `draft` session row. No env is stored
-/// (re-entered at launch), no daemon dispatch happens, and the row is excluded
-/// from liveness/reaping via its sticky `draft` status. Attached files are kept
+/// Persist a spawn payload as a `draft` session row, its env sealed. No daemon
+/// dispatch happens, and the row is excluded from liveness/reaping via its
+/// sticky `draft` status. Attached files are kept
 /// in the blob store under the draft id so the launch can stage them. Returns
 /// the new draft session id in `command_id` with `status = "draft"`.
 async fn save_draft(
@@ -781,9 +783,10 @@ async fn save_draft(
     ))
 }
 
-/// Insert a session row holding `req` (never its env) under `metadata.draft`,
-/// with its files in the blob store, for a later launch to rebuild the spawn.
-async fn store_spawn_row(
+/// Insert a session row holding `req` under `metadata.draft` (its env sealed
+/// beside it), with its files in the blob store, for a later launch to rebuild
+/// the spawn.
+pub async fn store_spawn_row(
     state: &AppState,
     req: &SpawnRequest,
     machine_uuid: Uuid,
@@ -792,7 +795,6 @@ async fn store_spawn_row(
 ) -> Result<Uuid, AppError> {
     let adapter_id = req.adapter_id.clone().unwrap_or_else(|| "claude-code".to_owned());
     let mut payload = req.clone();
-    payload.env.clear();
     payload.save_draft = false;
     let metadata = draft_metadata(payload, crate::crypto::vault_key)?;
 
@@ -857,18 +859,27 @@ pub fn seal_redacted(
 
 /// Key of the vault-encrypted original prompt beside `metadata.draft`.
 pub const DRAFT_SEALED_PROMPT: &str = "draft_sealed_prompt";
+/// Key of the vault-encrypted env map beside `metadata.draft`.
+pub const DRAFT_SEALED_ENV: &str = "draft_sealed_env";
 const DRAFT_SEAL_NEEDS_KEY: &str = "a draft whose prompt has <redacted> spans can only be saved \
      when the server has a vault key (CCTUI_VAULT_KEY)";
 const DRAFT_UNSEALABLE: &str = "the draft's sealed prompt does not decrypt with the vault key";
 
 /// `{ "draft": payload }` with the prompt's `<redacted>` spans masked; the
-/// real prompt is kept only encrypted, under [`DRAFT_SEALED_PROMPT`].
+/// real prompt is kept only encrypted, under [`DRAFT_SEALED_PROMPT`], and the
+/// env values only under [`DRAFT_SEALED_ENV`], the payload naming their keys.
 pub fn draft_metadata(
     mut payload: SpawnRequest,
-    key: impl FnOnce() -> Vec<u8>,
+    key: impl Fn() -> Vec<u8>,
 ) -> Result<serde_json::Value, AppError> {
+    let env = std::mem::take(&mut payload.env);
+    crate::sealed_env::bounded(env.len(), &env)
+        .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e))?;
+    let sealed_env = crate::sealed_env::seal(&env, &key)
+        .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e.message()))?;
+    payload.env_keys = crate::sealed_env::names(&env);
     let sealed = if let Some(prompt) = payload.prompt.as_deref() {
-        let (masked, sealed) = seal_redacted(prompt, key)
+        let (masked, sealed) = seal_redacted(prompt, &key)
             .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, DRAFT_SEAL_NEEDS_KEY))?;
         payload.prompt = Some(masked);
         sealed
@@ -883,7 +894,30 @@ pub fn draft_metadata(
     if let Some(sealed) = sealed {
         metadata[DRAFT_SEALED_PROMPT] = serde_json::Value::String(sealed);
     }
+    if let Some(sealed) = sealed_env {
+        metadata[DRAFT_SEALED_ENV] = serde_json::Value::String(sealed);
+    }
     Ok(metadata)
+}
+
+/// A draft edit's env: `keep` names hold their sealed values, `set` replaces.
+pub fn edited_draft_env(
+    stored: Option<&str>,
+    keep: &[String],
+    set: &crate::sealed_env::EnvMap,
+    key: impl FnOnce() -> Vec<u8>,
+) -> Result<crate::sealed_env::EnvMap, AppError> {
+    crate::sealed_env::bounded(keep.len().max(set.len()), set)
+        .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e))?;
+    crate::sealed_env::apply_edit(stored, keep, set, key)
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e.message()))
+}
+
+fn unseal_draft_env(req: &mut SpawnRequest, metadata: &serde_json::Value) -> Result<(), AppError> {
+    let sealed = metadata.get(DRAFT_SEALED_ENV).and_then(serde_json::Value::as_str);
+    req.env = crate::sealed_env::unseal(sealed, crate::crypto::vault_key)
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e.message()))?;
+    Ok(())
 }
 
 /// Puts the real prompt back into a draft read from `metadata`.
@@ -905,7 +939,7 @@ fn unseal_draft_prompt(
 }
 
 /// `POST /api/v1/sessions/{id}/launch`. Promote a draft to a live
-/// spawn: read the stored payload, merge the freshly-entered env, dispatch the
+/// spawn: read the stored payload, lay the launch env over its sealed env, dispatch the
 /// real spawn (minting account gateway env), then delete the draft row. The
 /// live session appears via the daemon's normal registration.
 #[tracing::instrument(skip_all, fields(session_id = %session_id))]
@@ -929,8 +963,8 @@ pub async fn launch_stored_draft(
 ) -> Result<(StatusCode, Json<SpawnResponse>), AppError> {
     let (mut req, uploads, raw_uploads) =
         stored_spawn(state, session_id, SessionRowStatus::Draft).await?;
-    // Env is entered fresh at launch; account gateway env is minted in dispatch.
-    req.env = env;
+    // Account gateway env is minted in dispatch.
+    req.env = crate::sealed_env::overlay(std::mem::take(&mut req.env), env);
     req.save_draft = false;
     // Labels put on the draft card after it was saved travel with the launch.
     for id in crate::spawn_labels::draft_label_ids(&state.pool, session_id).await {
@@ -973,8 +1007,8 @@ pub async fn launch_stored_draft(
 type StoredSpawn =
     (SpawnRequest, Vec<cctui_proto::adapter::BootstrapFile>, Vec<crate::uploads::RawUpload>);
 
-/// The spawn a `draft` or `queued` row stores, with its prompt unsealed and its
-/// files read back from the blob store.
+/// The spawn a `draft` or `queued` row stores, with its prompt and env unsealed
+/// and its files read back from the blob store.
 async fn stored_spawn(
     state: &AppState,
     session_id: &str,
@@ -1004,6 +1038,8 @@ async fn stored_spawn(
             })
         })?;
     unseal_draft_prompt(&mut req, &metadata, crate::crypto::vault_key)?;
+    unseal_draft_env(&mut req, &metadata)?;
+    req.env_keys.clear();
     let (uploads, raw_uploads) =
         load_draft_uploads(&state.pool, session_id, &req.attachment_names).await?;
     req.attachment_names.clear();
@@ -2610,9 +2646,10 @@ mod draft_seal_tests {
 
     use super::spawn_share_tests::{SPAWNER, caller, seed_machine, seed_user};
     use super::{
-        DRAFT_SEALED_PROMPT, DRAFT_UNSEALABLE, NeedsVaultKey, draft_metadata, seal_redacted,
-        unseal_draft_prompt,
+        DRAFT_SEALED_ENV, DRAFT_SEALED_PROMPT, DRAFT_UNSEALABLE, NeedsVaultKey, draft_metadata,
+        seal_redacted, unseal_draft_prompt,
     };
+    use crate::store::sessions::SessionRowStatus;
 
     const TAGGED: &str = "log in with <redacted>hunter2-xyz</redacted> please";
     const MASKED: &str = "log in with [REDACTED:user] please";
@@ -2765,6 +2802,82 @@ mod draft_seal_tests {
         assert_eq!(edit("rewritten").await.unwrap().0.status, "draft");
         let meta = stored_metadata(&pool, &id).await;
         assert!(meta.get(DRAFT_SEALED_PROMPT).is_none(), "a rewritten prompt drops the old seal");
+    }
+
+    fn with_env(machine: &str, keys: &[&str], env: &[(&str, &str)]) -> SpawnRequest {
+        let mut req = request(machine, "plain");
+        req.env_keys = keys.iter().map(|k| (*k).to_owned()).collect();
+        req.env = env.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
+        req
+    }
+
+    fn env_of(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    }
+
+    #[tokio::test]
+    async fn a_draft_env_is_sealed_write_only_and_edited_per_key() {
+        let name = "a_draft_env_is_sealed_write_only_and_edited_per_key";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        crate::crypto::install_vault_key(vec![7u8; 32]);
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let owner = seed_user(&pool).await;
+        let machine = seed_machine(&pool, owner).await.to_string();
+        let state = crate::state::AppState::for_test(pool.clone());
+        let ctx = caller(owner, SPAWNER);
+
+        let mut req = with_env(&machine, &[], &[("A", "alpha-secret"), ("B", "beta-secret")]);
+        req.save_draft = true;
+        let (_, Json(saved)) = super::save_draft(&state, &ctx, &req, &[]).await.unwrap();
+        let id = saved.command_id.to_string();
+        let row: String =
+            sqlx::query_scalar("SELECT row_to_json(s)::text FROM sessions s WHERE id = $1")
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(!row.contains("alpha-secret") && !row.contains("beta-secret"), "{row}");
+        let meta = stored_metadata(&pool, &id).await;
+        assert_eq!(meta["draft"]["env_keys"], serde_json::json!(["A", "B"]));
+        assert!(meta["draft"].get("env").is_none(), "{meta}");
+        assert!(meta.get(DRAFT_SEALED_ENV).is_some(), "{meta}");
+        let stored = |state: crate::state::AppState, id: String| async move {
+            super::stored_spawn(&state, &id, SessionRowStatus::Draft).await.unwrap().0.env
+        };
+        assert_eq!(
+            stored(state.clone(), id.clone()).await,
+            env_of(&[("A", "alpha-secret"), ("B", "beta-secret")])
+        );
+
+        let edit = |req: SpawnRequest| {
+            crate::routes::sessions::update_draft(
+                State(state.clone()),
+                Extension(ctx.clone()),
+                Path(id.clone()),
+                Json(req),
+            )
+        };
+        let Json(reply) =
+            edit(with_env(&machine, &["A", "B"], &[("B", "beta-new"), ("C", "gamma-new")]))
+                .await
+                .unwrap();
+        assert!(!serde_json::to_string(&reply).unwrap().contains("-new"));
+        assert_eq!(
+            stored(state.clone(), id.clone()).await,
+            env_of(&[("A", "alpha-secret"), ("B", "beta-new"), ("C", "gamma-new")]),
+            "A kept, B replaced, C added"
+        );
+        let meta = stored_metadata(&pool, &id).await;
+        assert!(!meta.to_string().contains("alpha-secret"), "{meta}");
+        assert_eq!(meta["draft"]["env_keys"], serde_json::json!(["A", "B", "C"]));
+
+        edit(with_env(&machine, &["A"], &[])).await.unwrap();
+        assert_eq!(stored(state.clone(), id.clone()).await, env_of(&[("A", "alpha-secret")]));
+
+        edit(with_env(&machine, &[], &[])).await.unwrap();
+        let meta = stored_metadata(&pool, &id).await;
+        assert!(meta.get(DRAFT_SEALED_ENV).is_none(), "no names left, no seal: {meta}");
+        assert!(stored(state, id).await.is_empty());
     }
 }
 

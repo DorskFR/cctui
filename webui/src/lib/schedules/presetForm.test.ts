@@ -40,6 +40,7 @@ const preset = (over: Partial<LaunchPreset> = {}): LaunchPreset => ({
 	last_fire_at: null,
 	then_preset_id: 'p2',
 	notify_url: null,
+	env_keys: ['FEED_TOKEN'],
 	created_at: '2026-11-01T00:00:00Z',
 	updated_at: '2026-11-01T00:00:00Z',
 	...over
@@ -122,7 +123,9 @@ describe('requestFromForm', () => {
 			enabled: true,
 			overlap: 'skip',
 			then_preset_id: null,
-			notify_url: null
+			notify_url: null,
+			env_keys: [],
+			env: {}
 		});
 	});
 
@@ -138,9 +141,13 @@ describe('requestFromForm', () => {
 		});
 	});
 
-	it('round-trips an unedited preset', () => {
+	it('round-trips an unedited preset, keeping every stored env value by name', () => {
 		const p = preset();
-		expect(requestFromForm(formFromPreset(p, 'UTC'), { schedule: true, base: p })).toEqual(requestFromPreset(p));
+		expect(requestFromForm(formFromPreset(p, 'UTC'), { schedule: true, base: p })).toEqual({
+			...requestFromPreset(p),
+			env_keys: ['FEED_TOKEN'],
+			env: {}
+		});
 	});
 
 	it('round-trips a dispatcher preset and never invents a machine target', () => {
@@ -151,7 +158,9 @@ describe('requestFromForm', () => {
 		form.enabled = false;
 		expect(requestFromForm(form, { schedule: true, base: p })).toEqual({
 			...requestFromPreset(p),
-			enabled: false
+			enabled: false,
+			env_keys: ['FEED_TOKEN'],
+			env: {}
 		});
 	});
 
@@ -161,7 +170,9 @@ describe('requestFromForm', () => {
 		form.prompt = 'Changed';
 		expect(requestFromForm(form, { schedule: false, base: p })).toEqual({
 			...requestFromPreset(p),
-			prompt: 'Changed'
+			prompt: 'Changed',
+			env_keys: ['FEED_TOKEN'],
+			env: {}
 		});
 	});
 });
@@ -316,5 +327,42 @@ describe('lists', () => {
 			'Europe/Paris',
 			'Mars/Olympus'
 		]);
+	});
+});
+
+describe('the schedule env', () => {
+	it('shows stored names masked and never a value', () => {
+		const form = formFromPreset(preset({ env_keys: ['FEED_TOKEN', 'API_KEY'] }), 'UTC');
+		expect(form.env).toEqual([
+			{ key: 'FEED_TOKEN', value: '', stored: true },
+			{ key: 'API_KEY', value: '', stored: true }
+		]);
+		expect(emptyForm({ timezone: 'UTC' }).env).toEqual([]);
+	});
+
+	it('keeps, replaces, removes and adds per name', () => {
+		const p = preset({ env_keys: ['KEEP', 'SWAP', 'GONE'] });
+		const form = formFromPreset(p, 'UTC');
+		form.env = form.env
+			.filter((r) => r.key !== 'GONE')
+			.map((r) => (r.key === 'SWAP' ? { ...r, value: 'new-swap' } : r));
+		form.env.push({ key: 'ADDED', value: 'new-added' }, { key: 'HALF', value: '' });
+		const body = requestFromForm(form, { schedule: true, base: p });
+		expect(body.env_keys).toEqual(['KEEP', 'SWAP', 'ADDED', 'HALF']);
+		expect(body.env).toEqual({ SWAP: 'new-swap', ADDED: 'new-added' });
+	});
+
+	it('leaves the stored env alone on the enabled toggle', () => {
+		const body = withEnabled(preset(), false);
+		expect(body.env_keys).toBeNull();
+		expect(body.env).toBeNull();
+	});
+
+	it('flags a name that is not a shell variable', () => {
+		const form = emptyForm({ machine_id: 'm1', adapter_id: 'claude', timezone: 'UTC' });
+		form.name = 'n';
+		form.prompt = 'p';
+		form.env = [{ key: 'lower-case', value: 'x' }];
+		expect(formProblems(form, { schedule: true })).toEqual({ env: 'invalid' });
 	});
 });

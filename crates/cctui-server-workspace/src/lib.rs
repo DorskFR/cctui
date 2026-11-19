@@ -63,6 +63,7 @@ mod rooms;
 mod routes;
 mod scheduled_messages;
 mod scheduled_spawns;
+mod sealed_env;
 mod search_index;
 mod session_emoji;
 mod session_plugins;

@@ -37,6 +37,7 @@ pub struct Preset {
     pub notify_url: Option<String>,
     pub machine_live: bool,
     pub dispatcher_name: Option<String>,
+    pub sealed_env: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -194,7 +195,8 @@ pub async fn from_session(
                 NULL::text AS pool_name, false AS no_account, \
                 NULL::text AS profile, 0 AS fresh_secs, \
                 'followup' AS on_stale, NULL::text AS notify_url, \
-                m.id IS NOT NULL AS machine_live, NULL::text AS dispatcher_name \
+                m.id IS NOT NULL AS machine_live, NULL::text AS dispatcher_name, \
+                NULL::text AS sealed_env \
          FROM sessions s \
          LEFT JOIN machines m ON m.id = s.machine_uuid \
               AND m.revoked_at IS NULL AND m.deleted_at IS NULL \
@@ -235,7 +237,7 @@ pub async fn load(pool: &PgPool, preset_id: Uuid) -> sqlx::Result<Option<Preset>
         "SELECT p.user_id, p.name, p.prompt, p.machine_id, p.working_dir, p.adapter_id, \
                 p.model, p.permission_mode, a.name AS account_name, ap.name AS pool_name, \
                 p.no_account, p.profile, p.fresh_secs, p.on_stale, p.notify_url, \
-                m.id IS NOT NULL AS machine_live, d.name AS dispatcher_name \
+                m.id IS NOT NULL AS machine_live, d.name AS dispatcher_name, p.sealed_env \
          FROM presets p \
          LEFT JOIN accounts a ON a.id = p.account_id \
          LEFT JOIN account_pools ap ON ap.id = p.pool_id \
@@ -356,14 +358,32 @@ pub fn spawn_request(preset: &Preset, plan: &Plan, prompt: &str) -> Option<Spawn
     .ok()
 }
 
-/// No secret is stored: credentials are minted by the dispatch itself.
+/// The preset's sealed env, opened for one run.
+pub fn run_env(
+    preset: &Preset,
+    key: impl FnOnce() -> Vec<u8>,
+) -> Result<crate::sealed_env::EnvMap, &'static str> {
+    crate::sealed_env::unseal(preset.sealed_env.as_deref(), key)
+        .map_err(crate::sealed_env::SealError::message)
+}
+
+/// Account credentials are minted by the dispatch itself.
 #[must_use]
 pub fn dispatch_request(
     preset: &Preset,
     dispatcher: String,
     batch_id: Uuid,
     prompt: &str,
+    env: &crate::sealed_env::EnvMap,
 ) -> DispatchRequest {
+    let mut payload = serde_json::json!({
+        "profile": preset.profile,
+        "prompt": prompt,
+        "name": preset.name,
+    });
+    if !env.is_empty() {
+        payload["env"] = serde_json::json!(env);
+    }
     DispatchRequest {
         dispatcher,
         session_id: Some(batch_id.to_string()),
@@ -371,11 +391,7 @@ pub fn dispatch_request(
         reply_url: None,
         notify_url: preset.notify_url.clone(),
         notify_secret: None,
-        payload: serde_json::json!({
-            "profile": preset.profile,
-            "prompt": prompt,
-            "name": preset.name,
-        }),
+        payload,
         account: None,
         provider: None,
         accounts: Vec::new(),
@@ -518,6 +534,10 @@ async fn spawn(
     let Some(mut req) = spawn_request(preset, plan, &prompt) else {
         return Ok(Outcome::Dead(MACHINE_GONE.to_owned()));
     };
+    req.env = match run_env(preset, crate::crypto::vault_key) {
+        Ok(env) => env,
+        Err(reason) => return Ok(Outcome::Dead(reason.to_owned())),
+    };
     req.label_ids = run_labels(state, preset, events).await;
     let (files, raw_files) = uploads(files);
     let ctx = match super::queued::acting_as(&state.pool, preset.user_id).await {
@@ -567,7 +587,11 @@ async fn dispatch(
         Ok(ctx) => ctx,
         Err(e) => return Outcome::Retry(e.to_string()),
     };
-    let req = dispatch_request(preset, dispatcher, batch_id, &instruction(preset, &text));
+    let env = match run_env(preset, crate::crypto::vault_key) {
+        Ok(env) => env,
+        Err(reason) => return Outcome::Dead(reason.to_owned()),
+    };
+    let req = dispatch_request(preset, dispatcher, batch_id, &instruction(preset, &text), &env);
     match cctui_server_core::dispatch::execute_dispatch(state, &ctx, req).await {
         Ok((_, Json(done))) => {
             Outcome::Delivered { session_id: done.session_id, delivered_as: "dispatch" }

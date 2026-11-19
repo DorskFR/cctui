@@ -9,8 +9,8 @@ use super::claim::{BatchEvent, ClaimedLane, LaneFilter, claim_lanes, release_lan
 use super::deliver::deliver_due;
 use super::preset::{
     Current, DISPATCHER_GONE, MACHINE_GONE, Plan, Preset, Prior, Resolved, UNDELIVERED,
-    dispatch_request, instruction, lane, plan, prior_from, resolve, reuse_window_secs, run_labels,
-    spawn_prompt, spawn_request,
+    dispatch_request, instruction, lane, plan, prior_from, resolve, reuse_window_secs, run_env,
+    run_labels, spawn_prompt, spawn_request,
 };
 use super::store::{NewEvent, insert_event};
 use crate::presets::store_tests::{Owner, seed_owner};
@@ -45,6 +45,7 @@ fn preset(machine: bool) -> Preset {
         notify_url: (!machine).then(|| "https://n8n.example/hook".to_owned()),
         machine_live: machine,
         dispatcher_name: (!machine).then(|| "kube".to_owned()),
+        sealed_env: None,
     }
 }
 
@@ -121,7 +122,8 @@ fn a_container_batch_dispatches_under_its_batch_id_with_no_secret() {
     let batch = Uuid::new_v4();
     let p = preset(false);
     let prompt = instruction(&p, "[cctui inbox: 1 event]");
-    let req = dispatch_request(&p, "kube".into(), batch, &prompt);
+    let none = crate::sealed_env::EnvMap::new();
+    let req = dispatch_request(&p, "kube".into(), batch, &prompt, &none);
     assert_eq!(req.dispatcher, "kube");
     assert_eq!(req.session_id, Some(batch.to_string()));
     assert_eq!(req.notify_url.as_deref(), Some("https://n8n.example/hook"));
@@ -170,6 +172,28 @@ fn a_machine_spawn_carries_the_account_pick_and_elects_one_when_none_is_set() {
     let unbound = Preset { no_account: true, ..preset(true) };
     let unbound = spawn_request(&unbound, &Plan::Spawn, "go").unwrap();
     assert!(unbound.no_account);
+}
+
+fn sealed(pairs: &[(&str, &str)], key: &[u8]) -> Option<String> {
+    let env: crate::sealed_env::EnvMap =
+        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
+    crate::sealed_env::seal(&env, || key.to_vec()).unwrap()
+}
+
+#[test]
+fn a_run_opens_the_presets_sealed_env_for_the_spawn_and_the_dispatch() {
+    let key = [3u8; 32];
+    let machine = Preset { sealed_env: sealed(&[("FOO", "bar-value")], &key), ..preset(true) };
+    let env = run_env(&machine, || key.to_vec()).unwrap();
+    assert_eq!(env.get("FOO").map(String::as_str), Some("bar-value"));
+    assert!(run_env(&preset(true), || panic!("nothing sealed")).unwrap().is_empty());
+    assert!(run_env(&machine, || vec![4u8; 32]).unwrap_err().contains("re-enter"));
+
+    let container = Preset { sealed_env: sealed(&[("FEED", "f-value")], &key), ..preset(false) };
+    let env = run_env(&container, || key.to_vec()).unwrap();
+    let req = dispatch_request(&container, "kube".into(), Uuid::new_v4(), "go", &env);
+    assert_eq!(req.payload["env"], json!({"FEED": "f-value"}));
+    assert_eq!(req.payload["profile"], "tonbo");
 }
 
 async fn pool(name: &str) -> Option<PgPool> {
@@ -669,4 +693,46 @@ async fn a_scheduled_or_webhook_run_is_labelled_with_its_preset_name() {
         let none = run_labels(&state, &named, &[batch_event(owner.user, source)]).await;
         assert!(none.is_empty(), "{source}");
     }
+}
+
+#[tokio::test]
+async fn a_machine_preset_with_env_fires_a_spawn_carrying_it() {
+    use cctui_proto::api::presets::{EnvValues, LaunchPresetRequest};
+    let Some(pool) = pool("inbox_preset_env_fire").await else { return };
+    crate::crypto::install_vault_key(vec![7u8; 32]);
+    let owner = seed_owner(&pool, "preset-env").await;
+    grant_dispatch(&pool, owner.user).await;
+    let req = LaunchPresetRequest {
+        name: format!("env-{}", Uuid::new_v4()),
+        prompt: "read the feed".into(),
+        machine_id: Some(owner.machine),
+        working_dir: Some("/w".into()),
+        no_account: true,
+        env: Some(EnvValues(std::collections::BTreeMap::from([(
+            "MINIFLUX_TOKEN".to_owned(),
+            "feed-t0ken".to_owned(),
+        )]))),
+        ..LaunchPresetRequest::default()
+    };
+    let valid = crate::presets::validate(&req).unwrap();
+    let preset = crate::presets::store::create(&pool, owner.user, &valid).await.unwrap();
+    assert_eq!(preset.env_keys, ["MINIFLUX_TOKEN"]);
+    let lane_id = lane(&pool, owner.user, preset.id, "ci").await.unwrap();
+    let event = add_event(&pool, lane_id, owner.user).await;
+    let state = AppState::for_test(pool.clone());
+    let daemon = crate::routes::fs::answer_list_dirs(&state, owner.machine, Ok(Vec::new()));
+
+    deliver_due(&state, 1, only(lane_id)).await;
+
+    let (status, _, _, error, delivered_as, _) = event_row(&pool, event).await;
+    let delivered = (status.as_str(), delivered_as.as_deref());
+    assert_eq!(delivered, ("delivered", Some("spawn")), "{error:?}");
+    let mut rx = daemon.await.unwrap();
+    let Some(cctui_proto::ws::DaemonFrameDown::Command { command, .. }) = rx.recv().await else {
+        panic!("expected a command frame")
+    };
+    let cctui_proto::adapter::AdapterCommand::Spawn { spec, .. } = *command else {
+        panic!("expected a spawn")
+    };
+    assert_eq!(spec.env.get("MINIFLUX_TOKEN").map(String::as_str), Some("feed-t0ken"));
 }
