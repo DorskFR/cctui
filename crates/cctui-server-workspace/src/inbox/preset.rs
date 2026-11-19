@@ -28,6 +28,9 @@ pub struct Preset {
     pub adapter_id: Option<String>,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
+    pub account_name: Option<String>,
+    pub pool_name: Option<String>,
+    pub no_account: bool,
     pub profile: Option<String>,
     pub fresh_secs: i32,
     pub on_stale: String,
@@ -183,7 +186,13 @@ pub async fn from_session(
     let found: Option<Preset> = sqlx::query_as(
         "SELECT $2::uuid AS user_id, COALESCE(s.session_name, '') AS name, '' AS prompt, \
                 s.machine_uuid AS machine_id, s.working_dir, s.adapter_id, s.model, \
-                s.permission_mode, NULL::text AS profile, 0 AS fresh_secs, \
+                s.permission_mode, \
+                (SELECT a.name FROM session_tokens st \
+                 JOIN account_providers ap ON ap.id = st.account_id \
+                 JOIN accounts a ON a.id = ap.account_id \
+                 WHERE st.session_id = s.id ORDER BY st.created_at DESC LIMIT 1) AS account_name, \
+                NULL::text AS pool_name, false AS no_account, \
+                NULL::text AS profile, 0 AS fresh_secs, \
                 'followup' AS on_stale, NULL::text AS notify_url, \
                 m.id IS NOT NULL AS machine_live, NULL::text AS dispatcher_name \
          FROM sessions s \
@@ -224,9 +233,12 @@ pub async fn follow_up_orphan(
 pub async fn load(pool: &PgPool, preset_id: Uuid) -> sqlx::Result<Option<Preset>> {
     sqlx::query_as(
         "SELECT p.user_id, p.name, p.prompt, p.machine_id, p.working_dir, p.adapter_id, \
-                p.model, p.permission_mode, p.profile, p.fresh_secs, p.on_stale, p.notify_url, \
+                p.model, p.permission_mode, a.name AS account_name, ap.name AS pool_name, \
+                p.no_account, p.profile, p.fresh_secs, p.on_stale, p.notify_url, \
                 m.id IS NOT NULL AS machine_live, d.name AS dispatcher_name \
          FROM presets p \
+         LEFT JOIN accounts a ON a.id = p.account_id \
+         LEFT JOIN account_pools ap ON ap.id = p.pool_id \
          LEFT JOIN machines m ON m.id = p.machine_id AND m.user_id = p.user_id \
               AND m.revoked_at IS NULL AND m.deleted_at IS NULL \
          LEFT JOIN dispatchers d ON d.id = p.dispatcher_id AND d.user_id = p.user_id \
@@ -332,6 +344,10 @@ pub fn spawn_request(preset: &Preset, plan: &Plan, prompt: &str) -> Option<Spawn
         "adapter_id": preset.adapter_id,
         "model": preset.model,
         "permission_mode": preset.permission_mode,
+        "account": preset.account_name,
+        "pool": preset.pool_name,
+        "no_account": preset.no_account,
+        "auto_account": preset.account_name.is_none() && preset.pool_name.is_none(),
         "name": preset.name,
         "prompt": prompt,
         "relation": parent.map(|_| crate::followup::RELATION),

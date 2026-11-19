@@ -140,6 +140,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "preset_hooks",
         sql: include_str!("../schema/0021_preset_hooks.sql"),
     },
+    Migration {
+        version: 22,
+        name: "preset_accounts",
+        sql: include_str!("../schema/0022_preset_accounts.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -290,7 +295,8 @@ mod tests {
                     (18, "bootstrap".to_owned()),
                     (19, "bootstrap".to_owned()),
                     (20, "bootstrap".to_owned()),
-                    (21, "bootstrap".to_owned())
+                    (21, "bootstrap".to_owned()),
+                    (22, "bootstrap".to_owned())
                 ]
             );
 
@@ -516,7 +522,8 @@ mod tests {
                     (18, "bootstrap".to_owned()),
                     (19, "bootstrap".to_owned()),
                     (20, "bootstrap".to_owned()),
-                    (21, "bootstrap".to_owned())
+                    (21, "bootstrap".to_owned()),
+                    (22, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =

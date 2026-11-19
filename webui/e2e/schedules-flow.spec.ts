@@ -106,3 +106,35 @@ test('a weekday schedule is created, paused and run by hand', async ({ page }) =
 	await expect.poll(() => calls.length).toBe(3);
 	expect(calls[2]).toMatchObject({ method: 'POST', path: '/presets/p1/run' });
 });
+
+test('a schedule runs on the account picked in the editor', async ({ page }) => {
+	const calls = await stub(page);
+	const account = (id: string, name: string, provider: string) => ({
+		id,
+		name,
+		emoji: null,
+		providers: [{ id: `${id}-p`, account_id: id, provider }]
+	});
+	await page.route(
+		(url) => url.pathname === '/api/v1/accounts',
+		(route) =>
+			route.fulfill({
+				json: [account('a1', 'personal', 'anthropic'), account('a2', 'bot', 'anthropic'), account('a3', 'gpt', 'openai')]
+			})
+	);
+	await page.goto('/schedules');
+	await page.getByRole('button', { name: 'New schedule' }).click();
+	const dialog = page.locator('dialog[open]').first();
+	await dialog.getByLabel('Name').fill('Morning news');
+	await dialog.getByLabel('Prompt').fill('Collect the news');
+	const picker = dialog.getByLabel('Account');
+	await expect(picker.locator('option')).toHaveText(['personal', 'bot', 'Auto', /^No account/], {
+		useInnerText: true
+	});
+	await picker.selectOption({ label: 'bot' });
+	await dialog.screenshot({ path: '../tmp/preset-acct/schedule-account.png' });
+	await dialog.getByRole('button', { name: 'Save' }).click();
+
+	await expect.poll(() => calls.length).toBe(1);
+	expect(calls[0].body).toMatchObject({ account_id: 'a2', pool_id: null, no_account: false });
+});

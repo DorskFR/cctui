@@ -6,13 +6,27 @@
 	import MachinePicker from '#lib/components/molecules/MachinePicker.svelte';
 	import PermissionModes from '#lib/components/organisms/spawn/PermissionModes.svelte';
 	import { dirFromQuery, makeCwdSchema } from '#lib/components/organisms/spawn/cwdSchema.ts';
+	import {
+		accountBacksAdapter,
+		accountPickOptions,
+		compatiblePools,
+		POOL_PREFIX
+	} from '#lib/components/organisms/spawn/options.ts';
+	import { accountUsedPct } from '#lib/components/organisms/spawn/profiles.ts';
 	import { fsLiveness } from '#lib/components/organisms/spawn/cwdGitInfo.ts';
 	import { harnessModelsFallback } from '#lib/domainTables.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
 	import { harnessTable } from '#lib/harnesses.svelte.ts';
 	import { familyAccent, pickableHarnesses } from '#lib/harnesses.ts';
 	import { modelHintText, withCurrentModel } from '#lib/harnessModels.ts';
-	import { useHarnessModels, useHarnesses, useMachineAdapters } from '#lib/queries/index.ts';
+	import {
+		useAccountPools,
+		useAccounts,
+		useAllAccountsUsage,
+		useHarnessModels,
+		useHarnesses,
+		useMachineAdapters
+	} from '#lib/queries/index.ts';
 	import { m } from '#lib/paraglide/messages.js';
 	import type { PresetForm, PresetFormProblems } from '#lib/schedules/presetForm.ts';
 
@@ -76,6 +90,31 @@
 		}));
 		if (!out.some((o) => o.value === '')) out.unshift({ value: '', label: m.spawn_model_default() });
 		return out;
+	});
+
+	const accountsQ = useAccounts();
+	const poolsQ = useAccountPools(() => hasFeature('account_sharing'));
+	const usageQ = useAllAccountsUsage();
+	const accounts = $derived(accountsQ.data ?? []);
+	const pools = $derived(poolsQ.data ?? []);
+	const accountOptions = $derived<SelectOption[]>(
+		accountPickOptions({
+			accounts,
+			pools,
+			harness: form.adapter_id,
+			usedPct: (id) => accountUsedPct(usageQ.data ?? [], id)
+		})
+	);
+	$effect(() => {
+		const pick = form.account;
+		if (!pick || !accountsQ.data) return;
+		if (pick.startsWith(POOL_PREFIX)) {
+			const pool = pools.find((p) => `${POOL_PREFIX}${p.id}` === pick);
+			if (poolsQ.data && (!pool || !compatiblePools([pool], accounts, form.adapter_id).length)) form.account = '';
+			return;
+		}
+		const account = accounts.find((a) => a.id === pick);
+		if (account && !accountBacksAdapter(account, form.adapter_id)) form.account = '';
 	});
 
 	function pickHarness(id: string) {
@@ -147,9 +186,14 @@
 		</AutoGrid>
 	</Field>
 
-	<Field label={m.spawn_field_model()} for="{uid}-model">
-		<Select id="{uid}-model" options={modelOptions} bind:value={form.model} />
-	</Field>
+	<AutoGrid min="12rem" maxCols={2} gap="var(--sp-3)">
+		<Field label={m.spawn_account_label()} for="{uid}-account">
+			<Select id="{uid}-account" options={accountOptions} bind:value={form.account} />
+		</Field>
+		<Field label={m.spawn_field_model()} for="{uid}-model">
+			<Select id="{uid}-model" options={modelOptions} bind:value={form.model} />
+		</Field>
+	</AutoGrid>
 
 	<PermissionModes
 		harness={form.adapter_id || null}

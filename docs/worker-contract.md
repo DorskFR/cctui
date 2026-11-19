@@ -1260,7 +1260,7 @@ How it lands, by lane target (`delivered_as` on the event):
 | a session queued for an offline machine | the queued spawn launches with it once the daemon is back (24 h at most) |
 | a session archived or gone | `followup` from the parent the events name (an approval answers its asker), else dead |
 | a machine preset, its current session idle less than `fresh_secs` (60–2700, default 900, capped by the cache TTL) | `reply` to that session |
-| a machine preset otherwise | `followup` of its last session (`on_stale: followup`, the default), else a fresh `spawn` (`on_stale: new`, or no session yet); prompt = preset prompt, blank line, batch |
+| a machine preset otherwise | `followup` of its last session (`on_stale: followup`, the default), else a fresh `spawn` (`on_stale: new`, or no session yet); prompt = preset prompt, blank line, batch; account = the preset's `account_id`, `pool_id` or `no_account`, else the matching account with the most allocation left |
 | a container preset (dispatcher) | `dispatch`: one worker per batch, `session_id` = the batch id so a redelivery is deduplicated, `payload: {profile, prompt, name}` from the preset, `notify_url` from the preset |
 
 A preset's `notify_url` (https, dispatcher presets only) is the dispatch

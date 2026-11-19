@@ -2,6 +2,7 @@ import type { LaunchPreset } from '@bindings/LaunchPreset';
 import type { LaunchPresetRequest } from '@bindings/LaunchPresetRequest';
 import type { Overlap } from '@bindings/Overlap';
 import type { PermissionMode } from '@bindings/PermissionMode';
+import { NO_ACCOUNT, POOL_PREFIX } from '#lib/components/organisms/spawn/options.ts';
 import { cronFromRepeat, cronProblem, parseTime, repeatFromCron, type CronProblem, type Repeat } from './cron';
 
 export interface PresetForm {
@@ -12,6 +13,8 @@ export interface PresetForm {
 	adapter_id: string;
 	model: string;
 	permission_mode: PermissionMode | null;
+	/** '' Auto · NO_ACCOUNT · POOL_PREFIX + pool id · account id */
+	account: string;
 	repeat: Repeat;
 	timezone: string;
 	overlap: Overlap;
@@ -30,6 +33,18 @@ export interface PresetFormProblems {
 	cron?: CronProblem;
 }
 
+export function accountPickOf(p: Pick<LaunchPreset, 'account_id' | 'pool_id' | 'no_account'>): string {
+	if (p.no_account) return NO_ACCOUNT;
+	if (p.pool_id) return `${POOL_PREFIX}${p.pool_id}`;
+	return p.account_id ?? '';
+}
+
+export function accountFields(pick: string): Pick<LaunchPresetRequest, 'account_id' | 'pool_id' | 'no_account'> {
+	if (pick === NO_ACCOUNT) return { account_id: null, pool_id: null, no_account: true };
+	if (pick.startsWith(POOL_PREFIX)) return { account_id: null, pool_id: pick.slice(POOL_PREFIX.length), no_account: false };
+	return { account_id: pick || null, pool_id: null, no_account: false };
+}
+
 export const isSchedule = (preset: Pick<LaunchPreset, 'cron'>): boolean => preset.cron !== null;
 
 export const isDispatcherTarget = (preset: Pick<LaunchPreset, 'dispatcher_id'> | null | undefined): boolean =>
@@ -44,6 +59,9 @@ export function requestFromPreset(preset: LaunchPreset): LaunchPresetRequest {
 		adapter_id: preset.adapter_id,
 		model: preset.model,
 		permission_mode: preset.permission_mode,
+		account_id: preset.account_id,
+		pool_id: preset.pool_id,
+		no_account: preset.no_account,
 		dispatcher_id: preset.dispatcher_id,
 		profile: preset.profile,
 		external_sources: preset.external_sources,
@@ -73,6 +91,7 @@ export function emptyForm(defaults: { machine_id?: string; adapter_id?: string; 
 		adapter_id: defaults.adapter_id ?? '',
 		model: '',
 		permission_mode: null,
+		account: '',
 		repeat: repeatFromCron(null),
 		timezone: defaults.timezone,
 		overlap: 'skip',
@@ -89,6 +108,7 @@ export function formFromPreset(preset: LaunchPreset, fallbackTimezone: string): 
 		adapter_id: preset.adapter_id ?? '',
 		model: preset.model ?? '',
 		permission_mode: preset.permission_mode,
+		account: accountPickOf(preset),
 		repeat: repeatFromCron(preset.cron),
 		timezone: preset.cron === null ? fallbackTimezone : preset.timezone || 'UTC',
 		overlap: preset.overlap,
@@ -157,7 +177,8 @@ export function requestFromForm(
 				working_dir: form.working_dir.trim() || null,
 				adapter_id: form.adapter_id || null,
 				model: form.model.trim() || null,
-				permission_mode: form.permission_mode
+				permission_mode: form.permission_mode,
+				...accountFields(form.account)
 			};
 	const schedule = opts.schedule
 		? {
@@ -173,6 +194,9 @@ export function requestFromForm(
 		adapter_id: null,
 		model: null,
 		permission_mode: null,
+		account_id: null,
+		pool_id: null,
+		no_account: false,
 		...DEFAULTS,
 		...kept,
 		name: form.name.trim(),
