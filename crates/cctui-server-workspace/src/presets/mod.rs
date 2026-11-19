@@ -454,11 +454,9 @@ mod tests {
     fn env_names_are_checked_and_values_stay_out_of_debug() {
         let bad = LaunchPresetRequest { env_keys: Some(vec!["lower".into()]), ..machine() };
         assert!(validate(&bad).unwrap_err().contains("invalid env key"));
-        let bad_value_key =
-            LaunchPresetRequest { env: Some(env(&[("1X", "v")])), ..machine() };
+        let bad_value_key = LaunchPresetRequest { env: Some(env(&[("1X", "v")])), ..machine() };
         assert!(validate(&bad_value_key).is_err());
-        let ok =
-            LaunchPresetRequest { env: Some(env(&[("TOKEN", "s3cr3t-v4lue")])), ..machine() };
+        let ok = LaunchPresetRequest { env: Some(env(&[("TOKEN", "s3cr3t-v4lue")])), ..machine() };
         let valid = validate(&ok).unwrap();
         assert!(!format!("{valid:?}").contains("s3cr3t-v4lue"), "{valid:?}");
         assert!(format!("{valid:?}").contains("TOKEN"));
@@ -466,12 +464,10 @@ mod tests {
 
     #[test]
     fn a_dispatcher_target_carries_env_but_not_a_reserved_name() {
-        let carried =
-            LaunchPresetRequest { env: Some(env(&[("FEED_TOKEN", "t")])), ..container() };
+        let carried = LaunchPresetRequest { env: Some(env(&[("FEED_TOKEN", "t")])), ..container() };
         assert!(matches!(validate(&carried).unwrap().env, EnvEdit::Edit { .. }));
         for name in ["ANTHROPIC_BASE_URL", "WORKER_NET_PROXY"] {
-            let reserved =
-                LaunchPresetRequest { env: Some(env(&[(name, "x")])), ..container() };
+            let reserved = LaunchPresetRequest { env: Some(env(&[(name, "x")])), ..container() };
             assert!(validate(&reserved).unwrap_err().contains("reserved"), "{name}");
         }
     }
