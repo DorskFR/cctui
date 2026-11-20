@@ -97,7 +97,7 @@ export function buildSessionSearchSchema(fetchValues: FetchValues): Schema {
 			},
 			{
 				name: 'pinned',
-				label: m.search_field_pinned(),
+				label: m.search_field_starred(),
 				type: 'bool',
 				aliases: ['starred'],
 				operators: ['eq'],
