@@ -290,8 +290,8 @@ pub struct FollowupPrompt {
 
 /// The same prompt and file the webui builds from this chain brief.
 #[must_use]
-pub fn followup_from_brief(brief: &BriefResponse, instruction: &str) -> FollowupPrompt {
-    let envelope = brief::followup_envelope(brief.sessions.as_deref().unwrap_or_default());
+pub fn followup_from_brief(chain: &BriefResponse, instruction: &str) -> FollowupPrompt {
+    let envelope = brief::followup_envelope(chain.sessions.as_deref().unwrap_or_default());
     FollowupPrompt {
         prompt: format!("{}\n\n{}", envelope.inline, ask(instruction)),
         file: envelope.file,

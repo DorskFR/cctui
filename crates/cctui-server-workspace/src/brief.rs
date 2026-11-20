@@ -447,7 +447,8 @@ pub fn assemble(links: &[Link], ceiling: usize) -> BriefResponse {
     let mut parts = chain_parts(links);
     let headings: Vec<String> =
         links.iter().enumerate().map(|(i, link)| heading(i + 1, link)).collect();
-    elide(&mut parts, chain_bytes(links, &parts, &headings).saturating_sub(ceiling));
+    let over = chain_bytes(links, &parts, &headings).saturating_sub(ceiling);
+    elide(&mut parts, over);
     let rendered: Vec<Vec<String>> = parts.iter().map(|p| pieces(p, ceiling)).collect();
     let mut sessions: Vec<BriefSession> = links
         .iter()

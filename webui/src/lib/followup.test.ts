@@ -93,7 +93,7 @@ describe('followupPrompt for a follow-up chain', () => {
 		'it can be longer than one Read call returns, so keep reading until the end of the file.';
 
 	it('always ships the whole chain as the file, oldest first, with pointers inline', () => {
-		const { prompt, file } = followupPrompt(src, { markdown: 'whole', sessions: chain }, 'Go on.');
+		const { prompt, file } = followupPrompt(src, { markdown: 'LEGACY-MARKDOWN', sessions: chain }, 'Go on.');
 		expect(file).toBe(
 			[
 				'<cctui-previous-sessions>',
@@ -127,7 +127,7 @@ describe('followupPrompt for a follow-up chain', () => {
 				'Go on.'
 			].join('\n')
 		);
-		expect(prompt).not.toContain('whole');
+		expect(prompt).not.toContain('LEGACY-MARKDOWN');
 		const { blocks, prose } = splitInjected(prompt);
 		expect(blocks.map((b) => [b.kind, b.tag])).toEqual([['previous-conversation', 'cctui-previous-sessions']]);
 		expect(splitInjected(blocks[0].body).blocks.map((b) => b.attrs.id)).toEqual(['s-a', 's-x', 's-c']);

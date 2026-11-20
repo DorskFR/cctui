@@ -576,7 +576,7 @@ async fn a_chain_followup_stages_the_same_file_as_the_webui_path() {
     .await
     .unwrap();
     let ask_a = format!("the root ask {}", "a".repeat(10 * 1024));
-    let mut rows = vec![(root.as_str(), json!({"role": "user", "text": ask_a}))];
+    let mut rows = vec![(root.as_str(), json!({"role": "user", "text": &ask_a}))];
     for i in 0..150 {
         let text = format!("<root-{i:03}>");
         rows.push(if i % 2 == 0 {
@@ -613,6 +613,7 @@ async fn a_chain_followup_stages_the_same_file_as_the_webui_path() {
     let Json(served) =
         crate::brief::session_brief(State(state), Extension(ctx), Path(parent.clone()), Query(q))
             .await
+            .map_err(|(status, _)| status)
             .expect("chain brief");
     assert_eq!(out, crate::followup::followup_from_brief(&served, &ask));
 
