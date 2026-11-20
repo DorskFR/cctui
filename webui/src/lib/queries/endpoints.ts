@@ -52,6 +52,7 @@ import type { ForkRequest } from "@bindings/ForkRequest";
 import type { ForkResponse } from "@bindings/ForkResponse";
 import type { BriefResponse } from "@bindings/BriefResponse";
 import type { SessionThreadResponse } from "@bindings/SessionThreadResponse";
+import type { ThreadConversationPage } from "@bindings/ThreadConversationPage";
 import type { StageFilesResponse } from "@bindings/StageFilesResponse";
 import type { DispatchRequest } from "@bindings/DispatchRequest";
 import type { DispatchResponse } from "@bindings/DispatchResponse";
@@ -484,6 +485,14 @@ export const endpoints = {
       before: opts?.before,
       after: opts?.after,
       order: opts?.order,
+    }),
+  /** The follow-up line ending at `id`, root first, newest page first: pass
+   *  `next_cursor` back as `cursor` for the entries before it. */
+  threadConversation: (id: string, opts?: { limit?: number; cursor?: string }) =>
+    api.get<ThreadConversationPage>(`/sessions/${id}/conversation`, {
+      thread: 1,
+      limit: opts?.limit,
+      cursor: opts?.cursor,
     }),
   /** Find-in-conversation hit list for ONE session, oldest → newest. The
    *  server is the source of truth for the total: the DOM only holds the

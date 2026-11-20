@@ -14,6 +14,9 @@ use cctui_proto::api::{SessionThreadResponse, SpawnRequest, ThreadSession};
 use cctui_proto::injected::{PREVIOUS_CONVERSATION, PREVIOUS_SESSIONS};
 
 use crate::brief::{self, Caps, Turn};
+#[path = "followup_thread.rs"]
+pub mod thread;
+
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -198,19 +201,64 @@ pub async fn claim_intent(pool: &PgPool, session_id: &str, spawn_key: Option<&st
             return;
         }
     };
-    if let Err(e) = sqlx::query(
+    let linked = sqlx::query_scalar::<_, Option<String>>(
         "UPDATE sessions SET \
              parent_id = COALESCE(parent_id, (SELECT id FROM sessions WHERE id = $2)), \
              metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('relation', $3::text) \
-         WHERE id = $1",
+         WHERE id = $1 RETURNING parent_id",
     )
     .bind(session_id)
     .bind(&parent)
     .bind(RELATION)
+    .fetch_optional(pool)
+    .await;
+    match linked {
+        Ok(Some(Some(linked_parent))) => {
+            if let Err(e) = stamp_thread_root(pool, session_id, &linked_parent).await {
+                tracing::warn!(%session_id, error = %e, "could not record the thread root");
+            }
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(
+                %session_id, %parent, error = %e, "could not link the follow-up session"
+            );
+        }
+/// `session_id` joins the line of `parent`: the parent becomes a root when it
+/// had no line yet, and the session takes the parent's root.
+async fn stamp_thread_root(
+    pool: &PgPool,
+    session_id: &str,
+    parent: &str,
+) -> Result<(), sqlx::Error> {
+    let root = match thread_root_of(pool, parent).await? {
+        Some(root) => root,
+        None => {
+            chain_of(pool, parent).await?.into_iter().next().unwrap_or_else(|| parent.to_owned())
+        }
+    };
+    sqlx::query(
+        "UPDATE sessions SET thread_root_id = $3 \
+         WHERE (id = $1 AND thread_root_id IS NULL) OR id = $2",
+    )
+    .bind(parent)
+    .bind(session_id)
+    .bind(&root)
     .execute(pool)
-    .await
-    {
-        tracing::warn!(%session_id, %parent, error = %e, "could not link the follow-up session");
+    .await?;
+    Ok(())
+}
+
+/// The recorded root of the line through `id`; `None` until a follow-up joins it.
+pub async fn thread_root_of(pool: &PgPool, id: &str) -> Result<Option<String>, sqlx::Error> {
+    let root: Option<Option<String>> =
+        sqlx::query_scalar("SELECT thread_root_id FROM sessions WHERE id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(root.flatten())
+}
+
     }
 }
 
