@@ -254,7 +254,7 @@ async fn a_session_the_user_holds_stays_until_they_let_go() {
     let viewed_child_root = f.dispatched(None).await;
     let viewed_child = f.session().await;
     f.nest(&viewed_child, &viewed_child_root, None).await;
-    for sid in [&pinned, &action, &asking, &viewed, &viewed_child_root] {
+    for sid in [&pinned, &action, &asking, &viewed, &viewed_child_root, &viewed_child] {
         f.end(sid, "ended", "completed", 300.0).await;
     }
     sqlx::query("UPDATE sessions SET pinned = true WHERE id = $1")
