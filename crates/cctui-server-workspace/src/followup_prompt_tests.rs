@@ -1,67 +1,68 @@
 use cctui_proto::injected::PREVIOUS_CONVERSATION;
 use serde_json::json;
 
-use super::{DEFAULT_INSTRUCTION, chain_prompt, followup_prompt, render_followup_prompt};
+use super::{DEFAULT_INSTRUCTION, FollowupPrompt, followup_from_brief, render_followup_prompt};
 use crate::brief::{self, Link, Role, Transcript, Turn, collect_turns};
 
 fn turn(role: Role, text: impl Into<String>) -> Turn {
     Turn { role, text: text.into() }
 }
 
-fn wrapped_len(prompt: &str) -> usize {
-    let close = format!("</{PREVIOUS_CONVERSATION}>");
-    prompt.find(&close).expect("closing tag") + close.len()
-}
-
-#[test]
-fn the_server_prompt_wraps_the_parent_brief_then_the_instruction() {
-    let turns = [turn(Role::User, "q"), turn(Role::Assistant, "a")];
-    let prompt = followup_prompt("s-a", "wave \"3\" <x>", &turns, " next step ");
-    assert_eq!(
-        prompt,
-        "<cctui-previous-conversation session=\"wave &quot;3&quot; &lt;x>\" id=\"s-a\">\n\
-         **User:**\n\nq\n\n**Assistant:**\n\na\n</cctui-previous-conversation>\n\nnext step"
-    );
-    let blank = followup_prompt("s-a", "w", &turns, "  ");
-    assert!(blank.ends_with(&format!("\n\n{DEFAULT_INSTRUCTION}")), "{blank}");
-}
-
-#[test]
-fn the_wrapped_brief_respects_the_turn_and_byte_caps() {
-    let many: Vec<Turn> = (0..200)
-        .map(|i| turn(if i % 2 == 0 { Role::User } else { Role::Assistant }, format!("t{i}")))
-        .collect();
-    let prompt = followup_prompt("s", "n", &many, "go");
-    assert!(prompt.contains("… 140 earlier turns omitted"), "{prompt}");
-    assert!(prompt.contains("t199") && !prompt.contains("t139\n"));
-
-    let big: Vec<Turn> =
-        (0..200).map(|i| turn(Role::User, format!("{i:04}").repeat(256))).collect();
-    let prompt = followup_prompt("s", &"n".repeat(10_000), &big, "go");
-    assert!(wrapped_len(&prompt) <= brief::DEFAULT_MAX_BYTES, "{}", wrapped_len(&prompt));
-    assert!(prompt.contains(&"0199".repeat(256)));
-    assert!(prompt.contains("earlier turns omitted"));
-
-    let huge = [turn(Role::Assistant, format!("{}tail", "x".repeat(200 * 1024)))];
-    let prompt = followup_prompt("s", "n", &huge, "go");
-    assert!(wrapped_len(&prompt) <= brief::DEFAULT_MAX_BYTES, "{}", wrapped_len(&prompt));
-    assert!(prompt.contains("tail\n</cctui-previous-conversation>"));
-}
-
-#[test]
-fn a_follow_up_of_a_server_rendered_follow_up_collapses_to_one_line() {
-    let first = followup_prompt("s-a", "a", &[turn(Role::User, "old ask")], "Now add tests.");
-    let rows = vec![("message", json!({"role": "user", "text": first}))];
-    let turns = collect_turns("claude-code", rows);
-    assert_eq!(turns, [turn(Role::User, "(continued from session \"a\" s-a)\n\nNow add tests.")]);
-}
-
 fn session(id: &str, name: &str, turns: Vec<Turn>) -> Link {
     Link { id: id.into(), transcript: Some(Transcript { name: name.into(), turns }) }
 }
 
+fn followup(links: &[Link], instruction: &str) -> FollowupPrompt {
+    followup_from_brief(&brief::assemble(links, brief::DEFAULT_CHAIN_MAX_BYTES), instruction)
+}
+
 #[test]
-fn the_server_chain_prompt_has_the_webui_envelope_and_collapses_per_session() {
+fn the_server_prompt_wraps_the_parent_brief_then_the_instruction() {
+    let turns = vec![turn(Role::User, "q"), turn(Role::Assistant, "a")];
+    let out = followup(&[session("s-a", "wave \"3\" <x>", turns.clone())], " next step ");
+    assert_eq!(out.file, None);
+    assert_eq!(
+        out.prompt,
+        "<cctui-previous-conversation session=\"wave &quot;3&quot; &lt;x>\" id=\"s-a\">\n\
+         **User:**\n\nq\n\n**Assistant:**\n\na\n</cctui-previous-conversation>\n\nnext step"
+    );
+    let blank = followup(&[session("s-a", "w", turns)], "  ");
+    assert!(blank.prompt.ends_with(&format!("\n\n{DEFAULT_INSTRUCTION}")), "{}", blank.prompt);
+}
+
+#[test]
+fn a_lone_parent_over_the_inline_budget_goes_whole_to_the_file() {
+    let many: Vec<Turn> = (0..200)
+        .map(|i| {
+            let role = if i % 2 == 0 { Role::User } else { Role::Assistant };
+            turn(role, format!("t{i:03} {}", "y".repeat(512)))
+        })
+        .collect();
+    let out = followup(&[session("s", &"n".repeat(10_000), many)], "go");
+    let file = out.file.expect("file");
+    for i in 0..200 {
+        assert_eq!(file.matches(&format!("t{i:03} ")).count(), 1, "t{i:03}");
+    }
+    assert!(!file.contains("omitted"), "no turn cap");
+    let close = format!("</{PREVIOUS_CONVERSATION}>");
+    let inline = &out.prompt[..out.prompt.find(&close).expect("closing tag") + close.len()];
+    assert!(inline.len() <= brief::INLINE_MAX_BYTES, "{}", inline.len());
+    assert!(inline.contains(brief::BRIEF_FILE_NAME) && inline.contains("Read all of it"));
+    assert!(inline.contains("t199 ") && !inline.contains("t000 "));
+    assert!(out.prompt.ends_with("\n\ngo"));
+}
+
+#[test]
+fn a_follow_up_of_a_server_rendered_follow_up_collapses_to_one_line() {
+    let parent = [session("s-a", "a", vec![turn(Role::User, "old ask")])];
+    let first = followup(&parent, "Now add tests.");
+    let rows = vec![("message", json!({"role": "user", "text": first.prompt}))];
+    let turns = collect_turns("claude-code", rows);
+    assert_eq!(turns, [turn(Role::User, "(continued from session \"a\" s-a)\n\nNow add tests.")]);
+}
+
+#[test]
+fn the_server_chain_prompt_points_at_the_file_and_collapses_per_session() {
     let links = [
         session(
             "s-a",
@@ -71,19 +72,17 @@ fn the_server_chain_prompt_has_the_webui_envelope_and_collapses_per_session() {
         Link { id: "s-x".into(), transcript: None },
         session("s-c", "c", vec![turn(Role::User, "(continued from session \"x\" s-x)\n\nask C")]),
     ];
-    let prompt = chain_prompt(&links, " go ");
-    assert_eq!(
-        prompt,
+    let out = followup(&links, " go ");
+    let file = out.file.expect("a chain always ships the file");
+    assert!(file.contains("(session s-x could not be included)"), "{file}");
+    assert!(file.contains("**User:**\n\nask A\n\n**Assistant:**\n\nanswer A"), "{file}");
+    assert!(out.prompt.starts_with(
         "<cctui-previous-sessions>\n\
          <cctui-previous-conversation n=\"1\" session=\"a &quot;x&quot;\" id=\"s-a\">\n\
-         **User:**\n\nask A\n\n**Assistant:**\n\nanswer A\n</cctui-previous-conversation>\n\
-         <cctui-previous-conversation n=\"2\" id=\"s-x\">\n\
-         (session s-x could not be included)\n</cctui-previous-conversation>\n\
-         <cctui-previous-conversation n=\"3\" session=\"c\" id=\"s-c\">\n\
-         **User:**\n\n(continued from session \"x\" s-x)\n\nask C\n</cctui-previous-conversation>\n\
-         </cctui-previous-sessions>\n\ngo"
-    );
-    let rows = vec![("message", json!({"role": "user", "text": prompt}))];
+         In the attached file previous-conversation.md."
+    ));
+    assert!(out.prompt.ends_with("</cctui-previous-sessions>\n\ngo"), "{}", out.prompt);
+    let rows = vec![("message", json!({"role": "user", "text": out.prompt}))];
     let turns = collect_turns("claude-code", rows);
     assert_eq!(
         turns,
@@ -96,19 +95,25 @@ fn the_server_chain_prompt_has_the_webui_envelope_and_collapses_per_session() {
 }
 
 #[test]
-fn the_server_chain_prompt_stays_inline_sized() {
+fn the_server_chain_prompt_keeps_every_turn_in_the_file_and_stays_inline_sized() {
     let links: Vec<Link> = (0..20)
         .map(|i| {
             let role = |t: i32| if t % 2 == 0 { Role::User } else { Role::Assistant };
-            let turns = (0..30).map(|t| turn(role(t), "y".repeat(1024))).collect();
+            let text = |t: i32| format!("s{i:02}t{t:02} {}", "y".repeat(1024));
+            let turns = (0..90).map(|t| turn(role(t), text(t))).collect();
             session(&format!("s-{i}"), &format!("n{i}"), turns)
         })
         .collect();
-    let prompt = chain_prompt(&links, "go");
+    let out = followup(&links, "go");
     let close = format!("</{}>", cctui_proto::injected::PREVIOUS_SESSIONS);
-    let wrapped = prompt.find(&close).expect("closing tag") + close.len();
-    assert!(wrapped <= brief::DEFAULT_MAX_BYTES, "{wrapped}");
-    assert_eq!(prompt.matches("<cctui-previous-conversation n=").count(), 20);
+    let wrapped = out.prompt.find(&close).expect("closing tag") + close.len();
+    assert!(wrapped <= brief::INLINE_MAX_BYTES, "{wrapped}");
+    assert_eq!(out.prompt.matches("<cctui-previous-conversation n=").count(), 20);
+    let file = out.file.expect("file");
+    for (i, t) in [(0, 0), (0, 89), (10, 45), (19, 89)] {
+        assert_eq!(file.matches(&format!("s{i:02}t{t:02} ")).count(), 1, "s{i:02}t{t:02}");
+    }
+    assert!(out.prompt.contains("s19t89 ") && !out.prompt.contains("s00t00 "));
 }
 
 #[tokio::test]
@@ -130,7 +135,9 @@ async fn render_followup_prompt_reads_the_parent_transcript() {
         .await
         .unwrap();
     }
-    let prompt = render_followup_prompt(&pool, &sid, "pick it up").await.unwrap().unwrap();
+    let out = render_followup_prompt(&pool, &sid, "pick it up").await.unwrap().unwrap();
+    let prompt = out.prompt;
+    assert_eq!(out.file, None);
     let open = format!("<{PREVIOUS_CONVERSATION} session=\"/w\" id=\"{sid}\">");
     assert!(prompt.starts_with(&open), "{prompt}");
     assert!(prompt.contains("**User:**\n\nhello\n\n**Assistant:**\n\nhi there\n"), "{prompt}");
@@ -301,14 +308,18 @@ mod chain {
 
         assert_eq!(brief(&state, me.0, "no-such-session", true).await.err(), Some(404));
 
-        let prompt = super::render_followup_prompt(&pool, &parent, "next").await.unwrap().unwrap();
+        let out = super::render_followup_prompt(&pool, &parent, "next").await.unwrap().unwrap();
+        let served = brief(&state, me.0, &parent, true).await.expect("chain brief");
+        assert_eq!(out, super::followup_from_brief(&served, "next"), "same as the webui path");
+        let (prompt, file) = (out.prompt, out.file.expect("file"));
         assert!(prompt.starts_with("<cctui-previous-sessions>\n"), "{prompt}");
         assert!(prompt.ends_with("</cctui-previous-sessions>\n\nnext"), "{prompt}");
-        assert_eq!(prompt.matches("ask A").count(), 1, "{prompt}");
-        assert!(prompt.contains("answer C") && !prompt.contains("ask B2"), "{prompt}");
-        let prompt = super::render_followup_prompt(&pool, &heir, "next").await.unwrap().unwrap();
-        assert!(prompt.contains(&format!("(session {hidden} could not be included)")), "{prompt}");
-        assert!(!prompt.contains("secret ask"), "{prompt}");
+        assert_eq!(file.matches("ask A").count(), 1, "{file}");
+        assert!(file.contains("answer C") && !file.contains("ask B2"), "{file}");
+        let out = super::render_followup_prompt(&pool, &heir, "next").await.unwrap().unwrap();
+        let file = out.file.expect("file");
+        assert!(file.contains(&format!("(session {hidden} could not be included)")), "{file}");
+        assert!(!file.contains("secret ask") && !out.prompt.contains("secret ask"), "{file}");
 
         let all = [heir, hidden, parent, sibling, middle, root];
         sqlx::query("DELETE FROM stream_events WHERE session_id = ANY($1)")

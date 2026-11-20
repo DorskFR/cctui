@@ -60,6 +60,16 @@ describe('followupPrompt', () => {
 		expect(file).toContain(brief);
 		expect(file?.startsWith('<cctui-previous-conversation session="my &quot;run&quot;" id="s1">')).toBe(true);
 		expect(file?.endsWith('</cctui-previous-conversation>\n')).toBe(true);
+		expect(prompt).toContain('Read all of it before you continue');
+	});
+
+	it('keeps the newest turns of an oversized lone parent inline beside the pointer', () => {
+		const markdown = 'x'.repeat(INLINE_BRIEF_MAX_BYTES + 1);
+		const lone: BriefSession = { id: 's1', name: 'n', markdown, turns: 9, omitted: 0, truncated: false, tail: '**User:**\n\nlast' };
+		const { prompt, file } = followupPrompt(src, { markdown, sessions: [lone] }, 'go');
+		expect(prompt).toContain(`${BRIEF_FILE_NAME}. Read all of it`);
+		expect(prompt).toContain('keep reading until the end of the file.\n\n**User:**\n\nlast\n</cctui-previous-conversation>\n\ngo');
+		expect(file).toContain(markdown);
 	});
 });
 
@@ -78,10 +88,13 @@ describe('followupPrompt for a follow-up chain', () => {
 		part('s-c', 'c', '**User:**\n\nask C')
 	];
 
-	it('wraps every session once, oldest first, in the previous-sessions block', () => {
-		const { prompt, file } = followupPrompt(src, { markdown: 'whole', sessions: chain }, 'Go on.');
-		expect(file).toBeNull();
-		expect(prompt).toBe(
+	const READ =
+		'The whole conversation is in the attached file previous-conversation.md. Read all of it before you continue: ' +
+		'it can be longer than one Read call returns, so keep reading until the end of the file.';
+
+	it('always ships the whole chain as the file, oldest first, with pointers inline', () => {
+		const { prompt, file } = followupPrompt(src, { markdown: 'LEGACY-MARKDOWN', sessions: chain }, 'Go on.');
+		expect(file).toBe(
 			[
 				'<cctui-previous-sessions>',
 				'<cctui-previous-conversation n="1" session="first &quot;run&quot;" id="s-a">',
@@ -94,16 +107,78 @@ describe('followupPrompt for a follow-up chain', () => {
 				'**User:**\n\nask C',
 				'</cctui-previous-conversation>',
 				'</cctui-previous-sessions>',
+				''
+			].join('\n')
+		);
+		expect(prompt).toBe(
+			[
+				'<cctui-previous-sessions>',
+				'<cctui-previous-conversation n="1" session="first &quot;run&quot;" id="s-a">',
+				`In the attached file ${BRIEF_FILE_NAME}.`,
+				'</cctui-previous-conversation>',
+				'<cctui-previous-conversation n="2" id="s-x">',
+				`In the attached file ${BRIEF_FILE_NAME}.`,
+				'</cctui-previous-conversation>',
+				'<cctui-previous-conversation n="3" session="c" id="s-c">',
+				READ,
+				'</cctui-previous-conversation>',
+				'</cctui-previous-sessions>',
 				'',
 				'Go on.'
 			].join('\n')
 		);
-		expect(prompt).not.toContain('whole');
-		expect(prompt.match(/ask A/g)).toHaveLength(1);
+		expect(prompt).not.toContain('LEGACY-MARKDOWN');
 		const { blocks, prose } = splitInjected(prompt);
 		expect(blocks.map((b) => [b.kind, b.tag])).toEqual([['previous-conversation', 'cctui-previous-sessions']]);
 		expect(splitInjected(blocks[0].body).blocks.map((b) => b.attrs.id)).toEqual(['s-a', 's-x', 's-c']);
 		expect(prose).toBe('Go on.');
+	});
+
+	it('ships the file even for a tiny chain of two', () => {
+		const sessions = [part('s-a', 'a', '**User:**\n\nhi'), part('s-b', 'b', '**User:**\n\nyo')];
+		const { file } = followupPrompt(src, { markdown: '', sessions });
+		expect(file).toContain('**User:**\n\nhi');
+		expect(file).toContain('**User:**\n\nyo');
+	});
+
+	it('builds the same envelope as the server for the shared fixture', () => {
+		const sessions: BriefSession[] = [
+			{
+				...part('s-a', 'n-s-a', '**User:**\n\nask A\n\n**Assistant:**\n\nanswer A'),
+				tail: '**User:**\n\nask A\n\n**Assistant:**\n\nanswer A'
+			},
+			part('s-x', null, '(session s-x could not be included)'),
+			{ ...part('s-c', 'c "x"', '**User:**\n\nask C'), tail: '**User:**\n\nask C' }
+		];
+		const { prompt, file } = followupPrompt(src, { markdown: '', sessions }, 'go');
+		expect(prompt).toBe(
+			'<cctui-previous-sessions>\n' +
+				'<cctui-previous-conversation n="1" session="n-s-a" id="s-a">\n' +
+				'In the attached file previous-conversation.md.\n\n' +
+				'**User:**\n\nask A\n\n**Assistant:**\n\nanswer A\n' +
+				'</cctui-previous-conversation>\n' +
+				'<cctui-previous-conversation n="2" id="s-x">\n' +
+				'In the attached file previous-conversation.md.\n' +
+				'</cctui-previous-conversation>\n' +
+				'<cctui-previous-conversation n="3" session="c &quot;x&quot;" id="s-c">\n' +
+				`${READ}\n\n` +
+				'**User:**\n\nask C\n' +
+				'</cctui-previous-conversation>\n' +
+				'</cctui-previous-sessions>\n\ngo'
+		);
+		expect(file).toBe(
+			'<cctui-previous-sessions>\n' +
+				'<cctui-previous-conversation n="1" session="n-s-a" id="s-a">\n' +
+				'**User:**\n\nask A\n\n**Assistant:**\n\nanswer A\n' +
+				'</cctui-previous-conversation>\n' +
+				'<cctui-previous-conversation n="2" id="s-x">\n' +
+				'(session s-x could not be included)\n' +
+				'</cctui-previous-conversation>\n' +
+				'<cctui-previous-conversation n="3" session="c &quot;x&quot;" id="s-c">\n' +
+				'**User:**\n\nask C\n' +
+				'</cctui-previous-conversation>\n' +
+				'</cctui-previous-sessions>\n'
+		);
 	});
 
 	it('keeps the single-block shape when the chain is just the parent', () => {
@@ -112,13 +187,13 @@ describe('followupPrompt for a follow-up chain', () => {
 		expect(followupPrompt(src, { markdown: 'legacy' }).prompt).toBe(followupPrompt(src, 'legacy').prompt);
 	});
 
-	it('moves an oversized chain into the bootstrap file and leaves pointers inline', () => {
+	it('keeps a large chain in the file and only the newest turns inline', () => {
 		const big = 'x'.repeat(INLINE_BRIEF_MAX_BYTES);
-		const sessions = [part('s-a', 'a', big), part('s-b', 'b', 'tail')];
+		const sessions = [part('s-a', 'a', big), { ...part('s-b', 'b', 'tail'), tail: '… 3 earlier turns are in the file\n\nnewest' }];
 		const { prompt, file } = followupPrompt(src, { markdown: '', sessions });
 		expect(prompt).not.toContain(big);
 		expect(prompt.startsWith('<cctui-previous-sessions>\n<cctui-previous-conversation n="1" session="a" id="s-a">\n')).toBe(true);
-		expect(prompt).toContain(`The transcripts are in the attached file ${BRIEF_FILE_NAME}. Read it first.`);
+		expect(prompt).toContain(`${READ}\n\n… 3 earlier turns are in the file\n\nnewest\n</cctui-previous-conversation>`);
 		expect(prompt.endsWith('</cctui-previous-sessions>\n\nContinue from this.')).toBe(true);
 		expect(file).toContain(big);
 		expect(file).toContain('<cctui-previous-conversation n="2" session="b" id="s-b">\ntail\n');
@@ -357,11 +432,15 @@ describe('launchFollowup', () => {
 		}));
 		const d = deps({ brief: vi.fn(async () => ({ markdown: 'whole', sessions })), spawn });
 		await launchFollowup(source, 'next step', d);
-		const prompt = spawn.mock.calls[0][0].prompt ?? '';
+		const [body, files] = spawn.mock.calls[0];
+		const prompt = body.prompt ?? '';
 		expect(prompt.startsWith('<cctui-previous-sessions>\n')).toBe(true);
-		expect(prompt).toContain('body of s-a');
-		expect(prompt).toContain('body of src');
+		expect(prompt).toContain(BRIEF_FILE_NAME);
 		expect(prompt.endsWith('</cctui-previous-sessions>\n\nnext step')).toBe(true);
+		expect(files.map((f) => f.name)).toEqual([BRIEF_FILE_NAME]);
+		const text = await files[0].text();
+		expect(text).toContain('body of s-a');
+		expect(text).toContain('body of src');
 	});
 
 	it('does not archive when the spawn fails', async () => {

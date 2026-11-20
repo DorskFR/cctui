@@ -28,6 +28,7 @@ description: Server environment variables, the daemon config file, per-machine a
 | `CCTUI_SESSION_ARCHIVE_TTL_HOURS`, `CCTUI_EPHEMERAL_MACHINE_TTL_HOURS` | Retention for archived sessions and stale ephemeral machines. |
 | `CCTUI_DB_MAX_CONNECTIONS`, `CCTUI_DB_MIN_CONNECTIONS`, `CCTUI_DB_ACQUIRE_TIMEOUT_SECS`, `CCTUI_DB_SLOW_QUERY_MS` | Pool and slow-query logging. |
 | `CCTUI_UPLOAD_BODY_LIMIT` | Maximum attachment upload size. |
+| `CCTUI_FOLLOWUP_BRIEF_MAX_BYTES` | Ceiling of the follow-up chain brief attached as `previous-conversation.md` (default 2 MiB, at least 49152). Past it, turns from the middle of the oldest sessions are replaced by a marker; the original ask always stays, and the newest session stays whole unless it alone is over the ceiling. |
 
 Most instance settings (upstream hosts, spawn limits, upload caps, harness health, plugins) are also editable at runtime under **Settings › Instance** and apply to every replica within 30 seconds.
 

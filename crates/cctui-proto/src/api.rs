@@ -1307,6 +1307,11 @@ pub struct BriefSession {
     pub turns: u32,
     pub omitted: u32,
     pub truncated: bool,
+    /// The newest turns of `markdown` that fit inline beside the pointer to
+    /// the file holding the whole chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub tail: Option<String>,
 }
 
 /// Absolute paths on the session's machine, in upload order.

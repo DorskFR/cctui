@@ -165,6 +165,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "preset_template",
         sql: include_str!("../schema/0026_preset_template.sql"),
     },
+    Migration {
+        version: 27,
+        name: "session_thread_root",
+        sql: include_str!("../schema/0027_session_thread_root.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -320,7 +325,8 @@ mod tests {
                     (23, "bootstrap".to_owned()),
                     (24, "bootstrap".to_owned()),
                     (25, "bootstrap".to_owned()),
-                    (26, "bootstrap".to_owned())
+                    (26, "bootstrap".to_owned()),
+                    (27, "bootstrap".to_owned())
                 ]
             );
 
@@ -587,6 +593,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_thread_root_migration_backfills_every_followup_line() {
+        with_isolated_database("session_thread_root_migration", |pool| async move {
+            provisioned(&pool).await;
+            sqlx::raw_sql("ALTER TABLE sessions DROP COLUMN thread_root_id")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::raw_sql(
+                "INSERT INTO sessions (id, machine_id, working_dir) VALUES ('a', 'm', '/w'); \
+                 INSERT INTO sessions (id, machine_id, working_dir, parent_id, metadata) VALUES \
+                   ('b', 'm', '/w', 'a', '{\"relation\": \"followup\"}'), \
+                   ('b2', 'm', '/w', 'a', '{\"relation\": \"followup\"}'); \
+                 INSERT INTO sessions (id, machine_id, working_dir, parent_id, metadata) VALUES \
+                   ('c', 'm', '/w', 'b', '{\"relation\": \"followup\"}'), \
+                   ('sub', 'm', '/w', 'b', '{\"relation\": \"subagent\"}'); \
+                 INSERT INTO sessions (id, machine_id, working_dir, parent_id, metadata) VALUES \
+                   ('fork', 'm', '/w', 'c', '{\"relation\": \"fork\"}'); \
+                 INSERT INTO sessions (id, machine_id, working_dir) VALUES ('lone', 'm', '/w')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let migration = super::MIGRATIONS.iter().find(|m| m.version == 27).unwrap();
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+
+            let roots: Vec<(String, Option<String>)> =
+                sqlx::query_as("SELECT id, thread_root_id FROM sessions ORDER BY id")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            let root = |id: &str| roots.iter().find(|(s, _)| s == id).unwrap().1.clone();
+            for id in ["a", "b", "b2", "c"] {
+                assert_eq!(root(id).as_deref(), Some("a"), "{id} is on the line rooted at a");
+            }
+            for id in ["sub", "fork", "lone"] {
+                assert_eq!(root(id), None, "{id} is not a follow-up line");
+            }
+            let indexed: bool = sqlx::query_scalar(
+                "SELECT to_regclass('public.idx_sessions_thread_root_id') IS NOT NULL",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(indexed);
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn storage_lifecycle_starts_with_no_rule_and_refuses_a_trim_without_a_size() {
         with_isolated_database("storage_lifecycle_rules", |pool| async move {
             provisioned(&pool).await;
@@ -664,7 +720,8 @@ mod tests {
                     (23, "bootstrap".to_owned()),
                     (24, "bootstrap".to_owned()),
                     (25, "bootstrap".to_owned()),
-                    (26, "bootstrap".to_owned())
+                    (26, "bootstrap".to_owned()),
+                    (27, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =

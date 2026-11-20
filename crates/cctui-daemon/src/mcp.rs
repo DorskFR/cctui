@@ -382,7 +382,10 @@ pub fn history_tool_schema() -> Value {
     CctuiPeers). Returns compact markdown by default, newest events first-priority within a size \
     budget; page backwards with `before` using the oldest seq the previous call reported. The \
     human running the target session sees that you consulted it. A `remote:<id>` peer can be \
-    read only if its owner shares its transcript; otherwise the call is refused.",
+    read only if its owner shares its transcript; otherwise the call is refused. With `thread: \
+    true` it reads the whole follow-up line ending at that session (pass your own id for yours): \
+    every earlier generation in order, with a marker where each follow-up started, user and \
+    assistant turns unless `roles` says otherwise.",
         "annotations": { "readOnlyHint": true },
         "inputSchema": {
             "type": "object",
@@ -412,6 +415,16 @@ pub fn history_tool_schema() -> Value {
                     "description": "Keep only these roles, e.g. [\"user\", \"assistant\"] for the \
     conversation without tool noise. Known roles: user, context, assistant, peer, thinking, tool, \
     result, mcp, error, summary, compact, system. Omit for everything.",
+                },
+                "thread": {
+                    "type": "boolean",
+                    "description": "Read the follow-up line ending at `session_id`, root first, \
+    instead of that one session. Page back with `cursor`, not `before`.",
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "With `thread`: the cursor the previous page reported, to read \
+    the entries before it.",
                 },
                 "format": {
                     "type": "string",
@@ -1458,15 +1471,19 @@ mod tests {
         let schema = history_tool_schema();
         assert_eq!(schema["inputSchema"]["required"], json!(["session_id"]));
         let props = schema["inputSchema"]["properties"].as_object().unwrap();
-        for key in ["session_id", "before", "after", "limit", "roles", "format"] {
+        let keys =
+            ["session_id", "before", "after", "limit", "roles", "format", "thread", "cursor"];
+        for key in keys {
             assert!(props.contains_key(key), "{key} missing from the schema");
         }
         assert_eq!(props["roles"]["type"], "array");
+        assert_eq!(props["thread"]["type"], "boolean");
         assert_eq!(props["format"]["enum"], json!(["markdown", "json"]));
         let desc = schema["description"].as_str().unwrap();
         assert!(desc.contains("archived"), "{desc}");
         assert!(desc.contains("no longer exists"), "{desc}");
         assert!(desc.contains("shares its transcript"), "{desc}");
+        assert!(desc.contains("follow-up line"), "{desc}");
     }
 
     #[test]

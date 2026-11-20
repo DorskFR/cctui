@@ -70,8 +70,19 @@ export function followupName(s: Pick<SessionListItem, 'name' | 'metadata'>): str
 	return m ? `${m[1]} ${Number(m[2]) + 1}` : `${name} 2`;
 }
 
+const MAX_ATTR_CHARS = 200;
+const FILE_POINTER = `In the attached file ${BRIEF_FILE_NAME}.`;
+const READ_POINTER =
+	`The whole conversation is in the attached file ${BRIEF_FILE_NAME}. Read all of it before you ` +
+	'continue: it can be longer than one Read call returns, so keep reading until the end of the file.';
+
 function attr(v: string): string {
-	return v.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+	return Array.from(v)
+		.slice(0, MAX_ATTR_CHARS)
+		.join('')
+		.replace(/&/g, '&amp;')
+		.replace(/"/g, '&quot;')
+		.replace(/</g, '&lt;');
 }
 
 function byteLength(s: string): number {
@@ -83,26 +94,27 @@ export interface FollowupPrompt {
 	file: string | null;
 }
 
-function chainPrompt(sessions: BriefSession[], ask: string): FollowupPrompt {
+function pointed(pointer: string, tail: string | undefined): string {
+	return tail === undefined ? pointer : `${pointer}\n\n${tail}`;
+}
+
+function chainEnvelope(sessions: BriefSession[], body: (s: BriefSession, i: number) => string): string {
 	const tag = CCTUI_TAGS.previousConversation;
-	const envelope = (body: (s: BriefSession, last: boolean) => string) => {
-		const blocks = sessions.map((s, i) => {
-			const name = s.name === null ? '' : ` session="${attr(s.name)}"`;
-			const open = `<${tag} n="${i + 1}"${name} id="${attr(s.id)}">`;
-			return `${open}\n${body(s, i === sessions.length - 1)}\n</${tag}>`;
-		});
-		return `<${PREVIOUS_SESSIONS_TAG}>\n${blocks.join('\n')}\n</${PREVIOUS_SESSIONS_TAG}>`;
-	};
-	const total = sessions.reduce((n, s) => n + byteLength(s.markdown), 0);
-	if (total > INLINE_BRIEF_MAX_BYTES) {
-		const pointer = envelope((_, last) =>
-			last
-				? `The transcripts are in the attached file ${BRIEF_FILE_NAME}. Read it first.`
-				: `In the attached file ${BRIEF_FILE_NAME}.`
-		);
-		return { prompt: `${pointer}\n\n${ask}`, file: `${envelope((s) => s.markdown)}\n` };
-	}
-	return { prompt: `${envelope((s) => s.markdown)}\n\n${ask}`, file: null };
+	const blocks = sessions.map((s, i) => {
+		const name = s.name === null ? '' : ` session="${attr(s.name)}"`;
+		return `<${tag} n="${i + 1}"${name} id="${attr(s.id)}">\n${body(s, i)}\n</${tag}>`;
+	});
+	return `<${PREVIOUS_SESSIONS_TAG}>\n${blocks.join('\n')}\n</${PREVIOUS_SESSIONS_TAG}>`;
+}
+
+/** The same envelope the server's `followup_envelope` builds: the whole chain
+ *  in the file, each session's pointer and newest turns inline. */
+function chainPrompt(sessions: BriefSession[], ask: string): FollowupPrompt {
+	const last = sessions.length - 1;
+	const inline = chainEnvelope(sessions, (s, i) =>
+		pointed(i === last ? READ_POINTER : FILE_POINTER, s.tail)
+	);
+	return { prompt: `${inline}\n\n${ask}`, file: `${chainEnvelope(sessions, (s) => s.markdown)}\n` };
 }
 
 /** The follow-up's first prompt: one previous-conversation block for a lone
@@ -115,14 +127,15 @@ export function followupPrompt(
 	const ask = instruction.trim() || DEFAULT_INSTRUCTION;
 	const chain = typeof full === 'string' ? null : (full.sessions ?? null);
 	if (chain && chain.length > 1) return chainPrompt(chain, ask);
-	const brief = typeof full === 'string' ? full : (chain?.[0]?.markdown ?? full.markdown);
+	const lone = chain?.[0];
+	const brief = typeof full === 'string' ? full : (lone?.markdown ?? full.markdown);
 	const name = attr(session.name || session.working_dir);
 	const tag = CCTUI_TAGS.previousConversation;
 	const open = `<${tag} session="${name}" id="${attr(session.id)}">`;
 	const close = `</${tag}>`;
 	if (byteLength(brief) > INLINE_BRIEF_MAX_BYTES) {
 		return {
-			prompt: `${open}\nThe transcript is in the attached file ${BRIEF_FILE_NAME}. Read it first.\n${close}\n\n${ask}`,
+			prompt: `${open}\n${pointed(READ_POINTER, lone?.tail)}\n${close}\n\n${ask}`,
 			file: `${open}\n${brief}\n${close}\n`
 		};
 	}

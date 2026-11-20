@@ -2755,13 +2755,39 @@ async fn message_usage(
         .collect())
 }
 
+/// `thread=1`: the collated history of the follow-up line instead.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct ThreadConversationQuery {
+    pub thread: Option<String>,
+    /// `next_cursor` of the previous thread page.
+    pub cursor: Option<String>,
+}
+
+impl ThreadConversationQuery {
+    fn thread(&self) -> bool {
+        matches!(self.thread.as_deref(), Some("1" | "true"))
+    }
+}
+
 pub async fn get_conversation(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Query(params): Query<ConversationQuery>,
     Query(images): Query<InlineImagesQuery>,
+    Query(thread): Query<ThreadConversationQuery>,
     req_headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
+    if thread.thread() {
+        let cursor = crate::followup::thread::parse_cursor(thread.cursor.as_deref())?;
+        let reader = crate::followup::thread::Reader::Caller(&ctx);
+        let limit = params.limit.unwrap_or(crate::followup::thread::DEFAULT_PAGE);
+        let page =
+            crate::followup::thread::conversation(&state, reader, &session_id, cursor, limit)
+                .await?
+                .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "session not found"))?;
+        return Ok(crate::http_cache::json_with_etag(&req_headers, &page));
+    }
     let adapter: Option<String> =
         crate::store::sessions::adapter_id(&state.pool, &session_id).await?;
 
@@ -2770,24 +2796,40 @@ pub async fn get_conversation(
     if params.order == ConversationOrder::Desc {
         rows.reverse();
     }
+    let mut normalized = client_events(&state, &session_id, rows).await?;
+    if images.inline_images {
+        crate::image_blobs::inline_client_rows(
+            &state.pool,
+            &session_id,
+            &mut normalized,
+            crate::image_blobs::INLINE_IMAGES_MAX_BYTES,
+        )
+        .await?;
+    }
+    Ok(crate::http_cache::json_with_etag(&req_headers, &normalized))
+}
 
+/// `rows` (oldest first) as the conversation route serves them: stamped with
+/// `ts`, `seq`, `turn_id`, the scheduled time and the turn's token usage.
+pub async fn client_events(
+    state: &AppState,
+    session_id: &str,
+    rows: Vec<RenderableRow>,
+) -> Result<Vec<serde_json::Value>, AppError> {
     let message_ids: Vec<String> = rows
         .iter()
         .filter_map(|(_, v, _, _)| v.get("message_id").and_then(serde_json::Value::as_str))
         .map(str::to_owned)
         .collect();
-    let usage_by_message = message_usage(&state, &session_id, &message_ids).await?;
+    let usage_by_message = message_usage(state, session_id, &message_ids).await?;
     let scheduled_turns = if state.config.features.contains(Feature::Scheduling) {
-        crate::scheduled_messages::scheduled_turns(&state.pool, &session_id).await?
+        crate::scheduled_messages::scheduled_turns(&state.pool, session_id).await?
     } else {
         HashMap::new()
     };
 
-    // Stamp each event with `ts` (unix millis, matching the live `AgentEvent`
-    // shape) derived from `created_at`, so the client renders real timestamps
-    // instead of "Invalid Date". Legacy payloads that already carry `ts` keep
-    // their own value.
-    let mut normalized: Vec<serde_json::Value> = rows
+    // `ts` in unix millis like the live `AgentEvent`; a legacy payload keeps its own.
+    Ok(rows
         .into_iter()
         .map(|(id, mut v, created_at, turn_id)| {
             if let Some(obj) = v.as_object_mut() {
@@ -2810,17 +2852,7 @@ pub async fn get_conversation(
             }
             v
         })
-        .collect();
-    if images.inline_images {
-        crate::image_blobs::inline_client_rows(
-            &state.pool,
-            &session_id,
-            &mut normalized,
-            crate::image_blobs::INLINE_IMAGES_MAX_BYTES,
-        )
-        .await?;
-    }
-    Ok(crate::http_cache::json_with_etag(&req_headers, &normalized))
+        .collect())
 }
 
 /// Newest renderable rows scanned for the final assistant message; one

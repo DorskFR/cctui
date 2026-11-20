@@ -7,6 +7,9 @@
 //! brief is meant to be the second, which is why the byte budget and the role
 //! filter are parameters rather than constants.
 
+use std::fmt::Write as _;
+
+use cctui_proto::thread::{ThreadConversationPage, ThreadCursor, ThreadEntry};
 use serde_json::Value;
 
 /// A transcript's identity line.
@@ -140,6 +143,76 @@ pub fn render(
         last_seq: blocks.last().map(|(s, _)| *s),
         truncated,
     }
+}
+
+/// A rendered page of a follow-up line.
+#[derive(Debug, Clone)]
+pub struct RenderedThread {
+    pub text: String,
+    pub events: usize,
+    /// Where to resume for older entries: the page's own cursor, or the oldest
+    /// entry kept when the budget cut the page short.
+    pub next_cursor: Option<ThreadCursor>,
+    pub truncated: bool,
+}
+
+fn thread_line(entry: &ThreadEntry, roles: &[String]) -> Option<String> {
+    match entry {
+        ThreadEntry::Event { injected: Some(_), .. } => None,
+        ThreadEntry::Event { event, .. } => {
+            block(event).filter(|(role, _)| roles.iter().any(|r| r == role)).map(|(_, text)| text)
+        }
+        ThreadEntry::FollowupMarker { generation, from, to, at, reason, .. } => {
+            let at = at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+            let why = reason.map_or_else(String::new, |r| format!(" ({r:?})").to_lowercase());
+            Some(format!("--- generation {generation}: `{to}` continued `{from}` at {at}{why} ---"))
+        }
+        ThreadEntry::Unreadable { generation, session_id } => {
+            Some(format!("--- generation {generation}: `{session_id}` is not readable ---"))
+        }
+    }
+}
+
+/// Render a follow-up line page (oldest first), keeping events of `roles`
+/// plus every marker, within `budget` bytes spent from the newest end.
+#[must_use]
+pub fn render_thread(
+    page: &ThreadConversationPage,
+    roles: &[String],
+    budget: usize,
+) -> RenderedThread {
+    let mut blocks: Vec<String> = Vec::new();
+    let mut events = 0usize;
+    let mut spent = 0usize;
+    let mut oldest = None;
+    let mut truncated = false;
+    for entry in page.entries.iter().rev() {
+        let Some(text) = thread_line(entry, roles) else { continue };
+        if spent + text.len() > budget && !blocks.is_empty() {
+            truncated = true;
+            break;
+        }
+        spent += text.len();
+        events += usize::from(matches!(entry, ThreadEntry::Event { .. }));
+        oldest = Some(entry.cursor());
+        blocks.push(text);
+    }
+    blocks.reverse();
+    let next_cursor =
+        if truncated { oldest } else { page.next_cursor.as_deref().and_then(ThreadCursor::parse) };
+    let mut text = format!(
+        "# follow-up line of `{}`\n\nroot: `{}` · {} generation(s)\n\n",
+        page.head,
+        page.thread_root_id,
+        page.generations.len()
+    );
+    text.push_str(&blocks.join("\n\n"));
+    text.push('\n');
+    if let Some(cursor) = next_cursor {
+        let _ =
+            writeln!(text, "\n[older entries: call again with thread=true, cursor=\"{cursor}\"]");
+    }
+    RenderedThread { text, events, next_cursor, truncated }
 }
 
 fn head(h: &Header) -> String {

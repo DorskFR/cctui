@@ -463,6 +463,16 @@ pub struct PeerConversationParams {
     pub roles: Option<String>,
     #[serde(default)]
     pub format: HistoryFormat,
+    /// `1`: the follow-up line ending at the target, root first.
+    pub thread: Option<String>,
+    /// `next_cursor` of the previous thread page.
+    pub cursor: Option<String>,
+}
+
+impl PeerConversationParams {
+    fn thread(&self) -> bool {
+        matches!(self.thread.as_deref(), Some("1" | "true"))
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
@@ -502,8 +512,19 @@ pub async fn peer_conversation(
     if target_id.starts_with("remote:") {
         return history_remote(&state, &headers, &session_id, target_id, &params).await;
     }
-    let (relation, _caller, target) = authorized(&state, &headers, &session_id, target_id).await?;
+    let (relation, caller, target) = authorized(&state, &headers, &session_id, target_id).await?;
     admit_history(&session_id)?;
+    if params.thread() {
+        let out = thread_history(&state, caller.user_id, &target, &params).await?;
+        let events = out["events"].as_u64().unwrap_or_default();
+        let label = format!(
+            "consulted the follow-up line of {} — {events} events [{}]",
+            target.label(),
+            relation.as_str()
+        );
+        audit(&state.pool, &session_id, &label).await;
+        return Ok(Json(out));
+    }
     let conversation = crate::routes::sessions::ConversationQuery {
         limit: Some(params.limit.unwrap_or(DEFAULT_HISTORY_EVENTS).clamp(1, MAX_HISTORY_EVENTS)),
         before: params.before,
@@ -572,6 +593,57 @@ pub async fn peer_conversation(
         }
     }
     Ok(Json(out))
+}
+
+/// `thread=1`: the target's follow-up line, user and assistant turns unless
+/// `roles` says otherwise. Earlier generations must belong to the caller's owner.
+async fn thread_history(
+    state: &AppState,
+    owner: Option<uuid::Uuid>,
+    target: &SessionNode,
+    params: &PeerConversationParams,
+) -> Result<Value, AppError> {
+    let cursor = crate::followup::thread::parse_cursor(params.cursor.as_deref())?;
+    let limit = params.limit.unwrap_or(DEFAULT_HISTORY_EVENTS).clamp(1, MAX_HISTORY_EVENTS);
+    let reader = crate::followup::thread::Reader::Owner(owner);
+    let page = crate::followup::thread::conversation(state, reader, &target.id, cursor, limit)
+        .await?
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "session not found"))?;
+    let mut roles = parse_roles(params.roles.as_deref());
+    if roles.is_empty() {
+        roles = vec!["user".to_owned(), "assistant".to_owned()];
+    }
+    let rendered = transcript_md::render_thread(&page, &roles, HISTORY_BUDGET_BYTES);
+    let mut out = json!({
+        "session_id": target.id,
+        "thread": true,
+        "head": page.head,
+        "thread_root_id": page.thread_root_id,
+        "generations": page.generations,
+        "events": rendered.events,
+        "truncated": rendered.truncated,
+        "next_cursor": rendered.next_cursor.as_ref().map(ToString::to_string),
+    });
+    match params.format {
+        HistoryFormat::Markdown => out["markdown"] = json!(rendered.text),
+        HistoryFormat::Json => {
+            let kept: Vec<&cctui_proto::thread::ThreadEntry> = page
+                .entries
+                .iter()
+                .filter(|entry| match entry {
+                    cctui_proto::thread::ThreadEntry::Event { injected: Some(_), .. } => false,
+                    cctui_proto::thread::ThreadEntry::Event { event, .. } => {
+                        let (role, _) = crate::normalize::client_category(event);
+                        roles.iter().any(|r| r == role)
+                    }
+                    _ => true,
+                })
+                .collect();
+            out["events"] = json!(kept.len());
+            out["items"] = json!(kept);
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -963,6 +1035,89 @@ mod tests {
         .await
         .expect("audit row");
         assert_eq!(marker.as_deref(), Some("consulted history of the parent"));
+        cleanup(&pool, uid).await;
+    }
+
+    #[tokio::test]
+    async fn thread_history_reads_the_follow_up_line_without_the_injected_brief() {
+        let Some(pool) = test_pool("peer_thread_history").await else { return };
+        let uid = Uuid::new_v4();
+        let machine = Uuid::new_v4();
+        seed_owner(&pool, uid, &[machine]).await;
+        let a = Uuid::new_v4().to_string();
+        let b = Uuid::new_v4().to_string();
+        seed_session(&pool, &a, None, uid, machine, "archived").await;
+        seed_session(&pool, &b, Some(&a), uid, machine, "active").await;
+        sqlx::query("UPDATE sessions SET metadata = '{\"relation\": \"followup\"}' WHERE id = $1")
+            .bind(&b)
+            .execute(&pool)
+            .await
+            .expect("link the follow-up");
+        let first = "<cctui-session-context>\nsession: lane\n</cctui-session-context>\n\n\
+                     <cctui-previous-sessions>\n<cctui-previous-conversation n=\"1\" id=\"a\">\n\
+                     BRIEF-TEXT\n</cctui-previous-conversation>\n</cctui-previous-sessions>\n\n\
+                     ship it";
+        for (sid, event_type, payload) in [
+            (&a, "message", json!({ "role": "user", "text": "plan the migration" })),
+            (&a, "tool_use", json!({ "tool": "Bash", "input": { "command": "ls" }, "id": "t" })),
+            (&a, "message", json!({ "role": "assistant", "text": "here is the plan" })),
+            (&b, "message", json!({ "role": "user", "text": first })),
+            (&b, "message", json!({ "role": "assistant", "text": "shipped" })),
+        ] {
+            sqlx::query(
+                "INSERT INTO stream_events (session_id, event_type, payload) VALUES ($1, $2, $3)",
+            )
+            .bind(sid)
+            .bind(event_type)
+            .bind(payload)
+            .execute(&pool)
+            .await
+            .expect("seed event");
+        }
+        let state = AppState::for_test(pool.clone());
+        let target = peer_policy::load_node(&pool, &b).await.unwrap().unwrap();
+        let params = PeerConversationParams {
+            session_id: b.clone(),
+            thread: Some("1".to_owned()),
+            ..Default::default()
+        };
+
+        let out = thread_history(&state, Some(uid), &target, &params).await.unwrap();
+        let md = out["markdown"].as_str().unwrap();
+        for seen in ["plan the migration", "here is the plan", "ship it", "shipped", "continued"] {
+            assert!(md.contains(seen), "{seen}: {md}");
+        }
+        assert!(md.find("here is the plan") < md.find("ship it"), "root first: {md}");
+        assert!(!md.contains("BRIEF-TEXT") && !md.contains("session: lane"), "{md}");
+        assert!(!md.contains("Bash"), "user and assistant only by default: {md}");
+        assert_eq!(out["events"], 4);
+        assert_eq!(out["head"], json!(b));
+        assert_eq!(out["thread_root_id"], json!(a));
+        assert!(out["next_cursor"].is_null());
+
+        let foreign = Some(Uuid::new_v4());
+        let stranger = thread_history(&state, foreign, &target, &params).await.unwrap();
+        let md = stranger["markdown"].as_str().unwrap();
+        assert!(md.contains("is not readable") && !md.contains("plan the migration"), "{md}");
+        assert!(md.contains("shipped"), "the target itself stays readable: {md}");
+
+        let tools = PeerConversationParams {
+            roles: Some("user,assistant,tool".to_owned()),
+            format: HistoryFormat::Json,
+            ..params
+        };
+        let out = thread_history(&state, Some(uid), &target, &tools).await.unwrap();
+        let items = out["items"].as_array().unwrap();
+        assert!(items.iter().any(|i| i["entry"] == "followup_marker"), "{items:?}");
+        assert!(items.iter().any(|i| i["event"]["type"] == "tool_call"), "{items:?}");
+        assert!(items.iter().all(|i| i.get("injected").is_none()), "{items:?}");
+
+        let paged = PeerConversationParams { limit: Some(1), ..tools };
+        let newest = thread_history(&state, Some(uid), &target, &paged).await.unwrap();
+        let cursor = newest["next_cursor"].as_str().expect("an older page").to_owned();
+        let older = PeerConversationParams { cursor: Some(cursor), ..paged };
+        let before = thread_history(&state, Some(uid), &target, &older).await.unwrap();
+        assert_ne!(before["items"], newest["items"]);
         cleanup(&pool, uid).await;
     }
 

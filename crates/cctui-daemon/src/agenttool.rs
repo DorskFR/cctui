@@ -274,6 +274,12 @@ fn parse_peer_history(args: &Value) -> Result<CallKind, String> {
     if let Some(format) = string_arg(args, "format") {
         query.push(("format", format.to_ascii_lowercase()));
     }
+    if args.get("thread").and_then(Value::as_bool) == Some(true) {
+        query.push(("thread", "1".to_owned()));
+        if let Some(cursor) = string_arg(args, "cursor") {
+            query.push(("cursor", cursor));
+        }
+    }
     Ok(CallKind::PeerHistory { query })
 }
 
@@ -3480,6 +3486,37 @@ mod tests {
             panic!("expected peer_history")
         };
         assert_eq!(query, vec![("session_id", "peer-9".to_owned())]);
+    }
+
+    #[test]
+    fn a_thread_history_call_sends_the_thread_flag_and_its_cursor() {
+        let line = json!({
+            "kind": "peer_history",
+            "session_id": "s1",
+            "args": { "session_id": "s1", "thread": true, "cursor": "2:417" },
+        })
+        .to_string();
+        let CallKind::PeerHistory { query } = parse_call(&line).unwrap().kind else {
+            panic!("expected peer_history")
+        };
+        assert_eq!(
+            query,
+            vec![
+                ("session_id", "s1".to_owned()),
+                ("thread", "1".to_owned()),
+                ("cursor", "2:417".to_owned()),
+            ]
+        );
+        let line = json!({
+            "kind": "peer_history",
+            "session_id": "s1",
+            "args": { "session_id": "s1", "thread": false, "cursor": "2:417" },
+        })
+        .to_string();
+        let CallKind::PeerHistory { query } = parse_call(&line).unwrap().kind else {
+            panic!("expected peer_history")
+        };
+        assert_eq!(query, vec![("session_id", "s1".to_owned())], "a cursor needs thread");
     }
 
     #[test]

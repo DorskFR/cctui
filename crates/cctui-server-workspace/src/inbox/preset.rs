@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use super::claim::{BatchEvent, ClaimedLane};
 use super::deliver::Outcome;
+use crate::followup::FollowupPrompt;
 use crate::state::AppState;
 
 pub const REGISTER_WAIT_SECS: i64 = 300;
@@ -435,10 +436,31 @@ pub fn dispatch_request(
 }
 
 /// A parent that no longer exists degrades to a plain spawn prompt.
-pub async fn spawn_prompt(pool: &PgPool, plan: &Plan, instruction: String) -> sqlx::Result<String> {
-    let Plan::Followup { parent } = plan else { return Ok(instruction) };
+pub async fn spawn_prompt(
+    pool: &PgPool,
+    plan: &Plan,
+    instruction: String,
+) -> sqlx::Result<FollowupPrompt> {
+    let without_brief = |prompt| FollowupPrompt { prompt, file: None };
+    let Plan::Followup { parent } = plan else { return Ok(without_brief(instruction)) };
     let rendered = crate::followup::render_followup_prompt(pool, parent, &instruction).await?;
-    Ok(rendered.unwrap_or(instruction))
+    Ok(rendered.unwrap_or_else(|| without_brief(instruction)))
+}
+
+pub(super) fn brief_upload(
+    file: String,
+) -> (cctui_proto::adapter::BootstrapFile, crate::uploads::RawUpload) {
+    use base64::Engine;
+    let encoded = cctui_proto::adapter::BootstrapFile {
+        name: crate::brief::BRIEF_FILE_NAME.to_owned(),
+        content_b64: base64::engine::general_purpose::STANDARD.encode(file.as_bytes()),
+    };
+    let raw = crate::uploads::RawUpload {
+        name: crate::brief::BRIEF_FILE_NAME.to_owned(),
+        bytes: file.into(),
+        content_type: Some("text/markdown".to_owned()),
+    };
+    (encoded, raw)
 }
 
 /// A webhook delivery's raw payload, attached to the spawn as a file.
@@ -564,7 +586,8 @@ async fn spawn(
         Ok(text) => text,
         Err(reason) => return Ok(Outcome::Dead(reason.to_owned())),
     };
-    let prompt = spawn_prompt(&state.pool, plan, instruction(preset, &text)).await?;
+    let FollowupPrompt { prompt, file: brief } =
+        spawn_prompt(&state.pool, plan, instruction(preset, &text)).await?;
     let Some(mut req) = spawn_request(preset, plan, &prompt) else {
         return Ok(Outcome::Dead(MACHINE_GONE.to_owned()));
     };
@@ -581,6 +604,10 @@ async fn spawn(
         Ok(stored) => stored,
         Err(reason) => return Ok(Outcome::Dead(reason)),
     };
+    if let Some((encoded, raw)) = brief.map(brief_upload) {
+        files.insert(0, encoded);
+        raw_files.insert(0, raw);
+    }
     let (batch_files, batch_raw) = uploads(files_in);
     files.extend(batch_files);
     raw_files.extend(batch_raw);
