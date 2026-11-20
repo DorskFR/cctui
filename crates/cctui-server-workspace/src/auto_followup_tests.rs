@@ -2,7 +2,8 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use cctui_proto::api::auto_followup::{
-    AutoFollowupOverride, AutoFollowupSetting, AutoFollowupThreshold, SendFollowup, ThresholdUnit,
+    AutoFollowupOverride, AutoFollowupSetting, AutoFollowupThreshold, ContextWindow, SendFollowup,
+    ThresholdUnit, WindowSource,
 };
 use serde_json::json;
 use sqlx::PgPool;
@@ -79,16 +80,21 @@ fn on_150k() -> serde_json::Value {
 }
 
 async fn session_at(f: &Fixture, context: i64) -> String {
+    claude_session(f, None, context).await
+}
+
+async fn claude_session(f: &Fixture, model: Option<&str>, context: i64) -> String {
     let id = Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status, \
-         adapter_id, agent_state, activity) \
-         VALUES ($1, $2, $3, $4, '/w', 'active', 'claude-code', 'idle', 'success')",
+         adapter_id, agent_state, activity, model) \
+         VALUES ($1, $2, $3, $4, '/w', 'active', 'claude-code', 'idle', 'success', $5)",
     )
     .bind(&id)
     .bind(f.machine.to_string())
     .bind(f.machine)
     .bind(f.user)
+    .bind(model)
     .execute(&f.pool)
     .await
     .unwrap();
@@ -148,21 +154,65 @@ fn a_codex_turn_counts_the_same_prompt_size() {
     assert_eq!(turns["claude"].context_tokens(), turns["codex"].context_tokens());
 }
 
+fn claude(
+    reported: Option<&str>,
+    launched: Option<&str>,
+    observed: Option<u64>,
+) -> Option<ContextWindow> {
+    window_of(Some("claude-code"), reported, launched, &json!({}), observed)
+}
+
+const fn window(tokens: u64, source: WindowSource) -> ContextWindow {
+    ContextWindow { tokens, source }
+}
+
 #[test]
 fn context_window_resolves_1m_claude_and_unknown_models() {
     let none = json!({});
-    assert_eq!(window_of(Some("claude-code"), Some("opus[1m]"), &none), Some(1_000_000));
-    assert_eq!(window_of(Some("claude-code"), Some("sonnet"), &none), Some(200_000));
+    assert_eq!(claude(Some("opus[1m]"), None, None), Some(window(1_000_000, WindowSource::Known)));
     let meta_model = json!({"model": "claude-opus-5-5[1m]"});
-    assert_eq!(window_of(Some("claude-code"), None, &meta_model), Some(1_000_000));
+    let from_meta = window_of(Some("claude-code"), None, None, &meta_model, None);
+    assert_eq!(from_meta.map(|w| w.tokens), Some(1_000_000));
     let codex = json!({"model_context_window": 400_000});
-    assert_eq!(window_of(Some("codex"), Some("gpt-5"), &codex), Some(400_000));
-    assert_eq!(
-        window_of(Some("codex"), Some("gpt-5"), &none),
-        Some(cctui_proto::api::auto_followup::CODEX_WINDOW)
-    );
-    assert_eq!(window_of(Some("opencode"), Some("big"), &none), None);
-    assert_eq!(window_of(None, None, &none), None);
+    let reported = window_of(Some("codex"), Some("gpt-5"), None, &codex, None);
+    assert_eq!(reported, Some(window(400_000, WindowSource::Known)));
+    let catalog = window_of(Some("codex"), Some("gpt-5"), None, &none, None);
+    assert_eq!(catalog.map(|w| w.tokens), Some(cctui_proto::api::auto_followup::CODEX_WINDOW));
+    assert_eq!(window_of(Some("opencode"), Some("big"), None, &none, None), None);
+    assert_eq!(window_of(None, None, None, &none, None), None);
+}
+
+#[test]
+fn a_1m_spawn_resolves_a_1m_window_though_the_harness_reports_the_base_model() {
+    let resolved = claude(Some("claude-opus-5-5"), Some("claude-opus-5-5[1m]"), Some(10_000));
+    assert_eq!(resolved, Some(window(1_000_000, WindowSource::Known)));
+    let pct = AutoFollowupSetting { enabled: true, threshold: percent(80) };
+    assert_eq!(threshold_at(pct, resolved, None), Some(800_000), "80% of 1M, not of 200k");
+}
+
+#[test]
+fn observed_context_above_200k_implies_a_1m_window() {
+    let prod = claude(Some("claude-opus-5-5"), None, Some(363_044));
+    assert_eq!(prod, Some(window(1_000_000, WindowSource::Observed)));
+    let launched_base = claude(Some("claude-opus-5-5"), Some("claude-opus-5-5"), Some(426_000));
+    let ran_1m = Some(window(1_000_000, WindowSource::Observed));
+    assert_eq!(launched_base, ran_1m, "launched plain, ran 1M");
+    assert_eq!(claude(None, None, Some(200_000)), Some(window(200_000, WindowSource::Assumed)));
+    let pct = AutoFollowupSetting { enabled: true, threshold: percent(50) };
+    assert_eq!(threshold_at(pct, prod, None), Some(500_000));
+}
+
+#[test]
+fn a_plain_claude_session_stays_at_200k() {
+    let launched = claude(Some("claude-opus-5-5"), Some("claude-opus-5-5"), Some(150_000));
+    let assumed = Some(window(200_000, WindowSource::Assumed));
+    assert_eq!(launched, assumed, "a plain launch can run 1M");
+    let guessed = claude(Some("claude-opus-5-5"), None, Some(150_000));
+    assert_eq!(guessed, Some(window(200_000, WindowSource::Assumed)));
+    let pct = AutoFollowupSetting { enabled: true, threshold: percent(80) };
+    assert_eq!(threshold_at(pct, launched, None), None, "never a percent of a guessed window");
+    assert_eq!(threshold_at(pct, guessed, None), None);
+    assert_eq!(threshold_at(ON_150K, guessed, None), Some(150_000), "tokens need no window");
 }
 
 #[test]
@@ -186,14 +236,14 @@ fn under_the_threshold_or_setting_off_is_a_plain_send() {
     assert!(!fires(SendFollowup::Auto, "go on", None, at));
     assert!(!fires(SendFollowup::Auto, "  ", Some(200_000), at), "nothing to say");
     let off = AutoFollowupSetting { enabled: false, ..ON_150K };
-    assert_eq!(threshold_at(off, Some(200_000), None), None);
+    assert_eq!(threshold_at(off, Some(window(200_000, WindowSource::Known)), None), None);
 }
 
 #[test]
 fn a_percent_threshold_without_a_known_window_never_fires() {
     let pct = AutoFollowupSetting { enabled: true, threshold: percent(80) };
-    assert_eq!(threshold_at(pct, Some(200_000), None), Some(160_000));
-    let unknown = window_of(Some("opencode"), Some("big"), &json!({}));
+    assert_eq!(threshold_at(pct, Some(window(200_000, WindowSource::Known)), None), Some(160_000));
+    let unknown = window_of(Some("opencode"), Some("big"), None, &json!({}), None);
     assert_eq!(threshold_at(pct, unknown, None), None);
     assert!(!fires(SendFollowup::Auto, "go on", Some(u64::MAX), None));
 }
@@ -495,4 +545,40 @@ fn a_message_key_names_the_followup_op() {
     assert_ne!(key_for(Some("  ")), "auto:");
     let long = "x".repeat(200);
     assert!(key_for(Some(&long)).len() <= cctui_proto::api::followup::IDEMPOTENCY_KEY_MAX);
+}
+
+#[tokio::test]
+async fn a_1m_spawn_hint_survives_registration() {
+    let Some(f) = fixture("auto_followup_1m_hint", on_150k()).await else { return };
+    let sid = claude_session(&f, Some("claude-opus-5-5"), 50_000).await;
+    let launch = crate::state::FailedSpawnRow {
+        session_id: sid.clone(),
+        machine_id: f.machine,
+        user_id: f.user,
+        adapter_id: "claude-code".into(),
+        working_dir: "/w".into(),
+        name: None,
+        model: Some("claude-opus-5-5[1m]".into()),
+        effort: None,
+    };
+    let command = Uuid::new_v4();
+    cctui_server_core::machine_launches::prepare(&f.pool, command, f.user, &launch).await.unwrap();
+    cctui_server_core::machine_launches::registered(&f.pool, &sid, &sid, f.machine, f.user)
+        .await
+        .unwrap();
+
+    let measured = measure(&f.pool, &sid).await.unwrap().unwrap();
+    assert_eq!(measured.context_window, Some(1_000_000), "the launch model, not the reported one");
+    let prefs = prefs_for(&f.pool, std::slice::from_ref(&sid)).await.unwrap();
+    assert_eq!(prefs[&sid].launched_model.as_deref(), Some("claude-opus-5-5[1m]"));
+    let Json(item) =
+        crate::routes::sessions::get_session(State(f.state.clone()), Path(sid.clone()))
+            .await
+            .unwrap();
+    assert_eq!(item.context_window, Some(1_000_000));
+
+    let plain = claude_session(&f, Some("claude-opus-5-5"), 50_000).await;
+    let measured = measure(&f.pool, &plain).await.unwrap().unwrap();
+    assert_eq!(measured.context_window, Some(200_000), "no launch row, no evidence");
+    cleanup(&f).await;
 }

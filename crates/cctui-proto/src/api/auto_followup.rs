@@ -116,19 +116,61 @@ impl SendFollowup {
     }
 }
 
-#[must_use]
-pub fn context_window(
-    adapter_id: Option<&str>,
-    model: Option<&str>,
-    codex_window: Option<u64>,
-) -> Option<u64> {
-    let harness = crate::adapter::harness_for_adapter(adapter_id?)?;
-    match harness.id.as_str() {
-        "claude-code" if model.is_some_and(is_1m) => Some(CLAUDE_1M_WINDOW),
-        "claude-code" => Some(CLAUDE_WINDOW),
-        "codex" => Some(codex_window.filter(|w| *w > 0).unwrap_or(CODEX_WINDOW)),
-        _ => None,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowSource {
+    Known,
+    Observed,
+    Assumed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextWindow {
+    pub tokens: u64,
+    pub source: WindowSource,
+}
+
+impl ContextWindow {
+    /// A percent threshold never measures against an assumed window.
+    #[must_use]
+    pub const fn for_percent(self) -> Option<u64> {
+        match self.source {
+            WindowSource::Assumed => None,
+            WindowSource::Known | WindowSource::Observed => Some(self.tokens),
+        }
     }
+}
+
+/// `reported_model` is what the harness reports, which drops a `[1m]` suffix;
+/// `launched_model` is what the session was launched with.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WindowHints<'a> {
+    pub reported_model: Option<&'a str>,
+    pub launched_model: Option<&'a str>,
+    pub codex_window: Option<u64>,
+    pub observed_tokens: Option<u64>,
+}
+
+#[must_use]
+pub fn context_window(adapter_id: Option<&str>, hints: &WindowHints<'_>) -> Option<ContextWindow> {
+    let harness = crate::adapter::harness_for_adapter(adapter_id?)?;
+    let (tokens, source) = match harness.id.as_str() {
+        "claude-code" => claude_window(hints),
+        "codex" => {
+            (hints.codex_window.filter(|w| *w > 0).unwrap_or(CODEX_WINDOW), WindowSource::Known)
+        }
+        _ => return None,
+    };
+    Some(ContextWindow { tokens, source })
+}
+
+fn claude_window(hints: &WindowHints<'_>) -> (u64, WindowSource) {
+    if hints.launched_model.is_some_and(is_1m) || hints.reported_model.is_some_and(is_1m) {
+        return (CLAUDE_1M_WINDOW, WindowSource::Known);
+    }
+    if hints.observed_tokens.is_some_and(|t| t > CLAUDE_WINDOW) {
+        return (CLAUDE_1M_WINDOW, WindowSource::Observed);
+    }
+    (CLAUDE_WINDOW, WindowSource::Assumed)
 }
 
 fn is_1m(model: &str) -> bool {
@@ -200,13 +242,37 @@ mod tests {
 
     #[test]
     fn context_window_resolves_by_harness_and_model() {
-        let claude = Some("claude-code");
-        assert_eq!(context_window(claude, Some("opus[1m]"), None), Some(1_000_000));
-        assert_eq!(context_window(claude, Some("claude-opus-5-5"), None), Some(200_000));
-        assert_eq!(context_window(claude, None, None), Some(200_000));
-        assert_eq!(context_window(Some("codex"), Some("gpt-5"), Some(400_000)), Some(400_000));
-        assert_eq!(context_window(Some("codex-app-server"), None, None), Some(CODEX_WINDOW));
-        assert_eq!(context_window(Some("opencode"), Some("x"), None), None);
-        assert_eq!(context_window(None, Some("opus[1m]"), None), None);
+        let window = |adapter, hints: WindowHints<'_>| {
+            context_window(Some(adapter), &hints).map(|w| (w.tokens, w.source))
+        };
+        let reported = |m| WindowHints { reported_model: Some(m), ..WindowHints::default() };
+        let launched = |m| WindowHints { launched_model: Some(m), ..WindowHints::default() };
+        let known_1m = Some((1_000_000, WindowSource::Known));
+        assert_eq!(window("claude-code", reported("opus[1m]")), known_1m);
+        assert_eq!(window("claude-code", launched("claude-opus-5-5[1m]")), known_1m);
+        assert_eq!(
+            window("claude-code", launched("claude-opus-5-5")),
+            Some((200_000, WindowSource::Assumed)),
+            "a plain launch can still run 1M"
+        );
+        let observed =
+            WindowHints { observed_tokens: Some(200_001), ..reported("claude-opus-5-5") };
+        assert_eq!(window("claude-code", observed), Some((1_000_000, WindowSource::Observed)));
+        let at_edge = WindowHints { observed_tokens: Some(200_000), ..WindowHints::default() };
+        assert_eq!(window("claude-code", at_edge), Some((200_000, WindowSource::Assumed)));
+        let codex = WindowHints { codex_window: Some(400_000), ..WindowHints::default() };
+        assert_eq!(window("codex", codex), Some((400_000, WindowSource::Known)));
+        let default_codex = window("codex-app-server", WindowHints::default());
+        assert_eq!(default_codex.map(|w| w.0), Some(CODEX_WINDOW));
+        assert_eq!(window("opencode", reported("x")), None);
+        assert_eq!(context_window(None, &reported("opus[1m]")), None);
+    }
+
+    #[test]
+    fn only_an_assumed_window_is_withheld_from_percent_thresholds() {
+        let at = |source| ContextWindow { tokens: 200_000, source }.for_percent();
+        assert_eq!(at(WindowSource::Known), Some(200_000));
+        assert_eq!(at(WindowSource::Observed), Some(200_000));
+        assert_eq!(at(WindowSource::Assumed), None);
     }
 }
