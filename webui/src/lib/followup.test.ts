@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { BriefSession } from '@bindings/BriefSession';
+import type { FollowupResponse } from '@bindings/FollowupResponse';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import {
 	BRIEF_FILE_NAME,
@@ -8,7 +9,6 @@ import {
 	followupName,
 	followupPrefill,
 	followupPrompt,
-	followupSpawnRequest,
 	launchFollowup,
 	migrateFollowupWhenCold,
 	nestsUnderParent,
@@ -16,8 +16,8 @@ import {
 	resolveFollowupWhenCold,
 	routeEnter,
 	showColdOffer,
-	type FollowupLaunchDeps,
-	type FollowupWhenCold
+	type FollowupWhenCold,
+	type PostFollowup
 } from './followup';
 import { splitInjected } from '#lib/components/organisms/conversation/format.ts';
 
@@ -326,166 +326,56 @@ describe('settings routing', () => {
 	});
 });
 
-describe('followupSpawnRequest', () => {
-	const source = {
-		id: 's1',
-		name: 'n',
-		working_dir: '/w',
-		machine_id: 'm1',
-		adapter_id: 'claude-code',
-		model: 'opus',
-		effort: 'high',
-		account_name: 'acct',
-		permission_mode: 'yolo',
-		labels: [{ id: 'l1' }]
-	} as unknown as SessionListItem;
-
-	it('spawns on the source machine, cwd, model and account, linked as its follow-up', () => {
-		const { body, files } = followupSpawnRequest(followupPrefill(source, 'brief', { instruction: 'go on' }));
-		expect(body).toMatchObject({
-			machine_id: 'm1',
-			working_dir: '/w',
-			adapter_id: 'claude-code',
-			model: 'opus',
-			effort: 'high',
-			account: 'acct',
-			auto_account: false,
-			permission_mode: 'yolo',
-			label_ids: ['l1'],
-			relation: 'followup',
-			parent_session_id: 's1'
-		});
-		expect(body.prompt?.endsWith('go on')).toBe(true);
-		expect(body.name).toBeNull();
-		expect(files).toEqual([]);
-	});
-
-	it('names the launched follow-up after a custom label', () => {
-		const custom = { ...source, name: 'deploy fix', metadata: { name_source: 'user' } } as SessionListItem;
-		expect(followupSpawnRequest(followupPrefill(custom, 'brief')).body.name).toBe('deploy fix 2');
-	});
-
-	it('lets the server pick an account when the source had none, and ships an oversized brief as a file', () => {
-		const brief = 'x'.repeat(INLINE_BRIEF_MAX_BYTES + 1);
-		const bare = { ...source, account_name: null, permission_mode: 'nope' } as unknown as SessionListItem;
-		const { body, files } = followupSpawnRequest(followupPrefill(bare, brief));
-		expect(body.account).toBeNull();
-		expect(body.auto_account).toBe(true);
-		expect(body.permission_mode).toBeNull();
-		expect(files.map((f) => f.name)).toEqual([BRIEF_FILE_NAME]);
-	});
-});
-
 describe('launchFollowup', () => {
-	const source = {
-		id: 'src',
-		name: 'n',
-		working_dir: '/w',
-		machine_id: 'm1',
-		adapter_id: 'claude-code',
-		labels: []
-	} as unknown as SessionListItem;
+	const response = (over: Partial<FollowupResponse> = {}): FollowupResponse => ({
+		followup_id: 'f1',
+		from: 'src',
+		to: null,
+		state: 'pending',
+		error: null,
+		...over
+	});
 
-	function deps(over: Partial<FollowupLaunchDeps> = {}) {
-		return {
-			brief: vi.fn(async () => ({ markdown: 'brief' })),
-			spawn: vi.fn(async () => ({ command_id: 'c1', status: 'dispatched', session_id: 'new' })),
-			awaitSpawn: vi.fn(async () => ({ ok: true })),
-			archive: vi.fn(async () => {}),
-			...over
-		};
-	}
+	it('launchFollowup posts the atomic endpoint with an idempotency key', async () => {
+		const post = vi.fn<PostFollowup>(async () => response());
+		const out = await launchFollowup('src', 'next step', 'cold', post);
+		expect(out).toEqual({ status: 'accepted', followup: response() });
+		expect(post).toHaveBeenCalledTimes(1);
+		const [id, body] = post.mock.calls[0];
+		expect(id).toBe('src');
+		expect(body).toEqual({
+			instruction: 'next step',
+			reason: 'cold',
+			archive_source: true,
+			idempotency_key: expect.stringMatching(/^[0-9a-f-]{36}$/)
+		});
+		await launchFollowup('src', 'next step', 'manual', post);
+		const second = post.mock.calls[1][1];
+		expect(second.reason).toBe('manual');
+		expect(second.idempotency_key).not.toBe(body.idempotency_key);
+	});
 
-	it('spawns with the draft as instruction, then archives the source', async () => {
-		const d = deps();
-		const out = await launchFollowup(source, 'next step', d);
-		expect(out).toEqual({ status: 'launched', sessionId: 'new' });
-		expect(d.spawn).toHaveBeenCalledTimes(1);
-		expect(d.spawn).toHaveBeenCalledWith(
-			expect.objectContaining({ prompt: expect.stringMatching(/next step$/), parent_session_id: 'src' }),
-			[]
+	it('reuses a caller-held key, so a retried launch is the same follow-up', async () => {
+		const post = vi.fn<PostFollowup>(async () => response());
+		await launchFollowup('src', 'x', 'cold', post, 'k-1');
+		await launchFollowup('src', 'x', 'cold', post, 'k-1');
+		expect(post.mock.calls.map(([, b]) => b.idempotency_key)).toEqual(['k-1', 'k-1']);
+	});
+
+	it('a failed follow-up returns the instruction', async () => {
+		const err = Object.assign(new Error('no daemon on m1'), { status: 502 });
+		const rejected = await launchFollowup('src', 'keep me', 'cold', async () => Promise.reject(err));
+		expect(rejected).toEqual({ status: 'failed', error: err, instruction: 'keep me' });
+		const refused = await launchFollowup('src', 'keep me', 'cold', async () =>
+			response({ state: 'failed', error: 'spawn refused' })
 		);
-		expect(d.awaitSpawn).toHaveBeenCalledWith('c1', 'new');
-		expect(d.archive).toHaveBeenCalledWith('src');
+		expect(refused).toEqual({ status: 'failed', error: 'spawn refused', instruction: 'keep me' });
 	});
 
-	it('names the cold-cache follow-up after the source label', async () => {
-		const d = deps();
-		const custom = { ...source, name: 'deploy fix 2', metadata: { name_source: 'user' } } as SessionListItem;
-		await launchFollowup(custom, 'next step', d);
-		expect(d.spawn).toHaveBeenCalledWith(expect.objectContaining({ name: 'deploy fix 3' }), []);
-	});
-
-	it('embeds the whole chain the brief returns', async () => {
-		const sessions = ['s-a', 'src'].map((id) => ({
-			id,
-			name: id,
-			markdown: `body of ${id}`,
-			turns: 1,
-			omitted: 0,
-			truncated: false
-		}));
-		const spawn = vi.fn<FollowupLaunchDeps['spawn']>(async () => ({
-			command_id: 'c1',
-			status: 'dispatched',
-			session_id: 'new'
-		}));
-		const d = deps({ brief: vi.fn(async () => ({ markdown: 'whole', sessions })), spawn });
-		await launchFollowup(source, 'next step', d);
-		const [body, files] = spawn.mock.calls[0];
-		const prompt = body.prompt ?? '';
-		expect(prompt.startsWith('<cctui-previous-sessions>\n')).toBe(true);
-		expect(prompt).toContain(BRIEF_FILE_NAME);
-		expect(prompt.endsWith('</cctui-previous-sessions>\n\nnext step')).toBe(true);
-		expect(files.map((f) => f.name)).toEqual([BRIEF_FILE_NAME]);
-		const text = await files[0].text();
-		expect(text).toContain('body of s-a');
-		expect(text).toContain('body of src');
-	});
-
-	it('does not archive when the spawn fails', async () => {
-		const d = deps({ awaitSpawn: vi.fn(async () => ({ ok: false, error: 'boom' })) });
-		expect(await launchFollowup(source, 'x', d)).toEqual({ status: 'failed', error: 'boom' });
-		expect(d.archive).not.toHaveBeenCalled();
-	});
-
-	it('does not archive when the spawn request or the brief is rejected', async () => {
-		const err = new Error('500');
-		const rejected = deps({ spawn: vi.fn(async () => Promise.reject(err)) });
-		expect(await launchFollowup(source, 'x', rejected)).toEqual({ status: 'failed', error: err });
-		expect(rejected.archive).not.toHaveBeenCalled();
-		const noBrief = deps({ brief: vi.fn(async () => Promise.reject(err)) });
-		expect((await launchFollowup(source, 'x', noBrief)).status).toBe('failed');
-		expect(noBrief.spawn).not.toHaveBeenCalled();
-		expect(noBrief.archive).not.toHaveBeenCalled();
-	});
-
-	it('leaves the source alone while the spawn is unconfirmed', async () => {
-		const d = deps({ awaitSpawn: vi.fn(async () => ({ ok: false, timedOut: true })) });
-		expect(await launchFollowup(source, 'x', d)).toEqual({
-			status: 'unconfirmed',
-			sessionId: 'new',
-			commandId: 'c1'
-		});
-		expect(d.archive).not.toHaveBeenCalled();
-	});
-
-	it('takes the id the probe found for an adapter without a pre-minted one', async () => {
-		const d = deps({
-			spawn: vi.fn(async () => ({ command_id: 'c1', status: 'dispatched', session_id: null })),
-			awaitSpawn: vi.fn(async () => ({ ok: true, sessionId: 'probed' }))
-		});
-		expect(await launchFollowup(source, 'x', d)).toEqual({ status: 'launched', sessionId: 'probed' });
-	});
-
-	it('reports a failed archive without failing the launch', async () => {
-		const err = new Error('403');
-		const d = deps({ archive: vi.fn(async () => Promise.reject(err)) });
-		expect(await launchFollowup(source, 'x', d)).toEqual({
-			status: 'launched',
-			sessionId: 'new',
-			archiveError: err
-		});
+	it('a 409 reports the follow-up in progress', async () => {
+		const err = Object.assign(new Error('a follow-up of this session is in progress'), { status: 409 });
+		const out = await launchFollowup('src', 'x', 'cold', async () => Promise.reject(err));
+		expect(out).toEqual({ status: 'in_progress', error: err });
 	});
 });
 

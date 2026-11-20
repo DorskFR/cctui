@@ -1,10 +1,9 @@
 import type { BriefSession } from '@bindings/BriefSession';
-import type { PermissionMode } from '@bindings/PermissionMode';
+import type { FollowupReason } from '@bindings/FollowupReason';
+import type { FollowupRequest } from '@bindings/FollowupRequest';
+import type { FollowupResponse } from '@bindings/FollowupResponse';
 import type { SessionListItem } from '@bindings/SessionListItem';
-import type { SpawnRequest } from '@bindings/SpawnRequest';
-import type { SpawnResponse } from '@bindings/SpawnResponse';
 import { CCTUI_TAGS } from '#lib/components/organisms/conversation/format.ts';
-import { PERMISSION_MODES } from '#lib/domainTables.ts';
 import { nameOf } from '#lib/sessionName.ts';
 
 /** On a cold cache, Send: launches a follow-up and archives this session
@@ -183,72 +182,37 @@ export function showColdOffer(setting: FollowupWhenCold, cold: boolean, dismisse
 	return cold && !dismissed && setting !== 'off';
 }
 
-/** The spawn request `followupPrefill` describes, sent without the modal. */
-export function followupSpawnRequest(p: Record<string, string>): { body: SpawnRequest; files: File[] } {
-	const codex = p.adapter_id === 'codex';
-	const account = p.account ?? '';
-	const mode = p.permission_mode as PermissionMode | undefined;
-	const body: SpawnRequest = {
-		machine_id: p.machine_id,
-		working_dir: p.working_dir,
-		adapter_id: p.adapter_id,
-		name: p.name || null,
-		prompt: p.prompt ?? null,
-		prompt_name: null,
-		model: (codex ? p.model_codex : p.model_claude) || null,
-		effort: (codex ? p.effort_codex : p.effort_claude) || null,
-		permission_mode: mode && PERMISSION_MODES.includes(mode) ? mode : null,
-		account: account || null,
-		auto_account: !account,
-		label_ids: p.label_ids ? p.label_ids.split(',') : [],
-		relation: p.relation ?? null,
-		parent_session_id: p.parent_session_id ?? null
-	};
-	const files = p.followup_file
-		? [new File([p.followup_file], BRIEF_FILE_NAME, { type: 'text/markdown' })]
-		: [];
-	return { body, files };
-}
-
-export interface FollowupLaunchDeps {
-	brief: (sessionId: string) => Promise<Exclude<Brief, string>>;
-	spawn: (body: SpawnRequest, files: File[]) => Promise<SpawnResponse>;
-	awaitSpawn: (
-		commandId: string,
-		sessionId: string | null
-	) => Promise<{ ok: boolean; error?: string; timedOut?: boolean; sessionId?: string | null }>;
-	archive: (sessionId: string) => Promise<void>;
-}
-
+/** What `POST /sessions/{id}/followup` made of a launch. `failed` hands the
+ *  instruction back so the composer can restore it. */
 export type FollowupLaunch =
-	| { status: 'launched'; sessionId: string | null; archiveError?: unknown }
-	| { status: 'unconfirmed'; sessionId: string | null; commandId: string }
-	| { status: 'failed'; error: unknown };
+	| { status: 'accepted'; followup: FollowupResponse }
+	| { status: 'in_progress'; error: unknown }
+	| { status: 'failed'; error: unknown; instruction: string };
 
-/** Spawn the follow-up of `session` and archive `session` once it is
- *  confirmed. Nothing is archived unless the spawn succeeded. */
+export type PostFollowup = (sourceId: string, body: FollowupRequest) => Promise<FollowupResponse>;
+
+/** Ask the server to follow `sourceId` up with `instruction`: it collects the
+ *  line, spawns, archives the source once the new session registers, and
+ *  announces the swap with `session_superseded`. */
 export async function launchFollowup(
-	session: SessionListItem,
+	sourceId: string,
 	instruction: string,
-	deps: FollowupLaunchDeps
+	reason: FollowupReason,
+	post: PostFollowup,
+	idempotencyKey: string = crypto.randomUUID()
 ): Promise<FollowupLaunch> {
-	let res: SpawnResponse;
+	const body: FollowupRequest = {
+		instruction,
+		reason,
+		archive_source: true,
+		idempotency_key: idempotencyKey
+	};
 	try {
-		const brief = await deps.brief(session.id);
-		const prefill = followupPrefill(session, brief, { instruction, archiveSource: true });
-		const req = followupSpawnRequest(prefill);
-		res = await deps.spawn(req.body, req.files);
+		const followup = await post(sourceId, body);
+		if (followup.state === 'failed') return { status: 'failed', error: followup.error, instruction };
+		return { status: 'accepted', followup };
 	} catch (error) {
-		return { status: 'failed', error };
+		if ((error as { status?: unknown } | null)?.status === 409) return { status: 'in_progress', error };
+		return { status: 'failed', error, instruction };
 	}
-	const out = await deps.awaitSpawn(res.command_id, res.session_id ?? null);
-	const sessionId = out.sessionId ?? res.session_id ?? null;
-	if (!out.ok && out.timedOut) return { status: 'unconfirmed', sessionId, commandId: res.command_id };
-	if (!out.ok) return { status: 'failed', error: out.error ?? null };
-	try {
-		await deps.archive(session.id);
-	} catch (archiveError) {
-		return { status: 'launched', sessionId, archiveError };
-	}
-	return { status: 'launched', sessionId };
 }

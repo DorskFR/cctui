@@ -5,6 +5,8 @@
 	import { Button, EmptyState, Text } from '@dorsk/tsumikit';
 	import BoundaryLine from './BoundaryLine.svelte';
 	import ConversationLine from './ConversationLine.svelte';
+	import FollowupMarker from './FollowupMarker.svelte';
+	import { THREAD_START_KEY } from './threadView';
 	import LivePrompts from './LivePrompts.svelte';
 	import TurnSummaryFooter from './TurnSummaryFooter.svelte';
 	import { latestTodoLineKey } from './format';
@@ -16,12 +18,13 @@
 	import type { Line } from './types';
 	import type { PluginActionButton } from '#lib/plugins/types.ts';
 	import { m } from '#lib/paraglide/messages.js';
-	import { untrack } from 'svelte';
+	import { tick, untrack } from 'svelte';
 
 	let {
 		stream,
 		scroll,
 		sessionId,
+		viewKey = sessionId,
 		lines,
 		isLoading,
 		canFetchOlder = false,
@@ -50,13 +53,17 @@
 		onspeak,
 		speakingKey = null,
 		onpluginaction,
-		onquote
+		onquote,
+		anchor = null,
+		onopengeneration
 	}: {
 		/** Live-stream controller. Passed whole rather than as a dozen
 		 * pass-through props; its `$state` fields stay reactive when read through it. */
 		stream: ConversationStream;
 		scroll: ScrollController;
 		sessionId: string;
+		/** Changes only when the pane leaves its thread; resets the render window. */
+		viewKey?: string;
 		lines: Line[];
 		isLoading: boolean;
 		// Server-side paging: more history exists beyond the fetched window.
@@ -97,6 +104,9 @@
 		onspeak?: (ln: Line) => void;
 		/** `lineKey` of the line being read aloud, if any. */
 		speakingKey?: string | null;
+		/** Scroll this row to the top once; a new `tick` scrolls again. */
+		anchor?: { key: string; tick: number } | null;
+		onopengeneration?: (sessionId: string) => void;
 	} = $props();
 
 	// ── Lazy render of large transcripts ───────────────────
@@ -109,7 +119,7 @@
 	let renderLimit = $state(RENDER_CHUNK);
 	// Reset the window when the open session changes.
 	$effect(() => {
-		void sessionId;
+		void viewKey;
 		renderLimit = RENDER_CHUNK;
 	});
 	const hiddenOlder = $derived(Math.max(0, lines.length - renderLimit));
@@ -157,6 +167,33 @@
 		if (!el) return;
 		el.scrollIntoView({ block: 'center', behavior: 'auto' });
 	}
+	let anchoredTick = -1;
+	$effect(() => {
+		const a = anchor;
+		if (!a || a.tick === anchoredTick) return;
+		const idx = a.key === THREAD_START_KEY ? 0 : lines.findIndex((l) => l.key === a.key);
+		if (idx < 0 || lines.length === 0) return;
+		const needed = lines.length - idx + RENDER_CHUNK;
+		if (needed > renderLimit) {
+			renderLimit = needed;
+			return;
+		}
+		anchoredTick = a.tick;
+		scroll.unstick();
+		void tick().then(() =>
+			requestAnimationFrame(() => {
+				const el = scroll.scroller;
+				if (!el) return;
+				if (a.key === THREAD_START_KEY) el.scrollTop = 0;
+				else
+					el.querySelector(`[data-anchor-key="${CSS.escape(a.key)}"]`)?.scrollIntoView({
+						block: 'start',
+						behavior: 'auto'
+					});
+			})
+		);
+	});
+
 	let scrolledToTs = $state<number | null>(null);
 	$effect(() => {
 		if (focusTs == null) {
@@ -173,7 +210,7 @@
 	<ConversationLine
 		{ln}
 		{archived}
-		{sessionId}
+		sessionId={ln.sessionId ?? sessionId}
 		pinned={ln.seq !== undefined && pinnedSeqs.has(ln.seq)}
 		{onpin}
 		onretry={(ts) => stream.retryFailed(ts)}
@@ -238,7 +275,13 @@
 			</div>
 		{/if}
 		{#each visibleLines as ln, i (ln.key)}
-			{#if ln.ask && stream.isDupeOfLiveAsk(ln.ask)}
+			{#if ln.followup}
+				<div data-anchor-key={ln.key}>
+					<FollowupMarker mark={ln.followup} onopen={onopengeneration} />
+				</div>
+			{:else if ln.unreadable}
+				<div class="older-row"><Text tone="faint" size="xs">{m.followup_thread_unreadable()}</Text></div>
+			{:else if ln.ask && stream.isDupeOfLiveAsk(ln.ask)}
 				<!-- Suppressed: same question is rendered live below. -->
 			{:else if ln.ask}
 				<AskQuestionCard

@@ -1,8 +1,7 @@
 <script lang="ts">
 	import { tick, untrack } from 'svelte';
-	import { goto } from '$app/navigation';
-	import { page } from '$app/state';
-	import { sessionHref } from '#lib/sessionFailureToast.ts';
+	import type { FollowupReason } from '@bindings/FollowupReason';
+	import type { FollowupResponse } from '@bindings/FollowupResponse';
 	import { insertBlock } from './insertText';
 	import { splitDictated } from '#lib/voice/dictatedMark.ts';
 	import { insertAtCaret, quoteMarkdown } from './format';
@@ -15,7 +14,6 @@
 		pendingScheduled,
 		useScheduledActions,
 		useScheduledMessages,
-		useSessionActions,
 		useSessionAttachments
 	} from '#lib/queries/index.ts';
 	import { Button, FileButton, IconButton, InputGroup, Text, formatTimestamp } from '@dorsk/tsumikit';
@@ -40,10 +38,7 @@
 	import type { ScrollController } from './scroll.svelte';
 	import { m } from '#lib/paraglide/messages.js';
 	import { settings } from '#lib/settings.svelte.ts';
-	import { BRIEF_FETCH_MAX_BYTES, launchFollowup, routeEnter, showColdOffer } from '#lib/followup.ts';
-	import { ws } from '#lib/ws.svelte.ts';
-	import { pendingSpawns } from '#lib/pendingSpawns.svelte.ts';
-	import { findSpawnedSession } from '#lib/components/organisms/spawn/spawnMatch.ts';
+	import { launchFollowup, routeEnter, showColdOffer } from '#lib/followup.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
 	import { composerClearance } from '#lib/composerClearance.ts';
 
@@ -59,6 +54,7 @@
 		onFork,
 		onResume,
 		onFollowup,
+		onfollowupstarted,
 		compact = false,
 		voiceEnabled = false,
 		voiceLive = false,
@@ -78,6 +74,8 @@
 		onFork?: () => void;
 		onResume?: () => void;
 		onFollowup?: (instruction?: string) => void;
+		/** The server took a follow-up of this session. */
+		onfollowupstarted?: (res: FollowupResponse, instruction: string, reason: FollowupReason) => void;
 		/** Tile chrome: one line of input until it takes focus. */
 		compact?: boolean;
 		/** The instance transcribes speech: show dictation. */
@@ -155,7 +153,6 @@
 	const canSchedule = $derived(
 		(!!input.trim() || att.files.length > 0) && !att.uploading && att.images.pending.length === 0
 	);
-	const actions = useSessionActions();
 	let launching = $state(false);
 	// What Send / Enter does right now. A cold Send starts a follow-up only
 	// where this pane can open one.
@@ -240,8 +237,9 @@
 		drafts.clear(composerKey(id));
 	}
 
-	/** Start the follow-up with the draft as its instruction and archive this
-	 *  session. On failure nothing is archived and the draft stays. */
+	/** Start the follow-up with the draft as its instruction. The server
+	 *  archives this session once the new one registers; until then the draft
+	 *  can come back through `restoreDraft`. */
 	async function launch() {
 		const text = input.trim();
 		if (launching || archived || !text || att.uploading || att.images.pending.length) return;
@@ -251,26 +249,14 @@
 			return;
 		}
 		launching = true;
-		const source = session;
-		const dictated = dictatedDraft;
+		const source = session.id;
+		const reason: FollowupReason = 'cold';
 		try {
-			const out = await launchFollowup(source, text, {
-				brief: (id) => endpoints.brief(id, BRIEF_FETCH_MAX_BYTES, { chain: true }),
-				spawn: (body, files) => actions.spawn(dictated ? { ...body, dictated } : body, files),
-				awaitSpawn: async (commandId, sessionId) => {
-					let found = sessionId;
-					const outcome = await ws.awaitSpawn(commandId, sessionId, {
-						probe: async () => {
-							const { sessions } = await endpoints.sessions(false);
-							const hit = findSpawnedSession(sessions, source.machine_id, commandId, found);
-							if (hit) found = hit.id;
-							return hit;
-						}
-					});
-					return { ...outcome, sessionId: found };
-				},
-				archive: (id) => actions.archive(id)
-			});
+			const out = await launchFollowup(source, text, reason, endpoints.followup);
+			if (out.status === 'in_progress') {
+				toasts.info(m.followup_thread_in_progress());
+				return;
+			}
 			if (out.status === 'failed') {
 				toasts.error(
 					m.spawn_toast_spawn_failed({
@@ -279,31 +265,18 @@
 				);
 				return;
 			}
-			clearSent(text, source.id);
-			if (out.status === 'unconfirmed') {
-				pendingSpawns.add({
-					commandId: out.commandId,
-					sessionId: out.sessionId,
-					machineId: source.machine_id,
-					name: '',
-					workingDir: source.working_dir
-				});
-				toasts.info(m.composer_followup_unconfirmed());
-				return;
-			}
-			if (out.archiveError !== undefined) {
-				toasts.error(m.composer_followup_archive_failed({ error: errMessage(out.archiveError) }));
-			} else {
-				toasts.ok(m.composer_followup_launched());
-			}
-			if (out.sessionId)
-				void goto(sessionHref(out.sessionId), {
-					replace: true,
-					state: { ...page.state, spawned: out.sessionId } as App.PageState
-				});
+			clearSent(text, source);
+			onfollowupstarted?.(out.followup, text, reason);
 		} finally {
 			launching = false;
 		}
+	}
+
+	/** Put back an instruction whose follow-up failed, ahead of anything typed since. */
+	export function restoreDraft(text: string) {
+		const typed = input.trim();
+		input = typed ? `${text}\n\n${input}` : text;
+		resetHistoryNav();
 	}
 
 	const nav = new HistoryNav({
