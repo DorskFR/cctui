@@ -28,7 +28,7 @@ pub enum Reader<'a> {
     Owner(Option<uuid::Uuid>),
 }
 
-pub struct Generation {
+pub struct Member {
     pub session_id: String,
     pub generation: u32,
     pub adapter_id: String,
@@ -39,7 +39,7 @@ pub struct Generation {
 }
 
 /// `id, adapter_id, session_name, registered_at, metadata`, in chain order.
-type GenerationRow = (String, Option<String>, Option<String>, DateTime<Utc>, Option<Value>);
+type MemberRow = (String, Option<String>, Option<String>, DateTime<Utc>, Option<Value>);
 
 const LINE_SQL: &str = "SELECT s.id, s.adapter_id, s.session_name, s.registered_at, s.metadata \
      FROM unnest($1::text[]) WITH ORDINALITY AS c(id, n) JOIN sessions s ON s.id = c.id \
@@ -74,14 +74,14 @@ pub async fn line_of(
     pool: &PgPool,
     reader: Reader<'_>,
     id: &str,
-) -> Result<Vec<Generation>, AppError> {
+) -> Result<Vec<Member>, AppError> {
     let ids = super::chain_of(pool, id).await?;
-    let rows: Vec<GenerationRow> = sqlx::query_as(LINE_SQL).bind(&ids).fetch_all(pool).await?;
+    let rows: Vec<MemberRow> = sqlx::query_as(LINE_SQL).bind(&ids).fetch_all(pool).await?;
     let mut line = Vec::with_capacity(rows.len());
     for (generation, row) in (1..).zip(rows) {
         let (session_id, adapter_id, name, registered_at, metadata) = row;
         let readable = session_id == id || readable(reader, &session_id, pool).await?;
-        line.push(Generation {
+        line.push(Member {
             generation,
             adapter_id: adapter_id.unwrap_or_else(|| "claude-code".to_owned()),
             name: name.filter(|_| readable),
@@ -101,7 +101,7 @@ const fn flag(kind: InjectedKind) -> InjectedFlag {
     }
 }
 
-fn marker(prev: &Generation, generation: &Generation) -> ThreadEntry {
+fn marker(prev: &Member, generation: &Member) -> ThreadEntry {
     let meta = |key: &str| generation.metadata.get(key).and_then(Value::as_str);
     ThreadEntry::FollowupMarker {
         generation: generation.generation,
@@ -113,7 +113,7 @@ fn marker(prev: &Generation, generation: &Generation) -> ThreadEntry {
     }
 }
 
-async fn first_turn_seq(pool: &PgPool, generation: &Generation) -> Result<Option<i64>, AppError> {
+async fn first_turn_seq(pool: &PgPool, generation: &Member) -> Result<Option<i64>, AppError> {
     let q = ConversationQuery {
         limit: Some(FIRST_TURN_SCAN),
         order: ConversationOrder::Asc,
@@ -128,7 +128,7 @@ async fn first_turn_seq(pool: &PgPool, generation: &Generation) -> Result<Option
 
 /// One stored event as entries. A first turn of generation 2+ splits into its
 /// injected blocks, flagged, then the user's own words as a plain user turn.
-fn event_entries(generation: &Generation, mut event: Value, first_turn: bool) -> Vec<ThreadEntry> {
+fn event_entries(generation: &Member, mut event: Value, first_turn: bool) -> Vec<ThreadEntry> {
     let entry = |injected, event| ThreadEntry::Event {
         session_id: generation.session_id.clone(),
         generation: generation.generation,
@@ -187,7 +187,7 @@ impl Walk {
 /// and the cursor of the page before it.
 pub async fn page(
     state: &AppState,
-    line: &[Generation],
+    line: &[Member],
     cursor: Option<ThreadCursor>,
     limit: i64,
 ) -> Result<(Vec<ThreadEntry>, Option<ThreadCursor>), AppError> {
@@ -231,7 +231,7 @@ pub async fn page(
 
 async fn collect_events(
     state: &AppState,
-    generation: &Generation,
+    generation: &Member,
     before: Option<i64>,
     walk: &mut Walk,
 ) -> Result<(), AppError> {

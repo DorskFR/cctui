@@ -122,7 +122,7 @@ impl Fixture {
             user_id: self.owner,
             key_id: self.owner,
             machine_id: None,
-            scopes: [Scope::Read].into_iter().collect(),
+            scopes: std::iter::once(Scope::Read).collect(),
         }
     }
 }

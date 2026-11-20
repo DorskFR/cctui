@@ -95,6 +95,15 @@ fn without_added_columns(after: &Value, before: &Value) -> Value {
     out
 }
 
+/// `data` from a core database as the workspace package extends it: the
+/// columns workspace migrations add to core's `sessions`, unset.
+fn with_workspace_session_columns(mut data: Value) -> Value {
+    for row in data["sessions"].as_array_mut().into_iter().flatten() {
+        row["thread_root_id"] = Value::Null;
+    }
+    data
+}
+
 async fn schema_shape(pool: &PgPool) -> Value {
     sqlx::query_scalar("WITH tables AS ( \
         SELECT c.oid,c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace \
@@ -174,7 +183,7 @@ async fn core_expansion_preserves_execution_data_and_matches_the_full_schema() {
         seed_execution(&pool).await;
         let before = execution_data(&pool).await;
         migrate(&pool, true).await.unwrap();
-        assert_eq!(execution_data(&pool).await, before);
+        assert_eq!(execution_data(&pool).await, with_workspace_session_columns(before));
         assert_credentials(&pool).await;
         let absent: bool = sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations') IS NULL")
             .fetch_one(&pool)
