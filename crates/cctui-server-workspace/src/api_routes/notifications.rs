@@ -49,7 +49,7 @@ pub(super) fn register(r: Routes) -> Routes {
     .add(
         &[Method::POST],
         "/notifications/read-all",
-        "Mark every unread notification without actions read.",
+        "Mark every unread notification read.",
         post(routes::notifications::read_all),
         Authn::Bearer,
         Human,
