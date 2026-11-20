@@ -438,15 +438,21 @@ async fn a_profile_spawn_copies_the_override_and_a_followup_inherits_it() {
         serde_json::from_value(req).unwrap()
     };
 
-    let (from_profile, stored) = override_after_registering(&f, &spawn(json!({
-        "profile_id": profile,
-    })))
+    let (from_profile, stored) = override_after_registering(
+        &f,
+        &spawn(json!({
+            "profile_id": profile,
+        })),
+    )
     .await;
     assert_eq!(stored, Some(early.clone()), "the profile's override lands on the session");
 
-    let (_, inherited) = override_after_registering(&f, &spawn(json!({
-        "relation": "followup", "parent_session_id": from_profile,
-    })))
+    let (_, inherited) = override_after_registering(
+        &f,
+        &spawn(json!({
+            "relation": "followup", "parent_session_id": from_profile,
+        })),
+    )
     .await;
     assert_eq!(inherited, Some(early), "a follow-up carries its source's override");
 
@@ -461,9 +467,8 @@ async fn put_auto_followup_sets_and_clears_the_override() {
     let sid = session_at(&f, 160_000).await;
     let over = AutoFollowupOverride { enabled: Some(true), threshold: Some(tokens(120_000)) };
 
-    let Json(set) = put_override(State(f.state.clone()), Path(sid.clone()), Json(over))
-        .await
-        .unwrap();
+    let Json(set) =
+        put_override(State(f.state.clone()), Path(sid.clone()), Json(over)).await.unwrap();
     assert_eq!(set.auto_followup_override, Some(over));
     assert_eq!(set.auto_followup_at, Some(120_000));
     assert_eq!(set.context_tokens, Some(160_000));

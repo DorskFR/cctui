@@ -775,8 +775,7 @@ impl EnrichContext {
         }
         ctx.last_turns = fetch_last_turns(state, &session_ids).await?;
         if state.config.features.contains(Feature::Automation) {
-            ctx.auto_followup =
-                crate::auto_followup::prefs_for(&state.pool, &session_ids).await?;
+            ctx.auto_followup = crate::auto_followup::prefs_for(&state.pool, &session_ids).await?;
         }
         let draft_ids: Vec<String> = with_ts
             .iter()
@@ -7391,10 +7390,7 @@ mod tests {
         ctx.with_credentials.insert("s".into());
         ctx.traffic_observed.insert("s".into());
         ctx.auto_approve.insert("s".into());
-        ctx.last_turns.insert(
-            "s".into(),
-            last_turn(50, 100, 900, ts(7), 1000),
-        );
+        ctx.last_turns.insert("s".into(), last_turn(50, 100, 900, ts(7), 1000));
 
         let out = super::enrich(vec![(ts(0), item), (ts(1), other)], ctx);
         let s = &out[0].1;
