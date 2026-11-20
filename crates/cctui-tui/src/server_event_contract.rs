@@ -93,6 +93,7 @@ fn samples() -> Vec<ServerEvent> {
     let mut all = session_samples();
     all.extend(fleet_samples());
     all.extend(outcome_samples());
+    all.extend(followup_samples());
     all
 }
 
@@ -169,6 +170,28 @@ fn session_samples() -> Vec<ServerEvent> {
             ok: true,
             error: None,
             command_id: Some(uuid()),
+        },
+    ]
+}
+
+fn followup_samples() -> Vec<ServerEvent> {
+    vec![
+        ServerEvent::SessionSuperseded {
+            followup_id: uuid(),
+            from: "s-1".to_owned(),
+            to: "s-2".to_owned(),
+            reason: cctui_proto::thread::FollowupReason::Cold,
+            instruction: "carry on".to_owned(),
+            archived: true,
+            archive_error: None,
+            at: now(),
+        },
+        ServerEvent::FollowupFailed {
+            followup_id: uuid(),
+            from: "s-1".to_owned(),
+            reason: cctui_proto::thread::FollowupReason::Manual,
+            instruction: "carry on".to_owned(),
+            error: "the daemon refused the spawn".to_owned(),
         },
     ]
 }
@@ -266,23 +289,6 @@ fn fleet_samples() -> Vec<ServerEvent> {
                 summary: "s-1 ended (completed)".to_owned(),
                 detail: serde_json::json!({ "end_reason": "completed" }),
             },
-        },
-        ServerEvent::SessionSuperseded {
-            followup_id: uuid(),
-            from: "s-1".to_owned(),
-            to: "s-2".to_owned(),
-            reason: cctui_proto::thread::FollowupReason::Cold,
-            instruction: "carry on".to_owned(),
-            archived: true,
-            archive_error: None,
-            at: now(),
-        },
-        ServerEvent::FollowupFailed {
-            followup_id: uuid(),
-            from: "s-1".to_owned(),
-            reason: cctui_proto::thread::FollowupReason::Manual,
-            instruction: "carry on".to_owned(),
-            error: "the daemon refused the spawn".to_owned(),
         },
         ServerEvent::Heartbeat {},
         ServerEvent::Resync { session_id: Some("s-1".to_owned()) },

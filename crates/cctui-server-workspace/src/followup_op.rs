@@ -370,7 +370,7 @@ pub fn watch(state: &AppState, id: Uuid) {
 
 /// Finishes the ops whose watcher died with its replica.
 pub async fn sweep(state: &AppState) {
-    let stale: sqlx::Result<Vec<Op>> = sqlx::query_as(concat!(
+    let timed_out: sqlx::Result<Vec<Op>> = sqlx::query_as(concat!(
         "UPDATE session_followup_ops SET state = 'failed', error = $2, settled_at = now(), \
              updated_at = now() \
          WHERE state = 'pending' AND created_at < now() - $1::bigint * interval '1 second' \
@@ -381,7 +381,7 @@ pub async fn sweep(state: &AppState) {
     .bind(NOT_REGISTERED)
     .fetch_all(&state.pool)
     .await;
-    match stale {
+    match timed_out {
         Ok(ops) => {
             for op in &ops {
                 publish_failed(state, op);

@@ -935,6 +935,8 @@ async fn a_schedule_fires_a_spawn_with_its_effort_labels_and_files() {
     assert!(intents.contains(&label), "{intents:?}");
 }
 
+type OpRow = (String, String, bool, Uuid, Option<String>, String);
+
 #[tokio::test]
 async fn inbox_preset_followup_goes_through_the_op() {
     let Some(pool) = pool("inbox_preset_followup_op").await else { return };
@@ -950,7 +952,6 @@ async fn inbox_preset_followup_goes_through_the_op() {
     let (status, _, _, error, delivered_as, delivered_to) = event_row(&pool, event).await;
     let delivered = (status.as_str(), delivered_as.as_deref());
     assert_eq!(delivered, ("delivered", Some("followup")), "{error:?}");
-    type OpRow = (String, String, bool, Uuid, Option<String>, String);
     let op: OpRow = sqlx::query_as(
         "SELECT reason, state, archive_source, command_id, spawn_key, instruction \
          FROM session_followup_ops WHERE source_session_id = $1 AND idempotency_key = $2",
