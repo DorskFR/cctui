@@ -554,6 +554,10 @@ fn skeleton_list_item(
         followup_count: 0,
         tool_guard_bypass: false,
         hidden: false,
+        context_tokens: None,
+        context_window: None,
+        auto_followup_at: None,
+        auto_followup_override: None,
     }
 }
 
@@ -720,6 +724,7 @@ struct EnrichContext {
     traffic_observed: HashSet<String>,
     auto_approve: HashSet<String>,
     last_turns: HashMap<String, LastTurn>,
+    auto_followup: HashMap<String, crate::auto_followup::Prefs>,
     /// Queued draft launches: `(launch_at, last_error)` by draft id.
     scheduled_launches: HashMap<String, (DateTime<Utc>, Option<String>)>,
     archive_after_secs: u64,
@@ -769,6 +774,10 @@ impl EnrichContext {
                 session_ids.iter().filter(|id| store.is_auto_approve(id)).cloned().collect();
         }
         ctx.last_turns = fetch_last_turns(state, &session_ids).await?;
+        if state.config.features.contains(Feature::Automation) {
+            ctx.auto_followup =
+                crate::auto_followup::prefs_for(&state.pool, &session_ids).await?;
+        }
         let draft_ids: Vec<String> = with_ts
             .iter()
             .filter(|(_, s)| s.status == SessionStatus::Draft)
@@ -1087,9 +1096,11 @@ fn enrich(
         s.user_actions = ctx.user_actions.remove(&s.id);
         s.latest_outcome = ctx.latest_outcomes.remove(&s.id);
         s.context_counts = ctx.context_counts.remove(&s.id);
-        if let Some(row) = ctx.signals.remove(&s.id) {
+        let turn_hold = ctx.signals.remove(&s.id).and_then(|row| {
+            let held = followup_hold(&row);
             apply_signals(s, row, &pr_cache, ctx.archive_after_secs);
-        }
+            held
+        });
         if let Some(labels) = ctx.labels.remove(&s.id) {
             s.labels = labels;
         }
@@ -1107,9 +1118,25 @@ fn enrich(
             s.last_activity_at = Some(turn.at);
             s.cache_cold = turn.cache_cold();
             s.estimated_burst_tokens = turn.estimated_burst_tokens();
+            s.context_tokens = turn.context_tokens();
         }
+        crate::auto_followup::fill(s, ctx.auto_followup.remove(&s.id), turn_hold);
     }
     with_ts
+}
+
+/// The row's own turn state, without the PR attention a listed bucket adds.
+fn followup_hold(row: &SignalRow) -> Option<crate::auto_followup::Hold> {
+    crate::auto_followup::hold(&crate::auto_followup::Signals {
+        status: &row.status,
+        ended: row.ended_at.is_some(),
+        pinned: row.pinned,
+        child: false,
+        tempo: row.tempo.as_deref(),
+        agent_state: row.agent_state.as_deref(),
+        activity: row.activity.as_deref(),
+        soft_limit: row.soft_limit_reason.as_deref(),
+    })
 }
 
 /// Apply the session row's status signals + display metadata: the bucket and
@@ -1158,12 +1185,13 @@ fn apply_signals(
 
 /// `(session_id, input, cache_read, cache_creation, created_at, rn)` from
 /// [`LAST_TWO_TURNS_SQL`].
-type LastTurnRow = (String, i64, i64, i64, DateTime<Utc>, i64);
+pub type LastTurnRow = (String, i64, i64, i64, DateTime<Utc>, i64);
 
 /// A session's newest usage row, plus the previous turn's context to judge
 /// its cache behaviour against (0 when there was no previous turn).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LastTurn {
+pub struct LastTurn {
+    input: i64,
     cache_read: i64,
     cache_creation: i64,
     at: DateTime<Utc>,
@@ -1190,16 +1218,24 @@ impl LastTurn {
         let burst = u64::try_from(self.cache_read.saturating_add(self.cache_creation)).unwrap_or(0);
         (burst > 0).then_some(burst)
     }
+
+    /// The prompt the turn sent. Codex stores its cached share as `cache_read`
+    /// and the rest as `input`, so this is the same quantity for both harnesses.
+    pub fn context_tokens(self) -> Option<u64> {
+        let sent = self.input.max(0) + self.cache_read.max(0) + self.cache_creation.max(0);
+        u64::try_from(sent).ok().filter(|t| *t > 0)
+    }
 }
 
 /// Fold [`LAST_TWO_TURNS_SQL`] rows (`rn` 1 = newest) into one [`LastTurn`]
 /// per session. A `rn = 2` row without its `rn = 1` sibling is ignored.
-fn fold_last_turns(rows: Vec<LastTurnRow>) -> HashMap<String, LastTurn> {
+pub fn fold_last_turns(rows: Vec<LastTurnRow>) -> HashMap<String, LastTurn> {
     let mut by_session: HashMap<String, LastTurn> = HashMap::new();
     for (sid, input, cache_read, cache_creation, at, rn) in rows {
         match rn {
             1 => {
                 by_session.entry(sid).or_insert(LastTurn {
+                    input,
                     cache_read,
                     cache_creation,
                     at,
@@ -2434,12 +2470,17 @@ pub async fn get_session(
                 followup_count: 0,
                 tool_guard_bypass,
                 hidden: false,
+                context_tokens: None,
+                context_window: None,
+                auto_followup_at: None,
+                auto_followup_override: None,
             };
             item.user_actions =
                 fetch_user_actions(&state, std::slice::from_ref(&item.id)).await?.remove(&item.id);
             item.latest_outcome = crate::outcome::latest(&state.pool, &item.id).await?;
             (item.next_session_id, item.followup_count) =
                 crate::followup::followups_of(&state.pool, &item.id).await?;
+            crate::auto_followup::fill_detail(&state, &mut item).await?;
             return Ok(Json(item));
         }
     }
@@ -2516,6 +2557,10 @@ pub async fn get_session(
         followup_count: 0,
         tool_guard_bypass: false,
         hidden: false,
+        context_tokens: None,
+        context_window: None,
+        auto_followup_at: None,
+        auto_followup_override: None,
     };
     let end: Option<EndRow> =
         sqlx::query_as(END_ROW_SQL).bind(&item.id).fetch_optional(&state.pool).await?;
@@ -2550,6 +2595,7 @@ pub async fn get_session(
     item.latest_outcome = crate::outcome::latest(&state.pool, &item.id).await?;
     (item.next_session_id, item.followup_count) =
         crate::followup::followups_of(&state.pool, &item.id).await?;
+    crate::auto_followup::fill_detail(&state, &mut item).await?;
     Ok(Json(item))
 }
 
@@ -3335,6 +3381,19 @@ pub async fn send_message(
     }
     crate::followup_op::refuse_while_pending(&state.pool, &session_id).await?;
     authorize_reply(&state, &ctx, &session_id).await?;
+    let turn_key = req.turn_id.map(|t| t.to_string());
+    if let Some(followed) = crate::auto_followup::route(
+        &state,
+        Some(&ctx),
+        &session_id,
+        req.followup,
+        &req.content,
+        turn_key.as_deref(),
+    )
+    .await?
+    {
+        return Ok((StatusCode::ACCEPTED, Json(crate::auto_followup::spawn_response(&followed))));
+    }
     // Carry re-minted gateway env so a reply-driven cold-resume revives the
     // worker with a fresh valid token rather than empty env.
     let env = crate::routes::gateway::resume_env_for_session(&state, &session_id).await;
@@ -7214,6 +7273,7 @@ mod tests {
         ];
         for c in cases {
             let turn = super::LastTurn {
+                input: 0,
                 cache_read: c.cache_read,
                 cache_creation: c.cache_creation,
                 at: ts(0),
@@ -7237,11 +7297,23 @@ mod tests {
         let folded = super::fold_last_turns(rows);
         assert_eq!(
             folded["a"],
-            super::LastTurn { cache_read: 200, cache_creation: 300, at: ts(9), prev_context: 60 }
+            super::LastTurn {
+                input: 100,
+                cache_read: 200,
+                cache_creation: 300,
+                at: ts(9),
+                prev_context: 60,
+            }
         );
         assert_eq!(
             folded["b"],
-            super::LastTurn { cache_read: 2, cache_creation: 3, at: ts(7), prev_context: 0 }
+            super::LastTurn {
+                input: 1,
+                cache_read: 2,
+                cache_creation: 3,
+                at: ts(7),
+                prev_context: 0,
+            }
         );
         assert!(!folded.contains_key("orphan"));
         assert_eq!(folded["neg"].prev_context, 7);
@@ -7311,7 +7383,13 @@ mod tests {
         ctx.auto_approve.insert("s".into());
         ctx.last_turns.insert(
             "s".into(),
-            super::LastTurn { cache_read: 100, cache_creation: 900, at: ts(7), prev_context: 1000 },
+            super::LastTurn {
+                input: 50,
+                cache_read: 100,
+                cache_creation: 900,
+                at: ts(7),
+                prev_context: 1000,
+            },
         );
 
         let out = super::enrich(vec![(ts(0), item), (ts(1), other)], ctx);
@@ -7351,6 +7429,7 @@ mod tests {
         assert_eq!(s.last_activity_at, Some(ts(7)));
         assert!(s.cache_cold);
         assert_eq!(s.estimated_burst_tokens, Some(1000));
+        assert_eq!(s.context_tokens, Some(1050));
 
         let o = &out[1].1;
         assert_eq!(o.machine_name, None);

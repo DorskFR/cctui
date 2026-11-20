@@ -1399,6 +1399,12 @@ tui = "waived"
 reason = "follow-ups are started from the webui composer and inbox presets"
 
 [[route]]
+id = "put_sessions_by_id_auto_followup"
+# PUT /sessions/{id}/auto-followup — Set or clear a session's auto follow-up override.
+tui = "waived"
+reason = "the auto follow-up override is set from the webui session menu"
+
+[[route]]
 id = "post_sessions_by_id_fork"
 # POST /sessions/{id}/fork — Fork a session into a new one.
 tui = "handled"

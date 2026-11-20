@@ -103,7 +103,7 @@ async fn usage_too_high(state: &AppState, session_id: &str) -> bool {
     false
 }
 
-pub(super) async fn reply(state: &AppState, session_id: &str, events: &[BatchEvent]) -> Outcome {
+pub async fn reply(state: &AppState, session_id: &str, events: &[BatchEvent]) -> Outcome {
     let Some(batch_id) = events.first().map(|e| e.batch_id) else { return Outcome::Skip };
     if usage_too_high(state, session_id).await {
         return Outcome::Skip;
@@ -117,6 +117,18 @@ pub(super) async fn reply(state: &AppState, session_id: &str, events: &[BatchEve
         Ok(text) => text,
         Err(reason) => return Outcome::Dead(reason.to_owned()),
     };
+    let key = batch_id.to_string();
+    let auto = cctui_proto::api::auto_followup::SendFollowup::Auto;
+    match crate::auto_followup::route(state, None, session_id, auto, &text, Some(&key)).await {
+        Ok(None) => {}
+        Ok(Some(followed)) => {
+            return Outcome::Delivered {
+                session_id: followed.to.unwrap_or_else(|| session_id.to_owned()),
+                delivered_as: "followup",
+            };
+        }
+        Err(e) => return Outcome::Retry(e.message().to_owned()),
+    }
     let delivered =
         || Outcome::Delivered { session_id: session_id.to_owned(), delivered_as: "reply" };
     let claimed = match crate::turn_dedupe::claim(&state.pool, session_id, batch_id).await {

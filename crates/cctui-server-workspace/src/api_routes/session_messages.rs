@@ -4,7 +4,7 @@ use super::{GET, sess_read, sess_write};
 use crate::authz::{Authn, Routes};
 use crate::routes;
 use axum::http::Method;
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
 
 pub(super) fn register(r: Routes) -> Routes {
     r.add(
@@ -20,6 +20,14 @@ pub(super) fn register(r: Routes) -> Routes {
         "/sessions/{id}/followup",
         "Continue a session in a new one and swap it in once it registers.",
         post(crate::followup_op::create),
+        Authn::Bearer,
+        sess_write(),
+    )
+    .add(
+        &[Method::PUT],
+        "/sessions/{id}/auto-followup",
+        "Set or clear a session's auto follow-up override.",
+        put(crate::auto_followup::put_override),
         Authn::Bearer,
         sess_write(),
     )

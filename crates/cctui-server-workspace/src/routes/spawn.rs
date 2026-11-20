@@ -304,7 +304,11 @@ async fn validate_spawn(
         remember_spawner(&state.pool, key, ctx.user_id, req.name.as_deref()),
         async {
             if state.config.features.contains(cctui_proto::features::Feature::Automation) {
-                crate::followup::remember_intent(&state.pool, key, req).await;
+                let profile_owner = ctx.owner_filter().unwrap_or(owner);
+                tokio::join!(
+                    crate::followup::remember_intent(&state.pool, key, req),
+                    crate::auto_followup::remember_intent(&state.pool, key, req, profile_owner),
+                );
             }
         },
     );

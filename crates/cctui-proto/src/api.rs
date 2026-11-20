@@ -3,6 +3,7 @@ pub mod account_redirects;
 pub mod accounts;
 pub mod admin;
 pub mod attachments;
+pub mod auto_followup;
 pub mod bookmarks;
 pub mod cache_loss;
 pub mod capabilities;
@@ -584,6 +585,16 @@ pub struct SessionListItem {
     /// Always false: a hidden owner's sessions are left out. Kept on the wire for one release.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
+    /// The newest turn's prompt size: input + cache read + cache creation.
+    #[serde(default)]
+    pub context_tokens: Option<u64>,
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    /// The effective auto follow-up threshold in tokens; `None` when it can never fire.
+    #[serde(default)]
+    pub auto_followup_at: Option<u64>,
+    #[serde(default)]
+    pub auto_followup_override: Option<auto_followup::AutoFollowupOverride>,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -1054,6 +1065,8 @@ pub struct MessageRequest {
     /// RFC3339, at most 30 days ahead; the request is queued and returns 202.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deliver_at: Option<String>,
+    #[serde(default, skip_serializing_if = "auto_followup::SendFollowup::is_auto")]
+    pub followup: auto_followup::SendFollowup,
 }
 
 /// `launch_at`: RFC3339, at most 30 days ahead.
@@ -1683,7 +1696,10 @@ pub struct StorageLifecyclePreview {
 
 #[cfg(test)]
 mod tests {
-    use super::{DaemonAuthResponse, UsageBucket};
+    use super::auto_followup::{
+        AutoFollowupOverride, AutoFollowupThreshold, SendFollowup, ThresholdUnit,
+    };
+    use super::{DaemonAuthResponse, MessageRequest, SessionListItem, UsageBucket};
 
     /// A server that predates pricing sends buckets without `cost_usd`; a newer
     /// client reads them as unpriced rather than failing the whole response.
@@ -1709,5 +1725,55 @@ mod tests {
         let resp: DaemonAuthResponse = serde_json::from_str(legacy).expect("legacy auth response");
         assert!(resp.capabilities.is_empty());
         assert!(!crate::capability::has(resp.capabilities.as_slice(), crate::capability::TURN_END));
+    }
+
+    #[test]
+    fn a_message_request_follows_up_unless_told_never() {
+        let plain: MessageRequest = serde_json::from_str(r#"{"content":"hi"}"#).unwrap();
+        assert_eq!(plain.followup, SendFollowup::Auto);
+        assert!(!serde_json::to_string(&plain).unwrap().contains("followup"));
+        let here: MessageRequest =
+            serde_json::from_str(r#"{"content":"hi","followup":"never"}"#).unwrap();
+        assert_eq!(here.followup, SendFollowup::Never);
+        assert!(serde_json::to_string(&here).unwrap().contains(r#""followup":"never""#));
+    }
+
+    fn listed(extra: &serde_json::Value) -> SessionListItem {
+        let mut item = serde_json::json!({
+            "id": "s", "parent_id": null, "machine_id": "m", "working_dir": "/w",
+            "status": "active", "token_usage": {"tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0},
+            "metadata": {},
+        });
+        item.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(item).unwrap()
+    }
+
+    #[test]
+    fn a_session_list_item_carries_the_context_measure_and_its_override() {
+        let old = listed(&serde_json::json!({}));
+        assert_eq!(old.context_tokens, None);
+        assert_eq!((old.context_window, old.auto_followup_at), (None, None));
+        assert_eq!(old.auto_followup_override, None);
+
+        let item = listed(&serde_json::json!({
+            "context_tokens": 160_000, "context_window": 1_000_000, "auto_followup_at": 150_000,
+            "auto_followup_override": {
+                "enabled": true, "threshold": {"unit": "percent", "value": 15},
+            },
+        }));
+        let json = serde_json::to_value(&item).unwrap();
+        assert_eq!(json["context_tokens"], 160_000);
+        assert_eq!(json["auto_followup_at"], 150_000);
+        let back: SessionListItem = serde_json::from_value(json).unwrap();
+        assert_eq!(back.context_window, Some(1_000_000));
+        assert_eq!(
+            back.auto_followup_override,
+            Some(AutoFollowupOverride {
+                enabled: Some(true),
+                threshold: Some(AutoFollowupThreshold { unit: ThresholdUnit::Percent, value: 15 }),
+            })
+        );
+        let unset = serde_json::to_value(&old).unwrap();
+        assert!(unset["context_tokens"].is_null() && unset["auto_followup_override"].is_null());
     }
 }

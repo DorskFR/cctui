@@ -332,6 +332,18 @@ pub async fn message_peer(
     admit_send(&session_id)?;
 
     let text = envelope(&caller, body);
+    let auto = cctui_proto::api::auto_followup::SendFollowup::Auto;
+    if let Some(followed) =
+        crate::auto_followup::route(&state, None, &target.id, auto, &text, None).await?
+    {
+        let note = format!("sent a peer message to {} as a follow-up", target.label());
+        audit(&state.pool, &session_id, &note).await;
+        return Ok(Json(json!({
+            "delivered_to": target.id,
+            "relation": relation.as_str(),
+            "followup_session_id": followed.to,
+        })));
+    }
     match deliver(&state, &target.id, target.state(), text).await {
         Delivery::Delivered => {}
         outcome => {

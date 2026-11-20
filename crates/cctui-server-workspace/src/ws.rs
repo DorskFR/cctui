@@ -4,6 +4,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use std::sync::Arc;
 
+use cctui_proto::api::auto_followup::SendFollowup;
 use cctui_proto::features::Feature;
 use cctui_proto::ws::{AgentEvent, ServerEvent, TuiCommand};
 use futures_util::{SinkExt, StreamExt};
@@ -474,6 +475,7 @@ async fn run_tui_socket(
                 ask_picks,
                 turn_id,
                 dictated,
+                followup,
             } => {
                 if !ws_owns_session(&state, &ctx, &session_id).await {
                     tracing::debug!(session_id = %session_id, user_id = %ctx.user_id, "tui_ws: message denied (not owner)");
@@ -506,11 +508,36 @@ async fn run_tui_socket(
                     }
                     continue;
                 }
+                let content = reply_content(content, dictated);
+                let followup = if ask_picks.is_some() { SendFollowup::Never } else { followup };
+                let key = turn_id.map(|t| t.to_string()).or_else(|| client_msg_id.clone());
+                let routed = crate::auto_followup::route(
+                    &state,
+                    Some(&ctx),
+                    &session_id,
+                    followup,
+                    &content,
+                    key.as_deref(),
+                )
+                .await;
+                match routed {
+                    Ok(None) => {}
+                    Ok(Some(followed)) => {
+                        let command = Some(followed.command_id);
+                        ack_message(&event_tx, session_id, client_msg_id, None, command).await;
+                        continue;
+                    }
+                    Err(e) => {
+                        let error = Some(e.to_string());
+                        ack_message(&event_tx, session_id, client_msg_id, error, None).await;
+                        continue;
+                    }
+                }
                 handle_message(
                     &state,
                     &event_tx,
                     session_id,
-                    reply_content(content, dictated),
+                    content,
                     client_msg_id,
                     ask_picks,
                     turn_id,

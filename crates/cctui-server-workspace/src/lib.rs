@@ -8,6 +8,7 @@ mod api_routes;
 mod auth;
 mod authz;
 mod auto_archive;
+mod auto_followup;
 mod auto_redeem;
 mod auto_resume;
 mod bandwidth_watch;

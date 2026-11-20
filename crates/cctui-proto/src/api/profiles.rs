@@ -25,6 +25,9 @@ pub struct SessionProfile {
     /// Context items this profile pins, applied server-side at spawn.
     #[cfg_attr(feature = "ts", ts(type = "string[]"))]
     pub context_items: Vec<Uuid>,
+    /// Copied into each session spawned from this profile.
+    #[cfg_attr(feature = "sqlx", sqlx(skip))]
+    pub auto_followup: Option<super::auto_followup::AutoFollowupOverride>,
     pub sort_order: i32,
     #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub created_at: DateTime<Utc>,
@@ -64,6 +67,9 @@ pub struct ProfileSpec {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(type = "string[]", optional))]
     pub context_items: Vec<Uuid>,
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub auto_followup: Option<super::auto_followup::AutoFollowupOverride>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

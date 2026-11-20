@@ -212,6 +212,7 @@ pub async fn launched(state: &AppState, id: Uuid, launched: &SpawnResponse) -> s
 /// Matched by the spawn key it echoes or through its launch row, so a daemon
 /// faster than [`launched`] still resolves.
 pub async fn claim(pool: &PgPool, session_id: &str, spawn_key: Option<&str>) {
+    crate::auto_followup::claim_intent(pool, session_id, spawn_key).await;
     let key = spawn_key.unwrap_or(session_id);
     let claimed: sqlx::Result<Option<(Uuid, String, String)>> = sqlx::query_as(
         "UPDATE session_followup_ops SET state = 'registered', target_session_id = $1, \

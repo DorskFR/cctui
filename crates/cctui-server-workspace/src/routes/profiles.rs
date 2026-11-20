@@ -12,13 +12,32 @@ pub use cctui_proto::api::profiles::{
     CreateProfileRequest, ProfileSpec, ReorderProfilesRequest, SessionProfile, UpdateProfileRequest,
 };
 
+use cctui_proto::api::auto_followup::AutoFollowupOverride;
+
 use crate::auth::AuthContext;
 use crate::error::AppError;
 use crate::state::AppState;
 
 const COLS: &str = "id, user_id, name, harness, account_id, pool_id, no_account, model_alias, \
-                    effort, permission_mode, service_tier, context_items, sort_order, created_at, \
-                    updated_at";
+                    effort, permission_mode, service_tier, context_items, auto_followup, \
+                    sort_order, created_at, updated_at";
+
+#[derive(sqlx::FromRow)]
+struct ProfileRow {
+    #[sqlx(flatten)]
+    profile: SessionProfile,
+    auto_followup: Option<sqlx::types::Json<AutoFollowupOverride>>,
+}
+
+impl From<ProfileRow> for SessionProfile {
+    fn from(row: ProfileRow) -> Self {
+        Self { auto_followup: row.auto_followup.map(|j| j.0), ..row.profile }
+    }
+}
+
+fn stored_override(spec: &ProfileSpec) -> Option<sqlx::types::Json<AutoFollowupOverride>> {
+    spec.auto_followup.filter(|o| !o.is_empty()).map(sqlx::types::Json)
+}
 
 fn db_err(e: sqlx::Error) -> AppError {
     if let sqlx::Error::Database(dbe) = &e
@@ -57,6 +76,12 @@ fn clean_spec(spec: ProfileSpec) -> Result<ProfileSpec, AppError> {
     {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "unknown permission mode"));
     }
+    if spec.auto_followup.is_some_and(|o| !o.valid()) {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            crate::auto_followup::THRESHOLD_OUT_OF_RANGE,
+        ));
+    }
     let picks = [spec.account_id.is_some(), spec.pool_id.is_some(), spec.no_account];
     if picks.iter().filter(|p| **p).count() > 1 {
         return Err(AppError::new(
@@ -76,6 +101,7 @@ fn clean_spec(spec: ProfileSpec) -> Result<ProfileSpec, AppError> {
             opt(spec.service_tier).as_deref(),
         ),
         context_items: spec.context_items,
+        auto_followup: spec.auto_followup.filter(|o| !o.is_empty()),
     })
 }
 
@@ -138,13 +164,14 @@ pub async fn list_for_user(
     pool: &PgPool,
     user_id: Uuid,
 ) -> Result<Vec<SessionProfile>, sqlx::Error> {
-    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    let rows: Vec<ProfileRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLS} FROM session_profiles WHERE user_id = $1 \
          ORDER BY sort_order, created_at, lower(name)"
     )))
     .bind(user_id)
     .fetch_all(pool)
-    .await
+    .await?;
+    Ok(rows.into_iter().map(SessionProfile::from).collect())
 }
 
 pub async fn insert(
@@ -153,11 +180,11 @@ pub async fn insert(
     name: &str,
     spec: &ProfileSpec,
 ) -> Result<SessionProfile, sqlx::Error> {
-    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    let row: ProfileRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "INSERT INTO session_profiles \
             (user_id, name, harness, account_id, pool_id, no_account, model_alias, effort, \
-             permission_mode, service_tier, context_items, sort_order) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, \
+             permission_mode, service_tier, context_items, auto_followup, sort_order) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, \
                  (SELECT COALESCE(MAX(sort_order) + 1, 0) FROM session_profiles WHERE user_id = $1)) \
          RETURNING {COLS}"
     )))
@@ -172,8 +199,10 @@ pub async fn insert(
     .bind(spec.permission_mode.as_deref())
     .bind(spec.service_tier.as_deref())
     .bind(&spec.context_items)
+    .bind(stored_override(spec))
     .fetch_one(pool)
-    .await
+    .await?;
+    Ok(row.into())
 }
 
 pub async fn update(
@@ -183,7 +212,7 @@ pub async fn update(
     name: Option<&str>,
     spec: Option<&ProfileSpec>,
 ) -> Result<Option<SessionProfile>, sqlx::Error> {
-    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    let row: Option<ProfileRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "UPDATE session_profiles SET \
             name = COALESCE($3, name), \
             harness = CASE WHEN $4 THEN $5 ELSE harness END, \
@@ -195,6 +224,7 @@ pub async fn update(
             permission_mode = CASE WHEN $4 THEN $11 ELSE permission_mode END, \
             service_tier = CASE WHEN $4 THEN $12 ELSE service_tier END, \
             context_items = CASE WHEN $4 THEN $13 ELSE context_items END, \
+            auto_followup = CASE WHEN $4 THEN $14 ELSE auto_followup END, \
             updated_at = now() \
          WHERE id = $1 AND user_id = $2 RETURNING {COLS}"
     )))
@@ -211,8 +241,10 @@ pub async fn update(
     .bind(spec.and_then(|s| s.permission_mode.as_deref()))
     .bind(spec.and_then(|s| s.service_tier.as_deref()))
     .bind(spec.map(|s| s.context_items.clone()).unwrap_or_default())
+    .bind(spec.and_then(stored_override))
     .fetch_optional(pool)
-    .await
+    .await?;
+    Ok(row.map(SessionProfile::from))
 }
 
 /// `ids` must be a permutation of the caller's current set; anything else
@@ -346,6 +378,7 @@ mod tests {
             service_tier: None,
             permission_mode: mode.map(str::to_string),
             context_items: Vec::new(),
+            auto_followup: None,
         }
     }
 
@@ -394,6 +427,72 @@ mod tests {
         let both =
             ProfileSpec { pool_id: Some(Uuid::new_v4()), no_account: true, ..spec("codex", None) };
         assert_eq!(clean_spec(both).unwrap_err().into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn clean_spec_checks_the_auto_followup_override() {
+        use cctui_proto::api::auto_followup::{AutoFollowupThreshold, ThresholdUnit};
+        let with = |enabled, unit, value| ProfileSpec {
+            auto_followup: Some(AutoFollowupOverride {
+                enabled,
+                threshold: Some(AutoFollowupThreshold { unit, value }),
+            }),
+            ..spec("claude-code", None)
+        };
+        let bad = clean_spec(with(Some(true), ThresholdUnit::Percent, 150)).unwrap_err();
+        assert_eq!(bad.into_response().status(), StatusCode::BAD_REQUEST);
+        let zero = clean_spec(with(None, ThresholdUnit::Tokens, 0)).unwrap_err();
+        assert_eq!(zero.into_response().status(), StatusCode::BAD_REQUEST);
+        let ok = clean_spec(with(Some(true), ThresholdUnit::Percent, 80)).unwrap();
+        assert_eq!(ok.auto_followup.and_then(|o| o.enabled), Some(true));
+        let inherit = ProfileSpec {
+            auto_followup: Some(AutoFollowupOverride::default()),
+            ..spec("claude-code", None)
+        };
+        assert_eq!(clean_spec(inherit).unwrap().auto_followup, None, "all-inherit is no override");
+    }
+
+    #[tokio::test]
+    async fn a_profile_stores_and_replaces_its_auto_followup_override() {
+        use cctui_proto::api::auto_followup::{AutoFollowupThreshold, ThresholdUnit};
+        let Some(url) = crate::routes::gateway::test_db_url("profile_auto_followup") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let owner: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (id, name, key_hash) \
+             VALUES (gen_random_uuid(), $1, gen_random_uuid()::text) RETURNING id",
+        )
+        .bind(format!("profiles-followup-{}", Uuid::new_v4()))
+        .fetch_one(&pool)
+        .await
+        .expect("insert user");
+        let early = AutoFollowupOverride {
+            enabled: Some(true),
+            threshold: Some(AutoFollowupThreshold { unit: ThresholdUnit::Tokens, value: 90_000 }),
+        };
+        let kit = ProfileSpec {
+            harness: "claude-code".into(),
+            auto_followup: Some(early),
+            ..ProfileSpec::default()
+        };
+
+        let created = insert(&pool, owner, "Early", &kit).await.expect("insert");
+        assert_eq!(created.auto_followup, Some(early));
+        let listed = list_for_user(&pool, owner).await.unwrap();
+        assert_eq!(listed[0].auto_followup, Some(early));
+
+        let renamed = update(&pool, owner, created.id, Some("Earlier"), None).await.unwrap();
+        assert_eq!(renamed.unwrap().auto_followup, Some(early), "a rename keeps the kit");
+        let plain = ProfileSpec { auto_followup: None, ..kit };
+        let cleared = update(&pool, owner, created.id, None, Some(&plain)).await.unwrap();
+        assert_eq!(cleared.unwrap().auto_followup, None, "the kit replaces the override");
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(owner).execute(&pool).await.ok();
     }
 
     #[test]
@@ -462,6 +561,7 @@ mod tests {
             effort: Some("medium".into()),
             permission_mode: Some("yolo".into()),
             context_items: Vec::new(),
+            auto_followup: None,
         };
         let created = insert(&pool, owner, "Orchestrator", &kit).await.expect("insert");
         assert_eq!(created.account_id, Some(account));

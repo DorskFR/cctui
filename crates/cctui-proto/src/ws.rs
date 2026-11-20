@@ -741,6 +741,8 @@ pub enum TuiCommand {
         /// The words came, at least partly, from speech-to-text.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         dictated: bool,
+        #[serde(default, skip_serializing_if = "crate::api::auto_followup::SendFollowup::is_auto")]
+        followup: crate::api::auto_followup::SendFollowup,
     },
     PermissionResponse {
         session_id: String,
@@ -1616,6 +1618,7 @@ mod tests {
             ask_picks: None,
             turn_id: None,
             dictated: false,
+            followup: crate::api::auto_followup::SendFollowup::Auto,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains(r#""type":"message""#));
@@ -1638,6 +1641,7 @@ mod tests {
             ask_picks: None,
             turn_id: None,
             dictated: false,
+            followup: crate::api::auto_followup::SendFollowup::Auto,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(!json.contains("client_msg_id"), "None must be skipped: {json}");
@@ -1663,6 +1667,7 @@ mod tests {
             ask_picks: None,
             turn_id: None,
             dictated: false,
+            followup: crate::api::auto_followup::SendFollowup::Auto,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains(r#""client_msg_id":"abc-123""#));
@@ -1686,6 +1691,20 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(voiced, TuiCommand::Message { dictated: true, .. }));
+    }
+
+    #[test]
+    fn tui_command_message_carries_the_followup_opt_out_only_when_set() {
+        use crate::api::auto_followup::SendFollowup;
+        let typed: TuiCommand =
+            serde_json::from_str(r#"{"type":"message","session_id":"s","content":"hi"}"#).unwrap();
+        assert!(matches!(typed, TuiCommand::Message { followup: SendFollowup::Auto, .. }));
+        assert!(!serde_json::to_string(&typed).unwrap().contains("followup"));
+        let here: TuiCommand = serde_json::from_str(
+            r#"{"type":"message","session_id":"s","content":"hi","followup":"never"}"#,
+        )
+        .unwrap();
+        assert!(matches!(here, TuiCommand::Message { followup: SendFollowup::Never, .. }));
     }
 
     #[test]

@@ -175,6 +175,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "session_followup_ops",
         sql: include_str!("../schema/0028_session_followup_ops.sql"),
     },
+    Migration {
+        version: 29,
+        name: "profile_auto_followup",
+        sql: include_str!("../schema/0029_profile_auto_followup.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -332,7 +337,8 @@ mod tests {
                     (25, "bootstrap".to_owned()),
                     (26, "bootstrap".to_owned()),
                     (27, "bootstrap".to_owned()),
-                    (28, "bootstrap".to_owned())
+                    (28, "bootstrap".to_owned()),
+                    (29, "bootstrap".to_owned())
                 ]
             );
 
@@ -689,6 +695,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_profile_holds_an_auto_followup_override_and_a_spawn_its_intent() {
+        with_isolated_database("profile_auto_followup_migration", |pool| async move {
+            provisioned(&pool).await;
+            let user = uuid::Uuid::new_v4();
+            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $2)")
+                .bind(user)
+                .bind(format!("u-{user}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+            let unset: Option<serde_json::Value> = sqlx::query_scalar(
+                "INSERT INTO session_profiles (user_id, name, harness) \
+                 VALUES ($1, 'plain', 'claude-code') RETURNING auto_followup",
+            )
+            .bind(user)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(unset, None, "an existing profile inherits");
+            let set: Option<serde_json::Value> = sqlx::query_scalar(
+                "INSERT INTO session_profiles (user_id, name, harness, auto_followup) \
+                 VALUES ($1, 'early', 'codex', '{\"enabled\": true}') RETURNING auto_followup",
+            )
+            .bind(user)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(set, Some(serde_json::json!({"enabled": true})));
+            sqlx::raw_sql(
+                "INSERT INTO session_auto_followup_intents (spawn_key, auto_followup) \
+                 VALUES ('k', '{}')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let again = sqlx::raw_sql(
+                "INSERT INTO session_auto_followup_intents (spawn_key, auto_followup) \
+                 VALUES ('k', '{}')",
+            )
+            .execute(&pool)
+            .await;
+            assert!(again.is_err(), "one intent per spawn key");
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn storage_lifecycle_starts_with_no_rule_and_refuses_a_trim_without_a_size() {
         with_isolated_database("storage_lifecycle_rules", |pool| async move {
             provisioned(&pool).await;
@@ -768,7 +821,8 @@ mod tests {
                     (25, "bootstrap".to_owned()),
                     (26, "bootstrap".to_owned()),
                     (27, "bootstrap".to_owned()),
-                    (28, "bootstrap".to_owned())
+                    (28, "bootstrap".to_owned()),
+                    (29, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =
