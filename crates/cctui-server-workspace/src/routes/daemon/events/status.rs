@@ -21,7 +21,7 @@ struct StatusSignals<'a> {
 
 /// Persist the latest Status signals onto the session row. `COALESCE` keeps
 /// the stored value when a Status event omits a field, so a sparse update
-/// never clears signal. `model` is special-cased to
+/// never clears signal; [`next_tempo`] is the one exception. `model` is special-cased to
 /// `COALESCE(model, $6)` (fill only when NULL): the requested model must not
 /// overwrite the init-frame ground truth that `SessionModel` writes.
 /// `effort` is safe to overwrite because the daemon reports the observed
@@ -84,7 +84,23 @@ impl Written {
         {
             return false;
         }
-        bucket(s.tempo.or(was.0), s.agent_state.or(was.1), s.activity.or(was.2)) == Bucket::Done
+        let tempo = next_tempo(s.tempo, s.agent_state, was.0);
+        bucket(tempo, s.agent_state.or(was.1), s.activity.or(was.2)) == Bucket::Done
+    }
+}
+
+/// The tempo a Status write leaves on the row; mirrors the `tempo` column in
+/// [`write_status_signals`]. An adapter that reports idle only through
+/// `state` (codex) must still end a stored `active`, while `blocked` and
+/// `hibernated` survive.
+fn next_tempo<'a>(
+    tempo: Option<&'a str>,
+    state: Option<&str>,
+    stored: Option<&'a str>,
+) -> Option<&'a str> {
+    match (tempo, state, stored) {
+        (None, Some("idle"), Some("active")) => Some("idle"),
+        _ => tempo.or(stored),
     }
 }
 
@@ -147,7 +163,9 @@ async fn write_status_signals(
             FROM claim c \
          ) \
          UPDATE sessions SET \
-            tempo = COALESCE($2, sessions.tempo), \
+            tempo = CASE WHEN $2::text IS NULL AND $3::text = 'idle' \
+                              AND sessions.tempo = 'active' \
+                         THEN 'idle' ELSE COALESCE($2, sessions.tempo) END, \
             agent_state = COALESCE($3, sessions.agent_state), \
             activity = COALESCE($4, sessions.activity), \
             session_name = COALESCE(prev.new_name, prev.pinned_title, sessions.session_name), \
@@ -170,7 +188,10 @@ async fn write_status_signals(
                 OR (sessions.tempo, sessions.agent_state, sessions.activity, sessions.intent, \
                     sessions.model, sessions.effort, sessions.permission_mode, sessions.children) \
                    IS DISTINCT FROM \
-                   (COALESCE($2, sessions.tempo), COALESCE($3, sessions.agent_state), \
+                   (CASE WHEN $2::text IS NULL AND $3::text = 'idle' \
+                              AND sessions.tempo = 'active' \
+                         THEN 'idle' ELSE COALESCE($2, sessions.tempo) END, \
+                    COALESCE($3, sessions.agent_state), \
                     COALESCE($4, sessions.activity), COALESCE($6, sessions.intent), \
                     COALESCE(sessions.model, $7), COALESCE($8, sessions.effort), \
                     COALESCE($11, sessions.permission_mode), \
@@ -400,6 +421,24 @@ mod tests {
         let blocked = written(Some("blocked"), Some("working"));
         assert!(!blocked.turn_went_idle(&signals(Some("idle"), Some("done"))));
     }
+    #[test]
+    fn an_idle_state_ends_a_stored_active_tempo_only() {
+        assert_eq!(next_tempo(None, Some("idle"), Some("active")), Some("idle"));
+        assert_eq!(next_tempo(None, Some("idle"), Some("hibernated")), Some("hibernated"));
+        assert_eq!(next_tempo(None, Some("idle"), Some("blocked")), Some("blocked"));
+        assert_eq!(next_tempo(None, Some("working"), Some("active")), Some("active"));
+        assert_eq!(next_tempo(Some("blocked"), Some("idle"), Some("active")), Some("blocked"));
+        assert_eq!(next_tempo(None, Some("idle"), None), None);
+    }
+
+    #[test]
+    fn a_codex_idle_status_ends_the_turn() {
+        let working = written(Some("active"), Some("working"));
+        assert!(working.turn_went_idle(&signals(None, Some("idle"))));
+        let asking = written(Some("blocked"), Some("working"));
+        assert!(!asking.turn_went_idle(&signals(None, Some("idle"))));
+    }
+
     use crate::routes::daemon::test_support::{
         drop_machines, row_version, seed_machine, seed_owned_session,
     };
@@ -443,6 +482,71 @@ mod tests {
         );
 
         drop_machines(&pool, &[sid], &[(uid, mid)]).await;
+    }
+
+    async fn write(
+        pool: &sqlx::PgPool,
+        sid: &str,
+        tempo: Option<&str>,
+        state: &str,
+    ) -> Option<Written> {
+        write_status_signals(pool, sid, &signals(tempo, Some(state)), None)
+            .await
+            .expect("status write")
+    }
+
+    async fn bucket_of(pool: &sqlx::PgPool, sid: &str) -> (Option<String>, Bucket) {
+        let (tempo, state, activity): (Option<String>, Option<String>, Option<String>) =
+            sqlx::query_as("SELECT tempo, agent_state, activity FROM sessions WHERE id = $1")
+                .bind(sid)
+                .fetch_one(pool)
+                .await
+                .expect("signals");
+        let bucket = crate::routes::sessions::bucket_from_signals(
+            tempo.as_deref(),
+            state.as_deref(),
+            activity.as_deref(),
+            None,
+            &[],
+            &std::collections::HashMap::new(),
+        );
+        (tempo, bucket)
+    }
+
+    #[tokio::test]
+    async fn a_codex_idle_status_leaves_working_and_keeps_hibernated_and_blocked() {
+        let Some(url) = crate::routes::gateway::test_db_url("codex_idle_status") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "codex-idle").await;
+        let [working, asleep, asking] = [
+            seed_owned_session(&pool, uid, mid).await,
+            seed_owned_session(&pool, uid, mid).await,
+            seed_owned_session(&pool, uid, mid).await,
+        ];
+        write(&pool, &working, Some("active"), "working").await;
+        assert_eq!(bucket_of(&pool, &working).await.1, Bucket::Working);
+        let settled = write(&pool, &working, None, "idle").await;
+        assert!(
+            settled.is_some_and(|w| w.turn_went_idle(&signals(None, Some("idle")))),
+            "idle ends the turn"
+        );
+        assert_eq!(bucket_of(&pool, &working).await, (Some("idle".to_owned()), Bucket::Done));
+
+        write(&pool, &asleep, Some("hibernated"), "idle").await;
+        write(&pool, &asleep, None, "idle").await;
+        assert_eq!(bucket_of(&pool, &asleep).await.0.as_deref(), Some("hibernated"));
+
+        write(&pool, &asking, Some("blocked"), "working").await;
+        write(&pool, &asking, None, "idle").await;
+        assert_eq!(bucket_of(&pool, &asking).await, (Some("blocked".to_owned()), Bucket::Blocked));
+
+        drop_machines(&pool, &[working, asleep, asking], &[(uid, mid)]).await;
     }
 
     /// Fixture for the agent-title precedence tests: an isolated user, machine
