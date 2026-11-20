@@ -194,8 +194,8 @@ export function removeFileByName(files: File[], name: string): File[] {
 /** Validate a file list against the caps; returns a human error or '' if ok. */
 export function fileCapError(files: File[], caps: UploadCaps = DEFAULT_UPLOAD_CAPS): string {
 	const total = files.reduce((n, f) => n + f.size, 0);
-	const big = files.find((f) => f.size > caps.max_file_bytes);
-	if (big) return `“${big.name}” exceeds the ${fmtSize(caps.max_file_bytes)} per-file cap`;
+	if (files.some((f) => f.size > caps.max_file_bytes))
+		return `A file exceeds the ${fmtSize(caps.max_file_bytes)} per-file cap`;
 	if (files.length > caps.max_files) return `Too many files (max ${caps.max_files})`;
 	if (total > caps.max_total_bytes)
 		return `Attachments exceed the ${fmtSize(caps.max_total_bytes)} total cap`;

@@ -85,7 +85,7 @@ describe('PromptAttachments with camera captures', () => {
 		a.add([sized('dump.bin', CAP + 1, 'application/octet-stream')]);
 		await flush();
 		expect(a.files.map((f) => f.name)).toEqual(['dump.bin']);
-		expect(a.error).toContain('dump.bin');
+		expect(a.error).toBe('A file exceeds the 1 KB per-file cap');
 		expect(errors()).toEqual([m.attach_too_large({ name: 'dump.bin', cap: '1 KB' })]);
 	});
 
