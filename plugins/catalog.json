@@ -3,7 +3,7 @@
   "plugins": [
     {
       "id": "yubisashi",
-      "name": "Review",
+      "name": "yubisashi",
       "description": "Frames your running dev app next to the conversation. Point at an element and its source location lands in the composer, ready for your comment.",
       "version": "0.7.1",
       "url": "https://github.com/DorskFR/yubisashi/releases/download/v0.7.1/yubisashi-0.7.1.tgz",
