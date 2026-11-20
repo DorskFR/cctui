@@ -250,9 +250,9 @@ async fn collect_events(
         None
     };
     rows.reverse();
-    let seqs: Vec<i64> = rows.iter().map(|(seq, _, _, _)| *seq).collect();
+    let keys: Vec<i64> = rows.iter().map(|(seq, _, _, _)| *seq).collect();
     let events = client_events(state, &generation.session_id, rows).await?;
-    for (seq, event) in seqs.into_iter().zip(events).rev() {
+    for (seq, event) in keys.into_iter().zip(events).rev() {
         let entries = event_entries(generation, event, first_turn == Some(seq));
         walk.push(ThreadCursor { generation: generation.generation, seq }, entries);
     }

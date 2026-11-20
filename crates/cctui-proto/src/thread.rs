@@ -36,7 +36,7 @@ pub enum InjectedFlag {
 }
 
 /// One line of a collated history. `generation` is 1-based, the root is 1.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(tag = "entry", rename_all = "snake_case")]
 pub enum ThreadEntry {
@@ -99,10 +99,12 @@ pub struct ThreadGeneration {
     pub registered_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// `GET /sessions/{id}/conversation?thread=1`: the newest page of the line
-/// root → `head`, oldest first. Pass `next_cursor` as `cursor` for the page
-/// before it; `None` when this page reaches the root's first event.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A page of `GET /sessions/{id}/conversation?thread=1`.
+///
+/// The newest entries of the line root → `head`, oldest first. Pass
+/// `next_cursor` as `cursor` for the page before it; `None` at the root's
+/// first event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ThreadConversationPage {
     pub thread_root_id: String,
@@ -115,9 +117,10 @@ pub struct ThreadConversationPage {
     pub next_cursor: Option<String>,
 }
 
-/// Where a page of a collated history stops: entries strictly before
-/// `(generation, seq)`. A generation's marker sorts at seq `-1` and an
-/// unreadable placeholder at `0`, before its events.
+/// Where a page of a collated history stops.
+///
+/// Entries strictly before `(generation, seq)`; a generation's marker sorts at
+/// seq `-1` and an unreadable placeholder at `0`, before its events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ThreadCursor {
     pub generation: u32,

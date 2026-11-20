@@ -3,8 +3,10 @@ import type { ThreadEntry } from "./ThreadEntry";
 import type { ThreadGeneration } from "./ThreadGeneration";
 
 /**
- * `GET /sessions/{id}/conversation?thread=1`: the newest page of the line
- * root → `head`, oldest first. Pass `next_cursor` as `cursor` for the page
- * before it; `None` when this page reaches the root's first event.
+ * A page of `GET /sessions/{id}/conversation?thread=1`.
+ *
+ * The newest entries of the line root → `head`, oldest first. Pass
+ * `next_cursor` as `cursor` for the page before it; `None` at the root's
+ * first event.
  */
 export type ThreadConversationPage = { thread_root_id: string, head: string, next_session_id?: string | null, generations: Array<ThreadGeneration>, entries: Array<ThreadEntry>, next_cursor?: string | null, };

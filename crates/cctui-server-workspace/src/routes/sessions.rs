@@ -2827,10 +2827,7 @@ pub async fn client_events(
         HashMap::new()
     };
 
-    // Stamp each event with `ts` (unix millis, matching the live `AgentEvent`
-    // shape) derived from `created_at`, so the client renders real timestamps
-    // instead of "Invalid Date". Legacy payloads that already carry `ts` keep
-    // their own value.
+    // `ts` in unix millis like the live `AgentEvent`; a legacy payload keeps its own.
     Ok(rows
         .into_iter()
         .map(|(id, mut v, created_at, turn_id)| {
