@@ -162,20 +162,20 @@ fn claude(
     window_of(Some("claude-code"), reported, launched, &json!({}), observed)
 }
 
-const fn window(tokens: u64, source: WindowSource) -> Option<ContextWindow> {
-    Some(ContextWindow { tokens, source })
+const fn window(tokens: u64, source: WindowSource) -> ContextWindow {
+    ContextWindow { tokens, source }
 }
 
 #[test]
 fn context_window_resolves_1m_claude_and_unknown_models() {
     let none = json!({});
-    assert_eq!(claude(Some("opus[1m]"), None, None), window(1_000_000, WindowSource::Known));
+    assert_eq!(claude(Some("opus[1m]"), None, None), Some(window(1_000_000, WindowSource::Known)));
     let meta_model = json!({"model": "claude-opus-5-5[1m]"});
     let from_meta = window_of(Some("claude-code"), None, None, &meta_model, None);
     assert_eq!(from_meta.map(|w| w.tokens), Some(1_000_000));
     let codex = json!({"model_context_window": 400_000});
     let reported = window_of(Some("codex"), Some("gpt-5"), None, &codex, None);
-    assert_eq!(reported, window(400_000, WindowSource::Known));
+    assert_eq!(reported, Some(window(400_000, WindowSource::Known)));
     let catalog = window_of(Some("codex"), Some("gpt-5"), None, &none, None);
     assert_eq!(catalog.map(|w| w.tokens), Some(cctui_proto::api::auto_followup::CODEX_WINDOW));
     assert_eq!(window_of(Some("opencode"), Some("big"), None, &none, None), None);
@@ -185,7 +185,7 @@ fn context_window_resolves_1m_claude_and_unknown_models() {
 #[test]
 fn a_1m_spawn_resolves_a_1m_window_though_the_harness_reports_the_base_model() {
     let resolved = claude(Some("claude-opus-5-5"), Some("claude-opus-5-5[1m]"), Some(10_000));
-    assert_eq!(resolved, window(1_000_000, WindowSource::Known));
+    assert_eq!(resolved, Some(window(1_000_000, WindowSource::Known)));
     let pct = AutoFollowupSetting { enabled: true, threshold: percent(80) };
     assert_eq!(threshold_at(pct, resolved, None), Some(800_000), "80% of 1M, not of 200k");
 }
@@ -193,10 +193,11 @@ fn a_1m_spawn_resolves_a_1m_window_though_the_harness_reports_the_base_model() {
 #[test]
 fn observed_context_above_200k_implies_a_1m_window() {
     let prod = claude(Some("claude-opus-5-5"), None, Some(363_044));
-    assert_eq!(prod, window(1_000_000, WindowSource::Observed));
+    assert_eq!(prod, Some(window(1_000_000, WindowSource::Observed)));
     let launched_base = claude(Some("claude-opus-5-5"), Some("claude-opus-5-5"), Some(426_000));
-    assert_eq!(launched_base, window(1_000_000, WindowSource::Observed), "launched plain, ran 1M");
-    assert_eq!(claude(None, None, Some(200_000)), window(200_000, WindowSource::Assumed));
+    let ran_1m = Some(window(1_000_000, WindowSource::Observed));
+    assert_eq!(launched_base, ran_1m, "launched plain, ran 1M");
+    assert_eq!(claude(None, None, Some(200_000)), Some(window(200_000, WindowSource::Assumed)));
     let pct = AutoFollowupSetting { enabled: true, threshold: percent(50) };
     assert_eq!(threshold_at(pct, prod, None), Some(500_000));
 }
@@ -204,9 +205,10 @@ fn observed_context_above_200k_implies_a_1m_window() {
 #[test]
 fn a_plain_claude_session_stays_at_200k() {
     let launched = claude(Some("claude-opus-5-5"), Some("claude-opus-5-5"), Some(150_000));
-    assert_eq!(launched, window(200_000, WindowSource::Assumed), "a plain launch can run 1M");
+    let assumed = Some(window(200_000, WindowSource::Assumed));
+    assert_eq!(launched, assumed, "a plain launch can run 1M");
     let guessed = claude(Some("claude-opus-5-5"), None, Some(150_000));
-    assert_eq!(guessed, window(200_000, WindowSource::Assumed));
+    assert_eq!(guessed, Some(window(200_000, WindowSource::Assumed)));
     let pct = AutoFollowupSetting { enabled: true, threshold: percent(80) };
     assert_eq!(threshold_at(pct, launched, None), None, "never a percent of a guessed window");
     assert_eq!(threshold_at(pct, guessed, None), None);
@@ -234,13 +236,13 @@ fn under_the_threshold_or_setting_off_is_a_plain_send() {
     assert!(!fires(SendFollowup::Auto, "go on", None, at));
     assert!(!fires(SendFollowup::Auto, "  ", Some(200_000), at), "nothing to say");
     let off = AutoFollowupSetting { enabled: false, ..ON_150K };
-    assert_eq!(threshold_at(off, window(200_000, WindowSource::Known), None), None);
+    assert_eq!(threshold_at(off, Some(window(200_000, WindowSource::Known)), None), None);
 }
 
 #[test]
 fn a_percent_threshold_without_a_known_window_never_fires() {
     let pct = AutoFollowupSetting { enabled: true, threshold: percent(80) };
-    assert_eq!(threshold_at(pct, window(200_000, WindowSource::Known), None), Some(160_000));
+    assert_eq!(threshold_at(pct, Some(window(200_000, WindowSource::Known)), None), Some(160_000));
     let unknown = window_of(Some("opencode"), Some("big"), None, &json!({}), None);
     assert_eq!(threshold_at(pct, unknown, None), None);
     assert!(!fires(SendFollowup::Auto, "go on", Some(u64::MAX), None));

@@ -29,6 +29,8 @@ pub const THRESHOLD_OUT_OF_RANGE: &str =
     "an auto follow-up threshold is 1 to 100 percent, or more than 0 tokens";
 const CODEX_WINDOW_KEY: &str = "model_context_window";
 
+type PrefsRow = (String, Option<Value>, Value, bool, Option<String>);
+
 #[must_use]
 pub fn setting_of(data: &Value) -> AutoFollowupSetting {
     data.get(SETTING_KEY)
@@ -192,7 +194,7 @@ pub async fn prefs_for(
     pool: &PgPool,
     session_ids: &[String],
 ) -> sqlx::Result<HashMap<String, Prefs>> {
-    let rows: Vec<(String, Option<Value>, Value, bool, Option<String>)> =
+    let rows: Vec<PrefsRow> =
         sqlx::query_as(PREFS_SQL).bind(session_ids).fetch_all(pool).await?;
     Ok(rows
         .into_iter()
