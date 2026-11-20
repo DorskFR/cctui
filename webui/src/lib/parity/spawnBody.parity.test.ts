@@ -45,7 +45,8 @@ function form(fields: Case['fields']): Form {
 		context_pack_token: text('context_pack_token'),
 		labels: list('labels'),
 		context_items: list('context_items'),
-		context_auto: (fields.context_auto as boolean | undefined) ?? false
+		context_auto: (fields.context_auto as boolean | undefined) ?? false,
+		auto_archive: (fields.auto_archive as boolean | undefined) ?? false
 	};
 }
 

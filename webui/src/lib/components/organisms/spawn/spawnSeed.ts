@@ -36,7 +36,8 @@ export const blank: Form = {
 	context_pack_token: '',
 	labels: [],
 	context_items: [],
-	context_auto: false
+	context_auto: false,
+	auto_archive: false
 };
 
 export interface Seed {
@@ -54,13 +55,14 @@ function stripPrefill(prefill: SpawnPrefill | null) {
 		draft_id,
 		env_keys,
 		label_ids,
+		auto_archive,
 		relation: _r,
 		parent_session_id: _p,
 		archive_source: _a,
 		followup_file: _f,
 		...form
 	} = prefill ?? {};
-	return { draft_id, env_keys, label_ids, form };
+	return { draft_id, env_keys, label_ids, auto_archive, form };
 }
 
 /** Seed the form from its local slot and the prefill. Non-empty prefill
@@ -69,7 +71,7 @@ export function seedForm(prefill: SpawnPrefill | null, slotKey: string): Seed {
 	try {
 		const saved: SpawnSlotPayload = readSpawnSlot(slotKey) ?? {};
 		const raw = Object.keys(saved).length > 0;
-		const { draft_id, env_keys, label_ids, form: prefillForm } = stripPrefill(prefill);
+		const { draft_id, env_keys, label_ids, auto_archive, form: prefillForm } = stripPrefill(prefill);
 		const keys = new Map<string, boolean>();
 		for (const r of saved.envRows ?? []) {
 			if (r?.key) keys.set(String(r.key), (r as { stored?: unknown }).stored === true);
@@ -89,6 +91,7 @@ export function seedForm(prefill: SpawnPrefill | null, slotKey: string): Seed {
 		);
 		const form = { ...blank, ...savedForm, ...given } as Form;
 		if (label_ids !== undefined) form.labels = label_ids.split(',').filter(Boolean);
+		form.auto_archive = auto_archive === undefined ? form.auto_archive === true : auto_archive === '1';
 		// Fresh open: propose the last submitted name with a bumped suffix and
 		// the last-used label set.
 		if (!raw && !prefill) {

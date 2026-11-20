@@ -832,7 +832,8 @@ export function draftEditPrefill(s: SessionListItem): Record<string, string> {
 		[modelField]: str(d.model),
 		[effortField]: str(d.effort),
 		env_keys: Array.isArray(d.env_keys) ? d.env_keys.filter((k) => typeof k === 'string').join(',') : '',
-		label_ids: draftLabelIds(d, s).join(',')
+		label_ids: draftLabelIds(d, s).join(','),
+		auto_archive: d.auto_archive === true ? '1' : '0'
 	};
 	return Object.fromEntries(Object.entries(full).filter(([, v]) => v !== ''));
 }

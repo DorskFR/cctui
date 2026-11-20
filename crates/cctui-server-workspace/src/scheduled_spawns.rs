@@ -477,6 +477,77 @@ mod tests {
         assert_eq!(spec.env.get("FOO").map(String::as_str), Some("bar-sealed-value"));
     }
 
+    async fn auto_archive_intents(pool: &sqlx::PgPool, spawn_key: &str) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM session_auto_archive WHERE spawn_key = $1")
+            .bind(spawn_key)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn launch_scheduled_draft(
+        state: &AppState,
+        owner: Uuid,
+        machine: Uuid,
+        auto_archive: bool,
+    ) -> String {
+        let req: cctui_proto::api::SpawnRequest = serde_json::from_value(serde_json::json!({
+            "machine_id": machine.to_string(), "working_dir": "/w", "prompt": "nightly",
+            "no_account": true, "save_draft": true, "auto_archive": auto_archive,
+        }))
+        .unwrap();
+        let draft = crate::routes::spawn::store_spawn_row(
+            state,
+            &req,
+            machine,
+            &[],
+            SessionRowStatus::Draft,
+        )
+        .await
+        .unwrap()
+        .to_string();
+        schedule(&state.pool, &state.bus, &draft, Some(owner), now()).await.unwrap();
+        let events = claim(&state.pool, &draft).await;
+        assert_eq!(events.len(), 1);
+        let daemon = crate::routes::fs::answer_list_dirs(state, machine, Ok(Vec::new()));
+        let outcome = launch(state, &draft, &events).await;
+        drop(daemon.await.unwrap());
+        let Outcome::Delivered { session_id, .. } = outcome else {
+            panic!("expected a delivered launch, got {outcome:?}")
+        };
+        session_id
+    }
+
+    #[tokio::test]
+    async fn a_scheduled_draft_keeps_its_auto_archive_intent() {
+        let name = "scheduled_spawn_auto_archive";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        crate::crypto::install_vault_key(vec![7u8; 32]);
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(4)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (_, owner) = seed_owned_draft(&pool, name).await;
+        let machine: Uuid = sqlx::query_scalar("SELECT id FROM machines WHERE user_id = $1")
+            .bind(owner)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let state = AppState::for_test(pool.clone());
+
+        let armed = launch_scheduled_draft(&state, owner, machine, true).await;
+        assert_eq!(auto_archive_intents(&pool, &armed).await, 1, "a ticked draft arms it");
+        let plain = launch_scheduled_draft(&state, owner, machine, false).await;
+        assert_eq!(auto_archive_intents(&pool, &plain).await, 0, "an unticked draft does not");
+
+        sqlx::query("DELETE FROM session_auto_archive WHERE spawn_key = $1")
+            .bind(&armed)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
     #[tokio::test]
     async fn discarding_a_draft_takes_its_schedule_with_it() {
         let name = "scheduled_spawn_cascade";

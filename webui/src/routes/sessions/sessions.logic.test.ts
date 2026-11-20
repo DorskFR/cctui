@@ -783,9 +783,17 @@ describe('draft payload + prefills', () => {
 			working_dir: '/w',
 			adapter_id: 'claude-code',
 			prompt: 'p',
-			env_keys: 'TOKEN,API_KEY'
+			env_keys: 'TOKEN,API_KEY',
+			auto_archive: '0'
 		});
 		expect('name' in p).toBe(false);
+	});
+
+	it('draftEditPrefill carries the auto-archive flag', () => {
+		const armed = session({ machine_id: 'm', working_dir: '/w', metadata: { draft: { auto_archive: true } } });
+		expect(draftEditPrefill(armed).auto_archive).toBe('1');
+		const plain = session({ machine_id: 'm', working_dir: '/w', metadata: { draft: {} } });
+		expect(draftEditPrefill(plain).auto_archive).toBe('0');
 	});
 
 	it('draftEditPrefill carries the stored labels and those put on the draft card', () => {

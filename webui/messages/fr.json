@@ -2151,6 +2151,8 @@
 	"spawn_add_env_vars": "Env vars",
 	"spawn_add_files": "Fichiers",
 	"spawn_add_label": "Libellés",
+	"spawn_auto_archive": "Archiver automatiquement une fois terminée",
+	"spawn_auto_archive_hint": "Archive la session dès qu'elle se termine sans erreur ; les questions et les échecs restent listés.",
 	"spawn_clear": "Effacer",
 	"spawn_config_label": "Configuration de la session",
 	"spawn_cwd_branch_title": "Branche {branch}",

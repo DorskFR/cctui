@@ -51,6 +51,7 @@ export function buildSpawnBody(
 		auto_account: !noAccount && !pool && !f.account.trim(),
 		pool,
 		save_draft: false,
+		auto_archive: f.auto_archive,
 		// Attached by the server once the session registers, so a draft
 		// launched later keeps them too.
 		label_ids: [...f.labels],

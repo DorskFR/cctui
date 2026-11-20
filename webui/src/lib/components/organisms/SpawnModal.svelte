@@ -15,6 +15,7 @@
 	import SpawnTargetSection from './spawn/SpawnTargetSection.svelte';
 	import SpawnPromptSection from './spawn/SpawnPromptSection.svelte';
 	import SpawnGrantsSection from './spawn/SpawnGrantsSection.svelte';
+	import SpawnAutoArchive from './spawn/SpawnAutoArchive.svelte';
 	import RepeatDraftModal from './presets/RepeatDraftModal.svelte';
 
 	// The kit's Button/SplitButton take no flex prop whose basis is the content
@@ -210,6 +211,9 @@
 		<Callout tone="danger" title={m.spawn_failure_inline()} style="flex-basis:100%">
 			<pre class="spawn-failure-detail">{sf.spawnFailure}</pre>
 		</Callout>
+	{/if}
+	{#if sf.target === 'machine' && !sf.noMachines}
+		<SpawnAutoArchive bind:checked={sf.form.auto_archive} />
 	{/if}
 	<div class="foot-row">
 		<Button style={FOOT_GROW} onclick={sf.clearForm}>{m.spawn_clear()}</Button>

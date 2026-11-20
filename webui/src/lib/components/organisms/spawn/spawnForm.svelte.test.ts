@@ -30,6 +30,7 @@ const setDraftAttachments = vi.fn();
 const listSessions = vi.fn();
 const discardDraft = vi.fn();
 const launchDraft = vi.fn();
+const scheduleDraftLaunch = vi.fn();
 
 vi.mock('#lib/queries/index.ts', () => {
 	const q = <T>(data: T) => ({ data, isLoading: false, isError: false });
@@ -53,7 +54,8 @@ vi.mock('#lib/queries/index.ts', () => {
 			updateDraft,
 			setDraftAttachments,
 			discardDraft,
-			launchDraft
+			launchDraft,
+			scheduleDraftLaunch
 		}),
 		endpoints: { machineDirs: async () => [], sessions: () => listSessions() }
 	};
@@ -109,6 +111,7 @@ beforeEach(() => {
 	listSessions.mockReset().mockResolvedValue({ sessions: [] });
 	discardDraft.mockReset().mockResolvedValue(undefined);
 	launchDraft.mockReset();
+	scheduleDraftLaunch.mockReset().mockResolvedValue(undefined);
 });
 afterEach(() => {
 	stop?.();
@@ -390,6 +393,47 @@ describe('SpawnForm spawn body', () => {
 		const body = sf.draftBody();
 		expect(body.env_keys).toEqual(['KEEP', 'SWAP']);
 		expect(body.env).toEqual({ SWAP: 'new' });
+	});
+});
+
+describe('SpawnForm auto-archive', () => {
+	it('is off by default and rides the spawn and draft bodies once ticked', () => {
+		const sf = open();
+		sf.form.working_dir = '/w';
+		expect(sf.form.auto_archive).toBe(false);
+		expect(sf.buildSpawnBody().auto_archive).toBe(false);
+		sf.form.auto_archive = true;
+		expect(sf.buildSpawnBody().auto_archive).toBe(true);
+		expect(sf.draftBody().auto_archive).toBe(true);
+	});
+
+	it('is restored from the local slot', () => {
+		drafts.set(SLOT, JSON.stringify({ machine_id: 'm-uuid-1', working_dir: '/w', prompt: 'p', auto_archive: true }));
+		drafts.set(SPAWN_SLOT, SLOT);
+		expect(open().form.auto_archive).toBe(true);
+	});
+
+	it("follows an edited draft's flag over the slot", () => {
+		const base = { machine_id: 'm-uuid-1', working_dir: '/w', draft_id: 'd-1' };
+		drafts.set(SLOT, JSON.stringify({ machine_id: 'm-uuid-1', working_dir: '/w', auto_archive: true }));
+		expect(open({ prefill: { ...base, auto_archive: '0' } }).form.auto_archive).toBe(false);
+		stop?.();
+		localStorage.clear();
+		expect(open({ prefill: { ...base, auto_archive: '1' } }).form.auto_archive).toBe(true);
+	});
+
+	it('is stored on the draft a scheduled launch replays, then cleared', async () => {
+		spawn.mockResolvedValue({ command_id: 'draft-7', status: 'draft' });
+		const sf = open();
+		sf.form.working_dir = '/w';
+		sf.form.prompt = 'nightly digest';
+		sf.form.auto_archive = true;
+		flushSync();
+		await sf.scheduleLaunch(new Date(Date.now() + 3_600_000));
+		expect(spawn).toHaveBeenCalledTimes(1);
+		expect(spawn.mock.calls[0][0]).toMatchObject({ save_draft: true, auto_archive: true });
+		expect(scheduleDraftLaunch).toHaveBeenCalledWith('draft-7', expect.any(String));
+		expect(sf.form.auto_archive).toBe(false);
 	});
 });
 
