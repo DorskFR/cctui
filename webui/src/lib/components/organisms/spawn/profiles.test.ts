@@ -68,6 +68,7 @@ const profile = (over: Partial<SessionProfile> = {}): SessionProfile => ({
 	permission_mode: 'yolo',
 	service_tier: null,
 	context_items: [],
+	auto_followup: null,
 	created_at: '',
 	updated_at: '',
 	...over
@@ -168,6 +169,17 @@ describe('specChanges / specChain', () => {
 		expect(specChanges({ ...a, context_items: ['x', 'y'] }, { ...a, context_items: ['y', 'x'] })).toBe(0);
 		expect(specChanges({ ...a, context_items: ['x'] }, { ...a, context_items: [] })).toBe(1);
 		expect(specChanges({ ...a, context_items: undefined }, { ...a, context_items: [] })).toBe(0);
+	});
+
+	it('counts the auto follow-up override as one knob', () => {
+		const a = specOf(profile());
+		expect(a.auto_followup).toBeNull();
+		const on = { enabled: true, threshold: { unit: 'percent' as const, value: 70 } };
+		const b = specOf(profile({ auto_followup: on }));
+		expect(b.auto_followup).toEqual(on);
+		expect(specChanges(a, b)).toBe(1);
+		expect(specChanges(b, { ...b, auto_followup: { enabled: true, threshold: { unit: 'percent', value: 70 } } })).toBe(0);
+		expect(specOf(profile({ auto_followup: { enabled: null, threshold: null } })).auto_followup).toBeNull();
 	});
 
 	it('renders the summary line', () => {

@@ -141,6 +141,7 @@ impl WsClient {
             ask_picks,
             turn_id,
             dictated: false,
+            followup: cctui_proto::api::auto_followup::SendFollowup::Auto,
         })
         .await
     }
@@ -168,6 +169,7 @@ impl WsClient {
                 ask_picks,
                 turn_id,
                 dictated: false,
+                followup: cctui_proto::api::auto_followup::SendFollowup::Auto,
             })
             .await;
         if let Err(e) = sent {

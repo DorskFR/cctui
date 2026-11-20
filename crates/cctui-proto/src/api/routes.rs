@@ -2293,6 +2293,15 @@ pub const ROUTES: &[Route] = &[
         feature: Some(Feature::Automation),
     },
     Route {
+        id: "put_sessions_by_id_auto_followup",
+        method: Method::Put,
+        path: "/sessions/{id}/auto-followup",
+        summary: "Set or clear a session's auto follow-up override.",
+        request: Some("AutoFollowupOverride"),
+        response: Some("SessionListItem"),
+        feature: Some(Feature::Automation),
+    },
+    Route {
         id: "post_sessions_by_id_fork",
         method: Method::Post,
         path: "/sessions/{id}/fork",

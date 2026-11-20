@@ -1,6 +1,7 @@
 //! Messages scheduled into a session, stored as inbox events on its
 //! `session:<id>` lane. Each one is its own batch under its turn id.
 
+use cctui_proto::api::auto_followup::SendFollowup;
 use chrono::{DateTime, Duration, Utc};
 
 use crate::auth::AuthContext;
@@ -206,6 +207,20 @@ pub async fn deliver(state: &AppState, mut row: ClaimedRow) -> Outcome {
         Ok(text) => text,
         Err(reason) => return Outcome::Dead(reason.to_owned()),
     };
+    let followup = if row.ask_picks.is_some() { SendFollowup::Never } else { SendFollowup::Auto };
+    let key = row.turn_id.to_string();
+    match crate::auto_followup::route(state, None, &row.session_id, followup, &text, Some(&key))
+        .await
+    {
+        Ok(None) => {}
+        Ok(Some(followed)) => {
+            return Outcome::Delivered {
+                session_id: followed.to.unwrap_or(row.session_id),
+                delivered_as: "followup",
+            };
+        }
+        Err(e) => return Outcome::RetryKept(e.into_parts().1.0.error),
+    }
     let env = crate::routes::gateway::resume_env_for_session(state, &row.session_id).await;
     let command_id = uuid::Uuid::new_v4();
     crate::state::track_command(

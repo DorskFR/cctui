@@ -3,6 +3,7 @@ import type { ServerEvent } from '@bindings/ServerEvent';
 import type { UserAction } from '@bindings/UserAction';
 import type { Notification as Notice } from '@bindings/Notification';
 import type { GuardStepState } from '@bindings/GuardStepState';
+import type { SendFollowup } from '@bindings/SendFollowup';
 import type { AccountUsage } from '../queries/types';
 import { qk } from '../queries/keys';
 import { toasts } from '#lib/toast.svelte.ts';
@@ -604,12 +605,14 @@ export class WsClient {
 		clientMsgId?: string,
 		askPicks?: number[][],
 		turnId?: string,
-		dictated?: boolean
+		dictated?: boolean,
+		followup: SendFollowup = 'auto'
 	): boolean {
 		return this.send({
 			type: 'message',
 			session_id: id,
 			content,
+			followup,
 			...(clientMsgId ? { client_msg_id: clientMsgId } : {}),
 			...(askPicks ? { ask_picks: askPicks } : {}),
 			...(turnId ? { turn_id: turnId } : {}),
@@ -624,9 +627,10 @@ export class WsClient {
 		ts: number,
 		askPicks?: number[][],
 		turnId?: string,
-		dictated?: boolean
+		dictated?: boolean,
+		followup?: SendFollowup
 	): boolean {
-		return this.delivery.trackedSend(sid, text, ts, askPicks, turnId, dictated);
+		return this.delivery.trackedSend(sid, text, ts, askPicks, turnId, dictated, followup);
 	}
 
 	retryNow(sid: string, ts: number) {

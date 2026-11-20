@@ -81,8 +81,8 @@ describe('composer gates', () => {
 	});
 
 	it('drops the schedule presets without scheduling', () => {
-		expect(composer).toContain('if (!schedulingOn) return coldItems ? coldSendItems(coldItems) : [];');
-		expect(composer).toContain('menu={schedulingOn || coldItems !== null}');
+		expect(composer).toContain('if (!schedulingOn) return coldItems ? coldSendItems(coldItems) : autoItems;');
+		expect(composer).toContain('menu={schedulingOn || coldItems !== null || autoFollowupTokens !== null}');
 	});
 
 	it('refuses to schedule without scheduling', () => {

@@ -335,6 +335,7 @@ mod tests {
             ask_picks: None,
             turn_id: None,
             dictated: false,
+            followup: cctui_proto::api::auto_followup::SendFollowup::Auto,
         });
         assert!(state.is_empty());
     }

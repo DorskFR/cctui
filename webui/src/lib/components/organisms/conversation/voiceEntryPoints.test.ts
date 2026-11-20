@@ -31,7 +31,9 @@ describe('conversation voice entry points follow the speech capabilities', () =>
 
 	it('sends a draft that went through the mic as dictated', () => {
 		expect(composer).toContain('dictatedDraft = true;');
-		expect(composer).toContain('onsend(text, dictatedDraft);');
-		expect(pane).toContain('onsend={(body, dictated) => stream.sendBody(body, dictated)}');
+		expect(composer).toContain('onsend(text, dictatedDraft, followup);');
+		expect(pane).toContain(
+			'onsend={(body, dictated, followup) => stream.sendBody(body, dictated, followup)}'
+		);
 	});
 });

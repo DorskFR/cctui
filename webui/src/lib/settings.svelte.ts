@@ -26,6 +26,8 @@ import {
   type FollowupWhenCold,
 } from "./followup";
 import { isPluginId } from "./plugins/discovery";
+import { clampAutoFollowup, DEFAULT_AUTO_FOLLOWUP } from "./autoFollowup";
+import type { AutoFollowupSetting } from "@bindings/AutoFollowupSetting";
 import {
   latestDirFor,
   latestEntryFor,
@@ -592,6 +594,7 @@ export interface SettingsState {
   // session stuck on an "API Error: Connection lost mid-response" with a
   // "continue" reply (1, 5 then 10 minutes) when this is on.
   autoResumeOnConnectionLoss: boolean;
+  autoFollowup: AutoFollowupSetting;
   // Server-read: archive a dispatched session once its run ends, after the
   // grace, unless its worker profile is listed.
   dispatchAutoArchive: boolean;
@@ -652,6 +655,7 @@ const DEFAULTS: SettingsState = {
   secretScrubPatterns: [],
   sessionEmojiPrefix: false,
   autoResumeOnConnectionLoss: false,
+  autoFollowup: DEFAULT_AUTO_FOLLOWUP,
   dispatchAutoArchive: true,
   dispatchAutoArchiveGraceSecs: DISPATCH_ARCHIVE_GRACE_DEFAULT,
   dispatchAutoArchiveKeepProfiles: [],
@@ -743,6 +747,7 @@ export function mergeDefaults(
     secretScrubPatterns: mergeSecretScrubPatterns(p.secretScrubPatterns),
     sessionEmojiPrefix: p.sessionEmojiPrefix === true,
     autoResumeOnConnectionLoss: p.autoResumeOnConnectionLoss === true,
+    autoFollowup: clampAutoFollowup(p.autoFollowup),
     dispatchAutoArchive: p.dispatchAutoArchive !== false,
     dispatchAutoArchiveGraceSecs: clampDispatchArchiveGrace(
       p.dispatchAutoArchiveGraceSecs,
@@ -1229,6 +1234,14 @@ class Settings {
   }
   get autoResumeOnConnectionLoss(): boolean {
     return this.state.autoResumeOnConnectionLoss;
+  }
+
+  get autoFollowup(): AutoFollowupSetting {
+    return this.state.autoFollowup;
+  }
+  setAutoFollowup(patch: Partial<AutoFollowupSetting>) {
+    this.state.autoFollowup = clampAutoFollowup({ ...this.state.autoFollowup, ...patch });
+    this.persist();
   }
 
   setDispatchAutoArchive(on: boolean) {
