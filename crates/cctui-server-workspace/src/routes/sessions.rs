@@ -7284,6 +7284,16 @@ mod tests {
         }
     }
 
+    fn last_turn(
+        input: i64,
+        cache_read: i64,
+        cache_creation: i64,
+        at: DateTime<Utc>,
+        prev_context: i64,
+    ) -> super::LastTurn {
+        super::LastTurn { input, cache_read, cache_creation, at, prev_context }
+    }
+
     #[test]
     fn fold_last_turns_pairs_newest_with_previous_context() {
         let rows = vec![
@@ -7383,13 +7393,7 @@ mod tests {
         ctx.auto_approve.insert("s".into());
         ctx.last_turns.insert(
             "s".into(),
-            super::LastTurn {
-                input: 50,
-                cache_read: 100,
-                cache_creation: 900,
-                at: ts(7),
-                prev_context: 1000,
-            },
+            last_turn(50, 100, 900, ts(7), 1000),
         );
 
         let out = super::enrich(vec![(ts(0), item), (ts(1), other)], ctx);

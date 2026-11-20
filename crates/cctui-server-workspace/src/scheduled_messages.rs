@@ -219,7 +219,7 @@ pub async fn deliver(state: &AppState, mut row: ClaimedRow) -> Outcome {
                 delivered_as: "followup",
             };
         }
-        Err(e) => return Outcome::RetryKept(e.message().to_owned()),
+        Err(e) => return Outcome::RetryKept(e.into_parts().1.0.error),
     }
     let env = crate::routes::gateway::resume_env_for_session(state, &row.session_id).await;
     let command_id = uuid::Uuid::new_v4();

@@ -109,15 +109,6 @@ pub fn hold(signals: &Signals<'_>) -> Option<Hold> {
 }
 
 #[must_use]
-pub fn is_child(parent_id: Option<&str>, metadata: &Value) -> bool {
-    parent_id.is_some()
-        && !matches!(
-            metadata.get("relation").and_then(Value::as_str),
-            Some("fork" | crate::followup::RELATION)
-        )
-}
-
-#[must_use]
 pub const fn threshold_at(
     setting: AutoFollowupSetting,
     window: Option<u64>,
@@ -297,12 +288,11 @@ pub async fn route(
     if !fires(followup, text, measured.context_tokens, measured.at) {
         return Ok(None);
     }
-    let ctx = match caller {
-        Some(ctx) => ctx.clone(),
-        None => {
-            let Some(owner) = measured.owner else { return Ok(None) };
-            crate::inbox::queued::acting_as(&state.pool, owner).await?
-        }
+    let ctx = if let Some(ctx) = caller {
+        ctx.clone()
+    } else {
+        let Some(owner) = measured.owner else { return Ok(None) };
+        crate::inbox::queued::acting_as(&state.pool, owner).await?
     };
     let req = FollowupRequest {
         instruction: text.to_owned(),

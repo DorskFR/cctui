@@ -127,7 +127,7 @@ pub async fn reply(state: &AppState, session_id: &str, events: &[BatchEvent]) ->
                 delivered_as: "followup",
             };
         }
-        Err(e) => return Outcome::Retry(e.message().to_owned()),
+        Err(e) => return Outcome::Retry(e.into_parts().1.0.error),
     }
     let delivered =
         || Outcome::Delivered { session_id: session_id.to_owned(), delivered_as: "reply" };

@@ -9,7 +9,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::{
-    Hold, Signals, claim_intent, fires, hold, is_child, key_for, measure, put_override,
+    Hold, Signals, claim_intent, fires, hold, key_for, measure, prefs_for, put_override,
     remember_intent, route, setting_of, threshold_at, window_of,
 };
 use crate::auth::AuthContext;
@@ -225,11 +225,43 @@ fn exclusions_children_pinned_waiting_and_mid_turn_never_fire() {
     for held in [Hold::Pinned, Hold::Child, Hold::Closed, Hold::Busy, Hold::Waiting] {
         assert_eq!(threshold_at(ON_150K, None, Some(held)), None, "{held:?}");
     }
-    assert!(is_child(Some("parent"), &json!({})), "a CctuiAgent child");
-    assert!(is_child(Some("parent"), &json!({"relation": "subagent"})));
-    assert!(!is_child(Some("parent"), &json!({"relation": "followup"})));
-    assert!(!is_child(Some("parent"), &json!({"relation": "fork"})));
-    assert!(!is_child(None, &json!({})));
+}
+
+async fn nest_under(f: &Fixture, child: &str, parent: &str, metadata: serde_json::Value) {
+    sqlx::query("UPDATE sessions SET parent_id = $2, metadata = $3 WHERE id = $1")
+        .bind(child)
+        .bind(parent)
+        .bind(metadata)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_cctuiagent_child_never_follows_up_but_a_followup_child_does() {
+    let Some(f) = fixture("auto_followup_child_exclusion", on_150k()).await else { return };
+    let parent = session_at(&f, 10).await;
+    let agent_child = session_at(&f, 160_000).await;
+    let subagent = session_at(&f, 160_000).await;
+    let continued = session_at(&f, 160_000).await;
+    nest_under(&f, &agent_child, &parent, json!({})).await;
+    nest_under(&f, &subagent, &parent, json!({"relation": "subagent"})).await;
+    nest_under(&f, &continued, &parent, json!({"relation": "followup"})).await;
+
+    for child in [&agent_child, &subagent] {
+        let measured = measure(&f.pool, child).await.unwrap().unwrap();
+        assert_eq!((measured.held, measured.at), (Some(Hold::Child), None), "{child}");
+        let routed = route(&f.state, Some(&f.ctx), child, SendFollowup::Auto, "go", None).await;
+        assert_eq!(routed.unwrap(), None);
+        assert!(ops_of(&f.pool, child).await.is_empty());
+    }
+    let measured = measure(&f.pool, &continued).await.unwrap().unwrap();
+    assert_eq!((measured.held, measured.at), (None, Some(150_000)), "a follow-up is no child");
+
+    let ids = [agent_child.clone(), continued.clone()];
+    let prefs = prefs_for(&f.pool, &ids).await.unwrap();
+    assert!(prefs[&agent_child].child && !prefs[&continued].child, "the list sees the same");
+    cleanup(&f).await;
 }
 
 #[tokio::test]
