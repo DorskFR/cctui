@@ -1024,17 +1024,17 @@ async fn fetch_token_holders(
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
-/// Sessions whose live token has actually been presented at the gateway
-/// (`last_used_at` stamped). An account-bound session missing here is bound
-/// in the DB but never routed through the gateway — the webui's "no gateway
-/// traffic observed" warning.
+/// Sessions with a token that was ever presented at the gateway
+/// (`last_used_at` stamped), revoked or not: ending a session revokes its
+/// tokens. An account-bound session missing here was never routed through the
+/// gateway — the webui's "no gateway traffic observed" warning.
 async fn fetch_traffic_observed(
     state: &AppState,
     session_ids: &[String],
 ) -> Result<HashSet<String>, AppError> {
     let rows: Vec<(String,)> = sqlx::query_as(
         "SELECT DISTINCT session_id FROM session_tokens \
-         WHERE session_id = ANY($1) AND revoked_at IS NULL AND last_used_at IS NOT NULL",
+         WHERE session_id = ANY($1) AND last_used_at IS NOT NULL",
     )
     .bind(session_ids)
     .fetch_all(&state.pool)
@@ -4286,13 +4286,20 @@ pub async fn archive_one(
             return Ok(ArchiveOutcome::SkippedPinned);
         }
     }
-    // Archive the session AND every descendant nested under it, at any depth: a
-    // parent's children should never outlive it in the list. Archiving a
-    // *child* does not touch the parent (no `parent_id` cascade upward), and a
-    // pinned descendant is never swept along unless forced.
+    // Archive the session AND every descendant nested under it, at any depth.
+    // Archiving a *child* does not touch the parent (no `parent_id` cascade
+    // upward), a pinned descendant is never swept along unless forced, and a
+    // sweep leaves every live descendant running and listed.
     let children =
         crate::store::sessions::descendants(&state.pool, session_id).await.unwrap_or_default();
-    let descendant_ids: Vec<String> = children.iter().map(|c| c.id.clone()).collect();
+    let swept = matches!(actor, Actor::Reaper);
+    let kept = if swept {
+        crate::auto_archive::kept_alive_under(&state.pool, &children).await
+    } else {
+        HashSet::new()
+    };
+    let descendant_ids: Vec<String> =
+        children.iter().map(|c| c.id.clone()).filter(|id| !kept.contains(id)).collect();
     // Clear the classifier signals on archive so a session that was waiting on
     // input doesn't keep its ✋ "needs input" glyph in the archived view — an
     // archived session is, by definition, no longer waiting on anyone.
@@ -4346,14 +4353,27 @@ pub async fn archive_one(
     }
     tracing::info!(session_id = %session_id, children = children.len(), "session archived");
     if archived.iter().any(|id| id == session_id) {
+        let detail = archived_detail(children.len(), initiator, swept.then_some(kept.len()));
         events::record(
             state,
-            Event::new(kind::SESSION_ARCHIVED, actor).session(session_id).detail(
-                serde_json::json!({ "children": children.len(), "initiator": initiator.as_str() }),
-            ),
+            Event::new(kind::SESSION_ARCHIVED, actor).session(session_id).detail(detail),
         );
     }
     Ok(ArchiveOutcome::Archived)
+}
+
+/// `session.archived` detail. A sweep also records how many live descendants
+/// it left running.
+fn archived_detail(
+    children: usize,
+    initiator: RemoveInitiator,
+    children_live: Option<usize>,
+) -> serde_json::Value {
+    let mut detail = serde_json::json!({ "children": children, "initiator": initiator.as_str() });
+    if let Some(live) = children_live {
+        detail["children_live"] = serde_json::json!(live);
+    }
+    detail
 }
 
 /// Un-archive a session: clear the sticky `archived` state back to
@@ -4713,8 +4733,9 @@ mod switch_account_tests;
 mod tests {
     use super::{
         Bucket, END_ROW_SQL, EndRow, RemoveInitiator, ResultRow, SessionChild, SqlParam,
-        attention_from_bucket, bucket_from_signals, cap_unread, compile_node, derive_liveness,
-        field_values_sql, make_snippet, normalize_last_message, remove_command, snippet_sql,
+        archived_detail, attention_from_bucket, bucket_from_signals, cap_unread, compile_node,
+        derive_liveness, field_values_sql, make_snippet, normalize_last_message, remove_command,
+        snippet_sql,
     };
     use crate::auth::AuthContext;
     use axum::http::StatusCode;
@@ -5321,6 +5342,77 @@ mod tests {
         let names: std::collections::HashMap<String, String> = rows.into_iter().collect();
         assert_eq!(names.get(&ended), Some(&format!("new-{uid}")), "newest revoked token");
         assert_eq!(names.get(&mixed), Some(&format!("old-{uid}")), "the live token wins");
+    }
+
+    /// Traffic observed is whether a token was ever used: ending the session
+    /// revokes it and the session must not fall back to the warning. A bound
+    /// token never presented at the gateway stays unobserved.
+    #[tokio::test]
+    async fn a_used_token_stays_observed_once_revoked() {
+        let Some(url) =
+            crate::routes::gateway::test_db_url("a_used_token_stays_observed_once_revoked")
+        else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("u-{uid}"))
+            .bind(format!("k-{uid}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let used = format!("used-{}", uuid::Uuid::new_v4());
+        let unused = format!("unused-{}", uuid::Uuid::new_v4());
+        for sid in [&used, &unused] {
+            sqlx::query(
+                "INSERT INTO sessions (id, machine_id, user_id, working_dir, status) \
+                 VALUES ($1, 'm', $2, '/w', 'active')",
+            )
+            .bind(sid)
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let provider = account_on(&pool, uid, &format!("acct-{uid}")).await;
+        token(&pool, &used, provider, false, 5).await;
+        token(&pool, &unused, provider, false, 5).await;
+        sqlx::query("UPDATE session_tokens SET last_used_at = now() WHERE session_id = $1")
+            .bind(&used)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let state = crate::state::AppState::for_test(pool.clone());
+        let ids = vec![used.clone(), unused.clone()];
+        let live = super::fetch_traffic_observed(&state, &ids).await.unwrap();
+        assert!(live.contains(&used), "used live token is observed");
+        assert!(!live.contains(&unused), "unused token is not observed");
+
+        for sid in &ids {
+            cctui_server_core::session_credentials::revoke_session_tokens(&state, sid).await;
+        }
+        let revoked: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM session_tokens \
+             WHERE session_id = ANY($1) AND revoked_at IS NOT NULL",
+        )
+        .bind(&ids)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(revoked, 2, "ending revokes every token");
+
+        let ended = super::fetch_traffic_observed(&state, &ids).await.unwrap();
+        assert!(ended.contains(&used), "a revoked token that was used stays observed");
+        assert!(!ended.contains(&unused), "a revoked unused token stays unobserved");
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 
     /// A session the daemon discovered rather than launched carries the marker
@@ -7884,6 +7976,17 @@ mod tests {
             assert_eq!(command_id, Some(id));
             assert_eq!(got, initiator);
         }
+    }
+
+    #[test]
+    fn only_a_sweep_records_its_live_children() {
+        let swept = archived_detail(3, RemoveInitiator::Automatic, Some(0));
+        assert_eq!(swept["children"], 3);
+        assert_eq!(swept["initiator"], "automatic");
+        assert_eq!(swept["children_live"], 0);
+        let user = archived_detail(3, RemoveInitiator::User, None);
+        assert_eq!(user["initiator"], "user");
+        assert!(user.get("children_live").is_none());
     }
 
     #[tokio::test]

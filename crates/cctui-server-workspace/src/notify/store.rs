@@ -708,27 +708,30 @@ pub async fn list(
     .await
 }
 
-/// Notices with actions stay unread until answered.
+/// Notices with actions stay open until answered and keep their escalations.
 pub async fn read_all(pool: &PgPool, user_id: Uuid) -> sqlx::Result<Vec<NotificationRecord>> {
     let mut tx = pool.begin().await?;
     let read: Vec<NotificationRecord> = sqlx::query_as(
         "UPDATE notifications SET state = 'read', updated_at = now(), \
            read_at = COALESCE(read_at, now()) \
          WHERE user_id = $1 AND state IN ('pending', 'delivered') \
-           AND COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(actions) = 'array' \
-                                              THEN actions END), 0) = 0 \
          RETURNING *",
     )
     .bind(user_id)
     .fetch_all(&mut *tx)
     .await?;
-    let ids: Vec<Uuid> = read.iter().map(|n| n.id).collect();
-    cancel_escalations(&mut tx, &ids).await?;
+    let informational: Vec<Uuid> = read.iter().filter(|n| !needs_answer(n)).map(|n| n.id).collect();
+    cancel_escalations(&mut tx, &informational).await?;
     tx.commit().await?;
     if !read.is_empty() {
         super::in_app::changed_many(pool, user_id, &read).await;
     }
     Ok(read)
+}
+
+#[must_use]
+pub fn needs_answer(n: &NotificationRecord) -> bool {
+    is_open(n) && n.actions.as_array().is_some_and(|a| !a.is_empty())
 }
 
 #[must_use]

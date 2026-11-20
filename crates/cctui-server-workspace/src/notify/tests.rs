@@ -7,7 +7,8 @@ use uuid::Uuid;
 use super::channel::{Capabilities, Channel, Channels, Endpoint, ProviderRef, Rendered, SendError};
 use super::dispatcher::{MAX_ATTEMPTS, run};
 use super::store::{
-    BODY_MAX_CHARS, Edge, NewNotification, Routing, Transitioned, clip, emit, transition,
+    BODY_MAX_CHARS, Edge, NewNotification, Routing, Transitioned, clip, emit, needs_answer,
+    read_all, transition, unread_count,
 };
 use super::{kind, retention};
 
@@ -158,6 +159,46 @@ async fn every_legal_edge_applies() {
 
     let expired = apply(&pool, open(&pool, u).await, Edge::Expire).await.notification;
     assert_eq!(expired.decision.as_deref(), Some("expired"));
+    drop_user(&pool, u).await;
+}
+
+async fn escalation(pool: &PgPool, notification: Uuid) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO notification_deliveries (notification_id, channel, op, state, stage) \
+         VALUES ($1, 'ntfy', 'send', 'scheduled', 1) RETURNING id",
+    )
+    .bind(notification)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn read_all_reads_actionable_notices_but_leaves_them_answerable() {
+    let Some(pool) = db("notify_read_all").await else { return };
+    let u = user(&pool).await;
+    let info = open(&pool, u).await;
+    let mut ask = NewNotification::new(u, kind::APPROVAL, "Ship?".into());
+    ask.actions = json!([{ "id": "approve", "label": "Approve" }]);
+    let ask = emit(&pool, Routing::default(), ask).await.unwrap().id;
+    let info_push = escalation(&pool, info).await;
+    let ask_push = escalation(&pool, ask).await;
+
+    let read = read_all(&pool, u).await.unwrap();
+    assert_eq!(read.len(), 2);
+    assert!(read.iter().all(|n| n.state == "read" && n.read_at.is_some()));
+    assert_eq!(unread_count(&pool, u).await.unwrap(), 0);
+    let asked = read.iter().find(|n| n.id == ask).unwrap();
+    assert!(needs_answer(asked));
+    assert!(asked.decision.is_none());
+    assert!(!needs_answer(read.iter().find(|n| n.id == info).unwrap()));
+    assert_eq!(delivery_row(&pool, info_push).await.state, "cancelled");
+    assert_eq!(delivery_row(&pool, ask_push).await.state, "scheduled");
+
+    let acted = apply(&pool, ask, APPROVE).await;
+    assert!(acted.applied);
+    assert_eq!(acted.notification.decision.as_deref(), Some("approve"));
+    assert!(read_all(&pool, u).await.unwrap().is_empty());
     drop_user(&pool, u).await;
 }
 

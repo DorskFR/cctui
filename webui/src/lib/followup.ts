@@ -5,6 +5,7 @@ import type { SpawnRequest } from '@bindings/SpawnRequest';
 import type { SpawnResponse } from '@bindings/SpawnResponse';
 import { CCTUI_TAGS } from '#lib/components/organisms/conversation/format.ts';
 import { PERMISSION_MODES } from '#lib/domainTables.ts';
+import { nameOf } from '#lib/sessionName.ts';
 
 /** On a cold cache, Send: launches a follow-up and archives this session
  *  (`auto`), opens the prefilled spawn modal (`modal`), or sends in place with
@@ -53,6 +54,20 @@ export function migrateFollowupWhenCold(legacy: unknown): FollowupWhenCold {
 
 export function resolveFollowupWhenCold(current: unknown, legacy: unknown): FollowupWhenCold {
 	return current === undefined ? migrateFollowupWhenCold(legacy) : clampFollowupWhenCold(current);
+}
+
+const COUNTER = /^(.*\S) ([1-9]\d{0,2})$/;
+
+/** A follow-up's name, parsed from its parent's user-set name only: a trailing
+ *  ` <n>` (1 to 999) is bumped, anything else gets ` 2`. Forks of one parent
+ *  share a name; it is an editable prefill. */
+export function followupName(s: Pick<SessionListItem, 'name' | 'metadata'>): string {
+	const meta = s.metadata as Record<string, unknown> | null;
+	if (meta?.name_source !== 'user') return '';
+	const name = nameOf(s);
+	if (!name) return '';
+	const m = name.match(COUNTER);
+	return m ? `${m[1]} ${Number(m[2]) + 1}` : `${name} 2`;
 }
 
 function attr(v: string): string {
@@ -126,7 +141,7 @@ export function followupPrefill(
 		machine_id: session.machine_id,
 		working_dir: session.working_dir,
 		adapter_id: adapter,
-		name: '',
+		name: followupName(session),
 		prompt,
 		[codex ? 'model_codex' : 'model_claude']: session.model ?? '',
 		[codex ? 'effort_codex' : 'effort_claude']: session.effort ?? '',
@@ -164,7 +179,7 @@ export function followupSpawnRequest(p: Record<string, string>): { body: SpawnRe
 		machine_id: p.machine_id,
 		working_dir: p.working_dir,
 		adapter_id: p.adapter_id,
-		name: null,
+		name: p.name || null,
 		prompt: p.prompt ?? null,
 		prompt_name: null,
 		model: (codex ? p.model_codex : p.model_claude) || null,

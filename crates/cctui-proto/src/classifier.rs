@@ -348,6 +348,14 @@ mod tests {
     }
 
     #[test]
+    fn an_idle_agent_still_on_a_background_task_is_working() {
+        let mut s = snap();
+        s.tempo = Some("idle");
+        s.state = Some("working");
+        assert_eq!(classify(&s, &HashMap::new()), Bucket::Working);
+    }
+
+    #[test]
     fn a_hibernated_worker_that_died_mid_turn_is_not_working() {
         let mut s = snap();
         s.tempo = Some("hibernated");

@@ -131,6 +131,52 @@ describe('NotificationBell', () => {
 		expect(toasts.error).not.toHaveBeenCalled();
 	});
 
+	it('mark all read clears the badge and keeps an approval answerable', async () => {
+		const readAll = vi.fn(async () => ({ read: 1, unread: 0 }));
+		const list = vi
+			.fn<NotificationApi['list']>()
+			.mockResolvedValueOnce({
+				notifications: [notice('a'), notice('b', { state: 'read' })],
+				unread: 1,
+				has_more: false
+			})
+			.mockResolvedValue({
+				notifications: [notice('a', { state: 'read' }), notice('b', { state: 'read' })],
+				unread: 0,
+				has_more: false
+			});
+		setup({ readAll, list });
+		await openPanel();
+		await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(1));
+		expect(trigger().textContent).toContain('1');
+		expect(document.querySelector('[data-id="a"]')?.hasAttribute('data-unread')).toBe(true);
+		const markAll = [...document.querySelectorAll('button')].find(
+			(b) => b.textContent?.trim() === 'Mark all read'
+		) as HTMLButtonElement;
+		markAll.click();
+		await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+		flushSync();
+		expect(readAll).toHaveBeenCalledOnce();
+		expect(trigger().textContent).not.toContain('1');
+		const row = document.querySelector('[data-id="a"]') as HTMLElement;
+		expect(row.hasAttribute('data-unread')).toBe(false);
+		expect(row.hasAttribute('data-resolved')).toBe(false);
+		expect(row.textContent).toContain('Needs an answer');
+		expect(row.querySelector('[data-action="approve"]')).not.toBeNull();
+		expect(toasts.error).not.toHaveBeenCalled();
+	});
+
+	it('says so when mark all read fails', async () => {
+		setup({ readAll: vi.fn(async () => Promise.reject(new Error('offline'))) });
+		await openPanel();
+		const markAll = [...document.querySelectorAll('button')].find(
+			(b) => b.textContent?.trim() === 'Mark all read'
+		) as HTMLButtonElement;
+		markAll.click();
+		await vi.waitFor(() => expect(toasts.error).toHaveBeenCalled());
+		expect(toasts.error.mock.calls[0][0]).toContain('offline');
+	});
+
 	it('shows an open link only on a notice with a target, anchored to its message', async () => {
 		const anchored = notice('t', { session_id: 's-7', anchor_seq: 42, actions: [] });
 		setup({}, [anchored]);
