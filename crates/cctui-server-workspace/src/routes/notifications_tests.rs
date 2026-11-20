@@ -272,7 +272,7 @@ async fn a_stale_approval_dismisses_without_confirm() {
     let (alice, ended) = seed(&state.pool, "dismiss-ended").await;
     let (_, archived) = seed(&state.pool, "dismiss-archived").await;
     let (_, moved) = seed(&state.pool, "dismiss-moved").await;
-    let stale = [
+    let gone = [
         session_approval(&state, alice, &ended).await,
         session_approval(&state, alice, &archived).await,
         session_approval(&state, alice, &moved).await,
@@ -288,7 +288,7 @@ async fn a_stale_approval_dismisses_without_confirm() {
     }
     outcome_row(&state, &moved).await;
 
-    for id in stale {
+    for id in gone {
         let done = dismiss_as(&state, alice, id, false).await.unwrap();
         assert!(done.applied);
         assert_eq!(done.notification.state, "resolved");
