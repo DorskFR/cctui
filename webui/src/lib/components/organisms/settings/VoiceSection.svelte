@@ -15,6 +15,7 @@
 	import { voiceCaps } from '#lib/voice/capabilities.ts';
 
 	const SPEEDS = [0.75, 1, 1.25, 1.5, 2];
+	const REPLY_DELAYS = [0, 500, 1000, 2000, 3000, 5000];
 
 	const voiceConfig = useVoiceConfig();
 	const caps = $derived(voiceCaps(voiceConfig.data));
@@ -188,6 +189,21 @@
 						bind:checked={() => settings.voice.bargeIn, (v) => settings.setVoice({ bargeIn: v })}
 						label={m.settings_voice_bargein_label()}
 					/>
+				</SettingRow>
+				<SettingRow
+					label={m.settings_voice_reply_delay_label()}
+					help={m.settings_voice_reply_delay_help()}
+				>
+					<Select
+						value={String(settings.voice.replyDelayMs)}
+						style="width:100%"
+						aria-label={m.settings_voice_reply_delay_label()}
+						onchange={(e: Event) => settings.setVoice({ replyDelayMs: Number(pick(e)) })}
+					>
+						{#each REPLY_DELAYS as ms (ms)}
+							<option value={String(ms)}>{ms / 1000} s</option>
+						{/each}
+					</Select>
 				</SettingRow>
 				<SettingRow label={m.settings_voice_style_label()} help={m.settings_voice_style_help()}>
 					<Select

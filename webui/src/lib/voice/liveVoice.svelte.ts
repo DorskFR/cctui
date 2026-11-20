@@ -8,6 +8,7 @@ import type { VoiceSettings } from '#lib/settings.svelte.ts';
 import { type ChunkerOptions, UtteranceChunker } from './chunker';
 import { floatToPcm16, frameLevel } from './pcm';
 import type { SpeechPlayer } from './player';
+import { ReplyGate } from './replyGate';
 import type { VadFactory, VadHandle } from './vad';
 
 /** How long a transcribed turn may sit between the server's `listening` and
@@ -82,13 +83,24 @@ export class LiveVoice {
 	private replyTimer: ReturnType<typeof setTimeout> | null = null;
 	private readonly deps: LiveVoiceDeps;
 	private readonly chunker: UtteranceChunker;
+	private readonly gate: ReplyGate;
 
 	constructor(deps: LiveVoiceDeps) {
 		this.deps = deps;
 		this.chunker = new UtteranceChunker((s, last) => this.sendPart(s, last), deps.chunker);
+		this.gate = new ReplyGate({
+			delayMs: () => deps.prefs().replyDelayMs,
+			onChange: (open) => {
+				deps.player.hold(!open);
+				if (this.socket) this.show();
+			}
+		});
 		deps.player.onIdleChange((idle) => {
 			this.playing = !idle;
-			if (idle) this.quietAt = Date.now();
+			if (idle) {
+				this.quietAt = Date.now();
+				this.gate.drained();
+			}
 			if (this.socket) this.show();
 		});
 	}
@@ -143,6 +155,7 @@ export class LiveVoice {
 		if (this.muted) {
 			this.vad?.pause();
 			this.chunker.cancel();
+			this.gate.speechEnd();
 			this.level = 0;
 		} else void this.vad?.start();
 	}
@@ -181,6 +194,7 @@ export class LiveVoice {
 				onMisfire: () => {
 					this.echo = false;
 					this.chunker.cancel();
+					this.gate.speechEnd();
 				},
 				onFrame: (frame, prob) => this.onFrame(frame, prob)
 			});
@@ -197,7 +211,8 @@ export class LiveVoice {
 	}
 
 	/** Without barge-in the loop is half duplex: what the microphone hears
-	 *  over a reply is its own echo, never recorded nor allowed to cut it. */
+	 *  over a reply is its own echo, never recorded nor allowed to cut it.
+	 *  A reply the gate holds does not show as speaking, so it is neither. */
 	private onSpeechStart() {
 		const replying = this.status === 'speaking' || this.deps.player.playing;
 		if (!this.deps.prefs().bargeIn) {
@@ -206,7 +221,9 @@ export class LiveVoice {
 				return;
 			}
 		} else if (replying) this.interrupt();
-		if (!this.muted) this.chunker.start();
+		if (this.muted) return;
+		this.chunker.start();
+		this.gate.speechStart();
 	}
 
 	private onFrame(frame: Float32Array, speechProb: number) {
@@ -222,6 +239,7 @@ export class LiveVoice {
 		}
 		if (this.muted) this.chunker.cancel();
 		else this.chunker.end();
+		this.gate.speechEnd();
 	}
 
 	private sendPart(samples: Float32Array, last: boolean) {
@@ -251,7 +269,10 @@ export class LiveVoice {
 				break;
 			case 'transcript':
 				this.transcript = msg.text;
-				if (!this.chunker.active) this.awaitingReply = true;
+				if (!this.chunker.active) {
+					this.awaitingReply = true;
+					if (this.gate.userMessage()) this.dropHeld();
+				}
 				this.show();
 				break;
 			case 'speak_start': {
@@ -261,6 +282,7 @@ export class LiveVoice {
 					this.lineGen = Math.max(this.lineGen, gen);
 				}
 				this.endAwait();
+				this.gate.reply();
 				this.deps.player.begin(msg.line_id);
 				break;
 			}
@@ -277,6 +299,14 @@ export class LiveVoice {
 				this.chunker.setMinPartMs(msg.min_part_ms ?? null);
 				break;
 		}
+	}
+
+	/** The reply the user talked over is stale once their message is out:
+	 *  the server stops speaking it but the agent's turn goes on. */
+	private dropHeld() {
+		this.deps.player.stop();
+		this.minGen = Math.max(this.minGen, this.lineGen) + 1;
+		this.send({ type: 'skip' });
 	}
 
 	private setServer(state: LiveStatus) {
@@ -296,6 +326,7 @@ export class LiveVoice {
 	 *  transcript and the reply's first sentence. */
 	private show() {
 		if (this.playing && TALKING.has(this.server)) this.status = 'speaking';
+		else if (this.server === 'speaking' && !this.gate.open) this.status = 'listening';
 		else if (this.server !== 'listening') this.status = this.server;
 		else if (this.awaitingReply) this.status = 'thinking';
 		else this.status = 'listening';
@@ -339,6 +370,7 @@ export class LiveVoice {
 		this.endAwait();
 		this.server = 'off';
 		this.deps.player.stop();
+		this.gate.reset();
 		this.releaseWakeLock?.();
 		this.releaseWakeLock = null;
 		this.level = 0;

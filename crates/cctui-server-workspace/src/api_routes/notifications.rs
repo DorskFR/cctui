@@ -73,7 +73,7 @@ pub(super) fn register(r: Routes) -> Routes {
     .add(
         &[Method::POST],
         "/notifications/{id}/dismiss",
-        "Dismiss a notification; refused for a blocking approval.",
+        "Dismiss a notification; one a run waits on needs confirm=true and expires.",
         post(routes::notifications::dismiss),
         Authn::Bearer,
         Human,

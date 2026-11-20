@@ -344,6 +344,8 @@ const UPSERT_SQL: &str = "\
     DO UPDATE SET repeat_count = notifications.repeat_count + 1, \
         title = EXCLUDED.title, body = EXCLUDED.body, severity = EXCLUDED.severity, \
         tags = EXCLUDED.tags, actions = EXCLUDED.actions, updated_at = now(), \
+        subject_kind = COALESCE(EXCLUDED.subject_kind, notifications.subject_kind), \
+        subject_id = COALESCE(EXCLUDED.subject_id, notifications.subject_id), \
         anchor_seq = COALESCE(EXCLUDED.anchor_seq, notifications.anchor_seq) \
     RETURNING *";
 
@@ -745,13 +747,33 @@ pub fn action_ids(n: &NotificationRecord) -> Vec<&str> {
         .unwrap_or_default()
 }
 
-/// An approval, or a notice about a blocking user action, holds a run until answered.
+/// SQL over a notice `n`: its session still runs and has declared nothing since.
+macro_rules! live_approval {
+    () => {
+        "EXISTS (SELECT 1 FROM sessions s \
+           WHERE s.id = n.session_id AND s.status NOT IN ('ended', 'failed', 'archived') \
+             AND (n.subject_kind IS DISTINCT FROM 'outcome' OR NOT EXISTS ( \
+               SELECT 1 FROM session_outcomes o WHERE o.session_id = s.id \
+                 AND o.created_at > COALESCE((SELECT p.created_at FROM session_outcomes p \
+                                              WHERE p.id::text = n.subject_id), \
+                                             n.created_at))))"
+    };
+}
+pub(super) use live_approval;
+
+const LIVE_APPROVAL_SQL: &str =
+    concat!("SELECT ", live_approval!(), " FROM notifications n WHERE n.id = $1");
+
+/// An approval its session still waits on, or a notice about a blocking user action,
+/// holds a run until answered.
 pub async fn awaits_decision<'e>(
     conn: impl PgExecutor<'e>,
     n: &NotificationRecord,
 ) -> sqlx::Result<bool> {
     if n.kind == super::kind::APPROVAL {
-        return Ok(true);
+        let live: Option<bool> =
+            sqlx::query_scalar(LIVE_APPROVAL_SQL).bind(n.id).fetch_optional(conn).await?;
+        return Ok(live.unwrap_or(false));
     }
     if n.subject_kind.as_deref() != Some(super::kind::USER_ACTION) {
         return Ok(false);

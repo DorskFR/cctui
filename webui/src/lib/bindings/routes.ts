@@ -317,7 +317,7 @@ export const ROUTES = [
   { id: "post_notifications_read_all", method: "POST", path: "/notifications/read-all", summary: "Mark every unread notification without actions read.", request: null, response: "NotificationReadAll", feature: null },
   { id: "post_notifications_by_id_read", method: "POST", path: "/notifications/{id}/read", summary: "Mark one notification read.", request: null, response: "NotificationTransition", feature: null },
   { id: "post_notifications_by_id_act", method: "POST", path: "/notifications/{id}/act", summary: "Answer a notification with one of its actions; the first answer wins.", request: "NotificationActRequest", response: "NotificationTransition", feature: null },
-  { id: "post_notifications_by_id_dismiss", method: "POST", path: "/notifications/{id}/dismiss", summary: "Dismiss a notification; refused for a blocking approval.", request: null, response: "NotificationTransition", feature: null },
+  { id: "post_notifications_by_id_dismiss", method: "POST", path: "/notifications/{id}/dismiss", summary: "Dismiss a notification; one a run waits on needs confirm=true and expires.", request: null, response: "NotificationTransition", feature: null },
   { id: "get_drafts", method: "GET", path: "/drafts", summary: "List your unsent drafts.", request: null, response: "DraftList", feature: "drafts" },
   { id: "get_drafts_by_*key", method: "GET", path: "/drafts/{*key}", summary: "Read, save or discard one draft.", request: null, response: "Draft", feature: "drafts" },
   { id: "put_drafts_by_*key", method: "PUT", path: "/drafts/{*key}", summary: "Read, save or discard one draft.", request: "PutDraftRequest", response: null, feature: "drafts" },

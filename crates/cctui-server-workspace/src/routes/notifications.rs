@@ -149,17 +149,28 @@ pub async fn act(
     decide(&state, id, edge).await?.map(Json).ok_or_else(not_found)
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct DismissQuery {
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// A notice a run still waits on needs `?confirm=true`, and then expires so the run hears.
 pub async fn dismiss(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
+    Query(query): Query<DismissQuery>,
 ) -> ApiResult<Json<NotificationTransition>> {
     let n = owned(&state, &ctx, id).await?;
     if store::is_open(&n) && store::awaits_decision(&state.pool, &n).await? {
-        return Err(AppError::new(
-            StatusCode::CONFLICT,
-            "a blocking approval cannot be dismissed: answer it instead",
-        ));
+        if !query.confirm {
+            return Err(AppError::new(
+                StatusCode::CONFLICT,
+                "a run is waiting on this: answer it, or dismiss with confirm=true to expire it",
+            ));
+        }
+        return decide(&state, id, Edge::Expire).await?.map(Json).ok_or_else(not_found);
     }
     let out = apply(&state, id, Edge::Dismiss).await?;
     if out.applied {

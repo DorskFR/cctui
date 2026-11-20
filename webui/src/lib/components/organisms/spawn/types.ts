@@ -67,12 +67,14 @@ export interface Form {
 	// or the server would add it back.
 	context_items: string[];
 	context_auto: boolean;
+	auto_archive: boolean;
 }
 
 /** What opens the form pre-seeded: a session's config, or a draft to edit
  * (`draft_id` names its row, `env_keys` the comma-joined env var names,
- * `label_ids` the comma-joined label ids). */
-export type SpawnPrefill = Partial<Form> & {
+ * `label_ids` the comma-joined label ids, `auto_archive` '1' or '0'). */
+export type SpawnPrefill = Omit<Partial<Form>, 'auto_archive'> & {
+	auto_archive?: string;
 	draft_id?: string;
 	env_keys?: string;
 	label_ids?: string;

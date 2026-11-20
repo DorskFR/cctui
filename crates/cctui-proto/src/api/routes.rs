@@ -2926,7 +2926,7 @@ pub const ROUTES: &[Route] = &[
         id: "post_notifications_by_id_dismiss",
         method: Method::Post,
         path: "/notifications/{id}/dismiss",
-        summary: "Dismiss a notification; refused for a blocking approval.",
+        summary: "Dismiss a notification; one a run waits on needs confirm=true and expires.",
         request: None,
         response: Some("NotificationTransition"),
         feature: None,

@@ -64,9 +64,12 @@
 	}
 
 	async function ondismiss(id: string) {
-		const out = await store.dismiss(id);
-		if (out === 'blocking') toasts.info(m.notif_dismiss_blocking());
-		else if (out === 'failed') toasts.error(m.notif_dismiss_failed());
+		let out = await store.dismiss(id);
+		if (out === 'blocking') {
+			if (!confirm(m.notif_dismiss_blocking())) return;
+			out = await store.dismiss(id, true);
+		}
+		if (out !== 'dismissed') toasts.error(m.notif_dismiss_failed());
 	}
 
 	function onreadall() {

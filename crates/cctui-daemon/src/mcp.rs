@@ -151,6 +151,9 @@ pub fn tool_schema() -> Value {
     whose call was cut off (lost connection, expired follow window), pass only its session_id, \
     without a prompt: that returns its last finished turn's final message, or waits for the \
     turn still running.",
+        // readOnlyHint also makes Claude Code auto-allow the call in ask/auto; spawns are
+        // gated server-side (child policy, posture ceiling, budget).
+        "annotations": { "readOnlyHint": true },
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -265,6 +268,7 @@ pub fn usage_tool_schema() -> Value {
     could run on is currently allowed or soft-limit blocked. Use it before dispatching \
     a batch of work, and when deciding which model to give a child: a blocked model wastes the \
     whole fan-out on 429s. Returns a one-line summary followed by the full JSON.",
+        "annotations": { "readOnlyHint": true },
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -322,6 +326,7 @@ pub fn peers_tool_schema() -> Value {
              not on this list is refused.",
             acp_agent_ids("")
         ),
+        "annotations": { "readOnlyHint": true },
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -378,6 +383,7 @@ pub fn history_tool_schema() -> Value {
     budget; page backwards with `before` using the oldest seq the previous call reported. The \
     human running the target session sees that you consulted it. A `remote:<id>` peer can be \
     read only if its owner shares its transcript; otherwise the call is refused.",
+        "annotations": { "readOnlyHint": true },
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1404,6 +1410,22 @@ mod tests {
         assert_eq!(tool_kind(PEERS_TOOL_NAME), Some("peers"));
         assert_eq!(tool_kind(SEND_TOOL_NAME), Some("send_peer"));
         assert_eq!(tool_kind(HISTORY_TOOL_NAME), Some("peer_history"));
+    }
+
+    #[test]
+    fn only_the_spawn_and_pure_read_tools_are_hinted_read_only() {
+        let read_only = [TOOL_NAME, USAGE_TOOL_NAME, PEERS_TOOL_NAME, HISTORY_TOOL_NAME];
+        for schema in tool_schemas() {
+            let name = schema["name"].as_str().unwrap();
+            let hint = &schema["annotations"]["readOnlyHint"];
+            if read_only.contains(&name) {
+                assert_eq!(hint, &json!(true), "{name}");
+            } else {
+                assert!(hint.is_null(), "{name} mutates state and must stay serial: {hint}");
+            }
+        }
+        assert_eq!(tool_schema()["annotations"]["readOnlyHint"], json!(true));
+        assert!(archive_tool_schema().get("annotations").is_none());
     }
 
     #[test]

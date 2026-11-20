@@ -203,4 +203,38 @@ describe('SpeechPlayer', () => {
 		expect(p.playing).toBe(false);
 		expect(idle.at(-1)).toBe(true);
 	});
+	it('holds finished lines until released, letting the one playing finish', () => {
+		const { p, made, started, line } = player();
+		line('a', 1);
+		p.hold(true);
+		line('b', 2);
+		line('c', 3);
+		expect(made).toHaveLength(1);
+		made[0].onended?.();
+		expect(p.playing).toBe(false);
+		expect(made).toHaveLength(1);
+
+		p.hold(false);
+		expect(made).toHaveLength(2);
+		expect(made[1].src).toBe('blob:2');
+		made[1].onended?.();
+		expect(made[2].src).toBe('blob:3');
+		expect(started).toEqual(['blob:1', 'blob:2', 'blob:3']);
+	});
+
+	it('a release with nothing queued does not report idle again', () => {
+		const { p, idle } = player();
+		p.hold(true);
+		p.hold(false);
+		expect(idle).toEqual([]);
+	});
+
+	it('stop drops held lines so a release plays nothing', () => {
+		const { p, made, line } = player();
+		p.hold(true);
+		line('a', 1);
+		p.stop();
+		p.hold(false);
+		expect(made).toHaveLength(0);
+	});
 });

@@ -522,8 +522,10 @@ export const endpoints = {
     api.post<NotificationTransition>(path("post_notifications_by_id_read", { id })),
   actNotification: (id: string, body: NotificationActRequest) =>
     api.post<NotificationTransition>(path("post_notifications_by_id_act", { id }), body),
-  dismissNotification: (id: string) =>
-    api.post<NotificationTransition>(path("post_notifications_by_id_dismiss", { id })),
+  dismissNotification: (id: string, confirm = false) =>
+    api.post<NotificationTransition>(
+      path("post_notifications_by_id_dismiss", { id }) + (confirm ? "?confirm=true" : ""),
+    ),
   readAllNotifications: () =>
     api.post<NotificationReadAll>(path("post_notifications_read_all")),
   notificationSettings: () =>
