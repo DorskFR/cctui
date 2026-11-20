@@ -9,8 +9,8 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::{
-    ListQuery, NotificationActRequest, NotificationTransition, act, act_with_token, confirm_page,
-    dismiss, escape, list, page, read, read_all, validate_act,
+    DismissQuery, ListQuery, NotificationActRequest, NotificationTransition, act, act_with_token,
+    confirm_page, dismiss, escape, list, page, read, read_all, validate_act,
 };
 use crate::auth::{AuthContext, Scope};
 use crate::notify::store::{self, Edge, NewNotification, NotificationRecord, Routing, emit};
@@ -171,7 +171,7 @@ async fn another_users_notification_is_404() {
     assert_eq!(status(read_it.map(|_| ())), StatusCode::NOT_FOUND);
     let acted = act_as(&state, bob, id, "approve").await;
     assert_eq!(status(acted.map(|_| ())), StatusCode::NOT_FOUND);
-    let dismissed = dismiss(State(state.clone()), Extension(caller(bob)), Path(id)).await;
+    let dismissed = dismiss_as(&state, bob, id, false).await;
     assert_eq!(status(dismissed.map(|_| ())), StatusCode::NOT_FOUND);
     assert!(listed(&state, bob, ListQuery::default()).await.notifications.is_empty());
     assert_eq!(row(&state, id).await.state, "pending");
@@ -204,23 +204,101 @@ async fn the_second_answer_is_not_applied_and_reads_the_first() {
     drop_users(&state, &[alice]).await;
 }
 
+async fn dismiss_as(
+    state: &AppState,
+    who: Uuid,
+    id: Uuid,
+    confirm: bool,
+) -> Result<NotificationTransition, crate::error::AppError> {
+    let query = Query(DismissQuery { confirm });
+    dismiss(State(state.clone()), Extension(caller(who)), Path(id), query).await.map(|Json(t)| t)
+}
+
+async fn outcome_row(state: &AppState, session: &str) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO session_outcomes (session_id, status, headline, source) \
+         VALUES ($1, 'needs_input', 'Ship it?', 'tool') RETURNING id",
+    )
+    .bind(session)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap()
+}
+
+async fn session_approval(state: &AppState, owner: Uuid, session: &str) -> Uuid {
+    let mut n = NewNotification::new(owner, "approval", "Ship it?".into());
+    n.actions = approve_reject();
+    n.blocking = true;
+    n.session_id = Some(session.to_owned());
+    n.subject_kind = Some("outcome".into());
+    n.subject_id = Some(outcome_row(state, session).await.to_string());
+    n.collapse_key = Some(format!("approval:{session}"));
+    emit(&state.pool, Routing::default(), n).await.unwrap().id
+}
+
+async fn decision_events(state: &AppState, id: Uuid) -> Vec<Value> {
+    sqlx::query_scalar("SELECT payload FROM inbox_events WHERE source_id = $1")
+        .bind(id.to_string())
+        .fetch_all(&state.pool)
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
-async fn a_blocking_approval_cannot_be_dismissed() {
-    let Some(state) = state("notif_routes_dismiss").await else { return };
-    let alice = user(&state).await;
-    let approval = notice(&state, alice, "approval", approve_reject()).await;
-    let info = notice(&state, alice, "outcome_result", json!([])).await;
+async fn a_live_approval_needs_the_confirm_path_and_then_expires() {
+    let Some(state) = state("notif_routes_dismiss_live").await else { return };
+    let (alice, sid) = crate::inbox::store_tests::seed_session(&state.pool, "dismiss-live").await;
+    let approval = session_approval(&state, alice, &sid).await;
 
-    let refused = dismiss(State(state.clone()), Extension(caller(alice)), Path(approval)).await;
-    assert_eq!(refused.map(|_| ()).unwrap_err().status(), StatusCode::CONFLICT);
+    let refused = dismiss_as(&state, alice, approval, false).await.unwrap_err();
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
     assert_eq!(row(&state, approval).await.state, "pending");
+    assert!(decision_events(&state, approval).await.is_empty());
 
-    let Json(done) =
-        dismiss(State(state.clone()), Extension(caller(alice)), Path(info)).await.unwrap();
+    let done = dismiss_as(&state, alice, approval, true).await.unwrap();
     assert!(done.applied);
-    assert_eq!(done.notification.state, "resolved");
+    assert_eq!(done.notification.state, "expired");
+    assert_eq!(done.notification.decision.as_deref(), Some("expired"));
+    let events = decision_events(&state, approval).await;
+    assert_eq!(events.len(), 1, "the run hears the dismissal");
+    assert_eq!(events[0]["decision"], "expired");
+    assert_eq!(events[0]["session_id"], sid.as_str());
+}
+
+#[tokio::test]
+async fn a_stale_approval_dismisses_without_confirm() {
+    let Some(state) = state("notif_routes_dismiss_stale").await else { return };
+    let seed = crate::inbox::store_tests::seed_session;
+    let (alice, ended) = seed(&state.pool, "dismiss-ended").await;
+    let (_, archived) = seed(&state.pool, "dismiss-archived").await;
+    let (_, moved) = seed(&state.pool, "dismiss-moved").await;
+    let stale = [
+        session_approval(&state, alice, &ended).await,
+        session_approval(&state, alice, &archived).await,
+        session_approval(&state, alice, &moved).await,
+        notice(&state, alice, "approval", approve_reject()).await,
+    ];
+    for (sid, status) in [(&ended, "ended"), (&archived, "archived")] {
+        sqlx::query("UPDATE sessions SET status = $2 WHERE id = $1")
+            .bind(sid)
+            .bind(status)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+    }
+    outcome_row(&state, &moved).await;
+
+    for id in stale {
+        let done = dismiss_as(&state, alice, id, false).await.unwrap();
+        assert!(done.applied);
+        assert_eq!(done.notification.state, "resolved");
+        assert_eq!(done.notification.decision.as_deref(), Some("dismissed"));
+        assert!(decision_events(&state, id).await.is_empty(), "nobody is waiting on it");
+    }
+
+    let info = notice(&state, alice, "outcome_result", json!([])).await;
+    let done = dismiss_as(&state, alice, info, false).await.unwrap();
     assert_eq!(done.notification.decision.as_deref(), Some("dismissed"));
-    drop_users(&state, &[alice]).await;
 }
 
 #[tokio::test]
@@ -407,8 +485,7 @@ async fn dismissing_a_dispatch_notice_dismisses_its_failure_record() {
     let (sid, id) = failed_dispatch(&state, alice).await;
     assert_eq!(shown_failures(&state, alice).await, [sid]);
 
-    let Json(done) =
-        dismiss(State(state.clone()), Extension(caller(alice)), Path(id)).await.unwrap();
+    let done = dismiss_as(&state, alice, id, false).await.unwrap();
     assert!(done.applied);
     assert!(shown_failures(&state, alice).await.is_empty(), "the record goes with its notice");
     drop_users(&state, &[alice]).await;

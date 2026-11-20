@@ -1814,7 +1814,7 @@ module = "app/notifications.rs"
 
 [[route]]
 id = "post_notifications_by_id_dismiss"
-# POST /notifications/{id}/dismiss — Dismiss a notification; refused for a blocking approval.
+# POST /notifications/{id}/dismiss — Dismiss a notification; one a run waits on needs confirm=true and expires.
 tui = "handled"
 module = "app/notifications.rs"
 

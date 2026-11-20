@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Notification as Notice } from '@bindings/Notification';
 import type { NotificationList } from '@bindings/NotificationList';
 import { NotificationStore, type NotificationApi } from '#lib/notifications.svelte.ts';
+import { ApiError } from '#lib/api.ts';
 
 const { toasts } = vi.hoisted(() => ({
 	toasts: { ok: vi.fn(), info: vi.fn(), error: vi.fn() }
@@ -54,6 +55,7 @@ afterEach(async () => {
 	comp = null;
 	document.body.replaceChildren();
 	vi.clearAllMocks();
+	vi.unstubAllGlobals();
 });
 
 function setup(
@@ -89,6 +91,14 @@ async function openPanel() {
 	await tick();
 	flushSync();
 }
+
+const dismissButton = (id: string) =>
+	document.querySelector(`[data-id="${id}"] .notif-dismiss button`) as HTMLElement;
+
+const resolved = (id: string, decision: string) => ({
+	notification: notice(id, { state: decision === 'expired' ? 'expired' : 'resolved', decision }),
+	applied: true
+});
 
 const trigger = () => document.querySelector('[aria-haspopup="dialog"]') as HTMLElement;
 
@@ -158,5 +168,50 @@ describe('NotificationBell', () => {
 		details().click();
 		await vi.waitFor(() => expect(goto).toHaveBeenCalledWith('/dispatch-failures?record=d-1'));
 		expect(act).not.toHaveBeenCalled();
+	});
+
+	it('dismisses a notice nobody waits on without asking', async () => {
+		const ask = vi.fn(() => true);
+		vi.stubGlobal('confirm', ask);
+		const dismiss = vi.fn(async () => resolved('a', 'dismissed'));
+		const store = setup({ dismiss });
+		await openPanel();
+		dismissButton('a').click();
+		await vi.waitFor(() => expect(store.items.map((n) => n.id)).not.toContain('a'));
+		expect(dismiss).toHaveBeenCalledTimes(1);
+		expect(dismiss).toHaveBeenCalledWith('a', false);
+		expect(ask).not.toHaveBeenCalled();
+		expect(toasts.error).not.toHaveBeenCalled();
+	});
+
+	it('asks before expiring a notice a session still waits on', async () => {
+		const ask = vi.fn(() => true);
+		vi.stubGlobal('confirm', ask);
+		const dismiss = vi.fn(async (id: string, confirm?: boolean) => {
+			if (!confirm) throw new ApiError(409, 'a run is waiting on this');
+			return resolved(id, 'expired');
+		});
+		const store = setup({ dismiss });
+		await openPanel();
+		dismissButton('a').click();
+		await vi.waitFor(() => expect(dismiss).toHaveBeenCalledTimes(2));
+		expect(ask).toHaveBeenCalledTimes(1);
+		expect(dismiss.mock.calls.map((c) => c[1])).toEqual([false, true]);
+		await vi.waitFor(() => expect(store.items.map((n) => n.id)).not.toContain('a'));
+		expect(toasts.error).not.toHaveBeenCalled();
+		expect(toasts.info).not.toHaveBeenCalled();
+	});
+
+	it('keeps a waited-on notice when the confirm is declined', async () => {
+		const ask = vi.fn(() => false);
+		vi.stubGlobal('confirm', ask);
+		const dismiss = vi.fn(async () => Promise.reject(new ApiError(409, 'waiting')));
+		const store = setup({ dismiss });
+		await openPanel();
+		dismissButton('a').click();
+		await vi.waitFor(() => expect(ask).toHaveBeenCalled());
+		expect(dismiss).toHaveBeenCalledTimes(1);
+		expect(store.items.map((n) => n.id)).toContain('a');
+		expect(toasts.error).not.toHaveBeenCalled();
 	});
 });

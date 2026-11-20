@@ -19,7 +19,7 @@ export interface NotificationApi {
 	list(q: { state: 'open'; limit: number; before?: string }): Promise<NotificationList>;
 	read(id: string): Promise<NotificationTransition>;
 	act(id: string, body: NotificationActRequest): Promise<NotificationTransition>;
-	dismiss(id: string): Promise<NotificationTransition>;
+	dismiss(id: string, confirm?: boolean): Promise<NotificationTransition>;
 	readAll(): Promise<NotificationReadAll>;
 }
 
@@ -27,7 +27,7 @@ const http: NotificationApi = {
 	list: (q) => endpoints.notifications(q),
 	read: (id) => endpoints.readNotification(id),
 	act: (id, body) => endpoints.actNotification(id, body),
-	dismiss: (id) => endpoints.dismissNotification(id),
+	dismiss: (id, confirm) => endpoints.dismissNotification(id, confirm),
 	readAll: () => endpoints.readAllNotifications()
 };
 
@@ -217,9 +217,10 @@ export class NotificationStore {
 		}
 	}
 
-	async dismiss(id: string): Promise<DismissOutcome> {
+	/** `confirm` expires a notice a run still waits on, instead of refusing it. */
+	async dismiss(id: string, confirm = false): Promise<DismissOutcome> {
 		try {
-			this.upsert((await this.#api.dismiss(id)).notification);
+			this.upsert((await this.#api.dismiss(id, confirm)).notification);
 			return 'dismissed';
 		} catch (e) {
 			return e instanceof ApiError && e.status === 409 ? 'blocking' : 'failed';

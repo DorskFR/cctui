@@ -1115,7 +1115,7 @@
 	"notif_center_empty_title": "Aucune notification",
 	"notif_center_mark_all": "Tout marquer comme lu",
 	"notif_center_title": "Notifications",
-	"notif_dismiss_blocking": "Cette approbation attend votre réponse : répondez-y au lieu de l'ignorer",
+	"notif_dismiss_blocking": "Une session attend encore cette réponse. L'ignorer quand même ? La session sera informée de son expiration.",
 	"notif_dismiss_failed": "Impossible d'ignorer la notification",
 	"notif_load_failed": "Impossible de charger les notifications : {error}",
 	"notif_state": "{decision}",

@@ -2,11 +2,20 @@ use serde_json::{Value, json};
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
-use super::store::{Edge, NotificationRecord, awaits_decision, close_in};
+use super::store::{Edge, NotificationRecord, awaits_decision, close_in, live_approval};
 use crate::inbox::{Source, session_lane_key};
 
 pub const DECISION_EVENT: &str = "notification.decision";
+pub const SUBJECT_GONE: &str = "subject_gone";
 const SWEEP_LIMIT: i64 = 100;
+
+const STALE_APPROVALS_SQL: &str = concat!(
+    "SELECT n.id FROM notifications n \
+     WHERE n.kind = 'approval' AND n.state IN ('pending', 'delivered', 'read') \
+       AND ($2::uuid IS NULL OR n.user_id = $2) AND NOT ",
+    live_approval!(),
+    " ORDER BY n.created_at LIMIT $1"
+);
 
 pub async fn sweep(pool: &PgPool) {
     match expire_due(pool, None).await {
@@ -14,6 +23,29 @@ pub async fn sweep(pool: &PgPool) {
         Ok(n) => tracing::debug!(expired = n, "notifications expired"),
         Err(e) => tracing::warn!("notification expiry sweep failed: {e}"),
     }
+    match close_stale_approvals(pool, None).await {
+        Ok(0) => {}
+        Ok(n) => tracing::debug!(closed = n, "stale approvals closed"),
+        Err(e) => tracing::warn!("stale approval sweep failed: {e}"),
+    }
+}
+
+/// Approvals whose session ended, was archived or declared past them wait on nothing.
+pub async fn close_stale_approvals(pool: &PgPool, user: Option<Uuid>) -> sqlx::Result<usize> {
+    let stale: Vec<Uuid> = sqlx::query_scalar(STALE_APPROVALS_SQL)
+        .bind(SWEEP_LIMIT)
+        .bind(user)
+        .fetch_all(pool)
+        .await?;
+    let mut closed = 0;
+    for id in stale {
+        match close(pool, id, Edge::Resolve { reason: SUBJECT_GONE }).await {
+            Ok(true) => closed += 1,
+            Ok(false) => {}
+            Err(e) => tracing::warn!(notification_id = %id, "stale approval not closed: {e}"),
+        }
+    }
+    Ok(closed)
 }
 
 pub async fn expire_due(pool: &PgPool, user: Option<Uuid>) -> sqlx::Result<usize> {
@@ -29,7 +61,7 @@ pub async fn expire_due(pool: &PgPool, user: Option<Uuid>) -> sqlx::Result<usize
     .await?;
     let mut expired = 0;
     for id in due {
-        match expire(pool, id).await {
+        match close(pool, id, Edge::Expire).await {
             Ok(true) => expired += 1,
             Ok(false) => {}
             Err(e) => tracing::warn!(notification_id = %id, "notification expiry failed: {e}"),
@@ -38,9 +70,9 @@ pub async fn expire_due(pool: &PgPool, user: Option<Uuid>) -> sqlx::Result<usize
     Ok(expired)
 }
 
-async fn expire(pool: &PgPool, id: Uuid) -> sqlx::Result<bool> {
+async fn close(pool: &PgPool, id: Uuid, edge: Edge<'_>) -> sqlx::Result<bool> {
     let mut tx = pool.begin().await?;
-    let Some((n, _)) = close_in(&mut tx, id, Edge::Expire).await? else {
+    let Some((n, _)) = close_in(&mut tx, id, edge).await? else {
         return Ok(false);
     };
     tx.commit().await?;
@@ -124,7 +156,7 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::expire_due;
+    use super::{close_stale_approvals, expire_due};
     use crate::inbox::store_tests::seed_session;
 
     async fn db(name: &str) -> Option<PgPool> {
@@ -268,6 +300,57 @@ mod tests {
         }
         assert_eq!(published, ["expired"]);
         assert_eq!(decision_events(&pool, id).await.len(), 1);
+    }
+
+    async fn set_status(pool: &PgPool, session: &str, status: &str) {
+        sqlx::query("UPDATE sessions SET status = $2 WHERE id = $1")
+            .bind(session)
+            .bind(status)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn resolved_reason(pool: &PgPool, id: Uuid) -> (String, Option<String>) {
+        sqlx::query_as("SELECT state, resolved_reason FROM notifications WHERE id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn ending_archiving_or_moving_past_a_session_closes_its_open_approval() {
+        let Some(pool) = db("notify_stale_approvals").await else { return };
+        let (u, ended) = seed_session(&pool, "stale-ended").await;
+        let (_, archived) = seed_session(&pool, "stale-archived").await;
+        let (_, moved) = seed_session(&pool, "stale-moved").await;
+        let (_, live) = seed_session(&pool, "stale-live").await;
+        let mut ids = Vec::new();
+        for sid in [&ended, &archived, &moved, &live] {
+            ids.push(notice(&pool, u, sid, "approval", "delivered", approve_reject(), 3600).await);
+        }
+        assert_eq!(close_stale_approvals(&pool, Some(u)).await.unwrap(), 0, "all live");
+
+        set_status(&pool, &ended, "ended").await;
+        set_status(&pool, &archived, "archived").await;
+        sqlx::query(
+            "INSERT INTO session_outcomes (session_id, status, headline, source) \
+             VALUES ($1, 'result', 'done', 'tool')",
+        )
+        .bind(&moved)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(close_stale_approvals(&pool, Some(u)).await.unwrap(), 3);
+        for &id in &ids[..3] {
+            assert_eq!(
+                resolved_reason(&pool, id).await,
+                ("resolved".into(), Some("subject_gone".into()))
+            );
+            assert!(decision_events(&pool, id).await.is_empty(), "nobody is waiting");
+        }
+        assert_eq!(resolved_reason(&pool, ids[3]).await, ("delivered".into(), None));
     }
 
     #[tokio::test]
