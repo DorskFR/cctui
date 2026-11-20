@@ -21,6 +21,28 @@ export function isBenignNotice(text: string): boolean {
 	return (/^ResizeObserver loop /i).test(text.trim());
 }
 
+const KIT_SCROLL_CAPTURE = [
+	/^can't access property "scroll", \w+\[\w+\] is undefined$/,
+	/^Cannot set properties of undefined \(setting 'scroll'\)$/,
+	/^undefined is not an object \(evaluating '\w+\[\w+\]\.scroll'\)$/
+];
+
+/** SvelteKit's router writes `history_info[index].scroll` without checking the
+ *  entry exists; it throws when the browser restored an entry the router has
+ *  no record of. Nothing breaks for the user, so it is logged, not toasted. */
+export function isKitScrollCaptureError(err: unknown): boolean {
+	const text = err instanceof Error ? err.message : typeof err === 'string' ? err : '';
+	if (err instanceof Error && err.name !== 'TypeError') return false;
+	const bare = text.trim().replace(/^(Uncaught )?TypeError: /, '');
+	return KIT_SCROLL_CAPTURE.some((re) => re.test(bare));
+}
+
+function ignored(err: unknown): boolean {
+	if (!isKitScrollCaptureError(err)) return false;
+	console.warn('ignored SvelteKit scroll capture error:', err);
+	return true;
+}
+
 function message(err: unknown): string {
 	if (err instanceof Error && err.message) return err.message;
 	if (typeof err === 'string' && err.trim()) return err;
@@ -32,11 +54,13 @@ if (typeof window !== 'undefined') {
 		// Resource-load failures (a missing <img>/<script>) surface here with no
 		// `error` object and a non-window target — those aren't app errors, skip them.
 		if (!e.error && !e.message) return;
+		if (ignored(e.error ?? e.message)) return;
 		const text = message(e.error ?? e.message);
 		if (isBenignNotice(text) || swallowedAsStaleChunk(text)) return;
 		toasts.error(text);
 	});
 	window.addEventListener('unhandledrejection', (e) => {
+		if (ignored(e.reason)) return;
 		const text = message(e.reason);
 		if (isBenignNotice(text) || swallowedAsStaleChunk(text)) return;
 		toasts.error(text);
@@ -56,7 +80,7 @@ export const handleError: HandleClientError = ({ error, kind }) => {
 	// `error(...)` throws are expected: the error page shows them, no toast.
 	if (kind === 'app') return;
 	const text = message(error);
-	if (!swallowedAsStaleChunk(text)) toasts.error(text);
+	if (!ignored(error) && !swallowedAsStaleChunk(text)) toasts.error(text);
 	// Returned shape is exposed to the app as `page.error`; keep it message-only.
 	return { message: text };
 };

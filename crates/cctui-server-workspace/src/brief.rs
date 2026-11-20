@@ -35,6 +35,7 @@ pub const DEFAULT_MAX_TURNS: usize = 60;
 pub const DEFAULT_MAX_BYTES: usize = 48 * 1024;
 const USER_PREFIX: &str = "▷ User: ";
 const CONTINUED_PREFIX: &str = "(continued from session \"";
+const DICTATED_LINE: &str = "(dictated: may hold speech-recognition errors)\n\n";
 const ROOT_ASK_MAX_BYTES: usize = 8 * 1024;
 const MIN_TAIL_BYTES: usize = 4 * 1024;
 const MIN_SKETCH_BYTES: usize = 512;
@@ -139,6 +140,9 @@ fn without_injected(text: &str) -> Option<String> {
     }
     if !out.is_empty() {
         out.push('\n');
+    }
+    if cctui_proto::injected::is_dictated_prompt(text) {
+        out.push_str(DICTATED_LINE);
     }
     out.push_str(prose);
     Some(out)
@@ -746,6 +750,17 @@ mod tests {
         let quoted = "why is this here:\n<cctui-session-context>\nx\n</cctui-session-context>";
         let turns = collect_turns("claude-code", vec![user(quoted)]);
         assert_eq!(turns[0].text, quoted);
+    }
+
+    #[test]
+    fn a_dictated_turn_keeps_the_fact_without_its_wrapper() {
+        let dictated = cctui_proto::injected::dictated_prompt("fix the login bug");
+        let turns = collect_turns("claude-code", vec![user(&dictated), assistant("on it")]);
+        assert_eq!(turns.len(), 2, "{turns:?}");
+        let text = &turns[0].text;
+        assert!(text.starts_with("(dictated: may hold speech-recognition errors)\n\n"), "{text}");
+        assert!(text.contains("fix the login bug"), "{text}");
+        assert!(!text.contains("session-context"), "{text}");
     }
 
     #[test]

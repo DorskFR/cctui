@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Dictation } from './dictation';
+import { Dictation, SPEECH_RMS } from './dictation';
 
 vi.mock('#lib/api.ts', () => ({ api: {} }));
 
@@ -64,6 +64,64 @@ describe('Dictation', () => {
 		mic.grant();
 		await started;
 		expect(mic.asked[0].audio).toMatchObject({ deviceId: { ideal: 'headset' }, echoCancellation: true });
+		d.cancel();
+	});
+});
+
+function stubAudio(level: number) {
+	const closed = vi.fn(async () => {});
+	vi.stubGlobal(
+		'AudioContext',
+		function (this: Record<string, unknown>) {
+			this.state = 'running';
+			this.resume = async () => {};
+			this.close = closed;
+			this.createAnalyser = () => ({
+				fftSize: 0,
+				getFloatTimeDomainData: (f: Float32Array) => f.fill(level)
+			});
+			this.createMediaStreamSource = () => ({ connect: () => {} });
+		}
+	);
+	return { closed };
+}
+
+describe('Dictation speech meter', () => {
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.unstubAllGlobals();
+	});
+
+	async function opened(level: number | null) {
+		vi.useFakeTimers();
+		const mic = stubMic();
+		const audio = level === null ? null : stubAudio(level);
+		const d = new Dictation();
+		const started = d.start();
+		mic.grant();
+		await started;
+		return { d, audio };
+	}
+
+	it('hears nothing while the room is quiet', async () => {
+		const { d } = await opened(SPEECH_RMS / 4);
+		vi.advanceTimersByTime(1000);
+		expect(d.heard).toBe(false);
+		d.cancel();
+	});
+
+	it('hears a voice once the level stays up', async () => {
+		const { d, audio } = await opened(SPEECH_RMS * 4);
+		expect(d.heard).toBe(false);
+		vi.advanceTimersByTime(300);
+		expect(d.heard).toBe(true);
+		d.cancel();
+		expect(audio?.closed).toHaveBeenCalled();
+	});
+
+	it('counts as heard where the level cannot be read', async () => {
+		const { d } = await opened(null);
+		expect(d.heard).toBe(true);
 		d.cancel();
 	});
 });

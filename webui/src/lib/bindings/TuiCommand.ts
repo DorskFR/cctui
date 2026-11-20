@@ -8,4 +8,8 @@ ask_picks?: Array<Array<number>> | null,
 /**
  * Client-minted `UUIDv7`.
  */
-turn_id?: string | null, } | { "type": "permission_response", session_id: string, request_id: string, behavior: string, option_id?: string | null, };
+turn_id?: string | null, 
+/**
+ * The words came, at least partly, from speech-to-text.
+ */
+dictated?: boolean, } | { "type": "permission_response", session_id: string, request_id: string, behavior: string, option_id?: string | null, };

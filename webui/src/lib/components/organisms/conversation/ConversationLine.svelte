@@ -171,6 +171,14 @@
 				>{ln.mcp ? 'mcp' : ln.role === 'result' ? 'result' : ln.role}</Badge
 			>
 		{/if}
+		{#if ln.dictated}
+			<span
+				class="dictated"
+				role="img"
+				aria-label={m.voice_user_dictated()}
+				title={m.voice_user_dictated()}>🎙</span
+			>
+		{/if}
 		{#if ln.context?.session}
 			<span class="who context-from" title={ln.context.session}>
 				·
@@ -322,6 +330,11 @@
 	.fork-check {
 		display: inline-flex;
 		align-items: center;
+	}
+	.dictated {
+		font-size: var(--fs-xs);
+		line-height: 1;
+		opacity: 0.75;
 	}
 	.who {
 		text-transform: uppercase;

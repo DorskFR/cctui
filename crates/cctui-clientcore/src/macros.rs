@@ -94,6 +94,7 @@ pub fn macro_spawn_body(mac: &MacroSpec) -> SpawnRequest {
         pool,
         save_draft: false,
         auto_archive: true,
+        dictated: false,
         env_keys: Vec::new(),
         attachment_names: Vec::new(),
         label_ids: Vec::new(),

@@ -166,6 +166,7 @@ pub async fn launch(
         pool: None,
         save_draft: false,
         auto_archive: false,
+        dictated: false,
         env_keys: Vec::new(),
         attachment_names: Vec::new(),
         label_ids: Vec::new(),

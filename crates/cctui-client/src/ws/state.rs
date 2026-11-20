@@ -334,6 +334,7 @@ mod tests {
             client_msg_id: Some("m1".to_owned()),
             ask_picks: None,
             turn_id: None,
+            dictated: false,
         });
         assert!(state.is_empty());
     }

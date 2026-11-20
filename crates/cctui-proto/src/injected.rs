@@ -93,6 +93,27 @@ pub fn is_spoken_prompt(text: &str) -> bool {
     })
 }
 
+// Mirrored byte for byte in `webui/src/lib/voice/dictatedMark.ts`.
+const DICTATED_NOTE: &str = "The user dictated this message: it went through speech recognition, \
+     so expect misheard or misspelled words, fragments in another language and run-on \
+     phrasing. Infer the intended words rather than taking odd ones literally.";
+
+/// `text` behind the session context that marks it dictated.
+#[must_use]
+pub fn dictated_prompt(text: &str) -> String {
+    format!(
+        "<{SESSION_CONTEXT} input=\"dictated\">\n{DICTATED_NOTE}\n</{SESSION_CONTEXT}>\n\n{text}"
+    )
+}
+
+/// Whether one of the session contexts leading `text` marks it dictated.
+#[must_use]
+pub fn is_dictated_prompt(text: &str) -> bool {
+    split_injected(text).0.iter().any(|b| {
+        b.kind == InjectedKind::SessionContext && b.attr("input").as_deref() == Some("dictated")
+    })
+}
+
 fn opens_tag(text: &str, tag: &str) -> bool {
     text.strip_prefix('<')
         .and_then(|r| r.strip_prefix(tag))
@@ -187,6 +208,32 @@ mod tests {
         let peer = "<cctui-peer-message voice=\"spoken\">\nx\n</cctui-peer-message>";
         assert!(!is_spoken_prompt(peer));
         assert!(!is_spoken_prompt("hi\nthere"));
+    }
+
+    #[test]
+    fn a_dictated_prompt_is_marked_and_keeps_its_words() {
+        let p = dictated_prompt("fix the login bug");
+        assert!(p.starts_with("<cctui-session-context input=\"dictated\">\n"), "{p}");
+        assert!(p.contains("speech recognition"));
+        assert!(is_dictated_prompt(&p));
+        assert!(!is_spoken_prompt(&p));
+        let (blocks, prose) = split_injected(&p);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(prose, "fix the login bug");
+    }
+
+    #[test]
+    fn a_dictated_mark_behind_the_spawn_preamble_still_counts() {
+        let first = format!(
+            "<cctui-session-context>\nsession: a\n</cctui-session-context>\n\n{}",
+            dictated_prompt("hi")
+        );
+        assert!(is_dictated_prompt(&first));
+        assert!(!is_dictated_prompt("<cctui-session-context>\nx\n</cctui-session-context>\n\nhi"));
+        assert!(!is_dictated_prompt(&format!("quoted: {}", dictated_prompt("hi"))));
+        let spoken =
+            "<cctui-session-context voice=\"spoken\">\nbody\n</cctui-session-context>\n\nhi";
+        assert!(!is_dictated_prompt(spoken));
     }
 
     #[test]

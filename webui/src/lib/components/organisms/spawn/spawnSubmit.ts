@@ -140,6 +140,7 @@ export async function spawnOnMachine(sf: SpawnForm) {
 	sf.cancelAutosave();
 	sf.spawnFailure = null;
 	const body: SpawnRequest = sf.buildSpawnBody();
+	if (sf.dictated && body.prompt) body.dictated = true;
 	const invite = hasFeature('federation') ? findInvite(sf.form.prompt) : null;
 	const joinLabel = (sf.joinLabel.trim() || sf.form.name.trim()).slice(0, 80);
 	if (invite) {

@@ -223,6 +223,35 @@ const MIME_EXT: Record<string, string> = {
 	'image/tiff': 'tiff',
 	'application/pdf': 'pdf'
 };
+const EXT_MIME: Record<string, string> = {
+	jpg: 'image/jpeg',
+	jpeg: 'image/jpeg',
+	png: 'image/png',
+	gif: 'image/gif',
+	webp: 'image/webp',
+	bmp: 'image/bmp',
+	avif: 'image/avif',
+	heic: 'image/heic',
+	heif: 'image/heif',
+	tif: 'image/tiff',
+	tiff: 'image/tiff',
+	pdf: 'application/pdf'
+};
+
+export const isHeic = (f: File): boolean =>
+	/^image\/hei[cf](-sequence)?$/i.test(f.type) || (!f.type && /\.hei[cf]$/i.test(f.name));
+
+/** Camera captures can arrive with no MIME type or no name: infer the type
+ *  from the extension and name a nameless file, since staging rejects an
+ *  empty name and only typed images are referenced as images. */
+export function normalizePicked(f: File): File {
+	const stem = f.type.startsWith('image/') ? 'photo' : 'file';
+	const name = f.name?.trim() ? f.name : `${stem}.${f.type ? extForType(f.type) : 'bin'}`;
+	const type = f.type || EXT_MIME[name.split('.').pop()?.toLowerCase() ?? ''] || '';
+	if (name === f.name && type === f.type) return f;
+	return new File([f], name, { type, lastModified: f.lastModified });
+}
+
 export function extForType(type: string): string {
 	if (MIME_EXT[type]) return MIME_EXT[type];
 	const sub = type.split('/')[1]?.split(';')[0];

@@ -4,6 +4,7 @@ import { allFilter, defaultFilter } from "./filters";
 import { latestTodoLineKey } from "./format";
 import { buildLines, resultAnswers, type LineBuildCtx } from "./lines";
 import type { MsgCategory } from "./types";
+import { dictatedPrompt } from "#lib/voice/dictatedMark.ts";
 
 const ctx = (
   overrides: Partial<Record<MsgCategory, boolean>> = {},
@@ -1543,6 +1544,44 @@ describe("spoken turns", () => {
 
   it("leaves a typed turn unmarked", () => {
     expect(buildLines([text("▷ User: hi", 1)], ctx())[0].voice).toBeUndefined();
+  });
+});
+
+describe("dictated turns", () => {
+  const dictated = `▷ User: ${dictatedPrompt("fix the login bug")}`;
+
+  it("flags the user line and renders none of the marker", () => {
+    const lines = buildLines([text(dictated, 1)], ctx());
+    expect(lines.map((l) => [l.role, l.dictated ?? false, l.voice ?? false])).toEqual([
+      ["user", true, false],
+    ]);
+    expect(lines[0].text).toBe("fix the login bug");
+    expect(lines[0].html).not.toContain("speech recognition");
+    expect(lines[0].html).not.toContain("session-context");
+  });
+
+  it("flags the optimistic echo of a dictated send the same way", () => {
+    const echo = {
+      type: "reply",
+      content: dictatedPrompt("fix the login bug"),
+      ts: 1,
+      seq: 1,
+    } as AgentEvent;
+    const lines = buildLines([echo], ctx());
+    expect(lines.map((l) => [l.role, l.dictated])).toEqual([["user", true]]);
+    expect(lines[0].text).toBe("fix the login bug");
+  });
+
+  it("keeps the spawn preamble as context and drops only the marker", () => {
+    const first = `▷ User: <cctui-session-context>\nsession: a\n</cctui-session-context>\n\n${dictatedPrompt("hi")}`;
+    const lines = buildLines([text(first, 1)], ctx());
+    expect(lines.map((l) => l.role)).toEqual(["context", "user"]);
+    expect(lines[0].text).not.toContain("speech recognition");
+    expect(lines[1].dictated).toBe(true);
+  });
+
+  it("leaves a typed turn unflagged", () => {
+    expect(buildLines([text("▷ User: hi", 1)], ctx())[0].dictated).toBeUndefined();
   });
 });
 

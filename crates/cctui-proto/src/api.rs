@@ -1162,6 +1162,9 @@ pub struct SpawnRequest {
     /// Archive once the first turn ends cleanly.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_archive: bool,
+    /// The prompt came, at least partly, from speech-to-text.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dictated: bool,
     /// Draft only: the names of its sealed env. On a draft edit a listed name
     /// sent without a value in `env` keeps its stored value; an unlisted one is dropped.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1213,6 +1216,7 @@ impl std::fmt::Debug for SpawnRequest {
             .field("env", &format_args!("<{} secret(s) redacted>", self.env.len()))
             .field("save_draft", &self.save_draft)
             .field("auto_archive", &self.auto_archive)
+            .field("dictated", &self.dictated)
             .field("env_keys", &self.env_keys)
             .field("attachment_names", &self.attachment_names)
             .field("label_ids", &self.label_ids)

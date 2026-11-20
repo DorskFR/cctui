@@ -157,6 +157,53 @@ describe('VoiceControls dictation gestures', () => {
 	});
 });
 
+function quietRoom() {
+	vi.stubGlobal(
+		'AudioContext',
+		function (this: Record<string, unknown>) {
+			this.state = 'running';
+			this.resume = async () => {};
+			this.close = async () => {};
+			this.createAnalyser = () => ({ fftSize: 0, getFloatTimeDomainData: (f: Float32Array) => f.fill(0) });
+			this.createMediaStreamSource = () => ({ connect: () => {} });
+		}
+	);
+}
+
+describe('VoiceControls clicks are not holds', () => {
+	it('a 600 ms click keeps recording', async () => {
+		await press(600);
+		expect(recordingPanel()).not.toBeNull();
+		expect(postForm).not.toHaveBeenCalled();
+	});
+
+	it('a long silent press is a tap and keeps recording', async () => {
+		quietRoom();
+		await press(HOLD_MS + 500);
+		expect(recordingPanel()).not.toBeNull();
+		expect(postForm).not.toHaveBeenCalled();
+	});
+
+	it('a short silent clip is dropped without a notice', async () => {
+		quietRoom();
+		await press(80);
+		vi.advanceTimersByTime(800);
+		await press(80);
+		expect(recordingPanel()).toBeNull();
+		expect(postForm).not.toHaveBeenCalled();
+		expect(toast.info).not.toHaveBeenCalled();
+	});
+
+	it('a long recording that comes back empty still says nothing was heard', async () => {
+		postForm.mockResolvedValueOnce({ text: '' });
+		await press(80);
+		vi.advanceTimersByTime(4000);
+		await press(80);
+		expect(postForm).toHaveBeenCalledTimes(1);
+		expect(toast.info).toHaveBeenCalledTimes(1);
+	});
+});
+
 describe('VoiceControls without voice mode', () => {
 	it('shows the mic but no voice-mode toggle when no live handler is given', () => {
 		const toggle = () => document.querySelector('[aria-label="Live voice conversation with this session"]');

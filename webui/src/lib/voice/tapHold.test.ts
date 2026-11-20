@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { HOLD_MS, MIN_CLIP_MS, TapHold } from './tapHold';
+import { HOLD_MS, MIN_CLIP_MS, SILENT_CLIP_MS, TapHold } from './tapHold';
 
 describe('TapHold', () => {
 	it('a tap starts recording and keeps it going after release', () => {
@@ -76,5 +76,63 @@ describe('TapHold', () => {
 		expect(g.down(30_000)).toBe('stop');
 		expect(g.up(30_090)).toBe('none');
 		expect(g.recording).toBe(false);
+	});
+
+	it('a 600 ms click keeps recording hands-free', () => {
+		const g = new TapHold(() => true);
+		expect(g.down(0)).toBe('start');
+		expect(g.up(600)).toBe('none');
+		expect(g.recording).toBe(true);
+	});
+
+	it('a deliberate hold with speech stops on release', () => {
+		const g = new TapHold(() => true);
+		g.down(0);
+		expect(g.up(HOLD_MS + 1200)).toBe('stop');
+		expect(g.recording).toBe(false);
+	});
+
+	it('a long press with no speech heard is a tap, not a hold', () => {
+		const g = new TapHold(() => false);
+		g.down(0);
+		expect(g.up(HOLD_MS + 400)).toBe('none');
+		expect(g.recording).toBe(true);
+	});
+
+	it('leaving the mic during a captured press does not stop', () => {
+		const g = new TapHold(() => true);
+		g.down(0);
+		g.capture();
+		expect(g.leave(HOLD_MS + 500)).toBe('none');
+		expect(g.recording).toBe(true);
+		expect(g.up(HOLD_MS + 900)).toBe('stop');
+	});
+
+	it('leaving the mic during an uncaptured hold counts as its release', () => {
+		const g = new TapHold(() => true);
+		g.down(0);
+		expect(g.leave(HOLD_MS + 500)).toBe('stop');
+	});
+
+	it('a short silent clip cancels instead of being transcribed', () => {
+		const g = new TapHold(() => false);
+		g.down(0);
+		g.up(100);
+		expect(g.down(SILENT_CLIP_MS - 100)).toBe('cancel');
+		expect(g.recording).toBe(false);
+	});
+
+	it('a short clip with speech is still transcribed', () => {
+		const g = new TapHold(() => true);
+		g.down(0);
+		g.up(100);
+		expect(g.down(SILENT_CLIP_MS - 100)).toBe('stop');
+	});
+
+	it('a long silent clip is transcribed so an empty result can be reported', () => {
+		const g = new TapHold(() => false);
+		g.down(0);
+		g.up(100);
+		expect(g.down(SILENT_CLIP_MS + 2000)).toBe('stop');
 	});
 });

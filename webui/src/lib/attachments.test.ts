@@ -9,6 +9,8 @@ import {
 	DEFAULT_UPLOAD_CAPS,
 	extForType,
 	fileCapError,
+	isHeic,
+	normalizePicked,
 	makeClipboardFiles,
 	mergeFiles,
 	mergeFilesRenamed,
@@ -290,5 +292,33 @@ describe('supportsAttachments', () => {
 			expect(supportsAttachments(a)).toBe(true);
 		expect(supportsAttachments('kilo')).toBe(false);
 		expect(supportsAttachments(null)).toBe(false);
+	});
+});
+
+describe('normalizePicked', () => {
+	const pick = (name: string, type: string) => new File(['x'], name, { type });
+
+	it('types a camera JPEG that arrives with an empty MIME type', () => {
+		const f = normalizePicked(pick('IMG_20261117.JPG', ''));
+		expect([f.name, f.type, f.size]).toEqual(['IMG_20261117.JPG', 'image/jpeg', 1]);
+	});
+
+	it('keeps a HEIC capture and recognises it', () => {
+		const typed = pick('IMG_0001.HEIC', 'image/heic');
+		expect(normalizePicked(typed)).toBe(typed);
+		expect(isHeic(typed)).toBe(true);
+		const untyped = normalizePicked(pick('IMG_0002.heic', ''));
+		expect(untyped.type).toBe('image/heic');
+		expect(isHeic(pick('IMG_0003.heif', ''))).toBe(true);
+		expect(isHeic(pick('a.jpg', 'image/jpeg'))).toBe(false);
+	});
+
+	it('names a nameless capture', () => {
+		expect(normalizePicked(pick('', 'image/jpeg')).name).toBe('photo.jpg');
+		expect(normalizePicked(pick('', '')).name).toBe('file.bin');
+	});
+
+	it('leaves an unknown extension untyped', () => {
+		expect(normalizePicked(pick('notes.xyz', '')).type).toBe('');
 	});
 });

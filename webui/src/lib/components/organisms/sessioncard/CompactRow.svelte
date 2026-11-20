@@ -457,4 +457,14 @@
 			min-width: min-content;
 		}
 	}
+	@container sess-row (max-width: 28em) {
+		.one .tokens {
+			display: none;
+		}
+	}
+	@container sess-row (max-width: 22em) {
+		.one .preview {
+			display: none;
+		}
+	}
 </style>
