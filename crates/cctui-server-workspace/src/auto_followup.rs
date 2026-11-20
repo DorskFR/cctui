@@ -194,8 +194,7 @@ pub async fn prefs_for(
     pool: &PgPool,
     session_ids: &[String],
 ) -> sqlx::Result<HashMap<String, Prefs>> {
-    let rows: Vec<PrefsRow> =
-        sqlx::query_as(PREFS_SQL).bind(session_ids).fetch_all(pool).await?;
+    let rows: Vec<PrefsRow> = sqlx::query_as(PREFS_SQL).bind(session_ids).fetch_all(pool).await?;
     Ok(rows
         .into_iter()
         .map(|(id, data, metadata, child, launched_model)| {

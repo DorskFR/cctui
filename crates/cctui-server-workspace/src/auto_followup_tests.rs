@@ -2,8 +2,8 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use cctui_proto::api::auto_followup::{
-    AutoFollowupOverride, AutoFollowupSetting, AutoFollowupThreshold, ContextWindow,
-    SendFollowup, ThresholdUnit, WindowSource,
+    AutoFollowupOverride, AutoFollowupSetting, AutoFollowupThreshold, ContextWindow, SendFollowup,
+    ThresholdUnit, WindowSource,
 };
 use serde_json::json;
 use sqlx::PgPool;
@@ -571,9 +571,10 @@ async fn a_1m_spawn_hint_survives_registration() {
     assert_eq!(measured.context_window, Some(1_000_000), "the launch model, not the reported one");
     let prefs = prefs_for(&f.pool, std::slice::from_ref(&sid)).await.unwrap();
     assert_eq!(prefs[&sid].launched_model.as_deref(), Some("claude-opus-5-5[1m]"));
-    let Json(item) = crate::routes::sessions::get_session(State(f.state.clone()), Path(sid.clone()))
-        .await
-        .unwrap();
+    let Json(item) =
+        crate::routes::sessions::get_session(State(f.state.clone()), Path(sid.clone()))
+            .await
+            .unwrap();
     assert_eq!(item.context_window, Some(1_000_000));
 
     let plain = claude_session(&f, Some("claude-opus-5-5"), 50_000).await;
