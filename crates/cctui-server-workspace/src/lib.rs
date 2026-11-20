@@ -1615,6 +1615,7 @@ mod tests {
             r#"POST /sessions/{id}/archive Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/attachments Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/auto-approve Bearer Resource(Session, Write, Path("id"))"#,
+            r#"PUT /sessions/{id}/auto-followup Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/bindings Bearer Resource(Session, Read, Path("id"))"#,
             r#"GET /sessions/{id}/blobs/{hash} Bearer Resource(Session, Read, Path("id"))"#,
             r#"GET /sessions/{id}/brief Bearer Resource(Session, Read, Path("id"))"#,
