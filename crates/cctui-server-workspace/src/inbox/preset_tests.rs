@@ -13,6 +13,7 @@ use super::preset::{
     run_env, run_labels, spawn_prompt, spawn_request,
 };
 use super::store::{NewEvent, insert_event};
+use crate::followup::FollowupPrompt;
 use crate::presets::store_tests::{Owner, seed_owner};
 use crate::state::AppState;
 
@@ -543,13 +544,97 @@ async fn a_followup_prompt_embeds_the_parents_brief_then_the_batch() {
     .unwrap();
     let ask = instruction(&preset(true), "[cctui inbox: 1 event]\n1. (schedule, x) nightly");
     let followup = Plan::Followup { parent: parent.clone() };
-    let prompt = spawn_prompt(&pool, &followup, ask.clone()).await.unwrap();
+    let out = spawn_prompt(&pool, &followup, ask.clone()).await.unwrap();
+    let prompt = &out.prompt;
     assert!(prompt.starts_with(&format!("<{PREVIOUS_CONVERSATION} ")), "{prompt}");
     assert!(prompt.contains("fix the flaky test"), "{prompt}");
     assert!(prompt.ends_with(&ask), "{prompt}");
+    assert_eq!(out.file, None);
+    let plain = FollowupPrompt { prompt: ask.clone(), file: None };
     let orphan = Plan::Followup { parent: "no-such-session".into() };
-    assert_eq!(spawn_prompt(&pool, &orphan, ask.clone()).await.unwrap(), ask);
-    assert_eq!(spawn_prompt(&pool, &Plan::Spawn, ask.clone()).await.unwrap(), ask);
+    assert_eq!(spawn_prompt(&pool, &orphan, ask.clone()).await.unwrap(), plain);
+    assert_eq!(spawn_prompt(&pool, &Plan::Spawn, ask.clone()).await.unwrap(), plain);
+}
+
+#[tokio::test]
+async fn a_chain_followup_stages_the_same_file_as_the_webui_path() {
+    use axum::extract::{Path, Query, State};
+    use axum::{Extension, Json};
+
+    let Some(pool) = pool("inbox_preset_chain_followup").await else { return };
+    let (user, root) = super::store_tests::seed_session(&pool, "preset-chain").await;
+    let parent = format!("{root}-next");
+    sqlx::query(
+        "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status, \
+         adapter_id, parent_id, metadata) \
+         SELECT $2, machine_id, machine_uuid, user_id, working_dir, 'active', adapter_id, $1, \
+         jsonb_build_object('relation', 'followup') FROM sessions WHERE id = $1",
+    )
+    .bind(&root)
+    .bind(&parent)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let ask_a = format!("the root ask {}", "a".repeat(10 * 1024));
+    let mut rows = vec![(root.as_str(), json!({"role": "user", "text": ask_a}))];
+    for i in 0..150 {
+        let text = format!("<root-{i:03}>");
+        rows.push(if i % 2 == 0 {
+            (root.as_str(), json!({"role": "assistant", "text": text, "message_id": "m"}))
+        } else {
+            (root.as_str(), json!({"role": "user", "text": text}))
+        });
+    }
+    rows.push((parent.as_str(), json!({"role": "user", "text": "ask B"})));
+    for (sid, payload) in rows {
+        sqlx::query(
+            "INSERT INTO stream_events (session_id, event_type, payload) \
+             VALUES ($1, 'message', $2)",
+        )
+        .bind(sid)
+        .bind(payload)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let ask = instruction(&preset(true), "[cctui inbox: 1 event]\n1. (schedule, x) nightly");
+    let out = spawn_prompt(&pool, &Plan::Followup { parent: parent.clone() }, ask.clone())
+        .await
+        .unwrap();
+
+    let ctx = crate::auth::AuthContext {
+        user_id: user,
+        key_id: Uuid::new_v4(),
+        machine_id: None,
+        scopes: std::collections::BTreeSet::new(),
+    };
+    let q = crate::brief::BriefQuery { chain: Some("1".into()), ..Default::default() };
+    let state = AppState::for_test(pool.clone());
+    let Json(served) =
+        crate::brief::session_brief(State(state), Extension(ctx), Path(parent.clone()), Query(q))
+            .await
+            .expect("chain brief");
+    assert_eq!(out, crate::followup::followup_from_brief(&served, &ask));
+
+    let file = out.file.clone().expect("a chain always ships the file");
+    assert!(file.contains(&ask_a), "the root ask arrives whole");
+    for i in [0, 100, 149] {
+        assert_eq!(file.matches(&format!("<root-{i:03}>")).count(), 1, "root turn {i}");
+    }
+    assert!(out.prompt.contains(crate::brief::BRIEF_FILE_NAME));
+    assert!(out.prompt.ends_with(&ask));
+    let (encoded, raw) = super::preset::brief_upload(file.clone());
+    assert_eq!(encoded.name, crate::brief::BRIEF_FILE_NAME);
+    assert_eq!(raw.name, crate::brief::BRIEF_FILE_NAME);
+    assert_eq!(&raw.bytes[..], file.as_bytes());
+
+    let all = [parent, root];
+    sqlx::query("DELETE FROM stream_events WHERE session_id = ANY($1)")
+        .bind(&all[..])
+        .execute(&pool)
+        .await
+        .ok();
+    sqlx::query("DELETE FROM sessions WHERE id = ANY($1)").bind(&all[..]).execute(&pool).await.ok();
 }
 
 async fn archived_session_lane(pool: &PgPool, name: &str) -> (Owner, String, Uuid) {

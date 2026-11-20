@@ -10,10 +10,12 @@
 //! previous conversation shrinks to one line, so chains never nest. An inbox
 //! batch keeps its numbered event lines and loses its header.
 //!
-//! `?chain=1` renders every session of the follow-up line ending at `id`, root
-//! first, under one byte cap: the root's first ask always stays, the newest
-//! sessions are filled first, and an older one that no longer fits shrinks to
-//! its first ask and last answer, then to one line.
+//! `?chain=1` renders every turn of every session of the follow-up line ending
+//! at `id`, root first. Only past the chain ceiling ([`CHAIN_MAX_BYTES_ENV`])
+//! are turns elided, from the middle of the oldest sessions first, behind an
+//! explicit marker; the root's first ask is never elided. Each session also
+//! carries the newest turns that fit inline beside the pointer to the
+//! [`BRIEF_FILE_NAME`] file holding the whole chain ([`followup_envelope`]).
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -26,21 +28,30 @@ use serde_json::Value;
 use sqlx::PgPool;
 
 use cctui_proto::api::{ApiError, BriefResponse, BriefSession};
-use cctui_proto::injected::{InjectedBlock, InjectedKind, PREVIOUS_SESSIONS, split_injected};
+use cctui_proto::injected::{
+    InjectedBlock, InjectedKind, PREVIOUS_CONVERSATION, PREVIOUS_SESSIONS, split_injected,
+};
 
 use crate::auth::AuthContext;
 use crate::state::AppState;
 
 pub const DEFAULT_MAX_TURNS: usize = 60;
 pub const DEFAULT_MAX_BYTES: usize = 48 * 1024;
+pub const BRIEF_FILE_NAME: &str = "previous-conversation.md";
+/// A follow-up's previous conversation stays in its prompt up to this size.
+pub const INLINE_MAX_BYTES: usize = 48 * 1024;
+pub const DEFAULT_CHAIN_MAX_BYTES: usize = 2 * 1024 * 1024;
+pub const CHAIN_MAX_BYTES_ENV: &str = "CCTUI_FOLLOWUP_BRIEF_MAX_BYTES";
 const USER_PREFIX: &str = "▷ User: ";
 const CONTINUED_PREFIX: &str = "(continued from session \"";
 const DICTATED_LINE: &str = "(dictated: may hold speech-recognition errors)\n\n";
-const ROOT_ASK_MAX_BYTES: usize = 8 * 1024;
-const MIN_TAIL_BYTES: usize = 4 * 1024;
-const MIN_SKETCH_BYTES: usize = 512;
-const MIN_SKETCH_SHARE: usize = 64;
-const ELISION_SLACK: usize = 64;
+const MARKER_BYTES: usize = 160;
+const TAIL_NOTE_BYTES: usize = 64;
+const MAX_ATTR_CHARS: usize = 200;
+const FILE_POINTER: &str = "In the attached file previous-conversation.md.";
+const READ_POINTER: &str = "The whole conversation is in the attached file \
+    previous-conversation.md. Read all of it before you continue: it can be longer than one \
+    Read call returns, so keep reading until the end of the file.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -222,17 +233,6 @@ const fn turn_len(turn: &Turn) -> usize {
     turn.role.heading().len() + 2 + turn.text.len() + 2
 }
 
-fn cut_tail(text: &str, keep: usize) -> String {
-    if text.len() <= keep {
-        return text.to_owned();
-    }
-    let mut end = keep;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &text[..end])
-}
-
 fn cut_head(text: &str, keep: usize) -> String {
     if text.len() <= keep {
         return text.to_owned();
@@ -288,68 +288,6 @@ fn count(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
-/// The first ask and the last answer of `turns`, clipped to share `budget`.
-fn sketch(turns: &[Turn], budget: usize) -> Option<BriefResponse> {
-    let first_user = turns.iter().position(|t| t.role == Role::User);
-    let last_assistant = turns.iter().rposition(|t| t.role == Role::Assistant);
-    let mut picked: Vec<usize> = [first_user, last_assistant].into_iter().flatten().collect();
-    picked.sort_unstable();
-    picked.dedup();
-    let omitted = turns.len() - picked.len();
-    let note = if omitted > 0 { format!("… {omitted} turns omitted\n\n") } else { String::new() };
-    let fixed = note.len()
-        + picked.iter().map(|&i| turns[i].role.heading().len() + 4 + "…".len()).sum::<usize>();
-    let share = budget.saturating_sub(fixed) / picked.len().max(1);
-    if picked.is_empty() || share < MIN_SKETCH_SHARE {
-        return None;
-    }
-    let mut markdown = String::new();
-    for (n, &i) in picked.iter().enumerate() {
-        if n == 1 {
-            markdown.push_str(&note);
-        }
-        let turn = &turns[i];
-        let text = match turn.role {
-            Role::User => cut_tail(&turn.text, share),
-            Role::Assistant => cut_head(&turn.text, share),
-        };
-        markdown.push_str(turn.role.heading());
-        markdown.push_str("\n\n");
-        markdown.push_str(&text);
-        markdown.push_str("\n\n");
-    }
-    if picked.len() == 1 {
-        markdown.push_str(&note);
-    }
-    Some(BriefResponse {
-        markdown: markdown.trim_end().to_owned(),
-        turns: count(picked.len()),
-        omitted: count(omitted),
-        truncated: true,
-        sessions: None,
-    })
-}
-
-/// `turns` within `budget` bytes: the newest turns, else a sketch, else one line.
-fn fit(turns: &[Turn], budget: usize, max_turns: usize) -> BriefResponse {
-    if turns.is_empty() || budget >= MIN_TAIL_BYTES {
-        let max_bytes = budget.saturating_sub(ELISION_SLACK);
-        return render(turns, Caps { max_turns, max_bytes });
-    }
-    if budget >= MIN_SKETCH_BYTES
-        && let Some(sketched) = sketch(turns, budget)
-    {
-        return sketched;
-    }
-    BriefResponse {
-        markdown: format!("… {} turns omitted", turns.len()),
-        turns: 0,
-        omitted: count(turns.len()),
-        truncated: true,
-        sessions: None,
-    }
-}
-
 /// One session of a follow-up chain; `transcript` is `None` when the caller
 /// cannot read it.
 pub struct Link {
@@ -368,32 +306,108 @@ fn heading(n: usize, link: &Link) -> String {
     )
 }
 
-/// The first user turn of `turns`, taken out and clipped.
-fn take_ask(turns: &mut Vec<Turn>) -> Option<Turn> {
-    let at = turns.iter().position(|t| t.role == Role::User)?;
-    let mut ask = turns.remove(at);
-    ask.text = cut_tail(&ask.text, ROOT_ASK_MAX_BYTES);
-    Some(ask)
+/// A chain session's turns; `turns[..keep]` is never elided.
+struct Part {
+    turns: Vec<Turn>,
+    keep: usize,
+    cut: Option<(usize, usize)>,
 }
 
-fn with_ask(ask: &Turn, part: &mut BriefSession) {
-    let mut markdown = format!("{}\n\n{}", ask.role.heading(), ask.text);
-    if !part.markdown.is_empty() {
-        markdown.push_str("\n\n");
-        markdown.push_str(&part.markdown);
+fn middle_window(
+    turns: &[Turn],
+    lo: usize,
+    hi: usize,
+    need: usize,
+) -> Option<(usize, usize, usize)> {
+    if lo >= hi {
+        return None;
     }
-    part.markdown = markdown;
-    part.turns = part.turns.saturating_add(1);
+    let mid = lo + (hi - lo) / 2;
+    let (mut start, mut end, mut freed) = (mid, mid, 0);
+    while freed < need && (start > lo || end < hi) {
+        if end < hi {
+            freed += turn_len(&turns[end]);
+            end += 1;
+        }
+        if freed < need && start > lo {
+            start -= 1;
+            freed += turn_len(&turns[start]);
+        }
+    }
+    Some((start, end, freed))
 }
 
-/// The chain `links` (root first) as one brief within `caps.max_bytes`.
-pub fn assemble(links: &[Link], caps: Caps) -> BriefResponse {
+/// The newest session is cut only as a last resort, and never its last turn.
+fn elide(parts: &mut [Part], mut over: usize) {
+    let Some(newest) = parts.len().checked_sub(1) else { return };
+    for i in (0..newest).chain([newest]) {
+        if over == 0 {
+            return;
+        }
+        let part = &mut parts[i];
+        let hi = if i == newest { part.turns.len().saturating_sub(1) } else { part.turns.len() };
+        let Some((start, end, freed)) =
+            middle_window(&part.turns, part.keep, hi, over + MARKER_BYTES)
+        else {
+            continue;
+        };
+        part.cut = Some((start, end));
+        over = over.saturating_sub(freed.saturating_sub(MARKER_BYTES));
+    }
+}
+
+fn marker(n: usize, ceiling: usize) -> String {
+    format!(
+        "… {n} turns elided here: the follow-up chain is over its {} KiB ceiling",
+        ceiling / 1024
+    )
+}
+
+fn pieces(part: &Part, ceiling: usize) -> Vec<String> {
+    let mut out = Vec::with_capacity(part.turns.len());
+    for (i, turn) in part.turns.iter().enumerate() {
+        match part.cut {
+            Some((start, end)) if i == start => out.push(marker(end - start, ceiling)),
+            Some((start, end)) if (start..end).contains(&i) => {}
+            _ => out.push(format!("{}\n\n{}", turn.role.heading(), turn.text)),
+        }
+    }
+    out
+}
+
+fn tails(pieces: &[Vec<String>], budget: usize) -> Vec<Option<String>> {
+    let mut out = vec![None; pieces.len()];
+    let mut left = budget;
+    for (i, session) in pieces.iter().enumerate().rev() {
+        left = left.saturating_sub(TAIL_NOTE_BYTES);
+        let mut from = session.len();
+        while from > 0 && session[from - 1].len() + 2 <= left {
+            from -= 1;
+            left -= session[from].len() + 2;
+        }
+        if from < session.len() {
+            let note = if from > 0 {
+                format!("… {from} earlier turns are in the file\n\n")
+            } else {
+                String::new()
+            };
+            out[i] = Some(format!("{note}{}", session[from..].join("\n\n")));
+        }
+        if from > 0 {
+            break;
+        }
+    }
+    out
+}
+
+fn chain_parts(links: &[Link]) -> Vec<Part> {
     let included: HashSet<&str> =
         links.iter().filter(|l| l.transcript.is_some()).map(|l| l.id.as_str()).collect();
-    let mut turns: Vec<Option<Vec<Turn>>> = links
+    links
         .iter()
-        .map(|l| {
-            l.transcript.as_ref().map(|t| {
+        .enumerate()
+        .map(|(i, link)| {
+            let turns: Vec<Turn> = link.transcript.as_ref().map_or_else(Vec::new, |t| {
                 t.turns
                     .iter()
                     .filter_map(|turn| {
@@ -401,48 +415,67 @@ pub fn assemble(links: &[Link], caps: Caps) -> BriefResponse {
                         (!text.is_empty()).then_some(Turn { role: turn.role, text })
                     })
                     .collect()
-            })
+            });
+            let keep = if i == 0 {
+                turns.iter().position(|t| t.role == Role::User).map_or(0, |at| at + 1)
+            } else {
+                0
+            };
+            Part { turns, keep, cut: None }
         })
-        .collect();
-    let ask = turns.first_mut().and_then(Option::as_mut).and_then(take_ask);
+        .collect()
+}
+
+fn chain_bytes(links: &[Link], parts: &[Part], headings: &[String]) -> usize {
+    headings.iter().map(|h| h.len() + 4).sum::<usize>()
+        + links
+            .iter()
+            .zip(parts)
+            .map(|(link, part)| {
+                if link.transcript.is_some() {
+                    part.turns.iter().map(turn_len).sum::<usize>()
+                } else {
+                    unavailable(&link.id).len()
+                }
+            })
+            .sum::<usize>()
+}
+
+/// The chain `links` (root first) as one brief: every turn, elided only past
+/// `ceiling` bytes.
+pub fn assemble(links: &[Link], ceiling: usize) -> BriefResponse {
+    let mut parts = chain_parts(links);
     let headings: Vec<String> =
         links.iter().enumerate().map(|(i, link)| heading(i + 1, link)).collect();
-    let reserved = headings.iter().map(|h| h.len() + 4).sum::<usize>()
-        + links.iter().map(|l| unavailable(&l.id).len()).sum::<usize>()
-        + ask.as_ref().map_or(0, turn_len);
-    let mut remaining = caps.max_bytes.saturating_sub(reserved);
-    let mut parts: Vec<BriefSession> = Vec::with_capacity(links.len());
-    for (link, kept) in links.iter().zip(&turns).rev() {
-        let budget = remaining + unavailable(&link.id).len();
-        let part = match (&link.transcript, kept) {
-            (Some(t), Some(kept)) => {
-                let out = fit(kept, budget, caps.max_turns);
-                BriefSession {
-                    id: link.id.clone(),
-                    name: Some(t.name.clone()),
-                    markdown: out.markdown,
-                    turns: out.turns,
-                    omitted: out.omitted,
-                    truncated: out.truncated,
-                }
-            }
-            _ => BriefSession {
+    elide(&mut parts, chain_bytes(links, &parts, &headings).saturating_sub(ceiling));
+    let rendered: Vec<Vec<String>> = parts.iter().map(|p| pieces(p, ceiling)).collect();
+    let mut sessions: Vec<BriefSession> = links
+        .iter()
+        .zip(&parts)
+        .zip(&rendered)
+        .map(|((link, part), pieces)| {
+            let cut = part.cut.map_or(0, |(start, end)| end - start);
+            BriefSession {
                 id: link.id.clone(),
-                name: None,
-                markdown: unavailable(&link.id),
-                turns: 0,
-                omitted: 0,
-                truncated: false,
-            },
-        };
-        remaining = budget.saturating_sub(part.markdown.len());
-        parts.push(part);
+                name: link.transcript.as_ref().map(|t| t.name.clone()),
+                markdown: if link.transcript.is_some() {
+                    pieces.join("\n\n")
+                } else {
+                    unavailable(&link.id)
+                },
+                turns: count(part.turns.len() - cut),
+                omitted: count(cut),
+                truncated: cut > 0,
+                tail: None,
+            }
+        })
+        .collect();
+    let overhead = followup_envelope(&sessions).inline.len() + 2 * sessions.len();
+    let budget = INLINE_MAX_BYTES.saturating_sub(overhead);
+    for (session, tail) in sessions.iter_mut().zip(tails(&rendered, budget)) {
+        session.tail = tail;
     }
-    parts.reverse();
-    if let (Some(ask), Some(root)) = (&ask, parts.first_mut()) {
-        with_ask(ask, root);
-    }
-    let markdown = parts
+    let markdown = sessions
         .iter()
         .zip(&headings)
         .map(|(part, heading)| format!("{heading}\n\n{}", part.markdown))
@@ -450,13 +483,74 @@ pub fn assemble(links: &[Link], caps: Caps) -> BriefResponse {
         .join("\n\n");
     BriefResponse {
         markdown,
-        turns: parts.iter().fold(0, |n, p| n.saturating_add(p.turns)),
-        omitted: parts.iter().fold(0, |n, p| n.saturating_add(p.omitted)),
-        truncated: parts.iter().any(|p| p.truncated),
-        sessions: Some(parts),
+        turns: sessions.iter().fold(0, |n, p| n.saturating_add(p.turns)),
+        omitted: sessions.iter().fold(0, |n, p| n.saturating_add(p.omitted)),
+        truncated: sessions.iter().any(|p| p.truncated),
+        sessions: Some(sessions),
     }
 }
 
+fn attr(raw: &str) -> String {
+    let clipped: String = raw.chars().take(MAX_ATTR_CHARS).collect();
+    clipped.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;")
+}
+
+/// A follow-up's previous conversation: what its prompt carries `inline`, and
+/// the [`BRIEF_FILE_NAME`] file it points at when the transcript is not inline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowupEnvelope {
+    pub inline: String,
+    pub file: Option<String>,
+}
+
+fn pointed(pointer: &str, tail: Option<&str>) -> String {
+    tail.map_or_else(|| pointer.to_owned(), |tail| format!("{pointer}\n\n{tail}"))
+}
+
+fn chain_envelope(
+    sessions: &[BriefSession],
+    body: impl Fn(usize, &BriefSession) -> String,
+) -> String {
+    let mut out = format!("<{PREVIOUS_SESSIONS}>\n");
+    for (i, s) in sessions.iter().enumerate() {
+        let name =
+            s.name.as_deref().map_or_else(String::new, |n| format!(" session=\"{}\"", attr(n)));
+        let open =
+            format!("<{PREVIOUS_CONVERSATION} n=\"{}\"{name} id=\"{}\">", i + 1, attr(&s.id));
+        let _ = writeln!(out, "{open}\n{}\n</{PREVIOUS_CONVERSATION}>", body(i, s));
+    }
+    let _ = write!(out, "</{PREVIOUS_SESSIONS}>");
+    out
+}
+
+/// The envelope the webui's `followupPrompt` builds from the same sessions: a
+/// lone session inline while it fits [`INLINE_MAX_BYTES`]; else, and always
+/// for a chain, the whole transcript in the file and pointers plus the
+/// sessions' tails inline.
+#[must_use]
+pub fn followup_envelope(sessions: &[BriefSession]) -> FollowupEnvelope {
+    if let [only] = sessions {
+        let name = attr(only.name.as_deref().unwrap_or_default());
+        let open =
+            format!("<{PREVIOUS_CONVERSATION} session=\"{name}\" id=\"{}\">", attr(&only.id));
+        let close = format!("</{PREVIOUS_CONVERSATION}>");
+        let whole = format!("{open}\n{}\n{close}", only.markdown);
+        if only.markdown.len() <= INLINE_MAX_BYTES {
+            return FollowupEnvelope { inline: whole, file: None };
+        }
+        let body = pointed(READ_POINTER, only.tail.as_deref());
+        let inline = format!("{open}\n{body}\n{close}");
+        return FollowupEnvelope { inline, file: Some(format!("{whole}\n")) };
+    }
+    let last = sessions.len().saturating_sub(1);
+    let inline = chain_envelope(sessions, |i, s| {
+        pointed(if i == last { READ_POINTER } else { FILE_POINTER }, s.tail.as_deref())
+    });
+    let file = format!("{}\n", chain_envelope(sessions, |_, s| s.markdown.clone()));
+    FollowupEnvelope { inline, file: Some(file) }
+}
+
+/// `?chain=1` ignores both caps: only the chain ceiling applies.
 #[derive(Debug, Default, Deserialize)]
 pub struct BriefQuery {
     pub max_turns: Option<usize>,
@@ -474,6 +568,28 @@ impl BriefQuery {
         Caps {
             max_turns: self.max_turns.unwrap_or(d.max_turns).clamp(1, 10_000),
             max_bytes: self.max_bytes.unwrap_or(d.max_bytes).clamp(256, 4 * 1024 * 1024),
+        }
+    }
+}
+
+/// The chain ceiling from [`CHAIN_MAX_BYTES_ENV`], resolved once.
+pub fn chain_max_bytes() -> usize {
+    static MAX: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *MAX.get_or_init(|| parse_chain_max_bytes(std::env::var(CHAIN_MAX_BYTES_ENV).ok().as_deref()))
+}
+
+fn parse_chain_max_bytes(raw: Option<&str>) -> usize {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return DEFAULT_CHAIN_MAX_BYTES;
+    };
+    match raw.parse::<usize>() {
+        Ok(v) if v >= INLINE_MAX_BYTES => v,
+        _ => {
+            tracing::warn!(
+                "{CHAIN_MAX_BYTES_ENV} must be a byte count of at least {INLINE_MAX_BYTES}, got \
+                 `{raw}`; using {DEFAULT_CHAIN_MAX_BYTES}"
+            );
+            DEFAULT_CHAIN_MAX_BYTES
         }
     }
 }
@@ -567,7 +683,7 @@ pub async fn session_brief(
         if links.is_empty() {
             return Err(failure(StatusCode::NOT_FOUND, "session not found"));
         }
-        return Ok(Json(assemble(&links, q.caps())));
+        return Ok(Json(assemble(&links, chain_max_bytes())));
     }
     let transcript = load(&state.pool, &session_id).await.map_err(|e| db_failure(&e))?;
     let Some(transcript) = transcript else {
@@ -580,7 +696,13 @@ pub async fn session_brief(
 mod tests {
     use serde_json::json;
 
-    use super::{Caps, Link, Role, Transcript, Turn, assemble, collect_turns, render};
+    use cctui_proto::api::BriefResponse;
+
+    use super::{
+        BRIEF_FILE_NAME, BriefQuery, Caps, DEFAULT_CHAIN_MAX_BYTES, INLINE_MAX_BYTES, Link, Role,
+        Transcript, Turn, assemble, collect_turns, followup_envelope, parse_chain_max_bytes,
+        render,
+    };
 
     fn user(text: &str) -> (&'static str, serde_json::Value) {
         ("message", json!({"role": "user", "text": text}))
@@ -862,7 +984,7 @@ mod tests {
                 ],
             ),
         ];
-        let out = assemble(&links, Caps::default());
+        let out = assemble(&links, DEFAULT_CHAIN_MAX_BYTES);
         let sessions = out.sessions.as_deref().expect("sessions");
         let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["s-a", "s-b", "s-c"]);
@@ -886,7 +1008,7 @@ mod tests {
             hidden("s-x"),
             link("s-y", &[(Role::User, "(continued from session \"x\" s-x)\n\nask Y")]),
         ];
-        let out = assemble(&links, Caps::default());
+        let out = assemble(&links, DEFAULT_CHAIN_MAX_BYTES);
         let sessions = out.sessions.as_deref().expect("sessions");
         assert_eq!(sessions[0].name, None);
         assert_eq!(sessions[0].markdown, "(session s-x could not be included)");
@@ -897,33 +1019,215 @@ mod tests {
         assert!(out.markdown.starts_with("### Session 1 (s-x)\n\n(session s-x could not"));
     }
 
-    #[test]
-    fn a_long_chain_over_the_cap_keeps_the_root_ask_and_the_parent_tail() {
-        let body = "x".repeat(2048);
-        let links: Vec<Link> = (0..20)
-            .map(|i| {
-                let id = format!("s-{i:02}");
-                let mut turns: Vec<(Role, String)> = vec![(Role::User, format!("ask {i}"))];
-                for t in 0..10 {
-                    turns.push((Role::Assistant, format!("{body} s{i} t{t}")));
-                    turns.push((Role::User, format!("{body} s{i} u{t}")));
-                }
-                turns.push((Role::Assistant, format!("last of {i}")));
-                let turns = turns.into_iter().map(|(role, text)| Turn { role, text }).collect();
-                Link { id, transcript: Some(Transcript { name: format!("n{i}"), turns }) }
+    fn alternating(id: &str, prefix: &str, n: usize) -> Link {
+        let turns = (0..n)
+            .map(|i| Turn {
+                role: if i % 2 == 0 { Role::User } else { Role::Assistant },
+                text: format!("<{prefix}-{i:03}>"),
             })
             .collect();
-        let cap = 32 * 1024;
-        let out = assemble(&links, Caps { max_turns: 60, max_bytes: cap });
-        assert!(out.markdown.len() <= cap, "{} > {cap}", out.markdown.len());
-        assert!(out.truncated);
+        Link { id: id.into(), transcript: Some(Transcript { name: format!("n-{id}"), turns }) }
+    }
+
+    #[test]
+    fn a_chain_carries_every_turn_of_every_session_once_in_order() {
+        let links = [
+            alternating("s-a", "A", 200),
+            alternating("s-b", "B", 150),
+            alternating("s-c", "C", 12),
+        ];
+        let out = assemble(&links, DEFAULT_CHAIN_MAX_BYTES);
+        assert!(!out.truncated);
+        assert_eq!((out.turns, out.omitted), (362, 0));
+        let mut at = 0;
+        for (prefix, n) in [("A", 200), ("B", 150), ("C", 12)] {
+            for i in 0..n {
+                let needle = format!("<{prefix}-{i:03}>");
+                assert_eq!(out.markdown.matches(&needle).count(), 1, "{needle}");
+                let found = out.markdown.find(&needle).unwrap();
+                assert!(found > at, "{needle} out of order");
+                at = found;
+            }
+        }
+        assert!(out.markdown.contains("**User:**\n\n<A-000>"));
+        assert!(out.markdown.contains("**User:**\n\n<A-100>"));
+        let file = followup_envelope(out.sessions.as_deref().unwrap()).file.expect("file");
+        for needle in ["<A-000>", "<A-100>", "<A-199>", "<B-149>", "<C-011>"] {
+            assert_eq!(file.matches(needle).count(), 1, "{needle}");
+        }
+    }
+
+    #[test]
+    fn a_root_ask_over_8_kib_arrives_whole() {
+        let ask = format!("start{}end", "q".repeat(20 * 1024));
+        let links = [
+            link("s-a", &[(Role::User, ask.as_str()), (Role::Assistant, "ok")]),
+            link("s-b", &[(Role::User, "next")]),
+        ];
+        let out = assemble(&links, DEFAULT_CHAIN_MAX_BYTES);
         let sessions = out.sessions.as_deref().expect("sessions");
-        assert_eq!(sessions.len(), 20);
-        assert!(sessions[0].markdown.starts_with("**User:**\n\nask 0"), "{}", sessions[0].markdown);
-        assert!(sessions[19].markdown.ends_with("last of 19"), "{}", sessions[19].markdown);
-        assert!(sessions[19].markdown.contains("s19 u9"));
-        assert!(sessions.iter().any(|s| s.markdown.contains("turns omitted")));
-        assert!(sessions[1..19].iter().all(|s| s.omitted > 0));
+        assert!(sessions[0].markdown.starts_with(&format!("**User:**\n\n{ask}\n\n")));
+        let file = followup_envelope(sessions).file.expect("file");
+        assert!(file.contains(&ask));
+    }
+
+    fn sized(id: &str, ask: &str, n: usize) -> Link {
+        let body = "z".repeat(1024);
+        let mut turns = vec![Turn { role: Role::User, text: ask.to_owned() }];
+        turns.extend((0..n).map(|i| Turn {
+            role: if i % 2 == 0 { Role::Assistant } else { Role::User },
+            text: format!("[{id} {i:02}] {body}"),
+        }));
+        Link { id: id.into(), transcript: Some(Transcript { name: id.into(), turns }) }
+    }
+
+    #[test]
+    fn only_past_the_ceiling_are_turns_elided_keeping_the_root_ask_and_the_newest_session() {
+        let root_ask = format!("root ask {}", "r".repeat(10 * 1024));
+        let links: Vec<Link> = (0..5)
+            .map(|i| sized(&format!("s{i}"), if i == 0 { root_ask.as_str() } else { "ask" }, 40))
+            .collect();
+        let under = assemble(&links, DEFAULT_CHAIN_MAX_BYTES);
+        assert!(!under.truncated && !under.markdown.contains("turns elided"));
+
+        let ceiling = 64 * 1024;
+        let out = assemble(&links, ceiling);
+        assert!(out.markdown.len() <= ceiling, "{} > {ceiling}", out.markdown.len());
+        assert!(out.truncated);
+        assert!(out.markdown.contains("turns elided here: the follow-up chain is over its 64 KiB"));
+        let sessions = out.sessions.as_deref().expect("sessions");
+        assert!(sessions[0].markdown.starts_with(&format!("**User:**\n\n{root_ask}\n\n")));
+        assert!(sessions[0].omitted > 0);
+        let newest = &sessions[4];
+        assert_eq!((newest.omitted, newest.truncated), (0, false));
+        assert!(!newest.markdown.contains("turns elided"));
+        for i in 0..40 {
+            assert!(newest.markdown.contains(&format!("[s4 {i:02}]")), "s4 turn {i}");
+        }
+        let cut = &sessions[0].markdown;
+        let first = cut.find("[s0 00]");
+        let last = cut.find("[s0 39]");
+        let mark = cut.find("turns elided").expect("marker in the root");
+        assert!(first.is_none_or(|f| f < mark) && last.is_none_or(|l| l > mark), "{cut}");
+    }
+
+    #[test]
+    fn the_inline_tail_is_the_newest_turns_within_the_inline_budget() {
+        let links: Vec<Link> = (0..3).map(|i| sized(&format!("s{i}"), "ask", 120)).collect();
+        let out = assemble(&links, DEFAULT_CHAIN_MAX_BYTES);
+        let sessions = out.sessions.as_deref().expect("sessions");
+        let envelope = followup_envelope(sessions);
+        assert!(envelope.inline.len() <= INLINE_MAX_BYTES, "{}", envelope.inline.len());
+        let tail = sessions[2].tail.as_deref().expect("newest tail");
+        assert!(tail.starts_with("… ") && tail.contains("earlier turns are in the file"));
+        assert!(tail.ends_with(&format!("[s2 119] {}", "z".repeat(1024))));
+        assert!(sessions[0].tail.is_none());
+        assert!(envelope.inline.contains(BRIEF_FILE_NAME));
+        assert!(envelope.inline.contains("Read all of it"));
+        assert!(envelope.file.expect("file").contains("[s0 00]"));
+    }
+
+    /// Shared with `webui/src/lib/followup.test.ts`: both sides build this.
+    #[test]
+    fn the_envelope_is_the_one_the_webui_builds() {
+        let links = [
+            link("s-a", &[(Role::User, "ask A"), (Role::Assistant, "answer A")]),
+            hidden("s-x"),
+            Link {
+                id: "s-c".into(),
+                transcript: Some(Transcript {
+                    name: "c \"x\"".into(),
+                    turns: vec![Turn { role: Role::User, text: "ask C".into() }],
+                }),
+            },
+        ];
+        let out = assemble(&links, DEFAULT_CHAIN_MAX_BYTES);
+        let envelope = followup_envelope(out.sessions.as_deref().unwrap());
+        assert_eq!(
+            envelope.inline,
+            "<cctui-previous-sessions>\n\
+             <cctui-previous-conversation n=\"1\" session=\"n-s-a\" id=\"s-a\">\n\
+             In the attached file previous-conversation.md.\n\n\
+             **User:**\n\nask A\n\n**Assistant:**\n\nanswer A\n\
+             </cctui-previous-conversation>\n\
+             <cctui-previous-conversation n=\"2\" id=\"s-x\">\n\
+             In the attached file previous-conversation.md.\n\
+             </cctui-previous-conversation>\n\
+             <cctui-previous-conversation n=\"3\" session=\"c &quot;x&quot;\" id=\"s-c\">\n\
+             The whole conversation is in the attached file previous-conversation.md. Read all \
+             of it before you continue: it can be longer than one Read call returns, so keep \
+             reading until the end of the file.\n\n\
+             **User:**\n\nask C\n\
+             </cctui-previous-conversation>\n\
+             </cctui-previous-sessions>"
+        );
+        assert_eq!(
+            envelope.file.as_deref(),
+            Some(
+                "<cctui-previous-sessions>\n\
+                 <cctui-previous-conversation n=\"1\" session=\"n-s-a\" id=\"s-a\">\n\
+                 **User:**\n\nask A\n\n**Assistant:**\n\nanswer A\n\
+                 </cctui-previous-conversation>\n\
+                 <cctui-previous-conversation n=\"2\" id=\"s-x\">\n\
+                 (session s-x could not be included)\n\
+                 </cctui-previous-conversation>\n\
+                 <cctui-previous-conversation n=\"3\" session=\"c &quot;x&quot;\" id=\"s-c\">\n\
+                 **User:**\n\nask C\n\
+                 </cctui-previous-conversation>\n\
+                 </cctui-previous-sessions>\n"
+            )
+        );
+    }
+
+    #[test]
+    fn a_lone_session_stays_inline_until_it_outgrows_the_inline_budget() {
+        let small = assemble(&[link("s-a", &[(Role::User, "q")])], DEFAULT_CHAIN_MAX_BYTES);
+        let envelope = followup_envelope(small.sessions.as_deref().unwrap());
+        assert_eq!(
+            envelope.inline,
+            "<cctui-previous-conversation session=\"n-s-a\" id=\"s-a\">\n**User:**\n\nq\n\
+             </cctui-previous-conversation>"
+        );
+        assert_eq!(envelope.file, None);
+        let big = assemble(&[sized("s-a", "ask", 80)], DEFAULT_CHAIN_MAX_BYTES);
+        let envelope = followup_envelope(big.sessions.as_deref().unwrap());
+        assert!(envelope.inline.len() <= INLINE_MAX_BYTES);
+        assert!(envelope.inline.contains("Read all of it") && envelope.inline.contains("[s-a 79]"));
+        let file = envelope.file.expect("file");
+        assert!(file.contains("**User:**\n\nask") && file.contains("[s-a 00]"));
+    }
+
+    #[test]
+    fn an_old_client_chain_request_still_gets_a_valid_brief() {
+        let old: BriefQuery =
+            serde_json::from_value(json!({"chain": "1", "max_bytes": 512, "max_turns": 4}))
+                .unwrap();
+        assert!(old.chain());
+        let out = assemble(&[alternating("s-a", "A", 200)], DEFAULT_CHAIN_MAX_BYTES);
+        assert_eq!((out.turns, out.omitted, out.truncated), (200, 0, false));
+        let json = serde_json::to_value(&out).unwrap();
+        let back: BriefResponse = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(back.markdown, out.markdown);
+        for key in ["markdown", "turns", "omitted", "truncated", "sessions"] {
+            assert!(json.get(key).is_some(), "{key}");
+        }
+        let session = &json["sessions"][0];
+        for key in ["id", "name", "markdown", "turns", "omitted", "truncated"] {
+            assert!(session.get(key).is_some(), "{key}");
+        }
+        let legacy = json!({"id": "s", "name": null, "markdown": "m", "turns": 1, "omitted": 0,
+            "truncated": false});
+        let parsed: cctui_proto::api::BriefSession = serde_json::from_value(legacy).unwrap();
+        assert_eq!(parsed.tail, None);
+    }
+
+    #[test]
+    fn the_chain_ceiling_falls_back_on_anything_unusable() {
+        assert_eq!(parse_chain_max_bytes(None), DEFAULT_CHAIN_MAX_BYTES);
+        assert_eq!(parse_chain_max_bytes(Some(" ")), DEFAULT_CHAIN_MAX_BYTES);
+        assert_eq!(parse_chain_max_bytes(Some("nope")), DEFAULT_CHAIN_MAX_BYTES);
+        assert_eq!(parse_chain_max_bytes(Some("1024")), DEFAULT_CHAIN_MAX_BYTES);
+        assert_eq!(parse_chain_max_bytes(Some(" 8388608 ")), 8 * 1024 * 1024);
     }
 
     #[test]

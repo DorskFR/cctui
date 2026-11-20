@@ -3,22 +3,19 @@
 //! labels and auto-archive) and claimed when the worker registers; a daemon
 //! announcing it as a root never takes the relation back.
 
-use std::fmt::Write as _;
-
 use axum::Json;
 use axum::extract::{Path, State};
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
-use cctui_proto::api::{SessionThreadResponse, SpawnRequest, ThreadSession};
-use cctui_proto::injected::{PREVIOUS_CONVERSATION, PREVIOUS_SESSIONS};
+use cctui_proto::api::{BriefResponse, SessionThreadResponse, SpawnRequest, ThreadSession};
 
-use crate::brief::{self, Caps, Turn};
-#[path = "followup_thread.rs"]
-pub mod thread;
-
+use crate::brief;
 use crate::error::AppError;
 use crate::state::AppState;
+
+#[path = "followup_thread.rs"]
+pub mod thread;
 
 pub const RELATION: &str = "followup";
 
@@ -224,6 +221,9 @@ pub async fn claim_intent(pool: &PgPool, session_id: &str, spawn_key: Option<&st
                 %session_id, %parent, error = %e, "could not link the follow-up session"
             );
         }
+    }
+}
+
 /// `session_id` joins the line of `parent`: the parent becomes a root when it
 /// had no line yet, and the session takes the parent's root.
 async fn stamp_thread_root(
@@ -259,9 +259,6 @@ pub async fn thread_root_of(pool: &PgPool, id: &str) -> Result<Option<String>, s
     Ok(root.flatten())
 }
 
-    }
-}
-
 /// Reaper tick: drop intents whose spawn never registered.
 pub async fn sweep(pool: &PgPool) {
     let cutoff = chrono::Utc::now() - chrono::Duration::seconds(INTENT_TTL_SECS);
@@ -275,32 +272,6 @@ pub async fn sweep(pool: &PgPool) {
 }
 
 pub const DEFAULT_INSTRUCTION: &str = "Continue from this.";
-const MAX_ATTR_CHARS: usize = 200;
-/// Room for the brief's own elision line and cut marker.
-const ELISION_SLACK: usize = 64;
-
-fn attr(raw: &str) -> String {
-    let clipped: String = raw.chars().take(MAX_ATTR_CHARS).collect();
-    clipped.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;")
-}
-
-/// The first prompt of a follow-up of `parent_id`: the parent's brief in the
-/// previous-conversation wrapper, then `instruction`. The wrapper and brief
-/// together stay within [`brief::DEFAULT_MAX_BYTES`], so the prompt goes
-/// inline without the attachment the webui uses for a larger brief.
-#[must_use]
-pub fn followup_prompt(parent_id: &str, name: &str, turns: &[Turn], instruction: &str) -> String {
-    let tag = PREVIOUS_CONVERSATION;
-    let open = format!("<{tag} session=\"{}\" id=\"{}\">", attr(name), attr(parent_id));
-    let close = format!("</{tag}>");
-    let overhead = open.len() + close.len() + 2 + ELISION_SLACK;
-    let caps = Caps {
-        max_turns: brief::DEFAULT_MAX_TURNS,
-        max_bytes: brief::DEFAULT_MAX_BYTES.saturating_sub(overhead),
-    };
-    let markdown = brief::render(turns, caps).markdown;
-    format!("{open}\n{markdown}\n{close}\n\n{}", ask(instruction))
-}
 
 fn ask(instruction: &str) -> &str {
     match instruction.trim() {
@@ -309,59 +280,50 @@ fn ask(instruction: &str) -> &str {
     }
 }
 
-/// The first prompt of a follow-up of the chain `links` (root first): every
-/// session in its own numbered block inside the previous-sessions container,
-/// the same shape the webui builds, within [`brief::DEFAULT_MAX_BYTES`].
-#[must_use]
-pub fn chain_prompt(links: &[brief::Link], instruction: &str) -> String {
-    let opens: Vec<String> = links
-        .iter()
-        .enumerate()
-        .map(|(i, link)| {
-            let session = link
-                .transcript
-                .as_ref()
-                .map_or_else(String::new, |t| format!(" session=\"{}\"", attr(&t.name)));
-            format!("<{PREVIOUS_CONVERSATION} n=\"{}\"{session} id=\"{}\">", i + 1, attr(&link.id))
-        })
-        .collect();
-    let close = format!("</{PREVIOUS_CONVERSATION}>");
-    let overhead = 2 * PREVIOUS_SESSIONS.len()
-        + 8
-        + opens.iter().map(|open| open.len() + close.len() + 3).sum::<usize>()
-        + ELISION_SLACK;
-    let caps = Caps {
-        max_turns: brief::DEFAULT_MAX_TURNS,
-        max_bytes: brief::DEFAULT_MAX_BYTES.saturating_sub(overhead),
-    };
-    let sessions = brief::assemble(links, caps).sessions.unwrap_or_default();
-    let mut prompt = format!("<{PREVIOUS_SESSIONS}>\n");
-    for (open, session) in opens.iter().zip(&sessions) {
-        let _ = writeln!(prompt, "{open}\n{}\n{close}", session.markdown);
-    }
-    let _ = write!(prompt, "</{PREVIOUS_SESSIONS}>\n\n{}", ask(instruction));
-    prompt
+/// A follow-up's first prompt and the [`brief::BRIEF_FILE_NAME`] file it
+/// points at, staged as a bootstrap upload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowupPrompt {
+    pub prompt: String,
+    pub file: Option<String>,
 }
 
-/// The first prompt of a follow-up spawned without a client, from the stored
-/// chain ending at the parent: [`followup_prompt`] for a lone parent, else
-/// [`chain_prompt`]. Ancestors the parent's owner cannot read are one line.
-/// `None` when the parent does not exist.
+/// The same prompt and file the webui builds from this chain brief.
+#[must_use]
+pub fn followup_from_brief(brief: &BriefResponse, instruction: &str) -> FollowupPrompt {
+    let envelope = brief::followup_envelope(brief.sessions.as_deref().unwrap_or_default());
+    FollowupPrompt {
+        prompt: format!("{}\n\n{}", envelope.inline, ask(instruction)),
+        file: envelope.file,
+    }
+}
+
+/// The follow-up of the stored chain ending at `parent_session_id`, with
+/// ancestors `reader` may not read as one line. `None` when the parent does
+/// not exist.
+pub async fn followup_for(
+    pool: &PgPool,
+    reader: brief::Reader<'_>,
+    parent_session_id: &str,
+    instruction: &str,
+) -> Result<Option<FollowupPrompt>, sqlx::Error> {
+    let links = brief::load_chain(pool, reader, parent_session_id).await?;
+    if links.last().is_none_or(|l| l.transcript.is_none()) {
+        return Ok(None);
+    }
+    let chain = brief::assemble(&links, brief::chain_max_bytes());
+    Ok(Some(followup_from_brief(&chain, instruction)))
+}
+
+/// [`followup_for`] a follow-up spawned without a client, read as the
+/// parent's owner.
 pub async fn render_followup_prompt(
     pool: &PgPool,
     parent_session_id: &str,
     instruction: &str,
-) -> Result<Option<String>, sqlx::Error> {
+) -> Result<Option<FollowupPrompt>, sqlx::Error> {
     let owner = crate::authz::session_owner(parent_session_id, pool).await?;
-    let links = brief::load_chain(pool, brief::Reader::Owner(owner), parent_session_id).await?;
-    Ok(match links.as_slice() {
-        [] => None,
-        [only] => only
-            .transcript
-            .as_ref()
-            .map(|t| followup_prompt(&only.id, &t.name, &t.turns, instruction)),
-        _ => Some(chain_prompt(&links, instruction)),
-    })
+    followup_for(pool, brief::Reader::Owner(owner), parent_session_id, instruction).await
 }
 
 #[cfg(test)]

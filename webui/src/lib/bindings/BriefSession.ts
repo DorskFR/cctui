@@ -4,4 +4,9 @@
  * One session of a follow-up chain brief. An ancestor the caller cannot read
  * has no `name` and a one-line placeholder for `markdown`.
  */
-export type BriefSession = { id: string, name: string | null, markdown: string, turns: number, omitted: number, truncated: boolean, };
+export type BriefSession = { id: string, name: string | null, markdown: string, turns: number, omitted: number, truncated: boolean, 
+/**
+ * The newest turns of `markdown` that fit inline beside the pointer to
+ * the file holding the whole chain.
+ */
+tail?: string, };
