@@ -67,7 +67,8 @@
 		{disabled}
 		{size}
 		width="auto"
-		bind:value={() => value.unit, onUnit}
+		value={value.unit}
+		onchange={(e: Event) => onUnit((e.currentTarget as HTMLSelectElement).value)}
 		aria-label={m.autofollowup_unit_label()}
 	/>
 </span>
