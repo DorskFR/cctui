@@ -51,7 +51,8 @@ export default defineConfig({
 				'composer-inset.spec.ts',
 				'mobile-hscroll.spec.ts',
 				'cold-followup.spec.ts',
-				'followup-thread.spec.ts'
+				'followup-thread.spec.ts',
+				'auto-followup.spec.ts'
 			],
 			use: { baseURL: headerUrl }
 		},

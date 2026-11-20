@@ -7,6 +7,8 @@
 	import { Button, Field, Input, Text } from '@dorsk/tsumikit';
 	import KitFields from './KitFields.svelte';
 	import ContextPicker from '#lib/components/molecules/ContextPicker.svelte';
+	import AutoFollowupOverrideFields from '#lib/components/molecules/AutoFollowupOverrideFields.svelte';
+	import { INHERIT, isInherit } from '#lib/autoFollowup.ts';
 	import { useContextItems } from '#lib/queries/index.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
 	import { profileNameTaken, specChanges, specOf, type ProfileSpecForm } from './profiles';
@@ -96,6 +98,15 @@
 				by="id"
 				bind:value={() => draft.context_items ?? [], (v) => (draft.context_items = v)}
 				label={m.spawn_profile_context_label()}
+			/>
+		</Field>
+	{/if}
+
+	{#if hasFeature('automation')}
+		<Field label={m.autofollowup_profile_label()} hint={m.autofollowup_profile_help()}>
+			<AutoFollowupOverrideFields
+				value={draft.auto_followup ?? INHERIT}
+				onchange={(next) => (draft.auto_followup = isInherit(next) ? null : next)}
 			/>
 		</Field>
 	{/if}

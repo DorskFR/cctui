@@ -2,6 +2,7 @@
 	import { tick, untrack } from 'svelte';
 	import type { FollowupReason } from '@bindings/FollowupReason';
 	import type { FollowupResponse } from '@bindings/FollowupResponse';
+	import type { SendFollowup } from '@bindings/SendFollowup';
 	import { insertBlock } from './insertText';
 	import { splitDictated } from '#lib/voice/dictatedMark.ts';
 	import { insertAtCaret, quoteMarkdown } from './format';
@@ -16,7 +17,15 @@
 		useScheduledMessages,
 		useSessionAttachments
 	} from '#lib/queries/index.ts';
-	import { Button, FileButton, IconButton, InputGroup, Text, formatTimestamp } from '@dorsk/tsumikit';
+	import {
+		Button,
+		FileButton,
+		IconButton,
+		InputGroup,
+		Text,
+		formatTimestamp,
+		type MenuItem
+	} from '@dorsk/tsumikit';
 	import ArchivedActions from './ArchivedActions.svelte';
 	import ScheduleCustomModal from './ScheduleCustomModal.svelte';
 	import ScheduledMessages from './ScheduledMessages.svelte';
@@ -26,6 +35,7 @@
 	import SendButton from './SendButton.svelte';
 	import VoiceControls from './VoiceControls.svelte';
 	import { CacheColdClock } from './cacheCold.svelte';
+	import { followupDue } from './contextMeter';
 	import { PromptAttachments } from '#lib/promptAttachments.svelte.ts';
 	import { filePickGuard } from '#lib/filePickGuard.ts';
 	import { scheduleBody } from './scheduleBody';
@@ -67,7 +77,7 @@
 		supportsAttachments: boolean;
 		scroll: ScrollController;
 		// Send a final message body (text + any appended staged-attachment paths).
-		onsend: (body: string, dictated?: boolean) => void;
+		onsend: (body: string, dictated?: boolean, followup?: SendFollowup) => void;
 		// Upload staged attachments, returning their absolute paths.
 		stageFiles: (files: File[]) => Promise<{ paths: string[] }>;
 		onNewFromScript: () => void;
@@ -162,11 +172,28 @@
 	const coldItems = $derived(
 		route === 'send'
 			? null
-			: { burstTokens, canSend: canSchedule && !launching, onsendhere: send, onoptions: followup }
+			: { burstTokens, canSend: canSchedule && !launching, onsendhere: sendHere, onoptions: followup }
+	);
+	// A cold route already follows up; this labels the server's context rule on a plain send.
+	const autoFollowupTokens = $derived(
+		route === 'send' && !archived && followupDue(session) ? (session.context_tokens ?? null) : null
+	);
+	const autoItems = $derived<MenuItem[]>(
+		autoFollowupTokens === null
+			? []
+			: [
+					{
+						id: 'send-here',
+						label: m.autofollowup_send_here(),
+						icon: 'send',
+						disabled: !canSchedule,
+						onselect: sendHere
+					}
+				]
 	);
 	const scheduleItems = $derived.by(() => {
-		if (!schedulingOn) return coldItems ? coldSendItems(coldItems) : [];
-		return scheduleMenuItems({
+		if (!schedulingOn) return coldItems ? coldSendItems(coldItems) : autoItems;
+		const items = scheduleMenuItems({
 			now: cache.now,
 			canSchedule,
 			scheduledCount,
@@ -178,6 +205,7 @@
 			onlist: () => scheduledEl?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }),
 			cold: coldItems
 		});
+		return [...autoItems, ...items];
 	});
 
 	async function scheduleAt(at: Date) {
@@ -354,7 +382,11 @@
 		msgHistory.push(session.id, body);
 	}
 
-	async function send() {
+	function sendHere() {
+		void send('never');
+	}
+
+	async function send(followup: SendFollowup = 'auto') {
 		const text = input.trim();
 		// Attachments alone are a valid message (the staged paths become the body).
 		if ((!text && att.files.length === 0) || archived || att.uploading || att.images.pending.length)
@@ -364,14 +396,14 @@
 			return;
 		}
 		const body = await att.stage(text, stageFiles);
-		if (body !== null) sendBody(body);
+		if (body !== null) sendBody(body, followup);
 	}
 
 	// Hand the final body off to the parent's send orchestration, then clear the
 	// composer + record the sent message in history.
-	function sendBody(text: string) {
+	function sendBody(text: string, followup: SendFollowup) {
 		if (!text || archived) return;
-		onsend(text, dictatedDraft);
+		onsend(text, dictatedDraft, followup);
 		clearSent(text);
 	}
 
@@ -437,7 +469,7 @@
 				<Text tone="muted" size="sm">
 					{#if route === 'launch'}
 						{m.composer_followup_auto_offer()}
-						<Button variant="link" size="sm" onclick={() => void send()}
+						<Button variant="link" size="sm" onclick={sendHere}
 							>{m.composer_followup_send_here_link()}</Button
 						>
 					{:else}
@@ -508,9 +540,10 @@
 					coldImminent={cache.imminent}
 					coldCountdownSecs={cache.countdownSecs}
 					{burstTokens}
+					{autoFollowupTokens}
 					{route}
 					{launching}
-					menu={schedulingOn || coldItems !== null}
+					menu={schedulingOn || coldItems !== null || autoFollowupTokens !== null}
 					onclick={submit}
 				/>
 			{/snippet}

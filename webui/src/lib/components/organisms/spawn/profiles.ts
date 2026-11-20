@@ -1,5 +1,7 @@
 import type { SessionProfile } from '@bindings/SessionProfile';
 import type { AccountPoolView } from '@bindings/AccountPoolView';
+import type { AutoFollowupOverride } from '@bindings/AutoFollowupOverride';
+import { clampOverride, isInherit, sameOverride } from '#lib/autoFollowup.ts';
 import type { AccountUsageEntry, OAuthAccount } from '#lib/queries/index.ts';
 import { headlinePct } from '#lib/components/molecules/usage-battery.logic.ts';
 import {
@@ -26,6 +28,8 @@ export interface ProfileSpecForm {
 	service_tier: string | null;
 	/** Pinned context item ids. */
 	context_items?: string[];
+	/** Null inherits the user's setting. */
+	auto_followup?: AutoFollowupOverride | null;
 }
 
 export const SPEC_FIELDS = [
@@ -77,7 +81,8 @@ export function specOf(p: SessionProfile): ProfileSpecForm {
 		effort: blank(p.effort),
 		permission_mode: blank(p.permission_mode),
 		service_tier: blank(p.service_tier),
-		context_items: [...(p.context_items ?? [])]
+		context_items: [...(p.context_items ?? [])],
+		auto_followup: isInherit(p.auto_followup) ? null : clampOverride(p.auto_followup)
 	};
 }
 
@@ -168,7 +173,12 @@ export function specChanges(a: ProfileSpecForm, b: ProfileSpecForm): number {
 	const pinsA = new Set(a.context_items ?? []);
 	const pinsB = new Set(b.context_items ?? []);
 	const pinsDiffer = pinsA.size !== pinsB.size || [...pinsA].some((id) => !pinsB.has(id));
-	return SPEC_FIELDS.filter((f) => (a[f] ?? null) !== (b[f] ?? null)).length + (pinsDiffer ? 1 : 0);
+	const followupDiffers = !sameOverride(a.auto_followup, b.auto_followup);
+	return (
+		SPEC_FIELDS.filter((f) => (a[f] ?? null) !== (b[f] ?? null)).length +
+		(pinsDiffer ? 1 : 0) +
+		(followupDiffers ? 1 : 0)
+	);
 }
 
 export function sameSpec(a: ProfileSpecForm, b: ProfileSpecForm): boolean {

@@ -52,6 +52,7 @@ import type { ForkRequest } from "@bindings/ForkRequest";
 import type { ForkResponse } from "@bindings/ForkResponse";
 import type { BriefResponse } from "@bindings/BriefResponse";
 import type { SessionThreadResponse } from "@bindings/SessionThreadResponse";
+import type { AutoFollowupOverride } from "@bindings/AutoFollowupOverride";
 import type { FollowupRequest } from "@bindings/FollowupRequest";
 import type { FollowupResponse } from "@bindings/FollowupResponse";
 import type { ThreadConversationPage } from "@bindings/ThreadConversationPage";
@@ -500,6 +501,9 @@ export const endpoints = {
    *  The same `idempotency_key` again answers the same op. */
   followup: (id: string, body: FollowupRequest) =>
     api.post<FollowupResponse>(`/sessions/${id}/followup`, body),
+  /** Both fields null clears this session's override. */
+  setAutoFollowup: (id: string, body: AutoFollowupOverride) =>
+    api.put<SessionListItem>(`/sessions/${id}/auto-followup`, body),
   /** Find-in-conversation hit list for ONE session, oldest → newest. The
    *  server is the source of truth for the total: the DOM only holds the
    *  currently paged window. */

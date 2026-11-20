@@ -4,6 +4,7 @@
 	import SettingGroup from '#lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '#lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '#lib/components/molecules/SettingSection.svelte';
+	import AutoFollowupGroup from './AutoFollowupGroup.svelte';
 	import { settings } from '#lib/settings.svelte.ts';
 	import { clampFollowupWhenCold } from '#lib/followup.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
@@ -72,4 +73,7 @@
 			/>
 		</SettingRow>
 	</SettingGroup>
+	{#if hasFeature('automation') && hasFeature('machine_spawn')}
+		<AutoFollowupGroup />
+	{/if}
 </SettingSection>
