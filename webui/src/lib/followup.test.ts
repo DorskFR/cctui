@@ -5,6 +5,7 @@ import {
 	BRIEF_FILE_NAME,
 	INLINE_BRIEF_MAX_BYTES,
 	clampFollowupWhenCold,
+	followupName,
 	followupPrefill,
 	followupPrompt,
 	followupSpawnRequest,
@@ -156,6 +157,51 @@ describe('followupPrefill', () => {
 		expect(p.prompt).toContain('brief');
 		expect(p).not.toHaveProperty('permission_mode');
 		expect(p).not.toHaveProperty('followup_file');
+		expect(p).not.toHaveProperty('name');
+	});
+
+	it('prefills the bumped custom label', () => {
+		const custom = { ...session, name: 'deploy fix 2', metadata: { name_source: 'user' } } as SessionListItem;
+		expect(followupPrefill(custom, 'brief').name).toBe('deploy fix 3');
+	});
+});
+
+describe('followupName parses the parent name, not the thread', () => {
+	const named = (name: string | null, metadata: Record<string, unknown> | null = { name_source: 'user' }) => ({
+		name,
+		metadata
+	}) as unknown as SessionListItem;
+
+	it('appends 2 to a custom label', () => {
+		expect(followupName(named('deploy fix'))).toBe('deploy fix 2');
+	});
+
+	it('bumps a trailing counter instead of stacking a second one', () => {
+		expect(followupName(named('deploy fix 2'))).toBe('deploy fix 3');
+		expect(followupName(named('deploy fix 9'))).toBe('deploy fix 10');
+	});
+
+	it('leaves an auto title or a missing name unnamed', () => {
+		expect(followupName(named('Fix the parser', { agent_title: 'Fix the parser' }))).toBe('');
+		expect(followupName(named('Fix the parser', null))).toBe('');
+		expect(followupName(named(null))).toBe('');
+		expect(followupName(named('   '))).toBe('');
+	});
+
+	it('takes the pinned title when the row lost its name', () => {
+		expect(followupName(named(null, { name_source: 'user', custom_title: 'lane d' }))).toBe('lane d 2');
+	});
+
+	it('treats a version or a ticket-like number as part of the label', () => {
+		expect(followupName(named('v0.32'))).toBe('v0.32 2');
+		expect(followupName(named('release 0.32'))).toBe('release 0.32 2');
+		expect(followupName(named('CCT 1940'))).toBe('CCT 1940 2');
+		expect(followupName(named('run 05'))).toBe('run 05 2');
+	});
+
+	it('names two follow-ups of one parent alike', () => {
+		const parent = named('deploy fix');
+		expect(followupName(parent)).toBe(followupName(parent));
 	});
 });
 
@@ -235,7 +281,13 @@ describe('followupSpawnRequest', () => {
 			parent_session_id: 's1'
 		});
 		expect(body.prompt?.endsWith('go on')).toBe(true);
+		expect(body.name).toBeNull();
 		expect(files).toEqual([]);
+	});
+
+	it('names the launched follow-up after a custom label', () => {
+		const custom = { ...source, name: 'deploy fix', metadata: { name_source: 'user' } } as SessionListItem;
+		expect(followupSpawnRequest(followupPrefill(custom, 'brief')).body.name).toBe('deploy fix 2');
 	});
 
 	it('lets the server pick an account when the source had none, and ships an oversized brief as a file', () => {
@@ -280,6 +332,13 @@ describe('launchFollowup', () => {
 		);
 		expect(d.awaitSpawn).toHaveBeenCalledWith('c1', 'new');
 		expect(d.archive).toHaveBeenCalledWith('src');
+	});
+
+	it('names the cold-cache follow-up after the source label', async () => {
+		const d = deps();
+		const custom = { ...source, name: 'deploy fix 2', metadata: { name_source: 'user' } } as SessionListItem;
+		await launchFollowup(custom, 'next step', d);
+		expect(d.spawn).toHaveBeenCalledWith(expect.objectContaining({ name: 'deploy fix 3' }), []);
 	});
 
 	it('embeds the whole chain the brief returns', async () => {
