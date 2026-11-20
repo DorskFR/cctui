@@ -194,8 +194,8 @@ export function removeFileByName(files: File[], name: string): File[] {
 /** Validate a file list against the caps; returns a human error or '' if ok. */
 export function fileCapError(files: File[], caps: UploadCaps = DEFAULT_UPLOAD_CAPS): string {
 	const total = files.reduce((n, f) => n + f.size, 0);
-	if (files.some((f) => f.size > caps.max_file_bytes))
-		return `A file exceeds the ${fmtSize(caps.max_file_bytes)} per-file cap`;
+	const big = files.find((f) => f.size > caps.max_file_bytes);
+	if (big) return `“${big.name}” exceeds the ${fmtSize(caps.max_file_bytes)} per-file cap`;
 	if (files.length > caps.max_files) return `Too many files (max ${caps.max_files})`;
 	if (total > caps.max_total_bytes)
 		return `Attachments exceed the ${fmtSize(caps.max_total_bytes)} total cap`;
@@ -223,6 +223,35 @@ const MIME_EXT: Record<string, string> = {
 	'image/tiff': 'tiff',
 	'application/pdf': 'pdf'
 };
+const EXT_MIME: Record<string, string> = {
+	jpg: 'image/jpeg',
+	jpeg: 'image/jpeg',
+	png: 'image/png',
+	gif: 'image/gif',
+	webp: 'image/webp',
+	bmp: 'image/bmp',
+	avif: 'image/avif',
+	heic: 'image/heic',
+	heif: 'image/heif',
+	tif: 'image/tiff',
+	tiff: 'image/tiff',
+	pdf: 'application/pdf'
+};
+
+export const isHeic = (f: File): boolean =>
+	/^image\/hei[cf](-sequence)?$/i.test(f.type) || (!f.type && /\.hei[cf]$/i.test(f.name));
+
+/** Camera captures can arrive with no MIME type or no name: infer the type
+ *  from the extension and name a nameless file, since staging rejects an
+ *  empty name and only typed images are referenced as images. */
+export function normalizePicked(f: File): File {
+	const stem = f.type.startsWith('image/') ? 'photo' : 'file';
+	const name = f.name?.trim() ? f.name : `${stem}.${f.type ? extForType(f.type) : 'bin'}`;
+	const type = f.type || EXT_MIME[name.split('.').pop()?.toLowerCase() ?? ''] || '';
+	if (name === f.name && type === f.type) return f;
+	return new File([f], name, { type, lastModified: f.lastModified });
+}
+
 export function extForType(type: string): string {
 	if (MIME_EXT[type]) return MIME_EXT[type];
 	const sub = type.split('/')[1]?.split(';')[0];

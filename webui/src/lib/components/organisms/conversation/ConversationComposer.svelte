@@ -28,6 +28,7 @@
 	import VoiceControls from './VoiceControls.svelte';
 	import { CacheColdClock } from './cacheCold.svelte';
 	import { PromptAttachments } from '#lib/promptAttachments.svelte.ts';
+	import { filePickGuard } from '#lib/filePickGuard.ts';
 	import { scheduleBody } from './scheduleBody';
 	import { coldSendItems, scheduleMenuItems } from './scheduleMenu';
 	import { parseCustom, toLocalInput } from './scheduleTimes';
@@ -122,6 +123,7 @@
 		stagedNames: () => (stagedQuery.data ?? []).map((a) => a.name),
 		el: () => scroll.textarea
 	});
+	const pickGuard = filePickGuard(() => toasts.error(m.attach_pick_lost()));
 	export function addFiles(incoming: File[]) {
 		att.add(incoming);
 	}
@@ -430,6 +432,7 @@
 	class="composer"
 	data-journey="composer"
 	{@attach composerClearance}
+	{@attach pickGuard}
 	class:dropping={att.dragActive}
 	class:compact
 	onfocusin={() => (focused = true)}
