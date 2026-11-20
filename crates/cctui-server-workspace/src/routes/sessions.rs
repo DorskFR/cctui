@@ -2782,9 +2782,10 @@ pub async fn get_conversation(
         let cursor = crate::followup::thread::parse_cursor(thread.cursor.as_deref())?;
         let reader = crate::followup::thread::Reader::Caller(&ctx);
         let limit = params.limit.unwrap_or(crate::followup::thread::DEFAULT_PAGE);
-        let page = crate::followup::thread::conversation(&state, reader, &session_id, cursor, limit)
-            .await?
-            .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "session not found"))?;
+        let page =
+            crate::followup::thread::conversation(&state, reader, &session_id, cursor, limit)
+                .await?
+                .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "session not found"))?;
         return Ok(crate::http_cache::json_with_etag(&req_headers, &page));
     }
     let adapter: Option<String> =

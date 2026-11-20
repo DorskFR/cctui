@@ -11,7 +11,9 @@ use cctui_proto::thread::{
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
-use crate::routes::sessions::{ConversationOrder, ConversationQuery, client_events, renderable_rows};
+use crate::routes::sessions::{
+    ConversationOrder, ConversationQuery, client_events, renderable_rows,
+};
 use crate::state::AppState;
 
 pub const DEFAULT_PAGE: i64 = 200;

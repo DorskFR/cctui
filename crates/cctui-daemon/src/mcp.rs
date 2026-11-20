@@ -1471,7 +1471,8 @@ mod tests {
         let schema = history_tool_schema();
         assert_eq!(schema["inputSchema"]["required"], json!(["session_id"]));
         let props = schema["inputSchema"]["properties"].as_object().unwrap();
-        let keys = ["session_id", "before", "after", "limit", "roles", "format", "thread", "cursor"];
+        let keys =
+            ["session_id", "before", "after", "limit", "roles", "format", "thread", "cursor"];
         for key in keys {
             assert!(props.contains_key(key), "{key} missing from the schema");
         }

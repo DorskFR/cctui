@@ -598,9 +598,8 @@ async fn a_chain_followup_stages_the_same_file_as_the_webui_path() {
         .unwrap();
     }
     let ask = instruction(&preset(true), "[cctui inbox: 1 event]\n1. (schedule, x) nightly");
-    let out = spawn_prompt(&pool, &Plan::Followup { parent: parent.clone() }, ask.clone())
-        .await
-        .unwrap();
+    let out =
+        spawn_prompt(&pool, &Plan::Followup { parent: parent.clone() }, ask.clone()).await.unwrap();
 
     let ctx = crate::auth::AuthContext {
         user_id: user,

@@ -198,11 +198,8 @@ pub fn render_thread(
         blocks.push(text);
     }
     blocks.reverse();
-    let next_cursor = if truncated {
-        oldest
-    } else {
-        page.next_cursor.as_deref().and_then(ThreadCursor::parse)
-    };
+    let next_cursor =
+        if truncated { oldest } else { page.next_cursor.as_deref().and_then(ThreadCursor::parse) };
     let mut text = format!(
         "# follow-up line of `{}`\n\nroot: `{}` · {} generation(s)\n\n",
         page.head,
@@ -212,10 +209,8 @@ pub fn render_thread(
     text.push_str(&blocks.join("\n\n"));
     text.push('\n');
     if let Some(cursor) = next_cursor {
-        let _ = writeln!(
-            text,
-            "\n[older entries: call again with thread=true, cursor=\"{cursor}\"]"
-        );
+        let _ =
+            writeln!(text, "\n[older entries: call again with thread=true, cursor=\"{cursor}\"]");
     }
     RenderedThread { text, events, next_cursor, truncated }
 }
