@@ -70,11 +70,7 @@ async fn readable(reader: Reader<'_>, id: &str, pool: &PgPool) -> Result<bool, A
 }
 
 /// Archived generations included; empty when `id` is unknown.
-pub async fn line_of(
-    pool: &PgPool,
-    reader: Reader<'_>,
-    id: &str,
-) -> Result<Vec<Member>, AppError> {
+pub async fn line_of(pool: &PgPool, reader: Reader<'_>, id: &str) -> Result<Vec<Member>, AppError> {
     let ids = super::chain_of(pool, id).await?;
     let rows: Vec<MemberRow> = sqlx::query_as(LINE_SQL).bind(&ids).fetch_all(pool).await?;
     let mut line = Vec::with_capacity(rows.len());
