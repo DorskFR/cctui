@@ -441,10 +441,10 @@ pub async fn spawn_prompt(
     plan: &Plan,
     instruction: String,
 ) -> sqlx::Result<FollowupPrompt> {
-    let plain = |prompt| FollowupPrompt { prompt, file: None };
-    let Plan::Followup { parent } = plan else { return Ok(plain(instruction)) };
+    let without_brief = |prompt| FollowupPrompt { prompt, file: None };
+    let Plan::Followup { parent } = plan else { return Ok(without_brief(instruction)) };
     let rendered = crate::followup::render_followup_prompt(pool, parent, &instruction).await?;
-    Ok(rendered.unwrap_or_else(|| plain(instruction)))
+    Ok(rendered.unwrap_or_else(|| without_brief(instruction)))
 }
 
 pub(super) fn brief_upload(
