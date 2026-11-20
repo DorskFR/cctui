@@ -14,6 +14,7 @@ describe("voice preferences", () => {
       voice: "  ",
       bargeIn: false,
       autoPlayVoiceNotes: true,
+      replyDelayMs: 99_999,
     });
     expect(v).toEqual({ ...DEFAULT_VOICE, bargeIn: false, autoPlayVoiceNotes: true });
   });
@@ -26,6 +27,14 @@ describe("voice preferences", () => {
     const v = mergeVoice({ speakerId: "  ", language: "de" as never });
     expect(v.speakerId).toBeUndefined();
     expect(v.language).toBe("auto");
+  });
+
+  it("keeps a reply delay within range, zero included", () => {
+    expect(mergeVoice({ replyDelayMs: 0 }).replyDelayMs).toBe(0);
+    expect(mergeVoice({ replyDelayMs: 2500 }).replyDelayMs).toBe(2500);
+    expect(mergeVoice({ replyDelayMs: -1 }).replyDelayMs).toBe(DEFAULT_VOICE.replyDelayMs);
+    expect(mergeVoice({ replyDelayMs: 1.5 }).replyDelayMs).toBe(DEFAULT_VOICE.replyDelayMs);
+    expect(mergeVoice({ replyDelayMs: "800" as never }).replyDelayMs).toBe(800);
   });
 
   it("keeps valid choices", () => {

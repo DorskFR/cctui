@@ -34,6 +34,9 @@ pub enum VoiceState {
 pub enum VoiceClientMsg {
     /// Barge-in: stop speaking now and, when `barge_in` is on, cut the turn.
     Interrupt {},
+    /// Stop speaking the reply in progress, which the user talked over,
+    /// without cutting the turn.
+    Skip {},
     /// The next binary frame is a non-final part of the utterance; a binary
     /// frame without this marker ends it, so a bare binary is a whole utterance.
     Part {},
@@ -98,6 +101,8 @@ mod tests {
     fn frames_use_a_type_tag() {
         let json = serde_json::to_string(&VoiceClientMsg::Interrupt {}).unwrap();
         assert_eq!(json, r#"{"type":"interrupt"}"#);
+        let skip: VoiceClientMsg = serde_json::from_str(r#"{"type":"skip"}"#).unwrap();
+        assert_eq!(skip, VoiceClientMsg::Skip {});
         let mode: VoiceClientMsg =
             serde_json::from_str(r#"{"type":"mode","barge_in":false,"spoken_style":"verbose"}"#)
                 .unwrap();

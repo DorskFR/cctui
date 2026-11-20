@@ -36,7 +36,7 @@ function render(stt: boolean, tts: boolean) {
 
 const STT_ROWS = ['Microphone', 'Voice input', 'Send dictation automatically'];
 const TTS_ROWS = ['Auto-play voice notes', 'Speaker', 'Playback speed'];
-const LIVE_ROWS = ['Interrupt by talking', 'Spoken reply style'];
+const LIVE_ROWS = ['Interrupt by talking', 'Wait before replying', 'Spoken reply style'];
 
 describe('VoiceSection follows the speech capabilities', () => {
 	it('renders nothing without a speech service', () => {

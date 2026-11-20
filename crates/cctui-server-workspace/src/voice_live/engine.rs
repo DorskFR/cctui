@@ -646,6 +646,11 @@ impl Turns {
         self.cut_below = self.current + u64::from(self.open) + self.pending;
     }
 
+    /// Cuts the open turn only: a prompt already sent keeps its reply.
+    fn cut_open(&mut self) {
+        self.cut_below = self.cut_below.max(self.current + u64::from(self.open));
+    }
+
     const fn is_cut(&self, id: u64) -> bool {
         id < self.cut_below
     }
@@ -860,7 +865,7 @@ impl<B: VoiceBackend> Engine<B> {
         }
     }
 
-    async fn barge_in(&mut self) {
+    fn silence(&mut self) {
         self.generation += 1;
         self.synth = spawn_synth(
             self.backend.clone(),
@@ -872,8 +877,12 @@ impl<B: VoiceBackend> Engine<B> {
         );
         self.queued = 0;
         self.reset_stream();
-        *self.probe() = None;
         self.speaking = false;
+    }
+
+    async fn barge_in(&mut self) {
+        self.silence();
+        *self.probe() = None;
         if self.turn_active {
             self.turns.cut();
         }
@@ -887,9 +896,16 @@ impl<B: VoiceBackend> Engine<B> {
         self.emit_state().await;
     }
 
+    async fn skip(&mut self) {
+        self.silence();
+        self.turns.cut_open();
+        self.emit_state().await;
+    }
+
     async fn control(&mut self, msg: VoiceClientMsg) {
         match msg {
             VoiceClientMsg::Interrupt {} => self.barge_in().await,
+            VoiceClientMsg::Skip {} => self.skip().await,
             VoiceClientMsg::Mode { barge_in, spoken_style, voice, speed, language } => {
                 let rewarm = {
                     let mut p =
@@ -1627,6 +1643,49 @@ mod tests {
         assert!(!frames.contains(&state(VoiceState::Thinking)), "the reply was cut: {frames:?}");
         assert_eq!(Mock::log(&h.mock.interrupts), 0);
         assert_eq!(Mock::log(&h.mock.sent).len(), 1);
+    }
+
+    /// A reply being spoken, then a second prompt spoken over it.
+    async fn talked_over_reply(stall: bool) -> Harness {
+        let mock = Mock { transcript: Mutex::new("go".into()), stall, ..Mock::default() };
+        let mut h = start(mock, Prefs { barge_in: true, ..Prefs::default() }).await;
+        h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
+        h.collect_until(is_transcript).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        h.signals.send(turn_start()).await.unwrap();
+        h.signals.send(Signal::Text("Alpha.".into())).await.unwrap();
+        h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(b"Alpha."))).await;
+        h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
+        h.collect_until(is_transcript).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(Mock::log(&h.mock.sent).len(), 2);
+        h
+    }
+
+    #[tokio::test]
+    async fn a_skip_silences_the_talked_over_reply_but_not_the_turn_nor_the_next_reply() {
+        let mut h = talked_over_reply(true).await;
+        h.inbound.send(Inbound::Control(VoiceClientMsg::Skip {})).await.unwrap();
+        h.signals.send(Signal::Text("Leftover.".into())).await.unwrap();
+        h.signals.send(Signal::TurnEnd).await.unwrap();
+        h.signals.send(turn_start()).await.unwrap();
+        h.signals.send(Signal::Text("Fresh.".into())).await.unwrap();
+        h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(b"Fresh."))).await;
+        assert_eq!(Mock::log(&h.mock.synthesized), vec!["Alpha.", "Fresh."]);
+        assert_eq!(Mock::log(&h.mock.interrupts), 0);
+    }
+
+    #[tokio::test]
+    async fn a_skip_after_the_talked_over_turn_ended_leaves_the_next_reply_alone() {
+        let mut h = talked_over_reply(false).await;
+        h.signals.send(Signal::TurnEnd).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        h.inbound.send(Inbound::Control(VoiceClientMsg::Skip {})).await.unwrap();
+        h.signals.send(turn_start()).await.unwrap();
+        h.signals.send(Signal::Text("Fresh.".into())).await.unwrap();
+        h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(b"Fresh."))).await;
+        assert_eq!(Mock::log(&h.mock.synthesized), vec!["Alpha.", "Fresh."]);
+        assert_eq!(Mock::log(&h.mock.interrupts), 0);
     }
 
     #[tokio::test]

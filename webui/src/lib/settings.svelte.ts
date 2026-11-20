@@ -506,6 +506,8 @@ export interface VoiceSettings {
   inputMode: VoiceInputMode;
   autoSend: boolean;
   bargeIn: boolean;
+  /** How long after the user stops talking a held live reply starts. */
+  replyDelayMs: number;
   spokenStyle: VoiceSpokenStyle;
   /** Read a summary of long messages instead of all of them. */
   summarizeLong: boolean;
@@ -518,13 +520,17 @@ export const DEFAULT_VOICE: VoiceSettings = {
   inputMode: "push",
   autoSend: false,
   bargeIn: false,
+  replyDelayMs: 1000,
   spokenStyle: "brief",
   summarizeLong: true,
 };
 
+export const MAX_REPLY_DELAY_MS = 5000;
+
 export function mergeVoice(v: Partial<VoiceSettings> | undefined): VoiceSettings {
   const raw = v ?? {};
   const speed = Number(raw.speed);
+  const replyDelayMs = Number(raw.replyDelayMs);
   const id = (v: unknown) => typeof v === "string" ? v.trim() : "";
   const voice = id(raw.voice);
   const micId = id(raw.micId);
@@ -542,6 +548,10 @@ export function mergeVoice(v: Partial<VoiceSettings> | undefined): VoiceSettings
     inputMode: raw.inputMode === "handsfree" ? "handsfree" : "push",
     autoSend: raw.autoSend === true,
     bargeIn: raw.bargeIn === true,
+    replyDelayMs:
+      Number.isInteger(replyDelayMs) && replyDelayMs >= 0 && replyDelayMs <= MAX_REPLY_DELAY_MS
+        ? replyDelayMs
+        : DEFAULT_VOICE.replyDelayMs,
     spokenStyle:
       raw.spokenStyle === "normal" || raw.spokenStyle === "verbose"
         ? raw.spokenStyle

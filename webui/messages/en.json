@@ -2686,6 +2686,8 @@
 	"settings_voice_autosend_help": "Send the transcribed message as soon as you stop talking instead of leaving it in the composer.",
 	"settings_voice_bargein_label": "Interrupt by talking",
 	"settings_voice_bargein_help": "Speaking while a reply is being read aloud stops the playback. Use headphones: through speakers the reply itself is heard by the microphone and cuts itself off.",
+	"settings_voice_reply_delay_label": "Wait before replying",
+	"settings_voice_reply_delay_help": "A reply that arrives while you are talking waits until you stop, then this long. If you send a new message meanwhile, it is not read out.",
 	"settings_voice_style_label": "Spoken reply style",
 	"settings_voice_style_help": "How long replies should be when they are meant to be heard.",
 	"settings_voice_style_brief": "Brief",
