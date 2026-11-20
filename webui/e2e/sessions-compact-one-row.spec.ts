@@ -47,6 +47,8 @@ for (const width of [472, 400, 320]) {
 				const time = shown(card.querySelector('.time'));
 				const spill = [...card.querySelectorAll('*')]
 					.filter((el) => {
+						if (el.getAttribute('aria-hidden') === 'true' && getComputedStyle(el).position === 'absolute')
+							return false;
 						const b = el.getBoundingClientRect();
 						return b.width > 0 && b.right > edge;
 					})
