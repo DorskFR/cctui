@@ -302,21 +302,24 @@ async fn a_stale_approval_dismisses_without_confirm() {
 }
 
 #[tokio::test]
-async fn read_all_leaves_notices_with_actions_unread() {
+async fn read_all_reads_every_notice_and_keeps_actions_answerable() {
     let Some(state) = state("notif_routes_read_all").await else { return };
     let alice = user(&state).await;
     let approval = notice(&state, alice, "approval", approve_reject()).await;
     let info = notice(&state, alice, "outcome_result", json!([])).await;
 
     let Json(bulk) = read_all(State(state.clone()), Extension(caller(alice))).await.unwrap();
-    assert_eq!((bulk.read, bulk.unread), (1, 1));
+    assert_eq!((bulk.read, bulk.unread), (2, 0));
     assert_eq!(row(&state, info).await.state, "read");
-    assert_eq!(row(&state, approval).await.state, "pending");
+    let still_open = row(&state, approval).await;
+    assert_eq!(still_open.state, "read");
+    assert!(store::needs_answer(&still_open));
+    assert_eq!(listed(&state, alice, ListQuery::default()).await.notifications.len(), 2);
 
-    let Json(one) =
-        read(State(state.clone()), Extension(caller(alice)), Path(approval)).await.unwrap();
-    assert!(one.applied);
-    assert_eq!(listed(&state, alice, ListQuery::default()).await.unread, 0);
+    let answered = act_as(&state, alice, approval, "approve").await.unwrap();
+    assert!(answered.applied);
+    assert_eq!(answered.notification.decision.as_deref(), Some("approve"));
+    assert!(!store::needs_answer(&answered.notification));
     drop_users(&state, &[alice]).await;
 }
 

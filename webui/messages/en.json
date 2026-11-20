@@ -1114,6 +1114,7 @@
 	"notif_center_empty_description": "You are all caught up.",
 	"notif_center_empty_title": "No notifications",
 	"notif_center_mark_all": "Mark all read",
+	"notifications_needs_answer": "Needs an answer",
 	"notif_center_title": "Notifications",
 	"notif_dismiss_blocking": "A session is still waiting on this. Dismiss it anyway? The session is told it expired.",
 	"notif_dismiss_failed": "Could not dismiss the notification",

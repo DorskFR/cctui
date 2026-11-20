@@ -2899,7 +2899,7 @@ pub const ROUTES: &[Route] = &[
         id: "post_notifications_read_all",
         method: Method::Post,
         path: "/notifications/read-all",
-        summary: "Mark every unread notification without actions read.",
+        summary: "Mark every unread notification read.",
         request: None,
         response: Some("NotificationReadAll"),
         feature: None,

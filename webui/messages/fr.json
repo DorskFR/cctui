@@ -1114,6 +1114,7 @@
 	"notif_center_empty_description": "Vous êtes à jour.",
 	"notif_center_empty_title": "Aucune notification",
 	"notif_center_mark_all": "Tout marquer comme lu",
+	"notifications_needs_answer": "Attend une réponse",
 	"notif_center_title": "Notifications",
 	"notif_dismiss_blocking": "Une session attend encore cette réponse. L'ignorer quand même ? La session sera informée de son expiration.",
 	"notif_dismiss_failed": "Impossible d'ignorer la notification",

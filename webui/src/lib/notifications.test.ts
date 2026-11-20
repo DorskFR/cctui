@@ -3,6 +3,7 @@ import type { Notification as Notice } from '@bindings/Notification';
 import { ApiError } from './api';
 import {
 	NotificationStore,
+	needsAnswer,
 	noticeHref,
 	toItem,
 	type NotificationApi
@@ -213,9 +214,49 @@ describe('notification store', () => {
 		expect(store.unread).toBe(0);
 	});
 
+	it('read-all leaves answerable notices read but still asking', async () => {
+		const read = [
+			notice('n1', { state: 'read' }),
+			notice('n2', { state: 'read', kind: 'outcome_result', actions: [], body: null })
+		];
+		const api = fakeApi({
+			readAll: vi.fn(async () => ({ read: 2, unread: 0 })),
+			list: vi.fn(async () => ({ notifications: read, unread: 0, has_more: false }))
+		});
+		const store = new NotificationStore(api);
+		store.setUnread(2);
+		await store.readAll();
+		expect(api.readAll).toHaveBeenCalledOnce();
+		expect(store.unread).toBe(0);
+		const [ask, info] = store.items.map(toItem);
+		expect(ask).toMatchObject({ unread: false, text: 'Needs an answer · ship it', icon: 'help' });
+		expect(ask.state).toBeUndefined();
+		expect(ask.actions?.map((a) => a.id)).toEqual(['approve', 'reject']);
+		expect(info).toMatchObject({ unread: false, text: undefined, icon: undefined });
+		expect(info.actions).toEqual([]);
+	});
+
+	it('a notice needs an answer only while it is open and offers actions', () => {
+		expect(needsAnswer(notice('n1'))).toBe(true);
+		expect(needsAnswer(notice('n1', { state: 'read', body: null }))).toBe(true);
+		expect(toItem(notice('n1', { state: 'read', body: null })).text).toBe('Needs an answer');
+		expect(needsAnswer(notice('n1', { actions: [] }))).toBe(false);
+		expect(needsAnswer(notice('n1', { state: 'acted', decision: 'approve' }))).toBe(false);
+		expect(needsAnswer(notice('n1', { state: 'expired' }))).toBe(false);
+		expect(
+			needsAnswer(notice('n1', { kind: 'dispatch_failed', subject_kind: 'dispatch', subject_id: 'r', actions: [] }))
+		).toBe(false);
+	});
+
 	it('maps a record onto the kit item', () => {
 		const item = toItem(notice('n1', { severity: 'critical' }));
-		expect(item).toMatchObject({ id: 'n1', title: 'notice n1', text: 'ship it', unread: true });
+		expect(item).toMatchObject({
+			id: 'n1',
+			title: 'notice n1',
+			text: 'Needs an answer · ship it',
+			icon: 'help',
+			unread: true
+		});
 		expect(item.tone).toBe('danger');
 		expect(item.state).toBeUndefined();
 		expect(item.actions?.map((a) => [a.id, a.variant, a.requiresConfirm])).toEqual([

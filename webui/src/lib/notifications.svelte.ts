@@ -118,13 +118,26 @@ function dispatchActions(n: Notice): NotificationAction[] {
 	];
 }
 
+/** Still waiting on a decision, read or not. */
+export function needsAnswer(n: Notice): boolean {
+	return !stateLabel(n) && noticeActions(n).length > 0;
+}
+
+function itemText(n: Notice, needs: boolean): string | undefined {
+	if (!needs) return n.body ?? undefined;
+	const lead = m.notifications_needs_answer();
+	return n.body ? `${lead} · ${n.body}` : lead;
+}
+
 export function toItem(n: Notice): NotificationData {
 	const state = stateLabel(n);
+	const needs = needsAnswer(n);
 	return {
 		id: n.id,
 		title: n.title,
-		text: n.body ?? undefined,
+		text: itemText(n, needs),
 		time: n.created_at,
+		icon: needs ? 'help' : undefined,
 		tone: tone(n.severity),
 		unread: isUnread(n),
 		state,
