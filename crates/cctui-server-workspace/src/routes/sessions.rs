@@ -4286,13 +4286,20 @@ pub async fn archive_one(
             return Ok(ArchiveOutcome::SkippedPinned);
         }
     }
-    // Archive the session AND every descendant nested under it, at any depth: a
-    // parent's children should never outlive it in the list. Archiving a
-    // *child* does not touch the parent (no `parent_id` cascade upward), and a
-    // pinned descendant is never swept along unless forced.
+    // Archive the session AND every descendant nested under it, at any depth.
+    // Archiving a *child* does not touch the parent (no `parent_id` cascade
+    // upward), a pinned descendant is never swept along unless forced, and a
+    // sweep leaves every live descendant running and listed.
     let children =
         crate::store::sessions::descendants(&state.pool, session_id).await.unwrap_or_default();
-    let descendant_ids: Vec<String> = children.iter().map(|c| c.id.clone()).collect();
+    let swept = matches!(actor, Actor::Reaper);
+    let kept = if swept {
+        crate::auto_archive::kept_alive_under(&state.pool, &children).await
+    } else {
+        HashSet::new()
+    };
+    let descendant_ids: Vec<String> =
+        children.iter().map(|c| c.id.clone()).filter(|id| !kept.contains(id)).collect();
     // Clear the classifier signals on archive so a session that was waiting on
     // input doesn't keep its ✋ "needs input" glyph in the archived view — an
     // archived session is, by definition, no longer waiting on anyone.
@@ -4346,14 +4353,27 @@ pub async fn archive_one(
     }
     tracing::info!(session_id = %session_id, children = children.len(), "session archived");
     if archived.iter().any(|id| id == session_id) {
+        let detail = archived_detail(children.len(), initiator, swept.then_some(kept.len()));
         events::record(
             state,
-            Event::new(kind::SESSION_ARCHIVED, actor).session(session_id).detail(
-                serde_json::json!({ "children": children.len(), "initiator": initiator.as_str() }),
-            ),
+            Event::new(kind::SESSION_ARCHIVED, actor).session(session_id).detail(detail),
         );
     }
     Ok(ArchiveOutcome::Archived)
+}
+
+/// `session.archived` detail. A sweep also records how many live descendants
+/// it left running.
+fn archived_detail(
+    children: usize,
+    initiator: RemoveInitiator,
+    children_live: Option<usize>,
+) -> serde_json::Value {
+    let mut detail = serde_json::json!({ "children": children, "initiator": initiator.as_str() });
+    if let Some(live) = children_live {
+        detail["children_live"] = serde_json::json!(live);
+    }
+    detail
 }
 
 /// Un-archive a session: clear the sticky `archived` state back to
@@ -4713,8 +4733,9 @@ mod switch_account_tests;
 mod tests {
     use super::{
         Bucket, END_ROW_SQL, EndRow, RemoveInitiator, ResultRow, SessionChild, SqlParam,
-        attention_from_bucket, bucket_from_signals, cap_unread, compile_node, derive_liveness,
-        field_values_sql, make_snippet, normalize_last_message, remove_command, snippet_sql,
+        archived_detail, attention_from_bucket, bucket_from_signals, cap_unread, compile_node,
+        derive_liveness, field_values_sql, make_snippet, normalize_last_message, remove_command,
+        snippet_sql,
     };
     use crate::auth::AuthContext;
     use axum::http::StatusCode;
@@ -7955,6 +7976,17 @@ mod tests {
             assert_eq!(command_id, Some(id));
             assert_eq!(got, initiator);
         }
+    }
+
+    #[test]
+    fn only_a_sweep_records_its_live_children() {
+        let swept = archived_detail(3, RemoveInitiator::Automatic, Some(0));
+        assert_eq!(swept["children"], 3);
+        assert_eq!(swept["initiator"], "automatic");
+        assert_eq!(swept["children_live"], 0);
+        let user = archived_detail(3, RemoveInitiator::User, None);
+        assert_eq!(user["initiator"], "user");
+        assert!(user.get("children_live").is_none());
     }
 
     #[tokio::test]
