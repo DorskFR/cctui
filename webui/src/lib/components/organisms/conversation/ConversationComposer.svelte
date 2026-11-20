@@ -43,6 +43,7 @@
 	import { pendingSpawns } from '#lib/pendingSpawns.svelte.ts';
 	import { findSpawnedSession } from '#lib/components/organisms/spawn/spawnMatch.ts';
 	import { hasFeature } from '#lib/features.svelte.ts';
+	import { composerClearance } from '#lib/composerClearance.ts';
 
 	let {
 		session,
@@ -428,6 +429,7 @@
 <div
 	class="composer"
 	data-journey="composer"
+	{@attach composerClearance}
 	class:dropping={att.dragActive}
 	class:compact
 	onfocusin={() => (focused = true)}

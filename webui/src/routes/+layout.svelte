@@ -258,6 +258,11 @@
 </PersistQueryClientProvider>
 
 <style>
+	/* The kit Toaster already adds --safe-bottom; the offset lifts it over the
+	   bottom nav or the composer, whichever reaches higher. */
+	.toaster-host {
+		--toaster-offset: calc(max(var(--bottom-chrome), var(--composer-clear, 0px)) - var(--safe-bottom));
+	}
 	.app {
 		min-height: 100dvh;
 		display: flex;
