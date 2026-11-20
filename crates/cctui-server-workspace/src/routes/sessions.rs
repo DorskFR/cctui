@@ -725,6 +725,7 @@ struct EnrichContext {
     auto_approve: HashSet<String>,
     last_turns: HashMap<String, LastTurn>,
     auto_followup: HashMap<String, crate::auto_followup::Prefs>,
+    automation: bool,
     /// Queued draft launches: `(launch_at, last_error)` by draft id.
     scheduled_launches: HashMap<String, (DateTime<Utc>, Option<String>)>,
     archive_after_secs: u64,
@@ -774,9 +775,8 @@ impl EnrichContext {
                 session_ids.iter().filter(|id| store.is_auto_approve(id)).cloned().collect();
         }
         ctx.last_turns = fetch_last_turns(state, &session_ids).await?;
-        if state.config.features.contains(Feature::Automation) {
-            ctx.auto_followup = crate::auto_followup::prefs_for(&state.pool, &session_ids).await?;
-        }
+        ctx.auto_followup = crate::auto_followup::prefs_for(&state.pool, &session_ids).await?;
+        ctx.automation = state.config.features.contains(Feature::Automation);
         let draft_ids: Vec<String> = with_ts
             .iter()
             .filter(|(_, s)| s.status == SessionStatus::Draft)
@@ -1119,7 +1119,8 @@ fn enrich(
             s.estimated_burst_tokens = turn.estimated_burst_tokens();
             s.context_tokens = turn.context_tokens();
         }
-        crate::auto_followup::fill(s, ctx.auto_followup.remove(&s.id), turn_hold);
+        let prefs = ctx.auto_followup.remove(&s.id);
+        crate::auto_followup::fill(s, prefs, turn_hold, ctx.automation);
     }
     with_ts
 }

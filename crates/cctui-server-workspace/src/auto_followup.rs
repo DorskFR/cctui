@@ -5,7 +5,8 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use cctui_proto::api::SessionListItem;
 use cctui_proto::api::auto_followup::{
-    AutoFollowupOverride, AutoFollowupSetting, SendFollowup, context_window,
+    AutoFollowupOverride, AutoFollowupSetting, ContextWindow, SendFollowup, WindowHints,
+    context_window,
 };
 use cctui_proto::api::followup::{
     FollowupReason, FollowupRequest, FollowupState, IDEMPOTENCY_KEY_MAX,
@@ -45,9 +46,20 @@ pub fn override_of(metadata: &Value) -> Option<AutoFollowupOverride> {
 }
 
 #[must_use]
-pub fn window_of(adapter_id: Option<&str>, model: Option<&str>, metadata: &Value) -> Option<u64> {
-    let model = model.or_else(|| metadata.get("model").and_then(Value::as_str));
-    context_window(adapter_id, model, metadata.get(CODEX_WINDOW_KEY).and_then(Value::as_u64))
+pub fn window_of(
+    adapter_id: Option<&str>,
+    model: Option<&str>,
+    launched_model: Option<&str>,
+    metadata: &Value,
+    observed_tokens: Option<u64>,
+) -> Option<ContextWindow> {
+    let hints = WindowHints {
+        reported_model: model.or_else(|| metadata.get("model").and_then(Value::as_str)),
+        launched_model,
+        codex_window: metadata.get(CODEX_WINDOW_KEY).and_then(Value::as_u64),
+        observed_tokens,
+    };
+    context_window(adapter_id, &hints)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,13 +123,17 @@ pub fn hold(signals: &Signals<'_>) -> Option<Hold> {
 #[must_use]
 pub const fn threshold_at(
     setting: AutoFollowupSetting,
-    window: Option<u64>,
+    window: Option<ContextWindow>,
     held: Option<Hold>,
 ) -> Option<u64> {
     if !setting.enabled || held.is_some() {
         return None;
     }
-    setting.threshold.tokens(window)
+    let base = match window {
+        Some(window) => window.for_percent(),
+        None => None,
+    };
+    setting.threshold.tokens(base)
 }
 
 #[must_use]
@@ -129,26 +145,46 @@ pub fn fires(followup: SendFollowup, text: &str, context: Option<u64>, at: Optio
 
 /// The stored half of a session's auto follow-up: the live registry's
 /// metadata copy can lag the row.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Prefs {
     pub user: AutoFollowupSetting,
     pub over: Option<AutoFollowupOverride>,
     pub child: bool,
+    pub launched_model: Option<String>,
 }
 
-pub fn fill(item: &mut SessionListItem, prefs: Option<Prefs>, turn: Option<Hold>) {
+pub fn fill(
+    item: &mut SessionListItem,
+    prefs: Option<Prefs>,
+    turn: Option<Hold>,
+    automation: bool,
+) {
     let adapter = item.adapter_id.as_ref().map(cctui_proto::adapter::AdapterId::as_str);
-    item.context_window = window_of(adapter, item.model.as_deref(), &item.metadata);
-    let Some(prefs) = prefs else { return };
+    let launched = prefs.as_ref().and_then(|p| p.launched_model.as_deref());
+    let model = item.model.as_deref();
+    let window = window_of(adapter, model, launched, &item.metadata, item.context_tokens);
+    item.context_window = window.map(|w| w.tokens);
+    let Some(prefs) = prefs.filter(|_| automation) else { return };
     let held = if prefs.child { Some(Hold::Child) } else { turn };
     item.auto_followup_override = prefs.over;
     let setting = prefs.user.with(prefs.over.as_ref());
-    item.auto_followup_at = threshold_at(setting, item.context_window, held);
+    item.auto_followup_at = threshold_at(setting, window, held);
+}
+
+/// The model a session was launched with: the harness reports it without
+/// its `[1m]` suffix. Claude pre-mints its id, so the launch row's
+/// `session_id` is the session's.
+macro_rules! launched_model_sql {
+    () => {
+        "(SELECT ml.model FROM machine_launches ml WHERE ml.session_id = s.id)"
+    };
 }
 
 const PREFS_SQL: &str = concat!(
     "SELECT s.id, us.data, COALESCE(s.metadata, '{}'::jsonb), s.parent_id IS NOT NULL AND ",
     nests_under_parent!("s"),
+    ", ",
+    launched_model_sql!(),
     " FROM sessions s LEFT JOIN user_settings us ON us.user_id = s.user_id WHERE s.id = ANY($1)"
 );
 
@@ -156,13 +192,13 @@ pub async fn prefs_for(
     pool: &PgPool,
     session_ids: &[String],
 ) -> sqlx::Result<HashMap<String, Prefs>> {
-    let rows: Vec<(String, Option<Value>, Value, bool)> =
+    let rows: Vec<(String, Option<Value>, Value, bool, Option<String>)> =
         sqlx::query_as(PREFS_SQL).bind(session_ids).fetch_all(pool).await?;
     Ok(rows
         .into_iter()
-        .map(|(id, data, metadata, child)| {
+        .map(|(id, data, metadata, child, launched_model)| {
             let user = data.as_ref().map(setting_of).unwrap_or_default();
-            (id, Prefs { user, over: override_of(&metadata), child })
+            (id, Prefs { user, over: override_of(&metadata), child, launched_model })
         })
         .collect())
 }
@@ -180,6 +216,7 @@ struct MeasureRow {
     ended: bool,
     adapter_id: Option<String>,
     model: Option<String>,
+    launched_model: Option<String>,
     metadata: Value,
     settings: Option<Value>,
     context_tokens: Option<i64>,
@@ -189,8 +226,9 @@ const MEASURE_SQL: &str = concat!(
     "SELECT s.user_id, s.status, s.tempo, s.agent_state, s.activity, s.soft_limit_reason, \
             s.pinned, s.parent_id IS NOT NULL AND ",
     nests_under_parent!("s"),
-    " AS child, s.ended_at IS NOT NULL AS ended, s.adapter_id, s.model, \
-            COALESCE(s.metadata, '{}'::jsonb) AS metadata, us.data AS settings, \
+    " AS child, s.ended_at IS NOT NULL AS ended, s.adapter_id, s.model, ",
+    launched_model_sql!(),
+    " AS launched_model, COALESCE(s.metadata, '{}'::jsonb) AS metadata, us.data AS settings, \
             (SELECT u.input_tokens + u.cache_read_tokens + u.cache_creation_tokens \
                FROM session_token_usage u WHERE u.session_id = s.id \
               ORDER BY u.created_at DESC LIMIT 1) AS context_tokens \
@@ -221,13 +259,20 @@ pub async fn measure(pool: &PgPool, session_id: &str) -> sqlx::Result<Option<Mea
             activity: row.activity.as_deref(),
             soft_limit: row.soft_limit_reason.as_deref(),
         });
-        let window = window_of(row.adapter_id.as_deref(), row.model.as_deref(), &row.metadata);
+        let context_tokens = row.context_tokens.and_then(|t| u64::try_from(t).ok());
+        let window = window_of(
+            row.adapter_id.as_deref(),
+            row.model.as_deref(),
+            row.launched_model.as_deref(),
+            &row.metadata,
+            context_tokens,
+        );
         let user = row.settings.as_ref().map(setting_of).unwrap_or_default();
         let over = override_of(&row.metadata);
         Measure {
             owner: row.user_id,
-            context_tokens: row.context_tokens.and_then(|t| u64::try_from(t).ok()),
-            context_window: window,
+            context_tokens,
+            context_window: window.map(|w| w.tokens),
             over,
             held,
             at: threshold_at(user.with(over.as_ref()), window, held),
