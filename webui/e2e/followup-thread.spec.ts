@@ -222,17 +222,17 @@ async function followUpFromComposer(page: Page, stub: Stub, submit: () => Promis
 		idempotency_key: expect.any(String)
 	});
 	await expect(markers(page)).toHaveCount(3);
-	await expect(drawer(page).getByText(INSTRUCTION)).toBeVisible();
+	await expect(scroller(page).getByText(INSTRUCTION)).toBeVisible();
 	stub.socket().send(superseded());
 	await expect(page).toHaveURL(new RegExp(`/sessions/${D.id}`));
 	await expect(markers(page).last()).toHaveAttribute('data-followup-to', D.id);
 	stub.socket().send(
 		JSON.stringify({ type: 'stream', session_id: D.id, data: text('the first reply from D', 1, 5) })
 	);
-	const reply = drawer(page).getByText('the first reply from D');
+	const reply = drawer(page).locator('.conv .bubble', { hasText: 'the first reply from D' });
 	await expect(reply).toBeVisible();
 	const markerTop = (await markers(page).last().boundingBox())?.y ?? Infinity;
-	const instructionTop = (await drawer(page).getByText(INSTRUCTION).boundingBox())?.y ?? -1;
+	const instructionTop = (await scroller(page).getByText(INSTRUCTION).boundingBox())?.y ?? -1;
 	const replyTop = (await reply.boundingBox())?.y ?? -1;
 	expect(instructionTop).toBeGreaterThan(markerTop);
 	expect(replyTop).toBeGreaterThan(instructionTop);

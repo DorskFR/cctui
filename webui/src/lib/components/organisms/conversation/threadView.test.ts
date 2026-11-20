@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { ThreadEntry } from '@bindings/ThreadEntry';
 import type { JsonValue } from '@bindings/serde_json/JsonValue';
+import type { InjectedFlag } from '@bindings/InjectedFlag';
 import { allFilter } from './filters';
 import { buildLines, type LineBuildCtx } from './lines';
 import {
@@ -33,7 +34,8 @@ const user = (content: string, seq: number, ts = T0 + seq * 1000): AgentEvent =>
 	ts,
 	seq
 });
-const said = (content: string, seq: number, ts = T0 + seq * 1000): AgentEvent => ({
+type TextEvent = Extract<AgentEvent, { type: 'text' }>;
+const said = (content: string, seq: number, ts = T0 + seq * 1000): TextEvent => ({
 	type: 'text',
 	content,
 	meta: false,
@@ -47,17 +49,24 @@ const tool = (seq: number): AgentEvent => ({
 	ts: T0 + seq * 1000,
 	seq
 });
-const ev = (
+const ev = (session_id: string, generation: number, event: AgentEvent): ThreadEntry => ({
+	entry: 'event',
+	session_id,
+	generation,
+	event: event as unknown as JsonValue
+});
+const flagged = (
 	session_id: string,
 	generation: number,
-	event: AgentEvent,
-	injected?: 'previous_sessions' | 'session_context'
+	injected: InjectedFlag,
+	content: string,
+	seq: number
 ): ThreadEntry => ({
 	entry: 'event',
 	session_id,
 	generation,
-	event: event as unknown as JsonValue,
-	...(injected ? { injected } : {})
+	injected,
+	event: { ...said(content, seq), meta: true } as unknown as JsonValue
 });
 const marker = (generation: number, from: string, to: string, instruction: string | null): ThreadEntry => ({
 	entry: 'followup_marker',
@@ -79,13 +88,13 @@ function line(): ThreadEntry[] {
 		ev('A', 1, tool(2)),
 		ev('A', 1, said('done in A', 3)),
 		marker(2, 'A', 'B', 'Carry on in B.'),
-		ev('B', 2, { ...said(BRIEF, 1), meta: true }, 'previous_sessions'),
-		ev('B', 2, { ...said(CONTEXT, 1), meta: true }, 'session_context'),
+		flagged('B', 2, 'previous_sessions', BRIEF, 1),
+		flagged('B', 2, 'session_context', CONTEXT, 1),
 		ev('B', 2, user('Carry on in B.', 1)),
 		ev('B', 2, tool(2)),
 		ev('B', 2, said('done in B', 3)),
 		marker(3, 'B', 'C', 'Carry on in C.'),
-		ev('C', 3, { ...said(BRIEF, 1), meta: true }, 'previous_sessions'),
+		flagged('C', 3, 'previous_sessions', BRIEF, 1),
 		ev('C', 3, user('Carry on in C.', 1)),
 		ev('C', 3, tool(2))
 	];
