@@ -45,7 +45,8 @@ export function linePath(tree: readonly ThreadSession[], opened: string): string
 
 export function markOfSession(s: SessionListItem, generation: number): FollowupMark | null {
 	const from = previousSessionId(s);
-	if (!from) return null;
+	const at = s.registered_at;
+	if (!from || !at) return null;
 	const meta = (s.metadata as Record<string, unknown> | null) ?? {};
 	const reason = meta.followup_reason as FollowupReason;
 	const instruction = meta.followup_instruction;
@@ -53,7 +54,7 @@ export function markOfSession(s: SessionListItem, generation: number): FollowupM
 		generation,
 		from,
 		to: s.id,
-		at: s.registered_at,
+		at,
 		reason: REASONS.includes(reason) ? reason : null,
 		instruction: typeof instruction === 'string' && instruction.trim() ? instruction : null
 	};
