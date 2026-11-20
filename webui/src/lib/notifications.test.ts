@@ -228,7 +228,8 @@ describe('notification store', () => {
 		await store.readAll();
 		expect(api.readAll).toHaveBeenCalledOnce();
 		expect(store.unread).toBe(0);
-		const [ask, info] = store.items.map(toItem);
+		const item = (id: string) => toItem(store.items.find((n) => n.id === id)!);
+		const [ask, info] = [item('n1'), item('n2')];
 		expect(ask).toMatchObject({ unread: false, text: 'Needs an answer · ship it', icon: 'help' });
 		expect(ask.state).toBeUndefined();
 		expect(ask.actions?.map((a) => a.id)).toEqual(['approve', 'reject']);
