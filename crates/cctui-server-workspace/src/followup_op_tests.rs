@@ -248,8 +248,9 @@ async fn registration_swaps_archives_and_emits_superseded() {
     assert_eq!(status(&f.pool, &f.source).await, "archived");
     let events = followup_events(&mut rx);
     assert_eq!(events.len(), 1, "{events:?}");
-    let ServerEvent::SessionSuperseded { followup_id, from, to: got, archived, archive_error, .. } =
-        &events[0]
+    let ServerEvent::SessionSuperseded {
+        followup_id, from, to: got, archived, archive_error, ..
+    } = &events[0]
     else {
         panic!("expected session_superseded, got {events:?}")
     };
@@ -282,12 +283,11 @@ async fn registration_writes_the_marker_metadata() {
 
     crate::followup::claim_intent(&f.pool, &to, Some(&spawn_key)).await;
 
-    let meta: serde_json::Value =
-        sqlx::query_scalar("SELECT metadata FROM sessions WHERE id = $1")
-            .bind(&to)
-            .fetch_one(&f.pool)
-            .await
-            .unwrap();
+    let meta: serde_json::Value = sqlx::query_scalar("SELECT metadata FROM sessions WHERE id = $1")
+        .bind(&to)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
     assert_eq!(meta["followup_reason"], "manual");
     assert_eq!(meta["followup_instruction"], "keep going");
     assert_eq!(meta["followup_id"], op.id.to_string());

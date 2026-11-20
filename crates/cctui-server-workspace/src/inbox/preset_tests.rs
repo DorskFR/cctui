@@ -968,10 +968,7 @@ async fn inbox_preset_followup_goes_through_the_op() {
     assert_eq!(spawn_key, delivered_to, "the op waits for the session the spawn pre-minted");
     assert!(instruction.contains("check the CI run"), "{instruction}");
     let mut rx = daemon.await.unwrap();
-    assert!(matches!(
-        rx.recv().await,
-        Some(cctui_proto::ws::DaemonFrameDown::Command { .. })
-    ));
+    assert!(matches!(rx.recv().await, Some(cctui_proto::ws::DaemonFrameDown::Command { .. })));
     let busy = crate::followup_op::in_progress(&pool, &sid).await.unwrap();
     assert!(busy, "the pending op holds the source against a plain send");
 }
