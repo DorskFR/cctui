@@ -181,6 +181,7 @@ pub async fn remember_intent(pool: &PgPool, spawn_key: &str, req: &SpawnRequest)
 /// both pre-minted (claude-code) and self-minted (codex) ids resolve. The
 /// parent must exist (FK), else the link is skipped.
 pub async fn claim_intent(pool: &PgPool, session_id: &str, spawn_key: Option<&str>) {
+    crate::followup_op::claim(pool, session_id, spawn_key).await;
     let key = spawn_key.unwrap_or(session_id);
     let parent = match sqlx::query_scalar::<_, String>(
         "DELETE FROM session_followup_intents WHERE spawn_key = $1 OR spawn_key = $2 \
@@ -259,16 +260,18 @@ pub async fn thread_root_of(pool: &PgPool, id: &str) -> Result<Option<String>, s
     Ok(root.flatten())
 }
 
-/// Reaper tick: drop intents whose spawn never registered.
-pub async fn sweep(pool: &PgPool) {
+/// Reaper tick: drop intents whose spawn never registered and finish the
+/// follow-up ops their watcher lost.
+pub async fn sweep(state: &AppState) {
     let cutoff = chrono::Utc::now() - chrono::Duration::seconds(INTENT_TTL_SECS);
     if let Err(e) = sqlx::query("DELETE FROM session_followup_intents WHERE created_at < $1")
         .bind(cutoff)
-        .execute(pool)
+        .execute(&state.pool)
         .await
     {
         tracing::warn!(error = %e, "follow-up intent prune failed");
     }
+    crate::followup_op::sweep(state).await;
 }
 
 pub const DEFAULT_INSTRUCTION: &str = "Continue from this.";

@@ -934,3 +934,41 @@ async fn a_schedule_fires_a_spawn_with_its_effort_labels_and_files() {
             .unwrap();
     assert!(intents.contains(&label), "{intents:?}");
 }
+
+type OpRow = (String, String, bool, Uuid, Option<String>, String);
+
+#[tokio::test]
+async fn inbox_preset_followup_goes_through_the_op() {
+    let Some(pool) = pool("inbox_preset_followup_op").await else { return };
+    let (owner, sid, lane_id) = archived_session_lane(&pool, "timer-followup-op").await;
+    let event = timer_event(&pool, lane_id, owner.user, Some(&sid)).await;
+    let batch = Uuid::new_v4();
+    strand(&pool, event, batch).await;
+    let state = AppState::for_test(pool.clone());
+    let daemon = crate::routes::fs::answer_list_dirs(&state, owner.machine, Ok(Vec::new()));
+
+    deliver_due(&state, 1, only(lane_id)).await;
+
+    let (status, _, _, error, delivered_as, delivered_to) = event_row(&pool, event).await;
+    let delivered = (status.as_str(), delivered_as.as_deref());
+    assert_eq!(delivered, ("delivered", Some("followup")), "{error:?}");
+    let op: OpRow = sqlx::query_as(
+        "SELECT reason, state, archive_source, command_id, spawn_key, instruction \
+         FROM session_followup_ops WHERE source_session_id = $1 AND idempotency_key = $2",
+    )
+    .bind(&sid)
+    .bind(batch.to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("the follow-up is recorded as an op keyed by the batch");
+    let (reason, state_name, archive_source, command_id, spawn_key, instruction) = op;
+    assert_eq!((reason.as_str(), state_name.as_str()), ("inbox", "pending"));
+    assert!(!archive_source, "an inbox follow-up leaves its source as it was");
+    assert_eq!(command_id, batch);
+    assert_eq!(spawn_key, delivered_to, "the op waits for the session the spawn pre-minted");
+    assert!(instruction.contains("check the CI run"), "{instruction}");
+    let mut rx = daemon.await.unwrap();
+    assert!(matches!(rx.recv().await, Some(cctui_proto::ws::DaemonFrameDown::Command { .. })));
+    let busy = crate::followup_op::in_progress(&pool, &sid).await.unwrap();
+    assert!(busy, "the pending op holds the source against a plain send");
+}

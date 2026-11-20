@@ -152,6 +152,12 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
         ServerEvent::Event { .. } => {
             waived("the TUI has no event log view; the list refresh carries status")
         }
+        ServerEvent::SessionSuperseded { .. } => {
+            waived("the list refresh carries the new session and drops the archived one")
+        }
+        ServerEvent::FollowupFailed { .. } => {
+            waived("follow-ups are started from the webui, which reports the failure")
+        }
         ServerEvent::Heartbeat { .. } => waived("liveness tick with nothing to render"),
     }
 }

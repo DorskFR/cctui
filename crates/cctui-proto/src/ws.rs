@@ -982,6 +982,25 @@ pub enum ServerEvent {
     Event {
         event: crate::api::events::EventRecord,
     },
+    /// `to` registered and continues `from`; `from` is archived when `archived`.
+    SessionSuperseded {
+        followup_id: uuid::Uuid,
+        from: String,
+        to: String,
+        reason: crate::thread::FollowupReason,
+        instruction: String,
+        archived: bool,
+        archive_error: Option<String>,
+        at: chrono::DateTime<chrono::Utc>,
+    },
+    /// The follow-up of `from` never started; `from` is untouched.
+    FollowupFailed {
+        followup_id: uuid::Uuid,
+        from: String,
+        reason: crate::thread::FollowupReason,
+        instruction: String,
+        error: String,
+    },
     /// Application-level liveness tick; browsers cannot observe WS pings.
     Heartbeat {},
     /// This socket lagged. Refetch the session, or everything when `None`.
@@ -1084,6 +1103,52 @@ mod tests {
         let seqs: Vec<Option<i64>> = events.iter().map(AgentEvent::seq).collect();
         assert_eq!(seqs, vec![Some(1), Some(2), Some(3)]);
         assert!(matches!(&events[2], AgentEvent::Text { content, .. } if content.contains("User")));
+    }
+
+    #[test]
+    fn followup_events_round_trip_under_their_wire_names() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-11-21T10:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let superseded = ServerEvent::SessionSuperseded {
+            followup_id: uuid::Uuid::nil(),
+            from: "a".into(),
+            to: "b".into(),
+            reason: crate::thread::FollowupReason::Cold,
+            instruction: "go on".into(),
+            archived: false,
+            archive_error: Some("pinned".into()),
+            at,
+        };
+        let json = serde_json::to_value(&superseded).unwrap();
+        assert_eq!(json["type"], "session_superseded");
+        assert_eq!((json["from"].as_str(), json["to"].as_str()), (Some("a"), Some("b")));
+        assert_eq!(json["reason"], "cold");
+        assert_eq!(json["archive_error"], "pinned");
+        let back: ServerEvent = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            back,
+            ServerEvent::SessionSuperseded { archived: false, at: t, .. } if t == at
+        ));
+
+        let failed = ServerEvent::FollowupFailed {
+            followup_id: uuid::Uuid::nil(),
+            from: "a".into(),
+            reason: crate::thread::FollowupReason::Inbox,
+            instruction: "go on".into(),
+            error: "no daemon".into(),
+        };
+        let json = serde_json::to_value(&failed).unwrap();
+        assert_eq!(json["type"], "followup_failed");
+        assert_eq!(
+            (json["reason"].as_str(), json["error"].as_str()),
+            (Some("inbox"), Some("no daemon"))
+        );
+        let back: ServerEvent = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            back,
+            ServerEvent::FollowupFailed { instruction, .. } if instruction == "go on"
+        ));
     }
 
     #[test]

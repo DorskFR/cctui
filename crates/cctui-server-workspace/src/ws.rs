@@ -160,6 +160,15 @@ async fn handle_message(
     ask_picks: Option<Vec<Vec<usize>>>,
     turn_id: Option<uuid::Uuid>,
 ) {
+    match crate::followup_op::in_progress(&state.pool, &session_id).await {
+        Ok(true) => {
+            let reason = crate::followup_op::BUSY.to_owned();
+            ack_message(event_tx, session_id, client_msg_id, Some(reason), None).await;
+            return;
+        }
+        Ok(false) => {}
+        Err(e) => tracing::warn!(%e, %session_id, "follow-up check failed"),
+    }
     // NoDaemon / NoAdapter are expected for sessions whose daemon is momentarily
     // offline — that is exactly the case the ack lets the client recover from.
     // A reply is not idempotent and a client that never saw its ack retries the
@@ -762,6 +771,9 @@ fn audience(event: &ServerEvent) -> Audience {
         | ServerEvent::UserActions { session_id, .. }
         | ServerEvent::SessionOutcome { session_id, .. } => session(session_id),
         ServerEvent::SessionRegistered { session: s } => session(&s.id),
+        ServerEvent::SessionSuperseded { from, .. } | ServerEvent::FollowupFailed { from, .. } => {
+            session(from)
+        }
         ServerEvent::CommandResult { session_id, .. } => {
             session_id.as_deref().map_or(AdminsOnly, session)
         }

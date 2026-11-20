@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::app::Action;
 use crate::app::server_event::to_actions;
 
-const VARIANT_COUNT: usize = 38;
+const VARIANT_COUNT: usize = 40;
 
 fn uuid() -> Uuid {
     Uuid::nil()
@@ -93,6 +93,7 @@ fn samples() -> Vec<ServerEvent> {
     let mut all = session_samples();
     all.extend(fleet_samples());
     all.extend(outcome_samples());
+    all.extend(followup_samples());
     all
 }
 
@@ -169,6 +170,28 @@ fn session_samples() -> Vec<ServerEvent> {
             ok: true,
             error: None,
             command_id: Some(uuid()),
+        },
+    ]
+}
+
+fn followup_samples() -> Vec<ServerEvent> {
+    vec![
+        ServerEvent::SessionSuperseded {
+            followup_id: uuid(),
+            from: "s-1".to_owned(),
+            to: "s-2".to_owned(),
+            reason: cctui_proto::thread::FollowupReason::Cold,
+            instruction: "carry on".to_owned(),
+            archived: true,
+            archive_error: None,
+            at: now(),
+        },
+        ServerEvent::FollowupFailed {
+            followup_id: uuid(),
+            from: "s-1".to_owned(),
+            reason: cctui_proto::thread::FollowupReason::Manual,
+            instruction: "carry on".to_owned(),
+            error: "the daemon refused the spawn".to_owned(),
         },
     ]
 }
@@ -310,6 +333,8 @@ fn variant_name(event: &ServerEvent) -> &'static str {
         ServerEvent::Notification { .. } => "notification",
         ServerEvent::NotificationsUnread { .. } => "notifications_unread",
         ServerEvent::Event { .. } => "event",
+        ServerEvent::SessionSuperseded { .. } => "session_superseded",
+        ServerEvent::FollowupFailed { .. } => "followup_failed",
         ServerEvent::Heartbeat { .. } => "heartbeat",
         ServerEvent::Resync { .. } => "resync",
     }

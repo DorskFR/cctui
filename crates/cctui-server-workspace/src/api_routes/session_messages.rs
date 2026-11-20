@@ -16,6 +16,14 @@ pub(super) fn register(r: Routes) -> Routes {
         sess_write(),
     )
     .add(
+        &[Method::POST],
+        "/sessions/{id}/followup",
+        "Continue a session in a new one and swap it in once it registers.",
+        post(crate::followup_op::create),
+        Authn::Bearer,
+        sess_write(),
+    )
+    .add(
         &[GET],
         "/sessions/{id}/messages/scheduled",
         "List a session's scheduled messages.",

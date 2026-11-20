@@ -43,7 +43,8 @@
 		showStatusBadge,
 		box = 'md',
 		onsetmodel,
-		onfork
+		onfork,
+		onthreadjump
 	}: {
 		session: SessionListItem;
 		archived: boolean;
@@ -53,6 +54,7 @@
 		onsetmodel: (model: string, effort: string) => void;
 		/** Omitted → the model chip is a plain readout, not a fork trigger. */
 		onfork?: () => void;
+		onthreadjump?: (sessionId: string) => boolean;
 	} = $props();
 
 	const end = $derived(sessionEnd(session));
@@ -238,7 +240,7 @@
 	{#if showStatusBadge}<Badge tone={statusBadgeTone(session.status)}>{session.status}</Badge>{/if}
 	{#if end}<Badge tone={end.tone} title={sessionEndTitle(end)} style={end.muted ? 'opacity:0.6' : undefined}>{end.label}</Badge>{/if}
 	{#if hasFeature('automation')}
-		<ThreadMenu {session} {box} />
+		<ThreadMenu {session} {box} onjump={onthreadjump} />
 	{/if}
 	<span class="cwd">
 		<WorkingDir

@@ -3333,6 +3333,7 @@ pub async fn send_message(
         )
         .await;
     }
+    crate::followup_op::refuse_while_pending(&state.pool, &session_id).await?;
     authorize_reply(&state, &ctx, &session_id).await?;
     // Carry re-minted gateway env so a reply-driven cold-resume revives the
     // worker with a fresh valid token rather than empty env.

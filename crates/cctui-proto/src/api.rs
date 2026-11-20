@@ -11,6 +11,7 @@ pub mod context;
 pub mod device_auth;
 pub mod dispatchers;
 pub mod events;
+pub mod followup;
 pub mod gateway;
 pub mod guard_step;
 pub mod harness_update;

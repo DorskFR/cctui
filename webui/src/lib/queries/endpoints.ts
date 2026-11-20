@@ -52,6 +52,8 @@ import type { ForkRequest } from "@bindings/ForkRequest";
 import type { ForkResponse } from "@bindings/ForkResponse";
 import type { BriefResponse } from "@bindings/BriefResponse";
 import type { SessionThreadResponse } from "@bindings/SessionThreadResponse";
+import type { FollowupRequest } from "@bindings/FollowupRequest";
+import type { FollowupResponse } from "@bindings/FollowupResponse";
 import type { ThreadConversationPage } from "@bindings/ThreadConversationPage";
 import type { StageFilesResponse } from "@bindings/StageFilesResponse";
 import type { DispatchRequest } from "@bindings/DispatchRequest";
@@ -494,6 +496,10 @@ export const endpoints = {
       limit: opts?.limit,
       cursor: opts?.cursor,
     }),
+  /** Follow `id` up server-side: collect, spawn, archive once registered.
+   *  The same `idempotency_key` again answers the same op. */
+  followup: (id: string, body: FollowupRequest) =>
+    api.post<FollowupResponse>(`/sessions/${id}/followup`, body),
   /** Find-in-conversation hit list for ONE session, oldest → newest. The
    *  server is the source of truth for the total: the DOM only holds the
    *  currently paged window. */

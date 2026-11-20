@@ -5,6 +5,7 @@ import type { ServerEvent } from '@bindings/ServerEvent';
 import { WsClient, type GithubEvent, type SessionEndedEvent } from './ws.svelte';
 import { auth } from './auth.svelte';
 import { qk } from './queries/keys';
+import { toasts } from './toast.svelte';
 
 // Fixtures mirror serde_json output: `Option::None` fields are omitted, not null.
 const SID = 's1';
@@ -36,6 +37,25 @@ const fixtures = {
 		}
 	},
 	session_deregistered: { type: 'session_deregistered', session_id: SID },
+	session_superseded: {
+		type: 'session_superseded',
+		followup_id: 'f1',
+		from: SID,
+		to: 's2',
+		reason: 'cold',
+		instruction: 'Carry on.',
+		archived: true,
+		archive_error: null,
+		at: '2026-11-20T10:00:00Z'
+	},
+	followup_failed: {
+		type: 'followup_failed',
+		followup_id: 'f1',
+		from: SID,
+		reason: 'manual',
+		instruction: 'Carry on.',
+		error: 'no daemon on m1'
+	},
 	permission_request: {
 		type: 'permission_request',
 		session_id: SID,
@@ -404,6 +424,47 @@ describe('onFrame, one fixture per ServerEvent variant', () => {
 		c.onSessionEnded((ev) => ends.push(ev));
 		sock.deliver(fixtures.session_ended);
 		expect(ends).toEqual([{ session_id: SID, reason: 'crashed', detail: 'segfault' }]);
+	});
+
+	it('session_superseded reaches the listeners of the superseded session and refreshes the list', () => {
+		const { c, sock } = setup();
+		const seen: unknown[] = [];
+		const other: unknown[] = [];
+		c.onSuperseded(SID, (ev) => seen.push(ev));
+		c.onSuperseded('s2', (ev) => other.push(ev));
+		const before = c.changeTick;
+		sock.deliver(fixtures.session_superseded);
+		const { type: _, ...ev } = fixtures.session_superseded;
+		expect(seen).toEqual([ev]);
+		expect(other).toEqual([]);
+		vi.advanceTimersByTime(2000);
+		expect(c.changeTick).toBe(before + 1);
+	});
+
+	it('followup_failed reaches the listeners of the source session', () => {
+		const { c, sock } = setup();
+		const seen: unknown[] = [];
+		const off = c.onFollowupFailed(SID, (ev) => seen.push(ev));
+		sock.deliver(fixtures.followup_failed);
+		off();
+		sock.deliver(fixtures.followup_failed);
+		const { type: _, ...ev } = fixtures.followup_failed;
+		expect(seen).toEqual([ev]);
+	});
+
+	it('a send refused by a follow-up in progress toasts instead of failing silently', () => {
+		const { c, sock } = setup();
+		const info = vi.spyOn(toasts, 'info');
+		c.trackedSend(SID, 'hi', 1);
+		const frame = sock.sent.find((f) => f.type === 'message');
+		sock.deliver({
+			...fixtures.message_ack,
+			client_msg_id: frame?.client_msg_id as string,
+			ok: false,
+			error: 'a follow-up of this session is in progress'
+		});
+		expect(info).toHaveBeenCalledTimes(1);
+		info.mockRestore();
 	});
 
 	it('message_ack without a command id settles the tracked send', () => {

@@ -3,6 +3,7 @@ import { highlightBlock, renderMarkdown } from '#lib/markdown.ts';
 import { highlightTerms } from '#lib/search.ts';
 import { headHiddenByFilter } from './headHidden';
 import { createLineBuilder, type DeliveryState, type LineBuildCtx } from './lines';
+import { threadLines, type ThreadSegment } from './threadView';
 import type { Line, MsgCategory, ViewOpts } from './types';
 
 export const isMachineUuid = (v: string) =>
@@ -20,11 +21,14 @@ export interface LineRendererOpts {
 	retrying: () => DeliveryState['retrying'];
 	askPreamble: () => string | null | undefined;
 	planPreamble: () => string | null | undefined;
+	/** Earlier generations of a follow-up line, rendered above `events`. */
+	prior?: () => readonly ThreadSegment[];
 }
 
 export class LineRenderer {
 	#o: LineRendererOpts;
 	#build = createLineBuilder();
+	#segmentBuilds = new Map<string, ReturnType<typeof createLineBuilder>>();
 	#ctx: LineBuildCtx;
 
 	constructor(o: LineRendererOpts) {
@@ -69,6 +73,24 @@ export class LineRenderer {
 			})
 		);
 	};
+
+	/** One memoized builder per session, so a live head event never re-renders
+	 *  the earlier generations. */
+	segmentLines = (seg: Pick<ThreadSegment, 'sessionId' | 'events'>): Line[] => {
+		let build = this.#segmentBuilds.get(seg.sessionId);
+		if (!build) {
+			build = createLineBuilder();
+			this.#segmentBuilds.set(seg.sessionId, build);
+		}
+		return build(seg.events, this.#ctx);
+	};
+
+	priorLines: Line[] = $derived.by(() => {
+		const segments = this.#o.prior?.() ?? [];
+		const keep = new Set(segments.map((s) => s.sessionId));
+		for (const id of this.#segmentBuilds.keys()) if (!keep.has(id)) this.#segmentBuilds.delete(id);
+		return threadLines(segments, this.segmentLines);
+	});
 
 	lines: Line[] = $derived.by(() =>
 		this.#build(this.#o.events(), this.#ctx, {

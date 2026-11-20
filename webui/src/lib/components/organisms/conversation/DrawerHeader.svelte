@@ -65,7 +65,8 @@
 		onDeleteLabel,
 		// Room = a field on the session: pick one (by id or by name) or clear it.
 		onsetroom,
-		onclearroom
+		onclearroom,
+		onthreadjump
 	}: {
 		session: SessionListItem;
 		archived: boolean;
@@ -116,6 +117,8 @@
 		onDeleteLabel?: (labelId: string) => void | Promise<void>;
 		onsetroom?: (sessionId: string, pick: { id: string } | { name: string }) => void;
 		onclearroom?: (sessionId: string) => void;
+		/** Scrolls to a session of the shown thread; false when it is not in it. */
+		onthreadjump?: (sessionId: string) => boolean;
 	} = $props();
 
 	// Label picker is interactive only when an attach handler is wired in.
@@ -432,7 +435,16 @@
 		</div>
 	{/if}
 	{#if !compact}
-		<HeaderMeta {session} {archived} {isCodexSession} {showStatusBadge} {box} {onsetmodel} {onfork} />
+		<HeaderMeta
+			{session}
+			{archived}
+			{isCodexSession}
+			{showStatusBadge}
+			{box}
+			{onsetmodel}
+			{onfork}
+			{onthreadjump}
+		/>
 	{/if}
 </div>
 
