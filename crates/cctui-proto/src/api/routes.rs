@@ -2284,6 +2284,15 @@ pub const ROUTES: &[Route] = &[
         feature: Some(Feature::Automation),
     },
     Route {
+        id: "post_sessions_by_id_followup",
+        method: Method::Post,
+        path: "/sessions/{id}/followup",
+        summary: "Continue a session in a new one and swap it in once it registers.",
+        request: Some("FollowupRequest"),
+        response: Some("FollowupResponse"),
+        feature: Some(Feature::Automation),
+    },
+    Route {
         id: "post_sessions_by_id_fork",
         method: Method::Post,
         path: "/sessions/{id}/fork",

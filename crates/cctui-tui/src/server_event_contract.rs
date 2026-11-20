@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::app::Action;
 use crate::app::server_event::to_actions;
 
-const VARIANT_COUNT: usize = 38;
+const VARIANT_COUNT: usize = 40;
 
 fn uuid() -> Uuid {
     Uuid::nil()
@@ -267,6 +267,23 @@ fn fleet_samples() -> Vec<ServerEvent> {
                 detail: serde_json::json!({ "end_reason": "completed" }),
             },
         },
+        ServerEvent::SessionSuperseded {
+            followup_id: uuid(),
+            from: "s-1".to_owned(),
+            to: "s-2".to_owned(),
+            reason: cctui_proto::thread::FollowupReason::Cold,
+            instruction: "carry on".to_owned(),
+            archived: true,
+            archive_error: None,
+            at: now(),
+        },
+        ServerEvent::FollowupFailed {
+            followup_id: uuid(),
+            from: "s-1".to_owned(),
+            reason: cctui_proto::thread::FollowupReason::Manual,
+            instruction: "carry on".to_owned(),
+            error: "the daemon refused the spawn".to_owned(),
+        },
         ServerEvent::Heartbeat {},
         ServerEvent::Resync { session_id: Some("s-1".to_owned()) },
     ]
@@ -310,6 +327,8 @@ fn variant_name(event: &ServerEvent) -> &'static str {
         ServerEvent::Notification { .. } => "notification",
         ServerEvent::NotificationsUnread { .. } => "notifications_unread",
         ServerEvent::Event { .. } => "event",
+        ServerEvent::SessionSuperseded { .. } => "session_superseded",
+        ServerEvent::FollowupFailed { .. } => "followup_failed",
         ServerEvent::Heartbeat { .. } => "heartbeat",
         ServerEvent::Resync { .. } => "resync",
     }

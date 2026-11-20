@@ -197,6 +197,11 @@ pub async fn deliver(state: &AppState, mut row: ClaimedRow) -> Outcome {
     if let Some(reason) = undeliverable_reason(row.session_status.as_deref()) {
         return Outcome::Dead(reason.to_owned());
     }
+    match crate::followup_op::in_progress(&state.pool, &row.session_id).await {
+        Ok(false) => {}
+        Ok(true) => return Outcome::RetryKept(crate::followup_op::BUSY.to_owned()),
+        Err(e) => return Outcome::RetryKept(e.to_string()),
+    }
     let text = match delivery_text(&row, crate::crypto::vault_key) {
         Ok(text) => text,
         Err(reason) => return Outcome::Dead(reason.to_owned()),

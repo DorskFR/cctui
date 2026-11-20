@@ -108,6 +108,11 @@ pub(super) async fn reply(state: &AppState, session_id: &str, events: &[BatchEve
     if usage_too_high(state, session_id).await {
         return Outcome::Skip;
     }
+    match crate::followup_op::in_progress(&state.pool, session_id).await {
+        Ok(false) => {}
+        Ok(true) => return Outcome::Retry(crate::followup_op::BUSY.to_owned()),
+        Err(e) => return Outcome::Retry(e.to_string()),
+    }
     let text = match batch_text(events, crate::crypto::vault_key) {
         Ok(text) => text,
         Err(reason) => return Outcome::Dead(reason.to_owned()),

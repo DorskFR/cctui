@@ -26,6 +26,7 @@ mod envelope_guard;
 mod error;
 mod events;
 mod followup;
+mod followup_op;
 mod guard_step;
 mod hooks;
 mod http_cache;
@@ -1194,7 +1195,7 @@ fn spawn_reaper_sweeps(state: &AppState) {
     }
     spawn_sweep(state, |state| async move { usage_history::sweep(&state) });
     if Task::FollowUp.enabled(features) {
-        spawn_sweep(state, |state| async move { followup::sweep(&state.pool).await });
+        spawn_sweep(state, |state| async move { followup::sweep(&state).await });
     }
     spawn_sweep(state, |state| async move {
         cctui_server_core::machine_policy::purge_spawner_intents(&state.pool).await;
@@ -1629,6 +1630,7 @@ mod tests {
             r#"PUT /sessions/{id}/draft-attachments Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/events Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/files Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/followup Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/fork Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/guard Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/guard/transition Bearer Resource(Session, Write, Path("id"))"#,

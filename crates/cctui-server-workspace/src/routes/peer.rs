@@ -328,6 +328,7 @@ pub async fn message_peer(
             ),
         ));
     }
+    crate::followup_op::refuse_while_pending(&state.pool, &target.id).await?;
     admit_send(&session_id)?;
 
     let text = envelope(&caller, body);

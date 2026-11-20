@@ -447,7 +447,7 @@ pub async fn spawn_prompt(
     Ok(rendered.unwrap_or_else(|| without_brief(instruction)))
 }
 
-pub(super) fn brief_upload(
+pub fn brief_upload(
     file: String,
 ) -> (cctui_proto::adapter::BootstrapFile, crate::uploads::RawUpload) {
     use base64::Engine;
@@ -586,8 +586,9 @@ async fn spawn(
         Ok(text) => text,
         Err(reason) => return Ok(Outcome::Dead(reason.to_owned())),
     };
+    let ask = instruction(preset, &text);
     let FollowupPrompt { prompt, file: brief } =
-        spawn_prompt(&state.pool, plan, instruction(preset, &text)).await?;
+        spawn_prompt(&state.pool, plan, ask.clone()).await?;
     let Some(mut req) = spawn_request(preset, plan, &prompt) else {
         return Ok(Outcome::Dead(MACHINE_GONE.to_owned()));
     };
@@ -615,28 +616,94 @@ async fn spawn(
         Ok(ctx) => ctx,
         Err(e) => return Ok(Outcome::Retry(e.to_string())),
     };
+    let op = match begin_followup(&state.pool, preset, plan, batch_id, &ask).await? {
+        Ok(op) => op,
+        Err(outcome) => return Ok(outcome),
+    };
     let sent =
         crate::routes::spawn::try_dispatch_spawn_as(state, &ctx, req, files, raw_files, batch_id)
             .await;
-    let failure = match sent {
+    let (outcome, launched) = match sent {
         Ok((_, Json(launched))) => {
             set_spawn(&state.pool, lane.id, Some(batch_id)).await?;
             let session_id =
                 launched.session_id.map_or_else(|| batch_id.to_string(), |id| id.to_string());
-            return Ok(delivered(session_id, plan));
+            (delivered(session_id, plan), Some(launched))
         }
-        Err(failure) => failure,
+        Err(failure) => (undelivered(&state.pool, batch_id, &failure).await?, None),
     };
+    if let Some(op) = op {
+        track_followup(state, op, &outcome, launched.as_ref()).await?;
+    }
+    Ok(outcome)
+}
+
+async fn undelivered(
+    pool: &PgPool,
+    batch_id: Uuid,
+    failure: &crate::routes::spawn::SpawnFailure,
+) -> sqlx::Result<Outcome> {
     let message = failure.message().to_owned();
     if failure.queue.is_some() {
         return Ok(Outcome::Retry(message));
     }
-    Ok(match prior_launch(&state.pool, batch_id).await? {
+    Ok(match prior_launch(pool, batch_id).await? {
         Prior::None if failure.response.0.is_server_error() => Outcome::Retry(message),
         Prior::None => Outcome::Dead(message),
         Prior::Refused(detail) => Outcome::Dead(format!("the daemon refused the spawn: {detail}")),
         Prior::Launched(_) | Prior::Undelivered => Outcome::RetryKept(message),
     })
+}
+
+/// The batch id keys the op, so a redelivered batch finds the op it started.
+async fn begin_followup(
+    pool: &PgPool,
+    preset: &Preset,
+    plan: &Plan,
+    batch_id: Uuid,
+    ask: &str,
+) -> sqlx::Result<Result<Option<Uuid>, Outcome>> {
+    use crate::followup_op::{BUSY, Begun, NewOp};
+    let Plan::Followup { parent } = plan else { return Ok(Ok(None)) };
+    let key = batch_id.to_string();
+    let new = NewOp {
+        source: parent,
+        owner: Some(preset.user_id),
+        key: &key,
+        reason: cctui_proto::api::followup::FollowupReason::Inbox,
+        instruction: ask,
+        archive_source: false,
+        command_id: batch_id,
+    };
+    Ok(match crate::followup_op::begin(pool, &new).await? {
+        Begun::Started(op) => Ok(Some(op.id)),
+        Begun::NoSource => Ok(None),
+        Begun::Existing(op) | Begun::Busy(op) => {
+            Err(Outcome::Retry(op.error.unwrap_or_else(|| BUSY.to_owned())))
+        }
+    })
+}
+
+/// A spawn that may still have landed keeps its op waiting for the registration.
+async fn track_followup(
+    state: &AppState,
+    op: Uuid,
+    outcome: &Outcome,
+    launched: Option<&cctui_proto::api::SpawnResponse>,
+) -> sqlx::Result<()> {
+    match (outcome, launched) {
+        (_, Some(launched)) => crate::followup_op::launched(state, op, launched).await,
+        (Outcome::RetryKept(_), None) => {
+            crate::followup_op::watch(state, op);
+            Ok(())
+        }
+        (Outcome::Retry(error) | Outcome::Dead(error), None) => {
+            crate::followup_op::fail(state, op, error).await.map(|_| ())
+        }
+        (Outcome::Delivered { .. } | Outcome::Skip, None) => {
+            crate::followup_op::fail(state, op, UNDELIVERED).await.map(|_| ())
+        }
+    }
 }
 
 /// Containers are one-shot: every batch is its own dispatch, keyed by

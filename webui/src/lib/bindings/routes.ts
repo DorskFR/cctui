@@ -246,6 +246,7 @@ export const ROUTES = [
   { id: "post_sessions_by_id_seen", method: "POST", path: "/sessions/{id}/seen", summary: "Mark this session's messages seen for the caller.", request: null, response: null, feature: null },
   { id: "get_sessions_by_id_brief", method: "GET", path: "/sessions/{id}/brief", summary: "Render a session's user/assistant transcript as a capped markdown brief.", request: null, response: null, feature: null },
   { id: "get_sessions_by_id_thread", method: "GET", path: "/sessions/{id}/thread", summary: "List the follow-up thread a session belongs to, oldest first.", request: null, response: "SessionThreadResponse", feature: "automation" },
+  { id: "post_sessions_by_id_followup", method: "POST", path: "/sessions/{id}/followup", summary: "Continue a session in a new one and swap it in once it registers.", request: "FollowupRequest", response: "FollowupResponse", feature: "automation" },
   { id: "post_sessions_by_id_fork", method: "POST", path: "/sessions/{id}/fork", summary: "Fork a session into a new one.", request: null, response: null, feature: "machine_spawn" },
   { id: "post_sessions_by_id_auto_approve", method: "POST", path: "/sessions/{id}/auto-approve", summary: "Toggle auto-approval of tool-use for a session.", request: null, response: null, feature: "auto_approve" },
   { id: "post_sessions_by_id_archive", method: "POST", path: "/sessions/{id}/archive", summary: "Archive a single session.", request: null, response: null, feature: null },

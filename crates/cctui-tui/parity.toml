@@ -1393,6 +1393,12 @@ tui = "waived"
 reason = "follow-up thread navigation lives in the webui drawer header"
 
 [[route]]
+id = "post_sessions_by_id_followup"
+# POST /sessions/{id}/followup — Continue a session in a new one and swap it in once it registers.
+tui = "waived"
+reason = "follow-ups are started from the webui composer and inbox presets"
+
+[[route]]
 id = "post_sessions_by_id_fork"
 # POST /sessions/{id}/fork — Fork a session into a new one.
 tui = "handled"
@@ -2105,6 +2111,16 @@ module = "app/notifications.rs"
 name = "event"
 tui = "waived"
 reason = "the TUI has no event log view; the list refresh carries status"
+
+[[ws_event]]
+name = "session_superseded"
+tui = "waived"
+reason = "the list refresh carries the new session and drops the archived one"
+
+[[ws_event]]
+name = "followup_failed"
+tui = "waived"
+reason = "follow-ups are started from the webui, which reports the failure"
 
 [[ws_event]]
 name = "heartbeat"

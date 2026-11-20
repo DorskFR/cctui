@@ -170,6 +170,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "session_thread_root",
         sql: include_str!("../schema/0027_session_thread_root.sql"),
     },
+    Migration {
+        version: 28,
+        name: "session_followup_ops",
+        sql: include_str!("../schema/0028_session_followup_ops.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -326,7 +331,8 @@ mod tests {
                     (24, "bootstrap".to_owned()),
                     (25, "bootstrap".to_owned()),
                     (26, "bootstrap".to_owned()),
-                    (27, "bootstrap".to_owned())
+                    (27, "bootstrap".to_owned()),
+                    (28, "bootstrap".to_owned())
                 ]
             );
 
@@ -643,6 +649,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_session_holds_one_pending_followup_op_and_one_op_per_key() {
+        with_isolated_database("session_followup_ops_migration", |pool| async move {
+            provisioned(&pool).await;
+            sqlx::raw_sql(
+                "INSERT INTO sessions (id, machine_id, working_dir) VALUES ('a', 'm', '/w')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let insert = |key: &'static str, state: &'static str| {
+                let pool = pool.clone();
+                async move {
+                    sqlx::query(
+                        "INSERT INTO session_followup_ops \
+                             (source_session_id, idempotency_key, reason, command_id, state) \
+                         VALUES ('a', $1, 'cold', gen_random_uuid(), $2)",
+                    )
+                    .bind(key)
+                    .bind(state)
+                    .execute(&pool)
+                    .await
+                }
+            };
+            insert("k1", "pending").await.unwrap();
+            assert!(insert("k2", "pending").await.is_err(), "a second pending op is refused");
+            assert!(insert("k1", "failed").await.is_err(), "a key names one op");
+            insert("k2", "failed").await.unwrap();
+            insert("k3", "registered").await.unwrap();
+            assert!(insert("k4", "done").await.is_err(), "unknown state");
+            sqlx::raw_sql("DELETE FROM sessions WHERE id = 'a'").execute(&pool).await.unwrap();
+            let left: i64 = sqlx::query_scalar("SELECT count(*) FROM session_followup_ops")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(left, 0, "ops go with their session");
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn storage_lifecycle_starts_with_no_rule_and_refuses_a_trim_without_a_size() {
         with_isolated_database("storage_lifecycle_rules", |pool| async move {
             provisioned(&pool).await;
@@ -721,7 +767,8 @@ mod tests {
                     (24, "bootstrap".to_owned()),
                     (25, "bootstrap".to_owned()),
                     (26, "bootstrap".to_owned()),
-                    (27, "bootstrap".to_owned())
+                    (27, "bootstrap".to_owned()),
+                    (28, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =
