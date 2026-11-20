@@ -108,8 +108,9 @@
 	{#if onbookmark}
 		<IconButton
 			inline
-			glyphSize={14}
-			emoji="◈"
+			glyphSize={16}
+			icon="bookmark"
+			filled={bookmarked}
 			pressed={bookmarked}
 			style="--btn-on: var(--role-assistant)"
 			label={m.bookmarks_line_label()}

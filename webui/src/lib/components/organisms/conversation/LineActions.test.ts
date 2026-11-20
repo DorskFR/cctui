@@ -54,6 +54,19 @@ describe('line action buttons', () => {
 		expect(b?.getAttribute('aria-pressed')).toBe('true');
 	});
 
+	it('renders the bookmark action as an outlined bookmark icon', async () => {
+		const b = byLabel(await render({ bookmarked: false }), 'Save this message to bookmarks');
+		expect(b?.textContent).not.toContain('◈');
+		const svg = b?.querySelector('svg[data-tsu="Icon"]');
+		expect(svg?.innerHTML).toContain('M17 3a2 2 0 0 1 2 2v15');
+		expect(svg?.getAttribute('fill')).toBe('none');
+	});
+
+	it('fills the bookmark icon when the message is bookmarked', async () => {
+		const b = byLabel(await render({ bookmarked: true }), 'Save this message to bookmarks');
+		expect(b?.querySelector('svg[data-tsu="Icon"]')?.getAttribute('fill')).toBe('currentColor');
+	});
+
 	it('exposes the pin toggle state via aria-pressed', async () => {
 		const el = await render({ pinned: true });
 		const pressed = [...el.querySelectorAll('button')].filter(
