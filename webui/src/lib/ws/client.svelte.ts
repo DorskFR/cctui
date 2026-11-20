@@ -576,7 +576,8 @@ export class WsClient {
 		content: string,
 		clientMsgId?: string,
 		askPicks?: number[][],
-		turnId?: string
+		turnId?: string,
+		dictated?: boolean
 	): boolean {
 		return this.send({
 			type: 'message',
@@ -584,7 +585,8 @@ export class WsClient {
 			content,
 			...(clientMsgId ? { client_msg_id: clientMsgId } : {}),
 			...(askPicks ? { ask_picks: askPicks } : {}),
-			...(turnId ? { turn_id: turnId } : {})
+			...(turnId ? { turn_id: turnId } : {}),
+			...(dictated ? { dictated } : {})
 		});
 	}
 
@@ -594,9 +596,10 @@ export class WsClient {
 		text: string,
 		ts: number,
 		askPicks?: number[][],
-		turnId?: string
+		turnId?: string,
+		dictated?: boolean
 	): boolean {
-		return this.delivery.trackedSend(sid, text, ts, askPicks, turnId);
+		return this.delivery.trackedSend(sid, text, ts, askPicks, turnId, dictated);
 	}
 
 	retryNow(sid: string, ts: number) {

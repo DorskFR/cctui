@@ -1,11 +1,12 @@
 /** The dictation mic's gesture state: a tap starts recording and a second
- *  tap stops it; a press held past `HOLD_MS` records until release. */
+ *  tap stops it; a press held past `HOLD_MS` while speaking records until
+ *  release. */
 
-/** Past the platform long-press delay, so a finger that lingers on a tap
- *  still starts a hands-free recording. */
-export const HOLD_MS = 500;
+/** Long enough that a firm click on a trackpad is still a tap. */
+export const HOLD_MS = 800;
 /** A recording stopped sooner than this holds nothing worth transcribing. */
 export const MIN_CLIP_MS = 300;
+export const SILENT_CLIP_MS = 1500;
 
 export type TapHoldAction = 'start' | 'stop' | 'cancel' | 'none';
 
@@ -14,6 +15,12 @@ export class TapHold {
 	private startedAt = 0;
 	private pressAt: number | null = null;
 	private pressStarted = false;
+	private captured = false;
+	private readonly heard: () => boolean;
+
+	constructor(heard: () => boolean = () => true) {
+		this.heard = heard;
+	}
 
 	down(now: number): TapHoldAction {
 		if (this.recording) return this.finish(now);
@@ -24,13 +31,21 @@ export class TapHold {
 		return 'start';
 	}
 
-	/** A release, or the pointer leaving the control mid-press. */
+	capture() {
+		if (this.pressStarted) this.captured = true;
+	}
+
 	up(now: number): TapHoldAction {
 		const pressAt = this.pressAt;
 		this.pressAt = null;
+		this.captured = false;
 		if (pressAt === null || !this.pressStarted) return 'none';
 		this.pressStarted = false;
-		return now - pressAt >= HOLD_MS ? this.finish(now) : 'none';
+		return now - pressAt >= HOLD_MS && this.heard() ? this.finish(now) : 'none';
+	}
+
+	leave(now: number): TapHoldAction {
+		return this.captured ? 'none' : this.up(now);
 	}
 
 	/** Keyboard or the stop control: start, or stop what is recording. */
@@ -42,11 +57,13 @@ export class TapHold {
 		this.recording = false;
 		this.pressAt = null;
 		this.pressStarted = false;
+		this.captured = false;
 	}
 
 	private finish(now: number): TapHoldAction {
 		const elapsed = now - this.startedAt;
 		this.reset();
-		return elapsed < MIN_CLIP_MS ? 'cancel' : 'stop';
+		const silent = elapsed < SILENT_CLIP_MS && !this.heard();
+		return elapsed < MIN_CLIP_MS || silent ? 'cancel' : 'stop';
 	}
 }

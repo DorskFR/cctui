@@ -4,6 +4,7 @@
 	import { page } from '$app/state';
 	import { sessionHref } from '#lib/sessionFailureToast.ts';
 	import { insertBlock } from './insertText';
+	import { splitDictated } from '#lib/voice/dictatedMark.ts';
 	import { insertAtCaret, quoteMarkdown } from './format';
 	import { errMessage } from '#lib/api.ts';
 	import type { SessionListItem } from '@bindings/SessionListItem';
@@ -70,7 +71,7 @@
 		supportsAttachments: boolean;
 		scroll: ScrollController;
 		// Send a final message body (text + any appended staged-attachment paths).
-		onsend: (body: string) => void;
+		onsend: (body: string, dictated?: boolean) => void;
 		// Upload staged attachments, returning their absolute paths.
 		stageFiles: (files: File[]) => Promise<{ paths: string[] }>;
 		onNewFromScript: () => void;
@@ -98,6 +99,10 @@
 	let revealed = $state<ReadonlySet<string>>(new Set());
 	$effect(() => {
 		drafts.set(composerKey(session.id), input);
+	});
+	let dictatedDraft = $state(false);
+	$effect(() => {
+		if (!input.trim()) dictatedDraft = false;
 	});
 
 	// A draft written on another device lands after first paint (which seeds from
@@ -247,10 +252,11 @@
 		}
 		launching = true;
 		const source = session;
+		const dictated = dictatedDraft;
 		try {
 			const out = await launchFollowup(source, text, {
 				brief: (id) => endpoints.brief(id, BRIEF_FETCH_MAX_BYTES, { chain: true }),
-				spawn: (body, files) => actions.spawn(body, files),
+				spawn: (body, files) => actions.spawn(dictated ? { ...body, dictated } : body, files),
 				awaitSpawn: async (commandId, sessionId) => {
 					let found = sessionId;
 					const outcome = await ws.awaitSpawn(commandId, sessionId, {
@@ -316,7 +322,9 @@
 
 	// Pull a still-pending message back into the composer to edit + resend.
 	export function loadDraft(text: string) {
-		input = text;
+		const draft = splitDictated(text);
+		input = draft.text;
+		dictatedDraft = draft.dictated;
 		resetHistoryNav();
 		scroll.textarea?.focus();
 	}
@@ -341,10 +349,10 @@
 	/** A finished dictation: into the draft, or out the way Send would route it
 	 *  when the pref says so, so a cold session gets its follow-up. */
 	async function dictated(text: string) {
-		if (!settings.voice.autoSend) return void insertText(text);
-		if (route === 'send') return sendText(text);
+		if (settings.voice.autoSend && route === 'send') return sendText(text, true);
+		dictatedDraft = true;
 		await insertText(text);
-		submit();
+		if (settings.voice.autoSend) submit();
 	}
 
 	/** Quote a message into the draft as a Markdown blockquote, keeping whatever
@@ -366,10 +374,10 @@
 
 	/** A plugin pane's message: goes out through the same path as a typed one,
 	 *  the draft stays. */
-	export function sendText(text: string) {
+	export function sendText(text: string, dictated = false) {
 		const body = text.trim();
 		if (!body || archived) return;
-		onsend(body);
+		onsend(body, dictated);
 		msgHistory.push(session.id, body);
 	}
 
@@ -390,7 +398,7 @@
 	// composer + record the sent message in history.
 	function sendBody(text: string) {
 		if (!text || archived) return;
-		onsend(text);
+		onsend(text, dictatedDraft);
 		clearSent(text);
 	}
 

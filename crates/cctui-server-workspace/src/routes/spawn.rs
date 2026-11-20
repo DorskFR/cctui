@@ -530,6 +530,14 @@ fn spawn_prompt(
     req: &SpawnRequest,
     context: &[crate::routes::context::ContextItem],
 ) -> Option<String> {
+    let prompt = templated_prompt(req, context);
+    if req.dictated { prompt.map(|p| cctui_proto::injected::dictated_prompt(&p)) } else { prompt }
+}
+
+fn templated_prompt(
+    req: &SpawnRequest,
+    context: &[crate::routes::context::ContextItem],
+) -> Option<String> {
     let typed = req.prompt.clone().filter(|p| !p.trim().is_empty());
     let Some(template) = context.iter().find(|i| i.kind == "prompt") else {
         return typed;
@@ -2659,6 +2667,18 @@ mod draft_seal_tests {
             "machine_id": machine, "working_dir": "/w", "prompt": prompt,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn a_dictated_spawn_prompt_is_marked_and_a_typed_one_is_not() {
+        let mut req = request("m", "fix the login bug");
+        assert_eq!(super::spawn_prompt(&req, &[]).as_deref(), Some("fix the login bug"));
+        req.dictated = true;
+        let first = super::spawn_prompt(&req, &[]).unwrap();
+        assert!(cctui_proto::injected::is_dictated_prompt(&first), "{first}");
+        assert!(first.ends_with("\n\nfix the login bug"), "{first}");
+        req.prompt = Some("  ".to_owned());
+        assert_eq!(super::spawn_prompt(&req, &[]), None);
     }
 
     #[test]

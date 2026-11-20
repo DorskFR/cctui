@@ -127,6 +127,7 @@ export class SpawnForm {
 	// (attachmentStore), keyed like the draft.
 	envRows = $state<EnvRow[]>([]);
 	promptEl = $state<HTMLTextAreaElement | null>(null);
+	dictated = $state(false);
 	readonly att = new PromptAttachments({
 		input: () => this.form.prompt,
 		setInput: (text) => (this.form.prompt = text),
@@ -496,6 +497,7 @@ export class SpawnForm {
 		this.files = [];
 		this.att.images.reset();
 		this.oneOff = null;
+		this.dictated = false;
 	}
 	discardMirror() {
 		if (!this.draftId || !this.canDraft) return;

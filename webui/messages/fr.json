@@ -2731,6 +2731,7 @@
 	"voice_line_speak": "Lire à voix haute",
 	"voice_line_speaking": "Arrêter la lecture",
 	"voice_user_spoken": "Dicté au micro",
+	"voice_user_dictated": "Dicté : peut contenir des erreurs de transcription",
 	"cctuiverse_linked_marker": "Lié à {peer} via cctuiverse",
 	"cctuiverse_external_badge": "externe",
 	"cctuiverse_external_title": "Envoyé par une session d'un autre cctui",

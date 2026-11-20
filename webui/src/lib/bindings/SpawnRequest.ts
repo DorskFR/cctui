@@ -58,6 +58,10 @@ save_draft?: boolean,
  */
 auto_archive?: boolean, 
 /**
+ * The prompt came, at least partly, from speech-to-text.
+ */
+dictated?: boolean, 
+/**
  * Draft only: the names of its sealed env. On a draft edit a listed name
  * sent without a value in `env` keeps its stored value; an unlisted one is dropped.
  */

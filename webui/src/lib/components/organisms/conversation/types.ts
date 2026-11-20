@@ -253,6 +253,8 @@ export interface Line {
 	voiceNoteId?: string;
 	/** A user turn that came in through the microphone. */
 	voice?: boolean;
+	/** A user turn typed at least partly by speech-to-text. */
+	dictated?: boolean;
 	usage?: TokenUsageT;
 	images?: ResultImage[];
 }

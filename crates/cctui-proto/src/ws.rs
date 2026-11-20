@@ -738,6 +738,9 @@ pub enum TuiCommand {
         /// Client-minted `UUIDv7`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<uuid::Uuid>,
+        /// The words came, at least partly, from speech-to-text.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        dictated: bool,
     },
     PermissionResponse {
         session_id: String,
@@ -1547,6 +1550,7 @@ mod tests {
             client_msg_id: None,
             ask_picks: None,
             turn_id: None,
+            dictated: false,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains(r#""type":"message""#));
@@ -1568,6 +1572,7 @@ mod tests {
             client_msg_id: None,
             ask_picks: None,
             turn_id: None,
+            dictated: false,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(!json.contains("client_msg_id"), "None must be skipped: {json}");
@@ -1592,6 +1597,7 @@ mod tests {
             client_msg_id: Some("abc-123".into()),
             ask_picks: None,
             turn_id: None,
+            dictated: false,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains(r#""client_msg_id":"abc-123""#));
@@ -1602,6 +1608,19 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn tui_command_message_carries_dictated_only_when_set() {
+        let typed: TuiCommand =
+            serde_json::from_str(r#"{"type":"message","session_id":"s","content":"hi"}"#).unwrap();
+        assert!(matches!(typed, TuiCommand::Message { dictated: false, .. }));
+        assert!(!serde_json::to_string(&typed).unwrap().contains("dictated"));
+        let voiced: TuiCommand = serde_json::from_str(
+            r#"{"type":"message","session_id":"s","content":"hi","dictated":true}"#,
+        )
+        .unwrap();
+        assert!(matches!(voiced, TuiCommand::Message { dictated: true, .. }));
     }
 
     #[test]

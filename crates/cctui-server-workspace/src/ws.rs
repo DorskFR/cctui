@@ -209,6 +209,16 @@ async fn handle_message(
     ack_message(event_tx, session_id, client_msg_id, err_reason, Some(command_id)).await;
 }
 
+/// A dictated reply goes out behind the marker telling the agent so; a spoken
+/// prompt keeps its own.
+fn reply_content(content: String, dictated: bool) -> String {
+    use cctui_proto::injected::{dictated_prompt, is_dictated_prompt, is_spoken_prompt};
+    if !dictated || is_spoken_prompt(&content) || is_dictated_prompt(&content) {
+        return content;
+    }
+    dictated_prompt(&content)
+}
+
 /// Queue `content` toward the session's daemon as a typed reply.
 ///
 /// The id is tracked before dispatch: a successful dispatch only means the
@@ -448,7 +458,14 @@ async fn run_tui_socket(
                 }
                 handle_watch_text(&state, &session_id, watch, &text_watches).await;
             }
-            TuiCommand::Message { session_id, content, client_msg_id, ask_picks, turn_id } => {
+            TuiCommand::Message {
+                session_id,
+                content,
+                client_msg_id,
+                ask_picks,
+                turn_id,
+                dictated,
+            } => {
                 if !ws_owns_session(&state, &ctx, &session_id).await {
                     tracing::debug!(session_id = %session_id, user_id = %ctx.user_id, "tui_ws: message denied (not owner)");
                     // Ack the failure when the client opted in, so it doesn't
@@ -484,7 +501,7 @@ async fn run_tui_socket(
                     &state,
                     &event_tx,
                     session_id,
-                    content,
+                    reply_content(content, dictated),
                     client_msg_id,
                     ask_picks,
                     turn_id,
@@ -1769,5 +1786,31 @@ mod tests {
         assert!(admin.allows(&notice_for(DAVE)).await);
         assert!(!admin.allows(&notice_for(BOB)).await, "notifications are personal");
         assert!(!admin.allows(&unread(BOB)).await);
+    }
+
+    #[test]
+    fn a_dictated_send_goes_out_behind_the_dictated_marker() {
+        let sent = super::reply_content("fix the login bug".to_owned(), true);
+        assert!(sent.starts_with("<cctui-session-context input=\"dictated\">"), "{sent}");
+        assert!(sent.ends_with("\n\nfix the login bug"), "{sent}");
+        assert!(cctui_proto::injected::is_dictated_prompt(&sent));
+        assert_eq!(super::reply_content(sent.clone(), true), sent, "a retry is not wrapped twice");
+    }
+
+    #[test]
+    fn a_typed_send_goes_out_untouched() {
+        assert_eq!(
+            super::reply_content("fix the login bug".to_owned(), false),
+            "fix the login bug"
+        );
+    }
+
+    #[test]
+    fn a_spoken_prompt_keeps_its_own_marker() {
+        let spoken = "<cctui-session-context voice=\"spoken\">\nThe user spoke aloud.\n\
+                      </cctui-session-context>\n\nwhat time is it";
+        assert_eq!(super::reply_content(spoken.to_owned(), false), spoken);
+        assert_eq!(super::reply_content(spoken.to_owned(), true), spoken);
+        assert!(!cctui_proto::injected::is_dictated_prompt(spoken));
     }
 }

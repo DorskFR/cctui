@@ -140,6 +140,7 @@ impl WsClient {
             client_msg_id: Some(client_msg_id),
             ask_picks,
             turn_id,
+            dictated: false,
         })
         .await
     }
@@ -166,6 +167,7 @@ impl WsClient {
                 client_msg_id: Some(client_msg_id.clone()),
                 ask_picks,
                 turn_id,
+                dictated: false,
             })
             .await;
         if let Err(e) = sent {

@@ -35,6 +35,7 @@ interface TrackedSend {
 	/** the turn's identity, re-sent on every retry so a retried frame the
 	 * server did receive produces the same turn id as the first attempt */
 	turnId?: string;
+	dictated?: boolean;
 	/** correlation id of the CURRENT attempt (rotates each retry) */
 	clientMsgId: string;
 	/** attempts dispatched so far (0 before the first dispatch) */
@@ -71,7 +72,8 @@ export interface DeliveryHost {
 		content: string,
 		clientMsgId?: string,
 		askPicks?: number[][],
-		turnId?: string
+		turnId?: string,
+		dictated?: boolean
 	): boolean;
 	connect(): void;
 	forceReconnect(): void;
@@ -105,7 +107,8 @@ export class DeliveryTracker {
 		text: string,
 		ts: number,
 		askPicks?: number[][],
-		turnId?: string
+		turnId?: string,
+		dictated?: boolean
 	): boolean {
 		let m = this.sends.get(sid);
 		if (!m) {
@@ -118,6 +121,7 @@ export class DeliveryTracker {
 			text,
 			askPicks,
 			turnId,
+			dictated,
 			clientMsgId: '',
 			attempt: 0,
 			phase: 'pending'
@@ -217,7 +221,14 @@ export class DeliveryTracker {
 		if (send.clientMsgId) this.ackIndex.delete(send.clientMsgId);
 		send.clientMsgId = cid;
 		this.ackIndex.set(cid, { sid: send.sid, ts: send.ts });
-		const ok = this.host.sendMessage(send.sid, send.text, cid, send.askPicks, send.turnId);
+		const ok = this.host.sendMessage(
+			send.sid,
+			send.text,
+			cid,
+			send.askPicks,
+			send.turnId,
+			send.dictated
+		);
 		if (!ok) {
 			// A frame that never left the client is not a delivery attempt: the
 			// budget measures sends the server ignored. Counting failed writes

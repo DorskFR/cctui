@@ -595,7 +595,7 @@
 				onvoicelive={caps.live ? toggleLiveVoice : undefined}
 				{supportsAttachments}
 				{scroll}
-				onsend={(body) => stream.sendBody(body)}
+				onsend={(body, dictated) => stream.sendBody(body, dictated)}
 				stageFiles={(files) => actions.stageFiles(id, files)}
 				onNewFromScript={() => onNewFromScript?.(session)}
 				onFork={canFork ? fork.openDialog : undefined}

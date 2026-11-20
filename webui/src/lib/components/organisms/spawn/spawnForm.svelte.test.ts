@@ -605,7 +605,24 @@ describe('SpawnForm dictation', () => {
 		spawn.mockResolvedValue({ command_id: 'voice-command', session_id: null });
 		await dictateIntoPrompt(sf, 'Fix the login bug', true);
 		expect(spawn).toHaveBeenCalledTimes(1);
-		expect(spawn.mock.calls[0][0]).toMatchObject({ prompt: 'Fix the login bug', working_dir: '/w' });
+		expect(spawn.mock.calls[0][0]).toMatchObject({
+			prompt: 'Fix the login bug',
+			working_dir: '/w',
+			dictated: true
+		});
+	});
+
+	it('marks only a spawn whose prompt went through the mic as dictated', async () => {
+		const sf = open();
+		await settle();
+		sf.form.working_dir = '/w';
+		sf.form.prompt = 'typed task';
+		flushSync();
+		spawn.mockResolvedValue({ command_id: 'typed-command', session_id: null });
+		await sf.submit();
+		expect(spawn).toHaveBeenCalledTimes(1);
+		expect(spawn.mock.calls[0][0].dictated).toBeUndefined();
+		expect(sf.buildSpawnBody().dictated).toBeUndefined();
 	});
 });
 
