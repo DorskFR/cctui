@@ -10,41 +10,41 @@ use uuid::Uuid;
 /// both.
 #[derive(Clone, Debug, serde::Serialize)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct AccountRedirect {
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
+    #[cfg_attr(test, ts(type = "string"))]
     pub id: Uuid,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
+    #[cfg_attr(test, ts(type = "string"))]
     pub user_id: Uuid,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
+    #[cfg_attr(test, ts(type = "string"))]
     pub from_account: Uuid,
-    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
+    #[cfg_attr(test, ts(type = "string | null"))]
     pub to_account: Option<Uuid>,
     pub family: String,
     pub match_model: Option<String>,
     pub to_model: Option<String>,
-    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
+    #[cfg_attr(test, ts(type = "string | null"))]
     pub expires_at: Option<DateTime<Utc>>,
     pub reason: Option<String>,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
+    #[cfg_attr(test, ts(type = "string"))]
     pub created_at: DateTime<Utc>,
 }
 
 #[derive(serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct PutRedirectRequest {
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
+    #[cfg_attr(test, ts(type = "string | null", optional))]
     pub to_account: Option<Uuid>,
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub to_model: Option<String>,
     pub family: String,
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub match_model: Option<String>,
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
+    #[cfg_attr(test, ts(type = "string | null", optional))]
     pub until: Option<DateTime<Utc>>,
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub reason: Option<String>,
     /// The admin token has no user identity and must name the rule's owner.
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
+    #[cfg_attr(test, ts(type = "string | null", optional))]
     pub user_id: Option<Uuid>,
 }

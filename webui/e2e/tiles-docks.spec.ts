@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { metrics, session, stubApi, transcript, watch } from './tiles.fixture';
+import { metrics, session, settled, stubApi, transcript, watch } from './tiles.fixture';
 
 const N = Number(process.env.TILES_N ?? 24);
 const SESSIONS = Array.from({ length: N }, (_, i) => ({
@@ -41,9 +41,7 @@ for (const nav of ['bottom', 'top'] as const) {
 
 			await page.goto('/sessions', { waitUntil: 'domcontentloaded' });
 			await page.waitForSelector('[data-journey="session-tiles"] .tile', { timeout: 30_000 });
-			await page.waitForTimeout(4000);
-
-			const m = await metrics(page);
+			const m = await settled(page, (s) => s.panes === panes && s.lastComposerBottom > 0);
 			console.log(`tiles ${nav}-nav ${tag} ${JSON.stringify(m)}`);
 			await page.screenshot({ path: testInfo.outputPath(`tiles-docks-${nav}-${tag}.png`) });
 
@@ -72,14 +70,14 @@ for (const nav of ['bottom', 'top'] as const) {
 				floor + 1
 			);
 
-			const scrolled = await page.evaluate(() => {
+			const scrolled = () => page.evaluate(() => {
 				const tile = document.querySelector('[data-journey="session-tiles"] .tile');
 				const el = [...(tile?.querySelectorAll('*') ?? [])].find(
 					(n) => n.scrollHeight > n.clientHeight + 8
 				);
 				return !!el;
 			});
-			expect(scrolled, 'a tile scrolls its own transcript').toBe(true);
+			await expect.poll(scrolled, { message: 'a tile scrolls its own transcript' }).toBe(true);
 
 			const newBtn = page.locator('[data-journey="new"]');
 			await expect(newBtn, 'the docked form is replaced by "+ New"').toBeVisible();

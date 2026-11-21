@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -8,7 +8,7 @@ use crate::adapter::PermissionMode;
 use crate::api::SpawnContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum OnStale {
     #[default]
@@ -37,7 +37,7 @@ impl OnStale {
 
 /// What a cron fire does while the preset's previous run is still working.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum Overlap {
     #[default]
@@ -65,7 +65,7 @@ impl Overlap {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct LaunchPreset {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -107,7 +107,7 @@ pub struct LaunchPreset {
 /// `attachment_names` lists the files stored with `PUT /presets/{id}/attachments`
 /// and is ignored on a preset write.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SpawnTemplate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
@@ -118,7 +118,7 @@ pub struct SpawnTemplate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<SpawnContext>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
+    #[cfg_attr(test, ts(type = "string | null", optional))]
     pub profile_id: Option<Uuid>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_archive: bool,
@@ -142,7 +142,7 @@ impl SpawnTemplate {
 /// Body of `POST /sessions/{id}/schedule-repeat`: the draft becomes a
 /// schedule with its whole payload, env and files included, and is removed.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(deny_unknown_fields)]
 pub struct RepeatDraftRequest {
     /// The draft's session name when absent.
@@ -171,7 +171,7 @@ pub struct RepeatDraftRequest {
 /// With both absent the stored env is left as it is; an absent `template`
 /// keeps the stored one.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(deny_unknown_fields)]
 pub struct LaunchPresetRequest {
     pub name: String,
@@ -222,7 +222,7 @@ pub struct LaunchPresetRequest {
     #[serde(default)]
     pub env_keys: Option<Vec<String>>,
     #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(type = "{ [key in string]: string } | null"))]
+    #[cfg_attr(test, ts(type = "{ [key in string]: string } | null"))]
     pub env: Option<EnvValues>,
     #[serde(default)]
     pub template: Option<SpawnTemplate>,
@@ -241,7 +241,7 @@ impl std::fmt::Debug for EnvValues {
 
 /// Reply of `POST /presets/{id}/run`: the inbox event the run was queued as.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PresetRun {
     pub event_id: Uuid,
     pub lane_id: Uuid,

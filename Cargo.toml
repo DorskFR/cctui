@@ -27,7 +27,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.32.0-beta.17"
+version = "0.32.0-beta.18"
 edition = "2024"
 license = "MIT"
 authors = ["DorskFR"]
@@ -105,3 +105,12 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+[profile.dev.package.regex]
+opt-level = 2
+
+[profile.dev.package.regex-automata]
+opt-level = 2
+
+[profile.dev.package.aho-corasick]
+opt-level = 2

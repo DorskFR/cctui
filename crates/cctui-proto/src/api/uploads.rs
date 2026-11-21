@@ -11,14 +11,14 @@ pub const MAX_TOTAL_BYTES: u64 = 20 * 1024 * 1024;
 pub const MAX_FILES: u32 = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 // The names are the JSON wire format and the exported TS binding.
 #[allow(clippy::struct_field_names)]
 pub struct UploadCaps {
     pub max_files: u32,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub max_file_bytes: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub max_total_bytes: u64,
 }
 

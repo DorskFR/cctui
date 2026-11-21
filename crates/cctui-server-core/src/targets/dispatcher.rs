@@ -584,14 +584,14 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn half_open_peer_is_evicted() {
         let stream = futures_util::stream::pending::<Result<Message, axum::Error>>();
         let out = drive(stream, Duration::from_millis(300), Duration::from_millis(25)).await;
         assert!(matches!(out, Inbound::Idle));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn slow_trickle_answering_pings_survives() {
         let stream = futures_util::stream::unfold(0u32, |i| async move {
             if i >= 12 {

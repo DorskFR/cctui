@@ -17,8 +17,13 @@ async function openWithSwitchableServer(page: Page) {
 	await row.evaluate((el) => {
 		el.dataset.mounted = 'original';
 	});
+	const answered = { version: 0 };
+	page.on('requestfinished', (r) => {
+		if (new URL(r.url()).pathname === '/api/v1/version') answered.version++;
+	});
 	return {
 		server,
+		answered,
 		row,
 		banner: page.getByTestId('reconnect-banner'),
 		screen: page.getByTestId('maintenance-screen')
@@ -30,10 +35,10 @@ test('losing the server keeps the page under a reconnecting banner, and coming b
 }) => {
 	test.setTimeout(90_000);
 	const errors = watch(page);
-	const { server, row, banner, screen } = await openWithSwitchableServer(page);
+	const { server, answered, row, banner, screen } = await openWithSwitchableServer(page);
 
-	// The refused socket keeps reporting failures; /version answering keeps the page up.
-	await page.waitForTimeout(4_000);
+	// The refused socket reports a failure; the /version probe it triggers keeps the page up.
+	await expect.poll(() => answered.version, { timeout: 20_000 }).toBeGreaterThan(0);
 	await expect(banner).toHaveCount(0);
 	await expect(screen).toHaveCount(0);
 

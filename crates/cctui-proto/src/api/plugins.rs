@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 /// The env name a host-minted, `read`-scoped cctui token is exported under.
@@ -11,14 +11,14 @@ use ts_rs::TS;
 /// There is deliberately no scope field: the one cctui API a plugin's skill can reach is its own
 /// backend proxy, which asks for `read`.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct PluginHostToken {
     pub env: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct PluginPage {
     pub title: String,
@@ -28,7 +28,7 @@ pub struct PluginPage {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct PluginSetting {
     pub key: String,
@@ -41,7 +41,7 @@ pub struct PluginSetting {
 /// One instance-level setting. `secret` values are sealed at rest and never
 /// leave the server, not even to the admin who wrote them.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct PluginInstanceSetting {
     pub key: String,
@@ -53,7 +53,7 @@ pub struct PluginInstanceSetting {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct PluginBackend {
     /// The `instanceSettings` key holding the upstream base URL.
@@ -61,7 +61,7 @@ pub struct PluginBackend {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum PluginSource {
     Directory,
@@ -69,7 +69,7 @@ pub enum PluginSource {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PluginInfo {
     pub id: String,
     pub name: String,
@@ -102,7 +102,7 @@ pub struct PluginInfo {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct AdminPluginInfo {
     pub id: String,
     pub name: String,
@@ -122,7 +122,7 @@ pub struct AdminPluginInfo {
 }
 
 #[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PluginInstallRequest {
     /// https URL of a `.tar.gz` plugin archive.
     pub url: String,
@@ -131,7 +131,7 @@ pub struct PluginInstallRequest {
 /// Install a published plugin by catalog id; the server resolves its url and
 /// sha256 itself and never trusts client-supplied ones.
 #[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PluginCatalogInstallRequest {
     pub catalog: String,
 }
@@ -139,7 +139,7 @@ pub struct PluginCatalogInstallRequest {
 /// A catalog entry as the admin UI sees it: the published metadata plus what
 /// this instance has installed.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct CatalogPluginInfo {
     pub id: String,
     pub name: String,
@@ -153,7 +153,7 @@ pub struct CatalogPluginInfo {
 }
 
 #[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PluginEnableRequest {
     pub enabled: bool,
 }
@@ -161,7 +161,7 @@ pub struct PluginEnableRequest {
 /// The admin settings form for one plugin. Secret values are represented only
 /// by `secrets_set`.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PluginInstanceSettings {
     pub id: String,
     pub instance_settings: Vec<PluginInstanceSetting>,
@@ -174,7 +174,7 @@ pub struct PluginInstanceSettings {
 }
 
 #[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PluginInstanceSettingsRequest {
     /// Keys to write. An empty value clears the setting; omitted keys keep
     /// their current value.
@@ -183,7 +183,7 @@ pub struct PluginInstanceSettingsRequest {
 
 /// A rotated proxy secret, returned exactly once.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PluginProxySecret {
     pub id: String,
     pub secret: String,

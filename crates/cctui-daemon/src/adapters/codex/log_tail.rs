@@ -12,11 +12,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use cctui_proto::adapter::{AdapterEvent, EndReason, SessionMeta};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 mod rollout;
@@ -674,7 +675,7 @@ mod tests {
         assert!(matches!(evt1, AdapterEvent::SessionStarted { .. }));
         assert!(matches!(evt2, AdapterEvent::Message { .. }));
     }
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn quiesce_emits_hibernated_status() {
         let tmp = tempfile::tempdir().unwrap();
         let sessions = tmp.path().to_path_buf();
@@ -933,7 +934,7 @@ mod tests {
         let meta = started_meta_for_exec(&format!("cctui-parent.{id}"), id).await;
         assert_eq!(meta.parent_local_id, None, "a self-parent would cycle the heartbeat CTE");
     }
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn quiesced_rollout_is_not_replayed_on_rediscovery() {
         let tmp = tempfile::tempdir().unwrap();
         let sessions = tmp.path().join("sessions");
@@ -970,7 +971,7 @@ mod tests {
         }
         assert!(texts(&drain(&mut rx)).is_empty());
     }
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn idle_rollout_hibernates_and_resumes_without_replay() {
         let tmp = tempfile::tempdir().unwrap();
         let sessions = tmp.path().join("sessions");

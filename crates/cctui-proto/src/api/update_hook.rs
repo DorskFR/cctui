@@ -1,13 +1,13 @@
 //! `/api/v1/version/self-update` — update-hook run state.
 
 use serde::Serialize;
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 use uuid::Uuid;
 
 /// A hook run as the webui sees it.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SelfUpdateRun {
     pub id: Uuid,
     pub machine_id: Uuid,
@@ -27,7 +27,7 @@ pub struct SelfUpdateRun {
 }
 
 #[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct DaemonVersion {
     pub version: &'static str,
     pub git_hash: &'static str,

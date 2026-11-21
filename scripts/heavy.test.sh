@@ -96,6 +96,19 @@ check "a nested call does not wait on the lock" "nested
 outer" "$(cat "$order")"
 check "a nested call prints nothing" "" "$(cat "$tmp/nested.err")"
 
+rm -f "$tmp/started"
+: >"$order"
+printf '#!/usr/bin/env bash\necho "svelte-check heavy=${CCTUI_HEAVY:-unset}" >>"$ORDER"\n' >"$stub/svelte-check"
+chmod +x "$stub/svelte-check"
+PATH="$bin" "$bash_bin" "$script" sh -c "touch '$tmp/started'; sleep 1; echo cargo >>'$order'" &
+first=$!
+for _ in $(seq 50); do [ -e "$tmp/started" ] && break; sleep 0.1; done
+ORDER="$order" heavy_stubbed "$stub/svelte-check" 2>"$tmp/svelte.err"
+wait "$first"
+check "svelte-check does not wait on the lock" "svelte-check heavy=unset
+cargo" "$(cat "$order")"
+check "svelte-check is not reported as queued" "" "$(cat "$tmp/svelte.err")"
+
 check "the default lock lives in XDG_RUNTIME_DIR" present "$(mkdir -p "$tmp/xdg" && env -u CCTUI_HEAVY_LOCK XDG_RUNTIME_DIR="$tmp/xdg" PATH="$bin" "$bash_bin" "$script" true && [ -e "$tmp/xdg/cctui-heavy.lock" ] && echo present || echo absent)"
 check "without XDG_RUNTIME_DIR the lock falls back to TMPDIR" present "$(mkdir -p "$tmp/t" && env -u CCTUI_HEAVY_LOCK -u XDG_RUNTIME_DIR TMPDIR="$tmp/t" PATH="$bin" "$bash_bin" "$script" true && [ -e "$tmp/t/cctui-heavy-$(id -u).lock" ] && echo present || echo absent)"
 

@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum FollowupReason {
     Cold,
@@ -28,7 +28,7 @@ impl FollowupReason {
 /// A block cctui injected into a generation's first turn. The history above
 /// it already shows that content, so clients hide it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum InjectedFlag {
     PreviousSessions,
@@ -37,7 +37,7 @@ pub enum InjectedFlag {
 
 /// One line of a collated history. `generation` is 1-based, the root is 1.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(tag = "entry", rename_all = "snake_case")]
 pub enum ThreadEntry {
     Event {
@@ -89,7 +89,7 @@ impl ThreadEntry {
 
 /// A generation of the line; `name` is withheld when the caller cannot read it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ThreadGeneration {
     pub session_id: String,
     pub generation: u32,
@@ -105,7 +105,7 @@ pub struct ThreadGeneration {
 /// `next_cursor` as `cursor` for the page before it; `None` at the root's
 /// first event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ThreadConversationPage {
     pub thread_root_id: String,
     pub head: String,

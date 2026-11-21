@@ -2,12 +2,12 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export, rename = "CctuiverseLinkKind"))]
+#[cfg_attr(test, derive(TS), ts(export, rename = "CctuiverseLinkKind"))]
 #[serde(rename_all = "snake_case")]
 pub enum LinkKind {
     Session,
@@ -15,7 +15,7 @@ pub enum LinkKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export, rename = "CctuiverseLinkRole"))]
+#[cfg_attr(test, derive(TS), ts(export, rename = "CctuiverseLinkRole"))]
 #[serde(rename_all = "snake_case")]
 pub enum LinkRole {
     Inviter,
@@ -23,7 +23,7 @@ pub enum LinkRole {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export, rename = "CctuiverseLinkState"))]
+#[cfg_attr(test, derive(TS), ts(export, rename = "CctuiverseLinkState"))]
 #[serde(rename_all = "snake_case")]
 pub enum LinkState {
     Pending,
@@ -55,7 +55,7 @@ str_enum!(OutboundMode { Tool => "tool", Auto => "auto", Both => "both" });
 
 /// What happens to a message the peer sends.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export, rename = "CctuiverseInbound"))]
+#[cfg_attr(test, derive(TS), ts(export, rename = "CctuiverseInbound"))]
 #[serde(rename_all = "snake_case")]
 pub enum InboundMode {
     #[default]
@@ -66,7 +66,7 @@ pub enum InboundMode {
 /// How this side's agent reaches the peer: through `CctuiSend`, by forwarding
 /// each turn's final reply, or both.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export, rename = "CctuiverseOutbound"))]
+#[cfg_attr(test, derive(TS), ts(export, rename = "CctuiverseOutbound"))]
 #[serde(rename_all = "snake_case")]
 pub enum OutboundMode {
     #[default]
@@ -85,7 +85,7 @@ impl OutboundMode {
 /// The owner's choices for one link. Every field defaults, so a partial or
 /// empty stored object reads back whole.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export, rename = "CctuiverseSettings"))]
+#[cfg_attr(test, derive(TS), ts(export, rename = "CctuiverseSettings"))]
 #[serde(default)]
 pub struct LinkSettings {
     pub inbound: InboundMode,
@@ -97,7 +97,7 @@ pub struct LinkSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct CctuiverseLinkView {
     pub id: Uuid,
     pub session_id: Option<String>,
@@ -124,7 +124,7 @@ pub struct CctuiverseLinkView {
 
 /// A held inbound or review-pending outbound message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct CctuiverseMessageView {
     pub id: i64,
     pub message_id: Uuid,

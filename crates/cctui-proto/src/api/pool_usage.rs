@@ -5,12 +5,12 @@ use uuid::Uuid;
 
 /// A member's share of one aggregated window.
 #[derive(Debug, Clone, serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct PoolUsageWindowMember {
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
+    #[cfg_attr(test, ts(type = "string"))]
     pub account_id: Uuid,
     pub utilization: f64,
-    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
+    #[cfg_attr(test, ts(type = "string | null"))]
     pub resets_at: Option<DateTime<Utc>>,
     pub expected_pct: Option<f64>,
     pub ratio: Option<f64>,
@@ -18,14 +18,14 @@ pub struct PoolUsageWindowMember {
 
 /// When the pool runs out under measured rates.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct PoolProjection {
     /// Every member at 100% at once; `None` when that never happens inside the
     /// horizon (a reset always comes first).
-    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
+    #[cfg_attr(test, ts(type = "string | null"))]
     pub wall_at: Option<DateTime<Utc>>,
     /// The first member to hit 100%, which matters when failover is off.
-    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
+    #[cfg_attr(test, ts(type = "string | null"))]
     pub first_member_wall_at: Option<DateTime<Utc>>,
     /// Sum of the members' measured rates, in percent points per hour.
     pub demand_pct_per_hour: f64,
@@ -37,7 +37,7 @@ pub struct PoolProjection {
 
 /// One window of a pool family, aggregated.
 #[derive(Debug, Clone, serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct PoolUsageWindow {
     pub key: String,
     pub kind: String,
@@ -51,7 +51,7 @@ pub struct PoolUsageWindow {
     /// on a window too young to rate.
     pub ratio: Option<f64>,
     /// Nearest reset among the members.
-    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
+    #[cfg_attr(test, ts(type = "string | null"))]
     pub next_reset_at: Option<DateTime<Utc>>,
     pub members: Vec<PoolUsageWindowMember>,
     pub projection: Option<PoolProjection>,

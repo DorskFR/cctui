@@ -3,11 +3,13 @@ name = "cctui-proto"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+doctest = false
+
 [lints]
 workspace = true
 
 [features]
-ts = ["dep:ts-rs"]
 sqlx = ["dep:sqlx"]
 
 [dependencies]
@@ -19,7 +21,6 @@ sha2.workspace = true
 hex.workspace = true
 base64.workspace = true
 zstd.workspace = true
-ts-rs = { workspace = true, optional = true }
 sqlx = { version = "0.9", default-features = false, features = ["derive"], optional = true }
 minisign-verify.workspace = true
 semver.workspace = true
@@ -27,5 +28,6 @@ tokio.workspace = true
 tokio-util.workspace = true
 
 [dev-dependencies]
+ts-rs.workspace = true
 toml.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

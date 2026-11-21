@@ -52,8 +52,8 @@ test('390px: dictation starts with one tap, shows a large stop target, and stops
 	expect(box!.width).toBeGreaterThanOrEqual(200);
 	expect(box!.x + box!.width).toBeLessThanOrEqual(MOBILE.width);
 
-	await page.waitForTimeout(1500);
-	await expect(recording).toContainText('0:01');
+	// Under SILENT_CLIP_MS (1.5 s) a clip whose fake-device tone isn't heard as a voice is dropped.
+	await expect(recording).toContainText('0:02', { timeout: 5_000 });
 	await stop.click();
 
 	await expect(recording).toHaveCount(0);

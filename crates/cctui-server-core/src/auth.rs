@@ -466,6 +466,7 @@ impl AuthConfig {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn cache_get(&self, hash: &str) -> Option<AuthContext> {
         self.cache_entry(hash).map(|entry| entry.ctx)
     }

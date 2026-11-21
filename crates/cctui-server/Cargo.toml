@@ -6,9 +6,6 @@ edition.workspace = true
 [lints]
 workspace = true
 
-[features]
-ts = ["cctui-server-workspace/ts"]
-
 [dependencies]
 cctui-server-workspace.workspace = true
 anyhow.workspace = true

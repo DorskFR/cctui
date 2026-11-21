@@ -1,11 +1,11 @@
 //! `/api/v1/admin/harness-autoupdate` — per-machine harness update policy.
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 #[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct MachineHarnessInfo {
     pub machine_id: String,
     pub name: String,
@@ -13,19 +13,19 @@ pub struct MachineHarnessInfo {
     pub policy: Option<crate::harness::HarnessUpdatePolicy>,
     pub effective: crate::harness::HarnessUpdatePolicy,
     pub report: Option<crate::harness::HarnessReport>,
-    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
+    #[cfg_attr(test, ts(type = "string | null"))]
     pub report_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct HarnessAutoupdateInfo {
     pub instance: Option<crate::harness::HarnessUpdatePolicy>,
     pub machines: Vec<MachineHarnessInfo>,
 }
 
 #[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct HarnessPolicyRequest {
     /// `null` clears: the instance default falls back to off, a machine
     /// override falls back to the instance default.
@@ -33,7 +33,7 @@ pub struct HarnessPolicyRequest {
 }
 
 #[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct HarnessRestartRequest {
     /// Adapter id of the harness whose long-lived process restarts once idle.
     pub harness: String,

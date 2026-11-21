@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 /// Longest accepted draft key.
@@ -79,7 +79,7 @@ pub fn history_session_id(key: &str) -> Option<&str> {
 
 /// One stored draft.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct Draft {
     pub key: String,
     pub text: String,
@@ -89,7 +89,7 @@ pub struct Draft {
 /// `GET /api/v1/drafts` — every draft the caller owns, newest first. The TUI
 /// pulls this once at startup instead of a request per session.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct DraftList {
     pub drafts: Vec<Draft>,
 }
@@ -97,7 +97,7 @@ pub struct DraftList {
 /// `PUT /api/v1/drafts/{key}`. An empty `text` deletes the row, so the client
 /// does not have to branch between `PUT` and `DELETE` as a field is cleared.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PutDraftRequest {
     pub text: String,
 }
@@ -107,7 +107,7 @@ pub struct PutDraftRequest {
 /// Mirrors the fields the spawn form recalls; `account_provider` is carried for
 /// display only, the form recomputes it from the account.
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SpawnMemoryEntry {
     #[serde(default)]
     pub adapter_id: String,
@@ -142,7 +142,7 @@ pub struct SpawnMemoryEntry {
 
 /// `GET`/`PUT /api/v1/spawn-memory` — the whole map, keyed by target.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SpawnMemoryPayload {
     #[serde(default)]
     pub entries: BTreeMap<String, SpawnMemoryEntry>,

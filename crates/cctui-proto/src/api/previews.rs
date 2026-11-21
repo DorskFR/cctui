@@ -3,18 +3,18 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewInfo {
     pub id: String,
     pub port: u16,
     pub url: String,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
+    #[cfg_attr(test, ts(type = "string"))]
     pub opened_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewTicket {
     pub ticket: String,

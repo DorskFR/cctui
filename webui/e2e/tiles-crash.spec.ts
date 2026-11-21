@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { metrics, session, stubApi, watch } from './tiles.fixture';
+import { metrics, session, settled, stubApi, watch } from './tiles.fixture';
 
 const N = Number(process.env.TILES_N ?? 24);
 const SESSIONS = Array.from({ length: N }, (_, i) => ({
@@ -29,9 +29,7 @@ test('a persisted tiles choice loads without crashing or scrolling the page', as
 
 	await page.goto('/sessions', { waitUntil: 'domcontentloaded' });
 	await page.waitForSelector('[data-journey="session-tiles"] .tile', { timeout: 20_000 });
-	await page.waitForTimeout(3000);
-
-	const m = await metrics(page);
+	const m = await settled(page, (s) => s.panes === Math.min(N, expectedCap(s.gridW, s.gridH)));
 	const historyFetches = seen.size;
 	console.log(`1920x1080 ${JSON.stringify(m)} historyFetches=${historyFetches}`);
 
@@ -52,7 +50,7 @@ test('?view=list rescues a browser stuck in tiles', async ({ page }) => {
 	await page.addInitScript(() => localStorage.setItem('cctui_list_view', 'tiles'));
 
 	await page.goto('/sessions?view=list', { waitUntil: 'domcontentloaded' });
-	await page.waitForTimeout(2000);
+	await expect(page.locator(`[data-session-id="${SESSIONS[0].id}"]`)).toBeVisible();
 
 	const m = await metrics(page);
 	expect(errors, 'no uncaught error').toEqual([]);
@@ -68,7 +66,7 @@ test('a tiles render that took the tab down last time starts in the list', async
 	});
 
 	await page.goto('/sessions', { waitUntil: 'domcontentloaded' });
-	await page.waitForTimeout(2000);
+	await expect(page.locator(`[data-session-id="${SESSIONS[0].id}"]`)).toBeVisible();
 
 	const m = await metrics(page);
 	expect(m.panes).toBe(0);
@@ -90,9 +88,7 @@ for (const [w, h, tag, want] of [
 
 		await page.goto('/sessions', { waitUntil: 'domcontentloaded' });
 		await page.waitForSelector('[data-journey="session-tiles"] .tile', { timeout: 20_000 });
-		await page.waitForTimeout(3000);
-
-		const m = await metrics(page);
+		const m = await settled(page, (s) => s.panes === Math.min(N, want));
 		console.log(`${tag} ${JSON.stringify(m)} historyFetches=${seen.size}`);
 		await page.screenshot({ path: testInfo.outputPath(`tiles-${tag}.png`) });
 

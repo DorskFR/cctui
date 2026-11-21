@@ -2,13 +2,13 @@
 //! `cctui-daemon` so this crate stays free of tokio.
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 use uuid::Uuid;
 
 /// Adapter implementation id, e.g. `claude-code`, `codex`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(transparent)]
 pub struct AdapterId(pub String);
 
@@ -17,7 +17,7 @@ pub struct AdapterId(pub String);
 // the clients read by name, so an enum set would churn the API for nothing.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct HarnessCapabilities {
     pub fork: bool,
     pub rename: bool,
@@ -31,7 +31,7 @@ pub struct HarnessCapabilities {
 
 /// One answer an agent offers on a permission prompt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PermissionChoice {
     pub option_id: String,
     pub name: String,
@@ -41,7 +41,7 @@ pub struct PermissionChoice {
 
 /// Where a harness's model picker gets its entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum ModelsSource {
     /// A fixed list shipped with the clients.
@@ -54,7 +54,7 @@ pub enum ModelsSource {
 
 /// One harness as served by `GET /api/v1/harnesses`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct HarnessDescriptor {
     pub id: String,
     pub label: String,
@@ -872,7 +872,7 @@ impl AdapterCommand {
 
 /// Defaults to [`Self::Automatic`], the conservative reading.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum RemoveInitiator {
     User,
@@ -902,7 +902,7 @@ impl RemoveInitiator {
 
 /// Subset-fork slice, anchored on assistant `message_id`s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum ForkMode {
     /// Up to and including the anchor.
@@ -914,7 +914,7 @@ pub enum ForkMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ForkExtract {
     pub mode: ForkMode,
     /// For `up_to` / `after`.
@@ -927,7 +927,7 @@ pub struct ForkExtract {
 
 /// Per-spawn permission posture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionMode {
     /// No prompts, no sandbox.

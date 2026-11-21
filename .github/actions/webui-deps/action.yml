@@ -9,12 +9,20 @@ runs:
         node-version: "26"
 
     # The lockfile's own version moves on every release; only its dependency
-    # tree decides whether node_modules is reusable.
+    # tree decides whether node_modules is reusable. Node, not jq: the e2e job
+    # runs in the Playwright image, which has no jq.
     - name: node_modules cache key
       id: key
       shell: bash
       run: |
-        tree="$(jq -S 'del(.version, .packages[""].version)' webui/package-lock.json | sha256sum | cut -c1-32)"
+        tree="$(node -e '
+          const lock = JSON.parse(require("fs").readFileSync("webui/package-lock.json", "utf8"));
+          delete lock.version;
+          if (lock.packages?.[""]) delete lock.packages[""].version;
+          const sorted = (v) => Array.isArray(v) ? v.map(sorted)
+            : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sorted(v[k])])) : v;
+          process.stdout.write(require("crypto").createHash("sha256").update(JSON.stringify(sorted(lock))).digest("hex").slice(0, 32));
+        ')"
         echo "key=webui-node_modules-${RUNNER_OS}-${RUNNER_ARCH}-$(node --version)-$tree" >> "$GITHUB_OUTPUT"
 
     - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

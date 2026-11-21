@@ -23,7 +23,7 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 use webauthn_rs::prelude::{
-    DiscoverableAuthentication, DiscoverableKey, Passkey, PasskeyRegistration, PublicKeyCredential,
+    DiscoverableAuthentication, Passkey, PasskeyRegistration, PublicKeyCredential,
     RegisterPublicKeyCredential,
 };
 
@@ -202,8 +202,8 @@ pub async fn register_start(
             .bind(ctx.user_id)
             .fetch_all(&state.pool)
             .await?;
-    let exclude = (!existing.is_empty())
-        .then(|| existing.into_iter().map(|(id,)| id.into()).collect::<Vec<_>>());
+    let exclude =
+        (!existing.is_empty()).then(|| existing.into_iter().map(|(id,)| id).collect::<Vec<_>>());
 
     let (mut options, reg_state) = webauthn
         .start_passkey_registration(ctx.user_id, &name, &name, exclude)
@@ -246,7 +246,7 @@ pub async fn register_finish(
          VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at",
     )
     .bind(ctx.user_id)
-    .bind(passkey.cred_id().as_ref())
+    .bind(passkey.cred_id().as_slice())
     .bind(&stored)
     .bind(&label)
     // Absent `credProps` means the browser didn't say; assume the key is
@@ -425,11 +425,7 @@ async fn finish_assertion(state: &AppState, req: PasskeyAssertion) -> ApiResult<
     let mut passkey: Passkey = serde_json::from_value(stored)
         .map_err(|e| bad_request(format!("stored credential unreadable: {e}")))?;
     let result = webauthn
-        .finish_discoverable_authentication(
-            &credential,
-            auth_state,
-            &[DiscoverableKey::from(&passkey)],
-        )
+        .finish_discoverable_authentication_v2(&credential, auth_state, &passkey)
         .map_err(|e| {
             tracing::warn!(%user_id, "passkey assertion rejected: {e}");
             AppError::new(StatusCode::UNAUTHORIZED, "assertion rejected")
@@ -606,6 +602,16 @@ pub async fn revoke_session_key(pool: &PgPool, token: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_passkey_stored_by_webauthn_rs_0_5_still_loads() {
+        let stored = r#"{"cred":{"attestation":{"data":"None","metadata":"None"},"attestation_format":"none","backup_eligible":true,"backup_state":true,"counter":7,"cred":{"key":{"EC_EC2":{"curve":"SECP256R1","x":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA","y":"ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A"}},"type_":"ES256"},"cred_id":"AAECAwQFBgcICQoLDA0ODw","extensions":{"appid":"NotRequested","cred_props":"NotRequested","cred_protect":"NotRequested","hmac_create_secret":"NotRequested"},"registration_policy":"required","transports":["internal","hybrid"],"user_verified":true}}"#;
+        let passkey: Passkey = serde_json::from_str(stored).unwrap();
+        assert_eq!(passkey.cred_id().as_slice(), (0u8..16).collect::<Vec<_>>());
+        let reloaded: Passkey =
+            serde_json::from_value(serde_json::to_value(&passkey).unwrap()).unwrap();
+        assert_eq!(reloaded.cred_id(), passkey.cred_id());
+    }
 
     #[test]
     fn label_defaults_and_trims() {

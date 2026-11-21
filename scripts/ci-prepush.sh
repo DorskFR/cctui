@@ -38,12 +38,18 @@ esac
 
 case "$area" in
   clippy)
-    exec cargo clippy --workspace --all-targets -- -D warnings
+    exec cargo clippy --workspace --all-targets --keep-going -- -D warnings
     ;;
   rust)
+    if [ -n "$base" ]; then
+      mapfile -t crates < <(bash scripts/affected-crates.sh "$base" HEAD)
+    else
+      mapfile -t crates < <(bash scripts/affected-crates.sh --all)
+    fi
+    echo "pre-push rust: testing ${crates[*]}"
     # DB-gated tests skip themselves without DATABASE_URL; `make test` runs
     # them against one.
-    exec env -u DATABASE_URL -u TEST_DATABASE_URL cargo test --workspace
+    exec env -u DATABASE_URL -u TEST_DATABASE_URL bash scripts/affected-crates.sh test "${crates[@]}"
     ;;
   webui)
     files=()

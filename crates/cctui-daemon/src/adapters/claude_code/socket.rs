@@ -71,6 +71,15 @@ fn inject_auth(request: &mut Value) {
 /// `read_line` here would hang the command forever.
 pub const ONE_SHOT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Tests run the attach exchanges against fake workers whose own timing goes
+/// through [`wait_ms`] too, so both sides shrink together.
+const WAIT_DIVISOR: u64 = if cfg!(test) { 4 } else { 1 };
+
+/// A wait in the attach exchanges with a worker's PTY.
+const fn wait_ms(ms: u64) -> Duration {
+    Duration::from_millis(ms / WAIT_DIVISOR)
+}
+
 /// Send a single request and read a single JSON-line response, failing after
 /// [`ONE_SHOT_TIMEOUT`] if the daemon never answers.
 pub async fn one_shot(socket: &Path, request: &Value) -> Result<Value> {
@@ -286,14 +295,14 @@ pub fn composer_known_empty(short: &str) -> bool {
 /// proves it landed.
 pub async fn attach_submit(socket: &Path, short: &str, confirm: &SubmitConfirm) -> Result<()> {
     /// PTY quiet period treated as "composer settled".
-    const QUIET: std::time::Duration = std::time::Duration::from_millis(600);
+    const QUIET: Duration = wait_ms(600);
     /// Cap on the settle wait. Multi-image ingest can repaint well past 10s,
     /// so a swallowed Enter here is expected — the confirm loop retries it.
-    const SETTLE_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+    const SETTLE_MAX: Duration = wait_ms(30_000);
     /// Window in which a submitted Enter must produce its confirm signal.
-    const CONFIRM: std::time::Duration = std::time::Duration::from_millis(1500);
+    const CONFIRM: Duration = wait_ms(1500);
     /// Poll cadence for the transcript while draining PTY bytes.
-    const POLL: std::time::Duration = std::time::Duration::from_millis(250);
+    const POLL: Duration = wait_ms(250);
     /// Enters that were followed by a repaint but no transcript growth: the
     /// keystroke probably landed and the transcript is lagging, so pressing
     /// again risks submitting a second (now empty or queued) message.
@@ -308,7 +317,7 @@ pub async fn attach_submit(socket: &Path, short: &str, confirm: &SubmitConfirm) 
         // Transcript growth lags the keypress (claude appends after the turn
         // starts), and each Enter swallowed mid-ingest burns an attempt: give
         // the strict mode more room.
-        SubmitConfirm::Transcript { .. } => (6, std::time::Duration::from_secs(4)),
+        SubmitConfirm::Transcript { .. } => (6, wait_ms(4000)),
     };
 
     let (mut reader, mut write_half) = attach_handshake(socket, short).await?;
@@ -360,7 +369,7 @@ pub async fn attach_submit(socket: &Path, short: &str, confirm: &SubmitConfirm) 
             }
             // Hold the connection so the keystroke is fully parsed before
             // detach fires the worker's attacher-close cleanup.
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(wait_ms(200)).await;
             return Ok(());
         }
         if repainted {
@@ -397,9 +406,9 @@ async fn composer_emptied(socket: &Path, short: &str) -> bool {
 /// or slow answers `Unknown` — callers must never press Enter on a guess.
 async fn probe_composer(socket: &Path, short: &str) -> composer::ComposerState {
     /// How long the probe collects bytes for its frame.
-    const WINDOW: Duration = Duration::from_millis(700);
+    const WINDOW: Duration = wait_ms(700);
     /// Bound on the whole probe — an unattachable worker must not hang a submit.
-    const TIMEOUT: Duration = Duration::from_secs(3);
+    const TIMEOUT: Duration = wait_ms(3000);
 
     read_composer(socket, short, WINDOW, WINDOW, TIMEOUT).await
 }
@@ -408,9 +417,9 @@ async fn probe_composer(socket: &Path, short: &str) -> composer::ComposerState {
 /// quiet. Only fit for an idle worker, whose screen stops changing after the
 /// repaint; a busy one repaints its spinner and simply runs to the window.
 async fn probe_composer_settled(socket: &Path, short: &str) -> composer::ComposerState {
-    const WINDOW: Duration = Duration::from_millis(700);
-    const QUIET: Duration = Duration::from_millis(250);
-    const TIMEOUT: Duration = Duration::from_secs(3);
+    const WINDOW: Duration = wait_ms(700);
+    const QUIET: Duration = wait_ms(250);
+    const TIMEOUT: Duration = wait_ms(3000);
 
     read_composer(socket, short, WINDOW, QUIET, TIMEOUT).await
 }
@@ -474,9 +483,9 @@ async fn attach_screen(
 async fn attach_submit_probed(socket: &Path, short: &str) -> Result<()> {
     /// Grace for the composer to finish ingesting the paste (image paths are
     /// read and swapped for `[Image #N]`) before the first Enter.
-    const INGEST_GRACE: Duration = Duration::from_millis(1200);
+    const INGEST_GRACE: Duration = wait_ms(1200);
     /// Settling time between an Enter and the probe that judges it.
-    const AFTER_ENTER: Duration = Duration::from_millis(600);
+    const AFTER_ENTER: Duration = wait_ms(600);
     const MAX_ATTEMPTS: u32 = 6;
     /// Consecutive unreadable frames after which we stop pressing: a landed
     /// submit must never be doubled just because the screen got unclear.
@@ -505,7 +514,7 @@ async fn attach_submit_probed(socket: &Path, short: &str) -> Result<()> {
                 if attempt > 1 {
                     tracing::info!(%short, attempt, "queued draft submit needed retry Enters");
                 }
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                tokio::time::sleep(wait_ms(200)).await;
                 return Ok(());
             }
             composer::SubmitStep::Press => {}
@@ -663,14 +672,14 @@ async fn attach_send_chunks(socket: &Path, short: &str, chunks: &[Vec<u8>]) -> R
             // Pace successive steps so the form renderer keeps up (verified
             // stable at 350ms against claude 2.1.162; digits/Tab dropped when
             // fired back-to-back).
-            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+            tokio::time::sleep(wait_ms(350)).await;
         }
         write_half.write_all(keys).await?;
         write_half.flush().await?;
     }
     // Hold the connection so the keystroke is parsed before detach (dropping
     // the stream fires the worker's attacher-close cleanup).
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    tokio::time::sleep(wait_ms(200)).await;
     Ok(())
 }
 
@@ -851,7 +860,7 @@ mod tests {
             for _ in 0..3 {
                 write_half.write_all(b"ingesting image...").await.unwrap();
                 write_half.flush().await.unwrap();
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                tokio::time::sleep(wait_ms(200)).await;
             }
 
             let mut key = [0_u8; 1];
@@ -862,7 +871,7 @@ mod tests {
             assert_eq!(key[0], b'\r', "retry keystroke after no repaint");
             write_half.write_all(b"composer cleared, turn started").await.unwrap();
             write_half.flush().await.unwrap();
-            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            tokio::time::sleep(wait_ms(400)).await;
         });
 
         attach_submit(&sock, "aaaaaaaa", &SubmitConfirm::Repaint)
@@ -900,14 +909,14 @@ mod tests {
             for _ in 0..4 {
                 write_half.write_all(b"still ingesting [Image #2]...").await.unwrap();
                 write_half.flush().await.unwrap();
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                tokio::time::sleep(wait_ms(300)).await;
             }
 
             reader.read_exact(&mut key).await.unwrap();
             assert_eq!(key[0], b'\r', "retry despite repaint noise");
             let mut f = std::fs::OpenOptions::new().append(true).open(&transcript_srv).unwrap();
             std::io::Write::write_all(&mut f, b"{\"type\":\"user\"}\n").unwrap();
-            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+            tokio::time::sleep(wait_ms(600)).await;
         });
 
         attach_submit(&sock, "aaaaaaaa", &SubmitConfirm::Transcript { path: transcript, baseline })
@@ -1053,7 +1062,7 @@ mod tests {
         let outcome = attach_clear_composer_unless_empty(&sock, "aaaaaaaa").await.unwrap();
         let took = started.elapsed();
         assert_eq!(outcome, ComposerClear::Skipped);
-        assert!(took < Duration::from_millis(600), "the probe must settle early, took {took:?}");
+        assert!(took < wait_ms(700), "the probe must settle early, took {took:?}");
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(attaches.load(Ordering::SeqCst), 1, "only the probe attaches");
         assert!(typed.lock().unwrap().is_empty(), "no key may reach the composer");
@@ -1199,7 +1208,7 @@ mod tests {
                                     enters.fetch_add(1, Ordering::SeqCst);
                                 },
                             },
-                            () = tokio::time::sleep(Duration::from_millis(100)) => {
+                            () = tokio::time::sleep(wait_ms(100)) => {
                                 if write_half.write_all(b"\x1b[1;1H\xc2\xb7 spinning").await.is_err()
                                 {
                                     return;
@@ -1282,7 +1291,7 @@ mod tests {
                                     counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                 },
                             },
-                            () = tokio::time::sleep(Duration::from_millis(100)) => {
+                            () = tokio::time::sleep(wait_ms(100)) => {
                                 if write_half.write_all(b"  Read(foo.rs)\n").await.is_err() {
                                     return;
                                 }

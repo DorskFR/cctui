@@ -5,10 +5,10 @@ use uuid::Uuid;
 /// What the account's latest usage payload says about a limit reset, normalized
 /// across providers for the button in the usage row.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct LimitResetStatus {
     /// `codex` (reset credits) or `claude` (`cedar_ember` / `juniper_tide`).
-    #[cfg_attr(feature = "ts", ts(type = "\"codex\" | \"claude\""))]
+    #[cfg_attr(test, ts(type = "\"codex\" | \"claude\""))]
     pub kind: &'static str,
     /// Whether a claim would do anything right now.
     pub available: bool,
@@ -25,15 +25,15 @@ pub struct LimitResetStatus {
     pub weekly_resets_at: Option<String>,
     /// Claude `cedar_ember`: claims left on the named grant.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "number | null", optional))]
+    #[cfg_attr(test, ts(type = "number | null", optional))]
     pub resets_left: Option<i64>,
     /// Claude `cedar_ember`: the grant may only be spent at a limit.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub requires_limit: Option<bool>,
     /// Claude `cedar_ember`: the limit windows a claim refills.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub clears: Option<Vec<String>>,
 }
 
@@ -41,10 +41,10 @@ pub struct LimitResetStatus {
 /// Claude's two programs. [`LimitResetStatus`] is the one the card button spends;
 /// this is every offer the cached payload names.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct LimitResetEntry {
     /// `codex` (reset credit) or `claude` (`cedar_ember` grant / `juniper_tide`).
-    #[cfg_attr(feature = "ts", ts(type = "\"codex\" | \"claude\""))]
+    #[cfg_attr(test, ts(type = "\"codex\" | \"claude\""))]
     pub kind: &'static str,
     /// What a claim names: a Codex credit id, a `cedar_ember` grant id, or the
     /// program name for `juniper_tide`.
@@ -58,7 +58,7 @@ pub struct LimitResetEntry {
     /// back.
     pub expires_at: Option<String>,
     /// Claude `cedar_ember`: claims left on this grant.
-    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    #[cfg_attr(test, ts(type = "number | null"))]
     pub resets_left: Option<i64>,
     /// Claude `cedar_ember`: the grant may only be spent at a limit.
     pub requires_limit: Option<bool>,
@@ -69,7 +69,7 @@ pub struct LimitResetEntry {
 }
 
 #[derive(Debug, serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct LimitResetResponse {
     pub account_id: Uuid,
     pub provider: String,

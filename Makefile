@@ -13,7 +13,7 @@ export CCTUI_ADMIN_TOKENS
 export CCTUI_URL
 export CCTUI_TOKEN
 
-.PHONY: setup build check test test/unit fmt lint clean
+.PHONY: setup build check test test/unit test/affected fmt lint clean
 .PHONY: db/up db/down db/reset db/migrate/up db/migrate/down db/migrate/add db/psql db/prepare
 .PHONY: db/test/up db/test/down db/test/migrate/up
 .PHONY: run/server run/tui run/admin
@@ -57,13 +57,24 @@ fmt:  ## Auto-format Rust + non-Rust files
 	biome check --write .
 
 lint:  ## Run clippy with deny warnings
-	$(HEAVY) cargo clippy --workspace --all-targets -- -D warnings
+	$(HEAVY) cargo clippy --workspace --all-targets --keep-going -- -D warnings
 
 # ── Test ───────────────────────────────────────────────────
 
-test: db/test/up db/test/migrate/up  ## Run all tests
+AFFECTED_BASE ?= origin/main
+TEST_SERVER_BIN = $${CARGO_TARGET_DIR:-target}/debug/cctui-server
+
+test: db/test/up  ## Run all tests
+	$(HEAVY) cargo test --workspace --no-run
+	DATABASE_URL=$(TEST_DATABASE_URL) $(TEST_SERVER_BIN) init-db
 	DATABASE_URL=$(TEST_DATABASE_URL) $(HEAVY) cargo test --workspace
 	@echo "Tests complete."
+
+test/affected: db/test/up  ## Test the crates committed since AFFECTED_BASE (default origin/main) and their dependents
+	$(HEAVY) cargo test --workspace --no-run
+	DATABASE_URL=$(TEST_DATABASE_URL) $(TEST_SERVER_BIN) init-db
+	DATABASE_URL=$(TEST_DATABASE_URL) $(HEAVY) bash scripts/affected-crates.sh test \
+	  $$(bash scripts/affected-crates.sh "$$(git merge-base $(AFFECTED_BASE) HEAD)" HEAD)
 
 test/unit:  ## Run unit tests only (no DB required)
 	env -u DATABASE_URL -u TEST_DATABASE_URL $(HEAVY) cargo test --workspace

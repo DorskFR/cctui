@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test';
+import { type Page, expect } from '@playwright/test';
 
 export function session(i: number) {
 	const now = new Date(Date.now() - i * 60_000).toISOString();
@@ -194,3 +194,24 @@ export const metrics = (page: Page) =>
 			view: localStorage.getItem('cctui_list_view')
 		};
 	});
+
+export type Metrics = Awaited<ReturnType<typeof metrics>>;
+
+/** The metrics once two samples in a row agree and `ready` holds. */
+export async function settled(page: Page, ready: (m: Metrics) => boolean = () => true) {
+	let prev = '';
+	let last: Metrics | undefined;
+	await expect
+		.poll(
+			async () => {
+				last = await metrics(page);
+				const key = JSON.stringify(last);
+				const same = key === prev && ready(last);
+				prev = key;
+				return same;
+			},
+			{ message: 'the layout settles', timeout: 20_000, intervals: [100, 250] }
+		)
+		.toBe(true);
+	return last as Metrics;
+}

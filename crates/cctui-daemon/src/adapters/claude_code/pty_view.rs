@@ -373,7 +373,7 @@ mod tests {
 
     /// `watch` is idempotent per short (a re-sent `watch: true` doesn't stack a
     /// second viewer attach), and `unwatch` cancels + removes the task.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn watch_is_idempotent_and_unwatch_cancels() {
         let dir = tempfile::tempdir().unwrap();
         let (events, _rx) = mpsc::channel(8);
@@ -433,7 +433,7 @@ mod tests {
 
     /// A watch that arrives before the session is rostered parks, and starts
     /// streaming as soon as a `list` snapshot inserts its short.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_watch_for_an_unrostered_session_starts_once_the_roster_lists_it() {
         let parts = pump_parts();
         let (tx, rx) = mpsc::channel(4);
@@ -458,7 +458,7 @@ mod tests {
 
     /// `watch: false` while still pending cancels it, so a later roster insert
     /// does not resurrect a view the browser already closed.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn unwatching_a_pending_watch_cancels_it() {
         let parts = pump_parts();
         let (tx, rx) = mpsc::channel(4);
@@ -479,7 +479,7 @@ mod tests {
 
     /// The pump stops a viewer whose session has already left the roster — the
     /// short it started under is remembered, not re-resolved.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn unwatch_stops_a_viewer_after_the_session_left_the_roster() {
         let parts = pump_parts();
         let (tx, rx) = mpsc::channel(4);
@@ -545,7 +545,7 @@ mod tests {
 
     /// The whole point of the separate channel: a `WatchPty` is served while the
     /// serial command loop is still stuck inside a reply's settle loop.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_watch_is_served_while_the_command_loop_is_stalled() {
         let parts = pump_parts();
         parts.roster.insert("sess-1".to_owned(), "aaaaaaaa".to_owned());
@@ -597,7 +597,7 @@ mod tests {
 
     /// With the event channel full, the post-attach repaint still gets through:
     /// it uses a bounded `send`, while a steady-state frame is dropped.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn the_first_frame_survives_a_full_event_channel() {
         let dir = tempfile::tempdir().unwrap();
         let (events, mut rx) = mpsc::channel(1);

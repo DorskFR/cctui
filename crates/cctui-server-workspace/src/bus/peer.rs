@@ -61,7 +61,8 @@ const AUTH_PURGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3
 /// How long a route waits for a replacement owner after the recorded one was
 /// unreachable (the daemon's reconnect to a live pod lands within this), and
 /// how often the owner row is re-read meanwhile.
-const REOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+const REOWN_WAIT: std::time::Duration =
+    std::time::Duration::from_secs(if cfg!(test) { 1 } else { 3 });
 const REOWN_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Marks a route request sent to a peer no presence row named, so a peer that
@@ -1396,7 +1397,7 @@ mod tests {
         tokio::spawn({
             let pool = pool.clone();
             async move {
-                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                tokio::time::sleep(REOWN_WAIT / 4).await;
                 set_owner(&pool, machine, "cct1642-live", "127.0.0.1").await;
             }
         });

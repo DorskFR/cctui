@@ -53,7 +53,7 @@ pub mod version;
 pub mod webhooks;
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -319,7 +319,7 @@ pub struct LaunchContextResponse {
 /// `auto` adds every filter-matching memory on top of the explicit picks; an
 /// omitted `auto` is off. Matching rules attach whatever it says.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SpawnContext {
     /// Item names, any kind.
     #[serde(default)]
@@ -393,7 +393,7 @@ const fn default_bucket() -> Bucket {
 /// than launched: it is driveable like any other, but nothing automatic of
 /// ours may attach to, kill or `claude rm` it — only an explicit user removal.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum SessionOrigin {
     /// Launched by cctui.
@@ -433,7 +433,7 @@ impl SessionOrigin {
 /// `final_assistant_text` joins the trailing visible assistant text rows of
 /// the last message, thinking excluded.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SessionResult {
     pub done: bool,
     #[serde(default)]
@@ -455,7 +455,7 @@ pub struct SessionResult {
 // session flags, not a state machine, so refactoring them into enums would churn the API.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SessionListItem {
     pub id: String,
     pub parent_id: Option<String>,
@@ -605,7 +605,7 @@ const fn is_zero(n: &u32) -> bool {
 /// Cache keep-alive: one tick every `interval_secs` while idle, stopping after
 /// `max_ticks` (`0` = never). Human activity resets `ticks_sent`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct KeepaliveState {
     pub interval_secs: u32,
     pub max_ticks: u32,
@@ -618,7 +618,7 @@ pub struct KeepaliveState {
 
 /// `enabled: false` clears the schedule; omitted fields use provider defaults.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SessionKeepaliveRequest {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -632,7 +632,7 @@ pub const USER_ACTION_TITLE_MAX: usize = 120;
 
 /// What the agent needs from the user.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum UserActionKind {
     #[default]
@@ -642,7 +642,7 @@ pub enum UserActionKind {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum UserActionStatus {
     #[default]
@@ -654,7 +654,7 @@ pub enum UserActionStatus {
 /// Who resolved an item. The agent must see the user's own ticks, so this is
 /// recorded rather than assumed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum UserActionResolver {
     Agent,
@@ -729,7 +729,7 @@ impl UserActionResolver {
 
 /// One thing the agent is waiting on from the user.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct UserAction {
     pub id: Uuid,
     pub title: String,
@@ -751,7 +751,7 @@ pub struct UserAction {
 /// A session's whole list. Every mutation returns it, so the caller — model or
 /// browser — never has to reconstruct the state it did not cause.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct UserActionList {
     pub session_id: String,
     #[serde(default)]
@@ -764,7 +764,7 @@ pub struct UserActionList {
 /// always get the list back with the reason, never a bare failure it could read
 /// as "the list is gone".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct UserActionResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -775,7 +775,7 @@ pub struct UserActionResult {
 
 /// Body for `POST /api/v1/daemon/sessions/{id}/user-actions`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct AddUserActionRequest {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -788,7 +788,7 @@ pub struct AddUserActionRequest {
 
 /// Body for `POST /api/v1/daemon/sessions/{id}/user-actions/tick`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct TickUserActionRequest {
     /// A string, not a `Uuid`: a model that invents an id must get the list back
     /// with a readable reason, not a deserialization failure.
@@ -801,7 +801,7 @@ pub struct TickUserActionRequest {
 /// Open user-action counts for a session card. `child_*` rolls up the session's
 /// subagents, so a parent sees that a child is blocked on the user.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct UserActionCounts {
     pub open: u32,
     pub blocking: u32,
@@ -820,7 +820,7 @@ impl UserActionCounts {
 
 /// Context the session carries, for the session card's chip.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ContextCounts {
     pub rules: u32,
     pub memories: u32,
@@ -832,7 +832,7 @@ pub struct ContextCounts {
 /// `id`, `description`, `blocked_by` and `owner` come from Claude Code's task
 /// list (`TaskCreate` / `TaskUpdate`), never from `TodoWrite` or `update_plan`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct TodoEntry {
     pub content: String,
     pub status: String,
@@ -851,7 +851,7 @@ pub struct TodoEntry {
 
 /// `color` is a CSS hex string.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct Label {
     pub id: String,
     pub name: String,
@@ -860,7 +860,7 @@ pub struct Label {
 
 /// Get-or-create by name.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct CreateLabelRequest {
     pub name: String,
     pub color: String,
@@ -877,7 +877,7 @@ pub struct CreateLabelRequest {
 
 /// Omitted fields are unchanged.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct UpdateLabelRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -886,19 +886,19 @@ pub struct UpdateLabelRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct AttachLabelRequest {
     pub label_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct LabelListResponse {
     pub labels: Vec<Label>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SessionListResponse {
     pub sessions: Vec<SessionListItem>,
     /// Parents of `sessions` rows that are not themselves in `sessions` (live,
@@ -915,20 +915,20 @@ pub struct SessionListResponse {
     pub partial: bool,
     /// `/sessions/search` first page only: how many sessions match in all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub total: Option<SearchTotal>,
 }
 
 /// `at_least` when counting stopped at its cap or time budget, so more may match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SearchTotal {
     pub count: u32,
     pub at_least: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SessionParentStub {
     pub id: String,
     pub name: Option<String>,
@@ -940,7 +940,7 @@ pub struct SessionParentStub {
 /// the same address pins and the client's jump primitive use; `role` is the
 /// webui's `MsgCategory`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ConversationHit {
     pub seq: i64,
     pub ts: i64,
@@ -955,7 +955,7 @@ pub struct ConversationHit {
 /// `partial` says the scan ran out of time first: the hits cover the oldest
 /// part of the conversation only, and `truncated` is set too.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ConversationSearchResponse {
     pub hits: Vec<ConversationHit>,
     pub total: u32,
@@ -968,7 +968,7 @@ pub struct ConversationSearchResponse {
 
 /// Session counts from SQL aggregates, not the capped list.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SessionStats {
     /// Includes archived.
     pub total: i64,
@@ -984,7 +984,7 @@ pub struct SessionStats {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct WindowTokenUsage {
     pub input: u64,
     pub output: u64,
@@ -993,7 +993,7 @@ pub struct WindowTokenUsage {
 
 /// `today` is since local midnight; the rest are rolling.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct TokenUsageWindows {
     pub hour: WindowTokenUsage,
     pub today: WindowTokenUsage,
@@ -1004,7 +1004,7 @@ pub struct TokenUsageWindows {
 
 /// Missing buckets are zero-filled client-side.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct UsageBucket {
     /// Bucket start, RFC3339 UTC.
     pub bucket: String,
@@ -1021,7 +1021,7 @@ pub struct UsageBucket {
 
 /// Attributed by session model, not per turn.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ModelUsage {
     /// `"unknown"` when unrecorded.
     pub model: String,
@@ -1034,7 +1034,7 @@ pub struct ModelUsage {
 
 /// Empty cells are omitted.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct HeatmapCell {
     /// 0 = Sunday.
     pub dow: u8,
@@ -1044,7 +1044,7 @@ pub struct HeatmapCell {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct UsageAnalytics {
     /// `hour` or `day`.
     pub granularity: String,
@@ -1056,7 +1056,7 @@ pub struct UsageAnalytics {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct MessageRequest {
     pub content: String,
     /// Client-minted `UUIDv7` echoed on every event of the turn.
@@ -1071,26 +1071,26 @@ pub struct MessageRequest {
 
 /// `launch_at`: RFC3339, at most 30 days ahead.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ScheduleLaunchRequest {
     pub launch_at: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct RenameRequest {
     pub name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct AutoApproveRequest {
     pub enabled: bool,
 }
 
 /// `None` fields are left unchanged.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SetModelRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -1102,7 +1102,7 @@ pub struct SetModelRequest {
 ///
 /// [`Default`] is a whole-session fork: every dial inherited, no prompt.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ForkRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -1118,13 +1118,13 @@ pub struct ForkRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ApiError {
     pub error: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 // `no_account` / `auto_account` / `save_draft` / `auto_archive` are independent
 // wire flags, each defaulting to false; an enum would change the JSON shape.
 #[allow(clippy::struct_excessive_bools)]
@@ -1191,7 +1191,7 @@ pub struct SpawnRequest {
     pub label_ids: Vec<String>,
     /// `None` = cannot spawn children.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(skip))]
+    #[cfg_attr(test, ts(skip))]
     pub spawn_capability: Option<SpawnCapability>,
     /// `followup`: the first prompt embeds the parent's brief. `None` = root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1205,7 +1205,7 @@ pub struct SpawnRequest {
     /// Profile this spawn came from. Only its context set is applied here;
     /// the other knobs still arrive as explicit fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
+    #[cfg_attr(test, ts(type = "string | null", optional))]
     pub profile_id: Option<uuid::Uuid>,
 }
 
@@ -1244,7 +1244,7 @@ impl std::fmt::Debug for SpawnRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SpawnResponse {
     pub command_id: Uuid,
     pub status: String,
@@ -1259,7 +1259,7 @@ pub struct SpawnResponse {
 /// Body for `POST /api/v1/sessions/{id}/launch`; `env` wins over the draft's
 /// stored env per name and is not stored.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct LaunchRequest {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub env: std::collections::BTreeMap<String, String>,
@@ -1267,7 +1267,7 @@ pub struct LaunchRequest {
 
 /// `session_id` is set when the adapter accepts a pre-minted id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ForkResponse {
     pub command_id: Uuid,
     pub status: String,
@@ -1276,7 +1276,7 @@ pub struct ForkResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ThreadSession {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1291,14 +1291,14 @@ pub struct ThreadSession {
 /// The follow-up tree through a session: root first, then depth first with
 /// siblings oldest first.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SessionThreadResponse {
     pub sessions: Vec<ThreadSession>,
 }
 
 /// User/assistant transcript as markdown, oldest turns elided past the caps.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct BriefResponse {
     pub markdown: String,
     pub turns: u32,
@@ -1306,14 +1306,14 @@ pub struct BriefResponse {
     pub truncated: bool,
     /// `?chain=1` only: the follow-up chain root first, ending with this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub sessions: Option<Vec<BriefSession>>,
 }
 
 /// One session of a follow-up chain brief. An ancestor the caller cannot read
 /// has no `name` and a one-line placeholder for `markdown`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct BriefSession {
     pub id: String,
     pub name: Option<String>,
@@ -1324,20 +1324,20 @@ pub struct BriefSession {
     /// The newest turns of `markdown` that fit inline beside the pointer to
     /// the file holding the whole chain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[cfg_attr(test, ts(optional))]
     pub tail: Option<String>,
 }
 
 /// Absolute paths on the session's machine, in upload order.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct StageFilesResponse {
     pub paths: Vec<String>,
 }
 
 /// Dispatcher-routed session start. `payload` is opaque and forwarded verbatim.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct DispatchRequest {
     pub dispatcher: String,
     /// Idempotency key; minted when absent.
@@ -1370,7 +1370,7 @@ pub struct DispatchRequest {
 
 /// One `(account, provider)` entry in [`DispatchRequest::accounts`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct DispatchAccount {
     pub account: String,
     /// `None` = anthropic.
@@ -1379,7 +1379,7 @@ pub struct DispatchAccount {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct DispatchResponse {
     pub session_id: String,
     pub dispatcher: String,
@@ -1399,7 +1399,7 @@ pub struct DispatchResponse {
 
 /// The Rule of Two exposure the run's worker profile declares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct DispatchExposure {
     pub untrusted_input: bool,
     pub sensitive_data: bool,
@@ -1410,7 +1410,7 @@ pub struct DispatchExposure {
 
 /// The human step bounding a worker's outward actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum HumanGate {
     NoPush,
@@ -1423,7 +1423,7 @@ pub enum HumanGate {
 
 /// Why a dispatched worker never ran to completion as a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum FailedDispatchReason {
     /// The dispatcher refused to place the workload.
@@ -1436,7 +1436,7 @@ pub enum FailedDispatchReason {
 
 /// Why a failed dispatch cannot be re-run in one click.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum RerunBlocker {
     Env,
@@ -1449,7 +1449,7 @@ pub enum RerunBlocker {
 /// A dispatch whose worker never registered or died before it could report,
 /// as recorded at dispatch time. Never carries env values or callback secrets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct FailedDispatch {
     pub session_id: String,
     pub dispatcher: String,
@@ -1493,7 +1493,7 @@ pub struct FailedDispatch {
 /// How a dispatched worker's container ended, read from the cluster before
 /// its pod is reaped. The log tail is scrubbed of secret-looking values.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct WorkerExit {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<String>,
@@ -1513,14 +1513,14 @@ pub struct WorkerExit {
 
 /// Body of `POST /api/v1/dispatch-records/dismiss-all`'s reply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct DismissedDispatches {
     pub dismissed: u64,
 }
 
 /// `image_id` is referenced as `cctui-img://<image_id>`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct SessionImageUploadResponse {
     pub image_id: String,
 }
@@ -1538,9 +1538,9 @@ pub struct SkillIndexEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct StorageOverview {
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub database_bytes: u64,
     pub tables: Vec<StorageTableSize>,
     pub images: StorageImages,
@@ -1550,38 +1550,38 @@ pub struct StorageOverview {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct StorageTableSize {
     pub name: String,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub total_bytes: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub table_bytes: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub index_bytes: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub toast_bytes: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    #[cfg_attr(test, ts(type = "number | null"))]
     pub row_estimate: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct StorageImages {
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub blobs: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub image_bytes: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub table_bytes: u64,
 }
 
 /// Counts and bytes are already scaled by `100 / percent` of a block sample.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct StorageSample {
     pub percent: f64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub rows_sampled: u64,
     pub sessions: Vec<StorageSessionSize>,
     pub tools: Vec<StorageToolSize>,
@@ -1590,61 +1590,61 @@ pub struct StorageSample {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct StorageSessionSize {
     pub session_id: String,
     pub name: Option<String>,
     pub harness: Option<String>,
     pub machine: Option<String>,
     pub machine_kind: Option<String>,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub events: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub bytes: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub tool_output_bytes: u64,
 }
 
 /// `tool` is empty when the result's call was not found.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct StorageToolSize {
     pub tool: String,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub results: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub bytes: u64,
 }
 
 /// `key` is a stable band id such as `lt_1k` or `d1_7`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct StorageBucket {
     pub key: String,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub results: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct StorageTrimRule {
     pub enabled: bool,
     pub after_days: u32,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub above_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct StorageDropRule {
     pub enabled: bool,
     pub after_days: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct StorageLifecycleRules {
     #[serde(default)]
     pub trim: Option<StorageTrimRule>,
@@ -1653,44 +1653,44 @@ pub struct StorageLifecycleRules {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct StorageLifecycleRun {
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub rows_scanned: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub rows_trimmed: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub rows_dropped: u64,
     /// A row with the rewritten content already existed.
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub rows_skipped: u64,
     /// Stored payload bytes; the disk gets them back only after vacuum.
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub bytes_freed: u64,
     pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct StorageLifecycleInfo {
     pub rules: StorageLifecycleRules,
     pub last_run: Option<StorageLifecycleRun>,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub bytes_freed_total: u64,
 }
 
 /// Rows are exact only at `percent` 100; bytes are always estimated from stored sizes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct StorageLifecyclePreview {
     pub percent: f64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub rows_trimmed: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub rows_dropped: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    #[cfg_attr(test, ts(type = "number"))]
     pub bytes_freed: u64,
 }
 

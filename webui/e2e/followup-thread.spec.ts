@@ -275,8 +275,18 @@ test.describe('desktop', () => {
 		const historyLength = await tagPage(page);
 		await scroller(page).hover();
 		await page.mouse.wheel(0, -300);
-		await page.waitForTimeout(300);
-		const before = await scroller(page).evaluate((el) => el.scrollTop);
+		let before = -1;
+		await expect
+			.poll(async () => {
+				const [top, fromBottom] = await scroller(page).evaluate((el) => [
+					el.scrollTop,
+					el.scrollHeight - el.clientHeight - el.scrollTop
+				]);
+				const settled = top === before && fromBottom > 0;
+				before = top;
+				return settled;
+			}, { message: 'the wheel scroll settles off the bottom' })
+			.toBe(true);
 		expect(before).toBeGreaterThan(0);
 		await message(page).fill('an unsent draft');
 		stub.socket().send(superseded('Carried on elsewhere.'));

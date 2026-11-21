@@ -3,11 +3,11 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
+#[cfg(test)]
 use ts_rs::TS;
 
 #[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct RescrubRequest {
     #[serde(default)]
     pub dry_run: bool,
@@ -18,7 +18,7 @@ pub struct RescrubRequest {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ScanSample {
     /// Any value the match carries is masked; a bare match is kept whole only
     /// when it cannot itself be a secret.
@@ -28,7 +28,7 @@ pub struct ScanSample {
 }
 
 #[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct ScanCategory {
     pub category: String,
     pub count: i64,
@@ -39,7 +39,7 @@ pub struct ScanCategory {
 }
 
 #[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[cfg_attr(test, derive(TS), ts(export))]
 pub struct PrivacyScanJob {
     pub id: String,
     /// `running` | `completed` | `cancelled` | `failed`.

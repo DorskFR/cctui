@@ -9,11 +9,6 @@ ENV CCTUI_GIT_HASH=${CCTUI_GIT_HASH}
 ARG CCTUI_CLAUDE_CLI_VERSION=
 ENV CCTUI_CLAUDE_CLI_VERSION=${CCTUI_CLAUDE_CLI_VERSION}
 
-# webauthn-rs (passkey login) links against OpenSSL, so the builder needs the
-# headers and the runtime needs the library, both from the distro.
-RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
@@ -32,7 +27,7 @@ COPY --from=builder /out/ /
 
 FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
 ARG CA_CERTS_REFRESH=2026-10-22
-RUN echo "ca-certificates refresh ${CA_CERTS_REFRESH}" && apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3t64 \
+RUN echo "ca-certificates refresh ${CA_CERTS_REFRESH}" && apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 RUN sed -i 's#^mozilla/emSign#!mozilla/emSign#' /etc/ca-certificates.conf \
     && update-ca-certificates --fresh >/dev/null \
