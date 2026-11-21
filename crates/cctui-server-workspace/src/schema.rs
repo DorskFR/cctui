@@ -25,6 +25,29 @@ const SEARCH_BLOCKS: [&str; 4] = [
 
 static SEARCHLESS: LazyLock<String> = LazyLock::new(|| without_blocks(BOOTSTRAP, &SEARCH_BLOCKS));
 
+const SEARCH_TEXT_GIN_GUARD: &str =
+    "IF pg_catalog.to_regclass('public.idx_stream_events_session_search_trgm') IS NULL THEN";
+
+/// Search migration one without its index on the column workspace 31 drops,
+/// for a database that has not recorded the original.
+static SEARCH_BASELINE: LazyLock<String> =
+    LazyLock::new(|| without_if_block(SEARCH[0].sql, SEARCH_TEXT_GIN_GUARD));
+
+fn without_if_block(sql: &str, guard: &str) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut skipping = false;
+    for line in sql.split_inclusive('\n') {
+        if skipping {
+            skipping = line.trim() != "END IF;";
+        } else if line.trim() == guard {
+            skipping = true;
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
 /// Immutable like an applied migration: a searchless database records its checksum.
 #[must_use]
 pub fn searchless_bootstrap() -> &'static str {
@@ -185,6 +208,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "retire_search_text_trigger",
         sql: include_str!("../schema/0030_retire_search_text_trigger.sql"),
     },
+    Migration {
+        version: 31,
+        name: "drop_stream_events_search_text",
+        sql: include_str!("../schema/0031_drop_stream_events_search_text.sql"),
+    },
 ];
 
 /// Expand a core installation, or adopt the already migrated full schema.
@@ -199,9 +227,25 @@ pub async fn provision(conn: &mut MigrationConnection, search: bool) -> Result<(
     }
     cctui_server_core::schema::install_package(conn, "workspace", &migrations, adopted).await?;
     if search {
-        cctui_server_core::schema::install_package(conn, SEARCH_PACKAGE, SEARCH, false).await?;
+        let stream = search_stream(conn).await?;
+        cctui_server_core::schema::install_package(conn, SEARCH_PACKAGE, &stream, false).await?;
     }
     Ok(())
+}
+
+async fn search_stream(conn: &mut PgConnection) -> Result<Vec<Migration>, sqlx::Error> {
+    let recorded: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT checksum FROM _cctui_schema_migrations WHERE package = $1 AND version = 1",
+    )
+    .bind(SEARCH_PACKAGE)
+    .fetch_optional(conn)
+    .await?;
+    let mut stream = SEARCH.to_vec();
+    let original = Sha256::digest(SEARCH[0].sql.as_bytes()).to_vec();
+    if recorded.is_none_or(|checksum| checksum != original) {
+        stream[0] = Migration { sql: SEARCH_BASELINE.as_str(), ..SEARCH[0] };
+    }
+    Ok(stream)
 }
 
 async fn baseline(conn: &mut PgConnection, full: bool) -> Result<Migration, sqlx::Error> {
@@ -344,7 +388,8 @@ mod tests {
                     (27, "bootstrap".to_owned()),
                     (28, "bootstrap".to_owned()),
                     (29, "bootstrap".to_owned()),
-                    (30, "bootstrap".to_owned())
+                    (30, "bootstrap".to_owned()),
+                    (31, "bootstrap".to_owned())
                 ]
             );
 
@@ -372,9 +417,12 @@ mod tests {
         .await;
     }
 
-    async fn search_text_objects(pool: &sqlx::PgPool) -> (bool, i64, bool) {
+    async fn search_text_objects(pool: &sqlx::PgPool) -> (bool, bool, i64, bool) {
         sqlx::query_as(
-            "SELECT EXISTS (SELECT 1 FROM pg_trigger \
+            "SELECT EXISTS (SELECT 1 FROM pg_attribute \
+                     WHERE attrelid = 'public.stream_events'::regclass \
+                       AND attname = 'search_text' AND NOT attisdropped), \
+                    EXISTS (SELECT 1 FROM pg_trigger \
                      WHERE tgname = 'stream_events_search_text' AND NOT tgisinternal), \
                     (SELECT count(*) FROM pg_proc p \
                      JOIN pg_namespace n ON n.oid = p.pronamespace \
@@ -387,7 +435,7 @@ mod tests {
         .unwrap()
     }
 
-    async fn insert_plain_event(pool: &sqlx::PgPool) -> Option<String> {
+    async fn insert_and_read_plain_event(pool: &sqlx::PgPool) -> String {
         sqlx::raw_sql(
             "INSERT INTO sessions (id, machine_id, working_dir) VALUES ('plain', 'm', '/w') \
              ON CONFLICT DO NOTHING",
@@ -395,106 +443,169 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
-        sqlx::query_scalar(
+        let id: i64 = sqlx::query_scalar(
             "INSERT INTO stream_events (session_id, event_type, payload) \
-             VALUES ('plain', 'message', '{\"text\": \"t\"}') RETURNING search_text",
+             VALUES ('plain', 'message', '{\"text\": \"t\"}') RETURNING id",
         )
         .fetch_one(pool)
         .await
-        .unwrap()
+        .unwrap();
+        sqlx::query_scalar("SELECT payload->>'text' FROM stream_events WHERE id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[test]
+    fn the_search_baseline_drops_only_the_search_text_index() {
+        let (full, baseline) = (super::SEARCH[0].sql, super::SEARCH_BASELINE.as_str());
+        assert!(full.contains("search_text"));
+        assert!(!baseline.contains("search_text"));
+        assert!(!baseline.contains("idx_stream_events_session_search_trgm"));
+        for needle in ["btree_gin", "pg_trgm", "idx_search_chunks_session_body_trgm"] {
+            assert!(baseline.contains(needle), "{needle}");
+        }
+        assert_eq!(full.lines().count() - baseline.lines().count(), 3);
+        assert_eq!(
+            hex::encode(Sha256::digest(baseline.as_bytes())),
+            "d6148ad378e097f37304983f9ddcf68533c766c5bf0d1eadee005e0a615a59a0",
+            "a database first searched after the column drop records this checksum"
+        );
     }
 
     #[tokio::test]
-    async fn the_search_text_trigger_functions_and_index_are_retired() {
-        with_isolated_database("search_text_retired", |pool| async move {
+    async fn a_fresh_install_ends_without_the_search_text_column() {
+        with_isolated_database("search_text_dropped", |pool| async move {
             provisioned(&pool).await;
-            assert_eq!(search_text_objects(&pool).await, (false, 0, false));
-            assert_eq!(insert_plain_event(&pool).await, None, "nothing fills search_text");
+            assert_eq!(search_text_objects(&pool).await, (false, false, 0, false));
+            assert_eq!(insert_and_read_plain_event(&pool).await, "t");
+            let recorded: Vec<u8> = sqlx::query_scalar(
+                "SELECT checksum FROM _cctui_schema_migrations \
+                 WHERE package = $1 AND version = 1",
+            )
+            .bind(super::SEARCH_PACKAGE)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let variant = Sha256::digest(super::SEARCH_BASELINE.as_bytes()).to_vec();
+            assert_eq!(recorded, variant);
         })
         .await;
     }
 
     #[tokio::test]
-    async fn a_searchless_install_migrates_through_the_search_text_retirement() {
-        with_isolated_database("search_text_retired_searchless", |pool| async move {
+    async fn a_searchless_install_ends_without_the_search_text_column() {
+        with_isolated_database("search_text_dropped_searchless", |pool| async move {
             cctui_server_core::schema::bootstrap(&pool).await.unwrap();
             let mut conn = cctui_server_core::schema::migration_connection(&pool).await.unwrap();
             super::provision(&mut conn, false).await.unwrap();
             drop(conn);
             let versions: Vec<i64> =
                 installations(&pool, "workspace").await.into_iter().map(|(v, _)| v).collect();
-            assert_eq!(versions.last(), Some(&30));
+            assert_eq!(versions.last(), Some(&31));
             assert!(installations(&pool, super::SEARCH_PACKAGE).await.is_empty());
-            assert_eq!(search_text_objects(&pool).await, (false, 0, false));
-            assert_eq!(insert_plain_event(&pool).await, None);
+            assert_eq!(search_text_objects(&pool).await, (false, false, 0, false));
+            assert_eq!(insert_and_read_plain_event(&pool).await, "t");
+
+            let mut conn = cctui_server_core::schema::migration_connection(&pool).await.unwrap();
+            super::provision(&mut conn, true).await.unwrap();
+            drop(conn);
+            assert_eq!(installations(&pool, super::SEARCH_PACKAGE).await.len(), 2);
+            assert_eq!(search_text_objects(&pool).await, (false, false, 0, false));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_database_searched_before_the_column_drop_keeps_its_search_ledger() {
+        with_isolated_database("search_text_drop_upgrade", |pool| async move {
+            use cctui_server_core::schema::{adopt, install_package};
+            cctui_server_core::schema::bootstrap(&pool).await.unwrap();
+            let mut conn = cctui_server_core::schema::migration_connection(&pool).await.unwrap();
+            let before_drop = &super::MIGRATIONS[..30];
+            install_package(&mut conn, "workspace", &before_drop[..1], false).await.unwrap();
+            adopt(&mut conn, "workspace", before_drop[1]).await.unwrap();
+            install_package(&mut conn, "workspace", before_drop, false).await.unwrap();
+            install_package(&mut conn, super::SEARCH_PACKAGE, super::SEARCH, false).await.unwrap();
+            let searched = installations(&pool, super::SEARCH_PACKAGE).await;
+            super::provision(&mut conn, true).await.unwrap();
+            drop(conn);
+            assert_eq!(installations(&pool, super::SEARCH_PACKAGE).await, searched);
+            assert_eq!(search_text_objects(&pool).await, (false, false, 0, false));
+            assert_eq!(insert_and_read_plain_event(&pool).await, "t");
         })
         .await;
     }
 
     const PREVIOUS_INSERT_ONE: &str = "INSERT INTO stream_events \
-         (session_id, event_type, payload, turn_id, search_text) \
-         SELECT $1, $2, $3, $4, CASE WHEN $7 THEN '' END WHERE EXISTS ( \
-             SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $5 AND user_id = $6) \
-         ON CONFLICT DO NOTHING \
-         RETURNING id";
+     (session_id, event_type, payload, turn_id) \
+     SELECT $1, $2, $3, $4 WHERE EXISTS ( \
+         SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $5 AND user_id = $6) \
+     ON CONFLICT DO NOTHING \
+     RETURNING id";
 
     const PREVIOUS_INSERT_MANY: &str = "WITH src AS ( \
          SELECT nextval(pg_get_serial_sequence('stream_events', 'id')) AS id, r.* \
          FROM ( \
              SELECT u.* \
-             FROM unnest($1::text[], $2::text[], $3::jsonb[], $4::uuid[], $7::bool[]) \
-                  WITH ORDINALITY AS u(session_id, event_type, payload, turn_id, chunked, ord) \
+             FROM unnest($1::text[], $2::text[], $3::jsonb[], $4::uuid[]) \
+                  WITH ORDINALITY AS u(session_id, event_type, payload, turn_id, ord) \
              WHERE EXISTS ( \
                  SELECT 1 FROM sessions s \
                  WHERE s.id = u.session_id AND s.machine_uuid = $5 AND s.user_id = $6) \
              ORDER BY u.ord \
          ) r \
      ), ins AS ( \
-         INSERT INTO stream_events (id, session_id, event_type, payload, turn_id, search_text) \
-         SELECT id, session_id, event_type, payload, turn_id, CASE WHEN chunked THEN '' END \
+         INSERT INTO stream_events (id, session_id, event_type, payload, turn_id) \
+         SELECT id, session_id, event_type, payload, turn_id \
          FROM src ORDER BY ord \
          ON CONFLICT DO NOTHING \
          RETURNING id \
      ) \
      SELECT src.ord, ins.id FROM ins JOIN src USING (id)";
 
-    const PREVIOUS_SESSION_ENDED: &str = "INSERT INTO stream_events \
-         (session_id, event_type, payload, search_text) \
-         SELECT $1, 'session_ended', $2, CASE WHEN $5 THEN NULL ELSE '' END WHERE EXISTS ( \
-             SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $3 AND user_id = $4) \
-         ON CONFLICT (session_id, event_type, content_hash, \
-                      COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
-         DO NOTHING";
+    const PREVIOUS_SESSION_ENDED: &str =
+        "INSERT INTO stream_events (session_id, event_type, payload) \
+     SELECT $1, 'session_ended', $2 WHERE EXISTS ( \
+         SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $3 AND user_id = $4) \
+     ON CONFLICT (session_id, event_type, content_hash, \
+                  COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
+     DO NOTHING";
 
-    #[tokio::test]
-    async fn the_previous_release_ingest_inserts_still_succeed_after_the_retirement() {
-        with_isolated_database("search_text_mixed_version", |pool| async move {
-            provisioned(&pool).await;
-            let (user, machine) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
-            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $2)")
-                .bind(user)
-                .bind(format!("u-{user}"))
-                .execute(&pool)
-                .await
-                .unwrap();
-            sqlx::query(
-                "INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)",
-            )
+    async fn seed_owned_session(pool: &sqlx::PgPool, id: &str) -> (uuid::Uuid, uuid::Uuid) {
+        let (user, machine) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $2)")
+            .bind(user)
+            .bind(format!("u-{user}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)")
             .bind(machine)
             .bind(user)
             .bind(format!("mk-{machine}"))
-            .execute(&pool)
+            .execute(pool)
             .await
             .unwrap();
-            sqlx::query(
-                "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir) \
-                 VALUES ('old-pod', 'm', $1, $2, '/w')",
-            )
-            .bind(machine)
-            .bind(user)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir) \
+             VALUES ($1, 'm', $2, $3, '/w')",
+        )
+        .bind(id)
+        .bind(machine)
+        .bind(user)
+        .execute(pool)
+        .await
+        .unwrap();
+        (user, machine)
+    }
+
+    #[tokio::test]
+    async fn the_previous_release_ingest_inserts_still_succeed_after_the_column_drop() {
+        with_isolated_database("search_text_drop_mixed_version", |pool| async move {
+            provisioned(&pool).await;
+            let (user, machine) = seed_owned_session(&pool, "old-pod").await;
 
             let one: Option<i64> = sqlx::query_scalar(PREVIOUS_INSERT_ONE)
                 .bind("old-pod")
@@ -503,7 +614,6 @@ mod tests {
                 .bind(None::<uuid::Uuid>)
                 .bind(machine)
                 .bind(user)
-                .bind(false)
                 .fetch_optional(&pool)
                 .await
                 .unwrap();
@@ -513,11 +623,10 @@ mod tests {
             let many: Vec<(i64, i64)> = sqlx::query_as(PREVIOUS_INSERT_MANY)
                 .bind(vec!["old-pod", "old-pod"])
                 .bind(vec!["message", "tool_use"])
-                .bind(vec![text("chunked"), text("raw")])
+                .bind(vec![text("first"), text("second")])
                 .bind(vec![None::<uuid::Uuid>, None])
                 .bind(machine)
                 .bind(user)
-                .bind(vec![true, false])
                 .fetch_all(&pool)
                 .await
                 .unwrap();
@@ -528,19 +637,18 @@ mod tests {
                 .bind(serde_json::json!({ "reason": "killed" }))
                 .bind(machine)
                 .bind(user)
-                .bind(true)
                 .execute(&pool)
                 .await
                 .unwrap();
             assert_eq!(ended.rows_affected(), 1, "the session-ended row");
 
-            let stored: Vec<Option<String>> = sqlx::query_scalar(
-                "SELECT search_text FROM stream_events WHERE session_id = 'old-pod' ORDER BY id",
+            let stored: Vec<String> = sqlx::query_scalar(
+                "SELECT event_type FROM stream_events WHERE session_id = 'old-pod' ORDER BY id",
             )
             .fetch_all(&pool)
             .await
             .unwrap();
-            assert_eq!(stored, [None, Some(String::new()), None, None]);
+            assert_eq!(stored, ["message", "message", "tool_use", "session_ended"]);
         })
         .await;
     }
@@ -877,7 +985,8 @@ mod tests {
                     (27, "bootstrap".to_owned()),
                     (28, "bootstrap".to_owned()),
                     (29, "bootstrap".to_owned()),
-                    (30, "bootstrap".to_owned())
+                    (30, "bootstrap".to_owned()),
+                    (31, "bootstrap".to_owned())
                 ]
             );
             let rows: i64 =

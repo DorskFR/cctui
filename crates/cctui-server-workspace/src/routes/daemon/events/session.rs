@@ -15,8 +15,7 @@ async fn mark_session_ended(
     local_id: &str,
     reason: &EndReason,
 ) -> anyhow::Result<()> {
-    let search = state.config.features.contains(Feature::TranscriptSearch);
-    if persist_session_end(&state.pool, search, machine_id, user_id, local_id, reason).await? {
+    if persist_session_end(&state.pool, machine_id, user_id, local_id, reason).await? {
         record_session_ended(state, local_id, machine_id, user_id, reason);
     }
     // Session-scoped gateway tokens die with the session.
@@ -103,7 +102,6 @@ impl cctui_server_core::lifecycle::SessionEndJournal for TranscriptJournal {
 
 pub(super) async fn persist_failed_spawn(
     pool: &sqlx::PgPool,
-    _search: bool,
     row: &crate::state::FailedSpawnRow,
     reason: &EndReason,
 ) -> anyhow::Result<bool> {
@@ -113,7 +111,6 @@ pub(super) async fn persist_failed_spawn(
 
 pub(in crate::routes::daemon) async fn persist_session_end(
     pool: &sqlx::PgPool,
-    _search: bool,
     machine_id: Uuid,
     user_id: Uuid,
     local_id: &str,
@@ -469,9 +466,9 @@ mod tests {
         let reason = EndReason::SpawnFailed {
             detail: "unknown model gpt-nope; available: gpt-5-codex".into(),
         };
-        assert!(super::persist_failed_spawn(&pool, true, &row, &reason).await.expect("persist"));
+        assert!(super::persist_failed_spawn(&pool, &row, &reason).await.expect("persist"));
         assert!(
-            !super::persist_failed_spawn(&pool, true, &row, &reason).await.expect("persist again"),
+            !super::persist_failed_spawn(&pool, &row, &reason).await.expect("persist again"),
             "an existing row is left alone"
         );
 
@@ -570,7 +567,7 @@ mod tests {
         let detail =
             format!("claude -p exited (exit status: 1); last stderr:\n{}", "x".repeat(3000));
         let reason = EndReason::Crashed { detail: detail.clone() };
-        super::persist_session_end(&pool, true, mid, uid, &sid, &reason).await.expect("persist");
+        super::persist_session_end(&pool, mid, uid, &sid, &reason).await.expect("persist");
 
         let (status, end_reason, end_detail, ended_at): (
             String,
@@ -607,7 +604,7 @@ mod tests {
         .expect("count events");
         assert_eq!(events, 1);
 
-        super::persist_session_end(&pool, true, mid, uid, &sid, &EndReason::Killed)
+        super::persist_session_end(&pool, mid, uid, &sid, &EndReason::Killed)
             .await
             .expect("persist");
         let (end_reason, end_detail): (Option<String>, Option<String>) =
@@ -618,39 +615,6 @@ mod tests {
                 .expect("read back");
         assert_eq!(end_reason.as_deref(), Some("killed"));
         assert_eq!(end_detail, None);
-    }
-
-    #[tokio::test]
-    async fn the_session_ended_row_is_stored_without_search_text() {
-        assert!(!super::SESSION_ENDED_SQL.contains("search_text"));
-        let Some(url) = crate::routes::gateway::test_db_url("session_end_search_off") else {
-            return;
-        };
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&url)
-            .await
-            .expect("connect test db");
-        let (uid, mid) = seed_machine(&pool, "end-search").await;
-        let mut sids = Vec::new();
-        for search in [false, true] {
-            let sid = seed_owned_session(&pool, uid, mid).await;
-            let reason = EndReason::Crashed { detail: "needle".into() };
-            super::persist_session_end(&pool, search, mid, uid, &sid, &reason)
-                .await
-                .expect("persist");
-            let rows: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM stream_events \
-                 WHERE session_id = $1 AND event_type = 'session_ended'",
-            )
-            .bind(&sid)
-            .fetch_one(&pool)
-            .await
-            .expect("count the end row");
-            assert_eq!(rows, 1, "search {search}");
-            sids.push(sid);
-        }
-        crate::routes::daemon::test_support::drop_machines(&pool, &sids, &[(uid, mid)]).await;
     }
 
     /// An account named `Astra-<id>` with one openai provider row, for `uid`.

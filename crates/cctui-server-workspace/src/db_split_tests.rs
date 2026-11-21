@@ -383,20 +383,19 @@ async fn current_without_search_step(pool: &PgPool, legacy: bool) {
     schema::install_package(&mut conn, "workspace", workspace, legacy).await.unwrap();
 }
 
-const SEARCH_TEXT_GIN: &str = "idx_stream_events_session_search_trgm";
-
-/// A [`catalog`] or [`schema_shape`] without the index the search step retires.
-fn without_search_text_gin(mut v: Value) -> Value {
-    for key in ["relations", "indexes"] {
-        if let Some(rows) = v.get_mut(key).and_then(Value::as_array_mut) {
-            rows.retain(|r| !r.to_string().contains(SEARCH_TEXT_GIN));
-        }
-    }
-    v
+async fn search_text_column(pool: &PgPool) -> bool {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_attribute \
+         WHERE attrelid='public.stream_events'::regclass AND attname='search_text' \
+           AND NOT attisdropped)",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
-async fn the_search_step_only_retires_the_search_text_index_in_a_current_database() {
+async fn the_search_step_changes_nothing_but_its_ledger_in_a_current_database() {
     for legacy in [true, false] {
         let name = if legacy { "search_step_legacy_full" } else { "search_step_core" };
         with_isolated_database(name, |pool| async move {
@@ -404,8 +403,11 @@ async fn the_search_step_only_retires_the_search_text_index_in_a_current_databas
             ingest_transcript(&pool, "kept").await;
             let (before, shape, history) =
                 (catalog(&pool).await, schema_shape(&pool).await, ledger(&pool).await);
-            assert!(before.to_string().contains(SEARCH_TEXT_GIN), "legacy={legacy}");
-            let (before, shape) = (without_search_text_gin(before), without_search_text_gin(shape));
+            assert!(!search_text_column(&pool).await, "legacy={legacy}");
+            assert!(
+                !before.to_string().contains("idx_stream_events_session_search_trgm"),
+                "legacy={legacy}"
+            );
 
             migrate(&pool, true).await.unwrap();
             assert_eq!(catalog(&pool).await, before, "legacy={legacy}");
@@ -424,6 +426,49 @@ async fn the_search_step_only_retires_the_search_text_index_in_a_current_databas
                 .await
                 .unwrap();
             assert_eq!(rows, 1);
+        })
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn an_adopted_legacy_schema_ends_without_the_search_text_column() {
+    for search in [true, false] {
+        let name = if search { "legacy_drop_search_text" } else { "legacy_drop_search_text_off" };
+        with_isolated_database(name, |pool| async move {
+            MIGRATOR.run(&pool).await.unwrap();
+            let (sid, id) = ingest_transcript(&pool, "a legacy transcript").await;
+            assert!(search_text_column(&pool).await, "search={search}");
+
+            migrate(&pool, search).await.unwrap();
+            assert!(!search_text_column(&pool).await, "search={search}");
+            let versions: Vec<i64> = sqlx::query_scalar(
+                "SELECT version FROM _cctui_schema_migrations WHERE package='workspace' \
+                 ORDER BY version",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(versions.last(), Some(&31), "search={search}");
+
+            let next: i64 = sqlx::query_scalar(
+                "INSERT INTO stream_events (session_id,event_type,payload) \
+                 VALUES ($1,'message','{\"text\":\"after the drop\"}') RETURNING id",
+            )
+            .bind(&sid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let read: Vec<(i64, String)> = sqlx::query_as(
+                "SELECT id,payload->>'text' FROM stream_events WHERE session_id=$1 ORDER BY id",
+            )
+            .bind(&sid)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            let expected =
+                [(id, "a legacy transcript".to_owned()), (next, "after the drop".to_owned())];
+            assert_eq!(read, expected, "search={search}");
         })
         .await;
     }

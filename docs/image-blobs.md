@@ -12,17 +12,6 @@ keeps a reference in place of the base64 `source`:
 This is the marker the daemon already writes for sources over 512 KiB; the
 server now applies it to every base64 source of 1 KiB or more.
 
-## search_text
-
-`stream_events.search_text` is set by the `stream_events_search_text` trigger
-when an insert does not supply it, and recomputed when `payload` is updated
-(an empty value stays empty). The rule is
-`public.stream_events_search_text_of(payload)`: `text`, `content`, `tool` and
-`input`, with base64 attachment data emptied: a JSON `"data"` string or a
-`;base64,` URL body that starts with 200 base64 characters. So a
-payload that stays inline (a failed blob write, a source over 32 MiB, a
-`data:` URL) still keeps its base64 out of `search_text`.
-
 Only valid images are stored as images. A source declaring `image/png`,
 `image/jpeg`, `image/gif` or `image/webp` must decode from base64, start with
 the magic bytes of one of those formats, and fully decode; the reference
@@ -90,9 +79,7 @@ Rows stored before this change are rewritten by a background walk. It is
 
 Each event is handled in one transaction: validate and recover its sources,
 write the blobs, verify each by hash, grant the session its links, then replace
-the payload only if `content_hash` still matches the row that was read. The
-payload update recomputes `search_text` from the reference, which drops the
-row's base64 copy too. The walk
+the payload only if `content_hash` still matches the row that was read. The walk
 also revisits references stored opaque before validation existed (an
 `"encoding": "base64"` ref without `"corrupt": true`): each is recovered or
 flagged. Any error rolls the whole event back and
@@ -104,10 +91,6 @@ inline`) and skipped:
 - the row changed in the meantime;
 - the rewritten payload equals another row of the session (a replayed
   duplicate).
-
-Such a row, and any scanned row whose source cannot move (too large, too
-small), still gets its `search_text` recomputed without the base64. That write
-is skipped when the value is already right, so re-runs write nothing.
 
 The cursor and counters live in `image_blob_backfill` (`name = 'backfill'`):
 `images_valid`, `images_corrupt` and `images_recovered` count sources by
@@ -137,15 +120,11 @@ FROM image_blob_backfill WHERE name = 'backfill';
 
 SELECT count(*), pg_size_pretty(sum(byte_len)) FROM daemon_blobs;
 
--- inline image payloads left, and base64 copies left in search_text
+-- inline image payloads left
 -- (pg_column_size reads no TOAST, so only large rows are detoasted)
 SELECT count(*), pg_size_pretty(sum(pg_column_size(payload)))
 FROM stream_events
 WHERE pg_column_size(payload) > 65536 AND strpos(payload::text, '"type": "base64"') > 0;
-
-SELECT count(*), pg_size_pretty(sum(pg_column_size(search_text)))
-FROM stream_events
-WHERE pg_column_size(search_text) > 65536 AND strpos(search_text, '"type": "base64"') > 0;
 ```
 
 Restart from the beginning (idempotent: rewritten rows are skipped):
